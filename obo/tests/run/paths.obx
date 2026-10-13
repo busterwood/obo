@@ -1,0 +1,21 @@
+// Finer paths: a change invalidates the references that lie under the place it
+// changed, not every reference into the same record or array.
+type Node = ref record { value: int; next: ?Node }
+type Box = ref record { a: Node; b: ?Node }
+
+fn main() {
+    var w = new Box{a: new Node{value: 1, next: nil}, b: new Node{value: 5, next: nil}}
+    var r = &w.a
+    w.b = nil                                    // a sibling field: the reference to a stays valid
+    println(r.value)                             // expect: 1
+    let ra = &w.a
+    w.a.next = new Node{value: 9, next: nil}     // inside a: a itself is not freed
+    println(ra.value)                            // expect: 1
+    let xs = new []Node(0)
+    append(xs, new Node{value: 3, next: nil})
+    append(xs, new Node{value: 4, next: nil})
+    let r0 = &xs[0]
+    xs[1] = new Node{value: 7, next: nil}        // another element: element 0 stays valid
+    println(r0.value)                            // expect: 3
+    println(xs[1].value)                         // expect: 7
+}

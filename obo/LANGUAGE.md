@@ -156,9 +156,12 @@ while nothing it may point into has been changed.
 - Several references may name the same object, whether mutable or not. A change
   through one reference only invalidates references that may point *inside* what
   changed, so references to the object itself stay valid.
-- Changing an element of an array (`items[i] = ...`) or truncating the array
-  invalidates every reference into that array, not just the one for element `i`.
-  Appending does not invalidate references.
+- A change reaches only the references that lie under the place it changed. A field
+  is a place, and so is an element at a constant index: changing `w.b` leaves a
+  reference to `w.a` valid, and changing `items[1]` leaves a reference to `items[0]`
+  valid. An element whose index is not a constant may be any element, so changing
+  `items[i]` invalidates references into all of them, and truncating the array
+  invalidates every reference into it. Appending does not invalidate references.
 
   ```obo
   // example: error: 'first' may point to freed memory
@@ -186,6 +189,23 @@ while nothing it may point into has been changed.
       append(items, new Node{v: 2})  // growing the array keeps 'first' valid
       println(first.v)
       println(items[0].v)
+  }
+  ```
+
+  ```obo
+  // example: runs
+  // prints 3
+  // prints 7
+  type Node = ref record { v: int }
+
+  fn main() {
+      var items = new []Node(0)
+      append(items, new Node{v: 3})
+      append(items, new Node{v: 4})
+      let first = &items[0]
+      items[1] = new Node{v: 7}     // a different element: 'first' stays valid
+      println(first.v)
+      println(items[1].v)
   }
   ```
 
@@ -376,9 +396,9 @@ fn main() {
 }
 ```
 
-**Coarse invalidation.** References are invalidated per array, not per element.
-Finer paths are planned so that changing one element leaves references to other
-elements valid.
+**Coarse through references.** A change made through a reference, such as `p.next = x`
+where `p` is a reference, is not yet traced by its path: it invalidates every reference
+into the whole root it reaches.
 
 **Planned.** The language features listed as not yet done in the root
 `README.md` also apply: methods and interfaces, lambdas, generic modules, `try`

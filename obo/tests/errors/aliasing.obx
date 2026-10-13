@@ -65,10 +65,12 @@ fn f() {
     append(b.items, make())
     elemFirst(b.items[0], b)  // error: argument 1 of elemFirst may point inside argument 2, which is mut
 }
-// === two mut elements (conservative until paths are finer: they might be one inside the other)
+// === two mut elements at indexes that may be the same (known different ones are accepted: run/aliasing.obx)
 fn f() {
     let b = new Box{items: new []Node(0)}
     append(b.items, make())
     append(b.items, make())
-    twoMut(b.items[0], b.items[1])  // error: argument 2 of twoMut may point inside argument 1, which is mut
+    let i = 0
+    let j = len(b.items) - 1
+    twoMut(b.items[i], b.items[j])  // error: argument 2 of twoMut may point inside argument 1, which is mut
 }

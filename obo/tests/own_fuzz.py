@@ -60,9 +60,11 @@ PRELUDE = [
     "fn bumpAll(mut a: &[]Node, b: &Node): int { return len(a) + b.value }",
     "fn gp(ys: &[]Node): int { return bumpAll(gxs, ys[0]) }",
     "fn galias(): int { var q = &ga; bump(ga); return sum(q) }",
+    "fn galias2(mut p: &?Node): int { var q = &ga; bump(p); return sum(q) }",
     "fn setGs(v: int): string { gs = \"g\" + string(v); return \"!\" }",
     "fn mkstr(v: int): string { return \"a\" + string(v) }",
     "type Box = ref record { items: []int }",
+    "type Pair = ref record { a: Node; b: ?Node }",
     "fn tick(mut a: &[]int): int { append(a, 1); return 0 }",
     "type Shape = closed {",
     "    Circle { r: int }",
@@ -416,6 +418,41 @@ class Gen:
         return Stmt([f"var {n}: Shape = new Circle{{r: {v}}}", f"println(area({n}))",
                      f"{n} = new Rect{{w: {v}, h: 2}}", f"println(area({n}))"], run)
 
+    def global_alias2_stmt(self):
+        """A reference to the global chain, then a change through a parameter that may be
+        that chain: the reference borrows the whole chain, so it stays valid."""
+        def run(st):
+            chain_bump(st.ga)
+            st.out.append(str(chain_sum(st.ga)))
+        return Stmt(["println(galias2(ga))"], run)
+
+    def sibling_ref_stmt(self):
+        """A reference to one field, then a write to its sibling: the reference stays valid."""
+        v = self.k()
+        n = self.nrefs
+        self.nrefs += 1
+        return Stmt([f"var pr{n} = new Pair{{a: new Node{{value: {v}, next: nil}}, b: nil}}",
+                     f"var qr{n} = &pr{n}.a",
+                     f"pr{n}.b = new Node{{value: 1, next: nil}}",
+                     f"println(qr{n}.value)"],
+                    lambda st: st.out.append(str(v)))
+
+    def two_elems_stmt(self):
+        """Two mut arguments at two known elements of one array: they are different, so allowed."""
+        v = self.k()
+        n = self.nrefs
+        self.nrefs += 1
+
+        def run(st):
+            st.out.append(str(v + 1))
+            st.out.append('12')
+        return Stmt([f"var er{n} = new []Node(0)",
+                     f"append(er{n}, new Node{{value: {v}, next: nil}})",
+                     f"append(er{n}, new Node{{value: 2, next: nil}})",
+                     f"two(er{n}[0], er{n}[1])",
+                     f"println(er{n}[0].value)",
+                     f"println(er{n}[1].value)"], run)
+
     def g_append_stmt(self):
         v = self.k()
 
@@ -474,6 +511,7 @@ class Gen:
                   self.tag_append_stmt, self.tag_append_stmt, self.tag_print_stmt,
                   self.mix_self_stmt, self.mix_global_stmt, self.global_alias_stmt,
                   self.gs_pin_stmt, self.str_call_stmt, self.shape_stmt,
+                  self.sibling_ref_stmt, self.two_elems_stmt, self.global_alias2_stmt,
                   self.g_append_stmt, self.g_total_stmt, self.ga_push_stmt, self.ga_sum_stmt,
                   self.ga_bump_stmt, self.h_read_stmt, self.h_write_stmt, self.h_alive_stmt]
         makers += [self.old_sum_stmt]

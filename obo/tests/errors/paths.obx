@@ -1,0 +1,12 @@
+// A change to the place a reference points into frees what it points to, and is
+// an error only for references that lie under that place.
+type Node = ref record { value: int; next: ?Node }
+type Holder = ref record { inner: Node }
+
+// === a reference into a field, after the field itself is assigned
+fn f() {
+    var h = new Holder{inner: new Node{value: 1, next: nil}}
+    let r = &h.inner
+    h.inner = new Node{value: 2, next: nil}
+    println(r.value)            // error: 'r' may point to freed memory
+}

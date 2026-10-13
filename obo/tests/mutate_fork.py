@@ -47,7 +47,7 @@ MUTANTS = {
     "globals not freed at exit": ("            x.disp = g.offset\n            rtCall1(RT_FREE, x, tVoid)\n", "            x.disp = g.offset\n"),
     # freeing too much: double free or poisoned reads
     "moved locals still freed": ("        if !s.moved && !s.isRefLocal {\n            let x = newItem", "        if !s.isRefLocal {\n            let x = newItem"),
-    "moves not recorded": ("        s.moved = true\n        invalidate(s, nil, true)", "        invalidate(s, nil, true)"),
+    "moves not recorded": ("        s.moved = true\n        invalidate(s, nil, true, \"\")", "        invalidate(s, nil, true, \"\")"),
     "take leaves the value in place": ("        opMem(0x8B, r, memOf(x), true, false)\n        opMem(0xC7, 0, memOf(x), true, false)\n        emit32(0)\n",
                                        "        opMem(0x8B, r, memOf(x), true, false)\n"),
     # string reference counts
@@ -64,11 +64,11 @@ MUTANTS = {
                                   "                if v.iterating { error(\"cannot change what '\" + v.name + \"' points into while a for loop walks it\") }"),
     "writes through read-only references": ("        if x.deref && wr != nil && wr.isRef && !wr.refMut {", "        if x.deref && wr != nil && wr.isRef && !wr.refMut && false {"),
     "mut aliases allowed": ("argModes[i] == 2 && argDeeps[j] && ri", "false && argDeeps[j] && ri"),
-    "mut calls invalidate nothing": ("            invalidate(argRoots[i], argVias[i], false)\n            recordFree", "            recordFree"),
-    "moving a root keeps its references": ("        invalidate(s, nil, true)                  // references into it now dangle\n", ""),
+    "mut calls invalidate nothing": ("            invalidate(argRoots[i], argVias[i], false, argPaths[i])\n            recordFree", "            recordFree"),
+    "moving a root keeps its references": ("        invalidate(s, nil, true, \"\")                  // references into it now dangle\n", ""),
     "references can be moved out": ("    if x.borrowed || (s != nil && s.isRef) { error(", "    if false { error("),
     "walked arrays can change": ("                    if xs.iterating { errorAt(", "                    if false { errorAt("),
-    "element writes invalidate nothing": ("                } else if x.deref {\n                    invalidate(ws, viaOf(x), false)\n", "                } else if x.deref {\n"),
+    "element writes invalidate nothing": ("                } else if x.deref {\n                    invalidate(ws, viaOf(x), false, x.path)\n", "                } else if x.deref {\n"),
     "read-only references can be passed as mut": ("            if f.pmodes[i] == 2 && !mutableOf(a) {", "            if false {"),
     "everything counts as an ancestor": ("        if p == a { return true }\n        p = p.refParent", "        return true"),
     # handles
@@ -80,7 +80,7 @@ MUTANTS = {
     "match reads the tag with the generation": ("    opMem(0x8B, r, mem(r, -1, -16, 8), false, false)", "    opMem(0x8B, r, mem(r, -1, -16, 8), true, false)"),
     # effect summaries
     "callees never free globals": ("    if f.addr < 0 || f == curFn || f.freesAll { return true }\n    for x in f.freed {", "    if false { return true }\n    for x in f.freed {"),
-    "calls invalidate nothing": ("            invalidate(g, nil, true)\n            if !all { recordFree(g) }", "            if !all { recordFree(g) }"),
+    "calls invalidate nothing": ("            invalidate(g, nil, true, \"\")\n            if !all { recordFree(g) }", "            if !all { recordFree(g) }"),
     "frees not recorded": ("    if g.storage != \"global\" { return }\n    for x in f.freed {", "    if true { return }\n    for x in f.freed {"),
     "drop frees nothing": ("        consume(x)\n        rtCall1(RT_FREE, dx, tVoid)\n        return voidItem()", "        consume(x)\n        return voidItem()"),
     "replace keeps the old value in place": ("        let xt = x.typ\n        store(x, v)\n", "        let xt = x.typ\n        releaseItem(x)\n"),
@@ -97,12 +97,15 @@ MUTANTS = {
     "changes reach no other root": ("    return isRefParam(changed) && (isRefParam(other) || other.storage == \"global\")",
                                     "    return false"),
     "changes through parameters miss globals": ("(isRefParam(other) || other.storage == \"global\")", "isRefParam(other)"),
-    "aliases lose non-deep references too": ("if !hit && r != nil && v.refDeep && reaches(root, r)", "if !hit && r != nil && reaches(root, r)"),
+    "aliases lose non-deep references too": ("if !hit && r != nil && r != root && v.refDeep && reaches(root, r)", "if !hit && r != nil && r != root && reaches(root, r)"),
     "global changes reach parameters": ("    if changed == other { return true }\n", "    if changed == other || changed.storage == \"global\" { return true }\n"),
     "calls check only one root": ("argDeeps[j] && ri != nil && rj != nil && reaches(ri, rj)", "argDeeps[j] && ri != nil && rj != nil && ri == rj"),
     "calls ignore depth": ("argModes[i] == 2 && argDeeps[j] && ri", "argModes[i] == 2 && ri"),
     # assigning into a field or element while a call might free it
     "field targets assigned across calls": ("            if xs == nil && userCalls != callsBefore {", "            if false && userCalls != callsBefore {"),
+    # finer paths (item 3): a change reaches only what lies under its place
+    "field changes invalidate siblings": ("(all || v.refDeep && underPath(v.refPath, path))", "(all || v.refDeep)"),
+    "known elements treated as one": ("(ri != rj || pathsOverlap(argPaths[i], argPaths[j]))", "(ri != rj || true)"),
 }
 
 

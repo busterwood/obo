@@ -861,6 +861,7 @@ type Sym = ref record {
     refMut: bool              // changes may be made through it
     refRoot: ?^Sym             // the owned local or reference parameter it borrows from
     refDeep: bool             // it may point below its root's own object
+    refPath: string           // where in its root it points: "/a/b", "/items/[]"; "" = anywhere
     refParent: ?^Sym           // the reference local it was derived from
     iterating: bool           // a for loop is walking this array
     pmodes: []int             // fn: 0 owned, 1 &, 2 mut, per parameter
@@ -906,6 +907,7 @@ type Item = ref record {
     viaHandle: bool           // the designator went through a handle
     deref: bool               // the designator goes through a field or element
     movedRef: bool            // a moved local named as an assignment target
+    path: string              // a field or element of root: "/a/b", "/items/[]"; "" = anywhere
 }
 
 fn newItem(mode: string, t: ^Type): Item {
@@ -1574,14 +1576,14 @@ fn addOwnedLocal(s: ^Sym) {
     append(ownedLocals, s)
 }
 
-fn invalidate(root: ?^Sym, via: ?^Sym, all: bool)
+fn invalidate(root: ?^Sym, via: ?^Sym, all: bool, path: string)
 
 // frees the live owned locals ownedLocals[from..to), newest first
 fn freeOwned(from: int, to: int) {
     var i = to - 1
     while i >= from {
         let s = ownedLocals[i]
-        if s.owned { invalidate(s, nil, true) }
+        if s.owned { invalidate(s, nil, true, "") }
         if !s.moved && !s.isRefLocal {
             let x = newItem("mem", symType(s))
             x.base = RBP
@@ -1657,7 +1659,7 @@ fn consume(mut x: &Item) {
         if pinned == s { error("cannot move '" + s.name + "' while assigning into it") }
         if s.deferUse { error("'" + s.name + "' is used by a defer and cannot be moved") }
         s.moved = true
-        invalidate(s, nil, true)                  // references into it now dangle
+        invalidate(s, nil, true, "")                  // references into it now dangle
         return
     }
     error("cannot move out of a field or element; use take() on an optional one")
@@ -1739,6 +1741,13 @@ fn ancestorOf(a: ^Sym, via: ?^Sym): bool {
     return false
 }
 
+// the path a reference to x borrows: a reference copied from another keeps its path
+fn refPathOf(x: &Item): string {
+    let s = x.sym
+    if s != nil && s.isRefLocal { return s.refPath }
+    return x.path
+}
+
 fn makeRefLocal(v: ^Sym, x: &Item, root: ?^Sym) {
     v.refParent = parentOf(x)
     v.isRef = true
@@ -1746,6 +1755,7 @@ fn makeRefLocal(v: ^Sym, x: &Item, root: ?^Sym) {
     v.refRoot = root
     v.refMut = mutableOf(x)
     v.refDeep = deepOf(x)
+    v.refPath = refPathOf(x)
     append(ownedLocals, v)
 }
 
@@ -1761,11 +1771,61 @@ fn reaches(changed: ^Sym, other: ^Sym): bool {
     return isRefParam(changed) && (isRefParam(other) || other.storage == "global")
 }
 
+// Paths name a place inside a root, segment by segment: "/a" for a field, "/[3]"
+// for element 3 and "/[]" for an element not known at compile time. "" is the
+// whole root. An element that is not known may be any element.
+
+// the index of the ']' that closes the element segment starting at i
+fn elemEnd(s: string, i: int): int {
+    var j = i
+    while s[j] != ']' { j += 1 }
+    return j
+}
+
+// p names s or something above it: its segments are the first ones of s
+fn segsPrefix(p: string, s: string): bool {
+    var i = 0
+    var j = 0
+    while i < len(p) {
+        if j >= len(s) { return false }
+        if p[i] == '[' {
+            if s[j] != '[' { return false }
+            let pe = elemEnd(p, i)
+            let se = elemEnd(s, j)
+            // two known elements must be the same one; an unknown one may be any
+            if pe - i > 1 && se - j > 1 {
+                if pe - i != se - j { return false }
+                for k in 0..pe - i {
+                    if p[i + k] != s[j + k] { return false }
+                }
+            }
+            i = pe + 1
+            j = se + 1
+        } else {
+            if p[i] != s[j] { return false }
+            i += 1
+            j += 1
+        }
+    }
+    return j == len(s) || s[j] == '/'
+}
+
+// the change at path p may free what a reference at path r points into: r is p
+// or lies under it. "" as either side means anywhere.
+fn underPath(r: string, p: string): bool {
+    return r == "" || segsPrefix(p, r)
+}
+
+// two places that may be one: one lies under the other
+fn pathsOverlap(a: string, b: string): bool {
+    return segsPrefix(a, b) || segsPrefix(b, a)
+}
+
 // Something under root may have been freed: the root's references become
 // invalid, except via (the reference the change went through) and, unless
 // all, references to the root's own object; so do references that may point
 // inside any other root the change reaches.
-fn invalidate(root: ?^Sym, via: ?^Sym, all: bool) {
+fn invalidate(root: ?^Sym, via: ?^Sym, all: bool, path: string) {
     if root == nil { return }
     for vI in 0..len(ownedLocals) {
         let v = ownedLocals[vI]
@@ -1773,8 +1833,8 @@ fn invalidate(root: ?^Sym, via: ?^Sym, all: bool) {
         // derived from point above it and stay valid
         if v.isRefLocal && !ancestorOf(v, via) && !v.moved {
             let r = v.refRoot
-            var hit = r == root && (all || v.refDeep)
-            if !hit && r != nil && v.refDeep && reaches(root, r) { hit = true }
+            var hit = r == root && (all || v.refDeep && underPath(v.refPath, path))
+            if !hit && r != nil && r != root && v.refDeep && reaches(root, r) { hit = true }
             if hit {
                 if v.iterating { error("cannot change what '" + v.name + "' points into while a for loop walks it") }
                 v.moved = true
@@ -1829,7 +1889,7 @@ fn afterCall(f: ^Sym) {
     for gI in 0..len(globals) {
         let g = globals[gI]
         if (g.kind == "var" || g.kind == "let") && (all || mightFree(f, g)) {
-            invalidate(g, nil, true)
+            invalidate(g, nil, true, "")
             if !all { recordFree(g) }
         }
     }
@@ -2091,6 +2151,7 @@ fn callFn(f: ^Sym): Item {
     let argModes = new []int(0)
     let argVias = new []?^Sym(0)
     let argDeeps = new []bool(0)
+    let argPaths = new []string(0)
     for i in 0..n {
         if sym == T_RPAREN { error(f.name + " takes " + string(n) + " argument(s), not " + string(i)) }
         if i > 0 { expect(T_COMMA, "") }
@@ -2105,6 +2166,7 @@ fn callFn(f: ^Sym): Item {
             append(argModes, f.pmodes[i])
             append(argVias, viaOf(a))
             append(argDeeps, deepOf(a))
+            append(argPaths, a.path)
         } else {
             consume(a)
         }
@@ -2120,7 +2182,9 @@ fn callFn(f: ^Sym): Item {
         for j in 0..len(argRoots) {
             let ri = argRoots[i]
             let rj = argRoots[j]
-            if i != j && argModes[i] == 2 && argDeeps[j] && ri != nil && rj != nil && reaches(ri, rj) {
+            // two places in one root may be told apart: elements known to differ
+            if i != j && argModes[i] == 2 && argDeeps[j] && ri != nil && rj != nil && reaches(ri, rj) &&
+               (ri != rj || pathsOverlap(argPaths[i], argPaths[j])) {
                 error("argument " + string(j + 1) + " of " + f.name + " may point inside argument " + string(i + 1) + ", which is mut")
             }
         }
@@ -2133,7 +2197,7 @@ fn callFn(f: ^Sym): Item {
     }
     for i in 0..len(argRoots) {
         if argModes[i] == 2 {
-            invalidate(argRoots[i], argVias[i], false)
+            invalidate(argRoots[i], argVias[i], false, argPaths[i])
             recordFree(argRoots[i])
         }
     }
@@ -2292,12 +2356,12 @@ fn builtin(name: string): Item {
         checkAssign(x.typ, v, "replacement value")
         consume(v)
         if x.deref {
-            invalidate(rootOf(x), viaOf(x), false)
+            invalidate(rootOf(x), viaOf(x), false, x.path)
             recordFree(rootOf(x))
         } else {
             let ts = x.sym
             if ts != nil {
-                invalidate(ts, nil, true)
+                invalidate(ts, nil, true, "")
                 recordFree(ts)
             }
         }
@@ -2348,13 +2412,13 @@ fn builtin(name: string): Item {
             error("take cannot change through '" + tr.name + "': it is a read-only reference")
         }
         if x.deref {
-            invalidate(rootOf(x), viaOf(x), false)
+            invalidate(rootOf(x), viaOf(x), false, x.path)
             recordFree(rootOf(x))
         } else {
             let ts = x.sym
-            if ts != nil && ts.storage == "local" { invalidate(ts, nil, true) }
+            if ts != nil && ts.storage == "local" { invalidate(ts, nil, true, "") }
             if ts != nil && ts.storage == "global" {
-                invalidate(ts, nil, true)
+                invalidate(ts, nil, true, "")
                 recordFree(ts)
             }
         }
@@ -2384,7 +2448,7 @@ fn builtin(name: string): Item {
                 error(name + " changes the array, but '" + ar.name + "' is a read-only reference")
             }
             if name == "truncate" {
-                invalidate(rootOf(a), viaOf(a), false)
+                invalidate(rootOf(a), viaOf(a), false, a.path)
                 recordFree(rootOf(a))
             }
         }
@@ -2520,6 +2584,7 @@ fn designatorT(target: bool): Item {
     }
     let root = x.root
     var viaHandle = false
+    var path = ""
     while sym == T_DOT || sym == T_LBRACK {
         if x.movedRef { error("'" + name + "' was moved and has no value here") }
         if x.mode == "reg" && isOwned(x.typ) {
@@ -2550,6 +2615,7 @@ fn designatorT(target: bool): Item {
             x = newItem("mem", fty)
             x.base = p.r
             x.disp = foff
+            path = path + "/" + fname
         } else {
             next()
             let line = tline
@@ -2567,6 +2633,8 @@ fn designatorT(target: bool): Item {
             if root != nil && root.storage == "global" && userCalls != callsBefore {
                 error("cannot index through global '" + root.name + "' with an index that calls a function: the call could free it")
             }
+            var seg = "/[]"
+            if i0.mode == "const" { seg = "/[" + string(i0.val) + "]" }
             let i = load(i0)
             expect(T_RBRACK, "")
             if kind == "string" {
@@ -2589,12 +2657,15 @@ fn designatorT(target: bool): Item {
                 x.line = line
                 if elem.kind == "byte" { x.width = 1 }
             }
+            path = path + seg
         }
     }
     x.viaHandle = viaHandle
     if x.sym == nil && root != nil {
         x.root = root
         x.deref = true
+        // a path is only known through an owned root: through a reference or handle it is the whole root
+        if !root.isRef && !viaHandle { x.path = path }
         // nothing can be moved out through a reference, so this can only be a borrow
         if root.isRef && isOwned(x.typ) { x.borrowed = true }
     }
@@ -3189,6 +3260,7 @@ fn assignmentOrCall(): bool {
             let par = parentOf(y)
             let mu = mutableOf(y)
             let dp = deepOf(y)
+            let pp = refPathOf(y)
             store(x, y)
             for vI in 0..len(ownedLocals) {
                 let v = ownedLocals[vI]
@@ -3196,6 +3268,7 @@ fn assignmentOrCall(): bool {
             }
             xs.refParent = par
             xs.refRoot = root
+            xs.refPath = pp
             xs.refMut = mu
             xs.refDeep = dp
             xs.moved = false
@@ -3224,12 +3297,12 @@ fn assignmentOrCall(): bool {
             if isOwned(dtype) {
                 if xs != nil && xs.storage == "local" {
                     if xs.iterating { errorAt("cannot change '" + xs.name + "' while a for loop walks it", line, col) }
-                    invalidate(xs, nil, true)
+                    invalidate(xs, nil, true, "")
                 } else if x.deref {
-                    invalidate(ws, viaOf(x), false)
+                    invalidate(ws, viaOf(x), false, x.path)
                     recordFree(ws)
                 } else if xs != nil {
-                    invalidate(xs, nil, true)               // a global given a new value
+                    invalidate(xs, nil, true, "")               // a global given a new value
                     recordFree(xs)
                 }
                 // free the old value first, unless the local's value was moved away

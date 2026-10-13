@@ -116,9 +116,11 @@ In order:
 2. **One kind of reference** (done). `&T` is the only reference type. A parameter
    that changes what it points to is declared `mut p: &T`; `&mut T` is an error with
    that hint. A local reference is changeable exactly when what it borrows is.
-3. **Finer paths, inferred.** Track fields and elements, not just roots, so changing
-   `w.b` no longer invalidates references into `w.a`, and two mutable elements of
-   one array can be passed together when they are provably different.
+3. **Finer paths, inferred** (done). A reference records the field or constant-index
+   element it borrows, and a change invalidates only the references under the place
+   it changed: changing `w.b` leaves a reference to `w.a` valid, and two mutable
+   elements at known different indexes can be passed together. Changes through a
+   reference are still coarse.
 4. **The port's speed.** It allocates 26 MB to compile itself. Steps 1 to 3 should
    let it shed workarounds written for stricter rules (copies, index loops, storing
    temporaries first), and each one removed is also a measure of simplicity: how

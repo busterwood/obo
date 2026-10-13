@@ -43,6 +43,8 @@ fn addAll(a: &[]Node, mut b: &[]Node) {  // changing values frees nothing
     }
 }
 
+fn twoElems(mut a: &Node, mut b: &Node) { a.value += 1; b.value += 10 }
+
 fn main() {
     let n = new Node{value: 0}
     bump(n, n)
@@ -62,4 +64,9 @@ fn main() {
     for i in 0..3 { append(arr, new Node{value: i + 1}) }
     addAll(arr, arr)                     // one array, read and changed
     println(arr[0].value)                // expect: 7
+    let el = new []Node(0)
+    append(el, new Node{value: 1})
+    append(el, new Node{value: 2})
+    twoElems(el[0], el[1])               // known different elements: both may change
+    println(el[0].value, " ", el[1].value)   // expect: 2 12
 }
