@@ -137,6 +137,13 @@ In order:
 collector, at the same speed; the port reads like ordinary code; and every error
 message says what to do instead.
 
+Measured (item 4, after items 1 to 3): compiling each compiler's own source takes
+about 0.01 to 0.02 s in both. The obo port (4283 lines) peaks at 1.5 MB resident and
+its live peak is 1.3 MB; obx's compiler (3222 lines), with the collector, peaks at
+8.8 MB. Not yet done: for loops over globals are still index loops, because walking a
+global is an error (about ten loops in the port), and the field loops would become
+borrows first.
+
 ## Finding your way
 
 | | |
