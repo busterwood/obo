@@ -1,0 +1,4102 @@
+module obo
+
+// obo: the ownership fork of obxc (see FORK.md). Written in mainline obx.
+//
+// Part 1: the scanner and the x86-64 encoder, with two test modes that are
+// compared against the Python compiler (tests/selfhost_test.py):
+//
+//     obxc --tokens FILE     one line per token, as obx.py --tokens prints them
+//     obxc --encode FILE     runs a script of encoder calls, one hex line each
+
+// ============================================================== utilities
+
+fn hexDigit(v: int): byte {
+    if v < 10 { return byte('0' + v) }
+    return byte('a' + v - 10)
+}
+
+fn hexOf(b: []byte, from: int, to: int): string {
+    let out = new []byte(0)
+    for i in from..to {
+        append(out, hexDigit(b[i] >> 4))
+        append(out, hexDigit(b[i] & 15))
+    }
+    return string(out)
+}
+
+fn bytesOf(s: string): []byte {
+    let out = new []byte(0)
+    for i in 0..len(s) { append(out, s[i]) }
+    return out
+}
+
+// ================================================================ scanner
+
+// token kinds
+const T_EOF = 0
+const T_IDENT = 1
+const T_INT = 2
+const T_CHAR = 3
+const T_STRING = 4
+const T_MODULE = 5
+const T_IMPORT = 6
+const T_PUB = 7
+const T_TYPE = 8
+const T_VAR = 9
+const T_LET = 10
+const T_CONST = 11
+const T_FN = 12
+const T_RETURN = 13
+const T_IF = 14
+const T_ELSE = 15
+const T_WHILE = 16
+const T_FOR = 17
+const T_IN = 18
+const T_BREAK = 19
+const T_CONTINUE = 20
+const T_DEFER = 21
+const T_MATCH = 22
+const T_REF = 23
+const T_RECORD = 24
+const T_CLOSED = 25
+const T_NEW = 26
+const T_NIL = 27
+const T_TRUE = 28
+const T_FALSE = 29
+const T_LPAREN = 30
+const T_RPAREN = 31
+const T_LBRACE = 32
+const T_RBRACE = 33
+const T_LBRACK = 34
+const T_RBRACK = 35
+const T_COMMA = 36
+const T_SEMI = 37
+const T_COLON = 38
+const T_DOT = 39
+const T_DOTDOT = 40
+const T_ASSIGN = 41
+const T_EQ = 42
+const T_NE = 43
+const T_LT = 44
+const T_LE = 45
+const T_GT = 46
+const T_GE = 47
+const T_PLUS = 48
+const T_MINUS = 49
+const T_STAR = 50
+const T_SLASH = 51
+const T_PERCENT = 52
+const T_NOT = 53
+const T_QUESTION = 54
+const T_AMP = 55
+const T_BAR = 56
+const T_CARET = 57
+const T_TILDE = 58
+const T_ANDAND = 59
+const T_OROR = 60
+const T_PLUSEQ = 61
+const T_MINUSEQ = 62
+const T_STAREQ = 63
+const T_SHL = 64
+const T_SHR = 65
+
+fn makeTokNames(): []string {
+    let k = new []string(0)
+    let names = "eof ident int char string module import pub type var let const fn return if else while for in break continue defer match ref record closed new nil true false ( ) { } [ ] , ; : . .. = == != < <= > >= + - * / % ! ? & | ^ ~ && || += -= *= << >>"
+    var start = 0
+    for i in 0..len(names) + 1 {
+        if i == len(names) || names[i] == ' ' {
+            append(k, substr(names, start, i))
+            start = i + 1
+        }
+    }
+    return k
+}
+
+let tokNames = makeTokNames()
+
+fn tokName(k: int): string { return tokNames[k] }
+
+
+var src = new []byte(0)
+var pos = 0
+var line = 1
+var col = 1
+var last = -1             // kind of the previous token
+var sym = -1              // kind of the current token: "ident", "int", "==", "fn", ...
+var sval = ""             // identifier text or string literal bytes
+var ival = 0              // integer or character value
+var tline = 0             // where the current token starts
+var tcol = 0
+var dumpMode = false
+
+fn makeKeywords(): []string {
+    let k = new []string(0)
+    let words = "module import pub type var let const fn return if else while for in break continue defer match ref record closed new nil true false"
+    var start = 0
+    for i in 0..len(words) + 1 {
+        if i == len(words) || words[i] == ' ' {
+            append(k, substr(words, start, i))
+            start = i + 1
+        }
+    }
+    return k
+}
+
+let keywords = makeKeywords()
+
+
+// the token number of a keyword, or T_IDENT for any other word
+fn keywordTok(w: string): int {
+    for i in 0..len(keywords) {
+        if keywords[i] == w { return T_MODULE + i }
+    }
+    return T_IDENT
+}
+
+var srcPath = ""
+
+// reports an error at line l, column c (0 means the current token) and stops
+fn errorAt(msg: string, l: int, c: int) {
+    var ln = l
+    var cn = c
+    if ln == 0 { ln = tline }
+    if cn == 0 { cn = tcol }
+    if dumpMode {
+        println(ln, ":", cn, " error ", msg)
+    } else {
+        eprintln(srcPath, ":", ln, ":", cn, ": ", msg)
+    }
+    exit(1)
+}
+
+fn fail(msg: string) { errorAt(msg, 0, 0) }
+
+fn isLetter(c: int): bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_' }
+fn isDigit(c: int): bool { return c >= '0' && c <= '9' }
+fn isHex(c: int): bool { return isDigit(c) || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F' }
+
+fn hexVal(c: int): int {
+    if isDigit(c) { return c - '0' }
+    if c >= 'a' { return c - 'a' + 10 }
+    return c - 'A' + 10
+}
+
+// the byte k places ahead, or -1 past the end
+fn peek(k: int): int {
+    if pos + k < len(src) { return src[pos + k] }
+    return -1
+}
+
+fn advance() {
+    if src[pos] == '\n' {
+        line += 1
+        col = 1
+    } else {
+        col += 1
+    }
+    pos += 1
+}
+
+fn text(from: int, to: int): string {
+    let b = new []byte(0)
+    for i in from..to { append(b, src[i]) }
+    return string(b)
+}
+
+// a newline after one of these ends the statement
+// a newline after one of these ends the statement
+fn semiAfter(k: int): bool {
+    match k {
+        T_IDENT, T_INT, T_CHAR, T_STRING, T_TRUE, T_FALSE, T_NIL, T_RETURN, T_BREAK, T_CONTINUE,
+        T_RPAREN, T_RBRACK, T_RBRACE { return true }
+        else { return false }
+    }
+}
+
+fn setTok(k: int) {
+    sym = k
+    last = k
+}
+
+fn escape(c: int): int {
+    match c {
+        'n' { return '\n' }
+        't' { return '\t' }
+        'r' { return '\r' }
+        '\\', '"', '\'' { return c }
+        '0' { return 0 }
+        else { return -1 }
+    }
+}
+
+// two-character operators, or -1
+fn punct2(a: int, b: int): int {
+    if b == '=' {
+        match a {
+            '=' { return T_EQ }
+            '!' { return T_NE }
+            '<' { return T_LE }
+            '>' { return T_GE }
+            '+' { return T_PLUSEQ }
+            '-' { return T_MINUSEQ }
+            '*' { return T_STAREQ }
+        }
+    }
+    if a == b {
+        match a {
+            '.' { return T_DOTDOT }
+            '&' { return T_ANDAND }
+            '|' { return T_OROR }
+            '<' { return T_SHL }
+            '>' { return T_SHR }
+        }
+    }
+    return -1
+}
+
+// one-character operators and punctuation, or -1
+fn punct1(c: int): int {
+    match c {
+        '(' { return T_LPAREN }
+        ')' { return T_RPAREN }
+        '{' { return T_LBRACE }
+        '}' { return T_RBRACE }
+        '[' { return T_LBRACK }
+        ']' { return T_RBRACK }
+        ',' { return T_COMMA }
+        ';' { return T_SEMI }
+        ':' { return T_COLON }
+        '.' { return T_DOT }
+        '=' { return T_ASSIGN }
+        '<' { return T_LT }
+        '>' { return T_GT }
+        '+' { return T_PLUS }
+        '-' { return T_MINUS }
+        '*' { return T_STAR }
+        '/' { return T_SLASH }
+        '%' { return T_PERCENT }
+        '!' { return T_NOT }
+        '?' { return T_QUESTION }
+        '&' { return T_AMP }
+        '|' { return T_BAR }
+        '^' { return T_CARET }
+        '~' { return T_TILDE }
+        else { return -1 }
+    }
+}
+
+fn scanNumber() {
+    var v = 0
+    if src[pos] == '0' && (peek(1) == 'x' || peek(1) == 'X') {
+        advance()
+        advance()
+        var any = false
+        var significant = 0
+        while pos < len(src) && (isHex(src[pos]) || src[pos] == '_') {
+            let d = src[pos]
+            if d != '_' {
+                any = true
+                if significant > 0 || d != '0' { significant += 1 }
+                v = (v << 4) | hexVal(d)
+            }
+            advance()
+        }
+        if !any { fail("hex literal needs digits") }
+        if significant > 16 { fail("integer literal too large") }
+    } else {
+        var big = false
+        while pos < len(src) && (isDigit(src[pos]) || src[pos] == '_') {
+            let d = src[pos]
+            if d != '_' {
+                let dv = d - '0'
+                if v > (9223372036854775807 - dv) / 10 {
+                    big = true
+                } else {
+                    v = v * 10 + dv
+                }
+            }
+            advance()
+        }
+        if big { fail("integer literal too large") }
+    }
+    ival = v
+    setTok(T_INT)
+}
+
+fn scanChar() {
+    advance()
+    if pos >= len(src) || src[pos] == '\'' || src[pos] == '\n' { fail("empty character literal") }
+    var ch = int(src[pos])
+    if ch == '\\' {
+        advance()
+        if pos >= len(src) { fail("unknown escape in character literal") }
+        ch = escape(src[pos])
+        if ch < 0 { fail("unknown escape in character literal") }
+    } else if ch >= 128 {
+        fail("character literal must be a single byte")
+    }
+    advance()
+    if pos >= len(src) || src[pos] != '\'' { fail("unterminated character literal") }
+    advance()
+    ival = ch
+    setTok(T_CHAR)
+}
+
+fn scanString() {
+    advance()
+    let buf = new []byte(0)
+    while true {
+        if pos >= len(src) || src[pos] == '\n' { fail("unterminated string") }
+        let ch = src[pos]
+        if ch == '"' {
+            advance()
+            break
+        }
+        if ch == '\\' {
+            advance()
+            if pos >= len(src) || src[pos] == '\n' { fail("unterminated string") }
+            let e = escape(src[pos])
+            if e < 0 {
+                append(buf, src[pos])
+            } else {
+                append(buf, byte(e))
+            }
+        } else {
+            append(buf, ch)
+        }
+        advance()
+    }
+    sval = string(buf)
+    setTok(T_STRING)
+}
+
+fn upper(s: string): string {
+    let b = new []byte(0)
+    for i in 0..len(s) {
+        let c = s[i]
+        if c >= 'a' && c <= 'z' {
+            append(b, byte(c - 'a' + 'A'))
+        } else {
+            append(b, c)
+        }
+    }
+    return string(b)
+}
+
+fn next() {
+    while true {
+        while pos < len(src) {
+            let c = src[pos]
+            if c != ' ' && c != '\t' && c != '\r' && c != '\n' { break }
+            if c == '\n' && semiAfter(last) {
+                tline = line
+                tcol = col
+                advance()
+                setTok(T_SEMI)
+                return
+            }
+            advance()
+        }
+        if peek(0) == '/' && peek(1) == '/' {
+            while pos < len(src) && src[pos] != '\n' { advance() }
+            continue
+        }
+        break
+    }
+    tline = line
+    tcol = col
+    if pos >= len(src) {
+        if semiAfter(last) {
+            setTok(T_SEMI)
+        } else {
+            setTok(T_EOF)
+        }
+        return
+    }
+    let c = src[pos]
+    if isLetter(c) {
+        let start = pos
+        while pos < len(src) && (isLetter(src[pos]) || isDigit(src[pos])) { advance() }
+        sval = text(start, pos)
+        setTok(keywordTok(sval))
+    } else if isDigit(c) {
+        scanNumber()
+    } else if c == '\'' {
+        scanChar()
+    } else if c == '"' {
+        scanString()
+    } else {
+        let p = punct2(c, peek(1))
+        let p1 = punct1(c)
+        if p >= 0 {
+            advance()
+            advance()
+            setTok(p)
+        } else if p1 >= 0 {
+            advance()
+            setTok(p1)
+        } else if c >= 33 && c <= 126 {
+            fail("unexpected character '" + text(pos, pos + 1) + "'")
+        } else {
+            let b = new []byte(0)
+            append(b, hexDigit(c >> 4))
+            append(b, hexDigit(c & 15))
+            fail("unexpected character 0x" + upper(string(b)))
+        }
+    }
+}
+
+fn startScanner(source: []byte) {
+    src = source
+    pos = 0
+    line = 1
+    col = 1
+    last = -1
+    next()
+}
+
+fn dumpTokens(source: []byte) {
+    dumpMode = true
+    startScanner(source)
+    while true {
+        print(tline, ":", tcol, " ", tokName(sym))
+        if sym == T_IDENT {
+            print(" ", sval)
+        } else if sym == T_INT || sym == T_CHAR {
+            print(" ", ival)
+        } else if sym == T_STRING {
+            let b = bytesOf(sval)
+            print(" ", len(b), ":", hexOf(b, 0, len(b)))
+        }
+        println()
+        if sym == T_EOF { return }
+        next()
+    }
+}
+
+// ================================================================ encoder
+
+// A memory operand: [base + index*scale + disp]; base -1 means an absolute
+// address in disp, index -1 means no index.
+type Mem = ref record { base, index, disp, scale: int }
+
+var code = new []byte(0)
+
+fn emit(b: int) { append(code, byte(b)) }
+
+fn emit32(v: int) {
+    emit(v)
+    emit(v >> 8)
+    emit(v >> 16)
+    emit(v >> 24)
+}
+
+fn emit64(v: int) {
+    emit32(v)
+    emit32(v >> 32)
+}
+
+fn fits8(v: int): bool { return v >= -128 && v < 128 }
+fn fits32(v: int): bool { return v >= -2147483648 && v < 2147483648 }
+
+fn pc(): int { return len(code) }
+
+fn emitOpcode(opc: int) {
+    if opc > 255 { emit(opc >> 8) }
+    emit(opc & 255)
+}
+
+fn rex(w: bool, reg: int, x: int, b: int, force: bool) {
+    var r = 0x40
+    if w { r = r | 8 }
+    r = r | ((reg >> 3) & 1) << 2 | ((x >> 3) & 1) << 1 | ((b >> 3) & 1)
+    if r != 0x40 || force { emit(r) }
+}
+
+// opcode with a register as the r/m operand
+fn opReg(opc: int, reg: int, rm: int, w: bool, byteReg: bool) {
+    rex(w, reg, 0, rm, byteReg && (rm >= 4 && rm <= 7 || opc == 0x88 && reg >= 4 && reg <= 7))
+    emitOpcode(opc)
+    emit(0xC0 | (reg & 7) << 3 | (rm & 7))
+}
+
+// opcode with a memory r/m operand
+fn opMem(opc: int, reg: int, m: Mem, w: bool, byteReg: bool) {
+    var x = 0
+    var b = 0
+    if m.index >= 0 { x = m.index }
+    if m.base >= 0 { b = m.base }
+    rex(w, reg, x, b, byteReg && opc == 0x88 && reg >= 4 && reg <= 7)
+    emitOpcode(opc)
+    if m.base < 0 && m.index < 0 {
+        emit(0x04 | (reg & 7) << 3)
+        emit(0x25)
+        emit32(m.disp)
+        return
+    }
+    var mod = 2
+    if m.disp == 0 && (m.base & 7) != 5 {
+        mod = 0
+    } else if fits8(m.disp) {
+        mod = 1
+    }
+    if m.index >= 0 {
+        var ss = 3
+        if m.scale == 1 { ss = 0 } else if m.scale == 2 { ss = 1 } else if m.scale == 4 { ss = 2 }
+        emit(mod << 6 | (reg & 7) << 3 | 4)
+        emit(ss << 6 | (m.index & 7) << 3 | (m.base & 7))
+    } else if (m.base & 7) == 4 {
+        emit(mod << 6 | (reg & 7) << 3 | 4)
+        emit(0x24)
+    } else {
+        emit(mod << 6 | (reg & 7) << 3 | (m.base & 7))
+    }
+    if mod == 1 {
+        emit(m.disp)
+    } else if mod == 2 {
+        emit32(m.disp)
+    }
+}
+
+fn movRI(r: int, v: int) {
+    if v >= 0 && v < 0x100000000 {
+        if r >= 8 { emit(0x41) }
+        emit(0xB8 + (r & 7))
+        emit32(v)
+    } else if fits32(v) {
+        opReg(0xC7, 0, r, true, false)
+        emit32(v)
+    } else {
+        emit(0x48 | (r >> 3))
+        emit(0xB8 + (r & 7))
+        emit64(v)
+    }
+}
+
+fn aluRI(o: int, r: int, v: int) {
+    if fits8(v) {
+        opReg(0x83, o, r, true, false)
+        emit(v)
+    } else {
+        opReg(0x81, o, r, true, false)
+        emit32(v)
+    }
+}
+
+fn aluMI(o: int, m: Mem, v: int) {
+    if fits8(v) {
+        opMem(0x83, o, m, true, false)
+        emit(v)
+    } else {
+        opMem(0x81, o, m, true, false)
+        emit32(v)
+    }
+}
+
+fn push(r: int) {
+    if r >= 8 { emit(0x41) }
+    emit(0x50 + (r & 7))
+}
+
+fn pop(r: int) {
+    if r >= 8 { emit(0x41) }
+    emit(0x58 + (r & 7))
+}
+
+// jumps leave a zero rel32 and return its position for fix()
+fn jcc(cc: int): int {
+    emit(0x0F)
+    emit(0x80 + cc)
+    emit32(0)
+    return pc() - 4
+}
+
+fn jmp(): int {
+    emit(0xE9)
+    emit32(0)
+    return pc() - 4
+}
+
+fn fix(at: int, target: int) {
+    let rel = target - (at + 4)
+    code[at] = byte(rel)
+    code[at + 1] = byte(rel >> 8)
+    code[at + 2] = byte(rel >> 16)
+    code[at + 3] = byte(rel >> 24)
+}
+
+fn callLocal(target: int) {
+    emit(0xE8)
+    emit32(target - (pc() + 4))
+}
+
+// ========================================================== encoder tests
+
+// splits a line into space-separated words
+fn words(s: string): []string {
+    let out = new []string(0)
+    var start = -1
+    for i in 0..len(s) + 1 {
+        let space = i == len(s) || s[i] == ' '
+        if space && start >= 0 {
+            append(out, substr(s, start, i))
+            start = -1
+        } else if !space && start < 0 {
+            start = i
+        }
+    }
+    return out
+}
+
+// decimal with an optional sign, or hex with a 0x prefix
+fn parseInt(s: string): int {
+    var i = 0
+    var neg = false
+    if s[0] == '-' {
+        neg = true
+        i = 1
+    }
+    var v = 0
+    if len(s) > i + 1 && s[i] == '0' && s[i + 1] == 'x' {
+        for k in i + 2..len(s) { v = (v << 4) | hexVal(s[k]) }
+    } else {
+        for k in i..len(s) { v = v * 10 + (s[k] - '0') }
+    }
+    if neg { return -v }
+    return v
+}
+
+// "r:N" or "m:BASE,INDEX,DISP,SCALE"
+fn parseMem(spec: string): ?Mem {
+    if spec[0] == 'r' { return nil }
+    let parts = new []int(0)
+    var start = 2
+    for i in 2..len(spec) + 1 {
+        if i == len(spec) || spec[i] == ',' {
+            append(parts, parseInt(substr(spec, start, i)))
+            start = i + 1
+        }
+    }
+    return new Mem{base: parts[0], index: parts[1], disp: parts[2], scale: parts[3]}
+}
+
+fn regOf(spec: string): int { return parseInt(substr(spec, 2, len(spec))) }
+
+fn emitHex(h: string) {
+    if h == "-" { return }
+    var i = 0
+    while i < len(h) {
+        emit(hexVal(h[i]) << 4 | hexVal(h[i + 1]))
+        i += 2
+    }
+}
+
+// op OPC REG RM W BYTE IMM | movri R V | aluri O RM V | push R | pop R
+// | jcc CC T | jmp T | call T
+fn runEncoderLine(l: string) {
+    let w = words(l)
+    let k = w[0]
+    if k == "op" {
+        let opc = parseInt(w[1])
+        let reg = parseInt(w[2])
+        let m = parseMem(w[3])
+        let wide = w[4] == "1"
+        let byteReg = w[5] == "1"
+        if m != nil {
+            opMem(opc, reg, m, wide, byteReg)
+        } else {
+            opReg(opc, reg, regOf(w[3]), wide, byteReg)
+        }
+        emitHex(w[6])
+    } else if k == "movri" {
+        movRI(parseInt(w[1]), parseInt(w[2]))
+    } else if k == "aluri" {
+        let m = parseMem(w[2])
+        if m != nil {
+            aluMI(parseInt(w[1]), m, parseInt(w[3]))
+        } else {
+            aluRI(parseInt(w[1]), regOf(w[2]), parseInt(w[3]))
+        }
+    } else if k == "push" {
+        push(parseInt(w[1]))
+    } else if k == "pop" {
+        pop(parseInt(w[1]))
+    } else if k == "jcc" {
+        fix(jcc(parseInt(w[1])), parseInt(w[2]))
+    } else if k == "jmp" {
+        fix(jmp(), parseInt(w[1]))
+    } else if k == "call" {
+        callLocal(parseInt(w[1]))
+    } else {
+        eprintln("unknown encoder command: ", k)
+        exit(2)
+    }
+}
+
+fn runEncoderScript(script: []byte) {
+    var start = 0
+    for i in 0..len(script) {
+        if script[i] == '\n' {
+            let before = pc()
+            let l = new []byte(0)
+            for k in start..i { append(l, script[k]) }
+            runEncoderLine(string(l))
+            println(hexOf(code, before, pc()))
+            start = i + 1
+        }
+    }
+}
+
+// ================================================================== types
+
+type Type
+type Sym
+
+type Field = ref record {
+    name: string
+    offset: int
+    typ: Type
+}
+
+type Type = ref record {
+    kind: string              // int byte bool string void nil record closed array opt
+    name: string
+    base: ?Type               // element type (array) or underlying type (opt)
+    fields: []Field           // record, in declaration order
+    parent: ?Type             // record: the closed type it is a variant of
+    variants: []Type          // closed
+    desc: int                 // record: address of its type descriptor
+    incomplete: bool          // declared by 'type Name', not yet defined
+    line: int
+}
+
+fn newType(kind: string, name: string, base: ?Type): Type {
+    return new Type{kind: kind, name: name, base: base, fields: new []Field(0), variants: new []Type(0)}
+}
+
+let tInt = newType("int", "int", nil)
+let tByte = newType("byte", "byte", nil)
+let tBool = newType("bool", "bool", nil)
+let tString = newType("string", "string", nil)
+let tVoid = newType("void", "void", nil)
+let tNil = newType("nil", "nil", nil)
+
+fn baseOf(t: Type): Type {
+    let b = t.base
+    if b != nil { return b }
+    return tVoid
+}
+
+fn tname(t: Type): string {
+    if t.kind == "array" { return "[]" + tname(baseOf(t)) }
+    if t.kind == "handle" { return "^" + tname(baseOf(t)) }
+    if t.kind == "opt" { return "?" + tname(baseOf(t)) }
+    if len(t.name) > 0 { return t.name }
+    return t.kind
+}
+
+fn isInt(t: Type): bool { return t.kind == "int" || t.kind == "byte" }
+
+fn isRef(t: Type): bool {
+    return t.kind == "record" || t.kind == "closed" || t.kind == "array" || t.kind == "opt" || t.kind == "string"
+}
+
+fn nonNull(t: Type): bool { return t.kind == "record" || t.kind == "closed" || t.kind == "array" || t.kind == "handle" }
+
+fn same(a: Type, b: Type): bool {
+    if a == b { return true }
+    if a.kind != b.kind { return false }
+    if a.kind == "array" || a.kind == "opt" || a.kind == "handle" { return same(baseOf(a), baseOf(b)) }
+    return a.kind == "int" || a.kind == "byte" || a.kind == "bool" || a.kind == "string" ||
+        a.kind == "void" || a.kind == "nil"
+}
+
+fn assignable(dst: Type, src: Type): bool {
+    if same(dst, src) { return true }
+    if dst.kind == "int" && src.kind == "byte" { return true }
+    if dst.kind == "closed" && src.kind == "record" && src.parent == dst { return true }
+    if dst.kind == "handle" && src.kind == "handle" { return assignable(baseOf(dst), baseOf(src)) }
+    if dst.kind == "opt" {
+        if src.kind == "nil" { return true }
+        if src.kind == "opt" { return assignable(baseOf(dst), baseOf(src)) }
+        return assignable(baseOf(dst), src)
+    }
+    return false
+}
+
+fn fieldOf(t: Type, name: string): ?Field {
+    for f in t.fields {
+        if f.name == name { return f }
+    }
+    return nil
+}
+
+// ======================================================== symbols, items
+
+type Sym = ref record {
+    kind: string              // var let const type fn builtin
+    name: string
+    typ: ?Type
+    storage: string           // local or global
+    offset: int               // rbp offset or absolute address
+    value: int                // const
+    addr: int                 // fn: code position once defined, else -1
+    fixups: []int             // fn: calls waiting for the address
+    params: []Type
+    ret: Type
+    line: int
+    owned: bool               // a local holding an owned value
+    moved: bool               // its value has been moved away
+    deferUse: bool            // a defer reads it, so it may not be moved
+    isStr: bool               // a string local, holding one reference
+    isRef: bool               // a reference: a parameter or local that borrows
+    isRefLocal: bool          // a reference local (its validity is tracked)
+    refMut: bool              // changes may be made through it
+    refRoot: ?Sym             // the owned local or reference parameter it borrows from
+    refDeep: bool             // it may point below its root's own object
+    refParent: ?Sym           // the reference local it was derived from
+    iterating: bool           // a for loop is walking this array
+    pmodes: []int             // fn: 0 owned, 1 &, 2 &mut, per parameter
+    freed: []Sym              // fn: the globals it might free (directly or through calls)
+    freesAll: bool            // fn: it might free anything (or isn't compiled yet)
+}
+
+fn newSym(kind: string, name: string, t: ?Type): Sym {
+    return new Sym{kind: kind, name: name, typ: t, addr: -1, fixups: new []int(0),
+                   params: new []Type(0), ret: tVoid, line: -1, pmodes: new []int(0), freed: new []Sym(0)}
+}
+
+fn symType(s: Sym): Type {
+    let t = s.typ
+    if t != nil { return t }
+    return tVoid
+}
+
+type NPair = ref record {
+    sym: Sym
+    typ: Type
+}
+
+// Describes where a value currently is, so that emission can be delayed.
+type Item = ref record {
+    mode: string              // const mem elem reg cond void
+    typ: Type
+    val: int
+    base, index, disp: int    // mem: base and index registers (-1 for none)
+    r: int
+    cc: int                   // cond: condition code meaning true
+    T, F: []int               // cond: jumps to the true and false targets
+    sym: ?Sym                 // set when the item is a plain variable
+    nt, nf: []NPair           // narrowings valid when the condition holds / fails
+    readonly: bool
+    width, scale, line: int
+    root: ?Sym                // the variable a designator starts from
+    strTemp: bool             // a fresh string whose reference nothing owns yet
+    borrowed: bool            // the value is a reference (borrowed, not owned)
+    viaHandle: bool           // the designator went through a handle
+    deref: bool               // the designator goes through a field or element
+    movedRef: bool            // a moved local named as an assignment target
+}
+
+fn newItem(mode: string, t: Type): Item {
+    return new Item{mode: mode, typ: t, base: -1, index: -1, r: -1, T: new []int(0), F: new []int(0),
+                    nt: new []NPair(0), nf: new []NPair(0), width: 8, scale: 8}
+}
+
+fn makeConst(t: Type, v: int): Item {
+    let x = newItem("const", t)
+    x.val = v
+    return x
+}
+
+fn makeReg(t: Type, r: int): Item {
+    let x = newItem("reg", t)
+    x.r = r
+    return x
+}
+
+fn voidItem(): Item { return newItem("void", tVoid) }
+
+fn concatInts(a: []int, b: []int): []int {
+    let out = new []int(0)
+    for v in a { append(out, v) }
+    for v in b { append(out, v) }
+    return out
+}
+
+fn concatPairs(a: []NPair, b: []NPair): []NPair {
+    let out = new []NPair(0)
+    for v in a { append(out, v) }
+    for v in b { append(out, v) }
+    return out
+}
+
+// ================================================================= layout
+
+const IMAGE_BASE = 0x400000
+const CODE_BASE = 0x401000
+const RODATA_BASE = 0x08000000
+const GLOBAL_BASE = 0x0C000000
+const RT_TEXT = 0x10000000
+const RT_DATA = 0x20000000
+
+const RT_INIT = 0
+const RT_EXIT = 1
+const RT_ALLOC_RECORD = 2
+const RT_ALLOC_ARRAY = 3
+const RT_PRINT_INT = 4
+const RT_PRINT_STR = 5
+const RT_PRINT_BOOL = 6
+const RT_NEWLINE = 7
+const RT_CONCAT = 8
+const RT_STREQ = 9
+const RT_PANIC_BOUNDS = 10
+const RT_COLLECT = 11
+const RT_GC_STATS = 12
+const RT_INT_TO_STR = 13
+const RT_APPEND = 14
+const RT_TRUNCATE = 15
+const RT_BYTES_TO_STRING = 16
+const RT_SUBSTR = 17
+const RT_READ_FILE = 18
+const RT_WRITE_FILE = 19
+const RT_ARGS = 20
+const RT_SET_OUTPUT = 21
+const RT_FREE = 22
+const RT_FINISH = 23
+const RT_STR_INC = 24
+const RT_STR_DEC = 25
+const RT_HANDLE = 26
+const RT_DEREF = 27
+const RT_ALIVE = 28
+
+const RAX = 0
+const RCX = 1
+const RDX = 2
+const RSP = 4
+const RBP = 5
+const RSI = 6
+const RDI = 7
+
+const CC_E = 4
+const CC_NE = 5
+const CC_L = 12
+const CC_GE = 13
+const CC_LE = 14
+const CC_G = 15
+
+fn relCC(o: int): int {
+    match o {
+        T_EQ { return CC_E }
+        T_NE { return CC_NE }
+        T_LT { return CC_L }
+        T_GE { return CC_GE }
+        T_LE { return CC_LE }
+        else { return CC_G }
+    }
+}
+
+fn swapCC(cc: int): int {
+    match cc {
+        CC_L { return CC_G }
+        CC_G { return CC_L }
+        CC_LE { return CC_GE }
+        CC_GE { return CC_LE }
+        else { return cc }
+    }
+}
+
+fn isRel(s: int): bool {
+    match s {
+        T_EQ, T_NE, T_LT, T_LE, T_GT, T_GE { return true }
+        else { return false }
+    }
+}
+
+// ========================================================= compiler state
+
+type Block = ref record {
+    syms: []Sym
+    defers: []int
+    nmark: int
+    omark: int                // ownedLocals before this block
+}
+
+type NEntry = ref record {
+    sym: Sym
+    typ: Type
+    depth: int
+    alive: bool
+}
+
+type Loop = ref record {
+    brk: []int
+    cont: []int
+    blocks: int
+    entry: []bool             // move states when the loop was entered
+    lv: ?Sym                  // a for loop's variable, rebound every iteration
+}
+
+fn makePool(): []int {
+    let p = new []int(0)
+    append(p, 3)
+    for r in 8..16 { append(p, r) }
+    return p
+}
+
+let pool = makePool()
+
+var rodata = new []byte(0)
+var strKeys = new []string(0)
+var strAddrs = new []int(0)
+var gsize = 0
+var free = new []int(0)
+var depth = 0
+var universe = new []Sym(0)
+var globals = new []Sym(0)
+var blocks = new []Block(0)
+var narrowStack = new []NEntry(0)
+var loops = new []Loop(0)
+var loopdepth = 0
+var curFn: ?Sym = nil
+var fnBlock = 0
+var frame = 0
+var inDefer = false
+var noreturn = false
+var initLink = 0
+
+fn copyInts(a: []int): []int {
+    let out = new []int(0)
+    for v in a { append(out, v) }
+    return out
+}
+
+fn containsInt(a: []int, v: int): bool {
+    for x in a {
+        if x == v { return true }
+    }
+    return false
+}
+
+fn initCompiler() {
+    free = copyInts(pool)
+    append(universe, newSym("type", "int", tInt))
+    append(universe, newSym("type", "byte", tByte))
+    append(universe, newSym("type", "bool", tBool))
+    append(universe, newSym("type", "string", tString))
+    let names = words("print println len gc gcstats exit append truncate substr eprint eprintln readFile writeFile args")
+    for n in names { append(universe, newSym("builtin", n, nil)) }
+    append(universe, newSym("builtin", "take", nil))
+    append(universe, newSym("builtin", "handle", nil))
+    append(universe, newSym("builtin", "alive", nil))
+    append(universe, newSym("builtin", "drop", nil))
+    append(universe, newSym("builtin", "replace", nil))
+}
+
+fn error(msg: string) { errorAt(msg, 0, 0) }
+
+// Python's repr() of a bytes value, as obx.py shows string tokens
+fn bytesRepr(s: string): string {
+    var hasSingle = false
+    var hasDouble = false
+    for i in 0..len(s) {
+        if s[i] == '\'' { hasSingle = true }
+        if s[i] == '"' { hasDouble = true }
+    }
+    var q: byte = '\''
+    if hasSingle && !hasDouble { q = '"' }
+    let out = new []byte(0)
+    append(out, 'b')
+    append(out, q)
+    for i in 0..len(s) {
+        let c = s[i]
+        if c == '\\' || c == q {
+            append(out, '\\')
+            append(out, c)
+        } else if c == '\t' {
+            append(out, '\\')
+            append(out, 't')
+        } else if c == '\n' {
+            append(out, '\\')
+            append(out, 'n')
+        } else if c == '\r' {
+            append(out, '\\')
+            append(out, 'r')
+        } else if c < 32 || c >= 127 {
+            append(out, '\\')
+            append(out, 'x')
+            append(out, hexDigit(c >> 4))
+            append(out, hexDigit(c & 15))
+        } else {
+            append(out, c)
+        }
+    }
+    append(out, q)
+    return string(out)
+}
+
+fn expect(k: int, what: string) {
+    if sym != k {
+        var got = tokName(sym)
+        if sym == T_IDENT {
+            got = "'" + sval + "'"
+        } else if sym == T_INT {
+            got = string(ival)
+        } else if sym == T_STRING {
+            got = bytesRepr(sval)
+        }
+        if got == ";" { got = "end of line" }
+        var w = what
+        if len(w) == 0 { w = "'" + tokName(k) + "'" }
+        error("expected " + w + ", found " + got)
+    }
+    next()
+}
+
+fn ident(): string {
+    if sym != T_IDENT { error("expected identifier") }
+    let name = sval
+    next()
+    return name
+}
+
+fn skipSemis() {
+    while sym == T_SEMI { next() }
+}
+
+// ======================================================== emission helpers
+
+fn fixHere(links: []int) {
+    for at in links { fix(at, pc()) }
+}
+
+fn fixTo(links: []int, target: int) {
+    for at in links { fix(at, target) }
+}
+
+fn jmpTo(target: int) { fix(jmp(), target) }
+
+fn fixHere1(at: int) { fix(at, pc()) }
+
+fn callAbs(addr: int) {
+    emit(0xE8)
+    emit32(addr - (CODE_BASE + pc() + 4))
+}
+
+fn rodAlign() {
+    while len(rodata) % 8 != 0 { append(rodata, 0) }
+}
+
+fn rod64(v: int) {
+    var x = v
+    for i in 0..8 {
+        append(rodata, byte(x))
+        x = x >> 8
+    }
+}
+
+fn stringLit(data: string): int {
+    for i in 0..len(strKeys) {
+        if strKeys[i] == data { return strAddrs[i] }
+    }
+    rodAlign()
+    let addr = RODATA_BASE + len(rodata)
+    rod64(len(data))
+    for i in 0..len(data) { append(rodata, data[i]) }
+    append(strKeys, data)
+    append(strAddrs, addr)
+    return addr
+}
+
+fn rodataString(addr: int): string {
+    let off = addr - RODATA_BASE
+    var n = 0
+    for i in 0..8 { n = n | int(rodata[off + i]) << (8 * i) }
+    let b = new []byte(0)
+    for i in 0..n { append(b, rodata[off + 8 + i]) }
+    return string(b)
+}
+
+// [size][n owned][offsets...][n strings][offsets...]: what freeing a record frees
+fn descriptor(size: int, ptrs: []int, strs: []int): int {
+    rodAlign()
+    let addr = RODATA_BASE + len(rodata)
+    rod64(size)
+    rod64(len(ptrs))
+    for p in ptrs { rod64(p) }
+    rod64(len(strs))
+    for p in strs { rod64(p) }
+    return addr
+}
+
+fn mem(base: int, index: int, disp: int, scale: int): Mem {
+    return new Mem{base: base, index: index, disp: disp, scale: scale}
+}
+
+fn memOf(x: Item): Mem { return mem(x.base, x.index, x.disp, x.scale) }
+
+fn movRR(d: int, s: int) {
+    if d != s { opReg(0x8B, d, s, true, false) }
+}
+
+fn pushR(r: int) {
+    push(r)
+    depth += 8
+}
+
+fn popR(r: int) {
+    pop(r)
+    depth -= 8
+}
+
+fn epilogue() {
+    emit(0x48)
+    emit(0x89)
+    emit(0xEC)
+    emit(0x5D)
+    emit(0xC3)
+}
+
+// ===================================================== registers and items
+
+fn alloc(): int {
+    if len(free) == 0 { error("expression too complex (out of registers)") }
+    let r = free[0]
+    for i in 1..len(free) { free[i - 1] = free[i] }
+    truncate(free, len(free) - 1)
+    return r
+}
+
+fn release(r: int) {
+    if containsInt(pool, r) && !containsInt(free, r) { append(free, r) }
+}
+
+fn releaseItem(x: Item) {
+    if x.mode == "reg" {
+        release(x.r)
+    } else if x.mode == "mem" || x.mode == "elem" {
+        if x.base >= 0 && x.base != RBP { release(x.base) }
+        if x.index >= 0 { release(x.index) }
+    }
+}
+
+fn inUse(): []int {
+    let out = new []int(0)
+    for r in pool {
+        if !containsInt(free, r) { append(out, r) }
+    }
+    return out
+}
+
+fn trapBounds(line: int) {
+    emit(0xBF)
+    emit32(line)
+    emit(0x48)
+    emit(0x83)
+    emit(0xE4)
+    emit(0xF0)
+    callAbs(RT_TEXT + 8 * RT_PANIC_BOUNDS)
+}
+
+fn boundsCheck(idx: int, length: Mem, line: int) {
+    opMem(0x3B, idx, length, true, false)
+    emit(0x72)
+    emit(14)
+    trapBounds(line)
+}
+
+fn resolve(x: Item) {
+    if x.mode == "elem" {
+        boundsCheck(x.index, mem(x.base, -1, 0, 8), x.line)
+        opMem(0x8B, x.base, mem(x.base, -1, 16, 8), true, false)
+        x.mode = "mem"
+        x.disp = 8
+        x.scale = x.width
+    }
+}
+
+fn load(x: Item): Item {
+    if x.mode == "reg" { return x }
+    var r = 0
+    if x.mode == "const" {
+        r = alloc()
+        movRI(r, x.val)
+    } else if x.mode == "mem" || x.mode == "elem" {
+        resolve(x)
+        releaseItem(x)
+        r = alloc()
+        if x.width == 1 {
+            opMem(0x0FB6, r, memOf(x), true, false)
+        } else {
+            opMem(0x8B, r, memOf(x), true, false)
+        }
+    } else if x.mode == "cond" {
+        r = alloc()
+        if len(x.T) == 0 && len(x.F) == 0 {
+            opReg(0x0F90 + x.cc, 0, r, false, true)
+            opReg(0x0FB6, r, r, true, true)
+        } else {
+            append(x.F, jcc(x.cc ^ 1))
+            fixHere(x.T)
+            movRI(r, 1)
+            let j = jmp()
+            fixHere(x.F)
+            movRI(r, 0)
+            fix(j, pc())
+        }
+    }
+    return makeReg(x.typ, r)
+}
+
+fn loadCond(x: Item): Item {
+    if x.typ.kind != "bool" { error("condition must be bool, not " + tname(x.typ)) }
+    if x.mode == "cond" { return x }
+    if x.mode == "mem" {
+        releaseItem(x)
+        aluMI(7, memOf(x), 0)
+    } else {
+        let y = load(x)
+        opReg(0x85, y.r, y.r, true, false)
+        release(y.r)
+    }
+    let c = newItem("cond", tBool)
+    c.cc = CC_NE
+    return c
+}
+
+fn falseJump(x: Item): []int {
+    append(x.F, jcc(x.cc ^ 1))
+    fixHere(x.T)
+    return x.F
+}
+
+fn store(dst: Item, source: Item) {
+    var src = source
+    if src.mode != "const" { src = load(src) }
+    resolve(dst)
+    if dst.width == 1 {
+        if src.mode == "const" {
+            opMem(0xC6, 0, memOf(dst), false, false)
+            emit(src.val & 255)
+        } else {
+            opMem(0x88, src.r, memOf(dst), false, true)
+        }
+    } else if src.mode == "const" && fits32(src.val) {
+        opMem(0xC7, 0, memOf(dst), true, false)
+        emit32(src.val)
+    } else {
+        src = load(src)
+        opMem(0x89, src.r, memOf(dst), true, false)
+    }
+    if src.mode == "reg" { release(src.r) }
+    releaseItem(dst)
+}
+
+fn materialise(x: Item): Item {
+    if x.mode == "mem" || x.mode == "elem" || x.mode == "cond" { return load(x) }
+    return x
+}
+
+// =================================================================== calls
+
+fn saveRegs(): []int {
+    let saved = inUse()
+    for r in saved { pushR(r) }
+    free = copyInts(pool)
+    return saved
+}
+
+fn restoreRegs(saved: []int) {
+    var i = len(saved) - 1
+    while i >= 0 {
+        popR(saved[i])
+        i -= 1
+    }
+    let f = new []int(0)
+    for r in pool {
+        if !containsInt(saved, r) { append(f, r) }
+    }
+    free = f
+}
+
+// Calls a runtime routine with the C ABI; live registers, including the
+// arguments, are pushed first so the collector sees every pointer.
+fn rtCall1(slot: int, a: Item, ret: Type): Item
+
+fn rtCall(slot: int, args: []Item, ret: Type): Item {
+    let regs = new []int(0)
+    let temps = new []bool(0)
+    for a in args {
+        append(temps, a.strTemp && slot != RT_STR_DEC)    // dropping a string is its own drop
+        append(regs, load(a).r)
+    }
+    let saved = inUse()
+    for r in saved { pushR(r) }
+    let abi = new []int(0)
+    append(abi, RDI)
+    append(abi, RSI)
+    append(abi, RDX)
+    append(abi, RCX)
+    for i in 0..len(regs) { movRR(abi[i], regs[i]) }
+    let pad = depth % 16
+    if pad != 0 {
+        aluRI(5, RSP, 8)
+        depth += 8
+    }
+    callAbs(RT_TEXT + 8 * slot)
+    if pad != 0 {
+        aluRI(0, RSP, 8)
+        depth -= 8
+    }
+    var i = len(saved) - 1
+    while i >= 0 {
+        popR(saved[i])
+        i -= 1
+    }
+    var res = voidItem()
+    if ret != tVoid {
+        let r = alloc()
+        movRR(r, RAX)
+        res = makeReg(ret, r)
+        res.strTemp = ret == tString            // every string a runtime call returns is fresh
+    }
+    for i in 0..len(regs) {
+        if temps[i] { rtCall1(RT_STR_DEC, makeReg(tString, regs[i]), tVoid) }
+    }
+    for r in regs { release(r) }
+    return res
+}
+
+fn rtCall0(slot: int, ret: Type): Item { return rtCall(slot, new []Item(0), ret) }
+
+fn rtCall1(slot: int, a: Item, ret: Type): Item {
+    let args = new []Item(0)
+    append(args, a)
+    return rtCall(slot, args, ret)
+}
+
+fn rtCall2(slot: int, a: Item, b: Item, ret: Type): Item {
+    let args = new []Item(0)
+    append(args, a)
+    append(args, b)
+    return rtCall(slot, args, ret)
+}
+
+// ========================================================= scopes, narrowing
+
+fn findSym(list: []Sym, name: string): ?Sym {
+    for s in list {
+        if s.name == name { return s }
+    }
+    return nil
+}
+
+fn lookup(name: string): Sym {
+    var i = len(blocks) - 1
+    while i >= 0 {
+        let s = findSym(blocks[i].syms, name)
+        if s != nil { return s }
+        i -= 1
+    }
+    let g = findSym(globals, name)
+    if g != nil { return g }
+    let u = findSym(universe, name)
+    if u != nil { return u }
+    error("undeclared identifier '" + name + "' (declare before use; use a forward heading for mutual recursion)")
+    return newSym("var", name, nil)
+}
+
+fn declare(s: Sym): Sym {
+    var scope = globals
+    if len(blocks) > 0 { scope = blocks[len(blocks) - 1].syms }
+    if findSym(scope, s.name) != nil { error("'" + s.name + "' is already declared in this scope") }
+    append(scope, s)
+    return s
+}
+
+// ============================================================== ownership
+
+var ownedLocals = new []Sym(0)
+var condDepth = 0                 // inside the right operand of && or ||
+var pinned: ?Sym = nil            // a local being assigned through
+var userCalls = 0                 // calls to obx functions compiled so far
+
+fn isOwned(t: Type): bool {
+    if t.kind == "record" || t.kind == "closed" || t.kind == "array" { return true }
+    if t.kind == "opt" { return isOwned(baseOf(t)) }
+    return false
+}
+
+fn addOwnedLocal(s: Sym) {
+    s.owned = true
+    append(ownedLocals, s)
+}
+
+fn invalidate(root: ?Sym, via: ?Sym, all: bool)
+
+// frees the live owned locals ownedLocals[from..to), newest first
+fn freeOwned(from: int, to: int) {
+    var i = to - 1
+    while i >= from {
+        let s = ownedLocals[i]
+        if s.owned { invalidate(s, nil, true) }
+        if !s.moved && !s.isRefLocal {
+            let x = newItem("mem", symType(s))
+            x.base = RBP
+            x.disp = s.offset
+            if s.isStr {
+                rtCall1(RT_STR_DEC, x, tVoid)
+            } else {
+                rtCall1(RT_FREE, x, tVoid)
+            }
+        }
+        i -= 1
+    }
+}
+
+fn snapshot(): []bool {
+    let out = new []bool(0)
+    for s in ownedLocals { append(out, s.moved) }
+    return out
+}
+
+fn restore(st: []bool) {
+    for i in 0..len(st) { ownedLocals[i].moved = st[i] }
+}
+
+// the first owned local whose move state differs between a and b, or nil
+fn stateDiff(a: []bool, b: []bool): ?Sym {
+    for i in 0..len(a) {
+        if i < len(b) && a[i] != b[i] { return ownedLocals[i] }
+    }
+    return nil
+}
+
+fn sameStates(a: []bool, b: []bool, line: int, col: int) {
+    let d = stateDiff(a, b)
+    if d != nil {
+        if d.isRefLocal {
+            errorAt("'" + d.name + "' is invalidated on one path but not another; point it again on every path or none", line, col)
+        }
+        errorAt("'" + d.name + "' is moved on one path but not another; move it on every path or none", line, col)
+    }
+}
+
+// Takes ownership of x's value, which is about to be stored in a variable,
+// field, element or parameter, or returned.
+fn consume(x: Item) {
+    if x.typ.kind == "string" {
+        // the destination will hold a reference: a fresh string hands over its
+        // own, anything else gets a new one (literals need none)
+        if x.strTemp {
+            x.strTemp = false
+        } else if x.mode != "const" {
+            let r = rtCall1(RT_STR_INC, x, tString)
+            x.mode = "reg"
+            x.r = r.r
+            x.base = -1
+            x.index = -1
+            x.sym = nil
+            x.strTemp = false
+        }
+        return
+    }
+    if !isOwned(x.typ) || x.mode == "reg" || x.mode == "const" { return }
+    let s = x.sym
+    if x.borrowed || (s != nil && s.isRef) { error("cannot move out of a reference: a reference only borrows") }
+    if s != nil && s.iterating { error("cannot move '" + s.name + "' while a for loop walks it") }
+    if x.mode == "mem" && s != nil {
+        if s.storage != "local" { error("cannot move out of global '" + s.name + "'; use take() on an optional one") }
+        if inDefer { error("cannot move '" + s.name + "' inside defer") }
+        if condDepth > 0 { error("cannot move '" + s.name + "' inside && or ||") }
+        if pinned == s { error("cannot move '" + s.name + "' while assigning into it") }
+        if s.deferUse { error("'" + s.name + "' is used by a defer and cannot be moved") }
+        s.moved = true
+        invalidate(s, nil, true)                  // references into it now dangle
+        return
+    }
+    error("cannot move out of a field or element; use take() on an optional one")
+}
+
+// A string read from a variable, field or element, about to be held while
+// more code runs (which might replace it), takes a reference of its own.
+fn pinStr(x: Item): Item {
+    if x.typ.kind == "string" && !x.strTemp && x.mode != "const" {
+        consume(x)
+        x.strTemp = true
+        return x
+    }
+    return materialise(x)
+}
+
+fn addStrLocal(s: Sym) {
+    s.isStr = true
+    append(ownedLocals, s)
+}
+
+// ============================================================= references
+
+var refMode = 0                   // set by parseRefType: 0 plain, 1 &, 2 &mut
+
+// the owned local or reference parameter that x ultimately borrows from
+fn rootOf(x: Item): ?Sym {
+    let r = x.root
+    if r == nil { return nil }
+    if r.isRef {
+        let rr = r.refRoot
+        if rr != nil { return rr }
+    }
+    return r
+}
+
+fn mutableOf(x: Item): bool {
+    let r = x.root
+    if r != nil && r.isRef { return r.refMut }
+    return true
+}
+
+fn deepOf(x: Item): bool {
+    if x.deref { return true }
+    let r = x.root
+    if r != nil && r.isRefLocal { return r.refDeep }
+    return false
+}
+
+// x is about to be borrowed: returns its root (nil for nil itself)
+fn borrowRoot(x: Item): ?Sym {
+    if x.mode == "const" { return nil }
+    if x.viaHandle { error("cannot borrow through a handle: pass the handle itself") }
+    if x.mode == "reg" && isOwned(x.typ) {
+        error("store this value in a variable first: a reference cannot borrow from a temporary")
+    }
+    let r = rootOf(x)
+    if r == nil { error("only variables, fields and elements can be borrowed") }
+
+    return r
+}
+
+// the reference local x was derived from: the one it goes through, or for a
+// plain copy, the one that one was derived from
+fn parentOf(x: Item): ?Sym {
+    let r = x.root
+    if r == nil || !r.isRefLocal { return nil }
+    if x.deref { return r }
+    return r.refParent
+}
+
+// true if a is via itself or one of the references via was derived from
+fn ancestorOf(a: Sym, via: ?Sym): bool {
+    var p = via
+    while p != nil {
+        if p == a { return true }
+        p = p.refParent
+    }
+    return false
+}
+
+fn makeRefLocal(v: Sym, x: Item, root: ?Sym, readOnly: bool) {
+    v.refParent = parentOf(x)
+    v.isRef = true
+    v.isRefLocal = true
+    v.refRoot = root
+    v.refMut = mutableOf(x) && !readOnly
+    v.refDeep = deepOf(x)
+    append(ownedLocals, v)
+}
+
+// a reference parameter: it may name the same object as another one, or a global
+fn isRefParam(s: Sym): bool { return s.isRef && !s.isRefLocal && s.storage == "local" }
+
+// a change under root changed may free something inside root other. A change
+// under a reference parameter reaches other reference parameters and globals,
+// since it may be either; a change under a global reaches no parameter, since
+// a function that might free under a global is never given references into it.
+fn reaches(changed: Sym, other: Sym): bool {
+    if changed == other { return true }
+    return isRefParam(changed) && (isRefParam(other) || other.storage == "global")
+}
+
+// Something under root may have been freed: the root's references become
+// invalid, except via (the reference the change went through) and, unless
+// all, references to the root's own object; so do references that may point
+// inside any other root the change reaches.
+fn invalidate(root: ?Sym, via: ?Sym, all: bool) {
+    if root == nil { return }
+    for v in ownedLocals {
+        // a change through via frees only things below via: references it was
+        // derived from point above it and stay valid
+        if v.isRefLocal && !ancestorOf(v, via) && !v.moved {
+            let r = v.refRoot
+            var hit = r == root && (all || v.refDeep)
+            if !hit && r != nil && v.refDeep && reaches(root, r) { hit = true }
+            if hit {
+                if v.iterating { error("cannot change what '" + v.name + "' points into while a for loop walks it") }
+                v.moved = true
+            }
+        }
+    }
+}
+
+// ======================================================== effect summaries
+// Every function records which globals it might free. Bodies are compiled
+// before they can be called (declare before use), so at a call site the
+// callee's summary is complete, unless it is still being compiled (recursion)
+// or only has a forward heading: then it is assumed to free anything.
+
+// a callee that cannot free anything: compiled, freeing no globals, and with
+// no &mut parameters it could free through
+fn pureFn(f: Sym): bool {
+    if f.addr < 0 || f == curFn || f.freesAll || len(f.freed) > 0 { return false }
+    for i in 0..len(f.pmodes) {
+        if f.pmodes[i] == 2 { return false }
+    }
+    return true
+}
+
+fn mightFree(f: Sym, g: Sym): bool {
+    if f.addr < 0 || f == curFn || f.freesAll { return true }
+    for x in f.freed {
+        if x == g { return true }
+    }
+    return false
+}
+
+// the current function might free global g
+fn recordFree(g: ?Sym) {
+    let f = curFn
+    if f == nil || g == nil { return }
+    if g.storage != "global" { return }
+    for x in f.freed {
+        if x == g { return }
+    }
+    append(f.freed, g)
+}
+
+// after calling f: references into what f might free are no longer valid,
+// and the caller inherits f's effects
+fn afterCall(f: Sym) {
+    let cur = curFn
+    let all = f.addr < 0 || f == cur || f.freesAll
+    if cur != nil && all { cur.freesAll = true }
+    for g in globals {
+        if (g.kind == "var" || g.kind == "let") && (all || mightFree(f, g)) {
+            invalidate(g, nil, true)
+            if !all { recordFree(g) }
+        }
+    }
+}
+
+// the reference local a change goes through, if any
+fn viaOf(x: Item): ?Sym {
+    let r = x.root
+    if r != nil && r.isRefLocal { return r }
+    return nil
+}
+
+fn parseType(): Type
+
+fn parseRefType(): Type {
+    refMode = 0
+    if sym == T_AMP {
+        next()
+        var mode = 1
+        if sym == T_IDENT && sval == "mut" {
+            next()
+            mode = 2
+        }
+        let t = parseType()
+        if !isOwned(t) { error("only records, closed types and arrays can be borrowed, not " + tname(t)) }
+        refMode = mode
+        return t
+    }
+    return parseType()
+}
+
+// an owned value that nothing owns yet must be stored, not just looked at
+fn noTemp(x: Item) {
+    if x.mode == "reg" && isOwned(x.typ) {
+        error("store this value in a variable first: otherwise it would never be freed")
+    }
+}
+
+fn openBlock() {
+    append(blocks, new Block{syms: new []Sym(0), defers: new []int(0), nmark: len(narrowStack),
+                             omark: len(ownedLocals)})
+}
+
+fn callDefers(blk: Block) {
+    var i = len(blk.defers) - 1
+    while i >= 0 {
+        callLocal(blk.defers[i])
+        i -= 1
+    }
+}
+
+fn closeBlock(terminated: bool) {
+    let blk = blocks[len(blocks) - 1]
+    truncate(blocks, len(blocks) - 1)
+    if !terminated {
+        callDefers(blk)
+        freeOwned(blk.omark, len(ownedLocals))
+    }
+    truncate(ownedLocals, blk.omark)
+    truncate(narrowStack, blk.nmark)
+}
+
+// leaving blocks early (return, break, continue): each block's defers run,
+// then its live owned locals are freed, innermost first
+fn runDefers(downTo: int) {
+    var top = len(ownedLocals)
+    var i = len(blocks) - 1
+    while i >= downTo {
+        callDefers(blocks[i])
+        freeOwned(blocks[i].omark, top)
+        top = blocks[i].omark
+        i -= 1
+    }
+}
+
+fn newLocal(name: string, t: Type, kind: string): Sym {
+    frame += 8
+    let s = newSym(kind, name, t)
+    s.storage = "local"
+    s.offset = -frame
+    if len(name) > 0 { return declare(s) }
+    return s
+}
+
+fn varType(s: Sym): Type {
+    var i = len(narrowStack) - 1
+    while i >= 0 {
+        let e = narrowStack[i]
+        if e.sym == s && e.alive { return e.typ }
+        i -= 1
+    }
+    return symType(s)
+}
+
+fn pushNarrowings(lst: []NPair) {
+    for p in lst { append(narrowStack, new NEntry{sym: p.sym, typ: p.typ, depth: loopdepth, alive: true}) }
+}
+
+fn widen(s: Sym) {
+    for e in narrowStack {
+        if e.sym == s && e.alive {
+            if e.depth != loopdepth {
+                error("'" + s.name + "' may become nil here, but it was checked outside this loop; check it inside the loop instead")
+            }
+            e.alive = false
+        }
+    }
+}
+
+// =========================================================== type syntax
+
+fn parseType(): Type {
+    if sym == T_QUESTION {
+        next()
+        let b = parseType()
+        if !nonNull(b) { error("only reference types can be optional, not " + tname(b)) }
+        return newType("opt", "", b)
+    }
+    if sym == T_LBRACK {
+        next()
+        expect(T_RBRACK, "")
+        return newType("array", "", parseType())
+    }
+    if sym == T_CARET {
+        next()
+        let b = parseType()
+        if b.kind != "record" && b.kind != "closed" { error("handles name records and closed types, not " + tname(b)) }
+        return newType("handle", "", b)
+    }
+    if sym == T_REF || sym == T_CLOSED { error("record and closed types must be declared with 'type'") }
+    let name = ident()
+    let s = lookup(name)
+    if s.kind != "type" { error("'" + name + "' is not a type") }
+    return symType(s)
+}
+
+fn fieldList(rec: Type) {
+    expect(T_LBRACE, "")
+    skipSemis()
+    var offset = 0
+    while sym != T_RBRACE {
+        let names = new []string(0)
+        append(names, ident())
+        while sym == T_COMMA {
+            next()
+            append(names, ident())
+        }
+        expect(T_COLON, "")
+        let t = parseType()
+        for n in names {
+            if fieldOf(rec, n) != nil { error("duplicate field '" + n + "'") }
+            append(rec.fields, new Field{name: n, offset: offset, typ: t})
+            offset += 8
+        }
+        if sym != T_RBRACE { expect(T_SEMI, "';' or newline") }
+        skipSemis()
+    }
+    expect(T_RBRACE, "")
+    let ptrs = new []int(0)
+    let strs = new []int(0)
+    for f in rec.fields {
+        if isOwned(f.typ) { append(ptrs, f.offset) }            // the fields freed with the record
+        if f.typ.kind == "string" { append(strs, f.offset) }    // and the strings it drops
+    }
+    rec.desc = descriptor(offset, ptrs, strs)
+}
+
+fn typeDecl() {
+    let line = tline
+    let name = ident()
+    let prior = findSym(globals, name)
+    var fwd: ?Type = nil
+    if prior != nil && prior.kind == "type" {
+        let pt = symType(prior)
+        if pt.incomplete { fwd = pt }
+    }
+    if sym != T_ASSIGN {
+        let t = newType("record", name, nil)
+        t.incomplete = true
+        t.line = line
+        declare(newSym("type", name, t))
+        return
+    }
+    expect(T_ASSIGN, "")
+    if fwd == nil && (sym == T_REF || sym == T_CLOSED) && prior != nil {
+        error("'" + name + "' is already declared in this scope")
+    }
+    if sym == T_REF {
+        next()
+        expect(T_RECORD, "")
+        var rec = newType("record", name, nil)
+        if fwd != nil {
+            rec = fwd
+        } else {
+            declare(newSym("type", name, rec))
+        }
+        fieldList(rec)
+        rec.incomplete = false
+    } else if sym == T_CLOSED {
+        next()
+        var ct = newType("closed", name, nil)
+        if fwd != nil { ct = fwd }
+        ct.kind = "closed"
+        ct.incomplete = false
+        if fwd == nil { declare(newSym("type", name, ct)) }
+        expect(T_LBRACE, "")
+        skipSemis()
+        while sym != T_RBRACE {
+            let vname = ident()
+            let v = newType("record", vname, nil)
+            v.parent = ct
+            declare(newSym("type", vname, v))
+            fieldList(v)
+            append(ct.variants, v)
+            skipSemis()
+        }
+        expect(T_RBRACE, "")
+        if len(ct.variants) == 0 { error("a closed type needs at least one variant") }
+    } else {
+        if fwd != nil {
+            error("'" + name + "' was declared as a forward type: define it as a ref record or closed type")
+        }
+        declare(newSym("type", name, parseType()))
+    }
+}
+
+fn checkAssign(dst: Type, x: Item, what: string) {
+    if x.typ == tVoid { error(what + ": expression has no value") }
+    if dst.kind == "byte" && x.mode == "const" && x.typ.kind == "int" && x.val >= 0 && x.val <= 255 { return }
+    if !assignable(dst, x.typ) {
+        var hint = ""
+        if x.typ.kind == "nil" && nonNull(dst) {
+            hint = " (" + tname(dst) + " can never be nil; declare it as ?" + tname(dst) + ")"
+        } else if dst.kind != "opt" && x.typ.kind == "opt" {
+            hint = " (it may be nil: check it with '!= nil' first)"
+        }
+        error(what + ": cannot use " + tname(x.typ) + " as " + tname(dst) + hint)
+    }
+}
+
+// ============================================================ expressions
+
+fn expression(): Item
+fn designator(): Item
+
+fn callFn(f: Sym): Item {
+    let saved = saveRegs()
+    let n = len(f.params)
+    let pad = (depth + 8 * n) % 16
+    if pad != 0 {
+        aluRI(5, RSP, 8)
+        depth += 8
+    }
+    expect(T_LPAREN, "")
+    let argRoots = new []?Sym(0)
+    let argModes = new []int(0)
+    let argVias = new []?Sym(0)
+    let argDeeps = new []bool(0)
+    for i in 0..n {
+        if sym == T_RPAREN { error(f.name + " takes " + string(n) + " argument(s), not " + string(i)) }
+        if i > 0 { expect(T_COMMA, "") }
+        let a = expression()
+        checkAssign(f.params[i], a, "argument " + string(i + 1) + " of " + f.name)
+        if f.pmodes[i] > 0 {
+            let root = borrowRoot(a)
+            if f.pmodes[i] == 2 && !mutableOf(a) {
+                error("argument " + string(i + 1) + " of " + f.name + " needs a mut reference, but this one is read-only")
+            }
+            append(argRoots, root)
+            append(argModes, f.pmodes[i])
+            append(argVias, viaOf(a))
+            append(argDeeps, deepOf(a))
+        } else {
+            consume(a)
+        }
+        let r = load(a)
+        pushR(r.r)
+        release(r.r)
+    }
+    if sym != T_RPAREN { error(f.name + " takes " + string(n) + " argument(s), not more") }
+    expect(T_RPAREN, "")
+    // a mut reference and another that may point inside it could let the callee
+    // free what the other points to; references to one object are fine
+    for i in 0..len(argRoots) {
+        for j in 0..len(argRoots) {
+            let ri = argRoots[i]
+            let rj = argRoots[j]
+            if i != j && argModes[i] == 2 && argDeeps[j] && ri != nil && rj != nil && reaches(ri, rj) {
+                error("argument " + string(j + 1) + " of " + f.name + " may point inside argument " + string(i + 1) + ", which is mut")
+            }
+        }
+    }
+    for i in 0..len(argRoots) {
+        let ar = argRoots[i]
+        if ar != nil && ar.storage == "global" && mightFree(f, ar) {
+            error("cannot pass a reference into global '" + ar.name + "' to " + f.name + ": it might free it")
+        }
+    }
+    for i in 0..len(argRoots) {
+        if argModes[i] == 2 {
+            invalidate(argRoots[i], argVias[i], false)
+            recordFree(argRoots[i])
+        }
+    }
+    afterCall(f)
+    if !pureFn(f) { userCalls += 1 }              // only calls that might free count
+    emit(0xE8)
+    emit32(0)
+    let at = pc() - 4
+    if f.addr >= 0 {
+        fix(at, f.addr)
+    } else {
+        append(f.fixups, at)
+    }
+    if n > 0 || pad != 0 {
+        aluRI(0, RSP, 8 * n + pad)
+        depth -= 8 * n + pad
+    }
+    restoreRegs(saved)
+    if f.ret == tVoid { return voidItem() }
+    let r = alloc()
+    movRR(r, RAX)
+    let res = makeReg(f.ret, r)
+    res.strTemp = f.ret == tString               // the caller now holds the returned reference
+    return res
+}
+
+fn describe(x: Item): string {
+    let s = x.sym
+    if s != nil { return s.name }
+    return "value"
+}
+
+fn conversion(t: Type): Item {
+    expect(T_LPAREN, "")
+    let a = expression()
+    expect(T_RPAREN, "")
+    if t == tString {
+        // string(n) gives the decimal digits of an int; string(bytes) copies a []byte
+        if a.typ.kind == "int" {
+            if a.mode == "const" { return makeConst(tString, stringLit(string(a.val))) }
+            return rtCall1(RT_INT_TO_STR, a, tString)
+        }
+        if a.typ.kind == "byte" {
+            error("string() of a byte is ambiguous: use string(int(b)) for its number, or a []byte for the character")
+        }
+        if a.typ.kind != "array" || baseOf(a.typ).kind != "byte" {
+            error("string() needs an int or a []byte, not " + tname(a.typ))
+        }
+        noTemp(a)
+        return rtCall1(RT_BYTES_TO_STRING, a, tString)
+    }
+    if !isInt(a.typ) { error(tname(t) + "() needs an int or byte, not " + tname(a.typ)) }
+    if a.mode == "const" {
+        if t == tByte { return makeConst(t, a.val & 255) }
+        return makeConst(t, a.val)
+    }
+    let x = load(a)
+    if t == tByte && x.typ.kind != "byte" { aluRI(4, x.r, 255) }
+    x.typ = t
+    return x
+}
+
+fn builtin(name: string): Item {
+    if name == "print" || name == "println" || name == "eprint" || name == "eprintln" {
+        let toStderr = name[0] == 'e'
+        if toStderr { rtCall1(RT_SET_OUTPUT, makeConst(tInt, 2), tVoid) }
+        expect(T_LPAREN, "")
+        var first = true
+        while sym != T_RPAREN {
+            if !first { expect(T_COMMA, "") }
+            first = false
+            let a = expression()
+            let k = a.typ.kind
+            var slot = -1
+            if k == "int" || k == "byte" {
+                slot = RT_PRINT_INT
+            } else if k == "bool" {
+                slot = RT_PRINT_BOOL
+            } else if k == "string" {
+                slot = RT_PRINT_STR
+            }
+            if slot < 0 { error("cannot print " + tname(a.typ)) }
+            rtCall1(slot, a, tVoid)
+        }
+        expect(T_RPAREN, "")
+        if name == "println" || name == "eprintln" { rtCall0(RT_NEWLINE, tVoid) }
+        if toStderr { rtCall1(RT_SET_OUTPUT, makeConst(tInt, 1), tVoid) }
+        return voidItem()
+    }
+    if name == "args" {
+        expect(T_LPAREN, "")
+        expect(T_RPAREN, "")
+        return rtCall0(RT_ARGS, newType("array", "", tString))
+    }
+    if name == "readFile" || name == "writeFile" {
+        expect(T_LPAREN, "")
+        var p = expression()
+        if p.typ.kind != "string" { error(name + " needs a string path, not " + tname(p.typ)) }
+        if name == "readFile" {
+            expect(T_RPAREN, "")
+            return rtCall1(RT_READ_FILE, p, newType("opt", "", newType("array", "", tByte)))
+        }
+        p = pinStr(p)
+        expect(T_COMMA, "")
+        var d = expression()
+        if d.typ.kind != "array" || baseOf(d.typ).kind != "byte" {
+            error("writeFile needs a []byte, not " + tname(d.typ))
+        }
+        noTemp(d)
+        d = materialise(d)
+        expect(T_COMMA, "")
+        let e = expression()
+        if e.typ.kind != "bool" { error("writeFile needs a bool saying whether the file is executable") }
+        expect(T_RPAREN, "")
+        let args3 = new []Item(0)
+        append(args3, p)
+        append(args3, d)
+        append(args3, e)
+        return rtCall(RT_WRITE_FILE, args3, tBool)
+    }
+    if name == "handle" {
+        // a handle to an object: copyable, storable, checked on every use
+        expect(T_LPAREN, "")
+        if sym != T_IDENT { error("handle needs a variable, field or element") }
+        let x = designator()
+        expect(T_RPAREN, "")
+        if (x.mode != "mem" && x.mode != "elem") || (x.typ.kind != "record" && x.typ.kind != "closed") {
+            error("handle needs a record or closed-type value that is not optional, not " + tname(x.typ))
+        }
+        let ht = newType("handle", "", x.typ)
+        return rtCall1(RT_HANDLE, x, ht)
+    }
+    if name == "replace" {
+        // stores a new value in a variable, field or element and hands back the old one
+        expect(T_LPAREN, "")
+        if sym != T_IDENT { error("replace needs a variable, field or element") }
+        var x = designator()
+        if (x.mode != "mem" && x.mode != "elem") || !isOwned(x.typ) {
+            error("replace needs a variable, field or element holding an owned value")
+        }
+        if x.readonly { error("replace cannot change '" + describe(x) + "': it is immutable") }
+        let tr = x.root
+        if x.deref && tr != nil && tr.isRef && !tr.refMut {
+            error("replace cannot change through '" + tr.name + "': it is a read-only reference")
+        }
+        expect(T_COMMA, "")
+        let callsBefore = userCalls
+        let savedPin = pinned
+        if x.deref && tr != nil && tr.storage == "local" { pinned = tr }
+        var v = expression()
+        pinned = savedPin
+        expect(T_RPAREN, "")
+        if (x.viaHandle || (x.deref && tr != nil && tr.storage == "global")) && userCalls != callsBefore {
+            error("replace through a handle or global cannot have a value that calls a function that might free")
+        }
+        checkAssign(x.typ, v, "replacement value")
+        consume(v)
+        if x.deref {
+            invalidate(rootOf(x), viaOf(x), false)
+            recordFree(rootOf(x))
+        } else {
+            let ts = x.sym
+            if ts != nil {
+                invalidate(ts, nil, true)
+                recordFree(ts)
+            }
+        }
+        resolve(x)
+        let r = alloc()
+        opMem(0x8B, r, memOf(x), true, false)
+        let xt = x.typ
+        store(x, v)
+        return makeReg(xt, r)
+    }
+    if name == "drop" {
+        // frees an owned local now and marks it moved, so that every path can agree
+        expect(T_LPAREN, "")
+        if sym != T_IDENT { error("drop needs a local variable") }
+        let x = designator()
+        expect(T_RPAREN, "")
+        let ds = x.sym
+        if x.mode != "mem" || ds == nil || ds.storage != "local" || !ds.owned {
+            error("drop needs a local variable holding an owned value")
+            return voidItem()
+        }
+        let dx = newItem("mem", symType(ds))
+        dx.base = RBP
+        dx.disp = ds.offset
+        consume(x)
+        rtCall1(RT_FREE, dx, tVoid)
+        return voidItem()
+    }
+    if name == "alive" {
+        expect(T_LPAREN, "")
+        let h = expression()
+        expect(T_RPAREN, "")
+        if h.typ.kind != "handle" { error("alive needs a handle, not " + tname(h.typ)) }
+        return rtCall1(RT_ALIVE, h, tBool)
+    }
+    if name == "take" {
+        // takes the value out of an optional variable, field or element, leaving nil
+        expect(T_LPAREN, "")
+        if sym != T_IDENT { error("take needs a variable, field or element") }
+        let x = designator()
+        expect(T_RPAREN, "")
+        if (x.mode != "mem" && x.mode != "elem") || x.typ.kind != "opt" || !isOwned(x.typ) {
+            error("take needs an optional variable, field or element holding an owned value")
+        }
+        if x.readonly { error("take cannot change '" + describe(x) + "': it is immutable") }
+        let tr = x.root
+        if x.deref && tr != nil && tr.isRef && !tr.refMut {
+            error("take cannot change through '" + tr.name + "': it is a read-only reference")
+        }
+        if x.deref {
+            invalidate(rootOf(x), viaOf(x), false)
+            recordFree(rootOf(x))
+        } else {
+            let ts = x.sym
+            if ts != nil && ts.storage == "local" { invalidate(ts, nil, true) }
+            if ts != nil && ts.storage == "global" {
+                invalidate(ts, nil, true)
+                recordFree(ts)
+            }
+        }
+        resolve(x)
+        let r = alloc()
+        opMem(0x8B, r, memOf(x), true, false)
+        opMem(0xC7, 0, memOf(x), true, false)
+        emit32(0)
+        releaseItem(x)
+        return makeReg(x.typ, r)
+    }
+    if name == "append" || name == "truncate" || name == "substr" {
+        let line = tline
+        expect(T_LPAREN, "")
+        var a = expression()
+        var want = "array"
+        var article = "an"
+        if name == "substr" {
+            want = "string"
+            article = "a"
+        }
+        if a.typ.kind != want { error(name + " needs " + article + " " + want + ", not " + tname(a.typ)) }
+        noTemp(a)
+        if name != "substr" {
+            let ar = a.root
+            if ar != nil && ar.isRef && !ar.refMut {
+                error(name + " changes the array, but '" + ar.name + "' is a read-only reference")
+            }
+            if name == "truncate" {
+                invalidate(rootOf(a), viaOf(a), false)
+                recordFree(rootOf(a))
+            }
+        }
+        a = pinStr(a)
+        expect(T_COMMA, "")
+        var b = expression()
+        if name == "append" {
+            checkAssign(baseOf(a.typ), b, "appended value")
+            consume(b)
+            expect(T_RPAREN, "")
+            rtCall2(RT_APPEND, a, b, tVoid)
+            return voidItem()
+        }
+        if !isInt(b.typ) { error(name + " needs int positions") }
+        if name == "truncate" {
+            expect(T_RPAREN, "")
+            let at = new []Item(0)
+            append(at, a)
+            append(at, b)
+            append(at, makeConst(tInt, line))
+            rtCall(RT_TRUNCATE, at, tVoid)
+            return voidItem()
+        }
+        b = materialise(b)
+        expect(T_COMMA, "")
+        let c = expression()
+        if !isInt(c.typ) { error(name + " needs int positions") }
+        expect(T_RPAREN, "")
+        let as = new []Item(0)
+        append(as, a)
+        append(as, b)
+        append(as, c)
+        append(as, makeConst(tInt, line))
+        return rtCall(RT_SUBSTR, as, tString)
+    }
+    if name == "gc" || name == "gcstats" {
+        expect(T_LPAREN, "")
+        expect(T_RPAREN, "")
+        if name == "gc" {
+            rtCall0(RT_COLLECT, tVoid)
+        } else {
+            rtCall0(RT_GC_STATS, tVoid)
+        }
+        return voidItem()
+    }
+    expect(T_LPAREN, "")
+    let a = expression()
+    expect(T_RPAREN, "")
+    if name == "exit" {
+        if a.typ.kind != "int" { error("exit needs an int") }
+        rtCall1(RT_EXIT, a, tVoid)
+        noreturn = true
+        return voidItem()
+    }
+    if a.typ.kind == "string" {
+        if a.mode == "const" { return makeConst(tInt, len(rodataString(a.val))) }
+        if a.strTemp {
+            let p = load(a)
+            let n = alloc()
+            movRR(n, p.r)
+            opReg(0x85, n, n, true, false)
+            emit(0x74)
+            emit(0)
+            let at0 = pc()
+            opMem(0x8B, n, mem(n, -1, 0, 8), true, false)
+            code[at0 - 1] = byte(pc() - at0)
+            rtCall1(RT_STR_DEC, p, tVoid)
+            return makeReg(tInt, n)
+        }
+        let x = load(a)
+        opReg(0x85, x.r, x.r, true, false)
+        emit(0x74)
+        emit(0)
+        let at = pc()
+        opMem(0x8B, x.r, mem(x.r, -1, 0, 8), true, false)
+        code[at - 1] = byte(pc() - at)
+        return makeReg(tInt, x.r)
+    }
+    if a.typ.kind != "array" { error("len needs a string or array, not " + tname(a.typ)) }
+    noTemp(a)
+    let x = load(a)
+    opMem(0x8B, x.r, mem(x.r, -1, 0, 8), true, false)
+    return makeReg(tInt, x.r)
+}
+
+fn designatorT(target: bool): Item
+
+fn designator(): Item { return designatorT(false) }
+
+// target: the designator is the left side of an assignment, where a moved
+// local may be given a new value
+fn designatorT(target: bool): Item {
+    let name = ident()
+    let s = lookup(name)
+    var x = voidItem()
+    if s.kind == "builtin" {
+        x = builtin(name)
+    } else if s.kind == "fn" {
+        if sym != T_LPAREN { error("functions can only be called") }
+        x = callFn(s)
+    } else if s.kind == "const" {
+        x = makeConst(symType(s), s.value)
+    } else if s.kind == "var" || s.kind == "let" {
+        if s.storage == "local" {
+            x = newItem("mem", varType(s))
+            x.base = RBP
+            x.disp = s.offset
+        } else {
+            x = newItem("mem", symType(s))
+            x.disp = s.offset
+        }
+        x.sym = s
+        x.root = s
+        x.readonly = s.kind == "let"
+        x.borrowed = s.isRef
+        if (s.owned || s.isRefLocal) && s.moved {
+            if target {
+                x.movedRef = true
+            } else if s.isRefLocal {
+                error("'" + name + "' may point to freed memory: something under what it points into was changed; point it again first")
+            } else {
+                error("'" + name + "' was moved and has no value here")
+            }
+        }
+        if inDefer && s.owned { s.deferUse = true }
+    } else if s.kind == "type" && sym == T_LPAREN && (symType(s) == tInt || symType(s) == tByte || symType(s) == tString) {
+        x = conversion(symType(s))
+    } else {
+        error("'" + name + "' is a type, not a value (use 'new " + name + "{...}' to make one)")
+    }
+    if sym == T_LPAREN && (s.kind == "var" || s.kind == "let" || s.kind == "const") {
+        error("'" + name + "' is not a function")
+    }
+    let root = x.root
+    var viaHandle = false
+    while sym == T_DOT || sym == T_LBRACK {
+        if x.movedRef { error("'" + name + "' was moved and has no value here") }
+        if x.mode == "reg" && isOwned(x.typ) {
+            error("store this value in a variable first: otherwise it would never be freed")
+        }
+        if x.typ.kind == "opt" { error("'" + describe(x) + "' may be nil: check it with '!= nil' first") }
+        if sym == T_DOT && x.typ.kind == "handle" {
+            // check the handle now: the object must still be the one it named
+            let hb = baseOf(x.typ)
+            x = rtCall1(RT_DEREF, x, hb)
+            viaHandle = true
+        }
+        if sym == T_DOT {
+            next()
+            let fname = ident()
+            if x.typ.incomplete { error(tname(x.typ) + " is declared but not yet defined") }
+            if x.typ.kind == "closed" { error(tname(x.typ) + " is a closed type: use 'match' to reach its fields") }
+            if x.typ.kind != "record" { error(tname(x.typ) + " has no fields") }
+            let f = fieldOf(x.typ, fname)
+            if f == nil {
+                error(tname(x.typ) + " has no field '" + fname + "'")
+                return x
+            }
+            let p = load(x)
+            x = newItem("mem", f.typ)
+            x.base = p.r
+            x.disp = f.offset
+        } else {
+            next()
+            let line = tline
+            let kind = x.typ.kind
+            if x.strTemp { error("store this string in a variable first") }
+            let callsBefore = userCalls
+            if kind != "array" && kind != "string" { error(tname(x.typ) + " cannot be indexed") }
+            let elem = baseOf(x.typ)
+            let a = load(x)
+            let i0 = expression()
+            if !isInt(i0.typ) { error("array index must be int") }
+            if viaHandle && userCalls != callsBefore {
+                error("cannot index through a handle with an index that calls a function: the call could free the object")
+            }
+            if root != nil && root.storage == "global" && userCalls != callsBefore {
+                error("cannot index through global '" + root.name + "' with an index that calls a function: the call could free it")
+            }
+            let i = load(i0)
+            expect(T_RBRACK, "")
+            if kind == "string" {
+                opReg(0x85, a.r, a.r, true, false)
+                emit(0x75)
+                emit(14)
+                trapBounds(line)
+                boundsCheck(i.r, mem(a.r, -1, 0, 8), line)
+                x = newItem("mem", tByte)
+                x.base = a.r
+                x.index = i.r
+                x.disp = 8
+                x.scale = 1
+                x.width = 1
+                x.readonly = true
+            } else {
+                x = newItem("elem", elem)
+                x.base = a.r
+                x.index = i.r
+                x.line = line
+                if elem.kind == "byte" { x.width = 1 }
+            }
+        }
+    }
+    x.viaHandle = viaHandle
+    if x.sym == nil && root != nil {
+        x.root = root
+        x.deref = true
+        // nothing can be moved out through a reference, so this can only be a borrow
+        if root.isRef && isOwned(x.typ) { x.borrowed = true }
+    }
+    return x
+}
+
+fn newExpr(): Item {
+    next()
+    if sym == T_LBRACK {
+        let t = parseType()
+        expect(T_LPAREN, "")
+        let n = expression()
+        if !isInt(n.typ) { error("array length must be int") }
+        let b = baseOf(t)
+        if nonNull(b) && !(n.mode == "const" && n.val == 0) {
+            error("array elements of type " + tname(b) + " would start as nil; use []?" + tname(b) +
+                  ", or start empty with new []" + tname(b) + "(0) and append")
+        }
+        expect(T_RPAREN, "")
+        var kind = 1
+        if b.kind == "byte" {
+            kind = 4
+        } else if b.kind == "string" {
+            kind = 6                                  // reference-counted strings
+        } else if isOwned(b) {
+            kind = 2                                  // owned objects, freed with the array (not handles)
+        }
+        return rtCall2(RT_ALLOC_ARRAY, n, makeConst(tInt, kind), t)
+    }
+    let name = ident()
+    let s = lookup(name)
+    if s.kind == "type" && symType(s).incomplete { error("'" + name + "' is declared but not yet defined") }
+    if s.kind != "type" || symType(s).kind != "record" { error("'" + name + "' is not a record type") }
+    let t = symType(s)
+    let p = rtCall1(RT_ALLOC_RECORD, makeConst(tInt, t.desc), t)
+    let given = new []string(0)
+    expect(T_LBRACE, "")
+    skipSemis()
+    while sym != T_RBRACE {
+        let fname = ident()
+        let f = fieldOf(t, fname)
+        if f == nil {
+            error(name + " has no field '" + fname + "'")
+            return p
+        }
+        for g in given {
+            if g == fname { error("field '" + fname + "' given twice") }
+        }
+        append(given, fname)
+        expect(T_COLON, "")
+        let v = expression()
+        checkAssign(f.typ, v, "field '" + fname + "'")
+        consume(v)
+        let dst = mem(p.r, -1, f.offset, 8)
+        if v.mode == "const" && fits32(v.val) {
+            opMem(0xC7, 0, dst, true, false)
+            emit32(v.val)
+        } else {
+            let r = load(v)
+            opMem(0x89, r.r, dst, true, false)
+            release(r.r)
+        }
+        if sym == T_COMMA || sym == T_SEMI {
+            next()
+        } else if sym != T_RBRACE {
+            expect(T_COMMA, "',' or '}'")
+        }
+        skipSemis()
+    }
+    expect(T_RBRACE, "")
+    var missing = ""
+    for f in t.fields {
+        var isGiven = false
+        for g in given {
+            if g == f.name { isGiven = true }
+        }
+        if nonNull(f.typ) && !isGiven {
+            if len(missing) > 0 { missing = missing + ", " }
+            missing = missing + f.name
+        }
+    }
+    if len(missing) > 0 { error(name + " needs a value for " + missing + " (it cannot be nil)") }
+    return p
+}
+
+fn factor(): Item {
+    let k = sym
+    if k == T_INT {
+        let v = ival
+        next()
+        return makeConst(tInt, v)
+    }
+    if k == T_STRING {
+        let addr = stringLit(sval)
+        next()
+        return makeConst(tString, addr)
+    }
+    if k == T_TRUE || k == T_FALSE {
+        next()
+        if k == T_TRUE { return makeConst(tBool, 1) }
+        return makeConst(tBool, 0)
+    }
+    if k == T_NIL {
+        next()
+        return makeConst(tNil, 0)
+    }
+    if k == T_LPAREN {
+        next()
+        let x = expression()
+        expect(T_RPAREN, "")
+        return x
+    }
+    if k == T_NEW { return newExpr() }
+    if k == T_NOT {
+        next()
+        let x = factor()
+        if x.typ.kind != "bool" { error("'!' needs a bool") }
+        if x.mode == "const" { return makeConst(tBool, 1 - x.val) }
+        let c = loadCond(x)
+        let y = newItem("cond", tBool)
+        y.cc = c.cc ^ 1
+        y.T = c.F
+        y.F = c.T
+        y.nt = c.nf
+        y.nf = c.nt
+        return y
+    }
+    if k == T_MINUS || k == T_TILDE {
+        next()
+        let x = factor()
+        if !isInt(x.typ) { error("'" + tokName(k) + "' needs an int") }
+        if x.mode == "const" {
+            if k == T_MINUS { return makeConst(tInt, -x.val) }
+            return makeConst(tInt, ~x.val)
+        }
+        let y = load(x)
+        if k == T_MINUS {
+            opReg(0xF7, 3, y.r, true, false)
+        } else {
+            opReg(0xF7, 2, y.r, true, false)
+        }
+        y.typ = tInt
+        return y
+    }
+    if k == T_CHAR {
+        let v = ival
+        next()
+        return makeConst(tByte, v)
+    }
+    if k == T_AMP {
+        // &place: borrow instead of moving
+        next()
+        if sym != T_IDENT { error("& needs a variable, field or element") }
+        let x = designator()
+        if (x.mode != "mem" && x.mode != "elem") || !isOwned(x.typ) {
+            error("& needs a variable, field or element holding a record, closed type or array")
+        }
+        x.borrowed = true
+        return x
+    }
+    if k == T_IDENT { return designator() }
+    error("expected an expression")
+    return voidItem()
+}
+
+// truncating division, as on x86
+fn fold(o: int, a: int, b: int): int {
+    if (o == T_SLASH || o == T_PERCENT) && b == 0 { error("division by zero") }
+    if (o == T_SLASH || o == T_PERCENT) && b == -1 {
+        if o == T_SLASH { return -a }             // wraps for the most negative int
+        return 0
+    }
+    match o {
+        T_PLUS { return a + b }
+        T_MINUS { return a - b }
+        T_STAR { return a * b }
+        T_SLASH { return a / b }
+        T_PERCENT { return a % b }
+        T_AMP { return a & b }
+        T_BAR { return a | b }
+        T_CARET { return a ^ b }
+        T_SHL { return a << b }
+        else { return a >> b }
+    }
+}
+
+fn isMulOp(k: int): bool {
+    match k {
+        T_STAR, T_SLASH, T_PERCENT, T_SHL, T_SHR, T_AMP { return true }
+        else { return false }
+    }
+}
+
+fn isAddOp(k: int): bool {
+    match k {
+        T_PLUS, T_MINUS, T_BAR, T_CARET { return true }
+        else { return false }
+    }
+}
+
+fn aluCode(o: int): int {
+    match o {
+        T_PLUS { return 0 }
+        T_BAR { return 1 }
+        T_AMP { return 4 }
+        T_MINUS { return 5 }
+        else { return 6 }
+    }
+}
+
+fn opOperand(opc: int, reg: int, y0: Item) {
+    var y = y0
+    if y.mode != "mem" && y.mode != "reg" { y = load(y) }
+    if y.mode == "reg" {
+        opReg(opc, reg, y.r, true, false)
+    } else {
+        opMem(opc, reg, memOf(y), true, false)
+    }
+    releaseItem(y)
+}
+
+fn binop(o: int, x0: Item, y0: Item): Item {
+    var x = x0
+    var y = y0
+    if !isInt(x.typ) || !isInt(y.typ) { error("'" + tokName(o) + "' needs ints") }
+    if x.mode == "const" && y.mode == "const" { return makeConst(tInt, fold(o, x.val, y.val)) }
+    if x.mode == "const" && (o == T_PLUS || o == T_STAR || o == T_AMP || o == T_BAR || o == T_CARET) {
+        let t = x
+        x = y
+        y = t
+    }
+    if y.mode == "elem" || (y.mode == "mem" && y.width == 1) { y = load(y) }
+    x = load(x)
+    if o == T_STAR {
+        if y.mode == "const" && fits32(y.val) {
+            opReg(0x69, x.r, x.r, true, false)
+            emit32(y.val)
+        } else {
+            opOperand(0x0FAF, x.r, y)
+        }
+    } else if o == T_SLASH || o == T_PERCENT {
+        if y.mode == "const" && y.val == 0 { error("division by zero") }
+        if y.mode == "const" { y = load(y) }
+        if y.mode != "mem" && y.mode != "reg" { y = load(y) }
+        movRR(RAX, x.r)
+        emit(0x48)
+        emit(0x99)
+        if y.mode == "reg" {
+            opReg(0xF7, 7, y.r, true, false)
+        } else {
+            opMem(0xF7, 7, memOf(y), true, false)
+        }
+        releaseItem(y)
+        if o == T_SLASH {
+            movRR(x.r, RAX)
+        } else {
+            movRR(x.r, RDX)
+        }
+    } else if o == T_SHL || o == T_SHR {
+        var ext = 7
+        if o == T_SHL { ext = 4 }
+        if y.mode == "const" {
+            opReg(0xC1, ext, x.r, true, false)
+            emit(y.val & 63)
+        } else {
+            opOperand(0x8B, RCX, y)
+            opReg(0xD3, ext, x.r, true, false)
+        }
+    } else {
+        let c = aluCode(o)
+        if y.mode == "const" && fits32(y.val) {
+            aluRI(c, x.r, y.val)
+        } else {
+            opOperand(c * 8 + 3, x.r, y)
+        }
+    }
+    x.typ = tInt
+    return x
+}
+
+fn term(): Item {
+    var x = factor()
+    while isMulOp(sym) {
+        let o = sym
+        next()
+        if !isInt(x.typ) { error("'" + tokName(o) + "' needs ints") }
+        x = materialise(x)
+        x = binop(o, x, factor())
+    }
+    return x
+}
+
+fn simpleExpr(): Item {
+    var x = term()
+    while isAddOp(sym) {
+        let o = sym
+        next()
+        if o == T_PLUS && x.typ.kind == "string" {
+            x = pinStr(x)
+            let y = term()
+            if y.typ.kind != "string" { error("'+' on a string needs another string (use string(n) for numbers)") }
+            if x.mode == "const" && y.mode == "const" {
+                x = makeConst(tString, stringLit(rodataString(x.val) + rodataString(y.val)))
+            } else {
+                x = rtCall2(RT_CONCAT, x, y, tString)
+            }
+            continue
+        }
+        if !isInt(x.typ) { error("'" + tokName(o) + "' needs ints") }
+        x = materialise(x)
+        x = binop(o, x, term())
+    }
+    return x
+}
+
+fn relation(): Item {
+    var x = simpleExpr()
+    if !isRel(sym) { return x }
+    let o = sym
+    next()
+    var xsym: ?Sym = nil
+    if x.mode == "mem" { xsym = x.sym }
+    noTemp(x)
+    x = pinStr(x)
+    var y = simpleExpr()
+    var ysym: ?Sym = nil
+    if y.mode == "mem" { ysym = y.sym }
+    noTemp(y)
+    let kx = x.typ.kind
+    let ky = y.typ.kind
+    if kx == "string" || ky == "string" {
+        if kx != ky || (o != T_EQ && o != T_NE) { error("strings can only be compared with == and !=") }
+        let r = rtCall2(RT_STREQ, x, y, tInt)
+        opReg(0x85, r.r, r.r, true, false)
+        release(r.r)
+        let z = newItem("cond", tBool)
+        z.cc = CC_E
+        if o == T_EQ { z.cc = CC_NE }
+        return z
+    }
+    let refs = isRef(x.typ) || isRef(y.typ) || kx == "nil" || ky == "nil"
+    if refs {
+        if o != T_EQ && o != T_NE { error("references can only be compared with == and !=") }
+        if !(assignable(x.typ, y.typ) || assignable(y.typ, x.typ)) {
+            error("cannot compare " + tname(x.typ) + " with " + tname(y.typ))
+        }
+    } else if kx != ky && !(isInt(x.typ) && isInt(y.typ)) {
+        error("cannot compare " + tname(x.typ) + " with " + tname(y.typ))
+    } else if kx == "bool" && o != T_EQ && o != T_NE {
+        error("bools can only be compared with == and !=")
+    }
+    if x.mode == "const" && y.mode == "const" {
+        var v = false
+        if o == T_EQ { v = x.val == y.val }
+        if o == T_NE { v = x.val != y.val }
+        if o == T_LT { v = x.val < y.val }
+        if o == T_LE { v = x.val <= y.val }
+        if o == T_GT { v = x.val > y.val }
+        if o == T_GE { v = x.val >= y.val }
+        if v { return makeConst(tBool, 1) }
+        return makeConst(tBool, 0)
+    }
+    var cc = relCC(o)
+    var narrowSym: ?Sym = nil
+    var narrowType = tVoid
+    if y.typ.kind == "nil" && x.typ.kind == "opt" && xsym != nil && xsym.storage == "local" {
+        narrowSym = xsym
+        narrowType = baseOf(x.typ)
+    }
+    if x.typ.kind == "nil" && y.typ.kind == "opt" && ysym != nil && ysym.storage == "local" {
+        narrowSym = ysym
+        narrowType = baseOf(y.typ)
+    }
+    if x.mode == "const" {
+        let t = x
+        x = y
+        y = t
+        cc = swapCC(cc)
+    }
+    if x.mode == "cond" { x = load(x) }
+    if y.mode == "const" && fits32(y.val) && x.mode == "mem" && x.width == 8 {
+        aluMI(7, memOf(x), y.val)
+        releaseItem(x)
+    } else {
+        x = load(x)
+        if y.mode == "const" && fits32(y.val) {
+            aluRI(7, x.r, y.val)
+        } else {
+            if (y.mode != "mem" && y.mode != "reg") || y.width == 1 { y = load(y) }
+            if y.mode == "reg" {
+                opReg(0x3B, x.r, y.r, true, false)
+            } else {
+                opMem(0x3B, x.r, memOf(y), true, false)
+            }
+            releaseItem(y)
+        }
+        release(x.r)
+    }
+    let z = newItem("cond", tBool)
+    z.cc = cc
+    if narrowSym != nil {
+        let p = new NPair{sym: narrowSym, typ: narrowType}
+        if o == T_NE {
+            append(z.nt, p)
+        } else {
+            append(z.nf, p)
+        }
+    }
+    return z
+}
+
+fn conjunction(): Item {
+    var x = relation()
+    while sym == T_ANDAND {
+        next()
+        if x.typ.kind != "bool" { error("'&&' needs bools") }
+        x = loadCond(x)
+        let flinks = falseJump(x)
+        let mark = len(narrowStack)
+        pushNarrowings(x.nt)
+        condDepth += 1
+        let y = loadCond(relation())
+        condDepth -= 1
+        truncate(narrowStack, mark)
+        y.F = concatInts(y.F, flinks)
+        y.nt = concatPairs(x.nt, y.nt)
+        y.nf = new []NPair(0)
+        x = y
+    }
+    return x
+}
+
+fn expression(): Item {
+    var x = conjunction()
+    while sym == T_OROR {
+        next()
+        if x.typ.kind != "bool" { error("'||' needs bools") }
+        x = loadCond(x)
+        append(x.T, jcc(x.cc))
+        fixHere(x.F)
+        let tlinks = x.T
+        let mark = len(narrowStack)
+        pushNarrowings(x.nf)
+        condDepth += 1
+        let y = loadCond(conjunction())
+        condDepth -= 1
+        truncate(narrowStack, mark)
+        y.T = concatInts(y.T, tlinks)
+        y.nf = concatPairs(x.nf, y.nf)
+        y.nt = new []NPair(0)
+        x = y
+    }
+    return x
+}
+
+// ============================================================= statements
+
+fn block(): bool
+fn statement(): bool
+
+fn varDecl(kind: string, isGlobal: bool) {
+    let name = ident()
+    var t: ?Type = nil
+    var declRef = 0
+    if sym == T_COLON {
+        next()
+        t = parseRefType()
+        declRef = refMode
+        if declRef > 0 && isGlobal { error("references cannot be global") }
+    }
+    var gsym = newSym(kind, name, t)
+    if isGlobal {
+        gsym.storage = "global"
+        gsym.offset = GLOBAL_BASE + gsize
+        gsize += 8
+    }
+    if sym == T_ASSIGN {
+        next()
+        if isGlobal { fixHere1(initLink) }
+        let x = expression()
+        if !isGlobal && (declRef > 0 || (t == nil && x.borrowed)) {
+            // a reference local: it borrows, nothing is moved or freed
+            var rt = x.typ
+            if t != nil { rt = t }
+            checkAssign(rt, x, "initialising '" + name + "'")
+            let root = borrowRoot(x)
+            let v = newLocal("", rt, kind)
+            v.name = name
+            let dst = newItem("mem", rt)
+            dst.base = RBP
+            dst.disp = v.offset
+            store(dst, x)
+            declare(v)
+            makeRefLocal(v, x, root, declRef == 1)
+            return
+        }
+        if x.borrowed && t != nil && x.mode != "const" {
+            error("cannot move out of a reference: declare '" + name + "' as &" + tname(t) + " to borrow")
+        }
+        var tt = x.typ
+        if t != nil {
+            tt = t
+        } else if x.typ.kind == "nil" || x.typ.kind == "void" {
+            error("cannot infer a type for '" + name + "' from this value")
+        }
+        checkAssign(tt, x, "initialising '" + name + "'")
+        consume(x)
+        var s = gsym
+        let dst = newItem("mem", tt)
+        if isGlobal {
+            s.typ = tt
+            dst.disp = s.offset
+        } else {
+            s = newLocal("", tt, kind)
+            s.name = name
+            dst.base = RBP
+            dst.disp = s.offset
+        }
+        store(dst, x)
+        if isGlobal { initLink = jmp() }
+        declare(s)
+        if !isGlobal && isOwned(tt) { addOwnedLocal(s) }
+        if !isGlobal && tt.kind == "string" { addStrLocal(s) }
+    } else {
+        if t == nil {
+            error("'" + name + "' needs a type or an initial value")
+            return
+        }
+        if nonNull(t) { error("'" + name + "' of type " + tname(t) + " needs an initial value (it cannot be nil)") }
+        if kind == "let" { error("'" + name + "' is immutable and needs a value") }
+        if isGlobal {
+            gsym.typ = t
+            declare(gsym)
+        } else {
+            let s = newLocal(name, t, kind)
+            opMem(0xC7, 0, mem(RBP, -1, s.offset, 8), true, false)
+            emit32(0)
+            if isOwned(t) { addOwnedLocal(s) }
+            if t.kind == "string" { addStrLocal(s) }
+        }
+    }
+}
+
+
+// returns true if the statement never completes (a call to exit)
+fn assignmentOrCall(): bool {
+    let line = tline
+    let col = tcol
+    noreturn = false
+    let x = designatorT(true)
+    if noreturn && (sym == T_SEMI || sym == T_RBRACE) { return true }
+    if x.movedRef && sym != T_ASSIGN {
+        let r = x.root
+        if r != nil { errorAt("'" + r.name + "' was moved and has no value here", line, col) }
+    }
+    if sym == T_ASSIGN || sym == T_PLUSEQ || sym == T_MINUSEQ || sym == T_STAREQ {
+        let o = sym
+        if x.mode != "mem" && x.mode != "elem" { errorAt("cannot assign to this", line, col) }
+        if x.readonly {
+            let xs = x.sym
+            if xs == nil {
+                errorAt("strings are immutable", line, col)
+            } else {
+                errorAt("'" + xs.name + "' is immutable (declared with let)", line, col)
+            }
+        }
+        next()
+        var dtype = x.typ
+        let xs = x.sym
+        if xs != nil { dtype = symType(xs) }
+        let ws = rootOf(x)
+        let wr = x.root
+        if x.deref && wr != nil && wr.isRef && !wr.refMut {
+            errorAt("cannot change through '" + wr.name + "': it is a read-only reference", line, col)
+        }
+        if o == T_ASSIGN && xs != nil && xs.isRefLocal {
+            // pointing a reference somewhere else: nothing is moved or freed
+            if xs.iterating { errorAt("cannot point '" + xs.name + "' elsewhere while a for loop walks it", line, col) }
+            let y = expression()
+            checkAssign(dtype, y, "assignment")
+            let root = borrowRoot(y)
+            if !assignable(x.typ, y.typ) { widen(xs) }
+            store(x, y)
+            for v in ownedLocals {
+                if v.refParent == xs { v.refParent = xs.refParent }   // their ancestor moves away
+            }
+            xs.refParent = parentOf(y)
+            xs.refRoot = root
+            xs.refMut = mutableOf(y)
+            xs.refDeep = deepOf(y)
+            xs.moved = false
+            return false
+        }
+        if o == T_ASSIGN {
+            let callsBefore = userCalls
+            let savedPin = pinned
+            let r0 = x.root
+            if x.deref && r0 != nil && r0.storage == "local" { pinned = r0 }
+            let y = expression()
+            pinned = savedPin
+            checkAssign(dtype, y, "assignment")
+            consume(y)
+            if x.viaHandle && userCalls != callsBefore {
+                errorAt("cannot assign through a handle across a call: the call could free the object; compute the value first", line, col)
+            }
+            if x.deref && r0 != nil && r0.storage == "global" && isOwned(symType(r0)) && userCalls != callsBefore {
+                errorAt("cannot assign through global '" + r0.name + "' across a call: the call could free what it points into", line, col)
+            }
+            if xs != nil && xs.storage == "local" && !assignable(x.typ, y.typ) { widen(xs) }
+            if isOwned(dtype) {
+                if xs != nil && xs.storage == "local" {
+                    if xs.iterating { errorAt("cannot change '" + xs.name + "' while a for loop walks it", line, col) }
+                    invalidate(xs, nil, true)
+                } else if x.deref {
+                    invalidate(ws, viaOf(x), false)
+                    recordFree(ws)
+                } else if xs != nil {
+                    invalidate(xs, nil, true)               // a global given a new value
+                    recordFree(xs)
+                }
+                // free the old value first, unless the local's value was moved away
+                var live = true
+                if xs != nil && xs.storage == "local" { live = !xs.moved }
+                if live {
+                    resolve(x)
+                    let r = alloc()
+                    opMem(0x8B, r, memOf(x), true, false)
+                    rtCall1(RT_FREE, makeReg(dtype, r), tVoid)
+                }
+                if xs != nil { xs.moved = false }
+            } else if dtype.kind == "string" {
+                resolve(x)
+                let r = alloc()
+                opMem(0x8B, r, memOf(x), true, false)
+                rtCall1(RT_STR_DEC, makeReg(tString, r), tVoid)
+            }
+            store(x, y)
+        } else {
+            if dtype.kind != "int" { error("'" + tokName(o) + "' needs an int") }
+            var y = expression()
+            if !isInt(y.typ) { error("'" + tokName(o) + "' needs an int") }
+            if !same(dtype, tInt) { error("'" + tokName(o) + "' needs an int") }
+            resolve(x)
+            let r = alloc()
+            opMem(0x8B, r, memOf(x), true, false)
+            if o == T_STAREQ {
+                y = load(y)
+                opReg(0x0FAF, r, y.r, true, false)
+                release(y.r)
+            } else {
+                var c = 5
+                if o == T_PLUSEQ { c = 0 }
+                if y.mode == "const" && fits32(y.val) {
+                    aluRI(c, r, y.val)
+                } else {
+                    y = load(y)
+                    opReg(c * 8 + 3, r, y.r, true, false)
+                    release(y.r)
+                }
+            }
+            store(x, makeReg(tInt, r))
+        }
+    } else {
+        if x.typ != tVoid || x.mode != "void" {
+            if x.mode != "reg" { errorAt("this expression does nothing", line, col) }
+            if isOwned(x.typ) {
+                rtCall1(RT_FREE, x, tVoid)                 // a dropped result is freed at once
+            } else if x.strTemp {
+                rtCall1(RT_STR_DEC, x, tVoid)
+            } else {
+                releaseItem(x)
+            }
+        }
+    }
+    return false
+}
+
+fn statSeq(): bool {
+    var term = false
+    skipSemis()
+    while sym != T_RBRACE && sym != T_EOF {
+        if term { error("unreachable code") }
+        term = statement()
+        if sym != T_RBRACE { expect(T_SEMI, "';' or newline") }
+        skipSemis()
+    }
+    return term
+}
+
+fn block(): bool {
+    expect(T_LBRACE, "")
+    openBlock()
+    let term = statSeq()
+    expect(T_RBRACE, "")
+    closeBlock(term)
+    return term
+}
+
+fn ifStat(): bool {
+    let iline = tline
+    let icol = tcol
+    next()
+    let x = loadCond(expression())
+    let flinks = falseJump(x)
+    let mark = len(narrowStack)
+    let s0 = snapshot()
+    pushNarrowings(x.nt)
+    let t1 = block()
+    let s1 = snapshot()
+    restore(s0)
+    truncate(narrowStack, mark)
+    if sym == T_ELSE {
+        next()
+        let j = jmp()
+        fixHere(flinks)
+        pushNarrowings(x.nf)
+        var t2 = false
+        if sym == T_IF {
+            t2 = ifStat()
+        } else {
+            t2 = block()
+        }
+        truncate(narrowStack, mark)
+        fixHere1(j)
+        let s2 = snapshot()
+        if t1 && !t2 {
+            restore(s2)
+        } else if t2 && !t1 {
+            restore(s1)
+        } else if !t1 && !t2 {
+            sameStates(s1, s2, iline, icol)
+        }
+        if t1 && !t2 {
+            pushNarrowings(x.nf)
+        } else if t2 && !t1 {
+            pushNarrowings(x.nt)
+        }
+        return t1 && t2
+    }
+    fixHere(flinks)
+    if !t1 { sameStates(s1, s0, iline, icol) }
+    if t1 { pushNarrowings(x.nf) }
+    return false
+}
+
+// entry: the move states when the loop is entered; every iteration must end,
+// and every break or continue happen, with the same states
+fn loopBodyV(entry: []bool, line: int, col: int, lv: ?Sym): Loop
+
+fn loopBody(entry: []bool, line: int, col: int): Loop {
+    return loopBodyV(entry, line, col, nil)
+}
+
+// lv: a for loop's variable, rebound at the start of every iteration
+fn loopBodyV(entry: []bool, line: int, col: int, lv: ?Sym): Loop {
+    let loop = new Loop{brk: new []int(0), cont: new []int(0), blocks: len(blocks), entry: entry, lv: lv}
+    append(loops, loop)
+    let term = block()
+    truncate(loops, len(loops) - 1)
+    if lv != nil { lv.moved = false }
+    if !term {
+        let d = stateDiff(entry, snapshot())
+        if d != nil {
+            if d.isRefLocal {
+                errorAt("'" + d.name + "' is invalidated inside the loop; point it again before the end of each iteration", line, col)
+            }
+            errorAt("'" + d.name + "' is moved inside the loop; it must have a value again by the end of each iteration", line, col)
+        }
+    }
+    restore(entry)
+    return loop
+}
+
+fn whileStat(): bool {
+    let wline = tline
+    let wcol = tcol
+    next()
+    let entry = snapshot()
+    let top = pc()
+    var x = expression()
+    let forever = x.mode == "const" && x.typ.kind == "bool" && x.val == 1
+    var flinks = new []int(0)
+    if forever {
+        x = newItem("cond", tBool)
+    } else {
+        x = loadCond(x)
+        flinks = falseJump(x)
+    }
+    loopdepth += 1
+    let mark = len(narrowStack)
+    pushNarrowings(x.nt)
+    let loop = loopBody(entry, wline, wcol)
+    truncate(narrowStack, mark)
+    loopdepth -= 1
+    fixTo(loop.cont, top)
+    jmpTo(top)
+    fixHere(flinks)
+    fixHere(loop.brk)
+    return forever && len(loop.brk) == 0
+}
+
+fn forStat() {
+    let fline = tline
+    let fcol = tcol
+    next()
+    let name = ident()
+    expect(T_IN, "")
+    openBlock()
+    let x = expression()
+    var top = 0
+    var exitLink = 0
+    var loop = new Loop{brk: new []int(0), cont: new []int(0), blocks: 0, entry: new []bool(0)}
+    if sym == T_DOTDOT {
+        next()
+        if x.typ.kind != "int" { error("range bounds must be ints") }
+        let v = newLocal(name, tInt, "let")
+        let vi = newItem("mem", tInt)
+        vi.base = RBP
+        vi.disp = v.offset
+        store(vi, x)
+        let y = expression()
+        if y.typ.kind != "int" { error("range bounds must be ints") }
+        let lim = newLocal("", tInt, "var")
+        let li = newItem("mem", tInt)
+        li.base = RBP
+        li.disp = lim.offset
+        store(li, y)
+        top = pc()
+        let r = alloc()
+        opMem(0x8B, r, mem(RBP, -1, v.offset, 8), true, false)
+        opMem(0x3B, r, mem(RBP, -1, lim.offset, 8), true, false)
+        release(r)
+        exitLink = jcc(CC_GE)
+        loopdepth += 1
+        loop = loopBody(snapshot(), fline, fcol)
+        loopdepth -= 1
+        fixHere(loop.cont)
+        aluMI(0, mem(RBP, -1, v.offset, 8), 1)
+    } else {
+        if x.typ.kind != "array" { error("cannot iterate over " + tname(x.typ)) }
+        noTemp(x)
+        let walked = x.sym
+        if walked == nil || walked.storage != "local" {
+            error("a for loop walks a local variable or parameter: borrow it first, for example let items = &p.items")
+            return
+        }
+        let owner = rootOf(x)
+        let arr = newLocal("", x.typ, "var")
+        let ai = newItem("mem", x.typ)
+        ai.base = RBP
+        ai.disp = arr.offset
+        store(ai, x)
+        let idx = newLocal("", tInt, "var")
+        opMem(0xC7, 0, mem(RBP, -1, idx.offset, 8), true, false)
+        emit32(0)
+        let v = newLocal(name, baseOf(x.typ), "let")
+        if isOwned(baseOf(x.typ)) {
+            // each element is borrowed, not moved out
+            v.isRef = true
+            v.isRefLocal = true
+            v.refRoot = owner
+            v.refMut = mutableOf(x)
+            v.refDeep = true
+            if walked.isRefLocal { v.refParent = walked }
+            append(ownedLocals, v)
+        }
+        let strs = baseOf(x.typ).kind == "string"
+        if strs {
+            opMem(0xC7, 0, mem(RBP, -1, v.offset, 8), true, false)
+            emit32(0)
+            addStrLocal(v)
+        }
+        let vi = newItem("mem", baseOf(x.typ))
+        vi.base = RBP
+        vi.disp = v.offset
+        top = pc()
+        let ri = alloc()
+        let ra = alloc()
+        opMem(0x8B, ri, mem(RBP, -1, idx.offset, 8), true, false)
+        opMem(0x8B, ra, mem(RBP, -1, arr.offset, 8), true, false)
+        opMem(0x3B, ri, mem(ra, -1, 0, 8), true, false)
+        exitLink = jcc(CC_GE)
+        if strs { rtCall1(RT_STR_DEC, vi, tVoid) }            // drop the previous element
+        opMem(0x8B, ra, mem(ra, -1, 16, 8), true, false)
+        if baseOf(x.typ).kind == "byte" {
+            opMem(0x0FB6, ri, mem(ra, ri, 8, 1), true, false)
+        } else {
+            opMem(0x8B, ri, mem(ra, ri, 8, 8), true, false)
+        }
+        opMem(0x89, ri, mem(RBP, -1, v.offset, 8), true, false)
+        release(ri)
+        release(ra)
+        if strs { release(rtCall1(RT_STR_INC, vi, tString).r) }   // and hold the new one
+        loopdepth += 1
+        let wasIterating = walked.iterating
+        walked.iterating = true
+        loop = loopBodyV(snapshot(), fline, fcol, v)
+        walked.iterating = wasIterating
+        loopdepth -= 1
+        fixHere(loop.cont)
+        aluMI(0, mem(RBP, -1, idx.offset, 8), 1)
+    }
+    jmpTo(top)
+    fixHere1(exitLink)
+    fixHere(loop.brk)
+    closeBlock(false)
+}
+
+// match on an int or byte: arms are lists of constants, with an optional else.
+// The subject is evaluated once; the statement terminates only with an else.
+// the line for errors reported at the current token
+fn line0(): int { return 0 }
+
+fn intMatch(x: Item): bool {
+    let slot = newLocal("", tInt, "var")
+    let si = newItem("mem", tInt)
+    si.base = RBP
+    si.disp = slot.offset
+    store(si, x)
+    let at = mem(RBP, -1, slot.offset, 8)
+    let mline = tline
+    let mcol = tcol
+    let s0 = snapshot()
+    var acc = s0
+    var have = false
+    expect(T_LBRACE, "")
+    skipSemis()
+    let seen = new []int(0)
+    let ends = new []int(0)
+    var allTerm = true
+    var hasElse = false
+    while sym != T_RBRACE {
+        if sym == T_ELSE {
+            next()
+            hasElse = true
+            restore(s0)
+            let bt = block()
+            allTerm = allTerm && bt
+            if !bt {
+                let st = snapshot()
+                if have { sameStates(acc, st, line0(), 0) }
+                acc = st
+                have = true
+            }
+            skipSemis()
+            if sym != T_RBRACE { error("'else' must be the last arm") }
+            break
+        }
+        let toBody = new []int(0)
+        var nxt = 0
+        while true {
+            let v = expression()
+            if v.mode != "const" || !isInt(v.typ) { error("match arms need constant ints or bytes") }
+            if containsInt(seen, v.val) { error("value " + string(v.val) + " is matched twice") }
+            append(seen, v.val)
+            if fits32(v.val) {
+                aluMI(7, at, v.val)
+            } else {
+                let r = alloc()
+                movRI(r, v.val)
+                opMem(0x3B, r, at, true, false)
+                release(r)
+            }
+            if sym != T_COMMA {
+                nxt = jcc(CC_NE)
+                break
+            }
+            next()
+            append(toBody, jcc(CC_E))
+        }
+        fixHere(toBody)
+        restore(s0)
+        let bt = block()
+        allTerm = allTerm && bt
+        if !bt {
+            let st = snapshot()
+            if have { sameStates(acc, st, line0(), 0) }
+            acc = st
+            have = true
+        }
+        append(ends, jmp())
+        fixHere1(nxt)
+        skipSemis()
+    }
+    expect(T_RBRACE, "")
+    if !hasElse {
+        if have { sameStates(acc, s0, mline, mcol) }
+        acc = s0
+        have = true
+    }
+    if have { restore(acc) } else { restore(s0) }
+    fixHere(ends)
+    return allTerm && hasElse
+}
+
+fn matchStat(): bool {
+    next()
+    let line = tline
+    let col = tcol
+    let x = expression()
+    if isInt(x.typ) { return intMatch(x) }
+    let t = x.typ
+    if t.kind != "closed" && t.kind != "opt" && !t.incomplete {
+        errorAt("match needs an int, byte or closed type, not " + tname(t), line, col)
+    }
+    let xs = x.sym
+    if x.mode != "mem" || xs == nil || (xs.kind != "var" && xs.kind != "let") || xs.storage != "local" {
+        errorAt("match needs a local variable or parameter", line, col)
+        return false
+    }
+    let s = xs
+    let name = s.name
+    if t.kind == "opt" { errorAt("'" + name + "' may be nil: check it with '!= nil' first", line, col) }
+    if t.incomplete { errorAt(tname(t) + " is declared but not yet defined", line, col) }
+    let tag = newLocal("", tInt, "var")
+    let s0 = snapshot()
+    var acc = s0
+    var have = false
+    let r = alloc()
+    opMem(0x8B, r, mem(RBP, -1, s.offset, 8), true, false)
+    opMem(0x8B, r, mem(r, -1, -16, 8), false, false)          // the tag; the high half is a generation
+    opMem(0x89, r, mem(RBP, -1, tag.offset, 8), true, false)
+    release(r)
+    expect(T_LBRACE, "")
+    skipSemis()
+    let seen = new []Type(0)
+    let ends = new []int(0)
+    var allTerm = true
+    var hasElse = false
+    while sym != T_RBRACE {
+        if sym == T_ELSE {
+            next()
+            hasElse = true
+            restore(s0)
+            let bt = block()
+            allTerm = allTerm && bt
+            if !bt {
+                let st = snapshot()
+                if have { sameStates(acc, st, line0(), 0) }
+                acc = st
+                have = true
+            }
+            skipSemis()
+            if sym != T_RBRACE { error("'else' must be the last arm") }
+            break
+        }
+        let vname = ident()
+        var v: ?Type = nil
+        for c in t.variants {
+            if v == nil && c.name == vname { v = c }
+        }
+        if v == nil {
+            error("'" + vname + "' is not a variant of " + tname(t))
+            return false
+        }
+        for c in seen {
+            if c == v { error("'" + vname + "' is matched twice") }
+        }
+        append(seen, v)
+        aluMI(7, mem(RBP, -1, tag.offset, 8), v.desc)
+        let nxt = jcc(CC_NE)
+        let mark = len(narrowStack)
+        append(narrowStack, new NEntry{sym: s, typ: v, depth: loopdepth, alive: true})
+        restore(s0)
+        let bt = block()
+        allTerm = allTerm && bt
+        if !bt {
+            let st = snapshot()
+            if have { sameStates(acc, st, line0(), 0) }
+            acc = st
+            have = true
+        }
+        truncate(narrowStack, mark)
+        append(ends, jmp())
+        fixHere1(nxt)
+        skipSemis()
+    }
+    expect(T_RBRACE, "")
+    var missing = ""
+    for c in t.variants {
+        var found = false
+        for d in seen {
+            if d == c { found = true }
+        }
+        if !found {
+            if len(missing) > 0 { missing = missing + ", " }
+            missing = missing + c.name
+        }
+    }
+    if len(missing) > 0 && !hasElse { errorAt("match on " + tname(t) + " is missing " + missing, line, col) }
+    if have { restore(acc) } else { restore(s0) }
+    fixHere(ends)
+    return allTerm
+}
+
+fn returnStat() {
+    next()
+    if inDefer { error("cannot return from inside defer") }
+    let f = curFn
+    if f == nil { return }
+    var active = false
+    for i in fnBlock..len(blocks) {
+        if len(blocks[i].defers) > 0 { active = true }
+    }
+    if f.ret == tVoid {
+        if sym != T_SEMI && sym != T_RBRACE { error(f.name + " does not return a value") }
+        runDefers(fnBlock)
+    } else {
+        let x0 = expression()
+        checkAssign(f.ret, x0, "return value")
+        consume(x0)
+        let x = load(x0)
+        for k in blocks[fnBlock].omark..len(ownedLocals) {
+            if !ownedLocals[k].moved { active = true }
+        }
+        if active {
+            let slot = newLocal("", f.ret, "var")
+            opMem(0x89, x.r, mem(RBP, -1, slot.offset, 8), true, false)
+            release(x.r)
+            runDefers(fnBlock)
+            opMem(0x8B, RAX, mem(RBP, -1, slot.offset, 8), true, false)
+        } else {
+            movRR(RAX, x.r)
+            release(x.r)
+        }
+    }
+    epilogue()
+}
+
+// The deferred statement is compiled out of line as a local subroutine,
+// called at every exit from the enclosing block.
+fn deferStat() {
+    next()
+    let over = jmp()
+    let entry = pc()
+    let savedDepth = depth
+    let savedNarrow = narrowStack
+    let savedLoops = loops
+    let savedInDefer = inDefer
+    depth = depth + 8
+    narrowStack = new []NEntry(0)
+    loops = new []Loop(0)
+    inDefer = true
+    if sym == T_LBRACE {
+        block()
+    } else {
+        openBlock()
+        statement()
+        closeBlock(false)
+    }
+    emit(0xC3)
+    depth = savedDepth
+    narrowStack = savedNarrow
+    loops = savedLoops
+    inDefer = savedInDefer
+    fixHere1(over)
+    append(blocks[len(blocks) - 1].defers, entry)
+}
+
+fn statement(): bool {
+    let k = sym
+    match k {
+        T_VAR, T_LET {
+            next()
+            varDecl(tokName(k), false)
+        }
+        T_IDENT { return assignmentOrCall() }
+        T_IF { return ifStat() }
+        T_WHILE { return whileStat() }
+        T_FOR { forStat() }
+        T_MATCH { return matchStat() }
+        T_RETURN {
+            returnStat()
+            return true
+        }
+        T_BREAK, T_CONTINUE {
+            next()
+            if len(loops) == 0 { error("'" + tokName(k) + "' outside a loop") }
+            let loop = loops[len(loops) - 1]
+            let st = snapshot()
+            let lv = loop.lv
+            if lv != nil {
+                for q in 0..len(ownedLocals) {
+                    if ownedLocals[q] == lv { st[q] = false }      // rebound next time round
+                }
+            }
+            let d = stateDiff(loop.entry, st)
+            if d != nil {
+                error("'" + d.name + "' is moved inside the loop; it must have a value again before " + tokName(k))
+            }
+            runDefers(loop.blocks)
+            if k == T_BREAK {
+                append(loop.brk, jmp())
+            } else {
+                append(loop.cont, jmp())
+            }
+            return true
+        }
+        T_DEFER { deferStat() }
+        T_LBRACE { return block() }
+        else { error("expected a statement") }
+    }
+    return false
+}
+
+// =========================================================== declarations
+
+type Param = ref record {
+    name: string
+    typ: Type
+    mode: int                 // 0 owned, 1 &, 2 &mut
+}
+
+fn fnDecl() {
+    let line = tline
+    let name = ident()
+    let params = new []Param(0)
+    expect(T_LPAREN, "")
+    while sym != T_RPAREN {
+        let names = new []string(0)
+        append(names, ident())
+        while sym == T_COMMA {
+            next()
+            append(names, ident())
+        }
+        expect(T_COLON, "")
+        let t = parseRefType()
+        let mode = refMode
+        for n in names { append(params, new Param{name: n, typ: t, mode: mode}) }
+        if sym != T_RPAREN { expect(T_COMMA, "',' or ')'") }
+    }
+    expect(T_RPAREN, "")
+    var ret = tVoid
+    if sym == T_COLON {
+        next()
+        ret = parseType()
+    }
+    let prior = findSym(globals, name)
+    var f = newSym("fn", name, nil)
+    if prior != nil && prior.kind == "fn" && prior.addr < 0 {
+        f = prior
+        var ok = len(f.params) == len(params) && same(f.ret, ret)
+        if ok {
+            for i in 0..len(params) {
+                if !same(f.params[i], params[i].typ) || f.pmodes[i] != params[i].mode { ok = false }
+            }
+        }
+        if !ok { error("'" + name + "' does not match its forward heading") }
+    } else {
+        declare(f)
+        for p in params {
+            append(f.params, p.typ)
+            append(f.pmodes, p.mode)
+        }
+        f.ret = ret
+        f.line = line
+    }
+    if sym != T_LBRACE { return }
+    if f.addr >= 0 { error("'" + name + "' is already defined") }
+    f.addr = pc()
+    fixTo(f.fixups, f.addr)
+    curFn = f
+    frame = 0
+    depth = 0
+    emit(0x55)
+    emit(0x48)
+    emit(0x89)
+    emit(0xE5)
+    emit(0x48)
+    emit(0x81)
+    emit(0xEC)
+    let frameAt = pc()
+    emit32(0)
+    openBlock()
+    fnBlock = len(blocks) - 1
+    let n = len(params)
+    for i in 0..n {
+        let s = newSym("var", params[i].name, params[i].typ)
+        s.storage = "local"
+        s.offset = 16 + 8 * (n - 1 - i)
+        declare(s)
+        if params[i].mode > 0 {
+            s.isRef = true                         // borrowed: not freed here
+            s.refMut = params[i].mode == 2
+            s.refRoot = s
+            s.kind = "let"
+        } else if isOwned(params[i].typ) {
+            addOwnedLocal(s)
+        }
+        if params[i].typ.kind == "string" { addStrLocal(s) }
+    }
+    expect(T_LBRACE, "")
+    openBlock()
+    let term = statSeq()
+    expect(T_RBRACE, "")
+    if !term && ret != tVoid { error(name + " must return a value on every path") }
+    closeBlock(term)
+    closeBlock(term)
+    if !term { epilogue() }
+    let size = (frame + 15) & ~15
+    code[frameAt] = byte(size)
+    code[frameAt + 1] = byte(size >> 8)
+    code[frameAt + 2] = byte(size >> 16)
+    code[frameAt + 3] = byte(size >> 24)
+    curFn = nil
+}
+
+fn constDecl() {
+    let name = ident()
+    expect(T_ASSIGN, "")
+    let x = expression()
+    if x.mode != "const" { error("constant value must be known at compile time") }
+    let s = newSym("const", name, x.typ)
+    s.value = x.val
+    declare(s)
+}
+
+fn compileModule() {
+    emit(0x48)
+    emit(0x89)
+    emit(0xE7)
+    emit(0xBE)
+    emit32(GLOBAL_BASE)
+    emit(0xBA)
+    let gendAt = pc()
+    emit32(0)
+    callAbs(RT_TEXT + 8 * RT_INIT)
+    initLink = jmp()
+    skipSemis()
+    if sym == T_MODULE {
+        next()
+        ident()
+        expect(T_SEMI, "newline")
+    }
+    skipSemis()
+    while sym != T_EOF {
+        if sym == T_PUB { next() }
+        let k = sym
+        match k {
+            T_IMPORT { error("imports are not supported yet") }
+            T_FN {
+                next()
+                fnDecl()
+            }
+            T_TYPE {
+                next()
+                typeDecl()
+            }
+            T_VAR, T_LET {
+                next()
+                varDecl(tokName(k), true)
+            }
+            T_CONST {
+                next()
+                constDecl()
+            }
+            else { error("expected a declaration") }
+        }
+        if sym != T_EOF { expect(T_SEMI, "newline") }
+        skipSemis()
+    }
+    for s in globals {
+        if s.kind == "type" && symType(s).incomplete {
+            errorAt("type '" + s.name + "' is declared but never defined", symType(s).line, 1)
+        }
+        if s.kind == "fn" && s.addr < 0 {
+            errorAt("function '" + s.name + "' has a forward heading but no body", s.line, 1)
+        }
+    }
+    let m = findSym(globals, "main")
+    if m == nil || m.kind != "fn" || len(m.params) > 0 || m.ret != tVoid {
+        var l = 1
+        if m != nil && m.kind == "fn" { l = m.line }
+        errorAt("the program needs 'fn main()' with no parameters or result", l, 1)
+        return
+    }
+    fixHere1(initLink)
+    emit(0xE8)
+    emit32(m.addr - (pc() + 4))
+    depth = 0
+    for g in globals {
+        if (g.kind == "var" || g.kind == "let") && isOwned(symType(g)) {
+            let x = newItem("mem", symType(g))
+            x.disp = g.offset
+            rtCall1(RT_FREE, x, tVoid)
+        }
+        if (g.kind == "var" || g.kind == "let") && symType(g).kind == "string" {
+            let x = newItem("mem", tString)
+            x.disp = g.offset
+            rtCall1(RT_STR_DEC, x, tVoid)
+        }
+    }
+    callAbs(RT_TEXT + 8 * RT_FINISH)
+    let gend = GLOBAL_BASE + gsize
+    code[gendAt] = byte(gend)
+    code[gendAt + 1] = byte(gend >> 8)
+    code[gendAt + 2] = byte(gend >> 16)
+    code[gendAt + 3] = byte(gend >> 24)
+}
+
+// ============================================================= ELF output
+
+fn put16(b: []byte, v: int) {
+    append(b, byte(v))
+    append(b, byte(v >> 8))
+}
+
+fn put32(b: []byte, v: int) {
+    put16(b, v)
+    put16(b, v >> 16)
+}
+
+fn put64(b: []byte, v: int) {
+    put32(b, v)
+    put32(b, v >> 32)
+}
+
+fn pageAlign(b: []byte) {
+    while len(b) % 0x1000 != 0 { append(b, 0) }
+}
+
+fn phdr(ph: []byte, flags: int, off: int, vaddr: int, filesz: int, memsz: int) {
+    put32(ph, 1)
+    put32(ph, flags)
+    put64(ph, off)
+    put64(ph, vaddr)
+    put64(ph, vaddr)
+    put64(ph, filesz)
+    put64(ph, memsz)
+    put64(ph, 0x1000)
+}
+
+// Same layout as obx.py: headers and code, then rodata, the globals
+// (memory only), and the runtime's code and data at fixed addresses.
+fn elfImage(rtText: []byte, rtData: []byte): []byte {
+    let out = new []byte(0x1000)
+    for c in code { append(out, c) }
+    let ph = new []byte(0)
+    let codeEnd = len(out)
+    phdr(ph, 5, 0, IMAGE_BASE, codeEnd, codeEnd)
+    pageAlign(out)
+    var ro = rodata
+    if len(ro) == 0 {
+        ro = new []byte(1)
+    }
+    var off = len(out)
+    for c in ro { append(out, c) }
+    phdr(ph, 4, off, RODATA_BASE, len(ro), len(ro))
+    pageAlign(out)
+    var gmem = gsize
+    if gmem < 8 { gmem = 8 }
+    phdr(ph, 6, 0, GLOBAL_BASE, 0, gmem)
+    pageAlign(out)
+    off = len(out)
+    for c in rtText { append(out, c) }
+    phdr(ph, 5, off, RT_TEXT, len(rtText), len(rtText))
+    pageAlign(out)
+    off = len(out)
+    for c in rtData { append(out, c) }
+    phdr(ph, 6, off, RT_DATA, len(rtData), len(rtData))
+    put32(ph, 0x6474E551)
+    put32(ph, 6)
+    for i in 0..5 { put64(ph, 0) }
+    put64(ph, 16)
+    let eh = new []byte(0)
+    append(eh, 0x7F)
+    append(eh, 'E')
+    append(eh, 'L')
+    append(eh, 'F')
+    append(eh, 2)
+    append(eh, 1)
+    append(eh, 1)
+    for i in 0..9 { append(eh, 0) }
+    put16(eh, 2)
+    put16(eh, 0x3E)
+    put32(eh, 1)
+    put64(eh, CODE_BASE)
+    put64(eh, 64)
+    put64(eh, 0)
+    put32(eh, 0)
+    put16(eh, 64)
+    put16(eh, 56)
+    put16(eh, 6)
+    put16(eh, 64)
+    put16(eh, 0)
+    put16(eh, 0)
+    for i in 0..len(eh) { out[i] = eh[i] }
+    for i in 0..len(ph) { out[64 + i] = ph[i] }
+    return out
+}
+
+fn dirOf(path: string): string {
+    var i = len(path) - 1
+    while i >= 0 && path[i] != '/' { i -= 1 }
+    if i < 0 { return "." }
+    return substr(path, 0, i)
+}
+
+fn compileFile(path: string, out: string, rtDir: string) {
+    srcPath = path
+    let data = readFile(path)
+    if data == nil {
+        eprintln("obxc: cannot read ", path)
+        exit(2)
+    }
+    let rtText = readFile(rtDir + "/runtime_text.bin")
+    let rtData = readFile(rtDir + "/runtime_data.bin")
+    if rtText == nil || rtData == nil {
+        eprintln("obxc: cannot read the runtime from ", rtDir)
+        exit(2)
+    }
+    startScanner(data)
+    compileModule()
+    if !writeFile(out, elfImage(rtText, rtData), true) {
+        eprintln("obxc: cannot write ", out)
+        exit(2)
+    }
+}
+
+fn main() {
+    initCompiler()
+    let a = args()
+    if len(a) == 3 && (a[1] == "--tokens" || a[1] == "--encode") {
+        let data = readFile(a[2])
+        if data == nil {
+            eprintln("obxc: cannot read ", a[2])
+            exit(2)
+        }
+        if a[1] == "--tokens" {
+            dumpTokens(data)
+        } else {
+            runEncoderScript(data)
+        }
+        return
+    }
+    // obxc SOURCE [-o OUTPUT] [--rt RUNTIME_DIR]
+    if len(a) >= 2 && a[1][0] != '-' {
+        let path = a[1]
+        var out = path
+        if len(out) > 4 && substr(out, len(out) - 4, len(out)) == ".obx" { out = substr(out, 0, len(out) - 4) }
+        var rtDir = dirOf(a[0])
+        var i = 2
+        while i + 1 < len(a) {
+            if a[i] == "-o" {
+                out = a[i + 1]
+            } else if a[i] == "--rt" {
+                rtDir = a[i + 1]
+            } else {
+                eprintln("obxc: unknown option ", a[i])
+                exit(2)
+            }
+            i += 2
+        }
+        compileFile(path, out, rtDir)
+        return
+    }
+    eprintln("usage: obxc SOURCE [-o OUTPUT] [--rt RUNTIME_DIR] | --tokens FILE | --encode FILE")
+    exit(2)
+}

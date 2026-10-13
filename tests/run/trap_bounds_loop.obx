@@ -1,0 +1,12 @@
+fn main() {
+    let a = new []int(3)
+    var i = 0
+    while true {
+        a[i] = i
+        print(i)
+        i += 1
+    }
+}
+// expect: 012
+// expect-exit: 3
+// expect-stderr: line 5

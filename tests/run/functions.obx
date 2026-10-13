@@ -1,0 +1,59 @@
+fn eight(a, b, c, d, e, f, g, h: int): int {
+    return a * 10000000 + b * 1000000 + c * 100000 + d * 10000 + e * 1000 + f * 100 + g * 10 + h
+}
+
+fn depth(n: int): int {
+    if n == 0 { return 0 }
+    return 1 + depth(n - 1)
+}
+
+var order = ""
+
+fn note(s: string, v: int): int {
+    order = order + s
+    return v
+}
+
+fn sub(a, b: int): int { return a - b }
+
+fn hello() { println("hello from a void function") }
+
+fn early(n: int) {
+    if n > 0 {
+        println("positive")
+        return
+    }
+    println("not positive")
+}
+
+fn mixed(s: string, n: int, b: bool): string {
+    if b { return s + string(n) }
+    return s
+}
+
+fn isOdd(n: int): bool
+
+fn isEven(n: int): bool {
+    if n == 0 { return true }
+    return isOdd(n - 1)
+}
+
+fn isOdd(n: int): bool {
+    if n == 0 { return false }
+    return isEven(n - 1)
+}
+
+fn main() {
+    println(eight(1, 2, 3, 4, 5, 6, 7, 8))           // expect: 12345678
+    println(depth(100000))                           // expect: 100000
+    println(sub(note("a", 10), note("b", 3)), " ", order)   // expect: 7 ab
+    hello()                                          // expect: hello from a void function
+    early(1)                                         // expect: positive
+    early(-1)                                        // expect: not positive
+    println(mixed("n=", 5, true), " ", mixed("n=", 5, false))   // expect: n=5 n=
+    println(isEven(10), " ", isOdd(7), " ", isEven(7))   // expect: true true false
+    sub(1, 2)
+    println(eight(sub(9, 8), sub(5, 3), 3, sub(8, 4), 5, 6, sub(10, 3), 8))   // expect: 12345678
+    println(eight(eight(0, 0, 0, 0, 0, 0, 0, 1), 0, 0, 0, 0, 0, 0, 1))      // expect: 10000001
+    if isEven(4) && sub(3, 1) == 2 { println("calls in conditions") }       // expect: calls in conditions
+}

@@ -1,0 +1,60 @@
+type Node = ref record { value: int; next: ?Node }
+type Holder = ref record { node: ?Node; label: string }
+
+var globalList: ?Node = nil
+
+fn list(n: int, start: int): ?Node {
+    var l: ?Node = nil
+    for i in 0..n { l = new Node{value: start + i, next: l} }
+    return l
+}
+
+fn sum(l: ?Node): int {
+    var t = 0
+    var p = l
+    while p != nil {
+        t += p.value
+        p = p.next
+    }
+    return t
+}
+
+// Allocates and drops lots of nodes so that anything freed by mistake gets
+// overwritten, then collects.
+fn churn(rounds: int): int {
+    var t = 0
+    for r in 0..rounds {
+        let l = list(1000, 1000000)
+        t += sum(l) % 7
+    }
+    gc()
+    return t
+}
+
+fn sumAfterChurn(l: ?Node): int {
+    churn(50)                        // l is reachable only from this argument slot
+    return sum(l)
+}
+
+fn strAfterChurn(): string {
+    churn(5)
+    return string(678)
+}
+
+fn main() {
+    globalList = list(100, 0)
+    let local = list(100, 1000)
+    let arr = new []?Node(2)
+    arr[1] = list(10, 7)
+    // the half-built Holder is reachable only from a register while churn runs
+    let holder = new Holder{node: list(10, 20), label: string(churn(1) * 0 + 5)}
+    println(sum(globalList), " ", sum(local), " ", sum(arr[1]), " ", sum(holder.node), " ", holder.label)
+    // expect: 4950 104950 115 245 5
+    churn(20)
+    println(sum(globalList), " ", sum(local), " ", sum(arr[1]), " ", sum(holder.node))
+    // expect: 4950 104950 115 245
+    println(sumAfterChurn(list(100, 0)))   // expect: 4950
+    // a heap string held only in a register across a collecting call
+    let s = string(12345 + sum(nil)) + strAfterChurn()
+    println(s)                       // expect: 12345678
+}

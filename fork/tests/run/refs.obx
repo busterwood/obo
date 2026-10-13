@@ -1,0 +1,81 @@
+type Node = ref record { value: int; next: ?Node }
+type Bag = ref record { items: []Node; name: string }
+
+fn push(list: ?Node, v: int): Node { return new Node{value: v, next: list} }
+
+fn sum(list: &?Node): int {          // borrows: the caller keeps the list
+    var t = 0
+    var p = list
+    while p != nil {
+        t += p.value
+        p = p.next                   // re-points p; nothing moves
+    }
+    return t
+}
+
+fn incrementAll(list: &mut ?Node) {
+    var p = list
+    while p != nil {
+        p.value += 1
+        p = p.next
+    }
+}
+
+fn appendEnd(list: &mut Node, v: int) {
+    var p = list
+    while true {
+        let n = p.next               // borrowed through p
+        if n == nil { break }
+        p = n
+    }
+    p.next = new Node{value: v}      // a change through p
+}
+
+fn longest(words: &[]string): string {
+    var best = ""
+    for w in words {
+        if len(w) > len(best) { best = w }
+    }
+    return best
+}
+
+fn total(b: &Bag): int {
+    var t = 0
+    let items = b.items
+    for n in items { t += n.value }  // n borrows each element
+    return t
+}
+
+fn main() {
+    var l: ?Node = nil
+    for i in 0..5 { l = push(l, i) }
+    println(sum(l), " ", sum(l))     // expect: 10 10
+    incrementAll(l)
+    println(sum(l))                  // expect: 15
+    if l != nil { appendEnd(l, 100) }
+    println(sum(l))                  // expect: 115
+    let b = new Bag{items: new []Node(0), name: "bag"}
+    for i in 0..4 { append(b.items, new Node{value: i * 10}) }
+    println(total(b))                // expect: 60
+    var r = &b.items
+    println(len(r))                  // expect: 4
+    for n in r { n.value += 1 }      // changing elements through references
+    println(total(b))                // expect: 64
+    let first = &b.items[0]
+    println(first.value)             // expect: 1
+    b.items[1] = new Node{value: 7}  // frees an element: element references like first are now invalid
+    println(total(b))                // expect: 60
+    r = &b.items                     // r was invalidated too; pointing it again is fine
+    println(len(r))                  // expect: 4
+    let words = new []string(0)
+    append(words, "a")
+    append(words, "abcd")
+    append(words, "ab")
+    println(longest(words))          // expect: abcd
+    var q = &b.items[2]
+    for i in 0..3 {
+        q.value += 1
+        q = &b.items[i]              // re-pointed every iteration
+    }
+    println(total(b))                // expect: 63
+}

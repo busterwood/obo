@@ -1,0 +1,123 @@
+type S = closed {
+    A { x: int }
+    B { y: int }
+    C { z: int }
+}
+type N = ref record { v: int }
+// === missing arms
+fn f(s: S) {
+    match s {  // error: is missing B, C
+        A { }
+    }
+}
+// === duplicate arm
+fn f(s: S) {
+    match s {
+        A { }
+        A { }  // error: matched twice
+        else { }
+    }
+}
+// === not a variant
+fn f(s: S) {
+    match s {
+        N { }  // error: 'N' is not a variant of S
+    }
+}
+// === match on a record
+fn f(n: N) {
+    match n {  // error: match needs an int, byte or closed type, not N
+        else { }
+    }
+}
+// === match on an optional
+fn f(s: ?S) {
+    match s {  // error: may be nil
+        else { }
+    }
+}
+// === match on a global
+var g: S = new A{x: 1}
+fn f() {
+    match g {  // error: match needs a local variable
+        else { }
+    }
+}
+// === else not last
+fn f(s: S) {
+    match s {
+        else { }
+        A { }  // error: 'else' must be the last arm
+    }
+}
+// === match on an expression
+fn f(s: S) {
+    match new A{x: 1} {  // error: match needs an int, byte or closed type, not A
+    }
+}
+// === arm fields of another variant
+fn f(s: S): int {
+    match s {
+        A { return s.y }  // error: A has no field 'y'
+        else { return 0 }
+    }
+}
+// === match on a bool
+fn f(b: bool) {
+    match b {  // error: match needs an int, byte or closed type, not bool
+        else { }
+    }
+}
+// === match on a string
+fn f(s: string) {
+    match s {  // error: not string
+        else { }
+    }
+}
+// === match on a closed-type expression that is not a variable
+fn g(): S { return new A{x: 1} }
+fn f() {
+    match g() {  // error: match needs a local variable or parameter
+        else { }
+    }
+}
+// === integer arm matched twice
+fn f(n: int) {
+    match n {
+        1, 2 { }
+        3, 2 { }  // error: value 2 is matched twice
+    }
+}
+// === character equal to an earlier integer
+fn f(c: byte) {
+    match c {
+        97 { }
+        'a' { }  // error: value 97 is matched twice
+    }
+}
+// === arm that is not a constant
+fn f(n: int, m: int) {
+    match n {
+        m { }  // error: match arms need constant ints or bytes
+    }
+}
+// === string arm on an int subject
+fn f(n: int) {
+    match n {
+        "one" { }  // error: match arms need constant ints or bytes
+    }
+}
+// === integer match without else does not terminate
+fn f(n: int): int {
+    match n {
+        1 { return 1 }
+        2 { return 2 }
+    }
+}  // error: must return a value on every path
+// === else not last in an integer match
+fn f(n: int) {
+    match n {
+        else { }
+        1 { }  // error: 'else' must be the last arm
+    }
+}

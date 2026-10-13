@@ -1,0 +1,52 @@
+type Person = ref record { name: string; friend: ?Person }
+
+var g = "global"
+
+fn exclaim(s: string): string { return s + "!" }
+
+fn replaceGlobal(): string {
+    g = "replaced " + string(1)          // drops the old global string
+    return "f"
+}
+
+fn keep(s: string): string { return s }
+
+fn two(): int { return 2 }
+
+fn main() {
+    var s = "a"
+    for i in 0..5 { s = s + string(i) }  // the old value is dropped each time
+    println(s)                           // expect: a01234
+    let t = s                            // a second reference to the same string
+    s = s + "x"
+    println(t, " ", s)                   // expect: a01234 a01234x
+    println(exclaim(t + "?"), " ", len(t + "yz"), " ", t + "" == t)   // expect: a01234?! 8 true
+    exclaim("dropped")                   // a discarded result is dropped
+    g = "g" + string(two())              // a heap string (a constant would be folded into a literal)
+    println(g + replaceGlobal())         // expect: g2f
+    println(g)                           // expect: replaced 1
+    let p = new Person{name: "Ann" + string(1), friend: new Person{name: keep("Bob" + string(2))}}
+    let f = take(p.friend)
+    if f != nil { println(p.name, " ", f.name) }   // expect: Ann1 Bob2
+    p.friend = f
+    p.name = "Anna"                      // the record's old string is dropped
+    println(p.name)                      // expect: Anna
+    let words = new []string(0)
+    for i in 0..4 { append(words, "w" + string(i)) }
+    let w0 = words[0]
+    words[0] = "first"
+    var joined = ""
+    for w in words {
+        joined = joined + w + ","
+        if len(words) < 6 { append(words, w + "+") }   // the array grows while being walked
+    }
+    println(joined)                      // expect: first,w1,w2,w3,first+,w1+,
+    println(w0)                          // expect: w0
+    truncate(words, 1)                   // the removed strings are dropped
+    println(len(words), " ", words[0])   // expect: 1 first
+    let a = args()
+    println(len(a))                      // expect: 2
+    println(substr("xyz" + string(9), 1, 3) + substr(s, 0, 1))   // expect: yza
+    let e = "" + ""
+    println(len(e), " ", e == "")        // expect: 0 true
+}

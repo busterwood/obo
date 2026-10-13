@@ -1,0 +1,15 @@
+fn main() {
+    let strs = new []string(1000)
+    for i in 0..1000 { strs[i] = "s" + string(i) }
+    var junk = 0
+    for r in 0..100000 {
+        let t = string(r) + "-" + string(r)
+        junk += len(t)
+    }
+    gc()
+    var ok = 0
+    for i in 0..1000 {
+        if strs[i] == "s" + string(i) { ok += 1 }
+    }
+    println(ok, " ", junk)           // expect: 1000 1077780
+}

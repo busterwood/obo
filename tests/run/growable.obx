@@ -1,0 +1,56 @@
+type Node = ref record { v: int }
+
+fn grow(a: []int): int {
+    for i in 0..100 { append(a, i) }     // forces the data block to be replaced
+    return 7
+}
+
+fn main() {
+    let a = new []int(0)
+    for i in 0..10 { append(a, i * i) }
+    println(len(a), " ", a[9], " ", a[3])            // expect: 10 81 9
+    let alias = a
+    append(alias, 1000)
+    println(len(a), " ", a[10])                      // expect: 11 1000
+    a[0] = grow(a)                                   // stored after grow has moved the elements
+    println(a[0], " ", len(a), " ", a[110])          // expect: 7 111 99
+    truncate(a, 3)
+    println(len(a), " ", a[2])                       // expect: 3 4
+    append(a, 5)
+    println(len(a), " ", a[3])                       // expect: 4 5
+    truncate(a, 0)
+    println(len(a))                                  // expect: 0
+    let nodes = new []Node(0)
+    for i in 0..1000 { append(nodes, new Node{v: i}) }
+    gc()
+    var total = 0
+    for n in nodes { total += n.v }
+    println(len(nodes), " ", total)                  // expect: 1000 499500
+    let q = new []int(0)
+    append(q, 1)
+    var seen = 0
+    for x in q {
+        seen += 1
+        if x < 5 { append(q, x + 1) }               // the loop sees appended elements
+    }
+    println(seen, " ", len(q))                       // expect: 5 5
+    let words = new []string(0)
+    append(words, "a")
+    append(words, "b" + string(2))
+    println(words[0], words[1], len(words))          // expect: ab22
+    let buf = new []byte(0)
+    for i in 0..300 { append(buf, byte(i)) }
+    println(len(buf), " ", buf[299], " ", buf[255], " ", buf[256])   // expect: 300 43 255 0
+    let rows = new [][]int(0)
+    for r in 0..3 {
+        let row = new []int(0)
+        for c in 0..r + 1 { append(row, r * 10 + c) }
+        append(rows, row)
+    }
+    println(len(rows), " ", len(rows[2]), " ", rows[2][1], " ", rows[1][0])   // expect: 3 3 21 10
+    let big = new []int(0)
+    for i in 0..100000 { append(big, i) }
+    var bs = 0
+    for x in big { bs += x }
+    println(bs)                                      // expect: 4999950000
+}

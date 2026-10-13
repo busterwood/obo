@@ -1,0 +1,92 @@
+type N = ref record { v: int }
+// === empty character literal
+fn main() { let c = '' }  // error: empty character literal
+// === multi-byte character literal
+fn main() { let c = 'é' }  // error: single byte
+// === unterminated character literal
+fn main() { let c = 'ab' }  // error: unterminated character literal
+// === unknown escape
+fn main() { let c = '\q' }  // error: unknown escape
+// === hex without digits
+fn main() { let x = 0x }  // error: hex literal needs digits
+// === hex too large
+fn main() { let x = 0x1_0000_0000_0000_0000 }  // error: integer literal too large
+// === int into byte
+fn main() {
+    var b: byte = 1
+    var i = 300
+    b = i  // error: cannot use int as byte
+}
+// === constant out of byte range
+fn main() { var b: byte = 256 }  // error: cannot use int as byte
+// === arithmetic result into byte
+fn main() {
+    var b: byte = 1
+    b = b + 1  // error: cannot use int as byte
+}
+// === compound assignment on a byte
+fn main() {
+    var b: byte = 1
+    b += 1  // error: '+=' needs an int
+}
+// === assign into a string
+fn main() {
+    let s = "abc"
+    s[0] = 'x'  // error: strings are immutable
+}
+// === string of an int array
+fn main() { let s = string(new []int(2)) }  // error: string() needs an int or a []byte, not []int
+// === byte of a string
+fn main() { let b = byte("a") }  // error: byte() needs an int or byte
+// === int of a bool
+fn main() { let i = int(true) }  // error: int() needs an int or byte
+// === shift a string
+fn main() { let x = "a" << 1 }  // error: '<<' needs ints
+// === bitwise and on bools
+fn main() { let x = true & false }  // error: '&' needs ints
+// === complement a bool
+fn main() { let x = ~true }  // error: '~' needs an int
+// === append the wrong type
+fn main() {
+    let a = new []int(0)
+    append(a, "x")  // error: appended value
+}
+// === append to a string
+fn main() { append("ab", 'c') }  // error: append needs an array
+// === append nil to a non-null array
+fn main() {
+    let a = new []N(0)
+    append(a, nil)  // error: N can never be nil
+}
+// === non-null array with a length
+fn main() { let a = new []N(2) }  // error: would start as nil
+// === non-null array with a computed length
+fn main() {
+    let n = 0
+    let a = new []N(n)  // error: would start as nil
+}
+// === truncate with a string
+fn main() {
+    let a = new []int(3)
+    truncate(a, "1")  // error: needs int positions
+}
+// === substr of an array
+fn main() { let s = substr(new []byte(2), 0, 1) }  // error: substr needs a string
+// === int into a byte array
+fn main() {
+    let a = new []byte(2)
+    let i = 5
+    a[0] = i  // error: cannot use int as byte
+}
+// === append result used as a value
+fn main() {
+    let a = new []int(0)
+    let x = append(a, 1)  // error: cannot infer a type
+}
+// === string of a byte is ambiguous
+fn main() {
+    let b: byte = 'a'
+    let s = string(b)  // error: string() of a byte is ambiguous
+}
+// === string of a bool
+fn main() { let s = string(true) }  // error: string() needs an int or a []byte, not bool

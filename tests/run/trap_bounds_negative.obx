@@ -1,0 +1,7 @@
+fn id(n: int): int { return n }
+fn main() {
+    let a = new []int(3)
+    a[id(-1)] = 5
+}
+// expect-exit: 3
+// expect-stderr: index out of range at line 4

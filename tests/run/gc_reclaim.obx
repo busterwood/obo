@@ -1,0 +1,11 @@
+// 600 arrays of 8 MB is 4.8 GB, more than the 4 GB heap reservation:
+// this only completes if dead arrays are reclaimed and their space reused.
+fn main() {
+    var keep = new []int(1)
+    for i in 0..600 {
+        let a = new []int(1000000)
+        a[999999] = i
+        keep = a
+    }
+    println(keep[999999])            // expect: 599
+}

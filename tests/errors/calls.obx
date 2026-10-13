@@ -1,0 +1,43 @@
+fn two(a, b: int): int { return a + b }
+fn nothing() {}
+type N = ref record { v: int }
+// === too few arguments
+fn main() { two(1) }  // error: two takes 2 argument(s), not 1
+// === no arguments
+fn main() { two() }  // error: two takes 2 argument(s), not 0
+// === too many arguments
+fn main() { two(1, 2, 3) }  // error: two takes 2 argument(s), not more
+// === wrong argument type
+fn main() { two(1, "x") }  // error: argument 2 of two
+// === void as value
+fn main() { let x = two(nothing(), 1) }  // error: expression has no value
+// === expression statement
+fn main() {
+    var x = 1
+    x  // error: this expression does nothing
+}
+// === assign to a call
+fn main() { two(1, 2) = 3 }  // error: cannot assign to this
+// === assign to a constant
+const K = 1
+fn main() { K = 2 }  // error: cannot assign to this
+// === call a variable
+fn main() {
+    let x = 1
+    x()  // error: 'x' is not a function
+}
+// === builtin with two arguments
+fn main() { let n = len("a", "b") }  // error: expected ')'
+// === print a record
+fn main() { println(new N{}) }  // error: cannot print N
+// === print nothing
+fn main() { println(nothing()) }  // error: cannot print void
+// === string of a string
+fn main() { let s = string("x") }  // error: string() needs an int or a []byte, not string
+// === str no longer exists
+fn main() { let s = str(1) }  // error: undeclared identifier 'str'
+
+// === len of an int
+fn main() { let n = len(5) }  // error: len needs a string or array
+// === exit with a string
+fn main() { exit("x") }  // error: exit needs an int

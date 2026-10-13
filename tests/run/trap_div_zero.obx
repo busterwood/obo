@@ -1,0 +1,6 @@
+fn id(n: int): int { return n }
+fn main() {
+    println(10 / id(0))
+}
+// division by zero is currently a hardware trap (SIGFPE)
+// expect-exit: -8

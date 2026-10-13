@@ -1,0 +1,43 @@
+type Box = ref record { v: int; label: string }
+
+fn makeBoxes(n: int): []Box {
+    let a = new []Box(0)
+    for i in 0..n { append(a, new Box{v: i, label: "b" + string(i)}) }
+    return a
+}
+
+fn total(a: []Box): int {
+    var t = 0
+    for i in 0..len(a) { t += a[i].v }
+    return t
+}
+
+fn main() {
+    var a = makeBoxes(5)
+    println(len(a), " ", a[4].v, " ", a[4].label)   // expect: 5 4 b4
+    a[1] = new Box{v: 100}                           // the old element is freed
+    println(total(a))                                // expect: 109
+    a = makeBoxes(2)                                 // the old array is freed (total consumed it, so a was moved)
+    truncate(a, 1)                                   // the removed element is freed
+    println(len(a), " ", a[0].v)                     // expect: 1 0
+    let slots = new []?Box(3)
+    slots[0] = new Box{v: 7}
+    slots[2] = new Box{v: 9}
+    let b = take(slots[0])
+    if b != nil { println("took ", b.v) }            // expect: took 7
+    println(slots[0] == nil, " ", slots[2] != nil)   // expect: true true
+    let grid = new [][]int(0)
+    for i in 0..3 {
+        let row = new []int(0)
+        for j in 0..i + 1 { append(row, i * 10 + j) }
+        append(grid, row)
+    }
+    println(grid[2][2], " ", len(grid[1]))           // expect: 22 2
+    let bytes = new []byte(0)
+    for i in 0..300 { append(bytes, byte(i)) }
+    println(len(bytes), " ", bytes[299])             // expect: 300 43
+    let names = new []string(0)
+    append(names, "x")
+    append(names, "y")
+    println(names[0], names[1])                      // expect: xy
+}

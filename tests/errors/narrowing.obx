@@ -1,0 +1,107 @@
+type N = ref record { v: int; next: ?N }
+// === narrowing ends after the if
+fn f(n: ?N): int {
+    if n != nil { println(n.v) }
+    return n.v  // error: may be nil
+}
+// === wrong branch
+fn f(n: ?N): int {
+    if n == nil {
+        return n.v  // error: may be nil
+    }
+    return 0
+}
+// === else branch of a != check
+fn f(n: ?N): int {
+    if n != nil {
+        return 1
+    } else {
+        return n.v  // error: may be nil
+    }
+}
+// === or does not narrow after !=
+fn f(n: ?N): bool { return n != nil || n.v > 0 }  // error: may be nil
+// === and does not narrow after ==
+fn f(n: ?N): bool { return n == nil && n.v > 0 }  // error: may be nil
+// === not an early exit
+fn f(n: ?N): int {
+    if n == nil { println("none") }
+    return n.v  // error: may be nil
+}
+// === widened by assignment
+fn f(n: ?N): int {
+    var p = n
+    if p != nil {
+        p = p.next
+        return p.v  // error: may be nil
+    }
+    return 0
+}
+// === widened inside a nested if stays widened
+fn f(n: ?N, c: bool): int {
+    var p = n
+    if p != nil {
+        if c { p = p.next }
+        return p.v  // error: may be nil
+    }
+    return 0
+}
+// === widened in an inner loop
+fn f(n: ?N): int {
+    var p = n
+    while p != nil {
+        for i in 0..3 {
+            p = p.next  // error: checked outside this loop
+        }
+    }
+    return 0
+}
+// === widened in a loop inside the check
+fn main() {
+    var p: ?N = new N{v: 1}
+    if p != nil {
+        while true {
+            println(p.v)
+            p = p.next  // error: checked outside this loop
+        }
+    }
+}
+// === narrowing hidden in defer
+fn f(n: ?N) {
+    if n != nil {
+        defer println(n.v)  // error: may be nil
+    }
+}
+// === globals are not narrowed
+var g: ?N = nil
+fn f(): int {
+    if g != nil { return g.v }  // error: may be nil
+    return 0
+}
+// === fields are not narrowed
+type H = ref record { n: ?N }
+fn f(h: H): int {
+    if h.n != nil { return h.n.v }  // error: may be nil
+    return 0
+}
+// === variant narrowing ends on reassignment
+type S = closed {
+    A { x: int }
+    B { y: int }
+}
+fn f(s: S): int {
+    var t = s
+    match t {
+        A {
+            t = new B{y: 1}
+            return t.x  // error: use 'match'
+        }
+        else { return 0 }
+    }
+}
+// === narrowing ends after the while loop
+fn f(n: ?N): int {
+    var p = n
+    while p != nil { p = p.next }
+    return p.v  // error: may be nil
+}

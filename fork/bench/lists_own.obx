@@ -1,0 +1,22 @@
+type Node = ref record { value: int; next: ?Node }
+fn push(list: ?Node, v: int): Node { return new Node{value: v, next: list} }
+fn sum(list: &?Node): int {
+    var t = 0
+    var p = list
+    while p != nil {
+        t += p.value
+        p = p.next
+    }
+    return t
+}
+fn main() {
+    var keep: ?Node = nil
+    for i in 0..1000 { keep = push(keep, i) }
+    var total = 0
+    for round in 0..300 {
+        var l: ?Node = nil
+        for i in 0..10000 { l = push(l, i) }
+        total += sum(l) % 7
+    }
+    println(total + sum(keep))
+}

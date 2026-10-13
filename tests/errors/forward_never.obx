@@ -1,0 +1,2 @@
+type F  // error: declared but never defined
+fn main() {}

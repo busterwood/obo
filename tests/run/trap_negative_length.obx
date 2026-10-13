@@ -1,0 +1,6 @@
+fn id(n: int): int { return n }
+fn main() {
+    let a = new []int(id(-1))
+}
+// expect-exit: 2
+// expect-stderr: negative array length

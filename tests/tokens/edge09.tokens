@@ -1,0 +1,6 @@
+1:1 module
+1:8 |
+1:9 int 31
+1:13 char 92
+1:18 ;
+2:2 error hex literal needs digits

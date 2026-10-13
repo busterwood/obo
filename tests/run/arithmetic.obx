@@ -1,0 +1,44 @@
+const MAXI = 9223372036854775807
+
+fn id(x: int): int { return x }
+
+fn main() {
+    println(10 - 3 - 2, " ", 100 / 10 / 5)           // expect: 5 2
+    println(2 + 3 * 4, " ", (2 + 3) * 4)             // expect: 14 20
+    println(-2 * -3, " ", - -5, " ", -(2 - 7))       // expect: 6 5 5
+    // folded at compile time
+    println(7 / 2, " ", -7 / 2, " ", 7 / -2, " ", -7 / -2)    // expect: 3 -3 -3 3
+    println(7 % 3, " ", -7 % 3, " ", 7 % -3, " ", -7 % -3)    // expect: 1 -1 1 -1
+    // the same at run time
+    let s = id(7)
+    let n = id(-7)
+    let t = id(2)
+    println(s / t, " ", n / t, " ", s / -t, " ", n / -t)      // expect: 3 -3 -3 3
+    println(s % 3, " ", n % 3, " ", s % id(-3), " ", n % id(-3))   // expect: 1 -1 1 -1
+    // 64-bit wraparound, folded and at run time
+    println(MAXI + 1)            // expect: -9223372036854775808
+    println(id(MAXI) + 1)        // expect: -9223372036854775808
+    println(id(MAXI) * 2)        // expect: -2
+    println(-MAXI - 1)           // expect: -9223372036854775808
+    // immediates either side of the 32-bit boundary
+    let z = id(0)
+    println(z + 2147483647, " ", z + 2147483648, " ", z - 2147483648, " ", z - 2147483649)
+    // expect: 2147483647 2147483648 -2147483648 -2147483649
+    println(id(1) * 4294967296, " ", id(3) * 2147483648, " ", id(5) * -1)
+    // expect: 4294967296 6442450944 -5
+    // division by memory operands and constants
+    var dv = 9
+    println(id(100) / dv, " ", id(100) % dv, " ", id(100) / 7, " ", id(-100) % 7)
+    // expect: 11 1 14 -2
+    // compound assignment
+    var acc = 10
+    acc += 5
+    acc -= 3
+    acc *= 4
+    acc += acc
+    println(acc)                 // expect: 96
+    acc *= -1
+    println(acc)                 // expect: -96
+    acc -= 2147483648
+    println(acc)                 // expect: -2147483744
+}

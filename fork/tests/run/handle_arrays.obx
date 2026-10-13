@@ -1,0 +1,15 @@
+type Node = ref record { v: int }
+
+fn main() {
+    let owners = new []Node(0)
+    for i in 0..3 { append(owners, new Node{v: i}) }
+    let maybe = new []?^Node(3)          // optional handles are not owned: freeing this frees no nodes
+    maybe[0] = handle(owners[2])
+    maybe[2] = handle(owners[0])
+    var t = 0
+    for i in 0..len(maybe) {
+        let h = maybe[i]
+        if h != nil { t += h.v * 10 + i }
+    }
+    println(t)                           // expect: 22
+}

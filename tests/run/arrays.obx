@@ -1,0 +1,52 @@
+type Box = ref record { n: int }
+
+fn sum(a: []int): int {
+    var t = 0
+    for v in a { t += v }
+    return t
+}
+
+fn fill(n: int): []int {
+    let a = new []int(n)
+    for i in 0..n { a[i] = i + 1 }
+    return a
+}
+
+fn idx(i: int): int { return i }
+
+fn main() {
+    let a = fill(5)
+    println(sum(a), " ", len(a))         // expect: 15 5
+    let alias = a
+    alias[0] = 100
+    println(a[0])                        // expect: 100
+    a[idx(1)] += 10
+    a[a[2] - 1] *= 3
+    println(a[1], " ", a[2])             // expect: 12 9
+    let flags = new []bool(3)
+    flags[1] = true
+    println(flags[0], " ", flags[1], " ", flags[2])   // expect: false true false
+    if flags[1] && !flags[0] { println("bool elements") }   // expect: bool elements
+    let boxes = new []?Box(2)
+    boxes[1] = new Box{n: 7}
+    var found = 0
+    for b in boxes {
+        if b != nil { found += b.n }
+    }
+    println(found)                       // expect: 7
+    let grid = new []?[]int(3)
+    for i in 0..3 { grid[i] = fill(i + 1) }
+    var gt = 0
+    for row in grid {
+        if row != nil { gt += sum(row) }
+    }
+    println(gt)                          // expect: 10
+    let row = grid[2]
+    if row != nil { println(row[2]) }    // expect: 3
+    println(a[idx(a[idx(4)] - 2)])       // expect: 4
+    let big = new []int(100000)
+    big[99999] = 42
+    println(big[99999], " ", big[0], " ", len(big))   // expect: 42 0 100000
+    let zero = new []int(0)
+    println(len(zero), " ", sum(zero))   // expect: 0 0
+}

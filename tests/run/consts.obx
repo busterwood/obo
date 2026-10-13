@@ -1,0 +1,19 @@
+const A = 6
+const B = A * 7
+const NEG = -A
+const S = "ab" + "cd"
+const T = true
+const F = !T
+const BIG = 4294967296 * 4
+const LEN = len(S)
+const SS = string(B)
+
+fn main() {
+    println(A, " ", B, " ", NEG, " ", S, " ", T, " ", F, " ", BIG, " ", LEN, " ", SS)
+    // expect: 6 42 -6 abcd true false 17179869184 4 42
+    let arr = new []int(A)
+    println(len(arr))                // expect: 6
+    if T && !F { println("const conditions") }   // expect: const conditions
+    println(B / 5, " ", B % 5, " ", -B / 5)      // expect: 8 2 -8
+    println(A == 6, " ", S == "abcd")            // expect: true true
+}

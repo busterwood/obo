@@ -1,0 +1,25 @@
+type Tree = ref record { left, right: ?Tree }
+
+fn build(d: int): Tree {
+    if d == 0 { return new Tree{} }
+    return new Tree{left: build(d - 1), right: build(d - 1)}
+}
+
+fn check(t: Tree): int {
+    var n = 1
+    let l = t.left
+    if l != nil { n += check(l) }
+    let r = t.right
+    if r != nil { n += check(r) }
+    return n
+}
+
+fn main() {
+    let long = build(16)
+    var total = 0
+    for i in 0..40 {
+        let t = build(14)
+        total += check(t)
+    }
+    println(total + check(long))
+}

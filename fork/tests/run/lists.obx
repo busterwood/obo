@@ -1,0 +1,52 @@
+type Node = ref record { value: int; next: ?Node }
+
+var global: ?Node = nil              // owned globals are freed when main returns
+
+fn push(list: ?Node, v: int): Node {
+    return new Node{value: v, next: list}  // the list moves into the new node
+}
+
+// consumes the list, freeing each node as it goes
+fn sum(list: ?Node): int {
+    var t = 0
+    var p = list
+    while p != nil {
+        t += p.value
+        p = take(p.next)                 // p's old node is freed here
+    }
+    return t
+}
+
+fn reverse(list: ?Node): ?Node {
+    var out: ?Node = nil
+    var p = list
+    while p != nil {
+        let rest = take(p.next)
+        p.next = out
+        out = p
+        p = rest
+    }
+    return out
+}
+
+fn first(list: ?Node): int {
+    if list == nil { return -1 }
+    return list.value                    // list is freed on return
+}
+
+fn main() {
+    var l: ?Node = nil
+    for i in 0..10 { l = push(l, i) }
+    println(sum(l))                      // expect: 45
+    var r: ?Node = nil
+    for i in 0..5 { r = push(r, i) }
+    r = reverse(r)
+    println(first(r))                    // expect: 0
+    var big: ?Node = nil
+    for i in 0..1000000 { big = push(big, i) }
+    big = nil                            // a million nodes freed without recursion
+    global = push(push(nil, 1), 2)
+    var g = take(global)                 // moving out of a global needs take()...
+    if g != nil { println(g.value) }     // expect: 2
+    global = g                           // ...and it can be put back
+}

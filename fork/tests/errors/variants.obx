@@ -1,0 +1,43 @@
+type Shape = closed {
+    Circle { r: int }
+    Rect { w, h: int }
+}
+type Scene = ref record { main: Shape }
+// === a variant replaced under a narrowed reference
+fn main() {
+    let sc = new Scene{main: new Circle{r: 1}}
+    let m = &sc.main
+    match m {
+        Circle {
+            sc.main = new Rect{w: 1, h: 1}
+            println(m.r)  // error: 'm' may point to freed memory
+        }
+        else {}
+    }
+}
+// === a matched variable given another variant
+fn main() {
+    var s: Shape = new Circle{r: 1}
+    match s {
+        Circle {
+            s = new Rect{w: 1, h: 1}
+            println(s.r)  // error: use 'match'
+        }
+        else {}
+    }
+}
+// === a variant taken out from under a narrowed reference
+type Holder = ref record { shape: ?Shape }
+fn main() {
+    let h = new Holder{shape: new Circle{r: 1}}
+    let s = &h.shape
+    if s != nil {
+        match s {
+            Circle {
+                let t = take(h.shape)
+                println(s.r)  // error: 's' may point to freed memory
+            }
+            else {}
+        }
+    }
+}

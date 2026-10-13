@@ -1,0 +1,55 @@
+type Point = ref record { x, y: int }
+
+type Person = ref record {
+    name: string
+    age: int
+    friend: ?Person
+    scores: ?[]int
+}
+
+type Line = ref record { from: Point; to: Point }
+
+fn move(p: Point, dx: int) { p.x += dx }
+
+fn length2(l: Line): int {
+    let dx = l.to.x - l.from.x
+    let dy = l.to.y - l.from.y
+    return dx * dx + dy * dy
+}
+
+fn main() {
+    let p = new Point{x: 1, y: 2}
+    let q = p
+    move(q, 10)
+    println(p.x, " ", p.y)               // expect: 11 2
+    let r = new Point{}
+    println(r.x, " ", r.y)               // expect: 0 0
+    println(p == q, " ", p == r, " ", p != r)   // expect: true false true
+    let ann = new Person{name: "Ann", age: 30}
+    let bob = new Person{name: "Bob", age: 40, friend: ann}
+    println(ann.name, " ", len(ann.name), " ", ann.friend == nil)   // expect: Ann 3 true
+    let f = bob.friend
+    if f != nil { println(bob.name, "'s friend is ", f.name) }      // expect: Bob's friend is Ann
+    ann.friend = bob
+    let ff = ann.friend
+    if ff != nil {
+        let fff = ff.friend
+        if fff != nil { println(fff.name) }     // expect: Ann
+    }
+    bob.scores = new []int(2)
+    let s = bob.scores
+    if s != nil { s[1] = 99 }
+    let s2 = bob.scores
+    if s2 != nil { println(s2[1]) }      // expect: 99
+    let l = new Line{from: new Point{x: 1, y: 1}, to: new Point{x: 4, y: 5}}
+    println(length2(l))                  // expect: 25
+    l.to.x = 1
+    println(length2(l))                  // expect: 16
+    let empty = new Person{}
+    println("[", empty.name, "] ", empty.age)   // expect: [] 0
+    let multi = new Point{
+        x: 3,
+        y: 4
+    }
+    println(multi.x * multi.y)           // expect: 12
+}

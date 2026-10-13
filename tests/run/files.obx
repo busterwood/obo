@@ -1,0 +1,41 @@
+fn bytesOf(s: string): []byte {
+    let b = new []byte(0)
+    for i in 0..len(s) { append(b, s[i]) }
+    return b
+}
+
+fn main() {
+    let a = args()
+    println(len(a))                              // expect: 2
+    let dir = a[1]                               // the runner passes a scratch directory
+    let text = "line one\nline two\n"
+    println(writeFile(dir + "/hello.txt", bytesOf(text), false))   // expect: true
+    let back = readFile(dir + "/hello.txt")
+    if back != nil { println(len(back), " ", string(back) == text) }   // expect: 18 true
+    println(readFile(dir + "/missing") == nil)   // expect: true
+    println(writeFile(dir + "/no/such/dir/x", bytesOf("x"), false))   // expect: false
+    println(readFile("") == nil)                 // expect: true
+    let bin = new []byte(256)
+    for i in 0..256 { bin[i] = byte(i) }
+    println(writeFile(dir + "/bin", bin, true))  // expect: true
+    let b2 = readFile(dir + "/bin")
+    if b2 != nil {
+        var same = len(b2) == 256
+        for i in 0..len(b2) {
+            if b2[i] != byte(i) { same = false }
+        }
+        println(same)                            // expect: true
+    }
+    println(writeFile(dir + "/hello.txt", bytesOf("short"), false))   // expect: true
+    let b3 = readFile(dir + "/hello.txt")
+    if b3 != nil { println(string(b3)) }        // expect: short
+    let empty = new []byte(0)
+    println(writeFile(dir + "/empty", empty, false))   // expect: true
+    let b4 = readFile(dir + "/empty")
+    if b4 != nil { println(len(b4)) }           // expect: 0
+    print("out ")
+    eprint("err ")
+    eprintln("to stderr ", 42, " ", true)
+    println("after")                             // expect: out after
+}
+// expect-stderr: err to stderr 42 true

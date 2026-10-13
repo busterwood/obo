@@ -1,0 +1,83 @@
+// === break outside a loop
+fn main() { break }  // error: 'break' outside a loop
+// === continue outside a loop
+fn main() { continue }  // error: 'continue' outside a loop
+// === return a value from void
+fn f() { return 1 }  // error: does not return a value
+// === return without a value
+fn f(): int { return }  // error: expected an expression
+// === missing return on one path
+fn f(n: int): int {
+    if n > 0 { return 1 }
+}  // error: must return a value on every path
+// === while with a condition may not run
+fn f(n: int): int {
+    while n > 0 { return 1 }
+}  // error: must return a value on every path
+// === while true with a break
+fn f(n: int): int {
+    while true {
+        if n > 0 { break }
+        return 1
+    }
+}  // error: must return a value on every path
+// === unreachable code
+fn f(): int {
+    return 1
+    println("x")  // error: unreachable code
+}
+// === unreachable after break
+fn main() {
+    while true {
+        break
+        println("x")  // error: unreachable code
+    }
+}
+// === return inside defer
+fn main() { defer { return } }  // error: cannot return from inside defer
+// === break inside defer
+fn main() {
+    while true {
+        defer { break }  // error: 'break' outside a loop
+    }
+}
+// === assign a let
+fn main() {
+    let x = 1
+    x = 2  // error: immutable
+}
+// === assign a range variable
+fn main() {
+    for i in 0..3 {
+        i = 5  // error: immutable
+    }
+}
+// === assign a for-each variable
+fn main() {
+    let a = new []int(2)
+    for v in a {
+        v += 1  // error: immutable
+    }
+}
+// === iterate over an int
+fn main() { for x in 5 { } }  // error: cannot iterate over int
+// === range of strings
+fn main() { for x in "a".."b" { } }  // error: range bounds must be ints
+// === out of registers
+fn main() {
+    let a = 1
+    let x = a + (a + (a + (a + (a + (a + (a + (a + (a + (a + (a + a))))))))))  // error: expression too complex
+}
+// === unreachable after exit
+fn main() {
+    exit(1)
+    println("x")  // error: unreachable code
+}
+// === exit ends a function with a result
+fn f(n: int): int {
+    if n > 0 { return n }
+    exit(1)
+}
+fn g(): int {
+    println("x")
+}  // error: must return a value on every path

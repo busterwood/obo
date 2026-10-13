@@ -1,0 +1,109 @@
+module core
+
+const BIG = 10_000_000_000
+const GREETING = "hel" + "lo"
+
+fn fib(n: int): int {
+    if n < 2 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn isOdd(n: int): bool          // forward heading for mutual recursion
+
+fn isEven(n: int): bool {
+    if n == 0 { return true }
+    return isOdd(n - 1)
+}
+
+fn isOdd(n: int): bool {
+    if n == 0 { return false }
+    return isEven(n - 1)
+}
+
+var calls = 0
+fn tick(v: bool): bool {
+    calls += 1
+    return v
+}
+
+fn add3(a, b, c: int): int { return a + b + c }
+fn sq(x: int): int { return x * x }
+
+fn makeTable(n: int): []int {
+    let t = new []int(n)
+    for i in 0..n { t[i] = i * i }
+    return t
+}
+let table = makeTable(5)        // global initialiser calling a function
+
+type Counter = ref record { n: int; label: string }
+
+fn main() {
+    println("fib(20) = ", fib(20))
+    println("even 10: ", isEven(10), ", odd 7: ", isOdd(7))
+    // short-circuit evaluation
+    calls = 0
+    if tick(false) && tick(true) { println("wrong") }
+    if tick(true) || tick(false) { println("or ok") }
+    println("calls ", calls)
+    let a = 7
+    let b = -3
+    println("div ", a / b, " mod ", a % b, " neg div ", -7 / 2, " ", -7 % 2)
+    println("big ", BIG, " ", BIG * 3 + 1)
+    println(GREETING + " " + "world", " len ", len(GREETING + "!"))
+    var s = ""
+    for i in 0..5 { s = s + string(i - 2) + "," }
+    println(s, " ", len(s))
+    println("eq ", s == "-2,-1,0,1,2,", " ne ", s != "x")
+    // nested calls and live registers across calls
+    let x = 2
+    let y = 3
+    println("nested ", add3(sq(x), add3(1, sq(y), 2), sq(add3(x, y, 1))))
+    println("mixed ", x + sq(y) * (y - x) + add3(x * 10, sq(sq(x)), y) * 2)
+    // register pressure
+    let e = ((a + 1) * (a + 2) + (a + 3) * (a + 4)) * ((a + 5) * (a + 6) + (a + 7) * ((a + 8) + (a + 9) * (a + 10)))
+    println("pressure ", e)
+    // bool variables and conditions
+    var flag = x < y && !(y == 4)
+    if flag { println("flag set") }
+    flag = !flag
+    println("flag now ", flag, " ", x > y || flag, " ", flag == false)
+    // records and arrays with compound assignment
+    let c = new Counter{label: "clicks"}
+    for i in 0..10 {
+        if i == 7 { break }
+        if i % 2 == 0 { continue }
+        c.n += i
+    }
+    println(c.label, " ", c.n)
+    let arr = new []int(4)
+    arr[1] = 5
+    arr[1] *= 3
+    arr[arr[1] - 13] += 100
+    println("arr ", arr[0], " ", arr[1], " ", arr[2], " ", arr[3], " len ", len(arr))
+    var sum = 0
+    for v in table { sum += v }
+    println("table sum ", sum)
+    let names = new []string(3)
+    names[1] = "mid"
+    println("[", names[0], "|", names[1], "|", names[2], "] ", len(names[0]))
+}
+
+// expect: fib(20) = 6765
+// expect: even 10: true, odd 7: true
+// expect: or ok
+// expect: calls 2
+// expect: div -2 mod 1 neg div -3 -1
+// expect: big 10000000000 30000000001
+// expect: hello world len 6
+// expect: -2,-1,0,1,2, 12
+// expect: eq true ne true
+// expect: nested 52
+// expect: mixed 89
+// expect: pressure 759668
+// expect: flag set
+// expect: flag now false false true
+// expect: clicks 9
+// expect: arr 0 15 100 0 len 4
+// expect: table sum 30
+// expect: [|mid|] 0

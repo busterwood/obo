@@ -1,0 +1,48 @@
+// === duplicate global
+var a = 1
+var a = 2  // error: 'a' is already declared
+// === duplicate local
+fn main() {
+    let x = 1
+    var x = 2  // error: 'x' is already declared
+}
+// === duplicate field
+type P = ref record { x: int; x: int }  // error: duplicate field 'x'
+// === duplicate parameter
+fn f(a: int, a: int) {}  // error: 'a' is already declared
+// === redefined function
+fn f() {}
+fn f() {}  // error: 'f' is already declared
+// === forward heading mismatch
+fn f(a: int): int
+fn f(a: bool): int { return 1 }  // error: does not match its forward heading
+// === undeclared
+fn main() { println(y) }  // error: undeclared identifier 'y'
+// === use before declaration
+fn main() { later() }  // error: undeclared identifier 'later'
+fn later() {}
+// === type as value
+type P = ref record { x: int }
+fn main() { let v = P }  // error: is a type, not a value
+// === value as type
+let v = 1
+fn f(a: v) {}  // error: 'v' is not a type
+// === function not called
+fn g(): int { return 1 }
+fn main() { let h = g }  // error: functions can only be called
+// === unknown type
+fn f(a: Foo) {}  // error: undeclared identifier 'Foo'
+// === anonymous record type
+fn f(a: ref record { x: int }) {}  // error: must be declared with 'type'
+// === empty closed type
+type S = closed { }  // error: at least one variant
+// === constant needs a constant
+fn f(): int { return 1 }
+const C = f()  // error: must be known at compile time
+// === optional of a value type
+fn f(a: ?int) {}  // error: only reference types can be optional
+// === mutually referring types are not yet supported
+type A = ref record { b: ?B }  // error: undeclared identifier 'B'
+type B = ref record { a: ?A }
+// === global used in its own initialiser
+var g = g + 1  // error: undeclared identifier 'g'

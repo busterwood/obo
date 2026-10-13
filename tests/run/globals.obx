@@ -1,0 +1,31 @@
+var counter = 0
+let base = 10
+let derived = base * 2 + 1
+
+fn bump(): int {
+    counter += 1
+    return counter
+}
+
+let first = bump()                   // initialisers run in order, before main
+let second = bump()
+var names = new []string(2)
+
+type Item = ref record { n: int }
+
+let item = new Item{n: derived}
+var opt: ?Item = nil
+const LIMIT = 3
+
+fn main() {
+    println(derived, " ", first, " ", second, " ", counter)   // expect: 21 1 2 2
+    names[0] = "x"
+    println(names[0], len(names))    // expect: x2
+    println(item.n)                  // expect: 21
+    println(opt == nil)              // expect: true
+    opt = item
+    let o = opt
+    if o != nil { println(o.n + LIMIT) }   // expect: 24
+    counter = 100
+    println(bump())                  // expect: 101
+}

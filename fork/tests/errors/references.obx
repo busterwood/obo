@@ -1,0 +1,147 @@
+type Node = ref record { value: int; next: ?Node }
+type Box = ref record { node: ?Node; items: []Node }
+var gnode = new Node{value: 1}
+fn make(): Node { return new Node{value: 0} }
+fn eat(n: Node) {}
+fn look(n: &Node) {}
+fn change(n: &mut Node) {}
+// === using a reference after its element is replaced
+fn main() {
+    let b = new Box{items: new []Node(0)}
+    append(b.items, make())
+    let first = &b.items[0]
+    b.items[0] = make()
+    println(first.value)  // error: 'first' may point to freed memory
+}
+// === using a reference after take
+fn main() {
+    let b = new Box{node: make(), items: new []Node(0)}
+    let n = &b.node
+    let t = take(b.node)
+    println(n == nil)  // error: 'n' may point to freed memory
+}
+// === using a reference after its root moves
+fn main() {
+    let a = make()
+    let r = &a
+    eat(a)
+    println(r.value)  // error: 'r' may point to freed memory
+}
+// === using a reference after a mut call on its root
+fn main() {
+    let b = new Box{node: make(), items: new []Node(0)}
+    let n = &b.node
+    let c = make()
+    change(c)
+    let m = &b.items
+    println(len(m))
+    var x = make()
+    let deep = &x.next
+    change(x)
+    println(deep == nil)  // error: 'deep' may point to freed memory
+}
+// === writing through a read-only reference
+fn f(n: &Node) {
+    n.value = 1  // error: it is a read-only reference
+}
+// === appending through a read-only reference
+fn f(a: &[]Node) {
+    append(a, make())  // error: append changes the array, but 'a' is a read-only reference
+}
+// === take through a read-only reference
+fn f(n: &Node) {
+    let t = take(n.next)  // error: read-only reference
+}
+// === passing a read-only reference as mut
+fn f(n: &Node) {
+    change(n)  // error: needs a mut reference, but this one is read-only
+}
+// === returning a reference
+fn f(n: &Node): Node {
+    return n  // error: cannot move out of a reference
+}
+// === storing a reference in a field
+fn f(n: &Node) {
+    let b = new Box{node: n, items: new []Node(0)}  // error: cannot move out of a reference
+}
+// === moving out through a reference
+fn f(n: &mut Node) {
+    eat(n)  // error: cannot move out of a reference
+}
+// === moving what a for loop walks
+fn main() {
+    let a = new []Node(0)
+    for x in a {
+        eat(make())
+        let b = a  // error: cannot move 'a' while a for loop walks it
+    }
+}
+// === reassigning what a for loop walks
+fn main() {
+    var a = new []int(3)
+    for x in a {
+        a = new []int(1)  // error: cannot change 'a' while a for loop walks it
+    }
+}
+// === reference invalidated in a loop
+fn main() {
+    let b = new Box{node: make(), items: new []Node(0)}
+    let n = &b.node
+    for i in 0..3 {  // error: 'n' is invalidated inside the loop
+        b.node = make()
+    }
+}
+// === reference invalidated on one branch
+fn main() {
+    let b = new Box{node: make(), items: new []Node(0)}
+    let n = &b.node
+    if true {  // error: 'n' is invalidated on one path but not another
+        b.node = make()
+    }
+}
+// === passing a reference into a global to a function that frees it
+fn reset() { gnode = make() }
+fn lookThenReset(n: &Node) { reset() }
+fn main() {
+    lookThenReset(gnode)  // error: cannot pass a reference into global 'gnode' to lookThenReset: it might free it
+}
+// === a reference into a global after a call that frees it
+fn reset() { gnode.next = nil }
+fn main() {
+    let r = &gnode.next
+    reset()
+    println(r == nil)  // error: 'r' may point to freed memory
+}
+// === a reference into a global passed to a function not compiled yet
+fn later(n: &Node)
+fn main() {
+    later(gnode)  // error: cannot pass a reference into global 'gnode' to later: it might free it
+}
+fn later(n: &Node) {}
+// === borrowing a temporary
+fn main() {
+    look(make())  // error: cannot borrow from a temporary
+}
+// === reference to an int
+fn f(n: &int) {}  // error: only records, closed types and arrays can be borrowed, not int
+// === global reference
+var gr: &Node  // error: references cannot be global
+// === a reference parameter is immutable
+fn f(n: &Node) {
+    n = make()  // error: 'n' is immutable
+}
+// === declaring an owned local from a reference
+fn f(n: &Node) {
+    let m: Node = n  // error: cannot move out of a reference
+}
+// === a change through an ancestor still invalidates its descendants
+type Tree = ref record { kids: []Tree; v: int }
+fn reset(t: &mut Tree) {}
+fn f(t: &mut Tree) {
+    let kids = t.kids
+    for k in kids {
+        let deep = k.kids
+        reset(k)
+        println(len(deep))  // error: 'deep' may point to freed memory
+    }
+}

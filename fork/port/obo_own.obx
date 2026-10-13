@@ -1,0 +1,772 @@
+module obo_own
+
+// obo: the ownership fork of obxc (see FORK.md). Written in mainline obx.
+//
+// Part 1: the scanner and the x86-64 encoder, with two test modes that are
+// compared against the Python compiler (tests/selfhost_test.py):
+//
+//     obxc --tokens FILE     one line per token, as obx.py --tokens prints them
+//     obxc --encode FILE     runs a script of encoder calls, one hex line each
+
+// ============================================================== utilities
+
+fn hexDigit(v: int): byte {
+    if v < 10 { return byte('0' + v) }
+    return byte('a' + v - 10)
+}
+
+fn hexOf(b: &[]byte, from: int, to: int): string {
+    let out = new []byte(0)
+    for i in from..to {
+        append(out, hexDigit(b[i] >> 4))
+        append(out, hexDigit(b[i] & 15))
+    }
+    return string(out)
+}
+
+fn bytesOf(s: string): []byte {
+    let out = new []byte(0)
+    for i in 0..len(s) { append(out, s[i]) }
+    return out
+}
+
+// ================================================================ scanner
+
+// token kinds
+const T_EOF = 0
+const T_IDENT = 1
+const T_INT = 2
+const T_CHAR = 3
+const T_STRING = 4
+const T_MODULE = 5
+const T_IMPORT = 6
+const T_PUB = 7
+const T_TYPE = 8
+const T_VAR = 9
+const T_LET = 10
+const T_CONST = 11
+const T_FN = 12
+const T_RETURN = 13
+const T_IF = 14
+const T_ELSE = 15
+const T_WHILE = 16
+const T_FOR = 17
+const T_IN = 18
+const T_BREAK = 19
+const T_CONTINUE = 20
+const T_DEFER = 21
+const T_MATCH = 22
+const T_REF = 23
+const T_RECORD = 24
+const T_CLOSED = 25
+const T_NEW = 26
+const T_NIL = 27
+const T_TRUE = 28
+const T_FALSE = 29
+const T_LPAREN = 30
+const T_RPAREN = 31
+const T_LBRACE = 32
+const T_RBRACE = 33
+const T_LBRACK = 34
+const T_RBRACK = 35
+const T_COMMA = 36
+const T_SEMI = 37
+const T_COLON = 38
+const T_DOT = 39
+const T_DOTDOT = 40
+const T_ASSIGN = 41
+const T_EQ = 42
+const T_NE = 43
+const T_LT = 44
+const T_LE = 45
+const T_GT = 46
+const T_GE = 47
+const T_PLUS = 48
+const T_MINUS = 49
+const T_STAR = 50
+const T_SLASH = 51
+const T_PERCENT = 52
+const T_NOT = 53
+const T_QUESTION = 54
+const T_AMP = 55
+const T_BAR = 56
+const T_CARET = 57
+const T_TILDE = 58
+const T_ANDAND = 59
+const T_OROR = 60
+const T_PLUSEQ = 61
+const T_MINUSEQ = 62
+const T_STAREQ = 63
+const T_SHL = 64
+const T_SHR = 65
+
+fn makeTokNames(): []string {
+    let k = new []string(0)
+    let names = "eof ident int char string module import pub type var let const fn return if else while for in break continue defer match ref record closed new nil true false ( ) { } [ ] , ; : . .. = == != < <= > >= + - * / % ! ? & | ^ ~ && || += -= *= << >>"
+    var start = 0
+    for i in 0..len(names) + 1 {
+        if i == len(names) || names[i] == ' ' {
+            append(k, substr(names, start, i))
+            start = i + 1
+        }
+    }
+    return k
+}
+
+let tokNames = makeTokNames()
+
+fn tokName(k: int): string { return tokNames[k] }
+
+
+var src = new []byte(0)
+var pos = 0
+var line = 1
+var col = 1
+var last = -1             // kind of the previous token
+var sym = -1              // kind of the current token: "ident", "int", "==", "fn", ...
+var sval = ""             // identifier text or string literal bytes
+var ival = 0              // integer or character value
+var tline = 0             // where the current token starts
+var tcol = 0
+var dumpMode = false
+
+fn makeKeywords(): []string {
+    let k = new []string(0)
+    let words = "module import pub type var let const fn return if else while for in break continue defer match ref record closed new nil true false"
+    var start = 0
+    for i in 0..len(words) + 1 {
+        if i == len(words) || words[i] == ' ' {
+            append(k, substr(words, start, i))
+            start = i + 1
+        }
+    }
+    return k
+}
+
+let keywords = makeKeywords()
+
+
+// the token number of a keyword, or T_IDENT for any other word
+fn keywordTok(w: string): int {
+    for i in 0..len(keywords) {
+        if keywords[i] == w { return T_MODULE + i }
+    }
+    return T_IDENT
+}
+
+var srcPath = ""
+
+// reports an error at line l, column c (0 means the current token) and stops
+fn errorAt(msg: string, l: int, c: int) {
+    var ln = l
+    var cn = c
+    if ln == 0 { ln = tline }
+    if cn == 0 { cn = tcol }
+    if dumpMode {
+        println(ln, ":", cn, " error ", msg)
+    } else {
+        eprintln(srcPath, ":", ln, ":", cn, ": ", msg)
+    }
+    exit(1)
+}
+
+fn fail(msg: string) { errorAt(msg, 0, 0) }
+
+fn isLetter(c: int): bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_' }
+fn isDigit(c: int): bool { return c >= '0' && c <= '9' }
+fn isHex(c: int): bool { return isDigit(c) || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F' }
+
+fn hexVal(c: int): int {
+    if isDigit(c) { return c - '0' }
+    if c >= 'a' { return c - 'a' + 10 }
+    return c - 'A' + 10
+}
+
+// the byte k places ahead, or -1 past the end
+fn peek(k: int): int {
+    if pos + k < len(src) { return src[pos + k] }
+    return -1
+}
+
+fn advance() {
+    if src[pos] == '\n' {
+        line += 1
+        col = 1
+    } else {
+        col += 1
+    }
+    pos += 1
+}
+
+fn text(from: int, to: int): string {
+    let b = new []byte(0)
+    for i in from..to { append(b, src[i]) }
+    return string(b)
+}
+
+// a newline after one of these ends the statement
+// a newline after one of these ends the statement
+fn semiAfter(k: int): bool {
+    match k {
+        T_IDENT, T_INT, T_CHAR, T_STRING, T_TRUE, T_FALSE, T_NIL, T_RETURN, T_BREAK, T_CONTINUE,
+        T_RPAREN, T_RBRACK, T_RBRACE { return true }
+        else { return false }
+    }
+}
+
+fn setTok(k: int) {
+    sym = k
+    last = k
+}
+
+fn escape(c: int): int {
+    match c {
+        'n' { return '\n' }
+        't' { return '\t' }
+        'r' { return '\r' }
+        '\\', '"', '\'' { return c }
+        '0' { return 0 }
+        else { return -1 }
+    }
+}
+
+// two-character operators, or -1
+fn punct2(a: int, b: int): int {
+    if b == '=' {
+        match a {
+            '=' { return T_EQ }
+            '!' { return T_NE }
+            '<' { return T_LE }
+            '>' { return T_GE }
+            '+' { return T_PLUSEQ }
+            '-' { return T_MINUSEQ }
+            '*' { return T_STAREQ }
+        }
+    }
+    if a == b {
+        match a {
+            '.' { return T_DOTDOT }
+            '&' { return T_ANDAND }
+            '|' { return T_OROR }
+            '<' { return T_SHL }
+            '>' { return T_SHR }
+        }
+    }
+    return -1
+}
+
+// one-character operators and punctuation, or -1
+fn punct1(c: int): int {
+    match c {
+        '(' { return T_LPAREN }
+        ')' { return T_RPAREN }
+        '{' { return T_LBRACE }
+        '}' { return T_RBRACE }
+        '[' { return T_LBRACK }
+        ']' { return T_RBRACK }
+        ',' { return T_COMMA }
+        ';' { return T_SEMI }
+        ':' { return T_COLON }
+        '.' { return T_DOT }
+        '=' { return T_ASSIGN }
+        '<' { return T_LT }
+        '>' { return T_GT }
+        '+' { return T_PLUS }
+        '-' { return T_MINUS }
+        '*' { return T_STAR }
+        '/' { return T_SLASH }
+        '%' { return T_PERCENT }
+        '!' { return T_NOT }
+        '?' { return T_QUESTION }
+        '&' { return T_AMP }
+        '|' { return T_BAR }
+        '^' { return T_CARET }
+        '~' { return T_TILDE }
+        else { return -1 }
+    }
+}
+
+fn scanNumber() {
+    var v = 0
+    if src[pos] == '0' && (peek(1) == 'x' || peek(1) == 'X') {
+        advance()
+        advance()
+        var any = false
+        var significant = 0
+        while pos < len(src) && (isHex(src[pos]) || src[pos] == '_') {
+            let d = src[pos]
+            if d != '_' {
+                any = true
+                if significant > 0 || d != '0' { significant += 1 }
+                v = (v << 4) | hexVal(d)
+            }
+            advance()
+        }
+        if !any { fail("hex literal needs digits") }
+        if significant > 16 { fail("integer literal too large") }
+    } else {
+        var big = false
+        while pos < len(src) && (isDigit(src[pos]) || src[pos] == '_') {
+            let d = src[pos]
+            if d != '_' {
+                let dv = d - '0'
+                if v > (9223372036854775807 - dv) / 10 {
+                    big = true
+                } else {
+                    v = v * 10 + dv
+                }
+            }
+            advance()
+        }
+        if big { fail("integer literal too large") }
+    }
+    ival = v
+    setTok(T_INT)
+}
+
+fn scanChar() {
+    advance()
+    if pos >= len(src) || src[pos] == '\'' || src[pos] == '\n' { fail("empty character literal") }
+    var ch = int(src[pos])
+    if ch == '\\' {
+        advance()
+        if pos >= len(src) { fail("unknown escape in character literal") }
+        ch = escape(src[pos])
+        if ch < 0 { fail("unknown escape in character literal") }
+    } else if ch >= 128 {
+        fail("character literal must be a single byte")
+    }
+    advance()
+    if pos >= len(src) || src[pos] != '\'' { fail("unterminated character literal") }
+    advance()
+    ival = ch
+    setTok(T_CHAR)
+}
+
+fn scanString() {
+    advance()
+    let buf = new []byte(0)
+    while true {
+        if pos >= len(src) || src[pos] == '\n' { fail("unterminated string") }
+        let ch = src[pos]
+        if ch == '"' {
+            advance()
+            break
+        }
+        if ch == '\\' {
+            advance()
+            if pos >= len(src) || src[pos] == '\n' { fail("unterminated string") }
+            let e = escape(src[pos])
+            if e < 0 {
+                append(buf, src[pos])
+            } else {
+                append(buf, byte(e))
+            }
+        } else {
+            append(buf, ch)
+        }
+        advance()
+    }
+    sval = string(buf)
+    setTok(T_STRING)
+}
+
+fn upper(s: string): string {
+    let b = new []byte(0)
+    for i in 0..len(s) {
+        let c = s[i]
+        if c >= 'a' && c <= 'z' {
+            append(b, byte(c - 'a' + 'A'))
+        } else {
+            append(b, c)
+        }
+    }
+    return string(b)
+}
+
+fn next() {
+    while true {
+        while pos < len(src) {
+            let c = src[pos]
+            if c != ' ' && c != '\t' && c != '\r' && c != '\n' { break }
+            if c == '\n' && semiAfter(last) {
+                tline = line
+                tcol = col
+                advance()
+                setTok(T_SEMI)
+                return
+            }
+            advance()
+        }
+        if peek(0) == '/' && peek(1) == '/' {
+            while pos < len(src) && src[pos] != '\n' { advance() }
+            continue
+        }
+        break
+    }
+    tline = line
+    tcol = col
+    if pos >= len(src) {
+        if semiAfter(last) {
+            setTok(T_SEMI)
+        } else {
+            setTok(T_EOF)
+        }
+        return
+    }
+    let c = src[pos]
+    if isLetter(c) {
+        let start = pos
+        while pos < len(src) && (isLetter(src[pos]) || isDigit(src[pos])) { advance() }
+        sval = text(start, pos)
+        setTok(keywordTok(sval))
+    } else if isDigit(c) {
+        scanNumber()
+    } else if c == '\'' {
+        scanChar()
+    } else if c == '"' {
+        scanString()
+    } else {
+        let p = punct2(c, peek(1))
+        let p1 = punct1(c)
+        if p >= 0 {
+            advance()
+            advance()
+            setTok(p)
+        } else if p1 >= 0 {
+            advance()
+            setTok(p1)
+        } else if c >= 33 && c <= 126 {
+            fail("unexpected character '" + text(pos, pos + 1) + "'")
+        } else {
+            let b = new []byte(0)
+            append(b, hexDigit(c >> 4))
+            append(b, hexDigit(c & 15))
+            fail("unexpected character 0x" + upper(string(b)))
+        }
+    }
+}
+
+fn startScanner(source: []byte) {
+    src = source
+    pos = 0
+    line = 1
+    col = 1
+    last = -1
+    next()
+}
+
+fn dumpTokens(source: []byte) {
+    dumpMode = true
+    startScanner(source)
+    while true {
+        print(tline, ":", tcol, " ", tokName(sym))
+        if sym == T_IDENT {
+            print(" ", sval)
+        } else if sym == T_INT || sym == T_CHAR {
+            print(" ", ival)
+        } else if sym == T_STRING {
+            let b = bytesOf(sval)
+            print(" ", len(b), ":", hexOf(b, 0, len(b)))
+        }
+        println()
+        if sym == T_EOF { return }
+        next()
+    }
+}
+
+// ================================================================ encoder
+
+// A memory operand: [base + index*scale + disp]; base -1 means an absolute
+// address in disp, index -1 means no index.
+type Mem = ref record { base, index, disp, scale: int }
+
+var code = new []byte(0)
+
+fn emit(b: int) { append(code, byte(b)) }
+
+fn emit32(v: int) {
+    emit(v)
+    emit(v >> 8)
+    emit(v >> 16)
+    emit(v >> 24)
+}
+
+fn emit64(v: int) {
+    emit32(v)
+    emit32(v >> 32)
+}
+
+fn fits8(v: int): bool { return v >= -128 && v < 128 }
+fn fits32(v: int): bool { return v >= -2147483648 && v < 2147483648 }
+
+fn pc(): int { return len(code) }
+
+fn emitOpcode(opc: int) {
+    if opc > 255 { emit(opc >> 8) }
+    emit(opc & 255)
+}
+
+fn rex(w: bool, reg: int, x: int, b: int, force: bool) {
+    var r = 0x40
+    if w { r = r | 8 }
+    r = r | ((reg >> 3) & 1) << 2 | ((x >> 3) & 1) << 1 | ((b >> 3) & 1)
+    if r != 0x40 || force { emit(r) }
+}
+
+// opcode with a register as the r/m operand
+fn opReg(opc: int, reg: int, rm: int, w: bool, byteReg: bool) {
+    rex(w, reg, 0, rm, byteReg && (rm >= 4 && rm <= 7 || opc == 0x88 && reg >= 4 && reg <= 7))
+    emitOpcode(opc)
+    emit(0xC0 | (reg & 7) << 3 | (rm & 7))
+}
+
+// opcode with a memory r/m operand
+fn opMem(opc: int, reg: int, m: Mem, w: bool, byteReg: bool) {
+    var x = 0
+    var b = 0
+    if m.index >= 0 { x = m.index }
+    if m.base >= 0 { b = m.base }
+    rex(w, reg, x, b, byteReg && opc == 0x88 && reg >= 4 && reg <= 7)
+    emitOpcode(opc)
+    if m.base < 0 && m.index < 0 {
+        emit(0x04 | (reg & 7) << 3)
+        emit(0x25)
+        emit32(m.disp)
+        return
+    }
+    var mod = 2
+    if m.disp == 0 && (m.base & 7) != 5 {
+        mod = 0
+    } else if fits8(m.disp) {
+        mod = 1
+    }
+    if m.index >= 0 {
+        var ss = 3
+        if m.scale == 1 { ss = 0 } else if m.scale == 2 { ss = 1 } else if m.scale == 4 { ss = 2 }
+        emit(mod << 6 | (reg & 7) << 3 | 4)
+        emit(ss << 6 | (m.index & 7) << 3 | (m.base & 7))
+    } else if (m.base & 7) == 4 {
+        emit(mod << 6 | (reg & 7) << 3 | 4)
+        emit(0x24)
+    } else {
+        emit(mod << 6 | (reg & 7) << 3 | (m.base & 7))
+    }
+    if mod == 1 {
+        emit(m.disp)
+    } else if mod == 2 {
+        emit32(m.disp)
+    }
+}
+
+fn movRI(r: int, v: int) {
+    if v >= 0 && v < 0x100000000 {
+        if r >= 8 { emit(0x41) }
+        emit(0xB8 + (r & 7))
+        emit32(v)
+    } else if fits32(v) {
+        opReg(0xC7, 0, r, true, false)
+        emit32(v)
+    } else {
+        emit(0x48 | (r >> 3))
+        emit(0xB8 + (r & 7))
+        emit64(v)
+    }
+}
+
+fn aluRI(o: int, r: int, v: int) {
+    if fits8(v) {
+        opReg(0x83, o, r, true, false)
+        emit(v)
+    } else {
+        opReg(0x81, o, r, true, false)
+        emit32(v)
+    }
+}
+
+fn aluMI(o: int, m: Mem, v: int) {
+    if fits8(v) {
+        opMem(0x83, o, m, true, false)
+        emit(v)
+    } else {
+        opMem(0x81, o, m, true, false)
+        emit32(v)
+    }
+}
+
+fn push(r: int) {
+    if r >= 8 { emit(0x41) }
+    emit(0x50 + (r & 7))
+}
+
+fn pop(r: int) {
+    if r >= 8 { emit(0x41) }
+    emit(0x58 + (r & 7))
+}
+
+// jumps leave a zero rel32 and return its position for fix()
+fn jcc(cc: int): int {
+    emit(0x0F)
+    emit(0x80 + cc)
+    emit32(0)
+    return pc() - 4
+}
+
+fn jmp(): int {
+    emit(0xE9)
+    emit32(0)
+    return pc() - 4
+}
+
+fn fix(at: int, target: int) {
+    let rel = target - (at + 4)
+    code[at] = byte(rel)
+    code[at + 1] = byte(rel >> 8)
+    code[at + 2] = byte(rel >> 16)
+    code[at + 3] = byte(rel >> 24)
+}
+
+fn callLocal(target: int) {
+    emit(0xE8)
+    emit32(target - (pc() + 4))
+}
+
+// ========================================================== encoder tests
+
+// splits a line into space-separated words
+fn words(s: string): []string {
+    let out = new []string(0)
+    var start = -1
+    for i in 0..len(s) + 1 {
+        let space = i == len(s) || s[i] == ' '
+        if space && start >= 0 {
+            append(out, substr(s, start, i))
+            start = -1
+        } else if !space && start < 0 {
+            start = i
+        }
+    }
+    return out
+}
+
+// decimal with an optional sign, or hex with a 0x prefix
+fn parseInt(s: string): int {
+    var i = 0
+    var neg = false
+    if s[0] == '-' {
+        neg = true
+        i = 1
+    }
+    var v = 0
+    if len(s) > i + 1 && s[i] == '0' && s[i + 1] == 'x' {
+        for k in i + 2..len(s) { v = (v << 4) | hexVal(s[k]) }
+    } else {
+        for k in i..len(s) { v = v * 10 + (s[k] - '0') }
+    }
+    if neg { return -v }
+    return v
+}
+
+// "r:N" or "m:BASE,INDEX,DISP,SCALE"
+fn parseMem(spec: string): ?Mem {
+    if spec[0] == 'r' { return nil }
+    let parts = new []int(0)
+    var start = 2
+    for i in 2..len(spec) + 1 {
+        if i == len(spec) || spec[i] == ',' {
+            append(parts, parseInt(substr(spec, start, i)))
+            start = i + 1
+        }
+    }
+    return new Mem{base: parts[0], index: parts[1], disp: parts[2], scale: parts[3]}
+}
+
+fn regOf(spec: string): int { return parseInt(substr(spec, 2, len(spec))) }
+
+fn emitHex(h: string) {
+    if h == "-" { return }
+    var i = 0
+    while i < len(h) {
+        emit(hexVal(h[i]) << 4 | hexVal(h[i + 1]))
+        i += 2
+    }
+}
+
+// op OPC REG RM W BYTE IMM | movri R V | aluri O RM V | push R | pop R
+// | jcc CC T | jmp T | call T
+fn runEncoderLine(l: string) {
+    let w = words(l)
+    let k = w[0]
+    if k == "op" {
+        let opc = parseInt(w[1])
+        let reg = parseInt(w[2])
+        let m = parseMem(w[3])
+        let wide = w[4] == "1"
+        let byteReg = w[5] == "1"
+        if m != nil {
+            opMem(opc, reg, m, wide, byteReg)
+        } else {
+            drop(m)
+            opReg(opc, reg, regOf(w[3]), wide, byteReg)
+        }
+        emitHex(w[6])
+    } else if k == "movri" {
+        movRI(parseInt(w[1]), parseInt(w[2]))
+    } else if k == "aluri" {
+        let m = parseMem(w[2])
+        if m != nil {
+            aluMI(parseInt(w[1]), m, parseInt(w[3]))
+        } else {
+            drop(m)
+            aluRI(parseInt(w[1]), regOf(w[2]), parseInt(w[3]))
+        }
+    } else if k == "push" {
+        push(parseInt(w[1]))
+    } else if k == "pop" {
+        pop(parseInt(w[1]))
+    } else if k == "jcc" {
+        fix(jcc(parseInt(w[1])), parseInt(w[2]))
+    } else if k == "jmp" {
+        fix(jmp(), parseInt(w[1]))
+    } else if k == "call" {
+        callLocal(parseInt(w[1]))
+    } else {
+        eprintln("unknown encoder command: ", k)
+        exit(2)
+    }
+}
+
+fn runEncoderScript(script: []byte) {
+    var start = 0
+    for i in 0..len(script) {
+        if script[i] == '\n' {
+            let before = pc()
+            let l = new []byte(0)
+            for k in start..i { append(l, script[k]) }
+            runEncoderLine(string(l))
+            println(hexOf(code, before, pc()))
+            start = i + 1
+        }
+    }
+}
+
+// ================================================================== main
+
+fn main() {
+    let a = args()
+    if len(a) == 3 && (a[1] == "--tokens" || a[1] == "--encode") {
+        let data = readFile(a[2])
+        if data == nil {
+            eprintln("obo: cannot read ", a[2])
+            exit(2)
+        }
+        if a[1] == "--tokens" {
+            dumpTokens(data)
+        } else {
+            runEncoderScript(data)
+        }
+        return
+    }
+    eprintln("usage: obo_own --tokens FILE | --encode FILE")
+    exit(2)
+}

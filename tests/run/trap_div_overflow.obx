@@ -1,0 +1,5 @@
+fn id(n: int): int { return n }
+fn main() {
+    println(id(-9223372036854775807 - 1) / id(-1))
+}
+// expect-exit: -8

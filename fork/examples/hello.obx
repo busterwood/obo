@@ -1,0 +1,10 @@
+module hello
+
+fn main() {
+    println("Hello from obx!")
+    var total = 0
+    for i in 1..11 {
+        total += i * i
+    }
+    println("sum of squares 1..10 = ", total)
+}

@@ -1,0 +1,19 @@
+1:1 ident iffy
+1:5 .
+1:7 string 1:71
+1:11 int -1
+1:33 true
+1:37 [
+1:39 ;
+1:43 <<
+1:45 char 92
+1:55 string 2:6869
+1:60 ident _a1
+1:65 module
+1:72 <
+1:74 ==
+1:77 <=
+1:80 ident iffy
+1:84 !=
+1:89 ~
+1:90 error integer literal too large

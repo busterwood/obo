@@ -1,0 +1,12 @@
+// Concatenates temporaries millions of times, so that collections land inside
+// the runtime's concatenation while both arguments are reachable only through
+// the call itself. They survive only if the compiler keeps them on the stack.
+fn main() {
+    var bad = 0
+    for i in 0..3000000 {
+        let s = string(i) + string(i % 97)
+        if len(s) != len(string(i)) + len(string(i % 97)) { bad += 1 }
+        if i % 1000 == 0 && s != string(i) + string(i % 97) { bad += 1 }
+    }
+    println("bad ", bad)             // expect: bad 0
+}

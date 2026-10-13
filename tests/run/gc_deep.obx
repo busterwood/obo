@@ -1,0 +1,21 @@
+// no-gc-stress: a million live nodes make collect-on-every-allocation quadratic
+type Node = ref record { value: int; next: ?Node }
+
+fn main() {
+    var l: ?Node = nil
+    for i in 0..1000000 { l = new Node{value: i, next: l} }
+    gc()
+    gc()
+    var junk = 0
+    for i in 0..300000 {
+        let x = new Node{value: -1}
+        junk += x.value
+    }
+    var t = 0
+    var p = l
+    while p != nil {
+        t += p.value
+        p = p.next
+    }
+    println(t, " ", junk)            // expect: 499999500000 -300000
+}

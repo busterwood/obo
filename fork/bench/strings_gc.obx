@@ -1,0 +1,11 @@
+fn main() {
+    let keep = new []string(0)
+    for i in 0..1000 { append(keep, "k" + string(i)) }
+    var total = 0
+    for round in 0..200 {
+        let words = new []string(0)
+        for i in 0..5000 { append(words, "word" + string(i) + "-" + string(round)) }
+        for w in words { total += len(w) }
+    }
+    println(total)
+}

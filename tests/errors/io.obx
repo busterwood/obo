@@ -1,0 +1,18 @@
+// === readFile with an int
+fn main() { let b = readFile(5) }  // error: readFile needs a string path
+// === writeFile with a string for data
+fn main() { let ok = writeFile("p", "data", false) }  // error: writeFile needs a []byte
+// === writeFile with an int array
+fn main() { let ok = writeFile("p", new []int(1), false) }  // error: writeFile needs a []byte
+// === writeFile without the executable flag
+fn main() { let ok = writeFile("p", new []byte(1), 1) }  // error: whether the file is executable
+// === readFile result may be nil
+fn main() {
+    let b = readFile("x")
+    println(len(b))  // error: len needs a string or array
+}
+// === args takes no arguments
+fn main() { let a = args(1) }  // error: expected ')'
+// === eprint a record
+type N = ref record { v: int }
+fn main() { eprintln(new N{}) }  // error: cannot print N

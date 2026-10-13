@@ -1,0 +1,30 @@
+fn id(s: string): string { return s }
+fn idn(n: int): int { return n }
+
+fn main() {
+    let a = "abc"
+    let b = id("ab") + id("c")
+    println(a == b, " ", a != b, " ", b == "abc", " ", a == "abd")   // expect: true false true false
+    println(len(a), " ", len(b), " ", len(""), " ", len(id("")))   // expect: 3 3 0 0
+    let e = id("") + id("")
+    println(e == "", " ", len(e))                 // expect: true 0
+    println(string(0), " ", string(-1), " ", string(9223372036854775807))
+    // expect: 0 -1 9223372036854775807
+    let n = idn(-9223372036854775807 - 1)
+    println(string(n), " ", string(n + 1), " ", string(idn(0)))
+    // expect: -9223372036854775808 -9223372036854775807 0
+    var s = ""
+    for i in 0..10 { s = s + string(i) }
+    println(s, " ", len(s))                       // expect: 0123456789 10
+    println("multi" + "ple" + " " + "folded")     // expect: multiple folded
+    println("unicode: héllo ", len("é"))          // expect: unicode: héllo 2
+    if id("x") + "y" == "xy" { println("concat compare") }   // expect: concat compare
+    let words = new []string(3)
+    words[0] = "one"
+    words[2] = "three"
+    var joined = ""
+    for w in words { joined = joined + "[" + w + "]" }
+    println(joined)                               // expect: [one][][three]
+    println(len(words[1]), " ", words[1] == "")   // expect: 0 true
+    println(string(42) + "|" + string(idn(-7)) + "|" + string(int('a')), " ", string(0) == "0")   // expect: 42|-7|97 true
+}

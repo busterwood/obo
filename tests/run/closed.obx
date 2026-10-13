@@ -1,0 +1,84 @@
+type Expr = closed {
+    Num { v: int }
+    Add { l, r: Expr }
+    Mul { l, r: Expr }
+    Neg { e: Expr }
+}
+
+fn eval(e: Expr): int {
+    match e {
+        Num { return e.v }
+        Add { return eval(e.l) + eval(e.r) }
+        Mul { return eval(e.l) * eval(e.r) }
+        Neg { return -eval(e.e) }
+    }
+}
+
+fn show(e: Expr): string {
+    match e {
+        Num { return string(e.v) }
+        Add { return "(" + show(e.l) + " + " + show(e.r) + ")" }
+        Mul { return show(e.l) + " * " + show(e.r) }
+        Neg { return "-" + show(e.e) }
+    }
+}
+
+fn isLeaf(e: Expr): bool {
+    match e {
+        Num { return true }
+        else { return false }
+    }
+}
+
+fn countNums(e: Expr): int {
+    var n = 0
+    match e {
+        Num { n = 1 }
+        Add { n = countNums(e.l) + countNums(e.r) }
+        Mul { n = countNums(e.l) + countNums(e.r) }
+        Neg { n = countNums(e.e) }
+    }
+    return n
+}
+
+fn main() {
+    let e = new Add{l: new Num{v: 2}, r: new Mul{l: new Num{v: 3}, r: new Neg{e: new Num{v: 4}}}}
+    println(show(e), " = ", eval(e))     // expect: (2 + 3 * -4) = -10
+    println(isLeaf(e), " ", isLeaf(new Num{v: 1}))   // expect: false true
+    println(countNums(e))                // expect: 3
+    var x: Expr = new Num{v: 1}
+    x = new Neg{e: x}
+    println(eval(x))                     // expect: -1
+    let opt: ?Expr = x
+    if opt != nil { println(show(opt)) } // expect: -1
+    let n = new Num{v: 9}
+    let asExpr: Expr = n
+    println(asExpr == n)                 // expect: true
+    let items = new []?Expr(4)
+    items[0] = new Num{v: 1}
+    items[1] = new Neg{e: new Num{v: 2}}
+    items[3] = new Add{l: new Num{v: 3}, r: new Num{v: 4}}
+    var kinds = ""
+    for it in items {
+        if it == nil {
+            kinds = kinds + "_"
+            continue
+        }
+        match it {
+            Num { kinds = kinds + "N" }
+            Neg { kinds = kinds + "-" }
+            else { kinds = kinds + "?" }
+        }
+    }
+    println(kinds)                       // expect: N-_?
+    match x {
+        Neg {
+            let inner = x.e
+            match inner {
+                Num { println("nested ", inner.v) }   // expect: nested 1
+                else { println("other") }
+            }
+        }
+        else { println("not neg") }
+    }
+}

@@ -1,0 +1,73 @@
+fn classify(n: int): string {
+    if n < 0 {
+        return "negative"
+    } else if n == 0 {
+        return "zero"
+    } else if n < 10 {
+        return "small"
+    } else {
+        return "large"
+    }
+}
+
+fn main() {
+    println(classify(-5), " ", classify(0), " ", classify(7), " ", classify(70))
+    // expect: negative zero small large
+    var i = 0
+    while i < 10 {
+        i += 1
+        if i % 2 == 0 { continue }
+        if i > 7 { break }
+        print(i, ",")
+    }
+    println()                    // expect: 1,3,5,7,
+    println("i=", i)             // expect: i=9
+    var pairs = 0
+    for x in 0..5 {
+        for y in 0..5 {
+            if y > x { break }   // leaves only the inner loop
+            pairs += 1
+        }
+    }
+    println(pairs)               // expect: 15
+    var count = 0
+    for k in 5..5 { count += 1 }
+    for k in 5..2 { count += 1 }
+    for k in -3..0 { count += 1 }
+    println(count)               // expect: 3
+    for k in 0..2 { print(k) }
+    for k in 10..12 { print(k) }
+    println()                    // expect: 011011
+    var evens = 0
+    for k in 0..10 {
+        if k % 2 == 1 { continue }   // continue in a for loop runs the increment
+        evens += k
+    }
+    println(evens)               // expect: 20
+    let empty = new []int(0)
+    for v in empty { println("never") }
+    let arr = new []int(3)
+    arr[0] = 4; arr[1] = 5; arr[2] = 6
+    var total = 0
+    for v in arr { total += v }
+    println(total)               // expect: 15
+    var a = 0
+    var b = 10
+    while a < b && b - a > 2 {
+        a += 1
+        b -= 1
+    }
+    println(a, " ", b)           // expect: 4 6
+    let v = 1
+    {
+        let v = 2
+        println(v)               // expect: 2
+    }
+    println(v)                   // expect: 1
+    var n = 0
+    while true {
+        n += 1
+        if n == 3 { break }
+    }
+    println(n)                   // expect: 3
+}

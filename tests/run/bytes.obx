@@ -1,0 +1,63 @@
+fn upper(s: string): string {
+    let out = new []byte(0)
+    for i in 0..len(s) {
+        let c = s[i]
+        if c >= 'a' && c <= 'z' {
+            append(out, byte(c - 'a' + 'A'))
+        } else {
+            append(out, c)
+        }
+    }
+    return string(out)
+}
+
+fn isDigit(c: byte): bool { return c >= '0' && c <= '9' }
+
+fn parseInt(s: string): int {
+    var n = 0
+    for i in 0..len(s) {
+        if !isDigit(s[i]) { return -1 }
+        n = n * 10 + int(s[i] - '0')
+    }
+    return n
+}
+
+fn main() {
+    println('a', " ", 'Z', " ", '0', " ", '\n', " ", '\\', " ", '\'', " ", '\0', " ", ' ')
+    // expect: 97 90 48 10 92 39 0 32
+    let s = "Hello, obx"
+    println(s[0], " ", s[7], " ", len(s), " ", s[len(s) - 1] == 'x')   // expect: 72 111 10 true
+    println(upper(s))                    // expect: HELLO, OBX
+    println(parseInt("12345"), " ", parseInt("12a"), " ", parseInt(""))   // expect: 12345 -1 0
+    var b: byte = 200
+    b = byte(b + 100)
+    println(b, " ", byte(-1), " ", byte(256 + 7), " ", int(b) * 2)     // expect: 44 255 7 88
+    let c: byte = 'q'
+    let n: int = c
+    println(n + 1)                       // expect: 114
+    println(substr(s, 0, 5), "|", substr(s, 7, 10), "|", substr(s, 3, 3), "|")   // expect: Hello|obx||
+    let raw = new []byte(3)
+    raw[0] = 'o'
+    raw[1] = 'b'
+    raw[2] = 'x'
+    raw[1] = byte(raw[1] + 1)
+    println(string(raw), " ", raw[2], " ", len(raw))   // expect: ocx 120 3
+    let empty = new []byte(0)
+    println("[", string(empty), "] ", len(string(empty)))   // expect: [] 0
+    var total = 0
+    for x in raw { total += x }
+    println(total)                       // expect: 330
+    println(raw[0] == 111, " ", raw[0] > 'a', " ", 'a' < 'b')   // expect: true true true
+    let all = new []byte(256)
+    for i in 0..256 { all[i] = byte(i) }
+    var sum = 0
+    for x in all { sum += x }
+    println(sum, " ", all[255], " ", all[128])   // expect: 32640 255 128
+    var w = 0x1122334455667788
+    let le = new []byte(0)
+    for i in 0..8 {
+        append(le, byte(w))              // little-endian bytes, as the encoder writes them
+        w = w >> 8
+    }
+    println(le[0], " ", le[1], " ", le[7])   // expect: 136 119 17
+}

@@ -1,0 +1,78 @@
+type Res = ref record { id: int }
+
+var log = ""
+
+fn note(s: string) { log = log + s }
+
+fn make(id: int): Res { return new Res{id: id} }
+
+fn consumeIt(r: Res): int { return r.id }
+
+fn pass(r: Res): Res { return r }
+
+fn early(n: int): int {
+    let a = make(1)
+    let b = make(2)
+    if n > 0 { return a.id }             // a and b are both freed here
+    let c = pass(b)                      // b moves into c
+    return c.id + a.id
+}
+
+fn loops(): int {
+    var r = make(0)
+    var t = 0
+    for i in 0..5 {
+        let tmp = make(i)
+        if i == 3 { continue }           // tmp is freed on continue
+        t += consumeIt(r)                // r is moved...
+        r = tmp                          // ...and given a value again in the same iteration
+    }
+    return t + r.id
+}
+
+fn branches(flag: bool): int {
+    let r = make(5)
+    var out = 0
+    if flag {
+        out = consumeIt(r)
+    } else {
+        out = consumeIt(r) + 100         // moved on both paths: fine
+    }
+    return out
+}
+
+fn deferred(): int {
+    let r = make(9)
+    defer note("d" + string(r.id))       // defers run before owned locals are freed
+    return r.id
+}
+
+type Shape = closed {
+    Circle { r: int }
+    Pair { a: Shape; b: Shape }
+}
+
+fn take2a(p: Shape): Shape { return new Circle{r: 1} }
+
+fn area(s: Shape): int {
+    match s {
+        Circle { return 3 * s.r * s.r }
+        Pair { return area(take2a(s)) }
+    }
+}
+
+fn main() {
+    println(early(1), " ", early(0))     // expect: 1 3
+    println(loops())                     // expect: 7
+    println(branches(true), " ", branches(false))   // expect: 5 105
+    println(deferred(), " ", log)        // expect: 9 d9
+    var p = make(1)
+    p = p                                // a move to itself: nothing is freed
+    println(p.id)                        // expect: 1
+    let s = new Pair{a: new Circle{r: 2}, b: new Circle{r: 3}}
+    println(area(s))                     // expect: 3
+    make(42)                             // a dropped result is freed
+    var q: ?Res = make(7)
+    let taken = take(q)
+    println(q == nil, " ", taken != nil) // expect: true true
+}

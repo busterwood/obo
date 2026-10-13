@@ -1,0 +1,7 @@
+fn main() {
+    let e = substr("abc", 1, 1)
+    println(len(e))                      // expect: 0
+    println(e[0])
+}
+// expect-exit: 3
+// expect-stderr: index out of range at line 4

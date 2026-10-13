@@ -1,0 +1,50 @@
+type Box = ref record { v: int }
+type Pair = ref record { a: Box; items: []int }
+fn peek(b: &Box) {}
+var junk = new []int(1)
+fn val(): int {
+    junk = new []int(1)             // frees the old array, so calls to val might free
+    return 1
+}
+// === borrowing through a handle
+fn main() {
+    let p = new Pair{a: new Box{v: 1}, items: new []int(2)}
+    let h = handle(p)
+    peek(h.a)  // error: cannot borrow through a handle: pass the handle itself
+}
+// === handle of an optional
+fn main() {
+    var o: ?Box = new Box{v: 1}
+    let h = handle(o)  // error: handle needs a record or closed-type value that is not optional
+}
+// === handle of an int
+fn f(h: ^int) {}  // error: handles name records and closed types, not int
+// === handle of a temporary
+fn main() {
+    let h = handle(new Box{v: 1})  // error: handle needs a variable, field or element
+}
+// === assigning through a handle across a call
+fn main() {
+    let b = new Box{v: 1}
+    let h = handle(b)
+    h.v = val()  // error: cannot assign through a handle across a call
+}
+// === indexing through a handle with a call
+fn main() {
+    let p = new Pair{a: new Box{v: 1}, items: new []int(3)}
+    let h = handle(p)
+    let x = h.items[val()]  // error: cannot index through a handle with an index that calls a function
+}
+// === a handle variable needs a value
+fn main() {
+    var h: ^Box  // error: needs an initial value
+}
+// === alive of something else
+fn main() {
+    let b = alive(5)  // error: alive needs a handle, not int
+}
+// === an optional handle used unchecked
+fn main() {
+    var h: ?^Box = nil
+    println(h.v)  // error: may be nil
+}

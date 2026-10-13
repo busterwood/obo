@@ -1,0 +1,1 @@
+fn main(n: int) {}  // error: the program needs 'fn main()'

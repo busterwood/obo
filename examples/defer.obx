@@ -1,0 +1,23 @@
+module deferdemo
+
+fn work(n: int): int {
+    println("open ", n)
+    defer println("close ", n)
+    if n > 2 {
+        defer println("  inner cleanup")
+        return n * 10
+    }
+    for i in 0..3 {
+        defer println("  end of iteration ", i)
+        if i == 1 { continue }
+        println("  iteration ", i)
+    }
+    return n
+}
+
+fn main() {
+    let a = work(1)
+    println("result ", a)
+    let b = work(5)
+    println("result ", b)
+}

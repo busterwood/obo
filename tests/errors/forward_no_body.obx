@@ -1,0 +1,2 @@
+fn f(n: int): int  // error: has a forward heading but no body
+fn main() {}

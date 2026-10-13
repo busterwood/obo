@@ -1,0 +1,59 @@
+type Shape = closed {
+    Circle { r: int }
+    Rect { w, h: int }
+    Group { items: []Shape; name: string }
+}
+
+type Scene = ref record { main: Shape; spare: ?Shape }
+
+fn area(s: &Shape): int {
+    match s {
+        Circle { return 3 * s.r * s.r }
+        Rect { return s.w * s.h }
+        Group {
+            var t = 0
+            let items = s.items
+            for x in items { t += area(x) }  // each element borrowed
+            return t
+        }
+    }
+}
+
+fn grow(s: &mut Shape) {
+    match s {
+        Circle { s.r += 1 }                   // a change inside the variant: allowed
+        Rect { s.w += 1 }
+        Group {
+            let items = s.items
+            for x in items { grow(x) }
+        }
+    }
+}
+
+fn main() {
+    let c0 = new Circle{r: 0}
+    let g = new Group{items: new []Shape(0), name: "g" + string(area(c0))}
+    let sc = new Scene{main: new Circle{r: 1}}
+    println(area(sc.main))                   // expect: 3
+    grow(sc.main)
+    println(area(sc.main))                   // expect: 12
+    sc.main = new Rect{w: 2, h: 3}           // the old Circle is freed
+    println(area(sc.main))                   // expect: 6
+    var m = &sc.main
+    match m {
+        Rect {
+            m.h = 10                         // narrowed to Rect through the reference
+            println(m.w * m.h)               // expect: 20
+        }
+        else {}
+    }
+    sc.spare = new Circle{r: 2}
+    let spare = take(sc.spare)
+    if spare != nil { println(area(spare)) } // expect: 12
+    let items = new []Shape(0)
+    append(items, new Circle{r: 1})
+    append(items, new Rect{w: 1, h: 1})
+    let group = new Group{items: items, name: "two"}
+    grow(group)
+    println(area(group), " ", g.name)        // expect: 14 g0
+}

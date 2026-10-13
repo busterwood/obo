@@ -1,0 +1,98 @@
+type Node = ref record { value: int; next: ?Node }
+
+fn val(n: ?Node): int {
+    if n == nil { return -1 }
+    return n.value                   // narrowed by the early return
+}
+
+fn valElse(n: ?Node): int {
+    if n == nil {
+        return -1
+    } else {
+        return n.value
+    }
+}
+
+fn valAnd(n: ?Node): bool { return n != nil && n.value > 10 }
+
+fn valOr(n: ?Node): bool { return n == nil || n.value > 10 }
+
+fn count(n: ?Node): int {
+    var c = 0
+    var p = n
+    while p != nil {
+        c += 1
+        p = p.next
+    }
+    return c
+}
+
+fn secondValue(n: ?Node): int {
+    if n != nil {
+        let nx = n.next
+        if nx != nil { return nx.value }
+    }
+    return -1
+}
+
+fn lastValue(n: Node): int {
+    var p = n
+    while true {
+        let nx = p.next
+        if nx == nil { return p.value }
+        p = nx
+    }
+}
+
+fn firstOver(n: ?Node, limit: int): int {
+    var p = n
+    while p != nil {
+        if p.value > limit { return p.value }
+        p = p.next
+    }
+    return -1
+}
+
+fn sumUntilNil(n: ?Node): int {
+    var total = 0
+    var p = n
+    for i in 0..100 {
+        if p == nil { break }
+        total += p.value
+        p = p.next
+    }
+    return total
+}
+
+fn main() {
+    let c = new Node{value: 30}
+    let b = new Node{value: 20, next: c}
+    let a = new Node{value: 5, next: b}
+    var none: ?Node = nil
+    println(val(a), " ", val(none), " ", valElse(b), " ", valElse(nil))   // expect: 5 -1 20 -1
+    println(valAnd(a), " ", valAnd(b), " ", valAnd(none))   // expect: false true false
+    println(valOr(a), " ", valOr(b), " ", valOr(none))      // expect: false true true
+    println(count(a), " ", count(none))           // expect: 3 0
+    println(secondValue(a), " ", secondValue(c))  // expect: 20 -1
+    println(lastValue(a))                         // expect: 30
+    println(firstOver(a, 10), " ", firstOver(a, 100))   // expect: 20 -1
+    println(sumUntilNil(a))                       // expect: 55
+    var maybe: ?Node = a
+    maybe = nil
+    println(maybe == nil)                         // expect: true
+    maybe = b
+    if maybe != nil { println(maybe.value) }      // expect: 20
+    let opt2: ?Node = maybe
+    println(opt2 != nil, " ", opt2 == b)          // expect: true true
+    var q: ?Node = a
+    var steps = 0
+    while q != nil && q.value < 25 {
+        steps += 1
+        q = q.next
+    }
+    println(steps)                                // expect: 2
+    if q != nil {
+        q = c                                     // a non-nil value keeps q narrowed
+        println(q.value)                          // expect: 30
+    }
+}

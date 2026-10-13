@@ -1,0 +1,79 @@
+var log = ""
+
+fn note(s: string) { log = log + s }
+
+fn simple() {
+    defer note("1")
+    defer note("2")
+    note("a")
+}
+
+fn withReturn(n: int): int {
+    defer note("x")
+    if n > 0 {
+        defer note("y")
+        return n * 2
+    }
+    return 0
+}
+
+fn retBeforeDefer(): int {
+    var v = 1
+    defer v = 100                    // runs after the return value is taken
+    return v
+}
+
+fn loops(): string {
+    var s = ""
+    for i in 0..4 {
+        defer s = s + "."
+        if i == 1 { continue }
+        if i == 3 { break }
+        s = s + string(i)
+    }
+    return s
+}
+
+fn nested() {
+    defer {
+        note("A")
+        defer note("B")
+        note("C")
+    }
+    note("0")
+}
+
+fn deferAllocates(): int {
+    let k = 7
+    defer {
+        gc()                         // runtime calls from a defer body keep the stack aligned
+        note("k" + string(k))
+    }
+    return 1
+}
+
+fn main() {
+    defer println("main done")
+    simple()
+    println(log)                     // expect: a21
+    log = ""
+    println(withReturn(3), " ", log) // expect: 6 yx
+    log = ""
+    println(withReturn(0), " ", log) // expect: 0 x
+    println(retBeforeDefer())        // expect: 1
+    println(loops())                 // expect: 0..2..
+    log = ""
+    nested()
+    println(log)                     // expect: 0ACB
+    log = ""
+    println(deferAllocates(), log)   // expect: 1k7
+    {
+        defer println("end of inner block")
+        println("in inner block")
+    }
+    println("after block")
+    // expect: in inner block
+    // expect: end of inner block
+    // expect: after block
+    // expect: main done
+}

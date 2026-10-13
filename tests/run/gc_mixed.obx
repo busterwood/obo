@@ -1,0 +1,23 @@
+// Mixed sizes exercise both small free lists and large-block reuse. Each array
+// is stamped with its creation number; survivors must be intact at the end.
+fn main() {
+    let ring = new []?[]int(100)
+    var seed = 12345
+    for i in 0..100000 {
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        let n = seed % 300
+        let a = new []int(n)
+        for k in 0..n { a[k] = i }
+        ring[i % 100] = a
+    }
+    var bad = 0
+    for j in 0..100 {
+        let a = ring[j]
+        if a != nil {
+            for v in a {
+                if v != 99900 + j { bad += 1 }
+            }
+        }
+    }
+    println("bad ", bad)             // expect: bad 0
+}

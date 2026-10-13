@@ -1,0 +1,31 @@
+type Node = ref record { value: int; next: ?Node }
+
+var list: ?Node = nil
+var log = new []int(0)
+
+fn push(v: int) { list = new Node{value: v, next: take(list)} }
+
+fn sum(l: &?Node): int {                 // reads only: frees nothing
+    var t = 0
+    var p = l
+    while p != nil {
+        t += p.value
+        p = p.next
+    }
+    return t
+}
+
+fn note(v: int) { append(log, v) }       // appending frees nothing either
+
+fn drop() { list = nil }                 // frees the whole list
+
+fn main() {
+    for i in 1..5 { push(i) }
+    println(sum(list))                   // expect: 10
+    let head = &list
+    note(sum(head))                      // fine: neither call frees 'list'
+    println(sum(head), " ", log[0])      // expect: 10 10
+    drop()
+    let again = &list                    // 'head' is no longer valid; borrow again
+    println(again == nil, " ", sum(again))   // expect: true 0
+}

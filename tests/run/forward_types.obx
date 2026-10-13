@@ -1,0 +1,53 @@
+type Tree
+type Item
+
+type Forest = ref record {
+    trees: []Tree
+    name: string
+}
+
+type Tree = ref record {
+    label: string
+    children: ?Forest
+}
+
+type Item = closed {
+    Leaf { t: Tree }
+    Group { items: []Item }
+}
+
+fn size(t: Tree): int {
+    var n = 1
+    let f = t.children
+    if f != nil {
+        for c in f.trees { n += size(c) }
+    }
+    return n
+}
+
+fn count(i: Item): int {
+    match i {
+        Leaf { return size(i.t) }
+        Group {
+            var n = 0
+            for x in i.items { n += count(x) }
+            return n
+        }
+    }
+}
+
+fn main() {
+    let leafy = new Tree{label: "leaf"}
+    let inner = new Forest{trees: new []Tree(0), name: "inner"}
+    append(inner.trees, leafy)
+    let mid = new Tree{label: "mid", children: inner}
+    let top = new Forest{trees: new []Tree(0), name: "top"}
+    append(top.trees, mid)
+    append(top.trees, new Tree{label: "solo"})
+    let root = new Tree{label: "root", children: top}
+    println(size(root))                  // expect: 4
+    let items = new []Item(0)
+    append(items, new Leaf{t: root})
+    append(items, new Leaf{t: leafy})
+    println(count(new Group{items: items}))   // expect: 5
+}

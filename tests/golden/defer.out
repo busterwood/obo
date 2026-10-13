@@ -1,0 +1,12 @@
+open 1
+  iteration 0
+  end of iteration 0
+  end of iteration 1
+  iteration 2
+  end of iteration 2
+close 1
+result 1
+open 5
+  inner cleanup
+close 5
+result 50

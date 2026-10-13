@@ -1,0 +1,24 @@
+type Mem = ref record { base: int }
+
+fn use(m: Mem): int { return m.base }
+
+fn parse(s: int): ?Mem {
+    if s > 0 { return new Mem{base: s} }
+    return nil
+}
+
+fn main() {
+    var total = 0
+    for i in -2..3 {
+        let m = parse(i)
+        if m != nil {
+            total += use(m)          // moved on this path...
+        } else {
+            drop(m)                  // ...so drop it on the other: both paths agree
+        }
+    }
+    println(total)                   // expect: 3
+    let a = new Mem{base: 5}
+    drop(a)                          // freed here, not at the end of main
+    gcstats()                        // expect: obo: 0 live objects, 32 peak bytes
+}

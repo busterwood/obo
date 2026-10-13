@@ -1,0 +1,6 @@
+2:1 %
+2:4 int 1
+2:25 ident true9223372036854775808
+2:48 /
+2:50 char 92
+2:54 error integer literal too large

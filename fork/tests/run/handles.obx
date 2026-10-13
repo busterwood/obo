@@ -1,0 +1,80 @@
+type Node = ref record {
+    name: string
+    kids: []Node
+    parent: ?^Node                   // a back-reference: a handle, not ownership
+}
+
+fn addKid(parent: &mut Node, name: string) {
+    append(parent.kids, new Node{name: name, kids: new []Node(0), parent: handle(parent)})
+}
+
+fn path(n: &Node): string {
+    var out = n.name
+    var p = n.parent
+    while p != nil {
+        out = p.name + "/" + out     // every step checks the handle
+        p = p.parent
+    }
+    return out
+}
+
+// an arena: types owned in one place, shared everywhere else by handle
+type Type = ref record { name: string; base: ?^Type }
+
+var arena = new []Type(0)
+
+fn mk(name: string, base: ?^Type): ^Type {
+    append(arena, new Type{name: name, base: base})
+    return handle(arena[len(arena) - 1])
+}
+
+fn show(t: ^Type): string {
+    let b = t.base
+    if b != nil { return "[]" + show(b) }
+    return t.name
+}
+
+type Counter = ref record { n: int; hits: []int }
+
+var counters = new []Counter(0)
+
+fn twice(x: int): int { return x * 2 }   // frees nothing: calling it can't free a handle's object
+
+fn bump(h: ^Counter) {
+    h.n = twice(h.n + 1)                 // a write through a handle across a pure call
+    append(h.hits, h.hits[twice(0)] + 1) // and an index through a handle calling it
+}
+
+fn counting() {
+    append(counters, new Counter{hits: new []int(1)})
+    let h = handle(counters[0])
+    bump(h)
+    bump(h)
+    println(h.n, " ", len(h.hits), " ", h.hits[2])
+}
+
+fn main() {
+    let root = new Node{name: "root", kids: new []Node(0)}
+    addKid(root, "a")
+    addKid(root, "b")
+    let kids = &root.kids
+    addKid(kids[0], "c")
+    println(path(kids[0].kids[0]))   // expect: root/a/c
+    let h = handle(kids[1])
+    println(alive(h), " ", h.name)   // expect: true b
+    h.name = "bee"                   // writes through a handle are checked too
+    println(path(kids[1]))           // expect: root/bee
+    truncate(root.kids, 1)           // frees "bee"
+    println(alive(h))                // expect: false
+    let n = new Node{name: "reuse", kids: new []Node(0)}   // may reuse the freed block
+    println(alive(h))                // expect: false
+    let i = mk("int", nil)
+    let ai = mk("arr", i)
+    let aai = mk("arr", ai)
+    println(show(aai), " ", show(i)) // expect: [][]int int
+    let hs = new []^Type(0)
+    append(hs, i)
+    append(hs, aai)
+    println(hs[0] == i, " ", hs[1] == i, " ", hs[1].base == ai)   // expect: true false true
+    counting()                       // expect: 6 3 1
+}

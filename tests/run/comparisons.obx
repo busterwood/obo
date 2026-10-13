@@ -1,0 +1,27 @@
+fn id(x: int): int { return x }
+
+fn main() {
+    let a = id(3)
+    let b = id(5)
+    println(a < b, " ", a <= b, " ", a > b, " ", a >= b, " ", a == b, " ", a != b)
+    // expect: true true false false false true
+    println(a < 3, " ", a <= 3, " ", 3 >= a, " ", 3 > a, " ", 5 == b, " ", 4 != a)
+    // expect: false true true false true true
+    let m = -9223372036854775807 - 1
+    println(id(m) < 0, " ", id(m) < id(9223372036854775807), " ", id(-2147483649) < -2147483648)
+    // expect: true true true
+    println((a < b) == true, " ", (a > b) == (b < a), " ", (a < b) != (b < a))
+    // expect: true true true
+    let f = a > b
+    println(f, " ", !f, " ", !(!f))  // expect: false true false
+    if !f && (a < b || b / id(0) == 1) { println("short circuit") }   // expect: short circuit
+    if a > b || (a == 3 && b == 5) { println("or-and") }            // expect: or-and
+    if !(a < b && b < 4) { println("de morgan") }                    // expect: de morgan
+    let both = a < b && b < 10 && a != 0
+    let either = a > b || b > 10 || a == 3
+    let neither = a > b || b > 10
+    println(both, " ", either, " ", neither)                         // expect: true true false
+    var flag = false
+    flag = !flag || a / id(0) == 0
+    println(flag)                                                    // expect: true
+}

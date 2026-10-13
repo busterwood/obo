@@ -1,0 +1,31 @@
+// === unterminated string
+fn main() { let s = "abc }  // error: unterminated string
+// === unexpected character
+fn main() { let x = 1 @ 2 }  // error: unexpected character
+// === integer too large
+fn main() { let x = 9223372036854775808 }  // error: integer literal too large
+// === unbalanced parenthesis
+fn main() { let x = (1 + 2 }  // error: expected ')'
+// === expected expression
+fn main() { let x = * 2 }  // error: expected an expression
+// === expected statement
+fn main() { 5 }  // error: expected a statement
+// === else on the next line
+fn main() {
+    if true {
+    }
+    else { }  // error: expected a statement
+}
+// === statement at module level
+let x = 1
+println(x)  // error: expected a declaration
+// === imports
+import foo  // error: imports are not supported yet
+// === two statements on one line
+fn main() {
+    var x = 1 var y = 2  // error: expected ';' or newline
+}
+// === body on the next line
+fn f()
+{  // error: expected a declaration
+}

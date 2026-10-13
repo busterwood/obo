@@ -1,0 +1,203 @@
+type Res2 = ref record { v: int }
+type Res = ref record { id: int; next: ?Res; child: Res2 }
+var g: ?Res = nil
+fn make(): Res2 { return new Res2{v: 1} }
+fn eat(r: Res2) {}
+fn eatOpt(r: ?Res) {}
+fn bump(): int {
+    g = nil
+    return 1
+}
+// === use after move
+fn main() {
+    let a = make()
+    eat(a)
+    println(a.v)  // error: 'a' was moved and has no value here
+}
+// === moved twice
+fn main() {
+    let a = make()
+    eat(a)
+    eat(a)  // error: 'a' was moved and has no value here
+}
+// === moved on one branch only
+fn main() {
+    let a = make()
+    if true {  // error: 'a' is moved on one path but not another
+        eat(a)
+    }
+}
+// === moved in one branch of if-else only
+fn main() {
+    let a = make()
+    if true {  // error: 'a' is moved on one path but not another
+        eat(a)
+    } else {
+        println(a.v)
+    }
+}
+// === moved inside a loop
+fn main() {
+    let a = make()
+    for i in 0..3 {  // error: 'a' is moved inside the loop
+        eat(a)
+    }
+}
+// === moved before break
+fn main() {
+    var a = make()
+    while true {
+        eat(a)
+        break  // error: 'a' is moved inside the loop; it must have a value again before break
+    }
+}
+// === moved inside &&
+fn check(r: Res2): bool { return true }
+fn main() {
+    let a = make()
+    let b = true && check(a)  // error: cannot move 'a' inside && or ||
+}
+// === moved inside defer
+fn main() {
+    let a = make()
+    defer eat(a)  // error: cannot move 'a' inside defer
+}
+// === moved after a defer uses it
+fn main() {
+    let a = make()
+    defer println(a.v)
+    eat(a)  // error: 'a' is used by a defer and cannot be moved
+}
+// === move out of a field
+fn main() {
+    let r = new Res{child: make()}
+    let c = r.child  // error: cannot move out of a field or element
+}
+// === move out of an element
+fn main() {
+    let arr = new []Res2(0)
+    append(arr, make())
+    eat(arr[0])  // error: cannot move out of a field or element
+}
+// === move out of a global
+fn main() {
+    let x = g  // error: cannot move out of global 'g'
+}
+// === move a local while assigning into it
+fn give(r: Res): Res2 { return make() }
+fn main() {
+    let r = new Res{child: make()}
+    r.child = give(r)  // error: cannot move 'r' while assigning into it
+}
+// === assigning to a moved let
+fn main() {
+    let a = make()
+    eat(a)
+    a = make()  // error: 'a' is immutable
+}
+// === assigning through a global with a call in the value
+type Box = ref record { v: int }
+var gb = new Box{v: 1}
+fn main() {
+    gb.v = bump()  // error: cannot assign through global 'gb' across a call
+}
+// === take of a non-optional field
+fn main() {
+    let r = new Res{child: make()}
+    let c = take(r.child)  // error: take needs an optional
+}
+// === take of an expression
+fn main() {
+    let c = take(make())  // error: take needs an optional variable
+}
+// === field of a temporary
+fn main() {
+    println(make().v)  // error: store this value in a variable first
+}
+// === length of a temporary array
+fn mk(): []int { return new []int(3) }
+fn main() {
+    println(len(mk()))  // error: store this value in a variable first
+}
+// === comparing a temporary
+fn main() {
+    let b = make() == make()  // error: store this value in a variable first
+}
+// === iterating through a field
+type Bag = ref record { items: []Res2 }
+fn main() {
+    let b = new Bag{items: new []Res2(0)}
+    for x in b.items {  // error: a for loop walks a local variable or parameter
+    }
+}
+// === assigning a field of a moved local
+fn main() {
+    let a = make()
+    eat(a)
+    a.v = 2  // error: 'a' was moved and has no value here
+}
+// === match arms disagree
+type S = closed {
+    A { x: int }
+    B { y: int }
+}
+fn main() {
+    let r = make()
+    let s: S = new A{x: 1}
+    match s {
+        A { eat(r) }
+        B { }  // error: 'r' is moved on one path but not another
+    }
+}
+// === integer match without else disagrees with falling through
+fn main() {
+    let r = make()
+    match 3 {  // error: 'r' is moved on one path but not another
+        1 { eat(r) }
+    }
+}
+// === string of a temporary byte array
+fn bytes(): []byte { return new []byte(2) }
+fn main() {
+    let s = string(bytes())  // error: store this value in a variable first
+}
+// === indexing a fresh string
+fn mk(): string { return "abc" + "d" }
+fn main() {
+    let c = mk()[0]  // error: store this string in a variable first
+}
+// === indexing through a global with a call in the index
+var garr = new []int(3)
+fn idx(): int {
+    garr = new []int(3)
+    return 1
+}
+fn main() {
+    let v = garr[idx()]  // error: cannot index through global 'garr' with an index that calls a function
+}
+// === drop of a field
+fn main() {
+    let r = new Res{child: make()}
+    drop(r.child)  // error: drop needs a local variable holding an owned value
+}
+// === use after drop
+fn main() {
+    let a = make()
+    drop(a)
+    println(a.v)  // error: 'a' was moved and has no value here
+}
+// === replace through a read-only reference
+type Bag = ref record { items: []Res2 }
+fn f(b: &Bag) {
+    let old = replace(b.items, new []Res2(0))  // error: replace cannot change through 'b': it is a read-only reference
+}
+// === replace of an int
+fn main() {
+    var n = 1
+    let old = replace(n, 2)  // error: replace needs a variable, field or element holding an owned value
+}
+// === replace with the wrong type
+fn main() {
+    var a = make()
+    let old = replace(a, new Res{child: make()})  // error: replacement value
+}

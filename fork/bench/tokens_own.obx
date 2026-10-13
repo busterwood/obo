@@ -1,0 +1,67 @@
+// a compiler-like workload: tokenise a source file into token records, then
+// intern every identifier in a hash table of string buckets
+type Token = ref record { kind: int; text: string; line: int }
+
+fn isLetter(c: byte): bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_' }
+fn isDigit(c: byte): bool { return c >= '0' && c <= '9' }
+
+fn scan(src: &[]byte, toks: &mut []Token) {
+    var i = 0
+    var line = 1
+    while i < len(src) {
+        let c = src[i]
+        if c == '\n' {
+            line += 1
+            i += 1
+        } else if isLetter(c) {
+            let b = new []byte(0)
+            while i < len(src) && (isLetter(src[i]) || isDigit(src[i])) {
+                append(b, src[i])
+                i += 1
+            }
+            append(toks, new Token{kind: 1, text: string(b), line: line})
+        } else if isDigit(c) {
+            while i < len(src) && isDigit(src[i]) { i += 1 }
+            append(toks, new Token{kind: 2, line: line})
+        } else if c == ' ' || c == '\t' {
+            i += 1
+        } else {
+            append(toks, new Token{kind: 3, line: line})
+            i += 1
+        }
+    }
+}
+
+fn hash(s: string): int {
+    var h = 5381
+    for i in 0..len(s) { h = (h * 33 + s[i]) & 0xFFFFFF }
+    return h
+}
+
+fn intern(table: &mut [][]string, s: string): bool {
+    let bucket = table[hash(s) % len(table)]
+    for name in bucket {
+        if name == s { return false }
+    }
+    append(bucket, s)
+    return true
+}
+
+fn main() {
+    let a = args()
+    let data = readFile(a[1])
+    if data == nil { exit(1) }
+    var tokens = 0
+    var unique = 0
+    for round in 0..10 {
+        let toks = new []Token(0)
+        scan(data, toks)
+        let table = new [][]string(0)
+        for i in 0..1024 { append(table, new []string(0)) }
+        for t in toks {
+            if t.kind == 1 && intern(table, t.text) { unique += 1 }
+        }
+        tokens += len(toks)
+    }
+    println(tokens, " ", unique)
+}

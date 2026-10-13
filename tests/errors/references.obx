@@ -1,0 +1,63 @@
+type N = ref record { v: int; next: ?N }
+type S = closed {
+    A { x: int }
+    B { y: int }
+}
+// === field on optional
+fn f(n: ?N): int { return n.v }  // error: may be nil
+// === index optional array
+fn f(a: ?[]int): int { return a[0] }  // error: may be nil
+// === unknown field
+fn f(n: N): int { return n.w }  // error: N has no field 'w'
+// === field on int
+fn f(i: int): int { return i.v }  // error: int has no fields
+// === field on closed type
+fn f(s: S): int { return s.x }  // error: use 'match' to reach its fields
+// === index a non-array
+fn f(i: int): int { return i[0] }  // error: cannot be indexed
+// === non-int index
+fn f(a: []int): int { return a[true] }  // error: array index must be int
+// === assign nil to non-null
+fn main() {
+    var n = new N{}
+    n = nil  // error: N can never be nil
+}
+// === pass optional as non-null
+fn g(n: N) {}
+fn f(n: ?N) { g(n) }  // error: may be nil
+// === return optional as non-null
+fn f(n: ?N): N { return n }  // error: may be nil
+// === store optional in non-null field
+type H = ref record { n: N }
+fn f(h: H, m: ?N) { h.n = m }  // error: may be nil
+// === new with unknown field
+fn main() { let n = new N{w: 1} }  // error: N has no field 'w'
+// === new with field twice
+fn main() { let n = new N{v: 1, v: 2} }  // error: given twice
+// === new missing a required field
+type P = ref record { n: N }
+fn main() { let p = new P{} }  // error: P needs a value for n
+// === new of a value type
+fn main() { let x = new int{} }  // error: 'int' is not a record type
+// === new of a closed parent
+fn main() { let x = new S{} }  // error: 'S' is not a record type
+// === array of non-null references
+fn main() { let a = new []N(3) }  // error: would start as nil
+// === array length not int
+fn main() { let a = new []int(true) }  // error: array length must be int
+// === wrong field type
+fn main() { let n = new N{v: "x"} }  // error: field 'v'
+// === variant of another closed type
+type T = closed { C { z: int } }
+fn main() { var s: S = new C{z: 1} }  // error: cannot use C as S
+// === parent to variant
+fn f(s: S) { var a: A = s }  // error: cannot use S as A
+// === array element type
+fn main() {
+    let a = new []int(2)
+    a[0] = "s"  // error: cannot use string as int
+}
+// === double optional
+fn f(a: ??N) {}  // error: only reference types can be optional
+// === nil string
+fn main() { var s: string = nil }  // error: cannot use nil as string

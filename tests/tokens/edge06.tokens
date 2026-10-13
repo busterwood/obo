@@ -1,0 +1,9 @@
+1:1 true
+1:6 module
+1:13 ,
+1:14 fn
+1:16 *=
+1:18 string 1:71
+1:22 :
+1:24 ident _a1
+1:27 error character literal must be a single byte

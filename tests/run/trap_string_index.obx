@@ -1,0 +1,7 @@
+fn main() {
+    let s = "abc"
+    println(s[2])                        // expect: 99
+    println(s[3])
+}
+// expect-exit: 3
+// expect-stderr: index out of range at line 4

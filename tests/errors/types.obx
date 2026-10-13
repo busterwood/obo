@@ -1,0 +1,77 @@
+type N = ref record { v: int }
+type M = ref record { v: int }
+// === infer from nil
+fn main() { var x = nil }  // error: cannot infer a type
+// === infer from void
+fn nothing() {}
+fn main() { var x = nothing() }  // error: cannot infer a type
+// === no type or value
+fn main() { var x }  // error: needs a type or an initial value
+// === let without value
+fn main() { let x: int }  // error: is immutable and needs a value
+// === non-null without value
+fn main() { var n: N }  // error: needs an initial value
+// === global non-null without value
+var gn: N  // error: needs an initial value
+// === wrong assignment type
+fn main() {
+    var x = 1
+    x = true  // error: cannot use bool as int
+}
+// === inferred type is fixed
+fn main() {
+    var x = 1
+    x = "s"  // error: cannot use string as int
+}
+// === string plus int
+fn main() { let s = "a" + 1 }  // error: needs another string
+// === int plus string
+fn main() { let s = 1 + "a" }  // error: '+' needs ints
+// === negate bool
+fn main() { let b = -true }  // error: '-' needs an int
+// === not int
+fn main() { let b = !1 }  // error: '!' needs a bool
+// === string ordering
+fn main() { let b = "a" < "b" }  // error: strings can only be compared with == and !=
+// === int vs bool
+fn main() { let b = 1 == true }  // error: cannot compare int with bool
+// === bool ordering
+fn main() { let b = true < false }  // error: bools can only be compared
+// === reference ordering
+fn main() {
+    let a = new N{}
+    let b = a < a  // error: references can only be compared with == and !=
+}
+// === unrelated references
+fn main() {
+    let a = new N{}
+    let b = new M{}
+    let c = a == b  // error: cannot compare N with M
+}
+// === condition not bool
+fn main() { if 1 { } }  // error: condition must be bool
+// === while condition not bool
+fn main() { while "x" { } }  // error: condition must be bool
+// === multiply strings
+fn main() { let s = "a" * 2 }  // error: '*' needs ints
+// === constant division by zero
+fn main() { let x = 1 / 0 }  // error: division by zero
+// === constant remainder by zero
+fn main() {
+    var a = 5
+    let x = a % 0  // error: division by zero
+}
+// === and on ints
+fn main() { let b = 1 && true }  // error: '&&' needs bools
+// === or with int operand
+fn main() { let b = true || 2 }  // error: must be bool
+// === compound assignment on a string
+fn main() {
+    var s = "a"
+    s += "b"  // error: '+=' needs an int
+}
+// === compound assignment with a bool
+fn main() {
+    var n = 1
+    n += true  // error: '+=' needs an int
+}

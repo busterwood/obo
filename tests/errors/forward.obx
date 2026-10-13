@@ -1,0 +1,25 @@
+// === field of an undefined type
+type F
+fn f(x: F): int { return x.v }  // error: declared but not yet defined
+type F = ref record { v: int }
+// === new of an undefined type
+type F
+fn main() { let x = new F{} }  // error: declared but not yet defined
+type F = ref record { v: int }
+// === match on an undefined type
+type F
+fn f(x: F) {
+    match x {  // error: declared but not yet defined
+        else { }
+    }
+}
+type F = closed { A { v: int } }
+// === forward type defined as an alias
+type F
+type F = int  // error: was declared as a forward type
+// === record defined twice
+type R = ref record { v: int }
+type R = ref record { v: int }  // error: 'R' is already declared
+// === forward declared twice
+type F
+type F  // error: 'F' is already declared

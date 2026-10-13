@@ -1,0 +1,65 @@
+// Aliased references: several references, mut or not, may name the same
+// object. Only a reference that may point inside something being changed is
+// invalidated, so all of these are accepted.
+type Node = ref record { value: int; next: ?Node }
+type Box = ref record { items: []Node }
+
+var g = new Box{items: new []Node(0)}
+
+fn bump(a: &mut Node, b: &mut Node) {    // both may be one node
+    a.value += 1
+    b.value += 10
+}
+
+fn look(a: &Node, b: &mut Node): int {   // a sees b's change if they are one node
+    b.value += 5
+    return a.value
+}
+
+fn step(b: &Box, n: &mut Node) {         // read the whole, change one element
+    n.value += len(b.items)
+}
+
+fn relink(a: &mut Node, b: &mut Node) {  // freeing below a leaves b itself valid
+    let keep = b                         // and a plain copy of b
+    a.next = new Node{value: 99}
+    keep.value = 7
+}
+
+fn reset(p: &mut Box): int {             // p may be the global: read it afresh
+    p.items = new []Node(0)
+    return len(g.items)
+}
+
+fn mostly(p: &Box): int {                // this frees under g, so p is never g:
+    let x = &p.items                     // x survives the change
+    g.items = new []Node(0)
+    return len(x)
+}
+
+fn addAll(a: &[]Node, b: &mut []Node) {  // changing values frees nothing
+    for n in a {
+        b[0].value += n.value
+    }
+}
+
+fn main() {
+    let n = new Node{value: 0}
+    bump(n, n)
+    println(n.value)                     // expect: 11
+    println(look(n, n))                  // expect: 16
+    let b = new Box{items: new []Node(0)}
+    for i in 0..3 { append(b.items, new Node{value: i}) }
+    step(b, b.items[1])
+    println(b.items[1].value)            // expect: 4
+    relink(n, n)
+    let m = &n.next
+    if m != nil { println(n.value, " ", m.value) }   // expect: 7 99
+    append(g.items, new Node{value: 1})
+    println(reset(g))                    // expect: 0
+    println(mostly(b))                   // expect: 3
+    let arr = new []Node(0)
+    for i in 0..3 { append(arr, new Node{value: i + 1}) }
+    addAll(arr, arr)                     // one array, read and changed
+    println(arr[0].value)                // expect: 7
+}

@@ -1,0 +1,45 @@
+module lists
+
+type Node = ref record {
+    value: int
+    next: ?Node
+}
+
+fn push(head: ?Node, v: int): Node {
+    return new Node{value: v, next: head}
+}
+
+fn sum(list: &?Node): int {
+    var total = 0
+    var p = list
+    while p != nil {          // p is a Node inside the loop
+        total += p.value
+        p = p.next            // may be nil again; re-checked at the top
+    }
+    return total
+}
+
+fn first(list: &?Node): int {
+    if list == nil { return -1 }
+    return list.value         // narrowed by the early return
+}
+
+var keep: ?Node = nil         // a global root the collector must respect
+
+fn main() {
+    keep = push(push(push(nil, 1), 2), 3)
+    // churn through lots of garbage: 2 million nodes in 1000-node lists
+    var grand = 0
+    for round in 0..2000 {
+        var list: ?Node = nil
+        for i in 0..1000 {
+            list = push(list, i)
+        }
+        grand += sum(list)
+    }
+    println("grand total ", grand)
+    let k = take(keep)                    // a global can't be borrowed: take it out...
+    println("kept list sum ", sum(k), ", first ", first(k))
+    keep = k                              // ...and put it back
+    gcstats()
+}

@@ -1,0 +1,31 @@
+type Entry = ref record { v: int }
+type Holder = ref record { items: []Entry; name: string }
+
+var stack = new []Entry(0)
+
+fn depth(): int { return len(stack) }
+
+fn nested(): int {
+    let saved = replace(stack, new []Entry(0))   // a fresh stack for the nested part
+    append(stack, new Entry{v: 9})
+    let inner = depth()
+    stack = saved                                 // the old stack comes back; the fresh one is freed
+    return inner
+}
+
+fn swapItems(h: &mut Holder, fresh: []Entry): []Entry {
+    return replace(h.items, fresh)               // through a mutable reference
+}
+
+fn main() {
+    append(stack, new Entry{v: 1})
+    append(stack, new Entry{v: 2})
+    println(nested(), " ", depth(), " ", stack[1].v)   // expect: 1 2 2
+    let h = new Holder{items: new []Entry(0), name: "h"}
+    append(h.items, new Entry{v: 5})
+    let old = swapItems(h, new []Entry(0))
+    println(len(old), " ", old[0].v, " ", len(h.items))   // expect: 1 5 0
+    var e = new Entry{v: 3}
+    let prev = replace(e, new Entry{v: 4})       // a local keeps a value throughout
+    println(prev.v, " ", e.v)                     // expect: 3 4
+}

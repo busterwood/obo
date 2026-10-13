@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""Mutation testing for obo: plants ownership bugs in a copy of obo.obx, builds
+each with mainline obxc, and checks that the fork's tests fail. Bugs that free
+too little must be caught by the leak check, bugs that free too much by the
+double-free check or poisoning, and missing compile-time checks by the error
+tests.
+
+    python3 fork/tests/mutate_fork.py [pattern]"""
+import os
+import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+FORK = os.path.dirname(HERE)
+ROOT = os.path.dirname(FORK)
+
+MUTANTS = {
+    # freeing too little: the leak check must notice
+    "scope exit frees nothing": ("        callDefers(blk)\n        freeOwned(blk.omark, len(ownedLocals))\n",
+                                 "        callDefers(blk)\n"),
+    "early exits free nothing": ("        freeOwned(blocks[i].omark, top)\n", ""),
+    "assignment keeps the old value": ("                if live {\n                    resolve(x)", "                if false {\n                    resolve(x)"),
+    "dropped results kept": ("                rtCall1(RT_FREE, x, tVoid)                 // a dropped result is freed at once",
+                             "                releaseItem(x)"),
+    "records don't free their fields": ("        if isOwned(f.typ) { append(ptrs, f.offset) }            // the fields freed with the record", ""),
+    "globals not freed at exit": ("            x.disp = g.offset\n            rtCall1(RT_FREE, x, tVoid)\n", "            x.disp = g.offset\n"),
+    # freeing too much: double free or poisoned reads
+    "moved locals still freed": ("        if !s.moved && !s.isRefLocal {\n            let x = newItem", "        if !s.isRefLocal {\n            let x = newItem"),
+    "moves not recorded": ("        s.moved = true\n        invalidate(s, nil, true)", "        invalidate(s, nil, true)"),
+    "take leaves the value in place": ("        opMem(0x8B, r, memOf(x), true, false)\n        opMem(0xC7, 0, memOf(x), true, false)\n        emit32(0)\n",
+                                       "        opMem(0x8B, r, memOf(x), true, false)\n"),
+    # string reference counts
+    "fresh strings shown to the runtime kept": ("        if temps[i] { rtCall1(RT_STR_DEC, makeReg(tString, regs[i]), tVoid) }\n", ""),
+    "copies take no reference": ("        } else if x.mode != \"const\" {\n            let r = rtCall1(RT_STR_INC, x, tString)", "        } else if false {\n            let r = rtCall1(RT_STR_INC, x, tString)"),
+    "assignment keeps the old string": ("            } else if dtype.kind == \"string\" {\n                resolve(x)", "            } else if false {\n                resolve(x)"),
+    "string locals never dropped": ("            if s.isStr {\n                rtCall1(RT_STR_DEC, x, tVoid)", "            if s.isStr {\n                releaseItem(x)"),
+    "held strings not pinned": ("    if x.typ.kind == \"string\" && !x.strTemp && x.mode != \"const\" {\n        consume(x)", "    if false {\n        consume(x)"),
+    "loop variable takes no reference": ("        if strs { release(rtCall1(RT_STR_INC, vi, tString).r) }", ""),
+    "records keep their strings": ("        if f.typ.kind == \"string\" { append(strs, f.offset) }    // and the strings it drops", ""),
+    "call results not fresh": ("    res.strTemp = f.ret == tString               // the caller now holds the returned reference", ""),
+    # references
+    "invalidation does nothing": ("                if v.iterating { error(\"cannot change what '\" + v.name + \"' points into while a for loop walks it\") }\n                v.moved = true",
+                                  "                if v.iterating { error(\"cannot change what '\" + v.name + \"' points into while a for loop walks it\") }"),
+    "writes through read-only references": ("        if x.deref && wr != nil && wr.isRef && !wr.refMut {", "        if x.deref && wr != nil && wr.isRef && !wr.refMut && false {"),
+    "mut aliases allowed": ("argModes[i] == 2 && argDeeps[j] && ri", "false && argDeeps[j] && ri"),
+    "mut calls invalidate nothing": ("            invalidate(argRoots[i], argVias[i], false)\n            recordFree", "            recordFree"),
+    "moving a root keeps its references": ("        invalidate(s, nil, true)                  // references into it now dangle\n", ""),
+    "references can be moved out": ("    if x.borrowed || (s != nil && s.isRef) { error(", "    if false { error("),
+    "walked arrays can change": ("                    if xs.iterating { errorAt(", "                    if false { errorAt("),
+    "element writes invalidate nothing": ("                } else if x.deref {\n                    invalidate(ws, viaOf(x), false)\n", "                } else if x.deref {\n"),
+    "read-only references can be passed as mut": ("            if f.pmodes[i] == 2 && !mutableOf(a) {", "            if false {"),
+    "everything counts as an ancestor": ("        if p == a { return true }\n        p = p.refParent", "        return true"),
+    # handles
+    "borrowing through handles allowed": ("    if x.viaHandle { error(\"cannot borrow through a handle: pass the handle itself\") }\n", ""),
+    "handle assignment across calls allowed": ("            if x.viaHandle && userCalls != callsBefore {\n                errorAt(", "            if false {\n                errorAt("),
+    "handle index calls allowed": ("            if viaHandle && userCalls != callsBefore {\n                error(", "            if false {\n                error("),
+    "match reads the tag with the generation": ("    opMem(0x8B, r, mem(r, -1, -16, 8), false, false)", "    opMem(0x8B, r, mem(r, -1, -16, 8), true, false)"),
+    # effect summaries
+    "callees never free globals": ("    if f.addr < 0 || f == curFn || f.freesAll { return true }\n    for x in f.freed {", "    if false { return true }\n    for x in f.freed {"),
+    "calls invalidate nothing": ("            invalidate(g, nil, true)\n            if !all { recordFree(g) }", "            if !all { recordFree(g) }"),
+    "frees not recorded": ("    if g.storage != \"global\" { return }\n    for x in f.freed {", "    if true { return }\n    for x in f.freed {"),
+    "drop frees nothing": ("        consume(x)\n        rtCall1(RT_FREE, dx, tVoid)\n        return voidItem()", "        consume(x)\n        return voidItem()"),
+    "replace keeps the old value in place": ("        let xt = x.typ\n        store(x, v)\n", "        let xt = x.typ\n        releaseItem(x)\n"),
+    # compile-time checks
+    "use after move allowed": ("                error(\"'\" + name + \"' was moved and has no value here\")\n            }\n        }",
+                               "            }\n        }"),
+    "branch states not compared": ("    let d = stateDiff(a, b)\n    if d != nil {\n        if d.isRefLocal {", "    let d = stateDiff(a, b)\n    if d != nil && false {\n        if d.isRefLocal {"),
+    "loop moves unchecked": ("    if !term {\n        let d = stateDiff(entry, snapshot())", "    if false {\n        let d = stateDiff(entry, snapshot())"),
+    "moves inside && allowed": ("        if condDepth > 0 {", "        if false {"),
+    "fields can be moved out": ("    error(\"cannot move out of a field or element; use take() on an optional one\")\n}",
+                                "}"),
+    "temporaries can be dropped": ("    if x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: otherwise", "    if false {\n        error(\"store this value in a variable first: otherwise"),
+    # aliasing (step 1): changes must reach every root that may be the same object
+    "changes reach no other root": ("    return isRefParam(changed) && (isRefParam(other) || other.storage == \"global\")",
+                                    "    return false"),
+    "changes through parameters miss globals": ("(isRefParam(other) || other.storage == \"global\")", "isRefParam(other)"),
+    "aliases lose non-deep references too": ("if !hit && r != nil && v.refDeep && reaches(root, r)", "if !hit && r != nil && reaches(root, r)"),
+    "global changes reach parameters": ("    if changed == other { return true }\n", "    if changed == other || changed.storage == \"global\" { return true }\n"),
+    "calls check only one root": ("argDeeps[j] && ri != nil && rj != nil && reaches(ri, rj)", "argDeeps[j] && ri != nil && rj != nil && ri == rj"),
+    "calls ignore depth": ("argModes[i] == 2 && argDeeps[j] && ri", "argModes[i] == 2 && ri"),
+}
+
+
+def main():
+    pattern = sys.argv[1] if len(sys.argv) > 1 else ''
+    src = open(os.path.join(FORK, 'obo.obx')).read()
+    work = tempfile.mkdtemp(prefix='obo-mutant-')
+    missed = []
+    names = [n for n in MUTANTS if pattern in n]
+    for name in names:
+        old, new = MUTANTS[name]
+        if src.count(old) != 1:
+            print(f"STALE   {name} (pattern found {src.count(old)} times)")
+            missed.append(name)
+            continue
+        with open(os.path.join(work, 'obo.obx'), 'w') as f:
+            f.write(src.replace(old, new))
+        exe = os.path.join(work, 'obo')
+        b = subprocess.run([os.path.join(ROOT, 'obxc'), os.path.join(work, 'obo.obx'), '-o', exe, '--rt', ROOT],
+                           capture_output=True, text=True)
+        if b.returncode != 0:
+            print(f"BROKEN  {name}: {b.stderr.strip()[:120]}")
+            missed.append(name)
+            continue
+        p = subprocess.run([sys.executable, os.path.join(HERE, 'run_fork.py')], capture_output=True, text=True,
+                           timeout=600, env=dict(os.environ, OBO=exe))
+        lines = p.stdout.strip().splitlines()
+        detail = next((l.strip() for l in lines if l.startswith('     ')), '')
+        caught = p.returncode != 0
+        print(f"{'caught' if caught else 'MISSED'}  {name:<36} {lines[-1].split(' in ')[0] if lines else ''}  {detail[:60]}")
+        if not caught:
+            missed.append(name)
+    print(f"\n{len(names) - len(missed)}/{len(names)} mutants caught")
+    sys.exit(1 if missed else 0)
+
+
+if __name__ == '__main__':
+    main()

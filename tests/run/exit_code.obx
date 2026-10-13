@@ -1,0 +1,15 @@
+type Box = ref record { v: int }
+
+fn find(ok: bool): ?Box {
+    if ok { return new Box{v: 5} }
+    return nil
+}
+
+fn main() {
+    let b = find(true)
+    if b == nil { exit(9) }
+    println("narrowed after exit ", b.v)       // expect: narrowed after exit 5
+    println("buffered output is flushed")      // expect: buffered output is flushed
+    exit(7)
+}
+// expect-exit: 7

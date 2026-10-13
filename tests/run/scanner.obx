@@ -1,0 +1,22 @@
+module scanner
+// comments and blank lines are ignored
+
+fn iffy(newer: int): int { return newer + 1 }   // keywords as identifier prefixes
+
+fn main() {
+    let x = 1 +
+        2 +
+        3                        // a line ending in an operator continues
+    println(x)                   // expect: 6
+    println(1_000_000)           // expect: 1000000
+    println("quote\" slash\\ //not a comment")  // expect: quote" slash\ //not a comment
+    println("a\nb")              // expect: a
+                                 // expect: b
+    println(iffy(41))            // expect: 42
+	println("tab indented")      // expect: tab indented
+    var y = 0; y += 5; println(y)   // expect: 5
+    if x == 6 { println("same line") } else { println("no") }   // expect: same line
+    println(((((x)))))           // expect: 6
+    println()                    // expect:
+    println(  x  ,  "x"  )       // expect: 6x
+}

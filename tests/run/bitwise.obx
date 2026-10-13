@@ -1,0 +1,28 @@
+fn id(x: int): int { return x }
+
+fn main() {
+    println(0xff, " ", 0x10, " ", 0XAbC, " ", 0xFFFF_FFFF_FFFF_FFFF, " ", 0x7fffffffffffffff)
+    // expect: 255 16 2748 -1 9223372036854775807
+    println(12 & 10, " ", 12 | 10, " ", 12 ^ 10, " ", ~5, " ", ~-1)   // expect: 8 14 6 -6 0
+    let a = id(12)
+    let b = id(10)
+    println(a & b, " ", a | b, " ", a ^ b, " ", ~a)                  // expect: 8 14 6 -13
+    println(1 << 3, " ", id(1) << 3, " ", 1 << id(3), " ", id(1) << id(63))
+    // expect: 8 8 8 -9223372036854775808
+    println(-16 >> 2, " ", id(-16) >> 2, " ", id(-16) >> id(2), " ", id(-1) >> 63)
+    // expect: -4 -4 -4 -1
+    println(id(1) << 64, " ", id(1) << 65, " ", 1 << 65)           // shift counts are taken mod 64
+    // expect: 1 2 2
+    println(1 + 2 << 3, " ", (1 + 2) << 3, " ", 6 & 3 + 1, " ", 6 | 1 & 2)
+    // expect: 17 24 3 6
+    let v = id(-2)
+    println(v & 0xff, " ", (v >> 8) & 0xff, " ", (0x12345678 >> 16) & 0xff)   // expect: 254 255 52
+    println(id(0x123456789) & 0xFFFFFFFF, " ", id(5) | 0x100000000)          // expect: 591751049 4294967301
+    var f = id(0)
+    f = f | 4
+    f = f | 1
+    println(f, " ", f & 4 != 0, " ", f & 2 != 0)                     // expect: 5 true false
+    var m = id(0xF0)
+    m = m ^ 0xFF
+    println(m, " ", m << 4 >> 4)                                     // expect: 15 15
+}

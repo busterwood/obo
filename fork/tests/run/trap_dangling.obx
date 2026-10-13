@@ -1,0 +1,11 @@
+type Box = ref record { v: int }
+
+fn main() {
+    var b = new Box{v: 1}
+    let h = handle(b)
+    println(h.v)                     // expect: 1
+    b = new Box{v: 2}                // frees the first box, which the new one may reuse
+    println(h.v)
+}
+// expect-exit: 7
+// expect-stderr: the object this handle names has been freed
