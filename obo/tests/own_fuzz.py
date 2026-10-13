@@ -42,21 +42,33 @@ PRELUDE = [
     "fn mk(v: int): Node { return new Node{value: v} }",
     "fn push(l: ?Node, v: int): Node { return new Node{value: v, next: l} }",
     "fn sum(l: &?Node): int { var t = 0; var p = l; while p != nil { t += p.value; p = p.next }; return t }",
-    "fn bump(l: &mut ?Node) { var p = l; while p != nil { p.value += 1; p = p.next } }",
+    "fn bump(mut l: &?Node) { var p = l; while p != nil { p.value += 1; p = p.next } }",
     "fn total(xs: &[]Node): int { var t = 0; for n in xs { t += n.value }; return t }",
     "fn eat(l: ?Node): int { return sum(l) }",
-    "fn two(a: &mut Node, b: &mut Node) { a.value += 1; b.value += 10 }",
-    "fn stepArr(xs: &[]Node, n: &mut Node) { n.value += len(xs) }",
-    "fn bumpRef(n: &mut Node) { n.value += 1 }",
+    "fn two(mut a: &Node, mut b: &Node) { a.value += 1; b.value += 10 }",
+    "fn stepArr(xs: &[]Node, mut n: &Node) { n.value += len(xs) }",
+    "fn bumpRef(mut n: &Node) { n.value += 1 }",
     "fn gdrop() { ga = nil }",
-    "fn shrinkInt(a: &mut []Node): int { truncate(a, 0); return 1 }",
+    "fn shrinkInt(mut a: &[]Node): int { truncate(a, 0); return 1 }",
     "fn fresh(): []Node { return new []Node(0) }",
     "fn f2() { gdrop() }",
     "fn viaF2(l: &?Node): int { f2(); return sum(l) }",
     "fn sumFree(l: &?Node): int { gdrop(); return sum(l) }",
-    "fn mixG(p: &mut ?Node, q: &?Node): int { bump(p); return sum(q) }",
+    "fn mixG(mut p: &?Node, q: &?Node): int { bump(p); return sum(q) }",
     "fn mixGP(p: &?Node): int { return mixG(ga, p) }",
-    "fn pq(a: &mut []Node, b: &Node): int { return shrinkInt(a) + b.value }",
+    "fn pq(mut a: &[]Node, b: &Node): int { return shrinkInt(a) + b.value }",
+    "fn bumpAll(mut a: &[]Node, b: &Node): int { return len(a) + b.value }",
+    "fn gp(ys: &[]Node): int { return bumpAll(gxs, ys[0]) }",
+    "fn galias(): int { var q = &ga; bump(ga); return sum(q) }",
+    "fn setGs(v: int): string { gs = \"g\" + string(v); return \"!\" }",
+    "fn mkstr(v: int): string { return \"a\" + string(v) }",
+    "type Box = ref record { items: []int }",
+    "fn tick(mut a: &[]int): int { append(a, 1); return 0 }",
+    "type Shape = closed {",
+    "    Circle { r: int }",
+    "    Rect { w, h: int }",
+    "}",
+    "fn area(s: &Shape): int { match s { Circle { return 3 * s.r * s.r } Rect { return s.w * s.h } } }",
 ]
 NAMES = 'abc'          # owned optional locals
 STRVARS = ['sa', 'sb', 'gs']
@@ -132,6 +144,7 @@ def invalidate(st):
 
 class Gen:
     def __init__(self, seed, full):
+        self.seed = seed
         self.r = random.Random(seed)
         self.full = full
         self.st = State()
@@ -318,7 +331,7 @@ class Gen:
 
     def alias_param_stmt(self):
         """A mut array and an element of another array, both parameters: they may be one array."""
-        self.extra_fn("fn pf(xs: &mut []Node, ys: &[]Node): int { return pq(xs, ys[0]) }")
+        self.extra_fn("fn pf(mut xs: &[]Node, ys: &[]Node): int { return pq(xs, ys[0]) }")
         return self.invalid_stmt([])
 
     def global_ref_free_stmt(self):
@@ -327,10 +340,81 @@ class Gen:
         self.nrefs += 1
         return self.invalid_stmt([f"var {r} = &ga", "gdrop()", f"println(sum({r}))"])
 
+    def handle_index_call_stmt(self):
+        """A handle to a record's array, indexed by a call that may change it: rejected."""
+        n = self.nrefs
+        self.nrefs += 1
+        return self.invalid_stmt([f"var b{n} = new Box{{items: new []int(0)}}", f"let hx{n} = handle(b{n})",
+                                  f"hx{n}.items[tick(b{n}.items)] = 9"])
+
+    def ref_move_stmt(self):
+        """A reference parameter passed where ownership is taken: rejected."""
+        self.extra_fn("fn mvRef(l: &?Node): int { return eat(l) }")
+        return self.invalid_stmt([])
+
+    def callee_free_global_stmt(self):
+        """A recursive call that passes a global the callee's own body frees: rejected."""
+        self.extra_fn("fn frX(n: int, l: &?Node): int { if n > 0 { frX(n - 1, ga) }; gdrop(); return sum(l) }")
+        return self.invalid_stmt([])
+
     def alias_global_elem_stmt(self):
         """A mut array parameter beside an element of a global array."""
-        self.extra_fn("fn pgl(xs: &mut []Node): int { return pq(xs, gxs[0]) }")
+        self.extra_fn("fn pgl(mut xs: &[]Node): int { return pq(xs, gxs[0]) }")
         return self.invalid_stmt([])
+
+    def global_alias_stmt(self):
+        """A reference into the global chain, a mut change to it, then a read: the change is allowed."""
+        def run(st):
+            chain_bump(st.ga)
+            st.out.append(str(chain_sum(st.ga)))
+        return Stmt(["println(galias())"], run)
+
+    def gs_pin_stmt(self):
+        """A string read before a call that changes it: the value read is the one kept."""
+        d, v = self.r.choice(STRVARS), self.k()
+
+        def run(st):
+            old = st.strs['gs']
+            st.strs['gs'] = 'g' + str(v)
+            st.strs[d] = old + '!'
+        return Stmt([f"{d} = gs + setGs({v})"], run)
+
+    def str_call_stmt(self):
+        """A string returned by a call, used at once and dropped."""
+        v = self.k()
+        if self.r.random() < 0.5:
+            return Stmt([f"println(len(mkstr({v})))"],
+                        lambda st: st.out.append(str(len('a' + str(v)))))
+        d = self.r.choice(STRVARS)
+
+        def run(st):
+            st.strs[d] = 'a' + str(v)
+        return Stmt([f"{d} = mkstr({v})"], run)
+
+    def ss_loop_stmt(self):
+        """Two strings appended to ss, each copied out of the loop, then ss is freed."""
+        d = self.r.choice(STRVARS)
+
+        def run(st):
+            n = len(st.ss)
+            st.ss += ['w' + str(n), 'w' + str(n + 2)]
+            st.strs[d] = st.ss[-1]
+            st.out.append(st.strs[d])
+            st.ss = []
+        return Stmt(["append(ss, \"w\" + string(len(ss)))", "append(ss, \"w\" + string(len(ss) + 1))",
+                     "for sv in ss {", f"    {d} = sv", "}", "truncate(ss, 0)", f"println({d})"], run)
+
+    def shape_stmt(self):
+        """A closed value reallocated as another variant, matched each time."""
+        v = self.k()
+        n = f"s{self.nrefs}"
+        self.nrefs += 1
+
+        def run(st):
+            st.out.append(str(3 * v * v))
+            st.out.append(str(v * 2))
+        return Stmt([f"var {n}: Shape = new Circle{{r: {v}}}", f"println(area({n}))",
+                     f"{n} = new Rect{{w: {v}, h: 2}}", f"println(area({n}))"], run)
 
     def g_append_stmt(self):
         v = self.k()
@@ -388,7 +472,8 @@ class Gen:
                   self.str_concat_stmt, self.str_copy_stmt, self.str_print_stmt, self.str_eq_stmt,
                   self.ss_append_stmt, self.ss_print_stmt, self.ss_set_stmt, self.ss_copy_stmt,
                   self.tag_append_stmt, self.tag_append_stmt, self.tag_print_stmt,
-                  self.mix_self_stmt, self.mix_global_stmt,
+                  self.mix_self_stmt, self.mix_global_stmt, self.global_alias_stmt,
+                  self.gs_pin_stmt, self.str_call_stmt, self.shape_stmt,
                   self.g_append_stmt, self.g_total_stmt, self.ga_push_stmt, self.ga_sum_stmt,
                   self.ga_bump_stmt, self.h_read_stmt, self.h_write_stmt, self.h_alive_stmt]
         makers += [self.old_sum_stmt]
@@ -839,7 +924,7 @@ class Gen:
             if s is not None:
                 return s
         makers = self.common() + [self.push_stmt] * 4 + [self.take_stmt] * 2 \
-            + [self.loop_stmt, self.if_stmt, self.g_set_stmt, self.g_trunc_stmt,
+            + [self.loop_stmt, self.if_stmt, self.g_set_stmt, self.g_trunc_stmt, self.ss_loop_stmt,
                self.gdrop_stmt, self.ss_trunc_stmt, self.tag_trunc_stmt, self.h_new_stmt, self.h_new_stmt,
                self.h_kill_stmt, self.h_kill_stmt,
                self.drop_stmt, self.replace_stmt, self.eat_stmt, self.if_move_stmt,
@@ -862,18 +947,25 @@ class Gen:
         return self.pick(makers)
 
     def bad_stmt(self):
-        """One statement that breaks a rule, chosen from all of them."""
-        return self.pick([self.and_move_stmt, self.field_move_stmt, self.temp_stmt,
-                          self.two_stmt, self.handle_set_stmt, self.move_root_stmt,
-                          self.free_global_stmt, self.field_call_stmt, self.ro_write_stmt,
-                          self.ro_pass_stmt, self.walk_assign_stmt, self.handle_borrow_stmt,
-                          self.elem_write_stmt, self.two_self_stmt, self.alias_param_stmt,
-                          self.alias_global_elem_stmt, self.global_ref_free_stmt])
+        """One statement that breaks a rule. The kinds take turns by seed, so each one
+        turns up regularly; if the turn's kind does not fit here, one is picked at random."""
+        ops = [self.and_move_stmt, self.field_move_stmt, self.temp_stmt,
+               self.two_stmt, self.handle_set_stmt, self.move_root_stmt,
+               self.free_global_stmt, self.field_call_stmt, self.ro_write_stmt,
+               self.ro_pass_stmt, self.walk_assign_stmt, self.handle_borrow_stmt,
+               self.elem_write_stmt, self.two_self_stmt, self.alias_param_stmt,
+               self.alias_global_elem_stmt, self.global_ref_free_stmt,
+               self.handle_index_call_stmt, self.ref_move_stmt, self.callee_free_global_stmt]
+        s = ops[self.seed % len(ops)]()
+        return s if s is not None else self.pick(ops)
 
     def program(self):
         count = self.r.randint(4, 20)
-        # about one program in five breaks one rule, at a random point
-        bad_at = self.r.randrange(count) if self.full and self.r.random() < 0.3 else None
+        # about one program in three breaks one rule, at a random point; in every other
+        # block of 20 seeds each program does, so each kind of bad statement recurs
+        # (bad_stmt picks the kind by seed) and the mutation runs see every one
+        due = self.full and (self.seed // 20) % 2 == 0
+        bad_at = self.r.randrange(count) if self.full and (self.r.random() < 0.3 or due) else None
         for idx in range(count):
             s = self.bad_stmt() if idx == bad_at else None
             if s is None:

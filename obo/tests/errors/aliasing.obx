@@ -2,38 +2,38 @@ type Node = ref record { value: int; next: ?Node }
 type Box = ref record { node: ?Node; items: []Node }
 var g = new Box{items: new []Node(0)}
 fn make(): Node { return new Node{value: 0} }
-fn grow(b: &mut Box, n: &Node) {}
-fn both(b: &mut Box, n: &mut Node) {}
-fn elemFirst(n: &mut Node, b: &mut Box) {}
-fn twoMut(a: &mut Node, b: &mut Node) {}
-fn clear(b: &mut Box) { b.items = new []Node(0) }
+fn grow(mut b: &Box, n: &Node) {}
+fn both(mut b: &Box, mut n: &Node) {}
+fn elemFirst(mut n: &Node, mut b: &Box) {}
+fn twoMut(mut a: &Node, mut b: &Node) {}
+fn clear(mut b: &Box) { b.items = new []Node(0) }
 fn main() {}
 // === a change through a parameter may free inside a global: the parameter may be it
-fn f(p: &mut Box) {
+fn f(mut p: &Box) {
     let x = &g.items
     p.items = new []Node(0)
     println(len(x))  // error: 'x' may point to freed memory
 }
 // === a change through a parameter reaches another parameter
-fn f(a: &Box, b: &mut Box) {
+fn f(a: &Box, mut b: &Box) {
     let x = &a.items
     b.items = new []Node(0)
     println(len(x))  // error: 'x' may point to freed memory
 }
 // === a mut call through a parameter reaches another parameter
-fn f(a: &Box, b: &mut Box) {
+fn f(a: &Box, mut b: &Box) {
     let x = &a.items
     clear(b)
     println(len(x))  // error: 'x' may point to freed memory
 }
 // === a mut call through a parameter reaches a global
-fn f(p: &mut Box) {
+fn f(mut p: &Box) {
     let x = &g.items
     clear(p)
     println(len(x))  // error: 'x' may point to freed memory
 }
 // === truncating through one parameter while a loop walks another, then using the element
-fn f(a: &[]Node, b: &mut []Node) {
+fn f(a: &[]Node, mut b: &[]Node) {
     for n in a {
         truncate(b, 0)
         println(n.value)  // error: 'n' may point to freed memory
@@ -46,11 +46,11 @@ fn f() {
     grow(b, b.items[0])  // error: argument 2 of grow may point inside argument 1, which is mut
 }
 // === a mut parameter and a reference inside a global
-fn f(p: &mut Box) {
+fn f(mut p: &Box) {
     grow(p, g.items[0])  // error: argument 2 of grow may point inside argument 1, which is mut
 }
 // === a mut parameter and a reference inside another parameter
-fn f(p: &mut Box, q: &Box) {
+fn f(mut p: &Box, q: &Box) {
     grow(p, q.items[0])  // error: argument 2 of grow may point inside argument 1, which is mut
 }
 // === two mut references, one inside the other

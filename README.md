@@ -40,7 +40,7 @@ from, as the Python compiler before it did.
 type Node = ref record { value: int; next: ?Node }
 type Box = ref record { items: []Node }
 
-fn step(b: &Box, n: &mut Node) {         // read the whole, change one part
+fn step(b: &Box, mut n: &Node) {         // read the whole, change one part
     n.value += len(b.items)
 }
 
@@ -62,7 +62,7 @@ fn main() {
 - **Ownership.** Every record and array has one owner. Assignment and passing by
   value move; owners free what they own at scope exit; `take(x)` moves out of an
   optional and leaves `nil`. Strings are immutable and reference counted.
-- **References** (`&T`, `&mut T`) borrow. They are second class: parameters and
+- **References** (`&T`) borrow. They are second class: parameters and
   locals only, never stored in fields or returned. That one restriction removes the
   need for lifetimes.
 - **One rule: no use after free.** Several references, mutable or not, may name
@@ -113,8 +113,9 @@ In order:
    target's address is computed before `h` runs, so a call that frees it could write
    into freed memory. Assigning to a field or element from a call that might free
    is now an error; the value is computed first.
-2. **One kind of reference.** `&` only, with `mut` declared as a fact about the
-   function rather than a second reference type.
+2. **One kind of reference** (done). `&T` is the only reference type. A parameter
+   that changes what it points to is declared `mut p: &T`; `&mut T` is an error with
+   that hint. A local reference is changeable exactly when what it borrows is.
 3. **Finer paths, inferred.** Track fields and elements, not just roots, so changing
    `w.b` no longer invalidates references into `w.a`, and two mutable elements of
    one array can be passed together when they are provably different.

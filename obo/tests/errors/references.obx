@@ -4,7 +4,7 @@ var gnode = new Node{value: 1}
 fn make(): Node { return new Node{value: 0} }
 fn eat(n: Node) {}
 fn look(n: &Node) {}
-fn change(n: &mut Node) {}
+fn change(mut n: &Node) {}
 // === using a reference after its element is replaced
 fn main() {
     let b = new Box{items: new []Node(0)}
@@ -65,7 +65,7 @@ fn f(n: &Node) {
     let b = new Box{node: n, items: new []Node(0)}  // error: cannot move out of a reference
 }
 // === moving out through a reference
-fn f(n: &mut Node) {
+fn f(mut n: &Node) {
     eat(n)  // error: cannot move out of a reference
 }
 // === moving what a for loop walks
@@ -136,8 +136,8 @@ fn f(n: &Node) {
 }
 // === a change through an ancestor still invalidates its descendants
 type Tree = ref record { kids: []Tree; v: int }
-fn reset(t: &mut Tree) {}
-fn f(t: &mut Tree) {
+fn reset(mut t: &Tree) {}
+fn f(mut t: &Tree) {
     let kids = t.kids
     for k in kids {
         let deep = k.kids

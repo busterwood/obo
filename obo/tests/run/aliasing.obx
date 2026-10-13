@@ -6,27 +6,27 @@ type Box = ref record { items: []Node }
 
 var g = new Box{items: new []Node(0)}
 
-fn bump(a: &mut Node, b: &mut Node) {    // both may be one node
+fn bump(mut a: &Node, mut b: &Node) {    // both may be one node
     a.value += 1
     b.value += 10
 }
 
-fn look(a: &Node, b: &mut Node): int {   // a sees b's change if they are one node
+fn look(a: &Node, mut b: &Node): int {   // a sees b's change if they are one node
     b.value += 5
     return a.value
 }
 
-fn step(b: &Box, n: &mut Node) {         // read the whole, change one element
+fn step(b: &Box, mut n: &Node) {         // read the whole, change one element
     n.value += len(b.items)
 }
 
-fn relink(a: &mut Node, b: &mut Node) {  // freeing below a leaves b itself valid
+fn relink(mut a: &Node, mut b: &Node) {  // freeing below a leaves b itself valid
     let keep = b                         // and a plain copy of b
     a.next = new Node{value: 99}
     keep.value = 7
 }
 
-fn reset(p: &mut Box): int {             // p may be the global: read it afresh
+fn reset(mut p: &Box): int {             // p may be the global: read it afresh
     p.items = new []Node(0)
     return len(g.items)
 }
@@ -37,7 +37,7 @@ fn mostly(p: &Box): int {                // this frees under g, so p is never g:
     return len(x)
 }
 
-fn addAll(a: &[]Node, b: &mut []Node) {  // changing values frees nothing
+fn addAll(a: &[]Node, mut b: &[]Node) {  // changing values frees nothing
     for n in a {
         b[0].value += n.value
     }

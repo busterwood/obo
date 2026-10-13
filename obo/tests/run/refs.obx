@@ -13,7 +13,7 @@ fn sum(list: &?Node): int {          // borrows: the caller keeps the list
     return t
 }
 
-fn incrementAll(list: &mut ?Node) {
+fn incrementAll(mut list: &?Node) {
     var p = list
     while p != nil {
         p.value += 1
@@ -21,7 +21,7 @@ fn incrementAll(list: &mut ?Node) {
     }
 }
 
-fn appendEnd(list: &mut Node, v: int) {
+fn appendEnd(mut list: &Node, v: int) {
     var p = list
     while true {
         let n = p.next               // borrowed through p

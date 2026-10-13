@@ -27,7 +27,7 @@ compile, but is a known problem rather than a model of good code.
 | `ref record { ... }` | a record, declared with `type` | yes |
 | `closed { ... }` | a variant type, declared with `type` | yes |
 | `?T` | a value that may be `nil`, for example `?Node` | as `T` |
-| `&T`, `&mut T` | a borrowed reference (section 4) | no |
+| `&T` | a borrowed reference (section 4) | no |
 | `^T` | a handle: a checked, non-owning link (section 5) | no |
 
 Records and closed types are declared with `type`, and may refer to each other.
@@ -117,7 +117,8 @@ The rules for moves:
 
 ## 4. References
 
-`&T` is a read-only reference and `&mut T` may change the object it points to.
+`&T` is the one reference type. A parameter declared `mut p: &T` may change the object
+it points to; one without `mut` may not.
 A reference borrows an owned value; it does not own it. A reference stays valid
 while nothing it may point into has been changed.
 
@@ -148,8 +149,10 @@ while nothing it may point into has been changed.
   ```
 
 - `&place` borrows explicitly: `let r = &items[0]`.
-- Changing through a reference needs `&mut`. A `&` parameter that is changed is an
-  error: `argument 1 of f needs a mut reference, but this one is read-only`.
+- Changing through a reference needs a `mut` parameter. Passing a read-only reference
+  to one is an error: `argument 1 of f needs a mut reference, but this one is read-only`.
+  `mut` belongs to the parameter, not the type: a local reference is changeable exactly
+  when the object it borrows is.
 - Several references may name the same object, whether mutable or not. A change
   through one reference only invalidates references that may point *inside* what
   changed, so references to the object itself stay valid.
@@ -309,7 +312,7 @@ depend on the program.
 | `store this value in a variable first: otherwise it would never be freed` | a temporary value is used directly; store it in a variable first. |
 | `store this value in a variable first: a reference cannot borrow from a temporary` | `&` needs a variable, field or element. |
 | `'<r>' may point to freed memory: something under what it points into was changed; point it again first` | a change freed what `<r>` pointed into. Borrow it again after the change. |
-| `argument <n> of <f> needs a mut reference, but this one is read-only` | the parameter is `&mut`, but the argument was borrowed read-only. |
+| `argument <n> of <f> needs a mut reference, but this one is read-only` | the parameter is `mut`, but the argument was borrowed read-only. |
 | `argument <n> of <f> may point inside argument <m>, which is mut` | two arguments may overlap and one of them changes. |
 | `'<x>' may be nil: check it with '!= nil' first` | check an optional before using its fields. |
 | `cannot borrow through a handle: pass the handle itself` | a handle can't be borrowed; pass the handle. |
@@ -322,7 +325,7 @@ depend on the program.
 
 - There is no garbage collector. Memory is freed at scope exit, on reassignment,
   or by `drop`, and the compiler checks the freeing.
-- References (`&T`, `&mut T`) borrow owned values. They are checked by the
+- References (`&T`) borrow owned values. They are checked by the
   compiler rather than by runtime collection.
 - Handles (`^T`) are the way to write back-references and graphs. They are checked
   at run time.
@@ -341,7 +344,7 @@ whose right-hand side calls a function that might free something:
 // example: error: cannot assign to a field or element across a call
 type Node = ref record { v: int; kids: []Node }
 
-fn replaceKids(n: &mut Node): Node {        // changes the array the target lives in
+fn replaceKids(mut n: &Node): Node {        // changes the array the target lives in
     return new Node{v: 7, kids: new []Node(0)}
 }
 
@@ -360,7 +363,7 @@ Compute the value first, then assign it:
 // prints 7
 type Node = ref record { v: int; kids: []Node }
 
-fn replaceKids(n: &mut Node): Node {
+fn replaceKids(mut n: &Node): Node {
     return new Node{v: 7, kids: new []Node(0)}
 }
 
@@ -377,8 +380,7 @@ fn main() {
 Finer paths are planned so that changing one element leaves references to other
 elements valid.
 
-**Planned.** One reference kind (`&`), with mutability declared as a property of
-the function. The language features listed as not yet done in the root
+**Planned.** The language features listed as not yet done in the root
 `README.md` also apply: methods and interfaces, lambdas, generic modules, `try`
 with result types, multiple modules, value records, `inout` parameters, and debug
 information.

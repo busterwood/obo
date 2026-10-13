@@ -19,7 +19,7 @@ fn area(s: &Shape): int {
     }
 }
 
-fn grow(s: &mut Shape) {
+fn grow(mut s: &Shape) {
     match s {
         Circle { s.r += 1 }                   // a change inside the variant: allowed
         Rect { s.w += 1 }

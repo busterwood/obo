@@ -863,7 +863,7 @@ type Sym = ref record {
     refDeep: bool             // it may point below its root's own object
     refParent: ?^Sym           // the reference local it was derived from
     iterating: bool           // a for loop is walking this array
-    pmodes: []int             // fn: 0 owned, 1 &, 2 &mut, per parameter
+    pmodes: []int             // fn: 0 owned, 1 &, 2 mut, per parameter
     freed: []^Sym              // fn: the globals it might free (directly or through calls)
     freesAll: bool            // fn: it might free anything (or isn't compiled yet)
 }
@@ -1339,7 +1339,7 @@ fn boundsCheck(idx: int, length: Mem, line: int) {
     trapBounds(line)
 }
 
-fn resolve(x: &mut Item) {
+fn resolve(mut x: &Item) {
     if x.mode == "elem" {
         boundsCheck(x.index, mem(x.base, -1, 0, 8), x.line)
         opMem(0x8B, x.base, mem(x.base, -1, 16, 8), true, false)
@@ -1399,7 +1399,7 @@ fn loadCond(x: Item): Item {
     return c
 }
 
-fn falseJump(x: &mut Item): []int {
+fn falseJump(mut x: &Item): []int {
     append(x.F, jcc(x.cc ^ 1))
     fixHere(x.T)
     return copyInts(x.F)
@@ -1629,7 +1629,7 @@ fn sameStates(a: &[]bool, b: &[]bool, line: int, col: int) {
 
 // Takes ownership of x's value, which is about to be stored in a variable,
 // field, element or parameter, or returned.
-fn consume(x: &mut Item) {
+fn consume(mut x: &Item) {
     if x.typ.kind == "string" {
         // the destination will hold a reference: a fresh string hands over its
         // own, anything else gets a new one (literals need none)
@@ -1681,7 +1681,7 @@ fn addStrLocal(s: ^Sym) {
 
 // ============================================================= references
 
-var refMode = 0                   // set by parseRefType: 0 plain, 1 &, 2 &mut
+var refMode = 0                   // set by parseRefType: 0 plain, 1 &
 
 // the owned local or reference parameter that x ultimately borrows from
 fn rootOf(x: &Item): ?^Sym {
@@ -1739,12 +1739,12 @@ fn ancestorOf(a: ^Sym, via: ?^Sym): bool {
     return false
 }
 
-fn makeRefLocal(v: ^Sym, x: &Item, root: ?^Sym, readOnly: bool) {
+fn makeRefLocal(v: ^Sym, x: &Item, root: ?^Sym) {
     v.refParent = parentOf(x)
     v.isRef = true
     v.isRefLocal = true
     v.refRoot = root
-    v.refMut = mutableOf(x) && !readOnly
+    v.refMut = mutableOf(x)
     v.refDeep = deepOf(x)
     append(ownedLocals, v)
 }
@@ -1790,7 +1790,7 @@ fn invalidate(root: ?^Sym, via: ?^Sym, all: bool) {
 // or only has a forward heading: then it is assumed to free anything.
 
 // a callee that cannot free anything: compiled, freeing no globals, and with
-// no &mut parameters it could free through
+// no mut parameters it could free through
 fn pureFn(f: ^Sym): bool {
     if f.addr < 0 || f == curFn || f.freesAll || len(f.freed) > 0 { return false }
     for i in 0..len(f.pmodes) {
@@ -1848,14 +1848,10 @@ fn parseRefType(): ^Type {
     refMode = 0
     if sym == T_AMP {
         next()
-        var mode = 1
-        if sym == T_IDENT && sval == "mut" {
-            next()
-            mode = 2
-        }
+        if sym == T_IDENT && sval == "mut" { error("there is one reference type, &T: write mut before the parameter name, as in mut p: &T") }
         let t = parseType()
         if !isOwned(t) { error("only records, closed types and arrays can be borrowed, not " + tname(t)) }
-        refMode = mode
+        refMode = 1
         return t
     }
     return parseType()
@@ -3099,7 +3095,7 @@ fn varDecl(kind: string, isGlobal: bool) {
             let dst = newItem("mem", rt)
             dst.base = RBP
             dst.disp = v.offset
-            makeRefLocal(v, x, root, declRef == 1)
+            makeRefLocal(v, x, root)
             store(dst, x)
             declare(v)
             return
@@ -3844,7 +3840,7 @@ fn statement(): bool {
 type Param = ref record {
     name: string
     typ: ^Type
-    mode: int                 // 0 owned, 1 &, 2 &mut
+    mode: int                 // 0 owned, 1 &, 2 mut
 }
 
 fn fnDecl() {
@@ -3853,6 +3849,12 @@ fn fnDecl() {
     let params = new []Param(0)
     expect(T_LPAREN, "")
     while sym != T_RPAREN {
+        // `mut` before the names: the function may change what the parameter points to
+        var pmut = false
+        if sym == T_IDENT && sval == "mut" {
+            next()
+            pmut = true
+        }
         let names = new []string(0)
         append(names, ident())
         while sym == T_COMMA {
@@ -3861,7 +3863,11 @@ fn fnDecl() {
         }
         expect(T_COLON, "")
         let t = parseRefType()
-        let mode = refMode
+        var mode = refMode
+        if pmut {
+            if mode == 0 { error("mut needs a reference parameter: write mut name: &T") }
+            mode = 2
+        }
         for n in names { append(params, new Param{name: n, typ: t, mode: mode}) }
         if sym != T_RPAREN { expect(T_COMMA, "',' or ')'") }
     }
@@ -4040,26 +4046,26 @@ fn compileModule() {
 
 // ============================================================= ELF output
 
-fn put16(b: &mut []byte, v: int) {
+fn put16(mut b: &[]byte, v: int) {
     append(b, byte(v))
     append(b, byte(v >> 8))
 }
 
-fn put32(b: &mut []byte, v: int) {
+fn put32(mut b: &[]byte, v: int) {
     put16(b, v)
     put16(b, v >> 16)
 }
 
-fn put64(b: &mut []byte, v: int) {
+fn put64(mut b: &[]byte, v: int) {
     put32(b, v)
     put32(b, v >> 32)
 }
 
-fn pageAlign(b: &mut []byte) {
+fn pageAlign(mut b: &[]byte) {
     while len(b) % 0x1000 != 0 { append(b, 0) }
 }
 
-fn phdr(ph: &mut []byte, flags: int, off: int, vaddr: int, filesz: int, memsz: int) {
+fn phdr(mut ph: &[]byte, flags: int, off: int, vaddr: int, filesz: int, memsz: int) {
     put32(ph, 1)
     put32(ph, flags)
     put64(ph, off)

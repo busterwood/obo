@@ -5,7 +5,7 @@ type Node = ref record { v: int; kids: []Node }
 
 fn mk(v: int): Node { return new Node{v: v, kids: new []Node(0)} }
 
-fn replaceKids(n: &mut Node): Node { return new Node{v: 7, kids: new []Node(0)} }
+fn replaceKids(mut n: &Node): Node { return new Node{v: 7, kids: new []Node(0)} }
 
 fn main() {
     var n = new Node{v: 1, kids: new []Node(0)}

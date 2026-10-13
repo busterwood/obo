@@ -4,7 +4,7 @@ type Node = ref record {
     parent: ?^Node                   // a back-reference: a handle, not ownership
 }
 
-fn addKid(parent: &mut Node, name: string) {
+fn addKid(mut parent: &Node, name: string) {
     append(parent.kids, new Node{name: name, kids: new []Node(0), parent: handle(parent)})
 }
 

@@ -113,7 +113,7 @@ nothing, because `"g" + string(2)` folds into a literal at compile time.
 
 ## Milestone 2: references (done)
 
-- `&T` and `&mut T` in parameter and local types. References are borrowed
+- `&T` in parameter and local types, with `mut` before a parameter name that changes what it points to. References are borrowed
   pointers to owned objects (records, closed types, arrays): they can't be stored
   in fields, elements or globals, returned, or made from globals or temporaries.
 - Borrowing is implicit where the destination is a reference: passing a value to
@@ -121,15 +121,15 @@ nothing, because `"g" + string(2)` folds into a literal at compile time.
   `&place` borrows explicitly, as in `var r = &b.items`. Anything owned reached
   through a reference is borrowed automatically, since nothing can be moved out
   through one.
-- Writes need a mutable reference (from an owned local or a `&mut` parameter).
+- Writes need a mutable reference (from an owned local or a `mut` parameter).
 - **Invalidation.** Each reference records its root (an owned local or reference
   parameter) and whether it may point below the root's own object. Assigning an
-  owned field or element, `take`, `truncate` and passing a `&mut` argument
+  owned field or element, `take`, `truncate` and passing a mut argument
   invalidate the root's deeper references, except the one the change went
   through; moving, reassigning or freeing the root invalidates them all. An
   invalid reference can't be used until it is pointed somewhere again, with the
   same branch and loop agreement rules as moves.
-- Passing a `&mut` argument and another reference into the same root is an
+- Passing a mut argument and another reference into the same root is an
   error. `for x in arr` over owned elements borrows each element; the array
   walked must be a local or parameter, and moving or reassigning it inside the
   loop is an error (this also closes a latent M1 hole where the loop could read a
@@ -162,7 +162,7 @@ matched variable already ended its narrowing. `tests/run/variants.obx` and
 `tests/errors/variants.obx` pin this down.
 
 Writing those tests exposed a false positive in the coarse rule: passing an
-element of a walked array as `&mut` invalidated the array itself, though a change
+element of a walked array as mut invalidated the array itself, though a change
 through the element can only free things below it. References now record the
 reference they were derived from, and a change through a reference spares its
 ancestors (sound because ownership is a tree; re-pointing an ancestor re-links
@@ -198,7 +198,7 @@ with no leaks: `hello` and `defer` unchanged, `shapes` 2 of 38 lines changed,
 - **Time.** obo matches the default collector and beats the tuned and aggressive
   ones, which pay for collecting more often. The exception: freeing a list node
   by node is slower than sweeping in bulk (lists: 54 ms against tuned GC's 42 ms).
-- **Syntax.** Small: `&` on read-only parameters and `&mut` on mutating ones
+- **Syntax.** Small: `&` on read-only parameters and `mut` on mutating ones (later, `&mut` was dropped for `mut` before the name)
   cover nearly every change. The one awkward pattern is a global, which can't be
   borrowed and must be taken out and put back.
 - **Rules.** Real but learnable: `take` instead of moving out of fields, storing
@@ -280,7 +280,7 @@ them mut, could not be passed to a call. That rule is gone.
 **Rules, as implemented** (`tools/m7_aliasing.py`, mirrored in the port by
 `tools/port_m7_aliasing.py`)
 - Several references, mut or not, may name one object: `bump(n, n)` with both
-  parameters `&mut` is fine. A change through a reference frees only things below
+  parameters `mut` is fine. A change through a reference frees only things below
   its object, never the object itself (only owners free whole objects), so
   references to the object stay valid.
 - A change under a root invalidates references that may point inside any root it
@@ -297,7 +297,7 @@ them mut, could not be passed to a call. That rule is gone.
   paths they might be one inside the other.
 
 **A hole this closed.** A reference parameter could be a global the function
-borrowed from: `f(p: &mut Box) { let x = &g.items; p.items = ...; use x }`,
+borrowed from: `f(mut p: &Box) { let x = &g.items; p.items = ...; use x }`,
 called as `f(g)`, compiled and read freed memory (segfault with a reused block).
 Nothing tracked that a parameter might be a global.
 
@@ -315,7 +315,7 @@ caught. Stage B: 340 of 340 identical, within the memory budget, fixed point hol
 else assumed disjoint parameters, and independent of aliasing: the target's address
 is computed before the right-hand side runs, so a call there can free the target.
 
-    b.items[0].next = h(b)       // h(b: &mut Box) replaces b.items: writes into freed memory
+    b.items[0].next = h(b)       // h(mut b: &Box) replaces b.items: writes into freed memory
 
 Today `pinned` only stops the target's root being moved. Both this and the variant
 through a reference local (`let e = &b.items[0]; e.next = h(b)`) compile; the leak
@@ -340,3 +340,92 @@ check catches them at run time only by luck. Next step.
 - **Starting point.** `obo` is currently identical to obxc. The first change is
   the runtime: replace the collector with explicit free plus counting, keeping the
   allocator's size classes and poisoning.
+
+## Optimization plan
+
+Status: planned, not started. Phases are ordered by expected value per unit of cost.
+Each has a gate; a phase that misses its gate is recorded here and stopped.
+
+**Baseline.** A loop `s = s + i * 2` over `i < n` compiles with every local in a stack
+slot. `s` and `i` are loaded and stored on every iteration, `i` is loaded three times,
+and the loop takes a second branch (`jmp`) back to the test. Both `s` and `i` are
+loop-carried, so each iteration waits on store-to-load forwarding: the cost is
+latency on the critical path, not only instruction count.
+
+**Ordering.** Register allocation (Phase 2) removes most of what a peephole pass would
+remove, so the peephole comes after it and may never be built.
+
+### Phase 0: measure
+
+Add four micro-benchmarks under `obo/bench/`: a tight integer loop, fib (call-heavy),
+an array-indexing loop, and an allocation-heavy loop. Record wall time, and
+instruction counts from `objdump` over the program's code segment, as the baseline.
+
+*Gate:* baseline figures recorded in this section.
+
+### Phase 1: cheap codegen
+
+- **Loop inversion.** Emit `jmp cond`, the body, then the condition at the bottom with
+  a backward conditional jump. One branch per iteration instead of two.
+- **Static stack depth.** Track the depth at compile time. Drop the alignment pads
+  (`sub rsp,0x8` / `add rsp,0x8`) around runtime calls when the depth is already
+  aligned, and drop `sub rsp,0x0` for functions with no locals.
+- **Immediate and push forms.** `push imm` instead of `mov` then `push`.
+
+*Gate:* the suite passes, benchmarks do not regress, and the byte-identity check
+below is handled (see open decisions).
+
+### Phase 2: register allocation for scalar locals
+
+- **Candidates.** `int` and `bool` locals and parameters whose address is never taken.
+  No borrow of a scalar, no handle.
+- **Choice.** A pre-scan of the function's tokens counts uses of each local. The most
+  used candidates get rbx, r12–r15 for the whole function.
+- **Calls.** The existing convention already preserves live registers: the caller
+  pushes them around calls. Check whether the push set has to grow.
+- **Single pass.** The pre-scan reads one function's tokens and emits its code once.
+  That is the one deviation from the single-pass rule, and it follows decision 5's
+  "buffer one function at a time". It is recorded here so it can be revisited.
+
+*Gate:* in the tight loop, the allocated locals make no memory accesses; the benchmark
+improves by a measured amount; fib does not regress. A mutant that drops a register
+save around a call must be caught by the suite.
+
+### Phase 3: calling convention
+
+Pass arguments of obo-to-obo calls in registers instead of pushing them on the stack.
+Do this only if Phase 2's numbers show that call overhead matters on the fib benchmark.
+
+*Gate:* fib improves; runtime calls are unchanged.
+
+### Phase 4: checks and allocation
+
+- **Redundant checks.** Hoist or remove bounds, handle and nil checks inside loops,
+  using facts from loop conditions. Reuse the narrowing machinery where it fits.
+- **Allocation.** The cause of the port's ~50% gap (Stage B, above): four arrays per
+  `Item`, and copies in `copyInts` and `dupItem`. Measure with Phase 0's allocation
+  benchmark before changing anything.
+
+*Gate:* each change shows a measured gain on its benchmark.
+
+### Peephole pass (not planned)
+
+The obx design (`README.md`, "Future work: a peephole optimizer") still applies: an
+emit-time pass that keeps the compiler single-pass. Revisit it only if reloads that
+remain after Phase 2 are measurable on the benchmarks.
+
+### Rules for every phase
+
+- Each rewrite gets a mutant in `tests/mutate_port.py`.
+- Benchmark times and instruction counts are recorded here before and after.
+- Work happens on a branch in a worktree. `seed/obo` changes only through `make
+  promote`, after the fixed point and the suite pass.
+
+### Open decisions
+
+- **Byte identity.** `tests/port_compare.py` requires the port's executables to match
+  byte for byte, and any optimization changes the bytes. Proposed: the compiler gets
+  an `--no-opt` flag, and `port_compare` uses it for the identity check. The suite
+  and the fixed point run with optimization on.
+- **Pre-scan.** Confirm that a token pre-scan is acceptable under the single-pass goal
+  before Phase 2 starts.

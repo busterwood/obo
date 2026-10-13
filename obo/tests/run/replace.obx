@@ -13,7 +13,7 @@ fn nested(): int {
     return inner
 }
 
-fn swapItems(h: &mut Holder, fresh: []Entry): []Entry {
+fn swapItems(mut h: &Holder, fresh: []Entry): []Entry {
     return replace(h.items, fresh)               // through a mutable reference
 }
 

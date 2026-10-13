@@ -1,7 +1,7 @@
 type Node = ref record { v: int; kids: []Node }
-fn replaceKids(n: &mut Node): Node { return new Node{v: 7, kids: new []Node(0)} }
+fn replaceKids(mut n: &Node): Node { return new Node{v: 7, kids: new []Node(0)} }
 fn mk(v: int): Node { return new Node{v: v, kids: new []Node(0)} }
-fn shrink(n: &mut Node): int { n.kids = new []Node(0); return 1 }
+fn shrink(mut n: &Node): int { n.kids = new []Node(0); return 1 }
 // === a call that might free the array being assigned into is an error
 fn main() {
     var n = new Node{v: 1, kids: new []Node(0)}
@@ -9,7 +9,7 @@ fn main() {
     n.kids[0] = replaceKids(n)  // error: cannot assign to a field or element across a call
 }
 // === the same through a reference parameter
-fn f(p: &mut Node) {
+fn f(mut p: &Node) {
     p.kids[0] = replaceKids(p)  // error: cannot assign to a field or element across a call
 }
 fn main() {}
