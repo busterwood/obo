@@ -10,6 +10,8 @@ poisoned, so use after free shows up as garbage.
 
   obo/tests/run/*.obx      programs, with // expect: comments as in mainline
   obo/tests/errors/*.obx   ownership errors, as in mainline (// === cases)
+  own-fuzz/*               random ownership programs, checked against a model
+                           (own_fuzz.py; --count is the number of seeds per profile)
 """
 import os
 import sys
@@ -20,9 +22,11 @@ FORK = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(os.path.dirname(FORK), 'obx', 'tests'))
 os.environ['OBO_CHECK'] = '1'
 import run  # noqa: E402
+import own_fuzz  # noqa: E402
 
 run.OBXC = os.path.abspath(os.environ.get('OBO', os.path.join(FORK, 'obo')))
 run.ROOT = FORK                                   # --rt: the fork's runtime
+FUZZ_COUNT = 50                                   # seeds per profile for own-fuzz
 
 
 def main():
@@ -38,6 +42,7 @@ def main():
         if f.endswith('.obx'):
             for name, src, lo, hi in run.error_cases(os.path.join(HERE, 'errors', f)):
                 tests.append((f"errors/{name}", lambda s=src, lo=lo, hi=hi: run.error_test(s, lo, hi)))
+    tests += own_fuzz.tests(FUZZ_COUNT)
     tests = [t for t in tests if pattern in t[0]]
     t0 = time.perf_counter()
     failed = 0
