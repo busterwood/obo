@@ -41,7 +41,7 @@ def main():
     cases = []
     for f in sorted(glob.glob(os.path.join(FORK, 'tests', 'run', '*.obx')) + glob.glob(os.path.join(FORK, 'examples', '*.obx')) +
                     glob.glob(os.path.join(FORK, 'bench', '*.obx')) + glob.glob(os.path.join(ROOT, 'tests', 'run', '*.obx')) +
-                    glob.glob(os.path.join(ROOT, 'examples', '*.obx')) + [os.path.join(FORK, 'src', 'obo-on-obx.obx'), SRC]):
+                    glob.glob(os.path.join(ROOT, 'examples', '*.obx')) + [SRC]):
         cases.append((os.path.relpath(f, ROOT), open(f, 'rb').read()))
     for f in sorted(glob.glob(os.path.join(FORK, 'tests', 'errors', '*.obx')) + glob.glob(os.path.join(ROOT, 'tests', 'errors', '*.obx'))):
         for name, text, _, _ in run.error_cases(f):

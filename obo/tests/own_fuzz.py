@@ -43,7 +43,16 @@ PRELUDE = [
     "fn sum(l: &?Node): int { var t = 0; var p = l; while p != nil { t += p.value; p = p.next }; return t }",
     "fn bump(l: &mut ?Node) { var p = l; while p != nil { p.value += 1; p = p.next } }",
     "fn total(xs: &[]Node): int { var t = 0; for n in xs { t += n.value }; return t }",
+    "fn eat(l: ?Node): int { return sum(l) }",
+    "fn two(a: &mut Node, b: &mut Node) { a.value += 1; b.value += 10 }",
+    "fn stepArr(xs: &[]Node, n: &mut Node) { n.value += len(xs) }",
+    "fn bumpRef(n: &mut Node) { n.value += 1 }",
     "fn gdrop() { ga = nil }",
+    "fn shrinkInt(a: &mut []Node): int { truncate(a, 0); return 1 }",
+    "fn fresh(): []Node { return new []Node(0) }",
+    "fn f2() { gdrop() }",
+    "fn viaF2(l: &?Node): int { f2(); return sum(l) }",
+    "fn sumFree(l: &?Node): int { gdrop(); return sum(l) }",
 ]
 NAMES = 'abc'          # owned optional locals
 STRVARS = ['sa', 'sb', 'gs']
@@ -92,6 +101,7 @@ class State:
         self.ss = []                            # the local array of strings
         self.refs = {}                          # name -> [node, still valid?]
         self.handles = {}                       # name -> node the handle names
+        self.olds = {}                          # name -> value returned by replace()
         self.out = []                           # the expected output lines
 
 
@@ -125,6 +135,7 @@ class Gen:
         self.lines = []
         self.nrefs = 0
         self.nhandles = 0
+        self.nold = 0
 
     def live(self):
         return [n for n in NAMES if not self.st.moved[n]]
@@ -308,8 +319,9 @@ class Gen:
                   self.ss_append_stmt, self.ss_print_stmt, self.ss_set_stmt, self.ss_copy_stmt,
                   self.g_append_stmt, self.g_total_stmt, self.ga_push_stmt, self.ga_sum_stmt,
                   self.ga_bump_stmt, self.h_read_stmt, self.h_write_stmt, self.h_alive_stmt]
+        makers += [self.old_sum_stmt]
         if self.full:
-            makers += [self.ref_read_stmt, self.ref_write_stmt]
+            makers += [self.ref_read_stmt, self.ref_write_stmt, self.stepArr_stmt]
         return makers
 
     def inner(self):
@@ -466,6 +478,204 @@ class Gen:
             del st.ss[n:]
         return Stmt([f"truncate(ss, {n})"], run)
 
+    def old_sum_stmt(self):
+        if not self.st.olds:
+            return None
+        o = self.r.choice(sorted(self.st.olds))
+        return Stmt([f"println(sum({o}))"], lambda st: st.out.append(str(chain_sum(st.olds[o]))))
+
+    def stepArr_stmt(self):
+        refs = self.valid_refs()
+        if not refs or not self.st.xs:
+            return None
+        n = self.r.choice(refs)
+
+        def run(st):
+            st.refs[n][0].v += len(st.xs)
+            for other, ref in st.refs.items():     # a mut change through n invalidates the rest
+                if other != n:
+                    ref[1] = False
+        return Stmt([f"stepArr(xs, {n})"], run)
+
+    # ---- top-level ownership statements
+
+    def drop_stmt(self):
+        live = self.live()
+        if not live:
+            return None
+        x = self.r.choice(live)
+
+        def run(st):
+            free(st.opt[x])
+            st.opt[x] = None
+            st.moved[x] = True
+        return Stmt([f"drop({x})"], run)
+
+    def replace_stmt(self):
+        live = self.live()
+        if not live:
+            return None
+        x, v = self.r.choice(live), self.k()
+        name = f"o{self.nold}"
+        self.nold += 1
+
+        def run(st):
+            st.olds[name] = st.opt[x]
+            st.opt[x] = Obj(v)
+        return Stmt([f"let {name} = replace({x}, push(nil, {v}))"], run)
+
+    def eat_stmt(self):
+        live = self.live()
+        if not live:
+            return None
+        x = self.r.choice(live)
+
+        def run(st):
+            st.out.append(str(chain_sum(st.opt[x])))
+            free(st.opt[x])
+            st.opt[x] = None
+            st.moved[x] = True
+        return Stmt([f"println(eat({x}))"], run)
+
+    def pair(self):
+        live = self.live()
+        if len(live) < 2:
+            return None
+        return self.r.sample(live, 2)
+
+    def if_move_stmt(self):
+        pr = self.pair()
+        if pr is None:
+            return None
+        x, y = pr
+        t = self.r.randint(0, 12)
+        kind = 'one' if self.full and self.r.random() < 0.1 else self.r.choice(['both', 'none'])
+        # 'one' moves on one branch only, which the rules reject
+        if kind == 'one':
+            self.invalid = True
+        then_mv = kind in ('both', 'one')
+        else_mv = kind == 'both'
+        then_b = [f"    {y} = {x}"] if then_mv else []
+        else_b = [f"    {y} = {x}"] if else_mv else []
+
+        def run(st):
+            if kind == 'both':
+                free(st.opt[y]) if not st.moved[y] else None
+                st.opt[y] = st.opt[x]
+                st.moved[x] = True
+                st.moved[y] = False
+        return Stmt([f"if sum({x}) > {t} {{"] + then_b + ["} else {"] + else_b + ["}"], run)
+
+    def loop_move_stmt(self):
+        pr = self.pair()
+        if pr is None:
+            return None
+        x, y = pr
+        n, v = self.r.randint(1, 3), self.k()
+        restore = not (self.full and self.r.random() < 0.1)   # without it the loop changes states
+        if not restore:
+            self.invalid = True
+        body = [f"    {y} = {x}"] + ([f"    {x} = push(nil, {v})"] if restore else [])
+
+        def run(st):
+            if not restore:
+                return
+            for _ in range(n):
+                free(st.opt[y])
+                st.opt[y] = st.opt[x]
+                st.opt[x] = Obj(v)
+        return Stmt([f"for i in 0..{n} {{"] + body + ["}"], run)
+
+    def bumpRef_stmt(self):
+        refs = self.valid_refs()
+        if not refs:
+            return None
+        n = self.r.choice(refs)
+
+        def run(st):
+            st.refs[n][0].v += 1
+            for other, ref in st.refs.items():
+                if other != n:
+                    ref[1] = False
+        return Stmt([f"bumpRef({n})"], run)
+
+    # ---- statements the rules reject: the program is invalid
+
+    def invalid_stmt(self, lines):
+        self.invalid = True
+        return Stmt(lines, lambda st: None)
+
+    def and_move_stmt(self):
+        pr = self.pair()
+        if pr is None:
+            return None
+        x, y = pr
+        return self.invalid_stmt([f"if sum({x}) > 0 && eat({y}) > 0 {{", "    println(1)", "}"])
+
+    def field_move_stmt(self):
+        live = self.live()
+        if not live:
+            return None
+        x = self.r.choice(live)
+        return self.invalid_stmt([f"if {x} != nil {{", f"    let t = {x}.next", "}"])
+
+    def ref_dead_stmt(self):
+        """Reads a reference that a change has invalidated: the program is invalid."""
+        bad = [n for n, (node, ok) in self.st.refs.items() if not ok]
+        if not bad:
+            return None
+        return self.invalid_stmt([f"println({self.r.choice(bad)}.value)"])
+
+    def mut_call_dead_stmt(self):
+        """A mutable call through one reference invalidates another, which is then read."""
+        if not self.st.xs:
+            return None
+        a, b = f"r{self.nrefs}", f"r{self.nrefs + 1}"
+        self.nrefs += 2
+        i, j = self.r.randrange(len(self.st.xs)), self.r.randrange(len(self.st.xs))
+        call = self.r.choice([f"bumpRef({a})", f"stepArr(xs, {a})"])
+        return self.invalid_stmt([f"var {a} = &xs[{i}]", f"var {b} = &xs[{j}]", call,
+                                  f"println({b}.value)"])
+
+    def discard_stmt(self):
+        """An owned result that is never stored: it is freed at once."""
+        v = self.k()
+        return Stmt([f"mk({v})"], lambda st: None)
+
+    def handle_set_stmt(self):
+        hs = sorted(self.st.handles)
+        if not hs:
+            return None
+        return self.invalid_stmt([f"{self.r.choice(hs)}.value = shrinkInt(xs)"])
+
+    def move_root_stmt(self):
+        r, z = f"r{self.nrefs}", f"z{self.nold}"
+        self.nrefs += 1
+        self.nold += 1
+        return self.invalid_stmt([f"var {r} = &xs[0]", f"let {z} = xs", f"println({r}.value)"])
+
+    def free_global_stmt(self):
+        return self.invalid_stmt([f"println({self.r.choice(['sumFree', 'viaF2'])}(ga))"])
+
+    def field_call_stmt(self):
+        return self.invalid_stmt(["xs[0] = mk(shrinkInt(xs))"])
+
+    def temp_stmt(self):
+        v = self.k()
+        form = self.r.randrange(3)
+        if form == 0:
+            return self.invalid_stmt([f"println(mk({v}).value)"])
+        if form == 1:
+            return self.invalid_stmt([f"println(sum(push(nil, {v})))"])
+        return self.invalid_stmt(["println(len(fresh()))"])
+
+    def two_stmt(self):
+        refs = self.valid_refs()
+        if not refs:
+            return None
+        n = self.r.choice(refs)
+        return self.invalid_stmt([f"two({n}, {n})"])
+
     def h_new_stmt(self):
         srcs = [(n, lst) for n, lst in (('xs', self.st.xs), ('gxs', self.st.gxs)) if lst]
         if not srcs:
@@ -525,20 +735,41 @@ class Gen:
                 return s
         makers = self.common() + [self.push_stmt] * 4 + [self.take_stmt] * 2 \
             + [self.loop_stmt, self.if_stmt, self.g_set_stmt, self.g_trunc_stmt,
-               self.gdrop_stmt, self.ss_trunc_stmt, self.h_new_stmt, self.h_new_stmt, self.h_kill_stmt, self.h_kill_stmt]
+               self.gdrop_stmt, self.ss_trunc_stmt, self.h_new_stmt, self.h_new_stmt,
+               self.h_kill_stmt, self.h_kill_stmt,
+               self.drop_stmt, self.replace_stmt, self.eat_stmt, self.if_move_stmt,
+               self.loop_move_stmt, self.discard_stmt]
         if self.full:
             makers += [self.move_stmt] * 2 + [self.elem_set_stmt, self.truncate_stmt,
-                                              self.ref_new_stmt, self.h_dead_stmt]
-            if self.r.random() < 0.08:
+                                              self.ref_new_stmt, self.h_dead_stmt, self.bumpRef_stmt]
+            if self.r.random() < 0.1:
+                s = self.ref_dead_stmt()
+                if s is not None:
+                    return s
+            if self.r.random() < 0.04:
+                s = self.mut_call_dead_stmt()
+                if s is not None:
+                    return s
+            if self.r.random() < 0.03:
                 s = self.inject_stmt()
                 if s is not None:
                     return s
         return self.pick(makers)
 
+    def bad_stmt(self):
+        """One statement that breaks a rule, chosen from all of them."""
+        return self.pick([self.and_move_stmt, self.field_move_stmt, self.temp_stmt,
+                          self.two_stmt, self.handle_set_stmt, self.move_root_stmt,
+                          self.free_global_stmt, self.field_call_stmt])
+
     def program(self):
         count = self.r.randint(4, 20)
-        for _ in range(count):
-            s = self.step()
+        # about one program in five breaks one rule, at a random point
+        bad_at = self.r.randrange(count) if self.full and self.r.random() < 0.2 else None
+        for idx in range(count):
+            s = self.bad_stmt() if idx == bad_at else None
+            if s is None:
+                s = self.step()
             if s is None:
                 continue
             s.run(self.st)

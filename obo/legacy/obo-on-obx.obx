@@ -3149,6 +3149,10 @@ fn assignmentOrCall(): bool {
             if x.deref && r0 != nil && r0.storage == "global" && isOwned(symType(r0)) && userCalls != callsBefore {
                 errorAt("cannot assign through global '" + r0.name + "' across a call: the call could free what it points into", line, col)
             }
+            if xs == nil && userCalls != callsBefore {
+                // a field or element: the call could free the record or array it is in
+                errorAt("cannot assign to a field or element across a call: the call could free what it is in; compute the value first", line, col)
+            }
             if xs != nil && xs.storage == "local" && !assignable(x.typ, y.typ) { widen(xs) }
             if isOwned(dtype) {
                 if xs != nil && xs.storage == "local" {

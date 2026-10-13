@@ -1,13 +1,13 @@
-# obo: the ownership language. Its compiler is written in obx (with GC), in
-# src/obo-on-obx.obx, and built by ../obx/obxc. It is not self-hosting until the
-# ownership model is proven; src/obo.obo is the compiler written in obo.
+# obo: the ownership language. Its compiler is written in obo (src/obo.obo) and is
+# built by seed/obo, the last promoted compiler. Nothing here needs obx.
 CFLAGS = -O2 -ffreestanding -fno-builtin -nostdlib -fno-pic -fno-pie -fno-stack-protector \
          -fno-asynchronous-unwind-tables -mcmodel=small -fno-tree-loop-distribute-patterns -Wall
 
 all: runtime_text.bin runtime_data.bin obo
 
-obo: src/obo-on-obx.obx ../obx/obxc
-	../obx/obxc src/obo-on-obx.obx -o obo --rt ../obx
+# the compiler, built from source by the seed compiler
+obo: src/obo.obo seed/obo runtime_text.bin runtime_data.bin
+	./seed/obo src/obo.obo -o obo --rt .
 
 runtime.elf: runtime/runtime.c runtime/entry.S runtime/rt.ld
 	gcc $(CFLAGS) -c runtime/runtime.c -o runtime.o
@@ -20,5 +20,15 @@ runtime_text.bin: runtime.elf
 runtime_data.bin: runtime.elf
 	objcopy -O binary -j .data --set-section-flags .data=alloc,load,contents runtime.elf $@
 
+# make the current compiler the new seed, once it is a fixed point and the suite passes
+promote: obo
+	./obo src/obo.obo -o .stage2 --rt .
+	./.stage2 src/obo.obo -o .stage3 --rt .
+	cmp .stage2 .stage3
+	OBO=./.stage2 python3 tests/run_fork.py
+	cp .stage2 seed/obo
+	rm -f .stage2 .stage3
+	@echo "seed/obo updated"
+
 clean:
-	rm -f *.o *.elf *.bin obo
+	rm -f *.o *.elf *.bin obo .stage2 .stage3

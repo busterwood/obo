@@ -332,12 +332,13 @@ depend on the program.
 
 ## 10. Known holes and planned changes
 
-**A known hole: assignment targets across calls.** The target of an assignment is
-located before the right-hand side is evaluated. If a call on the right frees the
-target, the write goes to freed memory. The program below compiles today:
+**Assignment targets across calls.** The target of an assignment is located before
+the right-hand side is evaluated, so a call on the right that frees the target would
+write into freed memory. The compiler therefore rejects a field or element assignment
+whose right-hand side calls a function that might free something:
 
 ```obo
-// example: compiles
+// example: error: cannot assign to a field or element across a call
 type Node = ref record { v: int; kids: []Node }
 
 fn replaceKids(n: &mut Node): Node {        // changes the array the target lives in
@@ -347,13 +348,30 @@ fn replaceKids(n: &mut Node): Node {        // changes the array the target live
 fn main() {
     var n = new Node{v: 1, kids: new []Node(0)}
     append(n.kids, new Node{v: 2, kids: new []Node(0)})
-    n.kids[0] = replaceKids(n)              // the target may be freed by the call
+    n.kids[0] = replaceKids(n)
     println(n.kids[0].v)
 }
 ```
 
-This is the next item to fix (`fork/FORK.md`, "Open: assignment targets across
-calls").
+Compute the value first, then assign it:
+
+```obo
+// example: runs
+// prints 7
+type Node = ref record { v: int; kids: []Node }
+
+fn replaceKids(n: &mut Node): Node {
+    return new Node{v: 7, kids: new []Node(0)}
+}
+
+fn main() {
+    var n = new Node{v: 1, kids: new []Node(0)}
+    append(n.kids, new Node{v: 2, kids: new []Node(0)})
+    let fresh = replaceKids(n)
+    n.kids[0] = fresh
+    println(n.kids[0].v)
+}
+```
 
 **Coarse invalidation.** References are invalidated per array, not per element.
 Finer paths are planned so that changing one element leaves references to other

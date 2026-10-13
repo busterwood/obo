@@ -50,7 +50,7 @@ def main():
                    glob.glob(os.path.join(ROOT, 'examples', '*.obx')) +
                    glob.glob(os.path.join(FORK, 'tests', '*', '*.obx')) +
                    glob.glob(os.path.join(FORK, 'bench', '*.obx')) +
-                   [os.path.join(FORK, 'src', 'obo-on-obx.obx'), os.path.join(FORK, 'src', 'obo.obo'),
+                   [os.path.join(FORK, 'src', 'obo.obo'),
                     os.path.join(ROOT, 'src', 'obxc.obx')])
     failures, count = [], 0
     for f in files:

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Mutation testing for obo: plants ownership bugs in a copy of obo-on-obx.obx, builds
-each with mainline obxc, and checks that the fork's tests fail. Bugs that free
+"""Mutation testing for obo: plants ownership bugs in a copy of src/obo.obo, builds
+each with the seed compiler, and checks that the suite fails. Bugs that free
 too little must be caught by the leak check, bugs that free too much by the
 double-free check or poisoning, and missing compile-time checks by the error
 tests.
@@ -13,7 +13,27 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FORK = os.path.dirname(HERE)
-ROOT = os.path.join(os.path.dirname(FORK), 'obx')
+
+# Patterns for the port where the text differs from the original obx compiler.
+PORT_PATTERNS = {
+    "scope exit frees nothing": ("        callDefers(last)\n        freeOwned(om, len(ownedLocals))\n",
+                                 "        callDefers(last)\n"),
+    "early exits free nothing": ("        freeOwned(om, top)\n", ""),
+    "records don't free their fields": ("        if isOwned(ft) { append(ptrs, fo) }                      // the fields freed with the record\n", ""),
+    "copies take no reference": ('        } else if x.mode != "const" {\n            let r = rtCall1(RT_STR_INC, dupItem(x), tString)',
+                                 '        } else if false {\n            let r = rtCall1(RT_STR_INC, dupItem(x), tString)'),
+    "loop variable takes no reference": ("            let held = rtCall1(RT_STR_INC, dupItem(vi), tString)   // and hold the new one\n            release(held.r)\n", ""),
+    "records keep their strings": ("        if ft.kind == \"string\" { append(strs, fo) }              // and the strings it drops\n", ""),
+    "callees never free globals": ("    if f.addr < 0 || f == curFn || f.freesAll { return true }\n    for xI in 0..len(f.freed) {",
+                                   "    if false { return true }\n    for xI in 0..len(f.freed) {"),
+    "frees not recorded": ('    if g.storage != "global" { return }\n    for xI in 0..len(f.freed) {',
+                           '    if true { return }\n    for xI in 0..len(f.freed) {'),
+    "loop moves unchecked": ("    if !term {\n        let now = snapshot()", "    if false {\n        let now = snapshot()"),
+    "string locals never dropped": ("            if s.isStr {\n                rtCall1(RT_STR_DEC, x, tVoid)",
+                                    "            if s.isStr {\n                rtCall1(RT_STR_INC, x, tVoid)"),
+    "dropped results kept": ("            if isOwned(x.typ) {\n                rtCall1(RT_FREE, x, tVoid)                 // a dropped result is freed at once",
+                             "            if false {\n                rtCall1(RT_FREE, x, tVoid)                 // a dropped result is freed at once"),
+}
 
 MUTANTS = {
     # freeing too little: the leak check must notice
@@ -79,25 +99,27 @@ MUTANTS = {
     "global changes reach parameters": ("    if changed == other { return true }\n", "    if changed == other || changed.storage == \"global\" { return true }\n"),
     "calls check only one root": ("argDeeps[j] && ri != nil && rj != nil && reaches(ri, rj)", "argDeeps[j] && ri != nil && rj != nil && ri == rj"),
     "calls ignore depth": ("argModes[i] == 2 && argDeeps[j] && ri", "argModes[i] == 2 && ri"),
+    # assigning into a field or element while a call might free it
+    "field targets assigned across calls": ("            if xs == nil && userCalls != callsBefore {", "            if false && userCalls != callsBefore {"),
 }
 
 
 def main():
     pattern = sys.argv[1] if len(sys.argv) > 1 else ''
-    src = open(os.path.join(FORK, 'src', 'obo-on-obx.obx')).read()
+    src = open(os.path.join(FORK, 'src', 'obo.obo')).read()
     work = tempfile.mkdtemp(prefix='obo-mutant-')
     missed = []
     names = [n for n in MUTANTS if pattern in n]
     for name in names:
-        old, new = MUTANTS[name]
+        old, new = PORT_PATTERNS.get(name, MUTANTS[name])
         if src.count(old) != 1:
             print(f"STALE   {name} (pattern found {src.count(old)} times)")
             missed.append(name)
             continue
-        with open(os.path.join(work, 'obo-on-obx.obx'), 'w') as f:
+        with open(os.path.join(work, 'obo.obo'), 'w') as f:
             f.write(src.replace(old, new))
         exe = os.path.join(work, 'obo')
-        b = subprocess.run([os.path.join(ROOT, 'obxc'), os.path.join(work, 'obo-on-obx.obx'), '-o', exe, '--rt', ROOT],
+        b = subprocess.run([os.path.join(FORK, 'seed', 'obo'), os.path.join(work, 'obo.obo'), '-o', exe, '--rt', FORK],
                            capture_output=True, text=True)
         if b.returncode != 0:
             print(f"BROKEN  {name}: {b.stderr.strip()[:120]}")

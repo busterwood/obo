@@ -109,10 +109,10 @@ The aim is a compiler you can trust, so the process matters as much as the code.
 
 In order:
 
-1. **Assignment targets across calls** (next). In `b.items[0].next = h(b)` the
-   target's address is computed before `h` runs, so a call that frees it writes
-   into freed memory. It compiles today; the fix treats the target as a reference
-   for the duration of the right-hand side.
+1. **Assignment targets across calls** (done). In `b.items[0].next = h(b)` the
+   target's address is computed before `h` runs, so a call that frees it could write
+   into freed memory. Assigning to a field or element from a call that might free
+   is now an error; the value is computed first.
 2. **One kind of reference.** `&` only, with `mut` declared as a fact about the
    function rather than a second reference type.
 3. **Finer paths, inferred.** Track fields and elements, not just roots, so changing
@@ -122,9 +122,10 @@ In order:
    let it shed workarounds written for stricter rules (copies, index loops, storing
    temporaries first), and each one removed is also a measure of simplicity: how
    far obo code must differ from straightforward code.
-5. **The move.** A committed obo bootstrap built from the port, a promote rule with
-   the fixed point, the mutants retargeted at the port, the remaining tests and
-   examples ported, and obx and `obo/src/obo-on-obx.obx` retired to `legacy/`.
+5. **The move** (done). obo's compiler is the port, built by a committed seed
+   (`obo/seed/obo`), with `make promote` checking the fixed point and the suite before
+   replacing the seed. The mutants run against the port, and `obo-on-obx.obx` is
+   retired to `obo/legacy/`.
 6. **Then the language again**: methods and interfaces, and the rest of the list
    under "Not yet done", each designed to fit the single pass and the ownership
    model.
@@ -140,8 +141,8 @@ message says what to do instead.
 | `obx/src/obxc.obx` | obx's compiler, in obx |
 | `obx/seed/obxc` | the trusted previous stage, which builds the current compiler |
 | `obx/tests/` | obx's suite, mutants and stage comparisons |
-| `obo/src/obo-on-obx.obx` | obo's compiler, in obx (built by `obx/obxc`) |
-| `obo/src/obo.obo` | obo's compiler, in obo: the port |
+| `obo/src/obo.obo` | obo's compiler, in obo, built by `obo/seed/obo` (promote with `make promote`) |
+| `obo/legacy/obo-on-obx.obx` | obo's first compiler, in obx: retired, kept for reference |
 | `obo/FORK.md` | obo's design decisions, milestones, measurements and findings |
 | `obo/runtime/` | obo's runtime: no collector, leak and double-free counting |
 | `obo/tools/` | the patch scripts behind each change |
@@ -369,6 +370,37 @@ Methods and interfaces, lambdas, generic
 modules, result types with `try`, multiple modules with symbol files, value records,
 inout parameters, a `>>>` logical shift, and debug info. Each was designed earlier
 to fit the single pass.
+
+### Future work: a peephole optimizer
+
+The generated code is register-based, but unoptimised: a value is often stored to a
+local and immediately reloaded (`mov [rbp-8],rbx` then `mov r8,[rbp-8]`), and
+`sub rsp,0x0` is emitted for functions with no locals. Options, in the order we would
+try them:
+
+- **Emit-time peephole.** Before each instruction is appended, look back at the last
+  one or two and rewrite them if they match. This keeps the compiler single-pass. A
+  rewrite is only safe if no jump or call target falls between the instructions, so
+  the compiler must record its fixup and label positions and stop rewriting there.
+- **Post-pass.** A separate pass over the finished code, which must also rewrite every
+  jump and call offset. Needs a relocation table the compiler does not yet have.
+
+Rules that any rewrite must keep:
+
+- **Keep the stores.** The runtime's collector scans the obx stack conservatively, so
+  a value that lives only in a register could be missed. Only reloads may become
+  register moves (`mov r8,rbx`); stores stay.
+- **Keep the call sequence.** Live registers are pushed around every runtime call, and
+  the stack alignment check depends on the exact stack depth at each call.
+
+Candidate rewrites: reload-after-store to a register move; dropping the zero-size
+`sub rsp,0x0`; computing a result directly in `rax` rather than copying it there.
+
+Checks for any rewrite: the encoder test (objdump cross-check) must still pass for
+new instruction forms; the stage tests will show every change in generated code as a
+difference against the bootstrap, which must be reviewed and then promoted; each rewrite
+gets a mutant, so the suite proves it is exercised; and the benchmarks show whether the
+gain is real.
 
 ## The ownership dialect
 

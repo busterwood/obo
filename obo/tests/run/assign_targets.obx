@@ -1,0 +1,20 @@
+// A field or element may be assigned from a call that cannot free anything
+// (mk, sum), and from a call that might free it once the value is computed
+// first.
+type Node = ref record { v: int; kids: []Node }
+
+fn mk(v: int): Node { return new Node{v: v, kids: new []Node(0)} }
+
+fn replaceKids(n: &mut Node): Node { return new Node{v: 7, kids: new []Node(0)} }
+
+fn main() {
+    var n = new Node{v: 1, kids: new []Node(0)}
+    append(n.kids, mk(2))
+    n.kids[0] = mk(9)
+    println(n.kids[0].v)                // expect: 9
+    n.v = n.kids[0].v + 1
+    println(n.v)                        // expect: 10
+    let fresh = replaceKids(n)          // computed first, so the call may free freely
+    n.kids[0] = fresh
+    println(n.kids[0].v)                // expect: 7
+}
