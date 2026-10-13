@@ -18,15 +18,15 @@ representation and writes x86-64 machine code straight into an ELF executable.
 There are two dialects of one language.
 
 - **obx** is the original: garbage collected, self-hosting, with about 925 tests and
-  47 mutants guarding them. Its compiler, `selfhost/obxc.obx`, is about 3,200 lines.
+  47 mutants guarding them. Its compiler, `obx/src/obxc.obx`, is about 3,200 lines.
   Everything from "Reference: mainline obx" below describes it.
-- **obo** (in `fork/`) replaces the collector with single ownership, borrowed
+- **obo** (in `obo/`) replaces the collector with single ownership, borrowed
   references and run-time-checked handles. On the benchmarks it uses 2 to 6 times
   less memory than even an aggressively tuned collector, at similar speed, with
   small changes to source code.
 
 The decisive test was the compiler itself. obo's compiler has been rewritten in
-the obo dialect (`fork/port/obo_own_wip.obx`), and it compiles every test program
+the obo dialect (`obo/src/obo.obo`), and it compiles every test program
 and error case byte-for-byte as obo does, and itself to a fixed point. Compiling
 its own source it peaks at 1.5 MB, against 2.5 MB for the same logic on a tuned
 collector and 1.9 MB on an aggressive one. It is still about 50% slower.
@@ -100,7 +100,7 @@ The aim is a compiler you can trust, so the process matters as much as the code.
   when it is lost. Memory is an example: the port compiling itself must stay within
   a recorded live-memory budget, measured exactly by the runtime (`OBO_STATS=1`).
 - **Edits by script.** Large changes are made by patch scripts that assert every
-  replacement matches exactly once (`fork/tools/`), so they are repeatable and
+  replacement matches exactly once (`obo/tools/`), so they are repeatable and
   reviewable.
 - **Problems reported plainly**, including holes in work already done. Two
   use-after-free holes in obo were found this way; one is closed, one is next.
@@ -124,7 +124,7 @@ In order:
    far obo code must differ from straightforward code.
 5. **The move.** A committed obo bootstrap built from the port, a promote rule with
    the fixed point, the mutants retargeted at the port, the remaining tests and
-   examples ported, and obx and `fork/obo.obx` retired to `legacy/`.
+   examples ported, and obx and `obo/src/obo-on-obx.obx` retired to `legacy/`.
 6. **Then the language again**: methods and interfaces, and the rest of the list
    under "Not yet done", each designed to fit the single pass and the ownership
    model.
@@ -137,22 +137,24 @@ message says what to do instead.
 
 | | |
 |---|---|
-| `selfhost/obxc.obx` | obx's compiler, in obx |
-| `fork/obo.obx` | obo's compiler, in obx (built by `../obxc`) |
-| `fork/port/obo_own_wip.obx` | obo's compiler, in obo: the port |
-| `fork/FORK.md` | obo's design decisions, milestones, measurements and findings |
-| `fork/runtime/` | obo's runtime: no collector, leak and double-free counting |
-| `fork/tools/` | the patch scripts behind each change |
+| `obx/src/obxc.obx` | obx's compiler, in obx |
+| `obx/seed/obxc` | the trusted previous stage, which builds the current compiler |
+| `obx/tests/` | obx's suite, mutants and stage comparisons |
+| `obo/src/obo-on-obx.obx` | obo's compiler, in obx (built by `obx/obxc`) |
+| `obo/src/obo.obo` | obo's compiler, in obo: the port |
+| `obo/FORK.md` | obo's design decisions, milestones, measurements and findings |
+| `obo/runtime/` | obo's runtime: no collector, leak and double-free counting |
+| `obo/tools/` | the patch scripts behind each change |
 
 ```
-make && ./run_tests.sh                    # obx: build and test (about 18 s)
-cd fork && make && cd ..                  # obo
-python3 fork/tests/run_fork.py            # obo's tests, leak check always on
-python3 fork/tests/mutate_fork.py         # obo's mutants
-python3 fork/tests/port_test.py           # the port, stage A (scanner and encoder)
-python3 fork/tests/port_compare.py        # the port, stage B (everything), with the memory budget
-python3 fork/tests/mutate_port.py         # the port's mutants
-python3 fork/bench/bench.py               # memory and time against the collector
+cd obx && make && ./run_tests.sh         # obx: build and test (about 8 s)
+cd obo && make                           # obo: build (needs obx built first)
+cd obo && python3 tests/run_fork.py      # obo's tests, leak check always on
+cd obo && python3 tests/mutate_fork.py   # obo's mutants
+cd obo && python3 tests/port_test.py     # the port: tokens and encoder, against obo
+cd obo && python3 tests/port_compare.py  # the port, stage B (everything), with the memory budget
+cd obo && python3 tests/mutate_port.py   # the port's mutants
+cd obo && python3 bench/bench.py         # memory and time against the collector
 ```
 
 ---
@@ -165,7 +167,8 @@ representation, and x86-64 machine code written straight into a static Linux ELF
 executable with no assembler or linker involved. The compiler is written in obx.
 
 ```
-make                         # the runtime (needs gcc), then obxc from the bootstrap
+cd obx
+make                         # the runtime (needs gcc), then obxc from seed/obxc
 ./obxc examples/shapes.obx --rt .
 ./examples/shapes
 ./run_tests.sh               # the full suite, under twenty seconds
@@ -257,7 +260,7 @@ Implemented:
 
 ## Architecture
 
-The compiler, `selfhost/obxc.obx`, is laid out in the order it is read: scanner,
+The compiler, `src/obxc.obx`, is laid out in the order it is read: scanner,
 x64 encoder, types and items, expressions, statements, declarations, ELF writer.
 
 - **Scanner** with Go-style semicolon insertion. It works on bytes: columns count
@@ -324,20 +327,21 @@ traps immediately with exit code 4 rather than crashing later.
 
 ## Self-hosting
 
-`selfhost/obxc.obx` is the obx compiler, written in obx: about 3,100 lines covering
+`src/obxc.obx` is the obx compiler, written in obx: about 3,100 lines covering
 the whole language, the x64 encoder and the ELF writer. It is the only compiler.
 The original compiler, written in Python, is kept in `legacy/` for reference only;
 nothing builds or tests with it. The test tooling is still Python (the runner, the
 fuzzer's model, the mutation driver), since it needs no compiler of its own.
 
 ```
-make                                  # runtime, then obxc built by bootstrap/obxc
+cd obx
+make                                  # runtime, then obxc built by seed/obxc
 ./obxc examples/shapes.obx --rt .     # obxc SOURCE [-o OUT] [--rt RUNTIME_DIR]
 ./run_tests.sh                        # the suite, against ./obxc
-make promote                          # make ./obxc the new bootstrap (see below)
+make promote                          # make ./obxc the new seed (see below)
 ```
 
-`bootstrap/obxc` is a committed binary: the trusted previous stage. obxc compiles
+`seed/obxc` is a committed binary: the trusted previous stage. obxc compiles
 its own source in about 20 ms.
 
 ### Changing the compiler
@@ -352,7 +356,7 @@ reaches a fixed point compiling itself.
 - A refactoring should leave the stage tests passing: nothing observable changes.
 - A deliberate change to code generation or messages shows up as stage differences.
   Review them, then `make promote`, which checks the fixed point and the rest of
-  the suite before copying the new compiler to `bootstrap/obxc`.
+  the suite before copying the new compiler to `seed/obxc`.
 - A new language feature takes two rounds: implement it without using it in
   obxc's source, and promote; then obxc can use it. Integer `match` went this way:
   first implemented, then obxc's token kinds became integer constants and its
@@ -368,7 +372,7 @@ to fit the single pass.
 
 ## The ownership dialect
 
-`fork/` holds obo, which replaces the collector with single ownership, borrowed
+`obo/` holds obo, which replaces the collector with single ownership, borrowed
 references and handles. It began as an experiment and is now the language's
-direction: see "Direction" at the top of this file, and `fork/FORK.md` for the
+direction: see "Direction" at the top of this file, and `obo/FORK.md` for the
 details.
