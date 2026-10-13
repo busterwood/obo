@@ -54,6 +54,9 @@ PRELUDE = [
     "fn f2() { gdrop() }",
     "fn viaF2(l: &?Node): int { f2(); return sum(l) }",
     "fn sumFree(l: &?Node): int { gdrop(); return sum(l) }",
+    "fn mixG(p: &mut ?Node, q: &?Node): int { bump(p); return sum(q) }",
+    "fn mixGP(p: &?Node): int { return mixG(ga, p) }",
+    "fn pq(a: &mut []Node, b: &Node): int { return shrinkInt(a) + b.value }",
 ]
 NAMES = 'abc'          # owned optional locals
 STRVARS = ['sa', 'sb', 'gs']
@@ -289,6 +292,46 @@ class Gen:
             del st.tags[n:]
         return Stmt([f"truncate(tags, {n})"], run)
 
+    def mix_self_stmt(self):
+        """One owned local passed both as the mut and as the shared argument: the same object."""
+        live = self.live()
+        if not live:
+            return None
+        x = self.r.choice(live)
+
+        def run(st):
+            chain_bump(st.opt[x])
+            st.out.append(str(chain_sum(st.opt[x])))
+        return Stmt([f"println(mixG({x}, {x}))"], run)
+
+    def mix_global_stmt(self):
+        """A global passed mut beside a reference parameter: the global may be the same object."""
+        live = self.live()
+        if not live:
+            return None
+        x = self.r.choice(live)
+
+        def run(st):
+            chain_bump(st.ga)
+            st.out.append(str(chain_sum(st.opt[x])))
+        return Stmt([f"println(mixGP({x}))"], run)
+
+    def alias_param_stmt(self):
+        """A mut array and an element of another array, both parameters: they may be one array."""
+        self.extra_fn("fn pf(xs: &mut []Node, ys: &[]Node): int { return pq(xs, ys[0]) }")
+        return self.invalid_stmt([])
+
+    def global_ref_free_stmt(self):
+        """A reference into the global chain, then a call that frees the chain: the reference dangles."""
+        r = f"r{self.nrefs}"
+        self.nrefs += 1
+        return self.invalid_stmt([f"var {r} = &ga", "gdrop()", f"println(sum({r}))"])
+
+    def alias_global_elem_stmt(self):
+        """A mut array parameter beside an element of a global array."""
+        self.extra_fn("fn pgl(xs: &mut []Node): int { return pq(xs, gxs[0]) }")
+        return self.invalid_stmt([])
+
     def g_append_stmt(self):
         v = self.k()
 
@@ -345,6 +388,7 @@ class Gen:
                   self.str_concat_stmt, self.str_copy_stmt, self.str_print_stmt, self.str_eq_stmt,
                   self.ss_append_stmt, self.ss_print_stmt, self.ss_set_stmt, self.ss_copy_stmt,
                   self.tag_append_stmt, self.tag_append_stmt, self.tag_print_stmt,
+                  self.mix_self_stmt, self.mix_global_stmt,
                   self.g_append_stmt, self.g_total_stmt, self.ga_push_stmt, self.ga_sum_stmt,
                   self.ga_bump_stmt, self.h_read_stmt, self.h_write_stmt, self.h_alive_stmt]
         makers += [self.old_sum_stmt]
@@ -823,7 +867,8 @@ class Gen:
                           self.two_stmt, self.handle_set_stmt, self.move_root_stmt,
                           self.free_global_stmt, self.field_call_stmt, self.ro_write_stmt,
                           self.ro_pass_stmt, self.walk_assign_stmt, self.handle_borrow_stmt,
-                          self.elem_write_stmt, self.two_self_stmt])
+                          self.elem_write_stmt, self.two_self_stmt, self.alias_param_stmt,
+                          self.alias_global_elem_stmt, self.global_ref_free_stmt])
 
     def program(self):
         count = self.r.randint(4, 20)
