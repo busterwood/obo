@@ -1317,8 +1317,8 @@ fn releaseItem(x: &Item) {
 
 fn inUse(): []int {
     let out = new []int(0)
-    for rI in 0..len(pool) {
-        let r = pool[rI]
+    let poolRefs = &pool
+    for r in poolRefs {
         if !containsInt(free, r) { append(out, r) }
     }
     return out
@@ -1450,8 +1450,8 @@ fn restoreRegs(saved: &[]int) {
         i -= 1
     }
     let f = new []int(0)
-    for rI in 0..len(pool) {
-        let r = pool[rI]
+    let poolRefs = &pool
+    for r in poolRefs {
         if !containsInt(saved, r) { append(f, r) }
     }
     free = f
@@ -1600,8 +1600,8 @@ fn freeOwned(from: int, to: int) {
 
 fn snapshot(): []bool {
     let out = new []bool(0)
-    for sI in 0..len(ownedLocals) {
-        let s = ownedLocals[sI]
+    let locals = &ownedLocals
+    for s in locals {
         append(out, s.moved)
     }
     return out
@@ -1827,8 +1827,8 @@ fn pathsOverlap(a: string, b: string): bool {
 // inside any other root the change reaches.
 fn invalidate(root: ?^Sym, via: ?^Sym, all: bool, path: string) {
     if root == nil { return }
-    for vI in 0..len(ownedLocals) {
-        let v = ownedLocals[vI]
+    let locals = &ownedLocals
+    for v in locals {
         // a change through via frees only things below via: references it was
         // derived from point above it and stay valid
         if v.isRefLocal && !ancestorOf(v, via) && !v.moved {
@@ -1886,8 +1886,8 @@ fn afterCall(f: ^Sym) {
     let cur = curFn
     let all = f.addr < 0 || f == cur || f.freesAll
     if cur != nil && all { cur.freesAll = true }
-    for gI in 0..len(globals) {
-        let g = globals[gI]
+    let gs = &globals
+    for g in gs {
         if (g.kind == "var" || g.kind == "let") && (all || mightFree(f, g)) {
             invalidate(g, nil, true, "")
             if !all { recordFree(g) }
@@ -1989,8 +1989,8 @@ fn pushNarrowings(lst: &[]NPair) {
 }
 
 fn widen(s: ^Sym) {
-    for eI in 0..len(narrowStack) {
-        let e = &narrowStack[eI]
+    let stack = &narrowStack
+    for e in stack {
         if e.sym == s && e.alive {
             if e.depth != loopdepth {
                 error("'" + s.name + "' may become nil here, but it was checked outside this loop; check it inside the loop instead")
@@ -3262,8 +3262,8 @@ fn assignmentOrCall(): bool {
             let dp = deepOf(y)
             let pp = refPathOf(y)
             store(x, y)
-            for vI in 0..len(ownedLocals) {
-                let v = ownedLocals[vI]
+            let locals = &ownedLocals
+            for v in locals {
                 if v.refParent == xs { v.refParent = xs.refParent }   // their ancestor moves away
             }
             xs.refParent = par
@@ -4076,13 +4076,15 @@ fn compileModule() {
         if sym != T_EOF { expect(T_SEMI, "newline") }
         skipSemis()
     }
-    for sI in 0..len(globals) {
-        let s = globals[sI]
-        if s.kind == "type" && symType(s).incomplete {
-            errorAt("type '" + s.name + "' is declared but never defined", symType(s).line, 1)
-        }
-        if s.kind == "fn" && s.addr < 0 {
-            errorAt("function '" + s.name + "' has a forward heading but no body", s.line, 1)
+    {
+        let syms = &globals
+        for s in syms {
+            if s.kind == "type" && symType(s).incomplete {
+                errorAt("type '" + s.name + "' is declared but never defined", symType(s).line, 1)
+            }
+            if s.kind == "fn" && s.addr < 0 {
+                errorAt("function '" + s.name + "' has a forward heading but no body", s.line, 1)
+            }
         }
     }
     let m = findSym(globals, "main")
