@@ -35,6 +35,7 @@ TMP = tempfile.mkdtemp(prefix='obo-own-fuzz-')
 
 PRELUDE = [
     "type Node = ref record { value: int; next: ?Node }",
+    "type Tag = ref record { v: int; s: string }",
     "var gs = \"\"",
     "var gxs = new []Node(0)",
     "var ga: ?Node = nil",
@@ -99,6 +100,7 @@ class State:
         self.ga = None                          # the global owned optional chain
         self.strs = {'sa': '', 'sb': '', 'gs': ''}
         self.ss = []                            # the local array of strings
+        self.tags = []                          # the local array of records holding a string
         self.refs = {}                          # name -> [node, still valid?]
         self.handles = {}                       # name -> node the handle names
         self.olds = {}                          # name -> value returned by replace()
@@ -136,6 +138,7 @@ class Gen:
         self.nrefs = 0
         self.nhandles = 0
         self.nold = 0
+        self.extra = []                         # helper functions an invalid program needs
 
     def live(self):
         return [n for n in NAMES if not self.st.moved[n]]
@@ -262,6 +265,30 @@ class Gen:
             st.strs[d] = st.ss[i]
         return Stmt([f"{d} = ss[{i}]"], run)
 
+    def tag_append_stmt(self):
+        v = self.k()
+
+        def run(st):
+            st.tags.append((v, 't' + str(len(st.tags) + v)))
+        return Stmt([f"append(tags, new Tag{{v: {v}, s: \"t\" + string(len(tags) + {v})}})"], run)
+
+    def tag_print_stmt(self):
+        if not self.st.tags:
+            return None
+        i = self.r.randrange(len(self.st.tags))
+
+        def run(st):
+            v, s = st.tags[i]
+            st.out.append(f"{v} {s}")
+        return Stmt([f"println(string(tags[{i}].v) + \" \" + tags[{i}].s)"], run)
+
+    def tag_trunc_stmt(self):
+        n = self.r.randrange(len(self.st.tags) + 1)
+
+        def run(st):
+            del st.tags[n:]
+        return Stmt([f"truncate(tags, {n})"], run)
+
     def g_append_stmt(self):
         v = self.k()
 
@@ -317,6 +344,7 @@ class Gen:
                   self.append_stmt, self.bump_stmt, self.field_stmt,
                   self.str_concat_stmt, self.str_copy_stmt, self.str_print_stmt, self.str_eq_stmt,
                   self.ss_append_stmt, self.ss_print_stmt, self.ss_set_stmt, self.ss_copy_stmt,
+                  self.tag_append_stmt, self.tag_append_stmt, self.tag_print_stmt,
                   self.g_append_stmt, self.g_total_stmt, self.ga_push_stmt, self.ga_sum_stmt,
                   self.ga_bump_stmt, self.h_read_stmt, self.h_write_stmt, self.h_alive_stmt]
         makers += [self.old_sum_stmt]
@@ -657,6 +685,39 @@ class Gen:
     def free_global_stmt(self):
         return self.invalid_stmt([f"println({self.r.choice(['sumFree', 'viaF2'])}(ga))"])
 
+    def extra_fn(self, text):
+        """Adds a helper function to this program only: it is invalid, so the program is."""
+        if text not in self.extra:
+            self.extra.append(text)
+
+    def ro_write_stmt(self):
+        self.extra_fn("fn wr(n: &Node) { n.value = 5 }")
+        return self.invalid_stmt([])
+
+    def ro_pass_stmt(self):
+        self.extra_fn("fn passRO(n: &Node) { bumpRef(n) }")
+        return self.invalid_stmt([])
+
+    def walk_assign_stmt(self):
+        return self.invalid_stmt(["for n in xs {", "    xs = new []Node(0)", "}"])
+
+    def handle_borrow_stmt(self):
+        h, q = f"h{self.nhandles}", f"q{self.nold}"
+        self.nhandles += 1
+        self.nold += 1
+        return self.invalid_stmt([f"let {h} = handle(xs[0])", f"let {q} = &{h}.next"])
+
+    def elem_write_stmt(self):
+        a, b = f"r{self.nrefs}", f"r{self.nrefs + 1}"
+        self.nrefs += 2
+        return self.invalid_stmt([f"var {a} = &xs[0]", f"var {b} = &xs[1]",
+                                  f"{a}.next = push(nil, 3)", f"println({b}.value)"])
+
+    def two_self_stmt(self):
+        a = f"r{self.nrefs}"
+        self.nrefs += 1
+        return self.invalid_stmt([f"var {a} = &xs[0]", f"two({a}, {a})"])
+
     def field_call_stmt(self):
         return self.invalid_stmt(["xs[0] = mk(shrinkInt(xs))"])
 
@@ -735,7 +796,7 @@ class Gen:
                 return s
         makers = self.common() + [self.push_stmt] * 4 + [self.take_stmt] * 2 \
             + [self.loop_stmt, self.if_stmt, self.g_set_stmt, self.g_trunc_stmt,
-               self.gdrop_stmt, self.ss_trunc_stmt, self.h_new_stmt, self.h_new_stmt,
+               self.gdrop_stmt, self.ss_trunc_stmt, self.tag_trunc_stmt, self.h_new_stmt, self.h_new_stmt,
                self.h_kill_stmt, self.h_kill_stmt,
                self.drop_stmt, self.replace_stmt, self.eat_stmt, self.if_move_stmt,
                self.loop_move_stmt, self.discard_stmt]
@@ -760,12 +821,14 @@ class Gen:
         """One statement that breaks a rule, chosen from all of them."""
         return self.pick([self.and_move_stmt, self.field_move_stmt, self.temp_stmt,
                           self.two_stmt, self.handle_set_stmt, self.move_root_stmt,
-                          self.free_global_stmt, self.field_call_stmt])
+                          self.free_global_stmt, self.field_call_stmt, self.ro_write_stmt,
+                          self.ro_pass_stmt, self.walk_assign_stmt, self.handle_borrow_stmt,
+                          self.elem_write_stmt, self.two_self_stmt])
 
     def program(self):
         count = self.r.randint(4, 20)
         # about one program in five breaks one rule, at a random point
-        bad_at = self.r.randrange(count) if self.full and self.r.random() < 0.2 else None
+        bad_at = self.r.randrange(count) if self.full and self.r.random() < 0.3 else None
         for idx in range(count):
             s = self.bad_stmt() if idx == bad_at else None
             if s is None:
@@ -784,8 +847,9 @@ class Gen:
                 "    var xs = new []Node(0)",
                 "    var sa = \"\"",
                 "    var sb = \"\"",
-                "    var ss = new []string(0)"]
-        return "\n".join(PRELUDE + head + indent(self.lines) + ["}"]) + "\n"
+                "    var ss = new []string(0)",
+                "    var tags = new []Tag(0)"]
+        return "\n".join(PRELUDE + self.extra + head + indent(self.lines) + ["}"]) + "\n"
 
 
 def generate(seed, full):

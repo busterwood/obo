@@ -73,6 +73,8 @@ MUTANTS = {
     "everything counts as an ancestor": ("        if p == a { return true }\n        p = p.refParent", "        return true"),
     # handles
     "borrowing through handles allowed": ("    if x.viaHandle { error(\"cannot borrow through a handle: pass the handle itself\") }\n", ""),
+    # acceptance-equivalent: the general field-target check rejects the same programs,
+    # so only the suite sees this, by the message text (the fuzzer compares acceptance only)
     "handle assignment across calls allowed": ("            if x.viaHandle && userCalls != callsBefore {\n                errorAt(", "            if false {\n                errorAt("),
     "handle index calls allowed": ("            if viaHandle && userCalls != callsBefore {\n                error(", "            if false {\n                error("),
     "match reads the tag with the generation": ("    opMem(0x8B, r, mem(r, -1, -16, 8), false, false)", "    opMem(0x8B, r, mem(r, -1, -16, 8), true, false)"),
