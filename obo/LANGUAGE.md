@@ -4,7 +4,7 @@ obo is a small language in the Wirth tradition, with C-style braces. It has no
 garbage collector. Every owned value has exactly one owner, which frees it at a
 known point, and the compiler rejects any program that could read freed memory.
 
-This describes the language as the compiler in `obo/src/obo-on-obx.obx`
+This describes the language as the compiler in `obo/src/obo.obo`
 implements it. Syntax not covered here (declarations, `if`, `while`, `for`,
 `match`, `defer`, closed types, constants, literals, operators) is the same as
 obx; see the language section of the root `README.md`. Rules that are planned
@@ -332,9 +332,9 @@ depend on the program.
 
 ## 10. Known holes and planned changes
 
-**Assignment targets across calls.** The target of an assignment is located before
-the right-hand side is evaluated, so a call on the right that frees the target would
-write into freed memory. The compiler therefore rejects a field or element assignment
+**Assignment targets across calls (closed).** The target of an assignment is located
+before the right-hand side is evaluated, so a call on the right that frees the target
+would write into freed memory. The compiler rejects a field or element assignment
 whose right-hand side calls a function that might free something:
 
 ```obo
