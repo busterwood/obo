@@ -149,6 +149,68 @@ while nothing it may point into has been changed.
   ```
 
 - `&place` borrows explicitly: `let r = &items[0]`.
+- `&place` may borrow through a handle: `let items = &h.items` borrows what `h` names. Such
+  a reference may point into any object, so it is invalidated by any change to an owned
+  value or through a handle, and by any call that might free. A call might free unless it
+  frees no global, changes through no `mut` parameter, writes no owned value through a
+  handle, is compiled before the call, and is not recursive. The reference cannot be passed to
+  a call that might free. A `for` loop that walks it cannot change what it points into, but
+  `append` to the array it walks is accepted: an append is not a change, and a walk re-reads
+  the array's header each time.
+
+  ```obo
+  // example: runs
+  // prints 6
+  type Node = ref record { value: int }
+  type Bag = ref record { items: []Node }
+
+  fn total(xs: &[]Node): int {         // pure: changes nothing and calls nothing that frees
+      var t = 0
+      for x in xs { t += x.value }
+      return t
+  }
+
+  fn main() {
+      let bag = new Bag{items: new []Node(0)}
+      append(bag.items, new Node{value: 1})
+      append(bag.items, new Node{value: 2})
+      append(bag.items, new Node{value: 3})
+      let h = handle(bag)
+      let items = &h.items
+      println(total(items))
+  }
+  ```
+
+  ```obo
+  // example: error: cannot pass a reference that borrows through a handle to shrink
+  type Node = ref record { value: int }
+  type Bag = ref record { items: []Node }
+  var spare = new []Node(0)
+  fn shrink(xs: &[]Node): int {
+      spare = new []Node(0)            // frees what spare held, so a call to shrink might free
+      return len(xs)
+  }
+  fn main() {
+      let bag = new Bag{items: new []Node(0)}
+      let h = handle(bag)
+      let items = &h.items
+      println(shrink(items))
+  }
+  ```
+
+  ```obo
+  // example: error: 'items' may point to freed memory
+  type Node = ref record { value: int }
+  type Bag = ref record { items: []Node }
+  fn main() {
+      var bag = new Bag{items: new []Node(0)}
+      append(bag.items, new Node{value: 1})
+      let h = handle(bag)
+      let items = &h.items
+      bag.items = new []Node(0)        // frees the nodes items points into
+      println(len(items))
+  }
+  ```
 - Changing through a reference needs a `mut` parameter. Passing a read-only reference
   to one is an error: `argument 1 of f needs a mut reference, but this one is read-only`.
   `mut` belongs to the parameter, not the type: a local reference is changeable exactly
@@ -335,7 +397,8 @@ depend on the program.
 | `argument <n> of <f> needs a mut reference, but this one is read-only` | the parameter is `mut`, but the argument was borrowed read-only. |
 | `argument <n> of <f> may point inside argument <m>, which is mut` | two arguments may overlap and one of them changes. |
 | `'<x>' may be nil: check it with '!= nil' first` | check an optional before using its fields. |
-| `cannot borrow through a handle: pass the handle itself` | a handle can't be borrowed; pass the handle. |
+| `cannot pass a reference that borrows through a handle to <f>: it might free what the handle names` | a reference borrowed through a handle may go only to a call that cannot free anything; pass the handle instead, or make the call pure. |
+| `cannot change what '<r>' points into while a for loop walks it` | a change, or a call that might free, while a loop walks `<r>`; make it after the loop. |
 | `take needs an optional variable, field or element holding an owned value` | `take` applies only to optional owned places. |
 | `replace needs a variable, field or element holding an owned value` | `replace` applies only to owned places. |
 | `drop needs a local variable holding an owned value` | `drop` applies only to local owned variables. |
@@ -399,6 +462,32 @@ fn main() {
 **Coarse through references.** A change made through a reference, such as `p.next = x`
 where `p` is a reference, is not yet traced by its path: it invalidates every reference
 into the whole root it reaches.
+
+**Handle changes and owned references (known hole).** A change through a handle, such as
+`h.items = ...` or `handle(p).items = ...` (a handle temporary, which has no name), or a call
+that makes one, invalidates borrows through handles (section 4),
+but not a borrow taken from an owned variable, such as `&bag.items[0]`. The program below
+compiles and then reads freed memory. The planned fix: a change through a handle, and a
+call that might make one, invalidates every reference.
+
+```obo
+// example: compiles
+type Item = ref record { v: int }
+type Bag = ref record { items: []Item }
+
+fn cut(h: ^Bag) {
+    h.items = new []Item(0)      // frees the items, which the reference below points into
+}
+
+fn main() {
+    var bag = new Bag{items: new []Item(0)}
+    append(bag.items, new Item{v: 1})
+    let h = handle(bag)
+    let first = &bag.items[0]
+    cut(h)
+    println(first.v)             // reads freed memory: no compile error
+}
+```
 
 **Planned.** The language features listed as not yet done in the root
 `README.md` also apply: methods and interfaces, lambdas, generic modules, `try`

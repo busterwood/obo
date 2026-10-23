@@ -1,0 +1,37 @@
+type Item = ref record { v: int }
+type Bag = ref record { items: []Item; n: int }
+
+// a pure function: it changes nothing and calls nothing that might free
+fn sumOf(xs: &[]Item): int {
+    var t = 0
+    for x in xs { t += x.v }
+    return t
+}
+
+// borrows through a handle parameter, then walks: the walk body is pure
+fn total(b: ^Bag): int {
+    let items = &b.items
+    return sumOf(items)
+}
+
+// a change to an element reached through a handle, and no freeing
+fn bump(b: ^Bag) {
+    let items = &b.items
+    for x in items { x.v += 1 }
+}
+
+fn main() {
+    let bag = new Bag{items: new []Item(0), n: 0}
+    for i in 0..3 { append(bag.items, new Item{v: i + 1}) }
+    let h = handle(bag)
+    println(total(h))                        // expect: 6
+    bump(h)
+    println(total(h))                        // expect: 9
+    let items = &h.items                     // borrows through a handle
+    var big = 0
+    for x in items {
+        if x.v > 2 { big += 1 }              // a pure walk body
+    }
+    println(big, " ", sumOf(items))          // expect: 2 9
+    println(len(items), " ", items[0].v)     // expect: 3 2
+}

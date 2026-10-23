@@ -869,10 +869,32 @@ class Gen:
         return self.invalid_stmt(["for n in xs {", "    xs = new []Node(0)", "}"])
 
     def handle_borrow_stmt(self):
+        """A borrow through a handle, used, then an int field of its object written: valid.
+        The write frees nothing, and the borrow is not used after it."""
+        if not self.st.xs:
+            return None
         h, q = f"h{self.nhandles}", f"q{self.nold}"
         self.nhandles += 1
         self.nold += 1
-        return self.invalid_stmt([f"let {h} = handle(xs[0])", f"let {q} = &{h}.next"])
+        v = self.k()
+
+        def run(st):
+            o = st.xs[0]
+            st.out.append(str(chain_sum(o.next)))
+            o.v = v
+        return Stmt([f"let {h} = handle(xs[0])", f"let {q} = &{h}.next", f"println(sum({q}))",
+                     f"{h}.value = {v}"], run)
+
+    def handle_borrow_dead_stmt(self):
+        """A borrow through a handle, a change that might free (through the handle, through a
+        handle temporary, or a call), then a use of the borrow: rejected."""
+        h, q = f"h{self.nhandles}", f"q{self.nold}"
+        self.nhandles += 1
+        self.nold += 1
+        change = self.r.choice([f"{h}.next = nil", "handle(xs[0]).next = nil", "gdrop()"])
+        # its own element first, so that xs[0] exists whatever the program has done so far
+        return self.invalid_stmt([f"append(xs, mk({self.k()}))", f"let {h} = handle(xs[0])",
+                                  f"let {q} = &{h}.next", change, f"println(sum({q}))"])
 
     def elem_write_stmt(self):
         a, b = f"r{self.nrefs}", f"r{self.nrefs + 1}"
@@ -964,7 +986,7 @@ class Gen:
         makers = self.common() + [self.push_stmt] * 4 + [self.take_stmt] * 2 \
             + [self.loop_stmt, self.if_stmt, self.g_set_stmt, self.g_trunc_stmt, self.ss_loop_stmt,
                self.gdrop_stmt, self.ss_trunc_stmt, self.tag_trunc_stmt, self.h_new_stmt, self.h_new_stmt,
-               self.h_kill_stmt, self.h_kill_stmt,
+               self.h_kill_stmt, self.h_kill_stmt, self.handle_borrow_stmt,
                self.drop_stmt, self.replace_stmt, self.eat_stmt, self.if_move_stmt,
                self.loop_move_stmt, self.discard_stmt]
         if self.full:
@@ -990,7 +1012,7 @@ class Gen:
         ops = [self.and_move_stmt, self.field_move_stmt, self.temp_stmt,
                self.two_stmt, self.handle_set_stmt, self.move_root_stmt,
                self.free_global_stmt, self.field_call_stmt, self.ro_write_stmt,
-               self.ro_pass_stmt, self.walk_assign_stmt, self.handle_borrow_stmt,
+               self.ro_pass_stmt, self.walk_assign_stmt, self.handle_borrow_dead_stmt,
                self.elem_write_stmt, self.two_self_stmt, self.alias_param_stmt,
                self.alias_global_elem_stmt, self.global_ref_free_stmt,
                self.handle_index_call_stmt, self.ref_move_stmt, self.callee_free_global_stmt]

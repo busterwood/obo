@@ -145,9 +145,12 @@ its live peak is 1.3 MB; obx's compiler (3222 lines), with the collector, peaks 
 walks by borrowing too. It was blocked by two false positives: a self-call counted as
 freeing anything (fixed in the checker, `run/globals.obx`, `errors/references.obx`), and
 the `rtCall`/`rtCall1` cycle through a forward heading (broken in the source). Effect
-summaries across mutually recursive groups remain a checker limit. Still index loops: two
-over `f.freed` and two over `t.variants`, because the checker refuses to borrow through a
-handle parameter (a rule to decide).
+summaries across mutually recursive groups remain a checker limit. The walks over `f.freed`
+and `t.variants` now borrow through their handles and loop with `for`. The rule, in one
+sentence: a reference borrowed through a handle is invalidated by any change, through a
+handle or a handle temporary included, and by any call that might free, and cannot be passed
+to such a call. Index loops remain over `f.pmodes`, `f.fixups`, `t.fields` and `rec.fields` (each reached
+through a handle) and over the globals `code` and `ownedLocals`; this change did not rewrite them.
 
 ## Finding your way
 

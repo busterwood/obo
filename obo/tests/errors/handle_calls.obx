@@ -1,0 +1,25 @@
+type Box = ref record { v: int }
+type Pair = ref record { a: Box; items: []int }
+// no global variables here: a call's invalidation must come from the handle rule itself
+// === a self-call might free what a borrow through a handle points into
+fn walk(h: ^Pair, n: int): int {
+    let items = &h.items
+    if n == 0 { return 0 }
+    return walk(h, n - 1) + items[0]  // error: 'items' may point to freed memory
+}
+fn main() {
+    let p = new Pair{a: new Box{v: 1}, items: new []int(2)}
+    let h = handle(p)
+    println(walk(h, 2))
+}
+// === a call that writes an owned field through a handle, then a use of a borrow through it
+fn bump(h: ^Pair) {
+    h.a = new Box{v: 2}             // frees what the handle names, so it might free
+}
+fn main() {
+    let p = new Pair{a: new Box{v: 1}, items: new []int(2)}
+    let h = handle(p)
+    let items = &h.items
+    bump(h)
+    println(items[0])  // error: 'items' may point to freed memory
+}

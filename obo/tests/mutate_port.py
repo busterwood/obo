@@ -45,6 +45,24 @@ MUTANTS = {
     # keeping symbols alive: over the memory budget
     "symbols never freed": [(FREE, "")],
     "parameters kept": [(MARK, ""), (PARAMS_DONE, PARAMS_DONE + "    let symMark = len(symArena)\n")],
+    # borrows through a handle (checker): each must be caught by a case in errors/handles.obx
+    # or errors/handle_calls.obx
+    # a call that might free does not invalidate borrows through a handle
+    "handle borrows survive calls": [("    if !pureFn(f) { invalidate(handleSym, nil, false, \"\") }   // and so may a borrow through a handle\n", "")],
+    # a change under another root does not reach a borrow through a handle
+    "handle borrows survive other changes": [("var hit = r == handleSym || r == root && (all || v.refDeep && underPath(v.refPath, path))",
+                                              "var hit = (r == handleSym && root == r) || r == root && (all || v.refDeep && underPath(v.refPath, path))")],
+    # a borrow through a handle may be passed to a call that might free it
+    "handle borrows passable to freeing calls": [("        if argRoots[i] == handleSym && !pureFn(f) {", "        if false {")],
+    # a callee that writes through a handle is taken for pure, so its callers keep their borrows
+    "handle writes not recorded": [("    if g == handleSym {                  // a change through a handle may free anything",
+                                    "    if false {                           // a change through a handle may free anything")],
+    # a change through a handle temporary (handle(p).items, no root) invalidates nothing: caught by errors/handles.obx
+    "handle temporaries invalidate nothing": [("    if x.viaHandle { invalidate(handleSym, viaOf(x), false, \"\") }",
+                                               "    if x.viaHandle && rootOf(x) != nil { invalidate(handleSym, viaOf(x), false, \"\") }")],
+    # an assignment through a handle temporary records no free, so its function looks pure: caught by errors/handles.obx (zap)
+    "handle temporary assignments record nothing": [("                } else if x.deref || x.viaHandle {\n                    invalidateChange(x)\n                    recordFree(freeRoot(x))\n",
+                                                     "                } else if x.deref || x.viaHandle {\n                    invalidateChange(x)\n                    if x.deref { recordFree(freeRoot(x)) }\n")],
 }
 
 

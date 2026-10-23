@@ -321,6 +321,95 @@ Today `pinned` only stops the target's root being moved. Both this and the varia
 through a reference local (`let e = &b.items[0]; e.next = h(b)`) compile; the leak
 check catches them at run time only by luck. Next step.
 
+## Borrowing through a handle (done)
+
+**Direction.** The checker refused `&h.field` where `h` is a handle, which forced index
+loops over `f.freed` and `t.variants` in the port. The decided rule allows the borrow,
+and treats it as able to point into any object: a reference borrowed through a handle is
+invalidated by anything that might free anything.
+
+**Rules, as implemented** (`src/obo.obo`)
+- `handleSym` (after `newSym`) is the root of such a reference. `borrowRoot` returns it for a
+  designator that went through a handle, so a reference copied or borrowed from one is
+  rooted there too, and so are the elements a `for` walk gives out.
+- `invalidate`: a reference rooted at `handleSym` is hit by every change that might free,
+  whatever its root (a scalar written through a handle frees nothing and invalidates nothing).
+- `afterCall`: a call that is not `pureFn` invalidates every such reference.
+- `recordFree`: a change through a handle (`freeRoot` returns `handleSym` when the designator
+  went through one) marks the current function `freesAll`, so callers treat it as a call that
+  might free. Without this, a pure-looking callee that writes a field through a handle would
+  leave its callers' borrows valid.
+- `callFn`: a reference rooted at `handleSym` may not be passed to a call that is not pure.
+- `invalidateChange` (assignment, `replace`, `take`, `truncate`): a change through a handle
+  also invalidates the handle-rooted references, even when the designator has no root, as
+  `handle(p).items = ...` or `mk(p).items = ...` has none. Without this a handle temporary's
+  change was not seen at all.
+
+**Free sites checked** (each one invalidates through `invalidateChange`, `invalidate`,
+`afterCall` or a root that reaches a handle-rooted reference; the nil-root early return in
+`invalidate` is safe, since a nil root is a temporary or a constant, and no reference can
+point into either):
+- scope exit and `return` (`freeOwned`): invalidates each owned local.
+- a move of a local (`consume`), and so `drop`: invalidates the local.
+- assignment to an owned place (`assignmentOrCall`): invalidates the local, the global, or the
+  root of a field or element, and records the free through `freeRoot`.
+- `replace`, `take`: invalidate the place's root, and through a handle the handle-rooted
+  references (`invalidateChange`); `take` and `replace` record `freeRoot`.
+- `truncate`: invalidates the array's root, and through a handle the handle-rooted references,
+  and records `freeRoot`.
+- a `mut` argument (`callFn`): invalidates its root.
+- a call's frees of globals (`afterCall`, `mightFree`): invalidates the global.
+- a dropped call result (`rtCall1(RT_FREE, x)`): a fresh object that no reference can name.
+- the frees at exit of globals: nothing is live after `main`.
+- strings (`RT_STR_DEC`): not owned records, and never borrowed.
+
+**Holes found while checking, not fixed here** (the same pattern exists without handle-rooted
+references, so they are a separate change; `LANGUAGE.md` section 10 has the first):
+- A change through a handle, `h.items = ...`, or a call that makes one, invalidates
+  references rooted at the handle, but not `&bag.items[0]` taken from an owned variable.
+  The compiler accepts `cut(h)` followed by `println(first.v)`, which reads freed memory.
+- A read-only parameter `p` and a handle `h` naming the same object: `let a = &p.items`,
+  then `h.items = ...` frees that array, and `len(a)` reads it. Accepted. (Reading `p.items`
+  again after the change is safe: `p` names the record, which is not freed.)
+- Not a hole, a false positive: a `return` inside a `for` walk of an owned local's reference
+  is rejected with "cannot change what ... points into" (the frees at the return).
+- Not a hole, a false positive: a walk over a handle-rooted reference whose body declares an
+  owned local is rejected at the body's end, since freeing the local is a change and a handle
+  could name it. The same walk over an owned variable's reference is accepted.
+
+**Tests.** `tests/run/handle_walks.obx` (a walk through a handle parameter, a pure body,
+an element change under the walk, and a borrow in `main`). `tests/errors/handles.obx`: the
+old "cannot borrow through a handle" case became "passed to a call that might free", and 14
+cases were added (a call in the walk body, an owned assignment, `take`, an assignment through
+another handle, `truncate`, a borrow used after a call, a borrow used after a call that writes
+through a handle, and an element used after its array is replaced; then, through a handle
+temporary such as `handle(p).items`: an assignment, an assignment through a handle returned by
+a call, `truncate`, `replace` and `take`, and a call whose body makes such an assignment).
+`tests/errors/handle_calls.obx` is separate because the shared prelude of `handles.obx`
+declares a global, and any invalidation of a global also reaches a handle-rooted reference,
+which hides a missing call invalidation; the two cases here have no global: a self-call,
+and a call that writes through a handle.
+
+**Mutants.** `tests/mutate_port.py`, 6 new: borrows survive calls (caught by
+`handle_calls.obx`, self-call), borrows survive other changes (caught by `handles.obx`, walk
+with an owned assignment), borrows passable to a freeing call (caught by `handles.obx`, `sink`),
+handle writes not recorded (caught by `handle_calls.obx`, `bump`), handle temporaries
+invalidate nothing (caught by `handles.obx`, assignment through `handle(p).items`), and handle
+temporary assignments record no free (caught by `handles.obx`, `zap`). `tests/mutate_fork.py`:
+two index-loop anchors retargeted to the borrow form, and "borrowing through handles allowed"
+renamed "handle borrows are untracked", since its message no longer exists.
+
+**Fuzzer.** `tests/own_fuzz.py` modelled every handle borrow as an error. Now `handle_borrow_stmt`
+is a valid kind (a borrow, a use, then an int field written through the handle, which frees
+nothing), and `handle_borrow_dead_stmt` is an invalid one (a borrow, then a change that might
+free, through the named handle, through a handle temporary, or by a call, then a use). The
+compiler with the "handle temporaries invalidate nothing" mutant accepts 6 of them in 1000
+full-profile seeds; the fixed compiler rejects them all. Coverage is thin: few generated
+programs contain a handle borrow.
+
+**Seed.** The checker change was promoted first, before the loops changed, because the old
+seed rejects a borrow through a handle.
+
 ## Milestone 1 design notes (as planned)
 
 - **Freeing reuses the type descriptors.** The compiler already emits, for every

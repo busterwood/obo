@@ -877,6 +877,10 @@ fn newSym(kind: string, name: string, t: ?^Type): ^Sym {
     return handle(symArena[len(symArena) - 1])
 }
 
+// the root of a reference that borrows through a handle: the handle may name any
+// object, so any change, and any call that might free, may free what it points into
+let handleSym = newSym("var", "a handle's target", nil)
+
 fn symType(s: ^Sym): ^Type {
     let t = s.typ
     if t != nil { return t }
@@ -1715,7 +1719,7 @@ fn deepOf(x: &Item): bool {
 // x is about to be borrowed: returns its root (nil for nil itself)
 fn borrowRoot(x: &Item): ?^Sym {
     if x.mode == "const" { return nil }
-    if x.viaHandle { error("cannot borrow through a handle: pass the handle itself") }
+    if x.viaHandle { return handleSym }
     if x.mode == "reg" && isOwned(x.typ) {
         error("store this value in a variable first: a reference cannot borrow from a temporary")
     }
@@ -1723,6 +1727,13 @@ fn borrowRoot(x: &Item): ?^Sym {
     if r == nil { error("only variables, fields and elements can be borrowed") }
 
     return r
+}
+
+// the root a change through x may free under: a change through a handle may free
+// anything, so it is recorded against handleSym
+fn freeRoot(x: &Item): ?^Sym {
+    if x.viaHandle { return handleSym }
+    return rootOf(x)
 }
 
 // the reference local x was derived from: the one it goes through, or for a
@@ -1836,7 +1847,8 @@ fn invalidate(root: ?^Sym, via: ?^Sym, all: bool, path: string) {
         // derived from point above it and stay valid
         if v.isRefLocal && !ancestorOf(v, via) && !v.moved {
             let r = v.refRoot
-            var hit = r == root && (all || v.refDeep && underPath(v.refPath, path))
+            // a borrow through a handle may point into any object, so any change reaches it
+            var hit = r == handleSym || r == root && (all || v.refDeep && underPath(v.refPath, path))
             if !hit && r != nil && r != root && v.refDeep && reaches(root, r) { hit = true }
             if hit {
                 if v.iterating { error("cannot change what '" + v.name + "' points into while a for loop walks it") }
@@ -1865,8 +1877,8 @@ fn pureFn(f: ^Sym): bool {
 
 fn mightFree(f: ^Sym, g: ^Sym): bool {
     if f.addr < 0 || f == curFn || f.freesAll { return true }
-    for xI in 0..len(f.freed) {
-        let x = f.freed[xI]
+    let freed = &f.freed
+    for x in freed {
         if x == g { return true }
     }
     return false
@@ -1876,9 +1888,13 @@ fn mightFree(f: ^Sym, g: ^Sym): bool {
 fn recordFree(g: ?^Sym) {
     let f = curFn
     if f == nil || g == nil { return }
+    if g == handleSym {                  // a change through a handle may free anything
+        f.freesAll = true
+        return
+    }
     if g.storage != "global" { return }
-    for xI in 0..len(f.freed) {
-        let x = f.freed[xI]
+    let freed = &f.freed
+    for x in freed {
         if x == g { return }
     }
     append(f.freed, g)
@@ -1892,6 +1908,7 @@ fn afterCall(f: ^Sym) {
     let cur = curFn
     let all = f.addr < 0 || f == cur || f.freesAll
     if cur != nil && all && f != cur { cur.freesAll = true }
+    if !pureFn(f) { invalidate(handleSym, nil, false, "") }   // and so may a borrow through a handle
     let gs = &globals
     for g in gs {
         if (g.kind == "var" || g.kind == "let") && (all || mightFree(f, g)) {
@@ -1906,6 +1923,13 @@ fn viaOf(x: &Item): ?^Sym {
     let r = x.root
     if r != nil && r.isRefLocal { return r }
     return nil
+}
+
+// a change through x: its root's references go invalid, and so do the handle-rooted
+// ones when x went through a handle. Such an x may have no root (handle(p).items).
+fn invalidateChange(x: &Item) {
+    invalidate(rootOf(x), viaOf(x), false, x.path)
+    if x.viaHandle { invalidate(handleSym, viaOf(x), false, "") }
 }
 
 fn parseType(): ^Type
@@ -2202,6 +2226,11 @@ fn callFn(f: ^Sym): Item {
         }
     }
     for i in 0..len(argRoots) {
+        if argRoots[i] == handleSym && !pureFn(f) {
+            error("cannot pass a reference that borrows through a handle to " + f.name + ": it might free what the handle names")
+        }
+    }
+    for i in 0..len(argRoots) {
         if argModes[i] == 2 {
             invalidate(argRoots[i], argVias[i], false, argPaths[i])
             recordFree(argRoots[i])
@@ -2361,9 +2390,9 @@ fn builtin(name: string): Item {
         }
         checkAssign(x.typ, v, "replacement value")
         consume(v)
-        if x.deref {
-            invalidate(rootOf(x), viaOf(x), false, x.path)
-            recordFree(rootOf(x))
+        if x.deref || x.viaHandle {
+            invalidateChange(x)
+            recordFree(freeRoot(x))
         } else {
             let ts = x.sym
             if ts != nil {
@@ -2417,9 +2446,9 @@ fn builtin(name: string): Item {
         if x.deref && tr != nil && tr.isRef && !tr.refMut {
             error("take cannot change through '" + tr.name + "': it is a read-only reference")
         }
-        if x.deref {
-            invalidate(rootOf(x), viaOf(x), false, x.path)
-            recordFree(rootOf(x))
+        if x.deref || x.viaHandle {
+            invalidateChange(x)
+            recordFree(freeRoot(x))
         } else {
             let ts = x.sym
             if ts != nil && ts.storage == "local" { invalidate(ts, nil, true, "") }
@@ -2454,8 +2483,8 @@ fn builtin(name: string): Item {
                 error(name + " changes the array, but '" + ar.name + "' is a read-only reference")
             }
             if name == "truncate" {
-                invalidate(rootOf(a), viaOf(a), false, a.path)
-                recordFree(rootOf(a))
+                invalidateChange(a)
+                recordFree(freeRoot(a))
             }
         }
         a = pinStr(a)
@@ -3251,7 +3280,6 @@ fn assignmentOrCall(): bool {
         var dtype = x.typ
         let xs = x.sym
         if xs != nil { dtype = symType(xs) }
-        let ws = rootOf(x)
         let wr = x.root
         if x.deref && wr != nil && wr.isRef && !wr.refMut {
             errorAt("cannot change through '" + wr.name + "': it is a read-only reference", line, col)
@@ -3304,9 +3332,9 @@ fn assignmentOrCall(): bool {
                 if xs != nil && xs.storage == "local" {
                     if xs.iterating { errorAt("cannot change '" + xs.name + "' while a for loop walks it", line, col) }
                     invalidate(xs, nil, true, "")
-                } else if x.deref {
-                    invalidate(ws, viaOf(x), false, x.path)
-                    recordFree(ws)
+                } else if x.deref || x.viaHandle {
+                    invalidateChange(x)
+                    recordFree(freeRoot(x))
                 } else if xs != nil {
                     invalidate(xs, nil, true, "")               // a global given a new value
                     recordFree(xs)
@@ -3756,8 +3784,8 @@ fn matchStat(): bool {
         }
         let vname = ident()
         var v: ?^Type = nil
-        for cI in 0..len(t.variants) {
-            let c = t.variants[cI]
+        let vs = &t.variants
+        for c in vs {
             if v == nil && c.name == vname { v = c }
         }
         if v == nil {
@@ -3788,8 +3816,8 @@ fn matchStat(): bool {
     }
     expect(T_RBRACE, "")
     var missing = ""
-    for cI in 0..len(t.variants) {
-        let c = t.variants[cI]
+    let vs = &t.variants
+    for c in vs {
         var found = false
         for d in seen {
             if d == c { found = true }

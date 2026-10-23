@@ -6,11 +6,21 @@ fn val(): int {
     junk = new []int(1)             // frees the old array, so calls to val might free
     return 1
 }
-// === borrowing through a handle
+type Slot = ref record { o: ?Box; items: []int }
+type Row = ref record { cells: []Box }
+fn sink(b: &Box): int {
+    junk = new []int(1)             // might free, so a reference through a handle may not be passed to it
+    return b.v
+}
+fn drop2(h: ^Pair) {
+    h.a = new Box{v: 3}             // writes through a handle, so it might free what the handle names
+}
+// === a reference through a handle passed to a call that might free
 fn main() {
     let p = new Pair{a: new Box{v: 1}, items: new []int(2)}
     let h = handle(p)
-    peek(h.a)  // error: cannot borrow through a handle: pass the handle itself
+    let a = &h.a
+    println(sink(a))  // error: cannot pass a reference that borrows through a handle to sink
 }
 // === handle of an optional
 fn main() {
@@ -47,4 +57,125 @@ fn main() {
 fn main() {
     var h: ?^Box = nil
     println(h.v)  // error: may be nil
+}
+// === a walk through a handle, with a call that might free in the body
+fn main() {
+    let p = new Pair{a: new Box{v: 1}, items: new []int(2)}
+    let h = handle(p)
+    let items = &h.items
+    for x in items {
+        println(val() + x)  // error: cannot change what 'items' points into while a for loop walks it
+    }
+}
+// === a walk through a handle, with an owned assignment in the body
+fn main() {
+    var q = new Pair{a: new Box{v: 1}, items: new []int(2)}
+    let h = handle(q)
+    let items = &h.items
+    for x in items {
+        q.a = new Box{v: 2}  // error: cannot change what 'items' points into while a for loop walks it
+    }
+}
+// === a walk through a handle, with a take in the body
+fn main() {
+    var s = new Slot{o: new Box{v: 1}, items: new []int(2)}
+    let h = handle(s)
+    let items = &h.items
+    for x in items {
+        let t = take(h.o)  // error: cannot change what 'items' points into while a for loop walks it
+    }
+}
+// === a walk through a handle, with an assignment through another handle in the body
+fn main() {
+    let p = new Pair{a: new Box{v: 1}, items: new []int(2)}
+    let h = handle(p)
+    let g = handle(p)
+    let items = &h.items
+    for x in items {
+        g.a = new Box{v: 2}  // error: cannot change what 'items' points into while a for loop walks it
+    }
+}
+// === a walk through a handle, with a truncate in the body
+fn main() {
+    let p = new Pair{a: new Box{v: 1}, items: new []int(2)}
+    let h = handle(p)
+    let items = &h.items
+    for x in items {
+        truncate(h.items, 0)  // error: cannot change what 'items' points into while a for loop walks it
+    }
+}
+// === a borrow through a handle, used after a call that might free
+fn main() {
+    let p = new Pair{a: new Box{v: 1}, items: new []int(2)}
+    let h = handle(p)
+    let items = &h.items
+    val()
+    println(items[0])  // error: 'items' may point to freed memory
+}
+// === a call that writes through a handle, then a use of a borrow through it
+fn main() {
+    let p = new Pair{a: new Box{v: 1}, items: new []int(2)}
+    let h = handle(p)
+    let items = &h.items
+    drop2(h)
+    println(items[0])  // error: 'items' may point to freed memory
+}
+// === an element borrowed through a handle, after its array is replaced
+fn main() {
+    var r = new Row{cells: new []Box(0)}
+    append(r.cells, new Box{v: 1})
+    let h = handle(r)
+    let first = &h.cells[0]
+    r.cells = new []Box(0)  // frees the element first points into
+    println(first.v)  // error: 'first' may point to freed memory
+}
+// === an assignment through a handle temporary frees what a borrow through a handle points into
+fn main() {
+    var p = new Pair{a: new Box{v: 1}, items: new []int(2)}
+    let h = handle(p)
+    let items = &h.items
+    handle(p).items = new []int(0)  // frees the array items points into
+    println(items[0])  // error: 'items' may point to freed memory
+}
+// === an assignment through a handle returned by a call frees what a borrow through a handle points into
+fn same(h: ^Pair): ^Pair { return h }
+fn main() {
+    var p = new Pair{a: new Box{v: 1}, items: new []int(2)}
+    let h = handle(p)
+    let items = &h.items
+    same(h).items = new []int(0)  // frees the array items points into
+    println(items[0])  // error: 'items' may point to freed memory
+}
+// === truncate through a handle temporary frees what a borrow through a handle points into
+fn main() {
+    var p = new Pair{a: new Box{v: 1}, items: new []int(2)}
+    let h = handle(p)
+    let items = &h.items
+    truncate(handle(p).items, 0)  // shrinks the array items points into
+    println(items[0])  // error: 'items' may point to freed memory
+}
+// === replace through a handle temporary frees what a borrow through a handle points into
+fn main() {
+    var p = new Pair{a: new Box{v: 1}, items: new []int(2)}
+    let h = handle(p)
+    let a = &h.a
+    replace(handle(p).a, new Box{v: 2})  // frees the Box a points into
+    println(a.v)  // error: 'a' may point to freed memory
+}
+// === take through a handle temporary frees what a borrow through a handle points into
+fn main() {
+    var s = new Slot{o: new Box{v: 1}, items: new []int(2)}
+    let h = handle(s)
+    let o = &h.o
+    take(handle(s).o)  // frees the Box o points into
+    if o != nil { println(o.v) }  // error: 'o' may point to freed memory
+}
+// === a call whose body changes through a handle temporary, then a use of a borrow through a handle
+var gp = new Pair{a: new Box{v: 1}, items: new []int(2)}
+fn zap() { handle(gp).items = new []int(0) }   // frees through a handle temporary; zap frees no global
+fn main() {
+    let h = handle(gp)
+    let items = &h.items
+    zap()
+    println(items[0])  // error: 'items' may point to freed memory
 }
