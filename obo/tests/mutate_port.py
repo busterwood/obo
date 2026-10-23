@@ -26,6 +26,19 @@ MUTANTS = {
                                "cannot move out of a reference")],
     "condition test compares with 1": [("        aluMI(7, memOf(x), 0)\n        drop(x)",
                                         "        aluMI(7, memOf(x), 1)\n        drop(x)")],
+    # a call to the function itself frees nothing in its own body: references held across it go unseen
+    "recursive call skips invalidation": [('        if (g.kind == "var" || g.kind == "let") && (all || mightFree(f, g)) {',
+                                           '        if (g.kind == "var" || g.kind == "let") && f != cur && (all || mightFree(f, g)) {')],
+    # a callee's frees not inherited: its callers' summaries are incomplete
+    "callee frees not recorded": [("            if !all { recordFree(g) }\n", "")],
+    # a self-call is a change in its body, so it must not be taken for a call that frees nothing
+    "recursive call might free": [("    if f.addr < 0 || f == curFn || f.freesAll { return true }",
+                                   "    if f.addr < 0 || f.freesAll { return true }")],
+    "recursive call is pure": [("    if f.addr < 0 || f == curFn || f.freesAll || len(f.freed) > 0 { return false }",
+                                "    if f.addr < 0 || f.freesAll || len(f.freed) > 0 { return false }")],
+    # a callee with a forward heading frees everything, and its callers must inherit that
+    "forward heading not inherited": [("    if cur != nil && all && f != cur { cur.freesAll = true }",
+                                       "    if cur != nil && f.addr < 0 && f != cur { cur.freesAll = true }")],
     # freeing symbols too early: a dangling-handle trap
     "frees one symbol too many": [(FREE, FREE.replace("symMark)", "symMark - 1)"))],
     "frees symbols before the blocks close": [(BLOCKS_CLOSE, "    truncate(symArena, symMark)\n" + BLOCKS_CLOSE)],

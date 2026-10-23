@@ -2,6 +2,7 @@ type Node = ref record { value: int; next: ?Node }
 
 var list: ?Node = nil
 var log = new []int(0)
+var nodes = new []Node(0)
 
 fn push(v: int) { list = new Node{value: v, next: take(list)} }
 
@@ -17,6 +18,11 @@ fn sum(l: &?Node): int {                 // reads only: frees nothing
 
 fn note(v: int) { append(log, v) }       // appending frees nothing either
 
+fn depth(n: int): int {                 // recursion frees nothing; still a call that a walk must allow
+    if n == 0 { return 0 }
+    return 1 + depth(n - 1)
+}
+
 fn drop() { list = nil }                 // frees the whole list
 
 fn main() {
@@ -28,4 +34,9 @@ fn main() {
     drop()
     let again = &list                    // 'head' is no longer valid; borrow again
     println(again == nil, " ", sum(again))   // expect: true 0
+    for i in 1..4 { append(nodes, new Node{value: i}) }
+    let walk = &nodes
+    var total = 0
+    for n in walk { total += depth(n.value) * n.value }
+    println(total)                       // expect: 14
 }

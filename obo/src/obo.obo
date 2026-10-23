@@ -1459,8 +1459,6 @@ fn restoreRegs(saved: &[]int) {
 
 // Calls a runtime routine with the C ABI; live registers, including the
 // arguments, are pushed first so the collector sees every pointer.
-fn rtCall1(slot: int, a: Item, ret: ^Type): Item
-
 fn rtCall(slot: int, args: []?Item, ret: ^Type): Item {
     let regs = new []int(0)
     let temps = new []bool(0)
@@ -1505,7 +1503,12 @@ fn rtCall(slot: int, args: []?Item, ret: ^Type): Item {
         res.strTemp = ret == tString            // every string a runtime call returns is fresh
     }
     for i in 0..len(regs) {
-        if temps[i] { rtCall1(RT_STR_DEC, makeReg(tString, regs[i]), tVoid) }
+        if temps[i] {
+            // not rtCall1: it comes later, and a forward heading would count as freeing anything
+            let one = new []?Item(0)
+            append(one, makeReg(tString, regs[i]))
+            rtCall(RT_STR_DEC, one, tVoid)
+        }
     }
     for r in regs { release(r) }
     return res
@@ -1846,8 +1849,9 @@ fn invalidate(root: ?^Sym, via: ?^Sym, all: bool, path: string) {
 // ======================================================== effect summaries
 // Every function records which globals it might free. Bodies are compiled
 // before they can be called (declare before use), so at a call site the
-// callee's summary is complete, unless it is still being compiled (recursion)
-// or only has a forward heading: then it is assumed to free anything.
+// callee's summary is complete, unless it is still being compiled (recursion:
+// the body treats the call as freeing anything, but the summary does not) or
+// only has a forward heading: then it is assumed to free anything.
 
 // a callee that cannot free anything: compiled, freeing no globals, and with
 // no mut parameters it could free through
@@ -1881,11 +1885,13 @@ fn recordFree(g: ?^Sym) {
 }
 
 // after calling f: references into what f might free are no longer valid,
-// and the caller inherits f's effects
+// and the caller inherits f's effects. A self-call adds nothing to the summary: the
+// body's later frees are not recorded yet, but the body treats the call as freeing
+// anything, and a caller reads the summary only once the body is finished.
 fn afterCall(f: ^Sym) {
     let cur = curFn
     let all = f.addr < 0 || f == cur || f.freesAll
-    if cur != nil && all { cur.freesAll = true }
+    if cur != nil && all && f != cur { cur.freesAll = true }
     let gs = &globals
     for g in gs {
         if (g.kind == "var" || g.kind == "let") && (all || mightFree(f, g)) {
@@ -4098,8 +4104,8 @@ fn compileModule() {
     emit(0xE8)
     emit32(m.addr - (pc() + 4))
     depth = 0
-    for gI in 0..len(globals) {
-        let g = globals[gI]
+    let gs = &globals
+    for g in gs {
         if (g.kind == "var" || g.kind == "let") && isOwned(symType(g)) {
             let x = newItem("mem", symType(g))
             x.disp = g.offset

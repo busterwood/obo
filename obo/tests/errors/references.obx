@@ -112,12 +112,62 @@ fn main() {
     reset()
     println(r == nil)  // error: 'r' may point to freed memory
 }
+// === a recursive call may free a global: a reference into it is invalid after the call
+fn churn(n: int) {
+    let r = &gnode.next
+    if n == 0 {
+        gnode = make()
+        return
+    }
+    churn(n - 1)
+    println(r == nil)  // error: 'r' may point to freed memory
+}
+fn main() { churn(2) }
+// === a recursive function that frees a global through a call: its callers must see the free
+fn drop1() { gnode = make() }
+fn churn2(n: int) {
+    if n > 0 { churn2(n - 1) } else { drop1() }
+}
+fn main() {
+    let r = &gnode.next
+    churn2(2)
+    println(r == nil)  // error: 'r' may point to freed memory
+}
 // === a reference into a global passed to a function not compiled yet
 fn later(n: &Node)
 fn main() {
     later(gnode)  // error: cannot pass a reference into global 'gnode' to later: it might free it
 }
 fn later(n: &Node) {}
+// === a reference into a global passed to a recursive call: the body frees it
+fn rec(r: &Node, n: int) {
+    if n == 0 { return }
+    rec(&gnode, n - 1)  // error: cannot pass a reference into global 'gnode' to rec: it might free it
+    gnode = make()
+    println(r.value)
+}
+fn main() {
+    let h = new Node{value: 5}
+    rec(&h, 2)
+}
+// === a free two calls down through a function with a forward heading
+fn later(n: int)
+fn mid() { later(0) }
+fn wrap() { mid() }
+fn later(n: int) { gnode = make() }
+fn main() {
+    let r = &gnode
+    wrap()
+    println(r.value)  // error: 'r' may point to freed memory
+}
+// === storing through a global across a recursive call that frees it
+fn rec(n: int): int {
+    if n == 0 { return 5 }
+    gnode.value = rec(n - 1)  // error: cannot assign through global 'gnode' across a call: the call could free what it points into
+    gnode = make()
+    return 1
+}
+fn main() { println(rec(2)) }
 // === borrowing a temporary
 fn main() {
     look(make())  // error: cannot borrow from a temporary

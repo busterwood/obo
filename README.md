@@ -141,10 +141,13 @@ Measured (item 4, after items 1 to 3): compiling each compiler's own source take
 about 0.01 to 0.02 s in both. The obo port (4283 lines) peaks at 1.5 MB resident and
 its live peak is 1.3 MB; obx's compiler (3222 lines), with the collector, peaks at
 8.8 MB. Also done: eight loops that only walked an array now borrow it and loop with `for`
-(the index form was a workaround for the walk rule). Still index loops: two over
-`f.freed` and two over `t.variants`, because the checker refuses to borrow through a
-handle parameter (a rule to decide), and one over `globals` at exit, because its
-runtime calls count as changes to the walked array (a checker false positive).
+(the index form was a workaround for the walk rule). The loop over `globals` at exit now
+walks by borrowing too. It was blocked by two false positives: a self-call counted as
+freeing anything (fixed in the checker, `run/globals.obx`, `errors/references.obx`), and
+the `rtCall`/`rtCall1` cycle through a forward heading (broken in the source). Effect
+summaries across mutually recursive groups remain a checker limit. Still index loops: two
+over `f.freed` and two over `t.variants`, because the checker refuses to borrow through a
+handle parameter (a rule to decide).
 
 ## Finding your way
 
@@ -381,7 +384,8 @@ reaches a fixed point compiling itself.
 Methods and interfaces, lambdas, generic
 modules, result types with `try`, multiple modules with symbol files, value records,
 inout parameters, a `>>>` logical shift, and debug info. Each was designed earlier
-to fit the single pass.
+to fit the single pass. Also: effect summaries for functions that call each other through
+forward headings.
 
 ### Future work: a peephole optimizer
 
