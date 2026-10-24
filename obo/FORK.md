@@ -226,7 +226,7 @@ making ownership the language's memory model is strong.
 test, `python3 obo/tests/port_compare.py`, builds it with obo and compiles every
 fork and mainline program, example, benchmark and error case with both, requiring
 byte-identical executables and identical error messages, with the leak check on
-in the port: 448 of 448 behave the same on the merged branch. The port compiling itself is a fixed point
+in the port: 462 of 462 behave the same on the merged branch (448 before the held-place change). The port compiling itself is a fixed point
 (obo builds p1 from the port, p1 builds p2, p2 builds p3; p1 = p2 = p3).
 
 **Now behavioural** (decided with the optimization plan, below): each case must have the
@@ -419,20 +419,71 @@ Before this change the field, element, grid, literal, reference and handle forms
 compound assignments through a reference, compiled, and read or wrote a freed header (exit 3 or a
 segfault in the probes that were run).
 
-**Tests.** `tests/errors/call_targets.obx` has 45 cases: each form above, through a local, a mut
+**Held places: a free counts as a move (the second review).** The rule above checks the owner for a
+move. Two holes remained, both about a free. (A) A pure call consumes the value of a `replace` or `take`
+that empties the array or record the statement holds: `b.items[sinkArr(replace(b.items, new []Node(0)))]`
+read a freed header (rc=3), `xs[0].v += sinkI(replace(xs, ...))` wrote into freed memory, and
+`xs[0].kids = sinkRes(replace(xs, ...))` freed a record twice (rc=6); `append(xs, sinkNode(replace(xs, ...)))`
+and `truncate` crashed. (B) A handle is the root of a held place. `heldLost` looked at the handle local,
+which no move touches: `let h = handle(b); h.items[eatBag(b)]` (rc=3), `let h = handle(xs[0]); h.kids[eatN(xs)]`
+(rc=139).
+
+Mechanism (`src/obo.obo`, section `heldPush` and after). Each index, `replace`, `append`/`truncate`, and
+assignment through a field, element or reference pushes the place it holds (`heldKey` the owner, `heldPath`
+the path inside it, `heldForeign` for a handle's target or a reference parameter, `heldHit` the flag) before
+its value or index runs, and pops it after. Two events set the flags. `consume(s)` calls `heldMove(s)`: every
+held place of `s`, and every foreign one, is hit. `replace` and `take` call `freeEvent(x, place)`: a free
+hits the held places of the same owner that are at or below the freed place (freeing something inside a
+held array leaves its header and buffer alone), and every foreign held place; a free through a handle hits
+all of them. An assignment's own target (`heldPushStore`) is exempt from a free of exactly its own place,
+since `take` leaves that place nil and the store then writes a valid place; a free of an ancestor still
+hits. The checks compare the flag after the value or index ran ("cannot index 'b' with an index that
+replaces or moves what it holds", "cannot replace a place with a value that moves or frees what it holds",
+"cannot append/truncate an array with a value or count that replaces or moves what it holds", "cannot
+assign through a place with a value that replaces or moves what it is in", and "cannot index through a
+handle with an index that moves or frees something").
+
+Accepted: a `take` of a sibling field beside the indexed array (`t.items[sinkOptB(take(t.opt))]`, prints 1);
+a `replace` of an unrelated array in an index; a whole record replaced and its old value consumed in a
+later index of the new record's array; a handle to one object indexed with a temporary of another
+(`hh.items[sinkIBag(new IBag{...})]`, z10 style); an element taken from the array indexed
+(`xo[sinkOpt(take(xo[1]))] = v`: freeing an element does not free the array header); and an assignment
+whose value takes its own target (`tk.opt = passOptIB(take(tk.opt))`).
+
+Refused, conservatively: a handle's array indexed by a move of a different local (`h.items[eatBag(other)]`).
+A handle may name any object, so the rule cannot tell them apart. This is a false positive, documented
+here and in LANGUAGE.md; a program that needs it can compute the index first.
+
+Not closed, found by the mutants. Two mutants survive, and both are argued equivalent rather than caught.
+(1) `take` does not free what it holds: no valid program has a held place inside an optional, because
+reaching one needs nil narrowing, and `take` refuses a narrowed operand (`take needs an optional variable,
+field or element holding an owned value`). So no `take` can free a held place; the hook is kept for
+the day narrowing allows it. (2) The reference's refPath prefix in `placePath`: every free that overlaps a
+reference's place already sets its `moved` flag (`invalidate`), which `heldLost` checks, so the held place
+of a reference adds nothing that the flag does not already refuse. Probes that were written but are not
+valid programs on either compiler (typing or syntax errors, so they tested nothing) are h1-h13, k5-k8,
+z1-z5, w2, x3, y4, y9 in the probe set (`review14/`).
+
+**Tests.** `tests/errors/call_targets.obx` has 59 cases: each form above, through a local, a mut
 parameter, a handle, a global, and an index target, and the holes just listed. `tests/run/
 call_targets.obx` runs the accepted forms, with outputs.
 
-**Mutants.** `tests/mutate_fork.py`: 67, all caught. They cover the root snapshot (the index check
+**Mutants.** `tests/mutate_fork.py`: 80, 78 caught (the two survivors are the equivalent ones above). The
+new ones: a replace or take that does not free (`replace does not free what it holds`, `take does not free
+what it holds`), handle moves and frees that do not reach held places, the directional rule reversed
+and the freed place's header counted, each push removed (index, replace, append/truncate, plain and
+compound assignment), the reference path ignored, and the assignment exemption removed (`assignment target
+exemption removed`, caught by the port itself). Before: 67, all caught. They cover the root snapshot (the index check
 dropped for fields, elements and whole locals, and the index check narrowed to whole variables, which
 misses fields, elements and grids), the reference owner and its invalidation (`heldLost` for a
 reference root, and the `moved` check alone), the assignment and compound checks through a reference,
 the replace, append and truncate checks, and the touch count itself. Each one is caught by a named
-case. `tests/mutate_port.py`: 68 after the merge (54 from this change, 14 from main), all caught at
+case. `tests/mutate_port.py`: 81 (67 from this change: 54 before and 13 for the held places, 14 from main), 79 caught (the same two equivalent survivors as above), at
 the committed budget of 1,351,000 (see "The port's memory budget" below); the port mutants change
 `src/obo.obo` and are judged by `port_compare`.
 
-**Fuzzer** (`tests/own_fuzz.py`): invalid kinds, `compound_target_stmt`, `append_target_stmt`,
+**Fuzzer** (`tests/own_fuzz.py`): invalid kinds, `replace_sink_index_stmt` (a field's array indexed by a pure
+call that consumes a replace of that array), `compound_target_stmt`, `append_target_stmt`,
 `truncate_target_stmt`, `index_target_stmt`, `index_assign_target_stmt`, each a field of a local
 record whose array a call in the same expression replaces; whole-local kinds, `moved_index_stmt`,
 `moved_assign_stmt`, `moved_append_stmt`, `moved_truncate_stmt`, `moved_replace_stmt`, each a local
@@ -450,8 +501,8 @@ changed elsewhere, so it is left.
 **The port.** It compiles unchanged under the new rules (no spot needed rewriting).
 
 **The port's memory budget, after the merge of main.** `PEAK_BUDGET` stays at 1,351,000, and the
-merged port passes it. The port compiling itself peaks at 1,097,776 bytes live, 253,224 bytes under
-the budget. Before the merge the branch's base lacked main's allocation work (step 4), and the same
+merged port passes it. The port compiling itself peaks at 1,097,776 bytes live before the held-place
+change and 1,116,352 after it, 234,648 bytes under the budget. Before the merge the branch's base lacked main's allocation work (step 4), and the same
 check failed at 1,739,088 bytes; the merge brought in that work and the check passes.
 
 This branch's compiler changes add 18,272 bytes to the peak: main's source measures about 1,079,400 bytes
@@ -1015,8 +1066,8 @@ Tried and dropped: freeing the code buffer as soon as the image has copied it. T
 live peak fell by 416 bytes (1,044,400 to 1,043,984), which was not worth the extra
 reassignment, since the peak is reached while the image is being copied.
 
-`PEAK_BUDGET` stays at 1,351,000. On the merged branch the peak is 1,097,776 bytes, a margin of
-253,224 bytes, which is more than the mutant "parameters kept" adds (about 190 KB), so that mutant
+`PEAK_BUDGET` stays at 1,351,000. On the merged branch the peak is 1,097,776 bytes (1,116,352 after the held-place change), a margin of
+234,648 bytes, which is more than the mutant "parameters kept" adds (about 190 KB), so that mutant
 is not caught by the budget. It is now caught when its peak rises above the unmutated peak
 (`KEEPS_ALIVE` in `tests/mutate_port.py`).
 

@@ -1754,6 +1754,9 @@ fn sameStates(a: &[]bool, b: &[]bool, line: int, col: int) {
     }
 }
 
+// the held places are defined with the checks that use them (heldMove: see below)
+fn heldMove(s: ^Sym)
+
 // Takes ownership of x's value, which is about to be stored in a variable,
 // field, element or parameter, or returned.
 fn consume(mut x: &Item) {
@@ -1785,6 +1788,7 @@ fn consume(mut x: &Item) {
         if s.deferUse { error("'" + s.name + "' is used by a defer and cannot be moved") }
         s.moved = true
         s.touches = s.touches + 1
+        heldMove(s)
         invalidate(s, nil, true, "")                  // references into it now dangle
         return
     }
@@ -2397,6 +2401,113 @@ fn heldLost(root: ?^Sym, t0: int): bool {
     return touched(ownerOf(root)) != t0
 }
 
+// The places a statement holds while an index or a value runs. heldPush records one: its owner (or
+// foreign, when its object may be any object: a handle's target, or a reference parameter's), and
+// the path it has inside the owner. A move of an owned local (heldMove) or a free by replace or take
+// (heldFree) that may free what a held place holds sets its hit flag; heldPop drops the entries from a
+// mark on. Entries nest: an index inside an index pushes and pops its own.
+var heldKey = new []?^Sym(0)
+var heldPath = new []string(0)
+var heldForeign = new []bool(0)
+var heldHit = new []bool(0)
+// set for an assignment's target: a free of exactly that place does not hit it, since take leaves the
+// place nil and replace installs the value the store then frees (an ancestor's free still hits)
+var heldStore = new []bool(0)
+// the place of the designator that designatorT returned last (placePath); replace, take and the
+// assignments read it straight after parsing their designator
+var lastPlace = ""
+
+// the place a designator names inside its owner: the path inside its root, after the root's own path
+// when the root is a reference ("" is anywhere in the owner, so it stays anywhere)
+fn placePath(root: ?^Sym, path: string): string {
+    if root != nil && root.isRef {
+        if root.refPath == "" { return "" }
+        return root.refPath + path
+    }
+    return path
+}
+
+// holds the place (root, path) while an index or a value runs: -1 when nothing is held
+fn heldPush(root: ?^Sym, viaHandle: bool, path: string): int {
+    if root == nil && !viaHandle { return -1 }
+    var key: ?^Sym = handleSym
+    var at = ""
+    var foreign = viaHandle || root == nil
+    if !foreign {
+        let o = ownerOf(root)
+        if o == nil {
+            foreign = true
+        } else {
+            key = o
+            at = path
+        }
+    }
+    let i = len(heldKey)
+    append(heldKey, key)
+    append(heldPath, at)
+    append(heldForeign, foreign)
+    append(heldHit, false)
+    append(heldStore, false)
+    return i
+}
+
+// heldPush for an assignment's target (see heldStore)
+fn heldPushStore(root: ?^Sym, viaHandle: bool, path: string): int {
+    let i = heldPush(root, viaHandle, path)
+    if i >= 0 { heldStore[i] = true }
+    return i
+}
+
+// the owned local s is moved: a held place inside s, or any foreign one, may be freed
+fn heldMove(s: ^Sym) {
+    for i in 0..len(heldKey) {
+        if heldForeign[i] || heldKey[i] == s { heldHit[i] = true }
+    }
+}
+
+// a replace or take frees the old value at place of key: that frees a held place of the same owner
+// when the freed place is the held one or above it (the array held is then inside what is freed);
+// an assignment's own target is exempt from the equal case (heldStore).
+// Freeing something inside a held array leaves its header and buffer alone, so it does not hit. A
+// foreign held place is hit by any free, and a free through a handle or a reference parameter may
+// reach anything, so it hits every held place
+fn heldFree(key: ?^Sym, place: string) {
+    for i in 0..len(heldKey) {
+        if heldForeign[i] || key == handleSym || (heldKey[i] == key && segsPrefix(place, heldPath[i]) && !(heldStore[i] && place == heldPath[i])) {
+            heldHit[i] = true
+        }
+    }
+}
+
+// the old value of the designator x that a replace or take frees
+fn freeEvent(x: &Item, place: string) {
+    if x.viaHandle {
+        heldFree(handleSym, "")
+        return
+    }
+    let root = x.root
+    if root == nil { return }
+    let o = ownerOf(root)
+    if o == nil {
+        heldFree(handleSym, place)
+    } else {
+        heldFree(o, place)
+    }
+}
+
+// the held place i was freed by a move or a free while the expression ran
+fn heldHitAt(i: int): bool { return i >= 0 && heldHit[i] }
+
+// drops the held places from mark on
+fn heldPop(mark: int) {
+    if mark < 0 { return }
+    truncate(heldKey, mark)
+    truncate(heldPath, mark)
+    truncate(heldForeign, mark)
+    truncate(heldHit, mark)
+    truncate(heldStore, mark)
+}
+
 fn checkAssign(dst: ^Type, x: &Item, what: string) {
     if x.typ == tVoid { error(what + ": expression has no value") }
     if dst.kind == "byte" && x.mode == "const" && x.typ.kind == "int" && x.val >= 0 && x.val <= 255 { return }
@@ -2644,6 +2755,7 @@ fn builtin(name: string): Item {
         expect(T_LPAREN, "")
         if sym != T_IDENT { error("replace needs a variable, field or element") }
         var x = designator()
+        let place = lastPlace
         if (x.mode != "mem" && x.mode != "elem") || !isOwned(x.typ) {
             error("replace needs a variable, field or element holding an owned value")
         }
@@ -2657,6 +2769,7 @@ fn builtin(name: string): Item {
         let savedPin = pinned
         let touch0 = heldTouch(tr)
         if x.deref && tr != nil && tr.storage == "local" { pinned = tr }
+        let hp = heldPush(tr, x.viaHandle, place)
         var v = expression()
         pinned = savedPin
         expect(T_RPAREN, "")
@@ -2666,8 +2779,13 @@ fn builtin(name: string): Item {
         if tr != nil && heldLost(tr, touch0) {
             error("cannot replace '" + tr.name + "' with a value that moves it: the call could free the array it gives back; compute the value first")
         }
+        if heldHitAt(hp) {
+            error("cannot replace a place with a value that moves or frees what it holds: the old value could be freed; compute the value first")
+        }
+        heldPop(hp)
         checkAssign(x.typ, v, "replacement value")
         consume(v)
+        freeEvent(x, place)
         if x.deref || x.viaHandle {
             invalidateOwnedChange(x)
             recordFree(freeRoot(x))
@@ -2724,6 +2842,7 @@ fn builtin(name: string): Item {
         if x.deref && tr != nil && tr.isRef && !tr.refMut {
             error("take cannot change through '" + tr.name + "': it is a read-only reference")
         }
+        freeEvent(x, lastPlace)
         if x.deref || x.viaHandle {
             invalidateOwnedChange(x)
             recordFree(freeRoot(x))
@@ -2747,6 +2866,7 @@ fn builtin(name: string): Item {
         let line = tline
         expect(T_LPAREN, "")
         var a = expression()
+        let aPlace = lastPlace
         var want = "array"
         var article = "an"
         if name == "substr" {
@@ -2776,6 +2896,7 @@ fn builtin(name: string): Item {
         let touch0 = heldTouch(r0)
         let savedPin = pinned
         if name != "substr" && aDeref && r0 != nil && r0.storage == "local" { pinned = r0 }
+        let hp = heldPush(r0, a.viaHandle, aPlace)
         var b = expression()
         pinned = savedPin
         if name != "substr" && held && userCalls != callsBefore {
@@ -2790,6 +2911,10 @@ fn builtin(name: string): Item {
             }
             errorAt("cannot truncate '" + r0.name + "' with a count that moves it: the call could free the array it is in; compute the count first", line, 0)
         }
+        if heldHitAt(hp) {
+            errorAt("cannot " + name + " an array with a value or count that replaces or moves what it holds: the old value could be freed; compute the value first", line, 0)
+        }
+        heldPop(hp)
         if name == "append" {
             checkAssign(baseOf(a.typ), b, "appended value")
             consume(b)
@@ -2970,6 +3095,7 @@ fn designatorT(target: bool): Item {
             let wholeLocal = x.sym != nil && !(root != nil && (root.storage == "global" || root.isRef))
             let touch0 = heldTouch(root)
             let a = load(x)
+            let hp = heldPush(root, viaHandle, placePath(root, path))
             let i0 = expression()
             if !isInt(i0.typ) { error("array index must be int") }
             if viaHandle && userCalls != callsBefore {
@@ -2984,6 +3110,13 @@ fn designatorT(target: bool): Item {
             if root != nil && heldLost(root, touch0) {
                 error("cannot index '" + root.name + "' with an index that moves it: the call could free its array; compute the index first")
             }
+            if viaHandle && heldHitAt(hp) {
+                error("cannot index through a handle with an index that moves or frees something: the object it names could be freed; compute the index first")
+            }
+            if root != nil && heldHitAt(hp) {
+                error("cannot index '" + root.name + "' with an index that replaces or moves what it holds: the old value could be freed; compute the index first")
+            }
+            heldPop(hp)
             var seg = "/[]"
             if i0.mode == "const" { seg = "/[" + string(i0.val) + "]" }
             let i = load(i0)
@@ -3020,6 +3153,7 @@ fn designatorT(target: bool): Item {
         s.usedAt = useSeq
     }
     x.viaHandle = viaHandle
+    lastPlace = placePath(root, path)
     if x.sym == nil && root != nil {
         x.root = root
         x.deref = true
@@ -3582,6 +3716,7 @@ fn assignmentOrCall(): bool {
     let col = tcol
     noreturn = false
     let x = designatorT(true)
+    let tplace = lastPlace
     if noreturn && (sym == T_SEMI || sym == T_RBRACE) { return true }
     if x.movedRef && sym != T_ASSIGN {
         let r = x.root
@@ -3637,6 +3772,8 @@ fn assignmentOrCall(): bool {
             let r0 = x.root
             let touch0 = heldTouch(r0)
             if x.deref && r0 != nil && r0.storage == "local" { pinned = r0 }
+            var hp = -1
+            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, tplace) }
             let y = expression()
             pinned = savedPin
             checkAssign(dtype, y, "assignment")
@@ -3645,6 +3782,10 @@ fn assignmentOrCall(): bool {
             if x.deref && r0 != nil && heldLost(r0, touch0) {
                 errorAt("cannot assign through '" + r0.name + "' with a value that moves what it is in: the call could free it; compute the value first", line, col)
             }
+            if heldHitAt(hp) {
+                errorAt("cannot assign through a place with a value that replaces or moves what it is in: the old value could be freed; compute the value first", line, col)
+            }
+            heldPop(hp)
             if xs != nil && xs.storage == "local" && !assignable(x.typ, y.typ) { widen(xs) }
             if isOwned(dtype) {
                 if xs != nil && xs.storage == "local" {
@@ -3681,12 +3822,18 @@ fn assignmentOrCall(): bool {
             let r0 = x.root
             let touch0 = heldTouch(r0)
             if x.deref && r0 != nil && r0.storage == "local" { pinned = r0 }
+            var hp = -1
+            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, tplace) }
             var y = expression()
             pinned = savedPin
             checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)
             if x.deref && r0 != nil && heldLost(r0, touch0) {
                 errorAt("cannot assign through '" + r0.name + "' with a value that moves what it is in: the call could free it; compute the value first", line, col)
             }
+            if heldHitAt(hp) {
+                errorAt("cannot assign through a place with a value that replaces or moves what it is in: the old value could be freed; compute the value first", line, col)
+            }
+            heldPop(hp)
             if !isInt(y.typ) { error("'" + tokName(o) + "' needs an int") }
             if !same(dtype, tInt) { error("'" + tokName(o) + "' needs an int") }
             resolve(x)

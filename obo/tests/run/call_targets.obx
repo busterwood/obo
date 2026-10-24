@@ -21,6 +21,12 @@ fn borrowBag(b: &IBag): int { return 0 }            // borrows the record: nothi
 fn moveBag(b: IBag): int { return 0 }               // takes the record by value
 fn idxG(a: &[][]int): int { return 0 }
 fn rebuildArr(a: []Item): []Item { return new []Item(0) }
+type Two = ref record { items: []Item; opt: ?IBag }
+fn sinkOptB(b: ?IBag): int { return 0 }             // pure: consumes the optional it is given
+fn sinkIt(a: []Item): int { return 0 }              // pure: consumes the array it is given
+fn sinkIBag(b: IBag): int { return 0 }              // pure: consumes the record it is given
+fn sinkOptItem(n: ?Item): int { return 0 }          // pure: consumes the optional item it is given
+fn passOptIB(b: ?IBag): ?IBag { return b }     // pure: returns the optional it is given
 
 fn main() {
     var a = new []Item(0)
@@ -75,4 +81,37 @@ fn main() {
     append(row, 5)
     append(grid, row)
     println(grid[0][idxG(grid)])    // expect: 5
+    // a take of an optional field, beside an array indexed in its record: the taken object is not the array's
+    var t = new Two{items: new []Item(0), opt: new IBag{items: new []Item(0)}}
+    append(t.items, mkItem(1))
+    println(t.items[sinkOptB(take(t.opt))].v)      // expect: 1
+    // a replace of another array in an index: the array indexed is not the one replaced
+    var oth = new []Item(0)
+    append(oth, mkItem(3))
+    var cb = new IBag{items: new []Item(0)}
+    append(cb.items, mkItem(7))
+    println(cb.items[sinkIt(replace(oth, new []Item(0)))].v)   // expect: 7
+    // a whole record replaced, its old value consumed in the index of the new one's array
+    var rb = new IBag{items: new []Item(0)}
+    append(rb.items, mkItem(8))
+    let oldRb = replace(rb, new IBag{items: new []Item(0)})
+    append(rb.items, mkItem(8))
+    println(rb.items[sinkIBag(oldRb)].v)             // expect: 8
+    // a handle to an object, indexed with a temporary moved in the index: the temporary is not its target
+    var hb = new IBag{items: new []Item(0)}
+    append(hb.items, mkItem(4))
+    let hh = handle(hb)
+    println(hh.items[sinkIBag(new IBag{items: new []Item(0)})].v)   // expect: 4
+    // an element taken from the array indexed: the array header is not freed, only the element
+    var xo = new []?Item(0)
+    append(xo, mkItem(1))
+    append(xo, mkItem(2))
+    xo[sinkOptItem(take(xo[1]))] = mkItem(7)
+    println(len(xo))                               // expect: 2
+    // a value that takes the optional field it is assigned to: take leaves the field nil and the store writes
+    // the place, so it is not freed (only an ancestor of the place is)
+    var tk = new Two{items: new []Item(0), opt: new IBag{items: new []Item(0)}}
+    append(tk.items, mkItem(6))
+    tk.opt = passOptIB(take(tk.opt))
+    println(tk.items[0].v)                         // expect: 6
 }

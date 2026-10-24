@@ -30,6 +30,15 @@ fn eatArrI(a: []Node): int { return 0 }             // takes an element's array 
 fn eatG(a: [][]int): int { return 0 }               // takes a grid by value: moves it
 fn eatOB(b: OBag): int { return 0 }
 fn idxOf(h: Holder): int { return 0 }               // its argument is a record literal that moves a bag
+// pure consumers: by-value arguments that the callee frees, so a value they are given is freed
+fn sinkArr(a: []Node): int { return 0 }
+fn sinkRes(a: []Node): []Node { return new []Node(0) }
+fn sinkNodeOf(a: []Node): Node { return mk(9) }
+fn sinkBag(b: Bag): int { return 0 }
+fn sinkG(a: [][]int): int { return 0 }
+type Two = ref record { items: []Node; opt: ?Bag }
+fn sinkOptB(b: ?Bag): int { return 0 }
+fn sinkBagArr(b: Bag): []Node { return new []Node(0) }   // pure: consumes the record it is given
 
 // === compound assignment to an element, the call replaces the array
 fn shrink(mut a: &[]Node): int { a[0] = mk(5); return 1 }
@@ -327,4 +336,98 @@ fn main() {
     let r = &xs
     r[0].v += eatArrI(xs)             // error: cannot assign through 'r' with a value that moves what it is in
     println(r[0].v)
+}
+// === a field's array indexed by a pure call that consumes the old array the index replaces
+fn main() {
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, mk(1))
+    println(b.items[sinkArr(replace(b.items, new []Node(0)))].v)   // error: cannot index 'b' with an index that replaces or moves what it holds
+}
+// === a whole record replaced inside an index of its own array, the old record consumed by a pure call
+fn main() {
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, mk(1))
+    println(b.items[sinkBag(replace(b, new Bag{items: new []Node(0)}))].v)   // error: cannot index 'b' with an index that replaces or moves what it holds
+}
+// === a grid's inner index that consumes the grid the row came from
+fn main() {
+    var g = new [][]int(0)
+    var row = new []int(0)
+    append(row, 5)
+    append(g, row)
+    println(g[0][sinkG(replace(g, new [][]int(0)))])   // error: cannot index 'g' with an index that replaces or moves what it holds
+}
+// === a compound assignment to an element field, its value replacing the array the element is in
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    xs[0].v += sinkArr(replace(xs, new []Node(0)))   // error: cannot assign through a place with a value that replaces or moves what it is in
+}
+// === a plain assignment to an element's array, its value replacing the array the element is in
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    xs[0].kids = sinkRes(replace(xs, new []Node(0)))   // error: cannot assign through a place with a value that replaces or moves what it is in
+}
+// === a plain assignment to an element field whose value replaces the array it is in
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    xs[0].v = sinkArr(replace(xs, new []Node(0)))   // error: cannot assign through a place with a value that replaces or moves what it is in
+}
+// === an append whose value replaces the array it appends to, the old array consumed by a pure call
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    append(xs, sinkNodeOf(replace(xs, new []Node(0))))   // error: cannot append an array with a value or count that replaces or moves what it holds
+}
+// === a truncate whose count replaces the array it truncates, the old array consumed by a pure call
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    truncate(xs, sinkArr(replace(xs, new []Node(0))))   // error: cannot truncate an array with a value or count that replaces or moves what it holds
+}
+// === a reference to a field's array indexed by a replace of that field
+fn main() {
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, mk(1))
+    let r = &b.items
+    println(r[sinkArr(replace(b.items, new []Node(0)))].v)   // error: cannot index 'r' with an index that moves it
+}
+// === a handle's array indexed by a pure move of the object it names
+fn main() {
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, mk(1))
+    let h = handle(b)
+    println(h.items[eatBag(b)].v)   // error: cannot index through a handle with an index that moves or frees something
+}
+// === a handle to an element's array indexed by a pure move of the array the element is in
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    append(xs[0].kids, mk(2))
+    let h = handle(xs[0])
+    println(h.kids[eatN(xs)].v)   // error: cannot index through a handle with an index that moves or frees something
+}
+// === a handle's array indexed by a pure call that replaces the owner's array
+fn main() {
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, mk(1))
+    let h = handle(b)
+    println(b.items[sinkArr(replace(h.items, new []Node(0)))].v)   // error: cannot index 'b' with an index that replaces or moves what it holds
+}
+// === a handle's array indexed by a pure move of another local (conservative: a handle may name any object)
+fn main() {
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, mk(1))
+    var other = new Bag{items: new []Node(0)}
+    let h = handle(b)
+    println(h.items[eatBag(other)].v)   // error: cannot index through a handle with an index that moves or frees something
+}
+// === a replace whose value replaces the record its target is in: the store would write into a freed record
+fn main() {
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, mk(1))
+    let got = replace(b.items, sinkBagArr(replace(b, new Bag{items: new []Node(0)})))   // error: cannot replace a place with a value that moves or frees what it holds
+    println(len(got))
 }

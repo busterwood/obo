@@ -189,6 +189,19 @@ MUTANTS = {
     "push imm8 from -129": [("fn pushI(v: int) {\n    if fits8(v) {", "fn pushI(v: int) {\n    if v >= -129 && v < 128 {")],
     "push imm32 masked": [("        emit(0x68)\n        emit32(v)\n", "        emit(0x68)\n        emit32(v & 0x7FFFFFFF)\n")],
     "frame dropped although there are locals": [("    if size == 0 {\n        dropFrame(frameAt)", "    if size <= 16 {\n        dropFrame(frameAt)")],
+    "held: replace does not free what it holds": [('        consume(v)\n        freeEvent(x, place)\n', '        consume(v)\n')],
+    "held: take does not free what it holds": [('        freeEvent(x, lastPlace)\n', '')],
+    "held: moves do not reach held handle targets": [('        if heldForeign[i] || heldKey[i] == s { heldHit[i] = true }', '        if heldKey[i] == s { heldHit[i] = true }')],
+    "held: frees through a handle do not reach held places": [('        if heldForeign[i] || key == handleSym || (heldKey[i] == key && segsPrefix(place, heldPath[i]) && !(heldStore[i] && place == heldPath[i])) {', '        if heldForeign[i] || (heldKey[i] == key && segsPrefix(place, heldPath[i]) && !(heldStore[i] && place == heldPath[i])) {')],
+    "held: frees inside a held array count as freeing it": [('(heldKey[i] == key && segsPrefix(place, heldPath[i]) && !(heldStore[i] && place == heldPath[i]))', '(heldKey[i] == key && (segsPrefix(place, heldPath[i]) || segsPrefix(heldPath[i], place)) && !(heldStore[i] && place == heldPath[i]))')],
+    "held: moves do not free handle targets": [('        heldMove(s)\n', '')],
+    "held: index does not hold its array": [('            let hp = heldPush(root, viaHandle, placePath(root, path))', '            let hp = -1')],
+    "held: replace does not hold its place": [('        let hp = heldPush(tr, x.viaHandle, place)', '        let hp = -1')],
+    "held: append and truncate do not hold their array": [('        let hp = heldPush(r0, a.viaHandle, aPlace)', '        let hp = -1')],
+    "held: plain assignments do not hold their target": [('            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, tplace) }\n            let y = expression()', '            let y = expression()')],
+    "held: compound assignments do not hold their target": [('            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, tplace) }\n            var y = expression()', '            var y = expression()')],
+    "held: reference places ignore the reference's path": [('        return root.refPath + path\n', '        return path\n')],
+    "held: assignment target exemption removed": [('(heldKey[i] == key && segsPrefix(place, heldPath[i]) && !(heldStore[i] && place == heldPath[i]))', '(heldKey[i] == key && segsPrefix(place, heldPath[i]))')],
 }
 
 # mutants of the encoder: caught by port_test.py's objdump cross-check

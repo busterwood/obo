@@ -47,7 +47,7 @@ MUTANTS = {
     "globals not freed at exit": ("            x.disp = g.offset\n            rtCall1(RT_FREE, x, tVoid)\n", "            x.disp = g.offset\n"),
     # freeing too much: double free or poisoned reads
     "moved locals still freed": ("        if !s.moved && !s.isRefLocal {\n            let x = newItem", "        if !s.isRefLocal {\n            let x = newItem"),
-    "moves not recorded": ("        s.moved = true\n        s.touches = s.touches + 1\n        invalidate(s, nil, true, \"\")", "        s.touches = s.touches + 1\n        invalidate(s, nil, true, \"\")"),
+    "moves not recorded": ("        s.moved = true\n        s.touches = s.touches + 1\n        heldMove(s)\n        invalidate(s, nil, true, \"\")", "        s.touches = s.touches + 1\n        heldMove(s)\n        invalidate(s, nil, true, \"\")"),
     "take leaves the value in place": ("        opMem(0x8B, r, memOf(x), true, false)\n        opMem(0xC7, 0, memOf(x), true, false)\n        emit32(0)\n",
                                        "        opMem(0x8B, r, memOf(x), true, false)\n"),
     # string reference counts
@@ -140,6 +140,26 @@ MUTANTS = {
     # finer paths (item 3): a change reaches only what lies under its place
     "field changes invalidate siblings": ("(all || v.refDeep && underPath(v.refPath, path))", "(all || v.refDeep)"),
     "known elements treated as one": ("(ri != rj || pathsOverlap(argPaths[i], argPaths[j]))", "(ri != rj || true)"),
+    # held places (heldPush, heldMove, heldFree): a replace or take frees what it empties, so a value
+    # that replaces an array an index, append or assignment holds is refused (call_targets.obx:
+    # "... replaces or moves what it holds"); a handle's target is any object, so any move or free
+    # reaches a held place of a handle ("through a handle ... moves or frees something")
+    "replace does not free what it holds": ("        consume(v)\n        freeEvent(x, place)\n", "        consume(v)\n"),
+    "take does not free what it holds": ("        freeEvent(x, lastPlace)\n", ""),
+    "moves do not reach held handle targets": ("        if heldForeign[i] || heldKey[i] == s { heldHit[i] = true }", "        if heldKey[i] == s { heldHit[i] = true }"),
+    "frees through a handle do not reach held places": ('        if heldForeign[i] || key == handleSym || (heldKey[i] == key && segsPrefix(place, heldPath[i]) && !(heldStore[i] && place == heldPath[i])) {', '        if heldForeign[i] || (heldKey[i] == key && segsPrefix(place, heldPath[i]) && !(heldStore[i] && place == heldPath[i])) {'),
+    "frees inside a held array count as freeing it": ('(heldKey[i] == key && segsPrefix(place, heldPath[i]) && !(heldStore[i] && place == heldPath[i]))', '(heldKey[i] == key && (segsPrefix(place, heldPath[i]) || segsPrefix(heldPath[i], place)) && !(heldStore[i] && place == heldPath[i]))'),
+    "moves do not free handle targets": ("        heldMove(s)\n", ""),
+    "index does not hold its array": ("            let hp = heldPush(root, viaHandle, placePath(root, path))", "            let hp = -1"),
+    "replace does not hold its place": ("        let hp = heldPush(tr, x.viaHandle, place)", "        let hp = -1"),
+    "append and truncate do not hold their array": ("        let hp = heldPush(r0, a.viaHandle, aPlace)", "        let hp = -1"),
+    "plain assignments do not hold their target": ("            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, tplace) }\n            let y = expression()",
+                                                    "            let y = expression()"),
+    "compound assignments do not hold their target": ("            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, tplace) }\n            var y = expression()",
+                                                      "            var y = expression()"),
+    "reference places ignore the reference's path": ("        return root.refPath + path\n", "        return path\n"),
+    # an assignment target (heldStore) is exempt from a free of exactly its own place: take leaves it nil
+    "assignment target exemption removed": ('(heldKey[i] == key && segsPrefix(place, heldPath[i]) && !(heldStore[i] && place == heldPath[i]))', '(heldKey[i] == key && segsPrefix(place, heldPath[i]))'),
 }
 
 

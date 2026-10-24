@@ -495,6 +495,15 @@ fn main() {
 }
 ```
 
+A free counts as a move. `replace` and `take` free the old value of the place they empty, so a value
+that a pure call consumes can free what the statement holds: `b.items[sinkArr(replace(b.items, new []Node(0)))]`,
+`xs[0].v += sinkI(replace(xs, new []Node(0)))` and `append(xs, sinkNode(replace(xs, new []Node(0))))` are refused.
+A handle's array indexed by a move of the object it names (`let h = handle(b); h.items[eat(b)]`) is refused too.
+A `replace` or `take` of an unrelated place, or of an element beside the array that is indexed, is accepted, and
+so is an assignment whose value takes its own target (`t.opt = pass(take(t.opt))`), since `take` leaves that
+place empty. A free of an ancestor of the target is still refused. A handle may name any object, so a move of a
+different local through a handle is refused as well: that rule is conservative.
+
 ```obo
 // example: error: cannot index a field, element or reference with an index that calls a function
 type Item = ref record { v: int; kids: []Item }

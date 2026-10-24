@@ -412,6 +412,15 @@ class Gen:
         return self.invalid_stmt([f"var b{n} = new Box{{items: new []int(0)}}", f"append(b{n}.items, 1)",
                                   f"println(b{n}.items[eatBox(b{n})])"])
 
+    def replace_sink_index_stmt(self):
+        """A field's array, indexed by a pure call whose argument is a replace of that array: the
+        replace frees what the index holds, so the statement is rejected (a free in a held place)."""
+        n = self.nrefs
+        self.nrefs += 1
+        self.extra_fn("fn sinkArrI(a: []int): int { return 0 }")
+        return self.invalid_stmt([f"var b{n} = new Box{{items: new []int(0)}}", f"append(b{n}.items, 1)",
+                                  f"println(b{n}.items[sinkArrI(replace(b{n}.items, new []int(0)))])"])
+
     def moved_index_stmt(self):
         return self.moved_local_stmt('index')
 
@@ -1160,7 +1169,8 @@ class Gen:
                self.compound_target_stmt, self.append_target_stmt, self.truncate_target_stmt,
                self.index_target_stmt, self.index_assign_target_stmt,
                self.moved_index_stmt, self.moved_assign_stmt, self.moved_append_stmt,
-               self.moved_truncate_stmt, self.moved_replace_stmt, self.moved_root_index_stmt]
+               self.moved_truncate_stmt, self.moved_replace_stmt, self.moved_root_index_stmt,
+               self.replace_sink_index_stmt]
         s = ops[self.seed % len(ops)]()
         return s if s is not None else self.pick(ops)
 
