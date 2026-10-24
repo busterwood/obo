@@ -629,7 +629,7 @@ compiler. They will be fixed next.
 
 ## Optimization plan
 
-Status: planned, not started. Phases are ordered by expected value per unit of cost.
+Status: Phase 0 done; Phases 1 to 4 planned, not started. Phases are ordered by expected value per unit of cost.
 Each has a gate; a phase that misses its gate is recorded here and stopped.
 
 **Baseline.** A loop `s = s + i * 2` over `i < n` compiles with every local in a stack
@@ -641,13 +641,65 @@ latency on the critical path, not only instruction count.
 **Ordering.** Register allocation (Phase 2) removes most of what a peephole pass would
 remove, so the peephole comes after it and may never be built.
 
-### Phase 0: measure
+### Phase 0: measure (done)
 
-Add four micro-benchmarks under `obo/bench/`: a tight integer loop, fib (call-heavy),
-an array-indexing loop, and an allocation-heavy loop. Record wall time, and
-instruction counts from `objdump` over the program's code segment, as the baseline.
+The four workloads are `obo/bench/loop_obo.obx`, `fib_obo.obx`, `array_obo.obx` and
+`alloc_obo.obx`. Each prints a checksum, which `obo/bench/micro.py` checks, and each
+runs once with `OBO_CHECK=1` and must exit 0 (no leaks, no double frees). The script
+builds the compiler with `make`, times each workload, and counts its code segment.
+Rerun it with:
 
-*Gate:* baseline figures recorded in this section.
+    python3 obo/bench/micro.py            # the table below; 5 timed runs each
+    python3 obo/bench/micro.py --disasm loop
+
+Measured at commit 4e11fb2 on an AMD Ryzen 7 8745HS under WSL2, with the seed
+compiler and gcc 13 / GNU objdump 2.42. Times are without `OBO_CHECK`, the normal
+configuration.
+
+| Benchmark | Time, median of 5 (ms) | Instructions in code segment | Notes |
+|---|---|---|---|
+| loop | 576 (range 576-587) | 36 | `while i < n { s = s + i * 2 }` with n = 1e9. Loop body is 12 instructions: 5 loads, 2 stores, 2 branches. |
+| fib | 619 (616-633) | 57 | `fib(40)`: about 331 million calls, about 1.9 ns each. Arguments are pushed on the stack. |
+| array | 408 (406-414) | 105 | 1e6 elements built by `append`, then 200 rounds of `a[i] = a[i] + r` and `total += a[i]`. Three bounds checks per iteration, each reloading the array header. Peak RSS 16.0 MB. |
+| alloc | 489 (434-514) | 56 | 2e7 records, each allocated and freed in its own iteration. Peak live 32 bytes, 640 MB allocated in total. |
+
+Peak RSS is 0.1 MB for loop, fib and alloc, and 16.0 MB for array (the 1e6-element
+array). The script reads it with `bench/peak.c`, the helper `bench.py` uses. A Python
+`wait4` would report the parent's RSS too, because a forked child starts with the
+parent's pages.
+
+Code segment: the program's code, from the entry point (0x401000) to the end of its
+executable segment (0x40109b). The runtime's text, at 0x10000000, is not counted.
+
+The tight loop's body, from `micro.py --disasm loop`:
+
+```
+40103a:	mov    -0x18(%rbp),%rbx
+40103e:	cmp    -0x8(%rbp),%rbx
+401042:	jge    0x40106f
+401048:	mov    -0x10(%rbp),%r8
+40104c:	mov    -0x18(%rbp),%r9
+401050:	imul   $0x2,%r9,%r9
+401057:	add    %r9,%r8
+40105a:	mov    %r8,-0x10(%rbp)
+40105e:	mov    -0x18(%rbp),%r10
+401062:	add    $0x1,%r10
+401066:	mov    %r10,-0x18(%rbp)
+40106a:	jmp    0x40103a
+```
+
+The plan's description holds. `i` (`-0x18`) is loaded three times, at 40103a, 40104c and
+40105e, and `s` (`-0x10`) is loaded and stored. `n` (`-0x8`) is loaded again by the `cmp`.
+The loop has a `jge` exit test at the top and a `jmp` back to it.
+
+One surprise: 576 ms for 1e9 iterations is 0.58 ns each, about 2.2 cycles at the
+3.8 GHz nominal clock. A loop whose two loop-carried values each go through a
+store-to-load round trip would usually be limited to several cycles per iteration by
+that round trip. This CPU may forward rbp-relative stores with almost no latency (memory
+renaming), so the latency part of the plan's motivation may be weaker here than
+assumed. Phase 2's measured gain will show whether it is.
+
+*Gate:* met. These figures are the baseline for Phases 1 to 4.
 
 ### Phase 1: cheap codegen
 

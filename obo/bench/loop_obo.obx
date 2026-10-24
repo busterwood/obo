@@ -1,0 +1,12 @@
+// Tight integer loop: s = s + i * 2 for i < n. Measures the codegen of a
+// loop with every local in a stack slot.
+fn main() {
+    let n = 1000000000
+    var s = 0
+    var i = 0
+    while i < n {
+        s = s + i * 2
+        i = i + 1
+    }
+    println(s)
+}
