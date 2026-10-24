@@ -20,7 +20,7 @@ REF = os.path.join(FORK, 'obo')
 SRC = os.path.join(FORK, 'src', 'obo.obo')
 # live peak, in bytes, of the port compiling itself: about 3% above the measured
 # figure. Lower it when memory improves; raise it only for a reason recorded in FORK.md.
-PEAK_BUDGET = 1_351_000
+PEAK_BUDGET = 1_777_000     # raised from 1,351,000 for the target checks: see FORK.md
 
 
 def outcome(exe, src_path, out_path):

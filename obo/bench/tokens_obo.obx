@@ -5,7 +5,7 @@ type Token = ref record { kind: int; text: string; line: int }
 fn isLetter(c: byte): bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_' }
 fn isDigit(c: byte): bool { return c >= '0' && c <= '9' }
 
-fn scan(src: &[]byte, toks: &mut []Token) {
+fn scan(src: &[]byte, mut toks: &[]Token) {
     var i = 0
     var line = 1
     while i < len(src) {
@@ -38,7 +38,7 @@ fn hash(s: string): int {
     return h
 }
 
-fn intern(table: &mut [][]string, s: string): bool {
+fn intern(mut table: &[][]string, s: string): bool {
     let bucket = table[hash(s) % len(table)]
     for name in bucket {
         if name == s { return false }

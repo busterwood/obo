@@ -1,0 +1,42 @@
+// The forms that stay accepted once compound assignments, append, truncate, replace and
+// indexes check their targets across calls: the value or index computed first, a pure call
+// beside a field, and a whole local array that no call can free.
+type Item = ref record { v: int; kids: []Item }
+
+var gscratch = new []Item(0)
+var gtotal = 0
+
+fn mkItem(v: int): Item { return new Item{v: v, kids: new []Item(0)} }
+fn rebuild(mut a: &[]Item): int { a[0] = mkItem(50); return 1 }
+fn sumOf(a: &[]Item): int { return len(a) }
+fn freeOther(): int { gscratch = new []Item(0); return 2 }
+fn fresh(): Item { gscratch = new []Item(0); return mkItem(6) }
+fn pick(mut a: &[]Item): int { append(a, mkItem(9)); return 1 }
+fn bumpTotal(): int { gtotal += 1; return 3 }
+
+fn main() {
+    var a = new []Item(0)
+    append(a, mkItem(1))
+    let r = rebuild(a)              // the call goes first
+    a[0].v += r                     // the value is computed before the target is located
+    println(a[0].v)                 // expect: 51
+    a[0].v += sumOf(a)              // a pure call beside a field: no freeing
+    println(a[0].v)                 // expect: 52
+    append(a, fresh())              // a call that frees a global, beside a whole local array
+    println(len(a))                 // expect: 2
+    let old = replace(a, new []Item(0))
+    println(len(old))              // expect: 2
+    var xs = new []Item(0)
+    append(xs, mkItem(3))
+    append(xs, fresh())             // the array is a whole local: no call can free it
+    println(len(xs))                // expect: 2
+    truncate(xs, freeOther() - 1)   // the count's call frees a global, not xs
+    println(len(xs))                // expect: 1
+    // the index is taken after the call made the array longer
+    println(xs[pick(xs)].v)         // expect: 9
+    var n = mkItem(1)
+    append(n.kids, mkItem(2))
+    let g = bumpTotal()
+    n.kids[0].v += g                // computed first
+    println(n.kids[0].v)            // expect: 5
+}

@@ -75,7 +75,7 @@ MUTANTS = {
     "handle borrows are untracked": ("    if x.mode == \"const\" { return nil }\n    if x.viaHandle { return handleSym }\n", "    if x.mode == \"const\" { return nil }\n    if x.viaHandle { return nil }\n"),
     # acceptance-equivalent: the general field-target check rejects the same programs,
     # so only the suite sees this, by the message text (the fuzzer compares acceptance only)
-    "handle assignment across calls allowed": ("            if x.viaHandle && userCalls != callsBefore {\n                errorAt(", "            if false {\n                errorAt("),
+    "handle assignment across calls allowed": ("    if x.viaHandle {\n        errorAt(\"cannot assign through a handle across a call", "    if false {\n        errorAt(\"cannot assign through a handle across a call"),
     "handle index calls allowed": ("            if viaHandle && userCalls != callsBefore {\n                error(", "            if false {\n                error("),
     "match reads the tag with the generation": ("    opMem(0x8B, r, mem(r, -1, -16, 8), false, false)", "    opMem(0x8B, r, mem(r, -1, -16, 8), true, false)"),
     # effect summaries
@@ -102,7 +102,21 @@ MUTANTS = {
     "calls check only one root": ("argDeeps[j] && ri != nil && rj != nil && reaches(ri, rj)", "argDeeps[j] && ri != nil && rj != nil && ri == rj"),
     "calls ignore depth": ("argModes[i] == 2 && argDeeps[j] && ri", "argModes[i] == 2 && ri"),
     # assigning into a field or element while a call might free it
-    "field targets assigned across calls": ("            if xs == nil && userCalls != callsBefore {", "            if false && userCalls != callsBefore {"),
+    "field targets assigned across calls": ("    if xs == nil {\n        // a field or element: the call could free the record or array it is in",
+                                            "    if false {\n        // a field or element: the call could free the record or array it is in"),
+    # the same for the other forms of a target located before a call (call_targets.obx)
+    "compound targets not checked": ("            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if !isInt(y.typ)",
+                                     "            pinned = savedPin\n            if !isInt(y.typ)"),
+    "append targets not checked": ("        if name != \"substr\" && held && userCalls != callsBefore {",
+                                   "        if name == \"truncate\" && held && userCalls != callsBefore {"),
+    "truncate targets not checked": ("        if name != \"substr\" && held && userCalls != callsBefore {",
+                                     "        if name == \"append\" && held && userCalls != callsBefore {"),
+    "replace field targets not checked": ("        if (x.viaHandle || x.sym == nil) && userCalls != callsBefore {",
+                                          "        if x.viaHandle && userCalls != callsBefore {"),
+    "index targets not checked": ("            if !wholeLocal && userCalls != callsBefore {", "            if false {"),
+    "held arrays ignore mut parameters": ("    return x.sym == nil || r.storage == \"global\" || r.isRef\n", "    return x.sym == nil || r.storage == \"global\"\n"),
+    "indexes of mut parameters unchecked": ("            let wholeLocal = x.sym != nil && !(root != nil && (root.storage == \"global\" || root.isRef))",
+                                            "            let wholeLocal = x.sym != nil && !(root != nil && root.storage == \"global\")"),
     # finer paths (item 3): a change reaches only what lies under its place
     "field changes invalidate siblings": ("(all || v.refDeep && underPath(v.refPath, path))", "(all || v.refDeep)"),
     "known elements treated as one": ("(ri != rj || pathsOverlap(argPaths[i], argPaths[j]))", "(ri != rj || true)"),

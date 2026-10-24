@@ -463,6 +463,36 @@ fn main() {
 }
 ```
 
+The same rule covers every form that locates a target, or an array, before a call later in its
+own expression:
+
+- a compound assignment (`+=`, `-=`, `*=`) to a field, element, handle target or global field,
+  whose value calls a function that might free it;
+- `append`, `truncate` and `replace` whose array (or target) is a field, element, handle, global, or
+  reached through a reference parameter, when the value or count calls such a function;
+- an index whose index expression calls such a function, when the array is a field or element, is
+  reached through a handle or a global, or is a reference parameter. This covers reads, assignment
+  targets, `take`, and `&a[f()]`.
+
+A whole local array is exempt: no call can free its header, so `append(xs, f())` stays accepted, and so
+does `xs[f(xs)]`. A pure call (one that frees nothing and changes no `mut` argument) is never counted.
+The fix is the same: compute the value, or the index, first.
+
+```obo
+// example: error: cannot index a field, element or reference with an index that calls a function
+type Item = ref record { v: int; kids: []Item }
+type Bag = ref record { items: []Item }
+fn cut(mut b: &Bag): int {
+    b.items = new []Item(0)     // frees the array the index is taken from
+    return 0
+}
+fn main() {
+    var b = new Bag{items: new []Item(0)}
+    append(b.items, new Item{v: 1, kids: new []Item(0)})
+    println(b.items[cut(b)].v)  // error: the index is computed after the array is loaded
+}
+```
+
 **Coarse through references.** A change made through a reference, such as `p.next = x`
 where `p` is a reference, is not yet traced by its path: it invalidates every reference
 into the whole root it reaches.

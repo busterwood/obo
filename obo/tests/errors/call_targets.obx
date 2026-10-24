@@ -1,0 +1,126 @@
+// Targets computed before a call in the same expression: a field, element, handle or
+// global that a call might free may not be a compound assignment's target, a builtin's
+// array, or the array an index is taken from, when a call comes later in the expression
+// (or in the index). Each case is one form; the error is at the marked line.
+type Node = ref record { v: int; kids: []Node }
+type Bag = ref record { items: []Node }
+type OBag = ref record { items: []?Node }
+
+fn mk(v: int): Node { return new Node{v: v, kids: new []Node(0)} }
+fn grow(mut n: &Node): int { n.kids = new []Node(0); return 1 }
+fn growNode(mut n: &Node): Node { n.kids = new []Node(0); return mk(7) }
+fn cut(h: ^Bag): Node { h.items = new []Node(0); return mk(5) }
+fn kidsOf(mut n: &Node): []Node { n.kids = new []Node(0); return new []Node(0) }
+fn idx(mut b: &Bag): int { b.items = new []Node(0); append(b.items, mk(4)); return 0 }
+fn idxArr(mut a: &[]Node): int { append(a, mk(4)); return 0 }
+fn idxO(mut b: &OBag): int { b.items = new []?Node(0); append(b.items, mk(4)); return 0 }
+var gbag = new Bag{items: new []Node(0)}
+var garr = new []Node(0)
+fn bumpG(): int { gbag = new Bag{items: new []Node(0)}; return 1 }
+fn bumpGNode(): Node { gbag = new Bag{items: new []Node(0)}; return mk(8) }
+fn bumpArr(): Node { garr = new []Node(0); return mk(3) }
+
+// === compound assignment to an element, the call replaces the array
+fn shrink(mut a: &[]Node): int { a[0] = mk(5); return 1 }
+fn main() {
+    var a = new []Node(0)
+    append(a, mk(1))
+    a[0].v += shrink(a)         // error: cannot assign to a field or element across a call
+}
+// === compound assignment to a field through a mut parameter
+fn f(mut n: &Node) {
+    n.v += grow(n)              // error: cannot assign to a field or element across a call
+}
+fn main() {}
+// === compound assignment to a field of a global
+fn main() {
+    gbag.items[0].v += bumpG()  // error: cannot assign through global 'gbag' across a call
+}
+// === compound assignment through a handle
+fn main() {
+    var n = mk(1)
+    let h = handle(n)
+    h.v += grow(n)              // error: cannot assign through a handle across a call
+}
+// === append to a field, the call frees the array the field is in
+fn main() {
+    var n = mk(1)
+    append(n.kids, mk(2))
+    append(n.kids, mk(3))
+    append(n.kids, growNode(n))     // error: cannot append to a field, element, handle or global across a call
+}
+// === append to a field through a mut parameter
+fn f(mut n: &Node) {
+    append(n.kids, growNode(n))     // error: cannot append to a field, element, handle or global across a call
+}
+fn main() {}
+// === append to a field through a handle
+fn main() {
+    var bag = new Bag{items: new []Node(0)}
+    append(bag.items, mk(1))
+    let h = handle(bag)
+    append(h.items, cut(h))     // error: cannot append to a field, element, handle or global across a call
+}
+// === append to a field of a global
+fn main() {
+    append(gbag.items, mk(1))
+    append(gbag.items, bumpGNode()) // error: cannot append to a field, element, handle or global across a call
+}
+// === append to a whole global array, the call replaces the global
+fn main() {
+    append(garr, mk(1))
+    append(garr, bumpArr())     // error: cannot append to a field, element, handle or global across a call
+}
+// === truncate a field, the count's call frees the array
+fn main() {
+    var n = mk(1)
+    append(n.kids, mk(2))
+    truncate(n.kids, grow(n) - 1)   // error: cannot truncate a field, element, handle or global across a call
+}
+// === replace a field, the value's call frees the array
+fn main() {
+    var n = mk(1)
+    let old = replace(n.kids, kidsOf(n))   // error: cannot have a value that calls a function that might free
+    println(len(old))
+}
+// === an index that calls a function which replaces the array the index is taken from
+fn main() {
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, mk(1))
+    println(b.items[idx(b)].v)  // error: cannot index a field, element or reference with an index that calls a function
+}
+// === the same through a mut parameter
+fn g(mut b: &Bag) {
+    println(b.items[idx(b)].v)  // error: cannot index a field, element or reference with an index that calls a function
+}
+fn main() {}
+// === an index target whose index calls a function
+fn main() {
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, mk(1))
+    b.items[idx(b)] = mk(2)     // error: cannot index a field, element or reference with an index that calls a function
+}
+// === take from an element whose index calls a function
+fn main() {
+    var b = new OBag{items: new []?Node(0)}
+    append(b.items, mk(1))
+    let t = take(b.items[idxO(b)])   // error: cannot index a field, element or reference with an index that calls a function
+}
+// === a reference taken from an element whose index calls a function
+fn main() {
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, mk(1))
+    let r = &b.items[idx(b)]    // error: cannot index a field, element or reference with an index that calls a function
+    println(r.v)
+}
+// === an array parameter appended from a call that replaces the global it may name
+fn addTo(mut a: &[]Node) {
+    append(a, bumpArr())        // error: cannot append to a field, element, handle or global across a call
+}
+fn main() {}
+// === an index through a mut array parameter whose index calls a function
+fn ix(mut a: &[]Node): int {
+    println(a[idxArr(a)].v)     // error: cannot index a field, element or reference with an index that calls a function
+    return 0
+}
+fn main() {}

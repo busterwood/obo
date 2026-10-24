@@ -112,7 +112,9 @@ In order:
 1. **Assignment targets across calls** (done). In `b.items[0].next = h(b)` the
    target's address is computed before `h` runs, so a call that frees it could write
    into freed memory. Assigning to a field or element from a call that might free
-   is now an error; the value is computed first.
+   is now an error; the value is computed first. The same holds for compound
+   assignment, `append`, `truncate`, `replace`, and an index whose index calls such a
+   function (LANGUAGE.md section 10).
 2. **One kind of reference** (done). `&T` is the only reference type. A parameter
    that changes what it points to is declared `mut p: &T`; `&mut T` is an error with
    that hint. A local reference is changeable exactly when what it borrows is.

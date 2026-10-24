@@ -2285,6 +2285,33 @@ fn typeDecl() {
     }
 }
 
+// A target located before a value that calls a function: the call could free what the
+// target is in, so the value is computed first. xs is the target's variable, if it is one
+// (a whole variable's place is fixed), r0 its root.
+fn checkTargetAcrossCall(x: &Item, xs: ?^Sym, r0: ?^Sym, callsBefore: int, line: int, col: int) {
+    if userCalls == callsBefore { return }
+    if x.viaHandle {
+        errorAt("cannot assign through a handle across a call: the call could free the object; compute the value first", line, col)
+    }
+    if x.deref && r0 != nil && r0.storage == "global" && isOwned(symType(r0)) {
+        errorAt("cannot assign through global '" + r0.name + "' across a call: the call could free what it points into", line, col)
+    }
+    if xs == nil {
+        // a field or element: the call could free the record or array it is in
+        errorAt("cannot assign to a field or element across a call: the call could free what it is in; compute the value first", line, col)
+    }
+}
+
+// An array operand whose array a call might free while it is held: one reached through a
+// field, element, handle, global or reference. A whole local array cannot be freed by a call
+// (no call can name it except by a mut argument, and that never frees the array itself).
+fn heldArray(x: &Item): bool {
+    if x.viaHandle { return true }
+    let r = x.root
+    if r == nil { return false }
+    return x.sym == nil || r.storage == "global" || r.isRef
+}
+
 fn checkAssign(dst: ^Type, x: &Item, what: string) {
     if x.typ == tVoid { error(what + ": expression has no value") }
     if dst.kind == "byte" && x.mode == "const" && x.typ.kind == "int" && x.val >= 0 && x.val <= 255 { return }
@@ -2540,8 +2567,8 @@ fn builtin(name: string): Item {
         var v = expression()
         pinned = savedPin
         expect(T_RPAREN, "")
-        if (x.viaHandle || (x.deref && tr != nil && tr.storage == "global")) && userCalls != callsBefore {
-            error("replace through a handle or global cannot have a value that calls a function that might free")
+        if (x.viaHandle || x.sym == nil) && userCalls != callsBefore {
+            error("replace through a handle, a field or an element cannot have a value that calls a function that might free; compute the value first")
         }
         checkAssign(x.typ, v, "replacement value")
         consume(v)
@@ -2643,9 +2670,23 @@ fn builtin(name: string): Item {
                 if owned || freeRoot(a) != handleSym { recordFree(freeRoot(a)) }   // a scalar array frees nothing
             }
         }
+        // the array is located before the value or count runs: a call there could free it
+        let held = heldArray(a)
+        let aDeref = a.deref
+        let r0 = a.root
         a = pinStr(a)
         expect(T_COMMA, "")
+        let callsBefore = userCalls
+        let savedPin = pinned
+        if name != "substr" && aDeref && r0 != nil && r0.storage == "local" { pinned = r0 }
         var b = expression()
+        pinned = savedPin
+        if name != "substr" && held && userCalls != callsBefore {
+            if name == "append" {
+                errorAt("cannot append to a field, element, handle or global across a call: the call could free the array it is in; compute the value first", line, 0)
+            }
+            errorAt("cannot truncate a field, element, handle or global across a call: the call could free the array it is in; compute the value first", line, 0)
+        }
         if name == "append" {
             checkAssign(baseOf(a.typ), b, "appended value")
             consume(b)
@@ -2817,6 +2858,9 @@ fn designatorT(target: bool): Item {
             let callsBefore = userCalls
             if kind != "array" && kind != "string" { error(tname(x.typ) + " cannot be indexed") }
             let elem = baseOf(x.typ)
+            // the array's address is loaded before the index runs: a call there could free it
+            // unless it is a whole local array, which no call can free
+            let wholeLocal = x.sym != nil && !(root != nil && (root.storage == "global" || root.isRef))
             let a = load(x)
             let i0 = expression()
             if !isInt(i0.typ) { error("array index must be int") }
@@ -2825,6 +2869,9 @@ fn designatorT(target: bool): Item {
             }
             if root != nil && root.storage == "global" && userCalls != callsBefore {
                 error("cannot index through global '" + root.name + "' with an index that calls a function: the call could free it")
+            }
+            if !wholeLocal && userCalls != callsBefore {
+                error("cannot index a field, element or reference with an index that calls a function: the call could free the array it is in; compute the index first")
             }
             var seg = "/[]"
             if i0.mode == "const" { seg = "/[" + string(i0.val) + "]" }
@@ -3484,16 +3531,7 @@ fn assignmentOrCall(): bool {
             pinned = savedPin
             checkAssign(dtype, y, "assignment")
             consume(y)
-            if x.viaHandle && userCalls != callsBefore {
-                errorAt("cannot assign through a handle across a call: the call could free the object; compute the value first", line, col)
-            }
-            if x.deref && r0 != nil && r0.storage == "global" && isOwned(symType(r0)) && userCalls != callsBefore {
-                errorAt("cannot assign through global '" + r0.name + "' across a call: the call could free what it points into", line, col)
-            }
-            if xs == nil && userCalls != callsBefore {
-                // a field or element: the call could free the record or array it is in
-                errorAt("cannot assign to a field or element across a call: the call could free what it is in; compute the value first", line, col)
-            }
+            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)
             if xs != nil && xs.storage == "local" && !assignable(x.typ, y.typ) { widen(xs) }
             if isOwned(dtype) {
                 if xs != nil && xs.storage == "local" {
@@ -3525,7 +3563,13 @@ fn assignmentOrCall(): bool {
             store(x, y)
         } else {
             if dtype.kind != "int" { error("'" + tokName(o) + "' needs an int") }
+            let callsBefore = userCalls
+            let savedPin = pinned
+            let r0 = x.root
+            if x.deref && r0 != nil && r0.storage == "local" { pinned = r0 }
             var y = expression()
+            pinned = savedPin
+            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)
             if !isInt(y.typ) { error("'" + tokName(o) + "' needs an int") }
             if !same(dtype, tInt) { error("'" + tokName(o) + "' needs an int") }
             resolve(x)
@@ -4127,6 +4171,9 @@ fn statement(): bool {
             }
             let d = stateDiff(loop.entry, st)
             if d != nil {
+                if d.isRefLocal {
+                    error("'" + d.name + "' is invalidated inside the loop; point it again before " + tokName(k))
+                }
                 error("'" + d.name + "' is moved inside the loop; it must have a value again before " + tokName(k))
             }
             let downTo = loop.blocks

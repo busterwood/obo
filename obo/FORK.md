@@ -317,15 +317,85 @@ removed: it is now allowed. Mutants: 7 new (changes reaching too few roots, too
 many, calls checking too little or too much), 2 stale ones retargeted; 48 of 48
 caught. Stage B: 340 of 340 identical, within the memory budget, fixed point holds.
 
-**Open: assignment targets across calls.** Found while checking whether anything
-else assumed disjoint parameters, and independent of aliasing: the target's address
-is computed before the right-hand side runs, so a call there can free the target.
+**Assignment targets across calls (closed; see "Assignment targets: every form" below).**
+Found while checking whether anything else assumed disjoint parameters, and independent of
+aliasing: the target's address is computed before the right-hand side runs, so a call there
+can free the target.
 
     b.items[0].next = h(b)       // h(mut b: &Box) replaces b.items: writes into freed memory
 
-Today `pinned` only stops the target's root being moved. Both this and the variant
-through a reference local (`let e = &b.items[0]; e.next = h(b)`) compile; the leak
-check catches them at run time only by luck. Next step.
+## Assignment targets: every form (done)
+
+**Holes.** The check was made only for plain `=`. Three more red-team passes found the same
+hole in every other form that locates a target, or an array, before a later call in its own
+expression, all accepted:
+
+- compound `+=`, `-=`, `*=`: `a[0].v += rep(a)` (use after free), through a handle
+  (`h.v += grow(n)`, double free), a mut parameter, and a global field;
+- `append`, `truncate`, `replace` whose array or target is a field or element, a handle
+  temporary or handle, or a global: `append(a[0].kids, shrink(a))` (segfault),
+  `truncate(b.items, mk(b))`, `replace(a[0].kids, rep(a))` (double free),
+  `append(G.items, mk())`, `append(h.items, cut(h))`, and `append(garr, bumpArr())` on a
+  whole global array;
+- an index with a call in it: `b.items[mk(b)].v` (a read of a freed header: "index out of
+  range" instead of the element), `b.items[mk(b)] = v`, `replace(b.items[mk(b)], ...)`,
+  `take(b.items[mk(b)])`, `let r = &b.items[mk(b)]`, and the same through a mut array
+  parameter. The index form is the one a call replaces the array in: the array's header is
+  loaded into a register before the index runs.
+
+**Rule, as implemented** (`src/obo.obo`):
+
+- `checkTargetAcrossCall` is the check `=` already made, now shared with compound assignment.
+  It applies when the target is reached through a handle, through a global, or is a field or
+  element (`xs == nil`), and a non-pure call ran while the value was computed.
+- `heldArray` says whether an array operand may be freed by a call: reached through a handle, a
+  field or element, a global, or a reference parameter. A whole local array is not held: no call
+  can free its header. `append` and `truncate` check it, and `replace` uses the `=` rule.
+- The index check in `designatorT` uses the same idea: the array is not a whole local (the base
+  is a field or element, a handle, a global or a reference parameter) and the index calls a
+  non-pure function.
+- Compound assignment, `append` and `truncate` pin the local root while the value runs, as `=`
+  does, so a move of the root during it is an error too.
+- The messages say "compute the value first" (or "compute the index first").
+
+**Accepted, unchanged:** a whole local array with a call beside it, `append(xs, f())`,
+`truncate(xs, f())`, `xs[f(xs)]`, `replace(xs, f())`; a pure call beside a field; a
+compound on a whole global scalar (`gtotal += f()`); and the call-first form of each.
+The generated code for accepted programs is unchanged.
+
+**Tests.** `tests/errors/call_targets.obx` (18 cases: each form above, through a local, a
+mut parameter, a handle, a global, and an index target; plus a whole global array and a
+mut array parameter). `tests/errors/references.obx` has a case for the `continue` message
+below. `tests/run/call_targets.obx` runs the accepted forms, with outputs.
+
+**Mutants** (`tests/mutate_fork.py`, not `mutate_port.py`: an accept-more mutant leaves the
+port's own source unchanged, so the port comparison cannot see it, while the fork suite's error
+cases can): compound, append, truncate, replace and index checks dropped, the field check
+dropped in the shared helper, and the held-array and mut-parameter cases narrowed. Each one is
+caught by a named case in `call_targets.obx`.
+
+**Fuzzer** (`tests/own_fuzz.py`): five invalid kinds, `compound_target_stmt`, `append_target_stmt`,
+`truncate_target_stmt`, `index_target_stmt`, `index_assign_target_stmt`, each a field of a local
+record whose array a call in the same expression replaces. All are rejected.
+
+**Messages.** A reference invalidated in a loop and then continued past said "is moved inside
+the loop; it must have a value again before continue"; it now says it is invalidated and must be
+pointed again. Not done: "'p' is invalidated on one path but not another" is still reported for
+a reference that is never used afterwards (`red2/n12.obo`). A reference invalid on one path and
+never used again is harmless, so the report should come only at a use, but that needs the join
+state to keep the flag on both paths rather than an error at the join, and the joins are being
+changed elsewhere, so it is left.
+
+**The port.** It compiles unchanged under the new rules (no spot needed rewriting).
+
+**The port's memory budget, raised.** The port compiling itself went from a live peak of
+1,326,256 bytes to 1,725,104, over the budget of 1,351,000 in `tests/port_compare.py`. The
+cause is the output image, not data: `elfImage` builds the image in one byte array that doubles
+when it grows, and the compiled port (the new compiler, 4 KB larger) grew past 256 KiB
+(262,880 bytes, against 258,784 before). The doubling to 512 KiB is the whole step. The budget
+is now 1,777,000, about 3% above the new figure, as the rule asks. Getting back under 256 KiB
+would need about 736 bytes less code or message text; it was not done, since the next change
+would cross the step again. Growth past 512 KiB will be a second step of the same size.
 
 ## Borrowing through a handle (done)
 
