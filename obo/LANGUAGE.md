@@ -211,6 +211,54 @@ while nothing it may point into has been changed.
       println(len(items))
   }
   ```
+- A reference's binding is kept for each path. Where a reference is pointed at one place on one
+  path and at another on the other, it may point into either, so a change to either place
+  invalidates it on the paths where that is possible. A reference pointed at the same place on
+  every path is checked against that place alone. Where paths join, the binding is the union of
+  their places, so a change under any of them is seen, and a reference that may be writable on
+  one path only is read-only after the join. A defer body may not point a reference declared
+  before it at something else: the body runs where its block is left, which is not one of the
+  paths the binding is kept on, so the change would not be seen there.
+- A loop follows the frees on each way out of it (`break`, `continue`, a `while` condition) and on the
+  way back to its start, so a free made in a condition or on a `break` path is seen after the loop. A
+  free before the loop does not mark a reference inside it unless the loop frees what it points into.
+  A reference writable where a loop starts and read-only where it starts again is an error only when
+  it is written through before it is pointed again.
+- A defer body's frees happen where its block is left, at each exit from the block (normal end,
+  `break`, `continue`, `return`); its moves are not taken where it is declared. The frees are
+  applied as the body made them: through the same reference, so a reference the change was made
+  through, or derived from, stays valid (a deferred write to a child of `p` leaves `p` valid). A
+  defer body's re-point of a reference declared before it is still an error, as above.
+- A mut argument, `append` and `truncate` write through the reference they are given, so a loop that
+  passes a reference to a mut parameter, or appends through it, is checked like an assignment: the
+  reference must be writable on every pass where it is written before it is pointed again.
+
+  ```obo
+  // example: error: 'k' may point to freed memory
+  type Item = ref record { v: int }
+  fn main() {
+      var a = new Item{v: 1}
+      var b = new Item{v: 2}
+      var k = &a
+      if a.v == 2 { k = &b }        // k points at b on one path only
+      a = new Item{v: 3}            // frees what k may still point to
+      println(k.v)
+  }
+  ```
+
+  ```obo
+  // example: runs
+  // prints 2
+  type Item = ref record { v: int }
+  fn main() {
+      var a = new Item{v: 1}
+      var b = new Item{v: 2}
+      var k = &a
+      if b.v == 2 { k = &b } else { k = &b }   // pointed at b on every path
+      a = new Item{v: 3}            // a is no longer pointed to: this is accepted
+      println(k.v)
+  }
+  ```
 - Changing through a reference needs a `mut` parameter. Passing a read-only reference
   to one is an error: `argument 1 of f needs a mut reference, but this one is read-only`.
   `mut` belongs to the parameter, not the type: a local reference is changeable exactly
@@ -403,6 +451,12 @@ depend on the program.
 | `'<r>' may point to freed memory: a recursive call writes through a handle, which could free what it points into` | a recursive call in a function that writes through a handle may free what `<r>` points into; borrow it again after the call. |
 | `a recursive call in this loop writes through a handle, which could free what a reference inside something points into on the next iteration` | a loop calls its own function, which writes through a handle; borrow the reference inside the loop, or move the call out of it. |
 | `cannot change what '<r>' points into while a for loop walks it` | a change, or a call that might free, while a loop walks `<r>`; make it after the loop. |
+| `cannot point '<r>' elsewhere in a defer: a defer body runs where its block is left, and the change would not be seen there` | a defer body points a reference declared before it at something else; do the change in the block, or declare the reference inside the defer body. |
+| `'<r>' is pointed somewhere new inside the loop, and read before it is pointed again; point it before the loop, or point it afresh before reading it in the loop` | a loop reads `<r>` before pointing it again, and a change in the loop may have freed what it points into, or it points somewhere the body was not checked with on the next iteration; point it afresh before reading it. |
+| `'<r>' is read-only where the loop starts again, and written before it is pointed again; point it afresh before writing it in the loop` | `<r>` is writable where the loop starts but read-only where it starts again, and is written before it is pointed again; point it afresh before writing it. |
+| `'<r>' is invalidated inside the loop; point it again before the end of each iteration` | a `continue` or the end of the body leaves `<r>` pointing into something a change in the loop freed; point it again before the loop goes round. |
+| `'<r>' is invalidated on one path but not another; point it again on every path or none` | a change freed what `<r>` points into on one path only, typically a recursive call that changes on its innermost pass; point it again on every path, or none. |
+| `the references in this loop change too often to be checked; point them afresh in the loop` | the loop's references did not settle within the checker's passes; point the references afresh inside the loop. |
 | `take needs an optional variable, field or element holding an owned value` | `take` applies only to optional owned places. |
 | `replace needs a variable, field or element holding an owned value` | `replace` applies only to owned places. |
 | `drop needs a local variable holding an owned value` | `drop` applies only to local owned variables. |
@@ -593,6 +647,44 @@ fn main() {
 }
 ```
 
+**References re-pointed on one path (closed).** A reference's binding used to be one for the whole
+function, so a re-point on one branch hid the place it had before from the paths that did not take
+the branch: the change that freed that place compiled and read freed memory. Each path now keeps its
+own binding (section 4), and where paths join, a reference may point into the union of their places.
+Two places join as follows: the same place stays the same; when one place lies under the other, the
+join is the lower place, which every change to the upper one reaches too; any other two places join
+to the whole root, which is the most conservative. A rule that kept only the common prefix of the two
+places would miss a change at the lower one, and is not used.
+
+A defer body may not re-point a reference declared before it (section 4). A loop is checked as well:
+where a change in the loop may have freed what a reference points into, while the reference was not
+pointed afresh on every path, a read of it on the next iteration is an error, unless the reference is
+pointed afresh after the change and before it is read again. A reference whose binding at the end of
+the body is not covered by the binding the body was checked with, or which is writable where the loop
+starts and read-only where it starts again, is also an error. The rule is per path, as the bindings
+are. Its precision is the same as before, and it is coarse in one place: a change made through a
+reference is taken to reach the whole root the reference borrows from, not the place it names, so a
+valid program can be rejected that changes one field through a reference and reads a reference to
+another field. That is a false rejection, not an unsound acceptance. A narrower rule is future work.
+
+**Loop and defer frees (closed).** A free in a `while` condition, or on a `break` or `continue` path,
+was lost at the loop's exit, and a defer body's frees were applied where the body is declared. Both
+are applied where they happen now (section 4). Loop marks are kept to their loop, so a free before a
+loop does not reject a read inside it that the loop does not change, and a reference that is writable
+where a loop starts and read-only where it starts again is an error only when it is written before it
+is pointed again.
+
+**Open holes (per path).** These are accepted by this compiler and by the seed; each reads freed memory
+when run:
+- A defer body's reads are checked where the body is declared, not where its block is left. In
+  `{ defer println(first.v); bag.items = new []Item(0) }`, with `first = &bag.items[0]`, the body
+  reads a freed element at the block's end.
+- A defer body reading a reference that is re-pointed after the defer statement: `var k = &a; { defer
+  println(k.v); k = &b; b = new Item{...} }` prints a freed value. The body sees the reference as it
+  was when it was declared, not at the block's end.
+- Argument order: in `use2(first, mk(h))`, where `mk` frees what `first` points into, `use2` reads
+  freed memory. The argument is checked before the later argument's call runs.
+
 **Known false positive (open).** The loop check does not follow each read to the re-point that
 precedes it in the same iteration. This program is valid, since `k` is pointed afresh before each
 read, but the loop is rejected because `k` is suspect where the next iteration starts and the loop
@@ -622,7 +714,9 @@ fn main() {}
 ```
 
 A loop that reads nothing it left suspect is accepted, and so is one that points a reference afresh
-after each call before reading it on the next iteration.
+after each call before reading it on the next iteration. A loop that frees what a reference points
+into and points the reference afresh before it reads it again is accepted too (`run/ref_bindings.obx`,
+`loopCache`).
 
 **Planned.** The language features listed as not yet done in the root
 `README.md` also apply: methods and interfaces, lambdas, generic modules, `try`

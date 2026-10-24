@@ -130,7 +130,8 @@ In order:
    temporaries first), and each one removed is also a measure of simplicity: how
    far obo code must differ from straightforward code. A change through a handle now
    frees what references inside something point into, and the compiler checks that (done);
-   no rewrite of the port's own code was needed to satisfy the rule.
+   no rewrite of the port's own code was needed to satisfy the rule. A reference's binding is
+   now kept for each path, so a reference re-pointed on one branch is checked on every path (done; `obo/FORK.md`, "Reference bindings per path").
 5. **The move** (done). obo's compiler is the port, built by a committed seed
    (`obo/seed/obo`), with `make promote` checking the fixed point and the suite before
    replacing the seed. The mutants run against the port, and `obo-on-obx.obx` is
