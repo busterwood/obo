@@ -3,7 +3,8 @@
 runs the Stage B comparison against it (port_compare.py, with SRC pointed at the
 copy), and checks that the comparison fails. Divergent output must show up as a
 mismatch, freeing too early as a dangling-handle trap, and keeping memory alive
-as a breach of the memory budget.
+as a breach of the memory budget. A mutant of the encoder (ENCODER) runs
+port_test.py instead, whose objdump cross-check must catch it.
 
     python3 obo/tests/mutate_port.py [pattern]"""
 import os
@@ -145,7 +146,32 @@ MUTANTS = {
     # a deferred recursive call is not applied where the block ends at all. Caught by errors/handle_deep.obx
     # "a deferred recursive call runs where the block ends: a reference used after the block is suspect"
     "deferred self-call not applied at block close": [("    if blocks[bi].selfDefer { markSuspects() }", "    if false { markSuspects() }")],
+    # cheap code generation (FORK.md, Phase 1). A misaligned stack at a runtime call is trapped by the
+    # runtime's entry stubs (exit 4), so a wrong depth shows up as a mismatch
+    "runtime call pad dropped when misaligned": [("    let pad = depth % 16\n", "    let pad = 0\n")],
+    "obo call pad dropped when misaligned": [("    let pad = (depth + 8 * n) % 16\n", "    let pad = 0\n")],
+    "push imm not counted in the depth": [("            pushI(a.val)                           // no register needed\n            depth += 8\n",
+                                           "            pushI(a.val)                           // no register needed\n")],
+    # an imm8 push for a value that needs imm32: caught by the objdump cross-check
+    "push imm8 for any imm32": [("    if fits8(v) {\n        emit(0x6A)", "    if fits32(v) {\n        emit(0x6A)")],
+    "constant runtime argument lost": [("                append(argConsts, a.val)\n", "                append(argConsts, 0)\n")],
+    # a function without locals loses its 'sub rsp,0' and its body moves back 7 bytes
+    "dropped frame: calls out not moved": [("    for p in calls { putRel(p - 7, getRel(p - 7) + 7) }\n", "")],
+    "dropped frame: calls waiting for later functions not moved": [("                if g.fixups[fi] > at { g.fixups[fi] -= 7 }\n", "")],
+    "dropped frame: calls to known functions not recorded": [("        fix(at, f.addr)\n        append(farCalls, at)\n", "        fix(at, f.addr)\n")],
+    # a pending forward call of an earlier function shifted when a later zero-frame function drops its frame:
+    # caught by tests/run/code_shapes.obx
+    "dropped frame: every waiting call shifted": [("                if g.fixups[fi] > at { g.fixups[fi] -= 7 }\n", "                g.fixups[fi] -= 7\n")],
+    "dropped frame: waiting calls shifted if not negative": [("                if g.fixups[fi] > at { g.fixups[fi] -= 7 }\n", "                if g.fixups[fi] >= 0 { g.fixups[fi] -= 7 }\n")],
+    # the boundaries of push imm8 and imm32, caught by the same program (Stage B, not only the objdump group)
+    "push imm8 up to 128": [("fn pushI(v: int) {\n    if fits8(v) {", "fn pushI(v: int) {\n    if v >= -128 && v <= 128 {")],
+    "push imm8 from -129": [("fn pushI(v: int) {\n    if fits8(v) {", "fn pushI(v: int) {\n    if v >= -129 && v < 128 {")],
+    "push imm32 masked": [("        emit(0x68)\n        emit32(v)\n", "        emit(0x68)\n        emit32(v & 0x7FFFFFFF)\n")],
+    "frame dropped although there are locals": [("    if size == 0 {\n        dropFrame(frameAt)", "    if size <= 16 {\n        dropFrame(frameAt)")],
 }
+
+# mutants of the encoder: caught by port_test.py's objdump cross-check
+ENCODER = {"push imm8 for any imm32"}
 
 
 # mutants that keep memory alive: caught when the peak rises above the unmutated peak,
@@ -176,6 +202,8 @@ def main():
         path = os.path.join(tmp, 'mutant.obx')
         open(path, 'w').write(text)
         code = f"import port_compare as pc; pc.SRC = {path!r}; pc.main()"
+        if name in ENCODER:
+            code = f"import port_test as pt; pt.SRC = {path!r}; pt.main()"
         r = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, cwd=HERE)
         total += 1
         if name in KEEPS_ALIVE and r.returncode == 0:

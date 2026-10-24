@@ -229,6 +229,17 @@ byte-identical executables and identical error messages, with the leak check on
 in the port: 329 of 329 identical. The port compiling itself is a fixed point
 (obo builds p1 from the port, p1 builds p2, p2 builds p3; p1 = p2 = p3).
 
+**Now behavioural** (decided with the optimization plan, below): each case must have the
+same compile outcome in both (success, or the same message at the same line:col), and a
+program that compiles must, when run with `OBO_CHECK=1` and a scratch directory as its
+argument, give the same exit code, stdout and stderr. The executables' bytes may differ.
+Stage B does not compare files a program writes into its scratch directory; a timeout on
+both sides counts as agreement; and the compiler's own byte identity (stage 2 against stage 3)
+is checked by `make promote`, not here.
+The fixed point still compares bytes (`make promote`: stage 2 = stage 3). The reference is
+`./obo`; `OBO_REF=seed/obo` compares against the seed instead, which is the comparison
+that sees a change in code generation before it is promoted.
+
 **Memory, first measurement.** The decisive comparison: the same compiler logic
 compiling the same source (the port's own) to the same bytes, once on the GC
 (obo, built by mainline) and once with ownership (the port).
@@ -630,7 +641,7 @@ compiler. They will be fixed next.
 
 ## Optimization plan
 
-Status: Phase 0 done; Phases 1 to 4 planned, not started. Phases are ordered by expected value per unit of cost.
+Status: Phase 0 done; Phase 1 done except loop inversion (designed below, deferred); Phases 2 and 3 planned. Phases are ordered by expected value per unit of cost.
 Each has a gate; a phase that misses its gate is recorded here and stopped.
 
 **Baseline.** A loop `s = s + i * 2` over `i < n` compiles with every local in a stack
@@ -712,7 +723,113 @@ assumed. Phase 2's measured gain will show whether it is.
 - **Immediate and push forms.** `push imm` instead of `mov` then `push`.
 
 *Gate:* the suite passes, benchmarks do not regress, and the byte-identity check
-below is handled (see open decisions).
+below is handled (done: Stage B compares behaviour, see open decisions).
+
+**Done** (patch `tools/port_cheap_codegen.py`), except loop inversion:
+
+- **Static stack depth** was already tracked: `depth` counts every push, pad and
+  return address, and `rtCall` and `callFn` pad only when the depth is misaligned. The pads
+  that remain (2,685 in the port's own code) are needed: they come from the registers
+  pushed around runtime calls, the arguments among them, and from odd argument counts.
+  Fewer would need a different call sequence, for example not pushing rbx and r12 to r15
+  around runtime calls (the C runtime preserves them, and obo has no collector to scan
+  them); that is a separate decision.
+- **No `sub rsp,0x0`.** The frame size is known only after the body, so for a function
+  without locals the 7 bytes are cut out then and the body moves back (`dropFrame`). Jumps
+  within the body are relative and move with it; calls out of it, to the runtime or to
+  functions already compiled, are recorded in `farCalls` and adjusted, and calls waiting for
+  a later function are moved in its `fixups`. Nothing else holds a position in a finished
+  body.
+- **`push imm`** for a constant argument of an obo call (`6A ib` or `68 id`).
+- **Constants straight to argument registers** for runtime calls: `mov edi,imm` instead
+  of loading a pool register, pushing it around the call, copying it and popping it. With
+  one push fewer, the pad usually goes as well: allocating a record went from 7
+  instructions to 2.
+
+Measured with the four Phase 0 workloads, each built by a compiler at each step and the
+runs interleaved (31 per build; median, range in brackets). The loop's executable is the
+same at every step, so its column shows the noise, about 1%; alloc's range is wide on
+WSL. The last row counts the instructions of the port's own source (as at 59c7701)
+compiled by each step.
+
+| Benchmark | Baseline (seed) | + push imm | + constant runtime arguments | + no `sub rsp,0x0` |
+|---|---|---|---|---|
+| loop | 564 ms (554-635), 36 instr | 566 (551-609), 36 | 567 (553-618), 36 | 566 (557-705), 36 |
+| fib | 613 ms (602-655), 57 instr | 613 (596-651), 56 | 614 (602-650), 56 | 602 (590-655), 54 |
+| array | 403 ms (391-462), 105 instr | 402 (389-454), 105 | 405 (393-446), 99 | 402 (393-477), 99 |
+| alloc | 473 ms (426-907), 56 instr | 480 (432-918), 56 | 482 (447-1530), 51 | 474 (459-528), 51 |
+| port's code | 44,983 instr | 44,130 | 40,723 | 40,638 |
+
+The port's code is 9.7% fewer instructions (258,784 to 246,496 bytes of executable), and
+it compiles itself in 29 to 30 ms against 30 to 31 ms, within noise. fib, where every call
+ran a `sub rsp,0x0`, is 2% faster; the other times did not change. No step regressed.
+
+Memory: compiling itself, the port allocates 12,057,056 bytes in total (through `tests/port_compare.py`), down from 12,266,272
+(fewer loads mean fewer Items; the constants are kept in one array, `argConsts`, since an
+array per runtime call added 315 KB). Its live peak rose from 1,045,392 to 1,079,424 bytes,
+within the budget of 1,351,000, because the peak moved: with less code to hold, the image
+phase at the end is no longer the highest point. The highest is now the moment the code
+buffer grows from 128 KB to 256 KB and both are live, partway through the source (measured
+with a runtime that records the block allocated at the peak: 262,176 bytes, against 544 at
+the end before).
+
+Mutants (`tests/mutate_port.py`), all caught: the pad dropped at a misaligned runtime call
+and at a misaligned obo call, and a `push imm` not counted in the depth (each trapped by the
+runtime's alignment check, exit 4, in the behavioural comparison); `push imm8` used for a
+value that needs imm32 (caught by the objdump cross-check, below); a constant runtime
+argument lost; and for the dropped frame, calls out of the body not adjusted, calls waiting
+for a later function not moved, calls to compiled functions not recorded, and a frame
+dropped although there are locals.
+
+Gaps closed after review: `tests/run/code_shapes.obx` has pending forward calls from
+functions before and after zero-frame ones (several calls, with and without locals or
+parameters), and constants at the push imm boundaries (127, 128, -128, -129, 2^31-1, -2^31,
+2^31, -2^31-1 and others). It catches, through Stage B alone, a shift of every waiting call
+(`> at` replaced by `>= 0`, or by no test), `fits8` with `<= 128` or from -129, and an imm32
+masked to 31 bits. `argConsts` is shared by `rtCall` calls, so each call now owns the part
+from its base index up and truncates back to it, which makes a re-entry from `load()`
+harmless (chosen over a guard or a local array, which allocates per call). One mutant is
+equivalent: dropping `!a.strTemp` from the constant path of `rtCall` changes nothing, since
+a constant never has `strTemp` set, so the guard is defensive and left in.
+
+**The encoder against objdump.** obo's encoder had no oracle of its own: `port_test.py`
+compared it with `./obo`, built from the same source. It now also runs mainline's objdump
+groups (`obx/tests/encoder_test.py`) against the port, and `group_push_immediates` for the
+new form.
+
+**Loop inversion: design (deferred until the per-path bindings branch merges, since it
+rewrites the same loop functions).** A `while` reads its condition before its body, but the
+inverted loop emits it after: `jmp cond; body: ...; cond: C; jcc body`. Three ways to get there
+in one pass:
+
+1. *Relocate the condition's bytes.* Compile the condition where it is read, as now, but stop
+   before its final jump. Copy its bytes out, truncate the code back to the loop's top, emit
+   `jmp cond`, compile the body, then append the bytes again and move what they hold by the
+   distance d they moved: calls out of them (the entries `farCalls` gained while the condition
+   was compiled) get rel32 - d; calls waiting for a later function (fixups in the condition's
+   range) get + d; and the condition item's true and false lists, whose links are positions
+   threaded through rel32 fields ("Allocation (done)"), get + d on every link and on each head.
+   Jumps inside the condition are relative and need nothing. Then `jcc cc` to the body, the
+   true list fixed to the body, and the false list and `break` fall through. `continue` goes
+   to the moved condition. A condition holds no defers, breaks or continues, since it is an
+   expression. The checker sees the condition and then the body once each, in source order,
+   as now.
+2. *Move the body instead.* Emit the condition at the top and move the body after it. The body
+   holds far more positions: nested loops' break and continue chains, defer subroutines,
+   fixups of every kind. Rejected.
+3. *Compile the condition twice.* Save the scanner's state (the source is one string, so
+   rewinding is cheap) and compile the condition again after the body, keeping the top copy
+   as a guard. No relocation, but the checker would run the condition twice: moves,
+   invalidations, `selfCalls` and `useSeq` counts and error reports would happen twice, at two
+   states, and the code would grow by the condition. It is a token pre-scan in all but name,
+   which is deferred with Phase 2.
+
+Recommended: (1). It shares `dropFrame`'s bookkeeping (`farCalls`, fixups), adds the chain
+walk, keeps the checker untouched and the code size the same. A `for` loop needs no relocation:
+its test is generated code over locals stored before the loop, so it can simply be emitted
+after the body. Mutants: each kind of position not moved (a call out, a waiting call, a link
+of each list); tests: a `while` whose condition calls a function declared later, concatenates
+a string, indexes an array and uses `&&` and `||`.
 
 ### Phase 2: register allocation for scalar locals
 
@@ -796,9 +913,12 @@ remain after Phase 2 are measurable on the benchmarks.
 
 ### Open decisions
 
-- **Byte identity.** `tests/port_compare.py` requires the port's executables to match
-  byte for byte, and any optimization changes the bytes. Proposed: the compiler gets
-  an `--no-opt` flag, and `port_compare` uses it for the identity check. The suite
-  and the fixed point run with optimization on.
+- **Byte identity** (resolved: dropped, compare behaviour). `tests/port_compare.py`
+  required the port's executables to match byte for byte, and any optimization changes
+  the bytes. The `--no-opt` flag proposed here was not built. Stage B now compares
+  behaviour: the same compile outcome (success, or the same error at the same
+  line:col), and for a program that runs, the same stdout, stderr and exit code with
+  `OBO_CHECK=1`. The fixed point (stage 2 = stage 3, in `make promote`) still compares
+  bytes, since the compiler compiles itself.
 - **Pre-scan.** Confirm that a token pre-scan is acceptable under the single-pass goal
   before Phase 2 starts.
