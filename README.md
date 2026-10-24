@@ -121,7 +121,8 @@ In order:
    it changed: changing `w.b` leaves a reference to `w.a` valid, and two mutable
    elements at known different indexes can be passed together. Changes through a
    reference are still coarse.
-4. **The port's speed.** It allocates 26 MB to compile itself. Steps 1 to 3 should
+4. **The port's speed.** It allocated 26 MB to compile itself, and now allocates 12.3 MB
+   (measured below). Steps 1 to 3 should
    let it shed workarounds written for stricter rules (copies, index loops, storing
    temporaries first), and each one removed is also a measure of simplicity: how
    far obo code must differ from straightforward code. A change through a handle now
@@ -140,9 +141,10 @@ collector, at the same speed; the port reads like ordinary code; and every error
 message says what to do instead.
 
 Measured (item 4, after items 1 to 3): compiling each compiler's own source takes
-about 0.01 to 0.02 s in both. The obo port (4283 lines) peaks at 1.5 MB resident and
-its live peak is 1.3 MB; obx's compiler (3222 lines), with the collector, peaks at
-8.8 MB. Also done: eight loops that only walked an array now borrow it and loop with `for`
+about 0.01 to 0.02 s in both. The obo port (4552 lines) had a live peak of 1.3 MB and allocated 28.6 MB before
+the allocation work; now its live peak is 1.05 MB and it allocates 12.3 MB (FORK.md,
+Phase 4), and obx's compiler (3222 lines), with the collector, peaks at 8.8 MB. Wall
+time is about 30 ms, down from 33 ms. Also done: eight loops that only walked an array now borrow it and loop with `for`
 (the index form was a workaround for the walk rule). The loop over `globals` at exit now
 walks by borrowing too. It was blocked by two false positives: a self-call counted as
 freeing anything (fixed in the checker, `run/globals.obx`, `errors/references.obx`), and

@@ -7,6 +7,7 @@ as a breach of the memory budget.
 
     python3 obo/tests/mutate_port.py [pattern]"""
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -42,7 +43,8 @@ MUTANTS = {
     # freeing symbols too early: a dangling-handle trap
     "frees one symbol too many": [(FREE, FREE.replace("symMark)", "symMark - 1)"))],
     "frees symbols before the blocks close": [(BLOCKS_CLOSE, "    truncate(symArena, symMark)\n" + BLOCKS_CLOSE)],
-    # keeping symbols alive: over the memory budget
+    # keeping symbols alive: over the memory budget. "parameters kept" is too small for the budget
+    # now that the peak is lower, so it is checked against the unmutated peak instead (KEEPS_ALIVE)
     "symbols never freed": [(FREE, "")],
     "parameters kept": [(MARK, ""), (PARAMS_DONE, PARAMS_DONE + "    let symMark = len(symArena)\n")],
     # borrows through a handle (checker): each must be caught by a case in errors/handles.obx
@@ -146,11 +148,24 @@ MUTANTS = {
 }
 
 
+# mutants that keep memory alive: caught when the peak rises above the unmutated peak,
+# for a leak too small to cross PEAK_BUDGET
+KEEPS_ALIVE = {"parameters kept"}
+
+
+def peak_of(output):
+    m = re.search(r"peaks at ([\d,]+) bytes", output)
+    return int(m.group(1).replace(',', '')) if m else None
+
+
 def main():
     pattern = sys.argv[1] if len(sys.argv) > 1 else ''
     src = open(SRC).read()
     tmp = tempfile.mkdtemp()
     caught = total = 0
+    base = subprocess.run([sys.executable, '-c', "import port_compare as pc; pc.main()"],
+                          capture_output=True, text=True, cwd=HERE)
+    base_peak = peak_of(base.stdout + base.stderr)
     for name, edits in MUTANTS.items():
         if pattern not in name:
             continue
@@ -162,9 +177,13 @@ def main():
         open(path, 'w').write(text)
         code = f"import port_compare as pc; pc.SRC = {path!r}; pc.main()"
         r = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, cwd=HERE)
+        total += 1
+        if name in KEEPS_ALIVE and r.returncode == 0:
+            peak = peak_of(r.stdout + r.stderr)
+            if peak is not None and base_peak is not None and peak > base_peak:
+                r = subprocess.CompletedProcess(r.args, 1, r.stdout, f"FAIL peak {peak:,} is above the unmutated {base_peak:,}")
         lines = (r.stdout + r.stderr).strip().splitlines()
         why = next((l for l in lines if l.startswith('FAIL') or 'does not compile' in l), lines[-1] if lines else '')
-        total += 1
         if r.returncode != 0:
             caught += 1
             print(f"caught  {name:40s} {why[:110]}")

@@ -259,18 +259,19 @@ itself exceeds `PEAK_BUDGET` (about 3% over the measured figure; patch
 reason recorded here.
 
 **Budget raised, 1,305,000 to 1,351,000** (measured live peak 1,311,184 bytes, about 3% over).
+The allocation work has since lowered the live peak to 1,045,392 bytes; the budget is unchanged.
 The reason: soundness fixes need per-path state for suspect references. The state at each join
 now carries every local's suspicion (see "Deep references" below), which added 10,432 bytes.
-More is coming: per-path reference bindings need the same kind of state. The allocation work in
-README item 4 is planned to reclaim it, and the budget goes down again then.
+More is coming: per-path reference bindings need the same kind of state. The allocation work
+("Allocation (done)", above) reclaimed the room, and the budget is left for a separate decision.
 
 **Tests.** `python3 obo/tests/mutate_port.py`: 6 mutants of the port, all caught
 (two divergences by mismatch, two early frees by dangling-handle traps, two
 retentions by the budget).
 
 **Open.** Time: the port is about 50% slower than the GC on the same work and
-allocates 26 MB in total; every Item allocates four arrays, and jump lists and
-items are copied (copyInts, dupItem). Then the structural move: a committed
+allocated 26 MB in total before the allocation work, now 12.3 MB ("Allocation (done)"),
+with items still allocated per use. Then the structural move: a committed
 bootstrap built from the port, a promote rule with the fixed point, the remaining
 mutants retargeted at the port, and obo-on-obx.obx retired to legacy.
 
@@ -742,9 +743,43 @@ Do this only if Phase 2's numbers show that call overhead matters on the fib ben
   using facts from loop conditions. Reuse the narrowing machinery where it fits.
 - **Allocation.** The cause of the port's ~50% gap (Stage B, above): four arrays per
   `Item`, and copies in `copyInts` and `dupItem`. Measure with Phase 0's allocation
-  benchmark before changing anything.
+  benchmark before changing anything. Done: see "Allocation (done)" below.
 
 *Gate:* each change shows a measured gain on its benchmark.
+
+### Allocation (done)
+
+Measured on the port compiling its own source (`obo/src/obo.obo`, 4,552 lines) with
+`OBO_STATS=1` through `tests/port_compare.py`. Each row is one change, measured after
+it; every kept change left Stage B at 396 of 396 identical.
+
+| Change | Total allocated (bytes) | Live peak (bytes) |
+|---|---|---|
+| Baseline at 4e11fb2 | 28,648,672 | 1,326,112 |
+| Jump lists as chains: a jump's rel32 field links to the next waiting jump (0 ends) | 23,068,272 | 1,323,712 |
+| Narrowings as linked lists, shared between branches | 17,830,672 | 1,321,328 |
+| Scanner holds the source as one string; tokens by `substr` | 16,479,488 | 1,319,760 |
+| Source freed before the image is built | 16,481,840 | 1,177,168 |
+| ELF image allocated once, at its final size | 16,206,832 | 1,044,560 |
+| Register sets as bit masks, not arrays | 13,960,992 | 1,044,400 |
+| No placeholder Item for a name or a runtime call's result | 12,266,272 | 1,045,392 |
+
+Wall time, the minimum of 21 to 41 runs on WSL: about 33 ms at baseline and 28 to 30 ms
+after the register change; the last change is within run-to-run noise. The baseline
+peak is 1,326,112 bytes as measured here (the brief's 1,326,016 was an earlier figure).
+
+Tried and dropped: freeing the code buffer as soon as the image has copied it. The
+live peak fell by 416 bytes (1,044,400 to 1,043,984), which was not worth the extra
+reassignment, since the peak is reached while the image is being copied.
+
+`PEAK_BUDGET` stays at 1,351,000. The new peak leaves a margin of 305,608 bytes, which is
+more than the mutant "parameters kept" adds (about 190 KB), so that mutant was no longer
+caught by the budget. It is now caught when its peak rises above the unmutated peak
+(`KEEPS_ALIVE` in `tests/mutate_port.py`).
+
+Not done: the per-call arrays in `rtCall` and `rtCall0/1/2` (`regs`, `temps`, the
+argument arrays), the `fixups` array of each Sym, and the snapshot copies (`copyBools`).
+Item creations (about 32,000 per self-compile, mostly loads and voids) were left as they are.
 
 ### Peephole pass (not planned)
 
