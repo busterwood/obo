@@ -514,7 +514,7 @@ class Gen:
                   self.sibling_ref_stmt, self.two_elems_stmt, self.global_alias2_stmt,
                   self.g_append_stmt, self.g_total_stmt, self.ga_push_stmt, self.ga_sum_stmt,
                   self.ga_bump_stmt, self.h_read_stmt, self.h_write_stmt, self.h_alive_stmt]
-        makers += [self.old_sum_stmt]
+        makers += [self.old_sum_stmt, self.owned_deep_stmt]
         if self.full:
             makers += [self.ref_read_stmt, self.ref_write_stmt, self.stepArr_stmt]
         return makers
@@ -882,8 +882,10 @@ class Gen:
             o = st.xs[0]
             st.out.append(str(chain_sum(o.next)))
             o.v = v
-        return Stmt([f"let {h} = handle(xs[0])", f"let {q} = &{h}.next", f"println(sum({q}))",
-                     f"{h}.value = {v}"], run)
+        # in a block: a reference through a handle lives only as long as the statement (any later
+        # change in a loop would invalidate it, and the model does not track that)
+        return Stmt(["{"] + indent([f"let {h} = handle(xs[0])", f"let {q} = &{h}.next", f"println(sum({q}))",
+                                    f"{h}.value = {v}"]) + ["}"], run)
 
     def handle_borrow_dead_stmt(self):
         """A borrow through a handle, a change that might free (through the handle, through a
@@ -895,6 +897,66 @@ class Gen:
         # its own element first, so that xs[0] exists whatever the program has done so far
         return self.invalid_stmt([f"append(xs, mk({self.k()}))", f"let {h} = handle(xs[0])",
                                   f"let {q} = &{h}.next", change, f"println(sum({q}))"])
+
+    def owned_deep_stmt(self):
+        """A reference into an owned variable's element, a scalar written through a handle to that
+        element (which frees nothing), then the reference used: valid."""
+        q, h = f"q{self.nold}", f"h{self.nhandles}"
+        self.nold += 1
+        self.nhandles += 1
+        v, w = self.k(), self.k()
+
+        def run(st):
+            st.xs.append(Obj(v))
+            st.xs[0].v = w
+            st.out.append(str(chain_sum(st.xs[0].next)))
+        # in a block, so that the reference ends with the statement: a reference through a handle
+        # is invalidated by any later change in a loop that it lives across
+        return Stmt(["{"] + indent([f"append(xs, mk({v}))", f"let {q} = &xs[0].next", f"let {h} = handle(xs[0])",
+                                    f"{h}.value = {w}", f"println(sum({q}))"]) + ["}"], run)
+
+    def owned_deep_writer_stmt(self):
+        """A reference into an owned variable's element, a writer called through a handle to that
+        element, and no use of the reference afterwards: valid (the writer frees what it points into,
+        and nothing uses it)."""
+        q = f"q{self.nold}"
+        self.nold += 1
+        v = self.k()
+        self.extra_fn("fn cutNext(h: ^Node) { h.next = nil }")
+
+        def run(st):
+            st.xs.append(Obj(v))
+            o = st.xs[0]
+            free(o.next)
+            o.next = None
+            invalidate(st)
+        return Stmt(["{"] + indent([f"append(xs, mk({v}))", f"let {q} = &xs[0].next", "cutNext(handle(xs[0]))"]) + ["}"],
+                    run)
+
+    def owned_deep_dead_stmt(self):
+        """A reference into an owned variable's element, a change through a handle to that element
+        (named, a handle temporary, or a writer called with one), then a use of the reference:
+        rejected, since the change frees what the reference points into."""
+        q, h = f"q{self.nold}", f"h{self.nhandles}"
+        self.nold += 1
+        self.nhandles += 1
+        self.extra_fn("fn cutNext(h: ^Node) { h.next = nil }")
+        self.extra_fn("fn cutVia(h: ^Node) { cutNext(h) }")      # a writer two calls down
+        change = self.r.choice([[f"let {h} = handle(xs[0])", f"{h}.next = nil"],
+                                ["handle(xs[0]).next = nil"],
+                                ["cutNext(handle(xs[0]))"],
+                                ["cutVia(handle(xs[0]))"]])
+        return self.invalid_stmt([f"append(xs, mk({self.k()}))", f"let {q} = &xs[0].next"] + change
+                                 + [f"println(sum({q}))"])
+
+    def owned_deep_arg_stmt(self):
+        """A reference into an owned variable's element passed to a writer: rejected, since the
+        writer may free what the reference points into."""
+        q = f"q{self.nold}"
+        self.nold += 1
+        self.extra_fn("fn cutArg(l: &?Node, h: ^Node) { h.next = nil }")
+        return self.invalid_stmt([f"append(xs, mk({self.k()}))", f"let {q} = &xs[0].next",
+                                  f"cutArg({q}, handle(xs[0]))"])
 
     def elem_write_stmt(self):
         a, b = f"r{self.nrefs}", f"r{self.nrefs + 1}"
@@ -986,7 +1048,7 @@ class Gen:
         makers = self.common() + [self.push_stmt] * 4 + [self.take_stmt] * 2 \
             + [self.loop_stmt, self.if_stmt, self.g_set_stmt, self.g_trunc_stmt, self.ss_loop_stmt,
                self.gdrop_stmt, self.ss_trunc_stmt, self.tag_trunc_stmt, self.h_new_stmt, self.h_new_stmt,
-               self.h_kill_stmt, self.h_kill_stmt, self.handle_borrow_stmt,
+               self.h_kill_stmt, self.h_kill_stmt, self.handle_borrow_stmt, self.owned_deep_writer_stmt,
                self.drop_stmt, self.replace_stmt, self.eat_stmt, self.if_move_stmt,
                self.loop_move_stmt, self.discard_stmt]
         if self.full:
@@ -1015,7 +1077,8 @@ class Gen:
                self.ro_pass_stmt, self.walk_assign_stmt, self.handle_borrow_dead_stmt,
                self.elem_write_stmt, self.two_self_stmt, self.alias_param_stmt,
                self.alias_global_elem_stmt, self.global_ref_free_stmt,
-               self.handle_index_call_stmt, self.ref_move_stmt, self.callee_free_global_stmt]
+               self.handle_index_call_stmt, self.ref_move_stmt, self.callee_free_global_stmt,
+               self.owned_deep_dead_stmt, self.owned_deep_arg_stmt]
         s = ops[self.seed % len(ops)]()
         return s if s is not None else self.pick(ops)
 

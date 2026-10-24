@@ -398,6 +398,10 @@ depend on the program.
 | `argument <n> of <f> may point inside argument <m>, which is mut` | two arguments may overlap and one of them changes. |
 | `'<x>' may be nil: check it with '!= nil' first` | check an optional before using its fields. |
 | `cannot pass a reference that borrows through a handle to <f>: it might free what the handle names` | a reference borrowed through a handle may go only to a call that cannot free anything; pass the handle instead, or make the call pure. |
+| `cannot pass a reference that points inside something to <f>: it writes through a handle, which could free it` | a reference inside a field or element may not go to a function that writes through a handle; pass a reference to the whole object, or the value. |
+| `cannot pass a reference that points inside something to <f>: its body is not known yet, so it is assumed to write through a handle, which could free it` | `<f>` is only declared so far: define it before the call, or pass a whole object. |
+| `'<r>' may point to freed memory: a recursive call writes through a handle, which could free what it points into` | a recursive call in a function that writes through a handle may free what `<r>` points into; borrow it again after the call. |
+| `a recursive call in this loop writes through a handle, which could free what a reference inside something points into on the next iteration` | a loop calls its own function, which writes through a handle; borrow the reference inside the loop, or move the call out of it. |
 | `cannot change what '<r>' points into while a for loop walks it` | a change, or a call that might free, while a loop walks `<r>`; make it after the loop. |
 | `take needs an optional variable, field or element holding an owned value` | `take` applies only to optional owned places. |
 | `replace needs a variable, field or element holding an owned value` | `replace` applies only to owned places. |
@@ -463,31 +467,115 @@ fn main() {
 where `p` is a reference, is not yet traced by its path: it invalidates every reference
 into the whole root it reaches.
 
-**Handle changes and owned references (known hole).** A change through a handle, such as
-`h.items = ...` or `handle(p).items = ...` (a handle temporary, which has no name), or a call
-that makes one, invalidates borrows through handles (section 4),
-but not a borrow taken from an owned variable, such as `&bag.items[0]`. The program below
-compiles and then reads freed memory. The planned fix: a change through a handle, and a
-call that might make one, invalidates every reference.
+**Changes through a handle, and references inside something (closed).** A change through a
+handle, such as `h.items = ...`, `handle(p).items = ...` (a handle temporary, which has no name),
+or a call that makes one, frees the old owned children of the handle's target. So it may free what
+any reference points into, whatever that reference borrowed from. The rules:
+
+- A reference *inside something* points into a field or element, such as `&bag.items[0]`, or
+  `&h.items` through a handle. It is invalidated by a change through a handle, by a change through
+  a reference borrowed through a handle, and by a call that writes through a handle.
+- A reference to a whole object, such as `&bag` or a parameter, stays valid. Only owners free whole
+  objects, and a change through a handle frees only what is below its target.
+- A reference inside something may not be passed to a function that writes through a handle, since
+  the handle may name the object it is inside. A function that calls such a function writes through a
+  handle too, and a function with only a forward heading is assumed to.
+- A recursive call is judged when the function's body is complete, so that a recursive tree walk
+  stays accepted. If the function writes through a handle, passing a reference inside something to
+  the recursive call is an error, and so is using such a reference after the call. In a loop that
+  makes the call, a reference that is still suspect where the next iteration starts is an error if
+  the loop's condition or body reads it.
+- Suspicion is per path. A reference that a recursive call may have freed stays suspect on every path
+  where that is so: a join of an `if`, a `match` or a loop keeps the suspicion of each path, and a
+  reference re-pointed on one path is still suspect on the others. A loop's next iteration starts
+  where its body ends, and at each `continue`; a body that always leaves the loop carries nothing.
+- A deferred recursive call runs where its block ends, so the references that are live there become
+  suspect at that point. Reads in the block before its end are not affected.
+
+The change that used to compile and read freed memory is now an error:
 
 ```obo
-// example: compiles
+// example: error: 'first' may point to freed memory
 type Item = ref record { v: int }
 type Bag = ref record { items: []Item }
-
 fn cut(h: ^Bag) {
     h.items = new []Item(0)      // frees the items, which the reference below points into
 }
-
 fn main() {
     var bag = new Bag{items: new []Item(0)}
     append(bag.items, new Item{v: 1})
     let h = handle(bag)
     let first = &bag.items[0]
     cut(h)
-    println(first.v)             // reads freed memory: no compile error
+    println(first.v)            // error: 'first' may point to freed memory
 }
 ```
+
+A reference re-pointed on one branch is still suspect on the other, so this is an error:
+
+```obo
+// example: error: 'r' may point to freed memory
+type Item = ref record { v: int; kids: []Item }
+type Bag = ref record { items: []Item }
+fn rec(b: &Bag, h: ^Bag, d: int) {
+    var r = &b.items[0]
+    if d > 0 { rec(b, h, d - 1) }
+    if d == 5 { r = &b.items[0] }   // only one path points it afresh
+    println(r.v)                   // error: 'r' may point to freed memory
+    h.items = new []Item(0)
+}
+fn main() {}
+```
+
+A reference to the whole bag is still valid after the same change:
+
+```obo
+// example: runs
+// prints 0
+type Item = ref record { v: int }
+type Bag = ref record { items: []Item }
+fn cut(h: ^Bag) {
+    h.items = new []Item(0)      // frees the items, which are below the bag
+}
+fn main() {
+    var bag = new Bag{items: new []Item(0)}
+    append(bag.items, new Item{v: 1})
+    let whole = &bag
+    cut(handle(bag))
+    println(len(whole.items))
+}
+```
+
+**Known false positive (open).** The loop check does not follow each read to the re-point that
+precedes it in the same iteration. This program is valid, since `k` is pointed afresh before each
+read, but the loop is rejected because `k` is suspect where the next iteration starts and the loop
+reads it:
+
+```obo
+// example: error: a recursive call in this loop writes through a handle
+type Item = ref record { v: int; kids: []Item }
+type Bag = ref record { items: []Item }
+fn rec(n: &Item, h: ^Bag, d: int): int {
+    if d == 0 {
+        h.items = new []Item(0)
+        return 0
+    }
+    var k = &n.kids[0]
+    var i = 0
+    var s = 0
+    while i < 2 {
+        k = &n.kids[0]
+        s += k.v
+        s += rec(n, h, d - 1)
+        i += 1
+    }
+    return s
+}
+fn main() {}
+```
+
+A loop that reads nothing it left suspect is accepted, and so is one that points a reference afresh
+after each call before reading it on the next iteration.
 
 **Planned.** The language features listed as not yet done in the root
 `README.md` also apply: methods and interfaces, lambdas, generic modules, `try`

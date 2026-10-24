@@ -16,7 +16,7 @@ sub("SRC = os.path.join(FORK, 'src', 'obo.obo')\n",
     "SRC = os.path.join(FORK, 'src', 'obo.obo')\n"
     "# live peak, in bytes, of the port compiling itself: about 3% above the measured\n"
     "# figure. Lower it when memory improves; raise it only for a reason recorded in FORK.md.\n"
-    "PEAK_BUDGET = 1_305_000\n")
+    "PEAK_BUDGET = 1_351_000\n")
 sub("""    for f in failures[:12]:
         print("FAIL", f)
 """, """    p = subprocess.run([PORT, SRC, '-o', os.path.join(tmp, 'self'), '--rt', FORK], capture_output=True, text=True,

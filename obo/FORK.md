@@ -254,9 +254,15 @@ handle traps. Live peak 2.17 MB to 1.27 MB. Patch: `tools/port_reclaim_syms.py`.
 **Memory budget.** `OBO_STATS=1` makes the runtime print its exact live peak and
 total allocation to stderr at exit (`tools/obo_stats.py`); the figures are
 repeatable, unlike resident memory. port_compare fails if the port compiling
-itself exceeds `PEAK_BUDGET` (about 3% over the measured 1,266,368 bytes; patch
+itself exceeds `PEAK_BUDGET` (about 3% over the measured figure; patch
 `tools/port_budget.py`). Lower the budget as memory improves; raise it only with a
 reason recorded here.
+
+**Budget raised, 1,305,000 to 1,351,000** (measured live peak 1,311,184 bytes, about 3% over).
+The reason: soundness fixes need per-path state for suspect references. The state at each join
+now carries every local's suspicion (see "Deep references" below), which added 10,432 bytes.
+More is coming: per-path reference bindings need the same kind of state. The allocation work in
+README item 4 is planned to reclaim it, and the budget goes down again then.
 
 **Tests.** `python3 obo/tests/mutate_port.py`: 6 mutants of the port, all caught
 (two divergences by mismatch, two early frees by dangling-handle traps, two
@@ -363,14 +369,11 @@ point into either):
 - the frees at exit of globals: nothing is live after `main`.
 - strings (`RT_STR_DEC`): not owned records, and never borrowed.
 
-**Holes found while checking, not fixed here** (the same pattern exists without handle-rooted
-references, so they are a separate change; `LANGUAGE.md` section 10 has the first):
-- A change through a handle, `h.items = ...`, or a call that makes one, invalidates
-  references rooted at the handle, but not `&bag.items[0]` taken from an owned variable.
-  The compiler accepts `cut(h)` followed by `println(first.v)`, which reads freed memory.
+**Holes found while checking** (the first two are closed by "Deep references" below):
+- A change through a handle, `h.items = ...`, or a call that makes one, invalidated references
+  rooted at the handle, but not `&bag.items[0]` taken from an owned variable. Closed.
 - A read-only parameter `p` and a handle `h` naming the same object: `let a = &p.items`,
-  then `h.items = ...` frees that array, and `len(a)` reads it. Accepted. (Reading `p.items`
-  again after the change is safe: `p` names the record, which is not freed.)
+  then `h.items = ...` frees that array, and `len(a)` read it. Closed.
 - Not a hole, a false positive: a `return` inside a `for` walk of an owned local's reference
   is rejected with "cannot change what ... points into" (the frees at the return).
 - Not a hole, a false positive: a walk over a handle-rooted reference whose body declares an
@@ -409,6 +412,200 @@ programs contain a handle borrow.
 
 **Seed.** The checker change was promoted first, before the loops changed, because the old
 seed rejects a borrow through a handle.
+
+## Deep references (done)
+
+**Direction.** A change through a handle frees the old owned children of the handle's
+target (`h.items = ...` frees the items). A reference that points inside something, such
+as `&bag.items[0]` or `&h.items`, could then read freed memory, while the existing rule
+checked only references rooted at the handle. The decided rule (`LANGUAGE.md` section 10):
+only owned changes count, a scalar written through a handle invalidates nothing, and a
+reference to a whole object stays valid.
+
+**Rules, as implemented** (`src/obo.obo`)
+- `Sym.refDeep` marks a reference inside something (from a field or element, or from a
+  reference that is itself deep). `invalidateDeep(via)` invalidates each live deep reference
+  that is not an ancestor of the changed place; the error is the existing one.
+- `invalidateOwnedChange(x)`: an owned change that goes through a handle, or through a
+  reference with `freeRoot` `handleSym`, calls `invalidateDeep`. Used by assignment,
+  `replace`, `take`, and `truncate` of an owned array (a scalar array frees nothing, so a
+  `truncate` through a handle records no free; this refines the old unconditional `recordFree`).
+- `writesHandles` (a `Sym` flag on functions): set by a direct handle free (`recordFree`),
+  inherited in `afterCall` from any callee that has it, and assumed for a forward-declared
+  callee (`addr < 0`). A call to such a function invalidates every deep reference.
+- `callFn`: a deep argument may not go to a writer. A forward-declared callee is named
+  separately ("its body is not known yet"). The self-call case is deferred (below).
+- Self-calls are deferred to the body's end (`notePending`, `pendLine`, `pendMsg`). A self-call
+  marks live deep references `suspect`; a later use of a suspect reference is noted; at the end
+  of the body, if the function writes through a handle, the first noted position is reported.
+  A loop that makes a self-call (`loopSelfCheck`, `selfCalls`) is noted the same way.
+  Suspicion is per path. `snapshot` carries each local's suspicion beside its move state, and a
+  re-point clears `suspect` on its own path only. The joins of `if`, `match` and loops keep the
+  suspicion of every path (`joinSuspect`, `joinStates`); a loop's `break` and `continue` carry
+  theirs out of the loop (`Loop.susp`, `joinFlags`); and a `while` condition's self-calls count
+  for the loop check (`whileStat` takes `selfBefore` before the condition). A `for` range bound
+  runs once, before the loop, so its self-calls need no loop check: the ordinary rule sees them.
+
+The port needed no changes. Compiled with the rule, `src/obo.obo` has 0 rejections, so the
+type-based narrowing was not needed. The port's peak live memory rose from 1,294,016 to
+1,300,752 bytes when it compiles itself (the two new `Sym` fields). The per-path suspicion
+below raised it to 1,311,184, over the 1,305,000 budget, which was raised to 1,351,000 (see
+"Memory budget" above).
+
+**Tests.** `tests/errors/handle_deep.obx`: 13 cases for the rule as described here, then six for
+the per-path suspicion (below). The four from the holes list: `cut(h)` then a use of `first` (the
+`d4` shape), a `both(p, h)` with `let a = &p.items` (the `g1` shape), a writer two calls
+down, and a change through a reference borrowed through a handle (`e = &h.items`;
+`e[0].kids = ...`), which the seed also accepted and read freed memory. Then a forward-declared
+writer, a deep argument to a forward-declared writer, a deep argument to a direct writer, to a
+writer two calls down, a handle temporary's field change, a `truncate` through a handle, a
+self-call passing a deep argument in a writer, a self-call followed by a use of the deep
+reference, and a loop that calls a self-writer while using a deep reference.
+`tests/run/handle_deep.obx` is the valid side: a deep reference survives a scalar write and a
+scalar truncate through a handle, reads through a handle, a recursive read-only walk, a
+recursive writer whose only reference is re-pointed after the call, and a recursive writer that
+passes only the whole object. It prints 11 values (expected output in source order) and passes
+on both compilers. The last value is a reference re-pointed on both branches of an `if` after a
+recursive call, then read before a writer: each path points it afresh, so it is accepted.
+
+**Mutants.** `tests/mutate_port.py`, 18 new. The runner reports the first failing case for each
+mutant, named here:
+- body write doesn't invalidate deep refs: `run/handle_deep.obx` (the first failing case).
+- callee writes keep deep refs: `handle_deep.obx`, the `cut` case.
+- flag not inherited from callees: `references.obx` (an existing case, a free two calls down
+  through a forward heading), then the `leaf`/`mid` case in `handle_deep.obx`.
+- forward heading not assumed to write: `handle_deep.obx`, the `cutLater` case.
+- forward heading deep argument allowed: `handle_deep.obx`, the `putLater` case.
+- call-site deep-argument check dropped: `handle_deep.obx`, the `putLater` case (it expects the
+  "cannot pass" message).
+- deferred self-call check dropped: `handle_deep.obx`, the `walk` case.
+- self-call suspects not marked: `handle_deep.obx`, the `rec` case.
+- suspect uses not noted: `handle_deep.obx`, the `rec` case.
+- re-pointing keeps suspicion: `run/handle_deep.obx`, the `repoint` function.
+- loop self-call check dropped: `handle_deep.obx`, the `loopRec` case.
+- change through a borrowed handle reference doesn't invalidate deep refs: `handle_deep.obx`,
+  the `e = &h.items` case.
+- shallow references invalidated by handle writes: `run/handle_deep.obx`, the `let q = &bag`
+  line in `main`.
+- scalar truncate invalidates deep references: `run/handle_deep.obx`, `trimVals`.
+- scalar truncate through a handle is a write: `run/handle_deep.obx`, `clearVals`.
+- suspect not joined at if or match: `handle_deep.obx`, "a recursive call on one branch of an if"
+  (the `if` join) and "a recursive call in one match arm" (the `match` join). Both are accepted
+  without the joins, as is the one-branch re-point case.
+- loop self-call counter taken after the condition: `handle_deep.obx`, "a recursive call in a while
+  condition".
+- break suspicion not recorded: `handle_deep.obx`, "a recursive call before a break, with a
+  reference made shallow before the loop's end" (the reference is re-pointed to a whole object on
+  the other path, so the loop check does not see it).
+
+The six new error cases, for the per-path rule: the one-branch re-point (fails on the pre-fix
+compiler), the while-condition self-call (fails on the pre-fix compiler), the `if` join and the
+`match` arm (both rejected by the pre-fix compiler too, through its global flag), a for range bound
+with a self-call (rejected by both: the bound runs once), and the break case (fails on the pre-fix
+compiler). The pre-fix compiler is the working-tree source built by HEAD's seed.
+
+**Known false positive.** A loop that re-points a reference at the top of each iteration, then makes
+the recursive call, is valid, but the loop check rejects it, since the check does not see the
+re-point on the next iteration. The program is in `LANGUAGE.md` section 10, where it is an error
+example.
+
+**Loops and defers (follow-up, done).** Review found two holes and two false positives in the
+rules above. All four are fixed.
+- Loop-carried suspicion (a hole). The loop check read `refDeep` at the body's end, which is
+  flow-insensitive: a shallow re-point on any path hid a suspicion carried to the next iteration,
+  so a read at the top of the body or in the condition was accepted. Each loop now records, per
+  local, the suspicion where its next iteration starts (`Loop.back`: the body's end if it falls
+  through, and every `continue`, recorded in `statement`). `loopSelfCheck` reports a reference that
+  is suspect there and that the loop reads. A read is counted by `designatorT` (`Sym.usedAt`
+  against `useSeq`, not for a plain re-pointing), and a while condition's reads count because
+  the count is taken before the condition. The per-loop sticky flag suggested in review would
+  also reject a loop that reads nothing; the path-sensitive state does not. Nested loops: a
+  self-call in an inner loop is checked by the inner loop, and its break and continue suspicion
+  reaches the outer loop through `joinFlags`, so the outer loop checks it too.
+- A body that always leaves a loop (a false positive, `p/h3`). Its end is not reached, so
+  `loopBodyV` takes the suspicion after the loop from the entry state (`restore(entry)`), as it
+  does for moves.
+- A deferred recursive call (a false positive, `j/OK_N`). The body of a `defer` is compiled
+  where the statement is, but runs where its block ends. `deferStat` takes back the suspicion its
+  body's self-call made (`suspects`, `restoreSuspects`) and sets `Block.selfDefer`; `callDefers`
+  applies it at each exit from the block (`markSuspects`). A read in the block before its end is
+  accepted, and a read after the block is rejected. `break` and `continue` record their
+  suspicion after `runDefers`, so a deferred call's suspicion reaches the loop's states.
+- The loop variable of a for walk is rebound each iteration, so its suspicion is not carried
+  around the loop (`loopSelfCheck` skips `lv`).
+- A second review found two more holes, both fixed. A for walk reads its array on every iteration
+  without going through `designatorT`, so a walk over a suspect reference was not counted as a read
+  (a regression of the read test): `forStat` now counts the walked reference before the body. And
+  a `defer` body that re-points a reference cleared its suspicion where the statement is, though
+  the re-point runs only at the block's end (this one predates the follow-up): `deferStat` now
+  takes back the body's effect on suspicion whether or not it made a recursive call. Tests: two
+  error cases (a walk over a reference with a recursive call in its body; a defer that re-points a
+  reference has not run yet) and three mutants, each caught by its case.
+
+Known false positive, still open: a loop that reads a reference after re-pointing it in the same
+iteration, when the reference is suspect where the next iteration starts (the example in
+`LANGUAGE.md` section 10). Every other loop-carried read of a suspect reference is a real error.
+
+**Tests.** `tests/errors/handle_deep.obx`: seven cases. A read at the top of a loop body after a
+call on one path, a read in the condition, a read in an inner loop's second iteration, a read by an
+outer loop after a `break` out of an inner loop, a read at the top after a `continue` (the
+`continue` path only keeps the reference deep), a read after a deferred call's block, and a
+read at the top of a loop after a deferred call in its body. The compiler before this change (the
+working tree, as it stood when review began) accepted the body, condition and `continue` cases; the
+other four were rejected too, each at another line or for another reason.
+`tests/run/handle_deep.obx`: five valid programs that the old rule rejected (`retLeak`: a loop body that always returns; `deferRec` and `deferInIf`: a
+use before a deferred call runs; `loopRepoint` and `loopBothRepoint`: a reference pointed afresh
+after each recursive call), and `unusedRef`, a loop whose recursive call leaves a reference suspect
+that nothing reads; the old rule accepted it too, and it guards the read test.
+The review's control `p/h2c` (listed as rejected) is a valid program, not a hole: its
+re-point is on both branches after the call, so it prints `2 2 2 9 9 9` and is now accepted.
+
+**Mutants.** `tests/mutate_port.py`, 7 new, each failing the cases named here (checked per case
+with the mutant compiler, so the list is every case that fails, not only the first one the port
+comparison prints):
+- loop-carried suspicion from the body's end dropped: the body-read case, the condition case, the
+  nested and break cases, the deferred-loop case, and two older cases (`a loop calls a recursive
+  writer`, `a recursive call in a while condition`); seven cases in all.
+- loop-carried suspicion from `continue` dropped: the `continue` case.
+- terminated body's suspicion kept: `run/handle_deep.obx` (`retLeak`).
+- loop check reports unread references: `run/handle_deep.obx` (`unusedRef`).
+- reads in a loop not counted: the same cases as the first mutant, and the `continue` case.
+- deferred call's suspicion kept at the defer statement: `run/handle_deep.obx` (`deferRec`) and the
+  after-block case.
+- deferred call not applied where the block ends: the after-block case and the deferred-loop case.
+  Two of the older mutants were retargeted to the new source text: self-call marking (now
+  `markSuspects`) and break recording.
+
+`tests/mutate_fork.py`: two stale anchors retargeted to `invalidateOwnedChange`: "handle temporary
+assignments record nothing" and "element writes invalidate nothing". Final run 51 of 51.
+
+**Fuzzer.** `tests/own_fuzz.py`: `owned_deep_stmt` (valid; a deep borrow from an owned element,
+a handle change to a different place, then a use), `owned_deep_writer_stmt` (valid; a writer
+that changes nothing a deep reference points into), `owned_deep_dead_stmt` (invalid; a deep
+borrow, then a change through a named handle, a temporary, or a call, then a use),
+`owned_deep_arg_stmt` (invalid; a deep reference passed to a writer). The writer call in the
+invalid kinds includes a writer two calls down. Valid kinds are wrapped in a bare block, and the
+handle borrow kind (`handle_borrow_stmt`) too, so its reference ends with the statement; without
+that the generator's own later loops tripped the existing rule (seed 229, which the committed
+seed also rejects). Detection at 300 seeds per profile, 600 programs, with the six fuzzer mutants
+built from the final source: body write 6 failures, callee writes keep deep refs 3, flag not
+inherited 2, call-site deep-argument check dropped 6; scalar truncate through a handle and
+shallow references invalidated 0 each. Those last two are covered by the run and error cases
+above, not by the fuzzer.
+
+**Holes found, not fixed here.** All three are accepted by HEAD's seed too, and by the current
+compiler. They will be fixed next.
+- A reference re-pointed in one branch keeps only the last binding for every path:
+  `var k = &a; if a.v == 2 { k = &b }; a = new ...; println(k.v)` reads freed memory
+  (`scratchpad/w/x4_root_join.obx`). The handle form is `var k = &root.kids[0]; if root.v == 2 {
+  k = &root }; h.kids = new ...; println(k.v)` (`scratchpad/w/x3_refdeep_nocall_arg.obx`). Per-path
+  reference bindings are the planned fix.
+- Uses inside `defer` bodies are not checked against later changes: `defer println(first.v)`, then
+  `bag.items = new ...` (`scratchpad/review5/p/p03_defer_nohandle.obx`).
+- Argument evaluation order: a deep argument is checked before a later argument's call frees what it
+  points into: `use2(first, mk(h))` (`scratchpad/review5/p/e1_arg_order.obx`, and `e2`).
+
+**Seed.** The rule is promoted after the suite and mutants pass, following `make promote`.
 
 ## Milestone 1 design notes (as planned)
 

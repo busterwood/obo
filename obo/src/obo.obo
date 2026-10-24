@@ -861,12 +861,15 @@ type Sym = ref record {
     refMut: bool              // changes may be made through it
     refRoot: ?^Sym             // the owned local or reference parameter it borrows from
     refDeep: bool             // it may point below its root's own object
+    suspect: bool             // live across a recursive call that may write through a handle
+    usedAt: int               // the reads so far (useSeq) when it was last read: see loopSelfCheck
     refPath: string           // where in its root it points: "/a/b", "/items/[]"; "" = anywhere
     refParent: ?^Sym           // the reference local it was derived from
     iterating: bool           // a for loop is walking this array
     pmodes: []int             // fn: 0 owned, 1 &, 2 mut, per parameter
     freed: []^Sym              // fn: the globals it might free (directly or through calls)
     freesAll: bool            // fn: it might free anything (or isn't compiled yet)
+    writesHandles: bool       // fn: it frees owned objects through a handle (directly, by a callee, or a forward heading)
 }
 
 var symArena = new []Sym(0)            // owns every symbol; the rest of the compiler holds handles
@@ -1059,6 +1062,7 @@ type Block = ref record {
     defers: []int
     nmark: int
     omark: int                // ownedLocals before this block
+    selfDefer: bool           // a deferred call of this block calls the function itself: see callDefers
 }
 
 type NEntry = ref record {
@@ -1074,6 +1078,8 @@ type Loop = ref record {
     blocks: int
     entry: []bool             // move states when the loop was entered
     lv: ?^Sym                  // a for loop's variable, rebound every iteration
+    susp: []bool             // per local: suspect where a break or continue leaves the loop
+    back: []bool             // per local: suspect where the next iteration starts (the body's end, or a continue)
 }
 
 fn makePool(): []int {
@@ -1098,6 +1104,12 @@ var narrowStack = new []NEntry(0)
 var loops = new []Loop(0)
 var loopdepth = 0
 var curFn: ?^Sym = nil
+// an error that needs the whole body: reported at its end if the body writes through a handle
+var pendLine = 0
+var pendCol = 0
+var pendMsg = ""
+var selfCalls = 0                 // calls a function makes to itself, so far
+var useSeq = 0                    // reads of references so far, numbered
 var fnBlock = 0
 var frame = 0
 var inDefer = false
@@ -1605,23 +1617,80 @@ fn freeOwned(from: int, to: int) {
     }
 }
 
+// A path's state: for each owned local, whether it has been moved (the first half) and whether
+// it is suspect (the second half, see afterCall). Moves must agree where paths join; suspicion
+// is the union of the paths' suspicion.
 fn snapshot(): []bool {
     let out = new []bool(0)
     let locals = &ownedLocals
     for s in locals {
         append(out, s.moved)
     }
+    for s in locals {
+        append(out, s.suspect)
+    }
     return out
 }
 
+// the number of locals a state covers
+fn localsIn(st: &[]bool): int { return len(st) / 2 }
+
 fn restore(st: &[]bool) {
-    for i in 0..len(st) { ownedLocals[i].moved = st[i] }
+    let n = localsIn(st)
+    for i in 0..n {
+        ownedLocals[i].moved = st[i]
+        ownedLocals[i].suspect = st[n + i]
+    }
+}
+
+// the suspicion of each owned local, and its restoration (a deferred body's suspicion is not its own)
+fn suspects(): []bool {
+    let out = new []bool(0)
+    let locals = &ownedLocals
+    for s in locals { append(out, s.suspect) }
+    return out
+}
+
+fn restoreSuspects(st: &[]bool) {
+    for i in 0..len(st) { ownedLocals[i].suspect = st[i] }
+}
+
+// the moves of a state, without its suspicion (a loop's suspicion is joined in afterwards)
+fn restoreMoved(st: &[]bool) {
+    for i in 0..localsIn(st) { ownedLocals[i].moved = st[i] }
+}
+
+// the suspicion of a state joins the current one, where paths meet
+fn joinSuspect(st: &[]bool) {
+    let n = localsIn(st)
+    for i in 0..n {
+        if st[n + i] { ownedLocals[i].suspect = true }
+    }
+}
+
+// per local, suspect where either state is: the state at a join of two paths is b's, with suspicion from a too
+fn joinStates(a: &[]bool, b: &[]bool): []bool {
+    let out = new []bool(0)
+    let n = localsIn(b)
+    for i in 0..len(b) { append(out, b[i]) }
+    for i in 0..n {
+        if a[n + i] { out[n + i] = true }
+    }
+    return out
+}
+
+// per local, suspect where it is flagged: the suspicion that a loop's exits carry
+fn joinFlags(flags: &[]bool) {
+    for i in 0..len(flags) {
+        if flags[i] { ownedLocals[i].suspect = true }
+    }
 }
 
 // the first owned local whose move state differs between a and b, or nil
 fn stateDiff(a: &[]bool, b: &[]bool): ?^Sym {
-    for i in 0..len(a) {
-        if i < len(b) && a[i] != b[i] { return ownedLocals[i] }
+    let n = localsIn(b)
+    for i in 0..localsIn(a) {
+        if i < n && a[i] != b[i] { return ownedLocals[i] }
     }
     return nil
 }
@@ -1858,6 +1927,53 @@ fn invalidate(root: ?^Sym, via: ?^Sym, all: bool, path: string) {
     }
 }
 
+// A change through a handle may free anything below its target, so every reference that points
+// inside something is invalid, whatever it borrows from. A reference to a whole object stays
+// valid: only owners free whole objects, and a change through a handle frees only below its target.
+fn invalidateDeep(via: ?^Sym) {
+    let locals = &ownedLocals
+    for v in locals {
+        if v.isRefLocal && v.refDeep && !ancestorOf(v, via) && !v.moved {
+            if v.iterating { error("cannot change what '" + v.name + "' points into while a for loop walks it") }
+            v.moved = true
+        }
+    }
+}
+
+// a deferred error, reported at the end of the body if it writes through a handle; the earliest wins
+fn notePending(line: int, col: int, msg: string) {
+    if pendLine == 0 || line < pendLine || (line == pendLine && col < pendCol) {
+        pendLine = line
+        pendCol = col
+        pendMsg = msg
+    }
+}
+
+// a recursive call (or a deferred one) may write through a handle: the references inside something
+// that are live now may be freed, so they are suspect until they are pointed afresh
+fn markSuspects() {
+    let locals = &ownedLocals
+    for v in locals {
+        if v.isRefLocal && v.refDeep && !v.moved { v.suspect = true }
+    }
+}
+
+// a loop whose body calls the function itself: a reference from before the loop that is suspect where
+// the next iteration starts (back: the body's end, or a continue) may be read there, in the loop's
+// condition or its body, after the call freed what it points into. The suspicion follows the paths,
+// so a reference pointed afresh after the call on every path is not reported, and a reference that
+// the loop does not read (usedAt, read since the loop began: useBefore) is not reported either. The
+// loop variable of a for walk is rebound each iteration, so its suspicion is not carried.
+fn loopSelfCheck(nOuter: int, selfBefore: int, useBefore: int, back: &[]bool, lv: ?^Sym, line: int, col: int) {
+    if selfCalls == selfBefore { return }
+    for i in 0..nOuter {
+        if back[i] && ownedLocals[i] != lv && ownedLocals[i].usedAt > useBefore {
+            notePending(line, col, "a recursive call in this loop writes through a handle, which could free what a reference inside something points into on the next iteration")
+            return
+        }
+    }
+}
+
 // ======================================================== effect summaries
 // Every function records which globals it might free. Bodies are compiled
 // before they can be called (declare before use), so at a call site the
@@ -1890,6 +2006,7 @@ fn recordFree(g: ?^Sym) {
     if f == nil || g == nil { return }
     if g == handleSym {                  // a change through a handle may free anything
         f.freesAll = true
+        f.writesHandles = true
         return
     }
     if g.storage != "global" { return }
@@ -1908,6 +2025,16 @@ fn afterCall(f: ^Sym) {
     let cur = curFn
     let all = f.addr < 0 || f == cur || f.freesAll
     if cur != nil && all && f != cur { cur.freesAll = true }
+    if f == cur {
+        // a recursive call may write through a handle, which is known only at the end of the body:
+        // until then the references inside something that are live across it are suspect
+        selfCalls += 1
+        markSuspects()
+    } else if f.addr < 0 || f.writesHandles {
+        // a callee that writes through a handle, or may: references inside something may be freed
+        if cur != nil { cur.writesHandles = true }
+        invalidateDeep(nil)
+    }
     if !pureFn(f) { invalidate(handleSym, nil, false, "") }   // and so may a borrow through a handle
     let gs = &globals
     for g in gs {
@@ -1930,6 +2057,13 @@ fn viaOf(x: &Item): ?^Sym {
 fn invalidateChange(x: &Item) {
     invalidate(rootOf(x), viaOf(x), false, x.path)
     if x.viaHandle { invalidate(handleSym, viaOf(x), false, "") }
+}
+
+// a change of an owned value that goes through a handle, or through a reference borrowed through
+// one (freeRoot is handleSym): it may free what references inside something point into
+fn invalidateOwnedChange(x: &Item) {
+    invalidateChange(x)
+    if freeRoot(x) == handleSym { invalidateDeep(viaOf(x)) }
 }
 
 fn parseType(): ^Type
@@ -1956,7 +2090,7 @@ fn noTemp(x: &Item) {
 
 fn openBlock() {
     append(blocks, new Block{syms: new []^Sym(0), defers: new []int(0), nmark: len(narrowStack),
-                             omark: len(ownedLocals)})
+                             omark: len(ownedLocals), selfDefer: false})
 }
 
 // calls the deferred statements of blocks[bi], newest first
@@ -1966,6 +2100,8 @@ fn callDefers(bi: int) {
         callLocal(blocks[bi].defers[i])
         i -= 1
     }
+    // a deferred call that calls the function itself runs here, where the block is left
+    if blocks[bi].selfDefer { markSuspects() }
 }
 
 fn closeBlock(terminated: bool) {
@@ -2182,9 +2318,13 @@ fn callFn(f: ^Sym): Item {
     let argVias = new []?^Sym(0)
     let argDeeps = new []bool(0)
     let argPaths = new []string(0)
+    var deepLine = 0                   // the first argument that points inside something
+    var deepCol = 0
     for i in 0..n {
         if sym == T_RPAREN { error(f.name + " takes " + string(n) + " argument(s), not " + string(i)) }
         if i > 0 { expect(T_COMMA, "") }
+        let argLine = tline
+        let argCol = tcol
         let a = expression()
         checkAssign(f.params[i], a, "argument " + string(i + 1) + " of " + f.name)
         if f.pmodes[i] > 0 {
@@ -2196,6 +2336,10 @@ fn callFn(f: ^Sym): Item {
             append(argModes, f.pmodes[i])
             append(argVias, viaOf(a))
             append(argDeeps, deepOf(a))
+            if deepOf(a) && deepLine == 0 {
+                deepLine = argLine
+                deepCol = argCol
+            }
             append(argPaths, a.path)
         } else {
             consume(a)
@@ -2206,6 +2350,17 @@ fn callFn(f: ^Sym): Item {
     }
     if sym != T_RPAREN { error(f.name + " takes " + string(n) + " argument(s), not more") }
     expect(T_RPAREN, "")
+    // a reference inside something may not go to a callee that writes through a handle, since the
+    // handle may name what it is inside. A callee with only a forward heading is assumed to write.
+    if deepLine > 0 {
+        if f == curFn {
+            notePending(deepLine, deepCol, "cannot pass a reference that points inside something to " + f.name + ": it writes through a handle, which could free it")
+        } else if f.addr < 0 {
+            errorAt("cannot pass a reference that points inside something to " + f.name + ": its body is not known yet, so it is assumed to write through a handle, which could free it", deepLine, deepCol)
+        } else if f.writesHandles {
+            errorAt("cannot pass a reference that points inside something to " + f.name + ": it writes through a handle, which could free it", deepLine, deepCol)
+        }
+    }
     // a mut reference and another that may point inside it could let the callee
     // free what the other points to; references to one object are fine
     for i in 0..len(argRoots) {
@@ -2391,7 +2546,7 @@ fn builtin(name: string): Item {
         checkAssign(x.typ, v, "replacement value")
         consume(v)
         if x.deref || x.viaHandle {
-            invalidateChange(x)
+            invalidateOwnedChange(x)
             recordFree(freeRoot(x))
         } else {
             let ts = x.sym
@@ -2447,7 +2602,7 @@ fn builtin(name: string): Item {
             error("take cannot change through '" + tr.name + "': it is a read-only reference")
         }
         if x.deref || x.viaHandle {
-            invalidateChange(x)
+            invalidateOwnedChange(x)
             recordFree(freeRoot(x))
         } else {
             let ts = x.sym
@@ -2483,8 +2638,9 @@ fn builtin(name: string): Item {
                 error(name + " changes the array, but '" + ar.name + "' is a read-only reference")
             }
             if name == "truncate" {
-                invalidateChange(a)
-                recordFree(freeRoot(a))
+                let owned = isOwned(baseOf(a.typ))
+                if owned { invalidateOwnedChange(a) } else { invalidateChange(a) }
+                if owned || freeRoot(a) != handleSym { recordFree(freeRoot(a)) }   // a scalar array frees nothing
             }
         }
         a = pinStr(a)
@@ -2576,6 +2732,8 @@ fn designator(): Item { return designatorT(false) }
 // target: the designator is the left side of an assignment, where a moved
 // local may be given a new value
 fn designatorT(target: bool): Item {
+    let uline = tline
+    let ucol = tcol
     let name = ident()
     let s = lookup(name)
     var x = voidItem()
@@ -2694,6 +2852,14 @@ fn designatorT(target: bool): Item {
             }
             path = path + seg
         }
+    }
+    // a use of a suspect reference (not just pointing it elsewhere): see afterCall
+    if s.suspect && (!target || path != "") {
+        notePending(uline, ucol, "'" + name + "' may point to freed memory: a recursive call writes through a handle, which could free what it points into")
+    }
+    if s.isRefLocal && (!target || path != "") {        // a read, not a re-pointing: see loopSelfCheck
+        useSeq += 1
+        s.usedAt = useSeq
     }
     x.viaHandle = viaHandle
     if x.sym == nil && root != nil {
@@ -3305,6 +3471,7 @@ fn assignmentOrCall(): bool {
             xs.refPath = pp
             xs.refMut = mu
             xs.refDeep = dp
+            xs.suspect = false
             xs.moved = false
             return false
         }
@@ -3333,7 +3500,7 @@ fn assignmentOrCall(): bool {
                     if xs.iterating { errorAt("cannot change '" + xs.name + "' while a for loop walks it", line, col) }
                     invalidate(xs, nil, true, "")
                 } else if x.deref || x.viaHandle {
-                    invalidateChange(x)
+                    invalidateOwnedChange(x)
                     recordFree(freeRoot(x))
                 } else if xs != nil {
                     invalidate(xs, nil, true, "")               // a global given a new value
@@ -3453,6 +3620,7 @@ fn ifStat(): bool {
             restore(s1)
         } else if !t1 && !t2 {
             sameStates(s1, s2, iline, icol)
+            joinSuspect(s1)
         }
         if t1 && !t2 {
             pushNarrowings(x.nf)
@@ -3462,17 +3630,28 @@ fn ifStat(): bool {
         return t1 && t2
     }
     fixHere(flinks)
-    if !t1 { sameStates(s1, s0, iline, icol) }
+    if !t1 {
+        sameStates(s1, s0, iline, icol)
+        joinSuspect(s1)
+    }
     if t1 { pushNarrowings(x.nf) }
     return false
 }
 
 // entry: the move states when the loop is entered; every iteration must end,
 // and every break or continue happen, with the same states
-fn loopBodyV(entry: []bool, line: int, col: int, lv: ?^Sym): Loop
+// nOuter and selfBefore: the owned locals and the self-call count before the loop's condition
+// (if any) and body, so that a self-call in either is seen by loopSelfCheck
+fn loopBodyV(entry: []bool, line: int, col: int, lv: ?^Sym, nOuter: int, selfBefore: int, useBefore: int): Loop
 
-fn loopBody(entry: []bool, line: int, col: int): Loop {
-    return loopBodyV(entry, line, col, nil)
+fn loopBody(entry: []bool, line: int, col: int, nOuter: int, selfBefore: int, useBefore: int): Loop {
+    return loopBodyV(entry, line, col, nil, nOuter, selfBefore, useBefore)
+}
+
+fn falseBools(n: int): []bool {
+    let out = new []bool(0)
+    for i in 0..n { append(out, false) }
+    return out
 }
 
 // lv: a for loop's variable, rebound at the start of every iteration
@@ -3482,13 +3661,22 @@ fn copyBools(a: &[]bool): []bool {
     return out
 }
 
-fn loopBodyV(entry: []bool, line: int, col: int, lv: ?^Sym): Loop {
-    append(loops, new Loop{brk: new []int(0), cont: new []int(0), blocks: len(blocks), entry: copyBools(entry), lv: lv})
+fn loopBodyV(entry: []bool, line: int, col: int, lv: ?^Sym, nOuter: int, selfBefore: int, useBefore: int): Loop {
+    let n = localsIn(entry)
+    append(loops, new Loop{brk: new []int(0), cont: new []int(0), blocks: len(blocks), entry: copyBools(entry), lv: lv,
+                           susp: falseBools(n), back: falseBools(n)})
     let term = block()
-    // the loop's record leaves the stack; what break and continue collected comes back
+    // the next iteration starts where the body ends, if it falls through, and at each continue (added then)
     let li = len(loops) - 1
+    if !term {
+        for i in 0..n {
+            if ownedLocals[i].suspect { loops[li].back[i] = true }
+        }
+    }
+    loopSelfCheck(nOuter, selfBefore, useBefore, &loops[li].back, lv, line, col)
+    // the loop's record leaves the stack; what break and continue collected comes back
     let res = new Loop{brk: copyInts(loops[li].brk), cont: copyInts(loops[li].cont), blocks: loops[li].blocks,
-                       entry: copyBools(entry), lv: lv}
+                       entry: copyBools(entry), lv: lv, susp: copyBools(loops[li].susp), back: copyBools(loops[li].back)}
     truncate(loops, li)
     if lv != nil { lv.moved = false }
     if !term {
@@ -3501,7 +3689,11 @@ fn loopBodyV(entry: []bool, line: int, col: int, lv: ?^Sym): Loop {
             errorAt("'" + d.name + "' is moved inside the loop; it must have a value again by the end of each iteration", line, col)
         }
     }
-    restore(entry)
+    // the loop may run no time, or leave from its body: its suspicion is what either carries. A body
+    // that always leaves carries none of its own, since its end is not reached
+    if term { restore(entry) } else { restoreMoved(entry) }
+    joinSuspect(entry)
+    joinFlags(res.susp)
     return res
 }
 
@@ -3509,6 +3701,9 @@ fn whileStat(): bool {
     let wline = tline
     let wcol = tcol
     next()
+    let nOuter = len(ownedLocals)
+    let selfBefore = selfCalls
+    let useBefore = useSeq
     let entry = snapshot()
     let top = pc()
     var x = expression()
@@ -3520,10 +3715,12 @@ fn whileStat(): bool {
         x = loadCond(x)
         flinks = falseJump(x)
     }
+    let condSt = snapshot()                  // the state when the condition leaves the loop
     loopdepth += 1
     let mark = len(narrowStack)
     pushNarrowings(x.nt)
-    let loop = loopBody(entry, wline, wcol)
+    let loop = loopBody(entry, wline, wcol, nOuter, selfBefore, useBefore)
+    joinSuspect(condSt)
     truncate(narrowStack, mark)
     loopdepth -= 1
     fixTo(loop.cont, top)
@@ -3543,7 +3740,7 @@ fn forStat() {
     let x = expression()
     var top = 0
     var exitLink = 0
-    var loop = new Loop{brk: new []int(0), cont: new []int(0), blocks: 0, entry: new []bool(0)}
+    var loop = new Loop{brk: new []int(0), cont: new []int(0), blocks: 0, entry: new []bool(0), susp: new []bool(0), back: new []bool(0)}
     if sym == T_DOTDOT {
         next()
         if x.typ.kind != "int" { error("range bounds must be ints") }
@@ -3566,7 +3763,7 @@ fn forStat() {
         release(r)
         exitLink = jcc(CC_GE)
         loopdepth += 1
-        loop = loopBody(snapshot(), fline, fcol)
+        loop = loopBody(snapshot(), fline, fcol, len(ownedLocals), selfCalls, useSeq)
         loopdepth -= 1
         fixHere(loop.cont)
         aluMI(0, mem(RBP, -1, v.offset, 8), 1)
@@ -3633,7 +3830,12 @@ fn forStat() {
         loopdepth += 1
         let wasIterating = walked.iterating
         walked.iterating = true
-        loop = loopBodyV(snapshot(), fline, fcol, v)
+        let walkUse = useSeq
+        if walked.isRefLocal {                  // the walk reads its array on every iteration
+            useSeq += 1
+            walked.usedAt = useSeq
+        }
+        loop = loopBodyV(snapshot(), fline, fcol, v, len(ownedLocals), selfCalls, walkUse)
         walked.iterating = wasIterating
         loopdepth -= 1
         fixHere(loop.cont)
@@ -3676,8 +3878,7 @@ fn intMatch(x: Item): bool {
             allTerm = allTerm && bt
             if !bt {
                 let st = snapshot()
-                if have { sameStates(acc, st, line0(), 0) }
-                acc = st
+                if have { sameStates(acc, st, line0(), 0); acc = joinStates(acc, st) } else { acc = copyBools(st) }
                 have = true
             }
             skipSemis()
@@ -3712,8 +3913,7 @@ fn intMatch(x: Item): bool {
         allTerm = allTerm && bt
         if !bt {
             let st = snapshot()
-            if have { sameStates(acc, st, line0(), 0) }
-            acc = st
+            if have { sameStates(acc, st, line0(), 0); acc = joinStates(acc, st) } else { acc = copyBools(st) }
             have = true
         }
         append(ends, jmp())
@@ -3722,8 +3922,7 @@ fn intMatch(x: Item): bool {
     }
     expect(T_RBRACE, "")
     if !hasElse {
-        if have { sameStates(acc, s0, mline, mcol) }
-        acc = copyBools(s0)
+        if have { sameStates(acc, s0, mline, mcol); acc = joinStates(acc, s0) } else { acc = copyBools(s0) }
         have = true
     }
     if have { restore(acc) } else { restore(s0) }
@@ -3774,8 +3973,7 @@ fn matchStat(): bool {
             allTerm = allTerm && bt
             if !bt {
                 let st = snapshot()
-                if have { sameStates(acc, st, line0(), 0) }
-                acc = st
+                if have { sameStates(acc, st, line0(), 0); acc = joinStates(acc, st) } else { acc = copyBools(st) }
                 have = true
             }
             skipSemis()
@@ -3805,8 +4003,7 @@ fn matchStat(): bool {
         allTerm = allTerm && bt
         if !bt {
             let st = snapshot()
-            if have { sameStates(acc, st, line0(), 0) }
-            acc = st
+            if have { sameStates(acc, st, line0(), 0); acc = joinStates(acc, st) } else { acc = copyBools(st) }
             have = true
         }
         truncate(narrowStack, mark)
@@ -3873,6 +4070,8 @@ fn deferStat() {
     next()
     let over = jmp()
     let entry = pc()
+    let sc = selfCalls
+    let before = suspects()
     let savedDepth = depth
     let savedNarrow = replace(narrowStack, new []NEntry(0))   // fresh stacks for the deferred code
     let savedLoops = replace(loops, new []Loop(0))
@@ -3892,6 +4091,10 @@ fn deferStat() {
     loops = savedLoops
     inDefer = savedInDefer
     fixHere1(over)
+    // the body runs where the block is left, not here: what it did to suspicion is taken back (its
+    // re-points have not happened yet either), and callDefers applies its recursive calls at each exit
+    restoreSuspects(before)
+    if selfCalls != sc { blocks[len(blocks) - 1].selfDefer = true }
     append(blocks[len(blocks) - 1].defers, entry)
 }
 
@@ -3926,7 +4129,17 @@ fn statement(): bool {
             if d != nil {
                 error("'" + d.name + "' is moved inside the loop; it must have a value again before " + tokName(k))
             }
-            runDefers(loop.blocks)
+            let downTo = loop.blocks
+            let nl = localsIn(loop.entry)
+            runDefers(downTo)
+            // the suspicion this exit carries, after the deferred calls that run here
+            let lp = &loops[len(loops) - 1]
+            for i in 0..nl {
+                if ownedLocals[i].suspect {
+                    lp.susp[i] = true
+                    if k == T_CONTINUE { lp.back[i] = true }
+                }
+            }
             let cur = &loops[len(loops) - 1]               // runDefers might have freed: borrow again
             if k == T_BREAK {
                 append(cur.brk, jmp())
@@ -4009,6 +4222,7 @@ fn fnDecl() {
     f.addr = pc()
     for fi in 0..len(f.fixups) { fix(f.fixups[fi], f.addr) }   // calls waiting for this address
     curFn = f
+    pendLine = 0
     frame = 0
     depth = 0
     emit(0x55)
@@ -4052,6 +4266,8 @@ fn fnDecl() {
     code[frameAt + 1] = byte(size >> 8)
     code[frameAt + 2] = byte(size >> 16)
     code[frameAt + 3] = byte(size >> 24)
+    if pendLine > 0 && f.writesHandles { errorAt(pendMsg, pendLine, pendCol) }
+    pendLine = 0
     curFn = nil
     truncate(symArena, symMark)                 // and nothing refers to them any more
 }

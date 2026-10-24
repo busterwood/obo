@@ -1,0 +1,399 @@
+type Item = ref record { v: int; kids: []Item }
+type Bag = ref record { items: []Item; n: int }
+// no global variables here: a call's invalidation must come from the handle rule itself
+// === a change through a handle frees what a borrow from an owned variable points into
+fn cut(h: ^Bag) {
+    h.items = new []Item(0)
+}
+fn main() {
+    var bag = new Bag{items: new []Item(0), n: 0}
+    append(bag.items, new Item{v: 1, kids: new []Item(0)})
+    let h = handle(bag)
+    let first = &bag.items[0]
+    cut(h)
+    println(first.v)  // error: 'first' may point to freed memory
+}
+// === a change through a handle to the object a reference parameter names
+fn both(p: &Bag, h: ^Bag) {
+    let a = &p.items
+    h.items = new []Item(0)
+    println(len(a))  // error: 'a' may point to freed memory
+}
+fn main() {
+    var bag = new Bag{items: new []Item(0), n: 0}
+    append(bag.items, new Item{v: 1, kids: new []Item(0)})
+    both(bag, handle(bag))
+}
+// === a writer two calls down frees a borrow from an owned variable
+fn leaf(h: ^Bag) {
+    h.items = new []Item(0)
+}
+fn mid(h: ^Bag) {
+    leaf(h)
+}
+fn main() {
+    var bag = new Bag{items: new []Item(0), n: 0}
+    append(bag.items, new Item{v: 1, kids: new []Item(0)})
+    let h = handle(bag)
+    let first = &bag.items[0]
+    mid(h)
+    println(first.v)  // error: 'first' may point to freed memory
+}
+// === a forward-declared writer frees a borrow from an owned variable
+fn cutLater(h: ^Bag)
+fn main() {
+    var bag = new Bag{items: new []Item(0), n: 0}
+    append(bag.items, new Item{v: 1, kids: new []Item(0)})
+    let h = handle(bag)
+    let first = &bag.items[0]
+    cutLater(h)
+    println(first.v)  // error: 'first' may point to freed memory
+}
+fn cutLater(h: ^Bag) {
+    h.items = new []Item(0)
+}
+// === a reference inside something passed to a forward-declared writer
+fn putLater(a: &Item, h: ^Bag)
+fn main() {
+    var bag = new Bag{items: new []Item(0), n: 0}
+    append(bag.items, new Item{v: 1, kids: new []Item(0)})
+    let h = handle(bag)
+    let first = &bag.items[0]
+    putLater(first, h)  // error: cannot pass a reference that points inside something to putLater
+}
+fn putLater(a: &Item, h: ^Bag) {
+    h.items = new []Item(0)
+}
+// === a reference inside something passed to a function that writes through a handle
+fn put(a: &Item, h: ^Bag) {
+    h.items = new []Item(0)
+}
+fn main() {
+    var bag = new Bag{items: new []Item(0), n: 0}
+    append(bag.items, new Item{v: 1, kids: new []Item(0)})
+    let h = handle(bag)
+    let first = &bag.items[0]
+    put(first, h)  // error: cannot pass a reference that points inside something to put
+}
+// === a reference inside something passed to a writer two calls down
+fn leaf2(h: ^Bag) {
+    h.items = new []Item(0)
+}
+fn midArg(a: &Item, h: ^Bag) {
+    leaf2(h)
+}
+fn main() {
+    var bag = new Bag{items: new []Item(0), n: 0}
+    append(bag.items, new Item{v: 1, kids: new []Item(0)})
+    let h = handle(bag)
+    let first = &bag.items[0]
+    midArg(first, h)  // error: cannot pass a reference that points inside something to midArg
+}
+// === a change through a handle temporary frees a borrow from an owned variable
+fn main() {
+    var bag = new Bag{items: new []Item(0), n: 0}
+    append(bag.items, new Item{v: 1, kids: new []Item(0)})
+    let first = &bag.items[0]
+    handle(bag).items = new []Item(0)
+    println(first.v)  // error: 'first' may point to freed memory
+}
+// === truncating an array through a handle frees what a borrow from an owned variable points into
+fn main() {
+    var bag = new Bag{items: new []Item(0), n: 0}
+    append(bag.items, new Item{v: 1, kids: new []Item(0)})
+    let h = handle(bag)
+    let first = &bag.items[0]
+    truncate(h.items, 0)
+    println(first.v)  // error: 'first' may point to freed memory
+}
+// === a change through a reference that was borrowed through a handle frees what a borrow from an owned variable points into
+fn main() {
+    var bag = new Bag{items: new []Item(0), n: 0}
+    append(bag.items, new Item{v: 1, kids: new []Item(0)})
+    append(bag.items[0].kids, new Item{v: 2, kids: new []Item(0)})
+    let h = handle(bag)
+    let k = &bag.items[0].kids
+    let e = &h.items
+    e[0].kids = new []Item(0)
+    println(len(k))  // error: 'k' may point to freed memory
+}
+// === a recursive call passes a reference inside something to itself, and the function writes through a handle
+fn walk(n: &Item, h: ^Bag, d: int) {
+    if d == 0 { return }
+    walk(n.kids[0], h, d - 1)  // error: cannot pass a reference that points inside something to walk
+    h.items = new []Item(0)
+}
+fn main() {
+    var bag = new Bag{items: new []Item(0), n: 0}
+    var root = new Item{v: 0, kids: new []Item(0)}
+    append(root.kids, new Item{v: 1, kids: new []Item(0)})
+    walk(root, handle(bag), 2)
+}
+// === a recursive call writes through a handle, and a reference inside something is used after it
+fn rec(n: &Item, h: ^Bag, d: int) {
+    let k = &n.kids[0]
+    if d > 0 { rec(n, h, d - 1) }
+    println(k.v)  // error: 'k' may point to freed memory
+    h.items = new []Item(0)
+}
+fn main() {}
+// === a loop calls a recursive writer, and a reference inside something is used in the loop
+fn loopRec(n: &Item, h: ^Bag, d: int) {
+    let k = &n.kids[0]
+    var i = 0
+    while i < d {  // error: a recursive call in this loop writes through a handle
+        println(k.v)
+        loopRec(n, h, 0)
+        i += 1
+    }
+    h.items = new []Item(0)
+}
+fn main() {}
+// === a reference re-pointed on one branch after a recursive call, then used: the other branch keeps the old borrow
+fn rec(b: &Bag, h: ^Bag, d: int) {
+    var r = &b.items[0]
+    if d > 0 { rec(b, h, d - 1) }
+    if d == 5 { r = &b.items[0] }
+    println(r.v)  // error: 'r' may point to freed memory
+    h.items = new []Item(0)
+}
+fn main() {}
+// === a recursive call in a while condition, with a reference used in the condition before it
+fn rec(n: &Bag, h: ^Bag, d: int): int {
+    if d == 0 {
+        h.items = new []Item(0)
+        return 0
+    }
+    let k = &n.items[0]
+    var c = 0
+    while k.v + rec(n, h, d - 1) > -1000 && c < 3 {  // error: a recursive call in this loop writes through a handle
+        c += 1
+    }
+    return c
+}
+fn main() {}
+// === a recursive call in a for range bound, with a reference used in the body: the bound runs once, before the loop
+fn rec(n: &Item, h: ^Bag, d: int): int {
+    if d == 0 {
+        h.items = new []Item(0)
+        return 0
+    }
+    let k = &n.kids[0]
+    var c = 0
+    for i in 0..rec(n, h, d - 1) {
+        println(k.v)  // error: 'k' may point to freed memory
+        c += i
+    }
+    return c
+}
+fn main() {}
+// === a recursive call on one branch of an if, with a reference used after the if
+fn rec(n: &Item, h: ^Bag, d: int) {
+    if d == 0 {
+        h.items = new []Item(0)
+        return
+    }
+    let k = &n.kids[0]
+    if d == 2 {
+        rec(n, h, d - 1)
+    }
+    println(k.v)  // error: 'k' may point to freed memory
+    h.items = new []Item(0)
+}
+fn main() {}
+// === a recursive call in one match arm, with a reference used after the match
+fn rec(n: &Item, h: ^Bag, d: int) {
+    if d == 0 {
+        h.items = new []Item(0)
+        return
+    }
+    let k = &n.kids[0]
+    match d {
+        2 { rec(n, h, d - 1) }
+        else { }
+    }
+    println(k.v)  // error: 'k' may point to freed memory
+    h.items = new []Item(0)
+}
+fn main() {}
+// === a recursive call before a break, with a reference made shallow before the loop's end and used after the loop
+fn rec(n: &Item, h: ^Bag, d: int) {
+    if d == 0 {
+        h.items = new []Item(0)
+        return
+    }
+    var k = &n.kids[0]
+    var i = 0
+    while i < 3 {
+        i += 1
+        if i == 2 {
+            rec(n, h, d - 1)
+            break
+        }
+        k = n
+    }
+    println(k.v)  // error: 'k' may point to freed memory
+    h.items = new []Item(0)
+}
+fn main() {}
+// === a loop's body reads a reference at its top, on the next iteration after a recursive call on one path
+fn refillKids(h: ^Item) {
+    h.kids = new []Item(0)
+    append(h.kids, new Item{v: 9, kids: new []Item(0)})
+}
+fn rec(n: &Item, h: ^Item, d: int) {
+    var k = &n.kids[0]
+    var i = 0
+    while i < 2 {  // error: a recursive call in this loop writes through a handle
+        println(k.v)
+        i += 1
+        if d > 0 { rec(n, h, d - 1) }
+        if i == 2 { k = n }     // re-points on one path only
+    }
+    refillKids(h)
+}
+fn main() {}
+// === a loop's condition reads a reference on the next iteration, after a recursive call in its body
+fn refillKids(h: ^Item) {
+    h.kids = new []Item(0)
+    append(h.kids, new Item{v: 9, kids: new []Item(0)})
+}
+fn rec(n: &Item, h: ^Item, d: int) {
+    var k = &n.kids[0]
+    var i = 0
+    while k.v > -100 && i < 2 {  // error: a recursive call in this loop writes through a handle
+        i += 1
+        if d > 0 { rec(n, h, d - 1) }
+        if i == 2 { k = n }
+    }
+    refillKids(h)
+}
+fn main() {}
+// === an inner loop's second iteration reads a reference that the first made a recursive call
+fn refillKids(h: ^Item) {
+    h.kids = new []Item(0)
+    append(h.kids, new Item{v: 9, kids: new []Item(0)})
+}
+fn rec(n: &Item, h: ^Item, d: int) {
+    var k = &n.kids[0]
+    var i = 0
+    while i < 2 {
+        var j = 0
+        while j < 2 {  // error: a recursive call in this loop writes through a handle
+            println(k.v)
+            j += 1
+            if d > 0 { rec(n, h, d - 1) }
+            if j == 2 { k = n }
+        }
+        k = &n.kids[0]          // the outer loop's next iteration starts afresh
+        i += 1
+    }
+    refillKids(h)
+}
+fn main() {}
+// === a recursive call in an inner loop's body, with a reference read by the outer loop on its next iteration (through a break)
+fn refillKids(h: ^Item) {
+    h.kids = new []Item(0)
+    append(h.kids, new Item{v: 9, kids: new []Item(0)})
+}
+fn rec(n: &Item, h: ^Item, d: int) {
+    var k = &n.kids[0]
+    var i = 0
+    while i < 2 {  // error: a recursive call in this loop writes through a handle
+        println(k.v)
+        var j = 0
+        while j < 5 {
+            j += 1
+            if d > 0 { rec(n, h, d - 1) }
+            break
+        }
+        if i == 1 { k = n }
+        i += 1
+    }
+    refillKids(h)
+}
+fn main() {}
+// === a recursive call before a continue: the next iteration starts with the reference still deep
+fn refillKids(h: ^Item) {
+    h.kids = new []Item(0)
+    append(h.kids, new Item{v: 9, kids: new []Item(0)})
+}
+fn rec(n: &Item, h: ^Item, d: int) {
+    var k = &n.kids[0]
+    var i = 0
+    while i < 3 {  // error: a recursive call in this loop writes through a handle
+        println(k.v)
+        i += 1
+        if i == 2 {
+            if d > 0 { rec(n, h, d - 1) }
+            continue
+        }
+        if i == 5 { k = n }     // never reached on the continue path
+    }
+    refillKids(h)
+}
+fn main() {}
+// === a deferred recursive call runs where the block ends: a reference used after the block is suspect
+fn refillKids(h: ^Item) {
+    h.kids = new []Item(0)
+    append(h.kids, new Item{v: 9, kids: new []Item(0)})
+}
+fn rec(n: &Item, h: ^Item, d: int) {
+    var k = &n.kids[0]
+    if d > 0 {
+        defer { rec(n, h, d - 1) }
+        println(k.v)
+    }
+    println(k.v)  // error: 'k' may point to freed memory
+    refillKids(h)
+}
+fn main() {}
+// === a deferred recursive call in a loop body: the reference read at the next iteration's top is suspect
+fn refillKids(h: ^Item) {
+    h.kids = new []Item(0)
+    append(h.kids, new Item{v: 9, kids: new []Item(0)})
+}
+fn rec(n: &Item, h: ^Item, d: int) {
+    var k = &n.kids[0]
+    var i = 0
+    while i < 2 {  // error: a recursive call in this loop writes through a handle
+        println(k.v)
+        i += 1
+        defer { if d > 0 { rec(n, h, d - 1) } }
+    }
+    refillKids(h)
+}
+fn main() {}
+// === a walk over a reference with a recursive call in its body
+fn refill3(h: ^Bag) {
+    h.items = new []Item(0)
+}
+fn walkRec(b: &Bag, h: ^Bag, d: int) {
+    let items = &b.items
+    for x in items {  // error: a recursive call in this loop writes through a handle
+        println(x.v)
+        if d > 0 { walkRec(b, h, d - 1) }
+    }
+    refill3(h)
+}
+fn main() {
+    var bag = new Bag{items: new []Item(0), n: 0}
+    append(bag.items, new Item{v: 1, kids: new []Item(0)})
+    walkRec(bag, handle(bag), 1)
+}
+// === a defer that re-points a reference has not run yet
+fn refill4(h: ^Bag) {
+    h.items = new []Item(0)
+}
+fn deferPoint(b: &Bag, h: ^Bag, d: int) {
+    var k = &b.items[0]
+    if d > 0 { deferPoint(b, h, d - 1) }
+    defer { k = &b.items[0] }
+    println(k.v)  // error: 'k' may point to freed memory
+    refill4(h)
+}
+fn main() {
+    var bag = new Bag{items: new []Item(0), n: 0}
+    append(bag.items, new Item{v: 1, kids: new []Item(0)})
+    deferPoint(bag, handle(bag), 1)
+}

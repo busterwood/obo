@@ -124,7 +124,9 @@ In order:
 4. **The port's speed.** It allocates 26 MB to compile itself. Steps 1 to 3 should
    let it shed workarounds written for stricter rules (copies, index loops, storing
    temporaries first), and each one removed is also a measure of simplicity: how
-   far obo code must differ from straightforward code.
+   far obo code must differ from straightforward code. A change through a handle now
+   frees what references inside something point into, and the compiler checks that (done);
+   no rewrite of the port's own code was needed to satisfy the rule.
 5. **The move** (done). obo's compiler is the port, built by a committed seed
    (`obo/seed/obo`), with `make promote` checking the fixed point and the suite before
    replacing the seed. The mutants run against the port, and `obo-on-obx.obx` is

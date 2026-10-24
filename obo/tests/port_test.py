@@ -10,8 +10,10 @@ compiler is checked against obo in port_compare.py.
 import glob
 import os
 import random
+import shutil
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FORK = os.path.dirname(HERE)
@@ -20,8 +22,6 @@ sys.path.insert(0, os.path.join(ROOT, 'tests'))
 import stage_test  # noqa: E402  (scanner fragments and encoder scripts)
 
 REF = os.path.join(FORK, 'obo')
-PORT = '/tmp/obo_own_test'
-TMP = '/tmp/obo_port_inputs'
 
 
 def run(exe, mode, path):
@@ -40,6 +40,18 @@ def compare(mode, path, label, failures):
 
 
 def main():
+    # a private directory per run, so that concurrent runs do not share the port's executable or inputs
+    work = tempfile.mkdtemp(prefix='obo-port-test-')
+    try:
+        check(work)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def check(work):
+    global PORT, TMP
+    PORT = os.path.join(work, 'obo_own_test')
+    TMP = os.path.join(work, 'inputs')
     b = subprocess.run([REF, os.path.join(FORK, 'src', 'obo.obo'), '-o', PORT, '--rt', FORK],
                        capture_output=True, text=True)
     if b.returncode != 0:

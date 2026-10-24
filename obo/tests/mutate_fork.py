@@ -68,7 +68,7 @@ MUTANTS = {
     "moving a root keeps its references": ("        invalidate(s, nil, true, \"\")                  // references into it now dangle\n", ""),
     "references can be moved out": ("    if x.borrowed || (s != nil && s.isRef) { error(", "    if false { error("),
     "walked arrays can change": ("                    if xs.iterating { errorAt(", "                    if false { errorAt("),
-    "element writes invalidate nothing": ("                } else if x.deref || x.viaHandle {\n                    invalidateChange(x)\n", "                } else if x.deref || x.viaHandle {\n"),
+    "element writes invalidate nothing": ("                } else if x.deref || x.viaHandle {\n                    invalidateOwnedChange(x)\n", "                } else if x.deref || x.viaHandle {\n"),
     "read-only references can be passed as mut": ("            if f.pmodes[i] == 2 && !mutableOf(a) {", "            if false {"),
     "everything counts as an ancestor": ("        if p == a { return true }\n        p = p.refParent", "        return true"),
     # handles
