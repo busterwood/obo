@@ -47,7 +47,7 @@ MUTANTS = {
     "globals not freed at exit": ("            x.disp = g.offset\n            rtCall1(RT_FREE, x, tVoid)\n", "            x.disp = g.offset\n"),
     # freeing too much: double free or poisoned reads
     "moved locals still freed": ("        if !s.moved && !s.isRefLocal {\n            let x = newItem", "        if !s.isRefLocal {\n            let x = newItem"),
-    "moves not recorded": ("        s.moved = true\n        invalidate(s, nil, true, \"\")", "        invalidate(s, nil, true, \"\")"),
+    "moves not recorded": ("        s.moved = true\n        s.touches = s.touches + 1\n        invalidate(s, nil, true, \"\")", "        s.touches = s.touches + 1\n        invalidate(s, nil, true, \"\")"),
     "take leaves the value in place": ("        opMem(0x8B, r, memOf(x), true, false)\n        opMem(0xC7, 0, memOf(x), true, false)\n        emit32(0)\n",
                                        "        opMem(0x8B, r, memOf(x), true, false)\n"),
     # string reference counts
@@ -75,7 +75,7 @@ MUTANTS = {
     "handle borrows are untracked": ("    if x.mode == \"const\" { return nil }\n    if x.viaHandle { return handleSym }\n", "    if x.mode == \"const\" { return nil }\n    if x.viaHandle { return nil }\n"),
     # acceptance-equivalent: the general field-target check rejects the same programs,
     # so only the suite sees this, by the message text (the fuzzer compares acceptance only)
-    "handle assignment across calls allowed": ("            if x.viaHandle && userCalls != callsBefore {\n                errorAt(", "            if false {\n                errorAt("),
+    "handle assignment across calls allowed": ("    if x.viaHandle {\n        errorAt(\"cannot assign through a handle across a call", "    if false {\n        errorAt(\"cannot assign through a handle across a call"),
     "handle index calls allowed": ("            if viaHandle && userCalls != callsBefore {\n                error(", "            if false {\n                error("),
     "match reads the tag with the generation": ("    opMem(0x8B, r, mem(r, -1, -16, 8), false, false)", "    opMem(0x8B, r, mem(r, -1, -16, 8), true, false)"),
     # effect summaries
@@ -102,7 +102,41 @@ MUTANTS = {
     "calls check only one root": ("argDeeps[j] && ri != nil && rj != nil && reaches(ri, rj)", "argDeeps[j] && ri != nil && rj != nil && ri == rj"),
     "calls ignore depth": ("argModes[i] == 2 && argDeeps[j] && ri", "argModes[i] == 2 && ri"),
     # assigning into a field or element while a call might free it
-    "field targets assigned across calls": ("            if xs == nil && userCalls != callsBefore {", "            if false && userCalls != callsBefore {"),
+    "field targets assigned across calls": ("    if xs == nil {\n        // a field or element: the call could free the record or array it is in",
+                                            "    if false {\n        // a field or element: the call could free the record or array it is in"),
+    # the same for the other forms of a target located before a call (call_targets.obx)
+    "compound targets not checked": ("            var y = expression()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n",
+                                     "            var y = expression()\n            pinned = savedPin\n"),
+    "append targets not checked": ("        if name != \"substr\" && held && userCalls != callsBefore {",
+                                   "        if name == \"truncate\" && held && userCalls != callsBefore {"),
+    "truncate targets not checked": ("        if name != \"substr\" && held && userCalls != callsBefore {",
+                                     "        if name == \"append\" && held && userCalls != callsBefore {"),
+    "replace field targets not checked": ("        if (x.viaHandle || x.sym == nil) && userCalls != callsBefore {",
+                                          "        if x.viaHandle && userCalls != callsBefore {"),
+    "index targets not checked": ("            if !wholeLocal && userCalls != callsBefore {", "            if false {"),
+    "held arrays ignore mut parameters": ("    return x.sym == nil || r.storage == \"global\" || r.isRef\n", "    return x.sym == nil || r.storage == \"global\"\n"),
+    "indexes of mut parameters unchecked": ("            let wholeLocal = x.sym != nil && !(root != nil && (root.storage == \"global\" || root.isRef))",
+                                            "            let wholeLocal = x.sym != nil && !(root != nil && root.storage == \"global\")"),
+    # a whole local array is freed only by a call that moves it, so an operand holding it across
+    # such a call is checked through the touch count (call_targets.obx: "... whose index moves the
+    # array", "append whose value moves the array", "replace whose value moves the variable")
+    # the root snapshot (heldTouch, heldLost): an index, assignment, append, truncate or replace that
+    # holds an array in an owned local is checked for a move of that local, whatever the path to the
+    # array (call_targets.obx: "a field's array ...", "an element's array ...", "a grid's inner index ...")
+    "index of a field, element or whole local not checked for moves": ("            if root != nil && heldLost(root, touch0) {", "            if root != nil && false {"),
+    "indexes checked only on a whole variable (not fields, elements, grids)": ("            if root != nil && heldLost(root, touch0) {", "            if wholeLocal && root != nil && heldLost(root, touch0) {"),
+    "append and truncate not checked for moves": ("        if name != \"substr\" && r0 != nil && heldLost(r0, touch0) {", "        if name != \"substr\" && r0 != nil && false {"),
+    "replace not checked for moves": ("        if tr != nil && heldLost(tr, touch0) {", "        if tr != nil && false {"),
+    "plain assignments through a reference not checked for moves": ("            consume(y)\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && heldLost(r0, touch0) {",
+                                                                     "            consume(y)\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && false {"),
+    "compound assignments through a reference not checked for moves": ("            var y = expression()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && heldLost(r0, touch0) {",
+                                                                       "            var y = expression()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && false {"),
+    # the reference local's owner (ownerOf) and its invalidation (the moved flag): a reference into a
+    # field or to an element's array, or a borrow through a handle, is only caught by one of them
+    "reference roots not checked for moves or invalidation": ("fn heldLost(root: ?^Sym, t0: int): bool {\n    if root == nil { return false }\n    if root.isRefLocal && root.moved { return true }\n    return touched(ownerOf(root)) != t0\n}",
+                                                              "fn heldLost(root: ?^Sym, t0: int): bool {\n    if root == nil { return false }\n    return !root.isRefLocal && touched(root) != t0\n}"),
+    "reference invalidation not checked": ("    if root.isRefLocal && root.moved { return true }\n", ""),
+    "moves not counted": ("        s.touches = s.touches + 1\n", ""),
     # finer paths (item 3): a change reaches only what lies under its place
     "field changes invalidate siblings": ("(all || v.refDeep && underPath(v.refPath, path))", "(all || v.refDeep)"),
     "known elements treated as one": ("(ri != rj || pathsOverlap(argPaths[i], argPaths[j]))", "(ri != rj || true)"),

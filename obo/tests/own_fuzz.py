@@ -349,6 +349,84 @@ class Gen:
         return self.invalid_stmt([f"var b{n} = new Box{{items: new []int(0)}}", f"let hx{n} = handle(b{n})",
                                   f"hx{n}.items[tick(b{n}.items)] = 9"])
 
+    def target_call_stmt(self, kind):
+        """A field of a local record, targeted by a compound assignment, append, truncate or an
+        index, while a call in the same expression replaces the record's array: rejected."""
+        n = self.nrefs
+        self.nrefs += 1
+        self.extra_fn("fn rebox(mut b: &Box): int { b.items = new []int(0); append(b.items, 2); return 1 }")
+        head = [f"var b{n} = new Box{{items: new []int(0)}}", f"append(b{n}.items, 1)"]
+        if kind == 'compound':
+            tail = [f"b{n}.items[0] += rebox(b{n})"]
+        elif kind == 'append':
+            tail = [f"append(b{n}.items, rebox(b{n}))"]
+        elif kind == 'truncate':
+            tail = [f"truncate(b{n}.items, rebox(b{n}))"]
+        elif kind == 'index':
+            tail = [f"println(b{n}.items[rebox(b{n})])"]
+        else:
+            tail = [f"b{n}.items[rebox(b{n})] = 3"]
+        return self.invalid_stmt(head + tail)
+
+    def compound_target_stmt(self):
+        return self.target_call_stmt('compound')
+
+    def append_target_stmt(self):
+        return self.target_call_stmt('append')
+
+    def truncate_target_stmt(self):
+        return self.target_call_stmt('truncate')
+
+    def index_target_stmt(self):
+        return self.target_call_stmt('index')
+
+    def index_assign_target_stmt(self):
+        return self.target_call_stmt('assign')
+
+    def moved_local_stmt(self, kind):
+        """A whole local array passed by value to a call in the same expression that uses the array:
+        the call moves it, so the array's header is freed under the operation: rejected."""
+        n = self.nrefs
+        self.nrefs += 1
+        self.extra_fn("fn eatInts(a: []int): int { return len(a) - 1 }")
+        head = [f"var v{n} = new []int(0)", f"append(v{n}, 1)"]
+        if kind == 'index':
+            tail = [f"println(v{n}[eatInts(v{n})])"]
+        elif kind == 'assign':
+            tail = [f"v{n}[eatInts(v{n})] = 3"]
+        elif kind == 'append':
+            tail = [f"append(v{n}, eatInts(v{n}))"]
+        elif kind == 'truncate':
+            tail = [f"truncate(v{n}, eatInts(v{n}))"]
+        else:
+            tail = [f"let o{n} = replace(v{n}, new []int(eatInts(v{n})))"]
+        return self.invalid_stmt(head + tail)
+
+    def moved_root_index_stmt(self):
+        """A field's array, indexed by a call that takes the record it is in by value: the call
+        moves the record and frees its array under the index, so it is rejected. Nothing in the
+        call is impure (pureFn), so only the move of the record shows it."""
+        n = self.nrefs
+        self.nrefs += 1
+        self.extra_fn("fn eatBox(b: Box): int { return 0 }")
+        return self.invalid_stmt([f"var b{n} = new Box{{items: new []int(0)}}", f"append(b{n}.items, 1)",
+                                  f"println(b{n}.items[eatBox(b{n})])"])
+
+    def moved_index_stmt(self):
+        return self.moved_local_stmt('index')
+
+    def moved_assign_stmt(self):
+        return self.moved_local_stmt('assign')
+
+    def moved_append_stmt(self):
+        return self.moved_local_stmt('append')
+
+    def moved_truncate_stmt(self):
+        return self.moved_local_stmt('truncate')
+
+    def moved_replace_stmt(self):
+        return self.moved_local_stmt('replace')
+
     def ref_move_stmt(self):
         """A reference parameter passed where ownership is taken: rejected."""
         self.extra_fn("fn mvRef(l: &?Node): int { return eat(l) }")
@@ -1078,7 +1156,11 @@ class Gen:
                self.elem_write_stmt, self.two_self_stmt, self.alias_param_stmt,
                self.alias_global_elem_stmt, self.global_ref_free_stmt,
                self.handle_index_call_stmt, self.ref_move_stmt, self.callee_free_global_stmt,
-               self.owned_deep_dead_stmt, self.owned_deep_arg_stmt]
+               self.owned_deep_dead_stmt, self.owned_deep_arg_stmt,
+               self.compound_target_stmt, self.append_target_stmt, self.truncate_target_stmt,
+               self.index_target_stmt, self.index_assign_target_stmt,
+               self.moved_index_stmt, self.moved_assign_stmt, self.moved_append_stmt,
+               self.moved_truncate_stmt, self.moved_replace_stmt, self.moved_root_index_stmt]
         s = ops[self.seed % len(ops)]()
         return s if s is not None else self.pick(ops)
 

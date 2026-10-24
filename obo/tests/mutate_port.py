@@ -146,6 +146,27 @@ MUTANTS = {
     # a deferred recursive call is not applied where the block ends at all. Caught by errors/handle_deep.obx
     # "a deferred recursive call runs where the block ends: a reference used after the block is suspect"
     "deferred self-call not applied at block close": [("    if blocks[bi].selfDefer { markSuspects() }", "    if false { markSuspects() }")],
+    # assignment targets across calls (tests/errors/call_targets.obx). Each one accepts programs the
+    # compiler must refuse; the port's own output does not change, but port_compare also runs the
+    # error cases, so the mutant is caught there
+    "field targets assigned across calls": [("    if xs == nil {\n        // a field or element: the call could free the record or array it is in",
+                                             "    if false {\n        // a field or element: the call could free the record or array it is in")],
+    "handle assignment across calls allowed": [("    if x.viaHandle {\n        errorAt(\"cannot assign through a handle across a call",
+                                                "    if false {\n        errorAt(\"cannot assign through a handle across a call")],
+    "compound targets not checked": [("            var y = expression()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n",
+                                      "            var y = expression()\n            pinned = savedPin\n")],
+    "append targets not checked": [("        if name != \"substr\" && held && userCalls != callsBefore {",
+                                    "        if name == \"truncate\" && held && userCalls != callsBefore {")],
+    "truncate targets not checked": [("        if name != \"substr\" && held && userCalls != callsBefore {",
+                                      "        if name == \"append\" && held && userCalls != callsBefore {")],
+    "replace field targets not checked": [("        if (x.viaHandle || x.sym == nil) && userCalls != callsBefore {",
+                                           "        if x.viaHandle && userCalls != callsBefore {")],
+    "index targets not checked": [("            if !wholeLocal && userCalls != callsBefore {", "            if false {")],
+    "held arrays ignore mut parameters": [("    return x.sym == nil || r.storage == \"global\" || r.isRef\n", "    return x.sym == nil || r.storage == \"global\"\n")],
+    "indexes of mut parameters unchecked": [("            let wholeLocal = x.sym != nil && !(root != nil && (root.storage == \"global\" || root.isRef))",
+                                             "            let wholeLocal = x.sym != nil && !(root != nil && root.storage == \"global\")")],
+    "index of a field, element or whole local not checked for moves": [("            if root != nil && heldLost(root, touch0) {",
+                                                                        "            if root != nil && false {")],
     # cheap code generation (FORK.md, Phase 1). A misaligned stack at a runtime call is trapped by the
     # runtime's entry stubs (exit 4), so a wrong depth shows up as a mismatch
     "runtime call pad dropped when misaligned": [("    let pad = depth % 16\n", "    let pad = 0\n")],

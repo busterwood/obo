@@ -30,7 +30,7 @@ the obo dialect (`obo/src/obo.obo`), and it compiled every test program
 and error case byte-for-byte as the first obo compiler did, and compiles itself to a
 fixed point. Its stage test now compares behaviour (same errors, same output when run),
 so code generation can improve. Compiling
-its own source it peaked at 1.5 MB resident (live peak now 1.08 MB), against 2.5 MB for the same logic on a tuned
+its own source it peaked at 1.5 MB resident (live peak now 1.10 MB), against 2.5 MB for the same logic on a tuned
 collector and 1.9 MB on an aggressive one. It is still about 50% slower.
 
 **Decision: obo is the future of the language.** obx becomes the reference it grew
@@ -114,7 +114,9 @@ In order:
 1. **Assignment targets across calls** (done). In `b.items[0].next = h(b)` the
    target's address is computed before `h` runs, so a call that frees it could write
    into freed memory. Assigning to a field or element from a call that might free
-   is now an error; the value is computed first.
+   is now an error; the value is computed first. The same holds for compound
+   assignment, `append`, `truncate`, `replace`, and an index whose index calls such a
+   function (LANGUAGE.md section 10).
 2. **One kind of reference** (done). `&T` is the only reference type. A parameter
    that changes what it points to is declared `mut p: &T`; `&mut T` is an error with
    that hint. A local reference is changeable exactly when what it borrows is.

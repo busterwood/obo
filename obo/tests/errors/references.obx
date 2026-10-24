@@ -195,3 +195,18 @@ fn f(mut t: &Tree) {
         println(len(deep))  // error: 'deep' may point to freed memory
     }
 }
+// === a reference invalidated in a loop, then continued past: it must be pointed again, not moved
+type Item = ref record { v: int; kids: []Item }
+fn main() {
+    var a = new []Item(0)
+    append(a, new Item{v: 1, kids: new []Item(0)})
+    append(a, new Item{v: 2, kids: new []Item(0)})
+    var k = &a[0]
+    for i in 0..3 {
+        if i == 1 {
+            a[0] = new Item{v: 5, kids: new []Item(0)}
+            continue            // error: 'k' is invalidated inside the loop; point it again before continue
+        }
+        println(k.v)
+    }
+}
