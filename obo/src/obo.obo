@@ -1515,14 +1515,14 @@ fn restoreRegs(saved: int) {
     setFree(saved)
 }
 
-var argConsts = new []int(0)      // rtCall's constant arguments, used before it calls again
+var argConsts = new []int(0)      // rtCall's constant arguments: a call owns the part from its base up, so load() may re-enter
 
 // Calls a runtime routine with the C ABI; live registers, including the
 // arguments, are pushed first so the collector sees every pointer. A constant
 // argument needs no register: it goes straight to its argument register.
 fn rtCall(slot: int, args: []?Item, ret: ^Type): Item {
     let regs = new []int(0)                 // -1 for a constant, which is in argConsts
-    truncate(argConsts, 0)
+    let base = len(argConsts)
     let temps = new []bool(0)
     for ai in 0..len(args) {
         let a = take(args[ai])
@@ -1544,8 +1544,9 @@ fn rtCall(slot: int, args: []?Item, ret: ^Type): Item {
     let saved = usedRegs()
     pushRegs(saved)
     for i in 0..len(regs) {
-        if regs[i] < 0 { movRI(argReg(i), argConsts[i]) } else { movRR(argReg(i), regs[i]) }
+        if regs[i] < 0 { movRI(argReg(i), argConsts[base + i]) } else { movRR(argReg(i), regs[i]) }
     }
+    truncate(argConsts, base)
     let pad = depth % 16
     if pad != 0 {
         aluRI(5, RSP, 8)

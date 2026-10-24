@@ -233,6 +233,9 @@ in the port: 329 of 329 identical. The port compiling itself is a fixed point
 same compile outcome in both (success, or the same message at the same line:col), and a
 program that compiles must, when run with `OBO_CHECK=1` and a scratch directory as its
 argument, give the same exit code, stdout and stderr. The executables' bytes may differ.
+Stage B does not compare files a program writes into its scratch directory; a timeout on
+both sides counts as agreement; and the compiler's own byte identity (stage 2 against stage 3)
+is checked by `make promote`, not here.
 The fixed point still compares bytes (`make promote`: stage 2 = stage 3). The reference is
 `./obo`; `OBO_REF=seed/obo` compares against the seed instead, which is the comparison
 that sees a change in code generation before it is promoted.
@@ -761,9 +764,9 @@ The port's code is 9.7% fewer instructions (258,784 to 246,496 bytes of executab
 it compiles itself in 29 to 30 ms against 30 to 31 ms, within noise. fib, where every call
 ran a `sub rsp,0x0`, is 2% faster; the other times did not change. No step regressed.
 
-Memory: compiling itself, the port allocates 12,053,952 bytes in total (through `tests/port_compare.py`), down from 12,266,272
+Memory: compiling itself, the port allocates 12,057,056 bytes in total (through `tests/port_compare.py`), down from 12,266,272
 (fewer loads mean fewer Items; the constants are kept in one array, `argConsts`, since an
-array per runtime call added 315 KB). Its live peak rose from 1,045,392 to 1,079,344 bytes,
+array per runtime call added 315 KB). Its live peak rose from 1,045,392 to 1,079,424 bytes,
 within the budget of 1,351,000, because the peak moved: with less code to hold, the image
 phase at the end is no longer the highest point. The highest is now the moment the code
 buffer grows from 128 KB to 256 KB and both are live, partway through the source (measured
@@ -777,6 +780,17 @@ value that needs imm32 (caught by the objdump cross-check, below); a constant ru
 argument lost; and for the dropped frame, calls out of the body not adjusted, calls waiting
 for a later function not moved, calls to compiled functions not recorded, and a frame
 dropped although there are locals.
+
+Gaps closed after review: `tests/run/code_shapes.obx` has pending forward calls from
+functions before and after zero-frame ones (several calls, with and without locals or
+parameters), and constants at the push imm boundaries (127, 128, -128, -129, 2^31-1, -2^31,
+2^31, -2^31-1 and others). It catches, through Stage B alone, a shift of every waiting call
+(`> at` replaced by `>= 0`, or by no test), `fits8` with `<= 128` or from -129, and an imm32
+masked to 31 bits. `argConsts` is shared by `rtCall` calls, so each call now owns the part
+from its base index up and truncates back to it, which makes a re-entry from `load()`
+harmless (chosen over a guard or a local array, which allocates per call). One mutant is
+equivalent: dropping `!a.strTemp` from the constant path of `rtCall` changes nothing, since
+a constant never has `strTemp` set, so the guard is defensive and left in.
 
 **The encoder against objdump.** obo's encoder had no oracle of its own: `port_test.py`
 compared it with `./obo`, built from the same source. It now also runs mainline's objdump

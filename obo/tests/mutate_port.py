@@ -159,6 +159,14 @@ MUTANTS = {
     "dropped frame: calls out not moved": [("    for p in calls { putRel(p - 7, getRel(p - 7) + 7) }\n", "")],
     "dropped frame: calls waiting for later functions not moved": [("                if g.fixups[fi] > at { g.fixups[fi] -= 7 }\n", "")],
     "dropped frame: calls to known functions not recorded": [("        fix(at, f.addr)\n        append(farCalls, at)\n", "        fix(at, f.addr)\n")],
+    # a pending forward call of an earlier function shifted when a later zero-frame function drops its frame:
+    # caught by tests/run/code_shapes.obx
+    "dropped frame: every waiting call shifted": [("                if g.fixups[fi] > at { g.fixups[fi] -= 7 }\n", "                g.fixups[fi] -= 7\n")],
+    "dropped frame: waiting calls shifted if not negative": [("                if g.fixups[fi] > at { g.fixups[fi] -= 7 }\n", "                if g.fixups[fi] >= 0 { g.fixups[fi] -= 7 }\n")],
+    # the boundaries of push imm8 and imm32, caught by the same program (Stage B, not only the objdump group)
+    "push imm8 up to 128": [("fn pushI(v: int) {\n    if fits8(v) {", "fn pushI(v: int) {\n    if v >= -128 && v <= 128 {")],
+    "push imm8 from -129": [("fn pushI(v: int) {\n    if fits8(v) {", "fn pushI(v: int) {\n    if v >= -129 && v < 128 {")],
+    "push imm32 masked": [("        emit(0x68)\n        emit32(v)\n", "        emit(0x68)\n        emit32(v & 0x7FFFFFFF)\n")],
     "frame dropped although there are locals": [("    if size == 0 {\n        dropFrame(frameAt)", "    if size <= 16 {\n        dropFrame(frameAt)")],
 }
 
