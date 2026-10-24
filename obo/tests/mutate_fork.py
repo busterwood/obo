@@ -105,8 +105,8 @@ MUTANTS = {
     "field targets assigned across calls": ("    if xs == nil {\n        // a field or element: the call could free the record or array it is in",
                                             "    if false {\n        // a field or element: the call could free the record or array it is in"),
     # the same for the other forms of a target located before a call (call_targets.obx)
-    "compound targets not checked": ("            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if !isInt(y.typ)",
-                                     "            pinned = savedPin\n            if !isInt(y.typ)"),
+    "compound targets not checked": ("            var y = expression()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n",
+                                     "            var y = expression()\n            pinned = savedPin\n"),
     "append targets not checked": ("        if name != \"substr\" && held && userCalls != callsBefore {",
                                    "        if name == \"truncate\" && held && userCalls != callsBefore {"),
     "truncate targets not checked": ("        if name != \"substr\" && held && userCalls != callsBefore {",
@@ -120,9 +120,22 @@ MUTANTS = {
     # a whole local array is freed only by a call that moves it, so an operand holding it across
     # such a call is checked through the touch count (call_targets.obx: "... whose index moves the
     # array", "append whose value moves the array", "replace whose value moves the variable")
-    "index of a whole local not checked for moves": ("            if wholeLocal && xs0 != nil && touched(xs0) != touch0 {", "            if wholeLocal && xs0 != nil && false {"),
-    "append and truncate of a whole local not checked for moves": ("        if name != \"substr\" && aSym != nil && touched(aSym) != touch0 {", "        if name != \"substr\" && aSym != nil && false {"),
-    "replace of a whole local not checked for moves": ("        if rSym != nil && touched(rSym) != touch0 {", "        if rSym != nil && false {"),
+    # the root snapshot (heldTouch, heldLost): an index, assignment, append, truncate or replace that
+    # holds an array in an owned local is checked for a move of that local, whatever the path to the
+    # array (call_targets.obx: "a field's array ...", "an element's array ...", "a grid's inner index ...")
+    "index of a field, element or whole local not checked for moves": ("            if root != nil && heldLost(root, touch0) {", "            if root != nil && false {"),
+    "indexes checked only on a whole variable (not fields, elements, grids)": ("            if root != nil && heldLost(root, touch0) {", "            if wholeLocal && root != nil && heldLost(root, touch0) {"),
+    "append and truncate not checked for moves": ("        if name != \"substr\" && r0 != nil && heldLost(r0, touch0) {", "        if name != \"substr\" && r0 != nil && false {"),
+    "replace not checked for moves": ("        if tr != nil && heldLost(tr, touch0) {", "        if tr != nil && false {"),
+    "plain assignments through a reference not checked for moves": ("            consume(y)\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && heldLost(r0, touch0) {",
+                                                                     "            consume(y)\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && false {"),
+    "compound assignments through a reference not checked for moves": ("            var y = expression()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && heldLost(r0, touch0) {",
+                                                                       "            var y = expression()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && false {"),
+    # the reference local's owner (ownerOf) and its invalidation (the moved flag): a reference into a
+    # field or to an element's array, or a borrow through a handle, is only caught by one of them
+    "reference roots not checked for moves or invalidation": ("fn heldLost(root: ?^Sym, t0: int): bool {\n    if root == nil { return false }\n    if root.isRefLocal && root.moved { return true }\n    return touched(ownerOf(root)) != t0\n}",
+                                                              "fn heldLost(root: ?^Sym, t0: int): bool {\n    if root == nil { return false }\n    return !root.isRefLocal && touched(root) != t0\n}"),
+    "reference invalidation not checked": ("    if root.isRefLocal && root.moved { return true }\n", ""),
     "moves not counted": ("        s.touches = s.touches + 1\n", ""),
     # finer paths (item 3): a change reaches only what lies under its place
     "field changes invalidate siblings": ("(all || v.refDeep && underPath(v.refPath, path))", "(all || v.refDeep)"),

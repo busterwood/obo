@@ -345,56 +345,86 @@ expression, all accepted:
 
 **Rule, as implemented** (`src/obo.obo`):
 
-- `checkTargetAcrossCall` is the check `=` already made, now shared with compound assignment.
-  It applies when the target is reached through a handle, through a global, or is a field or
-  element (`xs == nil`), and a non-pure call ran while the value was computed.
-- `heldArray` says whether an array operand may be freed by a call: reached through a handle, a
-  field or element, a global, or a reference parameter. A whole local array is not held here: its
-  header is freed only by a call that moves it, which the touch count below sees. `append` and
-  `truncate` check `heldArray`, and `replace` uses the `=` rule.
-- A whole local array is moved by a call that takes it by value (the callee owns it and frees it
-  when it returns). `consume` counts such a move on the local's symbol (`touches`). The index,
-  `append`, `truncate` and `replace` checks compare the count before and after the value or index
-  runs, and reject a change. A `mut` argument does not count: a `mut` array parameter is read-only,
-  so a call cannot reassign or replace the array's header.
-- The index check in `designatorT` uses the same idea: the array is not a whole local (the base
-  is a field or element, a handle, a global or a reference parameter) and the index calls a
-  non-pure function.
-- Compound assignment, `append` and `truncate` pin the local root while the value runs, as `=`
-  does, so a move of the root during it is an error too.
+- "Pure" here is `pureFn`: a callee that is compiled, frees no global, and takes no `mut` argument.
+  A by-value owned parameter does not make a callee impure. The callee frees the object it is given,
+  but the caller's argument is a move: `consume` counts it on the local (`touches`), and the checks
+  below see that count change. So `eat(xs)` with `fn eat(a: []int)` is pure, and it is refused
+  wherever `xs` is held across the call.
+- `checkTargetAcrossCall` is the check `=` already made, now shared with compound assignment. It
+  applies when the target is reached through a handle, through a global, or is a field or element
+  (`xs == nil`), and a non-pure call ran while the value was computed.
+- `ownerOf(root)` is the owned local whose move frees the array that a designator holds: the root
+  itself, or for a reference, the local it borrows from (`refRoot`). It is nil through a `^` handle
+  (`handleSym`), which no local owns, and for a reference parameter, whose owner is in the caller.
+- `heldTouch(root)` snapshots `touches` of that owner, and `heldLost(root, t0)` reports that the
+  owner was moved since, or that `root` is a reference that a move or a change invalidated (`moved`).
+  Both are taken for the root of the designator, so a field, an element, a multi-dimensional path, a
+  record literal, or a reference is checked the same way as a whole local.
+- The index check in `designatorT` snapshots before the array is loaded and compares after the index.
+  A non-pure call in the index is still refused when the array is not a whole local (as before).
+  `heldLost` refuses an index that moves the owner or invalidates a reference root.
+- `append`, `truncate` and `replace` take the same snapshot of the operand's root before the value
+  runs. An assignment (`=` or compound) whose target is reached through a field, an element or a
+  reference (`x.deref`) does too, after the value is consumed. A whole local assigned directly
+  (`xs = eat(xs)`) is not checked: the statement stores a new value into the variable after the call.
+- `pinned` (a move of the root while it is assigned into) and `heldArray` (the call-count rule for
+  `append` and `truncate`) are as before.
+- A `mut` argument is not a move: a `mut` array parameter is read-only, so no call can reassign or
+  replace its header. A `mut` argument does invalidate references into it, as before.
 - The messages say "compute the value first" (or "compute the index first").
 
 **Accepted, unchanged:** a pure call beside a field; a compound on a whole global scalar
 (`gtotal += f()`); a whole local array with a call beside it that only borrows it or takes it
 `mut` (`xs[g(xs)]` with `g(xs: &[]T)`, `xs[h(xs)]` with `h(mut xs: &[]T)`, `append(xs, h(xs))`); a
-call that moves a different array in an index (`ys[eat(xs)]`); a for-range bound that moves a whole
-local array (no array is held there); and the call-first form of each. The generated code for
-accepted programs is unchanged.
+borrowed field indexed by `&`-taking call (`b.items[g(b)]` with `g(b: &Bag)`), a grid indexed by a
+borrow of itself (`g[0][h(g)]` with `h(a: &[][]int)`), a reference indexed by a pure call that
+borrows its owner (`r[lastOf(xs)]`); a move in a later operand, after the index is closed
+(`b.items[0].v + eat(b)`); a call that moves a different array in an index (`ys[eat(xs)]`); a
+for-range bound that moves a whole local array (no array is held there); a whole local array
+reassigned from a call that takes it by value (`xs = f(xs)`); and the call-first form of each.
 
-**Refused, whole local arrays moved by a call:** `xs[eat(xs)]`, `xs[eat(xs)] = v`, `&xs[eat(xs)]`,
-`append(xs, eat(xs))`, `truncate(xs, eat(xs))` and `replace(xs, eat(xs))`, where `eat` takes `xs` by
-value. Before this change `xs[eat(xs)]` and `replace(xs, eat(xs))` were accepted and read or freed
-the header (a double free from `replace`). `append(xs, eat(xs))` was accepted and wrote into the
-moved array.
+**Refused, a move of the owner while the array is held:** where `eat` takes its argument by value,
+and the array or its root is held across the call:
 
-**Tests.** `tests/errors/call_targets.obx` has 26 cases: each form above, through a local, a mut
-parameter, a handle, a global, and an index target; a whole global array and a mut array parameter;
-and the 8 whole-local moves just listed. `tests/errors/references.obx` has a case for the `continue`
-message below. `tests/run/call_targets.obx` runs the accepted forms, with outputs.
+- a whole local: `xs[eat(xs)]`, `xs[eat(xs)] = v`, `&xs[eat(xs)]`, `append(xs, eat(xs))`,
+  `truncate(xs, eat(xs))`, `replace(xs, eat(xs))`, and a for-range bound that does the same;
+- a field's array of a local record `b`: `b.items[eat(b)]` as a read, an assignment, a compound
+  assignment, `&b.items[eat(b)]`, `take(...)`, `replace(b.items[eat(b)], v)` and a for-range bound;
+  a record literal that moves `b` in the index (`b.items[idx(new Holder{bg: b})]`, with no call that
+  moves `b` otherwise);
+- a nested record's array: `n.kids[eat(n)]`; an element's array: `xs[0].kids[eat(xs)]`; a grid's
+  inner index: `g[0][eat(g)]`;
+- a record parameter's array, the parameter passed by value: `h.items[eat(h)]` with `h: Bag`;
+- a reference, whether to a whole local (`let r = &xs; r[eat(xs)]`), to a field's array
+  (`let r = &b.items; r[eat(b)]`), to an element's array (`let r = &xs[0].kids; r[eat(xs)]`), or
+  a reference into a reference's index (`let q = &r[eat(xs)]`); a reference through a `^` handle
+  indexed by a move of a local the handle may name (`let r = &h.items; r[eat(b)]`);
+- a plain or compound assignment through a reference whose value moves the array it borrows
+  (`r[0] = eat(xs)`, `r[0].v += eat(xs)`).
 
-**Mutants.** Both `tests/mutate_fork.py` and `tests/mutate_port.py` carry them. The fork set has
-the compound, append, truncate, replace-field, index, held-array and mut-parameter mutants, and
-four for the whole-local moves (the index, append and truncate, and replace checks, and the touch
-count itself). Each is caught by a named case in `call_targets.obx`. The port set has the nine
-of the fork set listed above and the whole-local index one. An accept-more mutant leaves the port's
-own output unchanged, but `port_compare` also runs the error cases, so these are caught there.
+Before this change the field, element, grid, literal, reference and handle forms, and the plain and
+compound assignments through a reference, compiled, and read or wrote a freed header (exit 3 or a
+segfault in the probes that were run).
 
-**Fuzzer** (`tests/own_fuzz.py`): five invalid kinds, `compound_target_stmt`, `append_target_stmt`,
+**Tests.** `tests/errors/call_targets.obx` has 45 cases: each form above, through a local, a mut
+parameter, a handle, a global, and an index target, and the holes just listed. `tests/run/
+call_targets.obx` runs the accepted forms, with outputs.
+
+**Mutants.** `tests/mutate_fork.py`: 67, all caught. They cover the root snapshot (the index check
+dropped for fields, elements and whole locals, and the index check narrowed to whole variables, which
+misses fields, elements and grids), the reference owner and its invalidation (`heldLost` for a
+reference root, and the `moved` check alone), the assignment and compound checks through a reference,
+the replace, append and truncate checks, and the touch count itself. Each one is caught by a named
+case. `tests/mutate_port.py`: 54, all caught with the memory budget temporarily at 1,777,000 (see
+"The port's memory budget" below); the port mutants change `src/obo.obo` and are judged by
+`port_compare`.
+
+**Fuzzer** (`tests/own_fuzz.py`): invalid kinds, `compound_target_stmt`, `append_target_stmt`,
 `truncate_target_stmt`, `index_target_stmt`, `index_assign_target_stmt`, each a field of a local
-record whose array a call in the same expression replaces; and five whole-local kinds,
-`moved_index_stmt`, `moved_assign_stmt`, `moved_append_stmt`, `moved_truncate_stmt`,
-`moved_replace_stmt`, each a local array passed by value to a call in the expression that uses it.
-All are rejected.
+record whose array a call in the same expression replaces; whole-local kinds, `moved_index_stmt`,
+`moved_assign_stmt`, `moved_append_stmt`, `moved_truncate_stmt`, `moved_replace_stmt`, each a local
+array passed by value to a call in the expression that uses it; and `moved_root_index_stmt`, a field's
+array indexed by a by-value call on its record. All are rejected.
 
 **Messages.** A reference invalidated in a loop and then continued past said "is moved inside
 the loop; it must have a value again before continue"; it now says it is invalidated and must be
@@ -407,10 +437,16 @@ changed elsewhere, so it is left.
 **The port.** It compiles unchanged under the new rules (no spot needed rewriting).
 
 **The port's memory budget is not raised on this branch.** `PEAK_BUDGET` stays at 1,351,000. The
-port compiling itself now peaks at 1,733,024 bytes live, so the memory check in `port_compare`
+port compiling itself now peaks at 1,739,088 bytes live, so the memory check in `port_compare`
 fails here. That is expected: the compiled compiler grew past 256 KiB, where `elfImage`'s output
 buffer doubles in one step, and main pre-sizes that image so the step no longer happens. The budget
 is re-measured after merging main.
+
+`mutate_port` judges each mutant by `port_compare`, so with the budget over the peak every mutant
+fails the memory check, and "caught" means nothing. Its runs for the mutant counts above used the
+budget at 1,777,000 (about 2% over the measured peak), temporarily, and the
+committed value was restored afterwards. The memory mutants (for example "parameters kept") are
+caught only by that budget, so they need a measured budget to be judged at all.
 
 ## Borrowing through a handle (done)
 

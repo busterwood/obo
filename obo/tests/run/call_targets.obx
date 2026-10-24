@@ -16,6 +16,11 @@ fn pick(mut a: &[]Item): int { append(a, mkItem(9)); return 1 }
 fn bumpTotal(): int { gtotal += 1; return 3 }
 fn eatItems(a: []Item): int { return 1 }        // takes an array by value: it moves it
 fn lastOf(a: &[]Item): int { return len(a) - 1 }
+type IBag = ref record { items: []Item }
+fn borrowBag(b: &IBag): int { return 0 }            // borrows the record: nothing is moved
+fn moveBag(b: IBag): int { return 0 }               // takes the record by value
+fn idxG(a: &[][]int): int { return 0 }
+fn rebuildArr(a: []Item): []Item { return new []Item(0) }
 
 fn main() {
     var a = new []Item(0)
@@ -50,4 +55,24 @@ fn main() {
     println(ys[pick(ys)].v)         // expect: 5
     // another array moved by a call in the index: the array indexed is not the one moved
     println(ys[eatItems(xs)].v)     // expect: 5
+    // a field's array indexed through a borrow of its record: nothing is moved
+    var bg = new IBag{items: new []Item(0)}
+    append(bg.items, mkItem(7))
+    println(bg.items[borrowBag(bg)].v)   // expect: 7
+    // the index is closed before a later operand moves the record
+    println(bg.items[0].v + moveBag(bg)) // expect: 7
+    // a reference to a whole array indexed by a pure borrow of it
+    var rs = new []Item(0)
+    append(rs, mkItem(3))
+    let rr = &rs
+    println(rr[lastOf(rs)].v)       // expect: 3
+    // a whole local array reassigned from a call that takes it by value: the owner is the target
+    rs = rebuildArr(rs)
+    println(len(rs))                // expect: 0
+    // a grid indexed in its inner index by a borrow of the grid
+    var grid = new [][]int(0)
+    var row = new []int(0)
+    append(row, 5)
+    append(grid, row)
+    println(grid[0][idxG(grid)])    // expect: 5
 }

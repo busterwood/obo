@@ -474,12 +474,15 @@ own expression:
   reached through a handle or a global, or is a reference parameter. This covers reads, assignment
   targets, `take`, and `&a[f()]`.
 
-A whole local array is checked for one thing only: a call that takes it by value moves it, and the
-callee frees it when the callee returns. So `xs[f(xs)]`, `append(xs, f(xs))`, `truncate(xs, f(xs))`
-and `replace(xs, f(xs))` are rejected when `f` takes `xs` by value, whatever `f` does otherwise. A call
-that only borrows `xs` (`&xs`) or passes it as a `mut` argument is accepted: a `mut` array parameter
-cannot be reassigned or replaced, so no such call can free the array's header. The fix is the same:
-compute the value, or the index, first.
+A call that takes a value by value moves it, and the callee frees it when the callee returns. So an
+index, `append`, `truncate`, `replace` or assignment that holds an array while such a call moves the
+local the array lives in is rejected, whatever the array's place: a whole local (`xs[f(xs)]`,
+`append(xs, f(xs))`, `truncate(xs, f(xs))`, `replace(xs, f(xs))`), a field (`b.items[f(b)]`), an
+element (`xs[0].kids[f(xs)]`), a row of a grid (`g[0][f(g)]`), or a reference to any of these
+(`let r = &xs; r[f(xs)]`), when `f` takes that local by value. A record literal that moves the record
+in an index (`b.items[g(new Holder{bg: b})]`) is refused too. A call that only borrows (`&`) or takes
+a `mut` argument is accepted: a `mut` array parameter cannot be reassigned, so no such call can free
+the array's header. The fix is the same: compute the value, or the index, first.
 
 ```obo
 // example: error: cannot index 'xs' with an index that moves it

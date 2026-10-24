@@ -150,8 +150,8 @@ MUTANTS = {
                                              "    if false {\n        // a field or element: the call could free the record or array it is in")],
     "handle assignment across calls allowed": [("    if x.viaHandle {\n        errorAt(\"cannot assign through a handle across a call",
                                                 "    if false {\n        errorAt(\"cannot assign through a handle across a call")],
-    "compound targets not checked": [("            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if !isInt(y.typ)",
-                                      "            pinned = savedPin\n            if !isInt(y.typ)")],
+    "compound targets not checked": [("            var y = expression()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n",
+                                      "            var y = expression()\n            pinned = savedPin\n")],
     "append targets not checked": [("        if name != \"substr\" && held && userCalls != callsBefore {",
                                     "        if name == \"truncate\" && held && userCalls != callsBefore {")],
     "truncate targets not checked": [("        if name != \"substr\" && held && userCalls != callsBefore {",
@@ -162,8 +162,8 @@ MUTANTS = {
     "held arrays ignore mut parameters": [("    return x.sym == nil || r.storage == \"global\" || r.isRef\n", "    return x.sym == nil || r.storage == \"global\"\n")],
     "indexes of mut parameters unchecked": [("            let wholeLocal = x.sym != nil && !(root != nil && (root.storage == \"global\" || root.isRef))",
                                              "            let wholeLocal = x.sym != nil && !(root != nil && root.storage == \"global\")")],
-    "index of a whole local not checked for moves": [("            if wholeLocal && xs0 != nil && touched(xs0) != touch0 {",
-                                                      "            if wholeLocal && xs0 != nil && false {")],
+    "index of a field, element or whole local not checked for moves": [("            if root != nil && heldLost(root, touch0) {",
+                                                                        "            if root != nil && false {")],
 }
 
 

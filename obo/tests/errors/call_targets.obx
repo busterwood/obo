@@ -23,6 +23,13 @@ fn eatN(a: []Node): int { return 0 }                 // takes a whole array by v
 fn eatNode(a: []Node): Node { return mk(3) }
 fn eatRes(a: []Node): []Node { return new []Node(0) }
 fn eatI(a: []int): int { return 0 }
+type Holder = ref record { bg: Bag }
+fn eatBag(b: Bag): int { return 0 }                 // takes a record by value: moves it
+fn eatNodeI(n: Node): int { return 0 }              // takes a node by value: moves it
+fn eatArrI(a: []Node): int { return 0 }             // takes an element's array by value: moves it
+fn eatG(a: [][]int): int { return 0 }               // takes a grid by value: moves it
+fn eatOB(b: OBag): int { return 0 }
+fn idxOf(h: Holder): int { return 0 }               // its argument is a record literal that moves a bag
 
 // === compound assignment to an element, the call replaces the array
 fn shrink(mut a: &[]Node): int { a[0] = mk(5); return 1 }
@@ -181,4 +188,143 @@ fn main() {
     append(a, mk(1))
     let old = replace(a, eatRes(a))   // error: cannot replace 'a' with a value that moves it
     println(len(old))
+}
+// === a field's array, read at an index that moves the record it is in (by value)
+fn main() {
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, mk(1))
+    println(b.items[eatBag(b)].v)     // error: cannot index 'b' with an index that moves it
+}
+// === a field's array, assigned at an index that moves the record it is in
+fn main() {
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, mk(1))
+    b.items[eatBag(b)] = mk(9)        // error: cannot index 'b' with an index that moves it
+}
+// === a field's array, compound assignment at an index that moves the record it is in
+fn main() {
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, mk(1))
+    b.items[eatBag(b)].v += 1         // error: cannot index 'b' with an index that moves it
+}
+// === a reference into a field's array, taken at an index that moves the record it is in
+fn main() {
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, mk(1))
+    let p = &b.items[eatBag(b)]       // error: cannot index 'b' with an index that moves it
+    println(p.v)
+}
+// === take of an optional element of a field's array, at an index that moves the record
+fn main() {
+    var o = new OBag{items: new []?Node(0)}
+    append(o.items, mk(1))
+    let t = take(o.items[eatOB(o)])   // error: cannot index 'o' with an index that moves it
+    println("done")
+}
+// === replace of an element of a field's array, at an index that moves the record it is in
+fn main() {
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, mk(1))
+    let old = replace(b.items[eatBag(b)], mk(7))   // error: cannot index 'b' with an index that moves it
+    println("done")
+}
+// === a for-range bound that reads a field's array at an index that moves the record
+fn main() {
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, mk(1))
+    for i in 0..b.items[eatBag(b)].v + 1 {   // error: cannot index 'b' with an index that moves it
+        println(i)
+    }
+}
+// === a nested record's array, indexed by a move of the record (by value)
+fn main() {
+    var n = mk(1)
+    append(n.kids, mk(2))
+    println(n.kids[eatNodeI(n)].v)    // error: cannot index 'n' with an index that moves it
+}
+// === an element's array, indexed by a move of the whole array the element is in
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    append(xs[0].kids, mk(5))
+    println(xs[0].kids[eatArrI(xs)].v)   // error: cannot index 'xs' with an index that moves it
+}
+// === a grid's inner index, where the outer array is moved by the index
+fn main() {
+    var g = new [][]int(0)
+    var row = new []int(0)
+    append(row, 5)
+    append(g, row)
+    println(g[0][eatG(g)])            // error: cannot index 'g' with an index that moves it
+}
+// === a field's array, indexed by a record literal that moves the record (no call moves it)
+fn main() {
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, mk(1))
+    println(b.items[idxOf(new Holder{bg: b})].v)   // error: cannot index 'b' with an index that moves it
+}
+// === a handle parameter's array, indexed by a by-value move of the handle
+fn useH(h: Bag): int {
+    return h.items[eatBag(h)].v       // error: cannot index 'h' with an index that moves it
+}
+fn main() {
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, mk(1))
+    println(useH(b))
+}
+// === a reference to a whole local array, indexed by a call that moves the array
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    let r = &xs
+    println(r[eatN(xs)].v)            // error: cannot index 'r' with an index that moves it
+}
+// === a reference to a field's array, indexed by a call that moves the record it is in
+fn main() {
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, mk(1))
+    let r = &b.items
+    println(r[eatBag(b)].v)           // error: cannot index 'r' with an index that moves it
+}
+// === a reference into a reference's array, taken at an index that moves the owner
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    let r = &xs
+    let q = &r[eatN(xs)]              // error: cannot index 'r' with an index that moves it
+    println(q.v)
+}
+// === a reference to an element's array, indexed by a move of the array the element is in
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    append(xs[0].kids, mk(5))
+    let r = &xs[0].kids
+    println(r[eatArrI(xs)].v)         // error: cannot index 'r' with an index that moves it
+}
+// === an assignment through a reference, whose value moves the array the reference borrows
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    append(xs, mk(2))
+    let r = &xs
+    r[0] = eatNode(xs)                // error: cannot assign through 'r' with a value that moves what it is in
+    println(r[0].v)
+}
+// === a reference through a handle, indexed by a move of a local the handle may name
+fn main() {
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, mk(1))
+    append(b.items, mk(2))
+    let h = handle(b)
+    let r = &h.items
+    println(r[eatBag(b)].v)           // error: cannot index 'r' with an index that moves it
+}
+// === a compound assignment through a reference, whose value moves the array the reference borrows
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    let r = &xs
+    r[0].v += eatArrI(xs)             // error: cannot assign through 'r' with a value that moves what it is in
+    println(r[0].v)
 }

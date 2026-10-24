@@ -402,6 +402,16 @@ class Gen:
             tail = [f"let o{n} = replace(v{n}, new []int(eatInts(v{n})))"]
         return self.invalid_stmt(head + tail)
 
+    def moved_root_index_stmt(self):
+        """A field's array, indexed by a call that takes the record it is in by value: the call
+        moves the record and frees its array under the index, so it is rejected. Nothing in the
+        call is impure (pureFn), so only the move of the record shows it."""
+        n = self.nrefs
+        self.nrefs += 1
+        self.extra_fn("fn eatBox(b: Box): int { return 0 }")
+        return self.invalid_stmt([f"var b{n} = new Box{{items: new []int(0)}}", f"append(b{n}.items, 1)",
+                                  f"println(b{n}.items[eatBox(b{n})])"])
+
     def moved_index_stmt(self):
         return self.moved_local_stmt('index')
 
@@ -1150,7 +1160,7 @@ class Gen:
                self.compound_target_stmt, self.append_target_stmt, self.truncate_target_stmt,
                self.index_target_stmt, self.index_assign_target_stmt,
                self.moved_index_stmt, self.moved_assign_stmt, self.moved_append_stmt,
-               self.moved_truncate_stmt, self.moved_replace_stmt]
+               self.moved_truncate_stmt, self.moved_replace_stmt, self.moved_root_index_stmt]
         s = ops[self.seed % len(ops)]()
         return s if s is not None else self.pick(ops)
 
