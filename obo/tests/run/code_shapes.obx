@@ -1,0 +1,43 @@
+// Code generation shapes: a function without locals loses its frame setup, which moves the
+// calls waiting for later functions; constants are pushed as imm8 or imm32 at their boundaries.
+
+// A waits for X (declared, not yet defined); B has no locals and sits between them
+fn x(n: int): int
+fn a(n: int): int { return x(n) + 1 }
+fn b(n: int): int { return n * 2 }
+fn x(n: int): int { return b(n) + 100 }
+
+// several waiting calls from one function, two zero-frame functions in between, and one with locals
+fn y(n: int): int
+fn z(n: int): int
+fn c(n: int): int { return y(n) + z(n) + y(n + 1) }
+fn d(n: int): int { return n + 1 }
+fn e(n: int): int {
+    let t = n * 3
+    return t - 1
+}
+fn f(): int { return 7 }
+fn y(n: int): int { return d(n) + f() }
+fn z(n: int): int { return e(n) + d(n) }
+
+// the function that waits has no locals and no parameters; the one waited for is defined last
+fn w(): int
+fn g(): int { return w() + w() }
+fn h(): int { return 5 }
+fn w(): int { return h() + 1 }
+
+fn show(p: int, q: int, r: int, s: int) { println(p, " ", q, " ", r, " ", s) }
+fn one(p: int) { println(p) }
+
+fn main() {
+    println(a(5))                            // expect: 111
+    println(c(1))                            // expect: 23
+    println(g())                             // expect: 12
+    show(127, 128, -128, -129)               // expect: 127 128 -128 -129
+    show(2147483647, -2147483648, 2147483648, -2147483649)   // expect: 2147483647 -2147483648 2147483648 -2147483649
+    show(0, 1, -1, 100000)                   // expect: 0 1 -1 100000
+    show(-2, -100, -32768, 4294967296)       // expect: -2 -100 -32768 4294967296
+    one(-129)                                // expect: -129
+    one(128)                                 // expect: 128
+    one(2147483647)                          // expect: 2147483647
+}

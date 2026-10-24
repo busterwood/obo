@@ -485,7 +485,7 @@ whose right-hand side calls a function that might free something:
 // example: error: cannot assign to a field or element across a call
 type Node = ref record { v: int; kids: []Node }
 
-fn replaceKids(mut n: &Node): Node {        // changes the array the target lives in
+fn replaceKids(mut n: &Node): Node {        // the body changes nothing: the error is from taking n as mut
     return new Node{v: 7, kids: new []Node(0)}
 }
 
@@ -514,6 +514,53 @@ fn main() {
     let fresh = replaceKids(n)
     n.kids[0] = fresh
     println(n.kids[0].v)
+}
+```
+
+The same rule covers every form that locates a target, or an array, before a call later in its
+own expression:
+
+- a compound assignment (`+=`, `-=`, `*=`) to a field, element, handle target or global field,
+  whose value calls a function that might free it;
+- `append`, `truncate` and `replace` whose array (or target) is a field, element, handle, global, or
+  reached through a reference parameter, when the value or count calls such a function;
+- an index whose index expression calls such a function, when the array is a field or element, is
+  reached through a handle or a global, or is a reference parameter. This covers reads, assignment
+  targets, `take`, and `&a[f()]`.
+
+A call that takes a value by value moves it, and the callee frees it when the callee returns. So an
+index, `append`, `truncate`, `replace` or assignment that holds an array while such a call moves the
+local the array lives in is rejected, whatever the array's place: a whole local (`xs[f(xs)]`,
+`append(xs, f(xs))`, `truncate(xs, f(xs))`, `replace(xs, f(xs))`), a field (`b.items[f(b)]`), an
+element (`xs[0].kids[f(xs)]`), a row of a grid (`g[0][f(g)]`), or a reference to any of these
+(`let r = &xs; r[f(xs)]`), when `f` takes that local by value. A record literal that moves the record
+in an index (`b.items[g(new Holder{bg: b})]`) is refused too. A call that only borrows (`&`) or takes
+a `mut` argument is accepted: a `mut` array parameter cannot be reassigned, so no such call can free
+the array's header. The fix is the same: compute the value, or the index, first.
+
+```obo
+// example: error: cannot index 'xs' with an index that moves it
+type Node = ref record { v: int; kids: []Node }
+fn eat(a: []Node): int { return 0 }     // takes the array by value: it is moved and freed
+fn main() {
+    var xs = new []Node(0)
+    append(xs, new Node{v: 1, kids: new []Node(0)})
+    println(xs[eat(xs)].v)
+}
+```
+
+```obo
+// example: error: cannot index a field, element or reference with an index that calls a function
+type Item = ref record { v: int; kids: []Item }
+type Bag = ref record { items: []Item }
+fn cut(mut b: &Bag): int {
+    b.items = new []Item(0)     // frees the array the index is taken from
+    return 0
+}
+fn main() {
+    var b = new Bag{items: new []Item(0)}
+    append(b.items, new Item{v: 1, kids: new []Item(0)})
+    println(b.items[cut(b)].v)  // error: the index is computed after the array is loaded
 }
 ```
 

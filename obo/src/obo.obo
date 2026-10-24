@@ -598,6 +598,17 @@ fn pop(r: int) {
     emit(0x58 + (r & 7))
 }
 
+// push imm8 or imm32, sign-extended to 64 bits
+fn pushI(v: int) {
+    if fits8(v) {
+        emit(0x6A)
+        emit(v)
+    } else {
+        emit(0x68)
+        emit32(v)
+    }
+}
+
 // jumps leave a zero rel32 and return its position for fix()
 fn jcc(cc: int): int {
     emit(0x0F)
@@ -693,7 +704,7 @@ fn emitHex(h: string) {
     }
 }
 
-// op OPC REG RM W BYTE IMM | movri R V | aluri O RM V | push R | pop R
+// op OPC REG RM W BYTE IMM | movri R V | aluri O RM V | push R | pushi V | pop R
 // | jcc CC T | jmp T | call T
 fn runEncoderLine(l: string) {
     let w = words(l)
@@ -723,6 +734,8 @@ fn runEncoderLine(l: string) {
         }
     } else if k == "push" {
         push(parseInt(w[1]))
+    } else if k == "pushi" {
+        pushI(parseInt(w[1]))
     } else if k == "pop" {
         pop(parseInt(w[1]))
     } else if k == "jcc" {
@@ -857,6 +870,7 @@ type Sym = ref record {
     line: int
     owned: bool               // a local holding an owned value
     moved: bool               // its value has been moved away
+    touches: int              // how many calls have moved it: a whole array's header is freed only by a move
     deferUse: bool            // a defer reads it, so it may not be moved
     isStr: bool               // a string local, holding one reference
     isRef: bool               // a reference: a parameter or local that borrows
@@ -1178,6 +1192,7 @@ var selfCalls = 0                 // calls a function makes to itself, so far
 var useSeq = 0                    // reads of references so far, numbered
 var fnBlock = 0
 var frame = 0
+var farCalls = new []int(0)       // where the current function's calls out of its body keep their rel32
 var inDefer = false
 var noreturn = false
 var initLink = 0
@@ -1309,6 +1324,7 @@ fn fixHere1(at: int) { fix(at, pc()) }
 
 fn callAbs(addr: int) {
     emit(0xE8)
+    append(farCalls, pc())
     emit32(addr - (CODE_BASE + pc() + 4))
 }
 
@@ -1578,24 +1594,38 @@ fn restoreRegs(saved: int) {
     setFree(saved)
 }
 
+var argConsts = new []int(0)      // rtCall's constant arguments: a call owns the part from its base up, so load() may re-enter
+
 // Calls a runtime routine with the C ABI; live registers, including the
-// arguments, are pushed first so the collector sees every pointer.
+// arguments, are pushed first so the collector sees every pointer. A constant
+// argument needs no register: it goes straight to its argument register.
 fn rtCall(slot: int, args: []?Item, ret: ^Type): Item {
-    let regs = new []int(0)
+    let regs = new []int(0)                 // -1 for a constant, which is in argConsts
+    let base = len(argConsts)
     let temps = new []bool(0)
     for ai in 0..len(args) {
         let a = take(args[ai])
         if a != nil {
             append(temps, a.strTemp && slot != RT_STR_DEC)    // dropping a string is its own drop
-            let la = load(a)
-            append(regs, la.r)
+            if a.mode == "const" && !a.strTemp {
+                append(regs, -1)
+                append(argConsts, a.val)
+                drop(a)
+            } else {
+                let la = load(a)
+                append(regs, la.r)
+                append(argConsts, 0)
+            }
         } else {
             drop(a)
         }
     }
     let saved = usedRegs()
     pushRegs(saved)
-    for i in 0..len(regs) { movRR(argReg(i), regs[i]) }
+    for i in 0..len(regs) {
+        if regs[i] < 0 { movRI(argReg(i), argConsts[base + i]) } else { movRR(argReg(i), regs[i]) }
+    }
+    truncate(argConsts, base)
     let pad = depth % 16
     if pad != 0 {
         aluRI(5, RSP, 8)
@@ -2045,6 +2075,7 @@ fn consume(mut x: &Item) {
         if pinned == s { error("cannot move '" + s.name + "' while assigning into it") }
         if s.deferUse { error("'" + s.name + "' is used by a defer and cannot be moved") }
         s.moved = true
+        s.touches = s.touches + 1
         invalidate(s, nil, true, "")                  // references into it now dangle
         return
     }
@@ -2423,8 +2454,9 @@ fn loopBindCheck(entry: &PState, back: &PState, useBefore: int, lv: ?^Sym, line:
 // the body treats the call as freeing anything, but the summary does not) or
 // only has a forward heading: then it is assumed to free anything.
 
-// a callee that cannot free anything: compiled, freeing no globals, and with
-// no mut parameters it could free through
+// a callee that frees no global and changes no mut argument: compiled, freeing no globals, and with
+// no mut parameters it could free through. An owned by-value parameter does not make it impure: the
+// caller's argument is a move, which consume() counts (touches), and the array checks see that.
 fn pureFn(f: ^Sym): bool {
     if f.addr < 0 || f == curFn || f.freesAll || len(f.freed) > 0 { return false }
     for i in 0..len(f.pmodes) {
@@ -2796,6 +2828,72 @@ fn typeDecl() {
     }
 }
 
+// A target located before a value that calls a function: the call could free what the
+// target is in, so the value is computed first. xs is the target's variable, if it is one
+// (a whole variable's place is fixed), r0 its root.
+fn checkTargetAcrossCall(x: &Item, xs: ?^Sym, r0: ?^Sym, callsBefore: int, line: int, col: int) {
+    if userCalls == callsBefore { return }
+    if x.viaHandle {
+        errorAt("cannot assign through a handle across a call: the call could free the object; compute the value first", line, col)
+    }
+    if x.deref && r0 != nil && r0.storage == "global" && isOwned(symType(r0)) {
+        errorAt("cannot assign through global '" + r0.name + "' across a call: the call could free what it points into", line, col)
+    }
+    if xs == nil {
+        // a field or element: the call could free the record or array it is in
+        errorAt("cannot assign to a field or element across a call: the call could free what it is in; compute the value first", line, col)
+    }
+}
+
+// An array operand whose array a call might free while it is held: one reached through a
+// field, element, handle, global or reference. A whole local array is not held here: a by-value call
+// that could free its header moves it, which heldLost sees where the array is held across a call (an
+// index, append, truncate or replace). A mut argument cannot replace the header.
+fn heldArray(x: &Item): bool {
+    if x.viaHandle { return true }
+    let r = x.root
+    if r == nil { return false }
+    return x.sym == nil || r.storage == "global" || r.isRef
+}
+
+// how many calls have moved the local s so far: a whole local array's header is freed only by
+// a call that takes it by value, so an operand that holds the header must see this unchanged
+fn touched(s: ?^Sym): int {
+    if s == nil { return 0 }
+    return s.touches
+}
+
+// the owned local whose move frees the array that a designator rooted at root holds: root itself,
+// or for a reference, the local it borrows from. Nil through a handle (no local owns that object),
+// and for a reference parameter, whose owner is in the caller.
+// A reference may borrow from several owners on different paths (its binding's roots), so the touches of
+// all of them are summed: a sum only grows, so a change of it is a move of one of them.
+fn ownerTouch(root: ?^Sym): int {
+    if root == nil { return 0 }
+    let r = root
+    if !r.isRef { return touched(r) }
+    if !r.isRefLocal { return 0 }
+    var t = 0
+    let b = r.bind
+    for i in 0..len(b.roots) {
+        let o = b.roots[i]
+        if o != handleSym && !o.isRef { t += touched(o) }
+    }
+    return t
+}
+
+// snapshot taken before a value or index runs while the array under root is held
+fn heldTouch(root: ?^Sym): int { return ownerTouch(root) }
+
+// the array held under root may have been freed while a value or index ran: its owner was moved (a
+// by-value call takes the whole object, and nothing in a call's argument list is counted by pureFn),
+// or root is a reference that a move or a change invalidated. Compare with heldTouch taken before.
+fn heldLost(root: ?^Sym, t0: int): bool {
+    if root == nil { return false }
+    if root.isRefLocal && root.moved { return true }
+    return ownerTouch(root) != t0
+}
+
 fn checkAssign(dst: ^Type, x: &Item, what: string) {
     if x.typ == tVoid { error(what + ": expression has no value") }
     if dst.kind == "byte" && x.mode == "const" && x.typ.kind == "int" && x.val >= 0 && x.val <= 255 { return }
@@ -2855,9 +2953,15 @@ fn callFn(f: ^Sym): Item {
         } else {
             consume(a)
         }
-        let r = load(a)
-        pushR(r.r)
-        release(r.r)
+        if a.mode == "const" && fits32(a.val) {
+            pushI(a.val)                           // no register needed
+            depth += 8
+            drop(a)
+        } else {
+            let r = load(a)
+            pushR(r.r)
+            release(r.r)
+        }
     }
     if sym != T_RPAREN { error(f.name + " takes " + string(n) + " argument(s), not more") }
     expect(T_RPAREN, "")
@@ -2925,6 +3029,7 @@ fn callFn(f: ^Sym): Item {
     let at = pc() - 4
     if f.addr >= 0 {
         fix(at, f.addr)
+        append(farCalls, at)
     } else {
         append(f.fixups, at)
     }
@@ -3063,12 +3168,16 @@ fn builtin(name: string): Item {
         expect(T_COMMA, "")
         let callsBefore = userCalls
         let savedPin = pinned
+        let touch0 = heldTouch(tr)
         if x.deref && tr != nil && tr.storage == "local" { pinned = tr }
         var v = expression()
         pinned = savedPin
         expect(T_RPAREN, "")
-        if (x.viaHandle || (x.deref && tr != nil && tr.storage == "global")) && userCalls != callsBefore {
-            error("replace through a handle or global cannot have a value that calls a function that might free")
+        if (x.viaHandle || x.sym == nil) && userCalls != callsBefore {
+            error("replace through a handle, a field or an element cannot have a value that calls a function that might free; compute the value first")
+        }
+        if tr != nil && heldLost(tr, touch0) {
+            error("cannot replace '" + tr.name + "' with a value that moves it: the call could free the array it gives back; compute the value first")
         }
         checkAssign(x.typ, v, "replacement value")
         consume(v)
@@ -3172,9 +3281,30 @@ fn builtin(name: string): Item {
                 if owned || !throughHandle(a) { recordFreeChange(a) }   // a scalar array frees nothing
             }
         }
+        // the array is located before the value or count runs: a call there could free it
+        let held = heldArray(a)
+        let aDeref = a.deref
+        let r0 = a.root
         a = pinStr(a)
         expect(T_COMMA, "")
+        let callsBefore = userCalls
+        let touch0 = heldTouch(r0)
+        let savedPin = pinned
+        if name != "substr" && aDeref && r0 != nil && r0.storage == "local" { pinned = r0 }
         var b = expression()
+        pinned = savedPin
+        if name != "substr" && held && userCalls != callsBefore {
+            if name == "append" {
+                errorAt("cannot append to a field, element, handle or global across a call: the call could free the array it is in; compute the value first", line, 0)
+            }
+            errorAt("cannot truncate a field, element, handle or global across a call: the call could free the array it is in; compute the value first", line, 0)
+        }
+        if name != "substr" && r0 != nil && heldLost(r0, touch0) {
+            if name == "append" {
+                errorAt("cannot append to '" + r0.name + "' with a value that moves it: the call could free the array it is in; compute the value first", line, 0)
+            }
+            errorAt("cannot truncate '" + r0.name + "' with a count that moves it: the call could free the array it is in; compute the count first", line, 0)
+        }
         if name == "append" {
             checkAssign(baseOf(a.typ), b, "appended value")
             consume(b)
@@ -3349,6 +3479,11 @@ fn designatorT(target: bool): Item {
             let callsBefore = userCalls
             if kind != "array" && kind != "string" { error(tname(x.typ) + " cannot be indexed") }
             let elem = baseOf(x.typ)
+            // the array's address is loaded before the index runs: a call there could free it. A
+            // by-value call moves the owner of the root (any array in it, at any depth), which
+            // heldLost sees; a call that only borrows, or takes a mut argument, cannot free it.
+            let wholeLocal = x.sym != nil && !(root != nil && (root.storage == "global" || root.isRef))
+            let touch0 = heldTouch(root)
             let a = load(x)
             let i0 = expression()
             if !isInt(i0.typ) { error("array index must be int") }
@@ -3357,6 +3492,12 @@ fn designatorT(target: bool): Item {
             }
             if root != nil && root.storage == "global" && userCalls != callsBefore {
                 error("cannot index through global '" + root.name + "' with an index that calls a function: the call could free it")
+            }
+            if !wholeLocal && userCalls != callsBefore {
+                error("cannot index a field, element or reference with an index that calls a function: the call could free the array it is in; compute the index first")
+            }
+            if root != nil && heldLost(root, touch0) {
+                error("cannot index '" + root.name + "' with an index that moves it: the call could free its array; compute the index first")
             }
             var seg = "/[]"
             if i0.mode == "const" { seg = "/[" + string(i0.val) + "]" }
@@ -4025,20 +4166,15 @@ fn assignmentOrCall(): bool {
             let callsBefore = userCalls
             let savedPin = pinned
             let r0 = x.root
+            let touch0 = heldTouch(r0)
             if x.deref && r0 != nil && r0.storage == "local" { pinned = r0 }
             let y = expression()
             pinned = savedPin
             checkAssign(dtype, y, "assignment")
             consume(y)
-            if x.viaHandle && userCalls != callsBefore {
-                errorAt("cannot assign through a handle across a call: the call could free the object; compute the value first", line, col)
-            }
-            if x.deref && r0 != nil && r0.storage == "global" && isOwned(symType(r0)) && userCalls != callsBefore {
-                errorAt("cannot assign through global '" + r0.name + "' across a call: the call could free what it points into", line, col)
-            }
-            if xs == nil && userCalls != callsBefore {
-                // a field or element: the call could free the record or array it is in
-                errorAt("cannot assign to a field or element across a call: the call could free what it is in; compute the value first", line, col)
+            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)
+            if x.deref && r0 != nil && heldLost(r0, touch0) {
+                errorAt("cannot assign through '" + r0.name + "' with a value that moves what it is in: the call could free it; compute the value first", line, col)
             }
             if xs != nil && xs.storage == "local" && !assignable(x.typ, y.typ) { widen(xs) }
             if isOwned(dtype) {
@@ -4071,7 +4207,17 @@ fn assignmentOrCall(): bool {
             store(x, y)
         } else {
             if dtype.kind != "int" { error("'" + tokName(o) + "' needs an int") }
+            let callsBefore = userCalls
+            let savedPin = pinned
+            let r0 = x.root
+            let touch0 = heldTouch(r0)
+            if x.deref && r0 != nil && r0.storage == "local" { pinned = r0 }
             var y = expression()
+            pinned = savedPin
+            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)
+            if x.deref && r0 != nil && heldLost(r0, touch0) {
+                errorAt("cannot assign through '" + r0.name + "' with a value that moves what it is in: the call could free it; compute the value first", line, col)
+            }
             if !isInt(y.typ) { error("'" + tokName(o) + "' needs an int") }
             if !same(dtype, tInt) { error("'" + tokName(o) + "' needs an int") }
             resolve(x)
@@ -4759,6 +4905,9 @@ fn statement(): bool {
             }
             let d = stateDiff(loop.entry, st)
             if d != nil {
+                if d.isRefLocal {
+                    error("'" + d.name + "' is invalidated inside the loop; point it again before " + tokName(k))
+                }
                 error("'" + d.name + "' is moved inside the loop; it must have a value again before " + tokName(k))
             }
             let downTo = loop.blocks
@@ -4790,6 +4939,25 @@ fn statement(): bool {
 }
 
 // =========================================================== declarations
+
+// A function with no locals needs no 'sub rsp': its seven bytes, which end with the
+// frame size at 'at', are cut out and the body after them moves back. Jumps within the
+// body are relative and move with it. A call out of it (farCalls) is now 7 bytes further
+// from its target, and a call waiting for a later function has moved in its fixups.
+fn dropFrame(at: int) {
+    for i in at + 4..len(code) { code[i - 7] = code[i] }
+    truncate(code, len(code) - 7)
+    let calls = &farCalls
+    for p in calls { putRel(p - 7, getRel(p - 7) + 7) }
+    let gs = &globals
+    for g in gs {
+        if g.kind == "fn" && g.addr < 0 {
+            for fi in 0..len(g.fixups) {
+                if g.fixups[fi] > at { g.fixups[fi] -= 7 }
+            }
+        }
+    }
+}
 
 type Param = ref record {
     name: string
@@ -4859,6 +5027,7 @@ fn fnDecl() {
     pendLine = 0
     frame = 0
     depth = 0
+    truncate(farCalls, 0)
     emit(0x55)
     emit(0x48)
     emit(0x89)
@@ -4896,10 +5065,14 @@ fn fnDecl() {
     closeBlock(term)
     if !term { epilogue() }
     let size = (frame + 15) & ~15
-    code[frameAt] = byte(size)
-    code[frameAt + 1] = byte(size >> 8)
-    code[frameAt + 2] = byte(size >> 16)
-    code[frameAt + 3] = byte(size >> 24)
+    if size == 0 {
+        dropFrame(frameAt)
+    } else {
+        code[frameAt] = byte(size)
+        code[frameAt + 1] = byte(size >> 8)
+        code[frameAt + 2] = byte(size >> 16)
+        code[frameAt + 3] = byte(size >> 24)
+    }
     if pendLine > 0 && f.writesHandles { errorAt(pendMsg, pendLine, pendCol) }
     pendLine = 0
     curFn = nil

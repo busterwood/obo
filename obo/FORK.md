@@ -226,8 +226,19 @@ making ownership the language's memory model is strong.
 test, `python3 obo/tests/port_compare.py`, builds it with obo and compiles every
 fork and mainline program, example, benchmark and error case with both, requiring
 byte-identical executables and identical error messages, with the leak check on
-in the port: 329 of 329 identical. The port compiling itself is a fixed point
+in the port: 448 of 448 behave the same on the merged branch. The port compiling itself is a fixed point
 (obo builds p1 from the port, p1 builds p2, p2 builds p3; p1 = p2 = p3).
+
+**Now behavioural** (decided with the optimization plan, below): each case must have the
+same compile outcome in both (success, or the same message at the same line:col), and a
+program that compiles must, when run with `OBO_CHECK=1` and a scratch directory as its
+argument, give the same exit code, stdout and stderr. The executables' bytes may differ.
+Stage B does not compare files a program writes into its scratch directory; a timeout on
+both sides counts as agreement; and the compiler's own byte identity (stage 2 against stage 3)
+is checked by `make promote`, not here.
+The fixed point still compares bytes (`make promote`: stage 2 = stage 3). The reference is
+`./obo`; `OBO_REF=seed/obo` compares against the seed instead, which is the comparison
+that sees a change in code generation before it is promoted.
 
 **Memory, first measurement.** The decisive comparison: the same compiler logic
 compiling the same source (the port's own) to the same bytes, once on the GC
@@ -259,7 +270,8 @@ itself exceeds `PEAK_BUDGET` (about 3% over the measured figure; patch
 reason recorded here.
 
 **Budget raised, 1,305,000 to 1,351,000** (measured live peak 1,311,184 bytes, about 3% over).
-The allocation work has since lowered the live peak to 1,045,392 bytes; the budget is unchanged.
+The allocation work has since lowered the live peak to 1,045,392 bytes (before Phase 1, which
+raised it to about 1,079,400); the budget is unchanged.
 The reason: soundness fixes need per-path state for suspect references. The state at each join
 now carries every local's suspicion (see "Deep references" below), which added 10,432 bytes.
 More is coming: per-path reference bindings need the same kind of state. The allocation work
@@ -318,15 +330,144 @@ removed: it is now allowed. Mutants: 7 new (changes reaching too few roots, too
 many, calls checking too little or too much), 2 stale ones retargeted; 48 of 48
 caught. Stage B: 340 of 340 identical, within the memory budget, fixed point holds.
 
-**Open: assignment targets across calls.** Found while checking whether anything
-else assumed disjoint parameters, and independent of aliasing: the target's address
-is computed before the right-hand side runs, so a call there can free the target.
+**Assignment targets across calls (closed; see "Assignment targets: every form" below).**
+Found while checking whether anything else assumed disjoint parameters, and independent of
+aliasing: the target's address is computed before the right-hand side runs, so a call there
+can free the target.
 
     b.items[0].next = h(b)       // h(mut b: &Box) replaces b.items: writes into freed memory
 
-Today `pinned` only stops the target's root being moved. Both this and the variant
-through a reference local (`let e = &b.items[0]; e.next = h(b)`) compile; the leak
-check catches them at run time only by luck. Next step.
+## Assignment targets: every form (done)
+
+**Holes.** The check was made only for plain `=`. Three more red-team passes found the same
+hole in every other form that locates a target, or an array, before a later call in its own
+expression, all accepted:
+
+- compound `+=`, `-=`, `*=`: `a[0].v += rep(a)` (use after free), through a handle
+  (`h.v += grow(n)`, double free), a mut parameter, and a global field;
+- `append`, `truncate`, `replace` whose array or target is a field or element, a handle
+  temporary or handle, or a global: `append(a[0].kids, shrink(a))` (segfault),
+  `truncate(b.items, mk(b))`, `replace(a[0].kids, rep(a))` (double free),
+  `append(G.items, mk())`, `append(h.items, cut(h))`, and `append(garr, bumpArr())` on a
+  whole global array;
+- an index with a call in it: `b.items[mk(b)].v` (a read of a freed header: "index out of
+  range" instead of the element), `b.items[mk(b)] = v`, `replace(b.items[mk(b)], ...)`,
+  `take(b.items[mk(b)])`, `let r = &b.items[mk(b)]`, and the same through a mut array
+  parameter. The index form is the one a call replaces the array in: the array's header is
+  loaded into a register before the index runs.
+
+**Rule, as implemented** (`src/obo.obo`):
+
+- "Pure" here is `pureFn`: a callee that is compiled, frees no global, and takes no `mut` argument.
+  A by-value owned parameter does not make a callee impure. The callee frees the object it is given,
+  but the caller's argument is a move: `consume` counts it on the local (`touches`), and the checks
+  below see that count change. So `eat(xs)` with `fn eat(a: []int)` is pure, and it is refused
+  wherever `xs` is held across the call.
+- `checkTargetAcrossCall` is the check `=` already made, now shared with compound assignment. It
+  applies when the target is reached through a handle, through a global, or is a field or element
+  (`xs == nil`), and a non-pure call ran while the value was computed.
+- `ownerTouch(root)` is the sum of `touches` over the owned locals whose move frees the array that a
+  designator holds: the root itself, or for a reference, every local in its binding's roots (the
+  per-path binding of the reference, see section 4). A `^` handle (`handleSym`) and a reference
+  parameter (whose owner is in the caller) contribute nothing. A binding's roots are stable between
+  the snapshot and the check, and `touches` only grows, so a sum changes exactly when one of them moved.
+  (Merge decision: `main`'s `ownerOf` read `refRoot`, which the per-path binding replaced. Taking the sum
+  keeps `main`'s rule, a move of any owner the reference may point into is refused.)
+- `heldTouch(root)` is `ownerTouch(root)` taken before the call, and `heldLost(root, t0)` reports that an
+  owner was moved since (`ownerTouch(root) != t0`), or that `root` is a reference that a move or a change invalidated (`moved`).
+  Both are taken for the root of the designator, so a field, an element, a multi-dimensional path, a
+  record literal, or a reference is checked the same way as a whole local.
+- The index check in `designatorT` snapshots before the array is loaded and compares after the index.
+  A non-pure call in the index is still refused when the array is not a whole local (as before).
+  `heldLost` refuses an index that moves the owner or invalidates a reference root.
+- `append`, `truncate` and `replace` take the same snapshot of the operand's root before the value
+  runs. An assignment (`=` or compound) whose target is reached through a field, an element or a
+  reference (`x.deref`) does too, after the value is consumed. A whole local assigned directly
+  (`xs = eat(xs)`) is not checked: the statement stores a new value into the variable after the call.
+- `pinned` (a move of the root while it is assigned into) and `heldArray` (the call-count rule for
+  `append` and `truncate`) are as before.
+- A `mut` argument is not a move: a `mut` array parameter is read-only, so no call can reassign or
+  replace its header. A `mut` argument does invalidate references into it, as before.
+- The messages say "compute the value first" (or "compute the index first").
+
+**Accepted, unchanged:** a pure call beside a field; a compound on a whole global scalar
+(`gtotal += f()`); a whole local array with a call beside it that only borrows it or takes it
+`mut` (`xs[g(xs)]` with `g(xs: &[]T)`, `xs[h(xs)]` with `h(mut xs: &[]T)`, `append(xs, h(xs))`); a
+borrowed field indexed by `&`-taking call (`b.items[g(b)]` with `g(b: &Bag)`), a grid indexed by a
+borrow of itself (`g[0][h(g)]` with `h(a: &[][]int)`), a reference indexed by a pure call that
+borrows its owner (`r[lastOf(xs)]`); a move in a later operand, after the index is closed
+(`b.items[0].v + eat(b)`); a call that moves a different array in an index (`ys[eat(xs)]`); a
+for-range bound that moves a whole local array (no array is held there); a whole local array
+reassigned from a call that takes it by value (`xs = f(xs)`); and the call-first form of each.
+
+**Refused, a move of the owner while the array is held:** where `eat` takes its argument by value,
+and the array or its root is held across the call:
+
+- a whole local: `xs[eat(xs)]`, `xs[eat(xs)] = v`, `&xs[eat(xs)]`, `append(xs, eat(xs))`,
+  `truncate(xs, eat(xs))`, `replace(xs, eat(xs))`, and a for-range bound that does the same;
+- a field's array of a local record `b`: `b.items[eat(b)]` as a read, an assignment, a compound
+  assignment, `&b.items[eat(b)]`, `take(...)`, `replace(b.items[eat(b)], v)` and a for-range bound;
+  a record literal that moves `b` in the index (`b.items[idx(new Holder{bg: b})]`, with no call that
+  moves `b` otherwise);
+- a nested record's array: `n.kids[eat(n)]`; an element's array: `xs[0].kids[eat(xs)]`; a grid's
+  inner index: `g[0][eat(g)]`;
+- a record parameter's array, the parameter passed by value: `h.items[eat(h)]` with `h: Bag`;
+- a reference, whether to a whole local (`let r = &xs; r[eat(xs)]`), to a field's array
+  (`let r = &b.items; r[eat(b)]`), to an element's array (`let r = &xs[0].kids; r[eat(xs)]`), or
+  a reference into a reference's index (`let q = &r[eat(xs)]`); a reference through a `^` handle
+  indexed by a move of a local the handle may name (`let r = &h.items; r[eat(b)]`);
+- a plain or compound assignment through a reference whose value moves the array it borrows
+  (`r[0] = eat(xs)`, `r[0].v += eat(xs)`).
+
+Before this change the field, element, grid, literal, reference and handle forms, and the plain and
+compound assignments through a reference, compiled, and read or wrote a freed header (exit 3 or a
+segfault in the probes that were run).
+
+**Tests.** `tests/errors/call_targets.obx` has 45 cases: each form above, through a local, a mut
+parameter, a handle, a global, and an index target, and the holes just listed. `tests/run/
+call_targets.obx` runs the accepted forms, with outputs.
+
+**Mutants.** `tests/mutate_fork.py`: 67, all caught. They cover the root snapshot (the index check
+dropped for fields, elements and whole locals, and the index check narrowed to whole variables, which
+misses fields, elements and grids), the reference owner and its invalidation (`heldLost` for a
+reference root, and the `moved` check alone), the assignment and compound checks through a reference,
+the replace, append and truncate checks, and the touch count itself. Each one is caught by a named
+case. `tests/mutate_port.py`: 68 after the merge (54 from this change, 14 from main), all caught at
+the committed budget of 1,351,000 (see "The port's memory budget" below); the port mutants change
+`src/obo.obo` and are judged by `port_compare`.
+
+**Fuzzer** (`tests/own_fuzz.py`): invalid kinds, `compound_target_stmt`, `append_target_stmt`,
+`truncate_target_stmt`, `index_target_stmt`, `index_assign_target_stmt`, each a field of a local
+record whose array a call in the same expression replaces; whole-local kinds, `moved_index_stmt`,
+`moved_assign_stmt`, `moved_append_stmt`, `moved_truncate_stmt`, `moved_replace_stmt`, each a local
+array passed by value to a call in the expression that uses it; and `moved_root_index_stmt`, a field's
+array indexed by a by-value call on its record. All are rejected.
+
+**Messages.** A reference invalidated in a loop and then continued past said "is moved inside
+the loop; it must have a value again before continue"; it now says it is invalidated and must be
+pointed again. Not done: "'p' is invalidated on one path but not another" is still reported for
+a reference that is never used afterwards (`red2/n12.obo`). A reference invalid on one path and
+never used again is harmless, so the report should come only at a use, but that needs the join
+state to keep the flag on both paths rather than an error at the join, and the joins are being
+changed elsewhere, so it is left.
+
+**The port.** It compiles unchanged under the new rules (no spot needed rewriting).
+
+**The port's memory budget, after the merge of main.** `PEAK_BUDGET` stays at 1,351,000, and the
+merged port passes it. The port compiling itself peaks at 1,097,776 bytes live, 253,224 bytes under
+the budget. Before the merge the branch's base lacked main's allocation work (step 4), and the same
+check failed at 1,739,088 bytes; the merge brought in that work and the check passes.
+
+This branch's compiler changes add 18,272 bytes to the peak: main's source measures about 1,079,400 bytes
+with the same method, and this branch's source 1,097,776. (The figure moves by about 150 bytes
+with the paths on the command line.) The cause was not separated out (the
+branch changes about 70 lines of the compiler source); it is small against the margin.
+
+`mutate_port` judges each mutant by `port_compare`, so with the budget over the peak every mutant
+fails the memory check and "caught" means nothing. Before the merge the runs used a temporary budget
+of 1,777,000, which was not committed; the merged run needs no change, and all 68 mutants are caught
+at the committed budget. The memory mutants (for example "parameters kept") are caught only by the
+budget, so the mutate_port result is meaningful only while the budget passes.
 
 ## Borrowing through a handle (done)
 
@@ -529,7 +670,8 @@ rules above. All four are fixed.
 - A deferred recursive call (a false positive, `j/OK_N`). The body of a `defer` is compiled
   where the statement is, but runs where its block ends. `deferStat` takes back the suspicion its
   body's self-call made (`suspects`, `restoreSuspects`) and sets `Block.selfDefer`; `callDefers`
-  applies it at each exit from the block (`markSuspects`). A read in the block before its end is
+  applies it at each exit from the block (`markSuspects`). (Superseded: `selfDefer` was removed, see the
+  follow-up below; the same suspicion is now a logged free replayed at the exit.) A read in the block before its end is
   accepted, and a read after the block is rejected. `break` and `continue` record their
   suspicion after `runDefers`, so a deferred call's suspicion reaches the loop's states.
 - The loop variable of a for walk is rebound each iteration, so its suspicion is not carried
@@ -789,7 +931,21 @@ the review gave them. The rules are in `LANGUAGE.md` sections 4 and 10.
   `deferHandleChild`, `loopContChild`, `mutArgOk`. Mutants in `tests/mutate_fork.py`: a mut argument
   is not a write, an append is not a write, a deferred change or deep change replayed without its
   reference, a deferred change not replayed, and a logged free that ignores its reference. 69 of 69 are
-  caught.
+  caught before the merge with `main`; 85 of 85 after it (`main`'s mutants included).
+
+**Merge with `main` (8e3eb92).** The conflicts were in `src/obo.obo` (`callFn`, `designatorT`, `assignmentOrCall`,
+`consume`), `tests/mutate_port.py`, `tests/mutate_fork.py`, `tests/own_fuzz.py`, and the docs. Both rules are kept.
+Decisions that were not a choice between the two rules:
+- `ownerOf` (`main`, reads `refRoot`) became `ownerTouch` (see the paragraph on targets across calls above).
+- The mutant "deferred self-call not applied at block close" was dropped from `mutate_port.py`: its anchor
+  (`selfDefer`) no longer exists. The mutant "reference roots not checked for moves or invalidation" was
+  retargeted to `ownerTouch`.
+- `own_fuzz.py` runs both sets of operations (my `branch_free_stmt` and `main`'s target and move kinds).
+- `break` and `continue` in a loop now report "is invalidated inside the loop" for a reference and "is moved"
+  for an owned local. This is `main`'s wording, and the same probes are rejected as before.
+Measured after the merge: `run_fork` 325 of 325, `port_test` 415 of 415, `port_compare` 476 of 476 with a peak of
+1,161,072 bytes (budget 1,351,000), `own_fuzz --count 600` with 0 failures in 1200 programs, `mutate_fork` 85 of 85,
+`mutate_port` 73 of 73, `doc_check` 24 examples with no problems, `bench/bench.py` run for all four workloads.
 
 **Open after this follow-up** (accepted by the seed too; each reads freed memory when run):
 - H-3, a defer body reading a reference that is re-pointed after the defer statement (`mk/defer_repointed_later.obx`:
@@ -847,7 +1003,7 @@ the review gave them. The rules are in `LANGUAGE.md` sections 4 and 10.
 
 ## Optimization plan
 
-Status: Phase 0 done; Phases 1 to 4 planned, not started. Phases are ordered by expected value per unit of cost.
+Status: Phase 0 done; Phase 1 done except loop inversion (designed below, deferred); Phases 2 and 3 planned. Phases are ordered by expected value per unit of cost.
 Each has a gate; a phase that misses its gate is recorded here and stopped.
 
 **Baseline.** A loop `s = s + i * 2` over `i < n` compiles with every local in a stack
@@ -929,7 +1085,113 @@ assumed. Phase 2's measured gain will show whether it is.
 - **Immediate and push forms.** `push imm` instead of `mov` then `push`.
 
 *Gate:* the suite passes, benchmarks do not regress, and the byte-identity check
-below is handled (see open decisions).
+below is handled (done: Stage B compares behaviour, see open decisions).
+
+**Done** (patch `tools/port_cheap_codegen.py`), except loop inversion:
+
+- **Static stack depth** was already tracked: `depth` counts every push, pad and
+  return address, and `rtCall` and `callFn` pad only when the depth is misaligned. The pads
+  that remain (2,685 in the port's own code) are needed: they come from the registers
+  pushed around runtime calls, the arguments among them, and from odd argument counts.
+  Fewer would need a different call sequence, for example not pushing rbx and r12 to r15
+  around runtime calls (the C runtime preserves them, and obo has no collector to scan
+  them); that is a separate decision.
+- **No `sub rsp,0x0`.** The frame size is known only after the body, so for a function
+  without locals the 7 bytes are cut out then and the body moves back (`dropFrame`). Jumps
+  within the body are relative and move with it; calls out of it, to the runtime or to
+  functions already compiled, are recorded in `farCalls` and adjusted, and calls waiting for
+  a later function are moved in its `fixups`. Nothing else holds a position in a finished
+  body.
+- **`push imm`** for a constant argument of an obo call (`6A ib` or `68 id`).
+- **Constants straight to argument registers** for runtime calls: `mov edi,imm` instead
+  of loading a pool register, pushing it around the call, copying it and popping it. With
+  one push fewer, the pad usually goes as well: allocating a record went from 7
+  instructions to 2.
+
+Measured with the four Phase 0 workloads, each built by a compiler at each step and the
+runs interleaved (31 per build; median, range in brackets). The loop's executable is the
+same at every step, so its column shows the noise, about 1%; alloc's range is wide on
+WSL. The last row counts the instructions of the port's own source (as at 59c7701)
+compiled by each step.
+
+| Benchmark | Baseline (seed) | + push imm | + constant runtime arguments | + no `sub rsp,0x0` |
+|---|---|---|---|---|
+| loop | 564 ms (554-635), 36 instr | 566 (551-609), 36 | 567 (553-618), 36 | 566 (557-705), 36 |
+| fib | 613 ms (602-655), 57 instr | 613 (596-651), 56 | 614 (602-650), 56 | 602 (590-655), 54 |
+| array | 403 ms (391-462), 105 instr | 402 (389-454), 105 | 405 (393-446), 99 | 402 (393-477), 99 |
+| alloc | 473 ms (426-907), 56 instr | 480 (432-918), 56 | 482 (447-1530), 51 | 474 (459-528), 51 |
+| port's code | 44,983 instr | 44,130 | 40,723 | 40,638 |
+
+The port's code is 9.7% fewer instructions (258,784 to 246,496 bytes of executable), and
+it compiles itself in 29 to 30 ms against 30 to 31 ms, within noise. fib, where every call
+ran a `sub rsp,0x0`, is 2% faster; the other times did not change. No step regressed.
+
+Memory: compiling itself, the port allocates 12,057,056 bytes in total (through `tests/port_compare.py`), down from 12,266,272
+(fewer loads mean fewer Items; the constants are kept in one array, `argConsts`, since an
+array per runtime call added 315 KB). Its live peak rose from 1,045,392 to 1,079,424 bytes,
+within the budget of 1,351,000, because the peak moved: with less code to hold, the image
+phase at the end is no longer the highest point. The highest is now the moment the code
+buffer grows from 128 KB to 256 KB and both are live, partway through the source (measured
+with a runtime that records the block allocated at the peak: 262,176 bytes, against 544 at
+the end before).
+
+Mutants (`tests/mutate_port.py`), all caught: the pad dropped at a misaligned runtime call
+and at a misaligned obo call, and a `push imm` not counted in the depth (each trapped by the
+runtime's alignment check, exit 4, in the behavioural comparison); `push imm8` used for a
+value that needs imm32 (caught by the objdump cross-check, below); a constant runtime
+argument lost; and for the dropped frame, calls out of the body not adjusted, calls waiting
+for a later function not moved, calls to compiled functions not recorded, and a frame
+dropped although there are locals.
+
+Gaps closed after review: `tests/run/code_shapes.obx` has pending forward calls from
+functions before and after zero-frame ones (several calls, with and without locals or
+parameters), and constants at the push imm boundaries (127, 128, -128, -129, 2^31-1, -2^31,
+2^31, -2^31-1 and others). It catches, through Stage B alone, a shift of every waiting call
+(`> at` replaced by `>= 0`, or by no test), `fits8` with `<= 128` or from -129, and an imm32
+masked to 31 bits. `argConsts` is shared by `rtCall` calls, so each call now owns the part
+from its base index up and truncates back to it, which makes a re-entry from `load()`
+harmless (chosen over a guard or a local array, which allocates per call). One mutant is
+equivalent: dropping `!a.strTemp` from the constant path of `rtCall` changes nothing, since
+a constant never has `strTemp` set, so the guard is defensive and left in.
+
+**The encoder against objdump.** obo's encoder had no oracle of its own: `port_test.py`
+compared it with `./obo`, built from the same source. It now also runs mainline's objdump
+groups (`obx/tests/encoder_test.py`) against the port, and `group_push_immediates` for the
+new form.
+
+**Loop inversion: design (deferred until the per-path bindings branch merges, since it
+rewrites the same loop functions).** A `while` reads its condition before its body, but the
+inverted loop emits it after: `jmp cond; body: ...; cond: C; jcc body`. Three ways to get there
+in one pass:
+
+1. *Relocate the condition's bytes.* Compile the condition where it is read, as now, but stop
+   before its final jump. Copy its bytes out, truncate the code back to the loop's top, emit
+   `jmp cond`, compile the body, then append the bytes again and move what they hold by the
+   distance d they moved: calls out of them (the entries `farCalls` gained while the condition
+   was compiled) get rel32 - d; calls waiting for a later function (fixups in the condition's
+   range) get + d; and the condition item's true and false lists, whose links are positions
+   threaded through rel32 fields ("Allocation (done)"), get + d on every link and on each head.
+   Jumps inside the condition are relative and need nothing. Then `jcc cc` to the body, the
+   true list fixed to the body, and the false list and `break` fall through. `continue` goes
+   to the moved condition. A condition holds no defers, breaks or continues, since it is an
+   expression. The checker sees the condition and then the body once each, in source order,
+   as now.
+2. *Move the body instead.* Emit the condition at the top and move the body after it. The body
+   holds far more positions: nested loops' break and continue chains, defer subroutines,
+   fixups of every kind. Rejected.
+3. *Compile the condition twice.* Save the scanner's state (the source is one string, so
+   rewinding is cheap) and compile the condition again after the body, keeping the top copy
+   as a guard. No relocation, but the checker would run the condition twice: moves,
+   invalidations, `selfCalls` and `useSeq` counts and error reports would happen twice, at two
+   states, and the code would grow by the condition. It is a token pre-scan in all but name,
+   which is deferred with Phase 2.
+
+Recommended: (1). It shares `dropFrame`'s bookkeeping (`farCalls`, fixups), adds the chain
+walk, keeps the checker untouched and the code size the same. A `for` loop needs no relocation:
+its test is generated code over locals stored before the loop, so it can simply be emitted
+after the body. Mutants: each kind of position not moved (a call out, a waiting call, a link
+of each list); tests: a `while` whose condition calls a function declared later, concatenates
+a string, indexes an array and uses `&&` and `||`.
 
 ### Phase 2: register allocation for scalar locals
 
@@ -989,9 +1251,9 @@ Tried and dropped: freeing the code buffer as soon as the image has copied it. T
 live peak fell by 416 bytes (1,044,400 to 1,043,984), which was not worth the extra
 reassignment, since the peak is reached while the image is being copied.
 
-`PEAK_BUDGET` stays at 1,351,000. The new peak leaves a margin of 305,608 bytes, which is
-more than the mutant "parameters kept" adds (about 190 KB), so that mutant was no longer
-caught by the budget. It is now caught when its peak rises above the unmutated peak
+`PEAK_BUDGET` stays at 1,351,000. On the merged branch the peak is 1,097,776 bytes, a margin of
+253,224 bytes, which is more than the mutant "parameters kept" adds (about 190 KB), so that mutant
+is not caught by the budget. It is now caught when its peak rises above the unmutated peak
 (`KEEPS_ALIVE` in `tests/mutate_port.py`).
 
 Not done: the per-call arrays in `rtCall` and `rtCall0/1/2` (`regs`, `temps`, the
@@ -1013,9 +1275,12 @@ remain after Phase 2 are measurable on the benchmarks.
 
 ### Open decisions
 
-- **Byte identity.** `tests/port_compare.py` requires the port's executables to match
-  byte for byte, and any optimization changes the bytes. Proposed: the compiler gets
-  an `--no-opt` flag, and `port_compare` uses it for the identity check. The suite
-  and the fixed point run with optimization on.
+- **Byte identity** (resolved: dropped, compare behaviour). `tests/port_compare.py`
+  required the port's executables to match byte for byte, and any optimization changes
+  the bytes. The `--no-opt` flag proposed here was not built. Stage B now compares
+  behaviour: the same compile outcome (success, or the same error at the same
+  line:col), and for a program that runs, the same stdout, stderr and exit code with
+  `OBO_CHECK=1`. The fixed point (stage 2 = stage 3, in `make promote`) still compares
+  bytes, since the compiler compiles itself.
 - **Pre-scan.** Confirm that a token pre-scan is acceptable under the single-pass goal
   before Phase 2 starts.
