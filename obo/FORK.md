@@ -270,9 +270,8 @@ itself exceeds `PEAK_BUDGET` (about 3% over the measured figure; patch
 reason recorded here.
 
 **Budget raised, 1,305,000 to 1,351,000** (measured live peak 1,311,184 bytes, about 3% over).
-The allocation work has since lowered the live peak; the budget is unchanged. (This note's figure,
-1,045,392 bytes, does not reproduce: main's own source measures 1,079,504 bytes with the same
-`OBO_STATS` method, from both main's seed and the merged build.)
+The allocation work has since lowered the live peak to 1,045,392 bytes (before Phase 1, which
+raised it to about 1,079,400); the budget is unchanged.
 The reason: soundness fixes need per-path state for suspect references. The state at each join
 now carries every local's suspicion (see "Deep references" below), which added 10,432 bytes.
 More is coming: per-path reference bindings need the same kind of state. The allocation work
@@ -455,8 +454,9 @@ merged port passes it. The port compiling itself peaks at 1,097,776 bytes live, 
 the budget. Before the merge the branch's base lacked main's allocation work (step 4), and the same
 check failed at 1,739,088 bytes; the merge brought in that work and the check passes.
 
-This branch's compiler changes add 18,272 bytes to the peak: main's source measures 1,079,504 bytes
-with the same method, and this branch's source 1,097,776. The cause was not separated out (the
+This branch's compiler changes add 18,272 bytes to the peak: main's source measures about 1,079,400 bytes
+with the same method, and this branch's source 1,097,776. (The figure moves by about 150 bytes
+with the paths on the command line.) The cause was not separated out (the
 branch changes about 70 lines of the compiler source); it is small against the margin.
 
 `mutate_port` judges each mutant by `port_compare`, so with the budget over the peak every mutant
