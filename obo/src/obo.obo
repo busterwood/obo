@@ -754,6 +754,8 @@ fn runEncoderScript(script: []byte) {
 
 type Type
 type Sym
+type RefBind
+type PState
 
 type Field = ref record {
     name: string
@@ -858,13 +860,11 @@ type Sym = ref record {
     isStr: bool               // a string local, holding one reference
     isRef: bool               // a reference: a parameter or local that borrows
     isRefLocal: bool          // a reference local (its validity is tracked)
-    refMut: bool              // changes may be made through it
-    refRoot: ?^Sym             // the owned local or reference parameter it borrows from
-    refDeep: bool             // it may point below its root's own object
+    bind: ^RefBind            // what a reference local points into, on the path being compiled
+    fresh: bool               // pointed afresh since the innermost loop began, on every path to here
+    staleUse: int            // useSeq of the last read that was not fresh (see loopBindCheck)
     suspect: bool             // live across a recursive call that may write through a handle
     usedAt: int               // the reads so far (useSeq) when it was last read: see loopSelfCheck
-    refPath: string           // where in its root it points: "/a/b", "/items/[]"; "" = anywhere
-    refParent: ?^Sym           // the reference local it was derived from
     iterating: bool           // a for loop is walking this array
     pmodes: []int             // fn: 0 owned, 1 &, 2 mut, per parameter
     freed: []^Sym              // fn: the globals it might free (directly or through calls)
@@ -872,10 +872,58 @@ type Sym = ref record {
     writesHandles: bool       // fn: it frees owned objects through a handle (directly, by a callee, or a forward heading)
 }
 
+// A reference local's binding, on one path: what it may point into. Its roots are owned locals,
+// reference parameters, globals, or handleSym (a borrow through a handle). deeps says it may point
+// below the root's own object, and paths says where below ("" = anywhere). writable says changes may
+// be made through it, and parent is the reference local it was derived from, which a change through
+// it does not free. A binding is never changed once made: a re-point makes a new one (see arenaBind).
+type RefBind = ref record {
+    roots: []^Sym
+    deeps: []bool
+    paths: []string
+    writable: bool
+    parent: ?^Sym
+}
+
+// The state of the owned locals on one path at one point (see snapshot): flags holds, per local, its
+// moved flag, then its suspect flag, then its fresh flag; binds holds its binding.
+type PState = ref record {
+    flags: []bool
+    binds: []^RefBind
+}
+
+// The bindings made while compiling a function. The arena owns them and fnDecl releases them when the
+// function ends; handles to them are what symbols and states hold. noBind is the binding of anything
+// that is not a reference local (it points at nothing); noneBind is the identity of a join.
+var bindArena = new []RefBind(0)
+
+// the changes that may free something, so far: a loop whose body makes none cannot free what its next
+// iteration reads (see loopBindCheck)
+var freeCount = 0
+
+fn arenaBind(roots: []^Sym, deeps: []bool, paths: []string, writable: bool, parent: ?^Sym): ^RefBind {
+    append(bindArena, new RefBind{roots: roots, deeps: deeps, paths: paths, writable: writable, parent: parent})
+    return handle(bindArena[len(bindArena) - 1])
+}
+
+// a binding of one root
+fn singleBind(root: ^Sym, deep: bool, path: string, writable: bool, parent: ?^Sym): ^RefBind {
+    var roots = new []^Sym(0)
+    append(roots, root)
+    var deeps = new []bool(0)
+    append(deeps, deep)
+    var paths = new []string(0)
+    if deep { append(paths, path) } else { append(paths, "") }
+    return arenaBind(roots, deeps, paths, writable, parent)
+}
+
+let noBind = arenaBind(new []^Sym(0), new []bool(0), new []string(0), true, nil)
+let noneBind = arenaBind(new []^Sym(0), new []bool(0), new []string(0), true, nil)
+
 var symArena = new []Sym(0)            // owns every symbol; the rest of the compiler holds handles
 
 fn newSym(kind: string, name: string, t: ?^Type): ^Sym {
-    append(symArena, new Sym{kind: kind, name: name, typ: t, addr: -1, fixups: new []int(0),
+    append(symArena, new Sym{kind: kind, name: name, typ: t, bind: noBind, addr: -1, fixups: new []int(0),
                    params: new []^Type(0), ret: tVoid, line: -1, pmodes: new []int(0), freed: new []^Sym(0)})
     return handle(symArena[len(symArena) - 1])
 }
@@ -1076,10 +1124,10 @@ type Loop = ref record {
     brk: []int
     cont: []int
     blocks: int
-    entry: []bool             // move states when the loop was entered
+    entry: PState              // the state when the loop was entered
     lv: ?^Sym                  // a for loop's variable, rebound every iteration
-    susp: []bool             // per local: suspect where a break or continue leaves the loop
-    back: []bool             // per local: suspect where the next iteration starts (the body's end, or a continue)
+    susp: PState               // the state where a break or continue leaves the loop, joined
+    back: PState               // the state where the next iteration starts: the body's end, or a continue
 }
 
 fn makePool(): []int {
@@ -1617,85 +1665,266 @@ fn freeOwned(from: int, to: int) {
     }
 }
 
-// A path's state: for each owned local, whether it has been moved (the first half) and whether
-// it is suspect (the second half, see afterCall). Moves must agree where paths join; suspicion
-// is the union of the paths' suspicion.
-fn snapshot(): []bool {
-    let out = new []bool(0)
-    let locals = &ownedLocals
-    for s in locals {
-        append(out, s.moved)
-    }
-    for s in locals {
-        append(out, s.suspect)
-    }
-    return out
+// the index of the ']' that closes the element segment starting at i
+fn elemEnd(s: string, i: int): int {
+    var j = i
+    while s[j] != ']' { j += 1 }
+    return j
 }
+
+// p names s or something above it: its segments are the first ones of s
+fn segsPrefix(p: string, s: string): bool {
+    var i = 0
+    var j = 0
+    while i < len(p) {
+        if j >= len(s) { return false }
+        if p[i] == '[' {
+            if s[j] != '[' { return false }
+            let pe = elemEnd(p, i)
+            let se = elemEnd(s, j)
+            // two known elements must be the same one; an unknown one may be any
+            if pe - i > 1 && se - j > 1 {
+                if pe - i != se - j { return false }
+                for k in 0..pe - i {
+                    if p[i + k] != s[j + k] { return false }
+                }
+            }
+            i = pe + 1
+            j = se + 1
+        } else {
+            if p[i] != s[j] { return false }
+            i += 1
+            j += 1
+        }
+    }
+    return j == len(s) || s[j] == '/'
+}
+
+// ------------------------------------------------------------ joining bindings
+
+// two bindings of the same place (one each) joined: a place is hit by every change that hits either
+// one, so when one lies under the other, the longer one is hit by all the changes that hit the shorter
+fn joinPath(da: bool, pa: string, db: bool, pb: string): string {
+    if !db { return pa }
+    if !da { return pb }
+    if pa == pb { return pa }
+    if pa == "" || pb == "" { return "" }
+    if segsPrefix(pa, pb) && !segsPrefix(pb, pa) { return pb }
+    if segsPrefix(pb, pa) && !segsPrefix(pa, pb) { return pa }
+    return ""
+}
+
+fn sameParent(a: ?^Sym, b: ?^Sym): bool {
+    if a == nil { return b == nil }
+    if b == nil { return false }
+    return a == b
+}
+
+// the binding of a path that joins a and b: every root either may point into, deep where either may,
+// at the place that covers both; writable only where both are, and a parent only where equal
+fn joinBind(a: ^RefBind, b: ^RefBind): ^RefBind {
+    if a == b || b == noneBind { return a }
+    if a == noneBind { return b }
+    var roots = new []^Sym(0)
+    var deeps = new []bool(0)
+    var paths = new []string(0)
+    var changed = false
+    for i in 0..len(a.roots) {
+        append(roots, a.roots[i])
+        append(deeps, a.deeps[i])
+        append(paths, a.paths[i])
+    }
+    for j in 0..len(b.roots) {
+        var found = false
+        for i in 0..len(roots) {
+            if roots[i] == b.roots[j] {
+                found = true
+                let d = deeps[i] || b.deeps[j]
+                let p = joinPath(deeps[i], paths[i], b.deeps[j], b.paths[j])
+                if d != deeps[i] || p != paths[i] { changed = true }
+                deeps[i] = d
+                paths[i] = p
+            }
+        }
+        if !found {
+            append(roots, b.roots[j])
+            append(deeps, b.deeps[j])
+            append(paths, b.paths[j])
+            changed = true
+        }
+    }
+    let writable = a.writable && b.writable
+    if writable != a.writable { changed = true }
+    var parent: ?^Sym = a.parent
+    if !sameParent(a.parent, b.parent) {
+        parent = nil
+        changed = true
+    }
+    if !changed { return a }
+    return arenaBind(roots, deeps, paths, writable, parent)
+}
+
+// the places e covers for a place of b, both in one root: a whole-object pointer covers only
+// whole-object ones, and an e whose place lies under b's covers b's, since e is hit by all b is
+fn coversPlace(ed: bool, ep: string, bd: bool, bp: string): bool {
+    if !bd { return true }
+    if !ed { return false }
+    if ep == "" { return true }
+    return bp != "" && segsPrefix(bp, ep)
+}
+
+// the binding b, at the end of a loop's body, is covered by e, the binding the body was checked with:
+// every change that reaches b is one e was checked against, and b is writable only if e is
+fn bindCovers(e: ^RefBind, b: ^RefBind): bool {
+    if b == noneBind || b == e { return true }
+    if e.writable && !b.writable { return false }
+    if !sameParent(e.parent, b.parent) { return false }
+    for j in 0..len(b.roots) {
+        var covered = false
+        for i in 0..len(e.roots) {
+            if e.roots[i] == b.roots[j] && coversPlace(e.deeps[i], e.paths[i], b.deeps[j], b.paths[j]) {
+                covered = true
+            }
+        }
+        if !covered { return false }
+    }
+    return true
+}
+
+// The state of the owned locals on one path: moves must agree where paths join, while suspicion,
+// freshness and bindings are the join of the paths'. See PState.
+fn snapshot(): PState {
+    let locals = &ownedLocals
+    let n = len(locals)
+    var flags = new []bool(3 * n)
+    var binds = new []^RefBind(0)
+    for i in 0..n {
+        flags[i] = locals[i].moved
+        flags[n + i] = locals[i].suspect
+        flags[2 * n + i] = locals[i].fresh
+        append(binds, locals[i].bind)
+    }
+    return new PState{flags: flags, binds: binds}
+}
+
+// no moves, no suspicion, every local fresh and nothing pointed at: where a join begins
+fn neutralState(n: int): PState {
+    var flags = new []bool(3 * n)
+    var binds = new []^RefBind(0)
+    for i in 0..n {
+        flags[2 * n + i] = true
+        append(binds, noneBind)
+    }
+    return new PState{flags: flags, binds: binds}
+}
+
+fn emptyState(): PState { return neutralState(0) }
 
 // the number of locals a state covers
-fn localsIn(st: &[]bool): int { return len(st) / 2 }
+fn localsIn(st: &PState): int { return len(st.binds) }
 
-fn restore(st: &[]bool) {
+fn copyState(a: &PState): PState {
+    let n = len(a.flags)
+    let m = len(a.binds)
+    var flags = new []bool(n)
+    var binds = new []^RefBind(0)
+    for i in 0..n { flags[i] = a.flags[i] }
+    for i in 0..m { append(binds, a.binds[i]) }
+    return new PState{flags: flags, binds: binds}
+}
+
+fn restore(st: &PState) {
     let n = localsIn(st)
     for i in 0..n {
-        ownedLocals[i].moved = st[i]
-        ownedLocals[i].suspect = st[n + i]
+        ownedLocals[i].moved = st.flags[i]
+        ownedLocals[i].suspect = st.flags[n + i]
+        ownedLocals[i].fresh = st.flags[2 * n + i]
+        ownedLocals[i].bind = st.binds[i]
     }
 }
 
-// the suspicion of each owned local, and its restoration (a deferred body's suspicion is not its own)
-fn suspects(): []bool {
-    let out = new []bool(0)
-    let locals = &ownedLocals
-    for s in locals { append(out, s.suspect) }
-    return out
-}
-
-fn restoreSuspects(st: &[]bool) {
-    for i in 0..len(st) { ownedLocals[i].suspect = st[i] }
-}
-
-// the moves of a state, without its suspicion (a loop's suspicion is joined in afterwards)
-fn restoreMoved(st: &[]bool) {
-    for i in 0..localsIn(st) { ownedLocals[i].moved = st[i] }
-}
-
-// the suspicion of a state joins the current one, where paths meet
-fn joinSuspect(st: &[]bool) {
+// a deferred body runs where its block is left, so the suspicion, freshness and bindings it
+// leaves are taken back here; its moves are kept, since a deferred body may free
+fn restoreDeferred(st: &PState) {
     let n = localsIn(st)
     for i in 0..n {
-        if st[n + i] { ownedLocals[i].suspect = true }
+        ownedLocals[i].suspect = st.flags[n + i]
+        ownedLocals[i].fresh = st.flags[2 * n + i]
+        ownedLocals[i].bind = st.binds[i]
     }
 }
 
-// per local, suspect where either state is: the state at a join of two paths is b's, with suspicion from a too
-fn joinStates(a: &[]bool, b: &[]bool): []bool {
-    let out = new []bool(0)
+// the moves of a state, without the rest (a loop's exits are joined in afterwards)
+fn restoreMoved(st: &PState) {
+    for i in 0..localsIn(st) { ownedLocals[i].moved = st.flags[i] }
+}
+
+// where paths join: st's suspicion, bindings and freshness join the current ones
+fn joinSuspect(st: &PState) {
+    let n = localsIn(st)
+    for i in 0..n {
+        let s = ownedLocals[i]
+        if st.flags[n + i] { s.suspect = true }
+        let jb = joinBind(s.bind, st.binds[i])
+        s.bind = jb
+        s.fresh = s.fresh && st.flags[2 * n + i]
+    }
+}
+
+// as joinSuspect, but without suspicion (a continue's exit carries its suspicion to the top only)
+fn joinBinds(st: &PState) {
+    let n = localsIn(st)
+    for i in 0..n {
+        let s = ownedLocals[i]
+        let jb = joinBind(s.bind, st.binds[i])
+        s.bind = jb
+        s.fresh = s.fresh && st.flags[2 * n + i]
+    }
+}
+
+// per local: suspect where either state is, bindings joined, fresh only where both are; moves are b's
+fn joinStates(a: &PState, b: &PState): PState {
+    let out = copyState(b)
     let n = localsIn(b)
-    for i in 0..len(b) { append(out, b[i]) }
     for i in 0..n {
-        if a[n + i] { out[n + i] = true }
+        if a.flags[n + i] { out.flags[n + i] = true }
+        out.flags[2 * n + i] = out.flags[2 * n + i] && a.flags[2 * n + i]
+        let jb = joinBind(a.binds[i], b.binds[i])
+        out.binds[i] = jb
     }
     return out
 }
 
-// per local, suspect where it is flagged: the suspicion that a loop's exits carry
-fn joinFlags(flags: &[]bool) {
-    for i in 0..len(flags) {
-        if flags[i] { ownedLocals[i].suspect = true }
+// a loop's exit (a break, a continue, or the body's end) joins the loop's accumulated state, for the
+// locals the loop began with: the exit's st has at least as many
+fn absorb(mut acc: &PState, st: &PState) {
+    let m = localsIn(acc)
+    let n = localsIn(st)
+    for i in 0..m {
+        if st.flags[n + i] { acc.flags[m + i] = true }
+        acc.flags[2 * m + i] = acc.flags[2 * m + i] && st.flags[2 * n + i]
+        let jb = joinBind(acc.binds[i], st.binds[i])
+        acc.binds[i] = jb
     }
+}
+
+// a reference is pointed afresh by the body of a loop before it is read there: the reads before
+// that depend on the back edge, so they are not fresh
+fn clearFresh() {
+    let locals = &ownedLocals
+    for s in locals { s.fresh = false }
 }
 
 // the first owned local whose move state differs between a and b, or nil
-fn stateDiff(a: &[]bool, b: &[]bool): ?^Sym {
+fn stateDiff(a: &PState, b: &PState): ?^Sym {
     let n = localsIn(b)
     for i in 0..localsIn(a) {
-        if i < n && a[i] != b[i] { return ownedLocals[i] }
+        if i < n && a.flags[i] != b.flags[i] { return ownedLocals[i] }
     }
     return nil
 }
 
-fn sameStates(a: &[]bool, b: &[]bool, line: int, col: int) {
+fn sameStates(a: &PState, b: &PState, line: int, col: int) {
     let d = stateDiff(a, b)
     if d != nil {
         if d.isRefLocal {
@@ -1761,57 +1990,85 @@ fn addStrLocal(s: ^Sym) {
 
 var refMode = 0                   // set by parseRefType: 0 plain, 1 &
 
-// the owned local or reference parameter that x ultimately borrows from
-fn rootOf(x: &Item): ?^Sym {
+fn mutableOf(x: &Item): bool
+fn deepOf(x: &Item): bool
+fn parentOf(x: &Item): ?^Sym
+
+// the binding a reference to x takes: what x may point into, through the binding of the reference it
+// goes through; a constant points at nothing
+fn itemBind(x: &Item): ^RefBind {
+    if x.viaHandle { return singleBind(handleSym, deepOf(x), x.path, mutableOf(x), parentOf(x)) }
     let r = x.root
-    if r == nil { return nil }
-    if r.isRef {
-        let rr = r.refRoot
-        if rr != nil { return rr }
+    if x.mode == "const" || r == nil { return noBind }
+    if !r.isRef { return singleBind(r, x.deref, x.path, true, nil) }
+    let rb = r.bind
+    var roots = new []^Sym(0)
+    var deeps = new []bool(0)
+    var paths = new []string(0)
+    for i in 0..len(rb.roots) {
+        append(roots, rb.roots[i])
+        append(deeps, x.deref || rb.deeps[i])
+        if x.deref { append(paths, "") } else { append(paths, rb.paths[i]) }
     }
-    return r
+    var parent: ?^Sym = nil
+    if r.isRefLocal {
+        if x.deref { parent = r } else { parent = rb.parent }
+    }
+    return arenaBind(roots, deeps, paths, rb.writable, parent)
+}
+
+// x is about to be borrowed: the binding it takes, after the checks borrowing needs
+fn borrowBind(x: &Item): ^RefBind {
+    if x.mode == "const" { return noBind }
+    if x.viaHandle { return itemBind(x) }
+    if x.mode == "reg" && isOwned(x.typ) {
+        error("store this value in a variable first: a reference cannot borrow from a temporary")
+    }
+    let b = itemBind(x)
+    if len(b.roots) == 0 { error("only variables, fields and elements can be borrowed") }
+    return b
+}
+
+// the same binding with another parent
+fn rebind(b: ^RefBind, parent: ?^Sym): ^RefBind {
+    var roots = new []^Sym(0)
+    var deeps = new []bool(0)
+    var paths = new []string(0)
+    for i in 0..len(b.roots) {
+        append(roots, b.roots[i])
+        append(deeps, b.deeps[i])
+        append(paths, b.paths[i])
+    }
+    return arenaBind(roots, deeps, paths, b.writable, parent)
+}
+
+// true if some place the binding may point into is deeper than its root's own object
+fn anyDeep(b: ^RefBind): bool {
+    for i in 0..len(b.deeps) {
+        if b.deeps[i] { return true }
+    }
+    return false
 }
 
 fn mutableOf(x: &Item): bool {
     let r = x.root
-    if r != nil && r.isRef { return r.refMut }
+    if r != nil && r.isRef { return r.bind.writable }
     return true
 }
 
 fn deepOf(x: &Item): bool {
     if x.deref { return true }
     let r = x.root
-    if r != nil && r.isRefLocal { return r.refDeep }
+    if r != nil && r.isRefLocal { return anyDeep(r.bind) }
     return false
 }
 
-// x is about to be borrowed: returns its root (nil for nil itself)
-fn borrowRoot(x: &Item): ?^Sym {
-    if x.mode == "const" { return nil }
-    if x.viaHandle { return handleSym }
-    if x.mode == "reg" && isOwned(x.typ) {
-        error("store this value in a variable first: a reference cannot borrow from a temporary")
-    }
-    let r = rootOf(x)
-    if r == nil { error("only variables, fields and elements can be borrowed") }
-
-    return r
-}
-
-// the root a change through x may free under: a change through a handle may free
-// anything, so it is recorded against handleSym
-fn freeRoot(x: &Item): ?^Sym {
-    if x.viaHandle { return handleSym }
-    return rootOf(x)
-}
-
-// the reference local x was derived from: the one it goes through, or for a
-// plain copy, the one that one was derived from
+// the reference local x was derived from, through its own binding
 fn parentOf(x: &Item): ?^Sym {
     let r = x.root
     if r == nil || !r.isRefLocal { return nil }
     if x.deref { return r }
-    return r.refParent
+    return r.bind.parent
 }
 
 // true if a is via itself or one of the references via was derived from
@@ -1819,27 +2076,33 @@ fn ancestorOf(a: ^Sym, via: ?^Sym): bool {
     var p = via
     while p != nil {
         if p == a { return true }
-        p = p.refParent
+        p = p.bind.parent
     }
     return false
 }
 
-// the path a reference to x borrows: a reference copied from another keeps its path
-fn refPathOf(x: &Item): string {
-    let s = x.sym
-    if s != nil && s.isRefLocal { return s.refPath }
-    return x.path
-}
-
-fn makeRefLocal(v: ^Sym, x: &Item, root: ?^Sym) {
-    v.refParent = parentOf(x)
+fn makeRefLocal(v: ^Sym, b: ^RefBind) {
     v.isRef = true
     v.isRefLocal = true
-    v.refRoot = root
-    v.refMut = mutableOf(x)
-    v.refDeep = deepOf(x)
-    v.refPath = refPathOf(x)
+    v.bind = b
+    v.fresh = true
     append(ownedLocals, v)
+}
+
+// a for loop's variable borrows each element of the walked array: deep, anywhere in what the array may be in
+fn walkBind(x: &Item, walked: ^Sym): ^RefBind {
+    let b = itemBind(x)
+    var roots = new []^Sym(0)
+    var deeps = new []bool(0)
+    var paths = new []string(0)
+    for i in 0..len(b.roots) {
+        append(roots, b.roots[i])
+        append(deeps, true)
+        append(paths, "")
+    }
+    var parent: ?^Sym = nil
+    if walked.isRefLocal { parent = walked }
+    return arenaBind(roots, deeps, paths, b.writable, parent)
 }
 
 // a reference parameter: it may name the same object as another one, or a global
@@ -1858,41 +2121,6 @@ fn reaches(changed: ^Sym, other: ^Sym): bool {
 // for element 3 and "/[]" for an element not known at compile time. "" is the
 // whole root. An element that is not known may be any element.
 
-// the index of the ']' that closes the element segment starting at i
-fn elemEnd(s: string, i: int): int {
-    var j = i
-    while s[j] != ']' { j += 1 }
-    return j
-}
-
-// p names s or something above it: its segments are the first ones of s
-fn segsPrefix(p: string, s: string): bool {
-    var i = 0
-    var j = 0
-    while i < len(p) {
-        if j >= len(s) { return false }
-        if p[i] == '[' {
-            if s[j] != '[' { return false }
-            let pe = elemEnd(p, i)
-            let se = elemEnd(s, j)
-            // two known elements must be the same one; an unknown one may be any
-            if pe - i > 1 && se - j > 1 {
-                if pe - i != se - j { return false }
-                for k in 0..pe - i {
-                    if p[i + k] != s[j + k] { return false }
-                }
-            }
-            i = pe + 1
-            j = se + 1
-        } else {
-            if p[i] != s[j] { return false }
-            i += 1
-            j += 1
-        }
-    }
-    return j == len(s) || s[j] == '/'
-}
-
 // the change at path p may free what a reference at path r points into: r is p
 // or lies under it. "" as either side means anywhere.
 fn underPath(r: string, p: string): bool {
@@ -1910,15 +2138,20 @@ fn pathsOverlap(a: string, b: string): bool {
 // inside any other root the change reaches.
 fn invalidate(root: ?^Sym, via: ?^Sym, all: bool, path: string) {
     if root == nil { return }
+    freeCount += 1
     let locals = &ownedLocals
     for v in locals {
         // a change through via frees only things below via: references it was
         // derived from point above it and stay valid
         if v.isRefLocal && !ancestorOf(v, via) && !v.moved {
-            let r = v.refRoot
-            // a borrow through a handle may point into any object, so any change reaches it
-            var hit = r == handleSym || r == root && (all || v.refDeep && underPath(v.refPath, path))
-            if !hit && r != nil && r != root && v.refDeep && reaches(root, r) { hit = true }
+            let b = v.bind
+            var hit = false
+            for i in 0..len(b.roots) {
+                let r = b.roots[i]
+                // a borrow through a handle may point into any object, so any change reaches it
+                if r == handleSym || r == root && (all || b.deeps[i] && underPath(b.paths[i], path)) { hit = true }
+                if r != root && b.deeps[i] && reaches(root, r) { hit = true }
+            }
             if hit {
                 if v.iterating { error("cannot change what '" + v.name + "' points into while a for loop walks it") }
                 v.moved = true
@@ -1931,9 +2164,10 @@ fn invalidate(root: ?^Sym, via: ?^Sym, all: bool, path: string) {
 // inside something is invalid, whatever it borrows from. A reference to a whole object stays
 // valid: only owners free whole objects, and a change through a handle frees only below its target.
 fn invalidateDeep(via: ?^Sym) {
+    freeCount += 1
     let locals = &ownedLocals
     for v in locals {
-        if v.isRefLocal && v.refDeep && !ancestorOf(v, via) && !v.moved {
+        if v.isRefLocal && anyDeep(v.bind) && !ancestorOf(v, via) && !v.moved {
             if v.iterating { error("cannot change what '" + v.name + "' points into while a for loop walks it") }
             v.moved = true
         }
@@ -1954,7 +2188,7 @@ fn notePending(line: int, col: int, msg: string) {
 fn markSuspects() {
     let locals = &ownedLocals
     for v in locals {
-        if v.isRefLocal && v.refDeep && !v.moved { v.suspect = true }
+        if v.isRefLocal && anyDeep(v.bind) && !v.moved { v.suspect = true }
     }
 }
 
@@ -1964,12 +2198,26 @@ fn markSuspects() {
 // so a reference pointed afresh after the call on every path is not reported, and a reference that
 // the loop does not read (usedAt, read since the loop began: useBefore) is not reported either. The
 // loop variable of a for walk is rebound each iteration, so its suspicion is not carried.
-fn loopSelfCheck(nOuter: int, selfBefore: int, useBefore: int, back: &[]bool, lv: ?^Sym, line: int, col: int) {
+fn loopSelfCheck(nOuter: int, selfBefore: int, useBefore: int, back: &PState, lv: ?^Sym, line: int, col: int) {
     if selfCalls == selfBefore { return }
     for i in 0..nOuter {
-        if back[i] && ownedLocals[i] != lv && ownedLocals[i].usedAt > useBefore {
+        if back.flags[localsIn(back) + i] && ownedLocals[i] != lv && ownedLocals[i].usedAt > useBefore {
             notePending(line, col, "a recursive call in this loop writes through a handle, which could free what a reference inside something points into on the next iteration")
             return
+        }
+    }
+}
+
+// A loop that points a reference somewhere new and reads it before pointing it again reads it on the
+// next iteration with a binding the body was not checked with. If the body frees something, that
+// binding must be covered by the one the body was checked with (see bindCovers); a body that frees
+// nothing cannot free what the next iteration reads.
+fn loopBindCheck(entry: &PState, back: &PState, useBefore: int, frees: bool, lv: ?^Sym, line: int, col: int) {
+    let n = localsIn(entry)
+    for i in 0..n {
+        let s = ownedLocals[i]
+        if frees && s.isRefLocal && s != lv && s.staleUse > useBefore && !bindCovers(entry.binds[i], back.binds[i]) {
+            errorAt("'" + s.name + "' is pointed somewhere new inside the loop, and read before it is pointed again; point it before the loop, or point it afresh before reading it in the loop", line, col)
         }
     }
 }
@@ -2052,20 +2300,56 @@ fn viaOf(x: &Item): ?^Sym {
     return nil
 }
 
-// a change through x: its root's references go invalid, and so do the handle-rooted
-// ones when x went through a handle. Such an x may have no root (handle(p).items).
+// a change through x: the roots its binding may point into lose their references, and so do the
+// handle-rooted ones when x went through a handle. Such an x may have no root (handle(p).items).
 fn invalidateChange(x: &Item) {
-    invalidate(rootOf(x), viaOf(x), false, x.path)
-    if x.viaHandle { invalidate(handleSym, viaOf(x), false, "") }
+    let r = x.root
+    let via = viaOf(x)
+    if r != nil {
+        if r.isRef {
+            for i in 0..len(r.bind.roots) { invalidate(r.bind.roots[i], via, false, x.path) }
+        } else {
+            invalidate(r, via, false, x.path)
+        }
+    }
+    if x.viaHandle { invalidate(handleSym, via, false, "") }
+}
+
+// a change through x goes through a handle, or through a reference that may point into one
+fn throughHandle(x: &Item): bool {
+    if x.viaHandle { return true }
+    let r = x.root
+    if r != nil && r.isRef {
+        for i in 0..len(r.bind.roots) {
+            if r.bind.roots[i] == handleSym { return true }
+        }
+    }
+    return false
+}
+
+// the globals a change through x may free: a change through a handle may free anything
+fn recordFreeChange(x: &Item) {
+    if x.viaHandle {
+        recordFree(handleSym)
+        return
+    }
+    let r = x.root
+    if r == nil { return }
+    if r.isRef {
+        for i in 0..len(r.bind.roots) { recordFree(r.bind.roots[i]) }
+    } else {
+        recordFree(r)
+    }
 }
 
 // a change of an owned value that goes through a handle, or through a reference borrowed through
-// one (freeRoot is handleSym): it may free what references inside something point into
+// one: it may free what references inside something point into
 fn invalidateOwnedChange(x: &Item) {
     invalidateChange(x)
-    if freeRoot(x) == handleSym { invalidateDeep(viaOf(x)) }
+    if throughHandle(x) { invalidateDeep(viaOf(x)) }
 }
 
+fn parseType(): ^Type
 fn parseType(): ^Type
 
 fn parseRefType(): ^Type {
@@ -2313,10 +2597,9 @@ fn callFn(f: ^Sym): Item {
         depth += 8
     }
     expect(T_LPAREN, "")
-    let argRoots = new []?^Sym(0)
+    var argBinds = new []^RefBind(0)
     let argModes = new []int(0)
     let argVias = new []?^Sym(0)
-    let argDeeps = new []bool(0)
     let argPaths = new []string(0)
     var deepLine = 0                   // the first argument that points inside something
     var deepCol = 0
@@ -2328,15 +2611,14 @@ fn callFn(f: ^Sym): Item {
         let a = expression()
         checkAssign(f.params[i], a, "argument " + string(i + 1) + " of " + f.name)
         if f.pmodes[i] > 0 {
-            let root = borrowRoot(a)
-            if f.pmodes[i] == 2 && !mutableOf(a) {
+            let b = borrowBind(a)
+            if f.pmodes[i] == 2 && !b.writable {
                 error("argument " + string(i + 1) + " of " + f.name + " needs a mut reference, but this one is read-only")
             }
-            append(argRoots, root)
+            append(argBinds, b)
             append(argModes, f.pmodes[i])
             append(argVias, viaOf(a))
-            append(argDeeps, deepOf(a))
-            if deepOf(a) && deepLine == 0 {
+            if anyDeep(b) && deepLine == 0 {
                 deepLine = argLine
                 deepCol = argCol
             }
@@ -2363,32 +2645,48 @@ fn callFn(f: ^Sym): Item {
     }
     // a mut reference and another that may point inside it could let the callee
     // free what the other points to; references to one object are fine
-    for i in 0..len(argRoots) {
-        for j in 0..len(argRoots) {
-            let ri = argRoots[i]
-            let rj = argRoots[j]
-            // two places in one root may be told apart: elements known to differ
-            if i != j && argModes[i] == 2 && argDeeps[j] && ri != nil && rj != nil && reaches(ri, rj) &&
-               (ri != rj || pathsOverlap(argPaths[i], argPaths[j])) {
-                error("argument " + string(j + 1) + " of " + f.name + " may point inside argument " + string(i + 1) + ", which is mut")
+    for i in 0..len(argBinds) {
+        for j in 0..len(argBinds) {
+            let bi = argBinds[i]
+            let bj = argBinds[j]
+            if i != j && argModes[i] == 2 {
+                for p in 0..len(bi.roots) {
+                    for q in 0..len(bj.roots) {
+                        let ri = bi.roots[p]
+                        let rj = bj.roots[q]
+                        // two places in one root may be told apart: elements known to differ
+                        if bj.deeps[q] && reaches(ri, rj) && (ri != rj || pathsOverlap(bi.paths[p], bj.paths[q])) {
+                            error("argument " + string(j + 1) + " of " + f.name + " may point inside argument " + string(i + 1) + ", which is mut")
+                        }
+                    }
+                }
             }
         }
     }
-    for i in 0..len(argRoots) {
-        let ar = argRoots[i]
-        if ar != nil && ar.storage == "global" && mightFree(f, ar) {
-            error("cannot pass a reference into global '" + ar.name + "' to " + f.name + ": it might free it")
+    for i in 0..len(argBinds) {
+        let b = argBinds[i]
+        for p in 0..len(b.roots) {
+            let ar = b.roots[p]
+            if ar.storage == "global" && mightFree(f, ar) {
+                error("cannot pass a reference into global '" + ar.name + "' to " + f.name + ": it might free it")
+            }
         }
     }
-    for i in 0..len(argRoots) {
-        if argRoots[i] == handleSym && !pureFn(f) {
-            error("cannot pass a reference that borrows through a handle to " + f.name + ": it might free what the handle names")
+    for i in 0..len(argBinds) {
+        let b = argBinds[i]
+        for p in 0..len(b.roots) {
+            if b.roots[p] == handleSym && !pureFn(f) {
+                error("cannot pass a reference that borrows through a handle to " + f.name + ": it might free what the handle names")
+            }
         }
     }
-    for i in 0..len(argRoots) {
+    for i in 0..len(argBinds) {
         if argModes[i] == 2 {
-            invalidate(argRoots[i], argVias[i], false, argPaths[i])
-            recordFree(argRoots[i])
+            let b = argBinds[i]
+            for p in 0..len(b.roots) {
+                invalidate(b.roots[p], argVias[i], false, argPaths[i])
+                recordFree(b.roots[p])
+            }
         }
     }
     afterCall(f)
@@ -2530,7 +2828,7 @@ fn builtin(name: string): Item {
         }
         if x.readonly { error("replace cannot change '" + describe(x) + "': it is immutable") }
         let tr = x.root
-        if x.deref && tr != nil && tr.isRef && !tr.refMut {
+        if x.deref && tr != nil && tr.isRef && !tr.bind.writable {
             error("replace cannot change through '" + tr.name + "': it is a read-only reference")
         }
         expect(T_COMMA, "")
@@ -2547,7 +2845,7 @@ fn builtin(name: string): Item {
         consume(v)
         if x.deref || x.viaHandle {
             invalidateOwnedChange(x)
-            recordFree(freeRoot(x))
+            recordFreeChange(x)
         } else {
             let ts = x.sym
             if ts != nil {
@@ -2598,12 +2896,12 @@ fn builtin(name: string): Item {
         }
         if x.readonly { error("take cannot change '" + describe(x) + "': it is immutable") }
         let tr = x.root
-        if x.deref && tr != nil && tr.isRef && !tr.refMut {
+        if x.deref && tr != nil && tr.isRef && !tr.bind.writable {
             error("take cannot change through '" + tr.name + "': it is a read-only reference")
         }
         if x.deref || x.viaHandle {
             invalidateOwnedChange(x)
-            recordFree(freeRoot(x))
+            recordFreeChange(x)
         } else {
             let ts = x.sym
             if ts != nil && ts.storage == "local" { invalidate(ts, nil, true, "") }
@@ -2634,13 +2932,13 @@ fn builtin(name: string): Item {
         noTemp(a)
         if name != "substr" {
             let ar = a.root
-            if ar != nil && ar.isRef && !ar.refMut {
+            if ar != nil && ar.isRef && !ar.bind.writable {
                 error(name + " changes the array, but '" + ar.name + "' is a read-only reference")
             }
             if name == "truncate" {
                 let owned = isOwned(baseOf(a.typ))
                 if owned { invalidateOwnedChange(a) } else { invalidateChange(a) }
-                if owned || freeRoot(a) != handleSym { recordFree(freeRoot(a)) }   // a scalar array frees nothing
+                if owned || !throughHandle(a) { recordFreeChange(a) }   // a scalar array frees nothing
             }
         }
         a = pinStr(a)
@@ -2857,9 +3155,10 @@ fn designatorT(target: bool): Item {
     if s.suspect && (!target || path != "") {
         notePending(uline, ucol, "'" + name + "' may point to freed memory: a recursive call writes through a handle, which could free what it points into")
     }
-    if s.isRefLocal && (!target || path != "") {        // a read, not a re-pointing: see loopSelfCheck
+    if s.isRefLocal && (!target || path != "") {        // a read, not a re-pointing: see loopBindCheck
         useSeq += 1
         s.usedAt = useSeq
+        if !s.fresh { s.staleUse = useSeq }
     }
     x.viaHandle = viaHandle
     if x.sym == nil && root != nil {
@@ -3361,13 +3660,13 @@ fn varDecl(kind: string, isGlobal: bool) {
             var rt = x.typ
             if t != nil { rt = t }
             checkAssign(rt, x, "initialising '" + name + "'")
-            let root = borrowRoot(x)
+            let nb = borrowBind(x)
             let v = newLocal("", rt, kind)
             v.name = name
             let dst = newItem("mem", rt)
             dst.base = RBP
             dst.disp = v.offset
-            makeRefLocal(v, x, root)
+            makeRefLocal(v, nb)
             store(dst, x)
             declare(v)
             return
@@ -3447,7 +3746,7 @@ fn assignmentOrCall(): bool {
         let xs = x.sym
         if xs != nil { dtype = symType(xs) }
         let wr = x.root
-        if x.deref && wr != nil && wr.isRef && !wr.refMut {
+        if x.deref && wr != nil && wr.isRef && !wr.bind.writable {
             errorAt("cannot change through '" + wr.name + "': it is a read-only reference", line, col)
         }
         if o == T_ASSIGN && xs != nil && xs.isRefLocal {
@@ -3455,22 +3754,25 @@ fn assignmentOrCall(): bool {
             if xs.iterating { errorAt("cannot point '" + xs.name + "' elsewhere while a for loop walks it", line, col) }
             let y = expression()
             checkAssign(dtype, y, "assignment")
-            let root = borrowRoot(y)
+            let nb = borrowBind(y)
             if !assignable(x.typ, y.typ) { widen(xs) }
-            let par = parentOf(y)
-            let mu = mutableOf(y)
-            let dp = deepOf(y)
-            let pp = refPathOf(y)
             store(x, y)
+            // the parent may be xs itself, or one below it (a reference copied from xs's own value): then
+            // it is xs's old parent, so that the parents stay a chain
+            let oldParent = xs.bind.parent
+            var parent: ?^Sym = nb.parent
+            if ancestorOf(xs, parent) { parent = oldParent }
+            // the references derived from xs's old value derive from its parent now
             let locals = &ownedLocals
             for v in locals {
-                if v.refParent == xs { v.refParent = xs.refParent }   // their ancestor moves away
+                if v.isRefLocal && v.bind.parent == xs {
+                    let rb = rebind(v.bind, oldParent)
+                    v.bind = rb
+                }
             }
-            xs.refParent = par
-            xs.refRoot = root
-            xs.refPath = pp
-            xs.refMut = mu
-            xs.refDeep = dp
+            let nbind = rebind(nb, parent)
+            xs.bind = nbind
+            xs.fresh = true
             xs.suspect = false
             xs.moved = false
             return false
@@ -3501,7 +3803,7 @@ fn assignmentOrCall(): bool {
                     invalidate(xs, nil, true, "")
                 } else if x.deref || x.viaHandle {
                     invalidateOwnedChange(x)
-                    recordFree(freeRoot(x))
+                    recordFreeChange(x)
                 } else if xs != nil {
                     invalidate(xs, nil, true, "")               // a global given a new value
                     recordFree(xs)
@@ -3638,50 +3940,40 @@ fn ifStat(): bool {
     return false
 }
 
-// entry: the move states when the loop is entered; every iteration must end,
-// and every break or continue happen, with the same states
-// nOuter and selfBefore: the owned locals and the self-call count before the loop's condition
-// (if any) and body, so that a self-call in either is seen by loopSelfCheck
-fn loopBodyV(entry: []bool, line: int, col: int, lv: ?^Sym, nOuter: int, selfBefore: int, useBefore: int): Loop
+// entry: the state when the loop is entered; every iteration must end, and every break or continue
+// happen, with the same moves. nOuter and selfBefore: the owned locals and the self-call count before
+// the loop's condition (if any) and body, so that a self-call in either is seen by loopSelfCheck;
+// useBefore: the reads so far, so that a read in the loop is seen by loopBindCheck
+fn loopBodyV(entry: PState, line: int, col: int, lv: ?^Sym, nOuter: int, selfBefore: int, useBefore: int): Loop
 
-fn loopBody(entry: []bool, line: int, col: int, nOuter: int, selfBefore: int, useBefore: int): Loop {
+fn loopBody(entry: PState, line: int, col: int, nOuter: int, selfBefore: int, useBefore: int): Loop {
     return loopBodyV(entry, line, col, nil, nOuter, selfBefore, useBefore)
 }
 
-fn falseBools(n: int): []bool {
-    let out = new []bool(0)
-    for i in 0..n { append(out, false) }
-    return out
-}
-
 // lv: a for loop's variable, rebound at the start of every iteration
-fn copyBools(a: &[]bool): []bool {
-    let out = new []bool(0)
-    for v in a { append(out, v) }
-    return out
-}
-
-fn loopBodyV(entry: []bool, line: int, col: int, lv: ?^Sym, nOuter: int, selfBefore: int, useBefore: int): Loop {
+fn loopBodyV(entry: PState, line: int, col: int, lv: ?^Sym, nOuter: int, selfBefore: int, useBefore: int): Loop {
     let n = localsIn(entry)
-    append(loops, new Loop{brk: new []int(0), cont: new []int(0), blocks: len(blocks), entry: copyBools(entry), lv: lv,
-                           susp: falseBools(n), back: falseBools(n)})
+    let frees = freeCount
+    clearFresh()
+    append(loops, new Loop{brk: new []int(0), cont: new []int(0), blocks: len(blocks), entry: copyState(entry), lv: lv,
+                           susp: neutralState(n), back: neutralState(n)})
     let term = block()
     // the next iteration starts where the body ends, if it falls through, and at each continue (added then)
     let li = len(loops) - 1
     if !term {
-        for i in 0..n {
-            if ownedLocals[i].suspect { loops[li].back[i] = true }
-        }
+        let now = snapshot()
+        absorb(&loops[li].back, &now)
     }
     loopSelfCheck(nOuter, selfBefore, useBefore, &loops[li].back, lv, line, col)
+    loopBindCheck(&entry, &loops[li].back, useBefore, freeCount > frees, lv, line, col)
     // the loop's record leaves the stack; what break and continue collected comes back
     let res = new Loop{brk: copyInts(loops[li].brk), cont: copyInts(loops[li].cont), blocks: loops[li].blocks,
-                       entry: copyBools(entry), lv: lv, susp: copyBools(loops[li].susp), back: copyBools(loops[li].back)}
+                       entry: copyState(entry), lv: lv, susp: copyState(loops[li].susp), back: copyState(loops[li].back)}
     truncate(loops, li)
     if lv != nil { lv.moved = false }
     if !term {
         let now = snapshot()
-        let d = stateDiff(entry, now)
+        let d = stateDiff(&entry, &now)
         if d != nil {
             if d.isRefLocal {
                 errorAt("'" + d.name + "' is invalidated inside the loop; point it again before the end of each iteration", line, col)
@@ -3689,11 +3981,12 @@ fn loopBodyV(entry: []bool, line: int, col: int, lv: ?^Sym, nOuter: int, selfBef
             errorAt("'" + d.name + "' is moved inside the loop; it must have a value again by the end of each iteration", line, col)
         }
     }
-    // the loop may run no time, or leave from its body: its suspicion is what either carries. A body
-    // that always leaves carries none of its own, since its end is not reached
-    if term { restore(entry) } else { restoreMoved(entry) }
-    joinSuspect(entry)
-    joinFlags(res.susp)
+    // the loop may run no time, or leave from its body: its suspicion, bindings and freshness are what
+    // either carries. A body that always leaves carries none of its own, since its end is not reached
+    if term { restore(&entry) } else { restoreMoved(&entry) }
+    joinSuspect(&entry)
+    joinSuspect(&res.susp)
+    joinBinds(&res.back)
     return res
 }
 
@@ -3704,6 +3997,7 @@ fn whileStat(): bool {
     let nOuter = len(ownedLocals)
     let selfBefore = selfCalls
     let useBefore = useSeq
+    clearFresh()
     let entry = snapshot()
     let top = pc()
     var x = expression()
@@ -3740,7 +4034,7 @@ fn forStat() {
     let x = expression()
     var top = 0
     var exitLink = 0
-    var loop = new Loop{brk: new []int(0), cont: new []int(0), blocks: 0, entry: new []bool(0), susp: new []bool(0), back: new []bool(0)}
+    var loop = new Loop{brk: new []int(0), cont: new []int(0), blocks: 0, entry: emptyState(), susp: emptyState(), back: emptyState()}
     if sym == T_DOTDOT {
         next()
         if x.typ.kind != "int" { error("range bounds must be ints") }
@@ -3775,13 +4069,12 @@ fn forStat() {
             error("a for loop walks a local variable or parameter: borrow it first, for example let items = &p.items")
             return
         }
-        let owner = rootOf(x)
         let arr = newLocal("", x.typ, "var")
         let ai = newItem("mem", x.typ)
         ai.base = RBP
         ai.disp = arr.offset
         let xt = x.typ
-        let xmut = mutableOf(x)
+        let wb = walkBind(x, walked)
         store(ai, x)
         let idx = newLocal("", tInt, "var")
         opMem(0xC7, 0, mem(RBP, -1, idx.offset, 8), true, false)
@@ -3791,10 +4084,8 @@ fn forStat() {
             // each element is borrowed, not moved out
             v.isRef = true
             v.isRefLocal = true
-            v.refRoot = owner
-            v.refMut = xmut
-            v.refDeep = true
-            if walked.isRefLocal { v.refParent = walked }
+            v.bind = wb
+            v.fresh = true
             append(ownedLocals, v)
         }
         let strs = baseOf(xt).kind == "string"
@@ -3861,7 +4152,7 @@ fn intMatch(x: Item): bool {
     let mline = tline
     let mcol = tcol
     let s0 = snapshot()
-    var acc = copyBools(s0)
+    var acc = copyState(s0)
     var have = false
     expect(T_LBRACE, "")
     skipSemis()
@@ -3878,7 +4169,7 @@ fn intMatch(x: Item): bool {
             allTerm = allTerm && bt
             if !bt {
                 let st = snapshot()
-                if have { sameStates(acc, st, line0(), 0); acc = joinStates(acc, st) } else { acc = copyBools(st) }
+                if have { sameStates(acc, st, line0(), 0); acc = joinStates(acc, st) } else { acc = copyState(st) }
                 have = true
             }
             skipSemis()
@@ -3913,7 +4204,7 @@ fn intMatch(x: Item): bool {
         allTerm = allTerm && bt
         if !bt {
             let st = snapshot()
-            if have { sameStates(acc, st, line0(), 0); acc = joinStates(acc, st) } else { acc = copyBools(st) }
+            if have { sameStates(acc, st, line0(), 0); acc = joinStates(acc, st) } else { acc = copyState(st) }
             have = true
         }
         append(ends, jmp())
@@ -3922,7 +4213,7 @@ fn intMatch(x: Item): bool {
     }
     expect(T_RBRACE, "")
     if !hasElse {
-        if have { sameStates(acc, s0, mline, mcol); acc = joinStates(acc, s0) } else { acc = copyBools(s0) }
+        if have { sameStates(acc, s0, mline, mcol); acc = joinStates(acc, s0) } else { acc = copyState(s0) }
         have = true
     }
     if have { restore(acc) } else { restore(s0) }
@@ -3951,7 +4242,7 @@ fn matchStat(): bool {
     if t.incomplete { errorAt(tname(t) + " is declared but not yet defined", line, col) }
     let tag = newLocal("", tInt, "var")
     let s0 = snapshot()
-    var acc = copyBools(s0)
+    var acc = copyState(s0)
     var have = false
     let r = alloc()
     opMem(0x8B, r, mem(RBP, -1, s.offset, 8), true, false)
@@ -3973,7 +4264,7 @@ fn matchStat(): bool {
             allTerm = allTerm && bt
             if !bt {
                 let st = snapshot()
-                if have { sameStates(acc, st, line0(), 0); acc = joinStates(acc, st) } else { acc = copyBools(st) }
+                if have { sameStates(acc, st, line0(), 0); acc = joinStates(acc, st) } else { acc = copyState(st) }
                 have = true
             }
             skipSemis()
@@ -4003,7 +4294,7 @@ fn matchStat(): bool {
         allTerm = allTerm && bt
         if !bt {
             let st = snapshot()
-            if have { sameStates(acc, st, line0(), 0); acc = joinStates(acc, st) } else { acc = copyBools(st) }
+            if have { sameStates(acc, st, line0(), 0); acc = joinStates(acc, st) } else { acc = copyState(st) }
             have = true
         }
         truncate(narrowStack, mark)
@@ -4071,7 +4362,7 @@ fn deferStat() {
     let over = jmp()
     let entry = pc()
     let sc = selfCalls
-    let before = suspects()
+    let before = snapshot()
     let savedDepth = depth
     let savedNarrow = replace(narrowStack, new []NEntry(0))   // fresh stacks for the deferred code
     let savedLoops = replace(loops, new []Loop(0))
@@ -4093,7 +4384,7 @@ fn deferStat() {
     fixHere1(over)
     // the body runs where the block is left, not here: what it did to suspicion is taken back (its
     // re-points have not happened yet either), and callDefers applies its recursive calls at each exit
-    restoreSuspects(before)
+    restoreDeferred(&before)
     if selfCalls != sc { blocks[len(blocks) - 1].selfDefer = true }
     append(blocks[len(blocks) - 1].defers, entry)
 }
@@ -4122,7 +4413,7 @@ fn statement(): bool {
             let lv = loop.lv
             if lv != nil {
                 for q in 0..len(ownedLocals) {
-                    if ownedLocals[q] == lv { st[q] = false }      // rebound next time round
+                    if ownedLocals[q] == lv { st.flags[q] = false }      // rebound next time round
                 }
             }
             let d = stateDiff(loop.entry, st)
@@ -4130,16 +4421,12 @@ fn statement(): bool {
                 error("'" + d.name + "' is moved inside the loop; it must have a value again before " + tokName(k))
             }
             let downTo = loop.blocks
-            let nl = localsIn(loop.entry)
             runDefers(downTo)
-            // the suspicion this exit carries, after the deferred calls that run here
+            // the state this exit carries, after the deferred calls that run here
+            let now = snapshot()
             let lp = &loops[len(loops) - 1]
-            for i in 0..nl {
-                if ownedLocals[i].suspect {
-                    lp.susp[i] = true
-                    if k == T_CONTINUE { lp.back[i] = true }
-                }
-            }
+            absorb(&lp.susp, &now)
+            if k == T_CONTINUE { absorb(&lp.back, &now) }
             let cur = &loops[len(loops) - 1]               // runDefers might have freed: borrow again
             if k == T_BREAK {
                 append(cur.brk, jmp())
@@ -4234,6 +4521,7 @@ fn fnDecl() {
     emit(0xEC)
     let frameAt = pc()
     emit32(0)
+    let bindMark = len(bindArena)
     let symMark = len(symArena)                 // the function's own symbols start here
     openBlock()
     fnBlock = len(blocks) - 1
@@ -4245,8 +4533,7 @@ fn fnDecl() {
         declare(s)
         if params[i].mode > 0 {
             s.isRef = true                         // borrowed: not freed here
-            s.refMut = params[i].mode == 2
-            s.refRoot = s
+            s.bind = singleBind(s, false, "", params[i].mode == 2, nil)
             s.kind = "let"
         } else if isOwned(params[i].typ) {
             addOwnedLocal(s)
@@ -4269,6 +4556,7 @@ fn fnDecl() {
     if pendLine > 0 && f.writesHandles { errorAt(pendMsg, pendLine, pendCol) }
     pendLine = 0
     curFn = nil
+    truncate(bindArena, bindMark)
     truncate(symArena, symMark)                 // and nothing refers to them any more
 }
 

@@ -1,0 +1,61 @@
+// Reference bindings per path: a reference that is re-pointed on some paths is
+// invalidated only by changes under a root it may point into on the path that
+// reaches the change. Each case here is valid and must run.
+type Item = ref record { v: int; kids: []Item }
+
+fn choose(c: bool) {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a                       // choosing a reference that is never changed
+    if c { k = &b }
+    println(k.v)                     // expect: 2
+}
+
+fn both(c: bool) {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var c2 = new Item{v: 3, kids: new []Item(0)}
+    var k = &a
+    if c { k = &b } else { k = &c2 }  // re-pointed on every path
+    a = new Item{v: 4, kids: new []Item(0)}   // a is no longer pointed to: no error
+    println(k.v)                     // expect: 2
+}
+
+fn newRoot() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    k = &b                           // re-pointed to b on the only path
+    a = new Item{v: 5, kids: new []Item(0)}  // a is not pointed to any more
+    println(k.v)                     // expect: 2
+}
+
+fn loopPoint() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 2 {
+        k = &b                       // pointed afresh before it is read in the body
+        if i == 1 { println(k.v) }   // expect: 2
+        i += 1
+    }
+}
+
+fn underIndex() {
+    var root = new Item{v: 1, kids: new []Item(0)}
+    append(root.kids, new Item{v: 7, kids: new []Item(0)})
+    var other = new Item{v: 8, kids: new []Item(0)}
+    var k = &root.kids[0]
+    k = &other                       // k no longer points into root.kids
+    root.kids = new []Item(0)        // frees the kids, not what k points to
+    println(k.v)                     // expect: 8
+}
+
+fn main() {
+    choose(true)
+    both(true)
+    newRoot()
+    loopPoint()
+    underIndex()
+}
