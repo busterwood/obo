@@ -72,7 +72,7 @@ MUTANTS = {
     "change through a borrowed handle reference doesn't invalidate deep refs": [("    if freeRoot(x) == handleSym { invalidateDeep(viaOf(x)) }",
                                                                               "    if x.viaHandle { invalidateDeep(viaOf(x)) }")],
     # a call to a function that writes through a handle leaves references inside something valid
-    "callee writes keep deep refs": [("        invalidateDeep(nil)\n", "")],
+    "callee writes keep deep refs": [("        invalidateDeep(nil)\n    }\n    if !pureFn(f)", "    }\n    if !pureFn(f)")],
     # a function that calls a writer is not itself marked as one: its callers keep their references
     "flag not inherited from callees": [("        if cur != nil { cur.writesHandles = true }\n", "")],
     # a forward-declared callee is not assumed to write: its callers keep their references
@@ -138,21 +138,20 @@ MUTANTS = {
     "deferred self-call suspicion kept at the defer": [("    restoreSuspects(before)\n    if selfCalls != sc {", "    if selfCalls == sc { restoreSuspects(before) }\n    if selfCalls != sc {")],
     # a defer body's re-point clears suspicion before the defer has run. Caught by errors/handle_deep.obx
     # "a defer that re-points a reference"
-    "a defer's re-point clears suspicion": [("    restoreSuspects(before)\n    if selfCalls != sc {", "    if selfCalls != sc { restoreSuspects(before) }\n    if selfCalls != sc {")],
+    "a defer's re-point clears suspicion": [("    restoreDeferred(&before)\n", "")],
     # a for walk over a reference is not a read on each iteration. Caught by errors/handle_deep.obx
     # "a walk over a reference with a recursive call in its body"
     "walk source not counted as a read": [("        if walked.isRefLocal {                  // the walk reads its array on every iteration\n            useSeq += 1\n", "        if false {\n            useSeq += 1\n")],
     # a deferred recursive call is not applied where the block ends at all. Caught by errors/handle_deep.obx
     # "a deferred recursive call runs where the block ends: a reference used after the block is suspect"
-    "deferred self-call not applied at block close": [("    if blocks[bi].selfDefer { markSuspects() }", "    if false { markSuspects() }")],
 }
 
 
 # the reference bindings per path (obo/tools/port_ref_binds.py): the mutants whose text the rewrite
 # replaced are retargeted to the same behaviour, and the join and the loop check have their own
 MUTANTS.update({
-    "handle borrows survive other changes": [("if r == handleSym || r == root && (all || b.deeps[i] && underPath(b.paths[i], path)) { hit = true }",
-                                              "if (r == handleSym && root == r) || r == root && (all || b.deeps[i] && underPath(b.paths[i], path)) { hit = true }")],
+    "handle borrows survive other changes": [("if r == handleSym || r == root && (all || b.deeps[i] && underPath(b.paths[i], path)) { return true }",
+                                              "if (r == handleSym && root == r) || r == root && (all || b.deeps[i] && underPath(b.paths[i], path)) { return true }")],
     "handle borrows passable to freeing calls": [("            if b.roots[p] == handleSym && !pureFn(f) {", "            if false {")],
     "handle temporaries invalidate nothing": [("if x.viaHandle { invalidate(handleSym, via, false, \"\") }",
                                                "if x.viaHandle && r != nil { invalidate(handleSym, via, false, \"\") }")],
@@ -170,17 +169,17 @@ MUTANTS.update({
                                           ("        sameStates(s1, s0, iline, icol)\n        joinSuspect(s1)\n",
                                            "        sameStates(s1, s0, iline, icol)\n"),
                                           ("if a.flags[n + i] { out.flags[n + i] = true }", "if false { out.flags[n + i] = true }")],
-    "loop self-call counter taken after the condition": [("    let selfBefore = selfCalls\n    let useBefore = useSeq\n    clearFresh()\n    let entry = snapshot()",
-                                                          "    let useBefore = useSeq\n    clearFresh()\n    let entry = snapshot()"),
+    "loop self-call counter taken after the condition": [("    let selfBefore = selfCalls\n    let useBefore = useSeq\n",
+                                                          "    let useBefore = useSeq\n"),
                                                          ("    let condSt = snapshot()                  // the state when the condition leaves the loop",
                                                           "    let selfBefore = selfCalls\n    let condSt = snapshot()                  // the state when the condition leaves the loop")],
-    "break suspicion not recorded": [("            absorb(&lp.susp, &now)\n", "            if false { absorb(&lp.susp, &now) }\n")],
+    "break suspicion not recorded": [("                append(lp.exits, now)\n", "                if false { append(lp.exits, now) }\n")],
     "loop-carried suspicion from the body's end dropped": [("        absorb(&loops[li].back, &now)\n", "        if false { absorb(&loops[li].back, &now) }\n")],
-    "loop-carried suspicion from continue dropped": [("if k == T_CONTINUE { absorb(&lp.back, &now) }", "if false { absorb(&lp.back, &now) }")],
+    "loop-carried suspicion from continue dropped": [("                append(lp.conts, now)\n", "                if false { append(lp.conts, now) }\n")],
     "terminated loop body's suspicion kept": [("    if term { restore(&entry) } else { restoreMoved(&entry) }", "    restoreMoved(&entry)")],
     "loop check reports unread references": [("back.flags[localsIn(back) + i] && ownedLocals[i] != lv && ownedLocals[i].usedAt > useBefore {",
                                               "back.flags[localsIn(back) + i] && ownedLocals[i] != lv {")],
-    "deferred self-call suspicion kept at the defer": [("    restoreDeferred(&before)\n    if selfCalls != sc {", "    if selfCalls == sc { restoreDeferred(&before) }\n    if selfCalls != sc {")],
+    "deferred self-call suspicion kept at the defer": [("    restoreDeferred(&before)\n", "    if selfCalls == sc { restoreDeferred(&before) }\n")],
     # the join of two bindings keeps the binding of the last path, not the union of the paths
     "binding not joined: last path wins": [("    if a == b || b == noneBind { return a }\n    if a == noneBind { return b }\n",
                                             "    if b == noneBind { return a }\n    if true { return b }\n")],
@@ -195,7 +194,7 @@ MUTANTS.update({
     # writable only where both paths are: a reference writable on one path only is read-only after the join
     "refMut not ANDed at a join": [("    let writable = a.writable && b.writable", "    let writable = a.writable || b.writable")],
     # the loop's bindings at its end are never checked against the ones its body was checked with
-    "loop back-edge binding check dropped": [("    loopBindCheck(&entry, &loops[li].back, useBefore, lv, line, col)\n", "")],
+    "loop back-edge binding check dropped": [("    loopBindCheck(&entry, &back, useBefore, lv, line, col, hit)\n", "")],
 })
 
 

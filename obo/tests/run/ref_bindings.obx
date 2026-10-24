@@ -96,6 +96,136 @@ fn loopCache() {
     }
 }
 
+// a free between two loops: the second loop reads a reference at its top that it points afresh each pass
+// (the free is of something the reference does not point into, and the loops are accepted)
+fn freeBetweenLoops() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    var j = 0
+    while j < 2 { j += 1 }
+    var x = new Item{v: 9, kids: new []Item(0)}
+    x = new Item{v: 10, kids: new []Item(0)}
+    var i = 0
+    while i < 3 {
+        if i == 0 { println(k.v) }  // expect: 1
+        k = &b
+        if i == 1 { println(k.v) }  // expect: 2
+        i += 1
+    }
+    println(k.v)                    // expect: 2
+}
+
+// a loop frees a block that the reference does not point into, and reads the reference at its top
+fn unrelatedFree() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 3 {
+        if i == 2 { println(k.v) }  // expect: 1
+        b = new Item{v: 5, kids: new []Item(0)}
+        k = &a
+        i += 1
+    }
+}
+
+// a deferred free of a temporary at block exit, and a reference that does not point into it
+fn deferTemp() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var k = &a
+    {
+        var t = new Item{v: 3, kids: new []Item(0)}
+        defer { t = new Item{v: 4, kids: new []Item(0)} }
+        println(k.v)                // expect: 1
+    }
+    println(k.v)                    // expect: 1
+}
+
+// a deferred free of the reference's old target at block exit; the reference is pointed at a live one after it
+fn deferRepoint() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &b
+    {
+        defer { a = new Item{v: 9, kids: new []Item(0)} }
+        k = &a
+        println(k.v)                // expect: 1
+    }
+    k = &b
+    println(k.v)                    // expect: 2
+}
+
+// a reference read at the top of a loop, pointed at a read-only parameter at its end; written before that
+// only where it points at its own local, so the writable binding is not needed on the next pass
+fn readOnlyLoop(r: &Item) {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 2 {
+        if i == 0 { println(k.v) }  // expect: 1
+        if i == 1 { println(k.v) }  // expect: 2
+        k = r
+        i += 1
+    }
+    println(a.v)                    // expect: 1
+}
+
+fn readOnlyCaller() {
+    var x = new Item{v: 2, kids: new []Item(0)}
+    readOnlyLoop(x)
+}
+
+// a free that the reference does not point into, between two loops: the second loop reads it at its top,
+// and re-points it at a root that the loop then frees before the re-point (the free is not carried)
+fn preMark() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var c = new Item{v: 3, kids: new []Item(0)}
+    var d = new Item{v: 4, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 2 {
+        if i == 1 { k = &b }
+        i += 1
+    }
+    c = new Item{v: 6, kids: new []Item(0)}
+    i = 0
+    while i < 2 {
+        if i == 0 { println(k.v) }  // expect: 2
+        d = new Item{v: 7, kids: new []Item(0)}
+        k = &d
+        i += 1
+    }
+    println(k.v)                    // expect: 7
+}
+
+// a loop frees a block the reference does not point into, and reads the reference at its top where the
+// next iteration's binding differs from the one the loop starts with
+fn unrelated2() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var c = new Item{v: 3, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 3 {
+        c = new Item{v: 4, kids: new []Item(0)}   // frees c, which k does not point into
+        if i == 2 { println(k.v) }  // expect: 2
+        if i == 1 { k = &b }
+        i += 1
+    }
+}
+
+// a deferred free of the reference's target runs at the block's exit: the reference is valid before it
+fn deferEarly() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var k = &a
+    {
+        defer { a = new Item{v: 9, kids: new []Item(0)} }
+        println(k.v)                // expect: 1
+    }
+}
+
 fn main() {
     choose(true)
     both(true)
@@ -105,4 +235,12 @@ fn main() {
     selfParent()
     deferLocal(true)
     loopCache()
+    freeBetweenLoops()
+    unrelatedFree()
+    deferTemp()
+    deferRepoint()
+    readOnlyCaller()
+    preMark()
+    unrelated2()
+    deferEarly()
 }

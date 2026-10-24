@@ -595,7 +595,7 @@ shallow references invalidated 0 each. Those last two are covered by the run and
 above, not by the fuzzer.
 
 **Holes found, not fixed here.** Both are accepted by HEAD's seed too, and by the current
-compiler. They will be fixed next. (The reference re-pointed on one branch is fixed, and a re-point
+compiler. Still open after the follow-up below. (The reference re-pointed on one branch is fixed, and a re-point
 inside a defer body is refused: see "Reference bindings per path (done)" below.)
 - Uses inside `defer` bodies are not checked against later changes: `defer println(first.v)`, then
   `bag.items = new ...` (`scratchpad/review5/p/p03_defer_nohandle.obx`).
@@ -715,6 +715,88 @@ with more than 32 bindings, and no state covered more than 9 owned locals.
   and `tools/fork_ref_mutants.py`).
 
 **Seed.** The rule is promoted after the suite and mutants pass, following `make promote`.
+
+## Loop marks, defer frees and the open holes (follow-up, done)
+
+A review of the loop check and of defer bodies, after the per-path bindings. Its items are numbered as
+the review gave them. The rules are in `LANGUAGE.md` sections 4 and 10.
+
+- **FP-1, loop-entry scoping (done).** A free before a loop marked the references inside it (the marks
+  were one flag block for the whole function). A loop now starts with the marks from before it kept
+  aside, and joins back where it ends (`loopMarksSave`, `loopMarksJoin`), so a mark set in a loop
+  reaches the code after it, and an outer mark does not reach a read inside. `probes fp2_two_loops`
+  and `FP5_free_then_loop` print 1 2 2, and the realistic `FP7_realistic` prints 28.
+- **Overlap (FP-1, the check).** Each change that may free something is logged while a loop or a deferred
+  body is compiled (`freeLog`, `logFree`, `FreeRec`: kind, root, place, and the reference locals that are
+  not pointed afresh). A loop's error is raised only where a logged free overlaps the binding the reference
+  has on the back edge (`hitBy`, `applyExit`), so a free of something the reference does not point into is
+  no longer an error (`unrelatedFree`, `unrelated2` and `freeBetweenLoops` in `run/ref_bindings.obx`). The
+  marks themselves are still coarse, and the overlap decides. `preMark` is the case with a free before the
+  loop, and the reference re-pointed after it.
+- **FP-2, the writable rule (done).** A reference writable where a loop starts and read-only where it starts
+  again was an error on every such loop. It is now an error only when it is written through the reference
+  before it is pointed again (`writeUse`, set where an assignment writes through a reference, compared with
+  `useBefore`). `readOnlyLoop` (run) is accepted and `walk` (error, written before the re-point) is still
+  refused.
+- **H-1, frees on the way out of a loop (done).** A free in a `while` condition, or on a `break` or `continue`
+  path, was lost at the loop's exit. Each exit now records the frees logged on its way out (`Loop.exits`,
+  `Loop.conts`, with `exitAt` and `contAt` as log positions), and the loop applies them to the references
+  when it ends (`applyExit`). `carry_out_break` and `carry_out_cond` are rejected.
+- **H-2, a defer body's frees (done, replay).** The body's frees were applied where it is declared. The
+  option taken is to replay them where the block is left. The frees are taken out of the log at the
+  declaration and kept with the block (`Block.frees`, `deferStat`), and `callDefers` replays them at each
+  exit from the block (normal end, `break`, `continue`, `return`: `replayFrees`). The body's moves are not
+  taken where it is declared (the moved flags are restored, the owner's moves are kept). The other option,
+  refusing a defer body's frees, would refuse valid programs, so replay was chosen. A re-point in a defer
+  body stays refused, since replaying a binding change needs the state at each exit (see future work above).
+  `defer_hole1` and `unsafe_defer_free_loop` are rejected.
+- **Recursive self-call, deep carry.** The self-call branch of `afterCall` now also marks the deep references
+  it may free (`markCarriedDeep`), as the other changes do. The check asked for was a case where the innermost
+  call frees through a handle and an outer loop reads a deep reference into the freed place on its next pass
+  (`scratchpad` `mk/self3.obx`). The seed and this compiler both reject it ("'k' may point to freed memory",
+  at the read), so no hole is shown. `mk/self2.obx` (a re-point after the call) is accepted and prints 7 on
+  each of its fourteen lines. The explicit `markSuspects` at block end for a deferred self-call (`Block.selfDefer`)
+  was removed: the free that `markSuspects` logs is replayed at the same exit, so it was a copy of that replay.
+- **Memory.** The first run of this follow-up measured 1,412,368 bytes, over the budget. The cause was
+  `freeArena`, which kept every logged free for the whole compile. The outermost loop now remembers where its
+  records begin (`loopLogStart`, `arenaBase`), and truncates the arena back to that point at its end, when no
+  record is referenced any more: a block that holds a record is inside the loop and has closed by then. The
+  live peak is 1,134,304 bytes against the budget of 1,351,000 (before this follow-up: 1,097,408). The budget is
+  not raised. Allocation in all is 15,377,184 bytes.
+
+**Open after this follow-up** (accepted by the seed too; each reads freed memory when run):
+- H-3, a defer body reading a reference that is re-pointed after the defer statement (`mk/defer_repointed_later.obx`:
+  `defer println(k.v)`, then `k = &b` and `b = new ...` in the same block; the body prints a freed value).
+- A defer body's reads are checked where the body is declared, not where its block is left
+  (`mk/defer_read_change.obx`: `defer println(first.v)`, then `bag.items = new []Item(0)` in the same block).
+  The frees are replayed (H-2), but the reads are not.
+- Argument evaluation order (`mk/arg_order_fresh.obx`: `use2(first, mk(h))`, where `mk` frees what `first`
+  points into). The argument is checked before a later argument's call runs.
+- The precision limits in "Reference bindings per path": a change through a reference reaches its whole root,
+  and the known false positive in `LANGUAGE.md` section 10 (a re-point in the same iteration, with the reference
+  suspect at the top of the next pass).
+
+**Tests and checks.**
+- `tests/errors/ref_bindings.obx`: 24 cases, covering the loop exits (break, continue, a while condition), the
+  defer body at block exit and in a loop, a recursive call that frees through a handle on its innermost pass,
+  and a loop that frees before an inner loop and reads at the top of the next pass.
+- `tests/run/ref_bindings.obx`: 17 accepted programs with their output, including `freeBetweenLoops`,
+  `unrelatedFree`, `deferTemp`, `deferRepoint`, `readOnlyLoop` with `readOnlyCaller`, `preMark`, `unrelated2`
+  and `deferEarly`.
+- `tests/mutate_fork.py`: 63 mutants, all caught. Added: a loop start keeps the marks before it, a loop end
+  joins them, the loop check ignores the overlap, a loop exit ignores frees on its way, a deferred body's frees
+  are not replayed, its moves are kept where it is declared. Two stale anchors were retargeted (`loop moves
+  unchecked`, `aliases lose non-deep references too`). A mutant that dropped a loop exit's join of the back-edge
+  bindings was removed: the exit already joins them after the loop, so it is equivalent.
+- `tests/mutate_port.py`: 49 mutants, all caught. Anchors retargeted to the new text: the back-edge check, the
+  handle hit test (`hitBy`), the self-call counter, the break and continue recording (`exits`, `conts`), the
+  defer's restore of suspicion (`restoreDeferred`), the defer's re-point, the stale `callee writes keep deep
+  refs` anchor (the `invalidateDeep` call in `afterCall`), and the stale `break suspicion` and `continue`
+  anchors. A mutant on the replay of a deferred self-call was not added:
+  the port source has no deferred self-calls, so stage B does not see it.
+- `tests/run_fork.py`: 274 passed, 0 failed. `tests/port_test.py`: 403 of 403 identical, no leaks.
+  `tests/port_compare.py`: stage B 425 of 425 identical; the memory check passes (see Memory).
+  `tests/own_fuzz.py --count 600`: 0 failures in 1200 programs. `tests/doc_check.py`: 22 examples, 0 problems.
 
 ## Milestone 1 design notes (as planned)
 
