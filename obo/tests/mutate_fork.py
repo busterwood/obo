@@ -152,6 +152,14 @@ MUTANTS.update({
     "a defer body's re-point is not refused": ("            if deferMark >= 0 && declaredBefore(xs, deferMark) {", "            if false {"),
     "a re-point keeps the carried mark": ("            xs.carryFreed = false\n", ""),
     "a loop start forgets the carried marks": ("    for s in locals { s.fresh = false }\n", "    for s in locals { s.fresh = false; s.carryFreed = false }\n"),
+    # a write through a mut argument, or through an append, is a write for the writable rule (review15 w_mutarg, w_append)
+    "a mut argument is not a write": ("            if f.pmodes[i] == 2 { noteWrite(a) }\n", ""),
+    "an append is not a write": ("    if name == \"append\" || name == \"truncate\" { noteWrite(a) }\n", "    if name == \"truncate\" { noteWrite(a) }\n"),
+    # a deferred change is replayed as it was made: through the reference it was made through (review15 FP_defer_via_child_*)
+    "a deferred change is replayed without its reference": ("            invalidate(rt, rv, r.all, r.path)\n", "            invalidate(rt, nil, r.all, r.path)\n"),
+    "a deferred deep change is replayed without its reference": ("            invalidateDeep(rv)\n", "            invalidateDeep(nil)\n"),
+    "a deferred change is not replayed": ("            invalidate(rt, rv, r.all, r.path)\n", "            if false { invalidate(rt, rv, r.all, r.path) }\n"),
+    "a logged free ignores the reference it is made through": ("    if ancestorOf(s, rv) { return false }\n", ""),
 })
 
 

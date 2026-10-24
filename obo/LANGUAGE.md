@@ -225,8 +225,13 @@ while nothing it may point into has been changed.
   A reference writable where a loop starts and read-only where it starts again is an error only when
   it is written through before it is pointed again.
 - A defer body's frees happen where its block is left, at each exit from the block (normal end,
-  `break`, `continue`, `return`); its moves are not taken where it is declared. A defer body's
-  re-point of a reference declared before it is still an error, as above.
+  `break`, `continue`, `return`); its moves are not taken where it is declared. The frees are
+  applied as the body made them: through the same reference, so a reference the change was made
+  through, or derived from, stays valid (a deferred write to a child of `p` leaves `p` valid). A
+  defer body's re-point of a reference declared before it is still an error, as above.
+- A mut argument, `append` and `truncate` write through the reference they are given, so a loop that
+  passes a reference to a mut parameter, or appends through it, is checked like an assignment: the
+  reference must be writable on every pass where it is written before it is pointed again.
 
   ```obo
   // example: error: 'k' may point to freed memory

@@ -764,6 +764,33 @@ the review gave them. The rules are in `LANGUAGE.md` sections 4 and 10.
   live peak is 1,134,304 bytes against the budget of 1,351,000 (before this follow-up: 1,097,408). The budget is
   not raised. Allocation in all is 15,377,184 bytes.
 
+**Review 3 (fixed).** Two regressions from the entry above were found in review and are fixed.
+- A write through a `mut` argument, `append`, or `truncate` through a reference did not set the write
+  mark (`writeUse`), so the writable rule missed it: `k` passed to a mut parameter, or appended to,
+  on a pass where it is read-only on the next. The writes now go through `noteWrite`, the same mark
+  the assignment and `invalidateChange` set (`callFn`, the `append` and `truncate` builtin). Probes
+  `w_mutarg`, `w_nestedarg`, `w_defer_mutarg`, `w_append`, `AP_ro_append_loop` are rejected again, as
+  by 82dba34. `replace`, `take` and `truncate` already marked through `invalidateChange`; the
+  assignment marks through its own deref test.
+- A deferred change was replayed without the reference it was made through, so the reference's
+  ancestors (the one a child write was taken from) were moved: `let s = &p.kids[0]; defer { s.kids =
+  ... }` rejected a read of `p` after the block. The free log now keeps the `via` of each change
+  (`FreeRec.via`), and the replay passes it (`replayFrees`). The loop's exits and back-edge test use
+  the same exception (`freeHits` takes the local, and skips references the change's `via` is or is
+  derived from, as `invalidate` does). `FP_defer_via_child_ancestor`, `_fn` and `_loop` are accepted;
+  a deferred write to the parent's own array (`p.kids = ...`) is still refused where a reference into
+  that array is read after the block (the error case "a deferred write through a reference frees what
+  a reference into its place points into"). The loop case
+  `loopContChild` covers the exit path. The defer probe `l7_defer_in_loop_repoint_each` stays rejected,
+  as the non-defer form is by the seed.
+- Tests: `tests/errors/ref_bindings.obx`: three cases (a mut argument and an append through a
+  reference read-only on the next pass; a deferred write that frees what a reference into its parent
+  points into, read after the block). `tests/run/ref_bindings.obx`: `deferChild`, `deferChildLoop`,
+  `deferHandleChild`, `loopContChild`, `mutArgOk`. Mutants in `tests/mutate_fork.py`: a mut argument
+  is not a write, an append is not a write, a deferred change or deep change replayed without its
+  reference, a deferred change not replayed, and a logged free that ignores its reference. 69 of 69 are
+  caught.
+
 **Open after this follow-up** (accepted by the seed too; each reads freed memory when run):
 - H-3, a defer body reading a reference that is re-pointed after the defer statement (`mk/defer_repointed_later.obx`:
   `defer println(k.v)`, then `k = &b` and `b = new ...` in the same block; the body prints a freed value).

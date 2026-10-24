@@ -905,6 +905,7 @@ type FreeRec = ref record {
     root: ?^Sym
     all: bool
     path: string
+    via: ?^Sym           // the reference a change is made through: references it was derived from stay valid (see invalidate)
     nonFresh: []int      // the owned locals that were reference locals not pointed afresh when the change was made
 }
 
@@ -2219,13 +2220,13 @@ fn pathsOverlap(a: string, b: string): bool {
 // A change that may free something is logged while a loop or a deferred body is compiled: a loop's exits
 // are checked against the frees logged on their way out (see applyExit), and a deferred body's frees are
 // replayed where its block is left (see replayFrees).
-fn logFree(kind: int, root: ?^Sym, all: bool, path: string) {
+fn logFree(kind: int, root: ?^Sym, all: bool, path: string, via: ?^Sym) {
     if recording == 0 && !inDefer { return }
     var nf = new []int(0)
     for i in 0..len(ownedLocals) {
         if ownedLocals[i].isRefLocal && !ownedLocals[i].fresh { append(nf, i) }
     }
-    append(freeArena, new FreeRec{kind: kind, root: root, all: all, path: path, nonFresh: nf})
+    append(freeArena, new FreeRec{kind: kind, root: root, all: all, path: path, via: via, nonFresh: nf})
     append(freeLog, handle(freeArena[len(freeArena) - 1]))
 }
 
@@ -2257,8 +2258,11 @@ fn hitBy(b: ^RefBind, root: ?^Sym, all: bool, path: string): bool {
     return false
 }
 
-// whether a logged change may free what binding b points into
-fn freeHits(b: ^RefBind, r: ^FreeRec): bool {
+// whether a logged change may free what binding b points into, for the reference local s: the same test as
+// invalidate and invalidateDeep make, so a reference the change was made through, or derived from, stays valid
+fn freeHits(s: ^Sym, b: ^RefBind, r: ^FreeRec): bool {
+    let rv = r.via
+    if ancestorOf(s, rv) { return false }
     if r.kind == 0 { return hitBy(b, r.root, r.all, r.path) }
     return anyDeep(b)
 }
@@ -2305,20 +2309,15 @@ fn applyExit(mut x: &PState, back: &PState, logFrom: int, at: int) {
     for i in 0..m {
         if !x.flags[2 * n + i] && ownedLocals[i].isRefLocal {
             let bb = back.binds[i]
+            let s = ownedLocals[i]
             for k in logFrom..at {
                 let r = freeLog[k]
-                let rt = r.root
                 if r.kind == 2 {
-                    if anyDeep(bb) {
+                    if freeHits(s, bb, r) {
                         x.flags[n + i] = true
                         x.flags[3 * n + i] = true
                     }
-                } else if r.kind == 1 {
-                    if anyDeep(bb) {
-                        x.flags[i] = true
-                        x.flags[3 * n + i] = true
-                    }
-                } else if hitBy(bb, rt, r.all, r.path) {
+                } else if freeHits(s, bb, r) {
                     x.flags[i] = true
                     x.flags[3 * n + i] = true
                 }
@@ -2330,7 +2329,7 @@ fn applyExit(mut x: &PState, back: &PState, logFrom: int, at: int) {
 
 fn invalidate(root: ?^Sym, via: ?^Sym, all: bool, path: string) {
     if root == nil { return }
-    logFree(0, root, all, path)
+    logFree(0, root, all, path, via)
     markCarriedFreed()
     let locals = &ownedLocals
     for v in locals {
@@ -2349,7 +2348,7 @@ fn invalidate(root: ?^Sym, via: ?^Sym, all: bool, path: string) {
 // inside something is invalid, whatever it borrows from. A reference to a whole object stays
 // valid: only owners free whole objects, and a change through a handle frees only below its target.
 fn invalidateDeep(via: ?^Sym) {
-    logFree(1, nil, false, "")
+    logFree(1, nil, false, "", via)
     markCarriedDeep()
     let locals = &ownedLocals
     for v in locals {
@@ -2372,7 +2371,7 @@ fn notePending(line: int, col: int, msg: string) {
 // a recursive call (or a deferred one) may write through a handle: the references inside something
 // that are live now may be freed, so they are suspect until they are pointed afresh
 fn markSuspects() {
-    logFree(2, nil, false, "")
+    logFree(2, nil, false, "", nil)
     let locals = &ownedLocals
     for v in locals {
         if v.isRefLocal && anyDeep(v.bind) && !v.moved { v.suspect = true }
@@ -2545,6 +2544,15 @@ fn recordFreeChange(x: &Item) {
 
 // a change of an owned value that goes through a handle, or through a reference borrowed through
 // one: it may free what references inside something point into
+// a write through x, which is through a reference local that is not pointed afresh: see loopBindCheck
+fn noteWrite(x: &Item) {
+    let r = x.root
+    if r != nil && r.isRefLocal && !r.fresh {
+        useSeq += 1
+        r.writeUse = useSeq
+    }
+}
+
 fn invalidateOwnedChange(x: &Item) {
     invalidateChange(x)
     if throughHandle(x) { invalidateDeep(viaOf(x)) }
@@ -2583,11 +2591,13 @@ fn openBlock() {
 fn replayFrees(bi: int) {
     for k in 0..len(blocks[bi].frees) {
         let r = blocks[bi].frees[k]
+        // the change is replayed as it was made: through the same reference, so what it was derived from stays valid
+        let rv = r.via
         if r.kind == 0 {
             let rt = r.root
-            invalidate(rt, nil, r.all, r.path)
+            invalidate(rt, rv, r.all, r.path)
         } else if r.kind == 1 {
-            invalidateDeep(nil)
+            invalidateDeep(rv)
         } else {
             markSuspects()
         }
@@ -2832,6 +2842,8 @@ fn callFn(f: ^Sym): Item {
             if f.pmodes[i] == 2 && !b.writable {
                 error("argument " + string(i + 1) + " of " + f.name + " needs a mut reference, but this one is read-only")
             }
+            // a mut argument writes through the reference it is passed by
+            if f.pmodes[i] == 2 { noteWrite(a) }
             append(argBinds, b)
             append(argModes, f.pmodes[i])
             append(argVias, viaOf(a))
@@ -3147,6 +3159,8 @@ fn builtin(name: string): Item {
         }
         if a.typ.kind != want { error(name + " needs " + article + " " + want + ", not " + tname(a.typ)) }
         noTemp(a)
+        // a write through a reference: the root is read here, before pinStr loads the array into a register
+        if name == "append" || name == "truncate" { noteWrite(a) }
         if name != "substr" {
             let ar = a.root
             if ar != nil && ar.isRef && !ar.bind.writable {
@@ -4233,7 +4247,7 @@ fn loopBodyV(entry: PState, line: int, col: int, lv: ?^Sym, nOuter: int, selfBef
         let r = freeLog[j]
         for q in 0..len(r.nonFresh) {
             let i = r.nonFresh[q]
-            if i < n && !hit[i] && freeHits(back.binds[i], r) { hit[i] = true }
+            if i < n && !hit[i] && freeHits(ownedLocals[i], back.binds[i], r) { hit[i] = true }
         }
     }
     for i in 0..n {

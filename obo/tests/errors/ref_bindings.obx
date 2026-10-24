@@ -303,6 +303,48 @@ fn main() {
     append(root.kids, new Item{v: 7, kids: new []Item(0)})
     rec(root, handle(root), 2)
 }
+// === a mut argument writes through a reference that is read-only where the loop starts again
+fn bump(mut q: &Item) { q.kids = new []Item(0) }
+fn walk(r: &Item) {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 2 {  // error: 'k' is read-only where the loop starts again, and written before it is pointed again
+        bump(k)
+        if i == 0 { k = r }
+        i += 1
+    }
+}
+fn main() {
+    var x = new Item{v: 2, kids: new []Item(0)}
+    walk(x)
+}
+// === an append through a reference that is read-only where the loop starts again
+fn walk(r: &Item) {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 2 {  // error: 'k' is read-only where the loop starts again, and written before it is pointed again
+        append(k.kids, new Item{v: 4, kids: new []Item(0)})
+        if i == 0 { k = r }
+        i += 1
+    }
+}
+fn main() {
+    var x = new Item{v: 2, kids: new []Item(0)}
+    walk(x)
+}
+// === a deferred write through a reference frees what a reference into its place points into, read after the block
+fn main() {
+    var x = new Item{v: 1, kids: new []Item(0)}
+    append(x.kids, new Item{v: 2, kids: new []Item(0)})
+    var p = &x
+    var q = &x.kids[0]
+    {
+        defer { p.kids = new []Item(0) }
+    }
+    println(q.v)  // error: 'q' may point to freed memory
+}
 // === a loop frees what the reference points into, then an inner loop, then the reference is read at the top of the next pass
 fn main() {
     var a = new Item{v: 1, kids: new []Item(0)}

@@ -226,6 +226,82 @@ fn deferEarly() {
     }
 }
 
+// a deferred write through a child changes only what is under the child: its parent stays valid after the block
+fn deferChild() {
+    var x = new Item{v: 1, kids: new []Item(0)}
+    append(x.kids, new Item{v: 2, kids: new []Item(0)})
+    append(x.kids[0].kids, new Item{v: 3, kids: new []Item(0)})
+    var p = &x.kids[0]
+    {
+        let s = &p.kids[0]
+        defer { s.kids = new []Item(0) }
+        println(p.v)                // expect: 2
+    }
+    println(p.v)                    // expect: 2
+}
+
+// the same, deferred in each pass of a loop, where the parent is read after the loop
+fn deferChildLoop() {
+    var x = new Item{v: 1, kids: new []Item(0)}
+    append(x.kids, new Item{v: 2, kids: new []Item(0)})
+    append(x.kids[0].kids, new Item{v: 3, kids: new []Item(0)})
+    var p = &x.kids[0]
+    var i = 0
+    while i < 2 {
+        let s = &p.kids[0]
+        defer { s.kids = new []Item(0) }
+        i += 1
+    }
+    println(p.v)                    // expect: 2
+}
+
+// a deferred deep write through a child of a reference borrowed through a handle: the reference stays valid
+fn deferHandleChild() {
+    var x = new Item{v: 1, kids: new []Item(0)}
+    append(x.kids, new Item{v: 2, kids: new []Item(0)})
+    append(x.kids[0].kids, new Item{v: 3, kids: new []Item(0)})
+    let h = handle(x)
+    var p = &h.kids[0]
+    {
+        let s = &p.kids[0]
+        defer { s.kids = new []Item(0) }
+        println(p.v)                // expect: 2
+    }
+    println(p.v)                    // expect: 2
+}
+
+// a loop that writes through a child of p and leaves through continue: p, an ancestor, stays valid
+fn loopContChild() {
+    var x = new Item{v: 1, kids: new []Item(0)}
+    append(x.kids, new Item{v: 2, kids: new []Item(0)})
+    append(x.kids[0].kids, new Item{v: 3, kids: new []Item(0)})
+    var p = &x.kids[0]
+    var i = 0
+    while i < 2 {
+        let s = &p.kids[0]
+        s.kids = new []Item(0)
+        i += 1
+        if i == 1 { continue }
+        println(p.v)                // expect: 2
+    }
+    println(p.v)                    // expect: 2
+}
+
+fn bumpV(mut q: &Item) { q.v += 1 }
+
+// a mut argument writes through a reference that is pointed afresh before each pass: no error
+fn mutArgOk() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 2 {
+        k = &a
+        bumpV(k)
+        i += 1
+    }
+    println(a.v)                    // expect: 3
+}
+
 fn main() {
     choose(true)
     both(true)
@@ -243,4 +319,9 @@ fn main() {
     preMark()
     unrelated2()
     deferEarly()
+    deferChild()
+    deferChildLoop()
+    deferHandleChild()
+    loopContChild()
+    mutArgOk()
 }
