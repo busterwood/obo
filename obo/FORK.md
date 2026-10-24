@@ -270,7 +270,7 @@ More is coming: per-path reference bindings need the same kind of state. The all
 retentions by the budget).
 
 **Open.** Time: the port is about 50% slower than the GC on the same work and
-allocated 26 MB in total before the allocation work, now 12.3 MB ("Allocation (done)"),
+allocated 28.6 MB in total before the allocation work, now 12.3 MB ("Allocation (done)"),
 with items still allocated per use. Then the structural move: a committed
 bootstrap built from the port, a promote rule with the fixed point, the remaining
 mutants retargeted at the port, and obo-on-obx.obx retired to legacy.
