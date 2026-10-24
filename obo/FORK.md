@@ -259,18 +259,19 @@ itself exceeds `PEAK_BUDGET` (about 3% over the measured figure; patch
 reason recorded here.
 
 **Budget raised, 1,305,000 to 1,351,000** (measured live peak 1,311,184 bytes, about 3% over).
+The allocation work has since lowered the live peak to 1,045,392 bytes; the budget is unchanged.
 The reason: soundness fixes need per-path state for suspect references. The state at each join
 now carries every local's suspicion (see "Deep references" below), which added 10,432 bytes.
-More is coming: per-path reference bindings need the same kind of state. The allocation work in
-README item 4 is planned to reclaim it, and the budget goes down again then.
+More is coming: per-path reference bindings need the same kind of state. The allocation work
+("Allocation (done)", above) reclaimed the room, and the budget is left for a separate decision.
 
 **Tests.** `python3 obo/tests/mutate_port.py`: 6 mutants of the port, all caught
 (two divergences by mismatch, two early frees by dangling-handle traps, two
 retentions by the budget).
 
 **Open.** Time: the port is about 50% slower than the GC on the same work and
-allocates 26 MB in total; every Item allocates four arrays, and jump lists and
-items are copied (copyInts, dupItem). Then the structural move: a committed
+allocated 28.6 MB in total before the allocation work, now 12.3 MB ("Allocation (done)"),
+with items still allocated per use. Then the structural move: a committed
 bootstrap built from the port, a promote rule with the fixed point, the remaining
 mutants retargeted at the port, and obo-on-obx.obx retired to legacy.
 
@@ -593,17 +594,91 @@ inherited 2, call-site deep-argument check dropped 6; scalar truncate through a 
 shallow references invalidated 0 each. Those last two are covered by the run and error cases
 above, not by the fuzzer.
 
-**Holes found, not fixed here.** All three are accepted by HEAD's seed too, and by the current
-compiler. They will be fixed next.
-- A reference re-pointed in one branch keeps only the last binding for every path:
-  `var k = &a; if a.v == 2 { k = &b }; a = new ...; println(k.v)` reads freed memory
-  (`scratchpad/w/x4_root_join.obx`). The handle form is `var k = &root.kids[0]; if root.v == 2 {
-  k = &root }; h.kids = new ...; println(k.v)` (`scratchpad/w/x3_refdeep_nocall_arg.obx`). Per-path
-  reference bindings are the planned fix.
+**Holes found, not fixed here.** Both are accepted by HEAD's seed too, and by the current
+compiler. They will be fixed next. (The reference re-pointed on one branch is fixed: see
+"Reference bindings per path (done)" below.)
 - Uses inside `defer` bodies are not checked against later changes: `defer println(first.v)`, then
   `bag.items = new ...` (`scratchpad/review5/p/p03_defer_nohandle.obx`).
 - Argument evaluation order: a deep argument is checked before a later argument's call frees what it
   points into: `use2(first, mk(h))` (`scratchpad/review5/p/e1_arg_order.obx`, and `e2`).
+
+**Seed.** The rule is promoted after the suite and mutants pass, following `make promote`.
+
+## Reference bindings per path (done)
+
+**The hole.** A reference local's binding (what it may point into) was one for the whole function,
+so a re-point on one branch overwrote it for every path. `var k = &a; if a.v == 2 { k = &b };
+a = new ...; println(k.v)` compiled on HEAD and printed 0 from freed memory. Of the first nine cases in
+`tests/errors/ref_bindings.obx`, seven compiled on HEAD though they must fail (the if, the handle form
+with a deep reference, the recursive walk, the match arm, the else-if chain, the loop, and the items at
+two indexes).
+
+**The rule, as implemented: track both roots.** A binding is per path, and where paths join it is the
+union, so a reference re-pointed on one branch may point into the places of both branches, and a change
+under either is seen. The rule is in `LANGUAGE.md` section 4, with the example, and the join is stated
+in section 10.
+
+- `RefBind` (`src/obo.obo`, near line 881) is an immutable record: the roots, the deep flag and the
+  place for each root, writable, and the parent reference. `arenaBind` makes them; `fnDecl` releases
+  them when the function ends (`bindMark`). `PState` (near line 891) holds, per owned local, its moved,
+  suspect and fresh flags and its binding. `snapshot`, `copyState`, `restore`, `joinStates` and
+  `absorb` carry it through ifs, matches, loops, breaks, continues and defers.
+- The join (`joinBind`, near line 1744, and `joinPath`, near line 1726): roots are the union; deep is
+  OR; writable is AND; the parent is kept only where the two are equal. For places, equal is the same
+  place; when one place is under the other (its path is a prefix of the other's), the join is the
+  longer, so a change to the shorter place and every change under it is seen; any other pair joins to
+  the whole root (`""`).
+- Invalidation (`invalidate`, near line 1665) tests each binding entry: a change reaches an entry when
+  the change is at its root and the entry lies under the change's place, or when the root is the handle.
+  A re-point (the assignment, near line 3786) makes a new binding; it does not change the old one.
+- The loop check (`loopBindCheck`, near line 2234, with `bindCovers` near line 1797): when a loop body
+  frees something (`freeCount`, bumped by `invalidate` and `invalidateDeep`), a reference read before it
+  is pointed afresh in the body is an error unless its binding at the end of the body is covered by the
+  binding the body was checked with. The gate on frees is what keeps linked-list walks accepted (`p =
+  p.next` in a loop that reads `p` at its top): a body that frees nothing cannot free what the next
+  iteration reads, since the frees before the loop are in its entry state. Without the gate, 63 valid
+  fuzzer programs were rejected.
+
+**Path join: the spec's rule is unsound.** The first design took the common prefix of two places as the
+join, and called the shorter place "more conservative". It is not: a join of `/a/b` and `/a/c` to `/a`
+misses a change at `/a/b`, which frees the place one of the paths points at, and a join of `/a` and
+`/a/b` to `/a` misses a change at `/a/b` too. The rule above is the sound one. The mutant that keeps
+the shorter place is caught by `errors/ref_bindings.obx`, "a reference joined from a place and the place
+below it".
+
+**A self-parent hang, fixed.** `let w = &root; var k = &root; k = &k.kids[0]; k.kids = new []Item(0);
+println(w.v)` never finished on HEAD (timeout, exit 124). `k = &k.kids[0]` made `k` its own parent, and
+`ancestorOf` followed the parent chain forever. The re-point now keeps the old parent when the new one
+would be an ancestor of the reference itself (assignment, near line 3786). The case is
+`run/ref_bindings.obx`, `selfParent`, which prints 1.
+
+**Memory.** The port compiling itself has a live peak of 1,083,760 bytes against the budget of
+1,351,000 (`tests/port_compare.py`), and allocates 13,680,928 bytes in all. Main's allocation work,
+merged here, had 1,045,296; the difference is the per-path bindings (38 KB). Before that work the same
+change measured 1,758,240, over the budget, and the cause was not the new data: the image buffer grew
+past 262,144 bytes and was reallocated while both blocks were live. Padding HEAD by about 4 KB of
+emitted code reproduced the jump (1,727,616). Main's `elfImage` now sizes the image once, which removes
+it. The per-state arrays and the bindings arena are small: measured before the merge, no function ended
+with more than 32 bindings, and no state covered more than 9 owned locals.
+
+**Tests.**
+- `tests/errors/ref_bindings.obx`: 12 cases. The first nine are a re-point on one branch of an `if`,
+  through a handle with a deep reference, in a recursive walk, in a match arm, in an else-if chain, in a
+  loop, two roots changed, a change under the second root of a join, and the items at two indexes. Three
+  more: a reference joined from a place and the place below it, a reference shallow on one path and deep
+  on the other, and a reference writable on one path and read-only on the other.
+- `tests/run/ref_bindings.obx`: six accepted programs with their output (`choose`, `both`, `newRoot`,
+  `loopPoint`, `underIndex`, and `selfParent` for the hang above).
+- `tests/own_fuzz.py`: two statement kinds. `choose_ref_stmt` (valid): a reference pointed at one of two
+  locals, re-pointed on one path, read, with no change. `branch_free_stmt` (invalid): a reference
+  re-pointed on one path, a change under the root the other path points into, then a read.
+- `tests/mutate_port.py`: six new mutants, each caught by a named case: a binding that is not joined
+  (last path wins), a join that keeps only the first root, a join that is deep only where both paths are
+  (`errors/ref_bindings.obx`, "a re-point in one arm of a match", and "the same, through a handle, with a
+  deep reference"), the spec's shorter-place join, a join that is writable where either path is, and no
+  loop binding check. Eighteen existing port mutants, and twelve fork mutants, whose patterns the
+  rewrite had replaced were retargeted to the same behaviour in the new code (`tools/port_ref_mutants.py`
+  and `tools/fork_ref_mutants.py`).
 
 **Seed.** The rule is promoted after the suite and mutants pass, following `make promote`.
 
@@ -629,7 +704,7 @@ compiler. They will be fixed next.
 
 ## Optimization plan
 
-Status: planned, not started. Phases are ordered by expected value per unit of cost.
+Status: Phase 0 done; Phases 1 to 4 planned, not started. Phases are ordered by expected value per unit of cost.
 Each has a gate; a phase that misses its gate is recorded here and stopped.
 
 **Baseline.** A loop `s = s + i * 2` over `i < n` compiles with every local in a stack
@@ -641,13 +716,65 @@ latency on the critical path, not only instruction count.
 **Ordering.** Register allocation (Phase 2) removes most of what a peephole pass would
 remove, so the peephole comes after it and may never be built.
 
-### Phase 0: measure
+### Phase 0: measure (done)
 
-Add four micro-benchmarks under `obo/bench/`: a tight integer loop, fib (call-heavy),
-an array-indexing loop, and an allocation-heavy loop. Record wall time, and
-instruction counts from `objdump` over the program's code segment, as the baseline.
+The four workloads are `obo/bench/loop_obo.obx`, `fib_obo.obx`, `array_obo.obx` and
+`alloc_obo.obx`. Each prints a checksum, which `obo/bench/micro.py` checks, and each
+runs once with `OBO_CHECK=1` and must exit 0 (no leaks, no double frees). The script
+builds the compiler with `make`, times each workload, and counts its code segment.
+Rerun it with:
 
-*Gate:* baseline figures recorded in this section.
+    python3 obo/bench/micro.py            # the table below; 5 timed runs each
+    python3 obo/bench/micro.py --disasm loop
+
+Measured at commit 4e11fb2 on an AMD Ryzen 7 8745HS under WSL2, with the seed
+compiler and gcc 13 / GNU objdump 2.42. Times are without `OBO_CHECK`, the normal
+configuration.
+
+| Benchmark | Time, median of 5 (ms) | Instructions in code segment | Notes |
+|---|---|---|---|
+| loop | 576 (range 576-587) | 36 | `while i < n { s = s + i * 2 }` with n = 1e9. Loop body is 12 instructions: 5 loads, 2 stores, 2 branches. |
+| fib | 619 (616-633) | 57 | `fib(40)`: about 331 million calls, about 1.9 ns each. Arguments are pushed on the stack. |
+| array | 408 (406-414) | 105 | 1e6 elements built by `append`, then 200 rounds of `a[i] = a[i] + r` and `total += a[i]`. Three bounds checks per iteration, each reloading the array header. Peak RSS 16.0 MB. |
+| alloc | 489 (434-514) | 56 | 2e7 records, each allocated and freed in its own iteration. Peak live 32 bytes, 640 MB allocated in total. |
+
+Peak RSS is 0.1 MB for loop, fib and alloc, and 16.0 MB for array (the 1e6-element
+array). The script reads it with `bench/peak.c`, the helper `bench.py` uses. A Python
+`wait4` would report the parent's RSS too, because a forked child starts with the
+parent's pages.
+
+Code segment: the program's code, from the entry point (0x401000) to the end of its
+executable segment (0x40109b). The runtime's text, at 0x10000000, is not counted.
+
+The tight loop's body, from `micro.py --disasm loop`:
+
+```
+40103a:	mov    -0x18(%rbp),%rbx
+40103e:	cmp    -0x8(%rbp),%rbx
+401042:	jge    0x40106f
+401048:	mov    -0x10(%rbp),%r8
+40104c:	mov    -0x18(%rbp),%r9
+401050:	imul   $0x2,%r9,%r9
+401057:	add    %r9,%r8
+40105a:	mov    %r8,-0x10(%rbp)
+40105e:	mov    -0x18(%rbp),%r10
+401062:	add    $0x1,%r10
+401066:	mov    %r10,-0x18(%rbp)
+40106a:	jmp    0x40103a
+```
+
+The plan's description holds. `i` (`-0x18`) is loaded three times, at 40103a, 40104c and
+40105e, and `s` (`-0x10`) is loaded and stored. `n` (`-0x8`) is loaded again by the `cmp`.
+The loop has a `jge` exit test at the top and a `jmp` back to it.
+
+One surprise: 576 ms for 1e9 iterations is 0.58 ns each, about 2.2 cycles at the
+3.8 GHz nominal clock. A loop whose two loop-carried values each go through a
+store-to-load round trip would usually be limited to several cycles per iteration by
+that round trip. This CPU may forward rbp-relative stores with almost no latency (memory
+renaming), so the latency part of the plan's motivation may be weaker here than
+assumed. Phase 2's measured gain will show whether it is.
+
+*Gate:* met. These figures are the baseline for Phases 1 to 4.
 
 ### Phase 1: cheap codegen
 
@@ -690,9 +817,43 @@ Do this only if Phase 2's numbers show that call overhead matters on the fib ben
   using facts from loop conditions. Reuse the narrowing machinery where it fits.
 - **Allocation.** The cause of the port's ~50% gap (Stage B, above): four arrays per
   `Item`, and copies in `copyInts` and `dupItem`. Measure with Phase 0's allocation
-  benchmark before changing anything.
+  benchmark before changing anything. Done: see "Allocation (done)" below.
 
 *Gate:* each change shows a measured gain on its benchmark.
+
+### Allocation (done)
+
+Measured on the port compiling its own source (`obo/src/obo.obo`, 4,552 lines) with
+`OBO_STATS=1` through `tests/port_compare.py`. Each row is one change, measured after
+it; every kept change left Stage B at 396 of 396 identical.
+
+| Change | Total allocated (bytes) | Live peak (bytes) |
+|---|---|---|
+| Baseline at 4e11fb2 | 28,648,672 | 1,326,112 |
+| Jump lists as chains: a jump's rel32 field links to the next waiting jump (0 ends) | 23,068,272 | 1,323,712 |
+| Narrowings as linked lists, shared between branches | 17,830,672 | 1,321,328 |
+| Scanner holds the source as one string; tokens by `substr` | 16,479,488 | 1,319,760 |
+| Source freed before the image is built | 16,481,840 | 1,177,168 |
+| ELF image allocated once, at its final size | 16,206,832 | 1,044,560 |
+| Register sets as bit masks, not arrays | 13,960,992 | 1,044,400 |
+| No placeholder Item for a name or a runtime call's result | 12,266,272 | 1,045,392 |
+
+Wall time, the minimum of 21 to 41 runs on WSL: about 33 ms at baseline and 28 to 30 ms
+after the register change; the last change is within run-to-run noise. The baseline
+peak is 1,326,112 bytes as measured here (the brief's 1,326,016 was an earlier figure).
+
+Tried and dropped: freeing the code buffer as soon as the image has copied it. The
+live peak fell by 416 bytes (1,044,400 to 1,043,984), which was not worth the extra
+reassignment, since the peak is reached while the image is being copied.
+
+`PEAK_BUDGET` stays at 1,351,000. The new peak leaves a margin of 305,608 bytes, which is
+more than the mutant "parameters kept" adds (about 190 KB), so that mutant was no longer
+caught by the budget. It is now caught when its peak rises above the unmutated peak
+(`KEEPS_ALIVE` in `tests/mutate_port.py`).
+
+Not done: the per-call arrays in `rtCall` and `rtCall0/1/2` (`regs`, `temps`, the
+argument arrays), the `fixups` array of each Sym, and the snapshot copies (`copyBools`).
+Item creations (about 32,000 per self-compile, mostly loads and voids) were left as they are.
 
 ### Peephole pass (not planned)
 

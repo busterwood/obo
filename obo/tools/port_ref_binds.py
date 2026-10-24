@@ -594,7 +594,6 @@ fn invalidateOwnedChange(x: &Item) {
     if throughHandle(x) { invalidateDeep(viaOf(x)) }
 }
 
-fn parseType(): ^Type
 """)
 
 # ---------------------------------------------------------------- uses
@@ -725,7 +724,7 @@ fn loopBodyV(entry: PState, line: int, col: int, lv: ?^Sym, nOuter: int, selfBef
     let n = localsIn(entry)
     let frees = freeCount
     clearFresh()
-    append(loops, new Loop{brk: new []int(0), cont: new []int(0), blocks: len(blocks), entry: copyState(entry), lv: lv,
+    append(loops, new Loop{brk: 0, cont: 0, blocks: len(blocks), entry: copyState(entry), lv: lv,
                            susp: neutralState(n), back: neutralState(n)})
     let term = block()
     // the next iteration starts where the body ends, if it falls through, and at each continue (added then)
@@ -737,7 +736,7 @@ fn loopBodyV(entry: PState, line: int, col: int, lv: ?^Sym, nOuter: int, selfBef
     loopSelfCheck(nOuter, selfBefore, useBefore, &loops[li].back, lv, line, col)
     loopBindCheck(&entry, &loops[li].back, useBefore, freeCount > frees, lv, line, col)
     // the loop's record leaves the stack; what break and continue collected comes back
-    let res = new Loop{brk: copyInts(loops[li].brk), cont: copyInts(loops[li].cont), blocks: loops[li].blocks,
+    let res = new Loop{brk: loops[li].brk, cont: loops[li].cont, blocks: loops[li].blocks,
                        entry: copyState(entry), lv: lv, susp: copyState(loops[li].susp), back: copyState(loops[li].back)}
     truncate(loops, li)
     if lv != nil { lv.moved = false }

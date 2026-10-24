@@ -118,7 +118,7 @@ let tokNames = makeTokNames()
 fn tokName(k: int): string { return tokNames[k] }
 
 
-var src = new []byte(0)
+var src = ""                  // the source text, read by index
 var pos = 0
 var line = 1
 var col = 1
@@ -196,12 +196,6 @@ fn advance() {
         col += 1
     }
     pos += 1
-}
-
-fn text(from: int, to: int): string {
-    let b = new []byte(0)
-    for i in from..to { append(b, src[i]) }
-    return string(b)
 }
 
 // a newline after one of these ends the statement
@@ -418,7 +412,7 @@ fn next() {
     if isLetter(c) {
         let start = pos
         while pos < len(src) && (isLetter(src[pos]) || isDigit(src[pos])) { advance() }
-        sval = text(start, pos)
+        sval = substr(src, start, pos)
         setTok(keywordTok(sval))
     } else if isDigit(c) {
         scanNumber()
@@ -437,7 +431,7 @@ fn next() {
             advance()
             setTok(p1)
         } else if c >= 33 && c <= 126 {
-            fail("unexpected character '" + text(pos, pos + 1) + "'")
+            fail("unexpected character '" + substr(src, pos, pos + 1) + "'")
         } else {
             let b = new []byte(0)
             append(b, hexDigit(c >> 4))
@@ -448,7 +442,7 @@ fn next() {
 }
 
 fn startScanner(source: []byte) {
-    src = source
+    src = string(source)
     pos = 0
     line = 1
     col = 1
@@ -618,13 +612,20 @@ fn jmp(): int {
     return pc() - 4
 }
 
-fn fix(at: int, target: int) {
-    let rel = target - (at + 4)
-    code[at] = byte(rel)
-    code[at + 1] = byte(rel >> 8)
-    code[at + 2] = byte(rel >> 16)
-    code[at + 3] = byte(rel >> 24)
+// A jump's rel32 field holds its displacement once the target is known, and until then
+// the position of the next jump waiting for the same target (waitJump): 0 after the last.
+fn putRel(at: int, v: int) {
+    code[at] = byte(v)
+    code[at + 1] = byte(v >> 8)
+    code[at + 2] = byte(v >> 16)
+    code[at + 3] = byte(v >> 24)
 }
+
+fn getRel(at: int): int {
+    return int(code[at]) | (int(code[at + 1]) << 8) | (int(code[at + 2]) << 16) | (int(code[at + 3]) << 24)
+}
+
+fn fix(at: int, target: int) { putRel(at, target - (at + 4)) }
 
 fn callLocal(target: int) {
     emit(0xE8)
@@ -941,6 +942,7 @@ fn symType(s: ^Sym): ^Type {
 type NPair = ref record {
     sym: ^Sym
     typ: ^Type
+    next: ?NPair              // the rest of the list
 }
 
 // Describes where a value currently is, so that emission can be delayed.
@@ -951,9 +953,9 @@ type Item = ref record {
     base, index, disp: int    // mem: base and index registers (-1 for none)
     r: int
     cc: int                   // cond: condition code meaning true
-    T, F: []int               // cond: jumps to the true and false targets
+    T, F: int                 // cond: jumps waiting for the true and false targets (lists: see waitJump)
     sym: ?^Sym                 // set when the item is a plain variable
-    nt, nf: []NPair           // narrowings valid when the condition holds / fails
+    nt, nf: ?NPair            // narrowings valid when the condition holds / fails (a list of pairs)
     readonly: bool
     width, scale, line: int
     root: ?^Sym                // the variable a designator starts from
@@ -966,8 +968,8 @@ type Item = ref record {
 }
 
 fn newItem(mode: string, t: ^Type): Item {
-    return new Item{mode: mode, typ: t, base: -1, index: -1, r: -1, T: new []int(0), F: new []int(0),
-                    nt: new []NPair(0), nf: new []NPair(0), width: 8, scale: 8}
+    return new Item{mode: mode, typ: t, base: -1, index: -1, r: -1, T: 0, F: 0,
+                    nt: nil, nf: nil, width: 8, scale: 8}
 }
 
 fn makeConst(t: ^Type, v: int): Item {
@@ -1001,24 +1003,10 @@ fn dupItem(x: &Item): Item {
     return y
 }
 
-fn concatInts(a: &[]int, b: &[]int): []int {
-    let out = new []int(0)
-    for v in a { append(out, v) }
-    for v in b { append(out, v) }
-    return out
-}
-
-fn copyPairs(a: &[]NPair): []NPair {
-    let out = new []NPair(0)
-    for v in a { append(out, new NPair{sym: v.sym, typ: v.typ}) }
-    return out
-}
-
-fn concatPairs(a: &[]NPair, b: &[]NPair): []NPair {
-    let out = new []NPair(0)
-    for v in a { append(out, new NPair{sym: v.sym, typ: v.typ}) }
-    for v in b { append(out, new NPair{sym: v.sym, typ: v.typ}) }
-    return out
+// a copy of a's narrowings, then b's (b is moved in)
+fn joinPairs(a: &?NPair, b: ?NPair): ?NPair {
+    if a == nil { return b }
+    return new NPair{sym: a.sym, typ: a.typ, next: joinPairs(&a.next, b)}
 }
 
 // ================================================================= layout
@@ -1121,8 +1109,8 @@ type NEntry = ref record {
 }
 
 type Loop = ref record {
-    brk: []int
-    cont: []int
+    brk: int                  // jumps waiting for the loop's end (a list: see waitJump)
+    cont: int                 // jumps waiting for the next iteration
     blocks: int
     entry: PState              // the state when the loop was entered
     lv: ?^Sym                  // a for loop's variable, rebound every iteration
@@ -1164,12 +1152,6 @@ var inDefer = false
 var noreturn = false
 var initLink = 0
 
-fn copyInts(a: &[]int): []int {
-    let out = new []int(0)
-    for v in a { append(out, v) }
-    return out
-}
-
 fn containsInt(a: &[]int, v: int): bool {
     for x in a {
         if x == v { return true }
@@ -1178,7 +1160,8 @@ fn containsInt(a: &[]int, v: int): bool {
 }
 
 fn initCompiler() {
-    free = copyInts(pool)
+    let poolRefs = &pool
+    for r in poolRefs { append(free, r) }
     append(universe, newSym("type", "int", tInt))
     append(universe, newSym("type", "byte", tByte))
     append(universe, newSym("type", "bool", tBool))
@@ -1265,13 +1248,30 @@ fn skipSemis() {
 
 // ======================================================== emission helpers
 
-fn fixHere(links: &[]int) {
-    for at in links { fix(at, pc()) }
+// A list of jumps waiting for one target is 0 when empty, else the first of them; see putRel.
+fn waitJump(head: int, at: int): int {
+    putRel(at, head)
+    return at
 }
 
-fn fixTo(links: &[]int, target: int) {
-    for at in links { fix(at, target) }
+fn joinWaits(a: int, b: int): int {
+    if a == 0 { return b }
+    var at = a
+    while getRel(at) != 0 { at = getRel(at) }
+    putRel(at, b)
+    return a
 }
+
+fn fixTo(head: int, target: int) {
+    var at = head
+    while at != 0 {
+        let next = getRel(at)
+        fix(at, target)
+        at = next
+    }
+}
+
+fn fixHere(head: int) { fixTo(head, pc()) }
 
 fn jmpTo(target: int) { fix(jmp(), target) }
 
@@ -1379,13 +1379,47 @@ fn releaseItem(x: &Item) {
     }
 }
 
-fn inUse(): []int {
-    let out = new []int(0)
+// the registers in use, as a set: bit r is set for register r
+fn usedRegs(): int {
+    var set = 0
     let poolRefs = &pool
     for r in poolRefs {
-        if !containsInt(free, r) { append(out, r) }
+        if !containsInt(free, r) { set = set | (1 << r) }
     }
-    return out
+    return set
+}
+
+// the registers not in busy are free, in pool order
+fn setFree(busy: int) {
+    truncate(free, 0)
+    let poolRefs = &pool
+    for r in poolRefs {
+        if (busy & (1 << r)) == 0 { append(free, r) }
+    }
+}
+
+// pushes the registers in the set, in pool order; popRegs pops them in reverse
+fn pushRegs(set: int) {
+    let poolRefs = &pool
+    for r in poolRefs {
+        if (set & (1 << r)) != 0 { pushR(r) }
+    }
+}
+
+fn popRegs(set: int) {
+    var i = len(pool) - 1
+    while i >= 0 {
+        if (set & (1 << pool[i])) != 0 { popR(pool[i]) }
+        i -= 1
+    }
+}
+
+// the C argument registers, in order
+fn argReg(i: int): int {
+    if i == 0 { return RDI }
+    if i == 1 { return RSI }
+    if i == 2 { return RDX }
+    return RCX
 }
 
 fn trapBounds(line: int) {
@@ -1432,11 +1466,11 @@ fn load(x: Item): Item {
         }
     } else if x.mode == "cond" {
         r = alloc()
-        if len(x.T) == 0 && len(x.F) == 0 {
+        if x.T == 0 && x.F == 0 {
             opReg(0x0F90 + x.cc, 0, r, false, true)
             opReg(0x0FB6, r, r, true, true)
         } else {
-            append(x.F, jcc(x.cc ^ 1))
+            x.F = waitJump(x.F, jcc(x.cc ^ 1))
             fixHere(x.T)
             movRI(r, 1)
             let j = jmp()
@@ -1465,10 +1499,10 @@ fn loadCond(x: Item): Item {
     return c
 }
 
-fn falseJump(mut x: &Item): []int {
-    append(x.F, jcc(x.cc ^ 1))
+fn falseJump(mut x: &Item): int {
+    x.F = waitJump(x.F, jcc(x.cc ^ 1))
     fixHere(x.T)
-    return copyInts(x.F)
+    return x.F
 }
 
 fn store(dst: Item, source: Item) {
@@ -1500,25 +1534,18 @@ fn materialise(x: Item): Item {
 
 // =================================================================== calls
 
-fn saveRegs(): []int {
-    let saved = inUse()
-    for r in saved { pushR(r) }
-    free = copyInts(pool)
+// the registers in use are pushed, and all of them are free for the callee
+fn saveRegs(): int {
+    let saved = usedRegs()
+    pushRegs(saved)
+    setFree(0)
     return saved
 }
 
-fn restoreRegs(saved: &[]int) {
-    var i = len(saved) - 1
-    while i >= 0 {
-        popR(saved[i])
-        i -= 1
-    }
-    let f = new []int(0)
-    let poolRefs = &pool
-    for r in poolRefs {
-        if !containsInt(saved, r) { append(f, r) }
-    }
-    free = f
+// the saved registers are popped, and the ones that were not in use are free again
+fn restoreRegs(saved: int) {
+    popRegs(saved)
+    setFree(saved)
 }
 
 // Calls a runtime routine with the C ABI; live registers, including the
@@ -1536,14 +1563,9 @@ fn rtCall(slot: int, args: []?Item, ret: ^Type): Item {
             drop(a)
         }
     }
-    let saved = inUse()
-    for r in saved { pushR(r) }
-    let abi = new []int(0)
-    append(abi, RDI)
-    append(abi, RSI)
-    append(abi, RDX)
-    append(abi, RCX)
-    for i in 0..len(regs) { movRR(abi[i], regs[i]) }
+    let saved = usedRegs()
+    pushRegs(saved)
+    for i in 0..len(regs) { movRR(argReg(i), regs[i]) }
     let pad = depth % 16
     if pad != 0 {
         aluRI(5, RSP, 8)
@@ -1554,17 +1576,11 @@ fn rtCall(slot: int, args: []?Item, ret: ^Type): Item {
         aluRI(0, RSP, 8)
         depth -= 8
     }
-    var i = len(saved) - 1
-    while i >= 0 {
-        popR(saved[i])
-        i -= 1
-    }
-    var res = voidItem()
+    popRegs(saved)
+    var got = -1
     if ret != tVoid {
-        let r = alloc()
-        movRR(r, RAX)
-        res = makeReg(ret, r)
-        res.strTemp = ret == tString            // every string a runtime call returns is fresh
+        got = alloc()
+        movRR(got, RAX)
     }
     for i in 0..len(regs) {
         if temps[i] {
@@ -1575,6 +1591,9 @@ fn rtCall(slot: int, args: []?Item, ret: ^Type): Item {
         }
     }
     for r in regs { release(r) }
+    if ret == tVoid { return voidItem() }
+    let res = makeReg(ret, got)
+    res.strTemp = ret == tString            // every string a runtime call returns is fresh
     return res
 }
 
@@ -2350,7 +2369,6 @@ fn invalidateOwnedChange(x: &Item) {
 }
 
 fn parseType(): ^Type
-fn parseType(): ^Type
 
 fn parseRefType(): ^Type {
     refMode = 0
@@ -2434,8 +2452,10 @@ fn varType(s: ^Sym): ^Type {
     return symType(s)
 }
 
-fn pushNarrowings(lst: &[]NPair) {
-    for p in lst { append(narrowStack, new NEntry{sym: p.sym, typ: p.typ, depth: loopdepth, alive: true}) }
+fn pushNarrowings(lst: &?NPair) {
+    if lst == nil { return }
+    append(narrowStack, new NEntry{sym: lst.sym, typ: lst.typ, depth: loopdepth, alive: true})
+    pushNarrowings(&lst.next)
 }
 
 fn widen(s: ^Sym) {
@@ -3029,28 +3049,21 @@ fn designator(): Item { return designatorT(false) }
 
 // target: the designator is the left side of an assignment, where a moved
 // local may be given a new value
-fn designatorT(target: bool): Item {
-    let uline = tline
-    let ucol = tcol
-    let name = ident()
-    let s = lookup(name)
-    var x = voidItem()
-    if s.kind == "builtin" {
-        x = builtin(name)
-    } else if s.kind == "fn" {
+// the item a name stands for: a builtin, a call, a constant, a variable or a conversion
+fn nameItem(s: ^Sym, name: string, target: bool): Item {
+    if s.kind == "builtin" { return builtin(name) }
+    if s.kind == "fn" {
         if sym != T_LPAREN { error("functions can only be called") }
-        x = callFn(s)
-    } else if s.kind == "const" {
-        x = makeConst(symType(s), s.value)
-    } else if s.kind == "var" || s.kind == "let" {
+        return callFn(s)
+    }
+    if s.kind == "const" { return makeConst(symType(s), s.value) }
+    if s.kind == "var" || s.kind == "let" {
+        var x = newItem("mem", symType(s))
         if s.storage == "local" {
-            x = newItem("mem", varType(s))
+            x.typ = varType(s)
             x.base = RBP
-            x.disp = s.offset
-        } else {
-            x = newItem("mem", symType(s))
-            x.disp = s.offset
         }
+        x.disp = s.offset
         x.sym = s
         x.root = s
         x.readonly = s.kind == "let"
@@ -3065,11 +3078,21 @@ fn designatorT(target: bool): Item {
             }
         }
         if inDefer && s.owned { s.deferUse = true }
-    } else if s.kind == "type" && sym == T_LPAREN && (symType(s) == tInt || symType(s) == tByte || symType(s) == tString) {
-        x = conversion(symType(s))
-    } else {
-        error("'" + name + "' is a type, not a value (use 'new " + name + "{...}' to make one)")
+        return x
     }
+    if s.kind == "type" && sym == T_LPAREN && (symType(s) == tInt || symType(s) == tByte || symType(s) == tString) {
+        return conversion(symType(s))
+    }
+    error("'" + name + "' is a type, not a value (use 'new " + name + "{...}' to make one)")
+    return voidItem()
+}
+
+fn designatorT(target: bool): Item {
+    let uline = tline
+    let ucol = tcol
+    let name = ident()
+    let s = lookup(name)
+    var x = nameItem(s, name, target)
     if sym == T_LPAREN && (s.kind == "var" || s.kind == "let" || s.kind == "const") {
         error("'" + name + "' is not a function")
     }
@@ -3291,10 +3314,10 @@ fn factor(): Item {
         let c = loadCond(x)
         let y = newItem("cond", tBool)
         y.cc = c.cc ^ 1
-        y.T = copyInts(c.F)
-        y.F = copyInts(c.T)
-        y.nt = copyPairs(c.nf)
-        y.nf = copyPairs(c.nt)
+        y.T = c.F
+        y.F = c.T
+        y.nt = take(c.nf)
+        y.nf = take(c.nt)
         return y
     }
     if k == T_MINUS || k == T_TILDE {
@@ -3576,11 +3599,10 @@ fn relation(): Item {
     let z = newItem("cond", tBool)
     z.cc = cc
     if narrowSym != nil {
-        let p = new NPair{sym: narrowSym, typ: narrowType}
         if o == T_NE {
-            append(z.nt, p)
+            z.nt = new NPair{sym: narrowSym, typ: narrowType, next: nil}
         } else {
-            append(z.nf, p)
+            z.nf = new NPair{sym: narrowSym, typ: narrowType, next: nil}
         }
     }
     return z
@@ -3599,9 +3621,9 @@ fn conjunction(): Item {
         let y = loadCond(relation())
         condDepth -= 1
         truncate(narrowStack, mark)
-        y.F = concatInts(y.F, flinks)
-        y.nt = concatPairs(x.nt, y.nt)
-        y.nf = new []NPair(0)
+        y.F = joinWaits(y.F, flinks)
+        y.nt = joinPairs(&x.nt, take(y.nt))
+        y.nf = nil
         x = y
     }
     return x
@@ -3613,18 +3635,17 @@ fn expression(): Item {
         next()
         if x.typ.kind != "bool" { error("'||' needs bools") }
         x = loadCond(x)
-        append(x.T, jcc(x.cc))
+        x.T = waitJump(x.T, jcc(x.cc))
         fixHere(x.F)
-        let tlinks = copyInts(x.T)
         let mark = len(narrowStack)
         pushNarrowings(x.nf)
         condDepth += 1
         let y = loadCond(conjunction())
         condDepth -= 1
         truncate(narrowStack, mark)
-        y.T = concatInts(y.T, tlinks)
-        y.nf = concatPairs(x.nf, y.nf)
-        y.nt = new []NPair(0)
+        y.T = joinWaits(y.T, x.T)
+        y.nf = joinPairs(&x.nf, take(y.nf))
+        y.nt = nil
         x = y
     }
     return x
@@ -3955,7 +3976,7 @@ fn loopBodyV(entry: PState, line: int, col: int, lv: ?^Sym, nOuter: int, selfBef
     let n = localsIn(entry)
     let frees = freeCount
     clearFresh()
-    append(loops, new Loop{brk: new []int(0), cont: new []int(0), blocks: len(blocks), entry: copyState(entry), lv: lv,
+    append(loops, new Loop{brk: 0, cont: 0, blocks: len(blocks), entry: copyState(entry), lv: lv,
                            susp: neutralState(n), back: neutralState(n)})
     let term = block()
     // the next iteration starts where the body ends, if it falls through, and at each continue (added then)
@@ -3967,7 +3988,7 @@ fn loopBodyV(entry: PState, line: int, col: int, lv: ?^Sym, nOuter: int, selfBef
     loopSelfCheck(nOuter, selfBefore, useBefore, &loops[li].back, lv, line, col)
     loopBindCheck(&entry, &loops[li].back, useBefore, freeCount > frees, lv, line, col)
     // the loop's record leaves the stack; what break and continue collected comes back
-    let res = new Loop{brk: copyInts(loops[li].brk), cont: copyInts(loops[li].cont), blocks: loops[li].blocks,
+    let res = new Loop{brk: loops[li].brk, cont: loops[li].cont, blocks: loops[li].blocks,
                        entry: copyState(entry), lv: lv, susp: copyState(loops[li].susp), back: copyState(loops[li].back)}
     truncate(loops, li)
     if lv != nil { lv.moved = false }
@@ -4002,7 +4023,7 @@ fn whileStat(): bool {
     let top = pc()
     var x = expression()
     let forever = x.mode == "const" && x.typ.kind == "bool" && x.val == 1
-    var flinks = new []int(0)
+    var flinks = 0
     if forever {
         x = newItem("cond", tBool)
     } else {
@@ -4021,7 +4042,7 @@ fn whileStat(): bool {
     jmpTo(top)
     fixHere(flinks)
     fixHere(loop.brk)
-    return forever && len(loop.brk) == 0
+    return forever && loop.brk == 0
 }
 
 fn forStat() {
@@ -4034,7 +4055,7 @@ fn forStat() {
     let x = expression()
     var top = 0
     var exitLink = 0
-    var loop = new Loop{brk: new []int(0), cont: new []int(0), blocks: 0, entry: emptyState(), susp: emptyState(), back: emptyState()}
+    var loop = new Loop{brk: 0, cont: 0, blocks: 0, entry: emptyState(), susp: emptyState(), back: emptyState()}
     if sym == T_DOTDOT {
         next()
         if x.typ.kind != "int" { error("range bounds must be ints") }
@@ -4157,7 +4178,7 @@ fn intMatch(x: Item): bool {
     expect(T_LBRACE, "")
     skipSemis()
     let seen = new []int(0)
-    let ends = new []int(0)
+    var ends = 0
     var allTerm = true
     var hasElse = false
     while sym != T_RBRACE {
@@ -4176,7 +4197,7 @@ fn intMatch(x: Item): bool {
             if sym != T_RBRACE { error("'else' must be the last arm") }
             break
         }
-        let toBody = new []int(0)
+        var toBody = 0
         var nxt = 0
         while true {
             let v = expression()
@@ -4196,7 +4217,7 @@ fn intMatch(x: Item): bool {
                 break
             }
             next()
-            append(toBody, jcc(CC_E))
+            toBody = waitJump(toBody, jcc(CC_E))
         }
         fixHere(toBody)
         restore(s0)
@@ -4207,7 +4228,7 @@ fn intMatch(x: Item): bool {
             if have { sameStates(acc, st, line0(), 0); acc = joinStates(acc, st) } else { acc = copyState(st) }
             have = true
         }
-        append(ends, jmp())
+        ends = waitJump(ends, jmp())
         fixHere1(nxt)
         skipSemis()
     }
@@ -4252,7 +4273,7 @@ fn matchStat(): bool {
     expect(T_LBRACE, "")
     skipSemis()
     let seen = new []^Type(0)
-    let ends = new []int(0)
+    var ends = 0
     var allTerm = true
     var hasElse = false
     while sym != T_RBRACE {
@@ -4298,7 +4319,7 @@ fn matchStat(): bool {
             have = true
         }
         truncate(narrowStack, mark)
-        append(ends, jmp())
+        ends = waitJump(ends, jmp())
         fixHere1(nxt)
         skipSemis()
     }
@@ -4429,9 +4450,9 @@ fn statement(): bool {
             if k == T_CONTINUE { absorb(&lp.back, &now) }
             let cur = &loops[len(loops) - 1]               // runDefers might have freed: borrow again
             if k == T_BREAK {
-                append(cur.brk, jmp())
+                cur.brk = waitJump(cur.brk, jmp())
             } else {
-                append(cur.cont, jmp())
+                cur.cont = waitJump(cur.cont, jmp())
             }
             return true
         }
@@ -4674,9 +4695,7 @@ fn put64(mut b: &[]byte, v: int) {
     put32(b, v >> 32)
 }
 
-fn pageAlign(mut b: &[]byte) {
-    while len(b) % 0x1000 != 0 { append(b, 0) }
-}
+fn pageUp(n: int): int { return (n + 0xFFF) / 0x1000 * 0x1000 }
 
 fn phdr(mut ph: &[]byte, flags: int, off: int, vaddr: int, filesz: int, memsz: int) {
     put32(ph, 1)
@@ -4689,38 +4708,34 @@ fn phdr(mut ph: &[]byte, flags: int, off: int, vaddr: int, filesz: int, memsz: i
     put64(ph, 0x1000)
 }
 
+// copies a part of the image into place
+fn copyAt(mut out: &[]byte, at: int, data: &[]byte) {
+    for i in 0..len(data) { out[at + i] = data[i] }
+}
+
 // Same layout as obx.py: headers and code, then rodata, the globals
-// (memory only), and the runtime's code and data at fixed addresses.
+// (memory only), and the runtime's code and data at fixed addresses. Each part
+// starts on a page, and the image is allocated once, at its final size.
 fn elfImage(rtText: []byte, rtData: []byte): []byte {
-    let out = new []byte(0x1000)
-    for cI in 0..len(code) {
-        let c = code[cI]
-        append(out, c)
-    }
-    let ph = new []byte(0)
-    let codeEnd = len(out)
-    phdr(ph, 5, 0, IMAGE_BASE, codeEnd, codeEnd)
-    pageAlign(out)
-    var off = len(out)
+    let codeAt = 0x1000
+    let roAt = pageUp(codeAt + len(code))
     var roLen = len(rodata)
-    for i in 0..roLen { append(out, rodata[i]) }
-    if roLen == 0 {
-        append(out, 0)                               // an empty segment still gets one byte
-        roLen = 1
-    }
-    phdr(ph, 4, off, RODATA_BASE, roLen, roLen)
-    pageAlign(out)
+    if roLen == 0 { roLen = 1 }                      // an empty segment still gets one byte
+    let rtTextAt = pageUp(roAt + roLen)
+    let rtDataAt = pageUp(rtTextAt + len(rtText))
+    let out = new []byte(rtDataAt + len(rtData))
+    copyAt(out, codeAt, code)
+    copyAt(out, roAt, rodata)
+    copyAt(out, rtTextAt, rtText)
+    copyAt(out, rtDataAt, rtData)
+    let ph = new []byte(0)
+    phdr(ph, 5, 0, IMAGE_BASE, codeAt + len(code), codeAt + len(code))
+    phdr(ph, 4, roAt, RODATA_BASE, roLen, roLen)
     var gmem = gsize
     if gmem < 8 { gmem = 8 }
     phdr(ph, 6, 0, GLOBAL_BASE, 0, gmem)
-    pageAlign(out)
-    off = len(out)
-    for c in rtText { append(out, c) }
-    phdr(ph, 5, off, RT_TEXT, len(rtText), len(rtText))
-    pageAlign(out)
-    off = len(out)
-    for c in rtData { append(out, c) }
-    phdr(ph, 6, off, RT_DATA, len(rtData), len(rtData))
+    phdr(ph, 5, rtTextAt, RT_TEXT, len(rtText), len(rtText))
+    phdr(ph, 6, rtDataAt, RT_DATA, len(rtData), len(rtData))
     put32(ph, 0x6474E551)
     put32(ph, 6)
     for i in 0..5 { put64(ph, 0) }
@@ -4774,6 +4789,7 @@ fn compileFile(path: string, out: string, rtDir: string) {
     }
     startScanner(data)
     compileModule()
+    src = ""                       // the source is no longer read: free it before the image is built
     let image = elfImage(rtText, rtData)
     if !writeFile(out, image, true) {
         eprintln("obxc: cannot write ", out)

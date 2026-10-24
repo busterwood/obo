@@ -211,6 +211,39 @@ while nothing it may point into has been changed.
       println(len(items))
   }
   ```
+- A reference's binding is kept for each path. Where a reference is pointed at one place on one
+  path and at another on the other, it may point into either, so a change to either place
+  invalidates it on the paths where that is possible. A reference pointed at the same place on
+  every path is checked against that place alone. Where paths join, the binding is the union of
+  their places, so a change under any of them is seen, and a reference that may be writable on
+  one path only is read-only after the join.
+
+  ```obo
+  // example: error: 'k' may point to freed memory
+  type Item = ref record { v: int }
+  fn main() {
+      var a = new Item{v: 1}
+      var b = new Item{v: 2}
+      var k = &a
+      if a.v == 2 { k = &b }        // k points at b on one path only
+      a = new Item{v: 3}            // frees what k may still point to
+      println(k.v)
+  }
+  ```
+
+  ```obo
+  // example: runs
+  // prints 2
+  type Item = ref record { v: int }
+  fn main() {
+      var a = new Item{v: 1}
+      var b = new Item{v: 2}
+      var k = &a
+      if b.v == 2 { k = &b } else { k = &b }   // pointed at b on every path
+      a = new Item{v: 3}            // a is no longer pointed to: this is accepted
+      println(k.v)
+  }
+  ```
 - Changing through a reference needs a `mut` parameter. Passing a read-only reference
   to one is an error: `argument 1 of f needs a mut reference, but this one is read-only`.
   `mut` belongs to the parameter, not the type: a local reference is changeable exactly
@@ -545,6 +578,15 @@ fn main() {
     println(len(whole.items))
 }
 ```
+
+**References re-pointed on one path (closed).** A reference's binding used to be one for the whole
+function, so a re-point on one branch hid the place it had before from the paths that did not take
+the branch: the change that freed that place compiled and read freed memory. Each path now keeps its
+own binding (section 4), and where paths join, a reference may point into the union of their places.
+Two places join as follows: the same place stays the same; when one place lies under the other, the
+join is the lower place, which every change to the upper one reaches too; any other two places join
+to the whole root, which is the most conservative. A rule that kept only the common prefix of the two
+places would miss a change at the lower one, and is not used.
 
 **Known false positive (open).** The loop check does not follow each read to the re-point that
 precedes it in the same iteration. This program is valid, since `k` is pointed afresh before each

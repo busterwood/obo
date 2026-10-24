@@ -1,0 +1,15 @@
+// Allocation-heavy: a record is allocated and freed on every iteration.
+// Measures the cost of new and of the scope-exit free.
+type Cell = ref record { v: int; w: int }
+
+fn main() {
+    let n = 20000000
+    var total = 0
+    var i = 0
+    while i < n {
+        let c = new Cell{v: i, w: 2}
+        total = total + c.v + c.w
+        i = i + 1
+    }
+    println(total)
+}

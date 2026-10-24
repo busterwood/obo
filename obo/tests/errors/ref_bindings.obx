@@ -106,3 +106,34 @@ fn main() {
     items[1] = new Item{v: 5, kids: new []Item(0)}   // frees what k points into on the other path
     println(k.v)  // error: 'k' may point to freed memory
 }
+// === a reference joined from a place and the place below it: a change at the lower place is seen
+fn main() {
+    var root = new Item{v: 1, kids: new []Item(0)}
+    append(root.kids, new Item{v: 2, kids: new []Item(0)})
+    append(root.kids[0].kids, new Item{v: 3, kids: new []Item(0)})
+    var k = &root.kids[0]
+    if root.v == 1 { k = &root.kids[0].kids[0] }
+    root.kids[0].kids = new []Item(0)     // frees what k may point into, on one path
+    println(k.v)  // error: 'k' may point to freed memory
+}
+// === a reference shallow on one path and deep on the other: a change under the deep one is seen
+fn main() {
+    var root = new Item{v: 1, kids: new []Item(0)}
+    append(root.kids, new Item{v: 2, kids: new []Item(0)})
+    var k = &root
+    if root.v == 1 { k = &root.kids[0] }
+    root.kids = new []Item(0)             // frees the kids that k may point into, on one path
+    println(k.v)  // error: 'k' may point to freed memory
+}
+// === a reference writable on one path and read-only on the other: writing through it is refused
+fn pick(r: &Item) {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var k = &a
+    if r.v == 2 { k = r }
+    k.v = 5  // error: cannot change through 'k': it is a read-only reference
+    println(a.v)
+}
+fn main() {
+    var x = new Item{v: 2, kids: new []Item(0)}
+    pick(x)
+}

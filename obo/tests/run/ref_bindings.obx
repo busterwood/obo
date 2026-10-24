@@ -52,10 +52,23 @@ fn underIndex() {
     println(k.v)                     // expect: 8
 }
 
+// the reference that points at its own object's element: the parent of k would be k itself, and
+// the compiler must not loop on that (this case hung before the parent is guarded)
+fn selfParent() {
+    var root = new Item{v: 1, kids: new []Item(0)}
+    append(root.kids, new Item{v: 2, kids: new []Item(0)})
+    let w = &root
+    var k = &root
+    k = &k.kids[0]
+    k.kids = new []Item(0)               // frees what k points into, not what w points to
+    println(w.v)                         // expect: 1
+}
+
 fn main() {
     choose(true)
     both(true)
     newRoot()
     loopPoint()
     underIndex()
+    selfParent()
 }

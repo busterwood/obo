@@ -1,0 +1,23 @@
+// Array indexing: read and write elements by index in a while loop, over an
+// array built with append. Measures element access and its bounds checks.
+fn main() {
+    let n = 1000000
+    var a = new []int(0)
+    var i = 0
+    while i < n {
+        append(a, i)
+        i = i + 1
+    }
+    var total = 0
+    var r = 0
+    while r < 200 {
+        i = 0
+        while i < n {
+            a[i] = a[i] + r
+            total = total + a[i]
+            i = i + 1
+        }
+        r = r + 1
+    }
+    println(total)
+}
