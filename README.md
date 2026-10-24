@@ -26,8 +26,10 @@ There are two dialects of one language.
   small changes to source code.
 
 The decisive test was the compiler itself. obo's compiler has been rewritten in
-the obo dialect (`obo/src/obo.obo`), and it compiles every test program
-and error case byte-for-byte as obo does, and itself to a fixed point. Compiling
+the obo dialect (`obo/src/obo.obo`), and it compiled every test program
+and error case byte-for-byte as the first obo compiler did, and compiles itself to a
+fixed point. Its stage test now compares behaviour (same errors, same output when run),
+so code generation can improve. Compiling
 its own source it peaked at 1.5 MB resident (live peak now 1.05 MB), against 2.5 MB for the same logic on a tuned
 collector and 1.9 MB on an aggressive one. It is still about 50% slower.
 

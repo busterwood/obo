@@ -229,6 +229,14 @@ byte-identical executables and identical error messages, with the leak check on
 in the port: 329 of 329 identical. The port compiling itself is a fixed point
 (obo builds p1 from the port, p1 builds p2, p2 builds p3; p1 = p2 = p3).
 
+**Now behavioural** (decided with the optimization plan, below): each case must have the
+same compile outcome in both (success, or the same message at the same line:col), and a
+program that compiles must, when run with `OBO_CHECK=1` and a scratch directory as its
+argument, give the same exit code, stdout and stderr. The executables' bytes may differ.
+The fixed point still compares bytes (`make promote`: stage 2 = stage 3). The reference is
+`./obo`; `OBO_REF=seed/obo` compares against the seed instead, which is the comparison
+that sees a change in code generation before it is promoted.
+
 **Memory, first measurement.** The decisive comparison: the same compiler logic
 compiling the same source (the port's own) to the same bytes, once on the GC
 (obo, built by mainline) and once with ownership (the port).
@@ -712,7 +720,7 @@ assumed. Phase 2's measured gain will show whether it is.
 - **Immediate and push forms.** `push imm` instead of `mov` then `push`.
 
 *Gate:* the suite passes, benchmarks do not regress, and the byte-identity check
-below is handled (see open decisions).
+below is handled (done: Stage B compares behaviour, see open decisions).
 
 ### Phase 2: register allocation for scalar locals
 
@@ -796,9 +804,12 @@ remain after Phase 2 are measurable on the benchmarks.
 
 ### Open decisions
 
-- **Byte identity.** `tests/port_compare.py` requires the port's executables to match
-  byte for byte, and any optimization changes the bytes. Proposed: the compiler gets
-  an `--no-opt` flag, and `port_compare` uses it for the identity check. The suite
-  and the fixed point run with optimization on.
+- **Byte identity** (resolved: dropped, compare behaviour). `tests/port_compare.py`
+  required the port's executables to match byte for byte, and any optimization changes
+  the bytes. The `--no-opt` flag proposed here was not built. Stage B now compares
+  behaviour: the same compile outcome (success, or the same error at the same
+  line:col), and for a program that runs, the same stdout, stderr and exit code with
+  `OBO_CHECK=1`. The fixed point (stage 2 = stage 3, in `make promote`) still compares
+  bytes, since the compiler compiles itself.
 - **Pre-scan.** Confirm that a token pre-scan is acceptable under the single-pass goal
   before Phase 2 starts.
