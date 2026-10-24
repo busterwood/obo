@@ -226,8 +226,19 @@ making ownership the language's memory model is strong.
 test, `python3 obo/tests/port_compare.py`, builds it with obo and compiles every
 fork and mainline program, example, benchmark and error case with both, requiring
 byte-identical executables and identical error messages, with the leak check on
-in the port: 329 of 329 identical. The port compiling itself is a fixed point
+in the port: 448 of 448 behave the same on the merged branch. The port compiling itself is a fixed point
 (obo builds p1 from the port, p1 builds p2, p2 builds p3; p1 = p2 = p3).
+
+**Now behavioural** (decided with the optimization plan, below): each case must have the
+same compile outcome in both (success, or the same message at the same line:col), and a
+program that compiles must, when run with `OBO_CHECK=1` and a scratch directory as its
+argument, give the same exit code, stdout and stderr. The executables' bytes may differ.
+Stage B does not compare files a program writes into its scratch directory; a timeout on
+both sides counts as agreement; and the compiler's own byte identity (stage 2 against stage 3)
+is checked by `make promote`, not here.
+The fixed point still compares bytes (`make promote`: stage 2 = stage 3). The reference is
+`./obo`; `OBO_REF=seed/obo` compares against the seed instead, which is the comparison
+that sees a change in code generation before it is promoted.
 
 **Memory, first measurement.** The decisive comparison: the same compiler logic
 compiling the same source (the port's own) to the same bytes, once on the GC
@@ -259,18 +270,21 @@ itself exceeds `PEAK_BUDGET` (about 3% over the measured figure; patch
 reason recorded here.
 
 **Budget raised, 1,305,000 to 1,351,000** (measured live peak 1,311,184 bytes, about 3% over).
+The allocation work has since lowered the live peak; the budget is unchanged. (This note's figure,
+1,045,392 bytes, does not reproduce: main's own source measures 1,079,504 bytes with the same
+`OBO_STATS` method, from both main's seed and the merged build.)
 The reason: soundness fixes need per-path state for suspect references. The state at each join
 now carries every local's suspicion (see "Deep references" below), which added 10,432 bytes.
-More is coming: per-path reference bindings need the same kind of state. The allocation work in
-README item 4 is planned to reclaim it, and the budget goes down again then.
+More is coming: per-path reference bindings need the same kind of state. The allocation work
+("Allocation (done)", above) reclaimed the room, and the budget is left for a separate decision.
 
 **Tests.** `python3 obo/tests/mutate_port.py`: 6 mutants of the port, all caught
 (two divergences by mismatch, two early frees by dangling-handle traps, two
 retentions by the budget).
 
 **Open.** Time: the port is about 50% slower than the GC on the same work and
-allocates 26 MB in total; every Item allocates four arrays, and jump lists and
-items are copied (copyInts, dupItem). Then the structural move: a committed
+allocated 28.6 MB in total before the allocation work, now 12.3 MB ("Allocation (done)"),
+with items still allocated per use. Then the structural move: a committed
 bootstrap built from the port, a promote rule with the fixed point, the remaining
 mutants retargeted at the port, and obo-on-obx.obx retired to legacy.
 
@@ -415,9 +429,9 @@ dropped for fields, elements and whole locals, and the index check narrowed to w
 misses fields, elements and grids), the reference owner and its invalidation (`heldLost` for a
 reference root, and the `moved` check alone), the assignment and compound checks through a reference,
 the replace, append and truncate checks, and the touch count itself. Each one is caught by a named
-case. `tests/mutate_port.py`: 54, all caught with the memory budget temporarily at 1,777,000 (see
-"The port's memory budget" below); the port mutants change `src/obo.obo` and are judged by
-`port_compare`.
+case. `tests/mutate_port.py`: 68 after the merge (54 from this change, 14 from main), all caught at
+the committed budget of 1,351,000 (see "The port's memory budget" below); the port mutants change
+`src/obo.obo` and are judged by `port_compare`.
 
 **Fuzzer** (`tests/own_fuzz.py`): invalid kinds, `compound_target_stmt`, `append_target_stmt`,
 `truncate_target_stmt`, `index_target_stmt`, `index_assign_target_stmt`, each a field of a local
@@ -436,17 +450,20 @@ changed elsewhere, so it is left.
 
 **The port.** It compiles unchanged under the new rules (no spot needed rewriting).
 
-**The port's memory budget is not raised on this branch.** `PEAK_BUDGET` stays at 1,351,000. The
-port compiling itself now peaks at 1,739,088 bytes live, so the memory check in `port_compare`
-fails here. That is expected: the compiled compiler grew past 256 KiB, where `elfImage`'s output
-buffer doubles in one step, and main pre-sizes that image so the step no longer happens. The budget
-is re-measured after merging main.
+**The port's memory budget, after the merge of main.** `PEAK_BUDGET` stays at 1,351,000, and the
+merged port passes it. The port compiling itself peaks at 1,097,776 bytes live, 253,224 bytes under
+the budget. Before the merge the branch's base lacked main's allocation work (step 4), and the same
+check failed at 1,739,088 bytes; the merge brought in that work and the check passes.
+
+This branch's compiler changes add 18,272 bytes to the peak: main's source measures 1,079,504 bytes
+with the same method, and this branch's source 1,097,776. The cause was not separated out (the
+branch changes about 70 lines of the compiler source); it is small against the margin.
 
 `mutate_port` judges each mutant by `port_compare`, so with the budget over the peak every mutant
-fails the memory check, and "caught" means nothing. Its runs for the mutant counts above used the
-budget at 1,777,000 (about 2% over the measured peak), temporarily, and the
-committed value was restored afterwards. The memory mutants (for example "parameters kept") are
-caught only by that budget, so they need a measured budget to be judged at all.
+fails the memory check and "caught" means nothing. Before the merge the runs used a temporary budget
+of 1,777,000, which was not committed; the merged run needs no change, and all 68 mutants are caught
+at the committed budget. The memory mutants (for example "parameters kept") are caught only by the
+budget, so the mutate_port result is meaningful only while the budget passes.
 
 ## Borrowing through a handle (done)
 
@@ -750,7 +767,7 @@ compiler. They will be fixed next.
 
 ## Optimization plan
 
-Status: Phase 0 done; Phases 1 to 4 planned, not started. Phases are ordered by expected value per unit of cost.
+Status: Phase 0 done; Phase 1 done except loop inversion (designed below, deferred); Phases 2 and 3 planned. Phases are ordered by expected value per unit of cost.
 Each has a gate; a phase that misses its gate is recorded here and stopped.
 
 **Baseline.** A loop `s = s + i * 2` over `i < n` compiles with every local in a stack
@@ -832,7 +849,113 @@ assumed. Phase 2's measured gain will show whether it is.
 - **Immediate and push forms.** `push imm` instead of `mov` then `push`.
 
 *Gate:* the suite passes, benchmarks do not regress, and the byte-identity check
-below is handled (see open decisions).
+below is handled (done: Stage B compares behaviour, see open decisions).
+
+**Done** (patch `tools/port_cheap_codegen.py`), except loop inversion:
+
+- **Static stack depth** was already tracked: `depth` counts every push, pad and
+  return address, and `rtCall` and `callFn` pad only when the depth is misaligned. The pads
+  that remain (2,685 in the port's own code) are needed: they come from the registers
+  pushed around runtime calls, the arguments among them, and from odd argument counts.
+  Fewer would need a different call sequence, for example not pushing rbx and r12 to r15
+  around runtime calls (the C runtime preserves them, and obo has no collector to scan
+  them); that is a separate decision.
+- **No `sub rsp,0x0`.** The frame size is known only after the body, so for a function
+  without locals the 7 bytes are cut out then and the body moves back (`dropFrame`). Jumps
+  within the body are relative and move with it; calls out of it, to the runtime or to
+  functions already compiled, are recorded in `farCalls` and adjusted, and calls waiting for
+  a later function are moved in its `fixups`. Nothing else holds a position in a finished
+  body.
+- **`push imm`** for a constant argument of an obo call (`6A ib` or `68 id`).
+- **Constants straight to argument registers** for runtime calls: `mov edi,imm` instead
+  of loading a pool register, pushing it around the call, copying it and popping it. With
+  one push fewer, the pad usually goes as well: allocating a record went from 7
+  instructions to 2.
+
+Measured with the four Phase 0 workloads, each built by a compiler at each step and the
+runs interleaved (31 per build; median, range in brackets). The loop's executable is the
+same at every step, so its column shows the noise, about 1%; alloc's range is wide on
+WSL. The last row counts the instructions of the port's own source (as at 59c7701)
+compiled by each step.
+
+| Benchmark | Baseline (seed) | + push imm | + constant runtime arguments | + no `sub rsp,0x0` |
+|---|---|---|---|---|
+| loop | 564 ms (554-635), 36 instr | 566 (551-609), 36 | 567 (553-618), 36 | 566 (557-705), 36 |
+| fib | 613 ms (602-655), 57 instr | 613 (596-651), 56 | 614 (602-650), 56 | 602 (590-655), 54 |
+| array | 403 ms (391-462), 105 instr | 402 (389-454), 105 | 405 (393-446), 99 | 402 (393-477), 99 |
+| alloc | 473 ms (426-907), 56 instr | 480 (432-918), 56 | 482 (447-1530), 51 | 474 (459-528), 51 |
+| port's code | 44,983 instr | 44,130 | 40,723 | 40,638 |
+
+The port's code is 9.7% fewer instructions (258,784 to 246,496 bytes of executable), and
+it compiles itself in 29 to 30 ms against 30 to 31 ms, within noise. fib, where every call
+ran a `sub rsp,0x0`, is 2% faster; the other times did not change. No step regressed.
+
+Memory: compiling itself, the port allocates 12,057,056 bytes in total (through `tests/port_compare.py`), down from 12,266,272
+(fewer loads mean fewer Items; the constants are kept in one array, `argConsts`, since an
+array per runtime call added 315 KB). Its live peak rose from 1,045,392 to 1,079,424 bytes,
+within the budget of 1,351,000, because the peak moved: with less code to hold, the image
+phase at the end is no longer the highest point. The highest is now the moment the code
+buffer grows from 128 KB to 256 KB and both are live, partway through the source (measured
+with a runtime that records the block allocated at the peak: 262,176 bytes, against 544 at
+the end before).
+
+Mutants (`tests/mutate_port.py`), all caught: the pad dropped at a misaligned runtime call
+and at a misaligned obo call, and a `push imm` not counted in the depth (each trapped by the
+runtime's alignment check, exit 4, in the behavioural comparison); `push imm8` used for a
+value that needs imm32 (caught by the objdump cross-check, below); a constant runtime
+argument lost; and for the dropped frame, calls out of the body not adjusted, calls waiting
+for a later function not moved, calls to compiled functions not recorded, and a frame
+dropped although there are locals.
+
+Gaps closed after review: `tests/run/code_shapes.obx` has pending forward calls from
+functions before and after zero-frame ones (several calls, with and without locals or
+parameters), and constants at the push imm boundaries (127, 128, -128, -129, 2^31-1, -2^31,
+2^31, -2^31-1 and others). It catches, through Stage B alone, a shift of every waiting call
+(`> at` replaced by `>= 0`, or by no test), `fits8` with `<= 128` or from -129, and an imm32
+masked to 31 bits. `argConsts` is shared by `rtCall` calls, so each call now owns the part
+from its base index up and truncates back to it, which makes a re-entry from `load()`
+harmless (chosen over a guard or a local array, which allocates per call). One mutant is
+equivalent: dropping `!a.strTemp` from the constant path of `rtCall` changes nothing, since
+a constant never has `strTemp` set, so the guard is defensive and left in.
+
+**The encoder against objdump.** obo's encoder had no oracle of its own: `port_test.py`
+compared it with `./obo`, built from the same source. It now also runs mainline's objdump
+groups (`obx/tests/encoder_test.py`) against the port, and `group_push_immediates` for the
+new form.
+
+**Loop inversion: design (deferred until the per-path bindings branch merges, since it
+rewrites the same loop functions).** A `while` reads its condition before its body, but the
+inverted loop emits it after: `jmp cond; body: ...; cond: C; jcc body`. Three ways to get there
+in one pass:
+
+1. *Relocate the condition's bytes.* Compile the condition where it is read, as now, but stop
+   before its final jump. Copy its bytes out, truncate the code back to the loop's top, emit
+   `jmp cond`, compile the body, then append the bytes again and move what they hold by the
+   distance d they moved: calls out of them (the entries `farCalls` gained while the condition
+   was compiled) get rel32 - d; calls waiting for a later function (fixups in the condition's
+   range) get + d; and the condition item's true and false lists, whose links are positions
+   threaded through rel32 fields ("Allocation (done)"), get + d on every link and on each head.
+   Jumps inside the condition are relative and need nothing. Then `jcc cc` to the body, the
+   true list fixed to the body, and the false list and `break` fall through. `continue` goes
+   to the moved condition. A condition holds no defers, breaks or continues, since it is an
+   expression. The checker sees the condition and then the body once each, in source order,
+   as now.
+2. *Move the body instead.* Emit the condition at the top and move the body after it. The body
+   holds far more positions: nested loops' break and continue chains, defer subroutines,
+   fixups of every kind. Rejected.
+3. *Compile the condition twice.* Save the scanner's state (the source is one string, so
+   rewinding is cheap) and compile the condition again after the body, keeping the top copy
+   as a guard. No relocation, but the checker would run the condition twice: moves,
+   invalidations, `selfCalls` and `useSeq` counts and error reports would happen twice, at two
+   states, and the code would grow by the condition. It is a token pre-scan in all but name,
+   which is deferred with Phase 2.
+
+Recommended: (1). It shares `dropFrame`'s bookkeeping (`farCalls`, fixups), adds the chain
+walk, keeps the checker untouched and the code size the same. A `for` loop needs no relocation:
+its test is generated code over locals stored before the loop, so it can simply be emitted
+after the body. Mutants: each kind of position not moved (a call out, a waiting call, a link
+of each list); tests: a `while` whose condition calls a function declared later, concatenates
+a string, indexes an array and uses `&&` and `||`.
 
 ### Phase 2: register allocation for scalar locals
 
@@ -863,9 +986,43 @@ Do this only if Phase 2's numbers show that call overhead matters on the fib ben
   using facts from loop conditions. Reuse the narrowing machinery where it fits.
 - **Allocation.** The cause of the port's ~50% gap (Stage B, above): four arrays per
   `Item`, and copies in `copyInts` and `dupItem`. Measure with Phase 0's allocation
-  benchmark before changing anything.
+  benchmark before changing anything. Done: see "Allocation (done)" below.
 
 *Gate:* each change shows a measured gain on its benchmark.
+
+### Allocation (done)
+
+Measured on the port compiling its own source (`obo/src/obo.obo`, 4,552 lines) with
+`OBO_STATS=1` through `tests/port_compare.py`. Each row is one change, measured after
+it; every kept change left Stage B at 396 of 396 identical.
+
+| Change | Total allocated (bytes) | Live peak (bytes) |
+|---|---|---|
+| Baseline at 4e11fb2 | 28,648,672 | 1,326,112 |
+| Jump lists as chains: a jump's rel32 field links to the next waiting jump (0 ends) | 23,068,272 | 1,323,712 |
+| Narrowings as linked lists, shared between branches | 17,830,672 | 1,321,328 |
+| Scanner holds the source as one string; tokens by `substr` | 16,479,488 | 1,319,760 |
+| Source freed before the image is built | 16,481,840 | 1,177,168 |
+| ELF image allocated once, at its final size | 16,206,832 | 1,044,560 |
+| Register sets as bit masks, not arrays | 13,960,992 | 1,044,400 |
+| No placeholder Item for a name or a runtime call's result | 12,266,272 | 1,045,392 |
+
+Wall time, the minimum of 21 to 41 runs on WSL: about 33 ms at baseline and 28 to 30 ms
+after the register change; the last change is within run-to-run noise. The baseline
+peak is 1,326,112 bytes as measured here (the brief's 1,326,016 was an earlier figure).
+
+Tried and dropped: freeing the code buffer as soon as the image has copied it. The
+live peak fell by 416 bytes (1,044,400 to 1,043,984), which was not worth the extra
+reassignment, since the peak is reached while the image is being copied.
+
+`PEAK_BUDGET` stays at 1,351,000. On the merged branch the peak is 1,097,776 bytes, a margin of
+253,224 bytes, which is more than the mutant "parameters kept" adds (about 190 KB), so that mutant
+is not caught by the budget. It is now caught when its peak rises above the unmutated peak
+(`KEEPS_ALIVE` in `tests/mutate_port.py`).
+
+Not done: the per-call arrays in `rtCall` and `rtCall0/1/2` (`regs`, `temps`, the
+argument arrays), the `fixups` array of each Sym, and the snapshot copies (`copyBools`).
+Item creations (about 32,000 per self-compile, mostly loads and voids) were left as they are.
 
 ### Peephole pass (not planned)
 
@@ -882,9 +1039,12 @@ remain after Phase 2 are measurable on the benchmarks.
 
 ### Open decisions
 
-- **Byte identity.** `tests/port_compare.py` requires the port's executables to match
-  byte for byte, and any optimization changes the bytes. Proposed: the compiler gets
-  an `--no-opt` flag, and `port_compare` uses it for the identity check. The suite
-  and the fixed point run with optimization on.
+- **Byte identity** (resolved: dropped, compare behaviour). `tests/port_compare.py`
+  required the port's executables to match byte for byte, and any optimization changes
+  the bytes. The `--no-opt` flag proposed here was not built. Stage B now compares
+  behaviour: the same compile outcome (success, or the same error at the same
+  line:col), and for a program that runs, the same stdout, stderr and exit code with
+  `OBO_CHECK=1`. The fixed point (stage 2 = stage 3, in `make promote`) still compares
+  bytes, since the compiler compiles itself.
 - **Pre-scan.** Confirm that a token pre-scan is acceptable under the single-pass goal
   before Phase 2 starts.

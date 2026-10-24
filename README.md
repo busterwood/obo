@@ -26,9 +26,11 @@ There are two dialects of one language.
   small changes to source code.
 
 The decisive test was the compiler itself. obo's compiler has been rewritten in
-the obo dialect (`obo/src/obo.obo`), and it compiles every test program
-and error case byte-for-byte as obo does, and itself to a fixed point. Compiling
-its own source it peaks at 1.5 MB, against 2.5 MB for the same logic on a tuned
+the obo dialect (`obo/src/obo.obo`), and it compiled every test program
+and error case byte-for-byte as the first obo compiler did, and compiles itself to a
+fixed point. Its stage test now compares behaviour (same errors, same output when run),
+so code generation can improve. Compiling
+its own source it peaked at 1.5 MB resident (live peak now 1.10 MB), against 2.5 MB for the same logic on a tuned
 collector and 1.9 MB on an aggressive one. It is still about 50% slower.
 
 **Decision: obo is the future of the language.** obx becomes the reference it grew
@@ -123,8 +125,8 @@ In order:
    it changed: changing `w.b` leaves a reference to `w.a` valid, and two mutable
    elements at known different indexes can be passed together. Changes through a
    reference are still coarse.
-4. **The port's speed.** It allocates 26 MB to compile itself. Steps 1 to 3 should
-   let it shed workarounds written for stricter rules (copies, index loops, storing
+4. **The port's speed.** It allocated 28.6 MB to compile itself, and now allocates 12.1 MB
+   (measured below). Steps 1 to 3 should let it shed workarounds written for stricter rules (copies, index loops, storing
    temporaries first), and each one removed is also a measure of simplicity: how
    far obo code must differ from straightforward code. A change through a handle now
    frees what references inside something point into, and the compiler checks that (done);
@@ -142,10 +144,12 @@ collector, at the same speed; the port reads like ordinary code; and every error
 message says what to do instead.
 
 Measured (item 4, after items 1 to 3): compiling each compiler's own source takes
-about 0.01 to 0.02 s in both. The obo port (4283 lines) peaks at 1.5 MB resident and
-its live peak is 1.3 MB; obx's compiler (3222 lines), with the collector, peaks at
-8.8 MB. Also done: eight loops that only walked an array now borrow it and loop with `for`
-(the index form was a workaround for the walk rule). The loop over `globals` at exit now
+about 0.01 to 0.02 s in both. The obo port (4552 lines) had a live peak of 1.3 MB and
+allocated 28.6 MB before the allocation work; after it, 1.05 MB and 12.3 MB (FORK.md,
+Phase 4). The cheaper code of Phase 1 brought the total to 12.1 MB and moved the peak to
+1.08 MB, reached now while the code buffer grows (FORK.md, Phase 1). obx's compiler (3222 lines), with the
+collector, peaks at 8.8 MB. Wall time is about 30 ms, down from 33 ms. Also done:
+eight loops that only walked an array now borrow it and loop with `for` (the index form was a workaround for the walk rule). The loop over `globals` at exit now
 walks by borrowing too. It was blocked by two false positives: a self-call counted as
 freeing anything (fixed in the checker, `run/globals.obx`, `errors/references.obx`), and
 the `rtCall`/`rtCall1` cycle through a forward heading (broken in the source). Effect

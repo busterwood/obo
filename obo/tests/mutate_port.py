@@ -3,10 +3,12 @@
 runs the Stage B comparison against it (port_compare.py, with SRC pointed at the
 copy), and checks that the comparison fails. Divergent output must show up as a
 mismatch, freeing too early as a dangling-handle trap, and keeping memory alive
-as a breach of the memory budget.
+as a breach of the memory budget. A mutant of the encoder (ENCODER) runs
+port_test.py instead, whose objdump cross-check must catch it.
 
     python3 obo/tests/mutate_port.py [pattern]"""
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -42,7 +44,8 @@ MUTANTS = {
     # freeing symbols too early: a dangling-handle trap
     "frees one symbol too many": [(FREE, FREE.replace("symMark)", "symMark - 1)"))],
     "frees symbols before the blocks close": [(BLOCKS_CLOSE, "    truncate(symArena, symMark)\n" + BLOCKS_CLOSE)],
-    # keeping symbols alive: over the memory budget
+    # keeping symbols alive: over the memory budget. "parameters kept" is too small for the budget
+    # now that the peak is lower, so it is checked against the unmutated peak instead (KEEPS_ALIVE)
     "symbols never freed": [(FREE, "")],
     "parameters kept": [(MARK, ""), (PARAMS_DONE, PARAMS_DONE + "    let symMark = len(symArena)\n")],
     # borrows through a handle (checker): each must be caught by a case in errors/handles.obx
@@ -164,7 +167,42 @@ MUTANTS = {
                                              "            let wholeLocal = x.sym != nil && !(root != nil && root.storage == \"global\")")],
     "index of a field, element or whole local not checked for moves": [("            if root != nil && heldLost(root, touch0) {",
                                                                         "            if root != nil && false {")],
+    # cheap code generation (FORK.md, Phase 1). A misaligned stack at a runtime call is trapped by the
+    # runtime's entry stubs (exit 4), so a wrong depth shows up as a mismatch
+    "runtime call pad dropped when misaligned": [("    let pad = depth % 16\n", "    let pad = 0\n")],
+    "obo call pad dropped when misaligned": [("    let pad = (depth + 8 * n) % 16\n", "    let pad = 0\n")],
+    "push imm not counted in the depth": [("            pushI(a.val)                           // no register needed\n            depth += 8\n",
+                                           "            pushI(a.val)                           // no register needed\n")],
+    # an imm8 push for a value that needs imm32: caught by the objdump cross-check
+    "push imm8 for any imm32": [("    if fits8(v) {\n        emit(0x6A)", "    if fits32(v) {\n        emit(0x6A)")],
+    "constant runtime argument lost": [("                append(argConsts, a.val)\n", "                append(argConsts, 0)\n")],
+    # a function without locals loses its 'sub rsp,0' and its body moves back 7 bytes
+    "dropped frame: calls out not moved": [("    for p in calls { putRel(p - 7, getRel(p - 7) + 7) }\n", "")],
+    "dropped frame: calls waiting for later functions not moved": [("                if g.fixups[fi] > at { g.fixups[fi] -= 7 }\n", "")],
+    "dropped frame: calls to known functions not recorded": [("        fix(at, f.addr)\n        append(farCalls, at)\n", "        fix(at, f.addr)\n")],
+    # a pending forward call of an earlier function shifted when a later zero-frame function drops its frame:
+    # caught by tests/run/code_shapes.obx
+    "dropped frame: every waiting call shifted": [("                if g.fixups[fi] > at { g.fixups[fi] -= 7 }\n", "                g.fixups[fi] -= 7\n")],
+    "dropped frame: waiting calls shifted if not negative": [("                if g.fixups[fi] > at { g.fixups[fi] -= 7 }\n", "                if g.fixups[fi] >= 0 { g.fixups[fi] -= 7 }\n")],
+    # the boundaries of push imm8 and imm32, caught by the same program (Stage B, not only the objdump group)
+    "push imm8 up to 128": [("fn pushI(v: int) {\n    if fits8(v) {", "fn pushI(v: int) {\n    if v >= -128 && v <= 128 {")],
+    "push imm8 from -129": [("fn pushI(v: int) {\n    if fits8(v) {", "fn pushI(v: int) {\n    if v >= -129 && v < 128 {")],
+    "push imm32 masked": [("        emit(0x68)\n        emit32(v)\n", "        emit(0x68)\n        emit32(v & 0x7FFFFFFF)\n")],
+    "frame dropped although there are locals": [("    if size == 0 {\n        dropFrame(frameAt)", "    if size <= 16 {\n        dropFrame(frameAt)")],
 }
+
+# mutants of the encoder: caught by port_test.py's objdump cross-check
+ENCODER = {"push imm8 for any imm32"}
+
+
+# mutants that keep memory alive: caught when the peak rises above the unmutated peak,
+# for a leak too small to cross PEAK_BUDGET
+KEEPS_ALIVE = {"parameters kept"}
+
+
+def peak_of(output):
+    m = re.search(r"peaks at ([\d,]+) bytes", output)
+    return int(m.group(1).replace(',', '')) if m else None
 
 
 def main():
@@ -172,6 +210,9 @@ def main():
     src = open(SRC).read()
     tmp = tempfile.mkdtemp()
     caught = total = 0
+    base = subprocess.run([sys.executable, '-c', "import port_compare as pc; pc.main()"],
+                          capture_output=True, text=True, cwd=HERE)
+    base_peak = peak_of(base.stdout + base.stderr)
     for name, edits in MUTANTS.items():
         if pattern not in name:
             continue
@@ -182,10 +223,16 @@ def main():
         path = os.path.join(tmp, 'mutant.obx')
         open(path, 'w').write(text)
         code = f"import port_compare as pc; pc.SRC = {path!r}; pc.main()"
+        if name in ENCODER:
+            code = f"import port_test as pt; pt.SRC = {path!r}; pt.main()"
         r = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, cwd=HERE)
+        total += 1
+        if name in KEEPS_ALIVE and r.returncode == 0:
+            peak = peak_of(r.stdout + r.stderr)
+            if peak is not None and base_peak is not None and peak > base_peak:
+                r = subprocess.CompletedProcess(r.args, 1, r.stdout, f"FAIL peak {peak:,} is above the unmutated {base_peak:,}")
         lines = (r.stdout + r.stderr).strip().splitlines()
         why = next((l for l in lines if l.startswith('FAIL') or 'does not compile' in l), lines[-1] if lines else '')
-        total += 1
         if r.returncode != 0:
             caught += 1
             print(f"caught  {name:40s} {why[:110]}")

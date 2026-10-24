@@ -3,7 +3,9 @@
 dialect (ownership, references, handles). It is built with ./obo and must behave
 exactly like ./obo itself, with no leaks. Its --tokens and --encode modes are
 checked here: identical token streams on every source file we have, identical
-encoder output, and identical results on fuzzed scanner input. The whole
+encoder output, and identical results on fuzzed scanner input. Its encoder is also
+cross-checked against objdump, which needs no compiler: mainline's groups
+(obx/tests/encoder_test.py) and the forms only obo emits (OBO_GROUPS). The whole
 compiler is checked against obo in port_compare.py.
 
     python3 obo/tests/port_test.py"""
@@ -20,8 +22,24 @@ FORK = os.path.dirname(HERE)
 ROOT = os.path.join(os.path.dirname(FORK), 'obx')
 sys.path.insert(0, os.path.join(ROOT, 'tests'))
 import stage_test  # noqa: E402  (scanner fragments and encoder scripts)
+import encoder_test  # noqa: E402  (objdump cross-checks)
 
 REF = os.path.join(FORK, 'obo')
+SRC = os.path.join(FORK, 'src', 'obo.obo')
+
+
+class Fail(Exception):
+    pass
+
+
+def group_push_immediates(Fail, obo, unique):
+    """push imm8 and imm32, sign-extended: the arguments of obo calls"""
+    cases = [(f"pushi {v}", f"push {encoder_test.hx(v)}")
+             for v in (0, 1, -1, 40, 127, -128, 128, -129, 0x08000000, 2 ** 31 - 1, -2 ** 31)]
+    encoder_test.check(cases, Fail, obo, unique)
+
+
+OBO_GROUPS = [group_push_immediates]
 
 
 def run(exe, mode, path):
@@ -52,7 +70,7 @@ def check(work):
     global PORT, TMP
     PORT = os.path.join(work, 'obo_own_test')
     TMP = os.path.join(work, 'inputs')
-    b = subprocess.run([REF, os.path.join(FORK, 'src', 'obo.obo'), '-o', PORT, '--rt', FORK],
+    b = subprocess.run([REF, SRC, '-o', PORT, '--rt', FORK],
                        capture_output=True, text=True)
     if b.returncode != 0:
         raise SystemExit("the port does not compile: " + b.stderr)
@@ -81,9 +99,22 @@ def check(work):
         open(path, 'w').write('\n'.join(stage_test.encoder_script(part)) + '\n')
         compare('--encode', path, f'encoder {part}', failures)
         count += 1
+    # objdump first, so that a wrong encoding is reported by the oracle rather than as a difference
+    names = []
+    unique = lambda name: os.path.join(TMP, f"{name}{len(names)}")
+    for group in [g for _, g in encoder_test.tests(Fail, PORT, unique)] + [lambda g=g: g(Fail, PORT, unique) for g in OBO_GROUPS]:
+        names.append(group)
+        count += 1
+        try:
+            group()
+        except Fail as e:
+            failures.insert(0, f"objdump: {e}")
+    if not names:
+        print("objdump not found: the encoder is not cross-checked")
     for f in failures[:10]:
         print("FAIL", f)
-    print(f"\nport tokens and encoder: {count - len(failures)} of {count} identical, no leaks")
+    print(f"\nport tokens and encoder: {count - len(failures)} of {count} identical, no leaks; "
+          f"{len(names)} encoder groups checked against objdump")
     sys.exit(1 if failures else 0)
 
 
