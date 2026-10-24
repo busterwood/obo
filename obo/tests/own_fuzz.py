@@ -383,6 +383,40 @@ class Gen:
     def index_assign_target_stmt(self):
         return self.target_call_stmt('assign')
 
+    def moved_local_stmt(self, kind):
+        """A whole local array passed by value to a call in the same expression that uses the array:
+        the call moves it, so the array's header is freed under the operation: rejected."""
+        n = self.nrefs
+        self.nrefs += 1
+        self.extra_fn("fn eatInts(a: []int): int { return len(a) - 1 }")
+        head = [f"var v{n} = new []int(0)", f"append(v{n}, 1)"]
+        if kind == 'index':
+            tail = [f"println(v{n}[eatInts(v{n})])"]
+        elif kind == 'assign':
+            tail = [f"v{n}[eatInts(v{n})] = 3"]
+        elif kind == 'append':
+            tail = [f"append(v{n}, eatInts(v{n}))"]
+        elif kind == 'truncate':
+            tail = [f"truncate(v{n}, eatInts(v{n}))"]
+        else:
+            tail = [f"let o{n} = replace(v{n}, new []int(eatInts(v{n})))"]
+        return self.invalid_stmt(head + tail)
+
+    def moved_index_stmt(self):
+        return self.moved_local_stmt('index')
+
+    def moved_assign_stmt(self):
+        return self.moved_local_stmt('assign')
+
+    def moved_append_stmt(self):
+        return self.moved_local_stmt('append')
+
+    def moved_truncate_stmt(self):
+        return self.moved_local_stmt('truncate')
+
+    def moved_replace_stmt(self):
+        return self.moved_local_stmt('replace')
+
     def ref_move_stmt(self):
         """A reference parameter passed where ownership is taken: rejected."""
         self.extra_fn("fn mvRef(l: &?Node): int { return eat(l) }")
@@ -1114,7 +1148,9 @@ class Gen:
                self.handle_index_call_stmt, self.ref_move_stmt, self.callee_free_global_stmt,
                self.owned_deep_dead_stmt, self.owned_deep_arg_stmt,
                self.compound_target_stmt, self.append_target_stmt, self.truncate_target_stmt,
-               self.index_target_stmt, self.index_assign_target_stmt]
+               self.index_target_stmt, self.index_assign_target_stmt,
+               self.moved_index_stmt, self.moved_assign_stmt, self.moved_append_stmt,
+               self.moved_truncate_stmt, self.moved_replace_stmt]
         s = ops[self.seed % len(ops)]()
         return s if s is not None else self.pick(ops)
 

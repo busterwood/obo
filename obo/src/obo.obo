@@ -854,6 +854,7 @@ type Sym = ref record {
     line: int
     owned: bool               // a local holding an owned value
     moved: bool               // its value has been moved away
+    touches: int              // how many calls have moved it: a whole array's header is freed only by a move
     deferUse: bool            // a defer reads it, so it may not be moved
     isStr: bool               // a string local, holding one reference
     isRef: bool               // a reference: a parameter or local that borrows
@@ -1735,6 +1736,7 @@ fn consume(mut x: &Item) {
         if pinned == s { error("cannot move '" + s.name + "' while assigning into it") }
         if s.deferUse { error("'" + s.name + "' is used by a defer and cannot be moved") }
         s.moved = true
+        s.touches = s.touches + 1
         invalidate(s, nil, true, "")                  // references into it now dangle
         return
     }
@@ -2303,13 +2305,21 @@ fn checkTargetAcrossCall(x: &Item, xs: ?^Sym, r0: ?^Sym, callsBefore: int, line:
 }
 
 // An array operand whose array a call might free while it is held: one reached through a
-// field, element, handle, global or reference. A whole local array cannot be freed by a call
-// (no call can name it except by a mut argument, and that never frees the array itself).
+// field, element, handle, global or reference. A whole local array is not held here: the
+// calls that could free its header move it, and touched() catches those where it is held
+// across a call (an index, append, truncate or replace). A mut argument cannot replace it.
 fn heldArray(x: &Item): bool {
     if x.viaHandle { return true }
     let r = x.root
     if r == nil { return false }
     return x.sym == nil || r.storage == "global" || r.isRef
+}
+
+// how many calls have moved the local s so far: a whole local array's header is freed only by
+// a call that takes it by value, so an operand that holds the header must see this unchanged
+fn touched(s: ?^Sym): int {
+    if s == nil { return 0 }
+    return s.touches
 }
 
 fn checkAssign(dst: ^Type, x: &Item, what: string) {
@@ -2563,12 +2573,17 @@ fn builtin(name: string): Item {
         expect(T_COMMA, "")
         let callsBefore = userCalls
         let savedPin = pinned
+        let rSym = x.sym
+        let touch0 = touched(rSym)
         if x.deref && tr != nil && tr.storage == "local" { pinned = tr }
         var v = expression()
         pinned = savedPin
         expect(T_RPAREN, "")
         if (x.viaHandle || x.sym == nil) && userCalls != callsBefore {
             error("replace through a handle, a field or an element cannot have a value that calls a function that might free; compute the value first")
+        }
+        if rSym != nil && touched(rSym) != touch0 {
+            error("cannot replace '" + rSym.name + "' with a value that moves it: the call could free the array it gives back; compute the value first")
         }
         checkAssign(x.typ, v, "replacement value")
         consume(v)
@@ -2674,9 +2689,11 @@ fn builtin(name: string): Item {
         let held = heldArray(a)
         let aDeref = a.deref
         let r0 = a.root
+        let aSym = a.sym
         a = pinStr(a)
         expect(T_COMMA, "")
         let callsBefore = userCalls
+        let touch0 = touched(aSym)
         let savedPin = pinned
         if name != "substr" && aDeref && r0 != nil && r0.storage == "local" { pinned = r0 }
         var b = expression()
@@ -2686,6 +2703,12 @@ fn builtin(name: string): Item {
                 errorAt("cannot append to a field, element, handle or global across a call: the call could free the array it is in; compute the value first", line, 0)
             }
             errorAt("cannot truncate a field, element, handle or global across a call: the call could free the array it is in; compute the value first", line, 0)
+        }
+        if name != "substr" && aSym != nil && touched(aSym) != touch0 {
+            if name == "append" {
+                errorAt("cannot append to '" + aSym.name + "' with a value that moves it: the call could free the array it is in; compute the value first", line, 0)
+            }
+            errorAt("cannot truncate '" + aSym.name + "' with a count that moves it: the call could free the array it is in; compute the count first", line, 0)
         }
         if name == "append" {
             checkAssign(baseOf(a.typ), b, "appended value")
@@ -2858,9 +2881,11 @@ fn designatorT(target: bool): Item {
             let callsBefore = userCalls
             if kind != "array" && kind != "string" { error(tname(x.typ) + " cannot be indexed") }
             let elem = baseOf(x.typ)
-            // the array's address is loaded before the index runs: a call there could free it
-            // unless it is a whole local array, which no call can free
+            // the array's address is loaded before the index runs: a call there could free it.
+            // A whole local array is freed only by a call that moves it, which touched() sees.
             let wholeLocal = x.sym != nil && !(root != nil && (root.storage == "global" || root.isRef))
+            let xs0 = x.sym
+            let touch0 = touched(xs0)
             let a = load(x)
             let i0 = expression()
             if !isInt(i0.typ) { error("array index must be int") }
@@ -2872,6 +2897,9 @@ fn designatorT(target: bool): Item {
             }
             if !wholeLocal && userCalls != callsBefore {
                 error("cannot index a field, element or reference with an index that calls a function: the call could free the array it is in; compute the index first")
+            }
+            if wholeLocal && xs0 != nil && touched(xs0) != touch0 {
+                error("cannot index '" + xs0.name + "' with an index that moves it: the call could free its array; compute the index first")
             }
             var seg = "/[]"
             if i0.mode == "const" { seg = "/[" + string(i0.val) + "]" }

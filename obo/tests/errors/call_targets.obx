@@ -19,6 +19,10 @@ var garr = new []Node(0)
 fn bumpG(): int { gbag = new Bag{items: new []Node(0)}; return 1 }
 fn bumpGNode(): Node { gbag = new Bag{items: new []Node(0)}; return mk(8) }
 fn bumpArr(): Node { garr = new []Node(0); return mk(3) }
+fn eatN(a: []Node): int { return 0 }                 // takes a whole array by value: moves it
+fn eatNode(a: []Node): Node { return mk(3) }
+fn eatRes(a: []Node): []Node { return new []Node(0) }
+fn eatI(a: []int): int { return 0 }
 
 // === compound assignment to an element, the call replaces the array
 fn shrink(mut a: &[]Node): int { a[0] = mk(5); return 1 }
@@ -124,3 +128,57 @@ fn ix(mut a: &[]Node): int {
     return 0
 }
 fn main() {}
+// === an index of a whole local array whose index moves the array
+fn main() {
+    var a = new []Node(0)
+    append(a, mk(1))
+    println(a[eatN(a)].v)      // error: cannot index 'a' with an index that moves it
+}
+// === an index assignment whose index moves the array
+fn main() {
+    var a = new []Node(0)
+    append(a, mk(1))
+    a[eatN(a)] = mk(2)         // error: cannot index 'a' with an index that moves it
+}
+// === a reference into a whole local array whose index moves the array
+fn main() {
+    var a = new []Node(0)
+    append(a, mk(1))
+    let r = &a[eatN(a)]        // error: cannot index 'a' with an index that moves it
+    println(r.v)
+}
+// === a for-range bound that indexes a whole local array with a move
+fn main() {
+    var a = new []Node(0)
+    append(a, mk(1))
+    for i in 0..a[eatN(a)].v {  // error: cannot index 'a' with an index that moves it
+        println(i)
+    }
+}
+// === a nested index whose inner index moves the inner array
+fn main() {
+    var b = new []int(0)
+    append(b, 0)
+    var q = new []int(0)
+    append(q, 0)
+    println(q[b[eatI(b)]])     // error: cannot index 'b' with an index that moves it
+}
+// === append whose value moves the array it appends to
+fn main() {
+    var a = new []Node(0)
+    append(a, mk(1))
+    append(a, eatNode(a))      // error: cannot append to 'a' with a value that moves it
+}
+// === truncate whose count moves the array it truncates
+fn main() {
+    var a = new []Node(0)
+    append(a, mk(1))
+    truncate(a, eatN(a))       // error: cannot truncate 'a' with a count that moves it
+}
+// === replace whose value moves the variable it replaces
+fn main() {
+    var a = new []Node(0)
+    append(a, mk(1))
+    let old = replace(a, eatRes(a))   // error: cannot replace 'a' with a value that moves it
+    println(len(old))
+}

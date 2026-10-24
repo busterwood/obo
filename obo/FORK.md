@@ -349,8 +349,14 @@ expression, all accepted:
   It applies when the target is reached through a handle, through a global, or is a field or
   element (`xs == nil`), and a non-pure call ran while the value was computed.
 - `heldArray` says whether an array operand may be freed by a call: reached through a handle, a
-  field or element, a global, or a reference parameter. A whole local array is not held: no call
-  can free its header. `append` and `truncate` check it, and `replace` uses the `=` rule.
+  field or element, a global, or a reference parameter. A whole local array is not held here: its
+  header is freed only by a call that moves it, which the touch count below sees. `append` and
+  `truncate` check `heldArray`, and `replace` uses the `=` rule.
+- A whole local array is moved by a call that takes it by value (the callee owns it and frees it
+  when it returns). `consume` counts such a move on the local's symbol (`touches`). The index,
+  `append`, `truncate` and `replace` checks compare the count before and after the value or index
+  runs, and reject a change. A `mut` argument does not count: a `mut` array parameter is read-only,
+  so a call cannot reassign or replace the array's header.
 - The index check in `designatorT` uses the same idea: the array is not a whole local (the base
   is a field or element, a handle, a global or a reference parameter) and the index calls a
   non-pure function.
@@ -358,25 +364,37 @@ expression, all accepted:
   does, so a move of the root during it is an error too.
 - The messages say "compute the value first" (or "compute the index first").
 
-**Accepted, unchanged:** a whole local array with a call beside it, `append(xs, f())`,
-`truncate(xs, f())`, `xs[f(xs)]`, `replace(xs, f())`; a pure call beside a field; a
-compound on a whole global scalar (`gtotal += f()`); and the call-first form of each.
-The generated code for accepted programs is unchanged.
+**Accepted, unchanged:** a pure call beside a field; a compound on a whole global scalar
+(`gtotal += f()`); a whole local array with a call beside it that only borrows it or takes it
+`mut` (`xs[g(xs)]` with `g(xs: &[]T)`, `xs[h(xs)]` with `h(mut xs: &[]T)`, `append(xs, h(xs))`); a
+call that moves a different array in an index (`ys[eat(xs)]`); a for-range bound that moves a whole
+local array (no array is held there); and the call-first form of each. The generated code for
+accepted programs is unchanged.
 
-**Tests.** `tests/errors/call_targets.obx` (18 cases: each form above, through a local, a
-mut parameter, a handle, a global, and an index target; plus a whole global array and a
-mut array parameter). `tests/errors/references.obx` has a case for the `continue` message
-below. `tests/run/call_targets.obx` runs the accepted forms, with outputs.
+**Refused, whole local arrays moved by a call:** `xs[eat(xs)]`, `xs[eat(xs)] = v`, `&xs[eat(xs)]`,
+`append(xs, eat(xs))`, `truncate(xs, eat(xs))` and `replace(xs, eat(xs))`, where `eat` takes `xs` by
+value. Before this change `xs[eat(xs)]` and `replace(xs, eat(xs))` were accepted and read or freed
+the header (a double free from `replace`). `append(xs, eat(xs))` was accepted and wrote into the
+moved array.
 
-**Mutants** (`tests/mutate_fork.py`, not `mutate_port.py`: an accept-more mutant leaves the
-port's own source unchanged, so the port comparison cannot see it, while the fork suite's error
-cases can): compound, append, truncate, replace and index checks dropped, the field check
-dropped in the shared helper, and the held-array and mut-parameter cases narrowed. Each one is
-caught by a named case in `call_targets.obx`.
+**Tests.** `tests/errors/call_targets.obx` has 26 cases: each form above, through a local, a mut
+parameter, a handle, a global, and an index target; a whole global array and a mut array parameter;
+and the 8 whole-local moves just listed. `tests/errors/references.obx` has a case for the `continue`
+message below. `tests/run/call_targets.obx` runs the accepted forms, with outputs.
+
+**Mutants.** Both `tests/mutate_fork.py` and `tests/mutate_port.py` carry them. The fork set has
+the compound, append, truncate, replace-field, index, held-array and mut-parameter mutants, and
+four for the whole-local moves (the index, append and truncate, and replace checks, and the touch
+count itself). Each is caught by a named case in `call_targets.obx`. The port set has the nine
+of the fork set listed above and the whole-local index one. An accept-more mutant leaves the port's
+own output unchanged, but `port_compare` also runs the error cases, so these are caught there.
 
 **Fuzzer** (`tests/own_fuzz.py`): five invalid kinds, `compound_target_stmt`, `append_target_stmt`,
 `truncate_target_stmt`, `index_target_stmt`, `index_assign_target_stmt`, each a field of a local
-record whose array a call in the same expression replaces. All are rejected.
+record whose array a call in the same expression replaces; and five whole-local kinds,
+`moved_index_stmt`, `moved_assign_stmt`, `moved_append_stmt`, `moved_truncate_stmt`,
+`moved_replace_stmt`, each a local array passed by value to a call in the expression that uses it.
+All are rejected.
 
 **Messages.** A reference invalidated in a loop and then continued past said "is moved inside
 the loop; it must have a value again before continue"; it now says it is invalidated and must be
@@ -388,14 +406,11 @@ changed elsewhere, so it is left.
 
 **The port.** It compiles unchanged under the new rules (no spot needed rewriting).
 
-**The port's memory budget, raised.** The port compiling itself went from a live peak of
-1,326,256 bytes to 1,725,104, over the budget of 1,351,000 in `tests/port_compare.py`. The
-cause is the output image, not data: `elfImage` builds the image in one byte array that doubles
-when it grows, and the compiled port (the new compiler, 4 KB larger) grew past 256 KiB
-(262,880 bytes, against 258,784 before). The doubling to 512 KiB is the whole step. The budget
-is now 1,777,000, about 3% above the new figure, as the rule asks. Getting back under 256 KiB
-would need about 736 bytes less code or message text; it was not done, since the next change
-would cross the step again. Growth past 512 KiB will be a second step of the same size.
+**The port's memory budget is not raised on this branch.** `PEAK_BUDGET` stays at 1,351,000. The
+port compiling itself now peaks at 1,733,024 bytes live, so the memory check in `port_compare`
+fails here. That is expected: the compiled compiler grew past 256 KiB, where `elfImage`'s output
+buffer doubles in one step, and main pre-sizes that image so the step no longer happens. The budget
+is re-measured after merging main.
 
 ## Borrowing through a handle (done)
 

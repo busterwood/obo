@@ -1,6 +1,7 @@
 // The forms that stay accepted once compound assignments, append, truncate, replace and
 // indexes check their targets across calls: the value or index computed first, a pure call
-// beside a field, and a whole local array that no call can free.
+// beside a field, and a whole local array held across a call that only borrows it or passes it
+// as a mut argument. A call that takes it by value is refused there (tests/errors/call_targets.obx).
 type Item = ref record { v: int; kids: []Item }
 
 var gscratch = new []Item(0)
@@ -13,6 +14,8 @@ fn freeOther(): int { gscratch = new []Item(0); return 2 }
 fn fresh(): Item { gscratch = new []Item(0); return mkItem(6) }
 fn pick(mut a: &[]Item): int { append(a, mkItem(9)); return 1 }
 fn bumpTotal(): int { gtotal += 1; return 3 }
+fn eatItems(a: []Item): int { return 1 }        // takes an array by value: it moves it
+fn lastOf(a: &[]Item): int { return len(a) - 1 }
 
 fn main() {
     var a = new []Item(0)
@@ -39,4 +42,12 @@ fn main() {
     let g = bumpTotal()
     n.kids[0].v += g                // computed first
     println(n.kids[0].v)            // expect: 5
+    // a borrow and a mut argument may be called in an index of a whole array: neither moves its header
+    var ys = new []Item(0)
+    append(ys, mkItem(4))
+    append(ys, mkItem(5))
+    println(ys[lastOf(ys)].v)       // expect: 5
+    println(ys[pick(ys)].v)         // expect: 5
+    // another array moved by a call in the index: the array indexed is not the one moved
+    println(ys[eatItems(xs)].v)     // expect: 5
 }

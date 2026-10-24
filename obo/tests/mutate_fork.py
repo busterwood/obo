@@ -47,7 +47,7 @@ MUTANTS = {
     "globals not freed at exit": ("            x.disp = g.offset\n            rtCall1(RT_FREE, x, tVoid)\n", "            x.disp = g.offset\n"),
     # freeing too much: double free or poisoned reads
     "moved locals still freed": ("        if !s.moved && !s.isRefLocal {\n            let x = newItem", "        if !s.isRefLocal {\n            let x = newItem"),
-    "moves not recorded": ("        s.moved = true\n        invalidate(s, nil, true, \"\")", "        invalidate(s, nil, true, \"\")"),
+    "moves not recorded": ("        s.moved = true\n        s.touches = s.touches + 1\n        invalidate(s, nil, true, \"\")", "        s.touches = s.touches + 1\n        invalidate(s, nil, true, \"\")"),
     "take leaves the value in place": ("        opMem(0x8B, r, memOf(x), true, false)\n        opMem(0xC7, 0, memOf(x), true, false)\n        emit32(0)\n",
                                        "        opMem(0x8B, r, memOf(x), true, false)\n"),
     # string reference counts
@@ -117,6 +117,13 @@ MUTANTS = {
     "held arrays ignore mut parameters": ("    return x.sym == nil || r.storage == \"global\" || r.isRef\n", "    return x.sym == nil || r.storage == \"global\"\n"),
     "indexes of mut parameters unchecked": ("            let wholeLocal = x.sym != nil && !(root != nil && (root.storage == \"global\" || root.isRef))",
                                             "            let wholeLocal = x.sym != nil && !(root != nil && root.storage == \"global\")"),
+    # a whole local array is freed only by a call that moves it, so an operand holding it across
+    # such a call is checked through the touch count (call_targets.obx: "... whose index moves the
+    # array", "append whose value moves the array", "replace whose value moves the variable")
+    "index of a whole local not checked for moves": ("            if wholeLocal && xs0 != nil && touched(xs0) != touch0 {", "            if wholeLocal && xs0 != nil && false {"),
+    "append and truncate of a whole local not checked for moves": ("        if name != \"substr\" && aSym != nil && touched(aSym) != touch0 {", "        if name != \"substr\" && aSym != nil && false {"),
+    "replace of a whole local not checked for moves": ("        if rSym != nil && touched(rSym) != touch0 {", "        if rSym != nil && false {"),
+    "moves not counted": ("        s.touches = s.touches + 1\n", ""),
     # finer paths (item 3): a change reaches only what lies under its place
     "field changes invalidate siblings": ("(all || v.refDeep && underPath(v.refPath, path))", "(all || v.refDeep)"),
     "known elements treated as one": ("(ri != rj || pathsOverlap(argPaths[i], argPaths[j]))", "(ri != rj || true)"),

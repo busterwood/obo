@@ -431,7 +431,7 @@ whose right-hand side calls a function that might free something:
 // example: error: cannot assign to a field or element across a call
 type Node = ref record { v: int; kids: []Node }
 
-fn replaceKids(mut n: &Node): Node {        // changes the array the target lives in
+fn replaceKids(mut n: &Node): Node {        // the body changes nothing: the error is from taking n as mut
     return new Node{v: 7, kids: new []Node(0)}
 }
 
@@ -474,9 +474,23 @@ own expression:
   reached through a handle or a global, or is a reference parameter. This covers reads, assignment
   targets, `take`, and `&a[f()]`.
 
-A whole local array is exempt: no call can free its header, so `append(xs, f())` stays accepted, and so
-does `xs[f(xs)]`. A pure call (one that frees nothing and changes no `mut` argument) is never counted.
-The fix is the same: compute the value, or the index, first.
+A whole local array is checked for one thing only: a call that takes it by value moves it, and the
+callee frees it when the callee returns. So `xs[f(xs)]`, `append(xs, f(xs))`, `truncate(xs, f(xs))`
+and `replace(xs, f(xs))` are rejected when `f` takes `xs` by value, whatever `f` does otherwise. A call
+that only borrows `xs` (`&xs`) or passes it as a `mut` argument is accepted: a `mut` array parameter
+cannot be reassigned or replaced, so no such call can free the array's header. The fix is the same:
+compute the value, or the index, first.
+
+```obo
+// example: error: cannot index 'xs' with an index that moves it
+type Node = ref record { v: int; kids: []Node }
+fn eat(a: []Node): int { return 0 }     // takes the array by value: it is moved and freed
+fn main() {
+    var xs = new []Node(0)
+    append(xs, new Node{v: 1, kids: new []Node(0)})
+    println(xs[eat(xs)].v)
+}
+```
 
 ```obo
 // example: error: cannot index a field, element or reference with an index that calls a function
