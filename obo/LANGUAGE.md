@@ -216,7 +216,9 @@ while nothing it may point into has been changed.
   invalidates it on the paths where that is possible. A reference pointed at the same place on
   every path is checked against that place alone. Where paths join, the binding is the union of
   their places, so a change under any of them is seen, and a reference that may be writable on
-  one path only is read-only after the join.
+  one path only is read-only after the join. A defer body may not point a reference declared
+  before it at something else: the body runs where its block is left, which is not one of the
+  paths the binding is kept on, so the change would not be seen there.
 
   ```obo
   // example: error: 'k' may point to freed memory
@@ -436,6 +438,9 @@ depend on the program.
 | `'<r>' may point to freed memory: a recursive call writes through a handle, which could free what it points into` | a recursive call in a function that writes through a handle may free what `<r>` points into; borrow it again after the call. |
 | `a recursive call in this loop writes through a handle, which could free what a reference inside something points into on the next iteration` | a loop calls its own function, which writes through a handle; borrow the reference inside the loop, or move the call out of it. |
 | `cannot change what '<r>' points into while a for loop walks it` | a change, or a call that might free, while a loop walks `<r>`; make it after the loop. |
+| `cannot point '<r>' elsewhere in a defer: a defer body runs where its block is left, and the change would not be seen there` | a defer body points a reference declared before it at something else; do the change in the block, or declare the reference inside the defer body. |
+| `'<r>' is pointed somewhere new inside the loop, and read before it is pointed again; point it before the loop, or point it afresh before reading it in the loop` | a loop reads `<r>` before pointing it again, and a change in the loop may have freed what it points into, or it points somewhere the body was not checked with on the next iteration; point it afresh before reading it. |
+| `'<r>' is read-only where the loop starts again, and written before it is pointed again; point it afresh before writing it in the loop` | `<r>` is writable where the loop starts but read-only where it starts again, and is written before it is pointed again; point it afresh before writing it. |
 | `take needs an optional variable, field or element holding an owned value` | `take` applies only to optional owned places. |
 | `replace needs a variable, field or element holding an owned value` | `replace` applies only to owned places. |
 | `drop needs a local variable holding an owned value` | `drop` applies only to local owned variables. |
@@ -588,6 +593,17 @@ join is the lower place, which every change to the upper one reaches too; any ot
 to the whole root, which is the most conservative. A rule that kept only the common prefix of the two
 places would miss a change at the lower one, and is not used.
 
+A defer body may not re-point a reference declared before it (section 4). A loop is checked as well:
+where a change in the loop may have freed what a reference points into, while the reference was not
+pointed afresh on every path, a read of it on the next iteration is an error, unless the reference is
+pointed afresh after the change and before it is read again. A reference whose binding at the end of
+the body is not covered by the binding the body was checked with, or which is writable where the loop
+starts and read-only where it starts again, is also an error. The rule is per path, as the bindings
+are. Its precision is the same as before, and it is coarse in one place: a change made through a
+reference is taken to reach the whole root the reference borrows from, not the place it names, so a
+valid program can be rejected that changes one field through a reference and reads a reference to
+another field. That is a false rejection, not an unsound acceptance. A narrower rule is future work.
+
 **Known false positive (open).** The loop check does not follow each read to the re-point that
 precedes it in the same iteration. This program is valid, since `k` is pointed afresh before each
 read, but the loop is rejected because `k` is suspect where the next iteration starts and the loop
@@ -617,7 +633,9 @@ fn main() {}
 ```
 
 A loop that reads nothing it left suspect is accepted, and so is one that points a reference afresh
-after each call before reading it on the next iteration.
+after each call before reading it on the next iteration. A loop that frees what a reference points
+into and points the reference afresh before it reads it again is accepted too (`run/ref_bindings.obx`,
+`loopCache`).
 
 **Planned.** The language features listed as not yet done in the root
 `README.md` also apply: methods and interfaces, lambdas, generic modules, `try`

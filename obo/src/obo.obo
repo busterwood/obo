@@ -864,6 +864,8 @@ type Sym = ref record {
     bind: ^RefBind            // what a reference local points into, on the path being compiled
     fresh: bool               // pointed afresh since the innermost loop began, on every path to here
     staleUse: int            // useSeq of the last read that was not fresh (see loopBindCheck)
+    freedUse: int            // useSeq of the last read that was not fresh while carryFreed (see loopBindCheck)
+    carryFreed: bool         // a change that may free something came while it was not pointed afresh on every path
     suspect: bool             // live across a recursive call that may write through a handle
     usedAt: int               // the reads so far (useSeq) when it was last read: see loopSelfCheck
     iterating: bool           // a for loop is walking this array
@@ -887,7 +889,7 @@ type RefBind = ref record {
 }
 
 // The state of the owned locals on one path at one point (see snapshot): flags holds, per local, its
-// moved flag, then its suspect flag, then its fresh flag; binds holds its binding.
+// moved flag, then its suspect flag, then its fresh flag, then its carryFreed flag; binds holds its binding.
 type PState = ref record {
     flags: []bool
     binds: []^RefBind
@@ -898,9 +900,9 @@ type PState = ref record {
 // that is not a reference local (it points at nothing); noneBind is the identity of a join.
 var bindArena = new []RefBind(0)
 
-// the changes that may free something, so far: a loop whose body makes none cannot free what its next
-// iteration reads (see loopBindCheck)
-var freeCount = 0
+// the ownedLocals a defer body was entered with: a re-point of one of them in the body is refused
+// (see deferStat); -1 outside a defer body
+var deferMark = -1
 
 fn arenaBind(roots: []^Sym, deeps: []bool, paths: []string, writable: bool, parent: ?^Sym): ^RefBind {
     append(bindArena, new RefBind{roots: roots, deeps: deeps, paths: paths, writable: writable, parent: parent})
@@ -1793,7 +1795,8 @@ fn coversPlace(ed: bool, ep: string, bd: bool, bp: string): bool {
 }
 
 // the binding b, at the end of a loop's body, is covered by e, the binding the body was checked with:
-// every change that reaches b is one e was checked against, and b is writable only if e is
+// every change that reaches b is one e was checked against, and b is writable wherever e is (a write
+// checked against e is allowed through b too)
 fn bindCovers(e: ^RefBind, b: ^RefBind): bool {
     if b == noneBind || b == e { return true }
     if e.writable && !b.writable { return false }
@@ -1815,12 +1818,13 @@ fn bindCovers(e: ^RefBind, b: ^RefBind): bool {
 fn snapshot(): PState {
     let locals = &ownedLocals
     let n = len(locals)
-    var flags = new []bool(3 * n)
+    var flags = new []bool(4 * n)
     var binds = new []^RefBind(0)
     for i in 0..n {
         flags[i] = locals[i].moved
         flags[n + i] = locals[i].suspect
         flags[2 * n + i] = locals[i].fresh
+        flags[3 * n + i] = locals[i].carryFreed
         append(binds, locals[i].bind)
     }
     return new PState{flags: flags, binds: binds}
@@ -1828,7 +1832,7 @@ fn snapshot(): PState {
 
 // no moves, no suspicion, every local fresh and nothing pointed at: where a join begins
 fn neutralState(n: int): PState {
-    var flags = new []bool(3 * n)
+    var flags = new []bool(4 * n)
     var binds = new []^RefBind(0)
     for i in 0..n {
         flags[2 * n + i] = true
@@ -1858,6 +1862,7 @@ fn restore(st: &PState) {
         ownedLocals[i].moved = st.flags[i]
         ownedLocals[i].suspect = st.flags[n + i]
         ownedLocals[i].fresh = st.flags[2 * n + i]
+        ownedLocals[i].carryFreed = st.flags[3 * n + i]
         ownedLocals[i].bind = st.binds[i]
     }
 }
@@ -1884,6 +1889,7 @@ fn joinSuspect(st: &PState) {
     for i in 0..n {
         let s = ownedLocals[i]
         if st.flags[n + i] { s.suspect = true }
+        if st.flags[3 * n + i] { s.carryFreed = true }
         let jb = joinBind(s.bind, st.binds[i])
         s.bind = jb
         s.fresh = s.fresh && st.flags[2 * n + i]
@@ -1895,6 +1901,7 @@ fn joinBinds(st: &PState) {
     let n = localsIn(st)
     for i in 0..n {
         let s = ownedLocals[i]
+        if st.flags[3 * n + i] { s.carryFreed = true }
         let jb = joinBind(s.bind, st.binds[i])
         s.bind = jb
         s.fresh = s.fresh && st.flags[2 * n + i]
@@ -1907,6 +1914,7 @@ fn joinStates(a: &PState, b: &PState): PState {
     let n = localsIn(b)
     for i in 0..n {
         if a.flags[n + i] { out.flags[n + i] = true }
+        if a.flags[3 * n + i] { out.flags[3 * n + i] = true }
         out.flags[2 * n + i] = out.flags[2 * n + i] && a.flags[2 * n + i]
         let jb = joinBind(a.binds[i], b.binds[i])
         out.binds[i] = jb
@@ -1921,10 +1929,28 @@ fn absorb(mut acc: &PState, st: &PState) {
     let n = localsIn(st)
     for i in 0..m {
         if st.flags[n + i] { acc.flags[m + i] = true }
+        if st.flags[3 * n + i] { acc.flags[3 * m + i] = true }
         acc.flags[2 * m + i] = acc.flags[2 * m + i] && st.flags[2 * n + i]
         let jb = joinBind(acc.binds[i], st.binds[i])
         acc.binds[i] = jb
     }
+}
+
+// a change that may free something marks each reference that is not pointed afresh on every path:
+// what it points into may be freed, so a read of it, or its being carried round a loop, is checked
+// (see loopBindCheck)
+fn markCarriedFreed() {
+    for i in 0..len(ownedLocals) {
+        if ownedLocals[i].isRefLocal && !ownedLocals[i].fresh { ownedLocals[i].carryFreed = true }
+    }
+}
+
+// whether s is one of the first mark locals (declared before a defer body was entered)
+fn declaredBefore(s: ^Sym, mark: int): bool {
+    for i in 0..mark {
+        if ownedLocals[i] == s { return true }
+    }
+    return false
 }
 
 // a reference is pointed afresh by the body of a loop before it is read there: the reads before
@@ -2157,7 +2183,7 @@ fn pathsOverlap(a: string, b: string): bool {
 // inside any other root the change reaches.
 fn invalidate(root: ?^Sym, via: ?^Sym, all: bool, path: string) {
     if root == nil { return }
-    freeCount += 1
+    markCarriedFreed()
     let locals = &ownedLocals
     for v in locals {
         // a change through via frees only things below via: references it was
@@ -2183,7 +2209,7 @@ fn invalidate(root: ?^Sym, via: ?^Sym, all: bool, path: string) {
 // inside something is invalid, whatever it borrows from. A reference to a whole object stays
 // valid: only owners free whole objects, and a change through a handle frees only below its target.
 fn invalidateDeep(via: ?^Sym) {
-    freeCount += 1
+    markCarriedFreed()
     let locals = &ownedLocals
     for v in locals {
         if v.isRefLocal && anyDeep(v.bind) && !ancestorOf(v, via) && !v.moved {
@@ -2228,15 +2254,23 @@ fn loopSelfCheck(nOuter: int, selfBefore: int, useBefore: int, back: &PState, lv
 }
 
 // A loop that points a reference somewhere new and reads it before pointing it again reads it on the
-// next iteration with a binding the body was not checked with. If the body frees something, that
-// binding must be covered by the one the body was checked with (see bindCovers); a body that frees
-// nothing cannot free what the next iteration reads.
-fn loopBindCheck(entry: &PState, back: &PState, useBefore: int, frees: bool, lv: ?^Sym, line: int, col: int) {
+// next iteration with a binding the body was not checked with. That is unsafe where a change may have
+// freed what the reference points into while it was not pointed afresh (carryFreed, at a read or at the
+// back edge), and where the binding comes back read-only but the body was checked against a writable
+// one. Otherwise the binding must be covered by the one the body was checked with (see bindCovers).
+fn loopBindCheck(entry: &PState, back: &PState, useBefore: int, lv: ?^Sym, line: int, col: int) {
     let n = localsIn(entry)
     for i in 0..n {
         let s = ownedLocals[i]
-        if frees && s.isRefLocal && s != lv && s.staleUse > useBefore && !bindCovers(entry.binds[i], back.binds[i]) {
-            errorAt("'" + s.name + "' is pointed somewhere new inside the loop, and read before it is pointed again; point it before the loop, or point it afresh before reading it in the loop", line, col)
+        let e = entry.binds[i]
+        let b = back.binds[i]
+        if s.isRefLocal && s != lv && s.staleUse > useBefore && !bindCovers(e, b) {
+            if s.freedUse > useBefore || back.flags[3 * n + i] {
+                errorAt("'" + s.name + "' is pointed somewhere new inside the loop, and read before it is pointed again; point it before the loop, or point it afresh before reading it in the loop", line, col)
+            }
+            if e.writable && !b.writable {
+                errorAt("'" + s.name + "' is read-only where the loop starts again, and written before it is pointed again; point it afresh before writing it in the loop", line, col)
+            }
         }
     }
 }
@@ -3181,7 +3215,10 @@ fn designatorT(target: bool): Item {
     if s.isRefLocal && (!target || path != "") {        // a read, not a re-pointing: see loopBindCheck
         useSeq += 1
         s.usedAt = useSeq
-        if !s.fresh { s.staleUse = useSeq }
+        if !s.fresh {
+            s.staleUse = useSeq
+            if s.carryFreed { s.freedUse = useSeq }
+        }
     }
     x.viaHandle = viaHandle
     if x.sym == nil && root != nil {
@@ -3773,6 +3810,9 @@ fn assignmentOrCall(): bool {
         if o == T_ASSIGN && xs != nil && xs.isRefLocal {
             // pointing a reference somewhere else: nothing is moved or freed
             if xs.iterating { errorAt("cannot point '" + xs.name + "' elsewhere while a for loop walks it", line, col) }
+            if deferMark >= 0 && declaredBefore(xs, deferMark) {
+                errorAt("cannot point '" + xs.name + "' elsewhere in a defer: a defer body runs where its block is left, and the change would not be seen there", line, col)
+            }
             let y = expression()
             checkAssign(dtype, y, "assignment")
             let nb = borrowBind(y)
@@ -3794,6 +3834,7 @@ fn assignmentOrCall(): bool {
             let nbind = rebind(nb, parent)
             xs.bind = nbind
             xs.fresh = true
+            xs.carryFreed = false
             xs.suspect = false
             xs.moved = false
             return false
@@ -3974,7 +4015,6 @@ fn loopBody(entry: PState, line: int, col: int, nOuter: int, selfBefore: int, us
 // lv: a for loop's variable, rebound at the start of every iteration
 fn loopBodyV(entry: PState, line: int, col: int, lv: ?^Sym, nOuter: int, selfBefore: int, useBefore: int): Loop {
     let n = localsIn(entry)
-    let frees = freeCount
     clearFresh()
     append(loops, new Loop{brk: 0, cont: 0, blocks: len(blocks), entry: copyState(entry), lv: lv,
                            susp: neutralState(n), back: neutralState(n)})
@@ -3986,7 +4026,7 @@ fn loopBodyV(entry: PState, line: int, col: int, lv: ?^Sym, nOuter: int, selfBef
         absorb(&loops[li].back, &now)
     }
     loopSelfCheck(nOuter, selfBefore, useBefore, &loops[li].back, lv, line, col)
-    loopBindCheck(&entry, &loops[li].back, useBefore, freeCount > frees, lv, line, col)
+    loopBindCheck(&entry, &loops[li].back, useBefore, lv, line, col)
     // the loop's record leaves the stack; what break and continue collected comes back
     let res = new Loop{brk: loops[li].brk, cont: loops[li].cont, blocks: loops[li].blocks,
                        entry: copyState(entry), lv: lv, susp: copyState(loops[li].susp), back: copyState(loops[li].back)}
@@ -4388,6 +4428,8 @@ fn deferStat() {
     let savedNarrow = replace(narrowStack, new []NEntry(0))   // fresh stacks for the deferred code
     let savedLoops = replace(loops, new []Loop(0))
     let savedInDefer = inDefer
+    let savedMark = deferMark
+    deferMark = len(ownedLocals)
     depth = depth + 8
     inDefer = true
     if sym == T_LBRACE {
@@ -4402,6 +4444,7 @@ fn deferStat() {
     narrowStack = savedNarrow
     loops = savedLoops
     inDefer = savedInDefer
+    deferMark = savedMark
     fixHere1(over)
     // the body runs where the block is left, not here: what it did to suspicion is taken back (its
     // re-points have not happened yet either), and callDefers applies its recursive calls at each exit

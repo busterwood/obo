@@ -134,6 +134,19 @@ RETARGET = {
 MUTANTS.update(RETARGET)
 PORT_PATTERNS.update({k: v for k, v in RETARGET.items() if k in PORT_PATTERNS})
 
+# the loop check and the defer rule: the marks that frees leave on the references they may reach, the reads
+# that note them, the writable trigger, the refusal of a re-point in a defer body, and the loop start, which
+# must keep the marks its condition leaves (the condition frees before the body reads)
+MUTANTS.update({
+    "frees do not mark carried references": ("    for i in 0..len(ownedLocals) {\n        if ownedLocals[i].isRefLocal && !ownedLocals[i].fresh { ownedLocals[i].carryFreed = true }\n    }\n",
+                                             ""),
+    "a read of a marked reference is not noted": ("            if s.carryFreed { s.freedUse = useSeq }\n", ""),
+    "the writable trigger dropped": ("            if e.writable && !b.writable {\n", "            if false {\n"),
+    "a defer body's re-point is not refused": ("            if deferMark >= 0 && declaredBefore(xs, deferMark) {", "            if false {"),
+    "a re-point keeps the carried mark": ("            xs.carryFreed = false\n", ""),
+    "a loop start forgets the carried marks": ("    for s in locals { s.fresh = false }\n", "    for s in locals { s.fresh = false; s.carryFreed = false }\n"),
+})
+
 
 def main():
     pattern = sys.argv[1] if len(sys.argv) > 1 else ''

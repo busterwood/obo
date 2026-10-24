@@ -1,6 +1,6 @@
 type Item = ref record { v: int; kids: []Item }
 type Bag = ref record { items: []Item; n: int }
-// no global variables here: each case's invalidation must come from the reference's own binding
+// no global variables here, except in a case that says so: each case's invalidation must come from the reference's own binding
 // === a reference re-pointed on one branch of an if: the owner is freed on the other path
 fn main() {
     var a = new Item{v: 1, kids: new []Item(0)}
@@ -136,4 +136,73 @@ fn pick(r: &Item) {
 fn main() {
     var x = new Item{v: 2, kids: new []Item(0)}
     pick(x)
+}
+// === a defer that re-points a reference declared before it: the body runs where the block is left
+fn main() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    if a.v == 1 {
+        defer k = &b  // error: cannot point 'k' elsewhere in a defer
+        println(k.v)
+    }
+    println(k.v)
+}
+// === the same in a loop, with a break: the change would not be seen where the loop is left
+fn main() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 3 {
+        defer k = &b  // error: cannot point 'k' elsewhere in a defer
+        i += 1
+        break
+    }
+    println(k.v)
+}
+// === a while condition that frees a global the reference points into, and the body reads it at the top
+var h = new Item{v: 1, kids: new []Item(0)}
+fn bump(): bool {
+    h = new Item{v: 2, kids: new []Item(0)}
+    return false
+}
+fn main() {
+    var a = new Item{v: 5, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while !bump() && i < 3 {  // error: 'k' is pointed somewhere new inside the loop
+        println(k.v)
+        k = &h
+        i += 1
+    }
+}
+// === a loop that frees what the reference points into, then reads it at the top of the next pass
+fn main() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 3 {  // error: 'k' is pointed somewhere new inside the loop
+        b = new Item{v: 7, kids: new []Item(0)}
+        println(k.v)
+        k = &b
+        i += 1
+    }
+}
+// === a reference writable where a loop starts, read-only where the loop starts again
+fn walk(r: &Item) {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 2 {  // error: 'k' is read-only where the loop starts again
+        k.v = 5
+        k = r
+        i += 1
+    }
+    println(a.v)
+}
+fn main() {
+    var x = new Item{v: 2, kids: new []Item(0)}
+    walk(x)
 }

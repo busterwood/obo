@@ -64,6 +64,38 @@ fn selfParent() {
     println(w.v)                         // expect: 1
 }
 
+// a defer that re-points a reference declared inside its own body is fine: the body's reference is
+// local to the body, so the change is seen where the body runs
+fn deferLocal(c: bool) {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    if c {
+        println(a.v)                      // expect: 1
+        defer {
+            var t = &a
+            t = &b
+            println(t.v)                  // expect: 2
+        }
+    }
+    println(b.v)                          // expect: 2
+}
+
+// a reference read at the top of a loop, pointed at a new root after the old one is freed: the
+// read after the free is only of the binding pointed afresh before it, so the loop is accepted
+fn loopCache() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 2 {
+        if i == 0 { println(k.v) }        // expect: 1
+        b = new Item{v: 3, kids: new []Item(0)}
+        k = &b
+        if i == 1 { println(k.v) }        // expect: 3
+        i += 1
+    }
+}
+
 fn main() {
     choose(true)
     both(true)
@@ -71,4 +103,6 @@ fn main() {
     loopPoint()
     underIndex()
     selfParent()
+    deferLocal(true)
+    loopCache()
 }

@@ -381,15 +381,15 @@ fn main() {
     append(bag.items, new Item{v: 1, kids: new []Item(0)})
     walkRec(bag, handle(bag), 1)
 }
-// === a defer that re-points a reference has not run yet
+// === a defer that re-points a reference declared before it is refused: the body runs where the block is left
 fn refill4(h: ^Bag) {
     h.items = new []Item(0)
 }
 fn deferPoint(b: &Bag, h: ^Bag, d: int) {
     var k = &b.items[0]
     if d > 0 { deferPoint(b, h, d - 1) }
-    defer { k = &b.items[0] }
-    println(k.v)  // error: 'k' may point to freed memory
+    defer { k = &b.items[0] }  // error: cannot point 'k' elsewhere in a defer
+    println(k.v)
     refill4(h)
 }
 fn main() {

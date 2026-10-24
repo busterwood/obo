@@ -181,7 +181,6 @@ MUTANTS.update({
     "loop check reports unread references": [("back.flags[localsIn(back) + i] && ownedLocals[i] != lv && ownedLocals[i].usedAt > useBefore {",
                                               "back.flags[localsIn(back) + i] && ownedLocals[i] != lv {")],
     "deferred self-call suspicion kept at the defer": [("    restoreDeferred(&before)\n    if selfCalls != sc {", "    if selfCalls == sc { restoreDeferred(&before) }\n    if selfCalls != sc {")],
-    "a defer's re-point clears suspicion": [("    restoreDeferred(&before)\n    if selfCalls != sc {", "    if selfCalls != sc { restoreDeferred(&before) }\n    if selfCalls != sc {")],
     # the join of two bindings keeps the binding of the last path, not the union of the paths
     "binding not joined: last path wins": [("    if a == b || b == noneBind { return a }\n    if a == noneBind { return b }\n",
                                             "    if b == noneBind { return a }\n    if true { return b }\n")],
@@ -196,7 +195,7 @@ MUTANTS.update({
     # writable only where both paths are: a reference writable on one path only is read-only after the join
     "refMut not ANDed at a join": [("    let writable = a.writable && b.writable", "    let writable = a.writable || b.writable")],
     # the loop's bindings at its end are never checked against the ones its body was checked with
-    "loop back-edge binding check dropped": [("    loopBindCheck(&entry, &loops[li].back, useBefore, freeCount > frees, lv, line, col)\n", "")],
+    "loop back-edge binding check dropped": [("    loopBindCheck(&entry, &loops[li].back, useBefore, lv, line, col)\n", "")],
 })
 
 

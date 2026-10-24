@@ -595,8 +595,8 @@ shallow references invalidated 0 each. Those last two are covered by the run and
 above, not by the fuzzer.
 
 **Holes found, not fixed here.** Both are accepted by HEAD's seed too, and by the current
-compiler. They will be fixed next. (The reference re-pointed on one branch is fixed: see
-"Reference bindings per path (done)" below.)
+compiler. They will be fixed next. (The reference re-pointed on one branch is fixed, and a re-point
+inside a defer body is refused: see "Reference bindings per path (done)" below.)
 - Uses inside `defer` bodies are not checked against later changes: `defer println(first.v)`, then
   `bag.items = new ...` (`scratchpad/review5/p/p03_defer_nohandle.obx`).
 - Argument evaluation order: a deep argument is checked before a later argument's call frees what it
@@ -631,13 +631,36 @@ in section 10.
 - Invalidation (`invalidate`, near line 1665) tests each binding entry: a change reaches an entry when
   the change is at its root and the entry lies under the change's place, or when the root is the handle.
   A re-point (the assignment, near line 3786) makes a new binding; it does not change the old one.
-- The loop check (`loopBindCheck`, near line 2234, with `bindCovers` near line 1797): when a loop body
-  frees something (`freeCount`, bumped by `invalidate` and `invalidateDeep`), a reference read before it
-  is pointed afresh in the body is an error unless its binding at the end of the body is covered by the
-  binding the body was checked with. The gate on frees is what keeps linked-list walks accepted (`p =
-  p.next` in a loop that reads `p` at its top): a body that frees nothing cannot free what the next
-  iteration reads, since the frees before the loop are in its entry state. Without the gate, 63 valid
-  fuzzer programs were rejected.
+- The loop check (`loopBindCheck`, near line 2264, with `bindCovers` near line 1800). A change that may
+  free something (`invalidate` and `invalidateDeep` call `markCarriedFreed`) marks each reference local
+  that is not pointed afresh on every path (`carryFreed`, a fourth flag block in `PState`). A read of a
+  marked reference records its use (`freedUse`), and a marked reference at the end of the body is carried
+  round the loop. A loop is an error where such a read, or such a carried reference, has a binding the
+  body was not checked with (`bindCovers`), and where a binding comes back read-only that the body was
+  checked against as writable. A re-point clears the mark, so a reference pointed afresh after the free
+  is accepted (`run/ref_bindings.obx`, `loopCache`). The marks replace the frees counter that gated the
+  check before. The counter was read before a while condition, so a free in the condition was missed,
+  and it could not tell a free on one path from one on every path. A linked-list walk (`p = p.next`
+  with `p` read at the top) stays accepted, since nothing in its body frees.
+- A defer body that points a reference declared before it at something else is refused (`deferMark`,
+  `declaredBefore`, the error "cannot point 'k' elsewhere in a defer"). The body runs where its block is
+  left, at every exit, and its binding effects at compile time are discarded when the body is restored
+  (`restoreDeferred`). Applying them at each exit would need the state at each exit, so the simple rule
+  is taken: the change is refused. Declaring the reference inside the defer body is still allowed.
+- The writable rule comes from the loop check, not from `bindCovers`: `bindCovers` is sound as coded
+  (a write checked against the entry binding must be allowed through the back-edge binding, so
+  "writable wherever the entry is" is the rule), and its comment said it the other way round. The
+  case where a reference is writable where the loop starts and read-only where it starts again is an
+  error (`errors/ref_bindings.obx`, "a reference writable where a loop starts, read-only where the loop
+  starts again").
+- Future work: a change made through a reference is taken to reach the whole root that the reference
+  borrows from, not the place it names. This is the same as main, and it rejects some valid programs
+  (a change to one field through a reference, with a reference to another field read after it). A
+  narrower rule is future work, and so is applying a defer body's re-point at each exit in place of the
+  refusal.
+- Stage B now compares behaviour: the output of the port compiled by the seed and by the new compiler,
+  not the bytes of the code. A byte difference in a return spill (the retLeak case) is harmless and is
+  accepted. In this build stage B is 418 of 418 identical.
 
 **Path join: the spec's rule is unsound.** The first design took the common prefix of two places as the
 join, and called the shorter place "more conservative". It is not: a join of `/a/b` and `/a/c` to `/a`
@@ -652,9 +675,9 @@ println(w.v)` never finished on HEAD (timeout, exit 124). `k = &k.kids[0]` made 
 would be an ancestor of the reference itself (assignment, near line 3786). The case is
 `run/ref_bindings.obx`, `selfParent`, which prints 1.
 
-**Memory.** The port compiling itself has a live peak of 1,083,760 bytes against the budget of
-1,351,000 (`tests/port_compare.py`), and allocates 13,680,928 bytes in all. Main's allocation work,
-merged here, had 1,045,296; the difference is the per-path bindings (38 KB). Before that work the same
+**Memory.** The port compiling itself has a live peak of 1,097,408 bytes against the budget of
+1,351,000 (`tests/port_compare.py`), and allocates 13,885,696 bytes in all. Main's allocation work,
+merged here, had 1,045,296; the difference is the per-path bindings and their marks (52,112 bytes). Before that work the same
 change measured 1,758,240, over the budget, and the cause was not the new data: the image buffer grew
 past 262,144 bytes and was reallocated while both blocks were live. Padding HEAD by about 4 KB of
 emitted code reproduced the jump (1,727,616). Main's `elfImage` now sizes the image once, which removes
@@ -662,13 +685,19 @@ it. The per-state arrays and the bindings arena are small: measured before the m
 with more than 32 bindings, and no state covered more than 9 owned locals.
 
 **Tests.**
-- `tests/errors/ref_bindings.obx`: 12 cases. The first nine are a re-point on one branch of an `if`,
+- `tests/errors/ref_bindings.obx`: 17 cases. The first nine are a re-point on one branch of an `if`,
   through a handle with a deep reference, in a recursive walk, in a match arm, in an else-if chain, in a
   loop, two roots changed, a change under the second root of a join, and the items at two indexes. Three
   more: a reference joined from a place and the place below it, a reference shallow on one path and deep
-  on the other, and a reference writable on one path and read-only on the other.
-- `tests/run/ref_bindings.obx`: six accepted programs with their output (`choose`, `both`, `newRoot`,
-  `loopPoint`, `underIndex`, and `selfParent` for the hang above).
+  on the other, and a reference writable on one path and read-only on the other. Five more for the
+  defer and loop rules: a defer re-point in an if, the same in a loop with a break, a while condition
+  that frees a global the reference points into, a loop that frees what a reference points into before
+  reading it at the top, and a reference writable where a loop starts and read-only where it starts again.
+- `tests/run/ref_bindings.obx`: eight accepted programs with their output (`choose`, `both`, `newRoot`,
+  `loopPoint`, `underIndex`, `selfParent` for the hang above, `deferLocal`, a defer that points a
+  reference declared inside its own body, and `loopCache`, a loop that frees and re-points before the read).
+- `tests/errors/handle_deep.obx`, "a defer that re-points a reference declared before it is refused":
+  the case that expected the re-point to be tracked now expects the refusal at the defer.
 - `tests/own_fuzz.py`: two statement kinds. `choose_ref_stmt` (valid): a reference pointed at one of two
   locals, re-pointed on one path, read, with no change. `branch_free_stmt` (invalid): a reference
   re-pointed on one path, a change under the root the other path points into, then a read.
@@ -676,7 +705,12 @@ with more than 32 bindings, and no state covered more than 9 owned locals.
   (last path wins), a join that keeps only the first root, a join that is deep only where both paths are
   (`errors/ref_bindings.obx`, "a re-point in one arm of a match", and "the same, through a handle, with a
   deep reference"), the spec's shorter-place join, a join that is writable where either path is, and no
-  loop binding check. Eighteen existing port mutants, and twelve fork mutants, whose patterns the
+  loop binding check. Six more fork mutants (`tests/mutate_fork.py`) cover the marks and the defer rule:
+  frees that mark nothing, a read of a marked reference that notes nothing, the writable trigger dropped,
+  a defer re-point not refused, a re-point that keeps its mark, and a loop start that forgets the marks
+  (the case of a free in the condition). A mutant that restored a defer body's binding only when the
+  body made a self call was removed: with the defer re-point refused, nothing it changes is observable,
+  so it is equivalent. Eighteen existing port mutants, and twelve fork mutants, whose patterns the
   rewrite had replaced were retargeted to the same behaviour in the new code (`tools/port_ref_mutants.py`
   and `tools/fork_ref_mutants.py`).
 
