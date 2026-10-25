@@ -327,7 +327,7 @@ fn main() {
     append(b.items, mk(2))
     let h = handle(b)
     let r = &h.items
-    println(r[eatBag(b)].v)           // error: cannot index 'r' with an index that moves it
+    println(r[eatBag(b)].v)           // error: after a handle to it was made
 }
 // === a compound assignment through a reference, whose value moves the array the reference borrows
 fn main() {
@@ -399,7 +399,7 @@ fn main() {
     var b = new Bag{items: new []Node(0)}
     append(b.items, mk(1))
     let h = handle(b)
-    println(h.items[eatBag(b)].v)   // error: cannot index through a handle with an index that moves or frees something
+    println(h.items[eatBag(b)].v)   // error: after a handle to it was made
 }
 // === a handle to an element's array indexed by a pure move of the array the element is in
 fn main() {

@@ -147,7 +147,7 @@ MUTANTS = {
     # same identity at or below its path and by every free of another identity or of none
     "replace does not free what it holds": ("        consume(v)\n        freeEvent(x, place, raw, orig, ident)\n", "        consume(v)\n"),
     "take does not free what it holds": ("        freeEvent(x, lastPlace, lastRaw, lastOrigin, lastIdent)\n", ""),
-    "moves do not reach held handle targets": ("        if heldForeign[i] || heldKey[i] == s { heldHit[i] = true }", "        if heldKey[i] == s { heldHit[i] = true }"),
+    "moves do not reach held handle targets": ("        } else if heldForeign[i] {\n            if s.isParam || !refParamKey(heldKey[i]) { heldHit[i] = true }", "        } else if false {\n            if s.isParam || !refParamKey(heldKey[i]) { heldHit[i] = true }"),
     "moves do not free handle targets": ("        heldMove(s)\n", ""),
     "identity frees do not reach their entries": ("                if segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }",
                                                   "                if false { heldHit[k] = true }"),
@@ -229,6 +229,45 @@ MUTANTS.update({
 })
 
 
+# the second review's gaps: origins, the joins over several roots, the chained handles, and the
+# callee-local rule. An entry marked equivalent in FORK.md is expected to survive: the guard it removes
+# is redundant (see there)
+MUTANTS.update({
+    "origin needs no non-handle designator": ("if !x.viaHandle && lastRaw == \"\" { origin = wholeOwnerOf(x.sym) }",
+                                             "if lastRaw == \"\" { origin = wholeOwnerOf(x.sym) }"),
+    "origin needs no whole path": ("if !x.viaHandle && lastRaw == \"\" { origin = wholeOwnerOf(x.sym) }",
+                                  "if !x.viaHandle { origin = wholeOwnerOf(x.sym) }"),
+    "origin of a global is kept": ("    if r.owned && !r.isRef && r.storage == \"local\" { return r }",
+                                   "    if r.owned && !r.isRef { return r }"),
+    "chained handles keep the first origin": ("            } else {\n                hOrig = nil\n                hIdent = nil\n            }",
+                                              "            } else {\n            }"),
+    "a handle root of a reference is not an identity (held)": ("            if o == handleSym {\n                heldAdd(nil, true, false, \"\")",
+                                                              "            if false {\n                heldAdd(nil, true, false, \"\")"),
+    "a handle root of a reference is not an identity (freed)": ("            if o == handleSym {\n                heldFree(nil, nil, \"\")",
+                                                               "            if false {\n                heldFree(nil, nil, \"\")"),
+    "reference roots are owners (held)": ("            } else if o.isRef {\n                heldAdd(o, true, false, p)",
+                                          "            } else if false {\n                heldAdd(o, true, false, p)"),
+    "reference roots are owners (freed)": ("            } else if o.isRef {\n                heldFree(nil, o, p)",
+                                           "            } else if false {\n                heldFree(nil, o, p)"),
+    "every held place is whole": ("    heldAdd(r, false, raw == \"\", raw)", "    heldAdd(r, false, true, raw)"),
+    "unknown frees hit only whole arrays": ("        } else if !heldWhole[k] {", "        } else if heldWhole[k] {"),
+    "moves reach reference parameters from callee locals": ("            if s.isParam || !refParamKey(heldKey[i]) { heldHit[i] = true }",
+                                                           "            heldHit[i] = true"),
+    "frees reach reference parameters from callee locals": ("            } else if !(calleeLocal(o) && refParamKey(heldKey[k])) {",
+                                                           "            } else {"),
+    "a by-value parameter counts as a callee local": ("    return r.storage == \"local\" && !r.isParam", "    return r.storage == \"local\""),
+})
+
+
+# mutants that survive by design: each removes a test that is redundant, so the behaviour is unchanged
+EQUIVALENT = {
+    "origin needs no non-handle designator": "a designator through a handle has no sym, so wholeOwnerOf gives nil",
+    "origin needs no whole path": "a designator with a path has no sym (only a whole name sets it), so wholeOwnerOf gives nil",
+    "origin of a global is kept": "owned is set only for locals (addOwnedLocal), so a global never has an origin",
+    "a handle root of a reference is not an identity (held)": "the entry keeps its foreign flag and nil key: moves and frees hit it either way; a handleSym key is never a move or identity-free target",
+}
+
+
 def main():
     pattern = sys.argv[1] if len(sys.argv) > 1 else ''
     src = open(os.path.join(FORK, 'src', 'obo.obo')).read()
@@ -256,7 +295,9 @@ def main():
         detail = next((l.strip() for l in lines if l.startswith('     ')), '')
         caught = p.returncode != 0
         print(f"{'caught' if caught else 'MISSED'}  {name:<36} {lines[-1].split(' in ')[0] if lines else ''}  {detail[:60]}")
-        if not caught:
+        if not caught and name in EQUIVALENT:
+            print(f"EQUIV   {name}: {EQUIVALENT[name]}")
+        elif not caught:
             missed.append(name)
     print(f"\n{len(names) - len(missed)}/{len(names)} mutants caught")
     sys.exit(1 if missed else 0)

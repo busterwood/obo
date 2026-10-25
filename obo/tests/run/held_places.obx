@@ -116,6 +116,48 @@ fn c_local_param_replace() {
     append(b.items, mk(1))
     println(idxLocal(handle(b)))   // expect: 7
 }
+// a mut parameter's array indexed by a move of a local the callee declared: a reference cannot point into it
+fn f1(mut p: &Bag): int {
+    var t = new Bag{items: new []Node(0), opt: nil}
+    return p.items[sinkBag(t)].v
+}
+fn c_f1_callee_local_move() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(5))
+    println(f1(b))                    // expect: 5
+}
+// a reference parameter's array indexed by a move of a local the callee declared
+fn f2(p: &Bag): int {
+    var t = new Bag{items: new []Node(0), opt: nil}
+    return p.items[sinkBag(t)].v
+}
+fn c_f2_callee_local_move() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(6))
+    println(f2(b))                    // expect: 6
+}
+// a reference parameter's array indexed by a replace of an array the callee declared: no reference names it
+fn f4(p: &Bag): int {
+    var t = new Bag{items: new []Node(0), opt: nil}
+    append(t.items, mk(2))
+    return p.items[sinkI(replace(t.items, new []Node(0)))].v
+}
+fn c_f4_callee_local_replace() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(8))
+    println(f4(b))                    // expect: 8
+}
+// a reference parameter's array indexed by a take of an optional the callee declared
+fn f5(p: &Bag): int {
+    var t = new Bag{items: new []Node(0), opt: nil}
+    t.opt = mk(3)
+    return p.items[sinkN(take(t.opt))].v
+}
+fn c_f5_callee_local_take() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(8))
+    println(f5(b))                    // expect: 8
+}
 fn main() {
     c_own_take()
     c_self_replace()
@@ -129,4 +171,8 @@ fn main() {
     c_mutref_own_take()
     c_handle_other_move()
     c_local_param_replace()
+    c_f1_callee_local_move()
+    c_f2_callee_local_move()
+    c_f4_callee_local_replace()
+    c_f5_callee_local_take()
 }

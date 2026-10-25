@@ -876,6 +876,8 @@ type Sym = ref record {
     isRef: bool               // a reference: a parameter or local that borrows
     isRefLocal: bool          // a reference local (its validity is tracked)
     hOrigin: ?^Sym            // a let handle to a whole owned local: the local its object is in
+    handled: bool            // a handle was made from this whole local: a move of it is refused (see consume)
+    isParam: bool            // a parameter of the function being compiled: its object came from a caller
     bind: ^RefBind            // what a reference local points into, on the path being compiled
     fresh: bool               // pointed afresh since the innermost loop began, on every path to here
     staleUse: int            // useSeq of the last read that was not fresh (see loopBindCheck)
@@ -2079,6 +2081,7 @@ fn consume(mut x: &Item) {
         if condDepth > 0 { error("cannot move '" + s.name + "' inside && or ||") }
         if pinned == s { error("cannot move '" + s.name + "' while assigning into it") }
         if s.deferUse { error("'" + s.name + "' is used by a defer and cannot be moved") }
+        if s.handled { error("cannot move '" + s.name + "' after a handle to it was made: the handle names its object, and its held places would not follow the move") }
         s.moved = true
         s.touches = s.touches + 1
         heldMove(s)
@@ -2983,10 +2986,31 @@ fn heldPushStore(root: ?^Sym, viaHandle: bool, origin: ?^Sym, ident: ?^Sym, plac
     return mark
 }
 
+// a held identity that is a reference parameter: its object lies in a caller, so a local this function
+// declared (a fresh object, or one taken out of a caller's record) cannot be it
+fn refParamKey(k: ?^Sym): bool {
+    if k == nil { return false }
+    let r = k
+    return isRefParam(r)
+}
+
+// a local this function declared: not a by-value parameter (whose object a caller may name through a
+// reference) and not a global (which a reference parameter may name). No reference parameter names
+// the object of such a local, so a move or free of it does not reach a reference parameter's place
+fn calleeLocal(o: ?^Sym): bool {
+    if o == nil { return false }
+    let r = o
+    return r.storage == "local" && !r.isParam
+}
+
 // the owned local s is moved: a held place inside s, and every place that is not owned, may be freed
 fn heldMove(s: ^Sym) {
     for i in 0..len(heldKey) {
-        if heldForeign[i] || heldKey[i] == s { heldHit[i] = true }
+        if heldKey[i] == s {
+            heldHit[i] = true
+        } else if heldForeign[i] {
+            if s.isParam || !refParamKey(heldKey[i]) { heldHit[i] = true }
+        }
     }
 }
 
@@ -3001,7 +3025,7 @@ fn heldFree(o: ?^Sym, i: ?^Sym, place: string) {
         if heldForeign[k] {
             if i != nil && heldKey[k] == i {
                 if segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }
-            } else {
+            } else if !(calleeLocal(o) && refParamKey(heldKey[k])) {
                 heldHit[k] = true
             }
         } else if o != nil {
@@ -3056,6 +3080,14 @@ fn wholeOwnerOf(s: ?^Sym): ?^Sym {
     let r = s
     if r.owned && !r.isRef && r.storage == "local" { return r }
     return nil
+}
+
+// a handle was made from the whole local s: s may not be moved from now on (consume refuses it)
+fn markHandled(s: ?^Sym) {
+    if s != nil {
+        let r = s
+        r.handled = true
+    }
 }
 
 // a held place from mark on was freed or moved while the expression ran
@@ -3338,6 +3370,7 @@ fn builtin(name: string): Item {
         if !x.viaHandle && lastRaw == "" { origin = wholeOwnerOf(x.sym) }
         let made = rtCall1(RT_HANDLE, x, ht)
         made.hOrigin = origin
+        markHandled(origin)
         return made
     }
     if name == "replace" {
@@ -5296,6 +5329,7 @@ fn fnDecl() {
     for i in 0..n {
         let s = newSym("var", params[i].name, params[i].typ)
         s.storage = "local"
+        s.isParam = true
         s.offset = 16 + 8 * (n - 1 - i)
         declare(s)
         if params[i].mode > 0 {
