@@ -213,7 +213,7 @@ MUTANTS.update({
     "a loop end does not join the marks from before it": ("        if saved[i] { ownedLocals[i].carryFreed = true }\n", ""),
     "the loop check ignores the overlap": ("            if hit[i] && (s.freedUse > useBefore || back.flags[3 * n + i]) {\n", "            if (s.freedUse > useBefore || back.flags[3 * n + i]) {\n"),
     "a loop exit ignores the frees on its way": ("            for k in logFrom..at {\n", "            for k in logFrom..logFrom {\n"),
-    "a deferred body's frees are not replayed": ("    replayFrees(bi)\n", ""),
+    "a deferred body's frees are not replayed": ("        replayFrees(bi, i)\n", ""),
     "a deferred body's moves are kept where it is declared": ("        if ownedLocals[i].isRefLocal { ownedLocals[i].moved = before.flags[i] }\n", ""),
     "a defer body's re-point is not refused": ("            if deferMark >= 0 && declaredBefore(xs, deferMark) {", "            if false {"),
     "a re-point keeps the carried mark": ("            xs.carryFreed = false\n", ""),
@@ -227,6 +227,49 @@ MUTANTS.update({
     "a deferred change is not replayed": ("            invalidate(rt, rv, r.all, r.path)\n", "            if false { invalidate(rt, rv, r.all, r.path) }\n"),
     "a logged free ignores the reference it is made through": ("    if ancestorOf(s, rv) { return false }\n", ""),
 })
+
+# the uses of a defer body (see checkDeferUses): the re-point check, the invalidation check, one exit kind
+# at a time that skips the check, the uses not recorded, the uses of an inner defer not passed to the
+# enclosing one, the frees of a newer defer applied after the older one's check, and the suspect check
+def unchecked_exit(down):
+    """the exit code of runDefers, with the defers' uses not checked"""
+    return (f"            var mTop = len(ownedLocals)\n            var mI = len(blocks) - 1\n"
+            f"            while mI >= {down} {{\n"
+            "                var mD = len(blocks[mI].defers) - 1\n"
+            "                while mD >= 0 {\n"
+            "                    callLocal(blocks[mI].defers[mD])\n"
+            "                    replayFrees(mI, mD)\n"
+            "                    mD -= 1\n"
+            "                }\n"
+            "                freeOwned(blocks[mI].omark, mTop)\n"
+            "                mTop = blocks[mI].omark\n"
+            "                mI -= 1\n"
+            "            }\n")
+
+
+DEFER_USE_MUTANTS = {
+    "a defer's reference pointed elsewhere is not refused": ("        if !withinDeclared(blocks[bi].useBinds[k], s.bind) {", "        if false {"),
+    "a defer's reference may point beyond its declared targets": ("    for j in 0..len(e.roots) {\n        var covered = false\n        for i in 0..len(d.roots) {", "    for j in 0..0 {\n        var covered = false\n        for i in 0..len(d.roots) {"),
+    "a defer's check covers the uses of the newer defers": ("    var hi = len(blocks[bi].uses)\n    if d + 1 < len(blocks[bi].useFrom) { hi = blocks[bi].useFrom[d + 1] }\n    for k in blocks[bi].useFrom[d]..hi {",
+                                                           "    var hi = len(blocks[bi].uses)\n    for k in blocks[bi].useFrom[d]..hi {"),
+    "an inner defer's uses of the body's own locals are not guarded": ("            if i < len(deferUses) { deferUses[i] = true }\n", "            deferUses[i] = true\n"),
+    "a defer's invalidated reference is not refused": ("        if s.moved {\n            error(\"'\" + s.name + \"' is used by a defer", "        if false {\n            error(\"'\" + s.name + \"' is used by a defer"),
+    "a defer's suspect reference is not reported": ("        if s.suspect {\n            notePending(tline, tcol, \"'\" + s.name + \"' is used by a defer", "        if false {\n            notePending(tline, tcol, \"'\" + s.name + \"' is used by a defer"),
+    "defer uses not checked at the block's end": ("        callDefers(last)\n        freeOwned(om, len(ownedLocals))\n",
+                                                  "        var mI = len(blocks[last].defers) - 1\n        while mI >= 0 {\n            callLocal(blocks[last].defers[mI])\n            replayFrees(last, mI)\n            mI -= 1\n        }\n        freeOwned(om, len(ownedLocals))\n"),
+    # a break or continue leaves to a block above the function's own (a return runs the defers down to fnBlock)
+    "defer uses not checked at a break or continue": ("    while i >= downTo {\n        callDefers(i)\n",
+                                                      "    while i >= downTo {\n        if downTo == fnBlock { callDefers(i) } else {\n            var mD = len(blocks[i].defers) - 1\n            while mD >= 0 {\n                callLocal(blocks[i].defers[mD])\n                replayFrees(i, mD)\n                mD -= 1\n            }\n        }\n"),
+    "defer uses not checked at a return without a value": ("        if sym != T_SEMI && sym != T_RBRACE { error(f.name + \" does not return a value\") }\n        runDefers(fnBlock)\n",
+                                                           "        if sym != T_SEMI && sym != T_RBRACE { error(f.name + \" does not return a value\") }\n" + unchecked_exit("fnBlock")),
+    "defer uses not checked at a return with a value": ("            release(x.r)\n            runDefers(fnBlock)\n",
+                                                        "            release(x.r)\n" + unchecked_exit("fnBlock")),
+    "a defer's uses are not recorded": ("        if inDefer && s.isRefLocal { noteDeferUse(s) }\n", ""),
+    "an inner defer's uses are not passed outwards": ("            if i < len(deferUses) { deferUses[i] = true }\n", ""),
+    "a newer defer's frees are applied after the older one's check": ("        replayFrees(bi, i)\n        i -= 1\n    }\n}",
+                                                                      "        i -= 1\n    }\n    for q in 0..len(blocks[bi].defers) { replayFrees(bi, q) }\n}"),
+}
+MUTANTS.update(DEFER_USE_MUTANTS)
 
 
 # the second review's gaps: origins, the joins over several roots, the chained handles, and the

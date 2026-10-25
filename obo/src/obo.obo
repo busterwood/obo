@@ -943,6 +943,8 @@ var bindArena = new []RefBind(0)
 // the ownedLocals a defer body was entered with: a re-point of one of them in the body is refused
 // (see deferStat); -1 outside a defer body
 var deferMark = -1
+// the outer reference locals (by ownedLocals index, below deferMark) that the defer body being compiled uses
+var deferUses = new []bool(0)
 
 fn arenaBind(roots: []^Sym, deeps: []bool, paths: []string, writable: bool, parent: ?^Sym): ^RefBind {
     append(bindArena, new RefBind{roots: roots, deeps: deeps, paths: paths, writable: writable, parent: parent})
@@ -1140,6 +1142,10 @@ type Block = ref record {
     syms: []^Sym
     defers: []int
     frees: []^FreeRec         // the frees of the deferred bodies, replayed where the block is left (see callDefers)
+    freeFrom: []int           // per defer: where its frees begin in frees
+    uses: []^Sym              // the outer reference locals the deferred bodies use, checked where the block is left
+    useBinds: []^RefBind      // each one's binding where the defer is declared
+    useFrom: []int            // per defer: where its uses begin in uses
     nmark: int
     omark: int                // ownedLocals before this block
 }
@@ -2015,6 +2021,14 @@ fn loopMarksJoin(saved: []bool) {
     }
 }
 
+// a defer body uses the reference local s: if it was declared outside the body, its binding and validity
+// are checked where the block is left (see checkDeferUses)
+fn noteDeferUse(s: ^Sym) {
+    for i in 0..len(deferUses) {
+        if ownedLocals[i] == s { deferUses[i] = true }
+    }
+}
+
 // whether s is one of the first mark locals (declared before a defer body was entered)
 fn declaredBefore(s: ^Sym, mark: int): bool {
     for i in 0..mark {
@@ -2623,14 +2637,53 @@ fn noTemp(x: &Item) {
 
 fn openBlock() {
     append(blocks, new Block{syms: new []^Sym(0), defers: new []int(0), nmark: len(narrowStack),
-                             omark: len(ownedLocals), frees: new []^FreeRec(0)})
+                             omark: len(ownedLocals), frees: new []^FreeRec(0),
+                             freeFrom: new []int(0), uses: new []^Sym(0), useBinds: new []^RefBind(0), useFrom: new []int(0)})
 }
 
-// calls the deferred statements of blocks[bi], newest first
-// the frees of a block's deferred bodies, replayed where the block is left: the references they reach
+// whether a reference bound to e at a block's end points only where it was bound to d when its defer was
+// declared: every root and place of e is covered by d's, and a reference that was writable then still is.
+// The body was checked against d, so a narrower e is covered by those checks, and the frees replayed
+// from the body (made for every root of d) reach every root of e. The parent is not part of the target.
+fn withinDeclared(d: ^RefBind, e: ^RefBind): bool {
+    if d == e || e == noneBind { return true }
+    if d.writable && !e.writable { return false }
+    for j in 0..len(e.roots) {
+        var covered = false
+        for i in 0..len(d.roots) {
+            if d.roots[i] == e.roots[j] && coversPlace(d.deeps[i], d.paths[i], e.deeps[j], e.paths[j]) { covered = true }
+        }
+        if !covered { return false }
+    }
+    return true
+}
+
+// The reference locals that a deferred body uses were checked where the defer is declared, with the
+// bindings and validity they had there. The body runs where the block is left, so each must be as it was:
+// not pointed elsewhere, and not invalidated by a change since (or by a newer defer's frees, which have run).
+fn checkDeferUses(bi: int, d: int) {
+    var hi = len(blocks[bi].uses)
+    if d + 1 < len(blocks[bi].useFrom) { hi = blocks[bi].useFrom[d + 1] }
+    for k in blocks[bi].useFrom[d]..hi {
+        let s = blocks[bi].uses[k]
+        if !withinDeclared(blocks[bi].useBinds[k], s.bind) {
+            error("cannot point '" + s.name + "' elsewhere while a defer uses it: the defer runs where its block is left, and would use the new target")
+        }
+        if s.moved {
+            error("'" + s.name + "' is used by a defer but may point to freed memory at the block's end: something under what it points into was changed")
+        }
+        if s.suspect {
+            notePending(tline, tcol, "'" + s.name + "' is used by a defer but may point to freed memory at the block's end: a recursive call writes through a handle")
+        }
+    }
+}
+
+// the frees of the deferred body d of blocks[bi], replayed where the block is left: the references they reach
 // are moved (or carried) as at any other change, so a reference re-pointed inside the block is checked
-fn replayFrees(bi: int) {
-    for k in 0..len(blocks[bi].frees) {
+fn replayFrees(bi: int, d: int) {
+    var hi = len(blocks[bi].frees)
+    if d + 1 < len(blocks[bi].freeFrom) { hi = blocks[bi].freeFrom[d + 1] }
+    for k in blocks[bi].freeFrom[d]..hi {
         let r = blocks[bi].frees[k]
         // the change is replayed as it was made: through the same reference, so what it was derived from stays valid
         let rv = r.via
@@ -2645,13 +2698,16 @@ fn replayFrees(bi: int) {
     }
 }
 
+// calls the deferred statements of blocks[bi], newest first: each checks its uses against the state it
+// runs in, and then its frees are applied, for the older ones to see
 fn callDefers(bi: int) {
     var i = len(blocks[bi].defers) - 1
     while i >= 0 {
+        checkDeferUses(bi, i)
         callLocal(blocks[bi].defers[i])
+        replayFrees(bi, i)
         i -= 1
     }
-    replayFrees(bi)
 }
 
 fn closeBlock(terminated: bool) {
@@ -3662,6 +3718,7 @@ fn nameItem(s: ^Sym, name: string, target: bool): Item {
             }
         }
         if inDefer && s.owned { s.deferUse = true }
+        if inDefer && s.isRefLocal { noteDeferUse(s) }
         return x
     }
     if s.kind == "type" && sym == T_LPAREN && (symType(s) == tInt || symType(s) == tByte || symType(s) == tString) {
@@ -5129,6 +5186,7 @@ fn deferStat() {
     let savedLoops = replace(loops, new []Loop(0))
     let savedInDefer = inDefer
     let savedMark = deferMark
+    let savedUses = replace(deferUses, new []bool(len(ownedLocals)))
     deferMark = len(ownedLocals)
     depth = depth + 8
     inDefer = true
@@ -5145,6 +5203,7 @@ fn deferStat() {
     loops = savedLoops
     inDefer = savedInDefer
     deferMark = savedMark
+    let uses = replace(deferUses, savedUses)
     fixHere1(over)
     // the body runs where the block is left, not here: what it did to suspicion is taken back (its
     // re-points have not happened yet either), and callDefers applies its recursive calls at each exit
@@ -5155,8 +5214,18 @@ fn deferStat() {
     for i in 0..localsIn(&before) {
         if ownedLocals[i].isRefLocal { ownedLocals[i].moved = before.flags[i] }
     }
+    append(blocks[last].freeFrom, len(blocks[last].frees))
     for i in logAt..len(freeLog) { append(blocks[last].frees, freeLog[i]) }
     truncate(freeLog, logAt)
+    // the outer reference locals the body used, with their bindings here; an enclosing defer body uses them too
+    append(blocks[last].useFrom, len(blocks[last].uses))
+    for i in 0..len(uses) {
+        if uses[i] {
+            append(blocks[last].uses, ownedLocals[i])
+            append(blocks[last].useBinds, before.binds[i])
+            if i < len(deferUses) { deferUses[i] = true }
+        }
+    }
     append(blocks[last].defers, entry)
 }
 

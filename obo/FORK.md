@@ -801,11 +801,9 @@ inherited 2, call-site deep-argument check dropped 6; scalar truncate through a 
 shallow references invalidated 0 each. Those last two are covered by the run and error cases
 above, not by the fuzzer.
 
-**Holes found, not fixed here.** Both are accepted by HEAD's seed too, and by the current
+**Holes found, not fixed here.** This one is accepted by HEAD's seed too, and by the current
 compiler. Still open after the follow-up below. (The reference re-pointed on one branch is fixed, and a re-point
 inside a defer body is refused: see "Reference bindings per path (done)" below.)
-- Uses inside `defer` bodies are not checked against later changes: `defer println(first.v)`, then
-  `bag.items = new ...` (`scratchpad/review5/p/p03_defer_nohandle.obx`).
 - Argument evaluation order: a deep argument is checked before a later argument's call frees what it
   points into: `use2(first, mk(h))` (`scratchpad/review5/p/e1_arg_order.obx`, and `e2`).
 
@@ -1013,11 +1011,7 @@ Measured after the merge: `run_fork` 325 of 325, `port_test` 415 of 415, `port_c
 `mutate_port` 73 of 73, `doc_check` 24 examples with no problems, `bench/bench.py` run for all four workloads.
 
 **Open after this follow-up** (accepted by the seed too; each reads freed memory when run):
-- H-3, a defer body reading a reference that is re-pointed after the defer statement (`mk/defer_repointed_later.obx`:
-  `defer println(k.v)`, then `k = &b` and `b = new ...` in the same block; the body prints a freed value).
-- A defer body's reads are checked where the body is declared, not where its block is left
-  (`mk/defer_read_change.obx`: `defer println(first.v)`, then `bag.items = new []Item(0)` in the same block).
-  The frees are replayed (H-2), but the reads are not.
+- (H-3 and the defer-read hole are closed: see "Defer uses (done)" below.)
 - Argument evaluation order (`mk/arg_order_fresh.obx`: `use2(first, mk(h))`, where `mk` frees what `first`
   points into). The argument is checked before a later argument's call runs.
 - The precision limits in "Reference bindings per path": a change through a reference reaches its whole root,
@@ -1045,6 +1039,80 @@ Measured after the merge: `run_fork` 325 of 325, `port_test` 415 of 415, `port_c
 - `tests/run_fork.py`: 274 passed, 0 failed. `tests/port_test.py`: 403 of 403 identical, no leaks.
   `tests/port_compare.py`: stage B 425 of 425 identical; the memory check passes (see Memory).
   `tests/own_fuzz.py --count 600`: 0 failures in 1200 programs. `tests/doc_check.py`: 22 examples, 0 problems.
+
+## Defer uses (done)
+
+**The holes.** A defer body is compiled at its declaration but runs at each exit of its block. Its checks
+used the bindings and validity the references had at the declaration, so two kinds of program compiled
+and read or freed the wrong memory: a defer that reads a reference which is re-pointed, or whose target is
+changed or freed, after the defer statement (`defer println(first.v)`, then `bag.items = new ...`;
+`defer println(k.v)`, then `k = &b; b = new ...`), and a defer that writes or frees through a reference
+re-pointed after the declaration (`defer { k.items = new []Item(0) }`, then `k = &b`: the replay
+invalidated `a`, the binding at the declaration, though `k` named `b` at the exit; also `k.items[0] = ...`
+and a mut call `bumpb(k)`).
+
+**The rule, as implemented: record the uses, check them at each exit.** `LANGUAGE.md` section 4.
+- Every name occurrence of an outer reference local inside a defer body is recorded (`noteDeferUse`, called
+  from `nameItem`; `deferUses`, one flag per `ownedLocals` index below the body's `deferMark`). Reads,
+  writes, mut arguments and calls are all name occurrences, so one hook covers them. `deferStat` stores,
+  per defer, the references used and their bindings at the declaration (`Block.uses`, `useBinds`,
+  `useFrom`; `before.binds`). A defer inside a defer body passes its uses of outer locals outwards, so the
+  enclosing defer checks them too.
+- `callDefers` runs from each exit (normal end in `closeBlock`; `break`, `continue`, `return` through
+  `runDefers`). For each defer, newest first, `checkDeferUses` refuses: a reference whose binding is not the
+  targets within those at the declaration (`withinDeclared`: every root and place of the exit binding is
+  covered by the declaration binding, and a reference writable then is still; the parent is not part of the
+  target, so a reference derived from one that is re-pointed is still accepted). Narrowing is sound: the
+  body was checked against the wider binding, and the frees replayed from it were made for every root of
+  it. A reference that was joined from two places and is pointed at one again before the exit is accepted;
+  one that was bound to one place and is joined with another at the exit (a re-point on one path) is not.
+  The writable test cannot be reached by a program today (a binding of one root is writable or not for
+  all its paths), so no mutant covers it: "cannot point 'k' elsewhere while a defer uses it"; a reference that is invalidated
+  (`moved`): "'k' is used by a defer but may point to freed memory at the block's end"; and a suspect one
+  (a recursive call that writes through a handle; reported at the end of the body like the other suspect
+  errors, `notePending`). Then the defer's own frees are replayed (`replayFrees(bi, d)`, now per defer;
+  `Block.freeFrom`), before the next older defer is checked, so a newer defer that frees what an older one
+  reads is refused too.
+- Why it is sound: a defer body was checked against a state in which each outer reference it uses had the
+  recorded binding and was valid. The check at the exit shows the state it runs in has the same binding
+  (same targets) and is valid, so the body's checks, and the frees replayed from it, hold at the exit.
+  Nothing else in the body depends on the outer state: owned locals it reads cannot be moved after the
+  defer (`deferUse`), and the owned places under them are read or written at run time, where a bounds or
+  nil check applies. The error is reported at the exit, not at the change.
+- A cleaner design (checking the body against the exit state) would need the body compiled once per exit,
+  which a single-pass compiler with no AST does not have. The strictness is accepted: a block that points
+  a reference elsewhere after a defer that uses it is refused, even where the defer would be harmless.
+- Not changed: argument evaluation order (still open).
+
+**Tests.** `tests/errors/defer_uses.obx`: 22 cases, one for each probe (the re-point with a free, the
+re-point alone, the free after the defer, a free by a call, a write, an indexed write, a mut call), the
+exits (break, continue, return with and without a value, for a free and for a re-point), an inner block,
+a re-point on one path, two defers (a newer one frees what an older one reads, and a reference re-pointed
+under two defers), a defer inside a defer, and a recursive call. `tests/run/defer_uses.obx`: fifteen
+accepted programs: `defer close(f)` and `defer println(x.v)` with the reference untouched, a change or
+re-point of another reference, a re-point before the defer or after the block, a re-point to the same
+place, a parent re-pointed, a defer that frees something else, a defer that reads and then frees, a loop
+with break and continue, a reference made in the loop body, a return from a loop, nested blocks with
+two defers, and a reference declared inside the body. `tests/own_fuzz.py`: `defer_ref_stmt` (valid) and
+`defer_repoint_stmt` (invalid). The `review15/p/FP_defer_via_child_*` programs and step 2's
+`run/ref_bindings.obx` cases still pass.
+
+**Mutants** (`DEFER_USE_MUTANTS` in `tests/mutate_fork.py`, also run by `tests/mutate_port.py`): the
+re-point check disabled; an exit binding allowed beyond the declared targets;
+the invalidation check disabled; the suspect report disabled; no check at the
+normal end, at a break or continue, at a return without a value, at a return with a value; the uses not
+recorded; the check not limited to the defer's own uses (it would include a newer defer's, which its own
+frees may have invalidated: `twoDefers` in the run test); an inner defer's uses not passed outwards, or
+passed without the guard for the body's own locals (`innerOwn`); a newer defer's frees applied after the older one's
+check. One existing mutant was retargeted (`replayFrees(bi, i)`). The "not checked at the block's end" mutant
+keeps that exit's replay and skips only the check. A mutant that starts a defer's check at the first use
+(instead of its own `useFrom`) is equivalent: the extra uses are older defers', and the state only gains
+invalidations between the two checks, so what it refuses the older defer's own check refuses too.
+
+**Strictness note.** Besides the re-point after a used defer, a function that returns a value from which
+the defer's reference is derived is refused: `defer ... ; return bag` where the defer uses `k = &bag`
+(the return moves `bag` and invalidates `k` before the defer runs). This matches main's refusal of
+`defer ... bag.items ...; return bag` (the owned local a defer reads cannot be moved).
 
 ## Milestone 1 design notes (as planned)
 
