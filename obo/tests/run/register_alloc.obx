@@ -1,0 +1,469 @@
+// Register allocation: int and bool locals and parameters that a function uses a lot live in r12 to r15
+// instead of stack slots. What must hold: the registers survive calls (obo functions, recursion, runtime
+// routines), a register is given up where its scope ends and may be taken by another local, a local the
+// allocator leaves in memory still works beside the others, and every way out of a function is right.
+// The loops are what make a name hot enough to be given a register.
+
+type Box = ref record { v: int; w: int }
+
+var trace = ""
+
+fn note(s: string) { trace = trace + s }
+
+// more candidates than registers: seven hot locals, four registers
+fn seven(n: int): int {
+    var a = 1
+    var b = 2
+    var c = 3
+    var d = 4
+    var e = 5
+    var f = 6
+    var g = 7
+    var i = 0
+    while i < n {
+        a = a + b
+        b = b + c
+        c = c + d
+        d = d + e
+        e = e + f
+        f = f + g
+        g = g + 1
+        a = a % 1000
+        b = b % 1000
+        c = c % 1000
+        d = d % 1000
+        e = e % 1000
+        f = f % 1000
+        i += 1
+    }
+    return a + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 + g * 7
+}
+
+// the same, with the expression stack as full as it gets while all of them are live
+fn deep(n: int): int {
+    var a = 1
+    var b = 2
+    var c = 3
+    var d = 4
+    var e = 5
+    var f = 6
+    var t = 0
+    var i = 0
+    while i < n {
+        t = t + ((a + b) * (c + d) - (e + f) * ((a - b) + (c - d))) % 1000
+        t = t + (a * (b + (c * (d + (e * (f + i)))))) % 1000
+        a += 1
+        b += 2
+        c += 3
+        d += 4
+        e += 5
+        f += 6
+        i += 1
+    }
+    return t
+}
+
+fn id(x: int): int { return x }
+
+fn add3(a: int, b: int, c: int): int { return a + b * 10 + c * 100 }
+
+// locals live across calls to obo functions, in arguments and in conditions
+fn calls(n: int): int {
+    var s = 0
+    var i = 0
+    var k = 7
+    while i < n {
+        s = s + add3(i, id(k), id(i) + k) % 97
+        if id(i) % 2 == 0 && k > 3 {
+            k = k + id(1)
+        } else {
+            k = k - id(1)
+        }
+        i += 1
+    }
+    return s * 1000 + k
+}
+
+// recursion: the locals of each activation are its own
+fn tri(n: int): int {
+    var t = 0
+    var i = 0
+    while i < n {
+        t += i
+        i += 1
+    }
+    if n <= 0 { return t }
+    return t + tri(n - 1) * 2 % 100003
+}
+
+fn fibLoop(n: int): int {
+    var a = 0
+    var b = 1
+    var i = 0
+    while i < n {
+        let t = a + b
+        a = b
+        b = t % 1000003
+        i += 1
+    }
+    return a
+}
+
+fn fib(n: int): int {
+    if n < 2 { return n }
+    var acc = 0
+    var i = 0
+    while i < 2 {
+        acc += fib(n - 1 - i)
+        i += 1
+    }
+    return acc
+}
+
+// locals live across runtime calls: string concatenation, append, println, string()
+fn runtime(n: int): string {
+    var s = ""
+    var xs = new []int(0)
+    var i = 0
+    var total = 0
+    while i < n {
+        s = s + string(i) + ","
+        append(xs, i * i)
+        total += xs[i] + len(s)
+        println("i=", i, " total=", total)
+        i += 1
+    }
+    return s + string(total) + "/" + string(len(xs))
+}
+
+// parameters are candidates: they are loaded into their registers at the start
+fn params(n: int, step: int, down: bool): int {
+    var t = 0
+    var i = 0
+    while i < n {
+        if down { t -= step } else { t += step }
+        i += 1
+        step = step + 1
+    }
+    return t
+}
+
+// bools in conditions
+fn bools(n: int): int {
+    var even = true
+    var big = false
+    var flips = 0
+    var i = 0
+    while i < n {
+        even = !even
+        big = i > n / 2
+        if even && big { flips += 1 }
+        if even || big { flips += 10 }
+        if !even && !big { flips += 100 }
+        if (even == big) && i % 3 != 0 { flips += 1000 }
+        i += 1
+    }
+    var r = 0
+    if even { r = 1 }
+    if big { r += 2 }
+    return flips * 10 + r
+}
+
+fn boolValue(x: int): bool {
+    var ok = x > 3
+    var i = 0
+    while i < 3 {
+        ok = ok && x != i
+        i += 1
+    }
+    return ok
+}
+
+// address-taken (an owned record and an array, borrowed) beside plain locals
+fn poke(mut b: &Box) { b.v = b.v + 1 }
+
+fn bump(mut b: &Box, by: int) {
+    var i = 0
+    while i < by {
+        b.v += i
+        b.w = b.w + 1
+        i += 1
+    }
+}
+
+fn mixed(n: int): int {
+    let b = new Box{v: 0, w: 0}
+    var xs = new []int(0)
+    var i = 0
+    var s = 0
+    while i < n {
+        poke(b)
+        bump(b, 3)
+        append(xs, i)
+        s += xs[i] + b.v
+        i += 1
+    }
+    let r = &xs
+    var j = 0
+    while j < len(r) {
+        s += r[j] * 2
+        j += 1
+    }
+    return s + b.w
+}
+
+// nested blocks: a register is free again where its block ends, and a shadowing local has its own
+fn scopes(n: int): int {
+    var t = 0
+    var i = 0
+    while i < n {
+        var j = 0
+        while j < i {
+            let k = i * j
+            t += k
+            j += 1
+        }
+        {
+            var m = i + 1
+            while m > 0 {
+                t += m
+                m -= 2
+            }
+        }
+        i += 1
+    }
+    var u = 0
+    var x = 5
+    while u < 3 {
+        let x = u * 10
+        var y = x
+        while y > 0 {
+            t += 1
+            y -= 5
+        }
+        t += x
+        u += 1
+    }
+    return t * 100 + x
+}
+
+// for loops: the variable and the limit are registers; break and continue; nested
+fn loops(n: int): int {
+    var t = 0
+    for i in 0..n {
+        for j in 0..i {
+            if j % 3 == 1 { continue }
+            if i * j > 300 { break }
+            t += i * j
+        }
+        t += i
+    }
+    var xs = new []int(0)
+    for i in 0..n { append(xs, i * 3) }
+    for x in xs { t += x }
+    return t
+}
+
+// returns from deep inside loops: each leaves its registers as they were
+fn find(n: int, want: int): int {
+    var i = 0
+    while i < n {
+        var j = 0
+        while j < n {
+            var k = 0
+            while k < n {
+                if i * 100 + j * 10 + k == want { return i + j * 2 + k * 3 }
+                k += 1
+            }
+            j += 1
+        }
+        i += 1
+    }
+    return -1
+}
+
+fn findAll(n: int): int {
+    var t = 0
+    var w = 0
+    while w < 30 {
+        t += find(n, w) * 3 + find(n, w + 100)
+        w += 7
+    }
+    return t
+}
+
+// compound assignment on registers
+fn compound(n: int): int {
+    var a = 10
+    var b = 3
+    var i = 0
+    while i < n {
+        a += b
+        a -= 1
+        a *= 2
+        a = a % 10007
+        b += a % 5
+        b *= 3
+        b = b % 31
+        i += 1
+    }
+    return a * 100 + b
+}
+
+// division, remainder and shifts by registers (rax, rdx and rcx are in use for them)
+fn divs(n: int): int {
+    var q = 1000003
+    var d = 7
+    var s = 1
+    var t = 0
+    var i = 0
+    while i < n {
+        t += q / d + q % d
+        t += (q << (i % 5)) >> 2
+        t += -q / d + (q ^ d) + (q & d) + (q | d)
+        s = s * 3 % 1009
+        d = d % 11 + 2
+        q += s
+        i += 1
+    }
+    return t
+}
+
+// a defer reads a register local: it sees the value at the end of the block, however it was changed
+fn deferred(n: int) {
+    var count = 0
+    var i = 0
+    defer {
+        note("[" + string(count) + "]")
+    }
+    while i < n {
+        count += i
+        i += 1
+    }
+    count += 100
+}
+
+fn deferInLoop(n: int): int {
+    var t = 0
+    var i = 0
+    while i < n {
+        var local = i * 2
+        defer {
+            t += local
+        }
+        local += 1
+        if i == 3 { break }
+        i += 1
+    }
+    return t
+}
+
+// mut parameters are references: not candidates in the callee; a local passed by value is copied
+fn grow(mut b: &Box, by: int) {
+    var i = 0
+    while i < by {
+        b.v += 2
+        i += 1
+    }
+}
+
+fn byValue(x: int): int {
+    var i = 0
+    while i < 3 {
+        x = x + 1
+        i += 1
+    }
+    return x
+}
+
+fn passing(): int {
+    let b = new Box{v: 1, w: 0}
+    var n = 5
+    var i = 0
+    var r = 0
+    while i < 4 {
+        grow(b, n)
+        r += byValue(n) + byValue(i)
+        i += 1
+    }
+    return r * 1000 + n * 100 + b.v
+}
+
+// the registers hold across runtime calls that allocate and free
+fn frees(n: int): int {
+    var t = 0
+    var i = 0
+    while i < n {
+        let b = new Box{v: i, w: i + 1}
+        let c = new Box{v: b.w, w: b.v}
+        t += b.v * 3 + c.w * 5 + c.v
+        i += 1
+    }
+    return t
+}
+
+// a local used in a long chain: arguments, indexing, comparison of registers with memory
+fn chain(n: int): int {
+    var xs = new []int(0)
+    var i = 0
+    while i < n { append(xs, i * 7 % 11); i += 1 }
+    var best = 0
+    var at = 0
+    var j = 0
+    while j < n {
+        if xs[j] > best || (xs[j] == best && j < at) {
+            best = xs[j]
+            at = j
+        }
+        xs[j] = xs[j] + best - at
+        j += 1
+    }
+    var s = 0
+    for v in xs { s += v }
+    return s * 100 + best * 10 + at
+}
+
+// declared without a value: zero, in a register too
+fn zeros(n: int): int {
+    var a: int
+    var b: int
+    var i = 0
+    while i < n {
+        a += i
+        b += a
+        i += 1
+    }
+    return a * 7 + b
+}
+
+fn main() {
+    println(seven(1000))                    // expect: 20240
+    println(deep(300))                      // expect: 283700
+    println(calls(500))                     // expect: 23756007
+    println(tri(30))                        // expect: 18729
+    println(fibLoop(500))                   // expect: 689116
+    println(fib(18))                        // expect: 2584
+    println(runtime(3))                     // expect: i=0 total=2
+    // expect: i=1 total=7
+    // expect: i=2 total=17
+    // expect: 0,1,2,17/3
+    println(params(100, 3, false))          // expect: 5250
+    println(params(100, 3, true))           // expect: -5250
+    println(bools(100))                     // expect: 363653
+    println(boolValue(2), boolValue(9), boolValue(1))        // expect: falsetruefalse
+    println(mixed(50))                      // expect: 8925
+    println(scopes(20))                     // expect: 1767605
+    println(loops(40))                      // expect: 34865
+    println(find(6, 345))                   // expect: 26
+    println(find(6, 999))                   // expect: -1
+    println(findAll(6))                     // expect: 79
+    println(compound(300))                  // expect: 31625
+    println(divs(200))                      // expect: 746815110
+    deferred(10)
+    println(trace)                          // expect: [145]
+    println(deferInLoop(10))                // expect: 16
+    println(passing())                      // expect: 50541
+    println(frees(100))                     // expect: 44650
+    println(zeros(20))                      // expect: 2660
+    println(chain(60))                      // expect: 71303
+}

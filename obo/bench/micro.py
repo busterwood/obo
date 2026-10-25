@@ -15,7 +15,8 @@ expected checksum (a leak exits 5, a double free exits 6).
     python3 obo/bench/micro.py -n 9 --only fib  more runs, one workload
     python3 obo/bench/micro.py --disasm loop    objdump listing of one code segment
 
-Needs Python 3 and objdump only. The compiler is rebuilt first with make."""
+Needs Python 3 and objdump only. The compiler is rebuilt first with make; OBO=path measures another
+compiler (for example seed/obo, the compiler of main) instead."""
 import argparse
 import os
 import re
@@ -46,7 +47,7 @@ INSTR = re.compile(r'^\s+([0-9a-f]+):\t[0-9a-f ]+\t(\S.*)$')
 
 def build(name, tmp):
     exe = os.path.join(tmp, name)
-    subprocess.run([os.path.join(FORK, 'obo'), os.path.join(HERE, name + '_obo.obx'),
+    subprocess.run([os.path.abspath(os.environ.get('OBO', os.path.join(FORK, 'obo'))), os.path.join(HERE, name + '_obo.obx'),
                     '-o', exe, '--rt', FORK], check=True)
     return exe
 
