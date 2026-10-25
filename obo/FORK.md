@@ -1109,13 +1109,24 @@ some path is refused, as a use of one invalid on every path already was.
   6. `errors/references.obx`, "a reference invalidated in a loop, then continued past". The marker moved from the
      `continue` to `println(k.v)` on the next pass, where the invalid `k` is read.
   No other error test changed. The owned-value messages in `errors/ownership.obx` are unchanged.
-- Mutants. `tests/mutate_fork.py`: `ONE_PATH_MUTANTS`, eleven new, each caught by a named case: a join that drops
+- Mutants. `tests/mutate_fork.py`: `ONE_PATH_MUTANTS`, twelve new, each caught by a named case: a join that drops
   an invalidation (if, and match), the back edge that drops it, an owned-style difference at a join, the loop top
-  that does not check it or checks a reference that is not read, the wrong position of the report, the loop's exit
+  that does not check it or checks a reference that is not read, the loop top that checks a for-each variable that
+  its own pass points afresh (the `s != lv` exclusion), the wrong position of the report, the loop's exit
   that drops it, a read that is not refused, a write that gets the owned message, and a re-point that keeps the flag.
-  `tests/mutate_port.py` imports them (as it does the defer mutants). The stale "branch states not compared"
+  The for-each one is caught by `run/one_path.obx`, `forEachRebind`: a change to the item a for-each variable pointed
+  into on the first pass, and a read of it on the second pass, accepted with the sum 10. `tests/mutate_port.py`
+  imports them (as it does the defer mutants). The stale "branch states not compared"
   mutant, whose anchor was the `isRefLocal` branch that was removed, is retargeted to the same check.
-  `mutate_fork`: 109 of 109 caught (the 11 new ones among them). `mutate_port`: 108 of 108 caught.
+  `mutate_fork`: 110 of 110 caught. `mutate_port`: 109 of 109 caught.
+- Equivalent, not planted. The statement `if cs.flags[i] && !condSt.flags[i] { ownedLocals[i].moved = true }` after a
+  while loop's condition exit (in `whileStat`) can be removed with no test failing (`run_fork` 361 of 361 with
+  `OBO` pointed at a build without it). It is redundant: `applyExit` sets flags only for reference locals, so for
+  any other local `cs.flags[i]` equals `condSt.flags[i]` and the test is false; for a reference local the test is
+  true only where `cs.flags[i]` is, and `joinSuspect(&cs)`, which runs next with nothing in between that touches
+  `moved` (`loopdepth`, `loopMarksJoin`, `loopLogEnd`, the narrowing truncation), sets `moved` for every reference
+  local with that flag. The statement is kept: it states the rule where the condition's state is made, and removing it
+  would rest the rule on `joinSuspect` alone.
 - Memory. `PEAK_BUDGET` is unchanged at 1,351,000. The port's live peak is 1,192,816 bytes, against 1,183,728 before
   this change (+9,088): the two `Sym` fields, `freedRefMsg`, `loopCarryCheck`, and the checks.
 

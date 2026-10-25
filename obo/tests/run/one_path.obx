@@ -81,6 +81,23 @@ fn repointOther(c: bool) {
     println(8)                      // expect: 8
 }
 
+// a for-each variable is pointed afresh on every pass, so a change made on the first pass to the item it
+// pointed into does not carry to the second: the second pass reads the new item (1 + 9)
+fn forEachRebind() {
+    var bag = new Bag{items: new []Item(0)}
+    append(bag.items, new Item{v: 1})
+    append(bag.items, new Item{v: 2})
+    let its = &bag.items
+    var k = 0
+    var sum = 0
+    for q in its {
+        sum += q.v
+        if k == 0 { bag.items[1] = new Item{v: 9} }
+        k += 1
+    }
+    println(sum)                    // expect: 10
+}
+
 fn main() {
     ifElse(true)
     elseOnly(false)
@@ -89,4 +106,5 @@ fn main() {
     loopNoRead(3)
     repoint(true)
     repointOther(true)
+    forEachRebind()
 }

@@ -253,6 +253,8 @@ ONE_PATH_MUTANTS = {
     "the top of a loop checks a reference that is not read": ("        if s.isRefLocal && s != lv && back.flags[i] && s.staleUse > useBefore {",
                                                               "        if s.isRefLocal && s != lv && back.flags[i] {"),
     "a carried invalidation is reported at the wrong place": ("            errorAt(freedRefMsg(s.name), s.staleLine, s.staleCol)", "            errorAt(freedRefMsg(s.name), 0, 0)"),
+    "the top of a loop reports a for-each variable pointed afresh": ("        if s.isRefLocal && s != lv && back.flags[i] && s.staleUse > useBefore {",
+                                                                    "        if s.isRefLocal && back.flags[i] && s.staleUse > useBefore {"),
     "a loop's exit drops a carried invalidation": ("        if back.flags[i] && ownedLocals[i].isRefLocal { ownedLocals[i].moved = true }\n", ""),
     "a read of an invalidated reference is not refused": ("            } else if s.isRefLocal {\n                error(freedRefMsg(name))\n",
                                                           "            } else if false {\n                error(freedRefMsg(name))\n"),
