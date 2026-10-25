@@ -878,6 +878,8 @@ type Sym = ref record {
     bind: ^RefBind            // what a reference local points into, on the path being compiled
     fresh: bool               // pointed afresh since the innermost loop began, on every path to here
     staleUse: int            // useSeq of the last read that was not fresh (see loopBindCheck)
+    staleLine: int           // where that read is (its line and column): where a carried invalidation is reported
+    staleCol: int
     freedUse: int            // useSeq of the last read that was not fresh while carryFreed (see loopBindCheck)
     writeUse: int            // useSeq of the last write through the reference, not fresh (see loopBindCheck)
     carryFreed: bool         // a change that may free something came while it was not pointed afresh on every path
@@ -1957,6 +1959,7 @@ fn joinSuspect(st: &PState) {
     for i in 0..n {
         let s = ownedLocals[i]
         if st.flags[n + i] { s.suspect = true }
+        if st.flags[i] && s.isRefLocal { s.moved = true }
         if st.flags[3 * n + i] { s.carryFreed = true }
         let jb = joinBind(s.bind, st.binds[i])
         s.bind = jb
@@ -1976,11 +1979,13 @@ fn joinBinds(st: &PState) {
     }
 }
 
-// per local: suspect where either state is, bindings joined, fresh only where both are; moves are b's
+// per local: suspect where either state is, bindings joined, fresh only where both are; moves are b's, except
+// that a reference local is invalid where either state has it invalid (its uses are checked, see nameItem)
 fn joinStates(a: &PState, b: &PState): PState {
     let out = copyState(b)
     let n = localsIn(b)
     for i in 0..n {
+        if a.flags[i] && ownedLocals[i].isRefLocal { out.flags[i] = true }
         if a.flags[n + i] { out.flags[n + i] = true }
         if a.flags[3 * n + i] { out.flags[3 * n + i] = true }
         out.flags[2 * n + i] = out.flags[2 * n + i] && a.flags[2 * n + i]
@@ -1996,6 +2001,7 @@ fn absorb(mut acc: &PState, st: &PState) {
     let m = localsIn(acc)
     let n = localsIn(st)
     for i in 0..m {
+        if st.flags[i] && ownedLocals[i].isRefLocal { acc.flags[i] = true }
         if st.flags[n + i] { acc.flags[m + i] = true }
         if st.flags[3 * n + i] { acc.flags[3 * m + i] = true }
         acc.flags[2 * m + i] = acc.flags[2 * m + i] && st.flags[2 * n + i]
@@ -2044,11 +2050,12 @@ fn clearFresh() {
     for s in locals { s.fresh = false }
 }
 
-// the first owned local whose move state differs between a and b, or nil
+// the first owned local whose move state differs between a and b, or nil. A reference local's invalidation
+// is not a difference: where paths join it is invalid where either is, and a use of it is what is refused
 fn stateDiff(a: &PState, b: &PState): ?^Sym {
     let n = localsIn(b)
     for i in 0..localsIn(a) {
-        if i < n && a.flags[i] != b.flags[i] { return ownedLocals[i] }
+        if i < n && a.flags[i] != b.flags[i] && !ownedLocals[i].isRefLocal { return ownedLocals[i] }
     }
     return nil
 }
@@ -2056,9 +2063,6 @@ fn stateDiff(a: &PState, b: &PState): ?^Sym {
 fn sameStates(a: &PState, b: &PState, line: int, col: int) {
     let d = stateDiff(a, b)
     if d != nil {
-        if d.isRefLocal {
-            errorAt("'" + d.name + "' is invalidated on one path but not another; point it again on every path or none", line, col)
-        }
         errorAt("'" + d.name + "' is moved on one path but not another; move it on every path or none", line, col)
     }
 }
@@ -2461,6 +2465,26 @@ fn loopBindCheck(entry: &PState, back: &PState, useBefore: int, lv: ?^Sym, line:
             if e.writable && !b.writable && s.writeUse > useBefore {
                 errorAt("'" + s.name + "' is read-only where the loop starts again, and written before it is pointed again; point it afresh before writing it in the loop", line, col)
             }
+        }
+    }
+}
+
+// the error at a use of a reference that a change may have invalidated, on some path (see nameItem)
+fn freedRefMsg(name: string): string {
+    return "'" + name + "' may point to freed memory: something under what it points into was changed; point it again first"
+}
+
+// A reference that is invalid where the next iteration starts (a change in the loop invalidated it on some
+// path to the back edge, or to a continue) is invalid at the top of the loop. The body was compiled with the
+// state the loop was entered in, so a read of it that is not pointed afresh is where the invalidity shows: it
+// is reported there, as a use, with the message a use of an invalid reference always gets. A loop that
+// invalidates a reference and never reads it again is accepted.
+fn loopCarryCheck(back: &PState, useBefore: int, lv: ?^Sym) {
+    let n = localsIn(back)
+    for i in 0..n {
+        let s = ownedLocals[i]
+        if s.isRefLocal && s != lv && back.flags[i] && s.staleUse > useBefore {
+            errorAt(freedRefMsg(s.name), s.staleLine, s.staleCol)
         }
     }
 }
@@ -3474,7 +3498,7 @@ fn nameItem(s: ^Sym, name: string, target: bool): Item {
             if target {
                 x.movedRef = true
             } else if s.isRefLocal {
-                error("'" + name + "' may point to freed memory: something under what it points into was changed; point it again first")
+                error(freedRefMsg(name))
             } else {
                 error("'" + name + "' was moved and has no value here")
             }
@@ -3503,7 +3527,10 @@ fn designatorT(target: bool): Item {
     var viaHandle = false
     var path = ""
     while sym == T_DOT || sym == T_LBRACK {
-        if x.movedRef { error("'" + name + "' was moved and has no value here") }
+        if x.movedRef {
+            if s.isRefLocal { error(freedRefMsg(name)) }
+            error("'" + name + "' was moved and has no value here")
+        }
         if x.mode == "reg" && isOwned(x.typ) {
             error("store this value in a variable first: otherwise it would never be freed")
         }
@@ -3597,6 +3624,8 @@ fn designatorT(target: bool): Item {
         s.usedAt = useSeq
         if !s.fresh {
             s.staleUse = useSeq
+            s.staleLine = uline
+            s.staleCol = ucol
             if s.carryFreed { s.freedUse = useSeq }
         }
     }
@@ -4401,9 +4430,6 @@ fn loopBodyV(entry: PState, line: int, col: int, lv: ?^Sym, nOuter: int, selfBef
 // a loop's end, where the state of its last iteration is checked against the one it began with
 fn loopMoveError(d: ?^Sym, line: int, col: int) {
     if d != nil {
-        if d.isRefLocal {
-            errorAt("'" + d.name + "' is invalidated inside the loop; point it again before the end of each iteration", line, col)
-        }
         errorAt("'" + d.name + "' is moved inside the loop; it must have a value again by the end of each iteration", line, col)
     }
 }
@@ -4463,6 +4489,7 @@ fn loopBodyV(entry: PState, line: int, col: int, lv: ?^Sym, nOuter: int, selfBef
     }
     loopSelfCheck(nOuter, selfBefore, useBefore, &back, lv, line, col)
     loopBindCheck(&entry, &back, useBefore, lv, line, col, hit)
+    loopCarryCheck(&back, useBefore, lv)
     // the states the loop is left in: each break, and each continue, with the frees on the way out. The
     // references a state moves are moved after the loop (outMoved)
     var susp = neutralState(n)
@@ -4497,10 +4524,13 @@ fn loopBodyV(entry: PState, line: int, col: int, lv: ?^Sym, nOuter: int, selfBef
         loopMoveError(stateDiff(&entry, &now), line, col)
     }
     // the loop may run no time, or leave from its body: its suspicion, bindings and freshness are what
-    // either carries. A body that always leaves carries none of its own, since its end is not reached
+    // either carries. A body that always leaves carries none of its own, since its end is not reached.
+    // A reference invalid where the next iteration starts stays invalid where the loop is left from the top
+    // (a while condition, a for loop's test), and a break on a later pass sees it too
     if term { restore(&entry) } else { restoreMoved(&entry) }
     for i in 0..n {
         if outMoved[i] { ownedLocals[i].moved = true }
+        if back.flags[i] && ownedLocals[i].isRefLocal { ownedLocals[i].moved = true }
     }
     joinSuspect(&entry)
     joinSuspect(&res.susp)
@@ -5045,9 +5075,6 @@ fn statement(): bool {
             }
             let d = stateDiff(loop.entry, st)
             if d != nil {
-                if d.isRefLocal {
-                    error("'" + d.name + "' is invalidated inside the loop; point it again before " + tokName(k))
-                }
                 error("'" + d.name + "' is moved inside the loop; it must have a value again before " + tokName(k))
             }
             let downTo = loop.blocks

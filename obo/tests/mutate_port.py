@@ -261,6 +261,9 @@ MUTANTS.update({
 # errors/defer_uses.obx show them, since the port's own output does not change
 from mutate_fork import DEFER_USE_MUTANTS  # noqa: E402
 MUTANTS.update({k: [v] for k, v in DEFER_USE_MUTANTS.items()})
+# the references invalid on one path (errors/one_path_uses.obx, run/one_path.obx show them)
+from mutate_fork import ONE_PATH_MUTANTS  # noqa: E402
+MUTANTS.update({k: [v] for k, v in ONE_PATH_MUTANTS.items()})
 
 
 # mutants that keep memory alive: caught when the peak rises above the unmutated peak,

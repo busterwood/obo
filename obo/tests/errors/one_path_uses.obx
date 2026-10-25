@@ -1,0 +1,129 @@
+// A reference invalid on one path is refused where it is used: here each shape of the join (an if/else,
+// an if without else, a match, a loop with a break, a loop's top, a loop's condition) is followed by a use
+// of the reference, read, written, passed to a call, or used by a defer. Each must be refused at the use.
+type Item = ref record { v: int }
+type Bag = ref record { items: []Item }
+type Tree = ref record { kids: []Tree }
+
+fn show(q: &Item) { println(q.v) }
+
+// === read after an if/else that invalidates it on the then path
+fn main() {
+    var bag = new Bag{items: new []Item(0)}
+    append(bag.items, new Item{v: 1})
+    let p = &bag.items[0]
+    if len(bag.items) == 1 { bag.items = new []Item(0) } else { println(0) }
+    println(p.v)  // error: 'p' may point to freed memory
+}
+// === write after an if without else that invalidates it
+fn main() {
+    var bag = new Bag{items: new []Item(0)}
+    append(bag.items, new Item{v: 1})
+    let p = &bag.items[0]
+    if len(bag.items) == 1 { bag.items = new []Item(0) }
+    p.v = 2  // error: 'p' may point to freed memory
+}
+// === passed to a call after an if/else that invalidates it on the else path
+fn main() {
+    var bag = new Bag{items: new []Item(0)}
+    append(bag.items, new Item{v: 1})
+    let p = &bag.items[0]
+    if len(bag.items) == 2 { println(0) } else { bag.items = new []Item(0) }
+    show(p)  // error: 'p' may point to freed memory
+}
+// === read after a match that invalidates it in one arm
+fn main() {
+    var bag = new Bag{items: new []Item(0)}
+    append(bag.items, new Item{v: 1})
+    let p = &bag.items[0]
+    let n = len(bag.items)
+    match n {
+        1 { bag.items = new []Item(0) }
+        else { println(0) }
+    }
+    println(p.v)  // error: 'p' may point to freed memory
+}
+// === used by a defer at the block's end, after an if that invalidates it on one path
+fn main() {
+    var bag = new Bag{items: new []Item(0)}
+    append(bag.items, new Item{v: 1})
+    let p = &bag.items[0]
+    {
+        defer println(p.v)
+        if len(bag.items) == 1 { bag.items = new []Item(0) }
+    }  // error: 'p' is used by a defer but may point to freed memory at the block's end
+}
+// === read after a loop that invalidates it on the way out through a break
+fn main() {
+    var bag = new Bag{items: new []Item(0)}
+    append(bag.items, new Item{v: 1})
+    let p = &bag.items[0]
+    var i = 0
+    while i < 5 {
+        i += 1
+        if i == 2 {
+            bag.items = new []Item(0)
+            break
+        }
+    }
+    println(p.v)  // error: 'p' may point to freed memory
+}
+// === read at the top of a loop that invalidates it on its back edge, before it is pointed again
+fn main() {
+    var bag = new Bag{items: new []Item(0)}
+    append(bag.items, new Item{v: 1})
+    let p = &bag.items[0]
+    var i = 0
+    while i < 3 {
+        println(p.v)  // error: 'p' may point to freed memory
+        if i == 1 { bag.items = new []Item(0) }
+        i += 1
+    }
+}
+// === read in a loop's condition, where the body invalidates it on one path
+fn main() {
+    var bag = new Bag{items: new []Item(0)}
+    append(bag.items, new Item{v: 1})
+    let p = &bag.items[0]
+    var i = 0
+    while p.v < 5 {  // error: 'p' may point to freed memory
+        i += 1
+        if i == 1 { bag.items = new []Item(0) }
+    }
+}
+// === a read after the loop, where a continue invalidates it on an earlier pass
+fn main() {
+    var bag = new Bag{items: new []Item(0)}
+    append(bag.items, new Item{v: 1})
+    let p = &bag.items[0]
+    var i = 0
+    while i < 3 {
+        i += 1
+        if i == 1 {
+            bag.items = new []Item(0)
+            continue
+        }
+    }
+    show(p)  // error: 'p' may point to freed memory
+}
+// === read after a while loop that invalidates it on a pass, and is left through its condition
+fn main() {
+    var bag = new Bag{items: new []Item(0)}
+    append(bag.items, new Item{v: 1})
+    let p = &bag.items[0]
+    var i = 0
+    while i < 3 {
+        i += 1
+        if i == 1 { bag.items = new []Item(0) }
+    }
+    println(p.v)  // error: 'p' may point to freed memory
+}
+// === re-borrowed after an if without else that invalidates it
+fn main() {
+    var t = new Tree{kids: new []Tree(0)}
+    append(t.kids, new Tree{kids: new []Tree(0)})
+    let p = &t.kids[0]
+    if len(t.kids) == 1 { t.kids = new []Tree(0) }
+    let q = &p.kids  // error: 'p' may point to freed memory
+    println(len(q))
+}

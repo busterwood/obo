@@ -87,7 +87,7 @@ MUTANTS = {
     # compile-time checks
     "use after move allowed": ("                error(\"'\" + name + \"' was moved and has no value here\")\n            }\n        }",
                                "            }\n        }"),
-    "branch states not compared": ("    let d = stateDiff(a, b)\n    if d != nil {\n        if d.isRefLocal {", "    let d = stateDiff(a, b)\n    if d != nil && false {\n        if d.isRefLocal {"),
+    "branch states not compared": ("    let d = stateDiff(a, b)\n    if d != nil {\n", "    let d = stateDiff(a, b)\n    if d != nil && false {\n"),
     "loop moves unchecked": ("    if !term {\n        let d = stateDiff(entry, snapshot())", "    if false {\n        let d = stateDiff(entry, snapshot())"),
     "moves inside && allowed": ("        if condDepth > 0 {", "        if false {"),
     "fields can be moved out": ("    error(\"cannot move out of a field or element; use take() on an optional one\")\n}",
@@ -238,6 +238,28 @@ DEFER_USE_MUTANTS = {
                                                                       "        i -= 1\n    }\n    for q in 0..len(blocks[bi].defers) { replayFrees(bi, q) }\n}"),
 }
 MUTANTS.update(DEFER_USE_MUTANTS)
+
+# a reference invalid on one path only (the join keeps the flag; the use is refused, see LANGUAGE.md section 4):
+# the join must keep it at if, match and loop joins, the back edge and the loop's exits must carry it, the
+# re-point must clear it, a use must be refused at the use (read, write, carried to the top), and the
+# message must be the reference's
+ONE_PATH_MUTANTS = {
+    "a join drops a reference invalidated on one path": ("        if st.flags[i] && s.isRefLocal { s.moved = true }\n", ""),
+    "a match join drops a reference invalidated on one path": ("        if a.flags[i] && ownedLocals[i].isRefLocal { out.flags[i] = true }\n", ""),
+    "a loop's back edge drops a reference invalidated on the way round": ("        if st.flags[i] && ownedLocals[i].isRefLocal { acc.flags[i] = true }\n", ""),
+    "a join of invalidations is an error again": ("        if i < n && a.flags[i] != b.flags[i] && !ownedLocals[i].isRefLocal { return ownedLocals[i] }",
+                                                  "        if i < n && a.flags[i] != b.flags[i] { return ownedLocals[i] }"),
+    "the top of a loop does not check a carried invalidation": ("    loopCarryCheck(&back, useBefore, lv)\n", ""),
+    "the top of a loop checks a reference that is not read": ("        if s.isRefLocal && s != lv && back.flags[i] && s.staleUse > useBefore {",
+                                                              "        if s.isRefLocal && s != lv && back.flags[i] {"),
+    "a carried invalidation is reported at the wrong place": ("            errorAt(freedRefMsg(s.name), s.staleLine, s.staleCol)", "            errorAt(freedRefMsg(s.name), 0, 0)"),
+    "a loop's exit drops a carried invalidation": ("        if back.flags[i] && ownedLocals[i].isRefLocal { ownedLocals[i].moved = true }\n", ""),
+    "a read of an invalidated reference is not refused": ("            } else if s.isRefLocal {\n                error(freedRefMsg(name))\n",
+                                                          "            } else if false {\n                error(freedRefMsg(name))\n"),
+    "a write through an invalidated reference gets the owned message": ("            if s.isRefLocal { error(freedRefMsg(name)) }\n", ""),
+    "a re-point after the join keeps the invalidation": ("            xs.suspect = false\n            xs.moved = false\n", "            xs.suspect = false\n"),
+}
+MUTANTS.update(ONE_PATH_MUTANTS)
 
 
 def main():

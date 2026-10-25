@@ -1,0 +1,92 @@
+// A reference that is invalid on one path only, and never used after the join, is harmless: the
+// join keeps the flag, and only a use refuses it (LANGUAGE.md section 4). Each case here is valid
+// and must run; the same shapes with a use after the join are in errors/one_path_uses.obx.
+type Item = ref record { v: int }
+type Bag = ref record { items: []Item }
+
+// a change on the then path only, in an if/else
+fn ifElse(c: bool) {
+    var bag = new Bag{items: new []Item(0)}
+    append(bag.items, new Item{v: 1})
+    let p = &bag.items[0]
+    if c { bag.items = new []Item(0) } else { println(0) }
+    println(1)                      // expect: 1
+}
+
+// a change on the else path only
+fn elseOnly(c: bool) {
+    var bag = new Bag{items: new []Item(0)}
+    append(bag.items, new Item{v: 2})
+    let p = &bag.items[0]
+    if c { println(0) } else { bag.items = new []Item(0) }
+    println(2)                      // expect: 2
+}
+
+// a change on the only path that changes anything, in an if without else
+fn ifOnly(c: bool) {
+    var bag = new Bag{items: new []Item(0)}
+    append(bag.items, new Item{v: 3})
+    let p = &bag.items[0]
+    if c { bag.items = new []Item(0) }
+    println(3)                      // expect: 3
+}
+
+// a loop that leaves through a break after the change, and whose reference is not read after it
+fn loopBreak(n: int) {
+    var bag = new Bag{items: new []Item(0)}
+    append(bag.items, new Item{v: 4})
+    let p = &bag.items[0]
+    var i = 0
+    while i < n {
+        i += 1
+        if i == 2 {
+            bag.items = new []Item(0)
+            break
+        }
+    }
+    println(i)                      // expect: 2
+}
+
+// a loop whose body invalidates the reference on its first pass, and which never reads it
+fn loopNoRead(n: int) {
+    var bag = new Bag{items: new []Item(0)}
+    append(bag.items, new Item{v: 5})
+    let p = &bag.items[0]
+    var i = 0
+    while i < n {
+        i += 1
+        if i == 1 { bag.items = new []Item(0) }
+    }
+    println(i)                      // expect: 3
+}
+
+// a re-point after the join makes the reference valid again, and it is read after that
+fn repoint(c: bool) {
+    var bag = new Bag{items: new []Item(0)}
+    append(bag.items, new Item{v: 6})
+    var other = new Item{v: 7}
+    var p = &bag.items[0]
+    if c { bag.items = new []Item(0) } else { println(0) }
+    p = &other
+    println(p.v)                    // expect: 7
+}
+
+// the else path re-points the reference, and only the then path invalidates it: never read after the join
+fn repointOther(c: bool) {
+    var bag = new Bag{items: new []Item(0)}
+    append(bag.items, new Item{v: 8})
+    var other = new Item{v: 9}
+    var p = &bag.items[0]
+    if c { bag.items = new []Item(0) } else { p = &other }
+    println(8)                      // expect: 8
+}
+
+fn main() {
+    ifElse(true)
+    elseOnly(false)
+    ifOnly(true)
+    loopBreak(5)
+    loopNoRead(3)
+    repoint(true)
+    repointOther(true)
+}

@@ -445,11 +445,7 @@ array indexed by a by-value call on its record. All are rejected.
 
 **Messages.** A reference invalidated in a loop and then continued past said "is moved inside
 the loop; it must have a value again before continue"; it now says it is invalidated and must be
-pointed again. Not done: "'p' is invalidated on one path but not another" is still reported for
-a reference that is never used afterwards (`red2/n12.obo`). A reference invalid on one path and
-never used again is harmless, so the report should come only at a use, but that needs the join
-state to keep the flag on both paths rather than an error at the join, and the joins are being
-changed elsewhere, so it is left.
+pointed again. Done, as "Invalid on one path" below: the join no longer reports "'p' is invalidated on one path but not another". A reference invalid on one path is refused at a use, and a reference never used afterwards is not an error (the red-team probe `red2/n12.obo`, which is not in the repository, had that shape; `run/one_path.obx` has it).
 
 **The port.** It compiles unchanged under the new rules (no spot needed rewriting).
 
@@ -1048,6 +1044,93 @@ invalidations between the two checks, so what it refuses the older defer's own c
 the defer's reference is derived is refused: `defer ... ; return bag` where the defer uses `k = &bag`
 (the return moves `bag` and invalidates `k` before the defer runs). This matches main's refusal of
 `defer ... bag.items ...; return bag` (the owned local a defer reads cannot be moved).
+
+## Invalid on one path: reported at the use (done)
+
+**The false positive.** A reference invalidated on one path only was an error at the join.
+`let p = &bag.items[0]; if c { bag.items = new []Item(0) }`, with `p` never used again, was refused at the
+`if`: "'p' is invalidated on one path but not another; point it again on every path or none". The same held for
+an `if` or `match` whose join was followed by a re-point of `p`, and for a loop that invalidated a reference on
+one pass and never read it, which was refused at the loop's end ("'p' is invalidated inside the loop"). The
+three probes `if c { ... }` with and without `else`, and a re-point after the join, all failed on HEAD.
+
+**The rule.** The `moved` flag of a reference local is its invalidation, and it is now a may-flag: where paths
+join it is the union of their flags, and a use refuses it, as a reference invalid on every path always was.
+- `joinSuspect`, `joinStates` and `absorb` (the joins of an `if`, a `match`, the states a loop is left in, and
+  its back edge) take the union for reference locals. `stateDiff` no longer reports a difference in a reference
+  local, so `sameStates`, the loop's end, and the `break` and `continue` checks now concern owned locals only,
+  where "moved on one path but not another" and "moved inside the loop" are unchanged.
+- A use is refused by the checks that already existed: `nameItem` (a read, a pass to a call, a re-borrow, and a
+  write through the reference, which `designatorT` checks through `movedRef`), and `checkDeferUses` at the block's
+  end (a defer that uses it). A re-point clears the flag, as before.
+- Loops. The body is compiled once, from the state the loop is entered in, so an invalidation on the way round
+  (the body's end, or a `continue`) is not seen at the top by the body's checks. `loopCarryCheck` reports the
+  case: where the back edge leaves a reference invalid, and the body reads it before it is pointed afresh, the
+  read is the error. The position is the last such read (`Sym.staleLine`, `staleCol`, recorded by `designatorT`),
+  and the message is the use's. The loop's exits carry the invalidation after it, in `loopBodyV`: a while
+  condition, or a for loop's test, is reached from the top with the back edge's state, and a `break` on a later
+  pass sees it too (the states a loop is left in are computed from its entry state, so the back edge is added).
+- The message at a use is the one an all-path invalidation always had, now `freedRefMsg`. A write through an
+  invalid reference now gets it too: it said "'p' was moved and has no value here", the owned-value message.
+
+**Why nothing accepted before is refused now.** Before this change every join where the flag differed was an
+error, and so was every back edge that invalidated a reference. So a program that compiled had the same flag on
+every path to every join and no invalidation on the back edge, and the union is that same flag. The change only
+accepts more programs: those where an invalidation on some path reaches no use. A use of a reference invalid on
+some path is refused, as a use of one invalid on every path already was.
+
+**Tests.**
+- `tests/run/one_path.obx`: seven shapes, all accepted and run (`ifElse`: a change on the then path of an
+  if/else; `elseOnly`: on the else path; `ifOnly`: an if without else; `loopBreak`: a loop that breaks after the
+  change; `loopNoRead`: a loop that invalidates the reference on its first pass and never reads it; `repoint`: a
+  re-point after the join, then a read; `repointOther`: the else path re-points, the then path invalidates).
+- `tests/errors/one_path_uses.obx`: eleven cases. Each has a use after a shape: a read after an if/else, a write
+  after an if without else, a pass to a call after an else-only change, a read after a `match` arm, a defer at the
+  block's end (refused at the `}`: "is used by a defer"), a read after a loop left by `break`, a read at the top of
+  a loop, a read in a `while` condition, a read after a `continue` on an earlier pass, a read after a `while` loop
+  left through its condition, and a re-borrow (`let q = &p.kids`).
+- Existing error tests whose expected line or message changed. Each marker is now on the line that reports, and
+  each change is justified:
+  1. `errors/ref_bindings.obx`, "a continue after a call that frees what the reference points into on an earlier
+     pass". The error was at the `while` line ("invalidated inside the loop"). The loop is valid by itself, and
+     the invalid `k` is read after it (`println(k.v)`, on the path the `continue` leaves), so the marker moved to
+     that read.
+  2. `errors/ref_bindings.obx`, "a deferred free in a loop body of what the reference points into, read at the top
+     of the next pass". Refused at the top read, `println(k.v)` in the body, which is the read the case names. Was the
+     `while` line.
+  3. `errors/ref_bindings.obx`, "a recursive call that frees through a handle on its innermost pass, and a deep
+     reference read on the next pass". The error was the join at `if d == 0 { h.kids = ... }`, which has no use of
+     `k` after it. Now the error is the existing self-call check of this loop, "a recursive call in this loop writes
+     through a handle", at the `while` line; it was masked by the join error. The same loop without the handle write
+     compiles, so that check is the one that applies. The marker moved to the `while`.
+  4. `errors/references.obx`, "reference invalidated in a loop" and 5. "reference invalidated on one branch". Neither
+     reads `n` after the change, so both compile now. A use, `println(n != nil)`, was added after each, and the
+     marker is on it: the cases test the refusal, which is now at a use.
+  6. `errors/references.obx`, "a reference invalidated in a loop, then continued past". The marker moved from the
+     `continue` to `println(k.v)` on the next pass, where the invalid `k` is read.
+  No other error test changed. The owned-value messages in `errors/ownership.obx` are unchanged.
+- Mutants. `tests/mutate_fork.py`: `ONE_PATH_MUTANTS`, eleven new, each caught by a named case: a join that drops
+  an invalidation (if, and match), the back edge that drops it, an owned-style difference at a join, the loop top
+  that does not check it or checks a reference that is not read, the wrong position of the report, the loop's exit
+  that drops it, a read that is not refused, a write that gets the owned message, and a re-point that keeps the flag.
+  `tests/mutate_port.py` imports them (as it does the defer mutants). The stale "branch states not compared"
+  mutant, whose anchor was the `isRefLocal` branch that was removed, is retargeted to the same check.
+  `mutate_fork`: 109 of 109 caught (the 11 new ones among them). `mutate_port`: 108 of 108 caught.
+- Memory. `PEAK_BUDGET` is unchanged at 1,351,000. The port's live peak is 1,192,816 bytes, against 1,183,728 before
+  this change (+9,088): the two `Sym` fields, `freedRefMsg`, `loopCarryCheck`, and the checks.
+
+**Open.**
+- The self-call check of a loop (`loopSelfCheck`) still reports at the loop, not at the read it is about. It is the
+  existing rule, its message says "in this loop", and it was not part of the join.
+- The check is "may": a use reached by an invalidation on any path is refused, whatever the path's condition. This is
+  the same as for a reference invalid on every path, and is not value-sensitive.
+- In nested loops the carried check reports the last read that was not pointed afresh, which may be in the inner loop.
+
+**Language.** `LANGUAGE.md` section 4 has the rule, with an example that runs and one that is refused at the read.
+Section 8 drops the two messages that a join or a loop's end no longer raise for a reference ("is invalidated inside
+the loop", "is invalidated on one path but not another"), and the use message now lists the cases it covers.
+
+**Measured.** `run_fork` 361 passed, 0 failed. `port_test` 420 of 420 identical, no leaks. `port_compare` Stage B 512 of 512 identical, the port's peak 1,192,816 bytes against the budget 1,351,000. `own_fuzz --count 300`: 0 failures in 600 programs. `doc_check`: 27 examples, 0 problems. `bench/bench.py` runs all four workloads (its obx side needs `obx/obxc`, built from the worktree's `obx`). `make promote`: stage2 equals stage3, the suite passes with stage2 (361 passed); the seed was then restored to the committed one.
 
 ## Milestone 1 design notes (as planned)
 

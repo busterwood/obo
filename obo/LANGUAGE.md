@@ -219,6 +219,40 @@ while nothing it may point into has been changed.
   one path only is read-only after the join. A defer body may not point a reference declared
   before it at something else: the body runs where its block is left, which is not one of the
   paths the binding is kept on, so the change would not be seen there.
+- A reference invalidated on one path only is invalid where the paths join, and a use of it is
+  refused: a read, a write through it, a pass to a call, a re-borrow, or a use by a defer. A
+  reference that is not used after the join is not an error, so an `if`, a `match` or a loop that
+  changes what a reference points into on some path is accepted when nothing reads the reference
+  afterwards. A re-point after the join makes it valid again. A loop's next pass starts where its
+  body ends, so a reference invalidated on the way round is refused where the loop reads it before
+  pointing it again, and after the loop if it is read there.
+
+  ```obo
+  // example: runs
+  // prints 1
+  type Item = ref record { v: int }
+  type Bag = ref record { items: []Item }
+  fn main() {
+      var bag = new Bag{items: new []Item(0)}
+      append(bag.items, new Item{v: 0})
+      let p = &bag.items[0]
+      if bag.items[0].v == 0 { bag.items = new []Item(0) }   // p is invalid on this path, and never read
+      println(1)
+  }
+  ```
+
+  ```obo
+  // example: error: 'p' may point to freed memory
+  type Item = ref record { v: int }
+  type Bag = ref record { items: []Item }
+  fn main() {
+      var bag = new Bag{items: new []Item(0)}
+      append(bag.items, new Item{v: 0})
+      let p = &bag.items[0]
+      if bag.items[0].v == 0 { bag.items = new []Item(0) }
+      println(p.v)                   // invalid on one path: refused here, at the read
+  }
+  ```
 - A defer body is checked where it is declared, but runs where its block is left. The references
   declared outside the body that it uses (reads, writes through, passes to a call) must be as they
   were at the declaration at each exit from the block: not pointed at another place since, and not
@@ -463,7 +497,7 @@ depend on the program.
 | `cannot move '<x>' inside defer` | do the move in the body of the block. |
 | `store this value in a variable first: otherwise it would never be freed` | a temporary value is used directly; store it in a variable first. |
 | `store this value in a variable first: a reference cannot borrow from a temporary` | `&` needs a variable, field or element. |
-| `'<r>' may point to freed memory: something under what it points into was changed; point it again first` | a change freed what `<r>` pointed into. Borrow it again after the change. |
+| `'<r>' may point to freed memory: something under what it points into was changed; point it again first` | a use of `<r>` (a read, a write, a call, a re-borrow, a defer) on a path where a change freed what `<r>` pointed into, including a change on an earlier pass of a loop, or on one path only. Point `<r>` again before the use, or borrow it again after the change. |
 | `argument <n> of <f> needs a mut reference, but this one is read-only` | the parameter is `mut`, but the argument was borrowed read-only. |
 | `argument <n> of <f> may point inside argument <m>, which is mut` | two arguments may overlap and one of them changes. |
 | `'<x>' may be nil: check it with '!= nil' first` | check an optional before using its fields. |
@@ -479,8 +513,6 @@ depend on the program.
 | `'<r>' is used by a defer but may point to freed memory at the block's end: a recursive call writes through a handle` | the same, for a recursive call in a function that writes through a handle. |
 | `'<r>' is pointed somewhere new inside the loop, and read before it is pointed again; point it before the loop, or point it afresh before reading it in the loop` | a loop reads `<r>` before pointing it again, and a change in the loop may have freed what it points into, or it points somewhere the body was not checked with on the next iteration; point it afresh before reading it. |
 | `'<r>' is read-only where the loop starts again, and written before it is pointed again; point it afresh before writing it in the loop` | `<r>` is writable where the loop starts but read-only where it starts again, and is written before it is pointed again; point it afresh before writing it. |
-| `'<r>' is invalidated inside the loop; point it again before the end of each iteration` | a `continue` or the end of the body leaves `<r>` pointing into something a change in the loop freed; point it again before the loop goes round. |
-| `'<r>' is invalidated on one path but not another; point it again on every path or none` | a change freed what `<r>` points into on one path only, typically a recursive call that changes on its innermost pass; point it again on every path, or none. |
 | `the references in this loop change too often to be checked; point them afresh in the loop` | the loop's references did not settle within the checker's passes; point the references afresh inside the loop. |
 | `take needs an optional variable, field or element holding an owned value` | `take` applies only to optional owned places. |
 | `replace needs a variable, field or element holding an owned value` | `replace` applies only to owned places. |
