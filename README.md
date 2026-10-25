@@ -30,7 +30,7 @@ the obo dialect (`obo/src/obo.obo`), and it compiled every test program
 and error case byte-for-byte as the first obo compiler did, and compiles itself to a
 fixed point. Its stage test now compares behaviour (same errors, same output when run),
 so code generation can improve. Compiling
-its own source it peaked at 1.5 MB resident (live peak now 1.21 MB), against 2.5 MB for the same logic on a tuned
+its own source it peaked at 1.5 MB resident (live peak now 1.22 MB), against 2.5 MB for the same logic on a tuned
 collector and 1.9 MB on an aggressive one. It is still about 50% slower.
 
 **Decision: obo is the future of the language.** obx becomes the reference it grew

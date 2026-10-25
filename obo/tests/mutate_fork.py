@@ -337,12 +337,14 @@ def main():
         lines = p.stdout.strip().splitlines()
         detail = next((l.strip() for l in lines if l.startswith('     ')), '')
         caught = p.returncode != 0
-        print(f"{'caught' if caught else 'MISSED'}  {name:<36} {lines[-1].split(' in ')[0] if lines else ''}  {detail[:60]}")
         if not caught and name in EQUIVALENT:
             print(f"EQUIV   {name}: {EQUIVALENT[name]}")
-        elif not caught:
+            continue
+        print(f"{'caught' if caught else 'MISSED'}  {name:<36} {lines[-1].split(' in ')[0] if lines else ''}  {detail[:60]}")
+        if not caught:
             missed.append(name)
-    print(f"\n{len(names) - len(missed)}/{len(names)} mutants caught")
+    equiv = sum(1 for n in names if n in EQUIVALENT)
+    print(f"\n{len(names) - len(missed) - equiv}/{len(names)} mutants caught, {equiv} equivalent")
     sys.exit(1 if missed else 0)
 
 

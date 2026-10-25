@@ -190,7 +190,7 @@ MUTANTS = {
     "frame dropped although there are locals": [("    if size == 0 {\n        dropFrame(frameAt)", "    if size <= 16 {\n        dropFrame(frameAt)")],
     "held: replace does not free what it holds": [('        consume(v)\n        freeEvent(x, place, raw, orig, ident)\n', '        consume(v)\n')],
     "held: take does not free what it holds": [('        freeEvent(x, lastPlace, lastRaw, lastOrigin, lastIdent)\n', '')],
-    "held: moves do not reach held handle targets": [('        if heldForeign[i] || heldKey[i] == s { heldHit[i] = true }', '        if heldKey[i] == s { heldHit[i] = true }')],
+    "held: moves do not reach held handle targets": [('        } else if heldForeign[i] {\n            if s.isParam || !refParamKey(heldKey[i]) { heldHit[i] = true }', '        } else if false {\n            if s.isParam || !refParamKey(heldKey[i]) { heldHit[i] = true }')],
     "held: moves do not free handle targets": [('        heldMove(s)\n', '')],
     "held: identity frees do not reach their entries": [('                if segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }', '                if false { heldHit[k] = true }')],
     "held: same-identity frees ignore the path": [('                if segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }', '                heldHit[k] = true')],

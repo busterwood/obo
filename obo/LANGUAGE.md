@@ -581,7 +581,8 @@ A handle's array indexed by a move of the object it names (`let h = handle(b); h
 A `replace` or `take` of an unrelated place, or of an element beside the array that is indexed, is accepted, and
 so is an assignment whose value takes its own target (`t.opt = pass(take(t.opt))`), since `take` leaves that
 place empty. A free of an ancestor of the target is still refused. A handle made by `let h = handle(b)` from a
-whole owned local names that local, so a move of a different local through `h` is accepted. A handle without that
+whole owned local names that local, and that local cannot be moved after the handle is made (`var c = b` is
+refused, whether directly, through a call or into a field); a move of a different local through `h` is accepted. A handle without that
 origin (a handle parameter, or one made from a field or an element) may name any object: a move or a free through
 it is refused against anything it might name, and a free through it of another handle's place is compared by path
 only when it is the same handle.

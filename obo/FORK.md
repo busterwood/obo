@@ -226,7 +226,7 @@ making ownership the language's memory model is strong.
 test, `python3 obo/tests/port_compare.py`, builds it with obo and compiles every
 fork and mainline program, example, benchmark and error case with both, requiring
 byte-identical executables and identical error messages, with the leak check on
-in the port: 462 of 462 behave the same on the merged branch (448 before the held-place change). The port compiling itself is a fixed point
+in the port: 538 of 538 behave the same on the merged branch (462 before main's step 3). The port compiling itself is a fixed point
 (obo builds p1 from the port, p1 builds p2, p2 builds p3; p1 = p2 = p3).
 
 **Now behavioural** (decided with the optimization plan, below): each case must have the
@@ -478,27 +478,16 @@ object indexed with a temporary of another; an element taken from the array inde
 which frees an element and not the array header); and an assignment whose value takes its own target
 (`tk.opt = passOptIB(take(tk.opt))`).
 
-Refused: a move of the object a handle names while a place of it is held through the handle. A handle with an origin names that local alone, so a move of the origin is refused, and a move of any other local is accepted (the run control `hob.items[sinkBag(ot)]`). A handle parameter has no origin, and a move of any local while its place is held is refused, because `heldMove` hits every identity entry; this is the conservative case left by design. The refused forms are the cases in `tests/errors/held_places.obx`.
+Refused: a move of a local that a handle was made from. A handle `let h = handle(a)` made from a whole owned local names that local's object, and its held places are keyed to `a`. A move of `a` (`var c = a`, `var c = id(a)`, a record field, a move inside a loop) would leave those places unkeyed to `c`, so a later move or free through `c` reached freed memory (probes m1, m2, n2-n7). The move is now refused at the move itself ("after a handle to it was made"), which is simpler and sound than dropping the origin: moves of a whole local are the only moves (a part is refused outright), so this covers every move of the origin. A handle made from a field, or through another handle, has no origin; its place is an identity, and a move of any local while it is held is refused, because `heldMove` hits every identity entry (`let h = handle(p.first)`, and the chained `hh.hb.items[...]`). A handle parameter has no origin, and the same conservative rule applies (f3 is kept refused). A move or free of a local the callee declared (not a by-value parameter, not a global) no longer reaches a reference parameter's place, because a reference cannot point into the callee's own object; this is the false positive `p.items[sinkBag(t)]` (f1, f2) and its replace and take forms (f4, f5). A by-value parameter's object and a global are still hit. Refused still: f8, two `mut` parameters where a free through one is indexed through the other, since the two may name the same object. A reference to a field of a reference parameter is bound to the whole parameter (`itemBind` drops the field path through a deref), so `let r = &p.ys; p.xs[sinkI(replace(r, ...))]` is refused although the fields differ; the direct form `p.xs[sinkI(replace(p.ys, ...))]` is accepted. This is a precision limit of the binding model, left as it is. The refused forms are the cases in `tests/errors/held_places.obx`.
 
 Not closed: the argument-order hole `two(&xs[0], eatArr(xs))`, a reference into an array passed in one argument with the array moved by a later argument of the same call. It is a known hole, left alone in this round as the coordinator asked; the probes are `review16/ra/ra1`, `review16/p/a1` and `review16/ra/ra3`, listed with the holes above.
 
 Probes that were written but are not valid programs on either compiler (typing or syntax errors, so they tested
 nothing) are h1-h13, k5-k8, z1-z5, w2, x3, y4, y9 in the probe set (`review14/`).
 
-**Tests.** `tests/errors/call_targets.obx` has 58 cases (the earlier 59, less the handle-of-another-local
-case that is now accepted: its run control is in `tests/run/call_targets.obx`). `tests/errors/held_places.obx`
-has 12 cases: the two probes above, the review17 handle probes H1-H5 and H6-H9, and the compound and assignment
-forms. `tests/run/held_places.obx` runs the accepted forms above, with outputs.
+**Tests.** `tests/errors/call_targets.obx` has 58 cases (the earlier 59, less the handle-of-another-local case that is now accepted: its run control is in `tests/run/call_targets.obx`). `tests/errors/held_places.obx` has 25 cases: the probes above, the review17 handle probes H1-H9, the compound and assignment forms, the origin moves (plain, call result, record field, loop, m1, m2, n2-n7), a replace of the owner's array through a handle, handles made from a field and from a global, a chained handle, the free through a reference to a handle, and the by-value parameter moves and frees. `tests/run/held_places.obx` has 16 functions with outputs: the accepted forms above, and the callee-local cases f1, f2, f4, f5. The nit about the last-designator globals (`lastPlace`, `lastRaw`, `lastOrigin`, `lastIdent`, `lastViaHandle`): they are set once, at the end of `designatorT` after its index expressions are parsed, and each reader takes them straight after `designator()`, so a nested `expression()` cannot leave a stale value; the only path past `nameItem` without setting them is after an error. No probe found a case.
 
-**Mutants.** `tests/mutate_fork.py`: 105, 105 caught. The held-place mutants are: a replace or
-take that does not free (`replace does not free what it holds`, `take does not free what it holds`), moves that do
-not reach held places or do not free handle targets, identity frees that do not reach their entries, identity frees
-that ignore the path (the same-handle comparison disabled), owned frees that ignore the path, the assignment
-exemption removed for owned places and not applied through handles, origin ignored when holding and when freeing,
-whole local arrays hit by identity frees, reference parameters given their owner's place, each hold removed (index,
-replace, append/truncate, plain and compound assignment), and the binding's path ignored. Each is caught by a named
-case. `tests/mutate_port.py`: 93, 93 caught, at the committed budget of 1,351,000 (see
-"The port's memory budget" below); the port mutants change `src/obo.obo` and are judged by `port_compare`.
+**Mutants.** `tests/mutate_fork.py`: 131 entries, 127 caught, 4 equivalent (listed in its `EQUIVALENT` table with the reason, and reported as EQUIV). The held-place mutants are: a replace or take that does not free, moves that do not reach held places or do not free handle targets, identity frees that do not reach their entries or ignore the path, owned frees that ignore the path, the assignment exemption removed for owned places and not applied through handles, origin ignored when holding and when freeing, whole local arrays hit by identity frees, reference parameters given their owner's place, each hold removed, the binding's path ignored, and the second review's gaps: an origin without the non-handle or whole-path guard, a global origin, chained handles keeping the first origin, the handle-root and reference-root joins (held and freed), unknown frees hitting only whole arrays, every held place whole, moves and frees reaching reference parameters from callee locals, and a by-value parameter counted as a callee local. The four equivalents: `origin needs no non-handle designator` and `origin needs no whole path` (a designator through a handle, or with a path, has no sym, so `wholeOwnerOf` gives nil); `origin of a global is kept` (`owned` is set only by `addOwnedLocal`, so a global never has an origin, and the storage test is redundant); and `a handle root of a reference is not an identity (held)` (the entry keeps its foreign flag and nil key, so moves and frees hit it either way). `tests/mutate_port.py`: 106 entries, 106 caught, judged at the committed budget of 1,351,000 (see "The port's memory budget" below); the port mutants change `src/obo.obo` and are judged by `port_compare`.
 
 **Fuzzer** (`tests/own_fuzz.py`): invalid kinds, `replace_sink_index_stmt` (a field's array indexed by a pure
 call that consumes a replace of that array), `compound_target_stmt`, `append_target_stmt`,
@@ -518,10 +507,7 @@ changed elsewhere, so it is left.
 
 **The port.** It compiles unchanged under the new rules (no spot needed rewriting).
 
-**The port's memory budget, after the merge of main.** `PEAK_BUDGET` stays at 1,351,000, and the
-merged port passes it. The port compiling itself peaks at 1,211,104 bytes live, against main's 1,161,136 (the held places and
-main's reference bindings together), 139,896 bytes under the budget. Before the merge the branch's base lacked main's allocation work (step 4), and the same
-check failed at 1,739,088 bytes; the merge brought in that work and the check passes.
+**The port's memory budget, after the merge of main.** `PEAK_BUDGET` stays at 1,351,000, and the merged port passes it. The port compiling itself peaks at 1,224,864 bytes live, a margin of 126,136 bytes under the budget. The merge of main's step 3 (defer uses) added 13,760 bytes to the 1,211,104 this branch measured before it. The budget was not raised.
 
 This branch's compiler changes add 18,272 bytes to the peak: main's source measures about 1,079,400 bytes
 with the same method, and this branch's source 1,097,776. (The figure moves by about 150 bytes
