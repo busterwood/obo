@@ -1071,7 +1071,7 @@ the defer's reference is derived is refused: `defer ... ; return bag` where the 
 
 ## Optimization plan
 
-Status: Phase 0 and Phase 1 done (loop inversion included); Phases 2 and 3 planned. Phases are ordered by expected value per unit of cost.
+Status: Phases 0, 1 (loop inversion included) and 2 done; Phase 3 planned. Phases are ordered by expected value per unit of cost.
 Each has a gate; a phase that misses its gate is recorded here and stopped.
 
 **Baseline.** A loop `s = s + i * 2` over `i < n` compiles with every local in a stack
@@ -1316,7 +1316,7 @@ condition that calls a later function, concatenates strings, indexes arrays, use
 (chains of three in each direction), calls the runtime and allocates, and `while true`; with `continue`,
 `break`, nested loops, a loop in a function with no frame, and defers in the body.
 
-### Phase 2: register allocation for scalar locals
+### Phase 2: register allocation for scalar locals (planned; see "Phase 2 (done)" below for what was built)
 
 - **Candidates.** `int` and `bool` locals and parameters whose address is never taken.
   No borrow of a scalar, no handle.
@@ -1331,6 +1331,107 @@ condition that calls a later function, concatenates strings, indexes arrays, use
 *Gate:* in the tight loop, the allocated locals make no memory accesses; the benchmark
 improves by a measured amount; fib does not regress. A mutant that drops a register
 save around a call must be caught by the suite.
+
+### Phase 2 (done)
+
+Built in `src/obo.obo`; the pre-scan of one function (the user's decision, recorded under "Open
+decisions") is the only departure from a single pass.
+
+**Design.**
+
+- *Registers.* `rbx` and `r8`-`r15` are the expression pool. A local lives in one of `r15`, `r14`,
+  `r13`, `r12` (a "home"), taken out of the free list while the local is in scope, so it is never
+  handed out as a temporary (`release` refuses it; `setFree` leaves it out). The pool keeps `rbx`,
+  `r8`-`r11` at least. `rax`, `rcx`, `rdx` stay scratch (division, shifts) and `rdi`, `rsi`, `rdx`,
+  `rcx` the C argument registers. No register is pinned; there is no frame pointer change.
+- *Candidates.* `int` and `bool` locals (`var`, `let`, the variable and limit of a `for a..b`) and
+  by-value parameters. The language cannot borrow a scalar (`only records, closed types and arrays
+  can be borrowed`), so no scalar ever has its address taken; what stays in memory is everything
+  else: `byte`, strings, owned values, the element variable of an array walk, the `match` subject
+  slot, and anything declared inside a `defer` body (a defer subroutine is compiled apart and may run
+  where other locals hold the registers).
+- *Choice.* `scanFunction` reads the raw text of the body once (no lexer state, so a lexical error is
+  still reported by the real scanner, where it was): the names declared (parameters, `var`, `let`,
+  `for`) with their uses weighted 1/8/64/512 by loop depth, and the calls to the program's own
+  functions, weighted the same way. A name gets a register at its declaration if its uses minus twice
+  the weighted calls reach `HOME_MIN` = 8, a home is free, and fewer free homes than names ranked above
+  it that are still to be declared. Registers are given back at the end of the block, so sequential
+  scopes reuse them. The scan also counts the deepest nesting of parentheses, brackets and record
+  literals and allows only `7 - depth` homes (at most `REG_HOMES` = 4), keeping the pool large enough:
+  with a fixed four, 7 of 1,400 random programs failed with "out of registers" that compiled before; with
+  the cap, none of 5,300 (800 of them of extreme depth) differed from main.
+- *Calls.* Deviation from the plan's callee-save: the pool holds `rbx` and `r12`-`r15` as temporaries,
+  so a callee may clobber any of them without saving, and the existing convention (the caller pushes
+  the registers in use) covers the homes too. A home is "in use", so `callFn` pushes the homes in scope
+  with the live temporaries around an obo call, and pops them after; nothing changes in prologues,
+  epilogues, `return`, or defer subroutines, so there is no register to restore on any exit. Runtime
+  calls do not push homes: the C runtime keeps `rbx` and `r12`-`r15` (checked: `runtime.c` is plain C,
+  `entry.S` only touches `r11`; panics and `exit` do not return). Pushes go through `pushR`, so the
+  alignment pad counts them.
+- *Items.* A home is a `reg` item with `home` set. `load` copies it (callers change what they get);
+  `asReg` reads it in place (compare, argument push, runtime arguments, indexes, stores, return value).
+  A store to a home is a `mov`; `+=`, `-=`, `*=` change it in place; `x * const` uses the three-operand
+  `imul`. The checker is untouched: no `mode == "mem"` test of the checker applies to an int or a
+  bool, and the diff of compile outcomes against main (exit code, stdout, stderr, so every message and
+  position) is empty over 266 programs and error cases (tests/errors, tests/run, examples, bench).
+- *Off switch.* `const REG_HOMES = 0` in the source; `make obo-noregs` builds that compiler. No CLI flag.
+- *Encoder.* No new encodings: r12-r15 were already pool registers (`port_test.py`'s objdump groups pass).
+
+**Gate.** The loop (`micro.py --disasm loop`) has no memory access:
+
+```
+401021:	mov    $0x0,%r14d          s
+401027:	mov    $0x0,%r13d          i
+40102d:	jmp    0x40104c
+401032:	imul   $0x2,%r13,%rbx
+401039:	mov    %r14,%r8
+40103c:	add    %rbx,%r8
+40103f:	mov    %r8,%r14
+401042:	mov    %r13,%r9
+401045:	add    $0x1,%r9
+401049:	mov    %r9,%r13
+40104c:	cmp    %r15,%r13           n in r15
+40104f:	jl     0x401032
+```
+
+(`s = s + e` and `i = i + 1` still go through a temporary; an in-place form is left for a peephole.)
+
+Measured with `bench/micro.py -n 11` (`OBO=./seed/obo` for main's compiler), same machine and
+session; median ms (range), instructions in the code segment:
+
+| Benchmark | Main | Registers |
+|---|---|---|
+| loop | 569 (564-687), 36 | 434 (424-441), 28 |
+| fib | 623 (619-630), 54 | 618 (614-631), 54 |
+| array | 417 (409-429), 99 | 239 (235-246), 87 |
+| alloc | 485 (468-531), 51 | 515 (498-1705), 44 |
+
+loop is 24% faster, array 43%. fib has no loop and its `n` scores 5, under the threshold, so its code
+is unchanged. alloc is about 6% slower in three interleaved repeats though it runs 7 instructions
+fewer; the time is the runtime's allocation and free, and I found no cause in the code (the loop is
+the same shape with the locals in registers). Left as measured.
+
+The port compiling its own source (`make obo-noregs` against `obo`, same source): 53,016 to 52,735
+instructions and 196,957 to 194,704 bytes of code (a compiler is calls and branches, so few
+locals qualify); the compiler built either way compiles itself in 46 ms, no difference. The
+pre-scan costs time: the same compiler takes 43.9 ms with `REG_HOMES = 0` and 46.4 ms with 4, 6%.
+`tests/port_compare.py`: live peak 1,217,456 bytes (main 1,183,600, budget 1,351,000 unchanged), 18.5 MB
+allocated, 501 of 501 behave the same.
+
+**Mutants** (`tests/mutate_port.py`): the homes not pushed around an obo call; a home released as a
+temporary; a runtime call clobbering `r15`; an array walk's element variable in a register; one
+register for two live locals; a parameter not loaded; an uninitialised local not zeroed; a compound
+assignment on a copy; `x * const` writing the local; `load` of a home uncopied; a `for` limit sharing
+the variable's register. Those that change only speed (the scan counting nothing, the ranking
+ignored, a register not given back at a scope's end) are caught by `tests/homes_check.py`, which counts
+stack-slot instructions in three compiled programs. Not planted, equivalent: the prologue and
+epilogue mutants of the plan (there are none), a home allowed in a `defer` body (a defer's registers
+are dead when it runs), and a home handed out again at register exhaustion (the homes are the last
+registers in pool order, so only an expression needing more registers than the pool has would reach
+one). `tests/run/register_alloc.obx` covers more candidates than registers, locals across calls,
+recursion and runtime calls, parameters, bools, address-taken beside plain locals, nested and
+shadowing scopes, `for` loops, defers, early returns from loops, compound assignment, mut parameters
+and by-value passing; its expected output was taken from main's compiler.
 
 ### Phase 3: calling convention
 
@@ -1405,5 +1506,6 @@ remain after Phase 2 are measurable on the benchmarks.
   line:col), and for a program that runs, the same stdout, stderr and exit code with
   `OBO_CHECK=1`. The fixed point (stage 2 = stage 3, in `make promote`) still compares
   bytes, since the compiler compiles itself.
-- **Pre-scan.** Confirm that a token pre-scan is acceptable under the single-pass goal
-  before Phase 2 starts.
+- **Pre-scan** (resolved: allowed). A token pre-scan of one function is acceptable under the
+  single-pass goal, as decision 5's "buffer one function at a time". Built for Phase 2; see
+  "Phase 2 (done)".

@@ -18,8 +18,8 @@ SRC = os.path.join(os.path.dirname(HERE), 'src', 'obo.obo')
 
 MARK = "    let symMark = len(symArena)                 // the function's own symbols start here\n"
 FREE = "    truncate(symArena, symMark)                 // and nothing refers to them any more\n"
-PARAMS_DONE = "        if params[i].typ.kind == \"string\" { addStrLocal(s) }\n    }\n"
-BLOCKS_CLOSE = "    closeBlock(term)\n    closeBlock(term)\n    if !term { epilogue() }\n"
+PARAMS_DONE = "        }\n    }\n    expect(T_LBRACE, \"\")\n    openBlock()\n"
+BLOCKS_CLOSE = "    closeBlock(term)\n    closeBlock(term)\n    homeBits = 0\n    if !term { epilogue() }\n"
 
 # each mutant is a list of (old, new) replacements, each of which must match exactly once
 MUTANTS = {
@@ -263,6 +263,31 @@ from mutate_fork import DEFER_USE_MUTANTS  # noqa: E402
 MUTANTS.update({k: [v] for k, v in DEFER_USE_MUTANTS.items()})
 
 
+# register allocation (FORK.md, Phase 2). A home is r12 to r15, taken out of the free list while its local is in
+# scope; the callee may use any pool register, so the caller pushes the homes in scope around an obo call, and
+# the C runtime keeps them. Most are caught by tests/run/register_alloc.obx; the SHAPES ones change speed only
+# and are caught by tests/homes_check.py
+MUTANTS.update({
+    "homes not pushed around obo calls": [("    let saved = usedRegs()\n    pushRegs(saved)\n    setFree(0)",
+                                           "    let saved = usedRegs() & ~homeBits\n    pushRegs(saved)\n    setFree(0)")],
+    "a home released as a temporary": [(" && !containsInt(free, r) && (homeBits & (1 << r)) == 0 { append(free, r) }",
+                                        " && !containsInt(free, r) { append(free, r) }")],
+    "runtime call clobbers r15": [("    callAbs(RT_TEXT + 8 * slot)\n    if pad != 0 {", "    callAbs(RT_TEXT + 8 * slot)\n    movRI(15, 0)\n    if pad != 0 {")],
+    "array walk's element variable in a register": [('        let v = newLocal(name, baseOf(xt), "let")\n', '        let v = newLocal(name, baseOf(xt), "let")\n        homeFor(v, name, true)\n')],
+    "one register for two live locals": [("        if (homeBits & (1 << r)) == 0 && containsInt(free, r) {", "        if true {"),
+                                         ("    while free[j] != pick { j += 1 }", "    while j < len(free) && free[j] != pick { j += 1 }")],
+    "parameter not loaded into its register": [("                opMem(0x8B, h, mem(RBP, -1, s.offset, 8), true, false)      // the argument, from the stack\n", "")],
+    "uninitialised local not zeroed": [("                movRI(s.home, 0)\n", "")],
+    "compound assignment changes a copy": [("            var r = x.r                       // a local in a register is changed where it is", "            var r = alloc()")],
+    "multiplication by a constant writes the local": [("        let t = alloc()                           // imul reads one register and writes another", "        let t = x.r")],
+    "a local's register used as the caller's copy": [("        if !x.home { return x }\n        let c = alloc()", "        if true { return x }\n        let c = alloc()")],
+    "for limit in the variable's register": [("            homeFor(lim, name, false)              // the limit follows the variable into a register", "            lim.home = v.home")],
+    "scan: nothing counted": [("                if k >= 0 {\n                    scanScore[k] += w", "                if k >= 0 {\n                    scanScore[k] += 0")],
+    "scan: ranking ignored": [("    if nfree <= better { return -1 }", "")],
+    "scope end does not give the register back": [("        if s.home >= 0 { releaseHome(s.home) }", "        if s.home < 0 { releaseHome(s.home) }")],
+})
+SHAPES = {"scan: nothing counted", "scan: ranking ignored", "scope end does not give the register back"}
+
 # mutants that keep memory alive: caught when the peak rises above the unmutated peak,
 # for a leak too small to cross PEAK_BUDGET
 KEEPS_ALIVE = {"parameters kept"}
@@ -293,6 +318,8 @@ def main():
         code = f"import port_compare as pc; pc.SRC = {path!r}; pc.main()"
         if name in ENCODER:
             code = f"import port_test as pt; pt.SRC = {path!r}; pt.main()"
+        if name in SHAPES:
+            code = f"import homes_check as hc; hc.SRC = {path!r}; hc.main()"
         r = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, cwd=HERE)
         total += 1
         if name in KEEPS_ALIVE and r.returncode == 0:
