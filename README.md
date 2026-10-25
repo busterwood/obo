@@ -149,7 +149,7 @@ about 0.01 to 0.02 s in both. The obo port (4552 lines) had a live peak of 1.3 M
 allocated 28.6 MB before the allocation work; after it, 1.05 MB and 12.3 MB (FORK.md,
 Phase 4). The cheaper code of Phase 1 brought the total to 12.1 MB and moved the peak to
 1.08 MB, reached now while the code buffer grows (FORK.md, Phase 1); the checks across calls
-brought it to 1.10 MB. obx's compiler (3222 lines), with the
+brought it to 1.10 MB; loop inversion (one jump per iteration instead of two, FORK.md) made the tight loop 7% faster and left the live peak at 1.17 MB. obx's compiler (3222 lines), with the
 collector, peaks at 8.8 MB. Wall time is about 30 ms, down from 33 ms. Also done:
 eight loops that only walked an array now borrow it and loop with `for` (the index form was a workaround for the walk rule). The loop over `globals` at exit now
 walks by borrowing too. It was blocked by two false positives: a self-call counted as

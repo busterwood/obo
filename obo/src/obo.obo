@@ -1193,6 +1193,10 @@ var useSeq = 0                    // reads of references so far, numbered
 var fnBlock = 0
 var frame = 0
 var farCalls = new []int(0)       // where the current function's calls out of its body keep their rel32
+var fwdCalls = 0                  // calls to functions not yet defined, so far (a while condition may hold some)
+var lifted = new []byte(0)        // the code of the conditions of the while loops being compiled, lifted out until their bodies are done
+var waitFn = new []int(0)         // their calls that wait for a later function: which function (in globals)
+var waitAt = new []int(0)         // and where the call is
 var inDefer = false
 var noreturn = false
 var initLink = 0
@@ -3032,6 +3036,7 @@ fn callFn(f: ^Sym): Item {
         append(farCalls, at)
     } else {
         append(f.fixups, at)
+        fwdCalls += 1
     }
     if n > 0 || pad != 0 {
         aluRI(0, RSP, 8 * n + pad)
@@ -4446,6 +4451,22 @@ fn loopBodyV(entry: PState, line: int, col: int, lv: ?^Sym, nOuter: int, selfBef
     return res
 }
 
+// A while loop's condition is compiled where it is read, and its bytes are then moved after the body
+// (loop inversion): `jmp cond; body: ...; cond: C; jcc body`. Moved by d, what they hold that is not
+// relative moves with them: calls out (farCalls) are d further from their targets, calls waiting for a
+// later function are d further on, and the condition's true and false lists thread positions through
+// their rel32 fields. The checker has seen the condition once, where it is read.
+fn shiftWaits(head: int, d: int): int {
+    if head == 0 { return 0 }
+    var at = head + d
+    while getRel(at) != 0 {
+        let nxt = getRel(at) + d
+        putRel(at, nxt)
+        at = nxt
+    }
+    return head + d
+}
+
 fn whileStat(): bool {
     let wline = tline
     let wcol = tcol
@@ -4459,15 +4480,35 @@ fn whileStat(): bool {
     clearFresh()
     let entry = snapshot()
     let top = pc()
+    let farFrom = len(farCalls)
+    let fwdFrom = fwdCalls
     var x = expression()
     let forever = x.mode == "const" && x.typ.kind == "bool" && x.val == 1
-    var flinks = 0
+    let liftFrom = len(lifted)               // this loop's part of lifted, waitFn and waitAt starts here
+    let waitFrom = len(waitFn)
+    var farTo = 0
+    var jcond = 0
     if forever {
         x = newItem("cond", tBool)
     } else {
         x = loadCond(x)
-        flinks = falseJump(x)
+        for i in top..pc() { append(lifted, code[i]) }
+        truncate(code, top)
+        farTo = len(farCalls)
+        if fwdCalls != fwdFrom {
+            for g in 0..len(globals) {
+                if globals[g].kind == "fn" && globals[g].addr < 0 {
+                    while len(globals[g].fixups) > 0 && globals[g].fixups[len(globals[g].fixups) - 1] >= top {
+                        append(waitFn, g)
+                        append(waitAt, globals[g].fixups[len(globals[g].fixups) - 1])
+                        truncate(globals[g].fixups, len(globals[g].fixups) - 1)
+                    }
+                }
+            }
+        }
+        jcond = jmp()
     }
+    let bodyAt = pc()
     let condSt = snapshot()                  // the state when the condition leaves the loop
     let condAt = len(freeLog)
     loopdepth += 1
@@ -4485,11 +4526,33 @@ fn whileStat(): bool {
     loopdepth -= 1
     loopMarksJoin(savedMarks)
     loopLogEnd()
-    fixTo(loop.cont, top)
-    jmpTo(top)
-    fixHere(flinks)
+    if forever {
+        fixTo(loop.cont, top)
+        jmpTo(top)
+        fixHere(loop.brk)
+        return loop.brk == 0
+    }
+    // the condition goes after the body, and a continue goes to it
+    let at = pc()
+    let d = at - top
+    fix(jcond, at)
+    fixTo(loop.cont, at)
+    for i in liftFrom..len(lifted) { append(code, lifted[i]) }
+    truncate(lifted, liftFrom)
+    for k in farFrom..farTo {
+        farCalls[k] += d
+        putRel(farCalls[k], getRel(farCalls[k]) - d)
+    }
+    for k in waitFrom..len(waitFn) { append(globals[waitFn[k]].fixups, waitAt[k] + d) }
+    truncate(waitFn, waitFrom)
+    truncate(waitAt, waitFrom)
+    let tl = shiftWaits(x.T, d)
+    let fl = shiftWaits(x.F, d)
+    fix(jcc(x.cc), bodyAt)
+    fixTo(tl, bodyAt)
+    fixHere(fl)
     fixHere(loop.brk)
-    return forever && loop.brk == 0
+    return false
 }
 
 fn forStat() {
@@ -4521,12 +4584,8 @@ fn forStat() {
         li.base = RBP
         li.disp = lim.offset
         store(li, y)
+        exitLink = jmp()                        // to the test, after the body
         top = pc()
-        let r = alloc()
-        opMem(0x8B, r, mem(RBP, -1, v.offset, 8), true, false)
-        opMem(0x3B, r, mem(RBP, -1, lim.offset, 8), true, false)
-        release(r)
-        exitLink = jcc(CC_GE)
         loopdepth += 1
         savedMarks = loopMarksSave()
         loopLogStart()
@@ -4534,6 +4593,12 @@ fn forStat() {
         loopdepth -= 1
         fixHere(loop.cont)
         aluMI(0, mem(RBP, -1, v.offset, 8), 1)
+        fixHere1(exitLink)
+        let r = alloc()
+        opMem(0x8B, r, mem(RBP, -1, v.offset, 8), true, false)
+        opMem(0x3B, r, mem(RBP, -1, lim.offset, 8), true, false)
+        release(r)
+        fix(jcc(CC_L), top)
     } else {
         if x.typ.kind != "array" { error("cannot iterate over " + tname(x.typ)) }
         noTemp(x)
@@ -4570,13 +4635,12 @@ fn forStat() {
         let vi = newItem("mem", baseOf(xt))
         vi.base = RBP
         vi.disp = v.offset
+        exitLink = jmp()                        // to the test, after the body
         top = pc()
         let ri = alloc()
         let ra = alloc()
         opMem(0x8B, ri, mem(RBP, -1, idx.offset, 8), true, false)
         opMem(0x8B, ra, mem(RBP, -1, arr.offset, 8), true, false)
-        opMem(0x3B, ri, mem(ra, -1, 0, 8), true, false)
-        exitLink = jcc(CC_GE)
         if strs { rtCall1(RT_STR_DEC, dupItem(vi), tVoid) }  // drop the previous element
         opMem(0x8B, ra, mem(ra, -1, 16, 8), true, false)
         if baseOf(xt).kind == "byte" {
@@ -4606,9 +4670,16 @@ fn forStat() {
         loopdepth -= 1
         fixHere(loop.cont)
         aluMI(0, mem(RBP, -1, idx.offset, 8), 1)
+        fixHere1(exitLink)
+        let ti = alloc()
+        let ta = alloc()
+        opMem(0x8B, ti, mem(RBP, -1, idx.offset, 8), true, false)
+        opMem(0x8B, ta, mem(RBP, -1, arr.offset, 8), true, false)
+        opMem(0x3B, ti, mem(ta, -1, 0, 8), true, false)
+        release(ti)
+        release(ta)
+        fix(jcc(CC_L), top)
     }
-    jmpTo(top)
-    fixHere1(exitLink)
     fixHere(loop.brk)
     loopMarksJoin(savedMarks)
     loopLogEnd()

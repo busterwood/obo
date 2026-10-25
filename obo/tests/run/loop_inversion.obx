@@ -1,0 +1,244 @@
+// Loop inversion: a while loop's condition is compiled where it is read, then moved after the body.
+// What its bytes hold must move with them: calls out, calls waiting for later functions, the true and
+// false jump lists. continue goes to the moved condition.
+
+type Box = ref record { v: int }
+
+var ticks = 0
+var log = ""
+
+fn note(s: string) { log = log + s }
+
+// the condition calls functions declared later (forward calls, waiting in their fixups)
+fn later(i: int): int
+fn more(): bool
+fn tick()
+
+fn forward(): int {
+    var i = 0
+    var t = 0
+    while i < later(i) {
+        t += i
+        i += 1
+    }
+    return t
+}
+
+// a zero-frame function: no locals, so its frame setup is dropped and the whole body moves again
+fn zeroFrame(): int {
+    while more() {
+        tick()
+    }
+    return ticks
+}
+
+fn zeroPlain(): int {
+    while ticks < 9 { ticks += 2 }
+    return ticks
+}
+
+fn later(i: int): int { return 5 }
+fn more(): bool { return ticks < 3 }
+fn tick() { ticks += 1 }
+
+fn boxv(n: int): int {
+    let b = new Box{v: n}
+    return b.v
+}
+
+fn concat(): string {
+    var s = ""
+    while len(s + "x") < 5 { s = s + "a" }
+    var n = 0
+    while s + "!" != "aaaabbb!" && n < 10 {
+        s = s + "b"
+        n += 1
+    }
+    return s
+}
+
+fn indexing(): int {
+    let a = new []int(0)
+    for i in 0..10 { append(a, i * 7) }
+    var i = 0
+    while a[i] < 40 { i += 1 }
+    var j = 0
+    while j < len(a) && (a[j] != 21 || j < 2) { j += 1 }
+    return i * 100 + j
+}
+
+fn andOr(n: int): int {
+    var i = 0
+    var c = 0
+    while (i < n && i != 6) || (i >= 6 && c < 9) {
+        c += 1
+        i += 1
+    }
+    return i * 10 + c
+}
+
+// lists of several jumps: three false exits in the first condition, three true entries in the second
+fn chains(): string {
+    var i = 0
+    var j = 0
+    var k = 0
+    while i < 20 && j < 6 && k < 9 && i + j + k < 100 {
+        i += 1
+        j += 2
+        k += 3
+    }
+    let first = i * 100 + j * 10 + k
+    var n = 0
+    while i == 3 || j == 9 || k == 12 {
+        n += 1
+        if i == 3 {
+            i = 0
+            j = 9
+        } else if j == 9 {
+            j = 0
+            k = 12
+        } else {
+            k = 0
+        }
+    }
+    return string(first) + "/" + string(n) + string(i) + string(j) + string(k)
+}
+
+fn runtime(): string {
+    var i = 0
+    var out = ""
+    while len(string(i)) < 2 && boxv(i) < 12 {
+        let b = new Box{v: i}
+        out = out + string(b.v) + ","
+        i += 3
+    }
+    return out
+}
+
+fn grow(): int {
+    let a = new []int(0)
+    var n = 0
+    while len(a) < 20 {
+        append(a, n)
+        n += 2
+    }
+    var t = 0
+    while len(a) > 0 && a[len(a) - 1] > 30 {
+        truncate(a, len(a) - 1)
+        t += 1
+    }
+    return t * 1000 + len(a)
+}
+
+fn forever(): int {
+    var i = 0
+    while true {
+        i += 3
+        if i > 10 { break }
+    }
+    return i
+}
+
+fn control(): string {
+    var i = 0
+    var out = ""
+    while i < 10 {
+        i += 1
+        if i % 2 == 0 { continue }
+        if i > 7 { break }
+        out = out + string(i)
+    }
+    return out + "/" + string(i)
+}
+
+// continue in a loop whose condition calls a function and concatenates
+fn controlCall(): string {
+    var i = 0
+    var out = ""
+    while later(i) > i && len(out + "z") < 12 {
+        i += 1
+        if i == 2 { continue }
+        out = out + string(i)
+    }
+    return out
+}
+
+fn nested(): int {
+    var t = 0
+    var i = 0
+    while i < 5 {
+        var j = 0
+        i += 1
+        while j < i && later(j) > j {
+            j += 1
+            if j == 2 { continue }
+            if j > 3 { break }
+            t += i * 10 + j
+        }
+        if i == 4 { continue }
+        t += 1000
+    }
+    return t
+}
+
+fn deferred() {
+    var i = 0
+    while i < 3 {
+        defer note("d" + string(i))
+        i += 1
+        if i == 2 { continue }
+        note("b" + string(i))
+    }
+    note("|")
+    var k = 0
+    while k < 5 {
+        defer note("e")
+        k += 1
+        if k == 3 { break }
+    }
+}
+
+fn forms(): string {
+    var out = ""
+    for i in 0..5 {
+        if i == 1 { continue }
+        if i == 4 { break }
+        out = out + string(i)
+    }
+    for i in 3..3 { out = out + "never" }
+    let words = new []string(0)
+    append(words, "a")
+    append(words, "bb")
+    append(words, "ccc")
+    let ws = &words
+    for w in ws {
+        if w == "bb" { continue }
+        out = out + "<" + w + ">"
+    }
+    let nums = new []int(0)
+    let ns = &nums
+    for n in ns { out = out + "none" }
+    for i in 0..3 {
+        for j in i..3 { out = out + string(i * 10 + j) + " " }
+    }
+    return out + "|"
+}
+
+fn main() {
+    println(forward())                      // expect: 10
+    println(zeroFrame())                    // expect: 3
+    println(zeroPlain())                    // expect: 9
+    println(concat())                       // expect: aaaabbb
+    println(indexing())                     // expect: 603
+    println(andOr(8))                       // expect: 99
+    println(chains())                       // expect: 369/3000
+    println(runtime())                     // expect: 0,3,6,9,
+    println(grow())                         // expect: 4016
+    println(forever())                      // expect: 12
+    println(control())                      // expect: 1357/9
+    println(controlCall())                  // expect: 1345
+    println(nested())                       // expect: 4284
+    deferred()
+    println(log)                            // expect: b1d1d2b3d3|eee
+    println(forms())                        // expect: 023<a><ccc>0 1 2 11 12 22 |
+}

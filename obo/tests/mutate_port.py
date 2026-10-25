@@ -188,6 +188,18 @@ MUTANTS = {
     "push imm8 from -129": [("fn pushI(v: int) {\n    if fits8(v) {", "fn pushI(v: int) {\n    if v >= -129 && v < 128 {")],
     "push imm32 masked": [("        emit(0x68)\n        emit32(v)\n", "        emit(0x68)\n        emit32(v & 0x7FFFFFFF)\n")],
     "frame dropped although there are locals": [("    if size == 0 {\n        dropFrame(frameAt)", "    if size <= 16 {\n        dropFrame(frameAt)")],
+    # loop inversion: a while loop's condition moves after its body, and each kind of position it holds must move
+    # with it (tests/run/loop_inversion.obx)
+    "inverted loop: calls out of the condition not adjusted": [("        putRel(farCalls[k], getRel(farCalls[k]) - d)\n", "")],
+    "inverted loop: calls out of the condition not recorded at the new place": [("        farCalls[k] += d\n", "")],
+    "inverted loop: waiting calls in the condition not adjusted": [("append(globals[waitFn[k]].fixups, waitAt[k] + d)", "append(globals[waitFn[k]].fixups, waitAt[k])")],
+    "inverted loop: waiting calls in the condition not lifted": [("        if fwdCalls != fwdFrom {", "        if false {")],
+    "inverted loop: links of the true and false lists not adjusted": [("        putRel(at, nxt)\n        at = nxt\n", "        putRel(at, nxt - d)\n        at = nxt\n")],
+    "inverted loop: head of the true list not adjusted": [("    let tl = shiftWaits(x.T, d)\n", "    shiftWaits(x.T, d)\n    let tl = x.T\n")],
+    "inverted loop: head of the false list not adjusted": [("    let fl = shiftWaits(x.F, d)\n", "    shiftWaits(x.F, d)\n    let fl = x.F\n")],
+    "inverted loop: continue goes to the body, not the condition": [("    fixTo(loop.cont, at)\n", "    fixTo(loop.cont, bodyAt)\n")],
+    "inverted loop: continue goes to the end of the condition": [("    fixTo(loop.cont, at)\n", "    fixTo(loop.cont, at + len(lifted) - liftFrom)\n")],
+    "inverted for loop: test jumps back to its own top": [("        fix(jcc(CC_L), top)\n    } else {", "        fix(jcc(CC_L), pc() - 6)\n    } else {")],
 }
 
 # mutants of the encoder: caught by port_test.py's objdump cross-check
