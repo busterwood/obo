@@ -1,0 +1,283 @@
+// A defer body runs where its block is left, but is checked where it is declared. The outer
+// reference locals it uses must be as they were at the declaration at each exit: not pointed
+// elsewhere, and not invalidated by a change since. The error is at the exit.
+type Item = ref record { v: int; kids: []Item }
+type Node = ref record { v: int }
+type Bag = ref record { items: []Node }
+fn bumpb(mut q: &Bag): int {
+    q.items = new []Node(0)
+    return 0
+}
+// === a defer reads a reference that is pointed at a new target and the target is freed
+fn main() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &b
+    {
+        defer { println(k.v) }
+        k = &a
+        a = new Item{v: 7, kids: new []Item(0)}
+    }  // error: cannot point 'k' elsewhere while a defer uses it
+    println(a.v)
+}
+// === a defer reads a reference that is pointed at a new target, nothing is freed
+fn main() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    {
+        defer println(k.v)
+        k = &b
+    }  // error: cannot point 'k' elsewhere while a defer uses it
+}
+// === a defer reads a reference whose target is freed after the defer statement
+fn main() {
+    var bag = new Bag{items: new []Node(0)}
+    append(bag.items, new Node{v: 5})
+    let first = &bag.items[0]
+    {
+        defer println(first.v)
+        bag.items = new []Node(0)
+    }  // error: 'first' is used by a defer but may point to freed memory
+}
+// === a defer reads a reference whose target is freed by a call
+var g = new Item{v: 1, kids: new []Item(0)}
+fn bump() { g = new Item{v: 2, kids: new []Item(0)} }
+fn main() {
+    {
+        let k = &g
+        defer { println(k.v) }
+        bump()
+    }  // error: 'k' is used by a defer but may point to freed memory
+}
+// === a defer writes through a reference that is pointed at another owner after the declaration
+fn main() {
+    var a = new Bag{items: new []Node(0)}
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, new Node{v: 2})
+    var k = &a
+    let first = &b.items[0]
+    {
+        defer { k.items = new []Node(0) }
+        k = &b
+    }  // error: cannot point 'k' elsewhere while a defer uses it
+    println(first.v)
+}
+// === a defer assigns an element through a reference that is pointed elsewhere
+fn main() {
+    var a = new Bag{items: new []Node(0)}
+    var b = new Bag{items: new []Node(0)}
+    append(a.items, new Node{v: 1})
+    append(b.items, new Node{v: 2})
+    var k = &a
+    {
+        defer { k.items[0] = new Node{v: 9} }
+        k = &b
+    }  // error: cannot point 'k' elsewhere while a defer uses it
+}
+// === a defer passes a reference to a mut parameter and the reference is pointed elsewhere
+fn main() {
+    var a = new Bag{items: new []Node(0)}
+    var b = new Bag{items: new []Node(0)}
+    append(b.items, new Node{v: 2})
+    var k = &a
+    let first = &b.items[0]
+    {
+        defer { bumpb(k) }
+        k = &b
+    }  // error: cannot point 'k' elsewhere while a defer uses it
+    println(first.v)
+}
+// === a break leaves the block with a reference that the defer uses pointed elsewhere
+fn main() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 3 {
+        defer println(k.v)
+        if i == 1 {
+            k = &b
+            break  // error: cannot point 'k' elsewhere while a defer uses it
+        }
+        i += 1
+    }
+}
+// === a continue leaves the block with a reference that the defer uses pointed elsewhere
+fn main() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 3 {
+        defer println(k.v)
+        i += 1
+        if i == 1 {
+            k = &b
+            continue  // error: cannot point 'k' elsewhere while a defer uses it
+        }
+    }
+}
+// === a return leaves the block with a reference that the defer uses pointed elsewhere
+fn f(c: bool): int {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    defer println(k.v)
+    if c {
+        k = &b
+        return 1  // error: cannot point 'k' elsewhere while a defer uses it
+    }
+    return 0
+}
+fn main() { println(f(true)) }
+// === a break with the reference the defer uses freed on that path
+fn main() {
+    var bag = new Bag{items: new []Node(0)}
+    append(bag.items, new Node{v: 5})
+    var i = 0
+    while i < 3 {
+        let first = &bag.items[0]
+        defer println(first.v)
+        if i == 1 {
+            bag.items = new []Node(0)
+            append(bag.items, new Node{v: 6})
+            break  // error: 'first' is used by a defer but may point to freed memory
+        }
+        i += 1
+    }
+}
+// === a continue with the reference the defer uses freed on that path
+fn main() {
+    var bag = new Bag{items: new []Node(0)}
+    append(bag.items, new Node{v: 5})
+    var i = 0
+    while i < 3 {
+        let first = &bag.items[0]
+        defer println(first.v)
+        i += 1
+        if i == 1 {
+            bag.items = new []Node(0)
+            append(bag.items, new Node{v: 6})
+            continue  // error: 'first' is used by a defer but may point to freed memory
+        }
+    }
+}
+// === a return with the reference the defer uses freed on that path
+fn g(c: bool): int {
+    var bag = new Bag{items: new []Node(0)}
+    append(bag.items, new Node{v: 5})
+    let first = &bag.items[0]
+    defer println(first.v)
+    if c {
+        bag.items = new []Node(0)
+        return 1  // error: 'first' is used by a defer but may point to freed memory
+    }
+    return 0
+}
+fn main() { println(g(true)) }
+// === a return without a value, with the reference the defer uses freed or pointed elsewhere
+fn h(c: bool) {
+    var bag = new Bag{items: new []Node(0)}
+    append(bag.items, new Node{v: 5})
+    let first = &bag.items[0]
+    defer println(first.v)
+    if c {
+        bag.items = new []Node(0)
+        return  // error: 'first' is used by a defer but may point to freed memory
+    }
+}
+fn main() { h(true) }
+// === a return without a value, with the reference the defer uses pointed elsewhere
+fn h(c: bool) {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    defer println(k.v)
+    if c {
+        k = &b
+        return  // error: cannot point 'k' elsewhere while a defer uses it
+    }
+}
+fn main() { h(true) }
+// === the change is in an inner block, and the defer is in the outer one
+fn main() {
+    var bag = new Bag{items: new []Node(0)}
+    append(bag.items, new Node{v: 5})
+    let first = &bag.items[0]
+    {
+        defer println(first.v)
+        {
+            bag.items = new []Node(0)
+        }
+        println(1)
+    }  // error: 'first' is used by a defer but may point to freed memory
+}
+// === the reference is pointed elsewhere in an inner block, and the defer is in the outer one
+fn main() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    {
+        defer println(k.v)
+        {
+            k = &b
+        }
+    }  // error: cannot point 'k' elsewhere while a defer uses it
+}
+// === the reference is pointed elsewhere on one path only
+fn main() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    {
+        defer println(k.v)
+        if a.v == 7 { k = &b }
+    }  // error: cannot point 'k' elsewhere while a defer uses it
+}
+// === two defers: the newer one frees what the older one reads
+fn main() {
+    var bag = new Bag{items: new []Node(0)}
+    append(bag.items, new Node{v: 5})
+    let first = &bag.items[0]
+    {
+        defer println(first.v)
+        defer { bag.items = new []Node(0) }
+    }  // error: 'first' is used by a defer but may point to freed memory
+}
+// === two defers: one of the references they use is pointed elsewhere
+fn main() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    var j = &a
+    {
+        defer println(j.v)
+        defer println(k.v)
+        j = &b
+    }  // error: cannot point 'j' elsewhere while a defer uses it
+}
+// === a defer inside a defer body uses a reference from outside both
+fn main() {
+    var bag = new Bag{items: new []Node(0)}
+    append(bag.items, new Node{v: 5})
+    let first = &bag.items[0]
+    {
+        defer {
+            {
+                defer println(first.v)
+            }
+        }
+        bag.items = new []Node(0)
+    }  // error: 'first' is used by a defer but may point to freed memory
+}
+// === a recursive call that writes through a handle, then the block's end, where the defer reads a reference inside something
+fn rec(n: &Item, h: ^Bag, d: int) {
+    let k = &n.kids[0]
+    {
+        defer println(k.v)
+        if d > 0 { rec(n, h, d - 1) }
+    }  // error: 'k' is used by a defer but may point to freed memory
+    h.items = new []Node(0)
+}
+fn main() {}

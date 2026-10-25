@@ -256,6 +256,11 @@ MUTANTS.update({
     "loop back-edge binding check dropped": [("    loopBindCheck(&entry, &back, useBefore, lv, line, col, hit)\n", "")],
 })
 
+# the uses of a defer body: the same mutants as the fork's (see mutate_fork.py); the error cases of
+# errors/defer_uses.obx show them, since the port's own output does not change
+from mutate_fork import DEFER_USE_MUTANTS  # noqa: E402
+MUTANTS.update({k: [v] for k, v in DEFER_USE_MUTANTS.items()})
+
 
 # mutants that keep memory alive: caught when the peak rises above the unmutated peak,
 # for a leak too small to cross PEAK_BUDGET

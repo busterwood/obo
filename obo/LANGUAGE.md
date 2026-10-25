@@ -219,6 +219,28 @@ while nothing it may point into has been changed.
   one path only is read-only after the join. A defer body may not point a reference declared
   before it at something else: the body runs where its block is left, which is not one of the
   paths the binding is kept on, so the change would not be seen there.
+- A defer body is checked where it is declared, but runs where its block is left. The references
+  declared outside the body that it uses (reads, writes through, passes to a call) must be as they
+  were at the declaration at each exit from the block: not pointed at another place since, and not
+  invalidated by a change since. The check is made at the normal end, at `break`, `continue` and
+  `return`, and a newer defer's frees count for an older one. A reference pointed at another place
+  is an error even if nothing is freed, since the defer would use the new target. Owned locals a
+  defer reads are covered by the rule that they may not be moved after the defer.
+
+  ```obo
+  // example: error: 'first' is used by a defer but may point to freed memory
+  type Item = ref record { v: int }
+  type Bag = ref record { items: []Item }
+  fn main() {
+      var bag = new Bag{items: new []Item(0)}
+      append(bag.items, new Item{v: 5})
+      let first = &bag.items[0]
+      {
+          defer println(first.v)
+          bag.items = new []Item(0)      // frees what first points to, before the defer runs
+      }
+  }
+  ```
 - A loop follows the frees on each way out of it (`break`, `continue`, a `while` condition) and on the
   way back to its start, so a free made in a condition or on a `break` path is seen after the loop. A
   free before the loop does not mark a reference inside it unless the loop frees what it points into.
@@ -452,6 +474,9 @@ depend on the program.
 | `a recursive call in this loop writes through a handle, which could free what a reference inside something points into on the next iteration` | a loop calls its own function, which writes through a handle; borrow the reference inside the loop, or move the call out of it. |
 | `cannot change what '<r>' points into while a for loop walks it` | a change, or a call that might free, while a loop walks `<r>`; make it after the loop. |
 | `cannot point '<r>' elsewhere in a defer: a defer body runs where its block is left, and the change would not be seen there` | a defer body points a reference declared before it at something else; do the change in the block, or declare the reference inside the defer body. |
+| `cannot point '<r>' elsewhere while a defer uses it: the defer runs where its block is left, and would use the new target` | a defer body uses `<r>` and the block points `<r>` at another place before it is left; point a different reference instead, or declare `<r>` after the defer. |
+| `'<r>' is used by a defer but may point to freed memory at the block's end: something under what it points into was changed` | a change after the defer statement freed what `<r>` points into, and the defer runs at the block's end; make the change after the block, or borrow `<r>` inside the defer. |
+| `'<r>' is used by a defer but may point to freed memory at the block's end: a recursive call writes through a handle` | the same, for a recursive call in a function that writes through a handle. |
 | `'<r>' is pointed somewhere new inside the loop, and read before it is pointed again; point it before the loop, or point it afresh before reading it in the loop` | a loop reads `<r>` before pointing it again, and a change in the loop may have freed what it points into, or it points somewhere the body was not checked with on the next iteration; point it afresh before reading it. |
 | `'<r>' is read-only where the loop starts again, and written before it is pointed again; point it afresh before writing it in the loop` | `<r>` is writable where the loop starts but read-only where it starts again, and is written before it is pointed again; point it afresh before writing it. |
 | `'<r>' is invalidated inside the loop; point it again before the end of each iteration` | a `continue` or the end of the body leaves `<r>` pointing into something a change in the loop freed; point it again before the loop goes round. |
@@ -674,14 +699,17 @@ loop does not reject a read inside it that the loop does not change, and a refer
 where a loop starts and read-only where it starts again is an error only when it is written before it
 is pointed again.
 
+**Defer uses (closed).** A defer body's reads and writes were checked where the body is declared, not
+where its block is left. `{ defer println(first.v); bag.items = new []Item(0) }` read a freed element
+at the block's end, and `var k = &a; { defer println(k.v); k = &b; b = new Item{...} }` printed a freed
+value. A body that wrote through a reference pointed elsewhere after the declaration freed what the
+reference named at the declaration, not what it named at the exit. The rule in section 4 closes these:
+the references a defer uses must have the same binding and be valid at each exit. It costs some
+strictness: a block that points a reference elsewhere after a defer that uses it is refused, even where
+the defer would be harmless.
+
 **Open holes (per path).** These are accepted by this compiler and by the seed; each reads freed memory
 when run:
-- A defer body's reads are checked where the body is declared, not where its block is left. In
-  `{ defer println(first.v); bag.items = new []Item(0) }`, with `first = &bag.items[0]`, the body
-  reads a freed element at the block's end.
-- A defer body reading a reference that is re-pointed after the defer statement: `var k = &a; { defer
-  println(k.v); k = &b; b = new Item{...} }` prints a freed value. The body sees the reference as it
-  was when it was declared, not at the block's end.
 - Argument order: in `use2(first, mk(h))`, where `mk` frees what `first` points into, `use2` reads
   freed memory. The argument is checked before the later argument's call runs.
 
