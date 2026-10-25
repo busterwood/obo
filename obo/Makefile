@@ -20,6 +20,12 @@ runtime_text.bin: runtime.elf
 runtime_data.bin: runtime.elf
 	objcopy -O binary -j .data --set-section-flags .data=alloc,load,contents runtime.elf $@
 
+# the same compiler with register allocation off (REG_HOMES = 0), to compare code and speed with it on
+obo-noregs: src/obo.obo seed/obo runtime_text.bin runtime_data.bin
+	sed 's/^const REG_HOMES = .*/const REG_HOMES = 0/' src/obo.obo > .noregs.obo
+	./seed/obo .noregs.obo -o obo-noregs --rt .
+	rm -f .noregs.obo
+
 # make the current compiler the new seed, once it is a fixed point and the suite passes
 promote: obo
 	./obo src/obo.obo -o .stage2 --rt .
@@ -31,4 +37,4 @@ promote: obo
 	@echo "seed/obo updated"
 
 clean:
-	rm -f *.o *.elf *.bin obo .stage2 .stage3
+	rm -f *.o *.elf *.bin obo obo-noregs .noregs.obo .stage2 .stage3
