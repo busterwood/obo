@@ -281,6 +281,41 @@ while nothing it may point into has been changed.
       println(k.v)
   }
   ```
+- A call's arguments run left to right, and the callee gets all of them. A reference passed as an
+  argument (to a `&` or `mut` parameter, or the bytes of `writeFile`) is held while the later
+  arguments run, as a `let` reference to the same place would be: a later argument that moves,
+  frees, replaces or changes what it points into is an error at that argument. A later argument
+  that only reads, or changes a different place, is accepted, and so is one that frees something
+  after an earlier argument's own call has returned. A value passed by copy (an int, a handle) is
+  not held: a handle is checked where it is used.
+
+  ```obo
+  // example: error: argument 2 of two may free what argument 1 points into
+  type Node = ref record { v: int }
+  fn eat(a: []Node): int { return 1 }      // takes the array, and frees it
+  fn two(n: &Node, k: int): int { return n.v + k }
+  fn main() {
+      var xs = new []Node(0)
+      append(xs, new Node{v: 41})
+      println(two(&xs[0], eat(xs)))        // eat frees xs before two reads n
+  }
+  ```
+
+  ```obo
+  // example: runs
+  // prints 42
+  type Node = ref record { v: int }
+  fn eat(a: []Node): int { return 1 }
+  fn two(n: &Node, k: int): int { return n.v + k }
+  fn main() {
+      var xs = new []Node(0)
+      append(xs, new Node{v: 41})
+      let k = eat(xs)                      // the call first: xs is not borrowed yet
+      var ys = new []Node(0)
+      append(ys, new Node{v: 41})
+      println(two(&ys[0], k))
+  }
+  ```
 - Changing through a reference needs a `mut` parameter. Passing a read-only reference
   to one is an error: `argument 1 of f needs a mut reference, but this one is read-only`.
   `mut` belongs to the parameter, not the type: a local reference is changeable exactly
@@ -466,6 +501,8 @@ depend on the program.
 | `'<r>' may point to freed memory: something under what it points into was changed; point it again first` | a change freed what `<r>` pointed into. Borrow it again after the change. |
 | `argument <n> of <f> needs a mut reference, but this one is read-only` | the parameter is `mut`, but the argument was borrowed read-only. |
 | `argument <n> of <f> may point inside argument <m>, which is mut` | two arguments may overlap and one of them changes. |
+| `argument <n> of <f> may free what argument <m> points into, and runs after it; compute it before the call` | a later argument moves, frees or changes what an earlier reference argument points into; compute it into a local before the call. |
+| `argument <n> of <f> makes a recursive call that writes through a handle, which could free what argument <m> points into; compute it before the call` | the same, for a recursive call in a function that writes through a handle (reported at the end of the body). |
 | `'<x>' may be nil: check it with '!= nil' first` | check an optional before using its fields. |
 | `cannot pass a reference that borrows through a handle to <f>: it might free what the handle names` | a reference borrowed through a handle may go only to a call that cannot free anything; pass the handle instead, or make the call pure. |
 | `cannot pass a reference that points inside something to <f>: it writes through a handle, which could free it` | a reference inside a field or element may not go to a function that writes through a handle; pass a reference to the whole object, or the value. |
@@ -720,10 +757,10 @@ the references a defer uses must have the same binding and be valid at each exit
 strictness: a block that points a reference elsewhere after a defer that uses it is refused, even where
 the defer would be harmless.
 
-**Open holes (per path).** These are accepted by this compiler and by the seed; each reads freed memory
-when run:
-- Argument order: in `use2(first, mk(h))`, where `mk` frees what `first` points into, `use2` reads
-  freed memory. The argument is checked before the later argument's call runs.
+**Argument order (closed).** A call's argument was checked as if no later argument could change
+what it points into, so `use2(first, mk(h))`, where `mk` frees what `first` points into, and
+`two(&xs[0], eat(xs))` passed the callee freed memory. A reference argument is now held while the
+later arguments run (section 4).
 
 **Known false positive (open).** The loop check does not follow each read to the re-point that
 precedes it in the same iteration. This program is valid, since `k` is pointed afresh before each
