@@ -1,0 +1,349 @@
+type Node = ref record { v: int; kids: []Node; opt: ?Node }
+type Bag = ref record { items: []Node; opt: ?Node }
+fn mk(v: int): Node { return new Node{v: v, kids: new []Node(0), opt: nil} }
+fn sinkI(a: []Node): int { return 0 }
+fn sinkN(n: ?Node): int { return 0 }
+fn sinkN2(a: []Node): Node { return mk(4) }
+fn sinkArrRet(a: []Node): []Node { return a }
+fn sinkBag(b: Bag): int { return 0 }
+fn passOpt(o: ?Node): ?Node { return o }
+// a handle's field assigned the take of the same field: the take empties it before the store writes it
+fn c_own_take() {
+    var t = new Bag{items: new []Node(0), opt: nil}
+    t.opt = new Node{v: 3, kids: new []Node(0), opt: nil}
+    let h = handle(t)
+    h.opt = passOpt(take(h.opt))
+    let p = take(t.opt)
+    if p != nil { println(p.v) }      // expect: 3
+}
+// a handle's array assigned the replace of the array itself: the replace is the value the store writes
+fn c_self_replace() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(1))
+    let h = handle(b)
+    h.items = sinkArrRet(replace(h.items, new []Node(0)))
+    println(len(b.items))             // expect: 1
+}
+// a take through a handle beside an index of the owner's own array: the take frees the field, not the array
+fn c_take_sibling() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(1))
+    b.opt = mk(7)
+    let h = handle(b)
+    println(b.items[sinkN(take(h.opt))].v)   // expect: 1
+}
+// a replace through a handle beside an index of the owner's own array: the replace frees the field
+fn c_replace_sibling() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(1))
+    let h = handle(b)
+    println(h.items[sinkN(replace(h.opt, nil))].v)   // expect: 1
+}
+// a temporary handle beside an index of the owner's own array: the take frees the field, not the array
+fn c_temp_handle_take() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(1))
+    b.opt = mk(3)
+    println(b.items[sinkN(take(handle(b).opt))].v)   // expect: 1
+}
+// a local array indexed while a replace through a handle frees a different array of the owner
+fn c_local_index_replace() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(1))
+    var xs = new []Node(0)
+    append(xs, mk(7))
+    let h = handle(b)
+    println(xs[sinkI(replace(h.items, new []Node(0)))].v)   // expect: 7
+}
+// a local array appended a value that replaces a different array of the owner
+fn c_local_append_replace() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(1))
+    var xs = new []Node(0)
+    let h = handle(b)
+    append(xs, sinkN2(replace(h.items, new []Node(0))))
+    println(len(xs))                  // expect: 1
+    println(len(b.items))             // expect: 0
+}
+// a local array indexed while a take through a handle frees a field of the owner
+fn c_local_index_take() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    b.opt = mk(3)
+    var xs = new []Node(0)
+    append(xs, mk(7))
+    let h = handle(b)
+    println(xs[sinkN(take(h.opt)) + 0].v)   // expect: 7
+}
+// a mut parameter's array indexed by a take of a sibling field of the same parameter
+fn setOptIdx(mut p: &Bag): int {
+    p.items[sinkN(take(p.opt))].v = 2
+    return 0
+}
+fn c_mutref_sibling_take() {
+    var t = new Bag{items: new []Node(0), opt: nil}
+    append(t.items, mk(1))
+    t.opt = mk(7)
+    println(setOptIdx(t))             // expect: 0
+}
+// a mut parameter's field assigned the take of the same field
+fn setOptOwn(mut p: &Bag) {
+    p.opt = passOpt(take(p.opt))
+}
+fn c_mutref_own_take() {
+    var t = new Bag{items: new []Node(0), opt: nil}
+    t.opt = mk(3)
+    setOptOwn(t)
+    let p = take(t.opt)
+    if p != nil { println(p.v) }      // expect: 3
+}
+// a handle to one local indexed by a move of another local: the move frees nothing the handle names
+fn c_handle_other_move() {
+    var ob = new Bag{items: new []Node(0), opt: nil}
+    append(ob.items, mk(9))
+    var ot = new Bag{items: new []Node(0), opt: nil}
+    let hob = handle(ob)
+    println(hob.items[sinkBag(ot)].v)   // expect: 9
+}
+// a local array indexed while a replace through a handle parameter frees the parameter's array: the local is no
+// field of the owner, so the replace cannot free it
+fn idxLocal(h: ^Bag): int {
+    var xs = new []Node(0)
+    append(xs, mk(7))
+    return xs[sinkI(replace(h.items, new []Node(0)))].v
+}
+fn c_local_param_replace() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(1))
+    println(idxLocal(handle(b)))   // expect: 7
+}
+// a mut parameter's array indexed by a move of a local the callee declared: a reference cannot point into it
+fn f1(mut p: &Bag): int {
+    var t = new Bag{items: new []Node(0), opt: nil}
+    return p.items[sinkBag(t)].v
+}
+fn c_f1_callee_local_move() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(5))
+    println(f1(b))                    // expect: 5
+}
+// a reference parameter's array indexed by a move of a local the callee declared
+fn f2(p: &Bag): int {
+    var t = new Bag{items: new []Node(0), opt: nil}
+    return p.items[sinkBag(t)].v
+}
+fn c_f2_callee_local_move() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(6))
+    println(f2(b))                    // expect: 6
+}
+// a reference parameter's array indexed by a replace of an array the callee declared: no reference names it
+fn f4(p: &Bag): int {
+    var t = new Bag{items: new []Node(0), opt: nil}
+    append(t.items, mk(2))
+    return p.items[sinkI(replace(t.items, new []Node(0)))].v
+}
+fn c_f4_callee_local_replace() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(8))
+    println(f4(b))                    // expect: 8
+}
+// a reference parameter's array indexed by a take of an optional the callee declared
+fn f5(p: &Bag): int {
+    var t = new Bag{items: new []Node(0), opt: nil}
+    t.opt = mk(3)
+    return p.items[sinkN(take(t.opt))].v
+}
+fn c_f5_callee_local_take() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(8))
+    println(f5(b))                    // expect: 8
+}
+// a handle is made for a call and not kept: the owner is moved after the handle's use, not during it
+type Wrap = ref record { b: Bag }
+fn nbag(): Bag { return new Bag{items: new []Node(0), opt: nil} }
+fn useH(h: ^Bag): int { return h.items[0].v }
+fn idBag(b: Bag): Bag { return b }
+fn c_p1_let_then_move() {
+    var a = nbag()
+    append(a.items, mk(1))
+    let h = handle(a)
+    println(useH(h))                  // expect: 1
+    var c = a
+    println(c.items[0].v)             // expect: 1
+}
+// a temporary handle in a function that returns its owner
+fn f_p2(): Bag {
+    var a = nbag()
+    append(a.items, mk(1))
+    println(useH(handle(a)))          // expect: 1
+    return a
+}
+fn c_p2_temp_then_return() {
+    let b = f_p2()
+    println(len(b.items))             // expect: 1
+}
+// a temporary handle in each iteration of a loop, then the owner is appended
+fn c_p3_loop_temp() {
+    var xs = new []Bag(0)
+    var total = 0
+    for i in 0..3 {
+        var x = nbag()
+        append(x.items, mk(i))
+        total += useH(handle(x))
+        append(xs, x)
+    }
+    println(total)                    // expect: 3
+    println(len(xs))                  // expect: 3
+}
+// a temporary handle under a branch that does not run, then the owner is moved
+fn c_p4_branch_temp() {
+    var a = nbag()
+    append(a.items, mk(1))
+    if len(a.items) > 5 {
+        println(useH(handle(a)))
+    }
+    println(sinkBag(a))               // expect: 0
+}
+// a temporary handle, then the owner is moved into a call
+fn c_p5_temp_then_move() {
+    var a = nbag()
+    append(a.items, mk(1))
+    println(useH(handle(a)))          // expect: 1
+    println(sinkBag(a))               // expect: 0
+}
+// a handle declared inside a loop body: its owner is fresh each iteration and moved in the body
+fn c_fresh_loop() {
+    var total = 0
+    var lens = 0
+    for i in 0..2 {
+        var x = nbag()
+        append(x.items, mk(i + 1))
+        let h = handle(x)
+        total += h.items[0].v
+        let y = x
+        lens += len(y.items)
+    }
+    println(total)                    // expect: 3
+    println(lens)                     // expect: 2
+}
+// a handle made from the owner, then the owner moved into another local: the object lives on in it
+fn c_mv_sibling() {
+    var a = nbag()
+    append(a.items, mk(1))
+    let h = handle(a)
+    var c = a
+    println(h.items[0].v + len(c.items))  // expect: 2
+}
+// the same through a call result
+fn c_mv_call() {
+    var a = nbag()
+    append(a.items, mk(1))
+    let h = handle(a)
+    var c = idBag(a)
+    println(h.items[0].v + len(c.items))  // expect: 2
+}
+// the same into a record field
+fn c_mv_field() {
+    var a = nbag()
+    append(a.items, mk(1))
+    let h = handle(a)
+    let w = new Wrap{b: a}
+    println(h.items[0].v + len(w.b.items))  // expect: 2
+}
+// the held-places run tests from the second re-review: a handle copied out of a call, a temporary handle, an
+// owner assigned after its handle, a handle in a closed block that a later loop moves through, and a loop with
+// the handle outside it that is only read
+fn eat(b: Bag): int { return 0 }
+fn useIdx(h: ^Bag, c: Bag): int { return h.items[0].v + eat(c) }
+fn c_w2_param_after_move() {
+    var a = nbag()
+    append(a.items, mk(1))
+    let h = handle(a)
+    var c = a
+    println(useIdx(h, c))             // expect: 1
+}
+fn c_tmp_sibling() {
+    var a = nbag()
+    append(a.items, mk(1))
+    var c = nbag()
+    append(c.items, mk(2))
+    println(handle(a).items[eat(c)].v)  // expect: 1
+}
+fn c_block_handle_loop() {
+    var a = nbag()
+    append(a.items, mk(1))
+    if true {
+        let g = handle(a)
+        println(useH(g))              // expect: 1
+    }
+    var t = 0
+    for i in 0..2 {
+        var c = a
+        t += len(c.items)
+        a = c
+    }
+    println(t)                        // expect: 2
+}
+fn c_asg_clears_origin() {
+    var a = nbag()
+    append(a.items, mk(1))
+    let h = handle(a)
+    println(useH(h))                  // expect: 1
+    a = nbag()
+    for i in 0..2 {
+        var c = a
+        a = c
+    }
+    println(len(a.items))             // expect: 0
+}
+fn c_f1_handles_in_loops() {
+    var xs = new []Bag(0)
+    var a = nbag()
+    append(a.items, mk(1))
+    let h = handle(a)
+    var total = 0
+    for i in 0..2 {
+        total += useH(h)
+    }
+    for i in 0..1 {
+        var b = nbag()
+        append(b.items, mk(2))
+        total += useH(handle(b))
+        append(xs, b)
+    }
+    append(xs, a)
+    println(total)                    // expect: 4
+    println(len(xs))                  // expect: 2
+}
+fn main() {
+    c_own_take()
+    c_self_replace()
+    c_take_sibling()
+    c_replace_sibling()
+    c_temp_handle_take()
+    c_local_index_replace()
+    c_local_append_replace()
+    c_local_index_take()
+    c_mutref_sibling_take()
+    c_mutref_own_take()
+    c_handle_other_move()
+    c_local_param_replace()
+    c_f1_callee_local_move()
+    c_f2_callee_local_move()
+    c_f4_callee_local_replace()
+    c_f5_callee_local_take()
+    c_p1_let_then_move()
+    c_p2_temp_then_return()
+    c_p3_loop_temp()
+    c_p4_branch_temp()
+    c_p5_temp_then_move()
+    c_fresh_loop()
+    c_mv_sibling()
+    c_mv_call()
+    c_mv_field()
+    c_w2_param_after_move()
+    c_tmp_sibling()
+    c_block_handle_loop()
+    c_asg_clears_origin()
+    c_f1_handles_in_loops()
+}

@@ -226,7 +226,7 @@ making ownership the language's memory model is strong.
 test, `python3 obo/tests/port_compare.py`, builds it with obo and compiles every
 fork and mainline program, example, benchmark and error case with both, requiring
 byte-identical executables and identical error messages, with the leak check on
-in the port: 448 of 448 behave the same on the merged branch. The port compiling itself is a fixed point
+in the port: 549 of 549 behave the same on the merged branch (539 before main's loop inversion, 462 before main's step 3). The port compiling itself is a fixed point
 (obo builds p1 from the port, p1 builds p2, p2 builds p3; p1 = p2 = p3).
 
 **Now behavioural** (decided with the optimization plan, below): each case must have the
@@ -423,20 +423,74 @@ Before this change the field, element, grid, literal, reference and handle forms
 compound assignments through a reference, compiled, and read or wrote a freed header (exit 3 or a
 segfault in the probes that were run).
 
-**Tests.** `tests/errors/call_targets.obx` has 45 cases: each form above, through a local, a mut
-parameter, a handle, a global, and an index target, and the holes just listed. `tests/run/
-call_targets.obx` runs the accepted forms, with outputs.
+**Held places: a free counts as a move (the second review).** The rule above checks the owner for a
+move. Two holes remained, both about a free. (A) A pure call consumes the value of a `replace` or `take`
+that empties the array or record the statement holds: `b.items[sinkArr(replace(b.items, new []Node(0)))]`
+read a freed header (rc=3), `xs[0].v += sinkI(replace(xs, ...))` wrote into freed memory, and
+`xs[0].kids = sinkRes(replace(xs, ...))` freed a record twice (rc=6); `append(xs, sinkNode(replace(xs, ...)))`
+and `truncate` crashed. (B) A handle is the root of a held place. `heldLost` looked at the handle local,
+which no move touches: `let h = handle(b); h.items[eatBag(b)]` (rc=3), `let h = handle(xs[0]); h.kids[eatN(xs)]`
+(rc=139).
 
-**Mutants.** `tests/mutate_fork.py`: 67, all caught. They cover the root snapshot (the index check
-dropped for fields, elements and whole locals, and the index check narrowed to whole variables, which
-misses fields, elements and grids), the reference owner and its invalidation (`heldLost` for a
-reference root, and the `moved` check alone), the assignment and compound checks through a reference,
-the replace, append and truncate checks, and the touch count itself. Each one is caught by a named
-case. `tests/mutate_port.py`: 68 after the merge (54 from this change, 14 from main), all caught at
-the committed budget of 1,351,000 (see "The port's memory budget" below); the port mutants change
-`src/obo.obo` and are judged by `port_compare`.
+Mechanism (`src/obo.obo`, `heldPush` and after). Each index, `replace`, `append`/`truncate`, and assignment
+through a field, element or reference pushes the place it holds before its value or index runs, and pops it
+after. A held place is keyed by what it is in. An owned place (`heldKey` is the owner, `heldPath` the path
+inside it) is the place of a whole owned local. A reference local is held once per root of its binding, at the
+binding's path in that root: a reference after a join may point into several owners, and each is held, so a move
+or free of any of them is seen. A handle
+made by `let h = handle(b)` from a whole owned local carries that local as its origin (`hOrigin` on the
+handle's symbol and on each designator through it), so its held places are owned places of `b`. A handle
+without an origin (a handle parameter, or one made from a field or element) and a reference parameter are
+identities (`heldForeign`): a free through the same identity is compared by its raw path, and every other
+free hits them. A whole local array (`heldWhole`) is not hit by a free through an identity or by a free of
+unknown owner, since no handle or parameter names an array's header; a free of its own owner still hits it. `freeEvent(x, place, raw,
+origin, ident)` classifies a free the same way. A move (`consume` calls `heldMove`) hits every owned place
+of the moved local, and every identity. An assignment's own target (`heldPushStore`) is exempt from a free
+of exactly its own place, since `take` leaves that place nil and the store then writes a valid place; a free
+of an ancestor still hits. The checks compare the flag after the value or index ran ("cannot index 'b' with
+an index that replaces or moves what it holds", "cannot index through a handle with an index that moves or
+frees something", "cannot append/truncate an array with a value or count that replaces or moves what it
+holds", "cannot assign through a place with a value that replaces or moves what it is in").
 
-**Fuzzer** (`tests/own_fuzz.py`): invalid kinds, `compound_target_stmt`, `append_target_stmt`,
+Holes closed in this round (tests/errors/held_places.obx): a handle's array appended or truncated with a value
+or count that moves its owner (`append(h.items, keep(bag))`, `truncate(h.items, cnt(bag))`) was accepted and
+crashed (rc=139), because the handle flag was lost between the designator and the hold; it is now carried in
+`lastViaHandle`. The other cases there are the earlier forms (index, reference index, assignment, compound
+assignment, a field assigned a value that moves its own local), each one refused.
+
+Two survivors of the mutants were argued equivalent in the first version of this section. They are not:
+(1) `take` can free a held place. A handle made inside a narrowed block, `if o != nil { hh = handle(o) }`, names
+the object that `take(o)` empties, so `hh.kids[sinkN(take(o))]` read freed memory (rc=139, probe p2/t1). (2) The
+reference's path in its root matters: a free strictly below a reference's path is not covered by the moved flag,
+`let r = &xs[0]; r.kids[sinkI(replace(xs[0].kids, ...))]` (rc=3, probe p/q1). Both are error tests now
+(`held_places.obx`), and the mutants that drop the take's free and the reference's path are caught by them.
+
+Accepted, with outputs (tests/run/held_places.obx, tests/run/call_targets.obx): a take of a sibling field
+beside the indexed array (`b.items[sinkN(take(h.opt))]`); a replace of a sibling field through a handle
+(`h.items[sinkN(replace(h.opt, nil))]`); a temporary handle to a named local (`b.items[sinkN(take(handle(b).opt))]`,
+whose origin is `b`); a replace of the handle's own array assigned back to it (`h.items = sinkArrRet(replace(h.items,
+...))`); a local array indexed by a replace or a take through a handle of the owner; a mut parameter's array
+indexed by a take of a sibling field of the parameter, and a mut parameter's field assigned the take of that
+field (`p.opt = passOpt(take(p.opt))`, sound: the take empties the target before the store writes it); a handle to
+one local indexed by a move of another local (`hob.items[sinkBag(ot)]`, since the handle names `ob` alone); a
+whole record replaced and its old value consumed in a later index of the new record's array; a handle to one
+object indexed with a temporary of another; an element taken from the array indexed (`xo[sinkOpt(take(xo[1]))] = v`,
+which frees an element and not the array header); and an assignment whose value takes its own target
+(`tk.opt = passOptIB(take(tk.opt))`).
+
+Refused: a move of a local that a handle was made from, inside a loop. A handle `let h = handle(a)` made from a whole owned local records that local as its origin, so its held places are keyed to `a`. A whole move of `a` (`var c = a`, `var c = id(a)`, a record field, `replace(a, ...)`, `take(a)`) or an assignment over `a` clears that origin on every `let` handle that names `a` (`originMove`). Such a handle then has no origin: it is an identity, which every move and free reaches, so a later index through it that moves or frees something is refused by the held-place checks (probes u1, u3 and the optional take, in `tests/errors/held_places.obx`). This is sound because a move does not free the object: `c` holds the same object, and the handle still names it by its generation. The one case the clearing does not cover is a loop, because the body is compiled once: a whole move of `a` inside a loop that is deeper than the declaration of a live `let` handle with origin `a` is refused ("cannot move 'a' inside a loop while handle 'h' made from it is in scope"), since the next iteration would still see the origin. A handle declared inside the loop is fresh each iteration and is not refused (`c_fresh_loop`). A temporary `handle(a)` records no origin on any symbol, so a move after it is accepted (`c_p1_let_then_move` to `c_p5_temp_then_move`, run tests). The origin list (`originSyms`) keeps only the handles in scope: a block's handles leave it when the block closes, because their symbols are freed with it (a dangling entry there was a compiler abort in an early version of this rule). An assignment over `a` clears the origins but is not refused: `let h = handle(a); a = nb(); h.items[0]` compiles and traps at run time on the handle's generation check, as main does too. That is a gap in the held-place model (an assignment is not a free event for handles), left for a separate change. A handle made from a field, or through another handle, has no origin; its place is an identity, and a move of any local while it is held is refused, because `heldMove` hits every identity entry (`let h = handle(p.first)`, and the chained `hh.hb.items[...]`). A handle parameter has no origin, and the same conservative rule applies (f3 is kept refused). A move or free of a local the callee declared (not a by-value parameter, not a global) no longer reaches a reference parameter's place, because a reference cannot point into the callee's own object; this is the false positive `p.items[sinkBag(t)]` (f1, f2) and its replace and take forms (f4, f5). A by-value parameter's object and a global are still hit. Refused still: f8, two `mut` parameters where a free through one is indexed through the other, since the two may name the same object. A reference to a field of a reference parameter is bound to the whole parameter (`itemBind` drops the field path through a deref), so `let r = &p.ys; p.xs[sinkI(replace(r, ...))]` is refused although the fields differ; the direct form `p.xs[sinkI(replace(p.ys, ...))]` is accepted. This is a precision limit of the binding model, left as it is. The refused forms are the cases in `tests/errors/held_places.obx`. Known false positive (probe f2): a handle used only before a loop still blocks a move of its owner inside the loop, because the loop rule asks whether the handle is in scope, not whether it is used again. Telling the two apart would need a liveness check on the handle; until then the move is refused, which is conservative and sound.
+
+Not closed: the argument-order hole `two(&xs[0], eatArr(xs))`, a reference into an array passed in one argument with the array moved by a later argument of the same call. It is a known hole, left alone in this round as the coordinator asked; the probes are `review16/ra/ra1`, `review16/p/a1` and `review16/ra/ra3`, listed with the holes above.
+
+Probes that were written but are not valid programs on either compiler (typing or syntax errors, so they tested
+nothing) are h1-h13, k5-k8, z1-z5, w2, x3, y4, y9 in the probe set (`review14/`).
+
+**Tests.** `tests/errors/call_targets.obx` has 58 cases (the earlier 59, less the handle-of-another-local case that is now accepted: its run control is in `tests/run/call_targets.obx`). `tests/errors/held_places.obx` has 35 cases (the defer pairs pin that `loopOriginCheck` relies on defers never moving: a move inside a defer is refused with "cannot move" while a let handle from an enclosing loop is in scope, both when the handle is declared before the loop and inside the loop body): the probes above, the review17 handle probes H1-H9, the compound and assignment forms, the origin move in a loop, the replace and take holes (u1, u3, the optional take), a replace of the owner's array through a handle, handles made from a field and from a global, a chained handle, the free through a reference to a handle, and the by-value parameter moves and frees. `tests/run/held_places.obx` has 30 functions with outputs: the accepted forms above, the callee-local cases f1, f2, f4, f5, the origin moves that are now accepted (plain, call result and record field: `c_mv_sibling`, `c_mv_call`, `c_mv_field`), the temporary-handle forms p1-p5 (`c_p1_let_then_move` to `c_p5_temp_then_move`), and a handle declared in a loop body whose owner is moved there (`c_fresh_loop`). The nit about the last-designator globals (`lastPlace`, `lastRaw`, `lastOrigin`, `lastIdent`, `lastViaHandle`): they are set once, at the end of `designatorT` after its index expressions are parsed, and each reader takes them straight after `designator()`, so a nested `expression()` cannot leave a stale value; the only path past `nameItem` without setting them is after an error. No probe found a case.
+
+**Mutants.** `tests/mutate_fork.py`: 146 entries, 138 caught, 8 equivalent (listed in its `EQUIVALENT` table with the reason, and reported as EQUIV). The 15 origin-rule mutants (`ORIGIN_MUTANTS`) cover the clearing hooks in `originMove` (consume, replace, assignment), the truncation of `originSyms` at a block's `hmark`, the loop depth in `loopOriginCheck` (`<=`, and the check dropped), the depth recorded for a let handle, a var handle given an origin, and a temporary handle given none; each is killed by a named error or run case. Four of the new entries are equivalent: the take hook (a take needs its optional owner widened first, and only an assignment over a narrowed owner does that, so the assignment hook has already cleared the same origins) and the `!x.viaHandle && !x.deref` guards on the replace, take and assignment hooks (a deref designator has no sym, and a handle local is not owned, so `originMove` returns early). The held-place mutants are: a replace or take that does not free, moves that do not reach held places or do not free handle targets, identity frees that do not reach their entries or ignore the path, owned frees that ignore the path, the assignment exemption removed for owned places and not applied through handles, origin ignored when holding and when freeing, whole local arrays hit by identity frees, reference parameters given their owner's place, each hold removed, the binding's path ignored, and the second review's gaps: an origin without the non-handle or whole-path guard, a global origin, chained handles keeping the first origin, the handle-root and reference-root joins (held and freed), unknown frees hitting only whole arrays, every held place whole, moves and frees reaching reference parameters from callee locals, and a by-value parameter counted as a callee local. The first four equivalents: `origin needs no non-handle designator` and `origin needs no whole path` (a designator through a handle, or with a path, has no sym, so `wholeOwnerOf` gives nil); `origin of a global is kept` (`owned` is set only by `addOwnedLocal`, so a global never has an origin, and the storage test is redundant); and `a handle root of a reference is not an identity (held)` (equivalent because the older `heldLost` check on the reference local catches the case, not the held entry: under the mutant `foreign` is false, so `heldMove` does not hit). `tests/mutate_port.py`: 128 entries, 128 caught, judged at the committed budget of 1,351,000 (see "The port's memory budget" below); the port mutants change `src/obo.obo` and are judged by `port_compare`.
+
+**Fuzzer** (`tests/own_fuzz.py`): invalid kinds, `replace_sink_index_stmt` (a field's array indexed by a pure
+call that consumes a replace of that array), `compound_target_stmt`, `append_target_stmt`,
 `truncate_target_stmt`, `index_target_stmt`, `index_assign_target_stmt`, each a field of a local
 record whose array a call in the same expression replaces; whole-local kinds, `moved_index_stmt`,
 `moved_assign_stmt`, `moved_append_stmt`, `moved_truncate_stmt`, `moved_replace_stmt`, each a local
@@ -453,12 +507,9 @@ changed elsewhere, so it is left.
 
 **The port.** It compiles unchanged under the new rules (no spot needed rewriting).
 
-**The port's memory budget, after the merge of main.** `PEAK_BUDGET` stays at 1,351,000, and the
-merged port passes it. The port compiling itself peaks at 1,097,776 bytes live, 253,224 bytes under
-the budget. Before the merge the branch's base lacked main's allocation work (step 4), and the same
-check failed at 1,739,088 bytes; the merge brought in that work and the check passes.
+**The port's memory budget, after the merge of main.** `PEAK_BUDGET` stays at 1,351,000, and the merged port passes it. The port compiling itself peaks at 1,246,576 bytes live, a margin of 104,424 bytes under the budget. The merge of main's loop inversion (`62292f3`) added 17,152 bytes to the 1,229,424 this branch measured before it, so the margin is smaller than before the merge. The origin rule (`originSyms`, `originMove`, the block marks) added 4,560 bytes to the 1,224,864 measured before it. The merge of main's step 3 (defer uses) added 13,760 bytes to the 1,211,104 this branch measured before it. The budget was not raised.
 
-This branch's compiler changes add 18,272 bytes to the peak: main's source measures about 1,079,400 bytes
+Before the origin rule, this branch's compiler changes added 18,272 bytes to the peak: main's source measures about 1,079,400 bytes
 with the same method, and this branch's source 1,097,776. (The figure moves by about 150 bytes
 with the paths on the command line.) The cause was not separated out (the
 branch changes about 70 lines of the compiler source); it is small against the margin.
@@ -1507,10 +1558,9 @@ Tried and dropped: freeing the code buffer as soon as the image has copied it. T
 live peak fell by 416 bytes (1,044,400 to 1,043,984), which was not worth the extra
 reassignment, since the peak is reached while the image is being copied.
 
-`PEAK_BUDGET` stays at 1,351,000. On the merged branch the peak is 1,097,776 bytes, a margin of
-253,224 bytes, which is more than the mutant "parameters kept" adds (about 190 KB), so that mutant
-is not caught by the budget. It is now caught when its peak rises above the unmutated peak
-(`KEEPS_ALIVE` in `tests/mutate_port.py`).
+`PEAK_BUDGET` stays at 1,351,000. On the merged branch the peak is 1,211,104 bytes, a margin of 139,896 bytes. That margin is less than the
+mutant "parameters kept" adds (about 190 KB), so the budget check now catches that mutant directly; the
+`KEEPS_ALIVE` check in `tests/mutate_port.py` still applies on its own.
 
 Not done: the per-call arrays in `rtCall` and `rtCall0/1/2` (`regs`, `temps`, the
 argument arrays), the `fixups` array of each Sym, and the snapshot copies (`copyBools`).
