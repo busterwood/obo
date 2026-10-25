@@ -285,8 +285,17 @@ MUTANTS.update({
     "scan: nothing counted": [("                if k >= 0 {\n                    scanScore[k] += w", "                if k >= 0 {\n                    scanScore[k] += 0")],
     "scan: ranking ignored": [("    if nfree <= better { return -1 }", "")],
     "scope end does not give the register back": [("        if s.home >= 0 { releaseHome(s.home) }", "        if s.home < 0 { releaseHome(s.home) }")],
+    "runtime calls push the locals' registers": [("    let saved = usedRegs() & ~homeBits      // the C runtime keeps r12 to r15, where the locals are", "    let saved = usedRegs()")],
+    "return copies a local's register": [("        let x = asReg(x0)\n        for k in blocks[fnBlock].omark", "        let x = load(x0)\n        for k in blocks[fnBlock].omark")],
+    "for limit's register never given back": [("            if lim.home >= 0 { append(blocks[len(blocks) - 1].syms, lim) }       // so that the block's end frees it\n", "")],
+    "bool parameters left in memory": [('        if params[i].mode == 0 && (params[i].typ.kind == "int" || params[i].typ.kind == "bool") {\n            let h', '        if params[i].mode == 0 && params[i].typ.kind == "int" {\n            let h')],
+    "a local in a register as a statement accepted": [('            if x.mode != "reg" || x.home { errorAt("this expression does nothing"', '            if x.mode != "reg" { errorAt("this expression does nothing"')],
+    "destinations not counted in the register cap": [("                    held = 2 * lhsCount", "                    held = 0")],
 })
-SHAPES = {"scan: nothing counted", "scan: ranking ignored", "scope end does not give the register back"}
+SHAPES = {"scan: nothing counted", "scan: ranking ignored", "scope end does not give the register back",
+          "runtime calls push the locals' registers", "return copies a local's register",
+          "for limit's register never given back", "bool parameters left in memory"}
+EDGE = {"destinations not counted in the register cap"}
 
 # mutants that keep memory alive: caught when the peak rises above the unmutated peak,
 # for a leak too small to cross PEAK_BUDGET
@@ -318,6 +327,8 @@ def main():
         code = f"import port_compare as pc; pc.SRC = {path!r}; pc.main()"
         if name in ENCODER:
             code = f"import port_test as pt; pt.SRC = {path!r}; pt.main()"
+        if name in EDGE:
+            code = f"import homes_edge as he; he.SRC = {path!r}; he.main()"
         if name in SHAPES:
             code = f"import homes_check as hc; hc.SRC = {path!r}; hc.main()"
         r = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, cwd=HERE)

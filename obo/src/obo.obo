@@ -5402,7 +5402,15 @@ fn scanFunction(params: &[]Param) {
     var depth = 1
     let braces = new []int(0)             // for each brace open in the body: 1 if it opens a loop's body, 2 a record literal's, else 0
     var nest = 0                          // the parentheses, brackets and record literals open now
-    var nestMax = 0                       // and the most there were: the temporaries that an expression may need
+    var nestMax = 0                       // and the most registers a statement may hold at once (see below)
+    let parens = new []int(0)             // per open parenthesis or bracket: the commas so far if it is a builtin's argument list, else -1
+    var totalCommas = 0                   // the earlier arguments of the builtin calls open now: each is held in a register
+    var lhsCount = 0                      // the '[' and '.' left of the assignment operator: a destination holds a base and an index
+    var held = 0                          // the registers the destination of this statement holds while its value is computed
+    var seenAssign = false
+    var inDecl = false                    // the statement is a var or let: its '[' are in a type
+    var lastA = -1                        // the word just read, if the last token
+    var lastB = -1
     var prevNew = false                   // the word just read was `new`
     var afterNew = false                  // the word just read names the type of a record literal
     var loopDepth = 0
@@ -5411,9 +5419,18 @@ fn scanFunction(params: &[]Param) {
     while p < n && depth > 0 {
         let c = src[p]
         if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+            if c == '\n' && nest == 0 {
+                lhsCount = 0
+                held = 0
+                seenAssign = false
+                inDecl = false
+            }
             p += 1
             continue
         }
+        let la = lastA
+        let lb = lastB
+        lastA = -1
         let wasNew = afterNew
         afterNew = false
         let newWord = prevNew
@@ -5444,8 +5461,11 @@ fn scanFunction(params: &[]Param) {
             } else if newWord {
                 afterNew = true
             }
+            lastA = a
+            lastB = p
             if wordAt(a, p, "var") || wordAt(a, p, "let") {
                 decl = 1
+                inDecl = true
             } else if wordAt(a, p, "for") {
                 decl = 2
                 header = true
@@ -5471,11 +5491,49 @@ fn scanFunction(params: &[]Param) {
             while p < n && (isLetter(src[p]) || isDigit(src[p])) { p += 1 }
         } else if c == '(' || c == '[' {
             nest += 1
-            if nest > nestMax { nestMax = nest }
+            if c == '[' && !seenAssign && !inDecl { lhsCount += 1 }
+            if c == '(' && la >= 0 && exemptCall(la, lb) { append(parens, 0) } else { append(parens, -1) }
+            let eff = nest + held + totalCommas
+            if eff > nestMax { nestMax = eff }
             p += 1
         } else if c == ')' || c == ']' {
             if nest > 0 { nest -= 1 }
+            if len(parens) > 0 {
+                if parens[len(parens) - 1] > 0 { totalCommas -= parens[len(parens) - 1] }
+                truncate(parens, len(parens) - 1)
+            }
             p += 1
+        } else if c == ',' {
+            if len(parens) > 0 && parens[len(parens) - 1] >= 0 {
+                parens[len(parens) - 1] += 1
+                totalCommas += 1
+                let eff = nest + held + totalCommas
+                if eff > nestMax { nestMax = eff }
+            }
+            p += 1
+        } else if c == ';' {
+            lhsCount = 0
+            held = 0
+            seenAssign = false
+            inDecl = false
+            p += 1
+        } else if c == '.' {
+            if !seenAssign && !inDecl && p + 1 < n && src[p + 1] != '.' && p > 0 && src[p - 1] != '.' { lhsCount += 1 }
+            p += 1
+        } else if c == '=' {
+            if p + 1 < n && src[p + 1] == '=' {
+                p += 2
+            } else {
+                var plain = true
+                if p > 0 && (src[p - 1] == '!' || src[p - 1] == '<' || src[p - 1] == '>') { plain = false }
+                if plain && nest == 0 && !seenAssign {
+                    seenAssign = true
+                    held = 2 * lhsCount
+                    let eff = nest + held + totalCommas
+                    if eff > nestMax { nestMax = eff }
+                }
+                p += 1
+            }
         } else if c == '{' {
             depth += 1
             var kind = 0
@@ -5485,7 +5543,14 @@ fn scanFunction(params: &[]Param) {
             } else if wasNew {
                 kind = 2
                 nest += 1
-                if nest > nestMax { nestMax = nest }
+                let eff = nest + held + totalCommas
+                if eff > nestMax { nestMax = eff }
+            }
+            if kind != 2 {
+                lhsCount = 0
+                held = 0
+                seenAssign = false
+                inDecl = false
             }
             append(braces, kind)
             header = false
@@ -5496,6 +5561,12 @@ fn scanFunction(params: &[]Param) {
                 let kind = braces[len(braces) - 1]
                 if kind == 1 { loopDepth -= 1 }
                 if kind == 2 && nest > 0 { nest -= 1 }
+                if kind != 2 {
+                    lhsCount = 0
+                    held = 0
+                    seenAssign = false
+                    inDecl = false
+                }
                 truncate(braces, len(braces) - 1)
             }
             p += 1
@@ -5503,7 +5574,9 @@ fn scanFunction(params: &[]Param) {
             p += 1
         }
     }
-    // a deep expression needs about as many temporaries as it nests; the pool has nine registers
+    // what a statement holds in registers at once: its destination's base and index (held), the earlier
+    // arguments of the builtin calls open (totalCommas) and the operands waiting in the expression (nest);
+    // two more are in use at the innermost operation. The pool has nine registers.
     homeCap = 7 - nestMax
     if homeCap > REG_HOMES { homeCap = REG_HOMES }
     if homeCap < 0 { homeCap = 0 }

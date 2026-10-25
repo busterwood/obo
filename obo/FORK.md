@@ -1356,10 +1356,37 @@ decisions") is the only departure from a single pass.
   functions, weighted the same way. A name gets a register at its declaration if its uses minus twice
   the weighted calls reach `HOME_MIN` = 8, a home is free, and fewer free homes than names ranked above
   it that are still to be declared. Registers are given back at the end of the block, so sequential
-  scopes reuse them. The scan also counts the deepest nesting of parentheses, brackets and record
-  literals and allows only `7 - depth` homes (at most `REG_HOMES` = 4), keeping the pool large enough:
-  with a fixed four, 7 of 1,400 random programs failed with "out of registers" that compiled before; with
-  the cap, none of 5,300 (800 of them of extreme depth) differed from main.
+  scopes reuse them. The scan also bounds what a statement holds in registers (below) and allows only
+  `7 - that` homes (at most `REG_HOMES` = 4), keeping the pool large enough: with a fixed four, 7 of 1,400
+  random programs failed with "out of registers" that compiled before. The first cap counted only the
+  nesting of the value, and the review found `ga[i & 3] = (v*2 + (v*2 + (v*2 + v*2)))` refused (depths 3 to
+  6 of every element and field destination did the same: 24 of 198 generated statements); the bound below
+  fixes that.
+- *Why no statement runs out of registers (the bound).* A home leaves `9 - homes` temporaries, so the
+  cap must keep `9 - homes` at least what any statement of the function needs at once. The registers a
+  statement holds are: (a) the destination of an assignment, evaluated before the value: an element holds
+  its base and its index (2), a field its base (1), and a chain `a[i].f[j]` holds the last link only, so
+  2 per `[` or `.` left of the operator is an upper bound (`held`); (b) one pending operand per open
+  parenthesis, bracket or record literal (`nest`): the compiler evaluates the left operand into a
+  register, then the right; the operators are left-associative, so a chain `a + b + c` retires its left
+  operand as it goes and only parentheses (or a call's argument list, an index, a field value of a
+  literal) leave one waiting; (c) the earlier arguments of a call to a builtin, which are loaded into
+  registers until the runtime call (`totalCommas`; the arguments of an obo call are pushed at once and
+  the live temporaries are pushed around the call, so they hold nothing; `&&` and `||` use jump lists,
+  no register); (d) at most two at the innermost operation (its operand and its result, or an element's
+  base and index). So a statement needs at most `held + nest + totalCommas + 2` temporaries, and the cap
+  `homes <= 7 - (held + nest + totalCommas)` leaves `9 - homes >= held + nest + totalCommas + 2`. The
+  scan takes the maximum over the function's statements, counting statement ends at a newline outside any
+  bracket, a `;` or a brace. The numbers are over-estimates (a `.` or `[` in the left side counts 2
+  even for a nested index), and the scan reads text, so it also over-counts a type's `[`: those are
+  skipped after `var` and `let`. It is an argument, not a machine proof, so it is tested at the edge:
+  `tests/run/register_pressure.obx` (19 destination and call shapes at depths 3 to 6, which the
+  uncapped compiler refused) and `tests/homes_edge.py`, which compares obo with `obo-noregs` on those
+  shapes at depths 1 to 12 and 400 random statements (random nesting, mixed operators, several
+  destination forms) with four hot locals: the outcomes agree in all 628 (119 are refused by both: main
+  itself runs out of registers beyond depth 7). That `setFree` leaves homes out and a home is never
+  handed out again as a temporary matters only if the bound fails; under it the free list never runs
+  dry of non-home registers, so a mutant that ignored `homeBits` there is equivalent.
 - *Calls.* Deviation from the plan's callee-save: the pool holds `rbx` and `r12`-`r15` as temporaries,
   so a callee may clobber any of them without saving, and the existing convention (the caller pushes
   the registers in use) covers the homes too. A home is "in use", so `callFn` pushes the homes in scope
@@ -1404,12 +1431,12 @@ session; median ms (range), instructions in the code segment:
 | loop | 569 (564-687), 36 | 434 (424-441), 28 |
 | fib | 623 (619-630), 54 | 618 (614-631), 54 |
 | array | 417 (409-429), 99 | 239 (235-246), 87 |
-| alloc | 485 (468-531), 51 | 515 (498-1705), 44 |
+| alloc | 485 (468-531), 51 (review, 15 runs: 574 ms) | 515 (498-1705), 44 (review: 571 ms) |
 
 loop is 24% faster, array 43%. fib has no loop and its `n` scores 5, under the threshold, so its code
-is unchanged. alloc is about 6% slower in three interleaved repeats though it runs 7 instructions
-fewer; the time is the runtime's allocation and free, and I found no cause in the code (the loop is
-the same shape with the locals in registers). Left as measured.
+is unchanged. alloc showed about 6% slower in my three interleaved repeats, but the review's 15
+interleaved runs measured 574 ms on main against 571 ms on the branch: the difference is noise (the time
+is the runtime's allocation and free; the branch runs 7 instructions fewer).
 
 The port compiling its own source (`make obo-noregs` against `obo`, same source): 53,016 to 52,735
 instructions and 196,957 to 194,704 bytes of code (a compiler is calls and branches, so few
@@ -1423,8 +1450,13 @@ temporary; a runtime call clobbering `r15`; an array walk's element variable in 
 register for two live locals; a parameter not loaded; an uninitialised local not zeroed; a compound
 assignment on a copy; `x * const` writing the local; `load` of a home uncopied; a `for` limit sharing
 the variable's register. Those that change only speed (the scan counting nothing, the ranking
-ignored, a register not given back at a scope's end) are caught by `tests/homes_check.py`, which counts
-stack-slot instructions in three compiled programs. Not planted, equivalent: the prologue and
+ignored, a register not given back at a scope's end, a for limit's register leaking, a bool parameter
+left in memory, `return` copying a local, a runtime call pushing the locals' registers) are caught by
+`tests/homes_check.py`, which counts stack-slot instructions in seven compiled programs and refuses a
+pattern in two; the destination term of the cap by `tests/homes_edge.py`; a bare hot local as a
+statement (`|| x.home` in the "does nothing" check) by `tests/errors/register_alloc.obx`. The comma
+term of the cap has no mutant: the +2 of the bound already covers the two earlier arguments the builtins
+that load their arguments can have, so it is margin for a builtin with more. Not planted, equivalent: the prologue and
 epilogue mutants of the plan (there are none), a home allowed in a `defer` body (a defer's registers
 are dead when it runs), and a home handed out again at register exhaustion (the homes are the last
 registers in pool order, so only an expression needing more registers than the pool has would reach

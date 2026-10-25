@@ -58,11 +58,62 @@ fn main() {
 }
 """
 
-# program, most stack-slot instructions allowed
+RUNTIME = """
+fn main() {
+    var i = 0
+    var t = 0
+    while i < 10 {
+        t += i
+        println(t)
+        i += 1
+    }
+}
+"""
+
+RETURN = """
+fn sum(n: int): int {
+    var s = 0
+    var i = 0
+    while i < n { s += i; i += 1 }
+    return s
+}
+fn main() { println(sum(5)) }
+"""
+
+BOOLPARAM = """
+fn count(n: int, flag: bool): int {
+    var t = 0
+    var i = 0
+    while i < n {
+        if flag { t += i }
+        if !flag { t -= 1 }
+        i += 1
+    }
+    return t
+}
+fn main() { println(count(5, true)) }
+"""
+
+MORE = """
+fn main() {
+    var t = 0
+    for a in 0..3 { for x in 0..a { t += x } }
+    for b in 0..3 { for y in 0..b { t += y } }
+    for c in 0..3 { for z in 0..c { t += z } }
+    for d in 0..3 { for w in 0..d { t += w } }
+    println(t)
+}
+"""
+
+# program, most stack-slot instructions allowed, and a pattern that no instruction may match
 PROGRAMS = {
-    'the tight loop': (open(os.path.join(FORK, 'bench', 'loop_obo.obx')).read(), 0),
-    'registers given back at the end of a scope': (SCOPES, 10),
-    'the hottest local is declared last': (RANKED, 18),
+    'the tight loop': (open(os.path.join(FORK, 'bench', 'loop_obo.obx')).read(), 0, None),
+    'registers given back at the end of a scope': (SCOPES, 10, None),
+    'the hottest local is declared last': (RANKED, 18, None),
+    'a runtime call in a loop pushes no register of a local': (RUNTIME, 0, r'push +%r1[2-5]'),
+    'a returned local is read where it is': (RETURN, 1, r'mov +%r1[2-5],%r(bx|8|9|1[01])'),
+    'a bool parameter is a candidate': (BOOLPARAM, 2, None),
+    'the limit of a for loop is given back with its variable': (MORE, 16, None),
 }
 
 
@@ -73,15 +124,20 @@ def main():
     if b.returncode != 0:
         raise SystemExit('FAIL the port does not compile: ' + b.stderr)
     bad = 0
-    for name, (text, most) in PROGRAMS.items():
+    for name, (text, most, forbid) in PROGRAMS.items():
         src = os.path.join(tmp, 'p.obx')
         open(src, 'w').write(text)
         exe = os.path.join(tmp, 'p')
         c = subprocess.run([port, src, '-o', exe, '--rt', FORK], capture_output=True, text=True)
         if c.returncode != 0:
             raise SystemExit('FAIL ' + name + ': ' + c.stderr)
-        n = sum(1 for _, t in micro.listing(exe) if re.search(r'\(%rbp\)', t))
-        if n > most:
+        rows = micro.listing(exe)
+        n = sum(1 for _, t in rows if re.search(r'\(%rbp\)', t))
+        hit = [t for _, t in rows if forbid and re.search(forbid, t)]
+        if hit:
+            bad += 1
+            print(f'FAIL {name}: {hit[0]}')
+        elif n > most:
             bad += 1
             print(f'FAIL {name}: {n} instructions use a stack slot, at most {most} allowed')
         else:
