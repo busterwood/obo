@@ -331,6 +331,7 @@ ARG_ORDER_MUTANTS = {
     "a call's holders are not released": ('    releaseArgs(tbase, omark)\n    if sym != T_RPAREN', '    if sym != T_RPAREN'),
     "a function's argument holders outlive it": ('    truncate(argTemps, tempMark)\n', ''),
     "writeFile's bytes are not held": ('        holdArg(itemBind(d), 1)\n', ''),
+    "writeFile's bytes are held as another argument": ('        holdArg(itemBind(d), 1)\n', '        holdArg(itemBind(d), 0)\n'),
     "writeFile's flag is not checked": ('        argOrderCheck(tbase, name, 2, eLine, eCol)\n', ''),
     "writeFile's holder is not released": ('        argOrderCheck(tbase, name, 2, eLine, eCol)\n        releaseArgs(tbase, omark)\n',
         '        argOrderCheck(tbase, name, 2, eLine, eCol)\n'),

@@ -1160,19 +1160,33 @@ reference argument whose index replaces the array; a mut argument; a reference p
 handle writer; a global's element with a call that frees the global; a reference through a handle with a call
 that might free; a recursive call in an argument; and `writeFile`.
 
-**Mutants** (`ARG_ORDER_MUTANTS` in `tests/mutate_fork.py`, imported by `tests/mutate_port.py`): 19, all
+**Known false positives** (found in review, about 90 probes; each is refused the same way the `let` form is,
+since a holder has a `let` reference's precision: a `mut` argument invalidates the deep references into its
+root whatever the callee does with it):
+- `two(&xs[0], upd(xs, 1))`, where `upd(mut a: &[]Node, k: int)` only writes an element's scalar;
+- `rd(h.xs, grow(h.xs))` and `two(&h[0], tr(h))`, where the callee only appends to the `mut` array (an append
+  frees nothing);
+- `two(&b.items[0], bumpN(b))`, where `bumpN(mut b: &Bag)` only changes the scalar `b.n`.
+
+A whole-object argument beside such a call is accepted (`twoBag(b, bumpN(b))`, run test `mutScalar`). A
+narrower rule would need a summary of what a callee changes through each `mut` parameter, which the
+compiler does not keep.
+
+**Mutants** (`ARG_ORDER_MUTANTS` in `tests/mutate_fork.py`, imported by `tests/mutate_port.py`): 20, all
 caught, none equivalent: no hold, no check after a reference or a by-value argument, the pool never
 grows, a holder that is not a reference local, keeps its old binding, suspicion or index, a freed or
 suspect holder not reported, the check reaching enclosing calls' holders, only the newest holder
 refused, holders not reused, left in `ownedLocals`, not released after the arguments, kept past their
-function, and the three `writeFile` lines.
+function, and the four `writeFile` mutants (bytes not held, held under another argument's index, flag not
+checked, holder not released). The index mutant is caught by the `writeFile` error case, whose message
+names argument 2.
 
 **Memory.** The port compiling itself peaks at 1,251,616 bytes live (budget 1,351,000, not raised), 5,040
 more than the 1,246,576 before.
 
 **Measured.** `run_fork` 424 of 424, `port_test` 422 of 422 identical with no leaks, `port_compare` stage B
 575 of 575, `own_fuzz --count 300 --profile both` 0 failures in 600 programs, `doc_check` 27 examples with no
-problems, `mutate_fork` 157 of 165 caught with the 8 equivalents already listed, `mutate_port` 147 of 147,
+problems, `mutate_fork` 158 of 166 caught with the 8 equivalents already listed, `mutate_port` 148 of 148,
 `bench/bench.py` run for all four workloads, `make promote` a fixed point (the seed is not committed).
 
 **Not covered.** No existing test expectation changed, and the port needed no rewrite. Methods do not
