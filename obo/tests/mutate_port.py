@@ -193,6 +193,7 @@ MUTANTS = {
     "inverted loop: calls out of the condition not adjusted": [("        putRel(farCalls[k], getRel(farCalls[k]) - d)\n", "")],
     "inverted loop: calls out of the condition not recorded at the new place": [("        farCalls[k] += d\n", "")],
     "inverted loop: waiting calls in the condition not adjusted": [("append(globals[waitFn[k]].fixups, waitAt[k] + d)", "append(globals[waitFn[k]].fixups, waitAt[k])")],
+    "inverted loop: a nested loop lifts its outer loop's waiting calls": [("    let waitFrom = len(waitFn)\n", "    let waitFrom = 0\n")],
     "inverted loop: waiting calls in the condition not lifted": [("        if fwdCalls != fwdFrom {", "        if false {")],
     "inverted loop: links of the true and false lists not adjusted": [("        putRel(at, nxt)\n        at = nxt\n", "        putRel(at, nxt - d)\n        at = nxt\n")],
     "inverted loop: head of the true list not adjusted": [("    let tl = shiftWaits(x.T, d)\n", "    shiftWaits(x.T, d)\n    let tl = x.T\n")],

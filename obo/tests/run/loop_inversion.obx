@@ -13,6 +13,8 @@ fn note(s: string) { log = log + s }
 fn later(i: int): int
 fn more(): bool
 fn tick()
+fn f1(i: int): int
+fn f2(i: int): bool
 
 fn forward(): int {
     var i = 0
@@ -181,6 +183,24 @@ fn nested(): int {
     return t
 }
 
+// both conditions call functions defined later: the inner loop must lift only its own waiting calls
+fn nest(): int {
+    var t = 0
+    var i = 0
+    while f1(i) > i && f2(i) {
+        var j = 0
+        while f1(j) + f1(j) > j && f2(j) {
+            j += 1
+            t += 100
+        }
+        i += 1
+    }
+    return t
+}
+
+fn f1(i: int): int { return 3 }
+fn f2(i: int): bool { return i < 2 }
+
 fn deferred() {
     var i = 0
     while i < 3 {
@@ -238,6 +258,7 @@ fn main() {
     println(control())                      // expect: 1357/9
     println(controlCall())                  // expect: 1345
     println(nested())                       // expect: 4284
+    println(nest())                         // expect: 400
     deferred()
     println(log)                            // expect: b1d1d2b3d3|eee
     println(forms())                        // expect: 023<a><ccc>0 1 2 11 12 22 |
