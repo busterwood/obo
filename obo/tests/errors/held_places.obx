@@ -1,0 +1,105 @@
+type Node = ref record { v: int; kids: []Node; opt: ?Node }
+type Bag = ref record { items: []Node; opt: ?Node }
+fn mk(v: int): Node { return new Node{v: v, kids: new []Node(0), opt: nil} }
+fn eat(b: Bag): int { return 0 }
+fn cnt(b: Bag): int { return 0 }
+fn keep(b: Bag): Node { return mk(2) }
+fn getv(b: Bag): int { return 0 }
+fn give(b: Bag): []Node { return new []Node(0) }
+fn sinkI(a: []Node): int { return 0 }
+fn sinkN(n: ?Node): int { return 0 }
+fn passOpt(o: ?Node): ?Node { return o }
+// === a reference's place: a replace frees a field below the path the reference names
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    append(xs[0].kids, mk(5))
+    let r = &xs[0]
+    println(r.kids[sinkI(replace(xs[0].kids, new []Node(0)))].v)  // error: cannot index 'r' with an index that replaces or moves what it holds
+}
+// === a take through a handle made inside a narrowed block frees the place the handle holds
+fn main() {
+    var o: ?Node = mk(1)
+    var hh: ?^Node = nil
+    if o != nil {
+        append(o.kids, mk(2))
+        hh = handle(o)
+    }
+    if hh != nil {
+        println(hh.kids[sinkN(take(o))].v)  // error: cannot index through a handle with an index that moves or frees something
+    }
+}
+// === a handle's array indexed by a move of its own owner
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    let h = handle(bag)
+    println(h.items[eat(bag)].v)  // error: cannot index through a handle with an index that moves or frees something
+}
+// === a reference to a handle's array indexed by a move of its owner
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    let h = handle(bag)
+    let items = &h.items
+    println(items[eat(bag)].v)  // error: cannot index 'items' with an index that moves it
+}
+// === a handle's array assigned at an index that moves its owner
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    let h = handle(bag)
+    h.items[eat(bag)] = mk(5)  // error: cannot index through a handle with an index that moves or frees something
+}
+// === a handle's array appended a value that moves its owner: the append may reallocate what the value reads
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    let h = handle(bag)
+    append(h.items, keep(bag))  // error: cannot append an array with a value or count that replaces or moves what it holds
+}
+// === a handle's array truncated to a count that moves its owner
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    append(bag.items, mk(1))
+    let h = handle(bag)
+    truncate(h.items, cnt(bag))  // error: cannot truncate an array with a value or count that replaces or moves what it holds
+}
+// === a handle's element assigned a value that moves its owner (compound form)
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    let h = handle(bag)
+    h.items[0].v += getv(bag)  // error: cannot assign through a place with a value that replaces or moves what it is in
+}
+// === a reference to a handle's array assigned at an index that moves its owner
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    let h = handle(bag)
+    let items = &h.items
+    items[eat(bag)] = mk(5)  // error: cannot index 'items' with an index that moves it
+}
+// === a handle's array assigned a value that moves its owner
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    let h = handle(bag)
+    h.items = give(bag)  // error: cannot assign through a place with a value that replaces or moves what it is in
+}
+// === a field assigned a value that moves the local it is in
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    bag.items = give(bag)  // error: cannot move 'bag' while assigning into it
+}
+// === a handle parameter's array indexed by a replace of that same array: the same identity and path
+fn setA(h: ^Bag): int {
+    return h.items[sinkI(replace(h.items, new []Node(0)))].v  // error: cannot index through a handle with an index that moves or frees something
+}
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    println(setA(handle(bag)))
+}

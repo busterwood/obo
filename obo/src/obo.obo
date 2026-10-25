@@ -875,6 +875,7 @@ type Sym = ref record {
     isRefLocal: bool          // a reference local (its validity is tracked)
     refMut: bool              // changes may be made through it
     refRoot: ?^Sym             // the owned local or reference parameter it borrows from
+    hOrigin: ?^Sym            // a let handle to a whole owned local: the local its object is in
     refDeep: bool             // it may point below its root's own object
     suspect: bool             // live across a recursive call that may write through a handle
     usedAt: int               // the reads so far (useSeq) when it was last read: see loopSelfCheck
@@ -930,6 +931,7 @@ type Item = ref record {
     viaHandle: bool           // the designator went through a handle
     deref: bool               // the designator goes through a field or element
     movedRef: bool            // a moved local named as an assignment target
+    hOrigin: ?^Sym            // a handle made from a whole owned local by a let: that local
     path: string              // a field or element of root: "/a/b", "/items/[]"; "" = anywhere
 }
 
@@ -2401,21 +2403,26 @@ fn heldLost(root: ?^Sym, t0: int): bool {
     return touched(ownerOf(root)) != t0
 }
 
-// The places a statement holds while an index or a value runs. heldPush records one: its owner (or
-// foreign, when its object may be any object: a handle's target, or a reference parameter's), and
-// the path it has inside the owner. A move of an owned local (heldMove) or a free by replace or take
-// (heldFree) that may free what a held place holds sets its hit flag; heldPop drops the entries from a
-// mark on. Entries nest: an index inside an index pushes and pops its own.
+// The places a statement holds while an index or a value runs. heldPush records one, keyed by what
+// it is in: an owned local (its owner), a handle made from a whole owned local by a let (its origin:
+// the places a handle names are that local's places), or an identity, a handle variable or a
+// reference parameter, whose places are compared by path only among themselves. A place with no
+// identity (a handle or reference of unknown origin) is hit by any free. heldPop drops the entries
+// from a mark on. Entries nest: an index inside an index pushes and pops its own.
 var heldKey = new []?^Sym(0)
 var heldPath = new []string(0)
 var heldForeign = new []bool(0)
 var heldHit = new []bool(0)
-// set for an assignment's target: a free of exactly that place does not hit it, since take leaves the
-// place nil and replace installs the value the store then frees (an ancestor's free still hits)
 var heldStore = new []bool(0)
-// the place of the designator that designatorT returned last (placePath); replace, take and the
-// assignments read it straight after parsing their designator
+var heldWhole = new []bool(0)
+// the place, the path inside its root (a reference parameter's path is its own, not what it was
+// passed), and the identity or origin of the designator that designatorT returned last; replace,
+// take and the assignments read them straight after parsing their designator
 var lastPlace = ""
+var lastRaw = ""
+var lastOrigin: ?^Sym = nil
+var lastIdent: ?^Sym = nil
+var lastViaHandle = false
 
 // the place a designator names inside its owner: the path inside its root, after the root's own path
 // when the root is a reference ("" is anywhere in the owner, so it stays anywhere)
@@ -2427,19 +2434,37 @@ fn placePath(root: ?^Sym, path: string): string {
     return path
 }
 
-// holds the place (root, path) while an index or a value runs: -1 when nothing is held
-fn heldPush(root: ?^Sym, viaHandle: bool, path: string): int {
-    if root == nil && !viaHandle { return -1 }
-    var key: ?^Sym = handleSym
+// holds a place (see the comment above): origin, when the handle is a let of a whole owned local;
+// ident, the handle variable or the reference parameter; place, the path from the owner; raw, the
+// path inside the root. -1 when there is nothing to hold
+fn heldPush(root: ?^Sym, viaHandle: bool, origin: ?^Sym, ident: ?^Sym, place: string, raw: string): int {
+    var key: ?^Sym = nil
     var at = ""
-    var foreign = viaHandle || root == nil
-    if !foreign {
-        let o = ownerOf(root)
-        if o == nil {
-            foreign = true
+    var foreign = true
+    var whole = false
+    if viaHandle {
+        if origin != nil {
+            key = origin
+            at = raw
+            foreign = false
         } else {
-            key = o
-            at = path
+            key = ident
+            at = raw
+        }
+    } else {
+        if root == nil { return -1 }
+        let r = root
+        if isRefParam(r) {
+            key = r
+            at = raw
+        } else {
+            let o = ownerOf(r)
+            if o != nil {
+                key = o
+                at = place
+                foreign = false
+                whole = !r.isRef && place == ""
+            }
         }
     }
     let i = len(heldKey)
@@ -2448,51 +2473,82 @@ fn heldPush(root: ?^Sym, viaHandle: bool, path: string): int {
     append(heldForeign, foreign)
     append(heldHit, false)
     append(heldStore, false)
+    append(heldWhole, whole)
     return i
 }
 
-// heldPush for an assignment's target (see heldStore)
-fn heldPushStore(root: ?^Sym, viaHandle: bool, path: string): int {
-    let i = heldPush(root, viaHandle, path)
+// heldPush for an assignment's target: its own place is exempt from a free of exactly that place
+// (take leaves the place nil, and the store then writes a valid place; replace installs the value
+// the store frees). A free of an ancestor still hits
+fn heldPushStore(root: ?^Sym, viaHandle: bool, origin: ?^Sym, ident: ?^Sym, place: string, raw: string): int {
+    let i = heldPush(root, viaHandle, origin, ident, place, raw)
     if i >= 0 { heldStore[i] = true }
     return i
 }
 
-// the owned local s is moved: a held place inside s, or any foreign one, may be freed
+// the owned local s is moved: a held place inside s, and every place that is not owned, may be freed
 fn heldMove(s: ^Sym) {
     for i in 0..len(heldKey) {
         if heldForeign[i] || heldKey[i] == s { heldHit[i] = true }
     }
 }
 
-// a replace or take frees the old value at place of key: that frees a held place of the same owner
-// when the freed place is the held one or above it (the array held is then inside what is freed);
-// an assignment's own target is exempt from the equal case (heldStore).
-// Freeing something inside a held array leaves its header and buffer alone, so it does not hit. A
-// foreign held place is hit by any free, and a free through a handle or a reference parameter may
-// reach anything, so it hits every held place
-fn heldFree(key: ?^Sym, place: string) {
-    for i in 0..len(heldKey) {
-        if heldForeign[i] || key == handleSym || (heldKey[i] == key && segsPrefix(place, heldPath[i]) && !(heldStore[i] && place == heldPath[i])) {
-            heldHit[i] = true
+// a free of a place, by the owned object o (its root's owner), or through the identity i (a handle
+// variable or reference parameter), or of unknown identity (both nil). An identity entry is hit only
+// by a free of the same identity at or below its path; any other free may reach it. An owned entry is
+// hit by a free of its own object at or above its path, and by a free that is not owned, unless it is
+// a whole local array: no handle or reference parameter names an array's header, only a record's
+// field or an element's contents
+fn heldFree(o: ?^Sym, i: ?^Sym, place: string) {
+    for k in 0..len(heldKey) {
+        if heldForeign[k] {
+            if i != nil && heldKey[k] == i {
+                if segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }
+            } else {
+                heldHit[k] = true
+            }
+        } else if o != nil {
+            if heldKey[k] == o && segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) {
+                heldHit[k] = true
+            }
+        } else if !heldWhole[k] {
+            heldHit[k] = true
         }
     }
 }
 
-// the old value of the designator x that a replace or take frees
-fn freeEvent(x: &Item, place: string) {
+// the old value of the designator x that a replace or take frees; place, raw, origin and ident as
+// the designator gave them (see lastPlace)
+fn freeEvent(x: &Item, place: string, raw: string, origin: ?^Sym, ident: ?^Sym) {
     if x.viaHandle {
-        heldFree(handleSym, "")
+        if origin != nil {
+            heldFree(origin, nil, raw)
+        } else {
+            heldFree(nil, ident, raw)
+        }
         return
     }
     let root = x.root
     if root == nil { return }
-    let o = ownerOf(root)
-    if o == nil {
-        heldFree(handleSym, place)
-    } else {
-        heldFree(o, place)
+    let r = root
+    if isRefParam(r) {
+        heldFree(nil, r, raw)
+        return
     }
+    let o = ownerOf(r)
+    if o != nil {
+        heldFree(o, nil, place)
+    } else {
+        heldFree(nil, nil, place)
+    }
+}
+
+// the owned local a let handle may name as a whole: nil unless s is a plain owned local
+fn wholeOwnerOf(s: ?^Sym): ?^Sym {
+    if s == nil { return nil }
+    let r = s
+    if r.owned && !r.isRef && r.storage == "local" { return r }
+    return nil
 }
 
 // the held place i was freed by a move or a free while the expression ran
@@ -2506,6 +2562,7 @@ fn heldPop(mark: int) {
     truncate(heldForeign, mark)
     truncate(heldHit, mark)
     truncate(heldStore, mark)
+    truncate(heldWhole, mark)
 }
 
 fn checkAssign(dst: ^Type, x: &Item, what: string) {
@@ -2748,7 +2805,11 @@ fn builtin(name: string): Item {
             error("handle needs a record or closed-type value that is not optional, not " + tname(x.typ))
         }
         let ht = newType("handle", "", x.typ)
-        return rtCall1(RT_HANDLE, x, ht)
+        var origin: ?^Sym = nil
+        if !x.viaHandle && lastRaw == "" { origin = wholeOwnerOf(x.sym) }
+        let made = rtCall1(RT_HANDLE, x, ht)
+        made.hOrigin = origin
+        return made
     }
     if name == "replace" {
         // stores a new value in a variable, field or element and hands back the old one
@@ -2756,6 +2817,9 @@ fn builtin(name: string): Item {
         if sym != T_IDENT { error("replace needs a variable, field or element") }
         var x = designator()
         let place = lastPlace
+        let raw = lastRaw
+        let orig = lastOrigin
+        let ident = lastIdent
         if (x.mode != "mem" && x.mode != "elem") || !isOwned(x.typ) {
             error("replace needs a variable, field or element holding an owned value")
         }
@@ -2769,7 +2833,7 @@ fn builtin(name: string): Item {
         let savedPin = pinned
         let touch0 = heldTouch(tr)
         if x.deref && tr != nil && tr.storage == "local" { pinned = tr }
-        let hp = heldPush(tr, x.viaHandle, place)
+        let hp = heldPush(tr, x.viaHandle, orig, ident, place, raw)
         var v = expression()
         pinned = savedPin
         expect(T_RPAREN, "")
@@ -2785,7 +2849,7 @@ fn builtin(name: string): Item {
         heldPop(hp)
         checkAssign(x.typ, v, "replacement value")
         consume(v)
-        freeEvent(x, place)
+        freeEvent(x, place, raw, orig, ident)
         if x.deref || x.viaHandle {
             invalidateOwnedChange(x)
             recordFree(freeRoot(x))
@@ -2842,7 +2906,7 @@ fn builtin(name: string): Item {
         if x.deref && tr != nil && tr.isRef && !tr.refMut {
             error("take cannot change through '" + tr.name + "': it is a read-only reference")
         }
-        freeEvent(x, lastPlace)
+        freeEvent(x, lastPlace, lastRaw, lastOrigin, lastIdent)
         if x.deref || x.viaHandle {
             invalidateOwnedChange(x)
             recordFree(freeRoot(x))
@@ -2867,6 +2931,10 @@ fn builtin(name: string): Item {
         expect(T_LPAREN, "")
         var a = expression()
         let aPlace = lastPlace
+        let aRaw = lastRaw
+        let aOrig = lastOrigin
+        let aIdent = lastIdent
+        let aVia = lastViaHandle
         var want = "array"
         var article = "an"
         if name == "substr" {
@@ -2896,7 +2964,7 @@ fn builtin(name: string): Item {
         let touch0 = heldTouch(r0)
         let savedPin = pinned
         if name != "substr" && aDeref && r0 != nil && r0.storage == "local" { pinned = r0 }
-        let hp = heldPush(r0, a.viaHandle, aPlace)
+        let hp = heldPush(r0, aVia, aOrig, aIdent, aPlace, aRaw)
         var b = expression()
         pinned = savedPin
         if name != "substr" && held && userCalls != callsBefore {
@@ -3017,6 +3085,7 @@ fn nameItem(s: ^Sym, name: string, target: bool): Item {
         x.disp = s.offset
         x.sym = s
         x.root = s
+        x.hOrigin = s.hOrigin
         x.readonly = s.kind == "let"
         x.borrowed = s.isRef
         if (s.owned || s.isRefLocal) && s.moved {
@@ -3050,6 +3119,9 @@ fn designatorT(target: bool): Item {
     let root = x.root
     var viaHandle = false
     var path = ""
+    var hOrig: ?^Sym = nil
+    var hIdent: ?^Sym = nil
+    var handles = 0
     while sym == T_DOT || sym == T_LBRACK {
         if x.movedRef { error("'" + name + "' was moved and has no value here") }
         if x.mode == "reg" && isOwned(x.typ) {
@@ -3059,6 +3131,14 @@ fn designatorT(target: bool): Item {
         if sym == T_DOT && x.typ.kind == "handle" {
             // check the handle now: the object must still be the one it named
             let hb = baseOf(x.typ)
+            if handles == 0 {
+                hOrig = x.hOrigin
+                hIdent = x.sym
+            } else {
+                hOrig = nil
+                hIdent = nil
+            }
+            handles += 1
             x = rtCall1(RT_DEREF, x, hb)
             viaHandle = true
         }
@@ -3095,7 +3175,7 @@ fn designatorT(target: bool): Item {
             let wholeLocal = x.sym != nil && !(root != nil && (root.storage == "global" || root.isRef))
             let touch0 = heldTouch(root)
             let a = load(x)
-            let hp = heldPush(root, viaHandle, placePath(root, path))
+            let hp = heldPush(root, viaHandle, hOrig, hIdent, placePath(root, path), path)
             let i0 = expression()
             if !isInt(i0.typ) { error("array index must be int") }
             if viaHandle && userCalls != callsBefore {
@@ -3154,6 +3234,10 @@ fn designatorT(target: bool): Item {
     }
     x.viaHandle = viaHandle
     lastPlace = placePath(root, path)
+    lastRaw = path
+    lastOrigin = hOrig
+    lastIdent = hIdent
+    lastViaHandle = viaHandle
     if x.sym == nil && root != nil {
         x.root = root
         x.deref = true
@@ -3681,6 +3765,7 @@ fn varDecl(kind: string, isGlobal: bool) {
         } else {
             s = newLocal("", tt, kind)
             s.name = name
+            if kind == "let" { s.hOrigin = x.hOrigin }
             dst.base = RBP
             dst.disp = s.offset
         }
@@ -3717,6 +3802,9 @@ fn assignmentOrCall(): bool {
     noreturn = false
     let x = designatorT(true)
     let tplace = lastPlace
+    let traw = lastRaw
+    let torig = lastOrigin
+    let tident = lastIdent
     if noreturn && (sym == T_SEMI || sym == T_RBRACE) { return true }
     if x.movedRef && sym != T_ASSIGN {
         let r = x.root
@@ -3773,7 +3861,7 @@ fn assignmentOrCall(): bool {
             let touch0 = heldTouch(r0)
             if x.deref && r0 != nil && r0.storage == "local" { pinned = r0 }
             var hp = -1
-            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, tplace) }
+            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }
             let y = expression()
             pinned = savedPin
             checkAssign(dtype, y, "assignment")
@@ -3823,7 +3911,7 @@ fn assignmentOrCall(): bool {
             let touch0 = heldTouch(r0)
             if x.deref && r0 != nil && r0.storage == "local" { pinned = r0 }
             var hp = -1
-            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, tplace) }
+            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }
             var y = expression()
             pinned = savedPin
             checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)

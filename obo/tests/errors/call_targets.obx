@@ -416,14 +416,6 @@ fn main() {
     let h = handle(b)
     println(b.items[sinkArr(replace(h.items, new []Node(0)))].v)   // error: cannot index 'b' with an index that replaces or moves what it holds
 }
-// === a handle's array indexed by a pure move of another local (conservative: a handle may name any object)
-fn main() {
-    var b = new Bag{items: new []Node(0)}
-    append(b.items, mk(1))
-    var other = new Bag{items: new []Node(0)}
-    let h = handle(b)
-    println(h.items[eatBag(other)].v)   // error: cannot index through a handle with an index that moves or frees something
-}
 // === a replace whose value replaces the record its target is in: the store would write into a freed record
 fn main() {
     var b = new Bag{items: new []Node(0)}
