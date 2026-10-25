@@ -81,6 +81,59 @@ def flat(r):
     return s
 
 
+# a program of retried functions only (each has a statement that runs out of registers with its locals in them,
+# and main has no locals): obo compiles each of them again with no registers for locals, and must give the bytes
+# that obo-noregs gives
+RETRIED = """type P = ref record { x: int; y: int }
+var ga = new []int(0)
+var gp = new P{x: 1, y: 2}
+var gps = new []P(0)
+var s = "abc"
+fn one(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    while i < n { v += i; u += v; w += u; v += w; u += i; w += v; v += u; w += i; u += w; i += 1 }
+    ga[i & 3] = gps[i & 1].x + gp.x * ga[i & 3]
+    ga[i & 3] += gps[i & 1].x + gp.x * ga[i & 3]
+    return v + u + w
+}
+fn two(n: int): int {
+    var a = 1
+    var j = 0
+    var b = 2
+    var c = 3
+    while j < n { a += j; b += a; c += b; a += c; b += j; c += a; a += b; c += j; b += c; j += 1 }
+    ga[j & 3] += gps[j & 1].x + gp.x * ga[j & 3]
+    ga[j & 3] = gps[j & 1].x + gp.x * ga[j & 3]
+    return a + b + c
+}
+fn main() {
+    append(ga, 1)
+    append(ga, 2)
+    append(ga, 3)
+    append(ga, 4)
+    append(gps, new P{x: 1, y: 2})
+    append(gps, new P{x: 3, y: 4})
+    println(one(3) + two(4))
+}
+"""
+
+
+def identical(ref, noregs, tmp):
+    src = os.path.join(tmp, 'r.obx')
+    open(src, 'w').write(RETRIED)
+    a, b = os.path.join(tmp, 'r_regs'), os.path.join(tmp, 'r_noregs')
+    for exe, out in ((ref, a), (noregs, b)):
+        c = subprocess.run([exe, src, '-o', out, '--rt', FORK], capture_output=True, text=True)
+        if c.returncode != 0:
+            return 'the retried functions do not compile: ' + c.stderr
+    if open(a, 'rb').read() != open(b, 'rb').read():
+        return 'the retried functions are not byte for byte those of the compiler with no registers for locals'
+    return None
+
+
 def outcome(exe, src, out):
     c = subprocess.run([exe, src, '-o', out, '--rt', FORK], capture_output=True, text=True)
     if c.returncode != 0:
@@ -113,6 +166,10 @@ def main():
     for t in range(n_random):
         bodies.append((f'flat chain {t}', flat(rnd)))
     bad = refused = 0
+    why = identical(ref, noregs, tmp)
+    if why:
+        bad += 1
+        print('FAIL ' + why)
     for name, body in bodies:
         src = os.path.join(tmp, 'p.obx')
         open(src, 'w').write(HDR % body)

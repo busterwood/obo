@@ -328,13 +328,14 @@ MUTANTS.update({
     "retry: code not rewound": [("        truncate(code, f.addr)\n        let gs = &globals", "        let gs = &globals")],
     "retry: waiting calls of the first pass kept": [("                while len(g.fixups) > 0 && g.fixups[len(g.fixups) - 1] >= f.addr { truncate(g.fixups, len(g.fixups) - 1) }\n", "")],
     "retry: argument holders of the first pass kept": [("        truncate(argTemps, tempMark)\n        truncate(symArena, symMark)\n        return true", "        truncate(symArena, symMark)\n        return true")],
+    "retry: free list left as the first pass had it": [("    homeBits = 0\n    setFree(0)                          // the registers in pool order: a function starts as the one before it did not leave them\n", "    homeBits = 0\n")],
     "retry: scanner not rewound": [("        pos = sPos\n", "")],
     "retry: token not restored": [("        sym = sSym\n", "")],
 })
 SHAPES = {"scan: nothing counted", "scan: ranking ignored", "scope end does not give the register back",
           "runtime calls push the locals' registers", "return copies a local's register",
           "for limit's register never given back", "bool parameters left in memory"}
-EDGE = set()
+EDGE = {"retry: free list left as the first pass had it"}
 
 # mutants that keep memory alive: caught when the peak rises above the unmutated peak,
 # for a leak too small to cross PEAK_BUDGET

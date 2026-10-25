@@ -6012,6 +6012,8 @@ fn scanFunction(params: &[]Param) {
 // and bool locals may be held in registers. True if it ran out of registers with some (see giveUpHomes): nothing
 // has been left but its code, to be thrown away.
 fn fnBody(f: ^Sym, name: string, ret: ^Type, params: &[]Param, homes: bool): bool {
+    homeBits = 0
+    setFree(0)                          // the registers in pool order: a function starts as the one before it did not leave them
     pendLine = 0
     frame = 0
     depth = 0
@@ -6196,8 +6198,6 @@ fn fnDecl() {
         tline = sTline
         tcol = sTcol
         homeRetry = false
-        homeBits = 0
-        setFree(0)
         fnBody(f, name, ret, &params, false)
     }
     curFn = nil

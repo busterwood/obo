@@ -1651,6 +1651,14 @@ decisions") is the only departure from a single pass.
     pass added (a literal is found again by its text). The snapshot is eleven integers and a string; nothing
     is copied. The counters and the freed set are only compared inside one pass or re-derived, so their
     restoring has no mutant (equivalent); every other item has one.
+  - A function starts with the free list in pool order (`fnBody` calls `setFree(0)`), whatever the function
+    before it left, so a retried function is compiled from the same state as in `obo-noregs`, and gives the
+    same bytes: `tests/homes_edge.py` compiles a program of retried functions only with both compilers and
+    compares the executables (mutant: the line removed).
+  - The restores of `f.freed`, `freesAll` and `writesHandles` (and of the counters) are defensive: the second pass
+    records the same facts again, and the check of a recursive call that writes through a handle is deferred to
+    the end of the function, so no test discriminates them; they are kept so that the second pass starts from
+    the state of the first one's start.
   - The first pass must not report what the second would: an error it meets after the switch is the error
     the second would meet, since the checker does not read registers.
   `tests/run/register_pressure.obx` has the shapes that were refused (destinations of every kind at depths 3
