@@ -47,7 +47,7 @@ MUTANTS = {
     "globals not freed at exit": ("            x.disp = g.offset\n            rtCall1(RT_FREE, x, tVoid)\n", "            x.disp = g.offset\n"),
     # freeing too much: double free or poisoned reads
     "moved locals still freed": ("        if !s.moved && !s.isRefLocal {\n            let x = newItem", "        if !s.isRefLocal {\n            let x = newItem"),
-    "moves not recorded": ("        s.moved = true\n        s.touches = s.touches + 1\n        invalidate(s, nil, true, \"\")", "        s.touches = s.touches + 1\n        invalidate(s, nil, true, \"\")"),
+    "moves not recorded": ("        s.moved = true\n        s.touches = s.touches + 1\n        heldMove(s)\n        invalidate(s, nil, true, \"\")", "        s.touches = s.touches + 1\n        heldMove(s)\n        invalidate(s, nil, true, \"\")"),
     "take leaves the value in place": ("        opMem(0x8B, r, memOf(x), true, false)\n        opMem(0xC7, 0, memOf(x), true, false)\n        emit32(0)\n",
                                        "        opMem(0x8B, r, memOf(x), true, false)\n"),
     # string reference counts
@@ -127,8 +127,8 @@ MUTANTS = {
     "indexes checked only on a whole variable (not fields, elements, grids)": ("            if root != nil && heldLost(root, touch0) {", "            if wholeLocal && root != nil && heldLost(root, touch0) {"),
     "append and truncate not checked for moves": ("        if name != \"substr\" && r0 != nil && heldLost(r0, touch0) {", "        if name != \"substr\" && r0 != nil && false {"),
     "replace not checked for moves": ("        if tr != nil && heldLost(tr, touch0) {", "        if tr != nil && false {"),
-    "plain assignments through a reference not checked for moves": ("            consume(y)\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && heldLost(r0, touch0) {",
-                                                                     "            consume(y)\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && false {"),
+    "plain assignments through a reference not checked for moves": ("            consume(y)\n            if traw == \"\" && !x.viaHandle && !x.deref { originMove(xs, false) }\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && heldLost(r0, touch0) {",
+                                                                     "            consume(y)\n            if traw == \"\" && !x.viaHandle && !x.deref { originMove(xs, false) }\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && false {"),
     "compound assignments through a reference not checked for moves": ("            var y = expression()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && heldLost(r0, touch0) {",
                                                                        "            var y = expression()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && false {"),
     # the reference local's owner (ownerTouch) and its invalidation (the moved flag): a reference into a
@@ -140,6 +140,38 @@ MUTANTS = {
     # finer paths (item 3): a change reaches only what lies under its place
     "field changes invalidate siblings": ("(all || v.refDeep && underPath(v.refPath, path))", "(all || v.refDeep)"),
     "known elements treated as one": ("(ri != rj || pathsOverlap(argPaths[i], argPaths[j]))", "(ri != rj || true)"),
+    # held places (heldPush, heldMove, heldFree): a replace or take frees what it empties, so a value
+    # that replaces an array an index, append or assignment holds is refused (call_targets.obx and
+    # held_places.obx: "... replaces or moves what it holds"). A place held through a handle with an
+    # origin is an owned place of that local; a handle without one is an identity, hit by frees of the
+    # same identity at or below its path and by every free of another identity or of none
+    "replace does not free what it holds": ("        consume(v)\n        freeEvent(x, place, raw, orig, ident)\n", "        consume(v)\n"),
+    "take does not free what it holds": ("        freeEvent(x, lastPlace, lastRaw, lastOrigin, lastIdent)\n", ""),
+    "moves do not reach held handle targets": ("        } else if heldForeign[i] {\n            if s.isParam || !refParamKey(heldKey[i]) { heldHit[i] = true }", "        } else if false {\n            if s.isParam || !refParamKey(heldKey[i]) { heldHit[i] = true }"),
+    "moves do not free handle targets": ("        heldMove(s)\n", ""),
+    "identity frees do not reach their entries": ("                if segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }",
+                                                  "                if false { heldHit[k] = true }"),
+    "same-identity frees ignore the path": ("                if segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }",
+                                            "                heldHit[k] = true"),
+    "identity exemption removed": ("                if segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }",
+                                   "                if segsPrefix(place, heldPath[k]) { heldHit[k] = true }"),
+    "origin ignored when holding": ("        if origin != nil {\n            heldAdd(origin, false, false, raw)", "        if false {\n            heldAdd(origin, false, false, raw)"),
+    "origin ignored when freeing": ("        if origin != nil {\n            heldFree(origin, nil, raw)", "        if false {\n            heldFree(origin, nil, raw)"),
+    "whole local arrays hit by identity frees": ("        } else if !heldWhole[k] {", "        } else {"),
+    "reference parameters take their owner's place": ("    if isRefParam(r) {\n        heldAdd(r, true, false, raw)", "    if false {\n        heldAdd(r, true, false, raw)"),
+    "owned frees ignore the path": ("            if heldKey[k] == o && segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) {",
+                                    "            if heldKey[k] == o && !(heldStore[k] && place == heldPath[k]) {"),
+    "owned assignment exemption removed": ("            if heldKey[k] == o && segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) {",
+                                           "            if heldKey[k] == o && segsPrefix(place, heldPath[k]) {"),
+    "store exemption not applied through handles": ("    for k in mark..len(heldKey) { heldStore[k] = true }", "    for k in mark..len(heldKey) { heldStore[k] = !viaHandle }"),
+    "index does not hold its array": ("            let hp = heldPush(root, viaHandle, hOrig, hIdent, placePath(root, path), path)", "            let hp = -1"),
+    "replace does not hold its place": ("        let hp = heldPush(tr, x.viaHandle, orig, ident, place, raw)", "        let hp = -1"),
+    "append and truncate do not hold their array": ("        let hp = heldPush(r0, aVia, aOrig, aIdent, aPlace, aRaw)", "        let hp = -1"),
+    "plain assignments do not hold their target": ("            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            let y = expression()",
+                                                    "            let y = expression()"),
+    "compound assignments do not hold their target": ("            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            var y = expression()",
+                                                      "            var y = expression()"),
+    "reference places ignore the binding's path": ("            let p = b.paths[i] + raw\n            if o == handleSym {\n                heldAdd(nil, true, false, \"\")", "            let p = raw\n            if o == handleSym {\n                heldAdd(nil, true, false, \"\")"),
 }
 
 
@@ -239,6 +271,83 @@ DEFER_USE_MUTANTS = {
 }
 MUTANTS.update(DEFER_USE_MUTANTS)
 
+ORIGIN_MUTANTS = {
+    'origin not cleared by a consume': ('        originMove(s, true)\n        s.moved = true\n',
+        '        s.moved = true\n'),
+    'origin not cleared by a replace of a whole local': ('        if raw == "" && !x.viaHandle && !x.deref { originMove(x.sym, true) }\n',
+        ''),
+    'origin not cleared by a take of a whole local': ('        if lastRaw == "" && !x.viaHandle && !x.deref { originMove(x.sym, true) }\n',
+        ''),
+    'origin not cleared by an assignment over a whole local': ('            if traw == "" && !x.viaHandle && !x.deref { originMove(xs, false) }\n',
+        ''),
+    'replace clears origins through a reference or handle': ('        if raw == "" && !x.viaHandle && !x.deref { originMove(x.sym, true) }\n',
+        '        if raw == "" { originMove(x.sym, true) }\n'),
+    'take clears origins through a reference or handle': ('        if lastRaw == "" && !x.viaHandle && !x.deref { originMove(x.sym, true) }\n',
+        '        if lastRaw == "" { originMove(x.sym, true) }\n'),
+    'assignment clears origins through a reference or handle': ('            if traw == "" && !x.viaHandle && !x.deref { originMove(xs, false) }\n',
+        '            if traw == "" { originMove(xs, false) }\n'),
+    "a move clears no handle's origin": ('            if o == r { x.hOrigin = nil }\n',
+        '            if false { x.hOrigin = nil }\n'),
+    "a closed block's handles stay in the origin list": ('    truncate(originSyms, blocks[last].hmark)\n',
+        ''),
+    'a handle declared in the loop it is moved in is refused': ('        if x.hOrigin != nil && x.hDepth < len(loops) {\n',
+        '        if x.hOrigin != nil && x.hDepth <= len(loops) {\n'),
+    'the loop check ignores where a handle was declared': ('        if x.hOrigin != nil && x.hDepth < len(loops) {\n',
+        '        if x.hOrigin != nil {\n'),
+    "a let handle's loop depth is not recorded": ('                s.hDepth = len(loops)\n',
+        ''),
+    'moves do not check the loop': ('    if move { loopOriginCheck(r) }\n',
+        ''),
+    'a var handle is given its origin': ('            if kind == "let" {\n                s.hOrigin = x.hOrigin\n',
+        '            if true {\n                s.hOrigin = x.hOrigin\n'),
+    'a temporary handle is given no origin': ('        made.hOrigin = origin\n',
+        '        made.hOrigin = nil\n'),
+}
+MUTANTS.update(ORIGIN_MUTANTS)
+
+
+# the second review's gaps: origins, the joins over several roots, the chained handles, and the
+# callee-local rule. An entry marked equivalent in FORK.md is expected to survive: the guard it removes
+# is redundant (see there)
+MUTANTS.update({
+    "origin needs no non-handle designator": ("if !x.viaHandle && lastRaw == \"\" { origin = wholeOwnerOf(x.sym) }",
+                                             "if lastRaw == \"\" { origin = wholeOwnerOf(x.sym) }"),
+    "origin needs no whole path": ("if !x.viaHandle && lastRaw == \"\" { origin = wholeOwnerOf(x.sym) }",
+                                  "if !x.viaHandle { origin = wholeOwnerOf(x.sym) }"),
+    "origin of a global is kept": ("    if r.owned && !r.isRef && r.storage == \"local\" { return r }",
+                                   "    if r.owned && !r.isRef { return r }"),
+    "chained handles keep the first origin": ("            } else {\n                hOrig = nil\n                hIdent = nil\n            }",
+                                              "            } else {\n            }"),
+    "a handle root of a reference is not an identity (held)": ("            if o == handleSym {\n                heldAdd(nil, true, false, \"\")",
+                                                              "            if false {\n                heldAdd(nil, true, false, \"\")"),
+    "a handle root of a reference is not an identity (freed)": ("            if o == handleSym {\n                heldFree(nil, nil, \"\")",
+                                                               "            if false {\n                heldFree(nil, nil, \"\")"),
+    "reference roots are owners (held)": ("            } else if o.isRef {\n                heldAdd(o, true, false, p)",
+                                          "            } else if false {\n                heldAdd(o, true, false, p)"),
+    "reference roots are owners (freed)": ("            } else if o.isRef {\n                heldFree(nil, o, p)",
+                                           "            } else if false {\n                heldFree(nil, o, p)"),
+    "every held place is whole": ("    heldAdd(r, false, raw == \"\", raw)", "    heldAdd(r, false, true, raw)"),
+    "unknown frees hit only whole arrays": ("        } else if !heldWhole[k] {", "        } else if heldWhole[k] {"),
+    "moves reach reference parameters from callee locals": ("            if s.isParam || !refParamKey(heldKey[i]) { heldHit[i] = true }",
+                                                           "            heldHit[i] = true"),
+    "frees reach reference parameters from callee locals": ("            } else if !(calleeLocal(o) && refParamKey(heldKey[k])) {",
+                                                           "            } else {"),
+    "a by-value parameter counts as a callee local": ("    return r.storage == \"local\" && !r.isParam", "    return r.storage == \"local\""),
+})
+
+
+# mutants that survive by design: each removes a test that is redundant, so the behaviour is unchanged
+EQUIVALENT = {
+    "origin not cleared by a take of a whole local": "equivalent: a take needs its optional owner widened first, and only an assignment over a narrowed owner does that (a handle is made only while the owner is narrowed), so the assignment hook has already cleared the same origins before any take can run",
+    "replace clears origins through a reference or handle": "a designator through a field or element of a reference or handle has no sym (designatorT sets deref only when sym is nil), and a handle local is not owned (isOwned is false for handles), so originMove returns early; the guard is redundant",
+    "take clears origins through a reference or handle": "the same: deref implies a nil sym, and a handle local is not owned, so originMove returns early",
+    "assignment clears origins through a reference or handle": "the same: deref implies a nil sym, and a handle local is not owned, so originMove returns early",
+    "origin needs no non-handle designator": "a designator through a handle has no sym, so wholeOwnerOf gives nil",
+    "origin needs no whole path": "a designator with a path has no sym (only a whole name sets it), so wholeOwnerOf gives nil",
+    "origin of a global is kept": "owned is set only for locals (addOwnedLocal), so a global never has an origin",
+    "a handle root of a reference is not an identity (held)": "equivalent because the older heldLost check on the reference local catches the case, not the held entry: under the mutant foreign is false, so heldMove does not hit",
+}
+
 
 def main():
     pattern = sys.argv[1] if len(sys.argv) > 1 else ''
@@ -266,10 +375,14 @@ def main():
         lines = p.stdout.strip().splitlines()
         detail = next((l.strip() for l in lines if l.startswith('     ')), '')
         caught = p.returncode != 0
+        if not caught and name in EQUIVALENT:
+            print(f"EQUIV   {name}: {EQUIVALENT[name]}")
+            continue
         print(f"{'caught' if caught else 'MISSED'}  {name:<36} {lines[-1].split(' in ')[0] if lines else ''}  {detail[:60]}")
         if not caught:
             missed.append(name)
-    print(f"\n{len(names) - len(missed)}/{len(names)} mutants caught")
+    equiv = sum(1 for n in names if n in EQUIVALENT)
+    print(f"\n{len(names) - len(missed) - equiv}/{len(names)} mutants caught, {equiv} equivalent")
     sys.exit(1 if missed else 0)
 
 

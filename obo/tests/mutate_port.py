@@ -188,6 +188,26 @@ MUTANTS = {
     "push imm8 from -129": [("fn pushI(v: int) {\n    if fits8(v) {", "fn pushI(v: int) {\n    if v >= -129 && v < 128 {")],
     "push imm32 masked": [("        emit(0x68)\n        emit32(v)\n", "        emit(0x68)\n        emit32(v & 0x7FFFFFFF)\n")],
     "frame dropped although there are locals": [("    if size == 0 {\n        dropFrame(frameAt)", "    if size <= 16 {\n        dropFrame(frameAt)")],
+    "held: replace does not free what it holds": [('        consume(v)\n        freeEvent(x, place, raw, orig, ident)\n', '        consume(v)\n')],
+    "held: take does not free what it holds": [('        freeEvent(x, lastPlace, lastRaw, lastOrigin, lastIdent)\n', '')],
+    "held: moves do not reach held handle targets": [('        } else if heldForeign[i] {\n            if s.isParam || !refParamKey(heldKey[i]) { heldHit[i] = true }', '        } else if false {\n            if s.isParam || !refParamKey(heldKey[i]) { heldHit[i] = true }')],
+    "held: moves do not free handle targets": [('        heldMove(s)\n', '')],
+    "held: identity frees do not reach their entries": [('                if segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }', '                if false { heldHit[k] = true }')],
+    "held: same-identity frees ignore the path": [('                if segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }', '                heldHit[k] = true')],
+    "held: identity exemption removed": [('                if segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }', '                if segsPrefix(place, heldPath[k]) { heldHit[k] = true }')],
+    "held: origin ignored when holding": [('        if origin != nil {\n            heldAdd(origin, false, false, raw)', '        if false {\n            heldAdd(origin, false, false, raw)')],
+    "held: origin ignored when freeing": [('        if origin != nil {\n            heldFree(origin, nil, raw)', '        if false {\n            heldFree(origin, nil, raw)')],
+    "held: whole local arrays hit by identity frees": [('        } else if !heldWhole[k] {', '        } else {')],
+    "held: reference parameters take their owner's place": [('    if isRefParam(r) {\n        heldAdd(r, true, false, raw)', '    if false {\n        heldAdd(r, true, false, raw)')],
+    "held: owned frees ignore the path": [('            if heldKey[k] == o && segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) {', '            if heldKey[k] == o && !(heldStore[k] && place == heldPath[k]) {')],
+    "held: owned assignment exemption removed": [('            if heldKey[k] == o && segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) {', '            if heldKey[k] == o && segsPrefix(place, heldPath[k]) {')],
+    "held: store exemption not applied through handles": [('    for k in mark..len(heldKey) { heldStore[k] = true }', '    for k in mark..len(heldKey) { heldStore[k] = !viaHandle }')],
+    "held: index does not hold its array": [('            let hp = heldPush(root, viaHandle, hOrig, hIdent, placePath(root, path), path)', '            let hp = -1')],
+    "held: replace does not hold its place": [('        let hp = heldPush(tr, x.viaHandle, orig, ident, place, raw)', '        let hp = -1')],
+    "held: append and truncate do not hold their array": [('        let hp = heldPush(r0, aVia, aOrig, aIdent, aPlace, aRaw)', '        let hp = -1')],
+    "held: plain assignments do not hold their target": [('            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            let y = expression()', '            let y = expression()')],
+    "held: compound assignments do not hold their target": [('            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            var y = expression()', '            var y = expression()')],
+    "held: reference places ignore the binding's path": [('            let p = b.paths[i] + raw\n            if o == handleSym {\n                heldAdd(nil, true, false, "")', '            let p = raw\n            if o == handleSym {\n                heldAdd(nil, true, false, "")')],
     # loop inversion: a while loop's condition moves after its body, and each kind of position it holds must move
     # with it (tests/run/loop_inversion.obx)
     "inverted loop: calls out of the condition not adjusted": [("        putRel(farCalls[k], getRel(farCalls[k]) - d)\n", "")],
@@ -261,6 +281,9 @@ MUTANTS.update({
 # errors/defer_uses.obx show them, since the port's own output does not change
 from mutate_fork import DEFER_USE_MUTANTS  # noqa: E402
 MUTANTS.update({k: [v] for k, v in DEFER_USE_MUTANTS.items()})
+from mutate_fork import ORIGIN_MUTANTS, EQUIVALENT as FORK_EQUIVALENT  # noqa: E402
+# the fork's equivalent mutants are not run here: the port has the same source, so they are equivalent too
+MUTANTS.update({k: [v] for k, v in ORIGIN_MUTANTS.items() if k not in FORK_EQUIVALENT})
 
 
 # mutants that keep memory alive: caught when the peak rises above the unmutated peak,
