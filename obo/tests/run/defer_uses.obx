@@ -1,0 +1,217 @@
+// A defer body that uses outer references which are not pointed elsewhere or invalidated before
+// its block is left is valid, at every kind of exit. Each case here must run.
+type Item = ref record { v: int; kids: []Item }
+type File = ref record { fd: int; open: bool }
+
+fn close(f: &File) { println(f.fd) }
+
+// the common idioms: close a file, print a field of something that is left alone
+fn idioms() {
+    var f = new File{fd: 3, open: true}
+    var x = new Item{v: 5, kids: new []Item(0)}
+    {
+        defer close(f)
+        defer println(x.v)
+        x.v += 1
+    }
+    var r = &x
+    {
+        defer println(r.v)
+        r.v += 1
+    }
+}
+
+// a reference the defer uses, with a change elsewhere and a re-point of another reference
+fn untouched() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    var other = &a
+    {
+        defer println(k.v)
+        other = &b
+        b = new Item{v: 9, kids: new []Item(0)}
+    }
+    println(k.v)
+}
+
+// the reference is pointed afresh after the block, and before the defer in the block
+fn repointAround() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    {
+        k = &b
+        defer println(k.v)
+    }
+    k = &a
+    println(k.v)
+}
+
+// pointed at the same place again: the binding is the same
+fn samePlace() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var k = &a
+    {
+        defer println(k.v)
+        k = &a
+        a.v = 4
+    }
+}
+
+// the reference the defer uses is derived from another one, which is pointed elsewhere
+fn parentMoves() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    append(a.kids, new Item{v: 2, kids: new []Item(0)})
+    var b = new Item{v: 3, kids: new []Item(0)}
+    var p = &a
+    {
+        let s = &p.kids[0]
+        defer println(s.v)
+        p = &b
+    }
+}
+
+// the defer frees something the reference does not point into, and the reference stays valid
+fn freesOther() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    {
+        defer { b = new Item{v: 8, kids: new []Item(0)} }
+        defer println(k.v)
+        println(b.v)
+    }
+    println(b.v)
+}
+
+// the reference is read, then freed by the defer's own body after it read it
+fn readsThenFrees() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    append(a.kids, new Item{v: 6, kids: new []Item(0)})
+    let first = &a.kids[0]
+    {
+        defer {
+            println(first.v)
+            a.kids = new []Item(0)
+        }
+        a.v = 2
+    }
+    println(a.v)
+}
+
+// a defer in a loop, with break, continue and the end of the body
+fn loops() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 4 {
+        defer println(k.v + i)
+        i += 1
+        if i == 1 { continue }
+        if i == 3 { break }
+        println(i)
+    }
+    println(k.v)
+}
+
+// a reference made inside the loop body is changed and pointed again before the defer is declared
+fn loopLocal() {
+    var bag = new Item{v: 0, kids: new []Item(0)}
+    append(bag.kids, new Item{v: 5, kids: new []Item(0)})
+    var i = 0
+    while i < 2 {
+        let first = &bag.kids[0]
+        defer println(first.v)
+        i += 1
+        if i == 1 { continue }
+    }
+}
+
+// a return from inside a loop runs the defers of the loop's block and of the function
+fn early(n: int): int {
+    var a = new Item{v: 10, kids: new []Item(0)}
+    var k = &a
+    defer println(k.v)
+    var i = 0
+    while i < 5 {
+        defer println(k.v + 100)
+        if i == n { return i }
+        i += 1
+    }
+    return -1
+}
+
+// nested blocks, two defers: each runs at its own block's end
+fn nested() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var k = &a
+    {
+        defer println(k.v)
+        {
+            defer println(k.v + 1)
+            defer println(k.v + 2)
+            a.v = 5
+        }
+        a.v = 8
+    }
+}
+
+// the defer's own block declares and re-points a reference, and the outer one is only read
+fn innerPoint() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    {
+        defer {
+            var j = &b
+            j = &k
+            println(j.v)
+        }
+        a.v = 3
+    }
+}
+
+fn main() {
+    idioms()
+    // expect: 6
+    // expect: 3
+    // expect: 7
+    untouched()
+    // expect: 1
+    // expect: 1
+    repointAround()
+    // expect: 2
+    // expect: 1
+    samePlace()
+    // expect: 4
+    parentMoves()
+    // expect: 2
+    freesOther()
+    // expect: 2
+    // expect: 1
+    // expect: 8
+    readsThenFrees()
+    // expect: 6
+    // expect: 2
+    loops()
+    // expect: 2
+    // expect: 2
+    // expect: 3
+    // expect: 4
+    // expect: 1
+    loopLocal()
+    // expect: 5
+    // expect: 5
+    println(early(1))
+    // expect: 110
+    // expect: 110
+    // expect: 10
+    // expect: 1
+    nested()
+    // expect: 7
+    // expect: 6
+    // expect: 8
+    innerPoint()
+    // expect: 3
+}
