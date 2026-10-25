@@ -172,6 +172,53 @@ fn innerPoint() {
     }
 }
 
+// the reference was bound to either of two places where the defer is declared, and to one at the exit
+fn narrowed() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var c = true
+    var k = &a
+    if c { k = &b }
+    {
+        defer println(k.v)
+        k = &a
+        b = new Item{v: 3, kids: new []Item(0)}
+        a.v = 4
+    }
+}
+
+// two defers: the newer reads a reference and then frees what it points into; the older uses another one
+fn twoDefers() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    append(b.kids, new Item{v: 6, kids: new []Item(0)})
+    var j = &a
+    {
+        defer println(j.v)
+        let first = &b.kids[0]
+        defer {
+            println(first.v)
+            b.kids = new []Item(0)
+        }
+        a.v = 5
+    }
+}
+
+// a defer inside a defer body uses a reference that the body declares
+fn innerOwn() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    {
+        defer {
+            let j = &a
+            {
+                defer println(j.v)
+                a.v = 9
+            }
+        }
+        a.v = 3
+    }
+}
+
 fn main() {
     idioms()
     // expect: 6
@@ -214,4 +261,11 @@ fn main() {
     // expect: 8
     innerPoint()
     // expect: 3
+    narrowed()
+    // expect: 4
+    twoDefers()
+    // expect: 6
+    // expect: 5
+    innerOwn()
+    // expect: 9
 }

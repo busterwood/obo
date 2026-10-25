@@ -2632,21 +2632,17 @@ fn openBlock() {
                              freeFrom: new []int(0), uses: new []^Sym(0), useBinds: new []^RefBind(0), useFrom: new []int(0)})
 }
 
-// whether two bindings point at the same places: the roots and places cover one another (the parent and
-// writable flag are not the target; a reference derived from one that is re-pointed gets a new parent)
-fn sameTargets(a: ^RefBind, b: ^RefBind): bool {
-    if a == b { return true }
-    for j in 0..len(b.roots) {
+// whether a reference bound to e at a block's end points only where it was bound to d when its defer was
+// declared: every root and place of e is covered by d's, and a reference that was writable then still is.
+// The body was checked against d, so a narrower e is covered by those checks, and the frees replayed
+// from the body (made for every root of d) reach every root of e. The parent is not part of the target.
+fn withinDeclared(d: ^RefBind, e: ^RefBind): bool {
+    if d == e || e == noneBind { return true }
+    if d.writable && !e.writable { return false }
+    for j in 0..len(e.roots) {
         var covered = false
-        for i in 0..len(a.roots) {
-            if a.roots[i] == b.roots[j] && coversPlace(a.deeps[i], a.paths[i], b.deeps[j], b.paths[j]) { covered = true }
-        }
-        if !covered { return false }
-    }
-    for j in 0..len(a.roots) {
-        var covered = false
-        for i in 0..len(b.roots) {
-            if b.roots[i] == a.roots[j] && coversPlace(b.deeps[i], b.paths[i], a.deeps[j], a.paths[j]) { covered = true }
+        for i in 0..len(d.roots) {
+            if d.roots[i] == e.roots[j] && coversPlace(d.deeps[i], d.paths[i], e.deeps[j], e.paths[j]) { covered = true }
         }
         if !covered { return false }
     }
@@ -2661,7 +2657,7 @@ fn checkDeferUses(bi: int, d: int) {
     if d + 1 < len(blocks[bi].useFrom) { hi = blocks[bi].useFrom[d + 1] }
     for k in blocks[bi].useFrom[d]..hi {
         let s = blocks[bi].uses[k]
-        if !sameTargets(blocks[bi].useBinds[k], s.bind) {
+        if !withinDeclared(blocks[bi].useBinds[k], s.bind) {
             error("cannot point '" + s.name + "' elsewhere while a defer uses it: the defer runs where its block is left, and would use the new target")
         }
         if s.moved {

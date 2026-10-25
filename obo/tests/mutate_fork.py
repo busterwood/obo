@@ -216,7 +216,11 @@ def unchecked_exit(down):
 
 
 DEFER_USE_MUTANTS = {
-    "a defer's reference pointed elsewhere is not refused": ("        if !sameTargets(blocks[bi].useBinds[k], s.bind) {", "        if false {"),
+    "a defer's reference pointed elsewhere is not refused": ("        if !withinDeclared(blocks[bi].useBinds[k], s.bind) {", "        if false {"),
+    "a defer's reference may point beyond its declared targets": ("    for j in 0..len(e.roots) {\n        var covered = false\n        for i in 0..len(d.roots) {", "    for j in 0..0 {\n        var covered = false\n        for i in 0..len(d.roots) {"),
+    "a defer's check covers the uses of the newer defers": ("    var hi = len(blocks[bi].uses)\n    if d + 1 < len(blocks[bi].useFrom) { hi = blocks[bi].useFrom[d + 1] }\n    for k in blocks[bi].useFrom[d]..hi {",
+                                                           "    var hi = len(blocks[bi].uses)\n    for k in blocks[bi].useFrom[d]..hi {"),
+    "an inner defer's uses of the body's own locals are not guarded": ("            if i < len(deferUses) { deferUses[i] = true }\n", "            deferUses[i] = true\n"),
     "a defer's invalidated reference is not refused": ("        if s.moved {\n            error(\"'\" + s.name + \"' is used by a defer", "        if false {\n            error(\"'\" + s.name + \"' is used by a defer"),
     "a defer's suspect reference is not reported": ("        if s.suspect {\n            notePending(tline, tcol, \"'\" + s.name + \"' is used by a defer", "        if false {\n            notePending(tline, tcol, \"'\" + s.name + \"' is used by a defer"),
     "defer uses not checked at the block's end": ("        callDefers(last)\n        freeOwned(om, len(ownedLocals))\n",

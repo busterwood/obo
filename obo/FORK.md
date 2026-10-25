@@ -995,9 +995,14 @@ and a mut call `bumpb(k)`).
   enclosing defer checks them too.
 - `callDefers` runs from each exit (normal end in `closeBlock`; `break`, `continue`, `return` through
   `runDefers`). For each defer, newest first, `checkDeferUses` refuses: a reference whose binding is not the
-  same targets as at the declaration (`sameTargets`: roots and places cover one another both ways; the
-  parent and writable flag are not part of the target, so a reference derived from one that is re-pointed
-  is still accepted): "cannot point 'k' elsewhere while a defer uses it"; a reference that is invalidated
+  targets within those at the declaration (`withinDeclared`: every root and place of the exit binding is
+  covered by the declaration binding, and a reference writable then is still; the parent is not part of the
+  target, so a reference derived from one that is re-pointed is still accepted). Narrowing is sound: the
+  body was checked against the wider binding, and the frees replayed from it were made for every root of
+  it. A reference that was joined from two places and is pointed at one again before the exit is accepted;
+  one that was bound to one place and is joined with another at the exit (a re-point on one path) is not.
+  The writable test cannot be reached by a program today (a binding of one root is writable or not for
+  all its paths), so no mutant covers it: "cannot point 'k' elsewhere while a defer uses it"; a reference that is invalidated
   (`moved`): "'k' is used by a defer but may point to freed memory at the block's end"; and a suspect one
   (a recursive call that writes through a handle; reported at the end of the body like the other suspect
   errors, `notePending`). Then the defer's own frees are replayed (`replayFrees(bi, d)`, now per defer;
@@ -1018,7 +1023,7 @@ and a mut call `bumpb(k)`).
 re-point alone, the free after the defer, a free by a call, a write, an indexed write, a mut call), the
 exits (break, continue, return with and without a value, for a free and for a re-point), an inner block,
 a re-point on one path, two defers (a newer one frees what an older one reads, and a reference re-pointed
-under two defers), a defer inside a defer, and a recursive call. `tests/run/defer_uses.obx`: twelve
+under two defers), a defer inside a defer, and a recursive call. `tests/run/defer_uses.obx`: fifteen
 accepted programs: `defer close(f)` and `defer println(x.v)` with the reference untouched, a change or
 re-point of another reference, a re-point before the defer or after the block, a re-point to the same
 place, a parent re-pointed, a defer that frees something else, a defer that reads and then frees, a loop
@@ -1028,10 +1033,21 @@ two defers, and a reference declared inside the body. `tests/own_fuzz.py`: `defe
 `run/ref_bindings.obx` cases still pass.
 
 **Mutants** (`DEFER_USE_MUTANTS` in `tests/mutate_fork.py`, also run by `tests/mutate_port.py`): the
-re-point check disabled; the invalidation check disabled; the suspect report disabled; no check at the
+re-point check disabled; an exit binding allowed beyond the declared targets;
+the invalidation check disabled; the suspect report disabled; no check at the
 normal end, at a break or continue, at a return without a value, at a return with a value; the uses not
-recorded; an inner defer's uses not passed outwards; a newer defer's frees applied after the older one's
-check. One existing mutant was retargeted (`replayFrees(bi, i)`).
+recorded; the check not limited to the defer's own uses (it would include a newer defer's, which its own
+frees may have invalidated: `twoDefers` in the run test); an inner defer's uses not passed outwards, or
+passed without the guard for the body's own locals (`innerOwn`); a newer defer's frees applied after the older one's
+check. One existing mutant was retargeted (`replayFrees(bi, i)`). The "not checked at the block's end" mutant
+keeps that exit's replay and skips only the check. A mutant that starts a defer's check at the first use
+(instead of its own `useFrom`) is equivalent: the extra uses are older defers', and the state only gains
+invalidations between the two checks, so what it refuses the older defer's own check refuses too.
+
+**Strictness note.** Besides the re-point after a used defer, a function that returns a value from which
+the defer's reference is derived is refused: `defer ... ; return bag` where the defer uses `k = &bag`
+(the return moves `bag` and invalidates `k` before the defer runs). This matches main's refusal of
+`defer ... bag.items ...; return bag` (the owned local a defer reads cannot be moved).
 
 ## Milestone 1 design notes (as planned)
 
