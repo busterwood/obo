@@ -253,12 +253,12 @@ fn main() {
     var a = new Item{v: 5, kids: new []Item(0)}
     var k = &a
     var i = 0
-    while i < 10 {  // error: 'k' is invalidated inside the loop
+    while i < 10 {
         i += 1
         if bump() { continue }
         k = &h
     }
-    println(k.v)
+    println(k.v)  // error: 'k' may point to freed memory
 }
 // === a deferred free of a reference's target at block exit, read after the block
 fn main() {
@@ -278,8 +278,8 @@ fn main() {
     var b = new Item{v: 2, kids: new []Item(0)}
     var k = &a
     var i = 0
-    while i < 3 {  // error: 'k' is invalidated inside the loop
-        println(k.v)
+    while i < 3 {
+        println(k.v)  // error: 'k' may point to freed memory
         {
             defer { b = new Item{v: 7, kids: new []Item(0)} }
             k = &b
@@ -291,12 +291,12 @@ fn main() {
 fn rec(n: &Item, h: ^Item, d: int) {
     var k = &n.kids[0]
     var i = 0
-    while i < 2 {
+    while i < 2 {  // error: a recursive call in this loop writes through a handle
         println(k.v)
         if d > 0 { rec(n, h, d - 1) }
         i += 1
     }
-    if d == 0 { h.kids = new []Item(0) }  // error: 'k' is invalidated on one path but not another
+    if d == 0 { h.kids = new []Item(0) }
 }
 fn main() {
     var root = new Item{v: 1, kids: new []Item(0)}

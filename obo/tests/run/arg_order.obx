@@ -39,6 +39,17 @@ fn useH(h: ^Bag, k: int): int {
     return -1
 }
 
+// writeFile's bytes, then a flag argument that only reads them. It comes first, so that the functions
+// after it hold arguments from the pool writeFile used
+type Box = ref record { data: []byte }
+fn flagOf(b: &Box): bool { return len(b.data) == 0 }
+fn writeRead() {
+    var b = new Box{data: new []byte(0)}
+    append(b.data, byte(65))
+    println(writeFile("/dev/null", b.data, flagOf(b)))   // expect: true
+    if len(b.data) > 5 { b.data = new []byte(0) }
+}
+
 // a later argument that reads the array the earlier one points into
 fn readsArray() {
     var xs = new []Node(0)
@@ -174,17 +185,19 @@ fn holderReuse() {
     println(later(handle(c), n))             // expect: 5
 }
 
-// writeFile's bytes, then a flag argument that only reads them
-type Box = ref record { data: []byte }
-fn flagOf(b: &Box): bool { return len(b.data) == 0 }
-fn writeRead() {
-    var b = new Box{data: new []byte(0)}
-    append(b.data, byte(65))
-    println(writeFile("/dev/null", b.data, flagOf(b)))   // expect: true
-    if len(b.data) > 5 { b.data = new []byte(0) }
+// a holder is reused by the next call: a change between the two calls, under what the first call's
+// argument pointed into, does not reach the second call's argument
+fn reuseAfterChange() {
+    var xs = new []Node(0)
+    append(xs, mk(41))
+    println(two(&xs[0], 1))                  // expect: 42
+    xs = new []Node(0)
+    append(xs, mk(1))
+    println(two(&xs[0], 1))                  // expect: 2
 }
 
 fn main() {
+    writeRead()
     readsArray()
     readsElement()
     takesSibling()
@@ -200,5 +213,5 @@ fn main() {
     freeFirst()
     letGo(false)
     holderReuse()
-    writeRead()
+    reuseAfterChange()
 }
