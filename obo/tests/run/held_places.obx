@@ -158,6 +158,98 @@ fn c_f5_callee_local_take() {
     append(b.items, mk(8))
     println(f5(b))                    // expect: 8
 }
+// a handle is made for a call and not kept: the owner is moved after the handle's use, not during it
+type Wrap = ref record { b: Bag }
+fn nbag(): Bag { return new Bag{items: new []Node(0), opt: nil} }
+fn useH(h: ^Bag): int { return h.items[0].v }
+fn idBag(b: Bag): Bag { return b }
+fn c_p1_let_then_move() {
+    var a = nbag()
+    append(a.items, mk(1))
+    let h = handle(a)
+    println(useH(h))                  // expect: 1
+    var c = a
+    println(c.items[0].v)             // expect: 1
+}
+// a temporary handle in a function that returns its owner
+fn f_p2(): Bag {
+    var a = nbag()
+    append(a.items, mk(1))
+    println(useH(handle(a)))          // expect: 1
+    return a
+}
+fn c_p2_temp_then_return() {
+    let b = f_p2()
+    println(len(b.items))             // expect: 1
+}
+// a temporary handle in each iteration of a loop, then the owner is appended
+fn c_p3_loop_temp() {
+    var xs = new []Bag(0)
+    var total = 0
+    for i in 0..3 {
+        var x = nbag()
+        append(x.items, mk(i))
+        total += useH(handle(x))
+        append(xs, x)
+    }
+    println(total)                    // expect: 3
+    println(len(xs))                  // expect: 3
+}
+// a temporary handle under a branch that does not run, then the owner is moved
+fn c_p4_branch_temp() {
+    var a = nbag()
+    append(a.items, mk(1))
+    if len(a.items) > 5 {
+        println(useH(handle(a)))
+    }
+    println(sinkBag(a))               // expect: 0
+}
+// a temporary handle, then the owner is moved into a call
+fn c_p5_temp_then_move() {
+    var a = nbag()
+    append(a.items, mk(1))
+    println(useH(handle(a)))          // expect: 1
+    println(sinkBag(a))               // expect: 0
+}
+// a handle declared inside a loop body: its owner is fresh each iteration and moved in the body
+fn c_fresh_loop() {
+    var total = 0
+    var lens = 0
+    for i in 0..2 {
+        var x = nbag()
+        append(x.items, mk(i + 1))
+        let h = handle(x)
+        total += h.items[0].v
+        let y = x
+        lens += len(y.items)
+    }
+    println(total)                    // expect: 3
+    println(lens)                     // expect: 2
+}
+// a handle made from the owner, then the owner moved into another local: the object lives on in it
+fn c_mv_sibling() {
+    var a = nbag()
+    append(a.items, mk(1))
+    let h = handle(a)
+    var c = a
+    println(h.items[0].v + len(c.items))  // expect: 2
+}
+// the same through a call result
+fn c_mv_call() {
+    var a = nbag()
+    append(a.items, mk(1))
+    let h = handle(a)
+    var c = idBag(a)
+    println(h.items[0].v + len(c.items))  // expect: 2
+}
+// the same into a record field
+fn c_mv_field() {
+    var a = nbag()
+    append(a.items, mk(1))
+    let h = handle(a)
+    let w = new Wrap{b: a}
+    println(h.items[0].v + len(w.b.items))  // expect: 2
+}
 fn main() {
     c_own_take()
     c_self_replace()
@@ -175,4 +267,13 @@ fn main() {
     c_f2_callee_local_move()
     c_f4_callee_local_replace()
     c_f5_callee_local_take()
+    c_p1_let_then_move()
+    c_p2_temp_then_return()
+    c_p3_loop_temp()
+    c_p4_branch_temp()
+    c_p5_temp_then_move()
+    c_fresh_loop()
+    c_mv_sibling()
+    c_mv_call()
+    c_mv_field()
 }
