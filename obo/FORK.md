@@ -480,7 +480,7 @@ which frees an element and not the array header); and an assignment whose value 
 
 Refused: a move of a local that a handle was made from, inside a loop. A handle `let h = handle(a)` made from a whole owned local records that local as its origin, so its held places are keyed to `a`. A whole move of `a` (`var c = a`, `var c = id(a)`, a record field, `replace(a, ...)`, `take(a)`) or an assignment over `a` clears that origin on every `let` handle that names `a` (`originMove`). Such a handle then has no origin: it is an identity, which every move and free reaches, so a later index through it that moves or frees something is refused by the held-place checks (probes u1, u3 and the optional take, in `tests/errors/held_places.obx`). This is sound because a move does not free the object: `c` holds the same object, and the handle still names it by its generation. The one case the clearing does not cover is a loop, because the body is compiled once: a whole move of `a` inside a loop that is deeper than the declaration of a live `let` handle with origin `a` is refused ("cannot move 'a' inside a loop while handle 'h' made from it is in scope"), since the next iteration would still see the origin. A handle declared inside the loop is fresh each iteration and is not refused (`c_fresh_loop`). A temporary `handle(a)` records no origin on any symbol, so a move after it is accepted (`c_p1_let_then_move` to `c_p5_temp_then_move`, run tests). The origin list (`originSyms`) keeps only the handles in scope: a block's handles leave it when the block closes, because their symbols are freed with it (a dangling entry there was a compiler abort in an early version of this rule). An assignment over `a` clears the origins but is not refused: `let h = handle(a); a = nb(); h.items[0]` compiles and traps at run time on the handle's generation check, as main does too. That is a gap in the held-place model (an assignment is not a free event for handles), left for a separate change. A handle made from a field, or through another handle, has no origin; its place is an identity, and a move of any local while it is held is refused, because `heldMove` hits every identity entry (`let h = handle(p.first)`, and the chained `hh.hb.items[...]`). A handle parameter has no origin, and the same conservative rule applies (f3 is kept refused). A move or free of a local the callee declared (not a by-value parameter, not a global) no longer reaches a reference parameter's place, because a reference cannot point into the callee's own object; this is the false positive `p.items[sinkBag(t)]` (f1, f2) and its replace and take forms (f4, f5). A by-value parameter's object and a global are still hit. Refused still: f8, two `mut` parameters where a free through one is indexed through the other, since the two may name the same object. A reference to a field of a reference parameter is bound to the whole parameter (`itemBind` drops the field path through a deref), so `let r = &p.ys; p.xs[sinkI(replace(r, ...))]` is refused although the fields differ; the direct form `p.xs[sinkI(replace(p.ys, ...))]` is accepted. This is a precision limit of the binding model, left as it is. The refused forms are the cases in `tests/errors/held_places.obx`. Known false positive (probe f2): a handle used only before a loop still blocks a move of its owner inside the loop, because the loop rule asks whether the handle is in scope, not whether it is used again. Telling the two apart would need a liveness check on the handle; until then the move is refused, which is conservative and sound.
 
-Not closed: the argument-order hole `two(&xs[0], eatArr(xs))`, a reference into an array passed in one argument with the array moved by a later argument of the same call. It is a known hole, left alone in this round as the coordinator asked; the probes are `review16/ra/ra1`, `review16/p/a1` and `review16/ra/ra3`, listed with the holes above.
+Not closed: the argument-order hole `two(&xs[0], eatArr(xs))`, a reference into an array passed in one argument with the array moved by a later argument of the same call. It is a known hole, left alone in this round as the coordinator asked; the probes are `review16/ra/ra1`, `review16/p/a1` and `review16/ra/ra3`, listed with the holes above. (Closed since: see "Argument order (done)".)
 
 Probes that were written but are not valid programs on either compiler (typing or syntax errors, so they tested
 nothing) are h1-h13, k5-k8, z1-z5, w2, x3, y4, y9 in the probe set (`review14/`).
@@ -787,7 +787,8 @@ above, not by the fuzzer.
 compiler. Still open after the follow-up below. (The reference re-pointed on one branch is fixed, and a re-point
 inside a defer body is refused: see "Reference bindings per path (done)" below.)
 - Argument evaluation order: a deep argument is checked before a later argument's call frees what it
-  points into: `use2(first, mk(h))` (`scratchpad/review5/p/e1_arg_order.obx`, and `e2`).
+  points into: `use2(first, mk(h))` (`scratchpad/review5/p/e1_arg_order.obx`, and `e2`). Closed since: see
+  "Argument order (done)".
 
 **Seed.** The rule is promoted after the suite and mutants pass, following `make promote`.
 
@@ -995,7 +996,8 @@ Measured after the merge: `run_fork` 325 of 325, `port_test` 415 of 415, `port_c
 **Open after this follow-up** (accepted by the seed too; each reads freed memory when run):
 - (H-3 and the defer-read hole are closed: see "Defer uses (done)" below.)
 - Argument evaluation order (`mk/arg_order_fresh.obx`: `use2(first, mk(h))`, where `mk` frees what `first`
-  points into). The argument is checked before a later argument's call runs.
+  points into). The argument is checked before a later argument's call runs. Closed since: see "Argument
+  order (done)".
 - The precision limits in "Reference bindings per path": a change through a reference reaches its whole root,
   and the known false positive in `LANGUAGE.md` section 10 (a re-point in the same iteration, with the reference
   suspect at the top of the next pass).
@@ -1064,7 +1066,7 @@ and a mut call `bumpb(k)`).
 - A cleaner design (checking the body against the exit state) would need the body compiled once per exit,
   which a single-pass compiler with no AST does not have. The strictness is accepted: a block that points
   a reference elsewhere after a defer that uses it is refused, even where the defer would be harmless.
-- Not changed: argument evaluation order (still open).
+- Not changed: argument evaluation order (still open then; closed by "Argument order (done)" below).
 
 **Tests.** `tests/errors/defer_uses.obx`: 22 cases, one for each probe (the re-point with a free, the
 re-point alone, the free after the defer, a free by a call, a write, an indexed write, a mut call), the
@@ -1195,6 +1197,117 @@ Section 8 drops the two messages that a join or a loop's end no longer raise for
 the loop", "is invalidated on one path but not another"), and the use message now lists the cases it covers.
 
 **Measured** (on the merge of main at 03296b6): `run_fork` 410 passed, 0 failed. `port_test` 422 of 422 identical, no leaks. `port_compare` Stage B 561 of 561 identical, the port's peak 1,257,088 bytes against the budget 1,351,000. `own_fuzz --count 300 --profile both`: 0 failures in 600 programs. `doc_check`: 27 examples, 0 problems. `bench/bench.py` runs all four workloads (its obx side needs `obx/obxc`, built from the worktree's `obx`). `make promote`: stage2 equals stage3; the seed was then restored to the committed one, so the merge commit does not change the seed.
+
+## Argument order (done)
+
+**The hole.** A call's arguments were checked as if no argument could invalidate another. They run left to
+right, so a later argument could move, free or change what an earlier reference argument points into before
+the callee ran. `two(&xs[0], eatArr(xs))` printed a poisoned word (`123402283122688`), and
+`use2(first, mk(h))`, with `first = &bag.items[0]` and `mk` replacing `h.items`, printed 1 for 42 (with
+`OBO_CHECK=1`, which poisons freed memory; valgrind is not installed here). Both, and the 25 shapes in
+`tests/errors/arg_order.obx`, compiled on main (03296b6). Run, most print a poisoned or wrong value or exit
+3 on a freed header; the rest pass a dangling reference to a callee that happens not to read through it.
+
+**The rule, as implemented** (`holdArg`, `argOrderCheck`, `releaseArgs` before `callFn` in `src/obo.obo`).
+A reference argument (to a `&` or `mut` parameter) is held while the later arguments run, as a live `let`
+reference to the same place would be. The holder is a reference local of its own, with the argument's
+binding (`borrowBind`), pushed on `ownedLocals`. So every existing invalidation reaches it with the same
+precision: a move (`consume`), `replace`, `take`, a mut argument, a callee's free of a global (`afterCall`),
+a change through a handle (`invalidateDeep`), and a call that might free when the argument borrows through a
+handle. A disjoint place is told apart by the binding's path,
+as for a `let`. After each later argument (and after its move, when it is passed by value) the holders are
+checked: an invalidated one is refused at that argument ("argument 3 of f may free what argument 1 points
+into, and runs after it; compute it before the call"). A suspect one (a recursive call in a function that
+writes through a handle) is noted and reported at the end of the body, as the other suspect uses are. The
+holders are dropped when the last argument has run; the callee's own effects are checked by the existing
+call rules. `writeFile`'s bytes are held the same way while its flag runs: `writeFile(p, b.data, zap(b))`
+wrote 0 bytes from a freed header on main.
+
+The held-place list (`heldPush`) was not used: it keys a place by owner and identity for the index,
+`append` and assignment checks, and is hit only by moves and frees. A reference argument is also lost to a
+callee's frees of a global, to a write through a handle and to a mut argument, which the reference
+bindings already track. So the holder is a reference local, and it reuses them.
+
+**Pool.** The holder symbols are reused (`argTemps`, `argTempsUsed`), so a call costs no new symbol after
+the first at its depth. The ones made inside a function are dropped with its symbols at its end
+(`truncate(argTemps, tempMark)`). A holder is never named, and it is not in any loop's states (a loop's
+states cover only the locals it began with), so its freshness and loop marks are not read. An invalidated
+holder stops the compile, so only its suspicion is reset when it is reused. A holder made at the top level
+(a global's initializer) is kept for the whole compile, which `run/arg_order.obx` `holderReuse` covers.
+
+**Not held:** an argument passed by value (an int, a copy of a handle, a moved owned value), and an inner
+call's arguments once that call has returned (`add(two(&xs[0], 0), eatArr(xs))`). A handle passed by value
+whose target a later argument frees is checked where it is used (exit 7), as any handle is.
+
+**Accepted** (`tests/run/arg_order.obx`, 21 lines of output, also accepted by the seed): a later argument
+that reads the array or an element, takes a sibling field, moves another local, or changes a scalar through
+a mut argument or a handle; an int read from the place a later argument moves; an inner call finished before
+the move; a whole object passed and a later argument that frees below it through a handle; two references
+into one array; a let reference read by a later argument; a handle passed by value; and `writeFile` with a
+flag that reads the bytes.
+
+**Refused** (`tests/errors/arg_order.obx`, 25 cases, all compiled on main): an element, a field's element,
+a field's array, a whole local and a whole local array; the array passed by value to the same call (`keep(&xs[0], xs)`,
+and the `let` form, both with a callee that drops the array first); a reference through a handle and through a
+handle temporary with the owner moved; `replace` and `take` in a later argument; the freeing call nested
+in a later argument, its result passed on, and a reference held by an inner call; the third argument
+freeing the first, the second held and the third freeing it, two held and the first freed; a later
+reference argument whose index replaces the array; a mut argument; a reference parameter's element with a
+handle writer; a global's element with a call that frees the global; a reference through a handle with a call
+that might free; a recursive call in an argument; and `writeFile`.
+
+**Known false positives** (found in review, about 90 probes; each is refused the same way the `let` form is,
+since a holder has a `let` reference's precision: a `mut` argument invalidates the deep references into its
+root whatever the callee does with it):
+- `two(&xs[0], upd(xs, 1))`, where `upd(mut a: &[]Node, k: int)` only writes an element's scalar;
+- `rd(h.xs, grow(h.xs))` and `two(&h[0], tr(h))`, where the callee only appends to the `mut` array (an append
+  frees nothing);
+- `two(&b.items[0], bumpN(b))`, where `bumpN(mut b: &Bag)` only changes the scalar `b.n`.
+
+A whole-object argument beside such a call is accepted (`twoBag(b, bumpN(b))`, run test `mutScalar`). A
+narrower rule would need a summary of what a callee changes through each `mut` parameter, which the
+compiler does not keep.
+
+**Mutants** (`ARG_ORDER_MUTANTS` in `tests/mutate_fork.py`, imported by `tests/mutate_port.py`): 20, all
+caught, none equivalent: no hold, no check after a reference or a by-value argument, the pool never
+grows, a holder that is not a reference local, keeps its old binding, suspicion or index, a freed or
+suspect holder not reported, the check reaching enclosing calls' holders, only the newest holder
+refused, holders not reused, left in `ownedLocals`, not released after the arguments, kept past their
+function, and the four `writeFile` mutants (bytes not held, held under another argument's index, flag not
+checked, holder not released). The index mutant is caught by the `writeFile` error case, whose message
+names argument 2.
+
+**Memory.** The port compiling itself peaks at 1,251,616 bytes live (budget 1,351,000, not raised), 5,040
+more than the 1,246,576 before.
+
+**Measured.** `run_fork` 424 of 424, `port_test` 422 of 422 identical with no leaks, `port_compare` stage B
+575 of 575, `own_fuzz --count 300 --profile both` 0 failures in 600 programs, `doc_check` 27 examples with no
+problems, `mutate_fork` 158 of 166 caught with the 8 equivalents already listed, `mutate_port` 148 of 148,
+`bench/bench.py` run for all four workloads, `make promote` a fixed point (the seed is not committed).
+
+**Merge with `main` (07af3c9, the one-path may-flag).** Only `FORK.md` conflicted; both sections are kept.
+A reference local invalidated on one path is now invalid after the join, and is reported only where it is
+used (`joinSuspect`, `joinStates`, `absorb`, `loopCarryCheck`, the exit join in `loopBodyV`). Holders do not
+take part. A holder lives only between a call's first argument and its last; it is released before the
+statement goes on, and no snapshot, join or loop state is taken inside an argument list. The joins work over
+the locals a state covers. `releaseArgs` truncates `ownedLocals` to the length before the call's arguments,
+which the merged code does not change. Two pins changed with the merge. Two mutants were caught through the
+message "'an argument' is invalidated on one path but not another", which main removed: holders left live
+after the call, and `writeFile`'s holder not released. The first is still caught (a holder freed with its
+function is left in `ownedLocals`). The second was missed after the merge. `writeRead` now comes first in
+`run/arg_order.obx`, so the functions after it take holders from the pool it used, and the mutant's stale
+count is an index out of range. `reuseAfterChange` was added: a holder reused by a second call after a
+change between the two. Measured after the merge: `run_fork` 436 of 436, `port_test` 424 of 424 identical
+with no leaks, `port_compare` stage B 587 of 587, `own_fuzz --count 300 --profile both` 0 failures in 600
+programs, `doc_check` 29 examples with no problems, `mutate_fork` 170 of 178 caught with the 8 equivalents
+already listed, `mutate_port` 160 of 160, `bench/bench.py` run for all four workloads, `make promote` a fixed
+point (the seed was restored to main's). The port peaks at 1,273,232 bytes live (budget 1,351,000, not
+raised). Main's source alone measures 1,257,104 in the same way, so the merged rule costs 16,128 bytes,
+more than the 5,040 it cost on 03296b6. The cause was not separated out: the two changes' costs do not add
+up, as the image-buffer growth in "Reference bindings per path" did not.
+
+**Not covered.** No existing test expectation changed, and the port needed no rewrite. Methods do not
+exist yet (section 10 of `LANGUAGE.md`). The fuzzer has no argument-order kind.
 
 ## Milestone 1 design notes (as planned)
 
@@ -1530,7 +1643,10 @@ decisions") is the only departure from a single pass.
   - What a pass changes and the second must find as it was: the code (cut back to the function's start), the
     calls waiting for functions declared later (`fixups` of the unresolved ones, cut back to the start), the
     scanner (position, line, column, last token and the current token), `selfCalls`, `userCalls`, `useSeq`,
-    `fwdCalls`, what the function is recorded to free (`f.freed`, `freesAll`, `writesHandles`). The symbols and
+    `fwdCalls`, `argTempsUsed`, what the function is recorded to free (`f.freed`, `freesAll`, `writesHandles`),
+    and the pool of argument holders (`argTemps`, cut back to its length at the start: the first pass's holders
+    are symbols of the arena it truncates, so a kept handle would dangle; `p_held` holds a reference argument
+    while a later one runs, in a retried function) The symbols and
     bindings of the pass are truncated at its end as they always were; the string pool keeps what the first
     pass added (a literal is found again by its text). The snapshot is eleven integers and a string; nothing
     is copied. The counters and the freed set are only compared inside one pass or re-derived, so their

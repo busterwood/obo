@@ -1150,6 +1150,23 @@ fn p_retry(n: int): int {
     return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
 }
 fn later(x: int): int { return x * 3 + 1 }
+fn two(n: &P, k: int): int { return n.x + k }
+// the same, with a reference argument held while a later argument runs (argTemps): the holders the first pass
+// made are gone with its symbols, and the second pass makes its own
+fn p_held(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; v += w; u += i; w += v; v += u; w += i; u += w; i += 1 }
+    ga[i & 3] = gps[i & 1].x + gp.x * ga[i & 3]
+    g = two(r, id(u)) + two(rr.inner, id(w) + two(r, id(v)))
+    ga[i & 3] += gps[i & 1].x + gp.x * ga[i & 3]
+    g += two(gps[0], id(i)) + two(rr.inner, id(u))
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
 
 fn main() {
     for q in 0..4 { append(ga, q) }
@@ -1248,5 +1265,6 @@ fn main() {
     println(p_lines3(3))  // expect: 393
     println(p_lines4(3))  // expect: 393
     println(p_retry(4))  // expect: 163673
-    println(ga[0], ga[1], ga[2], ga[3], gp.x, gp.y, gps[0].x, gps[1].y)  // expect: 17881012202656178158
+    println(p_held(4))  // expect: 37115
+    println(ga[0], ga[1], ga[2], ga[3], gp.x, gp.y, gps[0].x, gps[1].y)  // expect: 57076157812202656178158
 }

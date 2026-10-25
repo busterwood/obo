@@ -1,0 +1,205 @@
+type Node = ref record { v: int; kids: []Node; opt: ?Node }
+type Bag = ref record { items: []Node; opt: ?Node; n: int }
+fn mk(v: int): Node { return new Node{v: v, kids: new []Node(0), opt: nil} }
+fn nb(): Bag {
+    var b = new Bag{items: new []Node(0), opt: nil, n: 0}
+    append(b.items, mk(41))
+    b.opt = mk(7)
+    return b
+}
+fn eatArr(a: []Node): int { return 1 }
+fn eatBag(b: Bag): int { return 1 }
+fn sinkI(a: []Node): int { return 1 }
+fn sinkN(n: ?Node): int { return 1 }
+fn give(a: []Node): []Node { return a }
+fn add(a: int, b: int): int { return a + b }
+fn two(n: &Node, k: int): int { return n.v + k }
+fn twoArr(a: &[]Node, k: int): int { return len(a) + k }
+fn twoBag(b: &Bag, k: int): int { return b.n + k }
+fn twoOpt(o: &?Node, k: int): int { return k }
+fn three(n: &Node, k: int, m: int): int { return n.v + k + m }
+fn setv(mut n: &Node, k: int): int {
+    n.v = k
+    return k
+}
+fn keep(n: &Node, a: []Node): int {
+    drop(a)
+    return n.v
+}
+fn cut(h: ^Bag): int {
+    h.items = new []Node(0)
+    return 1
+}
+fn clear(mut b: &Bag): int {
+    b.items = new []Node(0)
+    return 1
+}
+// === an element of an array passed by reference, then the array moved by a later argument
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(41))
+    println(two(&xs[0], eatArr(xs)))  // error: argument 2 of two may free what argument 1 points into
+}
+// === a deep reference local passed, then a later argument's call frees through a handle what it points into
+fn main() {
+    var bag = nb()
+    let h = handle(bag)
+    let first = &bag.items[0]
+    println(two(first, cut(h)))  // error: argument 2 of two may free what argument 1 points into
+}
+// === a field's element passed, then its record moved by a later argument
+fn main() {
+    var b = nb()
+    println(two(&b.items[0], eatBag(b)))  // error: argument 2 of two may free what argument 1 points into
+}
+// === a field's array passed, then replaced through a mut argument of a later call
+fn main() {
+    var b = nb()
+    println(twoArr(&b.items, clear(b)))  // error: argument 2 of twoArr may free what argument 1 points into
+}
+// === a whole local passed by reference, then moved by a later argument
+fn main() {
+    var b = nb()
+    println(twoBag(b, eatBag(b)))  // error: argument 2 of twoBag may free what argument 1 points into
+}
+// === a whole local array passed by reference, then moved by a later argument
+fn main() {
+    var xs = new []Node(0)
+    println(twoArr(xs, eatArr(xs)))  // error: argument 2 of twoArr may free what argument 1 points into
+}
+// === an element passed by reference, then its array passed by value to the same call
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(41))
+    println(keep(&xs[0], xs))  // error: argument 2 of keep may free what argument 1 points into
+}
+// === a let reference to an element, then its array passed by value to the same call
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(41))
+    let r = &xs[0]
+    println(keep(r, xs))  // error: argument 2 of keep may free what argument 1 points into
+}
+// === a reference through a handle passed, then the handle's owner moved by a later argument
+fn main() {
+    var b = nb()
+    let h = handle(b)
+    println(twoArr(&h.items, eatBag(b)))  // error: argument 2 of twoArr may free what argument 1 points into
+}
+// === a reference through a handle temporary, then its owner moved by a later argument
+fn main() {
+    var b = nb()
+    println(two(&handle(b).items[0], eatBag(b)))  // error: argument 2 of two may free what argument 1 points into
+}
+// === an element passed, then its array replaced by a later argument
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(41))
+    println(two(&xs[0], sinkI(replace(xs, new []Node(0)))))  // error: argument 2 of two may free what argument 1 points into
+}
+// === an optional field passed, then taken and freed by a later argument
+fn main() {
+    var b = nb()
+    println(twoOpt(&b.opt, sinkN(take(b.opt))))  // error: argument 2 of twoOpt may free what argument 1 points into
+}
+// === the freeing call nested inside a later argument
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(41))
+    println(two(&xs[0], add(1, eatArr(xs))))  // error: argument 2 of two may free what argument 1 points into
+}
+// === the freeing call's result passed on through another call
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(41))
+    println(two(&xs[0], sinkI(give(xs))))  // error: argument 2 of two may free what argument 1 points into
+}
+// === a reference held by an inner call while the inner call's later argument frees it
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(41))
+    println(add(1, two(&xs[0], eatArr(xs))))  // error: argument 2 of two may free what argument 1 points into
+}
+// === the second argument held, the third frees what it points into
+fn mid(k: int, n: &Node, m: int): int { return n.v + k + m }
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(41))
+    println(mid(1, &xs[0], eatArr(xs)))  // error: argument 3 of mid may free what argument 2 points into
+}
+// === a later reference argument whose index replaces what the earlier one points into
+fn pair(a: &Node, b: &Node): int { return a.v + b.v }
+fn main() {
+    var b = nb()
+    var c = nb()
+    println(pair(&b.items[0], &c.items[sinkI(replace(b.items, new []Node(0)))]))  // error: argument 2 of pair may free what argument 1 points into
+}
+// === two arguments held, the third frees what the first points into
+fn pair3(a: &Node, b: &Node, k: int): int { return a.v + b.v + k }
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(41))
+    var ys = new []Node(0)
+    append(ys, mk(1))
+    println(pair3(&xs[0], &ys[0], eatArr(xs)))  // error: argument 3 of pair3 may free what argument 1 points into
+}
+// === the third argument frees what the first points into
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(41))
+    println(three(&xs[0], 1, eatArr(xs)))  // error: argument 3 of three may free what argument 1 points into
+}
+// === a mut argument, then its array moved by a later argument
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(41))
+    println(setv(xs[0], eatArr(xs)))  // error: argument 2 of setv may free what argument 1 points into
+}
+// === an element of a reference parameter, then a later argument frees through a handle
+fn f(p: &Bag, h: ^Bag): int {
+    return two(&p.items[0], cut(h))  // error: argument 2 of two may free what argument 1 points into
+}
+fn main() {
+    var b = nb()
+    println(f(b, handle(b)))
+}
+// === an element of a global, then a later argument's call frees the global
+var G = nb()
+fn resetG(): int {
+    G = nb()
+    return 1
+}
+fn main() {
+    println(two(&G.items[0], resetG()))  // error: argument 2 of two may free what argument 1 points into
+}
+// === a reference through a handle, then a later argument's call that might free
+var spare = new []Node(0)
+fn zap(): int {
+    spare = new []Node(0)
+    return 1
+}
+fn main() {
+    var b = nb()
+    let h = handle(b)
+    println(twoArr(&h.items, zap()))  // error: argument 2 of twoArr may free what argument 1 points into
+}
+// === a recursive call that writes through a handle, in an argument after a deep reference
+fn rec(n: &Node, h: ^Bag, d: int): int {
+    if d == 0 {
+        h.items = new []Node(0)
+        return 0
+    }
+    return two(&n.kids[0], rec(n, h, d - 1))  // error: argument 2 of two makes a recursive call that writes through a handle
+}
+fn main() {}
+// === writeFile's bytes, then its flag argument replaces them
+type Box = ref record { data: []byte }
+fn zapData(mut b: &Box): bool {
+    b.data = new []byte(0)
+    return false
+}
+fn main() {
+    var b = new Box{data: new []byte(0)}
+    append(b.data, byte(65))
+    println(writeFile("/dev/null", b.data, zapData(b)))  // error: argument 3 of writeFile may free what argument 2 points into
+}

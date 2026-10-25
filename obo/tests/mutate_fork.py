@@ -328,6 +328,39 @@ ORIGIN_MUTANTS = {
 }
 MUTANTS.update(ORIGIN_MUTANTS)
 
+# argument order: a reference argument is held while the later arguments run (holdArg, argOrderCheck,
+# releaseArgs); errors/arg_order.obx and run/arg_order.obx show them
+ARG_ORDER_MUTANTS = {
+    'a reference argument is not held': ('            holdArg(b, i)\n', ''),
+    'no check after a reference argument': ('            argOrderCheck(tbase, f.name, i, argLine, argCol)\n            holdArg(b, i)\n',
+        '            holdArg(b, i)\n'),
+    'no check after a by-value argument': ('            consume(a)\n            argOrderCheck(tbase, f.name, i, argLine, argCol)\n',
+        '            consume(a)\n'),
+    'the holder pool never grows': ('    if argTempsUsed == len(argTemps) {\n', '    if argTempsUsed < 0 {\n'),
+    'an argument holder is not a reference local': ('        s.isRefLocal = true\n        append(argTemps, s)\n',
+        '        append(argTemps, s)\n'),
+    'an argument holder keeps its old binding': ('    t.bind = b\n    t.suspect = false\n', '    t.suspect = false\n'),
+    'an argument holder keeps its old suspicion': ('    t.suspect = false\n    t.value = i\n', '    t.value = i\n'),
+    'an argument holder keeps its old index': ('    t.value = i\n    append(ownedLocals, t)\n', '    append(ownedLocals, t)\n'),
+    'a freed argument is not refused': ('        if t.moved {\n            errorAt("argument "', '        if false {\n            errorAt("argument "'),
+    'a suspect argument is not noted': ('        if t.suspect {\n            notePending(line, col, "argument "',
+        '        if false {\n            notePending(line, col, "argument "'),
+    'the check reaches the holders of enclosing calls': ('    for k in tbase..argTempsUsed {\n        let t = argTemps[k]\n',
+        '    for k in 0..argTempsUsed {\n        let t = argTemps[k]\n'),
+    'only the newest holder is refused': ('        if t.moved {\n            errorAt("argument "',
+        '        if t.moved && k == argTempsUsed - 1 {\n            errorAt("argument "'),
+    'argument holders are not reused': ('    argTempsUsed = tbase\n    truncate(ownedLocals, omark)\n', '    truncate(ownedLocals, omark)\n'),
+    'argument holders stay live after the call': ('    argTempsUsed = tbase\n    truncate(ownedLocals, omark)\n', '    argTempsUsed = tbase\n'),
+    "a call's holders are not released": ('    releaseArgs(tbase, omark)\n    if sym != T_RPAREN', '    if sym != T_RPAREN'),
+    "a function's argument holders outlive it": ('    truncate(argTemps, tempMark)\n', ''),
+    "writeFile's bytes are not held": ('        holdArg(itemBind(d), 1)\n', ''),
+    "writeFile's bytes are held as another argument": ('        holdArg(itemBind(d), 1)\n', '        holdArg(itemBind(d), 0)\n'),
+    "writeFile's flag is not checked": ('        argOrderCheck(tbase, name, 2, eLine, eCol)\n', ''),
+    "writeFile's holder is not released": ('        argOrderCheck(tbase, name, 2, eLine, eCol)\n        releaseArgs(tbase, omark)\n',
+        '        argOrderCheck(tbase, name, 2, eLine, eCol)\n'),
+}
+MUTANTS.update(ARG_ORDER_MUTANTS)
+
 
 # the second review's gaps: origins, the joins over several roots, the chained handles, and the
 # callee-local rule. An entry marked equivalent in FORK.md is expected to survive: the guard it removes

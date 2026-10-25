@@ -1,0 +1,217 @@
+// Argument order: a reference passed as an argument is held while the later arguments run. These
+// shapes are accepted: the later argument only reads, touches a disjoint place, or the earlier
+// argument is passed by value or is finished with before the later one runs.
+type Node = ref record { v: int; kids: []Node; opt: ?Node }
+type Bag = ref record { items: []Node; opt: ?Node; n: int }
+fn mk(v: int): Node { return new Node{v: v, kids: new []Node(0), opt: nil} }
+fn nb(): Bag {
+    var b = new Bag{items: new []Node(0), opt: nil, n: 5}
+    append(b.items, mk(41))
+    b.opt = mk(7)
+    return b
+}
+fn eatArr(a: []Node): int { return len(a) }
+fn eatBag(b: Bag): int { return b.n }
+fn sinkN(n: ?Node): int {
+    if n != nil { return n.v }
+    return 0
+}
+fn count(a: &[]Node): int { return len(a) }
+fn readBag(b: &Bag): int { return b.n }
+fn add(a: int, b: int): int { return a + b }
+fn two(n: &Node, k: int): int { return n.v + k }
+fn twoBag(b: &Bag, k: int): int { return b.n + len(b.items) + k }
+fn pair(a: &Node, b: &Node): int { return a.v + b.v }
+fn bumpN(mut b: &Bag): int {
+    b.n += 1
+    return b.n
+}
+fn setV(h: ^Bag): int {
+    h.n = 9
+    return 1
+}
+fn cut(h: ^Bag): int {
+    h.items = new []Node(0)
+    return 1
+}
+fn useH(h: ^Bag, k: int): int {
+    if alive(h) { return h.n + k }
+    return -1
+}
+
+// writeFile's bytes, then a flag argument that only reads them. It comes first, so that the functions
+// after it hold arguments from the pool writeFile used
+type Box = ref record { data: []byte }
+fn flagOf(b: &Box): bool { return len(b.data) == 0 }
+fn writeRead() {
+    var b = new Box{data: new []byte(0)}
+    append(b.data, byte(65))
+    println(writeFile("/dev/null", b.data, flagOf(b)))   // expect: true
+    if len(b.data) > 5 { b.data = new []byte(0) }
+}
+
+// a later argument that reads the array the earlier one points into
+fn readsArray() {
+    var xs = new []Node(0)
+    append(xs, mk(41))
+    println(two(&xs[0], count(xs)))          // expect: 42
+}
+
+// a later argument that reads an element of the same array
+fn readsElement() {
+    var xs = new []Node(0)
+    append(xs, mk(40))
+    println(two(&xs[0], xs[0].v))            // expect: 80
+}
+
+// a later argument that takes a sibling field: a disjoint place
+fn takesSibling() {
+    var b = nb()
+    println(two(&b.items[0], sinkN(take(b.opt))))   // expect: 48
+}
+
+// a later argument that moves another local
+fn movesOther() {
+    var xs = new []Node(0)
+    append(xs, mk(41))
+    var ys = new []Node(0)
+    append(ys, mk(1))
+    println(two(&xs[0], eatArr(ys)))         // expect: 42
+}
+
+// an earlier argument passed by value: an int read from the place a later argument moves
+fn byValueFirst() {
+    var xs = new []Node(0)
+    append(xs, mk(41))
+    println(add(xs[0].v, eatArr(xs)))        // expect: 42
+}
+
+// an inner call that is finished with its reference before the later argument moves the array
+fn innerDone() {
+    var xs = new []Node(0)
+    append(xs, mk(41))
+    println(add(two(&xs[0], 0), eatArr(xs))) // expect: 42
+}
+
+// a later argument that changes a scalar through a mut argument: a whole-object reference stays valid
+fn mutScalar() {
+    var b = nb()
+    println(twoBag(b, bumpN(b)))             // expect: 13
+}
+
+// a later argument that writes a scalar through a handle: nothing is freed
+fn handleScalar() {
+    var b = nb()
+    let h = handle(b)
+    let first = &b.items[0]
+    println(two(first, setV(h)))             // expect: 42
+}
+
+// a whole object passed, then a later argument frees below it through a handle: the object itself stays
+fn handleFreesBelow() {
+    var b = nb()
+    let h = handle(b)
+    println(twoBag(b, cut(h)))               // expect: 6
+}
+
+// two references into one array, read by both arguments
+fn twoRefs() {
+    var xs = new []Node(0)
+    append(xs, mk(40))
+    append(xs, mk(2))
+    println(pair(&xs[0], &xs[1]))            // expect: 42
+}
+
+// a let reference passed, then a later argument that reads through it
+fn letRefRead() {
+    var b = nb()
+    let r = &b
+    println(twoBag(r, readBag(r)))           // expect: 11
+}
+
+// a handle passed by value, then its owner moved: the handle is checked when it is used
+fn handleValue() {
+    var b = nb()
+    var c = nb()
+    let h = handle(c)
+    println(useH(h, eatBag(b)))              // expect: 10
+}
+
+// a later argument whose freeing call has finished before the earlier argument is taken
+fn freeFirst() {
+    var xs = new []Node(0)
+    append(xs, mk(41))
+    var ys = new []Node(0)
+    append(ys, mk(1))
+    println(add(eatArr(ys), two(&xs[0], 1))) // expect: 43
+}
+
+// a reference argument is let go when its call is made: a change after the call, on one path, is not
+// a change under it
+fn letGo(c: bool) {
+    var xs = new []Node(0)
+    append(xs, mk(41))
+    println(two(&xs[0], 1))                  // expect: 42
+    if c { xs = new []Node(0) }
+    println(len(xs))                         // expect: 1
+}
+
+// a call outside any function holds its argument too; the holder is reused in the functions below
+var G0 = nb()
+let g0 = two(&G0.items[0], 1)
+
+// a recursive call after a deep reference argument, in a function that writes through no handle:
+// the argument is suspect, but nothing it points into is freed
+fn depth(n: &Node, d: int): int {
+    if d == 0 { return 0 }
+    return two(&n.kids[0], depth(n, d - 1))
+}
+
+// a function that writes through a handle and holds a deep argument, with no recursive call: the
+// suspicion of the holder's last use is not carried here
+fn later(h: ^Bag, n: &Node): int {
+    h.opt = nil
+    return two(&n.kids[0], 1)
+}
+
+fn holderReuse() {
+    println(g0)                              // expect: 42
+    var b = nb()
+    append(b.items[0].kids, mk(3))
+    println(depth(b.items[0], 1))            // expect: 3
+    var c = nb()
+    var n = mk(0)
+    append(n.kids, mk(4))
+    println(later(handle(c), n))             // expect: 5
+}
+
+// a holder is reused by the next call: a change between the two calls, under what the first call's
+// argument pointed into, does not reach the second call's argument
+fn reuseAfterChange() {
+    var xs = new []Node(0)
+    append(xs, mk(41))
+    println(two(&xs[0], 1))                  // expect: 42
+    xs = new []Node(0)
+    append(xs, mk(1))
+    println(two(&xs[0], 1))                  // expect: 2
+}
+
+fn main() {
+    writeRead()
+    readsArray()
+    readsElement()
+    takesSibling()
+    movesOther()
+    byValueFirst()
+    innerDone()
+    mutScalar()
+    handleScalar()
+    handleFreesBelow()
+    twoRefs()
+    letRefRead()
+    handleValue()
+    freeFirst()
+    letGo(false)
+    holderReuse()
+    reuseAfterChange()
+}

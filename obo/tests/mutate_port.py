@@ -287,6 +287,9 @@ MUTANTS.update({k: [v] for k, v in ONE_PATH_MUTANTS.items()})
 from mutate_fork import ORIGIN_MUTANTS, EQUIVALENT as FORK_EQUIVALENT  # noqa: E402
 # the fork's equivalent mutants are not run here: the port has the same source, so they are equivalent too
 MUTANTS.update({k: [v] for k, v in ORIGIN_MUTANTS.items() if k not in FORK_EQUIVALENT})
+# argument order: the error and run cases of arg_order.obx show them, as for the defer uses
+from mutate_fork import ARG_ORDER_MUTANTS  # noqa: E402
+MUTANTS.update({k: [v] for k, v in ARG_ORDER_MUTANTS.items() if k not in FORK_EQUIVALENT})
 
 
 # register allocation (FORK.md, Phase 2). A home is r12 to r15, taken out of the free list while its local is in
@@ -324,6 +327,7 @@ MUTANTS.update({
     "retry: locals' registers not given up": [("    if len(free) == 0 && homeBits != 0 { giveUpHomes() }\n", "")],
     "retry: code not rewound": [("        truncate(code, f.addr)\n        let gs = &globals", "        let gs = &globals")],
     "retry: waiting calls of the first pass kept": [("                while len(g.fixups) > 0 && g.fixups[len(g.fixups) - 1] >= f.addr { truncate(g.fixups, len(g.fixups) - 1) }\n", "")],
+    "retry: argument holders of the first pass kept": [("        truncate(argTemps, tempMark)\n        truncate(symArena, symMark)\n        return true", "        truncate(symArena, symMark)\n        return true")],
     "retry: scanner not rewound": [("        pos = sPos\n", "")],
     "retry: token not restored": [("        sym = sSym\n", "")],
 })
