@@ -1,0 +1,327 @@
+// Reference bindings per path: a reference that is re-pointed on some paths is
+// invalidated only by changes under a root it may point into on the path that
+// reaches the change. Each case here is valid and must run.
+type Item = ref record { v: int; kids: []Item }
+
+fn choose(c: bool) {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a                       // choosing a reference that is never changed
+    if c { k = &b }
+    println(k.v)                     // expect: 2
+}
+
+fn both(c: bool) {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var c2 = new Item{v: 3, kids: new []Item(0)}
+    var k = &a
+    if c { k = &b } else { k = &c2 }  // re-pointed on every path
+    a = new Item{v: 4, kids: new []Item(0)}   // a is no longer pointed to: no error
+    println(k.v)                     // expect: 2
+}
+
+fn newRoot() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    k = &b                           // re-pointed to b on the only path
+    a = new Item{v: 5, kids: new []Item(0)}  // a is not pointed to any more
+    println(k.v)                     // expect: 2
+}
+
+fn loopPoint() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 2 {
+        k = &b                       // pointed afresh before it is read in the body
+        if i == 1 { println(k.v) }   // expect: 2
+        i += 1
+    }
+}
+
+fn underIndex() {
+    var root = new Item{v: 1, kids: new []Item(0)}
+    append(root.kids, new Item{v: 7, kids: new []Item(0)})
+    var other = new Item{v: 8, kids: new []Item(0)}
+    var k = &root.kids[0]
+    k = &other                       // k no longer points into root.kids
+    root.kids = new []Item(0)        // frees the kids, not what k points to
+    println(k.v)                     // expect: 8
+}
+
+// the reference that points at its own object's element: the parent of k would be k itself, and
+// the compiler must not loop on that (this case hung before the parent is guarded)
+fn selfParent() {
+    var root = new Item{v: 1, kids: new []Item(0)}
+    append(root.kids, new Item{v: 2, kids: new []Item(0)})
+    let w = &root
+    var k = &root
+    k = &k.kids[0]
+    k.kids = new []Item(0)               // frees what k points into, not what w points to
+    println(w.v)                         // expect: 1
+}
+
+// a defer that re-points a reference declared inside its own body is fine: the body's reference is
+// local to the body, so the change is seen where the body runs
+fn deferLocal(c: bool) {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    if c {
+        println(a.v)                      // expect: 1
+        defer {
+            var t = &a
+            t = &b
+            println(t.v)                  // expect: 2
+        }
+    }
+    println(b.v)                          // expect: 2
+}
+
+// a reference read at the top of a loop, pointed at a new root after the old one is freed: the
+// read after the free is only of the binding pointed afresh before it, so the loop is accepted
+fn loopCache() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 2 {
+        if i == 0 { println(k.v) }        // expect: 1
+        b = new Item{v: 3, kids: new []Item(0)}
+        k = &b
+        if i == 1 { println(k.v) }        // expect: 3
+        i += 1
+    }
+}
+
+// a free between two loops: the second loop reads a reference at its top that it points afresh each pass
+// (the free is of something the reference does not point into, and the loops are accepted)
+fn freeBetweenLoops() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    var j = 0
+    while j < 2 { j += 1 }
+    var x = new Item{v: 9, kids: new []Item(0)}
+    x = new Item{v: 10, kids: new []Item(0)}
+    var i = 0
+    while i < 3 {
+        if i == 0 { println(k.v) }  // expect: 1
+        k = &b
+        if i == 1 { println(k.v) }  // expect: 2
+        i += 1
+    }
+    println(k.v)                    // expect: 2
+}
+
+// a loop frees a block that the reference does not point into, and reads the reference at its top
+fn unrelatedFree() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 3 {
+        if i == 2 { println(k.v) }  // expect: 1
+        b = new Item{v: 5, kids: new []Item(0)}
+        k = &a
+        i += 1
+    }
+}
+
+// a deferred free of a temporary at block exit, and a reference that does not point into it
+fn deferTemp() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var k = &a
+    {
+        var t = new Item{v: 3, kids: new []Item(0)}
+        defer { t = new Item{v: 4, kids: new []Item(0)} }
+        println(k.v)                // expect: 1
+    }
+    println(k.v)                    // expect: 1
+}
+
+// a deferred free of the reference's old target at block exit; the reference is pointed at a live one after it
+fn deferRepoint() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var k = &b
+    {
+        defer { a = new Item{v: 9, kids: new []Item(0)} }
+        k = &a
+        println(k.v)                // expect: 1
+    }
+    k = &b
+    println(k.v)                    // expect: 2
+}
+
+// a reference read at the top of a loop, pointed at a read-only parameter at its end; written before that
+// only where it points at its own local, so the writable binding is not needed on the next pass
+fn readOnlyLoop(r: &Item) {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 2 {
+        if i == 0 { println(k.v) }  // expect: 1
+        if i == 1 { println(k.v) }  // expect: 2
+        k = r
+        i += 1
+    }
+    println(a.v)                    // expect: 1
+}
+
+fn readOnlyCaller() {
+    var x = new Item{v: 2, kids: new []Item(0)}
+    readOnlyLoop(x)
+}
+
+// a free that the reference does not point into, between two loops: the second loop reads it at its top,
+// and re-points it at a root that the loop then frees before the re-point (the free is not carried)
+fn preMark() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var c = new Item{v: 3, kids: new []Item(0)}
+    var d = new Item{v: 4, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 2 {
+        if i == 1 { k = &b }
+        i += 1
+    }
+    c = new Item{v: 6, kids: new []Item(0)}
+    i = 0
+    while i < 2 {
+        if i == 0 { println(k.v) }  // expect: 2
+        d = new Item{v: 7, kids: new []Item(0)}
+        k = &d
+        i += 1
+    }
+    println(k.v)                    // expect: 7
+}
+
+// a loop frees a block the reference does not point into, and reads the reference at its top where the
+// next iteration's binding differs from the one the loop starts with
+fn unrelated2() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var b = new Item{v: 2, kids: new []Item(0)}
+    var c = new Item{v: 3, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 3 {
+        c = new Item{v: 4, kids: new []Item(0)}   // frees c, which k does not point into
+        if i == 2 { println(k.v) }  // expect: 2
+        if i == 1 { k = &b }
+        i += 1
+    }
+}
+
+// a deferred free of the reference's target runs at the block's exit: the reference is valid before it
+fn deferEarly() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var k = &a
+    {
+        defer { a = new Item{v: 9, kids: new []Item(0)} }
+        println(k.v)                // expect: 1
+    }
+}
+
+// a deferred write through a child changes only what is under the child: its parent stays valid after the block
+fn deferChild() {
+    var x = new Item{v: 1, kids: new []Item(0)}
+    append(x.kids, new Item{v: 2, kids: new []Item(0)})
+    append(x.kids[0].kids, new Item{v: 3, kids: new []Item(0)})
+    var p = &x.kids[0]
+    {
+        let s = &p.kids[0]
+        defer { s.kids = new []Item(0) }
+        println(p.v)                // expect: 2
+    }
+    println(p.v)                    // expect: 2
+}
+
+// the same, deferred in each pass of a loop, where the parent is read after the loop
+fn deferChildLoop() {
+    var x = new Item{v: 1, kids: new []Item(0)}
+    append(x.kids, new Item{v: 2, kids: new []Item(0)})
+    append(x.kids[0].kids, new Item{v: 3, kids: new []Item(0)})
+    var p = &x.kids[0]
+    var i = 0
+    while i < 2 {
+        let s = &p.kids[0]
+        defer { s.kids = new []Item(0) }
+        i += 1
+    }
+    println(p.v)                    // expect: 2
+}
+
+// a deferred deep write through a child of a reference borrowed through a handle: the reference stays valid
+fn deferHandleChild() {
+    var x = new Item{v: 1, kids: new []Item(0)}
+    append(x.kids, new Item{v: 2, kids: new []Item(0)})
+    append(x.kids[0].kids, new Item{v: 3, kids: new []Item(0)})
+    let h = handle(x)
+    var p = &h.kids[0]
+    {
+        let s = &p.kids[0]
+        defer { s.kids = new []Item(0) }
+        println(p.v)                // expect: 2
+    }
+    println(p.v)                    // expect: 2
+}
+
+// a loop that writes through a child of p and leaves through continue: p, an ancestor, stays valid
+fn loopContChild() {
+    var x = new Item{v: 1, kids: new []Item(0)}
+    append(x.kids, new Item{v: 2, kids: new []Item(0)})
+    append(x.kids[0].kids, new Item{v: 3, kids: new []Item(0)})
+    var p = &x.kids[0]
+    var i = 0
+    while i < 2 {
+        let s = &p.kids[0]
+        s.kids = new []Item(0)
+        i += 1
+        if i == 1 { continue }
+        println(p.v)                // expect: 2
+    }
+    println(p.v)                    // expect: 2
+}
+
+fn bumpV(mut q: &Item) { q.v += 1 }
+
+// a mut argument writes through a reference that is pointed afresh before each pass: no error
+fn mutArgOk() {
+    var a = new Item{v: 1, kids: new []Item(0)}
+    var k = &a
+    var i = 0
+    while i < 2 {
+        k = &a
+        bumpV(k)
+        i += 1
+    }
+    println(a.v)                    // expect: 3
+}
+
+fn main() {
+    choose(true)
+    both(true)
+    newRoot()
+    loopPoint()
+    underIndex()
+    selfParent()
+    deferLocal(true)
+    loopCache()
+    freeBetweenLoops()
+    unrelatedFree()
+    deferTemp()
+    deferRepoint()
+    readOnlyCaller()
+    preMark()
+    unrelated2()
+    deferEarly()
+    deferChild()
+    deferChildLoop()
+    deferHandleChild()
+    loopContChild()
+    mutArgOk()
+}

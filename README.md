@@ -30,7 +30,7 @@ the obo dialect (`obo/src/obo.obo`), and it compiled every test program
 and error case byte-for-byte as the first obo compiler did, and compiles itself to a
 fixed point. Its stage test now compares behaviour (same errors, same output when run),
 so code generation can improve. Compiling
-its own source it peaked at 1.5 MB resident (live peak now 1.13 MB), against 2.5 MB for the same logic on a tuned
+its own source it peaked at 1.5 MB resident (live peak now 1.21 MB), against 2.5 MB for the same logic on a tuned
 collector and 1.9 MB on an aggressive one. It is still about 50% slower.
 
 **Decision: obo is the future of the language.** obx becomes the reference it grew
@@ -130,7 +130,8 @@ In order:
    temporaries first), and each one removed is also a measure of simplicity: how
    far obo code must differ from straightforward code. A change through a handle now
    frees what references inside something point into, and the compiler checks that (done);
-   no rewrite of the port's own code was needed to satisfy the rule.
+   no rewrite of the port's own code was needed to satisfy the rule. A reference's binding is
+   now kept for each path, so a reference re-pointed on one branch is checked on every path (done; `obo/FORK.md`, "Reference bindings per path").
 5. **The move** (done). obo's compiler is the port, built by a committed seed
    (`obo/seed/obo`), with `make promote` checking the fixed point and the suite before
    replacing the seed. The mutants run against the port, and `obo-on-obx.obx` is
@@ -148,7 +149,7 @@ about 0.01 to 0.02 s in both. The obo port (4552 lines) had a live peak of 1.3 M
 allocated 28.6 MB before the allocation work; after it, 1.05 MB and 12.3 MB (FORK.md,
 Phase 4). The cheaper code of Phase 1 brought the total to 12.1 MB and moved the peak to
 1.08 MB, reached now while the code buffer grows (FORK.md, Phase 1); the checks across calls
-brought it to 1.13 MB. obx's compiler (3222 lines), with the
+brought it to 1.21 MB. obx's compiler (3222 lines), with the
 collector, peaks at 8.8 MB. Wall time is about 30 ms, down from 33 ms. Also done:
 eight loops that only walked an array now borrow it and loop with `for` (the index form was a workaround for the walk rule). The loop over `globals` at exit now
 walks by borrowing too. It was blocked by two false positives: a self-call counted as

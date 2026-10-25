@@ -366,11 +366,15 @@ expression, all accepted:
 - `checkTargetAcrossCall` is the check `=` already made, now shared with compound assignment. It
   applies when the target is reached through a handle, through a global, or is a field or element
   (`xs == nil`), and a non-pure call ran while the value was computed.
-- `ownerOf(root)` is the owned local whose move frees the array that a designator holds: the root
-  itself, or for a reference, the local it borrows from (`refRoot`). It is nil through a `^` handle
-  (`handleSym`), which no local owns, and for a reference parameter, whose owner is in the caller.
-- `heldTouch(root)` snapshots `touches` of that owner, and `heldLost(root, t0)` reports that the
-  owner was moved since, or that `root` is a reference that a move or a change invalidated (`moved`).
+- `ownerTouch(root)` is the sum of `touches` over the owned locals whose move frees the array that a
+  designator holds: the root itself, or for a reference, every local in its binding's roots (the
+  per-path binding of the reference, see section 4). A `^` handle (`handleSym`) and a reference
+  parameter (whose owner is in the caller) contribute nothing. A binding's roots are stable between
+  the snapshot and the check, and `touches` only grows, so a sum changes exactly when one of them moved.
+  (Merge decision: `main`'s `ownerOf` read `refRoot`, which the per-path binding replaced. Taking the sum
+  keeps `main`'s rule, a move of any owner the reference may point into is refused.)
+- `heldTouch(root)` is `ownerTouch(root)` taken before the call, and `heldLost(root, t0)` reports that an
+  owner was moved since (`ownerTouch(root) != t0`), or that `root` is a reference that a move or a change invalidated (`moved`).
   Both are taken for the root of the designator, so a field, an element, a multi-dimensional path, a
   record literal, or a reference is checked the same way as a whole local.
 - The index check in `designatorT` snapshots before the array is loaded and compares after the index.
@@ -431,7 +435,9 @@ which no move touches: `let h = handle(b); h.items[eatBag(b)]` (rc=3), `let h = 
 Mechanism (`src/obo.obo`, `heldPush` and after). Each index, `replace`, `append`/`truncate`, and assignment
 through a field, element or reference pushes the place it holds before its value or index runs, and pops it
 after. A held place is keyed by what it is in. An owned place (`heldKey` is the owner, `heldPath` the path
-inside it) is the place of a whole owned local, or of a reference into one (through its `refPath`). A handle
+inside it) is the place of a whole owned local. A reference local is held once per root of its binding, at the
+binding's path in that root: a reference after a join may point into several owners, and each is held, so a move
+or free of any of them is seen. A handle
 made by `let h = handle(b)` from a whole owned local carries that local as its origin (`hOrigin` on the
 handle's symbol and on each designator through it), so its held places are owned places of `b`. A handle
 without an origin (a handle parameter, or one made from a field or element) and a reference parameter are
@@ -455,7 +461,7 @@ assignment, a field assigned a value that moves its own local), each one refused
 Two survivors of the mutants were argued equivalent in the first version of this section. They are not:
 (1) `take` can free a held place. A handle made inside a narrowed block, `if o != nil { hh = handle(o) }`, names
 the object that `take(o)` empties, so `hh.kids[sinkN(take(o))]` read freed memory (rc=139, probe p2/t1). (2) The
-reference's `refPath` prefix matters: a free strictly below a reference's path is not covered by the moved flag,
+reference's path in its root matters: a free strictly below a reference's path is not covered by the moved flag,
 `let r = &xs[0]; r.kids[sinkI(replace(xs[0].kids, ...))]` (rc=3, probe p/q1). Both are error tests now
 (`held_places.obx`), and the mutants that drop the take's free and the reference's path are caught by them.
 
@@ -481,17 +487,17 @@ nothing) are h1-h13, k5-k8, z1-z5, w2, x3, y4, y9 in the probe set (`review14/`)
 
 **Tests.** `tests/errors/call_targets.obx` has 58 cases (the earlier 59, less the handle-of-another-local
 case that is now accepted: its run control is in `tests/run/call_targets.obx`). `tests/errors/held_places.obx`
-has 11 cases: the two probes above, the review17 handle probes H1-H5 and H6-H9, and the compound and assignment
+has 12 cases: the two probes above, the review17 handle probes H1-H5 and H6-H9, and the compound and assignment
 forms. `tests/run/held_places.obx` runs the accepted forms above, with outputs.
 
-**Mutants.** `tests/mutate_fork.py`: 87, 87 caught. The held-place mutants are: a replace or
+**Mutants.** `tests/mutate_fork.py`: 105, 105 caught. The held-place mutants are: a replace or
 take that does not free (`replace does not free what it holds`, `take does not free what it holds`), moves that do
 not reach held places or do not free handle targets, identity frees that do not reach their entries, identity frees
 that ignore the path (the same-handle comparison disabled), owned frees that ignore the path, the assignment
 exemption removed for owned places and not applied through handles, origin ignored when holding and when freeing,
 whole local arrays hit by identity frees, reference parameters given their owner's place, each hold removed (index,
-replace, append/truncate, plain and compound assignment), and the reference path ignored. Each is caught by a named
-case. `tests/mutate_port.py`: 88, 88 caught, at the committed budget of 1,351,000 (see
+replace, append/truncate, plain and compound assignment), and the binding's path ignored. Each is caught by a named
+case. `tests/mutate_port.py`: 93, 93 caught, at the committed budget of 1,351,000 (see
 "The port's memory budget" below); the port mutants change `src/obo.obo` and are judged by `port_compare`.
 
 **Fuzzer** (`tests/own_fuzz.py`): invalid kinds, `replace_sink_index_stmt` (a field's array indexed by a pure
@@ -513,8 +519,8 @@ changed elsewhere, so it is left.
 **The port.** It compiles unchanged under the new rules (no spot needed rewriting).
 
 **The port's memory budget, after the merge of main.** `PEAK_BUDGET` stays at 1,351,000, and the
-merged port passes it. The port compiling itself peaks at 1,097,776 bytes live before the held-place
-change and 1,127,104 after it, 223,896 bytes under the budget. Before the merge the branch's base lacked main's allocation work (step 4), and the same
+merged port passes it. The port compiling itself peaks at 1,211,104 bytes live, against main's 1,161,136 (the held places and
+main's reference bindings together), 139,896 bytes under the budget. Before the merge the branch's base lacked main's allocation work (step 4), and the same
 check failed at 1,739,088 bytes; the merge brought in that work and the check passes.
 
 This branch's compiler changes add 18,272 bytes to the peak: main's source measures about 1,079,400 bytes
@@ -729,7 +735,8 @@ rules above. All four are fixed.
 - A deferred recursive call (a false positive, `j/OK_N`). The body of a `defer` is compiled
   where the statement is, but runs where its block ends. `deferStat` takes back the suspicion its
   body's self-call made (`suspects`, `restoreSuspects`) and sets `Block.selfDefer`; `callDefers`
-  applies it at each exit from the block (`markSuspects`). A read in the block before its end is
+  applies it at each exit from the block (`markSuspects`). (Superseded: `selfDefer` was removed, see the
+  follow-up below; the same suspicion is now a logged free replayed at the exit.) A read in the block before its end is
   accepted, and a read after the block is rejected. `break` and `continue` record their
   suspicion after `runDefers`, so a deferred call's suspicion reaches the loop's states.
 - The loop variable of a for walk is rebound each iteration, so its suspicion is not carried
@@ -794,19 +801,250 @@ inherited 2, call-site deep-argument check dropped 6; scalar truncate through a 
 shallow references invalidated 0 each. Those last two are covered by the run and error cases
 above, not by the fuzzer.
 
-**Holes found, not fixed here.** All three are accepted by HEAD's seed too, and by the current
-compiler. They will be fixed next.
-- A reference re-pointed in one branch keeps only the last binding for every path:
-  `var k = &a; if a.v == 2 { k = &b }; a = new ...; println(k.v)` reads freed memory
-  (`scratchpad/w/x4_root_join.obx`). The handle form is `var k = &root.kids[0]; if root.v == 2 {
-  k = &root }; h.kids = new ...; println(k.v)` (`scratchpad/w/x3_refdeep_nocall_arg.obx`). Per-path
-  reference bindings are the planned fix.
+**Holes found, not fixed here.** Both are accepted by HEAD's seed too, and by the current
+compiler. Still open after the follow-up below. (The reference re-pointed on one branch is fixed, and a re-point
+inside a defer body is refused: see "Reference bindings per path (done)" below.)
 - Uses inside `defer` bodies are not checked against later changes: `defer println(first.v)`, then
   `bag.items = new ...` (`scratchpad/review5/p/p03_defer_nohandle.obx`).
 - Argument evaluation order: a deep argument is checked before a later argument's call frees what it
   points into: `use2(first, mk(h))` (`scratchpad/review5/p/e1_arg_order.obx`, and `e2`).
 
 **Seed.** The rule is promoted after the suite and mutants pass, following `make promote`.
+
+## Reference bindings per path (done)
+
+**The hole.** A reference local's binding (what it may point into) was one for the whole function,
+so a re-point on one branch overwrote it for every path. `var k = &a; if a.v == 2 { k = &b };
+a = new ...; println(k.v)` compiled on HEAD and printed 0 from freed memory. Of the first nine cases in
+`tests/errors/ref_bindings.obx`, seven compiled on HEAD though they must fail (the if, the handle form
+with a deep reference, the recursive walk, the match arm, the else-if chain, the loop, and the items at
+two indexes).
+
+**The rule, as implemented: track both roots.** A binding is per path, and where paths join it is the
+union, so a reference re-pointed on one branch may point into the places of both branches, and a change
+under either is seen. The rule is in `LANGUAGE.md` section 4, with the example, and the join is stated
+in section 10.
+
+- `RefBind` (`src/obo.obo`, near line 881) is an immutable record: the roots, the deep flag and the
+  place for each root, writable, and the parent reference. `arenaBind` makes them; `fnDecl` releases
+  them when the function ends (`bindMark`). `PState` (near line 891) holds, per owned local, its moved,
+  suspect and fresh flags and its binding. `snapshot`, `copyState`, `restore`, `joinStates` and
+  `absorb` carry it through ifs, matches, loops, breaks, continues and defers.
+- The join (`joinBind`, near line 1744, and `joinPath`, near line 1726): roots are the union; deep is
+  OR; writable is AND; the parent is kept only where the two are equal. For places, equal is the same
+  place; when one place is under the other (its path is a prefix of the other's), the join is the
+  longer, so a change to the shorter place and every change under it is seen; any other pair joins to
+  the whole root (`""`).
+- Invalidation (`invalidate`, near line 1665) tests each binding entry: a change reaches an entry when
+  the change is at its root and the entry lies under the change's place, or when the root is the handle.
+  A re-point (the assignment, near line 3786) makes a new binding; it does not change the old one.
+- The loop check (`loopBindCheck`, near line 2264, with `bindCovers` near line 1800). A change that may
+  free something (`invalidate` and `invalidateDeep` call `markCarriedFreed`) marks each reference local
+  that is not pointed afresh on every path (`carryFreed`, a fourth flag block in `PState`). A read of a
+  marked reference records its use (`freedUse`), and a marked reference at the end of the body is carried
+  round the loop. A loop is an error where such a read, or such a carried reference, has a binding the
+  body was not checked with (`bindCovers`), and where a binding comes back read-only that the body was
+  checked against as writable. A re-point clears the mark, so a reference pointed afresh after the free
+  is accepted (`run/ref_bindings.obx`, `loopCache`). The marks replace the frees counter that gated the
+  check before. The counter was read before a while condition, so a free in the condition was missed,
+  and it could not tell a free on one path from one on every path. A linked-list walk (`p = p.next`
+  with `p` read at the top) stays accepted, since nothing in its body frees.
+- A defer body that points a reference declared before it at something else is refused (`deferMark`,
+  `declaredBefore`, the error "cannot point 'k' elsewhere in a defer"). The body runs where its block is
+  left, at every exit, and its binding effects at compile time are discarded when the body is restored
+  (`restoreDeferred`). Applying them at each exit would need the state at each exit, so the simple rule
+  is taken: the change is refused. Declaring the reference inside the defer body is still allowed.
+- The writable rule comes from the loop check, not from `bindCovers`: `bindCovers` is sound as coded
+  (a write checked against the entry binding must be allowed through the back-edge binding, so
+  "writable wherever the entry is" is the rule), and its comment said it the other way round. The
+  case where a reference is writable where the loop starts and read-only where it starts again is an
+  error (`errors/ref_bindings.obx`, "a reference writable where a loop starts, read-only where the loop
+  starts again").
+- Future work: a change made through a reference is taken to reach the whole root that the reference
+  borrows from, not the place it names. This is the same as main, and it rejects some valid programs
+  (a change to one field through a reference, with a reference to another field read after it). A
+  narrower rule is future work, and so is applying a defer body's re-point at each exit in place of the
+  refusal.
+- Stage B now compares behaviour: the output of the port compiled by the seed and by the new compiler,
+  not the bytes of the code. A byte difference in a return spill (the retLeak case) is harmless and is
+  accepted. In this build stage B is 418 of 418 identical.
+
+**Path join: the spec's rule is unsound.** The first design took the common prefix of two places as the
+join, and called the shorter place "more conservative". It is not: a join of `/a/b` and `/a/c` to `/a`
+misses a change at `/a/b`, which frees the place one of the paths points at, and a join of `/a` and
+`/a/b` to `/a` misses a change at `/a/b` too. The rule above is the sound one. The mutant that keeps
+the shorter place is caught by `errors/ref_bindings.obx`, "a reference joined from a place and the place
+below it".
+
+**A self-parent hang, fixed.** `let w = &root; var k = &root; k = &k.kids[0]; k.kids = new []Item(0);
+println(w.v)` never finished on HEAD (timeout, exit 124). `k = &k.kids[0]` made `k` its own parent, and
+`ancestorOf` followed the parent chain forever. The re-point now keeps the old parent when the new one
+would be an ancestor of the reference itself (assignment, near line 3786). The case is
+`run/ref_bindings.obx`, `selfParent`, which prints 1.
+
+**Memory.** The port compiling itself has a live peak of 1,097,408 bytes against the budget of
+1,351,000 (`tests/port_compare.py`), and allocates 13,885,696 bytes in all. Main's allocation work,
+merged here, had 1,045,296; the difference is the per-path bindings and their marks (52,112 bytes). Before that work the same
+change measured 1,758,240, over the budget, and the cause was not the new data: the image buffer grew
+past 262,144 bytes and was reallocated while both blocks were live. Padding HEAD by about 4 KB of
+emitted code reproduced the jump (1,727,616). Main's `elfImage` now sizes the image once, which removes
+it. The per-state arrays and the bindings arena are small: measured before the merge, no function ended
+with more than 32 bindings, and no state covered more than 9 owned locals.
+
+**Tests.**
+- `tests/errors/ref_bindings.obx`: 17 cases. The first nine are a re-point on one branch of an `if`,
+  through a handle with a deep reference, in a recursive walk, in a match arm, in an else-if chain, in a
+  loop, two roots changed, a change under the second root of a join, and the items at two indexes. Three
+  more: a reference joined from a place and the place below it, a reference shallow on one path and deep
+  on the other, and a reference writable on one path and read-only on the other. Five more for the
+  defer and loop rules: a defer re-point in an if, the same in a loop with a break, a while condition
+  that frees a global the reference points into, a loop that frees what a reference points into before
+  reading it at the top, and a reference writable where a loop starts and read-only where it starts again.
+- `tests/run/ref_bindings.obx`: eight accepted programs with their output (`choose`, `both`, `newRoot`,
+  `loopPoint`, `underIndex`, `selfParent` for the hang above, `deferLocal`, a defer that points a
+  reference declared inside its own body, and `loopCache`, a loop that frees and re-points before the read).
+- `tests/errors/handle_deep.obx`, "a defer that re-points a reference declared before it is refused":
+  the case that expected the re-point to be tracked now expects the refusal at the defer.
+- `tests/own_fuzz.py`: two statement kinds. `choose_ref_stmt` (valid): a reference pointed at one of two
+  locals, re-pointed on one path, read, with no change. `branch_free_stmt` (invalid): a reference
+  re-pointed on one path, a change under the root the other path points into, then a read.
+- `tests/mutate_port.py`: six new mutants, each caught by a named case: a binding that is not joined
+  (last path wins), a join that keeps only the first root, a join that is deep only where both paths are
+  (`errors/ref_bindings.obx`, "a re-point in one arm of a match", and "the same, through a handle, with a
+  deep reference"), the spec's shorter-place join, a join that is writable where either path is, and no
+  loop binding check. Six more fork mutants (`tests/mutate_fork.py`) cover the marks and the defer rule:
+  frees that mark nothing, a read of a marked reference that notes nothing, the writable trigger dropped,
+  a defer re-point not refused, a re-point that keeps its mark, and a loop start that forgets the marks
+  (the case of a free in the condition). A mutant that restored a defer body's binding only when the
+  body made a self call was removed: with the defer re-point refused, nothing it changes is observable,
+  so it is equivalent. Eighteen existing port mutants, and twelve fork mutants, whose patterns the
+  rewrite had replaced were retargeted to the same behaviour in the new code (`tools/port_ref_mutants.py`
+  and `tools/fork_ref_mutants.py`).
+
+**Seed.** The rule is promoted after the suite and mutants pass, following `make promote`.
+
+## Loop marks, defer frees and the open holes (follow-up, done)
+
+A review of the loop check and of defer bodies, after the per-path bindings. Its items are numbered as
+the review gave them. The rules are in `LANGUAGE.md` sections 4 and 10.
+
+- **FP-1, loop-entry scoping (done).** A free before a loop marked the references inside it (the marks
+  were one flag block for the whole function). A loop now starts with the marks from before it kept
+  aside, and joins back where it ends (`loopMarksSave`, `loopMarksJoin`), so a mark set in a loop
+  reaches the code after it, and an outer mark does not reach a read inside. `probes fp2_two_loops`
+  and `FP5_free_then_loop` print 1 2 2, and the realistic `FP7_realistic` prints 28.
+- **Overlap (FP-1, the check).** Each change that may free something is logged while a loop or a deferred
+  body is compiled (`freeLog`, `logFree`, `FreeRec`: kind, root, place, and the reference locals that are
+  not pointed afresh). A loop's error is raised only where a logged free overlaps the binding the reference
+  has on the back edge (`hitBy`, `applyExit`), so a free of something the reference does not point into is
+  no longer an error (`unrelatedFree`, `unrelated2` and `freeBetweenLoops` in `run/ref_bindings.obx`). The
+  marks themselves are still coarse, and the overlap decides. `preMark` is the case with a free before the
+  loop, and the reference re-pointed after it.
+- **FP-2, the writable rule (done).** A reference writable where a loop starts and read-only where it starts
+  again was an error on every such loop. It is now an error only when it is written through the reference
+  before it is pointed again (`writeUse`, set where an assignment writes through a reference, compared with
+  `useBefore`). `readOnlyLoop` (run) is accepted and `walk` (error, written before the re-point) is still
+  refused.
+- **H-1, frees on the way out of a loop (done).** A free in a `while` condition, or on a `break` or `continue`
+  path, was lost at the loop's exit. Each exit now records the frees logged on its way out (`Loop.exits`,
+  `Loop.conts`, with `exitAt` and `contAt` as log positions), and the loop applies them to the references
+  when it ends (`applyExit`). `carry_out_break` and `carry_out_cond` are rejected.
+- **H-2, a defer body's frees (done, replay).** The body's frees were applied where it is declared. The
+  option taken is to replay them where the block is left. The frees are taken out of the log at the
+  declaration and kept with the block (`Block.frees`, `deferStat`), and `callDefers` replays them at each
+  exit from the block (normal end, `break`, `continue`, `return`: `replayFrees`). The body's moves are not
+  taken where it is declared (the moved flags are restored, the owner's moves are kept). The other option,
+  refusing a defer body's frees, would refuse valid programs, so replay was chosen. A re-point in a defer
+  body stays refused, since replaying a binding change needs the state at each exit (see future work above).
+  `defer_hole1` and `unsafe_defer_free_loop` are rejected.
+- **Recursive self-call, deep carry.** The self-call branch of `afterCall` now also marks the deep references
+  it may free (`markCarriedDeep`), as the other changes do. The check asked for was a case where the innermost
+  call frees through a handle and an outer loop reads a deep reference into the freed place on its next pass
+  (`scratchpad` `mk/self3.obx`). The seed and this compiler both reject it ("'k' may point to freed memory",
+  at the read), so no hole is shown. `mk/self2.obx` (a re-point after the call) is accepted and prints 7 on
+  each of its fourteen lines. The explicit `markSuspects` at block end for a deferred self-call (`Block.selfDefer`)
+  was removed: the free that `markSuspects` logs is replayed at the same exit, so it was a copy of that replay.
+- **Memory.** The first run of this follow-up measured 1,412,368 bytes, over the budget. The cause was
+  `freeArena`, which kept every logged free for the whole compile. The outermost loop now remembers where its
+  records begin (`loopLogStart`, `arenaBase`), and truncates the arena back to that point at its end, when no
+  record is referenced any more: a block that holds a record is inside the loop and has closed by then. The
+  live peak is 1,134,304 bytes against the budget of 1,351,000 (before this follow-up: 1,097,408). The budget is
+  not raised. Allocation in all is 15,377,184 bytes.
+
+**Review 3 (fixed).** Two regressions from the entry above were found in review and are fixed.
+- A write through a `mut` argument, `append`, or `truncate` through a reference did not set the write
+  mark (`writeUse`), so the writable rule missed it: `k` passed to a mut parameter, or appended to,
+  on a pass where it is read-only on the next. The writes now go through `noteWrite`, the same mark
+  the assignment and `invalidateChange` set (`callFn`, the `append` and `truncate` builtin). Probes
+  `w_mutarg`, `w_nestedarg`, `w_defer_mutarg`, `w_append`, `AP_ro_append_loop` are rejected again, as
+  by 82dba34. `replace`, `take` and `truncate` already marked through `invalidateChange`; the
+  assignment marks through its own deref test.
+- A deferred change was replayed without the reference it was made through, so the reference's
+  ancestors (the one a child write was taken from) were moved: `let s = &p.kids[0]; defer { s.kids =
+  ... }` rejected a read of `p` after the block. The free log now keeps the `via` of each change
+  (`FreeRec.via`), and the replay passes it (`replayFrees`). The loop's exits and back-edge test use
+  the same exception (`freeHits` takes the local, and skips references the change's `via` is or is
+  derived from, as `invalidate` does). `FP_defer_via_child_ancestor`, `_fn` and `_loop` are accepted;
+  a deferred write to the parent's own array (`p.kids = ...`) is still refused where a reference into
+  that array is read after the block (the error case "a deferred write through a reference frees what
+  a reference into its place points into"). The loop case
+  `loopContChild` covers the exit path. The defer probe `l7_defer_in_loop_repoint_each` stays rejected,
+  as the non-defer form is by the seed.
+- Tests: `tests/errors/ref_bindings.obx`: three cases (a mut argument and an append through a
+  reference read-only on the next pass; a deferred write that frees what a reference into its parent
+  points into, read after the block). `tests/run/ref_bindings.obx`: `deferChild`, `deferChildLoop`,
+  `deferHandleChild`, `loopContChild`, `mutArgOk`. Mutants in `tests/mutate_fork.py`: a mut argument
+  is not a write, an append is not a write, a deferred change or deep change replayed without its
+  reference, a deferred change not replayed, and a logged free that ignores its reference. 69 of 69 are
+  caught before the merge with `main`; 85 of 85 after it (`main`'s mutants included).
+
+**Merge with `main` (8e3eb92).** The conflicts were in `src/obo.obo` (`callFn`, `designatorT`, `assignmentOrCall`,
+`consume`), `tests/mutate_port.py`, `tests/mutate_fork.py`, `tests/own_fuzz.py`, and the docs. Both rules are kept.
+Decisions that were not a choice between the two rules:
+- `ownerOf` (`main`, reads `refRoot`) became `ownerTouch` (see the paragraph on targets across calls above).
+- The mutant "deferred self-call not applied at block close" was dropped from `mutate_port.py`: its anchor
+  (`selfDefer`) no longer exists. The mutant "reference roots not checked for moves or invalidation" was
+  retargeted to `ownerTouch`.
+- `own_fuzz.py` runs both sets of operations (my `branch_free_stmt` and `main`'s target and move kinds).
+- `break` and `continue` in a loop now report "is invalidated inside the loop" for a reference and "is moved"
+  for an owned local. This is `main`'s wording, and the same probes are rejected as before.
+Measured after the merge: `run_fork` 325 of 325, `port_test` 415 of 415, `port_compare` 476 of 476 with a peak of
+1,161,072 bytes (budget 1,351,000), `own_fuzz --count 600` with 0 failures in 1200 programs, `mutate_fork` 85 of 85,
+`mutate_port` 73 of 73, `doc_check` 24 examples with no problems, `bench/bench.py` run for all four workloads.
+
+**Open after this follow-up** (accepted by the seed too; each reads freed memory when run):
+- H-3, a defer body reading a reference that is re-pointed after the defer statement (`mk/defer_repointed_later.obx`:
+  `defer println(k.v)`, then `k = &b` and `b = new ...` in the same block; the body prints a freed value).
+- A defer body's reads are checked where the body is declared, not where its block is left
+  (`mk/defer_read_change.obx`: `defer println(first.v)`, then `bag.items = new []Item(0)` in the same block).
+  The frees are replayed (H-2), but the reads are not.
+- Argument evaluation order (`mk/arg_order_fresh.obx`: `use2(first, mk(h))`, where `mk` frees what `first`
+  points into). The argument is checked before a later argument's call runs.
+- The precision limits in "Reference bindings per path": a change through a reference reaches its whole root,
+  and the known false positive in `LANGUAGE.md` section 10 (a re-point in the same iteration, with the reference
+  suspect at the top of the next pass).
+
+**Tests and checks.**
+- `tests/errors/ref_bindings.obx`: 24 cases, covering the loop exits (break, continue, a while condition), the
+  defer body at block exit and in a loop, a recursive call that frees through a handle on its innermost pass,
+  and a loop that frees before an inner loop and reads at the top of the next pass.
+- `tests/run/ref_bindings.obx`: 17 accepted programs with their output, including `freeBetweenLoops`,
+  `unrelatedFree`, `deferTemp`, `deferRepoint`, `readOnlyLoop` with `readOnlyCaller`, `preMark`, `unrelated2`
+  and `deferEarly`.
+- `tests/mutate_fork.py`: 63 mutants, all caught. Added: a loop start keeps the marks before it, a loop end
+  joins them, the loop check ignores the overlap, a loop exit ignores frees on its way, a deferred body's frees
+  are not replayed, its moves are kept where it is declared. Two stale anchors were retargeted (`loop moves
+  unchecked`, `aliases lose non-deep references too`). A mutant that dropped a loop exit's join of the back-edge
+  bindings was removed: the exit already joins them after the loop, so it is equivalent.
+- `tests/mutate_port.py`: 49 mutants, all caught. Anchors retargeted to the new text: the back-edge check, the
+  handle hit test (`hitBy`), the self-call counter, the break and continue recording (`exits`, `conts`), the
+  defer's restore of suspicion (`restoreDeferred`), the defer's re-point, the stale `callee writes keep deep
+  refs` anchor (the `invalidateDeep` call in `afterCall`), and the stale `break suspicion` and `continue`
+  anchors. A mutant on the replay of a deferred self-call was not added:
+  the port source has no deferred self-calls, so stage B does not see it.
+- `tests/run_fork.py`: 274 passed, 0 failed. `tests/port_test.py`: 403 of 403 identical, no leaks.
+  `tests/port_compare.py`: stage B 425 of 425 identical; the memory check passes (see Memory).
+  `tests/own_fuzz.py --count 600`: 0 failures in 1200 programs. `tests/doc_check.py`: 22 examples, 0 problems.
 
 ## Milestone 1 design notes (as planned)
 
@@ -1078,10 +1316,9 @@ Tried and dropped: freeing the code buffer as soon as the image has copied it. T
 live peak fell by 416 bytes (1,044,400 to 1,043,984), which was not worth the extra
 reassignment, since the peak is reached while the image is being copied.
 
-`PEAK_BUDGET` stays at 1,351,000. On the merged branch the peak is 1,097,776 bytes (1,127,104 after the held-place change), a margin of
-223,896 bytes, which is more than the mutant "parameters kept" adds (about 190 KB), so that mutant
-is not caught by the budget. It is now caught when its peak rises above the unmutated peak
-(`KEEPS_ALIVE` in `tests/mutate_port.py`).
+`PEAK_BUDGET` stays at 1,351,000. On the merged branch the peak is 1,211,104 bytes, a margin of 139,896 bytes. That margin is less than the
+mutant "parameters kept" adds (about 190 KB), so the budget check now catches that mutant directly; the
+`KEEPS_ALIVE` check in `tests/mutate_port.py` still applies on its own.
 
 Not done: the per-call arrays in `rtCall` and `rtCall0/1/2` (`regs`, `temps`, the
 argument arrays), the `fixups` array of each Sym, and the snapshot copies (`copyBools`).

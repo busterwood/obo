@@ -908,6 +908,34 @@ class Gen:
             return None
         return self.invalid_stmt([f"println({self.r.choice(bad)}.value)"])
 
+    def choose_ref_stmt(self):
+        """A reference pointed at one of two locals, re-pointed on one path only, then read; nothing
+        is changed. Valid: each path's binding is the one read on that path."""
+        pr = self.pair()
+        if pr is None:
+            return None
+        x, y = pr
+        r = f"r{self.nrefs}"
+        self.nrefs += 1
+
+        def run(st):
+            st.out.append(str(chain_sum(st.opt[y] if len(st.xs) > 0 else st.opt[x])))
+        # the reference lives in its own block, so no later change inside a loop reaches it
+        return Stmt(["if len(xs) >= 0 {", f"    var {r} = &{x}", f"    if len(xs) > 0 {{ {r} = &{y} }}",
+                      f"    println(sum({r}))", "}"], run)
+
+    def branch_free_stmt(self):
+        """A reference re-pointed on one path only, then a change under the root the other path
+        points into, then a read: the program is invalid (the read may see freed memory)."""
+        pr = self.pair()
+        if pr is None:
+            return None
+        x, y = pr
+        r = f"r{self.nrefs}"
+        self.nrefs += 1
+        return self.invalid_stmt([f"var {r} = &{x}", f"if len(xs) > 0 {{ {r} = &{y} }}",
+                                  f"{x} = nil", f"println(sum({r}))"])
+
     def mut_call_dead_stmt(self):
         """A mutable call through one reference invalidates another, which is then read."""
         if not self.st.xs:
@@ -1132,7 +1160,7 @@ class Gen:
             s = self.h_dead_stmt()
             if s is not None:
                 return s
-        makers = self.common() + [self.push_stmt] * 4 + [self.take_stmt] * 2 \
+        makers = self.common() + [self.choose_ref_stmt] * 2 + [self.push_stmt] * 4 + [self.take_stmt] * 2 \
             + [self.loop_stmt, self.if_stmt, self.g_set_stmt, self.g_trunc_stmt, self.ss_loop_stmt,
                self.gdrop_stmt, self.ss_trunc_stmt, self.tag_trunc_stmt, self.h_new_stmt, self.h_new_stmt,
                self.h_kill_stmt, self.h_kill_stmt, self.handle_borrow_stmt, self.owned_deep_writer_stmt,
@@ -1165,7 +1193,7 @@ class Gen:
                self.elem_write_stmt, self.two_self_stmt, self.alias_param_stmt,
                self.alias_global_elem_stmt, self.global_ref_free_stmt,
                self.handle_index_call_stmt, self.ref_move_stmt, self.callee_free_global_stmt,
-               self.owned_deep_dead_stmt, self.owned_deep_arg_stmt,
+               self.owned_deep_dead_stmt, self.owned_deep_arg_stmt, self.branch_free_stmt,
                self.compound_target_stmt, self.append_target_stmt, self.truncate_target_stmt,
                self.index_target_stmt, self.index_assign_target_stmt,
                self.moved_index_stmt, self.moved_assign_stmt, self.moved_append_stmt,

@@ -131,9 +131,9 @@ MUTANTS = {
                                                                      "            consume(y)\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && false {"),
     "compound assignments through a reference not checked for moves": ("            var y = expression()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && heldLost(r0, touch0) {",
                                                                        "            var y = expression()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && false {"),
-    # the reference local's owner (ownerOf) and its invalidation (the moved flag): a reference into a
+    # the reference local's owner (ownerTouch) and its invalidation (the moved flag): a reference into a
     # field or to an element's array, or a borrow through a handle, is only caught by one of them
-    "reference roots not checked for moves or invalidation": ("fn heldLost(root: ?^Sym, t0: int): bool {\n    if root == nil { return false }\n    if root.isRefLocal && root.moved { return true }\n    return touched(ownerOf(root)) != t0\n}",
+    "reference roots not checked for moves or invalidation": ("fn heldLost(root: ?^Sym, t0: int): bool {\n    if root == nil { return false }\n    if root.isRefLocal && root.moved { return true }\n    return ownerTouch(root) != t0\n}",
                                                               "fn heldLost(root: ?^Sym, t0: int): bool {\n    if root == nil { return false }\n    return !root.isRefLocal && touched(root) != t0\n}"),
     "reference invalidation not checked": ("    if root.isRefLocal && root.moved { return true }\n", ""),
     "moves not counted": ("        s.touches = s.touches + 1\n", ""),
@@ -155,15 +155,15 @@ MUTANTS = {
                                             "                heldHit[k] = true"),
     "identity exemption removed": ("                if segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }",
                                    "                if segsPrefix(place, heldPath[k]) { heldHit[k] = true }"),
-    "origin ignored when holding": ("        if origin != nil {\n            key = origin", "        if false {\n            key = origin"),
+    "origin ignored when holding": ("        if origin != nil {\n            heldAdd(origin, false, false, raw)", "        if false {\n            heldAdd(origin, false, false, raw)"),
     "origin ignored when freeing": ("        if origin != nil {\n            heldFree(origin, nil, raw)", "        if false {\n            heldFree(origin, nil, raw)"),
     "whole local arrays hit by identity frees": ("        } else if !heldWhole[k] {", "        } else {"),
-    "reference parameters take their owner's place": ("        if isRefParam(r) {\n            key = r\n            at = raw", "        if false {\n            key = r\n            at = raw"),
+    "reference parameters take their owner's place": ("    if isRefParam(r) {\n        heldAdd(r, true, false, raw)", "    if false {\n        heldAdd(r, true, false, raw)"),
     "owned frees ignore the path": ("            if heldKey[k] == o && segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) {",
                                     "            if heldKey[k] == o && !(heldStore[k] && place == heldPath[k]) {"),
     "owned assignment exemption removed": ("            if heldKey[k] == o && segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) {",
                                            "            if heldKey[k] == o && segsPrefix(place, heldPath[k]) {"),
-    "store exemption not applied through handles": ("    if i >= 0 { heldStore[i] = true }\n", "    if i >= 0 && !viaHandle { heldStore[i] = true }\n"),
+    "store exemption not applied through handles": ("    for k in mark..len(heldKey) { heldStore[k] = true }", "    for k in mark..len(heldKey) { heldStore[k] = !viaHandle }"),
     "index does not hold its array": ("            let hp = heldPush(root, viaHandle, hOrig, hIdent, placePath(root, path), path)", "            let hp = -1"),
     "replace does not hold its place": ("        let hp = heldPush(tr, x.viaHandle, orig, ident, place, raw)", "        let hp = -1"),
     "append and truncate do not hold their array": ("        let hp = heldPush(r0, aVia, aOrig, aIdent, aPlace, aRaw)", "        let hp = -1"),
@@ -171,8 +171,62 @@ MUTANTS = {
                                                     "            let y = expression()"),
     "compound assignments do not hold their target": ("            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            var y = expression()",
                                                       "            var y = expression()"),
-    "reference places ignore the reference's path": ("        return root.refPath + path\n", "        return path\n"),
+    "reference places ignore the binding's path": ("            let p = b.paths[i] + raw\n            if o == handleSym {\n                heldAdd(nil, true, false, \"\")", "            let p = raw\n            if o == handleSym {\n                heldAdd(nil, true, false, \"\")"),
 }
+
+
+# the mutants whose patterns the reference bindings per path replaced: retargeted to the same behaviour
+RETARGET = {
+    "writes through read-only references": ("if x.deref && wr != nil && wr.isRef && !wr.bind.writable {",
+                                            "if x.deref && wr != nil && wr.isRef && !wr.bind.writable && false {"),
+    "mut aliases allowed": ("if i != j && argModes[i] == 2 {", "if i != j && argModes[i] == 2 && false {"),
+    "mut calls invalidate nothing": ("                invalidate(b.roots[p], argVias[i], false, argPaths[i])\n", ""),
+    "read-only references can be passed as mut": ("            if f.pmodes[i] == 2 && !b.writable {", "            if false {"),
+    "everything counts as an ancestor": ("        if p == a { return true }\n        p = p.bind.parent",
+                                         "        if p == a || true { return true }\n        p = p.bind.parent"),
+    "handle borrows are untracked": ("    if x.viaHandle { return singleBind(handleSym, deepOf(x), x.path, mutableOf(x), parentOf(x)) }\n",
+                                     "    if x.viaHandle { return noBind }\n"),
+    "loop moves unchecked": ("    if !term {\n        let now = snapshot()\n        loopMoveError(stateDiff(&entry, &now), line, col)",
+                             "    if false {\n        let now = snapshot()\n        loopMoveError(stateDiff(&entry, &now), line, col)"),
+    "aliases lose non-deep references too": ("if r != root && b.deeps[i] && reaches(root, r) { return true }",
+                                             "if r != root && reaches(root, r) { return true }"),
+    "calls check only one root": ("if bj.deeps[q] && reaches(ri, rj) && (ri != rj || pathsOverlap(bi.paths[p], bj.paths[q])) {",
+                                  "if bj.deeps[q] && reaches(ri, rj) && ri == rj {"),
+    "calls ignore depth": ("if bj.deeps[q] && reaches(ri, rj) && (ri != rj || pathsOverlap(bi.paths[p], bj.paths[q])) {",
+                           "if reaches(ri, rj) && (ri != rj || pathsOverlap(bi.paths[p], bj.paths[q])) {"),
+    "field changes invalidate siblings": ("(all || b.deeps[i] && underPath(b.paths[i], path))", "(all || b.deeps[i])"),
+    "known elements treated as one": ("(ri != rj || pathsOverlap(bi.paths[p], bj.paths[q]))", "(ri != rj || true)"),
+}
+MUTANTS.update(RETARGET)
+PORT_PATTERNS.update({k: v for k, v in RETARGET.items() if k in PORT_PATTERNS})
+
+# the loop check and the defer rule: the marks that frees leave on the references they may reach, the reads
+# that note them, the writable trigger, the refusal of a re-point in a defer body, and the loop start, which
+# must keep the marks its condition leaves (the condition frees before the body reads)
+MUTANTS.update({
+    "frees do not mark carried references": ("        if ownedLocals[i].isRefLocal && !ownedLocals[i].fresh {\n            ownedLocals[i].carryFreed = true\n        }\n",
+                                             ""),
+    "a read of a marked reference is not noted": ("            if s.carryFreed { s.freedUse = useSeq }\n", ""),
+    "the writable trigger dropped": ("            if e.writable && !b.writable && s.writeUse > useBefore {\n", "            if e.writable && !b.writable {\n"),
+    "a loop start keeps the marks from before it": ("        saved[i] = ownedLocals[i].carryFreed\n        ownedLocals[i].carryFreed = false\n",
+                                                   "        saved[i] = ownedLocals[i].carryFreed\n"),
+    "a loop end does not join the marks from before it": ("        if saved[i] { ownedLocals[i].carryFreed = true }\n", ""),
+    "the loop check ignores the overlap": ("            if hit[i] && (s.freedUse > useBefore || back.flags[3 * n + i]) {\n", "            if (s.freedUse > useBefore || back.flags[3 * n + i]) {\n"),
+    "a loop exit ignores the frees on its way": ("            for k in logFrom..at {\n", "            for k in logFrom..logFrom {\n"),
+    "a deferred body's frees are not replayed": ("    replayFrees(bi)\n", ""),
+    "a deferred body's moves are kept where it is declared": ("        if ownedLocals[i].isRefLocal { ownedLocals[i].moved = before.flags[i] }\n", ""),
+    "a defer body's re-point is not refused": ("            if deferMark >= 0 && declaredBefore(xs, deferMark) {", "            if false {"),
+    "a re-point keeps the carried mark": ("            xs.carryFreed = false\n", ""),
+    "a loop start forgets the carried marks": ("    for s in locals { s.fresh = false }\n", "    for s in locals { s.fresh = false; s.carryFreed = false }\n"),
+    # a write through a mut argument, or through an append, is a write for the writable rule (review15 w_mutarg, w_append)
+    "a mut argument is not a write": ("            if f.pmodes[i] == 2 { noteWrite(a) }\n", ""),
+    "an append is not a write": ("    if name == \"append\" || name == \"truncate\" { noteWrite(a) }\n", "    if name == \"truncate\" { noteWrite(a) }\n"),
+    # a deferred change is replayed as it was made: through the reference it was made through (review15 FP_defer_via_child_*)
+    "a deferred change is replayed without its reference": ("            invalidate(rt, rv, r.all, r.path)\n", "            invalidate(rt, nil, r.all, r.path)\n"),
+    "a deferred deep change is replayed without its reference": ("            invalidateDeep(rv)\n", "            invalidateDeep(nil)\n"),
+    "a deferred change is not replayed": ("            invalidate(rt, rv, r.all, r.path)\n", "            if false { invalidate(rt, rv, r.all, r.path) }\n"),
+    "a logged free ignores the reference it is made through": ("    if ancestorOf(s, rv) { return false }\n", ""),
+})
 
 
 def main():
