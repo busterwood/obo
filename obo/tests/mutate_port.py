@@ -281,6 +281,9 @@ MUTANTS.update({
 # errors/defer_uses.obx show them, since the port's own output does not change
 from mutate_fork import DEFER_USE_MUTANTS  # noqa: E402
 MUTANTS.update({k: [v] for k, v in DEFER_USE_MUTANTS.items()})
+# the references invalid on one path (errors/one_path_uses.obx, run/one_path.obx show them)
+from mutate_fork import ONE_PATH_MUTANTS  # noqa: E402
+MUTANTS.update({k: [v] for k, v in ONE_PATH_MUTANTS.items()})
 from mutate_fork import ORIGIN_MUTANTS, EQUIVALENT as FORK_EQUIVALENT  # noqa: E402
 # the fork's equivalent mutants are not run here: the port has the same source, so they are equivalent too
 MUTANTS.update({k: [v] for k, v in ORIGIN_MUTANTS.items() if k not in FORK_EQUIVALENT})

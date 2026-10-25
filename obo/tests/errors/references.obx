@@ -87,17 +87,19 @@ fn main() {
 fn main() {
     let b = new Box{node: make(), items: new []Node(0)}
     let n = &b.node
-    for i in 0..3 {  // error: 'n' is invalidated inside the loop
+    for i in 0..3 {
         b.node = make()
     }
+    println(n != nil)  // error: 'n' may point to freed memory
 }
 // === reference invalidated on one branch
 fn main() {
     let b = new Box{node: make(), items: new []Node(0)}
     let n = &b.node
-    if true {  // error: 'n' is invalidated on one path but not another
+    if true {
         b.node = make()
     }
+    println(n != nil)  // error: 'n' may point to freed memory
 }
 // === passing a reference into a global to a function that frees it
 fn reset() { gnode = make() }
@@ -205,8 +207,8 @@ fn main() {
     for i in 0..3 {
         if i == 1 {
             a[0] = new Item{v: 5, kids: new []Item(0)}
-            continue            // error: 'k' is invalidated inside the loop; point it again before continue
+            continue
         }
-        println(k.v)
+        println(k.v)  // error: 'k' may point to freed memory
     }
 }
