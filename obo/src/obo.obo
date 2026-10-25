@@ -3239,6 +3239,52 @@ fn checkAssign(dst: ^Type, x: &Item, what: string) {
 fn expression(): Item
 fn designator(): Item
 
+// Arguments run left to right, and the callee is given every one of them, so a reference passed as an
+// argument must stay valid while the later arguments run. Each one is held as a reference local of its
+// own while they do (argTemps, from a pool: the symbols are reused, and the ones made inside a function
+// go with its symbols at its end), so a move, a free or a change that would invalidate a `let`
+// reference to the same place invalidates it, and the later argument is refused (see argOrderCheck).
+var argTemps = new []^Sym(0)
+var argTempsUsed = 0
+
+// holds argument i, whose binding is b. A holder that was invalidated has stopped the compile (see
+// argOrderCheck), so only its suspicion is left from its last use. It is never named, so its freshness and
+// loop marks are not read: it is not in any loop's states, which cover only the locals a loop began with
+fn holdArg(b: ^RefBind, i: int) {
+    if argTempsUsed == len(argTemps) {
+        let s = newSym("let", "an argument", nil)
+        s.isRefLocal = true
+        append(argTemps, s)
+    }
+    let t = argTemps[argTempsUsed]
+    argTempsUsed += 1
+    t.bind = b
+    t.suspect = false
+    t.value = i
+    append(ownedLocals, t)
+}
+
+// argument j has run (and been moved, if it is passed by value): an argument held before it that it
+// invalidated would reach the callee pointing to freed memory. A recursive call in it that may write
+// through a handle is reported at the end of the body, as the other suspect uses are
+fn argOrderCheck(tbase: int, fname: string, j: int, line: int, col: int) {
+    for k in tbase..argTempsUsed {
+        let t = argTemps[k]
+        if t.moved {
+            errorAt("argument " + string(j + 1) + " of " + fname + " may free what argument " + string(t.value + 1) + " points into, and runs after it; compute it before the call", line, col)
+        }
+        if t.suspect {
+            notePending(line, col, "argument " + string(j + 1) + " of " + fname + " makes a recursive call that writes through a handle, which could free what argument " + string(t.value + 1) + " points into; compute it before the call")
+        }
+    }
+}
+
+// the held arguments from tbase on are let go: the call is made
+fn releaseArgs(tbase: int, omark: int) {
+    argTempsUsed = tbase
+    truncate(ownedLocals, omark)
+}
+
 fn callFn(f: ^Sym): Item {
     let saved = saveRegs()
     let n = len(f.params)
@@ -3254,6 +3300,8 @@ fn callFn(f: ^Sym): Item {
     let argPaths = new []string(0)
     var deepLine = 0                   // the first argument that points inside something
     var deepCol = 0
+    let tbase = argTempsUsed
+    let omark = len(ownedLocals)
     for i in 0..n {
         if sym == T_RPAREN { error(f.name + " takes " + string(n) + " argument(s), not " + string(i)) }
         if i > 0 { expect(T_COMMA, "") }
@@ -3276,8 +3324,11 @@ fn callFn(f: ^Sym): Item {
                 deepCol = argCol
             }
             append(argPaths, a.path)
+            argOrderCheck(tbase, f.name, i, argLine, argCol)
+            holdArg(b, i)
         } else {
             consume(a)
+            argOrderCheck(tbase, f.name, i, argLine, argCol)
         }
         if a.mode == "const" && fits32(a.val) {
             pushI(a.val)                           // no register needed
@@ -3289,6 +3340,7 @@ fn callFn(f: ^Sym): Item {
             release(r.r)
         }
     }
+    releaseArgs(tbase, omark)
     if sym != T_RPAREN { error(f.name + " takes " + string(n) + " argument(s), not more") }
     expect(T_RPAREN, "")
     // a reference inside something may not go to a callee that writes through a handle, since the
@@ -3456,9 +3508,17 @@ fn builtin(name: string): Item {
             error("writeFile needs a []byte, not " + tname(d.typ))
         }
         noTemp(d)
+        // the bytes are located before the flag runs: they are held while it does, as a call's argument is
+        let tbase = argTempsUsed
+        let omark = len(ownedLocals)
+        holdArg(itemBind(d), 1)
         d = materialise(d)
         expect(T_COMMA, "")
+        let eLine = tline
+        let eCol = tcol
         let e = expression()
+        argOrderCheck(tbase, name, 2, eLine, eCol)
+        releaseArgs(tbase, omark)
         if e.typ.kind != "bool" { error("writeFile needs a bool saying whether the file is executable") }
         expect(T_RPAREN, "")
         let args3 = new []?Item(0)
@@ -5522,6 +5582,7 @@ fn fnDecl() {
     emit32(0)
     let bindMark = len(bindArena)
     let symMark = len(symArena)                 // the function's own symbols start here
+    let tempMark = len(argTemps)                // and the argument holders made for it
     openBlock()
     fnBlock = len(blocks) - 1
     let n = len(params)
@@ -5561,6 +5622,7 @@ fn fnDecl() {
     pendLine = 0
     curFn = nil
     truncate(bindArena, bindMark)
+    truncate(argTemps, tempMark)
     truncate(symArena, symMark)                 // and nothing refers to them any more
 }
 
