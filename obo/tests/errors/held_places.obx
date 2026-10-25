@@ -1,0 +1,352 @@
+type Node = ref record { v: int; kids: []Node; opt: ?Node }
+type Bag = ref record { items: []Node; opt: ?Node }
+fn mk(v: int): Node { return new Node{v: v, kids: new []Node(0), opt: nil} }
+fn eat(b: Bag): int { return 0 }
+fn cnt(b: Bag): int { return 0 }
+fn keep(b: Bag): Node { return mk(2) }
+fn getv(b: Bag): int { return 0 }
+fn give(b: Bag): []Node { return new []Node(0) }
+fn sinkI(a: []Node): int { return 0 }
+fn sinkN(n: ?Node): int { return 0 }
+fn passOpt(o: ?Node): ?Node { return o }
+fn nb(): Bag { return new Bag{items: new []Node(0), opt: nil} }
+fn useH(h: ^Bag): int { return h.items[0].v }
+// === a reference's place: a replace frees a field below the path the reference names
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    append(xs[0].kids, mk(5))
+    let r = &xs[0]
+    println(r.kids[sinkI(replace(xs[0].kids, new []Node(0)))].v)  // error: cannot index 'r' with an index that replaces or moves what it holds
+}
+// === a take through a handle made inside a narrowed block frees the place the handle holds
+fn main() {
+    var o: ?Node = mk(1)
+    var hh: ?^Node = nil
+    if o != nil {
+        append(o.kids, mk(2))
+        hh = handle(o)
+    }
+    if hh != nil {
+        println(hh.kids[sinkN(take(o))].v)  // error: cannot index through a handle with an index that moves or frees something
+    }
+}
+// === a handle's array indexed by a move of its own owner
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    let h = handle(bag)
+    println(h.items[eat(bag)].v)  // error: cannot index through a handle with an index that moves or frees something
+}
+// === a reference to a handle's array indexed by a move of its owner
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    let h = handle(bag)
+    let items = &h.items
+    println(items[eat(bag)].v)  // error: cannot index 'items' with an index that moves it
+}
+// === a handle's array assigned at an index that moves its owner
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    let h = handle(bag)
+    h.items[eat(bag)] = mk(5)  // error: cannot index through a handle with an index that moves or frees something
+}
+// === a handle's array appended a value that moves its owner: the append may reallocate what the value reads
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    let h = handle(bag)
+    append(h.items, keep(bag))  // error: cannot append an array with a value or count that replaces or moves what it holds
+}
+// === a handle's array truncated to a count that moves its owner
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    append(bag.items, mk(1))
+    let h = handle(bag)
+    truncate(h.items, cnt(bag))  // error: cannot truncate an array with a value or count that replaces or moves what it holds
+}
+// === a handle's element assigned a value that moves its owner (compound form)
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    let h = handle(bag)
+    h.items[0].v += getv(bag)  // error: cannot assign through a place with a value that replaces or moves what it is in
+}
+// === a reference to a handle's array assigned at an index that moves its owner
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    let h = handle(bag)
+    let items = &h.items
+    items[eat(bag)] = mk(5)  // error: cannot index 'items' with an index that moves it
+}
+// === a handle's array assigned a value that moves its owner
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    let h = handle(bag)
+    h.items = give(bag)  // error: cannot assign through a place with a value that replaces or moves what it is in
+}
+// === a field assigned a value that moves the local it is in
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    bag.items = give(bag)  // error: cannot move 'bag' while assigning into it
+}
+// === a handle parameter's array indexed by a replace of that same array: the same identity and path
+fn setA(h: ^Bag): int {
+    return h.items[sinkI(replace(h.items, new []Node(0)))].v  // error: cannot index through a handle with an index that moves or frees something
+}
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    println(setA(handle(bag)))
+}
+// === a handle's owner moved inside a loop after the handle was made
+fn main() {
+    var a = new Bag{items: new []Node(0), opt: nil}
+    append(a.items, mk(1))
+    let h = handle(a)
+    var i = 0
+    while i < 2 {
+        var c = a  // error: cannot move 'a' inside a loop while handle 'h' made from it is in scope
+        i += 1
+        println(len(c.items))
+    }
+    println(h.items[0].v)
+}
+// === a handle's array indexed by a replace of the owner's array it names: the replace frees the held place
+fn main() {
+    var a = new Bag{items: new []Node(0), opt: nil}
+    append(a.items, mk(1))
+    let h = handle(a)
+    println(h.items[sinkI(replace(a.items, new []Node(0)))].v)  // error: cannot index through a handle with an index that moves or frees something
+}
+// === a handle made from a field of a local is not keyed to the local: a move of another local under its index is refused
+fn sinkBag(b: Bag): int { return 0 }
+type Pair = ref record { first: Bag; n: int }
+fn main() {
+    var p = new Pair{first: new Bag{items: new []Node(0), opt: nil}, n: 0}
+    append(p.first.items, mk(1))
+    var ot = new Bag{items: new []Node(0), opt: nil}
+    let h = handle(p.first)
+    println(h.items[sinkBag(ot)].v)  // error: cannot index through a handle with an index that moves or frees something
+}
+// === a handle to a global record is not keyed to the global: a move of a local under its index is refused
+var gb = new Bag{items: new []Node(0), opt: nil}
+fn sinkBag(b: Bag): int { return 0 }
+fn main() {
+    append(gb.items, mk(1))
+    var ol = new Bag{items: new []Node(0), opt: nil}
+    let h = handle(gb)
+    println(h.items[sinkBag(ol)].v)  // error: cannot index through a handle with an index that moves or frees something
+}
+// === a handle reached through another handle's field keeps no origin: the place is an identity
+fn sinkBag(b: Bag): int { return 0 }
+type Holder = ref record { hb: ^Bag }
+fn main() {
+    var bag = new Bag{items: new []Node(0), opt: nil}
+    append(bag.items, mk(1))
+    var holder = new Holder{hb: handle(bag)}
+    let hh = handle(holder)
+    var ot = new Bag{items: new []Node(0), opt: nil}
+    println(hh.hb.items[sinkBag(ot)].v)  // error: cannot index through a handle with an index that moves or frees something
+}
+// === a reference through a handle: its replace frees the array a local indexes, whatever names it
+fn main() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(1))
+    let h = handle(b)
+    var r = &h.items
+    println(b.items[sinkI(replace(r, new []Node(0)))].v)  // error: cannot index 'b' with an index that replaces or moves what it holds
+}
+// === a reference through a handle: its replace frees what another handle without an origin may name
+type Pair = ref record { first: Bag; n: int }
+fn main() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(1))
+    var pr = new Pair{first: new Bag{items: new []Node(0), opt: nil}, n: 0}
+    append(pr.first.items, mk(2))
+    let h = handle(b)
+    let h2 = handle(pr.first)
+    var r = &h.items
+    println(h2.items[sinkI(replace(r, new []Node(0)))].v)  // error: cannot index through a handle with an index that moves or frees something
+}
+// === a local's array indexed while a reference parameter's field is replaced: the replace may free a place of the local
+type Pair2 = ref record { xs: []Node; ys: []Node }
+fn refFree(mut p: &Pair2): int {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(1))
+    var r = &p.ys
+    return b.items[sinkI(replace(r, new []Node(0)))].v  // error: cannot index 'b' with an index that replaces or moves what it holds
+}
+fn main() {
+    var q = new Pair2{xs: new []Node(0), ys: new []Node(0)}
+    println(refFree(q))
+}
+// === a reference's array indexed by a move of a by-value parameter: the parameter's object is a caller's, which the reference may name
+fn sinkBag(b: Bag): int { return 0 }
+fn idxParam(p: &Bag, q: Bag): int {
+    let r = &p.items
+    return r[sinkBag(q)].v  // error: cannot index 'r' with an index that replaces or moves what it holds
+}
+fn main() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(1))
+    println(idxParam(b, new Bag{items: new []Node(0), opt: nil}))
+}
+// === a reference's array indexed by a replace of a by-value parameter's array: the parameter's array is a caller's
+fn idxParamFree(p: &Bag, q: Bag): int {
+    let r = &p.items
+    return r[sinkI(replace(q.items, new []Node(0)))].v  // error: cannot index 'r' with an index that replaces or moves what it holds
+}
+fn main() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(1))
+    println(idxParamFree(b, new Bag{items: new []Node(0), opt: nil}))
+}
+// === a handle's array indexed by an index that moves the object: a replace moves the old object out of its owner
+fn main() {
+    var a = nb()
+    append(a.items, mk(1))
+    let h = handle(a)
+    var c = replace(a, nb())
+    println(h.items[eat(c)].v)  // error: cannot index through a handle with an index that moves or frees something
+}
+// === a handle's array indexed by a replace of the array that a replace moved out of its owner
+fn main() {
+    var a = nb()
+    append(a.items, mk(1))
+    let h = handle(a)
+    var c = replace(a, nb())
+    println(h.items[sinkI(replace(c.items, new []Node(0)))].v)  // error: cannot index through a handle with an index that moves or frees something
+}
+// === a handle's array indexed by an index that takes the optional owner: the take moves the object out
+fn main() {
+    var a: ?Bag = nb()
+    var h: ?^Bag = nil
+    if a != nil {
+        append(a.items, mk(1))
+        h = handle(a)
+    }
+    var c = take(a)
+    if h != nil {
+        if c != nil {
+            println(h.items[eat(c)].v)  // error: cannot index through a handle with an index that moves or frees something
+        }
+    }
+}
+// === a handle's owner moved in a loop that the handle is declared outside of: the next iteration would still see the origin
+fn main() {
+    var a = nb()
+    append(a.items, mk(1))
+    var c = nb()
+    let h = handle(a)
+    var i = 0
+    while i < 2 {
+        println(h.items[0].v)
+        c = a  // error: cannot move 'a' inside a loop while handle 'h' made from it is in scope
+        a = nb()
+        i += 1
+    }
+}
+// === a handle copied to another local, then the owner moved: the copy names the same object and is an identity too
+fn main() {
+    var a = nb()
+    append(a.items, mk(1))
+    let h = handle(a)
+    let h2 = h
+    var c = a
+    println(h2.items[eat(c)].v)  // error: cannot index through a handle with an index that moves or frees something
+}
+// === a handle held in a record field, then its owner moved and indexed through the field
+type HH = ref record { h: ^Bag }
+fn main() {
+    var a = nb()
+    append(a.items, mk(1))
+    var s = new HH{h: handle(a)}
+    var c = a
+    println(s.h.items[eat(c)].v)  // error: cannot index through a handle with an index that moves or frees something
+}
+// === a handle made in a closed block, then the owner moved and an outer handle indexed through the move
+fn main() {
+    var a = nb()
+    append(a.items, mk(1))
+    let h = handle(a)
+    if true {
+        let g = handle(a)
+        println(useH(g))
+    }
+    var c = a
+    println(h.items[eat(c)].v)  // error: cannot index through a handle with an index that moves or frees something
+}
+// === a var handle made from the owner: it has no origin, so a move of another local through it is refused
+fn main() {
+    var a = nb()
+    append(a.items, mk(1))
+    var h = handle(a)
+    var c = nb()
+    append(c.items, mk(2))
+    println(h.items[eat(c)].v)  // error: cannot index through a handle with an index that moves or frees something
+}
+// === a handle outside a for loop: its owner moved in the loop body
+fn main() {
+    var a = nb()
+    append(a.items, mk(1))
+    let h = handle(a)
+    for i in 0..2 {
+        var c = a  // error: cannot move 'a' inside a loop while handle 'h' made from it is in scope
+        println(h.items[eat(c)].v)
+        a = c
+    }
+}
+// === a handle made in a loop body, then its owner moved and indexed through the move: the handle is fresh, the index is refused
+fn main() {
+    var a = nb()
+    append(a.items, mk(1))
+    for i in 0..2 {
+        let h = handle(a)
+        println(h.items[0].v)
+        var c = a
+        println(h.items[eat(c)].v)  // error: cannot index through a handle with an index that moves or frees something
+        a = c
+    }
+}
+// === a move inside a defer in a loop, where the let handle of the owner is made in the loop body: the defer rule applies
+fn main() {
+    var a = nb()
+    append(a.items, mk(1))
+    var c = nb()
+    for i in 0..2 {
+        let h = handle(a)
+        println(h.items[0].v)
+        defer { c = a }  // error: cannot move 'a' inside defer
+    }
+}
+// === a move inside a defer in a loop, where the let handle of the owner is made before the loop: the defer rule applies
+fn main() {
+    var a = nb()
+    append(a.items, mk(1))
+    var c = nb()
+    let h = handle(a)
+    for i in 0..2 {
+        println(h.items[0].v)
+        defer { c = a }  // error: cannot move 'a' inside defer
+    }
+}
+// === a take of an optional owner after its handle was made: the take clears the handle's origin, so a move of the object through the handle is refused
+fn main() {
+    var o: ?Bag = nb()
+    if o != nil {
+        append(o.items, mk(1))
+        let h = handle(o)
+        o = nil
+        var c = take(o)
+        if c != nil {
+            println(h.items[eat(c)].v)  // error: cannot index through a handle with an index that moves or frees something
+        }
+    }
+}

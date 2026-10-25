@@ -606,6 +606,18 @@ fn main() {
 }
 ```
 
+A free counts as a move. `replace` and `take` free the old value of the place they empty, so a value
+that a pure call consumes can free what the statement holds: `b.items[sinkArr(replace(b.items, new []Node(0)))]`,
+`xs[0].v += sinkI(replace(xs, new []Node(0)))` and `append(xs, sinkNode(replace(xs, new []Node(0))))` are refused.
+A handle's array indexed by a move of the object it names (`let h = handle(b); h.items[eat(b)]`) is refused too.
+A `replace` or `take` of an unrelated place, or of an element beside the array that is indexed, is accepted, and
+so is an assignment whose value takes its own target (`t.opt = pass(take(t.opt))`), since `take` leaves that
+place empty. A free of an ancestor of the target is still refused. A handle made by `let h = handle(b)` from a
+whole owned local names that local. A whole move of `b` (`var c = b`, through a call, into a field, `replace(b, ...)`, `take`) or an assignment over `b` makes that handle name no local, so it is checked like a handle without an origin: an index through it that moves or frees something is refused. A move of `b` inside a loop that a live `let` handle from `b` was declared outside of is refused (`cannot move 'b' inside a loop while handle 'h' made from it is in scope`). A temporary `handle(b)` names nothing afterwards. A handle without that
+origin (a handle parameter, or one made from a field or an element) may name any object: a move or a free through
+it is refused against anything it might name, and a free through it of another handle's place is compared by path
+only when it is the same handle.
+
 ```obo
 // example: error: cannot index a field, element or reference with an index that calls a function
 type Item = ref record { v: int; kids: []Item }
