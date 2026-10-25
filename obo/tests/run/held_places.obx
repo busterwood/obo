@@ -250,6 +250,71 @@ fn c_mv_field() {
     let w = new Wrap{b: a}
     println(h.items[0].v + len(w.b.items))  // expect: 2
 }
+// the held-places run tests from the second re-review: a handle copied out of a call, a temporary handle, an
+// owner assigned after its handle, a handle in a closed block that a later loop moves through, and a loop with
+// the handle outside it that is only read
+fn eat(b: Bag): int { return 0 }
+fn useIdx(h: ^Bag, c: Bag): int { return h.items[0].v + eat(c) }
+fn c_w2_param_after_move() {
+    var a = nbag()
+    append(a.items, mk(1))
+    let h = handle(a)
+    var c = a
+    println(useIdx(h, c))             // expect: 1
+}
+fn c_tmp_sibling() {
+    var a = nbag()
+    append(a.items, mk(1))
+    var c = nbag()
+    append(c.items, mk(2))
+    println(handle(a).items[eat(c)].v)  // expect: 1
+}
+fn c_block_handle_loop() {
+    var a = nbag()
+    append(a.items, mk(1))
+    if true {
+        let g = handle(a)
+        println(useH(g))              // expect: 1
+    }
+    var t = 0
+    for i in 0..2 {
+        var c = a
+        t += len(c.items)
+        a = c
+    }
+    println(t)                        // expect: 2
+}
+fn c_asg_clears_origin() {
+    var a = nbag()
+    append(a.items, mk(1))
+    let h = handle(a)
+    println(useH(h))                  // expect: 1
+    a = nbag()
+    for i in 0..2 {
+        var c = a
+        a = c
+    }
+    println(len(a.items))             // expect: 0
+}
+fn c_f1_handles_in_loops() {
+    var xs = new []Bag(0)
+    var a = nbag()
+    append(a.items, mk(1))
+    let h = handle(a)
+    var total = 0
+    for i in 0..2 {
+        total += useH(h)
+    }
+    for i in 0..1 {
+        var b = nbag()
+        append(b.items, mk(2))
+        total += useH(handle(b))
+        append(xs, b)
+    }
+    append(xs, a)
+    println(total)                    // expect: 4
+    println(len(xs))                  // expect: 2
+}
 fn main() {
     c_own_take()
     c_self_replace()
@@ -276,4 +341,9 @@ fn main() {
     c_mv_sibling()
     c_mv_call()
     c_mv_field()
+    c_w2_param_after_move()
+    c_tmp_sibling()
+    c_block_handle_loop()
+    c_asg_clears_origin()
+    c_f1_handles_in_loops()
 }

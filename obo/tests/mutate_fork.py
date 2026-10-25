@@ -271,6 +271,40 @@ DEFER_USE_MUTANTS = {
 }
 MUTANTS.update(DEFER_USE_MUTANTS)
 
+ORIGIN_MUTANTS = {
+    'origin not cleared by a consume': ('        originMove(s, true)\n        s.moved = true\n',
+        '        s.moved = true\n'),
+    'origin not cleared by a replace of a whole local': ('        if raw == "" && !x.viaHandle && !x.deref { originMove(x.sym, true) }\n',
+        ''),
+    'origin not cleared by a take of a whole local': ('        if lastRaw == "" && !x.viaHandle && !x.deref { originMove(x.sym, true) }\n',
+        ''),
+    'origin not cleared by an assignment over a whole local': ('            if traw == "" && !x.viaHandle && !x.deref { originMove(xs, false) }\n',
+        ''),
+    'replace clears origins through a reference or handle': ('        if raw == "" && !x.viaHandle && !x.deref { originMove(x.sym, true) }\n',
+        '        if raw == "" { originMove(x.sym, true) }\n'),
+    'take clears origins through a reference or handle': ('        if lastRaw == "" && !x.viaHandle && !x.deref { originMove(x.sym, true) }\n',
+        '        if lastRaw == "" { originMove(x.sym, true) }\n'),
+    'assignment clears origins through a reference or handle': ('            if traw == "" && !x.viaHandle && !x.deref { originMove(xs, false) }\n',
+        '            if traw == "" { originMove(xs, false) }\n'),
+    "a move clears no handle's origin": ('            if o == r { x.hOrigin = nil }\n',
+        '            if false { x.hOrigin = nil }\n'),
+    "a closed block's handles stay in the origin list": ('    truncate(originSyms, blocks[last].hmark)\n',
+        ''),
+    'a handle declared in the loop it is moved in is refused': ('        if x.hOrigin != nil && x.hDepth < len(loops) {\n',
+        '        if x.hOrigin != nil && x.hDepth <= len(loops) {\n'),
+    'the loop check ignores where a handle was declared': ('        if x.hOrigin != nil && x.hDepth < len(loops) {\n',
+        '        if x.hOrigin != nil {\n'),
+    "a let handle's loop depth is not recorded": ('                s.hDepth = len(loops)\n',
+        ''),
+    'moves do not check the loop': ('    if move { loopOriginCheck(r) }\n',
+        ''),
+    'a var handle is given its origin': ('            if kind == "let" {\n                s.hOrigin = x.hOrigin\n',
+        '            if true {\n                s.hOrigin = x.hOrigin\n'),
+    'a temporary handle is given no origin': ('        made.hOrigin = origin\n',
+        '        made.hOrigin = nil\n'),
+}
+MUTANTS.update(ORIGIN_MUTANTS)
+
 
 # the second review's gaps: origins, the joins over several roots, the chained handles, and the
 # callee-local rule. An entry marked equivalent in FORK.md is expected to survive: the guard it removes
@@ -304,6 +338,10 @@ MUTANTS.update({
 
 # mutants that survive by design: each removes a test that is redundant, so the behaviour is unchanged
 EQUIVALENT = {
+    "origin not cleared by a take of a whole local": "equivalent: a take needs its optional owner widened first, and only an assignment over a narrowed owner does that (a handle is made only while the owner is narrowed), so the assignment hook has already cleared the same origins before any take can run",
+    "replace clears origins through a reference or handle": "a designator through a field or element of a reference or handle has no sym (designatorT sets deref only when sym is nil), and a handle local is not owned (isOwned is false for handles), so originMove returns early; the guard is redundant",
+    "take clears origins through a reference or handle": "the same: deref implies a nil sym, and a handle local is not owned, so originMove returns early",
+    "assignment clears origins through a reference or handle": "the same: deref implies a nil sym, and a handle local is not owned, so originMove returns early",
     "origin needs no non-handle designator": "a designator through a handle has no sym, so wholeOwnerOf gives nil",
     "origin needs no whole path": "a designator with a path has no sym (only a whole name sets it), so wholeOwnerOf gives nil",
     "origin of a global is kept": "owned is set only for locals (addOwnedLocal), so a global never has an origin",

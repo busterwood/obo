@@ -10,6 +10,7 @@ fn sinkI(a: []Node): int { return 0 }
 fn sinkN(n: ?Node): int { return 0 }
 fn passOpt(o: ?Node): ?Node { return o }
 fn nb(): Bag { return new Bag{items: new []Node(0), opt: nil} }
+fn useH(h: ^Bag): int { return h.items[0].v }
 // === a reference's place: a replace frees a field below the path the reference names
 fn main() {
     var xs = new []Node(0)
@@ -250,5 +251,102 @@ fn main() {
         c = a  // error: cannot move 'a' inside a loop while handle 'h' made from it is in scope
         a = nb()
         i += 1
+    }
+}
+// === a handle copied to another local, then the owner moved: the copy names the same object and is an identity too
+fn main() {
+    var a = nb()
+    append(a.items, mk(1))
+    let h = handle(a)
+    let h2 = h
+    var c = a
+    println(h2.items[eat(c)].v)  // error: cannot index through a handle with an index that moves or frees something
+}
+// === a handle held in a record field, then its owner moved and indexed through the field
+type HH = ref record { h: ^Bag }
+fn main() {
+    var a = nb()
+    append(a.items, mk(1))
+    var s = new HH{h: handle(a)}
+    var c = a
+    println(s.h.items[eat(c)].v)  // error: cannot index through a handle with an index that moves or frees something
+}
+// === a handle made in a closed block, then the owner moved and an outer handle indexed through the move
+fn main() {
+    var a = nb()
+    append(a.items, mk(1))
+    let h = handle(a)
+    if true {
+        let g = handle(a)
+        println(useH(g))
+    }
+    var c = a
+    println(h.items[eat(c)].v)  // error: cannot index through a handle with an index that moves or frees something
+}
+// === a var handle made from the owner: it has no origin, so a move of another local through it is refused
+fn main() {
+    var a = nb()
+    append(a.items, mk(1))
+    var h = handle(a)
+    var c = nb()
+    append(c.items, mk(2))
+    println(h.items[eat(c)].v)  // error: cannot index through a handle with an index that moves or frees something
+}
+// === a handle outside a for loop: its owner moved in the loop body
+fn main() {
+    var a = nb()
+    append(a.items, mk(1))
+    let h = handle(a)
+    for i in 0..2 {
+        var c = a  // error: cannot move 'a' inside a loop while handle 'h' made from it is in scope
+        println(h.items[eat(c)].v)
+        a = c
+    }
+}
+// === a handle made in a loop body, then its owner moved and indexed through the move: the handle is fresh, the index is refused
+fn main() {
+    var a = nb()
+    append(a.items, mk(1))
+    for i in 0..2 {
+        let h = handle(a)
+        println(h.items[0].v)
+        var c = a
+        println(h.items[eat(c)].v)  // error: cannot index through a handle with an index that moves or frees something
+        a = c
+    }
+}
+// === a move inside a defer in a loop, where the let handle of the owner is made in the loop body: the defer rule applies
+fn main() {
+    var a = nb()
+    append(a.items, mk(1))
+    var c = nb()
+    for i in 0..2 {
+        let h = handle(a)
+        println(h.items[0].v)
+        defer { c = a }  // error: cannot move 'a' inside defer
+    }
+}
+// === a move inside a defer in a loop, where the let handle of the owner is made before the loop: the defer rule applies
+fn main() {
+    var a = nb()
+    append(a.items, mk(1))
+    var c = nb()
+    let h = handle(a)
+    for i in 0..2 {
+        println(h.items[0].v)
+        defer { c = a }  // error: cannot move 'a' inside defer
+    }
+}
+// === a take of an optional owner after its handle was made: the take clears the handle's origin, so a move of the object through the handle is refused
+fn main() {
+    var o: ?Bag = nb()
+    if o != nil {
+        append(o.items, mk(1))
+        let h = handle(o)
+        o = nil
+        var c = take(o)
+        if c != nil {
+            println(h.items[eat(c)].v)  // error: cannot index through a handle with an index that moves or frees something
+        }
     }
 }
