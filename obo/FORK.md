@@ -1122,7 +1122,7 @@ the defer's reference is derived is refused: `defer ... ; return bag` where the 
 
 ## Optimization plan
 
-Status: Phase 0 done; Phase 1 done except loop inversion (designed below, deferred); Phases 2 and 3 planned. Phases are ordered by expected value per unit of cost.
+Status: Phase 0 and Phase 1 done (loop inversion included); Phases 2 and 3 planned. Phases are ordered by expected value per unit of cost.
 Each has a gate; a phase that misses its gate is recorded here and stopped.
 
 **Baseline.** A loop `s = s + i * 2` over `i < n` compiles with every local in a stack
@@ -1206,7 +1206,7 @@ assumed. Phase 2's measured gain will show whether it is.
 *Gate:* the suite passes, benchmarks do not regress, and the byte-identity check
 below is handled (done: Stage B compares behaviour, see open decisions).
 
-**Done** (patch `tools/port_cheap_codegen.py`), except loop inversion:
+**Done** (patch `tools/port_cheap_codegen.py`; loop inversion is described under "Loop inversion (done)"):
 
 - **Static stack depth** was already tracked: `depth` counts every push, pad and
   return address, and `rtCall` and `callFn` pad only when the depth is misaligned. The pads
@@ -1278,8 +1278,8 @@ compared it with `./obo`, built from the same source. It now also runs mainline'
 groups (`obx/tests/encoder_test.py`) against the port, and `group_push_immediates` for the
 new form.
 
-**Loop inversion: design (deferred until the per-path bindings branch merges, since it
-rewrites the same loop functions).** A `while` reads its condition before its body, but the
+**Loop inversion: design (built after the per-path bindings merged, since it
+rewrote the same loop functions; see "Loop inversion (done)" below).** A `while` reads its condition before its body, but the
 inverted loop emits it after: `jmp cond; body: ...; cond: C; jcc body`. Three ways to get there
 in one pass:
 
@@ -1311,6 +1311,61 @@ its test is generated code over locals stored before the loop, so it can simply 
 after the body. Mutants: each kind of position not moved (a call out, a waiting call, a link
 of each list); tests: a `while` whose condition calls a function declared later, concatenates
 a string, indexes an array and uses `&&` and `||`.
+
+#### Loop inversion (done)
+
+Built as option 1 above, in `whileStat` and `forStat`. The checker is untouched: it sees the condition
+once, where it is read, and the body after it, with the same snapshots, free log positions and loop
+marks as before. Only the bytes move.
+
+- A `while` compiles its condition where it is read, copies the bytes out (`lifted`, a stack shared by
+  nested loops, so no array per loop) and cuts the code back to the loop's top. It emits `jmp cond`,
+  compiles the body, and appends the bytes after it, followed by `jcc body`. The false list and `break`
+  fall through to the loop's end; the true list goes to the body.
+- Moved by d, the condition's bytes keep these positions current: its calls out (the `farCalls` entries
+  added since the condition began) get rel32 - d and the entry + d; its calls waiting for a later function
+  are taken out of those functions' fixups when the code is cut back (`waitFn`, `waitAt`, found only when
+  `fwdCalls` changed) and put back + d; and the true and false lists are walked, + d on the head and on
+  every link (`shiftWaits`). Jumps inside the condition are relative.
+- Nothing else holds a code position during a condition. Checked: the free log, `Loop.exits/conts` and
+  their `exitAt/contAt` are indexes into the checker's own logs, not code; string temporaries and the
+  register state are checker and allocator state (all registers are free where a condition ends);
+  `pendLine` and the error positions are source positions; there is no line table. Defers and `break` and
+  `continue` cannot occur in an expression, and defer subroutines in the body do not move.
+- `continue` goes to the moved condition. `while true` keeps its old shape (nothing to move).
+- A `for` loop emits `jmp test; top: body; cont: increment; test: ...; jl top`. For the array form the
+  head still loads the index and the array to fetch the element, and the test loads them again, so that
+  form executes two more loads and one fewer jump per iteration.
+
+Measured with `bench/micro.py -n 11`, the same machine and session, the compiler of main (4a6c49d) and
+this one in turn:
+
+| Benchmark | Main | Inverted |
+|---|---|---|
+| loop | 576 ms (539-581), 36 instr, 12 per iteration | 534 ms (528-543), 36 instr, 11 per iteration |
+| fib | 629 ms (602-636), 54 instr | 591 ms (558-605), 54 instr |
+| array | 403 ms (369-419), 99 instr | 401 ms (392-413), 99 instr |
+| alloc | 471 ms (431-955), 51 instr | 471 ms (462-698), 51 instr |
+
+The loop is 7% faster (one `jmp` fewer per iteration; the static count is unchanged because the entry
+`jmp` replaces it). fib's difference is within the run-to-run range (it has no loop; an earlier
+interleaved run showed 602 to 614 ms), array and alloc did not change: within noise. The port's own
+code (the same source compiled by each compiler): 50,267 instructions and 184,052 bytes of code
+before, 50,327 and 184,388 after (the array `for` test); compiling itself takes 36.1 ms before and
+35.8 ms after, no change. `tests/port_compare.py`: the live peak is 1,169,952 bytes (budget 1,351,000;
+main 1,161,088 for its own source) and 15.82 MB allocated against 15.56 MB, which comes from the
+source being 2% longer, not from the lifting (the lifted code and the waiting calls are on shared
+stacks).
+
+Mutants (`tests/mutate_port.py`, all caught by `tests/run/loop_inversion.obx` or the comparison): calls
+out of the condition not adjusted, and not moved in `farCalls`; waiting calls not adjusted, and not
+lifted; links of the lists not adjusted; the head of the true list and of the false list not
+adjusted; `continue` going to the body, and to the end of the condition; the `for` test jumping back to
+the wrong place. `continue` to the old position of the condition is the loop's `jmp cond`, which
+reaches the condition anyway, so that mutant is equivalent and not planted. The test has a `while`
+condition that calls a later function, concatenates strings, indexes arrays, uses `&&` and `||`
+(chains of three in each direction), calls the runtime and allocates, and `while true`; with `continue`,
+`break`, nested loops, a loop in a function with no frame, and defers in the body.
 
 ### Phase 2: register allocation for scalar locals
 
