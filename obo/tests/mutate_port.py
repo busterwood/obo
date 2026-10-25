@@ -316,12 +316,21 @@ MUTANTS.update({
     "for limit's register never given back": [("            if lim.home >= 0 { append(blocks[len(blocks) - 1].syms, lim) }       // so that the block's end frees it\n", "")],
     "bool parameters left in memory": [('        if params[i].mode == 0 && (params[i].typ.kind == "int" || params[i].typ.kind == "bool") {\n            let h', '        if params[i].mode == 0 && params[i].typ.kind == "int" {\n            let h')],
     "a local in a register as a statement accepted": [('            if x.mode != "reg" || x.home { errorAt("this expression does nothing"', '            if x.mode != "reg" { errorAt("this expression does nothing"')],
-    "destinations not counted in the register cap": [("                    held = 2 * lhsCount", "                    held = 0")],
+    # a function that runs out of registers with locals in them is compiled again with none (FORK.md, Phase 2);
+    # tests/run/register_pressure.obx has such functions, one with calls waiting for a later function. Not planted,
+    # equivalent: the counters (selfCalls, userCalls, useSeq, fwdCalls) are only compared with their value at a
+    # point in the same pass, and what the first pass recorded as freed (f.freed, freesAll, writesHandles) the
+    # second records again, the checker being the same
+    "retry: locals' registers not given up": [("    if len(free) == 0 && homeBits != 0 { giveUpHomes() }\n", "")],
+    "retry: code not rewound": [("        truncate(code, f.addr)\n        let gs = &globals", "        let gs = &globals")],
+    "retry: waiting calls of the first pass kept": [("                while len(g.fixups) > 0 && g.fixups[len(g.fixups) - 1] >= f.addr { truncate(g.fixups, len(g.fixups) - 1) }\n", "")],
+    "retry: scanner not rewound": [("        pos = sPos\n", "")],
+    "retry: token not restored": [("        sym = sSym\n", "")],
 })
 SHAPES = {"scan: nothing counted", "scan: ranking ignored", "scope end does not give the register back",
           "runtime calls push the locals' registers", "return copies a local's register",
           "for limit's register never given back", "bool parameters left in memory"}
-EDGE = {"destinations not counted in the register cap"}
+EDGE = set()
 
 # mutants that keep memory alive: caught when the peak rises above the unmutated peak,
 # for a leak too small to cross PEAK_BUDGET

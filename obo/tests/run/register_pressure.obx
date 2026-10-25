@@ -787,6 +787,370 @@ fn p_arg_6(n: int): int {
     return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
 }
 
+fn p_flat3_0(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] = ga[i & 3] + rr.inner.y * len(s)
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flatc3_0(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] += ga[i & 3] + rr.inner.y * len(s)
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flat3_1(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] = gp.y + ga[(i + 1) & 3] * ga[(i + 3) & 3]
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flatc3_1(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] += gp.y + ga[(i + 1) & 3] * ga[(i + 3) & 3]
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flat3_2(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] = gps[i & 1].x + gp.x * ga[i & 3]
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flatc3_2(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] += gps[i & 1].x + gp.x * ga[i & 3]
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flat4_0(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] = ga[i & 3] + rr.inner.y * len(s) + gp.y
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flatc4_0(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] += ga[i & 3] + rr.inner.y * len(s) + gp.y
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flat4_1(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] = gp.y + ga[(i + 1) & 3] * ga[(i + 3) & 3] + gps[i & 1].x
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flatc4_1(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] += gp.y + ga[(i + 1) & 3] * ga[(i + 3) & 3] + gps[i & 1].x
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flat4_2(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] = gps[i & 1].x + gp.x * ga[i & 3] + rr.inner.y
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flatc4_2(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] += gps[i & 1].x + gp.x * ga[i & 3] + rr.inner.y
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flat5_0(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] = ga[i & 3] + rr.inner.y * len(s) + gp.y * ga[(i + 1) & 3]
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flatc5_0(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] += ga[i & 3] + rr.inner.y * len(s) + gp.y * ga[(i + 1) & 3]
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flat5_1(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] = gp.y + ga[(i + 1) & 3] * ga[(i + 3) & 3] + gps[i & 1].x * gp.x
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flatc5_1(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] += gp.y + ga[(i + 1) & 3] * ga[(i + 3) & 3] + gps[i & 1].x * gp.x
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flat5_2(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] = gps[i & 1].x + gp.x * ga[i & 3] + rr.inner.y * len(s)
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flatc5_2(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] += gps[i & 1].x + gp.x * ga[i & 3] + rr.inner.y * len(s)
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flat6_0(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] = ga[i & 3] + rr.inner.y * len(s) + gp.y * ga[(i + 1) & 3] + ga[(i + 3) & 3]
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flatc6_0(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] += ga[i & 3] + rr.inner.y * len(s) + gp.y * ga[(i + 1) & 3] + ga[(i + 3) & 3]
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flat6_1(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] = gp.y + ga[(i + 1) & 3] * ga[(i + 3) & 3] + gps[i & 1].x * gp.x + ga[i & 3]
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flatc6_1(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] += gp.y + ga[(i + 1) & 3] * ga[(i + 3) & 3] + gps[i & 1].x * gp.x + ga[i & 3]
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flat6_2(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] = gps[i & 1].x + gp.x * ga[i & 3] + rr.inner.y * len(s) + gp.y
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_flatc6_2(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] += gps[i & 1].x + gp.x * ga[i & 3] + rr.inner.y * len(s) + gp.y
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_lines1(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] = v*2 +
+        (v*2 + (v*2 + v*2))
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_lines2(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] += v*2 +
+        (v*2 + (v*2 + v*2))
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_lines3(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] = v*2 + // continues
+        (v*2 + (v*2 + v*2))
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+fn p_lines4(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; i += 1 }
+    ga[i & 3] = gp.y +
+        gp.x *
+        ga[i & 3] +
+        gps[i & 1].x * rr.inner.y
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+
+// a function that is compiled twice: it runs out of registers with its locals in them, so it is compiled again
+// with none. What the first pass left behind (a call waiting for a function declared later, in the body and in
+// a loop's condition) must not survive it.
+fn later(x: int): int
+fn p_retry(n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    let r = new P{x: 1, y: 2}
+    let rr = new R{inner: new P{x: 1, y: 1}}
+    while i < n { v += i; u += v; w += u; v += w; u += i; w += v; v += u; w += i; u += w; i += 1 }
+    let l1 = later(u)
+    ga[i & 3] = gps[i & 1].x + gp.x * ga[i & 3]
+    let l2 = later(w) + later(v)
+    g = l1 + l2 + later(i) + later(l1)
+    ga[i & 3] += gps[i & 1].x + gp.x * ga[i & 3]
+    g += later(w + u) + later(v)
+    return v + u + w + g + r.y + rr.inner.y + len(ga) + gp.x + gp.y + gps[0].x + gps[1].y
+}
+fn later(x: int): int { return x * 3 + 1 }
+
 fn main() {
     for q in 0..4 { append(ga, q) }
     append(gps, new P{x: 1, y: 2})
@@ -855,5 +1219,34 @@ fn main() {
     println(p_arg_4(3))  // expect: 377
     println(p_arg_5(3))  // expect: 385
     println(p_arg_6(3))  // expect: 393
-    println(ga[0], ga[1], ga[2], ga[3], gp.x, gp.y, gps[0].x, gps[1].y)  // expect: 561223256178158
+    println(p_flat3_0(3))  // expect: 393
+    println(p_flatc3_0(3))  // expect: 393
+    println(p_flat3_1(3))  // expect: 393
+    println(p_flatc3_1(3))  // expect: 393
+    println(p_flat3_2(3))  // expect: 393
+    println(p_flatc3_2(3))  // expect: 393
+    println(p_flat4_0(3))  // expect: 393
+    println(p_flatc4_0(3))  // expect: 393
+    println(p_flat4_1(3))  // expect: 393
+    println(p_flatc4_1(3))  // expect: 393
+    println(p_flat4_2(3))  // expect: 393
+    println(p_flatc4_2(3))  // expect: 393
+    println(p_flat5_0(3))  // expect: 393
+    println(p_flatc5_0(3))  // expect: 393
+    println(p_flat5_1(3))  // expect: 393
+    println(p_flatc5_1(3))  // expect: 393
+    println(p_flat5_2(3))  // expect: 393
+    println(p_flatc5_2(3))  // expect: 393
+    println(p_flat6_0(3))  // expect: 393
+    println(p_flatc6_0(3))  // expect: 393
+    println(p_flat6_1(3))  // expect: 393
+    println(p_flatc6_1(3))  // expect: 393
+    println(p_flat6_2(3))  // expect: 393
+    println(p_flatc6_2(3))  // expect: 393
+    println(p_lines1(3))  // expect: 393
+    println(p_lines2(3))  // expect: 393
+    println(p_lines3(3))  // expect: 393
+    println(p_lines4(3))  // expect: 393
+    println(p_retry(4))  // expect: 163673
+    println(ga[0], ga[1], ga[2], ga[3], gp.x, gp.y, gps[0].x, gps[1].y)  // expect: 17881012202656178158
 }

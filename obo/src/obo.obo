@@ -1197,6 +1197,7 @@ let pool = makePool()
 const REG_HOMES = 4
 const HOME_MIN = 8
 var homeBits = 0                  // the registers now held by locals, as a set
+var homeRetry = false             // the function being compiled ran out of registers with locals in them: see giveUpHomes
 
 var rodata = new []byte(0)
 var strKeys = new []string(0)
@@ -1436,7 +1437,21 @@ fn epilogue() {
 
 // ===================================================== registers and items
 
+// The function being compiled has locals in registers and no temporary is free. The locals' registers become
+// temporaries, as they are with no locals in registers, and the pass goes on to the end of the function,
+// its code to be thrown away: it reports what the function with all its locals in memory would report
+// (an error at a later token, or the exhaustion again, which is then the real one), and if it reaches the
+// end without one, fnDecl compiles the function again with no registers for locals (homeRetry).
+fn giveUpHomes() {
+    for r in 12..16 {
+        if (homeBits & (1 << r)) != 0 { append(free, r) }
+    }
+    homeBits = 0
+    homeRetry = true
+}
+
 fn alloc(): int {
+    if len(free) == 0 && homeBits != 0 { giveUpHomes() }
     if len(free) == 0 { error("expression too complex (out of registers)") }
     let r = free[0]
     for i in 1..len(free) { free[i - 1] = free[i] }
@@ -2746,7 +2761,7 @@ fn netScore(k: int): int { return scanScore[k] - 2 * scanCalls }
 // do better and are yet to be declared in the function would still have one. declares is false for a
 // second register of the same local (a for loop's limit).
 fn pickHome(name: string, declares: bool): int {
-    if REG_HOMES == 0 || curFn == nil || inDefer { return -1 }
+    if REG_HOMES == 0 || curFn == nil || inDefer || homeRetry { return -1 }
     let k = scannedName(name)
     if k < 0 { return -1 }
     if declares { scanPend[k] = false }
@@ -2899,7 +2914,7 @@ fn closeBlock(terminated: bool) {
     }
     let scope = &blocks[last].syms
     for s in scope {
-        if s.home >= 0 { releaseHome(s.home) }
+        if s.home >= 0 && !homeRetry { releaseHome(s.home) }
     }
     // the block's symbols are freed with it: the origin list keeps only the handles still in scope
     truncate(originSyms, blocks[last].hmark)
@@ -5702,6 +5717,12 @@ fn plausible(decl: int, from: int): bool {
     return true
 }
 
+// a line that ends in this goes on in the next
+fn contChar(c: int): bool {
+    return c == '+' || c == '-' || c == '*' || c == '/' || c == '%' || c == '&' || c == '|' || c == '^' ||
+           c == '<' || c == '>' || c == '=' || c == '!' || c == ',' || c == '.'
+}
+
 fn callAt(from: int): bool {
     let q = skipBlank(from)
     return q < len(src) && src[q] == '('
@@ -5753,6 +5774,7 @@ fn scanFunction(params: &[]Param) {
     var seenAssign = false
     var inDecl = false                    // the statement is a var or let: its '[' are in a type
     var lastA = -1                        // the word just read, if the last token
+    var prevCh = 0                        // the first character of the last token, comments apart
     var lastB = -1
     var prevNew = false                   // the word just read was `new`
     var afterNew = false                  // the word just read names the type of a record literal
@@ -5762,7 +5784,7 @@ fn scanFunction(params: &[]Param) {
     while p < n && depth > 0 {
         let c = src[p]
         if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-            if c == '\n' && nest == 0 {
+            if c == '\n' && nest == 0 && !contChar(prevCh) {
                 lhsCount = 0
                 held = 0
                 seenAssign = false
@@ -5771,6 +5793,7 @@ fn scanFunction(params: &[]Param) {
             p += 1
             continue
         }
+        if !(c == '/' && p + 1 < n && src[p + 1] == '/') { prevCh = c }
         let la = lastA
         let lb = lastB
         lastA = -1
@@ -5925,8 +5948,89 @@ fn scanFunction(params: &[]Param) {
     if homeCap < 0 { homeCap = 0 }
 }
 
+// Compiles the body of the function f, its heading read and its '{' the current token. homes is whether its int
+// and bool locals may be held in registers. True if it ran out of registers with some (see giveUpHomes): nothing
+// has been left but its code, to be thrown away.
+fn fnBody(f: ^Sym, name: string, ret: ^Type, params: &[]Param, homes: bool): bool {
+    pendLine = 0
+    frame = 0
+    depth = 0
+    truncate(farCalls, 0)
+    if homes {
+        scanFunction(params)
+    } else {
+        homeCap = 0
+    }
+    emit(0x55)
+    emit(0x48)
+    emit(0x89)
+    emit(0xE5)
+    emit(0x48)
+    emit(0x81)
+    emit(0xEC)
+    let frameAt = pc()
+    emit32(0)
+    let bindMark = len(bindArena)
+    let symMark = len(symArena)                 // the function's own symbols start here
+    openBlock()
+    fnBlock = len(blocks) - 1
+    let n = len(params)
+    for i in 0..n {
+        let s = newSym("var", params[i].name, params[i].typ)
+        s.storage = "local"
+        s.isParam = true
+        s.offset = 16 + 8 * (n - 1 - i)
+        declare(s)
+        if params[i].mode > 0 {
+            s.isRef = true                         // borrowed: not freed here
+            s.bind = singleBind(s, false, "", params[i].mode == 2, nil)
+            s.kind = "let"
+        } else if isOwned(params[i].typ) {
+            addOwnedLocal(s)
+        }
+        if params[i].typ.kind == "string" { addStrLocal(s) }
+        if params[i].mode == 0 && (params[i].typ.kind == "int" || params[i].typ.kind == "bool") {
+            let h = pickHome(params[i].name, true)
+            if h >= 0 {
+                s.home = h
+                opMem(0x8B, h, mem(RBP, -1, s.offset, 8), true, false)      // the argument, from the stack
+            }
+        }
+    }
+    expect(T_LBRACE, "")
+    openBlock()
+    let term = statSeq()
+    expect(T_RBRACE, "")
+    if !term && ret != tVoid { error(name + " must return a value on every path") }
+    closeBlock(term)
+    closeBlock(term)
+    homeBits = 0
+    if homeRetry {
+        truncate(bindArena, bindMark)
+        truncate(symArena, symMark)
+        return true
+    }
+    if !term { epilogue() }
+    let size = (frame + 15) & ~15
+    if size == 0 {
+        dropFrame(frameAt)
+    } else {
+        code[frameAt] = byte(size)
+        code[frameAt + 1] = byte(size >> 8)
+        code[frameAt + 2] = byte(size >> 16)
+        code[frameAt + 3] = byte(size >> 24)
+    }
+    if pendLine > 0 && f.writesHandles { errorAt(pendMsg, pendLine, pendCol) }
+    pendLine = 0
+    curFn = nil
+    truncate(bindArena, bindMark)
+    truncate(symArena, symMark)                 // and nothing refers to them any more
+    return false
+}
+
+
 fn fnDecl() {
-    let line = tline
+    let hline = tline
     let name = ident()
     let params = new []Param(0)
     expect(T_LPAREN, "")
@@ -5977,77 +6081,61 @@ fn fnDecl() {
             append(f.pmodes, p.mode)
         }
         f.ret = ret
-        f.line = line
+        f.line = hline
     }
     if sym != T_LBRACE { return }
     if f.addr >= 0 { error("'" + name + "' is already defined") }
     f.addr = pc()
     for fi in 0..len(f.fixups) { fix(f.fixups[fi], f.addr) }   // calls waiting for this address
     curFn = f
-    pendLine = 0
-    frame = 0
-    depth = 0
-    truncate(farCalls, 0)
-    scanFunction(&params)
-    emit(0x55)
-    emit(0x48)
-    emit(0x89)
-    emit(0xE5)
-    emit(0x48)
-    emit(0x81)
-    emit(0xEC)
-    let frameAt = pc()
-    emit32(0)
-    let bindMark = len(bindArena)
-    let symMark = len(symArena)                 // the function's own symbols start here
-    openBlock()
-    fnBlock = len(blocks) - 1
-    let n = len(params)
-    for i in 0..n {
-        let s = newSym("var", params[i].name, params[i].typ)
-        s.storage = "local"
-        s.isParam = true
-        s.offset = 16 + 8 * (n - 1 - i)
-        declare(s)
-        if params[i].mode > 0 {
-            s.isRef = true                         // borrowed: not freed here
-            s.bind = singleBind(s, false, "", params[i].mode == 2, nil)
-            s.kind = "let"
-        } else if isOwned(params[i].typ) {
-            addOwnedLocal(s)
-        }
-        if params[i].typ.kind == "string" { addStrLocal(s) }
-        if params[i].mode == 0 && (params[i].typ.kind == "int" || params[i].typ.kind == "bool") {
-            let h = pickHome(params[i].name, true)
-            if h >= 0 {
-                s.home = h
-                opMem(0x8B, h, mem(RBP, -1, s.offset, 8), true, false)      // the argument, from the stack
+    // what a pass over the body changes and a second pass must find as it was
+    let sPos = pos
+    let sLine = line
+    let sCol = col
+    let sLast = last
+    let sSym = sym
+    let sSval = sval
+    let sIval = ival
+    let sTline = tline
+    let sTcol = tcol
+    let sSelf = selfCalls
+    let sUser = userCalls
+    let sUse = useSeq
+    let sFwd = fwdCalls
+    let sFreed = len(f.freed)
+    let sAll = f.freesAll
+    let sWrites = f.writesHandles
+    homeRetry = false
+    if fnBody(f, name, ret, &params, true) {
+        truncate(code, f.addr)
+        let gs = &globals
+        for g in gs {
+            if g.kind == "fn" && g.addr < 0 {
+                while len(g.fixups) > 0 && g.fixups[len(g.fixups) - 1] >= f.addr { truncate(g.fixups, len(g.fixups) - 1) }
             }
         }
+        truncate(f.freed, sFreed)
+        f.freesAll = sAll
+        f.writesHandles = sWrites
+        selfCalls = sSelf
+        userCalls = sUser
+        useSeq = sUse
+        fwdCalls = sFwd
+        pos = sPos
+        line = sLine
+        col = sCol
+        last = sLast
+        sym = sSym
+        sval = sSval
+        ival = sIval
+        tline = sTline
+        tcol = sTcol
+        homeRetry = false
+        homeBits = 0
+        setFree(0)
+        fnBody(f, name, ret, &params, false)
     }
-    expect(T_LBRACE, "")
-    openBlock()
-    let term = statSeq()
-    expect(T_RBRACE, "")
-    if !term && ret != tVoid { error(name + " must return a value on every path") }
-    closeBlock(term)
-    closeBlock(term)
-    homeBits = 0
-    if !term { epilogue() }
-    let size = (frame + 15) & ~15
-    if size == 0 {
-        dropFrame(frameAt)
-    } else {
-        code[frameAt] = byte(size)
-        code[frameAt + 1] = byte(size >> 8)
-        code[frameAt + 2] = byte(size >> 16)
-        code[frameAt + 3] = byte(size >> 24)
-    }
-    if pendLine > 0 && f.writesHandles { errorAt(pendMsg, pendLine, pendCol) }
-    pendLine = 0
     curFn = nil
-    truncate(bindArena, bindMark)
-    truncate(symArena, symMark)                 // and nothing refers to them any more
 }
 
 fn constDecl() {

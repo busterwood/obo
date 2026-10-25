@@ -63,6 +63,24 @@ def nested(r, k):
     return e
 
 
+OPERANDS = ['ga[i & 3]', 'ga[(i + 1) & 3]', 'ga[ga[i & 3] & 3]', 'gp.x', 'gp.y', 'gps[i & 1].x', 'gps[(i + 1) & 1].y',
+            'rr.inner.y', 'r.x', 'len(s)', 'v', 'u * w', 'i', '3']
+DESTS = ['ga[i & 3] = ', 'ga[i & 3] += ', 'ga[(i + 1) & 3] -= ', 'ga[ga[i & 3] & 3] = ', 'gp.x = ', 'gp.y += ',
+         'gps[i & 1].x = ', 'rr.inner.y = ', 'r.y = ', 'g = ']
+
+
+def flat(r):
+    """A destination and a chain of 2 to 9 operands joined by + - * and && free of parentheses, some lines
+    broken after an operator, with a comment there now and then."""
+    s = r.choice(DESTS)
+    for j in range(r.randint(2, 9)):
+        if j:
+            s += ' ' + r.choice(['+', '-', '*', '+', '*'])
+            s += r.choice([' ', ' ', '\n        ', ' // goes on\n        ']) if r.random() < 0.4 else ' '
+        s += r.choice(OPERANDS)
+    return s
+
+
 def outcome(exe, src, out):
     c = subprocess.run([exe, src, '-o', out, '--rt', FORK], capture_output=True, text=True)
     if c.returncode != 0:
@@ -92,6 +110,8 @@ def main():
         shape = rnd.choice(SHAPES)
         parts = tuple(nested(rnd, rnd.randint(1, 9)) for _ in range(shape.count('%s')))
         bodies.append((f'random {t}: {shape!r}', shape % parts))
+    for t in range(n_random):
+        bodies.append((f'flat chain {t}', flat(rnd)))
     bad = refused = 0
     for name, body in bodies:
         src = os.path.join(tmp, 'p.obx')

@@ -1505,35 +1505,44 @@ decisions") is the only departure from a single pass.
   it that are still to be declared. Registers are given back at the end of the block, so sequential
   scopes reuse them. The scan also bounds what a statement holds in registers (below) and allows only
   `7 - that` homes (at most `REG_HOMES` = 4), keeping the pool large enough: with a fixed four, 7 of 1,400
-  random programs failed with "out of registers" that compiled before. The first cap counted only the
-  nesting of the value, and the review found `ga[i & 3] = (v*2 + (v*2 + (v*2 + v*2)))` refused (depths 3 to
-  6 of every element and field destination did the same: 24 of 198 generated statements); the bound below
-  fixes that.
-- *Why no statement runs out of registers (the bound).* A home leaves `9 - homes` temporaries, so the
-  cap must keep `9 - homes` at least what any statement of the function needs at once. The registers a
-  statement holds are: (a) the destination of an assignment, evaluated before the value: an element holds
-  its base and its index (2), a field its base (1), and a chain `a[i].f[j]` holds the last link only, so
-  2 per `[` or `.` left of the operator is an upper bound (`held`); (b) one pending operand per open
-  parenthesis, bracket or record literal (`nest`): the compiler evaluates the left operand into a
-  register, then the right; the operators are left-associative, so a chain `a + b + c` retires its left
-  operand as it goes and only parentheses (or a call's argument list, an index, a field value of a
-  literal) leave one waiting; (c) the earlier arguments of a call to a builtin, which are loaded into
-  registers until the runtime call (`totalCommas`; the arguments of an obo call are pushed at once and
-  the live temporaries are pushed around the call, so they hold nothing; `&&` and `||` use jump lists,
-  no register); (d) at most two at the innermost operation (its operand and its result, or an element's
-  base and index). So a statement needs at most `held + nest + totalCommas + 2` temporaries, and the cap
-  `homes <= 7 - (held + nest + totalCommas)` leaves `9 - homes >= held + nest + totalCommas + 2`. The
-  scan takes the maximum over the function's statements, counting statement ends at a newline outside any
-  bracket, a `;` or a brace. The numbers are over-estimates (a `.` or `[` in the left side counts 2
-  even for a nested index), and the scan reads text, so it also over-counts a type's `[`: those are
-  skipped after `var` and `let`. It is an argument, not a machine proof, so it is tested at the edge:
-  `tests/run/register_pressure.obx` (19 destination and call shapes at depths 3 to 6, which the
-  uncapped compiler refused) and `tests/homes_edge.py`, which compares obo with `obo-noregs` on those
-  shapes at depths 1 to 12 and 400 random statements (random nesting, mixed operators, several
-  destination forms) with four hot locals: the outcomes agree in all 628 (119 are refused by both: main
-  itself runs out of registers beyond depth 7). That `setFree` leaves homes out and a home is never
-  handed out again as a temporary matters only if the bound fails; under it the free list never runs
-  dry of non-home registers, so a mutant that ignored `homeBits` there is equivalent.
+  random programs failed with "out of registers" that compiled before. A cap from the nesting of the value, then
+  from the destination too, still missed flat chains and continued lines; the compile-again rule below is what
+  makes the allocation never refuse a program that compiles without it.
+- *Running out of registers: compile again (complete by construction).* Two rounds of review each found a
+  shape the scan's estimate of a statement's register need missed (a flat chain of element operands holds a
+  base and an index per operand as the precedence levels stack up; a statement continued over lines), so the
+  scan is only a heuristic for which locals get registers (and for how many, so that the retry below is
+  rare), and safety does not depend on it. When `alloc` finds no temporary free and locals hold registers,
+  `giveUpHomes` makes those registers temporaries again (as in a function with no locals in registers) and the
+  pass goes on to the end of the function, its code to be thrown away. If it reaches the end with no error,
+  `fnDecl` rewinds and compiles the function again with no registers for locals (`homeRetry`, then
+  `fnBody(..., false)`). Why that is exact:
+  - Before the switch, the pass needs at most the temporaries the function with all its locals in memory
+    needs (a local in a register is read in place, where one in memory is loaded into a temporary), and a
+    local's register is not a temporary. So the function with no registers for locals cannot have run out
+    earlier. After the switch the pass has at least as many free registers as that function. If it runs out
+    of registers then, so does that function, and the error (same message, the line and column of the token
+    where it fails) is the real one. If it does not, the second pass, which is exactly the function compiled
+    with no locals in registers, may still run out later, and then that is the error.
+  - So a program is refused with "out of registers" exactly when `obo-noregs` refuses it. Only for a function
+    with two errors can the one reported differ (the first pass may reach a checker error before the position
+    where the second runs out of registers, or the reverse); the checker's own messages are those of main.
+  - What a pass changes and the second must find as it was: the code (cut back to the function's start), the
+    calls waiting for functions declared later (`fixups` of the unresolved ones, cut back to the start), the
+    scanner (position, line, column, last token and the current token), `selfCalls`, `userCalls`, `useSeq`,
+    `fwdCalls`, what the function is recorded to free (`f.freed`, `freesAll`, `writesHandles`). The symbols and
+    bindings of the pass are truncated at its end as they always were; the string pool keeps what the first
+    pass added (a literal is found again by its text). The snapshot is eleven integers and a string; nothing
+    is copied. The counters and the freed set are only compared inside one pass or re-derived, so their
+    restoring has no mutant (equivalent); every other item has one.
+  - The first pass must not report what the second would: an error it meets after the switch is the error
+    the second would meet, since the checker does not read registers.
+  `tests/run/register_pressure.obx` has the shapes that were refused (destinations of every kind at depths 3
+  to 6, flat chains of 3 to 6 operands joined by `+` and `*`, statements continued over lines with and without
+  a comment after the operator, and `p_retry`, a retried function with calls waiting for a later function).
+  `tests/homes_edge.py` compares `obo` with `obo-noregs` on 1,028 statements (those shapes at depths 1 to 12, 400
+  random nested ones and 400 random flat chains with line continuations): all agree (119 are refused by
+  both). The scan still reads a line that ends in an operator as continued.
 - *Calls.* Deviation from the plan's callee-save: the pool holds `rbx` and `r12`-`r15` as temporaries,
   so a callee may clobber any of them without saving, and the existing convention (the caller pushes
   the registers in use) covers the homes too. A home is "in use", so `callFn` pushes the homes in scope
@@ -1600,10 +1609,12 @@ the variable's register. Those that change only speed (the scan counting nothing
 ignored, a register not given back at a scope's end, a for limit's register leaking, a bool parameter
 left in memory, `return` copying a local, a runtime call pushing the locals' registers) are caught by
 `tests/homes_check.py`, which counts stack-slot instructions in seven compiled programs and refuses a
-pattern in two; the destination term of the cap by `tests/homes_edge.py`; a bare hot local as a
-statement (`|| x.home` in the "does nothing" check) by `tests/errors/register_alloc.obx`. The comma
-term of the cap has no mutant: the +2 of the bound already covers the two earlier arguments the builtins
-that load their arguments can have, so it is margin for a builtin with more. Not planted, equivalent: the prologue and
+pattern in two; the compile-again rule by
+`register_pressure.obx` (no registers given up, code not rewound, waiting calls kept, scanner or token not
+restored); a bare hot local as a
+statement (`|| x.home` in the "does nothing" check) by `tests/errors/register_alloc.obx`. The terms of the cap
+(destination, call arguments, nesting) have no mutants: they only decide how often the function is compiled
+again, which `tests/homes_edge.py` and `register_pressure.obx` show cannot change what is accepted. Not planted, equivalent: the prologue and
 epilogue mutants of the plan (there are none), a home allowed in a `defer` body (a defer's registers
 are dead when it runs), and a home handed out again at register exhaustion (the homes are the last
 registers in pool order, so only an expression needing more registers than the pool has would reach
