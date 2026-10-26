@@ -500,6 +500,32 @@ handle 'h' made from it` (and `cannot drop`). The rule covers only
 or an element (`handle(p.child)`), a copy kept in a `var` or a record, and a
 handle parameter are checked at run time, as above.
 
+A test on `alive` narrows the handle: inside the block it guards, `h` is known to be live, so a use is
+accepted although the owner may have been freed on some path before. The guard forms are `if alive(h) { ... }`,
+`if alive(h) && cond { ... }` (and `cond` itself may use `h`), `if !alive(h) { ... } else { ... }` (the else
+arm is narrowed) and `if !alive(h) { exit }` where the block always ends in a `return`, `break` or `continue`
+(the code after the `if` is narrowed). `h` must be a bare name and `alive(h)` the first thing in the condition;
+`!alive(h)` must be the whole condition, and an `||` anywhere in a condition with `&&` turns the narrowing off.
+The narrowing ends at the next assignment over the owner or `drop` of it, which marks the handle dead again, and
+it does not outlive the block (or, for the early exit, the enclosing block): after `if alive(h) { ... }` the
+handle is as dead as it was before. Refused as before: `while alive(h)`, the else arm of `if alive(h)`,
+`alive(f(h))`, `alive(h) == true`, `alive(h) || c`, `!alive(h) && c`, a guard on a copy or another handle, and a
+loop that uses the handle and frees its owner anywhere in its body, guard or not.
+
+```obo
+// example: runs
+// prints 2
+type Box = ref record { v: int }
+
+fn main() {
+    var b = new Box{v: 1}
+    let h = handle(b)
+    var c = true
+    if c { b = new Box{v: 2} }     // may free the object h names
+    if alive(h) { println(h.v) } else { println(2) }
+}
+```
+
 Handles can be stored in fields and optional fields (`?^Node`), and they are
 checked for `nil` in the same way as other optionals. A handle needs a variable,
 field or element, and must name a record or closed type.
