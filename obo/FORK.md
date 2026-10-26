@@ -1778,13 +1778,46 @@ case is about 4% and not distinguishable from noise. Phase 3 is stopped, nothing
 
 ### Phase 4: checks and allocation
 
-- **Redundant checks.** Hoist or remove bounds, handle and nil checks inside loops,
+- **Redundant checks.** Measured, not built (see "Redundant checks" below). Hoist or remove bounds, handle and nil checks inside loops,
   using facts from loop conditions. Reuse the narrowing machinery where it fits.
 - **Allocation.** The cause of the port's ~50% gap (Stage B, above): four arrays per
   `Item`, and copies in `copyInts` and `dupItem`. Measure with Phase 0's allocation
   benchmark before changing anything. Done: see "Allocation (done)" below.
 
 *Gate:* each change shows a measured gain on its benchmark.
+
+### Redundant checks (measured; not built)
+
+`array_obo.obx` is the only benchmark with bounds checks in a hot loop. Its inner loop (`micro.py --disasm array`)
+does three `a[i]` accesses per iteration (`a[i] = a[i] + r`, then `total + a[i]`), each with a reload of `a`, a
+`cmp (%reg),%i; jb`, and a load of the data pointer. Upper bound, measured: a compiler with `boundsCheck` emitting
+nothing (invalid code, for measurement only) against the current one, `perf stat`, 5 interleaved runs:
+
+| | time | instructions | cycles |
+|---|---|---|---|
+| with the 3 checks | 0.22 to 0.24 s | 4,900,731,697 | 1,048,134,155 |
+| no checks (upper bound) | 0.18 to 0.19 s | 3,700,731,657 | 816,309,458 |
+
+So all three checks cost about 22% of this benchmark. But none of them can be removed from a fact that is available:
+
+- **Loop-condition facts.** The loop is `while i < n` with `n` a separate constant, not `len(a)`; no benchmark
+  (and no loop in the compiler's own hot paths measured so far) has `i < len(a)` or `for i in 0..len(a)`. A
+  fact `i < len(a)` needs `a` unchanged in the whole body, which a single-pass compiler does not know when it
+  emits the loop head: it would need a token pre-scan of the body plus `mightFree`/`pureFn` for every call in it
+  and the alias paths (`mut` calls, handles, references, globals). The benchmark would have to be rewritten to
+  show a gain, which the gate does not allow as evidence.
+- **Same index, same array, within a statement or body.** Only this shape occurs in `array_obo`. Removing the
+  second and third checks needs a fact (array local, index home) that dies at every call, label, assignment to
+  either, and write through an alias, in an emitter where those events are spread over many paths (`fixHere`,
+  `rtCall`, `callFn`, every store form, loop-back edges). Best case is 2 of the 3 checks, perhaps 10 to 15%, on
+  this one benchmark; the cost is a new invalidation surface in code that has no test for a missed kill.
+- **Handle and nil checks.** No benchmark runs a handle check in a hot loop (`alloc`, `lists`, `trees` are
+  dominated by allocation), so there is nothing to measure.
+- **`for x in a`** already has no per-element bounds check (the walked array is frozen by `iterating`).
+
+Decision: no check is removed or hoisted. The gate (a measured gain on a benchmark that has the pattern) is not met
+for the loop-condition facts, and the one pattern that exists is left until a benchmark makes the case.
+`src/obo.obo`, the tests and the seed are unchanged.
 
 ### Allocation (done)
 
