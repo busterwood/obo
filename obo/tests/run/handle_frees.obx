@@ -170,18 +170,99 @@ fn usedBeforeLoop() {
     println(len(a.items))             // expect: 1
 }
 
-// a move of the owner in a loop, with the handle used only before the loop (probe f2): the handle
-// names the same object afterwards
-fn f2MoveInLoop() {
+// a handle made inside the loop: the arm that frees its object leaves the loop by a break, and the code after
+// the if runs only on the path that did not (the marks of the break arm belong to the state after the loop)
+fn breakArm() {
     var a = nb()
-    a.n = 8
-    let h = handle(a)
-    println(h.n)                      // expect: 8
-    for i in 0..2 {
-        var c = a
-        a = c
+    var i = 0
+    while i < 3 {
+        let h = handle(a)
+        if i == 1 {
+            a = nb()
+            break
+        }
+        println(h.items[0].v)         // expect: 9
+        i += 1
     }
-    println(h.n)                      // expect: 8
+    println(len(a.items))             // expect: 1
+}
+
+// the same with a continue arm and a match
+fn continueArm() {
+    var a = nb()
+    var sum = 0
+    for i in 0..3 {
+        let h = handle(a)
+        match i {
+            1 {
+                a = nb()
+                continue
+            }
+            else { }
+        }
+        sum += h.n + 1
+    }
+    println(sum)                      // expect: 2
+}
+
+// a free of the owner in a loop that never names a handle declared outside it
+fn unusedInLoop() {
+    var a = nb()
+    let h = handle(a)
+    for i in 0..2 {
+        a = nb()
+    }
+    println(len(a.items))             // expect: 1
+}
+
+// a defer that uses a handle, with the owner left alone
+fn deferUse() {
+    var a = nb()
+    let h = handle(a)
+    defer { println(h.n) }            // expect: 0
+    a.n = 0
+}
+
+// an arm that returns takes its marks out of the function: the use after the loop is reached only on the
+// paths that did not free
+fn returnArm(c: bool): int {
+    var a = nb()
+    let h = handle(a)
+    for i in 0..3 {
+        if c {
+            a = nb()
+            println(1)                // expect: 1
+            return 1
+        }
+    }
+    return h.n
+}
+
+// a defer that does not use the handle, one that uses the handle of another owner, and one in a block that
+// is closed before the assignment
+fn deferOthers() {
+    var a = nb()
+    var b = nb()
+    b.n = 5
+    let h = handle(a)
+    let hb = handle(b)
+    defer { println(1) }
+    defer { println(hb.n) }
+    a = nb()
+    println(len(a.items))             // expect: 1
+    // the defers run here, newest first
+    // expect: 5
+    // expect: 1
+}
+
+fn deferClosed() {
+    var a = nb()
+    {
+        let h = handle(a)
+        defer { println(h.n) }        // expect: 0
+    }
+    a = nb()
+    println(a.n)                      // expect: 0
 }
 
 fn main() {
@@ -200,5 +281,11 @@ fn main() {
     deferred()
     freshAfterBlock()
     usedBeforeLoop()
-    f2MoveInLoop()
+    breakArm()
+    continueArm()
+    unusedInLoop()
+    deferUse()
+    returnArm(true)
+    deferOthers()
+    deferClosed()
 }

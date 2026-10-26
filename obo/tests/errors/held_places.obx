@@ -105,14 +105,14 @@ fn main() {
     append(bag.items, mk(1))
     println(setA(handle(bag)))
 }
-// === a handle's owner moved inside a loop after the handle was made, the handle not used in the loop: the origin rule does not apply, the ordinary move rule refuses it
+// === a handle's owner moved inside a loop after the handle was made
 fn main() {
     var a = new Bag{items: new []Node(0), opt: nil}
     append(a.items, mk(1))
     let h = handle(a)
     var i = 0
-    while i < 2 {  // error: 'a' is moved inside the loop
-        var c = a
+    while i < 2 {
+        var c = a  // error: cannot move 'a' inside a loop while handle 'h' made from it is in scope
         i += 1
         println(len(c.items))
     }
@@ -292,25 +292,14 @@ fn main() {
     append(c.items, mk(2))
     println(h.items[eat(c)].v)  // error: cannot index through a handle with an index that moves or frees something
 }
-// === a handle outside a for loop: its owner moved in the loop body before any use of the handle there; the move clears the origin, and the index is refused
+// === a handle outside a for loop: its owner moved in the loop body
 fn main() {
     var a = nb()
     append(a.items, mk(1))
     let h = handle(a)
     for i in 0..2 {
-        var c = a
-        println(h.items[eat(c)].v)  // error: cannot index through a handle with an index that moves or frees something
-        a = c
-    }
-}
-// === a handle outside a for loop, used in the loop body: its owner moved there
-fn main() {
-    var a = nb()
-    append(a.items, mk(1))
-    let h = handle(a)
-    for i in 0..2 {
-        println(h.items[0].v)
         var c = a  // error: cannot move 'a' inside a loop while handle 'h' made from it is in scope
+        println(h.items[eat(c)].v)
         a = c
     }
 }

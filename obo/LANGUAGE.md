@@ -470,10 +470,18 @@ fn main() {
 }
 ```
 
-Inside a loop, the assignment itself is refused when the handle was made before
-the loop and the loop uses it, since the next iteration would use the freed
-object: `cannot assign over 'b' inside a loop while handle 'h' made from it is
-in scope and used in the loop` (and `cannot drop 'b' ...`). The rule covers only
+Inside a loop, an assignment over the owner is refused when the handle was made
+before the loop and the loop uses the handle anywhere in its body, before or after
+the assignment in the text, since the next iteration would use the freed object:
+`cannot assign over the owner of handle 'h' inside a loop that uses the handle`
+(a `drop` of the owner in such a loop is refused as a move of it). A handle made
+inside the loop is fresh each iteration. If the arm that frees the object ends in
+a `break` or a `continue`, a use of a handle made inside the loop after the `if`
+is accepted, since that code runs only on the paths that did not free it; a use
+after the loop is reached through the break, and is refused. A `defer` that uses
+the handle runs after the free, so a free of the owner after the defer is
+declared is refused: `cannot assign over 'b' while a defer declared earlier uses
+handle 'h' made from it` (and `cannot drop`). The rule covers only
 `let` handles made from a whole local. A `var` handle, a handle made from a field
 or an element (`handle(p.child)`), a copy kept in a `var` or a record, and a
 handle parameter are checked at run time, as above.
@@ -586,8 +594,9 @@ depend on the program.
 | `drop needs a local variable holding an owned value` | `drop` applies only to local owned variables. |
 | `handles name records and closed types, not <t>` | `^T` is only for records and closed types. |
 | `handle '<h>' may name a freed object: '<x>' was assigned or dropped after the handle was made from it; make the handle again` | `let <h> = handle(<x>)`, then `<x>` was assigned over or dropped on some path, which freed the object `<h>` names, and `<h>` is used after it. Make the handle again after the assignment. |
-| `cannot assign over '<x>' inside a loop while handle '<h>' made from it is in scope and used in the loop` | the loop uses `<h>` before the assignment, and the next iteration would use the freed object. Make the handle inside the loop, or assign after it. The same with `cannot drop`. |
-| `cannot move '<x>' inside a loop while handle '<h>' made from it is in scope and used in the loop` | the loop uses `<h>`, which would still be taken to name `<x>`'s object on the next iteration. Make the handle inside the loop. |
+| `cannot assign over the owner of handle '<h>' inside a loop that uses the handle` | the loop uses `<h>` somewhere in its body, and the next iteration would use the freed object. Make the handle inside the loop, or assign after it. |
+| `cannot assign over '<x>' while a defer declared earlier uses handle '<h>' made from it` | the defer runs at the block's end, after the assignment (or `cannot drop`), and would use the freed object. |
+| `cannot move '<x>' inside a loop while handle '<h>' made from it is in scope` | a loop moves (or drops) `<x>` while a handle made from it before the loop is in scope. Make the handle inside the loop. |
 
 ## 9. Differences from obx
 
@@ -683,7 +692,7 @@ A handle's array indexed by a move of the object it names (`let h = handle(b); h
 A `replace` or `take` of an unrelated place, or of an element beside the array that is indexed, is accepted, and
 so is an assignment whose value takes its own target (`t.opt = pass(take(t.opt))`), since `take` leaves that
 place empty. A free of an ancestor of the target is still refused. A handle made by `let h = handle(b)` from a
-whole owned local names that local. A whole move of `b` (`var c = b`, through a call, into a field, `replace(b, ...)`, `take`) or an assignment over `b` makes that handle name no local, so it is checked like a handle without an origin: an index through it that moves or frees something is refused. A move of `b` inside a loop that a live `let` handle from `b` was declared outside of, and that uses the handle, is refused (`cannot move 'b' inside a loop while handle 'h' made from it is in scope and used in the loop`); a handle used only before the loop does not block it. An assignment over `b`, or `drop(b)`, frees the object the handle names, so a use through the handle after it is refused (section 5). A temporary `handle(b)` names nothing afterwards. A handle without that
+whole owned local names that local. A whole move of `b` (`var c = b`, through a call, into a field, `replace(b, ...)`, `take`) or an assignment over `b` makes that handle name no local, so it is checked like a handle without an origin: an index through it that moves or frees something is refused. A move of `b` inside a loop that a live `let` handle from `b` was declared outside of is refused (`cannot move 'b' inside a loop while handle 'h' made from it is in scope`), whether or not the loop uses the handle. An assignment over `b`, or `drop(b)`, frees the object the handle names, so a use through the handle after it is refused (section 5). A temporary `handle(b)` names nothing afterwards. A handle without that
 origin (a handle parameter, or one made from a field or an element) may name any object: a move or a free through
 it is refused against anything it might name, and a free through it of another handle's place is compared by path
 only when it is the same handle.

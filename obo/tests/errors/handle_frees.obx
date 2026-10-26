@@ -119,7 +119,7 @@ fn main() {
     var i = 0
     while i < 2 {
         println(h.items[0].v)
-        a = nb()  // error: cannot assign over 'a' inside a loop while handle 'h' made from it is in scope and used in the loop
+        a = nb()  // error: cannot assign over the owner of handle 'h' inside a loop that uses the handle
         i += 1
     }
 }
@@ -128,7 +128,7 @@ fn main() {
     var a = nb()
     let h = handle(a)
     while h.n < 2 {
-        a = nb()  // error: cannot assign over 'a' inside a loop while handle 'h' made from it is in scope and used in the loop
+        a = nb()  // error: cannot assign over the owner of handle 'h' inside a loop that uses the handle
     }
 }
 // === an assignment in an inner loop, the handle used in the outer loop before it
@@ -138,7 +138,7 @@ fn main() {
     for i in 0..2 {
         println(h.n)
         for j in 0..2 {
-            a = nb()  // error: cannot assign over 'a' inside a loop while handle 'h' made from it is in scope and used in the loop
+            a = nb()  // error: cannot assign over the owner of handle 'h' inside a loop that uses the handle
         }
     }
 }
@@ -204,7 +204,7 @@ fn main() {
     let h = handle(a)
     for i in 0..2 {
         println(h.n)
-        drop(a)  // error: cannot drop 'a' inside a loop while handle 'h' made from it is in scope and used in the loop
+        drop(a)  // error: cannot move 'a' inside a loop while handle 'h' made from it is in scope
         a = nb()
     }
 }
@@ -222,4 +222,123 @@ fn main() {
     let h = handle(a)
     a = nb()
     h.n = 3  // error: handle 'h' may name a freed object
+}
+// === a move of the owner in a loop, then an assignment, the handle used after: the move clears the handle's origin, so the loop rule refuses the move
+fn eat(x: Bag) { }
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    for i in 0..2 {
+        eat(a)  // error: cannot move 'a' inside a loop while handle 'h' made from it is in scope
+        a = nb()
+        println(h.n)
+    }
+}
+// === the same with a while loop
+fn eat(x: Bag) { }
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    var i = 0
+    while i < 2 {
+        eat(a)  // error: cannot move 'a' inside a loop while handle 'h' made from it is in scope
+        a = nb()
+        println(h.n)
+        i += 1
+    }
+}
+// === a move of the owner in a loop, the handle used after the loop
+fn eat(x: Bag) { }
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    for i in 0..2 {
+        eat(a)  // error: cannot move 'a' inside a loop while handle 'h' made from it is in scope
+        a = nb()
+    }
+    println(h.n)
+}
+// === an assignment in one arm of an if in a loop, the handle used in the other arm: the next iteration uses it
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    for i in 0..3 {
+        if i == 0 {
+            a = nb()  // error: cannot assign over the owner of handle 'h' inside a loop that uses the handle
+        } else {
+            println(h.n)
+        }
+    }
+}
+// === the same with the use in an earlier arm, and a while loop
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    var i = 0
+    while i < 3 {
+        if i > 0 {
+            println(h.n)
+        } else {
+            a = nb()  // error: cannot assign over the owner of handle 'h' inside a loop that uses the handle
+        }
+        i += 1
+    }
+}
+// === the same with a match
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    for i in 0..3 {
+        match i {
+            0 { a = nb() }  // error: cannot assign over the owner of handle 'h' inside a loop that uses the handle
+            else { println(h.n) }
+        }
+    }
+}
+// === the assignment in an inner loop, the use in the outer loop after it
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    for i in 0..3 {
+        for j in 0..2 {
+            if j == 0 { a = nb() }
+        }
+        println(h.n)  // error: handle 'h' may name a freed object
+    }
+}
+// === a drop in one arm of an if in a loop, the use in the other
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    for i in 0..3 {
+        if i == 0 {
+            drop(a)  // error: cannot move 'a' inside a loop while handle 'h' made from it is in scope
+            a = nb()
+        } else {
+            println(h.n)
+        }
+    }
+}
+// === a defer that uses the handle, the owner assigned after the defer: the defer runs after the assignment
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    defer { println(h.n) }
+    a = nb()  // error: cannot assign over 'a' while a defer declared earlier uses handle 'h'
+}
+// === the same with a drop
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    defer { println(h.n) }
+    drop(a)  // error: cannot drop 'a' while a defer declared earlier uses handle 'h'
+}
+// === the free in an inner block, the defer in the outer one
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    defer { println(h.items[0].v) }
+    if flag() {
+        a = nb()  // error: cannot assign over 'a' while a defer declared earlier uses handle 'h'
+    }
 }
