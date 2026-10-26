@@ -1297,6 +1297,11 @@ var frCol = new []int(0)
 var pendWhat = new []string(0)
 var deferH = new []^Sym(0)       // the handles (originSyms) that the defer bodies in scope use, with the index of the
 var deferAt = new []int(0)       // block each defer is declared in
+var deferFrees = new []^Sym(0)   // the owners a defer body being compiled assigns over or drops (originFree)
+var dfBlock = new []int(0)       // the same for the defers in scope: the owners, with the block and the number
+var dfIndex = new []int(0)       // of the defer in it, for callDefers to replay where the block is left
+var dfOwner = new []^Sym(0)
+var replayFree = false           // originFree is replaying a defer's free: the defers it runs before were checked at its declaration
 var originDead = new []?^Sym(0)  // per entry of originSyms: the local whose assignment or drop freed its object, or nil
 var loopdepth = 0
 var curFn: ?^Sym = nil
@@ -2988,6 +2993,12 @@ fn callDefers(bi: int) {
         checkDeferUses(bi, i)
         callLocal(blocks[bi].defers[i])
         replayFrees(bi, i)
+        // the body's assignments and drops of owners happen here, not where the defer is declared
+        replayFree = true
+        for j in 0..len(dfOwner) {
+            if dfBlock[j] == bi && dfIndex[j] == i { originFree(dfOwner[j], "assign over") }
+        }
+        replayFree = false
         i -= 1
     }
 }
@@ -3007,6 +3018,11 @@ fn closeBlock(terminated: bool) {
     // the block's symbols are freed with it: the origin list keeps only the handles still in scope
     truncate(originSyms, blocks[last].hmark)
     truncate(originDead, blocks[last].hmark)
+    while len(dfBlock) > 0 && dfBlock[len(dfBlock) - 1] >= last {
+        truncate(dfBlock, len(dfBlock) - 1)
+        truncate(dfIndex, len(dfIndex) - 1)
+        truncate(dfOwner, len(dfOwner) - 1)
+    }
     while len(deferAt) > 0 && deferAt[len(deferAt) - 1] >= last {
         truncate(deferAt, len(deferAt) - 1)
         truncate(deferH, len(deferH) - 1)
@@ -3468,6 +3484,7 @@ fn loopOriginCheck(s: ^Sym) {
 // loop the handle was declared outside of, a use of it earlier in the loop runs again on the next
 // iteration, so the free itself is refused then. The origins are cleared by originMove
 fn originFree(r: ^Sym, what: string) {
+    if inDefer { append(deferFrees, r) }
     for i in 0..len(originSyms) {
         let x = originSyms[i]
         if x.hOrigin != nil {
@@ -3483,6 +3500,7 @@ fn originFree(r: ^Sym, what: string) {
         }
     }
     for j in 0..len(deferH) {
+        if replayFree { break }
         let x = deferH[j]
         if x.hOrigin != nil {
             let o = x.hOrigin
@@ -4882,8 +4900,13 @@ fn varDecl(kind: string, isGlobal: bool) {
                 s.hOrigin = x.hOrigin
                 if s.hOrigin != nil {
                     s.hDepth = len(loops) + 1
+                    // a copy of a dead handle is dead too
+                    var dead: ?^Sym = nil
+                    for i in 0..len(originSyms) {
+                        if originSyms[i] == x.sym { dead = originDead[i] }
+                    }
                     append(originSyms, s)
-                    append(originDead, nil)
+                    append(originDead, dead)
                 }
             }
         }
@@ -5812,6 +5835,7 @@ fn deferStat() {
     let savedLoops = replace(loops, new []Loop(0))
     let savedInDefer = inDefer
     let savedMark = deferMark
+    let savedFrees = replace(deferFrees, new []^Sym(0))
     let savedUses = replace(deferUses, new []bool(len(ownedLocals)))
     deferMark = len(ownedLocals)
     depth = depth + 8
@@ -5830,11 +5854,17 @@ fn deferStat() {
     inDefer = savedInDefer
     deferMark = savedMark
     let uses = replace(deferUses, savedUses)
+    let owners = replace(deferFrees, savedFrees)
     fixHere1(over)
     // the body runs where the block is left, not here: what it did to suspicion is taken back (its
     // re-points have not happened yet either), and callDefers applies its recursive calls at each exit
     restoreDeferred(&before)
     deadSet(&deadBefore)
+    for i in 0..len(owners) {
+        append(dfBlock, len(blocks) - 1)
+        append(dfIndex, len(blocks[len(blocks) - 1].defers))
+        append(dfOwner, owners[i])
+    }
     // the handles the body named run where the block is left: a later free of their owners is refused (originFree)
     for i in 0..nHandles {
         if originSyms[i].usedAt > useAt {

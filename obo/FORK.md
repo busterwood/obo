@@ -1381,12 +1381,27 @@ every assignment while a handle from `a` is in scope would refuse `c_asg_clears_
   (2) A `drop` of the owner in a loop is now judged by the free rule (refused only if the loop uses the
   handle), not by the move rule, so a loop that drops the owner and never names the handle is accepted.
 
+- **Round 3: defers in nested blocks and loop bodies.** `deadSet(&deadBefore)` takes a defer body's marks
+  back where it is declared, and the first fix re-applied them nowhere, so a defer in an `if`, a bare block or
+  a loop body freed the owner unseen. Now `originFree` records the owners a defer body assigns over or drops
+  (`deferFrees`, kept per defer as `dfBlock`, `dfIndex`, `dfOwner`, dropped at `closeBlock`), and `callDefers`
+  replays them with `originFree` at each place the block's defers run (the end of the block, a `return`, a
+  `break`, a `continue`). The replay marks the handles dead on that path (so a break arm's marks reach
+  `Loop.exitDead` with the defer's), and in a loop records the pending free, so a defer in a loop body is
+  judged by the loop rule: it runs on every iteration. The replay skips the check against the defers declared
+  earlier (`replayFree`): it was made when the body was compiled. The loop error is reported at the end of the
+  body (the `}`), where the defer runs.
+- **Round 3: a `let` copy of a dead handle** takes the mark of the handle it copies (`varDecl`). Known false
+  positives kept: `while true { ...; break }` shapes where the loop is left on every path (f1), a use that
+  cannot be reached (f7), and `a = nb(); let g = h` in a loop (g2), where the copy counts as a naming of `h`
+  in the loop (`usedAt`) although a copy is not a use.
+
 **Not covered** (each still traps at run time, exit 7; none is a memory hole):
 - a handle made from a field or element (`let h = handle(p.child); p.child = nb()`), also through a `mut`
   parameter (`handle(p.child)` in `fn f(mut p: &Par)`): such a handle has no origin. Tracking a path
   would need clearing on every way the field can be emptied without naming it (`replace`, `take`, a
   `mut` call, a write through another handle or a reference), which the model does not keep;
-- a `var` handle, a handle in a record, and a `let` copy made after the assignment (it gets no origin);
+- a `var` handle, a handle in a record, and a `let` copy made after the assignment from a handle that was not made from the owner (it gets no origin). A `let` copy of a dead handle inherits the mark (round 3);
 - a move of the owner, then a use of the handle, where no loop rule applies: `let h = handle(a); take(a);
   pr(h.n)` (the callee frees its argument), also with `a = nb()` after the move, in a loop with `let h`
   inside it (reviewer probes c3 and c8). The move clears the handle's origin, so it falls back to the
@@ -1401,7 +1416,7 @@ every assignment while a handle from `a` is in scope would refuse `c_asg_clears_
 - `alive(h)` in a loop counts as a naming, so `while ... { alive(h); a = nb() }` is refused at the
   assignment although `alive` does not use the object.
 
-**Tests.** `tests/errors/handle_frees.obx`, 38 cases (5 more in round 2: a return arm, in a loop, a defer body, an else arm, a break arm, each followed by a real free) (the 22 of the first version, with the loop messages changed, and 11 for the review: a move, then an assignment, in a `for`, in a `while` and with the handle used after the loop; an assignment in one arm with the use in the other, in a `for`, a `while`, a `match`, and an inner loop; a drop in an arm; a defer that uses the handle, then an assignment, a drop, and an assignment in an inner block): the plain form and the doc's runtime-trap form, an
+**Tests.** `tests/errors/handle_frees.obx`, 44 cases (6 more in round 3: a defer in an `if` block, a bare block, a loop body that uses the handle, a loop body with the handle used after, and a `let` copy of a dead handle, also in a loop; 5 more in round 2: a return arm, in a loop, a defer body, an else arm, a break arm, each followed by a real free) (the 22 of the first version, with the loop messages changed, and 11 for the review: a move, then an assignment, in a `for`, in a `while` and with the handle used after the loop; an assignment in one arm with the use in the other, in a `for`, a `while`, a `match`, and an inner loop; a drop in an arm; a defer that uses the handle, then an assignment, a drop, and an assignment in an inner block): the plain form and the doc's runtime-trap form, an
 `if` without else, the then, else and else-if arms, the first and else arms of a closed `match` and of an
 int `match`, a loop that uses the handle before the assignment (body, `while` condition, outer loop of a
 nested one), a loop that may run before a later use, a break path, an optional owner assigned `nil` and a
@@ -1424,14 +1439,14 @@ Existing expectations that changed, each still refused or still trapping:
    by the new rule at the same line, with the new message. This is the case the `EQUIVALENT` note on the
    take hook describes: an assignment always comes first.
 
-**Mutants** (`HANDLE_FREE_MUTANTS` in `tests/mutate_fork.py`, imported by `tests/mutate_port.py`): 37,
+**Mutants** (`HANDLE_FREE_MUTANTS` in `tests/mutate_fork.py`, imported by `tests/mutate_port.py`): 42,
 all caught, none equivalent: the assignment and drop hooks, the dead mark, the loop refusal (dropped,
 without the use test, checked at the innermost loop), the use check, a mark that refuses every handle, the
 naming count (also once a move clears the origin), the loop's start count, the mark list's append and truncation, the arm's
 start, its join, its return and break handling (a break arm's marks kept for after the loop, counted, applied, not applied to a return), the defer handles (recorded, all, other owners', kept after the block), the then, else and else-if arms, the two `if` joins,
 the arms and else arms of both matches and their joins, and the defer's restore.
 
-**Memory.** `PEAK_BUDGET` is unchanged at 983,000. After the merge of main (c9510c6, peak 954,816) the port compiling itself peaks at 978,176 bytes live, so the change costs 23,360 bytes (the first draft added a `Sym` field, `hTracked`, and cost 33,568: every symbol paid for it, so the flag now lives in `hDepth`, which is 0 for a handle without an origin and the loop depth plus 1 otherwise). The Phase 2 register-allocation retry (`fnDecl`) needs no change to its restore list: the first pass runs to the end of the body, where every loop, block and defer has closed, so `originSyms`, `originDead`, `deferH` and the pending frees are empty again, and `jumpSeq` is only compared as a difference; `useSeq`, which it restores, is what `usedAt` and `Loop.useFrom` are counted in.
+**Memory.** `PEAK_BUDGET` is now 2,000,000 (raised by the user, not by this change). After the merge of main (d5ba3a5) the port compiling itself peaks at 981,984 bytes live. The Phase 2 retry in `fnDecl` needs no change to its restore list: the first pass runs to the end of the body, so `originSyms`, `originDead`, `deferH`, the `df*` lists and the pending frees are empty again.
 
 **Measured** (on 37bdfeb plus this change): `run_fork` 460 of 460, `port_test` 426 of 426 identical with
 no leaks, `port_compare` stage B 611 of 611, `own_fuzz --count 300 --profile both` 0 failures in 600

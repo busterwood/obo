@@ -272,8 +272,8 @@ DEFER_USE_MUTANTS = {
                                                         "            release(x.r)\n" + unchecked_exit("fnBlock")),
     "a defer's uses are not recorded": ("        if inDefer && s.isRefLocal { noteDeferUse(s) }\n", ""),
     "an inner defer's uses are not passed outwards": ("            if i < len(deferUses) { deferUses[i] = true }\n", ""),
-    "a newer defer's frees are applied after the older one's check": ("        replayFrees(bi, i)\n        i -= 1\n    }\n}",
-                                                                      "        i -= 1\n    }\n    for q in 0..len(blocks[bi].defers) { replayFrees(bi, q) }\n}"),
+    "a newer defer's frees are applied after the older one's check": ('        replayFrees(bi, i)\n        // the body\'s assignments and drops of owners happen here, not where the defer is declared\n        replayFree = true\n        for j in 0..len(dfOwner) {\n            if dfBlock[j] == bi && dfIndex[j] == i { originFree(dfOwner[j], "assign over") }\n        }\n        replayFree = false\n        i -= 1\n    }\n}',
+        '        // the body\'s assignments and drops of owners happen here, not where the defer is declared\n        replayFree = true\n        for j in 0..len(dfOwner) {\n            if dfBlock[j] == bi && dfIndex[j] == i { originFree(dfOwner[j], "assign over") }\n        }\n        replayFree = false\n        i -= 1\n    }\n    for q in 0..len(blocks[bi].defers) { replayFrees(bi, q) }\n}'),
 }
 MUTANTS.update(DEFER_USE_MUTANTS)
 
@@ -376,6 +376,11 @@ HANDLE_FREE_MUTANTS = {
     'a free does not mark the handle dead': ('            if o == r { originDead[i] = r }\n', ''),
     'an assignment clears the origins of the handles': ('        originFree(r, "assign over")\n        return\n', '        originFree(r, "assign over")\n'),
     'the loop move rule refuses a dead handle': ('x.hDepth <= len(loops) && originDead[i] == nil {\n', 'x.hDepth <= len(loops) {\n'),
+    "a defer's frees are not replayed where its block is left": ('            if dfBlock[j] == bi && dfIndex[j] == i { originFree(dfOwner[j], "assign over") }\n', ''),
+    'a replayed free is checked against the defers again': ('        if replayFree { break }\n', ''),
+    "a defer's frees are not recorded": ('    if inDefer { append(deferFrees, r) }\n', ''),
+    "a closed block's defer frees stay": ('    while len(dfBlock) > 0 && dfBlock[len(dfBlock) - 1] >= last {\n', '    while false {\n'),
+    'a let copy of a dead handle is alive': ('                    append(originDead, dead)\n', '                    append(originDead, nil)\n'),
     'a free in a loop is not reported': ('            if o == r && x.hDepth <= len(loops) {\n', '            if false {\n'),
     'a free in a loop is refused without a use there': ('            if pendSym[k].usedAt > loops[li].useFrom {\n', '            if true {\n'),
     'a free is checked at the end of the innermost loop': ('        if pendDepth[k] == li {\n', '        if pendDepth[k] <= li {\n'),
@@ -384,7 +389,7 @@ HANDLE_FREE_MUTANTS = {
     "a handle's naming is not recorded": ('        if s.hDepth > 0 {\n            useSeq += 1\n            s.usedAt = useSeq\n        }\n', ''),
     "a handle's naming is not recorded once a move clears its origin": ('        if s.hDepth > 0 {\n            useSeq += 1', '        if s.hOrigin != nil {\n            useSeq += 1'),
     'a loop does not record where its reads begin': ('logFrom: logFrom, useFrom: useBefore, exitDead', 'logFrom: logFrom, useFrom: 0, exitDead'),
-    'a let handle gets no dead mark': ('                    append(originDead, nil)\n', ''),
+    'a let handle gets no dead mark': ('                    append(originDead, dead)\n', ''),
     "a closed block's dead marks stay": ('    truncate(originDead, blocks[last].hmark)\n', ''),
     'an arm starts from the marks of the arm before': ('    deadSet(d0)\n    var term = false\n', '    var term = false\n'),
     "an arm's marks are not joined": ('    for i in 0..len(acc) {\n        if originDead[i] != nil { acc[i] = originDead[i] }\n    }\n', ''),

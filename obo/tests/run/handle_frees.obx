@@ -280,6 +280,35 @@ fn returnArmRemade(k: int): int {
     return 1
 }
 
+// a defer in a block assigns the owner; the handle is made again after the block
+fn deferBlockRemade() {
+    var a = nb()
+    {
+        let h = handle(a)
+        defer { a = nb() }
+        println(h.n)                  // expect: 0
+    }
+    let h2 = handle(a)
+    println(h2.items[0].v)            // expect: 9
+}
+
+// a defer that uses the handle and then assigns the owner is fine; a closed block's defer frees are forgotten
+fn deferUsesThenFrees() {
+    var a = nb()
+    {
+        let h = handle(a)
+        defer {
+            println(h.n)              // expect: 0
+            a = nb()
+        }
+    }
+    let h2 = handle(a)
+    {
+        defer { println(1) }          // expect: 1
+    }
+    println(h2.n)                     // expect: 0
+}
+
 fn main() {
     noHandle()
     after()
@@ -304,4 +333,6 @@ fn main() {
     deferOthers()
     deferClosed()
     returnArmRemade(1)
+    deferBlockRemade()
+    deferUsesThenFrees()
 }
