@@ -1885,6 +1885,7 @@ peak moves between the two points, so a saving depends on the order the changes 
 | The runtime read before the compile only to check it can be read, then again for the image (`runtimeReadable`) | 1,082,320 | 18,409,792 |
 | One array, optional and handle type per base (`derived`, with `arrayOf`, `optOf`, `handleOf`): 494 types live at the peak became 52 | 968,032 | 18,307,696 |
 | The last chunk kept apart (`cur`, written by index), so that `emit` only stores a byte | 970,480 | 18,372,512 |
+| The four function-only arrays of `Sym` (`fixups`, `params`, `pmodes`, `freed`) moved to a `FnRec` record, held by a handle; the other symbols share `noFnRec` (about 104 KB at the peak) | 954,912 | 19,321,216 |
 
 The peak falls by 302,720 bytes (24%). `tests/port_compare.py` measures 970,512 (it was 1,273,136),
 against the budget of 1,351,000, which is unchanged. The last row costs 2,448 bytes (`cur` is a
@@ -1901,13 +1902,12 @@ Its wall time, about 41 to 42 ms at the minimum on WSL, is within the noise.
 
 A shared derived type is never changed once made, and types are compared by structure (`same`),
 so sharing them changes no result. Only the basic types are compared by identity.
-Not done: Sym's four function-only arrays are allocated for every symbol, though about half are not
-functions (about 89 KB at the peak). Moving them into a per-function record would touch about 26
-sites, several of which are mutant patterns in `tests/mutate_port.py`.
 
 **Current figure, on main with Phase 2.** The table above was measured on this branch's own base, before Phase 2 (register allocation). On main, with Phase 2 merged and this work on top of it, the port's live peak compiling itself is 1,059,280 bytes (`tests/port_compare.py`). Phase 2 alone had measured 1,323,680 bytes on main, so this work brought the peak down by 264,400 bytes. The difference from 970,512 (88,768 bytes) comes from Phase 2's register allocation.
 
 **Budget lowered, 1,351,000 to 1,091,000** (measured live peak 1,059,280 bytes, about 3% over). The peak memory work lowered the peak, so the budget follows it. The budget named in the paragraphs above was 1,351,000 when they were written.
+
+**Budget lowered, 1,091,000 to 983,000** (measured live peak 954,912 bytes, about 3% over). The function records moved out of `Sym` (the row above). `FnRec` holds what only a function has: the calls waiting for its address, its parameters and their modes, and the globals it might free. `Sym` holds a handle to it, `fnRec`. A function gets its record in `fnDecl`, and every other symbol holds `noFnRec`, one shared record that nothing writes, as `bind` does with `noBind`. The output did not change: the 44 programs and the port's source compile to the same bytes and messages as main's compiler.
 
 ### Peephole pass (not planned)
 

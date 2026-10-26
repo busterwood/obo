@@ -42,8 +42,8 @@ MUTANTS = {
     # a self-call is a change in its body, so it must not be taken for a call that frees nothing
     "recursive call might free": [("    if f.addr < 0 || f == curFn || f.freesAll { return true }",
                                    "    if f.addr < 0 || f.freesAll { return true }")],
-    "recursive call is pure": [("    if f.addr < 0 || f == curFn || f.freesAll || len(f.freed) > 0 { return false }",
-                                "    if f.addr < 0 || f.freesAll || len(f.freed) > 0 { return false }")],
+    "recursive call is pure": [("    if f.addr < 0 || f == curFn || f.freesAll || len(f.fnRec.freed) > 0 { return false }",
+                                "    if f.addr < 0 || f.freesAll || len(f.fnRec.freed) > 0 { return false }")],
     # a callee with a forward heading frees everything, and its callers must inherit that
     "forward heading not inherited": [("    if cur != nil && all && f != cur { cur.freesAll = true }",
                                        "    if cur != nil && f.addr < 0 && f != cur { cur.freesAll = true }")],
@@ -183,12 +183,12 @@ MUTANTS = {
     "constant runtime argument lost": [("                append(argConsts, a.val)\n", "                append(argConsts, 0)\n")],
     # a function without locals loses its 'sub rsp,0' and its body moves back 7 bytes
     "dropped frame: calls out not moved": [("    for p in calls { putRel(p - 7, getRel(p - 7) + 7) }\n", "")],
-    "dropped frame: calls waiting for later functions not moved": [("                if g.fixups[fi] > at { g.fixups[fi] -= 7 }\n", "")],
+    "dropped frame: calls waiting for later functions not moved": [("                if g.fnRec.fixups[fi] > at { g.fnRec.fixups[fi] -= 7 }\n", "")],
     "dropped frame: calls to known functions not recorded": [("        fix(at, f.addr)\n        append(farCalls, at)\n", "        fix(at, f.addr)\n")],
     # a pending forward call of an earlier function shifted when a later zero-frame function drops its frame:
     # caught by tests/run/code_shapes.obx
-    "dropped frame: every waiting call shifted": [("                if g.fixups[fi] > at { g.fixups[fi] -= 7 }\n", "                g.fixups[fi] -= 7\n")],
-    "dropped frame: waiting calls shifted if not negative": [("                if g.fixups[fi] > at { g.fixups[fi] -= 7 }\n", "                if g.fixups[fi] >= 0 { g.fixups[fi] -= 7 }\n")],
+    "dropped frame: every waiting call shifted": [("                if g.fnRec.fixups[fi] > at { g.fnRec.fixups[fi] -= 7 }\n", "                g.fnRec.fixups[fi] -= 7\n")],
+    "dropped frame: waiting calls shifted if not negative": [("                if g.fnRec.fixups[fi] > at { g.fnRec.fixups[fi] -= 7 }\n", "                if g.fnRec.fixups[fi] >= 0 { g.fnRec.fixups[fi] -= 7 }\n")],
     # the boundaries of push imm8 and imm32, caught by the same program (Stage B, not only the objdump group)
     "push imm8 up to 128": [("fn pushI(v: int) {\n    if fits8(v) {", "fn pushI(v: int) {\n    if v >= -128 && v <= 128 {")],
     "push imm8 from -129": [("fn pushI(v: int) {\n    if fits8(v) {", "fn pushI(v: int) {\n    if v >= -129 && v < 128 {")],
@@ -218,7 +218,7 @@ MUTANTS = {
     # with it (tests/run/loop_inversion.obx)
     "inverted loop: calls out of the condition not adjusted": [("        putRel(farCalls[k], getRel(farCalls[k]) - d)\n", "")],
     "inverted loop: calls out of the condition not recorded at the new place": [("        farCalls[k] += d\n", "")],
-    "inverted loop: waiting calls in the condition not adjusted": [("append(globals[waitFn[k]].fixups, waitAt[k] + d)", "append(globals[waitFn[k]].fixups, waitAt[k])")],
+    "inverted loop: waiting calls in the condition not adjusted": [("append(globals[waitFn[k]].fnRec.fixups, waitAt[k] + d)", "append(globals[waitFn[k]].fnRec.fixups, waitAt[k])")],
     "inverted loop: a nested loop lifts its outer loop's waiting calls": [("    let waitFrom = len(waitFn)\n", "    let waitFrom = 0\n")],
     "inverted loop: waiting calls in the condition not lifted": [("        if fwdCalls != fwdFrom {", "        if false {")],
     "inverted loop: links of the true and false lists not adjusted": [("        putRel(at, nxt)\n        at = nxt\n", "        putRel(at, nxt - d)\n        at = nxt\n")],
@@ -328,11 +328,11 @@ MUTANTS.update({
     # a function that runs out of registers with locals in them is compiled again with none (FORK.md, Phase 2);
     # tests/run/register_pressure.obx has such functions, one with calls waiting for a later function. Not planted,
     # equivalent: the counters (selfCalls, userCalls, useSeq, fwdCalls) are only compared with their value at a
-    # point in the same pass, and what the first pass recorded as freed (f.freed, freesAll, writesHandles) the
+    # point in the same pass, and what the first pass recorded as freed (f.fnRec.freed, freesAll, writesHandles) the
     # second records again, the checker being the same
     "retry: locals' registers not given up": [("    if len(free) == 0 && homeBits != 0 { giveUpHomes() }\n", "")],
     "retry: code not rewound": [("        truncCode(f.addr)\n        let gs = &globals", "        let gs = &globals")],
-    "retry: waiting calls of the first pass kept": [("                while len(g.fixups) > 0 && g.fixups[len(g.fixups) - 1] >= f.addr { truncate(g.fixups, len(g.fixups) - 1) }\n", "")],
+    "retry: waiting calls of the first pass kept": [("                while len(fr.fixups) > 0 && fr.fixups[len(fr.fixups) - 1] >= f.addr { truncate(fr.fixups, len(fr.fixups) - 1) }\n", "")],
     "retry: argument holders of the first pass kept": [("        truncate(argTemps, tempMark)\n        truncate(symArena, symMark)\n        return true", "        truncate(symArena, symMark)\n        return true")],
     "retry: free list left as the first pass had it": [("    homeBits = 0\n    setFree(0)                          // the registers in pool order: a function starts as the one before it did not leave them\n", "    homeBits = 0\n")],
     "retry: scanner not rewound": [("        pos = sPos\n", "")],
