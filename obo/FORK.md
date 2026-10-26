@@ -1642,6 +1642,46 @@ Not done: the per-call arrays in `rtCall` and `rtCall0/1/2` (`regs`, `temps`, th
 argument arrays), the `fixups` array of each Sym, and the snapshot copies (`copyBools`).
 Item creations (about 32,000 per self-compile, mostly loads and voids) were left as they are.
 
+### Peak memory (done)
+
+Measured on the port compiling its own source, with `OBO_STATS=1` and a temporary runtime that
+recorded what was live at the peak (not committed). At main (37bdfeb) there were two peaks of
+nearly the same height. The first, 1,273,200 bytes, came when the code buffer grew from 128 KB to
+256 KB: both blocks were live (393 KB), with the source text (203 KB), the runtime's code and
+data (75 KB, read before the compile), 541 symbols at 288 bytes each plus four arrays each
+(fixups, params, pmodes, freed: at least 80 bytes per array, empty or not), and 454 types with two
+arrays each. The second, 1,265,344 bytes, came when the image was allocated: the image (300 KB),
+the 256 KB code buffer and all the tables. Each row below is one change, measured after it. The
+peak moves between the two points, so a saving depends on the order the changes were made in.
+
+| Change | Live peak (bytes) | Total allocated (bytes) |
+|---|---|---|
+| Main at 37bdfeb | 1,273,200 | 18,497,008 |
+| Code in 16 KB chunks, each allocated at full size (`emit`, `codeByte`, `setCode`, `truncCode`): growing the code never copies it | 1,224,944 | 18,271,872 |
+| Symbols, types, bindings, `universe`, `globals` and the string keys freed before the image is built (`releaseTables`) | 1,157,104 | 18,296,816 |
+| The runtime read before the compile only to check it can be read, then again for the image (`runtimeReadable`) | 1,082,320 | 18,409,792 |
+| One array, optional and handle type per base (`derived`, with `arrayOf`, `optOf`, `handleOf`): 494 types live at the peak became 52 | 968,032 | 18,307,696 |
+| The last chunk kept apart (`cur`, written by index), so that `emit` only stores a byte | 970,480 | 18,372,512 |
+
+The peak falls by 302,720 bytes (24%). `tests/port_compare.py` measures 970,512 (it was 1,273,136),
+against the budget of 1,351,000, which is unchanged. The last row costs 2,448 bytes (`cur` is a
+chunk of its own, copied into a new one when full), but `emit` stays a store and a test. The
+checker rejects the cheaper forms: with a `replace` or `truncate` of `cur` in `emit`, a call that
+emits may free, and the existing assignments to a field across such a call (`x.F = waitJump(x.F,
+jcc(...))`) are refused. The peak is now late in the compile, with the code nearly
+complete: the symbols with their arrays (about 370 KB), the source (205 KB) and the code (197 KB)
+are most of it. The output did not change: every program and error case compiles to the same bytes
+and messages as main's compiler, also with 32-byte chunks, which cross a chunk boundary in nearly
+every cut-back of the code (`truncCode`). The port compiling itself runs 0.5% fewer instructions
+(662.4 million against 666.0 million on the same source) and takes 418 page faults rather than 517.
+Its wall time, about 41 to 42 ms at the minimum on WSL, is within the noise.
+
+A shared derived type is never changed once made, and types are compared by structure (`same`),
+so sharing them changes no result. Only the basic types are compared by identity.
+Not done: Sym's four function-only arrays are allocated for every symbol, though about half are not
+functions (about 89 KB at the peak). Moving them into a per-function record would touch about 26
+sites, several of which are mutant patterns in `tests/mutate_port.py`.
+
 ### Peephole pass (not planned)
 
 The obx design (`README.md`, "Future work: a peephole optimizer") still applies: an
