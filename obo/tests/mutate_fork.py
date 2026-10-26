@@ -315,8 +315,8 @@ ORIGIN_MUTANTS = {
         '        if lastRaw == "" { originMove(x.sym, true) }\n'),
     'assignment clears origins through a reference or handle': ('            if traw == "" && !x.viaHandle && !x.deref { originMove(xs, false) }\n',
         '            if traw == "" { originMove(xs, false) }\n'),
-    "a move clears no handle's origin": ('            if o == r { x.hOrigin = nil }\n',
-        '            if false { x.hOrigin = nil }\n'),
+    "a move clears no handle's origin": ('            if o == r {\n                x.hOrigin = nil\n',
+        '            if false {\n                x.hOrigin = nil\n'),
     "a closed block's handles stay in the origin list": ('    truncate(originSyms, blocks[last].hmark)\n',
         ''),
     'a handle declared in the loop it is moved in is refused': ('        if x.hOrigin != nil && x.hDepth <= len(loops) && originDead[i] == nil {\n',
@@ -403,10 +403,10 @@ HANDLE_FREE_MUTANTS = {
     "a free is refused by a defer using another owner's handle": ('            if o == r {\n                error("cannot " + what + " \'" + r.name + "\' while a defer', '            if true {\n                error("cannot " + what + " \'" + r.name + "\' while a defer'),
     "a closed block's defer handles stay": ('    while len(deferAt) > 0 && deferAt[len(deferAt) - 1] >= last {\n', '    while false {\n'),
     'the then branch is not an arm': ('    let t1 = armBlock(&d0, &dacc, false)\n', '    let t1 = block()\n'),
-    'the else branch is not an arm': ('        let t2 = armBlock(&d0, &dacc, sym == T_IF)\n',
+    'the else branch is not an arm': ('        let t2 = armBlock(&e0, &dacc, sym == T_IF)\n',
         '        var t2 = false\n        if sym == T_IF { t2 = ifStat() } else { t2 = block() }\n'),
     'an if with an else does not take the join': ('        deadSet(&dacc)\n        truncate(narrowStack, mark)\n', '        truncate(narrowStack, mark)\n'),
-    'an if without an else does not take the join': ('    fixHere(flinks)\n    deadSet(&dacc)\n', '    fixHere(flinks)\n'),
+    'an if without an else does not take the join': ('    deadSet(&dacc)\n    if !t1 {\n', '    if !t1 {\n'),
     'an int match arm is not an arm': ('        fixHere(toBody)\n        restore(s0)\n        let bt = armBlock(&d0, &dacc, false)\n',
         '        fixHere(toBody)\n        restore(s0)\n        let bt = block()\n'),
     "an int match's else is not an arm": ('    let seen = new []int(0)\n    var ends = 0\n    var allTerm = true\n    var hasElse = false\n    while sym != T_RBRACE {\n        if sym == T_ELSE {\n            next()\n            hasElse = true\n            restore(s0)\n            let bt = armBlock(&d0, &dacc, false)\n',
@@ -566,6 +566,33 @@ EQUIVALENT = {
 }
 
 
+# narrowing on alive (ifStat, conjunction, the alive builtin)
+ALIVE_MUTANTS = {
+    'the then arm of alive(h) is not narrowed': ('    if gi >= 0 && !neg { narrowMark(&d0, gi) }\n', ''),
+    'the else arm of !alive(h) is not narrowed': ('    if gi >= 0 && neg { narrowMark(&e0, gi) }\n', ''),
+    'the else arm of alive(h) is narrowed': ('    if gi >= 0 && neg { narrowMark(&e0, gi) }\n', '    if gi >= 0 { narrowMark(&e0, gi) }\n'),
+    'the then arm of !alive(h) is narrowed': ('    if gi >= 0 && !neg { narrowMark(&d0, gi) }\n', '    if gi >= 0 { narrowMark(&d0, gi) }\n'),
+    'an early exit does not narrow the code after it': ('    if gi >= 0 && neg && t1 { narrowMark(&dacc, gi) }\n    deadSet(&dacc)', '    deadSet(&dacc)'),
+    'an early exit with an else does not narrow': ('        if gi >= 0 && neg && t1 { narrowMark(&dacc, gi) }\n', ''),
+    'a negated guard whose block goes on narrows after it': ('    if gi >= 0 && neg && t1 { narrowMark(&dacc, gi) }\n    deadSet(&dacc)', '    if gi >= 0 && neg { narrowMark(&dacc, gi) }\n    deadSet(&dacc)'),
+    'a negated guard with an else narrows after a block that goes on': ('        if gi >= 0 && neg && t1 { narrowMark(&dacc, gi) }\n', '        if gi >= 0 && neg { narrowMark(&dacc, gi) }\n'),
+    'an or in the condition keeps the narrowing': ('        if !neg && orSeq == orBefore && (', '        if !neg && ('),
+    'any token after alive(h) narrows': ('(guardFollow == T_LBRACE || guardFollow == T_ANDAND) {', 'true {'),
+    'a negated guard followed by anything narrows': ('        if neg && guardFollow == T_LBRACE {', '        if neg {'),
+    'alive anywhere in the condition is a guard': ('        let first = tokSeq == guardStart + 1\n', '        let first = true\n'),
+    'the rest of a conjunction is not narrowed': ('                    originDead[i] = nil\n                    guardOpen = true', '                    guardOpen = true'),
+    'the mark is not restored after a conjunction': ('        if guardFree == freeSeq { originDead[guardIdx] = guardMark }\n', ''),
+    'a nested conjunction reopens the guard': ('guardSym != nil && !guardNeg && !guardOpen && guardFollow', 'guardSym != nil && !guardNeg && guardFollow'),
+    'a negated guard opens the conjunction': ('guardSym != nil && !guardNeg && !guardOpen', 'guardSym != nil && !guardOpen'),
+    'a loop does not take the marks from before it': ('    for i in 0..len(dEntry) {\n        if dEntry[i] != nil { originDead[i] = dEntry[i] }\n    }\n', ''),
+    'a move of the owner keeps a narrowed handle usable': ('                if originNar[i] { originDead[i] = r }\n', ''),
+    'narrowing is not remembered': ('    if d[i] != nil { originNar[i] = true }\n', ''),
+    'narrowing is always remembered': ('    if d[i] != nil { originNar[i] = true }\n', '    originNar[i] = true\n'),
+    'a guard in the right operand of or is open': ('        orSeq += 1\n', ''),
+}
+MUTANTS.update(ALIVE_MUTANTS)
+
+
 def build_and_run(src):
     """Builds the compiler from src, in a directory of its own, and runs run_fork.py with it:
     (the run_fork result, None), or (None, the build's error) when it does not build."""
@@ -635,3 +662,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
