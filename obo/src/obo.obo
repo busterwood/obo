@@ -475,9 +475,52 @@ fn dumpTokens(source: []byte) {
 // address in disp, index -1 means no index.
 type Mem = ref record { base, index, disp, scale: int }
 
-var code = new []byte(0)
+// The code, in chunks of CHUNK bytes, each allocated at its full size: growing the code never
+// copies it, as a doubling buffer would, which holds the old block and the new one at once.
+// code holds the full chunks; the last one is written in cur, of which curLen bytes are code.
+const CHUNK_BITS = 14
+const CHUNK = 0x4000
+type Chunk = ref record { b: []byte }
+var code = new []Chunk(0)
+var cur = new []byte(CHUNK)
+var curLen = 0
+var codeBase = 0                    // where cur starts: CHUNK times len(code)
 
-fn emit(b: int) { append(code, byte(b)) }
+fn emit(b: int) {
+    cur[curLen] = byte(b)
+    curLen += 1
+    if curLen == CHUNK {
+        let full = new []byte(CHUNK)
+        for i in 0..CHUNK { full[i] = cur[i] }
+        append(code, new Chunk{b: full})
+        codeBase += CHUNK
+        curLen = 0
+    }
+}
+
+fn codeByte(at: int): byte {
+    if at >= codeBase { return cur[at - codeBase] }
+    return code[at >> CHUNK_BITS].b[at & (CHUNK - 1)]
+}
+
+fn setCode(at: int, v: int) {
+    if at >= codeBase {
+        cur[at - codeBase] = byte(v)
+    } else {
+        code[at >> CHUNK_BITS].b[at & (CHUNK - 1)] = byte(v)
+    }
+}
+
+// cuts the code back to n bytes: the chunk n is in becomes cur again
+fn truncCode(n: int) {
+    if n < codeBase {
+        let k = n >> CHUNK_BITS
+        for i in 0..CHUNK { cur[i] = code[k].b[i] }
+        truncate(code, k)
+        codeBase = k << CHUNK_BITS
+    }
+    curLen = n - codeBase
+}
 
 fn emit32(v: int) {
     emit(v)
@@ -494,7 +537,7 @@ fn emit64(v: int) {
 fn fits8(v: int): bool { return v >= -128 && v < 128 }
 fn fits32(v: int): bool { return v >= -2147483648 && v < 2147483648 }
 
-fn pc(): int { return len(code) }
+fn pc(): int { return codeBase + curLen }
 
 fn emitOpcode(opc: int) {
     if opc > 255 { emit(opc >> 8) }
@@ -626,14 +669,14 @@ fn jmp(): int {
 // A jump's rel32 field holds its displacement once the target is known, and until then
 // the position of the next jump waiting for the same target (waitJump): 0 after the last.
 fn putRel(at: int, v: int) {
-    code[at] = byte(v)
-    code[at + 1] = byte(v >> 8)
-    code[at + 2] = byte(v >> 16)
-    code[at + 3] = byte(v >> 24)
+    setCode(at, v)
+    setCode(at + 1, v >> 8)
+    setCode(at + 2, v >> 16)
+    setCode(at + 3, v >> 24)
 }
 
 fn getRel(at: int): int {
-    return int(code[at]) | (int(code[at + 1]) << 8) | (int(code[at + 2]) << 16) | (int(code[at + 3]) << 24)
+    return int(codeByte(at)) | (int(codeByte(at + 1)) << 8) | (int(codeByte(at + 2)) << 16) | (int(codeByte(at + 3)) << 24)
 }
 
 fn fix(at: int, target: int) { putRel(at, target - (at + 4)) }
@@ -758,7 +801,9 @@ fn runEncoderScript(script: []byte) {
             let l = new []byte(0)
             for k in start..i { append(l, script[k]) }
             runEncoderLine(string(l))
-            println(hexOf(code, before, pc()))
+            let b = new []byte(0)
+            for k in before..pc() { append(b, codeByte(k)) }
+            println(hexOf(b, 0, len(b)))
             start = i + 1
         }
     }
@@ -769,6 +814,7 @@ fn runEncoderScript(script: []byte) {
 type Type
 type Sym
 type RefBind
+type FnRec
 type PState
 
 type Field = ref record {
@@ -787,6 +833,7 @@ type Type = ref record {
     desc: int                 // record: address of its type descriptor
     incomplete: bool          // declared by 'type Name', not yet defined
     line: int
+    arrayOf, optOf, handleOf: ?^Type   // the types made from this one (see derived)
 }
 
 var typeArena = new []Type(0)          // owns every type; the rest of the compiler holds handles
@@ -794,6 +841,17 @@ var typeArena = new []Type(0)          // owns every type; the rest of the compi
 fn newType(kind: string, name: string, base: ?^Type): ^Type {
     append(typeArena, new Type{kind: kind, name: name, base: base, fields: new []Field(0), variants: new []^Type(0)})
     return handle(typeArena[len(typeArena) - 1])
+}
+
+// the type of the given kind ("array", "opt" or "handle") made from base: made once per base and
+// then shared, since no such type is changed once made and they are compared by structure
+fn derived(kind: string, base: ^Type): ^Type {
+    var t = base.arrayOf
+    if kind == "opt" { t = base.optOf } else if kind == "handle" { t = base.handleOf }
+    if t != nil { return t }
+    let n = newType(kind, "", base)
+    if kind == "array" { base.arrayOf = n } else if kind == "opt" { base.optOf = n } else { base.handleOf = n }
+    return n
 }
 
 let tInt = newType("int", "int", nil)
@@ -864,8 +922,7 @@ type Sym = ref record {
     offset: int               // rbp offset or absolute address
     value: int                // const
     addr: int                 // fn: code position once defined, else -1
-    fixups: []int             // fn: calls waiting for the address
-    params: []^Type
+    fnRec: ^FnRec             // fn: its record (see FnRec); the other kinds share noFnRec
     ret: ^Type
     line: int
     owned: bool               // a local holding an owned value
@@ -891,10 +948,9 @@ type Sym = ref record {
     usedAt: int               // the reads so far (useSeq) when it was last read: see loopSelfCheck; a tracked let handle:
                               // when it was last named (see originFree)
     iterating: bool           // a for loop is walking this array
-    pmodes: []int             // fn: 0 owned, 1 &, 2 mut, per parameter
-    freed: []^Sym              // fn: the globals it might free (directly or through calls)
     freesAll: bool            // fn: it might free anything (or isn't compiled yet)
     writesHandles: bool       // fn: it frees owned objects through a handle (directly, by a callee, or a forward heading)
+    home: int                 // an int or bool local held in this register (r12 to r15) instead of a stack slot, or -1
 }
 
 // A reference local's binding, on one path: what it may point into. Its roots are owned locals,
@@ -969,11 +1025,30 @@ fn singleBind(root: ^Sym, deep: bool, path: string, writable: bool, parent: ?^Sy
 let noBind = arenaBind(new []^Sym(0), new []bool(0), new []string(0), true, nil)
 let noneBind = arenaBind(new []^Sym(0), new []bool(0), new []string(0), true, nil)
 
+// The data of a function, held by its symbol: the parameters, the calls waiting for its address,
+// and the globals it might free. Only functions have one; the other symbols share noFnRec, which
+// nothing writes, so it stays empty.
+type FnRec = ref record {
+    fixups: []int             // calls waiting for the address
+    params: []^Type
+    pmodes: []int             // 0 owned, 1 &, 2 mut, per parameter
+    freed: []^Sym             // the globals it might free (directly or through calls)
+}
+
+var fnArena = new []FnRec(0)          // owns the function records; the symbols hold handles to them
+
+fn newFnRec(): ^FnRec {
+    append(fnArena, new FnRec{fixups: new []int(0), params: new []^Type(0), pmodes: new []int(0), freed: new []^Sym(0)})
+    return handle(fnArena[len(fnArena) - 1])
+}
+
+let noFnRec = newFnRec()
+
 var symArena = new []Sym(0)            // owns every symbol; the rest of the compiler holds handles
 
 fn newSym(kind: string, name: string, t: ?^Type): ^Sym {
-    append(symArena, new Sym{kind: kind, name: name, typ: t, bind: noBind, addr: -1, fixups: new []int(0),
-                   params: new []^Type(0), ret: tVoid, line: -1, pmodes: new []int(0), freed: new []^Sym(0)})
+    append(symArena, new Sym{kind: kind, name: name, typ: t, bind: noBind, addr: -1, fnRec: noFnRec,
+                   ret: tVoid, line: -1, home: -1})
     return handle(symArena[len(symArena) - 1])
 }
 
@@ -1014,6 +1089,7 @@ type Item = ref record {
     movedRef: bool            // a moved local named as an assignment target
     hOrigin: ?^Sym            // a handle made from a whole owned local by a let: that local
     path: string              // a field or element of root: "/a/b", "/items/[]"; "" = anywhere
+    home: bool                // a reg item that is a local's own register: read it, never change or release it
 }
 
 fn newItem(mode: string, t: ^Type): Item {
@@ -1049,6 +1125,7 @@ fn dupItem(x: &Item): Item {
     y.scale = x.scale
     y.line = x.line
     y.strTemp = x.strTemp
+    y.home = x.home
     return y
 }
 
@@ -1187,6 +1264,18 @@ fn makePool(): []int {
 }
 
 let pool = makePool()
+
+// Register homes. An int or bool local whose name the pre-scan of its function found busy lives in r12
+// to r15 (callee-saved in the C ABI, so a runtime call keeps it) instead of a stack slot. A home is taken
+// out of the free list while its local is in scope and so is never handed out as a temporary; it is
+// pushed around the calls to obo functions with the other registers in use, since a callee may use any
+// pool register. REG_HOMES is how many may be held at once (0 turns the allocation off); the pool keeps
+// at least five others. A name needs HOME_MIN weighted uses (a use in a loop counts 8, in two loops 64)
+// beyond twice the weighted calls its function makes.
+const REG_HOMES = 4
+const HOME_MIN = 8
+var homeBits = 0                  // the registers now held by locals, as a set
+var homeRetry = false             // the function being compiled ran out of registers with locals in them: see giveUpHomes
 
 var rodata = new []byte(0)
 var strKeys = new []string(0)
@@ -1435,7 +1524,21 @@ fn epilogue() {
 
 // ===================================================== registers and items
 
+// The function being compiled has locals in registers and no temporary is free. The locals' registers become
+// temporaries, as they are with no locals in registers, and the pass goes on to the end of the function,
+// its code to be thrown away: it reports what the function with all its locals in memory would report
+// (an error at a later token, or the exhaustion again, which is then the real one), and if it reaches the
+// end without one, fnDecl compiles the function again with no registers for locals (homeRetry).
+fn giveUpHomes() {
+    for r in 12..16 {
+        if (homeBits & (1 << r)) != 0 { append(free, r) }
+    }
+    homeBits = 0
+    homeRetry = true
+}
+
 fn alloc(): int {
+    if len(free) == 0 && homeBits != 0 { giveUpHomes() }
     if len(free) == 0 { error("expression too complex (out of registers)") }
     let r = free[0]
     for i in 1..len(free) { free[i - 1] = free[i] }
@@ -1444,7 +1547,7 @@ fn alloc(): int {
 }
 
 fn release(r: int) {
-    if containsInt(pool, r) && !containsInt(free, r) { append(free, r) }
+    if containsInt(pool, r) && !containsInt(free, r) && (homeBits & (1 << r)) == 0 { append(free, r) }
 }
 
 fn releaseItem(x: &Item) {
@@ -1471,7 +1574,7 @@ fn setFree(busy: int) {
     truncate(free, 0)
     let poolRefs = &pool
     for r in poolRefs {
-        if (busy & (1 << r)) == 0 { append(free, r) }
+        if ((busy | homeBits) & (1 << r)) == 0 { append(free, r) }
     }
 }
 
@@ -1527,7 +1630,12 @@ fn resolve(mut x: &Item) {
 }
 
 fn load(x: Item): Item {
-    if x.mode == "reg" { return x }
+    if x.mode == "reg" {
+        if !x.home { return x }
+        let c = alloc()                       // a local's own register is copied: the caller may change what it gets
+        movRR(c, x.r)
+        return makeReg(x.typ, c)
+    }
     var r = 0
     if x.mode == "const" {
         r = alloc()
@@ -1559,6 +1667,12 @@ fn load(x: Item): Item {
     return makeReg(x.typ, r)
 }
 
+// the item in a register that is only read: a local's own register is used where it is
+fn asReg(x: Item): Item {
+    if x.mode == "reg" { return x }
+    return load(x)
+}
+
 fn loadCond(x: Item): Item {
     if x.typ.kind != "bool" { error("condition must be bool, not " + tname(x.typ)) }
     if x.mode == "cond" { return x }
@@ -1567,7 +1681,7 @@ fn loadCond(x: Item): Item {
         aluMI(7, memOf(x), 0)
         drop(x)
     } else {
-        let y = load(x)
+        let y = asReg(x)
         opReg(0x85, y.r, y.r, true, false)
         release(y.r)
     }
@@ -1584,7 +1698,17 @@ fn falseJump(mut x: &Item): int {
 
 fn store(dst: Item, source: Item) {
     var src = source
-    if src.mode != "const" { src = load(src) }
+    if dst.home {
+        if src.mode == "const" {
+            movRI(dst.r, src.val)
+        } else {
+            src = asReg(src)
+            movRR(dst.r, src.r)
+            release(src.r)
+        }
+        return
+    }
+    if src.mode != "const" { src = asReg(src) }
     resolve(dst)
     if dst.width == 1 {
         if src.mode == "const" {
@@ -1597,7 +1721,7 @@ fn store(dst: Item, source: Item) {
         opMem(0xC7, 0, memOf(dst), true, false)
         emit32(src.val)
     } else {
-        src = load(src)
+        src = asReg(src)
         opMem(0x89, src.r, memOf(dst), true, false)
     }
     if src.mode == "reg" { release(src.r) }
@@ -1643,7 +1767,7 @@ fn rtCall(slot: int, args: []?Item, ret: ^Type): Item {
                 append(argConsts, a.val)
                 drop(a)
             } else {
-                let la = load(a)
+                let la = asReg(a)                // a local's own register is read where it is
                 append(regs, la.r)
                 append(argConsts, 0)
             }
@@ -1651,7 +1775,7 @@ fn rtCall(slot: int, args: []?Item, ret: ^Type): Item {
             drop(a)
         }
     }
-    let saved = usedRegs()
+    let saved = usedRegs() & ~homeBits      // the C runtime keeps r12 to r15, where the locals are
     pushRegs(saved)
     for i in 0..len(regs) {
         if regs[i] < 0 { movRI(argReg(i), argConsts[base + i]) } else { movRR(argReg(i), regs[i]) }
@@ -2527,16 +2651,16 @@ fn loopCarryCheck(back: &PState, useBefore: int, lv: ?^Sym) {
 // no mut parameters it could free through. An owned by-value parameter does not make it impure: the
 // caller's argument is a move, which consume() counts (touches), and the array checks see that.
 fn pureFn(f: ^Sym): bool {
-    if f.addr < 0 || f == curFn || f.freesAll || len(f.freed) > 0 { return false }
-    for i in 0..len(f.pmodes) {
-        if f.pmodes[i] == 2 { return false }
+    if f.addr < 0 || f == curFn || f.freesAll || len(f.fnRec.freed) > 0 { return false }
+    for i in 0..len(f.fnRec.pmodes) {
+        if f.fnRec.pmodes[i] == 2 { return false }
     }
     return true
 }
 
 fn mightFree(f: ^Sym, g: ^Sym): bool {
     if f.addr < 0 || f == curFn || f.freesAll { return true }
-    let freed = &f.freed
+    let freed = &f.fnRec.freed
     for x in freed {
         if x == g { return true }
     }
@@ -2553,11 +2677,11 @@ fn recordFree(g: ?^Sym) {
         return
     }
     if g.storage != "global" { return }
-    let freed = &f.freed
+    let freed = &f.fnRec.freed
     for x in freed {
         if x == g { return }
     }
-    append(f.freed, g)
+    append(f.fnRec.freed, g)
 }
 
 // after calling f: references into what f might free are no longer valid,
@@ -2681,6 +2805,118 @@ fn noTemp(x: &Item) {
     }
 }
 
+// ===================================================== register homes
+
+// What the pre-scan of the function being compiled found (see scanFunction): the names that are declared in
+// it, with their weighted uses, and the weighted calls it makes to the program's own functions.
+var scanBytes = new []byte(0)     // the names, one after another
+var scanAt = new []int(0)         // where each begins in scanBytes
+var scanLen = new []int(0)
+var scanScore = new []int(0)      // its weighted uses
+var scanPend = new []bool(0)      // it may still be declared as an int or bool local
+var scanCalls = 0
+var homeCap = 0                   // how many registers the function may use for locals: fewer where it nests expressions deeply
+
+// the name src[a..b) among the scanned ones, or -1
+fn findScanned(a: int, b: int): int {
+    let n = b - a
+    for k in 0..len(scanAt) {
+        if scanLen[k] == n {
+            var j = 0
+            while j < n && scanBytes[scanAt[k] + j] == src[a + j] { j += 1 }
+            if j == n { return k }
+        }
+    }
+    return -1
+}
+
+fn scannedName(name: string): int {
+    let n = len(name)
+    for k in 0..len(scanAt) {
+        if scanLen[k] == n {
+            var j = 0
+            while j < n && scanBytes[scanAt[k] + j] == name[j] { j += 1 }
+            if j == n { return k }
+        }
+    }
+    return -1
+}
+
+fn netScore(k: int): int { return scanScore[k] - 2 * scanCalls }
+
+// the register for the int or bool local `name`, which is about to be declared, or -1 for a stack slot. A
+// name is given one when its weighted uses are worth it and a register is free, and when the names that
+// do better and are yet to be declared in the function would still have one. declares is false for a
+// second register of the same local (a for loop's limit).
+fn pickHome(name: string, declares: bool): int {
+    if REG_HOMES == 0 || curFn == nil || inDefer || homeRetry { return -1 }
+    let k = scannedName(name)
+    if k < 0 { return -1 }
+    if declares { scanPend[k] = false }
+    if netScore(k) < HOME_MIN { return -1 }
+    var nfree = 0
+    var pick = -1
+    for i in 0..homeCap {
+        let r = 15 - i
+        if (homeBits & (1 << r)) == 0 && containsInt(free, r) {
+            nfree += 1
+            if pick < 0 { pick = r }
+        }
+    }
+    if pick < 0 { return -1 }
+    var better = 0
+    for m in 0..len(scanPend) {
+        if scanPend[m] && m != k && netScore(m) >= HOME_MIN {
+            if netScore(m) > netScore(k) || (netScore(m) == netScore(k) && m < k) { better += 1 }
+        }
+    }
+    if nfree <= better { return -1 }
+    var j = 0
+    while free[j] != pick { j += 1 }
+    while j + 1 < len(free) {
+        free[j] = free[j + 1]
+        j += 1
+    }
+    truncate(free, len(free) - 1)
+    homeBits = homeBits | (1 << pick)
+    return pick
+}
+
+// the name is declared in the function being compiled, whatever its type: it no longer competes as a candidate yet to come
+fn noteDeclared(name: string) {
+    let k = scannedName(name)
+    if k >= 0 { scanPend[k] = false }
+}
+
+fn releaseHome(r: int) {
+    homeBits = homeBits & ~(1 << r)
+    append(free, r)
+}
+
+// s, just made by newLocal, takes a register if pickHome gives it one: no stack slot then
+fn homeFor(s: ^Sym, name: string, declares: bool) {
+    let h = pickHome(name, declares)
+    if h >= 0 {
+        s.home = h
+        s.offset = 0
+        frame -= 8
+    }
+}
+
+// where a local is: its register, or its slot
+fn localItem(s: ^Sym, t: ^Type): Item {
+    if s.home >= 0 {
+        let x = newItem("reg", t)
+        x.r = s.home
+        x.home = true
+        return x
+    }
+    let x = newItem("mem", t)
+    x.base = RBP
+    x.disp = s.offset
+    return x
+}
+
 fn openBlock() {
     append(blocks, new Block{syms: new []^Sym(0), defers: new []int(0), nmark: len(narrowStack),
                              omark: len(ownedLocals), hmark: len(originSyms), frees: new []^FreeRec(0),
@@ -2764,6 +3000,10 @@ fn closeBlock(terminated: bool) {
         callDefers(last)
         freeOwned(om, len(ownedLocals))
     }
+    let scope = &blocks[last].syms
+    for s in scope {
+        if s.home >= 0 && !homeRetry { releaseHome(s.home) }
+    }
     // the block's symbols are freed with it: the origin list keeps only the handles still in scope
     truncate(originSyms, blocks[last].hmark)
     truncate(originDead, blocks[last].hmark)
@@ -2834,18 +3074,18 @@ fn parseType(): ^Type {
         next()
         let b = parseType()
         if !nonNull(b) { error("only reference types can be optional, not " + tname(b)) }
-        return newType("opt", "", b)
+        return derived("opt", b)
     }
     if sym == T_LBRACK {
         next()
         expect(T_RBRACK, "")
-        return newType("array", "", parseType())
+        return derived("array", parseType())
     }
     if sym == T_CARET {
         next()
         let b = parseType()
         if b.kind != "record" && b.kind != "closed" { error("handles name records and closed types, not " + tname(b)) }
-        return newType("handle", "", b)
+        return derived("handle", b)
     }
     if sym == T_REF || sym == T_CLOSED { error("record and closed types must be declared with 'type'") }
     let name = ident()
@@ -3390,7 +3630,7 @@ fn releaseArgs(tbase: int, omark: int) {
 
 fn callFn(f: ^Sym): Item {
     let saved = saveRegs()
-    let n = len(f.params)
+    let n = len(f.fnRec.params)
     let pad = (depth + 8 * n) % 16
     if pad != 0 {
         aluRI(5, RSP, 8)
@@ -3411,16 +3651,16 @@ fn callFn(f: ^Sym): Item {
         let argLine = tline
         let argCol = tcol
         let a = expression()
-        checkAssign(f.params[i], a, "argument " + string(i + 1) + " of " + f.name)
-        if f.pmodes[i] > 0 {
+        checkAssign(f.fnRec.params[i], a, "argument " + string(i + 1) + " of " + f.name)
+        if f.fnRec.pmodes[i] > 0 {
             let b = borrowBind(a)
-            if f.pmodes[i] == 2 && !b.writable {
+            if f.fnRec.pmodes[i] == 2 && !b.writable {
                 error("argument " + string(i + 1) + " of " + f.name + " needs a mut reference, but this one is read-only")
             }
             // a mut argument writes through the reference it is passed by
-            if f.pmodes[i] == 2 { noteWrite(a) }
+            if f.fnRec.pmodes[i] == 2 { noteWrite(a) }
             append(argBinds, b)
-            append(argModes, f.pmodes[i])
+            append(argModes, f.fnRec.pmodes[i])
             append(argVias, viaOf(a))
             if anyDeep(b) && deepLine == 0 {
                 deepLine = argLine
@@ -3438,7 +3678,7 @@ fn callFn(f: ^Sym): Item {
             depth += 8
             drop(a)
         } else {
-            let r = load(a)
+            let r = asReg(a)
             pushR(r.r)
             release(r.r)
         }
@@ -3512,7 +3752,7 @@ fn callFn(f: ^Sym): Item {
         fix(at, f.addr)
         append(farCalls, at)
     } else {
-        append(f.fixups, at)
+        append(f.fnRec.fixups, at)
         fwdCalls += 1
     }
     if n > 0 || pad != 0 {
@@ -3594,7 +3834,7 @@ fn builtin(name: string): Item {
     if name == "args" {
         expect(T_LPAREN, "")
         expect(T_RPAREN, "")
-        return rtCall0(RT_ARGS, newType("array", "", tString))
+        return rtCall0(RT_ARGS, derived("array", tString))
     }
     if name == "readFile" || name == "writeFile" {
         expect(T_LPAREN, "")
@@ -3602,7 +3842,7 @@ fn builtin(name: string): Item {
         if p.typ.kind != "string" { error(name + " needs a string path, not " + tname(p.typ)) }
         if name == "readFile" {
             expect(T_RPAREN, "")
-            return rtCall1(RT_READ_FILE, p, newType("opt", "", newType("array", "", tByte)))
+            return rtCall1(RT_READ_FILE, p, derived("opt", derived("array", tByte)))
         }
         p = pinStr(p)
         expect(T_COMMA, "")
@@ -3639,7 +3879,7 @@ fn builtin(name: string): Item {
         if (x.mode != "mem" && x.mode != "elem") || (x.typ.kind != "record" && x.typ.kind != "closed") {
             error("handle needs a record or closed-type value that is not optional, not " + tname(x.typ))
         }
-        let ht = newType("handle", "", x.typ)
+        let ht = derived("handle", x.typ)
         var origin: ?^Sym = nil
         if !x.viaHandle && lastRaw == "" { origin = wholeOwnerOf(x.sym) }
         let made = rtCall1(RT_HANDLE, x, ht)
@@ -3882,7 +4122,7 @@ fn builtin(name: string): Item {
             emit(0)
             let at0 = pc()
             opMem(0x8B, n, mem(n, -1, 0, 8), true, false)
-            code[at0 - 1] = byte(pc() - at0)
+            setCode(at0 - 1, pc() - at0)
             rtCall1(RT_STR_DEC, p, tVoid)
             return makeReg(tInt, n)
         }
@@ -3892,7 +4132,7 @@ fn builtin(name: string): Item {
         emit(0)
         let at = pc()
         opMem(0x8B, x.r, mem(x.r, -1, 0, 8), true, false)
-        code[at - 1] = byte(pc() - at)
+        setCode(at - 1, pc() - at)
         return makeReg(tInt, x.r)
     }
     if a.typ.kind != "array" { error("len needs a string or array, not " + tname(a.typ)) }
@@ -3918,7 +4158,11 @@ fn nameItem(s: ^Sym, name: string, target: bool): Item {
     if s.kind == "const" { return makeConst(symType(s), s.value) }
     if s.kind == "var" || s.kind == "let" {
         var x = newItem("mem", symType(s))
-        if s.storage == "local" {
+        if s.home >= 0 {
+            x = newItem("reg", symType(s))        // held in a register of its own: see REG_HOMES
+            x.r = s.home
+            x.home = true
+        } else if s.storage == "local" {
             x.typ = varType(s)
             x.base = RBP
         }
@@ -4048,7 +4292,7 @@ fn designatorT(target: bool): Item {
             heldPop(hp)
             var seg = "/[]"
             if i0.mode == "const" { seg = "/[" + string(i0.val) + "]" }
-            let i = load(i0)
+            let i = asReg(i0)
             expect(T_RBRACK, "")
             if kind == "string" {
                 opReg(0x85, a.r, a.r, true, false)
@@ -4159,7 +4403,7 @@ fn newExpr(): Item {
             emit32(v.val)
             drop(v)
         } else {
-            let r = load(v)
+            let r = asReg(v)
             opMem(0x89, r.r, dst, true, false)
             release(r.r)
         }
@@ -4334,6 +4578,14 @@ fn binop(o: int, x0: Item, y0: Item): Item {
         y = t
     }
     if y.mode == "elem" || (y.mode == "mem" && y.width == 1) { y = load(y) }
+    if o == T_STAR && x.home && y.mode == "const" && fits32(y.val) {
+        let t = alloc()                           // imul reads one register and writes another
+        opReg(0x69, t, x.r, true, false)
+        emit32(y.val)
+        drop(y)
+        x = makeReg(tInt, t)
+        return x
+    }
     x = load(x)
     if o == T_STAR {
         if y.mode == "const" && fits32(y.val) {
@@ -4491,7 +4743,7 @@ fn relation(): Item {
         aluMI(7, memOf(x), y.val)
         releaseItem(x)
     } else {
-        x = load(x)
+        x = asReg(x)
         if y.mode == "const" && fits32(y.val) {
             aluRI(7, x.r, y.val)
         } else {
@@ -4567,6 +4819,7 @@ fn statement(): bool
 
 fn varDecl(kind: string, isGlobal: bool) {
     let name = ident()
+    if !isGlobal { noteDeclared(name) }
     var t: ?^Type = nil
     var declRef = 0
     if sym == T_COLON {
@@ -4613,13 +4866,15 @@ fn varDecl(kind: string, isGlobal: bool) {
         checkAssign(tt, x, "initialising '" + name + "'")
         consume(x)
         var s = gsym
-        let dst = newItem("mem", tt)
+        var dst = newItem("mem", tt)
         if isGlobal {
             s.typ = tt
             dst.disp = s.offset
         } else {
             s = newLocal("", tt, kind)
             s.name = name
+            if tt.kind == "int" || tt.kind == "bool" { homeFor(s, name, true) }
+            dst = localItem(s, tt)
             if kind == "let" {
                 s.hOrigin = x.hOrigin
                 s.hDepth = len(loops)
@@ -4629,8 +4884,6 @@ fn varDecl(kind: string, isGlobal: bool) {
                     append(originDead, nil)
                 }
             }
-            dst.base = RBP
-            dst.disp = s.offset
         }
         store(dst, x)
         if isGlobal { initLink = jmp() }
@@ -4649,8 +4902,13 @@ fn varDecl(kind: string, isGlobal: bool) {
             declare(gsym)
         } else {
             let s = newLocal(name, t, kind)
-            opMem(0xC7, 0, mem(RBP, -1, s.offset, 8), true, false)
-            emit32(0)
+            if t.kind == "int" || t.kind == "bool" { homeFor(s, name, true) }
+            if s.home >= 0 {
+                movRI(s.home, 0)
+            } else {
+                opMem(0xC7, 0, mem(RBP, -1, s.offset, 8), true, false)
+                emit32(0)
+            }
             if isOwned(t) { addOwnedLocal(s) }
             if t.kind == "string" { addStrLocal(s) }
         }
@@ -4675,7 +4933,7 @@ fn assignmentOrCall(): bool {
     }
     if sym == T_ASSIGN || sym == T_PLUSEQ || sym == T_MINUSEQ || sym == T_STAREQ {
         let o = sym
-        if x.mode != "mem" && x.mode != "elem" { errorAt("cannot assign to this", line, col) }
+        if x.mode != "mem" && x.mode != "elem" && !x.home { errorAt("cannot assign to this", line, col) }
         if x.readonly {
             let xs = x.sym
             if xs == nil {
@@ -4801,10 +5059,13 @@ fn assignmentOrCall(): bool {
             if !isInt(y.typ) { error("'" + tokName(o) + "' needs an int") }
             if !same(dtype, tInt) { error("'" + tokName(o) + "' needs an int") }
             resolve(x)
-            let r = alloc()
-            opMem(0x8B, r, memOf(x), true, false)
+            var r = x.r                       // a local in a register is changed where it is
+            if !x.home {
+                r = alloc()
+                opMem(0x8B, r, memOf(x), true, false)
+            }
             if o == T_STAREQ {
-                y = load(y)
+                y = asReg(y)
                 opReg(0x0FAF, r, y.r, true, false)
                 release(y.r)
             } else {
@@ -4813,16 +5074,20 @@ fn assignmentOrCall(): bool {
                 if y.mode == "const" && fits32(y.val) {
                     aluRI(c, r, y.val)
                 } else {
-                    y = load(y)
+                    y = asReg(y)
                     opReg(c * 8 + 3, r, y.r, true, false)
                     release(y.r)
                 }
             }
-            store(x, makeReg(tInt, r))
+            if x.home {
+                drop(x)
+            } else {
+                store(x, makeReg(tInt, r))
+            }
         }
     } else {
         if x.typ != tVoid || x.mode != "void" {
-            if x.mode != "reg" { errorAt("this expression does nothing", line, col) }
+            if x.mode != "reg" || x.home { errorAt("this expression does nothing", line, col) }
             if isOwned(x.typ) {
                 rtCall1(RT_FREE, x, tVoid)                 // a dropped result is freed at once
             } else if x.strTemp {
@@ -5099,16 +5364,17 @@ fn whileStat(): bool {
         x = newItem("cond", tBool)
     } else {
         x = loadCond(x)
-        for i in top..pc() { append(lifted, code[i]) }
-        truncate(code, top)
+        for i in top..pc() { append(lifted, codeByte(i)) }
+        truncCode(top)
         farTo = len(farCalls)
         if fwdCalls != fwdFrom {
             for g in 0..len(globals) {
                 if globals[g].kind == "fn" && globals[g].addr < 0 {
-                    while len(globals[g].fixups) > 0 && globals[g].fixups[len(globals[g].fixups) - 1] >= top {
+                    let fr = globals[g].fnRec
+                    while len(fr.fixups) > 0 && fr.fixups[len(fr.fixups) - 1] >= top {
                         append(waitFn, g)
-                        append(waitAt, globals[g].fixups[len(globals[g].fixups) - 1])
-                        truncate(globals[g].fixups, len(globals[g].fixups) - 1)
+                        append(waitAt, fr.fixups[len(fr.fixups) - 1])
+                        truncate(fr.fixups, len(fr.fixups) - 1)
                     }
                 }
             }
@@ -5144,13 +5410,13 @@ fn whileStat(): bool {
     let d = at - top
     fix(jcond, at)
     fixTo(loop.cont, at)
-    for i in liftFrom..len(lifted) { append(code, lifted[i]) }
+    for i in liftFrom..len(lifted) { emit(lifted[i]) }
     truncate(lifted, liftFrom)
     for k in farFrom..farTo {
         farCalls[k] += d
         putRel(farCalls[k], getRel(farCalls[k]) - d)
     }
-    for k in waitFrom..len(waitFn) { append(globals[waitFn[k]].fixups, waitAt[k] + d) }
+    for k in waitFrom..len(waitFn) { append(globals[waitFn[k]].fnRec.fixups, waitAt[k] + d) }
     truncate(waitFn, waitFrom)
     truncate(waitAt, waitFrom)
     let tl = shiftWaits(x.T, d)
@@ -5167,6 +5433,7 @@ fn forStat() {
     let fcol = tcol
     next()
     let name = ident()
+    noteDeclared(name)
     expect(T_IN, "")
     openBlock()
     let x = expression()
@@ -5180,16 +5447,17 @@ fn forStat() {
         next()
         if x.typ.kind != "int" { error("range bounds must be ints") }
         let v = newLocal(name, tInt, "let")
-        let vi = newItem("mem", tInt)
-        vi.base = RBP
-        vi.disp = v.offset
+        homeFor(v, name, true)
+        let vi = localItem(v, tInt)
         store(vi, x)
         let y = expression()
         if y.typ.kind != "int" { error("range bounds must be ints") }
         let lim = newLocal("", tInt, "var")
-        let li = newItem("mem", tInt)
-        li.base = RBP
-        li.disp = lim.offset
+        if v.home >= 0 {
+            homeFor(lim, name, false)              // the limit follows the variable into a register
+            if lim.home >= 0 { append(blocks[len(blocks) - 1].syms, lim) }       // so that the block's end frees it
+        }
+        let li = localItem(lim, tInt)
         store(li, y)
         exitLink = jmp()                        // to the test, after the body
         top = pc()
@@ -5199,12 +5467,22 @@ fn forStat() {
         loop = loopBody(snapshot(), fline, fcol, len(ownedLocals), selfCalls, useSeq, len(freeLog))
         loopdepth -= 1
         fixHere(loop.cont)
-        aluMI(0, mem(RBP, -1, v.offset, 8), 1)
-        fixHere1(exitLink)
-        let r = alloc()
-        opMem(0x8B, r, mem(RBP, -1, v.offset, 8), true, false)
-        opMem(0x3B, r, mem(RBP, -1, lim.offset, 8), true, false)
-        release(r)
+        if v.home >= 0 {
+            aluRI(0, v.home, 1)
+            fixHere1(exitLink)
+            if lim.home >= 0 {
+                opReg(0x3B, v.home, lim.home, true, false)
+            } else {
+                opMem(0x3B, v.home, mem(RBP, -1, lim.offset, 8), true, false)
+            }
+        } else {
+            aluMI(0, mem(RBP, -1, v.offset, 8), 1)
+            fixHere1(exitLink)
+            let r = alloc()
+            opMem(0x8B, r, mem(RBP, -1, v.offset, 8), true, false)
+            opMem(0x3B, r, mem(RBP, -1, lim.offset, 8), true, false)
+            release(r)
+        }
         fix(jcc(CC_L), top)
     } else {
         if x.typ.kind != "array" { error("cannot iterate over " + tname(x.typ)) }
@@ -5498,7 +5776,7 @@ fn returnStat() {
         let x0 = expression()
         checkAssign(f.ret, x0, "return value")
         consume(x0)
-        let x = load(x0)
+        let x = asReg(x0)
         for k in blocks[fnBlock].omark..len(ownedLocals) {
             if !ownedLocals[k].moved { active = true }
         }
@@ -5650,15 +5928,15 @@ fn statement(): bool {
 // body are relative and move with it. A call out of it (farCalls) is now 7 bytes further
 // from its target, and a call waiting for a later function has moved in its fixups.
 fn dropFrame(at: int) {
-    for i in at + 4..len(code) { code[i - 7] = code[i] }
-    truncate(code, len(code) - 7)
+    for i in at + 4..pc() { setCode(i - 7, codeByte(i)) }
+    truncCode(pc() - 7)
     let calls = &farCalls
     for p in calls { putRel(p - 7, getRel(p - 7) + 7) }
     let gs = &globals
     for g in gs {
         if g.kind == "fn" && g.addr < 0 {
-            for fi in 0..len(g.fixups) {
-                if g.fixups[fi] > at { g.fixups[fi] -= 7 }
+            for fi in 0..len(g.fnRec.fixups) {
+                if g.fnRec.fixups[fi] > at { g.fnRec.fixups[fi] -= 7 }
             }
         }
     }
@@ -5670,8 +5948,388 @@ type Param = ref record {
     mode: int                 // 0 owned, 1 &, 2 mut
 }
 
+// ---- the pre-scan of a function
+
+let callExempt = words("if while for return match defer in else new print println eprint eprintln len gc gcstats exit append truncate substr readFile writeFile args take handle alive drop replace int byte string")
+
+fn wordAt(a: int, b: int, w: string): bool {
+    if len(w) != b - a { return false }
+    for j in 0..len(w) {
+        if src[a + j] != w[j] { return false }
+    }
+    return true
+}
+
+fn skipBlank(from: int): int {
+    var q = from
+    while q < len(src) && (src[q] == ' ' || src[q] == '\t') { q += 1 }
+    return q
+}
+
+fn weight(depth: int): int {
+    if depth > 3 { return 512 }
+    return 1 << (3 * depth)
+}
+
+fn addScanned(a: int, b: int): int {
+    append(scanAt, len(scanBytes))
+    append(scanLen, b - a)
+    for j in a..b { append(scanBytes, src[j]) }
+    append(scanScore, 0)
+    append(scanPend, false)
+    return len(scanAt) - 1
+}
+
+// whether the name just read, ending at `from`, may be an int or bool local (decl 1: after var or let; 2: after
+// for): by its type if it has one, else by where its value starts. A guess: a wrong one only costs a register
+// kept back, or lost, in the ranking. The declaration itself decides, with the real type.
+fn plausible(decl: int, from: int): bool {
+    var q = skipBlank(from)
+    if decl == 2 {
+        while q + 1 < len(src) && src[q] != '{' && src[q] != '\n' {
+            if src[q] == '.' && src[q + 1] == '.' { return true }      // a range; walking an array keeps its element in memory
+            q += 1
+        }
+        return false
+    }
+    if q >= len(src) { return false }
+    if src[q] == ':' {
+        q = skipBlank(q + 1)
+        var e = q
+        while e < len(src) && (isLetter(src[e]) || isDigit(src[e])) { e += 1 }
+        return wordAt(q, e, "int") || wordAt(q, e, "bool")
+    }
+    if src[q] != '=' { return false }
+    q = skipBlank(q + 1)
+    if q >= len(src) { return false }
+    let c = src[q]
+    if c == '"' || c == '&' || c == '[' { return false }
+    if isLetter(c) {
+        var e = q
+        while e < len(src) && (isLetter(src[e]) || isDigit(src[e])) { e += 1 }
+        if wordAt(q, e, "new") || wordAt(q, e, "string") || wordAt(q, e, "args") || wordAt(q, e, "readFile") { return false }
+        if wordAt(q, e, "substr") || wordAt(q, e, "take") || wordAt(q, e, "replace") || wordAt(q, e, "handle") { return false }
+        if wordAt(q, e, "nil") { return false }
+    }
+    return true
+}
+
+// a line that ends in this goes on in the next
+fn contChar(c: int): bool {
+    return c == '+' || c == '-' || c == '*' || c == '/' || c == '%' || c == '&' || c == '|' || c == '^' ||
+           c == '<' || c == '>' || c == '=' || c == '!' || c == ',' || c == '.'
+}
+
+fn callAt(from: int): bool {
+    let q = skipBlank(from)
+    return q < len(src) && src[q] == '('
+}
+
+fn exemptCall(a: int, b: int): bool {
+    let ws = &callExempt
+    for w in ws {
+        if wordAt(a, b, w) { return true }
+    }
+    return false
+}
+
+// Reads the body of the function about to be compiled, from the current token (its '{') on, as raw text and
+// without the scanner's state: the int and bool parameters and the locals it declares, with the uses of each
+// weighted 1, 8, 64 or 512 by how many loops it is in (the header of a while or for counts as inside),
+// and the calls it makes to the program's own functions, weighted the same way. Nothing here is
+// checked; whatever is wrong in the text is for the compiler to report where it reaches it.
+fn scanFunction(params: &[]Param) {
+    truncate(scanBytes, 0)
+    truncate(scanAt, 0)
+    truncate(scanLen, 0)
+    truncate(scanScore, 0)
+    truncate(scanPend, 0)
+    scanCalls = 0
+    homeCap = 0
+    if REG_HOMES == 0 { return }
+    for i in 0..len(params) {
+        let k = params[i].typ.kind
+        if params[i].mode == 0 && (k == "int" || k == "bool") {
+            let nm = params[i].name
+            for j in 0..len(nm) { append(scanBytes, nm[j]) }
+            append(scanAt, len(scanBytes) - len(nm))
+            append(scanLen, len(nm))
+            append(scanScore, 0)
+            append(scanPend, true)
+        }
+    }
+    let n = len(src)
+    var p = pos
+    var depth = 1
+    let braces = new []int(0)             // for each brace open in the body: 1 if it opens a loop's body, 2 a record literal's, else 0
+    var nest = 0                          // the parentheses, brackets and record literals open now
+    var nestMax = 0                       // and the most registers a statement may hold at once (see below)
+    let parens = new []int(0)             // per open parenthesis or bracket: the commas so far if it is a builtin's argument list, else -1
+    var totalCommas = 0                   // the earlier arguments of the builtin calls open now: each is held in a register
+    var lhsCount = 0                      // the '[' and '.' left of the assignment operator: a destination holds a base and an index
+    var held = 0                          // the registers the destination of this statement holds while its value is computed
+    var seenAssign = false
+    var inDecl = false                    // the statement is a var or let: its '[' are in a type
+    var lastA = -1                        // the word just read, if the last token
+    var prevCh = 0                        // the first character of the last token, comments apart
+    var lastB = -1
+    var prevNew = false                   // the word just read was `new`
+    var afterNew = false                  // the word just read names the type of a record literal
+    var loopDepth = 0
+    var header = false                    // between a while or for and its '{'
+    var decl = 0                          // 1 after var or let, 2 after for: the next word is the name declared
+    while p < n && depth > 0 {
+        let c = src[p]
+        if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+            if c == '\n' && nest == 0 && !contChar(prevCh) {
+                lhsCount = 0
+                held = 0
+                seenAssign = false
+                inDecl = false
+            }
+            p += 1
+            continue
+        }
+        if !(c == '/' && p + 1 < n && src[p + 1] == '/') { prevCh = c }
+        let la = lastA
+        let lb = lastB
+        lastA = -1
+        let wasNew = afterNew
+        afterNew = false
+        let newWord = prevNew
+        prevNew = false
+        if c == '/' && p + 1 < n && src[p + 1] == '/' {
+            while p < n && src[p] != '\n' { p += 1 }
+            afterNew = wasNew
+            prevNew = newWord
+        } else if c == '"' {
+            p += 1
+            while p < n && src[p] != '"' && src[p] != '\n' {
+                if src[p] == '\\' { p += 1 }
+                p += 1
+            }
+            p += 1
+        } else if c == '\'' {
+            p += 1
+            if p < n && src[p] == '\\' { p += 2 } else { p += 1 }
+            if p < n && src[p] == '\'' { p += 1 }
+        } else if isLetter(c) {
+            let a = p
+            while p < n && (isLetter(src[p]) || isDigit(src[p])) { p += 1 }
+            var d = loopDepth
+            if header { d += 1 }
+            let w = weight(d)
+            if wordAt(a, p, "new") {
+                prevNew = true
+            } else if newWord {
+                afterNew = true
+            }
+            lastA = a
+            lastB = p
+            if wordAt(a, p, "var") || wordAt(a, p, "let") {
+                decl = 1
+                inDecl = true
+            } else if wordAt(a, p, "for") {
+                decl = 2
+                header = true
+            } else if wordAt(a, p, "while") {
+                header = true
+            } else if decl > 0 {
+                var k = findScanned(a, p)
+                let known = k >= 0
+                if !known { k = addScanned(a, p) }
+                let ok = plausible(decl, p)
+                if !known || ok { scanPend[k] = ok }
+                scanScore[k] += w
+                decl = 0
+            } else {
+                let k = findScanned(a, p)
+                if k >= 0 {
+                    scanScore[k] += w
+                } else if callAt(p) && !exemptCall(a, p) {
+                    scanCalls += w
+                }
+            }
+        } else if isDigit(c) {
+            while p < n && (isLetter(src[p]) || isDigit(src[p])) { p += 1 }
+        } else if c == '(' || c == '[' {
+            nest += 1
+            if c == '[' && !seenAssign && !inDecl { lhsCount += 1 }
+            if c == '(' && la >= 0 && exemptCall(la, lb) { append(parens, 0) } else { append(parens, -1) }
+            let eff = nest + held + totalCommas
+            if eff > nestMax { nestMax = eff }
+            p += 1
+        } else if c == ')' || c == ']' {
+            if nest > 0 { nest -= 1 }
+            if len(parens) > 0 {
+                if parens[len(parens) - 1] > 0 { totalCommas -= parens[len(parens) - 1] }
+                truncate(parens, len(parens) - 1)
+            }
+            p += 1
+        } else if c == ',' {
+            if len(parens) > 0 && parens[len(parens) - 1] >= 0 {
+                parens[len(parens) - 1] += 1
+                totalCommas += 1
+                let eff = nest + held + totalCommas
+                if eff > nestMax { nestMax = eff }
+            }
+            p += 1
+        } else if c == ';' {
+            lhsCount = 0
+            held = 0
+            seenAssign = false
+            inDecl = false
+            p += 1
+        } else if c == '.' {
+            if !seenAssign && !inDecl && p + 1 < n && src[p + 1] != '.' && p > 0 && src[p - 1] != '.' { lhsCount += 1 }
+            p += 1
+        } else if c == '=' {
+            if p + 1 < n && src[p + 1] == '=' {
+                p += 2
+            } else {
+                var plain = true
+                if p > 0 && (src[p - 1] == '!' || src[p - 1] == '<' || src[p - 1] == '>') { plain = false }
+                if plain && nest == 0 && !seenAssign {
+                    seenAssign = true
+                    held = 2 * lhsCount
+                    let eff = nest + held + totalCommas
+                    if eff > nestMax { nestMax = eff }
+                }
+                p += 1
+            }
+        } else if c == '{' {
+            depth += 1
+            var kind = 0
+            if header {
+                kind = 1
+                loopDepth += 1
+            } else if wasNew {
+                kind = 2
+                nest += 1
+                let eff = nest + held + totalCommas
+                if eff > nestMax { nestMax = eff }
+            }
+            if kind != 2 {
+                lhsCount = 0
+                held = 0
+                seenAssign = false
+                inDecl = false
+            }
+            append(braces, kind)
+            header = false
+            p += 1
+        } else if c == '}' {
+            depth -= 1
+            if len(braces) > 0 {
+                let kind = braces[len(braces) - 1]
+                if kind == 1 { loopDepth -= 1 }
+                if kind == 2 && nest > 0 { nest -= 1 }
+                if kind != 2 {
+                    lhsCount = 0
+                    held = 0
+                    seenAssign = false
+                    inDecl = false
+                }
+                truncate(braces, len(braces) - 1)
+            }
+            p += 1
+        } else {
+            p += 1
+        }
+    }
+    // what a statement holds in registers at once: its destination's base and index (held), the earlier
+    // arguments of the builtin calls open (totalCommas) and the operands waiting in the expression (nest);
+    // two more are in use at the innermost operation. The pool has nine registers.
+    homeCap = 7 - nestMax
+    if homeCap > REG_HOMES { homeCap = REG_HOMES }
+    if homeCap < 0 { homeCap = 0 }
+}
+
+// Compiles the body of the function f, its heading read and its '{' the current token. homes is whether its int
+// and bool locals may be held in registers. True if it ran out of registers with some (see giveUpHomes): nothing
+// has been left but its code, to be thrown away.
+fn fnBody(f: ^Sym, name: string, ret: ^Type, params: &[]Param, homes: bool): bool {
+    homeBits = 0
+    setFree(0)                          // the registers in pool order: a function starts as the one before it did not leave them
+    pendLine = 0
+    frame = 0
+    depth = 0
+    truncate(farCalls, 0)
+    if homes {
+        scanFunction(params)
+    } else {
+        homeCap = 0
+    }
+    emit(0x55)
+    emit(0x48)
+    emit(0x89)
+    emit(0xE5)
+    emit(0x48)
+    emit(0x81)
+    emit(0xEC)
+    let frameAt = pc()
+    emit32(0)
+    let bindMark = len(bindArena)
+    let symMark = len(symArena)                 // the function's own symbols start here
+    let tempMark = len(argTemps)                // and the argument holders made for it
+    openBlock()
+    fnBlock = len(blocks) - 1
+    let n = len(params)
+    for i in 0..n {
+        let s = newSym("var", params[i].name, params[i].typ)
+        s.storage = "local"
+        s.isParam = true
+        s.offset = 16 + 8 * (n - 1 - i)
+        declare(s)
+        if params[i].mode > 0 {
+            s.isRef = true                         // borrowed: not freed here
+            s.bind = singleBind(s, false, "", params[i].mode == 2, nil)
+            s.kind = "let"
+        } else if isOwned(params[i].typ) {
+            addOwnedLocal(s)
+        }
+        if params[i].typ.kind == "string" { addStrLocal(s) }
+        if params[i].mode == 0 && (params[i].typ.kind == "int" || params[i].typ.kind == "bool") {
+            let h = pickHome(params[i].name, true)
+            if h >= 0 {
+                s.home = h
+                opMem(0x8B, h, mem(RBP, -1, s.offset, 8), true, false)      // the argument, from the stack
+            }
+        }
+    }
+    expect(T_LBRACE, "")
+    openBlock()
+    let term = statSeq()
+    expect(T_RBRACE, "")
+    if !term && ret != tVoid { error(name + " must return a value on every path") }
+    closeBlock(term)
+    closeBlock(term)
+    homeBits = 0
+    if homeRetry {
+        truncate(bindArena, bindMark)
+        truncate(argTemps, tempMark)
+        truncate(symArena, symMark)
+        return true
+    }
+    if !term { epilogue() }
+    let size = (frame + 15) & ~15
+    if size == 0 {
+        dropFrame(frameAt)
+    } else {
+        putRel(frameAt, size)
+    }
+    if pendLine > 0 && f.writesHandles { errorAt(pendMsg, pendLine, pendCol) }
+    pendLine = 0
+    curFn = nil
+    truncate(bindArena, bindMark)
+    truncate(argTemps, tempMark)
+    truncate(symArena, symMark)                 // and nothing refers to them any more
+    return false
+}
+
+
 fn fnDecl() {
-    let line = tline
+    let hline = tline
     let name = ident()
     let params = new []Param(0)
     expect(T_LPAREN, "")
@@ -5708,84 +6366,77 @@ fn fnDecl() {
     var f = newSym("fn", name, nil)
     if prior != nil && prior.kind == "fn" && prior.addr < 0 {
         f = prior
-        var ok = len(f.params) == len(params) && same(f.ret, ret)
+        var ok = len(f.fnRec.params) == len(params) && same(f.ret, ret)
         if ok {
             for i in 0..len(params) {
-                if !same(f.params[i], params[i].typ) || f.pmodes[i] != params[i].mode { ok = false }
+                if !same(f.fnRec.params[i], params[i].typ) || f.fnRec.pmodes[i] != params[i].mode { ok = false }
             }
         }
         if !ok { error("'" + name + "' does not match its forward heading") }
     } else {
+        f.fnRec = newFnRec()
         declare(f)
         for p in params {
-            append(f.params, p.typ)
-            append(f.pmodes, p.mode)
+            append(f.fnRec.params, p.typ)
+            append(f.fnRec.pmodes, p.mode)
         }
         f.ret = ret
-        f.line = line
+        f.line = hline
     }
     if sym != T_LBRACE { return }
     if f.addr >= 0 { error("'" + name + "' is already defined") }
     f.addr = pc()
-    for fi in 0..len(f.fixups) { fix(f.fixups[fi], f.addr) }   // calls waiting for this address
+    for fi in 0..len(f.fnRec.fixups) { fix(f.fnRec.fixups[fi], f.addr) }   // calls waiting for this address
     curFn = f
-    pendLine = 0
-    frame = 0
-    depth = 0
-    truncate(farCalls, 0)
-    emit(0x55)
-    emit(0x48)
-    emit(0x89)
-    emit(0xE5)
-    emit(0x48)
-    emit(0x81)
-    emit(0xEC)
-    let frameAt = pc()
-    emit32(0)
-    let bindMark = len(bindArena)
-    let symMark = len(symArena)                 // the function's own symbols start here
-    let tempMark = len(argTemps)                // and the argument holders made for it
-    openBlock()
-    fnBlock = len(blocks) - 1
-    let n = len(params)
-    for i in 0..n {
-        let s = newSym("var", params[i].name, params[i].typ)
-        s.storage = "local"
-        s.isParam = true
-        s.offset = 16 + 8 * (n - 1 - i)
-        declare(s)
-        if params[i].mode > 0 {
-            s.isRef = true                         // borrowed: not freed here
-            s.bind = singleBind(s, false, "", params[i].mode == 2, nil)
-            s.kind = "let"
-        } else if isOwned(params[i].typ) {
-            addOwnedLocal(s)
+    // what a pass over the body changes and a second pass must find as it was
+    let sPos = pos
+    let sLine = line
+    let sCol = col
+    let sLast = last
+    let sSym = sym
+    let sSval = sval
+    let sIval = ival
+    let sTline = tline
+    let sTcol = tcol
+    let sSelf = selfCalls
+    let sUser = userCalls
+    let sUse = useSeq
+    let sFwd = fwdCalls
+    let sTemps = argTempsUsed
+    let sFreed = len(f.fnRec.freed)
+    let sAll = f.freesAll
+    let sWrites = f.writesHandles
+    homeRetry = false
+    if fnBody(f, name, ret, &params, true) {
+        truncCode(f.addr)
+        let gs = &globals
+        for g in gs {
+            if g.kind == "fn" && g.addr < 0 {
+                let fr = g.fnRec
+                while len(fr.fixups) > 0 && fr.fixups[len(fr.fixups) - 1] >= f.addr { truncate(fr.fixups, len(fr.fixups) - 1) }
+            }
         }
-        if params[i].typ.kind == "string" { addStrLocal(s) }
+        truncate(f.fnRec.freed, sFreed)
+        f.freesAll = sAll
+        f.writesHandles = sWrites
+        selfCalls = sSelf
+        userCalls = sUser
+        useSeq = sUse
+        fwdCalls = sFwd
+        argTempsUsed = sTemps
+        pos = sPos
+        line = sLine
+        col = sCol
+        last = sLast
+        sym = sSym
+        sval = sSval
+        ival = sIval
+        tline = sTline
+        tcol = sTcol
+        homeRetry = false
+        fnBody(f, name, ret, &params, false)
     }
-    expect(T_LBRACE, "")
-    openBlock()
-    let term = statSeq()
-    expect(T_RBRACE, "")
-    if !term && ret != tVoid { error(name + " must return a value on every path") }
-    closeBlock(term)
-    closeBlock(term)
-    if !term { epilogue() }
-    let size = (frame + 15) & ~15
-    if size == 0 {
-        dropFrame(frameAt)
-    } else {
-        code[frameAt] = byte(size)
-        code[frameAt + 1] = byte(size >> 8)
-        code[frameAt + 2] = byte(size >> 16)
-        code[frameAt + 3] = byte(size >> 24)
-    }
-    if pendLine > 0 && f.writesHandles { errorAt(pendMsg, pendLine, pendCol) }
-    pendLine = 0
     curFn = nil
-    truncate(bindArena, bindMark)
-    truncate(argTemps, tempMark)
-    truncate(symArena, symMark)                 // and nothing refers to them any more
 }
 
 fn constDecl() {
@@ -5854,7 +6505,7 @@ fn compileModule() {
         }
     }
     let m = findSym(globals, "main")
-    if m == nil || m.kind != "fn" || len(m.params) > 0 || m.ret != tVoid {
+    if m == nil || m.kind != "fn" || len(m.fnRec.params) > 0 || m.ret != tVoid {
         var l = 1
         if m != nil && m.kind == "fn" { l = m.line }
         errorAt("the program needs 'fn main()' with no parameters or result", l, 1)
@@ -5879,10 +6530,7 @@ fn compileModule() {
     }
     callAbs(RT_TEXT + 8 * RT_FINISH)
     let gend = GLOBAL_BASE + gsize
-    code[gendAt] = byte(gend)
-    code[gendAt + 1] = byte(gend >> 8)
-    code[gendAt + 2] = byte(gend >> 16)
-    code[gendAt + 3] = byte(gend >> 24)
+    putRel(gendAt, gend)
 }
 
 // ============================================================= ELF output
@@ -5925,18 +6573,19 @@ fn copyAt(mut out: &[]byte, at: int, data: &[]byte) {
 // starts on a page, and the image is allocated once, at its final size.
 fn elfImage(rtText: []byte, rtData: []byte): []byte {
     let codeAt = 0x1000
-    let roAt = pageUp(codeAt + len(code))
+    let roAt = pageUp(codeAt + pc())
     var roLen = len(rodata)
     if roLen == 0 { roLen = 1 }                      // an empty segment still gets one byte
     let rtTextAt = pageUp(roAt + roLen)
     let rtDataAt = pageUp(rtTextAt + len(rtText))
     let out = new []byte(rtDataAt + len(rtData))
-    copyAt(out, codeAt, code)
+    for k in 0..len(code) { copyAt(out, codeAt + (k << CHUNK_BITS), code[k].b) }
+    for i in 0..curLen { out[codeAt + codeBase + i] = cur[i] }
     copyAt(out, roAt, rodata)
     copyAt(out, rtTextAt, rtText)
     copyAt(out, rtDataAt, rtData)
     let ph = new []byte(0)
-    phdr(ph, 5, 0, IMAGE_BASE, codeAt + len(code), codeAt + len(code))
+    phdr(ph, 5, 0, IMAGE_BASE, codeAt + pc(), codeAt + pc())
     phdr(ph, 4, roAt, RODATA_BASE, roLen, roLen)
     var gmem = gsize
     if gmem < 8 { gmem = 8 }
@@ -5981,6 +6630,27 @@ fn dirOf(path: string): string {
     return substr(path, 0, i)
 }
 
+// Once the module is compiled, the image needs only the code, rodata and gsize: the symbols,
+// types and the rest are freed before it is built, since it is the largest allocation.
+// The handles that still name them (tInt, the globals' fns) are not used again.
+fn releaseTables() {
+    symArena = new []Sym(0)
+    typeArena = new []Type(0)
+    bindArena = new []RefBind(0)
+    universe = new []^Sym(0)
+    globals = new []^Sym(0)
+    strKeys = new []string(0)
+    strAddrs = new []int(0)
+}
+
+// The runtime is read once before the compile, so that a missing one is reported before
+// any error in the source, and again for the image: it is not held while compiling.
+fn runtimeReadable(rtDir: string): bool {
+    let rtText = readFile(rtDir + "/runtime_text.bin")
+    let rtData = readFile(rtDir + "/runtime_data.bin")
+    return rtText != nil && rtData != nil
+}
+
 fn compileFile(path: string, out: string, rtDir: string) {
     srcPath = path
     let data = readFile(path)
@@ -5988,15 +6658,20 @@ fn compileFile(path: string, out: string, rtDir: string) {
         eprintln("obxc: cannot read ", path)
         exit(2)
     }
-    let rtText = readFile(rtDir + "/runtime_text.bin")
-    let rtData = readFile(rtDir + "/runtime_data.bin")
-    if rtText == nil || rtData == nil {
+    if !runtimeReadable(rtDir) {
         eprintln("obxc: cannot read the runtime from ", rtDir)
         exit(2)
     }
     startScanner(data)
     compileModule()
     src = ""                       // the source is no longer read: free it before the image is built
+    releaseTables()
+    let rtText = readFile(rtDir + "/runtime_text.bin")
+    let rtData = readFile(rtDir + "/runtime_data.bin")
+    if rtText == nil || rtData == nil {
+        eprintln("obxc: cannot read the runtime from ", rtDir)
+        exit(2)
+    }
     let image = elfImage(rtText, rtData)
     if !writeFile(out, image, true) {
         eprintln("obxc: cannot write ", out)

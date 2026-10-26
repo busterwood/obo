@@ -11,3 +11,5 @@
 # python
 __pycache__/
 *.pyc
+/obo/obo-noregs
+/obo/.noregs.obo

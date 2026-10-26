@@ -21,9 +21,11 @@ Two profiles:
     python3 obo/tests/own_fuzz.py [--count N] [--profile safe|full|both]
     python3 obo/tests/own_fuzz.py SEED [--safe]      print one program and its output
 """
+import atexit
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,6 +34,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FORK = os.path.dirname(HERE)
 OBO = os.environ.get('OBO', os.path.join(FORK, 'obo'))
 TMP = tempfile.mkdtemp(prefix='obo-own-fuzz-')
+atexit.register(shutil.rmtree, TMP, ignore_errors=True)
 
 PRELUDE = [
     "type Node = ref record { value: int; next: ?Node }",

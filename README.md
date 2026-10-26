@@ -30,7 +30,7 @@ the obo dialect (`obo/src/obo.obo`), and it compiled every test program
 and error case byte-for-byte as the first obo compiler did, and compiles itself to a
 fixed point. Its stage test now compares behaviour (same errors, same output when run),
 so code generation can improve. Compiling
-its own source it peaked at 1.5 MB resident (live peak now 1.25 MB), against 2.5 MB for the same logic on a tuned
+its own source it peaked at 1.5 MB resident (live peak now 1.06 MB on main), against 2.5 MB for the same logic on a tuned
 collector and 1.9 MB on an aggressive one. It is still about 50% slower.
 
 **Decision: obo is the future of the language.** obx becomes the reference it grew
@@ -149,17 +149,17 @@ about 0.01 to 0.02 s in both. The obo port (4552 lines) had a live peak of 1.3 M
 allocated 28.6 MB before the allocation work; after it, 1.05 MB and 12.3 MB (FORK.md,
 Phase 4). The cheaper code of Phase 1 brought the total to 12.1 MB and moved the peak to
 1.08 MB, reached now while the code buffer grows (FORK.md, Phase 1); the checks across calls
-brought it to 1.10 MB; loop inversion (one jump per iteration instead of two, FORK.md) made the tight loop 7% faster and left the live peak at 1.17 MB. obx's compiler (3222 lines), with the
+brought it to 1.10 MB; loop inversion (one jump per iteration instead of two, FORK.md) made the tight loop 7% faster and left the live peak at 1.17 MB. The checks added since raised it to 1.27 MB; code kept in fixed-size chunks, the tables freed before the image, the runtime read after the compile and shared derived types brought it to 0.97 MB (FORK.md, "Peak memory"). On main, with Phase 2's register allocation, the live peak was 1.06 MB; Phase 2 accounts for the difference. Moving the function-only fields of `Sym` into a per-function record (`FnRec`) brought it to 0.95 MB (954,912 bytes). obx's compiler (3222 lines), with the
 collector, peaks at 8.8 MB. Wall time is about 30 ms, down from 33 ms. Also done:
 eight loops that only walked an array now borrow it and loop with `for` (the index form was a workaround for the walk rule). The loop over `globals` at exit now
 walks by borrowing too. It was blocked by two false positives: a self-call counted as
 freeing anything (fixed in the checker, `run/globals.obx`, `errors/references.obx`), and
 the `rtCall`/`rtCall1` cycle through a forward heading (broken in the source). Effect
-summaries across mutually recursive groups remain a checker limit. The walks over `f.freed`
+summaries across mutually recursive groups remain a checker limit. The walks over `f.fnRec.freed`
 and `t.variants` now borrow through their handles and loop with `for`. The rule, in one
 sentence: a reference borrowed through a handle is invalidated by any change, through a
 handle or a handle temporary included, and by any call that might free, and cannot be passed
-to such a call. Index loops remain over `f.pmodes`, `f.fixups`, `t.fields` and `rec.fields` (each reached
+to such a call. Index loops remain over `f.fnRec.pmodes`, `f.fnRec.fixups`, `t.fields` and `rec.fields` (each reached
 through a handle) and over the globals `code` and `ownedLocals`; this change did not rewrite them.
 
 ## Finding your way

@@ -5,12 +5,18 @@ too little must be caught by the leak check, bugs that free too much by the
 double-free check or poisoning, and missing compile-time checks by the error
 tests.
 
-    python3 obo/tests/mutate_fork.py [pattern]"""
+    python3 obo/tests/mutate_fork.py [pattern]
+
+Mutants run side by side, one per core; MUTATE_JOBS sets how many."""
+import concurrent.futures
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
 
+TRANSIENT = re.compile(r'timed out|out of memory', re.IGNORECASE)   # run_fork's wording for a load failure
 HERE = os.path.dirname(os.path.abspath(__file__))
 FORK = os.path.dirname(HERE)
 
@@ -24,10 +30,10 @@ PORT_PATTERNS = {
                                  '        } else if false {\n            let r = rtCall1(RT_STR_INC, dupItem(x), tString)'),
     "loop variable takes no reference": ("            let held = rtCall1(RT_STR_INC, dupItem(vi), tString)   // and hold the new one\n            release(held.r)\n", ""),
     "records keep their strings": ("        if ft.kind == \"string\" { append(strs, fo) }              // and the strings it drops\n", ""),
-    "callees never free globals": ("    if f.addr < 0 || f == curFn || f.freesAll { return true }\n    let freed = &f.freed",
-                                   "    if false { return true }\n    let freed = &f.freed"),
-    "frees not recorded": ('    if g.storage != "global" { return }\n    let freed = &f.freed',
-                           '    if true { return }\n    let freed = &f.freed'),
+    "callees never free globals": ("    if f.addr < 0 || f == curFn || f.freesAll { return true }\n    let freed = &f.fnRec.freed",
+                                   "    if false { return true }\n    let freed = &f.fnRec.freed"),
+    "frees not recorded": ('    if g.storage != "global" { return }\n    let freed = &f.fnRec.freed',
+                           '    if true { return }\n    let freed = &f.fnRec.freed'),
     "loop moves unchecked": ("    if !term {\n        let now = snapshot()", "    if false {\n        let now = snapshot()"),
     "string locals never dropped": ("            if s.isStr {\n                rtCall1(RT_STR_DEC, x, tVoid)",
                                     "            if s.isStr {\n                rtCall1(RT_STR_INC, x, tVoid)"),
@@ -69,7 +75,7 @@ MUTANTS = {
     "references can be moved out": ("    if x.borrowed || (s != nil && s.isRef) { error(", "    if false { error("),
     "walked arrays can change": ("                    if xs.iterating { errorAt(", "                    if false { errorAt("),
     "element writes invalidate nothing": ("                } else if x.deref || x.viaHandle {\n                    invalidateOwnedChange(x)\n", "                } else if x.deref || x.viaHandle {\n"),
-    "read-only references can be passed as mut": ("            if f.pmodes[i] == 2 && !mutableOf(a) {", "            if false {"),
+    "read-only references can be passed as mut": ("            if f.fnRec.pmodes[i] == 2 && !mutableOf(a) {", "            if false {"),
     "everything counts as an ancestor": ("        if p == a { return true }\n        p = p.refParent", "        return true"),
     # handles
     "handle borrows are untracked": ("    if x.mode == \"const\" { return nil }\n    if x.viaHandle { return handleSym }\n", "    if x.mode == \"const\" { return nil }\n    if x.viaHandle { return nil }\n"),
@@ -79,9 +85,9 @@ MUTANTS = {
     "handle index calls allowed": ("            if viaHandle && userCalls != callsBefore {\n                error(", "            if false {\n                error("),
     "match reads the tag with the generation": ("    opMem(0x8B, r, mem(r, -1, -16, 8), false, false)", "    opMem(0x8B, r, mem(r, -1, -16, 8), true, false)"),
     # effect summaries
-    "callees never free globals": ("    if f.addr < 0 || f == curFn || f.freesAll { return true }\n    let freed = &f.freed", "    if false { return true }\n    let freed = &f.freed"),
+    "callees never free globals": ("    if f.addr < 0 || f == curFn || f.freesAll { return true }\n    let freed = &f.fnRec.freed", "    if false { return true }\n    let freed = &f.fnRec.freed"),
     "calls invalidate nothing": ("            invalidate(g, nil, true, \"\")\n            if !all { recordFree(g) }", "            if !all { recordFree(g) }"),
-    "frees not recorded": ("    if g.storage != \"global\" { return }\n    let freed = &f.freed", "    if true { return }\n    let freed = &f.freed"),
+    "frees not recorded": ("    if g.storage != \"global\" { return }\n    let freed = &f.fnRec.freed", "    if true { return }\n    let freed = &f.fnRec.freed"),
     "drop frees nothing": ("        consume(x)\n        rtCall1(RT_FREE, dx, tVoid)\n        return voidItem()", "        consume(x)\n        return voidItem()"),
     "replace keeps the old value in place": ("        let xt = x.typ\n        store(x, v)\n", "        let xt = x.typ\n        releaseItem(x)\n"),
     # compile-time checks
@@ -181,7 +187,7 @@ RETARGET = {
                                             "if x.deref && wr != nil && wr.isRef && !wr.bind.writable && false {"),
     "mut aliases allowed": ("if i != j && argModes[i] == 2 {", "if i != j && argModes[i] == 2 && false {"),
     "mut calls invalidate nothing": ("                invalidate(b.roots[p], argVias[i], false, argPaths[i])\n", ""),
-    "read-only references can be passed as mut": ("            if f.pmodes[i] == 2 && !b.writable {", "            if false {"),
+    "read-only references can be passed as mut": ("            if f.fnRec.pmodes[i] == 2 && !b.writable {", "            if false {"),
     "everything counts as an ancestor": ("        if p == a { return true }\n        p = p.bind.parent",
                                          "        if p == a || true { return true }\n        p = p.bind.parent"),
     "handle borrows are untracked": ("    if x.viaHandle { return singleBind(handleSym, deepOf(x), x.path, mutableOf(x), parentOf(x)) }\n",
@@ -219,7 +225,7 @@ MUTANTS.update({
     "a re-point keeps the carried mark": ("            xs.carryFreed = false\n", ""),
     "a loop start forgets the carried marks": ("    for s in locals { s.fresh = false }\n", "    for s in locals { s.fresh = false; s.carryFreed = false }\n"),
     # a write through a mut argument, or through an append, is a write for the writable rule (review15 w_mutarg, w_append)
-    "a mut argument is not a write": ("            if f.pmodes[i] == 2 { noteWrite(a) }\n", ""),
+    "a mut argument is not a write": ("            if f.fnRec.pmodes[i] == 2 { noteWrite(a) }\n", ""),
     "an append is not a write": ("    if name == \"append\" || name == \"truncate\" { noteWrite(a) }\n", "    if name == \"truncate\" { noteWrite(a) }\n"),
     # a deferred change is replayed as it was made: through the reference it was made through (review15 FP_defer_via_child_*)
     "a deferred change is replayed without its reference": ("            invalidate(rt, rv, r.all, r.path)\n", "            invalidate(rt, nil, r.all, r.path)\n"),
@@ -352,7 +358,7 @@ ARG_ORDER_MUTANTS = {
     'argument holders are not reused': ('    argTempsUsed = tbase\n    truncate(ownedLocals, omark)\n', '    truncate(ownedLocals, omark)\n'),
     'argument holders stay live after the call': ('    argTempsUsed = tbase\n    truncate(ownedLocals, omark)\n', '    argTempsUsed = tbase\n'),
     "a call's holders are not released": ('    releaseArgs(tbase, omark)\n    if sym != T_RPAREN', '    if sym != T_RPAREN'),
-    "a function's argument holders outlive it": ('    truncate(argTemps, tempMark)\n', ''),
+    "a function's argument holders outlive it": ('    truncate(bindArena, bindMark)\n    truncate(argTemps, tempMark)\n', '    truncate(bindArena, bindMark)\n'),
     "writeFile's bytes are not held": ('        holdArg(itemBind(d), 1)\n', ''),
     "writeFile's bytes are held as another argument": ('        holdArg(itemBind(d), 1)\n', '        holdArg(itemBind(d), 0)\n'),
     "writeFile's flag is not checked": ('        argOrderCheck(tbase, name, 2, eLine, eCol)\n', ''),
@@ -452,38 +458,68 @@ EQUIVALENT = {
 }
 
 
-def main():
-    pattern = sys.argv[1] if len(sys.argv) > 1 else ''
-    src = open(os.path.join(FORK, 'src', 'obo.obo')).read()
+def build_and_run(src):
+    """Builds the compiler from src, in a directory of its own, and runs run_fork.py with it:
+    (the run_fork result, None), or (None, the build's error) when it does not build."""
     work = tempfile.mkdtemp(prefix='obo-mutant-')
-    missed = []
-    names = [n for n in MUTANTS if pattern in n]
-    for name in names:
-        old, new = PORT_PATTERNS.get(name, MUTANTS[name])
-        if src.count(old) != 1:
-            print(f"STALE   {name} (pattern found {src.count(old)} times)")
-            missed.append(name)
-            continue
+    try:
         with open(os.path.join(work, 'obo.obo'), 'w') as f:
-            f.write(src.replace(old, new))
+            f.write(src)
         exe = os.path.join(work, 'obo')
         b = subprocess.run([os.path.join(FORK, 'seed', 'obo'), os.path.join(work, 'obo.obo'), '-o', exe, '--rt', FORK],
                            capture_output=True, text=True)
         if b.returncode != 0:
-            print(f"BROKEN  {name}: {b.stderr.strip()[:120]}")
-            missed.append(name)
-            continue
-        p = subprocess.run([sys.executable, os.path.join(HERE, 'run_fork.py')], capture_output=True, text=True,
-                           timeout=600, env=dict(os.environ, OBO=exe))
-        lines = p.stdout.strip().splitlines()
-        detail = next((l.strip() for l in lines if l.startswith('     ')), '')
-        caught = p.returncode != 0
-        if not caught and name in EQUIVALENT:
-            print(f"EQUIV   {name}: {EQUIVALENT[name]}")
-            continue
-        print(f"{'caught' if caught else 'MISSED'}  {name:<36} {lines[-1].split(' in ')[0] if lines else ''}  {detail[:60]}")
-        if not caught:
-            missed.append(name)
+            return None, b.stderr.strip()[:120]
+        return subprocess.run([sys.executable, os.path.join(HERE, 'run_fork.py')], capture_output=True, text=True,
+                              timeout=600, env=dict(os.environ, OBO=exe)), None
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def try_mutant(src, name):
+    """The verdict on one mutant: (status, line, output), status being 'caught', 'missed' or 'equiv'.
+    Mutants run side by side, each in a build directory of its own."""
+    old, new = PORT_PATTERNS.get(name, MUTANTS[name])
+    if src.count(old) != 1:
+        return 'missed', f"STALE   {name} (pattern found {src.count(old)} times)", ''
+    p, err = build_and_run(src.replace(old, new))
+    if p is None:
+        return 'missed', f"BROKEN  {name}: {err}", ''
+    lines = p.stdout.strip().splitlines()
+    detail = next((l.strip() for l in lines if l.startswith('     ')), '')
+    caught = p.returncode != 0
+    if not caught and name in EQUIVALENT:
+        return 'equiv', f"EQUIV   {name}: {EQUIVALENT[name]}", ''
+    line = f"{'caught' if caught else 'MISSED'}  {name:<36} {lines[-1].split(' in ')[0] if lines else ''}  {detail[:60]}"
+    return ('caught' if caught else 'missed'), line, p.stdout + p.stderr
+
+
+def main():
+    pattern = sys.argv[1] if len(sys.argv) > 1 else ''
+    src = open(os.path.join(FORK, 'src', 'obo.obo')).read()
+    # the baseline: the unmutated compiler must pass run_fork, or no mutant's failure means anything
+    base, err = build_and_run(src)
+    if base is None:
+        raise SystemExit(f"the unmutated compiler does not build ({err}), so no mutant can be judged")
+    if base.returncode != 0:
+        print(base.stdout.rstrip())
+        raise SystemExit("run_fork fails on the unmutated compiler (above), so no mutant can be judged")
+    names = [n for n in MUTANTS if pattern in n]
+    jobs = int(os.environ.get('MUTATE_JOBS', os.cpu_count() or 1))
+    status = {}
+    outputs = {}
+    with concurrent.futures.ThreadPoolExecutor(jobs) as pool:      # each mutant is a separate build and suite run
+        for name, (s, line, out) in zip(names, pool.map(lambda n: try_mutant(src, n), names)):
+            print(line, flush=True)
+            status[name], outputs[name] = s, out
+    # a caught mutant whose failure is a timeout or an out-of-memory may be the load, not the mutant:
+    # run it again alone, and report that result
+    for name in names:
+        if status[name] == 'caught' and TRANSIENT.search(outputs[name]):
+            s, line, out = try_mutant(src, name)
+            print(f"{line}   (serial re-run: the parallel run timed out or ran out of memory)", flush=True)
+            status[name] = s
+    missed = [n for n in names if status[n] == 'missed']
     equiv = sum(1 for n in names if n in EQUIVALENT)
     print(f"\n{len(names) - len(missed) - equiv}/{len(names)} mutants caught, {equiv} equivalent")
     sys.exit(1 if missed else 0)

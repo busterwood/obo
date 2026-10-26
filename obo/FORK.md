@@ -1453,7 +1453,7 @@ memory after 102 of its entries, all caught; the new group, imported last, was n
 
 ## Optimization plan
 
-Status: Phase 0 and Phase 1 done (loop inversion included); Phases 2 and 3 planned. Phases are ordered by expected value per unit of cost.
+Status: Phases 0, 1 (loop inversion included) and 2 done; Phase 3 measured and stopped (see below). Phases are ordered by expected value per unit of cost.
 Each has a gate; a phase that misses its gate is recorded here and stopped.
 
 **Baseline.** A loop `s = s + i * 2` over `i < n` compiles with every local in a stack
@@ -1698,7 +1698,7 @@ condition that calls a later function, concatenates strings, indexes arrays, use
 (chains of three in each direction), calls the runtime and allocates, and `while true`; with `continue`,
 `break`, nested loops, a loop in a function with no frame, and defers in the body.
 
-### Phase 2: register allocation for scalar locals
+### Phase 2: register allocation for scalar locals (planned; see "Phase 2 (done)" below for what was built)
 
 - **Candidates.** `int` and `bool` locals and parameters whose address is never taken.
   No borrow of a scalar, no handle.
@@ -1714,6 +1714,162 @@ condition that calls a later function, concatenates strings, indexes arrays, use
 improves by a measured amount; fib does not regress. A mutant that drops a register
 save around a call must be caught by the suite.
 
+### Phase 2 (done)
+
+Built in `src/obo.obo`; the pre-scan of one function (the user's decision, recorded under "Open
+decisions") is the only departure from a single pass.
+
+**Design.**
+
+- *Registers.* `rbx` and `r8`-`r15` are the expression pool. A local lives in one of `r15`, `r14`,
+  `r13`, `r12` (a "home"), taken out of the free list while the local is in scope, so it is never
+  handed out as a temporary (`release` refuses it; `setFree` leaves it out). The pool keeps `rbx`,
+  `r8`-`r11` at least. `rax`, `rcx`, `rdx` stay scratch (division, shifts) and `rdi`, `rsi`, `rdx`,
+  `rcx` the C argument registers. No register is pinned; there is no frame pointer change.
+- *Candidates.* `int` and `bool` locals (`var`, `let`, the variable and limit of a `for a..b`) and
+  by-value parameters. The language cannot borrow a scalar (`only records, closed types and arrays
+  can be borrowed`), so no scalar ever has its address taken; what stays in memory is everything
+  else: `byte`, strings, owned values, the element variable of an array walk, the `match` subject
+  slot, and anything declared inside a `defer` body (a defer subroutine is compiled apart and may run
+  where other locals hold the registers).
+- *Choice.* `scanFunction` reads the raw text of the body once (no lexer state, so a lexical error is
+  still reported by the real scanner, where it was): the names declared (parameters, `var`, `let`,
+  `for`) with their uses weighted 1/8/64/512 by loop depth, and the calls to the program's own
+  functions, weighted the same way. A name gets a register at its declaration if its uses minus twice
+  the weighted calls reach `HOME_MIN` = 8, a home is free, and fewer free homes than names ranked above
+  it that are still to be declared. Registers are given back at the end of the block, so sequential
+  scopes reuse them. The scan also bounds what a statement holds in registers (below) and allows only
+  `7 - that` homes (at most `REG_HOMES` = 4), keeping the pool large enough: with a fixed four, 7 of 1,400
+  random programs failed with "out of registers" that compiled before. A cap from the nesting of the value, then
+  from the destination too, still missed flat chains and continued lines; the compile-again rule below is what
+  makes the allocation never refuse a program that compiles without it.
+- *Running out of registers: compile again (complete by construction).* Two rounds of review each found a
+  shape the scan's estimate of a statement's register need missed (a flat chain of element operands holds a
+  base and an index per operand as the precedence levels stack up; a statement continued over lines), so the
+  scan is only a heuristic for which locals get registers (and for how many, so that the retry below is
+  rare), and safety does not depend on it. When `alloc` finds no temporary free and locals hold registers,
+  `giveUpHomes` makes those registers temporaries again (as in a function with no locals in registers) and the
+  pass goes on to the end of the function, its code to be thrown away. If it reaches the end with no error,
+  `fnDecl` rewinds and compiles the function again with no registers for locals (`homeRetry`, then
+  `fnBody(..., false)`). Why that is exact:
+  - Before the switch, the pass needs at most the temporaries the function with all its locals in memory
+    needs (a local in a register is read in place, where one in memory is loaded into a temporary), and a
+    local's register is not a temporary. So the function with no registers for locals cannot have run out
+    earlier. After the switch the pass has at least as many free registers as that function. If it runs out
+    of registers then, so does that function, and the error (same message, the line and column of the token
+    where it fails) is the real one. If it does not, the second pass, which is exactly the function compiled
+    with no locals in registers, may still run out later, and then that is the error.
+  - So a program is refused with "out of registers" exactly when `obo-noregs` refuses it. Only for a function
+    with two errors can the one reported differ (the first pass may reach a checker error before the position
+    where the second runs out of registers, or the reverse); the checker's own messages are those of main.
+  - What a pass changes and the second must find as it was: the code (cut back to the function's start), the
+    calls waiting for functions declared later (`fixups` of the unresolved ones, cut back to the start), the
+    scanner (position, line, column, last token and the current token), `selfCalls`, `userCalls`, `useSeq`,
+    `fwdCalls`, `argTempsUsed`, what the function is recorded to free (`f.freed`, `freesAll`, `writesHandles`),
+    and the pool of argument holders (`argTemps`, cut back to its length at the start: the first pass's holders
+    are symbols of the arena it truncates, so a kept handle would dangle; `p_held` holds a reference argument
+    while a later one runs, in a retried function) The symbols and
+    bindings of the pass are truncated at its end as they always were; the string pool keeps what the first
+    pass added (a literal is found again by its text). The snapshot is eleven integers and a string; nothing
+    is copied. The counters and the freed set are only compared inside one pass or re-derived, so their
+    restoring has no mutant (equivalent); every other item has one.
+  - A function starts with the free list in pool order (`fnBody` calls `setFree(0)`), whatever the function
+    before it left, so a retried function is compiled from the same state as in `obo-noregs`, and gives the
+    same bytes: `tests/homes_edge.py` compiles a program of retried functions only with both compilers and
+    compares the executables (mutant: the line removed).
+  - The restores of `f.freed`, `freesAll` and `writesHandles` (and of the counters) are defensive: the second pass
+    records the same facts again, and the check of a recursive call that writes through a handle is deferred to
+    the end of the function, so no test discriminates them; they are kept so that the second pass starts from
+    the state of the first one's start.
+  - The first pass must not report what the second would: an error it meets after the switch is the error
+    the second would meet, since the checker does not read registers.
+  `tests/run/register_pressure.obx` has the shapes that were refused (destinations of every kind at depths 3
+  to 6, flat chains of 3 to 6 operands joined by `+` and `*`, statements continued over lines with and without
+  a comment after the operator, and `p_retry`, a retried function with calls waiting for a later function).
+  `tests/homes_edge.py` compares `obo` with `obo-noregs` on 1,028 statements (those shapes at depths 1 to 12, 400
+  random nested ones and 400 random flat chains with line continuations): all agree (119 are refused by
+  both). The scan still reads a line that ends in an operator as continued.
+- *Calls.* Deviation from the plan's callee-save: the pool holds `rbx` and `r12`-`r15` as temporaries,
+  so a callee may clobber any of them without saving, and the existing convention (the caller pushes
+  the registers in use) covers the homes too. A home is "in use", so `callFn` pushes the homes in scope
+  with the live temporaries around an obo call, and pops them after; nothing changes in prologues,
+  epilogues, `return`, or defer subroutines, so there is no register to restore on any exit. Runtime
+  calls do not push homes: the C runtime keeps `rbx` and `r12`-`r15` (checked: `runtime.c` is plain C,
+  `entry.S` only touches `r11`; panics and `exit` do not return). Pushes go through `pushR`, so the
+  alignment pad counts them.
+- *Items.* A home is a `reg` item with `home` set. `load` copies it (callers change what they get);
+  `asReg` reads it in place (compare, argument push, runtime arguments, indexes, stores, return value).
+  A store to a home is a `mov`; `+=`, `-=`, `*=` change it in place; `x * const` uses the three-operand
+  `imul`. The checker is untouched: no `mode == "mem"` test of the checker applies to an int or a
+  bool, and the diff of compile outcomes against main (exit code, stdout, stderr, so every message and
+  position) is empty over 266 programs and error cases (tests/errors, tests/run, examples, bench).
+- *Off switch.* `const REG_HOMES = 0` in the source; `make obo-noregs` builds that compiler. No CLI flag.
+- *Encoder.* No new encodings: r12-r15 were already pool registers (`port_test.py`'s objdump groups pass).
+
+**Gate.** The loop (`micro.py --disasm loop`) has no memory access:
+
+```
+401021:	mov    $0x0,%r14d          s
+401027:	mov    $0x0,%r13d          i
+40102d:	jmp    0x40104c
+401032:	imul   $0x2,%r13,%rbx
+401039:	mov    %r14,%r8
+40103c:	add    %rbx,%r8
+40103f:	mov    %r8,%r14
+401042:	mov    %r13,%r9
+401045:	add    $0x1,%r9
+401049:	mov    %r9,%r13
+40104c:	cmp    %r15,%r13           n in r15
+40104f:	jl     0x401032
+```
+
+(`s = s + e` and `i = i + 1` still go through a temporary; an in-place form is left for a peephole.)
+
+Measured with `bench/micro.py -n 11` (`OBO=./seed/obo` for main's compiler), same machine and
+session; median ms (range), instructions in the code segment:
+
+| Benchmark | Main | Registers |
+|---|---|---|
+| loop | 569 (564-687), 36 | 434 (424-441), 28 |
+| fib | 623 (619-630), 54 | 618 (614-631), 54 |
+| array | 417 (409-429), 99 | 239 (235-246), 87 |
+| alloc | 485 (468-531), 51 (review, 15 runs: 574 ms) | 515 (498-1705), 44 (review: 571 ms) |
+
+loop is 24% faster, array 43%. fib has no loop and its `n` scores 5, under the threshold, so its code
+is unchanged. alloc showed about 6% slower in my three interleaved repeats, but the review's 15
+interleaved runs measured 574 ms on main against 571 ms on the branch: the difference is noise (the time
+is the runtime's allocation and free; the branch runs 7 instructions fewer).
+
+The port compiling its own source (`make obo-noregs` against `obo`, same source): 53,016 to 52,735
+instructions and 196,957 to 194,704 bytes of code (a compiler is calls and branches, so few
+locals qualify); the compiler built either way compiles itself in 46 ms, no difference. The
+pre-scan costs time: the same compiler takes 43.9 ms with `REG_HOMES = 0` and 46.4 ms with 4, 6%.
+`tests/port_compare.py`: live peak 1,217,456 bytes (main 1,183,600, budget 1,351,000 unchanged), 18.5 MB
+allocated, 501 of 501 behave the same. These are figures on the Phase 2 branch's base; on main after the merge the
+port's peak was 1,323,680 bytes (see "Peak memory" below).
+
+**Mutants** (`tests/mutate_port.py`): the homes not pushed around an obo call; a home released as a
+temporary; a runtime call clobbering `r15`; an array walk's element variable in a register; one
+register for two live locals; a parameter not loaded; an uninitialised local not zeroed; a compound
+assignment on a copy; `x * const` writing the local; `load` of a home uncopied; a `for` limit sharing
+the variable's register. Those that change only speed (the scan counting nothing, the ranking
+ignored, a register not given back at a scope's end, a for limit's register leaking, a bool parameter
+left in memory, `return` copying a local, a runtime call pushing the locals' registers) are caught by
+`tests/homes_check.py`, which counts stack-slot instructions in seven compiled programs and refuses a
+pattern in two; the compile-again rule by
+`register_pressure.obx` (no registers given up, code not rewound, waiting calls kept, scanner or token not
+restored); a bare hot local as a
+statement (`|| x.home` in the "does nothing" check) by `tests/errors/register_alloc.obx`. The terms of the cap
+(destination, call arguments, nesting) have no mutants: they only decide how often the function is compiled
+again, which `tests/homes_edge.py` and `register_pressure.obx` show cannot change what is accepted. Not planted, equivalent: the prologue and
+epilogue mutants of the plan (there are none), a home allowed in a `defer` body (a defer's registers
+are dead when it runs), and a home handed out again at register exhaustion (the homes are the last
+registers in pool order, so only an expression needing more registers than the pool has would reach
+one). `tests/run/register_alloc.obx` covers more candidates than registers, locals across calls,
+recursion and runtime calls, parameters, bools, address-taken beside plain locals, nested and
+shadowing scopes, `for` loops, defers, early returns from loops, compound assignment, mut parameters
+and by-value passing; its expected output was taken from main's compiler.
+
 ### Phase 3: calling convention
 
 Pass arguments of obo-to-obo calls in registers instead of pushing them on the stack.
@@ -1721,15 +1877,82 @@ Do this only if Phase 2's numbers show that call overhead matters on the fib ben
 
 *Gate:* fib improves; runtime calls are unchanged.
 
+**Measured; not built (decision).** Phase 2 left fib unchanged (618 ms against 623, 54 instructions), so
+the question is what register arguments could still save. `perf stat` on fib(40): 5,795,308,001
+instructions, 2,854,422,135 cycles (IPC 2.03), 596 ms; 331,160,281 calls, so 17.5 instructions and 8.6
+cycles a call. The code of one call (`micro.py --disasm fib`): the caller computes `n - 1` in a
+temporary and pushes it (1 store); the callee reads `n` from `[rbp+16]` three times (`n < 2`, the
+`return n`, `n - 1` and `n - 2` on the two paths, so one or two loads a call); the caller then pops it
+with `add $0x10,%rsp`. A register convention removes the push and the `add rsp`, and the loads of `n`.
+But `n` is live across the first recursive call, so the callee must still keep it in memory (a spilled
+slot, or a home pushed by the caller around the call); the store-to-load forwarding on `n` stays on the
+path. Upper bound, measured: I hand-wrote both conventions of fib in assembler (one `push rdi` in the
+prologue spilling the argument, the second call's alignment pad kept, nothing else different) and ran
+fib(40) 12 times each, interleaved: mean 0.676 s with stack arguments, 0.649 s with `rdi` (4.0%, with a
+spread of about 0.04 s in each, so within noise). The saving is 2 to 3 instructions of 17.5. The real
+implementation would also need the argument-order holds, the homes' push around a call, the retry, and
+a spill fallback for more than six arguments, with no further gain on fib.
+
+Decision: the gate's premise (call overhead worth about 5% or more on fib) does not hold, since the best
+case is about 4% and not distinguishable from noise. Phase 3 is stopped, nothing is built, and
+`src/obo.obo` and the seed are unchanged. The cost of fib is the call/return pair and the stack-carried
+`n`, which a calling convention does not change; Phase 4 (checks) does not touch it either.
+
 ### Phase 4: checks and allocation
 
-- **Redundant checks.** Hoist or remove bounds, handle and nil checks inside loops,
+- **Redundant checks.** Measured, not built (see "Redundant checks" below). Hoist or remove bounds, handle and nil checks inside loops,
   using facts from loop conditions. Reuse the narrowing machinery where it fits.
 - **Allocation.** The cause of the port's ~50% gap (Stage B, above): four arrays per
   `Item`, and copies in `copyInts` and `dupItem`. Measure with Phase 0's allocation
   benchmark before changing anything. Done: see "Allocation (done)" below.
 
 *Gate:* each change shows a measured gain on its benchmark.
+
+### Redundant checks (measured; not built)
+
+`array_obo.obx` is the only benchmark with bounds checks in a hot loop. Its inner loop (`micro.py --disasm array`)
+does three `a[i]` accesses per iteration (`a[i] = a[i] + r`, then `total + a[i]`), each with a reload of `a`, a
+`cmp (%reg),%i; jb`, and a load of the data pointer. Upper bound, measured: a compiler with `boundsCheck` emitting
+nothing (invalid code, for measurement only) against the current one, `perf stat`, 5 interleaved runs:
+
+| | time | instructions | cycles |
+|---|---|---|---|
+| with the 3 checks | 0.22 to 0.24 s | 4,900,731,697 | 1,048,134,155 |
+| no checks (upper bound) | 0.18 to 0.19 s | 3,700,731,657 | 816,309,458 |
+
+So all three checks cost about 22% of this benchmark. But none of them can be removed from a fact that is available:
+
+- **Loop-condition facts.** The loop is `while i < n` with `n` a separate constant, not `len(a)`; no benchmark except tokens (below)
+  has `i < len(a)` or `for i in 0..len(a)`. A
+  fact `i < len(a)` needs `a` unchanged in the whole body, which a single-pass compiler does not know when it
+  emits the loop head: it would need a token pre-scan of the body plus `mightFree`/`pureFn` for every call in it
+  and the alias paths (`mut` calls, handles, references, globals). The benchmark would have to be rewritten to
+  show a gain, which the gate does not allow as evidence.
+- **Same index, same array, within a statement or body.** Only this shape occurs in `array_obo`. Removing the
+  second and third checks needs a fact (array local, index home) that dies at every call, label, assignment to
+  either, and write through an alias, in an emitter where those events are spread over many paths (`fixHere`,
+  `rtCall`, `callFn`, every store form, loop-back edges). Best case is 2 of the 3 checks, perhaps 10 to 15%, on
+  this one benchmark; the cost is a new invalidation surface in code that has no test for a missed kill.
+- **Handle and nil checks.** No benchmark runs a handle check in a hot loop (`alloc`, `lists`, `trees` are
+  dominated by allocation), so there is nothing to measure.
+- **`for x in a`** already has no per-element bounds check (the walked array is frozen by `iterating`).
+
+**Re-examined with `tokens_obo.obx`**, which does have guarded indexing: `while i < len(src)` and
+`... && isDigit(src[i])` in `scan` (`src` is a `&[]byte`), and `for i in 0..len(s) { ... s[i] }` in `hash` (`s` is
+a string). Upper bound, measured the same way (a compiler whose `boundsCheck` emits nothing, so it removes every
+bounds check in the program, not only the guarded ones; input `obx/src/obxc.obx`, 7 interleaved runs, `perf stat`):
+
+| | time | instructions | cycles |
+|---|---|---|---|
+| with checks | 0.02 s | 289,064,128 | 87,238,714 |
+| no bounds checks (upper bound) | 0.02 s | 284,708,525 (-1.5%) | 84,991,583 (-2.6%) |
+
+The guarded checks are a subset of that, so the real gain is under 2.6% in cycles and not distinguishable in wall
+time. The workload is dominated by allocation and string work, not by indexing. Below the gate.
+
+Decision: no check is removed or hoisted. The gate (a measured gain on a benchmark that has the pattern) is not met
+for the loop-condition facts, and the one pattern that exists is left until a benchmark makes the case.
+`src/obo.obo`, the tests and the seed are unchanged.
 
 ### Allocation (done)
 
@@ -1764,6 +1987,50 @@ Not done: the per-call arrays in `rtCall` and `rtCall0/1/2` (`regs`, `temps`, th
 argument arrays), the `fixups` array of each Sym, and the snapshot copies (`copyBools`).
 Item creations (about 32,000 per self-compile, mostly loads and voids) were left as they are.
 
+### Peak memory (done)
+
+Measured on the port compiling its own source, with `OBO_STATS=1` and a temporary runtime that
+recorded what was live at the peak (not committed). At main (37bdfeb) there were two peaks of
+nearly the same height. The first, 1,273,200 bytes, came when the code buffer grew from 128 KB to
+256 KB: both blocks were live (393 KB), with the source text (203 KB), the runtime's code and
+data (75 KB, read before the compile), 541 symbols at 288 bytes each plus four arrays each
+(fixups, params, pmodes, freed: at least 80 bytes per array, empty or not), and 454 types with two
+arrays each. The second, 1,265,344 bytes, came when the image was allocated: the image (300 KB),
+the 256 KB code buffer and all the tables. Each row below is one change, measured after it. The
+peak moves between the two points, so a saving depends on the order the changes were made in.
+
+| Change | Live peak (bytes) | Total allocated (bytes) |
+|---|---|---|
+| Main at 37bdfeb | 1,273,200 | 18,497,008 |
+| Code in 16 KB chunks, each allocated at full size (`emit`, `codeByte`, `setCode`, `truncCode`): growing the code never copies it | 1,224,944 | 18,271,872 |
+| Symbols, types, bindings, `universe`, `globals` and the string keys freed before the image is built (`releaseTables`) | 1,157,104 | 18,296,816 |
+| The runtime read before the compile only to check it can be read, then again for the image (`runtimeReadable`) | 1,082,320 | 18,409,792 |
+| One array, optional and handle type per base (`derived`, with `arrayOf`, `optOf`, `handleOf`): 494 types live at the peak became 52 | 968,032 | 18,307,696 |
+| The last chunk kept apart (`cur`, written by index), so that `emit` only stores a byte | 970,480 | 18,372,512 |
+| The four function-only arrays of `Sym` (`fixups`, `params`, `pmodes`, `freed`) moved to a `FnRec` record, held by a handle; the other symbols share `noFnRec` (about 104 KB at the peak) | 954,912 | 19,321,216 |
+
+The peak falls by 302,720 bytes (24%). `tests/port_compare.py` measures 970,512 (it was 1,273,136),
+against the budget of 1,351,000, which is unchanged. The last row costs 2,448 bytes (`cur` is a
+chunk of its own, copied into a new one when full), but `emit` stays a store and a test. The
+checker rejects the cheaper forms: with a `replace` or `truncate` of `cur` in `emit`, a call that
+emits may free, and the existing assignments to a field across such a call (`x.F = waitJump(x.F,
+jcc(...))`) are refused. The peak is now late in the compile, with the code nearly
+complete: the symbols with their arrays (about 370 KB), the source (205 KB) and the code (197 KB)
+are most of it. The output did not change: every program and error case compiles to the same bytes
+and messages as main's compiler, also with 32-byte chunks, which cross a chunk boundary in nearly
+every cut-back of the code (`truncCode`). The port compiling itself runs 0.5% fewer instructions
+(662.4 million against 666.0 million on the same source) and takes 418 page faults rather than 517.
+Its wall time, about 41 to 42 ms at the minimum on WSL, is within the noise.
+
+A shared derived type is never changed once made, and types are compared by structure (`same`),
+so sharing them changes no result. Only the basic types are compared by identity.
+
+**Current figure, on main with Phase 2.** The table above was measured on this branch's own base, before Phase 2 (register allocation). On main, with Phase 2 merged and this work on top of it, the port's live peak compiling itself is 1,059,280 bytes (`tests/port_compare.py`). Phase 2 alone had measured 1,323,680 bytes on main, so this work brought the peak down by 264,400 bytes. The difference from 970,512 (88,768 bytes) comes from Phase 2's register allocation.
+
+**Budget lowered, 1,351,000 to 1,091,000** (measured live peak 1,059,280 bytes, about 3% over). The peak memory work lowered the peak, so the budget follows it. The budget named in the paragraphs above was 1,351,000 when they were written.
+
+**Budget lowered, 1,091,000 to 983,000** (measured live peak 954,912 bytes, about 3% over). The function records moved out of `Sym` (the row above). `FnRec` holds what only a function has: the calls waiting for its address, its parameters and their modes, and the globals it might free. `Sym` holds a handle to it, `fnRec`. A function gets its record in `fnDecl`, and every other symbol holds `noFnRec`, one shared record that nothing writes, as `bind` does with `noBind`. The output did not change: the 44 programs and the port's source compile to the same bytes and messages as main's compiler.
+
 ### Peephole pass (not planned)
 
 The obx design (`README.md`, "Future work: a peephole optimizer") still applies: an
@@ -1786,5 +2053,6 @@ remain after Phase 2 are measurable on the benchmarks.
   line:col), and for a program that runs, the same stdout, stderr and exit code with
   `OBO_CHECK=1`. The fixed point (stage 2 = stage 3, in `make promote`) still compares
   bytes, since the compiler compiles itself.
-- **Pre-scan.** Confirm that a token pre-scan is acceptable under the single-pass goal
-  before Phase 2 starts.
+- **Pre-scan** (resolved: allowed). A token pre-scan of one function is acceptable under the
+  single-pass goal, as decision 5's "buffer one function at a time". Built for Phase 2; see
+  "Phase 2 (done)".

@@ -1,25 +1,31 @@
 #!/usr/bin/env python3
 """Mutation testing for the port (obo/src/obo.obo): plants a bug in a copy,
-runs the Stage B comparison against it (port_compare.py, with SRC pointed at the
-copy), and checks that the comparison fails. Divergent output must show up as a
+runs the Stage B comparison against it (port_compare.compare, with the copy as
+its source), and checks that the comparison fails. Divergent output must show up as a
 mismatch, freeing too early as a dangling-handle trap, and keeping memory alive
 as a breach of the memory budget. A mutant of the encoder (ENCODER) runs
 port_test.py instead, whose objdump cross-check must catch it.
 
+Each mutant's comparison reuses obo's outcomes, stops at the first difference, and
+allows each program 20 times what obo took; MUTATE_JOBS mutants run side by side (4).
+
     python3 obo/tests/mutate_port.py [pattern]"""
+import concurrent.futures
 import os
-import re
+import shutil
 import subprocess
 import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(os.path.dirname(HERE), 'src', 'obo.obo')
+sys.path.insert(0, HERE)
+import port_compare as pc  # noqa: E402
 
 MARK = "    let symMark = len(symArena)                 // the function's own symbols start here\n"
 FREE = "    truncate(symArena, symMark)                 // and nothing refers to them any more\n"
-PARAMS_DONE = "        if params[i].typ.kind == \"string\" { addStrLocal(s) }\n    }\n"
-BLOCKS_CLOSE = "    closeBlock(term)\n    closeBlock(term)\n    if !term { epilogue() }\n"
+PARAMS_DONE = "        }\n    }\n    expect(T_LBRACE, \"\")\n    openBlock()\n"
+BLOCKS_CLOSE = "    closeBlock(term)\n    closeBlock(term)\n    homeBits = 0\n"
 
 # each mutant is a list of (old, new) replacements, each of which must match exactly once
 MUTANTS = {
@@ -36,16 +42,16 @@ MUTANTS = {
     # a self-call is a change in its body, so it must not be taken for a call that frees nothing
     "recursive call might free": [("    if f.addr < 0 || f == curFn || f.freesAll { return true }",
                                    "    if f.addr < 0 || f.freesAll { return true }")],
-    "recursive call is pure": [("    if f.addr < 0 || f == curFn || f.freesAll || len(f.freed) > 0 { return false }",
-                                "    if f.addr < 0 || f.freesAll || len(f.freed) > 0 { return false }")],
+    "recursive call is pure": [("    if f.addr < 0 || f == curFn || f.freesAll || len(f.fnRec.freed) > 0 { return false }",
+                                "    if f.addr < 0 || f.freesAll || len(f.fnRec.freed) > 0 { return false }")],
     # a callee with a forward heading frees everything, and its callers must inherit that
     "forward heading not inherited": [("    if cur != nil && all && f != cur { cur.freesAll = true }",
                                        "    if cur != nil && f.addr < 0 && f != cur { cur.freesAll = true }")],
     # freeing symbols too early: a dangling-handle trap
     "frees one symbol too many": [(FREE, FREE.replace("symMark)", "symMark - 1)"))],
     "frees symbols before the blocks close": [(BLOCKS_CLOSE, "    truncate(symArena, symMark)\n" + BLOCKS_CLOSE)],
-    # keeping symbols alive: over the memory budget. "parameters kept" is too small for the budget
-    # now that the peak is lower, so it is checked against the unmutated peak instead (KEEPS_ALIVE)
+    # keeping symbols alive: over the memory budget. "parameters kept" is caught by the budget line
+    # (its peak is about 1,555,696 bytes, over PEAK_BUDGET 1,091,000); KEEPS_ALIVE is a backstop for a leak too small for that
     "symbols never freed": [(FREE, "")],
     "parameters kept": [(MARK, ""), (PARAMS_DONE, PARAMS_DONE + "    let symMark = len(symArena)\n")],
     # borrows through a handle (checker): each must be caught by a case in errors/handles.obx
@@ -177,12 +183,12 @@ MUTANTS = {
     "constant runtime argument lost": [("                append(argConsts, a.val)\n", "                append(argConsts, 0)\n")],
     # a function without locals loses its 'sub rsp,0' and its body moves back 7 bytes
     "dropped frame: calls out not moved": [("    for p in calls { putRel(p - 7, getRel(p - 7) + 7) }\n", "")],
-    "dropped frame: calls waiting for later functions not moved": [("                if g.fixups[fi] > at { g.fixups[fi] -= 7 }\n", "")],
+    "dropped frame: calls waiting for later functions not moved": [("                if g.fnRec.fixups[fi] > at { g.fnRec.fixups[fi] -= 7 }\n", "")],
     "dropped frame: calls to known functions not recorded": [("        fix(at, f.addr)\n        append(farCalls, at)\n", "        fix(at, f.addr)\n")],
     # a pending forward call of an earlier function shifted when a later zero-frame function drops its frame:
     # caught by tests/run/code_shapes.obx
-    "dropped frame: every waiting call shifted": [("                if g.fixups[fi] > at { g.fixups[fi] -= 7 }\n", "                g.fixups[fi] -= 7\n")],
-    "dropped frame: waiting calls shifted if not negative": [("                if g.fixups[fi] > at { g.fixups[fi] -= 7 }\n", "                if g.fixups[fi] >= 0 { g.fixups[fi] -= 7 }\n")],
+    "dropped frame: every waiting call shifted": [("                if g.fnRec.fixups[fi] > at { g.fnRec.fixups[fi] -= 7 }\n", "                g.fnRec.fixups[fi] -= 7\n")],
+    "dropped frame: waiting calls shifted if not negative": [("                if g.fnRec.fixups[fi] > at { g.fnRec.fixups[fi] -= 7 }\n", "                if g.fnRec.fixups[fi] >= 0 { g.fnRec.fixups[fi] -= 7 }\n")],
     # the boundaries of push imm8 and imm32, caught by the same program (Stage B, not only the objdump group)
     "push imm8 up to 128": [("fn pushI(v: int) {\n    if fits8(v) {", "fn pushI(v: int) {\n    if v >= -128 && v <= 128 {")],
     "push imm8 from -129": [("fn pushI(v: int) {\n    if fits8(v) {", "fn pushI(v: int) {\n    if v >= -129 && v < 128 {")],
@@ -212,7 +218,7 @@ MUTANTS = {
     # with it (tests/run/loop_inversion.obx)
     "inverted loop: calls out of the condition not adjusted": [("        putRel(farCalls[k], getRel(farCalls[k]) - d)\n", "")],
     "inverted loop: calls out of the condition not recorded at the new place": [("        farCalls[k] += d\n", "")],
-    "inverted loop: waiting calls in the condition not adjusted": [("append(globals[waitFn[k]].fixups, waitAt[k] + d)", "append(globals[waitFn[k]].fixups, waitAt[k])")],
+    "inverted loop: waiting calls in the condition not adjusted": [("append(globals[waitFn[k]].fnRec.fixups, waitAt[k] + d)", "append(globals[waitFn[k]].fnRec.fixups, waitAt[k])")],
     "inverted loop: a nested loop lifts its outer loop's waiting calls": [("    let waitFrom = len(waitFn)\n", "    let waitFrom = 0\n")],
     "inverted loop: waiting calls in the condition not lifted": [("        if fwdCalls != fwdFrom {", "        if false {")],
     "inverted loop: links of the true and false lists not adjusted": [("        putRel(at, nxt)\n        at = nxt\n", "        putRel(at, nxt - d)\n        at = nxt\n")],
@@ -295,24 +301,93 @@ from mutate_fork import HANDLE_FREE_MUTANTS  # noqa: E402
 MUTANTS.update({k: [v] for k, v in HANDLE_FREE_MUTANTS.items() if k not in FORK_EQUIVALENT})
 
 
-# mutants that keep memory alive: caught when the peak rises above the unmutated peak,
-# for a leak too small to cross PEAK_BUDGET
+# register allocation (FORK.md, Phase 2). A home is r12 to r15, taken out of the free list while its local is in
+# scope; the callee may use any pool register, so the caller pushes the homes in scope around an obo call, and
+# the C runtime keeps them. Most are caught by tests/run/register_alloc.obx; the SHAPES ones change speed only
+# and are caught by tests/homes_check.py
+MUTANTS.update({
+    "homes not pushed around obo calls": [("    let saved = usedRegs()\n    pushRegs(saved)\n    setFree(0)",
+                                           "    let saved = usedRegs() & ~homeBits\n    pushRegs(saved)\n    setFree(0)")],
+    "a home released as a temporary": [(" && !containsInt(free, r) && (homeBits & (1 << r)) == 0 { append(free, r) }",
+                                        " && !containsInt(free, r) { append(free, r) }")],
+    "runtime call clobbers r15": [("    callAbs(RT_TEXT + 8 * slot)\n    if pad != 0 {", "    callAbs(RT_TEXT + 8 * slot)\n    movRI(15, 0)\n    if pad != 0 {")],
+    "array walk's element variable in a register": [('        let v = newLocal(name, baseOf(xt), "let")\n', '        let v = newLocal(name, baseOf(xt), "let")\n        homeFor(v, name, true)\n')],
+    "one register for two live locals": [("        if (homeBits & (1 << r)) == 0 && containsInt(free, r) {", "        if true {"),
+                                         ("    while free[j] != pick { j += 1 }", "    while j < len(free) && free[j] != pick { j += 1 }")],
+    "parameter not loaded into its register": [("                opMem(0x8B, h, mem(RBP, -1, s.offset, 8), true, false)      // the argument, from the stack\n", "")],
+    "uninitialised local not zeroed": [("                movRI(s.home, 0)\n", "")],
+    "compound assignment changes a copy": [("            var r = x.r                       // a local in a register is changed where it is", "            var r = alloc()")],
+    "multiplication by a constant writes the local": [("        let t = alloc()                           // imul reads one register and writes another", "        let t = x.r")],
+    "a local's register used as the caller's copy": [("        if !x.home { return x }\n        let c = alloc()", "        if true { return x }\n        let c = alloc()")],
+    "for limit in the variable's register": [("            homeFor(lim, name, false)              // the limit follows the variable into a register", "            lim.home = v.home")],
+    "scan: nothing counted": [("                if k >= 0 {\n                    scanScore[k] += w", "                if k >= 0 {\n                    scanScore[k] += 0")],
+    "scan: ranking ignored": [("    if nfree <= better { return -1 }", "")],
+    "scope end does not give the register back": [("        if s.home >= 0 && !homeRetry { releaseHome(s.home) }", "        if s.home < 0 && !homeRetry { releaseHome(s.home) }")],
+    "runtime calls push the locals' registers": [("    let saved = usedRegs() & ~homeBits      // the C runtime keeps r12 to r15, where the locals are", "    let saved = usedRegs()")],
+    "return copies a local's register": [("        let x = asReg(x0)\n        for k in blocks[fnBlock].omark", "        let x = load(x0)\n        for k in blocks[fnBlock].omark")],
+    "for limit's register never given back": [("            if lim.home >= 0 { append(blocks[len(blocks) - 1].syms, lim) }       // so that the block's end frees it\n", "")],
+    "bool parameters left in memory": [('        if params[i].mode == 0 && (params[i].typ.kind == "int" || params[i].typ.kind == "bool") {\n            let h', '        if params[i].mode == 0 && params[i].typ.kind == "int" {\n            let h')],
+    "a local in a register as a statement accepted": [('            if x.mode != "reg" || x.home { errorAt("this expression does nothing"', '            if x.mode != "reg" { errorAt("this expression does nothing"')],
+    # a function that runs out of registers with locals in them is compiled again with none (FORK.md, Phase 2);
+    # tests/run/register_pressure.obx has such functions, one with calls waiting for a later function. Not planted,
+    # equivalent: the counters (selfCalls, userCalls, useSeq, fwdCalls) are only compared with their value at a
+    # point in the same pass, and what the first pass recorded as freed (f.fnRec.freed, freesAll, writesHandles) the
+    # second records again, the checker being the same
+    "retry: locals' registers not given up": [("    if len(free) == 0 && homeBits != 0 { giveUpHomes() }\n", "")],
+    "retry: code not rewound": [("        truncCode(f.addr)\n        let gs = &globals", "        let gs = &globals")],
+    "retry: waiting calls of the first pass kept": [("                while len(fr.fixups) > 0 && fr.fixups[len(fr.fixups) - 1] >= f.addr { truncate(fr.fixups, len(fr.fixups) - 1) }\n", "")],
+    "retry: argument holders of the first pass kept": [("        truncate(argTemps, tempMark)\n        truncate(symArena, symMark)\n        return true", "        truncate(symArena, symMark)\n        return true")],
+    "retry: free list left as the first pass had it": [("    homeBits = 0\n    setFree(0)                          // the registers in pool order: a function starts as the one before it did not leave them\n", "    homeBits = 0\n")],
+    "retry: scanner not rewound": [("        pos = sPos\n", "")],
+    "retry: token not restored": [("        sym = sSym\n", "")],
+})
+SHAPES = {"scan: nothing counted", "scan: ranking ignored", "scope end does not give the register back",
+          "runtime calls push the locals' registers", "return copies a local's register",
+          "for limit's register never given back", "bool parameters left in memory"}
+EDGE = {"retry: free list left as the first pass had it"}
+
+# mutants that keep memory alive: a backstop for a leak too small to cross PEAK_BUDGET, caught when the
+# peak rises above the unmutated peak. "parameters kept" is already caught by the budget line itself.
 KEEPS_ALIVE = {"parameters kept"}
 
 
-def peak_of(output):
-    m = re.search(r"peaks at ([\d,]+) bytes", output)
-    return int(m.group(1).replace(',', '')) if m else None
+def try_mutant(name, text, base_peak):
+    """('caught' or 'missed', the line to print) for one mutant, in its own directory."""
+    tmp = tempfile.mkdtemp(prefix='obo-mutant-')
+    try:
+        path = os.path.join(tmp, 'mutant.obx')
+        open(path, 'w').write(text)
+        if name in ENCODER:
+            r = subprocess.run([sys.executable, '-c', f"import port_test as pt; pt.SRC = {path!r}; pt.main()"],
+                               capture_output=True, text=True, cwd=HERE)
+            lines = (r.stdout + r.stderr).strip().splitlines()
+            failures = [l for l in lines if l.startswith('FAIL') or 'does not compile' in l] or \
+                       ([lines[-1] if lines else f'exit {r.returncode}'] if r.returncode != 0 else [])
+        elif name in EDGE or name in SHAPES:
+            # the register-allocation checks: caught when their script exits nonzero
+            module, fn = ('homes_edge', 'he') if name in EDGE else ('homes_check', 'hc')
+            r = subprocess.run([sys.executable, '-c', f"import {module} as {fn}; {fn}.SRC = {path!r}; {fn}.main()"],
+                               capture_output=True, text=True, cwd=HERE)
+            lines = (r.stdout + r.stderr).strip().splitlines()
+            failures = [] if r.returncode == 0 else \
+                       ([l for l in lines if l.startswith('FAIL') or 'does not compile' in l] or
+                        [lines[-1] if lines else f'exit {r.returncode}'])
+        else:
+            lines, failures, peak = pc.compare(tmp, path, quick=True)
+            failures = ["FAIL " + f for f in failures]
+            if name in KEEPS_ALIVE and not failures and peak is not None and base_peak is not None and peak > base_peak:
+                failures = [f"FAIL peak {peak:,} is above the unmutated {base_peak:,}"]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if failures:
+        return 'caught', f"caught  {name:40s} {failures[0][:110]}"
+    return 'missed', f"MISSED  {name:40s} {lines[-1].strip() if lines else ''}"
 
 
 def main():
     pattern = sys.argv[1] if len(sys.argv) > 1 else ''
     src = open(SRC).read()
-    tmp = tempfile.mkdtemp()
-    caught = total = 0
-    base = subprocess.run([sys.executable, '-c', "import port_compare as pc; pc.main()"],
-                          capture_output=True, text=True, cwd=HERE)
-    base_peak = peak_of(base.stdout + base.stderr)
+    todo = []
     for name, edits in MUTANTS.items():
         if pattern not in name:
             continue
@@ -320,26 +395,23 @@ def main():
         for old, new in edits:
             assert text.count(old) == 1, f"mutant '{name}': expected one match for {old!r}"
             text = text.replace(old, new)
-        path = os.path.join(tmp, 'mutant.obx')
-        open(path, 'w').write(text)
-        code = f"import port_compare as pc; pc.SRC = {path!r}; pc.main()"
-        if name in ENCODER:
-            code = f"import port_test as pt; pt.SRC = {path!r}; pt.main()"
-        r = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, cwd=HERE)
-        total += 1
-        if name in KEEPS_ALIVE and r.returncode == 0:
-            peak = peak_of(r.stdout + r.stderr)
-            if peak is not None and base_peak is not None and peak > base_peak:
-                r = subprocess.CompletedProcess(r.args, 1, r.stdout, f"FAIL peak {peak:,} is above the unmutated {base_peak:,}")
-        lines = (r.stdout + r.stderr).strip().splitlines()
-        why = next((l for l in lines if l.startswith('FAIL') or 'does not compile' in l), lines[-1] if lines else '')
-        if r.returncode != 0:
-            caught += 1
-            print(f"caught  {name:40s} {why[:110]}")
-        else:
-            print(f"MISSED  {name:40s} {lines[-1] if lines else ''}")
-    print(f"\n{caught}/{total} mutants caught")
-    sys.exit(0 if caught == total else 1)
+        todo.append((name, text))
+    # the unmutated comparison: its peak, and REF's outcomes, which every mutant's comparison reuses
+    tmp = tempfile.mkdtemp(prefix='obo-mutant-base-')
+    try:
+        lines, failures, base_peak = pc.compare(tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if failures:
+        print("\n".join(lines))
+        raise SystemExit("the unmutated port fails Stage B, so no mutant can be judged")
+    with concurrent.futures.ThreadPoolExecutor(int(os.environ.get('MUTATE_JOBS', 4))) as pool:
+        results = list(pool.map(lambda m: try_mutant(*m, base_peak), todo))
+    for _, line in results:
+        print(line)
+    caught = sum(status == 'caught' for status, _ in results)
+    print(f"\n{caught}/{len(results)} mutants caught")
+    sys.exit(0 if caught == len(results) else 1)
 
 
 if __name__ == '__main__':
