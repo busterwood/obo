@@ -486,6 +486,25 @@ var cur = new []byte(CHUNK)
 var curLen = 0
 var codeBase = 0                    // where cur starts: CHUNK times len(code)
 
+// The peephole (FORK.md, "Peephole pass"). `x = x op y` on a local in a register compiles to a copy of the
+// local into a temporary, the operation on the temporary and a copy back; the store folds the three into
+// one operation on the local. The emitters note what they emitted last, so that nothing is decoded, and
+// the record is valid only while the code ends where the operation does (foldEnd == here()), nothing
+// has asked for a position since the copy began (barrier <= foldAt: a position is a jump target or a
+// patch point, and the fold would move or remove what is after it) and the code was not cut back.
+var barrier = 0                     // the last position pc() gave out
+var cpAt = -1                       // the last copy of a local's register into a temporary: start, end,
+var cpEnd = -1                      // the temporary and the local
+var cpDst = 0
+var cpSrc = 0
+var foldAt = 0                      // the operation on that copy, noted by binop: where the copy began,
+var foldEnd = -1                    // where the operation ended (-1: none), the local, the temporary,
+var foldHome = 0
+var foldT = 0
+var foldForm = 0                    // 1 alu with an immediate, 2 register operand, 3 imul by an immediate
+var foldOpc = 0                     // the alu code (form 1) or the opcode (form 2)
+var foldArg = 0                     // the immediate, or the operand register
+
 fn emit(b: int) {
     cur[curLen] = byte(b)
     curLen += 1
@@ -513,6 +532,8 @@ fn setCode(at: int, v: int) {
 
 // cuts the code back to n bytes: the chunk n is in becomes cur again
 fn truncCode(n: int) {
+    cpEnd = -1
+    foldEnd = -1
     if n < codeBase {
         let k = n >> CHUNK_BITS
         for i in 0..CHUNK { cur[i] = code[k].b[i] }
@@ -537,7 +558,13 @@ fn emit64(v: int) {
 fn fits8(v: int): bool { return v >= -128 && v < 128 }
 fn fits32(v: int): bool { return v >= -2147483648 && v < 2147483648 }
 
-fn pc(): int { return codeBase + curLen }
+// a position that is not asked for as a label or a patch point (pc() is: see barrier)
+fn here(): int { return codeBase + curLen }
+
+fn pc(): int {
+    barrier = codeBase + curLen
+    return barrier
+}
 
 fn emitOpcode(opc: int) {
     if opc > 255 { emit(opc >> 8) }
@@ -1649,7 +1676,12 @@ fn load(x: Item): Item {
     if x.mode == "reg" {
         if !x.home { return x }
         let c = alloc()                       // a local's own register is copied: the caller may change what it gets
+        let s0 = here()
         movRR(c, x.r)
+        cpAt = s0
+        cpEnd = here()
+        cpDst = c
+        cpSrc = x.r
         return makeReg(x.typ, c)
     }
     var r = 0
@@ -1712,6 +1744,36 @@ fn falseJump(mut x: &Item): int {
     return x.F
 }
 
+// the operation noted in the fold fields, on the local h instead of its copy
+fn applyFold(h: int) {
+    let form = foldForm
+    let opc = foldOpc
+    let arg = foldArg
+    truncCode(foldAt)
+    if form == 1 {
+        aluRI(opc, h, arg)
+    } else if form == 2 {
+        opReg(opc, h, arg, true, false)
+    } else {
+        opReg(0x69, h, h, true, false)
+        emit32(arg)
+    }
+}
+
+// binop emitted an operation on the register t at a0; it is foldable if it follows the copy of a local into t
+fn noteFold(a0: int, form: int, opc: int, arg: int, t: int) {
+    foldEnd = -1
+    if cpEnd == a0 && cpDst == t {
+        foldAt = cpAt
+        foldHome = cpSrc
+        foldT = t
+        foldForm = form
+        foldOpc = opc
+        foldArg = arg
+        foldEnd = here()
+    }
+}
+
 fn store(dst: Item, source: Item) {
     var src = source
     if dst.home {
@@ -1719,7 +1781,11 @@ fn store(dst: Item, source: Item) {
             movRI(dst.r, src.val)
         } else {
             src = asReg(src)
-            movRR(dst.r, src.r)
+            if foldEnd == here() && foldT == src.r && foldHome == dst.r && barrier <= foldAt {
+                applyFold(dst.r)
+            } else {
+                movRR(dst.r, src.r)
+            }
             release(src.r)
         }
         return
@@ -4711,8 +4777,15 @@ fn binop(o: int, x0: Item, y0: Item): Item {
     if y.mode == "elem" || (y.mode == "mem" && y.width == 1) { y = load(y) }
     if o == T_STAR && x.home && y.mode == "const" && fits32(y.val) {
         let t = alloc()                           // imul reads one register and writes another
+        let a0 = here()
         opReg(0x69, t, x.r, true, false)
         emit32(y.val)
+        foldAt = a0                               // a store of t into x.r becomes imul on x.r
+        foldHome = x.r
+        foldT = t
+        foldForm = 3
+        foldArg = y.val
+        foldEnd = here()
         drop(y)
         x = makeReg(tInt, t)
         return x
@@ -4724,7 +4797,11 @@ fn binop(o: int, x0: Item, y0: Item): Item {
             emit32(y.val)
             drop(y)
         } else {
+            let direct = y.mode == "reg"
+            let ry = y.r
+            let a0 = here()
             opOperand(0x0FAF, x.r, y)
+            if direct { noteFold(a0, 2, 0x0FAF, ry, x.r) }
         }
     } else if o == T_SLASH || o == T_PERCENT {
         if y.mode == "const" && y.val == 0 { error("division by zero") }
@@ -4759,10 +4836,16 @@ fn binop(o: int, x0: Item, y0: Item): Item {
     } else {
         let c = aluCode(o)
         if y.mode == "const" && fits32(y.val) {
+            let a0 = here()
             aluRI(c, x.r, y.val)
+            noteFold(a0, 1, c, y.val, x.r)
             drop(y)
         } else {
+            let direct = y.mode == "reg"
+            let ry = y.r
+            let a0 = here()
             opOperand(c * 8 + 3, x.r, y)
+            if direct { noteFold(a0, 2, c * 8 + 3, ry, x.r) }
         }
     }
     x.typ = tInt
@@ -5494,6 +5577,49 @@ fn shiftWaits(head: int, d: int): int {
     return head + d
 }
 
+// Loop heads (the target of a backward jump) start on a LOOP_ALIGN boundary, padded with multi-byte nops.
+// The code is at CODE_BASE, a multiple of 4096, so a position that is a multiple of LOOP_ALIGN is an address
+// that is. The padding is never executed in an inverted loop (the jump over it goes to the test).
+const LOOP_ALIGN = 32
+
+fn alignLoop() {
+    var n = (LOOP_ALIGN - (pc() & (LOOP_ALIGN - 1))) & (LOOP_ALIGN - 1)
+    while n > 0 {
+        var k = n
+        if k > 9 { k = 9 }
+        n -= k
+        if k == 6 || k == 9 {
+            emit(0x66)                          // 6 and 9 start with the operand-size prefix
+        }
+        if k == 2 {
+            emit(0x66)
+            emit(0x90)
+        } else if k == 1 {
+            emit(0x90)
+        } else {
+            emit(0x0F)
+            emit(0x1F)
+            if k == 3 {
+                emit(0x00)
+            } else if k == 4 {
+                emit(0x40)
+                emit(0x00)
+            } else if k == 5 || k == 6 {
+                emit(0x44)
+                emit(0x00)
+                emit(0x00)
+            } else if k == 7 {
+                emit(0x80)
+                emit32(0)
+            } else {
+                emit(0x84)                      // 8 and 9
+                emit(0x00)
+                emit32(0)
+            }
+        }
+    }
+}
+
 fn whileStat(): bool {
     let wline = tline
     let wcol = tcol
@@ -5506,7 +5632,7 @@ fn whileStat(): bool {
     let logFrom = len(freeLog)
     clearFresh()
     let entry = snapshot()
-    let top = pc()
+    var top = pc()
     let farFrom = len(farCalls)
     let fwdFrom = fwdCalls
     var x = expression()
@@ -5516,6 +5642,10 @@ fn whileStat(): bool {
     var farTo = 0
     var jcond = 0
     if forever {
+        if pc() == top {                     // nothing was emitted: the head is a backward jump's target too
+            alignLoop()
+            top = pc()
+        }
         x = newItem("cond", tBool)
     } else {
         x = loadCond(x)
@@ -5536,6 +5666,7 @@ fn whileStat(): bool {
         }
         jcond = jmp()
     }
+    alignLoop()
     let bodyAt = pc()
     let condSt = snapshot()                  // the state when the condition leaves the loop
     let condAt = len(freeLog)
@@ -5615,6 +5746,7 @@ fn forStat() {
         let li = localItem(lim, tInt)
         store(li, y)
         exitLink = jmp()                        // to the test, after the body
+        alignLoop()
         top = pc()
         loopdepth += 1
         savedMarks = loopMarksSave()
@@ -5676,6 +5808,7 @@ fn forStat() {
         vi.base = RBP
         vi.disp = v.offset
         exitLink = jmp()                        // to the test, after the body
+        alignLoop()
         top = pc()
         let ri = alloc()
         let ra = alloc()
@@ -6086,23 +6219,25 @@ fn statement(): bool {
 
 // =========================================================== declarations
 
-// A function with no locals needs no 'sub rsp': its seven bytes, which end with the
-// frame size at 'at', are cut out and the body after them moves back. Jumps within the
-// body are relative and move with it. A call out of it (farCalls) is now 7 bytes further
-// from its target, and a call waiting for a later function has moved in its fixups.
-fn dropFrame(at: int) {
-    for i in at + 4..pc() { setCode(i - 7, codeByte(i)) }
-    truncCode(pc() - 7)
+// A function with no locals needs no 'sub rsp'. Its seven bytes (the frame size is at 'at') are not cut out, because
+// that would move the body, and with it every loop head the alignment padding placed: the entry moves instead.
+// The four bytes of 'push rbp; mov rbp, rsp' are rewritten 7 bytes further on, right before the body, and the seven
+// bytes in front of them are dead (int3). f.addr is the new entry, so the calls that were aimed at the old one are
+// repointed: the calls waiting for it (its fixups) and its calls to itself (in farCalls, with the old target).
+// Every other call out of the body is relative to a place that did not move.
+fn dropFrame(at: int, f: ^Sym) {
+    let old = at - 7
+    for i in 0..7 { setCode(old + i, 0xCC) }
+    setCode(old + 7, 0x55)
+    setCode(old + 8, 0x48)
+    setCode(old + 9, 0x89)
+    setCode(old + 10, 0xE5)
+    f.addr = old + 7
     let calls = &farCalls
-    for p in calls { putRel(p - 7, getRel(p - 7) + 7) }
-    let gs = &globals
-    for g in gs {
-        if g.kind == "fn" && g.addr < 0 {
-            for fi in 0..len(g.fnRec.fixups) {
-                if g.fnRec.fixups[fi] > at { g.fnRec.fixups[fi] -= 7 }
-            }
-        }
+    for p in calls {
+        if ((p + 4 + getRel(p)) & 0xFFFFFFFF) == old { fix(p, f.addr) }   // getRel is unsigned
     }
+    for fi in 0..len(f.fnRec.fixups) { fix(f.fnRec.fixups[fi], f.addr) }
 }
 
 type Param = ref record {
@@ -6477,7 +6612,7 @@ fn fnBody(f: ^Sym, name: string, ret: ^Type, params: &[]Param, homes: bool): boo
     if !term { epilogue() }
     let size = (frame + 15) & ~15
     if size == 0 {
-        dropFrame(frameAt)
+        dropFrame(frameAt, f)
     } else {
         putRel(frameAt, size)
     }
