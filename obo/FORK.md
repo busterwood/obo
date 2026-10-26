@@ -1800,8 +1800,8 @@ nothing (invalid code, for measurement only) against the current one, `perf stat
 
 So all three checks cost about 22% of this benchmark. But none of them can be removed from a fact that is available:
 
-- **Loop-condition facts.** The loop is `while i < n` with `n` a separate constant, not `len(a)`; no benchmark
-  (and no loop in the compiler's own hot paths measured so far) has `i < len(a)` or `for i in 0..len(a)`. A
+- **Loop-condition facts.** The loop is `while i < n` with `n` a separate constant, not `len(a)`; no benchmark except tokens (below)
+  has `i < len(a)` or `for i in 0..len(a)`. A
   fact `i < len(a)` needs `a` unchanged in the whole body, which a single-pass compiler does not know when it
   emits the loop head: it would need a token pre-scan of the body plus `mightFree`/`pureFn` for every call in it
   and the alias paths (`mut` calls, handles, references, globals). The benchmark would have to be rewritten to
@@ -1814,6 +1814,19 @@ So all three checks cost about 22% of this benchmark. But none of them can be re
 - **Handle and nil checks.** No benchmark runs a handle check in a hot loop (`alloc`, `lists`, `trees` are
   dominated by allocation), so there is nothing to measure.
 - **`for x in a`** already has no per-element bounds check (the walked array is frozen by `iterating`).
+
+**Re-examined with `tokens_obo.obx`**, which does have guarded indexing: `while i < len(src)` and
+`... && isDigit(src[i])` in `scan` (`src` is a `&[]byte`), and `for i in 0..len(s) { ... s[i] }` in `hash` (`s` is
+a string). Upper bound, measured the same way (a compiler whose `boundsCheck` emits nothing, so it removes every
+bounds check in the program, not only the guarded ones; input `obx/src/obxc.obx`, 7 interleaved runs, `perf stat`):
+
+| | time | instructions | cycles |
+|---|---|---|---|
+| with checks | 0.02 s | 289,064,128 | 87,238,714 |
+| no bounds checks (upper bound) | 0.02 s | 284,708,525 (-1.5%) | 84,991,583 (-2.6%) |
+
+The guarded checks are a subset of that, so the real gain is under 2.6% in cycles and not distinguishable in wall
+time. The workload is dominated by allocation and string work, not by indexing. Below the gate.
 
 Decision: no check is removed or hoisted. The gate (a measured gain on a benchmark that has the pattern) is not met
 for the loop-condition facts, and the one pattern that exists is left until a benchmark makes the case.
