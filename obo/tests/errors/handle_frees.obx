@@ -247,16 +247,16 @@ fn main() {
         i += 1
     }
 }
-// === a move of the owner in a loop, the handle used after the loop
+// === a move of the owner in a loop that does not name the handle, the handle used after the loop
 fn eat(x: Bag) { }
 fn main() {
     var a = nb()
     let h = handle(a)
     for i in 0..2 {
-        eat(a)  // error: cannot move 'a' inside a loop while handle 'h' made from it is in scope
+        eat(a)
         a = nb()
     }
-    println(h.n)
+    println(h.n)  // error: handle 'h' was made from an owner that a loop moved
 }
 // === an assignment in one arm of an if in a loop, the handle used in the other arm: the next iteration uses it
 fn main() {

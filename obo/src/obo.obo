@@ -962,6 +962,7 @@ type Sym = ref record {
     hOrigin: ?^Sym            // a let handle to a whole owned local: the local its object is in
     hDepth: int              // a let handle that had an origin when declared: its loop depth + 1 (0 for the others); its uses
                              // are counted (usedAt) even after a move clears the origin
+    movedLoop: bool          // a let handle whose owner was moved inside a loop that did not name it: naming it again is refused
     isParam: bool            // a parameter of the function being compiled: its object came from a caller
     bind: ^RefBind            // what a reference local points into, on the path being compiled
     fresh: bool               // pointed afresh since the innermost loop began, on every path to here
@@ -972,8 +973,9 @@ type Sym = ref record {
     writeUse: int            // useSeq of the last write through the reference, not fresh (see loopBindCheck)
     carryFreed: bool         // a change that may free something came while it was not pointed afresh on every path
     suspect: bool             // live across a recursive call that may write through a handle
-    usedAt: int               // the reads so far (useSeq) when it was last read: see loopSelfCheck; a tracked let handle:
-                              // when it was last named (see originFree)
+    usedAt: int               // a reference local: the reads so far (useSeq) when it was last read before it was pointed afresh,
+                              // or a for walk read it: see loopSelfCheck; a tracked let handle: when it was last named
+                              // (see originFree)
     iterating: bool           // a for loop is walking this array
     freesAll: bool            // fn: it might free anything (or isn't compiled yet)
     writesHandles: bool       // fn: it frees owned objects through a handle (directly, by a callee, or a forward heading)
@@ -1060,6 +1062,8 @@ type FnRec = ref record {
     params: []^Type
     pmodes: []int             // 0 owned, 1 &, 2 mut, per parameter
     freed: []^Sym             // the globals it might free (directly or through calls)
+    pfree: int                // bit i: it might free something below the reference it was given for parameter i (directly or through
+                              // calls); parameters from the 62nd on are always assumed to
 }
 
 var fnArena = new []FnRec(0)          // owns the function records; the symbols hold handles to them
@@ -1316,12 +1320,19 @@ var blocks = new []Block(0)
 var narrowStack = new []NEntry(0)
 var loops = new []Loop(0)
 var originSyms = new []^Sym(0)   // the let handles that have an origin (hOrigin), in declaration order
-var jumpSeq = 0                  // the breaks and continues compiled so far
+var depthJumps = new []int(0)    // per loop depth: the breaks and continues compiled so far that leave a loop at that depth
 var pendSym = new []^Sym(0)      // the frees (see originFree) inside a loop of a handle declared outside it, to be
 var pendDepth = new []int(0)     // checked where that loop ends, when it is known whether the loop uses the handle:
 var frLine = new []int(0)      // the handle, the loop (an index of loops), and the place of the free
 var frCol = new []int(0)
-var pendWhat = new []string(0)
+var pendWhat = new []string(0)   // "assign over", "drop" or "move"
+var pendOwn = new []^Sym(0)      // the owner (for a move, whose handle's origin is cleared at once)
+var pendNest = new []int(0)      // len(loops) where it was made
+var contSeq = 0                  // the continues compiled so far
+var brkSeq = 0                   // the breaks compiled so far
+var inAlive = false              // the argument of alive is being compiled: naming a handle there is not a use
+var lastNamed: ?^Sym = nil       // the tracked let handle named last, and its usedAt before that (see nameItem)
+var lastNamedPrev = 0
 var deferH = new []^Sym(0)       // the handles (originSyms) that the defer bodies in scope use, with the index of the
 var deferAt = new []int(0)       // block each defer is declared in
 var deferFrees = new []^Sym(0)   // the owners a defer body being compiled assigns over or drops (originFree)
@@ -2284,7 +2295,9 @@ fn sameStates(a: &PState, b: &PState, line: int, col: int) {
 // the held places are defined with the checks that use them (heldMove: see below)
 fn heldMove(s: ^Sym)
 fn originMove(s: ?^Sym, move: bool)
-fn loopOriginCheck(s: ^Sym)
+fn loopOriginPend(s: ^Sym)
+fn pendPush(x: ^Sym, o: ^Sym, what: string)
+fn pendDrop(k: int)
 fn originFree(r: ^Sym, what: string)
 
 // Takes ownership of x's value, which is about to be stored in a variable,
@@ -2349,6 +2362,7 @@ var refMode = 0                   // set by parseRefType: 0 plain, 1 &
 fn mutableOf(x: &Item): bool
 fn deepOf(x: &Item): bool
 fn parentOf(x: &Item): ?^Sym
+fn isRefParam(s: ^Sym): bool
 
 // the binding a reference to x takes: what x may point into, through the binding of the reference it
 // goes through; a constant points at nothing
@@ -2364,7 +2378,9 @@ fn itemBind(x: &Item): ^RefBind {
     for i in 0..len(rb.roots) {
         append(roots, rb.roots[i])
         append(deeps, x.deref || rb.deeps[i])
-        if x.deref { append(paths, "") } else { append(paths, rb.paths[i]) }
+        // a place in a reference parameter's own object is told apart by its path; one reached through a
+        // reference local is the whole root
+        if x.deref && isRefParam(r) { append(paths, x.path) } else if x.deref { append(paths, "") } else { append(paths, rb.paths[i]) }
     }
     var parent: ?^Sym = nil
     if r.isRefLocal {
@@ -2657,7 +2673,9 @@ fn markSuspects() {
 // the next iteration starts (back: the body's end, or a continue) may be read there, in the loop's
 // condition or its body, after the call freed what it points into. The suspicion follows the paths,
 // so a reference pointed afresh after the call on every path is not reported, and a reference that
-// the loop does not read (usedAt, read since the loop began: useBefore) is not reported either. The
+// the loop does not read before pointing it afresh (usedAt: a read that is not fresh, since the loop
+// began: useBefore; a read after a re-point in the same iteration sees the new binding) is not reported
+// either. The
 // loop variable of a for walk is rebound each iteration, so its suspicion is not carried.
 fn loopSelfCheck(nOuter: int, selfBefore: int, useBefore: int, back: &PState, lv: ?^Sym, line: int, col: int) {
     if selfCalls == selfBefore { return }
@@ -2729,6 +2747,14 @@ fn pureFn(f: ^Sym): bool {
     return true
 }
 
+// whether a call of f may free something below the argument it gets for its parameter i: a callee that is
+// not compiled yet, is being compiled, or writes through a handle may free anything
+fn mutFrees(f: ^Sym, i: int): bool {
+    if f.addr < 0 || f == curFn || f.freesAll || f.writesHandles { return true }
+    if i >= 62 { return true }
+    return (f.fnRec.pfree >> i) & 1 == 1
+}
+
 fn mightFree(f: ^Sym, g: ^Sym): bool {
     if f.addr < 0 || f == curFn || f.freesAll { return true }
     let freed = &f.fnRec.freed
@@ -2745,6 +2771,11 @@ fn recordFree(g: ?^Sym) {
     if g == handleSym {                  // a change through a handle may free anything
         f.freesAll = true
         f.writesHandles = true
+        return
+    }
+    if g.isParam && g.isRef {            // the parameter's reference: something below it may be freed
+        let pi = len(f.fnRec.params) - 1 - (g.offset - 16) / 8      // its place in the list: see fnBody
+        if pi < 62 { f.fnRec.pfree = f.fnRec.pfree | (1 << pi) }
         return
     }
     if g.storage != "global" { return }
@@ -3521,7 +3552,7 @@ fn originMove(s: ?^Sym, move: bool) {
     if s == nil { return }
     let r = s
     if !r.owned || r.isRef || r.storage != "local" { return }
-    if move { loopOriginCheck(r) }
+    if move { loopOriginPend(r) }
     if !move {
         originFree(r, "assign over")
         return
@@ -3535,14 +3566,39 @@ fn originMove(s: ?^Sym, move: bool) {
     }
 }
 
-fn loopOriginCheck(s: ^Sym) {
+// the handle x was just named by an expression that is no use of its object (alive(x), a copy of a dead handle):
+// it is not counted
+fn unname(x: ?^Sym) {
+    if x != nil && lastNamed == x {
+        let h = x
+        h.usedAt = lastNamedPrev
+        lastNamed = nil
+    }
+}
+
+// a whole move of the owner s inside a loop that a let handle made from it was declared outside of: the
+// next iteration would still see the handle's origin, which this move clears. The move is allowed if the
+// loop never names the handle (pendingFreeCheck), and the handle may then not be named again (movedLoop)
+fn loopOriginPend(s: ^Sym) {
     for i in 0..len(originSyms) {
         let x = originSyms[i]
         if x.hOrigin != nil && x.hDepth <= len(loops) && originDead[i] == nil {
             let o = x.hOrigin
-            if o == s { error("cannot move '" + s.name + "' inside a loop while handle '" + x.name + "' made from it is in scope") }
+            if o == s { pendPush(x, s, "move") }
         }
     }
+}
+
+// a free or a move of the owner o of the handle x, inside a loop x was declared outside of, to be judged
+// where that loop ends
+fn pendPush(x: ^Sym, o: ^Sym, what: string) {
+    append(pendSym, x)
+    append(pendDepth, x.hDepth - 1)
+    append(frLine, tline)
+    append(frCol, tcol)
+    append(pendWhat, what)
+    append(pendOwn, o)
+    append(pendNest, len(loops))
 }
 
 // the object of the owned local r is freed (an assignment over it, what; or a drop): each let handle made
@@ -3555,13 +3611,7 @@ fn originFree(r: ^Sym, what: string) {
         let x = originSyms[i]
         if x.hOrigin != nil {
             let o = x.hOrigin
-            if o == r && x.hDepth <= len(loops) {
-                append(pendSym, x)
-                append(pendDepth, x.hDepth - 1)
-                append(frLine, tline)
-                append(frCol, tcol)
-                append(pendWhat, what)
-            }
+            if o == r && x.hDepth <= len(loops) { pendPush(x, r, what) }
             if o == r { originDead[i] = r }
         }
     }
@@ -3584,27 +3634,61 @@ fn pendingFreeCheck(li: int) {
     var k = 0
     while k < len(pendSym) {
         if pendDepth[k] == li {
-            if pendSym[k].usedAt > loops[li].useFrom {
-                errorAt("cannot " + pendWhat[k] + " the owner of handle '" + pendSym[k].name + "' inside a loop that uses the handle", frLine[k], frCol[k])
+            let x = pendSym[k]
+            if x.usedAt > loops[li].useFrom {
+                if pendWhat[k] == "move" {
+                    errorAt("cannot move '" + pendOwn[k].name + "' inside a loop while handle '" + x.name + "' made from it is in scope", frLine[k], frCol[k])
+                }
+                errorAt("cannot " + pendWhat[k] + " the owner of handle '" + x.name + "' inside a loop that uses the handle", frLine[k], frCol[k])
             }
-            // drop the entry
-            var j = k
-            while j + 1 < len(pendSym) {
-                pendSym[j] = pendSym[j + 1]
-                pendDepth[j] = pendDepth[j + 1]
-                frLine[j] = frLine[j + 1]
-                frCol[j] = frCol[j + 1]
-                pendWhat[j] = pendWhat[j + 1]
-                j += 1
-            }
-            truncate(pendSym, len(pendSym) - 1)
-            truncate(pendDepth, len(pendDepth) - 1)
-            truncate(frLine, len(frLine) - 1)
-            truncate(frCol, len(frCol) - 1)
-            truncate(pendWhat, len(pendWhat) - 1)
+            // the loop never names the handle: after a move it may not be named again
+            if pendWhat[k] == "move" { x.movedLoop = true }
+            pendDrop(k)
         } else {
             k += 1
         }
+    }
+}
+
+// the pending entry k is judged, or can never be repeated
+fn pendDrop(k: int) {
+    var j = k
+    while j + 1 < len(pendSym) {
+        pendSym[j] = pendSym[j + 1]
+        pendDepth[j] = pendDepth[j + 1]
+        frLine[j] = frLine[j + 1]
+        frCol[j] = frCol[j + 1]
+        pendWhat[j] = pendWhat[j + 1]
+        pendOwn[j] = pendOwn[j + 1]
+        pendNest[j] = pendNest[j + 1]
+        j += 1
+    }
+    truncate(pendSym, len(pendSym) - 1)
+    truncate(pendDepth, len(pendDepth) - 1)
+    truncate(frLine, len(frLine) - 1)
+    truncate(frCol, len(frCol) - 1)
+    truncate(pendWhat, len(pendWhat) - 1)
+    truncate(pendOwn, len(pendOwn) - 1)
+    truncate(pendNest, len(pendNest) - 1)
+}
+
+// A block that always ends (in a break or a return) with no continue in it: the frees it made in the loop it
+// is in are never followed by another iteration, if the block ends in a return, or, for a handle declared
+// inside the loop that a break leaves (pendDepth is its index), if it ends in a break. A use after such a
+// loop is seen by the dead marks (Loop.exitDead). A move stays after a break, since the origin it clears
+// would let a use after the loop through (movedLoop is set where the loop ends), and so does a return: the
+// origin the move clears is cleared for the paths that go on, which the other frees then miss. Entries made
+// in a loop inside the block repeat, and stay. pm: the entries from the block's start; cs, bs: contSeq and brkSeq there
+fn pendBlockEnds(pm: int, cs: int, bs: int) {
+    if contSeq != cs { return }
+    var k = pm
+    while k < len(pendSym) {
+        var drop = false
+        if pendNest[k] == len(loops) && pendWhat[k] != "move" {
+            if brkSeq == bs { drop = true }
+            if brkSeq != bs && pendDepth[k] == len(loops) - 1 { drop = true }
+        }
+        if drop { pendDrop(k) } else { k += 1 }
     }
 }
 
@@ -3728,6 +3812,7 @@ fn callFn(f: ^Sym): Item {
     let argModes = new []int(0)
     let argVias = new []?^Sym(0)
     let argPaths = new []string(0)
+    let argIdx = new []int(0)           // the parameter each of those is
     var deepLine = 0                   // the first argument that points inside something
     var deepCol = 0
     let tbase = argTempsUsed
@@ -3749,6 +3834,7 @@ fn callFn(f: ^Sym): Item {
             append(argBinds, b)
             append(argModes, f.fnRec.pmodes[i])
             append(argVias, viaOf(a))
+            append(argIdx, i)
             if anyDeep(b) && deepLine == 0 {
                 deepLine = argLine
                 deepCol = argCol
@@ -3822,7 +3908,8 @@ fn callFn(f: ^Sym): Item {
         }
     }
     for i in 0..len(argBinds) {
-        if argModes[i] == 2 {
+        // a callee that frees nothing below its mut parameter (see FnRec.pfree) leaves the references into it valid
+        if argModes[i] == 2 && mutFrees(f, argIdx[i]) {
             let b = argBinds[i]
             for p in 0..len(b.roots) {
                 invalidate(b.roots[p], argVias[i], false, argPaths[i])
@@ -3986,6 +4073,10 @@ fn builtin(name: string): Item {
             error("replace needs a variable, field or element holding an owned value")
         }
         if x.readonly { error("replace cannot change '" + describe(x) + "': it is immutable") }
+        let rs = x.sym
+        if rs != nil && rs.isRefLocal {
+            error("replace cannot change '" + rs.name + "': it is a reference, which only borrows; replace a field or element of it")
+        }
         if raw == "" && !x.viaHandle && !x.deref { originMove(x.sym, true) }
         let tr = x.root
         if x.deref && tr != nil && tr.isRef && !tr.bind.writable {
@@ -4051,9 +4142,19 @@ fn builtin(name: string): Item {
     }
     if name == "alive" {
         expect(T_LPAREN, "")
+        // asking whether a handle is alive is no use of its object: naming the handle here is not counted (usedAt)
+        var bare = false
+        if sym == T_IDENT {
+            var q = 0
+            while peek(q) == ' ' { q += 1 }
+            bare = peek(q) == ')'
+        }
+        inAlive = bare
         let h = expression()
+        inAlive = false
         expect(T_RPAREN, "")
         if h.typ.kind != "handle" { error("alive needs a handle, not " + tname(h.typ)) }
+        unname(h.sym)
         return rtCall1(RT_ALIVE, h, tBool)
     }
     if name == "take" {
@@ -4066,6 +4167,10 @@ fn builtin(name: string): Item {
             error("take needs an optional variable, field or element holding an owned value")
         }
         if x.readonly { error("take cannot change '" + describe(x) + "': it is immutable") }
+        let ts0 = x.sym
+        if ts0 != nil && ts0.isRefLocal {
+            error("take cannot change '" + ts0.name + "': it is a reference, which only borrows; take a field or element of it")
+        }
         let tr = x.root
         if x.deref && tr != nil && tr.isRef && !tr.bind.writable {
             error("take cannot change through '" + tr.name + "': it is a read-only reference")
@@ -4259,7 +4364,12 @@ fn nameItem(s: ^Sym, name: string, target: bool): Item {
         x.hOrigin = s.hOrigin
         if s.hDepth > 0 {
             useSeq += 1
+            lastNamed = s
+            lastNamedPrev = s.usedAt
             s.usedAt = useSeq
+            if s.movedLoop && !inAlive {
+                error("handle '" + name + "' was made from an owner that a loop moved: make the handle again")
+            }
         }
         x.readonly = s.kind == "let"
         x.borrowed = s.isRef
@@ -4410,9 +4520,9 @@ fn designatorT(target: bool): Item {
     }
     if s.isRefLocal && (!target || path != "") {        // a read, not a re-pointing: see loopBindCheck
         useSeq += 1
-        s.usedAt = useSeq
         if !s.fresh {
             s.staleUse = useSeq
+            s.usedAt = useSeq
             s.staleLine = uline
             s.staleCol = ucol
             if s.carryFreed { s.freedUse = useSeq }
@@ -4428,7 +4538,7 @@ fn designatorT(target: bool): Item {
         x.root = root
         x.deref = true
         // a path is only known through an owned root: through a reference or handle it is the whole root
-        if !root.isRef && !viaHandle { x.path = path }
+        if (!root.isRef || isRefParam(root)) && !viaHandle { x.path = path }
         // nothing can be moved out through a reference, so this can only be a borrow
         if root.isRef && isOwned(x.typ) { x.borrowed = true }
     }
@@ -4988,6 +5098,9 @@ fn varDecl(kind: string, isGlobal: bool) {
                     for i in 0..len(originSyms) {
                         if originSyms[i] == x.sym { dead = originDead[i] }
                     }
+                    // naming a handle that is dead here, to copy it, is no use of its object: the copy is dead too, and
+                    // every use of it is refused. (A copy of a handle not known to be dead counts as a naming.)
+                    if dead != nil { unname(x.sym) }
                     append(originSyms, s)
                     append(originDead, dead)
                 }
@@ -5226,7 +5339,11 @@ fn statSeq(): bool {
 fn block(): bool {
     expect(T_LBRACE, "")
     openBlock()
+    let pm = len(pendSym)
+    let cs = contSeq
+    let bs = brkSeq
     let term = statSeq()
+    if term { pendBlockEnds(pm, cs, bs) }
     expect(T_RBRACE, "")
     closeBlock(term)
     return term
@@ -5234,18 +5351,31 @@ fn block(): bool {
 
 fn ifStat(): bool
 
+// the breaks and continues so far that leave the loop being compiled: those of the loops inside it are not counted,
+// since they do not leave this one
+fn jumpsHere(): int {
+    if len(loops) == 0 { return 0 }
+    while len(depthJumps) < len(loops) { append(depthJumps, 0) }
+    return depthJumps[len(loops) - 1]
+}
+
+fn addJump() {
+    while len(depthJumps) < len(loops) { append(depthJumps, 0) }
+    depthJumps[len(loops) - 1] += 1
+}
+
 // an arm of an if or a match: it starts from the marks before the statement (d0), and the marks after the
 // statement are the union (acc) of the arms that go on. An arm that ends outside a loop ends in a return,
 // and goes nowhere; inside a loop it may be a break or a continue, so its marks are kept
 fn armBlock(d0: &[]?^Sym, mut acc: &[]?^Sym, isIf: bool): bool {
     deadSet(d0)
     var term = false
-    let js = jumpSeq
+    let js = jumpsHere()
     if isIf { term = ifStat() } else { term = block() }
     // an arm that ends does not go on to what follows the statement: its marks are the state after the loop,
     // if it leaves by a break or a continue, and nowhere if it returns
     if term {
-        if len(loops) > 0 && jumpSeq != js {
+        if len(loops) > 0 && jumpsHere() != js {
             let lx = &loops[len(loops) - 1]
             while len(lx.exitDead) < len(originDead) { append(lx.exitDead, nil) }
             for i in 0..len(originDead) {
@@ -6044,7 +6174,8 @@ fn statement(): bool {
         }
         T_BREAK, T_CONTINUE {
             next()
-            jumpSeq += 1
+            if len(loops) > 0 { addJump() }
+            if k == T_BREAK { brkSeq += 1 } else { contSeq += 1 }
             if len(loops) == 0 { error("'" + tokName(k) + "' outside a loop") }
             let loop = &loops[len(loops) - 1]
             let st = snapshot()

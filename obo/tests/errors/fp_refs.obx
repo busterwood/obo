@@ -1,0 +1,419 @@
+// The unsafe neighbours of the shapes in run/fp_refs.obx: each is still refused.
+type Node = ref record { v: int; kids: []Node }
+type Bag = ref record { items: []Node; opt: ?Node; n: int }
+type Pair = ref record { xs: []Node; ys: []Node }
+type Item = ref record { v: int; kids: []Item }
+type Hold = ref record { items: []Item }
+fn mk(v: int): Node { return new Node{v: v, kids: new []Node(0)} }
+fn nb(): Bag {
+    var b = new Bag{items: new []Node(0), opt: nil, n: 0}
+    append(b.items, mk(9))
+    return b
+}
+fn two(r: &Node, k: int): int { return r.v + k }
+// === a mut callee that replaces an element
+fn upd(mut a: &[]Node, k: int): int { a[k] = mk(7); return 1 }
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    append(xs, mk(2))
+    println(two(&xs[0], upd(xs, 1)))  // error: argument 2 of two may free what argument 1 points into, and runs after
+}
+// === a mut callee that replaces an element, the reference held in a local
+fn upd(mut a: &[]Node, k: int): int { a[k] = mk(7); return 1 }
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    append(xs, mk(2))
+    let r = &xs[0]
+    let z = upd(xs, 1)
+    println(r.v + z)  // error: 'r' may point to freed memory: something under what it points into was
+}
+// === a mut callee that replaces a field
+fn cut(mut b: &Bag): int { b.items = new []Node(0); return 1 }
+fn main() {
+    var b = nb()
+    println(two(&b.items[0], cut(b)))  // error: argument 2 of two may free what argument 1 points into, and runs after
+}
+// === a mut callee that passes its parameter on to one that frees
+fn cut(mut b: &Bag): int { b.items = new []Node(0); return 1 }
+fn mid(mut b: &Bag): int { return cut(b) }
+fn main() {
+    var b = nb()
+    println(two(&b.items[0], mid(b)))  // error: argument 2 of two may free what argument 1 points into, and runs after
+}
+// === a mut callee that passes a field of its parameter on to one that frees
+fn sub2(mut a: &[]Node): int { a[0] = mk(1); return 1 }
+fn sub(mut b: &Bag): int { return sub2(b.items) }
+fn main() {
+    var b = nb()
+    println(two(&b.items[0], sub(b)))  // error: argument 2 of two may free what argument 1 points into, and runs after
+}
+// === a mut callee that frees through a reference it made
+fn cut(mut b: &Bag): int {
+    let it = &b.items
+    it[0] = mk(3)
+    return 1
+}
+fn main() {
+    var b = nb()
+    println(two(&b.items[0], cut(b)))  // error: argument 2 of two may free what argument 1 points into, and runs after
+}
+// === a mut callee that takes a field
+fn tk(mut b: &Bag): int {
+    var t = take(b.opt)
+    return 1
+}
+fn main() {
+    var b = nb()
+    b.opt = mk(4)
+    let r = &b.opt
+    let z = tk(b)
+    println(r == nil)  // error: 'r' may point to freed memory: something under what it points into was
+}
+// === a mut callee that truncates an array of owned elements
+fn tr(mut a: &[]Node): int { truncate(a, 0); return 1 }
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    println(two(&xs[0], tr(xs)))  // error: argument 2 of two may free what argument 1 points into, and runs after
+}
+// === a mut callee that replaces an element through replace
+fn rp(mut a: &[]Node): int { var o = replace(a[0], mk(5)); return 1 }
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    println(two(&xs[0], rp(xs)))  // error: argument 2 of two may free what argument 1 points into, and runs after
+}
+// === a mut callee that replaces the array through replace
+fn sw(mut b: &Bag): int {
+    var t = replace(b.items, new []Node(0))
+    return 1
+}
+fn main() {
+    var b = nb()
+    println(two(&b.items[0], sw(b)))  // error: argument 2 of two may free what argument 1 points into, and runs after
+}
+// === a mut callee that writes through a handle
+fn hw(mut a: &[]Node, h: ^Bag): int { h.items = new []Node(0); return 1 }
+fn main() {
+    var b = nb()
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    println(two(&xs[0], hw(xs, handle(b))))  // error: argument 2 of two may free what argument 1 points into, and runs after
+}
+// === a recursive mut callee
+fn rr(mut a: &[]Node, d: int): int {
+    if d == 0 { return 0 }
+    return rr(a, d - 1)
+}
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    println(two(&xs[0], rr(xs, 1)))  // error: argument 2 of two may free what argument 1 points into, and runs after
+}
+// === a mut callee with only a forward heading
+fn later(mut b: &Bag): int
+fn main() {
+    var b = nb()
+    println(two(&b.items[0], later(b)))  // error: argument 2 of two may free what argument 1 points into, and runs after
+}
+fn later(mut b: &Bag): int { b.items = new []Node(0); return 1 }
+// === a global passed mut to a callee that frees it
+var gx = new []Node(0)
+fn gf(mut a: &[]Node): int { gx = new []Node(0); return 1 }
+fn main() {
+    append(gx, mk(1))
+    println(two(&gx[0], gf(gx)))  // error: cannot pass a reference into global 'gx' to gf: it might free it
+}
+// === the second of two parameters is the one that frees
+fn sec(a: &Bag, mut b: &Bag): int { b.items = new []Node(0); return a.n }
+fn main() {
+    var b = nb()
+    println(two(&b.items[0], sec(b, b)))  // error: argument 2 of two may free what argument 1 points into, and runs after
+}
+// === two mut parameters, the first one frees
+fn tw(mut a: &Bag, mut b: &Bag): int { b.items = new []Node(0); return a.n }
+fn main() {
+    var a = nb()
+    var b = nb()
+    println(two(&a.items[0], tw(b, a)))  // error: argument 2 of two may free what argument 1 points into, and runs after
+}
+// === a mut callee that frees in a defer
+fn df(mut b: &Bag): int {
+    defer b.items = new []Node(0)
+    return 1
+}
+fn main() {
+    var b = nb()
+    println(two(&b.items[0], df(b)))  // error: argument 2 of two may free what argument 1 points into, and runs after
+}
+// === a mut callee that frees in a loop, the reference read in the loop
+fn cut(mut b: &Bag): int { b.items = new []Node(0); return 1 }
+fn main() {
+    var b = nb()
+    var r = &b.items[0]
+    var i = 0
+    while i < 2 {
+        println(r.v)  // error: 'r' may point to freed memory: something under what it points into was
+        i += cut(b)
+    }
+}
+// === a mut callee that frees an element's children
+fn nest(mut n: &Node): int { n.kids = new []Node(0); return 1 }
+fn main() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    append(xs[0].kids, mk(2))
+    println(two(&xs[0].kids[0], nest(xs[0])))  // error: argument 2 of two may free what argument 1 points into, and runs after
+}
+// === a mut callee that frees through an element of a walk
+fn wk(mut b: &Bag): int {
+    let items = &b.items
+    for it in items { it.kids = new []Node(0) }
+    return 1
+}
+fn main() {
+    var b = nb()
+    println(two(&b.items[0], wk(b)))  // error: argument 2 of two may free what argument 1 points into, and runs after
+}
+// === the same field of a parameter passed both as mut and as read-only
+fn cutx(mut a: &[]Node, b: &[]Node): int { a[0] = mk(1); return len(b) }
+fn g(mut p: &Pair): int { return cutx(p.xs, p.xs) }  // error: argument 2 of cutx may point inside argument 1, which is mut
+fn main() {
+    var q = new Pair{xs: new []Node(0), ys: new []Node(0)}
+    append(q.xs, mk(3))
+    println(g(q))
+}
+// === the same field of a parameter, changed and held
+fn f(mut p: &Pair): int {
+    let s = &p.ys
+    p.ys = new []Node(0)
+    return len(s)  // error: 's' may point to freed memory: something under what it points into was
+}
+fn main() {
+    var q = new Pair{xs: new []Node(0), ys: new []Node(0)}
+    println(f(q))
+}
+// === a field of a parameter, changed under a held element
+fn f(mut p: &Pair): int {
+    let s = &p.xs[0]
+    p.xs = new []Node(0)
+    return s.v  // error: 's' may point to freed memory: something under what it points into was
+}
+fn main() {
+    var q = new Pair{xs: new []Node(0), ys: new []Node(0)}
+    append(q.xs, mk(3))
+    println(f(q))
+}
+// === an element of a parameter's array, replaced under a held reference to it
+fn f(mut p: &Pair): int {
+    let s = &p.xs[0]
+    p.xs[0] = mk(1)
+    return s.v  // error: 's' may point to freed memory: something under what it points into was
+}
+fn main() {
+    var q = new Pair{xs: new []Node(0), ys: new []Node(0)}
+    append(q.xs, mk(3))
+    println(f(q))
+}
+// === an element of a parameter's array at an unknown index, replaced under a held element
+fn f(mut p: &Pair, k: int): int {
+    let s = &p.xs[0]
+    p.xs[k] = mk(2)
+    return s.v  // error: 's' may point to freed memory: something under what it points into was
+}
+fn main() {
+    var q = new Pair{xs: new []Node(0), ys: new []Node(0)}
+    append(q.xs, mk(3))
+    println(f(q, 0))
+}
+// === a field of another parameter, which may be the same object
+fn f(mut p: &Pair, q: &Pair): int {
+    let s = &q.xs
+    p.ys = new []Node(0)
+    return len(s)  // error: 's' may point to freed memory: something under what it points into was
+}
+fn main() {
+    var q = new Pair{xs: new []Node(0), ys: new []Node(0)}
+    println(f(q, q))
+}
+// === a reference to a field of a reference reaches the whole root
+fn f(mut p: &Pair): int {
+    let r = &p
+    let s = &r.xs
+    p.xs = new []Node(0)
+    return len(s)  // error: 's' may point to freed memory: something under what it points into was
+}
+fn main() {
+    var q = new Pair{xs: new []Node(0), ys: new []Node(0)}
+    println(f(q))
+}
+// === a write through a reference to a field of a parameter reaches an element held beside it
+fn f(mut p: &Pair): int {
+    let r = &p.xs
+    let s = &p.xs[0]
+    r[0] = mk(1)
+    return s.v  // error: 's' may point to freed memory: something under what it points into was
+}
+fn main() {
+    var q = new Pair{xs: new []Node(0), ys: new []Node(0)}
+    append(q.xs, mk(3))
+    println(f(q))
+}
+// === a replace of a reference only borrows
+type Hdr = ref record { items: []Node }
+fn main() {
+    var h = new Hdr{items: new []Node(0)}
+    var r = &h.items
+    var old = replace(r, new []Node(0))  // error: replace cannot change 'r': it is a reference, which only borrows; repl
+}
+// === a take of a reference only borrows
+type Opt = ref record { o: ?Node }
+fn main() {
+    var h = new Opt{o: mk(1)}
+    var r = &h.o
+    var old = take(r)  // error: take cannot change 'r': it is a reference, which only borrows; take a 
+}
+// === a loop's recursive call, the reference read before it is pointed afresh
+fn rec(n: &Item, h: ^Hold, d: int): int {
+    if d == 0 {
+        h.items = new []Item(0)
+        return 0
+    }
+    var k = &n.kids[0]
+    var i = 0
+    var s = 0
+    while i < 2 {  // error: a recursive call in this loop writes through a handle, which could fre
+        s += k.v
+        k = &n.kids[0]
+        s += rec(n, h, d - 1)
+        i += 1
+    }
+    return s
+}
+fn main() {}
+// === a loop's recursive call, the reference pointed afresh on one path only
+fn rec(n: &Item, h: ^Hold, d: int): int {
+    if d == 0 {
+        h.items = new []Item(0)
+        return 0
+    }
+    var k = &n.kids[0]
+    var i = 0
+    var s = 0
+    while i < 2 {  // error: a recursive call in this loop writes through a handle, which could fre
+        if i == 1 { k = &n.kids[0] }
+        s += k.v
+        s += rec(n, h, d - 1)
+        i += 1
+    }
+    return s
+}
+fn main() {}
+// === a loop's recursive call, the reference read in the condition
+fn rec(n: &Item, h: ^Hold, d: int): int {
+    if d == 0 {
+        h.items = new []Item(0)
+        return 0
+    }
+    var k = &n.kids[0]
+    var s = 0
+    k = &n.kids[0]
+    while k.v < 5 {  // error: a recursive call in this loop writes through a handle, which could fre
+        s += rec(n, h, d - 1)
+    }
+    return s
+}
+fn main() {}
+// === a loop's recursive call, the reference read in the condition before it is pointed afresh
+fn rec(n: &Item, h: ^Hold, d: int): int {
+    if d == 0 {
+        h.items = new []Item(0)
+        return 0
+    }
+    var k = &n.kids[0]
+    var s = 0
+    var i = 0
+    while i < k.v {  // error: a recursive call in this loop writes through a handle, which could fre
+        k = &n.kids[0]
+        s += rec(n, h, d - 1)
+        i += 1
+    }
+    return s
+}
+fn main() {}
+// === a loop's recursive call, the reference read in an inner loop that does not point it afresh
+fn rec(n: &Item, h: ^Hold, d: int): int {
+    if d == 0 {
+        h.items = new []Item(0)
+        return 0
+    }
+    var k = &n.kids[0]
+    var s = 0
+    var i = 0
+    while i < 2 {  // error: a recursive call in this loop writes through a handle, which could fre
+        k = &n.kids[0]
+        var j = 0
+        while j < 2 {
+            s += k.v
+            s += rec(n, h, d - 1)
+            j += 1
+        }
+        i += 1
+    }
+    return s
+}
+fn main() {}
+// === a loop's recursive call, the reference walked on every iteration
+fn rec(n: &Item, h: ^Hold, d: int): int {
+    if d == 0 {
+        h.items = new []Item(0)
+        return 0
+    }
+    var k = &n.kids
+    var s = 0
+    k = &n.kids
+    for x in k {  // error: a recursive call in this loop writes through a handle, which could fre
+        s += x.v
+        s += rec(n, h, d - 1)
+    }
+    return s
+}
+fn main() {}
+// === a loop's recursive call, the reference passed to a call before it is pointed afresh
+fn show(x: &Item): int { return x.v }
+fn rec(n: &Item, h: ^Hold, d: int): int {
+    if d == 0 {
+        h.items = new []Item(0)
+        return 0
+    }
+    var k = &n.kids[0]
+    var s = 0
+    var i = 0
+    while i < 2 {  // error: a recursive call in this loop writes through a handle, which could fre
+        s += show(k)
+        k = &n.kids[0]
+        s += rec(n, h, d - 1)
+        i += 1
+    }
+    return s
+}
+fn main() {}
+// === a loop's recursive call, the reference derived from itself
+fn rec(n: &Item, h: ^Hold, d: int): int {
+    if d == 0 {
+        h.items = new []Item(0)
+        return 0
+    }
+    var k = &n.kids[0]
+    var s = 0
+    var i = 0
+    while i < 2 {  // error: a recursive call in this loop writes through a handle, which could fre
+        k = &k.kids[0]
+        s += rec(n, h, d - 1)
+        i += 1
+    }
+    return s
+}
+fn main() {}

@@ -51,6 +51,16 @@ PRELUDE = [
     "fn two(mut a: &Node, mut b: &Node) { a.value += 1; b.value += 10 }",
     "fn stepArr(xs: &[]Node, mut n: &Node) { n.value += len(xs) }",
     "fn bumpRef(mut n: &Node) { n.value += 1 }",
+    "fn cutRef(mut n: &Node) { n.next = nil }",
+    "fn eatArr(a: []Node): int { return len(a) }",
+    "fn eatNode(n: Node): int { return n.value }",
+    "fn holdN(n: &Node, k: int): int { return n.value + k }",
+    "fn holdO(k: int, n: &Node): int { return k + n.value }",
+    "fn renewAt(mut a: &[]Node, i: int): int { a[i] = mk(100 + i); return i }",
+    "fn bumpAt(mut a: &[]Node, i: int): int { a[i].value += 1; return 0 }",
+    "fn sumTake(l: ?Node): int { return sum(l) }",
+    "fn sum2(x: ?Node, y: ?Node): int { return sum(x) + sum(y) }",
+    "fn clearG(): int { gxs = new []Node(0); return 0 }",
     "fn gdrop() { ga = nil }",
     "fn shrinkInt(mut a: &[]Node): int { truncate(a, 0); return 1 }",
     "fn fresh(): []Node { return new []Node(0) }",
@@ -776,11 +786,86 @@ class Gen:
         n = self.r.choice(refs)
 
         def run(st):
-            st.refs[n][0].v += len(st.xs)
-            for other, ref in st.refs.items():     # a mut change through n invalidates the rest
-                if other != n:
-                    ref[1] = False
+            st.refs[n][0].v += len(st.xs)          # it frees nothing, so the other references stay valid
         return Stmt([f"stepArr(xs, {n})"], run)
+
+    # ---- argument order: the arguments of one call run left to right, so a reference taken by an earlier
+    # ---- argument is held while a later one runs, and a move or free in an earlier one has happened before
+    # ---- a later one looks
+
+    def arg_order_stmt(self):
+        """A call whose arguments are in an order that is valid: the argument that frees or moves comes
+        first (and the reference after it is taken from what is left), or it touches nothing the reference
+        names (another local, or a scalar of an element)."""
+        if not self.st.xs:
+            return None
+        n = len(self.st.xs)
+        i, j = self.r.randrange(n), self.r.randrange(n)
+        kind = self.r.choice(['renew_first', 'bump', 'take_other', 'take_both', 'take_twice'])
+        live = self.live()
+        if kind == 'renew_first':
+            def run(st):
+                free(st.xs[i])
+                st.xs[i] = Obj(100 + i)
+                invalidate(st)
+                st.out.append(str(i + st.xs[j].v))
+            return Stmt([f"println(holdO(renewAt(xs, {i}), &xs[{j}]))"], run)
+        if kind == 'bump':
+            def run(st):
+                st.xs[j].v += 1                      # a scalar: nothing is freed, so no reference is invalid
+                st.out.append(str(st.xs[i].v))
+            return Stmt([f"println(holdN(&xs[{i}], bumpAt(xs, {j})))"], run)
+        if kind == 'take_other' and live:
+            x = self.r.choice(live)
+
+            def run(st):
+                chain = st.opt[x]
+                st.opt[x] = None
+                free(chain)
+                st.out.append(str(st.xs[i].v + chain_sum(chain)))
+            return Stmt([f"println(holdN(&xs[{i}], sumTake(take({x}))))"], run)
+        if kind == 'take_both' and len(live) >= 2:
+            x, y = self.r.sample(live, 2)
+
+            def run(st):
+                cx, cy = st.opt[x], st.opt[y]
+                st.opt[x] = st.opt[y] = None
+                free(cx)
+                free(cy)
+                st.out.append(str(chain_sum(cx) + chain_sum(cy)))
+            return Stmt([f"println(sum2(take({x}), take({y})))"], run)
+        if kind == 'take_twice' and live:
+            x = self.r.choice(live)
+
+            def run(st):
+                chain = st.opt[x]
+                st.opt[x] = None
+                free(chain)
+                st.out.append(str(chain_sum(chain)))
+            return Stmt([f"println(sum2(take({x}), take({x})))"], run)
+        return None
+
+    def arg_order_bad_stmt(self):
+        """The same calls with the arguments the other way round, or a later argument that frees what an
+        earlier one points into: rejected."""
+        kinds = ['renew', 'eat', 'replace']
+        if self.st.gxs:
+            kinds.append('global')
+        if self.live():
+            kinds.append('moved')
+        kind = self.r.choice(kinds)
+        if kind == 'moved':
+            x = self.r.choice(self.live())
+            return self.invalid_stmt([f"println(sum2({x}, take({x})))"])
+        if kind == 'global':
+            i = self.r.randrange(len(self.st.gxs))
+            return self.invalid_stmt([f"println(holdN(&gxs[{i}], clearG()))"])
+        if not self.st.xs:
+            return None
+        i = self.r.randrange(len(self.st.xs))
+        call = {'renew': f"renewAt(xs, {i})", 'eat': "eatArr(xs)",
+                'replace': f"eatNode(replace(xs[{i}], mk(7)))"}[kind]
+        return self.invalid_stmt([f"println(holdN(&xs[{i}], {call}))"])
 
     # ---- top-level ownership statements
 
@@ -878,10 +963,7 @@ class Gen:
         n = self.r.choice(refs)
 
         def run(st):
-            st.refs[n][0].v += 1
-            for other, ref in st.refs.items():
-                if other != n:
-                    ref[1] = False
+            st.refs[n][0].v += 1                   # it frees nothing, so the other references stay valid
         return Stmt([f"bumpRef({n})"], run)
 
     # ---- statements the rules reject: the program is invalid
@@ -964,13 +1046,13 @@ class Gen:
                                   f"{x} = nil", f"println(sum({r}))"])
 
     def mut_call_dead_stmt(self):
-        """A mutable call through one reference invalidates another, which is then read."""
+        """A mutable call that frees through one reference invalidates another, which is then read."""
         if not self.st.xs:
             return None
         a, b = f"r{self.nrefs}", f"r{self.nrefs + 1}"
         self.nrefs += 2
         i, j = self.r.randrange(len(self.st.xs)), self.r.randrange(len(self.st.xs))
-        call = self.r.choice([f"bumpRef({a})", f"stepArr(xs, {a})"])
+        call = f"cutRef({a})"                      # it frees what the node points to, below the array
         return self.invalid_stmt([f"var {a} = &xs[{i}]", f"var {b} = &xs[{j}]", call,
                                   f"println({b}.value)"])
 
@@ -1195,13 +1277,22 @@ class Gen:
                self.loop_move_stmt, self.discard_stmt]
         if self.full:
             makers += [self.move_stmt] * 2 + [self.elem_set_stmt, self.truncate_stmt,
-                                              self.ref_new_stmt, self.h_dead_stmt, self.bumpRef_stmt]
+                                              self.ref_new_stmt, self.h_dead_stmt, self.bumpRef_stmt,
+                                              self.arg_order_stmt]
             if self.r.random() < 0.1:
                 s = self.ref_dead_stmt()
                 if s is not None:
                     return s
             if self.r.random() < 0.04:
                 s = self.mut_call_dead_stmt()
+                if s is not None:
+                    return s
+            if self.r.random() < 0.01:
+                s = self.arg_order_bad_stmt()
+                if s is not None:
+                    return s
+            if self.r.random() < 0.12:
+                s = self.arg_order_stmt()
                 if s is not None:
                     return s
             if self.r.random() < 0.03:
@@ -1225,7 +1316,7 @@ class Gen:
                self.index_target_stmt, self.index_assign_target_stmt,
                self.moved_index_stmt, self.moved_assign_stmt, self.moved_append_stmt,
                self.moved_truncate_stmt, self.moved_replace_stmt, self.moved_root_index_stmt,
-               self.replace_sink_index_stmt]
+               self.replace_sink_index_stmt, self.arg_order_bad_stmt]
         s = ops[self.seed % len(ops)]()
         return s if s is not None else self.pick(ops)
 
