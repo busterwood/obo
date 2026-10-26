@@ -1331,7 +1331,7 @@ exist yet (section 10 of `LANGUAGE.md`). The fuzzer has no argument-order kind.
 
 ## Optimization plan
 
-Status: Phases 0, 1 (loop inversion included) and 2 done; Phase 3 measured and stopped (see below). Phases are ordered by expected value per unit of cost.
+Status: Phases 0, 1 (loop inversion included) and 2 done; Phase 3 and the peephole pass measured and stopped (see below). Phases are ordered by expected value per unit of cost.
 Each has a gate; a phase that misses its gate is recorded here and stopped.
 
 **Baseline.** A loop `s = s + i * 2` over `i < n` compiles with every local in a stack
@@ -1909,11 +1909,74 @@ so sharing them changes no result. Only the basic types are compared by identity
 
 **Budget lowered, 1,091,000 to 983,000** (measured live peak 954,912 bytes, about 3% over). The function records moved out of `Sym` (the row above). `FnRec` holds what only a function has: the calls waiting for its address, its parameters and their modes, and the globals it might free. `Sym` holds a handle to it, `fnRec`. A function gets its record in `fnDecl`, and every other symbol holds `noFnRec`, one shared record that nothing writes, as `bind` does with `noBind`. The output did not change: the 44 programs and the port's source compile to the same bytes and messages as main's compiler.
 
-### Peephole pass (not planned)
+### Peephole pass (measured; not built)
 
 The obx design (`README.md`, "Future work: a peephole optimizer") still applies: an
-emit-time pass that keeps the compiler single-pass. Revisit it only if reloads that
-remain after Phase 2 are measurable on the benchmarks.
+emit-time pass that keeps the compiler single-pass. The plan said to revisit it only if
+the reloads that remain after Phase 2 are measurable on the benchmarks. They are not.
+
+**What remains in the hot loops** (`micro.py --disasm`, on main at c9510c6):
+
+| Pattern | Where | Found |
+|---|---|---|
+| store, then reload of the same slot | alloc: `mov %rbx,-8(%rbp)` then `mov -8(%rbp),%r8` | 1 per iteration; the loop is 25 ns of runtime allocation |
+| mov chain `mov A,T; op X,T; mov T,A` (`x = x op y` on a local in a register) | loop (2), array (2) | the only pattern in the two tight loops |
+| mov chain `mov m,T; mov T,r` | fib's base case (`mov 0x10(%rbp),%r8; mov %r8,%rax`) | 1 per call on half the calls; register moves are eliminated at rename |
+| a second load of one slot (`mov -8(%rbp),%r10; mov -8(%rbp),%r11`) | array: 3 reloads of the array local per iteration | 1 avoidable |
+| push, then pop of the same register | none adjacent (fib's `push`/`pop` have a call between) | 0 |
+| jump to the next instruction | none (loop inversion left none) | 0 |
+| compare with 0 after an op that set the flags | none (the compares are against `n` or a constant) | 0 |
+
+**Upper bounds**, by hand-patching the compiled loop and counting with `perf stat` (Ryzen 7 8745HS, WSL):
+
+- loop, `s = s + i*2; i = i + 1` as `add %rbx,%r14` and `add $1,%r13`: 9 to 5 instructions
+  per iteration, and 1.60 to 1.00 cycles per iteration when the loop is laid out well
+  (1,603,703,457 to 1,003,487,335 cycles for 1e9 iterations).
+- array, the two chains folded: 4,900,731,697 to 4,100,731,731 instructions, but 1,036,857,494 to
+  1,035,125,140 cycles (-0.2%) when the patched loop keeps the alignment of the original. Adding the
+  shared array load: 1,036,198,175. The loop is bound by the store-to-load dependence through `a[i]`
+  (5.2 cycles per element), not by instruction count. (A first patch that moved the loop to another
+  alignment ran 19% slower with no instruction changed: see the layout effect below.)
+- alloc and fib: the removable instructions are 1 to 3 of 44 and 54, among a runtime allocation and a
+  call/ret chain; not measurable.
+
+**The built pass.** A fold in `store`: the emitters note the copy of a local into a temporary and the
+operation on it (add, sub, and, or, xor, imul by a register or an immediate, and `x * const`), and
+when the store copies that temporary back into the same local, with the code ending where the
+operation does and no position asked for (`pc()`) since the copy began, the three instructions are
+replaced by the operation on the local. It was built and passed everything it was run against
+(`run_fork` 441 plus a new `tests/run/peephole.obx`, `port_test`, `port_compare` Stage B 592 of 592 in my run
+and 593 of 593 in the review, with a live peak of 969,648 bytes in mine and 969,712 in the review
+(the patched figures move by a few dozen bytes between builds; main's, measured by `port_compare.py` on this
+branch, is 954,912, and `PEAK_BUDGET` stays 983,000), `homes_check`, `homes_edge`, and the 10 mutants that the
+comparison catches; an 11th, speed-only, caught by `homes_check`, was added later) and then measured with the
+compiler of main and this one, interleaved, 7 runs, minimum cycles:
+
+| | instructions | cycles |
+|---|---|---|
+| loop | 9.00e9 to 5.00e9 (-44%) | 2,008,549,766 to 2,005,327,336 (-0.2%) |
+| array | 4.90e9 to 4.10e9 (-16%) | 1,039,606,821 to 1,010,995,649 (-2.8%) |
+| alloc | 4.30e9 to 4.26e9 (-1%) | 2,314,391,888 to 2,366,360,719 (+2.2%) |
+| fib | unchanged | 2,853,620,039 to 2,853,716,305 |
+| lists, strings | unchanged | -0.3%, -0.4% |
+| tokens, trees | unchanged | +9.2%, -4.5% (same instructions: noise from layout) |
+
+The loop did not get faster although it runs 44% fewer instructions. Both versions run 2.0 cycles per
+iteration, and the reason is where the loop sits, not what it holds: on this CPU a loop that
+straddles a 64-byte line can cost 2 cycles per iteration whatever it contains. The same five-instruction
+loop, assembled at 32 alignments, ran at 1.0 to 1.2 cycles in 19 of them, 1.3 to 1.8 in 4 and 2.0 in 9;
+the nine-instruction loop of main ran at 1.60 in 14 and at 1.8 to 2.4 in the other 18 (mean 1.87 against
+1.40 cycles, -25%). So the fold would pay on average over layouts, but the committed benchmarks do not
+show it, and the noise between identical programs (tokens +9%, trees -4.5%) is larger than the array's 2.8%.
+
+**Decision: not built; no change to `src/obo.obo`, the tests or the seed.** The gate is a measured gain
+of a few percent on a real benchmark, and none of the eight shows one outside the layout noise. The
+change is kept as `tools/peephole_fold.patch` (a diff against c9510c6 that adds the pass, the test and
+11 mutants; 10 are caught by the comparison and one, the fold never applied, by `homes_check.py`). Not
+planted, because equivalent today: the check that no position was asked for between the copy and its
+store (no emitter asks for one there) and the clearing of the notes in `truncCode`. If the fold is
+wanted later, the lever the numbers point to is first the alignment of loop tops (padding the target
+of a backward jump to 16 bytes), measured the same way.
 
 ### Rules for every phase
 

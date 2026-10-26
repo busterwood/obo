@@ -1,0 +1,422 @@
+diff --git a/obo/src/obo.obo b/obo/src/obo.obo
+index 750f01b..a72885f 100644
+--- a/obo/src/obo.obo
++++ b/obo/src/obo.obo
+@@ -486,6 +486,25 @@ var cur = new []byte(CHUNK)
+ var curLen = 0
+ var codeBase = 0                    // where cur starts: CHUNK times len(code)
+ 
++// The peephole (FORK.md, "Peephole pass"). `x = x op y` on a local in a register compiles to a copy of the
++// local into a temporary, the operation on the temporary and a copy back; the store folds the three into
++// one operation on the local. The emitters note what they emitted last, so that nothing is decoded, and
++// the record is valid only while the code ends where the operation does (foldEnd == here()), nothing
++// has asked for a position since the copy began (barrier <= foldAt: a position is a jump target or a
++// patch point, and the fold would move or remove what is after it) and the code was not cut back.
++var barrier = 0                     // the last position pc() gave out
++var cpAt = -1                       // the last copy of a local's register into a temporary: start, end,
++var cpEnd = -1                      // the temporary and the local
++var cpDst = 0
++var cpSrc = 0
++var foldAt = 0                      // the operation on that copy, noted by binop: where the copy began,
++var foldEnd = -1                    // where the operation ended (-1: none), the local, the temporary,
++var foldHome = 0
++var foldT = 0
++var foldForm = 0                    // 1 alu with an immediate, 2 register operand, 3 imul by an immediate
++var foldOpc = 0                     // the alu code (form 1) or the opcode (form 2)
++var foldArg = 0                     // the immediate, or the operand register
++
+ fn emit(b: int) {
+     cur[curLen] = byte(b)
+     curLen += 1
+@@ -513,6 +532,8 @@ fn setCode(at: int, v: int) {
+ 
+ // cuts the code back to n bytes: the chunk n is in becomes cur again
+ fn truncCode(n: int) {
++    cpEnd = -1
++    foldEnd = -1
+     if n < codeBase {
+         let k = n >> CHUNK_BITS
+         for i in 0..CHUNK { cur[i] = code[k].b[i] }
+@@ -537,7 +558,13 @@ fn emit64(v: int) {
+ fn fits8(v: int): bool { return v >= -128 && v < 128 }
+ fn fits32(v: int): bool { return v >= -2147483648 && v < 2147483648 }
+ 
+-fn pc(): int { return codeBase + curLen }
++// a position that is not asked for as a label or a patch point (pc() is: see barrier)
++fn here(): int { return codeBase + curLen }
++
++fn pc(): int {
++    barrier = codeBase + curLen
++    return barrier
++}
+ 
+ fn emitOpcode(opc: int) {
+     if opc > 255 { emit(opc >> 8) }
+@@ -1620,7 +1647,12 @@ fn load(x: Item): Item {
+     if x.mode == "reg" {
+         if !x.home { return x }
+         let c = alloc()                       // a local's own register is copied: the caller may change what it gets
++        let s0 = here()
+         movRR(c, x.r)
++        cpAt = s0
++        cpEnd = here()
++        cpDst = c
++        cpSrc = x.r
+         return makeReg(x.typ, c)
+     }
+     var r = 0
+@@ -1683,6 +1715,36 @@ fn falseJump(mut x: &Item): int {
+     return x.F
+ }
+ 
++// the operation noted in the fold fields, on the local h instead of its copy
++fn applyFold(h: int) {
++    let form = foldForm
++    let opc = foldOpc
++    let arg = foldArg
++    truncCode(foldAt)
++    if form == 1 {
++        aluRI(opc, h, arg)
++    } else if form == 2 {
++        opReg(opc, h, arg, true, false)
++    } else {
++        opReg(0x69, h, h, true, false)
++        emit32(arg)
++    }
++}
++
++// binop emitted an operation on the register t at a0; it is foldable if it follows the copy of a local into t
++fn noteFold(a0: int, form: int, opc: int, arg: int, t: int) {
++    foldEnd = -1
++    if cpEnd == a0 && cpDst == t {
++        foldAt = cpAt
++        foldHome = cpSrc
++        foldT = t
++        foldForm = form
++        foldOpc = opc
++        foldArg = arg
++        foldEnd = here()
++    }
++}
++
+ fn store(dst: Item, source: Item) {
+     var src = source
+     if dst.home {
+@@ -1690,7 +1752,11 @@ fn store(dst: Item, source: Item) {
+             movRI(dst.r, src.val)
+         } else {
+             src = asReg(src)
+-            movRR(dst.r, src.r)
++            if foldEnd == here() && foldT == src.r && foldHome == dst.r && barrier <= foldAt {
++                applyFold(dst.r)
++            } else {
++                movRR(dst.r, src.r)
++            }
+             release(src.r)
+         }
+         return
+@@ -4471,8 +4537,15 @@ fn binop(o: int, x0: Item, y0: Item): Item {
+     if y.mode == "elem" || (y.mode == "mem" && y.width == 1) { y = load(y) }
+     if o == T_STAR && x.home && y.mode == "const" && fits32(y.val) {
+         let t = alloc()                           // imul reads one register and writes another
++        let a0 = here()
+         opReg(0x69, t, x.r, true, false)
+         emit32(y.val)
++        foldAt = a0                               // a store of t into x.r becomes imul on x.r
++        foldHome = x.r
++        foldT = t
++        foldForm = 3
++        foldArg = y.val
++        foldEnd = here()
+         drop(y)
+         x = makeReg(tInt, t)
+         return x
+@@ -4484,7 +4557,11 @@ fn binop(o: int, x0: Item, y0: Item): Item {
+             emit32(y.val)
+             drop(y)
+         } else {
++            let direct = y.mode == "reg"
++            let ry = y.r
++            let a0 = here()
+             opOperand(0x0FAF, x.r, y)
++            if direct { noteFold(a0, 2, 0x0FAF, ry, x.r) }
+         }
+     } else if o == T_SLASH || o == T_PERCENT {
+         if y.mode == "const" && y.val == 0 { error("division by zero") }
+@@ -4519,10 +4596,16 @@ fn binop(o: int, x0: Item, y0: Item): Item {
+     } else {
+         let c = aluCode(o)
+         if y.mode == "const" && fits32(y.val) {
++            let a0 = here()
+             aluRI(c, x.r, y.val)
++            noteFold(a0, 1, c, y.val, x.r)
+             drop(y)
+         } else {
++            let direct = y.mode == "reg"
++            let ry = y.r
++            let a0 = here()
+             opOperand(c * 8 + 3, x.r, y)
++            if direct { noteFold(a0, 2, c * 8 + 3, ry, x.r) }
+         }
+     }
+     x.typ = tInt
+diff --git a/obo/tests/homes_check.py b/obo/tests/homes_check.py
+index 262b039..b3bb830 100644
+--- a/obo/tests/homes_check.py
++++ b/obo/tests/homes_check.py
+@@ -105,13 +105,34 @@ fn main() {
+ }
+ """
+ 
++# the peephole (FORK.md, "Peephole pass"): `x = x op y` on a local in a register is one instruction on the
++# local, in every form, also at the first instruction of a loop body (a jump target); no temporary is copied back
++FOLDS = """
++fn main() {
++    var t = 1
++    var i = 0
++    while true {
++        i = i + 1
++        t = t + i
++        t = t - 3
++        t = t * i
++        t = t * 3
++        t = t & 0xFFFF
++        if i >= 10 { break }
++    }
++    println(t)
++}
++"""
++BACK = r'mov +%r(bx|8|9|1[01]),%r1[2-5]|mov +%r1[2-5],%r(bx|8|9|1[01])'
++
+ # program, most stack-slot instructions allowed, and a pattern that no instruction may match
+ PROGRAMS = {
+-    'the tight loop': (open(os.path.join(FORK, 'bench', 'loop_obo.obx')).read(), 0, None),
++    'the tight loop': (open(os.path.join(FORK, 'bench', 'loop_obo.obx')).read(), 0, BACK),
+     'registers given back at the end of a scope': (SCOPES, 10, None),
+     'the hottest local is declared last': (RANKED, 18, None),
+     'a runtime call in a loop pushes no register of a local': (RUNTIME, 0, r'push +%r1[2-5]'),
+     'a returned local is read where it is': (RETURN, 1, r'mov +%r1[2-5],%r(bx|8|9|1[01])'),
++    'x = x op y is done in place': (FOLDS, 0, BACK),
+     'a bool parameter is a candidate': (BOOLPARAM, 2, None),
+     'the limit of a for loop is given back with its variable': (MORE, 16, None),
+ }
+diff --git a/obo/tests/mutate_port.py b/obo/tests/mutate_port.py
+index 15ac657..0b65b53 100644
+--- a/obo/tests/mutate_port.py
++++ b/obo/tests/mutate_port.py
+@@ -338,11 +338,32 @@ MUTANTS.update({
+     "retry: scanner not rewound": [("        pos = sPos\n", "")],
+     "retry: token not restored": [("        sym = sSym\n", "")],
+ })
+-SHAPES = {"scan: nothing counted", "scan: ranking ignored", "scope end does not give the register back",
++SHAPES = {"fold: refused at a jump target", "fold: never (speed only)", "fold: the copy is kept", "scan: nothing counted", "scan: ranking ignored", "scope end does not give the register back",
+           "runtime calls push the locals' registers", "return copies a local's register",
+           "for limit's register never given back", "bool parameters left in memory"}
+ EDGE = {"retry: free list left as the first pass had it"}
+ 
++# the peephole (FORK.md, "Peephole pass"): the store of `x = x op y` on a local in a register folds the copy, the
++# operation and the copy back into one operation on the local. Caught by tests/run/peephole.obx (through the
++# comparison of the port's output with obo's) or, for the one that only costs speed, by tests/homes_check.py.
++# Not planted, equivalent: `barrier <= foldAt` (no emitter asks for a position between a copy and its store, so
++# nothing reaches the guard today) and the records cleared in truncCode (a cut-back would have to be followed by
++# code ending exactly where the old operation did, with the same registers), and `cpDst == t` in noteFold (an
++# operation on a register right after the copy of a local into another one: no emitter makes that shape).
++MUTANTS.update({
++    "fold: more was emitted after the operation": [("if foldEnd == here() && foldT == src.r", "if foldT == src.r")],
++    "fold: a different local": [(" && foldHome == dst.r && barrier <= foldAt {", " && barrier <= foldAt {")],
++    "fold: the copy is kept": [("    truncCode(foldAt)\n    if form == 1 {", "    if form == 1 {")],
++    "fold: immediate changed": [("        aluRI(opc, h, arg)\n    } else if form == 2 {", "        aluRI(opc, h, arg + 1)\n    } else if form == 2 {")],
++    "fold: operand register is the temporary": [("        opReg(opc, h, arg, true, false)\n    } else {", "        opReg(opc, h, foldT, true, false)\n    } else {")],
++    "fold: imul by an immediate keeps the temporary": [("        opReg(0x69, h, h, true, false)\n        emit32(arg)\n    }\n}", "        opReg(0x69, foldT, h, true, false)\n        emit32(arg)\n    }\n}")],
++    "fold: a loaded operand taken for a register (alu)": [('            let direct = y.mode == "reg"\n            let ry = y.r\n            let a0 = here()\n            opOperand(c * 8 + 3', '            let direct = true\n            let ry = y.r\n            let a0 = here()\n            opOperand(c * 8 + 3')],
++    "fold: a loaded operand taken for a register (imul)": [('            let direct = y.mode == "reg"\n            let ry = y.r\n            let a0 = here()\n            opOperand(0x0FAF', '            let direct = true\n            let ry = y.r\n            let a0 = here()\n            opOperand(0x0FAF')],
++    "fold: the operation need not follow the copy": [("    if cpEnd == a0 && cpDst == t {", "    if cpDst == t {")],
++    "fold: refused at a jump target": [(" && barrier <= foldAt {", " && barrier < foldAt {")],
++    "fold: never (speed only)": [("            if foldEnd == here() && foldT", "            if false && foldT")],
++})
++
+ # mutants that keep memory alive: a backstop for a leak too small to cross PEAK_BUDGET, caught when the
+ # peak rises above the unmutated peak. "parameters kept" is already caught by the budget line itself.
+ KEEPS_ALIVE = {"parameters kept"}
+diff --git a/obo/tests/run/peephole.obx b/obo/tests/run/peephole.obx
+new file mode 100644
+index 0000000..fc1180c
+--- /dev/null
++++ b/obo/tests/run/peephole.obx
+@@ -0,0 +1,176 @@
++// The peephole (FORK.md, "Peephole pass"): `x = x op y` on a local in a register is one instruction
++// on the local, not a copy, the operation and a copy back. The locals here are hot (used in loops), so
++// they live in registers; the results are what the copies would give.
++
++fn alu(n: int): int {
++    var a = 1000
++    var b = 7
++    var i = 0
++    while i < n {
++        a = a + 3
++        a = a - 1
++        a = a & 0xFFFFF
++        a = a | 4
++        a = a ^ 5
++        a = a + b
++        a = a - b
++        a = a * b
++        a = a + 100000
++        a = a - 70000
++        a = a & 0x7FFFFFFF
++        b = b + 1
++        i = i + 1
++    }
++    return a + b
++}
++
++// the operand is the local itself, or the local is the second operand (never folded)
++fn selfOps(n: int): int {
++    var a = 3
++    var b = 5
++    var i = 0
++    while i < n {
++        a = a + a
++        a = a - a + 1
++        b = a - b
++        b = b - a
++        a = b - a
++        a = a * a
++        a = a & 0xFFFF
++        b = b * b
++        b = b & 0xFFFF
++        i = i + 1
++    }
++    return a * 1000003 + b
++}
++
++// a different local on the left: the copy back is needed
++fn crossed(n: int): int {
++    var a = 1
++    var b = 2
++    var c = 3
++    var i = 0
++    while i < n {
++        c = a + b
++        a = b + c
++        b = c + a + 1
++        a = a & 0xFFFFF
++        b = b & 0xFFFFF
++        i = i + 1
++    }
++    return a + b + c
++}
++
++// the multiplication by a constant, which has no copy
++fn scale(n: int): int {
++    var a = 1
++    var b = 1
++    var i = 0
++    while i < n {
++        a = a * 3
++        a = a & 0xFFFFFF
++        b = a * 5
++        b = b * -7
++        b = b & 0xFFFFFF
++        a = a * 1001
++        a = a & 0xFFFFFF
++        i = i + 1
++    }
++    return a + b
++}
++
++// a fold at the first instruction of a loop body and of a branch, after a branch, before a jump
++fn labels(n: int): int {
++    var a = 0
++    var b = 0
++    var i = 0
++    while i < n {
++        a = a + 1
++        if a % 3 == 0 {
++            b = b + 2
++        } else {
++            b = b - 1
++        }
++        b = b + a
++        if b > 100000 { b = b - 100000; continue }
++        a = a + b
++        a = a & 0xFFFF
++        if a == 12345 { break }
++        i = i + 1
++    }
++    return a * 7 + b
++}
++
++fn first(n: int): int {
++    var t = 0
++    var i = 0
++    while true {
++        i = i + 1
++        t = t + i
++        if i >= n { break }
++    }
++    return t
++}
++
++// more is done to the result of the operation before the store: the operation is not the last thing emitted
++fn after(n: int): int {
++    var a = 100
++    var b = 3
++    var i = 0
++    while i < n {
++        a = (a + 5) / 2
++        a = (a + 7) % 1000
++        a = (a - 1) << 2
++        a = (a + 9) >> 1
++        a = (a + 1) * 3
++        a = (a + b) * b
++        a = (a & 0xFFFF) + 1
++        b = (b + 2) * 2 - b
++        b = b & 0xFF
++        i = i + 1
++    }
++    return a * 1000 + b
++}
++
++fn seven(): int { return 7 }
++
++var gv = 3
++var gw = 5
++
++// an operand that is an element, a call, a sum, a negative constant, a constant too large for an immediate
++fn operands(n: int): int {
++    let arr = new []int(8)
++    for k in 0..8 { arr[k] = k * k }
++    var s = 0
++    var m = 1
++    var i = 0
++    while i < n {
++        s = s + arr[i & 7]
++        s = s - seven()
++        s = s + (i + 1)
++        s = s + -3
++        s = s ^ 0x123456789
++        s = s + 0x123456789
++        s = s + gv
++        s = s - gw
++        m = m * gv
++        m = m * 0x123456789
++        m = m * gw
++        s = s & 0xFFFFFFFFFF
++        m = m * ((i & 1) * 2 + 1)
++        m = m & 0xFFFFFF
++        i = i + 1
++    }
++    return s + m
++}
++
++fn main() {
++    println(alu(50))                  // expect: 54581337
++    println(selfOps(20))              // expect: 4000013
++    println(crossed(30))              // expect: 2672251
++    println(scale(12))                // expect: 29216950
++    println(labels(40))               // expect: 345062
++    println(first(100))               // expect: 5050
++    println(after(25))                // expect: 20203103
++    println(operands(40))             // expect: 262112948905
++}
