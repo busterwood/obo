@@ -1293,7 +1293,7 @@ var blocks = new []Block(0)
 var narrowStack = new []NEntry(0)
 var loops = new []Loop(0)
 var originSyms = new []^Sym(0)   // the let handles that have an origin (hOrigin), in declaration order
-var jumpSeq = 0                  // the breaks and continues compiled so far
+var depthJumps = new []int(0)    // per loop depth: the breaks and continues compiled so far that leave a loop at that depth
 var pendSym = new []^Sym(0)      // the frees (see originFree) inside a loop of a handle declared outside it, to be
 var pendDepth = new []int(0)     // checked where that loop ends, when it is known whether the loop uses the handle:
 var frLine = new []int(0)      // the handle, the loop (an index of loops), and the place of the free
@@ -1304,6 +1304,8 @@ var pendNest = new []int(0)      // len(loops) where it was made
 var contSeq = 0                  // the continues compiled so far
 var brkSeq = 0                   // the breaks compiled so far
 var inAlive = false              // the argument of alive is being compiled: naming a handle there is not a use
+var lastNamed: ?^Sym = nil       // the tracked let handle named last, and its usedAt before that (see nameItem)
+var lastNamedPrev = 0
 var deferH = new []^Sym(0)       // the handles (originSyms) that the defer bodies in scope use, with the index of the
 var deferAt = new []int(0)       // block each defer is declared in
 var deferFrees = new []^Sym(0)   // the owners a defer body being compiled assigns over or drops (originFree)
@@ -3498,6 +3500,16 @@ fn originMove(s: ?^Sym, move: bool) {
     }
 }
 
+// the handle x was just named by an expression that is no use of its object (alive(x), a copy of a dead handle):
+// it is not counted
+fn unname(x: ?^Sym) {
+    if x != nil && lastNamed == x {
+        let h = x
+        h.usedAt = lastNamedPrev
+        lastNamed = nil
+    }
+}
+
 // a whole move of the owner s inside a loop that a let handle made from it was declared outside of: the
 // next iteration would still see the handle's origin, which this move clears. The move is allowed if the
 // loop never names the handle (pendingFreeCheck), and the handle may then not be named again (movedLoop)
@@ -4065,8 +4077,6 @@ fn builtin(name: string): Item {
     if name == "alive" {
         expect(T_LPAREN, "")
         // asking whether a handle is alive is no use of its object: naming the handle here is not counted (usedAt)
-        var named = new []int(0)
-        for i in 0..len(originSyms) { append(named, originSyms[i].usedAt) }
         var bare = false
         if sym == T_IDENT {
             var q = 0
@@ -4078,12 +4088,7 @@ fn builtin(name: string): Item {
         inAlive = false
         expect(T_RPAREN, "")
         if h.typ.kind != "handle" { error("alive needs a handle, not " + tname(h.typ)) }
-        let hs = h.sym
-        if hs != nil {
-            for i in 0..len(named) {
-                if originSyms[i] == hs { hs.usedAt = named[i] }
-            }
-        }
+        unname(h.sym)
         return rtCall1(RT_ALIVE, h, tBool)
     }
     if name == "take" {
@@ -4293,6 +4298,8 @@ fn nameItem(s: ^Sym, name: string, target: bool): Item {
         x.hOrigin = s.hOrigin
         if s.hDepth > 0 {
             useSeq += 1
+            lastNamed = s
+            lastNamedPrev = s.usedAt
             s.usedAt = useSeq
             if s.movedLoop && !inAlive {
                 error("handle '" + name + "' was made from an owner that a loop moved: make the handle again")
@@ -5008,6 +5015,9 @@ fn varDecl(kind: string, isGlobal: bool) {
                     for i in 0..len(originSyms) {
                         if originSyms[i] == x.sym { dead = originDead[i] }
                     }
+                    // naming a handle that is dead here, to copy it, is no use of its object: the copy is dead too, and
+                    // every use of it is refused. (A copy of a handle not known to be dead counts as a naming.)
+                    if dead != nil { unname(x.sym) }
                     append(originSyms, s)
                     append(originDead, dead)
                 }
@@ -5258,18 +5268,31 @@ fn block(): bool {
 
 fn ifStat(): bool
 
+// the breaks and continues so far that leave the loop being compiled: those of the loops inside it are not counted,
+// since they do not leave this one
+fn jumpsHere(): int {
+    if len(loops) == 0 { return 0 }
+    while len(depthJumps) < len(loops) { append(depthJumps, 0) }
+    return depthJumps[len(loops) - 1]
+}
+
+fn addJump() {
+    while len(depthJumps) < len(loops) { append(depthJumps, 0) }
+    depthJumps[len(loops) - 1] += 1
+}
+
 // an arm of an if or a match: it starts from the marks before the statement (d0), and the marks after the
 // statement are the union (acc) of the arms that go on. An arm that ends outside a loop ends in a return,
 // and goes nowhere; inside a loop it may be a break or a continue, so its marks are kept
 fn armBlock(d0: &[]?^Sym, mut acc: &[]?^Sym, isIf: bool): bool {
     deadSet(d0)
     var term = false
-    let js = jumpSeq
+    let js = jumpsHere()
     if isIf { term = ifStat() } else { term = block() }
     // an arm that ends does not go on to what follows the statement: its marks are the state after the loop,
     // if it leaves by a break or a continue, and nowhere if it returns
     if term {
-        if len(loops) > 0 && jumpSeq != js {
+        if len(loops) > 0 && jumpsHere() != js {
             let lx = &loops[len(loops) - 1]
             while len(lx.exitDead) < len(originDead) { append(lx.exitDead, nil) }
             for i in 0..len(originDead) {
@@ -6018,7 +6041,7 @@ fn statement(): bool {
         }
         T_BREAK, T_CONTINUE {
             next()
-            jumpSeq += 1
+            if len(loops) > 0 { addJump() }
             if k == T_BREAK { brkSeq += 1 } else { contSeq += 1 }
             if len(loops) == 0 { error("'" + tokName(k) + "' outside a loop") }
             let loop = &loops[len(loops) - 1]

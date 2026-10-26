@@ -1307,7 +1307,7 @@ more than the 5,040 it cost on 03296b6. The cause was not separated out: the two
 up, as the image-buffer growth in "Reference bindings per path" did not.
 
 **Not covered.** No existing test expectation changed, and the port needed no rewrite. Methods do not
-exist yet (section 10 of `LANGUAGE.md`). The fuzzer has no argument-order kind.
+exist yet (section 10 of `LANGUAGE.md`). The fuzzer has an argument-order kind (see "Handle-owner and reference false positives").
 
 ## Assignment over a handle's owner (done)
 
@@ -2145,3 +2145,78 @@ of a backward jump to 16 bytes), measured the same way.
 - **Pre-scan** (resolved: allowed). A token pre-scan of one function is acceptable under the
   single-pass goal, as decision 5's "buffer one function at a time". Built for Phase 2; see
   "Phase 2 (done)".
+
+## Handle-owner and reference false positives (done)
+
+A batch of known false positives, each fixed by one rule, with its unsafe neighbours kept refused. Accepted
+shapes: `tests/run/fp_loops.obx`, `tests/run/fp_refs.obx`. Neighbours: `tests/errors/fp_loops.obx`,
+`tests/errors/fp_refs.obx`. Mutants: `FP_MUTANTS` in `tests/mutate_fork.py` (also run by `mutate_port.py`).
+The write-up named `FP_join_carry_other_path` was not in this file; the shape found and fixed under that
+name is item 1.
+
+1. **Marks of an arm that does not leave the loop (join carry).** `armBlock` kept an arm's dead marks for
+   after the loop when the arm ended and *any* break or continue had been compiled in it, including those of a
+   loop nested in the arm. An arm that frees, runs an inner loop that breaks, and returns, wrongly put the free
+   after the outer loop. The count is now per loop depth (`depthJumps`, `jumpsHere`, `addJump`): only jumps
+   that leave the loop the arm is in count. Test: `returnWithInnerLoop` (run), the `break`/`continue`/`return`
+   arm mixes (errors).
+2. **A loop that re-points a reference, then reads it.** `loopSelfCheck` asked whether the loop read the
+   reference (`usedAt`); it now asks whether it read it *before pointing it afresh* on every path to the read
+   (`usedAt` of a ref local is set only for a read that is not fresh, the notion `loopBindCheck` already
+   uses, and by a `for` walk of the reference). The condition of a `while` is compiled after `clearFresh`,
+   so its reads count. Reads on one path only, in an inner loop, in the condition, passes to calls, walks
+   and `k = &k.kids[0]` stay errors. The `LANGUAGE.md` section 10 example is now an accepted example.
+3. **A field of a ref param taking the whole param's binding.** For a reference *parameter* the path of
+   the designator is now kept (`designatorT` sets `x.path`, `itemBind` uses it), so `&p.ys` and `p.xs` are
+   different places, in invalidation (`p.ys = ...` leaves `&p.xs` valid), in the argument check
+   (`f(p.xs, p.ys)`) and in the held places. A parameter's own object has bind `[itself]`, so the path is
+   relative to the right root; other parameters and globals still match by `reaches` regardless of path.
+   Through a reference *local* the path is still dropped (the whole root). While testing the held-place
+   form (`replace(r, ...)` with `var r = &p.ys`) a hole that predates this batch showed up: `replace` and
+   `take` of a reference local wrote the local's slot and handed back the borrowed object, which the caller
+   then freed (exit 6, a double free, with the seed too). They are now refused (`replace cannot change 'r':
+   it is a reference`); three held-place error cases that used the form now expect that message.
+4. **`mut`-argument precision.** Each function keeps `FnRec.pfree`, a bit per parameter: it may free
+   something below the reference it got (`recordFree` sets it for a parameter's root, so every site that
+   already recorded a free for globals records it, including a `mut` argument passed on and a reference
+   local made from the parameter). `callFn` invalidates a `mut` argument's roots only if `mutFrees(f, i)`:
+   unknown callees (heading only, being compiled, i.e. recursion, or `freesAll`/`writesHandles`) and the
+   62nd parameter on count as freeing. `pureFn` is unchanged, so the handle forms (`rd(h.xs, grow(h.xs))`,
+   `two(&h[0], tr(h))`) stay refused. Pinned expectations changed: `references.obx` `change`/`reset` had
+   empty bodies and now free something; in `own_fuzz.py` `stepArr` and `bumpRef` (scalar writes) no longer
+   invalidate other references, and the invalid case uses a new `cutRef` that frees.
+5. **`alive(h)` is no use.** A bare-name argument restores the handle's `usedAt` (`lastNamed`, `unname`), so
+   a loop that asks and frees is accepted and a handle moved by a loop can still be asked about. `alive(f(h))`
+   and any other expression still count. The same restore serves item 8 (copies).
+6. **f2, the loop-move rule.** A move of the owner in a loop is no longer refused at the move: it is
+   pending (`pendPush`, as for frees) and judged where the loop ends. Refused (same message, same place) if the
+   loop names the handle anywhere; otherwise accepted, and the handle is marked `movedLoop`: naming it again
+   anywhere later, even after the loop, is refused. That keeps the earlier unsoundness out (a move clears the
+   origin, so `take(a); a = nb(); h.n` would trap) and adds no new gap after the loop (`let h = handle(a);
+   loop { take(a); break }; h.n` stays refused). Moves are never dropped by item 7's rule.
+7. **A free in a loop is refused wherever the handle is used.** A block that always ends in a `break` or a
+   `return` and has no `continue` in it drops the frees it made at its own loop level (`pendBlockEnds`): for a
+   return, any handle; for a break, only handles declared inside the loop it leaves (the outer loop repeats
+   otherwise). Frees made in a loop inside the block repeat and stay. The uses after the loop are still seen
+   by the dead marks (`Loop.exitDead`). Covers f1 (`while true { ...; break }`) and the f7 shape of a use
+   before a free that ends the loop.
+8. **g2 (done), f1 (done), f7 (partly).** g2: a `let g = h` copy of a handle that is dead at that point
+   does not count as naming `h` (`unname`), since `g` inherits the mark and every use of it is refused; a copy
+   of a handle not known to be dead there counts. The mark is a may-flag, so a copy after a free on one path
+   only is also exempt, soundly: `g` is marked dead on the merged path. f7 as a use that no path can reach
+   (for instance guarded by a condition the compiler cannot evaluate) is not fixable in a single pass and stays.
+
+**Left alone.** `rd(h.xs, grow(h.xs))` and `two(&h[0], tr(h))` (items for `pureFn`): a callee with a `mut`
+parameter is still impure for the held-array and handle checks, because `pureFn` also feeds
+`userCalls`, which the index checks use; relaxing it needs its own review. `if alive(h) { use(h) }` is still
+refused (no narrowing on `alive`).
+
+**Fuzzer.** `own_fuzz.py` has an argument-order kind: `arg_order_stmt` (valid: the freeing or moving argument
+first, `holdO(renewAt(xs, i), &xs[j])`; a scalar `mut` call after a reference; `take` in an argument beside a
+reference to another local; `sum2(take(x), take(y))`, `sum2(take(x), take(x))`) with a model, and
+`arg_order_bad_stmt` (invalid: a reference then a call that renews, moves, or `replace`s what it points into,
+a global cleared, `sum2(x, take(x))`), also one of the `bad_stmt` kinds.
+
+**Memory.** The port compiling itself peaks at about 1.03 million bytes live (981,888 before). The first
+version stored `pfree` as a `[]bool` per function and measured 1,080,464; a bit mask removed 42 KB. The rest
+is the source growing. `PEAK_BUDGET` (2,000,000) is untouched.

@@ -1,0 +1,221 @@
+// False positives of the reference rules that are fixed (FORK.md, "Reference false positives"): a mut argument
+// invalidates what its callee may free through it, a field of a reference parameter keeps its path, and a loop's
+// recursive call is judged against the reads that come before the reference is pointed afresh.
+// errors/fp_refs.obx has the unsafe neighbours of each shape.
+type Node = ref record { v: int; kids: []Node }
+type Bag = ref record { items: []Node; opt: ?Node; n: int }
+type Pair = ref record { xs: []Node; ys: []Node }
+type Rec = ref record { name: string; n: int }
+type Item = ref record { v: int; kids: []Item }
+type Hold = ref record { items: []Item }
+fn mk(v: int): Node { return new Node{v: v, kids: new []Node(0)} }
+fn nb(): Bag {
+    var b = new Bag{items: new []Node(0), opt: nil, n: 0}
+    append(b.items, mk(9))
+    return b
+}
+fn two(r: &Node, k: int): int { return r.v + k }
+
+// ---- a mut argument whose callee frees nothing below it
+
+fn upd(mut a: &[]Node, k: int): int { a[k].v = 7; return 1 }
+fn bumpN(mut b: &Bag): int { b.n += 1; return b.n }
+fn ap(mut a: &[]Node): int { append(a, mk(5)); return 1 }
+fn nm(mut r: &Rec): int { r.name = "zz"; return 1 }
+fn st(mut a: &[]int): int { a[0] = 7; return 1 }
+fn walkBump(mut b: &Bag): int {
+    let items = &b.items
+    for it in items { it.v += 1 }
+    return 1
+}
+fn viaTwo(mut b: &Bag): int { return upd(b.items, 0) + bumpN(b) }
+
+fn scalarElement() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    append(xs, mk(2))
+    println(two(&xs[0], upd(xs, 1)))  // expect: 2
+    println(xs[1].v)  // expect: 7
+}
+
+fn scalarField() {
+    var b = nb()
+    println(two(&b.items[0], bumpN(b)))  // expect: 10
+}
+
+fn appendKeepsElements() {
+    var xs = new []Node(0)
+    append(xs, mk(1))
+    println(two(&xs[0], ap(xs)))  // expect: 2
+    println(len(xs))  // expect: 2
+}
+
+fn stringField() {
+    var r = new Rec{name: "a", n: 4}
+    let z = nm(r)
+    println(r.name)  // expect: zz
+}
+
+fn scalarArray() {
+    var xs = new []int(2)
+    let r = &xs
+    let z = st(xs)
+    println(r[0] + z)  // expect: 8
+}
+
+fn walked() {
+    var b = nb()
+    println(two(&b.items[0], walkBump(b)))  // expect: 11
+}
+
+fn nested() {
+    var b = nb()
+    println(two(&b.items[0], viaTwo(b)))  // expect: 9
+}
+
+fn loopScalar() {
+    var b = nb()
+    let r = &b.items[0]
+    var i = 0
+    var seen = 0
+    while i < 3 {
+        seen += r.v
+        i += bumpN(b)
+    }
+    println(seen)  // expect: 18
+}
+
+// ---- fields of a reference parameter
+
+fn cutX(mut a: &[]Node, b: &[]Node): int { a[0] = mk(1); return len(b) }
+fn viaFields(mut p: &Pair): int { return cutX(p.xs, p.ys) }
+
+fn otherField(mut p: &Pair): int {
+    let s = &p.xs
+    p.ys = new []Node(0)
+    return len(s)
+}
+
+fn otherElement(mut p: &Pair): int {
+    let s = &p.xs[0]
+    p.xs[1] = mk(2)
+    return s.v
+}
+
+// a reference to the whole parameter stays valid: only owners free whole objects
+fn wholeRef(mut p: &Pair): int {
+    let s = &p
+    p.ys = new []Node(0)
+    return len(s.ys)
+}
+
+fn fieldPaths() {
+    var q = new Pair{xs: new []Node(0), ys: new []Node(0)}
+    append(q.xs, mk(3))
+    append(q.xs, mk(4))
+    append(q.ys, mk(5))
+    println(viaFields(q))  // expect: 1
+    println(otherField(q))  // expect: 2
+    println(otherElement(q))  // expect: 1
+    println(wholeRef(q))  // expect: 0
+}
+
+// ---- a loop's recursive call, after the reference is pointed afresh
+
+fn rec(n: &Item, h: ^Hold, d: int): int {
+    if d == 0 {
+        h.items = new []Item(0)
+        return 1
+    }
+    var k = &n.kids[0]
+    var i = 0
+    var s = 0
+    while i < 2 {
+        k = &n.kids[0]
+        s += k.v
+        s += rec(n, h, d - 1)
+        i += 1
+    }
+    return s
+}
+
+fn recContinue(n: &Item, h: ^Hold, d: int): int {
+    if d == 0 {
+        h.items = new []Item(0)
+        return 1
+    }
+    var k = &n.kids[0]
+    var s = 0
+    var i = 0
+    while i < 2 {
+        k = &n.kids[0]
+        s += k.v
+        i += 1
+        if i == 1 {
+            s += recContinue(n, h, d - 1)
+            continue
+        }
+    }
+    return s
+}
+
+fn recBreak(n: &Item, h: ^Hold, d: int): int {
+    if d == 0 {
+        h.items = new []Item(0)
+        return 1
+    }
+    var k = &n.kids[0]
+    var i = 0
+    var s = 0
+    while i < 3 {
+        k = &n.kids[0]
+        s += k.v
+        s += recBreak(n, h, d - 1)
+        if i == 1 { break }
+        i += 1
+    }
+    return s
+}
+
+fn recJoin(n: &Item, h: ^Hold, d: int): int {
+    if d == 0 {
+        h.items = new []Item(0)
+        return 1
+    }
+    var k = &n.kids[0]
+    var i = 0
+    var s = 0
+    while i < 3 {
+        if i == 1 {
+            s += recJoin(n, h, d - 1)
+            k = &n.kids[0]
+        } else {
+            s += k.v
+        }
+        i += 1
+    }
+    return s
+}
+
+fn recursion() {
+    var root = new Item{v: 1, kids: new []Item(0)}
+    append(root.kids, new Item{v: 3, kids: new []Item(0)})
+    var holder = new Hold{items: new []Item(0)}
+    println(rec(root, handle(holder), 2))  // expect: 22
+    println(recContinue(root, handle(holder), 2))  // expect: 13
+    println(recBreak(root, handle(holder), 2))  // expect: 22
+    println(recJoin(root, handle(holder), 2))  // expect: 13
+}
+
+fn main() {
+    scalarElement()
+    scalarField()
+    appendKeepsElements()
+    stringField()
+    scalarArray()
+    walked()
+    nested()
+    loopScalar()
+    fieldPaths()
+    recursion()
+}

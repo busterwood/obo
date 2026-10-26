@@ -325,7 +325,7 @@ ORIGIN_MUTANTS = {
         '        if x.hOrigin != nil {\n'),
     "a let handle's loop depth is not recorded": ('                    s.hDepth = len(loops) + 1\n',
         ''),
-    'moves do not check the loop': ('    if move { loopOriginCheck(r) }\n',
+    'moves do not check the loop': ('    if move { loopOriginPend(r) }\n',
         ''),
     'a var handle is given its origin': ('            if kind == "let" {\n                s.hOrigin = x.hOrigin\n',
         '            if true {\n                s.hOrigin = x.hOrigin\n'),
@@ -381,12 +381,12 @@ HANDLE_FREE_MUTANTS = {
     "a defer's frees are not recorded": ('    if inDefer { append(deferFrees, r) }\n', ''),
     "a closed block's defer frees stay": ('    while len(dfBlock) > 0 && dfBlock[len(dfBlock) - 1] >= last {\n', '    while false {\n'),
     'a let copy of a dead handle is alive': ('                    append(originDead, dead)\n', '                    append(originDead, nil)\n'),
-    'a free in a loop is not reported': ('            if o == r && x.hDepth <= len(loops) {\n', '            if false {\n'),
-    'a free in a loop is refused without a use there': ('            if pendSym[k].usedAt > loops[li].useFrom {\n', '            if true {\n'),
+    'a free in a loop is not reported': ('            if o == r && x.hDepth <= len(loops) { pendPush(x, r, what) }\n', ''),
+    'a free in a loop is refused without a use there': ('            if x.usedAt > loops[li].useFrom {\n', '            if true {\n'),
     'a free is checked at the end of the innermost loop': ('        if pendDepth[k] == li {\n', '        if pendDepth[k] <= li {\n'),
     'a use through a dead handle is not refused': ('                deadHandleCheck(x.sym)\n', ''),
     'a dead mark refuses every handle': ('        if o != nil && originSyms[i] == s {\n', '        if o != nil {\n'),
-    "a handle's naming is not recorded": ('        if s.hDepth > 0 {\n            useSeq += 1\n            s.usedAt = useSeq\n        }\n', ''),
+    "a handle's naming is not recorded": ('            lastNamedPrev = s.usedAt\n            s.usedAt = useSeq\n', '            lastNamedPrev = s.usedAt\n'),
     "a handle's naming is not recorded once a move clears its origin": ('        if s.hDepth > 0 {\n            useSeq += 1', '        if s.hOrigin != nil {\n            useSeq += 1'),
     'a loop does not record where its reads begin': ('logFrom: logFrom, useFrom: useBefore, exitDead', 'logFrom: logFrom, useFrom: 0, exitDead'),
     'a let handle gets no dead mark': ('                    append(originDead, dead)\n', ''),
@@ -394,9 +394,9 @@ HANDLE_FREE_MUTANTS = {
     'an arm starts from the marks of the arm before': ('    deadSet(d0)\n    var term = false\n', '    var term = false\n'),
     "an arm's marks are not joined": ('    for i in 0..len(acc) {\n        if originDead[i] != nil { acc[i] = originDead[i] }\n    }\n', ''),
     'an arm that ends keeps its marks for what follows': ('        return term\n    }\n    for i in 0..len(acc) {', '    }\n    for i in 0..len(acc) {'),
-    "a break arm's marks are not kept for after the loop": ('        if len(loops) > 0 && jumpSeq != js {\n', '        if false {\n'),
-    "a returning arm's marks are kept for after the loop": ('        if len(loops) > 0 && jumpSeq != js {\n', '        if len(loops) > 0 {\n'),
-    'a break is not counted': ('            jumpSeq += 1\n', ''),
+    "a break arm's marks are not kept for after the loop": ('        if len(loops) > 0 && jumpsHere() != js {\n', '        if false {\n'),
+    "a returning arm's marks are kept for after the loop": ('        if len(loops) > 0 && jumpsHere() != js {\n', '        if len(loops) > 0 {\n'),
+    'a break is not counted': ('            if len(loops) > 0 { addJump() }\n', ''),
     "a loop's exit marks are not applied after it": ('        if i < len(originDead) && loops[li].exitDead[i] != nil { originDead[i] = loops[li].exitDead[i] }\n', ''),
     "a defer's handles are not recorded": ('        if originSyms[i].usedAt > useAt {\n', '        if false {\n'),
     'a defer records every handle': ('        if originSyms[i].usedAt > useAt {\n', '        if true {\n'),
@@ -452,8 +452,59 @@ MUTANTS.update({
 })
 
 
+# the false-positive fixes (FORK.md, "Handle-owner false positives" and "Reference false positives"): each
+# mutant undoes a fix in the wrong direction, so that an unsafe neighbour is accepted, or undoes a fix
+# (so that the accepted shape is refused again). errors/fp_loops.obx and errors/fp_refs.obx hold the
+# neighbours; run/fp_loops.obx and run/fp_refs.obx the accepted shapes
+FP_MUTANTS = {
+    # alive is no use of a handle
+    'alive hides the earlier uses of the handle': ('        h.usedAt = lastNamedPrev\n        lastNamed = nil\n', '        h.usedAt = 0\n        lastNamed = nil\n'),
+    'alive of any expression is no use': ('        inAlive = bare\n', '        inAlive = true\n'),
+    'alive counts as a use': ('        unname(h.sym)\n', ''),
+    'a copy of a handle not known to be dead is no use': ('                    if dead != nil { unname(x.sym) }\n', '                    unname(x.sym)\n'),
+    'a copy of a dead handle is a use': ('                    if dead != nil { unname(x.sym) }\n', ''),
+    # a free that ends its block in a break or a return (pendBlockEnds)
+    'a block that ends drops its frees whatever follows': ('    if term { pendBlockEnds(pm, cs, bs) }\n', '    pendBlockEnds(pm, cs, bs)\n'),
+    'a block with a continue in it drops its frees': ('    if contSeq != cs { return }\n', ''),
+    'a break drops the frees of the loops outside the one it leaves': ('            if brkSeq != bs && pendDepth[k] == len(loops) - 1 { drop = true }\n', '            if brkSeq != bs { drop = true }\n'),
+    'a block drops the frees made in the loops inside it': ('        if pendNest[k] == len(loops) && pendWhat[k] != "move" {\n', '        if pendWhat[k] != "move" {\n'),
+    'a block drops the moves it made': ('        if pendNest[k] == len(loops) && pendWhat[k] != "move" {\n', '        if pendNest[k] == len(loops) {\n'),
+    'a free before a break is never dropped': ('            if brkSeq != bs && pendDepth[k] == len(loops) - 1 { drop = true }\n', ''),
+    'a free before a return is never dropped': ('            if brkSeq == bs { drop = true }\n', ''),
+    # a move of the owner in a loop that does not name the handle (loopOriginPend, pendingFreeCheck, movedLoop)
+    'a move in a loop is not reported': ('            if o == s { pendPush(x, s, "move") }\n', ''),
+    'a moved owner leaves its handle free to be named': ('            if pendWhat[k] == "move" { x.movedLoop = true }\n', ''),
+    'naming a handle after a loop moved its owner is allowed': ('            if s.movedLoop && !inAlive {\n', '            if false {\n'),
+    'naming a moved handle in alive is refused': ('            if s.movedLoop && !inAlive {\n', '            if s.movedLoop {\n'),
+    'a move in a loop is refused without a use there': ('            if x.usedAt > loops[li].useFrom {\n', '            if x.usedAt > loops[li].useFrom || pendWhat[k] == "move" {\n'),
+    # the marks of an arm that leaves the loop (jumpsHere, addJump)
+    'a continue is not counted as leaving the loop': ('            if len(loops) > 0 { addJump() }\n', '            if len(loops) > 0 && k == T_BREAK { addJump() }\n'),
+    'the jumps of inner loops are counted as leaving the outer one': ('    depthJumps[len(loops) - 1] += 1\n}', '    for q in 0..len(depthJumps) { depthJumps[q] += 1 }\n}'),
+    # a loop's recursive call reads a reference that was pointed afresh first
+    'the walk of a reference is not a read of it': ('            walked.usedAt = useSeq\n', ''),
+    'a read of a reference pointed afresh counts for the loop': ('            s.staleUse = useSeq\n            s.usedAt = useSeq\n', '            s.staleUse = useSeq\n'),
+    # a mut argument's callee (FnRec.pfree, mutFrees)
+    'a mut callee is assumed to free nothing': ('    return (f.fnRec.pfree >> i) & 1 == 1\n', '    return false\n'),
+    'frees through a parameter are not recorded': ('        if pi < 62 { f.fnRec.pfree = f.fnRec.pfree | (1 << pi) }\n', ''),
+    'a callee with a forward heading is assumed to free nothing': ('    if f.addr < 0 || f == curFn || f.freesAll || f.writesHandles { return true }\n', '    if f == curFn || f.freesAll || f.writesHandles { return true }\n'),
+    'a recursive callee is assumed to free nothing': ('    if f.addr < 0 || f == curFn || f.freesAll || f.writesHandles { return true }\n', '    if f.addr < 0 || f.freesAll || f.writesHandles { return true }\n'),
+    'a callee that writes through a handle is assumed to free nothing': ('    if f.addr < 0 || f == curFn || f.freesAll || f.writesHandles { return true }\n', '    if f.addr < 0 || f == curFn { return true }\n'),
+    'a parameter is recorded by the wrong place': ('        let pi = len(f.fnRec.params) - 1 - (g.offset - 16) / 8', '        let pi = (g.offset - 16) / 8'),
+    'a mut argument passed on is not recorded as freed': ('                recordFree(b.roots[p])\n', ''),
+    'the frees of a reference parameter are recorded as a global': ('    if g.isParam && g.isRef {', '    if g.isParam && g.isRef && false {'),
+    # a field of a reference parameter keeps its path (itemBind, designatorT)
+    'a field of a parameter binds the whole parameter': ('        if x.deref && isRefParam(r) { append(paths, x.path) }', '        if x.deref && isRefParam(r) { append(paths, "") }'),
+    'a path through a reference local is kept': ('        if (!root.isRef || isRefParam(root)) && !viaHandle { x.path = path }', '        if !viaHandle { x.path = path }'),
+    # a reference only borrows: replace and take refuse it
+    'a replace of a reference local is allowed': ('        if rs != nil && rs.isRefLocal {\n            error("replace cannot change', '        if rs != nil && rs.isRefLocal && false {\n            error("replace cannot change'),
+    'a take of a reference local is allowed': ('        if ts0 != nil && ts0.isRefLocal {\n            error("take cannot change', '        if ts0 != nil && ts0.isRefLocal && false {\n            error("take cannot change'),
+}
+MUTANTS.update(FP_MUTANTS)
+
 # mutants that survive by design: each removes a test that is redundant, so the behaviour is unchanged
 EQUIVALENT = {
+    "a callee with a forward heading is assumed to free nothing": "equivalent: afterCall treats a call to a callee that is not compiled as a write through a handle (invalidateDeep, writesHandles, freesAll), which invalidates every reference inside something and makes the caller's own summary assume every parameter freed; a reference to a whole object is never invalidated by a mut argument, so the check in mutFrees only repeats it",
+    "a callee that writes through a handle is assumed to free nothing": "equivalent for the same reason: a callee that writes through a handle sets freesAll and writesHandles, which afterCall turns into invalidateDeep and into the same flags for its caller, so every reference a mut argument could invalidate is already invalid",
     "origin not cleared by a take of a whole local": "equivalent: a take needs its optional owner widened first, and only an assignment over a narrowed owner does that (a handle is made only while the owner is narrowed), so the assignment hook has already cleared the same origins before any take can run",
     "replace clears origins through a reference or handle": "a designator through a field or element of a reference or handle has no sym (designatorT sets deref only when sym is nil), and a handle local is not owned (isOwned is false for handles), so originMove returns early; the guard is redundant",
     "take clears origins through a reference or handle": "the same: deref implies a nil sym, and a handle local is not owned, so originMove returns early",

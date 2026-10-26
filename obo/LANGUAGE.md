@@ -285,6 +285,15 @@ while nothing it may point into has been changed.
   applied as the body made them: through the same reference, so a reference the change was made
   through, or derived from, stays valid (a deferred write to a child of `p` leaves `p` valid). A
   defer body's re-point of a reference declared before it is still an error, as above.
+- A `mut` argument invalidates the references into the place it names only if its callee may free something
+  below it: the compiler keeps, for each function, which `mut` parameters it frees through (an assignment
+  of an owned value, `replace`, `take`, `truncate` of owned elements, a `mut` call that does, or a write
+  through a handle, a recursive call, or a heading not yet defined, which count as freeing anything). A
+  callee that only writes scalars, appends, or assigns strings leaves them valid.
+- A field of a reference parameter (`&p.ys`) is a place of its own: a change to `p.xs` does not reach it.
+  A reference that goes through a reference local (`&r.xs`) is still the whole root.
+- `replace` and `take` cannot name a reference local (`var r = &p.ys; replace(r, ...)`): a reference only
+  borrows, so the old value is not its to give back; name the field or element.
 - A mut argument, `append` and `truncate` write through the reference they are given, so a loop that
   passes a reference to a mut parameter, or appends through it, is checked like an assignment: the
   reference must be writable on every pass where it is written before it is pointed again.
@@ -474,7 +483,11 @@ Inside a loop, an assignment over the owner is refused when the handle was made
 before the loop and the loop uses the handle anywhere in its body, before or after
 the assignment in the text, since the next iteration would use the freed object:
 `cannot assign over the owner of handle 'h' inside a loop that uses the handle`
-(the same for a `drop` of the owner). A handle made
+(the same for a `drop` of the owner). A free that ends its block in a `break` or a `return`, with no
+`continue` in the block, is not followed by another iteration (a `break` leaves only the loop it is in, so a
+handle made outside an enclosing loop is still refused): the loop may use the handle, and a use after the
+loop is refused by the paths. `alive(h)`, as a bare name, does not count as the loop using the handle, and
+neither does a `let` copy of a handle that is already known to be dead there (the copy is dead too). A handle made
 inside the loop is fresh each iteration. If the arm that frees the object ends in
 a `break` or a `continue`, a use of a handle made inside the loop after the `if`
 is accepted, since that code runs only on the paths that did not free it; a use
@@ -597,6 +610,8 @@ depend on the program.
 | `cannot assign over the owner of handle '<h>' inside a loop that uses the handle` | the loop uses `<h>` somewhere in its body, and the next iteration would use the freed object. Make the handle inside the loop, or assign after it. |
 | `cannot assign over '<x>' while a defer declared earlier uses handle '<h>' made from it` | the defer runs at the block's end, after the assignment (or `cannot drop`), and would use the freed object. |
 | `cannot move '<x>' inside a loop while handle '<h>' made from it is in scope` | a loop moves (or drops) `<x>` while a handle made from it before the loop is in scope. Make the handle inside the loop. |
+| `handle '<h>' was made from an owner that a loop moved: make the handle again` | a loop that did not name `<h>` moved its owner, so `<h>` may not be named after it (except in `alive`). |
+| `replace cannot change '<r>': it is a reference` (also `take`) | `<r>` is a reference local; replace or take the field or element it borrows. |
 
 ## 9. Differences from obx
 
@@ -692,7 +707,7 @@ A handle's array indexed by a move of the object it names (`let h = handle(b); h
 A `replace` or `take` of an unrelated place, or of an element beside the array that is indexed, is accepted, and
 so is an assignment whose value takes its own target (`t.opt = pass(take(t.opt))`), since `take` leaves that
 place empty. A free of an ancestor of the target is still refused. A handle made by `let h = handle(b)` from a
-whole owned local names that local. A whole move of `b` (`var c = b`, through a call, into a field, `replace(b, ...)`, `take`) makes that handle name no local (an assignment over `b` does not: the handle keeps naming `b`, and is refused at its next use), so it is checked like a handle without an origin: an index through it that moves or frees something is refused. A move of `b` inside a loop that a live `let` handle from `b` was declared outside of is refused (`cannot move 'b' inside a loop while handle 'h' made from it is in scope`), whether or not the loop uses the handle. An assignment over `b`, or `drop(b)`, frees the object the handle names, so a use through the handle after it is refused (section 5). A temporary `handle(b)` names nothing afterwards. A handle without that
+whole owned local names that local. A whole move of `b` (`var c = b`, through a call, into a field, `replace(b, ...)`, `take`) makes that handle name no local (an assignment over `b` does not: the handle keeps naming `b`, and is refused at its next use), so it is checked like a handle without an origin: an index through it that moves or frees something is refused. A move of `b` inside a loop that a live `let` handle from `b` was declared outside of is refused (`cannot move 'b' inside a loop while handle 'h' made from it is in scope`) if the loop names the handle anywhere; if it does not, the move is accepted and the handle may not be named again, even after the loop (`handle 'h' was made from an owner that a loop moved: make the handle again`), except in `alive(h)`. An assignment over `b`, or `drop(b)`, frees the object the handle names, so a use through the handle after it is refused (section 5). A temporary `handle(b)` names nothing afterwards. A handle without that
 origin (a handle parameter, or one made from a field or an element) may name any object: a move or a free through
 it is refused against anything it might name, and a free through it of another handle's place is compared by path
 only when it is the same handle.
@@ -836,13 +851,14 @@ what it points into, so `use2(first, mk(h))`, where `mk` frees what `first` poin
 `two(&xs[0], eat(xs))` passed the callee freed memory. A reference argument is now held while the
 later arguments run (section 4).
 
-**Known false positive (open).** The loop check does not follow each read to the re-point that
-precedes it in the same iteration. This program is valid, since `k` is pointed afresh before each
-read, but the loop is rejected because `k` is suspect where the next iteration starts and the loop
-reads it:
+**A read after a re-point (closed).** A loop whose recursive call leaves a reference suspect where
+the next iteration starts is an error only if the loop reads that reference *before* pointing it
+afresh: a read that follows a re-point on every path to it sees the new binding. This program is valid
+and is accepted, since `k` is pointed afresh before each read; a read of `k` above the re-point, on
+one path only, in the condition, in an inner loop, or a walk of it, is still an error:
 
 ```obo
-// example: error: a recursive call in this loop writes through a handle
+// example: compiles
 type Item = ref record { v: int; kids: []Item }
 type Bag = ref record { items: []Item }
 fn rec(n: &Item, h: ^Bag, d: int): int {
@@ -864,8 +880,8 @@ fn rec(n: &Item, h: ^Bag, d: int): int {
 fn main() {}
 ```
 
-A loop that reads nothing it left suspect is accepted, and so is one that points a reference afresh
-after each call before reading it on the next iteration. A loop that frees what a reference points
+A loop that reads nothing it left suspect before pointing it afresh is accepted, and so is one that
+points a reference afresh after each call before reading it on the next iteration. A loop that frees what a reference points
 into and points the reference afresh before it reads it again is accepted too (`run/ref_bindings.obx`,
 `loopCache`).
 

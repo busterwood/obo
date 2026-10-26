@@ -138,7 +138,7 @@ MUTANTS = {
                                               "        if back[i] && ownedLocals[i] != lv {")],
     # reads in a loop are not counted: the loop check misses the reads it is for. Caught by errors/handle_deep.obx
     # "a loop's body reads a reference at its top, on the next iteration after a recursive call on one path"
-    "reads in a loop not counted": [("        useSeq += 1\n        s.usedAt = useSeq\n", "")],
+    "reads in a loop not counted": [("            s.staleUse = useSeq\n            s.usedAt = useSeq\n", "            s.staleUse = useSeq\n")],
     # a deferred recursive call is applied at the defer statement, not where the block ends. Caught by
     # run/handle_deep.obx "deferRec" (a use after the defer statement)
     "deferred self-call suspicion kept at the defer": [("    restoreSuspects(before)\n    if selfCalls != sc {", "    if selfCalls == sc { restoreSuspects(before) }\n    if selfCalls != sc {")],
@@ -297,6 +297,8 @@ from mutate_fork import ARG_ORDER_MUTANTS  # noqa: E402
 MUTANTS.update({k: [v] for k, v in ARG_ORDER_MUTANTS.items() if k not in FORK_EQUIVALENT})
 # a handle's object freed by an assignment over, or a drop of, its owner: the cases of handle_frees.obx
 from mutate_fork import HANDLE_FREE_MUTANTS  # noqa: E402
+from mutate_fork import FP_MUTANTS  # noqa: E402
+MUTANTS.update({k: [v] for k, v in FP_MUTANTS.items() if k not in FORK_EQUIVALENT})
 MUTANTS.update({k: [v] for k, v in HANDLE_FREE_MUTANTS.items() if k not in FORK_EQUIVALENT})
 
 

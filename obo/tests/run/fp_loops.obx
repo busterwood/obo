@@ -1,0 +1,215 @@
+// False positives of the handle-owner loop rules that are fixed (FORK.md, "Handle-owner false positives").
+// errors/fp_loops.obx has the unsafe neighbours of each shape.
+type Node = ref record { v: int; kids: []Node }
+type Bag = ref record { items: []Node; opt: ?Node; n: int }
+fn mk(v: int): Node { return new Node{v: v, kids: new []Node(0)} }
+fn nb(): Bag {
+    var b = new Bag{items: new []Node(0), opt: nil, n: 0}
+    append(b.items, mk(9))
+    return b
+}
+fn flag(): bool { return true }
+fn count(b: Bag): int { return b.n }
+
+// a free that is followed by a break: the next iteration never runs after it, so the handle may be used
+// earlier in the loop
+fn freeBreak() {
+    var a = nb()
+    a.n = 5
+    let h = handle(a)
+    var seen = 0
+    var i = 0
+    while i < 3 {
+        seen += h.n
+        if i == 1 { a = nb(); break }
+        i += 1
+    }
+    println(seen)  // expect: 10
+    println(a.n)  // expect: 0
+}
+
+// the same with a return
+fn freeReturn() {
+    var a = nb()
+    a.n = 4
+    let h = handle(a)
+    var seen = 0
+    var i = 0
+    while i < 3 {
+        seen += h.n
+        if i == 1 {
+            a = nb()
+            println(seen)  // expect: 8
+            return
+        }
+        i += 1
+    }
+}
+
+// a loop that always leaves by its break: it runs once
+fn once() {
+    var a = nb()
+    a.n = 6
+    let h = handle(a)
+    var seen = 0
+    while true {
+        seen += h.n
+        a = nb()
+        break
+    }
+    println(seen)  // expect: 6
+}
+
+// the handle is declared in the outer loop, so the inner loop's break leaves the only loop that repeats its use
+fn innerBreak() {
+    var a = nb()
+    a.n = 5
+    var seen = 0
+    var i = 0
+    while i < 2 {
+        let h = handle(a)
+        var j = 0
+        while j < 3 {
+            seen += h.n
+            if j == 1 { a = nb(); break }
+            j += 1
+        }
+        i += 1
+    }
+    println(seen)  // expect: 10
+}
+
+// a free in a match arm that breaks
+fn matchBreak() {
+    var a = nb()
+    let h = handle(a)
+    var seen = 0
+    var i = 0
+    while i < 3 {
+        seen += h.n + 1
+        match i {
+            1 { a = nb(); break }
+            else { i += 1 }
+        }
+    }
+    println(seen)  // expect: 2
+}
+
+// alive asks whether the object is there: it is no use of it, so a loop may free the owner after asking
+fn aliveInLoop() {
+    var a = nb()
+    let h = handle(a)
+    var seen = 0
+    var i = 0
+    while i < 3 {
+        if alive(h) { seen += 1 }
+        a = nb()
+        i += 1
+    }
+    println(seen)  // expect: 1
+    println(alive(h))  // expect: false
+}
+
+// a handle named only by alive may still be asked about after a loop that moved its owner
+fn aliveAfterMove() {
+    var a = nb()
+    let h = handle(a)
+    var seen = 0
+    var i = 0
+    while i < 2 {
+        seen += count(a)
+        a = nb()
+        i += 1
+    }
+    println(seen)  // expect: 0
+    println(alive(h))  // expect: false
+}
+
+// a copy of a handle whose object the loop has just freed: the copy is dead, the loop does not use the object
+fn copyOfDead() {
+    var a = nb()
+    let h = handle(a)
+    var seen = 0
+    var i = 0
+    while i < 2 {
+        a = nb()
+        let g = h
+        if alive(g) { seen += 1 }
+        i += 1
+    }
+    println(seen)  // expect: 0
+}
+
+// a handle used only before the loop: the loop moves the owner, and the handle is not named again
+fn moveNotNamed() {
+    var a = nb()
+    a.n = 3
+    let h = handle(a)
+    println(h.n)  // expect: 3
+    var seen = 0
+    var i = 0
+    while i < 2 {
+        seen += count(a)
+        a = nb()
+        i += 1
+    }
+    println(seen)  // expect: 3
+    println(a.n)  // expect: 0
+}
+
+// the same in the inner of two loops
+fn moveNotNamedNested() {
+    var a = nb()
+    a.n = 2
+    let h = handle(a)
+    println(h.n)  // expect: 2
+    var seen = 0
+    var i = 0
+    while i < 2 {
+        var j = 0
+        while j < 2 {
+            seen += count(a)
+            a = nb()
+            j += 1
+        }
+        i += 1
+    }
+    println(seen)  // expect: 2
+}
+
+// an arm that frees and returns, with a loop of its own that breaks: the break does not leave the outer loop,
+// so the freed handle is not on the way to what follows it
+fn returnWithInnerLoop(c: bool) {
+    var a = nb()
+    a.n = 8
+    let h = handle(a)
+    var i = 0
+    while i < 3 {
+        if c && i == 1 {
+            a = nb()
+            var j = 0
+            while j < 2 {
+                j += 1
+                if j == 1 { break }
+            }
+            return
+        }
+        i += 1
+    }
+    println(h.n)  // expect: 8
+}
+
+fn main() {
+    freeBreak()
+    freeReturn()
+    once()
+    innerBreak()
+    matchBreak()
+    aliveInLoop()
+    aliveAfterMove()
+    copyOfDead()
+    moveNotNamed()
+    moveNotNamedNested()
+    returnWithInnerLoop(true)
+    returnWithInnerLoop(false)
+}
