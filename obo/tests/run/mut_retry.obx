@@ -1,0 +1,44 @@
+// A mut callee that runs out of registers, so it is compiled again with none for its locals (FORK.md, Phase 2,
+// homeRetry), and that frees nothing below its mut parameter: it writes only the scalar field n there. A caller
+// that holds a reference into another part of the argument across the call is accepted, and the program runs as
+// written. errors/mut_retry.obx has the same callee with an assignment over the field items, which is refused.
+type P = ref record { x: int; y: int }
+type Node = ref record { v: int; kids: []Node }
+type Bag = ref record { items: []Node; opt: ?Node; n: int }
+
+var ga = new []int(0)
+var gp = new P{x: 1, y: 2}
+var gps = new []P(0)
+
+fn mk(v: int): Node { return new Node{v: v, kids: new []Node(0)} }
+fn nb(): Bag {
+    var b = new Bag{items: new []Node(0), opt: nil, n: 0}
+    append(b.items, mk(9))
+    append(b.items, mk(8))
+    return b
+}
+fn two(r: &Node, k: int): int { return r.v + k }
+
+fn scalarOnly(mut b: &Bag, n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    while i < n { v += i; u += v; w += u; v += w; u += i; w += v; v += u; w += i; u += w; i += 1 }
+    ga[i & 3] = gps[i & 1].x + gp.x * ga[i & 3]
+    b.n = v + u
+    return v + u + w
+}
+
+fn main() {
+    for q in 0..4 { append(ga, q + 1) }
+    append(gps, new P{x: 1, y: 2})
+    append(gps, new P{x: 3, y: 4})
+    var b = nb()
+    let r = &b.items[0]
+    let z = scalarOnly(b, 3)
+    println(r.v + z)  // expect: 2127
+    println(two(&b.items[0], scalarOnly(b, 2)))  // expect: 300
+    println(b.n)  // expect: 199
+    println(b.items[1].v)  // expect: 8
+}

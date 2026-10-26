@@ -485,8 +485,9 @@ the assignment in the text, since the next iteration would use the freed object:
 `cannot assign over the owner of handle 'h' inside a loop that uses the handle`
 (the same for a `drop` of the owner). A free that ends its block in a `break` or a `return`, with no
 `continue` in the block, is not followed by another iteration (a `break` leaves only the loop it is in, so a
-handle made outside an enclosing loop is still refused): the loop may use the handle, and a use after the
-loop is refused by the paths. `alive(h)`, as a bare name, does not count as the loop using the handle, and
+handle made outside an enclosing loop is still refused; a handle made in the scope directly outside the loop
+it leaves is not, since no iteration of that loop follows the break): the loop may use the handle, and a use
+after the loop is refused by the paths. `alive(h)`, as a bare name, does not count as the loop using the handle, and
 neither does a `let` copy of a handle that is already known to be dead there (the copy is dead too). A handle made
 inside the loop is fresh each iteration. If the arm that frees the object ends in
 a `break` or a `continue`, a use of a handle made inside the loop after the `if`
