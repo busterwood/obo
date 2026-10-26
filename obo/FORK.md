@@ -1331,7 +1331,7 @@ exist yet (section 10 of `LANGUAGE.md`). The fuzzer has no argument-order kind.
 
 ## Optimization plan
 
-Status: Phases 0, 1 (loop inversion included) and 2 done; Phase 3 planned. Phases are ordered by expected value per unit of cost.
+Status: Phases 0, 1 (loop inversion included) and 2 done; Phase 3 measured and stopped (see below). Phases are ordered by expected value per unit of cost.
 Each has a gate; a phase that misses its gate is recorded here and stopped.
 
 **Baseline.** A loop `s = s + i * 2` over `i < n` compiles with every local in a stack
@@ -1753,6 +1753,27 @@ Pass arguments of obo-to-obo calls in registers instead of pushing them on the s
 Do this only if Phase 2's numbers show that call overhead matters on the fib benchmark.
 
 *Gate:* fib improves; runtime calls are unchanged.
+
+**Measured; not built (decision).** Phase 2 left fib unchanged (618 ms against 623, 54 instructions), so
+the question is what register arguments could still save. `perf stat` on fib(40): 5,795,308,001
+instructions, 2,854,422,135 cycles (IPC 2.03), 596 ms; 331,160,281 calls, so 17.5 instructions and 8.6
+cycles a call. The code of one call (`micro.py --disasm fib`): the caller computes `n - 1` in a
+temporary and pushes it (1 store); the callee reads `n` from `[rbp+16]` three times (`n < 2`, the
+`return n`, `n - 1` and `n - 2` on the two paths, so one or two loads a call); the caller then pops it
+with `add $0x10,%rsp`. A register convention removes the push and the `add rsp`, and the loads of `n`.
+But `n` is live across the first recursive call, so the callee must still keep it in memory (a spilled
+slot, or a home pushed by the caller around the call); the store-to-load forwarding on `n` stays on the
+path. Upper bound, measured: I hand-wrote both conventions of fib in assembler (one `push rdi` in the
+prologue spilling the argument, the second call's alignment pad kept, nothing else different) and ran
+fib(40) 12 times each, interleaved: mean 0.676 s with stack arguments, 0.649 s with `rdi` (4.0%, with a
+spread of about 0.04 s in each, so within noise). The saving is 2 to 3 instructions of 17.5. The real
+implementation would also need the argument-order holds, the homes' push around a call, the retry, and
+a spill fallback for more than six arguments, with no further gain on fib.
+
+Decision: the gate's premise (call overhead worth about 5% or more on fib) does not hold, since the best
+case is about 4% and not distinguishable from noise. Phase 3 is stopped, nothing is built, and
+`src/obo.obo` and the seed are unchanged. The cost of fib is the call/return pair and the stack-carried
+`n`, which a calling convention does not change; Phase 4 (checks) does not touch it either.
 
 ### Phase 4: checks and allocation
 
