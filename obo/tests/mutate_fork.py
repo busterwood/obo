@@ -5,12 +5,18 @@ too little must be caught by the leak check, bugs that free too much by the
 double-free check or poisoning, and missing compile-time checks by the error
 tests.
 
-    python3 obo/tests/mutate_fork.py [pattern]"""
+    python3 obo/tests/mutate_fork.py [pattern]
+
+Mutants run side by side, one per core; MUTATE_JOBS sets how many."""
+import concurrent.futures
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
 
+TRANSIENT = re.compile(r'timed out|out of memory', re.IGNORECASE)   # run_fork's wording for a load failure
 HERE = os.path.dirname(os.path.abspath(__file__))
 FORK = os.path.dirname(HERE)
 
@@ -405,38 +411,68 @@ EQUIVALENT = {
 }
 
 
-def main():
-    pattern = sys.argv[1] if len(sys.argv) > 1 else ''
-    src = open(os.path.join(FORK, 'src', 'obo.obo')).read()
+def build_and_run(src):
+    """Builds the compiler from src, in a directory of its own, and runs run_fork.py with it:
+    (the run_fork result, None), or (None, the build's error) when it does not build."""
     work = tempfile.mkdtemp(prefix='obo-mutant-')
-    missed = []
-    names = [n for n in MUTANTS if pattern in n]
-    for name in names:
-        old, new = PORT_PATTERNS.get(name, MUTANTS[name])
-        if src.count(old) != 1:
-            print(f"STALE   {name} (pattern found {src.count(old)} times)")
-            missed.append(name)
-            continue
+    try:
         with open(os.path.join(work, 'obo.obo'), 'w') as f:
-            f.write(src.replace(old, new))
+            f.write(src)
         exe = os.path.join(work, 'obo')
         b = subprocess.run([os.path.join(FORK, 'seed', 'obo'), os.path.join(work, 'obo.obo'), '-o', exe, '--rt', FORK],
                            capture_output=True, text=True)
         if b.returncode != 0:
-            print(f"BROKEN  {name}: {b.stderr.strip()[:120]}")
-            missed.append(name)
-            continue
-        p = subprocess.run([sys.executable, os.path.join(HERE, 'run_fork.py')], capture_output=True, text=True,
-                           timeout=600, env=dict(os.environ, OBO=exe))
-        lines = p.stdout.strip().splitlines()
-        detail = next((l.strip() for l in lines if l.startswith('     ')), '')
-        caught = p.returncode != 0
-        if not caught and name in EQUIVALENT:
-            print(f"EQUIV   {name}: {EQUIVALENT[name]}")
-            continue
-        print(f"{'caught' if caught else 'MISSED'}  {name:<36} {lines[-1].split(' in ')[0] if lines else ''}  {detail[:60]}")
-        if not caught:
-            missed.append(name)
+            return None, b.stderr.strip()[:120]
+        return subprocess.run([sys.executable, os.path.join(HERE, 'run_fork.py')], capture_output=True, text=True,
+                              timeout=600, env=dict(os.environ, OBO=exe)), None
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def try_mutant(src, name):
+    """The verdict on one mutant: (status, line, output), status being 'caught', 'missed' or 'equiv'.
+    Mutants run side by side, each in a build directory of its own."""
+    old, new = PORT_PATTERNS.get(name, MUTANTS[name])
+    if src.count(old) != 1:
+        return 'missed', f"STALE   {name} (pattern found {src.count(old)} times)", ''
+    p, err = build_and_run(src.replace(old, new))
+    if p is None:
+        return 'missed', f"BROKEN  {name}: {err}", ''
+    lines = p.stdout.strip().splitlines()
+    detail = next((l.strip() for l in lines if l.startswith('     ')), '')
+    caught = p.returncode != 0
+    if not caught and name in EQUIVALENT:
+        return 'equiv', f"EQUIV   {name}: {EQUIVALENT[name]}", ''
+    line = f"{'caught' if caught else 'MISSED'}  {name:<36} {lines[-1].split(' in ')[0] if lines else ''}  {detail[:60]}"
+    return ('caught' if caught else 'missed'), line, p.stdout + p.stderr
+
+
+def main():
+    pattern = sys.argv[1] if len(sys.argv) > 1 else ''
+    src = open(os.path.join(FORK, 'src', 'obo.obo')).read()
+    # the baseline: the unmutated compiler must pass run_fork, or no mutant's failure means anything
+    base, err = build_and_run(src)
+    if base is None:
+        raise SystemExit(f"the unmutated compiler does not build ({err}), so no mutant can be judged")
+    if base.returncode != 0:
+        print(base.stdout.rstrip())
+        raise SystemExit("run_fork fails on the unmutated compiler (above), so no mutant can be judged")
+    names = [n for n in MUTANTS if pattern in n]
+    jobs = int(os.environ.get('MUTATE_JOBS', os.cpu_count() or 1))
+    status = {}
+    outputs = {}
+    with concurrent.futures.ThreadPoolExecutor(jobs) as pool:      # each mutant is a separate build and suite run
+        for name, (s, line, out) in zip(names, pool.map(lambda n: try_mutant(src, n), names)):
+            print(line, flush=True)
+            status[name], outputs[name] = s, out
+    # a caught mutant whose failure is a timeout or an out-of-memory may be the load, not the mutant:
+    # run it again alone, and report that result
+    for name in names:
+        if status[name] == 'caught' and TRANSIENT.search(outputs[name]):
+            s, line, out = try_mutant(src, name)
+            print(f"{line}   (serial re-run: the parallel run timed out or ran out of memory)", flush=True)
+            status[name] = s
+    missed = [n for n in names if status[n] == 'missed']
     equiv = sum(1 for n in names if n in EQUIVALENT)
     print(f"\n{len(names) - len(missed) - equiv}/{len(names)} mutants caught, {equiv} equivalent")
     sys.exit(1 if missed else 0)

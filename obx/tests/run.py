@@ -39,9 +39,11 @@ Test kinds
                        tests/tokens/, so scanner positions are pinned down.
   gcstress             The run/ programs again, collecting at every allocation.
 """
+import atexit
 import concurrent.futures as cf
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -57,6 +59,7 @@ sys.path.insert(0, HERE)
 OBXC = os.path.abspath(os.environ.get('OBXC', os.path.join(ROOT, 'obxc')))
 BOOTSTRAP = os.path.join(ROOT, 'seed', 'obxc')
 TMP = tempfile.mkdtemp(prefix='obx-tests-')
+atexit.register(shutil.rmtree, TMP, ignore_errors=True)     # the compiled programs and scratch directories
 
 
 class Fail(Exception):

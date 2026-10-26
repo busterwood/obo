@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
 """Mutation testing for the port (obo/src/obo.obo): plants a bug in a copy,
-runs the Stage B comparison against it (port_compare.py, with SRC pointed at the
-copy), and checks that the comparison fails. Divergent output must show up as a
+runs the Stage B comparison against it (port_compare.compare, with the copy as
+its source), and checks that the comparison fails. Divergent output must show up as a
 mismatch, freeing too early as a dangling-handle trap, and keeping memory alive
 as a breach of the memory budget. A mutant of the encoder (ENCODER) runs
 port_test.py instead, whose objdump cross-check must catch it.
 
+Each mutant's comparison reuses obo's outcomes, stops at the first difference, and
+allows each program 20 times what obo took; MUTATE_JOBS mutants run side by side (4).
+
     python3 obo/tests/mutate_port.py [pattern]"""
+import concurrent.futures
 import os
-import re
+import shutil
 import subprocess
 import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(os.path.dirname(HERE), 'src', 'obo.obo')
+sys.path.insert(0, HERE)
+import port_compare as pc  # noqa: E402
 
 MARK = "    let symMark = len(symArena)                 // the function's own symbols start here\n"
 FREE = "    truncate(symArena, symMark)                 // and nothing refers to them any more\n"
@@ -44,8 +50,8 @@ MUTANTS = {
     # freeing symbols too early: a dangling-handle trap
     "frees one symbol too many": [(FREE, FREE.replace("symMark)", "symMark - 1)"))],
     "frees symbols before the blocks close": [(BLOCKS_CLOSE, "    truncate(symArena, symMark)\n" + BLOCKS_CLOSE)],
-    # keeping symbols alive: over the memory budget. "parameters kept" is too small for the budget
-    # now that the peak is lower, so it is checked against the unmutated peak instead (KEEPS_ALIVE)
+    # keeping symbols alive: over the memory budget. "parameters kept" is caught by the budget line
+    # (its peak is about 1,555,696 bytes, over PEAK_BUDGET 1,351,000); KEEPS_ALIVE is a backstop for a leak too small for that
     "symbols never freed": [(FREE, "")],
     "parameters kept": [(MARK, ""), (PARAMS_DONE, PARAMS_DONE + "    let symMark = len(symArena)\n")],
     # borrows through a handle (checker): each must be caught by a case in errors/handles.obx
@@ -292,24 +298,39 @@ from mutate_fork import ARG_ORDER_MUTANTS  # noqa: E402
 MUTANTS.update({k: [v] for k, v in ARG_ORDER_MUTANTS.items() if k not in FORK_EQUIVALENT})
 
 
-# mutants that keep memory alive: caught when the peak rises above the unmutated peak,
-# for a leak too small to cross PEAK_BUDGET
+# mutants that keep memory alive: a backstop for a leak too small to cross PEAK_BUDGET, caught when the
+# peak rises above the unmutated peak. "parameters kept" is already caught by the budget line itself.
 KEEPS_ALIVE = {"parameters kept"}
 
 
-def peak_of(output):
-    m = re.search(r"peaks at ([\d,]+) bytes", output)
-    return int(m.group(1).replace(',', '')) if m else None
+def try_mutant(name, text, base_peak):
+    """('caught' or 'missed', the line to print) for one mutant, in its own directory."""
+    tmp = tempfile.mkdtemp(prefix='obo-mutant-')
+    try:
+        path = os.path.join(tmp, 'mutant.obx')
+        open(path, 'w').write(text)
+        if name in ENCODER:
+            r = subprocess.run([sys.executable, '-c', f"import port_test as pt; pt.SRC = {path!r}; pt.main()"],
+                               capture_output=True, text=True, cwd=HERE)
+            lines = (r.stdout + r.stderr).strip().splitlines()
+            failures = [l for l in lines if l.startswith('FAIL') or 'does not compile' in l] or \
+                       ([lines[-1] if lines else f'exit {r.returncode}'] if r.returncode != 0 else [])
+        else:
+            lines, failures, peak = pc.compare(tmp, path, quick=True)
+            failures = ["FAIL " + f for f in failures]
+            if name in KEEPS_ALIVE and not failures and peak is not None and base_peak is not None and peak > base_peak:
+                failures = [f"FAIL peak {peak:,} is above the unmutated {base_peak:,}"]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if failures:
+        return 'caught', f"caught  {name:40s} {failures[0][:110]}"
+    return 'missed', f"MISSED  {name:40s} {lines[-1].strip() if lines else ''}"
 
 
 def main():
     pattern = sys.argv[1] if len(sys.argv) > 1 else ''
     src = open(SRC).read()
-    tmp = tempfile.mkdtemp()
-    caught = total = 0
-    base = subprocess.run([sys.executable, '-c', "import port_compare as pc; pc.main()"],
-                          capture_output=True, text=True, cwd=HERE)
-    base_peak = peak_of(base.stdout + base.stderr)
+    todo = []
     for name, edits in MUTANTS.items():
         if pattern not in name:
             continue
@@ -317,26 +338,23 @@ def main():
         for old, new in edits:
             assert text.count(old) == 1, f"mutant '{name}': expected one match for {old!r}"
             text = text.replace(old, new)
-        path = os.path.join(tmp, 'mutant.obx')
-        open(path, 'w').write(text)
-        code = f"import port_compare as pc; pc.SRC = {path!r}; pc.main()"
-        if name in ENCODER:
-            code = f"import port_test as pt; pt.SRC = {path!r}; pt.main()"
-        r = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, cwd=HERE)
-        total += 1
-        if name in KEEPS_ALIVE and r.returncode == 0:
-            peak = peak_of(r.stdout + r.stderr)
-            if peak is not None and base_peak is not None and peak > base_peak:
-                r = subprocess.CompletedProcess(r.args, 1, r.stdout, f"FAIL peak {peak:,} is above the unmutated {base_peak:,}")
-        lines = (r.stdout + r.stderr).strip().splitlines()
-        why = next((l for l in lines if l.startswith('FAIL') or 'does not compile' in l), lines[-1] if lines else '')
-        if r.returncode != 0:
-            caught += 1
-            print(f"caught  {name:40s} {why[:110]}")
-        else:
-            print(f"MISSED  {name:40s} {lines[-1] if lines else ''}")
-    print(f"\n{caught}/{total} mutants caught")
-    sys.exit(0 if caught == total else 1)
+        todo.append((name, text))
+    # the unmutated comparison: its peak, and REF's outcomes, which every mutant's comparison reuses
+    tmp = tempfile.mkdtemp(prefix='obo-mutant-base-')
+    try:
+        lines, failures, base_peak = pc.compare(tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if failures:
+        print("\n".join(lines))
+        raise SystemExit("the unmutated port fails Stage B, so no mutant can be judged")
+    with concurrent.futures.ThreadPoolExecutor(int(os.environ.get('MUTATE_JOBS', 4))) as pool:
+        results = list(pool.map(lambda m: try_mutant(*m, base_peak), todo))
+    for _, line in results:
+        print(line)
+    caught = sum(status == 'caught' for status, _ in results)
+    print(f"\n{caught}/{len(results)} mutants caught")
+    sys.exit(0 if caught == len(results) else 1)
 
 
 if __name__ == '__main__':
