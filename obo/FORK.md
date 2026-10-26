@@ -1348,8 +1348,7 @@ every assignment while a handle from `a` is in scope would refuse `c_asg_clears_
   `pendDepth`, its place), and `pendingFreeCheck` reports it where the outermost such loop ends
   (`loops[hDepth]`), if the handle was named anywhere in the loop (`usedAt` after `Loop.useFrom`): "cannot
   assign over the owner of handle 'h' inside a loop that uses the handle". A `drop` in a loop is refused
-  earlier, as a move. `usedAt` is bumped for every tracked handle (`Sym.hTracked`, set when it is declared
-  with an origin), not only while it still has an origin: a move of the owner clears the origin, and the
+  earlier, as a move. `usedAt` is bumped for every tracked handle (`Sym.hDepth` > 0: set, to the loop depth plus 1, when it is declared with an origin), not only while it still has an origin: a move of the owner clears the origin, and the
   first version then stopped counting the uses.
 - **f2 is a known false positive again.** The first version limited the move rule (`loopOriginCheck`) to
   loops that had named the handle before the move. That is unsound: `take(a); a = nb(); pr(h.n)` in a loop
@@ -1419,10 +1418,7 @@ naming count (also once a move clears the origin), the loop's start count, the m
 start, its join, its return and break handling (a break arm's marks kept for after the loop, counted, applied, not applied to a return), the defer handles (recorded, all, other owners', kept after the block), the then, else and else-if arms, the two `if` joins,
 the arms and else arms of both matches and their joins, and the defer's restore.
 
-**Memory.** `PEAK_BUDGET` is unchanged at 1,351,000. The port compiling itself peaks at 1,278,352 bytes
-live; main's source (37bdfeb), measured the same way, peaks at 1,273,248, so the change costs 5,104 bytes
-(the dead-mark list, `Loop.useFrom`, the new functions and messages). No `Sym` field was added: the
-naming count reuses `usedAt`.
+**Memory.** `PEAK_BUDGET` is unchanged at 983,000. After the merge of main (c9510c6, peak 954,816) the port compiling itself peaks at 978,128 bytes live, so the change costs 23,312 bytes (the first draft added a `Sym` field, `hTracked`, and cost 33,568: every symbol paid for it, so the flag now lives in `hDepth`, which is 0 for a handle without an origin and the loop depth plus 1 otherwise). The Phase 2 register-allocation retry (`fnDecl`) needs no change to its restore list: the first pass runs to the end of the body, where every loop, block and defer has closed, so `originSyms`, `originDead`, `deferH` and the pending frees are empty again, and `jumpSeq` is only compared as a difference; `useSeq`, which it restores, is what `usedAt` and `Loop.useFrom` are counted in.
 
 **Measured** (on 37bdfeb plus this change): `run_fork` 460 of 460, `port_test` 426 of 426 identical with
 no leaks, `port_compare` stage B 611 of 611, `own_fuzz --count 300 --profile both` 0 failures in 600

@@ -933,8 +933,8 @@ type Sym = ref record {
     isRef: bool               // a reference: a parameter or local that borrows
     isRefLocal: bool          // a reference local (its validity is tracked)
     hOrigin: ?^Sym            // a let handle to a whole owned local: the local its object is in
-    hDepth: int              // the loop depth where a let handle with an origin was declared
-    hTracked: bool           // a let handle that had an origin when declared: its uses are counted (usedAt) even after a move clears it
+    hDepth: int              // a let handle that had an origin when declared: its loop depth + 1 (0 for the others); its uses
+                             // are counted (usedAt) even after a move clears the origin
     isParam: bool            // a parameter of the function being compiled: its object came from a caller
     bind: ^RefBind            // what a reference local points into, on the path being compiled
     fresh: bool               // pointed afresh since the innermost loop began, on every path to here
@@ -3453,7 +3453,7 @@ fn originMove(s: ?^Sym, move: bool) {
 fn loopOriginCheck(s: ^Sym) {
     for i in 0..len(originSyms) {
         let x = originSyms[i]
-        if x.hOrigin != nil && x.hDepth < len(loops) {
+        if x.hOrigin != nil && x.hDepth <= len(loops) {
             let o = x.hOrigin
             if o == s { error("cannot move '" + s.name + "' inside a loop while handle '" + x.name + "' made from it is in scope") }
         }
@@ -3469,9 +3469,9 @@ fn originFree(r: ^Sym, what: string) {
         let x = originSyms[i]
         if x.hOrigin != nil {
             let o = x.hOrigin
-            if o == r && x.hDepth < len(loops) {
+            if o == r && x.hDepth <= len(loops) {
                 append(pendSym, x)
-                append(pendDepth, x.hDepth)
+                append(pendDepth, x.hDepth - 1)
                 append(frLine, tline)
                 append(frCol, tcol)
                 append(pendWhat, what)
@@ -4170,7 +4170,7 @@ fn nameItem(s: ^Sym, name: string, target: bool): Item {
         x.sym = s
         x.root = s
         x.hOrigin = s.hOrigin
-        if s.hTracked {
+        if s.hDepth > 0 {
             useSeq += 1
             s.usedAt = useSeq
         }
@@ -4877,9 +4877,8 @@ fn varDecl(kind: string, isGlobal: bool) {
             dst = localItem(s, tt)
             if kind == "let" {
                 s.hOrigin = x.hOrigin
-                s.hDepth = len(loops)
                 if s.hOrigin != nil {
-                    s.hTracked = true
+                    s.hDepth = len(loops) + 1
                     append(originSyms, s)
                     append(originDead, nil)
                 }
