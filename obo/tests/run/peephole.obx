@@ -1,0 +1,176 @@
+// The peephole (FORK.md, "Peephole pass"): `x = x op y` on a local in a register is one instruction
+// on the local, not a copy, the operation and a copy back. The locals here are hot (used in loops), so
+// they live in registers; the results are what the copies would give.
+
+fn alu(n: int): int {
+    var a = 1000
+    var b = 7
+    var i = 0
+    while i < n {
+        a = a + 3
+        a = a - 1
+        a = a & 0xFFFFF
+        a = a | 4
+        a = a ^ 5
+        a = a + b
+        a = a - b
+        a = a * b
+        a = a + 100000
+        a = a - 70000
+        a = a & 0x7FFFFFFF
+        b = b + 1
+        i = i + 1
+    }
+    return a + b
+}
+
+// the operand is the local itself, or the local is the second operand (never folded)
+fn selfOps(n: int): int {
+    var a = 3
+    var b = 5
+    var i = 0
+    while i < n {
+        a = a + a
+        a = a - a + 1
+        b = a - b
+        b = b - a
+        a = b - a
+        a = a * a
+        a = a & 0xFFFF
+        b = b * b
+        b = b & 0xFFFF
+        i = i + 1
+    }
+    return a * 1000003 + b
+}
+
+// a different local on the left: the copy back is needed
+fn crossed(n: int): int {
+    var a = 1
+    var b = 2
+    var c = 3
+    var i = 0
+    while i < n {
+        c = a + b
+        a = b + c
+        b = c + a + 1
+        a = a & 0xFFFFF
+        b = b & 0xFFFFF
+        i = i + 1
+    }
+    return a + b + c
+}
+
+// the multiplication by a constant, which has no copy
+fn scale(n: int): int {
+    var a = 1
+    var b = 1
+    var i = 0
+    while i < n {
+        a = a * 3
+        a = a & 0xFFFFFF
+        b = a * 5
+        b = b * -7
+        b = b & 0xFFFFFF
+        a = a * 1001
+        a = a & 0xFFFFFF
+        i = i + 1
+    }
+    return a + b
+}
+
+// a fold at the first instruction of a loop body and of a branch, after a branch, before a jump
+fn labels(n: int): int {
+    var a = 0
+    var b = 0
+    var i = 0
+    while i < n {
+        a = a + 1
+        if a % 3 == 0 {
+            b = b + 2
+        } else {
+            b = b - 1
+        }
+        b = b + a
+        if b > 100000 { b = b - 100000; continue }
+        a = a + b
+        a = a & 0xFFFF
+        if a == 12345 { break }
+        i = i + 1
+    }
+    return a * 7 + b
+}
+
+fn first(n: int): int {
+    var t = 0
+    var i = 0
+    while true {
+        i = i + 1
+        t = t + i
+        if i >= n { break }
+    }
+    return t
+}
+
+// more is done to the result of the operation before the store: the operation is not the last thing emitted
+fn after(n: int): int {
+    var a = 100
+    var b = 3
+    var i = 0
+    while i < n {
+        a = (a + 5) / 2
+        a = (a + 7) % 1000
+        a = (a - 1) << 2
+        a = (a + 9) >> 1
+        a = (a + 1) * 3
+        a = (a + b) * b
+        a = (a & 0xFFFF) + 1
+        b = (b + 2) * 2 - b
+        b = b & 0xFF
+        i = i + 1
+    }
+    return a * 1000 + b
+}
+
+fn seven(): int { return 7 }
+
+var gv = 3
+var gw = 5
+
+// an operand that is an element, a call, a sum, a negative constant, a constant too large for an immediate
+fn operands(n: int): int {
+    let arr = new []int(8)
+    for k in 0..8 { arr[k] = k * k }
+    var s = 0
+    var m = 1
+    var i = 0
+    while i < n {
+        s = s + arr[i & 7]
+        s = s - seven()
+        s = s + (i + 1)
+        s = s + -3
+        s = s ^ 0x123456789
+        s = s + 0x123456789
+        s = s + gv
+        s = s - gw
+        m = m * gv
+        m = m * 0x123456789
+        m = m * gw
+        s = s & 0xFFFFFFFFFF
+        m = m * ((i & 1) * 2 + 1)
+        m = m & 0xFFFFFF
+        i = i + 1
+    }
+    return s + m
+}
+
+fn main() {
+    println(alu(50))                  // expect: 54581337
+    println(selfOps(20))              // expect: 4000013
+    println(crossed(30))              // expect: 2672251
+    println(scale(12))                // expect: 29216950
+    println(labels(40))               // expect: 345062
+    println(first(100))               // expect: 5050
+    println(after(25))                // expect: 20203103
+    println(operands(40))             // expect: 262112948905
+}

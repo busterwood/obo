@@ -180,19 +180,13 @@ MUTANTS = {
     # an imm8 push for a value that needs imm32: caught by the objdump cross-check
     "push imm8 for any imm32": [("    if fits8(v) {\n        emit(0x6A)", "    if fits32(v) {\n        emit(0x6A)")],
     "constant runtime argument lost": [("                append(argConsts, a.val)\n", "                append(argConsts, 0)\n")],
-    # a function without locals loses its 'sub rsp,0' and its body moves back 7 bytes
-    "dropped frame: calls out not moved": [("    for p in calls { putRel(p - 7, getRel(p - 7) + 7) }\n", "")],
-    "dropped frame: calls waiting for later functions not moved": [("                if g.fnRec.fixups[fi] > at { g.fnRec.fixups[fi] -= 7 }\n", "")],
+    # a function without locals loses its 'sub rsp,0': its entry moves 7 bytes on and its body stays (see "entry:" below)
     "dropped frame: calls to known functions not recorded": [("        fix(at, f.addr)\n        append(farCalls, at)\n", "        fix(at, f.addr)\n")],
-    # a pending forward call of an earlier function shifted when a later zero-frame function drops its frame:
-    # caught by tests/run/code_shapes.obx
-    "dropped frame: every waiting call shifted": [("                if g.fnRec.fixups[fi] > at { g.fnRec.fixups[fi] -= 7 }\n", "                g.fnRec.fixups[fi] -= 7\n")],
-    "dropped frame: waiting calls shifted if not negative": [("                if g.fnRec.fixups[fi] > at { g.fnRec.fixups[fi] -= 7 }\n", "                if g.fnRec.fixups[fi] >= 0 { g.fnRec.fixups[fi] -= 7 }\n")],
     # the boundaries of push imm8 and imm32, caught by the same program (Stage B, not only the objdump group)
     "push imm8 up to 128": [("fn pushI(v: int) {\n    if fits8(v) {", "fn pushI(v: int) {\n    if v >= -128 && v <= 128 {")],
     "push imm8 from -129": [("fn pushI(v: int) {\n    if fits8(v) {", "fn pushI(v: int) {\n    if v >= -129 && v < 128 {")],
     "push imm32 masked": [("        emit(0x68)\n        emit32(v)\n", "        emit(0x68)\n        emit32(v & 0x7FFFFFFF)\n")],
-    "frame dropped although there are locals": [("    if size == 0 {\n        dropFrame(frameAt)", "    if size <= 16 {\n        dropFrame(frameAt)")],
+    "frame dropped although there are locals": [("    if size == 0 {\n        dropFrame(frameAt, f)", "    if size <= 16 {\n        dropFrame(frameAt, f)")],
     "held: replace does not free what it holds": [('        consume(v)\n        freeEvent(x, place, raw, orig, ident)\n', '        consume(v)\n')],
     "held: take does not free what it holds": [('        freeEvent(x, lastPlace, lastRaw, lastOrigin, lastIdent)\n', '')],
     "held: moves do not reach held handle targets": [('        } else if heldForeign[i] {\n            if s.isParam || !refParamKey(heldKey[i]) { heldHit[i] = true }', '        } else if false {\n            if s.isParam || !refParamKey(heldKey[i]) { heldHit[i] = true }')],
@@ -340,10 +334,59 @@ MUTANTS.update({
     "retry: scanner not rewound": [("        pos = sPos\n", "")],
     "retry: token not restored": [("        sym = sSym\n", "")],
 })
-SHAPES = {"scan: nothing counted", "scan: ranking ignored", "scope end does not give the register back",
+SHAPES = {"align: loops not padded", "align: wrong padding", "align: while loops not padded", "align: while true not padded",
+          "align: for ranges not padded", "align: for arrays not padded", "align: not padded when compiled again",
+          "align: 4-byte nop contents", "align: 5 and 6-byte nop contents", "align: 7-byte nop contents", "align: 8 and 9-byte nop contents",
+          "fold: refused at a jump target", "fold: never (speed only)", "fold: the copy is kept", "scan: nothing counted", "scan: ranking ignored", "scope end does not give the register back",
           "runtime calls push the locals' registers", "return copies a local's register",
           "for limit's register never given back", "bool parameters left in memory"}
 EDGE = {"retry: free list left as the first pass had it"}
+
+# the peephole (FORK.md, "Peephole pass"): the store of `x = x op y` on a local in a register folds the copy, the
+# operation and the copy back into one operation on the local. Caught by tests/run/peephole.obx (through the
+# comparison of the port's output with obo's) or, for the one that only costs speed, by tests/homes_check.py.
+# Not planted, equivalent: `barrier <= foldAt` (no emitter asks for a position between a copy and its store, so
+# nothing reaches the guard today) and the records cleared in truncCode (a cut-back would have to be followed by
+# code ending exactly where the old operation did, with the same registers), and `cpDst == t` in noteFold (an
+# operation on a register right after the copy of a local into another one: no emitter makes that shape).
+MUTANTS.update({
+    "fold: more was emitted after the operation": [("if foldEnd == here() && foldT == src.r", "if foldT == src.r")],
+    "fold: a different local": [(" && foldHome == dst.r && barrier <= foldAt {", " && barrier <= foldAt {")],
+    "fold: the copy is kept": [("    truncCode(foldAt)\n    if form == 1 {", "    if form == 1 {")],
+    "fold: immediate changed": [("        aluRI(opc, h, arg)\n    } else if form == 2 {", "        aluRI(opc, h, arg + 1)\n    } else if form == 2 {")],
+    "fold: operand register is the temporary": [("        opReg(opc, h, arg, true, false)\n    } else {", "        opReg(opc, h, foldT, true, false)\n    } else {")],
+    "fold: imul by an immediate keeps the temporary": [("        opReg(0x69, h, h, true, false)\n        emit32(arg)\n    }\n}", "        opReg(0x69, foldT, h, true, false)\n        emit32(arg)\n    }\n}")],
+    "fold: a loaded operand taken for a register (alu)": [('            let direct = y.mode == "reg"\n            let ry = y.r\n            let a0 = here()\n            opOperand(c * 8 + 3', '            let direct = true\n            let ry = y.r\n            let a0 = here()\n            opOperand(c * 8 + 3')],
+    "fold: a loaded operand taken for a register (imul)": [('            let direct = y.mode == "reg"\n            let ry = y.r\n            let a0 = here()\n            opOperand(0x0FAF', '            let direct = true\n            let ry = y.r\n            let a0 = here()\n            opOperand(0x0FAF')],
+    "fold: the operation need not follow the copy": [("    if cpEnd == a0 && cpDst == t {", "    if cpDst == t {")],
+    "fold: refused at a jump target": [(" && barrier <= foldAt {", " && barrier < foldAt {")],
+    "fold: never (speed only)": [("            if foldEnd == here() && foldT", "            if false && foldT")],
+})
+
+# loop-head alignment (FORK.md, "Loop-head alignment"): the target of a backward jump is on a 32-byte boundary.
+# Speed only, so the SHAPES ones are caught by tests/homes_check.py, which finds the targets in the disassembly,
+# in a function with a frame, one without, and one compiled again with no registers. The entry-move ones change what
+# runs and are caught by the comparison, through tests/run/loop_align.obx: the calls to a function with no locals,
+# from itself and from the functions before and after it, must go to the entry that moved.
+ALIGN_N = "    var n = (LOOP_ALIGN - (pc() & (LOOP_ALIGN - 1))) & (LOOP_ALIGN - 1)\n"
+MUTANTS.update({
+    "align: loops not padded": [(ALIGN_N, "    var n = 0\n")],
+    "align: wrong padding": [(ALIGN_N, "    var n = (LOOP_ALIGN - 1 - (pc() & (LOOP_ALIGN - 1))) & (LOOP_ALIGN - 1)\n")],
+    "align: while loops not padded": [("    alignLoop()\n    let bodyAt = pc()\n", "    let bodyAt = pc()\n")],
+    "align: while true not padded": [("            alignLoop()\n            top = pc()\n        }\n        x = newItem", "            top = pc()\n        }\n        x = newItem")],
+    "align: for ranges not padded": [("        alignLoop()\n        top = pc()\n        loopdepth += 1\n", "        top = pc()\n        loopdepth += 1\n")],
+    "align: for arrays not padded": [("        alignLoop()\n        top = pc()\n        let ri = alloc()", "        top = pc()\n        let ri = alloc()")],
+    "align: not padded when compiled again": [(ALIGN_N, "    if homeCap == 0 { return }\n" + ALIGN_N)],
+    # the bytes of the padding: homes_check.py requires exactly the nops alignLoop emits, for every length
+    "align: 4-byte nop contents": [("            } else if k == 4 {\n                emit(0x40)", "            } else if k == 4 {\n                emit(0xCC)")],
+    "align: 5 and 6-byte nop contents": [("            } else if k == 5 || k == 6 {\n                emit(0x44)", "            } else if k == 5 || k == 6 {\n                emit(0xCC)")],
+    "align: 7-byte nop contents": [("            } else if k == 7 {\n                emit(0x80)", "            } else if k == 7 {\n                emit(0xCC)")],
+    "align: 8 and 9-byte nop contents": [("                emit(0x84)                      // 8 and 9", "                emit(0xCC)                      // 8 and 9")],
+    "entry: calls to itself keep the old entry": [("        if ((p + 4 + getRel(p)) & 0xFFFFFFFF) == old { fix(p, f.addr) }", "        if p < 0 { fix(p, f.addr) }")],
+    "entry: waiting calls keep the old entry": [("    for fi in 0..len(f.fnRec.fixups) { fix(f.fnRec.fixups[fi], f.addr) }\n}", "}")],
+    "entry: stays where it was": [("    f.addr = old + 7\n", "")],
+    "entry: prologue not moved": [("    setCode(old + 7, 0x55)\n", "")],
+})
 
 # PEAK_BUDGET is far above the port's peak, so a mutant that keeps memory alive is judged here instead:
 # its live peak must stay within this margin of the unmutated peak (the baseline compare in main()).

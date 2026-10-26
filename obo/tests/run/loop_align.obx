@@ -1,0 +1,118 @@
+// Loop heads start on a 32-byte boundary (FORK.md, "Loop-head alignment"), and a function with no locals keeps
+// its body where it is and moves its entry. What that touches: calls to the function from itself, from a
+// function before it (a forward heading) and after it, a loop condition that calls a later function, every kind
+// of loop, and a function compiled twice because it ran out of registers.
+
+fn isOdd(n: int): bool
+
+fn fact(n: int): int {                // frameless, calls itself
+    if n <= 1 { return 1 }
+    return n * fact(n - 1)
+}
+
+fn isEven(n: int): bool {             // frameless, calls a function declared later
+    if n == 0 { return true }
+    return isOdd(n - 1)
+}
+
+fn isOdd(n: int): bool {
+    if n == 0 { return false }
+    return isEven(n - 1)
+}
+
+fn countdown(n: int): int {           // a loop in a frameless function that calls itself
+    var i = 0
+    var t = 0
+    while i < n {
+        t += i
+        i += 1
+    }
+    if n > 0 { return t + countdown(n - 3) }
+    return t
+}
+
+fn spin(n: int): int {
+    var i = 0
+    while true {
+        i += 1
+        if i >= n { break }
+    }
+    return i
+}
+
+fn rows(): int {
+    var t = 0
+    for a in 0..5 {
+        for b in 0..a { t += a * b }
+    }
+    return t
+}
+
+fn walk(): int {
+    var xs = new []int(0)
+    for i in 0..6 { append(xs, i * i) }
+    var t = 0
+    for x in xs { t += x }
+    return t
+}
+
+fn lim(): int
+
+fn useLim(): int {                    // the condition calls a function declared later
+    var i = 0
+    var t = 0
+    while i < lim() {
+        t += i
+        i += 1
+    }
+    return t
+}
+
+fn lim(): int { return 6 }
+
+fn skips(): int {                     // continue and break go to the moved condition and past the loop
+    var i = 0
+    var t = 0
+    while i < 20 {
+        i += 1
+        if i % 3 == 0 { continue }
+        if i > 15 { break }
+        t += i
+    }
+    return t
+}
+
+type P = ref record { x: int; y: int }
+var ga = new []int(0)
+var gp = new P{x: 1, y: 2}
+var gps = new []P(0)
+
+fn many(n: int): int {                // a statement runs out of registers with locals in them: compiled again with none
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    while i < n { v += i; u += v; w += u; v += w; u += i; w += v; v += u; w += i; u += w; i += 1 }
+    ga[i & 3] = gps[i & 1].x + gp.x * ga[i & 3]
+    ga[i & 3] += gps[i & 1].x + gp.x * ga[i & 3]
+    return v + u + w
+}
+
+fn main() {
+    append(ga, 1)
+    append(ga, 2)
+    append(ga, 3)
+    append(ga, 4)
+    append(gps, new P{x: 1, y: 2})
+    append(gps, new P{x: 3, y: 4})
+    println(fact(10))                 // expect: 3628800
+    println(isEven(10))               // expect: true
+    println(isOdd(10))                // expect: false
+    println(countdown(10))            // expect: 72
+    println(spin(9))                  // expect: 9
+    println(rows())                   // expect: 35
+    println(walk())                   // expect: 55
+    println(useLim())                 // expect: 15
+    println(skips())                  // expect: 75
+    println(many(3))                  // expect: 2118
+}
