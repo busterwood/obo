@@ -1,0 +1,242 @@
+// Reference-local paths: a change made through a reference local is at the place the reference points
+// at (plus the path written), not anywhere in the root it borrows from. A reference to a disjoint place
+// stays valid. errors/ref_local_paths.obx has the unsafe neighbours of each shape.
+type Node = ref record { v: int; kids: []Node }
+type Pair = ref record { xs: []Node; ys: []Node; zs: []Node }
+type Deep = ref record { p: Pair; q: Pair }
+type Cell = ref record { a: ?Node; b: Node }
+
+fn mk(v: int): Node { return new Node{v: v, kids: new []Node(0)} }
+fn arr(a: int, b: int): []Node {
+    var xs = new []Node(0)
+    append(xs, mk(a))
+    append(xs, mk(b))
+    return xs
+}
+fn mkPair(k: int): Pair { return new Pair{xs: arr(k, k + 1), ys: arr(k + 2, k + 3), zs: arr(k + 4, k + 5)} }
+fn mkDeep(): Deep { return new Deep{p: mkPair(1), q: mkPair(10)} }
+fn cut(mut x: &[]Node): int { x[0] = mk(0); return 0 }
+fn pq(mut x: &[]Node, y: &Node): int { x[1] = mk(y.v); return 0 }
+var g = new Pair{xs: new []Node(0), ys: new []Node(0), zs: new []Node(0)}
+
+// a change through a reference to one field leaves a reference to another field valid
+fn fieldChange() {
+    var a = mkPair(1)
+    let keep = &a.xs[0]
+    var r = &a.ys
+    r[0] = mk(9)
+    println(keep.v)  // expect: 1
+    println(r[0].v)  // expect: 9
+    let r2 = &a.zs
+    r2[1] = mk(8)
+    println(keep.v + a.zs[1].v)  // expect: 9
+}
+
+// the same through a reference to a field of a field
+fn nestedChange() {
+    var d = mkDeep()
+    let keep = &d.q.xs[0]
+    let p = &d.p
+    p.ys = arr(7, 7)
+    println(keep.v)  // expect: 10
+    println(d.p.ys[1].v)  // expect: 7
+}
+
+// references derived from a reference keep its place: a change through one leaves the other valid
+fn derived() {
+    var d = mkDeep()
+    var p = &d.p
+    let s = &p.xs
+    let t = &p.ys
+    let w = &p.zs[0]
+    s[0] = mk(8)
+    println(t[0].v)  // expect: 3
+    println(w.v)  // expect: 5
+}
+
+// a reference made from a reference made from a reference
+fn chain() {
+    var d = mkDeep()
+    let p = &d.p
+    let s = &p.zs
+    let t = &s[1]
+    let keep = &d.q.zs[0]
+    let other = &p.xs[0]
+    t.kids = arr(4, 4)
+    println(other.v)  // expect: 1
+    println(keep.v)  // expect: 14
+    println(t.kids[0].v)  // expect: 4
+}
+
+// a change to a field directly, with a reference to another field
+fn direct() {
+    var a = mkPair(1)
+    let r = &a.ys
+    let r2 = &a.zs
+    a.xs = arr(5, 5)
+    println(r[0].v + r2[0].v)  // expect: 8
+}
+
+// constant indexes that differ are different places
+fn elements() {
+    var a = mkPair(1)
+    let r = &a.ys
+    let one = &a.ys[1]
+    r[0] = mk(6)
+    println(one.v)  // expect: 4
+    let e = &a.ys[0]
+    let f = &a.ys[1]
+    let r2 = &a.ys[0]
+    r2.kids = arr(2, 2)
+    println(f.v)  // expect: 4
+    println(e.kids[0].v)  // expect: 2
+}
+
+// an element with a variable index is every element, but not the fields beside the array
+fn varIndex(i: int) {
+    var a = mkPair(1)
+    let keep = &a.xs[0]
+    let r = &a.ys[i]
+    r.kids = arr(3, 3)
+    println(keep.v)  // expect: 1
+    println(a.ys[i].kids[1].v)  // expect: 3
+}
+
+// a reference pointed at another place: its binding is the new place on this path
+fn repoint() {
+    var a = mkPair(1)
+    var r = &a.xs
+    r = &a.ys
+    let keep = &a.xs[0]
+    r[0] = mk(6)
+    println(keep.v)  // expect: 1
+    println(a.ys[0].v)  // expect: 6
+}
+
+// re-pointed on one path to the place it already had
+fn samePlace(c: bool) {
+    var a = mkPair(1)
+    var r = &a.ys
+    if c { r = &a.ys }
+    let keep = &a.xs[0]
+    r[1] = mk(5)
+    println(keep.v)  // expect: 1
+}
+
+// a reference to a node, and the same node's child: the place and the place below it
+fn prefix(c: bool) {
+    var n = new Node{v: 1, kids: arr(2, 3)}
+    var r = &n
+    if c { r = &n.kids[0] }
+    println(r.v)  // expect: 2
+}
+
+// a mut call with a reference local changes what the callee frees, at the place the reference points at
+fn mutCall() {
+    var a = mkPair(1)
+    let keep = &a.xs[0]
+    let r = &a.ys
+    let z = cut(r)
+    println(keep.v + z)  // expect: 1
+    println(a.ys[0].v)  // expect: 0
+}
+
+// the arguments of a call: places that differ in one root
+fn arguments() {
+    var a = mkPair(1)
+    let r = &a.ys
+    let z = pq(r, &a.xs[0])
+    println(a.ys[1].v + z)  // expect: 1
+}
+
+// replace and truncate through a reference, with a reference to another field
+fn replaceTruncate() {
+    var a = mkPair(1)
+    let keep = &a.xs[0]
+    let r = &a.ys
+    let old = replace(r[0], mk(5))
+    println(old.v + keep.v)  // expect: 4
+    let r2 = &a.zs
+    truncate(r2, 0)
+    println(keep.v + len(a.zs))  // expect: 1
+}
+
+// take through a reference to the whole record, with a reference to another field
+fn takeField() {
+    var c = new Cell{a: mk(3), b: mk(4)}
+    let keep = &c.b
+    let r = &c
+    let old = take(r.a)
+    println(keep.v)  // expect: 4
+    if old != nil { println(old.v) }  // expect: 3
+}
+
+// a global root: a change through a reference into one field leaves a reference into another valid
+fn globalRoot() {
+    append(g.xs, mk(1))
+    append(g.ys, mk(2))
+    let keep = &g.xs[0]
+    let r = &g.ys
+    r[0] = mk(6)
+    println(keep.v + r[0].v)  // expect: 7
+}
+
+// a defer that changes through a reference, with a reference to another field read by an earlier defer
+fn deferred() {
+    var a = mkPair(1)
+    {
+        let keep = &a.xs[0]
+        var r = &a.ys
+        defer println(keep.v)  // expect: 1
+        defer { r[0] = mk(2) }
+    }
+    println(a.ys[0].v)  // expect: 2
+}
+
+// a reference declared in a loop is pointed afresh each time, so its place is known
+fn loopFresh() {
+    var a = mkPair(1)
+    let keep = &a.xs[0]
+    var i = 0
+    while i < 2 {
+        var r = &a.ys
+        r[0] = mk(i)
+        i += 1
+    }
+    println(keep.v)  // expect: 1
+}
+
+// a reference pointed afresh before a change inside a loop
+fn loopRepoint() {
+    var a = mkPair(1)
+    var r = &a.xs
+    let keep = &a.zs[0]
+    var i = 0
+    while i < 2 {
+        r = &a.ys
+        r[1] = mk(i)
+        i += 1
+    }
+    println(keep.v)  // expect: 5
+}
+
+fn main() {
+    fieldChange()
+    nestedChange()
+    derived()
+    chain()
+    direct()
+    elements()
+    varIndex(1)
+    repoint()
+    samePlace(true)
+    prefix(true)
+    mutCall()
+    arguments()
+    replaceTruncate()
+    takeField()
+    globalRoot()
+    deferred()
+    loopFresh()
+    loopRepoint()
+}

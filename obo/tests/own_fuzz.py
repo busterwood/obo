@@ -1051,10 +1051,11 @@ class Gen:
             return None
         a, b = f"r{self.nrefs}", f"r{self.nrefs + 1}"
         self.nrefs += 2
-        i, j = self.r.randrange(len(self.st.xs)), self.r.randrange(len(self.st.xs))
+        i = self.r.randrange(len(self.st.xs))
         call = f"cutRef({a})"                      # it frees what the node points to, below the array
-        return self.invalid_stmt([f"var {a} = &xs[{i}]", f"var {b} = &xs[{j}]", call,
-                                  f"println({b}.value)"])
+        # the second reference is into the place the call frees (a reference to another element is valid)
+        return self.invalid_stmt([f"var {a} = &xs[{i}]", f"var {b} = &xs[{i}].next", call,
+                                  f"println(sum({b}))"])
 
     def discard_stmt(self):
         """An owned result that is never stored: it is freed at once."""
@@ -1206,10 +1207,39 @@ class Gen:
                                   f"cutArg({q}, handle(xs[0]))"])
 
     def elem_write_stmt(self):
+        """A change through a reference to an element, then a read through a reference into the place that
+        was changed (the element's own field): invalid. A reference to another element stays valid (see
+        ref_local_path_stmt)."""
         a, b = f"r{self.nrefs}", f"r{self.nrefs + 1}"
         self.nrefs += 2
-        return self.invalid_stmt([f"var {a} = &xs[0]", f"var {b} = &xs[1]",
-                                  f"{a}.next = push(nil, 3)", f"println({b}.value)"])
+        return self.invalid_stmt(["{", "    var ys = new []Node(0)", f"    append(ys, mk({self.k()}))",
+                                  f"    var {a} = &ys[0]", f"    let {b} = &ys[0].next",
+                                  f"    {a}.next = push(nil, 3)", f"    println(sum({b}))", "}"])
+
+    def ref_local_path_stmt(self):
+        """References to two elements of one array (or two fields of one record); a change through one,
+        then a read through the other, which points at a place the change cannot free. Valid."""
+        a, b = f"r{self.nrefs}", f"r{self.nrefs + 1}"
+        self.nrefs += 2
+        k0, k1 = self.k(), self.k()
+        form = self.r.randrange(3)
+        if form == 0:
+            body = [f"    var {a} = &ys[0]", f"    let {b} = &ys[1]", f"    {a}.next = push(nil, 3)",
+                    f"    println({b}.value)", f"    println(sum({a}))"]
+            out = [str(k1), str(k0 + 3)]
+        elif form == 1:
+            body = [f"    var {a} = &ys[1]", f"    let {b} = &ys[0]", f"    {a}.next = push(nil, 4)",
+                    f"    println({b}.value)"]
+            out = [str(k0)]
+        else:
+            body = [f"    let {a} = &ys[0].next", f"    let {b} = &ys[1].next", "    ys[0].next = push(nil, 5)",
+                    f"    println(sum({b}))"]
+            out = [str(0)]
+        lines = ["{", "    var ys = new []Node(0)", f"    append(ys, mk({k0}))", f"    append(ys, mk({k1}))"] + body + ["}"]
+
+        def run(st):
+            st.out.extend(out)
+        return Stmt(lines, run)
 
     def two_self_stmt(self):
         a = f"r{self.nrefs}"
@@ -1292,7 +1322,7 @@ class Gen:
             s = self.h_dead_stmt()
             if s is not None:
                 return s
-        makers = self.common() + [self.choose_ref_stmt] * 2 + [self.defer_ref_stmt] + [self.push_stmt] * 4 + [self.take_stmt] * 2 \
+        makers = self.common() + [self.choose_ref_stmt] * 2 + [self.ref_local_path_stmt] + [self.defer_ref_stmt] + [self.push_stmt] * 4 + [self.take_stmt] * 2 \
             + [self.loop_stmt, self.if_stmt, self.g_set_stmt, self.g_trunc_stmt, self.ss_loop_stmt,
                self.gdrop_stmt, self.ss_trunc_stmt, self.tag_trunc_stmt, self.h_new_stmt, self.h_new_stmt,
                self.h_kill_stmt, self.h_kill_stmt, self.handle_borrow_stmt, self.handle_pure_mut_stmt, self.owned_deep_writer_stmt,

@@ -291,7 +291,30 @@ while nothing it may point into has been changed.
   through a handle, a recursive call, or a heading not yet defined, which count as freeing anything). A
   callee that only writes scalars, appends, or assigns strings leaves them valid.
 - A field of a reference parameter (`&p.ys`) is a place of its own: a change to `p.xs` does not reach it.
-  A reference that goes through a reference local (`&r.xs`) is still the whole root.
+  So is a place a reference local points at. With `var r = &a.ys`, a change through `r` (`r[0] = ...`,
+  `r = ...` is a re-point and changes nothing), a `mut` call given `r`, and a change to `a.ys` itself
+  reach a reference into `a.ys` and leave `&a.xs[0]` and `&a.zs` valid. A change through `r` is at the
+  place `r` points at plus the path written, so `s = &r.zs` is the place `a.ys.zs` and a change
+  through `s` leaves `&r.xs` valid. The rules for the place:
+  - Elements with different constant indexes are different places. An element with an index that is
+    not a constant is every element of the array (`&a.ys[i]` may be `&a.ys[0]`), and a constant
+    element is one of them: they overlap, and nothing beside the array does.
+  - A reference re-pointed has the place of the new target on that path. Where paths join (an `if`, a
+    `match`, the end of a loop), a reference may point into the places of both. The same place stays
+    one place; any two different places join to the whole root, and so does a reference to a whole
+    object (`&n`) joined with one inside it (`&n.kids[0]`): a change through it is then taken to
+    reach everything in the root. The places are not narrowed to a common prefix: that would miss a
+    change at one of them.
+  - A change that reaches the place by another route still reaches it: a change through a handle, a
+    `mut` call given the whole root, a function that frees a global the reference points into, and a
+    change through another reference parameter or a global, which may name the same object.
+  - A reference local that a loop has not pointed afresh since the loop began (it was declared
+    before the loop, and is not re-pointed on every path before the use) may be elsewhere on the next
+    iteration, and the body is checked once. A change through it, a reference made from it, or a
+    `mut` argument it is, inside that loop, is taken to reach the whole root. A reference declared
+    in the loop, or pointed afresh before the use, has its place. A copy of such a reference (`let s = r`)
+    is anywhere in the same roots. A known false rejection: `r[0] = replace(r[0], x)` through a reference
+    declared before the loop is refused inside it; point `r` in the loop, or name the element.
 - `replace` and `take` cannot name a reference local (`var r = &p.ys; replace(r, ...)`): a reference only
   borrows, so the old value is not its to give back; name the field or element.
 - A mut argument, `append` and `truncate` write through the reference they are given, so a loop that
@@ -754,9 +777,11 @@ fn main() {
 }
 ```
 
-**Coarse through references.** A change made through a reference, such as `p.next = x`
-where `p` is a reference, is not yet traced by its path: it invalidates every reference
-into the whole root it reaches.
+**Through references (closed, with limits).** A change made through a reference, such as `p.next = x`
+where `p` is a reference, is at the place the reference points at plus the path written (section 4), not
+anywhere in the root. What stays at the whole root: a change through a handle or through a reference
+borrowed through one, a reference local not pointed afresh in a loop, a join of two different places
+(including a whole object and a place inside it), and a `for` walk's variable.
 
 **Changes through a handle, and references inside something (closed).** A change through a
 handle, such as `h.items = ...`, `handle(p).items = ...` (a handle temporary, which has no name),
@@ -841,10 +866,12 @@ fn main() {
 function, so a re-point on one branch hid the place it had before from the paths that did not take
 the branch: the change that freed that place compiled and read freed memory. Each path now keeps its
 own binding (section 4), and where paths join, a reference may point into the union of their places.
-Two places join as follows: the same place stays the same; when one place lies under the other, the
-join is the lower place, which every change to the upper one reaches too; any other two places join
-to the whole root, which is the most conservative. A rule that kept only the common prefix of the two
-places would miss a change at the lower one, and is not used.
+Two places join as follows: the same place stays the same; any other two places join to the whole
+root, which is the most conservative. A rule that kept only the common prefix of the two places
+would miss a change at either one, and the lower of two nested places (an earlier version of this rule)
+is wrong for a change made through the reference, which is at the place plus the path written. A whole
+object and a place inside it stay two entries of the binding, so that a change through the reference is
+at each of them.
 
 A defer body may not re-point a reference declared before it (section 4). A loop is checked as well:
 where a change in the loop may have freed what a reference points into, while the reference was not
@@ -852,10 +879,9 @@ pointed afresh on every path, a read of it on the next iteration is an error, un
 pointed afresh after the change and before it is read again. A reference whose binding at the end of
 the body is not covered by the binding the body was checked with, or which is writable where the loop
 starts and read-only where it starts again, is also an error. The rule is per path, as the bindings
-are. Its precision is the same as before, and it is coarse in one place: a change made through a
-reference is taken to reach the whole root the reference borrows from, not the place it names, so a
-valid program can be rejected that changes one field through a reference and reads a reference to
-another field. That is a false rejection, not an unsound acceptance. A narrower rule is future work.
+are. A change made through a reference is at the place it names, not the whole root (section 4,
+"Through references"); a loop's reference that is not pointed afresh is the exception, and keeps the
+whole root.
 
 **Loop and defer frees (closed).** A free in a `while` condition, or on a `break` or `continue` path,
 was lost at the loop's exit, and a defer body's frees were applied where the body is declared. Both
