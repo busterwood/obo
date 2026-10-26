@@ -492,6 +492,14 @@ FP_MUTANTS = {
     'a parameter is recorded by the wrong place': ('        let pi = len(f.fnRec.params) - 1 - (g.offset - 16) / 8', '        let pi = (g.offset - 16) / 8'),
     'a mut argument passed on is not recorded as freed': ('                recordFree(b.roots[p])\n', ''),
     'the frees of a reference parameter are recorded as a global': ('    if g.isParam && g.isRef {', '    if g.isParam && g.isRef && false {'),
+    # pure calls with mut parameters (pureFn, movesFn)
+    'a callee with a mut parameter is never pure': ('        if f.fnRec.pmodes[i] == 2 && mutFrees(f, i) { return false }\n', '        if f.fnRec.pmodes[i] == 2 { return false }\n'),
+    'a callee that frees below a mut argument is pure': ('        if f.fnRec.pmodes[i] == 2 && mutFrees(f, i) { return false }\n', ''),
+    'a callee that frees globals is pure': ('    if f.addr < 0 || f == curFn || f.freesAll || len(f.fnRec.freed) > 0 { return false }\n', '    if f.addr < 0 || f == curFn || f.freesAll { return false }\n'),
+    'a callee that frees anything is pure': ('    if f.addr < 0 || f == curFn || f.freesAll || len(f.fnRec.freed) > 0 { return false }\n', '    if f.addr < 0 || f == curFn || len(f.fnRec.freed) > 0 { return false }\n'),
+    'a callee with a forward heading is pure': ('    if f.addr < 0 || f == curFn || f.freesAll || len(f.fnRec.freed) > 0 { return false }\n', '    if f == curFn || f.freesAll || len(f.fnRec.freed) > 0 { return false }\n'),
+    'a call with a mut parameter that appends does not count as moving': ('    if movesFn(f) { userCalls += 1 }', '    if !pureFn(f) { userCalls += 1 }'),
+    'only the first mut parameter is checked for frees': ('    for i in 0..len(f.fnRec.pmodes) {\n        if f.fnRec.pmodes[i] == 2 && mutFrees(f, i) { return false }', '    for i in 0..1 {\n        if i < len(f.fnRec.pmodes) && f.fnRec.pmodes[i] == 2 && mutFrees(f, i) { return false }'),
     # a field of a reference parameter keeps its path (itemBind, designatorT)
     'a field of a parameter binds the whole parameter': ('        if x.deref && isRefParam(r) { append(paths, x.path) }', '        if x.deref && isRefParam(r) { append(paths, "") }'),
     'a path through a reference local is kept': ('        if (!root.isRef || isRefParam(root)) && !viaHandle { x.path = path }', '        if !viaHandle { x.path = path }'),
