@@ -2316,6 +2316,28 @@ and any `||` in the condition (even in parentheses, a precision limit); `!alive(
 exit; a guard on a different handle or a copy (copies carry their own marks). A copy `let g = h` made inside
 the narrowed arm is live there, and dies with the arm's block. The early exit does not reach out of its block.
 
+**Review fixes (round 2).** The first version had two holes and a gap, all found by review; the programs are
+in `tests/errors/alive_narrow.obx`.
+1. *A negated guard opened the conjunction.* `!alive(h) && h.n > 0` compiled the operands after `&&` with `h`
+   narrowed, exactly where `h` is dead. `ifStat` now sets `guardNeg` before the condition and `conjunction`
+   opens the guard only for a positive one.
+2. *The early-exit narrowing left a loop that may run no time.* Marks used to only grow, so after a loop they
+   were what the body left; the early exit clears one inside the body (`dacc[gi]`), and that state was taken as the state
+   after the loop (`while c { if !alive(h) { return } ... }  h.n`, a `for` over an empty range or array, a
+   `while flag()`, a body ending in `break`, nested loops, an else arm narrowed in a loop). `loopBodyV` now saves
+   the marks at its start (`dEntry`) and unions them back into the marks after the loop, whichever way it is left
+   (all loop forms go through `loopBodyV`). This only adds marks, so no pre-existing accepted shape changes.
+3. *A move of the owner in a narrowed region.* A move clears the handle's origin but leaves its dead mark, which
+   used to keep the use refused (`if c { a = nb() }; eat(a); h.n`); narrowing cleared the mark, so
+   `if c { a = nb() }; if !alive(h) { return }; eat(a); h.n` was accepted (and traps: `eat` frees it). Now
+   narrowing that clears a non-nil mark remembers it (`originNar`, per `originSyms` entry, sticky, truncated with
+   the block; `narrowMark`), and `originMove` for a move of the owner marks such a handle dead again. Narrowing
+   that clears nothing remembers nothing, so a move with no earlier free behaves as on main (`moveNoFree` in the
+   run test: the handle still names the object that moved into another variable). The flag is sticky and not
+   path-aware: a move in the other arm of an earlier narrowing also marks the handle dead (conservative).
+Mutants: negated guard opens the conjunction, loop without the entry marks, move keeps narrowed handle usable,
+narrowing not remembered, narrowing always remembered.
+
 **Left.** A condition cannot free an owner (no assignment in an expression), so `guardFree == freeSeq` is a
 defensive check that no test can reach (an equivalent mutant is not listed for it). A move of the owner followed
 by its drop elsewhere (`consume(a)`) clears the origin and was never tracked; it is the same gap as outside a guard.
