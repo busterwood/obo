@@ -186,7 +186,7 @@ RETARGET = {
     "writes through read-only references": ("if x.deref && wr != nil && wr.isRef && !wr.bind.writable {",
                                             "if x.deref && wr != nil && wr.isRef && !wr.bind.writable && false {"),
     "mut aliases allowed": ("if i != j && argModes[i] == 2 {", "if i != j && argModes[i] == 2 && false {"),
-    "mut calls invalidate nothing": ("                invalidate(b.roots[p], av, false, at)\n", ""),
+    "mut calls invalidate nothing": ("                invalidate(b.roots[p], argVias[i], false, b.paths[p])\n", ""),
     "read-only references can be passed as mut": ("            if f.fnRec.pmodes[i] == 2 && !b.writable {", "            if false {"),
     "everything counts as an ancestor": ("        if p == a { return true }\n        p = p.bind.parent",
                                          "        if p == a || true { return true }\n        p = p.bind.parent"),
@@ -515,13 +515,12 @@ REF_PATH_MUTANTS = {
     'a path through a reference local is dropped': ('        if !viaHandle { x.path = path }', '        if !viaHandle && !root.isRefLocal { x.path = path }'),
     'a change through a reference local is at the whole root': ('invalidate(rb.roots[i], via, false, placeIn(r, i, x.path))', 'invalidate(rb.roots[i], via, false, "")'),
     'a reference derived from a reference local is anywhere in its root': ('        if x.deref { append(paths, placeIn(r, i, x.path)) }', '        if x.deref { append(paths, "") }'),
-    'a mut argument invalidates the whole root': ('invalidate(b.roots[p], av, false, at)', 'invalidate(b.roots[p], av, false, "")'),
+    'a mut argument invalidates the whole root': ('invalidate(b.roots[p], argVias[i], false, b.paths[p])', 'invalidate(b.roots[p], argVias[i], false, "")'),
     # placeIn
     'a reference ignores its own place for a change through it': ('    return b.paths[i] + xpath\n}', '    return xpath\n}'),
     'a reference with no known place is taken to know it': ('    if b.paths[i] == "" { return "" }\n', ''),
     'a reference to a whole object is taken to be anywhere': ('    if !b.deeps[i] { return xpath }\n', '    if !b.deeps[i] { return "" }\n'),
     'a reference not pointed afresh in a loop keeps its place': ('    if r.isRefLocal && !r.fresh && recording > 0 { return "" }\n', ''),
-    'a mut argument not pointed afresh in a loop keeps its place': ('                if av != nil && av.isRefLocal && !av.fresh && recording > 0 { at = "" }\n', ''),
     # the join of two bindings
     'a join of a place and the place below it keeps the longer': ('    if segsPrefix(pa, pb) && !segsPrefix(pb, pa) { return "" }\n    if segsPrefix(pb, pa) && !segsPrefix(pa, pb) { return "" }',
                                                                   '    if segsPrefix(pa, pb) && !segsPrefix(pb, pa) { return pb }\n    if segsPrefix(pb, pa) && !segsPrefix(pa, pb) { return pa }'),

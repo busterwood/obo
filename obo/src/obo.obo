@@ -3983,11 +3983,8 @@ fn callFn(f: ^Sym): Item {
         if argModes[i] == 2 && mutFrees(f, argIdx[i]) {
             let b = argBinds[i]
             for p in 0..len(b.roots) {
-                // a reference local that a loop has not pointed afresh may be elsewhere (see placeIn)
-                var at = b.paths[p]
-                let av = argVias[i]
-                if av != nil && av.isRefLocal && !av.fresh && recording > 0 { at = "" }
-                invalidate(b.roots[p], av, false, at)
+                // the binding's place; itemBind made it anywhere for a reference a loop has not pointed afresh
+                invalidate(b.roots[p], argVias[i], false, b.paths[p])
                 recordFree(b.roots[p])
             }
         }
