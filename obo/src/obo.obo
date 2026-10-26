@@ -814,6 +814,7 @@ fn runEncoderScript(script: []byte) {
 type Type
 type Sym
 type RefBind
+type FnRec
 type PState
 
 type Field = ref record {
@@ -921,8 +922,7 @@ type Sym = ref record {
     offset: int               // rbp offset or absolute address
     value: int                // const
     addr: int                 // fn: code position once defined, else -1
-    fixups: []int             // fn: calls waiting for the address
-    params: []^Type
+    fnRec: ^FnRec             // fn: its record (see FnRec); the other kinds share noFnRec
     ret: ^Type
     line: int
     owned: bool               // a local holding an owned value
@@ -946,8 +946,6 @@ type Sym = ref record {
     suspect: bool             // live across a recursive call that may write through a handle
     usedAt: int               // the reads so far (useSeq) when it was last read: see loopSelfCheck
     iterating: bool           // a for loop is walking this array
-    pmodes: []int             // fn: 0 owned, 1 &, 2 mut, per parameter
-    freed: []^Sym              // fn: the globals it might free (directly or through calls)
     freesAll: bool            // fn: it might free anything (or isn't compiled yet)
     writesHandles: bool       // fn: it frees owned objects through a handle (directly, by a callee, or a forward heading)
     home: int                 // an int or bool local held in this register (r12 to r15) instead of a stack slot, or -1
@@ -1025,11 +1023,30 @@ fn singleBind(root: ^Sym, deep: bool, path: string, writable: bool, parent: ?^Sy
 let noBind = arenaBind(new []^Sym(0), new []bool(0), new []string(0), true, nil)
 let noneBind = arenaBind(new []^Sym(0), new []bool(0), new []string(0), true, nil)
 
+// The data of a function, held by its symbol: the parameters, the calls waiting for its address,
+// and the globals it might free. Only functions have one; the other symbols share noFnRec, which
+// nothing writes, so it stays empty.
+type FnRec = ref record {
+    fixups: []int             // calls waiting for the address
+    params: []^Type
+    pmodes: []int             // 0 owned, 1 &, 2 mut, per parameter
+    freed: []^Sym             // the globals it might free (directly or through calls)
+}
+
+var fnArena = new []FnRec(0)          // owns the function records; the symbols hold handles to them
+
+fn newFnRec(): ^FnRec {
+    append(fnArena, new FnRec{fixups: new []int(0), params: new []^Type(0), pmodes: new []int(0), freed: new []^Sym(0)})
+    return handle(fnArena[len(fnArena) - 1])
+}
+
+let noFnRec = newFnRec()
+
 var symArena = new []Sym(0)            // owns every symbol; the rest of the compiler holds handles
 
 fn newSym(kind: string, name: string, t: ?^Type): ^Sym {
-    append(symArena, new Sym{kind: kind, name: name, typ: t, bind: noBind, addr: -1, fixups: new []int(0),
-                   params: new []^Type(0), ret: tVoid, line: -1, pmodes: new []int(0), freed: new []^Sym(0), home: -1})
+    append(symArena, new Sym{kind: kind, name: name, typ: t, bind: noBind, addr: -1, fnRec: noFnRec,
+                   ret: tVoid, line: -1, home: -1})
     return handle(symArena[len(symArena) - 1])
 }
 
@@ -2620,16 +2637,16 @@ fn loopCarryCheck(back: &PState, useBefore: int, lv: ?^Sym) {
 // no mut parameters it could free through. An owned by-value parameter does not make it impure: the
 // caller's argument is a move, which consume() counts (touches), and the array checks see that.
 fn pureFn(f: ^Sym): bool {
-    if f.addr < 0 || f == curFn || f.freesAll || len(f.freed) > 0 { return false }
-    for i in 0..len(f.pmodes) {
-        if f.pmodes[i] == 2 { return false }
+    if f.addr < 0 || f == curFn || f.freesAll || len(f.fnRec.freed) > 0 { return false }
+    for i in 0..len(f.fnRec.pmodes) {
+        if f.fnRec.pmodes[i] == 2 { return false }
     }
     return true
 }
 
 fn mightFree(f: ^Sym, g: ^Sym): bool {
     if f.addr < 0 || f == curFn || f.freesAll { return true }
-    let freed = &f.freed
+    let freed = &f.fnRec.freed
     for x in freed {
         if x == g { return true }
     }
@@ -2646,11 +2663,11 @@ fn recordFree(g: ?^Sym) {
         return
     }
     if g.storage != "global" { return }
-    let freed = &f.freed
+    let freed = &f.fnRec.freed
     for x in freed {
         if x == g { return }
     }
-    append(f.freed, g)
+    append(f.fnRec.freed, g)
 }
 
 // after calling f: references into what f might free are no longer valid,
@@ -3510,7 +3527,7 @@ fn releaseArgs(tbase: int, omark: int) {
 
 fn callFn(f: ^Sym): Item {
     let saved = saveRegs()
-    let n = len(f.params)
+    let n = len(f.fnRec.params)
     let pad = (depth + 8 * n) % 16
     if pad != 0 {
         aluRI(5, RSP, 8)
@@ -3531,16 +3548,16 @@ fn callFn(f: ^Sym): Item {
         let argLine = tline
         let argCol = tcol
         let a = expression()
-        checkAssign(f.params[i], a, "argument " + string(i + 1) + " of " + f.name)
-        if f.pmodes[i] > 0 {
+        checkAssign(f.fnRec.params[i], a, "argument " + string(i + 1) + " of " + f.name)
+        if f.fnRec.pmodes[i] > 0 {
             let b = borrowBind(a)
-            if f.pmodes[i] == 2 && !b.writable {
+            if f.fnRec.pmodes[i] == 2 && !b.writable {
                 error("argument " + string(i + 1) + " of " + f.name + " needs a mut reference, but this one is read-only")
             }
             // a mut argument writes through the reference it is passed by
-            if f.pmodes[i] == 2 { noteWrite(a) }
+            if f.fnRec.pmodes[i] == 2 { noteWrite(a) }
             append(argBinds, b)
-            append(argModes, f.pmodes[i])
+            append(argModes, f.fnRec.pmodes[i])
             append(argVias, viaOf(a))
             if anyDeep(b) && deepLine == 0 {
                 deepLine = argLine
@@ -3632,7 +3649,7 @@ fn callFn(f: ^Sym): Item {
         fix(at, f.addr)
         append(farCalls, at)
     } else {
-        append(f.fixups, at)
+        append(f.fnRec.fixups, at)
         fwdCalls += 1
     }
     if n > 0 || pad != 0 {
@@ -5209,10 +5226,11 @@ fn whileStat(): bool {
         if fwdCalls != fwdFrom {
             for g in 0..len(globals) {
                 if globals[g].kind == "fn" && globals[g].addr < 0 {
-                    while len(globals[g].fixups) > 0 && globals[g].fixups[len(globals[g].fixups) - 1] >= top {
+                    let fr = globals[g].fnRec
+                    while len(fr.fixups) > 0 && fr.fixups[len(fr.fixups) - 1] >= top {
                         append(waitFn, g)
-                        append(waitAt, globals[g].fixups[len(globals[g].fixups) - 1])
-                        truncate(globals[g].fixups, len(globals[g].fixups) - 1)
+                        append(waitAt, fr.fixups[len(fr.fixups) - 1])
+                        truncate(fr.fixups, len(fr.fixups) - 1)
                     }
                 }
             }
@@ -5254,7 +5272,7 @@ fn whileStat(): bool {
         farCalls[k] += d
         putRel(farCalls[k], getRel(farCalls[k]) - d)
     }
-    for k in waitFrom..len(waitFn) { append(globals[waitFn[k]].fixups, waitAt[k] + d) }
+    for k in waitFrom..len(waitFn) { append(globals[waitFn[k]].fnRec.fixups, waitAt[k] + d) }
     truncate(waitFn, waitFrom)
     truncate(waitAt, waitFrom)
     let tl = shiftWaits(x.T, d)
@@ -5755,8 +5773,8 @@ fn dropFrame(at: int) {
     let gs = &globals
     for g in gs {
         if g.kind == "fn" && g.addr < 0 {
-            for fi in 0..len(g.fixups) {
-                if g.fixups[fi] > at { g.fixups[fi] -= 7 }
+            for fi in 0..len(g.fnRec.fixups) {
+                if g.fnRec.fixups[fi] > at { g.fnRec.fixups[fi] -= 7 }
             }
         }
     }
@@ -6186,18 +6204,19 @@ fn fnDecl() {
     var f = newSym("fn", name, nil)
     if prior != nil && prior.kind == "fn" && prior.addr < 0 {
         f = prior
-        var ok = len(f.params) == len(params) && same(f.ret, ret)
+        var ok = len(f.fnRec.params) == len(params) && same(f.ret, ret)
         if ok {
             for i in 0..len(params) {
-                if !same(f.params[i], params[i].typ) || f.pmodes[i] != params[i].mode { ok = false }
+                if !same(f.fnRec.params[i], params[i].typ) || f.fnRec.pmodes[i] != params[i].mode { ok = false }
             }
         }
         if !ok { error("'" + name + "' does not match its forward heading") }
     } else {
+        f.fnRec = newFnRec()
         declare(f)
         for p in params {
-            append(f.params, p.typ)
-            append(f.pmodes, p.mode)
+            append(f.fnRec.params, p.typ)
+            append(f.fnRec.pmodes, p.mode)
         }
         f.ret = ret
         f.line = hline
@@ -6205,7 +6224,7 @@ fn fnDecl() {
     if sym != T_LBRACE { return }
     if f.addr >= 0 { error("'" + name + "' is already defined") }
     f.addr = pc()
-    for fi in 0..len(f.fixups) { fix(f.fixups[fi], f.addr) }   // calls waiting for this address
+    for fi in 0..len(f.fnRec.fixups) { fix(f.fnRec.fixups[fi], f.addr) }   // calls waiting for this address
     curFn = f
     // what a pass over the body changes and a second pass must find as it was
     let sPos = pos
@@ -6222,7 +6241,7 @@ fn fnDecl() {
     let sUse = useSeq
     let sFwd = fwdCalls
     let sTemps = argTempsUsed
-    let sFreed = len(f.freed)
+    let sFreed = len(f.fnRec.freed)
     let sAll = f.freesAll
     let sWrites = f.writesHandles
     homeRetry = false
@@ -6231,10 +6250,11 @@ fn fnDecl() {
         let gs = &globals
         for g in gs {
             if g.kind == "fn" && g.addr < 0 {
-                while len(g.fixups) > 0 && g.fixups[len(g.fixups) - 1] >= f.addr { truncate(g.fixups, len(g.fixups) - 1) }
+                let fr = g.fnRec
+                while len(fr.fixups) > 0 && fr.fixups[len(fr.fixups) - 1] >= f.addr { truncate(fr.fixups, len(fr.fixups) - 1) }
             }
         }
-        truncate(f.freed, sFreed)
+        truncate(f.fnRec.freed, sFreed)
         f.freesAll = sAll
         f.writesHandles = sWrites
         selfCalls = sSelf
@@ -6323,7 +6343,7 @@ fn compileModule() {
         }
     }
     let m = findSym(globals, "main")
-    if m == nil || m.kind != "fn" || len(m.params) > 0 || m.ret != tVoid {
+    if m == nil || m.kind != "fn" || len(m.fnRec.params) > 0 || m.ret != tVoid {
         var l = 1
         if m != nil && m.kind == "fn" { l = m.line }
         errorAt("the program needs 'fn main()' with no parameters or result", l, 1)

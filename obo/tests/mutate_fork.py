@@ -30,10 +30,10 @@ PORT_PATTERNS = {
                                  '        } else if false {\n            let r = rtCall1(RT_STR_INC, dupItem(x), tString)'),
     "loop variable takes no reference": ("            let held = rtCall1(RT_STR_INC, dupItem(vi), tString)   // and hold the new one\n            release(held.r)\n", ""),
     "records keep their strings": ("        if ft.kind == \"string\" { append(strs, fo) }              // and the strings it drops\n", ""),
-    "callees never free globals": ("    if f.addr < 0 || f == curFn || f.freesAll { return true }\n    let freed = &f.freed",
-                                   "    if false { return true }\n    let freed = &f.freed"),
-    "frees not recorded": ('    if g.storage != "global" { return }\n    let freed = &f.freed',
-                           '    if true { return }\n    let freed = &f.freed'),
+    "callees never free globals": ("    if f.addr < 0 || f == curFn || f.freesAll { return true }\n    let freed = &f.fnRec.freed",
+                                   "    if false { return true }\n    let freed = &f.fnRec.freed"),
+    "frees not recorded": ('    if g.storage != "global" { return }\n    let freed = &f.fnRec.freed',
+                           '    if true { return }\n    let freed = &f.fnRec.freed'),
     "loop moves unchecked": ("    if !term {\n        let now = snapshot()", "    if false {\n        let now = snapshot()"),
     "string locals never dropped": ("            if s.isStr {\n                rtCall1(RT_STR_DEC, x, tVoid)",
                                     "            if s.isStr {\n                rtCall1(RT_STR_INC, x, tVoid)"),
@@ -75,7 +75,7 @@ MUTANTS = {
     "references can be moved out": ("    if x.borrowed || (s != nil && s.isRef) { error(", "    if false { error("),
     "walked arrays can change": ("                    if xs.iterating { errorAt(", "                    if false { errorAt("),
     "element writes invalidate nothing": ("                } else if x.deref || x.viaHandle {\n                    invalidateOwnedChange(x)\n", "                } else if x.deref || x.viaHandle {\n"),
-    "read-only references can be passed as mut": ("            if f.pmodes[i] == 2 && !mutableOf(a) {", "            if false {"),
+    "read-only references can be passed as mut": ("            if f.fnRec.pmodes[i] == 2 && !mutableOf(a) {", "            if false {"),
     "everything counts as an ancestor": ("        if p == a { return true }\n        p = p.refParent", "        return true"),
     # handles
     "handle borrows are untracked": ("    if x.mode == \"const\" { return nil }\n    if x.viaHandle { return handleSym }\n", "    if x.mode == \"const\" { return nil }\n    if x.viaHandle { return nil }\n"),
@@ -85,9 +85,9 @@ MUTANTS = {
     "handle index calls allowed": ("            if viaHandle && userCalls != callsBefore {\n                error(", "            if false {\n                error("),
     "match reads the tag with the generation": ("    opMem(0x8B, r, mem(r, -1, -16, 8), false, false)", "    opMem(0x8B, r, mem(r, -1, -16, 8), true, false)"),
     # effect summaries
-    "callees never free globals": ("    if f.addr < 0 || f == curFn || f.freesAll { return true }\n    let freed = &f.freed", "    if false { return true }\n    let freed = &f.freed"),
+    "callees never free globals": ("    if f.addr < 0 || f == curFn || f.freesAll { return true }\n    let freed = &f.fnRec.freed", "    if false { return true }\n    let freed = &f.fnRec.freed"),
     "calls invalidate nothing": ("            invalidate(g, nil, true, \"\")\n            if !all { recordFree(g) }", "            if !all { recordFree(g) }"),
-    "frees not recorded": ("    if g.storage != \"global\" { return }\n    let freed = &f.freed", "    if true { return }\n    let freed = &f.freed"),
+    "frees not recorded": ("    if g.storage != \"global\" { return }\n    let freed = &f.fnRec.freed", "    if true { return }\n    let freed = &f.fnRec.freed"),
     "drop frees nothing": ("        consume(x)\n        rtCall1(RT_FREE, dx, tVoid)\n        return voidItem()", "        consume(x)\n        return voidItem()"),
     "replace keeps the old value in place": ("        let xt = x.typ\n        store(x, v)\n", "        let xt = x.typ\n        releaseItem(x)\n"),
     # compile-time checks
@@ -187,7 +187,7 @@ RETARGET = {
                                             "if x.deref && wr != nil && wr.isRef && !wr.bind.writable && false {"),
     "mut aliases allowed": ("if i != j && argModes[i] == 2 {", "if i != j && argModes[i] == 2 && false {"),
     "mut calls invalidate nothing": ("                invalidate(b.roots[p], argVias[i], false, argPaths[i])\n", ""),
-    "read-only references can be passed as mut": ("            if f.pmodes[i] == 2 && !b.writable {", "            if false {"),
+    "read-only references can be passed as mut": ("            if f.fnRec.pmodes[i] == 2 && !b.writable {", "            if false {"),
     "everything counts as an ancestor": ("        if p == a { return true }\n        p = p.bind.parent",
                                          "        if p == a || true { return true }\n        p = p.bind.parent"),
     "handle borrows are untracked": ("    if x.viaHandle { return singleBind(handleSym, deepOf(x), x.path, mutableOf(x), parentOf(x)) }\n",
@@ -225,7 +225,7 @@ MUTANTS.update({
     "a re-point keeps the carried mark": ("            xs.carryFreed = false\n", ""),
     "a loop start forgets the carried marks": ("    for s in locals { s.fresh = false }\n", "    for s in locals { s.fresh = false; s.carryFreed = false }\n"),
     # a write through a mut argument, or through an append, is a write for the writable rule (review15 w_mutarg, w_append)
-    "a mut argument is not a write": ("            if f.pmodes[i] == 2 { noteWrite(a) }\n", ""),
+    "a mut argument is not a write": ("            if f.fnRec.pmodes[i] == 2 { noteWrite(a) }\n", ""),
     "an append is not a write": ("    if name == \"append\" || name == \"truncate\" { noteWrite(a) }\n", "    if name == \"truncate\" { noteWrite(a) }\n"),
     # a deferred change is replayed as it was made: through the reference it was made through (review15 FP_defer_via_child_*)
     "a deferred change is replayed without its reference": ("            invalidate(rt, rv, r.all, r.path)\n", "            invalidate(rt, nil, r.all, r.path)\n"),
