@@ -3673,9 +3673,11 @@ fn pendDrop(k: int) {
 }
 
 // A block that always ends (in a break or a return) with no continue in it: the frees it made in the loop it
-// is in are never followed by another iteration, if the block ends in a return, or, for a handle declared
-// inside the loop that a break leaves (pendDepth is its index), if it ends in a break. A use after such a
-// loop is seen by the dead marks (Loop.exitDead). A move stays after a break, since the origin it clears
+// is in are never followed by another iteration, if the block ends in a return, or, if it ends in a break,
+// for a handle declared in the scope directly outside the loop it leaves (pendDepth is then the index of that
+// loop, the one the handle is declared outside of); a handle declared further out is judged where its outer
+// loop ends, since that loop repeats. A use after such a loop is seen by the dead marks (Loop.exitDead).
+// A move stays after a break, since the origin it clears
 // would let a use after the loop through (movedLoop is set where the loop ends), and so does a return: the
 // origin the move clears is cleared for the paths that go on, which the other frees then miss. Entries made
 // in a loop inside the block repeat, and stay. pm: the entries from the block's start; cs, bs: contSeq and brkSeq there
