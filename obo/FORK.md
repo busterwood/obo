@@ -2377,10 +2377,23 @@ arm that returns leaves the handle live for the paths that go on, and a free of 
 A loop ends with the live marks it began with (`dEntry`): the loop may run no time, and a mark only goes away along
 a path, so the marks at the entry are those of one of the paths out.
 
-`hOrigin` itself is still cleared flow-insensitively by a move. It is what the held-place checks use (a handle
-with no origin is an identity, which every move and free hits, the safe side), and `loopOriginPend` and
-`originNar`; only the free events moved to the live marks. The guard against a defer that uses the handle
-(`originFree`, "while a defer declared earlier uses handle") uses the live mark too.
+`hOrigin` itself is still cleared flow-insensitively by a move. The free events and the loop move rule
+(`loopOriginPend`: a move of the owner inside a loop that a handle from it was declared outside of, "cannot move
+'a' inside a loop while handle 'h' made from it is in scope", or `movedLoop` if the loop never names it) test the live
+mark, and so does the guard against a defer that uses the handle (`originFree`, "while a defer declared
+earlier uses handle"). The loop rule used `hOrigin`, so after a move in an arm that returned (which cleared it for
+the whole function) a move inside a loop went unseen, although the handle was live on the path that went on
+(`if c { eat(a); return }  while ... { println(h.n); var d = a; a = nb() }`, and a zero-trip loop that moves and
+refills followed by `a = nb()`; both compiled and exited 7). The remaining users of `hOrigin` stay on it, each
+for a reason: (1) the expression's `hOrigin` (`x.hOrigin = s.hOrigin`, and `hOrig` in the designator) decides
+whether a held place is keyed to the owner or is an identity, which every move and free hits. A cleared `hOrigin`
+is the safe side there; keying a place to the owner on the paths that did not move it would let a free of the
+owner in a callee pass unseen on the paths that did. (2) `originMove` re-marks a narrowed handle dead (`originNar`) at the first move that
+finds an origin; it is left as it was, since moving it to the live mark would change which narrowed handles stay
+usable and no failing program was found. (3) The `let` copy takes `x.hOrigin` for the same identity treatment, but is tracked (`originSyms`,
+`hDepth`, the dead and live marks of the handle it copies) whenever the copied handle is live, so a copy made after
+a move in an arm that returned (`if c { eat(a); return }  let g = h  a = nb()  g.n`) is refused like the handle
+itself; the copy has no origin, which is an identity.
 
 **Why it only tightens.** A dead mark is added exactly where the old rule added one, and in more places: a
 free that the old rule skipped because a textually earlier move (on another path, in an arm that ended, in an
@@ -2394,10 +2407,21 @@ on that path (a move on one path that does not refill is "moved on one path but 
 assignment after the merge is refused, because it frees the object on the paths that did not move.
 
 **Left.** The marks do not follow a condition: `if c { move+refill }  if c { a = nb() }  h.n` is refused although
-the two ifs agree (a path-insensitive false positive; the old rule accepted this one by accident). A `let` copy of
-a handle made after a move on a path that ended (`if c { take(a); return }  let g = h`) gets no origin, since
-`hOrigin` is already cleared by the arm, so a free of the owner then is not seen through `g` (run-time check). A
-move in a defer body is refused outright, so the defer needs no live handling beyond the restore.
+the two ifs agree (see the false positives below). A move in a defer body is refused outright, so the defer needs
+no live handling beyond the restore. Still on the run-time check: the owner moved away and back (`var c = a; a = nb();
+a = c; a = nb(); h.n`: the live mark does not come back with the object), a move into a by-value callee followed by
+assignments (`eat(a); a = nb(); a = nb(); h.n`, the documented callee-frees case), and a move in an `if` condition
+that returns (`if mv(a) { return }  a = nb()  h.n`).
+
+**Known false positives (path-correlated conditions).** The marks do not know that two conditions agree, so a free
+that is safe because the same condition guards the move and the free is refused:
+`if k == 1 { c = a; a = nb(2) }  println(h.n)  if k == 1 { a = nb(3) }  println(h.n)`: on the path where k is not 1
+nothing is freed, and where it is 1 the second `a = nb(3)` frees the refill, but the first `if` leaves the handle live
+(the other path did not move) and the second frees it. Likewise with a defer that uses the handle
+and with a loop whose body repeats the condition. A generator found 8 of these in 400 seeds, all with `k == const`
+conditions. Rewrite the program so that the move and the free are in one arm, or make the handle again after the
+move. The old rule accepted them only because any move cleared the origin for good, which also missed the real cases
+above.
 A handle with no origin, a field handle and the other "Not covered" shapes above are unchanged.
 
 **Tests.** Refused: `tests/errors/origin_paths.obx` (the then arm moves and returns and the else arm assigns

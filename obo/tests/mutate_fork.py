@@ -319,10 +319,10 @@ ORIGIN_MUTANTS = {
         '            if false {\n                x.hOrigin = nil\n'),
     "a closed block's handles stay in the origin list": ('    truncate(originSyms, blocks[last].hmark)\n',
         ''),
-    'a handle declared in the loop it is moved in is refused': ('        if x.hOrigin != nil && x.hDepth <= len(loops) && originDead[i] == nil {\n',
-        '        if x.hOrigin != nil && x.hDepth <= len(loops) + 1 {\n'),
-    'the loop check ignores where a handle was declared': ('        if x.hOrigin != nil && x.hDepth <= len(loops) && originDead[i] == nil {\n',
-        '        if x.hOrigin != nil {\n'),
+    'a handle declared in the loop it is moved in is refused': ('        if originLive[i] == s && x.hDepth <= len(loops) && originDead[i] == nil {\n',
+        '        if originLive[i] == s && x.hDepth <= len(loops) + 1 {\n'),
+    'the loop check ignores where a handle was declared': ('        if originLive[i] == s && x.hDepth <= len(loops) && originDead[i] == nil {\n',
+        '        if originLive[i] == s {\n'),
     "a let handle's loop depth is not recorded": ('                    s.hDepth = len(loops) + 1\n',
         ''),
     'moves do not check the loop': ('    if move { loopOriginPend(r) }\n',
@@ -472,7 +472,7 @@ FP_MUTANTS = {
     'a free before a break is never dropped': ('            if brkSeq != bs && pendDepth[k] == len(loops) - 1 { drop = true }\n', ''),
     'a free before a return is never dropped': ('            if brkSeq == bs { drop = true }\n', ''),
     # a move of the owner in a loop that does not name the handle (loopOriginPend, pendingFreeCheck, movedLoop)
-    'a move in a loop is not reported': ('            if o == s { pendPush(x, s, "move") }\n', ''),
+    'a move in a loop is not reported': ('            pendPush(x, s, "move")\n', ''),
     'a moved owner leaves its handle free to be named': ('            if pendWhat[k] == "move" { x.movedLoop = true }\n', ''),
     'naming a handle after a loop moved its owner is allowed': ('            if s.movedLoop && !inAlive {\n', '            if false {\n'),
     'naming a moved handle in alive is refused': ('            if s.movedLoop && !inAlive {\n', '            if s.movedLoop {\n'),
@@ -511,8 +511,8 @@ MUTANTS.update(FP_MUTANTS)
 
 # mutants that survive by design: each removes a test that is redundant, so the behaviour is unchanged
 EQUIVALENT = {
-    "a closed block's defer handles stay": "equivalent since origins per path: originFree finds the handles of a defer through originSyms, which a closed block drops, so a stale deferH entry is never matched",
-    "a loop does not restore the live marks from before it": "equivalent: a move of the owner inside a loop, with the handle declared outside it, is refused if the loop names the handle and otherwise sets movedLoop, which refuses naming it after the loop; a handle declared inside is gone at the loop's end; so the live mark after the loop is never read",
+    "a closed block's defer handles stay": "equivalent since origins per path: originFree finds the handles of a defer through originSyms, which a closed block drops, and a handle compares by generation, so a stale deferH entry never equals a later entry",
+    "a loop does not restore the live marks from before it": "equivalent since loopOriginPend tests the live mark: a move of the owner in a loop, with the handle declared outside it and live at the move, is refused if the loop names the handle and otherwise sets movedLoop, which refuses naming it after the loop (errors/origin_paths.obx, the zero-trip loop after a moving return arm, is refused that way); a handle declared inside is gone at the loop's end; so the live mark after the loop is never read",
     "a callee with a forward heading is assumed to free nothing": "equivalent: afterCall treats a call to a callee that is not compiled as a write through a handle (invalidateDeep, writesHandles, freesAll), which invalidates every reference inside something and makes the caller's own summary assume every parameter freed; a reference to a whole object is never invalidated by a mut argument, so the check in mutFrees only repeats it",
     "a callee that writes through a handle is assumed to free nothing": "equivalent for the same reason: a callee that writes through a handle sets freesAll and writesHandles, which afterCall turns into invalidateDeep and into the same flags for its caller, so every reference a mut argument could invalidate is already invalid",
     "origin not cleared by a take of a whole local": "equivalent: a take needs its optional owner widened first, and only an assignment over a narrowed owner does that (a handle is made only while the owner is narrowed), so the assignment hook has already cleared the same origins before any take can run",
@@ -564,9 +564,11 @@ PATH_MUTANTS = {
     'a match on a type starts its live union from the marks before': ('    var dacc = deadSave()\n    liveClear(&dacc)\n    let r = alloc()', '    var dacc = deadSave()\n    let r = alloc()'),
     'an arm that goes on does not add its live marks': ('        if originLive[i] != nil { acc[m + i] = originLive[i] }\n', ''),
     'the live marks are not restored with the dead ones': ('    for i in 0..m { originLive[i] = d[m + i] }\n', ''),
-    'a copy of a handle has no live mark': ('append(originLive, s.hOrigin)', 'append(originLive, nil)'),
+    'a copy of a handle has no live mark': ('append(originLive, live)', 'append(originLive, nil)'),
     'the defer guard uses the flow-insensitive origin': ('originSyms[i] == x && originLive[i] == r { live = true }', 'originSyms[i] == x && originLive[i] == r && x.hOrigin != nil { live = true }'),
     'the live marks are not dropped with the block': ('    truncate(originLive, blocks[last].hmark)\n', ''),
+    'the loop move rule uses the flow-insensitive origin': ('        if originLive[i] == s && x.hDepth <= len(loops)', '        if originLive[i] == s && x.hOrigin != nil && x.hDepth <= len(loops)'),
+    'a copy of a handle with no origin is not tracked': ('                if live != nil {\n                    s.hDepth', '                if live != nil && s.hOrigin != nil {\n                    s.hDepth'),
     'a loop does not restore the live marks from before it': ('        originLive[i] = dEntry[em + i]\n', ''),
 }
 MUTANTS.update(PATH_MUTANTS)

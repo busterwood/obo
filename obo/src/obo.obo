@@ -3623,9 +3623,9 @@ fn unname(x: ?^Sym) {
 fn loopOriginPend(s: ^Sym) {
     for i in 0..len(originSyms) {
         let x = originSyms[i]
-        if x.hOrigin != nil && x.hDepth <= len(loops) && originDead[i] == nil {
-            let o = x.hOrigin
-            if o == s { pendPush(x, s, "move") }
+        // the live mark, not hOrigin: an earlier move on a path that ended has cleared hOrigin for good
+        if originLive[i] == s && x.hDepth <= len(loops) && originDead[i] == nil {
+            pendPush(x, s, "move")
         }
     }
 }
@@ -5180,19 +5180,25 @@ fn varDecl(kind: string, isGlobal: bool) {
             dst = localItem(s, tt)
             if kind == "let" {
                 s.hOrigin = x.hOrigin
-                if s.hOrigin != nil {
-                    s.hDepth = len(loops) + 1
-                    // a copy of a dead handle is dead too
-                    var dead: ?^Sym = nil
-                    for i in 0..len(originSyms) {
-                        if originSyms[i] == x.sym { dead = originDead[i] }
+                // a copy takes the live mark of the handle it copies, so a copy of a handle whose origin an earlier
+                // move on a path that ended has cleared is still tracked (with no origin, which is an identity)
+                var live = x.hOrigin
+                var dead: ?^Sym = nil
+                for i in 0..len(originSyms) {
+                    if originSyms[i] == x.sym {
+                        live = originLive[i]
+                        // a copy of a dead handle is dead too
+                        dead = originDead[i]
                     }
+                }
+                if live != nil {
+                    s.hDepth = len(loops) + 1
                     // naming a handle that is dead here, to copy it, is no use of its object: the copy is dead too, and
                     // every use of it is refused. (A copy of a handle not known to be dead counts as a naming.)
                     if dead != nil { unname(x.sym) }
                     append(originSyms, s)
                     append(originDead, dead)
-                    append(originLive, s.hOrigin)
+                    append(originLive, live)
                     append(originNar, false)
                 }
             }

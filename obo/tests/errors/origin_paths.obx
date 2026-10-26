@@ -232,3 +232,51 @@ fn main() {
     }
     println(h.n)  // error: handle 'h' may name a freed object
 }
+// === a loop that may run no time moves the owner after a moving return arm
+fn run(n: int) {
+    var a = nb(1)
+    let h = handle(a)
+    if n == 99 { eat(a); return }
+    var c2 = nb(0)
+    var i = 0
+    while i < n { c2 = a; a = nb(2); i += 1 }
+    a = nb(5)
+    println(h.n)  // error: made from an owner that a loop moved
+    println(c2.n)
+}
+// === a move in a loop after a moving return arm, the handle used in the loop
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    if flag() == false { eat(a); return }
+    var i = 0
+    while i < 3 {
+        println(h.n)
+        var c = a  // error: cannot move 'a' inside a loop while handle 'h'
+        a = nb(1)
+        i += 1
+    }
+}
+// === a move in a loop after a moving return arm, the handle named after the loop
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    if flag() == false { eat(a); return }
+    var i = 0
+    while i < 3 {
+        var c = a
+        println(c.n)
+        a = nb(1)
+        i += 1
+    }
+    println(h.n)  // error: made from an owner that a loop moved
+}
+// === a copy of the handle made after a moving return arm
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    if flag() == false { eat(a); return }
+    let g = h
+    a = nb(2)
+    println(g.n)  // error: handle 'g' may name a freed object
+}
