@@ -2749,23 +2749,36 @@ fn loopCarryCheck(back: &PState, useBefore: int, lv: ?^Sym) {
 // the body treats the call as freeing anything, but the summary does not) or
 // only has a forward heading: then it is assumed to free anything.
 
-// a callee that frees no global and changes no mut argument: compiled, freeing no globals, and with
-// no mut parameters it could free through. An owned by-value parameter does not make it impure: the
-// caller's argument is a move, which consume() counts (touches), and the array checks see that.
-fn pureFn(f: ^Sym): bool {
-    if f.addr < 0 || f == curFn || f.freesAll || len(f.fnRec.freed) > 0 { return false }
-    for i in 0..len(f.fnRec.pmodes) {
-        if f.fnRec.pmodes[i] == 2 { return false }
-    }
-    return true
-}
-
 // whether a call of f may free something below the argument it gets for its parameter i: a callee that is
 // not compiled yet, is being compiled, or writes through a handle may free anything
 fn mutFrees(f: ^Sym, i: int): bool {
     if f.addr < 0 || f == curFn || f.freesAll || f.writesHandles { return true }
     if i >= 62 { return true }
     return (f.fnRec.pfree >> i) & 1 == 1
+}
+
+// a callee that might free nothing: compiled, not being compiled, freeing no global, not writing through a
+// handle, and freeing nothing below any of its mut arguments (mutFrees: FnRec.pfree). It may still change
+// them without freeing, and append to a mut array, which moves its storage: see movesFn.
+// An owned by-value parameter does not make it impure: the caller's argument is a move, which consume()
+// counts (touches), and the array checks see that.
+fn pureFn(f: ^Sym): bool {
+    if f.addr < 0 || f == curFn || f.freesAll || len(f.fnRec.freed) > 0 { return false }
+    for i in 0..len(f.fnRec.pmodes) {
+        if f.fnRec.pmodes[i] == 2 && mutFrees(f, i) { return false }
+    }
+    return true
+}
+
+// a call that counts in userCalls: one that might free (not pureFn), or that has a mut parameter, whose array
+// the callee may append to (append records no free, but it reallocates the array, so an array address or
+// index loaded before the call is stale). The index and held-array checks need this; the handle borrows do not.
+fn movesFn(f: ^Sym): bool {
+    if !pureFn(f) { return true }
+    for i in 0..len(f.fnRec.pmodes) {
+        if f.fnRec.pmodes[i] == 2 { return true }
+    }
+    return false
 }
 
 fn mightFree(f: ^Sym, g: ^Sym): bool {
@@ -3945,7 +3958,7 @@ fn callFn(f: ^Sym): Item {
         }
     }
     afterCall(f)
-    if !pureFn(f) { userCalls += 1 }              // only calls that might free count
+    if movesFn(f) { userCalls += 1 }              // only calls that might free or move an array count
     emit(0xE8)
     emit32(0)
     let at = pc() - 4
