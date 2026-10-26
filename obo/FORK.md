@@ -2261,8 +2261,8 @@ name is item 1.
 
 **Left alone.** `rd(h.xs, grow(h.xs))` and `two(&h[0], tr(h))` (items for `pureFn`): a callee with a `mut`
 parameter is still impure for the held-array and handle checks, because `pureFn` also feeds
-`userCalls`, which the index checks use; relaxing it needs its own review. `if alive(h) { use(h) }` is still
-refused (no narrowing on `alive`).
+`userCalls`, which the index checks use; relaxing it needs its own review. `if alive(h) { use(h) }` was still
+refused then; see "Narrowing on alive".
 
 **Fuzzer.** `own_fuzz.py` has an argument-order kind: `arg_order_stmt` (valid: the freeing or moving argument
 first, `holdO(renewAt(xs, i), &xs[j])`; a scalar `mut` call after a reference; `take` in an argument beside a
@@ -2273,3 +2273,57 @@ a global cleared, `sum2(x, take(x))`), also one of the `bad_stmt` kinds.
 **Memory.** The port compiling itself peaks at about 1.03 million bytes live (981,888 before). The first
 version stored `pfree` as a `[]bool` per function and measured 1,080,464; a bit mask removed 42 KB. The rest
 is the source growing. `PEAK_BUDGET` (2,000,000) is untouched.
+
+## Narrowing on alive (done)
+
+**The gap.** `var a = nb(); let h = handle(a); if c { a = nb() }; if alive(h) { pr(h.n) }` was refused ("handle
+'h' may name a freed object"), since the dead mark of `h` (`originDead`, a may-flag set by `originFree`) was
+still set from the path with the assignment.
+
+**Why it is sound.** The marks exist only for `let` handles made from a whole owned local, and the only thing
+that sets one is a free of that owner (assignment over it, `drop`). A freed object never lives again (the
+generation), so on a path where the mark is set `alive(h)` is false: the arm taken when it is true can only be
+reached on the paths where the mark is clear. Clearing the mark at the start of the arm is the narrowing; the
+frees inside the arm set it again by themselves (`originFree`), so no other rule is needed for "the narrowing
+ends at a free": a free in the block, in a nested loop, in a nested arm, all mark the handle dead and later uses
+are refused exactly as before. The loop rules are untouched (`pendPush`, `pendBlockEnds`, `movedLoop`,
+`Loop.exitDead`, `usedAt`): an owner freed in a loop that names the handle is still refused wherever the guard
+is, so `while c { if alive(h) { pr(h.n) }  a = nb() }` stays a (conservative) error. Handles with no origin
+(`var`, fields, elements, parameters) were never checked statically and are not touched.
+
+**The rule** (`ifStat`, `conjunction` and the `alive` builtin in `src/obo.obo`). A condition is a guard when
+`alive(h)` with a bare name `h` is its first token (after one `!`), found by the token index (`tokSeq`,
+`guardStart`): the builtin records `guardSym`, the token after it (`guardFollow`) and `freeSeq` (the frees so far)
+into globals. `ifStat` then narrows if no owner was freed meanwhile (`guardFree == freeSeq`) and:
+- `alive(h)` followed by `{` or `&&`, and no `||` was compiled in the condition (`orSeq`): the then-arm starts from
+  the marks with `h` cleared (`d0[gi] = nil`). The accumulated marks after the `if` (`dacc`) start from the marks
+  before, so the mark is back after the block, merged with what the block did.
+- `!alive(h)` followed by `{` (the whole condition): the else arm (also an `else if`) starts with `h` cleared
+  (`e0`). If the then-arm ends (`t1`: return, break, continue) the marks after the `if` have `h` cleared in
+  `dacc` before the else arm's marks are added, so code after an early exit is narrowed until a free.
+- `&&`: while the conjunction compiles the operands after `alive(h)` (`guardOpen`), the mark is cleared and put back
+  (`guardMark`) when the conjunction ends, before any `||` operand runs and before the arm, so `alive(h) && h.n > 0`
+  is accepted and the rest of the condition cannot leak the narrowing into an else arm. Only the conjunction that
+  opened it restores (`mine`).
+Refused (kept as before): `while alive(h)`; the else arm of a positive guard; `alive(f(h))` or a field (not bare);
+`alive` not first (`c && alive(h)`), compared, `(alive(h))`, `!!alive(h)`; `alive(h) || c`; `alive(h) && c || d`
+and any `||` in the condition (even in parentheses, a precision limit); `!alive(h) && c` or `|| c` as an early
+exit; a guard on a different handle or a copy (copies carry their own marks). A copy `let g = h` made inside
+the narrowed arm is live there, and dies with the arm's block. The early exit does not reach out of its block.
+
+**Left.** A condition cannot free an owner (no assignment in an expression), so `guardFree == freeSeq` is a
+defensive check that no test can reach (an equivalent mutant is not listed for it). A move of the owner followed
+by its drop elsewhere (`consume(a)`) clears the origin and was never tracked; it is the same gap as outside a guard.
+A loop whose body frees the owner and guards a use is still refused (above). `while alive(h)` is not narrowed:
+the loop machinery compiles the body once and the back edge would need the same proof.
+
+**Tests.** Accepted: `tests/run/alive_narrow.obx`. Neighbours: `tests/errors/alive_narrow.obx` (free before the
+use, drop, free in a loop in the block, loop that uses and frees, use after the if, else arm, other handle, copy,
+`alive(f(h))`, not first, compared, `||`, `&&` with `||`, negated forms, early exit then free, early exit in a
+block, double negation, parentheses, `while`, guard in a loop that frees later, break out of the arm, dead mark
+back after a conjunction, nested conjunction, else of a conjunction). Mutants: `ALIVE_MUTANTS` in
+`tests/mutate_fork.py` (also run by `mutate_port.py`). No fuzzer kind: `own_fuzz.py` makes handles from elements,
+which have no origin and are checked at run time only, so there is nothing for the guard to narrow.
+
+**Memory.** The port compiling itself peaks at about 1.06 million bytes live (1.03 million before); the budget
+`PEAK_BUDGET` (2,000,000) is untouched. The ifStat copies of the marks are transient.

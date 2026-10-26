@@ -126,6 +126,7 @@ var last = -1             // kind of the previous token
 var sym = -1              // kind of the current token: "ident", "int", "==", "fn", ...
 var sval = ""             // identifier text or string literal bytes
 var ival = 0              // integer or character value
+var tokSeq = 0                   // the tokens read so far (the index of the current one)
 var tline = 0             // where the current token starts
 var tcol = 0
 var dumpMode = false
@@ -209,6 +210,7 @@ fn semiAfter(k: int): bool {
 }
 
 fn setTok(k: int) {
+    tokSeq += 1
     sym = k
     last = k
 }
@@ -1330,6 +1332,15 @@ var pendOwn = new []^Sym(0)      // the owner (for a move, whose handle's origin
 var pendNest = new []int(0)      // len(loops) where it was made
 var contSeq = 0                  // the continues compiled so far
 var brkSeq = 0                   // the breaks compiled so far
+var orSeq = 0                    // the '||' operators compiled so far
+var freeSeq = 0                  // the frees of an owner (originFree) so far
+var guardStart = -10             // the token index at which the 'alive' of an if condition's guard would be
+var guardSym: ?^Sym = nil        // the handle h of a condition that starts with alive(h) (see "Narrowing on alive"), or nil
+var guardFollow = 0              // the token after that alive(h)
+var guardFree = 0                // freeSeq there
+var guardOpen = false            // a conjunction is compiling the rest of the guard's condition with h's dead mark cleared
+var guardIdx = 0                 // the originSyms entry of h, and its mark before it was cleared
+var guardMark: ?^Sym = nil
 var inAlive = false              // the argument of alive is being compiled: naming a handle there is not a use
 var lastNamed: ?^Sym = nil       // the tracked let handle named last, and its usedAt before that (see nameItem)
 var lastNamedPrev = 0
@@ -3606,6 +3617,7 @@ fn pendPush(x: ^Sym, o: ^Sym, what: string) {
 // loop the handle was declared outside of, a use of it earlier in the loop runs again on the next
 // iteration, so the free itself is refused then. The origins are cleared by originMove
 fn originFree(r: ^Sym, what: string) {
+    freeSeq += 1
     if inDefer { append(deferFrees, r) }
     for i in 0..len(originSyms) {
         let x = originSyms[i]
@@ -4141,6 +4153,7 @@ fn builtin(name: string): Item {
         return voidItem()
     }
     if name == "alive" {
+        let first = tokSeq == guardStart + 1
         expect(T_LPAREN, "")
         // asking whether a handle is alive is no use of its object: naming the handle here is not counted (usedAt)
         var bare = false
@@ -4155,6 +4168,11 @@ fn builtin(name: string): Item {
         expect(T_RPAREN, "")
         if h.typ.kind != "handle" { error("alive needs a handle, not " + tname(h.typ)) }
         unname(h.sym)
+        if bare && first {
+            guardSym = h.sym
+            guardFollow = sym
+            guardFree = freeSeq
+        }
         return rtCall1(RT_ALIVE, h, tBool)
     }
     if name == "take" {
@@ -4985,8 +5003,22 @@ fn relation(): Item {
 
 fn conjunction(): Item {
     var x = relation()
+    var mine = false
     while sym == T_ANDAND {
         next()
+        // the rest of an if condition that starts with alive(h) runs only where h is alive: its dead mark is
+        // cleared until the conjunction ends, unless something freed an owner since the guard
+        if guardSym != nil && !guardOpen && guardFollow == T_ANDAND && guardFree == freeSeq {
+            for i in 0..len(originSyms) {
+                if originSyms[i] == guardSym {
+                    guardIdx = i
+                    guardMark = originDead[i]
+                    originDead[i] = nil
+                    guardOpen = true
+                    mine = true
+                }
+            }
+        }
         if x.typ.kind != "bool" { error("'&&' needs bools") }
         x = loadCond(x)
         let flinks = falseJump(x)
@@ -5001,6 +5033,10 @@ fn conjunction(): Item {
         y.nf = nil
         x = y
     }
+    if mine {
+        if guardFree == freeSeq { originDead[guardIdx] = guardMark }
+        guardOpen = false
+    }
     return x
 }
 
@@ -5008,6 +5044,7 @@ fn expression(): Item {
     var x = conjunction()
     while sym == T_OROR {
         next()
+        orSeq += 1
         if x.typ.kind != "bool" { error("'||' needs bools") }
         x = loadCond(x)
         x.T = waitJump(x.T, jcc(x.cc))
@@ -5394,12 +5431,39 @@ fn ifStat(): bool {
     let iline = tline
     let icol = tcol
     next()
+    // a condition that starts with alive(h) or !alive(h) narrows h (see "Narrowing on alive")
+    var neg = false
+    if sym == T_NOT { neg = true }
+    guardSym = nil
+    guardOpen = false
+    guardStart = tokSeq
+    if neg { guardStart += 1 }
+    let orBefore = orSeq
     let x = loadCond(expression())
+    var gi = -1
+    if guardSym != nil && guardFree == freeSeq {
+        if !neg && orSeq == orBefore && (guardFollow == T_LBRACE || guardFollow == T_ANDAND) {
+            for i in 0..len(originSyms) {
+                if originSyms[i] == guardSym { gi = i }
+            }
+        }
+        if neg && guardFollow == T_LBRACE {
+            for i in 0..len(originSyms) {
+                if originSyms[i] == guardSym { gi = i }
+            }
+        }
+    }
+    guardSym = nil
+    guardStart = -10
     let flinks = falseJump(x)
     let mark = len(narrowStack)
     let s0 = snapshot()
-    let d0 = deadSave()
+    var d0 = deadSave()
     var dacc = deadSave()
+    // the arm where h is known alive starts without its dead mark
+    if gi >= 0 && !neg { d0[gi] = nil }
+    var e0 = deadSave()
+    if gi >= 0 && neg { e0[gi] = nil }
     pushNarrowings(x.nt)
     let t1 = armBlock(&d0, &dacc, false)
     let s1 = snapshot()
@@ -5410,7 +5474,8 @@ fn ifStat(): bool {
         let j = jmp()
         fixHere(flinks)
         pushNarrowings(x.nf)
-        let t2 = armBlock(&d0, &dacc, sym == T_IF)
+        if gi >= 0 && neg && t1 { dacc[gi] = nil }
+        let t2 = armBlock(&e0, &dacc, sym == T_IF)
         deadSet(&dacc)
         truncate(narrowStack, mark)
         fixHere1(j)
@@ -5431,6 +5496,7 @@ fn ifStat(): bool {
         return t1 && t2
     }
     fixHere(flinks)
+    if gi >= 0 && neg && t1 { dacc[gi] = nil }
     deadSet(&dacc)
     if !t1 {
         sameStates(s1, s0, iline, icol)

@@ -516,6 +516,28 @@ EQUIVALENT = {
 }
 
 
+# narrowing on alive (ifStat, conjunction, the alive builtin)
+ALIVE_MUTANTS = {
+    'the then arm of alive(h) is not narrowed': ('    if gi >= 0 && !neg { d0[gi] = nil }\n', ''),
+    'the else arm of !alive(h) is not narrowed': ('    if gi >= 0 && neg { e0[gi] = nil }\n', ''),
+    'the else arm of alive(h) is narrowed': ('    if gi >= 0 && neg { e0[gi] = nil }\n', '    if gi >= 0 { e0[gi] = nil }\n'),
+    'the then arm of !alive(h) is narrowed': ('    if gi >= 0 && !neg { d0[gi] = nil }\n', '    if gi >= 0 { d0[gi] = nil }\n'),
+    'an early exit does not narrow the code after it': ('    if gi >= 0 && neg && t1 { dacc[gi] = nil }\n    deadSet(&dacc)', '    deadSet(&dacc)'),
+    'an early exit with an else does not narrow': ('        if gi >= 0 && neg && t1 { dacc[gi] = nil }\n', ''),
+    'a negated guard whose block goes on narrows after it': ('    if gi >= 0 && neg && t1 { dacc[gi] = nil }\n    deadSet(&dacc)', '    if gi >= 0 && neg { dacc[gi] = nil }\n    deadSet(&dacc)'),
+    'a negated guard with an else narrows after a block that goes on': ('        if gi >= 0 && neg && t1 { dacc[gi] = nil }\n', '        if gi >= 0 && neg { dacc[gi] = nil }\n'),
+    'an or in the condition keeps the narrowing': ('        if !neg && orSeq == orBefore && (', '        if !neg && ('),
+    'any token after alive(h) narrows': ('(guardFollow == T_LBRACE || guardFollow == T_ANDAND) {', 'true {'),
+    'a negated guard followed by anything narrows': ('        if neg && guardFollow == T_LBRACE {', '        if neg {'),
+    'alive anywhere in the condition is a guard': ('        let first = tokSeq == guardStart + 1\n', '        let first = true\n'),
+    'the rest of a conjunction is not narrowed': ('                    originDead[i] = nil\n                    guardOpen = true', '                    guardOpen = true'),
+    'the mark is not restored after a conjunction': ('        if guardFree == freeSeq { originDead[guardIdx] = guardMark }\n', ''),
+    'a nested conjunction reopens the guard': ('guardSym != nil && !guardOpen && guardFollow', 'guardSym != nil && guardFollow'),
+    'a guard in the right operand of or is open': ('        orSeq += 1\n', ''),
+}
+MUTANTS.update(ALIVE_MUTANTS)
+
+
 def build_and_run(src):
     """Builds the compiler from src, in a directory of its own, and runs run_fork.py with it:
     (the run_fork result, None), or (None, the build's error) when it does not build."""
@@ -585,3 +607,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

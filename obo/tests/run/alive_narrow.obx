@@ -1,0 +1,124 @@
+// Narrowing on alive (FORK.md, "Narrowing on alive"): inside the arm guarded by alive(h) the handle is known to
+// be live, so a use is accepted although the owner may have been freed before. errors/alive_narrow.obx has the
+// unsafe neighbours.
+type Bag = ref record { n: int }
+fn nb(k: int): Bag { return new Bag{n: k} }
+fn pr(h: ^Bag) { println(h.n) }
+
+// the owner is freed on one path only
+fn thenArm(c: bool) {
+    var a = nb(1)
+    let h = handle(a)
+    if c { a = nb(2) }
+    if alive(h) { println(h.n) } else { println(-1) }
+}
+
+// the narrowing ends at a free in the block; no use follows it
+fn freeAfter() {
+    var a = nb(3)
+    let h = handle(a)
+    if alive(h) {
+        println(h.n)
+        a = nb(4)
+    }
+    println(a.n)
+}
+
+// the rest of a conjunction runs only where h is alive
+fn andRest(c: bool) {
+    var a = nb(5)
+    let h = handle(a)
+    if c { a = nb(6) }
+    if alive(h) && h.n > 0 { println(h.n) } else { println(0) }
+    if alive(h) && alive(h) && h.n == 5 { pr(h) }
+}
+
+// an early exit: after if !alive(h) { exit }, the handle is live
+fn early(c: bool): int {
+    var a = nb(7)
+    let h = handle(a)
+    if c { a = nb(8) }
+    if !alive(h) { return -1 }
+    println(h.n)
+    pr(h)
+    return h.n
+}
+
+// the else arm of !alive(h)
+fn elseArm(c: bool) {
+    var a = nb(9)
+    let h = handle(a)
+    if c { drop(a); a = nb(10) }
+    if !alive(h) { println(-2) } else { println(h.n) }
+}
+
+// the narrowing is in the arm only: a copy made in the arm is live there
+fn copyIn(c: bool) {
+    var a = nb(11)
+    let h = handle(a)
+    if c { a = nb(12) }
+    if alive(h) {
+        let g = h
+        println(g.n)
+    }
+}
+
+// a loop inside the guarded block that does not free
+fn loopIn(c: bool) {
+    var a = nb(13)
+    let h = handle(a)
+    if c { a = nb(14) }
+    if alive(h) {
+        var i = 0
+        while i < 2 {
+            println(h.n)
+            i += 1
+        }
+    }
+}
+
+// a break in the guarded arm of a loop; the handle is made outside
+fn inLoop() {
+    var a = nb(15)
+    let h = handle(a)
+    var i = 0
+    while i < 3 {
+        if alive(h) { println(h.n) }
+        i += 1
+    }
+}
+
+// a second guard after a free in the block narrows again
+fn again() {
+    var a = nb(16)
+    let h = handle(a)
+    if alive(h) {
+        a = nb(17)
+        if alive(h) { println(h.n) } else { println(-3) }
+    }
+}
+
+fn main() {
+    again()  // expect: -3
+    thenArm(false)  // expect: 1
+    thenArm(true)  // expect: -1
+    freeAfter()  // expect: 3
+                 // expect: 4
+    andRest(false)  // expect: 5
+                    // expect: 5
+    andRest(true)  // expect: 0
+    println(early(false))  // expect: 7
+                           // expect: 7
+                           // expect: 7
+    println(early(true))  // expect: -1
+    elseArm(false)  // expect: 9
+    elseArm(true)  // expect: -2
+    copyIn(false)  // expect: 11
+    copyIn(true)
+    loopIn(false)  // expect: 13
+                   // expect: 13
+    loopIn(true)
+    inLoop()  // expect: 15
+              // expect: 15
+              // expect: 15
+}
