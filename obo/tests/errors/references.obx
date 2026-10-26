@@ -4,7 +4,7 @@ var gnode = new Node{value: 1}
 fn make(): Node { return new Node{value: 0} }
 fn eat(n: Node) {}
 fn look(n: &Node) {}
-fn change(mut n: &Node) {}
+fn change(mut n: &Node) { n.next = nil }
 // === using a reference after its element is replaced
 fn main() {
     let b = new Box{items: new []Node(0)}
@@ -188,7 +188,7 @@ fn f(n: &Node) {
 }
 // === a change through an ancestor still invalidates its descendants
 type Tree = ref record { kids: []Tree; v: int }
-fn reset(mut t: &Tree) {}
+fn reset(mut t: &Tree) { t.kids = new []Tree(0) }
 fn f(mut t: &Tree) {
     let kids = t.kids
     for k in kids {

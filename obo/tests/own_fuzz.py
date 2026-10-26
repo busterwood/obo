@@ -51,6 +51,7 @@ PRELUDE = [
     "fn two(mut a: &Node, mut b: &Node) { a.value += 1; b.value += 10 }",
     "fn stepArr(xs: &[]Node, mut n: &Node) { n.value += len(xs) }",
     "fn bumpRef(mut n: &Node) { n.value += 1 }",
+    "fn cutRef(mut n: &Node) { n.next = nil }",
     "fn gdrop() { ga = nil }",
     "fn shrinkInt(mut a: &[]Node): int { truncate(a, 0); return 1 }",
     "fn fresh(): []Node { return new []Node(0) }",
@@ -776,10 +777,7 @@ class Gen:
         n = self.r.choice(refs)
 
         def run(st):
-            st.refs[n][0].v += len(st.xs)
-            for other, ref in st.refs.items():     # a mut change through n invalidates the rest
-                if other != n:
-                    ref[1] = False
+            st.refs[n][0].v += len(st.xs)          # it frees nothing, so the other references stay valid
         return Stmt([f"stepArr(xs, {n})"], run)
 
     # ---- top-level ownership statements
@@ -878,10 +876,7 @@ class Gen:
         n = self.r.choice(refs)
 
         def run(st):
-            st.refs[n][0].v += 1
-            for other, ref in st.refs.items():
-                if other != n:
-                    ref[1] = False
+            st.refs[n][0].v += 1                   # it frees nothing, so the other references stay valid
         return Stmt([f"bumpRef({n})"], run)
 
     # ---- statements the rules reject: the program is invalid
@@ -964,13 +959,13 @@ class Gen:
                                   f"{x} = nil", f"println(sum({r}))"])
 
     def mut_call_dead_stmt(self):
-        """A mutable call through one reference invalidates another, which is then read."""
+        """A mutable call that frees through one reference invalidates another, which is then read."""
         if not self.st.xs:
             return None
         a, b = f"r{self.nrefs}", f"r{self.nrefs + 1}"
         self.nrefs += 2
         i, j = self.r.randrange(len(self.st.xs)), self.r.randrange(len(self.st.xs))
-        call = self.r.choice([f"bumpRef({a})", f"stepArr(xs, {a})"])
+        call = f"cutRef({a})"                      # it frees what the node points to, below the array
         return self.invalid_stmt([f"var {a} = &xs[{i}]", f"var {b} = &xs[{j}]", call,
                                   f"println({b}.value)"])
 

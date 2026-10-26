@@ -112,11 +112,12 @@ fn main() {
     let h = handle(a)
     var i = 0
     while i < 2 {
-        var c = a  // error: cannot move 'a' inside a loop while handle 'h' made from it is in scope
+        var c = a
         i += 1
         println(len(c.items))
+        a = c
     }
-    println(h.items[0].v)
+    println(h.items[0].v)  // error: handle 'h' was made from an owner that a loop moved
 }
 // === a handle's array indexed by a replace of the owner's array it names: the replace frees the held place
 fn main() {
@@ -155,15 +156,15 @@ fn main() {
     var ot = new Bag{items: new []Node(0), opt: nil}
     println(hh.hb.items[sinkBag(ot)].v)  // error: cannot index through a handle with an index that moves or frees something
 }
-// === a reference through a handle: its replace frees the array a local indexes, whatever names it
+// === a replace of a reference through a handle is refused: a reference only borrows, so the old value is not its to give back
 fn main() {
     var b = new Bag{items: new []Node(0), opt: nil}
     append(b.items, mk(1))
     let h = handle(b)
     var r = &h.items
-    println(b.items[sinkI(replace(r, new []Node(0)))].v)  // error: cannot index 'b' with an index that replaces or moves what it holds
+    println(b.items[sinkI(replace(r, new []Node(0)))].v)  // error: replace cannot change 'r': it is a reference
 }
-// === a reference through a handle: its replace frees what another handle without an origin may name
+// === the same, with another handle without an origin
 type Pair = ref record { first: Bag; n: int }
 fn main() {
     var b = new Bag{items: new []Node(0), opt: nil}
@@ -173,15 +174,15 @@ fn main() {
     let h = handle(b)
     let h2 = handle(pr.first)
     var r = &h.items
-    println(h2.items[sinkI(replace(r, new []Node(0)))].v)  // error: cannot index through a handle with an index that moves or frees something
+    println(h2.items[sinkI(replace(r, new []Node(0)))].v)  // error: replace cannot change 'r': it is a reference
 }
-// === a local's array indexed while a reference parameter's field is replaced: the replace may free a place of the local
+// === the same, with a reference to a reference parameter's field
 type Pair2 = ref record { xs: []Node; ys: []Node }
 fn refFree(mut p: &Pair2): int {
     var b = new Bag{items: new []Node(0), opt: nil}
     append(b.items, mk(1))
     var r = &p.ys
-    return b.items[sinkI(replace(r, new []Node(0)))].v  // error: cannot index 'b' with an index that replaces or moves what it holds
+    return b.items[sinkI(replace(r, new []Node(0)))].v  // error: replace cannot change 'r': it is a reference
 }
 fn main() {
     var q = new Pair2{xs: new []Node(0), ys: new []Node(0)}
@@ -299,7 +300,7 @@ fn main() {
     let h = handle(a)
     for i in 0..2 {
         var c = a  // error: cannot move 'a' inside a loop while handle 'h' made from it is in scope
-        println(h.items[eat(c)].v)
+        println(h.items[0].v)
         a = c
     }
 }
