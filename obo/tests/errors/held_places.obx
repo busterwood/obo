@@ -337,7 +337,7 @@ fn main() {
         defer { c = a }  // error: cannot move 'a' inside defer
     }
 }
-// === a take of an optional owner after its handle was made: the take clears the handle's origin, so a move of the object through the handle is refused
+// === a take of an optional owner after its handle was made: the assignment that widens the owner frees the handle's object, so the use through the handle is refused
 fn main() {
     var o: ?Bag = nb()
     if o != nil {
@@ -346,7 +346,7 @@ fn main() {
         o = nil
         var c = take(o)
         if c != nil {
-            println(h.items[eat(c)].v)  // error: cannot index through a handle with an index that moves or frees something
+            println(h.items[eat(c)].v)  // error: handle 'h' may name a freed object: 'o' was assigned or dropped
         }
     }
 }

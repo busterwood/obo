@@ -3,7 +3,7 @@
 runs the Stage B comparison against it (port_compare.compare, with the copy as
 its source), and checks that the comparison fails. Divergent output must show up as a
 mismatch, freeing too early as a dangling-handle trap, and keeping memory alive
-as a breach of the memory budget. A mutant of the encoder (ENCODER) runs
+as a peak more than MEMORY_MARGIN above the unmutated one. A mutant of the encoder (ENCODER) runs
 port_test.py instead, whose objdump cross-check must catch it.
 
 Each mutant's comparison reuses obo's outcomes, stops at the first difference, and
@@ -50,8 +50,7 @@ MUTANTS = {
     # freeing symbols too early: a dangling-handle trap
     "frees one symbol too many": [(FREE, FREE.replace("symMark)", "symMark - 1)"))],
     "frees symbols before the blocks close": [(BLOCKS_CLOSE, "    truncate(symArena, symMark)\n" + BLOCKS_CLOSE)],
-    # keeping symbols alive: over the memory budget. "parameters kept" is caught by the budget line
-    # (its peak is about 1,555,696 bytes, over PEAK_BUDGET 1,091,000); KEEPS_ALIVE is a backstop for a leak too small for that
+    # keeping symbols alive: over the unmutated peak by more than MEMORY_MARGIN (see try_mutant)
     "symbols never freed": [(FREE, "")],
     "parameters kept": [(MARK, ""), (PARAMS_DONE, PARAMS_DONE + "    let symMark = len(symArena)\n")],
     # borrows through a handle (checker): each must be caught by a case in errors/handles.obx
@@ -290,6 +289,9 @@ MUTANTS.update({k: [v] for k, v in ORIGIN_MUTANTS.items() if k not in FORK_EQUIV
 # argument order: the error and run cases of arg_order.obx show them, as for the defer uses
 from mutate_fork import ARG_ORDER_MUTANTS  # noqa: E402
 MUTANTS.update({k: [v] for k, v in ARG_ORDER_MUTANTS.items() if k not in FORK_EQUIVALENT})
+# a handle's object freed by an assignment over, or a drop of, its owner: the cases of handle_frees.obx
+from mutate_fork import HANDLE_FREE_MUTANTS  # noqa: E402
+MUTANTS.update({k: [v] for k, v in HANDLE_FREE_MUTANTS.items() if k not in FORK_EQUIVALENT})
 
 
 # register allocation (FORK.md, Phase 2). A home is r12 to r15, taken out of the free list while its local is in
@@ -380,9 +382,9 @@ MUTANTS.update({
     "entry: prologue not moved": [("    setCode(old + 7, 0x55)\n", "")],
 })
 
-# mutants that keep memory alive: a backstop for a leak too small to cross PEAK_BUDGET, caught when the
-# peak rises above the unmutated peak. "parameters kept" is already caught by the budget line itself.
-KEEPS_ALIVE = {"parameters kept"}
+# PEAK_BUDGET is far above the port's peak, so a mutant that keeps memory alive is judged here instead:
+# its live peak must stay within this margin of the unmutated peak (the baseline compare in main()).
+MEMORY_MARGIN = 1.03
 
 
 def try_mutant(name, text, base_peak):
@@ -409,8 +411,8 @@ def try_mutant(name, text, base_peak):
         else:
             lines, failures, peak = pc.compare(tmp, path, quick=True)
             failures = ["FAIL " + f for f in failures]
-            if name in KEEPS_ALIVE and not failures and peak is not None and base_peak is not None and peak > base_peak:
-                failures = [f"FAIL peak {peak:,} is above the unmutated {base_peak:,}"]
+            if not failures and peak is not None and peak > base_peak * MEMORY_MARGIN:
+                failures = [f"FAIL peak {peak:,} is over the unmutated {base_peak:,} by more than 3%"]
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     if failures:
