@@ -1,0 +1,44 @@
+// A mut callee that runs out of registers, so it is compiled again with none for its locals (FORK.md, Phase 2,
+// homeRetry), and that frees below its mut parameter: it assigns a new array over the field items. The retry
+// keeps the callee's free summary (FnRec.pfree), so a caller holding a reference into the argument across the call
+// is refused. run/mut_retry.obx has the same callee with a scalar write, which is accepted.
+type P = ref record { x: int; y: int }
+type Node = ref record { v: int; kids: []Node }
+type Bag = ref record { items: []Node; opt: ?Node; n: int }
+
+var ga = new []int(0)
+var gp = new P{x: 1, y: 2}
+var gps = new []P(0)
+
+fn mk(v: int): Node { return new Node{v: v, kids: new []Node(0)} }
+fn nb(): Bag {
+    var b = new Bag{items: new []Node(0), opt: nil, n: 0}
+    append(b.items, mk(9))
+    append(b.items, mk(8))
+    return b
+}
+fn two(r: &Node, k: int): int { return r.v + k }
+
+fn cut(mut b: &Bag, n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    while i < n { v += i; u += v; w += u; v += w; u += i; w += v; v += u; w += i; u += w; i += 1 }
+    ga[i & 3] = gps[i & 1].x + gp.x * ga[i & 3]
+    b.items = new []Node(0)
+    return v + u + w
+}
+
+// === the reference is held in a local across the call
+fn main() {
+    var b = nb()
+    let r = &b.items[0]
+    let z = cut(b, 3)
+    println(r.v + z)  // error: 'r' may point to freed memory
+}
+// === the reference is an argument of the call that the callee's argument frees under
+fn main() {
+    var b = nb()
+    println(two(&b.items[0], cut(b, 3)))  // error: argument 2 of two may free what argument 1 points into, and runs after
+}

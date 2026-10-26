@@ -2237,7 +2237,11 @@ name is item 1.
    62nd parameter on count as freeing. `pureFn` is unchanged, so the handle forms (`rd(h.xs, grow(h.xs))`,
    `two(&h[0], tr(h))`) stay refused. Pinned expectations changed: `references.obx` `change`/`reset` had
    empty bodies and now free something; in `own_fuzz.py` `stepArr` and `bumpRef` (scalar writes) no longer
-   invalidate other references, and the invalid case uses a new `cutRef` that frees.
+   invalidate other references, and the invalid case uses a new `cutRef` that frees. The register retry
+   (`homeRetry`) recompiles a function with its `pfree` bits kept: `run/mut_retry.obx` (a retried `mut` callee
+   that only writes a scalar, a reference into another part of the argument is accepted) and
+   `errors/mut_retry.obx` (the same callee assigning over a field, refused). A mutant that clears `pfree` and
+   records nothing in the second pass fails both error cases.
 5. **`alive(h)` is no use.** A bare-name argument restores the handle's `usedAt` (`lastNamed`, `unname`), so
    a loop that asks and frees is accepted and a handle moved by a loop can still be asked about. `alive(f(h))`
    and any other expression still count. The same restore serves item 8 (copies).
@@ -2249,9 +2253,10 @@ name is item 1.
    loop { take(a); break }; h.n` stays refused). Moves are never dropped by item 7's rule.
 7. **A free in a loop is refused wherever the handle is used.** A block that always ends in a `break` or a
    `return` and has no `continue` in it drops the frees it made at its own loop level (`pendBlockEnds`): for a
-   return, any handle; for a break, only handles declared inside the loop it leaves (the outer loop repeats
-   otherwise). Frees made in a loop inside the block repeat and stay. The uses after the loop are still seen
-   by the dead marks (`Loop.exitDead`). Covers f1 (`while true { ...; break }`) and the f7 shape of a use
+   return, any handle; for a break, only handles declared in the scope directly outside the loop it leaves
+   (`pendDepth` is then the index of that loop, the one the handle is declared outside of). A handle declared
+   further out is judged where its outer loop ends, since that loop repeats. Frees made in a loop inside the
+   block repeat and stay. The uses after the loop are still seen by the dead marks (`Loop.exitDead`). Covers f1 (`while true { ...; break }`) and the f7 shape of a use
    before a free that ends the loop.
 8. **g2 (done), f1 (done), f7 (partly).** g2: a `let g = h` copy of a handle that is dead at that point
    does not count as naming `h` (`unname`), since `g` inherits the mark and every use of it is refused; a copy
