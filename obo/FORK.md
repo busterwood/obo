@@ -1978,6 +1978,42 @@ store (no emitter asks for one there) and the clearing of the notes in `truncCod
 wanted later, the lever the numbers point to is first the alignment of loop tops (padding the target
 of a backward jump to 16 bytes), measured the same way.
 
+### Loop-head alignment (measured; not built)
+
+FORK.md's peephole section suggested padding the target of a backward jump. Measured on main (bb54c20),
+Ryzen 7 8745HS under WSL, load average 0.3 to 2.2 (other agents running), `perf stat` cycles, variants
+interleaved, 15 runs, minimum. The pad goes after the jump over the body (while, inverted) or before the
+test target (for loops), with multi-byte nops, so it is never executed. The patch is `tools/loop_align.patch`.
+
+**Finding that matters:** `dropFrame` (a function with no locals) cuts 7 bytes out of the code and moves the body
+back, so a position taken before the cut is off by 7 afterwards. Plain padding therefore aligned nothing in the
+hot loops (the loop benchmark's `main` has no locals): the nop sat at 0x401032 and the loop head at 0x401039. The
+patch makes `dropFrame` overwrite the `sub rsp` with a 7-byte nop instead (`mainnop` in the table).
+
+| cycles vs main | pad16 (plain) | mainnop (7-byte nop only) | pad16 + nop | pad32 + nop | fold + pad32 + nop |
+|---|---|---|---|---|---|
+| loop | -0.1% | -0.1% | -20.0% | -20.1% (2.008e9 to 1.604e9) | -50.0% (1.003e9) |
+| fib | 0 | 0 (+5.7% instr) | 0 | 0 | -5.0% (noisy) |
+| array | +18.8% | -0.1% | +18.9% | +0.1% | -0.3% (fold alone -3.0%) |
+| alloc | -2.2% | -0.9% | -3.2% | +0.2% | +0.3% (spread 40 to 200%) |
+| lists, strings | within 0.5% | within 0.5% | within 0.5% | within 0.5% | within 0.5% |
+| tokens | +1.0% | +1.4% | +2.4% | +2.7% (reproduced at 41 runs) | +2.7% |
+| trees | +0.1% | -0.2% | -1.4% | -0.2% | +0.4% |
+
+Alone the 16-byte pad is unsafe: it puts the array loop in a bad place (+19%). 32 bytes is neutral there.
+alloc's spread was 40 to 200% between runs, so its movements are not evidence.
+
+**Decision: not built.** The loop gains 20% (and 50% with the fold, 1.0 cycle per iteration), but (1) tokens
+regresses 2.7% with the same instructions, above its noise (1.1 to 3.6%), about half of it from the 7-byte nop
+that every frameless call now runs, (2) the gain is a layout accident that depends on the loop being 36 bytes:
+the 16-byte variant loses 19% on array, and nothing fixes loops longer than the pad, (3) it needs a change to
+`dropFrame`'s contract. Fold + padding is not a separate case: the fold's gain on `loop` appears only with
+padding, but the same tokens regression and the array risk remain. A cleaner version would move the entry
+instead of the body in `dropFrame` (the 4 bytes of `push rbp; mov rbp,rsp` forward by 7, leaving dead bytes in
+front of the function), which costs no instruction; it needs the calls to the function from inside itself
+repatched, and was not tried. Peak with the patch: 962,896 bytes (main 954,912). Suites were not run on the
+patched source, since it is not built.
+
 ### Rules for every phase
 
 - Each rewrite gets a mutant in `tests/mutate_port.py`.
