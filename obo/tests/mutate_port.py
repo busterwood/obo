@@ -24,8 +24,8 @@ import port_compare as pc  # noqa: E402
 
 MARK = "    let symMark = len(symArena)                 // the function's own symbols start here\n"
 FREE = "    truncate(symArena, symMark)                 // and nothing refers to them any more\n"
-PARAMS_DONE = "        if params[i].typ.kind == \"string\" { addStrLocal(s) }\n    }\n"
-BLOCKS_CLOSE = "    closeBlock(term)\n    closeBlock(term)\n    if !term { epilogue() }\n"
+PARAMS_DONE = "        }\n    }\n    expect(T_LBRACE, \"\")\n    openBlock()\n"
+BLOCKS_CLOSE = "    closeBlock(term)\n    closeBlock(term)\n    homeBits = 0\n"
 
 # each mutant is a list of (old, new) replacements, each of which must match exactly once
 MUTANTS = {
@@ -298,6 +298,51 @@ from mutate_fork import ARG_ORDER_MUTANTS  # noqa: E402
 MUTANTS.update({k: [v] for k, v in ARG_ORDER_MUTANTS.items() if k not in FORK_EQUIVALENT})
 
 
+# register allocation (FORK.md, Phase 2). A home is r12 to r15, taken out of the free list while its local is in
+# scope; the callee may use any pool register, so the caller pushes the homes in scope around an obo call, and
+# the C runtime keeps them. Most are caught by tests/run/register_alloc.obx; the SHAPES ones change speed only
+# and are caught by tests/homes_check.py
+MUTANTS.update({
+    "homes not pushed around obo calls": [("    let saved = usedRegs()\n    pushRegs(saved)\n    setFree(0)",
+                                           "    let saved = usedRegs() & ~homeBits\n    pushRegs(saved)\n    setFree(0)")],
+    "a home released as a temporary": [(" && !containsInt(free, r) && (homeBits & (1 << r)) == 0 { append(free, r) }",
+                                        " && !containsInt(free, r) { append(free, r) }")],
+    "runtime call clobbers r15": [("    callAbs(RT_TEXT + 8 * slot)\n    if pad != 0 {", "    callAbs(RT_TEXT + 8 * slot)\n    movRI(15, 0)\n    if pad != 0 {")],
+    "array walk's element variable in a register": [('        let v = newLocal(name, baseOf(xt), "let")\n', '        let v = newLocal(name, baseOf(xt), "let")\n        homeFor(v, name, true)\n')],
+    "one register for two live locals": [("        if (homeBits & (1 << r)) == 0 && containsInt(free, r) {", "        if true {"),
+                                         ("    while free[j] != pick { j += 1 }", "    while j < len(free) && free[j] != pick { j += 1 }")],
+    "parameter not loaded into its register": [("                opMem(0x8B, h, mem(RBP, -1, s.offset, 8), true, false)      // the argument, from the stack\n", "")],
+    "uninitialised local not zeroed": [("                movRI(s.home, 0)\n", "")],
+    "compound assignment changes a copy": [("            var r = x.r                       // a local in a register is changed where it is", "            var r = alloc()")],
+    "multiplication by a constant writes the local": [("        let t = alloc()                           // imul reads one register and writes another", "        let t = x.r")],
+    "a local's register used as the caller's copy": [("        if !x.home { return x }\n        let c = alloc()", "        if true { return x }\n        let c = alloc()")],
+    "for limit in the variable's register": [("            homeFor(lim, name, false)              // the limit follows the variable into a register", "            lim.home = v.home")],
+    "scan: nothing counted": [("                if k >= 0 {\n                    scanScore[k] += w", "                if k >= 0 {\n                    scanScore[k] += 0")],
+    "scan: ranking ignored": [("    if nfree <= better { return -1 }", "")],
+    "scope end does not give the register back": [("        if s.home >= 0 && !homeRetry { releaseHome(s.home) }", "        if s.home < 0 && !homeRetry { releaseHome(s.home) }")],
+    "runtime calls push the locals' registers": [("    let saved = usedRegs() & ~homeBits      // the C runtime keeps r12 to r15, where the locals are", "    let saved = usedRegs()")],
+    "return copies a local's register": [("        let x = asReg(x0)\n        for k in blocks[fnBlock].omark", "        let x = load(x0)\n        for k in blocks[fnBlock].omark")],
+    "for limit's register never given back": [("            if lim.home >= 0 { append(blocks[len(blocks) - 1].syms, lim) }       // so that the block's end frees it\n", "")],
+    "bool parameters left in memory": [('        if params[i].mode == 0 && (params[i].typ.kind == "int" || params[i].typ.kind == "bool") {\n            let h', '        if params[i].mode == 0 && params[i].typ.kind == "int" {\n            let h')],
+    "a local in a register as a statement accepted": [('            if x.mode != "reg" || x.home { errorAt("this expression does nothing"', '            if x.mode != "reg" { errorAt("this expression does nothing"')],
+    # a function that runs out of registers with locals in them is compiled again with none (FORK.md, Phase 2);
+    # tests/run/register_pressure.obx has such functions, one with calls waiting for a later function. Not planted,
+    # equivalent: the counters (selfCalls, userCalls, useSeq, fwdCalls) are only compared with their value at a
+    # point in the same pass, and what the first pass recorded as freed (f.freed, freesAll, writesHandles) the
+    # second records again, the checker being the same
+    "retry: locals' registers not given up": [("    if len(free) == 0 && homeBits != 0 { giveUpHomes() }\n", "")],
+    "retry: code not rewound": [("        truncate(code, f.addr)\n        let gs = &globals", "        let gs = &globals")],
+    "retry: waiting calls of the first pass kept": [("                while len(g.fixups) > 0 && g.fixups[len(g.fixups) - 1] >= f.addr { truncate(g.fixups, len(g.fixups) - 1) }\n", "")],
+    "retry: argument holders of the first pass kept": [("        truncate(argTemps, tempMark)\n        truncate(symArena, symMark)\n        return true", "        truncate(symArena, symMark)\n        return true")],
+    "retry: free list left as the first pass had it": [("    homeBits = 0\n    setFree(0)                          // the registers in pool order: a function starts as the one before it did not leave them\n", "    homeBits = 0\n")],
+    "retry: scanner not rewound": [("        pos = sPos\n", "")],
+    "retry: token not restored": [("        sym = sSym\n", "")],
+})
+SHAPES = {"scan: nothing counted", "scan: ranking ignored", "scope end does not give the register back",
+          "runtime calls push the locals' registers", "return copies a local's register",
+          "for limit's register never given back", "bool parameters left in memory"}
+EDGE = {"retry: free list left as the first pass had it"}
+
 # mutants that keep memory alive: a backstop for a leak too small to cross PEAK_BUDGET, caught when the
 # peak rises above the unmutated peak. "parameters kept" is already caught by the budget line itself.
 KEEPS_ALIVE = {"parameters kept"}
@@ -315,6 +360,15 @@ def try_mutant(name, text, base_peak):
             lines = (r.stdout + r.stderr).strip().splitlines()
             failures = [l for l in lines if l.startswith('FAIL') or 'does not compile' in l] or \
                        ([lines[-1] if lines else f'exit {r.returncode}'] if r.returncode != 0 else [])
+        elif name in EDGE or name in SHAPES:
+            # the register-allocation checks: caught when their script exits nonzero
+            module, fn = ('homes_edge', 'he') if name in EDGE else ('homes_check', 'hc')
+            r = subprocess.run([sys.executable, '-c', f"import {module} as {fn}; {fn}.SRC = {path!r}; {fn}.main()"],
+                               capture_output=True, text=True, cwd=HERE)
+            lines = (r.stdout + r.stderr).strip().splitlines()
+            failures = [] if r.returncode == 0 else \
+                       ([l for l in lines if l.startswith('FAIL') or 'does not compile' in l] or
+                        [lines[-1] if lines else f'exit {r.returncode}'])
         else:
             lines, failures, peak = pc.compare(tmp, path, quick=True)
             failures = ["FAIL " + f for f in failures]

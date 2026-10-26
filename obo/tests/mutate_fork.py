@@ -358,7 +358,7 @@ ARG_ORDER_MUTANTS = {
     'argument holders are not reused': ('    argTempsUsed = tbase\n    truncate(ownedLocals, omark)\n', '    truncate(ownedLocals, omark)\n'),
     'argument holders stay live after the call': ('    argTempsUsed = tbase\n    truncate(ownedLocals, omark)\n', '    argTempsUsed = tbase\n'),
     "a call's holders are not released": ('    releaseArgs(tbase, omark)\n    if sym != T_RPAREN', '    if sym != T_RPAREN'),
-    "a function's argument holders outlive it": ('    truncate(argTemps, tempMark)\n', ''),
+    "a function's argument holders outlive it": ('    truncate(bindArena, bindMark)\n    truncate(argTemps, tempMark)\n', '    truncate(bindArena, bindMark)\n'),
     "writeFile's bytes are not held": ('        holdArg(itemBind(d), 1)\n', ''),
     "writeFile's bytes are held as another argument": ('        holdArg(itemBind(d), 1)\n', '        holdArg(itemBind(d), 0)\n'),
     "writeFile's flag is not checked": ('        argOrderCheck(tbase, name, 2, eLine, eCol)\n', ''),
