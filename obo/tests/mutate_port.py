@@ -51,7 +51,7 @@ MUTANTS = {
     "frees one symbol too many": [(FREE, FREE.replace("symMark)", "symMark - 1)"))],
     "frees symbols before the blocks close": [(BLOCKS_CLOSE, "    truncate(symArena, symMark)\n" + BLOCKS_CLOSE)],
     # keeping symbols alive: over the memory budget. "parameters kept" is caught by the budget line
-    # (its peak is about 1,555,696 bytes, over PEAK_BUDGET 1,351,000); KEEPS_ALIVE is a backstop for a leak too small for that
+    # (its peak is about 1,555,696 bytes, over PEAK_BUDGET 1,091,000); KEEPS_ALIVE is a backstop for a leak too small for that
     "symbols never freed": [(FREE, "")],
     "parameters kept": [(MARK, ""), (PARAMS_DONE, PARAMS_DONE + "    let symMark = len(symArena)\n")],
     # borrows through a handle (checker): each must be caught by a case in errors/handles.obx

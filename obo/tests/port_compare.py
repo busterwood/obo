@@ -30,9 +30,9 @@ REF = os.path.abspath(os.environ.get('OBO_REF', os.path.join(FORK, 'obo')))
 SRC = os.path.join(FORK, 'src', 'obo.obo')
 # live peak, in bytes, of the port compiling itself: about 3% above the measured
 # figure. Lower it when memory improves; raise it only for a reason recorded in FORK.md.
-# Now well above the measured 1,045,392 after the allocation work: it is reset once the
-# per-path reference bindings land (FORK.md, "Allocation (done)").
-PEAK_BUDGET = 1_351_000
+# Set after the peak memory work, on top of Phase 2 (register allocation): the measured
+# peak is 1,059,280 bytes (FORK.md, "Peak memory (done)").
+PEAK_BUDGET = 1_091_000
 
 
 # REF's outcome for each case text, with the seconds its compile and run took: a mutant's

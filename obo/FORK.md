@@ -1723,7 +1723,8 @@ instructions and 196,957 to 194,704 bytes of code (a compiler is calls and branc
 locals qualify); the compiler built either way compiles itself in 46 ms, no difference. The
 pre-scan costs time: the same compiler takes 43.9 ms with `REG_HOMES = 0` and 46.4 ms with 4, 6%.
 `tests/port_compare.py`: live peak 1,217,456 bytes (main 1,183,600, budget 1,351,000 unchanged), 18.5 MB
-allocated, 501 of 501 behave the same.
+allocated, 501 of 501 behave the same. These are figures on the Phase 2 branch's base; on main after the merge the
+port's peak was 1,323,680 bytes (see "Peak memory" below).
 
 **Mutants** (`tests/mutate_port.py`): the homes not pushed around an obo call; a home released as a
 temporary; a runtime call clobbering `r15`; an array walk's element variable in a register; one
@@ -1836,6 +1837,10 @@ so sharing them changes no result. Only the basic types are compared by identity
 Not done: Sym's four function-only arrays are allocated for every symbol, though about half are not
 functions (about 89 KB at the peak). Moving them into a per-function record would touch about 26
 sites, several of which are mutant patterns in `tests/mutate_port.py`.
+
+**Current figure, on main with Phase 2.** The table above was measured on this branch's own base, before Phase 2 (register allocation). On main, with Phase 2 merged and this work on top of it, the port's live peak compiling itself is 1,059,280 bytes (`tests/port_compare.py`). Phase 2 alone had measured 1,323,680 bytes on main, so this work brought the peak down by 264,400 bytes. The difference from 970,512 (88,768 bytes) comes from Phase 2's register allocation.
+
+**Budget lowered, 1,351,000 to 1,091,000** (measured live peak 1,059,280 bytes, about 3% over). The peak memory work lowered the peak, so the budget follows it. The budget named in the paragraphs above was 1,351,000 when they were written.
 
 ### Peephole pass (not planned)
 
