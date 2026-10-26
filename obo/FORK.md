@@ -1909,6 +1909,8 @@ so sharing them changes no result. Only the basic types are compared by identity
 
 **Budget lowered, 1,091,000 to 983,000** (measured live peak 954,912 bytes, about 3% over). The function records moved out of `Sym` (the row above). `FnRec` holds what only a function has: the calls waiting for its address, its parameters and their modes, and the globals it might free. `Sym` holds a handle to it, `fnRec`. A function gets its record in `fnDecl`, and every other symbol holds `noFnRec`, one shared record that nothing writes, as `bind` does with `noBind`. The output did not change: the 44 programs and the port's source compile to the same bytes and messages as main's compiler.
 
+**Budget raised, 983,000 to 2,000,000** (measured live peak about 0.95 MB), on 2026-10-26, by the user's decision. A budget about 3% above the peak left new checker work only about 28 KB of headroom (983,000 less 954,912 bytes). Leaks are still caught separately, by the leak check in `tests/port_test.py`, so the budget no longer has to guard them.
+
 ### Peephole pass (measured; not built)
 
 The obx design (`README.md`, "Future work: a peephole optimizer") still applies: an
