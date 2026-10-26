@@ -372,3 +372,172 @@ fn main() {
     }
     println(h.n)  // error: handle 'h' may name a freed object
 }
+// === a negated guard does not narrow the rest of an and
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    a = nb(2)
+    if !alive(h) && h.n > 0 { println(1) }  // error: handle 'h' may name a freed object
+}
+// === a negated guard does not narrow the rest of an and, the owner freed on one path
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    var c = flag()
+    if c { a = nb(2) }
+    if !alive(h) && h.n > 0 { println(1) }  // error: handle 'h' may name a freed object
+}
+// === an early exit in a while loop that may run no time
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    a = nb(2)
+    var c = flag()
+    while c {
+        if !alive(h) { return }
+        println(h.n)
+        c = false
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === an early exit in a for range loop that may run no time
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    a = nb(2)
+    for i in 0..0 {
+        if !alive(h) { return }
+        println(h.n)
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === an early exit in a for loop over an empty array
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    a = nb(2)
+    var xs = new []int(0)
+    for x in xs {
+        if !alive(h) { return }
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === an early exit in a loop whose condition is a call
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    a = nb(2)
+    while flag() {
+        if !alive(h) { return }
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === an early exit in a loop that ends in a break
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    a = nb(2)
+    while flag() {
+        if !alive(h) { return }
+        println(h.n)
+        break
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === an early exit in a nested loop
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    a = nb(2)
+    while flag() {
+        while flag() {
+            if !alive(h) { return }
+        }
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === an else arm narrowed in a loop that may run no time
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    a = nb(2)
+    var i = 0
+    while i < 2 {
+        i += 1
+        if !alive(h) { return } else { println(h.n) }
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === an early exit and an inner loop, in a loop that may run no time
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    a = nb(2)
+    var i = 0
+    while i < 2 {
+        i += 1
+        if !alive(h) { return }
+        while i < 5 { i += 1; println(h.n) }
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === an early exit that continues, in a loop that may run no time
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    a = nb(2)
+    var i = 0
+    while i < 2 {
+        i += 1
+        if !alive(h) { continue }
+        println(i)
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === a move of the owner after an early exit does not make the handle usable
+fn eat(b: Bag) { println(b.n) }
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    var c = flag()
+    if c { a = nb(2) }
+    if !alive(h) { return }
+    eat(a)
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === a move of the owner in a guarded block
+fn eat(b: Bag) { println(b.n) }
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    var c = flag()
+    if c { a = nb(2) }
+    if alive(h) {
+        eat(a)
+        println(h.n)  // error: handle 'h' may name a freed object
+    }
+}
+// === a move into a variable in a guarded block
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    var c = flag()
+    if c { a = nb(2) }
+    if alive(h) {
+        var d = a
+        println(h.n)  // error: handle 'h' may name a freed object
+        println(d.n)
+    }
+}
+// === a move of the owner after a guard with and
+fn eat(b: Bag) { println(b.n) }
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    var c = flag()
+    if c { a = nb(2) }
+    if alive(h) && c {
+        eat(a)
+        println(h.n)  // error: handle 'h' may name a freed object
+    }
+}

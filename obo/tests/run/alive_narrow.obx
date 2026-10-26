@@ -107,7 +107,29 @@ fn exitElse(c: bool) {
     println(h.n)
 }
 
+// no free before, so nothing was narrowed: a move of the owner keeps the documented behaviour (the object lives on
+// in the new variable, and the handle still names it)
+fn moveNoFree() {
+    var a = nb(20)
+    let h = handle(a)
+    if alive(h) { println(h.n) }
+    var d = a
+    println(h.n)
+    println(d.n)
+    var b = nb(21)
+    let k = handle(b)
+    if !alive(k) { return }
+    var e = b
+    println(k.n)
+    println(e.n)
+}
+
 fn main() {
+    moveNoFree()  // expect: 20
+                  // expect: 20
+                  // expect: 20
+                  // expect: 21
+                  // expect: 21
     exitElse(false)  // expect: 18
                      // expect: 18
     exitElse(true)

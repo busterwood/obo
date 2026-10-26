@@ -1338,6 +1338,8 @@ var guardStart = -10             // the token index at which the 'alive' of an i
 var guardSym: ?^Sym = nil        // the handle h of a condition that starts with alive(h) (see "Narrowing on alive"), or nil
 var guardFollow = 0              // the token after that alive(h)
 var guardFree = 0                // freeSeq there
+var guardNeg = false             // the guard is !alive(h)
+var originNar = new []bool(0)    // per entry of originSyms: narrowing cleared a dead mark of the handle (a move of the owner then marks it dead)
 var guardOpen = false            // a conjunction is compiling the rest of the guard's condition with h's dead mark cleared
 var guardIdx = 0                 // the originSyms entry of h, and its mark before it was cleared
 var guardMark: ?^Sym = nil
@@ -3126,6 +3128,7 @@ fn closeBlock(terminated: bool) {
     // the block's symbols are freed with it: the origin list keeps only the handles still in scope
     truncate(originSyms, blocks[last].hmark)
     truncate(originDead, blocks[last].hmark)
+    truncate(originNar, blocks[last].hmark)
     while len(dfBlock) > 0 && dfBlock[len(dfBlock) - 1] >= last {
         truncate(dfBlock, len(dfBlock) - 1)
         truncate(dfIndex, len(dfIndex) - 1)
@@ -3572,9 +3575,19 @@ fn originMove(s: ?^Sym, move: bool) {
         let x = originSyms[i]
         if x.hOrigin != nil {
             let o = x.hOrigin
-            if o == r { x.hOrigin = nil }
+            if o == r {
+                x.hOrigin = nil
+                // narrowing cleared a dead mark of this handle: the move must not make the handle usable again
+                if originNar[i] { originDead[i] = r }
+            }
         }
     }
+}
+
+// the narrowing of the handle of entry i: its dead mark is cleared in the marks d (and remembered, see originNar)
+fn narrowMark(mut d: &[]?^Sym, i: int) {
+    if d[i] != nil { originNar[i] = true }
+    d[i] = nil
 }
 
 // the handle x was just named by an expression that is no use of its object (alive(x), a copy of a dead handle):
@@ -5010,7 +5023,7 @@ fn conjunction(): Item {
         next()
         // the rest of an if condition that starts with alive(h) runs only where h is alive: its dead mark is
         // cleared until the conjunction ends, unless something freed an owner since the guard
-        if guardSym != nil && !guardOpen && guardFollow == T_ANDAND && guardFree == freeSeq {
+        if guardSym != nil && !guardNeg && !guardOpen && guardFollow == T_ANDAND && guardFree == freeSeq {
             for i in 0..len(originSyms) {
                 if originSyms[i] == guardSym {
                     guardIdx = i
@@ -5142,6 +5155,7 @@ fn varDecl(kind: string, isGlobal: bool) {
                     if dead != nil { unname(x.sym) }
                     append(originSyms, s)
                     append(originDead, dead)
+                    append(originNar, false)
                 }
             }
         }
@@ -5439,6 +5453,7 @@ fn ifStat(): bool {
     guardSym = nil
     guardOpen = false
     guardStart = tokSeq
+    guardNeg = neg
     if neg { guardStart += 1 }
     let orBefore = orSeq
     let x = loadCond(expression())
@@ -5463,9 +5478,9 @@ fn ifStat(): bool {
     var d0 = deadSave()
     var dacc = deadSave()
     // the arm where h is known alive starts without its dead mark
-    if gi >= 0 && !neg { d0[gi] = nil }
+    if gi >= 0 && !neg { narrowMark(&d0, gi) }
     var e0 = deadSave()
-    if gi >= 0 && neg { e0[gi] = nil }
+    if gi >= 0 && neg { narrowMark(&e0, gi) }
     pushNarrowings(x.nt)
     let t1 = armBlock(&d0, &dacc, false)
     let s1 = snapshot()
@@ -5476,7 +5491,7 @@ fn ifStat(): bool {
         let j = jmp()
         fixHere(flinks)
         pushNarrowings(x.nf)
-        if gi >= 0 && neg && t1 { dacc[gi] = nil }
+        if gi >= 0 && neg && t1 { narrowMark(&dacc, gi) }
         let t2 = armBlock(&e0, &dacc, sym == T_IF)
         deadSet(&dacc)
         truncate(narrowStack, mark)
@@ -5498,7 +5513,7 @@ fn ifStat(): bool {
         return t1 && t2
     }
     fixHere(flinks)
-    if gi >= 0 && neg && t1 { dacc[gi] = nil }
+    if gi >= 0 && neg && t1 { narrowMark(&dacc, gi) }
     deadSet(&dacc)
     if !t1 {
         sameStates(s1, s0, iline, icol)
@@ -5530,6 +5545,8 @@ fn loopBody(entry: PState, line: int, col: int, nOuter: int, selfBefore: int, us
 fn loopBodyV(entry: PState, line: int, col: int, lv: ?^Sym, nOuter: int, selfBefore: int, useBefore: int, logFrom: int): Loop {
     let n = localsIn(entry)
     clearFresh()
+    // the loop may run no time: what the marks were before it are marks after it too (narrowing clears marks)
+    let dEntry = deadSave()
     append(loops, new Loop{brk: 0, cont: 0, blocks: len(blocks), entry: copyState(entry), lv: lv,
                            susp: neutralState(n), back: neutralState(n), exits: new []PState(0), exitAt: new []int(0),
                            conts: new []PState(0), contAt: new []int(0), logFrom: logFrom, useFrom: useBefore, exitDead: new []?^Sym(0)})
@@ -5607,6 +5624,9 @@ fn loopBodyV(entry: PState, line: int, col: int, lv: ?^Sym, nOuter: int, selfBef
     pendingFreeCheck(li)
     for i in 0..len(loops[li].exitDead) {
         if i < len(originDead) && loops[li].exitDead[i] != nil { originDead[i] = loops[li].exitDead[i] }
+    }
+    for i in 0..len(dEntry) {
+        if dEntry[i] != nil { originDead[i] = dEntry[i] }
     }
     truncate(loops, li)
     if lv != nil { lv.moved = false }

@@ -533,6 +533,11 @@ ALIVE_MUTANTS = {
     'the rest of a conjunction is not narrowed': ('                    originDead[i] = nil\n                    guardOpen = true', '                    guardOpen = true'),
     'the mark is not restored after a conjunction': ('        if guardFree == freeSeq { originDead[guardIdx] = guardMark }\n', ''),
     'a nested conjunction reopens the guard': ('guardSym != nil && !guardOpen && guardFollow', 'guardSym != nil && guardFollow'),
+    'a negated guard opens the conjunction': ('guardSym != nil && !guardNeg && !guardOpen', 'guardSym != nil && !guardOpen'),
+    'a loop does not take the marks from before it': ('    for i in 0..len(dEntry) {\n        if dEntry[i] != nil { originDead[i] = dEntry[i] }\n    }\n', ''),
+    'a move of the owner keeps a narrowed handle usable': ('                if originNar[i] { originDead[i] = r }\n', ''),
+    'narrowing is not remembered': ('    if d[i] != nil { originNar[i] = true }\n', ''),
+    'narrowing is always remembered': ('    if d[i] != nil { originNar[i] = true }\n', '    originNar[i] = true\n'),
     'a guard in the right operand of or is open': ('        orSeq += 1\n', ''),
 }
 MUTANTS.update(ALIVE_MUTANTS)
