@@ -512,7 +512,12 @@ handle made outside an enclosing loop is still refused; a handle made in the sco
 it leaves is not, since no iteration of that loop follows the break): the loop may use the handle, and a use
 after the loop is refused by the paths. `alive(h)`, as a bare name, does not count as the loop using the handle, and
 neither does a `let` copy of a handle that is already known to be dead there (the copy is dead too). A handle made
-inside the loop is fresh each iteration. If the arm that frees the object ends in
+inside the loop is fresh each iteration. A move of the owner (`var c = a`, passing it) on one path
+does not hide a later free of the owner on a path that did not move it: `if k { var d = a; return } else { a = nb() }
+use(h)` is refused, since the else path freed the object. A handle is safe after a free only if every path that
+reaches it moved the owner. The compiler does not
+know that two conditions agree, so `if k == 1 { c = a; a = nb(2) }  if k == 1 { a = nb(3) }  use(h)` is refused
+although it is safe (known false positive): put the move and the free in one arm. If the arm that frees the object ends in
 a `break` or a `continue`, a use of a handle made inside the loop after the `if`
 is accepted, since that code runs only on the paths that did not free it; a use
 after the loop is reached through the break, and is refused. A `defer` that uses
