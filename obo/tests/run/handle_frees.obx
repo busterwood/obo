@@ -265,6 +265,21 @@ fn deferClosed() {
     println(a.n)                      // expect: 0
 }
 
+// a return arm assigns the owner; the code after the if makes the handle again and uses it
+fn returnArmRemade(k: int): int {
+    var a = nb()
+    let h = handle(a)
+    if k == 2 {
+        a = nb()
+        return 0
+    }
+    println(h.n)                      // expect: 0
+    a = nb()
+    let h2 = handle(a)
+    println(h2.items[0].v)            // expect: 9
+    return 1
+}
+
 fn main() {
     noHandle()
     after()
@@ -288,4 +303,5 @@ fn main() {
     returnArm(true)
     deferOthers()
     deferClosed()
+    returnArmRemade(1)
 }

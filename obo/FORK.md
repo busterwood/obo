@@ -1368,6 +1368,19 @@ every assignment while a handle from `a` is in scope would refuse `c_asg_clears_
   `continueArm`). With the handle declared outside the loop, the use in the loop is still refused (the
   free-and-use rule above), a conservative choice.
 
+- **Round 2: the assignment no longer clears the origin.** An assignment cleared `hOrigin` (`originMove`),
+  but the dead marks of the path it was on could be discarded later (a return arm's, a defer body's, a
+  break arm's, which go to the state after the loop), and the later real free then found no origin: `if k == 2
+  { a = nb(); return }  a = nb()  pr(h.n)` and `defer { a = nb() }  a = nb()  pr(h.n)` compiled and exited 7.
+  Now an assignment (`originMove(.., false)`) only calls `originFree` and leaves the origins alone: the
+  dead mark is the only record of it, and a path-dependent mark can no longer lose information. The
+  origin is cleared by a move only (which is not path-aware: `var c = a` in a return arm, and
+  `var a2 = a; a2 = nb()`, still leave the gap noted below). Two consequences. (1) The loop move rule
+  (`loopOriginCheck`) skips a handle that is dead (`originDead`): it may not be used in the loop at all, since
+  every use is refused, so the rule has nothing to protect (`c_asg_clears_origin` in `run/held_places.obx`).
+  (2) A `drop` of the owner in a loop is now judged by the free rule (refused only if the loop uses the
+  handle), not by the move rule, so a loop that drops the owner and never names the handle is accepted.
+
 **Not covered** (each still traps at run time, exit 7; none is a memory hole):
 - a handle made from a field or element (`let h = handle(p.child); p.child = nb()`), also through a `mut`
   parameter (`handle(p.child)` in `fn f(mut p: &Par)`): such a handle has no origin. Tracking a path
@@ -1388,7 +1401,7 @@ every assignment while a handle from `a` is in scope would refuse `c_asg_clears_
 - `alive(h)` in a loop counts as a naming, so `while ... { alive(h); a = nb() }` is refused at the
   assignment although `alive` does not use the object.
 
-**Tests.** `tests/errors/handle_frees.obx`, 33 cases (the 22 of the first version, with the loop messages changed, and 11 for the review: a move, then an assignment, in a `for`, in a `while` and with the handle used after the loop; an assignment in one arm with the use in the other, in a `for`, a `while`, a `match`, and an inner loop; a drop in an arm; a defer that uses the handle, then an assignment, a drop, and an assignment in an inner block): the plain form and the doc's runtime-trap form, an
+**Tests.** `tests/errors/handle_frees.obx`, 38 cases (5 more in round 2: a return arm, in a loop, a defer body, an else arm, a break arm, each followed by a real free) (the 22 of the first version, with the loop messages changed, and 11 for the review: a move, then an assignment, in a `for`, in a `while` and with the handle used after the loop; an assignment in one arm with the use in the other, in a `for`, a `while`, a `match`, and an inner loop; a drop in an arm; a defer that uses the handle, then an assignment, a drop, and an assignment in an inner block): the plain form and the doc's runtime-trap form, an
 `if` without else, the then, else and else-if arms, the first and else arms of a closed `match` and of an
 int `match`, a loop that uses the handle before the assignment (body, `while` condition, outer loop of a
 nested one), a loop that may run before a later use, a break path, an optional owner assigned `nil` and a
@@ -1411,14 +1424,14 @@ Existing expectations that changed, each still refused or still trapping:
    by the new rule at the same line, with the new message. This is the case the `EQUIVALENT` note on the
    take hook describes: an assignment always comes first.
 
-**Mutants** (`HANDLE_FREE_MUTANTS` in `tests/mutate_fork.py`, imported by `tests/mutate_port.py`): 35,
+**Mutants** (`HANDLE_FREE_MUTANTS` in `tests/mutate_fork.py`, imported by `tests/mutate_port.py`): 37,
 all caught, none equivalent: the assignment and drop hooks, the dead mark, the loop refusal (dropped,
 without the use test, checked at the innermost loop), the use check, a mark that refuses every handle, the
 naming count (also once a move clears the origin), the loop's start count, the mark list's append and truncation, the arm's
 start, its join, its return and break handling (a break arm's marks kept for after the loop, counted, applied, not applied to a return), the defer handles (recorded, all, other owners', kept after the block), the then, else and else-if arms, the two `if` joins,
 the arms and else arms of both matches and their joins, and the defer's restore.
 
-**Memory.** `PEAK_BUDGET` is unchanged at 983,000. After the merge of main (c9510c6, peak 954,816) the port compiling itself peaks at 978,128 bytes live, so the change costs 23,312 bytes (the first draft added a `Sym` field, `hTracked`, and cost 33,568: every symbol paid for it, so the flag now lives in `hDepth`, which is 0 for a handle without an origin and the loop depth plus 1 otherwise). The Phase 2 register-allocation retry (`fnDecl`) needs no change to its restore list: the first pass runs to the end of the body, where every loop, block and defer has closed, so `originSyms`, `originDead`, `deferH` and the pending frees are empty again, and `jumpSeq` is only compared as a difference; `useSeq`, which it restores, is what `usedAt` and `Loop.useFrom` are counted in.
+**Memory.** `PEAK_BUDGET` is unchanged at 983,000. After the merge of main (c9510c6, peak 954,816) the port compiling itself peaks at 978,176 bytes live, so the change costs 23,360 bytes (the first draft added a `Sym` field, `hTracked`, and cost 33,568: every symbol paid for it, so the flag now lives in `hDepth`, which is 0 for a handle without an origin and the loop depth plus 1 otherwise). The Phase 2 register-allocation retry (`fnDecl`) needs no change to its restore list: the first pass runs to the end of the body, where every loop, block and defer has closed, so `originSyms`, `originDead`, `deferH` and the pending frees are empty again, and `jumpSeq` is only compared as a difference; `useSeq`, which it restores, is what `usedAt` and `Loop.useFrom` are counted in.
 
 **Measured** (on 37bdfeb plus this change): `run_fork` 460 of 460, `port_test` 426 of 426 identical with
 no leaks, `port_compare` stage B 611 of 611, `own_fuzz --count 300 --profile both` 0 failures in 600

@@ -204,7 +204,7 @@ fn main() {
     let h = handle(a)
     for i in 0..2 {
         println(h.n)
-        drop(a)  // error: cannot move 'a' inside a loop while handle 'h' made from it is in scope
+        drop(a)  // error: cannot drop the owner of handle 'h' inside a loop that uses the handle
         a = nb()
     }
 }
@@ -312,7 +312,7 @@ fn main() {
     let h = handle(a)
     for i in 0..3 {
         if i == 0 {
-            drop(a)  // error: cannot move 'a' inside a loop while handle 'h' made from it is in scope
+            drop(a)  // error: cannot drop the owner of handle 'h' inside a loop that uses the handle
             a = nb()
         } else {
             println(h.n)
@@ -341,4 +341,63 @@ fn main() {
     if flag() {
         a = nb()  // error: cannot assign over 'a' while a defer declared earlier uses handle 'h'
     }
+}
+// === a return arm assigns, then the owner is assigned on the path that goes on: the arm's marks are dropped, but the free is real
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    var k = 1
+    if k == 2 {
+        a = nb()
+        return
+    }
+    a = nb()
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === the same with the return arm in a loop
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    var k = 0
+    while k < 3 {
+        k += 1
+        if k == 2 {
+            a = nb()
+            return
+        }
+    }
+    a = nb()
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === a defer body assigns the owner, then the owner is assigned: the defer's assignment runs later and must not clear the handle's origin here
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    defer { a = nb() }
+    a = nb()
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === an if whose then arm returns and whose else arm frees
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    if flag() {
+        return
+    } else {
+        a = nb()
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === a break arm assigns, the loop is left, and the owner is assigned again
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    for i in 0..3 {
+        if i == 1 {
+            a = nb()
+            break
+        }
+    }
+    a = nb()
+    println(h.n)  // error: handle 'h' may name a freed object
 }

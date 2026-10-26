@@ -319,9 +319,9 @@ ORIGIN_MUTANTS = {
         '            if false { x.hOrigin = nil }\n'),
     "a closed block's handles stay in the origin list": ('    truncate(originSyms, blocks[last].hmark)\n',
         ''),
-    'a handle declared in the loop it is moved in is refused': ('        if x.hOrigin != nil && x.hDepth <= len(loops) {\n',
+    'a handle declared in the loop it is moved in is refused': ('        if x.hOrigin != nil && x.hDepth <= len(loops) && originDead[i] == nil {\n',
         '        if x.hOrigin != nil && x.hDepth <= len(loops) + 1 {\n'),
-    'the loop check ignores where a handle was declared': ('        if x.hOrigin != nil && x.hDepth <= len(loops) {\n',
+    'the loop check ignores where a handle was declared': ('        if x.hOrigin != nil && x.hDepth <= len(loops) && originDead[i] == nil {\n',
         '        if x.hOrigin != nil {\n'),
     "a let handle's loop depth is not recorded": ('                    s.hDepth = len(loops) + 1\n',
         ''),
@@ -371,9 +371,11 @@ MUTANTS.update(ARG_ORDER_MUTANTS)
 # (originFree, deadHandleCheck, the dead marks of armBlock); errors/handle_frees.obx and
 # run/handle_frees.obx show them
 HANDLE_FREE_MUTANTS = {
-    'an assignment frees no handle': ('    if !move { originFree(r, "assign over") }\n', ''),
+    'an assignment frees no handle': ('        originFree(r, "assign over")\n        return\n', '        return\n'),
     'a drop frees no handle': ('        originFree(ds, "drop")\n', ''),
     'a free does not mark the handle dead': ('            if o == r { originDead[i] = r }\n', ''),
+    'an assignment clears the origins of the handles': ('        originFree(r, "assign over")\n        return\n', '        originFree(r, "assign over")\n'),
+    'the loop move rule refuses a dead handle': ('x.hDepth <= len(loops) && originDead[i] == nil {\n', 'x.hDepth <= len(loops) {\n'),
     'a free in a loop is not reported': ('            if o == r && x.hDepth <= len(loops) {\n', '            if false {\n'),
     'a free in a loop is refused without a use there': ('            if pendSym[k].usedAt > loops[li].useFrom {\n', '            if true {\n'),
     'a free is checked at the end of the innermost loop': ('        if pendDepth[k] == li {\n', '        if pendDepth[k] <= li {\n'),

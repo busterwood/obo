@@ -3440,7 +3440,10 @@ fn originMove(s: ?^Sym, move: bool) {
     let r = s
     if !r.owned || r.isRef || r.storage != "local" { return }
     if move { loopOriginCheck(r) }
-    if !move { originFree(r, "assign over") }
+    if !move {
+        originFree(r, "assign over")
+        return
+    }
     for i in 0..len(originSyms) {
         let x = originSyms[i]
         if x.hOrigin != nil {
@@ -3453,7 +3456,7 @@ fn originMove(s: ?^Sym, move: bool) {
 fn loopOriginCheck(s: ^Sym) {
     for i in 0..len(originSyms) {
         let x = originSyms[i]
-        if x.hOrigin != nil && x.hDepth <= len(loops) {
+        if x.hOrigin != nil && x.hDepth <= len(loops) && originDead[i] == nil {
             let o = x.hOrigin
             if o == s { error("cannot move '" + s.name + "' inside a loop while handle '" + x.name + "' made from it is in scope") }
         }
