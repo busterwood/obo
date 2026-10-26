@@ -475,9 +475,52 @@ fn dumpTokens(source: []byte) {
 // address in disp, index -1 means no index.
 type Mem = ref record { base, index, disp, scale: int }
 
-var code = new []byte(0)
+// The code, in chunks of CHUNK bytes, each allocated at its full size: growing the code never
+// copies it, as a doubling buffer would, which holds the old block and the new one at once.
+// code holds the full chunks; the last one is written in cur, of which curLen bytes are code.
+const CHUNK_BITS = 14
+const CHUNK = 0x4000
+type Chunk = ref record { b: []byte }
+var code = new []Chunk(0)
+var cur = new []byte(CHUNK)
+var curLen = 0
+var codeBase = 0                    // where cur starts: CHUNK times len(code)
 
-fn emit(b: int) { append(code, byte(b)) }
+fn emit(b: int) {
+    cur[curLen] = byte(b)
+    curLen += 1
+    if curLen == CHUNK {
+        let full = new []byte(CHUNK)
+        for i in 0..CHUNK { full[i] = cur[i] }
+        append(code, new Chunk{b: full})
+        codeBase += CHUNK
+        curLen = 0
+    }
+}
+
+fn codeByte(at: int): byte {
+    if at >= codeBase { return cur[at - codeBase] }
+    return code[at >> CHUNK_BITS].b[at & (CHUNK - 1)]
+}
+
+fn setCode(at: int, v: int) {
+    if at >= codeBase {
+        cur[at - codeBase] = byte(v)
+    } else {
+        code[at >> CHUNK_BITS].b[at & (CHUNK - 1)] = byte(v)
+    }
+}
+
+// cuts the code back to n bytes: the chunk n is in becomes cur again
+fn truncCode(n: int) {
+    if n < codeBase {
+        let k = n >> CHUNK_BITS
+        for i in 0..CHUNK { cur[i] = code[k].b[i] }
+        truncate(code, k)
+        codeBase = k << CHUNK_BITS
+    }
+    curLen = n - codeBase
+}
 
 fn emit32(v: int) {
     emit(v)
@@ -494,7 +537,7 @@ fn emit64(v: int) {
 fn fits8(v: int): bool { return v >= -128 && v < 128 }
 fn fits32(v: int): bool { return v >= -2147483648 && v < 2147483648 }
 
-fn pc(): int { return len(code) }
+fn pc(): int { return codeBase + curLen }
 
 fn emitOpcode(opc: int) {
     if opc > 255 { emit(opc >> 8) }
@@ -626,14 +669,14 @@ fn jmp(): int {
 // A jump's rel32 field holds its displacement once the target is known, and until then
 // the position of the next jump waiting for the same target (waitJump): 0 after the last.
 fn putRel(at: int, v: int) {
-    code[at] = byte(v)
-    code[at + 1] = byte(v >> 8)
-    code[at + 2] = byte(v >> 16)
-    code[at + 3] = byte(v >> 24)
+    setCode(at, v)
+    setCode(at + 1, v >> 8)
+    setCode(at + 2, v >> 16)
+    setCode(at + 3, v >> 24)
 }
 
 fn getRel(at: int): int {
-    return int(code[at]) | (int(code[at + 1]) << 8) | (int(code[at + 2]) << 16) | (int(code[at + 3]) << 24)
+    return int(codeByte(at)) | (int(codeByte(at + 1)) << 8) | (int(codeByte(at + 2)) << 16) | (int(codeByte(at + 3)) << 24)
 }
 
 fn fix(at: int, target: int) { putRel(at, target - (at + 4)) }
@@ -758,7 +801,9 @@ fn runEncoderScript(script: []byte) {
             let l = new []byte(0)
             for k in start..i { append(l, script[k]) }
             runEncoderLine(string(l))
-            println(hexOf(code, before, pc()))
+            let b = new []byte(0)
+            for k in before..pc() { append(b, codeByte(k)) }
+            println(hexOf(b, 0, len(b)))
             start = i + 1
         }
     }
@@ -787,6 +832,7 @@ type Type = ref record {
     desc: int                 // record: address of its type descriptor
     incomplete: bool          // declared by 'type Name', not yet defined
     line: int
+    arrayOf, optOf, handleOf: ?^Type   // the types made from this one (see derived)
 }
 
 var typeArena = new []Type(0)          // owns every type; the rest of the compiler holds handles
@@ -794,6 +840,17 @@ var typeArena = new []Type(0)          // owns every type; the rest of the compi
 fn newType(kind: string, name: string, base: ?^Type): ^Type {
     append(typeArena, new Type{kind: kind, name: name, base: base, fields: new []Field(0), variants: new []^Type(0)})
     return handle(typeArena[len(typeArena) - 1])
+}
+
+// the type of the given kind ("array", "opt" or "handle") made from base: made once per base and
+// then shared, since no such type is changed once made and they are compared by structure
+fn derived(kind: string, base: ^Type): ^Type {
+    var t = base.arrayOf
+    if kind == "opt" { t = base.optOf } else if kind == "handle" { t = base.handleOf }
+    if t != nil { return t }
+    let n = newType(kind, "", base)
+    if kind == "array" { base.arrayOf = n } else if kind == "opt" { base.optOf = n } else { base.handleOf = n }
+    return n
 }
 
 let tInt = newType("int", "int", nil)
@@ -2981,18 +3038,18 @@ fn parseType(): ^Type {
         next()
         let b = parseType()
         if !nonNull(b) { error("only reference types can be optional, not " + tname(b)) }
-        return newType("opt", "", b)
+        return derived("opt", b)
     }
     if sym == T_LBRACK {
         next()
         expect(T_RBRACK, "")
-        return newType("array", "", parseType())
+        return derived("array", parseType())
     }
     if sym == T_CARET {
         next()
         let b = parseType()
         if b.kind != "record" && b.kind != "closed" { error("handles name records and closed types, not " + tname(b)) }
-        return newType("handle", "", b)
+        return derived("handle", b)
     }
     if sym == T_REF || sym == T_CLOSED { error("record and closed types must be declared with 'type'") }
     let name = ident()
@@ -3657,7 +3714,7 @@ fn builtin(name: string): Item {
     if name == "args" {
         expect(T_LPAREN, "")
         expect(T_RPAREN, "")
-        return rtCall0(RT_ARGS, newType("array", "", tString))
+        return rtCall0(RT_ARGS, derived("array", tString))
     }
     if name == "readFile" || name == "writeFile" {
         expect(T_LPAREN, "")
@@ -3665,7 +3722,7 @@ fn builtin(name: string): Item {
         if p.typ.kind != "string" { error(name + " needs a string path, not " + tname(p.typ)) }
         if name == "readFile" {
             expect(T_RPAREN, "")
-            return rtCall1(RT_READ_FILE, p, newType("opt", "", newType("array", "", tByte)))
+            return rtCall1(RT_READ_FILE, p, derived("opt", derived("array", tByte)))
         }
         p = pinStr(p)
         expect(T_COMMA, "")
@@ -3702,7 +3759,7 @@ fn builtin(name: string): Item {
         if (x.mode != "mem" && x.mode != "elem") || (x.typ.kind != "record" && x.typ.kind != "closed") {
             error("handle needs a record or closed-type value that is not optional, not " + tname(x.typ))
         }
-        let ht = newType("handle", "", x.typ)
+        let ht = derived("handle", x.typ)
         var origin: ?^Sym = nil
         if !x.viaHandle && lastRaw == "" { origin = wholeOwnerOf(x.sym) }
         let made = rtCall1(RT_HANDLE, x, ht)
@@ -3944,7 +4001,7 @@ fn builtin(name: string): Item {
             emit(0)
             let at0 = pc()
             opMem(0x8B, n, mem(n, -1, 0, 8), true, false)
-            code[at0 - 1] = byte(pc() - at0)
+            setCode(at0 - 1, pc() - at0)
             rtCall1(RT_STR_DEC, p, tVoid)
             return makeReg(tInt, n)
         }
@@ -3954,7 +4011,7 @@ fn builtin(name: string): Item {
         emit(0)
         let at = pc()
         opMem(0x8B, x.r, mem(x.r, -1, 0, 8), true, false)
-        code[at - 1] = byte(pc() - at)
+        setCode(at - 1, pc() - at)
         return makeReg(tInt, x.r)
     }
     if a.typ.kind != "array" { error("len needs a string or array, not " + tname(a.typ)) }
@@ -5146,8 +5203,8 @@ fn whileStat(): bool {
         x = newItem("cond", tBool)
     } else {
         x = loadCond(x)
-        for i in top..pc() { append(lifted, code[i]) }
-        truncate(code, top)
+        for i in top..pc() { append(lifted, codeByte(i)) }
+        truncCode(top)
         farTo = len(farCalls)
         if fwdCalls != fwdFrom {
             for g in 0..len(globals) {
@@ -5191,7 +5248,7 @@ fn whileStat(): bool {
     let d = at - top
     fix(jcond, at)
     fixTo(loop.cont, at)
-    for i in liftFrom..len(lifted) { append(code, lifted[i]) }
+    for i in liftFrom..len(lifted) { emit(lifted[i]) }
     truncate(lifted, liftFrom)
     for k in farFrom..farTo {
         farCalls[k] += d
@@ -5691,8 +5748,8 @@ fn statement(): bool {
 // body are relative and move with it. A call out of it (farCalls) is now 7 bytes further
 // from its target, and a call waiting for a later function has moved in its fixups.
 fn dropFrame(at: int) {
-    for i in at + 4..len(code) { code[i - 7] = code[i] }
-    truncate(code, len(code) - 7)
+    for i in at + 4..pc() { setCode(i - 7, codeByte(i)) }
+    truncCode(pc() - 7)
     let calls = &farCalls
     for p in calls { putRel(p - 7, getRel(p - 7) + 7) }
     let gs = &globals
@@ -6079,10 +6136,7 @@ fn fnBody(f: ^Sym, name: string, ret: ^Type, params: &[]Param, homes: bool): boo
     if size == 0 {
         dropFrame(frameAt)
     } else {
-        code[frameAt] = byte(size)
-        code[frameAt + 1] = byte(size >> 8)
-        code[frameAt + 2] = byte(size >> 16)
-        code[frameAt + 3] = byte(size >> 24)
+        putRel(frameAt, size)
     }
     if pendLine > 0 && f.writesHandles { errorAt(pendMsg, pendLine, pendCol) }
     pendLine = 0
@@ -6173,7 +6227,7 @@ fn fnDecl() {
     let sWrites = f.writesHandles
     homeRetry = false
     if fnBody(f, name, ret, &params, true) {
-        truncate(code, f.addr)
+        truncCode(f.addr)
         let gs = &globals
         for g in gs {
             if g.kind == "fn" && g.addr < 0 {
@@ -6294,10 +6348,7 @@ fn compileModule() {
     }
     callAbs(RT_TEXT + 8 * RT_FINISH)
     let gend = GLOBAL_BASE + gsize
-    code[gendAt] = byte(gend)
-    code[gendAt + 1] = byte(gend >> 8)
-    code[gendAt + 2] = byte(gend >> 16)
-    code[gendAt + 3] = byte(gend >> 24)
+    putRel(gendAt, gend)
 }
 
 // ============================================================= ELF output
@@ -6340,18 +6391,19 @@ fn copyAt(mut out: &[]byte, at: int, data: &[]byte) {
 // starts on a page, and the image is allocated once, at its final size.
 fn elfImage(rtText: []byte, rtData: []byte): []byte {
     let codeAt = 0x1000
-    let roAt = pageUp(codeAt + len(code))
+    let roAt = pageUp(codeAt + pc())
     var roLen = len(rodata)
     if roLen == 0 { roLen = 1 }                      // an empty segment still gets one byte
     let rtTextAt = pageUp(roAt + roLen)
     let rtDataAt = pageUp(rtTextAt + len(rtText))
     let out = new []byte(rtDataAt + len(rtData))
-    copyAt(out, codeAt, code)
+    for k in 0..len(code) { copyAt(out, codeAt + (k << CHUNK_BITS), code[k].b) }
+    for i in 0..curLen { out[codeAt + codeBase + i] = cur[i] }
     copyAt(out, roAt, rodata)
     copyAt(out, rtTextAt, rtText)
     copyAt(out, rtDataAt, rtData)
     let ph = new []byte(0)
-    phdr(ph, 5, 0, IMAGE_BASE, codeAt + len(code), codeAt + len(code))
+    phdr(ph, 5, 0, IMAGE_BASE, codeAt + pc(), codeAt + pc())
     phdr(ph, 4, roAt, RODATA_BASE, roLen, roLen)
     var gmem = gsize
     if gmem < 8 { gmem = 8 }
@@ -6396,6 +6448,27 @@ fn dirOf(path: string): string {
     return substr(path, 0, i)
 }
 
+// Once the module is compiled, the image needs only the code, rodata and gsize: the symbols,
+// types and the rest are freed before it is built, since it is the largest allocation.
+// The handles that still name them (tInt, the globals' fns) are not used again.
+fn releaseTables() {
+    symArena = new []Sym(0)
+    typeArena = new []Type(0)
+    bindArena = new []RefBind(0)
+    universe = new []^Sym(0)
+    globals = new []^Sym(0)
+    strKeys = new []string(0)
+    strAddrs = new []int(0)
+}
+
+// The runtime is read once before the compile, so that a missing one is reported before
+// any error in the source, and again for the image: it is not held while compiling.
+fn runtimeReadable(rtDir: string): bool {
+    let rtText = readFile(rtDir + "/runtime_text.bin")
+    let rtData = readFile(rtDir + "/runtime_data.bin")
+    return rtText != nil && rtData != nil
+}
+
 fn compileFile(path: string, out: string, rtDir: string) {
     srcPath = path
     let data = readFile(path)
@@ -6403,15 +6476,20 @@ fn compileFile(path: string, out: string, rtDir: string) {
         eprintln("obxc: cannot read ", path)
         exit(2)
     }
-    let rtText = readFile(rtDir + "/runtime_text.bin")
-    let rtData = readFile(rtDir + "/runtime_data.bin")
-    if rtText == nil || rtData == nil {
+    if !runtimeReadable(rtDir) {
         eprintln("obxc: cannot read the runtime from ", rtDir)
         exit(2)
     }
     startScanner(data)
     compileModule()
     src = ""                       // the source is no longer read: free it before the image is built
+    releaseTables()
+    let rtText = readFile(rtDir + "/runtime_text.bin")
+    let rtData = readFile(rtDir + "/runtime_data.bin")
+    if rtText == nil || rtData == nil {
+        eprintln("obxc: cannot read the runtime from ", rtDir)
+        exit(2)
+    }
     let image = elfImage(rtText, rtData)
     if !writeFile(out, image, true) {
         eprintln("obxc: cannot write ", out)

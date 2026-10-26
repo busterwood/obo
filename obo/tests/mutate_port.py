@@ -331,7 +331,7 @@ MUTANTS.update({
     # point in the same pass, and what the first pass recorded as freed (f.freed, freesAll, writesHandles) the
     # second records again, the checker being the same
     "retry: locals' registers not given up": [("    if len(free) == 0 && homeBits != 0 { giveUpHomes() }\n", "")],
-    "retry: code not rewound": [("        truncate(code, f.addr)\n        let gs = &globals", "        let gs = &globals")],
+    "retry: code not rewound": [("        truncCode(f.addr)\n        let gs = &globals", "        let gs = &globals")],
     "retry: waiting calls of the first pass kept": [("                while len(g.fixups) > 0 && g.fixups[len(g.fixups) - 1] >= f.addr { truncate(g.fixups, len(g.fixups) - 1) }\n", "")],
     "retry: argument holders of the first pass kept": [("        truncate(argTemps, tempMark)\n        truncate(symArena, symMark)\n        return true", "        truncate(symArena, symMark)\n        return true")],
     "retry: free list left as the first pass had it": [("    homeBits = 0\n    setFree(0)                          // the registers in pool order: a function starts as the one before it did not leave them\n", "    homeBits = 0\n")],
