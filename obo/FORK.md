@@ -478,7 +478,7 @@ object indexed with a temporary of another; an element taken from the array inde
 which frees an element and not the array header); and an assignment whose value takes its own target
 (`tk.opt = passOptIB(take(tk.opt))`).
 
-Refused: a move of a local that a handle was made from, inside a loop. A handle `let h = handle(a)` made from a whole owned local records that local as its origin, so its held places are keyed to `a`. A whole move of `a` (`var c = a`, `var c = id(a)`, a record field, `replace(a, ...)`, `take(a)`) or an assignment over `a` clears that origin on every `let` handle that names `a` (`originMove`). Such a handle then has no origin: it is an identity, which every move and free reaches, so a later index through it that moves or frees something is refused by the held-place checks (probes u1, u3 and the optional take, in `tests/errors/held_places.obx`). This is sound because a move does not free the object: `c` holds the same object, and the handle still names it by its generation. The one case the clearing does not cover is a loop, because the body is compiled once: a whole move of `a` inside a loop that is deeper than the declaration of a live `let` handle with origin `a` is refused ("cannot move 'a' inside a loop while handle 'h' made from it is in scope"), since the next iteration would still see the origin. A handle declared inside the loop is fresh each iteration and is not refused (`c_fresh_loop`). A temporary `handle(a)` records no origin on any symbol, so a move after it is accepted (`c_p1_let_then_move` to `c_p5_temp_then_move`, run tests). The origin list (`originSyms`) keeps only the handles in scope: a block's handles leave it when the block closes, because their symbols are freed with it (a dangling entry there was a compiler abort in an early version of this rule). An assignment over `a` clears the origins but is not refused: `let h = handle(a); a = nb(); h.items[0]` compiles and traps at run time on the handle's generation check, as main does too. That is a gap in the held-place model (an assignment is not a free event for handles), left for a separate change. A handle made from a field, or through another handle, has no origin; its place is an identity, and a move of any local while it is held is refused, because `heldMove` hits every identity entry (`let h = handle(p.first)`, and the chained `hh.hb.items[...]`). A handle parameter has no origin, and the same conservative rule applies (f3 is kept refused). A move or free of a local the callee declared (not a by-value parameter, not a global) no longer reaches a reference parameter's place, because a reference cannot point into the callee's own object; this is the false positive `p.items[sinkBag(t)]` (f1, f2) and its replace and take forms (f4, f5). A by-value parameter's object and a global are still hit. Refused still: f8, two `mut` parameters where a free through one is indexed through the other, since the two may name the same object. A reference to a field of a reference parameter is bound to the whole parameter (`itemBind` drops the field path through a deref), so `let r = &p.ys; p.xs[sinkI(replace(r, ...))]` is refused although the fields differ; the direct form `p.xs[sinkI(replace(p.ys, ...))]` is accepted. This is a precision limit of the binding model, left as it is. The refused forms are the cases in `tests/errors/held_places.obx`. Known false positive (probe f2): a handle used only before a loop still blocks a move of its owner inside the loop, because the loop rule asks whether the handle is in scope, not whether it is used again. Telling the two apart would need a liveness check on the handle; until then the move is refused, which is conservative and sound.
+Refused: a move of a local that a handle was made from, inside a loop. A handle `let h = handle(a)` made from a whole owned local records that local as its origin, so its held places are keyed to `a`. A whole move of `a` (`var c = a`, `var c = id(a)`, a record field, `replace(a, ...)`, `take(a)`) or an assignment over `a` clears that origin on every `let` handle that names `a` (`originMove`). Such a handle then has no origin: it is an identity, which every move and free reaches, so a later index through it that moves or frees something is refused by the held-place checks (probes u1, u3 and the optional take, in `tests/errors/held_places.obx`). This is sound because a move does not free the object: `c` holds the same object, and the handle still names it by its generation. The one case the clearing does not cover is a loop, because the body is compiled once: a whole move of `a` inside a loop that is deeper than the declaration of a live `let` handle with origin `a` is refused ("cannot move 'a' inside a loop while handle 'h' made from it is in scope"), since the next iteration would still see the origin. A handle declared inside the loop is fresh each iteration and is not refused (`c_fresh_loop`). A temporary `handle(a)` records no origin on any symbol, so a move after it is accepted (`c_p1_let_then_move` to `c_p5_temp_then_move`, run tests). The origin list (`originSyms`) keeps only the handles in scope: a block's handles leave it when the block closes, because their symbols are freed with it (a dangling entry there was a compiler abort in an early version of this rule). An assignment over `a` clears the origins, and it also frees the handle's object: `let h = handle(a); a = nb(); h.items[0]` compiled and trapped at run time on the handle's generation check; it is now refused at the use (see "Assignment over a handle's owner (done)"). A handle made from a field, or through another handle, has no origin; its place is an identity, and a move of any local while it is held is refused, because `heldMove` hits every identity entry (`let h = handle(p.first)`, and the chained `hh.hb.items[...]`). A handle parameter has no origin, and the same conservative rule applies (f3 is kept refused). A move or free of a local the callee declared (not a by-value parameter, not a global) no longer reaches a reference parameter's place, because a reference cannot point into the callee's own object; this is the false positive `p.items[sinkBag(t)]` (f1, f2) and its replace and take forms (f4, f5). A by-value parameter's object and a global are still hit. Refused still: f8, two `mut` parameters where a free through one is indexed through the other, since the two may name the same object. A reference to a field of a reference parameter is bound to the whole parameter (`itemBind` drops the field path through a deref), so `let r = &p.ys; p.xs[sinkI(replace(r, ...))]` is refused although the fields differ; the direct form `p.xs[sinkI(replace(p.ys, ...))]` is accepted. This is a precision limit of the binding model, left as it is. The refused forms are the cases in `tests/errors/held_places.obx`. Known false positive (probe f2), closed since: a handle used only before a loop blocked a move of its owner inside the loop, because the loop rule asked whether the handle is in scope, not whether it is used in the loop. The rule now also asks whether the loop named the handle before the move (see "Assignment over a handle's owner (done)").
 
 Not closed: the argument-order hole `two(&xs[0], eatArr(xs))`, a reference into an array passed in one argument with the array moved by a later argument of the same call. It is a known hole, left alone in this round as the coordinator asked; the probes are `review16/ra/ra1`, `review16/p/a1` and `review16/ra/ra3`, listed with the holes above. (Closed since: see "Argument order (done)".)
 
@@ -1308,6 +1308,114 @@ up, as the image-buffer growth in "Reference bindings per path" did not.
 
 **Not covered.** No existing test expectation changed, and the port needed no rewrite. Methods do not
 exist yet (section 10 of `LANGUAGE.md`). The fuzzer has no argument-order kind.
+
+## Assignment over a handle's owner (done)
+
+**The gap.** An assignment over an owned local frees its old object, and a `let` handle made from that
+local names the old object. The assignment cleared the handle's origin (`originMove`) but was not a free
+event for it, so `let h = handle(a); a = nb(); h.items[0]` compiled and stopped at run time on the
+generation check (exit 7). Safe, but a free the compiler sees, missed. On main (37bdfeb) these all
+compiled and exited 7: the plain form; the assignment in an `if`, in a `match` arm and in a loop; an
+optional owner assigned a value or `nil`; `a = take(o)` over an optional owner; a by-value parameter
+assigned; and `drop(a)`, which frees the same way. A compound assignment applies only to ints, so it
+frees nothing. A whole `mut` parameter cannot be assigned (it is a reference).
+
+**The rule** (`originFree`, `deadHandleCheck`, `armBlock` in `src/obo.obo`). An assignment over a whole
+owned local `a` (the `originMove(xs, false)` hook) and `drop(a)` mark every `let` handle whose origin is
+`a` as dead (`originDead`, one entry per `originSyms` entry, truncated with it at a block's end). A use
+through a dead handle, the first deref in a designator (`h.f`, `h.f = v`, `h.items[i]`), is refused:
+"handle 'h' may name a freed object: 'a' was assigned or dropped after the handle was made from it; make
+the handle again". `alive(h)`, a copy of `h` and passing `h` are not uses, so a handle that is not used
+again is not refused. An assignment over a local whose value was moved away frees nothing; the move has
+already cleared the origin, so no handle matches.
+
+The refusal is at the use, not at the assignment, because that has the fewer false positives: refusing
+every assignment while a handle from `a` is in scope would refuse `c_asg_clears_origin` in
+`run/held_places.obx`, which uses the handle only before the assignment.
+
+- **Paths.** The dead marks are a may-flag, as for references ("Invalid on one path"). An `if` and both
+  kinds of `match` save them (`deadSave`), start each arm from the saved marks (`armBlock`), and leave
+  the union of the arms that go on (`deadSet`). Outside a loop an arm that ends ends in a return, so its
+  marks are dropped; inside a loop it may be a `break` or a `continue`, so they are kept. A `defer` body
+  runs where its block is left, after the uses that follow it, so its marks are taken back where it is
+  declared.
+- **Loops.** The body is compiled once, so a use earlier in the loop is not seen by the mark. An assignment
+  or drop inside a loop the handle was declared outside of is refused at the assignment when the loop
+  named the handle before it: "cannot assign over 'a' inside a loop while handle 'h' made from it is in
+  scope and used in the loop" (and "cannot drop"). "Named" is any naming in `nameItem` since the loop's
+  condition or body began: the handle's `usedAt` (the field the reference locals use, unused for
+  handles until now) against the new `Loop.useFrom`, the `useSeq` count where the loop began. A use
+  after the assignment, in the loop or after it, is refused by the mark.
+- **f2.** The same count closes the known false positive f2: a move of `a` in a loop is refused
+  (`loopOriginCheck`) only when the loop named the handle before the move. The move rule exists because
+  the body is compiled once, and its uses before the move would be checked with the origin on the next
+  iteration. If the loop names the handle nowhere before the move, every use the next iteration reaches
+  is after the move, where the origin is already cleared, so it is checked as an identity. Origin
+  reasoning starts only from a naming of the handle (a deref through it, or `let h2 = h`, which gives the
+  copy the origin and is itself an entry). The message gains "and used in the loop".
+
+**Not covered** (each still traps at run time, exit 7; none is a memory hole):
+- a handle made from a field or element (`let h = handle(p.child); p.child = nb()`), also through a `mut`
+  parameter (`handle(p.child)` in `fn f(mut p: &Par)`): such a handle has no origin. Tracking a path
+  would need clearing on every way the field can be emptied without naming it (`replace`, `take`, a
+  `mut` call, a write through another handle or a reference), which the model does not keep;
+- a `var` handle, a handle in a record, and a `let` copy made after the assignment (it gets no origin);
+- inside a loop the marks of an arm that ends are kept, since it may be a `break` or a `continue`, so an
+  arm that assigns and then returns marks the handle too (`while c { if d { a = nb(); return } }; h.n`
+  is refused, a false positive);
+- an `if` whose then arm assigns over or moves `a` and returns, and whose else arm assigns over `a`,
+  misses the else arm's free: the then arm cleared the origin, and the clearing is flow-insensitive (a
+  precision limit of `originMove`, which this change keeps);
+- `alive(h)` in a loop counts as a naming, so `while ... { alive(h); a = nb() }` is refused at the
+  assignment although `alive` does not use the object.
+
+**Tests.** `tests/errors/handle_frees.obx`, 22 cases: the plain form and the doc's runtime-trap form, an
+`if` without else, the then, else and else-if arms, the first and else arms of a closed `match` and of an
+int `match`, a loop that uses the handle before the assignment (body, `while` condition, outer loop of a
+nested one), a loop that may run before a later use, a break path, an optional owner assigned `nil` and a
+`take`, a by-value parameter, `drop` (plain and in a loop), a `let` copy of the handle, and a write
+through the handle. `tests/run/handle_frees.obx`, 16 shapes with output: no handle, a handle made
+after, a temporary handle, writes through the handle and to a scalar field of the owner, a handle unused
+after, a handle in a closed block, `alive` after, the owner moved first, another owner's handle, a use
+in the else arm, a returning arm, a use in another match arm, a `defer` that assigns, a fresh handle
+after a closed block's dead one, an assignment in a loop with the handle used only before it, and f2.
+`held_places.obx` (run), `call_targets.obx`, `one_path.obx` and `arg_order.obx` are unchanged and pass.
+
+Existing expectations that changed, each still refused or still trapping:
+1. `run/trap_dangling.obx` ran the exact shape now refused, to show the exit-7 trap. It now keeps the
+   handle in a record (`l.to.v`), which the compiler does not track, so it still shows the trap; the old
+   program is the second case of `errors/handle_frees.obx`. The `LANGUAGE.md` example in section 5
+   changed the same way, and a refused example was added.
+2. `errors/held_places.obx`, "a handle's owner moved inside a loop after the handle was made": the
+   handle is used only after the loop (f2's shape), so the origin rule no longer applies. The program
+   is still refused, by the ordinary rule at the `while` line ("'a' is moved inside the loop").
+3. `errors/held_places.obx`, "a handle outside a for loop: its owner moved in the loop body": the move
+   comes before any use of the handle in the loop, so it is no longer refused; the next line,
+   `h.items[eat(c)]`, is refused by the held-place rule (the cleared origin makes `h` an identity). A
+   new case keeps the for-loop form of the origin rule: the handle used in the loop before the move.
+4. `errors/held_places.obx`, "a take of an optional owner after its handle was made": the `o = nil`
+   that widens the owner for the `take` frees the handle's object, so the index through `h` is refused
+   by the new rule at the same line, with the new message. This is the case the `EQUIVALENT` note on the
+   take hook describes: an assignment always comes first.
+
+**Mutants** (`HANDLE_FREE_MUTANTS` in `tests/mutate_fork.py`, imported by `tests/mutate_port.py`): 28,
+all caught, none equivalent: the assignment and drop hooks, the dead mark, the loop refusal (dropped,
+without the use test, without the depth test), the use check, a mark that refuses every handle, the
+naming count, the loop's start count, f2's use test, the mark list's append and truncation, the arm's
+start, its join, its return and break handling, the then, else and else-if arms, the two `if` joins,
+the arms and else arms of both matches and their joins, and the defer's restore.
+
+**Memory.** `PEAK_BUDGET` is unchanged at 1,351,000. The port compiling itself peaks at 1,278,352 bytes
+live; main's source (37bdfeb), measured the same way, peaks at 1,273,248, so the change costs 5,104 bytes
+(the dead-mark list, `Loop.useFrom`, the new functions and messages). No `Sym` field was added: the
+naming count reuses `usedAt`.
+
+**Measured** (on 37bdfeb plus this change): `run_fork` 460 of 460, `port_test` 426 of 426 identical with
+no leaks, `port_compare` stage B 611 of 611, `own_fuzz --count 300 --profile both` 0 failures in 600
+programs, `doc_check` 30 examples with no problems, `mutate_fork` 198 of 206 caught with the 8
+equivalents already listed (all 28 new ones caught), `bench/bench.py` run for all four workloads,
+`make promote` a fixed point (the seed is not committed). `mutate_port` was stopped by the host for low
+memory after 102 of its entries, all caught; the new group, imported last, was not reached in that run.
 
 ## Milestone 1 design notes (as planned)
 

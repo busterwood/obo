@@ -887,7 +887,8 @@ type Sym = ref record {
     writeUse: int            // useSeq of the last write through the reference, not fresh (see loopBindCheck)
     carryFreed: bool         // a change that may free something came while it was not pointed afresh on every path
     suspect: bool             // live across a recursive call that may write through a handle
-    usedAt: int               // the reads so far (useSeq) when it was last read: see loopSelfCheck
+    usedAt: int               // the reads so far (useSeq) when it was last read: see loopSelfCheck; a let handle with
+                              // an origin: when it was last named (see originFree)
     iterating: bool           // a for loop is walking this array
     pmodes: []int             // fn: 0 owned, 1 &, 2 mut, per parameter
     freed: []^Sym              // fn: the globals it might free (directly or through calls)
@@ -1173,6 +1174,7 @@ type Loop = ref record {
     conts: []PState            // the states where a continue leaves, joined into back and the exits (contAt)
     contAt: []int
     logFrom: int               // the free log's length where the loop's condition or body begins
+    useFrom: int               // the reads so far (useSeq) where the loop's condition or body begins
 }
 
 fn makePool(): []int {
@@ -1196,6 +1198,7 @@ var blocks = new []Block(0)
 var narrowStack = new []NEntry(0)
 var loops = new []Loop(0)
 var originSyms = new []^Sym(0)   // the let handles that have an origin (hOrigin), in declaration order
+var originDead = new []?^Sym(0)  // per entry of originSyms: the local whose assignment or drop freed its object, or nil
 var loopdepth = 0
 var curFn: ?^Sym = nil
 // an error that needs the whole body: reported at its end if the body writes through a handle
@@ -2077,6 +2080,7 @@ fn sameStates(a: &PState, b: &PState, line: int, col: int) {
 fn heldMove(s: ^Sym)
 fn originMove(s: ?^Sym, move: bool)
 fn loopOriginCheck(s: ^Sym)
+fn originFree(r: ^Sym, what: string)
 
 // Takes ownership of x's value, which is about to be stored in a variable,
 // field, element or parameter, or returned.
@@ -2752,6 +2756,7 @@ fn closeBlock(terminated: bool) {
     }
     // the block's symbols are freed with it: the origin list keeps only the handles still in scope
     truncate(originSyms, blocks[last].hmark)
+    truncate(originDead, blocks[last].hmark)
     truncate(blocks, last)
     truncate(ownedLocals, om)
     truncate(narrowStack, nm)
@@ -3181,6 +3186,7 @@ fn originMove(s: ?^Sym, move: bool) {
     let r = s
     if !r.owned || r.isRef || r.storage != "local" { return }
     if move { loopOriginCheck(r) }
+    if !move { originFree(r, "assign over") }
     for i in 0..len(originSyms) {
         let x = originSyms[i]
         if x.hOrigin != nil {
@@ -3195,9 +3201,50 @@ fn loopOriginCheck(s: ^Sym) {
         let x = originSyms[i]
         if x.hOrigin != nil && x.hDepth < len(loops) {
             let o = x.hOrigin
-            if o == s { error("cannot move '" + s.name + "' inside a loop while handle '" + x.name + "' made from it is in scope") }
+            if o == s && x.usedAt > loops[x.hDepth].useFrom {
+                error("cannot move '" + s.name + "' inside a loop while handle '" + x.name + "' made from it is in scope and used in the loop")
+            }
         }
     }
+}
+
+// the object of the owned local r is freed (an assignment over it, what; or a drop): each let handle made
+// from it names a freed object from here on, so a use through it is refused (deadHandleCheck). Inside a
+// loop the handle was declared outside of, a use of it earlier in the loop runs again on the next
+// iteration, so the free itself is refused then. The origins are cleared by originMove
+fn originFree(r: ^Sym, what: string) {
+    for i in 0..len(originSyms) {
+        let x = originSyms[i]
+        if x.hOrigin != nil {
+            let o = x.hOrigin
+            if o == r && x.hDepth < len(loops) && x.usedAt > loops[x.hDepth].useFrom {
+                error("cannot " + what + " '" + r.name + "' inside a loop while handle '" + x.name + "' made from it is in scope and used in the loop")
+            }
+            if o == r { originDead[i] = r }
+        }
+    }
+}
+
+// a use through the let handle s, on a path where an assignment or a drop freed the object it was made from
+fn deadHandleCheck(s: ?^Sym) {
+    for i in 0..len(originSyms) {
+        let o = originDead[i]
+        if o != nil && originSyms[i] == s {
+            error("handle '" + originSyms[i].name + "' may name a freed object: '" + o.name + "' was assigned or dropped after the handle was made from it; make the handle again")
+        }
+    }
+}
+
+// the dead marks (originDead), saved where paths split: an if, a match, a defer body (whose assignments
+// run where its block is left, after the uses that follow it here)
+fn deadSave(): []?^Sym {
+    var d = new []?^Sym(0)
+    for i in 0..len(originDead) { append(d, originDead[i]) }
+    return d
+}
+
+fn deadSet(d: &[]?^Sym) {
+    for i in 0..len(d) { originDead[i] = d[i] }
 }
 
 // a held place from mark on was freed or moved while the expression ran
@@ -3614,6 +3661,7 @@ fn builtin(name: string): Item {
         let dx = newItem("mem", symType(ds))
         dx.base = RBP
         dx.disp = ds.offset
+        originFree(ds, "drop")
         consume(x)
         rtCall1(RT_FREE, dx, tVoid)
         return voidItem()
@@ -3822,6 +3870,10 @@ fn nameItem(s: ^Sym, name: string, target: bool): Item {
         x.sym = s
         x.root = s
         x.hOrigin = s.hOrigin
+        if s.hOrigin != nil {
+            useSeq += 1
+            s.usedAt = useSeq
+        }
         x.readonly = s.kind == "let"
         x.borrowed = s.isRef
         if (s.owned || s.isRefLocal) && s.moved {
@@ -3872,6 +3924,7 @@ fn designatorT(target: bool): Item {
             // check the handle now: the object must still be the one it named
             let hb = baseOf(x.typ)
             if handles == 0 {
+                deadHandleCheck(x.sym)
                 hOrig = x.hOrigin
                 hIdent = x.sym
             } else {
@@ -4514,7 +4567,10 @@ fn varDecl(kind: string, isGlobal: bool) {
             if kind == "let" {
                 s.hOrigin = x.hOrigin
                 s.hDepth = len(loops)
-                if s.hOrigin != nil { append(originSyms, s) }
+                if s.hOrigin != nil {
+                    append(originSyms, s)
+                    append(originDead, nil)
+                }
             }
             dst.base = RBP
             dst.disp = s.offset
@@ -4746,6 +4802,22 @@ fn block(): bool {
     return term
 }
 
+fn ifStat(): bool
+
+// an arm of an if or a match: it starts from the marks before the statement (d0), and the marks after the
+// statement are the union (acc) of the arms that go on. An arm that ends outside a loop ends in a return,
+// and goes nowhere; inside a loop it may be a break or a continue, so its marks are kept
+fn armBlock(d0: &[]?^Sym, mut acc: &[]?^Sym, isIf: bool): bool {
+    deadSet(d0)
+    var term = false
+    if isIf { term = ifStat() } else { term = block() }
+    if term && len(loops) == 0 { return term }
+    for i in 0..len(acc) {
+        if originDead[i] != nil { acc[i] = originDead[i] }
+    }
+    return term
+}
+
 fn ifStat(): bool {
     let iline = tline
     let icol = tcol
@@ -4754,8 +4826,10 @@ fn ifStat(): bool {
     let flinks = falseJump(x)
     let mark = len(narrowStack)
     let s0 = snapshot()
+    let d0 = deadSave()
+    var dacc = deadSave()
     pushNarrowings(x.nt)
-    let t1 = block()
+    let t1 = armBlock(&d0, &dacc, false)
     let s1 = snapshot()
     restore(s0)
     truncate(narrowStack, mark)
@@ -4764,12 +4838,8 @@ fn ifStat(): bool {
         let j = jmp()
         fixHere(flinks)
         pushNarrowings(x.nf)
-        var t2 = false
-        if sym == T_IF {
-            t2 = ifStat()
-        } else {
-            t2 = block()
-        }
+        let t2 = armBlock(&d0, &dacc, sym == T_IF)
+        deadSet(&dacc)
         truncate(narrowStack, mark)
         fixHere1(j)
         let s2 = snapshot()
@@ -4789,6 +4859,7 @@ fn ifStat(): bool {
         return t1 && t2
     }
     fixHere(flinks)
+    deadSet(&dacc)
     if !t1 {
         sameStates(s1, s0, iline, icol)
         joinSuspect(s1)
@@ -4821,7 +4892,7 @@ fn loopBodyV(entry: PState, line: int, col: int, lv: ?^Sym, nOuter: int, selfBef
     clearFresh()
     append(loops, new Loop{brk: 0, cont: 0, blocks: len(blocks), entry: copyState(entry), lv: lv,
                            susp: neutralState(n), back: neutralState(n), exits: new []PState(0), exitAt: new []int(0),
-                           conts: new []PState(0), contAt: new []int(0), logFrom: logFrom})
+                           conts: new []PState(0), contAt: new []int(0), logFrom: logFrom, useFrom: useBefore})
     let term = block()
     // the next iteration starts where the body ends, if it falls through, and at each continue, as the
     // continue is left (applyExit depends on the state the next iteration starts from, so this is repeated
@@ -5031,7 +5102,7 @@ fn forStat() {
     var savedMarks = new []bool(0)
     var loop = new Loop{brk: 0, cont: 0, blocks: 0, entry: emptyState(), susp: emptyState(), back: emptyState(),
                         exits: new []PState(0), exitAt: new []int(0), conts: new []PState(0), contAt: new []int(0),
-                        logFrom: 0}
+                        logFrom: 0, useFrom: 0}
     if sym == T_DOTDOT {
         next()
         if x.typ.kind != "int" { error("range bounds must be ints") }
@@ -5165,6 +5236,8 @@ fn intMatch(x: Item): bool {
     let s0 = snapshot()
     var acc = copyState(s0)
     var have = false
+    let d0 = deadSave()
+    var dacc = deadSave()
     expect(T_LBRACE, "")
     skipSemis()
     let seen = new []int(0)
@@ -5176,7 +5249,7 @@ fn intMatch(x: Item): bool {
             next()
             hasElse = true
             restore(s0)
-            let bt = block()
+            let bt = armBlock(&d0, &dacc, false)
             allTerm = allTerm && bt
             if !bt {
                 let st = snapshot()
@@ -5211,7 +5284,7 @@ fn intMatch(x: Item): bool {
         }
         fixHere(toBody)
         restore(s0)
-        let bt = block()
+        let bt = armBlock(&d0, &dacc, false)
         allTerm = allTerm && bt
         if !bt {
             let st = snapshot()
@@ -5228,6 +5301,7 @@ fn intMatch(x: Item): bool {
         have = true
     }
     if have { restore(acc) } else { restore(s0) }
+    deadSet(&dacc)
     fixHere(ends)
     return allTerm && hasElse
 }
@@ -5255,6 +5329,8 @@ fn matchStat(): bool {
     let s0 = snapshot()
     var acc = copyState(s0)
     var have = false
+    let d0 = deadSave()
+    var dacc = deadSave()
     let r = alloc()
     opMem(0x8B, r, mem(RBP, -1, s.offset, 8), true, false)
     opMem(0x8B, r, mem(r, -1, -16, 8), false, false)          // the tag; the high half is a generation
@@ -5271,7 +5347,7 @@ fn matchStat(): bool {
             next()
             hasElse = true
             restore(s0)
-            let bt = block()
+            let bt = armBlock(&d0, &dacc, false)
             allTerm = allTerm && bt
             if !bt {
                 let st = snapshot()
@@ -5301,7 +5377,7 @@ fn matchStat(): bool {
         let mark = len(narrowStack)
         append(narrowStack, new NEntry{sym: s, typ: v, depth: loopdepth, alive: true})
         restore(s0)
-        let bt = block()
+        let bt = armBlock(&d0, &dacc, false)
         allTerm = allTerm && bt
         if !bt {
             let st = snapshot()
@@ -5328,6 +5404,7 @@ fn matchStat(): bool {
     }
     if len(missing) > 0 && !hasElse { errorAt("match on " + tname(t) + " is missing " + missing, line, col) }
     if have { restore(acc) } else { restore(s0) }
+    deadSet(&dacc)
     fixHere(ends)
     return allTerm
 }
@@ -5373,6 +5450,7 @@ fn deferStat() {
     let over = jmp()
     let entry = pc()
     let before = snapshot()
+    let deadBefore = deadSave()
     let logAt = len(freeLog)
     let savedDepth = depth
     let savedNarrow = replace(narrowStack, new []NEntry(0))   // fresh stacks for the deferred code
@@ -5401,6 +5479,7 @@ fn deferStat() {
     // the body runs where the block is left, not here: what it did to suspicion is taken back (its
     // re-points have not happened yet either), and callDefers applies its recursive calls at each exit
     restoreDeferred(&before)
+    deadSet(&deadBefore)
     // the body's frees happen where its block is left, not here: a reference is not moved by them where the
     // body is declared, and they are kept with the block, to be replayed there (see callDefers)
     let last = len(blocks) - 1

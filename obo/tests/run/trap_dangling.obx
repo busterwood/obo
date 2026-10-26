@@ -1,11 +1,14 @@
 type Box = ref record { v: int }
+type Link = ref record { to: ^Box }
 
+// a let handle whose owner is assigned over is refused at compile time (errors/handle_frees.obx); a
+// handle kept in a record is not tracked, so its use is checked where it runs
 fn main() {
     var b = new Box{v: 1}
-    let h = handle(b)
-    println(h.v)                     // expect: 1
+    let l = new Link{to: handle(b)}
+    println(l.to.v)                  // expect: 1
     b = new Box{v: 2}                // frees the first box, which the new one may reuse
-    println(h.v)
+    println(l.to.v)
 }
 // expect-exit: 7
 // expect-stderr: the object this handle names has been freed

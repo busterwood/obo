@@ -361,6 +361,50 @@ ARG_ORDER_MUTANTS = {
 }
 MUTANTS.update(ARG_ORDER_MUTANTS)
 
+# an assignment over, or a drop of, the owner a let handle was made from frees the handle's object
+# (originFree, deadHandleCheck, the dead marks of armBlock); errors/handle_frees.obx and
+# run/handle_frees.obx show them
+HANDLE_FREE_MUTANTS = {
+    'an assignment frees no handle': ('    if !move { originFree(r, "assign over") }\n', ''),
+    'a drop frees no handle': ('        originFree(ds, "drop")\n', ''),
+    'a free does not mark the handle dead': ('            if o == r { originDead[i] = r }\n', ''),
+    'a free in a loop is not refused': ('            if o == r && x.hDepth < len(loops) && x.usedAt > loops[x.hDepth].useFrom {\n',
+        '            if false {\n'),
+    'a free in a loop is refused without a use there': ('            if o == r && x.hDepth < len(loops) && x.usedAt > loops[x.hDepth].useFrom {\n',
+        '            if o == r && x.hDepth < len(loops) {\n'),
+    'a free in a loop ignores where the handle was declared': ('            if o == r && x.hDepth < len(loops) && x.usedAt > loops[x.hDepth].useFrom {\n',
+        '            if o == r && x.hDepth <= len(loops) && x.usedAt > 0 {\n'),
+    'a use through a dead handle is not refused': ('                deadHandleCheck(x.sym)\n', ''),
+    'a dead mark refuses every handle': ('        if o != nil && originSyms[i] == s {\n', '        if o != nil {\n'),
+    "a handle's naming is not recorded": ('        if s.hOrigin != nil {\n            useSeq += 1\n            s.usedAt = useSeq\n        }\n', ''),
+    'a loop does not record where its reads begin': ('logFrom: logFrom, useFrom: useBefore})', 'logFrom: logFrom, useFrom: 0})'),
+    'a move in a loop is refused without a use there': ('            if o == s && x.usedAt > loops[x.hDepth].useFrom {\n',
+        '            if o == s {\n'),
+    'a let handle gets no dead mark': ('                    append(originDead, nil)\n', ''),
+    "a closed block's dead marks stay": ('    truncate(originDead, blocks[last].hmark)\n', ''),
+    'an arm starts from the marks of the arm before': ('    deadSet(d0)\n    var term = false\n', '    var term = false\n'),
+    "an arm's marks are not joined": ('    for i in 0..len(acc) {\n        if originDead[i] != nil { acc[i] = originDead[i] }\n    }\n', ''),
+    'a returning arm keeps its marks': ('    if term && len(loops) == 0 { return term }\n', ''),
+    'an arm left by a break drops its marks': ('    if term && len(loops) == 0 { return term }\n', '    if term { return term }\n'),
+    'the then branch is not an arm': ('    let t1 = armBlock(&d0, &dacc, false)\n', '    let t1 = block()\n'),
+    'the else branch is not an arm': ('        let t2 = armBlock(&d0, &dacc, sym == T_IF)\n',
+        '        var t2 = false\n        if sym == T_IF { t2 = ifStat() } else { t2 = block() }\n'),
+    'an if with an else does not take the join': ('        deadSet(&dacc)\n        truncate(narrowStack, mark)\n', '        truncate(narrowStack, mark)\n'),
+    'an if without an else does not take the join': ('    fixHere(flinks)\n    deadSet(&dacc)\n', '    fixHere(flinks)\n'),
+    'an int match arm is not an arm': ('        fixHere(toBody)\n        restore(s0)\n        let bt = armBlock(&d0, &dacc, false)\n',
+        '        fixHere(toBody)\n        restore(s0)\n        let bt = block()\n'),
+    "an int match's else is not an arm": ('    let seen = new []int(0)\n    var ends = 0\n    var allTerm = true\n    var hasElse = false\n    while sym != T_RBRACE {\n        if sym == T_ELSE {\n            next()\n            hasElse = true\n            restore(s0)\n            let bt = armBlock(&d0, &dacc, false)\n',
+        '    let seen = new []int(0)\n    var ends = 0\n    var allTerm = true\n    var hasElse = false\n    while sym != T_RBRACE {\n        if sym == T_ELSE {\n            next()\n            hasElse = true\n            restore(s0)\n            let bt = block()\n'),
+    'an int match does not take the join': ('    deadSet(&dacc)\n    fixHere(ends)\n    return allTerm && hasElse\n', '    fixHere(ends)\n    return allTerm && hasElse\n'),
+    'a match arm is not an arm': ('        restore(s0)\n        let bt = armBlock(&d0, &dacc, false)\n        allTerm = allTerm && bt\n        if !bt {\n            let st = snapshot()\n            if have { sameStates(acc, st, line0(), 0); acc = joinStates(acc, st) } else { acc = copyState(st) }\n            have = true\n        }\n        truncate(narrowStack, mark)\n',
+        '        restore(s0)\n        let bt = block()\n        allTerm = allTerm && bt\n        if !bt {\n            let st = snapshot()\n            if have { sameStates(acc, st, line0(), 0); acc = joinStates(acc, st) } else { acc = copyState(st) }\n            have = true\n        }\n        truncate(narrowStack, mark)\n'),
+    "a match's else is not an arm": ('    let seen = new []^Type(0)\n    var ends = 0\n    var allTerm = true\n    var hasElse = false\n    while sym != T_RBRACE {\n        if sym == T_ELSE {\n            next()\n            hasElse = true\n            restore(s0)\n            let bt = armBlock(&d0, &dacc, false)\n',
+        '    let seen = new []^Type(0)\n    var ends = 0\n    var allTerm = true\n    var hasElse = false\n    while sym != T_RBRACE {\n        if sym == T_ELSE {\n            next()\n            hasElse = true\n            restore(s0)\n            let bt = block()\n'),
+    'a match does not take the join': ('    deadSet(&dacc)\n    fixHere(ends)\n    return allTerm\n}', '    fixHere(ends)\n    return allTerm\n}'),
+    "a defer body's frees mark handles where it is declared": ('    deadSet(&deadBefore)\n', ''),
+}
+MUTANTS.update(HANDLE_FREE_MUTANTS)
+
 
 # the second review's gaps: origins, the joins over several roots, the chained handles, and the
 # callee-local rule. An entry marked equivalent in FORK.md is expected to survive: the guard it removes

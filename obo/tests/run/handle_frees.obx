@@ -1,0 +1,204 @@
+// An assignment over, or a drop of, the owner a let handle was made from frees the handle's object: a
+// use through the handle after it is refused (errors/handle_frees.obx). These are the shapes that stay
+// accepted.
+type Node = ref record { v: int; kids: []Node }
+type Bag = ref record { items: []Node; opt: ?Node; n: int }
+type S = closed {
+    A { v: int }
+    B { w: int }
+}
+fn mk(v: int): Node { return new Node{v: v, kids: new []Node(0)} }
+fn nb(): Bag {
+    var b = new Bag{items: new []Node(0), opt: nil, n: 0}
+    append(b.items, mk(9))
+    return b
+}
+fn flag(): bool { return true }
+fn noflag(): bool { return false }
+
+// no handle from the owner
+fn noHandle() {
+    var a = nb()
+    a = nb()
+    println(a.items[0].v)             // expect: 9
+}
+
+// a handle made after the assignment
+fn after() {
+    var a = nb()
+    a = nb()
+    a.n = 4
+    let h = handle(a)
+    println(h.n)                      // expect: 4
+}
+
+// a temporary handle: it is gone before the assignment
+fn temp() {
+    var a = nb()
+    println(handle(a).items[0].v)     // expect: 9
+    a = nb()
+    println(len(a.items))             // expect: 1
+}
+
+// writes through the handle and to a scalar field of the owner free nothing the handle names
+fn writes() {
+    var a = nb()
+    let h = handle(a)
+    h.n = 1
+    h.opt = mk(3)
+    h.items = new []Node(0)
+    a.n = 3
+    println(h.n)                      // expect: 3
+}
+
+// the handle is not used after the assignment
+fn unusedAfter() {
+    var a = nb()
+    let h = handle(a)
+    println(h.items[0].v)             // expect: 9
+    a = nb()
+    println(a.n)                      // expect: 0
+}
+
+// the handle's block is closed before the assignment
+fn innerBlock() {
+    var a = nb()
+    if flag() {
+        let h = handle(a)
+        println(h.n)                  // expect: 0
+    }
+    a = nb()
+    println(len(a.items))             // expect: 1
+}
+
+// alive asks without using the object
+fn aliveAfter() {
+    var a = nb()
+    let h = handle(a)
+    a = nb()
+    println(alive(h))                 // expect: false
+}
+
+// the owner's object was moved away first: the assignment frees nothing the handle names
+fn movedFirst() {
+    var a = nb()
+    let h = handle(a)
+    var c = a
+    c.n = 6
+    a = nb()
+    println(h.n)                      // expect: 6
+}
+
+// a handle made from another owner is not freed by the assignment
+fn otherOwner() {
+    var a = nb()
+    var b = nb()
+    b.n = 2
+    let ha = handle(a)
+    let hb = handle(b)
+    a = nb()
+    println(hb.n)                     // expect: 2
+    println(alive(ha))                // expect: false
+}
+
+// the then branch frees, the else branch uses the handle
+fn elseUses() {
+    var a = nb()
+    let h = handle(a)
+    if noflag() {
+        a = nb()
+    } else {
+        println(h.items[0].v)         // expect: 9
+    }
+}
+
+// the branch that frees returns: after the if the handle names a live object
+fn returns(b: bool): int {
+    var a = nb()
+    a.n = 5
+    let h = handle(a)
+    if b {
+        a = nb()
+        return 0
+    }
+    return h.n
+}
+fn returnsPath() {
+    println(returns(false))           // expect: 5
+}
+
+// one match arm frees, another uses the handle
+fn armUses() {
+    var a = nb()
+    let h = handle(a)
+    var s: S = new B{w: 2}
+    match s {
+        A { a = nb() }
+        B { println(h.n + s.w) }      // expect: 2
+    }
+}
+
+// a defer that assigns runs where the block is left, after the uses
+fn deferred() {
+    var a = nb()
+    let h = handle(a)
+    defer { a = nb() }
+    println(h.items[0].v)             // expect: 9
+}
+
+// a handle freed in a closed block, and a new one made after it
+fn freshAfterBlock() {
+    var a = nb()
+    if flag() {
+        let g = handle(a)
+        a = nb()
+        println(alive(g))             // expect: false
+    }
+    a.n = 7
+    let h = handle(a)
+    println(h.n)                      // expect: 7
+}
+
+// an assignment in a loop, with the handle used only before the loop
+fn usedBeforeLoop() {
+    var a = nb()
+    let h = handle(a)
+    println(h.n)                      // expect: 0
+    for i in 0..2 {
+        a = nb()
+    }
+    println(len(a.items))             // expect: 1
+}
+
+// a move of the owner in a loop, with the handle used only before the loop (probe f2): the handle
+// names the same object afterwards
+fn f2MoveInLoop() {
+    var a = nb()
+    a.n = 8
+    let h = handle(a)
+    println(h.n)                      // expect: 8
+    for i in 0..2 {
+        var c = a
+        a = c
+    }
+    println(h.n)                      // expect: 8
+}
+
+fn main() {
+    noHandle()
+    after()
+    temp()
+    writes()
+    unusedAfter()
+    innerBlock()
+    aliveAfter()
+    movedFirst()
+    otherOwner()
+    elseUses()
+    returnsPath()
+    armUses()
+    deferred()
+    freshAfterBlock()
+    usedBeforeLoop()
+    f2MoveInLoop()
+}
