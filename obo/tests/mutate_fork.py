@@ -319,10 +319,10 @@ ORIGIN_MUTANTS = {
         '            if false {\n                x.hOrigin = nil\n'),
     "a closed block's handles stay in the origin list": ('    truncate(originSyms, blocks[last].hmark)\n',
         ''),
-    'a handle declared in the loop it is moved in is refused': ('        if x.hOrigin != nil && x.hDepth <= len(loops) && originDead[i] == nil {\n',
-        '        if x.hOrigin != nil && x.hDepth <= len(loops) + 1 {\n'),
-    'the loop check ignores where a handle was declared': ('        if x.hOrigin != nil && x.hDepth <= len(loops) && originDead[i] == nil {\n',
-        '        if x.hOrigin != nil {\n'),
+    'a handle declared in the loop it is moved in is refused': ('        if originLive[i] == s && x.hDepth <= len(loops) && originDead[i] == nil {\n',
+        '        if originLive[i] == s && x.hDepth <= len(loops) + 1 {\n'),
+    'the loop check ignores where a handle was declared': ('        if originLive[i] == s && x.hDepth <= len(loops) && originDead[i] == nil {\n',
+        '        if originLive[i] == s {\n'),
     "a let handle's loop depth is not recorded": ('                    s.hDepth = len(loops) + 1\n',
         ''),
     'moves do not check the loop': ('    if move { loopOriginPend(r) }\n',
@@ -373,7 +373,7 @@ MUTANTS.update(ARG_ORDER_MUTANTS)
 HANDLE_FREE_MUTANTS = {
     'an assignment frees no handle': ('        originFree(r, "assign over")\n        return\n', '        return\n'),
     'a drop frees no handle': ('        originFree(ds, "drop")\n', ''),
-    'a free does not mark the handle dead': ('            if o == r { originDead[i] = r }\n', ''),
+    'a free does not mark the handle dead': ('            if x.hDepth <= len(loops) { pendPush(x, r, what) }\n            originDead[i] = r\n', '            if x.hDepth <= len(loops) { pendPush(x, r, what) }\n'),
     'an assignment clears the origins of the handles': ('        originFree(r, "assign over")\n        return\n', '        originFree(r, "assign over")\n'),
     'the loop move rule refuses a dead handle': ('x.hDepth <= len(loops) && originDead[i] == nil {\n', 'x.hDepth <= len(loops) {\n'),
     "a defer's frees are not replayed where its block is left": ('            if dfBlock[j] == bi && dfIndex[j] == i { originFree(dfOwner[j], "assign over") }\n', ''),
@@ -381,7 +381,7 @@ HANDLE_FREE_MUTANTS = {
     "a defer's frees are not recorded": ('    if inDefer { append(deferFrees, r) }\n', ''),
     "a closed block's defer frees stay": ('    while len(dfBlock) > 0 && dfBlock[len(dfBlock) - 1] >= last {\n', '    while false {\n'),
     'a let copy of a dead handle is alive': ('                    append(originDead, dead)\n', '                    append(originDead, nil)\n'),
-    'a free in a loop is not reported': ('            if o == r && x.hDepth <= len(loops) { pendPush(x, r, what) }\n', ''),
+    'a free in a loop is not reported': ('            if x.hDepth <= len(loops) { pendPush(x, r, what) }\n            originDead[i] = r\n', '            originDead[i] = r\n'),
     'a free in a loop is refused without a use there': ('            if x.usedAt > loops[li].useFrom {\n', '            if true {\n'),
     'a free is checked at the end of the innermost loop': ('        if pendDepth[k] == li {\n', '        if pendDepth[k] <= li {\n'),
     'a use through a dead handle is not refused': ('                deadHandleCheck(x.sym)\n', ''),
@@ -392,15 +392,15 @@ HANDLE_FREE_MUTANTS = {
     'a let handle gets no dead mark': ('                    append(originDead, dead)\n', ''),
     "a closed block's dead marks stay": ('    truncate(originDead, blocks[last].hmark)\n', ''),
     'an arm starts from the marks of the arm before': ('    deadSet(d0)\n    var term = false\n', '    var term = false\n'),
-    "an arm's marks are not joined": ('    for i in 0..len(acc) {\n        if originDead[i] != nil { acc[i] = originDead[i] }\n    }\n', ''),
-    'an arm that ends keeps its marks for what follows': ('        return term\n    }\n    for i in 0..len(acc) {', '    }\n    for i in 0..len(acc) {'),
+    "an arm's marks are not joined": ('        if originDead[i] != nil { acc[i] = originDead[i] }\n', ''),
+    'an arm that ends keeps its marks for what follows': ('        return term\n    }\n    let m = len(acc) / 2', '    }\n    let m = len(acc) / 2'),
     "a break arm's marks are not kept for after the loop": ('        if len(loops) > 0 && jumpsHere() != js {\n', '        if false {\n'),
     "a returning arm's marks are kept for after the loop": ('        if len(loops) > 0 && jumpsHere() != js {\n', '        if len(loops) > 0 {\n'),
     'a break is not counted': ('            if len(loops) > 0 { addJump() }\n', ''),
     "a loop's exit marks are not applied after it": ('        if i < len(originDead) && loops[li].exitDead[i] != nil { originDead[i] = loops[li].exitDead[i] }\n', ''),
     "a defer's handles are not recorded": ('        if originSyms[i].usedAt > useAt {\n', '        if false {\n'),
     'a defer records every handle': ('        if originSyms[i].usedAt > useAt {\n', '        if true {\n'),
-    "a free is refused by a defer using another owner's handle": ('            if o == r {\n                error("cannot " + what + " \'" + r.name + "\' while a defer', '            if true {\n                error("cannot " + what + " \'" + r.name + "\' while a defer'),
+    "a free is refused by a defer using another owner's handle": ('        if live {\n            error("cannot " + what + " \'" + r.name + "\' while a defer', '        if true {\n            error("cannot " + what + " \'" + r.name + "\' while a defer'),
     "a closed block's defer handles stay": ('    while len(deferAt) > 0 && deferAt[len(deferAt) - 1] >= last {\n', '    while false {\n'),
     'the then branch is not an arm': ('    let t1 = armBlock(&d0, &dacc, false)\n', '    let t1 = block()\n'),
     'the else branch is not an arm': ('        let t2 = armBlock(&e0, &dacc, sym == T_IF)\n',
@@ -472,7 +472,7 @@ FP_MUTANTS = {
     'a free before a break is never dropped': ('            if brkSeq != bs && pendDepth[k] == len(loops) - 1 { drop = true }\n', ''),
     'a free before a return is never dropped': ('            if brkSeq == bs { drop = true }\n', ''),
     # a move of the owner in a loop that does not name the handle (loopOriginPend, pendingFreeCheck, movedLoop)
-    'a move in a loop is not reported': ('            if o == s { pendPush(x, s, "move") }\n', ''),
+    'a move in a loop is not reported': ('            pendPush(x, s, "move")\n', ''),
     'a moved owner leaves its handle free to be named': ('            if pendWhat[k] == "move" { x.movedLoop = true }\n', ''),
     'naming a handle after a loop moved its owner is allowed': ('            if s.movedLoop && !inAlive {\n', '            if false {\n'),
     'naming a moved handle in alive is refused': ('            if s.movedLoop && !inAlive {\n', '            if s.movedLoop {\n'),
@@ -567,6 +567,8 @@ MUTANTS.update(MOVE_MUTANTS)
 # mutants that survive by design: each removes a test that is redundant, so the behaviour is unchanged
 EQUIVALENT = {
     "a retried callee forgets its free bits": "equivalent: the second pass compiles the same body again and records every free it makes again (recordFree), so clearing the bits between the passes loses nothing; the bits are kept (ORed into) only so that the summary never depends on which pass recorded it. A reset after the second pass would be caught (errors/move_bits.obx, errors/mut_retry.obx), but there is no place for it",
+    "a closed block's defer handles stay": "equivalent since origins per path: originFree finds the handles of a defer through originSyms, which a closed block drops, and a handle compares by generation, so a stale deferH entry never equals a later entry",
+    "a loop does not restore the live marks from before it": "equivalent since loopOriginPend tests the live mark: a move of the owner in a loop, with the handle declared outside it and live at the move, is refused if the loop names the handle and otherwise sets movedLoop, which refuses naming it after the loop (errors/origin_paths.obx, the zero-trip loop after a moving return arm, is refused that way); a handle declared inside is gone at the loop's end; so the live mark after the loop is never read",
     "a defer body is checked against a binding that is not the same place": "equivalent: a reference that a defer body uses may not be pointed elsewhere while the defer is declared (deferUses), so the binding at the block's end is the one the defer was declared with, and the two are covered either way",
     "a store to a place anywhere is exempt from a free of it (identity)": "no unsafe program found: with the exemption, r[0] = replace(r[0], ..) with r not pointed afresh in a loop is accepted, which is right (same designator, run/fp-style); a free of another place needs a call in the value, which heldLost or the call rule refuses first. Tried: r1.kids = f(replace(r2[0], ..)) with both joined or not fresh",
     "a store to a place anywhere is exempt from a free of it (owned)": "equivalent for the same reason",
@@ -589,9 +591,9 @@ ALIVE_MUTANTS = {
     'the else arm of !alive(h) is not narrowed': ('    if gi >= 0 && neg { narrowMark(&e0, gi) }\n', ''),
     'the else arm of alive(h) is narrowed': ('    if gi >= 0 && neg { narrowMark(&e0, gi) }\n', '    if gi >= 0 { narrowMark(&e0, gi) }\n'),
     'the then arm of !alive(h) is narrowed': ('    if gi >= 0 && !neg { narrowMark(&d0, gi) }\n', '    if gi >= 0 { narrowMark(&d0, gi) }\n'),
-    'an early exit does not narrow the code after it': ('    if gi >= 0 && neg && t1 { narrowMark(&dacc, gi) }\n    deadSet(&dacc)', '    deadSet(&dacc)'),
+    'an early exit does not narrow the code after it': ('    if gi >= 0 && neg && t1 { narrowMark(&dacc, gi) }\n    liveJoin(&d0, &dacc)\n    deadSet(&dacc)', '    liveJoin(&d0, &dacc)\n    deadSet(&dacc)'),
     'an early exit with an else does not narrow': ('        if gi >= 0 && neg && t1 { narrowMark(&dacc, gi) }\n', ''),
-    'a negated guard whose block goes on narrows after it': ('    if gi >= 0 && neg && t1 { narrowMark(&dacc, gi) }\n    deadSet(&dacc)', '    if gi >= 0 && neg { narrowMark(&dacc, gi) }\n    deadSet(&dacc)'),
+    'a negated guard whose block goes on narrows after it': ('    if gi >= 0 && neg && t1 { narrowMark(&dacc, gi) }\n    liveJoin(&d0, &dacc)\n    deadSet(&dacc)', '    if gi >= 0 && neg { narrowMark(&dacc, gi) }\n    liveJoin(&d0, &dacc)\n    deadSet(&dacc)'),
     'a negated guard with an else narrows after a block that goes on': ('        if gi >= 0 && neg && t1 { narrowMark(&dacc, gi) }\n', '        if gi >= 0 && neg { narrowMark(&dacc, gi) }\n'),
     'an or in the condition keeps the narrowing': ('        if !neg && orSeq == orBefore && (', '        if !neg && ('),
     'any token after alive(h) narrows': ('(guardFollow == T_LBRACE || guardFollow == T_ANDAND) {', 'true {'),
@@ -601,13 +603,34 @@ ALIVE_MUTANTS = {
     'the mark is not restored after a conjunction': ('        if guardFree == freeSeq { originDead[guardIdx] = guardMark }\n', ''),
     'a nested conjunction reopens the guard': ('guardSym != nil && !guardNeg && !guardOpen && guardFollow', 'guardSym != nil && !guardNeg && guardFollow'),
     'a negated guard opens the conjunction': ('guardSym != nil && !guardNeg && !guardOpen', 'guardSym != nil && !guardOpen'),
-    'a loop does not take the marks from before it': ('    for i in 0..len(dEntry) {\n        if dEntry[i] != nil { originDead[i] = dEntry[i] }\n    }\n', ''),
+    'a loop does not take the marks from before it': ('    for i in 0..em {\n        if dEntry[i] != nil { originDead[i] = dEntry[i] }\n', '    for i in 0..em {\n'),
     'a move of the owner keeps a narrowed handle usable': ('                if originNar[i] { originDead[i] = r }\n', ''),
     'narrowing is not remembered': ('    if d[i] != nil { originNar[i] = true }\n', ''),
     'narrowing is always remembered': ('    if d[i] != nil { originNar[i] = true }\n', '    originNar[i] = true\n'),
     'a guard in the right operand of or is open': ('        orSeq += 1\n', ''),
 }
 MUTANTS.update(ALIVE_MUTANTS)
+
+
+# origins per path (originLive, liveClear, liveJoin, deadSave/deadSet, originMove, originFree)
+PATH_MUTANTS = {
+    'a move of the owner keeps the live mark': ('        if originLive[i] == r { originLive[i] = nil }\n', ''),
+    'a free uses the flow-insensitive origin': ('        if originLive[i] == r {\n            if x.hDepth <= len(loops)', '        if originLive[i] == r && x.hOrigin != nil {\n            if x.hDepth <= len(loops)'),
+    'an if with an else starts its live union from the marks before': ('    var dacc = deadSave()\n    liveClear(&dacc)\n    // the arm where h', '    var dacc = deadSave()\n    // the arm where h'),
+    'an if without an else drops the path that runs no arm': ('    liveJoin(&d0, &dacc)\n    deadSet(&dacc)\n    if !t1 {', '    deadSet(&dacc)\n    if !t1 {'),
+    'a match starts its live union from the marks before': ('    var dacc = deadSave()\n    liveClear(&dacc)\n    expect(T_LBRACE', '    var dacc = deadSave()\n    expect(T_LBRACE'),
+    'a match without an else drops the path that matches no arm': ('        have = true\n        liveJoin(&d0, &dacc)\n', '        have = true\n'),
+    'a match on a type starts its live union from the marks before': ('    var dacc = deadSave()\n    liveClear(&dacc)\n    let r = alloc()', '    var dacc = deadSave()\n    let r = alloc()'),
+    'an arm that goes on does not add its live marks': ('        if originLive[i] != nil { acc[m + i] = originLive[i] }\n', ''),
+    'the live marks are not restored with the dead ones': ('    for i in 0..m { originLive[i] = d[m + i] }\n', ''),
+    'a copy of a handle has no live mark': ('append(originLive, live)', 'append(originLive, nil)'),
+    'the defer guard uses the flow-insensitive origin': ('originSyms[i] == x && originLive[i] == r { live = true }', 'originSyms[i] == x && originLive[i] == r && x.hOrigin != nil { live = true }'),
+    'the live marks are not dropped with the block': ('    truncate(originLive, blocks[last].hmark)\n', ''),
+    'the loop move rule uses the flow-insensitive origin': ('        if originLive[i] == s && x.hDepth <= len(loops)', '        if originLive[i] == s && x.hOrigin != nil && x.hDepth <= len(loops)'),
+    'a copy of a handle with no origin is not tracked': ('                if live != nil {\n                    s.hDepth', '                if live != nil && s.hOrigin != nil {\n                    s.hDepth'),
+    'a loop does not restore the live marks from before it': ('        originLive[i] = dEntry[em + i]\n', ''),
+}
+MUTANTS.update(PATH_MUTANTS)
 
 
 def build_and_run(src):

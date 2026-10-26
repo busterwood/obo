@@ -1353,6 +1353,7 @@ var dfBlock = new []int(0)       // the same for the defers in scope: the owners
 var dfIndex = new []int(0)       // of the defer in it, for callDefers to replay where the block is left
 var dfOwner = new []^Sym(0)
 var replayFree = false           // originFree is replaying a defer's free: the defers it runs before were checked at its declaration
+var originLive = new []?^Sym(0)  // per entry of originSyms: the owner, while some path to here has not moved it (a may-flag like originDead, nil after a move on every path); an assignment over the owner frees the handle's object only while this is set
 var originDead = new []?^Sym(0)  // per entry of originSyms: the local whose assignment or drop freed its object, or nil
 var loopdepth = 0
 var curFn: ?^Sym = nil
@@ -3164,6 +3165,7 @@ fn closeBlock(terminated: bool) {
     truncate(originSyms, blocks[last].hmark)
     truncate(originDead, blocks[last].hmark)
     truncate(originNar, blocks[last].hmark)
+    truncate(originLive, blocks[last].hmark)
     while len(dfBlock) > 0 && dfBlock[len(dfBlock) - 1] >= last {
         truncate(dfBlock, len(dfBlock) - 1)
         truncate(dfIndex, len(dfIndex) - 1)
@@ -3622,6 +3624,8 @@ fn originMove(s: ?^Sym, move: bool) {
     }
     for i in 0..len(originSyms) {
         let x = originSyms[i]
+        // on this path the owner is moved: its object is no longer the one an assignment frees (see originLive)
+        if originLive[i] == r { originLive[i] = nil }
         if x.hOrigin != nil {
             let o = x.hOrigin
             if o == r {
@@ -3655,9 +3659,9 @@ fn unname(x: ?^Sym) {
 fn loopOriginPend(s: ^Sym) {
     for i in 0..len(originSyms) {
         let x = originSyms[i]
-        if x.hOrigin != nil && x.hDepth <= len(loops) && originDead[i] == nil {
-            let o = x.hOrigin
-            if o == s { pendPush(x, s, "move") }
+        // the live mark, not hOrigin: an earlier move on a path that ended has cleared hOrigin for good
+        if originLive[i] == s && x.hDepth <= len(loops) && originDead[i] == nil {
+            pendPush(x, s, "move")
         }
     }
 }
@@ -3683,20 +3687,20 @@ fn originFree(r: ^Sym, what: string) {
     if inDefer { append(deferFrees, r) }
     for i in 0..len(originSyms) {
         let x = originSyms[i]
-        if x.hOrigin != nil {
-            let o = x.hOrigin
-            if o == r && x.hDepth <= len(loops) { pendPush(x, r, what) }
-            if o == r { originDead[i] = r }
+        if originLive[i] == r {
+            if x.hDepth <= len(loops) { pendPush(x, r, what) }
+            originDead[i] = r
         }
     }
     for j in 0..len(deferH) {
         if replayFree { break }
         let x = deferH[j]
-        if x.hOrigin != nil {
-            let o = x.hOrigin
-            if o == r {
-                error("cannot " + what + " '" + r.name + "' while a defer declared earlier uses handle '" + x.name + "' made from it: the defer runs after this")
-            }
+        var live = false
+        for i in 0..len(originSyms) {
+            if originSyms[i] == x && originLive[i] == r { live = true }
+        }
+        if live {
+            error("cannot " + what + " '" + r.name + "' while a defer declared earlier uses handle '" + x.name + "' made from it: the defer runs after this")
         }
     }
 }
@@ -3780,14 +3784,34 @@ fn deadHandleCheck(s: ?^Sym) {
 
 // the dead marks (originDead), saved where paths split: an if, a match, a defer body (whose assignments
 // run where its block is left, after the uses that follow it here)
+// (and the live marks, originLive: the second half of the array, so that the two are saved, merged and
+// restored together)
 fn deadSave(): []?^Sym {
     var d = new []?^Sym(0)
     for i in 0..len(originDead) { append(d, originDead[i]) }
+    for i in 0..len(originLive) { append(d, originLive[i]) }
     return d
 }
 
 fn deadSet(d: &[]?^Sym) {
-    for i in 0..len(d) { originDead[i] = d[i] }
+    let m = len(d) / 2
+    for i in 0..m { originDead[i] = d[i] }
+    for i in 0..m { originLive[i] = d[m + i] }
+}
+
+// the live half of the marks d is emptied: the union of the arms that go on starts with none (the dead half
+// starts with the marks before the statement, which only grow), and a path without an arm adds the marks before
+fn liveClear(mut d: &[]?^Sym) {
+    let m = len(d) / 2
+    for i in 0..m { d[m + i] = nil }
+}
+
+// the live half of the marks before a statement (d0) joins the union acc: the statement has a path that runs no arm
+fn liveJoin(d0: &[]?^Sym, mut acc: &[]?^Sym) {
+    let m = len(acc) / 2
+    for i in 0..m {
+        if d0[m + i] != nil { acc[m + i] = d0[m + i] }
+    }
 }
 
 // a held place from mark on was freed or moved while the expression ran
@@ -5191,18 +5215,25 @@ fn varDecl(kind: string, isGlobal: bool) {
             dst = localItem(s, tt)
             if kind == "let" {
                 s.hOrigin = x.hOrigin
-                if s.hOrigin != nil {
-                    s.hDepth = len(loops) + 1
-                    // a copy of a dead handle is dead too
-                    var dead: ?^Sym = nil
-                    for i in 0..len(originSyms) {
-                        if originSyms[i] == x.sym { dead = originDead[i] }
+                // a copy takes the live mark of the handle it copies, so a copy of a handle whose origin an earlier
+                // move on a path that ended has cleared is still tracked (with no origin, which is an identity)
+                var live = x.hOrigin
+                var dead: ?^Sym = nil
+                for i in 0..len(originSyms) {
+                    if originSyms[i] == x.sym {
+                        live = originLive[i]
+                        // a copy of a dead handle is dead too
+                        dead = originDead[i]
                     }
+                }
+                if live != nil {
+                    s.hDepth = len(loops) + 1
                     // naming a handle that is dead here, to copy it, is no use of its object: the copy is dead too, and
                     // every use of it is refused. (A copy of a handle not known to be dead counts as a naming.)
                     if dead != nil { unname(x.sym) }
                     append(originSyms, s)
                     append(originDead, dead)
+                    append(originLive, live)
                     append(originNar, false)
                 }
             }
@@ -5485,8 +5516,10 @@ fn armBlock(d0: &[]?^Sym, mut acc: &[]?^Sym, isIf: bool): bool {
         }
         return term
     }
-    for i in 0..len(acc) {
+    let m = len(acc) / 2
+    for i in 0..m {
         if originDead[i] != nil { acc[i] = originDead[i] }
+        if originLive[i] != nil { acc[m + i] = originLive[i] }
     }
     return term
 }
@@ -5525,6 +5558,7 @@ fn ifStat(): bool {
     let s0 = snapshot()
     var d0 = deadSave()
     var dacc = deadSave()
+    liveClear(&dacc)
     // the arm where h is known alive starts without its dead mark
     if gi >= 0 && !neg { narrowMark(&d0, gi) }
     var e0 = deadSave()
@@ -5562,6 +5596,7 @@ fn ifStat(): bool {
     }
     fixHere(flinks)
     if gi >= 0 && neg && t1 { narrowMark(&dacc, gi) }
+    liveJoin(&d0, &dacc)
     deadSet(&dacc)
     if !t1 {
         sameStates(s1, s0, iline, icol)
@@ -5673,8 +5708,12 @@ fn loopBodyV(entry: PState, line: int, col: int, lv: ?^Sym, nOuter: int, selfBef
     for i in 0..len(loops[li].exitDead) {
         if i < len(originDead) && loops[li].exitDead[i] != nil { originDead[i] = loops[li].exitDead[i] }
     }
-    for i in 0..len(dEntry) {
+    // a mark only grows along a path, so the marks of the loop's entry are those of the path that runs it no
+    // time, which is one of the paths out: after the loop the owner is moved only if it was moved before it
+    let em = len(dEntry) / 2
+    for i in 0..em {
         if dEntry[i] != nil { originDead[i] = dEntry[i] }
+        originLive[i] = dEntry[em + i]
     }
     truncate(loops, li)
     if lv != nil { lv.moved = false }
@@ -6013,6 +6052,7 @@ fn intMatch(x: Item): bool {
     var have = false
     let d0 = deadSave()
     var dacc = deadSave()
+    liveClear(&dacc)
     expect(T_LBRACE, "")
     skipSemis()
     let seen = new []int(0)
@@ -6074,6 +6114,7 @@ fn intMatch(x: Item): bool {
     if !hasElse {
         if have { sameStates(acc, s0, mline, mcol); acc = joinStates(acc, s0) } else { acc = copyState(s0) }
         have = true
+        liveJoin(&d0, &dacc)
     }
     if have { restore(acc) } else { restore(s0) }
     deadSet(&dacc)
@@ -6106,6 +6147,7 @@ fn matchStat(): bool {
     var have = false
     let d0 = deadSave()
     var dacc = deadSave()
+    liveClear(&dacc)
     let r = alloc()
     opMem(0x8B, r, mem(RBP, -1, s.offset, 8), true, false)
     opMem(0x8B, r, mem(r, -1, -16, 8), false, false)          // the tag; the high half is a generation
