@@ -188,6 +188,39 @@ fn main() {
     var q = new Pair2{xs: new []Node(0), ys: new []Node(0)}
     println(refFree(q))
 }
+// === a reference through a handle: a replace of what it points into frees the array a local indexes, whatever names it
+fn main() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(1))
+    let h = handle(b)
+    var r = &h.items[0]
+    println(b.items[sinkI(replace(r.kids, new []Node(0)))].v)  // error: cannot index 'b' with an index that replaces or moves what it holds
+}
+// === the same: it frees what another handle without an origin may name
+type Pair3 = ref record { first: Bag; n: int }
+fn main() {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(1))
+    var pr = new Pair3{first: new Bag{items: new []Node(0), opt: nil}, n: 0}
+    append(pr.first.items, mk(2))
+    let h = handle(b)
+    let h2 = handle(pr.first)
+    var r = &h.items[0]
+    println(h2.items[sinkI(replace(r.kids, new []Node(0)))].v)  // error: cannot index through a handle with an index that moves or frees something
+}
+// === the same, with a reference to an element of a reference parameter's field
+type Pair2b = ref record { xs: []Node; ys: []Node }
+fn refFree(mut p: &Pair2b): int {
+    var b = new Bag{items: new []Node(0), opt: nil}
+    append(b.items, mk(1))
+    var r = &p.ys[0]
+    return b.items[sinkI(replace(r.kids, new []Node(0)))].v  // error: cannot index 'b' with an index that replaces or moves what it holds
+}
+fn main() {
+    var q = new Pair2b{xs: new []Node(0), ys: new []Node(0)}
+    append(q.ys, mk(1))
+    println(refFree(q))
+}
 // === a reference's array indexed by a move of a by-value parameter: the parameter's object is a caller's, which the reference may name
 fn sinkBag(b: Bag): int { return 0 }
 fn idxParam(p: &Bag, q: Bag): int {

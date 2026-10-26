@@ -199,6 +199,23 @@ fn returnWithInnerLoop(c: bool) {
     println(h.n)  // expect: 8
 }
 
+// a handle that is already dead is not held up by a move of its owner: every use of it is refused anyway
+fn deadThenMove() {
+    var a = nb()
+    let h = handle(a)
+    a = nb()
+    var seen = 0
+    var i = 0
+    while i < 2 {
+        seen += count(a)
+        a = nb()
+        i += 1
+    }
+    let g = h
+    println(alive(g))  // expect: false
+    println(seen)  // expect: 0
+}
+
 fn main() {
     freeBreak()
     freeReturn()
@@ -212,4 +229,5 @@ fn main() {
     moveNotNamedNested()
     returnWithInnerLoop(true)
     returnWithInnerLoop(false)
+    deadThenMove()
 }
