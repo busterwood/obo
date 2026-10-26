@@ -295,6 +295,9 @@ MUTANTS.update({k: [v] for k, v in ORIGIN_MUTANTS.items() if k not in FORK_EQUIV
 # argument order: the error and run cases of arg_order.obx show them, as for the defer uses
 from mutate_fork import ARG_ORDER_MUTANTS  # noqa: E402
 MUTANTS.update({k: [v] for k, v in ARG_ORDER_MUTANTS.items() if k not in FORK_EQUIVALENT})
+# a handle's object freed by an assignment over, or a drop of, its owner: the cases of handle_frees.obx
+from mutate_fork import HANDLE_FREE_MUTANTS  # noqa: E402
+MUTANTS.update({k: [v] for k, v in HANDLE_FREE_MUTANTS.items() if k not in FORK_EQUIVALENT})
 
 
 # register allocation (FORK.md, Phase 2). A home is r12 to r15, taken out of the free list while its local is in

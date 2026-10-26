@@ -1,0 +1,459 @@
+type Node = ref record { v: int; kids: []Node }
+type Bag = ref record { items: []Node; opt: ?Node; n: int }
+type S = closed {
+    A { v: int }
+    B { w: int }
+    C { u: int }
+}
+fn mk(v: int): Node { return new Node{v: v, kids: new []Node(0)} }
+fn nb(): Bag {
+    var b = new Bag{items: new []Node(0), opt: nil, n: 0}
+    append(b.items, mk(9))
+    return b
+}
+fn flag(): bool { return true }
+fn pick(): int { return 1 }
+// === an assignment over the owner a let handle was made from: the old object is freed, and the handle names it
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    a = nb()
+    println(h.items[0].v)  // error: handle 'h' may name a freed object: 'a' was assigned or dropped after the handle was made from it
+}
+// === the shape the runtime trap test had: a box assigned over, then read through its handle
+type Box = ref record { v: int }
+fn main() {
+    var b = new Box{v: 1}
+    let h = handle(b)
+    println(h.v)
+    b = new Box{v: 2}
+    println(h.v)  // error: handle 'h' may name a freed object: 'b' was assigned or dropped
+}
+// === an assignment in an if without else: the handle may name a freed object after the join
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    if flag() { a = nb() }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === an assignment in the then branch of an if with an else
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    if flag() {
+        a = nb()
+    } else {
+        println(0)
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === an assignment in the else branch only
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    if flag() {
+        println(0)
+    } else {
+        a = nb()
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === an assignment in an else-if branch
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    if flag() {
+        println(0)
+    } else if pick() == 2 {
+        a = nb()
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === an assignment in the first arm of a match on a closed type
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    var s: S = new B{w: 1}
+    match s {
+        A { a = nb() }
+        B { println(1) }
+        C { println(2) }
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === an assignment in the else arm of a match on a closed type
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    var s: S = new B{w: 1}
+    match s {
+        B { println(1) }
+        else { a = nb() }
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === an assignment in the first arm of a match on an int
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    match pick() {
+        1 { a = nb() }
+        2 { println(2) }
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === an assignment in the else arm of a match on an int
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    match pick() {
+        2 { println(2) }
+        else { a = nb() }
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === an assignment in a loop whose body used the handle earlier: the next iteration uses the freed object
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    var i = 0
+    while i < 2 {
+        println(h.items[0].v)
+        a = nb()  // error: cannot assign over the owner of handle 'h' inside a loop that uses the handle
+        i += 1
+    }
+}
+// === an assignment in a loop whose condition reads through the handle
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    while h.n < 2 {
+        a = nb()  // error: cannot assign over the owner of handle 'h' inside a loop that uses the handle
+    }
+}
+// === an assignment in an inner loop, the handle used in the outer loop before it
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    for i in 0..2 {
+        println(h.n)
+        for j in 0..2 {
+            a = nb()  // error: cannot assign over the owner of handle 'h' inside a loop that uses the handle
+        }
+    }
+}
+// === an assignment in a loop that may run: the handle is read after the loop
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    for i in 0..pick() {
+        a = nb()
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === an assignment on a path that leaves the loop by a break
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    while true {
+        if flag() {
+            a = nb()
+            break
+        }
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === an optional owner assigned nil while its handle is in scope
+fn main() {
+    var o: ?Bag = nb()
+    if o != nil {
+        let h = handle(o)
+        o = nil
+        println(h.n)  // error: handle 'h' may name a freed object: 'o' was assigned or dropped
+    }
+}
+// === an optional owner assigned the take of another
+fn main() {
+    var a: ?Bag = nb()
+    var o: ?Bag = nb()
+    if a != nil {
+        let h = handle(a)
+        a = take(o)
+        println(h.n)  // error: handle 'h' may name a freed object: 'a' was assigned or dropped
+    }
+}
+// === a by-value parameter assigned while a handle made from it is in scope
+fn reset(a: Bag): int {
+    let h = handle(a)
+    a = nb()
+    return h.n  // error: handle 'h' may name a freed object: 'a' was assigned or dropped
+}
+fn main() {
+    println(reset(nb()))
+}
+// === a drop of the owner
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    drop(a)
+    println(h.n)  // error: handle 'h' may name a freed object: 'a' was assigned or dropped
+}
+// === a drop of the owner in a loop that used the handle
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    for i in 0..2 {
+        println(h.n)
+        drop(a)  // error: cannot drop the owner of handle 'h' inside a loop that uses the handle
+        a = nb()
+    }
+}
+// === a copy of the handle made before the assignment has the same origin
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    let h2 = h
+    a = nb()
+    println(h2.n)  // error: handle 'h2' may name a freed object
+}
+// === a write through the handle after the assignment is a use too
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    a = nb()
+    h.n = 3  // error: handle 'h' may name a freed object
+}
+// === a move of the owner in a loop, then an assignment, the handle used after: the move clears the handle's origin, so the loop rule refuses the move
+fn eat(x: Bag) { }
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    for i in 0..2 {
+        eat(a)  // error: cannot move 'a' inside a loop while handle 'h' made from it is in scope
+        a = nb()
+        println(h.n)
+    }
+}
+// === the same with a while loop
+fn eat(x: Bag) { }
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    var i = 0
+    while i < 2 {
+        eat(a)  // error: cannot move 'a' inside a loop while handle 'h' made from it is in scope
+        a = nb()
+        println(h.n)
+        i += 1
+    }
+}
+// === a move of the owner in a loop, the handle used after the loop
+fn eat(x: Bag) { }
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    for i in 0..2 {
+        eat(a)  // error: cannot move 'a' inside a loop while handle 'h' made from it is in scope
+        a = nb()
+    }
+    println(h.n)
+}
+// === an assignment in one arm of an if in a loop, the handle used in the other arm: the next iteration uses it
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    for i in 0..3 {
+        if i == 0 {
+            a = nb()  // error: cannot assign over the owner of handle 'h' inside a loop that uses the handle
+        } else {
+            println(h.n)
+        }
+    }
+}
+// === the same with the use in an earlier arm, and a while loop
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    var i = 0
+    while i < 3 {
+        if i > 0 {
+            println(h.n)
+        } else {
+            a = nb()  // error: cannot assign over the owner of handle 'h' inside a loop that uses the handle
+        }
+        i += 1
+    }
+}
+// === the same with a match
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    for i in 0..3 {
+        match i {
+            0 { a = nb() }  // error: cannot assign over the owner of handle 'h' inside a loop that uses the handle
+            else { println(h.n) }
+        }
+    }
+}
+// === the assignment in an inner loop, the use in the outer loop after it
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    for i in 0..3 {
+        for j in 0..2 {
+            if j == 0 { a = nb() }
+        }
+        println(h.n)  // error: handle 'h' may name a freed object
+    }
+}
+// === a drop in one arm of an if in a loop, the use in the other
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    for i in 0..3 {
+        if i == 0 {
+            drop(a)  // error: cannot drop the owner of handle 'h' inside a loop that uses the handle
+            a = nb()
+        } else {
+            println(h.n)
+        }
+    }
+}
+// === a defer that uses the handle, the owner assigned after the defer: the defer runs after the assignment
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    defer { println(h.n) }
+    a = nb()  // error: cannot assign over 'a' while a defer declared earlier uses handle 'h'
+}
+// === the same with a drop
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    defer { println(h.n) }
+    drop(a)  // error: cannot drop 'a' while a defer declared earlier uses handle 'h'
+}
+// === the free in an inner block, the defer in the outer one
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    defer { println(h.items[0].v) }
+    if flag() {
+        a = nb()  // error: cannot assign over 'a' while a defer declared earlier uses handle 'h'
+    }
+}
+// === a return arm assigns, then the owner is assigned on the path that goes on: the arm's marks are dropped, but the free is real
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    var k = 1
+    if k == 2 {
+        a = nb()
+        return
+    }
+    a = nb()
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === the same with the return arm in a loop
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    var k = 0
+    while k < 3 {
+        k += 1
+        if k == 2 {
+            a = nb()
+            return
+        }
+    }
+    a = nb()
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === a defer body assigns the owner, then the owner is assigned: the defer's assignment runs later and must not clear the handle's origin here
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    defer { a = nb() }
+    a = nb()
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === an if whose then arm returns and whose else arm frees
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    if flag() {
+        return
+    } else {
+        a = nb()
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === a break arm assigns, the loop is left, and the owner is assigned again
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    for i in 0..3 {
+        if i == 1 {
+            a = nb()
+            break
+        }
+    }
+    a = nb()
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === a defer in a nested block assigns the owner: it runs where that block is left
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    if flag() { defer { a = nb() } }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === the same in a bare block
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    {
+        defer { a = nb() }
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === a defer in a loop body runs on every iteration, and the loop uses the handle
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    for i in 0..3 {
+        println(h.n)
+        defer { a = nb() }
+    }  // error: cannot assign over the owner of handle 'h' inside a loop that uses the handle
+}
+// === a defer in a loop body, the handle used after the loop
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    var i = 0
+    while i < 3 {
+        i += 1
+        defer { a = nb() }
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === a let copy of a dead handle
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    a = nb()
+    let g = h
+    println(g.n)  // error: handle 'g' may name a freed object
+}
+// === a let copy of a dead handle, made and used in a loop
+fn main() {
+    var a = nb()
+    let h = handle(a)
+    a = nb()
+    var i = 0
+    while i < 2 {
+        i += 1
+        let g = h
+        if i == 2 { println(g.n) }  // error: handle 'g' may name a freed object
+    }
+}
