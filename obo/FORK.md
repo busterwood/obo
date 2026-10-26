@@ -1945,8 +1945,11 @@ operation on it (add, sub, and, or, xor, imul by a register or an immediate, and
 when the store copies that temporary back into the same local, with the code ending where the
 operation does and no position asked for (`pc()`) since the copy began, the three instructions are
 replaced by the operation on the local. It was built and passed everything it was run against
-(`run_fork` 441 plus a new `tests/run/peephole.obx`, `port_test`, `port_compare` 592 of 592 with a peak
-of 969,648 bytes, `homes_check`, `homes_edge`, 10 of 10 new mutants caught) and then measured with the
+(`run_fork` 441 plus a new `tests/run/peephole.obx`, `port_test`, `port_compare` Stage B 592 of 592 in my run
+and 593 of 593 in the review, with a live peak of 969,648 bytes in mine and 969,712 in the review
+(the patched figures move by a few dozen bytes between builds; main's, measured by `port_compare.py` on this
+branch, is 954,912, and `PEAK_BUDGET` stays 983,000), `homes_check`, `homes_edge`, and the 10 mutants that the
+comparison catches; an 11th, speed-only, caught by `homes_check`, was added later) and then measured with the
 compiler of main and this one, interleaved, 7 runs, minimum cycles:
 
 | | instructions | cycles |
