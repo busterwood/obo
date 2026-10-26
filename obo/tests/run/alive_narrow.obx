@@ -98,7 +98,19 @@ fn again() {
     }
 }
 
+// an early exit with an else: the code after the if is narrowed too
+fn exitElse(c: bool) {
+    var a = nb(18)
+    let h = handle(a)
+    if c { a = nb(19) }
+    if !alive(h) { return } else { println(h.n) }
+    println(h.n)
+}
+
 fn main() {
+    exitElse(false)  // expect: 18
+                     // expect: 18
+    exitElse(true)
     again()  // expect: -3
     thenArm(false)  // expect: 1
     thenArm(true)  // expect: -1

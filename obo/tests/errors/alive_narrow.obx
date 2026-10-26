@@ -359,3 +359,16 @@ fn main() {
         println(h.n)  // error: handle 'h' may name a freed object
     }
 }
+// === a negated guard with an else, the then block goes on
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    var c = flag()
+    if c { a = nb(2) }
+    if !alive(h) {
+        println(0)
+    } else {
+        println(h.n)
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
