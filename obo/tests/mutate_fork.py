@@ -155,20 +155,20 @@ MUTANTS = {
     "take does not free what it holds": ("        freeEvent(x, lastPlace, lastRaw, lastOrigin, lastIdent)\n", ""),
     "moves do not reach held handle targets": ("        } else if heldForeign[i] {\n            if s.isParam || !refParamKey(heldKey[i]) { heldHit[i] = true }", "        } else if false {\n            if s.isParam || !refParamKey(heldKey[i]) { heldHit[i] = true }"),
     "moves do not free handle targets": ("        heldMove(s)\n", ""),
-    "identity frees do not reach their entries": ("                if segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }",
+    "identity frees do not reach their entries": ("                if heldUnder(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k] && place != anyPlace) { heldHit[k] = true }",
                                                   "                if false { heldHit[k] = true }"),
-    "same-identity frees ignore the path": ("                if segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }",
+    "same-identity frees ignore the path": ("                if heldUnder(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k] && place != anyPlace) { heldHit[k] = true }",
                                             "                heldHit[k] = true"),
-    "identity exemption removed": ("                if segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }",
-                                   "                if segsPrefix(place, heldPath[k]) { heldHit[k] = true }"),
+    "identity exemption removed": ("                if heldUnder(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k] && place != anyPlace) { heldHit[k] = true }",
+                                   "                if heldUnder(place, heldPath[k]) { heldHit[k] = true }"),
     "origin ignored when holding": ("        if origin != nil {\n            heldAdd(origin, false, false, raw)", "        if false {\n            heldAdd(origin, false, false, raw)"),
     "origin ignored when freeing": ("        if origin != nil {\n            heldFree(origin, nil, raw)", "        if false {\n            heldFree(origin, nil, raw)"),
     "whole local arrays hit by identity frees": ("        } else if !heldWhole[k] {", "        } else {"),
     "reference parameters take their owner's place": ("    if isRefParam(r) {\n        heldAdd(r, true, false, raw)", "    if false {\n        heldAdd(r, true, false, raw)"),
-    "owned frees ignore the path": ("            if heldKey[k] == o && segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) {",
+    "owned frees ignore the path": ("            if heldKey[k] == o && heldUnder(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k] && place != anyPlace) {",
                                     "            if heldKey[k] == o && !(heldStore[k] && place == heldPath[k]) {"),
-    "owned assignment exemption removed": ("            if heldKey[k] == o && segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) {",
-                                           "            if heldKey[k] == o && segsPrefix(place, heldPath[k]) {"),
+    "owned assignment exemption removed": ("            if heldKey[k] == o && heldUnder(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k] && place != anyPlace) {",
+                                           "            if heldKey[k] == o && heldUnder(place, heldPath[k]) {"),
     "store exemption not applied through handles": ("    for k in mark..len(heldKey) { heldStore[k] = true }", "    for k in mark..len(heldKey) { heldStore[k] = !viaHandle }"),
     "index does not hold its array": ("            let hp = heldPush(root, viaHandle, hOrig, hIdent, placePath(root, path), path)", "            let hp = -1"),
     "replace does not hold its place": ("        let hp = heldPush(tr, x.viaHandle, orig, ident, place, raw)", "        let hp = -1"),
@@ -177,7 +177,7 @@ MUTANTS = {
                                                     "            let y = expression()"),
     "compound assignments do not hold their target": ("            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            var y = expression()",
                                                       "            var y = expression()"),
-    "reference places ignore the binding's path": ("            let p = b.paths[i] + raw\n            if o == handleSym {\n                heldAdd(nil, true, false, \"\")", "            let p = raw\n            if o == handleSym {\n                heldAdd(nil, true, false, \"\")"),
+    "reference places ignore the binding's path": ("            let p = heldAt(b, i, raw, r)\n            if o == handleSym {\n                heldAdd(nil, true, false, \"\")", "            let p = raw\n            if o == handleSym {\n                heldAdd(nil, true, false, \"\")"),
 }
 
 
@@ -186,7 +186,7 @@ RETARGET = {
     "writes through read-only references": ("if x.deref && wr != nil && wr.isRef && !wr.bind.writable {",
                                             "if x.deref && wr != nil && wr.isRef && !wr.bind.writable && false {"),
     "mut aliases allowed": ("if i != j && argModes[i] == 2 {", "if i != j && argModes[i] == 2 && false {"),
-    "mut calls invalidate nothing": ("                invalidate(b.roots[p], argVias[i], false, argPaths[i])\n", ""),
+    "mut calls invalidate nothing": ("                invalidate(b.roots[p], av, false, at)\n", ""),
     "read-only references can be passed as mut": ("            if f.fnRec.pmodes[i] == 2 && !b.writable {", "            if false {"),
     "everything counts as an ancestor": ("        if p == a { return true }\n        p = p.bind.parent",
                                          "        if p == a || true { return true }\n        p = p.bind.parent"),
@@ -500,17 +500,59 @@ FP_MUTANTS = {
     'a callee with a forward heading is pure': ('    if f.addr < 0 || f == curFn || f.freesAll || len(f.fnRec.freed) > 0 { return false }\n', '    if f == curFn || f.freesAll || len(f.fnRec.freed) > 0 { return false }\n'),
     'a call with a mut parameter that appends does not count as moving': ('    if movesFn(f) { userCalls += 1 }', '    if !pureFn(f) { userCalls += 1 }'),
     'only the first mut parameter is checked for frees': ('    for i in 0..len(f.fnRec.pmodes) {\n        if f.fnRec.pmodes[i] == 2 && mutFrees(f, i) { return false }', '    for i in 0..1 {\n        if i < len(f.fnRec.pmodes) && f.fnRec.pmodes[i] == 2 && mutFrees(f, i) { return false }'),
-    # a field of a reference parameter keeps its path (itemBind, designatorT)
-    'a field of a parameter binds the whole parameter': ('        if x.deref && isRefParam(r) { append(paths, x.path) }', '        if x.deref && isRefParam(r) { append(paths, "") }'),
-    'a path through a reference local is kept': ('        if (!root.isRef || isRefParam(root)) && !viaHandle { x.path = path }', '        if !viaHandle { x.path = path }'),
     # a reference only borrows: replace and take refuse it
     'a replace of a reference local is allowed': ('        if rs != nil && rs.isRefLocal {\n            error("replace cannot change', '        if rs != nil && rs.isRefLocal && false {\n            error("replace cannot change'),
     'a take of a reference local is allowed': ('        if ts0 != nil && ts0.isRefLocal {\n            error("take cannot change', '        if ts0 != nil && ts0.isRefLocal && false {\n            error("take cannot change'),
 }
 MUTANTS.update(FP_MUTANTS)
 
+# the paths of reference locals (FORK.md, "Reference-local paths"): a change through a reference is at the place it
+# points at plus the path written. Each mutant undoes one part of the rule, in the unsafe direction (an unsafe
+# neighbour in errors/ref_local_paths.obx is accepted) or in the safe one (a shape in run/ref_local_paths.obx, or in
+# errors/fp_refs.obx and run/fp_refs.obx for a reference parameter, is refused)
+REF_PATH_MUTANTS = {
+    # the path of a designator, and where it is used
+    'a path through a reference local is dropped': ('        if !viaHandle { x.path = path }', '        if !viaHandle && !root.isRefLocal { x.path = path }'),
+    'a change through a reference local is at the whole root': ('invalidate(rb.roots[i], via, false, placeIn(r, i, x.path))', 'invalidate(rb.roots[i], via, false, "")'),
+    'a reference derived from a reference local is anywhere in its root': ('        if x.deref { append(paths, placeIn(r, i, x.path)) }', '        if x.deref { append(paths, "") }'),
+    'a mut argument invalidates the whole root': ('invalidate(b.roots[p], av, false, at)', 'invalidate(b.roots[p], av, false, "")'),
+    # placeIn
+    'a reference ignores its own place for a change through it': ('    return b.paths[i] + xpath\n}', '    return xpath\n}'),
+    'a reference with no known place is taken to know it': ('    if b.paths[i] == "" { return "" }\n', ''),
+    'a reference to a whole object is taken to be anywhere': ('    if !b.deeps[i] { return xpath }\n', '    if !b.deeps[i] { return "" }\n'),
+    'a reference not pointed afresh in a loop keeps its place': ('    if r.isRefLocal && !r.fresh && recording > 0 { return "" }\n', ''),
+    'a mut argument not pointed afresh in a loop keeps its place': ('                if av != nil && av.isRefLocal && !av.fresh && recording > 0 { at = "" }\n', ''),
+    # the join of two bindings
+    'a join of a place and the place below it keeps the longer': ('    if segsPrefix(pa, pb) && !segsPrefix(pb, pa) { return "" }\n    if segsPrefix(pb, pa) && !segsPrefix(pa, pb) { return "" }',
+                                                                  '    if segsPrefix(pa, pb) && !segsPrefix(pb, pa) { return pb }\n    if segsPrefix(pb, pa) && !segsPrefix(pa, pb) { return pa }'),
+    'a join of a place and the place below it keeps the shorter': ('    if segsPrefix(pa, pb) && !segsPrefix(pb, pa) { return "" }\n    if segsPrefix(pb, pa) && !segsPrefix(pa, pb) { return "" }',
+                                                                   '    if segsPrefix(pa, pb) && !segsPrefix(pb, pa) { return pa }\n    if segsPrefix(pb, pa) && !segsPrefix(pa, pb) { return pb }'),
+    'a join of two places keeps the first': ('    if pa == pb { return pa }\n    if segsPrefix(pa, pb)', '    if true { return pa }\n    if segsPrefix(pa, pb)'),
+    'a whole object and a place below it share one entry': ('            if roots[i] == b.roots[j] && deeps[i] == b.deeps[j] {', '            if roots[i] == b.roots[j] {'),
+    # elements
+    'an unknown element is taken for none of the known ones': ('            if pe - i > 1 && se - j > 1 {\n                if pe - i != se - j { return false }', '            if true {\n                if pe - i != se - j { return false }'),
+    # held places
+    'a held place under a reference with no known place is a known place': ('    if b.paths[i] == "" { return anyPlace }\n', ''),
+    'a held place under a reference not pointed afresh in a loop is a known place': ('    if recording > 0 && !r.fresh { return anyPlace }\n', ''),
+    'a free anywhere in a root misses the places held in it': ('fn heldUnder(place: string, held: string): bool { return place == anyPlace || held == anyPlace || segsPrefix(place, held) }',
+                                                              'fn heldUnder(place: string, held: string): bool { return held == anyPlace || segsPrefix(place, held) }'),
+    'a held place anywhere in a root misses the frees in it': ('fn heldUnder(place: string, held: string): bool { return place == anyPlace || held == anyPlace || segsPrefix(place, held) }',
+                                                              'fn heldUnder(place: string, held: string): bool { return place == anyPlace || segsPrefix(place, held) }'),
+    'a store to a place anywhere is exempt from a free of it (identity)': ('                if heldUnder(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k] && place != anyPlace) { heldHit[k] = true }',
+                                                                         '                if heldUnder(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }'),
+    'a store to a place anywhere is exempt from a free of it (owned)': ('            if heldKey[k] == o && heldUnder(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k] && place != anyPlace) {',
+                                                                      '            if heldKey[k] == o && heldUnder(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) {'),
+    # the defer rule: the declared binding must cover the one at the block's end at the same place
+    'a defer body is checked against a binding that is not the same place': ('coversPlace(d.deeps[i], d.paths[i], e.deeps[j], e.paths[j], true)', 'coversPlace(d.deeps[i], d.paths[i], e.deeps[j], e.paths[j], false)'),
+}
+MUTANTS.update(REF_PATH_MUTANTS)
+
 # mutants that survive by design: each removes a test that is redundant, so the behaviour is unchanged
 EQUIVALENT = {
+    "a defer body is checked against a binding that is not the same place": "equivalent: a reference that a defer body uses may not be pointed elsewhere while the defer is declared (deferUses), so the binding at the block's end is the one the defer was declared with, and the two are covered either way",
+    "a held place anywhere in a root misses the frees in it": "equivalent: a free reaches a held place under a reference only through a call or a replace in an index or in a value, and for a root that is a reference or a global the index with a call is refused first (cannot index a field, element or reference with an index that calls a function), and heldLost refuses a value that moves what the reference is in",
+    "a store to a place anywhere is exempt from a free of it (identity)": "equivalent for the same reason: the free that the exemption would have to meet is refused by heldLost or by the call rule first",
+    "a store to a place anywhere is exempt from a free of it (owned)": "equivalent for the same reason",
     "a callee with a forward heading is assumed to free nothing": "equivalent: afterCall treats a call to a callee that is not compiled as a write through a handle (invalidateDeep, writesHandles, freesAll), which invalidates every reference inside something and makes the caller's own summary assume every parameter freed; a reference to a whole object is never invalidated by a mut argument, so the check in mutFrees only repeats it",
     "a callee that writes through a handle is assumed to free nothing": "equivalent for the same reason: a callee that writes through a handle sets freesAll and writesHandles, which afterCall turns into invalidateDeep and into the same flags for its caller, so every reference a mut argument could invalidate is already invalid",
     "origin not cleared by a take of a whole local": "equivalent: a take needs its optional owner widened first, and only an assignment over a narrowed owner does that (a handle is made only while the owner is narrowed), so the assignment hook has already cleared the same origins before any take can run",

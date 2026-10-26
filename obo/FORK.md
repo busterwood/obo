@@ -841,11 +841,9 @@ in section 10.
   case where a reference is writable where the loop starts and read-only where it starts again is an
   error (`errors/ref_bindings.obx`, "a reference writable where a loop starts, read-only where the loop
   starts again").
-- Future work: a change made through a reference is taken to reach the whole root that the reference
-  borrows from, not the place it names. This is the same as main, and it rejects some valid programs
-  (a change to one field through a reference, with a reference to another field read after it). A
-  narrower rule is future work, and so is applying a defer body's re-point at each exit in place of the
-  refusal.
+- Future work: applying a defer body's re-point at each exit in place of the refusal. (A change made
+  through a reference used to be taken to reach the whole root it borrows from; see "Reference-local
+  paths (done)".)
 - Stage B now compares behaviour: the output of the port compiled by the seed and by the new compiler,
   not the bytes of the code. A byte difference in a return spill (the retLeak case) is harmless and is
   accepted. In this build stage B is 418 of 418 identical.
@@ -2224,7 +2222,7 @@ name is item 1.
    different places, in invalidation (`p.ys = ...` leaves `&p.xs` valid), in the argument check
    (`f(p.xs, p.ys)`) and in the held places. A parameter's own object has bind `[itself]`, so the path is
    relative to the right root; other parameters and globals still match by `reaches` regardless of path.
-   Through a reference *local* the path is still dropped (the whole root). While testing the held-place
+   Through a reference *local* the path was still dropped (the whole root); see "Reference-local paths (done)". While testing the held-place
    form (`replace(r, ...)` with `var r = &p.ys`) a hole that predates this batch showed up: `replace` and
    `take` of a reference local wrote the local's slot and handed back the borrowed object, which the caller
    then freed (exit 6, a double free, with the seed too). They are now refused (`replace cannot change 'r':
@@ -2312,3 +2310,61 @@ stay refused). `FP_MUTANTS`: 7 new. `own_fuzz.py`: `handle_pure_mut_stmt` (valid
 `handle_freeing_mut_stmt` (invalid).
 
 **Memory.** The port peaks at 1,052,768 bytes live (budget 2,000,000, unchanged).
+
+## Reference-local paths (done)
+
+**Rule.** A change through a reference local is at the place the reference points at plus the path written,
+not anywhere in the root. With `var r = &a.ys`: `r[0] = ...` is at `/ys/[0]` of `a`, `&a.xs[0]` and `&a.zs`
+stay valid, `s = &r.zs` is `/ys/zs`, and a `mut` call given `r` frees below `/ys` only.
+
+**Where the path is stored.** Nothing new is stored per reference. `RefBind` already had `paths` per root
+(item 3 above). `designatorT` now sets `x.path` for every root that is not a handle (it used to skip
+reference locals). `placeIn(r, i, xpath)` is the one place the rule lives: for the i-th entry of r's binding,
+a non-deep entry (the root's whole object) gives `xpath`; a deep entry with a known path gives `path + xpath`;
+a deep entry with path `""` (anywhere in the root) gives `""`, the whole root. It is used by `itemBind` (a
+reference made from `r.f`), by `invalidateChange` (assignment, `replace`, `take`, `append`, `truncate`) and,
+by the entry's own `paths[p]`, by the `mut`-argument invalidation in `callFn` (which used `a.path`, "" for a
+reference local). Held places (`heldAt`, in `heldPush` and `freeEvent`) use the same place; a deep entry with
+no known place is the new held place `anyPlace` ("*"), which `heldUnder` treats as under and over every
+place in its root (before, `""` plus the path written was used, narrower than the truth).
+
+**Merges.** `joinPath` now returns the same place or `""`: the two earlier shapes (the lower place of a nested
+pair, as item "Path join" above argued for hits) are wrong for a change through the reference, since the place
+plus the path written is not nested the same way (`/a` + `/c` against `/a/b` + `/c`). The common prefix is
+unsound too (see above). `joinBind` keeps a whole-object entry and a deep entry of one root as two entries
+(it used to OR the depth flags), since the whole object and a place inside it need different paths for the
+same change. `coversPlace` has a strict form (same place, or anywhere) for `withinDeclared`; the loop check keeps
+the old hit-coverage form, because the loop rule below makes the strict one unnecessary there.
+
+**Loops (the soundness point).** The body of a loop is compiled once, with the place a reference had on entry.
+A reference declared before the loop and not pointed afresh on every path to the use (`!r.fresh`) may be
+elsewhere on the next iteration, so while `recording > 0` `placeIn` gives the whole root for it (a change
+through it, a reference made from it) and `callFn` invalidates the whole root for it as a `mut` argument, and
+`heldAt` gives `anyPlace`. A reference declared in the loop, or re-pointed before the use, has its place. Without
+this, `while .. { r[0] = ..; r = &a.ys }` with `r` first `&a.xs` and a `keep = &a.ys[0]` read after was accepted
+and read freed memory (found by thinking, covered by `errors/ref_local_paths.obx`). Walks of the form
+`p = p.next` need nothing: the derived binding of a non-fresh `p` is anywhere.
+
+**A hole that predated this**: `r` joined from two places had path `""`, and a held place or a free under it was
+recorded as the path written alone, so `a.ys[0].kids[f(replace(r[0], ..))]` with `r` either `&a.xs` or `&a.ys`
+compiled (seed). Fixed by `anyPlace`; `errors/ref_local_paths.obx` has it.
+
+**What is left at the whole root (and why).** A change through a handle or a reference borrowed through one
+(`invalidateDeep`); a join of two different places in one root, including a whole object and a place inside it (a
+set of paths per root would be needed; one string is kept for memory); a `for` walk's variable (`walkBind`, anywhere);
+a non-fresh reference in a loop (above); another reference parameter or a global that a changed parameter reaches
+(`reaches`, which ignores paths across roots); any call that may free the root (`afterCall`). A third field after
+a join of two fields is therefore refused. A variable index is the element wildcard `[]`, which `segsPrefix`
+already treats as overlapping every known element.
+
+**Fuzzer.** `own_fuzz.py`: `ref_local_path_stmt` (valid: references to two elements or two fields, a change through
+one, a read of the other, with a model); `elem_write_stmt` and `mut_call_dead_stmt` (invalid) now read a reference
+into the place that was changed (they used a reference to another element, which is valid now).
+
+**Tests.** `tests/run/ref_local_paths.obx` (20 accepted shapes), `tests/errors/ref_local_paths.obx` (overlap, prefix,
+join on one path, loop re-point, derived references, variable index, handle, `mut` call, other parameter, global,
+`truncate`/`replace`/`take`, defer, held places). **Mutants:** `REF_PATH_MUTANTS` in `tests/mutate_fork.py`, one per
+part of the rule (also run by `mutate_port.py`); three are equivalent with reasons given there.
+
+**Memory.** The port compiling itself peaks at 1,058,384 bytes live (1,052,768 before; budget 2,000,000 unchanged,
+`MEMORY_MARGIN` unchanged): no new field, only code.
