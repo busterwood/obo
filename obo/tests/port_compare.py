@@ -28,11 +28,11 @@ import run  # noqa: E402  (for error_cases)
 
 REF = os.path.abspath(os.environ.get('OBO_REF', os.path.join(FORK, 'obo')))
 SRC = os.path.join(FORK, 'src', 'obo.obo')
-# live peak, in bytes, of the port compiling itself: about 3% above the measured
-# figure. Lower it when memory improves; raise it only for a reason recorded in FORK.md.
-# Set after the function records moved out of the symbols: the measured peak is 954,896 bytes
-# (FORK.md, "Peak memory (done)").
-PEAK_BUDGET = 983_000
+# live peak, in bytes, of the port compiling itself. Lower it when memory improves; raise it only
+# for a reason recorded in FORK.md. Raised from 983,000 on 2026-10-26 by the user's decision: the
+# measured peak is 954,896 bytes (FORK.md, "Peak memory (done)"), and a budget about 3% above it
+# left new checker work only about 28 KB of headroom. Leaks are caught separately, by port_test's leak check.
+PEAK_BUDGET = 2_000_000
 
 
 # REF's outcome for each case text, with the seconds its compile and run took: a mutant's
