@@ -182,6 +182,45 @@ ALIGN = 32
 JUMP = re.compile(r'^j\w+\s+0x([0-9a-f]+)')
 
 
+# the padding before a loop head is the multi-byte nops of alignLoop, in the order it emits them (9 bytes at a time,
+# then what is left), and nothing else
+NOPS = {1: '90', 2: '6690', 3: '0f1f00', 4: '0f1f4000', 5: '0f1f440000', 6: '660f1f440000', 7: '0f1f8000000000',
+        8: '0f1f840000000000', 9: '660f1f840000000000'}
+NOP = re.compile(r'^(nop|xchg\s+%ax,%ax)')
+GARBAGE = re.compile(r'^(\(bad\)|int3|add\s+%al,\(%rax\))')
+
+
+def canon(p):
+    out = ''
+    while p > 0:
+        k = min(p, 9)
+        out += NOPS[k]
+        p -= k
+    return bytes.fromhex(out)
+
+
+def pads(rows, entry, code, heads):
+    """(a problem or None, the lengths of the paddings found): the nops before each head are exactly the bytes
+    alignLoop emits for their length, and what precedes them is not the debris of a nop cut short"""
+    at = {a: i for i, (a, _) in enumerate(rows)}
+    found = set()
+    for h in sorted(heads):
+        i = at.get(h)
+        if i is None:
+            return f'the loop head at {h:#x} is not at an instruction', found
+        j = i
+        while j > 0 and NOP.match(rows[j - 1][1]):
+            j -= 1
+        start = rows[j][0]
+        p = h - start
+        if p >= ALIGN or code[start - entry:h - entry] != canon(p):
+            return f'the padding before the loop head at {h:#x} is {code[start - entry:h - entry].hex()}, not {canon(min(p, 31)).hex()}', found
+        if j > 0 and GARBAGE.match(rows[j - 1][1]):
+            return f'the padding before the loop head at {h:#x} is preceded by {rows[j - 1][1]}', found
+        found.add(p)
+    return None, found
+
+
 def loop_heads(rows):
     heads = set()
     for addr, t in rows:
@@ -212,6 +251,7 @@ def main():
     if b.returncode != 0:
         raise SystemExit('FAIL the port does not compile: ' + b.stderr)
     bad = 0
+    seen = set()
     for name, (text, most, forbid) in PROGRAMS.items():
         src = os.path.join(tmp, 'p.obx')
         open(src, 'w').write(text)
@@ -231,6 +271,13 @@ def main():
             bad += 1
             print(f'FAIL {name}: only {len(heads)} loop heads found, expected at least 7')
             continue
+        entry, code = micro.code_segment(exe)
+        problem, found = pads(rows, entry, code, heads)
+        if problem:
+            bad += 1
+            print(f'FAIL {name}: {problem}')
+            continue
+        seen |= found
         hit = [t for _, t in rows if forbid and re.search(forbid, t)]
         if hit:
             bad += 1
@@ -240,6 +287,24 @@ def main():
             print(f'FAIL {name}: {n} instructions use a stack slot, at most {most} allowed')
         else:
             print(f'ok   {name}: {n} stack-slot instructions')
+    # the port compiles itself: every padding length from 1 to 31 occurs among its loop heads
+    exe = os.path.join(tmp, 'self')
+    c = subprocess.run([port, SRC, '-o', exe, '--rt', FORK], capture_output=True, text=True)
+    if c.returncode != 0:
+        raise SystemExit('FAIL the port does not compile itself: ' + c.stderr)
+    rows = micro.listing(exe)
+    entry, code = micro.code_segment(exe)
+    problem, found = pads(rows, entry, code, loop_heads(rows))
+    if problem:
+        bad += 1
+        print(f'FAIL the port compiling itself: {problem}')
+    else:
+        missing = sorted(set(range(1, ALIGN)) - found - seen)
+        if missing:
+            bad += 1
+            print(f'FAIL padding lengths never seen: {missing}')
+        else:
+            print(f'ok   padding lengths 1 to {ALIGN - 1} all occur and are checked ({len(found)} in the port)')
     sys.exit(1 if bad else 0)
 
 

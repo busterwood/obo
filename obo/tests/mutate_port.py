@@ -336,6 +336,7 @@ MUTANTS.update({
 })
 SHAPES = {"align: loops not padded", "align: wrong padding", "align: while loops not padded", "align: while true not padded",
           "align: for ranges not padded", "align: for arrays not padded", "align: not padded when compiled again",
+          "align: 4-byte nop contents", "align: 5 and 6-byte nop contents", "align: 7-byte nop contents", "align: 8 and 9-byte nop contents",
           "fold: refused at a jump target", "fold: never (speed only)", "fold: the copy is kept", "scan: nothing counted", "scan: ranking ignored", "scope end does not give the register back",
           "runtime calls push the locals' registers", "return copies a local's register",
           "for limit's register never given back", "bool parameters left in memory"}
@@ -376,6 +377,11 @@ MUTANTS.update({
     "align: for ranges not padded": [("        alignLoop()\n        top = pc()\n        loopdepth += 1\n", "        top = pc()\n        loopdepth += 1\n")],
     "align: for arrays not padded": [("        alignLoop()\n        top = pc()\n        let ri = alloc()", "        top = pc()\n        let ri = alloc()")],
     "align: not padded when compiled again": [(ALIGN_N, "    if homeCap == 0 { return }\n" + ALIGN_N)],
+    # the bytes of the padding: homes_check.py requires exactly the nops alignLoop emits, for every length
+    "align: 4-byte nop contents": [("            } else if k == 4 {\n                emit(0x40)", "            } else if k == 4 {\n                emit(0xCC)")],
+    "align: 5 and 6-byte nop contents": [("            } else if k == 5 || k == 6 {\n                emit(0x44)", "            } else if k == 5 || k == 6 {\n                emit(0xCC)")],
+    "align: 7-byte nop contents": [("            } else if k == 7 {\n                emit(0x80)", "            } else if k == 7 {\n                emit(0xCC)")],
+    "align: 8 and 9-byte nop contents": [("                emit(0x84)                      // 8 and 9", "                emit(0xCC)                      // 8 and 9")],
     "entry: calls to itself keep the old entry": [("        if ((p + 4 + getRel(p)) & 0xFFFFFFFF) == old { fix(p, f.addr) }", "        if p < 0 { fix(p, f.addr) }")],
     "entry: waiting calls keep the old entry": [("    for fi in 0..len(f.fnRec.fixups) { fix(f.fnRec.fixups[fi], f.addr) }\n}", "}")],
     "entry: stays where it was": [("    f.addr = old + 7\n", "")],

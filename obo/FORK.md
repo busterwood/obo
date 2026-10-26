@@ -2174,10 +2174,10 @@ again); `tests/homes_check.py` finds the backward-jump targets in the disassembl
 function with a frame, one without and one that was compiled again, and requires them on 32-byte boundaries.
 `tests/mutate_port.py` has 7 `align:` mutants (no padding, wrong padding, each loop kind unpadded, no padding in the
 retry; caught by `homes_check`) and 4 `entry:` mutants (self-calls, waiting calls, entry not set, prologue not moved;
-caught by the comparison). The old `dropped frame:` mutants of the shifting version were replaced by these. Final run: `mutate_port` 204 of 204 caught, `mutate_fork` 170 of 178 with the 8 equivalents, `run_fork` 443, `port_test` 429 of 429, `port_compare` Stage B 594 of 594, `homes_edge` 1028 with 0 differing, `own_fuzz --count 300 --profile both` 0 failures in 600, `doc_check` 29 examples.
+caught by the comparison). The old `dropped frame:` mutants of the shifting version were replaced by these. `homes_check` also checks the padding bytes: the nops before each loop head must be exactly what `alignLoop` emits for their length (compared with the bytes, not only the disassembly), and the port compiling itself must show every length from 1 to 31 (4 `align: ... nop contents` mutants). Final run after the merge: `mutate_port` 250 of 250 caught, `mutate_fork` 212 of 220 with the 8 equivalents, `run_fork` 488, `port_test` 431 of 431, `port_compare` Stage B 639 of 639, `homes_edge` 1028 with 0 differing, `own_fuzz --count 300 --profile both` 0 failures in 600, `doc_check` 29 examples.
 
 **Limits.** The alignment is only as good as the loop's size: a loop longer than 32 bytes can still straddle a line.
-The dead bytes cost 7 bytes per frameless function. The compiler's own peak is 973,136 bytes (main 954,912).
+The dead bytes cost 7 bytes per frameless function. The port's live peak compiling itself is 1,016,080 bytes after merging main at 18da3e5 (main alone: 981,984; the growth is the fold's and the padding's own code and the dead bytes in the compiled port), under the budget of 2,000,000.
 
 ### Rules for every phase
 
