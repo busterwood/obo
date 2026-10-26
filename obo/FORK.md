@@ -2421,6 +2421,18 @@ this, `while .. { r[0] = ..; r = &a.ys }` with `r` first `&a.xs` and a `keep = &
 and read freed memory (found by thinking, covered by `errors/ref_local_paths.obx`). Walks of the form
 `p = p.next` need nothing: the derived binding of a non-fresh `p` is anywhere.
 
+**Copies in loops (found by review).** A copy of a non-fresh reference local (`let s = r`, `s = r`, an argument
+binding) took `r`'s entry place, and `s` is fresh, so `s[0] = ...` was judged at `/xs` while the next iteration had `r`
+at `/ys`. `itemBind` now gives such a copy (`!r.fresh && recording > 0`, not a deref) deep entries with path "" (anywhere),
+which `placeIn`, `heldAt`, the argument overlap check and the `mut` invalidation all read. Tests: five cases in
+`errors/ref_local_paths.obx`; mutant "a copy of a reference not pointed afresh in a loop keeps its place". The review's
+`m4` (a held place under a non-fresh reference, a pure function replacing an element in the index) shows the mutant that
+dropped `held == anyPlace` from `heldUnder` is not equivalent; it is caught now.
+
+**Known false positive.** `let r = &xs` before a loop and `r[0] = replace(r[0], mk(i))` inside it is refused: the held
+target and the free are both `anyPlace` (r is not fresh in the loop), and the store exemption does not apply to
+`anyPlace`, since two unknown places may be an ancestor and a descendant. Point `r` inside the loop, or name `xs[0]`.
+
 **A hole that predated this**: `r` joined from two places had path `""`, and a held place or a free under it was
 recorded as the path written alone, so `a.ys[0].kids[f(replace(r[0], ..))]` with `r` either `&a.xs` or `&a.ys`
 compiled (seed). Fixed by `anyPlace`; `errors/ref_local_paths.obx` has it.

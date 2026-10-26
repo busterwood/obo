@@ -2404,11 +2404,14 @@ fn itemBind(x: &Item): ^RefBind {
     var roots = new []^Sym(0)
     var deeps = new []bool(0)
     var paths = new []string(0)
+    // a copy of a reference local that a loop has not pointed afresh may be a copy of another place on the
+    // next iteration: it points anywhere in its roots (see placeIn)
+    let moving = r.isRefLocal && !r.fresh && recording > 0
     for i in 0..len(rb.roots) {
         append(roots, rb.roots[i])
-        append(deeps, x.deref || rb.deeps[i])
+        append(deeps, x.deref || moving || rb.deeps[i])
         // a place reached through a reference is at the reference's place plus the path written
-        if x.deref { append(paths, placeIn(r, i, x.path)) } else { append(paths, rb.paths[i]) }
+        if x.deref { append(paths, placeIn(r, i, x.path)) } else if moving { append(paths, "") } else { append(paths, rb.paths[i]) }
     }
     var parent: ?^Sym = nil
     if r.isRefLocal {

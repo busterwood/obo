@@ -542,6 +542,7 @@ REF_PATH_MUTANTS = {
                                                                          '                if heldUnder(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }'),
     'a store to a place anywhere is exempt from a free of it (owned)': ('            if heldKey[k] == o && heldUnder(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k] && place != anyPlace) {',
                                                                       '            if heldKey[k] == o && heldUnder(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) {'),
+    'a copy of a reference not pointed afresh in a loop keeps its place': ('else if moving { append(paths, "") } else {', 'else if false { append(paths, "") } else {'),
     # the defer rule: the declared binding must cover the one at the block's end at the same place
     'a defer body is checked against a binding that is not the same place': ('coversPlace(d.deeps[i], d.paths[i], e.deeps[j], e.paths[j], true)', 'coversPlace(d.deeps[i], d.paths[i], e.deeps[j], e.paths[j], false)'),
 }
@@ -550,8 +551,7 @@ MUTANTS.update(REF_PATH_MUTANTS)
 # mutants that survive by design: each removes a test that is redundant, so the behaviour is unchanged
 EQUIVALENT = {
     "a defer body is checked against a binding that is not the same place": "equivalent: a reference that a defer body uses may not be pointed elsewhere while the defer is declared (deferUses), so the binding at the block's end is the one the defer was declared with, and the two are covered either way",
-    "a held place anywhere in a root misses the frees in it": "equivalent: a free reaches a held place under a reference only through a call or a replace in an index or in a value, and for a root that is a reference or a global the index with a call is refused first (cannot index a field, element or reference with an index that calls a function), and heldLost refuses a value that moves what the reference is in",
-    "a store to a place anywhere is exempt from a free of it (identity)": "equivalent for the same reason: the free that the exemption would have to meet is refused by heldLost or by the call rule first",
+    "a store to a place anywhere is exempt from a free of it (identity)": "no unsafe program found: with the exemption, r[0] = replace(r[0], ..) with r not pointed afresh in a loop is accepted, which is right (same designator, run/fp-style); a free of another place needs a call in the value, which heldLost or the call rule refuses first. Tried: r1.kids = f(replace(r2[0], ..)) with both joined or not fresh",
     "a store to a place anywhere is exempt from a free of it (owned)": "equivalent for the same reason",
     "a callee with a forward heading is assumed to free nothing": "equivalent: afterCall treats a call to a callee that is not compiled as a write through a handle (invalidateDeep, writesHandles, freesAll), which invalidates every reference inside something and makes the caller's own summary assume every parameter freed; a reference to a whole object is never invalidated by a mut argument, so the check in mutFrees only repeats it",
     "a callee that writes through a handle is assumed to free nothing": "equivalent for the same reason: a callee that writes through a handle sets freesAll and writesHandles, which afterCall turns into invalidateDeep and into the same flags for its caller, so every reference a mut argument could invalidate is already invalid",

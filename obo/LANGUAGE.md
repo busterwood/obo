@@ -312,7 +312,9 @@ while nothing it may point into has been changed.
     before the loop, and is not re-pointed on every path before the use) may be elsewhere on the next
     iteration, and the body is checked once. A change through it, a reference made from it, or a
     `mut` argument it is, inside that loop, is taken to reach the whole root. A reference declared
-    in the loop, or pointed afresh before the use, has its place.
+    in the loop, or pointed afresh before the use, has its place. A copy of such a reference (`let s = r`)
+    is anywhere in the same roots. A known false rejection: `r[0] = replace(r[0], x)` through a reference
+    declared before the loop is refused inside it; point `r` in the loop, or name the element.
 - `replace` and `take` cannot name a reference local (`var r = &p.ys; replace(r, ...)`): a reference only
   borrows, so the old value is not its to give back; name the field or element.
 - A mut argument, `append` and `truncate` write through the reference they are given, so a loop that

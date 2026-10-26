@@ -369,6 +369,76 @@ fn main() {
     }
     println(keep.v)  // error: 'keep' may point to freed memory
 }
+// === a copy of a reference not pointed afresh in a loop is changed through: the original may be elsewhere next time
+fn main() {
+    var a = mkPair(1)
+    var r = &a.xs
+    let keep = &a.ys[0]
+    var i = 0
+    while i < 2 {
+        let s = r
+        s[0] = mk(i)
+        r = &a.ys
+        i += 1
+    }
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+// === the same, in a for loop
+fn main() {
+    var a = mkPair(1)
+    var r = &a.xs
+    let keep = &a.ys[0]
+    for i in 0..2 {
+        let s = r
+        s[0] = mk(i)
+        r = &a.ys
+    }
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+// === the same, the copy assigned to a reference declared before the loop
+fn main() {
+    var a = mkPair(1)
+    var r = &a.xs
+    var s = &a.zs
+    let keep = &a.ys[0]
+    var i = 0
+    while i < 2 {
+        s = r
+        s[0] = mk(i)
+        r = &a.ys
+        i += 1
+    }
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+// === the same, the copy passed to a mut parameter
+fn main() {
+    var a = mkPair(1)
+    var r = &a.xs
+    let keep = &a.ys[0]
+    var i = 0
+    while i < 2 {
+        let s = r
+        let z = cut(s)
+        r = &a.ys
+        i += 1
+    }
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+// === a held place under a reference not pointed afresh in a loop, a pure function in the index frees an element
+fn sinkI(x: []Node): int { return 0 }
+fn two(): []Node { return arr(70, 80) }
+fn main() {
+    var n = new Node{v: 1, kids: arr(2, 3)}
+    append(n.kids[0].kids, mk(5))
+    append(n.kids[1].kids, mk(6))
+    var r = &n.kids[0]
+    var i = 0
+    while i < 2 {
+        println(r.kids[sinkI(replace(n.kids[0].kids, two()))].v)  // error: cannot index 'r' with an index that replaces or moves what it holds
+        r = &n.kids[1]
+        i += 1
+    }
+}
 // === a defer that changes through a reference, read by an earlier defer
 fn main() {
     var a = mkPair(1)
