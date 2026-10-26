@@ -1,0 +1,215 @@
+// Origins per path (FORK.md, "Origins per path"): a move of a handle's owner clears the handle's origin on the
+// paths it was on; after a merge the handle has no origin only if every path to it moved the owner. The safe
+// neighbours of errors/origin_paths.obx.
+type Bag = ref record { n: int }
+fn nb(k: int): Bag { return new Bag{n: k} }
+type S = closed {
+    A { v: int }
+    B { w: int }
+}
+fn eat(b: Bag) { println(b.n) }
+
+// a move with no free: the handle names the object the new owner holds
+fn plainMove() {
+    var a = nb(1)
+    let h = handle(a)
+    var c = a
+    a = nb(2)
+    println(h.n)
+    println(c.n)
+    println(a.n)
+}
+
+// the then arm moves and returns; the else arm and the code after it free nothing
+fn returnArm(k: int) {
+    var a = nb(3)
+    let h = handle(a)
+    if k == 0 {
+        var c = a
+        println(h.n)
+        println(c.n)
+        return
+    } else {
+        println(0)
+    }
+    println(h.n)
+}
+
+// the arm that frees the owner returns: its dead mark does not reach the code after it
+fn freeArmReturns(k: int) {
+    var a = nb(4)
+    let h = handle(a)
+    if k == 0 {
+        a = nb(5)
+        return
+    }
+    println(h.n)
+}
+
+// every arm moves the owner and fills it again: the owner is a new object, the handle names the old one
+fn bothMove(k: int) {
+    var a = nb(6)
+    let h = handle(a)
+    var c = nb(0)
+    if k == 0 {
+        c = a
+        a = nb(7)
+    } else {
+        c = a
+        a = nb(8)
+    }
+    a = nb(9)
+    println(h.n)
+    println(c.n)
+}
+
+// a move, a refill, and a second assignment on the same path: the second frees the refill, not the handle's object
+fn moveThenTwice() {
+    var a = nb(10)
+    let h = handle(a)
+    var c = a
+    a = nb(11)
+    a = nb(12)
+    println(h.n)
+    println(c.n)
+}
+
+// every arm of a match moves
+fn matchMoves(k: int) {
+    var a = nb(13)
+    let h = handle(a)
+    var c = nb(0)
+    match k {
+    1 { c = a; a = nb(14) }
+    else { c = a; a = nb(15) }
+    }
+    a = nb(16)
+    println(h.n)
+    println(c.n)
+}
+
+// an else-if chain where the arms that go on all move, and the one that does not returns
+fn chain(k: int) {
+    var a = nb(17)
+    let h = handle(a)
+    var c = nb(0)
+    if k == 1 {
+        c = a
+        a = nb(18)
+    } else if k == 2 {
+        c = a
+        a = nb(19)
+    } else {
+        a = nb(20)
+        return
+    }
+    a = nb(21)
+    println(h.n)
+    println(c.n)
+}
+
+// the use is inside the arm that moves, after the move
+fn useInArm(k: int) {
+    var a = nb(22)
+    let h = handle(a)
+    if k == 0 {
+        eat(a)
+        a = nb(23)
+        a = nb(24)
+        println(0)
+        return
+    }
+    println(h.n)
+}
+
+// a handle made in the loop; the arm that moves refills and continues, the other paths free nothing
+fn loopMove() {
+    var a = nb(25)
+    var i = 0
+    while i < 2 {
+        let h = handle(a)
+        i += 1
+        if i == 1 {
+            var c = a
+            a = nb(26)
+            println(h.n)
+            println(c.n)
+            continue
+        }
+        println(h.n)
+    }
+}
+
+// a loop whose break arm moves and refills; the handle is made in the loop
+fn loopBreak() {
+    var a = nb(27)
+    var i = 0
+    while i < 3 {
+        let h = handle(a)
+        i += 1
+        if i == 2 {
+            var c = a
+            a = nb(28)
+            println(c.n)
+            println(h.n)
+            break
+        }
+    }
+    println(a.n)
+}
+
+// every arm of a match on a closed type moves
+fn typeMoves(k: int) {
+    var a = nb(30)
+    let h = handle(a)
+    var c = nb(0)
+    var s: S = new A{v: 1}
+    if k == 1 { s = new B{w: 2} }
+    match s {
+        A { c = a; a = nb(31) }
+        B { c = a; a = nb(32) }
+    }
+    a = nb(33)
+    println(h.n)
+    println(c.n)
+}
+
+fn main() {
+    plainMove()  // expect: 1
+                 // expect: 1
+                 // expect: 2
+    returnArm(0)  // expect: 3
+                  // expect: 3
+    returnArm(1)  // expect: 0
+                  // expect: 3
+    freeArmReturns(0)
+    freeArmReturns(1)  // expect: 4
+    bothMove(0)  // expect: 6
+                 // expect: 6
+    bothMove(1)  // expect: 6
+                 // expect: 6
+    moveThenTwice()  // expect: 10
+                     // expect: 10
+    matchMoves(1)  // expect: 13
+                   // expect: 13
+    matchMoves(2)  // expect: 13
+                   // expect: 13
+    chain(1)  // expect: 17
+              // expect: 17
+    chain(2)  // expect: 17
+              // expect: 17
+    chain(3)
+    useInArm(0)  // expect: 22
+                 // expect: 0
+    useInArm(1)  // expect: 22
+    loopMove()  // expect: 25
+                // expect: 25
+                // expect: 26
+    loopBreak()  // expect: 27
+                 // expect: 27
+                 // expect: 28
+    typeMoves(0)  // expect: 30
+                  // expect: 30
+    typeMoves(1)  // expect: 30
+                  // expect: 30
+}

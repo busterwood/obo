@@ -1374,8 +1374,7 @@ every assignment while a handle from `a` is in scope would refuse `c_asg_clears_
   { a = nb(); return }  a = nb()  pr(h.n)` and `defer { a = nb() }  a = nb()  pr(h.n)` compiled and exited 7.
   Now an assignment (`originMove(.., false)`) only calls `originFree` and leaves the origins alone: the
   dead mark is the only record of it, and a path-dependent mark can no longer lose information. The
-  origin is cleared by a move only (which is not path-aware: `var c = a` in a return arm, and
-  `var a2 = a; a2 = nb()`, still leave the gap noted below). Two consequences. (1) The loop move rule
+  origin is cleared by a move only (which was not path-aware then; it is now, see "Origins per path (done)"). Two consequences. (1) The loop move rule
   (`loopOriginCheck`) skips a handle that is dead (`originDead`): it may not be used in the loop at all, since
   every use is refused, so the rule has nothing to protect (`c_asg_clears_origin` in `run/held_places.obx`).
   (2) A `drop` of the owner in a loop is now judged by the free rule (refused only if the loop uses the
@@ -1410,9 +1409,6 @@ every assignment while a handle from `a` is in scope would refuse `c_asg_clears_
 - false positives kept: `if alive(h) { pr(h.n) }` after the assignment is refused (the use is guarded, the
   compiler does not narrow on `alive`); a handle used in a loop that frees its owner is refused wherever
   the use is, even on a path that cannot follow the free (a use before a `break` arm that frees);
-- an `if` whose then arm assigns over or moves `a` and returns, and whose else arm assigns over `a`,
-  misses the else arm's free: the then arm cleared the origin, and the clearing is flow-insensitive (a
-  precision limit of `originMove`, which this change keeps);
 - `alive(h)` in a loop counts as a naming, so `while ... { alive(h); a = nb() }` is refused at the
   assignment although `alive` does not use the object.
 
@@ -2354,6 +2350,68 @@ which have no origin and are checked at run time only, so there is nothing for t
 
 **Memory.** The port compiling itself peaks at about 1.06 million bytes live (1.03 million before); the budget
 `PEAK_BUDGET` (2,000,000) is untouched. The ifStat copies of the marks are transient.
+
+## Origins per path (done)
+
+**The gap.** A move of a handle's owner cleared the handle's origin (`hOrigin`) for the rest of the function,
+on every path. `let h = handle(a); if c { var d = a; return } else { a = nb() }; pr(h.n)` compiled, because the
+then arm had cleared the origin before the else arm's free was compiled, so the free marked nothing; the use
+trapped at run time (exit 7). The same for an `if` with no else, `else if`, `match`, an arm that continues or
+breaks in a loop, and a `drop` after the `if`.
+
+**The rule** (`originLive`, `originMove`, `originFree`, `liveClear`, `liveJoin`, `deadSave`, `deadSet`,
+`armBlock`, `ifStat`, both matches and `loopBodyV` in `src/obo.obo`). Each `originSyms` entry has a live mark
+(`originLive`): the owner while some path to the point has not moved it. It is set where the handle is made (a
+`let` copy of a handle with an origin too) and cleared by a whole move of the owner (`originMove`, every way:
+`var c = a`, passing it, `take`, `replace`, a field). `originFree` (an assignment over the owner, `drop`, the replay of a
+defer's frees) marks a handle dead only while its live mark is set; a handle whose owner was moved on every path
+to the free is not freed by it (the object belongs to the new owner). The mark never comes back: a refill of the
+owner (`a = nb()` after the move) does not reset it, since the next free then frees the refill, not the handle's
+object. The live marks are saved and restored with the dead marks (`deadSave` returns both, `deadSet` takes
+both back) and merge as a union (a may-flag, like the dead marks): after an `if`, a `match` or an `else if`,
+a handle is live if some arm that goes on to the code after it left it live, or, with no else (a `match` with no
+else arm), if the path that runs no arm did (`liveJoin`). The union starts empty (`liveClear`), not from the marks
+before the statement as the dead marks do, since a live mark only goes away. An arm that ends does not take part:
+a return, and a break or a continue (whose paths reach the code after the loop, see below). Hence a move in an
+arm that returns leaves the handle live for the paths that go on, and a free of the owner there marks it dead.
+A loop ends with the live marks it began with (`dEntry`): the loop may run no time, and a mark only goes away along
+a path, so the marks at the entry are those of one of the paths out.
+
+`hOrigin` itself is still cleared flow-insensitively by a move. It is what the held-place checks use (a handle
+with no origin is an identity, which every move and free hits, the safe side), and `loopOriginPend` and
+`originNar`; only the free events moved to the live marks. The guard against a defer that uses the handle
+(`originFree`, "while a defer declared earlier uses handle") uses the live mark too.
+
+**Why it only tightens.** A dead mark is added exactly where the old rule added one, and in more places: a
+free that the old rule skipped because a textually earlier move (on another path, in an arm that ended, in an
+earlier iteration) had cleared the origin. The live mark is nil only when every path that reaches the point
+moved the owner; there the old rule skipped the free too. No dead mark is removed.
+
+**Documented behaviour kept.** `var c = a; h.n` is accepted (a move with no free; `c_asg_clears_origin` and the
+neighbours), `eat(a); h.n` stays on the run-time check. A move on every path followed by an assignment over the
+owner is accepted (`bothMove` in `tests/run/origin_paths.obx`); a move on one path only needs the owner refilled
+on that path (a move on one path that does not refill is "moved on one path but not another"), and then an
+assignment after the merge is refused, because it frees the object on the paths that did not move.
+
+**Left.** The marks do not follow a condition: `if c { move+refill }  if c { a = nb() }  h.n` is refused although
+the two ifs agree (a path-insensitive false positive; the old rule accepted this one by accident). A `let` copy of
+a handle made after a move on a path that ended (`if c { take(a); return }  let g = h`) gets no origin, since
+`hOrigin` is already cleared by the arm, so a free of the owner then is not seen through `g` (run-time check). A
+move in a defer body is refused outright, so the defer needs no live handling beyond the restore.
+A handle with no origin, a field handle and the other "Not covered" shapes above are unchanged.
+
+**Tests.** Refused: `tests/errors/origin_paths.obx` (the then arm moves and returns and the else arm assigns
+over; a hand-away (`eat(a)`); no else; the arm falls through after refilling; a `drop` after; else-if both
+ways; a `match` with an else, with none, and with every arm but one moving; a loop with a continue arm, with a
+break arm; a defer declared after a moving return arm; a copy made before one; a nested if). Accepted:
+`tests/run/origin_paths.obx` (a plain move, a moving return arm, a freeing return arm, every arm moving in an
+if, in a match and in an else-if chain, a move then two assignments, a use in the moving arm, a loop with a
+continue arm and a break arm). Mutants: `PATH_MUTANTS` in `tests/mutate_fork.py` (also run by `mutate_port.py`).
+All the programs in `tests/run`, `examples`, `bench` and the compiler itself compile the same with the old and the new
+compiler. No fuzzer kind: the fuzzer makes handles from elements, which have no origin.
+
+**Memory.** One more array (`originLive`) with one entry per tracked handle, and the saved marks are twice as
+long, transient: see the port's peak in the commit message.
 
 ## Pure calls with mut parameters (done)
 

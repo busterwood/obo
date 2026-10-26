@@ -1,0 +1,234 @@
+// A move of a handle's owner on one path clears the handle's origin on that path only (FORK.md, "Origins per
+// path"): a free of the owner on a path that did not move it still marks the handle dead.
+type Bag = ref record { n: int }
+fn nb(k: int): Bag { return new Bag{n: k} }
+fn flag(): bool { return true }
+type S = closed {
+    A { v: int }
+    B { w: int }
+}
+fn eat(b: Bag) { println(b.n) }
+// === the then arm moves and returns, the else arm assigns over the owner
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    if flag() {
+        var c = a
+        println(c.n)
+        return
+    } else {
+        a = nb(2)
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === the then arm hands the owner away and returns, the else arm assigns over it
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    if flag() {
+        eat(a)
+        return
+    } else {
+        a = nb(2)
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === the then arm moves and returns, the owner is assigned over after the if
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    if flag() {
+        var c = a
+        println(c.n)
+        return
+    }
+    a = nb(2)
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === the then arm moves and falls through, the owner is assigned over after the if
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    var c = nb(0)
+    if flag() {
+        c = a
+        a = nb(7)
+    }
+    a = nb(2)
+    println(h.n)  // error: handle 'h' may name a freed object
+    println(c.n)
+}
+// === the then arm moves, the else arm does not, a drop follows
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    var c = nb(0)
+    if flag() { c = a; a = nb(7) } else { println(0) }
+    drop(a)
+    println(h.n)  // error: handle 'h' may name a freed object
+    println(c.n)
+}
+// === else-if: the first arm moves and returns, the second assigns over
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    let k = 3
+    if k == 1 {
+        var c = a
+        println(c.n)
+        return
+    } else if k == 2 {
+        a = nb(2)
+    } else {
+        println(0)
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === else-if: the last arm moves and returns, the arm before it assigns over
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    let k = 3
+    if k == 1 {
+        a = nb(2)
+    } else if k == 2 {
+        var c = a
+        println(c.n)
+        return
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === match: one arm moves and returns, another assigns over
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    let k = 2
+    match k {
+    1 {
+        var c = a
+        println(c.n)
+        return
+    }
+    2 {
+        a = nb(2)
+    }
+    else { println(0) }
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === match without an else: one arm moves and returns, the owner is assigned over after
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    let k = 2
+    match k {
+    1 {
+        var c = a
+        println(c.n)
+        return
+    }
+    }
+    a = nb(2)
+    println(h.n)  // error: handle 'h' may name a freed object
+}
+// === match: every arm moves except one, the owner is assigned over after
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    var c = nb(0)
+    let k = 2
+    match k {
+    1 { c = a; a = nb(7) }
+    2 { println(2) }
+    else { c = a; a = nb(8) }
+    }
+    a = nb(3)
+    println(h.n)  // error: handle 'h' may name a freed object
+    println(c.n)
+}
+// === a loop: the body moves in an arm that continues, then assigns over
+fn main() {
+    var a = nb(1)
+    var i = 0
+    while i < 3 {
+        let h = handle(a)
+        i += 1
+        if i == 1 {
+            var c = a
+            println(c.n)
+            a = nb(5)
+            continue
+        }
+        a = nb(2)
+        println(h.n)  // error: handle 'h' may name a freed object
+    }
+}
+// === a loop: the move is in an arm that breaks, the free follows the arm
+fn main() {
+    var a = nb(1)
+    var i = 0
+    while i < 3 {
+        let h = handle(a)
+        i += 1
+        if i == 1 {
+            var c = a
+            a = nb(6)
+            println(c.n)
+            break
+        }
+        a = nb(2)
+        println(h.n)  // error: handle 'h' may name a freed object
+    }
+}
+// === a defer declared after a moving return arm still guards the owner against a free
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    if flag() {
+        var c = a
+        println(c.n)
+        return
+    }
+    defer { println(h.n) }
+    a = nb(2)  // error: while a defer declared earlier uses handle 'h'
+}
+// === a copy of the handle made before a moving return arm
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    let g = h
+    if flag() {
+        var c = a
+        println(c.n)
+        return
+    }
+    a = nb(2)
+    println(g.n)  // error: handle 'g' may name a freed object
+}
+// === the moving arm refills in both branches of a nested if, the if around it has no else
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    var c = nb(0)
+    if flag() {
+        if flag() { c = a; a = nb(3) } else { c = a; a = nb(4) }
+    }
+    a = nb(2)
+    println(h.n)  // error: handle 'h' may name a freed object
+    println(c.n)
+}
+// === a match on a closed type: one arm moves and returns, the other assigns over
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    var s: S = new A{v: 1}
+    match s {
+        A {
+            var c = a
+            println(c.n)
+            return
+        }
+        B { a = nb(2) }
+    }
+    println(h.n)  // error: handle 'h' may name a freed object
+}
