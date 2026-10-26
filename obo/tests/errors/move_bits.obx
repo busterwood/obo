@@ -1,0 +1,165 @@
+// The unsafe neighbours of run/move_bits.obx. A callee is moving when it might free: something below a mut
+// argument (an assignment over an array or field, replace, take, truncate), a global, anything through a handle,
+// or when it is not known (a forward heading, itself). Appending alone does not make it moving. Each case
+// holds an array or a place across such a call.
+type Item = ref record { v: int; opt: ?Item }
+type Bag = ref record { xs: []Item; ns: []int; n: int }
+var gns = new []int(0)
+var gxs = new []Item(0)
+fn mk(v: int): Item { return new Item{v: v, opt: nil} }
+fn mkBag(): Bag { return new Bag{xs: new []Item(0), ns: new []int(0), n: 0} }
+// === the callee appends to the indexed array and also truncates it
+fn growCut(mut a: &[]Item): int { append(a, mk(1)); truncate(a, 0); return 0 }
+fn f(mut b: &Bag): int {
+    return b.xs[growCut(b.xs)].v  // error: cannot index a field, element or reference with an index that calls a function
+}
+fn main() {}
+// === two calls deep: the inner callee assigns a new array over the field
+fn wipe(mut b: &Bag): int { b.xs = new []Item(0); return 0 }
+fn viaWipe(mut b: &Bag): int { return wipe(b) }
+fn f(mut b: &Bag): int {
+    return b.xs[viaWipe(b)].v  // error: cannot index a field, element or reference with an index that calls a function
+}
+fn main() {}
+// === recursion: the call of itself in the index is not known to move nothing
+fn rec(mut b: &Bag, n: int): int {
+    if n > 0 { return b.xs[rec(b, n - 1)].v }  // error: cannot index a field, element or reference with an index that calls a function
+    append(b.xs, mk(1))
+    return 0
+}
+fn main() {}
+// === a forward heading: the body is not known yet
+fn later(mut b: &Bag): int
+fn f(mut b: &Bag): int {
+    return b.xs[later(b)].v  // error: cannot index a field, element or reference with an index that calls a function
+}
+fn later(mut b: &Bag): int { append(b.xs, mk(1)); return 0 }
+fn main() {}
+// === truncate of the indexed array
+fn cut(mut a: &[]Item): int { truncate(a, 0); return 0 }
+fn f(mut b: &Bag): int {
+    return b.xs[cut(b.xs)].v  // error: cannot index a field, element or reference with an index that calls a function
+}
+fn main() {}
+// === an assignment over the indexed array
+fn wipe(mut b: &Bag): int { b.xs = new []Item(0); return 0 }
+fn f(mut b: &Bag): int {
+    return b.xs[wipe(b)].v  // error: cannot index a field, element or reference with an index that calls a function
+}
+fn main() {}
+// === replace of the indexed array
+fn swap(mut b: &Bag): int { let old = replace(b.xs, new []Item(0)); return len(old) }
+fn f(mut b: &Bag): int {
+    return b.xs[swap(b)].v  // error: cannot index a field, element or reference with an index that calls a function
+}
+fn main() {}
+// === take of an element of the indexed array
+type OBag = ref record { xs: []?Item }
+fn takeAt(mut a: &[]?Item): int { let o = take(a[0]); return 0 }
+fn f(mut b: &OBag): int {
+    return len(b.xs[takeAt(b.xs)]!.opt) // error: cannot index a field, element or reference with an index that calls a function
+}
+fn main() {}
+// === replace of an element of the array that an append holds
+fn swapFirst(mut a: &[]Item): Item { return replace(a[0], mk(2)) }
+fn f(mut b: &Bag) {
+    append(b.xs, swapFirst(b.xs))  // error: cannot append to a field, element, handle or global across a call
+}
+fn main() {}
+// === a handle's array, indexed by a call that assigns over it through the owner
+fn wipe(mut b: &Bag): int { b.xs = new []Item(0); return 0 }
+fn f(): int {
+    var b = mkBag()
+    let h = handle(b)
+    return h.xs[wipe(b)].v  // error: cannot index through a handle with an index that calls a function
+}
+fn main() {}
+// === a handle's array, appended to with a value from a call that truncates it
+fn cutItem(mut a: &[]Item): Item { truncate(a, 0); return mk(1) }
+fn f() {
+    var b = mkBag()
+    let h = handle(b)
+    append(h.xs, cutItem(b.xs))  // error: cannot append to a field, element, handle or global across a call
+}
+fn main() {}
+// === a global array, indexed by a call that assigns over it
+fn reset(): int { gns = new []int(0); return 0 }
+fn f(): int {
+    return gns[reset()]  // error: cannot index through global 'gns' with an index that calls a function
+}
+fn main() {}
+// === a global array, appended to with a value from a call that frees it
+fn resetItem(): Item { gxs = new []Item(0); return mk(1) }
+fn f() {
+    append(gxs, resetItem())  // error: cannot append to a field, element, handle or global across a call
+}
+fn main() {}
+// === an assignment target in an array, across a call that assigns over the array
+fn wipe(mut b: &Bag): int { b.xs = new []Item(0); return 0 }
+fn f(mut b: &Bag) {
+    b.xs[0].v = wipe(b)  // error: cannot assign to a field or element across a call
+}
+fn main() {}
+// === a replace of an element, with a value from a call that truncates its array
+fn cutItem(mut a: &[]Item): Item { truncate(a, 0); return mk(1) }
+fn f(mut b: &Bag) {
+    let old = replace(b.xs[0], cutItem(b.xs))  // error: replace through a handle, a field or an element cannot have a value that calls a function that might free
+}
+fn main() {}
+// === a reference to an element, held across a call that truncates the array (an append alone is fine)
+fn cut(mut a: &[]Item): int { truncate(a, 0); return 0 }
+fn main() {
+    var xs = new []Item(0)
+    append(xs, mk(1))
+    let r = &xs[0]
+    let n = cut(xs)
+    println(r.v + n)  // error: 'r' may point to freed memory
+}
+// === a reference to an element, held across a call that assigns over it
+fn setFirst(mut a: &[]Item): int { a[0] = mk(2); return 0 }
+fn main() {
+    var xs = new []Item(0)
+    append(xs, mk(1))
+    let r = &xs[0]
+    let n = setFirst(xs)
+    println(r.v + n)  // error: 'r' may point to freed memory
+}
+// === the callee that is compiled again without registers (FORK.md, Phase 2) assigns over the field
+type P = ref record { x: int; y: int }
+var ga = new []int(0)
+var gp = new P{x: 1, y: 2}
+var gps = new []P(0)
+fn cut(mut b: &Bag, n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    while i < n { v += i; u += v; w += u; v += w; u += i; w += v; v += u; w += i; u += w; i += 1 }
+    ga[i & 3] = gps[i & 1].x + gp.x * ga[i & 3]
+    b.xs = new []Item(0)
+    return v + u + w
+}
+fn f(mut b: &Bag): int {
+    return b.xs[cut(b, 3)].v  // error: cannot index a field, element or reference with an index that calls a function
+}
+fn main() {}
+// === a callee compiled again without registers that writes through a handle
+fn cutH(h: ^Bag, b: &Bag, n: int): int {
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    while i < n { v += i; u += v; w += u; v += w; u += i; w += v; v += u; w += i; u += w; i += 1 }
+    h.xs = new []Item(0)
+    return v + u + w
+}
+fn f(mut b: &Bag, h: ^Bag): int {
+    return b.xs[cutH(h, b, 3)].v  // error: cannot index a field, element or reference with an index that calls a function
+}
+fn main() {}
+// === the 63rd parameter is always assumed to free: a callee that only appends through it is moving
+fn many(p0: int, p1: int, p2: int, p3: int, p4: int, p5: int, p6: int, p7: int, p8: int, p9: int, p10: int, p11: int, p12: int, p13: int, p14: int, p15: int, p16: int, p17: int, p18: int, p19: int, p20: int, p21: int, p22: int, p23: int, p24: int, p25: int, p26: int, p27: int, p28: int, p29: int, p30: int, p31: int, p32: int, p33: int, p34: int, p35: int, p36: int, p37: int, p38: int, p39: int, p40: int, p41: int, p42: int, p43: int, p44: int, p45: int, p46: int, p47: int, p48: int, p49: int, p50: int, p51: int, p52: int, p53: int, p54: int, p55: int, p56: int, p57: int, p58: int, p59: int, p60: int, p61: int, mut a: &[]Item): int { append(a, mk(1)); return 0 }
+fn f(mut b: &Bag): int {
+    return b.xs[many(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, b.xs)].v  // error: cannot index a field, element or reference with an index that calls a function
+}
+fn main() {}

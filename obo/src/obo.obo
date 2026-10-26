@@ -2777,7 +2777,7 @@ fn mutFrees(f: ^Sym, i: int): bool {
 
 // a callee that might free nothing: compiled, not being compiled, freeing no global, not writing through a
 // handle, and freeing nothing below any of its mut arguments (mutFrees: FnRec.pfree). It may still change
-// them without freeing, and append to a mut array, which moves its storage: see movesFn.
+// them without freeing, and append to a mut array (which does not move the array: see movesFn).
 // An owned by-value parameter does not make it impure: the caller's argument is a move, which consume()
 // counts (touches), and the array checks see that.
 fn pureFn(f: ^Sym): bool {
@@ -2788,15 +2788,18 @@ fn pureFn(f: ^Sym): bool {
     return true
 }
 
-// a call that counts in userCalls: one that might free (not pureFn), or that has a mut parameter, whose array
-// the callee may append to (append records no free, but it reallocates the array, so an array address or
-// index loaded before the call is stale). The index and held-array checks need this; the handle borrows do not.
+// a call that counts in userCalls: one that might free (not pureFn). The index, held-array, append, truncate,
+// replace and assignment-target checks guard an array header (or a record address) loaded before the call.
+// Appending does not move that: an array value is a header (length, capacity, data pointer) of its own, which
+// append updates in place when it reallocates the data block; an element access reads the data pointer and the
+// length from the header when it is resolved, after the index has run, and a reference to an element is the
+// element object (or inner header), never a slot. So only a free of the array, or of what holds it, makes a loaded
+// header stale, and pureFn already says whether a callee may free (below its mut arguments through
+// FnRec.pfree, a global, anything through a handle, or unknown). Truncate shrinks the header in place and frees
+// only owned elements, which pfree records. A callee with a mut parameter that only writes, appends or
+// truncates a scalar array is therefore not moving. See FORK.md, "Move bits".
 fn movesFn(f: ^Sym): bool {
-    if !pureFn(f) { return true }
-    for i in 0..len(f.fnRec.pmodes) {
-        if f.fnRec.pmodes[i] == 2 { return true }
-    }
-    return false
+    return !pureFn(f)
 }
 
 fn mightFree(f: ^Sym, g: ^Sym): bool {
@@ -3990,7 +3993,7 @@ fn callFn(f: ^Sym): Item {
         }
     }
     afterCall(f)
-    if movesFn(f) { userCalls += 1 }              // only calls that might free or move an array count
+    if movesFn(f) { userCalls += 1 }              // only calls that might free count
     emit(0xE8)
     emit32(0)
     let at = pc() - 4

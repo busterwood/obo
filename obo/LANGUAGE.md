@@ -686,7 +686,8 @@ whose right-hand side calls a function that might free something:
 // example: error: cannot assign to a field or element across a call
 type Node = ref record { v: int; kids: []Node }
 
-fn replaceKids(mut n: &Node): Node {        // the body changes nothing: the error is from taking n as mut
+fn replaceKids(mut n: &Node): Node {        // frees the array the target is in
+    n.kids = new []Node(0)
     return new Node{v: 7, kids: new []Node(0)}
 }
 
@@ -738,6 +739,14 @@ element (`xs[0].kids[f(xs)]`), a row of a grid (`g[0][f(g)]`), or a reference to
 in an index (`b.items[g(new Holder{bg: b})]`) is refused too. A call that only borrows (`&`) or takes
 a `mut` argument is accepted: a `mut` array parameter cannot be reassigned, so no such call can free
 the array's header. The fix is the same: compute the value, or the index, first.
+
+A call is only a problem if it might free. A callee that writes a scalar through a `mut` parameter, or
+appends to a `mut` array, does not make these checks refuse: an array is a header of its own that `append`
+updates in place when it grows, so `xs.items[grow(xs.items)]`, `h.items[bump(b)] = v` and
+`append(b.items, grow(b.items))` are accepted when `grow` and `bump` only append or write scalars. A callee
+that assigns over, `replace`s or `take`s something below a `mut` argument, truncates an array through it (a
+truncate counts as a free even for scalar elements), is not compiled yet, or calls itself, is refused as before,
+whichever of its arguments it frees below.
 
 ```obo
 // example: error: cannot index 'xs' with an index that moves it

@@ -356,11 +356,27 @@ class Gen:
         return self.invalid_stmt([f"var {r} = &ga", "gdrop()", f"println(sum({r}))"])
 
     def handle_index_call_stmt(self):
-        """A handle to a record's array, indexed by a call that may change it: rejected."""
+        """A handle to a record's array, indexed by a call that replaces the array: rejected."""
         n = self.nrefs
         self.nrefs += 1
+        self.extra_fn("fn rebox(mut b: &Box): int { b.items = new []int(0); append(b.items, 2); return 1 }")
         return self.invalid_stmt([f"var b{n} = new Box{{items: new []int(0)}}", f"let hx{n} = handle(b{n})",
-                                  f"hx{n}.items[tick(b{n}.items)] = 9"])
+                                  f"hx{n}.items[rebox(b{n})] = 9"])
+
+    def move_bits_stmt(self):
+        """A handle's, a field's and a parameter's array indexed, appended to and assigned into by a
+        value that calls a function that only appends to the array (an append updates the array's header
+        in place, so nothing loaded is stale): valid."""
+        n = self.nrefs
+        self.nrefs += 1
+        k = self.k() % 5 + 1
+        lines = [f"var b{n} = new Box{{items: new []int(0)}}", f"let hx{n} = handle(b{n})",
+                 f"hx{n}.items[tick(b{n}.items)] = {k}", f"b{n}.items[tick(b{n}.items)] += {k}",
+                 f"append(b{n}.items, tick(b{n}.items))", f"println(b{n}.items[0] * 100 + len(b{n}.items))"]
+
+        def run(st):
+            st.out.append(str(2 * k * 100 + 4))
+        return Stmt(["{"] + indent(lines) + ["}"], run)
 
     def target_call_stmt(self, kind):
         """A field of a local record, targeted by a compound assignment, append, truncate or an
@@ -1325,7 +1341,7 @@ class Gen:
         makers = self.common() + [self.choose_ref_stmt] * 2 + [self.ref_local_path_stmt] + [self.defer_ref_stmt] + [self.push_stmt] * 4 + [self.take_stmt] * 2 \
             + [self.loop_stmt, self.if_stmt, self.g_set_stmt, self.g_trunc_stmt, self.ss_loop_stmt,
                self.gdrop_stmt, self.ss_trunc_stmt, self.tag_trunc_stmt, self.h_new_stmt, self.h_new_stmt,
-               self.h_kill_stmt, self.h_kill_stmt, self.handle_borrow_stmt, self.handle_pure_mut_stmt, self.owned_deep_writer_stmt,
+               self.h_kill_stmt, self.h_kill_stmt, self.handle_borrow_stmt, self.handle_pure_mut_stmt, self.move_bits_stmt, self.owned_deep_writer_stmt,
                self.drop_stmt, self.replace_stmt, self.eat_stmt, self.if_move_stmt,
                self.loop_move_stmt, self.discard_stmt]
         if self.full:

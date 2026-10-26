@@ -498,7 +498,6 @@ FP_MUTANTS = {
     'a callee that frees globals is pure': ('    if f.addr < 0 || f == curFn || f.freesAll || len(f.fnRec.freed) > 0 { return false }\n', '    if f.addr < 0 || f == curFn || f.freesAll { return false }\n'),
     'a callee that frees anything is pure': ('    if f.addr < 0 || f == curFn || f.freesAll || len(f.fnRec.freed) > 0 { return false }\n', '    if f.addr < 0 || f == curFn || len(f.fnRec.freed) > 0 { return false }\n'),
     'a callee with a forward heading is pure': ('    if f.addr < 0 || f == curFn || f.freesAll || len(f.fnRec.freed) > 0 { return false }\n', '    if f == curFn || f.freesAll || len(f.fnRec.freed) > 0 { return false }\n'),
-    'a call with a mut parameter that appends does not count as moving': ('    if movesFn(f) { userCalls += 1 }', '    if !pureFn(f) { userCalls += 1 }'),
     'only the first mut parameter is checked for frees': ('    for i in 0..len(f.fnRec.pmodes) {\n        if f.fnRec.pmodes[i] == 2 && mutFrees(f, i) { return false }', '    for i in 0..1 {\n        if i < len(f.fnRec.pmodes) && f.fnRec.pmodes[i] == 2 && mutFrees(f, i) { return false }'),
     # a reference only borrows: replace and take refuse it
     'a replace of a reference local is allowed': ('        if rs != nil && rs.isRefLocal {\n            error("replace cannot change', '        if rs != nil && rs.isRefLocal && false {\n            error("replace cannot change'),
@@ -547,8 +546,27 @@ REF_PATH_MUTANTS = {
 }
 MUTANTS.update(REF_PATH_MUTANTS)
 
+# the move rule (FORK.md, "Move bits"): a call counts in userCalls only if it might free (not pureFn); appending through
+# a mut parameter moves nothing a caller has loaded. Each mutant undoes one part, in the unsafe direction (a case of
+# errors/move_bits.obx is accepted) or in the safe one (run/move_bits.obx is refused again)
+MOVES = 'fn movesFn(f: ^Sym): bool {\n    return !pureFn(f)\n}'
+MOVE_MUTANTS = {
+    'no call counts as moving': (MOVES, 'fn movesFn(f: ^Sym): bool {\n    return false\n}'),
+    'every call counts as moving': (MOVES, 'fn movesFn(f: ^Sym): bool {\n    return true\n}'),
+    'a call with a mut parameter counts as moving': (MOVES,
+        'fn movesFn(f: ^Sym): bool {\n    if !pureFn(f) { return true }\n    for i in 0..len(f.fnRec.pmodes) {\n        if f.fnRec.pmodes[i] == 2 { return true }\n    }\n    return false\n}'),
+    'the 63rd parameter is assumed to free nothing': ('    if i >= 62 { return true }\n', ''),
+    'a truncate records no free': ('                if owned || !throughHandle(a) { recordFreeChange(a) }   // a scalar array frees nothing\n', ''),
+    'an assignment over an owned field of a parameter records no free': ('                    invalidateOwnedChange(x)\n                    recordFreeChange(x)\n                } else if xs != nil {', '                    invalidateOwnedChange(x)\n                } else if xs != nil {'),
+    'a replace through a parameter records no free': ('            recordFreeChange(x)\n        } else {\n            let ts = x.sym\n            if ts != nil {\n', '        } else {\n            let ts = x.sym\n            if ts != nil {\n'),
+    'a take through a parameter records no free': ('            recordFreeChange(x)\n        } else {\n            let ts = x.sym\n            if ts != nil && ts.storage == "local"', '        } else {\n            let ts = x.sym\n            if ts != nil && ts.storage == "local"'),
+    'a retried callee forgets its free bits': ('        truncate(f.fnRec.freed, sFreed)\n', '        truncate(f.fnRec.freed, sFreed)\n        f.fnRec.pfree = 0\n'),
+}
+MUTANTS.update(MOVE_MUTANTS)
+
 # mutants that survive by design: each removes a test that is redundant, so the behaviour is unchanged
 EQUIVALENT = {
+    "a retried callee forgets its free bits": "equivalent: the second pass compiles the same body again and records every free it makes again (recordFree), so clearing the bits between the passes loses nothing; the bits are kept (ORed into) only so that the summary never depends on which pass recorded it. A reset after the second pass would be caught (errors/move_bits.obx, errors/mut_retry.obx), but there is no place for it",
     "a defer body is checked against a binding that is not the same place": "equivalent: a reference that a defer body uses may not be pointed elsewhere while the defer is declared (deferUses), so the binding at the block's end is the one the defer was declared with, and the two are covered either way",
     "a store to a place anywhere is exempt from a free of it (identity)": "no unsafe program found: with the exemption, r[0] = replace(r[0], ..) with r not pointed afresh in a loop is accepted, which is right (same designator, run/fp-style); a free of another place needs a call in the value, which heldLost or the call rule refuses first. Tried: r1.kids = f(replace(r2[0], ..)) with both joined or not fresh",
     "a store to a place anywhere is exempt from a free of it (owned)": "equivalent for the same reason",

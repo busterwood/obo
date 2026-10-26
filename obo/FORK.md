@@ -2372,12 +2372,12 @@ and a handle borrow held across `grow(ys)` are accepted when `grow` only appends
   array address or index loaded before a call. `append` records no free (`recordFree` is called for `truncate`,
   not `append`) but reallocates the array, so a callee that appends through a `mut` parameter makes the loaded
   address stale (`h.xs[grow(h.xs)]`). Summaries have no "may move" bit, so these stay conservative: a new
-  `movesFn(f)` is `!pureFn(f)` or any `mut` parameter, and only it increments `userCalls`. Behaviour of every
-  `userCalls` check is unchanged.
+  `movesFn(f)` was `!pureFn(f)` or any `mut` parameter, and only it incremented `userCalls`. Replaced by the rule in
+  "Move bits (done)": the premise (append moves a loaded address) was wrong.
 
-**Left.** A per-parameter "appends" bit would let `userCalls` skip callees that only write scalars through
-`mut` (`xs[bumpAt(xs, 0)]` is still refused). A handle borrow passed to a callee whose only freeing `mut`
-parameter receives an unrelated array is still refused.
+**Left.** Nothing about `append` (see "Move bits (done)": `userCalls` no longer counts a callee only because it has a
+`mut` parameter). A handle borrow passed to a callee whose only freeing `mut` parameter receives an unrelated array is
+still refused.
 
 **Tests.** `tests/run/pure_mut.obx` (accepted shapes, refused by the seed); `tests/errors/pure_mut.obx`
 (truncate, element replace, two calls deep, recursion, forward headings with and without a `mut`
@@ -2456,3 +2456,68 @@ part of the rule (also run by `mutate_port.py`); three are equivalent with reaso
 
 **Memory.** The port compiling itself peaks at 1,058,384 bytes live (1,052,768 before; budget 2,000,000 unchanged,
 `MEMORY_MARGIN` unchanged): no new field, only code.
+
+## Move bits (done)
+
+**Rule.** `movesFn(f)`, the test that makes a call count in `userCalls`, is `!pureFn(f)`: a call counts only if the
+callee might free (a global, anything through a handle, something below a `mut` argument by `FnRec.pfree`) or is
+not known (forward heading, itself, the 63rd parameter on). No new bit is stored. The task asked for a per-parameter
+"may move or reallocate" summary; looking for what a reallocation can invalidate showed there is nothing for it to
+protect, so the summary would be a bit that is never consulted.
+
+**Why append moves nothing a caller holds.** An array value is the address of a header (`Array`: length,
+capacity, data pointer, element size), allocated apart from its data block. `rt_append` replaces the data block
+and updates the header in place (`runtime.c`); `truncate` shrinks the header in place. The compiler never holds a
+data pointer or a length across code that can run a call: an `elem` item keeps the *header* in a register, and
+`resolve` reads the length (bounds check) and the data pointer from it when the access is made, after the index and
+the right-hand side have run. A reference to an element is the element object (a record) or the inner array's
+header, never the slot (`&xs[0]` of an `[]int` is refused), so it survives a reallocation (`LANGUAGE.md`: appending
+does not invalidate references; checked at run time with `OBO_CHECK`, which poisons freed memory, in
+`run/move_bits.obx`). What a `userCalls` check can lose is therefore the header itself, or the record that holds it,
+and that happens only when something is freed: a free of the array, an assignment over it or over the field that holds
+it, `replace`/`take`, a free of the owner, or a move of the owner (the last is `heldLost`, not `userCalls`). Every one
+of these is already a free recorded in `pfree`, `freed` or `freesAll`, or an unknown callee. Truncating a scalar array
+records a free too (only through a handle is a scalar truncate exempt), so it stays moving: conservative, since a
+truncated array only fails its bounds check.
+
+**What each `userCalls` check needed.** All of them hold a header or a record address loaded before the call, so all
+use the one rule; none needed a different bit.
+- Index across a call (`designatorT`: through a handle, a global, a field, element or reference). Header held. Changed:
+  an appending or scalar-writing callee with a `mut` parameter is accepted.
+- `append`/`truncate` with a held array (the value or count calls). Header held, `rt_append` reads it afterwards. Changed
+  the same way.
+- `replace` through a handle, field or element, and the assignment targets (`checkTargetAcrossCall`, compound
+  assignment): the record or array the target is in is held. Changed the same way. The old text of
+  `errors/assignments.obx` used a `mut` callee that freed nothing; its callee now assigns over the field.
+- The retry saves (`sUser = userCalls` and the restore before the second pass): unchanged. The count is rebuilt by the
+  second pass, which sees the same summaries. Nothing to OR: `pfree` and `freed` are only appended to or kept
+  (`truncate(freed, sFreed)` drops only what the abandoned pass added, as before). The second pass records every free
+  again, so the bits are the same either way; `errors/move_bits.obx` has a retried callee that assigns over the
+  field.
+
+**Argument identity (not done).** An index into `xs` across a call that frees below an unrelated `ys` is still
+refused: the free is a single bit per parameter, and the counter says only "a call that might free happened". A rule
+that compared the held root with the roots of the freeing `mut` arguments needs the held roots at the call, an alias
+test between a held reference parameter and the argument (`reaches`), and a separate answer for globals, handles and
+unknown callees; it was not built. Whole locals are not affected (their place is fixed, `wholeLocal`).
+
+**What is left conservative.** A callee that truncates a scalar array through a `mut` parameter; a callee that
+replaces an element (`a[0] = mk(2)`, a free of the old element only: the header is held, not the element); a callee
+that frees below a different argument than the held one; a recursive callee's call in its own body; a forward heading;
+the 63rd and later parameters; handle writers.
+
+**Tests.** `tests/run/move_bits.obx`: accepted shapes (local, other array, field, handle, mut parameter, global, a
+reference held across an appending call), each with a callee that appends 20 elements so the data block moves.
+`tests/errors/move_bits.obx`: the neighbours (append plus truncate, two calls deep, recursion, forward heading,
+truncate, assignment over, replace, take, an append holding the array across a replace, a handle-rooted array,
+a global array, a reference held across a truncate or an element assignment, the Phase 2 retry callee, a handle
+writer, the 63rd parameter). Cases that depended on the old rule were changed: `errors/assignments.obx`,
+`errors/call_targets.obx` and `errors/pure_mut.obx` use a callee that really frees; `own_fuzz.py`'s
+`handle_index_call_stmt` (invalid) uses `rebox` and `move_bits_stmt` (valid, with a model) is new. LANGUAGE.md section 10 has the rule
+and its example now assigns over the field.
+**Mutants:** `MOVE_MUTANTS` in `tests/mutate_fork.py` (also run by `mutate_port.py`), nine: none, every, or any
+`mut` parameter counting as moving; the 63rd parameter; truncate, assignment, replace and take recording no free; a
+retried callee forgetting its bits (equivalent, with the reason in `EQUIVALENT`). The old mutant "a call with a
+mut parameter that appends does not count as moving" is gone: it is now the rule.
+
+**Memory.** No field, no bit: only code removed. See the report of the port's peak in the commit message.
