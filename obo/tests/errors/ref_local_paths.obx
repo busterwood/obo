@@ -1,0 +1,451 @@
+// The unsafe neighbours of the shapes in run/ref_local_paths.obx: each is still refused.
+type Node = ref record { v: int; kids: []Node }
+type Pair = ref record { xs: []Node; ys: []Node; zs: []Node }
+type Deep = ref record { p: Pair; q: Pair }
+type Cell = ref record { a: ?Node; b: Node }
+fn mk(v: int): Node { return new Node{v: v, kids: new []Node(0)} }
+fn arr(a: int, b: int): []Node {
+    var xs = new []Node(0)
+    append(xs, mk(a))
+    append(xs, mk(b))
+    return xs
+}
+fn mkPair(k: int): Pair { return new Pair{xs: arr(k, k + 1), ys: arr(k + 2, k + 3), zs: arr(k + 4, k + 5)} }
+fn mkDeep(): Deep { return new Deep{p: mkPair(1), q: mkPair(10)} }
+fn cut(mut x: &[]Node): int { x[0] = mk(0); return 0 }
+fn cutAll(mut p: &Pair): int { p.ys = arr(1, 1); return 0 }
+fn pq(mut x: &[]Node, y: &Node): int { x[1] = mk(y.v); return 0 }
+var g = new Pair{xs: new []Node(0), ys: new []Node(0), zs: new []Node(0)}
+fn clearG(): int { g.ys = new []Node(0); return 0 }
+// === overlapping paths: a change through a reference to the array frees an element a reference points at
+fn main() {
+    var a = mkPair(1)
+    let keep = &a.ys[0]
+    var r = &a.ys
+    r[0] = mk(9)
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+// === overlapping paths, a reference to the other field of the array's element
+fn main() {
+    var a = mkPair(1)
+    let keep = &a.ys[1].kids
+    var r = &a.ys
+    r[1] = mk(9)
+    println(len(keep))  // error: 'keep' may point to freed memory
+}
+// === a prefix path: the change is below the place the reference points at
+fn main() {
+    var a = mkPair(1)
+    let keep = &a.ys[0].kids
+    let r = &a.ys[0]
+    r.kids = arr(2, 2)
+    println(len(keep))  // error: 'keep' may point to freed memory
+}
+// === a prefix path, the reference changed through is the array and the other is deeper
+fn main() {
+    var a = mkPair(1)
+    append(a.ys[0].kids, mk(5))
+    let keep = &a.ys[0].kids[0]
+    let r = &a.ys
+    r[0].kids = arr(2, 2)
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+// === a re-point on one path only, then a change: the reference may point into either place
+fn pick(c: bool) {
+    var a = mkPair(1)
+    var r = &a.xs
+    if c { r = &a.ys }
+    let keep = &a.ys[0]
+    r[0] = mk(9)
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+fn main() { pick(true) }
+// === a re-point on one path only, the other place
+fn pick(c: bool) {
+    var a = mkPair(1)
+    var r = &a.xs
+    if c { r = &a.ys }
+    let keep = &a.xs[0]
+    r[0] = mk(9)
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+fn main() { pick(true) }
+// === a re-point on one path only: the places join to the whole root, a third field is refused too
+fn pick(c: bool) {
+    var a = mkPair(1)
+    var r = &a.xs
+    if c { r = &a.ys }
+    let keep = &a.zs[0]
+    r[0] = mk(9)
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+fn main() { pick(true) }
+// === a reference that is the whole record on one path and a field on the other
+fn pick(c: bool) {
+    var d = mkDeep()
+    var r = &d.p
+    if c { r = &d.q }
+    let keep = &d.q.xs[0]
+    r.xs = arr(1, 1)
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+fn main() { pick(true) }
+// === a re-point inside a loop: the next iteration changes through the other place
+fn main() {
+    var a = mkPair(1)
+    var r = &a.xs
+    let keep = &a.ys[0]
+    var i = 0
+    while i < 2 {
+        println(keep.v)  // error: 'keep' may point to freed memory
+        r[0] = mk(i)
+        r = &a.ys
+        i += 1
+    }
+}
+// === a reference not pointed afresh in a loop is taken to reach the whole root
+fn main() {
+    var a = mkPair(1)
+    var r = &a.ys
+    let keep = &a.xs[0]
+    var i = 0
+    while i < 2 {
+        r[0] = mk(i)
+        i += 1
+    }
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+// === a re-point in a loop, then a reference derived from it is changed through
+fn main() {
+    var d = mkDeep()
+    var r = &d.p
+    let keep = &d.q.xs[0]
+    var i = 0
+    while i < 2 {
+        let s = &r.xs
+        s[0] = mk(i)
+        r = &d.q
+        i += 1
+    }
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+// === a reference made from another reference: a change through the second frees the place of the first
+fn main() {
+    var d = mkDeep()
+    let keep = &d.p.zs[0]
+    let r = &d.p
+    let s = &r.zs
+    s[0] = mk(9)
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+// === a reference made from another reference, changed through the first
+fn main() {
+    var d = mkDeep()
+    let r = &d.p
+    let s = &r.zs[0]
+    r.zs = arr(1, 1)
+    println(s.v)  // error: 's' may point to freed memory
+}
+// === a reference made from another reference, one level up
+fn main() {
+    var d = mkDeep()
+    var r = &d.p
+    let s = &r.zs
+    let t = &s[0]
+    s[0] = mk(1)
+    println(t.v)  // error: 't' may point to freed memory
+}
+// === a variable index is every element
+fn main() {
+    var a = mkPair(1)
+    append(a.ys[0].kids, mk(5))
+    let keep = &a.ys[0].kids[0]
+    var i = 1
+    var r = &a.ys[i]
+    i = 0
+    r = &a.ys[i]
+    r.kids = arr(3, 3)
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+// === a variable index is every element, as the place of the other reference
+fn main() {
+    var a = mkPair(1)
+    var i = 1
+    let r = &a.ys[i]
+    append(a.ys[0].kids, mk(5))
+    let keep = &a.ys[0].kids[0]
+    r.kids = arr(3, 3)
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+// === a change through a handle reaches a reference inside the record
+fn main() {
+    var a = mkPair(1)
+    let r = &a.ys
+    let h = handle(a)
+    h.ys = arr(2, 2)
+    println(r[0].v)  // error: 'r' may point to freed memory
+}
+// === a change through a handle reaches a reference made from a reference
+fn main() {
+    var d = mkDeep()
+    let r = &d.p
+    let s = &r.zs[0]
+    let h = handle(d.q)
+    h.xs = arr(2, 2)
+    println(s.v)  // error: 's' may point to freed memory
+}
+// === a mut call on the whole root frees the place the reference points at
+fn main() {
+    var a = mkPair(1)
+    let r = &a.ys
+    let z = cutAll(a)
+    println(r[0].v + z)  // error: 'r' may point to freed memory
+}
+// === a mut call with the reference local frees the place of another reference
+fn main() {
+    var a = mkPair(1)
+    let keep = &a.ys[0]
+    let r = &a.ys
+    let z = cut(r)
+    println(keep.v + z)  // error: 'keep' may point to freed memory
+}
+// === a mut call and a reference into the mut argument, in one call
+fn main() {
+    var a = mkPair(1)
+    let r = &a.ys
+    let z = pq(r, &a.ys[0])  // error: argument 2 of pq may point inside argument 1, which is mut
+    println(z)
+}
+// === a mut argument and a reference inside it, through a reference to the record
+fn main() {
+    var d = mkDeep()
+    let r = &d.p
+    println(pq(d.p.ys, &r.ys[0]))  // error: argument 2 of pq may point inside argument 1, which is mut
+}
+// === a global root: a change through a reference into it reaches a reference into the same field
+fn main() {
+    append(g.ys, mk(2))
+    let keep = &g.ys[0]
+    let r = &g.ys
+    r[0] = mk(6)
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+// === a global root: a function that frees the field the reference points into
+fn main() {
+    append(g.ys, mk(2))
+    let r = &g.ys
+    let z = clearG()
+    println(r[0].v + z)  // error: 'r' may point to freed memory
+}
+// === a global root: a reference into it passed to a function that frees it
+fn use(x: &[]Node, y: int): int { return len(x) + y }
+fn main() {
+    append(g.ys, mk(2))
+    let r = &g.ys
+    println(use(r, clearG()))  // error: argument 2 of use may free what argument 1 points into
+}
+// === truncate of the borrowed field frees its elements
+fn main() {
+    var a = mkPair(1)
+    let keep = &a.ys[0]
+    let r = &a.ys
+    truncate(r, 0)
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+// === replace of an element of the borrowed field frees the old element
+fn main() {
+    var a = mkPair(1)
+    let keep = &a.ys[0]
+    let r = &a.ys
+    let old = replace(r[0], mk(5))
+    println(keep.v + old.v)  // error: 'keep' may point to freed memory
+}
+// === replace of an element with a variable index
+fn main() {
+    var a = mkPair(1)
+    let keep = &a.ys[0]
+    let r = &a.ys
+    var i = 0
+    let old = replace(r[i], mk(5))
+    println(keep.v + old.v)  // error: 'keep' may point to freed memory
+}
+// === take of the borrowed optional field
+fn sum1(l: &?Node): int { return 0 }
+fn main() {
+    var c = new Cell{a: mk(3), b: mk(4)}
+    let keep = &c.a
+    let r = &c
+    let old = take(r.a)
+    println(sum1(keep))  // error: 'keep' may point to freed memory
+}
+// === a reference to a node on one path and to its child on the other: the places join to the whole root
+fn pick(c: bool) {
+    var n = new Node{v: 1, kids: arr(2, 3)}
+    append(n.kids[0].kids, mk(5))
+    var r = &n.kids[0]
+    if c { r = &n.kids[0].kids[0] }
+    let keep = &n.kids[0].kids[0]
+    r.kids = arr(7, 7)
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+fn main() { pick(true) }
+// === a reference to a whole node on one path and to a child on the other
+fn pick(c: bool) {
+    var n = new Node{v: 1, kids: arr(2, 3)}
+    var r = &n
+    if c { r = &n.kids[0] }
+    let keep = &n.kids[1]
+    r.kids = arr(7, 7)
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+fn main() { pick(true) }
+// === two parameters may be one object: a change through a reference into one reaches the other
+fn f(mut p: &Pair, q: &Pair) {
+    let r = &p.ys
+    let keep = &q.xs[0]
+    r[0] = mk(1)
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+fn main() {
+    append(g.xs, mk(1))
+    append(g.ys, mk(1))
+    f(g, g)
+}
+// === a parameter may be a global: a change through a reference into it reaches a reference into the global
+fn f(mut p: &Pair) {
+    let r = &p.ys
+    let keep = &g.xs[0]
+    r[0] = mk(1)
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+fn main() {
+    append(g.xs, mk(1))
+    append(g.ys, mk(1))
+    f(g)
+}
+// === a reference to a whole node on one path and to a child on the other, the other way round
+fn pick(c: bool) {
+    var n = new Node{v: 1, kids: arr(2, 3)}
+    var r = &n.kids[0]
+    if c { r = &n }
+    let keep = &n.kids[1]
+    r.kids = arr(7, 7)
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+fn main() { pick(true) }
+// === a held place under a reference that points into either of two places: a replace through it frees the array indexed
+fn sinkN(x: Node): int { return 0 }
+fn pick(c: bool) {
+    var a = mkPair(1)
+    append(a.ys[0].kids, mk(1))
+    var r = &a.xs
+    if c { r = &a.ys }
+    println(a.ys[0].kids[sinkN(replace(r[0], mk(5)))].v)  // error: cannot index 'a' with an index that replaces or moves what it holds
+}
+fn main() { pick(true) }
+// === a held place under a reference that is not pointed afresh in a loop: it may be elsewhere on the next iteration
+fn sinkN(x: Node): int { return 0 }
+fn main() {
+    var a = mkPair(1)
+    append(a.ys[0].kids, mk(1))
+    var r = &a.xs
+    var i = 0
+    while i < 2 {
+        println(a.ys[0].kids[sinkN(replace(r[0], mk(5)))].v)  // error: cannot index 'a' with an index that replaces or moves what it holds
+        r = &a.ys
+        i += 1
+    }
+}
+// === a mut argument that is a reference not pointed afresh in a loop: the callee frees where it points next time
+fn main() {
+    var a = mkPair(1)
+    var r = &a.xs
+    let keep = &a.ys[0]
+    var i = 0
+    while i < 2 {
+        let z = cut(r)
+        r = &a.ys
+        i += 1
+    }
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+// === a copy of a reference not pointed afresh in a loop is changed through: the original may be elsewhere next time
+fn main() {
+    var a = mkPair(1)
+    var r = &a.xs
+    let keep = &a.ys[0]
+    var i = 0
+    while i < 2 {
+        let s = r
+        s[0] = mk(i)
+        r = &a.ys
+        i += 1
+    }
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+// === the same, in a for loop
+fn main() {
+    var a = mkPair(1)
+    var r = &a.xs
+    let keep = &a.ys[0]
+    for i in 0..2 {
+        let s = r
+        s[0] = mk(i)
+        r = &a.ys
+    }
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+// === the same, the copy assigned to a reference declared before the loop
+fn main() {
+    var a = mkPair(1)
+    var r = &a.xs
+    var s = &a.zs
+    let keep = &a.ys[0]
+    var i = 0
+    while i < 2 {
+        s = r
+        s[0] = mk(i)
+        r = &a.ys
+        i += 1
+    }
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+// === the same, the copy passed to a mut parameter
+fn main() {
+    var a = mkPair(1)
+    var r = &a.xs
+    let keep = &a.ys[0]
+    var i = 0
+    while i < 2 {
+        let s = r
+        let z = cut(s)
+        r = &a.ys
+        i += 1
+    }
+    println(keep.v)  // error: 'keep' may point to freed memory
+}
+// === a held place under a reference not pointed afresh in a loop, a pure function in the index frees an element
+fn sinkI(x: []Node): int { return 0 }
+fn two(): []Node { return arr(70, 80) }
+fn main() {
+    var n = new Node{v: 1, kids: arr(2, 3)}
+    append(n.kids[0].kids, mk(5))
+    append(n.kids[1].kids, mk(6))
+    var r = &n.kids[0]
+    var i = 0
+    while i < 2 {
+        println(r.kids[sinkI(replace(n.kids[0].kids, two()))].v)  // error: cannot index 'r' with an index that replaces or moves what it holds
+        r = &n.kids[1]
+        i += 1
+    }
+}
+// === a defer that changes through a reference, read by an earlier defer
+fn main() {
+    var a = mkPair(1)
+    {
+        let keep = &a.ys[0]
+        var r = &a.ys
+        defer println(keep.v)
+        defer { r[0] = mk(2) }
+    }  // error: 'keep' is used by a defer but may point to freed memory
+}

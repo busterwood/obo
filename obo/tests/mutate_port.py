@@ -191,22 +191,22 @@ MUTANTS = {
     "held: take does not free what it holds": [('        freeEvent(x, lastPlace, lastRaw, lastOrigin, lastIdent)\n', '')],
     "held: moves do not reach held handle targets": [('        } else if heldForeign[i] {\n            if s.isParam || !refParamKey(heldKey[i]) { heldHit[i] = true }', '        } else if false {\n            if s.isParam || !refParamKey(heldKey[i]) { heldHit[i] = true }')],
     "held: moves do not free handle targets": [('        heldMove(s)\n', '')],
-    "held: identity frees do not reach their entries": [('                if segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }', '                if false { heldHit[k] = true }')],
-    "held: same-identity frees ignore the path": [('                if segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }', '                heldHit[k] = true')],
-    "held: identity exemption removed": [('                if segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }', '                if segsPrefix(place, heldPath[k]) { heldHit[k] = true }')],
+    "held: identity frees do not reach their entries": [('                if heldUnder(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k] && place != anyPlace) { heldHit[k] = true }', '                if false { heldHit[k] = true }')],
+    "held: same-identity frees ignore the path": [('                if heldUnder(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k] && place != anyPlace) { heldHit[k] = true }', '                heldHit[k] = true')],
+    "held: identity exemption removed": [('                if heldUnder(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k] && place != anyPlace) { heldHit[k] = true }', '                if heldUnder(place, heldPath[k]) { heldHit[k] = true }')],
     "held: origin ignored when holding": [('        if origin != nil {\n            heldAdd(origin, false, false, raw)', '        if false {\n            heldAdd(origin, false, false, raw)')],
     "held: origin ignored when freeing": [('        if origin != nil {\n            heldFree(origin, nil, raw)', '        if false {\n            heldFree(origin, nil, raw)')],
     "held: whole local arrays hit by identity frees": [('        } else if !heldWhole[k] {', '        } else {')],
     "held: reference parameters take their owner's place": [('    if isRefParam(r) {\n        heldAdd(r, true, false, raw)', '    if false {\n        heldAdd(r, true, false, raw)')],
-    "held: owned frees ignore the path": [('            if heldKey[k] == o && segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) {', '            if heldKey[k] == o && !(heldStore[k] && place == heldPath[k]) {')],
-    "held: owned assignment exemption removed": [('            if heldKey[k] == o && segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) {', '            if heldKey[k] == o && segsPrefix(place, heldPath[k]) {')],
+    "held: owned frees ignore the path": [('            if heldKey[k] == o && heldUnder(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k] && place != anyPlace) {', '            if heldKey[k] == o && !(heldStore[k] && place == heldPath[k]) {')],
+    "held: owned assignment exemption removed": [('            if heldKey[k] == o && heldUnder(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k] && place != anyPlace) {', '            if heldKey[k] == o && heldUnder(place, heldPath[k]) {')],
     "held: store exemption not applied through handles": [('    for k in mark..len(heldKey) { heldStore[k] = true }', '    for k in mark..len(heldKey) { heldStore[k] = !viaHandle }')],
     "held: index does not hold its array": [('            let hp = heldPush(root, viaHandle, hOrig, hIdent, placePath(root, path), path)', '            let hp = -1')],
     "held: replace does not hold its place": [('        let hp = heldPush(tr, x.viaHandle, orig, ident, place, raw)', '        let hp = -1')],
     "held: append and truncate do not hold their array": [('        let hp = heldPush(r0, aVia, aOrig, aIdent, aPlace, aRaw)', '        let hp = -1')],
     "held: plain assignments do not hold their target": [('            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            let y = expression()', '            let y = expression()')],
     "held: compound assignments do not hold their target": [('            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            var y = expression()', '            var y = expression()')],
-    "held: reference places ignore the binding's path": [('            let p = b.paths[i] + raw\n            if o == handleSym {\n                heldAdd(nil, true, false, "")', '            let p = raw\n            if o == handleSym {\n                heldAdd(nil, true, false, "")')],
+    "held: reference places ignore the binding's path": [('            let p = heldAt(b, i, raw, r)\n            if o == handleSym {\n                heldAdd(nil, true, false, "")', '            let p = raw\n            if o == handleSym {\n                heldAdd(nil, true, false, "")')],
     # loop inversion: a while loop's condition moves after its body, and each kind of position it holds must move
     # with it (tests/run/loop_inversion.obx)
     "inverted loop: calls out of the condition not adjusted": [("        putRel(farCalls[k], getRel(farCalls[k]) - d)\n", "")],
@@ -264,11 +264,9 @@ MUTANTS.update({
                                             "    if b == noneBind { return a }\n    if true { return b }\n")],
     # a join keeps only the roots of the first path: a change under a root of the second is missed
     "join keeps only the first root": [("        if !found {\n            append(roots, b.roots[j])", "        if false {\n            append(roots, b.roots[j])")],
-    # a join is deep only where both paths are deep: a change under a deep path is missed
-    "deep not ORed at a join": [("                let d = deeps[i] || b.deeps[j]", "                let d = deeps[i] && b.deeps[j]")],
     # the spec's rule: the common prefix, which for a prefix pair is the shorter path; the longer one is hit
     # by every change that hits the shorter one and by changes below it
-    "path join keeps the shorter path (the spec's rule)": [("    if segsPrefix(pa, pb) && !segsPrefix(pb, pa) { return pb }\n    if segsPrefix(pb, pa) && !segsPrefix(pa, pb) { return pa }",
+    "path join keeps the shorter path (the spec's rule)": [('    if segsPrefix(pa, pb) && !segsPrefix(pb, pa) { return "" }\n    if segsPrefix(pb, pa) && !segsPrefix(pa, pb) { return "" }',
                                                             "    if segsPrefix(pa, pb) && !segsPrefix(pb, pa) { return pa }\n    if segsPrefix(pb, pa) && !segsPrefix(pa, pb) { return pb }")],
     # writable only where both paths are: a reference writable on one path only is read-only after the join
     "refMut not ANDed at a join": [("    let writable = a.writable && b.writable", "    let writable = a.writable || b.writable")],
@@ -291,8 +289,9 @@ from mutate_fork import ARG_ORDER_MUTANTS  # noqa: E402
 MUTANTS.update({k: [v] for k, v in ARG_ORDER_MUTANTS.items() if k not in FORK_EQUIVALENT})
 # a handle's object freed by an assignment over, or a drop of, its owner: the cases of handle_frees.obx
 from mutate_fork import HANDLE_FREE_MUTANTS  # noqa: E402
-from mutate_fork import FP_MUTANTS  # noqa: E402
+from mutate_fork import FP_MUTANTS, REF_PATH_MUTANTS  # noqa: E402
 MUTANTS.update({k: [v] for k, v in FP_MUTANTS.items() if k not in FORK_EQUIVALENT})
+MUTANTS.update({k: [v] for k, v in REF_PATH_MUTANTS.items() if k not in FORK_EQUIVALENT})
 MUTANTS.update({k: [v] for k, v in HANDLE_FREE_MUTANTS.items() if k not in FORK_EQUIVALENT})
 
 

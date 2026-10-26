@@ -2032,15 +2032,15 @@ fn segsPrefix(p: string, s: string): bool {
 
 // ------------------------------------------------------------ joining bindings
 
-// two bindings of the same place (one each) joined: a place is hit by every change that hits either
-// one, so when one lies under the other, the longer one is hit by all the changes that hit the shorter
-fn joinPath(da: bool, pa: string, db: bool, pb: string): string {
-    if !db { return pa }
-    if !da { return pb }
+// the places of two deep bindings of one root, joined: the same place, or the whole root ("" = anywhere).
+// Neither the shorter nor the longer of a place and the place below it is right: a change under the
+// shorter one is missed by the longer (a change to /a/b misses /a), and a change through the reference
+// is at its place plus the path written, which is not the same place for the two (see placeIn). A
+// common prefix is no better: a change to /a/b misses a join at /a of /a/b and /a/c.
+fn joinPath(pa: string, pb: string): string {
     if pa == pb { return pa }
-    if pa == "" || pb == "" { return "" }
-    if segsPrefix(pa, pb) && !segsPrefix(pb, pa) { return pb }
-    if segsPrefix(pb, pa) && !segsPrefix(pa, pb) { return pa }
+    if segsPrefix(pa, pb) && !segsPrefix(pb, pa) { return "" }
+    if segsPrefix(pb, pa) && !segsPrefix(pa, pb) { return "" }
     return ""
 }
 
@@ -2066,13 +2066,13 @@ fn joinBind(a: ^RefBind, b: ^RefBind): ^RefBind {
     }
     for j in 0..len(b.roots) {
         var found = false
+        // a reference to a root's whole object and one inside it stay two entries: a change through the
+        // reference is at the place it points at plus the path written (see placeIn), which they differ in
         for i in 0..len(roots) {
-            if roots[i] == b.roots[j] {
+            if roots[i] == b.roots[j] && deeps[i] == b.deeps[j] {
                 found = true
-                let d = deeps[i] || b.deeps[j]
-                let p = joinPath(deeps[i], paths[i], b.deeps[j], b.paths[j])
-                if d != deeps[i] || p != paths[i] { changed = true }
-                deeps[i] = d
+                let p = joinPath(paths[i], b.paths[j])
+                if p != paths[i] { changed = true }
                 paths[i] = p
             }
         }
@@ -2096,24 +2096,27 @@ fn joinBind(a: ^RefBind, b: ^RefBind): ^RefBind {
 
 // the places e covers for a place of b, both in one root: a whole-object pointer covers only
 // whole-object ones, and an e whose place lies under b's covers b's, since e is hit by all b is
-fn coversPlace(ed: bool, ep: string, bd: bool, bp: string): bool {
-    if !bd { return true }
+fn coversPlace(ed: bool, ep: string, bd: bool, bp: string, strict: bool): bool {
+    if !bd { return !strict || !ed || ep == "" }
     if !ed { return false }
     if ep == "" { return true }
+    // strict: a change made through the reference is at its place plus the path written, so only the same
+    // place (or anywhere) is checked against the same changes
+    if strict { return ep == bp }
     return bp != "" && segsPrefix(bp, ep)
 }
 
 // the binding b, at the end of a loop's body, is covered by e, the binding the body was checked with:
 // every change that reaches b is one e was checked against, and b is writable wherever e is (a write
 // checked against e is allowed through b too)
-fn bindCovers(e: ^RefBind, b: ^RefBind): bool {
+fn bindCovers(e: ^RefBind, b: ^RefBind, strict: bool): bool {
     if b == noneBind || b == e { return true }
     if e.writable && !b.writable { return false }
     if !sameParent(e.parent, b.parent) { return false }
     for j in 0..len(b.roots) {
         var covered = false
         for i in 0..len(e.roots) {
-            if e.roots[i] == b.roots[j] && coversPlace(e.deeps[i], e.paths[i], b.deeps[j], b.paths[j]) {
+            if e.roots[i] == b.roots[j] && coversPlace(e.deeps[i], e.paths[i], b.deeps[j], b.paths[j], strict) {
                 covered = true
             }
         }
@@ -2378,6 +2381,19 @@ fn deepOf(x: &Item): bool
 fn parentOf(x: &Item): ?^Sym
 fn isRefParam(s: ^Sym): bool
 
+// the place in the i-th root of r's binding of the designator whose path is xpath, written through r.
+// A reference to the root's whole object: the path written. One that points at the place bpath of the root:
+// bpath plus the path written. One with no known place may point anywhere in the root: the whole root.
+// So does a reference local that a loop has not pointed afresh (fresh): the loop may have pointed it
+// elsewhere when the next iteration begins, and the body is compiled once, with the place it had on entry.
+fn placeIn(r: ^Sym, i: int, xpath: string): string {
+    let b = r.bind
+    if r.isRefLocal && !r.fresh && recording > 0 { return "" }
+    if !b.deeps[i] { return xpath }
+    if b.paths[i] == "" { return "" }
+    return b.paths[i] + xpath
+}
+
 // the binding a reference to x takes: what x may point into, through the binding of the reference it
 // goes through; a constant points at nothing
 fn itemBind(x: &Item): ^RefBind {
@@ -2389,12 +2405,14 @@ fn itemBind(x: &Item): ^RefBind {
     var roots = new []^Sym(0)
     var deeps = new []bool(0)
     var paths = new []string(0)
+    // a copy of a reference local that a loop has not pointed afresh may be a copy of another place on the
+    // next iteration: it points anywhere in its roots (see placeIn)
+    let moving = r.isRefLocal && !r.fresh && recording > 0
     for i in 0..len(rb.roots) {
         append(roots, rb.roots[i])
-        append(deeps, x.deref || rb.deeps[i])
-        // a place in a reference parameter's own object is told apart by its path; one reached through a
-        // reference local is the whole root
-        if x.deref && isRefParam(r) { append(paths, x.path) } else if x.deref { append(paths, "") } else { append(paths, rb.paths[i]) }
+        append(deeps, x.deref || moving || rb.deeps[i])
+        // a place reached through a reference is at the reference's place plus the path written
+        if x.deref { append(paths, placeIn(r, i, x.path)) } else if moving { append(paths, "") } else { append(paths, rb.paths[i]) }
     }
     var parent: ?^Sym = nil
     if r.isRefLocal {
@@ -2599,7 +2617,7 @@ fn sameState(a: &PState, b: &PState): bool {
         if a.flags[i] != b.flags[i] { return false }
     }
     for i in 0..localsIn(a) {
-        if !bindCovers(a.binds[i], b.binds[i]) || !bindCovers(b.binds[i], a.binds[i]) { return false }
+        if !bindCovers(a.binds[i], b.binds[i], false) || !bindCovers(b.binds[i], a.binds[i], false) { return false }
     }
     return true
 }
@@ -2712,7 +2730,7 @@ fn loopBindCheck(entry: &PState, back: &PState, useBefore: int, lv: ?^Sym, line:
         let s = ownedLocals[i]
         let e = entry.binds[i]
         let b = back.binds[i]
-        if s.isRefLocal && s != lv && s.staleUse > useBefore && !bindCovers(e, b) {
+        if s.isRefLocal && s != lv && s.staleUse > useBefore && !bindCovers(e, b, false) {
             if hit[i] && (s.freedUse > useBefore || back.flags[3 * n + i]) {
                 errorAt("'" + s.name + "' is pointed somewhere new inside the loop, and read before it is pointed again; point it before the loop, or point it afresh before reading it in the loop", line, col)
             }
@@ -2861,7 +2879,8 @@ fn invalidateChange(x: &Item) {
             r.writeUse = useSeq
         }
         if r.isRef {
-            for i in 0..len(r.bind.roots) { invalidate(r.bind.roots[i], via, false, x.path) }
+            let rb = r.bind
+            for i in 0..len(rb.roots) { invalidate(rb.roots[i], via, false, placeIn(r, i, x.path)) }
         } else {
             invalidate(r, via, false, x.path)
         }
@@ -3062,7 +3081,7 @@ fn withinDeclared(d: ^RefBind, e: ^RefBind): bool {
     for j in 0..len(e.roots) {
         var covered = false
         for i in 0..len(d.roots) {
-            if d.roots[i] == e.roots[j] && coversPlace(d.deeps[i], d.paths[i], e.deeps[j], e.paths[j]) { covered = true }
+            if d.roots[i] == e.roots[j] && coversPlace(d.deeps[i], d.paths[i], e.deeps[j], e.paths[j], true) { covered = true }
         }
         if !covered { return false }
     }
@@ -3401,6 +3420,7 @@ fn heldLost(root: ?^Sym, t0: int): bool {
 // held once per root of its binding (a reference after a join may point into several), at the binding's
 // path in that root. A place with no identity (a handle of unknown origin, or a root that is a handle)
 // is hit by any free. heldHitAt and heldPop take the mark heldPush returns: the entries from it on.
+var anyPlace = "*"                // a held place that may be anywhere in its root
 var heldKey = new []?^Sym(0)
 var heldPath = new []string(0)
 var heldForeign = new []bool(0)
@@ -3419,6 +3439,19 @@ var lastViaHandle = false
 // the place a designator names inside its root: the path as written. A reference's binding adds its own
 // path per root, in heldPush and freeEvent
 fn placePath(root: ?^Sym, path: string): string { return path }
+
+// the place a designator with path raw holds in the i-th root of the reference binding b. A deep reference
+// with no known place may be anywhere in the root: anyPlace, which every free in the root hits. So may one
+// that a loop has not yet pointed afresh: it may be pointed elsewhere on the next iteration.
+fn heldAt(b: ^RefBind, i: int, raw: string, r: ^Sym): string {
+    if recording > 0 && !r.fresh { return anyPlace }
+    if !b.deeps[i] { return raw }
+    if b.paths[i] == "" { return anyPlace }
+    return b.paths[i] + raw
+}
+
+// a held place at or under the free place (see heldFree); either may be anywhere in the root
+fn heldUnder(place: string, held: string): bool { return place == anyPlace || held == anyPlace || segsPrefix(place, held) }
 
 // adds one held entry; heldPush and heldPushStore are the only callers
 fn heldAdd(key: ?^Sym, foreign: bool, whole: bool, at: string) {
@@ -3453,7 +3486,7 @@ fn heldPush(root: ?^Sym, viaHandle: bool, origin: ?^Sym, ident: ?^Sym, place: st
         let b = r.bind
         for i in 0..len(b.roots) {
             let o = b.roots[i]
-            let p = b.paths[i] + raw
+            let p = heldAt(b, i, raw, r)
             if o == handleSym {
                 heldAdd(nil, true, false, "")
             } else if o.isRef {
@@ -3515,12 +3548,12 @@ fn heldFree(o: ?^Sym, i: ?^Sym, place: string) {
     for k in 0..len(heldKey) {
         if heldForeign[k] {
             if i != nil && heldKey[k] == i {
-                if segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) { heldHit[k] = true }
+                if heldUnder(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k] && place != anyPlace) { heldHit[k] = true }
             } else if !(calleeLocal(o) && refParamKey(heldKey[k])) {
                 heldHit[k] = true
             }
         } else if o != nil {
-            if heldKey[k] == o && segsPrefix(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k]) {
+            if heldKey[k] == o && heldUnder(place, heldPath[k]) && !(heldStore[k] && place == heldPath[k] && place != anyPlace) {
                 heldHit[k] = true
             }
         } else if !heldWhole[k] {
@@ -3551,7 +3584,7 @@ fn freeEvent(x: &Item, place: string, raw: string, origin: ?^Sym, ident: ?^Sym) 
         let b = r.bind
         for i in 0..len(b.roots) {
             let o = b.roots[i]
-            let p = b.paths[i] + raw
+            let p = heldAt(b, i, raw, r)
             if o == handleSym {
                 heldFree(nil, nil, "")
             } else if o.isRef {
@@ -3875,7 +3908,6 @@ fn callFn(f: ^Sym): Item {
     var argBinds = new []^RefBind(0)
     let argModes = new []int(0)
     let argVias = new []?^Sym(0)
-    let argPaths = new []string(0)
     let argIdx = new []int(0)           // the parameter each of those is
     var deepLine = 0                   // the first argument that points inside something
     var deepCol = 0
@@ -3903,7 +3935,6 @@ fn callFn(f: ^Sym): Item {
                 deepLine = argLine
                 deepCol = argCol
             }
-            append(argPaths, a.path)
             argOrderCheck(tbase, f.name, i, argLine, argCol)
             holdArg(b, i)
         } else {
@@ -3976,7 +4007,8 @@ fn callFn(f: ^Sym): Item {
         if argModes[i] == 2 && mutFrees(f, argIdx[i]) {
             let b = argBinds[i]
             for p in 0..len(b.roots) {
-                invalidate(b.roots[p], argVias[i], false, argPaths[i])
+                // the binding's place; itemBind made it anywhere for a reference a loop has not pointed afresh
+                invalidate(b.roots[p], argVias[i], false, b.paths[p])
                 recordFree(b.roots[p])
             }
         }
@@ -4607,8 +4639,8 @@ fn designatorT(target: bool): Item {
     if x.sym == nil && root != nil {
         x.root = root
         x.deref = true
-        // a path is only known through an owned root: through a reference or handle it is the whole root
-        if (!root.isRef || isRefParam(root)) && !viaHandle { x.path = path }
+        // through a handle the path is not known (the whole root); a reference adds its own place (placeIn)
+        if !viaHandle { x.path = path }
         // nothing can be moved out through a reference, so this can only be a borrow
         if root.isRef && isOwned(x.typ) { x.borrowed = true }
     }
