@@ -1909,7 +1909,7 @@ so sharing them changes no result. Only the basic types are compared by identity
 
 **Budget lowered, 1,091,000 to 983,000** (measured live peak 954,912 bytes, about 3% over). The function records moved out of `Sym` (the row above). `FnRec` holds what only a function has: the calls waiting for its address, its parameters and their modes, and the globals it might free. `Sym` holds a handle to it, `fnRec`. A function gets its record in `fnDecl`, and every other symbol holds `noFnRec`, one shared record that nothing writes, as `bind` does with `noBind`. The output did not change: the 44 programs and the port's source compile to the same bytes and messages as main's compiler.
 
-### Peephole pass (measured; not built)
+### Peephole pass (measured; built later, with loop-head alignment: see the next section)
 
 The obx design (`README.md`, "Future work: a peephole optimizer") still applies: an
 emit-time pass that keeps the compiler single-pass. The plan said to revisit it only if
@@ -1978,41 +1978,58 @@ store (no emitter asks for one there) and the clearing of the notes in `truncCod
 wanted later, the lever the numbers point to is first the alignment of loop tops (padding the target
 of a backward jump to 16 bytes), measured the same way.
 
-### Loop-head alignment (measured; not built)
+### Loop-head alignment (built, with the peephole fold)
 
-FORK.md's peephole section suggested padding the target of a backward jump. Measured on main (bb54c20),
-Ryzen 7 8745HS under WSL, load average 0.3 to 2.2 (other agents running), `perf stat` cycles, variants
-interleaved, 15 runs, minimum. The pad goes after the jump over the body (while, inverted) or before the
-test target (for loops), with multi-byte nops, so it is never executed. The patch is `tools/loop_align.patch`.
+The target of every backward jump (a while loop's body, a `while true`, a for loop's body) starts on a 32-byte
+boundary (`alignLoop`, `LOOP_ALIGN`), padded with multi-byte nops. The code is at `CODE_BASE`, a multiple of 4096, so a
+position that is a multiple of 32 is an address that is. In an inverted loop and a for loop the padding sits after the
+jump to the test and is never executed; a `while true` runs it once.
 
-**Finding that matters:** `dropFrame` (a function with no locals) cuts 7 bytes out of the code and moves the body
-back, so a position taken before the cut is off by 7 afterwards. Plain padding therefore aligned nothing in the
-hot loops (the loop benchmark's `main` has no locals): the nop sat at 0x401032 and the loop head at 0x401039. The
-patch makes `dropFrame` overwrite the `sub rsp` with a 7-byte nop instead (`mainnop` in the table).
+**What had to change first: `dropFrame`.** A function with no locals used to cut the seven bytes of `sub rsp, 0` out
+and move its body back, which made every position taken in the body wrong by 7 and aligned nothing in the hot loops
+(they are in frameless functions: the loop benchmark's `main` has no locals). It now moves the entry instead: the four
+bytes of `push rbp; mov rbp, rsp` are rewritten 7 bytes on, right before the body, the seven bytes in front are dead
+(`int3`), and `f.addr` is the new entry. The body does not move, so nothing in it is repointed except the calls to the
+function: its fixups (calls from earlier functions waiting for it) and its calls to itself (the entries of
+`farCalls` whose target is the old entry; `getRel` is unsigned, so the target is compared modulo 2^32). Every other call
+out of the body is relative to a place that did not move, which is also why the old shifting of other functions' fixups
+is gone. The retry (Phase 2) calls `truncCode(f.addr)` before any drop, with the old entry still the real one. An
+earlier trial that overwrote the `sub` with an executed 7-byte nop cost every frameless call an instruction (fib +5.7%
+instructions) and tokens +2.7%; this one executes nothing extra.
 
-| cycles vs main | pad16 (plain) | mainnop (7-byte nop only) | pad16 + nop | pad32 + nop | fold + pad32 + nop |
-|---|---|---|---|---|---|
-| loop | -0.1% | -0.1% | -20.0% | -20.1% (2.008e9 to 1.604e9) | -50.0% (1.003e9) |
-| fib | 0 | 0 (+5.7% instr) | 0 | 0 | -5.0% (noisy) |
-| array | +18.8% | -0.1% | +18.9% | +0.1% | -0.3% (fold alone -3.0%) |
-| alloc | -2.2% | -0.9% | -3.2% | +0.2% | +0.3% (spread 40 to 200%) |
-| lists, strings | within 0.5% | within 0.5% | within 0.5% | within 0.5% | within 0.5% |
-| tokens | +1.0% | +1.4% | +2.4% | +2.7% (reproduced at 41 runs) | +2.7% |
-| trees | +0.1% | -0.2% | -1.4% | -0.2% | +0.4% |
+The peephole fold of `tools/peephole_fold.patch` is merged with it (its tests and 11 mutants; the patch file stays as
+the record of the base it was measured on). On its own the fold gains only on the benchmarks whose loop sits well; with
+the loop heads aligned it pays on the loop.
 
-Alone the 16-byte pad is unsafe: it puts the array loop in a bad place (+19%). 32 bytes is neutral there.
-alloc's spread was 40 to 200% between runs, so its movements are not evidence.
+Measured on main (bb54c20), Ryzen 7 8745HS under WSL, `perf stat` cycles (`:u`), variants interleaved, 25 runs,
+minimum. Other agents were running suites: load average 2 to 13 during the runs, so the per-run spread was 5 to 200%
+and only the minimum is used; differences under about 3% are noise. `eE` = entry move alone, `eP` = entry move and
+32-byte padding, `eF` = those and the fold.
 
-**Decision: not built.** The loop gains 20% (and 50% with the fold, 1.0 cycle per iteration), but (1) tokens
-regresses 2.7% with the same instructions, above its noise (1.1 to 3.6%), about half of it from the 7-byte nop
-that every frameless call now runs, (2) the gain is a layout accident that depends on the loop being 36 bytes:
-the 16-byte variant loses 19% on array, and nothing fixes loops longer than the pad, (3) it needs a change to
-`dropFrame`'s contract. Fold + padding is not a separate case: the fold's gain on `loop` appears only with
-padding, but the same tokens regression and the array risk remain. A cleaner version would move the entry
-instead of the body in `dropFrame` (the 4 bytes of `push rbp; mov rbp,rsp` forward by 7, leaving dead bytes in
-front of the function), which costs no instruction; it needs the calls to the function from inside itself
-repatched, and was not tried. Peak with the patch: 962,896 bytes (main 954,912). Suites were not run on the
-patched source, since it is not built.
+| cycles vs main | eE (entry only) | eP (+ pad32) | eF (+ fold) |
+|---|---|---|---|
+| loop | 2.006e9 (0.0%) | 1.605e9 (-20.1%) | 1.002e9 (-50.1%), 9 to 5 instructions per iteration |
+| fib | 0.0% | 0.0% | 0.0% |
+| array | -0.1% | 0.0% | -0.3% (the fold's -3.0% did not reappear) |
+| alloc | +2.2% | -0.6% | +1.5% (spread 70 to 220%: noise) |
+| lists, strings | within 1.3% | within 1.8% | within 2.4% |
+| tokens | +0.3% | +1.2% | +1.8% (spread 10 to 47%) |
+| trees | -5.3% | -3.7% | -6.7% (spread 7 to 32%: noise) |
+
+Earlier measurements on the way: 16-byte padding alone put the array loop in a bad place (+19% cycles with the same
+instructions), 32 bytes did not; the executed-nop variant of `dropFrame` showed tokens +2.7% reproducibly at 41 runs
+(0.289e9 instructions in both), the entry move shows +0.3% to +1.8% with a spread larger than that.
+
+**Tests.** `tests/run/loop_align.obx` (calls to a frameless function from itself, from before it through a forward
+heading and from after it, mutual recursion, every loop kind, a condition calling a later function, a function compiled
+again); `tests/homes_check.py` finds the backward-jump targets in the disassembly of a program with every loop kind, in a
+function with a frame, one without and one that was compiled again, and requires them on 32-byte boundaries.
+`tests/mutate_port.py` has 7 `align:` mutants (no padding, wrong padding, each loop kind unpadded, no padding in the
+retry; caught by `homes_check`) and 4 `entry:` mutants (self-calls, waiting calls, entry not set, prologue not moved;
+caught by the comparison). The old `dropped frame:` mutants of the shifting version were replaced by these. Final run: `mutate_port` 204 of 204 caught, `mutate_fork` 170 of 178 with the 8 equivalents, `run_fork` 443, `port_test` 429 of 429, `port_compare` Stage B 594 of 594, `homes_edge` 1028 with 0 differing, `own_fuzz --count 300 --profile both` 0 failures in 600, `doc_check` 29 examples.
+
+**Limits.** The alignment is only as good as the loop's size: a loop longer than 32 bytes can still straddle a line.
+The dead bytes cost 7 bytes per frameless function. The compiler's own peak is 973,136 bytes (main 954,912).
 
 ### Rules for every phase
 
