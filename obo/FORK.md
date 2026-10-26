@@ -2278,3 +2278,37 @@ a global cleared, `sum2(x, take(x))`), also one of the `bad_stmt` kinds.
 **Memory.** The port compiling itself peaks at about 1.03 million bytes live (981,888 before). The first
 version stored `pfree` as a `[]bool` per function and measured 1,080,464; a bit mask removed 42 KB. The rest
 is the source growing. `PEAK_BUDGET` (2,000,000) is untouched.
+
+## Pure calls with mut parameters (done)
+
+**Rule.** `pureFn(f)` is now true when f is compiled, is not being compiled, has `freesAll` clear, frees no
+global, and `mutFrees(f, i)` is false for every `mut` parameter i (`FnRec.pfree`: nothing freed below the
+reference it got; `freesAll`/`writesHandles`, forward headings, recursion and the 62nd parameter on count as
+freeing). Before, any `mut` parameter made f impure. `rd(h.xs, grow(h.xs))`, `two(&h.xs[0], bumpAll(h.xs))`
+and a handle borrow held across `grow(ys)` are accepted when `grow` only appends and `bumpAll` only writes scalars.
+
+**What each user of pureFn needed.**
+- `afterCall`'s `invalidate(handleSym, ...)` and `callFn`'s "reference that borrows through a handle may not go
+  to a call that might free": they protect against a free of any object a handle could name. A free below a
+  `mut` argument, a free of a global, a handle write (`freesAll`) and unknown callees are all in `pureFn`, so
+  these now use the precise rule. Passing a handle borrow to a callee that frees below any of its own `mut`
+  arguments is refused as before (a handle can name any object; per-argument precision against the handle
+  root was not attempted).
+- `userCalls` (the index, held-array, `append`/`truncate`, `replace`, assignment-target checks): these guard an
+  array address or index loaded before a call. `append` records no free (`recordFree` is called for `truncate`,
+  not `append`) but reallocates the array, so a callee that appends through a `mut` parameter makes the loaded
+  address stale (`h.xs[grow(h.xs)]`). Summaries have no "may move" bit, so these stay conservative: a new
+  `movesFn(f)` is `!pureFn(f)` or any `mut` parameter, and only it increments `userCalls`. Behaviour of every
+  `userCalls` check is unchanged.
+
+**Left.** A per-parameter "appends" bit would let `userCalls` skip callees that only write scalars through
+`mut` (`xs[bumpAt(xs, 0)]` is still refused). A handle borrow passed to a callee whose only freeing `mut`
+parameter receives an unrelated array is still refused.
+
+**Tests.** `tests/run/pure_mut.obx` (accepted shapes, refused by the seed); `tests/errors/pure_mut.obx`
+(truncate, element replace, two calls deep, recursion, forward headings with and without a `mut`
+parameter, handle writer, global free, the second `mut` parameter freeing, and the index/`append` cases that
+stay refused). `FP_MUTANTS`: 7 new. `own_fuzz.py`: `handle_pure_mut_stmt` (valid) and
+`handle_freeing_mut_stmt` (invalid).
+
+**Memory.** The port peaks at 1,052,768 bytes live (budget 2,000,000, unchanged).

@@ -152,8 +152,8 @@ while nothing it may point into has been changed.
 - `&place` may borrow through a handle: `let items = &h.items` borrows what `h` names. Such
   a reference may point into any object, so it is invalidated by any change to an owned
   value or through a handle, and by any call that might free. A call might free unless it
-  frees no global, changes through no `mut` parameter, writes no owned value through a
-  handle, is compiled before the call, and is not recursive. The reference cannot be passed to
+  frees no global, frees nothing below any of its `mut` arguments (writing a scalar or
+  appending is fine), writes no owned value through a handle, is compiled before the call, and is not recursive. The reference cannot be passed to
   a call that might free. A `for` loop that walks it cannot change what it points into, but
   `append` to the array it walks is accepted: an append is not a change, and a walk re-reads
   the array's header each time.

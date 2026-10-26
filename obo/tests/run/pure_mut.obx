@@ -1,0 +1,78 @@
+type Item = ref record { v: int }
+type Bag = ref record { xs: []Item; n: int }
+
+fn rd(a: &[]Item, n: int): int { return len(a) * 100 + n }
+fn two(a: &Item, n: int): int { return a.v * 100 + n }
+
+// appends to its mut array: frees nothing
+fn grow(mut a: &[]Item): int {
+    append(a, new Item{v: 9})
+    return len(a)
+}
+
+// writes a scalar of every element, frees nothing
+fn bumpAll(mut a: &[]Item): int {
+    for x in a { x.v += 1 }
+    return len(a)
+}
+
+// writes a scalar field of the bag
+fn count(mut b: &Bag): int {
+    b.n += 1
+    return b.n
+}
+
+// passes its mut argument on to a callee that frees nothing: two calls deep
+fn growVia(mut a: &[]Item): int { return grow(a) }
+
+// frees nothing through its first mut parameter
+fn mixed(mut a: &[]Item, mut b: &[]Item): int {
+    append(a, new Item{v: 1})
+    append(b, new Item{v: 2})
+    return len(a) + len(b)
+}
+
+fn viaHandleArray(h: ^Bag): int {
+    return rd(h.xs, grow(h.xs))
+}
+
+fn viaHandleElem(h: ^Bag): int {
+    return two(&h.xs[0], bumpAll(h.xs))
+}
+
+fn viaHandleDeep(h: ^Bag): int {
+    return rd(h.xs, growVia(h.xs))
+}
+
+fn viaOwnedBag(mut b: &Bag): int {
+    return rd(b.xs, count(b))
+}
+
+fn viaHandleLet(h: ^Bag): int {
+    let first = &h.xs[0]
+    let n = grow(h.xs)
+    return first.v * 100 + n
+}
+
+// a handle borrow held across a call that appends to or writes below another array
+fn otherArray(h: ^Bag, ys: []Item): int {
+    let first = &h.xs[0]
+    let a = rd(h.xs, grow(ys))
+    let b = bumpAll(ys)
+    return first.v * 10000 + a * 10 + b
+}
+
+fn main() {
+    let bag = new Bag{xs: new []Item(0), n: 0}
+    append(bag.xs, new Item{v: 5})
+    let h = handle(bag)
+    println(viaHandleArray(h))    // expect: 202
+    println(viaHandleElem(h))    // expect: 602
+    println(viaHandleDeep(h))    // expect: 303
+    println(viaHandleLet(h))    // expect: 604
+    println(viaOwnedBag(bag))    // expect: 401
+    println(otherArray(h, new []Item(0)))    // expect: 64011
+    let ys = new []Item(0)
+    let zs = new []Item(0)
+    println(mixed(ys, zs))    // expect: 2
+}

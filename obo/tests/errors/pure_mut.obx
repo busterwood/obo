@@ -1,0 +1,233 @@
+// Callees with a mut parameter are pure for borrows through a handle only if they free nothing below it
+// (and nothing else). Each case is the unsafe neighbour of an accepted shape in run/pure_mut.obx.
+type Item = ref record { v: int }
+type Bag = ref record { xs: []Item; n: int }
+// === the callee frees below its mut argument (truncate), the first argument borrows through the handle
+fn rd(a: &[]Item, n: int): int { return len(a) * 100 + n }
+fn cut(mut a: &[]Item): int { truncate(a, 0); return 0 }
+fn viaHandle(h: ^Bag): int {
+    return rd(h.xs, cut(h.xs))  // error: cannot pass a reference that borrows through a handle to cut
+}
+fn main() {
+    let h = handle(new Bag{xs: new []Item(0), n: 0})
+    println(viaHandle(h))
+}
+// === the callee replaces an element: it frees the old one
+fn two(a: &Item, n: int): int { return a.v + n }
+fn swap(mut a: &[]Item): int { a[0] = new Item{v: 7}; return 0 }
+fn viaHandle(h: ^Bag): int {
+    return two(&h.xs[0], swap(h.xs))  // error: cannot pass a reference that borrows through a handle to swap
+}
+fn main() {
+    let h = handle(new Bag{xs: new []Item(1), n: 0})
+    println(viaHandle(h))
+}
+// === two calls deep: the wrapper passes its mut argument on to a callee that frees
+fn rd(a: &[]Item, n: int): int { return len(a) * 100 + n }
+fn cut(mut a: &[]Item): int { truncate(a, 0); return 0 }
+fn wrap(mut a: &[]Item): int { return cut(a) }
+fn viaHandle(h: ^Bag): int {
+    return rd(h.xs, wrap(h.xs))  // error: cannot pass a reference that borrows through a handle to wrap
+}
+fn main() {
+    let h = handle(new Bag{xs: new []Item(0), n: 0})
+    println(viaHandle(h))
+}
+// === recursion: a callee that calls itself is assumed to free
+fn rd(a: &[]Item, n: int): int { return len(a) * 100 + n }
+fn rec(mut a: &[]Item, k: int): int {
+    if k > 0 { return rec(a, k - 1) }
+    append(a, new Item{v: 1})
+    return 0
+}
+fn viaHandle(h: ^Bag): int {
+    return rd(h.xs, rec(h.xs, 2))  // error: cannot pass a reference that borrows through a handle to rec
+}
+fn main() {
+    let h = handle(new Bag{xs: new []Item(0), n: 0})
+    println(viaHandle(h))
+}
+// === a callee with only a forward heading is assumed to free
+fn rd(a: &[]Item, n: int): int { return len(a) * 100 + n }
+fn later(mut a: &[]Item): int
+fn viaHandle(h: ^Bag): int {
+    return rd(h.xs, later(h.xs))  // error: its body is not known yet
+}
+fn later(mut a: &[]Item): int { append(a, new Item{v: 1}); return 0 }
+fn main() {
+    let h = handle(new Bag{xs: new []Item(0), n: 0})
+    println(viaHandle(h))
+}
+// === the callee writes through a handle: it frees whatever the handle names
+fn rd(a: &[]Item, n: int): int { return len(a) * 100 + n }
+fn hit(mut a: &[]Item, g: ^Bag): int { g.xs = new []Item(0); return 0 }
+fn viaHandle(h: ^Bag): int {
+    return rd(h.xs, hit(h.xs, h))  // error: it writes through a handle
+}
+fn main() {
+    let h = handle(new Bag{xs: new []Item(0), n: 0})
+    println(viaHandle(h))
+}
+// === the callee's own parameter is not what frees: it frees a global
+var gs = new []Item(0)
+fn rd(a: &[]Item, n: int): int { return len(a) * 100 + n }
+fn gone(mut a: &[]Item): int { gs = new []Item(0); return 0 }
+fn viaHandle(h: ^Bag): int {
+    return rd(h.xs, gone(h.xs))  // error: cannot pass a reference that borrows through a handle to gone
+}
+fn main() {
+    let h = handle(new Bag{xs: new []Item(0), n: 0})
+    println(viaHandle(h))
+}
+// === a borrow through a handle used after a call that frees below its mut argument
+fn cut(mut a: &[]Item): int { truncate(a, 0); return 0 }
+fn viaHandle(h: ^Bag): int {
+    let first = &h.xs[0]
+    cut(h.xs)  // error: cannot pass a reference that borrows through a handle to cut
+    return first.v
+}
+fn main() {
+    let h = handle(new Bag{xs: new []Item(1), n: 0})
+    println(viaHandle(h))
+}
+// === a borrow through a handle passed to a call that frees below its mut parameter
+fn cut(mut a: &[]Item): int { truncate(a, 0); return 0 }
+fn use(a: &Item, mut b: &[]Item): int { return cut(b) + a.v }
+fn viaHandle(h: ^Bag, ys: []Item): int {
+    let first = &h.xs[0]
+    return use(first, ys)  // error: cannot pass a reference that borrows through a handle to use
+}
+fn main() {
+    let h = handle(new Bag{xs: new []Item(1), n: 0})
+    println(viaHandle(h, new []Item(0)))
+}
+// === an index that calls a function that appends to the array: the array's address was loaded before (userCalls stays conservative)
+fn grow(mut a: &[]Item): int { append(a, new Item{v: 9}); return 0 }
+fn viaHandle(h: ^Bag): int {
+    return h.xs[grow(h.xs)].v  // error: cannot index through a handle with an index that calls a function
+}
+fn main() {
+    let h = handle(new Bag{xs: new []Item(1), n: 0})
+    println(viaHandle(h))
+}
+// === a field's array indexed by a call that appends to it
+fn grow(mut a: &[]Item): int { append(a, new Item{v: 9}); return 0 }
+fn viaOwned(b: Bag): int {
+    return b.xs[grow(b.xs)].v  // error: cannot index a field, element or reference with an index that calls a function
+}
+fn main() {
+    println(viaOwned(new Bag{xs: new []Item(1), n: 0}))
+}
+// === append to a handle's array with a value that calls a function that appends to the same array
+fn grow(mut a: &[]Item): Item { append(a, new Item{v: 9}); return new Item{v: 1} }
+fn viaHandle(h: ^Bag) {
+    append(h.xs, grow(h.xs))  // error: cannot append to a field, element, handle or global across a call
+}
+fn main() {
+    let h = handle(new Bag{xs: new []Item(1), n: 0})
+    viaHandle(h)
+}
+// === a handle borrow held across a call that frees below its mut argument, a different array: the call might free what the handle names
+fn rd(a: &[]Item, n: int): int { return len(a) * 100 + n }
+fn cut(mut a: &[]Item): int { truncate(a, 0); return 0 }
+fn viaHandle(h: ^Bag, ys: []Item): int {
+    return rd(h.xs, cut(ys))  // error: argument 2 of rd may free what argument 1 points into
+}
+fn main() {
+    let h = handle(new Bag{xs: new []Item(0), n: 0})
+    println(viaHandle(h, new []Item(0)))
+}
+// === the same through a let borrow
+fn cut(mut a: &[]Item): int { truncate(a, 0); return 0 }
+fn viaHandle(h: ^Bag, ys: []Item): int {
+    let first = &h.xs[0]
+    cut(ys)
+    return first.v  // error: 'first' may point to freed memory
+}
+fn main() {
+    let h = handle(new Bag{xs: new []Item(1), n: 0})
+    println(viaHandle(h, new []Item(0)))
+}
+// === two calls deep
+fn cut(mut a: &[]Item): int { truncate(a, 0); return 0 }
+fn wrap(mut a: &[]Item): int { return cut(a) }
+fn viaHandle(h: ^Bag, ys: []Item): int {
+    let first = &h.xs[0]
+    wrap(ys)
+    return first.v  // error: 'first' may point to freed memory
+}
+fn main() {
+    let h = handle(new Bag{xs: new []Item(1), n: 0})
+    println(viaHandle(h, new []Item(0)))
+}
+// === recursion
+fn rec(mut a: &[]Item, k: int): int {
+    if k > 0 { return rec(a, k - 1) }
+    append(a, new Item{v: 1})
+    return 0
+}
+fn viaHandle(h: ^Bag, ys: []Item): int {
+    let first = &h.xs[0]
+    rec(ys, 2)
+    return first.v  // error: 'first' may point to freed memory
+}
+fn main() {
+    let h = handle(new Bag{xs: new []Item(1), n: 0})
+    println(viaHandle(h, new []Item(0)))
+}
+// === a forward heading
+fn later(mut a: &[]Item): int
+fn viaHandle(h: ^Bag, ys: []Item): int {
+    let first = &h.xs[0]
+    later(ys)
+    return first.v  // error: 'first' may point to freed memory
+}
+fn later(mut a: &[]Item): int { append(a, new Item{v: 1}); return 0 }
+fn main() {
+    let h = handle(new Bag{xs: new []Item(1), n: 0})
+    println(viaHandle(h, new []Item(0)))
+}
+// === a callee that writes through a handle
+fn hit(mut a: &[]Item, g: ^Bag): int { g.xs = new []Item(0); return 0 }
+fn viaHandle(h: ^Bag, ys: []Item): int {
+    let first = &h.xs[0]
+    hit(ys, h)
+    return first.v  // error: 'first' may point to freed memory
+}
+fn main() {
+    let h = handle(new Bag{xs: new []Item(1), n: 0})
+    println(viaHandle(h, new []Item(0)))
+}
+// === the second of two mut parameters frees: the call as a whole might free
+fn mixed(mut a: &[]Item, mut b: &[]Item): int { append(a, new Item{v: 1}); truncate(b, 0); return 0 }
+fn viaHandle(h: ^Bag, ys: []Item, zs: []Item): int {
+    let first = &h.xs[0]
+    mixed(ys, zs)
+    return first.v  // error: 'first' may point to freed memory
+}
+fn main() {
+    let h = handle(new Bag{xs: new []Item(1), n: 0})
+    println(viaHandle(h, new []Item(0), new []Item(0)))
+}
+// === a forward heading in an index is a call that might free
+fn later(k: int): int
+fn viaHandle(h: ^Bag): int {
+    return h.xs[later(0)].v  // error: cannot index through a handle with an index that calls a function
+}
+fn later(k: int): int { return k }
+fn main() {
+    let h = handle(new Bag{xs: new []Item(1), n: 0})
+    println(viaHandle(h))
+}
+// === a forward heading without a mut parameter is assumed to free as well
+fn later(k: int): int
+fn viaHandle(h: ^Bag): int {
+    let first = &h.xs[0]
+    later(1)
+    return first.v  // error: 'first' may point to freed memory
+}
+fn later(k: int): int { return k }
+fn main() {
+    let h = handle(new Bag{xs: new []Item(1), n: 0})
+    println(viaHandle(h))
+}
