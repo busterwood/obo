@@ -804,8 +804,9 @@ RESULT_MUTANTS = {
 MUTANTS.update(RESULT_MUTANTS)
 
 # Incremental I/O (phase 2): the builtin argument discipline, the descriptors and
-# the stream accessors. These run only here (mutate_port.py does not import them):
-# the oracles are the io_pin_* programs, io_match, io_basic and errors/io.obx.
+# the stream accessors. mutate_port.py imports them too, judging them by the Stage B
+# comparison; here the oracles are the io_pin_* programs, io_match, io_basic and
+# errors/io.obx.
 IO_MUTANTS = {
     # the path is pinned before the mode runs; without it the mode frees the path
     'io: openFile does not pin the path': (
