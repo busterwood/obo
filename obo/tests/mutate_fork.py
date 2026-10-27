@@ -803,6 +803,57 @@ RESULT_MUTANTS = {
 }
 MUTANTS.update(RESULT_MUTANTS)
 
+# Incremental I/O (phase 2): the builtin argument discipline, the descriptors and
+# the stream accessors. These run only here (mutate_port.py does not import them):
+# the oracles are the io_pin_* programs, io_match, io_basic and errors/io.obx.
+IO_MUTANTS = {
+    # the path is pinned before the mode runs; without it the mode frees the path
+    'io: openFile does not pin the path': (
+        '        if p.typ.kind != "string" { error("openFile needs a string path, not " + tname(p.typ)) }\n        p = pinStr(p)\n',
+        '        if p.typ.kind != "string" { error("openFile needs a string path, not " + tname(p.typ)) }\n'),
+    # the fd is materialised before the later argument runs; without it the later
+    # value is the one used (io_pin_fd's global read)
+    'io: readFd does not materialise the fd': (
+        '        if !isInt(fd.typ) { error("readFd needs an int file descriptor, not " + tname(fd.typ)) }\n        fd = materialise(fd)\n',
+        '        if !isInt(fd.typ) { error("readFd needs an int file descriptor, not " + tname(fd.typ)) }\n'),
+    'io: writeFd does not materialise the fd': (
+        '        if !isInt(fd.typ) { error("writeFd needs an int file descriptor, not " + tname(fd.typ)) }\n        fd = materialise(fd)\n',
+        '        if !isInt(fd.typ) { error("writeFd needs an int file descriptor, not " + tname(fd.typ)) }\n'),
+    # a borrowed array with no owner must be refused (errors/io.obx compiles)
+    'io: writeFd drops noTemp': (
+        '        noTemp(d)\n        d = materialise(d)\n',
+        '        d = materialise(d)\n'),
+    # taking ownership of the borrowed array: a compile error or a leak after the call
+    'io: writeFd consumes its data': (
+        '        noTemp(d)\n        d = materialise(d)\n',
+        '        noTemp(d)\n        consume(d)\n        d = materialise(d)\n'),
+    # a fresh ok variant: match compares against the cached variant, so the ok arm
+    # is missed; try-based code would not reveal it (io_match is the oracle)
+    'io: wrong ok descriptor (fresh variant)': (
+        '    append(args, b)\n    append(args, makeConst(tInt, errVariantType().desc))\n    append(args, makeConst(tInt, rt.variants[0].desc))\n',
+        '    append(args, b)\n    append(args, makeConst(tInt, errVariantType().desc))\n    append(args, makeConst(tInt, okVariantOf(payload).desc))\n'),
+    # closeFile's err and ok descriptors swapped: the cells carry the wrong tags
+    'io: closeFile swaps the descriptors': (
+        '    append(args, a)\n    append(args, makeConst(tInt, errVariantType().desc))\n    append(args, makeConst(tInt, rt.variants[0].desc))\n',
+        '    append(args, a)\n    append(args, makeConst(tInt, rt.variants[0].desc))\n    append(args, makeConst(tInt, errVariantType().desc))\n'),
+    # expression() leaves tryNest at 0, so the B4 case is accepted (or reports the
+    # wrong message): errors/io.obx's try-in-an-argument case is the oracle
+    'io: the mode argument bypasses nestedExpr': (
+        '        var m = nestedExpr()\n        if m.typ.kind != "string" { error("openFile needs a string mode, not " + tname(m.typ)) }\n',
+        '        var m = expression()\n        if m.typ.kind != "string" { error("openFile needs a string mode, not " + tname(m.typ)) }\n'),
+    # the "w" and "a" cases of io_basic fail if every open is read-only
+    'io: openFile ignores the mode': (
+        '        return resultCall4(RT_OPEN_FILE, p, m, tInt)\n',
+        '        return resultCall4(RT_OPEN_FILE, p, makeConst(tString, stringLit("r")), tInt)\n'),
+    'io: stdout and stderr swap': (
+        '        if name == "stdout" { fd = 1 } else if name == "stderr" { fd = 2 }\n',
+        '        if name == "stdout" { fd = 2 } else if name == "stderr" { fd = 1 }\n'),
+    'io: readFd passes max as the fd': (
+        '        return resultCall4(RT_READ_FD, fd, n, derived("opt", derived("array", tByte)))\n',
+        '        return resultCall4(RT_READ_FD, n, fd, derived("opt", derived("array", tByte)))\n'),
+}
+MUTANTS.update(IO_MUTANTS)
+
 
 def mutation(src, name):
     """The mutant's source text, or (None, the stale-pattern message) when its
