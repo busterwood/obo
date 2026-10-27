@@ -5,21 +5,18 @@ too little must be caught by the leak check, bugs that free too much by the
 double-free check or poisoning, and missing compile-time checks by the error
 tests.
 
-    python3 obo/tests/mutate_fork.py [pattern] [--cache]
+    python3 obo/tests/mutate_fork.py [pattern]
 
 Mutants run side by side, one per core; MUTATE_JOBS sets how many. Each mutant's
 run_fork stops at its first failing test (the verdict is the same: a suite with a
 failing test fails), and MUTATE_INNER_JOBS tests run at once inside it, so that
-MUTATE_JOBS x MUTATE_INNER_JOBS is about the number of cores.
+MUTATE_JOBS x MUTATE_INNER_JOBS is about the number of cores. Both are positive
+integers; anything else is an error before a mutant starts.
 
---cache keeps each mutant's verdict in obo/.mutant-verdicts.json (ignored by git),
-keyed by an input digest: the mutated source, the seed compiler, the runtime
-binaries, every file of the suite, the Python version and OBO_CHECK/OBO_STATS.
-Any change to one of those inputs throws the whole file away. The unmutated
-baseline is not cached: it is one run, and its failure must be seen."""
+The unmutated baseline must pass the normal suite and then the same judge path a
+mutant takes (fail-fast, the smoke subset, the inner test count), and report the
+full count: a broken judge path would otherwise make every mutant look caught."""
 import concurrent.futures
-import hashlib
-import json
 import os
 import re
 import shutil
@@ -30,9 +27,6 @@ import tempfile
 TRANSIENT = re.compile(r'timed out|out of memory', re.IGNORECASE)   # run_fork's wording for a load failure
 HERE = os.path.dirname(os.path.abspath(__file__))
 FORK = os.path.dirname(HERE)
-RUNNER = os.path.join(os.path.dirname(FORK), 'obx', 'tests', 'run.py')
-CACHE_FILE = os.path.join(FORK, '.mutant-verdicts.json')
-CACHE_VERSION = 1
 DEFAULT_JOBS = os.cpu_count() or 1
 
 # Patterns for the port where the text differs from the original obx compiler.
@@ -651,113 +645,30 @@ PATH_MUTANTS = {
 MUTANTS.update(PATH_MUTANTS)
 
 
-def cache_paths():
-    """The files whose bytes can change a verdict: the suite's scripts, every test
-    case, the seed compiler and the runtime the built compilers link against."""
-    paths = [os.path.join(HERE, 'run_fork.py'), os.path.join(HERE, 'mutate_fork.py'),
-             os.path.join(HERE, 'own_fuzz.py'), RUNNER,
-             os.path.join(FORK, 'seed', 'obo'),
-             os.path.join(FORK, 'runtime_text.bin'), os.path.join(FORK, 'runtime_data.bin')]
-    for d in ('run', 'errors'):
-        paths += [os.path.join(HERE, d, f) for f in sorted(os.listdir(os.path.join(HERE, d)))
-                  if f.endswith('.obx')]
-    return paths
-
-
-def cache_inputs(paths=None, env=None, version=None):
-    """A digest of every shared input of a verdict: the files above, the Python
-    version and the environment variables run_fork passes on. The mutant itself is
-    hashed per entry; a changed digest throws the whole cache away."""
-    paths = cache_paths() if paths is None else paths
-    env = os.environ if env is None else env
-    version = sys.version if version is None else version
-    h = hashlib.sha256(f"mutate_fork verdict cache v{CACHE_VERSION}\0".encode())
-    h.update(version.encode() + b'\0' + sys.implementation.name.encode() + b'\0')
-    for var in ('OBO_CHECK', 'OBO_STATS'):
-        h.update(f"{var}={env.get(var, '')}\0".encode())
-    for p in paths:
-        h.update(os.path.relpath(p, FORK).encode() + b'\0')
-        with open(p, 'rb') as f:
-            for chunk in iter(lambda: f.read(1 << 20), b''):
-                h.update(chunk)
-        h.update(b'\0')
-    return h.hexdigest()
-
-
-def load_cache(digest, path=CACHE_FILE):
-    """The stored verdicts, if they were made from exactly these inputs; else {}."""
-    try:
-        with open(path) as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    if data.get('version') != CACHE_VERSION or data.get('inputs') != digest:
-        return {}
-    return data.get('verdicts') or {}
-
-
-def save_cache(digest, verdicts, path=CACHE_FILE):
-    """Writes the cache atomically. A cache that cannot be written is not an error:
-    the run's verdicts are already reported."""
-    try:
-        with open(path + '.tmp', 'w') as f:
-            json.dump({"version": CACHE_VERSION, "inputs": digest, "verdicts": verdicts}, f, indent=1)
-        os.replace(path + '.tmp', path)
-    except OSError:
-        pass
-
-
-def cache_self_check():
-    """Checks the cache's mechanism: each kind of input changes the digest, and an
-    entry is used only for the digest that was stored with it."""
-    import tempfile
-    ok = 0
-
-    def check(what, cond):
-        nonlocal ok
-        if not cond:
-            raise SystemExit(f"cache self-check FAILED: {what}")
-        ok += 1
-
-    check("the digest is deterministic", cache_inputs() == cache_inputs())
-    check("OBO_CHECK is an input", cache_inputs(env={'OBO_CHECK': '1'}) != cache_inputs(env={}))
-    check("OBO_STATS is an input", cache_inputs(env={'OBO_STATS': '1'}) != cache_inputs(env={}))
-    check("the Python version is an input", cache_inputs(version='3.12') != cache_inputs(version='3.13'))
-    real = set(cache_paths())
-    for p in (os.path.join(HERE, 'run_fork.py'), os.path.join(HERE, 'mutate_fork.py'),
-              os.path.join(HERE, 'own_fuzz.py'), RUNNER, os.path.join(FORK, 'seed', 'obo'),
-              os.path.join(FORK, 'runtime_text.bin'), os.path.join(FORK, 'runtime_data.bin')):
-        check(f"{os.path.relpath(p, FORK)} is an input", p in real)
-    for d in ('run', 'errors'):
-        for f in os.listdir(os.path.join(HERE, d)):
-            if f.endswith('.obx'):
-                check(f"tests/{d}/{f} is an input", os.path.join(HERE, d, f) in real)
-    with tempfile.TemporaryDirectory() as tmp:
-        a, b, cache = (os.path.join(tmp, n) for n in ('a', 'b', 'cache.json'))
-        open(a, 'w').write('one')
-        open(b, 'w').write('two')
-        d1 = cache_inputs(paths=[a, b])
-        check("a file's bytes are an input", cache_inputs(paths=[a]) != d1)
-        open(b, 'w').write('TWO')
-        check("one changed file changes the digest", cache_inputs(paths=[a, b]) != d1)
-        open(b, 'w').write('two')
-        check("restoring the file restores the digest", cache_inputs(paths=[a, b]) == d1)
-        save_cache(d1, {'m': {'digest': 'x', 'status': 'caught', 'line': 'x'}}, cache)
-        check("a saved entry is read back", load_cache(d1, cache).get('m', {}).get('status') == 'caught')
-        check("another digest invalidates every entry", load_cache('other', cache) == {})
-    print(f"cache self-check: {ok} checks passed; a changed input invalidates the cache")
-    return 0
-
-
 def mutation(src, name):
-    """The mutant's source text and a digest of what makes it this mutant, or
-    (None, the stale-pattern message) when its pattern no longer matches once."""
+    """The mutant's source text, or (None, the stale-pattern message) when its
+    pattern no longer matches once. A stale pattern is a 'missed' verdict: the
+    gate fails rather than skipping the mutant."""
     old, new = PORT_PATTERNS.get(name, MUTANTS[name])
     n = src.count(old)
     if n != 1:
         return None, f"STALE   {name} (pattern found {n} times)"
-    text = src.replace(old, new)
-    return text, hashlib.sha256((name + '\0' + text).encode()).hexdigest()
+    return src.replace(old, new), None
+
+
+def env_jobs(var, default):
+    """The positive integer in the environment's var, or default when it is unset.
+    A typo is a clear error rather than a traceback from inside the pool."""
+    raw = os.environ.get(var, '')
+    if raw == '':
+        return default
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 0
+    if n < 1:
+        raise SystemExit(f"{var} must be a positive integer, not {raw!r}")
+    return n
 
 
 def jobs_and_inner():
@@ -767,8 +678,8 @@ def jobs_and_inner():
     the suite is mostly short-lived compiler processes, so overlapping tests inside
     a mutant only adds spawn contention. MUTATE_INNER_JOBS overrides, for a host
     where it does pay."""
-    jobs = int(os.environ.get('MUTATE_JOBS', DEFAULT_JOBS))
-    inner = int(os.environ.get('MUTATE_INNER_JOBS', 0)) or max(1, (os.cpu_count() or 1) // jobs)
+    jobs = env_jobs('MUTATE_JOBS', DEFAULT_JOBS)
+    inner = env_jobs('MUTATE_INNER_JOBS', 0) or max(1, (os.cpu_count() or 1) // jobs)
     return jobs, inner
 
 
@@ -824,10 +735,10 @@ def try_mutant(src, name, jobs=1):
 
 def main():
     args = sys.argv[1:]
-    if '--cache-self-check' in args:
-        sys.exit(cache_self_check())
-    pattern = next((a for a in args if not a.startswith('-')), '')
-    use_cache = '--cache' in args or os.environ.get('MUTATE_CACHE', '') not in ('', '0')
+    options = [a for a in args if a.startswith('-')]
+    if options:
+        raise SystemExit(f"unknown option {options[0]!r}: the script takes a mutant-name pattern only")
+    pattern = args[0] if args else ''
     src = open(os.path.join(FORK, 'src', 'obo.obo')).read()
     # the baseline: the unmutated compiler must pass run_fork, or no mutant's failure means anything
     base, err = build_and_run(src)
@@ -836,41 +747,41 @@ def main():
     if base.returncode != 0:
         print(base.stdout.rstrip())
         raise SystemExit("run_fork fails on the unmutated compiler (above), so no mutant can be judged")
-    names = [n for n in MUTANTS if pattern in n]
+    summary = base.stdout.strip().splitlines()[-1] if base.stdout.strip() else ''
+    passed = re.search(r'(\d+) passed, 0 failed', summary)
+    if passed is None:
+        print(base.stdout.rstrip())
+        raise SystemExit("run_fork does not report a full pass on the unmutated compiler (above), "
+                         "so no mutant can be judged")
     jobs, inner = jobs_and_inner()
-    digest = cache_inputs() if use_cache else ''
-    verdicts = load_cache(digest) if use_cache else {}
-    keys = {name: mutation(src, name)[1] for name in names}
-    todo, status, outputs, lines = [], {}, {}, {}
-    hits = 0
-    for name in names:
-        entry = verdicts.get(name)
-        if keys[name] is not None and isinstance(entry, dict) and entry.get('digest') == keys[name]:
-            status[name], lines[name], outputs[name] = entry['status'], entry['line'], ''
-            hits += 1
-            print(f"cached  {name:<36} {entry['status']}", flush=True)
-        else:
-            todo.append(name)
+    # ... and the same judge path a mutant takes must pass it too, with the full
+    # count: a broken invocation would otherwise report every mutant as caught
+    smoke = os.environ.get('MUTATE_SMOKE', '1') != '0'
+    judge, err = build_and_run(src, fail_fast=True, jobs=inner, smoke=smoke)
+    if judge is None:
+        raise SystemExit(f"the unmutated compiler does not build ({err}), so no mutant can be judged")
+    judge_summary = judge.stdout.strip().splitlines()[-1] if judge.stdout.strip() else ''
+    if judge.returncode != 0 or not judge_summary.startswith(f"{passed.group(1)} passed, 0 failed"):
+        print(judge.stdout.rstrip())
+        raise SystemExit(f"run_fork -x{' --smoke' if smoke else ''} -j {inner} does not pass the unmutated "
+                         "compiler (above), so a mutant's failure could not be trusted")
+    names = [n for n in MUTANTS if pattern in n]
+    status = {}
+    outputs = {}
     with concurrent.futures.ThreadPoolExecutor(jobs) as pool:      # each mutant is a separate build and suite run
-        for name, (s, line, out) in zip(todo, pool.map(lambda n: try_mutant(src, n, inner), todo)):
+        for name, (s, line, out) in zip(names, pool.map(lambda n: try_mutant(src, n, inner), names)):
             print(line, flush=True)
-            status[name], lines[name], outputs[name] = s, line, out
+            status[name], outputs[name] = s, out
     # a caught mutant whose failure is a timeout or an out-of-memory may be the load, not the mutant:
     # run it again alone, and report that result
     for name in names:
-        if status[name] == 'caught' and TRANSIENT.search(outputs.get(name, '')):
+        if status[name] == 'caught' and TRANSIENT.search(outputs[name]):
             s, line, out = try_mutant(src, name)
             print(f"{line}   (serial re-run: the parallel run timed out or ran out of memory)", flush=True)
-            status[name], lines[name], outputs[name] = s, line, out
-    if use_cache:
-        for name in names:
-            if keys[name] is not None:
-                verdicts[name] = {'digest': keys[name], 'status': status[name], 'line': lines[name]}
-        save_cache(digest, verdicts)
+            status[name] = s
     missed = [n for n in names if status[n] == 'missed']
     equiv = sum(1 for n in names if n in EQUIVALENT)
-    cached = f" ({hits} cached)" if hits else ''
-    print(f"\n{len(names) - len(missed) - equiv}/{len(names)} mutants caught, {equiv} equivalent{cached}")
+    print(f"\n{len(names) - len(missed) - equiv}/{len(names)} mutants caught, {equiv} equivalent")
     sys.exit(1 if missed else 0)
 
 
