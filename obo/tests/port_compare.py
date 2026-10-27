@@ -118,11 +118,14 @@ def cases_of(src):
     return cases
 
 
-def compare(tmp, src=SRC, quick=False):
+def compare(tmp, src=SRC, quick=False, workers=None):
     """Compares the port built from src with REF on every case, in the directory tmp.
     Returns the report's lines, the failures, and the port's live peak compiling itself
     (None if it did not report one). quick, for a mutant: stops at the first failure,
-    and allows each case 20 times what REF took, so a mutant that loops is soon caught."""
+    and allows each case 20 times what REF took, so a mutant that loops is soon caught.
+    workers is the number of case comparisons at once (default: one per core); a
+    caller that runs several comparisons side by side passes a smaller number so
+    that the total stays about the core count."""
     PORT = os.path.join(tmp, 'obo_port')
     t0 = time.monotonic()
     b = subprocess.run([REF, src, '-o', PORT, '--rt', FORK], capture_output=True, text=True)
@@ -168,7 +171,7 @@ def compare(tmp, src=SRC, quick=False):
             p = outcome(PORT, case, case + '.port', scratch, 120, 60, capped_run=True)[0]
         return o, p
     results = {}
-    with concurrent.futures.ThreadPoolExecutor(os.cpu_count()) as pool:   # the programs run for seconds
+    with concurrent.futures.ThreadPoolExecutor(workers or os.cpu_count()) as pool:   # the programs run for seconds
         futures = {pool.submit(both, text): text for text in dict.fromkeys(text for _, text in cases)}
         for f in concurrent.futures.as_completed(futures):
             a, b = results[futures[f]] = f.result()

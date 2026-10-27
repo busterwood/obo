@@ -7,7 +7,15 @@ tests.
 
     python3 obo/tests/mutate_fork.py [pattern]
 
-Mutants run side by side, one per core; MUTATE_JOBS sets how many."""
+Mutants run side by side, one per core; MUTATE_JOBS sets how many. Each mutant's
+run_fork stops at its first failing test (the verdict is the same: a suite with a
+failing test fails), and MUTATE_INNER_JOBS tests run at once inside it, so that
+MUTATE_JOBS x MUTATE_INNER_JOBS is about the number of cores. Both are positive
+integers; anything else is an error before a mutant starts.
+
+The unmutated baseline must pass the normal suite and then the same judge path a
+mutant takes (fail-fast, the smoke subset, the inner test count), and report the
+full count: a broken judge path would otherwise make every mutant look caught."""
 import concurrent.futures
 import os
 import re
@@ -19,6 +27,7 @@ import tempfile
 TRANSIENT = re.compile(r'timed out|out of memory', re.IGNORECASE)   # run_fork's wording for a load failure
 HERE = os.path.dirname(os.path.abspath(__file__))
 FORK = os.path.dirname(HERE)
+DEFAULT_JOBS = os.cpu_count() or 1
 
 # Patterns for the port where the text differs from the original obx compiler.
 PORT_PATTERNS = {
@@ -716,9 +725,50 @@ FIELD_MUTANTS = {
 MUTANTS.update(FIELD_MUTANTS)
 
 
-def build_and_run(src):
-    """Builds the compiler from src, in a directory of its own, and runs run_fork.py with it:
-    (the run_fork result, None), or (None, the build's error) when it does not build."""
+def mutation(src, name):
+    """The mutant's source text, or (None, the stale-pattern message) when its
+    pattern no longer matches once. A stale pattern is a 'missed' verdict: the
+    gate fails rather than skipping the mutant."""
+    old, new = PORT_PATTERNS.get(name, MUTANTS[name])
+    n = src.count(old)
+    if n != 1:
+        return None, f"STALE   {name} (pattern found {n} times)"
+    return src.replace(old, new), None
+
+
+def env_jobs(var, default):
+    """The positive integer in the environment's var, or default when it is unset.
+    A typo is a clear error rather than a traceback from inside the pool."""
+    raw = os.environ.get(var, '')
+    if raw == '':
+        return default
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 0
+    if n < 1:
+        raise SystemExit(f"{var} must be a positive integer, not {raw!r}")
+    return n
+
+
+def jobs_and_inner():
+    """(outer mutants, tests inside each), with outer x inner about the core count.
+    At the default, that is one mutant per core and one test at a time: measured on
+    this host, 16/1 beat 8/2 (21.9 s wall, 203 s CPU) and 4/4 (50.7 s, 262 s) --
+    the suite is mostly short-lived compiler processes, so overlapping tests inside
+    a mutant only adds spawn contention. MUTATE_INNER_JOBS overrides, for a host
+    where it does pay."""
+    jobs = env_jobs('MUTATE_JOBS', DEFAULT_JOBS)
+    inner = env_jobs('MUTATE_INNER_JOBS', 0) or max(1, (os.cpu_count() or 1) // jobs)
+    return jobs, inner
+
+
+def build_and_run(src, fail_fast=False, jobs=1, smoke=False):
+    """Builds the compiler from src, in a directory of its own, and runs run_fork.py
+    with it: (the run_fork result, None), or (None, the build's error) when it does
+    not build. fail_fast stops run_fork at its first failing test (the verdict is
+    unchanged; only the time and the report differ), jobs tests run at once, and
+    smoke tries run_fork's smoke subset first (a reorder: the rest still run)."""
     work = tempfile.mkdtemp(prefix='obo-mutant-')
     try:
         with open(os.path.join(work, 'obo.obo'), 'w') as f:
@@ -728,19 +778,29 @@ def build_and_run(src):
                            capture_output=True, text=True)
         if b.returncode != 0:
             return None, b.stderr.strip()[:120]
-        return subprocess.run([sys.executable, os.path.join(HERE, 'run_fork.py')], capture_output=True, text=True,
-                              timeout=600, env=dict(os.environ, OBO=exe)), None
+        cmd = [sys.executable, os.path.join(HERE, 'run_fork.py')]
+        if fail_fast:
+            cmd.append('-x')
+        if jobs > 1:
+            cmd += ['-j', str(jobs)]
+        if smoke:
+            cmd.append('--smoke')
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=dict(os.environ, OBO=exe)), None
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def try_mutant(src, name):
+def try_mutant(src, name, jobs=1):
     """The verdict on one mutant: (status, line, output), status being 'caught', 'missed' or 'equiv'.
-    Mutants run side by side, each in a build directory of its own."""
-    old, new = PORT_PATTERNS.get(name, MUTANTS[name])
-    if src.count(old) != 1:
-        return 'missed', f"STALE   {name} (pattern found {src.count(old)} times)", ''
-    p, err = build_and_run(src.replace(old, new))
+    Mutants run side by side, each in a build directory of its own. The suite stops at
+    the first failing test: a suite with one failing test fails, so the verdict holds.
+    The smoke subset runs first; a failure there is a failure of the full suite, and a
+    pass still runs every other test, so 'missed' always means the full suite passed."""
+    text, stale = mutation(src, name)
+    if text is None:
+        return 'missed', stale, ''
+    p, err = build_and_run(text, fail_fast=True, jobs=jobs,
+                           smoke=os.environ.get('MUTATE_SMOKE', '1') != '0')
     if p is None:
         return 'missed', f"BROKEN  {name}: {err}", ''
     lines = p.stdout.strip().splitlines()
@@ -748,12 +808,17 @@ def try_mutant(src, name):
     caught = p.returncode != 0
     if not caught and name in EQUIVALENT:
         return 'equiv', f"EQUIV   {name}: {EQUIVALENT[name]}", ''
-    line = f"{'caught' if caught else 'MISSED'}  {name:<36} {lines[-1].split(' in ')[0] if lines else ''}  {detail[:60]}"
+    early = " (smoke)" if "(in the smoke subset)" in p.stdout else ""
+    line = f"{'caught' if caught else 'MISSED'}  {name:<36} {lines[-1].split(' in ')[0] if lines else ''}  {detail[:60]}{early}"
     return ('caught' if caught else 'missed'), line, p.stdout + p.stderr
 
 
 def main():
-    pattern = sys.argv[1] if len(sys.argv) > 1 else ''
+    args = sys.argv[1:]
+    options = [a for a in args if a.startswith('-')]
+    if options:
+        raise SystemExit(f"unknown option {options[0]!r}: the script takes a mutant-name pattern only")
+    pattern = args[0] if args else ''
     src = open(os.path.join(FORK, 'src', 'obo.obo')).read()
     # the baseline: the unmutated compiler must pass run_fork, or no mutant's failure means anything
     base, err = build_and_run(src)
@@ -762,12 +827,29 @@ def main():
     if base.returncode != 0:
         print(base.stdout.rstrip())
         raise SystemExit("run_fork fails on the unmutated compiler (above), so no mutant can be judged")
+    summary = base.stdout.strip().splitlines()[-1] if base.stdout.strip() else ''
+    passed = re.search(r'(\d+) passed, 0 failed', summary)
+    if passed is None:
+        print(base.stdout.rstrip())
+        raise SystemExit("run_fork does not report a full pass on the unmutated compiler (above), "
+                         "so no mutant can be judged")
+    jobs, inner = jobs_and_inner()
+    # ... and the same judge path a mutant takes must pass it too, with the full
+    # count: a broken invocation would otherwise report every mutant as caught
+    smoke = os.environ.get('MUTATE_SMOKE', '1') != '0'
+    judge, err = build_and_run(src, fail_fast=True, jobs=inner, smoke=smoke)
+    if judge is None:
+        raise SystemExit(f"the unmutated compiler does not build ({err}), so no mutant can be judged")
+    judge_summary = judge.stdout.strip().splitlines()[-1] if judge.stdout.strip() else ''
+    if judge.returncode != 0 or not judge_summary.startswith(f"{passed.group(1)} passed, 0 failed"):
+        print(judge.stdout.rstrip())
+        raise SystemExit(f"run_fork -x{' --smoke' if smoke else ''} -j {inner} does not pass the unmutated "
+                         "compiler (above), so a mutant's failure could not be trusted")
     names = [n for n in MUTANTS if pattern in n]
-    jobs = int(os.environ.get('MUTATE_JOBS', os.cpu_count() or 1))
     status = {}
     outputs = {}
     with concurrent.futures.ThreadPoolExecutor(jobs) as pool:      # each mutant is a separate build and suite run
-        for name, (s, line, out) in zip(names, pool.map(lambda n: try_mutant(src, n), names)):
+        for name, (s, line, out) in zip(names, pool.map(lambda n: try_mutant(src, n, inner), names)):
             print(line, flush=True)
             status[name], outputs[name] = s, out
     # a caught mutant whose failure is a timeout or an out-of-memory may be the load, not the mutant:

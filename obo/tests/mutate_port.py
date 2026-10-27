@@ -7,7 +7,13 @@ as a peak more than MEMORY_MARGIN above the unmutated one. A mutant of the encod
 port_test.py instead, whose objdump cross-check must catch it.
 
 Each mutant's comparison reuses obo's outcomes, stops at the first difference, and
-allows each program 20 times what obo took; MUTATE_JOBS mutants run side by side (4).
+allows each program 20 times what obo took; MUTATE_JOBS mutants run side by side and
+MUTATE_INNER_JOBS cases inside each comparison (default MUTATE_JOBS=4, inner the core
+count divided by it, so the two multiply to about the core count; both are positive
+integers and anything else is an error). Measured here on a
+28-mutant sample: 4 outer x 4 inner took 41.9 s wall (166 s CPU), against 46.9 s for
+2 x 8 and 95.2 s (309 s CPU) for the old 4 x 16 -- the cases are process spawns, and
+more than the core count only contends. A comparison alone uses one worker per core.
 
     python3 obo/tests/mutate_port.py [pattern]"""
 import concurrent.futures
@@ -21,6 +27,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(os.path.dirname(HERE), 'src', 'obo.obo')
 sys.path.insert(0, HERE)
 import port_compare as pc  # noqa: E402
+
+DEFAULT_JOBS = 4                # outer mutants; MUTATE_JOBS overrides
 
 MARK = "    let symMark = len(symArena)                 // the function's own symbols start here\n"
 FREE = "    truncate(symArena, symMark)                 // and nothing refers to them any more\n"
@@ -276,7 +284,7 @@ MUTANTS.update({
 
 # the uses of a defer body: the same mutants as the fork's (see mutate_fork.py); the error cases of
 # errors/defer_uses.obx show them, since the port's own output does not change
-from mutate_fork import DEFER_USE_MUTANTS  # noqa: E402
+from mutate_fork import DEFER_USE_MUTANTS, env_jobs  # noqa: E402
 MUTANTS.update({k: [v] for k, v in DEFER_USE_MUTANTS.items()})
 # the references invalid on one path (errors/one_path_uses.obx, run/one_path.obx show them)
 from mutate_fork import ONE_PATH_MUTANTS  # noqa: E402
@@ -397,8 +405,10 @@ MUTANTS.update({
 MEMORY_MARGIN = 1.03
 
 
-def try_mutant(name, text, base_peak):
-    """('caught' or 'missed', the line to print) for one mutant, in its own directory."""
+def try_mutant(name, text, base_peak, workers=None):
+    """('caught' or 'missed', the line to print) for one mutant, in its own directory.
+    workers is the number of case comparisons inside this mutant; the caller sets
+    it so that outer mutants x workers is about the core count."""
     tmp = tempfile.mkdtemp(prefix='obo-mutant-')
     try:
         path = os.path.join(tmp, 'mutant.obx')
@@ -419,7 +429,7 @@ def try_mutant(name, text, base_peak):
                        ([l for l in lines if l.startswith('FAIL') or 'does not compile' in l] or
                         [lines[-1] if lines else f'exit {r.returncode}'])
         else:
-            lines, failures, peak = pc.compare(tmp, path, quick=True)
+            lines, failures, peak = pc.compare(tmp, path, quick=True, workers=workers)
             failures = ["FAIL " + f for f in failures]
             if not failures and peak is not None and peak > base_peak * MEMORY_MARGIN:
                 failures = [f"FAIL peak {peak:,} is over the unmutated {base_peak:,} by more than 3%"]
@@ -451,8 +461,13 @@ def main():
     if failures:
         print("\n".join(lines))
         raise SystemExit("the unmutated port fails Stage B, so no mutant can be judged")
-    with concurrent.futures.ThreadPoolExecutor(int(os.environ.get('MUTATE_JOBS', 4))) as pool:
-        results = list(pool.map(lambda m: try_mutant(*m, base_peak), todo))
+    jobs = env_jobs('MUTATE_JOBS', DEFAULT_JOBS)
+    # the outer mutants and the workers inside each comparison multiply: keep the
+    # product about the core count, or the extra workers only contend for the
+    # process spawns the cases are made of
+    workers = env_jobs('MUTATE_INNER_JOBS', 0) or max(1, (os.cpu_count() or 1) // jobs)
+    with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
+        results = list(pool.map(lambda m: try_mutant(m[0], m[1], base_peak, workers), todo))
     for _, line in results:
         print(line)
     caught = sum(status == 'caught' for status, _ in results)
