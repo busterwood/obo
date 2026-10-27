@@ -2761,6 +2761,42 @@ fn loopCarryCheck(back: &PState, useBefore: int, lv: ?^Sym) {
     }
 }
 
+// whether the index that begins at the current token has a '(' before its closing ']': a call (or only a
+// parenthesis: that costs a pin, nothing else). The tokens are read by the lexer itself (next), so a quote in a
+// char literal or a comment, a bracket in a string, and a newline in the index are what the compiler will see; the
+// scanner is put back as it was, the way a function's second pass does it (fnDecl).
+fn indexHasCall(): bool {
+    let sPos = pos
+    let sLine = line
+    let sCol = col
+    let sLast = last
+    let sSym = sym
+    let sSval = sval
+    let sIval = ival
+    let sTline = tline
+    let sTcol = tcol
+    let sSeq = tokSeq
+    var depth = 1
+    var found = false
+    while !found && depth > 0 && sym != T_EOF {
+        next()
+        if sym == T_LPAREN { found = true }
+        if sym == T_LBRACK { depth += 1 }
+        if sym == T_RBRACK { depth -= 1 }
+    }
+    pos = sPos
+    line = sLine
+    col = sCol
+    last = sLast
+    sym = sSym
+    sval = sSval
+    ival = sIval
+    tline = sTline
+    tcol = sTcol
+    tokSeq = sSeq
+    return found
+}
+
 // ======================================================== effect summaries
 // Every function records which globals it might free. Bodies are compiled
 // before they can be called (declare before use), so at a call site the
@@ -2778,7 +2814,7 @@ fn mutFrees(f: ^Sym, i: int): bool {
 
 // a callee that might free nothing: compiled, not being compiled, freeing no global, not writing through a
 // handle, and freeing nothing below any of its mut arguments (mutFrees: FnRec.pfree). It may still change
-// them without freeing, and append to a mut array, which moves its storage: see movesFn.
+// them without freeing, and append to a mut array (which does not move the array: see movesFn).
 // An owned by-value parameter does not make it impure: the caller's argument is a move, which consume()
 // counts (touches), and the array checks see that.
 fn pureFn(f: ^Sym): bool {
@@ -2789,15 +2825,18 @@ fn pureFn(f: ^Sym): bool {
     return true
 }
 
-// a call that counts in userCalls: one that might free (not pureFn), or that has a mut parameter, whose array
-// the callee may append to (append records no free, but it reallocates the array, so an array address or
-// index loaded before the call is stale). The index and held-array checks need this; the handle borrows do not.
+// a call that counts in userCalls: one that might free (not pureFn). The index, held-array, append, truncate,
+// replace and assignment-target checks guard an array header (or a record address) loaded before the call.
+// Appending does not move that: an array value is a header (length, capacity, data pointer) of its own, which
+// append updates in place when it reallocates the data block; an element access reads the data pointer and the
+// length from the header when it is resolved, after the index has run, and a reference to an element is the
+// element object (or inner header), never a slot. So only a free of the array, or of what holds it, makes a loaded
+// header stale, and pureFn already says whether a callee may free (below its mut arguments through
+// FnRec.pfree, a global, anything through a handle, or unknown). Truncate shrinks the header in place and frees
+// only owned elements, which pfree records. A callee with a mut parameter that only writes, appends or
+// truncates a scalar array is therefore not moving. See FORK.md, "Move bits".
 fn movesFn(f: ^Sym): bool {
-    if !pureFn(f) { return true }
-    for i in 0..len(f.fnRec.pmodes) {
-        if f.fnRec.pmodes[i] == 2 { return true }
-    }
-    return false
+    return !pureFn(f)
 }
 
 fn mightFree(f: ^Sym, g: ^Sym): bool {
@@ -4011,7 +4050,7 @@ fn callFn(f: ^Sym): Item {
         }
     }
     afterCall(f)
-    if movesFn(f) { userCalls += 1 }              // only calls that might free or move an array count
+    if movesFn(f) { userCalls += 1 }              // only calls that might free count
     emit(0xE8)
     emit32(0)
     let at = pc() - 4
@@ -4322,7 +4361,7 @@ fn builtin(name: string): Item {
             if name == "truncate" {
                 let owned = isOwned(baseOf(a.typ))
                 if owned { invalidateOwnedChange(a) } else { invalidateChange(a) }
-                if owned || !throughHandle(a) { recordFreeChange(a) }   // a scalar array frees nothing
+                if owned || !throughHandle(a) || baseOf(a.typ).kind == "string" { recordFreeChange(a) }   // a scalar array frees nothing; strings lose a reference
             }
         }
         // the array is located before the value or count runs: a call there could free it
@@ -4563,7 +4602,12 @@ fn designatorT(target: bool): Item {
             // heldLost sees; a call that only borrows, or takes a mut argument, cannot free it.
             let wholeLocal = x.sym != nil && !(root != nil && (root.storage == "global" || root.isRef))
             let touch0 = heldTouch(root)
-            let a = load(x)
+            // a string's pointer is kept in a register across the index, and a call there that assigns over the
+            // string (b.s = "", through a mut parameter, a handle or a global) drops its last reference and frees it,
+            // which no free summary records (strings are not owned): the index holds a reference of its own
+            let pinIdx = kind == "string" && x.mode != "const" && indexHasCall()
+            var a = load(x)
+            if pinIdx { a = rtCall1(RT_STR_INC, a, tString) }
             let hp = heldPush(root, viaHandle, hOrig, hIdent, placePath(root, path), path)
             let i0 = expression()
             if !isInt(i0.typ) { error("array index must be int") }
@@ -4603,6 +4647,13 @@ fn designatorT(target: bool): Item {
                 x.scale = 1
                 x.width = 1
                 x.readonly = true
+                if pinIdx {
+                    // the byte is read now, and the reference the index took is given back
+                    let keep = alloc()
+                    movRR(keep, a.r)
+                    x = load(x)
+                    rtCall1(RT_STR_DEC, makeReg(tString, keep), tVoid)
+                }
             } else {
                 x = newItem("elem", elem)
                 x.base = a.r

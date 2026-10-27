@@ -1,5 +1,5 @@
 type Node = ref record { v: int; kids: []Node }
-fn replaceKids(mut n: &Node): Node { return new Node{v: 7, kids: new []Node(0)} }
+fn replaceKids(mut n: &Node): Node { n.kids = new []Node(0); return new Node{v: 7, kids: new []Node(0)} }
 fn mk(v: int): Node { return new Node{v: v, kids: new []Node(0)} }
 fn shrink(mut n: &Node): int { n.kids = new []Node(0); return 1 }
 // === a call that might free the array being assigned into is an error

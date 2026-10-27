@@ -13,6 +13,7 @@ fn cut(h: ^Bag): Node { h.items = new []Node(0); return mk(5) }
 fn kidsOf(mut n: &Node): []Node { n.kids = new []Node(0); return new []Node(0) }
 fn idx(mut b: &Bag): int { b.items = new []Node(0); append(b.items, mk(4)); return 0 }
 fn idxArr(mut a: &[]Node): int { append(a, mk(4)); return 0 }
+fn idxCut(mut a: &[]Node): int { truncate(a, 0); return 0 }
 fn idxO(mut b: &OBag): int { b.items = new []?Node(0); append(b.items, mk(4)); return 0 }
 var gbag = new Bag{items: new []Node(0)}
 var garr = new []Node(0)
@@ -140,7 +141,7 @@ fn addTo(mut a: &[]Node) {
 fn main() {}
 // === an index through a mut array parameter whose index calls a function
 fn ix(mut a: &[]Node): int {
-    println(a[idxArr(a)].v)     // error: cannot index a field, element or reference with an index that calls a function
+    println(a[idxCut(a)].v)     // error: cannot index a field, element or reference with an index that calls a function
     return 0
 }
 fn main() {}

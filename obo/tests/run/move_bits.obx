@@ -1,0 +1,115 @@
+// A call with a mut parameter that only writes a scalar, or appends to an array, moves
+// nothing an index, an append or an assignment target has already loaded: an array is a header that append
+// updates in place (FORK.md, "Move bits"). Each case below was refused while every callee with a mut parameter
+// counted as moving; the callees append enough to reallocate the data block. errors/move_bits.obx has the neighbours.
+type Item = ref record { v: int }
+type Bag = ref record { xs: []Item; ns: []int; n: int }
+
+var gns = new []int(0)
+
+fn mk(v: int): Item { return new Item{v: v} }
+
+// appends to its mut array, enough to reallocate it: frees nothing
+fn grow(mut a: &[]Item): int {
+    for i in 0..20 { append(a, mk(i)) }
+    return 0
+}
+fn growI(mut a: &[]int): int {
+    for i in 0..20 { append(a, i) }
+    return 0
+}
+fn growG(): int {
+    for i in 0..20 { append(gns, i) }
+    return 0
+}
+// writes a scalar
+fn bumpAt(mut a: &[]Item, i: int): int {
+    a[i].v += 10
+    return 0
+}
+fn count(mut b: &Bag): int {
+    b.n += 1
+    append(b.xs, mk(b.n))
+    return 0
+}
+// two calls deep
+fn growVia(mut a: &[]Item): int { return grow(a) }
+fn growItem(mut a: &[]Item): Item {
+    grow(a)
+    return mk(7)
+}
+
+fn local(): int {
+    var xs = new []Item(0)
+    append(xs, mk(1))
+    let a = xs[bumpAt(xs, 0)].v         // 11
+    let b = xs[growVia(xs)].v           // 11
+    xs[grow(xs)] = mk(5)                // an assignment target across a call that appends
+    return a * 1000 + b * 10 + xs[0].v + len(xs)
+}
+
+fn otherArray(): int {
+    var xs = new []Item(0)
+    var ys = new []Item(0)
+    append(xs, mk(3))
+    append(ys, mk(4))
+    let a = xs[grow(ys)].v + ys[bumpAt(xs, 0)].v
+    return a * 100 + len(ys)
+}
+
+fn fieldArray(): int {
+    var b = new Bag{xs: new []Item(0), ns: new []int(0), n: 0}
+    append(b.xs, mk(2))
+    append(b.ns, 6)
+    let a = b.xs[grow(b.xs)].v                  // 2
+    b.xs[0].v += count(b)                       // an element field across a call that appends to the array it is in
+    append(b.xs, growItem(b.xs))                // the array to append to is held across the call
+    append(b.ns, growI(b.ns))
+    b.ns[growI(b.ns)] = 9
+    return a * 100 + b.xs[0].v * 10 + len(b.xs) + b.ns[0] + len(b.ns)
+}
+
+fn viaHandle(h: ^Bag): int {
+    let a = h.xs[grow(h.xs)].v
+    h.xs[growVia(h.xs)] = mk(8)
+    h.ns[growI(h.ns)] += 1
+    append(h.xs, growItem(h.xs))
+    return a * 1000 + h.xs[0].v * 100 + len(h.xs) + h.ns[0]
+}
+
+fn viaParam(mut a: &[]Item): int {
+    let x = a[grow(a)].v
+    a[bumpAt(a, 0)].v += 1
+    return x * 100 + a[0].v + len(a)
+}
+
+fn viaGlobal(): int {
+    gns[growG()] += 1
+    let x = gns[growG()]
+    append(gns, growG())
+    return x * 100 + len(gns)
+}
+
+// a reference to an element held across an append through a call: appending does not invalidate references
+fn held(): int {
+    var xs = new []Item(0)
+    append(xs, mk(5))
+    let r = &xs[0]
+    let n = grow(xs)
+    return r.v * 100 + len(xs) + n
+}
+
+fn main() {
+    println(local())              // expect: 11156
+    println(otherArray())         // expect: 721
+    println(fieldArray())         // expect: 314
+    let bag = new Bag{xs: new []Item(0), ns: new []int(0), n: 0}
+    append(bag.xs, mk(1))
+    append(bag.ns, 4)
+    println(viaHandle(handle(bag)))   // expect: 1867
+    var as = new []Item(0)
+    append(as, mk(3))
+    println(viaParam(as))         // expect: 335
+    println(viaGlobal())          // expect: 161
+    println(held())               // expect: 521
+}

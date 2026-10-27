@@ -498,7 +498,6 @@ FP_MUTANTS = {
     'a callee that frees globals is pure': ('    if f.addr < 0 || f == curFn || f.freesAll || len(f.fnRec.freed) > 0 { return false }\n', '    if f.addr < 0 || f == curFn || f.freesAll { return false }\n'),
     'a callee that frees anything is pure': ('    if f.addr < 0 || f == curFn || f.freesAll || len(f.fnRec.freed) > 0 { return false }\n', '    if f.addr < 0 || f == curFn || len(f.fnRec.freed) > 0 { return false }\n'),
     'a callee with a forward heading is pure': ('    if f.addr < 0 || f == curFn || f.freesAll || len(f.fnRec.freed) > 0 { return false }\n', '    if f == curFn || f.freesAll || len(f.fnRec.freed) > 0 { return false }\n'),
-    'a call with a mut parameter that appends does not count as moving': ('    if movesFn(f) { userCalls += 1 }', '    if !pureFn(f) { userCalls += 1 }'),
     'only the first mut parameter is checked for frees': ('    for i in 0..len(f.fnRec.pmodes) {\n        if f.fnRec.pmodes[i] == 2 && mutFrees(f, i) { return false }', '    for i in 0..1 {\n        if i < len(f.fnRec.pmodes) && f.fnRec.pmodes[i] == 2 && mutFrees(f, i) { return false }'),
     # a reference only borrows: replace and take refuse it
     'a replace of a reference local is allowed': ('        if rs != nil && rs.isRefLocal {\n            error("replace cannot change', '        if rs != nil && rs.isRefLocal && false {\n            error("replace cannot change'),
@@ -547,8 +546,29 @@ REF_PATH_MUTANTS = {
 }
 MUTANTS.update(REF_PATH_MUTANTS)
 
+# the move rule (FORK.md, "Move bits"): a call counts in userCalls only if it might free (not pureFn); appending through
+# a mut parameter moves nothing a caller has loaded. Each mutant undoes one part, in the unsafe direction (a case of
+# errors/move_bits.obx is accepted) or in the safe one (run/move_bits.obx is refused again)
+MOVES = 'fn movesFn(f: ^Sym): bool {\n    return !pureFn(f)\n}'
+MOVE_MUTANTS = {
+    'no call counts as moving': (MOVES, 'fn movesFn(f: ^Sym): bool {\n    return false\n}'),
+    'every call counts as moving': (MOVES, 'fn movesFn(f: ^Sym): bool {\n    return true\n}'),
+    'a call with a mut parameter counts as moving': (MOVES,
+        'fn movesFn(f: ^Sym): bool {\n    if !pureFn(f) { return true }\n    for i in 0..len(f.fnRec.pmodes) {\n        if f.fnRec.pmodes[i] == 2 { return true }\n    }\n    return false\n}'),
+    'the 63rd parameter is assumed to free nothing': ('    if i >= 62 { return true }\n', ''),
+    'a truncate records no free': ('                if owned || !throughHandle(a) || baseOf(a.typ).kind == "string" { recordFreeChange(a) }   // a scalar array frees nothing; strings lose a reference\n', ''),
+    'a truncate of strings through a handle records no free': ('|| !throughHandle(a) || baseOf(a.typ).kind == "string" { recordFreeChange(a) }', '|| !throughHandle(a) { recordFreeChange(a) }'),
+    'a string index with a call holds no reference of its own': ('kind == "string" && x.mode != "const" && indexHasCall()', 'kind == "string" && x.mode != "const" && false'),
+    'a string index pins only when the call is its first token': ("        if sym == T_LPAREN { found = true }\n", "        if sym == T_LPAREN && depth == 0 { found = true }\n"),
+    'a nested bracket in an index ends the look-ahead': ("        if sym == T_LBRACK { depth += 1 }\n", ''),
+    'the look-ahead does not put the scanner back': ("    pos = sPos\n    line = sLine\n", "    line = sLine\n"),
+    'the look-ahead does not put the token back': ("    sym = sSym\n    sval = sSval\n", "    sval = sSval\n"),
+}
+MUTANTS.update(MOVE_MUTANTS)
+
 # mutants that survive by design: each removes a test that is redundant, so the behaviour is unchanged
 EQUIVALENT = {
+    "a retried callee forgets its free bits": "equivalent: the second pass compiles the same body again and records every free it makes again (recordFree), so clearing the bits between the passes loses nothing; the bits are kept (ORed into) only so that the summary never depends on which pass recorded it. A reset after the second pass would be caught (errors/move_bits.obx, errors/mut_retry.obx), but there is no place for it",
     "a closed block's defer handles stay": "equivalent since origins per path: originFree finds the handles of a defer through originSyms, which a closed block drops, and a handle compares by generation, so a stale deferH entry never equals a later entry",
     "a loop does not restore the live marks from before it": "equivalent since loopOriginPend tests the live mark: a move of the owner in a loop, with the handle declared outside it and live at the move, is refused if the loop names the handle and otherwise sets movedLoop, which refuses naming it after the loop (errors/origin_paths.obx, the zero-trip loop after a moving return arm, is refused that way); a handle declared inside is gone at the loop's end; so the live mark after the loop is never read",
     "a defer body is checked against a binding that is not the same place": "equivalent: a reference that a defer body uses may not be pointed elsewhere while the defer is declared (deferUses), so the binding at the block's end is the one the defer was declared with, and the two are covered either way",

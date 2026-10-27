@@ -101,27 +101,27 @@ fn main() {
     let h = handle(new Bag{xs: new []Item(1), n: 0})
     println(viaHandle(h, new []Item(0)))
 }
-// === an index that calls a function that appends to the array: the array's address was loaded before (userCalls stays conservative)
-fn grow(mut a: &[]Item): int { append(a, new Item{v: 9}); return 0 }
+// === an index that calls a function that truncates the array (a free below its mut argument)
+fn grow(mut a: &[]Item): int { truncate(a, 0); return 0 }
 fn viaHandle(h: ^Bag): int {
-    return h.xs[grow(h.xs)].v  // error: cannot index through a handle with an index that calls a function
+    return h.xs[grow(h.xs)].v  // error: cannot pass a reference that borrows through a handle to grow
 }
 fn main() {
     let h = handle(new Bag{xs: new []Item(1), n: 0})
     println(viaHandle(h))
 }
-// === a field's array indexed by a call that appends to it
-fn grow(mut a: &[]Item): int { append(a, new Item{v: 9}); return 0 }
+// === a field's array indexed by a call that truncates it
+fn grow(mut a: &[]Item): int { truncate(a, 0); return 0 }
 fn viaOwned(b: Bag): int {
     return b.xs[grow(b.xs)].v  // error: cannot index a field, element or reference with an index that calls a function
 }
 fn main() {
     println(viaOwned(new Bag{xs: new []Item(1), n: 0}))
 }
-// === append to a handle's array with a value that calls a function that appends to the same array
-fn grow(mut a: &[]Item): Item { append(a, new Item{v: 9}); return new Item{v: 1} }
+// === append to a handle's array with a value that calls a function that truncates the same array
+fn grow(mut a: &[]Item): Item { truncate(a, 0); return new Item{v: 1} }
 fn viaHandle(h: ^Bag) {
-    append(h.xs, grow(h.xs))  // error: cannot append to a field, element, handle or global across a call
+    append(h.xs, grow(h.xs))  // error: cannot pass a reference that borrows through a handle to grow
 }
 fn main() {
     let h = handle(new Bag{xs: new []Item(1), n: 0})
