@@ -1065,7 +1065,7 @@ class ToolCtx:
                 self.diff = 'shape'
             else:
                 self.diff = None
-        self.gnu_goldens = mode not in ('any', 'busybox') and kind in ('gnu', 'gnu-old', 'none')
+        self.gnu_goldens = mode not in ('any', 'busybox')
 
     def differential(self, case):
         if self.diff == 'portable':
@@ -1157,6 +1157,8 @@ class Harness:
                 continue
             world[name] = SPECS.get(name, Spec('missing'))
 
+        if (case.sink or case.tag == 'writeerror') and not os.path.exists('/dev/full'):
+            return ('skip', '/dev/full is absent')
         # unreadable cases are skipped where the fixture is actually readable
         if 'unreadable' in case.fixtures:
             up = SPECS['unreadable']
@@ -1168,10 +1170,11 @@ class Harness:
             # the documented width divergence must be invisible: adding the
             # unreadable file's byte must not change the digit count of the sum
             readable = 0
-            for name, spec in world.items():
-                if name in ('unreadable', '-', '') or spec.kind != 'file':
+            for name in parse_argv(case.tool, case.args)[1]:
+                if name in ('unreadable', '-', ''):
                     continue
-                if name == '/dev/null':
+                spec = world.get(name, Spec('missing'))
+                if spec.kind != 'file' or name == '/dev/null':
                     continue
                 readable += spec.size
             if len(str(readable)) != len(str(readable + 1)):
