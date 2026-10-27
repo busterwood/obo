@@ -2791,3 +2791,152 @@ shared inputs taken at startup, was built and then removed before merge: a test 
 and reverted before the run ended is invisible to both the startup digest and a save-time re-digest, because the
 file is already back, so a missed mutant could be stored and later reported as caught. A sound cache needs a
 snapshot or lock of the inputs for the whole run; that is future work. No cache is shipped.
+
+## Result and try (done)
+
+**Rule.** `Result[T]` is a built-in parameterized type: one owned cell with two variants, `ok` (field `value: T`)
+and `err` (fields `message: string` at offset 0, `code: int` at 8). `ok(v)`/`err(message[, code])` build a cell;
+`match` inspects it, non-consumingly or with the consuming `ok(v)`/`err(m, c)` bindings; `try e` propagates an
+error out of a function whose result is a `Result`, unwrapping an ok payload. `err(...)` is typed `errval` and is
+assignable to any `Result[T]`; `try` is allowed only in a tail position (a `let`/`var` initializer, an assignment
+right-hand side, or a statement) and not in `main` or a defer. There is no `Result[void]`: a success with no
+value uses `Result[bool]`, `Result[int]`, or a typed optional payload.
+
+**Shape.** `Type` gained `resultOf: ?^Type`; `derived("result", base)` caches the `Result[T]` in `base.resultOf`,
+exactly as `arrayOf`/`optOf`/`handleOf` do. `derivedResult` makes the per-`T` `ok` record (field `value` at 0,
+descriptor `descriptor(8, ptrs, strs)` with `ptrs = [0]` iff `isOwned(T)` and `strs = [0]` iff `T` is a string)
+and appends the one shared `err` variant (`errVariantType`, descriptor `descriptor(16, [], [0])`). The ok
+descriptor is the tag of an ok cell, so every mention of `Result[int]` must be the same `Type` object: the
+`derived` cache is the invariant, and `same()` stays pointer-only for `result` rather than comparing bases.
+`Result` is invariant: `Result[byte]` is not a `Result[int]`. The shared err descriptor is what makes
+`T != U` propagation sound: an err cell built for one success type has the same tag and layout as one for any
+other, and every free and match reads the cell's own header descriptor. `isOwned` adds `result` and `errval`;
+`nonNull` and `isRef` add `result`; `assignable` accepts `errval` for a `Result` (and, through the optional
+path, for `?Result[T]`). `errval` is a singleton type and is not a nameable type: `parseType` cannot write it,
+and inference for a bare `let e = err(...)` (local or global) is rejected.
+
+**Surface.** `Result` is the universe's type constructor `Result[T]` (`Result` alone says "Result needs a type");
+`^Result[T]` is refused by the handle check and `&Result[T]` is allowed because it is owned. `ok`/`err` are
+ordinary builtins and can be shadowed. `try` is the only new keyword: token 66 (after the punctuation, so the
+existing 5 to 65 token numbers do not move), `makeTokNames`/`makeKeywords` gain it, `keywordTok` special-cases it
+because its place in the keyword list is not its token number, and `semiAfter` does not include it (a newline
+after `try` does not end the statement). `ok` rejects a void expression, `nil`, a borrowed value and `errval`;
+`err` takes a string message (consumed, so a heap message is pinned before the code is parsed) and an int code
+(default 0). `callExempt` and `plausible` name `ok`, `err` and `try`, so the pre-scan does not count a constructor
+as a user call and does not guess a Result local as an int; `homeFor` only takes a declared int/bool anyway, so a
+wrong guess there can only waste ranking weight.
+
+**Match.** `matchStat` accepts kind `result`. The non-consuming form narrows the scrutinee like a closed type:
+`r.value` in the ok arm, `r.message`/`r.code` in the err arm; both arms are required and `else` is a hard error
+("a Result match names the ok and err arms; 'else' is not needed"). Strings and scalars can be copied out,
+optionals can be `take`n, owned records/arrays cannot be moved out. The consuming form is detected by one
+scanner lookahead before the first tag compare (first variant name followed by `(`, saved and restored exactly as
+`indexHasCall` does); `consume(scrutinee)` runs BEFORE `matchStat`'s `s0 = snapshot()` (pre-consume, every arm's
+`restore(s0)` would reset `moved` and the arm's shell free plus scope exit would double-free), after copying the
+cell pointer into an unnamed slot. The tag loads come from that slot, not from the moved symbol. Each arm's
+prologue (field extraction, field zeroing, shell free) is emitted only after that arm's tag compare, and the
+payload locals are declared after the arm's `openBlock`, so the arm's own exit (or `runDefers` on a return,
+break or continue) frees them; the err message is an ordinary `isStr` local that owns the cell's transferred
+reference, and the ok payload is added as an owned/string local per `T`. The arm replicates `block`'s
+`pendBlockEnds` and `armBlock`'s dead-mark/`exitDead` bookkeeping (factored as `armTail`). Both arms must bind or
+neither may.
+
+**`try` semantics.** Preconditions: a tail position (`trySite > 0 && tryNest == 0`); not in a defer; the
+enclosing function returns a `Result` (`main` returns nothing, and there is no function in a global initializer);
+the operand is a `Result` (an optional Result gets the nil-check hint, `errval` gets "no success type"); and the
+operand is moveable. The operand is consumed with the existing `consume`, so a whole local or parameter moves, a
+field/element/global/reference is refused, and the defer-use and `&&`/`||` checks apply. On ok: the 32-bit tag at
+`[cell-16]` is compared with the shared err descriptor (a 32-bit load: an 8-byte one would include the
+generation), the payload word is loaded, the field is zeroed, and the shell is freed with `RT_FREE`. On err: the
+cell is parked in an unnamed slot outside `ownedLocals`, `runDefers(fnBlock)` runs the defers and frees the live
+owned locals, and the slot is loaded into `RAX` before the epilogue. The payload item is a register, owned if `T`
+is, with `strTemp` set for `T == string` (the shell's reference is transferred). Diagnostics are reported at the
+`try` token; `consume`'s own errors stay at the operand.
+
+**Error-path isolation (blocking point B3).** Every path mark is captured AFTER `consume(e)`: the post-consume
+`snapshot()`, `deadSave()`, the `freeLog` length, the seven pending-array lengths (`pendSym`, `pendDepth`,
+`frLine`, `frCol`, `pendWhat`, `pendOwn`, `pendNest`), `freeSeq`, and the owned locals' `iterating` flags (saved
+and cleared, so the for-walk check does not fire on a returning path that abandons the walk). After the error
+block those are restored or truncated; the ok path then continues with the operand moved and the ok payload in
+its register. The pending diagnostic (`pendLine`/`pendCol`/`pendMsg`) is deliberately NOT restored: the error
+path is a real exit, so a defer-use suspicion raised while its `callDefers` runs is real, and `notePending`
+already keeps the earliest location. Everything else is unchanged or must persist and is not over-restored:
+`originSyms`, `originPath`, `originNar`, `deferFrees`/`deferFreeEv` (safe because `try` in a defer is rejected,
+so `inDefer` is false), `deferH`/`deferAt`, `dfBlock`/`dfIndex`/`dfOwner`/`dfEv`, the `held*` arrays (consume's
+`heldMove` effect persists; the error block does not touch them), `userCalls`/`selfCalls`/`fwdCalls`/`farCalls`,
+`depth`, `argTemps`/`argConsts`, `narrowStack`, `loops`, `blocks`, `pinned`, the function summaries, and
+`freeArena` (outside a loop `logFree` appends nothing, and inside one the outermost `loopLogEnd` drops it). The
+capture order is load-bearing: a pre-consume snapshot resets `moved` (double free at scope exit) and a
+pre-consume `deadSave` resurrects an `originLive` mark that `originMove` cleared.
+
+**Codegen.** The ok and err cells are `RT_ALLOC_RECORD` allocations whose size comes from the descriptor (both
+round to one 32-byte block and are zeroed on allocation); payload/message stores use the `newExpr` field-store
+pattern (no `store()`, which would release the cell register). `try` emits: park the cell; capture the marks; load
+and compare the tag; on ok load the payload, zero the field, `RT_FREE` the shell and jump over; on err
+`runDefers(fnBlock)`, load the slot into `RAX`, `leave; ret`. The payload register stays allocated across the
+error block, so the pool cannot reuse it. A string success sets `strTemp`; a discarded `try f()` string statement
+drops the reference. The ok/err constructors and the match use the existing descriptor/tag machinery; no runtime
+routine or layout change was needed (`runtime.c` is untouched). Function recompilation after a register-pressure
+retry reuses the cached types and descriptors; rodata from an abandoned pass stays referenced by the cache.
+
+**I/O (Phase 2, not implemented here).** `openFile`, `readFd`, `writeFd` and `closeFile` remain Phase 2. When
+they are added: pin or materialise earlier arguments before parsing a later one that can run user code
+(`pinStr(path)` before the mode, `asReg(fd)` before `max`/`data`, like `writeFile` does); `rtCall`/`argReg` place
+at most four arguments in registers, so a helper takes at most four (`openFile(path, mode, descErr, descOk)` etc.)
+and a fifth needs a descriptor block or an extended calling convention; the Result layout becomes a runtime
+contract (payload size, field offsets, descriptor shape) and must be recorded next to the object-header comment
+in `runtime.c`; a helper that allocates more than once while holding earlier results must root them in
+`tmp_root[0]`/`tmp_root[1]`, even though `rt_collect` currently returns; a pinned string argument's temporary
+reference is released by `rtCall` after the call, so a helper must not retain the path/mode/data pointer (a
+message that names a path copies it); `readFd` must reject `max <= 0` (`err(..., EINVAL)`, EINVAL=22), retry
+`EINTR`, free a partially built array on failure, treat 0 bytes as EOF (`ok(nil)` after freeing the empty array),
+and truncate `len` to a short read (a byte array owns no elements); `writeFd` retries `EINTR` and reports a short
+positive write as `ok(count)` (the caller loops) and never frees the borrowed data; `openFile` maps `r`/`w`/`a`
+(and later `r+`/`w+`) and reports errno; `closeFile` treats `EINTR` as success (Linux has already closed the
+descriptor) and returns `ok(true)` or `err(..., errno)`. Allocation failure stays the runtime's fatal exit 2.
+`readFile` keeps returning `?[]byte`; the two idioms mean different things (absence versus failure with a
+reason), and converting it would be a breaking change for every test, example and the compiler.
+
+**Tests.** `tests/run/result.obx` (60 expected output lines) covers construction and both match forms, strings
+(copied, tried with a transferred heap reference, consumed, discarded), owned, array, optional and nested
+payloads, a propagation chain, `T != U`, loops and for-ranges, defers and their order, the for-walk suppression, loop free-log
+isolation, a defer replay in a loop (pending arrays, a handle used after the `try`), a record field, `[]Result`
+with `truncate`, `?Result` with `take` and at scope exit, `replace`, a record-held error returned as a different
+`U`, a global result, match through `&Result`, recursion, `err` rebuilt in an err arm, `try ok(...)`, a moved
+result reassigned, the consuming match with terminating arms, a bare `ok`/`err` statement, and the
+consume-before-snapshot ordering. `tests/errors/result.obx` has 52 exact-line cases: every precondition and
+position-rule message, the constructor and type errors, invariance, identity comparison, missing/duplicate/`else`
+arms, the mixed binding forms, and a defer use invalidated by the change the `try` operand makes.
+`own_fuzz.py` gains the `result` profile (50 seeds in the suite): six helper shapes called with random
+arguments, with the output and both success/failure paths modelled in Python.
+
+**Mutants.** `RESULT_MUTANTS` in `tests/mutate_fork.py` (also run by `mutate_port.py`), 33 keys: the tag compare,
+the 8-byte tag load, returning the success value or the cell on error, no shell free, no payload zeroing, no
+consume, a pre-consume snapshot, skipped defers, skipped `freeOwned`, kept free log, kept for-walk marks, no state
+restore, no dead-mark restore, a descriptor per err site, the ok descriptor's owned and string lists (both ways),
+the err descriptor's string list and swapped offsets, no consume in `ok`/`err`, `errval` not owned, no `strTemp`,
+the consuming match's consume placement / shell free / message zeroing / message ownership, missing and duplicate
+arms, `else` on a Result, and the function-result check. 32 are caught by the suite; the pending-array truncation
+is `EQUIVALENT` (defensive): the error block's `callDefers` replays the same deferred frees that the defer's own
+block-end exit replays at the same depth and nesting, so no program was found where the extra entries change a
+verdict. The suite is 899 tests (848 before the fuzz profile): 796 existing plus 52 error cases, one run program
+and 50 result fuzz seeds.
+
+**Memory.** `port_compare.py` measures the port compiling itself at 1,229,408 bytes live, against a budget of
+2,000,000 and 1,126,736 on main just before this branch (+102,672: the new `Type` field is 8 bytes per type, the
+descriptors are a few words per result type, and the rest is code). Per-seed and per-file counts are unchanged
+elsewhere.
+
+**Seed and round 2.** The compiler source does not use the new feature in this branch (its own local variables named
+`ok` are ordinary variables that shadow the builtin, as before), so it is still built by the current seed; `make promote` is not part of the branch. Round 2, after the seed is promoted:
+`compileFile` returns `Result[bool]`, its four `exit(2)` sites become `return err("obxc: ...", 2)`, and `main`
+matches the result and keeps exit code 2, with `readFile`/`writeFile`, `--tokens` and the encoder untouched.
+
+**Decisions.** Consuming match is part of the feature (phase 1), not an add-on. The error payload is inline
+(`message`, `code`) rather than a named `Error` record. `err(...)` is `errval` for now, so an error value has
+exactly one use (a Result destination) and a bare `let e = err(...)` needs a declared type. `try` is tail-only;
+the restriction is load-bearing for the leak argument. `try` is not allowed in `main`: a helper plus `match` is
+the top-level pattern, and `exit(1)` is used rather than `exit(r.code)` because errno 2–7 collides with the
+runtime's trap namespace. `Result` comparison is identity `==`/`!=` only. `ok`/`err` stay shadowable and `try` is
+a reserved word. There is no `Result[void]`; errno lives in `code` for the Phase 2 I/O API; `readFile` keeps
+`?[]byte`.

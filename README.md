@@ -275,6 +275,9 @@ Implemented:
   since the character and the number are both plausible readings),
   `readFile(path): ?[]byte`, `writeFile(path, data, executable): bool`,
   `args(): []string`, `gc`, `gcstats`, `exit`.
+- obo adds `Result[T]` with `ok(v)` and `err(message[, code])`, the prefix
+  operator `try`, and the consuming `match` form `ok(v) { ... }`/`err(m, c) { ... }`
+  (`obo/LANGUAGE.md`, section 6); mainline obx has no result type.
 - Automatic semicolon insertion at line ends, as in Go.
 
 ## Safety checks at compile time
@@ -397,7 +400,7 @@ reaches a fixed point compiling itself.
 ## Not yet done
 
 Methods and interfaces, lambdas, generic
-modules, result types with `try`, multiple modules with symbol files, value records,
+modules, multiple modules with symbol files, value records,
 inout parameters, a `>>>` logical shift, and debug info. Each was designed earlier
 to fit the single pass. Also: effect summaries for functions that call each other through
 forward headings.
