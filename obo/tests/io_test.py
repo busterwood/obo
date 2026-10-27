@@ -173,6 +173,7 @@ def program_section():
     case_lib('stream.obx', check)
     case_lib('short_write.obx', clean_env(check=True, fault='short'))
     case_lib('short_write.obx', check)
+    case_lib('write_padded.obx', check)
 
     # inherited fd: Python opens the file (the number must be >= 3, or the test
     # would exercise the standard-stream refusal instead of the untracked close)
