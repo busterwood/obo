@@ -13,3 +13,4 @@ __pycache__/
 *.pyc
 /obo/obo-noregs
 /obo/.noregs.obo
+/obo/.mutant-verdicts.json
