@@ -9,7 +9,8 @@ port_test.py instead, whose objdump cross-check must catch it.
 Each mutant's comparison reuses obo's outcomes, stops at the first difference, and
 allows each program 20 times what obo took; MUTATE_JOBS mutants run side by side and
 MUTATE_INNER_JOBS cases inside each comparison (default MUTATE_JOBS=4, inner the core
-count divided by it, so the two multiply to about the core count). Measured here on a
+count divided by it, so the two multiply to about the core count; both are positive
+integers and anything else is an error). Measured here on a
 28-mutant sample: 4 outer x 4 inner took 41.9 s wall (166 s CPU), against 46.9 s for
 2 x 8 and 95.2 s (309 s CPU) for the old 4 x 16 -- the cases are process spawns, and
 more than the core count only contends. A comparison alone uses one worker per core.
@@ -283,7 +284,7 @@ MUTANTS.update({
 
 # the uses of a defer body: the same mutants as the fork's (see mutate_fork.py); the error cases of
 # errors/defer_uses.obx show them, since the port's own output does not change
-from mutate_fork import DEFER_USE_MUTANTS  # noqa: E402
+from mutate_fork import DEFER_USE_MUTANTS, env_jobs  # noqa: E402
 MUTANTS.update({k: [v] for k, v in DEFER_USE_MUTANTS.items()})
 # the references invalid on one path (errors/one_path_uses.obx, run/one_path.obx show them)
 from mutate_fork import ONE_PATH_MUTANTS  # noqa: E402
@@ -458,11 +459,11 @@ def main():
     if failures:
         print("\n".join(lines))
         raise SystemExit("the unmutated port fails Stage B, so no mutant can be judged")
-    jobs = int(os.environ.get('MUTATE_JOBS', DEFAULT_JOBS))
+    jobs = env_jobs('MUTATE_JOBS', DEFAULT_JOBS)
     # the outer mutants and the workers inside each comparison multiply: keep the
     # product about the core count, or the extra workers only contend for the
     # process spawns the cases are made of
-    workers = int(os.environ.get('MUTATE_INNER_JOBS', 0)) or max(1, (os.cpu_count() or 1) // jobs)
+    workers = env_jobs('MUTATE_INNER_JOBS', 0) or max(1, (os.cpu_count() or 1) // jobs)
     with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
         results = list(pool.map(lambda m: try_mutant(m[0], m[1], base_peak, workers), todo))
     for _, line in results:
