@@ -3108,8 +3108,8 @@ problems. `mutate_fork`: 409 of 429 caught, with the 20 equivalents (0 missed, 0
 `mutate_io`: 27 of 27 caught. `mutate_port`: 377 of 377 caught. The fixed point holds (stage2 equals
 stage3) and `seed/obo` is unchanged.
 
-**Seed and round 2.** The compiler source does not call the I/O builtins in this branch, so `seed/obo`
-stays the Result seed and `make promote` is not part of the branch. Round 2 (optional, recommended
+**Seed and round 2.** The seed already includes the I/O builtins (promoted on main at `c69b258`), so
+`make promote` is not part of this follow-up. Round 2 (optional, recommended
 against in phase 2) would move `compileFile` to the Result-returning builtins; `readFile`/`writeFile` are
 one-shot whole-file operations, so changing them would churn the fixed point for no tool benefit. The
 builtins are exercised by the tests and by phase 3.
