@@ -1,0 +1,15 @@
+// io_leak: a tracked fd still open at the normal end of main is a leak: exit 8,
+// before the object-leak check. The fd is opened in append mode, which is tracked
+// exactly like "w".
+// expect: open ok
+// expect-exit: 8
+// expect-stderr: file descriptors leaked: 1
+fn main() {
+    let a = args()
+    let p = a[1] + "/leak.bin"
+    let o = openFile(p, "a")
+    match o {
+        ok(fd) { println("open ok") }
+        err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+    }
+}

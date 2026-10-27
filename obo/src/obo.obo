@@ -1225,6 +1225,12 @@ const RT_STR_DEC = 25
 const RT_HANDLE = 26
 const RT_DEREF = 27
 const RT_ALIVE = 28
+// incremental I/O: the helpers build the Result cells themselves, from the err descriptor and the ok
+// variant descriptor of the exact payload type that the compiler passes as the last two arguments
+const RT_OPEN_FILE = 29
+const RT_READ_FD = 30
+const RT_WRITE_FD = 31
+const RT_CLOSE_FD = 32
 
 const RAX = 0
 const RCX = 1
@@ -1413,7 +1419,7 @@ fn initCompiler() {
     append(universe, newSym("type", "bool", tBool))
     append(universe, newSym("type", "string", tString))
     append(universe, newSym("type", "Result", tResultCtor))
-    let names = words("print println len gc gcstats exit append truncate substr eprint eprintln readFile writeFile args")
+    let names = words("print println len gc gcstats exit append truncate substr eprint eprintln readFile writeFile args openFile readFd writeFd closeFile stdin stdout stderr")
     for n in names { append(universe, newSym("builtin", n, nil)) }
     append(universe, newSym("builtin", "ok", nil))
     append(universe, newSym("builtin", "err", nil))
@@ -1925,6 +1931,9 @@ var argConsts = new []int(0)      // rtCall's constant arguments: a call owns th
 // arguments, are pushed first so the collector sees every pointer. A constant
 // argument needs no register: it goes straight to its argument register.
 fn rtCall(slot: int, args: []?Item, ret: ^Type): Item {
+    // argReg maps index 3 and every higher index to RCX, silently clobbering argument 3: a fifth
+    // argument needs a descriptor block or a stack convention, so catch it as a compiler bug here
+    if len(args) > 4 { error("a runtime call has at most four arguments") }
     let regs = new []int(0)                 // -1 for a constant, which is in argConsts
     let base = len(argConsts)
     let temps = new []bool(0)
@@ -1995,6 +2004,36 @@ fn rtCall2(slot: int, a: Item, b: Item, ret: ^Type): Item {
     append(args, a)
     append(args, b)
     return rtCall(slot, args, ret)
+}
+
+// A Result-returning builtin: the runtime builds the cell, so the compiler passes the shared err
+// descriptor and the ok variant of the exact payload type as the last two arguments. The ok variant
+// must be the CACHED one from derived("result", payload): match compares the cell's tag against that
+// descriptor, and a fresh okVariantOf(payload) would match neither arm (try would not reveal it).
+fn resultCall3(slot: int, a: Item, payload: ^Type): Item {
+    let rt = derived("result", payload)
+    let args = new []?Item(0)
+    append(args, a)
+    append(args, makeConst(tInt, errVariantType().desc))
+    append(args, makeConst(tInt, rt.variants[0].desc))
+    return rtCall(slot, args, rt)
+}
+
+fn resultCall4(slot: int, a: Item, b: Item, payload: ^Type): Item {
+    let rt = derived("result", payload)
+    let args = new []?Item(0)
+    append(args, a)
+    append(args, b)
+    append(args, makeConst(tInt, errVariantType().desc))
+    append(args, makeConst(tInt, rt.variants[0].desc))
+    return rtCall(slot, args, rt)
+}
+
+// openFile's constant mode must be one of the three the runtime maps
+fn checkMode(m: string) {
+    if m != "r" && m != "w" && m != "a" {
+        error("unknown open mode '" + m + "': use \"r\", \"w\" or \"a\"")
+    }
 }
 
 // ========================================================= scopes, narrowing
@@ -4713,6 +4752,68 @@ fn builtin(name: string): Item {
         releaseItem(x)
         return makeReg(x.typ, r)
     }
+    if name == "openFile" {
+        // openFile(path, mode): Result[int]. The path is pinned before the mode runs: the mode may
+        // assign over the string's owner, and the runtime converts the path only when called.
+        expect(T_LPAREN, "")
+        var p = nestedExpr()
+        if p.typ.kind != "string" { error("openFile needs a string path, not " + tname(p.typ)) }
+        p = pinStr(p)
+        expect(T_COMMA, "")
+        var m = nestedExpr()
+        if m.typ.kind != "string" { error("openFile needs a string mode, not " + tname(m.typ)) }
+        if m.mode == "const" { checkMode(rodataString(m.val)) }
+        m = materialise(m)
+        expect(T_RPAREN, "")
+        return resultCall4(RT_OPEN_FILE, p, m, tInt)
+    }
+    if name == "readFd" {
+        // readFd(fd, max): Result[?[]byte]. The fd is materialised before max runs, so a call there
+        // that changes the fd cannot change which descriptor is read.
+        expect(T_LPAREN, "")
+        var fd = nestedExpr()
+        if !isInt(fd.typ) { error("readFd needs an int file descriptor, not " + tname(fd.typ)) }
+        fd = materialise(fd)
+        expect(T_COMMA, "")
+        var n = nestedExpr()
+        if !isInt(n.typ) { error("readFd needs an int count, not " + tname(n.typ)) }
+        if n.mode == "const" && n.val <= 0 { error("readFd needs a positive count") }
+        n = materialise(n)
+        expect(T_RPAREN, "")
+        return resultCall4(RT_READ_FD, fd, n, derived("opt", derived("array", tByte)))
+    }
+    if name == "writeFd" {
+        // writeFd(fd, data): Result[int]. data is borrowed and is the last argument, so no hold is
+        // needed; noTemp keeps it from being a transient with no owner during the call.
+        expect(T_LPAREN, "")
+        var fd = nestedExpr()
+        if !isInt(fd.typ) { error("writeFd needs an int file descriptor, not " + tname(fd.typ)) }
+        fd = materialise(fd)
+        expect(T_COMMA, "")
+        var d = nestedExpr()
+        if d.typ.kind != "array" || baseOf(d.typ).kind != "byte" {
+            error("writeFd needs a []byte, not " + tname(d.typ))
+        }
+        noTemp(d)
+        d = materialise(d)
+        expect(T_RPAREN, "")
+        return resultCall4(RT_WRITE_FD, fd, d, tInt)
+    }
+    if name == "closeFile" {
+        expect(T_LPAREN, "")
+        var fd = nestedExpr()
+        if !isInt(fd.typ) { error("closeFile needs an int file descriptor, not " + tname(fd.typ)) }
+        fd = materialise(fd)
+        expect(T_RPAREN, "")
+        return resultCall3(RT_CLOSE_FD, fd, tBool)
+    }
+    if name == "stdin" || name == "stdout" || name == "stderr" {
+        expect(T_LPAREN, "")
+        expect(T_RPAREN, "")
+        var fd = 0
+        if name == "stdout" { fd = 1 } else if name == "stderr" { fd = 2 }
+        return makeConst(tInt, fd)
+    }
     if name == "append" || name == "truncate" || name == "substr" {
         let line = tline
         expect(T_LPAREN, "")
@@ -7143,7 +7244,7 @@ type Param = ref record {
 
 // ---- the pre-scan of a function
 
-let callExempt = words("if while for return match defer in else new print println eprint eprintln len gc gcstats exit append truncate substr readFile writeFile args take handle alive drop replace int byte string ok err try")
+let callExempt = words("if while for return match defer in else new print println eprint eprintln len gc gcstats exit append truncate substr readFile writeFile args openFile readFd writeFd closeFile stdin stdout stderr take handle alive drop replace int byte string ok err try")
 
 fn wordAt(a: int, b: int, w: string): bool {
     if len(w) != b - a { return false }
@@ -7203,6 +7304,8 @@ fn plausible(decl: int, from: int): bool {
         if wordAt(q, e, "new") || wordAt(q, e, "string") || wordAt(q, e, "args") || wordAt(q, e, "readFile") { return false }
         if wordAt(q, e, "substr") || wordAt(q, e, "take") || wordAt(q, e, "replace") || wordAt(q, e, "handle") { return false }
         if wordAt(q, e, "ok") || wordAt(q, e, "err") || wordAt(q, e, "try") { return false }
+        if wordAt(q, e, "openFile") || wordAt(q, e, "readFd") || wordAt(q, e, "writeFd") { return false }
+        if wordAt(q, e, "closeFile") || wordAt(q, e, "stdin") || wordAt(q, e, "stdout") || wordAt(q, e, "stderr") { return false }
         if wordAt(q, e, "nil") { return false }
     }
     return true

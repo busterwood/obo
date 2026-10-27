@@ -1,0 +1,30 @@
+// io_stdout_order: writeFd flushes the runtime's text buffer first, so text and
+// byte output keep program order; the stream accessors; closeFile refuses a
+// standard descriptor and later output still appears (N8).
+// expect: abc
+// expect: 0 1 2
+// expect: stdout refused 22
+// expect: after
+fn bytesOf(s: string): []byte {
+    let out = new []byte(0)
+    for i in 0..len(s) { append(out, s[i]) }
+    return out
+}
+
+fn main() {
+    print("a")
+    let b = bytesOf("b")
+    let w = writeFd(stdout(), b)
+    match w {
+        ok(n) { if n != 1 { println("short stdout write ", n); exit(1) } }
+        err(m, c) { println("stdout write: ", m, " (", c, ")"); exit(1) }
+    }
+    println("c")
+    println(stdin(), " ", stdout(), " ", stderr())
+    let r = closeFile(stdout())
+    match r {
+        ok(v) { println("closed stdout"); exit(1) }
+        err(m, c) { println("stdout refused ", c) }
+    }
+    println("after")
+}

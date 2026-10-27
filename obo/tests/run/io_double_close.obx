@@ -1,0 +1,23 @@
+// io_double_close: a tracked fd closed twice traps under OBO_CHECK=1.
+// expect-exit: 9
+// expect-stderr: double close of file descriptor
+fn main() {
+    let a = args()
+    let p = a[1] + "/double.bin"
+    let o = openFile(p, "w")
+    match o {
+        ok(fd) {
+            let c = closeFile(fd)
+            match c {
+                ok(v) { }
+                err(m, code) { println("first close: ", m, " (", code, ")"); exit(1) }
+            }
+            let c2 = closeFile(fd)
+            match c2 {
+                ok(v) { println("second close ok"); }
+                err(m, code) { println("second close: ", m, " (", code, ")"); }
+            }
+        }
+        err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+    }
+}

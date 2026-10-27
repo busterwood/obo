@@ -1,0 +1,24 @@
+// io_read_big_closed: a huge read from a tracked closed fd is the fd-state trap
+// (exit 9), not an out-of-memory exit 2: the check precedes the allocation (N2).
+// expect-exit: 9
+// expect-stderr: use of a closed file descriptor
+fn main() {
+    let a = args()
+    let p = a[1] + "/bigclosed.bin"
+    let o = openFile(p, "w")
+    match o {
+        ok(fd) {
+            let c = closeFile(fd)
+            match c {
+                ok(v) { }
+                err(m, code) { println("close: ", m, " (", code, ")"); exit(1) }
+            }
+            let r = readFd(fd, 1 << 40)
+            match r {
+                ok(v) { println("big read after close succeeded") }
+                err(m, code) { println("big read after close: ", m, " (", code, ")"); }
+            }
+        }
+        err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+    }
+}

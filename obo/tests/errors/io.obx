@@ -1,0 +1,70 @@
+// The incremental-I/O builtins' compile-time checks. The harness prepends every
+// line before the first "// ===" to each case, so the prelude must bind every
+// name the cases use (Box and b for the try case, makeBytes for the transient
+// case). Each case has exactly one error marker on its line, as in the other
+// error files.
+
+type Box = ref record { name: string }
+var b = new Box{name: "p"}
+fn getMode(): Result[string] { return ok("r") }
+fn makeBytes(): []byte { return new []byte(0) }
+
+// === openFile path type
+fn main() {
+    let r = openFile(1, "r")                        // error: openFile needs a string path, not int
+}
+
+// === openFile mode type
+fn main() {
+    let r = openFile("p", 1)                        // error: openFile needs a string mode, not int
+}
+
+// === openFile unknown mode
+fn main() {
+    let r = openFile("p", "z")                      // error: unknown open mode 'z': use "r", "w" or "a"
+}
+
+// === readFd fd type
+fn main() {
+    let r = readFd("0", 1)                          // error: readFd needs an int file descriptor, not string
+}
+
+// === readFd count type
+fn main() {
+    let r = readFd(0, "1")                          // error: readFd needs an int count, not string
+}
+
+// === readFd zero count
+fn main() {
+    let r = readFd(0, 0)                            // error: readFd needs a positive count
+}
+
+// === readFd negative count
+fn main() {
+    let r = readFd(0, -1)                           // error: readFd needs a positive count
+}
+
+// === writeFd data type
+fn main() {
+    let r = writeFd(0, "x")                         // error: writeFd needs a []byte, not string
+}
+
+// === writeFd transient data
+fn main() {
+    let r = writeFd(0, makeBytes())                 // error: store this value in a variable first: otherwise it would never be freed
+}
+
+// === closeFile fd type
+fn main() {
+    let r = closeFile("0")                          // error: closeFile needs an int file descriptor, not string
+}
+
+// === stdin arguments
+fn main() {
+    let r = stdin(1)                                // error: expected ')'
+}
+
+// === try in an I/O argument
+fn main() {
+    let fd = openFile(b.name, try getMode())        // error: a try expression cannot be part of a larger expression; assign it to a local first
+}
