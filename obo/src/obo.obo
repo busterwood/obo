@@ -99,10 +99,11 @@ const T_MINUSEQ = 62
 const T_STAREQ = 63
 const T_SHL = 64
 const T_SHR = 65
+const T_TRY = 66
 
 fn makeTokNames(): []string {
     let k = new []string(0)
-    let names = "eof ident int char string module import pub type var let const fn return if else while for in break continue defer match ref record closed new nil true false ( ) { } [ ] , ; : . .. = == != < <= > >= + - * / % ! ? & | ^ ~ && || += -= *= << >>"
+    let names = "eof ident int char string module import pub type var let const fn return if else while for in break continue defer match ref record closed new nil true false ( ) { } [ ] , ; : . .. = == != < <= > >= + - * / % ! ? & | ^ ~ && || += -= *= << >> try"
     var start = 0
     for i in 0..len(names) + 1 {
         if i == len(names) || names[i] == ' ' {
@@ -133,7 +134,7 @@ var dumpMode = false
 
 fn makeKeywords(): []string {
     let k = new []string(0)
-    let words = "module import pub type var let const fn return if else while for in break continue defer match ref record closed new nil true false"
+    let words = "module import pub type var let const fn return if else while for in break continue defer match ref record closed new nil true false try"
     var start = 0
     for i in 0..len(words) + 1 {
         if i == len(words) || words[i] == ' ' {
@@ -147,8 +148,10 @@ fn makeKeywords(): []string {
 let keywords = makeKeywords()
 
 
-// the token number of a keyword, or T_IDENT for any other word
+// the token number of a keyword, or T_IDENT for any other word. try is the 66th token, after the
+// punctuation, so it cannot be T_MODULE + its place in the keyword list (that is T_LPAREN's number)
 fn keywordTok(w: string): int {
+    if w == "try" { return T_TRY }
     for i in 0..len(keywords) {
         if keywords[i] == w { return T_MODULE + i }
     }
@@ -853,16 +856,16 @@ type Field = ref record {
 }
 
 type Type = ref record {
-    kind: string              // int byte bool string void nil record closed array opt
+    kind: string              // int byte bool string void nil record closed array opt result resultctor errval
     name: string
-    base: ?^Type               // element type (array) or underlying type (opt)
+    base: ?^Type               // element type (array) or underlying type (opt, result)
     fields: []Field           // record, in declaration order
     parent: ?^Type             // record: the closed type it is a variant of
-    variants: []^Type          // closed
+    variants: []^Type          // closed, result
     desc: int                 // record: address of its type descriptor
     incomplete: bool          // declared by 'type Name', not yet defined
     line: int
-    arrayOf, optOf, handleOf: ?^Type   // the types made from this one (see derived)
+    arrayOf, optOf, handleOf, resultOf: ?^Type   // the types made from this one (see derived)
 }
 
 var typeArena = new []Type(0)          // owns every type; the rest of the compiler holds handles
@@ -872,9 +875,16 @@ fn newType(kind: string, name: string, base: ?^Type): ^Type {
     return handle(typeArena[len(typeArena) - 1])
 }
 
-// the type of the given kind ("array", "opt" or "handle") made from base: made once per base and
-// then shared, since no such type is changed once made and they are compared by structure
+fn derivedResult(base: ^Type): ^Type
+
+// the type of the given kind ("array", "opt", "handle" or "result") made from base: made once per base and
+// then shared, since no such type is changed once made and they are compared by pointer
 fn derived(kind: string, base: ^Type): ^Type {
+    if kind == "result" {
+        let r = base.resultOf
+        if r != nil { return r }
+        return derivedResult(base)
+    }
     var t = base.arrayOf
     if kind == "opt" { t = base.optOf } else if kind == "handle" { t = base.handleOf }
     if t != nil { return t }
@@ -889,6 +899,8 @@ let tBool = newType("bool", "bool", nil)
 let tString = newType("string", "string", nil)
 let tVoid = newType("void", "void", nil)
 let tNil = newType("nil", "nil", nil)
+let tResultCtor = newType("resultctor", "Result", nil)   // the universe's Result; parseType makes Result[T]
+let tErrVal = newType("errval", "err", nil)              // the static type of err(...): one allocated err cell
 
 fn baseOf(t: ^Type): ^Type {
     let b = t.base
@@ -900,6 +912,7 @@ fn tname(t: ^Type): string {
     if t.kind == "array" { return "[]" + tname(baseOf(t)) }
     if t.kind == "handle" { return "^" + tname(baseOf(t)) }
     if t.kind == "opt" { return "?" + tname(baseOf(t)) }
+    if t.kind == "result" { return "Result[" + tname(baseOf(t)) + "]" }
     if len(t.name) > 0 { return t.name }
     return t.kind
 }
@@ -907,10 +920,13 @@ fn tname(t: ^Type): string {
 fn isInt(t: ^Type): bool { return t.kind == "int" || t.kind == "byte" }
 
 fn isRef(t: ^Type): bool {
-    return t.kind == "record" || t.kind == "closed" || t.kind == "array" || t.kind == "opt" || t.kind == "string"
+    return t.kind == "record" || t.kind == "closed" || t.kind == "array" || t.kind == "opt" ||
+        t.kind == "string" || t.kind == "result"
 }
 
-fn nonNull(t: ^Type): bool { return t.kind == "record" || t.kind == "closed" || t.kind == "array" || t.kind == "handle" }
+fn nonNull(t: ^Type): bool {
+    return t.kind == "record" || t.kind == "closed" || t.kind == "array" || t.kind == "handle" || t.kind == "result"
+}
 
 fn same(a: ^Type, b: ^Type): bool {
     if a == b { return true }
@@ -924,6 +940,7 @@ fn assignable(dst: ^Type, src: ^Type): bool {
     if same(dst, src) { return true }
     if dst.kind == "int" && src.kind == "byte" { return true }
     if dst.kind == "closed" && src.kind == "record" && src.parent == dst { return true }
+    if dst.kind == "result" && src.kind == "errval" { return true }
     if dst.kind == "handle" && src.kind == "handle" { return assignable(baseOf(dst), baseOf(src)) }
     if dst.kind == "opt" {
         if src.kind == "nil" { return true }
@@ -1395,8 +1412,11 @@ fn initCompiler() {
     append(universe, newSym("type", "byte", tByte))
     append(universe, newSym("type", "bool", tBool))
     append(universe, newSym("type", "string", tString))
+    append(universe, newSym("type", "Result", tResultCtor))
     let names = words("print println len gc gcstats exit append truncate substr eprint eprintln readFile writeFile args")
     for n in names { append(universe, newSym("builtin", n, nil)) }
+    append(universe, newSym("builtin", "ok", nil))
+    append(universe, newSym("builtin", "err", nil))
     append(universe, newSym("builtin", "take", nil))
     append(universe, newSym("builtin", "handle", nil))
     append(universe, newSym("builtin", "alive", nil))
@@ -1556,6 +1576,53 @@ fn descriptor(size: int, ptrs: &[]int, strs: &[]int): int {
     rod64(len(strs))
     for p in strs { rod64(p) }
     return addr
+}
+
+// ============================================================ Result[T]
+
+fn isOwned(t: ^Type): bool
+
+// The ok variant of Result[base]: a record with one field, value, at offset 0, whose descriptor owns the
+// payload when base is owned and drops its reference when base is a string.
+fn okVariantOf(base: ^Type): ^Type {
+    let okv = newType("record", "ok", nil)
+    append(okv.fields, new Field{name: "value", offset: 0, typ: base})
+    let ptrs = new []int(0)
+    let strs = new []int(0)
+    if isOwned(base) { append(ptrs, 0) }
+    if base.kind == "string" { append(strs, 0) }
+    okv.desc = descriptor(8, ptrs, strs)
+    return okv
+}
+
+// The one err variant every Result[T] shares: message at offset 0, code at 8. One descriptor for the
+// whole program is what lets an error cell made for one T be returned as another (see try).
+var errVariant: ?^Type = nil
+
+fn errVariantType(): ^Type {
+    let have = errVariant
+    if have != nil { return have }
+    let e = newType("record", "err", nil)
+    append(e.fields, new Field{name: "message", offset: 0, typ: tString})
+    append(e.fields, new Field{name: "code", offset: 8, typ: tInt})
+    let ptrs = new []int(0)
+    let strs = new []int(0)
+    append(strs, 0)
+    e.desc = descriptor(16, ptrs, strs)
+    errVariant = e
+    return e
+}
+
+// Result[base], made once per base type and cached in base.resultOf: the tag of an ok cell is this
+// variant's descriptor, so every mention of Result[int] must be the same Type object.
+fn derivedResult(base: ^Type): ^Type {
+    let t = newType("result", "", base)
+    let okv = okVariantOf(base)
+    let ev = errVariantType()
+    append(t.variants, okv)
+    append(t.variants, ev)
+    base.resultOf = t
+    return t
 }
 
 fn mem(base: int, index: int, disp: int, scale: int): Mem {
@@ -1972,6 +2039,10 @@ var userCalls = 0                 // calls to obx functions compiled so far
 fn isOwned(t: ^Type): bool {
     if t.kind == "record" || t.kind == "closed" || t.kind == "array" { return true }
     if t.kind == "opt" { return isOwned(baseOf(t)) }
+    // a Result is one owned cell. errval is the type of an err(...) temporary, which is already an
+    // allocated cell: it must be owned too, or a discarded err(...) would leak and noTemp would let it
+    // pass as a transient (so a Result comparison could allocate an unfreed cell)
+    if t.kind == "result" || t.kind == "errval" { return true }
     return false
 }
 
@@ -3373,7 +3444,15 @@ fn parseType(): ^Type {
     let name = ident()
     let s = lookup(name)
     if s.kind != "type" { error("'" + name + "' is not a type") }
-    return symType(s)
+    let t = symType(s)
+    if t.kind == "resultctor" {
+        if sym != T_LBRACK { error("Result needs a type: write Result[T]") }
+        next()
+        let b = parseType()
+        expect(T_RBRACK, "")
+        return derived("result", b)
+    }
+    return t
 }
 
 fn fieldList(rec: ^Type) {
@@ -4056,6 +4135,8 @@ fn checkAssign(dst: ^Type, x: &Item, what: string) {
             hint = " (" + tname(dst) + " can never be nil; declare it as ?" + tname(dst) + ")"
         } else if dst.kind != "opt" && x.typ.kind == "opt" {
             hint = " (it may be nil: check it with '!= nil' first)"
+        } else if x.typ.kind == "errval" {
+            hint = " (err(...) is an error cell; the destination must be a Result[T])"
         }
         error(what + ": cannot use " + tname(x.typ) + " as " + tname(dst) + hint)
     }
@@ -4065,6 +4146,26 @@ fn checkAssign(dst: ^Type, x: &Item, what: string) {
 
 fn expression(): Item
 fn designator(): Item
+
+// The position rule for try (see factor): trySite counts the sanctioned tail positions -- the value
+// of a let, var or assignment, or a statement -- and tryNest the places where a value is only part of
+// a larger expression. try may appear only where the first is set and the second is not.
+var trySite = 0
+var tryNest = 0
+
+fn tailExpr(): Item {
+    trySite += 1
+    let x = expression()
+    trySite -= 1
+    return x
+}
+
+fn nestedExpr(): Item {
+    tryNest += 1
+    let x = expression()
+    tryNest -= 1
+    return x
+}
 
 // Arguments run left to right, and the callee is given every one of them, so a reference passed as an
 // argument must stay valid while the later arguments run. Each one is held as a reference local of its
@@ -4167,7 +4268,7 @@ fn callFn(f: ^Sym): Item {
         if i > 0 { expect(T_COMMA, "") }
         let argLine = tline
         let argCol = tcol
-        let a = expression()
+        let a = nestedExpr()
         checkAssign(f.fnRec.params[i], a, "argument " + string(i + 1) + " of " + f.name)
         if f.fnRec.pmodes[i] > 0 {
             let b = borrowBind(a)
@@ -4295,9 +4396,24 @@ fn describe(x: &Item): string {
     return "value"
 }
 
+// Stores a payload word of a freshly allocated Result cell, without store() (which would release the
+// cell's register as if it were the destination's): the pattern newExpr uses for its fields.
+fn storeCellField(p: int, off: int, v: Item) {
+    let dst = mem(p, -1, off, 8)
+    if v.mode == "const" && fits32(v.val) {
+        opMem(0xC7, 0, dst, true, false)
+        emit32(v.val)
+        drop(v)
+    } else {
+        let r = asReg(v)
+        opMem(0x89, r.r, dst, true, false)
+        release(r.r)
+    }
+}
+
 fn conversion(t: ^Type): Item {
     expect(T_LPAREN, "")
-    let a = expression()
+    let a = nestedExpr()
     expect(T_RPAREN, "")
     if t == tString {
         // string(n) gives the decimal digits of an int; string(bytes) copies a []byte
@@ -4326,6 +4442,43 @@ fn conversion(t: ^Type): Item {
 }
 
 fn builtin(name: string): Item {
+    if name == "ok" {
+        // ok(v): Result[T] where T is v's type. v is moved into the cell, so a reference or an
+        // error value (which has no payload type) cannot be its value.
+        expect(T_LPAREN, "")
+        let v = nestedExpr()
+        expect(T_RPAREN, "")
+        if v.typ == tVoid { error("ok needs a value, not a void expression") }
+        if v.typ.kind == "nil" { error("ok(nil) has no type: give the payload a name first, as in 'let n: ?Node = nil; ok(n)'") }
+        if v.typ.kind == "errval" { error("ok cannot hold an error value: type it as a Result first, as in 'let inner: Result[int] = err(...); ok(inner)'") }
+        if v.borrowed { error("ok takes ownership of its value: it cannot hold a borrowed reference") }
+        consume(v)
+        let rt = derived("result", v.typ)
+        let okv = rt.variants[0]
+        let p = rtCall1(RT_ALLOC_RECORD, makeConst(tInt, okv.desc), rt)
+        storeCellField(p.r, 0, v)
+        return p
+    }
+    if name == "err" {
+        // err(message[, code]): one err cell, typed errval so that only a Result destination accepts
+        // it. The message is consumed (a string field takes a reference) before the code runs.
+        expect(T_LPAREN, "")
+        let m = nestedExpr()
+        if m.typ.kind != "string" { error("err needs a string message, not " + tname(m.typ)) }
+        consume(m)
+        var code = makeConst(tInt, 0)
+        if sym == T_COMMA {
+            next()
+            code = nestedExpr()
+            if !isInt(code.typ) { error("err needs an int code, not " + tname(code.typ)) }
+        }
+        expect(T_RPAREN, "")
+        let ev = errVariantType()
+        let p = rtCall1(RT_ALLOC_RECORD, makeConst(tInt, ev.desc), tErrVal)
+        storeCellField(p.r, 0, m)
+        storeCellField(p.r, 8, code)
+        return p
+    }
     if name == "print" || name == "println" || name == "eprint" || name == "eprintln" {
         let toStderr = name[0] == 'e'
         if toStderr { rtCall1(RT_SET_OUTPUT, makeConst(tInt, 2), tVoid) }
@@ -4334,7 +4487,7 @@ fn builtin(name: string): Item {
         while sym != T_RPAREN {
             if !first { expect(T_COMMA, "") }
             first = false
-            let a = expression()
+            let a = nestedExpr()
             let k = a.typ.kind
             var slot = -1
             if k == "int" || k == "byte" {
@@ -4359,7 +4512,7 @@ fn builtin(name: string): Item {
     }
     if name == "readFile" || name == "writeFile" {
         expect(T_LPAREN, "")
-        var p = expression()
+        var p = nestedExpr()
         if p.typ.kind != "string" { error(name + " needs a string path, not " + tname(p.typ)) }
         if name == "readFile" {
             expect(T_RPAREN, "")
@@ -4367,7 +4520,7 @@ fn builtin(name: string): Item {
         }
         p = pinStr(p)
         expect(T_COMMA, "")
-        var d = expression()
+        var d = nestedExpr()
         if d.typ.kind != "array" || baseOf(d.typ).kind != "byte" {
             error("writeFile needs a []byte, not " + tname(d.typ))
         }
@@ -4380,7 +4533,7 @@ fn builtin(name: string): Item {
         expect(T_COMMA, "")
         let eLine = tline
         let eCol = tcol
-        let e = expression()
+        let e = nestedExpr()
         argOrderCheck(tbase, name, 2, eLine, eCol)
         releaseArgs(tbase, omark)
         if e.typ.kind != "bool" { error("writeFile needs a bool saying whether the file is executable") }
@@ -4442,7 +4595,7 @@ fn builtin(name: string): Item {
         let touch0 = heldTouch(tr)
         if x.deref && tr != nil && tr.storage == "local" { pinned = tr }
         let hp = heldPush(tr, x.viaHandle, orig, ident, place, raw)
-        var v = expression()
+        var v = nestedExpr()
         pinned = savedPin
         expect(T_RPAREN, "")
         if (x.viaHandle || x.sym == nil) && userCalls != callsBefore {
@@ -4507,7 +4660,7 @@ fn builtin(name: string): Item {
             bare = peek(q) == ')'
         }
         inAlive = bare
-        let h = expression()
+        let h = nestedExpr()
         inAlive = false
         expect(T_RPAREN, "")
         if h.typ.kind != "handle" { error("alive needs a handle, not " + tname(h.typ)) }
@@ -4563,7 +4716,7 @@ fn builtin(name: string): Item {
     if name == "append" || name == "truncate" || name == "substr" {
         let line = tline
         expect(T_LPAREN, "")
-        var a = expression()
+        var a = nestedExpr()
         let aPlace = lastPlace
         let aRaw = lastRaw
         let aOrig = lastOrigin
@@ -4602,7 +4755,7 @@ fn builtin(name: string): Item {
         let savedPin = pinned
         if name != "substr" && aDeref && r0 != nil && r0.storage == "local" { pinned = r0 }
         let hp = heldPush(r0, aVia, aOrig, aIdent, aPlace, aRaw)
-        var b = expression()
+        var b = nestedExpr()
         pinned = savedPin
         if name != "substr" && held && userCalls != callsBefore {
             if name == "append" {
@@ -4647,7 +4800,7 @@ fn builtin(name: string): Item {
         }
         b = materialise(b)
         expect(T_COMMA, "")
-        let c = expression()
+        let c = nestedExpr()
         if !isInt(c.typ) { error(name + " needs int positions") }
         expect(T_RPAREN, "")
         let as = new []?Item(0)
@@ -4668,7 +4821,7 @@ fn builtin(name: string): Item {
         return voidItem()
     }
     expect(T_LPAREN, "")
-    let a = expression()
+    let a = nestedExpr()
     expect(T_RPAREN, "")
     if name == "exit" {
         if a.typ.kind != "int" { error("exit needs an int") }
@@ -4844,7 +4997,7 @@ fn designatorT(target: bool): Item {
             var a = load(x)
             if pinIdx { a = rtCall1(RT_STR_INC, a, tString) }
             let hp = heldPush(root, viaHandle, hOrig, hIdent, placePath(root, path), path)
-            let i0 = expression()
+            let i0 = nestedExpr()
             if !isInt(i0.typ) { error("array index must be int") }
             if viaHandle && userCalls != callsBefore {
                 error("cannot index through a handle with an index that calls a function: the call could free the object")
@@ -4935,7 +5088,7 @@ fn newExpr(): Item {
     if sym == T_LBRACK {
         let t = parseType()
         expect(T_LPAREN, "")
-        let n = expression()
+        let n = nestedExpr()
         if !isInt(n.typ) { error("array length must be int") }
         let b = baseOf(t)
         if nonNull(b) && !(n.mode == "const" && n.val == 0) {
@@ -4976,7 +5129,7 @@ fn newExpr(): Item {
         }
         append(given, fname)
         expect(T_COLON, "")
-        let v = expression()
+        let v = nestedExpr()
         checkAssign(fty, v, "field '" + fname + "'")
         consume(v)
         let dst = mem(p.r, -1, foff, 8)
@@ -5013,6 +5166,11 @@ fn newExpr(): Item {
     return p
 }
 
+// try e: on an ok cell the payload is moved out and the shell freed; on an err cell the function's
+// defers run, its live owned locals are freed, and that same cell is returned. The whole semantics is
+// in FORK.md; the state capture happens after consume (see the comment in the body).
+fn tryExpr(): Item
+
 fn factor(): Item {
     let k = sym
     if k == T_INT {
@@ -5041,6 +5199,7 @@ fn factor(): Item {
         return x
     }
     if k == T_NEW { return newExpr() }
+    if k == T_TRY { return tryExpr() }
     if k == T_NOT {
         next()
         let x = factor()
@@ -5091,6 +5250,108 @@ fn factor(): Item {
     if k == T_IDENT { return designator() }
     error("expected an expression")
     return voidItem()
+}
+
+// The for-walk marks of the owned locals, saved across a try's error block: the error path abandons the
+// walk, so a free on it must not be judged as a change during a walk (see invalidate).
+fn iteratingSave(): []bool {
+    let v = new []bool(0)
+    for i in 0..len(ownedLocals) { append(v, ownedLocals[i].iterating) }
+    return v
+}
+
+fn iteratingClear() {
+    for i in 0..len(ownedLocals) { ownedLocals[i].iterating = false }
+}
+
+fn iteratingSet(v: &[]bool) {
+    for i in 0..len(v) { ownedLocals[i].iterating = v[i] }
+}
+
+fn tryExpr(): Item {
+    let tl = tline
+    let tc = tcol
+    if inDefer { errorAt("cannot use try in a defer: a deferred statement cannot return from the function", tl, tc) }
+    if tryNest > 0 { errorAt("a try expression cannot be part of a larger expression; assign it to a local first", tl, tc) }
+    if trySite == 0 { errorAt("a try expression may only be the value of a let, var or assignment, or a statement", tl, tc) }
+    let fr0 = curFn
+    if fr0 == nil {
+        errorAt("try needs a function that returns a Result; there is no function here", tl, tc)
+        return voidItem()
+    }
+    let fr = fr0
+    if fr.ret.kind != "result" {
+        var what = "nothing"
+        if fr.ret != tVoid { what = tname(fr.ret) }
+        errorAt("try needs a function that returns a Result; '" + fr.name + "' returns " + what, tl, tc)
+    }
+    next()
+    var e = factor()
+    if e.typ.kind != "result" {
+        var hint = ""
+        if e.typ.kind == "opt" && baseOf(e.typ).kind == "result" {
+            hint = " (it may be nil: check it with '!= nil' first)"
+        } else if e.typ.kind == "errval" {
+            hint = " (err(...) has no success type)"
+        }
+        errorAt("try needs a Result value, not " + tname(e.typ) + hint, tl, tc)
+    }
+    let rt = e.typ
+    let ut = baseOf(rt)
+    consume(e)
+    let cell = asReg(e)
+    let cellR = cell.r
+    let slot = newLocal("", fr.ret, "var")
+    opMem(0x89, cellR, mem(RBP, -1, slot.offset, 8), true, false)
+    // The path marks are captured AFTER consume: a pre-consume snapshot would restore moved = false
+    // for the operand on the ok path (double free at scope exit), and a pre-consume deadSave would
+    // restore an originLive mark that consume's originMove cleared. The pending diagnostic
+    // (pendLine/pendCol/pendMsg) is deliberately not restored: the error path is a real exit.
+    let st = snapshot()
+    let dm = deadSave()
+    let log0 = len(freeLog)
+    let ps0 = len(pendSym)
+    let pd0 = len(pendDepth)
+    let fl0 = len(frLine)
+    let fc0 = len(frCol)
+    let pw0 = len(pendWhat)
+    let po0 = len(pendOwn)
+    let pn0 = len(pendNest)
+    let fs0 = freeSeq
+    let its = iteratingSave()
+    let ev = errVariantType()
+    let tr = alloc()
+    opMem(0x8B, tr, mem(cellR, -1, -16, 8), false, false)   // 32-bit: the high half is a generation
+    aluRI(7, tr, ev.desc)
+    release(tr)
+    let toErr = jcc(CC_E)
+    let payload = alloc()
+    opMem(0x8B, payload, mem(cellR, -1, 0, 8), true, false)
+    opMem(0xC7, 0, mem(cellR, -1, 0, 8), true, false)       // the payload is moved out, not owned by the shell
+    emit32(0)
+    rtCall1(RT_FREE, makeReg(rt, cellR), tVoid)             // the shell; releases cellR
+    let done = jmp()
+    fixHere(toErr)
+    iteratingClear()
+    runDefers(fnBlock)
+    opMem(0x8B, RAX, mem(RBP, -1, slot.offset, 8), true, false)
+    epilogue()
+    fixHere(done)
+    iteratingSet(its)
+    freeSeq = fs0
+    truncate(freeLog, log0)
+    truncate(pendSym, ps0)
+    truncate(pendDepth, pd0)
+    truncate(frLine, fl0)
+    truncate(frCol, fc0)
+    truncate(pendWhat, pw0)
+    truncate(pendOwn, po0)
+    truncate(pendNest, pn0)
+    restore(st)
+    deadSet(dm)
+    let res = makeReg(ut, payload)
+    if ut.kind == "string" { res.strTemp = true }          // the shell's reference is now the caller's
+    return res
 }
 
 // truncating division, as on x86
@@ -5244,7 +5505,10 @@ fn term(): Item {
         next()
         if !isInt(x.typ) { error("'" + tokName(o) + "' needs ints") }
         x = materialise(x)
-        x = binop(o, x, factor())
+        tryNest += 1
+        let y = factor()
+        tryNest -= 1
+        x = binop(o, x, y)
     }
     return x
 }
@@ -5256,7 +5520,9 @@ fn simpleExpr(): Item {
         next()
         if o == T_PLUS && x.typ.kind == "string" {
             x = pinStr(x)
+            tryNest += 1
             let y = term()
+            tryNest -= 1
             if y.typ.kind != "string" { error("'+' on a string needs another string (use string(n) for numbers)") }
             if x.mode == "const" && y.mode == "const" {
                 x = makeConst(tString, stringLit(rodataString(x.val) + rodataString(y.val)))
@@ -5268,7 +5534,10 @@ fn simpleExpr(): Item {
         }
         if !isInt(x.typ) { error("'" + tokName(o) + "' needs ints") }
         x = materialise(x)
-        x = binop(o, x, term())
+        tryNest += 1
+        let y = term()
+        tryNest -= 1
+        x = binop(o, x, y)
     }
     return x
 }
@@ -5282,7 +5551,9 @@ fn relation(): Item {
     if x.mode == "mem" { xsym = x.sym }
     noTemp(x)
     x = pinStr(x)
+    tryNest += 1
     var y = simpleExpr()
+    tryNest -= 1
     var ysym: ?^Sym = nil
     if y.mode == "mem" { ysym = y.sym }
     noTemp(y)
@@ -5392,7 +5663,9 @@ fn conjunction(): Item {
         let mark = len(narrowStack)
         pushNarrowings(x.nt)
         condDepth += 1
+        tryNest += 1
         let y = loadCond(relation())
+        tryNest -= 1
         condDepth -= 1
         truncate(narrowStack, mark)
         y.F = joinWaits(y.F, flinks)
@@ -5419,7 +5692,9 @@ fn expression(): Item {
         let mark = len(narrowStack)
         pushNarrowings(x.nf)
         condDepth += 1
+        tryNest += 1
         let y = loadCond(conjunction())
+        tryNest -= 1
         condDepth -= 1
         truncate(narrowStack, mark)
         y.T = joinWaits(y.T, x.T)
@@ -5455,7 +5730,7 @@ fn varDecl(kind: string, isGlobal: bool) {
     if sym == T_ASSIGN {
         next()
         if isGlobal { fixHere1(initLink) }
-        let x = expression()
+        let x = tailExpr()
         if !isGlobal && (declRef > 0 || (t == nil && x.borrowed)) {
             // a reference local: it borrows, nothing is moved or freed
             var rt = x.typ
@@ -5478,6 +5753,8 @@ fn varDecl(kind: string, isGlobal: bool) {
         var tt = x.typ
         if t != nil {
             tt = t
+        } else if x.typ.kind == "errval" {
+            error("cannot infer a type for '" + name + "' from an error value; declare it as Result[T]")
         } else if x.typ.kind == "nil" || x.typ.kind == "void" {
             error("cannot infer a type for '" + name + "' from this value")
         }
@@ -5556,6 +5833,24 @@ fn varDecl(kind: string, isGlobal: bool) {
 }
 
 
+// a value that is only evaluated for its effect: freed at once if it is owned, its string reference
+// dropped, a scalar ignored. Shared by a plain expression statement and a discarded try.
+fn discardValue(x: Item, line: int, col: int) {
+    if x.typ != tVoid || x.mode != "void" {
+        if x.mode != "reg" || x.home { errorAt("this expression does nothing", line, col) }
+        if isOwned(x.typ) {
+            rtCall1(RT_FREE, x, tVoid)                 // a dropped result is freed at once
+        } else if x.strTemp {
+            rtCall1(RT_STR_DEC, x, tVoid)
+        } else {
+            releaseItem(x)
+            drop(x)
+        }
+    } else {
+        drop(x)
+    }
+}
+
 // returns true if the statement never completes (a call to exit)
 fn assignmentOrCall(): bool {
     let line = tline
@@ -5601,7 +5896,7 @@ fn assignmentOrCall(): bool {
             if deferMark >= 0 && declaredBefore(xs, deferMark) {
                 errorAt("cannot point '" + xs.name + "' elsewhere in a defer: a defer body runs where its block is left, and the change would not be seen there", line, col)
             }
-            let y = expression()
+            let y = tailExpr()
             checkAssign(dtype, y, "assignment")
             let nb = borrowBind(y)
             if !assignable(x.typ, y.typ) { widen(xs) }
@@ -5635,7 +5930,7 @@ fn assignmentOrCall(): bool {
             if x.deref && r0 != nil && r0.storage == "local" { pinned = r0 }
             var hp = -1
             if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }
-            let y = expression()
+            let y = tailExpr()
             pinned = savedPin
             checkAssign(dtype, y, "assignment")
             consume(y)
@@ -5688,7 +5983,7 @@ fn assignmentOrCall(): bool {
             if x.deref && r0 != nil && r0.storage == "local" { pinned = r0 }
             var hp = -1
             if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }
-            var y = expression()
+            var y = tailExpr()
             pinned = savedPin
             checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)
             if x.deref && r0 != nil && heldLost(r0, touch0) {
@@ -5729,15 +6024,7 @@ fn assignmentOrCall(): bool {
         }
     } else {
         if x.typ != tVoid || x.mode != "void" {
-            if x.mode != "reg" || x.home { errorAt("this expression does nothing", line, col) }
-            if isOwned(x.typ) {
-                rtCall1(RT_FREE, x, tVoid)                 // a dropped result is freed at once
-            } else if x.strTemp {
-                rtCall1(RT_STR_DEC, x, tVoid)
-            } else {
-                releaseItem(x)
-                drop(x)
-            }
+            discardValue(x, line, col)
         } else {
             drop(x)
         }
@@ -5788,11 +6075,7 @@ fn addJump() {
 // an arm of an if or a match: it starts from the marks before the statement (d0), and the marks after the
 // statement are the union (acc) of the arms that go on. An arm that ends outside a loop ends in a return,
 // and goes nowhere; inside a loop it may be a break or a continue, so its marks are kept
-fn armBlock(d0: &[]?^Sym, mut acc: &[]?^Sym, isIf: bool): bool {
-    deadSet(d0)
-    var term = false
-    let js = jumpsHere()
-    if isIf { term = ifStat() } else { term = block() }
+fn armTail(mut acc: &[]?^Sym, js: int, term: bool): bool {
     // an arm that ends does not go on to what follows the statement: its marks are the state after the loop,
     // if it leaves by a break or a continue, and nowhere if it returns
     if term {
@@ -5811,6 +6094,14 @@ fn armBlock(d0: &[]?^Sym, mut acc: &[]?^Sym, isIf: bool): bool {
         if originLive[i] != nil { acc[m + i] = originLive[i] }
     }
     return term
+}
+
+fn armBlock(d0: &[]?^Sym, mut acc: &[]?^Sym, isIf: bool): bool {
+    deadSet(d0)
+    var term = false
+    let js = jumpsHere()
+    if isIf { term = ifStat() } else { term = block() }
+    return armTail(acc, js, term)
 }
 
 fn ifStat(): bool {
@@ -6411,6 +6702,94 @@ fn intMatch(x: Item): bool {
     return allTerm && hasElse
 }
 
+// whether the match whose '{' is the current token is the consuming form: its first arm's variant name
+// is followed by '('. This lookahead, and nothing else, runs before the first tag compare; the scanner
+// is left exactly as it was (the indexHasCall pattern).
+fn matchBindsFirst(): bool {
+    let mbPos = pos
+    let mbLine = line
+    let mbCol = col
+    let mbLast = last
+    let mbSym = sym
+    let mbSval = sval
+    let mbIval = ival
+    let mbTline = tline
+    let mbTcol = tcol
+    let mbSeq = tokSeq
+    var binds = false
+    if sym == T_LBRACE {
+        next()
+        skipSemis()
+        if sym == T_IDENT {
+            next()
+            binds = sym == T_LPAREN
+        }
+    }
+    pos = mbPos
+    line = mbLine
+    col = mbCol
+    last = mbLast
+    sym = mbSym
+    sval = mbSval
+    ival = mbIval
+    tline = mbTline
+    tcol = mbTcol
+    tokSeq = mbSeq
+    return binds
+}
+
+// One arm of a consuming match. After this arm's tag compare, the cell parked in the stack slot is
+// emptied into fresh locals declared in the arm's own block (so its exit, or runDefers on an early
+// exit, frees them) and the shell is freed. The err message is an ordinary isStr local: the cell's
+// reference is transferred to it, not copied.
+fn consumeArm(d0: &[]?^Sym, mut acc: &[]?^Sym, slot: int, rt: ^Type, v: ^Type, b1: string, b2: string): bool {
+    deadSet(d0)
+    let js = jumpsHere()
+    expect(T_LBRACE, "")
+    openBlock()
+    let pm = len(pendSym)
+    let cs = contSeq
+    let bs = brkSeq
+    let ev = errVariantType()
+    if v == ev {
+        let ml = newLocal(b1, tString, "var")
+        let cl = newLocal(b2, tInt, "var")
+        addStrLocal(ml)
+        let cellr = alloc()
+        opMem(0x8B, cellr, mem(RBP, -1, slot, 8), true, false)
+        let r1 = alloc()
+        opMem(0x8B, r1, mem(cellr, -1, 0, 8), true, false)
+        opMem(0x89, r1, mem(RBP, -1, ml.offset, 8), true, false)
+        release(r1)
+        let r2 = alloc()
+        opMem(0x8B, r2, mem(cellr, -1, 8, 8), true, false)
+        opMem(0x89, r2, mem(RBP, -1, cl.offset, 8), true, false)
+        release(r2)
+        opMem(0xC7, 0, mem(cellr, -1, 0, 8), true, false)      // the message reference is the local's now
+        emit32(0)
+        rtCall1(RT_FREE, makeReg(rt, cellr), tVoid)
+    } else {
+        let pt = v.fields[0].typ
+        let pl = newLocal(b1, pt, "var")
+        if isOwned(pt) { addOwnedLocal(pl) }
+        if pt.kind == "string" { addStrLocal(pl) }
+        let cellr = alloc()
+        opMem(0x8B, cellr, mem(RBP, -1, slot, 8), true, false)
+        let r1 = alloc()
+        opMem(0x8B, r1, mem(cellr, -1, 0, 8), true, false)
+        opMem(0x89, r1, mem(RBP, -1, pl.offset, 8), true, false)
+        release(r1)
+        opMem(0xC7, 0, mem(cellr, -1, 0, 8), true, false)      // the payload is the local's now
+        emit32(0)
+        rtCall1(RT_FREE, makeReg(rt, cellr), tVoid)
+    }
+    let term = statSeq()
+    if term { pendBlockEnds(pm, cs, bs) }
+    expect(T_RBRACE, "")
+    closeBlock(term)
+    return armTail(acc, js, term)
+}
+
 fn matchStat(): bool {
     next()
     let line = tline
@@ -6418,8 +6797,8 @@ fn matchStat(): bool {
     let x = expression()
     if isInt(x.typ) { return intMatch(x) }
     let t = x.typ
-    if t.kind != "closed" && t.kind != "opt" && !t.incomplete {
-        errorAt("match needs an int, byte or closed type, not " + tname(t), line, col)
+    if t.kind != "closed" && t.kind != "opt" && t.kind != "result" && !t.incomplete {
+        errorAt("match needs an int, byte, closed type or Result, not " + tname(t), line, col)
     }
     let xs = x.sym
     if x.mode != "mem" || xs == nil || (xs.kind != "var" && xs.kind != "let") || xs.storage != "local" {
@@ -6430,6 +6809,20 @@ fn matchStat(): bool {
     let name = s.name
     if t.kind == "opt" { errorAt("'" + name + "' may be nil: check it with '!= nil' first", line, col) }
     if t.incomplete { errorAt(tname(t) + " is declared but not yet defined", line, col) }
+    var consuming = false
+    if t.kind == "result" { consuming = matchBindsFirst() }
+    var slotOff = 0
+    if consuming {
+        if s.isRef || s.isRefLocal { errorAt("a consuming match needs the Result itself, not a reference", line, col) }
+        if !s.owned { errorAt("a consuming match needs a local variable or parameter holding an owned Result", line, col) }
+        let c0 = alloc()
+        opMem(0x8B, c0, mem(RBP, -1, s.offset, 8), true, false)      // the slot still holds the cell
+        let slot = newLocal("", t, "var")
+        slotOff = slot.offset
+        opMem(0x89, c0, mem(RBP, -1, slotOff, 8), true, false)
+        release(c0)
+        consume(x)                     // BEFORE the snapshot: every arm's restore must keep the move
+    }
     let tag = newLocal("", tInt, "var")
     let s0 = snapshot()
     var acc = copyState(s0)
@@ -6438,7 +6831,11 @@ fn matchStat(): bool {
     var dacc = deadSave()
     liveClear(&dacc)
     let r = alloc()
-    opMem(0x8B, r, mem(RBP, -1, s.offset, 8), true, false)
+    if consuming {
+        opMem(0x8B, r, mem(RBP, -1, slotOff, 8), true, false)
+    } else {
+        opMem(0x8B, r, mem(RBP, -1, s.offset, 8), true, false)
+    }
     opMem(0x8B, r, mem(r, -1, -16, 8), false, false)          // the tag; the high half is a generation
     opMem(0x89, r, mem(RBP, -1, tag.offset, 8), true, false)
     release(r)
@@ -6450,6 +6847,7 @@ fn matchStat(): bool {
     var hasElse = false
     while sym != T_RBRACE {
         if sym == T_ELSE {
+            if t.kind == "result" { errorAt("a Result match names the ok and err arms; 'else' is not needed", tline, tcol) }
             next()
             hasElse = true
             restore(s0)
@@ -6474,6 +6872,22 @@ fn matchStat(): bool {
             error("'" + vname + "' is not a variant of " + tname(t))
             return false
         }
+        var b1 = ""
+        var b2 = ""
+        if consuming {
+            if sym != T_LPAREN { errorAt("a consuming match binds its value in every arm: write ok(v) and err(m, c)", tline, tcol) }
+            next()
+            if sym != T_IDENT { error("expected a binding name after '('") }
+            b1 = ident()
+            if v == errVariantType() {
+                expect(T_COMMA, "")
+                if sym != T_IDENT { error("expected a binding name for the code") }
+                b2 = ident()
+            }
+            expect(T_RPAREN, "")
+        } else if t.kind == "result" && sym == T_LPAREN {
+            errorAt("a consuming match binds its value in every arm: write ok(v) and err(m, c)", tline, tcol)
+        }
         for c in seen {
             if c == v { error("'" + vname + "' is matched twice") }
         }
@@ -6481,16 +6895,21 @@ fn matchStat(): bool {
         aluMI(7, mem(RBP, -1, tag.offset, 8), v.desc)
         let nxt = jcc(CC_NE)
         let mark = len(narrowStack)
-        append(narrowStack, new NEntry{sym: s, typ: v, depth: loopdepth, alive: true})
+        if !consuming { append(narrowStack, new NEntry{sym: s, typ: v, depth: loopdepth, alive: true}) }
         restore(s0)
-        let bt = armBlock(&d0, &dacc, false)
+        var bt = false
+        if consuming {
+            bt = consumeArm(&d0, &dacc, slotOff, t, v, b1, b2)
+        } else {
+            bt = armBlock(&d0, &dacc, false)
+        }
         allTerm = allTerm && bt
         if !bt {
             let st = snapshot()
             if have { sameStates(acc, st, line0(), 0); acc = joinStates(acc, st) } else { acc = copyState(st) }
             have = true
         }
-        truncate(narrowStack, mark)
+        if !consuming { truncate(narrowStack, mark) }
         ends = waitJump(ends, jmp())
         fixHere1(nxt)
         skipSemis()
@@ -6634,6 +7053,12 @@ fn statement(): bool {
             varDecl(tokName(k), false)
         }
         T_IDENT { return assignmentOrCall() }
+        T_TRY {
+            let tl = tline
+            let tc = tcol
+            let x = tailExpr()
+            discardValue(x, tl, tc)
+        }
         T_IF { return ifStat() }
         T_WHILE { return whileStat() }
         T_FOR { forStat() }
@@ -6718,7 +7143,7 @@ type Param = ref record {
 
 // ---- the pre-scan of a function
 
-let callExempt = words("if while for return match defer in else new print println eprint eprintln len gc gcstats exit append truncate substr readFile writeFile args take handle alive drop replace int byte string")
+let callExempt = words("if while for return match defer in else new print println eprint eprintln len gc gcstats exit append truncate substr readFile writeFile args take handle alive drop replace int byte string ok err try")
 
 fn wordAt(a: int, b: int, w: string): bool {
     if len(w) != b - a { return false }
@@ -6777,6 +7202,7 @@ fn plausible(decl: int, from: int): bool {
         while e < len(src) && (isLetter(src[e]) || isDigit(src[e])) { e += 1 }
         if wordAt(q, e, "new") || wordAt(q, e, "string") || wordAt(q, e, "args") || wordAt(q, e, "readFile") { return false }
         if wordAt(q, e, "substr") || wordAt(q, e, "take") || wordAt(q, e, "replace") || wordAt(q, e, "handle") { return false }
+        if wordAt(q, e, "ok") || wordAt(q, e, "err") || wordAt(q, e, "try") { return false }
         if wordAt(q, e, "nil") { return false }
     }
     return true
