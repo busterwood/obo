@@ -2926,8 +2926,9 @@ truncation is caught by `pendErrCase` in `tests/run/result.obx`: with the trunca
 program (the defer's own replay, outside the inner loop, pushes no entry at that depth). The suite is 899 tests
 (849 before the fuzz profile): 796 existing plus 52 error cases, one run program and 50 result fuzz seeds.
 
-**Memory.** `port_compare.py` measures the port compiling itself at 1,229,408 bytes live, against a budget of
-2,000,000 and 1,126,736 on main just before this branch (+102,672: the new `Type` field is 8 bytes per type, the
+**Memory.** `port_compare.py` measures the port compiling itself at 1,229,344 bytes live on main (1,229,408 on the
+branch; the figure is path-dependent), against a budget of 2,000,000 and 1,126,736 on main just before this
+branch (+102,608: the new `Type` field is 8 bytes per type, the
 descriptors are a few words per result type, and the rest is code). Per-seed and per-file counts are unchanged
 elsewhere.
 
