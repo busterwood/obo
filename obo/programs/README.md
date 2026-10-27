@@ -38,11 +38,19 @@ the next.
 | `-n` | number every output line `%6d\t`, from 1 |
 | `-b` | number only nonblank lines; overrides `-n` in either order |
 | `-s` | never emit more than one consecutive blank line (squeezed lines are not numbered) |
-| `-E` | write `$` before each newline that is emitted (none after a final line without one) |
-| `-T` | write a tab as `^I` (no other control characters are transformed) |
+| `-E` | write `$` before each newline that is emitted (none after a final line without one); a CR immediately before an emitted newline is held and written as `^M`, so CRLF renders `^M$` |
+| `-T` | write a tab as `^I` (no other control characters are transformed; a CR is left alone unless `-E` is also present) |
 
-A blank line has no bytes before its newline: a line of spaces, a tab or a NUL is
-nonblank. The number width is a minimum; line 1,000,001 prints `1000001\t`.
+With `-E`, the CR hold spans Reader chunks and operands: a file ending in CR
+followed by a file beginning with LF renders one `^M$`, a CR at the 64 KiB chunk
+boundary followed by LF does the same, and a final unpaired CR is written
+literally at stream EOF (`a\r` stays `a\r`, with no `$`). A second CR can become
+the new pending one (`a\r\r\n` is `a\r^M$`). `-E` and every cluster containing
+it (`-nE`, `-bE`, `-sE`, `-TE`, ...) follow the rule.
+
+A blank line has no bytes before its newline: a line of spaces, a tab, a NUL or a
+CR is nonblank (a CR-only line is numbered by `-n`/`-b` and never squeezed). The
+number width is a minimum; line 1,000,001 prints `1000001\t`.
 
 Errors: an open or read error prints `cat: <operand>: <text>`, sets the failure
 and continues with the next operand (a directory opens and fails on read with
@@ -105,7 +113,11 @@ UTF-8 are preserved and the default order is unsigned byte order (`LC_ALL=C`).
   `--5` (0), `.5`, `-.5`, `2.` and 40-digit numbers follow GNU's `strnumcmp`,
   with no floating point and no overflow. A leading `+` is not accepted, and
   parsing stops at the first character that is not a digit, `.`, a sign or a
-  leading blank.
+  leading blank. Only ASCII `0-9` are digits: GNU 9.4's `strnumcmp` additionally
+  treats a leading byte `0x80` inside the integer leading-zero run as a zero
+  (`\x801` compares equal to `1`), which is outside the supported ASCII numeric
+  grammar and is deliberately not reproduced; high-byte numeric inputs are kept
+  out of the differential matrix.
 - `-r` reverses the whole comparison, including the last-resort line comparison.
 - `-u` makes key equality the only equality (the whole line, or the numeric
   value with `-n`) and keeps the first input occurrence.

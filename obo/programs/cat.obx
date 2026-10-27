@@ -9,7 +9,10 @@
 // The logical stream spans operands: the line number, the blank-line squeeze
 // state and a partially written line continue from one file to the next. A
 // blank line is a line with no bytes before the newline; spaces, a tab or a NUL
-// make a line nonblank. -b overrides -n regardless of order.
+// make a line nonblank. -b overrides -n regardless of order. With -E, a CR that
+// immediately precedes an emitted LF is held and written as ^M (GNU's rule): the
+// hold spans Reader chunks and operands, and a final unpaired CR is written
+// literally at stream EOF. A CR-only line is still nonblank for -n/-b/-s.
 //
 // Open and read errors print `cat: <operand>: <text>`, set failed, close the
 // operand and continue with the next one. A write error prints
@@ -28,6 +31,7 @@ type CatState = ref record {
     lineNo: int            // the next line number to print
     atLineStart: bool      // the next byte begins a line
     lastBlank: bool        // the previous input line was blank (-s)
+    pendingCr: bool        // -E is holding a CR for a possible following LF
     failed: bool           // an open/read error happened
     fatal: bool            // a write error happened
 }
@@ -40,46 +44,70 @@ type CatState = ref record {
 fn catChunk(mut w: &Writer, mut scratch: &[]byte, data: &[]byte, opts: &CatOpts, mut st: &CatState): Result[bool] {
     for k in 0..len(data) {
         let b = data[k]
-        if st.atLineStart {
+        var handled = false
+        if st.pendingCr {
+            // a CR held by -E: an LF turns it into ^M$, any other byte first
+            // releases the CR literally and is then processed normally (a second
+            // CR can become the new pending one)
+            st.pendingCr = false
             if b == '\n' {
-                if opts.squeeze && st.lastBlank {
-                    // a squeezed blank line: emit nothing, not even its number
-                } else {
-                    if opts.numberEvery && !opts.numberNonBlank {
-                        st.lineNo += 1
-                        appendPadded(scratch, st.lineNo, 6)
-                        append(scratch, '\t')
-                    }
-                    if opts.showEnds { append(scratch, '$') }
-                    append(scratch, '\n')
-                }
-                st.lastBlank = true
-            } else {
-                st.lineNo += 1
-                if opts.numberEvery || opts.numberNonBlank {
-                    appendPadded(scratch, st.lineNo, 6)
-                    append(scratch, '\t')
-                }
-                st.atLineStart = false
-                st.lastBlank = false
-                if b == '\t' && opts.showTabs {
-                    append(scratch, '^')
-                    append(scratch, 'I')
-                } else {
-                    append(scratch, b)
-                }
-            }
-        } else {
-            if b == '\n' {
-                if opts.showEnds { append(scratch, '$') }
+                append(scratch, '^')
+                append(scratch, 'M')
+                append(scratch, '$')
                 append(scratch, '\n')
                 st.atLineStart = true
                 st.lastBlank = false
-            } else if b == '\t' && opts.showTabs {
-                append(scratch, '^')
-                append(scratch, 'I')
+                handled = true
             } else {
-                append(scratch, b)
+                append(scratch, '\r')
+            }
+        }
+        if !handled {
+            if st.atLineStart {
+                if b == '\n' {
+                    if opts.squeeze && st.lastBlank {
+                        // a squeezed blank line: emit nothing, not even its number
+                    } else {
+                        if opts.numberEvery && !opts.numberNonBlank {
+                            st.lineNo += 1
+                            appendPadded(scratch, st.lineNo, 6)
+                            append(scratch, '\t')
+                        }
+                        if opts.showEnds { append(scratch, '$') }
+                        append(scratch, '\n')
+                    }
+                    st.lastBlank = true
+                } else {
+                    st.lineNo += 1
+                    if opts.numberEvery || opts.numberNonBlank {
+                        appendPadded(scratch, st.lineNo, 6)
+                        append(scratch, '\t')
+                    }
+                    st.atLineStart = false
+                    st.lastBlank = false
+                    if b == '\t' && opts.showTabs {
+                        append(scratch, '^')
+                        append(scratch, 'I')
+                    } else if b == '\r' && opts.showEnds {
+                        st.pendingCr = true
+                    } else {
+                        append(scratch, b)
+                    }
+                }
+            } else {
+                if b == '\n' {
+                    if opts.showEnds { append(scratch, '$') }
+                    append(scratch, '\n')
+                    st.atLineStart = true
+                    st.lastBlank = false
+                } else if b == '\t' && opts.showTabs {
+                    append(scratch, '^')
+                    append(scratch, 'I')
+                } else if b == '\r' && opts.showEnds {
+                    st.pendingCr = true
+                } else {
+                    append(scratch, b)
+                }
             }
         }
         if len(scratch) >= 65536 {
@@ -195,7 +223,7 @@ fn main() {
 
     var w = newWriter(stdout(), 65536)
     var scratch = new []byte(0)
-    var st = new CatState{lineNo: 0, atLineStart: true, lastBlank: false, failed: false, fatal: false}
+    var st = new CatState{lineNo: 0, atLineStart: true, lastBlank: false, pendingCr: false, failed: false, fatal: false}
     var fatal = false
     if len(operands) == 0 {
         let cont = catOperand("-", w, scratch, opts, st)
@@ -210,6 +238,19 @@ fn main() {
                 break
             }
             k += 1
+        }
+    }
+    if !fatal && st.pendingCr {
+        st.pendingCr = false
+        append(scratch, '\r')
+        let wr = writeBytes(w, scratch)
+        truncate(scratch, 0)
+        match wr {
+            ok { }
+            err {
+                eprintln("cat: write error: ", errText(wr.code))
+                exit(1)
+            }
         }
     }
     if !fatal {
