@@ -1,0 +1,40 @@
+// io_defer: defer closeFile(fd) is the documented cleanup pattern. The block
+// exits normally under OBO_CHECK=1, which would exit 5 for a leaked defer Result
+// cell and 8 for an unclosed descriptor; the file is reopened and read after the
+// block, so the content path is checked too.
+// expect: wrote 5
+// expect: read hello
+// expect: defer ok
+fn bytesOf(s: string): []byte {
+    let out = new []byte(0)
+    for i in 0..len(s) { append(out, s[i]) }
+    return out
+}
+
+fn main() {
+    let a = args()
+    let p = a[1] + "/defer.bin"
+    {
+        let o = openFile(p, "w")
+        match o {
+            ok(fd) {
+                defer closeFile(fd)
+                let data = bytesOf("hello")
+                let w = writeFd(fd, data)
+                match w {
+                    ok(n) { println("wrote ", n) }
+                    err(m, c) { println("write: ", m, " (", c, ")"); exit(1) }
+                }
+            }
+            err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+        }
+    }
+    let got = readFile(p)
+    if got == nil { println("unreadable"); exit(1) }
+    if len(got) != 5 { println("read length ", len(got)); exit(1) }
+    if got[0] != 'h' || got[1] != 'e' || got[2] != 'l' || got[3] != 'l' || got[4] != 'o' {
+        println("read content differs"); exit(1)
+    }
+    println("read hello")
+    println("defer ok")
+}
