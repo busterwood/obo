@@ -147,6 +147,13 @@ FILES = {
     '-Z': b'-Z\n',
     'name with space': b'space\n',
     'million': b'\n' * 1000001,
+    'crlfblanks': b'\r\n\r\n\r\n',
+    'cr_eof': b'a\r',
+    'cr_cross_a': b'a\r',
+    'cr_cross_b': b'\nb\n',
+    'cr_chunk': b'x' * 65535 + b'\r\n' + b'y\n',
+    'cr_double': b'a\r\r\n',
+    'cr_mid': b'a\rX\n',
 }
 
 SPECS = {name: Spec('file', data=data) for name, data in FILES.items()}
@@ -242,6 +249,21 @@ def add(name, tool, args, **kw):
     return c
 
 
+def validate_cases():
+    """A tag typo must not run a case that enters no comparison branch."""
+    for c in CASES:
+        if c.tag not in ('modeled', 'usage', 'writeerror'):
+            raise SetupError(f'{c}: unknown tag {c.tag!r}')
+        if c.portable and c.tag != 'modeled':
+            raise SetupError(f'{c}: the portable marker is only for modeled cases')
+        if c.golden and c.tag != 'modeled':
+            raise SetupError(f'{c}: golden goldens are only for modeled cases')
+        if c.tag == 'usage' and c.sink:
+            raise SetupError(f'{c}: a usage case cannot use the /dev/full sink')
+        if c.tag == 'writeerror' and not c.sink:
+            raise SetupError(f'{c}: a writeerror case must use the /dev/full sink')
+
+
 def cat_cases():
     T = 'cat'
     # byte copy over every stream fixture; the six marked ones are the portable set
@@ -279,6 +301,18 @@ def cat_cases():
     add('b_n_blanks', T, ['-b', '-n', 'blanks'], fixtures=['blanks'])
     add('s_blanks', T, ['-s', 'blanks'], fixtures=['blanks'])
     add('E_multi_a', T, ['-E', 'multi_a'], fixtures=['multi_a'])
+    # GNU -E holds a CR before an emitted LF and prints it as ^M
+    add('E_crlf', T, ['-E', 'crlf'], fixtures=['crlf'], golden=True)
+    add('nE_crlf', T, ['-nE', 'crlfblanks'], fixtures=['crlfblanks'], golden=True)
+    add('bE_crlf', T, ['-bE', 'crlfblanks'], fixtures=['crlfblanks'], golden=True)
+    add('sE_crlf', T, ['-sE', 'crlfblanks'], fixtures=['crlfblanks'], golden=True)
+    add('E_cr_eof', T, ['-E', 'cr_eof'], fixtures=['cr_eof'], golden=True)
+    add('E_cr_cross_file', T, ['-E', 'cr_cross_a', 'cr_cross_b'],
+        fixtures=['cr_cross_a', 'cr_cross_b'], golden=True)
+    add('E_cr_chunk', T, ['-E', 'cr_chunk'], fixtures=['cr_chunk'], golden=True)
+    add('E_cr_double', T, ['-E', 'cr_double'], fixtures=['cr_double'], golden=True)
+    add('E_cr_mid', T, ['-E', 'cr_mid'], fixtures=['cr_mid'], golden=True)
+    add('T_crlf', T, ['-T', 'crlf'], fixtures=['crlf'], golden=True)
     add('T_tabs', T, ['-T', 'tabs'], fixtures=['tabs'])
     add('nET_tabs', T, ['-nET', 'tabs'], fixtures=['tabs'], golden=True)
     add('s_n_blanks', T, ['-s', '-n', 'blanks'], fixtures=['blanks'])
@@ -418,14 +452,14 @@ def sort_cases():
                'newline', 'multi_a')
     for name in default:
         add(name, T, [name], fixtures=[name],
-            portable=name in ('empty', 'oneline'), golden=(name == 'nul'))
+            portable=name in ('empty', 'oneline', 'dups'), golden=(name == 'nul'))
     add('many', T, ['many'], fixtures=['many'], slow=True)
     add('sparse', T, ['sparse'], fixtures=['sparse'], slow=True)
     add('big', T, ['big'], fixtures=['big'], slow=True)
     add('multi_a_multi_b', T, ['multi_a', 'multi_b'],
         fixtures=['multi_a', 'multi_b'], portable=True)
     add('r_dups', T, ['-r', 'dups'], fixtures=['dups'])
-    add('u_dups', T, ['-u', 'dups'], fixtures=['dups'], portable=True)
+    add('u_dups', T, ['-u', 'dups'], fixtures=['dups'])
     add('ru_dups', T, ['-ru', 'dups'], fixtures=['dups'])
     # numeric grammar and exact decimal
     add('n_numeric', T, ['-n', 'numeric'], fixtures=['numeric'], golden=True)
@@ -527,6 +561,7 @@ def model_cat(world, argv, stdin_bytes):
     line_no = 0
     at_start = True
     last_blank = False
+    pending_cr = False
     failed = False
     stdin_used = False
 
@@ -534,41 +569,57 @@ def model_cat(world, argv, stdin_bytes):
         operands = ['-']
 
     def apply_chunk(data):
-        nonlocal line_no, at_start, last_blank
+        nonlocal line_no, at_start, last_blank, pending_cr
         for b in data:
-            if at_start:
+            handled = False
+            if pending_cr:
+                # -E holds a CR for a possible LF: emit ^M$ on LF, else the CR
+                pending_cr = False
                 if b == 0x0A:
-                    if squeeze and last_blank:
-                        pass
+                    out.extend(b'^M$\n')
+                    at_start = True
+                    last_blank = False
+                    handled = True
+                else:
+                    out.append(0x0D)
+            if not handled:
+                if at_start:
+                    if b == 0x0A:
+                        if squeeze and last_blank:
+                            pass
+                        else:
+                            if number_every and not number_nonblank:
+                                line_no += 1
+                                out.extend(b'%6d\t' % line_no)
+                            if show_ends:
+                                out.append(0x24)
+                            out.append(0x0A)
+                        last_blank = True
                     else:
-                        if number_every and not number_nonblank:
-                            line_no += 1
+                        line_no += 1
+                        if number_every or number_nonblank:
                             out.extend(b'%6d\t' % line_no)
+                        at_start = False
+                        last_blank = False
+                        if b == 0x09 and show_tabs:
+                            out.extend(b'^I')
+                        elif b == 0x0D and show_ends:
+                            pending_cr = True
+                        else:
+                            out.append(b)
+                else:
+                    if b == 0x0A:
                         if show_ends:
                             out.append(0x24)
                         out.append(0x0A)
-                    last_blank = True
-                else:
-                    line_no += 1
-                    if number_every or number_nonblank:
-                        out.extend(b'%6d\t' % line_no)
-                    at_start = False
-                    last_blank = False
-                    if b == 0x09 and show_tabs:
+                        at_start = True
+                        last_blank = False
+                    elif b == 0x09 and show_tabs:
                         out.extend(b'^I')
+                    elif b == 0x0D and show_ends:
+                        pending_cr = True
                     else:
                         out.append(b)
-            else:
-                if b == 0x0A:
-                    if show_ends:
-                        out.append(0x24)
-                    out.append(0x0A)
-                    at_start = True
-                    last_blank = False
-                elif b == 0x09 and show_tabs:
-                    out.extend(b'^I')
-                else:
-                    out.append(b)
 
     for name in operands:
         kind = kind_of(name, world)
@@ -591,6 +642,8 @@ def model_cat(world, argv, stdin_bytes):
                 stdin_used = True
         else:
             apply_chunk(world[name].bytes())
+    if pending_cr:
+        out.append(0x0D)
     return (1 if failed else 0), bytes(out), bytes(err)
 
 
@@ -1117,6 +1170,17 @@ class Harness:
             self._goldens[key] = load_golden(root, tool, name)
         return self._goldens[key]
 
+    def validate_goldens(self):
+        """Every golden-marked modeled case needs a complete gnu triple, and
+        every usage/writeerror case a complete own triple."""
+        for c in CASES:
+            if c.golden and self.golden('gnu', c.tool, c.name) is None:
+                raise SetupError(
+                    f'gnu golden missing for golden-marked {c.tool}/{c.name}')
+            if c.tag in ('usage', 'writeerror'):
+                if self.golden('own', c.tool, c.name) is None:
+                    raise SetupError(f'own golden missing for {c.tool}/{c.name}')
+
     def check_version_note(self):
         path = os.path.join(GOLDEN, 'gnu', 'VERSION')
         if not os.path.exists(path):
@@ -1274,7 +1338,7 @@ class Harness:
 
         # model vs GNU (hard harness failure on disagreement)
         if (model is not None and ref_run is not None and
-                self.ctx[case.tool].diff == 'exact' and
+                self.refs[case.tool].kind == 'gnu' and
                 self.args.check_models and case.tag == 'modeled'):
             if model[0] != ref_run.rc:
                 self.model_errors.append(
@@ -1283,7 +1347,8 @@ class Harness:
                 self.model_errors.append(
                     f'{case}: model stdout differs from GNU: ' +
                     describe(model[1], ref_run.stdout, 'stdout'))
-            if not case.sink and (model[2] or ref_run.stderr):
+            if (self.ctx[case.tool].diff == 'exact' and not case.sink and
+                    (model[2] or ref_run.stderr)):
                 if model[2] != ref_run.stderr:
                     self.model_errors.append(
                         f'{case}: model stderr differs from GNU: ' +
@@ -1315,6 +1380,8 @@ class Harness:
         return problems
 
     # -- modes
+    SERIAL_NAMES = ('stream', 'pipeline', 'stdin_unread')
+
     def run_matrix(self):
         cases = CASES
         if self.args.fast:
@@ -1324,23 +1391,32 @@ class Harness:
         if self.args.k:
             cases = [c for c in cases if self.args.k in c.name or
                      self.args.k in f'{c.tool}/{c.name}']
-        if not cases:
+        serial_only = (bool(self.args.k) and
+                       any(self.args.k in n for n in self.SERIAL_NAMES))
+        if not cases and not serial_only:
             raise SetupError('no cases selected')
-        if self.args.jobs > 1 and not self.args.fail_fast:
+        results = {}
+        if cases and self.args.jobs > 1 and not self.args.fail_fast:
+            # -j runs the plain cases in the pool; write-error/sink cases run
+            # serially as the design requires
+            parallel = [c for c in cases if not (c.sink or c.tag == 'writeerror')]
+            serial = [c for c in cases if c.sink or c.tag == 'writeerror']
             with concurrent.futures.ThreadPoolExecutor(self.args.jobs) as pool:
-                results = list(pool.map(self.run_case, cases))
+                for c, res in zip(parallel, pool.map(self.run_case, parallel)):
+                    results[c.key] = res
+            for c in serial:
+                results[c.key] = self.run_case(c)
         else:
-            results = []
+            # serial run (and every -x run): stop scheduling at the first failure
             for i, c in enumerate(cases):
-                try:
-                    results.append(self.run_case(c))
-                except SetupError:
-                    raise
-                if self.args.fail_fast and results[-1][0] == 'fail':
+                results[c.key] = self.run_case(c)
+                if self.args.fail_fast and results[c.key][0] == 'fail':
                     self.not_run = len(cases) - i - 1
-                    cases = cases[:i + 1]
                     break
-        for c, (status, detail) in zip(cases, results):
+        for c in cases:
+            if c.key not in results:
+                continue
+            status, detail = results[c.key]
             if status == 'pass':
                 self.passed += 1
                 if self.args.verbose:
@@ -1349,8 +1425,6 @@ class Harness:
                 self.skips.append(f'{c}: {detail}')
             else:
                 self.failures.append((c, detail))
-                if self.args.fail_fast and self.args.jobs > 1:
-                    break
         if self.args.fail_fast and self.failures:
             return
         self.run_serial_cases()
@@ -1468,10 +1542,15 @@ class Harness:
                               [self.ctx['sort'].exe, 'multi_a'], [head, '-n', '1'],
                               b'a\n'))
         for label, first, second, want in pipelines:
+            # both sides are process-group leaders and p1.stderr is drained to
+            # DEVNULL, so a hung pipeline cannot evade the timeout or fill a pipe
             p1 = subprocess.Popen(first, cwd=d, env=env, stdin=subprocess.DEVNULL,
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL,
+                                  start_new_session=True)
             p2 = subprocess.Popen(second, cwd=d, env=env, stdin=p1.stdout,
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  start_new_session=True)
             p1.stdout.close()
             try:
                 out, err2 = p2.communicate(timeout=20)
@@ -1482,8 +1561,11 @@ class Harness:
                         os.killpg(p.pid, signal.SIGKILL)
                     except OSError:
                         pass
-                p1.wait()
-                p2.wait()
+                for p in (p1, p2):
+                    try:
+                        p.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
                 self.failures.append((label, 'pipeline timed out'))
                 continue
             if out != want or p2.returncode != 0:
@@ -1561,6 +1643,9 @@ class Harness:
             os.makedirs(tdir, exist_ok=True)
             for fx in case.fixtures:
                 materialize(fx, casedir)
+            if (case.sink or case.tag == 'writeerror') and not os.path.exists('/dev/full'):
+                print(f'skip   {case}: /dev/full is absent')
+                continue
             if 'unreadable' in case.fixtures:
                 up = os.path.join(casedir, 'unreadable')
                 if os.path.exists(up) and os.access(up, os.R_OK):
@@ -1640,6 +1725,11 @@ def main(argv=None):
     ap.add_argument('--list', action='store_true')
     a = ap.parse_args(argv)
 
+    try:
+        validate_cases()
+    except SetupError as e:
+        print(f'tools.py: {e}', file=sys.stderr)
+        return 2
     if a.list:
         list_cases()
         return 0
@@ -1676,6 +1766,7 @@ def main(argv=None):
         if a.memory:
             h.run_memory()
         else:
+            h.validate_goldens()
             h.run_matrix()
     except SetupError as e:
         print(f'tools.py: {e}', file=sys.stderr)
@@ -1686,7 +1777,8 @@ def main(argv=None):
 
     for c, detail in h.failures:
         print(f'FAIL {c}')
-        for d in detail:
+        details = detail if isinstance(detail, list) else [detail]
+        for d in details:
             print(f'     {d}')
     for err in h.model_errors:
         print(f'MODEL {err}')
@@ -1701,16 +1793,21 @@ def main(argv=None):
         print(f'\n{len(h.model_errors)} model/harness errors (exit 2)')
         return 2
     kinds = {h.refs[t].kind for t in TOOLS}
+    version = None
+    if kinds == {'gnu'}:
+        m = re.search(r'\(GNU coreutils\)\s+([0-9][0-9.]*)',
+                      h.refs[TOOLS[0]].version)
+        version = m.group(1) if m else '9.x'
     if a.memory:
         print(f'\nmemory: {h.passed} passed, {len(h.failures)} failed')
         if h.failures:
             return 1
         return 0
     if a.reference == 'any' and kinds == {'gnu'}:
-        ref_line = ('reference: any (GNU coreutils 9.x): stdout/exit exact, '
+        ref_line = (f'reference: any (GNU coreutils {version}): stdout/exit exact, '
                     'stderr shape')
     elif kinds == {'gnu'}:
-        ref_line = 'reference: GNU coreutils 9.x (cat, wc, sort)'
+        ref_line = f'reference: GNU coreutils {version} (cat, wc, sort)'
     elif kinds == {'none'}:
         ref_line = (f'reference: none; {h.golden_usage["model"]} modeled cases via '
                     f'models, {h.golden_usage["gnu"]} gnu goldens, '

@@ -3212,8 +3212,8 @@ Each case has exactly one oracle tag, plus the orthogonal `portable` marker:
   a line, so its `/dev/full` case stays `writeerror`.
 
 The `portable` marker selects the forced `--reference=busybox` subset (cat byte
-copy and default sort; wc has none in v1 because its padding is
-implementation-specific). `--reference=any` ignores the marker and shape-compares
+copy and default `sort`, including default `dups`; no `-n`/`-r`/`-u` case is
+marked, and wc has none in v1 because its padding is implementation-specific). `--reference=any` ignores the marker and shape-compares
 stderr. Checked-in goldens are binary: `golden/gnu/<tool>/<case>.*` recorded with
 `--record` from GNU 9.4 (modeled, golden-marked cases only; no 1 MiB outputs),
 and `golden/own/<tool>/*` hand-written for the seven usage and six write-error
@@ -3224,10 +3224,10 @@ GNU on stdout/exit (and exact stderr) and exits 2 on disagreement, so the
 fallback cannot rot. `--reference=none` never probes a reference; models are the
 oracle for modeled cases and own goldens for usage/write-error.
 
-The matrix is 181 cases (cat 60, wc 63, sort 58) plus eight serial checks:
+The matrix is 191 cases (cat 70, wc 63, sort 58) plus eight serial checks:
 cat streams a pipe before EOF (plain and `-n`), stdin is not read when it is not
 an operand (all three tools), and three pipelines (`cat | wc -l`,
-`sort | head -n 1`, `cat -n | sort -n`). 13 cases are portable-marked, 26 have
+`sort | head -n 1`, `cat -n | sort -n`). 13 cases are portable-marked, 36 have
 recorded GNU goldens and 13 have own goldens; 10 are slow (`--fast` skips them).
 The case list, tags and markers print with `--list`.
 
@@ -3235,7 +3235,12 @@ The case list, tags and markers print with `--list`.
 state across files: `%6d\t` numbering from 1, `-b` overriding `-n` in either
 order, `-s` emitting at most one consecutive blank line (squeezed lines are not
 numbered), `-E` writing `$` only before emitted newlines, `-T` writing `^I` for
-tabs. A blank line is zero bytes; spaces, tabs and NUL make a line nonblank. An
+tabs. `-E` also follows GNU's CR rule: a CR immediately before an emitted
+newline is held and written as `^M`, so CRLF renders `^M$`; the hold spans
+Reader chunks, operands and read errors, and a final unpaired CR is written
+literally at stream EOF (a second CR can become the new pending one). `-T` alone
+leaves CR alone. A blank line is zero bytes; spaces, tabs, NUL and a CR make a
+line nonblank (a CR-only line is numbered by `-n`/`-b` and never squeezed). An
 open/read error prints, sets failed and continues; a write error prints once,
 sets fatal, stops reading and never opens a later operand. The transformed
 scratch is flushed at 64 KiB. wc uses GNU's C-locale word rule (whitespace ends
@@ -3248,11 +3253,18 @@ after a directory is still `cannot read`), reads all lines per operand with
 index array with a stable bottom-up merge, compares `-n` keys as exact decimals
 (no floating point; 40-digit numbers keep their order), applies `-r` to the
 last-resort line comparison too, and deduplicates `-u` with a key-only
-comparison so the first input occurrence survives. Nothing is written before all
-input is read.
+comparison so the first input occurrence survives. Only ASCII `0-9` are numeric
+digits. GNU 9.4's `strnumcmp` additionally treats a leading byte `0x80` inside
+the integer leading-zero run as a zero (`\x801` compares equal to `1`); that is
+outside the documented ASCII numeric grammar and is deliberately not reproduced,
+and high-byte numeric inputs stay out of the differential matrix. Nothing is
+written before all input is read. The `-E` CR rule was found by the independent
+implementation review after the first green run; the matrix now has CRLF,
+cross-file, chunk-boundary, double-CR and final-CR cases with recorded GNU
+goldens, and the model implements the same rule.
 
 **Acceptance and gates.** `python3 tests/tools.py --require-reference` passes:
-181 matrix cases plus the eight serial checks, 0 failed, with exact stdout/exit,
+191 matrix cases plus the eight serial checks, 0 failed, with exact stdout/exit,
 exact file-error stderr for GNU 9.4 (the bare-`argv[0]` rule), clean
 model-vs-GNU, and clean goldens. `--fast` passes with 10 slow cases skipped;
 `--memory` passes both pinned cases under 1 MiB live heap; `--reference=none`
@@ -3278,7 +3290,13 @@ documented. (6) GNU quotes exotic operands and ours print them verbatim; exact
 stderr cases use quote-free names. (7) The `tools` Make target collides with the
 existing `obo/tools/` directory; `.PHONY` is mandatory and verified. (8) The
 defensive prefix normalizer is per line, so even a hypothetical bypass of the
-invocation rule would still normalize every diagnostic line.
+invocation rule would still normalize every diagnostic line. (9) GNU 9.4's
+`strnumcmp` treats a leading `0x80` inside the integer leading-zero run as a
+zero digit (`\x801` equals `1`); that is outside the documented ASCII numeric
+grammar, is deliberately not reproduced, and high-byte numeric inputs are kept
+out of the differential matrix. The first green run missed GNU's `-E` CR rule;
+the implementation review found it, and the matrix, model, goldens and docs now
+pin it (CRLF, cross-file, chunk-boundary, double-CR and final-CR cases).
 
 **Later tools.** `head` (streaming, reuses cat's machinery) is the natural phase
 3b; `tail` waits for `seek`/`readAt` or a documented bounded version; `eza`
@@ -3301,9 +3319,9 @@ standalone, so a block using `Reader` would fail without a prelude extension.
 phase-2 harness that compiles `lib/io.obo` alone keeps working.
 
 **Measurements** (this host; GNU coreutils 9.4, Python 3.12.3). Build: three
-tools including the probe in 0.03 s. Gate: 181 matrix cases + 8 serial checks,
-0 failed (`--require-reference`), 0 failed with `--fast` (10 skipped), 2 of 2
-memory cases. Live heap peaks (`OBO_STATS=1`): plain `cat` on the 16 MiB
+tools including the probe in 0.03 s. Gate: 191 matrix cases + 8 serial checks
+(199 checks), 0 failed (`--require-reference` and `--reference=none`), 0 failed
+with `--fast` (10 skipped), 2 of 2 memory cases. Live heap peaks (`OBO_STATS=1`): plain `cat` on the 16 MiB
 newline-free sparse input 230,352 bytes; `wc -lwc` on the same 66,384 bytes;
 flag-heavy `cat -nET` on a 1 MiB all-newline file 295,936 bytes (the bounded
 64 KiB scratch; the design's whole-chunk-batch shape measured 1,638,592, so the
