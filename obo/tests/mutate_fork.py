@@ -46,8 +46,8 @@ PORT_PATTERNS = {
     "loop moves unchecked": ("    if !term {\n        let now = snapshot()", "    if false {\n        let now = snapshot()"),
     "string locals never dropped": ("            if s.isStr {\n                rtCall1(RT_STR_DEC, x, tVoid)",
                                     "            if s.isStr {\n                rtCall1(RT_STR_INC, x, tVoid)"),
-    "dropped results kept": ("            if isOwned(x.typ) {\n                rtCall1(RT_FREE, x, tVoid)                 // a dropped result is freed at once",
-                             "            if false {\n                rtCall1(RT_FREE, x, tVoid)                 // a dropped result is freed at once"),
+    "dropped results kept": ("        if isOwned(x.typ) {\n            rtCall1(RT_FREE, x, tVoid)                 // a dropped result is freed at once",
+                             "        if false {\n            rtCall1(RT_FREE, x, tVoid)                 // a dropped result is freed at once"),
 }
 
 MUTANTS = {
@@ -56,8 +56,8 @@ MUTANTS = {
                                  "        callDefers(blk)\n"),
     "early exits free nothing": ("        freeOwned(blocks[i].omark, top)\n", ""),
     "assignment keeps the old value": ("                if live {\n                    resolve(x)", "                if false {\n                    resolve(x)"),
-    "dropped results kept": ("                rtCall1(RT_FREE, x, tVoid)                 // a dropped result is freed at once",
-                             "                releaseItem(x)"),
+    "dropped results kept": ("            rtCall1(RT_FREE, x, tVoid)                 // a dropped result is freed at once",
+                             "            releaseItem(x)"),
     "records don't free their fields": ("        if isOwned(f.typ) { append(ptrs, f.offset) }            // the fields freed with the record", ""),
     "globals not freed at exit": ("            x.disp = g.offset\n            rtCall1(RT_FREE, x, tVoid)\n", "            x.disp = g.offset\n"),
     # freeing too much: double free or poisoned reads
@@ -120,8 +120,8 @@ MUTANTS = {
     "field targets assigned across calls": ("    if xs == nil {\n        // a field or element: the call could free the record or array it is in",
                                             "    if false {\n        // a field or element: the call could free the record or array it is in"),
     # the same for the other forms of a target located before a call (call_targets.obx)
-    "compound targets not checked": ("            var y = expression()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n",
-                                     "            var y = expression()\n            pinned = savedPin\n"),
+    "compound targets not checked": ("            var y = tailExpr()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n",
+                                     "            var y = tailExpr()\n            pinned = savedPin\n"),
     "append targets not checked": ("        if name != \"substr\" && held && userCalls != callsBefore {",
                                    "        if name == \"truncate\" && held && userCalls != callsBefore {"),
     "truncate targets not checked": ("        if name != \"substr\" && held && userCalls != callsBefore {",
@@ -144,8 +144,8 @@ MUTANTS = {
     "replace not checked for moves": ("        if tr != nil && heldLost(tr, touch0) {", "        if tr != nil && false {"),
     "plain assignments through a reference not checked for moves": ("            consume(y)\n            if traw == \"\" && !x.viaHandle && !x.deref { originMove(xs, false) }\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && heldLost(r0, touch0) {",
                                                                      "            consume(y)\n            if traw == \"\" && !x.viaHandle && !x.deref { originMove(xs, false) }\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && false {"),
-    "compound assignments through a reference not checked for moves": ("            var y = expression()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && heldLost(r0, touch0) {",
-                                                                       "            var y = expression()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && false {"),
+    "compound assignments through a reference not checked for moves": ("            var y = tailExpr()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && heldLost(r0, touch0) {",
+                                                                       "            var y = tailExpr()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n            if x.deref && r0 != nil && false {"),
     # the reference local's owner (ownerTouch) and its invalidation (the moved flag): a reference into a
     # field or to an element's array, or a borrow through a handle, is only caught by one of them
     "reference roots not checked for moves or invalidation": ("fn heldLost(root: ?^Sym, t0: int): bool {\n    if root == nil { return false }\n    if root.isRefLocal && root.moved { return true }\n    return ownerTouch(root) != t0\n}",
@@ -182,10 +182,10 @@ MUTANTS = {
     "index does not hold its array": ("            let hp = heldPush(root, viaHandle, hOrig, hIdent, placePath(root, path), path)", "            let hp = -1"),
     "replace does not hold its place": ("        let hp = heldPush(tr, x.viaHandle, orig, ident, place, raw)", "        let hp = -1"),
     "append and truncate do not hold their array": ("        let hp = heldPush(r0, aVia, aOrig, aIdent, aPlace, aRaw)", "        let hp = -1"),
-    "plain assignments do not hold their target": ("            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            let y = expression()",
-                                                    "            let y = expression()"),
-    "compound assignments do not hold their target": ("            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            var y = expression()",
-                                                      "            var y = expression()"),
+    "plain assignments do not hold their target": ("            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            let y = tailExpr()",
+                                                    "            let y = tailExpr()"),
+    "compound assignments do not hold their target": ("            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            var y = tailExpr()",
+                                                      "            var y = tailExpr()"),
     "reference places ignore the binding's path": ("            let p = heldAt(b, i, raw, r)\n            if o == handleSym {\n                heldAdd(nil, true, false, \"\")", "            let p = raw\n            if o == handleSym {\n                heldAdd(nil, true, false, \"\")"),
 }
 
@@ -421,10 +421,9 @@ HANDLE_FREE_MUTANTS = {
     "an int match's else is not an arm": ('    let seen = new []int(0)\n    var ends = 0\n    var allTerm = true\n    var hasElse = false\n    while sym != T_RBRACE {\n        if sym == T_ELSE {\n            next()\n            hasElse = true\n            restore(s0)\n            let bt = armBlock(&d0, &dacc, false)\n',
         '    let seen = new []int(0)\n    var ends = 0\n    var allTerm = true\n    var hasElse = false\n    while sym != T_RBRACE {\n        if sym == T_ELSE {\n            next()\n            hasElse = true\n            restore(s0)\n            let bt = block()\n'),
     'an int match does not take the join': ('    deadSet(&dacc)\n    fixHere(ends)\n    return allTerm && hasElse\n', '    fixHere(ends)\n    return allTerm && hasElse\n'),
-    'a match arm is not an arm': ('        restore(s0)\n        let bt = armBlock(&d0, &dacc, false)\n        allTerm = allTerm && bt\n        if !bt {\n            let st = snapshot()\n            if have { sameStates(acc, st, line0(), 0); acc = joinStates(acc, st) } else { acc = copyState(st) }\n            have = true\n        }\n        truncate(narrowStack, mark)\n',
-        '        restore(s0)\n        let bt = block()\n        allTerm = allTerm && bt\n        if !bt {\n            let st = snapshot()\n            if have { sameStates(acc, st, line0(), 0); acc = joinStates(acc, st) } else { acc = copyState(st) }\n            have = true\n        }\n        truncate(narrowStack, mark)\n'),
-    "a match's else is not an arm": ('    let seen = new []^Type(0)\n    var ends = 0\n    var allTerm = true\n    var hasElse = false\n    while sym != T_RBRACE {\n        if sym == T_ELSE {\n            next()\n            hasElse = true\n            restore(s0)\n            let bt = armBlock(&d0, &dacc, false)\n',
-        '    let seen = new []^Type(0)\n    var ends = 0\n    var allTerm = true\n    var hasElse = false\n    while sym != T_RBRACE {\n        if sym == T_ELSE {\n            next()\n            hasElse = true\n            restore(s0)\n            let bt = block()\n'),
+    'a match arm is not an arm': ('            bt = armBlock(&d0, &dacc, false)\n', '            bt = block()\n'),
+    "a match's else is not an arm": ('    let seen = new []^Type(0)\n    var ends = 0\n    var allTerm = true\n    var hasElse = false\n    while sym != T_RBRACE {\n        if sym == T_ELSE {\n            if t.kind == "result" { errorAt("a Result match names the ok and err arms; \'else\' is not needed", tline, tcol) }\n            next()\n            hasElse = true\n            restore(s0)\n            let bt = armBlock(&d0, &dacc, false)\n',
+        '    let seen = new []^Type(0)\n    var ends = 0\n    var allTerm = true\n    var hasElse = false\n    while sym != T_RBRACE {\n        if sym == T_ELSE {\n            if t.kind == "result" { errorAt("a Result match names the ok and err arms; \'else\' is not needed", tline, tcol) }\n            next()\n            hasElse = true\n            restore(s0)\n            let bt = block()\n'),
     'a match does not take the join': ('    deadSet(&dacc)\n    fixHere(ends)\n    return allTerm\n}', '    fixHere(ends)\n    return allTerm\n}'),
     "a defer body's frees mark handles where it is declared": ('    deadSet(&deadBefore)\n', ''),
 }
@@ -473,7 +472,7 @@ FP_MUTANTS = {
     'a copy of a handle not known to be dead is no use': ('                    if dead != nil { unname(x.sym) }\n', '                    unname(x.sym)\n'),
     'a copy of a dead handle is a use': ('                    if dead != nil { unname(x.sym) }\n', ''),
     # a free that ends its block in a break or a return (pendBlockEnds)
-    'a block that ends drops its frees whatever follows': ('    if term { pendBlockEnds(pm, cs, bs) }\n', '    pendBlockEnds(pm, cs, bs)\n'),
+    'a block that ends drops its frees whatever follows': ('    if term { pendBlockEnds(pm, cs, bs) }\n    expect(T_RBRACE, "")\n    closeBlock(term)\n    return term\n', '    pendBlockEnds(pm, cs, bs)\n    expect(T_RBRACE, "")\n    closeBlock(term)\n    return term\n'),
     'a block with a continue in it drops its frees': ('    if contSeq != cs { return }\n', ''),
     'a break drops the frees of the loops outside the one it leaves': ('            if brkSeq != bs && pendDepth[k] == len(loops) - 1 { drop = true }\n', '            if brkSeq != bs { drop = true }\n'),
     'a block drops the frees made in the loops inside it': ('        if pendNest[k] == len(loops) && pendWhat[k] != "move" {\n', '        if pendWhat[k] != "move" {\n'),
@@ -597,6 +596,7 @@ EQUIVALENT = {
     "place origin: a callee records every change as not strict": "equivalent: the strictness of a row matters only for a place that holds a record (the place itself survives a strict event), and a strict change is a truncate, whose place is an array, which no handle names; the anywhere row has its own encoding",
     "place origin: a row beside an anywhere row is kept": "equivalent: the events of a row below an anywhere row are covered by it",
     "a handle root of a reference is not an identity (held)": "equivalent because the older heldLost check on the reference local catches the case, not the held entry: under the mutant foreign is false, so heldMove does not hit",
+    "result: try error path keeps the pending arrays": "defensive: the error block's callDefers replays the same defer frees that the defer's own block-end exit replays, at the same pendDepth and pendNest, so every entry the error path adds is either judged identically by that later replay (same handle, same usedAt) or dropped at the same loop end; no program was found where the extra entry changes a verdict. Kept because it is the stated invariant of the error-path isolation",
 }
 
 
@@ -722,6 +722,87 @@ FIELD_MUTANTS = {
     'place origin: a free of a place in a defer is not recorded': ('        append(deferFrees, r)\n        if strict { append(deferFreeEv, "!" + path) } else { append(deferFreeEv, "=" + path) }\n', ''),
 }
 MUTANTS.update(FIELD_MUTANTS)
+
+# Result[T], ok/err, try and the consuming match
+RESULT_MUTANTS = {
+    # the shared err cell is what propagation relies on: without it an error is not recognised
+    'result: try treats an ok cell as an error': ('    let toErr = jcc(CC_E)\n', '    let toErr = jcc(CC_NE)\n'),
+    'result: try loads the tag as 8 bytes': ('    opMem(0x8B, tr, mem(cellR, -1, -16, 8), false, false)   // 32-bit: the high half is a generation',
+                                             '    opMem(0x8B, tr, mem(cellR, -1, -16, 8), true, false)   // 32-bit: the high half is a generation'),
+    'result: try returns the success value on error': ('    opMem(0x8B, RAX, mem(RBP, -1, slot.offset, 8), true, false)\n    epilogue()',
+                                                       '    movRI(RAX, 0)\n    epilogue()'),
+    'result: try keeps the ok shell': ('    rtCall1(RT_FREE, makeReg(rt, cellR), tVoid)             // the shell; releases cellR\n', ''),
+    'result: try does not zero the ok payload': ('    opMem(0xC7, 0, mem(cellR, -1, 0, 8), true, false)       // the payload is moved out, not owned by the shell\n    emit32(0)\n', ''),
+    'result: try returns the cell instead of the payload': ('    opMem(0x8B, payload, mem(cellR, -1, 0, 8), true, false)\n    opMem(0xC7, 0, mem(cellR, -1, 0, 8), true, false)       // the payload is moved out, not owned by the shell',
+                                                            '    movRR(payload, cellR)\n    opMem(0xC7, 0, mem(cellR, -1, 0, 8), true, false)       // the payload is moved out, not owned by the shell'),
+    'result: try does not consume its operand': ('    consume(e)\n    let cell = asReg(e)', '    let cell = asReg(e)'),
+    'result: try snapshots before consuming': ("""    consume(e)
+    let cell = asReg(e)
+    let cellR = cell.r
+    let slot = newLocal("", fr.ret, "var")
+    opMem(0x89, cellR, mem(RBP, -1, slot.offset, 8), true, false)
+    // The path marks are captured AFTER consume: a pre-consume snapshot would restore moved = false
+    // for the operand on the ok path (double free at scope exit), and a pre-consume deadSave would
+    // restore an originLive mark that consume's originMove cleared. The pending diagnostic
+    // (pendLine/pendCol/pendMsg) is deliberately not restored: the error path is a real exit.
+    let st = snapshot()""",
+                                                 """    let st = snapshot()
+    consume(e)
+    let cell = asReg(e)
+    let cellR = cell.r
+    let slot = newLocal("", fr.ret, "var")
+    opMem(0x89, cellR, mem(RBP, -1, slot.offset, 8), true, false)"""),
+    'result: try error path skips the defers': ('    runDefers(fnBlock)\n    opMem(0x8B, RAX,',
+                                                 '    freeOwned(blocks[fnBlock].omark, len(ownedLocals))\n    opMem(0x8B, RAX,'),
+    'result: try error path skips freeOwned': ('    iteratingClear()\n    runDefers(fnBlock)\n', '    iteratingClear()\n    callDefers(fnBlock)\n'),
+    'result: try error path keeps the free log': ('    truncate(freeLog, log0)\n', ''),
+    'result: try error path keeps the for-walk marks': ('    iteratingClear()\n', ''),
+    'result: try error path keeps the pending arrays': ('    truncate(pendSym, ps0)\n    truncate(pendDepth, pd0)\n    truncate(frLine, fl0)\n    truncate(frCol, fc0)\n    truncate(pendWhat, pw0)\n    truncate(pendOwn, po0)\n    truncate(pendNest, pn0)\n', ''),
+    'result: try does not restore the state after the error block': ('    restore(st)\n    deadSet(dm)\n', '    deadSet(dm)\n'),
+    'result: try does not restore the dead marks': ('    deadSet(dm)\n', ''),
+    'result: err makes a descriptor per call site': ('fn errVariantType(): ^Type {\n    let have = errVariant\n    if have != nil { return have }',
+                                                      'fn errVariantType(): ^Type {'),
+    'result: ok descriptor owns a scalar payload': ('    if isOwned(base) { append(ptrs, 0) }', '    if true { append(ptrs, 0) }'),
+    'result: ok descriptor never owns the payload': ('    if isOwned(base) { append(ptrs, 0) }', '    if false { append(ptrs, 0) }'),
+    'result: ok descriptor drops no string payload': ('    if base.kind == "string" { append(strs, 0) }', '    if false { append(strs, 0) }'),
+    'result: err descriptor drops no message': ('    let strs = new []int(0)\n    append(strs, 0)\n    e.desc = descriptor(16, ptrs, strs)',
+                                                 '    let strs = new []int(0)\n    e.desc = descriptor(16, ptrs, strs)'),
+    'result: err variant swaps message and code': ('''    append(e.fields, new Field{name: "message", offset: 0, typ: tString})
+    append(e.fields, new Field{name: "code", offset: 8, typ: tInt})
+    let ptrs = new []int(0)
+    let strs = new []int(0)
+    append(strs, 0)''',
+                                                    '''    append(e.fields, new Field{name: "message", offset: 8, typ: tString})
+    append(e.fields, new Field{name: "code", offset: 0, typ: tInt})
+    let ptrs = new []int(0)
+    let strs = new []int(0)
+    append(strs, 8)'''),
+    'result: ok does not consume its value': ('        if v.borrowed { error("ok takes ownership of its value: it cannot hold a borrowed reference") }\n        consume(v)',
+                                              '        if v.borrowed { error("ok takes ownership of its value: it cannot hold a borrowed reference") }'),
+    'result: err does not consume its message': ('        consume(m)\n        var code = makeConst(tInt, 0)', '        var code = makeConst(tInt, 0)'),
+    'result: a bare err is not owned': ('    if t.kind == "result" || t.kind == "errval" { return true }', '    if t.kind == "result" { return true }'),
+    'result: a string success is not a transferred reference': ('    if ut.kind == "string" { res.strTemp = true }          // the shell\'s reference is now the caller\'s\n', ''),
+    # the consuming match
+    'result: consuming match snapshots before consuming': ('''        release(c0)
+        consume(x)                     // BEFORE the snapshot: every arm's restore must keep the move
+    }
+    let tag = newLocal("", tInt, "var")
+    let s0 = snapshot()''',
+                                                           '''        release(c0)
+    }
+    let tag = newLocal("", tInt, "var")
+    let s0 = snapshot()
+    consume(x)'''),
+    'result: consuming match keeps the err shell': ('        opMem(0xC7, 0, mem(cellr, -1, 0, 8), true, false)      // the message reference is the local\'s now\n        emit32(0)\n        rtCall1(RT_FREE, makeReg(rt, cellr), tVoid)',
+                                                    '        opMem(0xC7, 0, mem(cellr, -1, 0, 8), true, false)      // the message reference is the local\'s now\n        emit32(0)'),
+    'result: consuming match does not zero the err message': ('        opMem(0xC7, 0, mem(cellr, -1, 0, 8), true, false)      // the message reference is the local\'s now\n        emit32(0)\n', ''),
+    'result: consuming match message owns no reference': ('        addStrLocal(ml)\n', ''),
+    'result: a Result match may miss an arm': ('    if len(missing) > 0 && !hasElse { errorAt("match on " + tname(t) + " is missing " + missing, line, col) }\n', ''),
+    'result: else is allowed in a Result match': ('            if t.kind == "result" { errorAt("a Result match names the ok and err arms; \'else\' is not needed", tline, tcol) }\n', ''),
+    'result: a variant may be matched twice': ('        for c in seen {\n            if c == v { error("\'" + vname + "\' is matched twice") }\n        }\n', ''),
+    'result: try skips the function-result check': ('    if fr.ret.kind != "result" {\n        var what = "nothing"', '    if false {\n        var what = "nothing"'),
+}
+MUTANTS.update(RESULT_MUTANTS)
 
 
 def mutation(src, name):

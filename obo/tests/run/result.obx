@@ -1,0 +1,530 @@
+// Result[T], ok/err, try and the consuming match.
+type Node = ref record { v: int }
+type Box = ref record { r: Result[int]; n: int }
+
+var g: Result[int] = ok(1)
+let h: Result[int] = err("glob", 3)
+
+fn get(n: int): Result[int] {
+    if n < 0 { return err("negative", 1) }
+    return ok(n)
+}
+fn mknode(n: int): Result[Node] { return ok(new Node{v: n}) }
+fn mkarr(): Result[[]byte] { return ok(new []byte(3)) }
+fn strPayload(n: int): Result[string] { return ok("hel" + string(n)) }
+fn readAll(): Result[[]byte] { return err("no data", 2) }
+
+// --- 1, 2: construction and non-consuming match
+fn show(r: Result[int]) {
+    match r {
+        ok { println("ok ", r.value) }
+        err { println("err ", r.code, " ", r.message) }
+    }
+}
+
+// --- 3: a string payload, copied, tried, and consumed
+fn stringCase() {
+    let r = strPayload(5)
+    match r {
+        ok { let s = r.value; println("copy ", s) }
+        err { println("bad") }
+    }
+    let t = strPayload(5)
+    match t {
+        ok(v) { println("consume ", v) }
+        err(m, c) { println("bad") }
+    }
+}
+fn stringTry(): Result[string] {
+    let s = try strPayload(5)
+    return ok(s + "!")
+}
+
+// --- 4: an owned payload
+fn ownedUse(): Result[int] {
+    let n = try mknode(5)
+    return ok(n.v)
+}
+// a cell freed with its payload still inside: the ok descriptor must own it
+fn freeOwnedOk(): Result[int] {
+    let r = ok(new Node{v: 3})
+    drop(r)
+    let s = ok("he" + string(7))
+    drop(s)
+    let r2 = ok(new Node{v: 4})
+    let s2 = ok("x" + string(8))
+    return ok(0)
+}
+
+// --- 5: an array payload
+fn arrUse(): Result[int] {
+    let a = try mkarr()
+    return ok(len(a))
+}
+
+// --- 6: an optional payload; success with no value needs a typed optional
+fn optnil(): Result[?Node] {
+    let n: ?Node = nil
+    return ok(n)
+}
+fn optnode2(): Result[?Node] {
+    let n: ?Node = new Node{v: 6}
+    return ok(n)
+}
+fn optUse(): Result[int] {
+    var got = 0
+    let r = optnode2()
+    match r {
+        ok { let m = take(r.value); if m == nil { } else { got = m.v } }
+        err { return err(r.message, r.code) }
+    }
+    let rn = optnil()
+    match rn {
+        ok(v) { if v == nil { got += 10 } }
+        err(m, c) { return err(m, c) }
+    }
+    return ok(got)
+}
+
+fn optTry(): Result[int] {
+    let r = optnode2()
+    let p = try r
+    if p == nil { return ok(0) }
+    return ok(p.v)
+}
+
+fn mkhandle(b: &Box): Result[^Box] { return ok(handle(b)) }
+fn handleUse(): Result[int] {
+    var b = new Box{r: ok(1), n: 3}
+    let h = try mkhandle(b)
+    if alive(h) { return ok(h.n) }
+    return ok(0)
+}
+fn consumeStr(): Result[string] {
+    let r = strPayload(5)
+    match r {
+        ok(v) { return ok(v + "!") }
+        err(m, c) { return err(m, c) }
+    }
+}
+
+// --- 7: nested results
+fn nestedOk(): Result[Result[int]] { return ok(ok(5)) }
+fn nestedErr(): Result[Result[int]] {
+    let inner: Result[int] = err("in", 1)
+    return ok(inner)
+}
+fn nested1(): Result[int] {
+    let x = try nestedOk()
+    let y = try x
+    return ok(y)
+}
+fn nested2(): Result[int] {
+    let y = try try nestedOk()
+    return ok(y)
+}
+fn nested3(): Result[int] {
+    let y = try try nestedErr()
+    return ok(y)
+}
+fn nestedDiscard(): Result[int] {
+    let x = try nestedOk()
+    return ok(0)
+}
+
+// --- 8: a propagation chain
+fn f8(n: int): Result[int] {
+    if n < 0 { return err("bottom", 9) }
+    return ok(n)
+}
+fn g8(n: int): Result[int] {
+    let v = try f8(n)
+    return ok(v + 1)
+}
+fn h8(n: int): Result[int] {
+    let v = try g8(n)
+    return ok(v + 1)
+}
+
+// --- 9: T need not equal the function's success type
+fn countData(): Result[int] {
+    let data = try readAll()
+    return ok(len(data))
+}
+
+// --- 10: try in a loop; an owned loop local is freed on the error path
+fn loopTry(): Result[int] {
+    var i = 0
+    var sum = 0
+    while i < 5 {
+        let n = new Node{v: i}
+        let v = try get(i - 3)
+        sum += n.v + v
+        i += 1
+    }
+    return ok(sum)
+}
+
+// --- 11: try in an if arm; the nil check for ?Result
+fn ifTry(n: int): Result[int] {
+    if n > 0 {
+        let v = try get(n)
+        return ok(v)
+    }
+    return ok(0)
+}
+fn nilCheck(r0: ?Result[int]): Result[int] {
+    var r = r0
+    if r == nil { return err("nil", 2) }
+    let v = try r
+    return ok(v)
+}
+
+// --- 12: defers on the error path; a defer reads live int locals
+fn deferCase(n: int): Result[int] {
+    {
+        defer println("inner defer")
+        let k = 7
+        defer println("defer k ", k)
+        var seen = 0
+        defer println("defer seen ", seen)
+        let v = try get(n)
+        seen = 1
+        return ok(v)
+    }
+}
+
+// --- 13: try in a for-range body, ok and error
+fn rangeOk(): Result[int] {
+    var sum = 0
+    for i in 0..3 {
+        let v = try get(i)
+        sum += v
+    }
+    return ok(sum)
+}
+fn rangeErr(): Result[int] {
+    var sum = 0
+    for i in 0..3 {
+        let v = try get(i - 1)
+        sum += v
+    }
+    return ok(sum)
+}
+
+// --- 13: a for walk across the error path; loop free-log isolation
+fn forCase(): Result[int] {
+    var arr = new []int(0)
+    append(arr, 1)
+    let p = &arr
+    for x in p {
+        let v = try get(-1)
+        println(x + v)
+    }
+    return ok(0)
+}
+fn isoCase(): Result[int] {
+    var arr = new []Node(0)
+    append(arr, new Node{v: 1})
+    let p = &arr
+    var i = 0
+    while i < 3 {
+        let n = try get(1)
+        if i == 1 { break }
+        i += 1
+    }
+    println("iso len ", len(p))
+    return ok(0)
+}
+fn pendCase(): Result[int] {
+    var i = 0
+    while i < 1 {
+        var b = new Box{r: ok(1), n: 7}
+        let hd = handle(b)
+        {
+            defer b = new Box{r: ok(2), n: 0}
+            let v = try get(i)
+            println("handle ", hd.n)
+            i += v + 1
+        }
+    }
+    return ok(0)
+}
+
+// --- 14: a record field, []Result with truncate, ?Result, replace and take
+fn storeCase(): Result[int] {
+    var b = new Box{r: ok(2), n: 0}
+    let v = try replace(b.r, ok(3))
+    let x = replace(b.r, ok(4))
+    let w = try x
+    var xs = new []Result[int](0)
+    append(xs, ok(1))
+    append(xs, err("gone", 2))
+    truncate(xs, 1)
+    let a = replace(xs[0], ok(0))
+    let q = try a
+    var t: ?Result[int] = ok(5)
+    var got = 0
+    let p = take(t)
+    if p == nil {
+        drop(p)
+    } else {
+        let z = try p
+        got = z
+    }
+    var onil: ?Result[int] = nil
+    let d = ok(8)
+    drop(d)
+    return ok(v + w + q + got)
+}
+
+// --- 15: match through a reference to a Result
+fn peek(r: &Result[string]): int {
+    match r {
+        ok { println("peek ", r.value); return len(r.value) }
+        err { println("peek err ", r.message); return r.code }
+    }
+}
+
+// --- 16: a recursive Result function using try
+fn rec2(n: int): Result[int] {
+    if n <= 0 { return ok(0) }
+    let v = try rec2(n - 1)
+    return ok(v + 1)
+}
+fn rec(): Result[int] {
+    let v = try rec2(3)
+    return ok(v)
+}
+
+// --- 17: rebuild an error in an err arm; a heap message survives its callee
+fn heapMsg(n: int): Result[int] { return err("he" + string(n), 5) }
+fn rebuild(r: Result[int]): Result[int] {
+    match r {
+        ok(v) { return ok(v) }
+        err(m, c) { return err(m, c) }
+    }
+}
+fn rebuild2(r: Result[int]): Result[int] {
+    match r {
+        ok { return ok(r.value) }
+        err { return err(r.message, r.code) }
+    }
+}
+
+// --- 19: try ok(...) and a local moved by try then reassigned
+fn tryOk(): Result[int] {
+    let v = try ok(41)
+    return ok(v)
+}
+fn reassign(): Result[int] {
+    var r = get(1)
+    let v = try r
+    r = ok(1)
+    let w = try r
+    return ok(v + w)
+}
+
+// --- 20: a consuming match frees the shell once; a terminating arm frees the payload
+fn consumeMatch(r: Result[int]): Result[int] {
+    match r {
+        ok(v) { return ok(v + 1) }
+        err(m, c) { return err(m, c) }
+    }
+}
+fn consumeShow(r: Result[int]) {
+    match r {
+        ok(v) { println("cm ok ", v) }
+        err(m, c) { println("cm err ", m, " ", c) }
+    }
+}
+
+// --- 21: a string success transfers its reference; a discarded try string drops it
+fn dropStr(): Result[int] {
+    let s = try strPayload(5)
+    println("str ", s)
+    try strPayload(5)
+    try get(1)
+    return ok(0)
+}
+
+// --- 23: a record-held error returned as a different success type
+fn boxU(): Result[bool] {
+    var b = new Box{r: err("held", 6), n: 0}
+    let e = replace(b.r, ok(1))
+    let v = try e
+    return ok(true)
+}
+
+// --- 24: consume before the snapshot: no shell double free at scope exit
+fn order(): Result[Node] {
+    let r = ok(new Node{v: 1})
+    let v = try r
+    return ok(v)
+}
+
+fn main() {
+    show(ok(1))
+    show(err("bad", 2))
+    show(err("zero"))
+    stringCase()
+
+    let st = stringTry()
+    match st { ok(v) { println("strtry ", v) } err(m, c) { println("bad") } }
+    let ou = ownedUse()
+    match ou { ok(v) { println("owned ", v) } err(m, c) { println("bad") } }
+    let fo = freeOwnedOk()
+    match fo { ok(v) { println("freeOwned ", v) } err(m, c) { println("bad") } }
+    let au = arrUse()
+    match au { ok(v) { println("arr ", v) } err(m, c) { println("bad") } }
+    let op = optUse()
+    match op { ok(v) { println("opt ", v) } err(m, c) { println("bad") } }
+    let ot = optTry()
+    match ot { ok(v) { println("optTry ", v) } err(m, c) { println("bad") } }
+    let hu = handleUse()
+    match hu { ok(v) { println("handle ", v) } err(m, c) { println("bad") } }
+    let cs = consumeStr()
+    match cs { ok(v) { println("consumeStr ", v) } err(m, c) { println("bad") } }
+    let n1 = nested1()
+    match n1 { ok(v) { println("nested1 ", v) } err(m, c) { println("bad") } }
+    let n2 = nested2()
+    match n2 { ok(v) { println("nested2 ", v) } err(m, c) { println("bad") } }
+    let n3 = nested3()
+    match n3 { ok(v) { println("bad") } err(m, c) { println("nested3 ", m, " ", c) } }
+    let nd = nestedDiscard()
+    match nd { ok(v) { println("nestedDiscard ", v) } err(m, c) { println("bad") } }
+    let p1 = h8(1)
+    match p1 { ok(v) { println("chain ", v) } err(m, c) { println("bad") } }
+    let p2 = h8(-1)
+    match p2 { ok(v) { println("bad") } err(m, c) { println("chain err ", m, " ", c) } }
+    let cd = countData()
+    match cd { ok(v) { println("bad") } err(m, c) { println("tu ", m, " ", c) } }
+    let lt = loopTry()
+    match lt { ok(v) { println("bad") } err(m, c) { println("loop ", m, " ", c) } }
+    let it = ifTry(4)
+    match it { ok(v) { println("if ", v) } err(m, c) { println("bad") } }
+    let it0 = ifTry(-4)
+    match it0 { ok(v) { println("if0 ", v) } err(m, c) { println("bad") } }
+    let nc = nilCheck(nil)
+    match nc { ok(v) { println("bad") } err(m, c) { println("nilcheck ", m, " ", c) } }
+    let nc2 = nilCheck(ok(3))
+    match nc2 { ok(v) { println("nilcheck2 ", v) } err(m, c) { println("bad") } }
+    let dc = deferCase(-1)
+    match dc { ok(v) { println("bad") } err(m, c) { println("defer err ", m, " ", c) } }
+    let fc = forCase()
+    match fc { ok(v) { println("for ", v) } err(m, c) { println("for err ", m, " ", c) } }
+    let ro = rangeOk()
+    match ro { ok(v) { println("range ", v) } err(m, c) { println("bad") } }
+    let re = rangeErr()
+    match re { ok(v) { println("bad") } err(m, c) { println("range err ", m, " ", c) } }
+    let ic = isoCase()
+    match ic { ok(v) { println("iso ", v) } err(m, c) { println("bad") } }
+    let pc = pendCase()
+    match pc { ok(v) { println("pend ", v) } err(m, c) { println("pend err ", m, c) } }
+    let sc = storeCase()
+    match sc { ok(v) { println("store ", v) } err(m, c) { println("bad") } }
+    let ra = ok("hello")
+    let pk = peek(ra)
+    println("peek len ", pk)
+    let rb: Result[string] = err("bad", 4)
+    let pk2 = peek(rb)
+    println("peek code ", pk2)
+    let rc = rec()
+    match rc { ok(v) { println("rec ", v) } err(m, c) { println("bad") } }
+    let hp = heapMsg(0)
+    let hb = rebuild(hp)
+    match hb { ok(v) { println("bad") } err(m, c) { println("heap ", m, " ", c) } }
+    let hb2 = rebuild2(ok(12))
+    match hb2 { ok(v) { println("rebuild2 ", v) } err(m, c) { println("bad") } }
+    let hb3 = rebuild2(err("copy", 2))
+    match hb3 { ok(v) { println("bad") } err(m, c) { println("rebuild3 ", m, " ", c) } }
+    let gp = &g
+    match gp { ok { println("global ", gp.value) } err { println("bad") } }
+    let hp2 = &h
+    match hp2 { ok { println("bad") } err { println("global err ", hp2.message, " ", hp2.code) } }
+    let to = tryOk()
+    match to { ok(v) { println("tryok ", v) } err(m, c) { println("bad") } }
+    let rs = reassign()
+    match rs { ok(v) { println("reassign ", v) } err(m, c) { println("bad") } }
+    let cm = consumeMatch(ok(9))
+    match cm { ok(v) { println("cmterm ", v) } err(m, c) { println("bad") } }
+    let cm2 = consumeMatch(err("term", 3))
+    match cm2 { ok(v) { println("bad") } err(m, c) { println("cmterm err ", m, " ", c) } }
+    consumeShow(ok(2))
+    consumeShow(err("shown", 8))
+    let ds = dropStr()
+    match ds { ok(v) { println("dropStr ", v) } err(m, c) { println("bad") } }
+    let bu = boxU()
+    match bu { ok(v) { println("bad") } err(m, c) { println("boxU ", m, " ", c) } }
+    let od = order()
+    match od { ok(n) { println("order ", n.v) } err(m, c) { println("bad") } }
+    let c1 = ok(1)
+    let c2 = ok(2)
+    if c1 == c2 { println("same") } else { println("diff") }
+    if c1 == c1 { println("same") }
+    if c1 != c2 { println("diff") }
+    ok(5)
+    err("discard", 1)
+}
+
+// The output, in order:
+// expect: ok 1
+// expect: err 2 bad
+// expect: err 0 zero
+// expect: copy hel5
+// expect: consume hel5
+// expect: strtry hel5!
+// expect: owned 5
+// expect: freeOwned 0
+// expect: arr 3
+// expect: opt 16
+// expect: optTry 6
+// expect: handle 3
+// expect: consumeStr hel5!
+// expect: nested1 5
+// expect: nested2 5
+// expect: nested3 in 1
+// expect: nestedDiscard 0
+// expect: chain 3
+// expect: chain err bottom 9
+// expect: tu no data 2
+// expect: loop negative 1
+// expect: if 4
+// expect: if0 0
+// expect: nilcheck nil 2
+// expect: nilcheck2 3
+// expect: defer seen 0
+// expect: defer k 7
+// expect: inner defer
+// expect: defer err negative 1
+// expect: for err negative 1
+// expect: range 3
+// expect: range err negative 1
+// expect: iso len 1
+// expect: iso 0
+// expect: handle 7
+// expect: pend 0
+// expect: store 11
+// expect: peek hello
+// expect: peek len 5
+// expect: peek err bad
+// expect: peek code 4
+// expect: rec 3
+// expect: heap he0 5
+// expect: rebuild2 12
+// expect: rebuild3 copy 2
+// expect: global 1
+// expect: global err glob 3
+// expect: tryok 41
+// expect: reassign 2
+// expect: cmterm 10
+// expect: cmterm err term 3
+// expect: cm ok 2
+// expect: cm err shown 8
+// expect: str hel5
+// expect: dropStr 0
+// expect: boxU held 6
+// expect: order 1
+// expect: diff
+// expect: same
+// expect: diff
