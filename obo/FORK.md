@@ -3065,15 +3065,16 @@ untracked fd closed exits 9 instead of returning code 9), the stdout refusal, an
 11 patterns, each matching once: no path pin, no fd materialise in readFd and in writeFd, noTemp dropped,
 data consumed, a fresh ok variant, swapped closeFile descriptors, `expression()` for the mode argument, a
 mode that is ignored, swapped stdout/stderr, and max passed as the fd. All are caught by the run/error
-files above. `tests/mutate_io.py` (new) judges 18 runtime and 6 library mutants by building a private
+files above. `tests/mutate_io.py` (new) judges 19 runtime and 7 library mutants by building a private
 runtime directory with the Makefile flags (or a mutated `io.obo` text) and running the same program-level
-oracles: short read as EOF, read at data+9, double close undetected, a close that does nothing (caught by
+oracles: short read as EOF, a read length of got+1, a read at data+9, double close undetected, a close that does nothing (caught by
 `io_basic`'s close-then-return leak, not by `io_leak`, which leaks either way), fd 1 and data-pointer fds,
 read/write EINTR, close EINTR as an error, swapped err message/code, the fd table not updated on open, the
 N1 zero-length shortcut, N2 allocation before the checks, an unchecked negative fd, an EINTR close that
 does not mark the table, an untracked close that does, closable standard descriptors, the ungated hook,
-and the library's fill boundary (both forms), lost flush, dropped flush tail, and takeChunk's prefix and
-suffix errors. The baseline must pass every case first; 24/24 are caught.
+and the library's fill boundary (both forms), lost flush, a dropped flush tail, a flush shift from the
+wrong offset, and takeChunk's prefix and suffix errors. The baseline must pass every case first; 26/26 are
+caught.
 
 **Fuzz.** `own_fuzz.py` gains `io_roundtrip` and `io_append`: a random payload (empty or up to 300 bytes,
 with NUL and 0xFF forced), a random chunk size and read max; the generated program writes in chunks with a

@@ -43,6 +43,10 @@ RUNTIME_MUTANTS = {
     'short read treated as EOF': (
         '    if ((u64)r < (u64)max) a->len = (u64)r;                        /* a short read is data, not EOF */\n',
         '    if ((u64)r < (u64)max) { rt_free((u64)a); return ok_cell(descOk, 0); }\n'),
+    # the array claims one byte more than was read
+    'read length got+1': (
+        '    if ((u64)r < (u64)max) a->len = (u64)r;                        /* a short read is data, not EOF */\n',
+        '    if ((u64)r < (u64)max) a->len = (u64)r + 1;\n'),
     # the read lands one byte into the array's data
     'read at data+9': (
         '    i64 r = io_read(fd, (i64)((char *)a->data + 8), max);\n',
@@ -134,6 +138,10 @@ LIB_MUTANTS = {
         '        }\n'
         '        truncate(w.buf, left)\n',
         '        truncate(w.buf, 0)\n'),
+    # the unwritten tail is copied from one byte too far
+    'flush shifts from the wrong offset': (
+        '            for i in 0..left { w.buf[i] = w.buf[i + n] }\n',
+        '            for i in 0..left { w.buf[i] = w.buf[i + n + 1] }\n'),
     # takeChunk hands back the whole chunk, prefix included
     'takeChunk keeps the consumed prefix': (
         '    if start == 0 { return all }\n',
