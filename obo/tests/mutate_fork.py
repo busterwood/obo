@@ -272,8 +272,8 @@ DEFER_USE_MUTANTS = {
                                                         "            release(x.r)\n" + unchecked_exit("fnBlock")),
     "a defer's uses are not recorded": ("        if inDefer && s.isRefLocal { noteDeferUse(s) }\n", ""),
     "an inner defer's uses are not passed outwards": ("            if i < len(deferUses) { deferUses[i] = true }\n", ""),
-    "a newer defer's frees are applied after the older one's check": ('        replayFrees(bi, i)\n        // the body\'s assignments and drops of owners happen here, not where the defer is declared\n        replayFree = true\n        for j in 0..len(dfOwner) {\n            if dfBlock[j] == bi && dfIndex[j] == i { originFree(dfOwner[j], "assign over") }\n        }\n        replayFree = false\n        i -= 1\n    }\n}',
-        '        // the body\'s assignments and drops of owners happen here, not where the defer is declared\n        replayFree = true\n        for j in 0..len(dfOwner) {\n            if dfBlock[j] == bi && dfIndex[j] == i { originFree(dfOwner[j], "assign over") }\n        }\n        replayFree = false\n        i -= 1\n    }\n    for q in 0..len(blocks[bi].defers) { replayFrees(bi, q) }\n}'),
+    "a newer defer's frees are applied after the older one's check": ('        replayFrees(bi, i)\n        // the body\'s assignments and drops of owners happen here, not where the defer is declared\n        replayFree = true\n        for j in 0..len(dfOwner) {\n            if dfBlock[j] == bi && dfIndex[j] == i {\n                let ev = dfEv[j]\n                originFreeAt(dfOwner[j], substr(ev, 1, len(ev)), ev[0] == \'!\', "assign over")\n            }\n        }\n        replayFree = false\n        i -= 1\n    }\n}',
+        '        // the body\'s assignments and drops of owners happen here, not where the defer is declared\n        replayFree = true\n        for j in 0..len(dfOwner) {\n            if dfBlock[j] == bi && dfIndex[j] == i {\n                let ev = dfEv[j]\n                originFreeAt(dfOwner[j], substr(ev, 1, len(ev)), ev[0] == \'!\', "assign over")\n            }\n        }\n        replayFree = false\n        i -= 1\n    }\n    for q in 0..len(blocks[bi].defers) { replayFrees(bi, q) }\n}'),
 }
 MUTANTS.update(DEFER_USE_MUTANTS)
 
@@ -376,9 +376,9 @@ HANDLE_FREE_MUTANTS = {
     'a free does not mark the handle dead': ('            if x.hDepth <= len(loops) { pendPush(x, r, what) }\n            originDead[i] = r\n', '            if x.hDepth <= len(loops) { pendPush(x, r, what) }\n'),
     'an assignment clears the origins of the handles': ('        originFree(r, "assign over")\n        return\n', '        originFree(r, "assign over")\n'),
     'the loop move rule refuses a dead handle': ('x.hDepth <= len(loops) && originDead[i] == nil {\n', 'x.hDepth <= len(loops) {\n'),
-    "a defer's frees are not replayed where its block is left": ('            if dfBlock[j] == bi && dfIndex[j] == i { originFree(dfOwner[j], "assign over") }\n', ''),
+    "a defer's frees are not replayed where its block is left": ('            if dfBlock[j] == bi && dfIndex[j] == i {\n                let ev = dfEv[j]\n                originFreeAt(dfOwner[j], substr(ev, 1, len(ev)), ev[0] == \'!\', "assign over")\n            }\n', ''),
     'a replayed free is checked against the defers again': ('        if replayFree { break }\n', ''),
-    "a defer's frees are not recorded": ('    if inDefer { append(deferFrees, r) }\n', ''),
+    "a defer's frees are not recorded": ('    if inDefer {\n        append(deferFrees, r)\n        if strict { append(deferFreeEv, "!" + path) } else { append(deferFreeEv, "=" + path) }\n    }\n', ''),
     "a closed block's defer frees stay": ('    while len(dfBlock) > 0 && dfBlock[len(dfBlock) - 1] >= last {\n', '    while false {\n'),
     'a let copy of a dead handle is alive': ('                    append(originDead, dead)\n', '                    append(originDead, nil)\n'),
     'a free in a loop is not reported': ('            if x.hDepth <= len(loops) { pendPush(x, r, what) }\n            originDead[i] = r\n', '            originDead[i] = r\n'),
@@ -599,7 +599,7 @@ MUTANTS.update(ALIVE_MUTANTS)
 # origins per path (originLive, liveClear, liveJoin, deadSave/deadSet, originMove, originFree)
 PATH_MUTANTS = {
     'a move of the owner keeps the live mark': ('        if wasLive { originLive[i] = nil }\n', ''),
-    'a free uses the flow-insensitive origin': ('        if originLive[i] == r {\n            if x.hDepth <= len(loops)', '        if originLive[i] == r && x.hOrigin != nil {\n            if x.hDepth <= len(loops)'),
+    'a free uses the flow-insensitive origin': ('        if placeHit(i, r, path, strict) {\n            if x.hDepth <= len(loops)', '        if placeHit(i, r, path, strict) && x.hOrigin != nil {\n            if x.hDepth <= len(loops)'),
     'an if with an else starts its live union from the marks before': ('    var dacc = deadSave()\n    liveClear(&dacc)\n    // the arm where h', '    var dacc = deadSave()\n    // the arm where h'),
     'an if without an else drops the path that runs no arm': ('    liveJoin(&d0, &dacc)\n    deadSet(&dacc)\n    if !t1 {', '    deadSet(&dacc)\n    if !t1 {'),
     'a match starts its live union from the marks before': ('    var dacc = deadSave()\n    liveClear(&dacc)\n    expect(T_LBRACE', '    var dacc = deadSave()\n    expect(T_LBRACE'),
@@ -608,7 +608,7 @@ PATH_MUTANTS = {
     'an arm that goes on does not add its live marks': ('        if originLive[i] != nil { acc[m + i] = originLive[i] }\n', ''),
     'the live marks are not restored with the dead ones': ('    for i in 0..m { originLive[i] = d[m + i] }\n', ''),
     'a copy of a handle has no live mark': ('append(originLive, live)', 'append(originLive, nil)'),
-    'the defer guard uses the flow-insensitive origin': ('originSyms[i] == x && originLive[i] == r { live = true }', 'originSyms[i] == x && originLive[i] == r && x.hOrigin != nil { live = true }'),
+    'the defer guard uses the flow-insensitive origin': ('originSyms[i] == x && placeHit(i, r, path, strict) { live = true }', 'originSyms[i] == x && placeHit(i, r, path, strict) && x.hOrigin != nil { live = true }'),
     'the live marks are not dropped with the block': ('    truncate(originLive, blocks[last].hmark)\n', ''),
     'the loop move rule uses the flow-insensitive origin': ('        if originLive[i] == s && x.hDepth <= len(loops)', '        if originLive[i] == s && x.hOrigin != nil && x.hDepth <= len(loops)'),
     'a copy of a handle with no origin is not tracked': ('                if live != nil {\n                    s.hDepth', '                if live != nil && s.hOrigin != nil {\n                    s.hDepth'),
