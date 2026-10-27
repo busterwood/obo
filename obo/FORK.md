@@ -2554,7 +2554,7 @@ protect, so the summary would be a bit that is never consulted.
 
 **Why append moves nothing a caller holds.** An array value is the address of a header (`Array`: length,
 capacity, data pointer, element size), allocated apart from its data block. `rt_append` replaces the data block
-and updates the header in place (`runtime.c`); `truncate` shrinks the header in place. The compiler never holds a
+and updates the header in place (`runtime.c`); `truncate` shrinks the header in place. For arrays the compiler never holds a
 data pointer or a length across code that can run a call: an `elem` item keeps the *header* in a register, and
 `resolve` reads the length (bounds check) and the data pointer from it when the access is made, after the index and
 the right-hand side have run. A reference to an element is the element object (a record) or the inner array's
@@ -2566,6 +2566,27 @@ it, `replace`/`take`, a free of the owner, or a move of the owner (the last is `
 of these is already a free recorded in `pfree`, `freed` or `freesAll`, or an unknown callee. Truncating a scalar array
 records a free too (only through a handle is a scalar truncate exempt), so it stays moving: conservative, since a
 truncated array only fails its bounds check.
+
+**Strings (found by review, fixed with a pin).** The paragraph above is true for arrays and `[]byte`. It is false for
+the string-index path of `designatorT`: it loads the string pointer (`load(x)`), keeps it in a register across the
+index, and reads the byte lazily afterwards. Strings are reference counted and are not `isOwned`, so assigning over a
+string field or element (`b.s = ""`, the `dtype.kind == "string"` branch of `assignmentOrCall`) emits `RT_STR_DEC` and
+records no free and no invalidation: such a callee has `pfree == 0` and is pure. With the old rule the mut parameter made
+it moving by accident; with `movesFn = !pureFn` the string was read after being freed (`b.s[clrB(b)]` printed the poison
+byte). The same read was already broken through a handle writer (`h.s[clrH(h)]`; `freesAll` does not count a string
+assignment either) and through a global string. Fix, at the point that holds the pointer and not in the summaries:
+when the text of the index has a `(` before its closing `]` (`indexHasCall`: a scan of `src` from `pos`, skipping
+string literals and counting nested brackets; a parenthesis that is not a call only costs a pin) and the string is not a
+literal, `RT_STR_INC` is taken on the loaded pointer before the index runs, and when the index has been checked the byte
+is loaded at once (`load` on the byte item, through a copy of the pointer register) and the reference is given back with
+`RT_STR_DEC`. An index with no call is compiled as before, so a string-heavy workload such as tokenising with `s[i]` or
+`s[i + 1]` is untouched. Every route (mut, handle, global, reference local, element of a `[]string`, nested record)
+is covered, with no summary bit. Other string consumers (concatenation, comparison, `substr`, arguments, `println`, `len`)
+go through `pinStr`/`consume` and were checked with a callee that clears the string (`OBO_CHECK` poison): all read it
+correctly. A truncate of a `[]string` through a handle now records a free like any other truncate (`recordFreeChange` when
+the element type is a string): it decrements the strings, and the summary used to say it frees nothing. A consequence of
+the pin: the byte of a string index with a call is a value in a register, not a lazy read-only memory item; nothing can
+assign to it either way.
 
 **What each `userCalls` check needed.** All of them hold a header or a record address loaded before the call, so all
 use the one rule; none needed a different bit.
@@ -2602,7 +2623,7 @@ writer, the 63rd parameter). Cases that depended on the old rule were changed: `
 `errors/call_targets.obx` and `errors/pure_mut.obx` use a callee that really frees; `own_fuzz.py`'s
 `handle_index_call_stmt` (invalid) uses `rebox` and `move_bits_stmt` (valid, with a model) is new. LANGUAGE.md section 10 has the rule
 and its example now assigns over the field.
-**Mutants:** `MOVE_MUTANTS` in `tests/mutate_fork.py` (also run by `mutate_port.py`), nine: none, every, or any
+**Mutants:** `MOVE_MUTANTS` in `tests/mutate_fork.py` (also run by `mutate_port.py`), fourteen (the last five are the string pin and the `[]string` truncate; `tests/run/string_index_pin.obx` is its test, `own_fuzz.py` `str_index_pin_stmt` its fuzz kind), the first nine: none, every, or any
 `mut` parameter counting as moving; the 63rd parameter; truncate, assignment, replace and take recording no free; a
 retried callee forgetting its bits (equivalent, with the reason in `EQUIVALENT`). The old mutant "a call with a
 mut parameter that appends does not count as moving" is gone: it is now the rule.

@@ -753,6 +753,12 @@ that assigns over, `replace`s or `take`s something below a `mut` argument, trunc
 truncate counts as a free even for scalar elements), is not compiled yet, or calls itself, is refused as before,
 whichever of its arguments it frees below.
 
+A string is different: it is not an owned value, so assigning a new value over a string field or element frees
+nothing the checks can see, yet the old string is freed if that was its last reference. A string indexed by an
+expression that contains a call (`b.s[f(b)]`, `h.s[g(h)]`, `names[0][clear(names)]`) therefore holds a reference of
+its own while the index runs and gives it back after the byte is read, so the byte is that of the string as it was
+when the index began, and nothing is refused.
+
 ```obo
 // example: error: cannot index 'xs' with an index that moves it
 type Node = ref record { v: int; kids: []Node }

@@ -2761,6 +2761,32 @@ fn loopCarryCheck(back: &PState, useBefore: int, lv: ?^Sym) {
     }
 }
 
+// whether the index that begins at the current token has a '(' before its closing ']': a call (or only a
+// parenthesis: that costs a pin, nothing else). Strings and nested brackets are skipped.
+fn indexHasCall(): bool {
+    if sym == T_LPAREN { return true }
+    var depth = 1
+    var i = pos
+    while i < len(src) {
+        let c = src[i]
+        if c == '(' { return true }
+        if c == '"' {
+            i += 1
+            while i < len(src) && src[i] != '"' {
+                if src[i] == '\\' { i += 1 }
+                i += 1
+            }
+        } else if c == '[' {
+            depth += 1
+        } else if c == ']' {
+            depth -= 1
+            if depth == 0 { return false }
+        }
+        i += 1
+    }
+    return false
+}
+
 // ======================================================== effect summaries
 // Every function records which globals it might free. Bodies are compiled
 // before they can be called (declare before use), so at a call site the
@@ -4325,7 +4351,7 @@ fn builtin(name: string): Item {
             if name == "truncate" {
                 let owned = isOwned(baseOf(a.typ))
                 if owned { invalidateOwnedChange(a) } else { invalidateChange(a) }
-                if owned || !throughHandle(a) { recordFreeChange(a) }   // a scalar array frees nothing
+                if owned || !throughHandle(a) || baseOf(a.typ).kind == "string" { recordFreeChange(a) }   // a scalar array frees nothing; strings lose a reference
             }
         }
         // the array is located before the value or count runs: a call there could free it
@@ -4566,7 +4592,12 @@ fn designatorT(target: bool): Item {
             // heldLost sees; a call that only borrows, or takes a mut argument, cannot free it.
             let wholeLocal = x.sym != nil && !(root != nil && (root.storage == "global" || root.isRef))
             let touch0 = heldTouch(root)
-            let a = load(x)
+            // a string's pointer is kept in a register across the index, and a call there that assigns over the
+            // string (b.s = "", through a mut parameter, a handle or a global) drops its last reference and frees it,
+            // which no free summary records (strings are not owned): the index holds a reference of its own
+            let pinIdx = kind == "string" && x.mode != "const" && indexHasCall()
+            var a = load(x)
+            if pinIdx { a = rtCall1(RT_STR_INC, a, tString) }
             let hp = heldPush(root, viaHandle, hOrig, hIdent, placePath(root, path), path)
             let i0 = expression()
             if !isInt(i0.typ) { error("array index must be int") }
@@ -4606,6 +4637,13 @@ fn designatorT(target: bool): Item {
                 x.scale = 1
                 x.width = 1
                 x.readonly = true
+                if pinIdx {
+                    // the byte is read now, and the reference the index took is given back
+                    let keep = alloc()
+                    movRR(keep, a.r)
+                    x = load(x)
+                    rtCall1(RT_STR_DEC, makeReg(tString, keep), tVoid)
+                }
             } else {
                 x = newItem("elem", elem)
                 x.base = a.r

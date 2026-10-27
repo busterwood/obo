@@ -163,3 +163,10 @@ fn f(mut b: &Bag): int {
     return b.xs[many(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, b.xs)].v  // error: cannot index a field, element or reference with an index that calls a function
 }
 fn main() {}
+// === a handle's array of strings, indexed by a call that truncates it (a truncate through a handle frees strings)
+type SBag = ref record { ss: []string }
+fn cutS(h: ^SBag): int { truncate(h.ss, 0); return 0 }
+fn f(h: ^SBag): int {
+    return len(h.ss[cutS(h)])  // error: cannot index through a handle with an index that calls a function
+}
+fn main() {}
