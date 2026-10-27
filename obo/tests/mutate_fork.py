@@ -559,12 +559,10 @@ MOVE_MUTANTS = {
     'a truncate records no free': ('                if owned || !throughHandle(a) || baseOf(a.typ).kind == "string" { recordFreeChange(a) }   // a scalar array frees nothing; strings lose a reference\n', ''),
     'a truncate of strings through a handle records no free': ('|| !throughHandle(a) || baseOf(a.typ).kind == "string" { recordFreeChange(a) }', '|| !throughHandle(a) { recordFreeChange(a) }'),
     'a string index with a call holds no reference of its own': ('kind == "string" && x.mode != "const" && indexHasCall()', 'kind == "string" && x.mode != "const" && false'),
-    'a string index pins only for a parenthesis at its start': ("        if c == '(' { return true }\n", ''),
-    'a nested bracket in an index ends the scan': ("        } else if c == '[' {\n            depth += 1\n", "        } else if c == '[' {\n"),
-    'an assignment over an owned field of a parameter records no free': ('                    invalidateOwnedChange(x)\n                    recordFreeChange(x)\n                } else if xs != nil {', '                    invalidateOwnedChange(x)\n                } else if xs != nil {'),
-    'a replace through a parameter records no free': ('            recordFreeChange(x)\n        } else {\n            let ts = x.sym\n            if ts != nil {\n', '        } else {\n            let ts = x.sym\n            if ts != nil {\n'),
-    'a take through a parameter records no free': ('            recordFreeChange(x)\n        } else {\n            let ts = x.sym\n            if ts != nil && ts.storage == "local"', '        } else {\n            let ts = x.sym\n            if ts != nil && ts.storage == "local"'),
-    'a retried callee forgets its free bits': ('        truncate(f.fnRec.freed, sFreed)\n', '        truncate(f.fnRec.freed, sFreed)\n        f.fnRec.pfree = 0\n'),
+    'a string index pins only when the call is its first token': ("        if sym == T_LPAREN { found = true }\n", "        if sym == T_LPAREN && depth == 0 { found = true }\n"),
+    'a nested bracket in an index ends the look-ahead': ("        if sym == T_LBRACK { depth += 1 }\n", ''),
+    'the look-ahead does not put the scanner back': ("    pos = sPos\n    line = sLine\n", "    line = sLine\n"),
+    'the look-ahead does not put the token back': ("    sym = sSym\n    sval = sSval\n", "    sval = sSval\n"),
 }
 MUTANTS.update(MOVE_MUTANTS)
 

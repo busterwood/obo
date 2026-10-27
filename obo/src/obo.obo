@@ -2762,29 +2762,39 @@ fn loopCarryCheck(back: &PState, useBefore: int, lv: ?^Sym) {
 }
 
 // whether the index that begins at the current token has a '(' before its closing ']': a call (or only a
-// parenthesis: that costs a pin, nothing else). Strings and nested brackets are skipped.
+// parenthesis: that costs a pin, nothing else). The tokens are read by the lexer itself (next), so a quote in a
+// char literal or a comment, a bracket in a string, and a newline in the index are what the compiler will see; the
+// scanner is put back as it was, the way a function's second pass does it (fnDecl).
 fn indexHasCall(): bool {
-    if sym == T_LPAREN { return true }
+    let sPos = pos
+    let sLine = line
+    let sCol = col
+    let sLast = last
+    let sSym = sym
+    let sSval = sval
+    let sIval = ival
+    let sTline = tline
+    let sTcol = tcol
+    let sSeq = tokSeq
     var depth = 1
-    var i = pos
-    while i < len(src) {
-        let c = src[i]
-        if c == '(' { return true }
-        if c == '"' {
-            i += 1
-            while i < len(src) && src[i] != '"' {
-                if src[i] == '\\' { i += 1 }
-                i += 1
-            }
-        } else if c == '[' {
-            depth += 1
-        } else if c == ']' {
-            depth -= 1
-            if depth == 0 { return false }
-        }
-        i += 1
+    var found = false
+    while !found && depth > 0 && sym != T_EOF {
+        next()
+        if sym == T_LPAREN { found = true }
+        if sym == T_LBRACK { depth += 1 }
+        if sym == T_RBRACK { depth -= 1 }
     }
-    return false
+    pos = sPos
+    line = sLine
+    col = sCol
+    last = sLast
+    sym = sSym
+    sval = sSval
+    ival = sIval
+    tline = sTline
+    tcol = sTcol
+    tokSeq = sSeq
+    return found
 }
 
 // ======================================================== effect summaries

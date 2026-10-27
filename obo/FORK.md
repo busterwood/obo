@@ -2575,8 +2575,10 @@ records no free and no invalidation: such a callee has `pfree == 0` and is pure.
 it moving by accident; with `movesFn = !pureFn` the string was read after being freed (`b.s[clrB(b)]` printed the poison
 byte). The same read was already broken through a handle writer (`h.s[clrH(h)]`; `freesAll` does not count a string
 assignment either) and through a global string. Fix, at the point that holds the pointer and not in the summaries:
-when the text of the index has a `(` before its closing `]` (`indexHasCall`: a scan of `src` from `pos`, skipping
-string literals and counting nested brackets; a parenthesis that is not a call only costs a pin) and the string is not a
+when the tokens of the index have a `(` before its closing `]` (`indexHasCall`: it reads the tokens with the lexer's own
+`next()` and counts bracket tokens, then puts the scanner back as fnDecl's second pass does: pos, line, col, last, sym,
+sval, ival, tline, tcol, tokSeq; a first version scanned the text and was fooled by a `"` in a char literal or in a
+comment, found by review; no textual heuristic is left; a parenthesis that is not a call only costs a pin) and the string is not a
 literal, `RT_STR_INC` is taken on the loaded pointer before the index runs, and when the index has been checked the byte
 is loaded at once (`load` on the byte item, through a copy of the pointer register) and the reference is given back with
 `RT_STR_DEC`. An index with no call is compiled as before, so a string-heavy workload such as tokenising with `s[i]` or
@@ -2623,7 +2625,7 @@ writer, the 63rd parameter). Cases that depended on the old rule were changed: `
 `errors/call_targets.obx` and `errors/pure_mut.obx` use a callee that really frees; `own_fuzz.py`'s
 `handle_index_call_stmt` (invalid) uses `rebox` and `move_bits_stmt` (valid, with a model) is new. LANGUAGE.md section 10 has the rule
 and its example now assigns over the field.
-**Mutants:** `MOVE_MUTANTS` in `tests/mutate_fork.py` (also run by `mutate_port.py`), fourteen (the last five are the string pin and the `[]string` truncate; `tests/run/string_index_pin.obx` is its test, `own_fuzz.py` `str_index_pin_stmt` its fuzz kind), the first nine: none, every, or any
+**Mutants:** `MOVE_MUTANTS` in `tests/mutate_fork.py` (also run by `mutate_port.py`), fifteen (the last six are the string pin and the `[]string` truncate; `tests/run/string_index_pin.obx` is its test, `own_fuzz.py` `str_index_pin_stmt` its fuzz kind), the first nine: none, every, or any
 `mut` parameter counting as moving; the 63rd parameter; truncate, assignment, replace and take recording no free; a
 retried callee forgetting its bits (equivalent, with the reason in `EQUIVALENT`). The old mutant "a call with a
 mut parameter that appends does not count as moving" is gone: it is now the rule.

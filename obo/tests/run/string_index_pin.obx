@@ -64,6 +64,43 @@ fn viaParens(): int {
     return b.s[(clrB(b) + 1) * 1]             // 98
 }
 
+// the look-ahead for a call is made by the lexer, so a quote in a char literal or a comment, a bracket in a comment or
+// a string, and a newline in the index mean what they mean to the compiler
+fn viaCharQuote(): int {
+    var b = new SB{s: mkS(), n: 0}
+    return b.s[0 + '"' - 34 + clrB(b)]        // 97
+}
+fn viaCharParen(): int {
+    var b = new SB{s: mkS(), n: 0}
+    return b.s['(' - 40 + clrB(b)]            // 97
+}
+fn viaCommentQuote(): int {
+    var b = new SB{s: mkS(), n: 0}
+    return b.s[0 + // "
+        clrB(b)]                              // 97
+}
+fn viaCommentBracket(): int {
+    var b = new SB{s: mkS(), n: 0}
+    return b.s[0 + // ] ( "
+        clrB(b)]                              // 97
+}
+fn viaMultiLine(): int {
+    var b = new SB{s: mkS(), n: 0}
+    return b.s[1 +
+        2 -
+        3 +
+        clrB(b)]                              // 97
+}
+fn viaStringBracket(): int {
+    var b = new SB{s: mkS(), n: 0}
+    return b.s[clrB(b) + len("]]") - 2]       // 97
+}
+fn viaNestedCall(): int {
+    var b = new SB{s: mkS(), n: 0}
+    var ns = new []int(1)
+    return b.s[ns[0] + ns[ns[0]] + clrB(b)]   // 97
+}
+
 fn main() {
     println(viaMut())          // expect: 97
     println(viaHandle())       // expect: 97
@@ -76,4 +113,12 @@ fn main() {
     println(viaBracket())      // expect: 97
     println(viaQuote())        // expect: 97
     println(viaParens())       // expect: 98
+    println(viaCharQuote())    // expect: 97
+    println(viaCharParen())    // expect: 97
+    println(viaCommentQuote())     // expect: 97
+    println(viaCommentBracket())   // expect: 97
+    println(viaMultiLine())    // expect: 97
+    println(viaStringBracket())    // expect: 97
+    println(viaNestedCall())   // expect: 97
+    println("x")             // expect: x
 }
