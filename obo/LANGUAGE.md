@@ -758,8 +758,13 @@ Other limits:
 - A result in a field, element or global cannot be moved out: use `replace` (or
   `take` on an optional one) to get it into a local, then `try` that. `match` also
   needs a whole local; inspect a field through a local reference (`match p`).
-- `obj.field = try f()` is refused by the assignment-target rule (section 11):
-  compute the value in a local first.
+- `obj.field = try f()` is refused when the call might free the object holding the
+  target (the assignment-target rule, section 11): compute the value in a local
+  first. A call that cannot free (a pure callee such as `get` above) is accepted:
+  `b.n = try get(3)` compiles.
+- Inside a non-consuming `ok` or `err` arm the scrutinee is narrowed to that
+  variant, so `try r` there is refused ("try needs a Result value, not ok"):
+  `try` the Result before the match.
 - A deferred cleanup cannot propagate its error; its result is discarded and
   freed. Record the error and return it from the main path instead.
 - `?Result[T]` may be nil; check it with `!= nil` before `try`, which narrows it

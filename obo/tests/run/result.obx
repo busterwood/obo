@@ -250,6 +250,30 @@ fn pendCase(): Result[int] {
     }
     return ok(0)
 }
+// The defer's normal replay is outside the inner loop; on the compiler's error
+// path it is replayed where the try is, inside the inner loop, so the pending
+// arrays must be restored after the error block (a handle declared inside the
+// outer loop and used in the inner one distinguishes them)
+fn pendErrCase(): Result[int] {
+    var got = 0
+    var i = 0
+    while i < 1 {
+        var b = new Box{r: ok(1), n: i + 4}
+        let hd = handle(b)
+        {
+            defer b = new Box{r: ok(2), n: 9}
+            var j = 0
+            while j < 1 {
+                if alive(hd) { got = hd.n }
+                let v = try get(1)
+                j += v
+            }
+        }
+        got += b.n
+        i += 1
+    }
+    return ok(got)
+}
 
 // --- 14: a record field, []Result with truncate, ?Result, replace and take
 fn storeCase(): Result[int] {
@@ -276,6 +300,13 @@ fn storeCase(): Result[int] {
     let d = ok(8)
     drop(d)
     return ok(v + w + q + got)
+}
+// An assignment target whose value is a try of a call that cannot free the object
+// holding the target (get is pure) is accepted: the target stays valid across the call
+fn assignTry(): Result[int] {
+    var b = new Box{r: ok(1), n: 0}
+    b.n = try get(3)
+    return ok(b.n)
 }
 
 // --- 15: match through a reference to a Result
@@ -421,8 +452,12 @@ fn main() {
     match ic { ok(v) { println("iso ", v) } err(m, c) { println("bad") } }
     let pc = pendCase()
     match pc { ok(v) { println("pend ", v) } err(m, c) { println("pend err ", m, c) } }
+    let pe = pendErrCase()
+    match pe { ok(v) { println("pendErr ", v) } err(m, c) { println("bad") } }
     let sc = storeCase()
     match sc { ok(v) { println("store ", v) } err(m, c) { println("bad") } }
+    let at = assignTry()
+    match at { ok(v) { println("assignTry ", v) } err(m, c) { println("bad") } }
     let ra = ok("hello")
     let pk = peek(ra)
     println("peek len ", pk)
@@ -504,7 +539,9 @@ fn main() {
 // expect: iso 0
 // expect: handle 7
 // expect: pend 0
+// expect: pendErr 13
 // expect: store 11
+// expect: assignTry 3
 // expect: peek hello
 // expect: peek len 5
 // expect: peek err bad

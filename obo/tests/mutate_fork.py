@@ -596,7 +596,6 @@ EQUIVALENT = {
     "place origin: a callee records every change as not strict": "equivalent: the strictness of a row matters only for a place that holds a record (the place itself survives a strict event), and a strict change is a truncate, whose place is an array, which no handle names; the anywhere row has its own encoding",
     "place origin: a row beside an anywhere row is kept": "equivalent: the events of a row below an anywhere row are covered by it",
     "a handle root of a reference is not an identity (held)": "equivalent because the older heldLost check on the reference local catches the case, not the held entry: under the mutant foreign is false, so heldMove does not hit",
-    "result: try error path keeps the pending arrays": "defensive: the error block's callDefers replays the same defer frees that the defer's own block-end exit replays, at the same pendDepth and pendNest, so every entry the error path adds is either judged identically by that later replay (same handle, same usedAt) or dropped at the same loop end; no program was found where the extra entry changes a verdict. Kept because it is the stated invariant of the error-path isolation",
 }
 
 

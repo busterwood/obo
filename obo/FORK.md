@@ -2897,11 +2897,14 @@ descriptor) and returns `ok(true)` or `err(..., errno)`. Allocation failure stay
 `readFile` keeps returning `?[]byte`; the two idioms mean different things (absence versus failure with a
 reason), and converting it would be a breaking change for every test, example and the compiler.
 
-**Tests.** `tests/run/result.obx` (60 expected output lines) covers construction and both match forms, strings
+**Tests.** `tests/run/result.obx` (62 expected output lines) covers construction and both match forms, strings
 (copied, tried with a transferred heap reference, consumed, discarded), owned, array, optional and nested
 payloads, a propagation chain, `T != U`, loops and for-ranges, defers and their order, the for-walk suppression, loop free-log
-isolation, a defer replay in a loop (pending arrays, a handle used after the `try`), a record field, `[]Result`
-with `truncate`, `?Result` with `take` and at scope exit, `replace`, a record-held error returned as a different
+isolation, a defer replay in a loop (a handle used after the `try`), the pending arrays restored after the error
+block (a defer inside an outer loop whose normal replay is outside an inner loop, replayed on the compiler's
+error path inside that inner loop, which uses the handle), a field assignment whose value is a pure `try` call,
+a record field, `[]Result` with `truncate`, `?Result` with `take` and at scope exit, `replace`, a record-held
+error returned as a different
 `U`, a global result, match through `&Result`, recursion, `err` rebuilt in an err arm, `try ok(...)`, a moved
 result reassigned, the consuming match with terminating arms, a bare `ok`/`err` statement, and the
 consume-before-snapshot ordering. `tests/errors/result.obx` has 52 exact-line cases: every precondition and
@@ -2910,17 +2913,18 @@ arms, the mixed binding forms, and a defer use invalidated by the change the `tr
 `own_fuzz.py` gains the `result` profile (50 seeds in the suite): six helper shapes called with random
 arguments, with the output and both success/failure paths modelled in Python.
 
-**Mutants.** `RESULT_MUTANTS` in `tests/mutate_fork.py` (also run by `mutate_port.py`), 33 keys: the tag compare,
+**Mutants.** `RESULT_MUTANTS` in `tests/mutate_fork.py` (the Result mutants run only there; `mutate_port.py` does
+not import them), 33 keys: the tag compare,
 the 8-byte tag load, returning the success value or the cell on error, no shell free, no payload zeroing, no
 consume, a pre-consume snapshot, skipped defers, skipped `freeOwned`, kept free log, kept for-walk marks, no state
 restore, no dead-mark restore, a descriptor per err site, the ok descriptor's owned and string lists (both ways),
 the err descriptor's string list and swapped offsets, no consume in `ok`/`err`, `errval` not owned, no `strTemp`,
 the consuming match's consume placement / shell free / message zeroing / message ownership, missing and duplicate
-arms, `else` on a Result, and the function-result check. 32 are caught by the suite; the pending-array truncation
-is `EQUIVALENT` (defensive): the error block's `callDefers` replays the same deferred frees that the defer's own
-block-end exit replays at the same depth and nesting, so no program was found where the extra entries change a
-verdict. The suite is 899 tests (848 before the fuzz profile): 796 existing plus 52 error cases, one run program
-and 50 result fuzz seeds.
+arms, `else` on a Result, and the function-result check. All 33 are caught by the suite; the pending-array
+truncation is caught by `pendErrCase` in `tests/run/result.obx`: with the truncation removed, the error path's
+`callDefers` pushes an entry inside the inner loop, and the pending check where that loop ends refuses a valid
+program (the defer's own replay, outside the inner loop, pushes no entry at that depth). The suite is 899 tests
+(849 before the fuzz profile): 796 existing plus 52 error cases, one run program and 50 result fuzz seeds.
 
 **Memory.** `port_compare.py` measures the port compiling itself at 1,229,408 bytes live, against a budget of
 2,000,000 and 1,126,736 on main just before this branch (+102,672: the new `Type` field is 8 bytes per type, the
