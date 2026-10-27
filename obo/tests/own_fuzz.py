@@ -133,6 +133,7 @@ class State:
         self.tags = []                          # the local array of records holding a string
         self.refs = {}                          # name -> [node, still valid?]
         self.handles = {}                       # name -> node the handle names
+        self.hsrc = {}                          # name -> the array it was made from, xs (local) or gxs (global)
         self.olds = {}                          # name -> value returned by replace()
         self.out = []                           # the expected output lines
 
@@ -140,8 +141,8 @@ class State:
 class Stmt:
     """One generated statement: its source lines, and what it does to the model."""
 
-    def __init__(self, lines, run, trap=False):
-        self.lines, self.run, self.trap = lines, run, trap
+    def __init__(self, lines, run, trap=False, either=False):
+        self.lines, self.run, self.trap, self.either = lines, run, trap, either
 
 
 def indent(lines):
@@ -165,6 +166,8 @@ class Gen:
         self.st = State()
         self.invalid = False
         self.trapped = False
+        self.either = False                     # the program ends in a use of a dead handle made from a local array
+        self.sdead = set()                      # handles made from xs that a call with a mut array may have freed
         self.lines = []
         self.nrefs = 0
         self.nhandles = 0
@@ -577,7 +580,9 @@ class Gen:
         return Stmt(["bump(ga)"], lambda st: chain_bump(st.ga))
 
     def alive_handles(self):
-        return [h for h, o in self.st.handles.items() if o.alive]
+        # a handle made from the local array is tracked by its place (FORK.md, "Field and element origins"): after a
+        # mut call that may free below the array it is not used again, although the model keeps its object alive
+        return [h for h, o in self.st.handles.items() if o.alive and h not in self.sdead]
 
     def h_read_stmt(self):
         hs = self.alive_handles()
@@ -1241,6 +1246,78 @@ class Gen:
             st.out.extend(out)
         return Stmt(lines, run)
 
+    def field_origin_stmt(self):
+        """A handle to an element of a local array, or to a field of a local record, a change that does not
+        reach its place (another element, a sibling field, a scalar, an append, a truncate that keeps it, a mut
+        call that frees below it or writes a scalar), then a read through the handle. Valid: the handle is
+        tracked by its place (FORK.md, "Field and element origins") and these changes are not refused."""
+        h = f"h{self.nhandles}"
+        self.nhandles += 1
+        k0, k1, k2 = self.k(), self.k(), self.k()
+        form = self.r.randrange(7)
+        arr = ["    var ys = new []Node(0)", f"    append(ys, mk({k0}))", f"    append(ys, mk({k1}))",
+               f"    append(ys, mk({k2}))"]
+        rec = [f"    var pr = new Pair{{a: mk({k0}), b: nil}}"]
+        if form == 0:
+            body = arr + [f"    let {h} = handle(ys[1])", "    ys[0] = mk(7)", "    ys[2] = mk(8)", "    append(ys, mk(9))",
+                          f"    println({h}.value)"]
+            out = [str(k1)]
+        elif form == 1:
+            body = rec + [f"    let {h} = handle(pr.a)", "    pr.b = mk(3)", "    pr.a.value += 2",
+                          f"    println({h}.value)"]
+            out = [str(k0 + 2)]
+        elif form == 2:
+            body = arr + [f"    let {h} = handle(ys[1])", "    truncate(ys, 2)", f"    println({h}.value)"]
+            out = [str(k1)]
+        elif form == 3:
+            body = arr + [f"    let {h} = handle(ys[1])", "    cutRef(ys[1])", "    bumpRef(ys[2])", f"    println({h}.value)"]
+            out = [str(k1)]
+        elif form == 4:
+            body = arr + ["    var i = 1", f"    let {h} = handle(ys[i])", "    bumpRef(ys[i])", "    cutRef(ys[i])",
+                          f"    println({h}.value)"]
+            out = [str(k1 + 1)]
+        elif form == 5:
+            body = rec + [f"    let {h} = handle(pr.a)", f"    pr.b = mk({k1})", "    cutRef(pr.a)",
+                          f"    println({h}.value)", "    pr.a = mk(5)", f"    let g{h} = handle(pr.a)",
+                          f"    println(g{h}.value)"]
+            out = [str(k0), "5"]
+        else:
+            body = arr + ["    var other = new []Node(0)", "    append(other, mk(6))", f"    let {h} = handle(ys[0])",
+                          "    other[0] = mk(7)", "    truncate(other, 0)", f"    println({h}.value)"]
+            out = [str(k0)]
+        lines = ["{"] + body + ["}"]
+
+        def run(st):
+            st.out.extend(out)
+        return Stmt(lines, run)
+
+    def field_origin_dead_stmt(self):
+        """A handle to an element or a field, the place or one above it emptied (assigned over, replaced,
+        truncated, reached by a mut call that frees below it, changed through a reference, or the owner
+        assigned over), then a read through the handle: invalid, the handle is dead on every path."""
+        h = f"h{self.nhandles}"
+        self.nhandles += 1
+        k0, k1 = self.k(), self.k()
+        arr = ["    var ys = new []Node(0)", f"    append(ys, mk({k0}))", f"    append(ys, mk({k1}))"]
+        rec = [f"    var pr = new Pair{{a: mk({k0}), b: nil}}"]
+        forms = [
+            arr + [f"    let {h} = handle(ys[1])", "    ys[1] = mk(7)"],
+            arr + [f"    let {h} = handle(ys[0])", "    var i = 1", "    ys[i] = mk(7)"],
+            arr + ["    var i = 1", f"    let {h} = handle(ys[i])", "    ys[0] = mk(7)"],
+            arr + [f"    let {h} = handle(ys[1])", "    truncate(ys, 1)"],
+            arr + [f"    let {h} = handle(ys[1])", "    renewAt(ys, 0)"],
+            arr + [f"    let {h} = handle(ys[0])", "    shrinkInt(ys)"],
+            arr + [f"    let {h} = handle(ys[0])", "    var r = &ys", "    r[0] = mk(7)"],
+            arr + [f"    let {h} = handle(ys[1])", "    ys = new []Node(0)"],
+            arr + [f"    let {h} = handle(ys[1])", "    let old = replace(ys[1], mk(7))", "    println(old.value)"],
+            rec + [f"    let {h} = handle(pr.a)", "    pr.a = mk(7)"],
+            rec + [f"    let {h} = handle(pr.a)", "    pr = new Pair{a: mk(7), b: nil}"],
+            rec + [f"    let {h} = handle(pr.a)", "    let old = replace(pr.a, mk(7))", "    println(old.value)"],
+            rec + [f"    let {h} = handle(pr.a)", "    let g = handle(pr.a)", "    pr.a = mk(7)", f"    println(g.value)"],
+        ]
+        body = self.r.choice(forms)
+        return self.invalid_stmt(["{"] + body + [f"    println({h}.value)", "}"])
+
     def two_self_stmt(self):
         a = f"r{self.nrefs}"
         self.nrefs += 1
@@ -1276,6 +1353,7 @@ class Gen:
 
         def run(st):
             st.handles[h] = (st.xs if src == 'xs' else st.gxs)[i]
+            st.hsrc[h] = src
         return Stmt([f"let {h} = handle({src}[{i}])"], run)
 
     def h_dead_stmt(self):
@@ -1284,7 +1362,9 @@ class Gen:
         if not dead:
             return None
         h = self.r.choice(sorted(dead))
-        return Stmt([f"println({h}.value)"], lambda st: None, trap=True)
+        # a handle made from the local array was usually freed where the compiler sees it (the program is then
+        # rejected, at this use), and otherwise it traps; one made from the global array always traps
+        return Stmt([f"println({h}.value)"], lambda st: None, trap=True, either=self.st.hsrc.get(h) == 'xs')
 
     def h_kill_stmt(self):
         """Replaces the element a live handle names, so the handle dangles."""
@@ -1322,7 +1402,7 @@ class Gen:
             s = self.h_dead_stmt()
             if s is not None:
                 return s
-        makers = self.common() + [self.choose_ref_stmt] * 2 + [self.ref_local_path_stmt] + [self.defer_ref_stmt] + [self.push_stmt] * 4 + [self.take_stmt] * 2 \
+        makers = self.common() + [self.choose_ref_stmt] * 2 + [self.ref_local_path_stmt] + [self.field_origin_stmt] + [self.defer_ref_stmt] + [self.push_stmt] * 4 + [self.take_stmt] * 2 \
             + [self.loop_stmt, self.if_stmt, self.g_set_stmt, self.g_trunc_stmt, self.ss_loop_stmt,
                self.gdrop_stmt, self.ss_trunc_stmt, self.tag_trunc_stmt, self.h_new_stmt, self.h_new_stmt,
                self.h_kill_stmt, self.h_kill_stmt, self.handle_borrow_stmt, self.handle_pure_mut_stmt, self.owned_deep_writer_stmt,
@@ -1369,7 +1449,7 @@ class Gen:
                self.index_target_stmt, self.index_assign_target_stmt,
                self.moved_index_stmt, self.moved_assign_stmt, self.moved_append_stmt,
                self.moved_truncate_stmt, self.moved_replace_stmt, self.moved_root_index_stmt,
-               self.replace_sink_index_stmt, self.arg_order_bad_stmt]
+               self.replace_sink_index_stmt, self.arg_order_bad_stmt, self.field_origin_dead_stmt]
         s = ops[self.seed % len(ops)]()
         return s if s is not None else self.pick(ops)
 
@@ -1388,8 +1468,11 @@ class Gen:
                 continue
             s.run(self.st)
             self.lines += s.lines
+            if re.search(r'\b(renewAt|shrinkInt|pq)\(xs\b', ' '.join(s.lines)):
+                self.sdead |= {h for h, src in self.st.hsrc.items() if src == 'xs'}
             if s.trap:
                 self.trapped = True
+                self.either = s.either
                 break
         head = ["fn main() {",
                 "    var a: ?Node = nil",
@@ -1407,7 +1490,7 @@ def generate(seed, full):
     """Returns (program text, expected output lines, kind), kind being valid, invalid or trap."""
     g = Gen(seed, full)
     text = g.program()
-    kind = 'invalid' if g.invalid else ('trap' if g.trapped else 'valid')
+    kind = 'invalid' if g.invalid else (('either' if g.either else 'trap') if g.trapped else 'valid')
     return text, g.st.out, kind
 
 
@@ -1425,24 +1508,26 @@ def check(seed, full):
         if not re.search(r':\d+:\d+: ', b.stderr):
             raise Fail(f"compiler failed without a source location (exit {b.returncode}): "
                        f"{b.stderr.strip()[:300]}\n{path}")
-        if kind != 'invalid':
+        if kind == 'either' and 'may name a freed object' in b.stderr:
+            return 'rejected'
+        if kind not in ('invalid', 'either'):
             raise Fail(f"false rejection: {b.stderr.strip()}\n{path}\n{regen}")
         return 'rejected'
     if kind == 'invalid':
         raise Fail(f"missed error: obo accepted a use of moved or invalidated memory\n{path}\n{regen}")
     run = subprocess.run([exe], capture_output=True, text=True, timeout=30,
                          env=dict(os.environ, OBO_CHECK='1', OBX_GC='poison'))
-    want_exit = 7 if kind == 'trap' else 0
+    want_exit = 7 if kind in ('trap', 'either') else 0
     if run.returncode != want_exit:
         raise Fail(f"exit {run.returncode}, expected {want_exit}: {run.stderr.strip()[:300]}\n{path}\n{regen}")
-    if kind == 'trap' and 'has been freed' not in run.stderr:
+    if kind in ('trap', 'either') and 'has been freed' not in run.stderr:
         raise Fail(f"exit 7 without the handle message: {run.stderr.strip()[:300]}\n{path}\n{regen}")
     got = run.stdout.splitlines()
     if got != expect:
         i = next((k for k in range(min(len(got), len(expect))) if got[k] != expect[k]), min(len(got), len(expect)))
         raise Fail(f"output line {i + 1}: expected {expect[i] if i < len(expect) else '<end>'!r}, "
                    f"got {got[i] if i < len(got) else '<end>'!r}\n{path}\n{regen}")
-    return 'trapped' if kind == 'trap' else 'ran'
+    return 'trapped' if kind in ('trap', 'either') else 'ran'
 
 
 def tests(count):

@@ -563,6 +563,7 @@ EQUIVALENT = {
     "origin needs no non-handle designator": "a designator through a handle has no sym, so wholeOwnerOf gives nil",
     "origin needs no whole path": "a designator with a path has no sym (only a whole name sets it), so wholeOwnerOf gives nil",
     "origin of a global is kept": "owned is set only for locals (addOwnedLocal), so a global never has an origin",
+    "place origin: a handle of a reference or a global gets an origin": "equivalent: no event is ever raised for an owner that is a reference or a global (placeFreeIn, originMove and the mut-call hook all test that it is an owned local), so such an origin is never freed and never moved; run/field_origins_param.obx and field_origins_global.obx still trap at run time",
     "a handle root of a reference is not an identity (held)": "equivalent because the older heldLost check on the reference local catches the case, not the held entry: under the mutant foreign is false, so heldMove does not hit",
 }
 
@@ -614,6 +615,62 @@ PATH_MUTANTS = {
     'a loop does not restore the live marks from before it': ('        originLive[i] = dEntry[em + i]\n', ''),
 }
 MUTANTS.update(PATH_MUTANTS)
+
+
+# handles made from a field or element of an owned local (FORK.md, "Field and element origins"): the place a handle
+# is made from (pOwner, pPath, originPath), what frees it (placeHit, originFreeAt, placeFreeIn, the mut call hook, the
+# assignment, replace and truncate hooks), what stops the tracking (placeOpaque), the loop and defer rules, and the
+# cases that fall back to no origin. The refused shapes are in errors/field_origins.obx, the accepted neighbours in
+# run/field_origins.obx, and the fallbacks in run/field_origins_*.obx. The take hook has no mutant: see EQUIVALENT
+FIELD_MUTANTS = {
+    # where the origin is made
+    'place origin: a field handle gets no origin': ('lastRaw != "" && x.deref { pOwner = wholeOwnerOf(x.root) }', 'lastRaw != "" && x.deref && false { pOwner = wholeOwnerOf(x.root) }'),
+    'place origin: a handle through a handle gets an origin': ('if origin == nil && !x.viaHandle && lastRaw != ""', 'if origin == nil && lastRaw != ""'),
+    'place origin: a handle of a reference or a global gets an origin': ('{ pOwner = wholeOwnerOf(x.root) }', '{ pOwner = x.root }'),
+    'place origin: the place is not kept': ('        made.pPath = praw\n', ''),
+    'place origin: a handle takes no place from its item': ('                    lpath = x.pPath\n', ''),
+    'place origin: a copy takes no place from the handle it copies': ('                        lpath = originPath[i]\n', ''),
+    'place origin: a copy of a field handle is not tracked': ('                    live = x.pOwner\n', ''),
+    'place origin: the places are not dropped with the block': ('    truncate(originPath, blocks[last].hmark)\n', ''),
+    # what frees it
+    'place origin: a free below the place frees the handle': ('    if !segsPrefix(path, e) { return false }\n', '    if !segsPrefix(e, path) { return false }\n'),
+    'place origin: a free of another place frees it': ('    if !segsPrefix(path, e) { return false }\n', ''),
+    'place origin: a free of a place frees a handle to the whole object': ('    if !segsPrefix(path, e) { return false }\n', '    if !segsPrefix(path, e) && e != "" { return false }\n'),
+    'place origin: a free of another owner frees it': ('    if originLive[i] != r { return false }\n    let e = originPath[i]', '    let e = originPath[i]'),
+    'place origin: a free that is strict frees the place itself': ('        if placeDepth(e) <= placeDepth(path) { return false }\n', ''),
+    'place origin: a free below a place frees a place of the same depth': ('        if placeDepth(e) <= placeDepth(path) { return false }\n', '        if placeDepth(e) < placeDepth(path) { return false }\n'),
+    'place origin: a truncate with a constant count frees the elements it keeps': ('            if k >= 0 && k < truncKeep { return false }\n', ''),
+    'place origin: a truncate with a constant count keeps the element at the count': ('            if k >= 0 && k < truncKeep { return false }\n', '            if k >= 0 && k <= truncKeep { return false }\n'),
+    'place origin: a truncate keeps a variable index': ('    if j == i + 1 { return -1 }\n    return k\n', '    if j == i + 1 { return 0 }\n    return k\n'),
+    'place origin: a segment is counted by its brackets': ('        if p[i] == \'/\' { n += 1 }\n', '        if p[i] == \'[\' { n += 1 }\n'),
+    # the hooks
+    'place origin: an assignment over a place frees nothing': ('                    placeFreeChange(x, false, "assign over a place in")\n', ''),
+    'place origin: a replace of a place frees nothing': ('            placeFreeChange(x, false, "replace a place in")\n', ''),
+    'place origin: a truncate frees nothing': ('                placeFreeIn(r0, aVia, aPath, true, "truncate an array in")\n', ''),
+    'place origin: a truncate of an array in a place is at the array': ('                placeFreeIn(r0, aVia, aPath, true, "truncate an array in")\n', '                placeFreeIn(r0, aVia, "", true, "truncate an array in")\n'),
+    'place origin: a truncate is not strict': ('                placeFreeIn(r0, aVia, aPath, true, "truncate an array in")\n', '                placeFreeIn(r0, aVia, aPath, false, "truncate an array in")\n'),
+    'place origin: a mut call frees nothing below its argument': ('                if br != handleSym && !br.isRef && br.storage == "local" { originFreeAt(br, b.paths[p], true, "let a call free below a place in") }\n', ''),
+    'place origin: a mut call frees the place it was given': ('originFreeAt(br, b.paths[p], true, "let a call free below a place in")', 'originFreeAt(br, b.paths[p], false, "let a call free below a place in")'),
+    'place origin: a mut call is at the whole root': ('originFreeAt(br, b.paths[p], true, "let a call free below a place in")', 'originFreeAt(br, "", true, "let a call free below a place in")'),
+    'place origin: a change through a reference is not at its place': ('                let p = placeIn(q, i, xpath)\n', '                let p = ""\n'),
+    'place origin: a change through a reference is not placed in each root': ('        for i in 0..len(rb.roots) {\n            let o = rb.roots[i]\n            if o != handleSym && !o.isRef && o.storage == "local" {', '        for i in 0..1 {\n            let o = rb.roots[i]\n            if o != handleSym && !o.isRef && o.storage == "local" {'),
+    'place origin: a change through a reference with no known place is not below the root': ('originFreeAt(o, p, strict || (p == "" && xpath != ""), what)', 'originFreeAt(o, p, strict, what)'),
+    'place origin: a direct change frees nothing': ('    } else if q.owned && q.storage == "local" {\n        originFreeAt(q, xpath, strict, what)', '    } else if q.owned && q.storage == "local" && false {\n        originFreeAt(q, xpath, strict, what)'),
+    'place origin: a direct change is at the whole owner': ('        originFreeAt(q, xpath, strict, what)\n    }\n}', '        originFreeAt(q, "", strict, what)\n    }\n}'),
+    # what stops the tracking
+    'place origin: a change through a handle does not stop it': ('fn invalidateDeep(via: ?^Sym) {\n    placeOpaque()\n', 'fn invalidateDeep(via: ?^Sym) {\n'),
+    'place origin: a recursive call does not stop it': ('fn markSuspects() {\n    placeOpaque()\n', 'fn markSuspects() {\n'),
+    'place origin: a change through a handle stops a handle to the whole object': ('        if originPath[i] != "" { originLive[i] = nil }\n', '        originLive[i] = nil\n'),
+    # loops and defers
+    'place origin: a free of a place in a loop is not judged': ('            if x.hDepth <= len(loops) { pendPush(x, r, what) }\n            originDead[i] = r', '            if x.hDepth <= len(loops) && originPath[i] == "" { pendPush(x, r, what) }\n            originDead[i] = r'),
+    'place origin: a move of the owner in a loop ignores a field handle': ('        if originLive[i] == s && x.hDepth <= len(loops) && originDead[i] == nil {', '        if originLive[i] == s && originPath[i] == "" && x.hDepth <= len(loops) && originDead[i] == nil {'),
+    'place origin: a defer that uses a field handle does not stop a free of its place': ('            if originSyms[i] == x && placeHit(i, r, path, strict) { live = true }', '            if originSyms[i] == x && placeHit(i, r, path, strict) && originPath[i] == "" { live = true }'),
+    'place origin: a defer that uses a field handle stops a free of another place': ('            if originSyms[i] == x && placeHit(i, r, path, strict) { live = true }', '            if originSyms[i] == x && originLive[i] == r { live = true }'),
+    'place origin: a free in a defer is replayed at the whole owner': ('originFreeAt(dfOwner[j], substr(ev, 1, len(ev)), ev[0] == \'!\', "assign over")', 'originFreeAt(dfOwner[j], "", ev[0] == \'!\', "assign over")'),
+    'place origin: a strict free in a defer is replayed as a free of the place': ('originFreeAt(dfOwner[j], substr(ev, 1, len(ev)), ev[0] == \'!\', "assign over")', 'originFreeAt(dfOwner[j], substr(ev, 1, len(ev)), false, "assign over")'),
+    'place origin: a free of a place in a defer is not recorded': ('        append(deferFrees, r)\n        if strict { append(deferFreeEv, "!" + path) } else { append(deferFreeEv, "=" + path) }\n', ''),
+}
+MUTANTS.update(FIELD_MUTANTS)
 
 
 def build_and_run(src):

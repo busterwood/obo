@@ -1,0 +1,13 @@
+// A handle made from a field of a global has no origin (FORK.md, "Field and element origins"): any function may
+// free it, so the use is checked where it runs.
+type Kid = ref record { n: int }
+type Par = ref record { child: Kid }
+var g = new Par{child: new Kid{n: 1}}
+fn main() {
+    let h = handle(g.child)
+    println(h.n)                     // expect: 1
+    g.child = new Kid{n: 2}          // frees the first kid
+    println(h.n)
+}
+// expect-exit: 7
+// expect-stderr: the object this handle names has been freed

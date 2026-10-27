@@ -1121,6 +1121,8 @@ type Item = ref record {
     deref: bool               // the designator goes through a field or element
     movedRef: bool            // a moved local named as an assignment target
     hOrigin: ?^Sym            // a handle made from a whole owned local by a let: that local
+    pOwner: ?^Sym             // a handle made from a field or element of an owned local: that local, and its place (pPath)
+    pPath: string
     path: string              // a field or element of root: "/a/b", "/items/[]"; "" = anywhere
     home: bool                // a reg item that is a local's own register: read it, never change or release it
 }
@@ -1355,6 +1357,11 @@ var dfOwner = new []^Sym(0)
 var replayFree = false           // originFree is replaying a defer's free: the defers it runs before were checked at its declaration
 var originLive = new []?^Sym(0)  // per entry of originSyms: the owner, while some path to here has not moved it (a may-flag like originDead, nil after a move on every path); an assignment over the owner frees the handle's object only while this is set
 var originDead = new []?^Sym(0)  // per entry of originSyms: the local whose assignment or drop freed its object, or nil
+var truncKeep = -1               // while a truncate with a constant count is judged (originFreeAt): the elements before it survive
+var originPath = new []string(0) // per entry of originSyms: "" for a handle to the owner's whole object; for one made from a field or
+                                 // element of the owner (see "Field and element origins"), the place, "/items/[]/next"
+var deferFreeEv = new []string(0)  // with deferFrees: where in the owner each free is, "=" or "!" (strictly below) and the place
+var dfEv = new []string(0)         // with dfOwner
 var loopdepth = 0
 var curFn: ?^Sym = nil
 // an error that needs the whole body: reported at its end if the body writes through a handle
@@ -2316,6 +2323,9 @@ fn loopOriginPend(s: ^Sym)
 fn pendPush(x: ^Sym, o: ^Sym, what: string)
 fn pendDrop(k: int)
 fn originFree(r: ^Sym, what: string)
+fn originFreeAt(r: ^Sym, path: string, strict: bool, what: string)
+fn placeFreeChange(x: &Item, strict: bool, what: string)
+fn placeOpaque()
 
 // Takes ownership of x's value, which is about to be stored in a variable,
 // field, element or parameter, or returned.
@@ -2671,6 +2681,7 @@ fn invalidate(root: ?^Sym, via: ?^Sym, all: bool, path: string) {
 // inside something is invalid, whatever it borrows from. A reference to a whole object stays
 // valid: only owners free whole objects, and a change through a handle frees only below its target.
 fn invalidateDeep(via: ?^Sym) {
+    placeOpaque()
     logFree(1, nil, false, "", via)
     markCarriedDeep()
     let locals = &ownedLocals
@@ -2694,6 +2705,7 @@ fn notePending(line: int, col: int, msg: string) {
 // a recursive call (or a deferred one) may write through a handle: the references inside something
 // that are live now may be freed, so they are suspect until they are pointed afresh
 fn markSuspects() {
+    placeOpaque()
     logFree(2, nil, false, "", nil)
     let locals = &ownedLocals
     for v in locals {
@@ -3139,7 +3151,10 @@ fn callDefers(bi: int) {
         // the body's assignments and drops of owners happen here, not where the defer is declared
         replayFree = true
         for j in 0..len(dfOwner) {
-            if dfBlock[j] == bi && dfIndex[j] == i { originFree(dfOwner[j], "assign over") }
+            if dfBlock[j] == bi && dfIndex[j] == i {
+                let ev = dfEv[j]
+                originFreeAt(dfOwner[j], substr(ev, 1, len(ev)), ev[0] == '!', "assign over")
+            }
         }
         replayFree = false
         i -= 1
@@ -3163,10 +3178,12 @@ fn closeBlock(terminated: bool) {
     truncate(originDead, blocks[last].hmark)
     truncate(originNar, blocks[last].hmark)
     truncate(originLive, blocks[last].hmark)
+    truncate(originPath, blocks[last].hmark)
     while len(dfBlock) > 0 && dfBlock[len(dfBlock) - 1] >= last {
         truncate(dfBlock, len(dfBlock) - 1)
         truncate(dfIndex, len(dfIndex) - 1)
         truncate(dfOwner, len(dfOwner) - 1)
+        truncate(dfEv, len(dfEv) - 1)
     }
     while len(deferAt) > 0 && deferAt[len(deferAt) - 1] >= last {
         truncate(deferAt, len(deferAt) - 1)
@@ -3676,12 +3693,69 @@ fn pendPush(x: ^Sym, o: ^Sym, what: string) {
 // from it names a freed object from here on, so a use through it is refused (deadHandleCheck). Inside a
 // loop the handle was declared outside of, a use of it earlier in the loop runs again on the next
 // iteration, so the free itself is refused then. The origins are cleared by originMove
-fn originFree(r: ^Sym, what: string) {
+fn originFree(r: ^Sym, what: string) { originFreeAt(r, "", false, what) }
+
+// the number of segments in a place: "/items/[]/next" has three
+fn placeDepth(p: string): int {
+    var n = 0
+    for i in 0..len(p) {
+        if p[i] == '/' { n += 1 }
+    }
+    return n
+}
+
+// the constant index of the segment of the place e that comes after d segments ("/[3]/x" after 0 is 3), or -1
+// if that segment is not an element with a constant index
+fn elemAt(e: string, d: int): int {
+    var seen = 0
+    var i = 0
+    while i < len(e) && seen <= d {
+        if e[i] == '/' { seen += 1 }
+        i += 1
+    }
+    if seen != d + 1 || i + 1 >= len(e) || e[i] != '[' { return -1 }
+    var k = 0
+    var j = i + 1
+    while j < len(e) && e[j] != ']' {
+        if e[j] < '0' || e[j] > '9' { return -1 }
+        k = k * 10 + int(e[j]) - 48
+        j += 1
+    }
+    if j == i + 1 { return -1 }
+    return k
+}
+
+// whether the free of the place path in the object of the owned local r (strict: only what lies below that place,
+// not the place itself) frees the object that entry i of originSyms names. A handle to the owner's whole object
+// (originPath "") is freed by a free of the whole owner only; one made from a field or element is freed by a free
+// of that place or of any place above it. An element with a variable index is any element (segsPrefix)
+fn placeHit(i: int, r: ^Sym, path: string, strict: bool): bool {
+    if originLive[i] != r { return false }
+    let e = originPath[i]
+    if !segsPrefix(path, e) { return false }
+    if strict {
+        if placeDepth(e) <= placeDepth(path) { return false }
+        // truncate(a, n) with a constant n keeps the elements before n: a handle to a known one of them is not freed
+        if truncKeep >= 0 {
+            let k = elemAt(e, placeDepth(path))
+            if k >= 0 && k < truncKeep { return false }
+        }
+        return true
+    }
+    return true
+}
+
+// a free at a place of the owned local r, or of the whole of it (path ""): see placeHit. what says what the
+// program did, for the messages
+fn originFreeAt(r: ^Sym, path: string, strict: bool, what: string) {
     freeSeq += 1
-    if inDefer { append(deferFrees, r) }
+    if inDefer {
+        append(deferFrees, r)
+        if strict { append(deferFreeEv, "!" + path) } else { append(deferFreeEv, "=" + path) }
+    }
     for i in 0..len(originSyms) {
         let x = originSyms[i]
-        if originLive[i] == r {
+        if placeHit(i, r, path, strict) {
             if x.hDepth <= len(loops) { pendPush(x, r, what) }
             originDead[i] = r
         }
@@ -3691,7 +3765,7 @@ fn originFree(r: ^Sym, what: string) {
         let x = deferH[j]
         var live = false
         for i in 0..len(originSyms) {
-            if originSyms[i] == x && originLive[i] == r { live = true }
+            if originSyms[i] == x && placeHit(i, r, path, strict) { live = true }
         }
         if live {
             error("cannot " + what + " '" + r.name + "' while a defer declared earlier uses handle '" + x.name + "' made from it: the defer runs after this")
@@ -3766,11 +3840,47 @@ fn pendBlockEnds(pm: int, cs: int, bs: int) {
     }
 }
 
+// a change through x frees the old value at its place (strict: what is below it): the handles made from a field or
+// element of an owned local that the change reaches are dead. The change is at the place written, directly, or, through
+// a reference, at the place the reference's binding gives in each owned local it may point into (placeIn). A change
+// through a handle is not here: it is placeOpaque's
+fn placeFreeIn(r: ?^Sym, viaHandle: bool, xpath: string, strict: bool, what: string) {
+    if r == nil || viaHandle { return }
+    let q = r
+    if q.isRef {
+        let rb = q.bind
+        for i in 0..len(rb.roots) {
+            let o = rb.roots[i]
+            if o != handleSym && !o.isRef && o.storage == "local" {
+                let p = placeIn(q, i, xpath)
+                // a reference that may point anywhere below the root: the change is below the root, whatever the place
+                originFreeAt(o, p, strict || (p == "" && xpath != ""), what)
+            }
+        }
+    } else if q.owned && q.storage == "local" {
+        originFreeAt(q, xpath, strict, what)
+    }
+}
+
+fn placeFreeChange(x: &Item, strict: bool, what: string) { placeFreeIn(x.root, x.viaHandle, x.path, strict, what) }
+
+// something may have been freed through a handle, which can name any object, so a slot of an owned local may
+// have been emptied unseen: the handles made from a field or element stop being tracked (the run-time check is
+// left). The handles to a whole owned local are not touched: only that local frees its object
+fn placeOpaque() {
+    for i in 0..len(originSyms) {
+        if originPath[i] != "" { originLive[i] = nil }
+    }
+}
+
 // a use through the let handle s, on a path where an assignment or a drop freed the object it was made from
 fn deadHandleCheck(s: ?^Sym) {
     for i in 0..len(originSyms) {
         let o = originDead[i]
         if o != nil && originSyms[i] == s {
+            if originPath[i] != "" {
+                error("handle '" + originSyms[i].name + "' may name a freed object: a place in '" + o.name + "' was assigned over, replaced, taken, truncated or reached by a call that frees below it, after the handle was made from it; make the handle again")
+            }
             error("handle '" + originSyms[i].name + "' may name a freed object: '" + o.name + "' was assigned or dropped after the handle was made from it; make the handle again")
         }
     }
@@ -4006,6 +4116,8 @@ fn callFn(f: ^Sym): Item {
             for p in 0..len(b.roots) {
                 // the binding's place; itemBind made it anywhere for a reference a loop has not pointed afresh
                 invalidate(b.roots[p], argVias[i], false, b.paths[p])
+                let br = b.roots[p]
+                if br != handleSym && !br.isRef && br.storage == "local" { originFreeAt(br, b.paths[p], true, "let a call free below a place in") }
                 recordFree(b.roots[p])
             }
         }
@@ -4149,8 +4261,15 @@ fn builtin(name: string): Item {
         let ht = derived("handle", x.typ)
         var origin: ?^Sym = nil
         if !x.viaHandle && lastRaw == "" { origin = wholeOwnerOf(x.sym) }
+        // a field or element of an owned local: tracked by its place (see "Field and element origins"). Not through a
+        // handle or a reference, and not of a global
+        var pOwner: ?^Sym = nil
+        if origin == nil && !x.viaHandle && lastRaw != "" && x.deref { pOwner = wholeOwnerOf(x.root) }
+        let praw = lastRaw
         let made = rtCall1(RT_HANDLE, x, ht)
         made.hOrigin = origin
+        made.pOwner = pOwner
+        made.pPath = praw
         return made
     }
     if name == "replace" {
@@ -4200,6 +4319,7 @@ fn builtin(name: string): Item {
         if x.deref || x.viaHandle {
             invalidateOwnedChange(x)
             recordFreeChange(x)
+            placeFreeChange(x, false, "replace a place in")
         } else {
             let ts = x.sym
             if ts != nil {
@@ -4279,6 +4399,7 @@ fn builtin(name: string): Item {
         if x.deref || x.viaHandle {
             invalidateOwnedChange(x)
             recordFreeChange(x)
+            placeFreeChange(x, false, "take a place in")
         } else {
             let ts = x.sym
             if ts != nil && ts.storage == "local" { invalidate(ts, nil, true, "") }
@@ -4328,6 +4449,7 @@ fn builtin(name: string): Item {
         // the array is located before the value or count runs: a call there could free it
         let held = heldArray(a)
         let aDeref = a.deref
+        let aPath = a.path
         let r0 = a.root
         a = pinStr(a)
         expect(T_COMMA, "")
@@ -4364,6 +4486,13 @@ fn builtin(name: string): Item {
         if !isInt(b.typ) { error(name + " needs int positions") }
         if name == "truncate" {
             expect(T_RPAREN, "")
+            // the elements above the count are freed: the handles made from an element of this array, or from
+            // something inside one, are dead (after the count was computed)
+            if isOwned(baseOf(a.typ)) {
+                if b.mode == "const" { truncKeep = b.val }
+                placeFreeIn(r0, aVia, aPath, true, "truncate an array in")
+                truncKeep = -1
+            }
             let at = new []?Item(0)
             append(at, a)
             append(at, b)
@@ -5212,10 +5341,16 @@ fn varDecl(kind: string, isGlobal: bool) {
                 // a copy takes the live mark of the handle it copies, so a copy of a handle whose origin an earlier
                 // move on a path that ended has cleared is still tracked (with no origin, which is an identity)
                 var live = x.hOrigin
+                var lpath = ""
+                if live == nil {
+                    live = x.pOwner
+                    lpath = x.pPath
+                }
                 var dead: ?^Sym = nil
                 for i in 0..len(originSyms) {
                     if originSyms[i] == x.sym {
                         live = originLive[i]
+                        lpath = originPath[i]
                         // a copy of a dead handle is dead too
                         dead = originDead[i]
                     }
@@ -5228,6 +5363,7 @@ fn varDecl(kind: string, isGlobal: bool) {
                     append(originSyms, s)
                     append(originDead, dead)
                     append(originLive, live)
+                    append(originPath, lpath)
                     append(originNar, false)
                 }
             }
@@ -5363,6 +5499,7 @@ fn assignmentOrCall(): bool {
                 } else if x.deref || x.viaHandle {
                     invalidateOwnedChange(x)
                     recordFreeChange(x)
+                    placeFreeChange(x, false, "assign over a place in")
                 } else if xs != nil {
                     invalidate(xs, nil, true, "")               // a global given a new value
                     recordFree(xs)
@@ -6271,6 +6408,7 @@ fn deferStat() {
     let savedInDefer = inDefer
     let savedMark = deferMark
     let savedFrees = replace(deferFrees, new []^Sym(0))
+    let savedEvs = replace(deferFreeEv, new []string(0))
     let savedUses = replace(deferUses, new []bool(len(ownedLocals)))
     deferMark = len(ownedLocals)
     depth = depth + 8
@@ -6290,6 +6428,7 @@ fn deferStat() {
     deferMark = savedMark
     let uses = replace(deferUses, savedUses)
     let owners = replace(deferFrees, savedFrees)
+    let evs = replace(deferFreeEv, savedEvs)
     fixHere1(over)
     // the body runs where the block is left, not here: what it did to suspicion is taken back (its
     // re-points have not happened yet either), and callDefers applies its recursive calls at each exit
@@ -6299,6 +6438,7 @@ fn deferStat() {
         append(dfBlock, len(blocks) - 1)
         append(dfIndex, len(blocks[len(blocks) - 1].defers))
         append(dfOwner, owners[i])
+        append(dfEv, evs[i])
     }
     // the handles the body named run where the block is left: a later free of their owners is refused (originFree)
     for i in 0..nHandles {

@@ -1394,10 +1394,9 @@ every assignment while a handle from `a` is in scope would refuse `c_asg_clears_
   in the loop (`usedAt`) although a copy is not a use.
 
 **Not covered** (each still traps at run time, exit 7; none is a memory hole):
-- a handle made from a field or element (`let h = handle(p.child); p.child = nb()`), also through a `mut`
-  parameter (`handle(p.child)` in `fn f(mut p: &Par)`): such a handle has no origin. Tracking a path
-  would need clearing on every way the field can be emptied without naming it (`replace`, `take`, a
-  `mut` call, a write through another handle or a reference), which the model does not keep;
+- (done, see "Field and element origins (done)") a handle made from a field or element of a local owner. Still
+  untracked: one made through a reference parameter, a reference local, another handle, or from a global, and a
+  place emptied through a handle or a call that may write through one (stopped tracking, not refused);
 - a `var` handle, a handle in a record, and a `let` copy made after the assignment from a handle that was not made from the owner (it gets no origin). A `let` copy of a dead handle inherits the mark (round 3);
 - a move of the owner, then a use of the handle, where no loop rule applies: `let h = handle(a); take(a);
   pr(h.n)` (the callee frees its argument), also with `a = nb()` after the move, in a loop with `let h`
@@ -2439,6 +2438,75 @@ compiler. No fuzzer kind: the fuzzer makes handles from elements, which have no 
 
 **Memory.** One more array (`originLive`) with one entry per tracked handle, and the saved marks are twice as
 long, transient: see the port's peak in the commit message.
+
+## Field and element origins (done)
+
+**The gap.** `let h = handle(p.child); p.child = nb(); h.n` compiled and stopped at run time (exit 7): a handle
+made from a field or element had no origin, because tracking a place needs a hook on every way the place can be
+emptied. Since then the compiler has the per-path marks (originLive, originDead), `placeIn` and per-entry paths.
+
+**Where a place origin is stored.** `Item.pOwner` and `Item.pPath` carry it from the `handle(...)` builtin to the
+`let`. The handle then has one `originSyms` entry like a whole-owner handle, with the same `originLive` (the owner,
+while some path has not moved it) and `originDead`, plus one new array, `originPath` (one string per entry): `""` for a
+handle to the owner's whole object, otherwise the place as `designatorT` writes it (`/child`, `/kids/[2]`,
+`/rows/[]/cols/[]`). `hOrigin` stays nil for it, so the held-place keying (identity treatment) is unchanged. A `let`
+copy takes the live mark, dead mark and path of the handle it copies. Block ends truncate `originPath` with the
+others. Made only when the designator has a path, does not go through a handle, and its root is an owned local
+(`wholeOwnerOf`): not a reference parameter or local, not another handle, not a global (those keep no origin).
+
+**What frees it** (`originFreeAt(r, path, strict, what)`, `placeHit`). An event at `path` of owner `r` marks dead each
+live entry of `r` whose place the event is at or above (`segsPrefix(path, place)`; a variable index is `[]`, which
+overlaps every element, in either direction). `strict` events free what lies below the place but not the place
+(the place has more segments than the event): a `mut` call given the place, `truncate` of the array. Events:
+- assignment over a field or element, `replace` (the old value is gone from the place whether or not it lives on:
+  a false positive if kept), and `take` (the hook is kept for symmetry but cannot fire: a handle cannot be made through
+  an optional, so no place lies under a taken one; no mutant);
+- `truncate(a, n)`, strict; with a constant `n` an element with a constant index below `n` is kept (`truncKeep`);
+- the owner assigned over or dropped (path `""`, as before);
+- a change through a reference: at `placeIn(r, i, path)` in each owned local of its binding. A place not known
+  (`""` from a join, or a reference not pointed afresh in a loop) is strictly below the root, so it never frees a
+  handle to the whole object;
+- a `mut` argument to a callee with `mutFrees`: strict, at the binding's path of the argument (`""` = every place in
+  the root, not the whole object).
+A move of the owner clears the live mark (`originMove`) as for a whole owner; a move in a loop with the handle
+outside is refused (`loopOriginPend`). Moving a field or element out is not possible (only `take` / `replace`).
+
+**What stops tracking** (`placeOpaque`, called from `invalidateDeep` and `markSuspects`). A change that frees through a
+handle, a callee that writes through one or is unknown, and a recursive call can empty a slot of a local owner
+unseen (a handle can name any object), so the live marks of all place entries are cleared on that path: no later free
+is reported for them, and the use is checked at run time. Entries for a whole object are not touched (only the local frees
+its object). The mark is path-aware, so `if c { opaqueCall() }  p.child = nb()  h.n` is still refused.
+
+**Loops and defers.** Shared with owners: `originFreeAt` calls `pendPush` (a free of the place in a loop that
+uses a handle declared outside is refused, "cannot assign over a place in the owner of handle 'h' inside a loop that uses
+the handle"), `loopOriginPend` for a move, the defer guard (a free of the place while an earlier defer uses the handle),
+and defer frees are recorded with their place and strictness (`deferFrees`, `deferFreeEv`, `dfEv`) and replayed
+exactly (truncate's constant count is not kept in a defer replay: conservative).
+
+**Message.** A use of a dead place handle: "handle 'h' may name a freed object: a place in 'p' was assigned over,
+replaced, taken, truncated or reached by a call that frees below it, after the handle was made from it; make the handle
+again".
+
+**Memory.** One string array entry per tracked handle (`originPath`), two more `Item` fields (transient), code. The port
+compiling itself peaks at 1,112,176 bytes live (1,058,384 before; budget 2,000,000 unchanged, `MEMORY_MARGIN` untouched).
+
+**Not covered / left.**
+- Handles made through a reference (parameter or local), through another handle, or from a global: no origin.
+- Frees through a handle or an unknown/recursive callee stop tracking instead of being reported.
+- False positives: `replace` of the place whose old value lives on; a `mut` call to a function that frees something
+  else below the argument (the summary is one bit per parameter); `truncate` with a count that is not constant frees every
+  element handle; a free guarded by the same condition as a move (see "Origins per path"); a `replace` or free of an
+  element with a variable index frees every element handle of the array.
+- A `var` handle, a handle in a record, and a handle parameter, as before.
+
+**Tests.** `tests/errors/field_origins.obx` (45 refused shapes), `tests/run/field_origins.obx` (accepted neighbours:
+sibling field, scalar, descendant, other constant element, other array, append, truncate that keeps, mut calls that write
+a scalar or free below a sibling or below the place itself, references elsewhere, remade handle, alive guard, loops,
+defers, handle through a held handle, callee writing through a handle, whole-object handle) and
+`run/field_origins_param.obx`, `_global.obx`, `_handle.obx`, `_call.obx` (fallbacks that trap, exit 7).
+`own_fuzz.py`: `field_origin_stmt` (valid), `field_origin_dead_stmt` (invalid); a dead handle from the local array that
+the fuzzer's model expects to trap now may also be rejected ("either").
+**Mutants:** `FIELD_MUTANTS` in `tests/mutate_fork.py` (also in `mutate_port.py`), 41, one equivalent (listed).
 
 ## Pure calls with mut parameters (done)
 

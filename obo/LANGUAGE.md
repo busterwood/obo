@@ -523,10 +523,39 @@ is accepted, since that code runs only on the paths that did not free it; a use
 after the loop is reached through the break, and is refused. A `defer` that uses
 the handle runs after the free, so a free of the owner after the defer is
 declared is refused: `cannot assign over 'b' while a defer declared earlier uses
-handle 'h' made from it` (and `cannot drop`). The rule covers only
-`let` handles made from a whole local. A `var` handle, a handle made from a field
-or an element (`handle(p.child)`), a copy kept in a `var` or a record, and a
-handle parameter are checked at run time, as above.
+handle 'h' made from it` (and `cannot drop`). The rule covers `let` handles
+made from a whole local, and from a field or element of a local (below). A `var`
+handle, a copy kept in a `var` or a record, a handle made through a reference
+parameter, another handle or a global, and a handle parameter are checked at run
+time, as above.
+
+A `let` handle made from a field or element of an owned local (`handle(p.child)`,
+`handle(p.kids[2])`, `handle(xs[i])`) is tracked by its place. It is dead after the
+place, or any place above it, is assigned over, replaced, taken or truncated away,
+or the owner is assigned over or dropped; directly, through a reference that may
+point at or above the place, or by passing a `mut` argument that reaches the place
+to a function that frees below its parameter. A change to a sibling field, to
+another element with a constant index, to a scalar, or inside the object the handle
+names does not reach it, nor does `append` or a `truncate` with a constant count
+that keeps the element. An element with a variable index is reached by a change
+to the array or to any element. A move of the owner is a move, as for a whole
+owner. A change through another handle, or a call that may write through a
+handle, may have emptied the place unseen: the handle is then checked at run time.
+
+```obo
+// example: error: handle 'h' may name a freed object: a place in 'p'
+type Kid = ref record { n: int }
+type Par = ref record { child: Kid; other: Kid }
+
+fn main() {
+    var p = new Par{child: new Kid{n: 1}, other: new Kid{n: 2}}
+    let h = handle(p.child)
+    p.other = new Kid{n: 3}        // another place: h is still good
+    println(h.n)
+    p.child = new Kid{n: 4}        // frees the first child
+    println(h.n)                   // refused: h names it
+}
+```
 
 A test on `alive` narrows the handle: inside the block it guards, `h` is known to be live, so a use is
 accepted although the owner may have been freed on some path before. The guard forms are `if alive(h) { ... }`,

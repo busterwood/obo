@@ -1,0 +1,357 @@
+// Handles made from a field or element of an owned local (FORK.md, "Field and element origins"): the safe neighbours
+// of errors/field_origins.obx. A change that does not reach the handle's place, or the places above it, leaves the
+// handle usable.
+type Kid = ref record { n: int; next: ?Kid }
+type Par = ref record { child: Kid; other: Kid; kids: []Kid; more: []Kid; opt: ?Kid; k: int }
+type Top = ref record { par: Par; spare: Par }
+type Wrap = ref record { h: ^Par }
+fn nk(n: int): Kid { return new Kid{n: n, next: nil} }
+fn np(): Par { return new Par{child: nk(1), other: nk(2), kids: new []Kid(0), more: new []Kid(0), opt: nil, k: 0} }
+fn flag(): bool { return true }
+fn eat(p: Par) { println(p.k) }
+fn pr(h: ^Kid) { println(h.n) }
+// mut callees: one writes a scalar, one frees below its parameter
+fn bump(mut p: &Par) { p.k += 1 }
+fn grow(mut k: &Kid) { k.next = nk(70) }
+fn reset(mut p: &Par) { p.child = nk(9) }
+fn dropKids(mut ks: &[]Kid) { truncate(ks, 0) }
+
+// a sibling field, a scalar of the owner, a scalar inside the object, a descendant of the place
+fn siblings() {
+    var p = np()
+    let h = handle(p.child)
+    p.other = nk(5)
+    p.k = 9
+    p.k += 1
+    p.child.n = 4
+    p.child.next = nk(6)
+    p.opt = nk(7)
+    println(h.n)
+    println(p.other.n)
+}
+
+// another element with a constant index, another array, an append
+fn elements() {
+    var p = np()
+    append(p.kids, nk(10))
+    append(p.kids, nk(11))
+    append(p.more, nk(12))
+    let h = handle(p.kids[1])
+    p.kids[0] = nk(13)
+    p.more[0] = nk(14)
+    append(p.kids, nk(15))
+    append(p.more, nk(16))
+    println(h.n)
+    println(p.kids[0].n)
+    truncate(p.more, 1)
+    println(h.n)
+}
+
+// a variable index: a change to another array, to a field, a scalar, an append
+fn variable(i: int) {
+    var p = np()
+    append(p.kids, nk(20))
+    append(p.kids, nk(21))
+    append(p.more, nk(22))
+    let h = handle(p.kids[i])
+    p.more[0] = nk(23)
+    p.child = nk(24)
+    p.k = 5
+    append(p.kids, nk(25))
+    println(h.n)
+}
+
+// a local array: another one, an append
+fn localArray() {
+    var xs = new []Kid(0)
+    var ys = new []Kid(0)
+    append(xs, nk(30))
+    append(xs, nk(31))
+    append(ys, nk(32))
+    let h = handle(xs[1])
+    xs[0] = nk(33)
+    ys[0] = nk(34)
+    append(xs, nk(35))
+    println(h.n)
+}
+
+// a deeper place, the sibling of an ancestor
+fn deep() {
+    var t = new Top{par: np(), spare: np()}
+    append(t.par.kids, nk(40))
+    let h = handle(t.par.kids[0])
+    t.spare = np()
+    t.par.child = nk(41)
+    t.par.other = nk(42)
+    t.spare.kids = new []Kid(0)
+    println(h.n)
+    let g = handle(t.par.child)
+    t.par.other = nk(43)
+    t.spare.child = nk(44)
+    println(g.n)
+}
+
+// mut calls: one that writes only a scalar, one that frees below a sibling, one given the place itself
+// (it frees below the object the handle names, not the object), the same for an element
+fn calls() {
+    var p = np()
+    append(p.kids, nk(50))
+    append(p.kids, nk(51))
+    let h = handle(p.child)
+    let e = handle(p.kids[1])
+    bump(p)
+    grow(p.other)
+    grow(p.child)
+    grow(p.kids[1])
+    println(h.n)
+    println(e.n)
+    println(p.child.n)
+    var t = new Top{par: np(), spare: np()}
+    let g = handle(t.par.child)
+    reset(t.spare)
+    dropKids(t.spare.kids)
+    bump(t.par)
+    println(g.n)
+}
+
+// a variable index given to a mut call
+fn callIndex(i: int) {
+    var p = np()
+    append(p.kids, nk(60))
+    append(p.kids, nk(61))
+    let h = handle(p.kids[i])
+    grow(p.kids[i])
+    println(h.n)
+}
+
+// changes through a reference that point elsewhere
+fn references() {
+    var p = np()
+    append(p.kids, nk(70))
+    append(p.kids, nk(71))
+    let h = handle(p.kids[0])
+    let r = &p.kids
+    r[1] = nk(72)
+    let s = &p.other
+    s.n = 73
+    println(h.n)
+    var q = np()
+    var t = &q
+    t.child = nk(74)
+    println(h.n)
+}
+
+// the handle is made after the change, or again after it
+fn remade() {
+    var p = np()
+    p.child = nk(80)
+    let h = handle(p.child)
+    println(h.n)
+    p.child = nk(81)
+    let g = handle(p.child)
+    println(g.n)
+    p.child = nk(82)
+    println(handle(p.child).n)
+}
+
+// the handle is not used again
+fn unused() {
+    var p = np()
+    let h = handle(p.child)
+    println(h.n)
+    p.child = nk(83)
+    if alive(h) { println(h.n) } else { println(-1) }
+    let c = alive(h)
+    println(c)
+}
+
+// the owner is moved after the last use
+fn moved() {
+    var p = np()
+    let h = handle(p.child)
+    println(h.n)
+    eat(p)
+}
+
+// a branch that frees and a use that is narrowed
+fn guarded(c: bool) {
+    var p = np()
+    let h = handle(p.child)
+    if c { p.child = nk(84) }
+    if alive(h) { println(h.n) } else { println(-2) }
+}
+
+// a loop whose handle is made inside it, or that does not name it
+fn loops() {
+    var p = np()
+    for i in 0..3 {
+        let h = handle(p.child)
+        println(h.n)
+        p.child = nk(85 + i)
+    }
+    for i in 0..2 {
+        p.other = nk(i)
+        let g = handle(p.other)
+        p.child = nk(i + 50)
+        println(g.n)
+        p.k = i
+    }
+}
+
+// a handle to the whole object is freed only by a free of the whole owner: not by an owned field changed in it, or
+// by a change through a reference with no known place
+fn wholeHandle() {
+    var p = np()
+    append(p.kids, nk(100))
+    append(p.more, nk(101))
+    let h = handle(p)
+    p.child = nk(102)
+    p.kids[0] = nk(103)
+    truncate(p.kids, 0)
+    var r = &p.kids
+    if flag() { r = &p.more }
+    r[0] = nk(104)
+    println(h.k)
+    println(h.child.n)
+}
+
+// another owner's change, and the same place of another owner
+fn otherOwner() {
+    var p = np()
+    var q = np()
+    let h = handle(p.child)
+    q.child = nk(105)
+    q.other = nk(106)
+    let r = &q
+    r.child = nk(107)
+    reset(q)
+    println(h.n)
+}
+
+// a handle made through a handle held in a field: the holder can be replaced without freeing what it names
+fn viaField() {
+    var p = np()
+    var q = np()
+    var w = new Wrap{h: handle(p)}
+    let k = handle(w.h.child)
+    w = new Wrap{h: handle(q)}
+    println(k.n)
+}
+
+// defers: one that frees below the place (strictly), one that frees a sibling, one that uses the handle while a
+// sibling is freed after it
+fn defers() {
+    var p = np()
+    let h = handle(p.child)
+    {
+        defer { grow(p.child) }
+        defer { p.other = nk(108) }
+    }
+    println(h.n)
+    let g = handle(p.child)
+    defer { println(g.n) }
+    p.other = nk(109)
+    p.k = 1
+}
+
+// a callee that writes through a handle: the old child it hands back lives on
+fn swapKid(g: ^Par): Kid { return replace(g.child, nk(110)) }
+fn byCallee() {
+    var p = np()
+    let h = handle(p.child)
+    let old = swapKid(handle(p))
+    p.child = nk(111)
+    println(h.n)
+    println(old.n)
+}
+
+// truncate with a constant count keeps the elements before it
+fn truncKeep() {
+    var p = np()
+    append(p.kids, nk(95))
+    append(p.kids, nk(96))
+    append(p.kids, nk(97))
+    let h = handle(p.kids[1])
+    truncate(p.kids, 2)
+    println(h.n)
+    var xs = new []Kid(0)
+    append(xs, nk(98))
+    append(xs, nk(99))
+    let g = handle(xs[0])
+    truncate(xs, 1)
+    println(g.n)
+}
+
+// a free in a loop of a place other than the handle's
+fn loopSibling() {
+    var p = np()
+    append(p.kids, nk(90))
+    append(p.kids, nk(91))
+    let h = handle(p.kids[0])
+    for i in 0..3 {
+        println(h.n)
+        p.other = nk(i)
+        p.kids[1] = nk(i)
+    }
+}
+
+// a change through a handle may free the object by moving it out: the handle is no longer tracked, and the
+// old child lives on in 'old'
+fn throughHandle() {
+    var p = np()
+    let h = handle(p.child)
+    let g = handle(p)
+    let old = replace(g.child, nk(5))
+    p.child = nk(6)
+    println(h.n)
+    println(old.n)
+}
+
+fn main() {
+    siblings()              // expect: 4
+                            // expect: 5
+    elements()              // expect: 11
+                            // expect: 13
+                            // expect: 11
+    variable(1)             // expect: 21
+    localArray()            // expect: 31
+    deep()                  // expect: 40
+                            // expect: 41
+    calls()                 // expect: 1
+                            // expect: 51
+                            // expect: 1
+                            // expect: 1
+    callIndex(1)            // expect: 61
+    references()            // expect: 70
+                            // expect: 70
+    remade()                // expect: 80
+                            // expect: 81
+                            // expect: 82
+    unused()                // expect: 1
+                            // expect: -1
+                            // expect: false
+    moved()                 // expect: 1
+                            // expect: 0
+    guarded(false)          // expect: 1
+    guarded(true)           // expect: -2
+    loops()                 // expect: 1
+                            // expect: 85
+                            // expect: 86
+                            // expect: 0
+                            // expect: 1
+    loopSibling()           // expect: 90
+                            // expect: 90
+                            // expect: 90
+    throughHandle()         // expect: 1
+                            // expect: 1
+    truncKeep()             // expect: 96
+                            // expect: 98
+    wholeHandle()           // expect: 0
+                            // expect: 102
+    otherOwner()            // expect: 1
+    viaField()              // expect: 1
+    defers()                // expect: 1
+                            // expect: 1
+    byCallee()              // expect: 1
+                            // expect: 1
+}
