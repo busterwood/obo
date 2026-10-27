@@ -1,0 +1,124 @@
+// A string indexed by an expression that calls a function: the string's pointer is loaded before the index runs,
+// and a call that assigns over the string (through a mut parameter, a handle or a global) drops its last reference.
+// Strings are not owned values, so no free summary records that; the index holds a reference of its own while the
+// index runs (FORK.md, "Move bits"). Each callee below clears the string and allocates, so an unpinned string would
+// be read after it is freed (OBO_CHECK poisons it). The bytes read are those of the string as it was.
+type SB = ref record { s: string; n: int }
+type Outer = ref record { sb: SB; n: int }
+var gs = "abcdefgh2"
+
+fn mkS(): string { var a = new []int(2); return "abcdefgh" + string(len(a)) }
+fn clrB(mut b: &SB): int { b.s = ""; let t = "ZZZZZZZZ" + string(b.n); b.n = len(t); return 0 }
+fn clrG(): int { gs = ""; let t = "ZZZZZZZZ" + string(len(gs)); return len(t) - len(t) }
+fn clrH(h: ^SB): int { h.s = ""; let t = "ZZZZZZZZ" + string(h.n); return len(t) - len(t) }
+fn clrA(mut a: &[]string): int { a[0] = ""; let t = "ZZZZZZZZ" + string(len(a)); return len(t) - len(t) }
+fn clrO(mut o: &Outer): int { o.sb.s = ""; let t = "ZZZZZZZZ" + string(o.n); return len(t) - len(t) }
+
+fn viaMut(): int {
+    var b = new SB{s: mkS(), n: 0}
+    return b.s[clrB(b)]                       // 97
+}
+fn viaHandle(): int {
+    var b = new SB{s: mkS(), n: 0}
+    let h = handle(b)
+    return h.s[clrH(h)]                       // 97
+}
+fn viaGlobal(): int {
+    gs = mkS()
+    return gs[clrG()]                         // 97
+}
+fn viaElem(): int {
+    var a = new []string(0)
+    append(a, mkS())
+    return a[0][clrA(a)]                      // 97
+}
+fn viaNested(): int {
+    var o = new Outer{sb: new SB{s: mkS(), n: 0}, n: 0}
+    return o.sb.s[clrO(o)]                    // 97
+}
+fn viaRefLocal(): int {
+    var b = new SB{s: mkS(), n: 0}
+    let r = &b
+    return r.s[clrB(b)]                       // 97
+}
+fn viaLet(): int {
+    var b = new SB{s: mkS(), n: 0}
+    let k = b.s[clrB(b)]
+    return k + 1                              // 98
+}
+fn viaSum(): int {
+    var b = new SB{s: mkS(), n: 0}
+    return b.s[0] + b.s[clrB(b)]              // 194
+}
+fn viaBracket(): int {
+    var b = new SB{s: mkS(), n: 0}
+    var ns = new []int(1)
+    return b.s[ns[0] + clrB(b)]               // 97
+}
+fn viaQuote(): int {
+    var b = new SB{s: mkS(), n: 0}
+    return b.s[len("]") - 1 + clrB(b)]        // 97
+}
+fn viaParens(): int {
+    var b = new SB{s: mkS(), n: 0}
+    return b.s[(clrB(b) + 1) * 1]             // 98
+}
+
+// the look-ahead for a call is made by the lexer, so a quote in a char literal or a comment, a bracket in a comment or
+// a string, and a newline in the index mean what they mean to the compiler
+fn viaCharQuote(): int {
+    var b = new SB{s: mkS(), n: 0}
+    return b.s[0 + '"' - 34 + clrB(b)]        // 97
+}
+fn viaCharParen(): int {
+    var b = new SB{s: mkS(), n: 0}
+    return b.s['(' - 40 + clrB(b)]            // 97
+}
+fn viaCommentQuote(): int {
+    var b = new SB{s: mkS(), n: 0}
+    return b.s[0 + // "
+        clrB(b)]                              // 97
+}
+fn viaCommentBracket(): int {
+    var b = new SB{s: mkS(), n: 0}
+    return b.s[0 + // ] ( "
+        clrB(b)]                              // 97
+}
+fn viaMultiLine(): int {
+    var b = new SB{s: mkS(), n: 0}
+    return b.s[1 +
+        2 -
+        3 +
+        clrB(b)]                              // 97
+}
+fn viaStringBracket(): int {
+    var b = new SB{s: mkS(), n: 0}
+    return b.s[clrB(b) + len("]]") - 2]       // 97
+}
+fn viaNestedCall(): int {
+    var b = new SB{s: mkS(), n: 0}
+    var ns = new []int(1)
+    return b.s[ns[0] + ns[ns[0]] + clrB(b)]   // 97
+}
+
+fn main() {
+    println(viaMut())          // expect: 97
+    println(viaHandle())       // expect: 97
+    println(viaGlobal())       // expect: 97
+    println(viaElem())         // expect: 97
+    println(viaNested())       // expect: 97
+    println(viaRefLocal())     // expect: 97
+    println(viaLet())          // expect: 98
+    println(viaSum())          // expect: 194
+    println(viaBracket())      // expect: 97
+    println(viaQuote())        // expect: 97
+    println(viaParens())       // expect: 98
+    println(viaCharQuote())    // expect: 97
+    println(viaCharParen())    // expect: 97
+    println(viaCommentQuote())     // expect: 97
+    println(viaCommentBracket())   // expect: 97
+    println(viaMultiLine())    // expect: 97
+    println(viaStringBracket())    // expect: 97
+    println(viaNestedCall())   // expect: 97
+    println("x")             // expect: x
+}

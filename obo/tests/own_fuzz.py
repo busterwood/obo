@@ -82,6 +82,9 @@ PRELUDE = [
     "fn setA(mut pr: &Pair) { pr.a = mk(7) }",
     "fn viaSetB(mut pr: &Pair) { setB(pr) }",
     "fn tick(mut a: &[]int): int { append(a, 1); return 0 }",
+    "type SBox = ref record { s: string }",
+    "fn clrSBox(mut b: &SBox): int { b.s = \"\"; let t = \"ZZZZZZZZ\" + string(len(b.s)); return len(t) - len(t) }",
+    "fn clrSBoxH(h: ^SBox): int { h.s = \"\"; let t = \"ZZZZZZZZ\" + string(len(h.s)); return len(t) - len(t) }",
     "type Shape = closed {",
     "    Circle { r: int }",
     "    Rect { w, h: int }",
@@ -362,11 +365,45 @@ class Gen:
         return self.invalid_stmt([f"var {r} = &ga", "gdrop()", f"println(sum({r}))"])
 
     def handle_index_call_stmt(self):
-        """A handle to a record's array, indexed by a call that may change it: rejected."""
+        """A handle to a record's array, indexed by a call that replaces the array: rejected."""
         n = self.nrefs
         self.nrefs += 1
+        self.extra_fn("fn rebox(mut b: &Box): int { b.items = new []int(0); append(b.items, 2); return 1 }")
         return self.invalid_stmt([f"var b{n} = new Box{{items: new []int(0)}}", f"let hx{n} = handle(b{n})",
-                                  f"hx{n}.items[tick(b{n}.items)] = 9"])
+                                  f"hx{n}.items[rebox(b{n})] = 9"])
+
+    def str_index_pin_stmt(self):
+        """A string field indexed by a call that clears it through a mut parameter or through a handle: the
+        index holds a reference of its own, so the byte read is the one of the string as it was (valid)."""
+        n = self.nrefs
+        self.nrefs += 1
+        k = self.k() % 7
+        first = self.r.choice("abcdefgh")
+        lines = [f"var sbx{n} = new SBox{{s: \"{first}bcdefg\" + string({k})}}",
+                 f"println(sbx{n}.s[clrSBox(sbx{n})])",
+                 f"sbx{n}.s = \"{first}bcdefg\" + string({k})",
+                 f"let shx{n} = handle(sbx{n})",
+                 f"println(shx{n}.s[clrSBoxH(shx{n})])"]
+
+        def run(st):
+            st.out.append(str(ord(first)))
+            st.out.append(str(ord(first)))
+        return Stmt(["{"] + indent(lines) + ["}"], run)
+
+    def move_bits_stmt(self):
+        """A handle's, a field's and a parameter's array indexed, appended to and assigned into by a
+        value that calls a function that only appends to the array (an append updates the array's header
+        in place, so nothing loaded is stale): valid."""
+        n = self.nrefs
+        self.nrefs += 1
+        k = self.k() % 5 + 1
+        lines = [f"var b{n} = new Box{{items: new []int(0)}}", f"let hx{n} = handle(b{n})",
+                 f"hx{n}.items[tick(b{n}.items)] = {k}", f"b{n}.items[tick(b{n}.items)] += {k}",
+                 f"append(b{n}.items, tick(b{n}.items))", f"println(b{n}.items[0] * 100 + len(b{n}.items))"]
+
+        def run(st):
+            st.out.append(str(2 * k * 100 + 4))
+        return Stmt(["{"] + indent(lines) + ["}"], run)
 
     def target_call_stmt(self, kind):
         """A field of a local record, targeted by a compound assignment, append, truncate or an
@@ -1413,7 +1450,7 @@ class Gen:
         makers = self.common() + [self.choose_ref_stmt] * 2 + [self.ref_local_path_stmt] + [self.field_origin_stmt] + [self.defer_ref_stmt] + [self.push_stmt] * 4 + [self.take_stmt] * 2 \
             + [self.loop_stmt, self.if_stmt, self.g_set_stmt, self.g_trunc_stmt, self.ss_loop_stmt,
                self.gdrop_stmt, self.ss_trunc_stmt, self.tag_trunc_stmt, self.h_new_stmt, self.h_new_stmt,
-               self.h_kill_stmt, self.h_kill_stmt, self.handle_borrow_stmt, self.handle_pure_mut_stmt, self.owned_deep_writer_stmt,
+               self.h_kill_stmt, self.h_kill_stmt, self.handle_borrow_stmt, self.handle_pure_mut_stmt, self.move_bits_stmt, self.str_index_pin_stmt, self.owned_deep_writer_stmt,
                self.drop_stmt, self.replace_stmt, self.eat_stmt, self.if_move_stmt,
                self.loop_move_stmt, self.discard_stmt]
         if self.full:
