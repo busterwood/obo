@@ -8,7 +8,15 @@ cross-checked against objdump, which needs no compiler: mainline's groups
 (obx/tests/encoder_test.py) and the forms only obo emits (OBO_GROUPS). The whole
 compiler is checked against obo in port_compare.py.
 
-    python3 obo/tests/port_test.py"""
+    python3 obo/tests/port_test.py [-j N]
+
+  -j, --jobs N  compare up to N inputs at once (default 1). Each input is a file
+                of its own and both compilers only read it, so a comparison is
+                independent; the failures are reported in input order either way.
+                The encoder cross-checks against objdump run afterwards, one at a
+                time, because they share the temporary work list.
+"""
+import concurrent.futures
 import glob
 import os
 import random
@@ -49,24 +57,31 @@ def run(exe, mode, path):
     return p.stdout
 
 
-def compare(mode, path, label, failures):
+def compare(mode, path, label):
+    """The first difference between obo's output and the port's, or None. The
+    inputs are read-only and each comparison names its own case, so threads do
+    not share anything."""
     a, b = run(REF, mode, path), run(PORT, mode, path)
     if a != b:
         la, lb = a.decode('latin-1').splitlines(), b.decode('latin-1').splitlines()
         i = next((k for k in range(min(len(la), len(lb))) if la[k] != lb[k]), min(len(la), len(lb)))
-        failures.append(f"{label}: line {i + 1}: obo {la[i] if i < len(la) else '<end>'!r}, port {lb[i] if i < len(lb) else '<end>'!r}")
+        return f"{label}: line {i + 1}: obo {la[i] if i < len(la) else '<end>'!r}, port {lb[i] if i < len(lb) else '<end>'!r}"
+    return None
 
 
 def main():
+    args = sys.argv[1:]
+    jobs = int(args[args.index('-j') + 1]) if '-j' in args else \
+        int(args[args.index('--jobs') + 1]) if '--jobs' in args else 1
     # a private directory per run, so that concurrent runs do not share the port's executable or inputs
     work = tempfile.mkdtemp(prefix='obo-port-test-')
     try:
-        check(work)
+        check(work, jobs)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def check(work):
+def check(work, jobs=1):
     global PORT, TMP
     PORT = os.path.join(work, 'obo_own_test')
     TMP = os.path.join(work, 'inputs')
@@ -82,23 +97,27 @@ def check(work):
                    glob.glob(os.path.join(FORK, 'bench', '*.obx')) +
                    [os.path.join(FORK, 'src', 'obo.obo'),
                     os.path.join(ROOT, 'src', 'obxc.obx')])
-    failures, count = [], 0
-    for f in files:
-        compare('--tokens', f, os.path.relpath(f, ROOT), failures)
-        count += 1
+    tasks = [('--tokens', f, os.path.relpath(f, ROOT)) for f in files]
+    # the scanner fuzz inputs and the encoder scripts are written before any
+    # comparison starts, so that no thread writes a shared file
     r = random.Random(7)
     for case in range(300):
         data = ''.join(r.choice(stage_test.FRAGMENTS) + (' ' if r.random() < 0.3 else '')
                        for _ in range(r.randint(1, 120))).encode('latin-1')
         path = os.path.join(TMP, f'fuzz{case}.txt')
         open(path, 'wb').write(data)
-        compare('--tokens', path, f'scanner fuzz {case}', failures)
-        count += 1
+        tasks.append(('--tokens', path, f'scanner fuzz {case}'))
     for part in ('memory', 'registers', 'immediates', 'jumps'):
         path = os.path.join(TMP, f'enc_{part}.txt')
         open(path, 'w').write('\n'.join(stage_test.encoder_script(part)) + '\n')
-        compare('--encode', path, f'encoder {part}', failures)
-        count += 1
+        tasks.append(('--encode', path, f'encoder {part}'))
+    if jobs > 1:
+        with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
+            found = list(pool.map(lambda t: compare(*t), tasks))
+    else:
+        found = [compare(*t) for t in tasks]
+    failures = [f for f in found if f]
+    count = len(tasks)
     # objdump first, so that a wrong encoding is reported by the oracle rather than as a difference
     names = []
     unique = lambda name: os.path.join(TMP, f"{name}{len(names)}")
