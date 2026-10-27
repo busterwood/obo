@@ -6,9 +6,10 @@
 Sections (all by default):
   rt        builds tests/rt_io_test.c with runtime.c and runs every case in its
             own process: the Result cell layout and tags, error codes and the
-            N1/N2 precedence, close-state marking, exits 0/8/9, the gated
-            OBO_IO_FAULT hooks with and without OBO_CHECK, and no leak on the
-            normal paths.
+            N1/N2 precedence, close-state marking (an EINTR or a failed close
+            still marks the table), "w" truncation, the unknown-mode error,
+            exits 0/8/9, the gated OBO_IO_FAULT hooks with and without
+            OBO_CHECK, and no leak on the normal paths.
   programs  compiles tests/io/*.obx (standalone) and tests/lib/*.obx (with
             obo/lib/io.obo concatenated) and runs each with its stdin, env and
             extra arguments; the // expect: and // expect-exit: markers are
@@ -126,6 +127,10 @@ RT_CASES = [
     ('empty_write_closed', clean_env(), 0),
     ('closed_big_read', clean_env(check=True), 9),
     ('closed_big_read', clean_env(), 0),
+    ('close_ebadf', clean_env(check=True), 0),
+    ('close_ebadf', clean_env(), 0),
+    ('trunc', clean_env(check=True), 0),
+    ('unknown_mode', clean_env(check=True), 0),
     ('eintr', clean_env(check=True, fault='eintr'), 0),
     ('short', clean_env(check=True, fault='short'), 0),
     ('inert', clean_env(fault='short'), 0),
@@ -163,6 +168,7 @@ def program_section():
     case_io('no_check_big_read.obx', clean_env())
     case_io('close_stdout.obx', check)
     case_io('arg_errors.obx', check)
+    case_io('path_errors.obx', check)
     case_lib('boundaries.obx', check)
     case_lib('stream.obx', check)
     case_lib('short_write.obx', clean_env(check=True, fault='short'))

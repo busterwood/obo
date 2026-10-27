@@ -212,6 +212,65 @@ static void case_closed_big_read(const char *path) {
     rt_finish();
 }
 
+/* a close that fails with EBADF (the kernel fd was closed behind the table's
+ * back) still marks the tracked number closed (N4): rt_finish reports no leak,
+ * and without OBO_CHECK a second close is the table's EBADF, never a syscall on
+ * a number the kernel may have reused. */
+static void case_close_ebadf(const char *path) {
+    u64 fd = open_ok(path, "w");
+    sys3(3, (i64)fd, 0, 0);             /* the kernel closes it; the table still says open */
+    u64 cell = rt_close_fd((i64)fd, (u64)desc_err, (u64)desc_ok_bool);
+    CHECK(cell_tag(cell) == (u64)desc_err);
+    CHECK(cell_code(cell) == 9);        /* the failed close is itself reported */
+    rt_free(cell);
+    if (!leak_check) {
+        cell = rt_close_fd((i64)fd, (u64)desc_err, (u64)desc_ok_bool);
+        CHECK(cell_tag(cell) == (u64)desc_err);
+        CHECK(cell_code(cell) == 9);
+        rt_free(cell);
+    }
+    rt_finish();                        /* a table left open would exit 8 */
+}
+
+/* "w" is O_TRUNC: a 3-byte rewrite of an 8-byte file leaves exactly 3 bytes */
+static void case_trunc(const char *path) {
+    u64 fd = open_ok(path, "w");
+    Array *a = bytes(8, 0);
+    u64 cell = rt_write_fd((i64)fd, a, (u64)desc_err, (u64)desc_ok_int);
+    CHECK(cell_tag(cell) == (u64)desc_ok_int);
+    CHECK(cell_payload(cell) == 8);
+    rt_free(cell);
+    rt_free((u64)a);
+    close_ok(fd);
+    fd = open_ok(path, "w");             /* truncates the 8 bytes away */
+    a = bytes(3, 7);
+    cell = rt_write_fd((i64)fd, a, (u64)desc_err, (u64)desc_ok_int);
+    CHECK(cell_tag(cell) == (u64)desc_ok_int);
+    CHECK(cell_payload(cell) == 3);
+    rt_free(cell);
+    rt_free((u64)a);
+    close_ok(fd);
+    fd = open_ok(path, "r");
+    cell = rt_read_fd((i64)fd, 16, (u64)desc_err, (u64)desc_ok_owned);
+    CHECK(cell_tag(cell) == (u64)desc_ok_owned);
+    CHECK(bytes_are((Array *)cell_payload(cell), 3, 7));
+    rt_free(cell);
+    close_ok(fd);
+    rt_finish();
+}
+
+/* a computed mode that is none of "r", "w" and "a" is EINVAL, before any open */
+static void case_unknown_mode(const char *path) {
+    (void)path;
+    u64 cell = rt_open_file(mkstr("/nonexistent-obo-rt-io"), mkstr("z"),
+                            (u64)desc_err, (u64)desc_ok_int);
+    CHECK(cell_tag(cell) == (u64)desc_err);
+    CHECK(cell_code(cell) == 22);
+    CHECK(str_eq_c(cell_msg(cell), "unknown open mode"));
+    rt_free(cell);
+    rt_finish();
+}
+
 /* one synthetic EINTR per read, write and close: all three complete; the close
  * is ok(true) and marks the fd closed, so rt_finish reports no leak */
 static void case_eintr(const char *path) {
@@ -298,6 +357,9 @@ void test_main(u64 *sp) {
     else if (c_eq(c, "double_close")) case_double_close(path);
     else if (c_eq(c, "empty_write_closed")) case_empty_write_closed(path);
     else if (c_eq(c, "closed_big_read")) case_closed_big_read(path);
+    else if (c_eq(c, "close_ebadf")) case_close_ebadf(path);
+    else if (c_eq(c, "trunc")) case_trunc(path);
+    else if (c_eq(c, "unknown_mode")) case_unknown_mode(path);
     else if (c_eq(c, "eintr")) case_eintr(path);
     else if (c_eq(c, "short")) case_short(path);
     else if (c_eq(c, "inert")) case_inert(path);
