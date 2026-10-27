@@ -2945,3 +2945,162 @@ the top-level pattern, and `exit(1)` is used rather than `exit(r.code)` because 
 runtime's trap namespace. `Result` comparison is identity `==`/`!=` only. `ok`/`err` stay shadowable and `try` is
 a reserved word. There is no `Result[void]`; errno lives in `code` for the Phase 2 I/O API; `readFile` keeps
 `?[]byte`.
+
+## Incremental I/O (done)
+
+**Rule.** An open file is an `int` descriptor with an explicit `closeFile(fd)`; `defer closeFile(fd)` is
+the cleanup pattern. There is no `File` type and the language does not track fd ownership. `Result[T]`
+(phase 1) carries every failure; the runtime builds the I/O cells itself, from descriptors the compiler
+passes. Buffering lives in obo (`obo/lib/io.obo`), not in the builtins: a `Reader`/`Writer` owns a
+`[]byte` and borrows its fd, and a tool flushes it explicitly.
+
+**Resource model.** `openFile(path, mode)` returns `Result[int]`. The modes are exactly `"r"`, `"w"`
+(`O_WRONLY|O_CREAT|O_TRUNC`, 0644) and `"a"` (`O_WRONLY|O_CREAT|O_APPEND`, 0644); a constant other than
+those three is a compile error, and a computed one is `err("unknown open mode", EINVAL)`. A path of 4096
+bytes or more is `ENAMETOOLONG` (36) before conversion; an empty path or an embedded NUL is `EINVAL` (22,
+from `cpath`). `openFile` retries `EINTR` internally (a FIFO or device open can be interrupted). After a
+successful `open` it marks the number open in the fd table when it is below 1024. The returned fd may be
+0/1/2 if the standard descriptor was closed before the program started, so the runtime tests `fd < 0`, not
+`fd <= 0`.
+
+**Builtins.** `readFd(fd, max)` is one read: `max <= 0` is `err(..., EINVAL)` before any allocation; a
+negative fd is `err(..., EBADF)` before the allocation; a tracked closed fd is exit 9 under `OBO_CHECK`,
+otherwise `err(..., EBADF)`, with no syscall; then `rt_alloc_array(max, 4)` and one read (retrying
+`EINTR`). A short read is data: the array's `len` is truncated to the count. `got == 0` is EOF, and the
+result is `ok(nil)` after freeing the empty array; an empty non-nil array never means EOF. `writeFd(fd,
+data)` borrows the array, checks the tracked state first (so an empty write to a closed fd is the fd
+error, never `ok(0)`), makes one write (retrying `EINTR`), returns `ok(n)` for a short positive count and
+`err(..., EIO)` for 0 with data. `closeFile(fd)` classifies before the kernel: a table-state-0 0/1/2 is
+refused with `err("cannot close standard stream fd N", EINVAL)` and is not touched; a tracked closed fd is
+exit 9 under `OBO_CHECK` or `err(EBADF)`; a tracked open fd is closed and the table marks it closed on any
+attempt, even a failed one (the kernel may already have released it, and a retry would be a double close);
+any other number goes to the kernel and stays untracked, so a second close is the kernel's EBADF, never
+exit 9. `close` treats `EINTR` as success (Linux has closed the descriptor). `stdin()`, `stdout()` and
+`stderr()` are zero-argument builtins returning 0, 1 and 2; they are ordinary identifiers in `universe`
+and may be shadowed.
+
+**Runtime contract (descriptors, cells, tmp_root).** The compiler passes the shared err descriptor
+(`errVariantType().desc`, `[16, 0, 1, 0]`: message at +0, code at +8) and the cached ok variant
+`derived("result", payload).variants[0].desc` as the last two arguments of each helper
+(`rt_open_file(path, mode, descErr, descOk)` etc.). `rt_alloc_record` reads `desc[0]`, so a scalar ok cell
+is `[8, 0, 0]` and an owned one `[8, 1, 0, 0]`. The header's low 32 bits are the match tag, and `match`
+compares against the cached variants: a fresh `okVariantOf(payload)` descriptor would miss both arms (and
+`try` would not reveal it, because it compares only the err descriptor). Messages are proper kind-3 obo
+strings, one allocation each, copying the path bytes or the decimal fd; no cell retains a caller pointer.
+The helpers follow the runtime's two-allocation rule: the message is rooted in `tmp_root[0]` while the
+err cell is allocated, and the readFd array while the ok cell is allocated, with the root cleared after
+the stores. Allocation failure remains the fatal exit 2. `readFile`/`writeFile` keep their raw syscalls
+and never enter the fd table, so the compiler's own file use cannot report phantom leaks.
+
+**Argument order.** Every I/O argument is parsed with `nestedExpr()`, so a `try` in an argument is refused
+by position ("cannot be part of a larger expression"): a `try` error return would otherwise bypass the
+release of a pinned string temporary. `openFile` pins the path with `pinStr` before the mode runs: in
+`openFile(b.name, g())`, `g` may assign over `b.name` and free the bytes the runtime would otherwise
+convert; the pin's reference is dropped by `rtCall` after the call. `readFd`/`writeFd`/`closeFile`
+materialise the fd before a later argument runs: in `readFd(gfd, f())`, `f` may change `gfd`; in
+`readFd(b.fd, bump(b))`, the mut callee may write the field; in `writeFd(gfd, rows[setGfd(0)])`, the index
+call may change the global. `writeFd`'s data is last and borrowed, so no hold is needed; `noTemp(data)`
+refuses a transient call result (`writeFd(fd, makeBytes())`), which would have no owner during the call,
+and runs before `materialise` as `writeFile` does. `rtCall` now refuses more than four arguments: `argReg`
+maps index 4 and higher to RCX and would silently clobber argument 3; a fifth argument needs a descriptor
+block or a stack convention.
+
+**Buffered library.** `obo/lib/io.obo` defines `Reader` and `Writer` (an owned `[]byte`, a borrowed fd,
+`pos`/`size`, and `hitEof` for the Reader). `fill` reads one chunk with `readFd(fd, size)` and treats only
+`nil` as EOF; `newReader`/`newWriter` clamp only the maximum (1 MiB) and raise a non-positive size to 1.
+`takeChunk` moves the unconsumed bytes out (`replace(r.buf, new []byte(0))`, plus one suffix copy when
+`pos > 0`) because passing `r.buf` to a `mut` writer is refused by the mut-overlap rule; `pump` and
+`count` stream through it. `readLine` returns `Result[?[]byte]`: nil is EOF at a line start, a non-nil
+empty array is an empty line, `'\n'` is stripped and `'\r'` kept, and a line longer than the chunk is
+returned whole. `readByte` returns `ok(-1)` at EOF; `readN` returns nil only if EOF came before any byte;
+`eof` performs no I/O. `flush` loops on short counts, shifting the unwritten tail to the front, and keeps
+the unwritten bytes on error so the caller may retry. `write`/`writeBytes` append a byte at a time and
+flush at the threshold; a string argument is reference-counted by the call as usual. Tools live in
+`obo/programs/` (outside `port_compare`'s example glob) and are built by concatenating the library first;
+`run_fork.py` applies the same rule to a `tests/run` file that starts with `// prelude: io`. `cat` uses
+`fill` + `takeChunk` + a flush per chunk (so a pipe delivers each chunk at once), not `readN`, which would
+block until the full count or EOF. `wc` counts newlines and bytes in one streaming pass.
+
+**Standard streams.** 0/1/2 are plain ints, never owned and never tracked. `closeFile` refuses them at
+table state 0, so the runtime's `out_fd` and the shell's descriptors cannot be closed through the API.
+`writeFd(stdout(), ...)` and `readFd(stdin(), ...)` flush the runtime's 64 KiB text buffer first, so
+`print("a"); writeFd(stdout(), b); println("c")` keeps its order and a prompt appears before a blocking
+read. The Writer buffer is separate: a tool must call `flush`, and `exit()` flushes only the runtime
+buffer.
+
+**Leaks and errors.** The runtime keeps `fdstate[1024]` in `.bss` (0 never seen, 1 open via `openFile`, 2
+closed). Under `OBO_CHECK=1`, a normal end with an open tracked fd prints `obo: file descriptors leaked: N`
+and exits 8 before the object-leak check; a double close prints `obo: double close of file descriptor N`
+and exits 9; a read/write on a tracked closed fd prints `obo: use of a closed file descriptor N` and exits
+9. Without `OBO_CHECK` the same calls are `err(..., EBADF)` and do not reach the kernel for a tracked
+closed fd. `exit()` bypasses `rt_finish`, so it runs no defers, frees no owned locals and runs no leak
+checks. The `OBO_IO_FAULT=eintr|short` hook is test-only and inert unless `OBO_CHECK=1` (the environment
+order is arbitrary, so the gate is applied after the scan); `eintr` injects one synthetic `-EINTR` before
+the next read, write and close, and `short` caps each write at 3 bytes. A synthetic close-EINTR does not
+close the kernel fd, so it tests only the ok(true)/table-closed semantics. `r.code` is the positive errno;
+the trap codes overlap numerically with errnos, so a program must not `exit(r.code)`.
+
+**Tests.** `errors/io.obx` has 12 cases (the type/mode/count checks, the transient data, the no-argument
+accessor, and the B4 try-in-an-argument case with the complete prelude `Box`/`b`/`getMode`/`makeBytes`).
+`tests/run/io_basic.obx` covers the three modes, ENOENT, EBADF for a read-only/write-only fd, an empty
+file, bytes 0..255, a 1 MiB file, a computed max and reopening; `io_match.obx` matches every builtin in
+the consuming form (the ok-descriptor oracle: a wrong tag misses the arm, and `try` would not see it);
+`io_pin_path.obx` checks the original file's content after `g()` frees the path string; `io_pin_fd.obx`
+checks the global read, the indexed write and the record field; `io_stdout_order.obx` checks text/byte
+ordering, the accessors and the stdout refusal; `io_double_close`, `io_after_close`,
+`io_write_empty_closed`, `io_read_big_closed` and `io_leak` are the exit-9/8 oracles. `io_reader.obx` and
+`io_writer.obx` (built with the library prelude) cover chunk sizes 1..16, a 100 KiB line, empty versus nil,
+EOF mid-line, readByte/readN/eof and flush thresholds. `tests/rt_io_test.c` links `runtime.c` directly
+with its own `_entry`: it checks the cell layout/tags, descriptor-driven frees (no leak at `rt_finish`),
+EOF as a nil payload, EINVAL/EBADF precedence (max, then fd, then the table, then the allocation), the
+N1/N2 orderings, exits 0/8/9 in one process per case, the EINTR close-state marking, and the gated hooks
+with and without check. `tests/io_test.py` runs that harness and the controlled programs: cat streaming
+from a pipe before EOF, a 100 KiB binary round trip, wc's counts, short reads, EINTR, short writes, the
+inert hook, the no-check Result codes, the inherited-fd double close (Python passes an fd >= 3, the program
+parses `args()[2]` with a decimal loop, and the case runs under `OBO_CHECK=1` so a mutant that marks the
+untracked fd closed exits 9 instead of returning code 9), the stdout refusal, and the library boundaries.
+`tests/programs/cat.obx` and `wc.obx` are the tool smoke cases.
+
+**Mutants.** `IO_MUTANTS` in `tests/mutate_fork.py` (only there; `mutate_port.py` does not import them),
+11 patterns, each matching once: no path pin, no fd materialise in readFd and in writeFd, noTemp dropped,
+data consumed, a fresh ok variant, swapped closeFile descriptors, `expression()` for the mode argument, a
+mode that is ignored, swapped stdout/stderr, and max passed as the fd. All are caught by the run/error
+files above. `tests/mutate_io.py` (new) judges 18 runtime and 6 library mutants by building a private
+runtime directory with the Makefile flags (or a mutated `io.obo` text) and running the same program-level
+oracles: short read as EOF, read at data+9, double close undetected, a close that does nothing (caught by
+`io_basic`'s close-then-return leak, not by `io_leak`, which leaks either way), fd 1 and data-pointer fds,
+read/write EINTR, close EINTR as an error, swapped err message/code, the fd table not updated on open, the
+N1 zero-length shortcut, N2 allocation before the checks, an unchecked negative fd, an EINTR close that
+does not mark the table, an untracked close that does, closable standard descriptors, the ungated hook,
+and the library's fill boundary (both forms), lost flush, dropped flush tail, and takeChunk's prefix and
+suffix errors. The baseline must pass every case first; 24/24 are caught.
+
+**Fuzz.** `own_fuzz.py` gains `io_roundtrip` and `io_append`: a random payload (empty or up to 300 bytes,
+with NUL and 0xFF forced), a random chunk size and read max; the generated program writes in chunks with a
+short-count loop, reopens, reads back (and for `io_append`, reopens `"a"` and appends first), and prints
+the length and a byte checksum that Python computes. 50 seeds of each run in `run_fork` under
+`OBO_CHECK=1`.
+
+**Memory.** `port_compare.py` measures the port compiling itself at 1,244,528 bytes live, against the
+2,000,000 budget (1,229,344 on main, so +15,184: the seven universe symbols, the builtin branches, the
+three Result-call helpers and the tests' text). The 1 KiB fd table lives in the runtime data segment of
+every image, not in the obo heap: `runtime_data.bin` grew by exactly 1,024 bytes (66,272 to 67,296) and
+`runtime_text.bin` by 4,303 (8,849 to 13,152) for the helpers. The compiler source does not use the
+builtins, so the port's peak grows only with its code.
+
+**Seed and round 2.** The compiler source does not call the I/O builtins in this branch, so `seed/obo`
+stays the Result seed and `make promote` is not part of the branch. Round 2 (optional, recommended
+against in phase 2) would move `compileFile` to the Result-returning builtins; `readFile`/`writeFile` are
+one-shot whole-file operations, so changing them would churn the fixed point for no tool benefit. The
+builtins are exercised by the tests and by phase 3.
+
+**Decisions.** An int descriptor in v1; revisit a `File` type in phase 5 if `eza` makes the fd discipline
+error-prone or a general destructor exists. The runtime builds the Result cells (one C place for the
+layout) rather than returning raw counts and building cells in obo. Messages are copies, never retained
+argument pointers. `readLine` returns bytes (`Result[?[]byte]`): optional strings are rejected by
+`parseType`, and strings canonicalise empty to 0, so an empty line and EOF would be indistinguishable.
+`readByte` uses `ok(-1)` because an optional byte is not a type. Only the maximum buffer size is clamped,
+and `readN`'s count is the caller's. `closeFile` refuses 0/1/2 but follows the table for a number
+`openFile` actually placed there. SIGPIPE keeps its default disposition (a write to a closed pipe kills
+the process, like coreutils); it is not a Result. The fd table is 1024 bytes; fds at or above it are
+untracked and the kernel still handles them.
