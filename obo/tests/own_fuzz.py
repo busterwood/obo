@@ -78,6 +78,9 @@ PRELUDE = [
     "fn mkstr(v: int): string { return \"a\" + string(v) }",
     "type Box = ref record { items: []int }",
     "type Pair = ref record { a: Node; b: ?Node }",
+    "fn setB(mut pr: &Pair) { pr.b = nil }",
+    "fn setA(mut pr: &Pair) { pr.a = mk(7) }",
+    "fn viaSetB(mut pr: &Pair) { setB(pr) }",
     "fn tick(mut a: &[]int): int { append(a, 1); return 0 }",
     "type Shape = closed {",
     "    Circle { r: int }",
@@ -1254,7 +1257,7 @@ class Gen:
         h = f"h{self.nhandles}"
         self.nhandles += 1
         k0, k1, k2 = self.k(), self.k(), self.k()
-        form = self.r.randrange(7)
+        form = self.r.randrange(8)
         arr = ["    var ys = new []Node(0)", f"    append(ys, mk({k0}))", f"    append(ys, mk({k1}))",
                f"    append(ys, mk({k2}))"]
         rec = [f"    var pr = new Pair{{a: mk({k0}), b: nil}}"]
@@ -1281,6 +1284,9 @@ class Gen:
                           f"    println({h}.value)", "    pr.a = mk(5)", f"    let g{h} = handle(pr.a)",
                           f"    println(g{h}.value)"]
             out = [str(k0), "5"]
+        elif form == 7:
+            body = rec + [f"    let {h} = handle(pr.a)", "    setB(pr)", "    viaSetB(pr)", f"    println({h}.value)"]
+            out = [str(k0)]
         else:
             body = arr + ["    var other = new []Node(0)", "    append(other, mk(6))", f"    let {h} = handle(ys[0])",
                           "    other[0] = mk(7)", "    truncate(other, 0)", f"    println({h}.value)"]
@@ -1311,6 +1317,8 @@ class Gen:
             arr + [f"    let {h} = handle(ys[1])", "    ys = new []Node(0)"],
             arr + [f"    let {h} = handle(ys[1])", "    let old = replace(ys[1], mk(7))", "    println(old.value)"],
             rec + [f"    let {h} = handle(pr.a)", "    pr.a = mk(7)"],
+            rec + [f"    let {h} = handle(pr.a)", "    setA(pr)"],
+            rec + [f"    let {h} = handle(pr.a)", "    let g = handle(pr)", "    g.a = mk(7)"],
             rec + [f"    let {h} = handle(pr.a)", "    pr = new Pair{a: mk(7), b: nil}"],
             rec + [f"    let {h} = handle(pr.a)", "    let old = replace(pr.a, mk(7))", "    println(old.value)"],
             rec + [f"    let {h} = handle(pr.a)", "    let g = handle(pr.a)", "    pr.a = mk(7)", f"    println(g.value)"],

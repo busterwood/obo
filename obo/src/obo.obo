@@ -2325,7 +2325,7 @@ fn pendDrop(k: int)
 fn originFree(r: ^Sym, what: string)
 fn originFreeAt(r: ^Sym, path: string, strict: bool, what: string)
 fn placeFreeChange(x: &Item, strict: bool, what: string)
-fn placeOpaque()
+fn placeFreeVia(orig: ?^Sym, raw: string, strict: bool, what: string)
 
 // Takes ownership of x's value, which is about to be stored in a variable,
 // field, element or parameter, or returned.
@@ -2681,7 +2681,6 @@ fn invalidate(root: ?^Sym, via: ?^Sym, all: bool, path: string) {
 // inside something is invalid, whatever it borrows from. A reference to a whole object stays
 // valid: only owners free whole objects, and a change through a handle frees only below its target.
 fn invalidateDeep(via: ?^Sym) {
-    placeOpaque()
     logFree(1, nil, false, "", via)
     markCarriedDeep()
     let locals = &ownedLocals
@@ -2705,7 +2704,6 @@ fn notePending(line: int, col: int, msg: string) {
 // a recursive call (or a deferred one) may write through a handle: the references inside something
 // that are live now may be freed, so they are suspect until they are pointed afresh
 fn markSuspects() {
-    placeOpaque()
     logFree(2, nil, false, "", nil)
     let locals = &ownedLocals
     for v in locals {
@@ -2821,6 +2819,50 @@ fn mightFree(f: ^Sym, g: ^Sym): bool {
     return false
 }
 
+// Where below its reference parameters a function may free (FnRec.pfree says only whether). One row per event:
+// the function, the parameter, and "=" (the value in a place is freed) or "!" (what lies below a place is freed, not
+// the place) with the place relative to the parameter. "!" alone is anywhere below. A parameter has at most
+// PF_MAX rows; past that, or for an unknown place, its rows all become "!"
+const PF_MAX = 4
+var pfFn = new []^Sym(0)
+var pfIdx = new []int(0)
+var pfEv = new []string(0)
+
+fn pfAdd(f: ^Sym, i: int, ev: string) {
+    var n = 0
+    for k in 0..len(pfFn) {
+        if pfFn[k] == f && pfIdx[k] == i {
+            if pfEv[k] == ev || pfEv[k] == "!" { return }
+            n += 1
+        }
+    }
+    if ev != "!" && n < PF_MAX {
+        append(pfFn, f)
+        append(pfIdx, i)
+        append(pfEv, ev)
+        return
+    }
+    for k in 0..len(pfFn) {
+        if pfFn[k] == f && pfIdx[k] == i { pfEv[k] = "!" }
+    }
+    if n == 0 {
+        append(pfFn, f)
+        append(pfIdx, i)
+        append(pfEv, "!")
+    }
+}
+
+// the current function might free, below its reference parameter g, what ev says (see pfAdd)
+fn recordParamFree(g: ^Sym, ev: string) {
+    let f = curFn
+    if f == nil { return }
+    let pi = len(f.fnRec.params) - 1 - (g.offset - 16) / 8
+    if pi < 62 {
+        f.fnRec.pfree = f.fnRec.pfree | (1 << pi)
+        pfAdd(f, pi, ev)
+    }
+}
+
 // the current function might free global g
 fn recordFree(g: ?^Sym) {
     let f = curFn
@@ -2830,9 +2872,8 @@ fn recordFree(g: ?^Sym) {
         f.writesHandles = true
         return
     }
-    if g.isParam && g.isRef {            // the parameter's reference: something below it may be freed
-        let pi = len(f.fnRec.params) - 1 - (g.offset - 16) / 8      // its place in the list: see fnBody
-        if pi < 62 { f.fnRec.pfree = f.fnRec.pfree | (1 << pi) }
+    if g.isParam && g.isRef {            // the parameter's reference: something below it may be freed, anywhere
+        recordParamFree(g, "!")
         return
     }
     if g.storage != "global" { return }
@@ -2912,8 +2953,16 @@ fn throughHandle(x: &Item): bool {
     return false
 }
 
-// the globals a change through x may free: a change through a handle may free anything
-fn recordFreeChange(x: &Item) {
+// the place placeIn gave for the i-th root of the reference r is not known: the reference is deep with no place, or a
+// loop has not pointed it afresh
+fn unknownPlace(r: ^Sym, i: int, p: string, xpath: string): bool {
+    if p != "" { return false }
+    return xpath != "" || r.bind.deeps[i] || (r.isRefLocal && !r.fresh && recording > 0)
+}
+
+// the globals a change through x may free (a change through a handle may free anything), and the places below a
+// reference parameter it may free (strict: what lies below the place, not the place)
+fn recordFreeChange(x: &Item, strict: bool) {
     if x.viaHandle {
         recordFree(handleSym)
         return
@@ -2921,7 +2970,23 @@ fn recordFreeChange(x: &Item) {
     let r = x.root
     if r == nil { return }
     if r.isRef {
-        for i in 0..len(r.bind.roots) { recordFree(r.bind.roots[i]) }
+        let rb = r.bind
+        for i in 0..len(rb.roots) {
+            let o = rb.roots[i]
+            if o.isParam && o.isRef {
+                // below a reference parameter: at the place the reference's binding gives in it
+                let p = placeIn(r, i, x.path)
+                if unknownPlace(r, i, p, x.path) {
+                    recordParamFree(o, "!")
+                } else if strict {
+                    recordParamFree(o, "!" + p)
+                } else {
+                    recordParamFree(o, "=" + p)
+                }
+            } else {
+                recordFree(o)
+            }
+        }
     } else {
         recordFree(r)
     }
@@ -3843,7 +3908,7 @@ fn pendBlockEnds(pm: int, cs: int, bs: int) {
 // a change through x frees the old value at its place (strict: what is below it): the handles made from a field or
 // element of an owned local that the change reaches are dead. The change is at the place written, directly, or, through
 // a reference, at the place the reference's binding gives in each owned local it may point into (placeIn). A change
-// through a handle is not here: it is placeOpaque's
+// through a handle is not here: it can name any object, and a later free of the place is a certain one
 fn placeFreeIn(r: ?^Sym, viaHandle: bool, xpath: string, strict: bool, what: string) {
     if r == nil || viaHandle { return }
     let q = r
@@ -3853,8 +3918,13 @@ fn placeFreeIn(r: ?^Sym, viaHandle: bool, xpath: string, strict: bool, what: str
             let o = rb.roots[i]
             if o != handleSym && !o.isRef && o.storage == "local" {
                 let p = placeIn(q, i, xpath)
-                // a reference that may point anywhere below the root: the change is below the root, whatever the place
-                originFreeAt(o, p, strict || (p == "" && xpath != ""), what)
+                // a reference that may point anywhere below the root: the change is below the root, whatever the place,
+                // and the elements a truncate keeps are not known
+                let unk = unknownPlace(q, i, p, xpath)
+                let keep = truncKeep
+                if unk { truncKeep = -1 }
+                originFreeAt(o, p, strict || unk, what)
+                truncKeep = keep
             }
         }
     } else if q.owned && q.storage == "local" {
@@ -3864,12 +3934,12 @@ fn placeFreeIn(r: ?^Sym, viaHandle: bool, xpath: string, strict: bool, what: str
 
 fn placeFreeChange(x: &Item, strict: bool, what: string) { placeFreeIn(x.root, x.viaHandle, x.path, strict, what) }
 
-// something may have been freed through a handle, which can name any object, so a slot of an owned local may
-// have been emptied unseen: the handles made from a field or element stop being tracked (the run-time check is
-// left). The handles to a whole owned local are not touched: only that local frees its object
-fn placeOpaque() {
-    for i in 0..len(originSyms) {
-        if originPath[i] != "" { originLive[i] = nil }
+// a change through a let handle made from the whole of an owned local (orig), at the path raw inside its object, is
+// a change of that local at that place
+fn placeFreeVia(orig: ?^Sym, raw: string, strict: bool, what: string) {
+    if orig != nil {
+        let o = orig
+        originFreeAt(o, raw, strict, what)
     }
 }
 
@@ -4003,6 +4073,39 @@ fn releaseArgs(tbase: int, omark: int) {
     truncate(ownedLocals, omark)
 }
 
+fn callFreeEvent(br: ^Sym, path: string, strict: bool) {
+    if br == handleSym { return }
+    if br.isParam && br.isRef {
+        if strict { recordParamFree(br, "!" + path) } else { recordParamFree(br, "=" + path) }
+    } else if !br.isRef && br.storage == "local" {
+        originFreeAt(br, path, strict, "let a call free below a place in")
+    }
+}
+
+// what a call to f may free below the reference it got for parameter i, which points at the place apath of the
+// root br (known unless the binding is deep with no place): the events of the rows of pfFn at that place, or
+// everything below it if f is not known to free only certain places. Handles made from a place of an owned
+// local are killed by them, and a reference parameter of the caller takes them in its own rows
+fn callFrees(f: ^Sym, i: int, br: ^Sym, known: bool, apath: string) {
+    if !known {
+        callFreeEvent(br, "", true)
+        return
+    }
+    if f.addr < 0 || f == curFn || f.freesAll || f.writesHandles || i >= 62 {
+        callFreeEvent(br, apath, true)
+        return
+    }
+    var n = 0
+    for k in 0..len(pfFn) {
+        if pfFn[k] == f && pfIdx[k] == i {
+            n += 1
+            let ev = pfEv[k]
+            callFreeEvent(br, apath + substr(ev, 1, len(ev)), ev[0] == '!')
+        }
+    }
+    if n == 0 { callFreeEvent(br, apath, true) }
+}
+
 fn callFn(f: ^Sym): Item {
     let saved = saveRegs()
     let n = len(f.fnRec.params)
@@ -4117,8 +4220,8 @@ fn callFn(f: ^Sym): Item {
                 // the binding's place; itemBind made it anywhere for a reference a loop has not pointed afresh
                 invalidate(b.roots[p], argVias[i], false, b.paths[p])
                 let br = b.roots[p]
-                if br != handleSym && !br.isRef && br.storage == "local" { originFreeAt(br, b.paths[p], true, "let a call free below a place in") }
-                recordFree(b.roots[p])
+                callFrees(f, argIdx[i], br, !b.deeps[p] || b.paths[p] != "", b.paths[p])
+                if !(br.isParam && br.isRef) { recordFree(br) }
             }
         }
     }
@@ -4318,8 +4421,9 @@ fn builtin(name: string): Item {
         freeEvent(x, place, raw, orig, ident)
         if x.deref || x.viaHandle {
             invalidateOwnedChange(x)
-            recordFreeChange(x)
+            recordFreeChange(x, false)
             placeFreeChange(x, false, "replace a place in")
+            if x.viaHandle { placeFreeVia(orig, raw, false, "replace a place in") }
         } else {
             let ts = x.sym
             if ts != nil {
@@ -4398,8 +4502,9 @@ fn builtin(name: string): Item {
         if lastRaw == "" && !x.viaHandle && !x.deref { originMove(x.sym, true) }
         if x.deref || x.viaHandle {
             invalidateOwnedChange(x)
-            recordFreeChange(x)
+            recordFreeChange(x, false)
             placeFreeChange(x, false, "take a place in")
+            if x.viaHandle { placeFreeVia(lastOrigin, lastRaw, false, "take a place in") }
         } else {
             let ts = x.sym
             if ts != nil && ts.storage == "local" { invalidate(ts, nil, true, "") }
@@ -4443,7 +4548,7 @@ fn builtin(name: string): Item {
             if name == "truncate" {
                 let owned = isOwned(baseOf(a.typ))
                 if owned { invalidateOwnedChange(a) } else { invalidateChange(a) }
-                if owned || !throughHandle(a) { recordFreeChange(a) }   // a scalar array frees nothing
+                if owned || !throughHandle(a) { recordFreeChange(a, true) }   // a scalar array frees nothing
             }
         }
         // the array is located before the value or count runs: a call there could free it
@@ -4491,6 +4596,7 @@ fn builtin(name: string): Item {
             if isOwned(baseOf(a.typ)) {
                 if b.mode == "const" { truncKeep = b.val }
                 placeFreeIn(r0, aVia, aPath, true, "truncate an array in")
+                if aVia { placeFreeVia(aOrig, aRaw, true, "truncate an array in") }
                 truncKeep = -1
             }
             let at = new []?Item(0)
@@ -5498,8 +5604,9 @@ fn assignmentOrCall(): bool {
                     invalidate(xs, nil, true, "")
                 } else if x.deref || x.viaHandle {
                     invalidateOwnedChange(x)
-                    recordFreeChange(x)
+                    recordFreeChange(x, false)
                     placeFreeChange(x, false, "assign over a place in")
+                    if x.viaHandle { placeFreeVia(torig, traw, false, "assign over a place in") }
                 } else if xs != nil {
                     invalidate(xs, nil, true, "")               // a global given a new value
                     recordFree(xs)

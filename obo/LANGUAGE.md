@@ -537,10 +537,15 @@ point at or above the place, or by passing a `mut` argument that reaches the pla
 to a function that frees below its parameter. A change to a sibling field, to
 another element with a constant index, to a scalar, or inside the object the handle
 names does not reach it, nor does `append` or a `truncate` with a constant count
-that keeps the element. An element with a variable index is reached by a change
+that keeps the element. A `mut` call frees only the places its callee frees below the
+parameter (a callee that sets `p.other` leaves a handle to `p.child` alone); a recursive
+or unknown callee, or one that frees many places, frees anywhere below the argument. An element with a variable index is reached by a change
 to the array or to any element. A move of the owner is a move, as for a whole
-owner. A change through another handle, or a call that may write through a
-handle, may have emptied the place unseen: the handle is then checked at run time.
+owner. A write through a handle made from the whole owner is a change of the
+owner. A write through any other handle is not seen, and the use is checked at run
+time. Known false positives: the old value replaced (`replace`) and kept elsewhere, a
+`truncate` with a count that is not a constant, and a free on a path the program does
+not take.
 
 ```obo
 // example: error: handle 'h' may name a freed object: a place in 'p'

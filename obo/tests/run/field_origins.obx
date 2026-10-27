@@ -7,6 +7,23 @@ type Top = ref record { par: Par; spare: Par }
 type Wrap = ref record { h: ^Par }
 fn nk(n: int): Kid { return new Kid{n: n, next: nil} }
 fn np(): Par { return new Par{child: nk(1), other: nk(2), kids: new []Kid(0), more: new []Kid(0), opt: nil, k: 0} }
+type Big = ref record { a: Kid; b: Kid; c: Kid; d: Kid; e: Kid; f: Kid }
+fn nbig(): Big { return new Big{a: nk(1), b: nk(2), c: nk(3), d: nk(4), e: nk(5), f: nk(6)} }
+// mut callees that free only certain places below their parameter
+fn touchOther(mut p: &Par) { p.other = nk(9) }
+fn viaTouch(mut p: &Par) { touchOther(p) }
+fn resetT(mut t: &Top) { t.par.child = nk(9) }
+fn dup5(mut x: &Big) { x.a = nk(7); x.a = nk(7); x.a = nk(7); x.a = nk(7); x.a = nk(7); x.b = nk(7) }
+fn scr4(mut x: &Big) { x.a = nk(7); x.b = nk(7); x.c = nk(7); x.d = nk(7) }
+fn wipeRec(mut k: &Kid, n: int) {
+    if n > 0 { wipeRec(k, n - 1) }
+    k.next = nk(1)
+}
+fn joined(mut x: &Top, c: bool) {
+    var r = &x.par.kids
+    if c { r = &x.par.more }
+    r[0] = nk(1)
+}
 fn flag(): bool { return true }
 fn eat(p: Par) { println(p.k) }
 fn pr(h: ^Kid) { println(h.n) }
@@ -245,6 +262,7 @@ fn defers() {
     let h = handle(p.child)
     {
         defer { grow(p.child) }
+        defer { wipeRec(p.child, 0) }
         defer { p.other = nk(108) }
     }
     println(h.n)
@@ -254,15 +272,42 @@ fn defers() {
     p.k = 1
 }
 
-// a callee that writes through a handle: the old child it hands back lives on
-fn swapKid(g: ^Par): Kid { return replace(g.child, nk(110)) }
-fn byCallee() {
+// a callee that frees below some places of its parameter leaves a handle to another place alone: a field, a field
+// of a field, two calls deep, a callee that is recursive (anywhere below the argument, not the argument itself),
+// four places, and a change through a reference with no known place (below the root, not the whole object)
+fn siblingCalls() {
     var p = np()
+    append(p.kids, nk(120))
     let h = handle(p.child)
-    let old = swapKid(handle(p))
-    p.child = nk(111)
+    let hk = handle(p.kids[0])
+    touchOther(p)
+    viaTouch(p)
     println(h.n)
-    println(old.n)
+    println(hk.n)
+    var t = new Top{par: np(), spare: np()}
+    let g = handle(t.spare.child)
+    let g2 = handle(t.par.other)
+    resetT(t)
+    println(g.n)
+    println(g2.n)
+    var b = nbig()
+    let hf = handle(b.f)
+    scr4(b)
+    dup5(b)
+    println(hf.n)
+    let hc = handle(p.child)
+    wipeRec(p.child, 0)
+    println(hc.n)
+    let gp = handle(p)
+    gp.other = nk(123)
+    gp.k = 4
+    println(h.n)
+    var t2 = new Top{par: np(), spare: np()}
+    append(t2.par.kids, nk(121))
+    append(t2.par.more, nk(122))
+    let hw = handle(t2)
+    joined(t2, true)
+    println(hw.par.k)
 }
 
 // truncate with a constant count keeps the elements before it
@@ -293,18 +338,6 @@ fn loopSibling() {
         p.other = nk(i)
         p.kids[1] = nk(i)
     }
-}
-
-// a change through a handle may free the object by moving it out: the handle is no longer tracked, and the
-// old child lives on in 'old'
-fn throughHandle() {
-    var p = np()
-    let h = handle(p.child)
-    let g = handle(p)
-    let old = replace(g.child, nk(5))
-    p.child = nk(6)
-    println(h.n)
-    println(old.n)
 }
 
 fn main() {
@@ -342,8 +375,14 @@ fn main() {
     loopSibling()           // expect: 90
                             // expect: 90
                             // expect: 90
-    throughHandle()         // expect: 1
+    siblingCalls()          // expect: 1
+                            // expect: 120
                             // expect: 1
+                            // expect: 2
+                            // expect: 6
+                            // expect: 1
+                            // expect: 1
+                            // expect: 0
     truncKeep()             // expect: 96
                             // expect: 98
     wholeHandle()           // expect: 0
@@ -351,7 +390,5 @@ fn main() {
     otherOwner()            // expect: 1
     viaField()              // expect: 1
     defers()                // expect: 1
-                            // expect: 1
-    byCallee()              // expect: 1
                             // expect: 1
 }

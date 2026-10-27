@@ -12,6 +12,17 @@ fn eat(p: Par) { println(p.k) }
 fn reset(mut p: &Par) { p.child = nk(9) }
 fn dropKids(mut ks: &[]Kid) { truncate(ks, 0) }
 fn bump(mut p: &Par) { p.k += 1 }
+type Big = ref record { a: Kid; b: Kid; c: Kid; d: Kid; e: Kid; f: Kid }
+fn nbig(): Big { return new Big{a: nk(1), b: nk(2), c: nk(3), d: nk(4), e: nk(5), f: nk(6)} }
+fn touchOther(mut p: &Par) { p.other = nk(9) }
+fn viaTouch(mut p: &Par) { touchOther(p) }
+fn setFirst(mut ks: &[]Kid) { ks[0] = nk(1) }
+fn scr5(mut x: &Big) { x.a = nk(7); x.b = nk(7); x.c = nk(7); x.d = nk(7); x.e = nk(7) }
+fn recur(mut p: &Par, n: int) {
+    if n > 0 { recur(p, n - 1) }
+    p.other = nk(9)
+}
+fn swapKid(g: ^Par): Kid { return replace(g.child, nk(110)) }
 // === a field assigned over
 fn main() {
     var p = np()
@@ -423,5 +434,112 @@ fn main() {
     append(t.par.kids, nk(1))
     let h = handle(t.par.kids[0])
     t.par.kids = new []Kid(0)
+    println(h.n)  // error: may name a freed object
+}
+// === a callee that frees the place the handle is made from
+fn main() {
+    var p = np()
+    let h = handle(p.other)
+    touchOther(p)
+    println(h.n)  // error: may name a freed object
+}
+// === a callee two calls deep that frees the place
+fn main() {
+    var p = np()
+    let h = handle(p.other)
+    viaTouch(p)
+    println(h.n)  // error: may name a freed object
+}
+// === a callee with more places than the summary keeps frees any place below the argument
+fn main() {
+    var b = nbig()
+    let h = handle(b.f)
+    scr5(b)
+    println(h.n)  // error: may name a freed object
+}
+// === a recursive callee frees anywhere below the argument
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    recur(p, 1)
+    println(h.n)  // error: may name a freed object
+}
+// === a callee that sets an element, given a reference with no known place
+fn main() {
+    var p = np()
+    append(p.kids, nk(1))
+    append(p.more, nk(2))
+    let h = handle(p.kids[0])
+    var r = &p.kids
+    if flag() { r = &p.more }
+    setFirst(r)
+    println(h.n)  // error: may name a freed object
+}
+// === a free through a handle to another owner does not stop the tracking
+fn main() {
+    var p = np()
+    var q = np()
+    let h = handle(p.child)
+    let hq = handle(q)
+    hq.other = nk(3)
+    p = np()
+    println(h.n)  // error: may name a freed object
+}
+// === a recursive call does not stop the tracking
+fn rec(n: int) {
+    if n == 0 { return }
+    var p = np()
+    let h = handle(p.child)
+    rec(n - 1)
+    p.child = nk(2)
+    println(h.n)  // error: may name a freed object
+}
+fn main() { rec(1) }
+// === the object moved out through a handle, then the place refilled: a known false positive
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    let old = swapKid(handle(p))
+    p.child = nk(111)
+    println(h.n)  // error: may name a freed object
+    println(old.n)
+}
+// === a truncate through a reference with no known place, the elements it keeps are not known
+fn main() {
+    var ys = new [][][]Kid(0)
+    append(ys, new [][]Kid(0))
+    append(ys, new [][]Kid(0))
+    for j in 0..3 { append(ys[1], new []Kid(0)) }
+    append(ys[1][2], nk(7))
+    let h = handle(ys[1][2][0])
+    var r = &ys[0]
+    if len(ys) == 2 { r = &ys[1] }
+    truncate(r, 2)
+    println(h.n)  // error: may name a freed object
+}
+// === a write through a handle to the owner
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    let g = handle(p)
+    g.child = nk(3)
+    println(h.n)  // error: may name a freed object
+}
+// === a replace through a handle to the owner
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    let g = handle(p)
+    let old = replace(g.child, nk(3))
+    println(h.n)  // error: may name a freed object
+    println(old.n)
+}
+// === a truncate through a handle to the owner
+fn main() {
+    var p = np()
+    append(p.kids, nk(1))
+    let h = handle(p.kids[0])
+    let g = handle(p)
+    truncate(g.kids, 0)
     println(h.n)  // error: may name a freed object
 }
