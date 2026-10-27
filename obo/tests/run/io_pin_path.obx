@@ -1,0 +1,71 @@
+// io_pin_path: openFile(b.name, g()), where g assigns over b.name and so frees
+// the string the path came from. The path is pinned before the mode runs, so the
+// ORIGINAL file is opened; without the pin the runtime would read freed bytes.
+// The oracle is the original file's content, not merely a successful open.
+// expect: opened original
+// expect: content ORIGINAL
+type Box = ref record { name: string }
+
+var b = new Box{name: ""}
+
+fn g(): string {
+    b.name = "WRONG-PATH-" + string(424242)
+    return "r"
+}
+
+fn bytesOf(s: string): []byte {
+    let out = new []byte(0)
+    for i in 0..len(s) { append(out, s[i]) }
+    return out
+}
+
+fn slurp(fd: int): Result[[]byte] {
+    var out = new []byte(0)
+    while true {
+        let got = try readFd(fd, 16)
+        if got == nil { break }
+        for i in 0..len(got) { append(out, got[i]) }
+    }
+    return ok(out)
+}
+
+fn main() {
+    let a = args()
+    let p = a[1] + "/pin.txt"
+    // create the original file
+    let o = openFile(p, "w")
+    match o {
+        ok(fd) {
+            let data = bytesOf("ORIGINAL")
+            let w = writeFd(fd, data)
+            match w {
+                ok(n) { if n != 8 { println("setup write ", n); exit(1) } }
+                err(m, c) { println("setup: ", m, " (", c, ")"); exit(1) }
+            }
+            let c = closeFile(fd)
+            match c { ok(v) { } err(m, code) { println("setup close: ", m, " (", code, ")"); exit(1) } }
+        }
+        err(m, c) { println("setup open: ", m, " (", c, ")"); exit(1) }
+    }
+    // give the global the real path, then open it while g() frees the string
+    b.name = p
+    let r = openFile(b.name, g())
+    match r {
+        ok(fd) {
+            println("opened original")
+            let s = slurp(fd)
+            match s {
+                ok(v) {
+                    if len(v) != 8 { println("content length ", len(v)); exit(1) }
+                    var out = new []byte(0)
+                    for i in 0..len(v) { append(out, v[i]) }
+                    println("content ", string(out))
+                }
+                err(m, c) { println("read: ", m, " (", c, ")"); exit(1) }
+            }
+            let c = closeFile(fd)
+            match c { ok(v) { } err(m, code) { println("close: ", m, " (", code, ")"); exit(1) } }
+        }
+        err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+    }
+}

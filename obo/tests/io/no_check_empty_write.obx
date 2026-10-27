@@ -1,0 +1,24 @@
+// no_check_empty_write: without OBO_CHECK=1 an empty write to a tracked closed
+// fd is err(EBADF), code 9, not ok(0): the state check precedes any shortcut (N1).
+// expect: write code 9
+fn main() {
+    let a = args()
+    let p = a[1] + "/emptywrite.bin"
+    let o = openFile(p, "w")
+    match o {
+        ok(fd) {
+            let c = closeFile(fd)
+            match c {
+                ok(v) { }
+                err(m, code) { println("close code ", code); exit(1) }
+            }
+            let empty = new []byte(0)
+            let w = writeFd(fd, empty)
+            match w {
+                ok(n) { println("write ok ", n); exit(1) }
+                err(m, code) { println("write code ", code) }
+            }
+        }
+        err(m, c) { println("open code ", c); exit(1) }
+    }
+}

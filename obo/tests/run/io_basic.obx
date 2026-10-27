@@ -1,0 +1,161 @@
+// io_basic: the open modes, read and write, the errno codes, binary data,
+// a computed max and a 1 MiB file. Everything is verified by reopening.
+// expect: binary 256 32640
+// expect: append 260 84 65 73 76
+// expect: enoent 2
+// expect: read-only 9
+// expect: write-only 9
+// expect: empty nil
+// expect: big 1048576 133693440
+fn bytesOf(s: string): []byte {
+    let out = new []byte(0)
+    for i in 0..len(s) { append(out, s[i]) }
+    return out
+}
+
+fn openOrDie(path: string, mode: string): int {
+    let o = openFile(path, mode)
+    match o {
+        ok(v) { return v }
+        err(m, c) { println("open failed: ", m, " (", c, ")"); exit(1) }
+    }
+}
+
+fn closeOrDie(fd: int) {
+    let r = closeFile(fd)
+    match r {
+        ok(v) { if !v { println("close returned false"); exit(1) } }
+        err(m, c) { println("close failed: ", m, " (", c, ")"); exit(1) }
+    }
+}
+
+fn writeOrDie(fd: int, data: &[]byte): int {
+    let w = writeFd(fd, data)
+    match w {
+        ok(n) { return n }
+        err(m, c) { println("write failed: ", m, " (", c, ")"); exit(1) }
+    }
+}
+
+fn slurp(path: string): Result[[]byte] {
+    let fd = try openFile(path, "r")
+    var out = new []byte(0)
+    while true {
+        let got = try readFd(fd, 64)
+        if got == nil { break }
+        for i in 0..len(got) { append(out, got[i]) }
+    }
+    try closeFile(fd)
+    return ok(out)
+}
+
+fn main() {
+    let a = args()
+    let dir = a[1]
+    let p = dir + "/basic.bin"
+
+    // "w" creates and truncates: binary bytes 0..255
+    var data = new []byte(256)
+    for i in 0..256 { data[i] = byte(i) }
+    let fd = openOrDie(p, "w")
+    let n = writeOrDie(fd, data)
+    if n != 256 { println("short write ", n); exit(1) }
+    closeOrDie(fd)
+
+    let s = slurp(p)
+    match s {
+        ok(v) {
+            if len(v) != 256 { println("read back ", len(v)); exit(1) }
+            var sum = 0
+            for i in 0..len(v) { sum += int(v[i]) }
+            if int(v[0]) != 0 || int(v[255]) != 255 { println("content differs"); exit(1) }
+            println("binary ", len(v), " ", sum)
+        }
+        err(m, c) { println("slurp: ", m, " (", c, ")"); exit(1) }
+    }
+
+    // "a" appends
+    let tail = bytesOf("TAIL")
+    let fa = openOrDie(p, "a")
+    let na = writeOrDie(fa, tail)
+    if na != 4 { println("short append ", na); exit(1) }
+    closeOrDie(fa)
+    let fr = openOrDie(p, "r")
+    let want = len(data) + len(tail)
+    let got = readFd(fr, want)
+    match got {
+        ok {
+            let v = take(got.value)
+            if v == nil { println("append eof"); exit(1) }
+            if len(v) != want { println("append length ", len(v)); exit(1) }
+            println("append ", len(v), " ", int(v[want - 4]), " ", int(v[want - 3]), " ", int(v[want - 2]), " ", int(v[want - 1]))
+        }
+        err { println("append read: ", got.message, " (", got.code, ")"); exit(1) }
+    }
+    closeOrDie(fr)
+
+    // ENOENT is code 2
+    let miss = openFile(dir + "/nope.bin", "r")
+    match miss {
+        ok(v) { println("unexpected ok ", v); exit(1) }
+        err(m, c) { println("enoent ", c) }
+    }
+
+    // a write to a read-only fd is EBADF (9)
+    let ro = openOrDie(p, "r")
+    let rw = writeFd(ro, tail)
+    match rw {
+        ok(n2) { println("write to read-only succeeded ", n2); exit(1) }
+        err(m, c) { println("read-only ", c) }
+    }
+    closeOrDie(ro)
+
+    // a read from a write-only fd is EBADF (9)
+    let woPath = dir + "/writeonly.bin"
+    let wo = openOrDie(woPath, "w")
+    let rr = readFd(wo, 8)
+    match rr {
+        ok { println("read from write-only succeeded"); exit(1) }
+        err { println("write-only ", rr.code) }
+    }
+    closeOrDie(wo)
+
+    // an empty file reads EOF as nil
+    let emptyPath = dir + "/empty.bin"
+    let fe = openOrDie(emptyPath, "w")
+    closeOrDie(fe)
+    let er = openOrDie(emptyPath, "r")
+    let eg = readFd(er, 16)
+    match eg {
+        ok {
+            let v = take(eg.value)
+            if v != nil { println("empty file had bytes"); exit(1) }
+            println("empty nil")
+        }
+        err { println("empty read: ", eg.message, " (", eg.code, ")"); exit(1) }
+    }
+    closeOrDie(er)
+
+    // a 1 MiB file, written and read with a computed max
+    let bigPath = dir + "/big.bin"
+    var big = new []byte(1048576)
+    for i in 0..len(big) { big[i] = byte(i * 7) }
+    let fb = openOrDie(bigPath, "w")
+    let nb = writeOrDie(fb, big)
+    if nb != len(big) { println("big short write ", nb); exit(1) }
+    closeOrDie(fb)
+    let fbr = openOrDie(bigPath, "r")
+    let bg = readFd(fbr, len(big))
+    match bg {
+        ok {
+            let v = take(bg.value)
+            if v == nil { println("big eof"); exit(1) }
+            if len(v) != len(big) { println("big length ", len(v)); exit(1) }
+            var sum = 0
+            for i in 0..len(v) { sum += int(v[i]) }
+            println("big ", len(v), " ", sum)
+        }
+        err { println("big read: ", bg.message, " (", bg.code, ")"); exit(1) }
+    }
+    closeOrDie(fbr)
+}

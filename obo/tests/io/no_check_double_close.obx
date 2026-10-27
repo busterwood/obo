@@ -1,0 +1,23 @@
+// no_check_double_close: without OBO_CHECK=1 the second close of a tracked fd is
+// err(EBADF) in the Result, code 9, and the program ends normally.
+// expect: second code 9
+fn main() {
+    let a = args()
+    let p = a[1] + "/double.bin"
+    let o = openFile(p, "w")
+    match o {
+        ok(fd) {
+            let c1 = closeFile(fd)
+            match c1 {
+                ok(v) { }
+                err(m, code) { println("first code ", code); exit(1) }
+            }
+            let c2 = closeFile(fd)
+            match c2 {
+                ok(v) { println("second ok"); }
+                err(m, code) { println("second code ", code) }
+            }
+        }
+        err(m, c) { println("open code ", c); exit(1) }
+    }
+}

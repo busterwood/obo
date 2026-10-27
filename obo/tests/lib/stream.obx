@@ -1,0 +1,91 @@
+// stream: the pump and count shapes over real files: pump moves a file through
+// a Reader and a Writer chunk by chunk, and count sums the bytes without holding
+// them. The output is compared byte for byte with the input.
+// expect: pumped ok
+// expect: count 1000
+// expect: same ok
+fn writeAll(path: string, data: &[]byte) {
+    let o = openFile(path, "w")
+    match o {
+        ok(fd) {
+            let w = writeFd(fd, data)
+            match w {
+                ok(n) { if n != len(data) { println("write ", n); exit(1) } }
+                err(m, c) { println("write: ", m, " (", c, ")"); exit(1) }
+            }
+            let cl = closeFile(fd)
+            match cl { ok(v) { } err(m, c) { println("close: ", m, " (", c, ")"); exit(1) } }
+        }
+        err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+    }
+}
+
+fn main() {
+    let a = args()
+    let dir = a[1]
+    let inPath = dir + "/stream.in"
+    let outPath = dir + "/stream.out"
+    var data = new []byte(1000)
+    for i in 0..len(data) { data[i] = byte(i * 17 + 3) }
+    writeAll(inPath, data)
+
+    let io = openFile(inPath, "r")
+    match io {
+        ok(fdIn) {
+            let oo = openFile(outPath, "w")
+            match oo {
+                ok(fdOut) {
+                    var r = newReader(fdIn, 7)
+                    var w = newWriter(fdOut, 11)
+                    let p = pump(r, w)
+                    match p {
+                        ok(v) { }
+                        err(m, c) { println("pump: ", m, " (", c, ")"); exit(1) }
+                    }
+                    let f = flush(w)
+                    match f {
+                        ok(v) { if !v { println("flush false"); exit(1) } }
+                        err(m, c) { println("flush: ", m, " (", c, ")"); exit(1) }
+                    }
+                    let c = closeFile(fdOut)
+                    match c { ok(v) { } err(m, code) { println("close out: ", m, " (", code, ")"); exit(1) } }
+                }
+                err(m, c) { println("open out: ", m, " (", c, ")"); exit(1) }
+            }
+            let c = closeFile(fdIn)
+            match c { ok(v) { } err(m, code) { println("close in: ", m, " (", code, ")"); exit(1) } }
+        }
+        err(m, c) { println("open in: ", m, " (", c, ")"); exit(1) }
+    }
+    println("pumped ok")
+
+    // count the input file without holding it
+    let ci = openFile(inPath, "r")
+    match ci {
+        ok(fd) {
+            var r = newReader(fd, 13)
+            let n = count(r)
+            match n {
+                ok(v) { println("count ", v) }
+                err(m, c) { println("count: ", m, " (", c, ")"); exit(1) }
+            }
+            if !eof(r) { println("count did not reach eof"); exit(1) }
+            let c = closeFile(fd)
+            match c { ok(v) { } err(m, code) { println("close: ", m, " (", code, ")"); exit(1) } }
+        }
+        err(m, c) { println("open count: ", m, " (", c, ")"); exit(1) }
+    }
+
+    // the output is byte-identical to the input
+    var want = readFile(inPath)
+    var got = readFile(outPath)
+    let w = take(want)
+    let g = take(got)
+    if w == nil { println("unreadable in"); exit(1) }
+    if g == nil { println("unreadable out"); exit(1) }
+    if len(g) != len(w) { println("stream length ", len(g)); exit(1) }
+    for i in 0..len(g) {
+        if g[i] != w[i] { println("stream byte ", i); exit(1) }
+    }
+    println("same ok")
+}

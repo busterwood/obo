@@ -1,0 +1,75 @@
+// io_match: every I/O Result is matched, both arms, in the consuming form.
+// This is the oracle for the runtime's ok descriptor: a cell tagged with a
+// fresh or wrong descriptor misses the ok arm, and try-based code would not
+// reveal that (try compares only the err descriptor).
+// expect: open ok
+// expect: write ok 5
+// expect: close ok true
+// expect: read ok 5 532
+// expect: read nil at eof
+// expect: close ok true
+// expect: enoent err 2
+fn bytesOf(s: string): []byte {
+    let out = new []byte(0)
+    for i in 0..len(s) { append(out, s[i]) }
+    return out
+}
+
+fn main() {
+    let a = args()
+    let p = a[1] + "/match.bin"
+
+    let o = openFile(p, "w")
+    match o {
+        ok(fd) {
+            println("open ok")
+            let b = bytesOf("hello")
+            let w = writeFd(fd, b)
+            match w {
+                ok(n) { println("write ok ", n) }
+                err(m, c) { println("write err ", m, " ", c); exit(1) }
+            }
+            let c = closeFile(fd)
+            match c {
+                ok(v) { println("close ok ", v) }
+                err(m, code) { println("close err ", m, " ", code); exit(1) }
+            }
+        }
+        err(m, c) { println("open err ", m, " ", c); exit(1) }
+    }
+
+    let ir = openFile(p, "r")
+    match ir {
+        ok(fd) {
+            let r = readFd(fd, 16)
+            match r {
+                ok(v) {
+                    if v == nil { println("read nil too soon"); exit(1) }
+                    var sum = 0
+                    for i in 0..len(v) { sum += int(v[i]) }
+                    println("read ok ", len(v), " ", sum)
+                }
+                err(m, c) { println("read err ", m, " ", c); exit(1) }
+            }
+            let e = readFd(fd, 16)
+            match e {
+                ok(v) {
+                    if v == nil { println("read nil at eof") } else { println("read past eof ", len(v)); exit(1) }
+                }
+                err(m, c) { println("eof err ", m, " ", c); exit(1) }
+            }
+            let c = closeFile(fd)
+            match c {
+                ok(v) { println("close ok ", v) }
+                err(m, code) { println("close err ", m, " ", code); exit(1) }
+            }
+        }
+        err(m, c) { println("open err ", m, " ", c); exit(1) }
+    }
+
+    let miss = openFile(a[1] + "/no-such-file", "r")
+    match miss {
+        ok(fd) { println("unexpected ok ", fd); exit(1) }
+        err(m, c) { println("enoent err ", c) }
+    }
+}

@@ -1,0 +1,23 @@
+// io_after_close: reading a tracked fd after close traps under OBO_CHECK=1.
+// expect-exit: 9
+// expect-stderr: use of a closed file descriptor
+fn main() {
+    let a = args()
+    let p = a[1] + "/after.bin"
+    let o = openFile(p, "w")
+    match o {
+        ok(fd) {
+            let c = closeFile(fd)
+            match c {
+                ok(v) { }
+                err(m, code) { println("close: ", m, " (", code, ")"); exit(1) }
+            }
+            let r = readFd(fd, 4)
+            match r {
+                ok(v) { println("read after close succeeded") }
+                err(m, code) { println("read after close: ", m, " (", code, ")"); }
+            }
+        }
+        err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+    }
+}

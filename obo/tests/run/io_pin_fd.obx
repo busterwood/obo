@@ -1,0 +1,158 @@
+// io_pin_fd: the fd argument is materialised before a later argument runs, so a
+// call there that changes the fd cannot change which descriptor is used. Three
+// shapes: a global read, an indexed write whose index calls, and a record field
+// with a mut callee. Without the materialise, each would use the later value.
+// expect: read AA
+// expect: write C=XY D=
+// expect: field EE
+type FBox = ref record { fd: int; fd2: int }
+
+var gfd = 0
+var gfd2 = 0
+var gfd4 = 0
+
+// f changes the global fd and returns a count: the read must use the fd on entry
+fn f(): int {
+    gfd = gfd2
+    return 2
+}
+
+// setGfd changes the global fd while the data argument is located
+fn setGfd(i: int): int {
+    gfd = gfd4
+    return i
+}
+
+// bump changes the record's fd while the fd argument is already located
+fn bump(mut b: &FBox): int {
+    b.fd = b.fd2
+    return 2
+}
+
+fn bytesOf(s: string): []byte {
+    let out = new []byte(0)
+    for i in 0..len(s) { append(out, s[i]) }
+    return out
+}
+
+fn openOrDie(path: string, mode: string): int {
+    let o = openFile(path, mode)
+    match o {
+        ok(v) { return v }
+        err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+    }
+}
+
+fn closeOrDie(fd: int) {
+    let r = closeFile(fd)
+    match r {
+        ok(v) { if !v { println("close false"); exit(1) } }
+        err(m, c) { println("close: ", m, " (", c, ")"); exit(1) }
+    }
+}
+
+fn makeFile(path: string, s: string) {
+    let fd = openOrDie(path, "w")
+    let data = bytesOf(s)
+    let w = writeFd(fd, data)
+    match w {
+        ok(n) { if n != len(data) { println("setup write ", n); exit(1) } }
+        err(m, c) { println("setup: ", m, " (", c, ")"); exit(1) }
+    }
+    let c = closeFile(fd)
+    match c { ok(v) { } err(m, code) { println("setup close: ", m, " (", code, ")"); exit(1) } }
+}
+
+fn slurp(path: string): Result[[]byte] {
+    let fd = try openFile(path, "r")
+    var out = new []byte(0)
+    while true {
+        let got = try readFd(fd, 16)
+        if got == nil { break }
+        for i in 0..len(got) { append(out, got[i]) }
+    }
+    try closeFile(fd)
+    return ok(out)
+}
+
+fn firstByte(v: &[]byte): int {
+    if len(v) == 0 { return -1 }
+    return int(v[0])
+}
+
+fn main() {
+    let a = args()
+    let dir = a[1]
+    makeFile(dir + "/A", "AAAA")
+    makeFile(dir + "/B", "BBBBBBBB")
+    makeFile(dir + "/C", "")
+    makeFile(dir + "/D", "")
+    makeFile(dir + "/E", "EEEE")
+    makeFile(dir + "/F", "FFFFFF")
+
+    // 1: readFd(gfd, f()), with f changing gfd
+    let fdA = openOrDie(dir + "/A", "r")
+    let fdB = openOrDie(dir + "/B", "r")
+    gfd = fdA
+    gfd2 = fdB
+    let r = readFd(gfd, f())
+    match r {
+        ok(v) {
+            if v == nil { println("pin fd: eof"); exit(1) }
+            if len(v) != 2 || firstByte(v) != 65 { println("pin fd: wrong bytes"); exit(1) }
+            println("read AA")
+        }
+        err(m, c) { println("pin fd: ", m, " (", c, ")"); exit(1) }
+    }
+    closeOrDie(fdA)
+    closeOrDie(fdB)
+
+    // 2: writeFd(gfd, rows[setGfd(0)]), with the index call changing gfd
+    let fdC = openOrDie(dir + "/C", "w")
+    let fdD = openOrDie(dir + "/D", "w")
+    gfd = fdC
+    gfd4 = fdD
+    var rows = new [][]byte(0)
+    append(rows, bytesOf("XY"))
+    append(rows, bytesOf("ZZ"))
+    let w = writeFd(gfd, rows[setGfd(0)])
+    match w {
+        ok(n) { if n != 2 { println("pin write: ", n); exit(1) } }
+        err(m, c) { println("pin write: ", m, " (", c, ")"); exit(1) }
+    }
+    closeOrDie(fdC)
+    closeOrDie(fdD)
+    let sc = slurp(dir + "/C")
+    let sd = slurp(dir + "/D")
+    match sc {
+        ok(vc) {
+            match sd {
+                ok(vd) {
+                    var cbytes = new []byte(0)
+                    for i in 0..len(vc) { append(cbytes, vc[i]) }
+                    var dbytes = new []byte(0)
+                    for i in 0..len(vd) { append(dbytes, vd[i]) }
+                    println("write C=", string(cbytes), " D=", string(dbytes))
+                }
+                err(m, c) { println("D: ", m, " (", c, ")"); exit(1) }
+            }
+        }
+        err(m, c) { println("C: ", m, " (", c, ")"); exit(1) }
+    }
+
+    // 3: readFd(b.fd, bump(b)), with bump changing the field
+    let fdE = openOrDie(dir + "/E", "r")
+    let fdF = openOrDie(dir + "/F", "r")
+    var bx = new FBox{fd: fdE, fd2: fdF}
+    let q = readFd(bx.fd, bump(bx))
+    match q {
+        ok(v) {
+            if v == nil { println("pin field: eof"); exit(1) }
+            if len(v) != 2 || firstByte(v) != 69 { println("pin field: wrong bytes"); exit(1) }
+            println("field EE")
+        }
+        err(m, c) { println("pin field: ", m, " (", c, ")"); exit(1) }
+    }
+    closeOrDie(fdE)
+    closeOrDie(fdF)
+}

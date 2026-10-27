@@ -24,6 +24,14 @@ nested results, an owned payload, a consuming match, strings, a discarded try, a
 loop) called with random arguments, with both the ok and error paths modelled in
 Python.
 
+Two more profiles, io_roundtrip and io_append, are valid-only generators for the
+incremental-I/O builtins: a random payload (empty or up to 300 bytes, with NUL
+and 0xFF forced), a random chunk size, a random read max; the program writes in
+chunks (looping on short counts), reopens and reads back (io_append appends to a
+reopened "a" file first), prints the length and a byte checksum, and Python
+computes the same output. Both run under OBO_CHECK=1, so a leak or an fd mistake
+fails the seed.
+
     python3 obo/tests/own_fuzz.py [--count N] [--profile safe|full|both]
     python3 obo/tests/own_fuzz.py SEED [--safe]      print one program and its output
 """
@@ -1727,6 +1735,171 @@ def check_result(seed):
     return 'ran'
 
 
+# ---------------------------------------------------------------- io profiles
+# Incremental I/O, valid only: a generated payload is written in chunks (the
+# write loop handles short counts), the file is reopened and read with a random
+# max, and the length and checksum are printed. io_append reopens "a" and appends
+# a second payload before reading back. The model computes the same lines.
+IO_HELPERS = [
+    "fn writeChunks(fd: int, data: &[]byte, chunk: int): Result[int] {",
+    "    var done = 0",
+    "    while done < len(data) {",
+    "        var take = len(data) - done",
+    "        if take > chunk { take = chunk }",
+    "        var part = new []byte(0)",
+    "        for i in 0..take { append(part, data[done + i]) }",
+    "        var off = 0",
+    "        while off < take {",
+    "            var rest = new []byte(0)",
+    "            for i in off..take { append(rest, part[i]) }",
+    "            let n = try writeFd(fd, rest)",
+    "            if n == 0 { return err(\"no progress\", 5) }",
+    "            off += n",
+    "        }",
+    "        done += take",
+    "    }",
+    "    return ok(done)",
+    "}",
+    "fn readAll(fd: int, max: int): Result[[]byte] {",
+    "    var out = new []byte(0)",
+    "    while true {",
+    "        let got = try readFd(fd, max)",
+    "        if got == nil { break }",
+    "        for i in 0..len(got) { append(out, got[i]) }",
+    "    }",
+    "    return ok(out)",
+    "}",
+]
+
+
+def io_checksum(bs):
+    s = 0
+    for b in bs:
+        s = (s * 131 + b) % 1000003
+    return s
+
+
+def io_payload(r):
+    """(length, multiplier, addend, bytes): the program builds the same bytes."""
+    n = r.choice([0, 1, 2, 3, 5, 7, 15, 16, 17, 31, 63, 64, 65, 255, 256, 257, 300])
+    m, k = r.randrange(1, 256), r.randrange(0, 256)
+    data = [(i * m + k) & 255 for i in range(n)]
+    if n > 0:
+        data[0] = 0
+    if n > 1:
+        data[-1] = 255
+    return n, m, k, data
+
+
+def io_program(seed, append):
+    """(program text, expected output lines) for one io-profile seed."""
+    r = random.Random(seed * 104729 + (7 if append else 3))
+    n, m, k, data = io_payload(r)
+    chunk, maxread = r.randrange(1, 20), r.randrange(1, 40)
+    lines = list(IO_HELPERS) + [
+        "fn main() {",
+        "    let a = args()",
+        '    let p = a[1] + "/iofuzz.bin"',
+        f"    var data = new []byte({n})",
+        f"    for i in 0..len(data) {{ data[i] = byte(i * {m} + {k}) }}",
+        "    if len(data) > 0 { data[0] = 0 }",
+        "    if len(data) > 1 { data[len(data) - 1] = 255 }",
+    ]
+    if append:
+        n2, m2, k2, tail = io_payload(r)
+        lines += [
+            f"    var tail = new []byte({n2})",
+            f"    for i in 0..len(tail) {{ tail[i] = byte(i * {m2} + {k2}) }}",
+            "    if len(tail) > 0 { tail[0] = 0 }",
+            "    if len(tail) > 1 { tail[len(tail) - 1] = 255 }",
+        ]
+    else:
+        n2, tail = 0, []
+    lines += [
+        '    let o = openFile(p, "w")',
+        "    match o {",
+        "        ok(fd) {",
+        f"            let w = writeChunks(fd, data, {chunk})",
+        "            match w {",
+        "                ok(n) { if n != len(data) { println(\"write count \", n); exit(1) } }",
+        "                err(m, c) { println(\"werr \", m, \" \", c); exit(1) }",
+        "            }",
+        "            let c = closeFile(fd)",
+        "            match c { ok(v) { } err(m, code) { println(\"cerr \", code); exit(1) } }",
+        "        }",
+        "        err(m, c) { println(\"oerr \", m, \" \", c); exit(1) }",
+        "    }",
+    ]
+    if append:
+        lines += [
+            '    let o2 = openFile(p, "a")',
+            "    match o2 {",
+            "        ok(fd) {",
+            f"            let w = writeChunks(fd, tail, {max(1, chunk - 1)})",
+            "            match w {",
+            "                ok(n) { if n != len(tail) { println(\"append count \", n); exit(1) } }",
+            "                err(m, c) { println(\"aerr \", m, \" \", c); exit(1) }",
+            "            }",
+            "            let c = closeFile(fd)",
+            "            match c { ok(v) { } err(m, code) { println(\"cerr \", code); exit(1) } }",
+            "        }",
+            "        err(m, c) { println(\"oerr \", m, \" \", c); exit(1) }",
+            "    }",
+        ]
+    lines += [
+        '    let r = openFile(p, "r")',
+        "    match r {",
+        "        ok(fd) {",
+        f"            let got = readAll(fd, {maxread})",
+        "            match got {",
+        "                ok(v) {",
+        "                    println(\"len \", len(v))",
+        "                    var sum = 0",
+        "                    for i in 0..len(v) { sum = (sum * 131 + int(v[i])) % 1000003 }",
+        "                    println(\"sum \", sum)",
+        "                }",
+        "                err(m, c) { println(\"rerr \", m, \" \", c); exit(1) }",
+        "            }",
+        "            let c = closeFile(fd)",
+        "            match c { ok(v) { } err(m, code) { println(\"cerr \", code); exit(1) } }",
+        "        }",
+        "        err(m, c) { println(\"oerr \", m, \" \", c); exit(1) }",
+        "    }",
+        "}",
+        "",
+    ]
+    full = data + tail
+    return "\n".join(lines), [f"len {len(full)}", f"sum {io_checksum(full)}"]
+
+
+def check_io(seed, append):
+    """Compile and run one io-profile seed; its output and the leak check must match."""
+    text, expect = io_program(seed, append)
+    kind = 'io_append' if append else 'io_roundtrip'
+    tag = f"{kind}{seed}"
+    path = os.path.join(TMP, tag + '.obx')
+    exe = os.path.join(TMP, tag)
+    with open(path, 'w') as f:
+        f.write(text)
+    regen = f"(regenerate with: python3 obo/tests/own_fuzz.py {seed})"
+    b = subprocess.run([OBO, path, '-o', exe, '--rt', FORK], capture_output=True, text=True, timeout=60)
+    if b.returncode != 0:
+        raise Fail(f"false rejection: {b.stderr.strip()}\n{path}\n{regen}")
+    scratch = os.path.join(TMP, tag + '-scratch')
+    shutil.rmtree(scratch, ignore_errors=True)
+    os.mkdir(scratch)
+    run = subprocess.run([exe, scratch], capture_output=True, text=True, timeout=30,
+                         env=dict(os.environ, OBO_CHECK='1', OBX_GC='poison'))
+    if run.returncode != 0:
+        raise Fail(f"exit {run.returncode}: {run.stderr.strip()[:300]}\n{path}\n{regen}")
+    got = run.stdout.splitlines()
+    if got != expect:
+        i = next((k for k in range(min(len(got), len(expect))) if got[k] != expect[k]), min(len(got), len(expect)))
+        raise Fail(f"output line {i + 1}: expected {expect[i] if i < len(expect) else '<end>'!r}, "
+                   f"got {got[i] if i < len(got) else '<end>'!r}\n{path}\n{regen}")
+    return 'ran'
+
+
 def tests(count):
     """(name, check) pairs for run_fork.py: the first count seeds of each profile."""
     out = []
@@ -1736,6 +1909,9 @@ def tests(count):
                         lambda s=seed, f=full: check(s, f)))
     for seed in range(1, count + 1):
         out.append((f"own-fuzz/result/{seed}", lambda s=seed: check_result(s)))
+    for seed in range(1, count + 1):
+        out.append((f"own-fuzz/io_roundtrip/{seed}", lambda s=seed: check_io(s, False)))
+        out.append((f"own-fuzz/io_append/{seed}", lambda s=seed: check_io(s, True)))
     return out
 
 

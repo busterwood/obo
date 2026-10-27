@@ -1,0 +1,18 @@
+// arg_errors: a computed non-positive readFd count and a computed unknown open
+// mode are runtime Results with EINVAL (22); neither touches the filesystem.
+// expect: max code 22
+// expect: mode code 22
+fn main() {
+    let z = 0
+    let r = readFd(stdin(), z)
+    match r {
+        ok(v) { println("max ok"); exit(1) }
+        err(m, c) { println("max code ", c) }
+    }
+    let mode = "z"
+    let o = openFile("obo-io-arg-errors-no-such-file", mode)
+    match o {
+        ok(v) { println("mode ok"); exit(1) }
+        err(m, c) { println("mode code ", c) }
+    }
+}

@@ -1,0 +1,235 @@
+// prelude: io
+// io_reader: the buffered Reader at chunk sizes 1, 2, 3, 4, 7 and 16; lines on
+// the boundaries; a 100 KiB line; an empty line (non-nil empty array) versus EOF
+// at the start (nil); EOF mid-line; binary bytes through readByte; readN's short,
+// EOF and nil results; eof.
+// expect: sizes ok
+// expect: empty ok
+// expect: partial ok
+// expect: long line ok
+// expect: bytes ok
+// expect: readN ok
+// expect: eof ok
+fn bytesOf(s: string): []byte {
+    let out = new []byte(0)
+    for i in 0..len(s) { append(out, s[i]) }
+    return out
+}
+
+fn writeAll(path: string, data: &[]byte) {
+    let o = openFile(path, "w")
+    match o {
+        ok(fd) {
+            let w = writeFd(fd, data)
+            match w {
+                ok(n) { if n != len(data) { println("write ", n); exit(1) } }
+                err(m, c) { println("write: ", m, " (", c, ")"); exit(1) }
+            }
+            let cl = closeFile(fd)
+            match cl { ok(v) { } err(m, c) { println("close: ", m, " (", c, ")"); exit(1) } }
+        }
+        err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+    }
+}
+
+// 254 after every line, 255 at EOF: an empty line contributes only 254, so it is
+// distinct from EOF at the start of a line
+fn collectLines(path: string, size: int): Result[[]byte] {
+    let fd = try openFile(path, "r")
+    var r = newReader(fd, size)
+    var out = new []byte(0)
+    while true {
+        let line = try readLine(r)
+        if line == nil {
+            append(out, 255)
+            try closeFile(fd)
+            return ok(out)
+        }
+        for i in 0..len(line) { append(out, line[i]) }
+        append(out, 254)
+    }
+}
+
+fn checkSizes(path: string, want: &[]byte) {
+    var sizes = new []int(0)
+    append(sizes, 1)
+    append(sizes, 2)
+    append(sizes, 3)
+    append(sizes, 4)
+    append(sizes, 7)
+    append(sizes, 16)
+    for k in 0..len(sizes) {
+        let c = collectLines(path, sizes[k])
+        match c {
+            ok(v) {
+                if len(v) != len(want) { println("size ", sizes[k], " length ", len(v)); exit(1) }
+                for i in 0..len(v) {
+                    if v[i] != want[i] { println("size ", sizes[k], " byte ", i); exit(1) }
+                }
+            }
+            err(m, code) { println("size ", sizes[k], ": ", m, " (", code, ")"); exit(1) }
+        }
+    }
+}
+
+fn addText(mut out: &[]byte, s: string) {
+    for i in 0..len(s) { append(out, s[i]) }
+}
+
+fn main() {
+    let a = args()
+    let dir = a[1]
+
+    // alpha, beta, an empty line, and a final partial line
+    let linesPath = dir + "/lines.bin"
+    let lines = bytesOf("alpha\nbeta\n\nlast")
+    writeAll(linesPath, lines)
+    var wantLines = new []byte(0)
+    addText(wantLines, "alpha")
+    append(wantLines, 254)
+    addText(wantLines, "beta")
+    append(wantLines, 254)
+    append(wantLines, 254)          // the empty line, non-nil
+    addText(wantLines, "last")
+    append(wantLines, 254)
+    append(wantLines, 255)          // EOF at the start of a line
+    checkSizes(linesPath, wantLines)
+    println("sizes ok")
+
+    // an empty file: EOF at the start, never an empty line
+    let emptyPath = dir + "/empty.bin"
+    let empty = new []byte(0)
+    writeAll(emptyPath, empty)
+    var wantEmpty = new []byte(0)
+    append(wantEmpty, 255)
+    checkSizes(emptyPath, wantEmpty)
+    println("empty ok")
+
+    // EOF in the middle of a line returns the partial line
+    let partialPath = dir + "/partial.bin"
+    let partial = bytesOf("abc")
+    writeAll(partialPath, partial)
+    var wantPartial = new []byte(0)
+    append(wantPartial, 'a')
+    append(wantPartial, 'b')
+    append(wantPartial, 'c')
+    append(wantPartial, 254)
+    append(wantPartial, 255)
+    checkSizes(partialPath, wantPartial)
+    println("partial ok")
+
+    // a line longer than any chunk, then a short line
+    let longPath = dir + "/long.bin"
+    var longData = new []byte(0)
+    for i in 0..100000 { append(longData, 'x') }
+    append(longData, '\n')
+    append(longData, 't')
+    append(longData, 'a')
+    append(longData, 'i')
+    append(longData, 'l')
+    append(longData, '\n')
+    writeAll(longPath, longData)
+    var wantLong = new []byte(0)
+    for i in 0..100000 { append(wantLong, 'x') }
+    append(wantLong, 254)
+    append(wantLong, 't')
+    append(wantLong, 'a')
+    append(wantLong, 'i')
+    append(wantLong, 'l')
+    append(wantLong, 254)
+    append(wantLong, 255)
+    checkSizes(longPath, wantLong)
+    println("long line ok")
+
+    // readByte over every byte value, then -1 at EOF
+    let bytesPath = dir + "/bytes.bin"
+    var all = new []byte(256)
+    for i in 0..256 { all[i] = byte(i) }
+    writeAll(bytesPath, all)
+    let bo = openFile(bytesPath, "r")
+    match bo {
+        ok(fd) {
+            var r = newReader(fd, 7)
+            var k = 0
+            while k < 256 {
+                let b = readByte(r)
+                match b {
+                    ok(v) { if v != k { println("byte ", k, " is ", v); exit(1) } }
+                    err(m, c) { println("readByte: ", m, " (", c, ")"); exit(1) }
+                }
+                k += 1
+            }
+            let e = readByte(r)
+            match e {
+                ok(v) { if v != -1 { println("byte at EOF is ", v); exit(1) } }
+                err(m, c) { println("readByte eof: ", m, " (", c, ")"); exit(1) }
+            }
+            let c = closeFile(fd)
+            match c { ok(v) { } err(m, code) { println("close: ", m, " (", code, ")"); exit(1) } }
+        }
+        err(m, c) { println("open bytes: ", m, " (", c, ")"); exit(1) }
+    }
+    println("bytes ok")
+
+    // readN: short at EOF, nil at EOF, and EINVAL for a non-positive count
+    let sixPath = dir + "/six.bin"
+    let six = bytesOf("abcdef")
+    writeAll(sixPath, six)
+    let so = openFile(sixPath, "r")
+    match so {
+        ok(fd) {
+            var r = newReader(fd, 2)
+            let n1 = readN(r, 4)
+            match n1 {
+                ok(v) {
+                    if v == nil { println("readN 4 nil"); exit(1) }
+                    if len(v) != 4 { println("readN 4 length ", len(v)); exit(1) }
+                    for i in 0..len(v) { if v[i] != six[i] { println("readN 4 byte ", i); exit(1) } }
+                }
+                err(m, c) { println("readN 4: ", m, " (", c, ")"); exit(1) }
+            }
+            let n2 = readN(r, 4)
+            match n2 {
+                ok(v) {
+                    if v == nil { println("readN short nil"); exit(1) }
+                    if len(v) != 2 { println("readN short length ", len(v)); exit(1) }
+                    if v[0] != 'e' || v[1] != 'f' { println("readN short bytes"); exit(1) }
+                }
+                err(m, c) { println("readN short: ", m, " (", c, ")"); exit(1) }
+            }
+            let n3 = readN(r, 4)
+            match n3 {
+                ok(v) { if v != nil { println("readN at EOF ", len(v)); exit(1) } }
+                err(m, c) { println("readN at EOF: ", m, " (", c, ")"); exit(1) }
+            }
+            let n4 = readN(r, 0)
+            match n4 {
+                ok(v) { println("readN 0 succeeded"); exit(1) }
+                err(m, c) { if c != 22 { println("readN 0 code ", c); exit(1) } }
+            }
+            let c = closeFile(fd)
+            match c { ok(v) { } err(m, code) { println("close: ", m, " (", code, ")"); exit(1) } }
+        }
+        err(m, c) { println("open six: ", m, " (", c, ")"); exit(1) }
+    }
+    println("readN ok")
+
+    // eof: false before any fill, true after the last chunk is consumed
+    let eo = openFile(sixPath, "r")
+    match eo {
+        ok(fd) {
+            var r = newReader(fd, 3)
+            if eof(r) { println("eof before reading"); exit(1) }
+            let n1 = readN(r, 16)
+            match n1 {
+                ok(v) { if v == nil || len(v) != 6 { println("eof readN"); exit(1) } }
+                err(m, c) { println("eof readN: ", m, " (", c, ")"); exit(1) }
+            }
+            if !eof(r) { println("no eof after the last chunk"); exit(1) }
+            let c = closeFile(fd)
+            match c { ok(v) { } err(m, code) { println("close: ", m, " (", code, ")"); exit(1) } }
+        }
+        err(m, c) { println("open six: ", m, " (", c, ")"); exit(1) }
+    }
+    println("eof ok")
+}

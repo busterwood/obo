@@ -1,0 +1,25 @@
+// io_write_empty_closed: an empty write to a tracked closed fd is the fd error,
+// never ok(0) (N1): the state check runs before any zero-length shortcut.
+// expect-exit: 9
+// expect-stderr: use of a closed file descriptor
+fn main() {
+    let a = args()
+    let p = a[1] + "/emptywrite.bin"
+    let o = openFile(p, "w")
+    match o {
+        ok(fd) {
+            let c = closeFile(fd)
+            match c {
+                ok(v) { }
+                err(m, code) { println("close: ", m, " (", code, ")"); exit(1) }
+            }
+            let empty = new []byte(0)
+            let w = writeFd(fd, empty)
+            match w {
+                ok(n) { println("empty write after close ok ", n) }
+                err(m, code) { println("empty write after close: ", m, " (", code, ")"); }
+            }
+        }
+        err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+    }
+}

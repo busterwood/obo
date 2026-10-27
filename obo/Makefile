@@ -26,6 +26,11 @@ obo-noregs: src/obo.obo seed/obo runtime_text.bin runtime_data.bin
 	./seed/obo .noregs.obo -o obo-noregs --rt .
 	rm -f .noregs.obo
 
+# the runtime's own I/O contract harness (tests/io_test.py builds and runs it in a temp dir too)
+rt_io_test: tests/rt_io_test.c runtime/runtime.c runtime/rt.ld
+	gcc $(CFLAGS) -c tests/rt_io_test.c -o rt_io_test.o
+	ld -T runtime/rt.ld -o rt_io_test rt_io_test.o
+
 # make the current compiler the new seed, once it is a fixed point and the suite passes
 promote: obo
 	./obo src/obo.obo -o .stage2 --rt .
@@ -37,4 +42,4 @@ promote: obo
 	@echo "seed/obo updated"
 
 clean:
-	rm -f *.o *.elf *.bin obo obo-noregs .noregs.obo .stage2 .stage3
+	rm -f *.o *.elf *.bin obo obo-noregs .noregs.obo .stage2 .stage3 rt_io_test

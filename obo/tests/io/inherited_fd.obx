@@ -1,0 +1,25 @@
+// inherited_fd: N3. Python opens a file and passes the descriptor (>= 3) as the
+// second user argument; the program parses it with a decimal loop. Both closes
+// are Results: the first is ok(true) (untracked, the kernel closes it), the second
+// is the kernel's EBADF, code 9, never the exit-9 double-close trap. The program
+// returns normally (exit 0) under OBO_CHECK=1.
+// expect: first ok
+// expect: second code 9
+fn main() {
+    let a = args()
+    let s = a[2]
+    var fd = 0
+    for i in 0..len(s) {
+        fd = fd * 10 + (int(s[i]) - 48)
+    }
+    let c1 = closeFile(fd)
+    match c1 {
+        ok(v) { println("first ok") }
+        err(m, code) { println("first code ", code); exit(1) }
+    }
+    let c2 = closeFile(fd)
+    match c2 {
+        ok(v) { println("second ok"); }
+        err(m, code) { println("second code ", code) }
+    }
+}

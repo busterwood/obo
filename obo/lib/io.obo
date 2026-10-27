@@ -1,0 +1,209 @@
+// obo/lib/io.obo: buffered incremental I/O on the int-fd model.
+//
+// There are no modules yet, so a tool is built by concatenating this file before
+// its own source:
+//
+//     cat obo/lib/io.obo obo/programs/wc.obx > build/wc.obo
+//     obo/obo build/wc.obo -o build/wc --rt obo
+//
+// A Reader or Writer owns only its byte buffer; the fd is borrowed (an int has
+// no owner), so the caller closes what it opened and the library never closes
+// anything. The standard descriptors are 0/1/2 (stdin()/stdout()/stderr()), and
+// closeFile refuses them. The builtins are unbuffered; fill reads one chunk and
+// flush writes the Writer's buffer. A missing flush loses data: tools flush
+// explicitly, because exit() runs no language cleanup.
+//
+// readLine returns Result[?[]byte]: nil means EOF at the start of a line, and a
+// non-nil empty array is an empty line. readByte returns ok(-1) at EOF; readN
+// returns nil only if EOF came before any byte. takeChunk moves the unconsumed
+// bytes out for streaming (passing r.buf to a mut writer would be refused: the
+// writer may point inside the reader).
+
+type Reader = ref record {
+    fd: int
+    buf: []byte          // the current chunk: owned; len(buf) is the chunk length
+    pos: int             // next unread byte in buf
+    size: int            // requested chunk size for the next fill
+    hitEof: bool         // the last fill got nil
+}
+
+type Writer = ref record {
+    fd: int
+    buf: []byte          // pending bytes: owned; len(buf) is what flush will write
+    size: int            // flush threshold
+}
+
+// clamp only the maximum (a typo cannot ask for a huge chunk); a non-positive
+// size becomes 1 so the boundary tests can use sizes 1..5
+fn clampChunk(size: int): int {
+    var n = size
+    if n <= 0 { n = 1 }
+    if n > 1048576 { n = 1048576 }
+    return n
+}
+
+fn newReader(fd: int, size: int): Reader {
+    return new Reader{fd: fd, buf: new []byte(0), pos: 0, size: clampChunk(size), hitEof: false}
+}
+
+fn newWriter(fd: int, size: int): Writer {
+    return new Writer{fd: fd, buf: new []byte(0), size: clampChunk(size)}
+}
+
+// ok(true) = bytes are available, ok(false) = EOF. A short chunk is data, not
+// EOF: the next fill decides. The old chunk is freed by the assignment.
+fn fill(mut r: &Reader): Result[bool] {
+    if r.pos < len(r.buf) { return ok(true) }
+    if r.hitEof { return ok(false) }
+    let got = try readFd(r.fd, r.size)
+    if got == nil {
+        r.hitEof = true
+        r.buf = new []byte(0)
+        r.pos = 0
+        return ok(false)
+    }
+    r.buf = got
+    r.pos = 0
+    return ok(true)
+}
+
+// The streaming primitive: the caller owns the returned array. When pos == 0 the
+// current array is handed over as it is; otherwise a fresh array receives the
+// unconsumed suffix and the old array is freed at scope exit. buf becomes empty.
+fn takeChunk(mut r: &Reader): []byte {
+    let all = replace(r.buf, new []byte(0))
+    let start = r.pos
+    r.pos = 0
+    if start == 0 { return all }
+    let out = new []byte(0)
+    for i in start..len(all) { append(out, all[i]) }
+    return out
+}
+
+// A line without its '\n' ('\r' is kept). EOF after some bytes returns the
+// partial line; EOF at the start returns nil; an empty line is a non-nil empty
+// array, which is the only way to tell it from EOF. No fixed line buffer: a long
+// line costs its own length.
+fn readLine(mut r: &Reader): Result[?[]byte] {
+    let out = new []byte(0)
+    while true {
+        let more = try fill(r)
+        if !more {
+            if len(out) == 0 {
+                var none: ?[]byte = nil
+                return ok(none)
+            }
+            let line: ?[]byte = out
+            return ok(line)
+        }
+        let c = r.buf[r.pos]
+        r.pos += 1
+        if c == '\n' {
+            let line: ?[]byte = out
+            return ok(line)
+        }
+        append(out, c)
+    }
+}
+
+// 0..255, or -1 at EOF (byte values are 0..255, so -1 is outside the domain)
+fn readByte(mut r: &Reader): Result[int] {
+    let more = try fill(r)
+    if !more { return ok(-1) }
+    let c = r.buf[r.pos]
+    r.pos += 1
+    return ok(int(c))
+}
+
+// Up to n bytes, accumulating across fills; nil only if EOF came before any
+// byte, otherwise the (possibly short) array. n is unbounded: the caller chooses.
+fn readN(mut r: &Reader, n: int): Result[?[]byte] {
+    if n <= 0 { return err("readN needs a positive count", 22) }
+    let out = new []byte(0)
+    while len(out) < n {
+        let more = try fill(r)
+        if !more { break }
+        let avail = len(r.buf) - r.pos
+        var take = n - len(out)
+        if take > avail { take = avail }
+        for i in 0..take { append(out, r.buf[r.pos + i]) }
+        r.pos += take
+    }
+    if len(out) == 0 {
+        var none: ?[]byte = nil
+        return ok(none)
+    }
+    let got: ?[]byte = out
+    return ok(got)
+}
+
+// True when the buffer is exhausted and a fill has seen EOF. It performs no I/O:
+// a reader that has consumed the last chunk reports false until the next fill.
+fn eof(r: &Reader): bool {
+    return r.hitEof && r.pos >= len(r.buf)
+}
+
+// While bytes remain, write them; a short count shifts the unwritten tail to the
+// front and truncates. A 0 count is an EIO error, and an error leaves the
+// unwritten bytes in buf so the caller may retry. On success the buffer is empty
+// (its capacity stays).
+fn flush(mut w: &Writer): Result[bool] {
+    while len(w.buf) > 0 {
+        let n = try writeFd(w.fd, w.buf)
+        if n == 0 { return err("write made no progress", 5) }
+        let left = len(w.buf) - n
+        if left > 0 {
+            for i in 0..left { w.buf[i] = w.buf[i + n] }
+        }
+        truncate(w.buf, left)
+    }
+    return ok(true)
+}
+
+// Append a string's bytes, flushing at the threshold. A flush error propagates
+// with the unwritten bytes retained and the rest of the input not appended.
+fn write(mut w: &Writer, s: string): Result[bool] {
+    for i in 0..len(s) {
+        append(w.buf, s[i])
+        if len(w.buf) >= w.size {
+            try flush(w)
+        }
+    }
+    return ok(true)
+}
+
+// Append borrowed bytes; the array stays the caller's.
+fn writeBytes(mut w: &Writer, data: &[]byte): Result[bool] {
+    for i in 0..len(data) {
+        append(w.buf, data[i])
+        if len(w.buf) >= w.size {
+            try flush(w)
+        }
+    }
+    return ok(true)
+}
+
+// Streaming copy: fill as soon as any data is available, move the bytes out of
+// the reader, write them and flush, so a pipe delivers each chunk promptly.
+fn pump(mut r: &Reader, mut w: &Writer): Result[bool] {
+    while true {
+        let more = try fill(r)
+        if !more { return ok(true) }
+        let chunk = takeChunk(r)
+        try writeBytes(w, chunk)
+        try flush(w)
+    }
+}
+
+// Count bytes without holding them. Each iteration allocates readFd's chunk and
+// takeChunk's fresh empty array (stored back into r.buf; the next fill or the
+// Reader's scope exit frees it).
+fn count(mut r: &Reader): Result[int] {
+    var n = 0
+    while true {
+        let more = try fill(r)
+        if !more { return ok(n) }
+        let chunk = takeChunk(r)
+        n += len(chunk)
+    }
+}

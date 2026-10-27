@@ -822,6 +822,11 @@ fn main() {}
 | `string(x)` | an int's digits, or the string made from a `[]byte` |
 | `readFile(path)` | `?[]byte`, or `nil` if the file cannot be read |
 | `writeFile(path, data, executable)` | write bytes; returns `bool` |
+| `openFile(path, mode)` | `Result[int]`: open `path` with mode `"r"`, `"w"` or `"a"`; the caller closes the descriptor |
+| `readFd(fd, max)` | `Result[?[]byte]`: one read of up to `max` bytes; `nil` is end of file |
+| `writeFd(fd, data)` | `Result[int]`: one write of the borrowed `[]byte`; a short count is success |
+| `closeFile(fd)` | `Result[bool]`: `ok(true)` on success |
+| `stdin()`, `stdout()`, `stderr()` | the standard descriptors, 0, 1 and 2 |
 | `args()` | the command-line arguments, as `[]string` |
 | `exit(code)` | stop with the given exit code |
 | `take(x)` | move out of an optional variable, field or element; leaves `nil` |
@@ -853,6 +858,64 @@ fn main() {
 }
 ```
 
+### Incremental I/O
+
+`openFile` returns `Result[int]`: the descriptor is a copied scalar with no
+owner, and the program closes it with `closeFile`, normally through `defer`.
+The modes are exactly `"r"`, `"w"` (`O_CREAT|O_TRUNC`) and `"a"` (`O_CREAT|
+O_APPEND`). A constant mode is checked at compile time; any other problem is a
+Result: `err("cannot open " + path, errno)`, with errno in `code` (2 for a
+missing file, 22 for an empty path or an embedded NUL, 36 for a path of 4096
+bytes or more). `readFd(fd, max)` makes one read: `ok(nil)` means end of file,
+a non-nil array of 1..max bytes is data, and a negative count is
+`err("readFd needs a positive count", EINVAL)` before anything is allocated.
+`writeFd(fd, data)` borrows the array and makes one write; a short count is
+success, so the caller loops. `closeFile(0/1/2)` is refused with EINVAL, so a
+program cannot close the standard streams; `closeFile` on any other descriptor
+is a Result, and its error in a `defer` is discarded.
+
+`exit(...)` runs no defers: a `defer closeFile(fd)` does not run, and the
+operating system reclaims the descriptor. Return from `main` instead when the
+`OBO_CHECK` oracles (a leaked fd exits 8; a double close or a use after close
+exits 9) should run.
+
+```obo
+// example: runs
+// prints 22
+// prints readFd needs a positive count
+fn main() {
+    let n = 0
+    let r = readFd(stdin(), n)          // computed: EINVAL, and stdin is not read
+    match r {
+        ok { println("unexpected ok") }
+        err { println(r.code); println(r.message) }
+    }
+}
+```
+
+```obo
+// example: runs
+// prints 0 1 2
+// prints HI
+// prints 2
+fn main() {
+    println(stdin(), " ", stdout(), " ", stderr())
+    let b = new []byte(2)
+    b[0] = 'H'
+    b[1] = 'I'
+    let r = writeFd(stdout(), b)        // the text above is flushed first
+    match r {
+        ok(n) { println(""); println(n) }
+        err(m, c) { println(m) }
+    }
+}
+```
+
+`obo/lib/io.obo` builds buffered `Reader`/`Writer` types on these builtins
+(`fill`, `readLine`, `readN`, `readByte`, `takeChunk`, `flush`, `pump`,
+`count`); it is concatenated before a tool's source, and its own header
+documents the API and the fd-is-borrowed rule.
+
 ## 8. Runtime checks and exit codes
 
 | Exit code | Cause |
@@ -863,8 +926,16 @@ fn main() {
 | 5 | with `OBO_CHECK=1`: the program ended with live objects (a leak) |
 | 6 | with `OBO_CHECK=1`: a double free |
 | 7 | a handle was used after its object was freed |
+| 8 | with `OBO_CHECK=1`: the program ended with file descriptors opened by `openFile` and never closed |
+| 9 | with `OBO_CHECK=1`: a tracked file descriptor was closed twice or used after it was closed |
 
 Division by zero stops the program with a hardware trap (SIGFPE).
+
+The `code` of an I/O `Result` is the OS errno, positive (0 means unspecified);
+the trap codes 2 to 9 are a different namespace and overlap numerically with
+errnos (ENOENT is 2, EBADF is 9), so a program must not do `exit(r.code)`:
+a missing input file would look like an out-of-memory trap. Print the message
+and choose the exit code deliberately.
 
 Environment variables:
 
@@ -937,6 +1008,15 @@ depend on the program.
 | `a consuming match binds its value in every arm: write ok(v) and err(m, c)` | some arms bind and some do not. |
 | `a consuming match needs the Result itself, not a reference` | a consuming match on a reference; match the reference non-consumingly. |
 | `a consuming match needs a local variable or parameter holding an owned Result` | a consuming match on something that is not an owned result. |
+| `openFile needs a string path, not <t>` | the first argument of `openFile` is not a string. |
+| `openFile needs a string mode, not <t>` | the second argument of `openFile` is not a string. |
+| `unknown open mode '<m>': use "r", "w" or "a"` | a constant `openFile` mode is not one of the three. |
+| `readFd needs an int file descriptor, not <t>` | the first argument of `readFd` is not an int. |
+| `readFd needs an int count, not <t>` | the second argument of `readFd` is not an int. |
+| `readFd needs a positive count` | a constant `readFd` count is zero or negative. |
+| `writeFd needs an int file descriptor, not <t>` | the first argument of `writeFd` is not an int. |
+| `writeFd needs a []byte, not <t>` | the second argument of `writeFd` is not a `[]byte`. |
+| `closeFile needs an int file descriptor, not <t>` | the argument of `closeFile` is not an int. |
 
 ## 10. Differences from obx
 
@@ -946,8 +1026,9 @@ depend on the program.
   compiler rather than by runtime collection.
 - Handles (`^T`) are the way to write back-references and graphs. They are checked
   at run time.
-- New built-ins: `take`, `drop`, `replace`, `handle`, `alive`, `ok`, `err`, and the prefix
-  operator `try`.
+- New built-ins: `take`, `drop`, `replace`, `handle`, `alive`, `ok`, `err`,
+  `openFile`, `readFd`, `writeFd`, `closeFile`, `stdin`, `stdout`, `stderr`, and
+  the prefix operator `try`.
 - `Result[T]` is a built-in parameterized type, inspected with `match` (including the
   consuming `ok(v)`/`err(m, c)` form).
 - `gc()` does nothing.

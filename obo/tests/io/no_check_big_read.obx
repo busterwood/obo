@@ -1,0 +1,37 @@
+// no_check_big_read: without OBO_CHECK=1 the fd checks still come before the
+// max-sized allocation: a huge read from a tracked closed fd and from fd -1 are
+// EBADF (9), not OOM (2); max is checked first, so a computed zero is EINVAL (22).
+// expect: big code 9
+// expect: negative code 9
+// expect: zero code 22
+fn main() {
+    let a = args()
+    let p = a[1] + "/big.bin"
+    let o = openFile(p, "w")
+    match o {
+        ok(fd) {
+            let c = closeFile(fd)
+            match c {
+                ok(v) { }
+                err(m, code) { println("close code ", code); exit(1) }
+            }
+            let r1 = readFd(fd, 1 << 40)
+            match r1 {
+                ok(v) { println("big ok"); exit(1) }
+                err(m, code) { println("big code ", code) }
+            }
+        }
+        err(m, c) { println("open code ", c); exit(1) }
+    }
+    let r2 = readFd(-1, 1 << 40)
+    match r2 {
+        ok(v) { println("negative ok"); exit(1) }
+        err(m, code) { println("negative code ", code) }
+    }
+    let z = 0
+    let r3 = readFd(-1, z)
+    match r3 {
+        ok(v) { println("zero ok"); exit(1) }
+        err(m, code) { println("zero code ", code) }
+    }
+}

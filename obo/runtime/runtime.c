@@ -58,7 +58,14 @@ static void die(const char *msg) { die_code(msg, 2); }
  * An array is a header {len, cap, data, element size} whose data points to a
  * block [count][elements...] holding cap elements. Growing replaces the block,
  * so every reference to the array sees the change. Elements past len are kept
- * zero. Strings are a single object [len][bytes]. */
+ * zero. Strings are a single object [len][bytes].
+ *
+ * A Result cell (the I/O builtins build these) is a record whose header's low
+ * 32 bits are the variant descriptor: the ok variant has the payload word at
+ * +0; the shared err variant has the message (an owned string, 0 = "") at +0
+ * and the positive errno at +8. The compiler passes both descriptors to each
+ * I/O helper, and match compares the header tag against the cached variants,
+ * so the helpers must use exactly the descriptor they are given. */
 #define HEAP_SIZE (1UL << 32)
 #define GRAN 16
 #define NCLASS 65
@@ -81,6 +88,14 @@ static u64 live_owned, live_bytes_now, peak_bytes;
 static int leak_check;
 static int stats;                  /* OBO_STATS=1: report memory at exit */
 
+/* Incremental I/O: the fd table and the test-only fault hook. fdstate is 0 for a
+ * descriptor openFile never saw (0/1/2, inherited, negative or >= 1024), 1 for one
+ * it opened, and 2 once a close was attempted. The fault hook is inert unless
+ * OBO_CHECK=1, so a normal program cannot see it. */
+static unsigned char fdstate[1024];
+static int io_fault_eintr, io_fault_short;
+static int fault_read, fault_write, fault_close;
+
 static inline u64 gidx(u64 h) { return (h - heap_start) / GRAN; }
 static inline int  is_start(u64 h) { u64 g = gidx(h); return starts[g >> 3] >> (g & 7) & 1; }
 static inline void set_start(u64 h) { u64 g = gidx(h); starts[g >> 3] |= (unsigned char)(1 << (g & 7)); }
@@ -97,7 +112,12 @@ void rt_init(u64 sbase, u64 gstart, u64 gend) {
         if (starts_with(*env, "OBX_GC=stress")) gc_poison = 1;
         if (starts_with(*env, "OBO_CHECK=1")) leak_check = 1;
         if (starts_with(*env, "OBO_STATS=1")) stats = 1;
+        if (starts_with(*env, "OBO_IO_FAULT=eintr")) io_fault_eintr = 1;
+        if (starts_with(*env, "OBO_IO_FAULT=short")) io_fault_short = 1;
     }
+    /* the environment order is arbitrary: gate the hook after the whole loop */
+    if (!leak_check) { io_fault_eintr = 0; io_fault_short = 0; }
+    if (io_fault_eintr) { fault_read = fault_write = fault_close = 1; }
     heap_start = (u64)sys_mmap(HEAP_SIZE);
     if ((i64)heap_start < 0) die("obx: cannot reserve heap\n");
     heap_top = heap_start; heap_end = heap_start + HEAP_SIZE;
@@ -302,6 +322,18 @@ void rt_finish(void) {
         flush();
         out_fd = was;
     }
+    if (leak_check) {
+        u64 nfd = 0;
+        for (int i = 0; i < 1024; i++) if (fdstate[i] == 1) nfd++;
+        if (nfd) {
+            char msg[80]; const char *p = "obo: file descriptors leaked: "; int n = 0;
+            while (*p) msg[n++] = *p++;
+            char b[24]; int i = 24; u64 u = nfd; do { b[--i] = (char)('0' + u % 10); u /= 10; } while (u);
+            while (i < 24) msg[n++] = b[i++];
+            msg[n++] = '\n';
+            sys3(1, 2, (i64)msg, n); sys3(60, 8, 0, 0);
+        }
+    }
     if (leak_check && live_owned) {
         char msg[64]; const char *p = "obo: objects leaked: "; int n = 0;
         while (*p) msg[n++] = *p++;
@@ -453,6 +485,161 @@ i64 rt_write_file(u64 path, Array *a, i64 executable) {
         done += (u64)w;
     }
     return sys3(3, fd, 0, 0) == 0;
+}
+
+/* ---------- incremental I/O: Result cells and the fd helpers ---------- */
+
+/* Every message is a proper obo string (kind 3) allocated once; the err cell's
+ * descriptor frees it. No cell retains a caller's pointer: path bytes are copied.
+ * The cell stores and the tmp_root use follow the runtime's two-allocation rule. */
+static u64 iomsg_lit(const char *s) {
+    u64 n = 0; while (s[n]) n++;
+    u64 p = alloc_raw(3, 8 + n);
+    *(u64 *)p = n;
+    memcpy((char *)p + 8, s, n);
+    return p;
+}
+static u64 iomsg_str(const char *pre, u64 s) {
+    u64 pl = 0; while (pre[pl]) pl++;
+    u64 sl = slen(s);
+    u64 p = alloc_raw(3, 8 + pl + sl);
+    *(u64 *)p = pl + sl;
+    memcpy((char *)p + 8, pre, pl);
+    memcpy((char *)p + 8 + pl, sdata(s), sl);
+    return p;
+}
+static u64 iomsg_num(const char *pre, i64 v) {
+    char b[24]; int i = 24; u64 u = v < 0 ? (u64)0 - (u64)v : (u64)v;
+    do { b[--i] = (char)('0' + u % 10); u /= 10; } while (u);
+    if (v < 0) b[--i] = '-';
+    u64 pl = 0; while (pre[pl]) pl++;
+    u64 p = alloc_raw(3, 8 + pl + (u64)(24 - i));
+    *(u64 *)p = pl + (u64)(24 - i);
+    memcpy((char *)p + 8, pre, pl);
+    memcpy((char *)p + 8 + pl, b + i, 24 - i);
+    return p;
+}
+static u64 err_cell(u64 descErr, u64 msg, i64 code) {
+    tmp_root[0] = msg;
+    u64 *c = (u64 *)rt_alloc_record((u64 *)descErr);
+    c[0] = msg;
+    c[1] = (u64)code;
+    tmp_root[0] = 0;
+    return (u64)c;
+}
+static u64 ok_cell(u64 descOk, u64 payload) {
+    tmp_root[0] = payload;
+    u64 *c = (u64 *)rt_alloc_record((u64 *)descOk);
+    c[0] = payload;
+    tmp_root[0] = 0;
+    return (u64)c;
+}
+/* A trap naming a descriptor, like the other runtime traps: stderr, then exit. */
+static void die_num(const char *pre, i64 v, i64 code) {
+    flush();
+    char msg[80]; int n = 0; while (*pre) msg[n++] = *pre++;
+    char b[24]; int i = 24; u64 u = v < 0 ? (u64)0 - (u64)v : (u64)v;
+    do { b[--i] = (char)('0' + u % 10); u /= 10; } while (u);
+    if (v < 0) b[--i] = '-';
+    while (i < 24) msg[n++] = b[i++];
+    msg[n++] = '\n';
+    sys3(1, 2, (i64)msg, n); sys3(60, code, 0, 0); for (;;);
+}
+static int str_is(u64 s, const char *t) {
+    u64 n = slen(s), i = 0;
+    while (i < n && t[i] && sdata(s)[i] == t[i]) i++;
+    return i == n && t[i] == 0;
+}
+/* The test-only injections: one synthetic EINTR per syscall kind and a 3-byte cap
+ * on each write. Both are inert unless OBO_CHECK=1 (see rt_init). */
+static i64 io_read(i64 fd, i64 buf, i64 n) {
+    for (;;) {
+        i64 r;
+        if (fault_read) { fault_read = 0; r = -4; } else r = sys3(0, fd, buf, n);
+        if (r != -4) return r;
+    }
+}
+static i64 io_write(i64 fd, i64 buf, i64 n) {
+    for (;;) {
+        i64 r;
+        if (io_fault_short && n > 3) n = 3;
+        if (fault_write) { fault_write = 0; r = -4; } else r = sys3(1, fd, buf, n);
+        if (r != -4) return r;
+    }
+}
+static i64 io_close(i64 fd) {
+    if (fault_close) { fault_close = 0; return -4; }
+    return sys3(3, fd, 0, 0);
+}
+
+/* openFile(path, mode, descErr, descOk): Result[int]. The path is checked before
+ * conversion; a 4095-byte path plus the NUL fits cpath's buffer exactly. */
+u64 rt_open_file(u64 path, u64 mode, u64 descErr, u64 descOk) {
+    char p[4096];
+    if (slen(path) >= 4096) return err_cell(descErr, iomsg_str("cannot open ", path), 36);  /* ENAMETOOLONG */
+    if (!cpath(path, p)) return err_cell(descErr, iomsg_str("cannot open ", path), 22);     /* EINVAL */
+    i64 flags, pmode = 0;
+    if (str_is(mode, "r")) { flags = 0; }                                                   /* O_RDONLY */
+    else if (str_is(mode, "w")) { flags = 0x241; pmode = 0644; }                            /* O_WRONLY|O_CREAT|O_TRUNC */
+    else if (str_is(mode, "a")) { flags = 0x441; pmode = 0644; }                            /* O_WRONLY|O_CREAT|O_APPEND */
+    else return err_cell(descErr, iomsg_lit("unknown open mode"), 22);
+    i64 fd;
+    do { fd = sys3(2, (i64)p, flags, pmode); } while (fd == -4);   /* EINTR: opening a FIFO or device */
+    if (fd < 0) return err_cell(descErr, iomsg_str("cannot open ", path), -fd);
+    if (fd < 1024) fdstate[fd] = 1;
+    return ok_cell(descOk, (u64)fd);
+}
+
+/* readFd(fd, max, descErr, descOk): Result[?[]byte]. Flush first, so a prompt
+ * written with print appears before the program blocks; then the checks run
+ * before the max-sized array allocation (N2), in the order max, fd, table. */
+u64 rt_read_fd(i64 fd, i64 max, u64 descErr, u64 descOk) {
+    flush();
+    if (max <= 0) return err_cell(descErr, iomsg_lit("readFd needs a positive count"), 22);
+    if (fd < 0) return err_cell(descErr, iomsg_num("cannot read fd ", fd), 9);             /* EBADF */
+    if (fd < 1024 && fdstate[fd] == 2) {
+        if (leak_check) die_num("obo: use of a closed file descriptor ", fd, 9);
+        return err_cell(descErr, iomsg_num("cannot read fd ", fd), 9);
+    }
+    Array *a = (Array *)rt_alloc_array(max, 4);
+    i64 r = io_read(fd, (i64)((char *)a->data + 8), max);
+    if (r < 0) { rt_free((u64)a); return err_cell(descErr, iomsg_num("cannot read fd ", fd), -r); }
+    if (r == 0) { rt_free((u64)a); return ok_cell(descOk, 0); }    /* EOF is nil, never an empty array */
+    if ((u64)r < (u64)max) a->len = (u64)r;                        /* a short read is data, not EOF */
+    return ok_cell(descOk, (u64)a);
+}
+
+/* writeFd(fd, data, descErr, descOk): Result[int]. Borrows data. The fd-state
+ * check is first, so a closed fd is never ok(0) for empty data (N1). */
+u64 rt_write_fd(i64 fd, Array *data, u64 descErr, u64 descOk) {
+    flush();
+    if (fd >= 0 && fd < 1024 && fdstate[fd] == 2) {
+        if (leak_check) die_num("obo: use of a closed file descriptor ", fd, 9);
+        return err_cell(descErr, iomsg_num("cannot write fd ", fd), 9);
+    }
+    i64 r = io_write(fd, (i64)((char *)data->data + 8), (i64)data->len);
+    if (r < 0) return err_cell(descErr, iomsg_num("cannot write fd ", fd), -r);
+    if (r == 0 && data->len > 0) return err_cell(descErr, iomsg_num("cannot write fd ", fd), 5);  /* EIO */
+    return ok_cell(descOk, (u64)r);                                /* a short write is success */
+}
+
+/* closeFile(fd, descErr, descOk): Result[bool]. A table-state-0 0/1/2 is
+ * refused; a tracked number follows the open/closed cases; any other number
+ * goes to the kernel and is never entered in the table (N3). A tracked fd is
+ * marked closed on any attempt, even a failed one (N4). */
+u64 rt_close_fd(i64 fd, u64 descErr, u64 descOk) {
+    flush();
+    int tracked = fd >= 0 && fd < 1024 && fdstate[fd] != 0;
+    if (fd >= 0 && fd < 3 && !tracked)
+        return err_cell(descErr, iomsg_num("cannot close standard stream fd ", fd), 22);   /* EINVAL */
+    if (tracked && fdstate[fd] == 2) {
+        if (leak_check) die_num("obo: double close of file descriptor ", fd, 9);
+        return err_cell(descErr, iomsg_num("cannot close fd ", fd), 9);
+    }
+    i64 r = io_close(fd);
+    if (tracked) fdstate[fd] = 2;
+    if (r == 0 || r == -4) return ok_cell(descOk, 1);      /* EINTR: Linux already closed it */
+    return err_cell(descErr, iomsg_num("cannot close fd ", fd), -r);
 }
 
 /* args(): the command line, program name first */

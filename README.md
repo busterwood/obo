@@ -441,4 +441,7 @@ gain is real.
 `obo/` holds obo, which replaces the collector with single ownership, borrowed
 references and handles. It began as an experiment and is now the language's
 direction: see "Direction" at the top of this file, and `obo/FORK.md` for the
-details.
+details. Phase 2 adds streaming file I/O: `openFile`, `readFd`, `writeFd` and
+`closeFile` (plus `stdin()`/`stdout()`/`stderr()`) return `Result` values, and
+the buffered `obo/lib/io.obo` adds `Reader`/`Writer`; `obo/programs/cat.obx`
+and `wc.obx` are the first tools built from it.

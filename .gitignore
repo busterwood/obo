@@ -12,4 +12,5 @@
 __pycache__/
 *.pyc
 /obo/obo-noregs
+/obo/rt_io_test
 /obo/.noregs.obo

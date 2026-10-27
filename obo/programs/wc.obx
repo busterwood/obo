@@ -1,0 +1,22 @@
+// wc: count newlines and bytes on stdin, streaming (fill + takeChunk), and print
+// "lines bytes". Built by concatenating obo/lib/io.obo before this file.
+fn main() {
+    var src = newReader(stdin(), 65536)
+    var bytes = 0
+    var lines = 0
+    while true {
+        let more = fill(src)
+        match more {
+            ok(v) {
+                if !v { break }
+                let chunk = takeChunk(src)
+                bytes += len(chunk)
+                for i in 0..len(chunk) {
+                    if chunk[i] == '\n' { lines += 1 }
+                }
+            }
+            err(m, c) { eprintln("wc: ", m); exit(1) }
+        }
+    }
+    println(lines, " ", bytes)
+}

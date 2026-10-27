@@ -1,0 +1,39 @@
+// short_write: 10 KiB through a 64-byte Writer threshold. Under
+// OBO_IO_FAULT=short (with OBO_CHECK=1) every write syscall is capped at three
+// bytes, so flush's short-count loop must complete the file; the contents are
+// read back and compared. The driver runs it with and without the hook.
+// expect: short write ok
+fn main() {
+    let a = args()
+    let dir = a[1]
+    let path = dir + "/short.bin"
+    let o = openFile(path, "w")
+    match o {
+        ok(fd) {
+            var w = newWriter(fd, 64)
+            var data = new []byte(10240)
+            for i in 0..len(data) { data[i] = byte(i * 31) }
+            let r = writeBytes(w, data)
+            match r {
+                ok(v) { }
+                err(m, c) { println("writeBytes: ", m, " (", c, ")"); exit(1) }
+            }
+            let f = flush(w)
+            match f {
+                ok(v) { if !v { println("flush false"); exit(1) } }
+                err(m, c) { println("flush: ", m, " (", c, ")"); exit(1) }
+            }
+            let c = closeFile(fd)
+            match c { ok(v) { } err(m, code) { println("close: ", m, " (", code, ")"); exit(1) } }
+        }
+        err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+    }
+    var got = readFile(path)
+    let g = take(got)
+    if g == nil { println("unreadable"); exit(1) }
+    if len(g) != 10240 { println("length ", len(g)); exit(1) }
+    for i in 0..len(g) {
+        if g[i] != byte(i * 31) { println("byte ", i); exit(1) }
+    }
+    println("short write ok")
+}
