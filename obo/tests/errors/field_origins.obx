@@ -1,0 +1,545 @@
+// Handles made from a field or element of an owned local are tracked by their place (FORK.md, "Field and element
+// origins"): a use after the place, or one above it, is emptied is refused. The safe neighbours are in
+// run/field_origins.obx.
+type Kid = ref record { n: int; next: ?Kid }
+type Par = ref record { child: Kid; other: Kid; kids: []Kid; more: []Kid; opt: ?Kid; k: int }
+type Top = ref record { par: Par; spare: Par }
+fn nk(n: int): Kid { return new Kid{n: n, next: nil} }
+fn np(): Par { return new Par{child: nk(1), other: nk(2), kids: new []Kid(0), more: new []Kid(0), opt: nil, k: 0} }
+fn flag(): bool { return true }
+fn eat(p: Par) { println(p.k) }
+// a mut callee that frees below its parameter
+fn reset(mut p: &Par) { p.child = nk(9) }
+fn dropKids(mut ks: &[]Kid) { truncate(ks, 0) }
+fn bump(mut p: &Par) { p.k += 1 }
+type Big = ref record { a: Kid; b: Kid; c: Kid; d: Kid; e: Kid; f: Kid }
+fn nbig(): Big { return new Big{a: nk(1), b: nk(2), c: nk(3), d: nk(4), e: nk(5), f: nk(6)} }
+fn touchOther(mut p: &Par) { p.other = nk(9) }
+fn viaTouch(mut p: &Par) { touchOther(p) }
+fn setFirst(mut ks: &[]Kid) { ks[0] = nk(1) }
+fn scr5(mut x: &Big) { x.a = nk(7); x.b = nk(7); x.c = nk(7); x.d = nk(7); x.e = nk(7) }
+fn recur(mut p: &Par, n: int) {
+    if n > 0 { recur(p, n - 1) }
+    p.other = nk(9)
+}
+fn swapKid(g: ^Par): Kid { return replace(g.child, nk(110)) }
+// === a field assigned over
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    println(h.n)
+    p.child = nk(2)
+    println(h.n)  // error: handle 'h' may name a freed object: a place in 'p'
+}
+// === a field assigned over, in a branch
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    if flag() { p.child = nk(2) }
+    println(h.n)  // error: may name a freed object
+}
+// === an element with a constant index assigned over
+fn main() {
+    var p = np()
+    append(p.kids, nk(1))
+    append(p.kids, nk(2))
+    let h = handle(p.kids[1])
+    p.kids[1] = nk(3)
+    println(h.n)  // error: may name a freed object
+}
+// === an element with a variable index, another element assigned over
+fn main() {
+    var p = np()
+    append(p.kids, nk(1))
+    append(p.kids, nk(2))
+    var i = 1
+    let h = handle(p.kids[i])
+    p.kids[0] = nk(3)
+    println(h.n)  // error: may name a freed object
+}
+// === a constant element, a variable index assigned over
+fn main() {
+    var p = np()
+    append(p.kids, nk(1))
+    append(p.kids, nk(2))
+    var i = 0
+    let h = handle(p.kids[1])
+    p.kids[i] = nk(3)
+    println(h.n)  // error: may name a freed object
+}
+// === a variable index, the same expression assigned over
+fn main() {
+    var p = np()
+    append(p.kids, nk(1))
+    var i = 0
+    let h = handle(p.kids[i])
+    p.kids[i] = nk(3)
+    println(h.n)  // error: may name a freed object
+}
+// === an element of a local array
+fn main() {
+    var xs = new []Kid(0)
+    append(xs, nk(1))
+    let h = handle(xs[0])
+    xs[0] = nk(2)
+    println(h.n)  // error: may name a freed object
+}
+// === a local array assigned over
+fn main() {
+    var xs = new []Kid(0)
+    append(xs, nk(1))
+    let h = handle(xs[0])
+    xs = new []Kid(0)
+    println(h.n)  // error: may name a freed object
+}
+// === the owner assigned over
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    p = np()
+    println(h.n)  // error: may name a freed object
+}
+// === the owner dropped
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    drop(p)
+    println(h.n)  // error: may name a freed object
+}
+// === an ancestor of the place assigned over
+fn main() {
+    var t = new Top{par: np(), spare: np()}
+    let h = handle(t.par.child)
+    t.par = np()
+    println(h.n)  // error: may name a freed object
+}
+// === a deeper place, an ancestor replaced
+fn main() {
+    var t = new Top{par: np(), spare: np()}
+    append(t.par.kids, nk(1))
+    let h = handle(t.par.kids[0])
+    let old = replace(t.par, np())
+    println(h.n)  // error: may name a freed object
+    eat(old)
+}
+// === the place replaced
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    let old = replace(p.child, nk(2))
+    println(h.n)  // error: may name a freed object
+    println(old.n)
+}
+// === the array truncated
+fn main() {
+    var p = np()
+    append(p.kids, nk(1))
+    let h = handle(p.kids[0])
+    truncate(p.kids, 0)
+    println(h.n)  // error: may name a freed object
+}
+// === a local array truncated
+fn main() {
+    var xs = new []Kid(0)
+    append(xs, nk(1))
+    let h = handle(xs[0])
+    truncate(xs, 0)
+    println(h.n)  // error: may name a freed object
+}
+// === a mut call that frees below its argument
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    reset(p)
+    println(h.n)  // error: may name a freed object
+}
+// === a mut call that frees below an array argument
+fn main() {
+    var p = np()
+    append(p.kids, nk(1))
+    let h = handle(p.kids[0])
+    dropKids(p.kids)
+    println(h.n)  // error: may name a freed object
+}
+// === a mut call given an element, that frees below it, with a variable index
+fn main() {
+    var t = new Top{par: np(), spare: np()}
+    let h = handle(t.par.child)
+    reset(t.par)
+    println(h.n)  // error: may name a freed object
+}
+// === a change through a reference to the owner
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    let r = &p
+    r.child = nk(2)
+    println(h.n)  // error: may name a freed object
+}
+// === a change through a reference to the place's parent
+fn main() {
+    var t = new Top{par: np(), spare: np()}
+    let h = handle(t.par.child)
+    let r = &t.par
+    r.child = nk(2)
+    println(h.n)  // error: may name a freed object
+}
+// === a change through a reference to the array
+fn main() {
+    var p = np()
+    append(p.kids, nk(1))
+    let h = handle(p.kids[0])
+    let r = &p.kids
+    r[0] = nk(2)
+    println(h.n)  // error: may name a freed object
+}
+// === a change through a reference that may point at the owner or another
+fn main() {
+    var p = np()
+    var q = np()
+    let h = handle(p.child)
+    var r = &q
+    if flag() { r = &p }
+    r.child = nk(2)
+    println(h.n)  // error: may name a freed object
+}
+// === a copy of the handle, made before
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    let g = h
+    p.child = nk(2)
+    println(g.n)  // error: may name a freed object
+}
+// === a copy of the handle, made after
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    p.child = nk(2)
+    let g = h
+    println(g.n)  // error: may name a freed object
+}
+// === a write through the handle
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    p.child = nk(2)
+    h.n = 5  // error: may name a freed object
+}
+// === a by-value parameter
+fn f(p: Par) {
+    let h = handle(p.child)
+    p.child = nk(2)
+    println(h.n)  // error: may name a freed object
+    eat(p)
+}
+fn main() { f(np()) }
+// === in a loop that uses the handle
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    var i = 0
+    while i < 2 {
+        println(h.n)
+        p.child = nk(i)  // error: cannot assign over a place in the owner of handle 'h' inside a loop that uses the handle
+        i += 1
+    }
+}
+// === the free in a loop that never names the handle, the handle used after
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    for i in 0..2 {
+        p.child = nk(i)
+        println(i)
+    }
+    println(h.n)  // error: may name a freed object
+}
+// === an element freed in a loop that uses the handle
+fn main() {
+    var p = np()
+    append(p.kids, nk(1))
+    let h = handle(p.kids[0])
+    for i in 0..2 {
+        println(h.n)
+        p.kids[i - i] = nk(i)  // error: inside a loop that uses the handle
+    }
+}
+// === a replace in a loop that uses the handle
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    for i in 0..2 {
+        println(h.n)
+        let old = replace(p.child, nk(i))  // error: inside a loop that uses the handle
+        println(old.n)
+    }
+}
+// === a truncate in a loop that uses the handle
+fn main() {
+    var p = np()
+    append(p.kids, nk(1))
+    let h = handle(p.kids[0])
+    for i in 0..2 {
+        println(h.n)
+        truncate(p.kids, 0)  // error: inside a loop that uses the handle
+    }
+}
+// === a mut call in a loop that uses the handle
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    for i in 0..2 {
+        println(h.n)
+        reset(p)  // error: inside a loop that uses the handle
+    }
+}
+// === a move of the owner in a loop that uses the handle
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    for i in 0..2 {
+        println(h.n)
+        eat(p)  // error: cannot move 'p' inside a loop while handle 'h' made from it is in scope
+        p = np()
+    }
+}
+// === the free in a defer, the handle used by an earlier defer
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    defer { println(h.n) }
+    p.child = nk(2)  // error: cannot assign over a place in 'p' while a defer declared earlier uses handle 'h'
+}
+// === the free in a defer body, the handle used after it
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    {
+        defer { p.child = nk(2) }
+    }
+    println(h.n)  // error: may name a freed object
+}
+// === the free in the then arm, a use after the if
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    if flag() {
+        p.child = nk(2)
+    } else {
+        println(h.n)
+    }
+    println(h.n)  // error: may name a freed object
+}
+// === the free in a match arm
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    match p.k {
+    0 { p.child = nk(3) }
+    else { println(1) }
+    }
+    println(h.n)  // error: may name a freed object
+}
+// === a free on the paths that did not move the owner
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    if flag() {
+        eat(p)
+        return
+    } else {
+        p.child = nk(2)
+    }
+    println(h.n)  // error: may name a freed object
+}
+// === a guard that ends before a later free
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    if alive(h) {
+        p.child = nk(2)
+        println(h.n)  // error: may name a freed object
+    }
+}
+// === a handle to a field of a field, the field assigned over
+fn main() {
+    var t = new Top{par: np(), spare: np()}
+    let h = handle(t.par.other)
+    t.spare.opt = nk(1)
+    println(h.n)
+    t.par.other = nk(1)
+    println(h.n)  // error: may name a freed object
+}
+// === the array truncated to the handle's own index
+fn main() {
+    var p = np()
+    append(p.kids, nk(1))
+    append(p.kids, nk(2))
+    let h = handle(p.kids[1])
+    truncate(p.kids, 1)
+    println(h.n)  // error: may name a freed object
+}
+// === the array truncated by a count that is not constant
+fn main() {
+    var p = np()
+    append(p.kids, nk(1))
+    append(p.kids, nk(2))
+    var n = 2
+    let h = handle(p.kids[0])
+    truncate(p.kids, n)
+    println(h.n)  // error: may name a freed object
+}
+// === a variable index, the array truncated by a constant count
+fn main() {
+    var p = np()
+    append(p.kids, nk(1))
+    append(p.kids, nk(2))
+    var i = 0
+    let h = handle(p.kids[i])
+    truncate(p.kids, 1)
+    println(h.n)  // error: may name a freed object
+}
+// === an element inside the element, the array truncated to it
+fn main() {
+    var t = new Top{par: np(), spare: np()}
+    append(t.par.kids, nk(1))
+    let h = handle(t.par.kids[0])
+    truncate(t.par.kids, 0)
+    println(h.n)  // error: may name a freed object
+}
+// === a handle to the whole object, after a write through a handle
+fn main() {
+    var p = np()
+    let h = handle(p)
+    let g = handle(p)
+    g.child = nk(3)
+    p = np()
+    println(h.k)  // error: handle 'h' may name a freed object: 'p' was assigned or dropped
+}
+// === a change through a reference with no known place
+fn main() {
+    var p = np()
+    append(p.kids, nk(1))
+    append(p.more, nk(2))
+    let h = handle(p.kids[0])
+    var r = &p.kids
+    if flag() { r = &p.more }
+    r[0] = nk(3)
+    println(h.n)  // error: may name a freed object
+}
+// === an element of an element, the outer array assigned over
+fn main() {
+    var t = new Top{par: np(), spare: np()}
+    append(t.par.kids, nk(1))
+    let h = handle(t.par.kids[0])
+    t.par.kids = new []Kid(0)
+    println(h.n)  // error: may name a freed object
+}
+// === a callee that frees the place the handle is made from
+fn main() {
+    var p = np()
+    let h = handle(p.other)
+    touchOther(p)
+    println(h.n)  // error: may name a freed object
+}
+// === a callee two calls deep that frees the place
+fn main() {
+    var p = np()
+    let h = handle(p.other)
+    viaTouch(p)
+    println(h.n)  // error: may name a freed object
+}
+// === a callee with more places than the summary keeps frees any place below the argument
+fn main() {
+    var b = nbig()
+    let h = handle(b.f)
+    scr5(b)
+    println(h.n)  // error: may name a freed object
+}
+// === a recursive callee frees anywhere below the argument
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    recur(p, 1)
+    println(h.n)  // error: may name a freed object
+}
+// === a callee that sets an element, given a reference with no known place
+fn main() {
+    var p = np()
+    append(p.kids, nk(1))
+    append(p.more, nk(2))
+    let h = handle(p.kids[0])
+    var r = &p.kids
+    if flag() { r = &p.more }
+    setFirst(r)
+    println(h.n)  // error: may name a freed object
+}
+// === a free through a handle to another owner does not stop the tracking
+fn main() {
+    var p = np()
+    var q = np()
+    let h = handle(p.child)
+    let hq = handle(q)
+    hq.other = nk(3)
+    p = np()
+    println(h.n)  // error: may name a freed object
+}
+// === a recursive call does not stop the tracking
+fn rec(n: int) {
+    if n == 0 { return }
+    var p = np()
+    let h = handle(p.child)
+    rec(n - 1)
+    p.child = nk(2)
+    println(h.n)  // error: may name a freed object
+}
+fn main() { rec(1) }
+// === the object moved out through a handle, then the place refilled: a known false positive
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    let old = swapKid(handle(p))
+    p.child = nk(111)
+    println(h.n)  // error: may name a freed object
+    println(old.n)
+}
+// === a truncate through a reference with no known place, the elements it keeps are not known
+fn main() {
+    var ys = new [][][]Kid(0)
+    append(ys, new [][]Kid(0))
+    append(ys, new [][]Kid(0))
+    for j in 0..3 { append(ys[1], new []Kid(0)) }
+    append(ys[1][2], nk(7))
+    let h = handle(ys[1][2][0])
+    var r = &ys[0]
+    if len(ys) == 2 { r = &ys[1] }
+    truncate(r, 2)
+    println(h.n)  // error: may name a freed object
+}
+// === a write through a handle to the owner
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    let g = handle(p)
+    g.child = nk(3)
+    println(h.n)  // error: may name a freed object
+}
+// === a replace through a handle to the owner
+fn main() {
+    var p = np()
+    let h = handle(p.child)
+    let g = handle(p)
+    let old = replace(g.child, nk(3))
+    println(h.n)  // error: may name a freed object
+    println(old.n)
+}
+// === a truncate through a handle to the owner
+fn main() {
+    var p = np()
+    append(p.kids, nk(1))
+    let h = handle(p.kids[0])
+    let g = handle(p)
+    truncate(g.kids, 0)
+    println(h.n)  // error: may name a freed object
+}

@@ -1,0 +1,16 @@
+// A handle made from a field of a reference parameter has no origin (FORK.md, "Field and element origins"): the
+// object the field names may be freed by the caller's other references, so the use is checked where it runs.
+type Kid = ref record { n: int }
+type Par = ref record { child: Kid }
+fn f(mut p: &Par) {
+    let h = handle(p.child)
+    println(h.n)                     // expect: 1
+    p.child = new Kid{n: 2}          // frees the first kid
+    println(h.n)
+}
+fn main() {
+    var p = new Par{child: new Kid{n: 1}}
+    f(p)
+}
+// expect-exit: 7
+// expect-stderr: the object this handle names has been freed

@@ -1,0 +1,14 @@
+// A handle made through another handle has no origin (FORK.md, "Field and element origins"): the use is checked
+// where it runs.
+type Kid = ref record { n: int }
+type Par = ref record { child: Kid }
+fn main() {
+    var p = new Par{child: new Kid{n: 1}}
+    let g = handle(p)
+    let h = handle(g.child)
+    println(h.n)                     // expect: 1
+    p.child = new Kid{n: 2}          // frees the first kid
+    println(h.n)
+}
+// expect-exit: 7
+// expect-stderr: the object this handle names has been freed
