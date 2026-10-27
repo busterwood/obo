@@ -315,8 +315,8 @@ ORIGIN_MUTANTS = {
         '        if lastRaw == "" { originMove(x.sym, true) }\n'),
     'assignment clears origins through a reference or handle': ('            if traw == "" && !x.viaHandle && !x.deref { originMove(xs, false) }\n',
         '            if traw == "" { originMove(xs, false) }\n'),
-    "a move clears no handle's origin": ('            if o == r {\n                x.hOrigin = nil\n',
-        '            if false {\n                x.hOrigin = nil\n'),
+    "a move clears no handle's origin": ('        if x.hOrigin == r { x.hOrigin = nil }\n',
+        ''),
     "a closed block's handles stay in the origin list": ('    truncate(originSyms, blocks[last].hmark)\n',
         ''),
     'a handle declared in the loop it is moved in is refused': ('        if originLive[i] == s && x.hDepth <= len(loops) && originDead[i] == nil {\n',
@@ -586,7 +586,8 @@ ALIVE_MUTANTS = {
     'a nested conjunction reopens the guard': ('guardSym != nil && !guardNeg && !guardOpen && guardFollow', 'guardSym != nil && !guardNeg && guardFollow'),
     'a negated guard opens the conjunction': ('guardSym != nil && !guardNeg && !guardOpen', 'guardSym != nil && !guardOpen'),
     'a loop does not take the marks from before it': ('    for i in 0..em {\n        if dEntry[i] != nil { originDead[i] = dEntry[i] }\n', '    for i in 0..em {\n'),
-    'a move of the owner keeps a narrowed handle usable': ('                if originNar[i] { originDead[i] = r }\n', ''),
+    'a move of the owner keeps a narrowed handle usable': ('        if wasLive && originNar[i] { originDead[i] = r }\n', ''),
+    'the narrowed re-mark uses the flow-insensitive origin': ('        if wasLive && originNar[i] { originDead[i] = r }\n', '        if x.hOrigin == r && originNar[i] { originDead[i] = r }\n'),
     'narrowing is not remembered': ('    if d[i] != nil { originNar[i] = true }\n', ''),
     'narrowing is always remembered': ('    if d[i] != nil { originNar[i] = true }\n', '    originNar[i] = true\n'),
     'a guard in the right operand of or is open': ('        orSeq += 1\n', ''),
@@ -596,7 +597,7 @@ MUTANTS.update(ALIVE_MUTANTS)
 
 # origins per path (originLive, liveClear, liveJoin, deadSave/deadSet, originMove, originFree)
 PATH_MUTANTS = {
-    'a move of the owner keeps the live mark': ('        if originLive[i] == r { originLive[i] = nil }\n', ''),
+    'a move of the owner keeps the live mark': ('        if wasLive { originLive[i] = nil }\n', ''),
     'a free uses the flow-insensitive origin': ('        if originLive[i] == r {\n            if x.hDepth <= len(loops)', '        if originLive[i] == r && x.hOrigin != nil {\n            if x.hDepth <= len(loops)'),
     'an if with an else starts its live union from the marks before': ('    var dacc = deadSave()\n    liveClear(&dacc)\n    // the arm where h', '    var dacc = deadSave()\n    // the arm where h'),
     'an if without an else drops the path that runs no arm': ('    liveJoin(&d0, &dacc)\n    deadSet(&dacc)\n    if !t1 {', '    deadSet(&dacc)\n    if !t1 {'),

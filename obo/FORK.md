@@ -2386,9 +2386,14 @@ refills followed by `a = nb()`; both compiled and exited 7). The remaining users
 for a reason: (1) the expression's `hOrigin` (`x.hOrigin = s.hOrigin`, and `hOrig` in the designator) decides
 whether a held place is keyed to the owner or is an identity, which every move and free hits. A cleared `hOrigin`
 is the safe side there; keying a place to the owner on the paths that did not move it would let a free of the
-owner in a callee pass unseen on the paths that did. (2) `originMove` re-marks a narrowed handle dead (`originNar`) at the first move that
-finds an origin; it is left as it was, since moving it to the live mark would change which narrowed handles stay
-usable and no failing program was found. (3) The `let` copy takes `x.hOrigin` for the same identity treatment, but is tracked (`originSyms`,
+owner in a callee pass unseen on the paths that did. (2) `originMove` re-marks a narrowed handle dead (`originNar`) when the move hits the handle's live mark, not its `hOrigin`
+(it was the last user of `hOrigin` among the dead-mark consumers). With `hOrigin` a returning arm that moved the owner earlier made the
+re-mark skip: `if c { eat(a); return }  if c2 { a = nb() }  if alive(h) { eat(a); h.n }` compiled and exited 7, while the
+same without the earlier arm was refused; and `if alive(h) { c = a; a = nb(3); h.n }` was refused only without the earlier arm.
+Both now behave alike: refused. The second is a false positive that was already there (the object lives on in `c`; the
+re-mark cannot tell a move into a variable from a move into a callee that frees it). The held-place decision (1) stays on
+`hOrigin`: keying a place to the owner is only sound where no path has cleared the origin, and a cleared `hOrigin` merely falls
+back to the identity treatment, which every move or free hits. (3) The `let` copy takes `x.hOrigin` for the same identity treatment, but is tracked (`originSyms`,
 `hDepth`, the dead and live marks of the handle it copies) whenever the copied handle is live, so a copy made after
 a move in an arm that returned (`if c { eat(a); return }  let g = h  a = nb()  g.n`) is refused like the handle
 itself; the copy has no origin, which is an identity.
