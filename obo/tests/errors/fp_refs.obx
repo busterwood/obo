@@ -126,6 +126,14 @@ fn main() {
     append(gx, mk(1))
     println(two(&gx[0], gf(gx)))  // error: cannot pass a reference into global 'gx' to gf: it might free it
 }
+// === a mut argument passed on: the caller inherits the free of the global it passed
+var gy = new []Node(0)
+fn cut2(mut a: &[]Node): int { truncate(a, 0); return 0 }
+fn wrap2(n: &Node): int { return cut2(gy) + n.v }
+fn main() {
+    append(gy, mk(1))
+    println(wrap2(&gy[0]))  // error: cannot pass a reference into global 'gy' to wrap2: it might free it
+}
 // === the second of two parameters is the one that frees
 fn sec(a: &Bag, mut b: &Bag): int { b.items = new []Node(0); return a.n }
 fn main() {
