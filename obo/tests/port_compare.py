@@ -7,6 +7,11 @@ code when run with OBO_CHECK=1. The executables' bytes may differ, so code gener
 can change; the fixed point (make promote) still compares the compiler's own bytes.
 The compiler itself must have no leaks and stay within its memory budget.
 
+A tests/run program that starts with "// prelude: io" is compiled with
+obo/lib/io.obo concatenated before it, exactly as run_fork.py does; otherwise
+both compilers would reject the library's names and the case would compare two
+identical errors without compiling anything.
+
     python3 obo/tests/port_compare.py
     OBO_REF=obo/seed/obo python3 obo/tests/port_compare.py   # against the seed instead"""
 import concurrent.futures
@@ -28,6 +33,7 @@ import run  # noqa: E402  (for error_cases)
 
 REF = os.path.abspath(os.environ.get('OBO_REF', os.path.join(FORK, 'obo')))
 SRC = os.path.join(FORK, 'src', 'obo.obo')
+LIB = os.path.join(FORK, 'lib', 'io.obo')
 # live peak, in bytes, of the port compiling itself. Lower it when memory improves; raise it only
 # for a reason recorded in FORK.md. Raised from 983,000 on 2026-10-26 by the user's decision: the
 # measured peak is 954,896 bytes (FORK.md, "Peak memory (done)"), and a budget about 3% above it
@@ -106,12 +112,19 @@ def main():
 
 
 def cases_of(src):
-    """(name, text) of every case: the programs, src itself, and the error cases."""
+    """(name, text) of every case: the programs, src itself, and the error cases.
+    A program that starts with "// prelude: io" gets the library before it, as
+    run_fork.py's program_test does, so the case compiles the library and the
+    program with both compilers rather than comparing two identical rejections."""
     cases = []
+    lib = open(LIB, 'rb').read()
     for f in sorted(glob.glob(os.path.join(FORK, 'tests', 'run', '*.obx')) + glob.glob(os.path.join(FORK, 'examples', '*.obx')) +
                     glob.glob(os.path.join(FORK, 'bench', '*.obx')) + glob.glob(os.path.join(ROOT, 'tests', 'run', '*.obx')) +
                     glob.glob(os.path.join(ROOT, 'examples', '*.obx')) + [src]):
-        cases.append((os.path.relpath(f, ROOT), open(f, 'rb').read()))
+        text = open(f, 'rb').read()
+        if text.startswith(b'// prelude: io'):
+            text = lib + b'\n' + text
+        cases.append((os.path.relpath(f, ROOT), text))
     for f in sorted(glob.glob(os.path.join(FORK, 'tests', 'errors', '*.obx')) + glob.glob(os.path.join(ROOT, 'tests', 'errors', '*.obx'))):
         for name, text, _, _ in run.error_cases(f):
             cases.append((name, text.encode()))

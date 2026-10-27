@@ -298,6 +298,11 @@ MUTANTS.update({k: [v] for k, v in ARG_ORDER_MUTANTS.items() if k not in FORK_EQ
 # a handle's object freed by an assignment over, or a drop of, its owner: the cases of handle_frees.obx
 from mutate_fork import HANDLE_FREE_MUTANTS  # noqa: E402
 from mutate_fork import FP_MUTANTS, REF_PATH_MUTANTS, MOVE_MUTANTS, FIELD_MUTANTS  # noqa: E402
+# the I/O builtins: the port compiles the run and error I/O cases (and, for the
+# two "// prelude: io" programs, the library), so these compiler mutants are
+# judged by the Stage B comparison too
+from mutate_fork import IO_MUTANTS  # noqa: E402
+MUTANTS.update({k: [v] for k, v in IO_MUTANTS.items()})
 MUTANTS.update({k: [v] for k, v in FP_MUTANTS.items() if k not in FORK_EQUIVALENT})
 MUTANTS.update({k: [v] for k, v in REF_PATH_MUTANTS.items() if k not in FORK_EQUIVALENT})
 MUTANTS.update({k: [v] for k, v in MOVE_MUTANTS.items() if k not in FORK_EQUIVALENT})

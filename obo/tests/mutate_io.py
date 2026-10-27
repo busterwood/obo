@@ -103,6 +103,10 @@ RUNTIME_MUTANTS = {
     'EINTR close does not mark closed': (
         '    if (tracked) fdstate[fd] = 2;\n',
         '    if (tracked && r == 0) fdstate[fd] = 2;\n'),
+    # "w" drops O_TRUNC: a shorter rewrite leaves the old tail
+    'w mode does not truncate': (
+        '    else if (str_is(mode, "w")) { flags = 0x241; pmode = 0644; }                            /* O_WRONLY|O_CREAT|O_TRUNC */\n',
+        '    else if (str_is(mode, "w")) { flags = 0x041; pmode = 0644; }                            /* O_WRONLY|O_CREAT */\n'),
     # an untracked fd is entered in the table, so its second close traps (N3)
     'untracked close marks the table': (
         '    i64 r = io_close(fd);\n    if (tracked) fdstate[fd] = 2;\n',
@@ -188,6 +192,7 @@ CASES = [
     case('run/io_read_big_closed', 'tests/run/io_read_big_closed.obx', env=clean_env(check=True)),
     case('run/io_reader', 'tests/run/io_reader.obx', env=clean_env(check=True)),
     case('run/io_writer', 'tests/run/io_writer.obx', env=clean_env(check=True)),
+    case('run/io_defer', 'tests/run/io_defer.obx', env=clean_env(check=True)),
     case('io/short_read', 'tests/io/short_read.obx', env=clean_env(check=True), stdin=b'0123456789'),
     case('io/fault_eintr', 'tests/io/fault_eintr.obx', env=clean_env(check=True, fault='eintr')),
     case('io/fault_inert', 'tests/io/fault_inert.obx', env=clean_env(fault='short')),

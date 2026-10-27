@@ -2,6 +2,7 @@
 // a computed max and a 1 MiB file. Everything is verified by reopening.
 // expect: binary 256 32640
 // expect: append 260 84 65 73 76
+// expect: truncate 3 xyz
 // expect: enoent 2
 // expect: read-only 9
 // expect: write-only 9
@@ -93,6 +94,27 @@ fn main() {
         err { println("append read: ", got.message, " (", got.code, ")"); exit(1) }
     }
     closeOrDie(fr)
+
+    // "w" truncates: a shorter rewrite of an existing file leaves no stale tail
+    let truncPath = dir + "/trunc.bin"
+    let ft = openOrDie(truncPath, "w")
+    let nft = writeOrDie(ft, data)
+    if nft != len(data) { println("trunc fill ", nft); exit(1) }
+    closeOrDie(ft)
+    let ft2 = openOrDie(truncPath, "w")
+    let three = bytesOf("xyz")
+    let nt2 = writeOrDie(ft2, three)
+    if nt2 != 3 { println("trunc short ", nt2); exit(1) }
+    closeOrDie(ft2)
+    let tr = slurp(truncPath)
+    match tr {
+        ok(v) {
+            if len(v) != 3 { println("trunc length ", len(v)); exit(1) }
+            if v[0] != 'x' || v[1] != 'y' || v[2] != 'z' { println("trunc content differs"); exit(1) }
+            println("truncate ", len(v), " xyz")
+        }
+        err(m, c) { println("trunc read: ", m, " (", c, ")"); exit(1) }
+    }
 
     // ENOENT is code 2
     let miss = openFile(dir + "/nope.bin", "r")
