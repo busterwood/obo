@@ -1,4 +1,4 @@
-# obx and obo
+# obo
 
 A small Oberon-derived language and its compiler, built to answer one question:
 **can a language keep Oberon's simplicity and manage memory without a garbage
@@ -15,26 +15,81 @@ representation and writes x86-64 machine code straight into an ELF executable.
 
 ## Where things stand
 
-There are two dialects of one language.
+**obo** is the language and compiler this repository is about: single ownership,
+borrowed references and run-time-checked handles, with no garbage collector. On the
+benchmarks it uses 2 to 6 times less memory than even an aggressively tuned
+collector, at similar speed, with small changes to source code.
 
-- **obx** is the original: garbage collected, self-hosting, with about 925 tests and
-  47 mutants guarding them. Its compiler, `obx/src/obxc.obx`, is about 3,200 lines.
-  Everything from "Reference: mainline obx" below describes it.
-- **obo** (in `obo/`) replaces the collector with single ownership, borrowed
-  references and run-time-checked handles. On the benchmarks it uses 2 to 6 times
-  less memory than even an aggressively tuned collector, at similar speed, with
-  small changes to source code.
+**obx** was the original garbage-collected dialect and the compiler obo grew from.
+It is kept as the historical reference; the "History: mainline obx" section below
+describes it, not the current direction.
 
 The decisive test was the compiler itself. obo's compiler has been rewritten in
 the obo dialect (`obo/src/obo.obo`), and it compiled every test program
 and error case byte-for-byte as the first obo compiler did, and compiles itself to a
 fixed point. Its stage test now compares behaviour (same errors, same output when run),
 so code generation can improve. Compiling
-its own source it peaked at 1.5 MB resident (live peak now 1.23 MB, 1,229,344 bytes, on main), against 2.5 MB for the same logic on a tuned
-collector and 1.9 MB on an aggressive one. It is still about 50% slower.
+its own source it peaked at 1.5 MB resident (live peak now 1,244,400 bytes on a
+293,403-byte source; the 378,592-byte compiler takes 0.08–0.10 s; see Current
+status), against 2.5 MB for the same logic on a tuned collector and 1.9 MB on an
+aggressive one. The larger source and its extra checks account for the wall time.
 
-**Decision: obo is the future of the language.** obx becomes the reference it grew
-from, as the Python compiler before it did.
+**obo is the language.** obx remains the historical reference it grew from, as the
+Python compiler before it did.
+
+## Current status (27 October 2026)
+
+The ownership compiler is merged and self-hosting. The compiler and
+`obo/seed/obo` are the same 378,592-byte binary and reach a fixed point compiling
+themselves. `Result[T]`/`try` and incremental I/O are done (merged and seeded); the
+first command-line tools (`cat`, `wc`, `sort`) and their GNU differential gate are in
+progress on a branch, not yet merged.
+
+| Metric | Value |
+|---|---:|
+| Compiler source | 8,018 lines, 293,403 bytes |
+| Compiler / seed binary | 378,592 bytes |
+| Self-compile wall time | 0.08–0.10 s (5 runs; median 0.09 s) |
+| Self-compile live peak | 1,244,400 bytes |
+| Total allocated | 24,873,072 bytes |
+| Maximum resident set | 2,352 KB |
+| Live-memory budget | 2,000,000 bytes (about 755 KB spare) |
+| obo suite | 1,024 tests; 409/429 caught + 20 equivalent; 27 runtime/library; 377 port |
+| Minimal static executable | 90,848 bytes (runtime included) |
+| `wc` design prototype | 103,136 bytes (dummy I/O; final Phase 3 binaries pending) |
+
+For historical comparison, obx's collector-based compiler is 3,222 lines and
+172,768 bytes; it compiles its own 88,731-byte source in about 0.01 s and peaks at
+8,832 KB resident. obo's source is 3.3× larger and carries more checks, so wall time
+is not like for like; the memory result is the point: about 1.24 MB live against
+8.8 MB resident.
+
+The earlier 12.1 MB allocation and 30 ms figures in "Direction" describe the smaller
+pre-Result, pre-I/O compiler. The source has grown from 4,552 lines at that stage to
+8,018; total allocation has grown with it, while the live peak stays within the 2 MB
+budget.
+
+### Toward command-line tools
+
+The target is a small, GC-free language for real command-line tools: first the
+coreutils-shaped `cat`, `wc` and `sort`; then `eza` (the maintained exa fork), `fd`,
+`hexyl`, `tokei`, and `jq` once the float decision is made.
+
+| Phase | Status |
+|---|---|
+| 0. Ownership compiler, self-hosting fixed point | done |
+| 1. `Result[T]`, `ok`/`err`, `try`, consuming `match` | done |
+| 2. Incremental I/O: `openFile`/`readFd`/`writeFd`/`closeFile`, standard fds, `Reader`/`Writer` | done |
+| 3. `cat`, `wc`, `sort` and the GNU differential gate | in progress |
+| 4. Multiple modules with `.sym` symbol files | next |
+| 5. Stdlib modules and the `eza` core | planned |
+| 6. Methods, interfaces and lambdas | planned |
+| 7. Peephole/optimizer audit | evidence-gated |
+| 8. More tools: `fd`, `hexyl`, `tokei`, `jq` | later |
+
+Floats, concurrency, networking and TUI work are deliberately later; `jq` and
+`hyperfine` are the first things that would need a float decision. Generic modules
+are not planned.
 
 ## The model, in one page
 
@@ -168,29 +223,37 @@ through a handle) and over the globals `code` and `ownedLocals`; this change did
 
 | | |
 |---|---|
-| `obx/src/obxc.obx` | obx's compiler, in obx |
-| `obx/seed/obxc` | the trusted previous stage, which builds the current compiler |
-| `obx/tests/` | obx's suite, mutants and stage comparisons |
 | `obo/src/obo.obo` | obo's compiler, in obo, built by `obo/seed/obo` (promote with `make promote`) |
-| `obo/legacy/obo-on-obx.obx` | obo's first compiler, in obx: retired, kept for reference |
-| `obo/FORK.md` | obo's design decisions, milestones, measurements and findings |
+| `obo/seed/obo` | the trusted previous stage |
+| `obo/lib/` | the buffered I/O library (`Reader`/`Writer`); Phase 3 adds `str.obo` and `writePadded` |
+| `obo/programs/` | the first tools: `cat`, `wc`, and (Phase 3) `sort` |
+| `obo/tests/` | obo's suite, mutants and the I/O gates |
+| `obo/tests/io_test.py` | the runtime and streaming-I/O gates |
 | `obo/runtime/` | obo's runtime: no collector, leak and double-free counting |
+| `obo/FORK.md` | design decisions, milestones, measurements and findings |
 | `obo/tools/` | the patch scripts behind each change |
+| `obx/` | history: the original GC compiler, suite and stage tests (see History) |
 
 ```
-cd obx && make && ./run_tests.sh         # obx: build and test (about 8 s)
-cd obo && make                           # obo: build (needs obx built first)
+cd obo && make                           # obo: build from the committed seed
 cd obo && python3 tests/run_fork.py      # obo's tests, leak check always on
+cd obo && python3 tests/io_test.py --rt --programs --tools  # I/O runtime and programs
 cd obo && python3 tests/mutate_fork.py   # obo's mutants
+cd obo && python3 tests/mutate_io.py     # runtime/library mutants
 cd obo && python3 tests/port_test.py     # the port: tokens and encoder, against obo
 cd obo && python3 tests/port_compare.py  # the port, stage B (everything), with the memory budget
 cd obo && python3 tests/mutate_port.py   # the port's mutants
 cd obo && python3 bench/bench.py         # memory and time against the collector
+# Phase 3, once merged: python3 tests/tools.py --require-reference
+# history: cd obx && make && ./run_tests.sh
 ```
 
 ---
 
-# Reference: mainline obx
+# History: mainline obx (the original dialect)
+
+This section is kept as history: obx is the GC dialect obo grew from, and the
+design record references it. Current obo plans are in the status and roadmap above.
 
 A self-hosting, single-pass compiler for a small Oberon-derived language with
 C-style braces, written in the Wirth tradition: no AST, no intermediate
@@ -435,13 +498,3 @@ new instruction forms; the stage tests will show every change in generated code 
 difference against the bootstrap, which must be reviewed and then promoted; each rewrite
 gets a mutant, so the suite proves it is exercised; and the benchmarks show whether the
 gain is real.
-
-## The ownership dialect
-
-`obo/` holds obo, which replaces the collector with single ownership, borrowed
-references and handles. It began as an experiment and is now the language's
-direction: see "Direction" at the top of this file, and `obo/FORK.md` for the
-details. Phase 2 adds streaming file I/O: `openFile`, `readFd`, `writeFd` and
-`closeFile` (plus `stdin()`/`stdout()`/`stderr()`) return `Result` values, and
-the buffered `obo/lib/io.obo` adds `Reader`/`Writer`; `obo/programs/cat.obx`
-and `wc.obx` are the first tools built from it.
