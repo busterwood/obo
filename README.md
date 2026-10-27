@@ -41,7 +41,7 @@ the obo dialect (`obo/src/obo.obo`), and it compiled every test program
 and error case byte-for-byte as the first obo compiler did, and compiles itself to a
 fixed point. Its stage test now compares behaviour (same errors, same output when run),
 so code generation can improve. Compiling
-its own source it peaked at 1.5 MB resident (live peak now 1,244,400 bytes on a
+its own source it peaked at 1.5 MB resident (live peak now 1,244,480 bytes on a
 293,403-byte source; the 378,592-byte compiler takes 0.08–0.10 s; see Current
 status), against 2.5 MB for the same logic on a tuned collector and 1.9 MB on an
 aggressive one. The larger source and its extra checks account for the wall time.
@@ -54,21 +54,26 @@ Python compiler before it did.
 The ownership compiler is merged and self-hosting. The compiler and
 `obo/seed/obo` are the same 378,592-byte binary and reach a fixed point compiling
 themselves. `Result[T]`/`try` and incremental I/O are done (merged and seeded); the
-first command-line tools (`cat`, `wc`, `sort`) and their GNU differential gate are in
-progress on a branch, not yet merged.
+first command-line tools (`cat`, `wc`, `sort`) and their GNU differential gate are
+done and merged, with no compiler, runtime or seed change.
 
 | Metric | Value |
 |---|---:|
 | Compiler source | 8,018 lines, 293,403 bytes |
 | Compiler / seed binary | 378,592 bytes |
 | Self-compile wall time | 0.08–0.10 s (5 runs; median 0.09 s) |
-| Self-compile live peak | 1,244,400 bytes |
-| Total allocated | 24,873,072 bytes |
+| Self-compile live peak | 1,244,480 bytes |
+| Total allocated | 24,873,248 bytes |
 | Maximum resident set | 2,352 KB |
 | Live-memory budget | 2,000,000 bytes (about 755 KB spare) |
 | obo suite | 1,024 tests; 409/429 caught + 20 equivalent; 27 runtime/library; 377 port |
+| Tools differential gate | 199 checks (191 matrix + 8 serial) vs GNU coreutils 9.4; 2 memory cases |
+| Tool binaries | cat 108,256; wc 108,256; sort 112,352 bytes (static, runtime included) |
 | Minimal static executable | 90,848 bytes (runtime included) |
-| `wc` design prototype | 103,136 bytes (dummy I/O; final Phase 3 binaries pending) |
+
+Memory figures vary by a few dozen bytes with the source path; these are the
+merged-tree gate values. The tools do not change the compiler or seed; their
+runtime is included in the tool binary sizes above.
 
 For historical comparison, obx's collector-based compiler is 3,222 lines and
 172,768 bytes; it compiles its own 88,731-byte source in about 0.01 s and peaks at
@@ -92,7 +97,7 @@ coreutils-shaped `cat`, `wc` and `sort`; then `eza` (the maintained exa fork), `
 | 0. Ownership compiler, self-hosting fixed point | done |
 | 1. `Result[T]`, `ok`/`err`, `try`, consuming `match` | done |
 | 2. Incremental I/O: `openFile`/`readFd`/`writeFd`/`closeFile`, standard fds, `Reader`/`Writer` | done |
-| 3. `cat`, `wc`, `sort` and the GNU differential gate | in progress |
+| 3. `cat`, `wc`, `sort` and the GNU differential gate | done |
 | 4. Multiple modules with `.sym` symbol files | next |
 | 5. Stdlib modules and the `eza` core | planned |
 | 6. Methods, interfaces and lambdas | planned |
@@ -237,12 +242,15 @@ through a handle) and over the globals `code` and `ownedLocals`; this change did
 |---|---|
 | `obo/src/obo.obo` | obo's compiler, in obo, built by `obo/seed/obo` (promote with `make promote`) |
 | `obo/seed/obo` | the trusted previous stage |
-| `obo/lib/` | the buffered I/O library (`Reader`/`Writer`); Phase 3 adds `str.obo` and `writePadded` |
-| `obo/programs/` | the first tools: `cat`, `wc`, and (Phase 3) `sort` |
-| `obo/tests/` | obo's suite, mutants and the I/O gates |
+| `obo/lib/` | the buffered I/O library (`Reader`/`Writer`), `str.obo` byte helpers and `writePadded` |
+| `obo/programs/` | the first tools: `cat`, `wc`, `sort`, with `README.md` |
+| `obo/tests/` | obo's suite, mutants, the I/O gates and the tools differential gate |
 | `obo/tests/io_test.py` | the runtime and streaming-I/O gates |
+| `obo/tests/tools.py` | the tools against GNU coreutils, with models and goldens |
+| `obo/tests/tools/` | recorded GNU/own goldens for the tools gate |
 | `obo/runtime/` | obo's runtime: no collector, leak and double-free counting |
 | `obo/FORK.md` | design decisions, milestones, measurements and findings |
+| `obo/tools/build_tools.py` | builds the first tools from the preludes and program source |
 | `obo/tools/` | the patch scripts behind each change |
 | `obx/` | history: the original GC compiler, suite and stage tests (see History) |
 
