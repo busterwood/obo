@@ -242,7 +242,7 @@ MUTANTS.update({
     "self-call suspects not marked": [("if v.isRefLocal && anyDeep(v.bind) && !v.moved { v.suspect = true }", "if false { v.suspect = true }")],
     "shallow references invalidated by handle writes": [("if v.isRefLocal && anyDeep(v.bind) && !ancestorOf(v, via) && !v.moved {",
                                                          "if v.isRefLocal && !ancestorOf(v, via) && !v.moved {")],
-    "scalar truncate through a handle is a write": [("if owned || !throughHandle(a) { recordFreeChange(a) }", "recordFreeChange(a)")],
+    "scalar truncate through a handle is a write": [('if owned || !throughHandle(a) || baseOf(a.typ).kind == "string" { recordFreeChange(a) }', 'recordFreeChange(a)')],
     "suspect not joined at if or match": [("            sameStates(s1, s2, iline, icol)\n            joinSuspect(s1)\n",
                                            "            sameStates(s1, s2, iline, icol)\n"),
                                           ("        sameStates(s1, s0, iline, icol)\n        joinSuspect(s1)\n",
