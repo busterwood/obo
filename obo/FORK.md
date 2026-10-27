@@ -2507,9 +2507,11 @@ replaced, taken, truncated or reached by a call that frees below it, after the h
 again".
 
 **Memory.** One string array entry per tracked handle (`originPath`), two more `Item` fields (transient), the summary
-rows, code. After the merge with "Move bits (done)", the port compiling itself peaks at 1,126,832 bytes live,
-45,968 bytes (4.25%) above main's 1,080,864 before the merge (budget 2,000,000 unchanged, `MEMORY_MARGIN`
-untouched). The "before" figure this section first stated, 1,058,384, predates the narrowed re-mark merge and is stale.
+rows, code. After the merge with "Move bits (done)", the port compiling itself peaks at 1,126,736 bytes live,
+45,872 bytes (4.24%) above main's 1,080,864 before the merge (budget 2,000,000 unchanged, `MEMORY_MARGIN`
+untouched). The exact count moves by about a hundred bytes with the argument paths (`port_compare` reported
+1,126,720, 1,126,736 and 1,126,800 in different runs). The "before" figure this section first stated, 1,058,384,
+predates the narrowed re-mark merge and is stale.
 
 **Move bits (merged).** Main's move bits meet this work in three places. `movesFn(f)` is now `!pureFn(f)`, so `userCalls`
 counts a call only when it might free; the place tracking does not read `userCalls`, and the rows do not add a second
@@ -2537,7 +2539,7 @@ still set after the designator loop.
     a move: the marks are path-insensitive, as for owners; a variable index frees every element handle of the array.
 - A `var` handle, a handle in a record, and a handle parameter, as before.
 
-**Tests.** `tests/errors/field_origins.obx` (45 refused shapes), `tests/run/field_origins.obx` (accepted neighbours:
+**Tests.** `tests/errors/field_origins.obx` (59 refused shapes), `tests/run/field_origins.obx` (accepted neighbours:
 sibling field, scalar, descendant, other constant element, other array, append, truncate that keeps, mut calls that write
 a scalar or free below a sibling or below the place itself, references elsewhere, remade handle, alive guard, loops,
 defers, handle through a held handle, callee writing through a handle, whole-object handle) and
@@ -2737,9 +2739,55 @@ writer, the 63rd parameter). Cases that depended on the old rule were changed: `
 `errors/call_targets.obx` and `errors/pure_mut.obx` use a callee that really frees; `own_fuzz.py`'s
 `handle_index_call_stmt` (invalid) uses `rebox` and `move_bits_stmt` (valid, with a model) is new. LANGUAGE.md section 10 has the rule
 and its example now assigns over the field.
-**Mutants:** `MOVE_MUTANTS` in `tests/mutate_fork.py` (also run by `mutate_port.py`), fifteen (the last six are the string pin and the `[]string` truncate; `tests/run/string_index_pin.obx` is its test, `own_fuzz.py` `str_index_pin_stmt` its fuzz kind), the first nine: none, every, or any
-`mut` parameter counting as moving; the 63rd parameter; truncate, assignment, replace and take recording no free; a
-retried callee forgetting its bits (equivalent, with the reason in `EQUIVALENT`). The old mutant "a call with a
-mut parameter that appends does not count as moving" is gone: it is now the rule.
+**Mutants:** `MOVE_MUTANTS` in `tests/mutate_fork.py` (also run by `mutate_port.py`), eleven keys. The last six are
+the `[]string` truncate through a handle and the five string-pin/look-ahead mutants (`tests/run/string_index_pin.obx`
+is their test, `own_fuzz.py` `str_index_pin_stmt` its fuzz kind); the first five are the moving rules (none, every,
+or any `mut` parameter counting as moving), the 63rd parameter, and truncate recording no free. The old mutant "a
+call with a mut parameter that appends does not count as moving" is gone: it is now the rule.
 
-**Memory.** No field, no bit: only code removed. See the report of the port's peak in the commit message.
+**Memory.** No field, no bit: only code removed. On main after move-bits, `port_compare` measures the port compiling
+itself at 1,080,864 bytes live (the branch's own run reported 1,080,960); the later field-origins work raised it to
+1,126,736, and the exact count moves by about a hundred bytes with the argument paths (see "Field and element
+origins (done)").
+
+## Test harness (done)
+
+**Fail-fast.** `run_fork.py -x` stops after the first failing test: a suite with one failing test fails, so a
+mutant's verdict is caught on its first failure and the rest of the suite is not paid for. The failing test is still
+reported, the summary counts the tests that did not run ("N passed, M failed, K not run"), and the exit is 1 on any
+failure (0 otherwise). With `-j` the failure may be reported while other cases are already running: those finish and
+are counted, and nothing further is scheduled.
+
+**Smoke subset.** `--smoke` reorders 30 tests (`SMOKE`) to the front of the same process and then runs every other
+test as usual. It is a strict subset of the suite and only a reorder, so a failure there is a failure of the full
+suite and a pass still runs all the rest; a miss still runs the full suite, so "missed" always means the full suite
+passed. The 30 are the tests a real fail-fast run of the 326 mutants failed at first, weighted by how much of the
+suite a failure there lets a mutant skip: 138 of the 311 caught mutants failed there first (44%), and the cold
+suite cost 186 s CPU (17.4 s wall) against 234 s (55.5 s wall) with no subset. A name that is no longer a test is
+reported and ignored, so a renamed case can cost time, never a verdict.
+
+**Parallel cases.** `-j/--jobs` (default 1) runs that many independent cases at once in `run_fork.py` and
+`port_test.py`; at 1 the report is unchanged. Every case has a name of its own (the output counter is locked) and
+`run_exe` gives each its own scratch directory (`mkdtemp`), so no two cases share a file; `port_test.py` writes its
+scanner fuzz inputs and encoder scripts before the pool starts, and its objdump cross-checks stay serial because
+they share a temporary work list. In the mutation runs the outer and inner counts are one concurrency budget, not
+two: they multiply to about the core count.
+
+**Mutation defaults.** `mutate_fork.py` runs one mutant per core with one test inside each (`MUTATE_JOBS` defaults
+to the core count, `MUTATE_INNER_JOBS` to the cores divided by it, so 16/1 on this host), measured fastest: 16/1 took
+21.9 s wall and 203 s CPU, against 27.2 s for 8/2 and 50.7 s for 4/4. The suite is mostly short-lived compiler
+processes, so overlapping tests inside a mutant only adds spawn contention. `mutate_port.py` runs 4 mutants with the
+core count divided by 4 comparison workers each (4 x 4 on this host), measured fastest on a 28-mutant sample: 4 x 4
+took 41.9 s wall and 166 s CPU against 95.2 s and 309 s for the old 4 x 16 fan-out, 2.3x faster in wall time and
+1.9x in CPU. Both scripts reject a job count that is not a positive integer before a mutant starts.
+
+**Measured.** CPU is the fair comparison; the wall numbers came from a loaded host. `mutate_fork.py` now takes
+about 17.5 to 19.5 s wall and 174 to 230 s CPU, against about 170 s wall and 574 s CPU before the harness.
+`mutate_port.py` takes about 432 to 486 s wall and 1,925 to 2,107 s CPU, against about 1,652 s wall and 5,596 s
+CPU. Every verdict was identical name-for-name to the old harness in all modes tested.
+
+**The verdict cache (not shipped).** A cache of mutant verdicts, keyed by the mutated source and by a digest of the
+shared inputs taken at startup, was built and then removed before merge: a test file changed in the middle of a run
+and reverted before the run ended is invisible to both the startup digest and a save-time re-digest, because the
+file is already back, so a missed mutant could be stored and later reported as caught. A sound cache needs a
+snapshot or lock of the inputs for the whole run; that is future work. No cache is shipped.

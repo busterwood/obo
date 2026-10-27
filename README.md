@@ -30,7 +30,7 @@ the obo dialect (`obo/src/obo.obo`), and it compiled every test program
 and error case byte-for-byte as the first obo compiler did, and compiles itself to a
 fixed point. Its stage test now compares behaviour (same errors, same output when run),
 so code generation can improve. Compiling
-its own source it peaked at 1.5 MB resident (live peak now 1.06 MB on main), against 2.5 MB for the same logic on a tuned
+its own source it peaked at 1.5 MB resident (live peak now 1.13 MB, 1,126,736 bytes, on main), against 2.5 MB for the same logic on a tuned
 collector and 1.9 MB on an aggressive one. It is still about 50% slower.
 
 **Decision: obo is the future of the language.** obx becomes the reference it grew
@@ -92,7 +92,9 @@ The aim is a compiler you can trust, so the process matters as much as the code.
 - **Small, verified steps.** Each change starts with tests that fail, often an
   error case that pins down a hole, then the change, then mutants: deliberate bugs
   planted in a copy of the compiler, each of which the suite must catch. A mutant
-  that survives marks a gap in the tests.
+  that survives marks a gap in the tests. The mutation suites run fail-fast, with a
+  smoke subset first and parallel cases; a verdict cache was designed, found unsound,
+  and is not shipped.
 - **Oracles that don't depend on a compiler**: expected output written beside the
   code, objdump for the encoder, a Python model for the fuzzer, a counting runtime
   that fails any program ending with live objects (exit 5) or freeing twice (exit 6).
