@@ -1,0 +1,204 @@
+// boundaries: the buffered library at chunk sizes 1..5 over exact-boundary lines,
+// an empty line against EOF, EOF mid-line; Writer thresholds at 1..5; a write
+// error on a read-only fd; and takeChunk's exact unconsumed bytes, including the
+// pos > 0 copy (after a readByte and after a readLine) and the empty case.
+// The old buffers are freed once: a double free would exit 6 under OBO_CHECK.
+// expect: reader sizes ok
+// expect: writer sizes ok
+// expect: write error 9
+// expect: takechunk ok
+fn addText(mut out: &[]byte, s: string) {
+    for i in 0..len(s) { append(out, s[i]) }
+}
+
+fn bytesOf(s: string): []byte {
+    let out = new []byte(0)
+    for i in 0..len(s) { append(out, s[i]) }
+    return out
+}
+
+fn writeAll(path: string, data: &[]byte) {
+    let o = openFile(path, "w")
+    match o {
+        ok(fd) {
+            let w = writeFd(fd, data)
+            match w {
+                ok(n) { if n != len(data) { println("write ", n); exit(1) } }
+                err(m, c) { println("write: ", m, " (", c, ")"); exit(1) }
+            }
+            let cl = closeFile(fd)
+            match cl { ok(v) { } err(m, c) { println("close: ", m, " (", c, ")"); exit(1) } }
+        }
+        err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+    }
+}
+
+// 254 after each line, 255 at EOF
+fn collectLines(path: string, size: int): Result[[]byte] {
+    let fd = try openFile(path, "r")
+    var r = newReader(fd, size)
+    var out = new []byte(0)
+    while true {
+        let line = try readLine(r)
+        if line == nil {
+            append(out, 255)
+            try closeFile(fd)
+            return ok(out)
+        }
+        for i in 0..len(line) { append(out, line[i]) }
+        append(out, 254)
+    }
+}
+
+fn checkEqual(label: string, got: &[]byte, want: &[]byte) {
+    if len(got) != len(want) { println(label, " length ", len(got), " want ", len(want)); exit(1) }
+    for i in 0..len(got) {
+        if got[i] != want[i] { println(label, " byte ", i, " is ", int(got[i]), " want ", int(want[i])); exit(1) }
+    }
+}
+
+fn main() {
+    let a = args()
+    let dir = a[1]
+
+    // exact-boundary lines, an empty line, EOF mid-line
+    let linesPath = dir + "/lines.bin"
+    let lines = bytesOf("ab\nabcd\nx\n\nlast")
+    writeAll(linesPath, lines)
+    var want = new []byte(0)
+    addText(want, "ab")
+    append(want, 254)
+    addText(want, "abcd")
+    append(want, 254)
+    addText(want, "x")
+    append(want, 254)
+    append(want, 254)
+    addText(want, "last")
+    append(want, 254)
+    append(want, 255)
+    for size in 1..6 {
+        let c = collectLines(linesPath, size)
+        match c {
+            ok(v) { checkEqual("reader size", v, want) }
+            err(m, code) { println("reader: ", m, " (", code, ")"); exit(1) }
+        }
+    }
+    println("reader sizes ok")
+
+    // Writer thresholds 1..5, string and byte input, verified by reading back
+    let s = "hello\n"
+    for size in 1..6 {
+        let path = dir + "/w.bin"
+        let o = openFile(path, "w")
+        match o {
+            ok(fd) {
+                var w = newWriter(fd, size)
+                let w1 = write(w, s)
+                match w1 { ok(v) { } err(m, c) { println("write: ", m, " (", c, ")"); exit(1) } }
+                var extra = new []byte(0)
+                for i in 0..5 { append(extra, byte(65 + i)) }
+                let w2 = writeBytes(w, extra)
+                match w2 { ok(v) { } err(m, c) { println("writeBytes: ", m, " (", c, ")"); exit(1) } }
+                let f = flush(w)
+                match f {
+                    ok(v) { if !v { println("flush false"); exit(1) } }
+                    err(m, c) { println("flush: ", m, " (", c, ")"); exit(1) }
+                }
+                let cl = closeFile(fd)
+                match cl { ok(v) { } err(m, code) { println("close: ", m, " (", code, ")"); exit(1) } }
+            }
+            err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+        }
+        var wwant = new []byte(0)
+        addText(wwant, s)
+        for i in 0..5 { append(wwant, byte(65 + i)) }
+        var got = readFile(path)
+        let g = take(got)
+        if g == nil { println("unreadable"); exit(1) }
+        checkEqual("writer size", g, wwant)
+    }
+    println("writer sizes ok")
+
+    // a flush error on a read-only fd is err EBADF (9), not a trap
+    let roPath = dir + "/ro.bin"
+    let roData = bytesOf("data")
+    writeAll(roPath, roData)
+    let ro = openFile(roPath, "r")
+    match ro {
+        ok(fd) {
+            var w = newWriter(fd, 1)
+            let data = bytesOf("x")
+            let r = writeBytes(w, data)
+            match r {
+                ok(v) { println("write to read-only succeeded"); exit(1) }
+                err(m, c) { println("write error ", c) }
+            }
+            let cl = closeFile(fd)
+            match cl { ok(v) { } err(m, code) { println("close: ", m, " (", code, ")"); exit(1) } }
+        }
+        err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+    }
+
+    // takeChunk: pos == 0 hands over the whole chunk; pos > 0 copies the suffix
+    let tcPath = dir + "/tc.bin"
+    let tcData = bytesOf("abcdefgh")
+    writeAll(tcPath, tcData)
+    let tco = openFile(tcPath, "r")
+    match tco {
+        ok(fd) {
+            var r = newReader(fd, 4)
+            let f1 = fill(r)
+            match f1 { ok(v) { if !v { println("fill eof"); exit(1) } } err(m, c) { println("fill: ", m, " (", c, ")"); exit(1) } }
+            let c0 = takeChunk(r)
+            let want0 = bytesOf("abcd")
+            checkEqual("takechunk pos0", c0, want0)
+            let f2 = fill(r)
+            match f2 { ok(v) { if !v { println("fill eof 2"); exit(1) } } err(m, c) { println("fill: ", m, " (", c, ")"); exit(1) } }
+            let b = readByte(r)
+            match b {
+                ok(v) { if v != 101 { println("readByte ", v); exit(1) } }
+                err(m, c) { println("readByte: ", m, " (", c, ")"); exit(1) }
+            }
+            let c1 = takeChunk(r)
+            let want1 = bytesOf("fgh")
+            checkEqual("takechunk pos1", c1, want1)
+            let f3 = fill(r)
+            match f3 { ok(v) { if v { println("expected eof"); exit(1) } } err(m, c) { println("fill: ", m, " (", c, ")"); exit(1) } }
+            let c2 = takeChunk(r)
+            if len(c2) != 0 { println("takechunk at eof ", len(c2)); exit(1) }
+            let cl = closeFile(fd)
+            match cl { ok(v) { } err(m, code) { println("close: ", m, " (", code, ")"); exit(1) } }
+        }
+        err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+    }
+
+    // takeChunk after a readLine leaves pos > 0 inside one chunk
+    let rlPath = dir + "/rl.bin"
+    let rlData = bytesOf("one\ntwo\n")
+    writeAll(rlPath, rlData)
+    let rlo = openFile(rlPath, "r")
+    match rlo {
+        ok(fd) {
+            var r = newReader(fd, 8)
+            let line = readLine(r)
+            match line {
+                ok(v) {
+                    if v == nil { println("readLine nil"); exit(1) }
+                    let wantLine = bytesOf("one")
+                    if len(v) != len(wantLine) { println("readline length ", len(v)); exit(1) }
+                    for i in 0..len(v) {
+                        if v[i] != wantLine[i] { println("readline byte ", i); exit(1) }
+                    }
+                }
+                err(m, c) { println("readLine: ", m, " (", c, ")"); exit(1) }
+            }
+            let rest = takeChunk(r)
+            let wantRest = bytesOf("two\n")
+            checkEqual("takechunk after line", rest, wantRest)
+            let cl = closeFile(fd)
+            match cl { ok(v) { } err(m, code) { println("close: ", m, " (", code, ")"); exit(1) } }
+        }
+        err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+    }
+    println("takechunk ok")
+}

@@ -1,0 +1,17 @@
+// cat: copy stdin to stdout, streaming. Built by concatenating obo/lib/io.obo
+// before this file; the library's pump flushes each chunk, so a pipe delivers
+// every byte as soon as it arrives.
+fn main() {
+    var src = newReader(stdin(), 65536)
+    var out = newWriter(stdout(), 65536)
+    let r = pump(src, out)
+    match r {
+        ok { }
+        err { eprintln("cat: ", r.message); exit(1) }
+    }
+    let f = flush(out)
+    match f {
+        ok { }
+        err { eprintln("cat: ", f.message); exit(1) }
+    }
+}

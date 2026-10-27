@@ -1,0 +1,21 @@
+// short_read: readFd(0, 100) on a pipe with exactly 10 bytes returns 10, and the
+// next read is EOF (nil). The driver writes and closes the pipe.
+// expect: bytes 10
+// expect: eof
+fn main() {
+    let r = readFd(stdin(), 100)
+    match r {
+        ok(v) {
+            if v == nil { println("nil"); exit(1) }
+            println("bytes ", len(v))
+        }
+        err(m, c) { println("read: ", m, " (", c, ")"); exit(1) }
+    }
+    let e = readFd(stdin(), 100)
+    match e {
+        ok(v) {
+            if v == nil { println("eof") } else { println("more ", len(v)); exit(1) }
+        }
+        err(m, c) { println("read: ", m, " (", c, ")"); exit(1) }
+    }
+}

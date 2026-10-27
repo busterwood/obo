@@ -1,0 +1,12 @@
+// close_stdout: closeFile refuses a standard descriptor with EINVAL (22), and
+// the descriptor is not touched: later output still appears (N8).
+// expect: stdout code 22
+// expect: still here
+fn main() {
+    let r = closeFile(stdout())
+    match r {
+        ok(v) { println("closed stdout"); exit(1) }
+        err(m, c) { println("stdout code ", c) }
+    }
+    println("still here")
+}

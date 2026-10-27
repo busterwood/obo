@@ -33,6 +33,7 @@ poisoned, so use after free shows up as garbage.
 import concurrent.futures
 import os
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -86,6 +87,27 @@ SMOKE = [
 ]
 
 
+def program_test(p):
+    """A tests/run program. One that starts with '// prelude: io' is compiled
+    with obo/lib/io.obo concatenated before it: the library's build rule, which
+    io_test.py also applies for the tests/lib programs."""
+    with open(p) as f:
+        text = f.read()
+    if not text.startswith('// prelude: io'):
+        return run.program_test(p)
+    lib = open(os.path.join(FORK, 'lib', 'io.obo')).read()
+    fd, merged = tempfile.mkstemp(prefix='io-prelude-', suffix='.obx')
+    try:
+        os.write(fd, (lib + '\n' + text).encode())
+        os.close(fd)
+        fd = -1
+        return run.program_test(merged)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        os.unlink(merged)
+
+
 def main():
     args = sys.argv[1:]
     pattern = args[args.index('-k') + 1] if '-k' in args else ''
@@ -98,7 +120,7 @@ def main():
     for f in sorted(os.listdir(os.path.join(HERE, 'run'))):
         if f.endswith('.obx'):
             p = os.path.join(HERE, 'run', f)
-            tests.append((f"run/{f}", lambda p=p: run.program_test(p)))
+            tests.append((f"run/{f}", lambda p=p: program_test(p)))
     for f in sorted(os.listdir(os.path.join(HERE, 'errors'))):
         if f.endswith('.obx'):
             for name, src, lo, hi in run.error_cases(os.path.join(HERE, 'errors', f)):

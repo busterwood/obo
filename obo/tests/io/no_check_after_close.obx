@@ -1,0 +1,23 @@
+// no_check_after_close: without OBO_CHECK=1 a read from a tracked closed fd is
+// err(EBADF), code 9, and no syscall is made.
+// expect: read code 9
+fn main() {
+    let a = args()
+    let p = a[1] + "/after.bin"
+    let o = openFile(p, "w")
+    match o {
+        ok(fd) {
+            let c = closeFile(fd)
+            match c {
+                ok(v) { }
+                err(m, code) { println("close code ", code); exit(1) }
+            }
+            let r = readFd(fd, 4)
+            match r {
+                ok(v) { println("read ok"); exit(1) }
+                err(m, code) { println("read code ", code) }
+            }
+        }
+        err(m, c) { println("open code ", c); exit(1) }
+    }
+}

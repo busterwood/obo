@@ -1,0 +1,53 @@
+// fault_eintr: with OBO_IO_FAULT=eintr (and OBO_CHECK=1) one synthetic EINTR
+// hits the write, the read and a close. All complete; the EINTR close is
+// ok(true) and marks the descriptor closed, so the normal end reports no leak.
+// expect: wrote 5
+// expect: closed true
+// expect: read 5
+// expect: closed true
+fn bytesOf(s: string): []byte {
+    let out = new []byte(0)
+    for i in 0..len(s) { append(out, s[i]) }
+    return out
+}
+
+fn main() {
+    let a = args()
+    let p = a[1] + "/eintr.bin"
+    let o = openFile(p, "w")
+    match o {
+        ok(fd) {
+            let data = bytesOf("hello")
+            let w = writeFd(fd, data)
+            match w {
+                ok(n) { println("wrote ", n) }
+                err(m, c) { println("write: ", m, " (", c, ")"); exit(1) }
+            }
+            let c = closeFile(fd)
+            match c {
+                ok(v) { println("closed ", v) }
+                err(m, code) { println("close: ", m, " (", code, ")"); exit(1) }
+            }
+        }
+        err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+    }
+    let ir = openFile(p, "r")
+    match ir {
+        ok(fd) {
+            let r = readFd(fd, 16)
+            match r {
+                ok(v) {
+                    if v == nil { println("eof"); exit(1) }
+                    println("read ", len(v))
+                }
+                err(m, c) { println("read: ", m, " (", c, ")"); exit(1) }
+            }
+            let c = closeFile(fd)
+            match c {
+                ok(v) { println("closed ", v) }
+                err(m, code) { println("close: ", m, " (", code, ")"); exit(1) }
+            }
+        }
+        err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+    }
+}
