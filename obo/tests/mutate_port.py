@@ -242,15 +242,15 @@ MUTANTS.update({
     "handle borrows passable to freeing calls": [("            if b.roots[p] == handleSym && !pureFn(f) {", "            if false {")],
     "handle temporaries invalidate nothing": [("if x.viaHandle { invalidate(handleSym, via, false, \"\") }",
                                                "if x.viaHandle && r != nil { invalidate(handleSym, via, false, \"\") }")],
-    "handle temporary assignments record nothing": [("                } else if x.deref || x.viaHandle {\n                    invalidateOwnedChange(x)\n                    recordFreeChange(x)\n",
-                                                     "                } else if x.deref || x.viaHandle {\n                    invalidateOwnedChange(x)\n                    if x.deref { recordFreeChange(x) }\n")],
+    "handle temporary assignments record nothing": [("                } else if x.deref || x.viaHandle {\n                    invalidateOwnedChange(x)\n                    recordFreeChange(x, false)\n",
+                                                     "                } else if x.deref || x.viaHandle {\n                    invalidateOwnedChange(x)\n                    if x.deref { recordFreeChange(x, false) }\n")],
     "body write doesn't invalidate deep refs": [("    if throughHandle(x) { invalidateDeep(viaOf(x)) }\n", "    if false { invalidateDeep(viaOf(x)) }\n")],
     "change through a borrowed handle reference doesn't invalidate deep refs": [("    if throughHandle(x) { invalidateDeep(viaOf(x)) }",
                                                                               "    if x.viaHandle { invalidateDeep(viaOf(x)) }")],
     "self-call suspects not marked": [("if v.isRefLocal && anyDeep(v.bind) && !v.moved { v.suspect = true }", "if false { v.suspect = true }")],
     "shallow references invalidated by handle writes": [("if v.isRefLocal && anyDeep(v.bind) && !ancestorOf(v, via) && !v.moved {",
                                                          "if v.isRefLocal && !ancestorOf(v, via) && !v.moved {")],
-    "scalar truncate through a handle is a write": [('if owned || !throughHandle(a) || baseOf(a.typ).kind == "string" { recordFreeChange(a) }', 'recordFreeChange(a)')],
+    "scalar truncate through a handle is a write": [('if owned || !throughHandle(a) || baseOf(a.typ).kind == "string" { recordFreeChange(a, true) }', 'recordFreeChange(a, true)')],
     "suspect not joined at if or match": [("            sameStates(s1, s2, iline, icol)\n            joinSuspect(s1)\n",
                                            "            sameStates(s1, s2, iline, icol)\n"),
                                           ("        sameStates(s1, s0, iline, icol)\n        joinSuspect(s1)\n",
@@ -297,10 +297,12 @@ from mutate_fork import ARG_ORDER_MUTANTS  # noqa: E402
 MUTANTS.update({k: [v] for k, v in ARG_ORDER_MUTANTS.items() if k not in FORK_EQUIVALENT})
 # a handle's object freed by an assignment over, or a drop of, its owner: the cases of handle_frees.obx
 from mutate_fork import HANDLE_FREE_MUTANTS  # noqa: E402
-from mutate_fork import FP_MUTANTS, REF_PATH_MUTANTS, MOVE_MUTANTS  # noqa: E402
+from mutate_fork import FP_MUTANTS, REF_PATH_MUTANTS, MOVE_MUTANTS, FIELD_MUTANTS  # noqa: E402
 MUTANTS.update({k: [v] for k, v in FP_MUTANTS.items() if k not in FORK_EQUIVALENT})
 MUTANTS.update({k: [v] for k, v in REF_PATH_MUTANTS.items() if k not in FORK_EQUIVALENT})
 MUTANTS.update({k: [v] for k, v in MOVE_MUTANTS.items() if k not in FORK_EQUIVALENT})
+# handles made from a field or an element of an owned local (errors/field_origins.obx, run/field_origins*.obx)
+MUTANTS.update({k: [v] for k, v in FIELD_MUTANTS.items() if k not in FORK_EQUIVALENT})
 MUTANTS.update({k: [v] for k, v in HANDLE_FREE_MUTANTS.items() if k not in FORK_EQUIVALENT})
 
 

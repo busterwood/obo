@@ -281,8 +281,8 @@ DEFER_USE_MUTANTS = {
                                                         "            release(x.r)\n" + unchecked_exit("fnBlock")),
     "a defer's uses are not recorded": ("        if inDefer && s.isRefLocal { noteDeferUse(s) }\n", ""),
     "an inner defer's uses are not passed outwards": ("            if i < len(deferUses) { deferUses[i] = true }\n", ""),
-    "a newer defer's frees are applied after the older one's check": ('        replayFrees(bi, i)\n        // the body\'s assignments and drops of owners happen here, not where the defer is declared\n        replayFree = true\n        for j in 0..len(dfOwner) {\n            if dfBlock[j] == bi && dfIndex[j] == i { originFree(dfOwner[j], "assign over") }\n        }\n        replayFree = false\n        i -= 1\n    }\n}',
-        '        // the body\'s assignments and drops of owners happen here, not where the defer is declared\n        replayFree = true\n        for j in 0..len(dfOwner) {\n            if dfBlock[j] == bi && dfIndex[j] == i { originFree(dfOwner[j], "assign over") }\n        }\n        replayFree = false\n        i -= 1\n    }\n    for q in 0..len(blocks[bi].defers) { replayFrees(bi, q) }\n}'),
+    "a newer defer's frees are applied after the older one's check": ('        replayFrees(bi, i)\n        // the body\'s assignments and drops of owners happen here, not where the defer is declared\n        replayFree = true\n        for j in 0..len(dfOwner) {\n            if dfBlock[j] == bi && dfIndex[j] == i {\n                let ev = dfEv[j]\n                originFreeAt(dfOwner[j], substr(ev, 1, len(ev)), ev[0] == \'!\', "assign over")\n            }\n        }\n        replayFree = false\n        i -= 1\n    }\n}',
+        '        // the body\'s assignments and drops of owners happen here, not where the defer is declared\n        replayFree = true\n        for j in 0..len(dfOwner) {\n            if dfBlock[j] == bi && dfIndex[j] == i {\n                let ev = dfEv[j]\n                originFreeAt(dfOwner[j], substr(ev, 1, len(ev)), ev[0] == \'!\', "assign over")\n            }\n        }\n        replayFree = false\n        i -= 1\n    }\n    for q in 0..len(blocks[bi].defers) { replayFrees(bi, q) }\n}'),
 }
 MUTANTS.update(DEFER_USE_MUTANTS)
 
@@ -385,9 +385,9 @@ HANDLE_FREE_MUTANTS = {
     'a free does not mark the handle dead': ('            if x.hDepth <= len(loops) { pendPush(x, r, what) }\n            originDead[i] = r\n', '            if x.hDepth <= len(loops) { pendPush(x, r, what) }\n'),
     'an assignment clears the origins of the handles': ('        originFree(r, "assign over")\n        return\n', '        originFree(r, "assign over")\n'),
     'the loop move rule refuses a dead handle': ('x.hDepth <= len(loops) && originDead[i] == nil {\n', 'x.hDepth <= len(loops) {\n'),
-    "a defer's frees are not replayed where its block is left": ('            if dfBlock[j] == bi && dfIndex[j] == i { originFree(dfOwner[j], "assign over") }\n', ''),
+    "a defer's frees are not replayed where its block is left": ('            if dfBlock[j] == bi && dfIndex[j] == i {\n                let ev = dfEv[j]\n                originFreeAt(dfOwner[j], substr(ev, 1, len(ev)), ev[0] == \'!\', "assign over")\n            }\n', ''),
     'a replayed free is checked against the defers again': ('        if replayFree { break }\n', ''),
-    "a defer's frees are not recorded": ('    if inDefer { append(deferFrees, r) }\n', ''),
+    "a defer's frees are not recorded": ('    if inDefer {\n        append(deferFrees, r)\n        if strict { append(deferFreeEv, "!" + path) } else { append(deferFreeEv, "=" + path) }\n    }\n', ''),
     "a closed block's defer frees stay": ('    while len(dfBlock) > 0 && dfBlock[len(dfBlock) - 1] >= last {\n', '    while false {\n'),
     'a let copy of a dead handle is alive': ('                    append(originDead, dead)\n', '                    append(originDead, nil)\n'),
     'a free in a loop is not reported': ('            if x.hDepth <= len(loops) { pendPush(x, r, what) }\n            originDead[i] = r\n', '            originDead[i] = r\n'),
@@ -494,12 +494,12 @@ FP_MUTANTS = {
     'a read of a reference pointed afresh counts for the loop': ('            s.staleUse = useSeq\n            s.usedAt = useSeq\n', '            s.staleUse = useSeq\n'),
     # a mut argument's callee (FnRec.pfree, mutFrees)
     'a mut callee is assumed to free nothing': ('    return (f.fnRec.pfree >> i) & 1 == 1\n', '    return false\n'),
-    'frees through a parameter are not recorded': ('        if pi < 62 { f.fnRec.pfree = f.fnRec.pfree | (1 << pi) }\n', ''),
+    'frees through a parameter are not recorded': ('        f.fnRec.pfree = f.fnRec.pfree | (1 << pi)\n', ''),
     'a callee with a forward heading is assumed to free nothing': ('    if f.addr < 0 || f == curFn || f.freesAll || f.writesHandles { return true }\n', '    if f == curFn || f.freesAll || f.writesHandles { return true }\n'),
     'a recursive callee is assumed to free nothing': ('    if f.addr < 0 || f == curFn || f.freesAll || f.writesHandles { return true }\n', '    if f.addr < 0 || f.freesAll || f.writesHandles { return true }\n'),
     'a callee that writes through a handle is assumed to free nothing': ('    if f.addr < 0 || f == curFn || f.freesAll || f.writesHandles { return true }\n', '    if f.addr < 0 || f == curFn { return true }\n'),
-    'a parameter is recorded by the wrong place': ('        let pi = len(f.fnRec.params) - 1 - (g.offset - 16) / 8', '        let pi = (g.offset - 16) / 8'),
-    'a mut argument passed on is not recorded as freed': ('                recordFree(b.roots[p])\n', ''),
+    'a parameter is recorded by the wrong place': ('    let pi = len(f.fnRec.params) - 1 - (g.offset - 16) / 8', '    let pi = (g.offset - 16) / 8'),
+    'a mut argument passed on is not recorded as freed': ('                if !(br.isParam && br.isRef) { recordFree(br) }\n', '                if false { recordFree(br) }\n'),
     'the frees of a reference parameter are recorded as a global': ('    if g.isParam && g.isRef {', '    if g.isParam && g.isRef && false {'),
     # pure calls with mut parameters (pureFn, movesFn)
     'a callee with a mut parameter is never pure': ('        if f.fnRec.pmodes[i] == 2 && mutFrees(f, i) { return false }\n', '        if f.fnRec.pmodes[i] == 2 { return false }\n'),
@@ -565,8 +565,8 @@ MOVE_MUTANTS = {
     'a call with a mut parameter counts as moving': (MOVES,
         'fn movesFn(f: ^Sym): bool {\n    if !pureFn(f) { return true }\n    for i in 0..len(f.fnRec.pmodes) {\n        if f.fnRec.pmodes[i] == 2 { return true }\n    }\n    return false\n}'),
     'the 63rd parameter is assumed to free nothing': ('    if i >= 62 { return true }\n', ''),
-    'a truncate records no free': ('                if owned || !throughHandle(a) || baseOf(a.typ).kind == "string" { recordFreeChange(a) }   // a scalar array frees nothing; strings lose a reference\n', ''),
-    'a truncate of strings through a handle records no free': ('|| !throughHandle(a) || baseOf(a.typ).kind == "string" { recordFreeChange(a) }', '|| !throughHandle(a) { recordFreeChange(a) }'),
+    'a truncate records no free': ('                if owned || !throughHandle(a) || baseOf(a.typ).kind == "string" { recordFreeChange(a, true) }   // a scalar array frees nothing; strings lose a reference\n', ''),
+    'a truncate of strings through a handle records no free': ('|| !throughHandle(a) || baseOf(a.typ).kind == "string" { recordFreeChange(a, true) }', '|| !throughHandle(a) { recordFreeChange(a, true) }'),
     'a string index with a call holds no reference of its own': ('kind == "string" && x.mode != "const" && indexHasCall()', 'kind == "string" && x.mode != "const" && false'),
     'a string index pins only when the call is its first token': ("        if sym == T_LPAREN { found = true }\n", "        if sym == T_LPAREN && depth == 0 { found = true }\n"),
     'a nested bracket in an index ends the look-ahead': ("        if sym == T_LBRACK { depth += 1 }\n", ''),
@@ -585,6 +585,7 @@ EQUIVALENT = {
     "a store to a place anywhere is exempt from a free of it (owned)": "equivalent for the same reason",
     "a callee with a forward heading is assumed to free nothing": "equivalent: afterCall treats a call to a callee that is not compiled as a write through a handle (invalidateDeep, writesHandles, freesAll), which invalidates every reference inside something and makes the caller's own summary assume every parameter freed; a reference to a whole object is never invalidated by a mut argument, so the check in mutFrees only repeats it",
     "a callee that writes through a handle is assumed to free nothing": "equivalent for the same reason: a callee that writes through a handle sets freesAll and writesHandles, which afterCall turns into invalidateDeep and into the same flags for its caller, so every reference a mut argument could invalidate is already invalid",
+    "the frees of a reference parameter are recorded as a global": "equivalent after the refactor: recordFree's `g.isParam && g.isRef` guard cannot be reached, because no caller passes a reference parameter. recordFreeChange passes handleSym, or a root of a reference binding that is not a reference parameter (it tests o.isParam && o.isRef first and sends those to recordParamFree), or a root with r.isRef false; afterCall passes symbols of `globals`, which declare fills only outside any block; callFn passes a mut-argument root only when !(br.isParam && br.isRef); and the whole-designator callers (replace, take, assignment) cannot name a reference parameter, which is a let: replace and assignment refuse it as immutable, and take's recordFree is for globals only. A free below a reference parameter is recorded by recordParamFree at those sites, so removing this guard changes no summary",
     "origin not cleared by a take of a whole local": "equivalent: a take needs its optional owner widened first, and only an assignment over a narrowed owner does that (a handle is made only while the owner is narrowed), so the assignment hook has already cleared the same origins before any take can run",
     "replace clears origins through a reference or handle": "a designator through a field or element of a reference or handle has no sym (designatorT sets deref only when sym is nil), and a handle local is not owned (isOwned is false for handles), so originMove returns early; the guard is redundant",
     "take clears origins through a reference or handle": "the same: deref implies a nil sym, and a handle local is not owned, so originMove returns early",
@@ -592,6 +593,10 @@ EQUIVALENT = {
     "origin needs no non-handle designator": "a designator through a handle has no sym, so wholeOwnerOf gives nil",
     "origin needs no whole path": "a designator with a path has no sym (only a whole name sets it), so wholeOwnerOf gives nil",
     "origin of a global is kept": "owned is set only for locals (addOwnedLocal), so a global never has an origin",
+    "place origin: a handle of a reference or a global gets an origin": "equivalent: no event is ever raised for an owner that is a reference or a global (placeFreeIn, originMove and the mut-call hook all test that it is an owned local), so such an origin is never freed and never moved; run/field_origins_param.obx and field_origins_global.obx still trap at run time",
+    "place origin: a callee without rows frees nothing": "defensive: a parameter's bit is set only by recordParamFree, which adds a row, so a set bit always has one",
+    "place origin: a callee records every change as not strict": "equivalent: the strictness of a row matters only for a place that holds a record (the place itself survives a strict event), and a strict change is a truncate, whose place is an array, which no handle names; the anywhere row has its own encoding",
+    "place origin: a row beside an anywhere row is kept": "equivalent: the events of a row below an anywhere row are covered by it",
     "a handle root of a reference is not an identity (held)": "equivalent because the older heldLost check on the reference local catches the case, not the held entry: under the mutant foreign is false, so heldMove does not hit",
 }
 
@@ -627,7 +632,7 @@ MUTANTS.update(ALIVE_MUTANTS)
 # origins per path (originLive, liveClear, liveJoin, deadSave/deadSet, originMove, originFree)
 PATH_MUTANTS = {
     'a move of the owner keeps the live mark': ('        if wasLive { originLive[i] = nil }\n', ''),
-    'a free uses the flow-insensitive origin': ('        if originLive[i] == r {\n            if x.hDepth <= len(loops)', '        if originLive[i] == r && x.hOrigin != nil {\n            if x.hDepth <= len(loops)'),
+    'a free uses the flow-insensitive origin': ('        if placeHit(i, r, path, strict) {\n            if x.hDepth <= len(loops)', '        if placeHit(i, r, path, strict) && x.hOrigin != nil {\n            if x.hDepth <= len(loops)'),
     'an if with an else starts its live union from the marks before': ('    var dacc = deadSave()\n    liveClear(&dacc)\n    // the arm where h', '    var dacc = deadSave()\n    // the arm where h'),
     'an if without an else drops the path that runs no arm': ('    liveJoin(&d0, &dacc)\n    deadSet(&dacc)\n    if !t1 {', '    deadSet(&dacc)\n    if !t1 {'),
     'a match starts its live union from the marks before': ('    var dacc = deadSave()\n    liveClear(&dacc)\n    expect(T_LBRACE', '    var dacc = deadSave()\n    expect(T_LBRACE'),
@@ -636,13 +641,88 @@ PATH_MUTANTS = {
     'an arm that goes on does not add its live marks': ('        if originLive[i] != nil { acc[m + i] = originLive[i] }\n', ''),
     'the live marks are not restored with the dead ones': ('    for i in 0..m { originLive[i] = d[m + i] }\n', ''),
     'a copy of a handle has no live mark': ('append(originLive, live)', 'append(originLive, nil)'),
-    'the defer guard uses the flow-insensitive origin': ('originSyms[i] == x && originLive[i] == r { live = true }', 'originSyms[i] == x && originLive[i] == r && x.hOrigin != nil { live = true }'),
+    'the defer guard uses the flow-insensitive origin': ('originSyms[i] == x && placeHit(i, r, path, strict) { live = true }', 'originSyms[i] == x && placeHit(i, r, path, strict) && x.hOrigin != nil { live = true }'),
     'the live marks are not dropped with the block': ('    truncate(originLive, blocks[last].hmark)\n', ''),
     'the loop move rule uses the flow-insensitive origin': ('        if originLive[i] == s && x.hDepth <= len(loops)', '        if originLive[i] == s && x.hOrigin != nil && x.hDepth <= len(loops)'),
     'a copy of a handle with no origin is not tracked': ('                if live != nil {\n                    s.hDepth', '                if live != nil && s.hOrigin != nil {\n                    s.hDepth'),
     'a loop does not restore the live marks from before it': ('        originLive[i] = dEntry[em + i]\n', ''),
 }
 MUTANTS.update(PATH_MUTANTS)
+
+
+# handles made from a field or element of an owned local (FORK.md, "Field and element origins"): the place a handle
+# is made from (pOwner, pPath, originPath), what frees it (placeHit, originFreeAt, placeFreeIn, the mut call hook, the
+# assignment, replace and truncate hooks), what stops the tracking (placeOpaque), the loop and defer rules, and the
+# cases that fall back to no origin. The refused shapes are in errors/field_origins.obx, the accepted neighbours in
+# run/field_origins.obx, and the fallbacks in run/field_origins_*.obx. The take hook has no mutant: see EQUIVALENT
+FIELD_MUTANTS = {
+    # where the origin is made
+    'place origin: a field handle gets no origin': ('lastRaw != "" && x.deref { pOwner = wholeOwnerOf(x.root) }', 'lastRaw != "" && x.deref && false { pOwner = wholeOwnerOf(x.root) }'),
+    'place origin: a handle through a handle gets an origin': ('if origin == nil && !x.viaHandle && lastRaw != ""', 'if origin == nil && lastRaw != ""'),
+    'place origin: a handle of a reference or a global gets an origin': ('{ pOwner = wholeOwnerOf(x.root) }', '{ pOwner = x.root }'),
+    'place origin: the place is not kept': ('        made.pPath = praw\n', ''),
+    'place origin: a handle takes no place from its item': ('                    lpath = x.pPath\n', ''),
+    'place origin: a copy takes no place from the handle it copies': ('                        lpath = originPath[i]\n', ''),
+    'place origin: a copy of a field handle is not tracked': ('                    live = x.pOwner\n', ''),
+    'place origin: the places are not dropped with the block': ('    truncate(originPath, blocks[last].hmark)\n', ''),
+    # what frees it
+    'place origin: a free below the place frees the handle': ('    if !segsPrefix(path, e) { return false }\n', '    if !segsPrefix(e, path) { return false }\n'),
+    'place origin: a free of another place frees it': ('    if !segsPrefix(path, e) { return false }\n', ''),
+    'place origin: a free of a place frees a handle to the whole object': ('    if !segsPrefix(path, e) { return false }\n', '    if !segsPrefix(path, e) && e != "" { return false }\n'),
+    'place origin: a free of another owner frees it': ('    if originLive[i] != r { return false }\n    let e = originPath[i]', '    let e = originPath[i]'),
+    'place origin: a free that is strict frees the place itself': ('        if placeDepth(e) <= placeDepth(path) { return false }\n', ''),
+    'place origin: a free below a place frees a place of the same depth': ('        if placeDepth(e) <= placeDepth(path) { return false }\n', '        if placeDepth(e) < placeDepth(path) { return false }\n'),
+    'place origin: a truncate with a constant count frees the elements it keeps': ('            if k >= 0 && k < truncKeep { return false }\n', ''),
+    'place origin: a truncate with a constant count keeps the element at the count': ('            if k >= 0 && k < truncKeep { return false }\n', '            if k >= 0 && k <= truncKeep { return false }\n'),
+    'place origin: a truncate keeps a variable index': ('    if j == i + 1 { return -1 }\n    return k\n', '    if j == i + 1 { return 0 }\n    return k\n'),
+    'place origin: a segment is counted by its brackets': ('        if p[i] == \'/\' { n += 1 }\n', '        if p[i] == \'[\' { n += 1 }\n'),
+    # the hooks
+    'place origin: an assignment over a place frees nothing': ('                    placeFreeChange(x, false, "assign over a place in")\n', ''),
+    'place origin: a replace of a place frees nothing': ('            placeFreeChange(x, false, "replace a place in")\n', ''),
+    'place origin: a truncate frees nothing': ('                placeFreeIn(r0, aVia, aPath, true, "truncate an array in")\n', ''),
+    'place origin: a truncate of an array in a place is at the array': ('                placeFreeIn(r0, aVia, aPath, true, "truncate an array in")\n', '                placeFreeIn(r0, aVia, "", true, "truncate an array in")\n'),
+    'place origin: a truncate is not strict': ('                placeFreeIn(r0, aVia, aPath, true, "truncate an array in")\n', '                placeFreeIn(r0, aVia, aPath, false, "truncate an array in")\n'),
+    'place origin: a mut call frees nothing below its argument': ('                callFrees(f, argIdx[i], br, !b.deeps[p] || b.paths[p] != "", b.paths[p])\n', ''),
+    'place origin: a mut call is at the whole root': ('callFrees(f, argIdx[i], br, !b.deeps[p] || b.paths[p] != "", b.paths[p])', 'callFrees(f, argIdx[i], br, !b.deeps[p] || b.paths[p] != "", "")'),
+    'place origin: a change through a reference is not at its place': ('                let p = placeIn(q, i, xpath)\n', '                let p = ""\n'),
+    'place origin: a change through a reference is not placed in each root': ('        for i in 0..len(rb.roots) {\n            let o = rb.roots[i]\n            if o != handleSym && !o.isRef && o.storage == "local" {', '        for i in 0..1 {\n            let o = rb.roots[i]\n            if o != handleSym && !o.isRef && o.storage == "local" {'),
+    'place origin: a change through a reference with no known place is not below the root': ('originFreeAt(o, p, strict || unk, what)', 'originFreeAt(o, p, strict, what)'),
+    'place origin: a direct change frees nothing': ('    } else if q.owned && q.storage == "local" {\n        originFreeAt(q, xpath, strict, what)', '    } else if q.owned && q.storage == "local" && false {\n        originFreeAt(q, xpath, strict, what)'),
+    'place origin: a direct change is at the whole owner': ('        originFreeAt(q, xpath, strict, what)\n    }\n}', '        originFreeAt(q, "", strict, what)\n    }\n}'),
+    # what does not stop the tracking (a free through a handle, or a recursive call, is not a reason to forget a place)
+    'place origin: a change through a handle stops tracking': ('fn invalidateDeep(via: ?^Sym) {\n', 'fn invalidateDeep(via: ?^Sym) {\n    for q in 0..len(originSyms) {\n        if originPath[q] != "" { originLive[q] = nil }\n    }\n'),
+    'place origin: a recursive call stops tracking': ('fn markSuspects() {\n', 'fn markSuspects() {\n    for q in 0..len(originSyms) {\n        if originPath[q] != "" { originLive[q] = nil }\n    }\n'),
+    # what a mut callee may free: the rows of pfFn (pfAdd, recordParamFree, recordFreeChange, callFrees, callFreeEvent)
+    'place origin: a mut callee frees anywhere below its argument': ('    if f.addr < 0 || f == curFn || f.freesAll || f.writesHandles || i >= 62 {\n        callFreeEvent(br, apath, true)', '    if true {\n        callFreeEvent(br, apath, true)'),
+    'place origin: the places of a callee are not added to the argument': ('callFreeEvent(br, apath + substr(ev, 1, len(ev)), ev[0] == \'!\')', 'callFreeEvent(br, apath, ev[0] == \'!\')'),
+    'place origin: the rows of a callee are all strict': ('callFreeEvent(br, apath + substr(ev, 1, len(ev)), ev[0] == \'!\')', 'callFreeEvent(br, apath + substr(ev, 1, len(ev)), true)'),
+    'place origin: the rows of a callee are all not strict': ('callFreeEvent(br, apath + substr(ev, 1, len(ev)), ev[0] == \'!\')', 'callFreeEvent(br, apath + substr(ev, 1, len(ev)), false)'),
+    'place origin: a callee without rows frees nothing': ('    if n == 0 { callFreeEvent(br, apath, true) }\n', ''),
+    'place origin: an argument with no known place is taken to know it': ('    if !known {\n        callFreeEvent(br, "", true)\n        return\n    }\n', ''),
+    'place origin: a call frees the argument itself for an unknown callee': ('    if f.addr < 0 || f == curFn || f.freesAll || f.writesHandles || i >= 62 {\n        callFreeEvent(br, apath, true)', '    if f.addr < 0 || f == curFn || f.freesAll || f.writesHandles || i >= 62 {\n        callFreeEvent(br, apath, false)'),
+    'place origin: a nested call adds no rows to the caller': ('    if br.isParam && br.isRef {\n        if strict { recordParamFree(br, "!" + path) } else { recordParamFree(br, "=" + path) }\n    } else if', '    if br.isParam && br.isRef {\n    } else if'),
+    'place origin: a callee records its changes as anywhere': ('                } else if strict {\n                    recordParamFree(o, "!" + p)\n                } else {\n                    recordParamFree(o, "=" + p)\n                }', '                } else {\n                    recordParamFree(o, "!")\n                }'),
+    'place origin: a callee records an unknown place as a place': ('                if unknownPlace(r, i, p, x.path) {\n                    recordParamFree(o, "!")\n                } else if strict {', '                if false {\n                    recordParamFree(o, "!")\n                } else if strict {'),
+    'place origin: a callee records every change as not strict': ('                } else if strict {\n                    recordParamFree(o, "!" + p)', '                } else if false {\n                    recordParamFree(o, "!" + p)'),
+    'place origin: the rows of a parameter have no limit': ('    if ev != "!" && n < PF_MAX {', '    if ev != "!" {'),
+    'place origin: a row is added twice': ('            if pfEv[k] == ev || pfEv[k] == "!" { return }', '            if pfEv[k] == "!" { return }'),
+    'place origin: a row beside an anywhere row is kept': ('            if pfEv[k] == ev || pfEv[k] == "!" { return }', '            if pfEv[k] == ev { return }'),
+    'place origin: an anywhere row does not replace the others': ('    for k in 0..len(pfFn) {\n        if pfFn[k] == f && pfIdx[k] == i { pfEv[k] = "!" }\n    }\n    if n == 0 {', '    if n == 0 {'),
+    'place origin: a truncate through a reference with no known place keeps elements': ('                if unk { truncKeep = -1 }\n', ''),
+    'place origin: a write through a handle to the owner frees nothing': ('                    if x.viaHandle { placeFreeVia(torig, traw, false, "assign over a place in") }\n', ''),
+    'place origin: a replace through a handle to the owner frees nothing': ('            if x.viaHandle { placeFreeVia(orig, raw, false, "replace a place in") }\n', ''),
+    'place origin: a truncate through a handle to the owner frees nothing': ('                if aVia { placeFreeVia(aOrig, aRaw, true, "truncate an array in") }\n', ''),
+    'place origin: a write through a handle to the owner is at the whole owner': ('placeFreeVia(torig, traw, false, "assign over a place in")', 'placeFreeVia(torig, "", false, "assign over a place in")'),
+    # loops and defers
+    'place origin: a free of a place in a loop is not judged': ('            if x.hDepth <= len(loops) { pendPush(x, r, what) }\n            originDead[i] = r', '            if x.hDepth <= len(loops) && originPath[i] == "" { pendPush(x, r, what) }\n            originDead[i] = r'),
+    'place origin: a move of the owner in a loop ignores a field handle': ('        if originLive[i] == s && x.hDepth <= len(loops) && originDead[i] == nil {', '        if originLive[i] == s && originPath[i] == "" && x.hDepth <= len(loops) && originDead[i] == nil {'),
+    'place origin: a defer that uses a field handle does not stop a free of its place': ('            if originSyms[i] == x && placeHit(i, r, path, strict) { live = true }', '            if originSyms[i] == x && placeHit(i, r, path, strict) && originPath[i] == "" { live = true }'),
+    'place origin: a defer that uses a field handle stops a free of another place': ('            if originSyms[i] == x && placeHit(i, r, path, strict) { live = true }', '            if originSyms[i] == x && originLive[i] == r { live = true }'),
+    'place origin: a free in a defer is replayed at the whole owner': ('originFreeAt(dfOwner[j], substr(ev, 1, len(ev)), ev[0] == \'!\', "assign over")', 'originFreeAt(dfOwner[j], "", ev[0] == \'!\', "assign over")'),
+    'place origin: a strict free in a defer is replayed as a free of the place': ('originFreeAt(dfOwner[j], substr(ev, 1, len(ev)), ev[0] == \'!\', "assign over")', 'originFreeAt(dfOwner[j], substr(ev, 1, len(ev)), false, "assign over")'),
+    'place origin: a free of a place in a defer is not recorded': ('        append(deferFrees, r)\n        if strict { append(deferFreeEv, "!" + path) } else { append(deferFreeEv, "=" + path) }\n', ''),
+}
+MUTANTS.update(FIELD_MUTANTS)
 
 
 def mutation(src, name):
