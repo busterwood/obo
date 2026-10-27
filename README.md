@@ -192,6 +192,7 @@ cd obo && python3 tests/mutate_fork.py   # obo's mutants
 cd obo && python3 tests/port_test.py     # the port: tokens and encoder, against obo
 cd obo && python3 tests/port_compare.py  # the port, stage B (everything), with the memory budget
 cd obo && python3 tests/mutate_port.py   # the port's mutants
+cd obo && python3 tests/tools.py         # the tools vs GNU; models/goldens without it
 cd obo && python3 tests/tools.py --require-reference   # tools vs GNU coreutils (release checklist)
 cd obo && python3 tests/tools.py --memory              # the two pinned tool memory cases
 cd obo && python3 bench/bench.py         # memory and time against the collector
