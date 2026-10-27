@@ -1,0 +1,278 @@
+// Result[T], ok/err, try and the consuming match: what the compiler refuses.
+type Node = ref record { v: int }
+type Box = ref record { r: Result[int]; nodes: []Node }
+fn get(n: int): Result[int] {
+    if n < 0 { return err("neg", n) }
+    return ok(n)
+}
+fn getn(): Result[Node] { return ok(new Node{v: 1}) }
+fn getb(): Result[byte] { return ok(byte(1)) }
+fn gets(): Result[string] { return ok("s") }
+fn ident(n: int): int { return n }
+fn pop(b: Box): Result[int] { return ok(len(b.nodes)) }
+// === try in main
+fn main() {
+    let v = try get(1)  // error: try needs a function that returns a Result; 'main' returns nothing
+}
+// === try in a function that does not return a Result
+fn f(): int {
+    let v = try get(1)  // error: try needs a function that returns a Result; 'f' returns int
+    return v
+}
+// === try on an int
+fn f(): Result[int] {
+    let v = try 3  // error: try needs a Result value, not int
+    return ok(v)
+}
+// === try on a string
+fn f(): Result[int] {
+    let v = try "s"  // error: try needs a Result value, not string
+    return ok(v)
+}
+// === try on nil
+fn f(): Result[int] {
+    let v = try nil  // error: try needs a Result value, not nil
+    return ok(v)
+}
+// === try on an error value
+fn f(): Result[int] {
+    let v = try err("x", 1)  // error: err(...) has no success type
+    return ok(v)
+}
+// === try on an optional Result
+fn f(r: ?Result[int]): Result[int] {
+    let v = try r  // error: it may be nil: check it with '!= nil' first
+    return ok(v)
+}
+// === try on a reference to a Result
+fn f(r: &Result[int]): Result[int] {
+    let v = try r  // error: cannot move out of a reference: a reference only borrows
+    return ok(v)
+}
+// === try on a field holding a Result
+fn f(b: Box): Result[int] {
+    let v = try b.r  // error: cannot move out of a field or element; use take() on an optional one
+    return ok(v)
+}
+// === try on an element holding a Result
+fn f(xs: []Result[int]): Result[int] {
+    let v = try xs[0]  // error: cannot move out of a field or element; use take() on an optional one
+    return ok(v)
+}
+// === try on a global holding a Result
+var gr: Result[int] = ok(1)
+fn f(): Result[int] {
+    let v = try gr  // error: cannot move out of global 'gr'; use take() on an optional one
+    return ok(v)
+}
+// === try in a defer body
+fn f(): Result[int] {
+    defer println(try get(1))  // error: cannot use try in a defer: a deferred statement cannot return from the function
+    return ok(0)
+}
+// === try in a call argument
+fn f(): Result[int] {
+    println(ident(try get(1)))  // error: a try expression cannot be part of a larger expression; assign it to a local first
+    return ok(0)
+}
+// === try in a record field value
+fn f(): Result[int] {
+    let n = new Node{v: try get(1)}  // error: a try expression cannot be part of a larger expression; assign it to a local first
+    return ok(n.v)
+}
+// === try in an array length
+fn f(): Result[int] {
+    let a = new []int(try get(1))  // error: a try expression cannot be part of a larger expression; assign it to a local first
+    return ok(len(a))
+}
+// === try in an index
+fn f(): Result[int] {
+    var a = new []int(1)
+    let z = a[try get(1)]  // error: a try expression cannot be part of a larger expression; assign it to a local first
+    return ok(z)
+}
+// === try in a condition
+fn f(): Result[int] {
+    if try get(1) == 0 {  // error: a try expression may only be the value of a let, var or assignment, or a statement
+        return ok(1)
+    }
+    return ok(0)
+}
+// === try in a return value
+fn f(): Result[int] {
+    return try get(1)  // error: a try expression may only be the value of a let, var or assignment, or a statement
+}
+// === try in a match scrutinee
+fn f(): Result[int] {
+    match try get(1) {  // error: a try expression may only be the value of a let, var or assignment, or a statement
+        ok(v) { return ok(v) }
+        err(m, c) { return err(m, c) }
+    }
+}
+// === try in a for bound
+fn f(): Result[int] {
+    for i in 0..try get(1) {  // error: a try expression may only be the value of a let, var or assignment, or a statement
+        println(i)
+    }
+    return ok(0)
+}
+// === try as the right operand of +
+fn f(): Result[int] {
+    let v = 1 + try get(1)  // error: a try expression cannot be part of a larger expression; assign it to a local first
+    return ok(v)
+}
+// === try as the right operand of &&
+fn f(): Result[int] {
+    let b = true && try get(1) == 0  // error: a try expression cannot be part of a larger expression; assign it to a local first
+    return ok(0)
+}
+// === try as the right operand of ||
+fn f(): Result[int] {
+    let b = false || try get(1) == 0  // error: a try expression cannot be part of a larger expression; assign it to a local first
+    return ok(0)
+}
+// === a Result moved by try on one path only
+fn f(r: Result[int]): Result[int] {
+    if true { let v = try r }  // error: 'r' is moved on one path but not another
+    return ok(0)
+}
+// === try of a local a defer reads
+fn f(): Result[int] {
+    var r = get(1)
+    defer println(r == r)
+    let v = try r  // error: 'r' is used by a defer and cannot be moved
+    return ok(v)
+}
+// === a Result declared before a loop and moved by try in it
+fn f(): Result[int] {
+    var r = get(1)
+    var i = 0
+    while i < 2 {  // error: 'r' is moved inside the loop; it must have a value again by the end of each iteration
+        let v = try r
+        i += 1
+    }
+    return ok(0)
+}
+// === cannot infer a type for a local from err(...)
+fn f() {
+    let e = err("x", 1)  // error: cannot infer a type for 'e' from an error value; declare it as Result[T]
+}
+// === cannot infer a type for a global from err(...)
+let e = err("x", 1)  // error: cannot infer a type for 'e' from an error value; declare it as Result[T]
+fn main() { }
+// === ok(nil) has no type
+fn f() {
+    let r: Result[int] = ok(nil)  // error: ok(nil) has no type: give the payload a name first, as in 'let n: ?Node = nil; ok(n)'
+}
+// === ok(err(...)) is not a payload
+fn f() {
+    let r: Result[int] = ok(err("x", 1))  // error: ok cannot hold an error value: type it as a Result first, as in 'let inner: Result[int] = err(...); ok(inner)'
+}
+// === ok(&r) cannot take a borrow
+fn f(n: Node) {
+    let r = ok(&n)  // error: ok takes ownership of its value: it cannot hold a borrowed reference
+}
+// === err needs a string message
+fn f() {
+    let r: Result[int] = err(1, 2)  // error: err needs a string message, not int
+}
+// === err needs an int code
+fn f() {
+    let r: Result[int] = err("x", "y")  // error: err needs an int code, not string
+}
+// === Result needs a type
+fn f(x: Result) { }  // error: Result needs a type: write Result[T]
+// === Result takes one type
+fn f(x: Result[int, string]) { }  // error: expected ']', found ,
+// === a handle cannot name a Result
+fn f(x: ^Result[int]) { }  // error: handles name records and closed types, not Result[int]
+// === new Result{...} is not a record
+fn f() {
+    let x = new Result{r: 1}  // error: 'Result' is not a record type
+}
+// === Result is invariant: byte is not int
+fn f(b: Result[byte]): Result[int] {
+    return b  // error: return value: cannot use Result[byte] as Result[int]
+}
+// === Result[int] is not Result[string]
+fn f(b: Result[int]): Result[string] {
+    return b  // error: return value: cannot use Result[int] as Result[string]
+}
+// === nil is not a Result
+fn f() {
+    let r: Result[int] = nil  // error: initialising 'r': cannot use nil as Result[int] (Result[int] can never be nil; declare it as ?Result[int])
+}
+// === a Result is compared only with == and !=
+fn f(r1: Result[int], r2: Result[int]) {
+    if r1 < r2 { }  // error: references can only be compared with == and !=
+}
+// === a Result match needs both arms
+fn f(r: Result[int]) {
+    match r {  // error: match on Result[int] is missing err
+        ok(v) { println(v) }
+    }
+}
+// === a Result arm is matched once
+fn f(r: Result[int]) {
+    match r {
+        ok { }
+        ok { }  // error: 'ok' is matched twice
+        err { }
+    }
+}
+// === else is not for a Result match
+fn f(r: Result[int]) {
+    match r {
+        ok { }
+        err { }
+        else { }  // error: a Result match names the ok and err arms; 'else' is not needed
+    }
+}
+// === a defer use invalidated by a change made before the try
+fn f(): Result[int] {
+    var b = new Box{r: ok(1), nodes: new []Node(0)}
+    let p = &b.nodes
+    defer println(len(p))
+    let v = try pop(b)  // error: 'p' is used by a defer but may point to freed memory at the block's end: something under what it points into was changed
+    return ok(v)
+}
+// === a consuming match needs the Result itself, not a reference
+fn f(p: &Result[int]) {
+    match p {  // error: a consuming match needs the Result itself, not a reference
+        ok(v) { println(v) }
+        err(m, c) { println(m, c) }
+    }
+}
+// === a consuming match needs a local, not a field
+fn f(b: Box) {
+    match b.r {  // error: match needs a local variable or parameter
+        ok(v) { println(v) }
+        err(m, c) { println(m, c) }
+    }
+}
+// === a consuming match binds every arm (non-consuming first)
+fn f(r: Result[int]) {
+    match r {
+        ok { }
+        err(m, c) { }  // error: a consuming match binds its value in every arm: write ok(v) and err(m, c)
+    }
+}
+// === a consuming match binds every arm (consuming first)
+fn f(r: Result[int]) {
+    match r {
+        ok(v) { println(v) }
+        err { }  // error: a consuming match binds its value in every arm: write ok(v) and err(m, c)
+    }
+}
+// === a reference cannot borrow from an owned try value
+fn refTry(): Result[int] {
+    let p: &Node = try getn()  // error: store this value in a variable first: a reference cannot borrow from a temporary
+    return ok(p.v)
+}
+// === a Result comparison takes stored values
+fn f(r: Result[int]) {
+    if r == err("x", 1) { }  // error: store this value in a variable first: otherwise it would never be freed
+}
+// === try in a global initializer
+var gl: Result[int] = try get(1)  // error: try needs a function that returns a Result; there is no function here
+fn main() { }

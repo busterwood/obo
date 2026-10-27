@@ -8,7 +8,7 @@ This describes the language as the compiler in `obo/src/obo.obo`
 implements it. Syntax not covered here (declarations, `if`, `while`, `for`,
 `match`, `defer`, closed types, constants, literals, operators) is the same as
 obx; see the language section of the root `README.md`. Rules that are planned
-rather than implemented are marked as such, and section 10 lists known holes.
+rather than implemented are marked as such, and section 11 lists known holes.
 
 The examples are checked against the compiler. A block marked
 `// example: runs` is a complete program that must compile and exit 0, and each
@@ -29,6 +29,7 @@ compile, but is a known problem rather than a model of good code.
 | `?T` | a value that may be `nil`, for example `?Node` | as `T` |
 | `&T` | a borrowed reference (section 4) | no |
 | `^T` | a handle: a checked, non-owning link (section 5) | no |
+| `Result[T]` | success (`ok`) or failure with a message and a code (`err`) | yes (one cell; the payload follows `T`) |
 
 Records and closed types are declared with `type`, and may refer to each other.
 A forward declaration `type Sym` lets them do so; the fields are only usable once
@@ -592,7 +593,222 @@ Handles can be stored in fields and optional fields (`?^Node`), and they are
 checked for `nil` in the same way as other optionals. A handle needs a variable,
 field or element, and must name a record or closed type.
 
-## 6. Built-in functions
+## 6. Results and try
+
+`Result[T]` is the type of an operation that can fail with a reason. It is a
+built-in parameterized type: one owned cell holding one of two variants, `ok`
+(one field `value: T`) or `err` (fields `message: string` and `code: int`). The
+err variant and its descriptor are shared by every `Result[T]`, so an error cell
+made for one success type can be returned from a function whose success type is
+another. A result is always one allocated cell; the payload follows `T` (an owned
+pointer, a reference-counted string, or a copied scalar or handle).
+
+Construct with `ok(v)` and `err(message[, code])`; the code defaults to 0. `ok`
+takes ownership of its value and rejects `nil`, a void expression, a borrowed
+value and an error value (`ok(err(...))` has no payload type: type the error in a
+`Result` local first). A success with no value needs a typed optional
+(`let n: ?Node = nil; return ok(n)`) because `ok(nil)` has no type. `err` takes a
+reference to its message, so a heap message it is given is kept alive by the cell.
+
+A result is owned like a record: it is freed at scope exit, can be stored in
+fields, arrays, optionals and globals, and its payload or message is freed with
+it. `Result` is invariant: `Result[byte]` is not a `Result[int]`, because the ok
+tag belongs to the success type. `==` and `!=` compare result cells by identity,
+and both sides must be stored values, not `ok(...)`/`err(...)` temporaries;
+`nil` comparison is only for `?Result[T]`.
+
+```obo
+// example: runs
+// prints 3
+// prints bad 7
+fn get(n: int): Result[int] {
+    if n < 0 { return err("bad", 7) }
+    return ok(n)
+}
+
+fn main() {
+    let a = get(3)
+    match a {
+        ok { println(a.value) }
+        err { println(a.message, " ", a.code) }
+    }
+    let b = get(-1)
+    match b {
+        ok { println(b.value) }
+        err { println(b.message, " ", b.code) }
+    }
+}
+```
+
+`match` narrows the result to the variant, as for a closed type: `r.value` in the
+`ok` arm, `r.message` and `r.code` in the `err` arm. Both arms are required and
+`else` is not allowed. This match does not consume the result: scalars, handles
+and strings can be copied out (`let s = r.value` takes a string reference), and an
+optional payload can be `take`n; an owned record or array cannot be moved out,
+because the result still owns it.
+
+A consuming match binds the payload instead. Write `ok(v)` and `err(m, c)`; every
+arm must bind, or none may. The scrutinee must be a whole local or parameter, not
+a reference: it is moved, the shell is freed, and the bindings are ordinary locals
+of the arm, freed where the arm's block ends or its `return` leaves. A string
+binding owns the cell's reference; returning `err(m, c)` from an `err` arm builds
+a new cell from it.
+
+```obo
+// example: runs
+// prints 5
+// prints from 9
+type Node = ref record { v: int }
+
+fn get(n: int): Result[Node] {
+    if n < 0 { return err("no node", 9) }
+    return ok(new Node{v: n})
+}
+
+fn main() {
+    let r = get(5)
+    match r {
+        ok(n) { println(n.v) }
+        err(m, c) { println(m, " ", c) }
+    }
+    let e = get(-1)
+    match e {
+        ok(n) { println(n.v) }
+        err(m, c) { println("from ", c) }
+    }
+}
+```
+
+`try e` propagates a failure. Its operand must be an owned `Result`: a whole
+local or parameter, or a fresh call result. On ok, `try` moves the payload out and
+frees the empty cell; on err, it runs the function's defers, frees its live owned
+locals, and returns the error cell itself, so the caller sees the same message and
+code. The enclosing function must return a `Result` (of any success type); `main`
+does not, so it matches a helper's result instead of trying it.
+
+```obo
+// example: runs
+// prints 4
+// prints deeper 9
+fn bottom(n: int): Result[int] {
+    if n < 0 { return err("deeper", 9) }
+    return ok(n)
+}
+
+fn addOne(n: int): Result[int] {
+    let v = try bottom(n)
+    return ok(v + 1)
+}
+
+fn main() {
+    let a = addOne(3)
+    match a {
+        ok { println(a.value) }
+        err { println(a.message, " ", a.code) }
+    }
+    let b = addOne(-1)
+    match b {
+        ok { println(b.value) }
+        err { println(b.message, " ", b.code) }
+    }
+}
+```
+
+The tried result's success type need not be the enclosing function's: a
+`Result[[]byte]` error tried inside a `Result[int]` function returns the shared
+error cell, and the caller's `err` arm reads it. Nesting works the same way:
+`try try f()` with `f: Result[Result[int]]` unwraps both. `try` in a loop is fine
+with a fresh local per iteration; a local declared before the loop and moved by
+`try` is refused at the back edge, as for any move.
+
+`try` may appear only where its value is the first thing evaluated: the whole
+value of a `let` or `var` initializer, an assignment's right-hand side (an
+operator may follow on the left, as in `try f() + 1`), or a statement. It may not
+be an argument, a record field, an array length, an index, a condition, a return
+value, a match scrutinee, a `for` bound, a global initializer, or the right operand
+of an operator, because the early return would leave a half-built value or a
+pushed argument behind. It may not appear inside `defer`, whose body runs
+out of line and cannot return from the function. The rule is a designed
+restriction, not a hole: lifting it needs cleanup of live temporaries (drop glue).
+
+```obo
+// example: error: a try expression cannot be part of a larger expression
+fn get(n: int): Result[int] { return ok(n) }
+fn eat(n: int): int { return n }
+
+fn f(): Result[int] {
+    let v = eat(try get(1))
+    return ok(v)
+}
+
+fn main() {}
+```
+
+```obo
+// example: error: try needs a function that returns a Result; 'main' returns nothing
+fn get(n: int): Result[int] { return ok(n) }
+
+fn main() {
+    let v = try get(1)
+}
+```
+
+Other limits:
+
+- A result in a field, element or global cannot be moved out: use `replace` (or
+  `take` on an optional one) to get it into a local, then `try` that. `match` also
+  needs a whole local; inspect a field through a local reference (`match p`).
+- `obj.field = try f()` is refused when the call might free the object holding the
+  target (the assignment-target rule, section 11): compute the value in a local
+  first. A call that cannot free (a pure callee such as `get` above) is accepted:
+  `b.n = try get(3)` compiles.
+- Inside a non-consuming `ok` or `err` arm the scrutinee is narrowed to that
+  variant, so `try r` there is refused ("try needs a Result value, not ok"):
+  `try` the Result before the match.
+- A deferred cleanup cannot propagate its error; its result is discarded and
+  freed. Record the error and return it from the main path instead.
+- `?Result[T]` may be nil; check it with `!= nil` before `try`, which narrows it
+  to `Result[T]`. `try` on the optional itself is refused.
+- `Result` has no fields until a `match` arm narrows it, and a `Result` value can
+  never be `nil`.
+
+```obo
+// example: error: a Result match names the ok and err arms; 'else' is not needed
+fn get(n: int): Result[int] { return ok(n) }
+
+fn main() {
+    let r = get(1)
+    match r {
+        ok { println(r.value) }
+        err { println(r.message) }
+        else { }
+    }
+}
+```
+
+```obo
+// example: error: ok(nil) has no type
+type Node = ref record { v: int }
+
+fn f(): Result[?Node] {
+    return ok(nil)
+}
+
+fn main() {}
+```
+
+```obo
+// example: error: cannot use Result[byte] as Result[int]
+fn getb(): Result[byte] { return ok(byte(1)) }
+
+fn f(): Result[int] {
+    return getb()
+}
+
+fn main() {}
+```
+
+## 7. Built-in functions
 
 | Function | What it does |
 |---|---|
@@ -612,6 +828,8 @@ field or element, and must name a record or closed type.
 | `drop(x)` | free a local variable now, rather than at scope exit |
 | `replace(place, value)` | store `value` in `place` and return the old value, which the caller owns |
 | `handle(x)` | make a handle to `x` (section 5) |
+| `ok(v)` | a `Result[T]` success holding `v`, which is moved in |
+| `err(message[, code])` | a `Result[T]` failure; code defaults to 0 |
 | `alive(h)` | `true` if the handle's object has not been freed |
 | `gcstats()` | print the live object count and peak bytes |
 | `gc()` | does nothing; there is no collector |
@@ -635,7 +853,7 @@ fn main() {
 }
 ```
 
-## 7. Runtime checks and exit codes
+## 8. Runtime checks and exit codes
 
 | Exit code | Cause |
 |---|---|
@@ -656,7 +874,7 @@ Environment variables:
   garbage rather than as a value that happens to still be there.
 - `OBO_STATS=1` prints the exact live peak and total allocation at exit.
 
-## 8. Compile errors
+## 9. Compile errors
 
 The messages below are the compiler's own text; the parts in angle brackets
 depend on the program.
@@ -701,8 +919,26 @@ depend on the program.
 | `cannot move '<x>' inside a loop while handle '<h>' made from it is in scope` | a loop moves (or drops) `<x>` while a handle made from it before the loop is in scope. Make the handle inside the loop. |
 | `handle '<h>' was made from an owner that a loop moved: make the handle again` | a loop that did not name `<h>` moved its owner, so `<h>` may not be named after it (except in `alive`). |
 | `replace cannot change '<r>': it is a reference` (also `take`) | `<r>` is a reference local; replace or take the field or element it borrows. |
+| `try needs a function that returns a Result; '<f>' returns <t>` | `try` outside a function whose result is a `Result`; `main` returns nothing, so match a helper's result instead. |
+| `try needs a function that returns a Result; there is no function here` | `try` in a global initializer. |
+| `try needs a Result value, not <t>` | the operand of `try` is not a `Result`; the hint names `?Result[T]` (check it with `!= nil`) or `err(...)` (it has no success type). |
+| `a try expression may only be the value of a let, var or assignment, or a statement` | `try` in a condition, a return value, a match scrutinee or a `for` bound. |
+| `a try expression cannot be part of a larger expression; assign it to a local first` | `try` in an argument, a record field, an array length, an index or the right operand of an operator. |
+| `cannot use try in a defer: a deferred statement cannot return from the function` | `try` inside `defer`. |
+| `ok needs a value, not a void expression` | `ok` of a call that returns nothing. |
+| `ok(nil) has no type: give the payload a name first, as in 'let n: ?Node = nil; ok(n)'` | name the typed optional first. |
+| `ok cannot hold an error value: type it as a Result first, as in 'let inner: Result[int] = err(...); ok(inner)'` | `ok(err(...))`. |
+| `ok takes ownership of its value: it cannot hold a borrowed reference` | `ok(&x)`. |
+| `err needs a string message, not <t>` | the first argument of `err` is not a string. |
+| `err needs an int code, not <t>` | the second argument of `err` is not an int. |
+| `cannot infer a type for '<x>' from an error value; declare it as Result[T]` | `err(...)` needs a declared `Result` destination. |
+| `Result needs a type: write Result[T]` | `Result` without its type argument. |
+| `a Result match names the ok and err arms; 'else' is not needed` | `else` in a `Result` match. |
+| `a consuming match binds its value in every arm: write ok(v) and err(m, c)` | some arms bind and some do not. |
+| `a consuming match needs the Result itself, not a reference` | a consuming match on a reference; match the reference non-consumingly. |
+| `a consuming match needs a local variable or parameter holding an owned Result` | a consuming match on something that is not an owned result. |
 
-## 9. Differences from obx
+## 10. Differences from obx
 
 - There is no garbage collector. Memory is freed at scope exit, on reassignment,
   or by `drop`, and the compiler checks the freeing.
@@ -710,11 +946,14 @@ depend on the program.
   compiler rather than by runtime collection.
 - Handles (`^T`) are the way to write back-references and graphs. They are checked
   at run time.
-- New built-ins: `take`, `drop`, `replace`, `handle`, `alive`.
+- New built-ins: `take`, `drop`, `replace`, `handle`, `alive`, `ok`, `err`, and the prefix
+  operator `try`.
+- `Result[T]` is a built-in parameterized type, inspected with `match` (including the
+  consuming `ok(v)`/`err(m, c)` form).
 - `gc()` does nothing.
 - Strings are reference counted rather than collected.
 
-## 10. Known holes and planned changes
+## 11. Known holes and planned changes
 
 **Assignment targets across calls (closed).** The target of an assignment is located
 before the right-hand side is evaluated, so a call on the right that frees the target
@@ -993,6 +1232,5 @@ into and points the reference afresh before it reads it again is accepted too (`
 `loopCache`).
 
 **Planned.** The language features listed as not yet done in the root
-`README.md` also apply: methods and interfaces, lambdas, generic modules, `try`
-with result types, multiple modules, value records, `inout` parameters, and debug
+`README.md` also apply: methods and interfaces, lambdas, generic modules, multiple modules, value records, `inout` parameters, and debug
 information.

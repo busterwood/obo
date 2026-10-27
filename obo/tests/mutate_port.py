@@ -165,8 +165,8 @@ MUTANTS = {
                                              "    if false {\n        // a field or element: the call could free the record or array it is in")],
     "handle assignment across calls allowed": [("    if x.viaHandle {\n        errorAt(\"cannot assign through a handle across a call",
                                                 "    if false {\n        errorAt(\"cannot assign through a handle across a call")],
-    "compound targets not checked": [("            var y = expression()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n",
-                                      "            var y = expression()\n            pinned = savedPin\n")],
+    "compound targets not checked": [("            var y = tailExpr()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n",
+                                      "            var y = tailExpr()\n            pinned = savedPin\n")],
     "append targets not checked": [("        if name != \"substr\" && held && userCalls != callsBefore {",
                                     "        if name == \"truncate\" && held && userCalls != callsBefore {")],
     "truncate targets not checked": [("        if name != \"substr\" && held && userCalls != callsBefore {",
@@ -212,8 +212,8 @@ MUTANTS = {
     "held: index does not hold its array": [('            let hp = heldPush(root, viaHandle, hOrig, hIdent, placePath(root, path), path)', '            let hp = -1')],
     "held: replace does not hold its place": [('        let hp = heldPush(tr, x.viaHandle, orig, ident, place, raw)', '        let hp = -1')],
     "held: append and truncate do not hold their array": [('        let hp = heldPush(r0, aVia, aOrig, aIdent, aPlace, aRaw)', '        let hp = -1')],
-    "held: plain assignments do not hold their target": [('            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            let y = expression()', '            let y = expression()')],
-    "held: compound assignments do not hold their target": [('            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            var y = expression()', '            var y = expression()')],
+    "held: plain assignments do not hold their target": [('            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            let y = tailExpr()', '            let y = tailExpr()')],
+    "held: compound assignments do not hold their target": [('            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            var y = tailExpr()', '            var y = tailExpr()')],
     "held: reference places ignore the binding's path": [('            let p = heldAt(b, i, raw, r)\n            if o == handleSym {\n                heldAdd(nil, true, false, "")', '            let p = raw\n            if o == handleSym {\n                heldAdd(nil, true, false, "")')],
     # loop inversion: a while loop's condition moves after its body, and each kind of position it holds must move
     # with it (tests/run/loop_inversion.obx)
@@ -332,7 +332,7 @@ MUTANTS.update({
     "return copies a local's register": [("        let x = asReg(x0)\n        for k in blocks[fnBlock].omark", "        let x = load(x0)\n        for k in blocks[fnBlock].omark")],
     "for limit's register never given back": [("            if lim.home >= 0 { append(blocks[len(blocks) - 1].syms, lim) }       // so that the block's end frees it\n", "")],
     "bool parameters left in memory": [('        if params[i].mode == 0 && (params[i].typ.kind == "int" || params[i].typ.kind == "bool") {\n            let h', '        if params[i].mode == 0 && params[i].typ.kind == "int" {\n            let h')],
-    "a local in a register as a statement accepted": [('            if x.mode != "reg" || x.home { errorAt("this expression does nothing"', '            if x.mode != "reg" { errorAt("this expression does nothing"')],
+    "a local in a register as a statement accepted": [('        if x.mode != "reg" || x.home { errorAt("this expression does nothing"', '        if x.mode != "reg" { errorAt("this expression does nothing"')],
     # a function that runs out of registers with locals in them is compiled again with none (FORK.md, Phase 2);
     # tests/run/register_pressure.obx has such functions, one with calls waiting for a later function. Not planted,
     # equivalent: the counters (selfCalls, userCalls, useSeq, fwdCalls) are only compared with their value at a

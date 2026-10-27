@@ -18,6 +18,12 @@ Two profiles:
           trap     obo accepts it, and it stops with exit 7 at the first use of a
                    handle whose object has been freed, after the modelled output.
 
+A third profile, result, is a valid-only generator for Result[T], ok/err, try and
+the consuming match: a fixed set of helpers (try unwrapping, error propagation,
+nested results, an owned payload, a consuming match, strings, a discarded try, a
+loop) called with random arguments, with both the ok and error paths modelled in
+Python.
+
     python3 obo/tests/own_fuzz.py [--count N] [--profile safe|full|both]
     python3 obo/tests/own_fuzz.py SEED [--safe]      print one program and its output
 """
@@ -1575,6 +1581,152 @@ def check(seed, full):
     return 'trapped' if kind in ('trap', 'either') else 'ran'
 
 
+# ---------------------------------------------------------------- result profile
+# Result[T], ok/err, try and the consuming match: only valid programs, with the
+# output computed as the program is generated. The helper bodies are fixed; the
+# main body calls a random mix of them with random arguments, so both the ok and
+# the error path of try are reached in most seeds.
+RESULT_HELPERS = [
+    "type RNode = ref record { v: int }",
+    "fn src(n: int): Result[int] {",
+    "    if n % 4 == 3 { return err(\"e\" + string(n), n) }",
+    "    return ok(n)",
+    "}",
+    "fn strsrc(n: int): Result[string] {",
+    "    if n % 4 == 3 { return err(\"e\" + string(n), n) }",
+    "    return ok(\"s\" + string(n))",
+    "}",
+    "fn show(r: Result[int]) {",
+    "    match r {",
+    "        ok { println(\"ok \", r.value) }",
+    "        err { println(\"err \", r.message, \" \", r.code) }",
+    "    }",
+    "}",
+    "fn pass(n: int, k: int): Result[int] {",
+    "    let v = try src(n)",
+    "    return ok(v + k)",
+    "}",
+    "fn nest(n: int): Result[Result[int]] {",
+    "    let inner = src(n)",
+    "    return ok(inner)",
+    "}",
+    "fn nestUse(n: int): Result[int] {",
+    "    let y = try try nest(n)",
+    "    return ok(y + 7)",
+    "}",
+    "fn ownedUse(n: int): Result[int] {",
+    "    let node = try src(n)",
+    "    let r = ok(new RNode{v: node})",
+    "    let x = try r",
+    "    return ok(x.v * 2)",
+    "}",
+    "fn matchUse(n: int): Result[int] {",
+    "    let r = src(n)",
+    "    match r {",
+    "        ok(v) { return ok(v * 3) }",
+    "        err(m, c) { return err(m, c) }",
+    "    }",
+    "}",
+    "fn strUse(n: int): Result[int] {",
+    "    let s = try strsrc(n)",
+    "    return ok(len(s))",
+    "}",
+    "fn discardUse(n: int): Result[int] {",
+    "    try strsrc(n)",
+    "    return ok(1)",
+    "}",
+    "fn loopUse(lim: int): Result[int] {",
+    "    var i = 0",
+    "    var sum = 0",
+    "    while i < lim {",
+    "        let node = new RNode{v: i}",
+    "        let v = try src(i)",
+    "        sum += node.v + v",
+    "        i += 1",
+    "    }",
+    "    return ok(sum)",
+    "}",
+]
+
+
+def result_program(seed):
+    """(program text, expected output lines) for one result-profile seed."""
+    r = random.Random(seed * 7919 + 17)
+    calls, expect = [], []
+
+    def err(n):
+        return n % 4 == 3
+
+    def emsg(n):
+        return "e" + str(n)
+
+    def out(n, val):
+        expect.append(f"err {emsg(n)} {n}" if err(n) else f"ok {val}")
+
+    for _ in range(r.randint(3, 7)):
+        kind = r.randrange(6)
+        n = r.randrange(0, 31)
+        if kind == 0:
+            k = r.randrange(0, 10)
+            calls.append(f"    show(pass({n}, {k}))")
+            out(n, n + k)
+        elif kind == 1:
+            calls.append(f"    show(nestUse({n}))")
+            out(n, n + 7)
+        elif kind == 2:
+            calls.append(f"    show(ownedUse({n}))")
+            out(n, n * 2)
+        elif kind == 3:
+            calls.append(f"    show(matchUse({n}))")
+            out(n, n * 3)
+        elif kind == 4:
+            calls.append(f"    show(strUse({n}))")
+            out(n, len("s" + str(n)))
+        elif kind == 5:
+            if r.randrange(2) == 0:
+                calls.append(f"    show(discardUse({n}))")
+                out(n, 1)
+            else:
+                lim = r.randrange(1, 9)
+                calls.append(f"    show(loopUse({lim}))")
+                total, i, failed = 0, 0, False
+                while i < lim:
+                    if err(i):
+                        expect.append(f"err {emsg(i)} {i}")
+                        failed = True
+                        break
+                    total += i + i
+                    i += 1
+                if not failed:
+                    expect.append(f"ok {total}")
+    text = "\n".join(RESULT_HELPERS + ["fn main() {"] + calls + ["}", ""])
+    return text, expect
+
+
+def check_result(seed):
+    """Compile and run one result-profile seed; its output and the leak check must match."""
+    text, expect = result_program(seed)
+    tag = "result" + str(seed)
+    path = os.path.join(TMP, tag + '.obx')
+    exe = os.path.join(TMP, tag)
+    with open(path, 'w') as f:
+        f.write(text)
+    regen = f"(regenerate with: python3 obo/tests/own_fuzz.py {seed})"
+    b = subprocess.run([OBO, path, '-o', exe, '--rt', FORK], capture_output=True, text=True, timeout=60)
+    if b.returncode != 0:
+        raise Fail(f"false rejection: {b.stderr.strip()}\n{path}\n{regen}")
+    run = subprocess.run([exe], capture_output=True, text=True, timeout=30,
+                         env=dict(os.environ, OBO_CHECK='1', OBX_GC='poison'))
+    if run.returncode != 0:
+        raise Fail(f"exit {run.returncode}: {run.stderr.strip()[:300]}\n{path}\n{regen}")
+    got = run.stdout.splitlines()
+    if got != expect:
+        i = next((k for k in range(min(len(got), len(expect))) if got[k] != expect[k]), min(len(got), len(expect)))
+        raise Fail(f"output line {i + 1}: expected {expect[i] if i < len(expect) else '<end>'!r}, "
+                   f"got {got[i] if i < len(got) else '<end>'!r}\n{path}\n{regen}")
+    return 'ran'
+
+
 def tests(count):
     """(name, check) pairs for run_fork.py: the first count seeds of each profile."""
     out = []
@@ -1582,6 +1734,8 @@ def tests(count):
         for seed in range(1, count + 1):
             out.append((f"own-fuzz/{'full' if full else 'safe'}/{seed}",
                         lambda s=seed, f=full: check(s, f)))
+    for seed in range(1, count + 1):
+        out.append((f"own-fuzz/result/{seed}", lambda s=seed: check_result(s)))
     return out
 
 
