@@ -45,6 +45,10 @@ _entry:
     slot rt_handle
     slot rt_deref
     slot rt_alive
+    slot rt_open_file
+    slot rt_read_fd
+    slot rt_write_fd
+    slot rt_close_fd
 
     .text
     .macro check f
@@ -85,5 +89,9 @@ check_\f:
     check rt_handle
     check rt_deref
     check rt_alive
+    check rt_open_file
+    check rt_read_fd
+    check rt_write_fd
+    check rt_close_fd
 
     .section .note.GNU-stack,"",@progbits
