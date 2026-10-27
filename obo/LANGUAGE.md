@@ -867,12 +867,15 @@ O_APPEND`). A constant mode is checked at compile time; any other problem is a
 Result: `err("cannot open " + path, errno)`, with errno in `code` (2 for a
 missing file, 22 for an empty path or an embedded NUL, 36 for a path of 4096
 bytes or more). `readFd(fd, max)` makes one read: `ok(nil)` means end of file,
-a non-nil array of 1..max bytes is data, and a negative count is
-`err("readFd needs a positive count", EINVAL)` before anything is allocated.
-`writeFd(fd, data)` borrows the array and makes one write; a short count is
-success, so the caller loops. `closeFile(0/1/2)` is refused with EINVAL, so a
-program cannot close the standard streams; `closeFile` on any other descriptor
-is a Result, and its error in a `defer` is discarded.
+a non-nil array of 1..max bytes is data, and a count that is zero or negative is
+`err("readFd needs a positive count", EINVAL)` before the max-sized array is
+allocated. `writeFd(fd, data)` borrows the array and makes one write; a short
+count is success, so the caller loops. `closeFile(0/1/2)` is refused with
+EINVAL, so a program cannot close the standard streams; `closeFile` on any other
+descriptor is a Result, and its error in a `defer` is discarded. A descriptor
+number can be reused after a close: the language does not track ownership of the
+number, so a stale `int` may read or close a file opened later under the same
+number.
 
 `exit(...)` runs no defers: a `defer closeFile(fd)` does not run, and the
 operating system reclaims the descriptor. Return from `main` instead when the

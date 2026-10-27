@@ -2963,7 +2963,8 @@ successful `open` it marks the number open in the fd table when it is below 1024
 0/1/2 if the standard descriptor was closed before the program started, so the runtime tests `fd < 0`, not
 `fd <= 0`.
 
-**Builtins.** `readFd(fd, max)` is one read: `max <= 0` is `err(..., EINVAL)` before any allocation; a
+**Builtins.** `readFd(fd, max)` is one read: `max <= 0` is `err(..., EINVAL)` before the max-sized
+allocation; a
 negative fd is `err(..., EBADF)` before the allocation; a tracked closed fd is exit 9 under `OBO_CHECK`,
 otherwise `err(..., EBADF)`, with no syscall; then `rt_alloc_array(max, 4)` and one read (retrying
 `EINTR`). A short read is data: the array's `len` is truncated to the count. `got == 0` is EOF, and the
@@ -3038,43 +3039,52 @@ checks. The `OBO_IO_FAULT=eintr|short` hook is test-only and inert unless `OBO_C
 order is arbitrary, so the gate is applied after the scan); `eintr` injects one synthetic `-EINTR` before
 the next read, write and close, and `short` caps each write at 3 bytes. A synthetic close-EINTR does not
 close the kernel fd, so it tests only the ok(true)/table-closed semantics. `r.code` is the positive errno;
-the trap codes overlap numerically with errnos, so a program must not `exit(r.code)`.
+the trap codes overlap numerically with errnos, so a program must not `exit(r.code)`. A descriptor number
+can be reused by the kernel after a close, so an `int` the program keeps past its `closeFile` may later
+read or close a different file; the table tracks numbers, not owners, and cannot detect that.
 
 **Tests.** `errors/io.obx` has 12 cases (the type/mode/count checks, the transient data, the no-argument
 accessor, and the B4 try-in-an-argument case with the complete prelude `Box`/`b`/`getMode`/`makeBytes`).
-`tests/run/io_basic.obx` covers the three modes, ENOENT, EBADF for a read-only/write-only fd, an empty
-file, bytes 0..255, a 1 MiB file, a computed max and reopening; `io_match.obx` matches every builtin in
-the consuming form (the ok-descriptor oracle: a wrong tag misses the arm, and `try` would not see it);
-`io_pin_path.obx` checks the original file's content after `g()` frees the path string; `io_pin_fd.obx`
-checks the global read, the indexed write and the record field; `io_stdout_order.obx` checks text/byte
-ordering, the accessors and the stdout refusal; `io_double_close`, `io_after_close`,
-`io_write_empty_closed`, `io_read_big_closed` and `io_leak` are the exit-9/8 oracles. `io_reader.obx` and
-`io_writer.obx` (built with the library prelude) cover chunk sizes 1..16, a 100 KiB line, empty versus nil,
-EOF mid-line, readByte/readN/eof and flush thresholds. `tests/rt_io_test.c` links `runtime.c` directly
-with its own `_entry`: it checks the cell layout/tags, descriptor-driven frees (no leak at `rt_finish`),
-EOF as a nil payload, EINVAL/EBADF precedence (max, then fd, then the table, then the allocation), the
-N1/N2 orderings, exits 0/8/9 in one process per case, the EINTR close-state marking, and the gated hooks
-with and without check. `tests/io_test.py` runs that harness and the controlled programs: cat streaming
-from a pipe before EOF, a 100 KiB binary round trip, wc's counts, short reads, EINTR, short writes, the
-inert hook, the no-check Result codes, the inherited-fd double close (Python passes an fd >= 3, the program
+`tests/run/io_basic.obx` covers the three modes, `"w"` truncation (a shorter rewrite leaves no stale
+tail), ENOENT, EBADF for a read-only/write-only fd, an empty file, bytes 0..255, a 1 MiB file, a computed
+max and reopening; `io_match.obx` matches every builtin in the consuming form (the ok-descriptor oracle:
+a wrong tag misses the arm, and `try` would not see it); `io_pin_path.obx` checks the original file's
+content after `g()` frees the path string; `io_pin_fd.obx` checks the global read, the indexed write and
+the record field; `io_stdout_order.obx` checks text/byte ordering, the accessors and the stdout refusal;
+`io_double_close`, `io_after_close`, `io_write_empty_closed`, `io_read_big_closed` and `io_leak` are the
+exit-9/8 oracles; `io_defer.obx` is the `defer closeFile(fd)` regression (the block exits normally under
+`OBO_CHECK=1`, which exits 5 for a leaked defer Result cell and 8 for an unclosed fd, then the program
+reopens and reads the file). `io_reader.obx` and `io_writer.obx` (built with the library prelude, and
+`port_compare.py` applies that rule too) cover chunk sizes 1..16, a 100 KiB line, empty versus nil, EOF
+mid-line, readByte/readN/eof and flush thresholds. `tests/rt_io_test.c` links `runtime.c` directly with
+its own `_entry`: it checks the cell layout/tags, descriptor-driven frees (no leak at `rt_finish`), EOF as
+a nil payload, EINVAL/EBADF precedence (max, then fd, then the table, then the allocation), the N1/N2
+orderings, exits 0/8/9 in one process per case, the EINTR close-state marking (and a failed non-EINTR
+close still marking the table closed), `"w"` truncation, the unknown-mode error, and the gated hooks with
+and without check. `tests/io_test.py` runs that harness and the controlled programs: cat streaming from a
+pipe before EOF, a 100 KiB binary round trip, wc's counts, short reads, EINTR, short writes, the inert
+hook, the no-check Result codes, the inherited-fd double close (Python passes an fd >= 3, the program
 parses `args()[2]` with a decimal loop, and the case runs under `OBO_CHECK=1` so a mutant that marks the
-untracked fd closed exits 9 instead of returning code 9), the stdout refusal, and the library boundaries.
-`tests/programs/cat.obx` and `wc.obx` are the tool smoke cases.
+untracked fd closed exits 9 instead of returning code 9), the stdout refusal, the four filesystem-free
+path/mode errors (`tests/io/path_errors.obx`: empty and NUL paths EINVAL 22, a 4096-byte path
+ENAMETOOLONG 36, and a computed unknown mode EINVAL 22 with its message), and the library boundaries.
+`obo/programs/cat.obx` and `wc.obx` are the tool smoke cases.
 
-**Mutants.** `IO_MUTANTS` in `tests/mutate_fork.py` (only there; `mutate_port.py` does not import them),
-11 patterns, each matching once: no path pin, no fd materialise in readFd and in writeFd, noTemp dropped,
-data consumed, a fresh ok variant, swapped closeFile descriptors, `expression()` for the mode argument, a
-mode that is ignored, swapped stdout/stderr, and max passed as the fd. All are caught by the run/error
-files above. `tests/mutate_io.py` (new) judges 19 runtime and 7 library mutants by building a private
-runtime directory with the Makefile flags (or a mutated `io.obo` text) and running the same program-level
-oracles: short read as EOF, a read length of got+1, a read at data+9, double close undetected, a close that does nothing (caught by
+**Mutants.** `IO_MUTANTS` in `tests/mutate_fork.py` (also imported by `mutate_port.py`: the port compiles
+the I/O cases too, so its Stage B comparison catches each of them), 11 patterns, each matching once: no
+path pin, no fd materialise in readFd and in writeFd, noTemp dropped, data consumed, a fresh ok variant,
+swapped closeFile descriptors, `expression()` for the mode argument, a mode that is ignored, swapped
+stdout/stderr, and max passed as the fd. All are caught by the run/error files above. `tests/mutate_io.py`
+(new) judges 20 runtime and 7 library mutants by building a private runtime directory with the Makefile
+flags (or a mutated `io.obo` text) and running the same program-level oracles: short read as EOF, a read
+length of got+1, a read at data+9, double close undetected, a close that does nothing (caught by
 `io_basic`'s close-then-return leak, not by `io_leak`, which leaks either way), fd 1 and data-pointer fds,
 read/write EINTR, close EINTR as an error, swapped err message/code, the fd table not updated on open, the
 N1 zero-length shortcut, N2 allocation before the checks, an unchecked negative fd, an EINTR close that
-does not mark the table, an untracked close that does, closable standard descriptors, the ungated hook,
-and the library's fill boundary (both forms), lost flush, a dropped flush tail, a flush shift from the
-wrong offset, and takeChunk's prefix and suffix errors. The baseline must pass every case first; 26/26 are
-caught.
+does not mark the table, `"w"` without `O_TRUNC`, an untracked close that does, closable standard
+descriptors, the ungated hook, and the library's fill boundary (both forms), lost flush, a dropped flush
+tail, a flush shift from the wrong offset, and takeChunk's prefix and suffix errors. The baseline must
+pass every case first; 27/27 are caught.
 
 **Fuzz.** `own_fuzz.py` gains `io_roundtrip` and `io_append`: a random payload (empty or up to 300 bytes,
 with NUL and 0xFF forced), a random chunk size and read max; the generated program writes in chunks with a
@@ -3083,11 +3093,20 @@ the length and a byte checksum that Python computes. 50 seeds of each run in `ru
 `OBO_CHECK=1`.
 
 **Memory.** `port_compare.py` measures the port compiling itself at 1,244,528 bytes live, against the
-2,000,000 budget (1,229,344 on main, so +15,184: the seven universe symbols, the builtin branches, the
-three Result-call helpers and the tests' text). The 1 KiB fd table lives in the runtime data segment of
+2,000,000 budget (1,229,344 on main, so +15,184: the seven universe symbols, the builtin branches and
+the three Result-call helpers; the peak is the port compiling `src/obo.obo`, so no test text is in it).
+The 1 KiB fd table lives in the runtime data segment of
 every image, not in the obo heap: `runtime_data.bin` grew by exactly 1,024 bytes (66,272 to 67,296) and
 `runtime_text.bin` by 4,303 (8,849 to 13,152) for the helpers. The compiler source does not use the
 builtins, so the port's peak grows only with its code.
+
+**Measured (follow-up round).** `io_test.py --rt --programs --tools`: 0 failures. `run_fork`: 1024
+passed, 0 failed. `port_test`: 483 of 483 identical, no leaks (9 encoder groups checked against objdump).
+`port_compare`: stage B 1025 of 1025, the memory check within the 2,000,000 budget. `homes_check`: every
+check passes; `homes_edge`: 1028 statements, 119 refused by both, 0 differ. `doc_check`: 42 examples, 0
+problems. `mutate_fork`: 409 of 429 caught, with the 20 equivalents (0 missed, 0 stale, 0 broken).
+`mutate_io`: 27 of 27 caught. `mutate_port`: 377 of 377 caught. The fixed point holds (stage2 equals
+stage3) and `seed/obo` is unchanged.
 
 **Seed and round 2.** The compiler source does not call the I/O builtins in this branch, so `seed/obo`
 stays the Result seed and `make promote` is not part of the branch. Round 2 (optional, recommended
