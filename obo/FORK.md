@@ -2492,9 +2492,9 @@ below. A callee that calls another with `mut` takes the callee's rows composed w
 callee that writes through a handle (`freesAll`) and the 62nd parameter are `"!"`. A parameter has at most `PF_MAX` (4) rows,
 then all become `"!"`. At a call with a `mut` argument that points at a place of an owned local, each row is an event at
 the argument's place plus the row's (`originFreeAt`): `touchOther(p)` (`p.other = ..`) leaves a handle to `p.child` alone, and
-`resetT(t)` (`t.par.child = ..`) one to `t.spare.child`. Rows are not read for anything else (`pureFn`, `mutFrees` and
-`userCalls` are as before). Memory: rows exist only for callees that free below a `mut` parameter (a few dozen in the
-compiler).
+`resetT(t)` (`t.par.child = ..`) one to `t.spare.child`. Rows are not read for anything else: `pureFn` and `mutFrees`
+read only `FnRec.pfree` (set with the rows), and `userCalls` reads `pureFn`. Memory: rows exist only for callees that
+free below a `mut` parameter (a few dozen in the compiler).
 
 **Loops and defers.** Shared with owners: `originFreeAt` calls `pendPush` (a free of the place in a loop that
 uses a handle declared outside is refused, "cannot assign over a place in the owner of handle 'h' inside a loop that uses
@@ -2506,8 +2506,21 @@ exactly (truncate's constant count is not kept in a defer replay: conservative).
 replaced, taken, truncated or reached by a call that frees below it, after the handle was made from it; make the handle
 again".
 
-**Memory.** One string array entry per tracked handle (`originPath`), two more `Item` fields (transient), the summary rows, code. The port
-compiling itself peaks at 1,123,568 bytes live (1,058,384 before; budget 2,000,000 unchanged, `MEMORY_MARGIN` untouched).
+**Memory.** One string array entry per tracked handle (`originPath`), two more `Item` fields (transient), the summary
+rows, code. After the merge with "Move bits (done)", the port compiling itself peaks at 1,126,832 bytes live,
+45,968 bytes (4.25%) above main's 1,080,864 before the merge (budget 2,000,000 unchanged, `MEMORY_MARGIN`
+untouched). The "before" figure this section first stated, 1,058,384, predates the narrowed re-mark merge and is stale.
+
+**Move bits (merged).** Main's move bits meet this work in three places. `movesFn(f)` is now `!pureFn(f)`, so `userCalls`
+counts a call only when it might free; the place tracking does not read `userCalls`, and the rows do not add a second
+path into moving: `mutFrees` and `pureFn` read `FnRec.pfree`, which `recordParamFree` sets next to the rows, so a
+`mut` callee that frees below a place is moving exactly when the bit says so. A truncate of a `[]string` through a
+handle now calls `recordFreeChange(a, true)`: main's string condition under this branch's `strict` argument, so the
+function is `freesAll` (its calls are moving) and the event is below the array, like the string references it drops;
+the `placeFreeIn`/`placeFreeVia` calls and `truncKeep` are unchanged by the merge: they were already strict. The
+string-index pin (`indexHasCall`, `designatorT`) is orthogonal to origins: a string's byte designator names no
+handle-able object (a handle needs a record or a closed type), and `root`, `deref`, `path`, `pOwner` and `pPath` are
+still set after the designator loop.
 
 **Not covered / left.**
 - Handles made through a reference (parameter or local), through another handle, or from a global: no origin.
@@ -2531,7 +2544,13 @@ defers, handle through a held handle, callee writing through a handle, whole-obj
 `run/field_origins_param.obx`, `_global.obx`, `_handle.obx` (fallbacks that trap, exit 7).
 `own_fuzz.py`: `field_origin_stmt` (valid), `field_origin_dead_stmt` (invalid); a dead handle from the local array that
 the fuzzer's model expects to trap now may also be rejected ("either").
-**Mutants:** `FIELD_MUTANTS` in `tests/mutate_fork.py` (also in `mutate_port.py`), 55, four equivalent (listed).
+**Mutants:** `FIELD_MUTANTS` in `tests/mutate_fork.py` (also in `mutate_port.py`), 59 entries: 55 caught, four
+equivalent (listed). The `FnRec.pfree` side is `FP_MUTANTS`: after the refactor into `recordParamFree` its three stale
+patterns were re-anchored (`frees through a parameter are not recorded`, `a parameter is recorded by the wrong place`,
+`a mut argument passed on is not recorded as freed`), the last now caught by `errors/fp_refs.obx` ("a mut argument
+passed on: the caller inherits the free of the global it passed"), and the fourth, `the frees of a reference parameter
+are recorded as a global`, is equivalent because `recordFree`'s `g.isParam && g.isRef` guard is unreachable after the
+refactor (the reason is in `EQUIVALENT`).
 
 ## Pure calls with mut parameters (done)
 
