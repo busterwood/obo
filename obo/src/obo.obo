@@ -3625,15 +3625,12 @@ fn originMove(s: ?^Sym, move: bool) {
     for i in 0..len(originSyms) {
         let x = originSyms[i]
         // on this path the owner is moved: its object is no longer the one an assignment frees (see originLive)
-        if originLive[i] == r { originLive[i] = nil }
-        if x.hOrigin != nil {
-            let o = x.hOrigin
-            if o == r {
-                x.hOrigin = nil
-                // narrowing cleared a dead mark of this handle: the move must not make the handle usable again
-                if originNar[i] { originDead[i] = r }
-            }
-        }
+        let wasLive = originLive[i] == r
+        if wasLive { originLive[i] = nil }
+        // narrowing cleared a dead mark of this handle: the move must not make the handle usable again. This tests
+        // the live mark, not hOrigin: an earlier move on a path that ended has cleared hOrigin for good
+        if wasLive && originNar[i] { originDead[i] = r }
+        if x.hOrigin == r { x.hOrigin = nil }
     }
 }
 

@@ -541,3 +541,57 @@ fn main() {
         println(h.n)  // error: handle 'h' may name a freed object
     }
 }
+// === a move of the owner in a narrowed arm, after a returning arm moved it (refused like the same arm without the earlier move; conservative: the object lives on in c)
+fn eat(b: Bag) { println(b.n) }
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    var c = nb(0)
+    if flag() == false { eat(a); return }
+    if flag() { a = nb(2) }
+    if alive(h) {
+        c = a
+        a = nb(3)
+        println(h.n)  // error: handle 'h' may name a freed object
+    }
+    println(c.n)
+}
+// === the same without the earlier returning arm
+fn eat(b: Bag) { println(b.n) }
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    var c = nb(0)
+    if flag() { a = nb(2) }
+    if alive(h) {
+        c = a
+        a = nb(3)
+        println(h.n)  // error: handle 'h' may name a freed object
+    }
+    println(c.n)
+}
+// === a free by a call in a narrowed arm, after a returning arm moved the owner
+fn eat(b: Bag) { println(b.n) }
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    if flag() == false { eat(a); return }
+    if flag() { a = nb(2) }
+    if alive(h) {
+        eat(a)
+        println(h.n)  // error: handle 'h' may name a freed object
+        return
+    }
+}
+// === the same without the earlier returning arm
+fn eat(b: Bag) { println(b.n) }
+fn main() {
+    var a = nb(1)
+    let h = handle(a)
+    if flag() { a = nb(2) }
+    if alive(h) {
+        eat(a)
+        println(h.n)  // error: handle 'h' may name a freed object
+        return
+    }
+}
