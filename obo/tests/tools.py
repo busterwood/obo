@@ -506,15 +506,6 @@ def parse_argv(tool, argv):
     return opts, operands, code
 
 
-def source_bytes(name, world, stdin_bytes):
-    if name == '-':
-        return stdin_bytes
-    spec = world.get(name)
-    if spec is None:
-        spec = SPECS.get(name, Spec('missing'))
-    return spec
-
-
 def kind_of(name, world):
     if name == '-':
         return 'stdin'
@@ -1196,6 +1187,9 @@ class Harness:
         defect = runtime_defect(ours)
         if defect:
             problems.append(f'tool defect: {defect}')
+        # path normalization safety net; relative operands make it unnecessary
+        ours.stdout = normalize_paths(ours.stdout, casedir)
+        ours.stderr = normalize_paths(ours.stderr, casedir)
 
         # our side compared against its own/gnu golden
         own = self.golden('own', case.tool, case.name) if case.tag in ('usage', 'writeerror') else None
@@ -1239,8 +1233,6 @@ class Harness:
                 problems.append('reference timed out')
             if ref_run.overrun:
                 problems.append('reference output overrun (>16 MiB)')
-            ours.stdout = normalize_paths(ours.stdout, casedir)
-            ours.stderr = normalize_paths(ours.stderr, casedir)
             ref_run.stdout = normalize_paths(ref_run.stdout, casedir)
             ref_run.stderr = normalize_paths(ref_run.stderr, casedir)
             norm, changed = normalize_ref_stderr(ref_run.stderr, ref, case.tool)
