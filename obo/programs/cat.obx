@@ -1,17 +1,226 @@
-// cat: copy stdin to stdout, streaming. Built by concatenating obo/lib/io.obo
-// before this file; the library's pump flushes each chunk, so a pipe delivers
-// every byte as soon as it arrives.
-fn main() {
-    var src = newReader(stdin(), 65536)
-    var out = newWriter(stdout(), 65536)
-    let r = pump(src, out)
-    match r {
-        ok { }
-        err { eprintln("cat: ", r.message); exit(1) }
+// cat: concatenate operands to stdout, with -n, -b, -s, -E and -T.
+//
+// Built by concatenating obo/lib/str.obo, obo/lib/io.obo and this file (in that
+// order) with tools/build_tools.py; there are no modules yet, so names are
+// file-global and this file may use both preludes but no earlier file may use
+// it. The subset is deliberate: -v, -e, -t, -A, -u, long options, --help and
+// --version are unsupported (see programs/README.md).
+//
+// The logical stream spans operands: the line number, the blank-line squeeze
+// state and a partially written line continue from one file to the next. A
+// blank line is a line with no bytes before the newline; spaces, a tab or a NUL
+// make a line nonblank. -b overrides -n regardless of order.
+//
+// Open and read errors print `cat: <operand>: <text>`, set failed, close the
+// operand and continue with the next one. A write error prints
+// `cat: write error: <text>` once, sets fatal, stops reading and never opens a
+// later operand. Both exit 1.
+
+type CatOpts = ref record {
+    numberEvery: bool      // -n
+    numberNonBlank: bool   // -b (overrides -n)
+    squeeze: bool          // -s
+    showEnds: bool         // -E
+    showTabs: bool         // -T
+}
+
+type CatState = ref record {
+    lineNo: int            // the next line number to print
+    atLineStart: bool      // the next byte begins a line
+    lastBlank: bool        // the previous input line was blank (-s)
+    failed: bool           // an open/read error happened
+    fatal: bool            // a write error happened
+}
+
+// Transform one input chunk into scratch and hand it to the Writer. A write or
+// flush failure comes back as err; the caller prints the one write diagnostic
+// and marks the state fatal. The scratch is flushed at 64 KiB so -nET on a
+// 64 KiB chunk of newlines stays bounded (a whole-chunk batch would grow the
+// array to about 1 MiB).
+fn catChunk(mut w: &Writer, mut scratch: &[]byte, data: &[]byte, opts: &CatOpts, mut st: &CatState): Result[bool] {
+    for k in 0..len(data) {
+        let b = data[k]
+        if st.atLineStart {
+            if b == '\n' {
+                if opts.squeeze && st.lastBlank {
+                    // a squeezed blank line: emit nothing, not even its number
+                } else {
+                    if opts.numberEvery && !opts.numberNonBlank {
+                        st.lineNo += 1
+                        appendPadded(scratch, st.lineNo, 6)
+                        append(scratch, '\t')
+                    }
+                    if opts.showEnds { append(scratch, '$') }
+                    append(scratch, '\n')
+                }
+                st.lastBlank = true
+            } else {
+                st.lineNo += 1
+                if opts.numberEvery || opts.numberNonBlank {
+                    appendPadded(scratch, st.lineNo, 6)
+                    append(scratch, '\t')
+                }
+                st.atLineStart = false
+                st.lastBlank = false
+                if b == '\t' && opts.showTabs {
+                    append(scratch, '^')
+                    append(scratch, 'I')
+                } else {
+                    append(scratch, b)
+                }
+            }
+        } else {
+            if b == '\n' {
+                if opts.showEnds { append(scratch, '$') }
+                append(scratch, '\n')
+                st.atLineStart = true
+                st.lastBlank = false
+            } else if b == '\t' && opts.showTabs {
+                append(scratch, '^')
+                append(scratch, 'I')
+            } else {
+                append(scratch, b)
+            }
+        }
+        if len(scratch) >= 65536 {
+            try writeBytes(w, scratch)
+            truncate(scratch, 0)
+        }
     }
-    let f = flush(out)
+    try writeBytes(w, scratch)
+    truncate(scratch, 0)
+    try flush(w)
+    return ok(true)
+}
+
+// Stream one Reader through the transform. ok(false) means a write error was
+// already reported and the whole tool must stop; a read error is returned as err
+// for the operand handler, which prints it and continues.
+fn catReader(mut r: &Reader, mut w: &Writer, mut scratch: &[]byte, opts: &CatOpts, mut st: &CatState): Result[bool] {
+    while true {
+        let more = try fill(r)
+        if !more { return ok(true) }
+        let chunk = takeChunk(r)
+        let rr = catChunk(w, scratch, chunk, opts, st)
+        match rr {
+            ok { }
+            err {
+                eprintln("cat: write error: ", errText(rr.code))
+                st.fatal = true
+                return ok(false)
+            }
+        }
+    }
+}
+
+// Read one operand. Returns false only for a fatal write error; open and read
+// errors are printed here and return true (continue with the next operand).
+// Stdin ("-" or no operands) is never opened or closed.
+fn catOperand(path: string, mut w: &Writer, mut scratch: &[]byte, opts: &CatOpts, mut st: &CatState): bool {
+    if path == "-" {
+        var r = newReader(stdin(), 65536)
+        let rr = catReader(r, w, scratch, opts, st)
+        match rr {
+            ok { if !rr.value { return false } }
+            err {
+                eprintln("cat: -: ", errText(rr.code))
+                st.failed = true
+            }
+        }
+        return true
+    }
+    let f = openFile(path, "r")
     match f {
-        ok { }
-        err { eprintln("cat: ", f.message); exit(1) }
+        ok {
+            let fd = f.value
+            defer closeFile(fd)
+            var r = newReader(fd, 65536)
+            let rr = catReader(r, w, scratch, opts, st)
+            match rr {
+                ok { if !rr.value { return false } }
+                err {
+                    eprintln("cat: ", path, ": ", errText(rr.code))
+                    st.failed = true
+                }
+            }
+        }
+        err {
+            eprintln("cat: ", path, ": ", errText(f.code))
+            st.failed = true
+        }
     }
+    return true
+}
+
+// Apply one short-option character; false means it is not one of ours.
+fn setOpt(mut o: &CatOpts, c: byte): bool {
+    if c == 'n' { o.numberEvery = true; return true }
+    if c == 'b' { o.numberNonBlank = true; return true }
+    if c == 's' { o.squeeze = true; return true }
+    if c == 'E' { o.showEnds = true; return true }
+    if c == 'T' { o.showTabs = true; return true }
+    return false
+}
+
+fn main() {
+    let argv = args()
+    var opts = new CatOpts{numberEvery: false, numberNonBlank: false, squeeze: false, showEnds: false, showTabs: false}
+    var operands = new []string(0)
+    var endOpts = false
+    var i = 1
+    while i < len(argv) {
+        let a = argv[i]
+        if !endOpts && a == "--" {
+            endOpts = true
+        } else if !endOpts && len(a) > 1 && a[0] == '-' {
+            if len(a) > 2 && a[1] == '-' {
+                eprintln("cat: unrecognized option '", a, "'")
+                exit(1)
+            }
+            var j = 1
+            while j < len(a) {
+                let c = a[j]
+                if !setOpt(opts, c) {
+                    let ch = substr(a, j, j + 1)
+                    eprintln("cat: invalid option -- '", ch, "'")
+                    exit(1)
+                }
+                j += 1
+            }
+        } else {
+            append(operands, a)
+        }
+        i += 1
+    }
+
+    var w = newWriter(stdout(), 65536)
+    var scratch = new []byte(0)
+    var st = new CatState{lineNo: 0, atLineStart: true, lastBlank: false, failed: false, fatal: false}
+    var fatal = false
+    if len(operands) == 0 {
+        let cont = catOperand("-", w, scratch, opts, st)
+        if !cont { fatal = true }
+    } else {
+        var k = 0
+        while k < len(operands) {
+            let p = operands[k]
+            let cont = catOperand(p, w, scratch, opts, st)
+            if !cont {
+                fatal = true
+                break
+            }
+            k += 1
+        }
+    }
+    if !fatal {
+        let fl = flush(w)
+        match fl {
+            ok { }
+            err {
+                eprintln("cat: write error: ", errText(fl.code))
+                exit(1)
+            }
+        }
+    }
+    if fatal || st.failed { exit(1) }
 }

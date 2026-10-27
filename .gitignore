@@ -4,6 +4,7 @@
 *.bin
 /obx/obxc
 /obo/obo
+/obo/build/
 /obo/bench/peak
 .stage2
 .stage3
