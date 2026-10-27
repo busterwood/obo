@@ -3,6 +3,12 @@
 CFLAGS = -O2 -ffreestanding -fno-builtin -nostdlib -fno-pic -fno-pie -fno-stack-protector \
          -fno-asynchronous-unwind-tables -mcmodel=small -fno-tree-loop-distribute-patterns -Wall
 
+# .PHONY matters for tools: obo/tools/ is an existing directory, so a non-phony
+# target of that name would be "up to date" whenever the directory is not older
+# than its prerequisites, and the tool and library sources are deliberately not
+# prerequisites (the builder checks them).
+.PHONY: tools tools-check tools-memory all clean
+
 all: runtime_text.bin runtime_data.bin obo
 
 # the compiler, built from source by the seed compiler
@@ -31,6 +37,20 @@ rt_io_test: tests/rt_io_test.c runtime/runtime.c runtime/rt.ld
 	gcc $(CFLAGS) -c tests/rt_io_test.c -o rt_io_test.o
 	ld -T runtime/rt.ld -o rt_io_test rt_io_test.o
 
+# the first command-line tools: lib/str.obo + lib/io.obo + one programs/*.obx each,
+# concatenated and compiled by tools/build_tools.py (the sources are not Make
+# prerequisites; .PHONY makes every source edit rebuild, and the builder's own
+# checks report a missing phase 2 instead of make reporting a missing target)
+tools: obo runtime_text.bin runtime_data.bin
+	python3 tools/build_tools.py
+
+# the differential gate against GNU coreutils (separate from make promote)
+tools-check: tools
+	python3 tests/tools.py
+
+tools-memory: tools
+	python3 tests/tools.py --memory
+
 # make the current compiler the new seed, once it is a fixed point and the suite passes
 promote: obo
 	./obo src/obo.obo -o .stage2 --rt .
@@ -42,4 +62,5 @@ promote: obo
 	@echo "seed/obo updated"
 
 clean:
+	rm -rf build
 	rm -f *.o *.elf *.bin obo obo-noregs .noregs.obo .stage2 .stage3 rt_io_test

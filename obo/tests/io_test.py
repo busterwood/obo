@@ -14,9 +14,10 @@ Sections (all by default):
             obo/lib/io.obo concatenated) and runs each with its stdin, env and
             extra arguments; the // expect: and // expect-exit: markers are
             checked as in run_fork.py.
-  tools     concatenates the library with programs/cat.obx and programs/wc.obx,
-            checks cat streams a pipe before EOF, a 100 KiB binary round trip,
-            wc's line and byte counts, and both on a file.
+  tools     concatenates lib/str.obo + lib/io.obo + programs/{cat,wc}.obx
+            (the phase-3 tool build), checks cat streams a pipe before EOF, a
+            100 KiB binary round trip, wc's line/word/byte counts, and both on a
+            file. The full tool semantics live in tests/tools.py.
 
 The compiler is $OBO (default obo/obo); --rt points every program at this tree.
 """
@@ -38,6 +39,7 @@ import run  # noqa: E402
 run.OBXC = os.environ.get('OBO', os.path.join(FORK, 'obo'))
 run.ROOT = FORK
 LIB = os.path.join(FORK, 'lib', 'io.obo')
+STR = os.path.join(FORK, 'lib', 'str.obo')
 TMP = tempfile.mkdtemp(prefix='obo-io-test-')
 atexit.register(shutil.rmtree, TMP, ignore_errors=True)
 
@@ -173,6 +175,7 @@ def program_section():
     case_lib('stream.obx', check)
     case_lib('short_write.obx', clean_env(check=True, fault='short'))
     case_lib('short_write.obx', check)
+    case_lib('write_padded.obx', check)
 
     # inherited fd: Python opens the file (the number must be >= 3, or the test
     # would exercise the standard-stream refusal instead of the untracked close)
@@ -191,7 +194,8 @@ def program_section():
 
 # ---------------------------------------------------------------- tools
 def build_tool(name):
-    text = open(LIB).read() + '\n' + open(os.path.join(FORK, 'programs', name + '.obx')).read()
+    text = (open(STR).read() + '\n' + open(LIB).read() + '\n' +
+            open(os.path.join(FORK, 'programs', name + '.obx')).read())
     return compile_text('tool_' + name, text)
 
 
@@ -238,11 +242,12 @@ def tool_section():
     else:
         print('ok   tools/cat 100 KiB binary')
 
-    # wc: text, empty and binary
-    for data, want in [(b'one\ntwo\nthree\n', '3 14'), (b'', '0 0'),
-                       (bytes(range(256)) * 391, f"{bytes(range(256)).count(10) * 391} {256 * 391}")]:
+    # wc: text, empty and binary (stdin is a pipe, so padding uses GNU's 7 floor)
+    for data, want in [(b'one\ntwo\nthree\n', '      3       3      14'),
+                       (b'', '      0       0       0'),
+                       (bytes(range(256)) * 391, '    391     391  100096')]:
         r = run_tool_file(wc, data)
-        if r.returncode != 0 or r.stdout.decode().strip() != want:
+        if r.returncode != 0 or r.stdout.decode() != want + '\n':
             failures.append(f"tools/wc: {r.stdout!r}, expected {want!r} (exit {r.returncode})")
         else:
             print(f"ok   tools/wc {want}")
@@ -259,8 +264,10 @@ def tool_section():
         print('ok   tools/cat file')
     with open(path, 'rb') as f:
         r = subprocess.run([wc], stdin=f, capture_output=True, timeout=120, env=clean_env(check=True))
-    if r.returncode != 0 or r.stdout.decode().strip() != '2 11':
-        failures.append(f"tools/wc file: {r.stdout!r}, expected '2 11'")
+    # a regular-file stdin is still unknown to the tool, so width 7
+    want = '      2       2      11'
+    if r.returncode != 0 or r.stdout.decode() != want + '\n':
+        failures.append(f"tools/wc file: {r.stdout!r}, expected {want!r}")
     else:
         print('ok   tools/wc file')
 

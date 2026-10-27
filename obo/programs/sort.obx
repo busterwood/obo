@@ -1,0 +1,371 @@
+// sort: sort lines, with -n (exact decimal), -r and -u.
+//
+// Built by concatenating obo/lib/str.obo, obo/lib/io.obo and this file (in that
+// order). The subset is deliberate: -k, -t, -f, -b, -d, -i, -M, -h, -V, -s, -c,
+// -C, -o, -m, -z, --parallel, long options, --help and --version are unsupported
+// (see programs/README.md). The whole input is read before anything is written:
+// an open or read error prints one message and exits 2 with no stdout.
+//
+// Input rules: each operand is split on newlines by readLine; the final partial
+// line is a line and the final newline is optional; an empty file has no lines;
+// "\n" is one empty line. A partial final line is finalized before the next
+// operand starts. Every output line ends with '\n', including a final input line
+// that had none. Lines are opaque bytes and default order is unsigned byte
+// order (LC_ALL=C).
+//
+// -n is GNU's exact decimal strnumcmp, not floating point: optional leading
+// blanks (space/tab), an optional '-', digits, and an optional fractional part.
+// A '+' is not accepted, and parsing stops at the first other byte, so "+2",
+// "1e3" (1), "0x10" (0), "abc" (0) and "--5" (0) follow GNU. Leading integer
+// zeros and trailing fraction zeros are stripped and the parts compare as digit
+// strings, so there is no overflow. A numeric tie uses the whole line as the
+// last-resort comparison; -r reverses that too. -u compares keys only (the whole
+// line, or the numeric value) and keeps the first input occurrence, which a
+// stable index merge makes exact.
+//
+// Errors: a named operand is preflighted (open+close) before any is read, so the
+// first operand that cannot be opened wins even when an earlier one is a
+// directory; that prints `sort: cannot read: <p>: <text>` and exits 2. A
+// directory read prints `sort: read failed: <p>: <text>` and exits 2. A write
+// error prints `sort: write error` and exits 2 (GNU 9.4 prints two lines there;
+// the harness shape-compares).
+
+type SortOpts = ref record {
+    numeric: bool      // -n
+    reverse: bool      // -r
+    unique: bool       // -u
+}
+
+// One exact-decimal key. ip holds the integer digits with leading zeros
+// stripped ("" means zero); fp holds the fraction digits with trailing zeros
+// stripped. Both empty is the value zero, whatever the sign.
+type NumKey = ref record {
+    neg: bool
+    ip: string
+    fp: string
+}
+
+fn parseNum(s: string): NumKey {
+    var i = 0
+    while i < len(s) && isBlank(s[i]) { i += 1 }
+    var neg = false
+    if i < len(s) && s[i] == '-' {
+        neg = true
+        i += 1
+    }
+    var istart = i
+    while i < len(s) && s[i] >= '0' && s[i] <= '9' { i += 1 }
+    var iend = i
+    var j = istart
+    while j < iend && s[j] == '0' { j += 1 }
+    var ip = ""
+    if j < iend { ip = substr(s, j, iend) }
+    var fp = ""
+    if i < len(s) && s[i] == '.' {
+        i += 1
+        var fstart = i
+        while i < len(s) && s[i] >= '0' && s[i] <= '9' { i += 1 }
+        var fend = i
+        while fend > fstart && s[fend - 1] == '0' { fend -= 1 }
+        if fend > fstart { fp = substr(s, fstart, fend) }
+    }
+    return new NumKey{neg: neg, ip: ip, fp: fp}
+}
+
+// compare the magnitudes (sign ignored): integer parts by length then bytes,
+// then fractions digit by digit with a longer fraction larger after a tie
+fn magCompare(keys: &[]NumKey, i: int, j: int): int {
+    let ai = len(keys[i].ip)
+    let bi = len(keys[j].ip)
+    if ai < bi { return -1 }
+    if ai > bi { return 1 }
+    let ic = cmpBytes(keys[i].ip, keys[j].ip)
+    if ic != 0 { return ic }
+    let af = keys[i].fp
+    let bf = keys[j].fp
+    let an = len(af)
+    let bn = len(bf)
+    var n = an
+    if bn < n { n = bn }
+    for k in 0..n {
+        if af[k] < bf[k] { return -1 }
+        if af[k] > bf[k] { return 1 }
+    }
+    if an < bn { return -1 }
+    if an > bn { return 1 }
+    return 0
+}
+
+fn numCompare(keys: &[]NumKey, i: int, j: int): int {
+    let az = len(keys[i].ip) == 0 && len(keys[i].fp) == 0
+    let bz = len(keys[j].ip) == 0 && len(keys[j].fp) == 0
+    if az && bz { return 0 }
+    let aneg = keys[i].neg
+    let bneg = keys[j].neg
+    if aneg && !bneg { return -1 }
+    if !aneg && bneg { return 1 }
+    let c = magCompare(keys, i, j)
+    if aneg { return -c }
+    return c
+}
+
+// Compare the lines at indexes i and j. keyOnly drops the whole-line last-resort
+// comparison for -u. reverse is applied last so it reverses the tie-break too.
+fn cmpAt(lines: &[]string, keys: &[]NumKey, i: int, j: int, opts: &SortOpts, keyOnly: bool): int {
+    var c = 0
+    if opts.numeric {
+        c = numCompare(keys, i, j)
+        if c == 0 && !keyOnly { c = cmpBytes(lines[i], lines[j]) }
+    } else {
+        c = cmpBytes(lines[i], lines[j])
+    }
+    if opts.reverse { return -c }
+    return c
+}
+
+// Stable bottom-up merge over an index array; a []int auxiliary is copied back
+// after each run, so equal keys keep their input order.
+fn sortIdx(lines: &[]string, keys: &[]NumKey, n: int, opts: &SortOpts, keyOnly: bool): []int {
+    var order = new []int(n)
+    for i in 0..n { order[i] = i }
+    if n < 2 { return order }
+    var aux = new []int(n)
+    var width = 1
+    while width < n {
+        var lo = 0
+        while lo < n {
+            var mid = lo + width
+            if mid > n { mid = n }
+            var hi = mid + width
+            if hi > n { hi = n }
+            var a = lo
+            var b = mid
+            var k = lo
+            while a < mid && b < hi {
+                let c = cmpAt(lines, keys, order[a], order[b], opts, keyOnly)
+                if c <= 0 {
+                    aux[k] = order[a]
+                    a += 1
+                } else {
+                    aux[k] = order[b]
+                    b += 1
+                }
+                k += 1
+            }
+            while a < mid {
+                aux[k] = order[a]
+                a += 1
+                k += 1
+            }
+            while b < hi {
+                aux[k] = order[b]
+                b += 1
+                k += 1
+            }
+            for t in lo..hi { order[t] = aux[t] }
+            lo = hi
+        }
+        width *= 2
+    }
+    return order
+}
+
+// -u: equal keys are adjacent after the sort, so compare each candidate with
+// the last kept one; equality is key-only.
+fn buildKept(lines: &[]string, keys: &[]NumKey, order: &[]int, opts: &SortOpts): []int {
+    var kept = new []int(0)
+    var i = 0
+    while i < len(order) {
+        var keep = true
+        if opts.unique && len(kept) > 0 {
+            let last = kept[len(kept) - 1]
+            if opts.numeric {
+                if numCompare(keys, order[i], last) == 0 { keep = false }
+            } else {
+                if cmpBytes(lines[order[i]], lines[last]) == 0 { keep = false }
+            }
+        }
+        if keep { append(kept, order[i]) }
+        i += 1
+    }
+    return kept
+}
+
+fn emitLines(mut w: &Writer, lines: &[]string, kept: &[]int): Result[bool] {
+    var scratch = new []byte(0)
+    var i = 0
+    while i < len(kept) {
+        let line = lines[kept[i]]
+        for j in 0..len(line) {
+            append(scratch, line[j])
+            if len(scratch) >= 65536 {
+                try writeBytes(w, scratch)
+                truncate(scratch, 0)
+            }
+        }
+        append(scratch, '\n')
+        if len(scratch) >= 65536 {
+            try writeBytes(w, scratch)
+            truncate(scratch, 0)
+        }
+        i += 1
+    }
+    try writeBytes(w, scratch)
+    try flush(w)
+    return ok(true)
+}
+
+// Preflight every named operand in order: the first one that cannot be opened
+// (or closed) wins, before any byte is read. "-" is stdin and is skipped.
+fn preflight(operands: &[]string): bool {
+    var i = 0
+    while i < len(operands) {
+        let p = operands[i]
+        if p != "-" {
+            let f = openFile(p, "r")
+            match f {
+                ok {
+                    let fd = f.value
+                    let c = closeFile(fd)
+                    match c {
+                        ok { }
+                        err {
+                            eprintln("sort: cannot read: ", p, ": ", errText(c.code))
+                            return false
+                        }
+                    }
+                }
+                err {
+                    eprintln("sort: cannot read: ", p, ": ", errText(f.code))
+                    return false
+                }
+            }
+        }
+        i += 1
+    }
+    return true
+}
+
+fn collectReader(mut r: &Reader, mut lines: &[]string): Result[bool] {
+    while true {
+        let line = try readLine(r)
+        if line == nil { return ok(true) }
+        let s = string(line)
+        append(lines, s)
+    }
+}
+
+// Read one operand into lines. A read error prints `read failed` here (a
+// directory is caught this way); an open failure (a preflight race) prints
+// `cannot read`. Returns false to stop the tool with exit 2.
+fn collectOperand(path: string, mut lines: &[]string): bool {
+    if path == "-" {
+        var r = newReader(stdin(), 65536)
+        let rr = collectReader(r, lines)
+        match rr {
+            ok { return true }
+            err {
+                eprintln("sort: read failed: -: ", errText(rr.code))
+                return false
+            }
+        }
+    }
+    let f = openFile(path, "r")
+    match f {
+        ok {
+            let fd = f.value
+            defer closeFile(fd)
+            var r = newReader(fd, 65536)
+            let rr = collectReader(r, lines)
+            match rr {
+                ok { return true }
+                err {
+                    eprintln("sort: read failed: ", path, ": ", errText(rr.code))
+                    return false
+                }
+            }
+        }
+        err {
+            eprintln("sort: cannot read: ", path, ": ", errText(f.code))
+            return false
+        }
+    }
+}
+
+// Apply one short-option character; false means it is not one of ours.
+fn setOpt(mut o: &SortOpts, c: byte): bool {
+    if c == 'n' { o.numeric = true; return true }
+    if c == 'r' { o.reverse = true; return true }
+    if c == 'u' { o.unique = true; return true }
+    return false
+}
+
+fn main() {
+    let argv = args()
+    var opts = new SortOpts{numeric: false, reverse: false, unique: false}
+    var operands = new []string(0)
+    var endOpts = false
+    var i = 1
+    while i < len(argv) {
+        let a = argv[i]
+        if !endOpts && a == "--" {
+            endOpts = true
+        } else if !endOpts && len(a) > 1 && a[0] == '-' {
+            if len(a) > 2 && a[1] == '-' {
+                eprintln("sort: unrecognized option '", a, "'")
+                exit(2)
+            }
+            var j = 1
+            while j < len(a) {
+                let c = a[j]
+                if !setOpt(opts, c) {
+                    let ch = substr(a, j, j + 1)
+                    eprintln("sort: invalid option -- '", ch, "'")
+                    exit(2)
+                }
+                j += 1
+            }
+        } else {
+            append(operands, a)
+        }
+        i += 1
+    }
+
+    if !preflight(operands) { exit(2) }
+
+    var lines = new []string(0)
+    if len(operands) == 0 {
+        if !collectOperand("-", lines) { exit(2) }
+    } else {
+        var k = 0
+        while k < len(operands) {
+            let p = operands[k]
+            if !collectOperand(p, lines) { exit(2) }
+            k += 1
+        }
+    }
+
+    let n = len(lines)
+    var keys = new []NumKey(0)
+    if opts.numeric {
+        var ki = 0
+        while ki < n {
+            let key = parseNum(lines[ki])
+            append(keys, key)
+            ki += 1
+        }
+    }
+    let keyOnly = opts.unique
+    let order = sortIdx(lines, keys, n, opts, keyOnly)
+    let kept = buildKept(lines, keys, order, opts)
+
+    var w = newWriter(stdout(), 65536)
+    let er = emitLines(w, lines, kept)
+    match er {
+        ok { }
+        err {
+            eprintln("sort: write error")
+            exit(2)
+        }
+    }
+}

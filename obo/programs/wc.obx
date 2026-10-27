@@ -1,22 +1,271 @@
-// wc: count newlines and bytes on stdin, streaming (fill + takeChunk), and print
-// "lines bytes". Built by concatenating obo/lib/io.obo before this file.
-fn main() {
-    var src = newReader(stdin(), 65536)
-    var bytes = 0
-    var lines = 0
-    while true {
-        let more = fill(src)
-        match more {
-            ok(v) {
-                if !v { break }
-                let chunk = takeChunk(src)
-                bytes += len(chunk)
-                for i in 0..len(chunk) {
-                    if chunk[i] == '\n' { lines += 1 }
-                }
+// wc: count lines, words and bytes, with -l, -w and -c.
+//
+// Built by concatenating obo/lib/str.obo, obo/lib/io.obo and this file (in that
+// order). The subset is deliberate: -m, -L, --files0-from, long options,
+// --help and --version are unsupported (see programs/README.md).
+//
+// The C-locale word rule is GNU's: whitespace (space, tab, LF, VT, FF, CR) ends
+// a word, a printable byte 0x21..0x7E starts or continues one, and every other
+// byte (NUL, the other controls, 0x7F..0xFF) is ignored -- it neither starts nor
+// ends a word. Word state resets for each operand; a final line without a
+// newline is not counted as a line.
+//
+// Output is delayed until every operand has been scanned, because the width
+// depends on the total size. Phase 2 has no stat, so the tool uses the bytes it
+// counted: width 0 for one output line with one selected column, otherwise
+// max(7 if any operand's size is unknown (stdin or a directory read error),
+// digits(bytes counted on non-stdin operands)). GNU's metadata-based width
+// differs for unreadable, non-regular and regular-file-stdin operands; see the
+// README for the documented divergences and the cases the harness keeps out.
+//
+// Open/read errors print `wc: <operand>: <text>`, set failed and continue; a
+// directory's (zero) counts still print. Write errors print `wc: write error`
+// (no operand, no errno text), exit 1. The delayed output is flushed before the
+// failure exit so the counts and the error both appear.
+
+type Counts = ref record {
+    lines: int
+    words: int
+    bytes: int
+    inWord: bool       // inside a word at the end of the last chunk
+}
+
+type WcStat = ref record {
+    label: string      // the operand name, or "-" for stdin
+    counts: Counts
+    unknown: bool      // stdin, or a read that failed with EISDIR
+    isStdin: bool      // its bytes are excluded from the width sum
+}
+
+type WcOpts = ref record {
+    lines: bool
+    words: bool
+    bytes: bool
+}
+
+fn scanChunk(mut c: &Counts, data: &[]byte) {
+    for i in 0..len(data) {
+        let b = data[i]
+        c.bytes += 1
+        if b == '\n' { c.lines += 1 }
+        if isSpace(b) {
+            c.inWord = false
+        } else if isWordByte(b) {
+            if !c.inWord {
+                c.words += 1
+                c.inWord = true
             }
-            err(m, c) { eprintln("wc: ", m); exit(1) }
         }
     }
-    println(lines, " ", bytes)
+}
+
+fn countReader(mut r: &Reader, mut c: &Counts): Result[bool] {
+    while true {
+        let more = try fill(r)
+        if !more { return ok(true) }
+        let chunk = takeChunk(r)
+        scanChunk(c, chunk)
+    }
+}
+
+// Scan one operand and append its stat. Returns false when the operand failed
+// (open error: no stat; read error: the partial counts are still appended).
+// Stdin is never opened or closed.
+fn wcOperand(path: string, label: string, mut stats: &[]WcStat): bool {
+    var c = new Counts{lines: 0, words: 0, bytes: 0, inWord: false}
+    if path == "-" {
+        var r = newReader(stdin(), 65536)
+        let rr = countReader(r, c)
+        match rr {
+            ok {
+                append(stats, new WcStat{label: label, counts: c, unknown: true, isStdin: true})
+                return true
+            }
+            err {
+                eprintln("wc: -: ", errText(rr.code))
+                append(stats, new WcStat{label: label, counts: c, unknown: true, isStdin: true})
+                return false
+            }
+        }
+    }
+    let f = openFile(path, "r")
+    match f {
+        ok {
+            let fd = f.value
+            defer closeFile(fd)
+            var r = newReader(fd, 65536)
+            let rr = countReader(r, c)
+            match rr {
+                ok {
+                    append(stats, new WcStat{label: path, counts: c, unknown: false, isStdin: false})
+                    return true
+                }
+                err {
+                    eprintln("wc: ", path, ": ", errText(rr.code))
+                    var unknown = false
+                    if rr.code == 21 { unknown = true }
+                    append(stats, new WcStat{label: path, counts: c, unknown: unknown, isStdin: false})
+                    return false
+                }
+            }
+        }
+        err {
+            eprintln("wc: ", path, ": ", errText(f.code))
+            return false
+        }
+    }
+}
+
+fn columnCount(opts: &WcOpts): int {
+    var n = 0
+    if opts.lines { n += 1 }
+    if opts.words { n += 1 }
+    if opts.bytes { n += 1 }
+    return n
+}
+
+// One output line: the selected counts in l/w/c order, right-aligned to width,
+// single spaces between fields (no leading separator), then the label if any.
+fn emitStat(mut w: &Writer, s: &WcStat, opts: &WcOpts, width: int): Result[bool] {
+    var first = true
+    if opts.lines {
+        try writePadded(w, s.counts.lines, width)
+        first = false
+    }
+    if opts.words {
+        if !first { try write(w, " ") }
+        try writePadded(w, s.counts.words, width)
+        first = false
+    }
+    if opts.bytes {
+        if !first { try write(w, " ") }
+        try writePadded(w, s.counts.bytes, width)
+        first = false
+    }
+    if len(s.label) > 0 {
+        try write(w, " ")
+        try write(w, s.label)
+    }
+    try write(w, "\n")
+    return ok(true)
+}
+
+// Apply one short-option character; false means it is not one of ours.
+fn setOpt(mut o: &WcOpts, c: byte): bool {
+    if c == 'l' { o.lines = true; return true }
+    if c == 'w' { o.words = true; return true }
+    if c == 'c' { o.bytes = true; return true }
+    return false
+}
+
+fn main() {
+    let argv = args()
+    var opts = new WcOpts{lines: false, words: false, bytes: false}
+    var operands = new []string(0)
+    var endOpts = false
+    var i = 1
+    while i < len(argv) {
+        let a = argv[i]
+        if !endOpts && a == "--" {
+            endOpts = true
+        } else if !endOpts && len(a) > 1 && a[0] == '-' {
+            if len(a) > 2 && a[1] == '-' {
+                eprintln("wc: unrecognized option '", a, "'")
+                exit(1)
+            }
+            var j = 1
+            while j < len(a) {
+                let c = a[j]
+                if !setOpt(opts, c) {
+                    let ch = substr(a, j, j + 1)
+                    eprintln("wc: invalid option -- '", ch, "'")
+                    exit(1)
+                }
+                j += 1
+            }
+        } else {
+            append(operands, a)
+        }
+        i += 1
+    }
+    if columnCount(opts) == 0 {
+        opts.lines = true
+        opts.words = true
+        opts.bytes = true
+    }
+
+    var stats = new []WcStat(0)
+    var failed = false
+    if len(operands) == 0 {
+        if !wcOperand("-", "", stats) { failed = true }
+    } else {
+        var k = 0
+        while k < len(operands) {
+            let p = operands[k]
+            if !wcOperand(p, p, stats) { failed = true }
+            k += 1
+        }
+    }
+
+    // the width is chosen once, from every line that will print
+    var operandCount = len(operands)
+    if operandCount == 0 { operandCount = 1 }
+    var printedLines = len(stats)
+    if operandCount > 1 { printedLines += 1 }
+    var width = 0
+    if !(len(stats) == 1 && operandCount == 1 && columnCount(opts) == 1) {
+        var sizeSum = 0
+        var anyUnknown = false
+        var si = 0
+        while si < len(stats) {
+            if !stats[si].isStdin { sizeSum += stats[si].counts.bytes }
+            if stats[si].unknown { anyUnknown = true }
+            si += 1
+        }
+        width = digits(sizeSum)
+        if anyUnknown && width < 7 { width = 7 }
+    }
+
+    var total = new Counts{lines: 0, words: 0, bytes: 0, inWord: false}
+    var ti = 0
+    while ti < len(stats) {
+        total.lines += stats[ti].counts.lines
+        total.words += stats[ti].counts.words
+        total.bytes += stats[ti].counts.bytes
+        ti += 1
+    }
+
+    var w = newWriter(stdout(), 65536)
+    var ei = 0
+    while ei < len(stats) {
+        let er = emitStat(w, stats[ei], opts, width)
+        match er {
+            ok { }
+            err {
+                eprintln("wc: write error")
+                exit(1)
+            }
+        }
+        ei += 1
+    }
+    let ts = new WcStat{label: "total", counts: total, unknown: false, isStdin: false}
+    if operandCount > 1 {
+        let er = emitStat(w, ts, opts, width)
+        match er {
+            ok { }
+            err {
+                eprintln("wc: write error")
+                exit(1)
+            }
+        }
+    }
+    let fl = flush(w)
+    match fl {
+        ok { }
+        err {
+            eprintln("wc: write error")
+            exit(1)
+        }
+    }
+    if failed { exit(1) }
 }

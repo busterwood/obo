@@ -20,6 +20,18 @@ borrowed references and run-time-checked handles, with no garbage collector. On 
 benchmarks it uses 2 to 6 times less memory than even an aggressively tuned
 collector, at similar speed, with small changes to source code.
 
+**obo** is the language and compiler this repository is about: single ownership,
+borrowed references and run-time-checked handles, with no garbage collector. On the
+benchmarks it uses 2 to 6 times less memory than even an aggressively tuned
+collector, at similar speed, with small changes to source code. It now also has
+its first command-line tools, `cat`, `wc` and `sort`, written in obo in
+`obo/programs/` and built by `make tools`; a separate differential gate
+(`obo/tests/tools.py`) compares them with GNU coreutils, with Python models and
+recorded goldens as the fallback. There are no modules yet, so
+`obo/tools/build_tools.py` concatenates the two library preludes and the tool
+before compiling it; the exact subset, message forms and caveats are in
+`obo/programs/README.md`.
+
 **obx** was the original garbage-collected dialect and the compiler obo grew from.
 It is kept as the historical reference; the "History: mainline obx" section below
 describes it, not the current direction.
@@ -236,6 +248,7 @@ through a handle) and over the globals `code` and `ownedLocals`; this change did
 
 ```
 cd obo && make                           # obo: build from the committed seed
+cd obo && make tools                     # obo's first tools: build/tools/{cat,wc,sort}
 cd obo && python3 tests/run_fork.py      # obo's tests, leak check always on
 cd obo && python3 tests/io_test.py --rt --programs --tools  # I/O runtime and programs
 cd obo && python3 tests/mutate_fork.py   # obo's mutants
@@ -243,8 +256,10 @@ cd obo && python3 tests/mutate_io.py     # runtime/library mutants
 cd obo && python3 tests/port_test.py     # the port: tokens and encoder, against obo
 cd obo && python3 tests/port_compare.py  # the port, stage B (everything), with the memory budget
 cd obo && python3 tests/mutate_port.py   # the port's mutants
+cd obo && python3 tests/tools.py         # the tools vs GNU; models/goldens without it
+cd obo && python3 tests/tools.py --require-reference   # tools vs GNU coreutils (release checklist)
+cd obo && python3 tests/tools.py --memory              # the two pinned tool memory cases
 cd obo && python3 bench/bench.py         # memory and time against the collector
-# Phase 3, once merged: python3 tests/tools.py --require-reference
 # history: cd obx && make && ./run_tests.sh
 ```
 

@@ -3124,3 +3124,210 @@ and `readN`'s count is the caller's. `closeFile` refuses 0/1/2 but follows the t
 `openFile` actually placed there. SIGPIPE keeps its default disposition (a write to a closed pipe kills
 the process, like coreutils); it is not a Result. The fd table is 1024 bytes; fds at or above it are
 untracked and the kernel still handles them.
+
+## First command-line tools (done)
+
+The first programs written for their own sake rather than to test the language:
+`cat`, `wc` and `sort` in `obo/programs/`, with a separate differential gate
+(`obo/tests/tools.py`) against GNU coreutils. They use only the language, the
+phase-2 runtime and `lib/io.obo`, so they change no compiler, runtime or seed
+source and the two-round self-hosting rule does not apply. The implementation
+base is main at `0db2ef4` (phase 1 merged, the phase-2 I/O seed promoted); phase
+2's `openFile`/`readFd`/`writeFd`/`closeFile` and `lib/io.obo` are the
+precondition, and the builder probes them. **Do not run `make promote` for this
+work**: the tools are outside the compiler's fixed point, and the tools gate is
+separate from `make promote`.
+
+**Tool set and subset.** `cat [-nbsET]`, `wc [-lwc]`, `sort [-nru]`, with `--`,
+`-` (stdin) and clustered/permuted options. Exit codes: 0 success, 1 for any
+`cat`/`wc` error or usage, 2 for any `sort` error or usage. Deliberately absent:
+cat `-v -e -t -A -u`, wc `-m -L --files0-from`, sort `-k -t -f -b -d -i -M -h
+-V -s -c -C -o -m -z --parallel`, every long option, and `--help`/`--version`
+(they are unrecognized long options, pinned by own goldens). `head` is a natural
+next tool; `tail` needs `seek`/`readAt` or a bounded implementation. The user
+subset, message forms and caveats are in `obo/programs/README.md`.
+
+**Layout and build.** There are no modules yet, so `obo/tools/build_tools.py`
+concatenates a generated header (relative source paths, no timestamp, so the
+generated source is reproducible), `lib/str.obo`, `lib/io.obo` and the tool, in
+that order. The rule is that a prelude may use only earlier preludes, and a
+declaration may use only earlier declarations in its own file. The builder
+resolves every path to an absolute path, checks the compiler, runtime `.bin`s and
+sources, compiles (never runs) a well-typed phase-2 probe naming every I/O
+builtin, and maps a compile error's generated line back to the source file and
+line. It has no cache and no `--force`. `obo/Makefile` gains
+`.PHONY: tools tools-check tools-memory all clean`; `tools` depends only on
+`obo`, `runtime_text.bin` and `runtime_data.bin`, never on `lib/io.obo`, so the
+builder's clear `phase 2 (incremental I/O) is a prerequisite` message is
+reachable instead of `make`'s missing-target error. `.PHONY` is required because
+`obo/tools/` is an existing directory (a non-phony `tools` target is silently
+"up to date") and because the tool/library sources are deliberately not Make
+prerequisites. `make clean` removes `build/`, which `.gitignore` now ignores.
+
+**Library additions.** `lib/str.obo` is new and dependency-free:
+`isSpace`, `isBlank`, `isPrint`, `isWordByte`, `cmpBytes`, `errText`, `digits`
+and `appendPadded`. `lib/io.obo` gains one function, `writePadded`, appended at
+the end (after `pump`/`count`, which stay after their callees). It is
+self-contained (an inline digit-width loop, not `str.digits`) so the phase-2
+tests and docs that compile `io.obo` alone still work; it is generic formatting,
+used by wc. `tests/lib/write_padded.obx` exercises it over widths 0..8, a padded
+zero, a value wider than the width, writer thresholds 1, 3, 8 and 65536, and
+byte-compares the file; `io_test.py --programs` runs it. No other library
+signature changed.
+
+**The harness.** `tests/tools.py` is a separate gate, not in `run_fork.py` and
+not in `make promote`. It builds the tools with the same builder into a private
+temporary directory, then runs each case in its own directory with relative
+operands, a clean environment (`PATH=/usr/bin:/bin`, `LC_ALL=C`, `TZ=UTC`,
+per-case `HOME`/`TMPDIR`; no inherited `OBO_*`/`OBX_*`), stdin `DEVNULL` or a
+pipe, stdout/stderr captured to capped files (`RLIMIT_FSIZE` 16 MiB), and
+process-group timeouts (10 s, 60 s for slow cases). Our tool additionally runs
+under `OBO_CHECK=1` and `OBX_GC=poison`, so a successful run also proves no
+leaks or fds; runtime traps (`obo:`/`obx:` lines, exits 3-9) are tool defects.
+
+The reference is GNU coreutils 9.4, resolved only through the pinned
+`/usr/bin:/bin` and executed as `[tool, *args]` with `executable=<absolute
+path>`: `argv[0]` is the bare tool name, so GNU prints the same `<tool>: `
+prefix as ours (an absolute invocation would print `/usr/bin/cat: ...`). Every
+reference process (version probing, cases, model-vs-GNU, `--record`) uses that
+invocation; a defensive normalizer replaces a leading `<ref_path>: ` on *every*
+stderr line and warns, and goldens are validated to contain no `/`-leading line.
+The report prints each resolved path, kind and version line.
+
+Each case has exactly one oracle tag, plus the orthogonal `portable` marker:
+
+- `modeled` (the default): GNU >= 9 is the primary oracle, with stdout and exit
+  exact, success stderr empty, and file-error stderr exact for quote-free
+  operands. Without a usable reference, the Python model is the oracle. Frozen
+  `gnu` goldens, where present, are also compared.
+- `usage`: our messages only, pinned by hand-written own goldens; the reference
+  is never invoked.
+- `writeerror`: stdout is `/dev/full` (a sink). Our stdout/stderr/exit are
+  pinned by own goldens; GNU's stdout (empty) and exit are exact and its stderr
+  is shape-compared. Models are never consulted (they have no stdout destination
+  and do not implement ENOSPC). `cat empty > /dev/full` is *modeled*, not a
+  write error: no write is issued, GNU exits 0 with empty stderr, and the model
+  returns `(0, b"", b"")`; `/dev/full` rejects even a zero-length write, so the
+  case also pins that the Writer never issues an empty write. `wc` always prints
+  a line, so its `/dev/full` case stays `writeerror`.
+
+The `portable` marker selects the forced `--reference=busybox` subset (cat byte
+copy and default `sort`, including default `dups`; no `-n`/`-r`/`-u` case is
+marked, and wc has none in v1 because its padding is implementation-specific). `--reference=any` ignores the marker and shape-compares
+stderr. Checked-in goldens are binary: `golden/gnu/<tool>/<case>.*` recorded with
+`--record` from GNU 9.4 (modeled, golden-marked cases only; no 1 MiB outputs),
+and `golden/own/<tool>/*` hand-written for the seven usage and six write-error
+cases. `--record` applies the prefix normalizer, refuses a `/`-leading line, and
+refuses to overwrite a differing golden without `--force`; a `VERSION` mismatch
+is a note. `--check-models` (default on) compares every modeled case's model with
+GNU on stdout/exit (and exact stderr) and exits 2 on disagreement, so the
+fallback cannot rot. `--reference=none` never probes a reference; models are the
+oracle for modeled cases and own goldens for usage/write-error.
+
+The matrix is 191 cases (cat 70, wc 63, sort 58) plus eight serial checks:
+cat streams a pipe before EOF (plain and `-n`), stdin is not read when it is not
+an operand (all three tools), and three pipelines (`cat | wc -l`,
+`sort | head -n 1`, `cat -n | sort -n`). 13 cases are portable-marked, 36 have
+recorded GNU goldens and 13 have own goldens; 10 are slow (`--fast` skips them).
+The case list, tags and markers print with `--list`.
+
+**Per-tool semantics.** cat is a byte-stream transform over its operands with
+state across files: `%6d\t` numbering from 1, `-b` overriding `-n` in either
+order, `-s` emitting at most one consecutive blank line (squeezed lines are not
+numbered), `-E` writing `$` only before emitted newlines, `-T` writing `^I` for
+tabs. `-E` also follows GNU's CR rule: a CR immediately before an emitted
+newline is held and written as `^M`, so CRLF renders `^M$`; the hold spans
+Reader chunks, operands and read errors, and a final unpaired CR is written
+literally at stream EOF (a second CR can become the new pending one). `-T` alone
+leaves CR alone. A blank line is zero bytes; spaces, tabs, NUL and a CR make a
+line nonblank (a CR-only line is numbered by `-n`/`-b` and never squeezed). An
+open/read error prints, sets failed and continues; a write error prints once,
+sets fatal, stops reading and never opens a later operand. The transformed
+scratch is flushed at 64 KiB. wc uses GNU's C-locale word rule (whitespace ends
+a word, `0x21..0x7E` starts or continues one, every other byte is ignored), a
+fresh count per operand, the documented no-`stat` width, totals iff more than
+one operand, and delayed output flushed before a failure exit. sort preflights
+every named operand in order (the first unopenable one wins, so a missing file
+after a directory is still `cannot read`), reads all lines per operand with
+`readLine` (final partial line included, per-operand finalization), sorts an
+index array with a stable bottom-up merge, compares `-n` keys as exact decimals
+(no floating point; 40-digit numbers keep their order), applies `-r` to the
+last-resort line comparison too, and deduplicates `-u` with a key-only
+comparison so the first input occurrence survives. Only ASCII `0-9` are numeric
+digits. GNU 9.4's `strnumcmp` additionally treats a leading byte `0x80` inside
+the integer leading-zero run as a zero (`\x801` compares equal to `1`); that is
+outside the documented ASCII numeric grammar and is deliberately not reproduced,
+and high-byte numeric inputs stay out of the differential matrix. Nothing is
+written before all input is read. The `-E` CR rule was found by the independent
+implementation review after the first green run; the matrix now has CRLF,
+cross-file, chunk-boundary, double-CR and final-CR cases with recorded GNU
+goldens, and the model implements the same rule.
+
+**Acceptance and gates.** `python3 tests/tools.py --require-reference` passes:
+191 matrix cases plus the eight serial checks, 0 failed, with exact stdout/exit,
+exact file-error stderr for GNU 9.4 (the bare-`argv[0]` rule), clean
+model-vs-GNU, and clean goldens. `--fast` passes with 10 slow cases skipped;
+`--memory` passes both pinned cases under 1 MiB live heap; `--reference=none`
+passes with models/own goldens and no reference process. The compiler gates are
+untouched and still pass: `run_fork`, `port_test`, `port_compare` (which
+concatenates `lib/io.obo` for `// prelude: io`), `io_test --rt --programs
+--tools`, `rt_io_test`, `mutate_io` (27/27; the added `writePadded` does not
+alter its library patterns), `mutate_port`, `mutate_fork`, `doc_check`,
+`homes_check`/`homes_edge`. `seed/obo` and `src/obo.obo`/`runtime` are unchanged;
+no promotion is part of this work. Exact current numbers are in Measurements.
+
+**Risks.** (1) wc's width without `stat`: unreadable regular files, readable
+non-regular files and regular-file stdin diverge; they are documented and kept
+out of padded differential cases, and the unreadable fixture is one byte with a
+checked digit precondition. (2) The models could share a spec bug with the
+tools; model-vs-GNU on every modeled case is a hard failure, and the goldens are
+recorded from GNU. (3) The reference may be absent or different: classification
+detects GNU old/BusyBox/unknown, exact stderr is GNU >= 9 only, shape elsewhere,
+and `--require-reference` makes GNU >= 9 mandatory. (4) Locale leaks would move
+sort order, wc words and strerror text; the environment is built from a clean
+base with `LC_ALL=C`. (5) sort is in memory; huge inputs can exhaust it (exit 2),
+documented. (6) GNU quotes exotic operands and ours print them verbatim; exact
+stderr cases use quote-free names. (7) The `tools` Make target collides with the
+existing `obo/tools/` directory; `.PHONY` is mandatory and verified. (8) The
+defensive prefix normalizer is per line, so even a hypothetical bypass of the
+invocation rule would still normalize every diagnostic line. (9) GNU 9.4's
+`strnumcmp` treats a leading `0x80` inside the integer leading-zero run as a
+zero digit (`\x801` equals `1`); that is outside the documented ASCII numeric
+grammar, is deliberately not reproduced, and high-byte numeric inputs are kept
+out of the differential matrix. The first green run missed GNU's `-E` CR rule;
+the implementation review found it, and the matrix, model, goldens and docs now
+pin it (CRLF, cross-file, chunk-boundary, double-CR and final-CR cases).
+
+**Later tools.** `head` (streaming, reuses cat's machinery) is the natural phase
+3b; `tail` waits for `seek`/`readAt` or a documented bounded version; `eza`
+needs `readDir`/`stat`/`isatty`, `fd` needs directory walking, and `jq` needs
+parsing and associative containers. All use `obo/programs/` and the `tests/tools.py`
+spec table as the extension point.
+
+**Decisions.** A separate gate, not part of `make promote`; the release
+checklist runs `tests/tools.py --require-reference` then `tests/tools.py
+--memory`. The reference always has a bare `argv[0]` (a normalizer is a safety
+net, not the mechanism). Usage and write-error text is ours, pinned by own
+goldens; GNU is never asked for it. The empty-input `/dev/full` case is modeled
+so it gets model-vs-GNU coverage; the write-error shape rule stays strict for
+cases that write. The `portable` marker is orthogonal to the oracle tag. The
+tools keep their own semantics (cat's state machine, wc's width, sort's numeric
+parser) and share only generic byte/formatting helpers. `LANGUAGE.md` gains no
+tool/library examples: `doc_check.py` compiles every `// example:` block
+standalone, so a block using `Reader` would fail without a prelude extension.
+`writePadded` is self-contained rather than depending on `str.obo`, so every
+phase-2 harness that compiles `lib/io.obo` alone keeps working.
+
+**Measurements** (this host; GNU coreutils 9.4, Python 3.12.3). Build: three
+tools including the probe in 0.03 s. Gate: 191 matrix cases + 8 serial checks
+(199 checks), 0 failed (`--require-reference` and `--reference=none`), 0 failed
+with `--fast` (10 skipped), 2 of 2 memory cases. Live heap peaks (`OBO_STATS=1`): plain `cat` on the 16 MiB
+newline-free sparse input 230,352 bytes; `wc -lwc` on the same 66,384 bytes;
+flag-heavy `cat -nET` on a 1 MiB all-newline file 295,936 bytes (the bounded
+64 KiB scratch; the design's whole-chunk-batch shape measured 1,638,592, so the
+bounded form is kept); `sort` on the 50,000-line/888,890-byte fixture 4,111,488
+bytes in 0.06 s; `sort` on the 20,000-line/1,080,000-byte fixture 2,449,104
+bytes in 0.05 s; `sort -n` on the 50,000-line fixture 8,634,208 bytes in 0.08 s
+(numeric keys cost one record per line). Sort is O(input). Byte-copying `cat`
+streams a pipe before EOF (the serial liveness check), so `fill` plus a flush
+per chunk is in use, not `readN`.

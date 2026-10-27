@@ -1,10 +1,16 @@
 // obo/lib/io.obo: buffered incremental I/O on the int-fd model.
 //
 // There are no modules yet, so a tool is built by concatenating this file before
-// its own source:
+// its own source (with str.obo first when the tool uses it; this file itself does
+// not depend on str.obo, so a phase-2 test or doc that compiles io.obo alone
+// still works):
 //
-//     cat obo/lib/io.obo obo/programs/wc.obx > build/wc.obo
+//     cat obo/lib/str.obo obo/lib/io.obo obo/programs/wc.obx > build/wc.obo
 //     obo/obo build/wc.obo -o build/wc --rt obo
+//
+// Names are file-global and a declaration may use only earlier declarations:
+// this file's functions are ordered callees first. No prelude defines main.
+// writePadded (at the end) is the phase-3 additive function.
 //
 // A Reader or Writer owns only its byte buffer; the fd is borrowed (an int has
 // no owner), so the caller closes what it opened and the library never closes
@@ -206,4 +212,34 @@ fn count(mut r: &Reader): Result[int] {
         let chunk = takeChunk(r)
         n += len(chunk)
     }
+}
+
+// Write the non-negative int n right-aligned in width (width 0: no padding)
+// through a Writer, flushing at the Writer's threshold. Self-contained: it has
+// its own digit-width loop rather than str.obo's digits, so io.obo compiles
+// alone for the phase-2 tests and docs. Used by wc's counts.
+fn writePadded(mut w: &Writer, n: int, width: int): Result[bool] {
+    var d = 1
+    var v = n
+    while v >= 10 {
+        v = v / 10
+        d += 1
+    }
+    if d < width {
+        for i in 0..(width - d) {
+            append(w.buf, ' ')
+            if len(w.buf) >= w.size { try flush(w) }
+        }
+    }
+    var p = 1
+    for i in 1..d { p *= 10 }
+    var r = n
+    for i in 0..d {
+        let digit = r / p
+        append(w.buf, byte('0' + digit))
+        if len(w.buf) >= w.size { try flush(w) }
+        r = r - digit * p
+        if p > 1 { p = p / 10 }
+    }
+    return ok(true)
 }

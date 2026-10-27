@@ -1,0 +1,101 @@
+// obo/lib/str.obo: small byte and string helpers shared by the command-line
+// tools. There are no modules yet, so this file is concatenated before a tool's
+// source (and before io.obo, which may use it):
+//
+//     cat obo/lib/str.obo obo/lib/io.obo obo/programs/wc.obx > build/wc.obo
+//     obo/obo build/wc.obo -o build/wc --rt obo
+//
+// The rule is that a prelude may use only earlier preludes, and within a file a
+// declaration may use only earlier declarations: names are file-global. This
+// file is dependency-free. No prelude defines main.
+//
+// The tool rules do not live here: cat's numbering and squeeze state, wc's width
+// rule and sort's numeric parser stay in those tools. These functions are only
+// byte classification, byte ordering, decimal formatting and the fixed errno
+// text the tools print.
+//
+// cmpBytes indexes the strings (a byte comes back) because obo strings support
+// only == and !=, and byte comparisons are unsigned. errText is the C-locale
+// strerror text for the errnos these tools can see; it is English regardless of
+// the user's locale (the differential harness pins LC_ALL=C for the reference).
+
+// C-locale whitespace: space, tab, LF, VT, FF, CR
+fn isSpace(b: byte): bool {
+    return b == ' ' || (b >= '\t' && b <= '\r')
+}
+
+// the blanks sort -n skips: space and tab only
+fn isBlank(b: byte): bool {
+    return b == ' ' || b == '\t'
+}
+
+// C-locale isprint: 0x20..0x7E
+fn isPrint(b: byte): bool {
+    return b >= ' ' && b <= '~'
+}
+
+// GNU wc's C-locale word byte: printable and not space (0x21..0x7E)
+fn isWordByte(b: byte): bool {
+    return isPrint(b) && b != ' '
+}
+
+// unsigned byte-wise lexicographic order; -1, 0 or 1
+fn cmpBytes(a: string, b: string): int {
+    var n = len(a)
+    if len(b) < n { n = len(b) }
+    for i in 0..n {
+        if a[i] < b[i] { return -1 }
+        if a[i] > b[i] { return 1 }
+    }
+    if len(a) < len(b) { return -1 }
+    if len(a) > len(b) { return 1 }
+    return 0
+}
+
+// the fixed C-locale text for the errnos the tools can encounter
+fn errText(code: int): string {
+    if code == 2 { return "No such file or directory" }
+    if code == 5 { return "Input/output error" }
+    if code == 9 { return "Bad file descriptor" }
+    if code == 11 { return "Resource temporarily unavailable" }
+    if code == 13 { return "Permission denied" }
+    if code == 20 { return "Not a directory" }
+    if code == 21 { return "Is a directory" }
+    if code == 22 { return "Invalid argument" }
+    if code == 24 { return "Too many open files" }
+    if code == 28 { return "No space left on device" }
+    if code == 32 { return "Broken pipe" }
+    if code == 36 { return "File name too long" }
+    if code == 40 { return "Too many levels of symbolic links" }
+    return "error " + string(code)
+}
+
+// decimal digit count of a non-negative int; digits(0) is 1
+fn digits(n: int): int {
+    var d = 1
+    var v = n
+    while v >= 10 {
+        v = v / 10
+        d += 1
+    }
+    return d
+}
+
+// Append n right-aligned in width (width 0 means no padding) to a byte buffer.
+// The digits are produced by an inline power-of-ten loop, so no per-line string
+// is allocated. Used by cat's batched number prefixes.
+fn appendPadded(mut buf: &[]byte, n: int, width: int) {
+    var d = digits(n)
+    if d < width {
+        for i in 0..(width - d) { append(buf, ' ') }
+    }
+    var p = 1
+    for i in 1..d { p *= 10 }
+    var v = n
+    for i in 0..d {
+        let digit = v / p
+        append(buf, byte('0' + digit))
+        v = v - digit * p
+        if p > 1 { p = p / 10 }
+    }
+}
