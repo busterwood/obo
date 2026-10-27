@@ -23,7 +23,13 @@ There are two dialects of one language.
 - **obo** (in `obo/`) replaces the collector with single ownership, borrowed
   references and run-time-checked handles. On the benchmarks it uses 2 to 6 times
   less memory than even an aggressively tuned collector, at similar speed, with
-  small changes to source code.
+  small changes to source code. It now also has its first command-line tools,
+  `cat`, `wc` and `sort`, written in obo in `obo/programs/` and built by
+  `make tools`; a separate differential gate (`obo/tests/tools.py`) compares them
+  with GNU coreutils, with Python models and recorded goldens as the fallback.
+  There are no modules yet, so `obo/tools/build_tools.py` concatenates the two
+  library preludes and the tool before compiling it; the exact subset, message
+  forms and caveats are in `obo/programs/README.md`.
 
 The decisive test was the compiler itself. obo's compiler has been rewritten in
 the obo dialect (`obo/src/obo.obo`), and it compiled every test program
@@ -180,11 +186,14 @@ through a handle) and over the globals `code` and `ownedLocals`; this change did
 ```
 cd obx && make && ./run_tests.sh         # obx: build and test (about 8 s)
 cd obo && make                           # obo: build (needs obx built first)
+cd obo && make tools                     # obo's first tools: build/tools/{cat,wc,sort}
 cd obo && python3 tests/run_fork.py      # obo's tests, leak check always on
 cd obo && python3 tests/mutate_fork.py   # obo's mutants
 cd obo && python3 tests/port_test.py     # the port: tokens and encoder, against obo
 cd obo && python3 tests/port_compare.py  # the port, stage B (everything), with the memory budget
 cd obo && python3 tests/mutate_port.py   # the port's mutants
+cd obo && python3 tests/tools.py --require-reference   # tools vs GNU coreutils (release checklist)
+cd obo && python3 tests/tools.py --memory              # the two pinned tool memory cases
 cd obo && python3 bench/bench.py         # memory and time against the collector
 ```
 
