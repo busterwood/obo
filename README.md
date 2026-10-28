@@ -55,8 +55,8 @@ and error case byte-for-byte as the first obo compiler did, and compiles itself 
 fixed point. Its stage test now compares behaviour (same errors, same output when run),
 so code generation can improve. Compiling
 its own source it peaked at 1.5 MB resident at the earlier stage (live peak now
-1,634,720 bytes on a 381,767-byte source; the 493,280-byte compiler takes
-0.10 s; see Current status), against 2.5 MB for the same logic on a tuned
+1,636,336 bytes on a 382,329-byte source; the compiler takes
+0.11 s; see Current status), against 2.5 MB for the same logic on a tuned
 collector and 1.9 MB on an
 aggressive one. The larger source and its extra checks account for the wall time.
 
@@ -65,30 +65,44 @@ Python compiler before it did.
 
 ## Current status (28 October 2026)
 
-The ownership compiler is merged and self-hosting. The Stage 2 compiler is a
-493,280-byte binary and is the promoted seed (`obo/seed/obo`); it is an exact
-fixed point (`obo` == stage 2 == stage 3), and the old Stage 1 seed built it. `Result[T]`/`try` and incremental I/O are done (merged and seeded);
-modules are done in both stages (source imports and `.sym`/`--check`); the first
-command-line tools (`cat`, `wc`, `sort`) and their GNU differential gate are done
-and merged, with no compiler, runtime or seed change.
+The ownership compiler is merged and self-hosting. The compiler in this tree
+trims the runtime data segment and uses `leave; ret` epilogues. The last
+promoted compiler (`obo/seed/obo`) is still the pre-size-fix binary, so `make`
+builds a 493,280-byte compiler with the seed's old image wrapper, and the next
+stage is 421,889 bytes. The two-generation check is exact: the seed builds A
+(493,280), A builds B (421,889), B builds C (421,889), and B == C byte for
+byte; no promotion has been done, so the seed becomes the smaller binary only
+on the next `make promote`. `Result[T]`/`try` and incremental I/O are done
+(merged and seeded); modules are done in both stages (source imports and
+`.sym`/`--check`); the first command-line tools (`cat`, `wc`, `sort`) and their
+GNU differential gate are done and merged, with no compiler, runtime or seed
+change from that work.
 
 | Metric | Value |
 |---|---:|
-| Compiler source | 10,440 lines, 381,767 bytes |
-| Compiler / seed binary | 493,280 bytes (stage 2 compiler and promoted seed) |
-| Self-compile wall time | 0.10 s (5 runs; median 0.10 s) |
-| Self-compile live peak | 1,634,720 bytes |
-| Total allocated | 35,121,184 bytes |
-| Maximum resident set | 2,988 KB |
-| Live-memory budget | 2,000,000 bytes (365,280 spare) |
-| obo suite | 1,129 tests; 523/544 mutants caught + 21 equivalent; 27 runtime/library; 491 port; 27 symbol-file tests; 200 fuzz mutations |
+| Compiler source | 10,448 lines, 382,329 bytes |
+| Compiler built by the seed (`obo`) | 493,280 bytes (old image wrapper; sha256 `804ec94d…`) |
+| Next-stage compiler (stage 2 == stage 3) | 421,889 bytes (sha256 `55dab101…`) |
+| Promoted seed | 493,280 bytes (pre-size-fix; unchanged until promotion) |
+| Self-compile wall time | 0.11 s (5 runs; median 0.11 s) |
+| Self-compile live peak | 1,636,336 bytes |
+| Total allocated | 35,078,528 bytes |
+| Maximum resident set | 2,860 KB (A and B; 5 runs each) |
+| Live-memory budget | 2,000,000 bytes (363,664 spare) |
+| obo suite | 1,130 tests; 527/549 mutants caught + 22 equivalent; 27 runtime/library; 495 port; 27 symbol-file tests; 200 fuzz mutations |
 | Tools differential gate | 199 checks (191 matrix + 8 serial) vs GNU coreutils 9.4; 2 memory cases (module roots) |
-| Tool binaries | cat 108,256; wc 108,256; sort 112,352 bytes (static, runtime included) |
-| Minimal static executable | 90,848 bytes (runtime included) |
+| Tool binaries | cat 36,865; wc 40,961; sort 45,057 bytes (static, runtime included) |
+| Minimal static executable | 28,673 bytes (runtime included) |
 
 Memory figures vary by a few hundred bytes with the source path; these are the
-merged-tree gate values. The tools do not change the compiler or seed; their
-runtime is included in the tool binary sizes above.
+merged-tree gate values. The tools do not change the compiler, runtime or seed;
+their runtime is included in the tool binary sizes above. The pre-size-fix
+figures (the 493,280-byte compiler and seed, tool binaries 108,256/108,256/
+112,352, and the earlier 90,848-byte minimal figure) are historical. The
+minimal executable measured in this tree before the fix was 95,968 bytes (the
+difference is the minimal source and runtime revision, not the compiler); the
+fix removes the 67,295-byte zero run from every produced executable (the tool
+`cat` loses 4,096 more because its code crossed a page boundary).
 
 For historical comparison, obx's collector-based compiler is 3,222 lines and
 172,768 bytes; it compiles its own 88,731-byte source in about 0.01 s and peaks at
@@ -98,10 +112,11 @@ is not like for like; the memory result is the point: about 1.24 MB live against
 
 The earlier 12.1 MB allocation and 30 ms figures in "Direction" describe the smaller
 pre-Result, pre-I/O compiler. The source has grown from 4,552 lines at that stage to
-10,440; total allocation has grown with it, while the live peak stays within the 2 MB
+10,448; total allocation has grown with it, while the live peak stays within the 2 MB
 budget (the Stage 1 module context raised it from 1,244,480 bytes at the Phase 3
 merge to 1,364,240; Stage 2's symbol-file writer and reader raised it to 1,634,720,
-an increase of 270,480 bytes, still 365,280 bytes under the budget).
+an increase of 270,480 bytes; the size fixes measure 1,636,336, still 363,664 bytes
+under the budget).
 
 ### Toward command-line tools
 
@@ -264,6 +279,7 @@ through a handle) and over the globals `code` and `ownedLocals`; this change did
 | `obo/programs/` | the first tools: `cat`, `wc`, `sort`, with `README.md` |
 | `obo/tests/` | obo's suite, mutants, the I/O gates and the tools differential gate |
 | `obo/tests/io_test.py` | the runtime and streaming-I/O gates |
+| `obo/tests/elf_test.py` | the emitted image's runtime-data segment |
 | `obo/tests/tools.py` | the tools against GNU coreutils, with models and goldens |
 | `obo/tests/tools/` | recorded GNU/own goldens for the tools gate |
 | `obo/runtime/` | obo's runtime: no collector, leak and double-free counting |
@@ -276,6 +292,7 @@ through a handle) and over the globals `code` and `ownedLocals`; this change did
 cd obo && make                           # obo: build from the committed seed
 cd obo && make tools                     # obo's first tools: build/tools/{cat,wc,sort}
 cd obo && python3 tests/run_fork.py      # obo's tests, leak check always on
+cd obo && python3 tests/elf_test.py      # the image: trimmed runtime-data segment
 cd obo && python3 tests/io_test.py --rt --programs --tools  # I/O runtime and programs
 cd obo && python3 tests/mutate_fork.py   # obo's mutants
 cd obo && python3 tests/mutate_io.py     # runtime/library mutants

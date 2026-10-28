@@ -2053,11 +2053,8 @@ fn popR(r: int) {
 }
 
 fn epilogue() {
-    emit(0x48)
-    emit(0x89)
-    emit(0xEC)
-    emit(0x5D)
-    emit(0xC3)
+    emit(0xC9)                   // leave: mov rsp,rbp; pop rbp
+    emit(0xC3)                   // ret
 }
 
 // ===================================================== registers and items
@@ -8568,6 +8565,16 @@ fn copyAt(mut out: &[]byte, at: int, data: &[]byte) {
     for i in 0..len(data) { out[at + i] = data[i] }
 }
 
+// The runtime's data image ends in zero-filled .bss (obuf, the heap state, the
+// free lists): only the nonzero prefix must be in the file. The memory size
+// keeps the full length and the loader zero-fills the rest, which it already
+// does for the compiler's own globals segment (filesz 0).
+fn dataFileLen(b: &[]byte): int {
+    var n = len(b)
+    while n > 0 && b[n - 1] == 0 { n = n - 1 }
+    return n
+}
+
 // Same layout as obx.py: headers and code, then rodata, the globals
 // (memory only), and the runtime's code and data at fixed addresses. Each part
 // starts on a page, and the image is allocated once, at its final size.
@@ -8578,12 +8585,13 @@ fn elfImage(rtText: []byte, rtData: []byte): []byte {
     if roLen == 0 { roLen = 1 }                      // an empty segment still gets one byte
     let rtTextAt = pageUp(roAt + roLen)
     let rtDataAt = pageUp(rtTextAt + len(rtText))
-    let out = new []byte(rtDataAt + len(rtData))
+    let rtDataFile = dataFileLen(rtData)             // the trailing .bss need not be in the file
+    let out = new []byte(rtDataAt + rtDataFile)
     for k in 0..len(code) { copyAt(out, codeAt + (k << CHUNK_BITS), code[k].b) }
     for i in 0..curLen { out[codeAt + codeBase + i] = cur[i] }
     copyAt(out, roAt, rodata)
     copyAt(out, rtTextAt, rtText)
-    copyAt(out, rtDataAt, rtData)
+    for i in 0..rtDataFile { out[rtDataAt + i] = rtData[i] }
     let ph = new []byte(0)
     phdr(ph, 5, 0, IMAGE_BASE, codeAt + pc(), codeAt + pc())
     phdr(ph, 4, roAt, RODATA_BASE, roLen, roLen)
@@ -8591,7 +8599,7 @@ fn elfImage(rtText: []byte, rtData: []byte): []byte {
     if gmem < 8 { gmem = 8 }
     phdr(ph, 6, 0, GLOBAL_BASE, 0, gmem)
     phdr(ph, 5, rtTextAt, RT_TEXT, len(rtText), len(rtText))
-    phdr(ph, 6, rtDataAt, RT_DATA, len(rtData), len(rtData))
+    phdr(ph, 6, rtDataAt, RT_DATA, rtDataFile, len(rtData))
     put32(ph, 0x6474E551)
     put32(ph, 6)
     for i in 0..5 { put64(ph, 0) }

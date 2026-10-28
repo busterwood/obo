@@ -3777,6 +3777,9 @@ and `-o` documentation, and scoping the Stage 1 text below.
   sha256 `b54d5da7b6ee6ab6685b3fe70d7824c18201689aa650cb9dff6f81d9ccf35e0a`;
   the compiler source is 10,440 lines / 381,767 bytes, sha256
   `597b807864dcad48a56a861e2ce7cd166f005f55278fb81dc1b530e37086cb9a`.
+  **These are the pre-size-fix figures.** The "Compiler size fixes" record at the
+  end of this file supersedes them: the next-stage compiler is 421,889 bytes
+  (B == C), and the committed seed stays 493,280 until a promotion.
 - Measured port memory compiling itself on the merged tree: **1,634,720 bytes
   live**, 35,121,184 allocated (budget 2,000,000; 365,280 spare). Stage 1 was
   1,364,240 / 28,136,432, so Stage 2 costs +270,480 live / +6,984,752 allocated.
@@ -3850,6 +3853,10 @@ Stage 2 language as merged.
 
 ## Gates (merged tree)
 
+**These are pre-size-fix figures.** The "Compiler size fixes" record at the end
+of this file supersedes the compiler and seed sizes, the peak and the mutant
+counts; the seed remains 493,280 until a promotion.
+
 `make`; `make tools`; `tests/tools.py --require-reference` 199/199; `--memory`
 2/2; `io_test.py --rt --programs --tools` 0 failures; `run_fork.py` 1129
 passed; `port_test.py` 486/486; `port_compare.py` 1147/1147 with a
@@ -3884,3 +3891,160 @@ calls, globals, strings and descriptors), a link pass and a build cache keyed by
 the interface hash. Stage 2 deliberately keeps one image and one descriptor per
 type, so Stage 3 can add objects without changing the interface format or the
 type-identity rules.
+
+# Compiler size fixes (done)
+
+Implemented on branch `size-fixes` on top of `4e733a6` (the merged
+tools-modules tree); main (`7fa68db`) has since been merged into the branch at
+`dd28c28`. No seed promotion and no push; the branch is not merged into main.
+
+## What changed
+
+- **Epilogue.** `epilogue()` emits `leave; ret` (`0xC9 0xC3`, two bytes)
+  instead of `mov rsp,rbp; pop rbp; ret` (`0x48 0x89 0xEC 0x5D 0xC3`, five).
+  Its three call sites are the early return in `tryExpr`, `returnStat` and
+  `fnBody`; every compiled function has the `push rbp; mov rsp,rbp` prologue
+  (or `dropFrame`'s copy of it), so `leave` is exactly the sequence it
+  replaces. Prologues, frames, register allocation and loop alignment are
+  unchanged. In the new compiler 931 of 931 returns are `leave; ret`; the
+  pre-fix compiler had 930 old epilogues and no others.
+- **Runtime data segment.** `dataFileLen(&[]byte)` returns one past the last
+  nonzero byte (only the trailing zero run is trimmed). `elfImage` allocates
+  and copies that prefix and emits it as the segment's `p_filesz`, while
+  `p_memsz` stays the full `runtime_data.bin` length. The loader zero-fills
+  the rest, the mechanism the compiler already relies on for its own globals
+  segment (`filesz 0`, `memsz 0x5f8`). The vaddr and page alignment are
+  unchanged. The offset is still `pageUp` of the preceding parts, so it moves
+  by whole pages when the code shrinks (A's runtime data at 0x68000 becomes
+  0x67000 in B; the tool `cat`'s 0xa000 becomes 0x9000). The globals, runtime
+  text and rodata segment shapes are unchanged.
+
+## Measurements
+
+The source grew from 10,440 lines / 381,767 bytes to 10,448 lines / 382,329
+bytes, sha256 `44770afa7da4e8090aefc1f8a4e644379e16e19d177d4a5939bc1bca4c0854e3`.
+The seed is unchanged: 493,280 bytes, sha256
+`b54d5da7b6ee6ab6685b3fe70d7824c18201689aa650cb9dff6f81d9ccf35e0a`.
+
+Fixed point, built on the merged-tree path (`make` uses the committed seed):
+
+| build | built by | file bytes | code bytes | runtime data filesz/memsz | sha256 |
+|---|---:|---:|---:|---|---|
+| A | seed (pre-fix) | 493,280 | 373,429 | 0x106e0 / 0x106e0 | `804ec94d…` |
+| B | A | **421,889** | **370,476** | **1 / 0x106e0** | `55dab101…` |
+| C | B | 421,889 | 370,476 | 1 / 0x106e0 | `55dab101…` |
+
+`cmp B C` passes: B == C byte for byte. A is still wrapped by the seed's old
+emitter (full data segment, old epilogue encoding in A's own code), but A's
+own emitter is the new one, so every program A builds is trimmed. No promotion
+was done, so the committed seed stays 493,280 and the smaller compiler appears
+only in the next stage.
+
+Epilogue saving alone: a source with only the epilogue change, compiled by the
+seed and then by itself, has code 370,380 bytes (from 373,365) and file 489,184
+(from 493,280): **-2,985 code bytes**. The decomposition is 930 epilogues x 3
+nominal bytes (`leave; ret` is two bytes, the old sequence five) = 2,790, plus
+32 bytes from the shorter compiled `epilogue()` body and 163 bytes of
+layout/alignment effects = 2,985. The combined compiler has 931 epilogues
+because the runtime-data change adds a function: 931 x 3 + 32 + 160 = 2,985 for
+the epilogue component. Its net code is 370,476, i.e. 2,889 below the pre-fix
+373,365, because the runtime-data emission change as a whole (the `dataFileLen`
+helper plus the changed copy and header code) adds 96 bytes.
+
+Every produced executable loses the 67,295-byte zero run (the runtime data
+image has exactly one nonzero byte, `out_fd = 1`, at offset 0; last nonzero + 1
+= 1); a produced file shrinks by 4,096 more when its code crosses a page
+boundary (`cat`):
+
+| binary | before | after | delta |
+|---|---:|---:|---:|
+| minimal (`module mini; fn main() {}`) | 95,968 | 28,673 | -67,295 |
+| tool `cat` | 108,256 | 36,865 | -71,391 |
+| tool `wc` | 108,256 | 40,961 | -67,295 |
+| tool `sort` | 112,352 | 45,057 | -67,295 |
+
+The extra 4,096 bytes for `cat` are a code page boundary: its code crossed one
+while the runtime data shrank. The examples compile to 28,673 bytes and produce
+output identical to the pre-fix compiler's.
+
+Segment table for B (`readelf -lW`):
+
+```
+Program Headers:
+  Type           Offset   VirtAddr           PhysAddr           FileSiz  MemSiz   Flg Align
+  LOAD           0x000000 0x0000000000400000 0x0000000000400000 0x05b72c 0x05b72c R E 0x1000
+  LOAD           0x05c000 0x0000000008000000 0x0000000008000000 0x0068e0 0x0068e0 R   0x1000
+  LOAD           0x000000 0x000000000c000000 0x000000000c000000 0x000000 0x0005f8 RW  0x1000
+  LOAD           0x063000 0x0000000010000000 0x0000000010000000 0x003360 0x003360 R E 0x1000
+  LOAD           0x067000 0x0000000020000000 0x0000000020000000 0x000001 0x0106e0 RW  0x1000
+  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RW  0x10
+```
+
+The runtime data segment is the last part of the image: `0x67000 + 1` is the
+file size, so the 67,295-byte zero run is gone. gdb at `starti` shows
+`0x20000000 = 1` and zeros at `0x20000ff0` and `0x200106d0`; the Linux loader
+zero-fills the tail, exactly as it does the compiler's globals.
+`dataFileLen` trims only the trailing run: `tests/elf_test.py` checks a
+synthetic image with a zero gap before a later nonzero byte (filesz = last
+nonzero + 1) and an all-zero image (filesz 0, offset at the end of the file).
+
+Memory compiling itself with the new compiler (`port_compare.py`): **1,636,336
+bytes live**, 35,078,528 allocated (budget 2,000,000; 363,664 spare). The
+pre-fix Stage 2 figures were 1,634,720 / 35,121,184; the peak stays well inside
+the budget. A direct `OBO_STATS=1` self-compile, with a different source path,
+reports 1,636,064 / 35,075,296. Self-compile wall time is 0.11 s (median of 5;
+A and B). Maximum resident set is 2,860 KB for both A and B in 5 runs each on
+this host (the pre-fix Stage 2 figure was 2,988 KB; RSS varies by tens of KB
+with load and page residency).
+
+## Tests
+
+- `tests/elf_test.py` parses a produced executable's program headers and
+  asserts: one `PT_LOAD` at `RT_DATA`, `memsz` = the `runtime_data.bin` length,
+  `filesz` = last nonzero + 1 (strictly below `memsz` when the image ends in
+  zeros), the segment's file bytes are the runtime data prefix `rt[:filesz]`,
+  the segment is page aligned with the same vaddr, the file ends at
+  `p_offset + p_filesz`, and the compiler's globals segment still has filesz 0.
+  It then runs a program compiled by the same compiler. Synthetic data images
+  cover the trailing-run rule and the prefix bytes (a zero gap before a later
+  nonzero byte, and an all-zero image). It is run by `run_fork.py` as
+  `image/runtime_data_segment` (1,130 tests) and standalone in the documented
+  gate list.
+- `SIZE_MUTANTS` in `tests/mutate_fork.py`, five entries, each pattern unique:
+  the old full-length segment, `p_memsz` shrunk to `p_filesz`, and a copy of
+  only the first prefix byte (all caught by the image test; the last only by
+  the synthetic zero-gap image, since the real prefix is one byte), the old
+  two-instruction epilogue (equivalent: `leave` is defined as exactly those two
+  instructions), and an `int3` return (caught by the executable tests).
+  `mutate_port.py` imports the group; the three segment mutants are judged by
+  `elf_test.py --source` (the comparison sees the same outcomes and peak), the
+  others by the ordinary comparison.
+
+## Gates (cold, in the worktree)
+
+`make`; `run_fork.py` 1,130 passed; `port_compare.py` 1,147/1,147 with a
+1,636,336-byte peak, and `OBO_REF=seed/obo port_compare.py` 1,025/1,025;
+`port_test.py` 486/486 identical, no leaks, 9 encoder groups against objdump;
+`doc_check.py` 45 examples; `homes_check.py`; `homes_edge.py` 1,028 statements
+0 differ; `io_test.py --rt --programs --tools` 0 failures; `tools.py
+--require-reference` 199/199; `tools.py --memory` 2/2; `sym_test.py` 27
+passed; `sym_fuzz.py` 200/200; `bench/micro.py` all four workloads; the new
+`elf_test.py`. `mutate_fork.py`: 527/549 caught, 22 equivalent (the new group:
+four caught, one equivalent); `mutate_port.py` 495/495; `mutate_io.py` 27/27.
+The fixed point B == C above; no promotion.
+
+## Limitations and residual risks
+
+- The zero-fill relies on Linux's ELF loader for `p_filesz < p_memsz`; the
+  runtime is Linux x86-64 only (direct syscalls), and the compiler already
+  relied on this for its globals segment.
+- Produced executables are not byte-identical to the pre-fix compiler's: the
+  runtime data tail is gone and the epilogue encoding changed. No test compares
+  produced bytes; the fixed point is B == C, and every behavioural comparison
+  passes.
+- The segment check requires `filesz == last nonzero + 1`; it requires that to
+  be strictly below `memsz` only when the image does end in zeros (the current
+  zero-filled .bss tail). An image whose last byte is nonzero correctly gets
+  `filesz == memsz` and is accepted.
+- The seed is not promoted; until `make promote` is run, `make` builds a
+  493,280-byte compiler and the 421,889-byte stage exists only as B/C.
