@@ -3828,8 +3828,9 @@ library migration to source modules, done with the Stage 2 language as merged.
   messages, output bytes and exit codes are unchanged.
 - `obo/tools/build_tools.py` compiles each root directly; the generated header
   and all concatenation are gone. Every build gets its own `<out>/sym`, created
-  by the builder (`build/tools/sym` for `make tools`), so concurrent builds never
-  share one writable sym dir. Compile diagnostics name the real source files;
+  by the builder (`build/tools/sym` for `make tools`). Concurrent builds must
+  use distinct outputs: one output has one sym dir and one probe name. Compile
+  diagnostics name the real source files;
   `build()` keeps its signature for `tests/tools.py` and the builtin probe.
 - `tests/run/io_reader.obx` and `tests/run/io_writer.obx` and
   `tests/lib/{boundaries,stream,short_write,write_padded}.obx` are module roots
@@ -3849,8 +3850,9 @@ library migration to source modules, done with the Stage 2 language as merged.
 
 `make tools`; `tests/tools.py --require-reference` 199/199; `--memory` 2/2;
 `io_test.py --rt --programs --tools` 0 failures; `run_fork.py` 1129 passed;
-`port_compare.py` 1147/1147 with a 1,634,880-byte peak (budget 2,000,000);
-`mutate_io.py` 27/27 caught; `doc_check.py` 45 examples; `homes_check.py`;
+`port_compare.py` 1147/1147 with a 1,634,880-byte peak (budget 2,000,000), and
+`OBO_REF=seed/obo port_compare.py` 1025/1025; `mutate_io.py` 27/27 caught;
+`doc_check.py` 45 examples; `homes_check.py`;
 `homes_edge.py` 1028 statements, 0 differ; `bench/micro.py` runs. The compiler
 source, runtime and seed are byte-identical to `3e17141`.
 
@@ -3864,9 +3866,9 @@ the tools stay in `programs/` with their existing relative imports. The module
 build produces binaries of the same size as the old concatenated build but not
 the same bytes (module compile order and initialization change code layout); the
 differential gate compares behavior, and tool stdout, stderr and exit codes are
-byte-identical. The two `--memory` cases report 48 more live/allocated bytes
-than the concatenated build (still far under the 1,048,576-byte case limit);
-that is the only measured difference.
+byte-identical. The two `--memory` cases pass well under the 1,048,576-byte case
+limit; memory figures vary by build path, and no behaviour difference was
+measured.
 
 ## Stage 3 sketch
 

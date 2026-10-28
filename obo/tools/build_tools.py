@@ -169,6 +169,8 @@ def build(names, out, obo, rt):
             if not mapped.strip():
                 mapped = f"compiler exited {rc} with no message"
             raise BuildError(f"{name}: compile failed\n{mapped.rstrip()}")
+        if not os.path.isfile(exe):
+            raise BuildError(f"{name}: the compiler reported success but produced no {exe}")
         built.append(exe)
     return built
 

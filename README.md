@@ -37,8 +37,9 @@ without sources. The tools are now module roots: each source in
 `obo/programs/` imports `../lib/io.obx` as `io` and
 `../lib/strings.obx` as `strings`, and `obo/tools/build_tools.py` compiles it
 directly with the ordinary compiler; nothing is concatenated. Each build gets a
-private symbol directory under its output (`build/tools/sym` for `make tools`),
-created by the builder, so concurrent builds never share one writable directory.
+symbol directory under its output (`build/tools/sym` for `make tools`), created
+by the builder. Concurrent builds must use distinct output directories; a shared
+output has one symbol directory and one probe name.
 The tools still live in `programs/`, and `io::writePadded` stays in the I/O
 module for this migration; a wider stdlib split (a `fmt` module, `cmd/`) is
 later (recorded in `obo/FORK.md`). The exact subset, message forms and caveats

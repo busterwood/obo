@@ -1291,11 +1291,11 @@ fn main() {
 
 `obo/lib/io.obx` is a source module (`module io`) that builds buffered
 `Reader`/`Writer` types on these builtins (`fill`, `readLine`, `readN`,
-`readByte`, `takeChunk`, `flush`, `pump`, `count`, `writePadded`); importers
-write `import "../lib/io.obx" as io` (or `"io.obx"` with `-I obo/lib`) and
-qualify the names (`io::newReader`, `io::flush`). Its own header documents the
-API and the fd-is-borrowed rule. `obo/lib/strings.obx` (`module strings`) holds
-the byte helpers the tools share.
+`readByte`, `takeChunk`, `flush`, `pump`, `count`) and adds `writePadded`;
+importers write `import "../lib/io.obx" as io` (or `"io.obx"` with `-I obo/lib`)
+and qualify the names (`io::newReader`, `io::flush`). Its own header documents
+the API and the fd-is-borrowed rule. `obo/lib/strings.obx` (`module strings`)
+holds the byte helpers the tools share.
 
 ## 9. Runtime checks and exit codes
 

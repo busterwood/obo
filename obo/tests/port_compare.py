@@ -8,9 +8,9 @@ can change; the fixed point (make promote) still compares the compiler's own byt
 The compiler itself must have no leaks and stay within its memory budget.
 
 A program that imports library modules is compiled as a module root with
--I obo/lib and a private --sym-dir per compiler. When REF is seed/obo, those
-cases are skipped along with the module trees (the seed comparison already
-leaves the tree cases out).
+-I obo/lib and a private --sym-dir per compiler. The seed comparison compiles
+those roots too; only the separate module-tree cases stay out of its flat
+Stage B count.
 
     python3 obo/tests/port_compare.py
     OBO_REF=obo/seed/obo python3 obo/tests/port_compare.py   # against the seed instead"""
@@ -137,8 +137,8 @@ def cases_of(src):
 # every emitted .sym byte-for-byte, and --check of every module source that has a
 # header. `symcheck` cases are check-only: a root source plus committed symdir
 # fixtures, which exercise the reader's structural and staleness validation and
-# the check-mode writer. The seed compiler predates modules, so all of these are
-# skipped when REF is seed/obo.
+# the check-mode writer. These tree cases are compared in the default run; the
+# seed comparison's Stage B count has always excluded them.
 
 MODDIR = os.path.join(FORK, 'tests', 'modules')
 SEED_REF = os.path.realpath(os.path.join(FORK, 'seed', 'obo'))
@@ -568,13 +568,14 @@ def compare(tmp, src=SRC, quick=False, workers=None):
         return lines, failures, peak
     modules = os.path.realpath(REF) != SEED_REF
     cases = cases_of(src)
-    if not modules:
-        # the seed comparison already skips the module trees; leave the module-root
-        # programs out of it too
-        cases = [(n, t) for n, t in cases if b'import "' not in t]
 
-    def module_args(symdir):
-        if not modules:
+    def imports_module(text):
+        return any(line.startswith(b'import "') for line in text.splitlines())
+
+    def module_args(symdir, needs_modules):
+        # the default comparison passes the module flags to every case; the seed
+        # comparison needs them only for the module roots, and those roots stay in
+        if not modules and not needs_modules:
             return ()
         os.makedirs(symdir, exist_ok=True)
         return ['-I', LIBDIR, '--sym-dir', symdir]
@@ -584,14 +585,15 @@ def compare(tmp, src=SRC, quick=False, workers=None):
         case = os.path.join(tmp, f'case-{h}.obx')
         open(case, 'wb').write(text)
         scratch = os.path.join(tmp, f'scratch-{h}')
+        needs_modules = imports_module(text)
         ref = REF_OUTCOMES.get(text)
         if ref is None:
             ref = REF_OUTCOMES[text] = outcome(
                 REF, case, case + '.ref', scratch,
-                module_args=module_args(case + '.refsym'))
+                module_args=module_args(case + '.refsym', needs_modules))
         o, tc, tr = ref
         limits = (min(120, max(10, 20 * tc)), min(60, max(5, 20 * tr))) if quick else (120, 60)
-        args = module_args(case + '.portsym')
+        args = module_args(case + '.portsym', needs_modules)
         p = outcome(PORT, case, case + '.port', scratch, *limits, capped_run=quick,
                     module_args=args)[0]
         if quick and o != p and timed_out(p):

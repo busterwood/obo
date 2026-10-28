@@ -5,9 +5,9 @@ a module root that imports `../lib/io.obx` as `io` and
 `../lib/strings.obx` as `strings`; every library name is qualified
 (`io::Writer`, `io::newWriter`, `strings::errText`, ...). `tools/build_tools.py`
 compiles each root directly with the ordinary compiler, dependency-first, and
-nothing is concatenated. The builder creates a private symbol directory under
-its output (`build/tools/sym` for `make tools`): symbol writes truncate in place,
-so no writable sym dir is shared between concurrent builds.
+nothing is concatenated. The builder creates a symbol directory under its output
+(`build/tools/sym` for `make tools`): symbol writes truncate in place, so
+concurrent builds must use distinct output directories.
 
 ```
 cd obo
