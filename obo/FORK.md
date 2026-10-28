@@ -607,7 +607,7 @@ seed rejects a borrow through a handle.
 **Direction.** A change through a handle frees the old owned children of the handle's
 target (`h.items = ...` frees the items). A reference that points inside something, such
 as `&bag.items[0]` or `&h.items`, could then read freed memory, while the existing rule
-checked only references rooted at the handle. The decided rule (`LANGUAGE.md` section 10):
+checked only references rooted at the handle. The decided rule (`LANGUAGE.md` section 12):
 only owned changes count, a scalar written through a handle invalidates nothing, and a
 reference to a whole object stays valid.
 
@@ -695,7 +695,7 @@ compiler). The pre-fix compiler is the working-tree source built by HEAD's seed.
 
 **Known false positive.** A loop that re-points a reference at the top of each iteration, then makes
 the recursive call, is valid, but the loop check rejects it, since the check does not see the
-re-point on the next iteration. The program is in `LANGUAGE.md` section 10, where it is an error
+re-point on the next iteration. The program is in `LANGUAGE.md` section 12, where it is an error
 example.
 
 **Loops and defers (follow-up, done).** Review found two holes and two false positives in the
@@ -734,7 +734,7 @@ rules above. All four are fixed.
 
 Known false positive, still open: a loop that reads a reference after re-pointing it in the same
 iteration, when the reference is suspect where the next iteration starts (the example in
-`LANGUAGE.md` section 10). Every other loop-carried read of a suspect reference is a real error.
+`LANGUAGE.md` section 12). Every other loop-carried read of a suspect reference is a real error.
 
 **Tests.** `tests/errors/handle_deep.obx`: seven cases. A read at the top of a loop body after a
 call on one path, a read in the condition, a read in an inner loop's second iteration, a read by an
@@ -804,7 +804,7 @@ two indexes).
 **The rule, as implemented: track both roots.** A binding is per path, and where paths join it is the
 union, so a reference re-pointed on one branch may point into the places of both branches, and a change
 under either is seen. The rule is in `LANGUAGE.md` section 4, with the example, and the join is stated
-in section 10.
+in section 12.
 
 - `RefBind` (`src/obo.obo`, near line 881) is an immutable record: the roots, the deep flag and the
   place for each root, writable, and the parent reference. `arenaBind` makes them; `fnDecl` releases
@@ -905,7 +905,7 @@ with more than 32 bindings, and no state covered more than 9 owned locals.
 ## Loop marks, defer frees and the open holes (follow-up, done)
 
 A review of the loop check and of defer bodies, after the per-path bindings. Its items are numbered as
-the review gave them. The rules are in `LANGUAGE.md` sections 4 and 10.
+the review gave them. The rules are in `LANGUAGE.md` sections 4 and 12.
 
 - **FP-1, loop-entry scoping (done).** A free before a loop marked the references inside it (the marks
   were one flag block for the whole function). A loop now starts with the marks from before it kept
@@ -997,7 +997,7 @@ Measured after the merge: `run_fork` 325 of 325, `port_test` 415 of 415, `port_c
   points into). The argument is checked before a later argument's call runs. Closed since: see "Argument
   order (done)".
 - The precision limits in "Reference bindings per path": a change through a reference reaches its whole root,
-  and the known false positive in `LANGUAGE.md` section 10 (a re-point in the same iteration, with the reference
+  and the known false positive in `LANGUAGE.md` section 12 (a re-point in the same iteration, with the reference
   suspect at the top of the next pass).
 
 **Tests and checks.**
@@ -1305,7 +1305,7 @@ more than the 5,040 it cost on 03296b6. The cause was not separated out: the two
 up, as the image-buffer growth in "Reference bindings per path" did not.
 
 **Not covered.** No existing test expectation changed, and the port needed no rewrite. Methods do not
-exist yet (section 10 of `LANGUAGE.md`). The fuzzer has an argument-order kind (see "Handle-owner and reference false positives").
+exist yet (section 12 of `LANGUAGE.md`). The fuzzer has an argument-order kind (see "Handle-owner and reference false positives").
 
 ## Assignment over a handle's owner (done)
 
@@ -2211,7 +2211,7 @@ name is item 1.
    (`usedAt` of a ref local is set only for a read that is not fresh, the notion `loopBindCheck` already
    uses, and by a `for` walk of the reference). The condition of a `while` is compiled after `clearFresh`,
    so its reads count. Reads on one path only, in an inner loop, in the condition, passes to calls, walks
-   and `k = &k.kids[0]` stay errors. The `LANGUAGE.md` section 10 example is now an accepted example.
+   and `k = &k.kids[0]` stay errors. The `LANGUAGE.md` section 12 example is now an accepted example.
 3. **A field of a ref param taking the whole param's binding.** For a reference *parameter* the path of
    the designator is now kept (`designatorT` sets `x.path`, `itemBind` uses it), so `&p.ys` and `p.xs` are
    different places, in invalidation (`p.ys = ...` leaves `&p.xs` valid), in the argument check
@@ -2737,7 +2737,7 @@ truncate, assignment over, replace, take, an append holding the array across a r
 a global array, a reference held across a truncate or an element assignment, the Phase 2 retry callee, a handle
 writer, the 63rd parameter). Cases that depended on the old rule were changed: `errors/assignments.obx`,
 `errors/call_targets.obx` and `errors/pure_mut.obx` use a callee that really frees; `own_fuzz.py`'s
-`handle_index_call_stmt` (invalid) uses `rebox` and `move_bits_stmt` (valid, with a model) is new. LANGUAGE.md section 10 has the rule
+`handle_index_call_stmt` (invalid) uses `rebox` and `move_bits_stmt` (valid, with a model) is new. LANGUAGE.md section 12 has the rule
 and its example now assigns over the field.
 **Mutants:** `MOVE_MUTANTS` in `tests/mutate_fork.py` (also run by `mutate_port.py`), eleven keys. The last six are
 the `[]string` truncate through a handle and the five string-pin/look-ahead mutants (`tests/run/string_index_pin.obx`
@@ -3472,8 +3472,8 @@ whole gate's final counts are below).
 
 **Measurements** (this host). `src/obo.obo` grew from 8,018 to 8,756 lines.
 The port compiling itself peaks at **1,364,368 bytes live** and allocates
-28,137,488 in total (budget 2,000,000; the pre-module peak was 954,896, so the
-module context and qualified-name work costs about 410 KB). The fixed point is
+28,137,488 in total (budget 2,000,000; the Phase 3 pre-module peak was 1,244,480,
+so the module context and qualified-name work costs 119,888 bytes, 9.6%). The fixed point is
 exact: `./obo src/obo.obo` and the stage-2 compiler's output are byte-identical.
 `run_fork`: 1,102 passed, 0 failed. `port_compare`: 1,102 of 1,102 behave the
 same. Against the old seed (`OBO_REF=seed/obo`, which skips the new module
@@ -3493,10 +3493,12 @@ recompiles every module body (milliseconds at this scale), and `--check`'s
 "same verdict without code" claim waits for Stage 2. Symlink identity is
 lexical. `--deps` streams its post-order, so a duplicate-name error can follow
 the paths of the modules already completed (it writes no files). A module
-alias's diagnostics use the declared module name, not the alias. Two spellings
-that normalize to one path dedup; a file reached under a path that normalizes
-differently is a different module (and the duplicate-name check reports it when
-the headers agree). The compiler stays one
+alias's diagnostics use the declared module name, not the alias. Module names are
+not reserved: a module named `int` or `Result` is accepted only with an explicit
+alias, and Stage 2 must decide how such a name is spelled in `.sym` type keys.
+Two spellings that normalize to one path dedup; a file reached under a path that
+normalizes differently is a different module (and the duplicate-name check
+reports it when the headers agree). The compiler stays one
 file; splitting it (or the stdlib and tools) is the next stage, with a later
 `.sym` format and promotion after review.
 

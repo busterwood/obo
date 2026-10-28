@@ -42,18 +42,19 @@ the obo dialect (`obo/src/obo.obo`), and it compiled every test program
 and error case byte-for-byte as the first obo compiler did, and compiles itself to a
 fixed point. Its stage test now compares behaviour (same errors, same output when run),
 so code generation can improve. Compiling
-its own source it peaked at 1.5 MB resident (live peak now 1,244,480 bytes on a
-293,403-byte source; the 378,592-byte compiler takes 0.08–0.10 s; see Current
-status), against 2.5 MB for the same logic on a tuned collector and 1.9 MB on an
+its own source it peaked at 1.5 MB resident at the earlier stage (live peak now
+1,364,368 bytes on a 321,043-byte source; the 415,456-byte compiler takes
+0.07–0.08 s; see Current status), against 2.5 MB for the same logic on a tuned
+collector and 1.9 MB on an
 aggressive one. The larger source and its extra checks account for the wall time.
 
 **obo is the language.** obx remains the historical reference it grew from, as the
 Python compiler before it did.
 
-## Current status (27 October 2026)
+## Current status (28 October 2026)
 
 The ownership compiler is merged and self-hosting. The compiler and
-`obo/seed/obo` are the same 378,592-byte binary and reach a fixed point compiling
+`obo/seed/obo` are the same 415,456-byte binary and reach a fixed point compiling
 themselves. `Result[T]`/`try` and incremental I/O are done (merged and seeded); the
 first command-line tools (`cat`, `wc`, `sort`) and their GNU differential gate are
 done and merged, with no compiler, runtime or seed change.
@@ -61,11 +62,11 @@ done and merged, with no compiler, runtime or seed change.
 | Metric | Value |
 |---|---:|
 | Compiler source | 8,756 lines, 321,043 bytes |
-| Compiler / seed binary | 415,456 bytes (stage 2; the seed is promoted after review) |
+| Compiler / seed binary | 415,456 bytes |
 | Self-compile wall time | 0.07–0.08 s (5 runs; median 0.07 s) |
 | Self-compile live peak | 1,364,368 bytes |
 | Total allocated | 28,137,488 bytes |
-| Maximum resident set | 2,352 KB |
+| Maximum resident set | 2,560 KB |
 | Live-memory budget | 2,000,000 bytes (about 635 KB spare) |
 | obo suite | 1,102 tests; 446/467 mutants caught + 21 equivalent; 27 runtime/library; 414 port |
 | Tools differential gate | 199 checks (191 matrix + 8 serial) vs GNU coreutils 9.4; 2 memory cases |
@@ -85,7 +86,8 @@ is not like for like; the memory result is the point: about 1.24 MB live against
 The earlier 12.1 MB allocation and 30 ms figures in "Direction" describe the smaller
 pre-Result, pre-I/O compiler. The source has grown from 4,552 lines at that stage to
 8,756; total allocation has grown with it, while the live peak stays within the 2 MB
-budget (the module context and qualified-name work raised it from 954,896 bytes).
+budget (the module context and qualified-name work raised it from 1,244,480 bytes
+at the Phase 3 merge to 1,364,368, an increase of 119,888 bytes).
 
 ### Toward command-line tools
 
@@ -99,7 +101,7 @@ coreutils-shaped `cat`, `wc` and `sort`; then `eza` (the maintained exa fork), `
 | 1. `Result[T]`, `ok`/`err`, `try`, consuming `match` | done |
 | 2. Incremental I/O: `openFile`/`readFd`/`writeFd`/`closeFile`, standard fds, `Reader`/`Writer` | done |
 | 3. `cat`, `wc`, `sort` and the GNU differential gate | done |
-| 4. Multiple modules with `.sym` symbol files | next |
+| 4. Multiple modules | Stage 1 (source imports) done; Stage 2 (`.sym`) next |
 | 5. Stdlib modules and the `eza` core | planned |
 | 6. Methods, interfaces and lambdas | planned |
 | 7. Peephole/optimizer audit | evidence-gated |
@@ -191,7 +193,7 @@ In order:
    into freed memory. Assigning to a field or element from a call that might free
    is now an error; the value is computed first. The same holds for compound
    assignment, `append`, `truncate`, `replace`, and an index whose index calls such a
-   function (LANGUAGE.md section 10).
+   function (LANGUAGE.md section 12).
 2. **One kind of reference** (done). `&T` is the only reference type. A parameter
    that changes what it points to is declared `mut p: &T`; `&mut T` is an error with
    that hint. A local reference is changeable exactly when what it borrows is.
