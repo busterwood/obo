@@ -1,0 +1,3 @@
+module lib
+pub type Node = ref record { v: int }
+pub fn pure(x: int): int { return x + 1 }

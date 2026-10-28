@@ -43,6 +43,7 @@ os.environ['OBO_CHECK'] = '1'
 import run  # noqa: E402
 import own_fuzz  # noqa: E402
 import module_test  # noqa: E402
+import sym_test  # noqa: E402
 
 run.OBXC = os.path.abspath(os.environ.get('OBO', os.path.join(FORK, 'obo')))
 run.ROOT = FORK                                   # --rt: the fork's runtime
@@ -87,6 +88,9 @@ SMOKE = [
     "run/ref_bindings.obx",
     "modules/run/basic",
     "modules/errors/private_variant",
+    "sym/roundtrip_rich",
+    "sym/malformed_structures",
+    "sym/b6_stub_order",
 ]
 
 
@@ -130,6 +134,7 @@ def main():
                 tests.append((f"errors/{name}", lambda s=src, lo=lo, hi=hi: run.error_test(s, lo, hi)))
     tests += own_fuzz.tests(FUZZ_COUNT)
     tests += module_test.tests()               # source modules: run, errors, --deps, tokens
+    tests += sym_test.tests()                  # Stage 2 symbol files: writer, reader, --check, staleness
     smoke_names = set()
     if smoke:
         known = {name for name, _ in tests}

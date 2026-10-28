@@ -1,0 +1,3 @@
+module main
+import "mid.obx"
+fn main() { let x = mid::m(); println(x.v) }

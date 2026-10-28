@@ -1,0 +1,3 @@
+module main
+import "wrong.obx"
+fn main() { println(other::g()) }

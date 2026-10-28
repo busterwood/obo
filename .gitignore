@@ -15,3 +15,7 @@ __pycache__/
 /obo/obo-noregs
 /obo/rt_io_test
 /obo/.noregs.obo
+
+# generated symbol files (the golden fixtures under obo/tests/modules/golden are committed)
+/obo/.obo/
+**/.obo/sym/

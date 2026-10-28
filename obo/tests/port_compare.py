@@ -134,12 +134,13 @@ def cases_of(src):
 
 # ---------------------------------------------------------------- module trees
 #
-# Stage 1 modules: compile the same tree with both compilers (same -I and case
-# directory), compare the compile outcome, and for one that compiles, its run
-# (OBO_CHECK=1, a scratch directory of its own). --deps cases compare the
-# depth-first post-order. The seed compiler predates modules, so these are
-# skipped when REF is seed/obo. Each tree is compiled once by REF per process;
-# mutants reuse those outcomes.
+# Stage 1/2 modules: compile the same tree with both compilers (same -I and case
+# directory, a private --sym-dir for each), compare the compile outcome, the run,
+# every emitted .sym byte-for-byte, and --check of every module source that has a
+# header. `symcheck` cases are check-only: a root source plus committed symdir
+# fixtures, which exercise the reader's structural and staleness validation and
+# the check-mode writer. The seed compiler predates modules, so all of these are
+# skipped when REF is seed/obo.
 
 MODDIR = os.path.join(FORK, 'tests', 'modules')
 SEED_REF = os.path.realpath(os.path.join(FORK, 'seed', 'obo'))
@@ -148,14 +149,21 @@ REF_TREE = {}
 
 def tree_cases():
     out = []
-    for kind in ('run', 'errors', 'deps'):
+    for kind in ('run', 'errors', 'deps', 'sym'):
         base = os.path.join(MODDIR, kind)
         if not os.path.isdir(base):
             continue
         for name in sorted(os.listdir(base)):
             d = os.path.join(base, name)
-            if os.path.isdir(d):
-                out.append((f"modules/{kind}/{name}", kind, d))
+            if not os.path.isdir(d):
+                continue
+            # only directories with a root source are tree cases; `golden` is a fixture
+            if kind == 'run' or kind == 'errors' or kind == 'deps':
+                if os.path.exists(os.path.join(d, 'main.obx')):
+                    out.append((f"modules/{kind}/{name}", kind, d))
+            elif kind == 'sym':
+                if os.path.exists(os.path.join(d, 'main.obx')):
+                    out.append((f"modules/sym/{name}", 'symcheck', d))
     return out
 
 
@@ -170,11 +178,17 @@ def tree_includes(case_dir):
     return out
 
 
-def tree_args(exe, case_dir, out_path):
+def fresh_dir(path):
+    shutil.rmtree(path, ignore_errors=True)
+    os.makedirs(path)
+    return path
+
+
+def tree_args(exe, case_dir, out_path, symdir):
     args = [exe, os.path.join(case_dir, 'main.obx')]
     if out_path is not None:
         args += ['-o', out_path]
-    args += ['--rt', FORK, '-I', case_dir]
+    args += ['--rt', FORK, '-I', case_dir, '--sym-dir', symdir]
     for d in tree_includes(case_dir):
         args += ['-I', d]
     return args
@@ -186,7 +200,17 @@ def tree_norm(text, case_dir):
     return text.strip()
 
 
-def tree_outcome(exe, kind, case_dir, out_path, scratch, compile_limit=120, run_limit=60, capped_run=False):
+def sym_map(d):
+    out = {}
+    if os.path.isdir(d):
+        for f in sorted(os.listdir(d)):
+            if f.endswith('.sym'):
+                with open(os.path.join(d, f), 'rb') as fh:
+                    out[f] = fh.read()
+    return out
+
+
+def tree_outcome(exe, kind, case_dir, out_path, scratch, symdir, compile_limit=120, run_limit=60, capped_run=False):
     if kind == 'deps':
         args = [exe, '--deps', os.path.join(case_dir, 'main.obx'), '-I', case_dir]
         for d in tree_includes(case_dir):
@@ -199,16 +223,32 @@ def tree_outcome(exe, kind, case_dir, out_path, scratch, compile_limit=120, run_
             return ('crash', f"no result in {compile_limit:.0f} s"), compile_limit, 0
         t1 = time.monotonic()
         return ('deps', p.returncode, tree_norm(p.stdout, case_dir), tree_norm(p.stderr, case_dir)), t1 - t0, 0
+    if kind == 'symcheck':
+        # a committed symdir is copied, because --check writes the checked module's .sym
+        fresh_dir(symdir)
+        for f in os.listdir(os.path.join(case_dir, 'symdir')):
+            shutil.copyfile(os.path.join(case_dir, 'symdir', f), os.path.join(symdir, f))
+        args = [exe, '--check', os.path.join(case_dir, 'main.obx'), '-I', case_dir, '--sym-dir', symdir]
+        t0 = time.monotonic()
+        try:
+            p = subprocess.run(args, capture_output=True, text=True, timeout=compile_limit,
+                               preexec_fn=capped() if capped_run else None)
+        except subprocess.TimeoutExpired:
+            return ('crash', f"no result in {compile_limit:.0f} s"), compile_limit, 0
+        t1 = time.monotonic()
+        return ('check', p.returncode, tree_norm(p.stderr, case_dir).replace(symdir, '<sym>'), sym_map(symdir)), t1 - t0, 0
+    fresh_dir(symdir)
     t0 = time.monotonic()
     try:
-        p = subprocess.run(tree_args(exe, case_dir, out_path), capture_output=True, text=True,
+        p = subprocess.run(tree_args(exe, case_dir, out_path, symdir), capture_output=True, text=True,
                            env=dict(os.environ, OBO_CHECK='1'), timeout=compile_limit,
                            preexec_fn=capped() if capped_run else None)
     except subprocess.TimeoutExpired:
         return ('crash', f"no result in {compile_limit:.0f} s"), compile_limit, 0
     t1 = time.monotonic()
+    syms = sym_map(symdir)
     if p.returncode != 0:
-        return ('error', p.returncode, tree_norm(p.stderr, case_dir)), t1 - t0, 0
+        return ('error', p.returncode, tree_norm(p.stderr, case_dir).replace(symdir, '<sym>'), syms), t1 - t0, 0
     shutil.rmtree(scratch, ignore_errors=True)
     os.mkdir(scratch)
     try:
@@ -216,33 +256,87 @@ def tree_outcome(exe, kind, case_dir, out_path, scratch, compile_limit=120, run_
                            preexec_fn=capped(run._limits) if capped_run else run._limits,
                            env=dict(os.environ, OBO_CHECK='1'))
     except subprocess.TimeoutExpired:
-        return ('ok', ('timeout', b'', b'')), t1 - t0, run_limit
+        return ('ok', ('timeout', b'', b''), syms), t1 - t0, run_limit
     t2 = time.monotonic()
     sb = scratch.encode()
-    return ('ok', (r.returncode, r.stdout.replace(sb, b'<scratch>'), r.stderr.replace(sb, b'<scratch>'))), t1 - t0, t2 - t1
+    return ('ok', (r.returncode, r.stdout.replace(sb, b'<scratch>'), r.stderr.replace(sb, b'<scratch>')), syms), t1 - t0, t2 - t1
+
+
+def header_of(path):
+    try:
+        with open(path, 'r', errors='replace') as f:
+            for line in f:
+                if line.strip().startswith('//'):
+                    continue
+                return line.strip().startswith('module ')
+    except OSError:
+        return False
+    return False
+
+
+def check_each_module(exe, case_dir, symdir, tmp, tag, compile_limit=120, capped_run=False):
+    """The outcome of --check for every source in the tree that has a module header,
+    against a copy of the build's sym directory. Both compilers must agree."""
+    out = {}
+    n = 0
+    for f in sorted(os.listdir(case_dir)):
+        path = os.path.join(case_dir, f)
+        if not f.endswith('.obx') or not os.path.isfile(path) or not header_of(path):
+            continue
+        cd = fresh_dir(os.path.join(tmp, f'check-{tag}-{n}-sym'))
+        for s in os.listdir(symdir):
+            if s.endswith('.sym'):
+                shutil.copyfile(os.path.join(symdir, s), os.path.join(cd, s))
+        n += 1
+        args = [exe, '--check', path, '-I', case_dir, '--sym-dir', cd]
+        for d in tree_includes(case_dir):
+            args += ['-I', d]
+        try:
+            p = subprocess.run(args, capture_output=True, text=True, timeout=compile_limit,
+                               preexec_fn=capped() if capped_run else None)
+        except subprocess.TimeoutExpired:
+            out[f] = ('timeout',)
+            continue
+        out[f] = (p.returncode, tree_norm(p.stderr, case_dir).replace(cd, '<sym>'), sym_map(cd).get(f[:-4] + '.sym'))
+    return out
 
 
 def tree_show(o):
     if o[0] == 'ok':
         return f"runs: exit {o[1][0]}, stdout {o[1][1][-80:]!r}, stderr {o[1][2][-80:]!r}"
-    return f"{o[0]} {o[1:]!r}"
+    if o[0] == 'check':
+        return f"check: exit {o[1]}, stderr {o[2][-120:]!r}"
+    if o[0] in ('error', 'crash', 'deps'):
+        return f"{o[0]} {o[1:3]!r}"
+    return f"{o[0]} {o[1]!r}"
 
 
 def tree_both(name, kind, case_dir, tmp, quick, port):
     main = os.path.join(case_dir, 'main.obx')
-    ref_exe = os.path.join(tmp, 'tree-ref-' + name.replace('/', '-'))
-    port_exe = os.path.join(tmp, 'tree-port-' + name.replace('/', '-'))
-    ref_scratch = os.path.join(tmp, 'tree-ref-scratch-' + name.replace('/', '-'))
-    port_scratch = os.path.join(tmp, 'tree-port-scratch-' + name.replace('/', '-'))
+    tag = name.replace('/', '-')
+    ref_exe = os.path.join(tmp, 'tree-ref-' + tag)
+    port_exe = os.path.join(tmp, 'tree-port-' + tag)
+    ref_scratch = os.path.join(tmp, 'tree-ref-scratch-' + tag)
+    port_scratch = os.path.join(tmp, 'tree-port-scratch-' + tag)
+    ref_sym = os.path.join(tmp, 'tree-ref-sym-' + tag)
+    port_sym = os.path.join(tmp, 'tree-port-sym-' + tag)
     ref = REF_TREE.get(name)
     if ref is None:
-        ref = REF_TREE[name] = tree_outcome(REF, kind, case_dir, ref_exe, ref_scratch)
-    o, tc, tr = ref
+        o, tc, tr = tree_outcome(REF, kind, case_dir, ref_exe, ref_scratch, ref_sym)
+        ref_checks = {}
+        if kind in ('run',) and o[0] == 'ok':
+            ref_checks = check_each_module(REF, case_dir, ref_sym, tmp, 'ref-' + tag)
+        ref = REF_TREE[name] = (o, ref_checks, tc, tr)
+    o, ref_checks, tc, tr = ref
     limits = (min(120, max(10, 20 * tc)), min(60, max(5, 20 * tr))) if quick else (120, 60)
-    p = tree_outcome(port, kind, case_dir, port_exe, port_scratch, *limits, capped_run=quick)
-    if quick and o != p[0] and timed_out(p[0]):
-        p = tree_outcome(port, kind, case_dir, port_exe, port_scratch, 120, 60, capped_run=True)
-    return o, p[0]
+    o2, tc, tr = tree_outcome(port, kind, case_dir, port_exe, port_scratch, port_sym, *limits, capped_run=quick)
+    if quick and o != o2 and timed_out(o2):
+        o2, tc, tr = tree_outcome(port, kind, case_dir, port_exe, port_scratch, port_sym, 120, 60, capped_run=True)
+    port_checks = {}
+    if kind in ('run',) and o2[0] == 'ok':
+        port_checks = check_each_module(port, case_dir, port_sym, tmp, 'port-' + tag,
+                                        limits[0], capped_run=quick)
+    return (o, o2, ref_checks, port_checks)
 
 
 def token_outcome(exe):
@@ -251,20 +345,181 @@ def token_outcome(exe):
     return (p.returncode, p.stdout, p.stderr)
 
 
+CLI_CASES = [
+    ('--version', lambda exe, d: [exe, '--version']),
+    ('unknown option', lambda exe, d: [exe, '--not-an-option']),
+    ('missing value', lambda exe, d: [exe, os.path.join(d, 'main.obx'), '-I']),
+    ('check with -o', lambda exe, d: [exe, '--check', os.path.join(d, 'main.obx'), '-o', 'x', '--sym-dir', d]),
+]
+
+
+def special_run(cmd, quick, cwd=None):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=60 if quick else 120,
+                              cwd=cwd, preexec_fn=capped() if quick else None)
+    except subprocess.TimeoutExpired:
+        return None
+
+
+def special_norm(text, root):
+    return text.replace(root, '<tmp>').strip()
+
+
+def special_syms(d):
+    out = []
+    if os.path.isdir(d):
+        for f in sorted(os.listdir(d)):
+            if f.endswith('.sym'):
+                with open(os.path.join(d, f), 'rb') as fh:
+                    out.append((f, fh.read()))
+    return tuple(out)
+
+
+def special_emit_sym(exe, root, quick):
+    tree = os.path.join(root, 't')
+    os.makedirs(tree)
+    src = os.path.join(tree, 'single.obx')
+    open(src, 'w').write('module single\npub fn f(): int { return 1 }\nfn main() { println(f()) }\n')
+    sym = os.path.join(root, 'sym')
+    os.makedirs(sym)
+    p = special_run([exe, src, '--emit-sym', '-o', os.path.join(root, 'p'), '--rt', FORK, '--sym-dir', sym], quick)
+    if p is None:
+        return ('timeout',)
+    return (p.returncode, special_norm(p.stderr, root), special_syms(sym))
+
+
+def special_emit_headerless(exe, root, quick):
+    src = os.path.join(root, 'nohdr.obx')
+    open(src, 'w').write('fn main() { }\n')
+    sym = os.path.join(root, 'sym')
+    os.makedirs(sym)
+    p = special_run([exe, src, '--emit-sym', '-o', os.path.join(root, 'p'), '--rt', FORK, '--sym-dir', sym], quick)
+    if p is None:
+        return ('timeout',)
+    return (p.returncode, special_norm(p.stderr, root), special_syms(sym))
+
+
+def special_check_headerless(exe, root, quick):
+    src = os.path.join(root, 'nohdr.obx')
+    open(src, 'w').write('fn main() { }\n')
+    sym = os.path.join(root, 'sym')
+    os.makedirs(sym)
+    p = special_run([exe, '--check', src, '--sym-dir', sym], quick)
+    if p is None:
+        return ('timeout',)
+    return (p.returncode, special_norm(p.stderr, root), special_syms(sym))
+
+
+def special_default_symdir(exe, root, quick):
+    tree = os.path.join(root, 't')
+    os.makedirs(tree)
+    open(os.path.join(tree, 'lib.obx'), 'w').write('module lib\npub fn f(): int { return 1 }\n')
+    open(os.path.join(tree, 'main.obx'), 'w').write('module main\nimport "lib.obx"\nfn main() { println(lib::f()) }\n')
+    p = special_run([exe, os.path.join(tree, 'main.obx'), '-o', os.path.join(root, 'p'), '--rt', FORK, '-I', tree],
+                    quick, cwd=root)
+    if p is None:
+        return ('timeout',)
+    return (p.returncode, special_norm(p.stderr, root), special_syms(tree), special_syms(root))
+
+
+def special_sourceless_build(exe, root, quick):
+    tree = os.path.join(root, 't')
+    os.makedirs(tree)
+    lib = os.path.join(tree, 'lib.obx')
+    open(lib, 'w').write('module lib\npub fn f(): int { return 1 }\n')
+    open(os.path.join(tree, 'main.obx'), 'w').write('module main\nimport "lib.obx"\nfn main() { println(lib::f()) }\n')
+    sym = os.path.join(root, 'sym')
+    os.makedirs(sym)
+    p = special_run([exe, os.path.join(tree, 'main.obx'), '-o', os.path.join(root, 'p'), '--rt', FORK,
+                     '-I', tree, '--sym-dir', sym], quick)
+    if p is None or p.returncode != 0:
+        return ('setup', p.returncode if p else 'timeout')
+    os.unlink(lib)
+    p = special_run([exe, os.path.join(tree, 'main.obx'), '-o', os.path.join(root, 'p2'), '--rt', FORK,
+                     '-I', tree, '--sym-dir', sym], quick)
+    if p is None:
+        return ('timeout',)
+    return (p.returncode, special_norm(p.stderr, root))
+
+
+SPECIAL_CASES = [
+    ('emit-sym', special_emit_sym),
+    ('emit-sym headerless', special_emit_headerless),
+    ('check headerless', special_check_headerless),
+    ('default sym-dir', special_default_symdir),
+    ('source-less build', special_sourceless_build),
+]
+
+REEMIT_CASES = [
+    ('reemit high pfree bits', os.path.join(MODDIR, 'sym', 'reemit_highbits', 'symdir', 'many.sym')),
+]
+
+
 def compare_trees(tmp, quick, port):
-    """(same, total, failures) for the Stage 1 module trees and the token dump."""
+    """(same, total, failures) for the module trees, the .sym fixtures, the CLI and
+    the token dump."""
     if os.path.realpath(REF) == SEED_REF:
         return 0, 0, []
     same, total, failures = 0, 0, []
     for name, kind, case_dir in tree_cases():
         total += 1
-        a, b = tree_both(name, kind, case_dir, tmp, quick, port)
+        a, b, ref_checks, port_checks = tree_both(name, kind, case_dir, tmp, quick, port)
         if a == b:
             same += 1
         else:
             failures.append(f"{name}: obo {tree_show(a)!r}; port {tree_show(b)!r}")
             if quick:
                 return same, total, failures
+        if ref_checks != port_checks:
+            failures.append(f"{name}: --check differs: obo {ref_checks!r}; port {port_checks!r}")
+            if quick:
+                return same, total, failures
+    # a .sym fixture tree for the CLI (--check with -o is rejected)
+    cli_dir = os.path.join(tmp, 'cli')
+    os.makedirs(cli_dir, exist_ok=True)
+    open(os.path.join(cli_dir, 'main.obx'), 'w').write('module main\nfn main() { }\n')
+    for name, make in CLI_CASES:
+        total += 1
+        try:
+            a = subprocess.run(make(REF, cli_dir), capture_output=True, text=True, timeout=60)
+            b = subprocess.run(make(port, cli_dir), capture_output=True, text=True, timeout=60)
+            ao = (a.returncode, a.stdout, a.stderr)
+            bo = (b.returncode, b.stdout, b.stderr)
+        except subprocess.TimeoutExpired:
+            failures.append(f"cli {name}: a run timed out")
+            continue
+        if ao == bo:
+            same += 1
+        else:
+            failures.append(f"cli {name}: obo {ao!r}; port {bo!r}")
+    for name, fn in SPECIAL_CASES:
+        total += 1
+        rroot = fresh_dir(os.path.join(tmp, 'special-ref-' + name.replace(' ', '-')))
+        proot = fresh_dir(os.path.join(tmp, 'special-port-' + name.replace(' ', '-')))
+        try:
+            a = fn(REF, rroot, False)
+            b = fn(port, proot, quick)
+        except Exception as e:  # noqa: BLE001 - a harness problem is a failure, not a crash
+            failures.append(f"special {name}: {e!r}")
+            continue
+        if a == b:
+            same += 1
+        else:
+            failures.append(f"special {name}: obo {a!r}; port {b!r}")
+    for name, path in REEMIT_CASES:
+        total += 1
+        try:
+            a = subprocess.run([REF, '--reemit-sym', path], capture_output=True, timeout=60)
+            b = subprocess.run([port, '--reemit-sym', path], capture_output=True, timeout=60)
+            ao = (a.returncode, a.stdout, a.stderr)
+            bo = (b.returncode, b.stdout, b.stderr)
+        except subprocess.TimeoutExpired:
+            failures.append(f"reemit {name}: a run timed out")
+            continue
+        if ao == bo:
+            same += 1
+        else:
+            failures.append(f"reemit {name}: obo {ao[0]}; port {bo[0]}")
     total += 1
     try:
         a, b = token_outcome(REF), token_outcome(port)

@@ -1,0 +1,3 @@
+module lib
+pub fn f(): int { return 1 }
+// a0

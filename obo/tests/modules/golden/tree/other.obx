@@ -1,0 +1,6 @@
+module other
+
+pub type Box = ref record { v: int }
+pub const Unit = 1
+pub fn make(v: int): Box { return new Box{v: v} }
+pub fn boxed(b: Box): int { return b.v }

@@ -1,0 +1,9 @@
+obosym 1
+abi 1
+compiler "0.2"
+source 0xfb01c2c77a96347a
+dep b "b.obx"
+interface 0xee3ed02f32a1a877
+module c
+depiface b 0x8cdf3f23b577c302
+fn outer() frees 1 a::g

@@ -1,0 +1,11 @@
+obosym 1
+abi 1
+compiler "0.2"
+source 0x9c6980b442eb46e1
+dep b "b.obx"
+dep a "a.obx"
+interface 0x299ad5e3a8b30950
+module mid
+depiface a 0x924236e51d7f3d1a
+depiface b 0x75ac481c43924972
+fn m(): int

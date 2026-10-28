@@ -1,0 +1,8 @@
+obosym 1
+abi 1
+compiler "0.2"
+source 0x591c6ef9c07916d2
+dep lib "lib.obx"
+interface 0x1661743efef54d68
+module main
+depiface lib 0xa9c05c9801a0e755

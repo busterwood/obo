@@ -1,0 +1,7 @@
+obosym 1
+abi 1
+compiler "0.2"
+source 0x0000000000000000
+interface 0xdd5de23a53fac3f0
+module many
+fn many(q0: int, q1: int, q2: int, q3: int, q4: int, q5: int, q6: int, q7: int, q8: int, q9: int, q10: int, q11: int, q12: int, q13: int, q14: int, q15: int, q16: int, q17: int, q18: int, q19: int, q20: int, q21: int, q22: int, q23: int, q24: int, q25: int, q26: int, q27: int, q28: int, q29: int, q30: int, q31: int, q32: int, q33: int, q34: int, q35: int, q36: int, q37: int, q38: int, q39: int, q40: int, q41: int, q42: int, q43: int, q44: int, q45: int, q46: int, q47: int, q48: int, q49: int, q50: int, q51: int, q52: int, q53: int, q54: int, q55: int, q56: int, q57: int, q58: int, q59: int, q60: int, q61: int, q62: int): int pf 62 "!" pfree 0xc000000000000000

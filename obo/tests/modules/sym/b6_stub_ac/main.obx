@@ -1,0 +1,4 @@
+module b6_stub_ac
+import "x.obx"
+import "m.obx"
+fn main() { let r = &x::g; m::f(); println(r.v) }

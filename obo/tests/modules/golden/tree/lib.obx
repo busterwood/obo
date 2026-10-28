@@ -1,0 +1,26 @@
+module lib
+
+import "other.obx"
+
+pub type Node = ref record { value: int; child: ?Node }
+pub type Fwd
+pub type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
+pub type Fwd = ref record { c: ?Circle }
+pub type BoxAlias = other::Box
+pub type Holder = ref record { c: ?Circle }
+pub type Alias = []Node
+pub const Limit = 10
+pub const Mask = byte(255)
+pub const On = true
+pub const Greeting = "hi\n"
+pub var Cache: []Node = new []Node(0)
+pub let Root: Node = new Node{value: 0, child: nil}
+
+pub fn make(v: int): Node { return new Node{value: v, child: nil} }
+pub fn area(s: Shape): int {
+    match s {
+        Circle { return 3 * s.r * s.r }
+        Rect { return s.w * s.h }
+    }
+}
+pub fn add(mut n: &Node, v: int) { n.value = n.value + v }

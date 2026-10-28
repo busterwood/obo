@@ -1,0 +1,9 @@
+obosym 1
+abi 1
+compiler "0.2"
+source 0xae4ebae09a9e494d
+interface 0xa29cc43557622957
+module lib
+type Node uid 0x5fca22110fba38d4
+type Node = ref record { v: int }
+fn clear(mut p0: &[]Node) pfree 0x1 pf 0 "!"

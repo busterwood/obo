@@ -1,0 +1,3 @@
+module lib
+pub type Node = ref record { v: int }
+pub fn clear(mut a: &[]Node) { truncate(a, 0) }

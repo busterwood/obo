@@ -638,8 +638,9 @@ MODULE_MUTANTS = {
                                                       "        append(programGlobals, visibleGlobals[i])"),
     "modules: teardown frees no module globals": ("        if (g.kind == \"var\" || g.kind == \"let\") && isOwned(symType(g)) {",
                                                    "        if false {"),
-    "modules: scanner state not restored after an import": ("    restoreScan(ss)\n", ""),
-    "modules: imports not bound": ("    append(curModule.imports, new Import{alias: alias, mod: dep})", ""),
+    "modules: scanner state not restored after an import": ("    visibleGlobals = savedVisible\n    restoreScan(ss)\n}", "    visibleGlobals = savedVisible\n}"),
+    "modules: imports not bound": ("    append(curModule.imports, new Import{alias: alias, mod: dep, raw: raw})",
+                                 "    if false { append(curModule.imports, new Import{alias: alias, mod: dep, raw: raw}) }"),
     "modules: B7 alias key overwrites the shared type": ("        let t = parseType()                      // an alias key: it maps to this object; it never names it (B7)\n",
                                                           "        let t = parseType()                      // an alias key: it maps to this object; it never names it (B7)\n        t.owner = curModuleName\n"),
     "modules: _root accepted in a dependency": ("        if !isRoot && mod.name == \"_root\" {", "        if false {"),
@@ -667,6 +668,225 @@ MODULE_MUTANTS = {
             p += 1
 """),
 }
+SYM_MUTANTS = {
+    # ---- writer: canonical declarations, order and summaries
+    "sym: shells omitted": ("        if s.exported && symDefines(s, modName) { appTypeShell(b, s) }",
+                            "        if false { appTypeShell(b, s) }"),
+    "sym: definitions omitted": ("            appTypeDef(b, mod.globals[best], modName)",
+                                 "            let skippedDef = best"),
+    "sym: aliases omitted": ("        if s.exported && s.kind == \"type\" && !symDefines(s, modName) && !symIsVariantSym(s) {",
+                             "        if false {"),
+    "sym: alias to a variant omitted": ("        if s.exported && s.kind == \"type\" && !symDefines(s, modName) && !symIsVariantSym(s) {",
+                                        "        if s.exported && s.kind == \"type\" && !symDefines(s, modName) && true {"),
+    "sym: constants omitted": ("        if s.exported && s.kind == \"const\" { appConst(b, s) }",
+                               "        if false { appConst(b, s) }"),
+    "sym: globals omitted": ("        if s.exported && (s.kind == \"var\" || s.kind == \"let\") && s.storage == \"global\" {",
+                             "        if false {"),
+    "sym: functions omitted": ("        if s.exported && s.kind == \"fn\" { appFn(b, s, modName) }",
+                               "        if false { appFn(b, s, modName) }"),
+    "sym: canonical parameter names lost": ("        append(b, 'p')\n        appInt(b, i)",
+                                             "        append(b, 'q')\n        appInt(b, i)"),
+    "sym: closed variants omitted": ("        appStr(b, t.variants[i].name)",
+                                     "        appStr(b, \"\")"),
+    "sym: record fields reversed": ("        appStr(b, rec.fields[i].name)\n        appStr(b, \": \")\n        appTypeExpr(b, rec.fields[i].typ, modName)",
+                                    "        appStr(b, rec.fields[len(rec.fields) - 1 - i].name)\n        appStr(b, \": \")\n        appTypeExpr(b, rec.fields[len(rec.fields) - 1 - i].typ, modName)"),
+    "sym: local type expressions lose their bare name": ("    if t.owner != \"\" && t.owner != modName {",
+                                                         "    if t.owner != \"\" {"),
+    "sym: freesall omitted": ("    if f.freesAll { appStr(b, \" freesall\") }",
+                              "    if false { appStr(b, \" freesall\") }"),
+    "sym: writeshandles omitted": ("    if f.writesHandles { appStr(b, \" writeshandles\") }",
+                                   "    if false { appStr(b, \" writeshandles\") }"),
+    "sym: pfree omitted": ("    if f.fnRec.pfree != 0 {", "    if false {"),
+    "sym: frees list omitted": ("    if len(f.fnRec.freed) > 0 {", "    if false {"),
+    "sym: pf rows omitted": ("            if pfFn[k] == f && pfIdx[k] == i {", "            if false {"),
+    "sym: int constants written in decimal": ("    } else {\n        appHex16(b, s.value)\n    }",
+                                              "    } else {\n        appStr(b, string(s.value))\n    }"),
+    "sym: string constant bytes replaced by the address": ("        let data = rodataString(s.value)",
+                                                            "        let data = string(s.value)"),
+    # ---- header, hashes and dependencies
+    "sym: module line omitted": ("    appStr(b, \"module \")\n    appStr(b, modName)",
+                                 "    appStr(b, \"\")\n    appStr(b, modName)"),
+    "sym: source line carries the interface hash": ("    appStr(b, \"source \")\n    appHex16(b, mod.srcHash)",
+                                                    "    appStr(b, \"source \")\n    appHex16(b, h)"),
+    "sym: interface line writes zero": ("    appStr(b, \"interface \")\n    appHex16(b, h)",
+                                        "    appStr(b, \"interface \")\n    appHex16(b, 0)"),
+    "sym: dep header lines omitted": ("    for i in 0..len(dl.names) {\n        appStr(b, \"dep \")",
+                                      "    for i in 0..0 {\n        appStr(b, \"dep \")"),
+    "sym: depiface body lines omitted": ("    for i in 0..len(dl.names) {\n        appStr(b, \"depiface \")",
+                                         "    for i in 0..0 {\n        appStr(b, \"depiface \")"),
+    "sym: duplicate imports not deduped": ("        if !have {\n            append(out.names, im.mod.name)",
+                                           "        if true {\n            append(out.names, im.mod.name)"),
+    # ---- reader: version, hashes, structure
+    "sym: format check accepts any version": ("    if fmt != SYM_FORMAT {", "    if false {"),
+    "sym: ABI check accepts any version": ("    if abi != SYM_ABI {", "    if false {"),
+    "sym: compiler check accepts any version": ("    if cv != OBO_VERSION {", "    if false {"),
+    "sym: source hash not validated": ("        if srcFound && srcHash != fileSrc {",
+                                       "        if false {"),
+    "sym: body hash not checked": ("    if computed != ifaceH { symFileFail(symPath, \"is corrupt (interface hash); rebuild it\") }",
+                                   "    if false { symFileFail(symPath, \"is corrupt (interface hash); rebuild it\") }"),
+    "sym: depiface hash not checked": ("        if dm.ifaceHash != depIfHashes[i] {",
+                                       "        if false {"),
+    "sym: transitive dependency interface not loaded": ("            dm = loadSymCheck(joinDirPath(symDir, dn + \".sym\"), dn, depPaths[i], cand)",
+                                                        "            dm = handle(noModule)"),
+    "sym: malformed hexadecimal hash accepted": ("    if !isHex16(text) {", "    if false {"),
+    "sym: dependency interface order not checked": ("        if depIfNames[i] != depNames[i] {",
+                                                    "        if false {"),
+    "sym: empty dependency path accepted": ("        if len(dp) == 0 { error(\"a dependency path cannot be empty\") }",
+                                            "        if false { error(\"a dependency path cannot be empty\") }"),
+    "sym: malformed summary event prefix accepted": ("    if pref != '=' && pref != '!' { error(",
+                                                     "    if false { error("),
+    "sym: malformed summary event path accepted": ("            symValidateEvent(ev)",
+                                                   "            if false { symValidateEvent(ev) }"),
+    "sym: pf index not bounded": ("            if pi < 0 || pi >= len(ptypes) { error(\"pf index \" + string(pi) + \" is out of range\") }",
+                                  "            if pi < 0 { error(\"pf index \" + string(pi) + \" is out of range\") }"),
+    "sym: pf row without its pfree bit accepted": ("        if pi < 62 && (low >> pi) & 1 == 0 {",
+                                                   "        if false {"),
+    "sym: pfree bit without a pf row accepted": ("            if !have { error(\"pfree bit \" + string(i) + \" has no pf row\") }",
+                                                 "            if false { error(\"pfree bit \" + string(i) + \" has no pf row\") }"),
+    "sym: pfree high bits not ignored": ("    let low = pfree & 0x3FFFFFFFFFFFFFFF", "    let low = pfree"),
+    "sym: mut without a reference accepted": ("            if pmut { error(\"mut needs a reference parameter: write mut p0: &T\") }",
+                                              "            if false { error(\"mut needs a reference parameter: write mut p0: &T\") }"),
+    "sym: scalar borrow accepted": ("            if !isOwned(t) { error(\"only records, closed types and arrays can be borrowed, not \" + symTypeText(t)) }",
+                                    "            if false { error(\"only records, closed types and arrays can be borrowed, not \" + symTypeText(t)) }"),
+    "sym: non-primitive constant accepted": ("    if t != tInt && t != tByte && t != tBool && t != tString {",
+                                             "    if false {"),
+    "sym: byte constant range unchecked": ("    if t == tByte && (v < 0 || v > 255) { error(\"a byte constant must be between 0 and 255\") }",
+                                           "    if false { error(\"a byte constant must be between 0 and 255\") }"),
+    "sym: bool constant value unchecked": ("    if t == tBool && kind != \"bool\" { error(\"a bool constant must be true or false\") }",
+                                           "    if false { error(\"a bool constant must be true or false\") }"),
+    "sym: duplicate exported names accepted": ("    if symHas(symSeen, name) { error(\"duplicate exported name '\" + name + \"'\") }",
+                                               "    if false { error(\"duplicate exported name '\" + name + \"'\") }"),
+    "sym: shell completeness unchecked": ("""    let shells = &symShells
+    for sh in shells {
+        if !symHas(symDefined, sh) { error("type '" + sh + "' has a shell but no definition") }
+    }
+    if mode == 1 {
+        for i in 0..len(symCurMod.globals) {
+            let s = symCurMod.globals[i]
+            if s.kind == "type" && symType(s).incomplete { error("type '" + s.name + "' has a shell but no definition") }""",
+        """    if mode == 1 {
+        for i in 0..len(symCurMod.globals) {
+            let s = symCurMod.globals[i]
+            if false { error("type '" + s.name + "' has a shell but no definition") }"""),
+    "sym: definition without a shell accepted": ("""        if !symHas(symShells, name) { error("type '" + name + "' has a definition but no shell") }
+        if symHas(symDefined, name) { error("duplicate definition of type '" + name + "'") }
+        symAfterShells = true
+        next()
+        expect(T_RECORD, "")""",
+        """        if false { error("type '" + name + "' has a definition but no shell") }
+        if symHas(symDefined, name) { error("duplicate definition of type '" + name + "'") }
+        symAfterShells = true
+        next()
+        expect(T_RECORD, "")"""),
+    "sym: reader resolves bare types through lookup": ("""    let s = findExport(symCurMod, name)
+    if s != nil {
+        if s.kind == "type" { return symType(s) }
+    }
+    errorAt("unknown type '" + name + "'", nline, ncol)""",
+        """    let s = lookup(name)
+    if s.kind == "type" { return symType(s) }
+    errorAt("unknown type '" + name + "'", nline, ncol)"""),
+    "sym: scanner state not restored after a .sym read": ("""    symReadDecls(mode)
+    symFinish(mode)
+    restoreScan(ss)
+    symMode = savedSymMode""",
+        """    symReadDecls(mode)
+    symFinish(mode)
+    symMode = savedSymMode"""),
+    "sym: imported function is a forward heading": ("        f.addr = 0                                    // known: a complete imported summary, never a forward heading",
+                                                     "        f.addr = -1"),
+    "sym: imported pfree dropped": ("        f.fnRec.pfree = low", "        f.fnRec.pfree = 0"),
+    "sym: imported parameter modes dropped": ("            append(f.fnRec.pmodes, pmodes[k])",
+                                              "            append(f.fnRec.pmodes, 0)"),
+    "sym: imported freed keys dropped": ("""        for k in 0..len(freedOwners) {
+            append(f.fnRec.freed, globalSym(freedOwners[k], freedNames[k]))
+        }""",
+        """        for k in 0..0 {
+            append(f.fnRec.freed, globalSym(freedOwners[k], freedNames[k]))
+        }"""),
+    "sym: B6 global stub not reused": ("    let have = globalAtKey(key)\n    if have != nil { return have }",
+                                       "    let have = globalAtKey(key)\n    if have != nil { let fresh = newSym(\"var\", name, nil); fresh.owner = owner; fresh.storage = \"global\"; append(globalKeys, key); append(globalRegistry, fresh); return fresh }"),
+    "sym: B6 defining global creates a fresh symbol": ("        let g = globalSym(symCurMod.name, name)",
+                                                       "        let g = newSym(kind, name, nil)"),
+    "sym: B7 alias key creates a new type": ("""        registerTypeAlias(symCurMod.name, name, t)
+        let s = newSym("type", name, t)""",
+        """        let nt = newType("record", name, nil)
+        nt.owner = symCurMod.name
+        registerTypeAlias(symCurMod.name, name, nt)
+        let s = newSym("type", name, nt)"""),
+    "sym: live type registry not filled": ("    registerType(t, curModuleName, name)",
+                                           "    let keep = t"),
+    "sym: live module globals not registered": ("    if s.storage == \"global\" { registerGlobalSym(s) }",
+                                                "    if false { registerGlobalSym(s) }"),
+    # ---- root rules, modes and CLI
+    "sym: single-file build writes a root .sym": ("    if isRoot && !checking && len(mod.imports) == 0 && !emitRootSym { doWrite = false }",
+                                                  "    if false { doWrite = false }"),
+    "sym: --emit-sym ignored": ("    if isRoot && !checking && len(mod.imports) == 0 && !emitRootSym { doWrite = false }",
+                                "    if isRoot && !checking && len(mod.imports) == 0 { doWrite = false }"),
+    "sym: headerless --emit-sym accepted": ("""    if isRoot && emitRootSym && !mod.hasHeader {
+        errorAt("--emit-sym needs a 'module Name' header in the root source", 1, 1)
+    }""",
+        """    if false {
+        errorAt("--emit-sym needs a 'module Name' header in the root source", 1, 1)
+    }"""),
+    "sym: checked module needs no header": ("""        if checking && isRoot {
+            errorAt("the checked module needs a 'module Name' header", tline, tcol)
+        }""",
+        """        if false {
+            errorAt("the checked module needs a 'module Name' header", tline, tcol)
+        }"""),
+    "sym: --version reports the wrong format": ("            println(\"obo \", OBO_VERSION, \" sym-format \", SYM_FORMAT, \" abi \", SYM_ABI)",
+                                                "            println(\"obo \", OBO_VERSION, \" sym-format \", 0, \" abi \", SYM_ABI)"),
+    "sym: -o accepted with --check": ("    if mode != \"build\" && outSet { cliFail(\"-o cannot be used with --check or --deps\") }",
+                                      "    if false { cliFail(\"-o cannot be used with --check or --deps\") }"),
+    "sym: sym-dir write failure ignored": ("""    if !writeFile(joinDirPath(symDir, mod.name + ".sym"), text, false) {
+        eprintln("obxc: symbol-file directory '", symDir, "' does not exist or is not writable")
+        exit(2)
+    }""",
+        """    if false {
+        eprintln("obxc: symbol-file directory '", symDir, "' does not exist or is not writable")
+        exit(2)
+    }"""),
+    "sym: default sym-dir is the current directory": ("    if !symDirSet { symDir = dirOf(normPath(path)) }\n    compileProgram(path, out, rtDir)",
+                                                      "    if !symDirSet { symDir = \".\" }\n    compileProgram(path, out, rtDir)"),
+    "sym: --check does not set check mode": ("fn checkFile(path: string) {\n    checking = true",
+                                              "fn checkFile(path: string) {\n    checking = false"),
+    "sym: source-less build message not used": ("    if !depsWalk && probe != nil {",
+                                                "    if false {"),
+    "sym: negative source hash treated as absent": ("        if srcFound && srcHash != fileSrc {",
+                                                     "        if srcHash >= 0 && srcHash != fileSrc {"),
+    "sym: imported pf rows dropped": ("""        for k in 0..len(rowIdx) {
+            append(pfFn, f)
+            append(pfIdx, rowIdx[k])
+            append(pfEv, rowEv[k])
+        }""",
+        """        for k in 0..len(rowIdx) {
+            let lostRow = f
+        }"""),
+    "sym: dependency basename check dropped": ("""    if bodyName != expected {
+        symSourceRule("module '" + bodyName + "' must be in a file named " + bodyName + ".obx (found " + display + ")")
+    }""",
+        """    if false {
+        symSourceRule("module '" + bodyName + "' must be in a file named " + bodyName + ".obx (found " + display + ")")
+    }"""),
+    "sym: definition order reversed": ("                if best < 0 || s.line < bestLine {",
+                                        "                if best < 0 || s.line > bestLine {"),
+    "sym: type and global keys lose the module prefix": ('fn keyOf(owner: string, name: string): string { return owner + "::" + name }',
+                                                          'fn keyOf(owner: string, name: string): string { return name }'),
+    "sym: variant parent not set": ("                v.uid = fnv1a(vkey)\n                v.parent = ct",
+                                     "                v.uid = fnv1a(vkey)\n                v.parent = nil"),
+    "sym: shell uid not validated": ('            if uid != fnv1a(key) { error("type \'" + name + "\' uid does not match its key") }',
+                                      '            if false { error("type \'" + name + "\' uid does not match its key") }'),
+    "sym: symMode not restored after a nested read": ("""    restoreScan(ss)
+    symMode = savedSymMode
+    truncate(symLoadNames, len(symLoadNames) - 1)""",
+        """    restoreScan(ss)
+    symMode = false
+    truncate(symLoadNames, len(symLoadNames) - 1)"""),
+}
+
+MODULE_MUTANTS.update(SYM_MUTANTS)
+
 MUTANTS.update(MODULE_MUTANTS)
 
 # mutants that survive by design: each removes a test that is redundant, so the behaviour is unchanged

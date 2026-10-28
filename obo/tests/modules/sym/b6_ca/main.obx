@@ -1,0 +1,4 @@
+module ca
+import "c.obx"
+import "a.obx"
+fn main() { let r = &a::g; c::outer(); println(r.v) }

@@ -1,0 +1,8 @@
+obosym 1
+abi 1
+compiler "0.2"
+source 0x7d6f94b9e438ff08
+dep mid "mid.obx"
+interface 0xd00b0861d9dbb4c9
+module main
+depiface mid 0x002760d08bc0de67

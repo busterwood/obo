@@ -1,0 +1,7 @@
+obosym 1
+abi 1
+compiler "0.2"
+source 0xb61fb94405e36b39
+interface 0x011b83e028b71d26
+module other
+fn g(): int

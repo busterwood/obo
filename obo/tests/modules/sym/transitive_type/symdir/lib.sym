@@ -1,0 +1,8 @@
+obosym 1
+abi 1
+compiler "0.2"
+source 0x8aae20a574ffece5
+interface 0xaa08c7688f25f7e9
+module lib
+type T uid 0x2bd2b8a37148a914
+type T = ref record { v: int }

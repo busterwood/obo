@@ -27,11 +27,18 @@ collector, at similar speed, with small changes to source code. It now also has
 its first command-line tools, `cat`, `wc` and `sort`, written in obo in
 `obo/programs/` and built by `make tools`; a separate differential gate
 (`obo/tests/tools.py`) compares them with GNU coreutils, with Python models and
-recorded goldens as the fallback. Source-level modules are now implemented
-(`module`, `import "Name.obx" [as alias]`, `pub`, `alias::name`, `--deps` and
-`-I`); Stage 1 does not refactor the tools, so `obo/tools/build_tools.py` still
-concatenates the two library preludes and the tool before compiling it. The
-exact subset, message forms and caveats are in `obo/programs/README.md`.
+recorded goldens as the fallback. Modules are now implemented in both stages:
+source imports and exports (Stage 1: `module`, `import "Name.obx" [as alias]`,
+`pub`, `alias::name`, `--deps`, `-I`), and text `.sym` symbol files with
+`--check`, `--sym-dir`, `--emit-sym`, `--version` and staleness/version checks
+(Stage 2). A full build still compiles every module body from source; `--check`
+checks a module against its dependencies' symbol files, including dependencies
+without sources. The tools are not yet refactored into modules, so
+`obo/tools/build_tools.py` still concatenates the two library preludes and the tool
+before compiling it; it creates and passes `.obo/sym` so a module root will build
+unchanged, and `--deps`-based Make prerequisites are deferred until a tool is a
+module (recorded in `obo/FORK.md`). The exact subset, message forms and caveats are
+in `obo/LANGUAGE.md` section 6 and `obo/programs/README.md`.
 
 **obx** was the original garbage-collected dialect and the compiler obo grew from.
 It is kept as the historical reference; the "History: mainline obx" section below
@@ -43,8 +50,8 @@ and error case byte-for-byte as the first obo compiler did, and compiles itself 
 fixed point. Its stage test now compares behaviour (same errors, same output when run),
 so code generation can improve. Compiling
 its own source it peaked at 1.5 MB resident at the earlier stage (live peak now
-1,364,240 bytes on a 321,043-byte source; the 415,456-byte compiler takes
-0.07–0.08 s; see Current status), against 2.5 MB for the same logic on a tuned
+1,634,880 bytes on a 381,767-byte source; the 493,280-byte compiler takes
+0.10 s; see Current status), against 2.5 MB for the same logic on a tuned
 collector and 1.9 MB on an
 aggressive one. The larger source and its extra checks account for the wall time.
 
@@ -53,22 +60,24 @@ Python compiler before it did.
 
 ## Current status (28 October 2026)
 
-The ownership compiler is merged and self-hosting. The compiler and
-`obo/seed/obo` are the same 415,456-byte binary and reach a fixed point compiling
-themselves. `Result[T]`/`try` and incremental I/O are done (merged and seeded); the
-first command-line tools (`cat`, `wc`, `sort`) and their GNU differential gate are
-done and merged, with no compiler, runtime or seed change.
+The ownership compiler is merged and self-hosting. The Stage 2 compiler is a
+493,280-byte binary; `obo/seed/obo` is still the Stage 1 415,456-byte binary until
+the user promotes after review; the Stage 2 compiler is an exact fixed point
+(`obo` == stage 2 == stage 3), and the Stage 1 seed builds it. `Result[T]`/`try` and incremental I/O are done (merged and seeded);
+modules are done in both stages (source imports and `.sym`/`--check`); the first
+command-line tools (`cat`, `wc`, `sort`) and their GNU differential gate are done
+and merged, with no compiler, runtime or seed change.
 
 | Metric | Value |
 |---|---:|
-| Compiler source | 8,756 lines, 321,043 bytes |
-| Compiler / seed binary | 415,456 bytes |
-| Self-compile wall time | 0.07–0.08 s (5 runs; median 0.07 s) |
-| Self-compile live peak | 1,364,240 bytes |
-| Total allocated | 28,136,432 bytes |
-| Maximum resident set | 2,560 KB |
-| Live-memory budget | 2,000,000 bytes (about 635 KB spare) |
-| obo suite | 1,102 tests; 446/467 mutants caught + 21 equivalent; 27 runtime/library; 414 port |
+| Compiler source | 10,440 lines, 381,767 bytes |
+| Compiler / seed binary | 493,280 / 415,456 bytes (stage 2 / stage 1 seed) |
+| Self-compile wall time | 0.10 s (5 runs; median 0.10 s) |
+| Self-compile live peak | 1,634,880 bytes |
+| Total allocated | 35,123,104 bytes |
+| Maximum resident set | 2,988 KB |
+| Live-memory budget | 2,000,000 bytes (about 365 KB spare) |
+| obo suite | 1,129 tests; 523/544 mutants caught + 21 equivalent; 27 runtime/library; 491 port; 27 symbol-file tests; 200 fuzz mutations |
 | Tools differential gate | 199 checks (191 matrix + 8 serial) vs GNU coreutils 9.4; 2 memory cases |
 | Tool binaries | cat 108,256; wc 108,256; sort 112,352 bytes (static, runtime included) |
 | Minimal static executable | 90,848 bytes (runtime included) |
@@ -85,9 +94,10 @@ is not like for like; the memory result is the point: about 1.24 MB live against
 
 The earlier 12.1 MB allocation and 30 ms figures in "Direction" describe the smaller
 pre-Result, pre-I/O compiler. The source has grown from 4,552 lines at that stage to
-8,756; total allocation has grown with it, while the live peak stays within the 2 MB
-budget (the module context and qualified-name work raised it from 1,244,480 bytes
-at the Phase 3 merge to 1,364,240, an increase of 119,760 bytes).
+10,440; total allocation has grown with it, while the live peak stays within the 2 MB
+budget (the Stage 1 module context raised it from 1,244,480 bytes at the Phase 3
+merge to 1,364,240; Stage 2's symbol-file writer and reader raised it to 1,634,880,
+an increase of 270,640 bytes, still 365,120 bytes under the budget).
 
 ### Toward command-line tools
 
@@ -101,7 +111,7 @@ coreutils-shaped `cat`, `wc` and `sort`; then `eza` (the maintained exa fork), `
 | 1. `Result[T]`, `ok`/`err`, `try`, consuming `match` | done |
 | 2. Incremental I/O: `openFile`/`readFd`/`writeFd`/`closeFile`, standard fds, `Reader`/`Writer` | done |
 | 3. `cat`, `wc`, `sort` and the GNU differential gate | done |
-| 4. Multiple modules | Stage 1 (source imports) done; Stage 2 (`.sym`) next |
+| 4. Multiple modules | done: Stage 1 source imports, Stage 2 `.sym`/`--check` |
 | 5. Stdlib modules and the `eza` core | planned |
 | 6. Methods, interfaces and lambdas | planned |
 | 7. Peephole/optimizer audit | evidence-gated |
@@ -213,8 +223,8 @@ In order:
    (`obo/seed/obo`), with `make promote` checking the fixed point and the suite before
    replacing the seed. The mutants run against the port, and `obo-on-obx.obx` is
    retired to `obo/legacy/`.
-6. **Then the language again**: modules (Stage 1 done: source imports, `pub`,
-   `alias::name`, `--deps`), their symbol files and separate checking (Stage 2),
+6. **Then the language again**: modules (done: source imports, `pub`,
+   `alias::name`, `--deps`, `.sym` symbol files, `--check` and separate checking),
    methods and interfaces, and the rest of the list under "Not yet done", each
    designed to fit the single pass and the ownership model.
 
@@ -268,11 +278,16 @@ cd obo && python3 tests/mutate_io.py     # runtime/library mutants
 cd obo && python3 tests/port_test.py     # the port: tokens and encoder, against obo
 cd obo && python3 tests/port_compare.py  # the port, stage B (everything), with the memory budget
 cd obo && python3 tests/mutate_port.py   # the port's mutants
+cd obo && python3 tests/sym_test.py      # symbol files: writer, reader, --check, staleness
+cd obo && python3 tests/sym_fuzz.py      # deterministic .sym corruption fuzzing
 cd obo && python3 tests/tools.py         # the tools vs GNU; models/goldens without it
 cd obo && python3 tests/tools.py --require-reference   # tools vs GNU coreutils (release checklist)
 cd obo && python3 tests/tools.py --memory              # the two pinned tool memory cases
 cd obo && python3 bench/bench.py         # memory and time against the collector
 cd obo && ./obo --deps tests/modules/run/basic/main.obx -I tests/modules/run/basic  # dependencies first
+cd obo && mkdir -p /tmp/syms && ./obo --check src/obo.obo --sym-dir /tmp/syms        # check without an executable
+cd obo && ./obo --version                # obo 0.2 sym-format 1 abi 1
+cd obo && ./obo --reemit-sym /tmp/syms/obo.sym   # canonical re-emission (test hook)
 # history: cd obx && make && ./run_tests.sh
 ```
 
@@ -374,7 +389,18 @@ Implemented:
   search paths, `pub` exports with everything else private, `alias::name`
   qualification, and `obo --deps SOURCE [-I DIR]...` for a tree's source list.
   Dependencies compile first into one image, initialize once and free their own
-  globals; a headerless root is `_root`. Symbol files and `--check` are Stage 2.
+  globals; a headerless root is `_root`.
+- Symbol files (`obo/LANGUAGE.md`, section 6): each module with a header writes a
+  text `Name.sym` (format `obosym 1`, ABI 1, compiler `0.2`, FNV-1a source,
+  interface and dependency-interface hashes); importers read and validate it, and
+  `--check SOURCE [--sym-dir DIR]` checks a module against symbol files alone,
+  including source-less dependencies. `--emit-sym` writes a single-file root's
+  interface; `--version` prints the three version numbers; `-o` is rejected with
+  `--check`/`--deps` (as are the three modes with each other). `--reemit-sym FILE`
+  is a test hook that reads a symbol file and prints its canonical re-emission.
+  Generated symbol files are ignored under `.obo/sym`; a build without
+  `--sym-dir` writes next to the root source, so use `--sym-dir .obo/sym`.
+  `tests/modules/golden/expected/*.sym` are committed byte-goldens.
 - Automatic semicolon insertion at line ends, as in Go.
 
 ## Safety checks at compile time
@@ -497,8 +523,7 @@ reaches a fixed point compiling itself.
 ## Not yet done
 
 Methods and interfaces, lambdas, generic
-modules, symbol files and separate checking (`--check`, `--sym-dir`; modules
-Stage 2), value records, inout parameters, a `>>>` logical shift, and debug info. Each was designed earlier
+modules, value records, inout parameters, a `>>>` logical shift, and debug info. Each was designed earlier
 to fit the single pass. Also: effect summaries for functions that call each other through
 forward headings.
 

@@ -1,0 +1,8 @@
+module lib
+pub type Node = ref record { v: int }
+pub const Limit = 10
+pub const Mask = byte(255)
+pub const On = true
+pub var cache: ?Node = nil
+pub fn zap(mut a: &[]int) { truncate(a, 0) }
+pub fn pure(x: int): int { return x + 1 }

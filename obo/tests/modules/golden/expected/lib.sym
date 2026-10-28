@@ -1,0 +1,27 @@
+obosym 1
+abi 1
+compiler "0.2"
+source 0x581c58722e661f3b
+dep other "other.obx"
+interface 0xf701cc563e21d048
+module lib
+depiface other 0xaf82ae64d770c496
+type Node uid 0x5fca22110fba38d4
+type Fwd uid 0xc4e88e319fe28959
+type Shape uid 0x6fe855337d3c0b3d
+type Holder uid 0x1c2d79f85a8d8c56
+type Node = ref record { value: int; child: ?Node }
+type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
+type Fwd = ref record { c: ?Circle }
+type Holder = ref record { c: ?Circle }
+type BoxAlias = other::Box
+type Alias = []Node
+const Limit: int = 0x000000000000000a
+const Mask: byte = 0x00000000000000ff
+const On: bool = true
+const Greeting: string = hex "68690a"
+var Cache: []Node
+let Root: Node
+fn make(p0: int): Node
+fn area(p0: Shape): int
+fn add(mut p0: &Node, p1: int)

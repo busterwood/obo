@@ -1,0 +1,14 @@
+obosym 1
+abi 1
+compiler "0.2"
+source 0xe8012afce820cb5c
+interface 0x4c993b4a2954f270
+module lib
+type Node uid 0x5fca22110fba38d4
+type Node = ref record { v: int }
+const Limit: int = 0x000000000000000a
+const Mask: byte = 0x0000000000000100
+const On: bool = true
+var cache: ?Node
+fn zap(mut p0: &[]int) pfree 0x1 pf 0 "!"
+fn pure(p0: int): int

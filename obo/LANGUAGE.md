@@ -595,11 +595,14 @@ field or element, and must name a record or closed type.
 
 ## 6. Modules
 
-Stage 1 of modules: one source file is one **module**, imported modules are
-compiled dependency-first into the same image, and importers reach exported
-declarations as `alias::name`. Symbol files (`--check`, `--sym-dir`,
-`--emit-sym`) are Stage 2 and are not part of this section; the compiler itself
-stays one file and uses no imports.
+Modules: one source file is one **module**, imported modules are compiled
+dependency-first into the same image, and importers reach exported declarations
+as `alias::name`. Each module also emits a text **symbol file** (`.sym`) holding
+its exported interface, hashes and versions; an importer reads that interface and
+`--check` can check a module against symbol files alone, including dependencies
+whose source is absent. A full build still compiles every module body from source:
+this is interface-level separate compilation, not object files or a linker. The
+compiler itself stays one file and uses no imports.
 
 ### Headers, files and identity
 
@@ -717,12 +720,180 @@ It writes nothing, rejects `-o`, and reports missing files (exit 2), cycles
 basename rule with the same messages as a build. `make` can use it for tool
 source prerequisites.
 
+### Symbol files, `--check` and `--sym-dir`
+
+Every module with a `module Name` header writes `Name.sym` after its declarations
+are compiled and its summaries are complete. The file lives in the **symbol
+directory**: `--sym-dir DIR`, or the root source's directory by default. The
+directory is a flat namespace by module name and must already exist (the runtime
+has no `mkdir`); a missing or unwritable directory is
+`obxc: symbol-file directory '<dir>' does not exist or is not writable` (exit 2).
+Two builds must not share a sym-dir: `writeFile` truncates in place and there is no
+atomic rename, so parallel builds and tests use private directories.
+
+The emission rule is one rule:
+
+- dependencies always write their `.sym` (the importer reads them);
+- a build with at least one import writes the root's `.sym` too when the root has a
+  header;
+- a single-file build writes no `.sym` unless `--emit-sym` is given;
+- `--check` always writes the checked module's `.sym`, and never an executable.
+
+`--emit-sym` is a flag on a normal build (it still writes the executable and still
+accepts `-o`); it requires a `module` header. `--check`, `--deps` and `--emit-sym`
+are mutually exclusive; `-o` is rejected with `--check` and `--deps`:
+`obxc: -o cannot be used with --check or --deps`.
+
+In a full build the importer binds the **live** interface (the defining module's
+types, globals, functions and descriptors) and reads and validates the dependency's
+`.sym` against it. `--check` instead reconstructs the interface from the `.sym`:
+imported functions get a known dummy address and imported globals unique dummy
+offsets, imported types have no descriptor, and the checked module's code is
+discarded. `--check` compiles and checks the body on every run; it is not a build
+cache. It does not require `main`: a checked module may have a private `main` (its
+`.sym` omits it) or an exported `main` (the `.sym` lists it, and an importer rejects
+it with `module '<m>' may not declare 'main'; the program root provides it`).
+
+For each dependency, `--check` looks for `<sym-dir>/<basename>.sym`, where the
+basename is the import path's file name without `.obx`; the `.sym`'s `module` line
+must equal that basename. A dependency's source, if present, is used only to
+validate its header (the basename rule) and its `source` hash; it is never
+compiled. A source-less dependency is allowed if its `.sym` is valid. A **full
+build** still requires every source; if only a `.sym` exists it reports
+`obxc: cannot read module '<m>' at <paths>; only --check may use a symbol file
+without source` (exit 2). The checked root is exempt from the basename rule (it is
+the root of its check graph), and its `.sym` is named by its declared module name.
+
+`--version` prints `obo 0.2 sym-format 1 abi 1`; the numbers are the `obosym`
+format, the compiled-program ABI and the compiler version, each checked exactly
+when a `.sym` is read. `--reemit-sym FILE` is a testing hook: it reads a symbol
+file with the reader and prints the canonical re-emission, which the symbol-file
+tests compare byte-for-byte.
+
+### The `.sym` format and hashes
+
+A `.sym` is text in a language-like declaration syntax, readable by the scanner:
+
+```text
+obosym 1
+abi 1
+compiler "0.2"
+source 0x0123456789abcdef
+dep io "io.obx"
+interface 0xfedcba9876543210
+module strings
+depiface io 0x1111111111111111
+type Builder uid 0x3333333333333333
+type Builder = ref record { items: []string; count: int }
+type Node = ref record { value: int; next: ?Node }
+type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
+type Text = []string
+const Limit: int = 0x000000000000000a
+const Empty: string = hex "6e6f6e65"
+var Cache: []Node
+let Default: int
+fn split(p0: string, p1: string): []string
+fn reset(mut p0: &Builder) pfree 0x1 pf 0 "=/items" frees 1 strings::scratch
+```
+
+- The first word is the single identifier `obosym` (not `obo-sym`), then the
+  format number; the reader requires exact `obosym`, `abi` and `compiler` lines.
+- `source` is the FNV-1a 64 hash of the module's source bytes exactly.
+- `dep` lines are the direct dependencies, one per unique module in first-import
+  order, with the path **as imported** (relative stays relative). They are
+  diagnostic and outside the interface hash.
+- `interface` is the FNV-1a 64 hash of the exact bytes after that line. The body
+  holds the module name, one `depiface <module> <hash>` per dependency in the same
+  order, then the exported declarations. A dependency's interface change therefore
+  changes every dependent's interface hash; a body-only change does not. Import
+  order is part of the hash because it determines initialization order.
+- Declarations are emitted in canonical groups: shells for exported record/closed
+  types (source order), their definitions (source order), aliases, constants,
+  globals, functions. Private declarations are skipped without reordering the
+  exported ones. No address, offset, descriptor, pointer, timestamp or absolute
+  path appears.
+- A record definition lists its fields in declaration order (offsets are
+  recomputed: one 8-byte word each); a closed definition lists its variants in
+  declaration order. Every exported record/closed type has a shell line first, so
+  recursive and mutually recursive types resolve. Variants are registered by the
+  reader under `Module::Variant` and exported with their closed type.
+- An alias `type A = <typeExpr>` maps the name to the existing type; it never
+  re-declares it. Field and signature types are emitted as the underlying type, so
+  layout never depends on an alias.
+- Constants are primitive: `int`/`byte` as 16 hexadecimal digits (negative values
+  wrap), `bool` as `true`/`false`, `string` as `hex "<bytes>"` (including `hex ""`).
+  The reader interns string bytes instead of carrying a rodata address.
+- Globals are `var Name: T` or `let Name: T`, with no initializer; a `let` is
+  read-only to importers and the defining module owns initialization.
+- Function headings reuse the source syntax for parameters, `&` and `mut`, but the
+  writer **always** emits the canonical names `p0`, `p1`, ...; parameter names are
+  syntax only, so renaming a source parameter changes the source hash but not the
+  interface hash. `pfree` is the 62-bit mask of parameters below which the function
+  may free; `frees N key...` names the globals it may free (a private or transitive
+  `Module::name` key is allowed); `pf i "<event>"` records a precise free place,
+  with `=` (the value in the place) or `!` (what lies below it) and a path of
+  `/field`, `/[n]` and `/[]` segments. Summary items may be read in any order; the
+  writer emits `freesall`, `writeshandles`, `pfree`, `frees`, then `pf` rows by
+  parameter and insertion order.
+
+The reader validates hashes, versions, shells, field/variant structure, duplicate
+keys and exports, parameter modes, constants, `frees` counts and keys, and the
+`pf`/`pfree` consistency before using any value. Malformed files are
+`obxc: <sympath>:<line>:<col>: symbol file: <detail>` (exit 2).
+
+### Versions and the trust model
+
+Three exact-match values version a `.sym`: `obosym` (format/grammar and meaning),
+`abi` (record layout, descriptor format, calling convention, global addressing,
+effect-summary meaning and initialization order), and `compiler` (`OBO_VERSION`).
+Bump `OBO_VERSION` with a compiler feature; bump `obosym` on a grammar or meaning
+change; bump `abi` on a layout/ABI/effect change. A mismatch is reported with the
+line that differs:
+
+- `obxc: symbol file '<p>' has format <n>; this compiler reads <m>; rebuild it`
+- `obxc: symbol file '<p>' has ABI <n>; this compiler uses <m>; rebuild it`
+- `obxc: symbol file '<p>' was built by compiler '<v>'; this is '<w>'; rebuild it`
+
+FNV-1a is a staleness and integrity check, **not** a cryptographic one. Symbol
+files are trusted build outputs: a forged but well-formed interface can make
+`--check` accept an unsound program (it can claim a callee frees nothing). Do not
+`--check` against untrusted symbol files, and do not treat a `.sym` as a security
+boundary. A full build re-reads and validates the freshly written interface, so a
+missed version bump only affects `--check` against stale artifacts.
+
+Generated `.sym` files under the build convention (`.obo/sym`) are gitignored;
+an arbitrary `--sym-dir` is not automatically ignored. A build without
+`--sym-dir` writes next to the root source, so use `--sym-dir .obo/sym` in a
+checkout. `tests/modules/golden/expected/*.sym` are
+committed byte-goldens and are not ignored. The golden tests never rewrite a fixture in the gate; `sym_test.py
+--update` is the explicit regeneration path.
+
 ### A checked example
 
 The first file is the root; the second is compiled through `-I`.
 
 ```obo
 // example: modules
+// file: main.obx
+module main
+import "lib.obx"
+fn main() {
+    let n = lib::make(4)
+    println(lib::value(n))
+}
+// file: lib.obx
+module lib
+pub type Node = ref record { v: int }
+pub fn make(v: int): Node { return new Node{v: v} }
+pub fn value(n: Node): int { return n.v }
+// prints 4
+```
+
+A source-less check: the same tree is built, the dependency source is deleted, and
+`--check` reads only the symbol file.
+
+```obo
+// example: modules check
 // file: main.obx
 module main
 import "lib.obx"
@@ -773,6 +944,18 @@ fn secret(): int { return 1 }
 | reserved type name | `cannot declare a type named '<name>'` | 1 |
 | `const nil` | `a constant cannot be nil; use a typed optional var or let` | 1 |
 | import path not `.obx` | `import paths must end in .obx` | 1 |
+| missing `.sym` in `--check` | `obxc: no symbol file for module '<m>' in <dir>; run a build first` | 2 |
+| stale `.sym` | `obxc: symbol file '<p>' is stale: '<src>' changed since it was built; run a build` | 2 |
+| format mismatch | `obxc: symbol file '<p>' has format <n>; this compiler reads <m>; rebuild it` | 2 |
+| ABI mismatch | `obxc: symbol file '<p>' has ABI <n>; this compiler uses <m>; rebuild it` | 2 |
+| compiler mismatch | `obxc: symbol file '<p>' was built by compiler '<v>'; this is '<w>'; rebuild it` | 2 |
+| corrupt body hash | `obxc: symbol file '<p>' is corrupt (interface hash); rebuild it` | 2 |
+| dependency interface mismatch | `obxc: symbol file '<p>' depends on '<d>' with interface hash <h>, but '<d>' has <h2>; rebuild the dependent module` | 2 |
+| `.sym` vs a build's live interface | `obxc: symbol file '<p>' disagrees with the compiled interface of '<m>' for <decl>; rebuild it` | 2 |
+| malformed `.sym` | `obxc: <sympath>:<line>:<col>: symbol file: <detail>` | 2 |
+| source-less dependency in a build | `obxc: cannot read module '<m>' at <paths>; only --check may use a symbol file without source` | 2 |
+| sym-dir missing or unwritable | `obxc: symbol-file directory '<dir>' does not exist or is not writable` | 2 |
+| `-o` with `--check`/`--deps` | `obxc: -o cannot be used with --check or --deps` | 2 |
 
 Qualified names in diagnostics are `Module::name` with the declared module name
 (not the alias), and types keep the bare name inside their own module. An error
@@ -780,9 +963,10 @@ about an imported value says `lib::split` or `lib::Cache`; an error about a
 value of an imported type says `a::T` or `[]a::T`. A local alias use may print
 the underlying type, because aliases are transparent.
 
-Stage 1 has no symbol files and no separate checking: `--check`, `--sym-dir` and
-`--emit-sym` arrive in Stage 2, and the `.sym` trust model belongs there. A full
-build needs every module's source.
+A full build needs every module's source. `--check` is the separate-checking
+mode: it needs the checked module's source and its dependencies' symbol files, not
+their sources. Symbol files are trusted build outputs, not a security boundary; see
+"The `.sym` format and hashes" below.
 
 ## 7. Results and try
 
