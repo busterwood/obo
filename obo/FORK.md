@@ -3017,8 +3017,9 @@ returned whole. `readByte` returns `ok(-1)` at EOF; `readN` returns nil only if 
 `eof` performs no I/O. `flush` loops on short counts, shifting the unwritten tail to the front, and keeps
 the unwritten bytes on error so the caller may retry. `write`/`writeBytes` append a byte at a time and
 flush at the threshold; a string argument is reference-counted by the call as usual. Tools live in
-`obo/programs/` (outside `port_compare`'s example glob) and are built by concatenating the library first;
-`run_fork.py` applies the same rule to a `tests/run` file that starts with `// prelude: io`. `cat` uses
+`obo/programs/` (outside `port_compare`'s example glob) and were built by concatenating the library first;
+`run_fork.py` applied the same rule to a `tests/run` file that starts with `// prelude: io`. (Both rules
+were replaced by source modules; see "The command-line tools as source modules (done)".) `cat` uses
 `fill` + `takeChunk` + a flush per chunk (so a pipe delivers each chunk at once), not `readN`, which would
 block until the full count or EOF. `wc` counts newlines and bytes in one streaming pass.
 
@@ -3147,10 +3148,11 @@ cat `-v -e -t -A -u`, wc `-m -L --files0-from`, sort `-k -t -f -b -d -i -M -h
 next tool; `tail` needs `seek`/`readAt` or a bounded implementation. The user
 subset, message forms and caveats are in `obo/programs/README.md`.
 
-**Layout and build.** There are no modules yet, so `obo/tools/build_tools.py`
-concatenates a generated header (relative source paths, no timestamp, so the
+**Layout and build (Phase 3; superseded by the tools-as-modules record).** There
+were no modules yet, so `obo/tools/build_tools.py`
+concatenated a generated header (relative source paths, no timestamp, so the
 generated source is reproducible), `lib/str.obo`, `lib/io.obo` and the tool, in
-that order. The rule is that a prelude may use only earlier preludes, and a
+that order. The rule was that a prelude may use only earlier preludes, and a
 declaration may use only earlier declarations in its own file. The builder
 resolves every path to an absolute path, checks the compiler, runtime `.bin`s and
 sources, compiles (never runs) a well-typed phase-2 probe naming every I/O
@@ -3790,7 +3792,8 @@ it does not rebuild the tools) and `clean` removes it. The tools are still
 single-file roots built by concatenating preludes, so no `.sym` is written today
 and `--deps`-based Make prerequisites are deferred until a tool becomes a module
 root; converting the tools/stdlib to modules is explicitly out of Stage 2 scope.
-A module tool will build unchanged with the same command.
+A module tool will build unchanged with the same command. (Superseded: the tools
+and their libraries became source modules in the next record.)
 
 ## Rejected alternatives (Stage 2)
 
@@ -3801,6 +3804,68 @@ tree; absolute paths/timestamps in `.sym`; a compiler self-hash in the header
 (breaks obo/port byte comparison and depends on invocation); a `.sym`-based build
 cache (`--check` compiles bodies every run); raising the memory budget or the
 mutant margin.
+
+# The command-line tools as source modules (done)
+
+Implemented on branch `tools-modules` on top of `3e17141` (the merged Stage 2
+tree). There is no compiler, runtime or seed change: this is the first tool and
+library migration to source modules, done with the Stage 2 language as merged.
+
+## What changed
+
+- `obo/lib/str.obo` became `obo/lib/strings.obx` (`module strings`); every
+  declaration is `pub` (`isSpace`, `isBlank`, `isPrint`, `isWordByte`,
+  `cmpBytes`, `errText`, `digits`, `appendPadded`).
+- `obo/lib/io.obo` became `obo/lib/io.obx` (`module io`); `Reader`, `Writer` and
+  every function are `pub`. The module stays dependency-free: `writePadded` (and
+  its own digit loop) remains in `io` for this migration, and no `fmt` module was
+  added.
+- `obo/programs/{cat,wc,sort}.obx` are module roots. Each imports
+  `../lib/io.obx` as `io` and `../lib/strings.obx` as `strings` and qualifies
+  every library name (`io::Writer`, `io::newReader`, `io::fill`,
+  `strings::errText`, ...). They remain in `programs/`, not `cmd/`; flags,
+  messages, output bytes and exit codes are unchanged.
+- `obo/tools/build_tools.py` compiles each root directly; the generated header
+  and all concatenation are gone. Every build gets its own `<out>/sym`, created
+  by the builder (`build/tools/sym` for `make tools`), so concurrent builds never
+  share one writable sym dir. Compile diagnostics name the real source files;
+  `build()` keeps its signature for `tests/tools.py` and the builtin probe.
+- `tests/run/io_reader.obx` and `tests/run/io_writer.obx` and
+  `tests/lib/{boundaries,stream,short_write,write_padded}.obx` are module roots
+  importing `io.obx`; they are compiled with `-I obo/lib` and a private
+  `--sym-dir`. `run_fork.py`, `port_compare.py`, `io_test.py` and `mutate_io.py`
+  no longer inject the library text: `run.py` gained an optional `extra_args`
+  for module roots, and `port_compare` leaves the import cases out of its
+  `OBO_REF=seed/obo` comparison, matching that comparison's existing module-tree
+  skip (the default comparison runs them). `mutate_io.py`'s library mutants now copy the `lib/*.obx`
+  modules into a scratch tree, replace `io.obx` with the mutant and compile the
+  affected roots against `-I <scratch>/lib`; runtime mutants keep the real lib.
+- `make tools` no longer creates `.obo/sym`. Generated symbol files live under
+  `build/tools/sym`, already ignored with `obo/build/`; the generic
+  `--sym-dir .obo/sym` convention and its ignore rule remain for other builds.
+
+## Gates (cold, in the worktree)
+
+`make tools`; `tests/tools.py --require-reference` 199/199; `--memory` 2/2;
+`io_test.py --rt --programs --tools` 0 failures; `run_fork.py` 1129 passed;
+`port_compare.py` 1147/1147 with a 1,634,880-byte peak (budget 2,000,000);
+`mutate_io.py` 27/27 caught; `doc_check.py` 45 examples; `homes_check.py`;
+`homes_edge.py` 1028 statements, 0 differ; `bench/micro.py` runs. The compiler
+source, runtime and seed are byte-identical to `3e17141`.
+
+## Deviations and limitations
+
+The P2 checklist in `/tmp/obo-stdlib-eza-design-v2.md` asks for `lib/fmt.obx`
+(with `writePadded` and `digits` moved there), a `writeByte` addition and a move
+to `cmd/`. Those belong to the wider stdlib split and were deliberately left out
+here: `writePadded` stays in `io`, `strings` keeps `digits`/`appendPadded`, and
+the tools stay in `programs/` with their existing relative imports. The module
+build produces binaries of the same size as the old concatenated build but not
+the same bytes (module compile order and initialization change code layout); the
+differential gate compares behavior, and tool stdout, stderr and exit codes are
+byte-identical. The two `--memory` cases report 48 more live/allocated bytes
+than the concatenated build (still far under the 1,048,576-byte case limit);
+that is the only measured difference.
 
 ## Stage 3 sketch
 
