@@ -845,6 +845,10 @@ fn runEncoderScript(script: []byte) {
 
 // ================================================================== types
 
+// the module whose source is being parsed (section 13): type and symbol diagnostics qualify a
+// name from another module as owner::name, and keep the bare name inside its own module
+var curModuleName = ""
+
 type Type
 type Sym
 type RefBind
@@ -860,6 +864,8 @@ type Field = ref record {
 type Type = ref record {
     kind: string              // int byte bool string void nil record closed array opt result resultctor errval
     name: string
+    owner: string             // the module a named type belongs to; "" for primitives, derived and built-ins
+    uid: int                  // FNV-1a 64 of owner + "::" + name; 0 when the type has no key (B7: aliases never set it)
     base: ?^Type               // element type (array) or underlying type (opt, result)
     fields: []Field           // record, in declaration order
     parent: ?^Type             // record: the closed type it is a variant of
@@ -915,7 +921,10 @@ fn tname(t: ^Type): string {
     if t.kind == "handle" { return "^" + tname(baseOf(t)) }
     if t.kind == "opt" { return "?" + tname(baseOf(t)) }
     if t.kind == "result" { return "Result[" + tname(baseOf(t)) + "]" }
-    if len(t.name) > 0 { return t.name }
+    if len(t.name) > 0 {
+        if t.owner != "" && t.owner != curModuleName { return t.owner + "::" + t.name }
+        return t.name
+    }
     return t.kind
 }
 
@@ -965,6 +974,8 @@ fn fieldIndex(t: ^Type, name: string): int {
 type Sym = ref record {
     kind: string              // var let const type fn builtin
     name: string
+    owner: string             // the module a module-level declaration belongs to; "" for locals and builtins
+    exported: bool            // a module-level declaration marked pub (a dependency can see it)
     typ: ?^Type
     storage: string           // local or global
     offset: int               // rbp offset or absolute address
@@ -1344,7 +1355,6 @@ var gsize = 0
 var free = new []int(0)
 var depth = 0
 var universe = new []^Sym(0)
-var globals = new []^Sym(0)
 var blocks = new []Block(0)
 var narrowStack = new []NEntry(0)
 var loops = new []Loop(0)
@@ -1501,6 +1511,209 @@ fn ident(): string {
 
 fn skipSemis() {
     while sym == T_SEMI { next() }
+}
+
+// ====================================================== modules (Stage 1)
+//
+// Source imports. A module is one source file; an imported file declares `module Name` and is
+// named Name.obx. Imports are compiled dependency-first at the import point and bound to their
+// live exported declarations: the defining module's ^Sym and ^Type objects are reused, so one
+// type key is one object and one descriptor in the whole image, and a callee's effect summary
+// is final before an importer is checked. Canonical identity is the normalized source path
+// (B4); the names are only for lookup and diagnostics.
+
+fn dirOf(path: string): string
+fn normPath(p: string): string
+fn endsWith(s: string, suf: string): bool
+fn moduleNameOfPath(p: string): string
+fn resolveSource(raw: string, base: string, line: int, col: int): string
+fn lookup(name: string): ^Sym
+
+type Module
+type Import = ref record { alias: string; mod: ^Module }
+type Module = ref record {
+    name: string              // the declared name, or _root for a headerless root
+    path: string              // the normalized resolved source path: the canonical identity
+    dir: string               // its directory, for resolving its imports
+    hasHeader: bool
+    isRoot: bool
+    compiled: bool
+    globals: []^Sym           // its own top-level declarations (the declaration scope)
+    exports: []^Sym           // the exported subset, built when it completes
+    imports: []Import         // its aliases, in import order
+}
+
+var modules = new []Module(0)       // every module of the build, in compile order
+var programGlobals = new []^Sym(0)  // every module's own globals, for the exit teardown
+var visibleGlobals = new []^Sym(0)  // the current module's globals and its direct imports' exports
+var importStack = new []^Module(0)
+var importStackNames = new []string(0)
+var closureSeen = new []^Type(0)
+
+// a module used before one is current: --tokens and --encode, and the compiler's own start
+var noModule = new Module{name: "", path: "", dir: ".", hasHeader: false, isRoot: false, compiled: false,
+                          globals: new []^Sym(0), exports: new []^Sym(0), imports: new []Import(0)}
+var curModule: ^Module = handle(noModule)
+
+// The scanner's whole state, saved while a dependency's source is read, and restored before
+// the importer's next token.
+type ScanState = ref record {
+    src: string
+    pos: int
+    line: int
+    col: int
+    last: int
+    sym: int
+    sval: string
+    ival: int
+    tokSeq: int
+    tline: int
+    tcol: int
+    srcPath: string
+}
+
+fn saveScan(): ScanState {
+    return new ScanState{src: src, pos: pos, line: line, col: col, last: last, sym: sym, sval: sval,
+                         ival: ival, tokSeq: tokSeq, tline: tline, tcol: tcol, srcPath: srcPath}
+}
+
+fn restoreScan(st: &ScanState) {
+    src = st.src
+    pos = st.pos
+    line = st.line
+    col = st.col
+    last = st.last
+    sym = st.sym
+    sval = st.sval
+    ival = st.ival
+    tokSeq = st.tokSeq
+    tline = st.tline
+    tcol = st.tcol
+    srcPath = st.srcPath
+}
+
+// FNV-1a 64: the type key hash (the symbol-file hashes come in Stage 2)
+fn fnv1a(s: string): int {
+    var h = 0xcbf29ce484222325
+    for i in 0..len(s) { h = (h ^ int(s[i])) * 0x100000001b3 }
+    return h
+}
+
+// names a type at its defining declaration: only typeDecl does this (B7)
+fn nameType(t: ^Type, name: string) {
+    t.name = name
+    t.owner = curModuleName
+    t.uid = fnv1a(curModuleName + "::" + name)
+}
+
+fn reservedTypeName(n: string): bool {
+    return n == "int" || n == "byte" || n == "bool" || n == "string" ||
+        n == "void" || n == "nil" || n == "Result"
+}
+
+fn newModuleRecord(name: string, path: string, isRoot: bool): ^Module {
+    let m = new Module{name: name, path: path, dir: dirOf(path), hasHeader: false, isRoot: isRoot,
+                       compiled: false, globals: new []^Sym(0), exports: new []^Sym(0), imports: new []Import(0)}
+    append(modules, m)
+    return handle(modules[len(modules) - 1])
+}
+
+fn findModPath(path: string): ?^Module {
+    for i in 0..len(modules) {
+        if modules[i].path == path { return handle(modules[i]) }
+    }
+    return nil
+}
+
+// the module a resolved path names, which must have a record by now
+fn moduleAt(path: string): ^Module {
+    for i in 0..len(modules) {
+        if modules[i].path == path { return handle(modules[i]) }
+    }
+    error("internal error: no module record for " + path)
+    return curModule
+}
+
+fn onImportStack(m: ^Module): bool {
+    for i in 0..len(importStack) {
+        if importStack[i] == m { return true }
+    }
+    return false
+}
+
+fn findImport(alias: string): ?^Import {
+    for i in 0..len(curModule.imports) {
+        if curModule.imports[i].alias == alias { return handle(curModule.imports[i]) }
+    }
+    return nil
+}
+
+fn findExport(m: ^Module, name: string): ?^Sym {
+    for i in 0..len(m.globals) {
+        let s = m.globals[i]
+        if s.name == name && s.exported { return s }
+    }
+    return nil
+}
+
+// `alias::name`: the alias is always a module, even if a local has its name; the member is
+// looked up only in that module's exports
+fn importModule(alias: string, line: int, col: int): ^Module {
+    let im = findImport(alias)
+    if im != nil { return im.mod }
+    errorAt("'" + alias + "' is not a module", line, col)
+    return curModule
+}
+
+fn exportOf(alias: string, member: string, line: int, col: int): ^Sym {
+    let m = importModule(alias, line, col)
+    let s = findExport(m, member)
+    if s != nil { return s }
+    errorAt("module '" + m.name + "' has no exported member '" + member + "' (only 'pub' declarations are visible)", line, col)
+    return newSym("var", member, nil)
+}
+
+// a module-level name from another module is printed qualified
+fn qualifiedSymName(s: ^Sym): string {
+    if s.owner != "" && s.owner != curModuleName { return s.owner + "::" + s.name }
+    return s.name
+}
+
+// the symbol a designator starts with: alias::name when qualified (the alias is a module even
+// if a local has its name), otherwise the ordinary lookup. lastDesigName is its display name.
+var lastDesigName = ""
+
+fn designatorSym(name: string, line: int, col: int): ^Sym {
+    if sym == T_COLONCOLON {
+        next()
+        if sym != T_IDENT { errorAt("expected an exported name after '::'", tline, tcol) }
+        let member = ident()
+        lastDesigName = name + "::" + member
+        return exportOf(name, member, line, col)
+    }
+    lastDesigName = name
+    return lookup(name)
+}
+
+// a later file declaring the same module name is an error; the root is in the same table
+fn registerModule(mod: ^Module, line: int) {
+    for i in 0..len(modules) {
+        if modules[i].path != mod.path && modules[i].name == mod.name {
+            errorAt("module '" + mod.name + "' is declared by both " + modules[i].path + " and " + mod.path, line, 1)
+        }
+    }
+}
+
+// the import cycle text, from the stack entry that is the target to the closing import
+fn cycleTextModule(target: ^Module, closing: string): string {
+    var k = 0
+    while k < len(importStack) && importStack[k] != target { k += 1 }
+    var msg = "import cycle: "
+    while k < len(importStack) {
+        msg = msg + importStackNames[k] + " -> "
+        k += 1
+    }
+    return msg + closing
 }
 
 // ======================================================== emission helpers
@@ -2054,7 +2267,7 @@ fn lookup(name: string): ^Sym {
         if s != nil { return s }
         i -= 1
     }
-    let g = findSym(globals, name)
+    let g = findSym(curModule.globals, name)              // never an import: qualified names only
     if g != nil { return g }
     let u = findSym(universe, name)
     if u != nil { return u }
@@ -2063,10 +2276,19 @@ fn lookup(name: string): ^Sym {
 }
 
 fn declare(s: ^Sym): ^Sym {
-    var scope = &globals
-    if len(blocks) > 0 { scope = &blocks[len(blocks) - 1].syms }
-    if findSym(scope, s.name) != nil { error("'" + s.name + "' is already declared in this scope") }
-    append(scope, s)
+    if len(blocks) > 0 {
+        let scope = &blocks[len(blocks) - 1].syms
+        if findSym(scope, s.name) != nil { error("'" + s.name + "' is already declared in this scope") }
+        append(scope, s)
+        return s
+    }
+    if findSym(curModule.globals, s.name) != nil { error("'" + s.name + "' is already declared in this scope") }
+    for i in 0..len(curModule.imports) {
+        if curModule.imports[i].alias == s.name { error("'" + s.name + "' clashes with a top-level declaration") }
+    }
+    s.owner = curModuleName
+    append(curModule.globals, s)
+    append(visibleGlobals, s)
     return s
 }
 
@@ -2463,7 +2685,7 @@ fn consume(mut x: &Item) {
     if x.borrowed || (s != nil && s.isRef) { error("cannot move out of a reference: a reference only borrows") }
     if s != nil && s.iterating { error("cannot move '" + s.name + "' while a for loop walks it") }
     if x.mode == "mem" && s != nil {
-        if s.storage != "local" { error("cannot move out of global '" + s.name + "'; use take() on an optional one") }
+        if s.storage != "local" { error("cannot move out of global '" + qualifiedSymName(s) + "'; use take() on an optional one") }
         if inDefer { error("cannot move '" + s.name + "' inside defer") }
         if condDepth > 0 { error("cannot move '" + s.name + "' inside && or ||") }
         if pinned == s { error("cannot move '" + s.name + "' while assigning into it") }
@@ -3055,11 +3277,20 @@ fn afterCall(f: ^Sym) {
         invalidateDeep(nil)
     }
     if !pureFn(f) { invalidate(handleSym, nil, false, "") }   // and so may a borrow through a handle
-    let gs = &globals
+    // The caller's summary inherits every global the callee may free, independently of what the
+    // caller can name (B2): a middle module that does not import the defining module must still
+    // carry A::g for its own callers, which may import A. recordFree dedups and ignores a
+    // top-level initializer (curFn == nil).
+    if !all {
+        let freed = &f.fnRec.freed
+        for g in freed { recordFree(g) }
+    }
+    // The module's visible globals are invalidated for their references' sake only: a reference
+    // can only point into a global the module can name, so its direct imports suffice.
+    let gs = &visibleGlobals
     for g in gs {
         if (g.kind == "var" || g.kind == "let") && (all || mightFree(f, g)) {
             invalidate(g, nil, true, "")
-            if !all { recordFree(g) }
         }
     }
 }
@@ -3482,7 +3713,17 @@ fn parseType(): ^Type {
         return derived("handle", b)
     }
     if sym == T_REF || sym == T_CLOSED { error("record and closed types must be declared with 'type'") }
+    let uline = tline
+    let ucol = tcol
     let name = ident()
+    if sym == T_COLONCOLON {
+        next()
+        if sym != T_IDENT { error("expected a type name after '::'") }
+        let member = ident()
+        let qs = exportOf(name, member, uline, ucol)
+        if qs.kind != "type" { error("'" + name + "::" + member + "' is not a type") }
+        return symType(qs)
+    }
     let s = lookup(name)
     if s.kind != "type" { error("'" + name + "' is not a type") }
     let t = symType(s)
@@ -3529,10 +3770,11 @@ fn fieldList(rec: ^Type) {
     rec.desc = descriptor(offset, ptrs, strs)
 }
 
-fn typeDecl() {
+fn typeDecl(isPub: bool) {
     let line = tline
     let name = ident()
-    let prior = findSym(globals, name)
+    if reservedTypeName(name) { errorAt("cannot declare a type named '" + name + "'", line, 1) }
+    let prior = findSym(curModule.globals, name)
     var fwd: ?^Type = nil
     if prior != nil && prior.kind == "type" {
         let pt = symType(prior)
@@ -3540,9 +3782,13 @@ fn typeDecl() {
     }
     if sym != T_ASSIGN {
         let t = newType("record", name, nil)
+        nameType(t, name)
         t.incomplete = true
         t.line = line
-        declare(newSym("type", name, t))
+        let s = newSym("type", name, t)
+        s.line = line
+        declare(s)
+        if isPub { s.exported = true }
         return
     }
     expect(T_ASSIGN, "")
@@ -3556,24 +3802,48 @@ fn typeDecl() {
         if fwd != nil {
             rec = fwd
         } else {
-            declare(newSym("type", name, rec))
+            nameType(rec, name)
+            let s = newSym("type", name, rec)
+            s.line = line
+            declare(s)
+        }
+        let cs = findSym(curModule.globals, name)
+        if cs != nil {
+            cs.exported = cs.exported || isPub       // sticky across a forward heading and its definition
+            cs.line = line
         }
         fieldList(rec)
         rec.incomplete = false
     } else if sym == T_CLOSED {
         next()
         var ct = newType("closed", name, nil)
-        if fwd != nil { ct = fwd }
+        if fwd != nil { ct = fwd } else { nameType(ct, name) }
         ct.kind = "closed"
         ct.incomplete = false
-        if fwd == nil { declare(newSym("type", name, ct)) }
+        if fwd == nil {
+            let s = newSym("type", name, ct)
+            s.line = line
+            declare(s)
+        }
+        let cs = findSym(curModule.globals, name)
+        var pubType = isPub
+        if cs != nil {
+            cs.exported = cs.exported || isPub
+            cs.line = line
+            pubType = cs.exported
+        }
         expect(T_LBRACE, "")
         skipSemis()
         while sym != T_RBRACE {
+            let vline = tline
             let vname = ident()
             let v = newType("record", vname, nil)
+            nameType(v, vname)
             v.parent = ct
-            declare(newSym("type", vname, v))
+            let vs = newSym("type", vname, v)
+            vs.line = vline
+            declare(vs)
+            vs.exported = pubType                // exporting a closed type exports its variants
             fieldList(v)
             append(ct.variants, v)
             skipSemis()
@@ -3584,7 +3854,11 @@ fn typeDecl() {
         if fwd != nil {
             error("'" + name + "' was declared as a forward type: define it as a ref record or closed type")
         }
-        declare(newSym("type", name, parseType()))
+        let t = parseType()                      // an alias key: it maps to this object; it never names it (B7)
+        let s = newSym("type", name, t)
+        s.line = line
+        declare(s)
+        if isPub { s.exported = true }
     }
 }
 
@@ -3597,7 +3871,7 @@ fn checkTargetAcrossCall(x: &Item, xs: ?^Sym, r0: ?^Sym, callsBefore: int, line:
         errorAt("cannot assign through a handle across a call: the call could free the object; compute the value first", line, col)
     }
     if x.deref && r0 != nil && r0.storage == "global" && isOwned(symType(r0)) {
-        errorAt("cannot assign through global '" + r0.name + "' across a call: the call could free what it points into", line, col)
+        errorAt("cannot assign through global '" + qualifiedSymName(r0) + "' across a call: the call could free what it points into", line, col)
     }
     if xs == nil {
         // a field or element: the call could free the record or array it is in
@@ -4288,6 +4562,7 @@ fn callFrees(f: ^Sym, i: int, br: ^Sym, known: bool, apath: string) {
 }
 
 fn callFn(f: ^Sym): Item {
+    let fname = qualifiedSymName(f)
     let saved = saveRegs()
     let n = len(f.fnRec.params)
     let pad = (depth + 8 * n) % 16
@@ -4305,16 +4580,16 @@ fn callFn(f: ^Sym): Item {
     let tbase = argTempsUsed
     let omark = len(ownedLocals)
     for i in 0..n {
-        if sym == T_RPAREN { error(f.name + " takes " + string(n) + " argument(s), not " + string(i)) }
+        if sym == T_RPAREN { error(fname + " takes " + string(n) + " argument(s), not " + string(i)) }
         if i > 0 { expect(T_COMMA, "") }
         let argLine = tline
         let argCol = tcol
         let a = nestedExpr()
-        checkAssign(f.fnRec.params[i], a, "argument " + string(i + 1) + " of " + f.name)
+        checkAssign(f.fnRec.params[i], a, "argument " + string(i + 1) + " of " + fname)
         if f.fnRec.pmodes[i] > 0 {
             let b = borrowBind(a)
             if f.fnRec.pmodes[i] == 2 && !b.writable {
-                error("argument " + string(i + 1) + " of " + f.name + " needs a mut reference, but this one is read-only")
+                error("argument " + string(i + 1) + " of " + fname + " needs a mut reference, but this one is read-only")
             }
             // a mut argument writes through the reference it is passed by
             if f.fnRec.pmodes[i] == 2 { noteWrite(a) }
@@ -4326,11 +4601,11 @@ fn callFn(f: ^Sym): Item {
                 deepLine = argLine
                 deepCol = argCol
             }
-            argOrderCheck(tbase, f.name, i, argLine, argCol)
+            argOrderCheck(tbase, fname, i, argLine, argCol)
             holdArg(b, i)
         } else {
             consume(a)
-            argOrderCheck(tbase, f.name, i, argLine, argCol)
+            argOrderCheck(tbase, fname, i, argLine, argCol)
         }
         if a.mode == "const" && fits32(a.val) {
             pushI(a.val)                           // no register needed
@@ -4343,17 +4618,17 @@ fn callFn(f: ^Sym): Item {
         }
     }
     releaseArgs(tbase, omark)
-    if sym != T_RPAREN { error(f.name + " takes " + string(n) + " argument(s), not more") }
+    if sym != T_RPAREN { error(fname + " takes " + string(n) + " argument(s), not more") }
     expect(T_RPAREN, "")
     // a reference inside something may not go to a callee that writes through a handle, since the
     // handle may name what it is inside. A callee with only a forward heading is assumed to write.
     if deepLine > 0 {
         if f == curFn {
-            notePending(deepLine, deepCol, "cannot pass a reference that points inside something to " + f.name + ": it writes through a handle, which could free it")
+            notePending(deepLine, deepCol, "cannot pass a reference that points inside something to " + fname + ": it writes through a handle, which could free it")
         } else if f.addr < 0 {
-            errorAt("cannot pass a reference that points inside something to " + f.name + ": its body is not known yet, so it is assumed to write through a handle, which could free it", deepLine, deepCol)
+            errorAt("cannot pass a reference that points inside something to " + fname + ": its body is not known yet, so it is assumed to write through a handle, which could free it", deepLine, deepCol)
         } else if f.writesHandles {
-            errorAt("cannot pass a reference that points inside something to " + f.name + ": it writes through a handle, which could free it", deepLine, deepCol)
+            errorAt("cannot pass a reference that points inside something to " + fname + ": it writes through a handle, which could free it", deepLine, deepCol)
         }
     }
     // a mut reference and another that may point inside it could let the callee
@@ -4369,7 +4644,7 @@ fn callFn(f: ^Sym): Item {
                         let rj = bj.roots[q]
                         // two places in one root may be told apart: elements known to differ
                         if bj.deeps[q] && reaches(ri, rj) && (ri != rj || pathsOverlap(bi.paths[p], bj.paths[q])) {
-                            error("argument " + string(j + 1) + " of " + f.name + " may point inside argument " + string(i + 1) + ", which is mut")
+                            error("argument " + string(j + 1) + " of " + fname + " may point inside argument " + string(i + 1) + ", which is mut")
                         }
                     }
                 }
@@ -4381,7 +4656,7 @@ fn callFn(f: ^Sym): Item {
         for p in 0..len(b.roots) {
             let ar = b.roots[p]
             if ar.storage == "global" && mightFree(f, ar) {
-                error("cannot pass a reference into global '" + ar.name + "' to " + f.name + ": it might free it")
+                error("cannot pass a reference into global '" + qualifiedSymName(ar) + "' to " + fname + ": it might free it")
             }
         }
     }
@@ -4389,7 +4664,7 @@ fn callFn(f: ^Sym): Item {
         let b = argBinds[i]
         for p in 0..len(b.roots) {
             if b.roots[p] == handleSym && !pureFn(f) {
-                error("cannot pass a reference that borrows through a handle to " + f.name + ": it might free what the handle names")
+                error("cannot pass a reference that borrows through a handle to " + fname + ": it might free what the handle names")
             }
         }
     }
@@ -4433,7 +4708,7 @@ fn callFn(f: ^Sym): Item {
 
 fn describe(x: &Item): string {
     let s = x.sym
-    if s != nil { return s.name }
+    if s != nil { return qualifiedSymName(s) }
     return "value"
 }
 
@@ -4643,7 +4918,7 @@ fn builtin(name: string): Item {
             error("replace through a handle, a field or an element cannot have a value that calls a function that might free; compute the value first")
         }
         if tr != nil && heldLost(tr, touch0) {
-            error("cannot replace '" + tr.name + "' with a value that moves it: the call could free the array it gives back; compute the value first")
+            error("cannot replace '" + qualifiedSymName(tr) + "' with a value that moves it: the call could free the array it gives back; compute the value first")
         }
         if heldHitAt(hp) {
             error("cannot replace a place with a value that moves or frees what it holds: the old value could be freed; compute the value first")
@@ -4868,9 +5143,9 @@ fn builtin(name: string): Item {
         }
         if name != "substr" && r0 != nil && heldLost(r0, touch0) {
             if name == "append" {
-                errorAt("cannot append to '" + r0.name + "' with a value that moves it: the call could free the array it is in; compute the value first", line, 0)
+                errorAt("cannot append to '" + qualifiedSymName(r0) + "' with a value that moves it: the call could free the array it is in; compute the value first", line, 0)
             }
-            errorAt("cannot truncate '" + r0.name + "' with a count that moves it: the call could free the array it is in; compute the count first", line, 0)
+            errorAt("cannot truncate '" + qualifiedSymName(r0) + "' with a count that moves it: the call could free the array it is in; compute the count first", line, 0)
         }
         if heldHitAt(hp) {
             errorAt("cannot " + name + " an array with a value or count that replaces or moves what it holds: the old value could be freed; compute the value first", line, 0)
@@ -5026,10 +5301,11 @@ fn designatorT(target: bool): Item {
     let uline = tline
     let ucol = tcol
     let name = ident()
-    let s = lookup(name)
-    var x = nameItem(s, name, target)
+    let s = designatorSym(name, uline, ucol)
+    let qname = lastDesigName
+    var x = nameItem(s, qname, target)
     if sym == T_LPAREN && (s.kind == "var" || s.kind == "let" || s.kind == "const") {
-        error("'" + name + "' is not a function")
+        error("'" + qname + "' is not a function")
     }
     let root = x.root
     var viaHandle = false
@@ -5039,8 +5315,8 @@ fn designatorT(target: bool): Item {
     var handles = 0
     while sym == T_DOT || sym == T_LBRACK {
         if x.movedRef {
-            if s.isRefLocal { error(freedRefMsg(name)) }
-            error("'" + name + "' was moved and has no value here")
+            if s.isRefLocal { error(freedRefMsg(qname)) }
+            error("'" + qname + "' was moved and has no value here")
         }
         if x.mode == "reg" && isOwned(x.typ) {
             error("store this value in a variable first: otherwise it would never be freed")
@@ -5106,19 +5382,19 @@ fn designatorT(target: bool): Item {
                 error("cannot index through a handle with an index that calls a function: the call could free the object")
             }
             if root != nil && root.storage == "global" && userCalls != callsBefore {
-                error("cannot index through global '" + root.name + "' with an index that calls a function: the call could free it")
+                error("cannot index through global '" + qualifiedSymName(root) + "' with an index that calls a function: the call could free it")
             }
             if !wholeLocal && userCalls != callsBefore {
                 error("cannot index a field, element or reference with an index that calls a function: the call could free the array it is in; compute the index first")
             }
             if root != nil && heldLost(root, touch0) {
-                error("cannot index '" + root.name + "' with an index that moves it: the call could free its array; compute the index first")
+                error("cannot index '" + qualifiedSymName(root) + "' with an index that moves it: the call could free its array; compute the index first")
             }
             if viaHandle && heldHitAt(hp) {
                 error("cannot index through a handle with an index that moves or frees something: the object it names could be freed; compute the index first")
             }
             if root != nil && heldHitAt(hp) {
-                error("cannot index '" + root.name + "' with an index that replaces or moves what it holds: the old value could be freed; compute the index first")
+                error("cannot index '" + qualifiedSymName(root) + "' with an index that replaces or moves what it holds: the old value could be freed; compute the index first")
             }
             heldPop(hp)
             var seg = "/[]"
@@ -5157,7 +5433,7 @@ fn designatorT(target: bool): Item {
     }
     // a use of a suspect reference (not just pointing it elsewhere): see afterCall
     if s.suspect && (!target || path != "") {
-        notePending(uline, ucol, "'" + name + "' may point to freed memory: a recursive call writes through a handle, which could free what it points into")
+        notePending(uline, ucol, "'" + qname + "' may point to freed memory: a recursive call writes through a handle, which could free what it points into")
     }
     if s.isRefLocal && (!target || path != "") {        // a read, not a re-pointing: see loopBindCheck
         useSeq += 1
@@ -5209,10 +5485,13 @@ fn newExpr(): Item {
         }
         return rtCall2(RT_ALLOC_ARRAY, n, makeConst(tInt, kind), t)
     }
+    let uline = tline
+    let ucol = tcol
     let name = ident()
-    let s = lookup(name)
-    if s.kind == "type" && symType(s).incomplete { error("'" + name + "' is declared but not yet defined") }
-    if s.kind != "type" || symType(s).kind != "record" { error("'" + name + "' is not a record type") }
+    let s = designatorSym(name, uline, ucol)
+    let qname = lastDesigName
+    if s.kind == "type" && symType(s).incomplete { error("'" + qname + "' is declared but not yet defined") }
+    if s.kind != "type" || symType(s).kind != "record" { error("'" + qname + "' is not a record type") }
     let t = symType(s)
     let p = rtCall1(RT_ALLOC_RECORD, makeConst(tInt, t.desc), t)
     let given = new []string(0)
@@ -5222,7 +5501,7 @@ fn newExpr(): Item {
         let fname = ident()
         let fi = fieldIndex(t, fname)
         if fi < 0 {
-            error(name + " has no field '" + fname + "'")
+            error(tname(t) + " has no field '" + fname + "'")
             return p
         }
         let fty = t.fields[fi].typ
@@ -5265,7 +5544,7 @@ fn newExpr(): Item {
             missing = missing + fname2
         }
     }
-    if len(missing) > 0 { error(name + " needs a value for " + missing + " (it cannot be nil)") }
+    if len(missing) > 0 { error(tname(t) + " needs a value for " + missing + " (it cannot be nil)") }
     return p
 }
 
@@ -5813,7 +6092,8 @@ fn expression(): Item {
 fn block(): bool
 fn statement(): bool
 
-fn varDecl(kind: string, isGlobal: bool) {
+fn varDecl(kind: string, isGlobal: bool, isPub: bool) {
+    let nameLine = tline
     let name = ident()
     if !isGlobal { noteDeclared(name) }
     var t: ?^Type = nil
@@ -5825,6 +6105,7 @@ fn varDecl(kind: string, isGlobal: bool) {
         if declRef > 0 && isGlobal { error("references cannot be global") }
     }
     var gsym = newSym(kind, name, t)
+    gsym.line = nameLine
     if isGlobal {
         gsym.storage = "global"
         gsym.offset = GLOBAL_BASE + gsize
@@ -5908,6 +6189,7 @@ fn varDecl(kind: string, isGlobal: bool) {
         store(dst, x)
         if isGlobal { initLink = jmp() }
         declare(s)
+        if isPub { s.exported = true }
         if !isGlobal && isOwned(tt) { addOwnedLocal(s) }
         if !isGlobal && tt.kind == "string" { addStrLocal(s) }
     } else {
@@ -5920,6 +6202,7 @@ fn varDecl(kind: string, isGlobal: bool) {
         if isGlobal {
             gsym.typ = t
             declare(gsym)
+            if isPub { gsym.exported = true }
         } else {
             let s = newLocal(name, t, kind)
             if t.kind == "int" || t.kind == "bool" { homeFor(s, name, true) }
@@ -5977,7 +6260,7 @@ fn assignmentOrCall(): bool {
             if xs == nil {
                 errorAt("strings are immutable", line, col)
             } else {
-                errorAt("'" + xs.name + "' is immutable (declared with let)", line, col)
+                errorAt("'" + qualifiedSymName(xs) + "' is immutable (declared with let)", line, col)
             }
         }
         next()
@@ -6511,9 +6794,9 @@ fn whileStat(): bool {
         truncCode(top)
         farTo = len(farCalls)
         if fwdCalls != fwdFrom {
-            for g in 0..len(globals) {
-                if globals[g].kind == "fn" && globals[g].addr < 0 {
-                    let fr = globals[g].fnRec
+            for g in 0..len(curModule.globals) {
+                if curModule.globals[g].kind == "fn" && curModule.globals[g].addr < 0 {
+                    let fr = curModule.globals[g].fnRec
                     while len(fr.fixups) > 0 && fr.fixups[len(fr.fixups) - 1] >= top {
                         append(waitFn, g)
                         append(waitAt, fr.fixups[len(fr.fixups) - 1])
@@ -6560,7 +6843,7 @@ fn whileStat(): bool {
         farCalls[k] += d
         putRel(farCalls[k], getRel(farCalls[k]) - d)
     }
-    for k in waitFrom..len(waitFn) { append(globals[waitFn[k]].fnRec.fixups, waitAt[k] + d) }
+    for k in waitFrom..len(waitFn) { append(curModule.globals[waitFn[k]].fnRec.fixups, waitAt[k] + d) }
     truncate(waitFn, waitFrom)
     truncate(waitAt, waitFrom)
     let tl = shiftWaits(x.T, d)
@@ -6966,6 +7249,12 @@ fn matchStat(): bool {
             break
         }
         let vname = ident()
+        if sym == T_COLONCOLON {
+            next()
+            var bare = vname
+            if sym == T_IDENT { bare = sval }
+            errorAt("match arms name a variant without its module: write " + bare, tline, tcol)
+        }
         var v: ?^Type = nil
         let vs = &t.variants
         for c in vs {
@@ -7153,7 +7442,7 @@ fn statement(): bool {
     match k {
         T_VAR, T_LET {
             next()
-            varDecl(tokName(k), false)
+            varDecl(tokName(k), false, false)
         }
         T_IDENT { return assignmentOrCall() }
         T_TRY {
@@ -7209,6 +7498,7 @@ fn statement(): bool {
             return true
         }
         T_DEFER { deferStat() }
+        T_PUB { error("'pub' is only allowed on top-level declarations") }
         T_LBRACE { return block() }
         else { error("expected a statement") }
     }
@@ -7637,9 +7927,12 @@ fn fnBody(f: ^Sym, name: string, ret: ^Type, params: &[]Param, homes: bool): boo
 }
 
 
-fn fnDecl() {
+fn fnDecl(isPub: bool) {
     let hline = tline
     let name = ident()
+    if name == "main" && !curModule.isRoot {
+        errorAt("module '" + curModule.name + "' may not declare 'main'; the program root provides it", hline, 1)
+    }
     let params = new []Param(0)
     expect(T_LPAREN, "")
     while sym != T_RPAREN {
@@ -7671,7 +7964,7 @@ fn fnDecl() {
         next()
         ret = parseType()
     }
-    let prior = findSym(globals, name)
+    let prior = findSym(curModule.globals, name)
     var f = newSym("fn", name, nil)
     if prior != nil && prior.kind == "fn" && prior.addr < 0 {
         f = prior
@@ -7692,6 +7985,7 @@ fn fnDecl() {
         f.ret = ret
         f.line = hline
     }
+    if isPub { f.exported = true }               // sticky across a forward heading and its body
     if sym != T_LBRACE { return }
     if f.addr >= 0 { error("'" + name + "' is already defined") }
     f.addr = pc()
@@ -7718,8 +8012,8 @@ fn fnDecl() {
     homeRetry = false
     if fnBody(f, name, ret, &params, true) {
         truncCode(f.addr)
-        let gs = &globals
-        for g in gs {
+        for gi in 0..len(curModule.globals) {
+            let g = curModule.globals[gi]
             if g.kind == "fn" && g.addr < 0 {
                 let fr = g.fnRec
                 while len(fr.fixups) > 0 && fr.fixups[len(fr.fixups) - 1] >= f.addr { truncate(fr.fixups, len(fr.fixups) - 1) }
@@ -7748,17 +8042,232 @@ fn fnDecl() {
     curFn = nil
 }
 
-fn constDecl() {
+fn constDecl(isPub: bool) {
+    let line = tline
     let name = ident()
     expect(T_ASSIGN, "")
     let x = expression()
     if x.mode != "const" { error("constant value must be known at compile time") }
+    if x.typ.kind == "nil" { error("a constant cannot be nil; use a typed optional var or let") }
     let s = newSym("const", name, x.typ)
     s.value = x.val
+    s.line = line
     declare(s)
+    if isPub { s.exported = true }
 }
 
-fn compileModule() {
+// ================================================== checking exported types
+
+// An exported declaration may not mention a private named type of its own module, traversed
+// through [], ?, ^, Result, record fields and every closed-type variant's fields (B5).
+fn closureCheck(t: ^Type, declName: string, variant: string, line: int) {
+    let k = t.kind
+    if k == "array" || k == "opt" || k == "handle" || k == "result" {
+        closureCheck(baseOf(t), declName, variant, line)
+        return
+    }
+    if k != "record" && k != "closed" { return }
+    for q in 0..len(closureSeen) {
+        if closureSeen[q] == t { return }
+    }
+    append(closureSeen, t)
+    if t.owner != "" && t.owner == curModuleName && len(t.name) > 0 {
+        let s = findSym(curModule.globals, t.name)
+        if s != nil && s.kind == "type" && !s.exported {
+            var v = ""
+            if len(variant) > 0 { v = " (variant '" + variant + "')" }
+            errorAt("exported '" + declName + "' uses private type '" + t.name + "'" + v + "; mark '" + t.name + "' pub too", line, 1)
+        }
+    }
+    if t.owner != "" && t.owner != curModuleName { return }     // a foreign interface is its module's to check
+    if k == "closed" {
+        for i in 0..len(t.variants) {
+            closureCheck(t.variants[i], declName, t.variants[i].name, line)
+        }
+    } else {
+        for i in 0..len(t.fields) {
+            closureCheck(t.fields[i].typ, declName, variant, line)
+        }
+    }
+}
+
+fn checkExports() {
+    for i in 0..len(curModule.globals) {
+        let s = curModule.globals[i]
+        if s.exported {
+            truncate(closureSeen, 0)
+            if s.kind == "fn" {
+                for p in 0..len(s.fnRec.params) { closureCheck(s.fnRec.params[p], s.name, "", s.line) }
+                closureCheck(s.ret, s.name, "", s.line)
+            } else if s.kind == "var" || s.kind == "let" {
+                closureCheck(symType(s), s.name, "", s.line)
+            } else if s.kind == "type" {
+                closureCheck(symType(s), s.name, "", s.line)
+            }
+        }
+    }
+}
+
+// ================================================== one image, dependency-first
+
+fn compileUnit(path: string, display: string, isRoot: bool)
+
+// Parses one import at the current token (T_IMPORT), compiles the dependency if this build
+// has not yet, binds its live exported declarations under the alias, and adds the direct
+// imports' exports to visibleGlobals for call invalidation.
+fn parseImport() {
+    let iline = tline
+    let icol = tcol
+    next()
+    if sym != T_STRING { errorAt("expected a module path after 'import'", iline, icol) }
+    let raw = sval
+    if !endsWith(raw, ".obx") { errorAt("import paths must end in .obx", iline, icol) }
+    next()
+    var alias = ""
+    if sym == T_IDENT && sval == "as" {
+        next()
+        if sym != T_IDENT { errorAt("expected an import alias after 'as'", tline, tcol) }
+        alias = ident()
+    }
+    expect(T_SEMI, "newline")
+    let rp = resolveSource(raw, curModule.dir, iline, icol)
+    let seen = findModPath(rp)
+    if seen != nil && onImportStack(seen) {
+        errorAt(cycleTextModule(seen, raw), iline, icol)
+    }
+    if seen == nil { compileUnit(rp, raw, false) }
+    let dep = moduleAt(rp)
+    if len(alias) == 0 { alias = dep.name }
+    if reservedTypeName(alias) || findSym(universe, alias) != nil {
+        errorAt("cannot use '" + alias + "' as an import alias: it is a built-in name", iline, icol)
+    }
+    for i in 0..len(curModule.imports) {
+        if curModule.imports[i].alias == alias {
+            errorAt("'" + alias + "' is already used as an import alias", iline, icol)
+        }
+    }
+    var dup = false
+    for i in 0..len(curModule.imports) {
+        if curModule.imports[i].mod == dep { dup = true }
+    }
+    append(curModule.imports, new Import{alias: alias, mod: dep})
+    if !dup {
+        for i in 0..len(dep.globals) {
+            if dep.globals[i].exported { append(visibleGlobals, dep.globals[i]) }
+        }
+    }
+}
+
+// Compiles one module: its header and imports, then its declarations, into the shared code,
+// rodata, globals and init chain. A dependency is compiled at its import point, before the
+// importer's declarations, so its initializers run first, once, and its addresses and effect
+// summaries are final at every cross-module call.
+fn compileUnit(path: string, display: string, isRoot: bool) {
+    let data = readFile(path)
+    if data == nil {
+        eprintln("obxc: cannot read ", path)
+        exit(2)
+    }
+    let ss = saveScan()
+    let savedMod = curModule
+    let savedName = curModuleName
+    let savedVisible = replace(visibleGlobals, new []^Sym(0))
+    let m = new Module{name: "", path: path, dir: dirOf(path), hasHeader: false, isRoot: isRoot,
+                       compiled: false, globals: new []^Sym(0), exports: new []^Sym(0), imports: new []Import(0)}
+    append(modules, m)
+    let mod = handle(modules[len(modules) - 1])
+    curModule = mod
+    curModuleName = ""
+    append(importStack, mod)
+    append(importStackNames, display)
+    srcPath = path
+    startScanner(data)
+    skipSemis()
+    if sym == T_MODULE {
+        let mline = tline
+        next()
+        if sym != T_IDENT { error("expected a module name") }
+        mod.name = ident()
+        mod.hasHeader = true
+        if !isRoot && mod.name == "_root" {
+            errorAt("module '_root' is reserved for the program root", mline, 1)
+        }
+        registerModule(mod, mline)
+        curModuleName = mod.name
+        expect(T_SEMI, "newline")
+    } else {
+        if !isRoot { errorAt("imported module '" + display + "' needs a 'module Name' header", tline, tcol) }
+        mod.name = "_root"
+        registerModule(mod, 1)
+        curModuleName = "_root"
+    }
+    if !isRoot {
+        let want = moduleNameOfPath(display)
+        if mod.name != want {
+            errorAt("module '" + mod.name + "' must be in a file named " + mod.name + ".obx (found " + display + ")", 1, 1)
+        }
+    }
+    skipSemis()
+    while sym == T_IMPORT { parseImport(); skipSemis() }
+    while sym != T_EOF {
+        var isPub = false
+        if sym == T_PUB {
+            let pline = tline
+            let pcol = tcol
+            next()
+            isPub = true
+            if sym == T_IMPORT { errorAt("'pub' applies to declarations, not imports", pline, pcol) }
+        }
+        if sym == T_IMPORT { errorAt("imports must come before declarations", tline, tcol) }
+        let k = sym
+        match k {
+            T_FN {
+                next()
+                fnDecl(isPub)
+            }
+            T_TYPE {
+                next()
+                typeDecl(isPub)
+            }
+            T_VAR, T_LET {
+                next()
+                varDecl(tokName(k), true, isPub)
+            }
+            T_CONST {
+                next()
+                constDecl(isPub)
+            }
+            else { error("expected a declaration") }
+        }
+        if sym != T_EOF { expect(T_SEMI, "newline") }
+        skipSemis()
+    }
+    let syms = &curModule.globals
+    for s in syms {
+        if s.kind == "type" && symType(s).incomplete {
+            errorAt("type '" + s.name + "' is declared but never defined", symType(s).line, 1)
+        }
+        if s.kind == "fn" && s.addr < 0 {
+            errorAt("function '" + s.name + "' has a forward heading but no body", s.line, 1)
+        }
+    }
+    checkExports()
+    mod.compiled = true
+    for i in 0..len(curModule.globals) {
+        if curModule.globals[i].exported { append(mod.exports, curModule.globals[i]) }
+        append(programGlobals, curModule.globals[i])
+    }
+    truncate(importStack, len(importStack) - 1)
+    truncate(importStackNames, len(importStackNames) - 1)
+    curModule = savedMod
+    curModuleName = savedName
+    visibleGlobals = savedVisible
+    restoreScan(ss)
+}
+
+// The program: one entry prologue, the root's compile, its main, and the teardown of every
+// module's own globals in compile order (dependency globals first), then RT_FINISH.
+fn compileProgram(rootPath: string, out: string, rtDir: string) {
     emit(0x48)
     emit(0x89)
     emit(0xE7)
@@ -7769,62 +8278,21 @@ fn compileModule() {
     emit32(0)
     callAbs(RT_TEXT + 8 * RT_INIT)
     initLink = jmp()
-    skipSemis()
-    if sym == T_MODULE {
-        next()
-        ident()
-        expect(T_SEMI, "newline")
-    }
-    skipSemis()
-    while sym != T_EOF {
-        if sym == T_PUB { next() }
-        let k = sym
-        match k {
-            T_IMPORT { error("imports are not supported yet") }
-            T_FN {
-                next()
-                fnDecl()
-            }
-            T_TYPE {
-                next()
-                typeDecl()
-            }
-            T_VAR, T_LET {
-                next()
-                varDecl(tokName(k), true)
-            }
-            T_CONST {
-                next()
-                constDecl()
-            }
-            else { error("expected a declaration") }
-        }
-        if sym != T_EOF { expect(T_SEMI, "newline") }
-        skipSemis()
-    }
-    {
-        let syms = &globals
-        for s in syms {
-            if s.kind == "type" && symType(s).incomplete {
-                errorAt("type '" + s.name + "' is declared but never defined", symType(s).line, 1)
-            }
-            if s.kind == "fn" && s.addr < 0 {
-                errorAt("function '" + s.name + "' has a forward heading but no body", s.line, 1)
-            }
-        }
-    }
-    let m = findSym(globals, "main")
-    if m == nil || m.kind != "fn" || len(m.fnRec.params) > 0 || m.ret != tVoid {
+    let root = normPath(rootPath)
+    compileUnit(root, rootPath, true)
+    let rm = moduleAt(root)
+    let mainSym = findSym(rm.globals, "main")
+    if mainSym == nil || mainSym.kind != "fn" || len(mainSym.fnRec.params) > 0 || mainSym.ret != tVoid {
         var l = 1
-        if m != nil && m.kind == "fn" { l = m.line }
+        if mainSym != nil && mainSym.kind == "fn" { l = mainSym.line }
         errorAt("the program needs 'fn main()' with no parameters or result", l, 1)
         return
     }
     fixHere1(initLink)
     emit(0xE8)
-    emit32(m.addr - (pc() + 4))
+    emit32(mainSym.addr - (pc() + 4))
     depth = 0
-    let gs = &globals
+    let gs = &programGlobals
     for g in gs {
         if (g.kind == "var" || g.kind == "let") && isOwned(symType(g)) {
             let x = newItem("mem", symType(g))
@@ -8014,43 +8482,6 @@ fn moduleNameOfPath(p: string): string {
 
 var incDirs = new []string(0)
 
-// The scanner's whole state, saved while a dependency's source (or a symbol file, in Stage 2)
-// is read, and restored before the importer's next token.
-type ScanState = ref record {
-    src: string
-    pos: int
-    line: int
-    col: int
-    last: int
-    sym: int
-    sval: string
-    ival: int
-    tokSeq: int
-    tline: int
-    tcol: int
-    srcPath: string
-}
-
-fn saveScan(): ScanState {
-    return new ScanState{src: src, pos: pos, line: line, col: col, last: last, sym: sym, sval: sval,
-                         ival: ival, tokSeq: tokSeq, tline: tline, tcol: tcol, srcPath: srcPath}
-}
-
-fn restoreScan(st: &ScanState) {
-    src = st.src
-    pos = st.pos
-    line = st.line
-    col = st.col
-    last = st.last
-    sym = st.sym
-    sval = st.sval
-    ival = st.ival
-    tokSeq = st.tokSeq
-    tline = st.tline
-    tcol = st.tcol
-    srcPath = st.srcPath
-}
-
 // the module record of the --deps scan: only names and paths, no compile
 type Dep = ref record { name: string; path: string; display: string }
 
@@ -8104,8 +8535,15 @@ fn resolveSource(raw: string, base: string, line: int, col: int): string {
         for k in 0..len(incDirs) { append(cands, joinDirPath(incDirs[k], raw)) }
     }
     var tried = ""
+    let seenPaths = new []string(0)
     for c in cands {
         let n = normPath(c)
+        var dup = false
+        for k in 0..len(seenPaths) {
+            if seenPaths[k] == n { dup = true }
+        }
+        if dup { continue }
+        append(seenPaths, n)
         if len(tried) > 0 { tried = tried + ", " }
         tried = tried + n
         let data = readFile(n)
@@ -8188,7 +8626,11 @@ fn releaseTables() {
     typeArena = new []Type(0)
     bindArena = new []RefBind(0)
     universe = new []^Sym(0)
-    globals = new []^Sym(0)
+    modules = new []Module(0)
+    programGlobals = new []^Sym(0)
+    visibleGlobals = new []^Sym(0)
+    importStack = new []^Module(0)
+    closureSeen = new []^Type(0)
     strKeys = new []string(0)
     strAddrs = new []int(0)
 }
@@ -8212,9 +8654,8 @@ fn compileFile(path: string, out: string, rtDir: string) {
         eprintln("obxc: cannot read the runtime from ", rtDir)
         exit(2)
     }
-    startScanner(data)
-    compileModule()
-    src = ""                       // the source is no longer read: free it before the image is built
+    drop(data)                     // the root source is read again by compileUnit; do not hold two copies
+    compileProgram(path, out, rtDir)
     releaseTables()
     let rtText = readFile(rtDir + "/runtime_text.bin")
     let rtData = readFile(rtDir + "/runtime_data.bin")
