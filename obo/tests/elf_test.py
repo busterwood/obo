@@ -5,9 +5,10 @@ The runtime's data image ends in zero-filled .bss (obuf, the heap state, the
 free lists), so the compiler puts the full length in p_memsz and only the
 nonzero prefix in p_filesz; the loader zero-fills the rest, as it already does
 for the compiler's own globals segment (filesz 0). This checks a produced
-executable's program headers, that the file ends where the runtime-data
-segment's file bytes end instead of carrying the zero tail, and that a normal
-program compiled by the same compiler still runs.
+executable's program headers, that the segment's file bytes are the runtime
+data prefix, that the file ends where those bytes end instead of carrying the
+zero tail, and that a normal program compiled by the same compiler still
+runs.
 
     python3 obo/tests/elf_test.py
     python3 obo/tests/elf_test.py --source SRC   # build SRC with the seed, then check
@@ -68,10 +69,11 @@ def last_nonzero(data):
     return n
 
 
-def segment_shape(exe, rt_len, trimmed):
+def segment_shape(exe, rt_len, trimmed, prefix):
     """Check a produced file's runtime-data segment against the runtime data it
     was built with: memory size rt_len, file size trimmed (last nonzero + 1),
-    page aligned, and last in the file. Returns (filesz, memsz)."""
+    file bytes prefix (the nonzero run), page aligned, and last in the file.
+    Returns (filesz, memsz)."""
     data = open(exe, 'rb').read()
     phdrs = program_headers(data)
     loads = [p for p in phdrs if p[0] == PT_LOAD]
@@ -83,12 +85,17 @@ def segment_shape(exe, rt_len, trimmed):
         raise Fail(f"runtime data vaddr is {vaddr:#x}")
     if align != PAGE or off % PAGE != 0:
         raise Fail(f"runtime data segment is not page aligned (offset {off:#x}, align {align:#x})")
-    if filesz >= memsz:
-        raise Fail(f"runtime data filesz {filesz} is not below memsz {memsz}: the zero tail is in the file")
     if memsz != rt_len:
         raise Fail(f"runtime data memsz is {memsz}, not the image length {rt_len}")
+    if filesz > memsz:
+        raise Fail(f"runtime data filesz {filesz} is over memsz {memsz}")
+    if trimmed < rt_len and filesz >= memsz:
+        raise Fail(f"runtime data filesz {filesz} is not below memsz {memsz} although the image ends in zeros: "
+                   "the zero tail is in the file")
     if filesz != trimmed:
         raise Fail(f"runtime data filesz is {filesz}, not last-nonzero+1 = {trimmed}")
+    if data[off:off + filesz] != prefix:
+        raise Fail(f"the segment's {filesz} file bytes are not the runtime data prefix")
     size = os.path.getsize(exe)
     if size != off + filesz:
         raise Fail(f"the file is {size} bytes, not {off + filesz}: bytes follow the segment's file data")
@@ -126,7 +133,7 @@ def check_synthetic(compiler, work):
         with open(os.path.join(rt_dir, 'runtime_data.bin'), 'wb') as f:
             f.write(rt)
         compile_program(compiler, src, exe, rt_dir)
-        segment_shape(exe, len(rt), trimmed)
+        segment_shape(exe, len(rt), trimmed, rt[:trimmed])
 
 
 def check(compiler, workdir=None):
@@ -146,7 +153,7 @@ def check(compiler, workdir=None):
         with open(src, 'w') as f:
             f.write(PROGRAM)
         compile_program(compiler, src, exe, FORK)
-        filesz, memsz = segment_shape(exe, len(rt), trimmed)
+        filesz, memsz = segment_shape(exe, len(rt), trimmed, rt[:trimmed])
         r = subprocess.run([exe], capture_output=True, timeout=60,
                            env=dict(os.environ, OBO_CHECK='1'))
         if r.returncode != 0 or r.stdout != EXPECTED or r.stderr:

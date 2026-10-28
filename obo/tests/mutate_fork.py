@@ -1173,12 +1173,12 @@ IO_MUTANTS = {
 MUTANTS.update(IO_MUTANTS)
 
 # image emission (FORK.md, "Compiler size fixes"): the runtime data segment's
-# file size is its nonzero prefix and its memory size the full image; the
-# epilogue is leave; ret. The first two change only produced images, so the
-# image test in run_fork judges them (mutate_port runs elf_test.py); the int3
-# return is caught by the ordinary executable tests. The old two-instruction
-# epilogue is genuinely equivalent: x86 leave is defined as mov rsp,rbp; pop
-# rbp, and only the encoding's size differs.
+# file size is its nonzero prefix, its file bytes that prefix and its memory
+# size the full image; the epilogue is leave; ret. The first three change only
+# produced images, so the image test in run_fork judges them (mutate_port runs
+# elf_test.py); the int3 return is caught by the ordinary executable tests. The
+# old two-instruction epilogue is genuinely equivalent: x86 leave is defined as
+# mov rsp,rbp; pop rbp, and only the encoding's size differs.
 SIZE_MUTANTS = {
     "image: the runtime data keeps its zero tail": (
         "    let rtDataFile = dataFileLen(rtData)             // the trailing .bss need not be in the file\n",
@@ -1186,6 +1186,9 @@ SIZE_MUTANTS = {
     "image: the runtime data memory size is its file size": (
         "    phdr(ph, 6, rtDataAt, RT_DATA, rtDataFile, len(rtData))\n",
         "    phdr(ph, 6, rtDataAt, RT_DATA, rtDataFile, rtDataFile)\n"),
+    "image: the runtime data copies only its first byte": (
+        "    for i in 0..rtDataFile { out[rtDataAt + i] = rtData[i] }\n",
+        "    if rtDataFile > 0 { out[rtDataAt] = rtData[0] }\n"),
     "image: the epilogue is the old two-instruction sequence": (
         "    emit(0xC9)                   // leave: mov rsp,rbp; pop rbp\n",
         "    emit(0x48)\n    emit(0x89)\n    emit(0xEC)\n    emit(0x5D)\n"),

@@ -235,11 +235,13 @@ MUTANTS = {
 ENCODER = {"push imm8 for any imm32"}
 
 # mutants of the image emitter: they change only the produced file (the zero tail
-# in p_filesz, or p_memsz shrunk to p_filesz), so the comparison's outcomes and
-# peak are the same; elf_test.py judges them. The wrong epilogue opcode builds
-# crashing programs, so the ordinary comparison catches it.
+# in p_filesz, p_memsz shrunk to p_filesz, or only the first prefix byte copied
+# while the sizes stay right), so the comparison's outcomes and peak are the
+# same; elf_test.py judges them. The wrong epilogue opcode builds crashing
+# programs, so the ordinary comparison catches it.
 IMAGE = {"image: the runtime data keeps its zero tail",
-         "image: the runtime data memory size is its file size"}
+         "image: the runtime data memory size is its file size",
+         "image: the runtime data copies only its first byte"}
 
 
 # the reference bindings per path (obo/tools/port_ref_binds.py): the mutants whose text the rewrite
