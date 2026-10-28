@@ -7,7 +7,12 @@ CFLAGS = -O2 -ffreestanding -fno-builtin -nostdlib -fno-pic -fno-pie -fno-stack-
 # target of that name would be "up to date" whenever the directory is not older
 # than its prerequisites, and the tool and library sources are deliberately not
 # prerequisites (the builder checks them).
-.PHONY: tools tools-check tools-memory all clean
+#
+# Stage 2 symbol files live in .obo/sym, one file per module, a flat namespace. The
+# directory is an order-only prerequisite: creating/touching it must not rebuild the
+# tools. The builder creates it too, so a direct `python3 tools/build_tools.py` works.
+SYMDIR = .obo/sym
+.PHONY: tools tools-check tools-memory all clean $(SYMDIR)
 
 all: runtime_text.bin runtime_data.bin obo
 
@@ -41,8 +46,11 @@ rt_io_test: tests/rt_io_test.c runtime/runtime.c runtime/rt.ld
 # concatenated and compiled by tools/build_tools.py (the sources are not Make
 # prerequisites; .PHONY makes every source edit rebuild, and the builder's own
 # checks report a missing phase 2 instead of make reporting a missing target)
-tools: obo runtime_text.bin runtime_data.bin
+tools: obo runtime_text.bin runtime_data.bin | $(SYMDIR)
 	python3 tools/build_tools.py
+
+$(SYMDIR):
+	mkdir -p $(SYMDIR)
 
 # the differential gate against GNU coreutils (separate from make promote)
 tools-check: tools
@@ -64,3 +72,4 @@ promote: obo
 clean:
 	rm -rf build
 	rm -f *.o *.elf *.bin obo obo-noregs .noregs.obo .stage2 .stage3 rt_io_test
+	rm -rf .obo

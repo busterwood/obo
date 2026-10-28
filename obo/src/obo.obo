@@ -102,6 +102,14 @@ const T_SHR = 65
 const T_TRY = 66
 const T_COLONCOLON = 67
 
+// Stage 2: the symbol-file format, the compiled-program ABI and the compiler version.
+// OBO_VERSION is the compiler's identity in every .sym's `compiler` line and in --version.
+// Bump OBO_VERSION with each merged compiler feature; bump SYM_FORMAT on any grammar or
+// meaning change; bump SYM_ABI on any layout/calling-convention/descriptor/effect change.
+const OBO_VERSION = "0.2"
+const SYM_FORMAT = 1
+const SYM_ABI = 1
+
 fn makeTokNames(): []string {
     let k = new []string(0)
     let names = "eof ident int char string module import pub type var let const fn return if else while for in break continue defer match ref record closed new nil true false ( ) { } [ ] , ; : . .. = == != < <= > >= + - * / % ! ? & | ^ ~ && || += -= *= << >> try ::"
@@ -131,6 +139,7 @@ var ival = 0              // integer or character value
 var tokSeq = 0                   // the tokens read so far (the index of the current one)
 var tline = 0             // where the current token starts
 var tcol = 0
+var tokStart = 0          // where the current token's text starts in src (the .sym reader checks hex forms)
 var dumpMode = false
 
 fn makeKeywords(): []string {
@@ -161,6 +170,10 @@ fn keywordTok(w: string): int {
 
 var srcPath = ""
 
+// true while a .sym file is being read: its errors are symbol-file errors (exit 2), not
+// source errors (exit 1), and name the file with the obxc: prefix
+var symMode = false
+
 // reports an error at line l, column c (0 means the current token) and stops
 fn errorAt(msg: string, l: int, c: int) {
     var ln = l
@@ -169,9 +182,12 @@ fn errorAt(msg: string, l: int, c: int) {
     if cn == 0 { cn = tcol }
     if dumpMode {
         println(ln, ":", cn, " error ", msg)
+    } else if symMode {
+        eprintln("obxc: ", srcPath, ":", ln, ":", cn, ": symbol file: ", msg)
     } else {
         eprintln(srcPath, ":", ln, ":", cn, ": ", msg)
     }
+    if symMode { exit(2) }
     exit(1)
 }
 
@@ -393,6 +409,7 @@ fn next() {
             if c == '\n' && semiAfter(last) {
                 tline = line
                 tcol = col
+                tokStart = pos
                 advance()
                 setTok(T_SEMI)
                 return
@@ -407,6 +424,7 @@ fn next() {
     }
     tline = line
     tcol = col
+    tokStart = pos
     if pos >= len(src) {
         if semiAfter(last) {
             setTok(T_SEMI)
@@ -1527,20 +1545,31 @@ fn normPath(p: string): string
 fn endsWith(s: string, suf: string): bool
 fn moduleNameOfPath(p: string): string
 fn resolveSource(raw: string, base: string, line: int, col: int): string
+fn findSource(raw: string, base: string): string
+fn joinDirPath(d: string, p: string): string
 fn lookup(name: string): ^Sym
 
 type Module
-type Import = ref record { alias: string; mod: ^Module }
+type Import = ref record { alias: string; mod: ^Module; raw: string }
+type SymDepList = ref record { names: []string; paths: []string; hashes: []int }
 type Module = ref record {
     name: string              // the declared name, or _root for a headerless root
     path: string              // the normalized resolved source path: the canonical identity
+    srcPath: string           // the source actually read ("" for an interface-only module)
     dir: string               // its directory, for resolving its imports
     hasHeader: bool
     isRoot: bool
     compiled: bool
+    ifaceOnly: bool           // reconstructed from a .sym: --check and its dependencies
+    symLoaded: bool           // its .sym has been read and validated in this build
+    srcHash: int              // FNV-1a 64 of the source bytes
+    ifaceHash: int            // hash of the interface body (set when the .sym is written or read)
     globals: []^Sym           // its own top-level declarations (the declaration scope)
     exports: []^Sym           // the exported subset, built when it completes
     imports: []Import         // its aliases, in import order
+    symDepNames: []string     // the .sym's dep/depiface pairs, in first-import order (interface-only)
+    symDepPaths: []string
+    symDepHashes: []int
 }
 
 var modules = new []Module(0)       // every module of the build, in compile order
@@ -1550,13 +1579,29 @@ var importStack = new []^Module(0)
 var importStackNames = new []string(0)
 var closureSeen = new []^Type(0)
 
+// Stage 2 symbol files (defined after the module compiler below)
+fn writeSym(mod: ^Module)
+fn symText(mod: ^Module): []byte
+fn readSym(symPath: string, expected: string, mode: int, display: string, srcCandidate: string): ^Module
+fn loadSymCheck(symPath: string, expected: string, display: string, srcCandidate: string): ^Module
+
+var symDir = ""                  // where .sym files are written and found
+var symDirSet = false
+var checking = false            // --check: read dependency .sym files, write the checked module's
+var emitRootSym = false          // --emit-sym: a single-file build writes the root's .sym
+var symLoadNames = new []string(0)   // the modules whose interfaces are being read (cycle check)
+var symDummyGlobals = 0              // imported global dummy offsets in --check (never overlap real globals)
+const SYM_DUMMY_BASE = GLOBAL_BASE + 0x01000000
+
 // a module used before one is current: --tokens and --encode, and the compiler's own start
-var noModule = new Module{name: "", path: "", dir: ".", hasHeader: false, isRoot: false, compiled: false,
-                          globals: new []^Sym(0), exports: new []^Sym(0), imports: new []Import(0)}
+var noModule = new Module{name: "", path: "", srcPath: "", dir: ".", hasHeader: false, isRoot: false, compiled: false,
+                          ifaceOnly: false, symLoaded: false, srcHash: 0, ifaceHash: 0,
+                          globals: new []^Sym(0), exports: new []^Sym(0), imports: new []Import(0),
+                          symDepNames: new []string(0), symDepPaths: new []string(0), symDepHashes: new []int(0)}
 var curModule: ^Module = handle(noModule)
 
-// The scanner's whole state, saved while a dependency's source is read, and restored before
-// the importer's next token.
+// The scanner's whole state, saved while a dependency's source is read or a .sym is parsed,
+// and restored before the caller's next token.
 type ScanState = ref record {
     src: string
     pos: int
@@ -1569,12 +1614,15 @@ type ScanState = ref record {
     tokSeq: int
     tline: int
     tcol: int
+    tokStart: int
     srcPath: string
+    dumpMode: bool
 }
 
 fn saveScan(): ScanState {
     return new ScanState{src: src, pos: pos, line: line, col: col, last: last, sym: sym, sval: sval,
-                         ival: ival, tokSeq: tokSeq, tline: tline, tcol: tcol, srcPath: srcPath}
+                         ival: ival, tokSeq: tokSeq, tline: tline, tcol: tcol, tokStart: tokStart,
+                         srcPath: srcPath, dumpMode: dumpMode}
 }
 
 fn restoreScan(st: &ScanState) {
@@ -1589,21 +1637,86 @@ fn restoreScan(st: &ScanState) {
     tokSeq = st.tokSeq
     tline = st.tline
     tcol = st.tcol
+    tokStart = st.tokStart
     srcPath = st.srcPath
+    dumpMode = st.dumpMode
 }
 
-// FNV-1a 64: the type key hash (the symbol-file hashes come in Stage 2)
+// FNV-1a 64: the type key hash and the symbol-file hashes (§7.5)
 fn fnv1a(s: string): int {
     var h = 0xcbf29ce484222325
     for i in 0..len(s) { h = (h ^ int(s[i])) * 0x100000001b3 }
     return h
 }
 
+fn fnvRange(s: string, from: int, to: int): int {
+    var h = 0xcbf29ce484222325
+    var i = from
+    while i < to {
+        h = (h ^ int(s[i])) * 0x100000001b3
+        i += 1
+    }
+    return h
+}
+
+fn fnvBytes(b: &[]byte): int {
+    var h = 0xcbf29ce484222325
+    for i in 0..len(b) { h = (h ^ int(b[i])) * 0x100000001b3 }
+    return h
+}
+
+// appends a value's 16 hexadecimal digits (two's complement: negatives wrap)
+fn appHex16(mut b: &[]byte, v: int) {
+    append(b, '0')
+    append(b, 'x')
+    for k in 0..16 {
+        let sh = 60 - 4 * k
+        append(b, hexDigit((v >> sh) & 15))
+    }
+}
+
+// appends the shortest hexadecimal form of a non-negative mask (0 is "0x0")
+fn appHexMin(mut b: &[]byte, v: int) {
+    append(b, '0')
+    append(b, 'x')
+    var started = false
+    for k in 0..16 {
+        let sh = 60 - 4 * k
+        let d = (v >> sh) & 15
+        if d != 0 || started || k == 15 {
+            append(b, hexDigit(d))
+            started = true
+        }
+    }
+}
+
+fn hex16Of(v: int): string {
+    let b = new []byte(0)
+    appHex16(b, v)
+    return string(b)
+}
+
+// true for text of exactly 0x followed by 16 hexadecimal digits
+fn isHex16(s: string): bool {
+    if len(s) != 18 { return false }
+    if s[0] != '0' || s[1] != 'x' { return false }
+    for i in 2..18 {
+        if !isHex(s[i]) { return false }
+    }
+    return true
+}
+
+// the canonical registries (defined below)
+fn registerType(t: ^Type, owner: string, name: string)
+fn registerTypeAlias(owner: string, name: string, t: ^Type)
+fn registerGlobalSym(s: ^Sym)
+
 // names a type at its defining declaration: only typeDecl does this (B7)
 fn nameType(t: ^Type, name: string) {
     t.name = name
     t.owner = curModuleName
     t.uid = fnv1a(curModuleName + "::" + name)
+    registerType(t, curModuleName, name)
 }
 
 fn reservedTypeName(n: string): bool {
@@ -1611,9 +1724,81 @@ fn reservedTypeName(n: string): bool {
         n == "void" || n == "nil" || n == "Result"
 }
 
+// ------------------------------------------------- the canonical registries
+//
+// One ^Type per canonical key Module::Name and one ^Sym per global key, for the whole
+// compilation. A full build registers the defining module's live objects as it declares
+// them; --check reconstructs them from .sym files. A summary may name a global of a module
+// that is not loaded: globalSym returns (or makes) an incomplete stub, and the defining
+// module's later load completes that same ^Sym (B6), so mightFree compares one object.
+
+var typeKeys = new []string(0)
+var typeRegistry = new []^Type(0)
+var globalKeys = new []string(0)
+var globalRegistry = new []^Sym(0)
+
+fn keyOf(owner: string, name: string): string { return owner + "::" + name }
+
+fn typeAtKey(key: string): ?^Type {
+    for i in 0..len(typeKeys) {
+        if typeKeys[i] == key { return typeRegistry[i] }
+    }
+    return nil
+}
+
+// registers a named type; the caller has checked that the key is new
+fn registerType(t: ^Type, owner: string, name: string) {
+    append(typeKeys, keyOf(owner, name))
+    append(typeRegistry, t)
+}
+
+// an alias key maps to an existing Type; it never creates one or changes owner/uid/name (B7)
+fn registerTypeAlias(owner: string, name: string, t: ^Type) {
+    append(typeKeys, keyOf(owner, name))
+    append(typeRegistry, t)
+}
+
+fn globalAtKey(key: string): ?^Sym {
+    for i in 0..len(globalKeys) {
+        if globalKeys[i] == key { return globalRegistry[i] }
+    }
+    return nil
+}
+
+// the one ^Sym for a global key: the existing symbol, or an incomplete stub that a later
+// defining .sym completes (B6)
+fn globalSym(owner: string, name: string): ^Sym {
+    let key = keyOf(owner, name)
+    let have = globalAtKey(key)
+    if have != nil { return have }
+    let s = newSym("var", name, nil)
+    s.owner = owner
+    s.storage = "global"
+    append(globalKeys, key)
+    append(globalRegistry, s)
+    return s
+}
+
+// registers a live module global; its key must be new
+fn registerGlobalSym(s: ^Sym) {
+    append(globalKeys, keyOf(s.owner, s.name))
+    append(globalRegistry, s)
+}
+
+// the key a registered symbol was made under, for the .sym writer
+fn symKey(s: ^Sym): string {
+    let key = keyOf(s.owner, s.name)
+    for i in 0..len(globalKeys) {
+        if globalRegistry[i] == s { return globalKeys[i] }
+    }
+    return key
+}
+
 fn newModuleRecord(name: string, path: string, isRoot: bool): ^Module {
-    let m = new Module{name: name, path: path, dir: dirOf(path), hasHeader: false, isRoot: isRoot,
-                       compiled: false, globals: new []^Sym(0), exports: new []^Sym(0), imports: new []Import(0)}
+    let m = new Module{name: name, path: path, srcPath: "", dir: dirOf(path), hasHeader: false, isRoot: isRoot,
+                       compiled: false, ifaceOnly: false, symLoaded: false, srcHash: 0, ifaceHash: 0,
+                       globals: new []^Sym(0), exports: new []^Sym(0), imports: new []Import(0),
+                       symDepNames: new []string(0), symDepPaths: new []string(0), symDepHashes: new []int(0)}
     append(modules, m)
     return handle(modules[len(modules) - 1])
 }
@@ -2287,6 +2472,7 @@ fn declare(s: ^Sym): ^Sym {
         if curModule.imports[i].alias == s.name { error("'" + s.name + "' clashes with a top-level declaration") }
     }
     s.owner = curModuleName
+    if s.storage == "global" { registerGlobalSym(s) }
     append(curModule.globals, s)
     append(visibleGlobals, s)
     return s
@@ -3855,6 +4041,7 @@ fn typeDecl(isPub: bool) {
             error("'" + name + "' was declared as a forward type: define it as a ref record or closed type")
         }
         let t = parseType()                      // an alias key: it maps to this object; it never names it (B7)
+        registerTypeAlias(curModuleName, name, t)
         let s = newSym("type", name, t)
         s.line = line
         declare(s)
@@ -8112,6 +8299,28 @@ fn checkExports() {
 
 fn compileUnit(path: string, display: string, isRoot: bool)
 
+// the alias checks and binding shared by a build import and a check import
+fn bindImportedAlias(alias: string, dep: ^Module, raw: string, iline: int, icol: int) {
+    if reservedTypeName(alias) || findSym(universe, alias) != nil {
+        errorAt("cannot use '" + alias + "' as an import alias: it is a built-in name", iline, icol)
+    }
+    for i in 0..len(curModule.imports) {
+        if curModule.imports[i].alias == alias {
+            errorAt("'" + alias + "' is already used as an import alias", iline, icol)
+        }
+    }
+    var dup = false
+    for i in 0..len(curModule.imports) {
+        if curModule.imports[i].mod == dep { dup = true }
+    }
+    append(curModule.imports, new Import{alias: alias, mod: dep, raw: raw})
+    if !dup {
+        for i in 0..len(dep.globals) {
+            if dep.globals[i].exported { append(visibleGlobals, dep.globals[i]) }
+        }
+    }
+}
+
 // Parses one import at the current token (T_IMPORT), compiles the dependency if this build
 // has not yet, binds its live exported declarations under the alias, and adds the direct
 // imports' exports to visibleGlobals for call invalidation.
@@ -8130,6 +8339,17 @@ fn parseImport() {
         alias = ident()
     }
     expect(T_SEMI, "newline")
+    if checking {
+        // --check: the dependency's interface comes from its .sym; a source, if present, is
+        // used only to validate the header and the source hash (never compiled)
+        let base = moduleNameOfPath(raw)
+        let symPath = joinDirPath(symDir, base + ".sym")
+        let src = findSource(raw, curModule.dir)
+        let dep = loadSymCheck(symPath, base, raw, src)
+        if len(alias) == 0 { alias = dep.name }
+        bindImportedAlias(alias, dep, raw, iline, icol)
+        return
+    }
     let rp = resolveSource(raw, curModule.dir, iline, icol)
     let seen = findModPath(rp)
     if seen != nil && onImportStack(seen) {
@@ -8137,25 +8357,14 @@ fn parseImport() {
     }
     if seen == nil { compileUnit(rp, raw, false) }
     let dep = moduleAt(rp)
+    // every import reads the dependency's .sym at the import point and validates it against
+    // the live interface (the v1 invariant: a build never takes semantics from the file)
+    if !dep.symLoaded {
+        readSym(joinDirPath(symDir, dep.name + ".sym"), dep.name, 0, raw, "")
+        dep.symLoaded = true
+    }
     if len(alias) == 0 { alias = dep.name }
-    if reservedTypeName(alias) || findSym(universe, alias) != nil {
-        errorAt("cannot use '" + alias + "' as an import alias: it is a built-in name", iline, icol)
-    }
-    for i in 0..len(curModule.imports) {
-        if curModule.imports[i].alias == alias {
-            errorAt("'" + alias + "' is already used as an import alias", iline, icol)
-        }
-    }
-    var dup = false
-    for i in 0..len(curModule.imports) {
-        if curModule.imports[i].mod == dep { dup = true }
-    }
-    append(curModule.imports, new Import{alias: alias, mod: dep})
-    if !dup {
-        for i in 0..len(dep.globals) {
-            if dep.globals[i].exported { append(visibleGlobals, dep.globals[i]) }
-        }
-    }
+    bindImportedAlias(alias, dep, raw, iline, icol)
 }
 
 // Compiles one module: its header and imports, then its declarations, into the shared code,
@@ -8172,8 +8381,10 @@ fn compileUnit(path: string, display: string, isRoot: bool) {
     let savedMod = curModule
     let savedName = curModuleName
     let savedVisible = replace(visibleGlobals, new []^Sym(0))
-    let m = new Module{name: "", path: path, dir: dirOf(path), hasHeader: false, isRoot: isRoot,
-                       compiled: false, globals: new []^Sym(0), exports: new []^Sym(0), imports: new []Import(0)}
+    let m = new Module{name: "", path: path, srcPath: path, dir: dirOf(path), hasHeader: false, isRoot: isRoot,
+                       compiled: false, ifaceOnly: false, symLoaded: false, srcHash: fnvBytes(&data), ifaceHash: 0,
+                       globals: new []^Sym(0), exports: new []^Sym(0), imports: new []Import(0),
+                       symDepNames: new []string(0), symDepPaths: new []string(0), symDepHashes: new []int(0)}
     append(modules, m)
     let mod = handle(modules[len(modules) - 1])
     curModule = mod
@@ -8196,10 +8407,16 @@ fn compileUnit(path: string, display: string, isRoot: bool) {
         curModuleName = mod.name
         expect(T_SEMI, "newline")
     } else {
+        if checking && isRoot {
+            errorAt("the checked module needs a 'module Name' header", tline, tcol)
+        }
         if !isRoot { errorAt("imported module '" + display + "' needs a 'module Name' header", tline, tcol) }
         mod.name = "_root"
         registerModule(mod, 1)
         curModuleName = "_root"
+    }
+    if isRoot && emitRootSym && !mod.hasHeader {
+        errorAt("--emit-sym needs a 'module Name' header in the root source", 1, 1)
     }
     if !isRoot {
         let want = moduleNameOfPath(display)
@@ -8257,6 +8474,11 @@ fn compileUnit(path: string, display: string, isRoot: bool) {
         if curModule.globals[i].exported { append(mod.exports, curModule.globals[i]) }
         append(programGlobals, curModule.globals[i])
     }
+    // The one .sym emission rule: every module with a header writes one when it has imports or
+    // is a checked module, and a single-file build writes the root's only with --emit-sym.
+    var doWrite = mod.hasHeader
+    if isRoot && !checking && len(mod.imports) == 0 && !emitRootSym { doWrite = false }
+    if doWrite { writeSym(mod) }
     truncate(importStack, len(importStack) - 1)
     truncate(importStackNames, len(importStackNames) - 1)
     curModule = savedMod
@@ -8523,10 +8745,12 @@ fn depRegister(ix: int, name: string, line: int) {
     deps[ix].name = name
 }
 
-// Resolves an import path: relative to the importer's directory, then each -I directory in
-// order; an absolute path is used as written. Returns the normalized path, or exits 2 with
-// every path tried in the message.
-fn resolveSource(raw: string, base: string, line: int, col: int): string {
+// true while --deps walks headers: it never consults a .sym directory
+var depsWalk = false
+
+// the candidate paths for an import, in search order: as written if absolute, else the
+// importer's directory then each -I directory
+fn sourceCandidates(raw: string, base: string): []string {
     let cands = new []string(0)
     if isAbsPath(raw) {
         append(cands, raw)
@@ -8534,6 +8758,32 @@ fn resolveSource(raw: string, base: string, line: int, col: int): string {
         append(cands, joinDirPath(base, raw))
         for k in 0..len(incDirs) { append(cands, joinDirPath(incDirs[k], raw)) }
     }
+    return cands
+}
+
+// the first readable candidate for an import path, normalized, or "" (no error)
+fn findSource(raw: string, base: string): string {
+    let cands = sourceCandidates(raw, base)
+    let seenPaths = new []string(0)
+    for c in cands {
+        let n = normPath(c)
+        var dup = false
+        for k in 0..len(seenPaths) {
+            if seenPaths[k] == n { dup = true }
+        }
+        if dup { continue }
+        append(seenPaths, n)
+        let data = readFile(n)
+        if data != nil { return n }
+    }
+    return ""
+}
+
+// Resolves an import path: relative to the importer's directory, then each -I directory in
+// order; an absolute path is used as written. Returns the normalized path, or exits 2 with
+// every path tried in the message. A build needs the source: if only a .sym exists, say so.
+fn resolveSource(raw: string, base: string, line: int, col: int): string {
+    let cands = sourceCandidates(raw, base)
     var tried = ""
     let seenPaths = new []string(0)
     for c in cands {
@@ -8549,7 +8799,14 @@ fn resolveSource(raw: string, base: string, line: int, col: int): string {
         let data = readFile(n)
         if data != nil { return n }
     }
-    eprintln("obxc: cannot read module '", moduleNameOfPath(raw), "' at ", tried)
+    let mname = moduleNameOfPath(raw)
+    let probe = readFile(joinDirPath(symDir, mname + ".sym"))
+    if !depsWalk && probe != nil {
+        eprintln("obxc: cannot read module '", mname, "' at ", tried,
+                 "; only --check may use a symbol file without source")
+    } else {
+        eprintln("obxc: cannot read module '", mname, "' at ", tried)
+    }
     exit(2)
 }
 
@@ -8615,12 +8872,1340 @@ fn scanDeps(path: string, display: string, isRoot: bool) {
 }
 
 fn runDeps(rootPath: string) {
+    depsWalk = true
     scanDeps(normPath(rootPath), rootPath, true)
 }
 
 // Once the module is compiled, the image needs only the code, rodata and gsize: the symbols,
 // types and the rest are freed before it is built, since it is the largest allocation.
 // The handles that still name them (tInt, the globals' fns) are not used again.
+// ===================================================== symbol files: the writer
+//
+// Text, line-oriented, language-like declarations (§7): obosym/abi/compiler/source/dep/
+// interface, then the hashed body module/depiface/declarations. The canonical order and
+// canonical p0.. parameter names make the bytes deterministic; no address, offset,
+// descriptor, pointer, timestamp or absolute path appears.
+
+fn appStr(mut b: &[]byte, s: string) {
+    for i in 0..len(s) { append(b, s[i]) }
+}
+
+fn appInt(mut b: &[]byte, v: int) { appStr(b, string(v)) }
+
+// a string in the language's source syntax: the writer and the scanner agree on every
+// escape the .sym grammar can carry (paths and pf events)
+fn appQuoted(mut b: &[]byte, s: string) {
+    append(b, '"')
+    for i in 0..len(s) {
+        let c = s[i]
+        if c == '\\' || c == '"' {
+            append(b, '\\')
+            append(b, c)
+        } else if c == '\n' {
+            append(b, '\\')
+            append(b, 'n')
+        } else if c == '\t' {
+            append(b, '\\')
+            append(b, 't')
+        } else if c == '\r' {
+            append(b, '\\')
+            append(b, 'r')
+        } else {
+            append(b, c)
+        }
+    }
+    append(b, '"')
+}
+
+// The canonical type expression: primitives; [] ? ^ Result; a bare name for the defining
+// module; Module::Name for a foreign one. Alias names are never emitted: the underlying
+// type is, so layout never depends on an alias.
+fn appTypeExpr(mut b: &[]byte, t: ^Type, modName: string) {
+    let k = t.kind
+    if k == "array" {
+        appStr(b, "[]")
+        appTypeExpr(b, baseOf(t), modName)
+        return
+    }
+    if k == "opt" {
+        append(b, '?')
+        appTypeExpr(b, baseOf(t), modName)
+        return
+    }
+    if k == "handle" {
+        append(b, '^')
+        appTypeExpr(b, baseOf(t), modName)
+        return
+    }
+    if k == "result" {
+        appStr(b, "Result[")
+        appTypeExpr(b, baseOf(t), modName)
+        append(b, ']')
+        return
+    }
+    if t.owner != "" && t.owner != modName {
+        appStr(b, t.owner)
+        appStr(b, "::")
+    }
+    appStr(b, t.name)
+}
+
+fn appFields(mut b: &[]byte, rec: ^Type, modName: string) {
+    append(b, '{')
+    for i in 0..len(rec.fields) {
+        if i > 0 { append(b, ';') }
+        append(b, ' ')
+        appStr(b, rec.fields[i].name)
+        appStr(b, ": ")
+        appTypeExpr(b, rec.fields[i].typ, modName)
+    }
+    append(b, ' ')
+    append(b, '}')
+}
+
+// a declaration in the source grammar that defines a type (as opposed to an alias key)
+fn symDefines(s: ^Sym, modName: string): bool {
+    if s.kind != "type" { return false }
+    let t = symType(s)
+    if t.parent != nil { return false }
+    return (t.kind == "record" || t.kind == "closed") && t.owner == modName && t.name == s.name
+}
+
+// a variant's own exported symbol (emitted inside its closed type, never as an alias)
+fn symIsVariantSym(s: ^Sym): bool {
+    if s.kind != "type" { return false }
+    let t = symType(s)
+    return t.parent != nil && t.name == s.name
+}
+
+fn appTypeShell(mut b: &[]byte, s: ^Sym) {
+    appStr(b, "type ")
+    appStr(b, s.name)
+    appStr(b, " uid ")
+    appHex16(b, symType(s).uid)
+    append(b, '\n')
+}
+
+fn appTypeDef(mut b: &[]byte, s: ^Sym, modName: string) {
+    let t = symType(s)
+    appStr(b, "type ")
+    appStr(b, s.name)
+    if t.kind == "record" {
+        appStr(b, " = ref record ")
+        appFields(b, t, modName)
+        append(b, '\n')
+        return
+    }
+    appStr(b, " = closed {")
+    for i in 0..len(t.variants) {
+        append(b, ' ')
+        appStr(b, t.variants[i].name)
+        append(b, ' ')
+        appFields(b, t.variants[i], modName)
+    }
+    appStr(b, " }\n")
+}
+
+fn appTypeAlias(mut b: &[]byte, s: ^Sym, modName: string) {
+    appStr(b, "type ")
+    appStr(b, s.name)
+    appStr(b, " = ")
+    appTypeExpr(b, symType(s), modName)
+    append(b, '\n')
+}
+
+fn appConst(mut b: &[]byte, s: ^Sym) {
+    let t = symType(s)
+    appStr(b, "const ")
+    appStr(b, s.name)
+    appStr(b, ": ")
+    appTypeExpr(b, t, "")
+    appStr(b, " = ")
+    if t.kind == "bool" {
+        if s.value != 0 { appStr(b, "true") } else { appStr(b, "false") }
+    } else if t.kind == "string" {
+        let data = rodataString(s.value)
+        appStr(b, "hex \"")
+        for i in 0..len(data) {
+            append(b, hexDigit(data[i] >> 4))
+            append(b, hexDigit(data[i] & 15))
+        }
+        append(b, '"')
+    } else {
+        appHex16(b, s.value)
+    }
+    append(b, '\n')
+}
+
+fn appGlobal(mut b: &[]byte, s: ^Sym, modName: string) {
+    appStr(b, s.kind)
+    append(b, ' ')
+    appStr(b, s.name)
+    appStr(b, ": ")
+    appTypeExpr(b, symType(s), modName)
+    append(b, '\n')
+}
+
+fn appFn(mut b: &[]byte, f: ^Sym, modName: string) {
+    appStr(b, "fn ")
+    appStr(b, f.name)
+    append(b, '(')
+    let n = len(f.fnRec.params)
+    for i in 0..n {
+        if i > 0 { appStr(b, ", ") }
+        if f.fnRec.pmodes[i] == 2 { appStr(b, "mut ") }
+        append(b, 'p')
+        appInt(b, i)
+        appStr(b, ": ")
+        if f.fnRec.pmodes[i] > 0 { append(b, '&') }
+        appTypeExpr(b, f.fnRec.params[i], modName)
+    }
+    append(b, ')')
+    if f.ret != tVoid {
+        appStr(b, ": ")
+        appTypeExpr(b, f.ret, modName)
+    }
+    if f.freesAll { appStr(b, " freesall") }
+    if f.writesHandles { appStr(b, " writeshandles") }
+    if f.fnRec.pfree != 0 {
+        appStr(b, " pfree ")
+        appHexMin(b, f.fnRec.pfree)
+    }
+    if len(f.fnRec.freed) > 0 {
+        appStr(b, " frees ")
+        appInt(b, len(f.fnRec.freed))
+        let freed = &f.fnRec.freed
+        for g in freed {
+            append(b, ' ')
+            appStr(b, symKey(g))
+        }
+    }
+    for i in 0..n {
+        for k in 0..len(pfFn) {
+            if pfFn[k] == f && pfIdx[k] == i {
+                appStr(b, " pf ")
+                appInt(b, i)
+                append(b, ' ')
+                appQuoted(b, pfEv[k])
+            }
+        }
+    }
+    append(b, '\n')
+}
+
+// The .sym's dep/depiface pairs: one per unique module in first-import order. A module
+// imported twice (with one or two aliases) appears once; the aliases are not interface data.
+fn symDepsOf(mod: ^Module): SymDepList {
+    let out = new SymDepList{names: new []string(0), paths: new []string(0), hashes: new []int(0)}
+    if mod.ifaceOnly {
+        for i in 0..len(mod.symDepNames) {
+            append(out.names, mod.symDepNames[i])
+            append(out.paths, mod.symDepPaths[i])
+            append(out.hashes, mod.symDepHashes[i])
+        }
+        return out
+    }
+    let imports = &mod.imports
+    for im in imports {
+        var have = false
+        for i in 0..len(out.names) {
+            if out.names[i] == im.mod.name { have = true }
+        }
+        if !have {
+            append(out.names, im.mod.name)
+            append(out.paths, im.raw)
+            append(out.hashes, im.mod.ifaceHash)
+        }
+    }
+    return out
+}
+
+fn symBody(mod: ^Module): []byte {
+    let b = new []byte(0)
+    let modName = mod.name
+    appStr(b, "module ")
+    appStr(b, modName)
+    append(b, '\n')
+    let dl = symDepsOf(mod)
+    for i in 0..len(dl.names) {
+        appStr(b, "depiface ")
+        appStr(b, dl.names[i])
+        append(b, ' ')
+        appHex16(b, dl.hashes[i])
+        append(b, '\n')
+    }
+    for i in 0..len(mod.globals) {                  // 1. shells
+        let s = mod.globals[i]
+        if s.exported && symDefines(s, modName) { appTypeShell(b, s) }
+    }
+    for i in 0..len(mod.globals) {                  // 2. record and closed definitions
+        let s = mod.globals[i]
+        if s.exported && symDefines(s, modName) { appTypeDef(b, s, modName) }
+    }
+    for i in 0..len(mod.globals) {                  // 3. aliases (after definitions)
+        let s = mod.globals[i]
+        if s.exported && s.kind == "type" && !symDefines(s, modName) && !symIsVariantSym(s) {
+            appTypeAlias(b, s, modName)
+        }
+    }
+    for i in 0..len(mod.globals) {                  // 4. constants
+        let s = mod.globals[i]
+        if s.exported && s.kind == "const" { appConst(b, s) }
+    }
+    for i in 0..len(mod.globals) {                  // 5. globals
+        let s = mod.globals[i]
+        if s.exported && (s.kind == "var" || s.kind == "let") && s.storage == "global" {
+            appGlobal(b, s, modName)
+        }
+    }
+    for i in 0..len(mod.globals) {                  // 6. functions
+        let s = mod.globals[i]
+        if s.exported && s.kind == "fn" { appFn(b, s, modName) }
+    }
+    return b
+}
+
+// The whole file: the unhashed header, the interface hash of the body, then the body.
+fn symText(mod: ^Module): []byte {
+    let body = symBody(mod)
+    let h = fnvBytes(&body)
+    mod.ifaceHash = h
+    let b = new []byte(0)
+    appStr(b, "obosym ")
+    appInt(b, SYM_FORMAT)
+    append(b, '\n')
+    appStr(b, "abi ")
+    appInt(b, SYM_ABI)
+    append(b, '\n')
+    appStr(b, "compiler \"")
+    appStr(b, OBO_VERSION)
+    appStr(b, "\"\n")
+    appStr(b, "source ")
+    appHex16(b, mod.srcHash)
+    append(b, '\n')
+    let dl = symDepsOf(mod)
+    for i in 0..len(dl.names) {
+        appStr(b, "dep ")
+        appStr(b, dl.names[i])
+        append(b, ' ')
+        appQuoted(b, dl.paths[i])
+        append(b, '\n')
+    }
+    appStr(b, "interface ")
+    appHex16(b, h)
+    append(b, '\n')
+    for i in 0..len(body) { append(b, body[i]) }
+    return b
+}
+
+fn writeSym(mod: ^Module) {
+    let text = symText(mod)
+    if !writeFile(joinDirPath(symDir, mod.name + ".sym"), text, false) {
+        eprintln("obxc: symbol-file directory '", symDir, "' does not exist or is not writable")
+        exit(2)
+    }
+}
+
+// ===================================================== symbol files: the reader
+//
+// A dedicated declaration parser over the scanner (§7.7). It never calls lookup: a bare
+// name resolves in the .sym module's own export table, a qualified name in the named
+// module's. Structure and summaries are validated before any index or dereference; every
+// malformed file is a clean `obxc: <path>:<line>:<col>: symbol file: <detail>` (exit 2).
+// A full build validates the file against the live interface and never constructs or
+// overwrites a live object; --check reconstructs the interface from the file.
+
+var symCurMod: ^Module = handle(noModule)
+var symSeen = new []string(0)
+var symShells = new []string(0)
+var symDefined = new []string(0)
+var symAliasOrder = new []string(0)
+var symConstOrder = new []string(0)
+var symGlobalOrder = new []string(0)
+var symFnOrder = new []string(0)
+var symAfterShells = false
+
+fn symDisagree(decl: string)
+
+fn symFail(msg: string) {
+    eprintln("obxc: ", msg)
+    exit(2)
+}
+
+fn symFileFail(p: string, tail: string) {
+    eprintln("obxc: symbol file '", p, "' ", tail)
+    exit(2)
+}
+
+// a rule that comes from the source language but is detected in a .sym (exit 1)
+fn symSourceRule(msg: string) {
+    eprintln(srcPath, ":", 1, ":", 1, ": ", msg)
+    exit(1)
+}
+
+fn symHas(list: &[]string, s: string): bool {
+    for i in 0..len(list) {
+        if list[i] == s { return true }
+    }
+    return false
+}
+
+fn symLineEnd() {
+    if sym == T_SEMI { next(); return }
+    if sym == T_EOF { return }
+    error("expected the end of the line")
+}
+
+fn symIntTok(): int {
+    if sym != T_INT { error("expected an integer") }
+    let v = ival
+    next()
+    return v
+}
+
+// a hash or uid: exactly 0x and 16 hexadecimal digits, so short/long/odd forms are clean errors
+fn symHex16(what: string): int {
+    if sym != T_INT { error("expected a hexadecimal " + what) }
+    let text = substr(src, tokStart, pos)
+    if !isHex16(text) {
+        error("malformed " + what + ": expected 0x and 16 hexadecimal digits, found " + text)
+    }
+    let v = ival
+    next()
+    return v
+}
+
+fn symHexString(s: string): string {
+    if len(s) % 2 != 0 { error("malformed hex string: an odd number of digits") }
+    let out = new []byte(0)
+    var i = 0
+    while i < len(s) {
+        if !isHex(s[i]) || !isHex(s[i + 1]) { error("malformed hex string: expected hexadecimal digits") }
+        append(out, byte(hexVal(s[i]) * 16 + hexVal(s[i + 1])))
+        i += 2
+    }
+    return string(out)
+}
+
+fn symWord(w: string) {
+    if sym == T_IDENT && sval == w { next(); return }
+    error("expected '" + w + "'")
+}
+
+fn symTypeText(t: ^Type): string {
+    if t.kind == "array" { return "[]" + symTypeText(baseOf(t)) }
+    if t.kind == "handle" { return "^" + symTypeText(baseOf(t)) }
+    if t.kind == "opt" { return "?" + symTypeText(baseOf(t)) }
+    if t.kind == "result" { return "Result[" + symTypeText(baseOf(t)) + "]" }
+    if t.owner != "" { return t.owner + "::" + t.name }
+    return t.name
+}
+
+fn moduleByName(name: string): ?^Module {
+    for i in 0..len(modules) {
+        if !modules[i].ifaceOnly && modules[i].name == name { return handle(modules[i]) }
+    }
+    return nil
+}
+
+fn symModuleByName(name: string): ?^Module {
+    for i in 0..len(modules) {
+        if modules[i].ifaceOnly && modules[i].name == name { return handle(modules[i]) }
+    }
+    return nil
+}
+
+// the pf path grammar: /field, /[n] and /[] segments; an empty path after the prefix is whole
+fn symValidateEvent(ev: string) {
+    if len(ev) == 0 { error("a pf event needs '=' or '!'") }
+    let pref = ev[0]
+    if pref != '=' && pref != '!' { error("a pf event starts with '=' or '!', not '" + substr(ev, 0, 1) + "'") }
+    var i = 1
+    while i < len(ev) {
+        if ev[i] != '/' { error("malformed pf event path '" + ev + "': expected '/'") }
+        i += 1
+        if i >= len(ev) { error("malformed pf event path '" + ev + "': empty segment") }
+        if ev[i] == '[' {
+            i += 1
+            if i < len(ev) && ev[i] == ']' {
+                i += 1
+            } else {
+                if i < len(ev) && ev[i] == '-' { i += 1 }
+                let start = i
+                while i < len(ev) && isDigit(ev[i]) { i += 1 }
+                if i == start { error("malformed pf event path '" + ev + "': expected an index") }
+                if i >= len(ev) || ev[i] != ']' { error("malformed pf event path '" + ev + "': expected ']'") }
+                i += 1
+            }
+        } else {
+            if !isLetter(ev[i]) { error("malformed pf event path '" + ev + "': expected a field name") }
+            while i < len(ev) && (isLetter(ev[i]) || isDigit(ev[i])) { i += 1 }
+        }
+    }
+}
+
+fn symQualifiedType(mname: string, member: string, line: int, col: int): ^Type {
+    var found: ?^Module = nil
+    if checking { found = symModuleByName(mname) } else { found = moduleByName(mname) }
+    if found == nil { errorAt("unknown module '" + mname + "' in a type", line, col) }
+    var m: ^Module = handle(noModule)
+    if found != nil { m = found }
+    let s = findExport(m, member)
+    if s != nil && s.kind == "type" { return symType(s) }
+    errorAt("module '" + mname + "' has no exported type '" + member + "'", line, col)
+    return tVoid
+}
+
+fn symParseType(): ^Type {
+    if sym == T_QUESTION {
+        next()
+        let b = symParseType()
+        if !nonNull(b) { error("only reference types can be optional, not " + symTypeText(b)) }
+        return derived("opt", b)
+    }
+    if sym == T_LBRACK {
+        next()
+        expect(T_RBRACK, "")
+        return derived("array", symParseType())
+    }
+    if sym == T_CARET {
+        next()
+        let b = symParseType()
+        if b.kind != "record" && b.kind != "closed" {
+            error("handles name records and closed types, not " + symTypeText(b))
+        }
+        return derived("handle", b)
+    }
+    if sym == T_REF || sym == T_CLOSED { error("record and closed types must be declared with 'type'") }
+    if sym != T_IDENT { error("expected a type") }
+    let nline = tline
+    let ncol = tcol
+    let name = ident()
+    if sym == T_COLONCOLON {
+        next()
+        if sym != T_IDENT { error("expected a type name after '::'") }
+        let member = ident()
+        return symQualifiedType(name, member, nline, ncol)
+    }
+    if name == "int" { return tInt }
+    if name == "byte" { return tByte }
+    if name == "bool" { return tBool }
+    if name == "string" { return tString }
+    if name == "Result" {
+        if sym != T_LBRACK { error("Result needs a type: write Result[T]") }
+        next()
+        let b = symParseType()
+        expect(T_RBRACK, "")
+        return derived("result", b)
+    }
+    let s = findExport(symCurMod, name)
+    if s != nil {
+        if s.kind == "type" { return symType(s) }
+    }
+    errorAt("unknown type '" + name + "'", nline, ncol)
+    return tVoid
+}
+
+// parses { field: type; ... } into rec's (empty) field list, in declaration order
+fn symFieldList(rec: ^Type) {
+    expect(T_LBRACE, "")
+    skipSemis()
+    while sym != T_RBRACE {
+        if sym != T_IDENT { error("expected a field name") }
+        let fline = tline
+        let fname = ident()
+        if sym != T_COLON { errorAt("expected ':' after the field name", fline, 1) }
+        next()
+        let t = symParseType()
+        for i in 0..len(rec.fields) {
+            if rec.fields[i].name == fname { error("duplicate field '" + fname + "'") }
+        }
+        append(rec.fields, new Field{name: fname, offset: 8 * len(rec.fields), typ: t})
+        if sym == T_SEMI { next() } else if sym != T_RBRACE { error("expected ';' or '}'") }
+        skipSemis()
+    }
+    expect(T_RBRACE, "")
+}
+
+fn symCompareFields(live: ^Type, parsed: ^Type, what: string) {
+    if len(live.fields) != len(parsed.fields) { symDisagree(what) }
+    for i in 0..len(live.fields) {
+        if live.fields[i].name != parsed.fields[i].name { symDisagree(what) }
+        if live.fields[i].offset != parsed.fields[i].offset { symDisagree(what) }
+        if !same(live.fields[i].typ, parsed.fields[i].typ) { symDisagree(what) }
+    }
+}
+
+fn symClaim(name: string) {
+    if symHas(symSeen, name) { error("duplicate exported name '" + name + "'") }
+    append(symSeen, name)
+}
+
+fn symDisagree(decl: string) {
+    eprintln("obxc: symbol file '", srcPath, "' disagrees with the compiled interface of '",
+             symCurMod.name, "' for ", decl, "; rebuild it")
+    exit(2)
+}
+
+fn symSameList(a: &[]string, b: &[]string): bool {
+    if len(a) != len(b) { return false }
+    for i in 0..len(a) {
+        if a[i] != b[i] { return false }
+    }
+    return true
+}
+
+// the file's declaration groups must match the live module's, in order (build mode)
+fn symCompareOrder() {
+    let liveTypes = new []string(0)
+    let liveAliases = new []string(0)
+    let liveConsts = new []string(0)
+    let liveGlobals = new []string(0)
+    let liveFns = new []string(0)
+    for i in 0..len(symCurMod.globals) {
+        let s = symCurMod.globals[i]
+        if !s.exported { continue }
+        if s.kind == "type" {
+            if symIsVariantSym(s) { continue }
+            let t = symType(s)
+            if (t.kind == "record" || t.kind == "closed") && t.owner == symCurMod.name && t.name == s.name {
+                append(liveTypes, s.name)
+            } else {
+                append(liveAliases, s.name)
+            }
+        } else if s.kind == "const" {
+            append(liveConsts, s.name)
+        } else if (s.kind == "var" || s.kind == "let") && s.storage == "global" {
+            append(liveGlobals, s.name)
+        } else if s.kind == "fn" {
+            append(liveFns, s.name)
+        }
+    }
+    if !symSameList(symShells, liveTypes) { symDisagree("the type declaration order") }
+    if !symSameList(symDefined, liveTypes) { symDisagree("the type definition order") }
+    if !symSameList(symAliasOrder, liveAliases) { symDisagree("the type alias order") }
+    if !symSameList(symConstOrder, liveConsts) { symDisagree("the constant order") }
+    if !symSameList(symGlobalOrder, liveGlobals) { symDisagree("the global order") }
+    if !symSameList(symFnOrder, liveFns) { symDisagree("the function order") }
+}
+
+fn symFinish(mode: int) {
+    let shells = &symShells
+    for sh in shells {
+        if !symHas(symDefined, sh) { error("type '" + sh + "' has a shell but no definition") }
+    }
+    if mode == 1 {
+        for i in 0..len(symCurMod.globals) {
+            let s = symCurMod.globals[i]
+            if s.kind == "type" && symType(s).incomplete { error("type '" + s.name + "' has a shell but no definition") }
+            if s.exported { append(symCurMod.exports, s) }
+        }
+        return
+    }
+    for i in 0..len(symCurMod.globals) {
+        let s = symCurMod.globals[i]
+        if s.exported && !symHas(symSeen, s.name) { symDisagree("exported '" + s.name + "'") }
+    }
+    symCompareOrder()
+}
+
+fn symTypeDecl(mode: int) {
+    let nline = tline
+    if sym != T_IDENT { error("expected a type name") }
+    let name = ident()
+    if sym == T_IDENT && sval == "uid" {
+        if symAfterShells { error("a type shell must come before every definition") }
+        if symHas(symShells, name) { error("duplicate type '" + name + "'") }
+        next()
+        let uid = symHex16("type uid")
+        symClaim(name)
+        append(symShells, name)
+        if mode == 1 {
+            let key = keyOf(symCurMod.name, name)
+            if typeAtKey(key) != nil { error("duplicate type key '" + key + "'") }
+            let t = newType("record", name, nil)
+            t.owner = symCurMod.name
+            t.uid = uid
+            t.incomplete = true
+            registerType(t, symCurMod.name, name)
+            let s = newSym("type", name, t)
+            s.owner = symCurMod.name
+            s.exported = true
+            s.line = nline
+            append(symCurMod.globals, s)
+            return
+        }
+        let got = typeAtKey(keyOf(symCurMod.name, name))
+        if got == nil { symDisagree("type '" + name + "'") }
+        var t: ^Type = tVoid
+        if got != nil { t = got }
+        if t.uid != uid { symDisagree("type '" + name + "'") }
+        if t.kind != "record" && t.kind != "closed" { symDisagree("type '" + name + "'") }
+        if t.incomplete { symDisagree("type '" + name + "'") }
+        let es = findExport(symCurMod, name)
+        if es == nil { symDisagree("type '" + name + "'") }
+        if es != nil {
+            if es.kind != "type" || symType(es) != t { symDisagree("type '" + name + "'") }
+        }
+        return
+    }
+    if sym != T_ASSIGN { error("expected 'uid' or '=' after a type name") }
+    next()
+    if sym == T_REF {
+        if !symHas(symShells, name) { error("type '" + name + "' has a definition but no shell") }
+        if symHas(symDefined, name) { error("duplicate definition of type '" + name + "'") }
+        symAfterShells = true
+        next()
+        expect(T_RECORD, "")
+        append(symDefined, name)
+        let got = typeAtKey(keyOf(symCurMod.name, name))
+        if mode == 1 {
+            if got == nil { error("unknown type key '" + keyOf(symCurMod.name, name) + "'") }
+            var t: ^Type = tVoid
+            if got != nil { t = got }
+            if !t.incomplete { error("duplicate definition of type '" + name + "'") }
+            t.kind = "record"
+            symFieldList(t)
+            t.incomplete = false
+            t.desc = 0
+            return
+        }
+        if got == nil { symDisagree("type '" + name + "'") }
+        var t: ^Type = tVoid
+        if got != nil { t = got }
+        if t.kind != "record" || t.incomplete { symDisagree("type '" + name + "'") }
+        let tmp = newType("record", "", nil)
+        symFieldList(tmp)
+        symCompareFields(t, tmp, "type '" + name + "'")
+        return
+    }
+    if sym == T_CLOSED {
+        if !symHas(symShells, name) { error("type '" + name + "' has a definition but no shell") }
+        if symHas(symDefined, name) { error("duplicate definition of type '" + name + "'") }
+        symAfterShells = true
+        next()
+        expect(T_LBRACE, "")
+        let ctgot = typeAtKey(keyOf(symCurMod.name, name))
+        var ct: ^Type = tVoid
+        if ctgot == nil {
+            if mode == 1 { error("unknown type key '" + keyOf(symCurMod.name, name) + "'") }
+            symDisagree("type '" + name + "'")
+        }
+        if ctgot != nil { ct = ctgot }
+        if mode == 1 {
+            if !ct.incomplete { error("duplicate definition of type '" + name + "'") }
+            ct.kind = "closed"
+            ct.variants = new []^Type(0)
+        } else {
+            if ct.kind != "closed" || ct.incomplete { symDisagree("type '" + name + "'") }
+        }
+        var vi = 0
+        skipSemis()
+        while sym != T_RBRACE {
+            if sym != T_IDENT { error("expected a variant name") }
+            let vline = tline
+            let vname = ident()
+            if mode == 1 {
+                let vkey = keyOf(symCurMod.name, vname)
+                if typeAtKey(vkey) != nil { error("duplicate type key '" + vkey + "'") }
+                if symHas(symSeen, vname) { error("duplicate exported name '" + vname + "'") }
+                let v = newType("record", vname, nil)
+                v.owner = symCurMod.name
+                v.uid = fnv1a(vkey)
+                v.parent = ct
+                registerType(v, symCurMod.name, vname)
+                let vs = newSym("type", vname, v)
+                vs.owner = symCurMod.name
+                vs.exported = true
+                vs.line = vline
+                append(symCurMod.globals, vs)
+                append(symSeen, vname)
+                symFieldList(v)
+                v.desc = 0
+                append(ct.variants, v)
+            } else {
+                if vi >= len(ct.variants) { symDisagree("variant '" + vname + "'") }
+                let v = ct.variants[vi]
+                if v.name != vname { symDisagree("variant '" + vname + "'") }
+                let vtmp = newType("record", "", nil)
+                symFieldList(vtmp)
+                symCompareFields(v, vtmp, "variant '" + vname + "'")
+                let vs = findExport(symCurMod, vname)
+                if vs == nil { symDisagree("variant '" + vname + "'") }
+                if vs != nil {
+                    if vs.kind != "type" || symType(vs) != v { symDisagree("variant '" + vname + "'") }
+                }
+                append(symSeen, vname)
+                vi += 1
+            }
+            if sym == T_SEMI { next() }
+            skipSemis()
+        }
+        expect(T_RBRACE, "")
+        if mode == 1 {
+            if len(ct.variants) == 0 { error("a closed type needs at least one variant") }
+            ct.incomplete = false
+            ct.desc = 0
+        } else if vi != len(ct.variants) {
+            symDisagree("type '" + name + "'")
+        }
+        append(symDefined, name)
+        return
+    }
+    // a type alias: it maps the name to the underlying Type; it never names or changes one (B7)
+    symAfterShells = true
+    symClaim(name)
+    let t = symParseType()
+    append(symAliasOrder, name)
+    if mode == 1 {
+        let key = keyOf(symCurMod.name, name)
+        if typeAtKey(key) != nil { error("duplicate type key '" + key + "'") }
+        registerTypeAlias(symCurMod.name, name, t)
+        let s = newSym("type", name, t)
+        s.owner = symCurMod.name
+        s.exported = true
+        s.line = nline
+        append(symCurMod.globals, s)
+        return
+    }
+    let es = findExport(symCurMod, name)
+    if es == nil { symDisagree("type '" + name + "'") }
+    if es != nil {
+        if es.kind != "type" || !same(symType(es), t) { symDisagree("type '" + name + "'") }
+    }
+}
+
+fn symConstDecl(mode: int) {
+    if sym != T_IDENT { error("expected a constant name") }
+    let nline = tline
+    let name = ident()
+    if sym != T_COLON { error("expected ':' in a constant declaration") }
+    next()
+    let t = symParseType()
+    if sym != T_ASSIGN { error("expected '=' in a constant declaration") }
+    next()
+    var kind = ""
+    var v = 0
+    var sv = ""
+    if sym == T_INT {
+        kind = "int"
+        v = ival
+        next()
+    } else if sym == T_TRUE {
+        kind = "bool"
+        v = 1
+        next()
+    } else if sym == T_FALSE {
+        kind = "bool"
+        v = 0
+        next()
+    } else if sym == T_IDENT && sval == "hex" {
+        kind = "string"
+        next()
+        if sym != T_STRING { error("expected a quoted hex byte string") }
+        sv = symHexString(sval)
+        next()
+    } else {
+        error("expected a constant value")
+    }
+    if t != tInt && t != tByte && t != tBool && t != tString {
+        error("a constant must have type int, byte, bool or string")
+    }
+    if t == tString && kind != "string" { error("a string constant needs a hex byte string") }
+    if t == tBool && kind != "bool" { error("a bool constant must be true or false") }
+    if (t == tInt || t == tByte) && kind != "int" { error("an integer constant needs an integer value") }
+    if t == tByte && (v < 0 || v > 255) { error("a byte constant must be between 0 and 255") }
+    symClaim(name)
+    append(symConstOrder, name)
+    if mode == 1 {
+        let s = newSym("const", name, t)
+        s.owner = symCurMod.name
+        s.exported = true
+        s.line = nline
+        if t == tString { s.value = stringLit(sv) } else { s.value = v }
+        append(symCurMod.globals, s)
+        return
+    }
+    let es = findExport(symCurMod, name)
+    if es == nil { symDisagree("const '" + name + "'") }
+    if es != nil {
+        if es.kind != "const" || !same(symType(es), t) { symDisagree("const '" + name + "'") }
+        if t == tString {
+            if rodataString(es.value) != sv { symDisagree("const '" + name + "'") }
+        } else if es.value != v {
+            symDisagree("const '" + name + "'")
+        }
+    }
+}
+
+fn symGlobalDecl(mode: int, kind: string) {
+    if sym != T_IDENT { error("expected a global name") }
+    let nline = tline
+    let name = ident()
+    if sym != T_COLON { error("expected ':' in a global declaration") }
+    next()
+    let t = symParseType()
+    symClaim(name)
+    append(symGlobalOrder, name)
+    if mode == 1 {
+        let g = globalSym(symCurMod.name, name)
+        if g.typ != nil { error("duplicate global '" + name + "'") }
+        g.kind = kind
+        g.typ = t
+        g.offset = SYM_DUMMY_BASE + 8 * symDummyGlobals
+        symDummyGlobals += 1
+        g.exported = true
+        g.line = nline
+        append(symCurMod.globals, g)
+        return
+    }
+    let es = findExport(symCurMod, name)
+    if es == nil { symDisagree(kind + " '" + name + "'") }
+    if es != nil {
+        if es.kind != kind || !same(symType(es), t) || es.storage != "global" {
+            symDisagree(kind + " '" + name + "'")
+        }
+    }
+}
+
+fn symFnDecl(mode: int) {
+    if sym != T_IDENT { error("expected a function name") }
+    let nline = tline
+    let name = ident()
+    if name == "main" {
+        eprintln(srcPath, ":", nline, ":", 1, ": module '", symCurMod.name,
+                 "' may not declare 'main'; the program root provides it")
+        exit(1)
+    }
+    if sym != T_LPAREN { error("expected '(' after the function name") }
+    next()
+    let ptypes = new []^Type(0)
+    let pmodes = new []int(0)
+    while sym != T_RPAREN {
+        var pmut = false
+        if sym == T_IDENT && sval == "mut" { pmut = true; next() }
+        if sym != T_IDENT { error("expected a parameter name") }
+        ident()                                       // parameter names are syntax only
+        if sym != T_COLON { error("expected ':' after the parameter name") }
+        next()
+        if sym == T_AMP {
+            next()
+            let t = symParseType()
+            if !isOwned(t) { error("only records, closed types and arrays can be borrowed, not " + symTypeText(t)) }
+            append(ptypes, t)
+            if pmut { append(pmodes, 2) } else { append(pmodes, 1) }
+        } else {
+            if pmut { error("mut needs a reference parameter: write mut p0: &T") }
+            append(ptypes, symParseType())
+            append(pmodes, 0)
+        }
+        if sym != T_RPAREN { expect(T_COMMA, "',' or ')'") }
+    }
+    expect(T_RPAREN, "")
+    var ret = tVoid
+    if sym == T_COLON {
+        next()
+        ret = symParseType()
+    }
+    var freesAll = false
+    var writesHandles = false
+    var pfree = 0
+    var hasPfree = false
+    var hasFrees = false
+    let freedOwners = new []string(0)
+    let freedNames = new []string(0)
+    let rowIdx = new []int(0)
+    let rowEv = new []string(0)
+    while sym == T_IDENT {
+        let w = sval
+        if w == "freesall" {
+            if freesAll { error("duplicate 'freesall'") }
+            freesAll = true
+            next()
+        } else if w == "writeshandles" {
+            if writesHandles { error("duplicate 'writeshandles'") }
+            writesHandles = true
+            next()
+        } else if w == "pfree" {
+            if hasPfree { error("duplicate 'pfree'") }
+            next()
+            pfree = symIntTok()
+            hasPfree = true
+        } else if w == "frees" {
+            if hasFrees { error("duplicate 'frees'") }
+            next()
+            let cnt = symIntTok()
+            if cnt > len(src) - pos { error("a frees count is larger than the rest of the file") }
+            for k in 0..cnt {
+                if sym != T_IDENT { error("expected a global name in the frees list") }
+                let owner = ident()
+                if sym != T_COLONCOLON { error("expected '::' in a frees global key") }
+                next()
+                if sym != T_IDENT { error("expected a global name after '::'") }
+                let member = ident()
+                for k2 in 0..len(freedOwners) {
+                    if freedOwners[k2] == owner && freedNames[k2] == member {
+                        error("duplicate frees key '" + keyOf(owner, member) + "'")
+                    }
+                }
+                append(freedOwners, owner)
+                append(freedNames, member)
+            }
+            hasFrees = true
+        } else if w == "pf" {
+            next()
+            let pi = symIntTok()
+            if pi < 0 || pi >= len(ptypes) { error("pf index " + string(pi) + " is out of range") }
+            if sym != T_STRING { error("pf needs an event string") }
+            let ev = sval
+            next()
+            symValidateEvent(ev)
+            for k2 in 0..len(rowIdx) {
+                if rowIdx[k2] == pi && rowEv[k2] == ev { error("duplicate pf row") }
+            }
+            append(rowIdx, pi)
+            append(rowEv, ev)
+        } else {
+            error("unknown summary item '" + w + "'")
+        }
+    }
+    // pfree is a 62-bit mask; bits 62 and 63 are ignored (parameters from 62 on are always
+    // assumed to free), and every row below 62 and its bit agree
+    let low = pfree & 0x3FFFFFFFFFFFFFFF
+    if len(ptypes) < 62 {
+        var i = len(ptypes)
+        while i < 62 {
+            if (low >> i) & 1 == 1 { error("pfree has a bit for parameter " + string(i) + ", which does not exist") }
+            i += 1
+        }
+    }
+    for i in 0..len(rowIdx) {
+        let pi = rowIdx[i]
+        if pi < 62 && (low >> pi) & 1 == 0 {
+            error("pf row for parameter " + string(pi) + " has no pfree bit")
+        }
+    }
+    var i = 0
+    while i < len(ptypes) && i < 62 {
+        if (low >> i) & 1 == 1 {
+            var have = false
+            for k2 in 0..len(rowIdx) {
+                if rowIdx[k2] == i { have = true }
+            }
+            if !have { error("pfree bit " + string(i) + " has no pf row") }
+        }
+        i += 1
+    }
+    symClaim(name)
+    append(symFnOrder, name)
+    if mode == 1 {
+        let f = newSym("fn", name, nil)
+        f.fnRec = newFnRec()
+        for k in 0..len(ptypes) {
+            append(f.fnRec.params, ptypes[k])
+            append(f.fnRec.pmodes, pmodes[k])
+        }
+        f.ret = ret
+        f.freesAll = freesAll
+        f.writesHandles = writesHandles
+        f.fnRec.pfree = low
+        f.addr = 0                                    // known: a complete imported summary, never a forward heading
+        f.owner = symCurMod.name
+        f.exported = true
+        f.line = nline
+        for k in 0..len(freedOwners) {
+            append(f.fnRec.freed, globalSym(freedOwners[k], freedNames[k]))
+        }
+        for k in 0..len(rowIdx) {
+            append(pfFn, f)
+            append(pfIdx, rowIdx[k])
+            append(pfEv, rowEv[k])
+        }
+        append(symCurMod.globals, f)
+        return
+    }
+    let es = findExport(symCurMod, name)
+    if es == nil { symDisagree("fn '" + name + "'") }
+    if es != nil {
+        if es.kind != "fn" { symDisagree("fn '" + name + "'") }
+        if len(es.fnRec.params) != len(ptypes) { symDisagree("fn '" + name + "'") }
+        for k in 0..len(ptypes) {
+            if !same(es.fnRec.params[k], ptypes[k]) || es.fnRec.pmodes[k] != pmodes[k] {
+                symDisagree("fn '" + name + "'")
+            }
+        }
+        if !same(es.ret, ret) { symDisagree("fn '" + name + "'") }
+        if es.freesAll != freesAll || es.writesHandles != writesHandles { symDisagree("fn '" + name + "'") }
+        if es.fnRec.pfree != low { symDisagree("fn '" + name + "'") }
+        if len(es.fnRec.freed) != len(freedOwners) { symDisagree("fn '" + name + "'") }
+        for k in 0..len(freedOwners) {
+            let g = globalAtKey(keyOf(freedOwners[k], freedNames[k]))
+            if g == nil || es.fnRec.freed[k] != g { symDisagree("fn '" + name + "'") }
+        }
+        var r = 0
+        for k in 0..len(ptypes) {
+            for q in 0..len(pfFn) {
+                if pfFn[q] == es && pfIdx[q] == k {
+                    if r >= len(rowIdx) || rowIdx[r] != k || rowEv[r] != pfEv[q] { symDisagree("fn '" + name + "'") }
+                    r += 1
+                }
+            }
+        }
+        if r != len(rowIdx) { symDisagree("fn '" + name + "'") }
+    }
+}
+
+fn symReadDecls(mode: int) {
+    skipSemis()
+    while sym != T_EOF {
+        if sym == T_TYPE {
+            next()
+            symTypeDecl(mode)
+        } else if sym == T_CONST {
+            next()
+            symConstDecl(mode)
+        } else if sym == T_VAR || sym == T_LET {
+            let kind = tokName(sym)
+            next()
+            symGlobalDecl(mode, kind)
+        } else if sym == T_FN {
+            next()
+            symFnDecl(mode)
+        } else {
+            error("expected a declaration")
+        }
+        symLineEnd()
+        skipSemis()
+    }
+}
+
+// a dependency's source candidate for transitive staleness: its dep path as written,
+// relative to the importing source's directory and then the -I directories
+fn symDepSource(depPath: string, parentSrc: string): string {
+    if len(parentSrc) == 0 { return "" }
+    return findSource(depPath, dirOf(parentSrc))
+}
+
+// A dependency's source, present in check mode: validate its header and return its FNV hash.
+// This is a source-level check, so its errors are source errors (exit 1), not .sym errors.
+fn validateDepSource(path: string, expected: string, display: string): int {
+    let data = readFile(path)
+    if data == nil { return -1 }
+    let ss = saveScan()
+    let savedSymMode = symMode
+    let savedPath = srcPath
+    symMode = false
+    srcPath = path
+    let h = fnvBytes(&data)
+    startScanner(data)
+    skipSemis()
+    if sym != T_MODULE {
+        errorAt("imported module '" + display + "' needs a 'module Name' header", tline, tcol)
+    }
+    let nline = tline
+    next()
+    if sym != T_IDENT { error("expected a module name") }
+    let name = ident()
+    if name == "_root" { errorAt("module '_root' is reserved for the program root", nline, 1) }
+    if name != expected {
+        errorAt("module '" + name + "' must be in a file named " + name + ".obx (found " + display + ")", 1, 1)
+    }
+    symMode = savedSymMode
+    srcPath = savedPath
+    restoreScan(ss)
+    return h
+}
+
+// Reads and validates one .sym. mode 0 validates a full build against the live module;
+// mode 1 reconstructs the interface for --check and a source-less dependency.
+fn readSym(symPath: string, expected: string, mode: int, display: string, srcCandidate: string): ^Module {
+    if mode == 1 {
+        let have = symModuleByName(expected)
+        if have != nil { return have }
+    }
+    let loading = &symLoadNames
+    for n in loading {
+        if n == expected { symFileFail(symPath, "is corrupt (interface cycle); rebuild it") }
+    }
+    append(symLoadNames, expected)
+    var srcHash = -1
+    if len(srcCandidate) > 0 { srcHash = validateDepSource(srcCandidate, expected, display) }
+    let data = readFile(symPath)
+    if data == nil {
+        eprintln("obxc: no symbol file for module '", expected, "' in ", symDir, "; run a build first")
+        exit(2)
+    }
+    let ss = saveScan()
+    srcPath = symPath
+    symMode = true
+    startScanner(data)
+    skipSemis()
+    symWord("obosym")
+    let fmt = symIntTok()
+    symLineEnd()
+    if fmt != SYM_FORMAT {
+        symFileFail(symPath, "has format " + string(fmt) + "; this compiler reads " + string(SYM_FORMAT) + "; rebuild it")
+    }
+    symWord("abi")
+    let abi = symIntTok()
+    symLineEnd()
+    if abi != SYM_ABI {
+        symFileFail(symPath, "has ABI " + string(abi) + "; this compiler uses " + string(SYM_ABI) + "; rebuild it")
+    }
+    symWord("compiler")
+    if sym != T_STRING { error("expected the compiler version") }
+    let cv = sval
+    next()
+    symLineEnd()
+    if cv != OBO_VERSION {
+        symFileFail(symPath, "was built by compiler '" + cv + "'; this is '" + OBO_VERSION + "'; rebuild it")
+    }
+    symWord("source")
+    let fileSrc = symHex16("source hash")
+    symLineEnd()
+    let depNames = new []string(0)
+    let depPaths = new []string(0)
+    let depHashes = new []int(0)
+    while sym == T_IDENT && sval == "dep" {
+        next()
+        if sym != T_IDENT { error("expected a dependency module name") }
+        let dn = ident()
+        if sym != T_STRING { error("expected a quoted dependency path") }
+        let dp = sval
+        if len(dp) == 0 { error("a dependency path cannot be empty") }
+        next()
+        symLineEnd()
+        let known = &depNames
+        for d in known {
+            if d == dn { error("duplicate dependency '" + dn + "'") }
+        }
+        append(depNames, dn)
+        append(depPaths, dp)
+        append(depHashes, 0)
+    }
+    symWord("interface")
+    let ifaceH = symHex16("interface hash")
+    if sym != T_SEMI && sym != T_EOF { error("expected the end of the line") }
+    let bodyStart = pos
+    let computed = fnvRange(src, bodyStart, len(src))
+    if computed != ifaceH { symFileFail(symPath, "is corrupt (interface hash); rebuild it") }
+    next()
+    if sym != T_MODULE { error("expected 'module'") }
+    next()
+    if sym != T_IDENT { error("expected the module name") }
+    let bodyName = ident()
+    symLineEnd()
+    if bodyName == "_root" { symSourceRule("module '_root' is reserved for the program root") }
+    if bodyName != expected {
+        symSourceRule("module '" + bodyName + "' must be in a file named " + bodyName + ".obx (found " + display + ")")
+    }
+    let depIfNames = new []string(0)
+    let depIfHashes = new []int(0)
+    while sym == T_IDENT && sval == "depiface" {
+        next()
+        if sym != T_IDENT { error("expected a dependency module name") }
+        let dn = ident()
+        let dh = symHex16("dependency interface hash")
+        symLineEnd()
+        append(depIfNames, dn)
+        append(depIfHashes, dh)
+    }
+    if len(depIfNames) != len(depNames) {
+        error("the depiface lines do not match the dep lines")
+    }
+    for i in 0..len(depIfNames) {
+        if depIfNames[i] != depNames[i] {
+            error("the depiface lines are not in the dependency order")
+        }
+    }
+    for i in 0..len(depIfNames) {
+        let dn = depIfNames[i]
+        var dm: ^Module = handle(noModule)
+        if mode == 1 {
+            let cand = symDepSource(depPaths[i], srcCandidate)
+            dm = loadSymCheck(joinDirPath(symDir, dn + ".sym"), dn, depPaths[i], cand)
+        } else {
+            let found = moduleByName(dn)
+            if found == nil {
+                symFileFail(symPath, "is corrupt (dependency '" + dn + "' is not part of this build); rebuild it")
+            }
+            if found != nil { dm = found }
+        }
+        if dm.ifaceHash != depIfHashes[i] {
+            symFileFail(symPath, "depends on '" + dn + "' with interface hash " + hex16Of(depIfHashes[i]) +
+                       ", but '" + dn + "' has " + hex16Of(dm.ifaceHash) + "; rebuild the dependent module")
+        }
+        depHashes[i] = depIfHashes[i]
+    }
+    var m: ^Module = handle(noModule)
+    if mode == 1 {
+        if srcHash >= 0 && srcHash != fileSrc {
+            symFail("symbol file '" + symPath + "' is stale: '" + srcCandidate +
+                    "' changed since it was built; run a build")
+        }
+        let other = moduleByName(bodyName)
+        if other != nil {
+            symSourceRule("module '" + bodyName + "' is declared by both " + other.path + " and " + symPath)
+        }
+        let nm = new Module{name: bodyName, path: symPath, srcPath: srcCandidate, dir: dirOf(symPath),
+                            hasHeader: true, isRoot: false, compiled: true, ifaceOnly: true, symLoaded: true,
+                            srcHash: fileSrc, ifaceHash: ifaceH, globals: new []^Sym(0),
+                            exports: new []^Sym(0), imports: new []Import(0),
+                            symDepNames: depNames, symDepPaths: depPaths, symDepHashes: depHashes}
+        append(modules, nm)
+        m = handle(modules[len(modules) - 1])
+    } else {
+        drop(depNames)
+        drop(depPaths)
+        drop(depHashes)
+        let found = moduleByName(bodyName)
+        if found == nil { symFileFail(symPath, "is corrupt (no compiled module '" + bodyName + "'); rebuild it") }
+        if found != nil { m = found }
+        if m.srcHash != fileSrc {
+            symFail("symbol file '" + symPath + "' is stale: '" + m.srcPath +
+                    "' changed since it was built; run a build")
+        }
+    }
+    symCurMod = m
+    symSeen = new []string(0)
+    symShells = new []string(0)
+    symDefined = new []string(0)
+    symAliasOrder = new []string(0)
+    symConstOrder = new []string(0)
+    symGlobalOrder = new []string(0)
+    symFnOrder = new []string(0)
+    symAfterShells = false
+    symReadDecls(mode)
+    symFinish(mode)
+    restoreScan(ss)
+    symMode = false
+    truncate(symLoadNames, len(symLoadNames) - 1)
+    return m
+}
+
+fn loadSymCheck(symPath: string, expected: string, display: string, srcCandidate: string): ^Module {
+    let have = symModuleByName(expected)
+    if have != nil { return have }
+    return readSym(symPath, expected, 1, display, srcCandidate)
+}
+
+// --reemit-sym FILE: read a .sym with the reader and print its canonical re-emission, so a
+// writer/reader round-trip can be compared byte-for-byte (tests/sym_test.py)
+fn reemitSym(path: string) {
+    let bname = baseNameOf(path)
+    if !endsWith(bname, ".sym") {
+        eprintln("obxc: --reemit-sym needs a .sym file")
+        exit(2)
+    }
+    let name = substr(bname, 0, len(bname) - 4)
+    symDir = dirOf(path)
+    if len(symDir) == 0 { symDir = "." }
+    checking = true
+    let m = loadSymCheck(path, name, name, "")
+    let text = symText(m)
+    print(string(text))
+}
+
 fn releaseTables() {
     symArena = new []Sym(0)
     typeArena = new []Type(0)
@@ -8655,6 +10240,7 @@ fn compileFile(path: string, out: string, rtDir: string) {
         exit(2)
     }
     drop(data)                     // the root source is read again by compileUnit; do not hold two copies
+    if !symDirSet { symDir = dirOf(normPath(path)) }
     compileProgram(path, out, rtDir)
     releaseTables()
     let rtText = readFile(rtDir + "/runtime_text.bin")
@@ -8670,13 +10256,36 @@ fn compileFile(path: string, out: string, rtDir: string) {
     }
 }
 
+// --check: compile and check the checked module's body against its dependencies' .sym files,
+// write its own .sym, and produce no executable. A dependency's source, if present, only
+// validates the header and source hash; it is never compiled and a source-less dependency
+// is allowed. There is no runtime and no main requirement.
+fn checkFile(path: string) {
+    checking = true
+    if !symDirSet { symDir = dirOf(normPath(path)) }
+    compileUnit(normPath(path), path, true)
+}
+
 fn usage() {
-    eprintln("usage: obxc SOURCE [-o OUTPUT] [--rt RUNTIME_DIR] [-I DIR]... | --deps SOURCE [-I DIR]... | --tokens FILE | --encode FILE")
+    eprintln("usage: obxc SOURCE [-o OUTPUT] [--rt RUNTIME_DIR] [-I DIR]... [--sym-dir DIR] ",
+             "[--check | --deps | --emit-sym] | --version | --tokens FILE | --encode FILE | --reemit-sym FILE")
+}
+
+// reports a Stage 2 CLI conflict (exit 2)
+fn cliFail(msg: string) {
+    eprintln("obxc: ", msg)
+    exit(2)
 }
 
 fn main() {
     initCompiler()
     let a = args()
+    for i in 1..len(a) {
+        if a[i] == "--version" {
+            println("obo ", OBO_VERSION, " sym-format ", SYM_FORMAT, " abi ", SYM_ABI)
+            return
+        }
+    }
     if len(a) == 3 && (a[1] == "--tokens" || a[1] == "--encode") {
         let data = readFile(a[2])
         if data == nil {
@@ -8690,67 +10299,72 @@ fn main() {
         }
         return
     }
-    if len(a) >= 2 && a[1] == "--deps" {
-        var path = ""
-        var i = 2
-        while i < len(a) {
-            if a[i] == "-I" {
-                if i + 1 >= len(a) {
-                    eprintln("obxc: -I needs a directory")
-                    exit(2)
-                }
-                append(incDirs, a[i + 1])
-                i += 2
-            } else if a[i] == "-o" {
-                eprintln("obxc: -o cannot be used with --check or --deps")
-                exit(2)
-            } else if len(a[i]) > 0 && a[i][0] == '-' {
-                eprintln("obxc: unknown option ", a[i])
-                exit(2)
-            } else if len(path) == 0 {
-                path = a[i]
-                i += 1
+    if len(a) == 3 && a[1] == "--reemit-sym" {
+        reemitSym(a[2])
+        return
+    }
+    var path = ""
+    var out = ""
+    var outSet = false
+    var rtDir = dirOf(a[0])
+    var mode = "build"                 // build check deps
+    var emitSym = false
+    var i = 1
+    while i < len(a) {
+        let arg = a[i]
+        if arg == "-o" || arg == "--rt" || arg == "-I" || arg == "--sym-dir" {
+            if i + 1 >= len(a) { cliFail(arg + " needs a value") }
+            let v = a[i + 1]
+            if arg == "-o" {
+                out = v
+                outSet = true
+            } else if arg == "--rt" {
+                rtDir = v
+            } else if arg == "-I" {
+                append(incDirs, v)
             } else {
-                eprintln("obxc: more than one source file: ", a[i])
-                exit(2)
+                symDir = v
+                symDirSet = true
             }
+            i += 2
+        } else if arg == "--check" {
+            if mode == "deps" || emitSym { cliFail("--check, --deps and --emit-sym are mutually exclusive") }
+            mode = "check"
+            i += 1
+        } else if arg == "--deps" {
+            if mode == "check" || emitSym { cliFail("--check, --deps and --emit-sym are mutually exclusive") }
+            mode = "deps"
+            i += 1
+        } else if arg == "--emit-sym" {
+            if mode != "build" { cliFail("--check, --deps and --emit-sym are mutually exclusive") }
+            emitSym = true
+            i += 1
+        } else if len(arg) > 0 && arg[0] == '-' {
+            cliFail("unknown option " + arg)
+        } else if len(path) == 0 {
+            path = arg
+            i += 1
+        } else {
+            cliFail("more than one source file: " + arg)
         }
-        if len(path) == 0 {
-            usage()
-            exit(2)
-        }
+    }
+    if len(path) == 0 {
+        usage()
+        exit(2)
+    }
+    if mode != "build" && outSet { cliFail("-o cannot be used with --check or --deps") }
+    emitRootSym = emitSym
+    if mode == "deps" {
         runDeps(path)
         return
     }
-    // obxc SOURCE [-o OUTPUT] [--rt RUNTIME_DIR] [-I DIR]...
-    if len(a) >= 2 && a[1][0] != '-' {
-        let path = a[1]
-        var out = path
-        if len(out) > 4 && substr(out, len(out) - 4, len(out)) == ".obx" { out = substr(out, 0, len(out) - 4) }
-        var rtDir = dirOf(a[0])
-        var i = 2
-        while i < len(a) {
-            if a[i] == "-o" || a[i] == "--rt" || a[i] == "-I" {
-                if i + 1 >= len(a) {
-                    eprintln("obxc: unknown option ", a[i])
-                    exit(2)
-                }
-                if a[i] == "-o" {
-                    out = a[i + 1]
-                } else if a[i] == "--rt" {
-                    rtDir = a[i + 1]
-                } else {
-                    append(incDirs, a[i + 1])
-                }
-            } else {
-                eprintln("obxc: unknown option ", a[i])
-                exit(2)
-            }
-            i += 2
-        }
-        compileFile(path, out, rtDir)
+    if mode == "check" {
+        checkFile(path)
         return
     }
-    usage()
-    exit(2)
+    if len(out) == 0 {
+        out = path
+        if len(out) > 4 && substr(out, len(out) - 4, len(out)) == ".obx" { out = substr(out, 0, len(out) - 4) }
+    }
+    compileFile(path, out, rtDir)
 }
