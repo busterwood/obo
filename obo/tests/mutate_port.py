@@ -4,7 +4,8 @@ runs the Stage B comparison against it (port_compare.compare, with the copy as
 its source), and checks that the comparison fails. Divergent output must show up as a
 mismatch, freeing too early as a dangling-handle trap, and keeping memory alive
 as a peak more than MEMORY_MARGIN above the unmutated one. A mutant of the encoder (ENCODER) runs
-port_test.py instead, whose objdump cross-check must catch it.
+port_test.py instead, whose objdump cross-check must catch it; a mutant of the image emitter
+(IMAGE) runs elf_test.py, because it changes only the produced file's segment sizes.
 
 Each mutant's comparison reuses obo's outcomes, stops at the first difference, and
 allows each program 20 times what obo took; MUTATE_JOBS mutants run side by side and
