@@ -1,4 +1,4 @@
-// write_padded: io.obo's phase-3 writePadded. One fixed sequence exercises
+// write_padded: io::writePadded. One fixed sequence exercises
 // width 0 (no padding), a padded zero, values narrower/wider than the width and
 // a width larger than the digits; each is written through Writer thresholds 1,
 // 3, 8 and 65536 so the flush-inside-writePadded path is covered too. The file
@@ -7,19 +7,21 @@
 // expect: case 3 ok
 // expect: case 8 ok
 // expect: case 65536 ok
-fn emitSeq(mut w: &Writer): Result[bool] {
-    try writePadded(w, 0, 0)
-    try write(w, "|")
-    try writePadded(w, 0, 2)
-    try write(w, "|")
-    try writePadded(w, 7, 5)
-    try write(w, "|")
-    try writePadded(w, 42, 1)
-    try write(w, "|")
-    try writePadded(w, 1000001, 6)
-    try write(w, "|")
-    try writePadded(w, 999999, 8)
-    try write(w, "\n")
+import "io.obx" as io
+
+fn emitSeq(mut w: &io::Writer): Result[bool] {
+    try io::writePadded(w, 0, 0)
+    try io::write(w, "|")
+    try io::writePadded(w, 0, 2)
+    try io::write(w, "|")
+    try io::writePadded(w, 7, 5)
+    try io::write(w, "|")
+    try io::writePadded(w, 42, 1)
+    try io::write(w, "|")
+    try io::writePadded(w, 1000001, 6)
+    try io::write(w, "|")
+    try io::writePadded(w, 999999, 8)
+    try io::write(w, "\n")
     return ok(true)
 }
 
@@ -31,13 +33,13 @@ fn oneCase(dir: string, size: int) {
         ok {
             let fd = f.value
             defer closeFile(fd)
-            var w = newWriter(fd, size)
+            var w = io::newWriter(fd, size)
             let e = emitSeq(w)
             match e {
                 ok { }
                 err { println("case ", size, " write error ", e.code); exit(1) }
             }
-            let fl = flush(w)
+            let fl = io::flush(w)
             match fl {
                 ok { }
                 err { println("case ", size, " flush error ", fl.code); exit(1) }

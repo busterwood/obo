@@ -1,17 +1,29 @@
 # obo command-line tools
 
-The first tools written in obo: `cat`, `wc` and `sort`. They are ordinary obo
-programs built from `lib/str.obo`, `lib/io.obo` and one source file here; there
-are no modules yet, so `tools/build_tools.py` concatenates those files in that
-order and compiles the result with the ordinary compiler.
+The first tools written in obo: `cat`, `wc` and `sort`. Each source file here is
+a module root that imports `../lib/io.obx` as `io` and
+`../lib/strings.obx` as `strings`; every library name is qualified
+(`io::Writer`, `io::newWriter`, `strings::errText`, ...). `tools/build_tools.py`
+compiles each root directly with the ordinary compiler, dependency-first, and
+nothing is concatenated. The builder creates a symbol directory under its output
+(`build/tools/sym` for `make tools`): symbol writes truncate in place, so
+concurrent builds must use distinct output directories.
 
 ```
 cd obo
-make tools                 # build build/tools/{cat,wc,sort}
+make tools                 # build build/tools/{cat,wc,sort} and build/tools/sym
 python3 tools/build_tools.py [cat] [--out DIR] [--obo PATH] [--rt DIR]
 python3 tests/tools.py --require-reference   # the differential gate
 python3 tests/tools.py --memory
 ```
+
+The library modules are `lib/io.obx` (`Reader`, `Writer`, the buffered
+functions and `writePadded`) and `lib/strings.obx` (byte classification,
+`cmpBytes`, `errText`, `digits`, `appendPadded`). They stay in `lib/`, the tools
+stay in `programs/`, and `writePadded` stays in `io` for this migration; the
+wider stdlib split (a `fmt` module and a `cmd/` directory) is a later change.
+The test programs `tests/run/io_reader.obx`, `tests/run/io_writer.obx` and
+`tests/lib/*.obx` import the same modules and are compiled with `-I lib`.
 
 The subset is deliberate and small. Options may be clustered (`-nET`, `-lwc`,
 `-rnu`) and may appear before or after operands; `--` ends option parsing. A lone

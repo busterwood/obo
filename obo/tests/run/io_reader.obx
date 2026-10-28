@@ -1,5 +1,4 @@
-// prelude: io
-// io_reader: the buffered Reader at chunk sizes 1, 2, 3, 4, 7 and 16; lines on
+// io_reader: the buffered io::Reader at chunk sizes 1, 2, 3, 4, 7 and 16; lines on
 // the boundaries; a 100 KiB line; an empty line (non-nil empty array) versus EOF
 // at the start (nil); EOF mid-line; binary bytes through readByte; readN's short,
 // EOF and nil results; eof.
@@ -10,6 +9,8 @@
 // expect: bytes ok
 // expect: readN ok
 // expect: eof ok
+import "io.obx" as io
+
 fn bytesOf(s: string): []byte {
     let out = new []byte(0)
     for i in 0..len(s) { append(out, s[i]) }
@@ -36,10 +37,10 @@ fn writeAll(path: string, data: &[]byte) {
 // distinct from EOF at the start of a line
 fn collectLines(path: string, size: int): Result[[]byte] {
     let fd = try openFile(path, "r")
-    var r = newReader(fd, size)
+    var r = io::newReader(fd, size)
     var out = new []byte(0)
     while true {
-        let line = try readLine(r)
+        let line = try io::readLine(r)
         if line == nil {
             append(out, 255)
             try closeFile(fd)
@@ -149,17 +150,17 @@ fn main() {
     let bo = openFile(bytesPath, "r")
     match bo {
         ok(fd) {
-            var r = newReader(fd, 7)
+            var r = io::newReader(fd, 7)
             var k = 0
             while k < 256 {
-                let b = readByte(r)
+                let b = io::readByte(r)
                 match b {
                     ok(v) { if v != k { println("byte ", k, " is ", v); exit(1) } }
                     err(m, c) { println("readByte: ", m, " (", c, ")"); exit(1) }
                 }
                 k += 1
             }
-            let e = readByte(r)
+            let e = io::readByte(r)
             match e {
                 ok(v) { if v != -1 { println("byte at EOF is ", v); exit(1) } }
                 err(m, c) { println("readByte eof: ", m, " (", c, ")"); exit(1) }
@@ -178,8 +179,8 @@ fn main() {
     let so = openFile(sixPath, "r")
     match so {
         ok(fd) {
-            var r = newReader(fd, 2)
-            let n1 = readN(r, 4)
+            var r = io::newReader(fd, 2)
+            let n1 = io::readN(r, 4)
             match n1 {
                 ok(v) {
                     if v == nil { println("readN 4 nil"); exit(1) }
@@ -188,7 +189,7 @@ fn main() {
                 }
                 err(m, c) { println("readN 4: ", m, " (", c, ")"); exit(1) }
             }
-            let n2 = readN(r, 4)
+            let n2 = io::readN(r, 4)
             match n2 {
                 ok(v) {
                     if v == nil { println("readN short nil"); exit(1) }
@@ -197,12 +198,12 @@ fn main() {
                 }
                 err(m, c) { println("readN short: ", m, " (", c, ")"); exit(1) }
             }
-            let n3 = readN(r, 4)
+            let n3 = io::readN(r, 4)
             match n3 {
                 ok(v) { if v != nil { println("readN at EOF ", len(v)); exit(1) } }
                 err(m, c) { println("readN at EOF: ", m, " (", c, ")"); exit(1) }
             }
-            let n4 = readN(r, 0)
+            let n4 = io::readN(r, 0)
             match n4 {
                 ok(v) { println("readN 0 succeeded"); exit(1) }
                 err(m, c) { if c != 22 { println("readN 0 code ", c); exit(1) } }
@@ -218,14 +219,14 @@ fn main() {
     let eo = openFile(sixPath, "r")
     match eo {
         ok(fd) {
-            var r = newReader(fd, 3)
-            if eof(r) { println("eof before reading"); exit(1) }
-            let n1 = readN(r, 16)
+            var r = io::newReader(fd, 3)
+            if io::eof(r) { println("eof before reading"); exit(1) }
+            let n1 = io::readN(r, 16)
             match n1 {
                 ok(v) { if v == nil || len(v) != 6 { println("eof readN"); exit(1) } }
                 err(m, c) { println("eof readN: ", m, " (", c, ")"); exit(1) }
             }
-            if !eof(r) { println("no eof after the last chunk"); exit(1) }
+            if !io::eof(r) { println("no eof after the last chunk"); exit(1) }
             let c = closeFile(fd)
             match c { ok(v) { } err(m, code) { println("close: ", m, " (", code, ")"); exit(1) } }
         }

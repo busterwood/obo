@@ -10,14 +10,14 @@ Sections (all by default):
             still marks the table), "w" truncation, the unknown-mode error,
             exits 0/8/9, the gated OBO_IO_FAULT hooks with and without
             OBO_CHECK, and no leak on the normal paths.
-  programs  compiles tests/io/*.obx (standalone) and tests/lib/*.obx (with
-            obo/lib/io.obo concatenated) and runs each with its stdin, env and
-            extra arguments; the // expect: and // expect-exit: markers are
-            checked as in run_fork.py.
-  tools     concatenates lib/str.obo + lib/io.obo + programs/{cat,wc}.obx
-            (the phase-3 tool build), checks cat streams a pipe before EOF, a
-            100 KiB binary round trip, wc's line/word/byte counts, and both on a
-            file. The full tool semantics live in tests/tools.py.
+  programs  compiles tests/io/*.obx (standalone) and tests/lib/*.obx (as module
+            roots importing io.obx, with -I obo/lib and a private sym dir) and
+            runs each with its stdin, env and extra arguments; the // expect: and
+            // expect-exit: markers are checked as in run_fork.py.
+  tools     builds programs/{cat,wc}.obx with tools/build_tools.py (module
+            roots; nothing is concatenated), checks cat streams a pipe before
+            EOF, a 100 KiB binary round trip, wc's line/word/byte counts, and
+            both on a file. The full tool semantics live in tests/tools.py.
 
 The compiler is $OBO (default obo/obo); --rt points every program at this tree.
 """
@@ -36,10 +36,12 @@ ROOT = os.path.join(os.path.dirname(FORK), 'obx')
 sys.path.insert(0, os.path.join(ROOT, 'tests'))
 import run  # noqa: E402
 
+sys.path.insert(0, os.path.join(FORK, 'tools'))
+import build_tools  # noqa: E402
+
 run.OBXC = os.environ.get('OBO', os.path.join(FORK, 'obo'))
 run.ROOT = FORK
-LIB = os.path.join(FORK, 'lib', 'io.obo')
-STR = os.path.join(FORK, 'lib', 'str.obo')
+LIBDIR = os.path.join(FORK, 'lib')
 TMP = tempfile.mkdtemp(prefix='obo-io-test-')
 atexit.register(shutil.rmtree, TMP, ignore_errors=True)
 
@@ -89,11 +91,9 @@ def compile_text(name, text):
     return run.compile_with(run.OBXC, text, 'io_' + name)
 
 
-def case_io(name, env, stdin=b'', args=(), prelude=False, pass_fds=()):
+def case_io(name, env, stdin=b'', args=(), pass_fds=()):
     path = os.path.join(HERE, 'io', name)
     text = open(path).read()
-    if prelude:
-        text = open(LIB).read() + '\n' + text
     exe = compile_text(name, text)
     scratch = tempfile.mkdtemp(prefix='scratch-', dir=TMP)
     expect, code = markers(path)
@@ -104,8 +104,10 @@ def case_io(name, env, stdin=b'', args=(), prelude=False, pass_fds=()):
 
 def case_lib(name, env):
     path = os.path.join(HERE, 'lib', name)
-    text = open(LIB).read() + '\n' + open(path).read()
-    exe = compile_text('lib_' + name, text)
+    text = open(path).read()
+    symdir = tempfile.mkdtemp(prefix='sym-', dir=TMP)
+    exe = run.compile_with(run.OBXC, text, 'lib_' + name,
+                           extra_args=['-I', LIBDIR, '--sym-dir', symdir])
     scratch = tempfile.mkdtemp(prefix='scratch-', dir=TMP)
     expect, code = markers(path)
     p = subprocess.run([exe, scratch], capture_output=True, timeout=120, env=env)
@@ -194,9 +196,8 @@ def program_section():
 
 # ---------------------------------------------------------------- tools
 def build_tool(name):
-    text = (open(STR).read() + '\n' + open(LIB).read() + '\n' +
-            open(os.path.join(FORK, 'programs', name + '.obx')).read())
-    return compile_text('tool_' + name, text)
+    out = tempfile.mkdtemp(prefix='tool-', dir=TMP)
+    return build_tools.build([name], out, run.OBXC, run.ROOT)[0]
 
 
 def run_tool_file(exe, data, timeout=120):

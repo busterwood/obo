@@ -7,6 +7,8 @@
 // expect: writer sizes ok
 // expect: write error 9
 // expect: takechunk ok
+import "io.obx" as io
+
 fn addText(mut out: &[]byte, s: string) {
     for i in 0..len(s) { append(out, s[i]) }
 }
@@ -36,10 +38,10 @@ fn writeAll(path: string, data: &[]byte) {
 // 254 after each line, 255 at EOF
 fn collectLines(path: string, size: int): Result[[]byte] {
     let fd = try openFile(path, "r")
-    var r = newReader(fd, size)
+    var r = io::newReader(fd, size)
     var out = new []byte(0)
     while true {
-        let line = try readLine(r)
+        let line = try io::readLine(r)
         if line == nil {
             append(out, 255)
             try closeFile(fd)
@@ -92,14 +94,14 @@ fn main() {
         let o = openFile(path, "w")
         match o {
             ok(fd) {
-                var w = newWriter(fd, size)
-                let w1 = write(w, s)
+                var w = io::newWriter(fd, size)
+                let w1 = io::write(w, s)
                 match w1 { ok(v) { } err(m, c) { println("write: ", m, " (", c, ")"); exit(1) } }
                 var extra = new []byte(0)
                 for i in 0..5 { append(extra, byte(65 + i)) }
-                let w2 = writeBytes(w, extra)
+                let w2 = io::writeBytes(w, extra)
                 match w2 { ok(v) { } err(m, c) { println("writeBytes: ", m, " (", c, ")"); exit(1) } }
-                let f = flush(w)
+                let f = io::flush(w)
                 match f {
                     ok(v) { if !v { println("flush false"); exit(1) } }
                     err(m, c) { println("flush: ", m, " (", c, ")"); exit(1) }
@@ -126,9 +128,9 @@ fn main() {
     let ro = openFile(roPath, "r")
     match ro {
         ok(fd) {
-            var w = newWriter(fd, 1)
+            var w = io::newWriter(fd, 1)
             let data = bytesOf("x")
-            let r = writeBytes(w, data)
+            let r = io::writeBytes(w, data)
             match r {
                 ok(v) { println("write to read-only succeeded"); exit(1) }
                 err(m, c) { println("write error ", c) }
@@ -146,25 +148,25 @@ fn main() {
     let tco = openFile(tcPath, "r")
     match tco {
         ok(fd) {
-            var r = newReader(fd, 4)
-            let f1 = fill(r)
+            var r = io::newReader(fd, 4)
+            let f1 = io::fill(r)
             match f1 { ok(v) { if !v { println("fill eof"); exit(1) } } err(m, c) { println("fill: ", m, " (", c, ")"); exit(1) } }
-            let c0 = takeChunk(r)
+            let c0 = io::takeChunk(r)
             let want0 = bytesOf("abcd")
             checkEqual("takechunk pos0", c0, want0)
-            let f2 = fill(r)
+            let f2 = io::fill(r)
             match f2 { ok(v) { if !v { println("fill eof 2"); exit(1) } } err(m, c) { println("fill: ", m, " (", c, ")"); exit(1) } }
-            let b = readByte(r)
+            let b = io::readByte(r)
             match b {
                 ok(v) { if v != 101 { println("readByte ", v); exit(1) } }
                 err(m, c) { println("readByte: ", m, " (", c, ")"); exit(1) }
             }
-            let c1 = takeChunk(r)
+            let c1 = io::takeChunk(r)
             let want1 = bytesOf("fgh")
             checkEqual("takechunk pos1", c1, want1)
-            let f3 = fill(r)
+            let f3 = io::fill(r)
             match f3 { ok(v) { if v { println("expected eof"); exit(1) } } err(m, c) { println("fill: ", m, " (", c, ")"); exit(1) } }
-            let c2 = takeChunk(r)
+            let c2 = io::takeChunk(r)
             if len(c2) != 0 { println("takechunk at eof ", len(c2)); exit(1) }
             let cl = closeFile(fd)
             match cl { ok(v) { } err(m, code) { println("close: ", m, " (", code, ")"); exit(1) } }
@@ -179,8 +181,8 @@ fn main() {
     let rlo = openFile(rlPath, "r")
     match rlo {
         ok(fd) {
-            var r = newReader(fd, 8)
-            let line = readLine(r)
+            var r = io::newReader(fd, 8)
+            let line = io::readLine(r)
             match line {
                 ok(v) {
                     if v == nil { println("readLine nil"); exit(1) }
@@ -192,7 +194,7 @@ fn main() {
                 }
                 err(m, c) { println("readLine: ", m, " (", c, ")"); exit(1) }
             }
-            let rest = takeChunk(r)
+            let rest = io::takeChunk(r)
             let wantRest = bytesOf("two\n")
             checkEqual("takechunk after line", rest, wantRest)
             let cl = closeFile(fd)

@@ -7,10 +7,10 @@ code when run with OBO_CHECK=1. The executables' bytes may differ, so code gener
 can change; the fixed point (make promote) still compares the compiler's own bytes.
 The compiler itself must have no leaks and stay within its memory budget.
 
-A tests/run program that starts with "// prelude: io" is compiled with
-obo/lib/io.obo concatenated before it, exactly as run_fork.py does; otherwise
-both compilers would reject the library's names and the case would compare two
-identical errors without compiling anything.
+A program that imports library modules is compiled as a module root with
+-I obo/lib and a private --sym-dir per compiler. The seed comparison compiles
+those roots too; only the separate module-tree cases stay out of its flat
+Stage B count.
 
     python3 obo/tests/port_compare.py
     OBO_REF=obo/seed/obo python3 obo/tests/port_compare.py   # against the seed instead"""
@@ -33,7 +33,7 @@ import run  # noqa: E402  (for error_cases)
 
 REF = os.path.abspath(os.environ.get('OBO_REF', os.path.join(FORK, 'obo')))
 SRC = os.path.join(FORK, 'src', 'obo.obo')
-LIB = os.path.join(FORK, 'lib', 'io.obo')
+LIBDIR = os.path.join(FORK, 'lib')
 # live peak, in bytes, of the port compiling itself. Lower it when memory improves; raise it only
 # for a reason recorded in FORK.md. Raised from 983,000 on 2026-10-26 by the user's decision: the
 # measured peak is 954,896 bytes (FORK.md, "Peak memory (done)"), and a budget about 3% above it
@@ -66,7 +66,8 @@ def timed_out(o):
     return o == ('ok', ('timeout', b'', b'')) or (o[0] == 'crash' and o[1].startswith('no result in'))
 
 
-def outcome(exe, src_path, out_path, scratch, compile_limit=120, run_limit=60, capped_run=False):
+def outcome(exe, src_path, out_path, scratch, compile_limit=120, run_limit=60, capped_run=False,
+            module_args=()):
     """('ok', (exit code, stdout, stderr)) for a program that compiles, run with
     OBO_CHECK=1 and a fresh scratch directory as its argument (as run.py does);
     ('error', 'line:col: message') or ('crash', ...) for one that does not. The case's
@@ -76,7 +77,8 @@ def outcome(exe, src_path, out_path, scratch, compile_limit=120, run_limit=60, c
     tmp = os.path.dirname(src_path)
     t0 = time.monotonic()
     try:
-        p = subprocess.run([exe, src_path, '-o', out_path, '--rt', FORK], capture_output=True, text=True,
+        p = subprocess.run([exe, src_path, '-o', out_path, '--rt', FORK, *module_args],
+                           capture_output=True, text=True,
                            env=dict(os.environ, OBO_CHECK='1'), timeout=compile_limit,
                            preexec_fn=capped() if capped_run else None)
     except subprocess.TimeoutExpired:
@@ -113,17 +115,13 @@ def main():
 
 def cases_of(src):
     """(name, text) of every case: the programs, src itself, and the error cases.
-    A program that starts with "// prelude: io" gets the library before it, as
-    run_fork.py's program_test does, so the case compiles the library and the
-    program with both compilers rather than comparing two identical rejections."""
+    A program that imports modules is compiled as a module root (see the module
+    arguments in compare); there is no source injection."""
     cases = []
-    lib = open(LIB, 'rb').read()
     for f in sorted(glob.glob(os.path.join(FORK, 'tests', 'run', '*.obx')) + glob.glob(os.path.join(FORK, 'examples', '*.obx')) +
                     glob.glob(os.path.join(FORK, 'bench', '*.obx')) + glob.glob(os.path.join(ROOT, 'tests', 'run', '*.obx')) +
                     glob.glob(os.path.join(ROOT, 'examples', '*.obx')) + [src]):
         text = open(f, 'rb').read()
-        if text.startswith(b'// prelude: io'):
-            text = lib + b'\n' + text
         cases.append((os.path.relpath(f, ROOT), text))
     for f in sorted(glob.glob(os.path.join(FORK, 'tests', 'errors', '*.obx')) + glob.glob(os.path.join(ROOT, 'tests', 'errors', '*.obx'))):
         for name, text, _, _ in run.error_cases(f):
@@ -139,8 +137,8 @@ def cases_of(src):
 # every emitted .sym byte-for-byte, and --check of every module source that has a
 # header. `symcheck` cases are check-only: a root source plus committed symdir
 # fixtures, which exercise the reader's structural and staleness validation and
-# the check-mode writer. The seed compiler predates modules, so all of these are
-# skipped when REF is seed/obo.
+# the check-mode writer. These tree cases are compared in the default run; the
+# seed comparison's Stage B count has always excluded them.
 
 MODDIR = os.path.join(FORK, 'tests', 'modules')
 SEED_REF = os.path.realpath(os.path.join(FORK, 'seed', 'obo'))
@@ -568,22 +566,40 @@ def compare(tmp, src=SRC, quick=False, workers=None):
             failures.append(f"memory: live peak {peak:,} bytes is over the budget of {PEAK_BUDGET:,}")
     if quick and failures:
         return lines, failures, peak
+    modules = os.path.realpath(REF) != SEED_REF
     cases = cases_of(src)
+
+    def imports_module(text):
+        return any(line.startswith(b'import "') for line in text.splitlines())
+
+    def module_args(symdir, needs_modules):
+        # the default comparison passes the module flags to every case; the seed
+        # comparison needs them only for the module roots, and those roots stay in
+        if not modules and not needs_modules:
+            return ()
+        os.makedirs(symdir, exist_ok=True)
+        return ['-I', LIBDIR, '--sym-dir', symdir]
 
     def both(text):
         h = hashlib.sha1(text).hexdigest()[:16]
         case = os.path.join(tmp, f'case-{h}.obx')
         open(case, 'wb').write(text)
         scratch = os.path.join(tmp, f'scratch-{h}')
+        needs_modules = imports_module(text)
         ref = REF_OUTCOMES.get(text)
         if ref is None:
-            ref = REF_OUTCOMES[text] = outcome(REF, case, case + '.ref', scratch)
+            ref = REF_OUTCOMES[text] = outcome(
+                REF, case, case + '.ref', scratch,
+                module_args=module_args(case + '.refsym', needs_modules))
         o, tc, tr = ref
         limits = (min(120, max(10, 20 * tc)), min(60, max(5, 20 * tr))) if quick else (120, 60)
-        p = outcome(PORT, case, case + '.port', scratch, *limits, capped_run=quick)[0]
+        args = module_args(case + '.portsym', needs_modules)
+        p = outcome(PORT, case, case + '.port', scratch, *limits, capped_run=quick,
+                    module_args=args)[0]
         if quick and o != p and timed_out(p):
             # a timeout on a loaded machine is not a mismatch: judge the case again with the full limits
-            p = outcome(PORT, case, case + '.port', scratch, 120, 60, capped_run=True)[0]
+            p = outcome(PORT, case, case + '.port', scratch, 120, 60, capped_run=True,
+                        module_args=args)[0]
         return o, p
     results = {}
     with concurrent.futures.ThreadPoolExecutor(workers or os.cpu_count()) as pool:   # the programs run for seconds

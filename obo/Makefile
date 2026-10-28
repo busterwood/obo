@@ -8,11 +8,10 @@ CFLAGS = -O2 -ffreestanding -fno-builtin -nostdlib -fno-pic -fno-pie -fno-stack-
 # than its prerequisites, and the tool and library sources are deliberately not
 # prerequisites (the builder checks them).
 #
-# Stage 2 symbol files live in .obo/sym, one file per module, a flat namespace. The
-# directory is an order-only prerequisite: creating/touching it must not rebuild the
-# tools. The builder creates it too, so a direct `python3 tools/build_tools.py` works.
-SYMDIR = .obo/sym
-.PHONY: tools tools-check tools-memory all clean $(SYMDIR)
+# Each build's symbol files live in <out>/sym, created by tools/build_tools.py;
+# build/tools/sym for `make tools`. Symbol writes truncate in place, so tests use
+# private output directories instead of sharing one writable sym dir.
+.PHONY: tools tools-check tools-memory all clean
 
 all: runtime_text.bin runtime_data.bin obo
 
@@ -42,15 +41,13 @@ rt_io_test: tests/rt_io_test.c runtime/runtime.c runtime/rt.ld
 	gcc $(CFLAGS) -c tests/rt_io_test.c -o rt_io_test.o
 	ld -T runtime/rt.ld -o rt_io_test rt_io_test.o
 
-# the first command-line tools: lib/str.obo + lib/io.obo + one programs/*.obx each,
-# concatenated and compiled by tools/build_tools.py (the sources are not Make
-# prerequisites; .PHONY makes every source edit rebuild, and the builder's own
-# checks report a missing phase 2 instead of make reporting a missing target)
-tools: obo runtime_text.bin runtime_data.bin | $(SYMDIR)
+# the first command-line tools: each programs/*.obx is a module root importing
+# ../lib/io.obx and ../lib/strings.obx, compiled directly by
+# tools/build_tools.py (the sources are not Make prerequisites; .PHONY makes
+# every source edit rebuild, and the builder's own checks report a missing
+# phase 2 instead of make reporting a missing target)
+tools: obo runtime_text.bin runtime_data.bin
 	python3 tools/build_tools.py
-
-$(SYMDIR):
-	mkdir -p $(SYMDIR)
 
 # the differential gate against GNU coreutils (separate from make promote)
 tools-check: tools

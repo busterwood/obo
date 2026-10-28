@@ -3,6 +3,8 @@
 // bytes, so flush's short-count loop must complete the file; the contents are
 // read back and compared. The driver runs it with and without the hook.
 // expect: short write ok
+import "io.obx" as io
+
 fn main() {
     let a = args()
     let dir = a[1]
@@ -10,15 +12,15 @@ fn main() {
     let o = openFile(path, "w")
     match o {
         ok(fd) {
-            var w = newWriter(fd, 64)
+            var w = io::newWriter(fd, 64)
             var data = new []byte(10240)
             for i in 0..len(data) { data[i] = byte(i * 31) }
-            let r = writeBytes(w, data)
+            let r = io::writeBytes(w, data)
             match r {
                 ok(v) { }
                 err(m, c) { println("writeBytes: ", m, " (", c, ")"); exit(1) }
             }
-            let f = flush(w)
+            let f = io::flush(w)
             match f {
                 ok(v) { if !v { println("flush false"); exit(1) } }
                 err(m, c) { println("flush: ", m, " (", c, ")"); exit(1) }

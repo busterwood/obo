@@ -1,7 +1,8 @@
 // sort: sort lines, with -n (exact decimal), -r and -u.
 //
-// Built by concatenating obo/lib/str.obo, obo/lib/io.obo and this file (in that
-// order). The subset is deliberate: -k, -t, -f, -b, -d, -i, -M, -h, -V, -s, -c,
+// Built as a module root by tools/build_tools.py: it imports lib/io.obx as
+// `io` and lib/strings.obx as `strings`, and every library name is qualified.
+// The subset is deliberate: -k, -t, -f, -b, -d, -i, -M, -h, -V, -s, -c,
 // -C, -o, -m, -z, --parallel, long options, --help and --version are unsupported
 // (see programs/README.md). The whole input is read before anything is written:
 // an open or read error prints one message and exits 2 with no stdout.
@@ -30,6 +31,9 @@
 // error prints `sort: write error` and exits 2 (GNU 9.4 prints two lines there;
 // the harness shape-compares).
 
+import "../lib/io.obx" as io
+import "../lib/strings.obx" as strings
+
 type SortOpts = ref record {
     numeric: bool      // -n
     reverse: bool      // -r
@@ -47,7 +51,7 @@ type NumKey = ref record {
 
 fn parseNum(s: string): NumKey {
     var i = 0
-    while i < len(s) && isBlank(s[i]) { i += 1 }
+    while i < len(s) && strings::isBlank(s[i]) { i += 1 }
     var neg = false
     if i < len(s) && s[i] == '-' {
         neg = true
@@ -79,7 +83,7 @@ fn magCompare(keys: &[]NumKey, i: int, j: int): int {
     let bi = len(keys[j].ip)
     if ai < bi { return -1 }
     if ai > bi { return 1 }
-    let ic = cmpBytes(keys[i].ip, keys[j].ip)
+    let ic = strings::cmpBytes(keys[i].ip, keys[j].ip)
     if ic != 0 { return ic }
     let af = keys[i].fp
     let bf = keys[j].fp
@@ -115,9 +119,9 @@ fn cmpAt(lines: &[]string, keys: &[]NumKey, i: int, j: int, opts: &SortOpts, key
     var c = 0
     if opts.numeric {
         c = numCompare(keys, i, j)
-        if c == 0 && !keyOnly { c = cmpBytes(lines[i], lines[j]) }
+        if c == 0 && !keyOnly { c = strings::cmpBytes(lines[i], lines[j]) }
     } else {
-        c = cmpBytes(lines[i], lines[j])
+        c = strings::cmpBytes(lines[i], lines[j])
     }
     if opts.reverse { return -c }
     return c
@@ -182,7 +186,7 @@ fn buildKept(lines: &[]string, keys: &[]NumKey, order: &[]int, opts: &SortOpts):
             if opts.numeric {
                 if numCompare(keys, order[i], last) == 0 { keep = false }
             } else {
-                if cmpBytes(lines[order[i]], lines[last]) == 0 { keep = false }
+                if strings::cmpBytes(lines[order[i]], lines[last]) == 0 { keep = false }
             }
         }
         if keep { append(kept, order[i]) }
@@ -191,7 +195,7 @@ fn buildKept(lines: &[]string, keys: &[]NumKey, order: &[]int, opts: &SortOpts):
     return kept
 }
 
-fn emitLines(mut w: &Writer, lines: &[]string, kept: &[]int): Result[bool] {
+fn emitLines(mut w: &io::Writer, lines: &[]string, kept: &[]int): Result[bool] {
     var scratch = new []byte(0)
     var i = 0
     while i < len(kept) {
@@ -199,19 +203,19 @@ fn emitLines(mut w: &Writer, lines: &[]string, kept: &[]int): Result[bool] {
         for j in 0..len(line) {
             append(scratch, line[j])
             if len(scratch) >= 65536 {
-                try writeBytes(w, scratch)
+                try io::writeBytes(w, scratch)
                 truncate(scratch, 0)
             }
         }
         append(scratch, '\n')
         if len(scratch) >= 65536 {
-            try writeBytes(w, scratch)
+            try io::writeBytes(w, scratch)
             truncate(scratch, 0)
         }
         i += 1
     }
-    try writeBytes(w, scratch)
-    try flush(w)
+    try io::writeBytes(w, scratch)
+    try io::flush(w)
     return ok(true)
 }
 
@@ -230,13 +234,13 @@ fn preflight(operands: &[]string): bool {
                     match c {
                         ok { }
                         err {
-                            eprintln("sort: cannot read: ", p, ": ", errText(c.code))
+                            eprintln("sort: cannot read: ", p, ": ", strings::errText(c.code))
                             return false
                         }
                     }
                 }
                 err {
-                    eprintln("sort: cannot read: ", p, ": ", errText(f.code))
+                    eprintln("sort: cannot read: ", p, ": ", strings::errText(f.code))
                     return false
                 }
             }
@@ -246,9 +250,9 @@ fn preflight(operands: &[]string): bool {
     return true
 }
 
-fn collectReader(mut r: &Reader, mut lines: &[]string): Result[bool] {
+fn collectReader(mut r: &io::Reader, mut lines: &[]string): Result[bool] {
     while true {
-        let line = try readLine(r)
+        let line = try io::readLine(r)
         if line == nil { return ok(true) }
         let s = string(line)
         append(lines, s)
@@ -260,12 +264,12 @@ fn collectReader(mut r: &Reader, mut lines: &[]string): Result[bool] {
 // `cannot read`. Returns false to stop the tool with exit 2.
 fn collectOperand(path: string, mut lines: &[]string): bool {
     if path == "-" {
-        var r = newReader(stdin(), 65536)
+        var r = io::newReader(stdin(), 65536)
         let rr = collectReader(r, lines)
         match rr {
             ok { return true }
             err {
-                eprintln("sort: read failed: -: ", errText(rr.code))
+                eprintln("sort: read failed: -: ", strings::errText(rr.code))
                 return false
             }
         }
@@ -275,18 +279,18 @@ fn collectOperand(path: string, mut lines: &[]string): bool {
         ok {
             let fd = f.value
             defer closeFile(fd)
-            var r = newReader(fd, 65536)
+            var r = io::newReader(fd, 65536)
             let rr = collectReader(r, lines)
             match rr {
                 ok { return true }
                 err {
-                    eprintln("sort: read failed: ", path, ": ", errText(rr.code))
+                    eprintln("sort: read failed: ", path, ": ", strings::errText(rr.code))
                     return false
                 }
             }
         }
         err {
-            eprintln("sort: cannot read: ", path, ": ", errText(f.code))
+            eprintln("sort: cannot read: ", path, ": ", strings::errText(f.code))
             return false
         }
     }
@@ -359,7 +363,7 @@ fn main() {
     let order = sortIdx(lines, keys, n, opts, keyOnly)
     let kept = buildKept(lines, keys, order, opts)
 
-    var w = newWriter(stdout(), 65536)
+    var w = io::newWriter(stdout(), 65536)
     let er = emitLines(w, lines, kept)
     match er {
         ok { }

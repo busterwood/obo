@@ -8,10 +8,11 @@
 
 This is a separate gate from the compiler suites: it is not in run_fork.py and
 not part of `make promote`. The tools are built in a private temporary
-directory with tools/build_tools.py (the same concatenation rule as
-`make tools`), then each case runs our tool and a reference utility in
-deterministic per-case directories and compares what users observe: stdout bytes,
-exit status, and stderr.
+directory with tools/build_tools.py (the same module-root rule as `make tools`:
+the sources are compiled directly, with their own private symbol directory),
+then each case runs our tool and a reference utility in deterministic per-case
+directories and compares what users observe: stdout bytes, exit status, and
+stderr.
 
 The reference is GNU coreutils 9.x primarily, resolved only through the pinned
 PATH /usr/bin:/bin and executed as `[tool, *args]` with `executable=<absolute

@@ -33,12 +33,17 @@ source imports and exports (Stage 1: `module`, `import "Name.obx" [as alias]`,
 `--check`, `--sym-dir`, `--emit-sym`, `--version` and staleness/version checks
 (Stage 2). A full build still compiles every module body from source; `--check`
 checks a module against its dependencies' symbol files, including dependencies
-without sources. The tools are not yet refactored into modules, so
-`obo/tools/build_tools.py` still concatenates the two library preludes and the tool
-before compiling it; it creates and passes `.obo/sym` so a module root will build
-unchanged, and `--deps`-based Make prerequisites are deferred until a tool is a
-module (recorded in `obo/FORK.md`). The exact subset, message forms and caveats are
-in `obo/LANGUAGE.md` section 6 and `obo/programs/README.md`.
+without sources. The tools are now module roots: each source in
+`obo/programs/` imports `../lib/io.obx` as `io` and
+`../lib/strings.obx` as `strings`, and `obo/tools/build_tools.py` compiles it
+directly with the ordinary compiler; nothing is concatenated. Each build gets a
+symbol directory under its output (`build/tools/sym` for `make tools`), created
+by the builder. Concurrent builds must use distinct output directories; a shared
+output has one symbol directory and one probe name.
+The tools still live in `programs/`, and `io::writePadded` stays in the I/O
+module for this migration; a wider stdlib split (a `fmt` module, `cmd/`) is
+later (recorded in `obo/FORK.md`). The exact subset, message forms and caveats
+are in `obo/LANGUAGE.md` section 6 and `obo/programs/README.md`.
 
 **obx** was the original garbage-collected dialect and the compiler obo grew from.
 It is kept as the historical reference; the "History: mainline obx" section below
@@ -77,7 +82,7 @@ and merged, with no compiler, runtime or seed change.
 | Maximum resident set | 2,988 KB |
 | Live-memory budget | 2,000,000 bytes (365,280 spare) |
 | obo suite | 1,129 tests; 523/544 mutants caught + 21 equivalent; 27 runtime/library; 491 port; 27 symbol-file tests; 200 fuzz mutations |
-| Tools differential gate | 199 checks (191 matrix + 8 serial) vs GNU coreutils 9.4; 2 memory cases |
+| Tools differential gate | 199 checks (191 matrix + 8 serial) vs GNU coreutils 9.4; 2 memory cases (module roots) |
 | Tool binaries | cat 108,256; wc 108,256; sort 112,352 bytes (static, runtime included) |
 | Minimal static executable | 90,848 bytes (runtime included) |
 
@@ -110,7 +115,7 @@ coreutils-shaped `cat`, `wc` and `sort`; then `eza` (the maintained exa fork), `
 | 1. `Result[T]`, `ok`/`err`, `try`, consuming `match` | done |
 | 2. Incremental I/O: `openFile`/`readFd`/`writeFd`/`closeFile`, standard fds, `Reader`/`Writer` | done |
 | 3. `cat`, `wc`, `sort` and the GNU differential gate | done |
-| 4. Multiple modules | done: Stage 1 source imports, Stage 2 `.sym`/`--check` |
+| 4. Multiple modules | done: Stage 1 source imports, Stage 2 `.sym`/`--check`; the tools and their libraries are module roots |
 | 5. Stdlib modules and the `eza` core | planned |
 | 6. Methods, interfaces and lambdas | planned |
 | 7. Peephole/optimizer audit | evidence-gated |
@@ -255,7 +260,7 @@ through a handle) and over the globals `code` and `ownedLocals`; this change did
 |---|---|
 | `obo/src/obo.obo` | obo's compiler, in obo, built by `obo/seed/obo` (promote with `make promote`) |
 | `obo/seed/obo` | the trusted previous stage |
-| `obo/lib/` | the buffered I/O library (`Reader`/`Writer`), `str.obo` byte helpers and `writePadded` |
+| `obo/lib/` | the source modules `io.obx` (buffered `Reader`/`Writer`, `writePadded`) and `strings.obx` (byte helpers) |
 | `obo/programs/` | the first tools: `cat`, `wc`, `sort`, with `README.md` |
 | `obo/tests/` | obo's suite, mutants, the I/O gates and the tools differential gate |
 | `obo/tests/io_test.py` | the runtime and streaming-I/O gates |
@@ -263,7 +268,7 @@ through a handle) and over the globals `code` and `ownedLocals`; this change did
 | `obo/tests/tools/` | recorded GNU/own goldens for the tools gate |
 | `obo/runtime/` | obo's runtime: no collector, leak and double-free counting |
 | `obo/FORK.md` | design decisions, milestones, measurements and findings |
-| `obo/tools/build_tools.py` | builds the first tools from the preludes and program source |
+| `obo/tools/build_tools.py` | builds the tool module roots directly (no concatenation) |
 | `obo/tools/` | the patch scripts behind each change |
 | `obx/` | history: the original GC compiler, suite and stage tests (see History) |
 
@@ -398,7 +403,9 @@ Implemented:
   `--check`/`--deps` (as are the three modes with each other). `--reemit-sym FILE`
   is a test hook that reads a symbol file and prints its canonical re-emission.
   Generated symbol files are ignored under `.obo/sym`; a build without
-  `--sym-dir` writes next to the root source, so use `--sym-dir .obo/sym`.
+  `--sym-dir` writes next to the root source, so use `--sym-dir .obo/sym`. The
+  tools' builder uses its own `<out>/sym` instead (`obo/build/tools/sym` for
+  `make tools`), also ignored with the rest of `obo/build/`.
   `tests/modules/golden/expected/*.sym` are committed byte-goldens.
 - Automatic semicolon insertion at line ends, as in Go.
 
