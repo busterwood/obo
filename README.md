@@ -54,7 +54,7 @@ and error case byte-for-byte as the first obo compiler did, and compiles itself 
 fixed point. Its stage test now compares behaviour (same errors, same output when run),
 so code generation can improve. Compiling
 its own source it peaked at 1.5 MB resident at the earlier stage (live peak now
-1,634,880 bytes on a 381,767-byte source; the 493,280-byte compiler takes
+1,634,720 bytes on a 381,767-byte source; the 493,280-byte compiler takes
 0.10 s; see Current status), against 2.5 MB for the same logic on a tuned
 collector and 1.9 MB on an
 aggressive one. The larger source and its extra checks account for the wall time.
@@ -65,9 +65,8 @@ Python compiler before it did.
 ## Current status (28 October 2026)
 
 The ownership compiler is merged and self-hosting. The Stage 2 compiler is a
-493,280-byte binary; `obo/seed/obo` is still the Stage 1 415,456-byte binary until
-the user promotes after review; the Stage 2 compiler is an exact fixed point
-(`obo` == stage 2 == stage 3), and the Stage 1 seed builds it. `Result[T]`/`try` and incremental I/O are done (merged and seeded);
+493,280-byte binary and is the promoted seed (`obo/seed/obo`); it is an exact
+fixed point (`obo` == stage 2 == stage 3), and the old Stage 1 seed built it. `Result[T]`/`try` and incremental I/O are done (merged and seeded);
 modules are done in both stages (source imports and `.sym`/`--check`); the first
 command-line tools (`cat`, `wc`, `sort`) and their GNU differential gate are done
 and merged, with no compiler, runtime or seed change.
@@ -75,12 +74,12 @@ and merged, with no compiler, runtime or seed change.
 | Metric | Value |
 |---|---:|
 | Compiler source | 10,440 lines, 381,767 bytes |
-| Compiler / seed binary | 493,280 / 415,456 bytes (stage 2 / stage 1 seed) |
+| Compiler / seed binary | 493,280 bytes (stage 2 compiler and promoted seed) |
 | Self-compile wall time | 0.10 s (5 runs; median 0.10 s) |
-| Self-compile live peak | 1,634,880 bytes |
-| Total allocated | 35,123,104 bytes |
+| Self-compile live peak | 1,634,720 bytes |
+| Total allocated | 35,121,184 bytes |
 | Maximum resident set | 2,988 KB |
-| Live-memory budget | 2,000,000 bytes (about 365 KB spare) |
+| Live-memory budget | 2,000,000 bytes (365,280 spare) |
 | obo suite | 1,129 tests; 523/544 mutants caught + 21 equivalent; 27 runtime/library; 491 port; 27 symbol-file tests; 200 fuzz mutations |
 | Tools differential gate | 199 checks (191 matrix + 8 serial) vs GNU coreutils 9.4; 2 memory cases (module roots) |
 | Tool binaries | cat 108,256; wc 108,256; sort 112,352 bytes (static, runtime included) |
@@ -100,8 +99,8 @@ The earlier 12.1 MB allocation and 30 ms figures in "Direction" describe the sma
 pre-Result, pre-I/O compiler. The source has grown from 4,552 lines at that stage to
 10,440; total allocation has grown with it, while the live peak stays within the 2 MB
 budget (the Stage 1 module context raised it from 1,244,480 bytes at the Phase 3
-merge to 1,364,240; Stage 2's symbol-file writer and reader raised it to 1,634,880,
-an increase of 270,640 bytes, still 365,120 bytes under the budget).
+merge to 1,364,240; Stage 2's symbol-file writer and reader raised it to 1,634,720,
+an increase of 270,480 bytes, still 365,280 bytes under the budget).
 
 ### Toward command-line tools
 
