@@ -1,0 +1,5 @@
+module lib
+pub type Holder
+pub type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
+pub type Holder = ref record { c: ?Circle }
+pub fn make(): Holder { return new Holder{c: new Circle{r: 1}} }

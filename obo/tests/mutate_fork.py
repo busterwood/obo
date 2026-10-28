@@ -672,8 +672,8 @@ SYM_MUTANTS = {
     # ---- writer: canonical declarations, order and summaries
     "sym: shells omitted": ("        if s.exported && symDefines(s, modName) { appTypeShell(b, s) }",
                             "        if false { appTypeShell(b, s) }"),
-    "sym: definitions omitted": ("        if s.exported && symDefines(s, modName) { appTypeDef(b, s, modName) }",
-                                 "        if false { appTypeDef(b, s, modName) }"),
+    "sym: definitions omitted": ("            appTypeDef(b, mod.globals[best], modName)",
+                                 "            let skippedDef = best"),
     "sym: aliases omitted": ("        if s.exported && s.kind == \"type\" && !symDefines(s, modName) && !symIsVariantSym(s) {",
                              "        if false {"),
     "sym: alias to a variant omitted": ("        if s.exported && s.kind == \"type\" && !symDefines(s, modName) && !symIsVariantSym(s) {",
@@ -720,7 +720,7 @@ SYM_MUTANTS = {
     "sym: format check accepts any version": ("    if fmt != SYM_FORMAT {", "    if false {"),
     "sym: ABI check accepts any version": ("    if abi != SYM_ABI {", "    if false {"),
     "sym: compiler check accepts any version": ("    if cv != OBO_VERSION {", "    if false {"),
-    "sym: source hash not validated": ("        if srcHash >= 0 && srcHash != fileSrc {",
+    "sym: source hash not validated": ("        if srcFound && srcHash != fileSrc {",
                                        "        if false {"),
     "sym: body hash not checked": ("    if computed != ifaceH { symFileFail(symPath, \"is corrupt (interface hash); rebuild it\") }",
                                    "    if false { symFileFail(symPath, \"is corrupt (interface hash); rebuild it\") }"),
@@ -789,10 +789,10 @@ SYM_MUTANTS = {
     "sym: scanner state not restored after a .sym read": ("""    symReadDecls(mode)
     symFinish(mode)
     restoreScan(ss)
-    symMode = false""",
+    symMode = savedSymMode""",
         """    symReadDecls(mode)
     symFinish(mode)
-    symMode = false"""),
+    symMode = savedSymMode"""),
     "sym: imported function is a forward heading": ("        f.addr = 0                                    // known: a complete imported summary, never a forward heading",
                                                      "        f.addr = -1"),
     "sym: imported pfree dropped": ("        f.fnRec.pfree = low", "        f.fnRec.pfree = 0"),
@@ -853,6 +853,36 @@ SYM_MUTANTS = {
                                               "fn checkFile(path: string) {\n    checking = false"),
     "sym: source-less build message not used": ("    if !depsWalk && probe != nil {",
                                                 "    if false {"),
+    "sym: negative source hash treated as absent": ("        if srcFound && srcHash != fileSrc {",
+                                                     "        if srcHash >= 0 && srcHash != fileSrc {"),
+    "sym: imported pf rows dropped": ("""        for k in 0..len(rowIdx) {
+            append(pfFn, f)
+            append(pfIdx, rowIdx[k])
+            append(pfEv, rowEv[k])
+        }""",
+        """        for k in 0..len(rowIdx) {
+            let lostRow = f
+        }"""),
+    "sym: dependency basename check dropped": ("""    if bodyName != expected {
+        symSourceRule("module '" + bodyName + "' must be in a file named " + bodyName + ".obx (found " + display + ")")
+    }""",
+        """    if false {
+        symSourceRule("module '" + bodyName + "' must be in a file named " + bodyName + ".obx (found " + display + ")")
+    }"""),
+    "sym: definition order reversed": ("                if best < 0 || s.line < bestLine {",
+                                        "                if best < 0 || s.line > bestLine {"),
+    "sym: type and global keys lose the module prefix": ('fn keyOf(owner: string, name: string): string { return owner + "::" + name }',
+                                                          'fn keyOf(owner: string, name: string): string { return name }'),
+    "sym: variant parent not set": ("                v.uid = fnv1a(vkey)\n                v.parent = ct",
+                                     "                v.uid = fnv1a(vkey)\n                v.parent = nil"),
+    "sym: shell uid not validated": ('            if uid != fnv1a(key) { error("type \'" + name + "\' uid does not match its key") }',
+                                      '            if false { error("type \'" + name + "\' uid does not match its key") }'),
+    "sym: symMode not restored after a nested read": ("""    restoreScan(ss)
+    symMode = savedSymMode
+    truncate(symLoadNames, len(symLoadNames) - 1)""",
+        """    restoreScan(ss)
+    symMode = false
+    truncate(symLoadNames, len(symLoadNames) - 1)"""),
 }
 
 MODULE_MUTANTS.update(SYM_MUTANTS)

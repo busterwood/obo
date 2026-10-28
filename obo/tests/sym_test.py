@@ -199,6 +199,7 @@ def roundtrip_rich():
             want = sym_text(os.path.join(s, name))
             if p.stdout != want:
                 raise Fail(f"re-emission of {name} is not byte-identical")
+        ok(build(d, s, check=True), 'check')      # variants keep their parent in check mode
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -382,6 +383,21 @@ def stale_missing_corrupt_versions():
             raise Fail(f"stale: exit {q.returncode}: {q.stderr.strip()}")
         # a build succeeds and rewrites it
         ok(build(d, s), 'rebuild')
+        # a changed source whose FNV-1a hash has the top bit set is stale too:
+        # -1 is a legal hash, not a "source absent" sentinel (B1)
+        found = False
+        for k in range(20):
+            body = ('module lib\npub fn f(): int { return 1 }\n// a%d\n' % k).encode()
+            if fnv(body) >= (1 << 63):
+                open(os.path.join(d, 'lib.obx'), 'wb').write(body)
+                found = True
+                break
+        if not found:
+            raise Fail('could not find a changed source with the FNV top bit set')
+        q = build(d, s, check=True)
+        if q.returncode != 2 or 'is stale' not in q.stderr:
+            raise Fail(f"negative-hash stale: exit {q.returncode}: {q.stderr.strip()}")
+        ok(build(d, s), 'rebuild negative hash')
         base = sym_text(p)
         # missing
         os.unlink(p)
@@ -599,6 +615,7 @@ pub fn pure(x: int): int { return x + 1 }
             ('pf index 62 on a no-pfree function', b'fn pure(p0: int): int', b'fn pure(p0: int): int pf 62 "!"', 'out of range'),
             ('non-primitive constant', b'const Limit: int', b'const Limit: Node', 'constant must have type'),
             ('byte constant out of range', b'0x00000000000000ff', b'0x0000000000000100', 'between 0 and 255'),
+            ('wrong shell uid', b'uid 0x5fca22110fba38d4', b'uid 0x1111111111111111', 'uid does not match'),
             ('bool constant is an integer', b'const On: bool = true', b'const On: bool = 0x0000000000000001', 'true or false'),
         ]
         for name, old, new, detail in cases:
@@ -1001,6 +1018,80 @@ def transitive_type_check():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def forward_variant_check():
+    """A forward-declared record whose field names a later closed type's variant:
+    definitions are emitted in definition-line order, so check mode can read the
+    writer's own output and re-emit it byte-for-byte (B2)."""
+    files = {
+        'lib.obx': '''module lib
+pub type Holder
+pub type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
+pub type Holder = ref record { c: ?Circle }
+pub fn make(): Holder { return new Holder{c: new Circle{r: 1}} }
+''',
+        'main.obx': 'module main\nimport "lib.obx"\nfn main() { let h = lib::make() }\n',
+    }
+    d, s = tree(files)
+    try:
+        ok(build(d, s), 'build')
+        text = sym_text(os.path.join(s, 'lib.sym')).decode()
+        if text.index('type Shape = closed') > text.index('type Holder = ref record'):
+            raise Fail('definitions are not in definition-line order')
+        ok(build(d, s, check=True), 'check')
+        r = reemit(os.path.join(s, 'lib.sym'))
+        ok(r, 'reemit')
+        if r.stdout != sym_text(os.path.join(s, 'lib.sym')):
+            raise Fail('the forward variant interface does not round-trip')
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def b6_stub_completion():
+    """The mandatory B6 case: a middle .sym whose summary names x::g but has no
+    depiface to x creates the stub before x loads; both load orders reject the
+    use-after-free through the same ^Sym."""
+    x = 'module x\npub type Box = ref record { v: int }\npub var g: Box = new Box{v: 1}\n'
+    files = {'x.obx': x,
+             'main.obx': 'module main\nimport "x.obx"\nfn main() { let r = &x::g; println(r.v) }\n'}
+    d, s = tree(files)
+    try:
+        ok(build(d, s), 'x build')
+        m = os.path.join(s, 'm.sym')
+        open(m, 'w').write('obosym 1\nabi 1\ncompiler "0.2"\nsource 0x%016x\ninterface 0x0\nmodule m\nfn f() frees 1 x::g\n' % 0)
+        rehash(m, lambda b: b)
+        for name, imports in (('order1', 'import "m.obx"\nimport "x.obx"'),
+                              ('order2', 'import "x.obx"\nimport "m.obx"')):
+            open(os.path.join(d, name + '.obx'), 'w').write(
+                'module ' + name + '\n' + imports + '\nfn main() { let r = &x::g; m::f(); println(r.v) }\n')
+            q = build(d, s, root=name + '.obx', check=True)
+            if q.returncode != 1 or 'may point to freed memory' not in q.stderr:
+                raise Fail(f"{name}: exit {q.returncode}: {q.stderr.strip()}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def nested_sym_error():
+    """A structural error in a .sym that has a depiface is still a symbol-file
+    error (obxc: ... symbol file:, exit 2), not a source error (B3)."""
+    files = {
+        'lib.obx': 'module lib\npub fn f(): int { return 1 }\n',
+        'mid.obx': 'module mid\nimport "lib.obx"\npub fn m(): int { return lib::f() }\n',
+        'main.obx': 'module main\nimport "mid.obx"\nfn main() { println(mid::m()) }\n',
+    }
+    d, s = tree(files)
+    try:
+        ok(build(d, s), 'build')
+        mid = os.path.join(s, 'mid.sym')
+        data = sym_text(mid).replace(b'fn m(): int', b'fn m(: int', 1)
+        open(mid, 'wb').write(data)
+        rehash(mid, lambda b: b)
+        q = build(d, s, check=True)
+        if q.returncode != 2 or not q.stderr.startswith('obxc: ') or 'symbol file:' not in q.stderr:
+            raise Fail(f"nested sym error: exit {q.returncode}: {q.stderr.strip()}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def duplicate_import_pair():
     """The same module imported with two aliases has one dep/depiface pair and runs once."""
     files = {
@@ -1047,6 +1138,9 @@ def tests():
         ('sym/default_symdir', default_symdir),
         ('sym/check_requires_header', check_requires_header),
         ('sym/transitive_type_check', transitive_type_check),
+        ('sym/forward_variant_check', forward_variant_check),
+        ('sym/b6_stub_completion', b6_stub_completion),
+        ('sym/nested_sym_error', nested_sym_error),
     ]
 
 

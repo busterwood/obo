@@ -1,0 +1,3 @@
+module mid
+import "lib.obx"
+pub fn m(): int { return lib::f() }

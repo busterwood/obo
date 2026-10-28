@@ -3,7 +3,9 @@ module lib
 import "other.obx"
 
 pub type Node = ref record { value: int; child: ?Node }
+pub type Fwd
 pub type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
+pub type Fwd = ref record { c: ?Circle }
 pub type BoxAlias = other::Box
 pub type Holder = ref record { c: ?Circle }
 pub type Alias = []Node

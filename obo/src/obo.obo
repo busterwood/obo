@@ -1590,6 +1590,7 @@ var symDirSet = false
 var checking = false            // --check: read dependency .sym files, write the checked module's
 var emitRootSym = false          // --emit-sym: a single-file build writes the root's .sym
 var symLoadNames = new []string(0)   // the modules whose interfaces are being read (cycle check)
+var symSrcFound = false              // validateDepSource found and read a source (its hash may be any 64-bit value)
 var symDummyGlobals = 0              // imported global dummy offsets in --check (never overlap real globals)
 const SYM_DUMMY_BASE = GLOBAL_BASE + 0x01000000
 
@@ -9138,9 +9139,33 @@ fn symBody(mod: ^Module): []byte {
         let s = mod.globals[i]
         if s.exported && symDefines(s, modName) { appTypeShell(b, s) }
     }
-    for i in 0..len(mod.globals) {                  // 2. record and closed definitions
+    // Definitions follow their *definition* line, not the symbol's first (forward)
+    // position: a forward type declared before a closed type may name one of its
+    // variants, so the closed definition must be read first.
+    var defDone = new []bool(0)
+    for i in 0..len(mod.globals) { append(defDone, false) }
+    var defLeft = 0
+    for i in 0..len(mod.globals) {
         let s = mod.globals[i]
-        if s.exported && symDefines(s, modName) { appTypeDef(b, s, modName) }
+        if s.exported && symDefines(s, modName) { defLeft += 1 }
+    }
+    while defLeft > 0 {
+        var best = -1
+        var bestLine = 0
+        for i in 0..len(mod.globals) {
+            let s = mod.globals[i]
+            if !defDone[i] && s.exported && symDefines(s, modName) {
+                if best < 0 || s.line < bestLine {
+                    best = i
+                    bestLine = s.line
+                }
+            }
+        }
+        if best >= 0 {
+            defDone[best] = true
+            appTypeDef(b, mod.globals[best], modName)
+            defLeft -= 1
+        }
     }
     for i in 0..len(mod.globals) {                  // 3. aliases (after definitions)
         let s = mod.globals[i]
@@ -9482,7 +9507,35 @@ fn symCompareOrder() {
         }
     }
     if !symSameList(symShells, liveTypes) { symDisagree("the type declaration order") }
-    if !symSameList(symDefined, liveTypes) { symDisagree("the type definition order") }
+    // live definitions in definition-line order, matching the writer
+    var liveDefs = new []string(0)
+    var liveLines = new []int(0)
+    for i in 0..len(symCurMod.globals) {
+        let s = symCurMod.globals[i]
+        if !s.exported || s.kind != "type" || symIsVariantSym(s) { continue }
+        let t = symType(s)
+        if (t.kind == "record" || t.kind == "closed") && t.owner == symCurMod.name && t.name == s.name {
+            append(liveDefs, s.name)
+            append(liveLines, s.line)
+        }
+    }
+    var d = 0
+    while d < len(liveDefs) {
+        var bestD = d
+        for k in d + 1..len(liveDefs) {
+            if liveLines[k] < liveLines[bestD] { bestD = k }
+        }
+        if bestD != d {
+            let tn = liveDefs[d]
+            liveDefs[d] = liveDefs[bestD]
+            liveDefs[bestD] = tn
+            let tl = liveLines[d]
+            liveLines[d] = liveLines[bestD]
+            liveLines[bestD] = tl
+        }
+        d += 1
+    }
+    if !symSameList(symDefined, liveDefs) { symDisagree("the type definition order") }
     if !symSameList(symAliasOrder, liveAliases) { symDisagree("the type alias order") }
     if !symSameList(symConstOrder, liveConsts) { symDisagree("the constant order") }
     if !symSameList(symGlobalOrder, liveGlobals) { symDisagree("the global order") }
@@ -9523,6 +9576,7 @@ fn symTypeDecl(mode: int) {
         if mode == 1 {
             let key = keyOf(symCurMod.name, name)
             if typeAtKey(key) != nil { error("duplicate type key '" + key + "'") }
+            if uid != fnv1a(key) { error("type '" + name + "' uid does not match its key") }
             let t = newType("record", name, nil)
             t.owner = symCurMod.name
             t.uid = uid
@@ -9568,6 +9622,8 @@ fn symTypeDecl(mode: int) {
             symFieldList(t)
             t.incomplete = false
             t.desc = 0
+            let ds = findExport(symCurMod, name)
+            if ds != nil { ds.line = nline }
             return
         }
         if got == nil { symDisagree("type '" + name + "'") }
@@ -9646,6 +9702,8 @@ fn symTypeDecl(mode: int) {
             if len(ct.variants) == 0 { error("a closed type needs at least one variant") }
             ct.incomplete = false
             ct.desc = 0
+            let ds = findExport(symCurMod, name)
+            if ds != nil { ds.line = nline }
         } else if vi != len(ct.variants) {
             symDisagree("type '" + name + "'")
         }
@@ -9990,7 +10048,8 @@ fn symDepSource(depPath: string, parentSrc: string): string {
 // This is a source-level check, so its errors are source errors (exit 1), not .sym errors.
 fn validateDepSource(path: string, expected: string, display: string): int {
     let data = readFile(path)
-    if data == nil { return -1 }
+    if data == nil { return 0 }
+    symSrcFound = true
     let ss = saveScan()
     let savedSymMode = symMode
     let savedPath = srcPath
@@ -10028,14 +10087,20 @@ fn readSym(symPath: string, expected: string, mode: int, display: string, srcCan
         if n == expected { symFileFail(symPath, "is corrupt (interface cycle); rebuild it") }
     }
     append(symLoadNames, expected)
-    var srcHash = -1
-    if len(srcCandidate) > 0 { srcHash = validateDepSource(srcCandidate, expected, display) }
+    var srcHash = 0
+    var srcFound = false
+    if len(srcCandidate) > 0 {
+        symSrcFound = false
+        srcHash = validateDepSource(srcCandidate, expected, display)
+        srcFound = symSrcFound
+    }
     let data = readFile(symPath)
     if data == nil {
         eprintln("obxc: no symbol file for module '", expected, "' in ", symDir, "; run a build first")
         exit(2)
     }
     let ss = saveScan()
+    let savedSymMode = symMode
     srcPath = symPath
     symMode = true
     startScanner(data)
@@ -10139,7 +10204,7 @@ fn readSym(symPath: string, expected: string, mode: int, display: string, srcCan
     }
     var m: ^Module = handle(noModule)
     if mode == 1 {
-        if srcHash >= 0 && srcHash != fileSrc {
+        if srcFound && srcHash != fileSrc {
             symFail("symbol file '" + symPath + "' is stale: '" + srcCandidate +
                     "' changed since it was built; run a build")
         }
@@ -10178,7 +10243,7 @@ fn readSym(symPath: string, expected: string, mode: int, display: string, srcCan
     symReadDecls(mode)
     symFinish(mode)
     restoreScan(ss)
-    symMode = false
+    symMode = savedSymMode
     truncate(symLoadNames, len(symLoadNames) - 1)
     return m
 }
@@ -10218,6 +10283,11 @@ fn releaseTables() {
     closureSeen = new []^Type(0)
     strKeys = new []string(0)
     strAddrs = new []int(0)
+    typeKeys = new []string(0)
+    typeRegistry = new []^Type(0)
+    globalKeys = new []string(0)
+    globalRegistry = new []^Sym(0)
+    symLoadNames = new []string(0)
 }
 
 // The runtime is read once before the compile, so that a missing one is reported before

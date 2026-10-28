@@ -1,0 +1,11 @@
+obosym 1
+abi 1
+compiler "0.2"
+source 0x95a25aa8d242aaab
+interface 0xd89c8e6e5bc3cef1
+module lib
+type Holder uid 0x1c2d79f85a8d8c56
+type Shape uid 0x6fe855337d3c0b3d
+type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
+type Holder = ref record { c: ?Circle }
+fn make(): Holder

@@ -32,7 +32,16 @@ ADDRESS_SPACE = 5 << 30
 RULE_ONE = ("may not declare 'main'", "_root' is reserved", "must be in a file named",
             "has no exported member", "is not a type")
 
+A = '''module a
+pub type Box = ref record { v: int }
+pub var g: ?Box = new Box{v: 1}
+pub fn f(): int { return 1 }
+'''
+
 LIB = '''module lib
+
+import "a.obx" as a1
+import "a.obx" as a2
 
 pub type Node = ref record { value: int; next: ?Node }
 pub type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
@@ -45,8 +54,11 @@ pub var cache: ?Node = nil
 pub var freesall: int = 1
 pub let Root: Node = new Node{value: 0, next: nil}
 
-fn hidden(): int { return 1 }
+var hidden: ?Node = nil
 
+fn hiddenFn(): int { return 1 }
+
+pub fn use(): int { return a1::f() + a2::f() }
 pub fn make(v: int): Node { return new Node{value: v, next: nil} }
 pub fn area(s: Shape): int {
     match s {
@@ -56,8 +68,8 @@ pub fn area(s: Shape): int {
 }
 pub fn add(mut n: &Node, v: int) { n.value = n.value + v }
 pub fn clear(mut a: &[]Node) { truncate(a, 0) }
-pub fn wipe() { cache = nil; freesall = 0 }
-pub fn pure(x: int): int { return x + hidden() }
+pub fn wipe() { hidden = nil; cache = nil; freesall = 0 }
+pub fn pure(x: int): int { return x + hiddenFn() }
 '''
 
 MAIN = '''module main
@@ -90,6 +102,8 @@ def rehash_bytes(data):
 
 def setup():
     d = tempfile.mkdtemp(prefix='sym-fuzz-')
+    with open(os.path.join(d, 'a.obx'), 'w') as f:
+        f.write(A)
     with open(os.path.join(d, 'lib.obx'), 'w') as f:
         f.write(LIB)
     with open(os.path.join(d, 'main.obx'), 'w') as f:
@@ -194,8 +208,8 @@ def change_version(rng, data):
 @mutator
 def change_dep(rng, data):
     if rng.randrange(2):
-        return data.replace(b'dep lib "lib.obx"', b'dep lib "other.obx"', 1)
-    return re.sub(rb'(?m)^depiface lib 0x[0-9a-f]{16}$', b'depiface lib 0x0000000000000000', data, count=1)
+        return data.replace(b'dep a "a.obx"', b'dep a "other.obx"', 1)
+    return re.sub(rb'(?m)^depiface a 0x[0-9a-f]{16}$', b'depiface a 0x0000000000000000', data, count=1)
 
 
 @mutator
@@ -207,8 +221,9 @@ def corrupt_summary(rng, data):
         (b'pf 0 "!"', b'pf 0 "x"'),
         (b'pf 0 "!"', b'pf 0 "!/"'),
         (b' pf 0 "!"', b''),
-        (b' frees 1 lib::cache', b' frees 2 lib::cache'),
-        (b' frees 1 lib::cache', b' frees 2 lib::cache lib::cache'),
+        (b'lib::hidden lib::cache', b'lib::hidden lib::cache lib::cache'),
+        (b'lib::hidden lib::cache', b'lib::hidden'),
+        (b' frees 2 ', b' frees 3 '),
         (b'mut p0: &Node', b'mut p0: Node'),
         (b'p0: int', b'p0: &int'),
     ]

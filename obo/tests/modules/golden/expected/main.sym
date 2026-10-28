@@ -4,7 +4,7 @@ compiler "0.2"
 source 0x66002f09d576072e
 dep lib "lib.obx"
 dep other "other.obx"
-interface 0x7e78af1a56640289
+interface 0xe372b7fff39720c4
 module main
-depiface lib 0x3c4a0bc41f49ab0d
+depiface lib 0xf701cc563e21d048
 depiface other 0xaf82ae64d770c496
