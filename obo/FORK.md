@@ -3490,12 +3490,12 @@ benchmarks, homes checks and the tools suite are unchanged.
 **Limitations, by design for Stage 1.** No `.sym` writer/reader, `--check`,
 `--sym-dir`, `--emit-sym`, `--version`, object files or linker; a full build
 recompiles every module body (milliseconds at this scale), and `--check`'s
-"same verdict without code" claim waits for Stage 2. Symlink identity is
+"same verdict without code" claim was Stage 2's job (done in the next record). Symlink identity is
 lexical. `--deps` streams its post-order, so a duplicate-name error can follow
 the paths of the modules already completed (it writes no files). A module
 alias's diagnostics use the declared module name, not the alias. Module names are
 not reserved: a module named `int` or `Result` is accepted only with an explicit
-alias, and Stage 2 must decide how such a name is spelled in `.sym` type keys.
+alias; Stage 2 later decided (below) that such a name is spelled `int::T`/`Result::T`.
 Two spellings that normalize to one path dedup; a file reached under a path that
 normalizes differently is a different module (and the duplicate-name check
 reports it when the headers agree). The compiler stays one
@@ -3508,9 +3508,9 @@ single-file suite, the port comparison (1,102 cases plus the compiler's own
 compile), the memory cap and the byte fixed point all stay green. The B2 and B4
 counterexamples and the B5/B7 cases are tests, not comments. The pre-scan's `::`
 is taught, with the documented fallback if a future emitter misses a form. The
-remaining risk is Stage 2's interface identity: nothing here writes or trusts a
-symbol file, so the live-binding invariant is total, and descriptor ownership
-is single by construction.
+remaining risk at Stage 1 time was Stage 2's interface identity; the Stage 2
+record below writes and validates symbol files and keeps the live-binding
+invariant total, so descriptor ownership is still single by construction.
 
 ---
 
@@ -3572,18 +3572,21 @@ and insertion order; the reader accepts any order. `frees` keys are
 not loaded creates an incomplete global stub.
 
 **Variant shells.** Shells are emitted for exported record and closed types, not
-for variants. This is safe because of source declare-before-use plus the
-definition order: a record defined *before* a closed type cannot name its
-variants (the variants are declared only inside the closed definition, and a
-forward `type V` followed by a closed variant `V` is a duplicate declaration),
-while a record defined *after* it can, and definitions are emitted in source
-order. Aliases and functions come after every definition. Test:
-`sym_test.py` `sym/roundtrip_rich` includes
-`pub type Holder = ref record { c: ?Circle }` after
-`pub type Shape = closed { Circle { … } … }`, re-emits byte-identically, and the
-committed golden `tests/modules/golden/expected/lib.sym` contains the same line;
-`modules/run/registry` covers an alias to a variant (`type Point = Dot`). A reader
-that rejected the writer's output is therefore covered by the gate.
+for variants. Two rules make this safe (the second was added after the
+independent review found a counterexample): definitions are emitted in
+*definition-line* order, not at the symbol's forward-declaration position, and
+the check-mode reader moves a completed shell's symbol to its definition line.
+So a forward `pub type Holder` declared before
+`pub type Shape = closed { Circle { … } … }` and defined after it is emitted
+after Shape, and `?Circle` resolves; a record defined *before* a closed type
+cannot name its variants because variants are declared only inside the closed
+definition (and a forward `type V` followed by a closed variant `V` is a
+duplicate declaration). Aliases and functions come after every definition.
+Tests: `sym/forward_variant_check` (build, definition order, `--check`,
+byte-identical re-emission), the committed `forward_variant` port fixture, and
+the golden `expected/lib.sym`, whose `Fwd` is forward-declared before `Shape`
+and defined after it; `sym/roundtrip_rich` covers an alias to a variant
+(`CircleAlias`) and `modules/run/registry` covers `type Point = Dot`.
 
 **Module names `int` and `Result`.** Stage 1 accepts these module names only with
 an explicit import alias. Stage 2 keeps that behaviour and makes the names
@@ -3692,17 +3695,42 @@ Two limitations are recorded rather than claimed solved:
   a check. No mutant was added for disabling it (it would be unkillable by
   program input); the risk is recorded here. The check-mode reader path shares the
   same structure code and is heavily mutated and fuzzed.
-- **Reader-side `pf` row reconstruction** is exercised indirectly (b6 and the
-  effects fixtures). A mutant that drops rows only in the reader was not added:
-  at a call site the whole mut-argument path is invalidated unconditionally when
-  `pfree` says the callee may free, so dropping rows is conservative there and no
-  tested program observes it; a dedicated two-hop precision test would be needed
-  to make such a mutant non-equivalent. Writer omission of rows *is* mutated and
-  killed byte-for-byte by the `.sym` comparison.
+- **Reader-side `pf` row reconstruction** is mutated too (`sym: imported pf rows
+  dropped`): reconstructed functions lose their rows, so re-emission differs and
+  `sym/roundtrip_rich`/`sym/handwritten_interface` (and the port reemit case)
+  kill it. It is not equivalent. Writer omission of rows is killed byte-for-byte
+  by the `.sym` comparison as well.
+- **Dummy imported-global offsets** are not observable by a mutant:
+  `--check` discards code and the checker uses symbol identity, not offsets, so
+  an overlapping dummy offset changes no verdict. Recorded as a gap rather than
+  forced into an artificial test.
+
+**Review fixes.** The independent review found three blocking defects, all fixed
+with regression tests and mutants. (B1) The stale-source sentinel was the value
+-1, so a changed source whose FNV-1a hash had the top bit set skipped the
+staleness check; `validateDepSource` now sets a `symSrcFound` flag and every
+64-bit hash is compared (`sym: negative source hash treated as absent`, the
+negative-hash part of `sym/stale_missing_corrupt_versions`, and the
+`negative_stale` port fixture). (B2) A forward-declared record naming a later
+closed type's variant was emitted at its forward position and rejected by
+`--check`; definitions now follow definition-line order, the check-mode symbol
+line is set at the definition, and mode-0 order validation sorts by definition
+line (`sym/forward_variant_check`, `forward_variant` port fixture, golden `Fwd`,
+and the definition-order mutants). (B3) A nested `readSym` cleared `symMode`, so
+a malformed `.sym` with a depiface was reported as a source error; `readSym`
+saves and restores its caller's mode (`sym/nested_sym_error`, `nested_corrupt`
+port fixture, and the `symMode` mutant). Non-blocking items fixed too:
+check-mode shell uid validation (`sym: shell uid not validated`, wrong-uid
+fixture), a real B6 stub-creation test (`sym/b6_stub_completion` and the
+`b6_stub_*` port fixtures), the reader pf-rows mutant, a fuzz corpus with a
+middle module, a private freed global and duplicate imports, dependency-basename/
+group-order/key-prefix/variant-parent mutants, registry clearing in
+`releaseTables`, deletion of the stale `effects_pfree/main.sym`, `--reemit-sym`
+and `-o` documentation, and scoping the Stage 1 text below.
 
 ## Tests, mutants and measurements
 
-- `tests/sym_test.py`: 24 named tests covering writer round trip
+- `tests/sym_test.py`: 27 named tests covering writer round trip
   (`--reemit-sym` byte identity) for every production, determinism, golden
   fixtures, source-vs-interface hashes, private declarations, parameter rename,
   depiface propagation, stale/missing/corrupt/format/ABI/compiler errors,
@@ -3722,7 +3750,7 @@ Two limitations are recorded rather than claimed solved:
   source); same digest on repeated runs.
 - `port_compare.py`: per-compiler private sym dirs, every emitted `.sym` compared
   byte-for-byte, `--check` compared for every header-bearing source of each run
-  tree, 28 `modules/sym` fixtures (valid, stale, corrupt, version, depiface,
+  tree, 35 `modules/sym` fixtures (valid, stale, corrupt, version, depiface,
   main-export, B6 both orders, transitive type, and the malformed structures
   above), five build/CLI special cases (emit-sym, headerless emit/check, default
   sym-dir, source-less build), a `--reemit-sym` comparison for high pfree bits,
@@ -3731,19 +3759,25 @@ Two limitations are recorded rather than claimed solved:
 - Golden fixtures: `tests/modules/golden/tree` and
   `tests/modules/golden/expected/{lib,main,other}.sym`, regenerated with the
   final compiler; `sym_test.py --update` is the only writer.
-- `MODULE_MUTANTS` gains 69 `sym:` entries (writer groups/summaries/hashes/
+- `MODULE_MUTANTS` gains 77 `sym:` entries (writer groups/summaries/hashes/
   dependency lines; reader version/hash/structure/malformed summaries; type and
   global registries, B6, B7; imported address/pfree/pmodes/freed keys; root
-  rules, check flag, CLI, default sym-dir, source-less message). Each pattern
-  occurs exactly once and each is killed by a named test: measured 69/69 by
-  `mutate_fork` (run_fork judge) and 69/69 by `mutate_port` (port_compare judge).
+  rules, check flag, CLI, default sym-dir, source-less message; the review's
+  negative-sentinel, pf-rows, basename, definition-order, key-prefix,
+  variant-parent, uid and symMode cases). Each pattern occurs exactly once and
+  each is killed by a named test: measured 77/77 by `mutate_fork` (run_fork
+  judge) and 77/77 by `mutate_port` (port_compare judge).
   No Stage 2 equivalent was needed. The full totals are recorded in README after
   the cold gate.
-- Measured port memory compiling itself: **1,631,344 bytes live**, 34,842,272
-  allocated (budget 2,000,000; 368,656 spare). Stage 1 was 1,364,240 / 28,136,432,
-  so Stage 2 costs +267,104 live / +6,705,840 allocated. The compiler source grew
-  from 8,756 to 10,370 lines (321,043 → 379,283 bytes); the built compiler is
-  489,184 bytes (the seed is still 415,456 until promotion). The fixed point
+- The final fixed point is exact: `obo` == stage 2 == stage 3, 493,280 bytes,
+  sha256 `b54d5da7b6ee6ab6685b3fe70d7824c18201689aa650cb9dff6f81d9ccf35e0a`;
+  the compiler source is 10,440 lines / 381,767 bytes, sha256
+  `597b807864dcad48a56a861e2ce7cd166f005f55278fb81dc1b530e37086cb9a`.
+- Measured port memory compiling itself: **1,634,880 bytes live**, 35,123,104
+  allocated (budget 2,000,000; 365,120 spare). Stage 1 was 1,364,240 / 28,136,432,
+  so Stage 2 costs +270,640 live / +6,986,672 allocated. The compiler source grew
+  from 8,756 to 10,440 lines (321,043 → 381,767 bytes); the built compiler is
+  493,280 bytes (the seed is still 415,456 until promotion). The fixed point
   (stage 2 == stage 3, and the suite on stage 2) is recorded in README after the
   cold gate; `make promote` was not run.
 
