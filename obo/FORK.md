@@ -3809,8 +3809,9 @@ mutant margin.
 # The command-line tools as source modules (done)
 
 Implemented on branch `tools-modules` on top of `3e17141` (the merged Stage 2
-tree). There is no compiler, runtime or seed change: this is the first tool and
-library migration to source modules, done with the Stage 2 language as merged.
+tree) and merged at `4e733a6`. There is no compiler, runtime or seed change:
+this is the first tool and library migration to source modules, done with the
+Stage 2 language as merged.
 
 ## What changed
 
@@ -3837,24 +3838,30 @@ library migration to source modules, done with the Stage 2 language as merged.
   importing `io.obx`; they are compiled with `-I obo/lib` and a private
   `--sym-dir`. `run_fork.py`, `port_compare.py`, `io_test.py` and `mutate_io.py`
   no longer inject the library text: `run.py` gained an optional `extra_args`
-  for module roots, and `port_compare` leaves the import cases out of its
-  `OBO_REF=seed/obo` comparison, matching that comparison's existing module-tree
-  skip (the default comparison runs them). `mutate_io.py`'s library mutants now copy the `lib/*.obx`
+  for module roots. `port_compare` compiles the module roots with per-case
+  module flags in both the default and `OBO_REF=seed/obo` comparisons; only the
+  separate module-tree cases stay out of the seed count. `mutate_io.py`'s
+  library mutants now copy the `lib/*.obx`
   modules into a scratch tree, replace `io.obx` with the mutant and compile the
   affected roots against `-I <scratch>/lib`; runtime mutants keep the real lib.
 - `make tools` no longer creates `.obo/sym`. Generated symbol files live under
   `build/tools/sym`, already ignored with `obo/build/`; the generic
   `--sym-dir .obo/sym` convention and its ignore rule remain for other builds.
 
-## Gates (cold, in the worktree)
+## Gates (merged tree)
 
-`make tools`; `tests/tools.py --require-reference` 199/199; `--memory` 2/2;
-`io_test.py --rt --programs --tools` 0 failures; `run_fork.py` 1129 passed;
-`port_compare.py` 1147/1147 with a 1,634,880-byte peak (budget 2,000,000), and
-`OBO_REF=seed/obo port_compare.py` 1025/1025; `mutate_io.py` 27/27 caught;
-`doc_check.py` 45 examples; `homes_check.py`;
-`homes_edge.py` 1028 statements, 0 differ; `bench/micro.py` runs. The compiler
-source, runtime and seed are byte-identical to `3e17141`.
+`make`; `make tools`; `tests/tools.py --require-reference` 199/199; `--memory`
+2/2; `io_test.py --rt --programs --tools` 0 failures; `run_fork.py` 1129
+passed; `port_test.py` 486/486; `port_compare.py` 1147/1147 with a
+1,634,720-byte peak (budget 2,000,000), and `OBO_REF=seed/obo
+port_compare.py` 1025/1025; `mutate_io.py` 27/27 caught; `mutate_fork.py`
+523/544 caught + 21 equivalent; `mutate_port.py` 491/491; `sym_test.py`
+27/27; `sym_fuzz.py` 200/200; `doc_check.py` 45 examples; `homes_check.py`;
+`homes_edge.py` 1028 statements, 119 refused by both, 0 differ;
+`bench/bench.py` runs. Fixed point `obo` == stage 2 == stage 3 == seed,
+sha256 `b54d5da7b6ee6ab6685b3fe70d7824c18201689aa650cb9dff6f81d9ccf35e0a`,
+493,280 bytes. The compiler source, runtime and seed are byte-identical to
+`3e17141`.
 
 ## Deviations and limitations
 
