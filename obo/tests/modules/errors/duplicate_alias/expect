@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:3:1: 'lib' is already used as an import alias

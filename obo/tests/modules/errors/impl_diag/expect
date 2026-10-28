@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:3:21: argument 1 of lib::f: cannot use int as string

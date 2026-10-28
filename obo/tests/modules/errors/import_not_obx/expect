@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:2:1: import paths must end in .obx

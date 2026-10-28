@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:2:14: a constant cannot be nil; use a typed optional var or let

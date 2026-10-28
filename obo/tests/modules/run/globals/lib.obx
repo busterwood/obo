@@ -1,0 +1,6 @@
+module lib
+pub var Count: int = 1
+pub let Limit: int = 9
+pub type Box = ref record { v: int }
+pub var Keep: Box = new Box{v: 4}
+pub fn bump() { Count = Count + 1 }

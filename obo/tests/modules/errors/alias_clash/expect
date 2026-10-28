@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:3:10: 'lib' clashes with a top-level declaration

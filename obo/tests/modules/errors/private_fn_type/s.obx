@@ -1,0 +1,3 @@
+module s
+type Secret = ref record { v: int }
+pub fn f(x: Secret): int { return x.v }

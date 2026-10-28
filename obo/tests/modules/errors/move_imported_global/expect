@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:3:29: cannot move out of global 'g::Keep'; use take() on an optional one

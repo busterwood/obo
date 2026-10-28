@@ -1,0 +1,3 @@
+module c
+import "a.obx"
+pub fn two(): int { return a::base() + 1 }

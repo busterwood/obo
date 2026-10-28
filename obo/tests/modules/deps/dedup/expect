@@ -1,0 +1,5 @@
+exit 0
+stdout lib.obx
+stdout a.obx
+stdout b.obx
+stdout main.obx

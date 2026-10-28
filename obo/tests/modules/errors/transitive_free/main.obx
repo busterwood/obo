@@ -1,0 +1,8 @@
+module main
+import "a.obx"
+import "c.obx"
+fn main() {
+    let r = &a::g
+    c::outer()
+    println(r.v)
+}

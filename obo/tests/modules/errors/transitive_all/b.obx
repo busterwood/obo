@@ -1,0 +1,4 @@
+module b
+import "a.obx"
+pub type H = ^a::Box
+pub fn mid(h: H) { a::wipeAll(h) }

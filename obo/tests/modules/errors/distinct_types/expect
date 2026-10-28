@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:4:89: assignment: cannot use lib2::T as lib::T

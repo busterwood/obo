@@ -1,0 +1,3 @@
+module a
+fn mark(): int { println("a"); return 1 }
+pub var A: int = mark()

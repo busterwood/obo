@@ -1,0 +1,4 @@
+module b
+import "a.obx"
+fn mark(): int { println("b"); return a::A + 1 }
+pub var B: int = mark()

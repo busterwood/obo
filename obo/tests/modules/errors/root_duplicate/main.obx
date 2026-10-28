@@ -1,0 +1,3 @@
+module main
+import "sub/main.obx"
+fn main() {}

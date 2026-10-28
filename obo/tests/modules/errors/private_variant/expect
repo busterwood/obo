@@ -1,0 +1,2 @@
+exit 1
+stderr r.obx:3:1: exported 'Shape' uses private type 'Secret' (variant 'A'); mark 'Secret' pub too

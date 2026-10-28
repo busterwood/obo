@@ -8,7 +8,7 @@ This describes the language as the compiler in `obo/src/obo.obo`
 implements it. Syntax not covered here (declarations, `if`, `while`, `for`,
 `match`, `defer`, closed types, constants, literals, operators) is the same as
 obx; see the language section of the root `README.md`. Rules that are planned
-rather than implemented are marked as such, and section 11 lists known holes.
+rather than implemented are marked as such, and section 12 lists known holes.
 
 The examples are checked against the compiler. A block marked
 `// example: runs` is a complete program that must compile and exit 0, and each
@@ -593,7 +593,198 @@ Handles can be stored in fields and optional fields (`?^Node`), and they are
 checked for `nil` in the same way as other optionals. A handle needs a variable,
 field or element, and must name a record or closed type.
 
-## 6. Results and try
+## 6. Modules
+
+Stage 1 of modules: one source file is one **module**, imported modules are
+compiled dependency-first into the same image, and importers reach exported
+declarations as `alias::name`. Symbol files (`--check`, `--sym-dir`,
+`--emit-sym`) are Stage 2 and are not part of this section; the compiler itself
+stays one file and uses no imports.
+
+### Headers, files and identity
+
+A file may start with `module Name` (comments and blank lines first are fine).
+An imported module **must** have a header, and its file must be named
+`Name.obx`; the command-line file is the root and is exempt from the naming rule.
+A headerless root is internally `_root`; `_root` is reserved and an imported
+module may not declare it. Module identity is the **lexically normalized
+resolved path**: repeated `/` collapse, `.` goes, `..` pops the previous
+segment, a leading `/` stays, and symlinks are not resolved. So `lib.obx` and
+`./lib.obx` are one module (compiled and initialized once), while two files
+declaring the same `module Name` are the duplicate-name error. Symlinks are not
+resolved: two spellings through different links are different identities, so if
+both are reached the duplicate-name check reports the same declared name at two
+paths. Use canonical module trees.
+
+### Imports and aliases
+
+```text
+import "path.obx"
+import "path.obx" as alias
+```
+
+The header comes first, then all imports, then declarations. An import after a
+declaration is an error. A path is resolved against the importing file's
+directory first, then each `-I DIR` in command-line order; an absolute path is
+used as written, and the missing-module error lists the paths tried. The import
+path must end in `.obx`, and its basename must match the declared module name.
+The default alias is the declared module name; `as` overrides it. Everything is
+qualified: there are no unqualified or selective imports and no re-exports.
+Duplicate imports are allowed (the module is compiled and initialized once; two
+aliases to it are fine). An alias may not repeat, clash with a top-level
+declaration, or be a built-in name; a local may have an alias's name, since
+`alias::` is always the module.
+
+Module aliases live in their own namespace. A qualified name resolves the alias
+to its module and then the member in that module's exports; a name that is not an
+import alias is the error `'<x>' is not a module`, even if a local, global or
+type has that name.
+
+### Qualified names
+
+`alias::name` reaches exported functions, types, variants, constants, globals and
+record constructors: `lib::make(1)`, `new lib::Node{...}`, `new []lib::Node(0)`,
+`?lib::Node`, `^lib::Node`, `Result[lib::Node]`, `lib::Limit`, `&lib::Cache`.
+`match` arms stay bare (`Circle { ... }`), because the subject's closed type
+names them; writing `lib::Circle` in an arm is refused with
+`match arms name a variant without its module: write Circle`.
+
+### Exports and privacy
+
+Everything is private unless marked `pub`; `pub` is allowed only on top-level
+`fn`, `type`, `const`, `var` and `let`. It is sticky across a forward heading and
+its definition: the symbol is exported if either declaration says `pub`.
+Importers see only the exports; reaching a private function, type, global or
+constant reports `module '<m>' has no exported member '<x>' (only 'pub'
+declarations are visible)`.
+
+Exporting a closed type exports its variants, so an importer may write
+`new lib::Circle{...}`. Exporting a record type exports only the type.
+
+An exported declaration may not mention a **private** named type of its own
+module, directly or through `[]`, `?`, `^`, `Result`, record fields or a
+closed-type variant's fields:
+
+`exported 'Shape' uses private type 'Secret' (variant 'A'); mark 'Secret' pub too`
+
+A private type may mention exported types freely; imported types are fine
+because their own module exported them. Type aliases are transparent: `type A =
+lib::T` names the one object `lib::T`, and does not create or rename a type.
+
+### Initialization, main and teardown
+
+Imports are compiled at the import statement, before the importer's
+declarations. Initializers run dependency-first, depth-first in import order,
+once per module (a diamond runs the shared module once); the root's `main`
+runs after every initializer. Only the root may declare `main`; a dependency's
+`main` is refused (`module '<m>' may not declare 'main'; the program root
+provides it`), and the root needs `fn main()` with no parameters or result.
+After `main` returns, every module's owned and string globals are freed in
+compile order (dependencies first), each exactly once, including a global of a
+type from another module; then the runtime finishes. `OBO_CHECK=1` therefore
+reports no leaks and no double frees across a module tree.
+
+An initializer may call functions declared earlier in its module or in a
+dependency, and read or write those modules' globals; it runs with no current
+function, so its calls add nothing to any function's effect summary (there is no
+caller to record them in).
+
+### Type identity
+
+A named type is one object for the whole compilation: the defining module's
+declaration creates it and every importer reuses that object, so `a::T` in B, in
+C and in A is the same type, and a record allocated in one module, freed or
+matched in another, uses one descriptor address. Two modules that declare
+structurally identical records have two different types; assigning one to the
+other is an error (`cannot use b::T as a::T`). A type alias is the underlying
+type for every rule; two aliases to one imported type, in one module or several,
+still denote one object and one descriptor.
+
+### Reserved type names and constants
+
+A type may not be named `int`, `byte`, `bool`, `string`, `void`, `nil` or
+`Result` (`cannot declare a type named '<name>'`), and `const` of `nil` is
+refused (`a constant cannot be nil; use a typed optional var or let`). A module
+alias may not use a built-in name.
+
+### The dependency scan: `--deps`
+
+`obo --deps SOURCE [-I DIR]...` reads module headers and import blocks only and
+prints the normalized source paths in depth-first post-order: dependencies
+before importers, the root last, one per line, deduplicated by normalized path.
+It writes nothing, rejects `-o`, and reports missing files (exit 2), cycles
+(exit 1), duplicate module names (exit 1), a missing imported header and the
+basename rule with the same messages as a build. `make` can use it for tool
+source prerequisites.
+
+### A checked example
+
+The first file is the root; the second is compiled through `-I`.
+
+```obo
+// example: modules
+// file: main.obx
+module main
+import "lib.obx"
+fn main() {
+    let n = lib::make(4)
+    println(lib::value(n))
+}
+// file: lib.obx
+module lib
+pub type Node = ref record { v: int }
+pub fn make(v: int): Node { return new Node{v: v} }
+pub fn value(n: Node): int { return n.v }
+// prints 4
+```
+
+```obo
+// example: modules error: module 'lib' has no exported member 'secret'
+// file: main.obx
+module main
+import "lib.obx"
+fn main() { println(lib::secret()) }
+// file: lib.obx
+module lib
+fn secret(): int { return 1 }
+```
+
+### Module errors
+
+| Situation | Message | Exit |
+|---|---|---|
+| missing imported source | `obxc: cannot read module '<m>' at <paths tried>` | 2 |
+| imported file has no header | `imported module '<path>' needs a 'module Name' header` | 1 |
+| file/header name mismatch | `module '<m>' must be in a file named <m>.obx (found <path>)` | 1 |
+| import cycle | `import cycle: a.obx -> b.obx -> a.obx` | 1 |
+| duplicate module name | `module '<m>' is declared by both <path1> and <path2>` | 1 |
+| `module _root` in a dependency | `module '_root' is reserved for the program root` | 1 |
+| import after a declaration | `imports must come before declarations` | 1 |
+| repeated alias | `'<a>' is already used as an import alias` | 1 |
+| alias vs a declaration | `'<a>' clashes with a top-level declaration` | 1 |
+| alias is a built-in name | `cannot use '<a>' as an import alias: it is a built-in name` | 1 |
+| qualified name on a non-module | `'<x>' is not a module` | 1 |
+| unknown/private member | `module '<m>' has no exported member '<x>' (only 'pub' declarations are visible)` | 1 |
+| `pub` in a block | `'pub' is only allowed on top-level declarations` | 1 |
+| `pub import` | `'pub' applies to declarations, not imports` | 1 |
+| private type in an export | `exported '<x>' uses private type '<T>'; mark '<T>' pub too` | 1 |
+| `main` in a dependency | `module '<m>' may not declare 'main'; the program root provides it` | 1 |
+| qualified match arm | `match arms name a variant without its module: write Circle` | 1 |
+| reserved type name | `cannot declare a type named '<name>'` | 1 |
+| `const nil` | `a constant cannot be nil; use a typed optional var or let` | 1 |
+| import path not `.obx` | `import paths must end in .obx` | 1 |
+
+Qualified names in diagnostics are `Module::name` with the declared module name
+(not the alias), and types keep the bare name inside their own module. An error
+about an imported value says `lib::split` or `lib::Cache`; an error about a
+value of an imported type says `a::T` or `[]a::T`. A local alias use may print
+the underlying type, because aliases are transparent.
+
+Stage 1 has no symbol files and no separate checking: `--check`, `--sym-dir` and
+`--emit-sym` arrive in Stage 2, and the `.sym` trust model belongs there. A full
+build needs every module's source.
+
+## 7. Results and try
 
 `Result[T]` is the type of an operation that can fail with a reason. It is a
 built-in parameterized type: one owned cell holding one of two variants, `ok`
@@ -759,7 +950,7 @@ Other limits:
   `take` on an optional one) to get it into a local, then `try` that. `match` also
   needs a whole local; inspect a field through a local reference (`match p`).
 - `obj.field = try f()` is refused when the call might free the object holding the
-  target (the assignment-target rule, section 11): compute the value in a local
+  target (the assignment-target rule, section 12): compute the value in a local
   first. A call that cannot free (a pure callee such as `get` above) is accepted:
   `b.n = try get(3)` compiles.
 - Inside a non-consuming `ok` or `err` arm the scrutinee is narrowed to that
@@ -808,7 +999,7 @@ fn f(): Result[int] {
 fn main() {}
 ```
 
-## 7. Built-in functions
+## 8. Built-in functions
 
 | Function | What it does |
 |---|---|
@@ -919,7 +1110,7 @@ fn main() {
 `count`); it is concatenated before a tool's source, and its own header
 documents the API and the fd-is-borrowed rule.
 
-## 8. Runtime checks and exit codes
+## 9. Runtime checks and exit codes
 
 | Exit code | Cause |
 |---|---|
@@ -948,7 +1139,7 @@ Environment variables:
   garbage rather than as a value that happens to still be there.
 - `OBO_STATS=1` prints the exact live peak and total allocation at exit.
 
-## 9. Compile errors
+## 10. Compile errors
 
 The messages below are the compiler's own text; the parts in angle brackets
 depend on the program.
@@ -1021,7 +1212,7 @@ depend on the program.
 | `writeFd needs a []byte, not <t>` | the second argument of `writeFd` is not a `[]byte`. |
 | `closeFile needs an int file descriptor, not <t>` | the argument of `closeFile` is not an int. |
 
-## 10. Differences from obx
+## 11. Differences from obx
 
 - There is no garbage collector. Memory is freed at scope exit, on reassignment,
   or by `drop`, and the compiler checks the freeing.
@@ -1034,10 +1225,14 @@ depend on the program.
   the prefix operator `try`.
 - `Result[T]` is a built-in parameterized type, inspected with `match` (including the
   consuming `ok(v)`/`err(m, c)` form).
+- Modules are source imports: `module Name`, `import "Name.obx" [as alias]`,
+  `pub`, and `alias::name`. obx's `module`/`import`/`pub` tokens were accepted
+  but unimplemented; obo has no unqualified or selective imports and no
+  re-exports in Stage 1.
 - `gc()` does nothing.
 - Strings are reference counted rather than collected.
 
-## 11. Known holes and planned changes
+## 12. Known holes and planned changes
 
 **Assignment targets across calls (closed).** The target of an assignment is located
 before the right-hand side is evaluated, so a call on the right that frees the target
@@ -1316,5 +1511,5 @@ into and points the reference afresh before it reads it again is accepted too (`
 `loopCache`).
 
 **Planned.** The language features listed as not yet done in the root
-`README.md` also apply: methods and interfaces, lambdas, generic modules, multiple modules, value records, `inout` parameters, and debug
+`README.md` also apply: methods and interfaces, lambdas, generic modules, value records, `inout` parameters, and debug
 information.

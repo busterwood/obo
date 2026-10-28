@@ -1,0 +1,8 @@
+module main
+import "lib.obx"
+fn main() {
+    println(lib::I, lib::B, lib::F)   // expect: 107true
+    println(lib::S)                   // expect: hi
+    println(lib::Folded)              // expect: 7
+    println(len(lib::H), len(lib::Nul))   // expect: 33
+}

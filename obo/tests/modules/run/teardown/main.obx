@@ -1,0 +1,7 @@
+module main
+import "lib.obx"
+fn reset(): int { lib::G = new lib::Box{v: 2}; return 1 }
+var X: int = reset()
+fn main() {
+    println(lib::G.v, X)             // expect: 21
+}

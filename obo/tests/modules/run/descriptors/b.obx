@@ -1,0 +1,4 @@
+module b
+import "a.obx"
+pub fn makeAndFree(v: int): int { let x = a::make(v); a::eat(x); return v }
+pub var Keep: a::Box = a::make(8)

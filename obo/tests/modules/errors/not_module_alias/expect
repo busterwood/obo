@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:3:21: 'str2' is not a module

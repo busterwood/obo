@@ -1,0 +1,5 @@
+module main
+import "a.obx"
+import "b.obx"
+fn main() { println(a::V + b::V) }   // expect: init
+                                     // expect: 2

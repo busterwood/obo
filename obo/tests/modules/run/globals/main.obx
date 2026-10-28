@@ -1,0 +1,7 @@
+module main
+import "lib.obx"
+fn main() {
+    lib::bump()
+    println(lib::Count, lib::Limit)  // expect: 29
+    println(lib::Keep.v)             // expect: 4
+}

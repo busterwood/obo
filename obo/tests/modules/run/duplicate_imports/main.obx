@@ -1,0 +1,7 @@
+module main
+import "lib.obx"
+import "lib.obx" as l2
+fn main() {
+    println(lib::V + l2::V)          // expect: init
+                                     // expect: 10
+}

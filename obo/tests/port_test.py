@@ -49,6 +49,10 @@ def group_push_immediates(Fail, obo, unique):
 
 OBO_GROUPS = [group_push_immediates]
 
+# the Stage 1 scanner additions, for the port-vs-obo scanner fuzz: obo's own list, so
+# obx/tests/stage_test.FRAGMENTS (which obx uses) is not changed
+OBO_FRAGMENTS = stage_test.FRAGMENTS + ['::', 'import', 'as', 'pub']
+
 
 def run(exe, mode, path):
     p = subprocess.run([exe, mode, path], capture_output=True, env=dict(os.environ, OBO_CHECK='1'), timeout=60)
@@ -102,7 +106,7 @@ def check(work, jobs=1):
     # comparison starts, so that no thread writes a shared file
     r = random.Random(7)
     for case in range(300):
-        data = ''.join(r.choice(stage_test.FRAGMENTS) + (' ' if r.random() < 0.3 else '')
+        data = ''.join(r.choice(OBO_FRAGMENTS) + (' ' if r.random() < 0.3 else '')
                        for _ in range(r.randint(1, 120))).encode('latin-1')
         path = os.path.join(TMP, f'fuzz{case}.txt')
         open(path, 'wb').write(data)
@@ -111,13 +115,30 @@ def check(work, jobs=1):
         path = os.path.join(TMP, f'enc_{part}.txt')
         open(path, 'w').write('\n'.join(stage_test.encoder_script(part)) + '\n')
         tasks.append(('--encode', path, f'encoder {part}'))
+    # Stage 1: :: is token 67, after try at 66, and the dump names both. The source
+    # constants are checked, so a mutant of either is caught as well as a scanner one.
+    src_text = open(SRC).read()
+    stage1 = []
+    if 'const T_TRY = 66\n' not in src_text:
+        stage1.append("--tokens: T_TRY is not 66")
+    if 'const T_COLONCOLON = 67\n' not in src_text:
+        stage1.append("--tokens: T_COLONCOLON is not 67")
+    if 'try ::' not in src_text:
+        stage1.append("--tokens: the token names do not end 'try ::'")
+    colon = os.path.join(TMP, 'colon.obx')
+    open(colon, 'w').write('a :: b try\n')
+    tasks.append(('--tokens', colon, 'tokens ::'))
+    want_colon = ['1:1 ident a', '1:3 ::', '1:6 ident b', '1:8 try', '2:1 eof']
+    got_colon = run(REF, '--tokens', colon).decode('latin-1').splitlines()
+    if got_colon != want_colon:
+        stage1.append(f"--tokens: :: dump {got_colon!r}, expected {want_colon!r}")
     if jobs > 1:
         with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
             found = list(pool.map(lambda t: compare(*t), tasks))
     else:
         found = [compare(*t) for t in tasks]
-    failures = [f for f in found if f]
-    count = len(tasks)
+    failures = stage1 + [f for f in found if f]
+    count = len(tasks) + len(stage1)
     # objdump first, so that a wrong encoding is reported by the oracle rather than as a difference
     names = []
     unique = lambda name: os.path.join(TMP, f"{name}{len(names)}")

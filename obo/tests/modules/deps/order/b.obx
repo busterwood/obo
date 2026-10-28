@@ -1,0 +1,2 @@
+module b
+import "a.obx"

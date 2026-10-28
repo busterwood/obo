@@ -1,0 +1,3 @@
+module main
+import "missing.obx"
+fn main() {}

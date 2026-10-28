@@ -1,0 +1,7 @@
+module main
+import "lib.obx"
+fn main() {
+    let r = &lib::Cache[0]
+    lib::clear(lib::Cache)
+    println(r.v)
+}

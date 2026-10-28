@@ -1,0 +1,4 @@
+module main
+import "lib.obx"
+import "sub/lib.obx"
+fn main() {}

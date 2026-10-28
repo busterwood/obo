@@ -1,0 +1,2 @@
+module lib2
+pub type T = ref record { v: int }

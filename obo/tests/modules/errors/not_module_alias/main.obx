@@ -1,0 +1,3 @@
+module main
+import "lib.obx" as str
+fn main() { println(str2::f()) }

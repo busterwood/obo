@@ -1,0 +1,2 @@
+exit 1
+stderr c.obx:2:1: import cycle: a.obx -> b.obx -> c.obx -> a.obx

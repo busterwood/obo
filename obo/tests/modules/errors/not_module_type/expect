@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:3:20: 'X' is not a module

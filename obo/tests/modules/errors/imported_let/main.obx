@@ -1,0 +1,3 @@
+module main
+import "g.obx"
+fn main() { g::Fixed = 7 }

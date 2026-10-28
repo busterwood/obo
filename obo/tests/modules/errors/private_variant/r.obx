@@ -1,0 +1,3 @@
+module r
+type Secret = ref record { v: int }
+pub type Shape = closed { A { s: Secret } }

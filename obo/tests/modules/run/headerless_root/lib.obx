@@ -1,0 +1,2 @@
+module lib
+pub var V: int = 1

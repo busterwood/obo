@@ -1,0 +1,9 @@
+module main
+import "lib.obx"
+import "imp.obx"
+fn main() {
+    let t = lib::make(3)
+    println(imp::v1(t), imp::v2(t), lib::value(t))   // expect: 333
+    let p = lib::makePoint(4)
+    println(imp::px(p), lib::dx(p))                  // expect: 44
+}

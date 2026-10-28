@@ -1,0 +1,2 @@
+exit 1
+stderr lib.obx:2:1: type 'Never' is declared but never defined

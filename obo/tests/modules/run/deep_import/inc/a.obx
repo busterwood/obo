@@ -1,0 +1,2 @@
+module a
+pub fn base(): int { return 1 }

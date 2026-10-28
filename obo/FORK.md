@@ -607,7 +607,7 @@ seed rejects a borrow through a handle.
 **Direction.** A change through a handle frees the old owned children of the handle's
 target (`h.items = ...` frees the items). A reference that points inside something, such
 as `&bag.items[0]` or `&h.items`, could then read freed memory, while the existing rule
-checked only references rooted at the handle. The decided rule (`LANGUAGE.md` section 10):
+checked only references rooted at the handle. The decided rule (`LANGUAGE.md` section 12):
 only owned changes count, a scalar written through a handle invalidates nothing, and a
 reference to a whole object stays valid.
 
@@ -695,7 +695,7 @@ compiler). The pre-fix compiler is the working-tree source built by HEAD's seed.
 
 **Known false positive.** A loop that re-points a reference at the top of each iteration, then makes
 the recursive call, is valid, but the loop check rejects it, since the check does not see the
-re-point on the next iteration. The program is in `LANGUAGE.md` section 10, where it is an error
+re-point on the next iteration. The program is in `LANGUAGE.md` section 12, where it is an error
 example.
 
 **Loops and defers (follow-up, done).** Review found two holes and two false positives in the
@@ -734,7 +734,7 @@ rules above. All four are fixed.
 
 Known false positive, still open: a loop that reads a reference after re-pointing it in the same
 iteration, when the reference is suspect where the next iteration starts (the example in
-`LANGUAGE.md` section 10). Every other loop-carried read of a suspect reference is a real error.
+`LANGUAGE.md` section 12). Every other loop-carried read of a suspect reference is a real error.
 
 **Tests.** `tests/errors/handle_deep.obx`: seven cases. A read at the top of a loop body after a
 call on one path, a read in the condition, a read in an inner loop's second iteration, a read by an
@@ -804,7 +804,7 @@ two indexes).
 **The rule, as implemented: track both roots.** A binding is per path, and where paths join it is the
 union, so a reference re-pointed on one branch may point into the places of both branches, and a change
 under either is seen. The rule is in `LANGUAGE.md` section 4, with the example, and the join is stated
-in section 10.
+in section 12.
 
 - `RefBind` (`src/obo.obo`, near line 881) is an immutable record: the roots, the deep flag and the
   place for each root, writable, and the parent reference. `arenaBind` makes them; `fnDecl` releases
@@ -905,7 +905,7 @@ with more than 32 bindings, and no state covered more than 9 owned locals.
 ## Loop marks, defer frees and the open holes (follow-up, done)
 
 A review of the loop check and of defer bodies, after the per-path bindings. Its items are numbered as
-the review gave them. The rules are in `LANGUAGE.md` sections 4 and 10.
+the review gave them. The rules are in `LANGUAGE.md` sections 4 and 12.
 
 - **FP-1, loop-entry scoping (done).** A free before a loop marked the references inside it (the marks
   were one flag block for the whole function). A loop now starts with the marks from before it kept
@@ -997,7 +997,7 @@ Measured after the merge: `run_fork` 325 of 325, `port_test` 415 of 415, `port_c
   points into). The argument is checked before a later argument's call runs. Closed since: see "Argument
   order (done)".
 - The precision limits in "Reference bindings per path": a change through a reference reaches its whole root,
-  and the known false positive in `LANGUAGE.md` section 10 (a re-point in the same iteration, with the reference
+  and the known false positive in `LANGUAGE.md` section 12 (a re-point in the same iteration, with the reference
   suspect at the top of the next pass).
 
 **Tests and checks.**
@@ -1305,7 +1305,7 @@ more than the 5,040 it cost on 03296b6. The cause was not separated out: the two
 up, as the image-buffer growth in "Reference bindings per path" did not.
 
 **Not covered.** No existing test expectation changed, and the port needed no rewrite. Methods do not
-exist yet (section 10 of `LANGUAGE.md`). The fuzzer has an argument-order kind (see "Handle-owner and reference false positives").
+exist yet (section 12 of `LANGUAGE.md`). The fuzzer has an argument-order kind (see "Handle-owner and reference false positives").
 
 ## Assignment over a handle's owner (done)
 
@@ -2211,7 +2211,7 @@ name is item 1.
    (`usedAt` of a ref local is set only for a read that is not fresh, the notion `loopBindCheck` already
    uses, and by a `for` walk of the reference). The condition of a `while` is compiled after `clearFresh`,
    so its reads count. Reads on one path only, in an inner loop, in the condition, passes to calls, walks
-   and `k = &k.kids[0]` stay errors. The `LANGUAGE.md` section 10 example is now an accepted example.
+   and `k = &k.kids[0]` stay errors. The `LANGUAGE.md` section 12 example is now an accepted example.
 3. **A field of a ref param taking the whole param's binding.** For a reference *parameter* the path of
    the designator is now kept (`designatorT` sets `x.path`, `itemBind` uses it), so `&p.ys` and `p.xs` are
    different places, in invalidation (`p.ys = ...` leaves `&p.xs` valid), in the argument check
@@ -2737,7 +2737,7 @@ truncate, assignment over, replace, take, an append holding the array across a r
 a global array, a reference held across a truncate or an element assignment, the Phase 2 retry callee, a handle
 writer, the 63rd parameter). Cases that depended on the old rule were changed: `errors/assignments.obx`,
 `errors/call_targets.obx` and `errors/pure_mut.obx` use a callee that really frees; `own_fuzz.py`'s
-`handle_index_call_stmt` (invalid) uses `rebox` and `move_bits_stmt` (valid, with a model) is new. LANGUAGE.md section 10 has the rule
+`handle_index_call_stmt` (invalid) uses `rebox` and `move_bits_stmt` (valid, with a model) is new. LANGUAGE.md section 12 has the rule
 and its example now assigns over the field.
 **Mutants:** `MOVE_MUTANTS` in `tests/mutate_fork.py` (also run by `mutate_port.py`), eleven keys. The last six are
 the `[]string` truncate through a handle and the five string-pin/look-ahead mutants (`tests/run/string_index_pin.obx`
@@ -3331,3 +3331,183 @@ bytes in 0.05 s; `sort -n` on the 50,000-line fixture 8,634,208 bytes in 0.08 s
 (numeric keys cost one record per line). Sort is O(input). Byte-copying `cat`
 streams a pipe before EOF (the serial liveness check), so `fill` plus a flush
 per chunk is in use, not `readN`.
+
+## Multiple modules: Stage 1 (done)
+
+Source-level modules, the first stage of the approved module design
+(`/tmp/obo-module-design-v2.md`, §17 Stage 1). Stage 2 (symbol files,
+`--check`, `--sym-dir`, `--emit-sym`, staleness) is not built. The compiler
+itself remains one file and uses no imports.
+
+**Surface.** `module Name` is the first token (comments and blank lines aside).
+An imported module must have a header and its file must be `Name.obx`; the root
+is exempt and a headerless root is `_root` (reserved, and included in the
+duplicate-name table). `import "path.obx" [as alias]` precedes all declarations;
+paths resolve against the importing file's directory, then each `-I` in order,
+and absolute paths as written; the default alias is the declared module name.
+`pub` (never `export`) marks a top-level `fn`, `type`, `const`, `var` or `let`
+exported, and is sticky across a forward heading and its definition. Everything
+else is private. Importers use `alias::name` for functions, types, variants,
+constants, globals, `new`, `[]/?/^/Result` and `&`; `match` arms stay bare.
+There are no unqualified, selective or wildcard imports and no re-exports.
+
+**Module identity (B4).** Canonical identity is the lexically normalized
+resolved path: repeated `/` collapse, `.` segments go, `..` pops a previous
+segment (a leading `..` of a relative path stays), and a leading `/` stays.
+Dedup, the cycle stack and duplicate-name checks are all keyed on it, so
+`lib.obx` and `./lib.obx` are one module and one initialization. Symlinks are
+not resolved (the runtime has no `readlink`/`realpath`); a symlinked copy is a
+different path, so module trees use canonical paths, and if both spellings are
+reached the duplicate-name check reports the same module name at two paths. `_root` cannot be declared
+by a dependency and the root is in the same duplicate table.
+
+**Compilation model.** `compileUnit` saves the scanner (the `ScanState` record:
+source, position, line/column, last/current token, token text and value,
+`tokSeq`, token position and `srcPath`) and the current `Module` and
+`visibleGlobals`, starts the dependency's scanner, stores its `Module` under the
+normalized path, parses its header and imports, compiles its declarations into
+the shared code/rodata/gsize/string pool/descriptor area and returns; the
+importer's scanner and context are restored. Imports are acyclic, so a
+dependency is complete before its importer: addresses are final (no fixups
+across a module), and effect summaries are final at every cross-module call.
+`compileProgram` emits the one entry prologue (`RT_INIT`, then the init-chain
+jump), compiles the root, requires the root's own `main`, fixes the chain, calls
+`main`, frees the globals of every module in compile order (dependency-first,
+each own global once, imported globals never by the importer), calls
+`RT_FINISH`, and patches the global-end placeholder with the final `gsize`.
+Dependencies initialize once (a diamond compiles/initializes the shared module
+once); init order is depth-first left-to-right in import order.
+
+**Globals and effects.** Three lists replace the single process-wide `globals`:
+`curModule.globals` (the declaration scope; `lookup` and `declare` use it and
+never search imports), `visibleGlobals` (the module's own globals plus its direct
+imports' exports; `afterCall` invalidates references into these) and
+`programGlobals` (every module's own globals in compile order, for teardown).
+`waitFn`/`waitAt`, `fnDecl`'s forward-fixup cleanup, forward type/function
+matching and the module-end completeness checks all use `curModule.globals`; an
+import is at top level, so no wait entry spans a module boundary.
+
+`afterCall` propagates **every** entry of the callee's `FnRec.freed` with
+`recordFree` independently of `visibleGlobals`, then invalidates the visible
+globals the callee may free (**B2**). The v1 design's "iterate visibleGlobals
+and record each one the callee frees" loses transitive frees: in A (exports `g`,
+`wipe`), B (`mid` calls `a::wipe`), C (`outer` calls `b::mid`), D (imports A and
+C) a reference `&a::g` across `c::outer()` must be rejected even though C never
+imports A, because C's summary must carry `A::g`. The independent loop is the
+fix; the four-module case and the folded mutant are in the tests. `recordFree`
+ignores `curFn == nil`, so a top-level initializer adds no function summary.
+
+**Type identity (B7).** `Type.owner` is the defining module and `Type.uid` the
+FNV-1a 64 of `owner::name`; `Type.name` stays the local name. The defining
+declaration is the only place that names a type; an importer's `a::T` resolves
+through the defining module's live export table, so one key is one `^Type` and
+one descriptor in the whole image: allocate in A, free/match in B. Derived types
+(`[]`, `?`, `^`, `Result`) stay canonical through the shared base object and its
+caches. A type alias (`type A = lib::T`, `type P = Dot`, `type X = []T`) is a
+symbol whose type is the existing object: it creates no `Type` and never writes
+`owner`, `uid` or `name`. In Stage 1 the **live export table is the registry**:
+an imported name resolves to the defining module's `^Sym` and `^Type`, so
+`mightFree(f, g)` compares the same object for a private/transitive global too
+and no separate keyed global stub is needed until `.sym` can name one before its
+module is loaded (B6, Stage 2). Two aliases to one imported type, in one module or
+several, still denote one object. Structurally identical records in two modules
+are different types, and assignment between them is refused with both names
+qualified.
+
+**Exports and the private closure (B5).** `declare` sets a top-level symbol's
+owner and adds it to `visibleGlobals`; `pub` sets `exported` (variants inherit
+their closed type's flag). `findExport` scans a module's globals for an exported
+name, so private declarations are unreachable even within the same source tree.
+At module end `checkExports` walks every exported type, function parameter and
+result, and global type through `[]`, `?`, `^`, `Result`, record fields and
+**every closed variant's fields**; a private named type of the same module is
+reported with the variant named. Imported types are not traversed (their own
+module checked them), so an exported alias to a foreign type is accepted.
+
+**Diagnostics.** `tname` qualifies a named type as `owner::name` when the owner
+is not the current module; `qualifiedSymName` does the same for functions and
+globals, and `describe`, `callFn`'s arity/argument messages, move/immutability
+messages and the global target/index messages use it. Inside the defining
+module names stay bare, so all single-file messages are unchanged. Names print
+the declared module name, not the import alias; an alias may print its
+underlying type. Reserved type names (`int`, `byte`, `bool`, `string`, `void`,
+`nil`, `Result`), `const nil`, the qualified match-arm hint and the `main` rules
+are implemented with the design's messages.
+
+**Scanner and pre-scan.** `::` is token 67 after `try` at 66 (the Result work
+landed first); the token-names string ends `... >> try ::`. `punct2` scans it,
+and `scanFunction` treats a `::` while a `new` type name is pending as part of
+the name (it sets `prevNew` again), so `new lib::Node{...}` still counts as a
+record literal in the register-pressure estimate. The `homeRetry` fallback
+remains the safety net; the mutant that removes the teaching is documented as
+equivalent because a wrong estimate only changes homes, not semantics.
+
+**`--deps`.** `obo --deps SOURCE [-I DIR]...` scans headers and import blocks
+only, and prints normalized resolved paths in depth-first post-order
+(dependencies first, root last, deduped). Missing files exit 2; cycles,
+duplicate names, a missing imported header and the basename rule exit 1 with
+the build's messages. `-o` is refused. It writes nothing.
+
+**Tests.** `tests/module_test.py` adds 78 cases to `run_fork` (21 accepted run
+trees, 49 rejected trees with exact normalized stderr, 6 `--deps` trees, the
+`-o` rejection and a `--tokens` case). `port_compare` compiles every module tree
+with both compilers and compares compile outcome, run output/exit and `--deps`
+output; it also compares the `::` token dump, and uses a private tree directory
+per case. `port_test` checks `T_TRY = 66`, `T_COLONCOLON = 67`, the names string
+and the `::` dump directly, and adds an obo-local scanner fragment list
+(`::`, `import`, `as`, `pub`) without touching `obx/tests/stage_test.FRAGMENTS`.
+`doc_check` learns multi-file examples (`// example: modules` with `// file:`
+lines); the LANGUAGE example and a private-access error example are checked.
+
+**Mutants.** 38 Stage 1 module mutants in `MODULE_MUTANTS`, shared with
+`mutate_port`: exports both ways, variant export, the closure (including B5),
+reserved names, `const nil`, import placement, aliases, cycles, duplicate names,
+basename, B4 normalization, B2's two loops, imported global identity, pmodes,
+mut-callee precision, double compilation, programGlobals, scanner restore,
+import binding, B7 alias mutation, `_root`, dependency `main`, `pub` placement,
+path suffix, `-I`, global offsets, the token constant and name, and the
+pre-scan. Measured: 37 caught, 1 documented equivalent (the pre-scan estimate);
+`mutate_fork` and `mutate_port` both see them through the module cases (the
+whole gate's final counts are below).
+
+**Measurements** (this host). `src/obo.obo` grew from 8,018 to 8,756 lines.
+The port compiling itself peaks at **1,364,368 bytes live** and allocates
+28,137,488 in total (budget 2,000,000; the Phase 3 pre-module peak was 1,244,480,
+so the module context and qualified-name work costs 119,888 bytes, 9.6%). The fixed point is
+exact: `./obo src/obo.obo` and the stage-2 compiler's output are byte-identical.
+`run_fork`: 1,102 passed, 0 failed. `port_compare`: 1,102 of 1,102 behave the
+same. Against the old seed (`OBO_REF=seed/obo`, which skips the new module
+trees), 1,024 of 1,025 single-file cases match: the one difference is
+`obx/tests/errors/syntax.obx`'s `import foo`, whose old "imports are not
+supported yet" is now "expected a module path after 'import'", because imports
+exist. That is the intended surface change, not a single-file behaviour change;
+everything else, including every obo program and error case, matches the seed. `port_test`: 486 of 486 identical, 9 encoder groups. `doc_check`: 44
+examples, 0 problems. `mutate_fork`: 446 of 467 caught, 21 equivalent (cold,
+including the module cases; the module subgroup is 37 of 38 caught + 1
+equivalent). `mutate_port`: 414 of 414 caught. All single-file programs, errors,
+benchmarks, homes checks and the tools suite are unchanged.
+
+**Limitations, by design for Stage 1.** No `.sym` writer/reader, `--check`,
+`--sym-dir`, `--emit-sym`, `--version`, object files or linker; a full build
+recompiles every module body (milliseconds at this scale), and `--check`'s
+"same verdict without code" claim waits for Stage 2. Symlink identity is
+lexical. `--deps` streams its post-order, so a duplicate-name error can follow
+the paths of the modules already completed (it writes no files). A module
+alias's diagnostics use the declared module name, not the alias. Module names are
+not reserved: a module named `int` or `Result` is accepted only with an explicit
+alias, and Stage 2 must decide how such a name is spelled in `.sym` type keys.
+Two spellings that normalize to one path dedup; a file reached under a path that
+normalizes differently is a different module (and the duplicate-name check
+reports it when the headers agree). The compiler stays one
+file; splitting it (or the stdlib and tools) is the next stage, with a later
+`.sym` format and promotion after review.
+
+**Risks found and handled.** The module-context refactor touches the scanner,
+the three global views, forward fixups, the init chain and teardown; the
+single-file suite, the port comparison (1,102 cases plus the compiler's own
+compile), the memory cap and the byte fixed point all stay green. The B2 and B4
+counterexamples and the B5/B7 cases are tests, not comments. The pre-scan's `::`
+is taught, with the documented fallback if a future emitter misses a form. The
+remaining risk is Stage 2's interface identity: nothing here writes or trusts a
+symbol file, so the live-binding invariant is total, and descriptor ownership
+is single by construction.

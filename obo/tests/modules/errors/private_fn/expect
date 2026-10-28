@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:3:21: module 'lib' has no exported member 'secret' (only 'pub' declarations are visible)

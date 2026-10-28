@@ -1,0 +1,9 @@
+module main
+import "a.obx"
+import "b.obx"
+fn main() {
+    let t = a::make(5)
+    println(b::value(t))             // expect: 5
+    let u = b::accept(6)
+    println(u.v)                     // expect: 6
+}

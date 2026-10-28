@@ -1,0 +1,5 @@
+module lib
+pub type Node = ref record { value: int; next: ?Node }
+pub fn make(v: int): Node { return new Node{value: v, next: nil} }
+pub fn value(n: Node): int { return n.value }
+pub fn bump(mut n: &Node) { n.value = n.value + 1 }

@@ -1,0 +1,2 @@
+module lib
+pub fn f(s: string): int { return len(s) }

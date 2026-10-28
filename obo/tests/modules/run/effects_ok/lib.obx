@@ -1,0 +1,5 @@
+module lib
+pub type Box = ref record { v: int }
+fn seed(): []Box { let xs = new []Box(0); append(xs, new Box{v: 0}); return xs }
+pub var Cache: []Box = seed()
+pub fn add(mut xs: &[]Box) { append(xs, new Box{v: 1}) }

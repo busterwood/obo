@@ -1,0 +1,2 @@
+exit 2
+stderr obxc: cannot read module 'missing' at missing.obx

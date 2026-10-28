@@ -1,0 +1,8 @@
+module main
+import "lib.obx"
+fn main() {
+    let a = lib::make()
+    if a.b == nil { println(1) }      // expect: 1
+    let b = new lib::B{a: nil}
+    println(b.a == nil)               // expect: true
+}

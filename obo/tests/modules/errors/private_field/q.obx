@@ -1,0 +1,3 @@
+module q
+type Hidden = ref record { v: int }
+pub type Public = ref record { h: Hidden }

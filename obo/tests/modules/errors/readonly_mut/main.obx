@@ -1,0 +1,7 @@
+module main
+import "lib.obx"
+fn inner(n: &lib::Node) { lib::bump(n) }
+fn main() {
+    let n = lib::make(1)
+    inner(n)
+}

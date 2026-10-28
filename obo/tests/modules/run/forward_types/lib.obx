@@ -1,0 +1,6 @@
+module lib
+pub type A
+pub type B
+pub type A = ref record { b: ?B }
+pub type B = ref record { a: ?A }
+pub fn make(): A { return new A{b: nil} }
