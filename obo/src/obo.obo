@@ -100,10 +100,11 @@ const T_STAREQ = 63
 const T_SHL = 64
 const T_SHR = 65
 const T_TRY = 66
+const T_COLONCOLON = 67
 
 fn makeTokNames(): []string {
     let k = new []string(0)
-    let names = "eof ident int char string module import pub type var let const fn return if else while for in break continue defer match ref record closed new nil true false ( ) { } [ ] , ; : . .. = == != < <= > >= + - * / % ! ? & | ^ ~ && || += -= *= << >> try"
+    let names = "eof ident int char string module import pub type var let const fn return if else while for in break continue defer match ref record closed new nil true false ( ) { } [ ] , ; : . .. = == != < <= > >= + - * / % ! ? & | ^ ~ && || += -= *= << >> try ::"
     var start = 0
     for i in 0..len(names) + 1 {
         if i == len(names) || names[i] == ' ' {
@@ -249,6 +250,7 @@ fn punct2(a: int, b: int): int {
             '|' { return T_OROR }
             '<' { return T_SHL }
             '>' { return T_SHR }
+            ':' { return T_COLONCOLON }
         }
     }
     return -1
@@ -7494,6 +7496,16 @@ fn scanFunction(params: &[]Param) {
                 }
                 p += 1
             }
+        } else if c == ':' {
+            // `new lib::Node{...}`: the `::` is part of the type name, so the member word after it is
+            // still the type a record literal names. Treating the `::` like `new` keeps afterNew set
+            // through the member word, so the `{` is counted as a record literal (kind 2).
+            if p + 1 < n && src[p + 1] == ':' && wasNew {
+                prevNew = true
+                p += 2
+            } else {
+                p += 1
+            }
         } else if c == '{' {
             depth += 1
             var kind = 0
@@ -7924,7 +7936,248 @@ fn dirOf(path: string): string {
     var i = len(path) - 1
     while i >= 0 && path[i] != '/' { i -= 1 }
     if i < 0 { return "." }
+    if i == 0 { return "/" }
     return substr(path, 0, i)
+}
+
+// ================================================== module paths and --deps
+
+fn endsWith(s: string, suf: string): bool {
+    if len(suf) > len(s) { return false }
+    let from = len(s) - len(suf)
+    for i in 0..len(suf) {
+        if s[from + i] != suf[i] { return false }
+    }
+    return true
+}
+
+fn isAbsPath(p: string): bool { return len(p) > 0 && p[0] == '/' }
+
+fn joinDirPath(d: string, p: string): string {
+    if len(d) == 0 || d == "." { return p }
+    if d[len(d) - 1] == '/' { return d + p }
+    return d + "/" + p
+}
+
+// The canonical lexical form of a path (B4): repeated '/' collapses, '.' goes, '..' pops the
+// previous segment (a leading '..' of a relative path stays), and a leading '/' is kept.
+// Symlinks are not resolved: the runtime has no readlink/realpath, so module trees use
+// canonical paths and a symlinked duplicate is a different file.
+fn normPath(p: string): string {
+    let abs = isAbsPath(p)
+    let parts = new []string(0)
+    var start = 0
+    var i = 0
+    while i <= len(p) {
+        if i == len(p) || p[i] == '/' {
+            let seg = substr(p, start, i)
+            if len(seg) > 0 && seg != "." {
+                if seg == ".." {
+                    if len(parts) > 0 && parts[len(parts) - 1] != ".." {
+                        truncate(parts, len(parts) - 1)
+                    } else if !abs {
+                        append(parts, seg)
+                    }
+                } else {
+                    append(parts, seg)
+                }
+            }
+            start = i + 1
+        }
+        i += 1
+    }
+    var out = ""
+    if abs { out = "/" }
+    for k in 0..len(parts) {
+        if k > 0 { out = out + "/" }
+        out = out + parts[k]
+    }
+    if len(out) == 0 {
+        if abs { return "/" }
+        return "."
+    }
+    return out
+}
+
+fn baseNameOf(p: string): string {
+    var i = len(p) - 1
+    while i >= 0 && p[i] != '/' { i -= 1 }
+    return substr(p, i + 1, len(p))
+}
+
+// the module name an import path names: its basename without .obx
+fn moduleNameOfPath(p: string): string {
+    let b = baseNameOf(p)
+    if len(b) > 4 && endsWith(b, ".obx") { return substr(b, 0, len(b) - 4) }
+    return b
+}
+
+var incDirs = new []string(0)
+
+// The scanner's whole state, saved while a dependency's source (or a symbol file, in Stage 2)
+// is read, and restored before the importer's next token.
+type ScanState = ref record {
+    src: string
+    pos: int
+    line: int
+    col: int
+    last: int
+    sym: int
+    sval: string
+    ival: int
+    tokSeq: int
+    tline: int
+    tcol: int
+    srcPath: string
+}
+
+fn saveScan(): ScanState {
+    return new ScanState{src: src, pos: pos, line: line, col: col, last: last, sym: sym, sval: sval,
+                         ival: ival, tokSeq: tokSeq, tline: tline, tcol: tcol, srcPath: srcPath}
+}
+
+fn restoreScan(st: &ScanState) {
+    src = st.src
+    pos = st.pos
+    line = st.line
+    col = st.col
+    last = st.last
+    sym = st.sym
+    sval = st.sval
+    ival = st.ival
+    tokSeq = st.tokSeq
+    tline = st.tline
+    tcol = st.tcol
+    srcPath = st.srcPath
+}
+
+// the module record of the --deps scan: only names and paths, no compile
+type Dep = ref record { name: string; path: string; display: string }
+
+var deps = new []Dep(0)
+var depStack = new []int(0)
+
+fn depIndex(path: string): int {
+    for i in 0..len(deps) {
+        if deps[i].path == path { return i }
+    }
+    return -1
+}
+
+fn depOnStack(ix: int): bool {
+    for k in 0..len(depStack) {
+        if depStack[k] == ix { return true }
+    }
+    return false
+}
+
+// the cycle text from the stack entry that is the target to the closing import
+fn cycleText(target: int, closing: string): string {
+    var k = 0
+    while k < len(depStack) && depStack[k] != target { k += 1 }
+    var msg = "import cycle: "
+    while k < len(depStack) {
+        msg = msg + deps[depStack[k]].display + " -> "
+        k += 1
+    }
+    return msg + closing
+}
+
+fn depRegister(ix: int, name: string, line: int) {
+    for k in 0..len(deps) {
+        if k != ix && deps[k].name == name {
+            errorAt("module '" + name + "' is declared by both " + deps[k].path + " and " + deps[ix].path, line, 1)
+        }
+    }
+    deps[ix].name = name
+}
+
+// Resolves an import path: relative to the importer's directory, then each -I directory in
+// order; an absolute path is used as written. Returns the normalized path, or exits 2 with
+// every path tried in the message.
+fn resolveSource(raw: string, base: string, line: int, col: int): string {
+    let cands = new []string(0)
+    if isAbsPath(raw) {
+        append(cands, raw)
+    } else {
+        append(cands, joinDirPath(base, raw))
+        for k in 0..len(incDirs) { append(cands, joinDirPath(incDirs[k], raw)) }
+    }
+    var tried = ""
+    for c in cands {
+        let n = normPath(c)
+        if len(tried) > 0 { tried = tried + ", " }
+        tried = tried + n
+        let data = readFile(n)
+        if data != nil { return n }
+    }
+    eprintln("obxc: cannot read module '", moduleNameOfPath(raw), "' at ", tried)
+    exit(2)
+}
+
+// Reads a source file's module header and import block (no declarations, no compile) and
+// prints its normalized path after its dependencies: depth-first post-order, root last.
+fn scanDeps(path: string, display: string, isRoot: bool) {
+    let data = readFile(path)
+    if data == nil {
+        eprintln("obxc: cannot read ", path)
+        exit(2)
+    }
+    let st = saveScan()
+    append(deps, new Dep{name: "", path: path, display: display})
+    let ix = len(deps) - 1
+    append(depStack, ix)
+    srcPath = path
+    startScanner(data)
+    skipSemis()
+    if sym == T_MODULE {
+        let mline = tline
+        next()
+        if sym != T_IDENT { error("expected a module name") }
+        let name = ident()
+        if !isRoot && name == "_root" { errorAt("module '_root' is reserved for the program root", mline, 1) }
+        depRegister(ix, name, mline)
+        expect(T_SEMI, "newline")
+    } else {
+        if !isRoot { errorAt("imported module '" + display + "' needs a 'module Name' header", tline, tcol) }
+        depRegister(ix, "_root", 1)
+    }
+    if !isRoot {
+        let want = moduleNameOfPath(display)
+        if deps[ix].name != want {
+            errorAt("module '" + deps[ix].name + "' must be in a file named " + deps[ix].name + ".obx (found " + display + ")", 1, 1)
+        }
+    }
+    skipSemis()
+    while sym == T_IMPORT {
+        let iline = tline
+        let icol = tcol
+        next()
+        if sym != T_STRING { errorAt("expected a module path after 'import'", iline, icol) }
+        let raw = sval
+        if !endsWith(raw, ".obx") { errorAt("import paths must end in .obx", iline, icol) }
+        next()
+        if sym == T_IDENT && sval == "as" {
+            next()
+            if sym != T_IDENT { errorAt("expected an import alias after 'as'", tline, tcol) }
+            next()
+        }
+        expect(T_SEMI, "newline")
+        let rp = resolveSource(raw, dirOf(path), iline, icol)
+        let j = depIndex(rp)
+        if j >= 0 && depOnStack(j) {
+            errorAt(cycleText(j, raw), iline, icol)
+        }
+        if j < 0 { scanDeps(rp, raw, false) }
+        skipSemis()
+    }
+    println(path)
+    truncate(depStack, len(depStack) - 1)
+    restoreScan(st)
+}
+
+fn runDeps(rootPath: string) {
+    scanDeps(normPath(rootPath), rootPath, true)
 }
 
 // Once the module is compiled, the image needs only the code, rodata and gsize: the symbols,
@@ -7976,6 +8229,10 @@ fn compileFile(path: string, out: string, rtDir: string) {
     }
 }
 
+fn usage() {
+    eprintln("usage: obxc SOURCE [-o OUTPUT] [--rt RUNTIME_DIR] [-I DIR]... | --deps SOURCE [-I DIR]... | --tokens FILE | --encode FILE")
+}
+
 fn main() {
     initCompiler()
     let a = args()
@@ -7992,18 +8249,58 @@ fn main() {
         }
         return
     }
-    // obxc SOURCE [-o OUTPUT] [--rt RUNTIME_DIR]
+    if len(a) >= 2 && a[1] == "--deps" {
+        var path = ""
+        var i = 2
+        while i < len(a) {
+            if a[i] == "-I" {
+                if i + 1 >= len(a) {
+                    eprintln("obxc: -I needs a directory")
+                    exit(2)
+                }
+                append(incDirs, a[i + 1])
+                i += 2
+            } else if a[i] == "-o" {
+                eprintln("obxc: -o cannot be used with --check or --deps")
+                exit(2)
+            } else if len(a[i]) > 0 && a[i][0] == '-' {
+                eprintln("obxc: unknown option ", a[i])
+                exit(2)
+            } else if len(path) == 0 {
+                path = a[i]
+                i += 1
+            } else {
+                eprintln("obxc: more than one source file: ", a[i])
+                exit(2)
+            }
+        }
+        if len(path) == 0 {
+            usage()
+            exit(2)
+        }
+        runDeps(path)
+        return
+    }
+    // obxc SOURCE [-o OUTPUT] [--rt RUNTIME_DIR] [-I DIR]...
     if len(a) >= 2 && a[1][0] != '-' {
         let path = a[1]
         var out = path
         if len(out) > 4 && substr(out, len(out) - 4, len(out)) == ".obx" { out = substr(out, 0, len(out) - 4) }
         var rtDir = dirOf(a[0])
         var i = 2
-        while i + 1 < len(a) {
-            if a[i] == "-o" {
-                out = a[i + 1]
-            } else if a[i] == "--rt" {
-                rtDir = a[i + 1]
+        while i < len(a) {
+            if a[i] == "-o" || a[i] == "--rt" || a[i] == "-I" {
+                if i + 1 >= len(a) {
+                    eprintln("obxc: unknown option ", a[i])
+                    exit(2)
+                }
+                if a[i] == "-o" {
+                    out = a[i + 1]
+                } else if a[i] == "--rt" {
+                    rtDir = a[i + 1]
+                } else {
+                    append(incDirs, a[i + 1])
+                }
             } else {
                 eprintln("obxc: unknown option ", a[i])
                 exit(2)
@@ -8013,6 +8310,6 @@ fn main() {
         compileFile(path, out, rtDir)
         return
     }
-    eprintln("usage: obxc SOURCE [-o OUTPUT] [--rt RUNTIME_DIR] | --tokens FILE | --encode FILE")
+    usage()
     exit(2)
 }
