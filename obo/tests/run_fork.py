@@ -44,6 +44,7 @@ import run  # noqa: E402
 import own_fuzz  # noqa: E402
 import module_test  # noqa: E402
 import sym_test  # noqa: E402
+import elf_test  # noqa: E402
 
 run.OBXC = os.path.abspath(os.environ.get('OBO', os.path.join(FORK, 'obo')))
 run.ROOT = FORK                                   # --rt: the fork's runtime
@@ -125,6 +126,9 @@ def main():
     tests += own_fuzz.tests(FUZZ_COUNT)
     tests += module_test.tests()               # source modules: run, errors, --deps, tokens
     tests += sym_test.tests()                  # Stage 2 symbol files: writer, reader, --check, staleness
+    # the image: the runtime-data segment's file size is the nonzero prefix, its
+    # memory size the full image, and the program built by the compiler runs
+    tests.append(("image/runtime_data_segment", lambda: elf_test.check(run.OBXC)))
     smoke_names = set()
     if smoke:
         known = {name for name, _ in tests}

@@ -233,6 +233,13 @@ MUTANTS = {
 # mutants of the encoder: caught by port_test.py's objdump cross-check
 ENCODER = {"push imm8 for any imm32"}
 
+# mutants of the image emitter: they change only the produced file (the zero tail
+# in p_filesz, or p_memsz shrunk to p_filesz), so the comparison's outcomes and
+# peak are the same; elf_test.py judges them. The wrong epilogue opcode builds
+# crashing programs, so the ordinary comparison catches it.
+IMAGE = {"image: the runtime data keeps its zero tail",
+         "image: the runtime data memory size is its file size"}
+
 
 # the reference bindings per path (obo/tools/port_ref_binds.py): the mutants whose text the rewrite
 # replaced are retargeted to the same behaviour, and the join and the loop check have their own
@@ -306,6 +313,10 @@ from mutate_fork import FP_MUTANTS, REF_PATH_MUTANTS, MOVE_MUTANTS, FIELD_MUTANT
 # mutants are judged by the Stage B comparison too
 from mutate_fork import IO_MUTANTS  # noqa: E402
 MUTANTS.update({k: [v] for k, v in IO_MUTANTS.items()})
+# the image emitter (runtime data segment and epilogue): elf_test.py judges the two
+# segment mutants; the epilogue ones are equivalent/caught as in the fork's notes
+from mutate_fork import SIZE_MUTANTS  # noqa: E402
+MUTANTS.update({k: [v] for k, v in SIZE_MUTANTS.items() if k not in FORK_EQUIVALENT})
 MUTANTS.update({k: [v] for k, v in FP_MUTANTS.items() if k not in FORK_EQUIVALENT})
 MUTANTS.update({k: [v] for k, v in REF_PATH_MUTANTS.items() if k not in FORK_EQUIVALENT})
 MUTANTS.update({k: [v] for k, v in MOVE_MUTANTS.items() if k not in FORK_EQUIVALENT})
@@ -421,7 +432,13 @@ def try_mutant(name, text, base_peak, workers=None):
     try:
         path = os.path.join(tmp, 'mutant.obx')
         open(path, 'w').write(text)
-        if name in ENCODER:
+        if name in IMAGE:
+            r = subprocess.run([sys.executable, os.path.join(HERE, 'elf_test.py'), '--source', path],
+                               capture_output=True, text=True, cwd=HERE, timeout=300)
+            lines = (r.stdout + r.stderr).strip().splitlines()
+            failures = [l for l in lines if l.startswith('FAIL')] or \
+                       ([lines[-1] if lines else f'exit {r.returncode}'] if r.returncode != 0 else [])
+        elif name in ENCODER:
             r = subprocess.run([sys.executable, '-c', f"import port_test as pt; pt.SRC = {path!r}; pt.main()"],
                                capture_output=True, text=True, cwd=HERE)
             lines = (r.stdout + r.stderr).strip().splitlines()

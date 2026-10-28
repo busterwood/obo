@@ -912,6 +912,7 @@ EQUIVALENT = {
     "place origin: a row beside an anywhere row is kept": "equivalent: the events of a row below an anywhere row are covered by it",
     "a handle root of a reference is not an identity (held)": "equivalent because the older heldLost check on the reference local catches the case, not the held entry: under the mutant foreign is false, so heldMove does not hit",
     "modules: pre-scan forgets the :: of a qualified literal": "equivalent: the pre-scan only estimates register pressure. A qualified record literal is then not counted as a record literal, which can underestimate the live registers and give the function more register homes, or exhaust its temporaries and make it run out and be compiled again with none (homeRetry); both produce the same code semantics. homeRetry is the documented fallback (FORK.md, modules Stage 1); tests/homes_check.py still passes either way, and tests/run/modules is a correctness oracle only",
+    "image: the epilogue is the old two-instruction sequence": "equivalent: x86 leave is defined as mov rsp,rbp; pop rbp (RSP := RBP, then RBP := Pop()) and has no other effect, so the old five-byte encoding and leave; ret produce the same registers, flags and memory; only the code size differs, and the behavioural gates do not compare produced bytes",
 }
 
 
@@ -1170,6 +1171,29 @@ IO_MUTANTS = {
         '        return resultCall4(RT_READ_FD, n, fd, derived("opt", derived("array", tByte)))\n'),
 }
 MUTANTS.update(IO_MUTANTS)
+
+# image emission (FORK.md, "Compiler size fixes"): the runtime data segment's
+# file size is its nonzero prefix and its memory size the full image; the
+# epilogue is leave; ret. The first two change only produced images, so the
+# image test in run_fork judges them (mutate_port runs elf_test.py); the int3
+# return is caught by the ordinary executable tests. The old two-instruction
+# epilogue is genuinely equivalent: x86 leave is defined as mov rsp,rbp; pop
+# rbp, and only the encoding's size differs.
+SIZE_MUTANTS = {
+    "image: the runtime data keeps its zero tail": (
+        "    let rtDataFile = dataFileLen(rtData)             // the trailing .bss need not be in the file\n",
+        "    let rtDataFile = len(rtData)\n"),
+    "image: the runtime data memory size is its file size": (
+        "    phdr(ph, 6, rtDataAt, RT_DATA, rtDataFile, len(rtData))\n",
+        "    phdr(ph, 6, rtDataAt, RT_DATA, rtDataFile, rtDataFile)\n"),
+    "image: the epilogue is the old two-instruction sequence": (
+        "    emit(0xC9)                   // leave: mov rsp,rbp; pop rbp\n",
+        "    emit(0x48)\n    emit(0x89)\n    emit(0xEC)\n    emit(0x5D)\n"),
+    "image: the epilogue returns with int3": (
+        "    emit(0xC3)                   // ret\n",
+        "    emit(0xCC)                   // ret\n"),
+}
+MUTANTS.update(SIZE_MUTANTS)
 
 
 def mutation(src, name):
