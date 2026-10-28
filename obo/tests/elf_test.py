@@ -68,6 +68,67 @@ def last_nonzero(data):
     return n
 
 
+def segment_shape(exe, rt_len, trimmed):
+    """Check a produced file's runtime-data segment against the runtime data it
+    was built with: memory size rt_len, file size trimmed (last nonzero + 1),
+    page aligned, and last in the file. Returns (filesz, memsz)."""
+    data = open(exe, 'rb').read()
+    phdrs = program_headers(data)
+    loads = [p for p in phdrs if p[0] == PT_LOAD]
+    rtph = [p for p in loads if p[3] == RT_DATA]
+    if len(rtph) != 1:
+        raise Fail(f"expected one PT_LOAD at the runtime data address {RT_DATA:#x}, found {len(rtph)}")
+    _typ, _flags, off, vaddr, filesz, memsz, align = rtph[0]
+    if vaddr != RT_DATA:
+        raise Fail(f"runtime data vaddr is {vaddr:#x}")
+    if align != PAGE or off % PAGE != 0:
+        raise Fail(f"runtime data segment is not page aligned (offset {off:#x}, align {align:#x})")
+    if filesz >= memsz:
+        raise Fail(f"runtime data filesz {filesz} is not below memsz {memsz}: the zero tail is in the file")
+    if memsz != rt_len:
+        raise Fail(f"runtime data memsz is {memsz}, not the image length {rt_len}")
+    if filesz != trimmed:
+        raise Fail(f"runtime data filesz is {filesz}, not last-nonzero+1 = {trimmed}")
+    size = os.path.getsize(exe)
+    if size != off + filesz:
+        raise Fail(f"the file is {size} bytes, not {off + filesz}: bytes follow the segment's file data")
+    # the compiler's own globals segment is memory-only and unchanged
+    gph = [p for p in loads if p[3] == GLOBAL_BASE]
+    if len(gph) != 1:
+        raise Fail(f"expected one PT_LOAD at the globals address {GLOBAL_BASE:#x}, found {len(gph)}")
+    if gph[0][4] != 0 or gph[0][5] < 8:
+        raise Fail(f"the globals BSS segment changed: filesz {gph[0][4]}, memsz {gph[0][5]}")
+    return filesz, memsz
+
+
+def compile_program(compiler, src, out, rt_dir):
+    b = subprocess.run([compiler, src, '-o', out, '--rt', rt_dir],
+                       capture_output=True, text=True, timeout=120)
+    if b.returncode != 0:
+        raise Fail(f"the compiler does not build the test program: {b.stderr.strip()[:300]}")
+
+
+def check_synthetic(compiler, work):
+    """The trimming rule is the trailing zero run, not every zero byte: a data
+    image with a zero gap before a final nonzero byte keeps its full prefix,
+    and an all-zero image has no file bytes at all. The programs are not run:
+    their runtime data is synthetic."""
+    rt_dir = os.path.join(work, 'rt-synthetic')
+    os.makedirs(rt_dir, exist_ok=True)
+    shutil.copyfile(os.path.join(FORK, 'runtime_text.bin'), os.path.join(rt_dir, 'runtime_text.bin'))
+    cases = [
+        (b'\x09' + b'\x00' * 0x1FF + b'\x07' + b'\x00' * 0x200, 0x201),   # zero gap, then a nonzero byte
+        (b'\x00' * 0x402, 0),                                             # no nonzero byte at all
+    ]
+    src = os.path.join(work, 'image.obx')
+    exe = os.path.join(work, 'image-synthetic')
+    for i, (rt, trimmed) in enumerate(cases):
+        with open(os.path.join(rt_dir, 'runtime_data.bin'), 'wb') as f:
+            f.write(rt)
+        compile_program(compiler, src, exe, rt_dir)
+        segment_shape(exe, len(rt), trimmed)
+
+
 def check(compiler, workdir=None):
     """Raise Fail unless compiler emits the trimmed runtime-data segment and a
     program it compiles runs. workdir is a scratch directory, or None for a
@@ -84,40 +145,13 @@ def check(compiler, workdir=None):
         exe = os.path.join(work, 'image')
         with open(src, 'w') as f:
             f.write(PROGRAM)
-        b = subprocess.run([compiler, src, '-o', exe, '--rt', FORK],
-                           capture_output=True, text=True, timeout=120)
-        if b.returncode != 0:
-            raise Fail(f"the compiler does not build the test program: {b.stderr.strip()[:300]}")
-        data = open(exe, 'rb').read()
-        phdrs = program_headers(data)
-        loads = [p for p in phdrs if p[0] == PT_LOAD]
-        rtph = [p for p in loads if p[3] == RT_DATA]
-        if len(rtph) != 1:
-            raise Fail(f"expected one PT_LOAD at the runtime data address {RT_DATA:#x}, found {len(rtph)}")
-        _typ, _flags, off, vaddr, filesz, memsz, align = rtph[0]
-        if vaddr != RT_DATA:
-            raise Fail(f"runtime data vaddr is {vaddr:#x}")
-        if align != PAGE or off % PAGE != 0:
-            raise Fail(f"runtime data segment is not page aligned (offset {off:#x}, align {align:#x})")
-        if filesz >= memsz:
-            raise Fail(f"runtime data filesz {filesz} is not below memsz {memsz}: the zero tail is in the file")
-        if memsz != len(rt):
-            raise Fail(f"runtime data memsz is {memsz}, not the image length {len(rt)}")
-        if filesz != trimmed:
-            raise Fail(f"runtime data filesz is {filesz}, not last-nonzero+1 = {trimmed}")
-        size = os.path.getsize(exe)
-        if size != off + filesz:
-            raise Fail(f"the file is {size} bytes, not {off + filesz}: bytes follow the segment's file data")
-        # the compiler's own globals segment is memory-only and unchanged
-        gph = [p for p in loads if p[3] == GLOBAL_BASE]
-        if len(gph) != 1:
-            raise Fail(f"expected one PT_LOAD at the globals address {GLOBAL_BASE:#x}, found {len(gph)}")
-        if gph[0][4] != 0 or gph[0][5] < 8:
-            raise Fail(f"the globals BSS segment changed: filesz {gph[0][4]}, memsz {gph[0][5]}")
+        compile_program(compiler, src, exe, FORK)
+        filesz, memsz = segment_shape(exe, len(rt), trimmed)
         r = subprocess.run([exe], capture_output=True, timeout=60,
                            env=dict(os.environ, OBO_CHECK='1'))
         if r.returncode != 0 or r.stdout != EXPECTED or r.stderr:
             raise Fail(f"the program runs wrongly: exit {r.returncode}, stdout {r.stdout[:80]!r}, stderr {r.stderr[:80]!r}")
+        check_synthetic(compiler, work)
         return filesz, memsz
     finally:
         if own:
