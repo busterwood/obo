@@ -1,0 +1,9 @@
+module main
+
+import "lib.obx"
+import "other.obx" as o
+
+fn main() {
+    let n = lib::make(3)
+    println(lib::area(new lib::Circle{r: 2}), " ", lib::Mask, " ", o::boxed(o::make(4)))
+}

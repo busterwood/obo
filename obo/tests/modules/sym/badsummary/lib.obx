@@ -1,0 +1,2 @@
+module lib
+pub fn f(mut a: &[]int): int { truncate(a, 0); return 1 }

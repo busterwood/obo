@@ -1,0 +1,9 @@
+obosym 1
+abi 1
+compiler "0.2"
+source 0x2ec8547db6eef4af
+dep a "a.obx"
+interface 0x8cdf3f23b577c302
+module b
+depiface a 0xad320ebb1b35e980
+fn mid() frees 1 a::g

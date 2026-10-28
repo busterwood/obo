@@ -8,8 +8,11 @@ A ```obo block whose first line is "// example: runs" must compile and exit 0
 
 A multi-file example starts "// example: modules" (or "modules error: TEXT"):
 inside it, a line "// file: path" starts a new source file, the first is the
-root, and the root is compiled with -I <example dir> and a private output name.
-"// prints"/"// exit" apply to the root program.
+root, and the root is compiled with -I <example dir>, a private --sym-dir and a
+private output name. "// prints"/"// exit" apply to the root program.
+"// example: modules check" builds the root, deletes the dependency sources and
+then runs --check against the emitted symbol files (expecting success, or the
+text after "modules check error: TEXT").
 
     python3 obo/tests/doc_check.py
 """
@@ -26,12 +29,20 @@ bad = 0
 for i, b in enumerate(blocks, 1):
     lines = b.splitlines()
     head = lines[0]
-    m = re.match(r'// example: (runs|compiles|modules|error: (.*)|modules error: (.*))$', head)
+    check_mods = head.startswith('// example: modules check')
+    if check_mods:
+        rest = head[len('// example: modules check'):].strip()
+        want = rest[len('error:'):].strip() if rest.startswith('error:') else None
+        m = re.match(r'// example: modules', head)
+    else:
+        m = re.match(r'// example: (runs|compiles|modules|error: (.*)|modules error: (.*))$', head)
+        want = None
     if not m:
         print(f"block {i}: no example marker"); bad += 1; continue
-    kind = 'error' if m.group(2) else m.group(1)
-    if kind == 'modules' or m.group(3):
-        want = m.group(3) if m.group(3) else m.group(2)
+    kind = 'modules' if check_mods else ('error' if m.group(2) else m.group(1))
+    if kind == 'modules' or (not check_mods and m.group(3)):
+        if not check_mods:
+            want = m.group(3) if m.group(3) else m.group(2)
         case = os.path.join(tmp, f'm{i}')
         os.makedirs(case)
         files = []                       # (path, [lines])
@@ -48,7 +59,10 @@ for i, b in enumerate(blocks, 1):
             open(fp, 'w').write('\n'.join(body) + '\n')
         root = os.path.join(case, files[0][0])
         out = os.path.join(case, 'prog')
-        c = subprocess.run([OBO, root, '-o', out, '--rt', RT, '-I', case], capture_output=True, text=True)
+        symdir = os.path.join(case, 'sym')
+        os.makedirs(symdir)
+        c = subprocess.run([OBO, root, '-o', out, '--rt', RT, '-I', case, '--sym-dir', symdir],
+                           capture_output=True, text=True)
         if want is not None:
             if c.returncode == 0:
                 print(f"block {i}: expected error '{want}', but it compiled"); bad += 1
@@ -59,6 +73,22 @@ for i, b in enumerate(blocks, 1):
             continue
         if c.returncode != 0:
             print(f"block {i}: modules did not compile: {c.stderr.strip()}"); bad += 1; continue
+        if check_mods:
+            # source-less checking: remove the dependency sources, keep the .sym files
+            for name, _ in files[1:]:
+                os.unlink(os.path.join(case, name))
+            chk = subprocess.run([OBO, '--check', root, '-I', case, '--sym-dir', symdir],
+                                 capture_output=True, text=True)
+            if want is not None:
+                if chk.returncode == 0:
+                    print(f"block {i}: expected check error '{want}', but it passed"); bad += 1
+                elif want not in chk.stderr:
+                    print(f"block {i}: check error differs: wanted '{want}', got: {chk.stderr.strip()}"); bad += 1
+                else:
+                    print(f"block {i}: ok (modules check error '{want}')")
+                continue
+            if chk.returncode != 0:
+                print(f"block {i}: modules --check failed: {chk.stderr.strip()}"); bad += 1; continue
         exp_exit = next((int(re.search(r'// exit: (\d+)', l).group(1)) for l in lines if '// exit:' in l), 0)
         prints = [l[len('// prints '):] for l in lines if l.startswith('// prints ')]
         r = subprocess.run([out], capture_output=True, text=True, env=dict(os.environ, OBO_CHECK='1', OBX_GC='poison'))

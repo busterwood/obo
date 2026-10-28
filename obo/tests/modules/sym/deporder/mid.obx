@@ -1,0 +1,4 @@
+module mid
+import "a.obx"
+import "b.obx"
+pub fn m(): int { return a::f() + b::g() }

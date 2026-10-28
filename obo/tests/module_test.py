@@ -92,6 +92,10 @@ def compile_args(case_dir, exe=None):
     args += ['--rt', RT, '-I', case_dir]
     for d in case_includes(case_dir):
         args += ['-I', d]
+    # every module build writes .sym files; a private sym-dir keeps tests/modules clean
+    symdir = run.unique('module_sym_' + os.path.basename(case_dir))
+    os.makedirs(symdir, exist_ok=True)
+    args += ['--sym-dir', symdir]
     return args
 
 

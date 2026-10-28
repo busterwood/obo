@@ -1,0 +1,2 @@
+module b
+pub fn g(): int { return 2 }
