@@ -3511,3 +3511,266 @@ is taught, with the documented fallback if a future emitter misses a form. The
 remaining risk is Stage 2's interface identity: nothing here writes or trusts a
 symbol file, so the live-binding invariant is total, and descriptor ownership
 is single by construction.
+
+---
+
+# Multiple modules with symbol files: Stage 2 (done)
+
+Stage 2 was implemented in the worktree `modules-sym` on top of `01a66c0` (the
+merged Stage 1 tree). The compiler is still one file (`src/obo.obo`, no imports
+of its own), the seed is still the Stage 1 binary, and the two-round rule holds:
+the old seed builds the Stage 2 source. This record covers the `.sym` writer and
+reader, `--check`/`--sym-dir`/`--emit-sym`/`--version`, staleness and version
+errors, the tests, the mutants and the measurements. The design note is
+`/tmp/obo-module-design-v2.md`; this record states what was built and any
+deviation.
+
+## What separate compilation means here
+
+Interfaces are separate; code is not. A full build compiles every module body
+from source, dependency-first, into one image, and writes every module's `.sym`.
+At an import it binds the dependency's **live** interface (types, globals,
+functions, descriptors) and reads the `.sym` only to validate it: version lines,
+source hash, dep/depiface pairs, body hash, declaration structure and effect
+summaries must agree with the live objects. The `.sym` is therefore never the
+semantic source of truth in a build, which keeps one `^Type` per key and one
+descriptor per type by construction. `--check` is the mode where the file is the
+interface: it compiles and checks the checked module's body against dependency
+`.sym` files, reconstructs imported types with `desc = 0`, gives imported
+functions a known dummy address (`0`, not `-1`) and imported globals unique dummy
+offsets (`GLOBAL_BASE + 0x01000000 + 8*i`), writes the checked module's `.sym`,
+discards the code and writes no executable. `--check` is not a build cache and
+never compiles a dependency's source; a present dependency source only validates
+the header and the `source` hash.
+
+## The format
+
+Text, line-oriented, parsed by the compiler's scanner. The header is `obosym 1`
+(one identifier; `obo-sym` would scan as three tokens), `abi 1`,
+`compiler "0.2"`, `source 0x…`, one `dep <module> "<path as imported>"` per
+unique direct dependency in first-import order, and `interface 0x…`. The body is
+`module <name>`, one `depiface <module> 0x…` per dependency in the same order,
+then declarations. `source` is FNV-1a 64 of the source bytes exactly;
+`interface` is FNV-1a 64 of the exact bytes after the interface line (module name,
+deduped depiface order and every exported declaration and summary). Dep paths are
+outside the hash. No address, offset, descriptor, pointer, timestamp or absolute
+path appears.
+
+Canonical emission order: shells for exported record/closed types (source order),
+their definitions (source order), aliases, constants, globals, functions.
+Private declarations are skipped without reordering the exported ones. A record
+lists fields in declaration order (offsets are recomputed as one 8-byte word
+each); a closed type lists variants in declaration order. Field and signature
+types are emitted as their underlying type, never an alias name. Constants are
+primitive (int/byte as 16 hex digits, bool as true/false, string as
+`hex "<bytes>"`, including `hex ""`); globals are `var`/`let` with no
+initializer; function parameters are always canonical `p0`, `p1`, … (renaming a
+source parameter changes only the source hash). Summary items are emitted
+`freesall`, `writeshandles`, `pfree`, `frees N key…`, then `pf` rows by parameter
+and insertion order; the reader accepts any order. `frees` keys are
+`Module::name`, may name a private or transitive global, and a key for a module
+not loaded creates an incomplete global stub.
+
+**Variant shells.** Shells are emitted for exported record and closed types, not
+for variants. This is safe because of source declare-before-use plus the
+definition order: a record defined *before* a closed type cannot name its
+variants (the variants are declared only inside the closed definition, and a
+forward `type V` followed by a closed variant `V` is a duplicate declaration),
+while a record defined *after* it can, and definitions are emitted in source
+order. Aliases and functions come after every definition. Test:
+`sym_test.py` `sym/roundtrip_rich` includes
+`pub type Holder = ref record { c: ?Circle }` after
+`pub type Shape = closed { Circle { … } … }`, re-emits byte-identically, and the
+committed golden `tests/modules/golden/expected/lib.sym` contains the same line;
+`modules/run/registry` covers an alias to a variant (`type Point = Dot`). A reader
+that rejected the writer's output is therefore covered by the gate.
+
+**Module names `int` and `Result`.** Stage 1 accepts these module names only with
+an explicit import alias. Stage 2 keeps that behaviour and makes the names
+representable: a qualified type is parsed before primitive/`Result[T]`
+recognition, so `int::T`, `Result::T`, `Result[T]` and a module named `Result`
+exporting `T` all round-trip. Tested by `sym/module_names_int_result` (build,
+run, re-emit, `--check`).
+
+## Hashes and versions
+
+FNV-1a 64 with offset basis `0xcbf29ce484222325` and prime `0x100000001b3`, 64-bit
+wrapping. Three exact-match version values: `obosym` (grammar and meaning),
+`abi` (layout, descriptor format, calling convention, global addressing, effect
+summaries, initialization order) and `compiler` (`OBO_VERSION`, currently `0.2`;
+`--version` prints `obo 0.2 sym-format 1 abi 1`). Errors use the per-line §12
+wording: `has format <n>; this compiler reads <m>`, `has ABI <n>; this compiler
+uses <m>`, `was built by compiler '<v>'; this is '<w>'`, each with
+`; rebuild it` and exit 2 — not one combined message. Bump `OBO_VERSION` with a
+compiler feature, `obosym` on a grammar/meaning change and `abi` on a layout/ABI
+change; a missed bump affects `--check` against stale artifacts, not a full build.
+
+**Trust model.** `.sym` files are trusted build outputs. FNV catches accidental
+staleness and corruption; it does not resist an adversary who can write the
+sym-dir, because a forged well-formed interface can make the checker accept an
+unsound program (it can claim a callee frees nothing). Do not `--check` against
+untrusted symbol files, and do not treat a `.sym` as a security boundary. A
+stronger digest/signature is future work if interfaces are ever distributed.
+
+## Type identity, aliases, stubs and transitive frees
+
+- The canonical key is `Module::Name`. The defining declaration is the only place
+  that sets `owner`, `uid`, `name`, fields, variants, parent or `desc`; the type
+  registry has one `^Type` per key. In a build the registry is filled by the live
+  compiler; in `--check` shells and definitions reconstruct it with `desc = 0`.
+- **B7:** an alias key maps to the existing `Type` and never creates or renames
+  one. Two aliases in one module and another module's alias all denote one object
+  and one descriptor; alias lines carry no owner/uid. Tested by
+  `sym/b7_aliases` and the Stage 1 registry case.
+- **B6:** one `^Sym` per global key. A summary key for a module not yet loaded
+  creates an incomplete stub; the defining module's later `.sym` completes that
+  same symbol (kind/type/dummy offset), never a second one. `sym/b6_stub_order`
+  checks both load orders and the four-module use-after-free is rejected.
+- **B2:** `afterCall` propagates every `f.fnRec.freed` entry independently of the
+  visible-globals invalidation loop, and the summaries carry those keys across
+  modules (including a middle module that cannot name the defining module).
+  `sym/b6_stub_order` and `modules/errors/transitive_free` cover it.
+- Effect summaries cross the boundary exactly: parameter modes, canonical names,
+  `pfree`, `frees` keys with counts, and `pf` rows. Tests accept a valid imported
+  append-only/pure callee and reject an imported truncating callee, a read-only
+  reference passed to `mut`, a deep reference passed to a handle writer, and a
+  mut callee that frees a field (`sym/effects_check`; the port fixtures
+  `effects_pfree` and the b6 fixtures).
+
+## Root rules and CLI
+
+One emission rule: dependencies always write their `.sym`; a build with at least
+one import writes the root's when it has a header; a single-file build writes none
+unless `--emit-sym`; `--check` always writes the checked module's. `--emit-sym`
+is a flag on a build (it still writes the executable and accepts `-o`) and
+requires a `module` header; a headerless root is rejected with a clear source
+error. A checked root is exempt from the file-name rule (it is the root of its
+check graph) and its `.sym` is named by its declared module name; a checked
+dependency must match `<basename>.sym` and its `module` line. A checked module may
+have a private `main` (omitted from its `.sym`) or an exported `main` (listed; an
+importer rejects it with the source-language message, exit 1). `--check`,
+`--deps` and `--emit-sym` are mutually exclusive; `-o` is rejected in
+`--check`/`--deps`; a missing option value says it needs a value; unknown options
+exit 2.
+
+**Default sym-dir deviation.** Design §8.2 says the default is the root source's
+directory; the branch brief's phrase "generated `.sym` directories are gitignored
+(default `.obo/sym` …)" was read as the build script's directory, not the
+compiler default, and the implementation follows the design: without
+`--sym-dir`, `<root source dir>` holds the `.sym` files. `make`/`build_tools.py`
+use `.obo/sym` explicitly, `.gitignore` ignores `/obo/.obo/` and `**/.obo/sym/`,
+and the committed goldens under `tests/modules/golden/expected` are not ignored.
+Tests always pass a private temp `--sym-dir`, so the repository is not polluted.
+The sym-dir is a flat module-name namespace, must already exist and be writable
+(no `mkdir`/`rename` in the runtime), and is not writer-concurrency-safe:
+parallel builds use private directories. Generated `.sym` files are never
+committed; the golden test only compares unless `sym_test.py --update` is run
+explicitly.
+
+## Validation and residual risks
+
+The reader validates before indexing or dereferencing: exact 16-hex hashes and
+uids, non-empty dep paths, dep/depiface partner count and order, body hash before
+parsing, shells complete and definitions shelled, duplicate type keys/exports/
+fields, unknown types (including a foreign private type), zero-variant closed
+types, parameter modes, `mut` implies `&`, borrowed types owned, return types
+never references, primitive constants and ranges, `frees` counts and unique keys,
+`pf` index/event path, and `pf`/`pfree` consistency (bits 0..61; 62/63 ignored; a
+row below 62 implies its bit and a set bit has a row). Malformed input is a clean
+`obxc: <sympath>:<line>:<col>: symbol file: <detail>` (exit 2); `sym_fuzz.py`
+checks 200 seeded mutations for no signal/trap/hang and a deterministic outcome
+digest.
+
+Two limitations are recorded rather than claimed solved:
+
+- **Live-interface validation is defence in depth.** In a build the dependency's
+  `.sym` is written by `writeSym` from the live module and read immediately by the
+  same process at the import point; there is no program input between the write
+  and the read, so a disagreement would require an external writer or an I/O
+  corruption race. All module trees exercise the validation path with valid
+  output, but no test can feed it a disagreeing file without changing a build into
+  a check. No mutant was added for disabling it (it would be unkillable by
+  program input); the risk is recorded here. The check-mode reader path shares the
+  same structure code and is heavily mutated and fuzzed.
+- **Reader-side `pf` row reconstruction** is exercised indirectly (b6 and the
+  effects fixtures). A mutant that drops rows only in the reader was not added:
+  at a call site the whole mut-argument path is invalidated unconditionally when
+  `pfree` says the callee may free, so dropping rows is conservative there and no
+  tested program observes it; a dedicated two-hop precision test would be needed
+  to make such a mutant non-equivalent. Writer omission of rows *is* mutated and
+  killed byte-for-byte by the `.sym` comparison.
+
+## Tests, mutants and measurements
+
+- `tests/sym_test.py`: 24 named tests covering writer round trip
+  (`--reemit-sym` byte identity) for every production, determinism, golden
+  fixtures, source-vs-interface hashes, private declarations, parameter rename,
+  depiface propagation, stale/missing/corrupt/format/ABI/compiler errors,
+  source-less check and full-build refusal, sym-dir errors, root/`--emit-sym`
+  rules, check mode and CLI, malformed structures with pinned details,
+  hand-written interfaces (arbitrary parameter names, summary order, `pfree 0`,
+  a `pf` row at index 62, high `pfree` bits), B6 both orders, B7 aliases,
+  effect precision, scanner restore, reader-not-lookup, `int`/`Result` modules,
+  checked-root basename, duplicate-import dedup, default sym-dir, headerless
+  check, and transitive type loading. Wired into `run_fork.py` (three sym tests
+  in `SMOKE`), so `mutate_fork` judges them.
+- `tests/sym_fuzz.py`: 200 seeded mutations (truncation, line edits, token and
+  hash-digit replacement, version/dep/summary corruption, unknown declarations,
+  half rehashed to reach structural validators), 10 s timeout and a 5 GiB address
+  cap; exit 0/2, or exit 1 only for source-language interface rules (exported
+  `main`, `_root`, basename mismatch, a removed export that breaks the checked
+  source); same digest on repeated runs.
+- `port_compare.py`: per-compiler private sym dirs, every emitted `.sym` compared
+  byte-for-byte, `--check` compared for every header-bearing source of each run
+  tree, 28 `modules/sym` fixtures (valid, stale, corrupt, version, depiface,
+  main-export, B6 both orders, transitive type, and the malformed structures
+  above), five build/CLI special cases (emit-sym, headerless emit/check, default
+  sym-dir, source-less build), a `--reemit-sym` comparison for high pfree bits,
+  CLI comparisons (`--version`, unknown option, missing value, `-o` with
+  `--check`) and the token dump.
+- Golden fixtures: `tests/modules/golden/tree` and
+  `tests/modules/golden/expected/{lib,main,other}.sym`, regenerated with the
+  final compiler; `sym_test.py --update` is the only writer.
+- `MODULE_MUTANTS` gains 69 `sym:` entries (writer groups/summaries/hashes/
+  dependency lines; reader version/hash/structure/malformed summaries; type and
+  global registries, B6, B7; imported address/pfree/pmodes/freed keys; root
+  rules, check flag, CLI, default sym-dir, source-less message). Each pattern
+  occurs exactly once and each is killed by a named test: measured 69/69 by
+  `mutate_fork` (run_fork judge) and 69/69 by `mutate_port` (port_compare judge).
+  No Stage 2 equivalent was needed. The full totals are recorded in README after
+  the cold gate.
+- Measured port memory compiling itself: **1,631,344 bytes live**, 34,842,272
+  allocated (budget 2,000,000; 368,656 spare). Stage 1 was 1,364,240 / 28,136,432,
+  so Stage 2 costs +267,104 live / +6,705,840 allocated. The compiler source grew
+  from 8,756 to 10,370 lines (321,043 → 379,283 bytes); the built compiler is
+  489,184 bytes (the seed is still 415,456 until promotion). The fixed point
+  (stage 2 == stage 3, and the suite on stage 2) is recorded in README after the
+  cold gate; `make promote` was not run.
+
+## Build script and tool deferral
+
+`build_tools.py` creates `obo/.obo/sym` and passes `--sym-dir` to every compile;
+the Makefile makes the directory an order-only prerequisite (creating or touching
+it does not rebuild the tools) and `clean` removes it. The tools are still
+single-file roots built by concatenating preludes, so no `.sym` is written today
+and `--deps`-based Make prerequisites are deferred until a tool becomes a module
+root; converting the tools/stdlib to modules is explicitly out of Stage 2 scope.
+A module tool will build unchanged with the same command.
+
+## Rejected alternatives (Stage 2)
+
+Objects/linker and per-module relocations (Stage 3); binary `.sym`; a `.sym`
+carrying addresses/descriptors (two tags for one type); unqualified or wildcard
+imports and re-exports; `alias.name`; making the compiler a multi-file module
+tree; absolute paths/timestamps in `.sym`; a compiler self-hash in the header
+(breaks obo/port byte comparison and depends on invocation); a `.sym`-based build
+cache (`--check` compiles bodies every run); raising the memory budget or the
+mutant margin.
+
+## Stage 3 sketch
+
+Objects at module granularity (code, rodata, descriptor bytes and relocations for
+calls, globals, strings and descriptors), a link pass and a build cache keyed by
+the interface hash. Stage 2 deliberately keeps one image and one descriptor per
+type, so Stage 3 can add objects without changing the interface format or the
+type-identity rules.
