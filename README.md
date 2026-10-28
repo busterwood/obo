@@ -563,3 +563,12 @@ new instruction forms; the stage tests will show every change in generated code 
 difference against the bootstrap, which must be reviewed and then promoted; each rewrite
 gets a mutant, so the suite proves it is exercised; and the benchmarks show whether the
 gain is real.
+
+## License
+
+obo is licensed under the Apache License, Version 2.0. The full text is in
+[LICENSE](LICENSE); [NOTICE](NOTICE) records the copyright. Unless a file says
+otherwise, the compiler, runtime, tools, tests and documentation are covered.
+
+Contributions are accepted under the same license; by contributing you agree that
+your contribution is licensed under the Apache License, Version 2.0.
