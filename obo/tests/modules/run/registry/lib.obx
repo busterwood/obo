@@ -1,0 +1,8 @@
+module lib
+pub type T = ref record { v: int }
+pub fn make(v: int): T { return new T{v: v} }
+pub fn value(t: T): int { return t.v }
+pub type Shape = closed { Dot { x: int } }
+pub type Point = Dot
+pub fn makePoint(x: int): Point { return new Dot{x: x} }
+pub fn dx(p: Point): int { return p.x }

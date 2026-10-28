@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:3:13: module 'lib' has no exported member 'nope' (only 'pub' declarations are visible)

@@ -1,0 +1,3 @@
+module lib
+fn mark(): int { println("init"); return 5 }
+pub var V: int = mark()

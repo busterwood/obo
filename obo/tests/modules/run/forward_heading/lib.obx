@@ -1,0 +1,6 @@
+module lib
+pub type N
+type N = ref record { v: int }
+pub fn mk(): N { return new N{v: 2} }
+pub fn head(): int
+fn head(): int { return 3 }

@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:6:14: 'r' may point to freed memory: something under what it points into was changed; point it again first

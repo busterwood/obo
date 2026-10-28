@@ -1,0 +1,2 @@
+module lib
+pub type Shape = closed { Circle { r: int } }

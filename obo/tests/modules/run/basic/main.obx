@@ -1,0 +1,5 @@
+module main
+import "lib.obx"
+fn main() {
+    println(lib::twice(21))          // expect: 42
+}

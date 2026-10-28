@@ -1,0 +1,4 @@
+module main
+import "lib.obx"
+fn main() { println(lib::Loaded) }  // expect: lib loaded
+                                    // expect: 0

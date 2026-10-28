@@ -1,0 +1,3 @@
+module main
+type Result = int
+fn main() {}

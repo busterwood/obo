@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:3:13: 'g::Fixed' is immutable (declared with let)

@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:3:62: match on lib::Shape is missing Rect

@@ -1,0 +1,3 @@
+module lib
+pub fn shout(s: string): string { return s + "!" }
+pub var Count: int = 0

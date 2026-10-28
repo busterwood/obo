@@ -1,0 +1,2 @@
+module g
+pub let Fixed: int = 6

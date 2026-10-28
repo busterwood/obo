@@ -1,0 +1,3 @@
+module lib
+var secret: int = 1
+pub var open: int = 2

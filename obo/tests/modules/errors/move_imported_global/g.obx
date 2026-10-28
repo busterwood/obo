@@ -1,0 +1,3 @@
+module g
+pub type Box = ref record { v: int }
+pub var Keep: Box = new Box{v: 1}

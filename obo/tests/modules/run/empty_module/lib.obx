@@ -1,0 +1,3 @@
+module lib
+fn mark(): int { println("lib loaded"); return 0 }
+pub var Loaded: int = mark()

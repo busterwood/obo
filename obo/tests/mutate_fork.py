@@ -95,7 +95,7 @@ MUTANTS = {
     "match reads the tag with the generation": ("    opMem(0x8B, r, mem(r, -1, -16, 8), false, false)", "    opMem(0x8B, r, mem(r, -1, -16, 8), true, false)"),
     # effect summaries
     "callees never free globals": ("    if f.addr < 0 || f == curFn || f.freesAll { return true }\n    let freed = &f.fnRec.freed", "    if false { return true }\n    let freed = &f.fnRec.freed"),
-    "calls invalidate nothing": ("            invalidate(g, nil, true, \"\")\n            if !all { recordFree(g) }", "            if !all { recordFree(g) }"),
+    "calls invalidate nothing": ("            invalidate(g, nil, true, \"\")\n", ""),
     "frees not recorded": ("    if g.storage != \"global\" { return }\n    let freed = &f.fnRec.freed", "    if true { return }\n    let freed = &f.fnRec.freed"),
     "drop frees nothing": ("        consume(x)\n        rtCall1(RT_FREE, dx, tVoid)\n        return voidItem()", "        consume(x)\n        return voidItem()"),
     "replace keeps the old value in place": ("        let xt = x.typ\n        store(x, v)\n", "        let xt = x.typ\n        releaseItem(x)\n"),
@@ -305,7 +305,7 @@ ONE_PATH_MUTANTS = {
     "a loop's exit drops a carried invalidation": ("        if back.flags[i] && ownedLocals[i].isRefLocal { ownedLocals[i].moved = true }\n", ""),
     "a read of an invalidated reference is not refused": ("            } else if s.isRefLocal {\n                error(freedRefMsg(name))\n",
                                                           "            } else if false {\n                error(freedRefMsg(name))\n"),
-    "a write through an invalidated reference gets the owned message": ("            if s.isRefLocal { error(freedRefMsg(name)) }\n", ""),
+    "a write through an invalidated reference gets the owned message": ("            if s.isRefLocal { error(freedRefMsg(qname)) }\n", ""),
     "a re-point after the join keeps the invalidation": ("            xs.suspect = false\n            xs.moved = false\n", "            xs.suspect = false\n"),
 }
 MUTANTS.update(ONE_PATH_MUTANTS)
@@ -347,9 +347,9 @@ MUTANTS.update(ORIGIN_MUTANTS)
 # releaseArgs); errors/arg_order.obx and run/arg_order.obx show them
 ARG_ORDER_MUTANTS = {
     'a reference argument is not held': ('            holdArg(b, i)\n', ''),
-    'no check after a reference argument': ('            argOrderCheck(tbase, f.name, i, argLine, argCol)\n            holdArg(b, i)\n',
+    'no check after a reference argument': ('            argOrderCheck(tbase, fname, i, argLine, argCol)\n            holdArg(b, i)\n',
         '            holdArg(b, i)\n'),
-    'no check after a by-value argument': ('            consume(a)\n            argOrderCheck(tbase, f.name, i, argLine, argCol)\n',
+    'no check after a by-value argument': ('            consume(a)\n            argOrderCheck(tbase, fname, i, argLine, argCol)\n',
         '            consume(a)\n'),
     'the holder pool never grows': ('    if argTempsUsed == len(argTemps) {\n', '    if argTempsUsed < 0 {\n'),
     'an argument holder is not a reference local': ('        s.isRefLocal = true\n        append(argTemps, s)\n',
@@ -574,6 +574,101 @@ MOVE_MUTANTS = {
 }
 MUTANTS.update(MOVE_MUTANTS)
 
+# Stage 1 modules: exports and privacy, type identity (B7), the dependency-first build
+# (B4 identity, duplicate/cycle/basename rules, globals and teardown) and the effect
+# summaries across modules (B2). The module cases of tests/module_test.py, wired into
+# run_fork, and the module trees of port_compare kill them.
+MODULE_MUTANTS = {
+    "modules: exports ignored (all private)": ("        if s.name == name && s.exported { return s }",
+                                               "        if s.name == name && false { return s }"),
+    "modules: exports ignored (all public)": ("        if s.name == name && s.exported { return s }",
+                                              "        if s.name == name { return s }"),
+    "modules: closed variants not exported": ("            vs.exported = pubType                // exporting a closed type exports its variants",
+                                              "            vs.exported = false"),
+    "modules: private-type closure dropped": ("    checkExports()\n", ""),
+    "modules: closure skips closed variant fields (B5)": ("            closureCheck(t.variants[i], declName, t.variants[i].name, line)\n", ""),
+    "modules: reserved type names allowed": ("    if reservedTypeName(name) { errorAt(\"cannot declare a type named '\" + name + \"'\", line, 1) }",
+                                             "    if false { errorAt(\"cannot declare a type named '\" + name + \"'\", line, 1) }"),
+    "modules: const nil allowed": ("    if x.typ.kind == \"nil\" { error(\"a constant cannot be nil; use a typed optional var or let\") }",
+                                   "    if false { error(\"a constant cannot be nil; use a typed optional var or let\") }"),
+    "modules: imports after declarations allowed": ("        if sym == T_IMPORT { errorAt(\"imports must come before declarations\", tline, tcol) }",
+                                                    "        if false { errorAt(\"imports must come before declarations\", tline, tcol) }"),
+    "modules: duplicate alias allowed": ("        if curModule.imports[i].alias == alias {\n            errorAt(\"'\" + alias + \"' is already used as an import alias\", iline, icol)\n        }",
+                                         "        if false {\n            errorAt(\"'\" + alias + \"' is already used as an import alias\", iline, icol)\n        }"),
+    "modules: alias/declaration clash allowed": ("        if curModule.imports[i].alias == s.name { error(\"'\" + s.name + \"' clashes with a top-level declaration\") }",
+                                                 "        if false { error(\"'\" + s.name + \"' clashes with a top-level declaration\") }"),
+    "modules: built-in import alias allowed": ("    if reservedTypeName(alias) || findSym(universe, alias) != nil {",
+                                               "    if false {"),
+    "modules: alias lookup takes any module": ("        if curModule.imports[i].alias == alias { return handle(curModule.imports[i]) }",
+                                               "        if true { return handle(curModule.imports[i]) }"),
+    "modules: cycle detection dropped": ("    if seen != nil && onImportStack(seen) {", "    if seen != nil && seen == curModule {"),
+    "modules: duplicate module names allowed": ("        if modules[i].path != mod.path && modules[i].name == mod.name {", "        if false {"),
+    "modules: basename rule dropped": ("        if mod.name != want {", "        if false {"),
+    "modules: import syntax not required": ("        if !isRoot { errorAt(\"imported module '\" + display + \"' needs a 'module Name' header\", tline, tcol) }\n        mod.name = \"_root\"",
+                                            "        if false { errorAt(\"imported module '\" + display + \"' needs a 'module Name' header\", tline, tcol) }\n        mod.name = \"_root\""),
+    "modules: B4 path normalization keeps .": ("            if len(seg) > 0 && seg != \".\" {", "            if len(seg) > 0 {"),
+    "modules: B2 freed keys propagated only when visible": ("""    if !all {
+        let freed = &f.fnRec.freed
+        for g in freed { recordFree(g) }
+    }
+    // The module's visible globals are invalidated for their references' sake only: a reference
+    // can only point into a global the module can name, so its direct imports suffice.
+    let gs = &visibleGlobals
+    for g in gs {
+        if (g.kind == "var" || g.kind == "let") && (all || mightFree(f, g)) {
+            invalidate(g, nil, true, "")
+        }
+    }""",
+        """    let gs = &visibleGlobals
+    for g in gs {
+        if (g.kind == "var" || g.kind == "let") && (all || mightFree(f, g)) {
+            invalidate(g, nil, true, "")
+            if !all { recordFree(g) }
+        }
+    }"""),
+    "modules: imported globals not invalidated": ("            invalidate(g, nil, true, \"\")\n", ""),
+    "modules: imported global lookup returns a copy": ("            if dep.globals[i].exported { append(visibleGlobals, dep.globals[i]) }",
+                                                        "            if dep.globals[i].exported { append(visibleGlobals, newSym(\"var\", dep.globals[i].name, symType(dep.globals[i]))) }"),
+    "modules: imported pmodes dropped": ("            if f.fnRec.pmodes[i] == 2 && !b.writable {", "            if false {"),
+    "modules: a mut callee assumed to free below every argument": ("    if f.addr < 0 || f == curFn || f.freesAll || f.writesHandles { return true }",
+                                                                    "    if true { return true }"),
+    "modules: a module imported twice is compiled twice": ("    if seen == nil { compileUnit(rp, raw, false) }\n",
+                                                            "    compileUnit(rp, raw, false)\n"),
+    "modules: teardown frees imported globals too": ("        append(programGlobals, curModule.globals[i])",
+                                                      "        append(programGlobals, visibleGlobals[i])"),
+    "modules: teardown frees no module globals": ("        if (g.kind == \"var\" || g.kind == \"let\") && isOwned(symType(g)) {",
+                                                   "        if false {"),
+    "modules: scanner state not restored after an import": ("    restoreScan(ss)\n", ""),
+    "modules: imports not bound": ("    append(curModule.imports, new Import{alias: alias, mod: dep})", ""),
+    "modules: B7 alias key overwrites the shared type": ("        let t = parseType()                      // an alias key: it maps to this object; it never names it (B7)\n",
+                                                          "        let t = parseType()                      // an alias key: it maps to this object; it never names it (B7)\n        t.owner = curModuleName\n"),
+    "modules: _root accepted in a dependency": ("        if !isRoot && mod.name == \"_root\" {", "        if false {"),
+    "modules: main in a dependency allowed": ("    if name == \"main\" && !curModule.isRoot {", "    if false {"),
+    "modules: pub inside a function accepted": ("        T_PUB { error(\"'pub' is only allowed on top-level declarations\") }", "        T_PUB { next() }"),
+    "modules: pub import accepted": ("            if sym == T_IMPORT { errorAt(\"'pub' applies to declarations, not imports\", pline, pcol) }",
+                                     "            if false { errorAt(\"'pub' applies to declarations, not imports\", pline, pcol) }"),
+    "modules: import paths need not end in .obx": ("    if !endsWith(raw, \".obx\") { errorAt(\"import paths must end in .obx\", iline, icol) }\n    next()",
+                                                   "    if false { errorAt(\"import paths must end in .obx\", iline, icol) }\n    next()"),
+    "modules: -I ignored": ("        for k in 0..len(incDirs) { append(cands, joinDirPath(incDirs[k], raw)) }\n", ""),
+    "modules: module globals share one slot": ("        gsym.offset = GLOBAL_BASE + gsize", "        gsym.offset = GLOBAL_BASE"),
+    "modules: T_COLONCOLON is 66": ("const T_COLONCOLON = 67", "const T_COLONCOLON = 66"),
+    "modules: token names lack ::": ("try ::\"", "try\""),
+    "modules: pre-scan forgets the :: of a qualified literal": ("""        } else if c == ':' {
+            // `new lib::Node{...}`: the `::` is part of the type name, so the member word after it is
+            // still the type a record literal names. Treating the `::` like `new` keeps afterNew set
+            // through the member word, so the `{` is counted as a record literal (kind 2).
+            if p + 1 < n && src[p + 1] == ':' && wasNew {
+                prevNew = true
+                p += 2
+            } else {
+                p += 1
+            }
+""", """        } else if c == ':' {
+            p += 1
+"""),
+}
+MUTANTS.update(MODULE_MUTANTS)
+
 # mutants that survive by design: each removes a test that is redundant, so the behaviour is unchanged
 EQUIVALENT = {
     "a closed block's defer handles stay": "equivalent since origins per path: originFree finds the handles of a defer through originSyms, which a closed block drops, and a handle compares by generation, so a stale deferH entry never equals a later entry",
@@ -596,6 +691,7 @@ EQUIVALENT = {
     "place origin: a callee records every change as not strict": "equivalent: the strictness of a row matters only for a place that holds a record (the place itself survives a strict event), and a strict change is a truncate, whose place is an array, which no handle names; the anywhere row has its own encoding",
     "place origin: a row beside an anywhere row is kept": "equivalent: the events of a row below an anywhere row are covered by it",
     "a handle root of a reference is not an identity (held)": "equivalent because the older heldLost check on the reference local catches the case, not the held entry: under the mutant foreign is false, so heldMove does not hit",
+    "modules: pre-scan forgets the :: of a qualified literal": "equivalent: the pre-scan only estimates register pressure. A qualified record literal is then not counted as a record literal, which can overestimate the live registers and give the function fewer register homes, or make it run out and be compiled again with none (homeRetry); both produce the same code semantics. homeRetry is the documented fallback (FORK.md, modules Stage 1); tests/homes_check.py still passes either way, and tests/run/modules is a correctness oracle only",
 }
 
 

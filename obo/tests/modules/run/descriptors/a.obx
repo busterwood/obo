@@ -1,0 +1,4 @@
+module a
+pub type Box = ref record { v: int }
+pub fn make(v: int): Box { return new Box{v: v} }
+pub fn eat(b: Box) { }

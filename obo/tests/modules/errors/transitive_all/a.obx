@@ -1,0 +1,4 @@
+module a
+pub type Box = ref record { v: int; next: ?Box }
+pub var g: Box = new Box{v: 1, next: nil}
+pub fn wipeAll(h: ^Box) { h.next = nil }

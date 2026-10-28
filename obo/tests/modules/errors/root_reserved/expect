@@ -1,0 +1,2 @@
+exit 1
+stderr rootdep.obx:1:1: module '_root' is reserved for the program root

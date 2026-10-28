@@ -1,0 +1,3 @@
+module main
+import "b.obx"
+fn main() { println(b::three()) }   // expect: 3

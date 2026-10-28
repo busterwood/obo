@@ -1,0 +1,2 @@
+exit 1
+stderr nh.obx:1:1: imported module 'nh.obx' needs a 'module Name' header

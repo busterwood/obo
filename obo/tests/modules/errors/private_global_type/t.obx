@@ -1,0 +1,3 @@
+module t
+type Secret = ref record { v: int }
+pub var G: ?Secret = nil

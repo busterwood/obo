@@ -1,0 +1,9 @@
+module main
+import "lib.obx" as str
+import "lib.obx"
+fn main() {
+    let str = 99
+    println(str::shout("hi"))        // expect: hi!
+    println(lib::Count)              // expect: 0
+    println(str)                     // expect: 99
+}

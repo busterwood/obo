@@ -1,0 +1,4 @@
+module main
+import "b.obx"
+import "a.obx" as again
+fn main() {}

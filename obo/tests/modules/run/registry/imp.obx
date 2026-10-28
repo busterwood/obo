@@ -1,0 +1,8 @@
+module imp
+import "lib.obx"
+type A1 = lib::T
+type A2 = lib::T
+type P = lib::Point
+pub fn v1(t: &A1): int { return t.v }
+pub fn v2(t: &A2): int { return t.v }
+pub fn px(p: &P): int { return p.x }

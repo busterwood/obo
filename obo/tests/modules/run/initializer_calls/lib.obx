@@ -1,0 +1,3 @@
+module lib
+pub var Base: int = 10
+pub fn add(x: int): int { return x + Base }

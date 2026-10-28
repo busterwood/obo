@@ -1,0 +1,8 @@
+module lib
+pub const I = 10
+pub const B = byte(7)
+pub const F = true
+pub const S = "hi"
+pub const H = "a\nb"
+pub const Nul = "a\0b"
+pub const Folded = 2 * 3 + 1

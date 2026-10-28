@@ -1,0 +1,8 @@
+module main
+import "lib.obx"
+fn main() {
+    let n = lib::make(7)
+    println(n.value)                 // expect: 7
+    lib::bump(n)
+    println(lib::value(n))           // expect: 8
+}

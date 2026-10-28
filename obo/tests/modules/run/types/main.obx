@@ -1,0 +1,24 @@
+module main
+import "lib.obx"
+fn main() {
+    let xs: []lib::Node = new []lib::Node(0)
+    append(xs, lib::make(1))
+    append(xs, lib::make(2))
+    println(lib::sum(xs))            // expect: 3
+    var o: ?lib::Node = lib::make(3)
+    if o != nil { println(lib::valueRef(o)) }   // expect: 3
+    let r: Result[lib::Node] = ok(lib::make(4))
+    match r {
+        ok(n) { println(lib::value(n)) }        // expect: 4
+        err(m, c) { println(0) }
+    }
+    let w: Result[lib::Node] = lib::wrap(lib::make(5))
+    match w {
+        ok(n) { println(n.v) }                  // expect: 5
+        err(m, c) { println(0) }
+    }
+    let q = lib::make(6)
+    let h: ^lib::Node = lib::refOf(q)
+    println(lib::dv(h), h.v)                    // expect: 66
+    lib::eatAll(xs)                  // the defining module frees the array
+}

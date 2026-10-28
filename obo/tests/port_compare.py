@@ -131,6 +131,153 @@ def cases_of(src):
     return cases
 
 
+
+# ---------------------------------------------------------------- module trees
+#
+# Stage 1 modules: compile the same tree with both compilers (same -I and case
+# directory), compare the compile outcome, and for one that compiles, its run
+# (OBO_CHECK=1, a scratch directory of its own). --deps cases compare the
+# depth-first post-order. The seed compiler predates modules, so these are
+# skipped when REF is seed/obo. Each tree is compiled once by REF per process;
+# mutants reuse those outcomes.
+
+MODDIR = os.path.join(FORK, 'tests', 'modules')
+SEED_REF = os.path.realpath(os.path.join(FORK, 'seed', 'obo'))
+REF_TREE = {}
+
+
+def tree_cases():
+    out = []
+    for kind in ('run', 'errors', 'deps'):
+        base = os.path.join(MODDIR, kind)
+        if not os.path.isdir(base):
+            continue
+        for name in sorted(os.listdir(base)):
+            d = os.path.join(base, name)
+            if os.path.isdir(d):
+                out.append((f"modules/{kind}/{name}", kind, d))
+    return out
+
+
+def tree_includes(case_dir):
+    out = []
+    path = os.path.join(case_dir, 'includes')
+    if os.path.exists(path):
+        for line in open(path).read().splitlines():
+            line = line.strip()
+            if line and not line.startswith('#'):
+                out.append(os.path.join(case_dir, line))
+    return out
+
+
+def tree_args(exe, case_dir, out_path):
+    args = [exe, os.path.join(case_dir, 'main.obx')]
+    if out_path is not None:
+        args += ['-o', out_path]
+    args += ['--rt', FORK, '-I', case_dir]
+    for d in tree_includes(case_dir):
+        args += ['-I', d]
+    return args
+
+
+def tree_norm(text, case_dir):
+    for p in (case_dir + os.sep, case_dir + '/'):
+        text = text.replace(p, '')
+    return text.strip()
+
+
+def tree_outcome(exe, kind, case_dir, out_path, scratch, compile_limit=120, run_limit=60, capped_run=False):
+    if kind == 'deps':
+        args = [exe, '--deps', os.path.join(case_dir, 'main.obx'), '-I', case_dir]
+        for d in tree_includes(case_dir):
+            args += ['-I', d]
+        t0 = time.monotonic()
+        try:
+            p = subprocess.run(args, capture_output=True, text=True, timeout=compile_limit,
+                               preexec_fn=capped() if capped_run else None)
+        except subprocess.TimeoutExpired:
+            return ('crash', f"no result in {compile_limit:.0f} s"), compile_limit, 0
+        t1 = time.monotonic()
+        return ('deps', p.returncode, tree_norm(p.stdout, case_dir), tree_norm(p.stderr, case_dir)), t1 - t0, 0
+    t0 = time.monotonic()
+    try:
+        p = subprocess.run(tree_args(exe, case_dir, out_path), capture_output=True, text=True,
+                           env=dict(os.environ, OBO_CHECK='1'), timeout=compile_limit,
+                           preexec_fn=capped() if capped_run else None)
+    except subprocess.TimeoutExpired:
+        return ('crash', f"no result in {compile_limit:.0f} s"), compile_limit, 0
+    t1 = time.monotonic()
+    if p.returncode != 0:
+        return ('error', p.returncode, tree_norm(p.stderr, case_dir)), t1 - t0, 0
+    shutil.rmtree(scratch, ignore_errors=True)
+    os.mkdir(scratch)
+    try:
+        r = subprocess.run([out_path, scratch], capture_output=True, timeout=run_limit,
+                           preexec_fn=capped(run._limits) if capped_run else run._limits,
+                           env=dict(os.environ, OBO_CHECK='1'))
+    except subprocess.TimeoutExpired:
+        return ('ok', ('timeout', b'', b'')), t1 - t0, run_limit
+    t2 = time.monotonic()
+    sb = scratch.encode()
+    return ('ok', (r.returncode, r.stdout.replace(sb, b'<scratch>'), r.stderr.replace(sb, b'<scratch>'))), t1 - t0, t2 - t1
+
+
+def tree_show(o):
+    if o[0] == 'ok':
+        return f"runs: exit {o[1][0]}, stdout {o[1][1][-80:]!r}, stderr {o[1][2][-80:]!r}"
+    return f"{o[0]} {o[1:]!r}"
+
+
+def tree_both(name, kind, case_dir, tmp, quick, port):
+    main = os.path.join(case_dir, 'main.obx')
+    ref_exe = os.path.join(tmp, 'tree-ref-' + name.replace('/', '-'))
+    port_exe = os.path.join(tmp, 'tree-port-' + name.replace('/', '-'))
+    ref_scratch = os.path.join(tmp, 'tree-ref-scratch-' + name.replace('/', '-'))
+    port_scratch = os.path.join(tmp, 'tree-port-scratch-' + name.replace('/', '-'))
+    ref = REF_TREE.get(name)
+    if ref is None:
+        ref = REF_TREE[name] = tree_outcome(REF, kind, case_dir, ref_exe, ref_scratch)
+    o, tc, tr = ref
+    limits = (min(120, max(10, 20 * tc)), min(60, max(5, 20 * tr))) if quick else (120, 60)
+    p = tree_outcome(port, kind, case_dir, port_exe, port_scratch, *limits, capped_run=quick)
+    if quick and o != p[0] and timed_out(p[0]):
+        p = tree_outcome(port, kind, case_dir, port_exe, port_scratch, 120, 60, capped_run=True)
+    return o, p[0]
+
+
+def token_outcome(exe):
+    p = subprocess.run([exe, '--tokens', os.path.join(MODDIR, 'tokens.obx')],
+                       capture_output=True, text=True, timeout=60)
+    return (p.returncode, p.stdout, p.stderr)
+
+
+def compare_trees(tmp, quick, port):
+    """(same, total, failures) for the Stage 1 module trees and the token dump."""
+    if os.path.realpath(REF) == SEED_REF:
+        return 0, 0, []
+    same, total, failures = 0, 0, []
+    for name, kind, case_dir in tree_cases():
+        total += 1
+        a, b = tree_both(name, kind, case_dir, tmp, quick, port)
+        if a == b:
+            same += 1
+        else:
+            failures.append(f"{name}: obo {tree_show(a)!r}; port {tree_show(b)!r}")
+            if quick:
+                return same, total, failures
+    total += 1
+    try:
+        a, b = token_outcome(REF), token_outcome(port)
+    except subprocess.TimeoutExpired:
+        failures.append("modules/tokens: a --tokens run timed out")
+        return same, total, failures
+    if a == b:
+        same += 1
+    else:
+        failures.append(f"modules/tokens: obo {a[0]}; port {b[0]}")
+    return same, total, failures
+
+
 def compare(tmp, src=SRC, quick=False, workers=None):
     """Compares the port built from src with REF on every case, in the directory tmp.
     Returns the report's lines, the failures, and the port's live peak compiling itself
@@ -201,8 +348,12 @@ def compare(tmp, src=SRC, quick=False, workers=None):
         else:
             show = lambda o: o[1] if o[0] != 'ok' else f"runs: exit {o[1][0]}, stdout {o[1][1][-80:]!r}, stderr {o[1][2][-80:]!r}"
             failures.append(f"{name}: obo {show(a)!r}; port {show(b)!r}")
+    tree_same, tree_total, tree_failures = compare_trees(tmp, quick, PORT)
+    failures += tree_failures
+    same += tree_same
+    total = len(cases) + tree_total
     lines += ["FAIL " + f for f in failures[:12]]
-    lines.append(f"\nstage B: {same} of {len(cases)} behave the same")
+    lines.append(f"\nstage B: {same} of {total} behave the same")
     return lines, failures, peak
 
 

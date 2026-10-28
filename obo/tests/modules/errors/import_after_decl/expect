@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:3:1: imports must come before declarations

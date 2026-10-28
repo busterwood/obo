@@ -1,0 +1,3 @@
+module u
+type Secret = ref record { v: int }
+pub type Alias = []Secret

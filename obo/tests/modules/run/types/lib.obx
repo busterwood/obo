@@ -1,0 +1,14 @@
+module lib
+pub type Node = ref record { v: int; next: ?Node }
+pub fn make(v: int): Node { return new Node{v: v, next: nil} }
+pub fn value(n: Node): int { return n.v }
+pub fn valueRef(n: &Node): int { return n.v }
+pub fn wrap(n: Node): Result[Node] { return ok(n) }
+pub fn refOf(n: &Node): ^Node { return handle(n) }
+pub fn dv(h: ^Node): int { return h.v }
+pub fn eatAll(xs: []Node) { }
+pub fn sum(xs: &[]Node): int {
+    var t = 0
+    for i in 0..len(xs) { t = t + xs[i].v }
+    return t
+}

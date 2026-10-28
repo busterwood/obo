@@ -1,0 +1,3 @@
+module c
+import "b.obx"
+pub fn outer(h: b::H) { b::mid(h) }

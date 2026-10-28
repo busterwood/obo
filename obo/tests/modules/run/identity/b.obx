@@ -1,0 +1,4 @@
+module b
+import "a.obx"
+pub fn value(t: a::T): int { return t.v }
+pub fn accept(v: int): a::T { return new a::T{v: v} }

@@ -1,0 +1,2 @@
+exit 1
+stderr q.obx:3:1: exported 'Public' uses private type 'Hidden'; mark 'Hidden' pub too

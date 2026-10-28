@@ -1,0 +1,3 @@
+module lib
+type Hidden = ref record { v: int }
+pub fn open(): int { return 1 }

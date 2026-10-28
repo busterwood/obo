@@ -1,0 +1,10 @@
+module main
+import "a.obx"
+import "b.obx"
+fn main() {
+    let x = a::make(7)
+    println(b::makeAndFree(3))       // expect: 3
+    println(x.v)                     // expect: 7
+    println(b::Keep.v)               // expect: 8
+    a::eat(x)
+}

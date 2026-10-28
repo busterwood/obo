@@ -1,0 +1,12 @@
+module main
+// expect: a
+// expect: b
+// expect: root
+// expect: 3
+import "b.obx"
+import "a.obx" as again
+fn mark(): int { println("root"); return b::B + again::A }
+var R: int = mark()
+fn main() {
+    println(R)
+}

@@ -1,0 +1,3 @@
+module main
+type int = []int
+fn main() {}

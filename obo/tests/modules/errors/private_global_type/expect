@@ -1,0 +1,2 @@
+exit 1
+stderr t.obx:3:1: exported 'G' uses private type 'Secret'; mark 'Secret' pub too

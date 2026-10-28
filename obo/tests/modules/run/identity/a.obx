@@ -1,0 +1,3 @@
+module a
+pub type T = ref record { v: int }
+pub fn make(v: int): T { return new T{v: v} }

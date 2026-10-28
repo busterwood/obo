@@ -1,0 +1,2 @@
+exit 1
+stderr dep.obx:2:1: module 'dep' may not declare 'main'; the program root provides it

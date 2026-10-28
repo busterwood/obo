@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:2:1: cannot declare a type named 'int'

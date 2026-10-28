@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:3:38: argument 1 of lib::bump needs a mut reference, but this one is read-only

@@ -42,6 +42,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(FORK), 'obx', 'tests'))
 os.environ['OBO_CHECK'] = '1'
 import run  # noqa: E402
 import own_fuzz  # noqa: E402
+import module_test  # noqa: E402
 
 run.OBXC = os.path.abspath(os.environ.get('OBO', os.path.join(FORK, 'obo')))
 run.ROOT = FORK                                   # --rt: the fork's runtime
@@ -84,6 +85,8 @@ SMOKE = [
     "errors/alive_narrow.obx:a free in the guarded block before the use",
     "run/fp_loops.obx",
     "run/ref_bindings.obx",
+    "modules/run/basic",
+    "modules/errors/private_variant",
 ]
 
 
@@ -126,6 +129,7 @@ def main():
             for name, src, lo, hi in run.error_cases(os.path.join(HERE, 'errors', f)):
                 tests.append((f"errors/{name}", lambda s=src, lo=lo, hi=hi: run.error_test(s, lo, hi)))
     tests += own_fuzz.tests(FUZZ_COUNT)
+    tests += module_test.tests()               # source modules: run, errors, --deps, tokens
     smoke_names = set()
     if smoke:
         known = {name for name, _ in tests}

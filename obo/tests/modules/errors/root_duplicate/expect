@@ -1,0 +1,2 @@
+exit 1
+stderr sub/main.obx:1:1: module 'main' is declared by both main.obx and sub/main.obx

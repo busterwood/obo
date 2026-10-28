@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:3:20: module 'lib' has no exported member 'Hidden' (only 'pub' declarations are visible)

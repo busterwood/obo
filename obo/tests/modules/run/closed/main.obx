@@ -1,0 +1,26 @@
+module main
+import "lib.obx"
+fn main() {
+    let c = new lib::Circle{r: 2}
+    println(lib::area(c))            // expect: 12
+    let s: lib::Shape = new lib::Rect{w: 3, h: 5}
+    match s {
+        Circle { println(s.r) }
+        Rect { println(s.w + s.h) }  // expect: 8
+    }
+    match s {
+        Circle { println(0) }
+        else { println(9) }          // expect: 9
+    }
+    let t: lib::Shape = new lib::Circle{r: 1}
+    match t {                        // expect: t is Circle
+        Circle { println("t is Circle") }
+        Rect { println("t is Rect") }
+    }
+    let u = lib::makeCircle(2)
+    match u {                        // expect: 2
+        Circle { println(u.r) }
+        Rect { println(0) }
+    }
+    println(lib::area(s))            // expect: 15
+}

@@ -1,0 +1,5 @@
+module main
+import "lib.obx"
+var V: int = lib::add(5)
+var W: int = lib::Base + 1
+fn main() { println(V, W) }         // expect: 1511

@@ -46,7 +46,7 @@ MUTANTS = {
     "recursive call skips invalidation": [('        if (g.kind == "var" || g.kind == "let") && (all || mightFree(f, g)) {',
                                            '        if (g.kind == "var" || g.kind == "let") && f != cur && (all || mightFree(f, g)) {')],
     # a callee's frees not inherited: its callers' summaries are incomplete
-    "callee frees not recorded": [("            if !all { recordFree(g) }\n", "")],
+    "callee frees not recorded": [("        for g in freed { recordFree(g) }\n", "")],
     # a self-call is a change in its body, so it must not be taken for a call that frees nothing
     "recursive call might free": [("    if f.addr < 0 || f == curFn || f.freesAll { return true }",
                                    "    if f.addr < 0 || f.freesAll { return true }")],
@@ -219,7 +219,7 @@ MUTANTS = {
     # with it (tests/run/loop_inversion.obx)
     "inverted loop: calls out of the condition not adjusted": [("        putRel(farCalls[k], getRel(farCalls[k]) - d)\n", "")],
     "inverted loop: calls out of the condition not recorded at the new place": [("        farCalls[k] += d\n", "")],
-    "inverted loop: waiting calls in the condition not adjusted": [("append(globals[waitFn[k]].fnRec.fixups, waitAt[k] + d)", "append(globals[waitFn[k]].fnRec.fixups, waitAt[k])")],
+    "inverted loop: waiting calls in the condition not adjusted": [("append(curModule.globals[waitFn[k]].fnRec.fixups, waitAt[k] + d)", "append(curModule.globals[waitFn[k]].fnRec.fixups, waitAt[k])")],
     "inverted loop: a nested loop lifts its outer loop's waiting calls": [("    let waitFrom = len(waitFn)\n", "    let waitFrom = 0\n")],
     "inverted loop: waiting calls in the condition not lifted": [("        if fwdCalls != fwdFrom {", "        if false {")],
     "inverted loop: links of the true and false lists not adjusted": [("        putRel(at, nxt)\n        at = nxt\n", "        putRel(at, nxt - d)\n        at = nxt\n")],
@@ -292,6 +292,9 @@ MUTANTS.update({k: [v] for k, v in ONE_PATH_MUTANTS.items()})
 from mutate_fork import ORIGIN_MUTANTS, EQUIVALENT as FORK_EQUIVALENT  # noqa: E402
 # the fork's equivalent mutants are not run here: the port has the same source, so they are equivalent too
 MUTANTS.update({k: [v] for k, v in ORIGIN_MUTANTS.items() if k not in FORK_EQUIVALENT})
+# Stage 1 modules: the module trees of port_compare exercise these (see FORK.md)
+from mutate_fork import MODULE_MUTANTS  # noqa: E402
+MUTANTS.update({k: [v] for k, v in MODULE_MUTANTS.items() if k not in FORK_EQUIVALENT})
 # argument order: the error and run cases of arg_order.obx show them, as for the defer uses
 from mutate_fork import ARG_ORDER_MUTANTS  # noqa: E402
 MUTANTS.update({k: [v] for k, v in ARG_ORDER_MUTANTS.items() if k not in FORK_EQUIVALENT})
@@ -344,7 +347,7 @@ MUTANTS.update({
     # point in the same pass, and what the first pass recorded as freed (f.fnRec.freed, freesAll, writesHandles) the
     # second records again, the checker being the same
     "retry: locals' registers not given up": [("    if len(free) == 0 && homeBits != 0 { giveUpHomes() }\n", "")],
-    "retry: code not rewound": [("        truncCode(f.addr)\n        let gs = &globals", "        let gs = &globals")],
+    "retry: code not rewound": [("        truncCode(f.addr)\n        for gi in 0..len(curModule.globals) {", "        for gi in 0..len(curModule.globals) {")],
     "retry: waiting calls of the first pass kept": [("                while len(fr.fixups) > 0 && fr.fixups[len(fr.fixups) - 1] >= f.addr { truncate(fr.fixups, len(fr.fixups) - 1) }\n", "")],
     "retry: argument holders of the first pass kept": [("        truncate(argTemps, tempMark)\n        truncate(symArena, symMark)\n        return true", "        truncate(symArena, symMark)\n        return true")],
     "retry: free list left as the first pass had it": [("    homeBits = 0\n    setFree(0)                          // the registers in pool order: a function starts as the one before it did not leave them\n", "    homeBits = 0\n")],

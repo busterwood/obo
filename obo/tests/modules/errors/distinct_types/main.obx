@@ -1,0 +1,4 @@
+module main
+import "lib.obx"
+import "lib2.obx"
+fn main() { var a: lib::T = new lib::T{v: 1}; let b: lib2::T = new lib2::T{v: 2}; a = b }

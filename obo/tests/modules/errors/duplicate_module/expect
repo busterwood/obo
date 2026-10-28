@@ -1,0 +1,2 @@
+exit 1
+stderr sub/lib.obx:1:1: module 'lib' is declared by both lib.obx and sub/lib.obx
