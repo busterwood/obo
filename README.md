@@ -43,7 +43,7 @@ and error case byte-for-byte as the first obo compiler did, and compiles itself 
 fixed point. Its stage test now compares behaviour (same errors, same output when run),
 so code generation can improve. Compiling
 its own source it peaked at 1.5 MB resident at the earlier stage (live peak now
-1,364,368 bytes on a 321,043-byte source; the 415,456-byte compiler takes
+1,364,240 bytes on a 321,043-byte source; the 415,456-byte compiler takes
 0.07–0.08 s; see Current status), against 2.5 MB for the same logic on a tuned
 collector and 1.9 MB on an
 aggressive one. The larger source and its extra checks account for the wall time.
@@ -64,8 +64,8 @@ done and merged, with no compiler, runtime or seed change.
 | Compiler source | 8,756 lines, 321,043 bytes |
 | Compiler / seed binary | 415,456 bytes |
 | Self-compile wall time | 0.07–0.08 s (5 runs; median 0.07 s) |
-| Self-compile live peak | 1,364,368 bytes |
-| Total allocated | 28,137,488 bytes |
+| Self-compile live peak | 1,364,240 bytes |
+| Total allocated | 28,136,432 bytes |
 | Maximum resident set | 2,560 KB |
 | Live-memory budget | 2,000,000 bytes (about 635 KB spare) |
 | obo suite | 1,102 tests; 446/467 mutants caught + 21 equivalent; 27 runtime/library; 414 port |
@@ -73,7 +73,7 @@ done and merged, with no compiler, runtime or seed change.
 | Tool binaries | cat 108,256; wc 108,256; sort 112,352 bytes (static, runtime included) |
 | Minimal static executable | 90,848 bytes (runtime included) |
 
-Memory figures vary by a few dozen bytes with the source path; these are the
+Memory figures vary by a few hundred bytes with the source path; these are the
 merged-tree gate values. The tools do not change the compiler or seed; their
 runtime is included in the tool binary sizes above.
 
@@ -87,7 +87,7 @@ The earlier 12.1 MB allocation and 30 ms figures in "Direction" describe the sma
 pre-Result, pre-I/O compiler. The source has grown from 4,552 lines at that stage to
 8,756; total allocation has grown with it, while the live peak stays within the 2 MB
 budget (the module context and qualified-name work raised it from 1,244,480 bytes
-at the Phase 3 merge to 1,364,368, an increase of 119,888 bytes).
+at the Phase 3 merge to 1,364,240, an increase of 119,760 bytes).
 
 ### Toward command-line tools
 

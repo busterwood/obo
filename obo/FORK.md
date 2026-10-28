@@ -3471,9 +3471,9 @@ pre-scan. Measured: 37 caught, 1 documented equivalent (the pre-scan estimate);
 whole gate's final counts are below).
 
 **Measurements** (this host). `src/obo.obo` grew from 8,018 to 8,756 lines.
-The port compiling itself peaks at **1,364,368 bytes live** and allocates
-28,137,488 in total (budget 2,000,000; the Phase 3 pre-module peak was 1,244,480,
-so the module context and qualified-name work costs 119,888 bytes, 9.6%). The fixed point is
+The port compiling itself peaks at **1,364,240 bytes live** and allocates
+28,136,432 in total (budget 2,000,000; the Phase 3 pre-module peak was 1,244,480,
+so the module context and qualified-name work costs 119,760 bytes, 9.6%). The fixed point is
 exact: `./obo src/obo.obo` and the stage-2 compiler's output are byte-identical.
 `run_fork`: 1,102 passed, 0 failed. `port_compare`: 1,102 of 1,102 behave the
 same. Against the old seed (`OBO_REF=seed/obo`, which skips the new module
