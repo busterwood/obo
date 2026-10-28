@@ -287,7 +287,7 @@ cd obo && python3 bench/bench.py         # memory and time against the collector
 cd obo && ./obo --deps tests/modules/run/basic/main.obx -I tests/modules/run/basic  # dependencies first
 cd obo && mkdir -p /tmp/syms && ./obo --check src/obo.obo --sym-dir /tmp/syms        # check without an executable
 cd obo && ./obo --version                # obo 0.2 sym-format 1 abi 1
-cd obo && ./obo --reemit-sym /tmp/syms/lib.sym   # canonical re-emission (test hook)
+cd obo && ./obo --reemit-sym /tmp/syms/obo.sym   # canonical re-emission (test hook)
 # history: cd obx && make && ./run_tests.sh
 ```
 

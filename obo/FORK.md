@@ -3336,8 +3336,9 @@ per chunk is in use, not `readN`.
 
 Source-level modules, the first stage of the approved module design
 (`/tmp/obo-module-design-v2.md`, §17 Stage 1). Stage 2 (symbol files,
-`--check`, `--sym-dir`, `--emit-sym`, staleness) is not built. The compiler
-itself remains one file and uses no imports.
+`--check`, `--sym-dir`, `--emit-sym`, staleness) was not built at Stage 1; see
+the Stage 2 record below. The compiler itself remains one file and uses no
+imports.
 
 **Surface.** `module Name` is the first token (comments and blank lines aside).
 An imported module must have a header and its file must be `Name.obx`; the root

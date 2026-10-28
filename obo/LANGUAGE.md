@@ -861,9 +861,10 @@ files are trusted build outputs: a forged but well-formed interface can make
 boundary. A full build re-reads and validates the freshly written interface, so a
 missed version bump only affects `--check` against stale artifacts.
 
-Generated `.sym` files in the build convention (`.obo/sym` or any `--sym-dir`)
-are gitignored; a build without `--sym-dir` writes next to the root source, so use
-`--sym-dir .obo/sym` in a checkout. `tests/modules/golden/expected/*.sym` are
+Generated `.sym` files under the build convention (`.obo/sym`) are gitignored;
+an arbitrary `--sym-dir` is not automatically ignored. A build without
+`--sym-dir` writes next to the root source, so use `--sym-dir .obo/sym` in a
+checkout. `tests/modules/golden/expected/*.sym` are
 committed byte-goldens and are not ignored. The golden tests never rewrite a fixture in the gate; `sym_test.py
 --update` is the explicit regeneration path.
 
