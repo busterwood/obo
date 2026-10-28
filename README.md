@@ -87,9 +87,9 @@ change from that work.
 | Self-compile wall time | 0.11 s (5 runs; median 0.11 s) |
 | Self-compile live peak | 1,636,336 bytes |
 | Total allocated | 35,078,528 bytes |
-| Maximum resident set | 2,976 KB |
+| Maximum resident set | 2,860 KB (A and B; 5 runs each) |
 | Live-memory budget | 2,000,000 bytes (363,664 spare) |
-| obo suite | 1,130 tests; 526/548 mutants caught + 22 equivalent; 27 runtime/library; 494 port; 27 symbol-file tests; 200 fuzz mutations |
+| obo suite | 1,130 tests; 527/549 mutants caught + 22 equivalent; 27 runtime/library; 495 port; 27 symbol-file tests; 200 fuzz mutations |
 | Tools differential gate | 199 checks (191 matrix + 8 serial) vs GNU coreutils 9.4; 2 memory cases (module roots) |
 | Tool binaries | cat 36,865; wc 40,961; sort 45,057 bytes (static, runtime included) |
 | Minimal static executable | 28,673 bytes (runtime included) |
@@ -101,7 +101,8 @@ figures (the 493,280-byte compiler and seed, tool binaries 108,256/108,256/
 112,352, and the earlier 90,848-byte minimal figure) are historical. The
 minimal executable measured in this tree before the fix was 95,968 bytes (the
 difference is the minimal source and runtime revision, not the compiler); the
-fix removes the same 67,295 bytes from every produced executable.
+fix removes the 67,295-byte zero run from every produced executable (the tool
+`cat` loses 4,096 more because its code crossed a page boundary).
 
 For historical comparison, obx's collector-based compiler is 3,222 lines and
 172,768 bytes; it compiles its own 88,731-byte source in about 0.01 s and peaks at
