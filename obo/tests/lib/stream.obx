@@ -4,6 +4,8 @@
 // expect: pumped ok
 // expect: count 1000
 // expect: same ok
+import "io.obx" as io
+
 fn writeAll(path: string, data: &[]byte) {
     let o = openFile(path, "w")
     match o {
@@ -29,20 +31,20 @@ fn main() {
     for i in 0..len(data) { data[i] = byte(i * 17 + 3) }
     writeAll(inPath, data)
 
-    let io = openFile(inPath, "r")
-    match io {
+    let inFile = openFile(inPath, "r")
+    match inFile {
         ok(fdIn) {
             let oo = openFile(outPath, "w")
             match oo {
                 ok(fdOut) {
-                    var r = newReader(fdIn, 7)
-                    var w = newWriter(fdOut, 11)
-                    let p = pump(r, w)
+                    var r = io::newReader(fdIn, 7)
+                    var w = io::newWriter(fdOut, 11)
+                    let p = io::pump(r, w)
                     match p {
                         ok(v) { }
                         err(m, c) { println("pump: ", m, " (", c, ")"); exit(1) }
                     }
-                    let f = flush(w)
+                    let f = io::flush(w)
                     match f {
                         ok(v) { if !v { println("flush false"); exit(1) } }
                         err(m, c) { println("flush: ", m, " (", c, ")"); exit(1) }
@@ -63,13 +65,13 @@ fn main() {
     let ci = openFile(inPath, "r")
     match ci {
         ok(fd) {
-            var r = newReader(fd, 13)
-            let n = count(r)
+            var r = io::newReader(fd, 13)
+            let n = io::count(r)
             match n {
                 ok(v) { println("count ", v) }
                 err(m, c) { println("count: ", m, " (", c, ")"); exit(1) }
             }
-            if !eof(r) { println("count did not reach eof"); exit(1) }
+            if !io::eof(r) { println("count did not reach eof"); exit(1) }
             let c = closeFile(fd)
             match c { ok(v) { } err(m, code) { println("close: ", m, " (", code, ")"); exit(1) } }
         }

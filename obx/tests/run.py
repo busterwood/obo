@@ -80,14 +80,15 @@ def unique(name):
         return os.path.join(TMP, f"{_counter[0]}_{re.sub(r'[^A-Za-z0-9_.-]', '_', name)}")
 
 
-def compile_with(compiler, src, name):
+def compile_with(compiler, src, name, extra_args=()):
     """Compiles src (str or bytes) with the given obxc; returns the executable's
-    path, or raises CompileError with obxc's 'line:col: message'."""
+    path, or raises CompileError with obxc's 'line:col: message'. extra_args are
+    appended to the compiler command (module roots pass -I and --sym-dir)."""
     base = unique(name)
     path = base + '.obx'
     with open(path, 'wb') as f:
         f.write(src.encode('utf-8') if isinstance(src, str) else src)
-    p = subprocess.run([compiler, path, '-o', base, '--rt', ROOT], capture_output=True, text=True, timeout=120)
+    p = subprocess.run([compiler, path, '-o', base, '--rt', ROOT, *extra_args], capture_output=True, text=True, timeout=120)
     if p.returncode == 0:
         return base
     if p.returncode == 1 and p.stderr.startswith(path + ':'):
@@ -95,8 +96,8 @@ def compile_with(compiler, src, name):
     raise Fail(f"compiler failed with exit code {p.returncode}: {p.stderr.strip()[:300]}")
 
 
-def build(src, name):
-    return compile_with(OBXC, src, name)
+def build(src, name, extra_args=()):
+    return compile_with(OBXC, src, name, extra_args)
 
 
 def _limits():
@@ -121,7 +122,7 @@ def run_exe(exe, timeout=60, gc_mode='poison'):
 
 
 # ---------------------------------------------------------------- program tests
-def program_test(path, gc_mode='poison'):
+def program_test(path, gc_mode='poison', extra_args=()):
     src = open(path).read()
     expect, exit_code, stderr_subs = [], 0, []
     for line in src.splitlines():
@@ -135,7 +136,7 @@ def program_test(path, gc_mode='poison'):
         if m:
             stderr_subs.append(m.group(1).strip())
     try:
-        exe = build(src, gc_mode + '_' + os.path.basename(path))
+        exe = build(src, gc_mode + '_' + os.path.basename(path), extra_args)
     except CompileError as e:
         raise Fail(f"did not compile: {e}")
     code, out, err = run_exe(exe, gc_mode=gc_mode)

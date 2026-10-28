@@ -1,14 +1,14 @@
-// obo/lib/str.obo: small byte and string helpers shared by the command-line
-// tools. There are no modules yet, so this file is concatenated before a tool's
-// source (and before io.obo, which may use it):
+// obo/lib/strings.obx: small byte and string helpers shared by the command-line
+// tools. It is a source module (`module strings`); importers write
 //
-//     cat obo/lib/str.obo obo/lib/io.obo obo/programs/wc.obx > build/wc.obo
-//     obo/obo build/wc.obo -o build/wc --rt obo
+//     import "../lib/strings.obx" as strings
 //
-// The rule is that a prelude may use only earlier preludes, and within a file a
-// declaration may use only earlier declarations: names are file-global. This
-// file is dependency-free. No prelude defines main.
+// and reach exported declarations as strings::name. Within a file a declaration
+// may use only earlier declarations, so this file keeps its callees first. It is
+// dependency-free and defines no main.
 //
+module strings
+
 // The tool rules do not live here: cat's numbering and squeeze state, wc's width
 // rule and sort's numeric parser stay in those tools. These functions are only
 // byte classification, byte ordering, decimal formatting and the fixed errno
@@ -20,27 +20,27 @@
 // the user's locale (the differential harness pins LC_ALL=C for the reference).
 
 // C-locale whitespace: space, tab, LF, VT, FF, CR
-fn isSpace(b: byte): bool {
+pub fn isSpace(b: byte): bool {
     return b == ' ' || (b >= '\t' && b <= '\r')
 }
 
 // the blanks sort -n skips: space and tab only
-fn isBlank(b: byte): bool {
+pub fn isBlank(b: byte): bool {
     return b == ' ' || b == '\t'
 }
 
 // C-locale isprint: 0x20..0x7E
-fn isPrint(b: byte): bool {
+pub fn isPrint(b: byte): bool {
     return b >= ' ' && b <= '~'
 }
 
 // GNU wc's C-locale word byte: printable and not space (0x21..0x7E)
-fn isWordByte(b: byte): bool {
+pub fn isWordByte(b: byte): bool {
     return isPrint(b) && b != ' '
 }
 
 // unsigned byte-wise lexicographic order; -1, 0 or 1
-fn cmpBytes(a: string, b: string): int {
+pub fn cmpBytes(a: string, b: string): int {
     var n = len(a)
     if len(b) < n { n = len(b) }
     for i in 0..n {
@@ -53,7 +53,7 @@ fn cmpBytes(a: string, b: string): int {
 }
 
 // the fixed C-locale text for the errnos the tools can encounter
-fn errText(code: int): string {
+pub fn errText(code: int): string {
     if code == 2 { return "No such file or directory" }
     if code == 5 { return "Input/output error" }
     if code == 9 { return "Bad file descriptor" }
@@ -71,7 +71,7 @@ fn errText(code: int): string {
 }
 
 // decimal digit count of a non-negative int; digits(0) is 1
-fn digits(n: int): int {
+pub fn digits(n: int): int {
     var d = 1
     var v = n
     while v >= 10 {
@@ -84,7 +84,7 @@ fn digits(n: int): int {
 // Append n right-aligned in width (width 0 means no padding) to a byte buffer.
 // The digits are produced by an inline power-of-ten loop, so no per-line string
 // is allocated. Used by cat's batched number prefixes.
-fn appendPadded(mut buf: &[]byte, n: int, width: int) {
+pub fn appendPadded(mut buf: &[]byte, n: int, width: int) {
     var d = digits(n)
     if d < width {
         for i in 0..(width - d) { append(buf, ' ') }

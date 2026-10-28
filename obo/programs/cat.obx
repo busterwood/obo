@@ -1,9 +1,8 @@
 // cat: concatenate operands to stdout, with -n, -b, -s, -E and -T.
 //
-// Built by concatenating obo/lib/str.obo, obo/lib/io.obo and this file (in that
-// order) with tools/build_tools.py; there are no modules yet, so names are
-// file-global and this file may use both preludes but no earlier file may use
-// it. The subset is deliberate: -v, -e, -t, -A, -u, long options, --help and
+// Built as a module root by tools/build_tools.py: it imports lib/io.obx as
+// `io` and lib/strings.obx as `strings`, and every library name is qualified.
+// The subset is deliberate: -v, -e, -t, -A, -u, long options, --help and
 // --version are unsupported (see programs/README.md).
 //
 // The logical stream spans operands: the line number, the blank-line squeeze
@@ -18,6 +17,9 @@
 // operand and continue with the next one. A write error prints
 // `cat: write error: <text>` once, sets fatal, stops reading and never opens a
 // later operand. Both exit 1.
+
+import "../lib/io.obx" as io
+import "../lib/strings.obx" as strings
 
 type CatOpts = ref record {
     numberEvery: bool      // -n
@@ -41,7 +43,7 @@ type CatState = ref record {
 // and marks the state fatal. The scratch is flushed at 64 KiB so -nET on a
 // 64 KiB chunk of newlines stays bounded (a whole-chunk batch would grow the
 // array to about 1 MiB).
-fn catChunk(mut w: &Writer, mut scratch: &[]byte, data: &[]byte, opts: &CatOpts, mut st: &CatState): Result[bool] {
+fn catChunk(mut w: &io::Writer, mut scratch: &[]byte, data: &[]byte, opts: &CatOpts, mut st: &CatState): Result[bool] {
     for k in 0..len(data) {
         let b = data[k]
         var handled = false
@@ -70,7 +72,7 @@ fn catChunk(mut w: &Writer, mut scratch: &[]byte, data: &[]byte, opts: &CatOpts,
                     } else {
                         if opts.numberEvery && !opts.numberNonBlank {
                             st.lineNo += 1
-                            appendPadded(scratch, st.lineNo, 6)
+                            strings::appendPadded(scratch, st.lineNo, 6)
                             append(scratch, '\t')
                         }
                         if opts.showEnds { append(scratch, '$') }
@@ -80,7 +82,7 @@ fn catChunk(mut w: &Writer, mut scratch: &[]byte, data: &[]byte, opts: &CatOpts,
                 } else {
                     st.lineNo += 1
                     if opts.numberEvery || opts.numberNonBlank {
-                        appendPadded(scratch, st.lineNo, 6)
+                        strings::appendPadded(scratch, st.lineNo, 6)
                         append(scratch, '\t')
                     }
                     st.atLineStart = false
@@ -111,29 +113,29 @@ fn catChunk(mut w: &Writer, mut scratch: &[]byte, data: &[]byte, opts: &CatOpts,
             }
         }
         if len(scratch) >= 65536 {
-            try writeBytes(w, scratch)
+            try io::writeBytes(w, scratch)
             truncate(scratch, 0)
         }
     }
-    try writeBytes(w, scratch)
+    try io::writeBytes(w, scratch)
     truncate(scratch, 0)
-    try flush(w)
+    try io::flush(w)
     return ok(true)
 }
 
 // Stream one Reader through the transform. ok(false) means a write error was
 // already reported and the whole tool must stop; a read error is returned as err
 // for the operand handler, which prints it and continues.
-fn catReader(mut r: &Reader, mut w: &Writer, mut scratch: &[]byte, opts: &CatOpts, mut st: &CatState): Result[bool] {
+fn catReader(mut r: &io::Reader, mut w: &io::Writer, mut scratch: &[]byte, opts: &CatOpts, mut st: &CatState): Result[bool] {
     while true {
-        let more = try fill(r)
+        let more = try io::fill(r)
         if !more { return ok(true) }
-        let chunk = takeChunk(r)
+        let chunk = io::takeChunk(r)
         let rr = catChunk(w, scratch, chunk, opts, st)
         match rr {
             ok { }
             err {
-                eprintln("cat: write error: ", errText(rr.code))
+                eprintln("cat: write error: ", strings::errText(rr.code))
                 st.fatal = true
                 return ok(false)
             }
@@ -144,14 +146,14 @@ fn catReader(mut r: &Reader, mut w: &Writer, mut scratch: &[]byte, opts: &CatOpt
 // Read one operand. Returns false only for a fatal write error; open and read
 // errors are printed here and return true (continue with the next operand).
 // Stdin ("-" or no operands) is never opened or closed.
-fn catOperand(path: string, mut w: &Writer, mut scratch: &[]byte, opts: &CatOpts, mut st: &CatState): bool {
+fn catOperand(path: string, mut w: &io::Writer, mut scratch: &[]byte, opts: &CatOpts, mut st: &CatState): bool {
     if path == "-" {
-        var r = newReader(stdin(), 65536)
+        var r = io::newReader(stdin(), 65536)
         let rr = catReader(r, w, scratch, opts, st)
         match rr {
             ok { if !rr.value { return false } }
             err {
-                eprintln("cat: -: ", errText(rr.code))
+                eprintln("cat: -: ", strings::errText(rr.code))
                 st.failed = true
             }
         }
@@ -162,18 +164,18 @@ fn catOperand(path: string, mut w: &Writer, mut scratch: &[]byte, opts: &CatOpts
         ok {
             let fd = f.value
             defer closeFile(fd)
-            var r = newReader(fd, 65536)
+            var r = io::newReader(fd, 65536)
             let rr = catReader(r, w, scratch, opts, st)
             match rr {
                 ok { if !rr.value { return false } }
                 err {
-                    eprintln("cat: ", path, ": ", errText(rr.code))
+                    eprintln("cat: ", path, ": ", strings::errText(rr.code))
                     st.failed = true
                 }
             }
         }
         err {
-            eprintln("cat: ", path, ": ", errText(f.code))
+            eprintln("cat: ", path, ": ", strings::errText(f.code))
             st.failed = true
         }
     }
@@ -221,7 +223,7 @@ fn main() {
         i += 1
     }
 
-    var w = newWriter(stdout(), 65536)
+    var w = io::newWriter(stdout(), 65536)
     var scratch = new []byte(0)
     var st = new CatState{lineNo: 0, atLineStart: true, lastBlank: false, pendingCr: false, failed: false, fatal: false}
     var fatal = false
@@ -243,22 +245,22 @@ fn main() {
     if !fatal && st.pendingCr {
         st.pendingCr = false
         append(scratch, '\r')
-        let wr = writeBytes(w, scratch)
+        let wr = io::writeBytes(w, scratch)
         truncate(scratch, 0)
         match wr {
             ok { }
             err {
-                eprintln("cat: write error: ", errText(wr.code))
+                eprintln("cat: write error: ", strings::errText(wr.code))
                 exit(1)
             }
         }
     }
     if !fatal {
-        let fl = flush(w)
+        let fl = io::flush(w)
         match fl {
             ok { }
             err {
-                eprintln("cat: write error: ", errText(fl.code))
+                eprintln("cat: write error: ", strings::errText(fl.code))
                 exit(1)
             }
         }

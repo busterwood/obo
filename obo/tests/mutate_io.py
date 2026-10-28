@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Mutation testing for the incremental-I/O runtime and library.
 
-Each mutant is one replacement in runtime/runtime.c or lib/io.obo. The runtime
+Each mutant is one replacement in runtime/runtime.c or lib/io.obx. The runtime
 mutants are built into a private runtime directory (runtime_text.bin and
 runtime_data.bin, with the Makefile's flags) and the test programs are compiled
-against it with the unmutated compiler; the library mutants are concatenated
-before their test program. The baseline (no mutant) must pass every case before
-any mutant is judged, and every mutant must fail at least one case.
+against it with the unmutated compiler. A library mutant gets a scratch module
+tree: the lib/*.obx modules are copied into <work>/lib, io.obx is replaced with
+the mutant text, and every affected root is compiled with -I <work>/lib and a
+private --sym-dir, so the mutated module is what the program imports. The
+baseline (no mutant) must pass every case before any mutant is judged, and every
+mutant must fail at least one case.
 
     python3 obo/tests/mutate_io.py [pattern]
 
@@ -30,7 +33,7 @@ import run  # noqa: E402
 
 run.OBXC = os.path.abspath(os.environ.get('OBO', os.path.join(FORK, 'obo')))
 run.ROOT = FORK
-LIB = os.path.join(FORK, 'lib', 'io.obo')
+LIBDIR = os.path.join(FORK, 'lib')
 RUNTIME = os.path.join(FORK, 'runtime', 'runtime.c')
 CFLAGS = ('-O2 -ffreestanding -fno-builtin -nostdlib -fno-pic -fno-pie '
           '-fno-stack-protector -fno-asynchronous-unwind-tables -mcmodel=small '
@@ -180,8 +183,8 @@ def markers(path):
     return expect, code
 
 
-def case(name, rel, lib=False, inherited=False, **kw):
-    return dict(name=name, path=os.path.join(FORK, rel), lib=lib, inherited=inherited, **kw)
+def case(name, rel, inherited=False, **kw):
+    return dict(name=name, path=os.path.join(FORK, rel), inherited=inherited, **kw)
 
 
 CASES = [
@@ -199,9 +202,9 @@ CASES = [
     case('io/close_stdout', 'tests/io/close_stdout.obx', env=clean_env(check=True)),
     case('io/no_check_big_read', 'tests/io/no_check_big_read.obx', env=clean_env()),
     case('io/inherited_fd', 'tests/io/inherited_fd.obx', env=clean_env(check=True), inherited=True),
-    case('lib/boundaries', 'tests/lib/boundaries.obx', lib=True, env=clean_env(check=True)),
-    case('lib/stream', 'tests/lib/stream.obx', lib=True, env=clean_env(check=True)),
-    case('lib/short_write', 'tests/lib/short_write.obx', lib=True, env=clean_env(check=True, fault='short')),
+    case('lib/boundaries', 'tests/lib/boundaries.obx', env=clean_env(check=True)),
+    case('lib/stream', 'tests/lib/stream.obx', env=clean_env(check=True)),
+    case('lib/short_write', 'tests/lib/short_write.obx', env=clean_env(check=True, fault='short')),
 ]
 
 
@@ -209,13 +212,18 @@ class Fail(Exception):
     pass
 
 
-def compile_text(text, name, rt_dir):
-    """run.compile_with, but with an explicit runtime directory: the mutant's."""
+def compile_text(text, name, rt_dir, lib_dir):
+    """run.compile_with, but with an explicit runtime directory (the mutant's) and
+    a private symbol directory: every case is a module root compiled with -I
+    lib_dir, so a root that imports io.obx sees this mutant tree's module."""
     base = run.unique('mio_' + name)
     path = base + '.obx'
+    symdir = base + '.sym'
+    os.makedirs(symdir)
     with open(path, 'w') as f:
         f.write(text)
-    p = subprocess.run([run.OBXC, path, '-o', base, '--rt', rt_dir],
+    p = subprocess.run([run.OBXC, path, '-o', base, '--rt', rt_dir,
+                        '-I', lib_dir, '--sym-dir', symdir],
                        capture_output=True, text=True, timeout=120)
     if p.returncode == 0:
         return base
@@ -224,13 +232,12 @@ def compile_text(text, name, rt_dir):
     raise Fail(f"compiler exit {p.returncode}: {p.stderr.strip()[:200]}")
 
 
-def run_case(c, rt_dir, lib_path):
-    """Runs one case against rt_dir (the runtime bins) and lib_path (the library
-    text); raises Fail on a compile error, a wrong exit, or different output."""
+def run_case(c, rt_dir, lib_dir):
+    """Runs one case against rt_dir (the runtime bins) and lib_dir (the module
+    tree its imports resolve in); raises Fail on a compile error, a wrong exit,
+    or different output."""
     text = open(c['path']).read()
-    if c['lib'] or text.startswith('// prelude: io'):
-        text = open(lib_path).read() + '\n' + text
-    exe = compile_text(text, os.path.basename(c['name']), rt_dir)
+    exe = compile_text(text, os.path.basename(c['name']), rt_dir, lib_dir)
     scratch = tempfile.mkdtemp(prefix='scratch-', dir=TMP)
     extra = []
     fds = ()
@@ -279,13 +286,13 @@ def build_runtime(src_text, work):
     return rt
 
 
-def judge(rt_dir, lib_path, pattern):
+def judge(rt_dir, lib_dir, pattern):
     """The first failing case's message for one mutant, or None if all pass."""
     for c in CASES:
         if pattern and pattern not in c['name']:
             continue
         try:
-            run_case(c, rt_dir, lib_path)
+            run_case(c, rt_dir, lib_dir)
         except Fail as e:
             return f"{c['name']}: {e}"
     return None
@@ -296,10 +303,10 @@ def main():
     if any(a.startswith('-') for a in sys.argv[1:]):
         raise SystemExit("the script takes a case-name pattern only")
     runtime_src = open(RUNTIME).read()
-    lib_src = open(LIB).read()
+    lib_src = open(os.path.join(LIBDIR, 'io.obx')).read()
 
     # the baseline: the unmutated runtime and library must pass every case
-    first = judge(FORK, LIB, pattern)
+    first = judge(FORK, LIBDIR, pattern)
     if first is not None:
         raise SystemExit(f"the baseline fails ({first}), so no mutant can be judged")
     print(f"baseline: {sum(1 for c in CASES if pattern in c['name'])} cases passed")
@@ -320,12 +327,20 @@ def main():
         try:
             if kind == 'runtime':
                 rt = build_runtime(src.replace(old, new), work)
-                lib_path = LIB
+                lib_dir = LIBDIR
             else:
+                # the mutant's own module tree: every library module, with io.obx
+                # replaced by the mutated text
                 rt = FORK
-                lib_path = os.path.join(work, 'io.obo')
-                open(lib_path, 'w').write(src.replace(old, new))
-            first = judge(rt, lib_path, pattern)
+                lib_dir = os.path.join(work, 'lib')
+                os.makedirs(lib_dir)
+                for f in sorted(os.listdir(LIBDIR)):
+                    if f.endswith('.obx') and f != 'io.obx':
+                        shutil.copyfile(os.path.join(LIBDIR, f),
+                                        os.path.join(lib_dir, f))
+                open(os.path.join(lib_dir, 'io.obx'), 'w').write(
+                    src.replace(old, new))
+            first = judge(rt, lib_dir, pattern)
         except subprocess.CalledProcessError as e:
             broken.append(f"BROKEN {kind}: {name}: {e.stderr.decode()[:160]}")
             continue

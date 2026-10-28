@@ -95,24 +95,14 @@ SMOKE = [
 
 
 def program_test(p):
-    """A tests/run program. One that starts with '// prelude: io' is compiled
-    with obo/lib/io.obo concatenated before it: the library's build rule, which
-    io_test.py also applies for the tests/lib programs."""
-    with open(p) as f:
-        text = f.read()
-    if not text.startswith('// prelude: io'):
-        return run.program_test(p)
-    lib = open(os.path.join(FORK, 'lib', 'io.obo')).read()
-    fd, merged = tempfile.mkstemp(prefix='io-prelude-', suffix='.obx')
-    try:
-        os.write(fd, (lib + '\n' + text).encode())
-        os.close(fd)
-        fd = -1
-        return run.program_test(merged)
-    finally:
-        if fd >= 0:
-            os.close(fd)
-        os.unlink(merged)
+    """A tests/run program, compiled as a module root. -I obo/lib finds the
+    library modules a program imports (io.obx, strings.obx), and a private sym
+    dir keeps every build's .sym files out of the tree and away from the other
+    tests: symbol writes truncate in place, so one writable dir cannot be
+    shared."""
+    symdir = tempfile.mkdtemp(prefix='sym-', dir=run.TMP)
+    return run.program_test(p, extra_args=['-I', os.path.join(FORK, 'lib'),
+                                           '--sym-dir', symdir])
 
 
 def main():
