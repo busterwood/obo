@@ -3779,7 +3779,7 @@ and `-o` documentation, and scoping the Stage 1 text below.
   `597b807864dcad48a56a861e2ce7cd166f005f55278fb81dc1b530e37086cb9a`.
   **These are the pre-size-fix figures.** The "Compiler size fixes" record at the
   end of this file supersedes them: the next-stage compiler is 421,889 bytes
-  (B == C), and the committed seed stays 493,280 until a promotion.
+  (B == C), and the seed was 493,280 before the size-fix promotion.
 - Measured port memory compiling itself on the merged tree: **1,634,720 bytes
   live**, 35,121,184 allocated (budget 2,000,000; 365,280 spare). Stage 1 was
   1,364,240 / 28,136,432, so Stage 2 costs +270,480 live / +6,984,752 allocated.
@@ -3855,7 +3855,7 @@ Stage 2 language as merged.
 
 **These are pre-size-fix figures.** The "Compiler size fixes" record at the end
 of this file supersedes the compiler and seed sizes, the peak and the mutant
-counts; the seed remains 493,280 until a promotion.
+counts; the seed was 493,280 before the size-fix promotion.
 
 `make`; `make tools`; `tests/tools.py --require-reference` 199/199; `--memory`
 2/2; `io_test.py --rt --programs --tools` 0 failures; `run_fork.py` 1129
@@ -3895,8 +3895,10 @@ type-identity rules.
 # Compiler size fixes (done)
 
 Implemented on branch `size-fixes` on top of `4e733a6` (the merged
-tools-modules tree); main (`7fa68db`) has since been merged into the branch at
-`dd28c28`. No seed promotion and no push; the branch is not merged into main.
+tools-modules tree); main (`7fa68db` and `b3f369f`) was merged into the branch,
+and the branch was merged into main at `134e6a5`. The seed was promoted once
+after the merge: `seed/obo` and `obo` are both B (421,889 bytes). Main is
+pushed; the branch is not pushed separately.
 
 ## What changed
 
@@ -3923,8 +3925,10 @@ tools-modules tree); main (`7fa68db`) has since been merged into the branch at
 
 The source grew from 10,440 lines / 381,767 bytes to 10,448 lines / 382,329
 bytes, sha256 `44770afa7da4e8090aefc1f8a4e644379e16e19d177d4a5939bc1bca4c0854e3`.
-The seed is unchanged: 493,280 bytes, sha256
-`b54d5da7b6ee6ab6685b3fe70d7824c18201689aa650cb9dff6f81d9ccf35e0a`.
+The pre-fix seed was 493,280 bytes, sha256
+`b54d5da7b6ee6ab6685b3fe70d7824c18201689aa650cb9dff6f81d9ccf35e0a`; the
+promoted seed is B, 421,889 bytes, sha256
+`55dab101d819d9eeb1b408da64a2c1a96033e46399bd79bb130f63bf3ff76e98`.
 
 Fixed point, built on the merged-tree path (`make` uses the committed seed):
 
@@ -3936,9 +3940,9 @@ Fixed point, built on the merged-tree path (`make` uses the committed seed):
 
 `cmp B C` passes: B == C byte for byte. A is still wrapped by the seed's old
 emitter (full data segment, old epilogue encoding in A's own code), but A's
-own emitter is the new one, so every program A builds is trimmed. No promotion
-was done, so the committed seed stays 493,280 and the smaller compiler appears
-only in the next stage.
+own emitter is the new one, so every program A builds is trimmed. B was
+promoted as the seed; `make` now builds C == B, so `seed/obo` == `obo` == B/C.
+A exists only as the pre-promotion build.
 
 Epilogue saving alone: a source with only the epilogue change, compiled by the
 seed and then by itself, has code 370,380 bytes (from 373,365) and file 489,184
@@ -3988,14 +3992,14 @@ zero-fills the tail, exactly as it does the compiler's globals.
 synthetic image with a zero gap before a later nonzero byte (filesz = last
 nonzero + 1) and an all-zero image (filesz 0, offset at the end of the file).
 
-Memory compiling itself with the new compiler (`port_compare.py`): **1,636,336
-bytes live**, 35,078,528 allocated (budget 2,000,000; 363,664 spare). The
+Memory compiling itself with the new compiler (`port_compare.py`): **1,636,176
+bytes live**, 35,076,608 allocated (budget 2,000,000; 363,824 spare). The
 pre-fix Stage 2 figures were 1,634,720 / 35,121,184; the peak stays well inside
 the budget. A direct `OBO_STATS=1` self-compile, with a different source path,
 reports 1,636,064 / 35,075,296. Self-compile wall time is 0.11 s (median of 5;
 A and B). Maximum resident set is 2,860 KB for both A and B in 5 runs each on
-this host (the pre-fix Stage 2 figure was 2,988 KB; RSS varies by tens of KB
-with load and page residency).
+this host (the pre-fix Stage 2 figure was 2,988 KB; RSS varies with load and
+page residency).
 
 ## Tests
 
@@ -4020,18 +4024,21 @@ with load and page residency).
   `elf_test.py --source` (the comparison sees the same outcomes and peak), the
   others by the ordinary comparison.
 
-## Gates (cold, in the worktree)
+## Gates (merged tree)
 
 `make`; `run_fork.py` 1,130 passed; `port_compare.py` 1,147/1,147 with a
-1,636,336-byte peak, and `OBO_REF=seed/obo port_compare.py` 1,025/1,025;
+1,636,176-byte peak, and `OBO_REF=seed/obo port_compare.py` 1,025/1,025;
 `port_test.py` 486/486 identical, no leaks, 9 encoder groups against objdump;
 `doc_check.py` 45 examples; `homes_check.py`; `homes_edge.py` 1,028 statements
 0 differ; `io_test.py --rt --programs --tools` 0 failures; `tools.py
 --require-reference` 199/199; `tools.py --memory` 2/2; `sym_test.py` 27
-passed; `sym_fuzz.py` 200/200; `bench/micro.py` all four workloads; the new
+passed; `sym_fuzz.py` 200/200; `bench/bench.py` all four workloads; the new
 `elf_test.py`. `mutate_fork.py`: 527/549 caught, 22 equivalent (the new group:
 four caught, one equivalent); `mutate_port.py` 495/495; `mutate_io.py` 27/27.
-The fixed point B == C above; no promotion.
+The fixed point B == C; B was promoted, and the post-promotion checks
+(`make`, `run_fork` 1,130, both `port_compare` runs 1,147/1,147 and 1,025/1,025,
+`sym_test` 27, `sym_fuzz` 200/200, `doc_check` 45, `elf_test`) pass with
+`seed/obo` == `obo` == B/C.
 
 ## Limitations and residual risks
 
@@ -4046,5 +4053,5 @@ The fixed point B == C above; no promotion.
   be strictly below `memsz` only when the image does end in zeros (the current
   zero-filled .bss tail). An image whose last byte is nonzero correctly gets
   `filesz == memsz` and is accepted.
-- The seed is not promoted; until `make promote` is run, `make` builds a
-  493,280-byte compiler and the 421,889-byte stage exists only as B/C.
+- Before the promotion, `make` built A (493,280); after the promotion, `make`
+  builds C == B (421,889), and `seed/obo` == `obo`.
