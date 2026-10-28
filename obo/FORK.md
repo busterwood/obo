@@ -3518,9 +3518,10 @@ invariant total, so descriptor ownership is still single by construction.
 # Multiple modules with symbol files: Stage 2 (done)
 
 Stage 2 was implemented in the worktree `modules-sym` on top of `01a66c0` (the
-merged Stage 1 tree). The compiler is still one file (`src/obo.obo`, no imports
-of its own), the seed is still the Stage 1 binary, and the two-round rule holds:
-the old seed builds the Stage 2 source. This record covers the `.sym` writer and
+merged Stage 1 tree), merged at `744809c`, and the seed promoted once at
+`3e17141`. The compiler is still one file (`src/obo.obo`, no imports of its
+own), and the two-round rule held: the old Stage 1 seed built the Stage 2
+source. This record covers the `.sym` writer and
 reader, `--check`/`--sym-dir`/`--emit-sym`/`--version`, staleness and version
 errors, the tests, the mutants and the measurements. The design note is
 `/tmp/obo-module-design-v2.md`; this record states what was built and any
@@ -3774,13 +3775,13 @@ and `-o` documentation, and scoping the Stage 1 text below.
   sha256 `b54d5da7b6ee6ab6685b3fe70d7824c18201689aa650cb9dff6f81d9ccf35e0a`;
   the compiler source is 10,440 lines / 381,767 bytes, sha256
   `597b807864dcad48a56a861e2ce7cd166f005f55278fb81dc1b530e37086cb9a`.
-- Measured port memory compiling itself: **1,634,880 bytes live**, 35,123,104
-  allocated (budget 2,000,000; 365,120 spare). Stage 1 was 1,364,240 / 28,136,432,
-  so Stage 2 costs +270,640 live / +6,986,672 allocated. The compiler source grew
-  from 8,756 to 10,440 lines (321,043 → 381,767 bytes); the built compiler is
-  493,280 bytes (the seed is still 415,456 until promotion). The fixed point
-  (stage 2 == stage 3, and the suite on stage 2) is recorded in README after the
-  cold gate; `make promote` was not run.
+- Measured port memory compiling itself on the merged tree: **1,634,720 bytes
+  live**, 35,121,184 allocated (budget 2,000,000; 365,280 spare). Stage 1 was
+  1,364,240 / 28,136,432, so Stage 2 costs +270,480 live / +6,984,752 allocated.
+  The compiler source grew from 8,756 to 10,440 lines (321,043 → 381,767
+  bytes); the built compiler is 493,280 bytes and the promoted seed is the same
+  binary. The fixed point (stage 2 == stage 3 == seed, and the merged-tree
+  suite) is recorded in README; `make promote` was run once after the merge.
 
 ## Build script and tool deferral
 
