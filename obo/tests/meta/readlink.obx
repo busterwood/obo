@@ -1,0 +1,16 @@
+// meta/readlink.obx: print each path's raw readlink result as "ok <bytes>" or
+// "err <code>". tests/meta_test.py compares the bytes with os.readlink and the
+// codes with the expected errnos (22 for a non-symlink or an empty path, 2 for
+// a missing path).
+import "fs.obx" as fs
+
+fn main() {
+    let a = args()
+    for i in 2..len(a) {
+        let r = fs::readlink(a[i])
+        match r {
+            ok(b) { println("ok ", string(b)) }
+            err(m, c) { println("err ", c) }
+        }
+    }
+}

@@ -1,0 +1,267 @@
+// obo/lib/fs.obx: directory iteration, stat/lstat and symlink targets.
+//
+// It is a source module (`module fs`); importers write
+//
+//     import "fs.obx" as fs            // from obo/lib/
+//     import "../lib/fs.obx" as fs     // from obo/cmd/
+//
+// and reach exported declarations as fs::name. Within a file a declaration may
+// use only earlier declarations, so this file's helper functions are ordered
+// callees first. The module uses only builtins: no other lib module is needed.
+//
+// The design is section 5.9 of stdlib-eza-design-v7. `open` opens the operand
+// as a directory (an ordinary regular file opens too; the first `next` then
+// reports ENOTDIR from readDirFd). A Dir owns its raw buffer, the chunk string
+// and the operand path, and borrows the fd: `close` closes it through
+// closeFile, remembers that it is closed by setting fd to -1, and is
+// idempotent (a second close returns ok(false) with no syscall). `next` yields
+// one entry per call in the kernel's order, skips the records named exactly
+// "." and ".." (eza's Rust read_dir never yields them; the eza layer
+// synthesizes them itself), copies every name out of the chunk with substr, and
+// returns ok(false) at end of directory. A short getdents64 buffer is data; only
+// a zero-length read is EOF.
+//
+// linux_dirent64: d_ino u64 at 0, d_off i64 at 8 (unused), d_reclen u16 at 16,
+// d_type at 18, d_name NUL-terminated at 19. A record with reclen < 20, one that
+// runs past the buffer, or one with no NUL inside it is err("bad directory
+// entry", EIO=5) and the iterator does not advance, so the same error is
+// reported again rather than an infinite loop.
+//
+// Type resolution matches eza's cached DirEntry::file_type(): e.kind is d_type
+// when it is known; for DT_UNKNOWN (KIND_UNKNOWN) `next` lazily lstats the
+// entry path and uses typeOf(mode); if that lstat fails the kind stays
+// KIND_UNKNOWN (unknown/special). Normal Linux filesystems return a known
+// d_type, so the fallback is exercised by the crafted tests/meta case. The entry
+// path is the operand joined with the name exactly as paths::join spells it
+// (an internal copy: fs does not import paths); fs never resolves symlink
+// targets itself.
+//
+// statArray(path, follow) is the hot form: the runtime's 14-int array unchanged,
+// in the design's order (STAT_* constants), not the kernel's struct order.
+// stat/lstat build the Stat record and free the array. Both are path-based and
+// resolve a relative path against the process cwd; stat follows symlinks and
+// lstat does not. readlink returns the raw target bytes with no NUL; a dangling
+// target still succeeds, and a non-symlink is EINVAL (22). Paths are limited by
+// cpath: 4095 bytes is the longest accepted; 4096 is ENAMETOOLONG (36). The
+// future fstatat(dirfd,name)/readlinkat fix for the path limit and the
+// getdents64-to-stat race is not part of this API (design section 6.7).
+//
+// typeOf maps the S_IFMT bits of a raw mode to the DT_* kind byte. kindOfName
+// is not provided: the eza layer decides filtering and sorting from the kind
+// and the Stat fields.
+module fs
+
+// the 14-int array order
+pub const STAT_MODE = 0
+pub const STAT_SIZE = 1
+pub const STAT_MTIME = 2
+pub const STAT_MTIME_NS = 3
+pub const STAT_UID = 4
+pub const STAT_GID = 5
+pub const STAT_NLINK = 6
+pub const STAT_INO = 7
+pub const STAT_DEV = 8
+pub const STAT_RDEV = 9
+pub const STAT_BLKSIZE = 10
+pub const STAT_BLOCKS = 11
+pub const STAT_ATIME = 12
+pub const STAT_CTIME = 13
+pub const STAT_FIELDS = 14
+
+// the Linux DT_* kind values, as d_type and typeOf both report them
+pub const KIND_UNKNOWN = 0
+pub const KIND_FIFO = 1
+pub const KIND_CHR = 2
+pub const KIND_DIR = 4
+pub const KIND_BLK = 6
+pub const KIND_REG = 8
+pub const KIND_LNK = 10
+pub const KIND_SOCK = 12
+
+// the directory read size; readDirFd's hard cap is 1 MiB
+pub const DIR_BUF = 32768
+
+pub type Stat = ref record {
+    mode: int
+    size: int
+    mtime: int
+    mtimeNs: int
+    uid: int
+    gid: int
+    nlink: int
+    ino: int
+    dev: int
+    rdev: int
+    blksize: int
+    blocks: int
+    atime: int
+    ctime: int
+}
+
+pub type DirEntry = ref record {
+    name: string
+    ino: int
+    kind: byte
+}
+
+pub type Dir = ref record {
+    fd: int
+    path: string       // the operand path, owned; used for entry paths
+    buf: []byte        // current raw getdents64 buffer, owned
+    text: string       // string(buf), owned; used by substr
+    pos: int
+    used: int
+    eof: bool
+    size: int          // requested buffer size
+}
+
+// d_ino: the low bytes first, as the kernel stores them; values above INT64_MAX
+// are not representable and are not expected on Linux filesystems
+fn inoAt(data: &[]byte, at: int): int {
+    var v = 0
+    for i in 0..8 { v = v | (int(data[at + i]) << (8 * i)) }
+    return v
+}
+
+// S_IFMT bits to DT_*: the same numbers as the d_type constants
+pub fn typeOf(mode: int): byte {
+    let kind = mode & 0xF000
+    if kind == 0x1000 { return byte(KIND_FIFO) }
+    if kind == 0x2000 { return byte(KIND_CHR) }
+    if kind == 0x4000 { return byte(KIND_DIR) }
+    if kind == 0x6000 { return byte(KIND_BLK) }
+    if kind == 0x8000 { return byte(KIND_REG) }
+    if kind == 0xA000 { return byte(KIND_LNK) }
+    if kind == 0xC000 { return byte(KIND_SOCK) }
+    return byte(KIND_UNKNOWN)
+}
+
+// paths::join's shape for an entry name (never absolute, never empty here):
+// the operand, one separator unless it already ends in '/', the name
+fn entryPath(dir: string, name: string): string {
+    if len(dir) == 0 { return name }
+    if dir[len(dir) - 1] == '/' { return dir + name }
+    return dir + "/" + name
+}
+
+// the lazy DT_UNKNOWN fallback: lstat the entry path and take its mode's type;
+// a failed lstat leaves the kind unknown/special
+fn resolveKind(dir: string, name: string): byte {
+    let p = entryPath(dir, name)
+    let r = lstatPath(p)
+    match r {
+        ok(f) { return typeOf(f[STAT_MODE]) }
+        err(m, c) { return byte(KIND_UNKNOWN) }
+    }
+}
+
+// Open a directory for iteration. openFile "r" opens directories; the fd is
+// tracked by the runtime and closeFile is the only close. The Dir owns the
+// operand string (a copy of the caller's value) and starts empty: the first
+// next fills the buffer.
+pub fn open(path: string): Result[Dir] {
+    let fd = try openFile(path, "r")
+    let buf = new []byte(0)
+    let text = string(buf)
+    let d = new Dir{fd: fd, path: path, buf: buf, text: text, pos: 0, used: 0, eof: false, size: DIR_BUF}
+    return ok(d)
+}
+
+// One entry: ok(true) with e filled, ok(false) at end of directory. The name is
+// a fresh copy and survives refills and close; e's previous name is released by
+// the assignment. "." and ".." are skipped. A malformed record is an EIO error
+// with the iterator left where it was.
+pub fn next(mut d: &Dir, mut e: &DirEntry): Result[bool] {
+    while true {
+        if d.pos >= d.used {
+            if d.eof { return ok(false) }
+            let chunk = try readDirFd(d.fd, d.size)
+            if chunk == nil {
+                d.eof = true
+                return ok(false)
+            }
+            d.buf = chunk
+            d.text = string(d.buf)
+            d.pos = 0
+            d.used = len(d.buf)
+        }
+        if d.used - d.pos < 19 { return err("bad directory entry", 5) }
+        let reclen = int(d.buf[d.pos + 16]) | (int(d.buf[d.pos + 17]) << 8)
+        if reclen < 20 || reclen > d.used - d.pos { return err("bad directory entry", 5) }
+        let stop = d.pos + reclen
+        var end = d.pos + 19
+        while end < stop && d.buf[end] != 0 { end += 1 }
+        if end >= stop { return err("bad directory entry", 5) }
+        let name = substr(d.text, d.pos + 19, end)
+        let kind = d.buf[d.pos + 18]
+        let ino = inoAt(d.buf, d.pos)
+        d.pos += reclen
+        if name == "." || name == ".." { continue }
+        var resolved = kind
+        if resolved == KIND_UNKNOWN { resolved = resolveKind(d.path, name) }
+        e.name = name
+        e.ino = ino
+        e.kind = resolved
+        return ok(true)
+    }
+}
+
+// Close the borrowed fd and mark the Dir closed whatever the Result says. A Dir
+// whose fd is already -1 returns ok(false) with no syscall, so close is
+// idempotent.
+pub fn close(mut d: &Dir): Result[bool] {
+    if d.fd < 0 { return ok(false) }
+    let r = closeFile(d.fd)
+    d.fd = -1
+    return r
+}
+
+// The runtime's 14-int array unchanged: follow=true is stat, false is lstat.
+pub fn statArray(path: string, follow: bool): Result[[]int] {
+    if follow { return statPath(path) }
+    return lstatPath(path)
+}
+
+// The Stat record from the array; the array is freed when stat returns.
+pub fn stat(path: string): Result[Stat] {
+    let f = try statArray(path, true)
+    let s = new Stat{mode: f[STAT_MODE], size: f[STAT_SIZE], mtime: f[STAT_MTIME],
+                     mtimeNs: f[STAT_MTIME_NS], uid: f[STAT_UID], gid: f[STAT_GID],
+                     nlink: f[STAT_NLINK], ino: f[STAT_INO], dev: f[STAT_DEV],
+                     rdev: f[STAT_RDEV], blksize: f[STAT_BLKSIZE], blocks: f[STAT_BLOCKS],
+                     atime: f[STAT_ATIME], ctime: f[STAT_CTIME]}
+    return ok(s)
+}
+
+pub fn lstat(path: string): Result[Stat] {
+    let f = try statArray(path, false)
+    let s = new Stat{mode: f[STAT_MODE], size: f[STAT_SIZE], mtime: f[STAT_MTIME],
+                     mtimeNs: f[STAT_MTIME_NS], uid: f[STAT_UID], gid: f[STAT_GID],
+                     nlink: f[STAT_NLINK], ino: f[STAT_INO], dev: f[STAT_DEV],
+                     rdev: f[STAT_RDEV], blksize: f[STAT_BLKSIZE], blocks: f[STAT_BLOCKS],
+                     atime: f[STAT_ATIME], ctime: f[STAT_CTIME]}
+    return ok(s)
+}
+
+// The raw target bytes with no NUL: a dangling target still succeeds, a
+// non-symlink is EINVAL, and the longest accepted target is 4095 bytes.
+pub fn readlink(path: string): Result[[]byte] {
+    return readLinkPath(path)
+}
+
+pub fn isDir(mode: int): bool { return int(typeOf(mode)) == KIND_DIR }
+pub fn isSymlink(mode: int): bool { return int(typeOf(mode)) == KIND_LNK }
+pub fn isRegular(mode: int): bool { return int(typeOf(mode)) == KIND_REG }
+pub fn isFifo(mode: int): bool { return int(typeOf(mode)) == KIND_FIFO }
+pub fn isSocket(mode: int): bool { return int(typeOf(mode)) == KIND_SOCK }
+
+// regular && the owner execute bit (0o100)
+pub fn isExecutableFile(mode: int): bool {
+    return isRegular(mode) && (mode & 0x040) != 0
+}
+
+// eza's File::size(): st_size for a regular file, -1 for every other type
+pub fn sizeForLong(mode: int, size: int): int {
+    if isRegular(mode) { return size }
+    return -1
+}

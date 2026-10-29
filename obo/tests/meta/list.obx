@@ -1,0 +1,30 @@
+// meta/list.obx: list a directory through fs::open/next/close and print one
+// line per entry. tests/meta_test.py compares the names, kinds and inodes with
+// Python's os.listdir and os.lstat; the final "end" marks a clean EOF, and no
+// "." or ".." line can appear (fs::next skips them). The helper uses try, so
+// the Result propagation of all three fs calls is exercised too.
+import "fs.obx" as fs
+
+fn listAll(dir: string): Result[bool] {
+    var d = try fs::open(dir)
+    var e = new fs::DirEntry{name: "", ino: 0, kind: 0}
+    var more = true
+    while more {
+        more = try fs::next(d, e)
+        if more {
+            print(e.name, "\t", int(e.kind), "\t", e.ino)
+            println("")
+        }
+    }
+    try fs::close(d)
+    return ok(true)
+}
+
+fn main() {
+    let a = args()
+    let r = listAll(a[2])
+    match r {
+        ok(v) { println("end") }
+        err(m, c) { println("err ", m, " ", c); exit(1) }
+    }
+}

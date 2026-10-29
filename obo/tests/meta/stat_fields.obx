@@ -1,0 +1,27 @@
+// meta/stat_fields.obx: print the 14 statArray fields (and the lstat fields)
+// for every path argument. tests/meta_test.py compares them with os.stat and
+// os.lstat, so the array order and every value are pinned against Python.
+import "fs.obx" as fs
+
+fn show(label: string, f: &[]int) {
+    print(label)
+    for i in 0..len(f) { print(" ", f[i]) }
+    println("")
+}
+
+fn main() {
+    let a = args()
+    for i in 2..len(a) {
+        let p = a[i]
+        let s = fs::statArray(p, true)
+        match s {
+            ok(f) { show("stat", f) }
+            err(m, c) { println("stat err ", m, " ", c) }
+        }
+        let l = fs::statArray(p, false)
+        match l {
+            ok(f) { show("lstat", f) }
+            err(m, c) { println("lstat err ", m, " ", c) }
+        }
+    }
+}

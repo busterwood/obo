@@ -1,0 +1,38 @@
+// meta/entry_paths.obx: list an operand and, for every entry, build the entry
+// path with paths::join(d.path, name), lstat it and print its type. The operand
+// is used exactly as given (absolute, or "../entries" from a sibling cwd), and
+// d.path is that spelling, so tests/meta_test.py can compare the joined paths
+// with os.path.join and the types with os.lstat. "end" marks a clean EOF.
+import "fs.obx" as fs
+import "paths.obx" as paths
+
+fn listPaths(operand: string): Result[bool] {
+    var d = try fs::open(operand)
+    var e = new fs::DirEntry{name: "", ino: 0, kind: 0}
+    var more = true
+    while more {
+        more = try fs::next(d, e)
+        if more {
+            let joined = paths::join(d.path, e.name)
+            var kind = -1
+            let s = fs::lstat(joined)
+            match s {
+                ok(st) { kind = int(fs::typeOf(st.mode)) }
+                err(msg, c) { kind = -c }
+            }
+            print(e.name, "\t", joined, "\t")
+            println(kind)
+        }
+    }
+    try fs::close(d)
+    return ok(true)
+}
+
+fn main() {
+    let a = args()
+    let r = listPaths(a[2])
+    match r {
+        ok(v) { println("end") }
+        err(m, c) { println("err ", m, " ", c); exit(1) }
+    }
+}

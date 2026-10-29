@@ -1,0 +1,248 @@
+// meta: the four metadata builtins at the program level, run by run_fork.py
+// with a scratch directory as argv[1]. It covers statPath/lstatPath and
+// readLinkPath, readDirFd's records and nil EOF, the runtime's error codes, the
+// consuming and non-consuming Result forms (the ok-descriptor oracle: a wrong
+// tag misses the arm and try would not see it), try propagation, an owned
+// []int/[]byte/?[]byte payload freed with its cell, and the fd-materialisation
+// rule: readDirFd(gfd, changeGfd()) must read the fd as it was before
+// changeGfd() changed gfd, so "pin dir inside" (not "pin dir other").
+//
+// expect: stat 14 5
+// expect: lstat 14 5
+// expect: link err 22
+// expect: readdir found
+// expect: eof nil
+// expect: close true
+// expect: missing err 2
+// expect: empty err 22
+// expect: max zero err 22
+// expect: max big err 22
+// expect: fd err 9
+// expect: pin dir inside
+// expect: match ok 14
+// expect: match err 2
+// expect: try stat 14
+// expect: try err 2
+// expect: notdir 20
+// expect: consume data
+
+var gfd = 0
+var gfd2 = 0
+
+fn bytesOf(s: string): []byte {
+    let out = new []byte(0)
+    for i in 0..len(s) { append(out, s[i]) }
+    return out
+}
+
+fn openOrDie(path: string, mode: string): int {
+    let o = openFile(path, mode)
+    match o {
+        ok(fd) { return fd }
+        err(m, c) { println("open ", m, " ", c); exit(1) }
+    }
+}
+
+fn closeOrDie(fd: int) {
+    let c = closeFile(fd)
+    match c {
+        ok(v) { }
+        err(m, x) { println("close ", m, " ", x); exit(1) }
+    }
+}
+
+fn makeFileN(path: string, content: string) {
+    let fd = openOrDie(path, "w")
+    let d = bytesOf(content)
+    let w = writeFd(fd, d)
+    match w {
+        ok(n) { if n != len(content) { println("write ", n); exit(1) } }
+        err(m, c) { println("write ", m, " ", c); exit(1) }
+    }
+    closeOrDie(fd)
+}
+
+// a byte scan for a name inside a raw getdents64 buffer
+fn hasName(b: &[]byte, name: string): bool {
+    if len(name) == 0 { return false }
+    var i = 0
+    while i + len(name) <= len(b) {
+        var j = 0
+        while j < len(name) && b[i + j] == name[j] { j += 1 }
+        if j == len(name) { return true }
+        i += 1
+    }
+    return false
+}
+
+fn scanDir(fd: int, want: string): Result[bool] {
+    var found = false
+    while true {
+        let chunk = try readDirFd(fd, 4096)
+        if chunk == nil { return ok(found) }
+        if hasName(chunk, want) { found = true }
+    }
+}
+
+fn firstChunk(fd: int): Result[?[]byte] {
+    let v = try readDirFd(fd, 4096)
+    return ok(v)
+}
+
+fn drain(fd: int): Result[bool] {
+    while true {
+        let v = try readDirFd(fd, 4096)
+        if v == nil { return ok(true) }
+    }
+}
+
+fn statLen(p: string): Result[int] {
+    let f = try statPath(p)
+    return ok(len(f))
+}
+
+// changes the global fd and returns a valid max: the runtime call must still
+// use the fd that was read before this ran
+fn changeGfd(): int {
+    gfd = gfd2
+    return 4096
+}
+
+fn main() {
+    let a = args()
+    let dir = a[1]
+    let p = dir + "/meta-file"
+    makeFileN(p, "hello")
+
+    // non-consuming matches: the cell still owns the array
+    let r = statPath(p)
+    match r {
+        ok { println("stat ", len(r.value), " ", r.value[1]) }
+        err { println("stat err ", r.code); exit(1) }
+    }
+    let l = lstatPath(p)
+    match l {
+        ok { println("lstat ", len(l.value), " ", l.value[1]) }
+        err { println("lstat err ", l.code); exit(1) }
+    }
+    let k = readLinkPath(p)
+    match k {
+        ok { println("link ok ", len(k.value)) }
+        err { println("link err ", k.code) }
+    }
+
+    // readDirFd: whole records until nil; the file's name is in one of them
+    let fd = openOrDie(dir, "r")
+    let s = scanDir(fd, "meta-file")
+    match s {
+        ok(v) {
+            if v { println("readdir found") } else { println("readdir missing"); exit(1) }
+        }
+        err(m, c) { println("scan err ", m, " ", c); exit(1) }
+    }
+    let e = firstChunk(fd)
+    match e {
+        ok(v) {
+            if v == nil { println("eof nil") } else { println("eof data"); exit(1) }
+        }
+        err(m, c) { println("eof err ", c); exit(1) }
+    }
+    closeOrDie(fd)
+    println("close true")
+
+    let mr = statPath(dir + "/missing")
+    match mr {
+        ok { println("missing ok"); exit(1) }
+        err { println("missing err ", mr.code) }
+    }
+    let er = statPath("")
+    match er {
+        ok { println("empty ok"); exit(1) }
+        err { println("empty err ", er.code) }
+    }
+
+    // the runtime checks (computed counts: a constant one is a compile error)
+    var z = 0
+    let mz = readDirFd(0, z)
+    match mz {
+        ok { println("max zero ok"); exit(1) }
+        err { println("max zero err ", mz.code) }
+    }
+    var big = 1048577
+    let mb = readDirFd(0, big)
+    match mb {
+        ok { println("max big ok"); exit(1) }
+        err { println("max big err ", mb.code) }
+    }
+    let fe = readDirFd(-1, 4096)
+    match fe {
+        ok { println("fd ok"); exit(1) }
+        err { println("fd err ", fe.code) }
+    }
+
+    // the fd is materialised before max runs
+    makeFileN(dir + "/inside-marker", "x")
+    let fa = openOrDie(dir, "r")
+    let fb = openOrDie(dir + "/..", "r")
+    gfd = fa
+    gfd2 = fb
+    let chunk = readDirFd(gfd, changeGfd())
+    match chunk {
+        ok(v) {
+            if v == nil { println("pin dir eof"); exit(1) }
+            if hasName(v, "inside-marker") { println("pin dir inside") } else { println("pin dir other") }
+        }
+        err(m, c) { println("pin err ", m, " ", c); exit(1) }
+    }
+    let d = drain(fa)
+    match d {
+        ok(v) { }
+        err(m, c) { println("drain err ", c); exit(1) }
+    }
+    closeOrDie(fa)
+    closeOrDie(fb)
+
+    // consuming matches: the arm owns the payload and frees it where it ends
+    let mc = statPath(p)
+    match mc {
+        ok(fields) { println("match ok ", len(fields)) }
+        err(m, c) { println("match err ", c); exit(1) }
+    }
+    let me = statPath(dir + "/missing")
+    match me {
+        ok(fields) { println("match ok?"); exit(1) }
+        err(m, c) { println("match err ", c) }
+    }
+
+    // try propagation through a helper
+    let ts = statLen(p)
+    match ts {
+        ok(n) { println("try stat ", n) }
+        err(m, c) { println("try stat err ", c); exit(1) }
+    }
+    let te = statLen(dir + "/missing")
+    match te {
+        ok(n) { println("try ok?"); exit(1) }
+        err(m, c) { println("try err ", c) }
+    }
+
+    // a regular-file fd is ENOTDIR on the first readDirFd (a computed error path)
+    let ff = openOrDie(p, "r")
+    let de = readDirFd(ff, 4096)
+    match de {
+        ok(v) { println("notdir ok"); exit(1) }
+        err(m, c) { println("notdir ", c) }
+    }
+    closeOrDie(ff)
+
+    // a consuming readDirFd match owns the chunk
+    let fc = openOrDie(dir, "r")
+    let dc = readDirFd(fc, 4096)
+    match dc {
+        ok(v) {
+            if v == nil { println("consume eof") } else { println("consume data") }
+        }
+        err(m, c) { println("consume err ", c); exit(1) }
+    }
+    closeOrDie(fc)
+}

@@ -1,0 +1,52 @@
+// meta/err_paths.obx: the fs-level error codes. Arguments: a regular file, a
+// missing path, and a directory. stat/lstat of a missing path are ENOENT (2),
+// readlink of a regular file is EINVAL (22), opening a regular file succeeds
+// but the first next is ENOTDIR (20) from readDirFd, and close still succeeds.
+// expect: stat 2
+// expect: lstat 2
+// expect: readlink 22
+// expect: dir 20
+// expect: closed true
+// expect: missinglink 2
+import "fs.obx" as fs
+
+fn main() {
+    let a = args()
+    let r = fs::stat(a[3])
+    match r {
+        ok(s) { println("stat ok"); exit(1) }
+        err(m, c) { println("stat ", c) }
+    }
+    let l = fs::lstat(a[3])
+    match l {
+        ok(s) { println("lstat ok"); exit(1) }
+        err(m, c) { println("lstat ", c) }
+    }
+    let k = fs::readlink(a[2])
+    match k {
+        ok(b) { println("readlink ok"); exit(1) }
+        err(m, c) { println("readlink ", c) }
+    }
+    let o = fs::open(a[2])
+    match o {
+        ok(d) {
+            var e = new fs::DirEntry{name: "", ino: 0, kind: 0}
+            let n = fs::next(d, e)
+            match n {
+                ok(m) { println("dir ok"); exit(1) }
+                err(msg, c) { println("dir ", c) }
+            }
+            let c = fs::close(d)
+            match c {
+                ok(v) { println("closed ", v) }
+                err(m, x) { println("close err ", m, " ", x); exit(1) }
+            }
+        }
+        err(m, c) { println("open err ", m, " ", c); exit(1) }
+    }
+    let m2 = fs::readlink(a[3])
+    match m2 {
+        ok(b) { println("missing link ok"); exit(1) }
+        err(msg, c) { println("missinglink ", c) }
+    }
+}

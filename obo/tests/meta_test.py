@@ -310,7 +310,7 @@ def check_readlink(name, p, cases):
     ok(name)
 
 
-def check_entry_paths(name, p, fx, operand):
+def check_entry_paths(name, p, fx, operand, cwd=None):
     if p.returncode != 0:
         bad(name, f"exit {p.returncode}; stderr {p.stderr.decode('utf-8', 'replace').strip()[:200]!r}")
         return
@@ -328,7 +328,7 @@ def check_entry_paths(name, p, fx, operand):
     want = []
     for n in os.listdir(fx.entries):
         joined = os.path.join(operand, n)
-        st = os.lstat(joined)
+        st = os.lstat(os.path.join(cwd, joined) if cwd else joined)
         want.append((n, joined, kind_of(st.st_mode)))
     if sorted(got) != sorted(want):
         bad(name, f"entries {sorted(got)!r} != python {sorted(want)!r}")
@@ -364,7 +364,7 @@ def program_section():
     p = run_program(exe('entry_paths.obx'), [fx.entries])
     check_entry_paths('fs/entry_paths absolute', p, fx, fx.entries)
     p = run_program(exe('entry_paths.obx'), [fx.relative], cwd=fx.cwd)
-    check_entry_paths('fs/entry_paths ../', p, fx, fx.relative)
+    check_entry_paths('fs/entry_paths ../', p, fx, fx.relative, cwd=fx.cwd)
 
     # close idempotence (the fd is >= 0 once, then -1); no leak under OBO_CHECK
     p = run_program(exe('close_idempotent.obx'), [fx.entries])

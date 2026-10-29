@@ -1,0 +1,23 @@
+// meta/open_close.obx: open and close a directory under OBO_CHECK=1 with no
+// leak (the runtime's fd table must be empty at rt_finish).
+// expect: opened
+// expect: closed true
+import "fs.obx" as fs
+
+fn openClose(dir: string): Result[bool] {
+    var d = try fs::open(dir)
+    let c = try fs::close(d)
+    return ok(c)
+}
+
+fn main() {
+    let a = args()
+    let r = openClose(a[2])
+    match r {
+        ok(v) {
+            println("opened")
+            println("closed ", v)
+        }
+        err(m, c) { println("err ", m, " ", c); exit(1) }
+    }
+}

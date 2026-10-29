@@ -4,7 +4,7 @@
     python3 obo/tests/imports.py
 
 Cases:
-  * every stdlib module (io, strings, paths, sort, time, cli, fmt, errors)
+  * every stdlib module (io, strings, paths, sort, time, cli, fmt, errors, fs)
     compiles through a tiny importer root built with `-I obo/lib`;
   * every tool source (cmd/cat.obx, wc.obx, sort.obx) compiles with its
     own relative `../lib/...` imports and no -I;
@@ -13,9 +13,9 @@ Cases:
     ignored), `cmd/sort.obx` imports no sort module, and a scratch cmd/ tree
     with io/fmt/errors/strings decoys beside cat.obx still builds and runs
     against the real lib/ modules;
-  * obo/lib holds exactly the P2 module set: io, strings, paths, sort, time,
-    cli, fmt and errors. The exact-set check proves env.obx and fs.obx are not
-    part of P1/P2 (and that no leftover compatibility module exists);
+  * obo/lib holds exactly the P3 module set: io, strings, paths, sort, time,
+    cli, fmt, errors and fs. The exact-set check proves env.obx is not part of
+    P1/P2/P3 (and that no leftover compatibility module exists);
   * collision/decoy trees pin module resolution and the exact diagnostics:
     a headerless imported module, a self import cycle, a mutual import cycle,
     a headerless local decoy shadowing a lib module, a headed local decoy with
@@ -147,12 +147,14 @@ IMPORTERS = {
     'errors': ('import "errors.obx" as errors\n'
                'fn main() { println(errors::text(2)) }\n',
                'No such file or directory\n'),
+    'fs': ('import "fs.obx" as fs\n'
+           'fn main() { println(fs::isDir(0x4000)) }\n', 'true\n'),
 }
 
 TOOLS = ['cat.obx', 'wc.obx', 'sort.obx']
 
-WANT_LIB = {'cli.obx', 'errors.obx', 'fmt.obx', 'io.obx', 'paths.obx',
-            'sort.obx', 'strings.obx', 'time.obx'}
+WANT_LIB = {'cli.obx', 'errors.obx', 'fmt.obx', 'fs.obx', 'io.obx',
+            'paths.obx', 'sort.obx', 'strings.obx', 'time.obx'}
 
 
 def main():

@@ -1,0 +1,86 @@
+// The metadata builtins' compile-time checks (P3). The harness prepends every
+// line before the first "// ===" to each case, so the prelude binds the names
+// the cases use (getPath for the try-in-an-argument case). Each case has
+// exactly one error marker on its line, as in the other error files.
+
+fn getPath(): Result[string] { return ok("p") }
+
+// === statPath path type
+fn main() {
+    let r = statPath(1)                             // error: statPath needs a string path, not int
+}
+
+// === lstatPath path type
+fn main() {
+    let r = lstatPath(true)                         // error: lstatPath needs a string path, not bool
+}
+
+// === readLinkPath path type
+fn main() {
+    let r = readLinkPath(1)                         // error: readLinkPath needs a string path, not int
+}
+
+// === readDirFd fd type
+fn main() {
+    let r = readDirFd("0", 1)                       // error: readDirFd needs an int file descriptor, not string
+}
+
+// === readDirFd count type
+fn main() {
+    let r = readDirFd(0, "1")                       // error: readDirFd needs an int count, not string
+}
+
+// === readDirFd zero count
+fn main() {
+    let r = readDirFd(0, 0)                         // error: readDirFd needs a positive count
+}
+
+// === readDirFd negative count
+fn main() {
+    let r = readDirFd(0, -1)                        // error: readDirFd needs a positive count
+}
+
+// === readDirFd count too large
+fn main() {
+    let r = readDirFd(0, 1048577)                   // error: readDirFd count is too large
+}
+
+// === readDirFd extra argument
+fn main() {
+    let r = readDirFd(0, 1, 2)                      // error: expected ')', found ,
+}
+
+// === statPath extra argument
+fn main() {
+    let r = statPath("p", 1)                        // error: expected ')', found ,
+}
+
+// === readLinkPath extra argument
+fn main() {
+    let r = readLinkPath("p", 1)                    // error: expected ')', found ,
+}
+
+// === statPath no argument
+fn main() {
+    let r = statPath()                              // error: expected an expression
+}
+
+// === try in a metadata argument
+fn main() {
+    let r = statPath(try getPath())                 // error: a try expression cannot be part of a larger expression; assign it to a local first
+}
+
+// === a Result in arithmetic
+fn main() {
+    let x = statPath("p") + 1                       // error: '+' needs ints
+}
+
+// === a Result as a condition
+fn main() {
+    if statPath("p") { }                            // error: condition must be bool, not Result[[]int]
+}
+
+// === a Result as a match scrutinee
+fn main() {
+    match statPath("p") { ok { } err { } }          // error: match needs a local variable or parameter
+}
