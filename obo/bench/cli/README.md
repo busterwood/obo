@@ -143,6 +143,11 @@ binary sizes:
 total: 90.5 s on this host; the numbers are host-dependent.
 ```
 
+This table is the `bench-cli` snapshot above; it predates the sort rewrite. On
+the same fixture and host the rewritten `sort` (MSD radix over one input buffer,
+with ordered-input detection) measures about 184 ms, against GNU `sort`'s
+250 ms and the recorded 2,038 ms.
+
 `--quick` changes the workload sizes as well as the repetition counts, so its
 absolute times are not comparable with default rows: `fib(30)`, a 10,000,000
 loop, a sieve to 1,000,000, an 11,000,000-byte text file, 100,000 sort lines and
@@ -198,8 +203,10 @@ loop, a sieve to 1,000,000, an 11,000,000-byte text file, 100,000 sort lines and
   other direction, obo's `wc` scans only the requested columns after wc-fast,
   so its `wc -l` is at parity with Python's C `bytes.count` (and still behind
   GNU's optimized `-l`), while its `wc -lwc` beats both Python and GNU's word
-  pass on this fixture; obo's `sort` is a merge sort and trails Python's C
-  `list.sort` and GNU `sort`.
+  pass on this fixture. obo's `sort` has since been rewritten (a stable MSD
+  radix sort over one input buffer, with ordered-input detection) and now leads
+  both Python's C `list.sort` and GNU `sort` on that fixture; the table above is
+  the earlier bench-cli snapshot.
 * **`sum(range(n))` is a reference, not an equivalent.** It is Python's
   C-level builtin and is labeled as a different algorithm; it is in the table to
   show what the same arithmetic costs without a Python-level loop.

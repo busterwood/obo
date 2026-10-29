@@ -143,6 +143,9 @@ UTF-8 are preserved and the default order is unsigned byte order (`LC_ALL=C`).
   grammar and is deliberately not reproduced; high-byte numeric inputs are kept
   out of the differential matrix.
 - `-r` reverses the whole comparison, including the last-resort line comparison.
+  The default path sorts ascending once and reverses the finished order (two
+  distinct lines are never equal, so ties cannot be observed); the numeric path
+  keeps the comparator negation, so its stable tie order is unchanged.
 - `-u` makes key equality the only equality (the whole line, or the numeric
   value with `-n`) and keeps the first input occurrence.
 
@@ -153,11 +156,40 @@ read: `sort: read failed: <p>: <text>`, exit 2, no stdout. A write error prints
 `sort: write error` and exits 2 (GNU 9.4 prints two lines there; the gate shape-
 compares).
 
-Sort is in memory: peak is linear in the input (roughly five times the input
-size for the 50,000-line fixture, with numeric keys making it larger). There is no
-external merge; a huge input can exhaust memory (the runtime exits 2). `-k`,
-`-t`, `-f`, `-b`, `-d`, `-i`, `-M`, `-h`, `-V`, `-s`, `-c`, `-C`, `-o`, `-m`,
-`-z`, `--parallel`, long options, `--help` and `--version` are absent.
+Sort is in memory: peak is linear in the input. The input is one byte buffer
+plus one start offset per line; a single regular-file operand whose reported
+size is positive and matches what was read is read in one allocation (a final
+partial line costs one small copy, and a file reporting size 0 -- `/proc` and
+other synthetic regular files do that while holding data -- is read
+incrementally), while stdin and several operands hold the read chunks until
+that buffer is assembled (about twice the input, transiently), and `-n` adds
+the exact-decimal keys. There is no external merge; a huge input can
+exhaust memory (the runtime exits 2). `-k`, `-t`, `-f`, `-b`, `-d`, `-i`, `-M`,
+`-h`, `-V`, `-s`, `-c`, `-C`, `-o`, `-m`, `-z`, `--parallel`, long options,
+`--help` and `--version` are absent.
+
+**Performance (this branch).** The default order is a stable MSD radix sort over
+byte positions in the buffer: 257 buckets (byte + 1, with 0 for the line
+terminator so a prefix sorts first), insertion sort below 20 elements, and a
+common-prefix pass that skips a shared byte run instead of paying a counting
+pass per byte; one linear pass detects already-sorted and reverse-sorted input
+and skips the sort. `-n` keeps the exact-decimal keys and the stable merge.
+Output is assembled in 64 KiB blocks and written with `writeFd`. On the CLI
+benchmark's 1,000,000 fixed 8-digit lines (warm cache, one core) obo `sort`
+measures about 184 ms against GNU `sort` 9.4's 250 ms and the benchmark's
+Python 604 ms; it was about 1,838 ms with the former readLine + index merge.
+Sorted input measures about 63 ms (GNU 85 ms), a 22 MB random variable-length
+file 309 ms (GNU 331 ms), and a 73 MB file whose lines share a 64-byte prefix
+650 ms (GNU 480 ms). Absolute times are fixture-dependent, and on the shapes
+measured here the shared-prefix file is the one where a comparison sort with
+`memcmp` clearly wins; duplicate-heavy variable-length inputs can favor GNU as
+well, while fixed-width and small-key inputs favor the radix. Peak RSS on the
+9 MB/1,000,000-line file is about 41 MB (GNU `sort` 9.4 pinned to one core
+uses about 59 MB there, and about 137 MB unpinned with its default threads)
+and about 103 MB on the 73 MB file; `-n` is about 135 MB because of its key
+records, and remains the slow path (about 2.4 s on 1,000,000 lines) because it
+still parses two owned digit strings per line and merges with a comparator
+call per comparison.
 
 ## eza (E0, E1 and E2)
 

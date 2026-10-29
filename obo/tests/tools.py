@@ -83,13 +83,21 @@ class ModelError(Exception):
 # --------------------------------------------------------------------- fixtures
 
 class Spec:
-    def __init__(self, kind='file', data=None, size=None, zero_fill=False):
-        self.kind = kind            # file | dir | missing | unreadable
+    def __init__(self, kind='file', data=None, size=None, zero_fill=False,
+                 live_path=None):
+        self.kind = kind            # file | dir | missing | unreadable | live
         self.data = data
         self.size = len(data) if data is not None else (size or 0)
         self.zero_fill = zero_fill
+        self.live_path = live_path  # kind == 'live': read this path when modeling
 
     def bytes(self):
+        if self.kind == 'live':
+            try:
+                with open(self.live_path, 'rb') as f:
+                    return f.read()
+            except OSError:
+                return b''
         if self.data is not None:
             return self.data
         if self.zero_fill:
@@ -144,6 +152,15 @@ FILES = {
     'split_b': b'b',
     'one': b'one\n',
     'two': b'two\n',
+    # radix-path fixtures: already ordered, reverse ordered, a long common
+    # prefix, lines that are prefixes of each other, a line past the 64 KiB
+    # write block, and runs of duplicate empty lines
+    'sortedin': b'aa\nbb\ncc\n',
+    'revin': b'cc\nbb\naa\n',
+    'prefix': b'a\naa\nab\naaa\nb\na\x00\n\x00\naa\n',
+    'lcp': b''.join(b'a' * 100 + (b'%02d\n' % i) for i in range(20)),
+    'long2': b'y' * 70000 + b'\n' + b'a\n' + b'z' * 70000,
+    'emptydups': b'\n\na\n\n\nb\n\n',
     '-n': b'-n\n',
     '-Z': b'-Z\n',
     'name with space': b'space\n',
@@ -171,6 +188,10 @@ SPECS['unreadable'] = Spec('unreadable', data=b'u')
 for _m in ('missing', 'nope1', 'nope2', 'nope'):
     SPECS[_m] = Spec('missing')
 SPECS['/dev/null'] = Spec('file', data=b'')
+# a synthetic regular file that reports st_size 0 while holding data: the
+# readFile fast path must fall back to the incremental reader for it
+LIVE_OSTYPE = '/proc/sys/kernel/ostype'
+SPECS[LIVE_OSTYPE] = Spec('live', live_path=LIVE_OSTYPE)
 
 ERRTEXT = {
     2: 'No such file or directory',
@@ -199,6 +220,8 @@ def materialize(name, casedir):
     if name == '/dev/null':
         if not os.path.exists('/dev/null'):
             raise SetupError('the wc matrix needs /dev/null')
+        return
+    if spec.kind == 'live':
         return
     path = os.path.join(casedir, name)
     if spec.kind == 'dir':
@@ -528,6 +551,36 @@ def sort_cases():
         fixtures=['multi_a'])
     add('stdin_words', T, [], stdin=FILES['words'])
     add('dash_alone', T, ['-'], stdin=FILES['words'])
+    # radix path: ordered input, reverse order, shared prefixes, prefix keys
+    add('sorted_in', T, ['sortedin'], fixtures=['sortedin'])
+    add('r_sorted_in', T, ['-r', 'sortedin'], fixtures=['sortedin'])
+    add('u_sorted_in', T, ['-u', 'sortedin'], fixtures=['sortedin'])
+    add('stdin_sorted', T, [], stdin=FILES['sortedin'])
+    add('stdin_rev', T, [], stdin=FILES['revin'])
+    add('prefix', T, ['prefix'], fixtures=['prefix'])
+    add('r_prefix', T, ['-r', 'prefix'], fixtures=['prefix'])
+    add('u_prefix', T, ['-u', 'prefix'], fixtures=['prefix'])
+    add('lcp', T, ['lcp'], fixtures=['lcp'])
+    add('r_lcp', T, ['-r', 'lcp'], fixtures=['lcp'])
+    add('u_lcp', T, ['-u', 'lcp'], fixtures=['lcp'])
+    add('ru_lcp', T, ['-ru', 'lcp'], fixtures=['lcp'])
+    add('n_lcp', T, ['-n', 'lcp'], fixtures=['lcp'])
+    add('nu_lcp', T, ['-nu', 'lcp'], fixtures=['lcp'])
+    add('long2', T, ['long2'], fixtures=['long2'])
+    add('r_long2', T, ['-r', 'long2'], fixtures=['long2'])
+    add('u_long2', T, ['-u', 'long2'], fixtures=['long2'])
+    add('emptydups', T, ['emptydups'], fixtures=['emptydups'])
+    add('u_emptydups', T, ['-u', 'emptydups'], fixtures=['emptydups'])
+    add('ru_emptydups', T, ['-ru', 'emptydups'], fixtures=['emptydups'])
+    add('ru_binary', T, ['-ru', 'binary'], fixtures=['binary'])
+    # multi-file separator: an empty operand on either side of a partial line
+    add('empty_multi_a', T, ['empty', 'multi_a'], fixtures=['empty', 'multi_a'])
+    add('multi_a_empty', T, ['multi_a', 'empty'], fixtures=['multi_a', 'empty'])
+    add('empty_noeol_empty', T, ['empty', 'noeol', 'empty'],
+        fixtures=['empty', 'noeol'])
+    # a synthetic regular file with st_size 0 that still holds data: the
+    # readFile fast path must fall back and read it to EOF (/proc may be absent)
+    add('proc_size0', T, [LIVE_OSTYPE], fixtures=[LIVE_OSTYPE])
     # errors: preflight order and read errors, no stdout
     add('missing', T, ['missing'])
     add('multi_a_missing', T, ['multi_a', 'missing'], fixtures=['multi_a'])
@@ -584,7 +637,9 @@ def kind_of(name, world):
         return 'stdin'
     spec = world.get(name)
     if spec is None:
-        return SPECS.get(name, Spec('missing')).kind
+        spec = SPECS.get(name, Spec('missing'))
+    if spec.kind == 'live':
+        return 'file'
     return spec.kind
 
 
@@ -1253,6 +1308,11 @@ class Harness:
 
         if (case.sink or case.tag == 'writeerror') and not os.path.exists('/dev/full'):
             return ('skip', '/dev/full is absent')
+        for fx in case.fixtures:
+            spec = SPECS.get(fx)
+            if spec is not None and spec.kind == 'live':
+                if not os.path.isfile(fx) or not os.access(fx, os.R_OK):
+                    return ('skip', f'{fx} is absent or unreadable')
         # unreadable cases are skipped where the fixture is actually readable
         if 'unreadable' in case.fixtures:
             up = SPECS['unreadable']
