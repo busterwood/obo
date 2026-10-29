@@ -6,13 +6,14 @@
 Cases:
   * every stdlib module (io, strings, paths, sort, time, cli, fmt, errors, fs)
     compiles through a tiny importer root built with `-I obo/lib`;
-  * every tool source (cmd/cat.obx, wc.obx, sort.obx) compiles with its
-    own relative `../lib/...` imports and no -I;
-  * the design 4.2 P2 tool-matrix checks: every tool import is an explicit
+  * every tool source (cmd/cat.obx, wc.obx, sort.obx, eza.obx) compiles
+    with its own relative `../lib/...` imports and no -I;
+  * the design 4.2 P2/P4 tool-matrix checks: every tool import is an explicit
     `../lib/*.obx` path (a cmd/-local decoy with a library module's name is
-    ignored), `cmd/sort.obx` imports no sort module, and a scratch cmd/ tree
-    with io/fmt/errors/strings decoys beside cat.obx still builds and runs
-    against the real lib/ modules;
+    ignored), `cmd/sort.obx` imports no sort module, `cmd/eza.obx` imports
+    `../lib/sort.obx` (never the plain name, which would resolve to the sort
+    tool root), and a scratch cmd/ tree with io/fmt/errors/strings decoys
+    beside cat.obx still builds and runs against the real lib/ modules;
   * obo/lib holds exactly the P3 module set: io, strings, paths, sort, time,
     cli, fmt, errors and fs. The exact-set check proves env.obx is not part of
     P1/P2/P3 (and that no leftover compatibility module exists);
@@ -151,7 +152,7 @@ IMPORTERS = {
            'fn main() { println(fs::isDir(0x4000)) }\n', 'true\n'),
 }
 
-TOOLS = ['cat.obx', 'wc.obx', 'sort.obx']
+TOOLS = ['cat.obx', 'wc.obx', 'sort.obx', 'eza.obx']
 
 WANT_LIB = {'cli.obx', 'errors.obx', 'fmt.obx', 'fs.obx', 'io.obx',
             'paths.obx', 'sort.obx', 'strings.obx', 'time.obx'}
@@ -203,6 +204,13 @@ def main():
             sort_imports.append(path)
     check('sort.obx imports no sort module', not sort_imports,
           ', '.join(sort_imports))
+    eza_sort = []
+    for m in re.finditer(r'^import\s+"([^"]+)"', tool_text['eza.obx'], re.M):
+        path = m.group(1)
+        if path == 'sort.obx' or path.endswith('/sort.obx'):
+            eza_sort.append(path)
+    check('eza.obx imports ../lib/sort.obx', eza_sort == ['../lib/sort.obx'],
+          ', '.join(eza_sort) or 'no sort import')
 
     # design 4.2 P2: a cmd/-local decoy with a library module's name must not
     # capture the tool's `../lib/...` import. Copy cmd/cat.obx and lib/*.obx into
@@ -290,10 +298,10 @@ def main():
 
     for f in failures:
         print('FAIL', f)
-    total = 1 + len(IMPORTERS) + len(TOOLS) + 3 + 7
+    total = 1 + len(IMPORTERS) + len(TOOLS) + 4 + 7
     print(f"\n{passed}/{total} import/compile checks passed "
           f"({len(IMPORTERS)} stdlib importers, {len(TOOLS)} tools, "
-          f"3 static tool-matrix checks, 7 collision/decoy trees, "
+          f"4 static tool-matrix checks, 7 collision/decoy trees, "
           f"1 lib set), {len(failures)} failures")
     sys.exit(1 if failures else 0)
 

@@ -43,12 +43,12 @@ rt_io_test: tests/rt_io_test.c runtime/runtime.c runtime/rt.ld
 	gcc $(CFLAGS) -c tests/rt_io_test.c -o rt_io_test.o
 	ld -T runtime/rt.ld -o rt_io_test rt_io_test.o
 
-# the first command-line tools: each cmd/*.obx is a module root importing
-# ../lib modules (io, strings, fmt, errors), compiled directly by
+# the coreutils-shaped tools: each cmd/*.obx is a module root importing
+# ../lib modules, compiled directly by
 # tools/build_tools.py (the sources are not Make prerequisites; .PHONY makes
 # every source edit rebuild, and the builder's own checks report a missing
 # phase 2 instead of make reporting a missing target)
-tools: obo runtime_text.bin runtime_data.bin
+tools: obo runtime_text.bin runtime_data.bin | $(OUT_TOOLS)/sym
 	python3 tools/build_tools.py
 
 # the differential gate against GNU coreutils (separate from make promote)

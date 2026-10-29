@@ -197,7 +197,7 @@
     "filesystem": "ext4",
     "umask": "0022"
   },
-  "note": "P0 skeleton manifest; per-case host metadata is a P4 TODO",
+  "note": "P4: reference and own goldens; per-case host metadata is not recorded",
   "reference": {
     "sha256": "10457dde35808517d09bcd3bfb6bc386000d06c2126e34b9071e09470a8f7cd8",
     "version": "eza - A modern, maintained replacement for ls\nv0.23.3 [+git]\nhttps://github.com/eza-community/eza\n"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The differential gate for `eza` (P0 skeleton; own build arrives in P4).
+"""The differential gate for `eza` (E0, phase P4).
 
     python3 tests/eza.py [-k PATTERN] [-v] [-x] [-j N] [--fast]
         [--reference=auto|eza|none] [--require-reference]
@@ -45,17 +45,26 @@ against the pinned binary (`-l --no-user --bytes --time-style=long-iso
 
 Own eza and P4 gating
 ---------------------
-The own source `cmd/eza.obx` arrives in P4; `own_available()` tests for it.
-While it is absent, `--record` records the selected reference goldens only and
-skips own-tagged cases, a normal run checks the committed reference goldens
-against the pinned reference and skips own cases, and `--memory` exits 2 with
-the P4 message.  Nothing about the reference pin or the reference golden
-checks is relaxed: `--require-reference` still requires the exact version and
-binary hash, and a missing or malformed reference golden is still a setup
-error.  With no own build and no usable pinned reference there is nothing to
-run, so the harness is a setup error (exit 2), never a silent all-skip pass.
-Once `cmd/eza.obx` exists, the designed behaviour returns: build eza and
-compare/record own cases as well.
+P4 supplies `cmd/eza.obx`; `own_available()` tests for it.  A normal run
+builds it through `build_tools.build(['eza'], private_out, obo, rt)` in the
+harness temp dir (its own `sym/`), compares every golden and live case, and
+checks the own-tagged usage errors against `golden/own/`.  `--record` also
+records those own cases from the built binary.  `--memory` builds eza, creates
+10,000 entries, runs the restricted-long and name-only cases under
+`OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, parses the single
+`obo: N peak bytes, M allocated` line, rejects any leak/double-close line or
+nonzero exit, and enforces the measured `EZA_PEAK_MAX`; it also prints our max
+RSS, the pinned reference's max RSS and both binary sizes for the P4 record
+(measurement only, never gated).
+
+The P0 fallback stays for a tree without the own source: with no own build,
+`--record` records reference goldens only and skips own cases, a normal run
+checks the committed reference goldens against the pinned reference and skips
+own cases, and `--memory` exits 2.  Nothing about the reference pin or the
+reference golden checks is relaxed: `--require-reference` requires the exact
+version and binary hash, and a missing or malformed golden is a setup error.
+With no own build and no usable pinned reference there is nothing to run, so
+the harness is a setup error (exit 2), never a silent all-skip pass.
 
 E0 scope
 --------
@@ -106,6 +115,12 @@ ROOT = os.path.dirname(FORK)                             # repository root
 EZA = 'eza'
 REFERENCE_PATH = '/usr/bin:/bin'
 FSIZE = 16 * 1024 * 1024                                 # per-process cap
+# The eza memory cap is a measured bound, not the compiler's PEAK_BUDGET:
+# the first gated runs of the two 10,000-entry cases (P4, OBO_STATS=1) peaked
+# at 2,185,008 (long) and 2,184,384 (names) live heap bytes, so the cap is the
+# long measurement plus a 26.0% margin (2,752,512 = 672 * 4096). A few hundred
+# bytes of the peak track the random temp-path length in the environment.
+EZA_PEAK_MAX = 2752512
 VERSION = os.path.join(HERE, 'eza', 'VERSION')
 GOLDEN = os.path.join(HERE, 'eza', 'golden')
 OWN_SOURCE = os.path.join(FORK, 'cmd', 'eza.obx')       # P4 own source
@@ -509,9 +524,11 @@ def _error_cases():
 def _memory_cases():
     _o('memory', 'long_10000', '-l', '--no-user', '--bytes',
        '--time-style=long-iso', 'many10000', slow=True, memory_entries=10000,
-       note='TODO(P4): parse the single OBO_STATS line and EZA_PEAK_MAX')
+       note='restricted long over 10,000 entries under OBO_STATS; '
+            'EZA_PEAK_MAX and no leak line')
     _o('memory', 'names_10000', 'many10000', slow=True,
-       memory_entries=10000, note='name-only listing under OBO_STATS')
+       memory_entries=10000, note='name-only 10,000 entries under '
+            'OBO_STATS; EZA_PEAK_MAX and no leak line')
 
 
 for _builder in (_default_cases, _name_cases, _sortkey_cases, _long_cases,
@@ -919,6 +936,33 @@ def runtime_defect(result):
     return None
 
 
+def measure_rss(argv, cwd, env, out_path, err_path, tag_path):
+    """Run argv and return the child's max RSS in KiB, or None.
+
+    GNU time uses wait4 on the child, so the number is the child's own peak
+    (a fork from the Python harness would include the harness's inherited
+    pages in the child's max RSS). This is a measurement for the P4 record,
+    never a gate; a host without /usr/bin/time simply prints no RSS.
+    """
+    if not os.path.exists('/usr/bin/time'):
+        return None
+    try:
+        with open(out_path, 'wb') as out, open(err_path, 'wb') as err:
+            p = subprocess.run(['/usr/bin/time', '-f', '%M', '-o', tag_path]
+                               + argv, cwd=cwd, env=env,
+                               stdin=subprocess.DEVNULL, stdout=out,
+                               stderr=err, timeout=120)
+        if p.returncode != 0:
+            return None
+        with open(tag_path, encoding='ascii', errors='replace') as f:
+            lines = [x.strip() for x in f if x.strip()]
+        if not lines or not lines[-1].isdigit():
+            return None
+        return int(lines[-1])
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+
+
 class Harness:
     def __init__(self, args, tmp):
         self.args = args
@@ -1194,10 +1238,88 @@ class Harness:
                 self.failures.append((case, detail))
 
     def run_memory(self):
+        """The design 9.7 memory gate plus a reference measurement.
+
+        Build eza, run the two 10,000-entry cases (restricted long and
+        name-only) under OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison, parse the one
+        `obo: N peak bytes, M allocated` line, reject any leak/double-close
+        line or nonzero exit, and enforce the measured EZA_PEAK_MAX. The
+        reference RSS and both binary sizes are printed for comparison and are
+        deliberately not gated (the reference is a different implementation).
+        """
         if not own_available():
             raise SetupError('eza build not implemented (P4)')
         self.build()
-        raise SetupError('eza memory cases not implemented (P4)')
+        numbers = []
+        for case in self.selection(memory=True):
+            base, root, caps = self.prepare_case(case)
+            try:
+                env = self.case_env(base, case)
+                env.update({'OBO_CHECK': '1', 'OBX_GC': 'poison',
+                            'OBO_STATS': '1'})
+                argv = [EZA] + self.expand_argv(case, root)
+                res = run_proc(argv, self.run_cwd(root, case), base, env,
+                               executable=self.exe, timeout=120, tag='mem')
+                lines = res.stderr.split(b'\n')
+                pattern = rb'^obo: (\d+) peak bytes, (\d+) allocated$'
+                stats = [x for x in lines if re.match(pattern, x)]
+                other = [x for x in lines
+                         if x.startswith(b'obo: ') or x.startswith(b'obx: ')]
+                if res.timed_out:
+                    self.failures.append((case.key, 'timed out'))
+                    continue
+                if res.rc != 0:
+                    self.failures.append(
+                        (case.key, 'exit %s (a leak/double close exits 5/8/9)'
+                         % res.rc))
+                    continue
+                if len(stats) != 1 or len(other) != 1:
+                    self.failures.append(
+                        (case.key, 'stats line missing or duplicated '
+                         '(leak/double close?): %r' % res.stderr[-400:]))
+                    continue
+                m = re.match(pattern, stats[0])
+                peak, alloc = int(m.group(1)), int(m.group(2))
+                if peak > EZA_PEAK_MAX:
+                    self.failures.append(
+                        (case.key, 'peak %d > EZA_PEAK_MAX %d live heap bytes'
+                         % (peak, EZA_PEAK_MAX)))
+                    continue
+                numbers.append((case.key, peak, alloc))
+                self.passed += 1
+                print('ok   %s: %d peak bytes, %d allocated (EZA_PEAK_MAX %d)'
+                      % (case.key, peak, alloc, EZA_PEAK_MAX))
+                # Measurement only: our own max RSS in the plain case
+                # environment, then the pinned reference over the same tree.
+                our_argv = [self.exe] + self.expand_argv(case, root)
+                rss = measure_rss(our_argv, self.run_cwd(root, case), env,
+                                  os.path.join(base, '.our.stdout'),
+                                  os.path.join(base, '.our.stderr'),
+                                  os.path.join(base, '.our.rss'))
+                if rss is not None:
+                    print('     eza max RSS %d KiB' % rss)
+                if self.ref is not None and self.ref.kind == 'pinned':
+                    ref_env = self.case_env(base, case)
+                    ref_argv = [self.ref.path] + self.expand_argv(case, root)
+                    rss = measure_rss(ref_argv, self.run_cwd(root, case),
+                                      ref_env,
+                                      os.path.join(base, '.ref.stdout'),
+                                      os.path.join(base, '.ref.stderr'),
+                                      os.path.join(base, '.ref.rss'))
+                    if rss is not None:
+                        print('     reference %s: max RSS %d KiB'
+                              % (case.key, rss))
+            finally:
+                fixtures.rmtree(base)
+        if self.exe is not None:
+            print('eza binary size: %d bytes' % os.path.getsize(self.exe))
+        if self.ref is not None and self.ref.kind == 'pinned':
+            try:
+                print('reference binary size: %d bytes'
+                      % os.path.getsize(self.ref.path))
+            except OSError:
+                pass
+        return numbers
 
     # -- record
     def leak_refusal(self, data, base, root, case, stream):
@@ -1269,7 +1391,7 @@ class Harness:
             },
             'cases': sorted(recorded),
             'skipped': sorted('ref/' + key for key in skipped),
-            'note': 'P0 skeleton manifest; per-case host metadata is a P4 TODO',
+            'note': 'P4: reference and own goldens; per-case host metadata is not recorded',
         }
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, sort_keys=True)
@@ -1327,7 +1449,6 @@ class Harness:
                   % len(own_cases))
             own_cases = []
         if own_cases:
-            # TODO(P4): build eza through build_tools.build(['eza'], ...).
             self.build()
         recorded = []
         ref_recorded = []

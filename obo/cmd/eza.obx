@@ -26,8 +26,9 @@ import "../lib/time.obx" as time
 import "../lib/fs.obx" as fs
 
 // Deduced command-line state. Every field is copied from the effective (last)
-// occurrence of its option; cli.parse has already rejected unknown names,
-// missing required values and eza-invalid values with eza's wording.
+// occurrence of its option; cli.parse has already rejected unknown names and
+// missing required values, and deduce validates the effective values with
+// eza's last-occurrence rule and wording.
 type Opts = ref record {
     allCount: int          // -a/--all occurrences
     almostAll: bool        // -A
@@ -104,6 +105,12 @@ fn stringList4(a: string, b: string, c: string, d: string): []string {
     return xs
 }
 
+fn stringList5(a: string, b: string, c: string, d: string, e: string): []string {
+    var xs = stringList4(a, b, c, d)
+    append(xs, e)
+    return xs
+}
+
 // The text after "(choices: ...)" in eza's --sort diagnostics.
 fn sortChoices(): []string {
     var xs = new []string(0)
@@ -168,10 +175,6 @@ fn whenConsume(): []string {
     return stringList3("always", "auto", "never")
 }
 
-fn whenAccept(): []string {
-    return stringList4("always", "auto", "never", "automatic")
-}
-
 fn scaleConsume(): []string {
     return stringList3("all", "age", "size")
 }
@@ -193,6 +196,12 @@ fn mkSpec(short: byte, long: string, mode: int, consume: []string,
 // The rejected ones keep eza's value mode so their values are consumed before
 // this build's unsupported-option error (design 7.11); --help/--version and
 // -?/-v are deliberately absent and take the unknown-name path.
+//
+// The accept lists for --sort, --classify, --color/--colour and --icons are
+// empty on purpose: eza deduces only the last occurrence, so `--sort=foo
+// --sort=name` lists (it never validates foo). deduce validates the effective
+// value against the same choices and prints eza's wording. The consume lists
+// stay, because they decide whether a separate next token is a value at all.
 fn specs(): []cli::FlagSpec {
     var s = new []cli::FlagSpec(0)
     // views
@@ -206,11 +215,11 @@ fn specs(): []cli::FlagSpec {
     append(s, mkSpec('D', "only-dirs", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
     append(s, mkSpec('f', "only-files", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
     append(s, mkSpec('r', "reverse", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
-    append(s, mkSpec('s', "sort", cli::VALUE_REQUIRED, noStrings(), sortAccept(), sortChoices(), ""))
+    append(s, mkSpec('s', "sort", cli::VALUE_REQUIRED, noStrings(), noStrings(), sortChoices(), ""))
     append(s, mkSpec(byte(0), "group-directories-first", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
     append(s, mkSpec(byte(0), "group-directories-last", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
     // classify and long columns
-    append(s, mkSpec('F', "classify", cli::VALUE_OPTIONAL, whenConsume(), whenAccept(), noStrings(), "auto"))
+    append(s, mkSpec('F', "classify", cli::VALUE_OPTIONAL, whenConsume(), noStrings(), noStrings(), "auto"))
     append(s, mkSpec('B', "bytes", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
     append(s, mkSpec('n', "numeric", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
     append(s, mkSpec(byte(0), "no-user", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
@@ -218,11 +227,11 @@ fn specs(): []cli::FlagSpec {
     append(s, mkSpec(byte(0), "no-filesize", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
     append(s, mkSpec(byte(0), "no-time", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
     append(s, mkSpec(byte(0), "time-style", cli::VALUE_REQUIRED, noStrings(), noStrings(),
-                     stringList4("default", "long-iso", "full-iso", "iso"), ""))
+                     stringList5("default", "long-iso", "full-iso", "iso", "relative"), ""))
     // colour and icons: accepted spellings, E0 rejects rendering `always`
-    append(s, mkSpec(byte(0), "color", cli::VALUE_OPTIONAL, whenConsume(), whenAccept(), noStrings(), "auto"))
-    append(s, mkSpec(byte(0), "colour", cli::VALUE_OPTIONAL, whenConsume(), whenAccept(), noStrings(), "auto"))
-    append(s, mkSpec(byte(0), "icons", cli::VALUE_OPTIONAL, whenConsume(), whenAccept(), noStrings(), "auto"))
+    append(s, mkSpec(byte(0), "color", cli::VALUE_OPTIONAL, whenConsume(), noStrings(), noStrings(), "auto"))
+    append(s, mkSpec(byte(0), "colour", cli::VALUE_OPTIONAL, whenConsume(), noStrings(), noStrings(), "auto"))
+    append(s, mkSpec(byte(0), "icons", cli::VALUE_OPTIONAL, whenConsume(), noStrings(), noStrings(), "auto"))
     // eza-valid options this build rejects (parsed, then reported by name)
     append(s, mkSpec('G', "grid", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
     append(s, mkSpec('x', "across", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
@@ -352,6 +361,40 @@ fn valueMessage(name: string, value: string): string {
     return "option '--" + name + "=" + value + "' is not supported by this build"
 }
 
+// The WHEN values eza's optional-value deduction accepts after '='.
+fn isWhenValue(v: string): bool {
+    return v == "always" || v == "auto" || v == "never" || v == "automatic"
+}
+
+// Linear membership over a caller-built string array (borrowed).
+fn inStrings(xs: &[]string, s: string): bool {
+    for i in 0..len(xs) {
+        if xs[i] == s { return true }
+    }
+    return false
+}
+
+// The "(choices: a, b, c)" tail of a bad-value message; empty for none.
+fn choicesText(xs: &[]string): string {
+    if len(xs) == 0 { return "" }
+    var s = " (choices: "
+    for i in 0..len(xs) {
+        if i > 0 { s = s + ", " }
+        s = s + xs[i]
+    }
+    return s + ")"
+}
+
+// eza's Optional/Option bad-value wording, without the "eza: " prefix.
+fn noSetting(label: string, value: string, choices: []string): string {
+    var m = "Option " + label + " has no \"" + value + "\" setting"
+    if len(choices) > 0 {
+        let tail = choicesText(choices)
+        m = m + tail
+    }
+    return m
+}
+
 // Turn the parsed option occurrences into the effective state. Returns this
 // build's own usage errors (exit 3 at the caller) for values it does not
 // implement and for the restricted long form.
@@ -363,6 +406,12 @@ fn deduce(options: &[]cli::Option): Result[Opts] {
                      noUser: false, noPermissions: false, noFilesize: false,
                      noTime: false, timeStyle: "", timeStyleSeen: false,
                      longView: false}
+    // The effective (last) values of the optional-value flags. eza deduces
+    // only the last occurrence, so an earlier bad value is ignored when a
+    // later valid one replaces it (probed: --sort=foo --sort=name lists).
+    var classifyValue = ""
+    var colorValue = ""
+    var iconsValue = ""
     var k = 0
     while k < len(options) {
         let name = options[k].long
@@ -384,7 +433,7 @@ fn deduce(options: &[]cli::Option): Result[Opts] {
         } else if name == "group-directories-last" {
             o.groupLast = true
         } else if name == "classify" {
-            if value == "always" { o.classifyAlways = true }
+            classifyValue = value
         } else if name == "only-dirs" {
             o.onlyDirs = true
         } else if name == "only-files" {
@@ -409,21 +458,43 @@ fn deduce(options: &[]cli::Option): Result[Opts] {
         } else if name == "oneline" {
             o.longView = false
         } else if name == "color" || name == "colour" {
-            if value == "always" {
-                return err(valueMessage(name, value), 22)
-            }
+            colorValue = value
         } else if name == "icons" {
-            if value == "always" {
-                return err(valueMessage(name, value), 22)
-            }
+            iconsValue = value
         } else if isUnsupported(name) {
             return err(messageFor(name), 22)
         }
         k += 1
     }
-    // E0 sort keys only; eza's valid-but-later values get this build's message.
-    if len(o.sortField) > 0 && isRejectedSort(o.sortField) {
-        return err(valueMessage("sort", o.sortField), 22)
+    // Effective-value validation, in eza's last-occurrence model. The cli
+    // accept lists are deliberately empty for these flags: validating every
+    // occurrence would reject `--sort=foo --sort=name`, which eza accepts.
+    if len(o.sortField) > 0 {
+        let valid = sortAccept()
+        if !inStrings(valid, o.sortField) {
+            return err(noSetting("--sort (-s)", o.sortField, sortChoices()), 22)
+        }
+        // E0 sort keys only; eza's valid-but-later values get this build's
+        // message.
+        if isRejectedSort(o.sortField) {
+            return err(valueMessage("sort", o.sortField), 22)
+        }
+    }
+    if len(classifyValue) > 0 && !isWhenValue(classifyValue) {
+        return err(noSetting("--classify (-F)", classifyValue, noStrings()), 22)
+    }
+    o.classifyAlways = classifyValue == "always"
+    if len(colorValue) > 0 && !isWhenValue(colorValue) {
+        return err(noSetting("--color", colorValue, noStrings()), 22)
+    }
+    if colorValue == "always" {
+        return err(valueMessage("color", "always"), 22)
+    }
+    if len(iconsValue) > 0 && !isWhenValue(iconsValue) {
+        return err(noSetting("--icons", iconsValue, noStrings()), 22)
+    }
+    if iconsValue == "always" {
+        return err(valueMessage("icons", "always"), 22)
     }
     if o.longView {
         // Restricted long: -l is only accepted with the explicit
@@ -750,48 +821,160 @@ fn groupKeys(es: &[]Entry, o: &Opts): []int {
     return out
 }
 
-// The stable E0 order: field sort, then -r over the whole order, then the
-// directory grouping (design 7.5). Every helper keeps input order for equal
-// keys; the exact fixtures have no comparator-equal pairs.
+// A stable merge over an existing order with a string key array. mode 0 is
+// byte order, 1 natural, 2 natural folded. desc is the P0-probed eza rule: a
+// reversed comparator keeps comparator-equal entries in their input order
+// (eza sorts with a stable descending comparison, it does not reverse the
+// resulting vector -- `--sort=size -r` on equal sizes keeps readdir order).
+fn keyCmp(keys: &[]string, i: int, j: int, mode: int): int {
+    if mode == 0 { return strings::cmp(keys[i], keys[j]) }
+    if mode == 1 { return strings::natcmp(keys[i], keys[j]) }
+    return strings::natcmpFold(keys[i], keys[j])
+}
+
+fn mergeDir(order: []int, keys: &[]string, mode: int, desc: bool): []int {
+    let n = len(order)
+    if n < 2 { return order }
+    var aux = new []int(n)
+    var width = 1
+    while width < n {
+        var lo = 0
+        while lo < n {
+            var mid = lo + width
+            if mid > n { mid = n }
+            var hi = mid + width
+            if hi > n { hi = n }
+            var a = lo
+            var b = mid
+            var k = lo
+            while a < mid && b < hi {
+                let c = keyCmp(keys, order[a], order[b], mode)
+                var takeLeft = c <= 0
+                if desc { takeLeft = c >= 0 }
+                if takeLeft {
+                    aux[k] = order[a]
+                    a += 1
+                } else {
+                    aux[k] = order[b]
+                    b += 1
+                }
+                k += 1
+            }
+            while a < mid {
+                aux[k] = order[a]
+                a += 1
+                k += 1
+            }
+            while b < hi {
+                aux[k] = order[b]
+                b += 1
+                k += 1
+            }
+            for t in lo..hi { order[t] = aux[t] }
+            lo = hi
+        }
+        width *= 2
+    }
+    return order
+}
+
+fn copyOrder(xs: &[]int): []int {
+    var out = new []int(len(xs))
+    for i in 0..len(xs) { out[i] = xs[i] }
+    return out
+}
+
+// Stable natural order in the requested direction; comparator-equal names keep
+// their input order in both directions.
+fn orderNaturalDir(keys: &[]string, fold: bool, desc: bool): []int {
+    var mode = 1
+    if fold { mode = 2 }
+    let init = sort::identity(len(keys))
+    return mergeDir(init, keys, mode, desc)
+}
+
+// The same merge over an existing order (the extension pipeline's passes).
+fn sortOrderStringsDir(order: &[]int, keys: &[]string, desc: bool): []int {
+    let init = copyOrder(order)
+    return mergeDir(init, keys, 0, desc)
+}
+
+// A new int array with every key negated: a stable ascending sort of it is the
+// stable descending sort of the original (ties keep their order, unlike the
+// vector reversal the design note describes; the live probe pins this).
+fn negKeys(xs: &[]int): []int {
+    var out = new []int(len(xs))
+    for i in 0..len(xs) { out[i] = -xs[i] }
+    return out
+}
+
+// The E0 order. The field sort is ascending or a stable descending comparison
+// under -r (probe-confirmed: ties keep readdir order), then the directory
+// grouping is a final stable sort in either mode. Every helper keeps input
+// order for equal keys; the committed fixtures also avoid comparator ties.
 fn sortEntries(es: &[]Entry, v: &View, o: &Opts): []int {
     let f = o.sortField
     var order = sort::identity(len(es))
     if f == "" || f == "name" || f == "filename" {
         let ks = nameKeys(es)
-        order = sort::orderNatural(ks, true)
+        order = orderNaturalDir(ks, true, o.reverse)
     } else if f == "Name" || f == "Filename" {
         let ks = nameKeys(es)
-        order = sort::orderNatural(ks, false)
+        order = orderNaturalDir(ks, false, o.reverse)
     } else if isSizeSort(f) {
         let ks = sizeKeys(es)
-        order = sort::sortOrderInts(&order, &ks)
+        if o.reverse {
+            let nk = negKeys(ks)
+            order = sort::sortOrderInts(&order, &nk)
+        } else {
+            order = sort::sortOrderInts(&order, &ks)
+        }
     } else if isModifiedSort(f) {
         let ns = nsecKeys(es)
         let sec = secKeys(es)
-        let o1 = sort::sortOrderInts(&order, &ns)
-        order = sort::sortOrderInts(&o1, &sec)
+        if o.reverse {
+            let nk = negKeys(ns)
+            let sk = negKeys(sec)
+            let o1 = sort::sortOrderInts(&order, &nk)
+            order = sort::sortOrderInts(&o1, &sk)
+        } else {
+            let o1 = sort::sortOrderInts(&order, &ns)
+            order = sort::sortOrderInts(&o1, &sec)
+        }
     } else if f == "extension" || f == "ext" {
         let ks = nameKeys(es)
-        let pre = sort::orderNatural(ks, true)
+        let pre = orderNaturalDir(ks, true, o.reverse)
         let ek = extKeys(es, v.operand)
         let hk = extHasKeys(es, v.operand)
-        let o1 = sort::sortOrderStrings(&pre, &ek)
-        order = sort::sortOrderInts(&o1, &hk)
+        let o1 = sortOrderStringsDir(&pre, &ek, o.reverse)
+        if o.reverse {
+            let nh = negKeys(hk)
+            order = sort::sortOrderInts(&o1, &nh)
+        } else {
+            order = sort::sortOrderInts(&o1, &hk)
+        }
     } else if f == "Extension" || f == "Ext" {
         let ks = nameKeys(es)
-        let pre = sort::orderNatural(ks, false)
+        let pre = orderNaturalDir(ks, false, o.reverse)
         let ek = extKeys(es, v.operand)
         let hk = extHasKeys(es, v.operand)
-        let o1 = sort::sortOrderStrings(&pre, &ek)
-        order = sort::sortOrderInts(&o1, &hk)
+        let o1 = sortOrderStringsDir(&pre, &ek, o.reverse)
+        if o.reverse {
+            let nh = negKeys(hk)
+            order = sort::sortOrderInts(&o1, &nh)
+        } else {
+            order = sort::sortOrderInts(&o1, &hk)
+        }
     } else {
         let ks = nameKeys(es)
-        let pre = sort::orderNatural(ks, false)
+        let pre = orderNaturalDir(ks, false, o.reverse)
         let tk = typeKeys(es)
-        order = sort::sortOrderInts(&pre, &tk)
-    }
-    if o.reverse {
-        sort::reverse(order)
+        if o.reverse {
+            let rk = negKeys(tk)
+            order = sort::sortOrderInts(&pre, &rk)
+        } else {
+            order = sort::sortOrderInts(&pre, &tk)
+        }
     }
     if o.groupFirst || o.groupLast {
         let gk = groupKeys(es, o)
