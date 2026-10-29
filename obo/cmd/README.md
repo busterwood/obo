@@ -176,8 +176,12 @@ measures about 184 ms against GNU `sort` 9.4's 250 ms and the benchmark's
 Python 604 ms; it was about 1,838 ms with the former readLine + index merge.
 Sorted input measures about 63 ms (GNU 85 ms), a 22 MB random variable-length
 file 309 ms (GNU 331 ms), and a 73 MB file whose lines share a 64-byte prefix
-728 ms (GNU 478 ms) -- the one measured shape where a comparison sort with
-`memcmp` still wins.
+650 ms (GNU 480 ms) -- the one measured shape where a comparison sort with
+`memcmp` still wins. Peak RSS on the 9 MB/1,000,000-line file is about 41 MB
+(GNU `sort` 9.4 uses about 137 MB there) and about 103 MB on the 73 MB file;
+`-n` is about 135 MB because of its key records, and remains the slow path
+(about 2.4 s on 1,000,000 lines) because it still parses two owned digit
+strings per line and merges with a comparator call per comparison.
 
 ## eza (E0 + E1)
 

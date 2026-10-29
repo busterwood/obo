@@ -296,10 +296,23 @@ fn lineStarts(buf: &[]byte): []int {
     if m == 0 { return starts }
     append(starts, 0)
     var i = 0
+    while i + 8 <= m {
+        if buf[i] == '\n' { append(starts, i + 1) }
+        if buf[i + 1] == '\n' { append(starts, i + 2) }
+        if buf[i + 2] == '\n' { append(starts, i + 3) }
+        if buf[i + 3] == '\n' { append(starts, i + 4) }
+        if buf[i + 4] == '\n' { append(starts, i + 5) }
+        if buf[i + 5] == '\n' { append(starts, i + 6) }
+        if buf[i + 6] == '\n' { append(starts, i + 7) }
+        if buf[i + 7] == '\n' { append(starts, i + 8) }
+        i += 8
+    }
     while i < m {
-        if buf[i] == '\n' && i + 1 < m { append(starts, i + 1) }
+        if buf[i] == '\n' { append(starts, i + 1) }
         i += 1
     }
+    // the final newline's sentinel (the end of the buffer) is not a line start
+    if starts[len(starts) - 1] == m { truncate(starts, len(starts) - 1) }
     return starts
 }
 
@@ -657,7 +670,8 @@ fn writeExactly(fd: int, data: &[]byte): Result[bool] {
 }
 
 // Emit the lines at the kept start offsets. Blocks are filled by byte copy and
-// flushed with writeFd; a line longer than a block is written on its own.
+// flushed with writeFd; the copy runs until the block is full, so a line longer
+// than a block simply spans several blocks and costs one pass over its bytes.
 fn emit(fd: int, buf: &[]byte, kept: &[]int): Result[bool] {
     let nb = len(kept)
     if nb == 0 { return ok(true) }
@@ -666,36 +680,30 @@ fn emit(fd: int, buf: &[]byte, kept: &[]int): Result[bool] {
     var i = 0
     while i < nb {
         let s = kept[i]
-        var e = s
-        while buf[e] != '\n' { e += 1 }
-        let need = e - s + 1
-        if used + need > 65536 {
-            if used == 65536 {
-                try writeExactly(fd, block)
-            } else if used > 0 {
-                truncate(block, used)
-                try writeExactly(fd, block)
-                block = new []byte(65536)
-            }
-            used = 0
-            if need > 65536 {
-                var piece = new []byte(need)
-                var t = 0
-                while t < need {
-                    piece[t] = buf[s + t]
-                    t += 1
-                }
-                try writeExactly(fd, piece)
-                i += 1
-                continue
-            }
-        }
         var k = s
-        while k <= e {
-            block[used] = buf[k]
-            used += 1
-            k += 1
+        var done = false
+        while !done {
+            let room = 65536 - used
+            var j = 0
+            while j < room {
+                let b = buf[k]
+                if b == '\n' {
+                    done = true
+                    break
+                }
+                block[used + j] = b
+                j += 1
+                k += 1
+            }
+            used += j
+            if !done {
+                // the block is full (used == 65536) and the line continues
+                try writeExactly(fd, block)
+                used = 0
+            }
         }
+        block[used] = '\n'
+        used += 1
         i += 1
     }
     if used > 0 {
