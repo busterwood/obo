@@ -4,8 +4,8 @@
     python3 obo/tools/build_tools.py [TOOL ...] [--out DIR] [--obo PATH] [--rt DIR]
 
 Each tool source under cmd/ is compiled directly by the ordinary compiler;
-there is no concatenation. cat, wc and sort import ../lib/io.obx as `io` and
-../lib/strings.obx as `strings`, so the compiler compiles those modules
+there is no concatenation. The tools import from ../lib (io, strings, fmt and
+errors, as needed), so the compiler compiles those modules
 dependency-first and writes their .sym files. The rule within a file is still
 declare-before-use.
 
@@ -40,7 +40,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../obo
 TOOLS = ('cat', 'wc', 'sort')
 SRCDIR = 'cmd'                       # the tool roots live in obo/cmd/
-LIB_MODULES = ('io.obx', 'strings.obx')
+LIB_MODULES = ('io.obx', 'strings.obx', 'fmt.obx', 'errors.obx')
 
 PROBE = '''// phase-2 builtin probe: compile only, never run
 fn main() {

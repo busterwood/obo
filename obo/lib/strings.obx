@@ -2,7 +2,7 @@
 // tools and the eza stdlib. It is a source module (`module strings`);
 // importers write
 //
-//     import "../lib/strings.obx" as strings      // from obo/programs/
+//     import "../lib/strings.obx" as strings      // from obo/cmd/
 //     import "strings.obx" as strings             // from obo/lib/
 //
 // and reach exported declarations as strings::name. Within a file a declaration
@@ -16,11 +16,9 @@
 // parent-prefix primitive. Everything is byte-wise: there is no UTF-8 decoding,
 // no locale and no case folding beyond ASCII.
 //
-// P1 compatibility (design stdlib-eza-design-v7 section 4.3): cmpBytes, errText,
-// digits and appendPadded are temporary. The merged tools (cat, wc, sort) call
-// them and must keep compiling and behaving identically until P2 moves them to
-// errors/fmt. cmpBytes is a wrapper over cmp, whose body is the surviving
-// implementation, so P2 can delete the wrapper without touching cmp.
+// The P1 compatibility functions (cmpBytes, errText, digits, appendPadded) were
+// removed in P2: cmp is the byte-order name that survives, errno text lives in
+// errors.obx and number formatting in fmt.obx (design section 4.3).
 //
 // Ownership follows section 5.0: strings are borrowed, returned strings are
 // owed by the caller, and an array parameter is borrowed unless its type is
@@ -52,8 +50,8 @@ pub fn isDigit(b: byte): bool {
     return b >= '0' && b <= '9'
 }
 
-// unsigned byte-wise lexicographic order; -1, 0 or 1. The body lives here and
-// cmpBytes is its pre-P2 alias, so cmp survives the compatibility removal.
+// unsigned byte-wise lexicographic order; -1, 0 or 1. This is the only
+// byte-order name: P1's temporary cmpBytes wrapper was removed in P2.
 pub fn cmp(a: string, b: string): int {
     var n = len(a)
     if len(b) < n { n = len(b) }
@@ -64,64 +62,6 @@ pub fn cmp(a: string, b: string): int {
     if len(a) < len(b) { return -1 }
     if len(a) > len(b) { return 1 }
     return 0
-}
-
-// temporary P1 compatibility: the merged tools call cmpBytes; P2 removes it and
-// they call cmp instead. Behavior is unchanged.
-pub fn cmpBytes(a: string, b: string): int {
-    return cmp(a, b)
-}
-
-// temporary P1 compatibility: P2 moves this text to errors::text. The fixed
-// C-locale text for the errnos the tools can encounter; LC_ALL=C is pinned by
-// the differential, so this is English regardless of the user's locale.
-pub fn errText(code: int): string {
-    if code == 2 { return "No such file or directory" }
-    if code == 5 { return "Input/output error" }
-    if code == 9 { return "Bad file descriptor" }
-    if code == 11 { return "Resource temporarily unavailable" }
-    if code == 13 { return "Permission denied" }
-    if code == 20 { return "Not a directory" }
-    if code == 21 { return "Is a directory" }
-    if code == 22 { return "Invalid argument" }
-    if code == 24 { return "Too many open files" }
-    if code == 28 { return "No space left on device" }
-    if code == 32 { return "Broken pipe" }
-    if code == 36 { return "File name too long" }
-    if code == 40 { return "Too many levels of symbolic links" }
-    return "error " + string(code)
-}
-
-// temporary P1 compatibility: P2 moves digits/appendPadded to fmt. Decimal
-// digit count of a non-negative int; digits(0) is 1.
-pub fn digits(n: int): int {
-    var d = 1
-    var v = n
-    while v >= 10 {
-        v = v / 10
-        d += 1
-    }
-    return d
-}
-
-// temporary P1 compatibility: P2 moves this to fmt. Append n right-aligned in
-// width (width 0 means no padding) to a byte buffer. The digits are produced by
-// an inline power-of-ten loop, so no per-line string is allocated. Used by cat's
-// batched number prefixes.
-pub fn appendPadded(mut buf: &[]byte, n: int, width: int) {
-    var d = digits(n)
-    if d < width {
-        for i in 0..(width - d) { append(buf, ' ') }
-    }
-    var p = 1
-    for i in 1..d { p *= 10 }
-    var v = n
-    for i in 0..d {
-        let digit = v / p
-        append(buf, byte('0' + digit))
-        v = v - digit * p
-        if p > 1 { p = p / 10 }
-    }
 }
 
 // bytes [start, start+len(sub)) of s equal sub; the caller checks the bounds

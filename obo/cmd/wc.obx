@@ -1,9 +1,10 @@
 // wc: count lines, words and bytes, with -l, -w and -c.
 //
 // Built as a module root by tools/build_tools.py: it imports lib/io.obx as
-// `io` and lib/strings.obx as `strings`, and every library name is qualified.
-// The subset is deliberate: -m, -L, --files0-from, long options,
-// --help and --version are unsupported (see cmd/README.md).
+// `io`, lib/strings.obx as `strings`, lib/fmt.obx as `fmt` and lib/errors.obx
+// as `errors`, and every library name is qualified. The subset is deliberate:
+// -m, -L, --files0-from, long options, --help and --version are unsupported
+// (see cmd/README.md).
 //
 // The C-locale word rule is GNU's: whitespace (space, tab, LF, VT, FF, CR) ends
 // a word, a printable byte 0x21..0x7E starts or continues one, and every other
@@ -26,6 +27,8 @@
 
 import "../lib/io.obx" as io
 import "../lib/strings.obx" as strings
+import "../lib/fmt.obx" as fmt
+import "../lib/errors.obx" as errors
 
 type Counts = ref record {
     lines: int
@@ -86,7 +89,7 @@ fn wcOperand(path: string, label: string, mut stats: &[]WcStat): bool {
                 return true
             }
             err {
-                eprintln("wc: -: ", strings::errText(rr.code))
+                eprintln("wc: -: ", errors::text(rr.code))
                 append(stats, new WcStat{label: label, counts: c, unknown: true, isStdin: true})
                 return false
             }
@@ -105,7 +108,7 @@ fn wcOperand(path: string, label: string, mut stats: &[]WcStat): bool {
                     return true
                 }
                 err {
-                    eprintln("wc: ", path, ": ", strings::errText(rr.code))
+                    eprintln("wc: ", path, ": ", errors::text(rr.code))
                     var unknown = false
                     if rr.code == 21 { unknown = true }
                     append(stats, new WcStat{label: path, counts: c, unknown: unknown, isStdin: false})
@@ -114,7 +117,7 @@ fn wcOperand(path: string, label: string, mut stats: &[]WcStat): bool {
             }
         }
         err {
-            eprintln("wc: ", path, ": ", strings::errText(f.code))
+            eprintln("wc: ", path, ": ", errors::text(f.code))
             return false
         }
     }
@@ -133,17 +136,17 @@ fn columnCount(opts: &WcOpts): int {
 fn emitStat(mut w: &io::Writer, s: &WcStat, opts: &WcOpts, width: int): Result[bool] {
     var first = true
     if opts.lines {
-        try io::writePadded(w, s.counts.lines, width)
+        try fmt::writePadded(w, s.counts.lines, width)
         first = false
     }
     if opts.words {
         if !first { try io::write(w, " ") }
-        try io::writePadded(w, s.counts.words, width)
+        try fmt::writePadded(w, s.counts.words, width)
         first = false
     }
     if opts.bytes {
         if !first { try io::write(w, " ") }
-        try io::writePadded(w, s.counts.bytes, width)
+        try fmt::writePadded(w, s.counts.bytes, width)
         first = false
     }
     if len(s.label) > 0 {
@@ -226,7 +229,7 @@ fn main() {
             if stats[si].unknown { anyUnknown = true }
             si += 1
         }
-        width = strings::digits(sizeSum)
+        width = fmt::digits(sizeSum)
         if anyUnknown && width < 7 { width = 7 }
     }
 

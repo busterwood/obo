@@ -1,26 +1,29 @@
-// write_padded: io::writePadded. One fixed sequence exercises
+// write_padded: fmt::writePadded. One fixed sequence exercises
 // width 0 (no padding), a padded zero, values narrower/wider than the width and
 // a width larger than the digits; each is written through Writer thresholds 1,
 // 3, 8 and 65536 so the flush-inside-writePadded path is covered too. The file
 // is read back and compared byte for byte; OBO_CHECK=1 covers leaks and fds.
+// P2 moved writePadded from io to fmt; the io import stays for Writer,
+// newWriter, write and flush.
 // expect: case 1 ok
 // expect: case 3 ok
 // expect: case 8 ok
 // expect: case 65536 ok
 import "io.obx" as io
+import "fmt.obx" as fmt
 
 fn emitSeq(mut w: &io::Writer): Result[bool] {
-    try io::writePadded(w, 0, 0)
+    try fmt::writePadded(w, 0, 0)
     try io::write(w, "|")
-    try io::writePadded(w, 0, 2)
+    try fmt::writePadded(w, 0, 2)
     try io::write(w, "|")
-    try io::writePadded(w, 7, 5)
+    try fmt::writePadded(w, 7, 5)
     try io::write(w, "|")
-    try io::writePadded(w, 42, 1)
+    try fmt::writePadded(w, 42, 1)
     try io::write(w, "|")
-    try io::writePadded(w, 1000001, 6)
+    try fmt::writePadded(w, 1000001, 6)
     try io::write(w, "|")
-    try io::writePadded(w, 999999, 8)
+    try fmt::writePadded(w, 999999, 8)
     try io::write(w, "\n")
     return ok(true)
 }

@@ -11,7 +11,8 @@ Sections (all by default):
             exits 0/8/9, the gated OBO_IO_FAULT hooks with and without
             OBO_CHECK, and no leak on the normal paths.
   programs  compiles tests/io/*.obx (standalone) and tests/lib/*.obx (as module
-            roots importing io.obx, with -I obo/lib and a private sym dir) and
+            roots importing lib modules such as io.obx and fmt.obx, with
+            -I obo/lib and a private sym dir) and
             runs each with its stdin, env and extra arguments; the // expect: and
             // expect-exit: markers are checked as in run_fork.py.
   tools     builds cmd/{cat,wc}.obx with tools/build_tools.py (module

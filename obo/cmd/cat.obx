@@ -1,9 +1,9 @@
 // cat: concatenate operands to stdout, with -n, -b, -s, -E and -T.
 //
 // Built as a module root by tools/build_tools.py: it imports lib/io.obx as
-// `io` and lib/strings.obx as `strings`, and every library name is qualified.
-// The subset is deliberate: -v, -e, -t, -A, -u, long options, --help and
-// --version are unsupported (see cmd/README.md).
+// `io`, lib/fmt.obx as `fmt` and lib/errors.obx as `errors`, and every library
+// name is qualified. The subset is deliberate: -v, -e, -t, -A, -u, long
+// options, --help and --version are unsupported (see cmd/README.md).
 //
 // The logical stream spans operands: the line number, the blank-line squeeze
 // state and a partially written line continue from one file to the next. A
@@ -19,7 +19,8 @@
 // later operand. Both exit 1.
 
 import "../lib/io.obx" as io
-import "../lib/strings.obx" as strings
+import "../lib/fmt.obx" as fmt
+import "../lib/errors.obx" as errors
 
 type CatOpts = ref record {
     numberEvery: bool      // -n
@@ -72,7 +73,7 @@ fn catChunk(mut w: &io::Writer, mut scratch: &[]byte, data: &[]byte, opts: &CatO
                     } else {
                         if opts.numberEvery && !opts.numberNonBlank {
                             st.lineNo += 1
-                            strings::appendPadded(scratch, st.lineNo, 6)
+                            fmt::appendPadded(scratch, st.lineNo, 6)
                             append(scratch, '\t')
                         }
                         if opts.showEnds { append(scratch, '$') }
@@ -82,7 +83,7 @@ fn catChunk(mut w: &io::Writer, mut scratch: &[]byte, data: &[]byte, opts: &CatO
                 } else {
                     st.lineNo += 1
                     if opts.numberEvery || opts.numberNonBlank {
-                        strings::appendPadded(scratch, st.lineNo, 6)
+                        fmt::appendPadded(scratch, st.lineNo, 6)
                         append(scratch, '\t')
                     }
                     st.atLineStart = false
@@ -135,7 +136,7 @@ fn catReader(mut r: &io::Reader, mut w: &io::Writer, mut scratch: &[]byte, opts:
         match rr {
             ok { }
             err {
-                eprintln("cat: write error: ", strings::errText(rr.code))
+                eprintln("cat: write error: ", errors::text(rr.code))
                 st.fatal = true
                 return ok(false)
             }
@@ -153,7 +154,7 @@ fn catOperand(path: string, mut w: &io::Writer, mut scratch: &[]byte, opts: &Cat
         match rr {
             ok { if !rr.value { return false } }
             err {
-                eprintln("cat: -: ", strings::errText(rr.code))
+                eprintln("cat: -: ", errors::text(rr.code))
                 st.failed = true
             }
         }
@@ -169,13 +170,13 @@ fn catOperand(path: string, mut w: &io::Writer, mut scratch: &[]byte, opts: &Cat
             match rr {
                 ok { if !rr.value { return false } }
                 err {
-                    eprintln("cat: ", path, ": ", strings::errText(rr.code))
+                    eprintln("cat: ", path, ": ", errors::text(rr.code))
                     st.failed = true
                 }
             }
         }
         err {
-            eprintln("cat: ", path, ": ", strings::errText(f.code))
+            eprintln("cat: ", path, ": ", errors::text(f.code))
             st.failed = true
         }
     }
@@ -250,7 +251,7 @@ fn main() {
         match wr {
             ok { }
             err {
-                eprintln("cat: write error: ", strings::errText(wr.code))
+                eprintln("cat: write error: ", errors::text(wr.code))
                 exit(1)
             }
         }
@@ -260,7 +261,7 @@ fn main() {
         match fl {
             ok { }
             err {
-                eprintln("cat: write error: ", strings::errText(fl.code))
+                eprintln("cat: write error: ", errors::text(fl.code))
                 exit(1)
             }
         }

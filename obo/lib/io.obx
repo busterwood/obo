@@ -6,8 +6,9 @@
 //
 // and reach exported declarations as io::name. Within a file a declaration may
 // use only earlier declarations, so this file's functions are ordered callees
-// first. The module is dependency-free: writePadded (at the end) has its own
-// digit-width loop instead of strings::digits, and defines no main.
+// first. The module is dependency-free (builtins only) and defines no main.
+// Number formatting lives in fmt.obx; P2 moved writePadded there and added
+// writeByte here (design stdlib-eza-design-v7 section 5.5).
 //
 // A Reader or Writer owns only its byte buffer; the fd is borrowed (an int has
 // no owner), so the caller closes what it opened and the library never closes
@@ -188,6 +189,16 @@ pub fn writeBytes(mut w: &Writer, data: &[]byte): Result[bool] {
     return ok(true)
 }
 
+// Append one byte, flushing at the Writer's threshold. The same threshold and
+// error rule as write/writeBytes: on a flush error the byte stays in buf with
+// the unwritten tail and the caller may retry. (P2 addition; the eza layer uses
+// it for one-byte separators.)
+pub fn writeByte(mut w: &Writer, b: byte): Result[bool] {
+    append(w.buf, b)
+    if len(w.buf) >= w.size { try flush(w) }
+    return ok(true)
+}
+
 // Streaming copy: fill as soon as any data is available, move the bytes out of
 // the reader, write them and flush, so a pipe delivers each chunk promptly.
 pub fn pump(mut r: &Reader, mut w: &Writer): Result[bool] {
@@ -211,34 +222,4 @@ pub fn count(mut r: &Reader): Result[int] {
         let chunk = takeChunk(r)
         n += len(chunk)
     }
-}
-
-// Write the non-negative int n right-aligned in width (width 0: no padding)
-// through a Writer, flushing at the Writer's threshold. Self-contained: it has
-// its own digit-width loop rather than strings::digits, so the io module stays
-// dependency-free. Used by wc's counts.
-pub fn writePadded(mut w: &Writer, n: int, width: int): Result[bool] {
-    var d = 1
-    var v = n
-    while v >= 10 {
-        v = v / 10
-        d += 1
-    }
-    if d < width {
-        for i in 0..(width - d) {
-            append(w.buf, ' ')
-            if len(w.buf) >= w.size { try flush(w) }
-        }
-    }
-    var p = 1
-    for i in 1..d { p *= 10 }
-    var r = n
-    for i in 0..d {
-        let digit = r / p
-        append(w.buf, byte('0' + digit))
-        if len(w.buf) >= w.size { try flush(w) }
-        r = r - digit * p
-        if p > 1 { p = p / 10 }
-    }
-    return ok(true)
 }

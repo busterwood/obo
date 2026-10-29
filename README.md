@@ -33,17 +33,20 @@ source imports and exports (Stage 1: `module`, `import "Name.obx" [as alias]`,
 `--check`, `--sym-dir`, `--emit-sym`, `--version` and staleness/version checks
 (Stage 2). A full build still compiles every module body from source; `--check`
 checks a module against its dependencies' symbol files, including dependencies
-without sources. The tools are now module roots: each source in
-`obo/cmd/` imports `../lib/io.obx` as `io` and
-`../lib/strings.obx` as `strings`, and `obo/tools/build_tools.py` compiles it
-directly with the ordinary compiler; nothing is concatenated. Each build gets a
+without sources. The tools are now module roots: each source in `obo/cmd/`
+imports the `../lib/...` modules it uses (all three take `io`; `cat` takes
+`fmt` and `errors`, `wc` takes `strings`, `fmt` and `errors`, `sort` takes
+`strings` and `errors`), and `obo/tools/build_tools.py` compiles it directly
+with the ordinary compiler; nothing is concatenated. Each build gets a
 symbol directory under its output (`build/tools/sym` for `make tools`), created
 by the builder. Concurrent builds must use distinct output directories; a shared
 output has one symbol directory and one probe name.
-The tools live in `cmd/`, and `io::writePadded` stays in the I/O
-module for this migration; the wider stdlib split (a `fmt` module) is
-later (recorded in `obo/FORK.md`). The exact subset, message forms and
-caveats are in `obo/LANGUAGE.md` section 6 and `obo/cmd/README.md`.
+The tools live in `cmd/`, and their libraries are source modules under `lib/`:
+`strings`, `paths`, `sort`, `time`, `cli`, `io`, `fmt` and `errors`. `cat`,
+`wc` and `sort` import only what they use (`io`/`fmt`/`errors`, plus `strings`
+for `wc` and `sort`); `fmt` owns the digit and padding helpers, and `errors`
+owns the errno text and the eza-shaped exit constants. The exact subset, message
+forms and caveats are in `obo/LANGUAGE.md` section 6 and `obo/cmd/README.md`.
 
 **obx** was the original garbage-collected dialect and the compiler obo grew from.
 It is kept as the historical reference; the "History: mainline obx" section below
@@ -88,12 +91,18 @@ change from that work.
 | Live-memory budget | 2,000,000 bytes (363,824 spare) |
 | obo suite | 1,130 tests; 527/549 mutants caught + 22 equivalent; 27 runtime/library; 495 port; 27 symbol-file tests; 200 fuzz mutations |
 | Tools differential gate | 199 checks (191 matrix + 8 serial) vs GNU coreutils 9.4; 2 memory cases (module roots) |
-| Tool binaries | cat 36,865; wc 40,961; sort 45,057 bytes (static, runtime included) |
+| Tool binaries | cat 40,961; wc 53,249; sort 53,249 bytes (static, runtime included) |
 | Minimal static executable | 28,673 bytes (runtime included) |
 
-Memory figures vary by a few hundred bytes with the source path; these are the
-merged-tree gate values. The tools work did not change the compiler, runtime or
-seed; their runtime is included in the tool binary sizes above. The old
+Live peak varies by a few hundred bytes with the source path and total
+allocation by about 1.9 KB; the table keeps the main-tree gate values, and the
+`port_compare` gate in this worktree measures 1,636,336 live and 35,078,496
+allocated (both far under the 2,000,000-byte budget). The tools work did not
+change the compiler, runtime or
+seed; their runtime is included in the tool binary sizes above. P2b's `fmt`/
+`errors` split compiles whole modules into each tool, so the tool binaries grew
+from cat 36,865 / wc 40,961 / sort 45,057 to the sizes above; their observable
+output is byte-identical. The old
 493,280-byte compiler and seed, tool binaries 108,256/108,256/112,352, and the
 earlier 90,848-byte minimal figure are historical. The
 minimal executable measured in this tree before the fix was 95,968 bytes (the
@@ -128,7 +137,7 @@ coreutils-shaped `cat`, `wc` and `sort`; then `eza` (the maintained exa fork), `
 | 2. Incremental I/O: `openFile`/`readFd`/`writeFd`/`closeFile`, standard fds, `Reader`/`Writer` | done |
 | 3. `cat`, `wc`, `sort` and the GNU differential gate | done |
 | 4. Multiple modules | done: Stage 1 source imports, Stage 2 `.sym`/`--check`; the tools and their libraries are module roots |
-| 5. Stdlib modules and the `eza` core | planned |
+| 5. Stdlib modules and the `eza` core | in progress: the P1/P2 stdlib modules are in `lib/`; the `eza` core follows P3 |
 | 6. Methods, interfaces and lambdas | planned |
 | 7. Peephole/optimizer audit | evidence-gated |
 | 8. More tools: `fd`, `hexyl`, `tokei`, `jq` | later |
@@ -272,7 +281,7 @@ through a handle) and over the globals `code` and `ownedLocals`; this change did
 |---|---|
 | `obo/src/obo.obo` | obo's compiler, in obo, built by `obo/seed/obo` (promote with `make promote`) |
 | `obo/seed/obo` | the trusted previous stage |
-| `obo/lib/` | the source modules `io.obx` (buffered `Reader`/`Writer`, `writePadded`) and `strings.obx` (byte helpers) |
+| `obo/lib/` | the source modules under `lib/`: `strings` (byte helpers), `paths`, `sort`, `time`, `cli`, `io` (buffered `Reader`/`Writer`, `writeByte`), `fmt` (digits, padding, `modeString`) and `errors` (errno text, exit codes) |
 | `obo/cmd/` | the first tools: `cat`, `wc`, `sort`, with `README.md` |
 | `obo/tests/` | obo's suite, mutants, the I/O gates and the tools differential gate |
 | `obo/tests/io_test.py` | the runtime and streaming-I/O gates |

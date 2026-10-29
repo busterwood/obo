@@ -1291,11 +1291,16 @@ fn main() {
 
 `obo/lib/io.obx` is a source module (`module io`) that builds buffered
 `Reader`/`Writer` types on these builtins (`fill`, `readLine`, `readN`,
-`readByte`, `takeChunk`, `flush`, `pump`, `count`) and adds `writePadded`;
+`readByte`, `takeChunk`, `flush`, `pump`, `count`) and adds `writeByte`;
 importers write `import "../lib/io.obx" as io` (or `"io.obx"` with `-I obo/lib`)
 and qualify the names (`io::newReader`, `io::flush`). Its own header documents
-the API and the fd-is-borrowed rule. `obo/lib/strings.obx` (`module strings`)
-holds the byte helpers the tools share.
+the API and the fd-is-borrowed rule. The rest of the stdlib is a set of source
+modules under `obo/lib/`: `strings` (`cmp`, split/join, trim, natord and
+QuoteSpaces helpers), `paths`, `sort`, `time`, `cli`, `fmt` (`digits`,
+`appendPadded`, `writePadded`, `modeString`) and `errors` (C-locale errno
+`text`, `osError`, `debugPath` and the eza-shaped `EXIT_*` constants). P2 moved
+`writePadded` from `io` and the digit/padding helpers from `strings` into
+`fmt`, and removed the four P1 compatibility functions.
 
 ## 9. Runtime checks and exit codes
 
