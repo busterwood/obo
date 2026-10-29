@@ -35,9 +35,9 @@ REF = os.path.abspath(os.environ.get('OBO_REF', os.path.join(FORK, 'obo')))
 SRC = os.path.join(FORK, 'src', 'obo.obo')
 LIBDIR = os.path.join(FORK, 'lib')
 # live peak, in bytes, of the port compiling itself. Lower it when memory improves; raise it only
-# for a reason recorded in FORK.md. The P3 tree measures 1,642,416 bytes live and 35,253,408 bytes
-# total allocation (FORK.md, "Runtime metadata: slots 33-36"); the budget stays 2,000,000
-# (357,584 spare above that peak). The figure is for the current tree and varies by a few hundred
+# for a reason recorded in FORK.md. The P5a tree measures 1,645,424 bytes live and 35,359,504 bytes
+# total allocation (FORK.md, "Environment metadata: slots 37-38"); the budget stays 2,000,000
+# (354,576 spare above that peak). The figure is for the current tree and varies by a few hundred
 # bytes with the source path. Leaks are caught separately, by port_test's leak check.
 PEAK_BUDGET = 2_000_000
 
