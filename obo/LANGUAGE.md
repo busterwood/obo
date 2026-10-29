@@ -1417,7 +1417,10 @@ fn main() {
 (`ENOTTY`), invalid (`EBADF`) or negative, and `0` when the terminal reports a
 zero column count (unknown; a fresh pty may do so). It never consults the fd
 table and allocates nothing, with the same closed/reused-descriptor caveat and
-`EINTR` retry as `isatty`. Callers fall back to 80 for an unknown width.
+`EINTR` retry as `isatty`. The descriptor is handed to the kernel as its 32-bit
+`int`, so a value outside 0..0xFFFFFFFF reaches the kernel as its low 32 bits;
+this is pre-existing and shared by `isatty` and the other fd builtins. Callers
+fall back to 80 for an unknown width.
 
 ```obo
 // example: runs

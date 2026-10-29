@@ -743,6 +743,7 @@ static void case_termwidth_checks(const char *dir) {
      * the reused descriptor, and a regular file is still 0, never a trap */
     i64 again = sys3(2, (i64)p, 0, 0);
     CHECK(again >= 0);
+    CHECK(again == fd);                            /* the number really was reused */
     CHECK(rt_term_width(again) == 0);
     CHECK(sys3(3, again, 0, 0) == 0);
     /* the pty: a fresh one may report 0x0, so set a size and read it back; the
@@ -753,6 +754,8 @@ static void case_termwidth_checks(const char *dir) {
     CHECK(rt_term_width(s) == 80);
     set_winsize(m, 43, 132);
     CHECK(rt_term_width(s) == 132);
+    set_winsize(s, 24, 40000);                     /* above 16 bits' signed range: u16 widened */
+    CHECK(rt_term_width(s) == 40000);
     set_winsize(s, 7, 0);                          /* a zero column count is unknown */
     CHECK(rt_term_width(s) == 0);
     CHECK(sys3(3, s, 0, 0) == 0 && sys3(3, m, 0, 0) == 0);

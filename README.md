@@ -98,7 +98,7 @@ seed is promoted once after review.
 | Total allocated | 35,355,536 bytes |
 | Maximum resident set | 2,976 KB (3 runs on this branch) |
 | Live-memory budget | 2,000,000 bytes (353,024 spare) |
-| obo suite | 1,164 tests; 527/549 mutants caught + 22 equivalent; 27 runtime/library; 495 port; 27 symbol-file tests; 200 fuzz mutations; 34 metadata checks; 50/52 + 2 and 21/30 + 9 metadata mutants caught/equivalent |
+| obo suite | 1,165 tests; 527/549 mutants caught + 22 equivalent; 27 runtime/library; 495 port; 27 symbol-file tests; 200 fuzz mutations; 34 metadata checks; 50/52 + 2 and 21/30 + 9 metadata mutants caught/equivalent |
 | Tools differential gate | 199 checks (191 matrix + 8 serial) vs GNU coreutils 9.4; 2 memory cases (module roots) |
 | Tool binaries | cat 40,961; wc 53,249; sort 53,249 bytes (static, runtime included) |
 | eza E0 differential gate | 272/272 non-memory (214 exact goldens replayed against the pinned reference, 42 live, 16 own) + 2 memory cases |
