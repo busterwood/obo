@@ -156,10 +156,13 @@ read: `sort: read failed: <p>: <text>`, exit 2, no stdout. A write error prints
 compares).
 
 Sort is in memory: peak is linear in the input. The input is one byte buffer
-plus one start offset per line; a single regular-file operand is read in one
-allocation with no copy, while stdin and several operands hold the read chunks
-until that buffer is assembled (about twice the input, transiently), and `-n`
-adds four int arrays indexed by line (integer end, significant integer length,
+plus one start offset per line; a single regular-file operand whose reported
+size is positive and matches what was read is read in one allocation (a final
+partial line costs one small copy, and a file reporting size 0 -- `/proc` and
+other synthetic regular files do that while holding data -- is read
+incrementally), while stdin and several operands hold the read chunks until
+that buffer is assembled (about twice the input, transiently), and `-n` adds
+four int arrays indexed by line (integer end, significant integer length,
 fraction length and, when every integer part fits, its int64 value), with no
 per-line keys or strings. There is no external merge; a huge input can
 exhaust memory (the runtime exits 2). `-k`, `-t`, `-f`, `-b`, `-d`, `-i`, `-M`,
@@ -171,19 +174,30 @@ byte positions in the buffer: 257 buckets (byte + 1, with 0 for the line
 terminator so a prefix sorts first), insertion sort below 20 elements, and a
 common-prefix pass that skips a shared byte run instead of paying a counting
 pass per byte; one linear pass detects already-sorted and reverse-sorted input
-and skips the sort. `-n` keeps the exact-decimal keys and the stable merge.
-Output is assembled in 64 KiB blocks and written with `writeFd`. On the CLI
+and skips the sort. `-n` parses every line once into four int arrays indexed by
+line (integer end with the sign, significant integer length, fraction length,
+and the integer part's exact int64 value when every integer part has at most
+18 digits) and runs a stable numeric MSD radix over line ids: the int64 value
+when it fits, otherwise the exact decimal digit sequence, with reversed bucket
+order inside the negative category and a fraction stage whose terminator sorts
+below `0`; a numerically equal range continues with the whole-line byte radix
+unless `-u`, which is the last-resort tie-break. Output is assembled in 64 KiB
+blocks and written with `writeFd`. On the CLI
 benchmark's 1,000,000 fixed 8-digit lines (warm cache, one core) obo `sort`
 measures about 184 ms against GNU `sort` 9.4's 250 ms and the benchmark's
 Python 604 ms; it was about 1,838 ms with the former readLine + index merge.
 Sorted input measures about 63 ms (GNU 85 ms), a 22 MB random variable-length
 file 309 ms (GNU 331 ms), and a 73 MB file whose lines share a 64-byte prefix
-650 ms (GNU 480 ms) -- the one measured shape where a comparison sort with
-`memcmp` still wins. Peak RSS on the 9 MB/1,000,000-line file is about 41 MB
-(GNU `sort` 9.4 uses about 137 MB there) and about 103 MB on the 73 MB file;
-`-n` is about 135 MB because of its key records, and remains the slow path
-(about 2.4 s on 1,000,000 lines) because it still parses two owned digit
-strings per line and merges with a comparator call per comparison.
+650 ms (GNU 480 ms). Absolute times are fixture-dependent, and on the shapes
+measured here the shared-prefix file is the one where a comparison sort with
+`memcmp` clearly wins; duplicate-heavy variable-length inputs can favor GNU as
+well, while fixed-width and small-key inputs favor the radix. Peak RSS on the
+9 MB/1,000,000-line file is about 41 MB (GNU `sort` 9.4 pinned to one core
+uses about 59 MB there, and about 137 MB unpinned with its default threads)
+and about 103 MB on the 73 MB file; `-n` uses about 80 MB, and on the numeric
+fixture measures about 230 ms for 8-digit integers and about 310 ms for
+decimal and all-negative data, against GNU `sort`'s 460 ms and 510-520 ms (the
+former key records and stable merge took about 2,500-2,800 ms).
 
 ## eza (E0 + E1)
 

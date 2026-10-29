@@ -1371,24 +1371,33 @@ fn collect(operands: &[]string, mut b: &ByteBuf): bool {
     return true
 }
 
-// The single-operand fast path: a plain regular file is read in one allocation
-// and no copy. false (the collect path then reads it) covers stdin, every other
-// file kind and any readFile failure, so the error messages stay the ones the
-// incremental reader produces.
+// The single-operand fast path: a plain regular file whose reported size is
+// positive and is exactly what readFile returned is read in one allocation and
+// no copy (a final partial line is padded by copying, see below). Everything
+// else falls back to collect, which reads incrementally and produces the
+// reader's error messages, so this path can never change what is read: stdin,
+// every other file kind, a stat failure, a readFile failure, a size of zero
+// (/proc and other synthetic regular files report st_size 0 while holding
+// data, which readFile's lseek-based size would silently truncate), and any
+// stat/readFile length disagreement all return false here.
 fn slurpRegular(path: string, mut b: &ByteBuf): bool {
     if path == "-" { return false }
+    var size = 0
     let st = statPath(path)
     match st {
         ok {
             if (st.value[0] & 0xF000) != 0x8000 { return false }
+            size = st.value[1]
         }
         err { return false }
     }
+    if size <= 0 { return false }
     let got = readFile(path)
     if got == nil { return false }
     b.data = got
     let cur = &b.data
     let n = len(cur)
+    if n != size { return false }
     if n > 0 && cur[n - 1] != '\n' {
         var padded = new []byte(n + 1)
         var i = 0
@@ -1696,7 +1705,11 @@ fn numericLines(buf: &[]byte, starts: &[]int, opts: &SortOpts): []int {
     return kept
 }
 
-// Write exactly data's bytes; a short count retries the unwritten tail.
+// Write exactly data's bytes; a short count retries the unwritten tail by
+// copying it down. A real descriptor takes the whole block in one write, so the
+// retry only runs for the synthetic short-write fault hook (OBO_IO_FAULT), where
+// a writer that returned one byte at a time would make this quadratic -- the
+// same shape the io::flush it replaces had, and not a path a real file takes.
 fn writeExactly(fd: int, data: &[]byte): Result[bool] {
     let n = len(data)
     var off = 0
