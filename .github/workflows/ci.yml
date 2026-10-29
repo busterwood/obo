@@ -1,6 +1,9 @@
-# CI for obo: build the compiler and runtime from the promoted seed and run the
-# fast deterministic Linux gates that are green today. The eza differential and
-# memory gates are gated on P0 (obo/tests/eza.py + obo/tests/eza/VERSION) and
+# CI for obo: build the compiler and runtime from the promoted seed and run a
+# fast, deterministic Linux subset of the full gate: documentation examples,
+# the compiler suite, tools and their GNU coreutils differential, tool memory,
+# incremental I/O (tools, runtime and programs), the ELF segment, symbol fuzz,
+# home-directory checks, and the eza differential/memory once P0 and P4 land.
+# The eza gates are gated on P0 (obo/tests/eza.py + obo/tests/eza/VERSION) and
 # P4 (obo/cmd/eza.obx); until those land they skip with a clear message, so no
 # live differential is claimed before P4.
 #
@@ -11,9 +14,9 @@
 #
 # Deliberately not here: the long mutation gates (tests/mutate_fork.py,
 # tests/mutate_port.py, tests/mutate_io.py and, from P3, tests/mutate_meta.py),
-# the long port comparisons (tests/port_compare.py, including OBO_REF=seed/obo)
-# and bench/bench.py. They remain local/release gates because of their runtime
-# (design section 11.2).
+# the long port gates (tests/port_compare.py, including OBO_REF=seed/obo, and
+# tests/port_test.py) and bench/bench.py. They remain local/release gates
+# because of their runtime (design section 11.2).
 name: ci
 
 'on':
@@ -67,6 +70,10 @@ jobs:
           have=0
           if [ -f obo/tests/eza.py ]; then have=$((have + 1)); fi
           if [ -f obo/tests/eza/VERSION ]; then have=$((have + 1)); fi
+          if [ -f obo/cmd/eza.obx ] && [ "$have" -ne 2 ]; then
+            echo 'error: malformed stage state: own eza exists but the P0 harness is incomplete' >&2
+            exit 1
+          fi
           case "$have" in
             0)
               echo 'P0 eza harness not present yet; skipping the reference install'
@@ -125,6 +132,18 @@ jobs:
       - name: Check the ELF runtime-data segment
         run: python3 obo/tests/elf_test.py
 
+      - name: Run the incremental I/O runtime and program cases
+        run: python3 obo/tests/io_test.py --rt --programs
+
+      - name: Run the symbol fuzz cases
+        run: python3 obo/tests/sym_fuzz.py
+
+      - name: Check home-directory handling
+        run: python3 obo/tests/homes_check.py
+
+      - name: Check home-directory edge cases
+        run: python3 obo/tests/homes_edge.py
+
       - name: Differential-test eza against the pinned reference (P4+)
         # Active only when P0 (obo/tests/eza.py + obo/tests/eza/VERSION) and P4
         # (obo/cmd/eza.obx) have all landed. Before P0, skip cleanly; a
@@ -137,6 +156,10 @@ jobs:
           have=0
           if [ -f obo/tests/eza.py ]; then have=$((have + 1)); fi
           if [ -f obo/tests/eza/VERSION ]; then have=$((have + 1)); fi
+          if [ -f obo/cmd/eza.obx ] && [ "$have" -ne 2 ]; then
+            echo 'error: malformed stage state: own eza exists but the P0 harness is incomplete' >&2
+            exit 1
+          fi
           case "$have" in
             0)
               echo 'P0 eza harness not present yet; skipping the differential'
@@ -162,6 +185,10 @@ jobs:
           have=0
           if [ -f obo/tests/eza.py ]; then have=$((have + 1)); fi
           if [ -f obo/tests/eza/VERSION ]; then have=$((have + 1)); fi
+          if [ -f obo/cmd/eza.obx ] && [ "$have" -ne 2 ]; then
+            echo 'error: malformed stage state: own eza exists but the P0 harness is incomplete' >&2
+            exit 1
+          fi
           case "$have" in
             0)
               echo 'P0 eza harness not present yet; skipping the memory cases'
