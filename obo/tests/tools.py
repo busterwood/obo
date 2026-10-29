@@ -155,6 +155,11 @@ FILES = {
     'cr_chunk': b'x' * 65535 + b'\r\n' + b'y\n',
     'cr_double': b'a\r\r\n',
     'cr_mid': b'a\rX\n',
+    # wc chunk boundaries (the tool reads 64 KiB chunks): a newline as the last
+    # byte of one chunk and as the first byte of the next, and a word spanning a
+    # boundary (both must count exactly once)
+    'nlbounds': b'x' * 65535 + b'\n' + b'\n' + b'y' * 65534 + b'\n' + b'z',
+    'wordbounds': b'a' * 65536 + b'b c\n' + b'd',
 }
 
 SPECS = {name: Spec('file', data=data) for name, data in FILES.items()}
@@ -440,6 +445,39 @@ def wc_cases():
         fixtures=['split_a', 'split_b'])
     add('l_split_a_split_b', T, ['-l', 'split_a', 'split_b'],
         fixtures=['split_a', 'split_b'])
+    # every flag combination on a fixture with no trailing newline: the final
+    # partial line is not a line but its bytes count and its word is already
+    # counted when the word started
+    add('l_noeol', T, ['-l', 'noeol'], fixtures=['noeol'])
+    add('w_noeol', T, ['-w', 'noeol'], fixtures=['noeol'])
+    add('c_noeol', T, ['-c', 'noeol'], fixtures=['noeol'])
+    # a 200000-byte line, so a line spans several chunks
+    add('l_longline', T, ['-l', 'longline'], fixtures=['longline'])
+    add('w_longline', T, ['-w', 'longline'], fixtures=['longline'])
+    add('c_longline', T, ['-c', 'longline'], fixtures=['longline'])
+    add('longline', T, ['longline'], fixtures=['longline'])
+    # 64 KiB chunk boundaries: newline at the end and at the start of a chunk
+    add('nlbounds', T, ['nlbounds'], fixtures=['nlbounds'])
+    add('l_nlbounds', T, ['-l', 'nlbounds'], fixtures=['nlbounds'])
+    add('w_nlbounds', T, ['-w', 'nlbounds'], fixtures=['nlbounds'])
+    add('lw_nlbounds', T, ['-lw', 'nlbounds'], fixtures=['nlbounds'])
+    add('lwc_nlbounds', T, ['-lwc', 'nlbounds'], fixtures=['nlbounds'])
+    # a word split across a chunk boundary, and the word state not reset there
+    add('wordbounds', T, ['wordbounds'], fixtures=['wordbounds'])
+    add('l_wordbounds', T, ['-l', 'wordbounds'], fixtures=['wordbounds'])
+    add('w_wordbounds', T, ['-w', 'wordbounds'], fixtures=['wordbounds'])
+    add('lw_wordbounds', T, ['-lw', 'wordbounds'], fixtures=['wordbounds'])
+    add('c_wordbounds', T, ['-c', 'wordbounds'], fixtures=['wordbounds'])
+    add('lwc_wordbounds', T, ['-lwc', 'wordbounds'], fixtures=['wordbounds'])
+    # totals across operands, including files with no trailing newline
+    add('lwc_multi_a_multi_b', T, ['-lwc', 'multi_a', 'multi_b'],
+        fixtures=['multi_a', 'multi_b'])
+    add('lwc_split_a_split_b', T, ['-lwc', 'split_a', 'split_b'],
+        fixtures=['split_a', 'split_b'])
+    # stdin for the remaining column selections (the default is stdin_words)
+    add('w_stdin', T, ['-w'], stdin=FILES['words'])
+    add('c_stdin', T, ['-c'], stdin=FILES['words'])
+    add('lwc_stdin', T, ['-lwc'], stdin=FILES['words'])
     add('devfull_oneline', T, ['oneline'], fixtures=['oneline'], sink=True,
         tag='writeerror')
     add('usage_z', T, ['-Z'], tag='usage')

@@ -85,10 +85,13 @@ and `OBO_VERSION` 0.3, and its seed was promoted. P4 added the working `eza` E0
 promoted. P6a adds the terminal-size builtin `terminalWidth`, `io::termWidth`
 and `OBO_VERSION` 0.5; the 0.5 compiler recomputes itself to the same
 425,985-byte binary (`obo` == stage 2 == stage 3, checked with `cmp`), and the
-seed is promoted once after review. P5b (this branch; no compiler/runtime
-change of its own) adds the eza E1 core: the default colour palette with
+seed is promoted once after review. P5b (no compiler/runtime change of its
+own) adds the eza E1 core: the default colour palette with
 `--color`/`--colour`, `NO_COLOR` and the documented `LS_COLORS`/`EZA_COLORS`
-subset; `-T`/`--tree` and `-L`; and `--no-quotes`.
+subset; `-T`/`--tree` and `-L`; and `--no-quotes`. P6b (this branch, after
+merging P5b's review fixes, main's P6a review nits/0.5 seed and main 557936f;
+no compiler/runtime change of its own) adds the eza E2 work: grid and width
+sources, UTF-8 widths and code-point order, and lossy non-UTF-8 display.
 
 | Metric | Value |
 |---|---:|
@@ -102,10 +105,10 @@ subset; `-T`/`--tree` and `-L`; and `--no-quotes`.
 | Maximum resident set | 2,976 KB (3 runs on this branch) |
 | Live-memory budget | 2,000,000 bytes (353,024 spare) |
 | obo suite | 1,165 tests; 527/549 mutants caught + 22 equivalent; 27 runtime/library; 495 port; 27 symbol-file tests; 200 fuzz mutations; 34 metadata checks; 50/52 + 2 and 21/30 + 9 metadata mutants caught/equivalent |
-| Tools differential gate | 199 checks (191 matrix + 8 serial) vs GNU coreutils 9.4; 2 memory cases (module roots) |
-| Tool binaries | cat 40,961; wc 77,825; sort 77,825 bytes (static, runtime included; P6b's UTF-8 width table) |
+| Tools differential gate | 222 checks vs GNU coreutils 9.4 (main's wc-fast added the wc column cases); 2 memory cases (module roots) |
+| Tool binaries | cat 40,961; wc 45,057; sort 77,825 bytes (static, runtime included; P6b's width functions add 17,152 B and the other strings layer 7,840 B, the 24,576 B sort growth being page-rounded; main's wc-fast is in wc) |
 | eza E2 differential gate | 546/546 non-memory cases (462 exact reference goldens, 72 live including 22 pty, 12 own) + 5 memory cases |
-| eza E2 binary | 212,993 bytes (sha256 `91a5f2c5…`; static, runtime included; reference eza 0.23.3 is 2,294,768) |
+| eza E2 binary | 212,993 bytes (sha256 `53133d23…`; static, runtime included; reference eza 0.23.3 is 2,294,768) |
 | eza 10k-entry live peak | 2,190,032 bytes restricted long / 2,189,408 names / 2,190,160 tree / 2,189,632 colour / 2,189,808 grid; `EZA_PEAK_MAX` 2,752,512 (unchanged) |
 | eza 10k-entry max RSS | 2,560 KiB for each of long/names/tree/colour/grid; pinned reference about 25 MB long / 12 MB names / 14 MB tree / 12 MB colour / 12 MB grid across runs (measurement only) |
 | Minimal static executable | 28,673 bytes (runtime included) |
@@ -130,9 +133,13 @@ sha256 `6f0e8472…`), the four 10,000-entry peaks (2,189,984 / 2,189,360 /
 2,190,112 / 2,189,584 bytes) and max RSS (2,560 KiB each) without raising the
 memory cap. P6b (after merging P5b's review fixes and main `cc6c420`) measures
 the E2 gate at 546/546 non-memory and `--memory` 5/5, binary 212,993 bytes
-(sha256 `91a5f2c5…`), the five peaks 2,190,032 / 2,189,408 / 2,190,160 /
+(sha256 `53133d23…`), the five peaks 2,190,032 / 2,189,408 / 2,190,160 /
 2,189,632 / 2,189,808 bytes and 2,560 KiB max RSS each, with the cap
-unchanged.
+unchanged. Main's wc-fast merge (557936f) additionally makes `wc` 45,057
+bytes and the tools gate 222/222; P6b's width functions add 17,152 bytes and
+the other strings layer 7,840 bytes to the strings-importing tools (sort
+53,249 -> 77,825, the 24,576-byte file growth is page-rounded; cat is
+unchanged).
 Whole modules are compiled into each tool, so the figures track the imported
 module set: the pre-P1 tree (`265564c`) measured cat 36,865 / wc 40,961 / sort
 45,057, the P1+P2a base (`ec244e0`) measured 49,153 / 49,153 / 53,249, and

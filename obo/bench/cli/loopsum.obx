@@ -1,0 +1,32 @@
+// loopsum: add 0..n-1 with an explicit while loop, the same loop as
+// loopsum.py. The optional argument is n (default 100,000,000); --quick
+// passes 10,000,000.
+
+module loopsum
+
+// A non-negative decimal argument, or `default` when it is absent or malformed.
+fn sizeArg(default: int): int {
+    let av = args()
+    if len(av) < 2 { return default }
+    let s = av[1]
+    var v = 0
+    var i = 0
+    while i < len(s) {
+        let b = s[i]
+        if b < '0' || b > '9' { return default }
+        v = v * 10 + int(b) - 48
+        i += 1
+    }
+    return v
+}
+
+fn main() {
+    let n = sizeArg(100000000)
+    var i: int = 0
+    var s: int = 0
+    while i < n {
+        s += i
+        i += 1
+    }
+    println(s)
+}
