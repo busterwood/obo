@@ -188,11 +188,11 @@ Supported flags (everything else is rejected, see below):
 
 | Flags | Behaviour |
 |---|---|
-| `-1`, `--oneline` | one per line (the non-TTY default); the last of `-1`/`-l`/`-T`/`-G` selects the view (a last `-1` makes `-T`/`-G` a plain listing; a last `-T` with any `-l` is a long tree; a last `-G` with any `-l` is GridDetails, rejected here) |
+| `-1`, `--oneline` | one per line (the non-TTY default); the view rule is: a last `-1` is Lines; otherwise any `-l` makes the view long, with the last of `-T`/`-G` picking long tree / GridDetails (rejected here) / plain long; with no `-l`, the last of `-T`/`-G` picks tree or grid |
 | `-l`, `--long` | restricted long only (below) |
 | `-G`, `--grid` | grid regardless of stdout (width falls back to 80); `-l -G` is this build's unsupported GridDetails error |
 | `-x`, `--across` | fill grid rows left to right instead of down columns; ignored by non-grid views |
-| `-w`, `--width=COLS` | set the console width (a value >= 1); `0` is Automatic; invalid values take eza's exact message |
+| `-w`, `--width=COLS` | set the console width (a value >= 1; `-w40`, `-w=40`, `-w 40` and `--width=40` are the same option, and a missing value is `Flag -w needs a value`); `0` is Automatic; invalid values use the reference's `Value "..."` wording with ASCII Debug escaping (non-ASCII escapes diverge, below) |
 | `-a`, `--all` | count occurrences; one shows dotfiles, two also synthesizes `.`/`..` |
 | `-A`, `--almost-all` | dotfiles without `.`/`..`; `-A -a` is one `-a`, `-A -aa` shows dots |
 | `-d`, `--treat-dirs-as-files`, `--list-dirs` | describe a directory operand as one entry |
@@ -381,11 +381,15 @@ that measurement is printed for comparison and is not gated.
 
 ### E2: grid, width sources, UTF-8 and lossy names
 
-**View selection.** eza's `Mode::deduce` takes the last of `-l`, `-1`, `-T`
-and `-G`; with no such flag it grids when the run is *terminal-ish* and uses
-lines otherwise. Terminal-ish (`is_a_tty`) is: a Set width (`--width` >= 1, or
-`COLUMNS` present and parsable, including `0`) or stdout being a real terminal
-that reports a non-zero size. It selects the grid and enables automatic
+**View selection.** eza's `Mode::deduce` is not simply "the last flag wins":
+if the last of `-l`, `-1`, `-T` and `-G` is `-1`, the view is Lines.
+Otherwise, if any `-l` is present, the view is long and the last of `-G`/`-T`
+chooses the subtype: `-T` is a long tree, `-G` is GridDetails (rejected here),
+and neither is plain long. With no `-l` and no last `-1`, the last of
+`-T`/`-G` chooses tree or grid; with no view flag at all, it grids when the
+run is *terminal-ish* and uses lines otherwise. Terminal-ish (`is_a_tty`) is:
+a Set width (`--width` >= 1, or `COLUMNS` present and parsable, including `0`)
+or stdout being a real terminal that reports a non-zero size. It selects the grid and enables automatic
 classify markers; it does **not** enable automatic colour, which still needs
 `io::isTty(1)` (probed: `--width=80 --color=auto` on a pipe is plain).
 Explicit `-G` grids even with no width (the grid then lays out for 80 columns).
@@ -397,21 +401,32 @@ comparison, so comparator-equal entries keep readdir order (probed for
 `--sort=size -r`; the tree view is the one that reverses the whole vector).
 
 **Width sources.** `--width=COLS` is parsed as a `usize` (optional `+`,
-leading zeros; the exact `invalid digit`/`number too large`/`cannot parse
-integer` messages) and only `>= 1` is Set; `0` is `TerminalWidth::Automatic`
-and also suppresses `COLUMNS`. Otherwise a valid-Unicode `COLUMNS` is Set,
-`0` included; an invalid-UTF-8 `COLUMNS` is ignored like eza's failed
-`into_string`. Automatic width is the `io::termWidth(1)` value when stdout is
-a terminal and the report has non-zero rows and columns, else unknown; the
-grid renderer falls back to 80 only for an unknown width (an explicit `-G`).
+leading zeros; the `invalid digit`/`number too large`/`cannot parse integer`
+wording) and only `>= 1` is Set; `0` is `TerminalWidth::Automatic` and also
+suppresses `COLUMNS`. The short forms `-w40`, `-w=40` and `-w 40` are the same
+option; a missing value is `eza: Flag -w needs a value`. Otherwise a
+valid-Unicode `COLUMNS` is Set, `0` included; an invalid-UTF-8 `COLUMNS` is
+ignored like eza's failed `into_string`. The displayed bad value uses Rust
+Debug escaping for ASCII quote, backslash, NUL, tab/newline/CR, other C0 and
+DEL; Rust also escapes non-ASCII non-printables (`\u{a0}`, combining marks,
+format controls, U+0085, U+2028, U+FEFF) as `\u{...}`, which this build copies
+raw (documented divergence; the `width_nonascii_escape` probe records the
+reference). Automatic width is the `io::termWidth(1)` value when stdout is a
+terminal and the report has non-zero rows and columns, else unknown; the grid
+renderer falls back to 80 only for an unknown width (an explicit `-G`).
 `terminal_size` returns `None` for a zero row **or** zero column report; the
-`io::termWidth` slot exposes only the column count, so this build treats a
-zero-column terminal as unknown (probed) but cannot see a zero-row report: on
-such a terminal the reference stays in Lines mode while this build grids
-(documented limitation; `E2-PROBES.md` records the reference bytes). Widths
-above `GRID_WIDTH_CAP` (2^40) are clamped; the reference panics from an
-internal `usize` overflow for values within two of `usize::MAX`, and this
-build deliberately prints a one-row grid instead of reproducing a panic.
+`io::termWidth` slot exposes only the column count. A zero-column terminal is
+therefore not terminal-ish (probed). A rows=0 terminal is also not
+terminal-ish in the reference: the default view is Lines, explicit `-G` still
+grids, and automatic classify markers stay off in every view (grid, lines,
+tree and long), while automatic colour still follows the real stdout isatty.
+This build cannot see the row count, so it treats such a terminal as
+terminal-ish: it grids by default and adds automatic classify markers where
+the reference adds none (accepted 0.5-runtime limitation; `pty_zero_rows*` in
+`E2-PROBES.md` records the reference bytes). Widths above `GRID_WIDTH_CAP`
+(2^40) are clamped; the reference panics from an internal `usize` overflow for
+values within two of `usize::MAX`, and this build deliberately prints a
+one-row grid instead of reproducing a panic.
 
 **Layout.** The reference uses `uutils_term_grid 0.7.0` with
 `Filling::Spaces(2)`. One cell is one row/column; if the widest cell plus two
@@ -450,8 +465,10 @@ naturally and otherwise compare code points. Folding is simple
 single-code-point lowercase for ASCII, Latin-1, Latin Extended-A, basic Greek,
 basic Cyrillic and fullwidth A-Z; Rust's full `to_lowercase()` also expands
 some characters into several (U+0130) and covers every script, which is the
-documented divergence: U+0130 is left unfolded. A pairwise matrix of the
-curated ASCII/Greek/Cyrillic/fullwidth/whitespace strings was checked against
+documented divergence: outside the implemented blocks 1,234 scalar values
+(542 ranges) still compare unfolded, and U+0130 — the only multi-character
+expansion — is left unfolded. A pairwise matrix of the curated
+ASCII/Greek/Cyrillic/fullwidth/whitespace strings was checked against
 natord-plus-plus 2.0.0 itself; every pair agrees except the U+0130 pairs.
 
 **Lossy non-UTF-8.** eza's `File.name` and target names are
@@ -515,6 +532,12 @@ to quote-free operand names (successful operands may contain spaces). An empty
 operand is outside the matrix: `openFile` rejects it with `EINVAL`, so ours says
 `cat: : Invalid argument` where GNU prints a quoted empty name. `SIGPIPE` keeps
 its default disposition, so `sort | head` behaves like coreutils.
+
+An eza missing-operand error whose name contains invalid UTF-8 bytes is printed
+by `errors::debugPath`, which copies the raw bytes; the reference uses Rust's
+`{path:?}`, which Debug-escapes invalid bytes and control characters. P6b does
+not change `lib/errors.obx`, so this inherited P2 limitation remains and such
+operands are outside the exact error cases.
 
 ## Metadata (P3) and the path limit
 

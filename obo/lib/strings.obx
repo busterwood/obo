@@ -287,9 +287,10 @@ fn isUnicodeSpace(cp: int): bool {
 // Latin-1 Supplement, Latin Extended-A, the basic Greek and Cyrillic blocks and
 // fullwidth A-Z. Rust's char::to_lowercase() is full Unicode lowercase; it can
 // expand one character into several (U+0130 is "i" plus a combining dot) and it
-// covers every script. This table is the documented divergence: an
-// unimplemented character compares by its original code point, and U+0130 is
-// deliberately unchanged rather than expanded.
+// covers every script. Outside these blocks 1,234 scalar values (542 ranges)
+// still compare by their original code point, the documented divergence;
+// U+0130 is the only multi-character expansion and is deliberately left
+// unfolded.
 fn lowerCp(cp: int): int {
     if cp >= 'A' && cp <= 'Z' { return cp + 32 }
     if cp >= 0xC0 && cp <= 0xD6 { return cp + 32 }
@@ -1140,7 +1141,8 @@ pub fn parentPrefix(parent: string, quoteSpaces: bool): string {
 
 // The display width of s: each decoded code point contributes widthCp's width
 // and each invalid maximal subpart contributes one U+FFFD (width 1), matching
-// the reference's lossy display. ASCII is unchanged from E0. This is the
+// the reference's lossy display. Printable ASCII is unchanged from E0; C0
+// controls and DEL are width 0, not their byte length. This is the
 // per-character rule ansi-width applies to eza's painted grid cells; callers
 // that lay out columns must not use len(s).
 pub fn displayWidth(s: string): int {

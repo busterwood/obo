@@ -932,9 +932,12 @@ def _utf8_cases():
        '--icons=never', 'utf8bad')
     _g('utf8', 'bad_aa', '-aa', '--icons=never', 'utf8bad')
     # a raw-byte operand is looked up by its bytes and displayed lossy
-    _g('utf8', 'bad_operand', b'utf8bad/a-\xff')
-    _g('utf8', 'bad_operand_long', *LONG, b'utf8bad/a-\xff')
-    _g('utf8', 'bad_operand_dir_d', '-d', b'utf8bad/sub-\xff')
+    _g('utf8', 'bad_operand', b'utf8bad/a-\xff',
+       requires=('invalid_utf8',))
+    _g('utf8', 'bad_operand_long', *LONG, b'utf8bad/a-\xff',
+       requires=('invalid_utf8',))
+    _g('utf8', 'bad_operand_dir_d', '-d', b'utf8bad/sub-\xff',
+       requires=('invalid_utf8',))
     _g('utf8', 'bad_reverse', '-r', '--icons=never', 'utf8bad')
 
 

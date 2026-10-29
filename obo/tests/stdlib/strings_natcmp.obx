@@ -171,6 +171,13 @@ fn main() {
     t::checkInt("fold cyrillic", strings::natcmpFold("Ж", "ж"), 0)
     t::checkInt("fold fullwidth", strings::natcmpFold("Ａ", "ａ"), 0)
     t::checkInt("fold cjk unchanged", strings::natcmpFold("中", "中"), 0)
+    // U+0130 is Rust to_lowercase's only multi-character expansion ("i" plus
+    // U+0301). This build deliberately leaves it unfolded: it compares as
+    // U+0130, after ASCII, where the reference folds it to "i"+dot (so its
+    // "İ" vs "j" is Less, ours Greater). Pinned as the documented divergence.
+    t::checkInt("fold dotted I self", strings::natcmpFold("İ", "İ"), 0)
+    t::checkInt("natcmp dotted I j", strings::natcmp("İ", "j"), 1)
+    t::checkInt("fold dotted I j unfolded", strings::natcmpFold("İ", "j"), 1)
     // Rust char::is_whitespace: NBSP, NEL, EM SPACE and IDEOGRAPHIC SPACE are
     // skipped like ASCII space
     let nbsp = bytes2(0xc2, 0xa0)

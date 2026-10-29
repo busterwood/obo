@@ -5008,10 +5008,15 @@ code-point `natcmp`/`natcmpFold` with Rust `char::is_whitespace` skipping and
 simple lowercase (ASCII, Latin-1, Latin Extended-A, basic Greek/Cyrillic,
 fullwidth A-Z). The table was verified over every Unicode scalar value against
 the crate (identical hash and counts: 6,261 zero-width, 923,290 width-1,
-182,512 width-2, one width-3); a pairwise natcmp matrix against
-natord-plus-plus 2.0.0 agrees except the documented U+0130 expansion.
-`cmd/eza.obx` gains eza's `Mode::deduce` view rules (last of `-l`/`-1`/`-T`/
-`-G`; no view flag grids when terminal-ish), `TerminalWidth` (`--width` >= 1
+182,512 width-2, one width-3); the folded comparator leaves 1,234 scalar
+values (542 ranges) outside its blocks unfolded, with U+0130 the only
+multi-character expansion left unfolded (a pairwise natcmp matrix against
+natord-plus-plus 2.0.0 agrees except the U+0130 pairs).
+`cmd/eza.obx` gains eza's `Mode::deduce` view rules (a last `-1` is Lines;
+otherwise any `-l` is a long view whose subtype is chosen by the last of
+`-T`/`-G` — long tree, GridDetails/rejected, or plain long — and with no `-l`
+the last of `-T`/`-G` picks tree or grid; no view flag grids when
+terminal-ish), `TerminalWidth` (`--width` >= 1
 Set, 0 Automatic and suppressing `COLUMNS`; `COLUMNS` Set including 0;
 invalid-UTF-8 COLUMNS ignored; automatic width from `io::termWidth(1)` only
 on a non-zero terminal, else the 80 fallback for explicit `-G`), automatic
@@ -5021,15 +5026,22 @@ last fitting column count, no truncation, unpadded last column), grid cells
 with the marker on the link and the broken-link name in the broken style, and
 lossy names/operand parents/targets for display, sorting, ext keys and colour
 while raw bytes stay for lookup. `-l` with `-G` (GridDetails) is rejected with
-this build's own message.
+this build's own message. A rows=0 terminal is invisible to `io::termWidth`
+(only columns are exposed): the reference treats it as non-terminal-ish (Lines
+by default, no auto-classify markers anywhere, explicit `-G` still grids),
+while this build treats it as terminal-ish; the `pty_zero_rows*` probes record
+the reference (accepted 0.5-runtime limitation).
 
 **Merge resolutions.** `cmd/eza.obx` keeps the E2 view/width/grid code and the
 E1 fixes: the removed `treeFlag`, `debugText` Debug escaping, the `-L +`
 InvalidDigit rule, `sortFieldOrder`/`sortEntriesTree` (tree `-r` sorts
 ascending then reverses the vector; lines/long keep stable descending), the
 `#` Temp rule and the colour-kind setters. The E1 fix was propagated to E2:
-`--width`/`COLUMNS` parse errors now Debug-escape their value and a lone `+`
-is InvalidDigit, with goldens added. Grid sorting uses the lines/long model
+`--width`/`COLUMNS` parse errors now ASCII-Debug-escape their value and a
+lone `+` is InvalidDigit, with goldens added; non-ASCII non-printables
+(`\u{a0}`, combining marks, format controls, U+0085, U+2028, U+FEFF) are
+copied raw where Rust's Debug escapes them, a documented divergence pinned by
+the `width_nonascii_escape` probe. Grid sorting uses the lines/long model
 (probed `--sort=size -r` keeps tie readdir order in a grid; the tree is the
 only vector-reversing view). `tests/eza.py`, `fixtures.py` and `probe.py`
 combine both case sets; `E2-PROBES.md` is regenerated with the merged

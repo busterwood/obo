@@ -25,7 +25,7 @@ Reference: ` /tmp/eza-tar-test2/eza `
 - reference path: ` /tmp/eza-tar-test2/eza `
 - reference sha256: ` 10457dde35808517d09bcd3bfb6bc386000d06c2126e34b9071e09470a8f7cd8 `
 - fixture capabilities: ` {'euid': 1000, 'umask': 18, 'pre_epoch': True, 'xattr': True, 'invalid_utf8': True, 'fifo': True, 'socket': True, 'hardlink': True, 'symlink': True, 'deep_path': True, 'nonroot': True, 'dev_full': True, 'ambient_xattr': False} `
-- dt-unknown candidates: ` {'/proc': {'entries': 97, 'unknown': 0, 'sample': []}, '/sys': {'entries': 12, 'unknown': 0, 'sample': []}, '/dev/shm': {'entries': 7, 'unknown': 0, 'sample': []}, '/run': {'entries': 34, 'unknown': 0, 'sample': []}} `
+- dt-unknown candidates: ` {'/proc': {'entries': 98, 'unknown': 0, 'sample': []}, '/sys': {'entries': 12, 'unknown': 0, 'sample': []}, '/dev/shm': {'entries': 7, 'unknown': 0, 'sample': []}, '/run': {'entries': 34, 'unknown': 0, 'sample': []}} `
 
 ## 20. E2 re-probes (P6b: grid, width sources, UTF-8, lossy names)
 
@@ -689,6 +689,88 @@ b'g0  g1  g2  g3  g4  g5  g6  g7  g8  g9\n'
 b''
 ```
 
+### width_short_attached
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-w40', '--icons=never', 'grid10'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 9598159f25b3d2ca0c7034ce2c4f9466090bcdc1cd679600b783fd41475ac11f `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'g0  g1  g2  g3  g4  g5  g6  g7  g8  g9\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+### width_short_equals
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-w=40', '--icons=never', 'grid10'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 9598159f25b3d2ca0c7034ce2c4f9466090bcdc1cd679600b783fd41475ac11f `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'g0  g1  g2  g3  g4  g5  g6  g7  g8  g9\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+### width_short_missing
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-w'] `
+- env extras: ` {} `
+- exit: ` 3 `
+- stdout sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stderr sha256: ` fef5562aa0919af3f42b465b6d4b4ba45ce9f1a2339ddab167583cb21f2af416 `
+- stdout bytes:
+
+```python
+b''
+```
+
+- stderr bytes:
+
+```python
+b'eza: Flag -w needs a value\n'
+```
+
+### width_short_next
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-w', 'grid10'] `
+- env extras: ` {} `
+- exit: ` 3 `
+- stdout sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stderr sha256: ` 0b822d9ed276efa03d8fec4ae62fbe5874c7da5267d7cbeaa48db4f434f2cfb5 `
+- stdout bytes:
+
+```python
+b''
+```
+
+- stderr bytes:
+
+```python
+b'eza: Value "grid10" not valid for option --width (-w): invalid digit found in string\n'
+```
+
+- note: ` the next token is the value, not an operand `
+
 ### width_x
 
 - cwd: ` <root> `
@@ -853,6 +935,28 @@ b'eza: Value "a\\"b" not valid for option --width (-w): invalid digit found in s
 
 - note: ` FailedParse Debug-escapes the displayed value `
 
+### width_nonascii_escape
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '--width=a\xa0b', 'grid10'] `
+- env extras: ` {} `
+- exit: ` 3 `
+- stdout sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stderr sha256: ` 6fb202d3c05d0fc7fc6690b3df3504c69fb6b6c4df992912f4af9832716a2cb9 `
+- stdout bytes:
+
+```python
+b''
+```
+
+- stderr bytes:
+
+```python
+b'eza: Value "a\\u{a0}b" not valid for option --width (-w): invalid digit found in string\n'
+```
+
+- note: ` Rust Debug escapes non-ASCII non-printables as \u{a0}; the build copies them raw (documented divergence) `
+
 ### columns_plus
 
 - cwd: ` <root> `
@@ -955,7 +1059,7 @@ b''
 
 - note: ` COLUMNS=0 is Set(0): a real grid, one column `
 
-### columns_plus
+### columns_plus40
 
 - cwd: ` <root> `
 - argv: ` ['<ref>', '--icons=never', 'grid10'] `
@@ -1573,7 +1677,95 @@ b"-\r\n--x\r\nalpha\r\nBeta\r\n\x1b[36mbroken\x1b[0m \x1b[31m->\x1b[0m \x1b[4;31
 b''
 ```
 
-- note: ` terminal_size also requires a non-zero row count: with rows=0 eza is in Lines mode, but io::termWidth exposes only the column count, so this build cannot see this case (documented) `
+- note: ` rows=0 cols=80: terminal_size is None, so the reference stays in Lines mode (colour auto on, no automatic classify). io::termWidth exposes only the column count, so this build sees cols=80, grids by default and enables auto classify (0.5-runtime limitation, documented) `
+
+### pty_zero_rows_F
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-G', '-F', '--icons=never', 'mixed'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 2654e8d989c283d6cc438bf1af232de7c542e029cf1725749640a672ae3945a4 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b"-    alpha  \x1b[31mbroken\x1b[0m  \x1b[36mdirlink\x1b[0m    \x1b[36mlink\x1b[0m    \x1b[33mpipe\x1b[0m  \x1b[1;31msock\x1b[0m    \x1b[1;34msub.dir\x1b[0m\r\n--x  Beta   \x1b[1;34mdir\x1b[0m     gamma.txt  noexec  \x1b[1;32mprog\x1b[0m  \x1b[36mspaced\x1b[0m  'tar get'\r\n"
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` rows=0: explicit -G grids, but is_a_tty is false so the reference adds no auto-classify markers; this build sees cols=80 and adds them (documented) `
+
+### pty_zero_rows_lines_F
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-1', '-F', '--icons=never', 'mixed'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 8268f20970b5f59dccd1e1767fe51b6371ad5941cfe3064ad1284e4a3d784399 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b"-\r\n--x\r\nalpha\r\nBeta\r\n\x1b[36mbroken\x1b[0m \x1b[31m->\x1b[0m \x1b[4;31mmissing\x1b[0m\r\n\x1b[1;34mdir\x1b[0m\r\n\x1b[36mdirlink\x1b[0m \x1b[1;90m->\x1b[0m \x1b[1;34mdir\x1b[0m\r\ngamma.txt\r\n\x1b[36mlink\x1b[0m \x1b[1;90m->\x1b[0m alpha\r\nnoexec\r\n\x1b[33mpipe\x1b[0m\r\n\x1b[1;32mprog\x1b[0m\r\n\x1b[1;31msock\x1b[0m\r\n\x1b[36mspaced\x1b[0m \x1b[1;90m->\x1b[0m 'tar get'\r\n\x1b[1;34msub.dir\x1b[0m\r\n'tar get'\r\n"
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` rows=0: the reference Lines view has no automatic markers; this build adds them (documented) `
+
+### pty_zero_rows_tree_F
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-T', '-F', '--icons=never', 'tree'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 2b6bf5aa8777add551e1919bd51595e5bcda006ba33bbfc205943e8a99df72f6 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'\x1b[1;34mtree\x1b[0m\r\n\x1b[1;90m\xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 \x1b[0ma.txt\r\n\x1b[1;90m\xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 \x1b[0m\x1b[36mbroken\x1b[0m \x1b[31m->\x1b[0m \x1b[4;31mmissing\x1b[0m\r\n\x1b[1;90m\xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 \x1b[34md1\x1b[0m\r\n\x1b[1;90m\xe2\x94\x82   \xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 \x1b[0mb.txt\r\n\x1b[1;90m\xe2\x94\x82   \xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 \x1b[34md2\x1b[0m\r\n\x1b[1;90m\xe2\x94\x82       \xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 \x1b[0mc.txt\r\n\x1b[1;90m\xe2\x94\x82       \xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 \x1b[34md3\x1b[0m\r\n\x1b[1;90m\xe2\x94\x82           \xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 \x1b[0md.txt\r\n\x1b[1;90m\xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 \x1b[0m\x1b[36mdirlink\x1b[0m \x1b[1;90m->\x1b[0m \x1b[1;34md1\x1b[0m\r\n\x1b[1;90m\xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 \x1b[34memptydir\x1b[0m\r\n\x1b[1;90m\xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 \x1b[34mhidden\x1b[0m\r\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` rows=0: the reference tree has no automatic markers; this build adds them (documented) `
+
+### pty_zero_rows_long_F
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-l', '--no-user', '--bytes', '--time-style=long-iso', '-F', '--icons=never', 'mixed'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 67094e6dc2856e3b0330906f47b6da3c71ef6ac66478903e2ccc181523790717 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b".\x1b[1;33mr\x1b[31mw\x1b[90m-\x1b[0m\x1b[33mr\x1b[1;90m--\x1b[0m\x1b[33mr\x1b[1;90m--\x1b[0m  \x1b[32m5\x1b[0m \x1b[34m2020-09-13 12:26\x1b[0m -\r\n.\x1b[1;33mr\x1b[31mw\x1b[90m-\x1b[0m\x1b[33mr\x1b[1;90m--\x1b[0m\x1b[33mr\x1b[1;90m--\x1b[0m  \x1b[32m9\x1b[0m \x1b[34m2020-09-13 12:26\x1b[0m --x\r\n.\x1b[1;33mr\x1b[31mw\x1b[90m-\x1b[0m\x1b[33mr\x1b[1;90m--\x1b[0m\x1b[33mr\x1b[1;90m--\x1b[0m  \x1b[32m6\x1b[0m \x1b[34m2020-09-13 12:26\x1b[0m alpha\r\n.\x1b[1;33mr\x1b[31mw\x1b[90m-\x1b[0m\x1b[33mr\x1b[1;90m--\x1b[0m\x1b[33mr\x1b[1;90m--\x1b[0m  \x1b[32m5\x1b[0m \x1b[34m2020-09-13 12:26\x1b[0m Beta\r\n\x1b[36ml\x1b[1;33mr\x1b[31mw\x1b[32mx\x1b[0m\x1b[33mr\x1b[31mw\x1b[32mx\x1b[33mr\x1b[31mw\x1b[32mx\x1b[0m  \x1b[1;90m-\x1b[0m \x1b[34m2020-09-13 12:26\x1b[0m \x1b[36mbroken\x1b[0m \x1b[31m->\x1b[0m \x1b[4;31mmissing\x1b[0m\r\n\x1b[1;34md\x1b[33mr\x1b[31mw\x1b[32mx\x1b[0m\x1b[33mr\x1b[1;90m-\x1b[0m\x1b[32mx\x1b[33mr\x1b[1;90m-\x1b[0m\x1b[32mx\x1b[0m  \x1b[1;90m-\x1b[0m \x1b[34m2020-09-13 12:26\x1b[0m \x1b[1;34mdir\x1b[0m\r\n\x1b[36ml\x1b[1;33mr\x1b[31mw\x1b[32mx\x1b[0m\x1b[33mr\x1b[31mw\x1b[32mx\x1b[33mr\x1b[31mw\x1b[32mx\x1b[0m  \x1b[1;90m-\x1b[0m \x1b[34m2020-09-13 12:26\x1b[0m \x1b[36mdirlink\x1b[0m \x1b[1;90m->\x1b[0m \x1b[1;34mdir\x1b[0m\r\n.\x1b[1;33mr\x1b[31mw\x1b[90m-\x1b[0m\x1b[33mr\x1b[1;90m--\x1b[0m\x1b[33mr\x1b[1;90m--\x1b[0m  \x1b[32m6\x1b[0m \x1b[34m2020-09-13 12:26\x1b[0m gamma.txt\r\n\x1b[36ml\x1b[1;33mr\x1b[31mw\x1b[32mx\x1b[0m\x1b[33mr\x1b[31mw\x1b[32mx\x1b[33mr\x1b[31mw\x1b[32mx\x1b[0m  \x1b[1;90m-\x1b[0m \x1b[34m2020-09-13 12:26\x1b[0m \x1b[36mlink\x1b[0m \x1b[1;90m->\x1b[0m alpha\r\n.\x1b[1;33mr\x1b[31mw\x1b[90m-\x1b[0m\x1b[33mr\x1b[1;90m--\x1b[0m\x1b[33mr\x1b[1;90m--\x1b[0m  \x1b[32m3\x1b[0m \x1b[34m2020-09-13 12:26\x1b[0m noexec\r\n\x1b[33m|\x1b[1mr\x1b[31mw\x1b[90m-\x1b[0m\x1b[33mr\x1b[1;90m--\x1b[0m\x1b[33mr\x1b[1;90m--\x1b[0m  \x1b[1;90m-\x1b[0m \x1b[34m2020-09-13 12:26\x1b[0m \x1b[33mpipe\x1b[0m\r\n.\x1b[1;33mr\x1b[31mw\x1b[4;32mx\x1b[0m\x1b[33mr\x1b[1;90m-\x1b[0m\x1b[32mx\x1b[33mr\x1b[1;90m-\x1b[0m\x1b[32mx\x1b[0m \x1b[32m17\x1b[0m \x1b[34m2020-09-13 12:26\x1b[0m \x1b[1;32mprog\x1b[0m\r\n\x1b[1;31ms\x1b[33mr\x1b[31mw\x1b[90m-\x1b[0m\x1b[33mr\x1b[1;90m--\x1b[0m\x1b[33mr\x1b[1;90m--\x1b[0m  \x1b[1;90m-\x1b[0m \x1b[34m2020-09-13 12:26\x1b[0m \x1b[1;31msock\x1b[0m\r\n\x1b[36ml\x1b[1;33mr\x1b[31mw\x1b[32mx\x1b[0m\x1b[33mr\x1b[31mw\x1b[32mx\x1b[33mr\x1b[31mw\x1b[32mx\x1b[0m  \x1b[1;90m-\x1b[0m \x1b[34m2020-09-13 12:26\x1b[0m \x1b[36mspaced\x1b[0m \x1b[1;90m->\x1b[0m 'tar get'\r\n\x1b[1;34md\x1b[33mr\x1b[31mw\x1b[32mx\x1b[0m\x1b[33mr\x1b[1;90m-\x1b[0m\x1b[32mx\x1b[33mr\x1b[1;90m-\x1b[0m\x1b[32mx\x1b[0m  \x1b[1;90m-\x1b[0m \x1b[34m2020-09-13 12:26\x1b[0m \x1b[1;34msub.dir\x1b[0m\r\n.\x1b[1;33mr\x1b[31mw\x1b[90m-\x1b[0m\x1b[33mr\x1b[1;90m--\x1b[0m\x1b[33mr\x1b[1;90m--\x1b[0m  \x1b[32m7\x1b[0m \x1b[34m2020-09-13 12:26\x1b[0m 'tar get'\r\n"
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` rows=0: the reference restricted long view has no automatic markers; this build adds them (documented) `
 
 ### pty_colour_mixed
 
@@ -2250,11 +2442,33 @@ no equal names in recordable trees, and the size/time sort keys are distinct.
   `quoting/broken_relative_long`, `classify/F_long_links`,
   `dirs/d_long_file`, `dirs/d_long_dir`, `dirs/d_long_symlink`) then skips
   rather than absorb an `@` marker.
-- The invalid-UTF-8 shape case stays probe-only until an E2 shape mode
-  exists; there is no shape-comparison runner in P0.
+- Invalid-UTF-8 display is now covered by exact E2 goldens (the `utf8`
+  family) whenever the fixture can create invalid names; the P0 `utf8` probes
+  remain raw-shape evidence. There is still no shape-comparison runner: that
+  means there is no shape oracle, not that lossy display is untested.
 - REFERENCE.md is not byte-for-byte reproducible: the host manifest records
   live host data (e.g. `/proc` entry counts). That is accepted.
 
+- A rows=0 terminal is invisible to `io::termWidth`, which exposes only the
+  column count. The reference's `terminal_size` requires non-zero rows and
+  columns, so with rows=0 it is not terminal-ish: the default view is Lines,
+  explicit `-G` still grids, and automatic classify markers stay off in every
+  view. This build sees the columns and treats the run as terminal-ish (grid
+  by default and auto markers). The `pty_zero_rows*` probes record the
+  reference bytes; this is an accepted 0.5-runtime limitation and no
+  differential case sets rows=0.
+- Rust's `{:?}` Debug escaping of an option value also escapes non-ASCII
+  non-printables (`\u{a0}`, combining marks, format controls, U+0085,
+  U+2028, U+FEFF) as `\u{...}`; `debugText` copies such bytes raw. ASCII
+  quote, backslash, NUL, tab/newline/CR, other C0 and DEL are escaped
+  identically. `width_nonascii_escape` records the reference; the divergence
+  is documented.
+- `errors::debugPath` prints an operand's raw bytes in a missing-operand
+  error; the reference's `{path:?}` Debug-escapes invalid UTF-8 and controls.
+  This is an inherited P2 limitation outside P6b's files.
+
 Note for reviewers: `git diff --check` flags trailing whitespace in
-`long/dir_mode000.stderr` (the permission summary line ends with a space).
-That is an exact reference byte, not formatting; do not edit it.
+`long/dir_mode000.stderr` (the permission summary line ends with a space) and
+in `grid/quoting_noquotes_width.stdout` line 2 (`trail ` is a NoQuotes cell
+that keeps its trailing space). Both are exact reference bytes, not
+formatting; do not edit them.

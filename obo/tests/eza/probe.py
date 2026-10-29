@@ -777,9 +777,10 @@ def e2_probes():
     not automatic colour, grid symlink/marker/quoting/broken-colour rules,
     real-TTY grids on a pty, valid UTF-8 widths and sort orders, simple
     lowercase folding, Unicode whitespace ties, and lossy invalid-UTF-8 names
-    and targets. Every grid probe passes --icons=never except the pty default
-    probes, where the default is no icons anyway. Run with ``--only e2`` for a
-    separate report."""
+    and targets. Every grid probe passes --icons=never, including the pty
+    probes. The pty_zero_rows_* probes pin the reference's rows=0 terminal,
+    which io::termWidth cannot see (0.5-runtime limitation). Run with
+    ``--only e2`` for a separate report."""
     return [
         # layout: 1/2/10/100 short, 10/100 long and mixed lengths
         _p('e2', 'width_20_grid10', '--width=20', '--icons=never', 'grid10'),
@@ -839,6 +840,11 @@ def e2_probes():
         _p('e2', 'width_plus_40', '--width=+40', '--icons=never', 'grid10'),
         _p('e2', 'width_leading_zero', '--width=040', '--icons=never',
            'grid10'),
+        _p('e2', 'width_short_attached', '-w40', '--icons=never', 'grid10'),
+        _p('e2', 'width_short_equals', '-w=40', '--icons=never', 'grid10'),
+        _p('e2', 'width_short_missing', '-w'),
+        _p('e2', 'width_short_next', '-w', 'grid10',
+           note='the next token is the value, not an operand'),
         _p('e2', 'width_x', '--width=x', 'grid10'),
         _p('e2', 'width_negative', '--width=-1', 'grid10'),
         _p('e2', 'width_empty_value', '--width', '', 'grid10'),
@@ -849,6 +855,9 @@ def e2_probes():
            note='Rust usize::from_str: "+" alone is InvalidDigit, not Empty'),
         _p('e2', 'width_quote', '--width=a"b', 'grid10',
            note='FailedParse Debug-escapes the displayed value'),
+        _p('e2', 'width_nonascii_escape', '--width=a\u00a0b', 'grid10',
+           note='Rust Debug escapes non-ASCII non-printables as \\u{a0}; the '
+                'build copies them raw (documented divergence)'),
         _p('e2', 'columns_plus', 'grid10', env={'COLUMNS': '+'}),
         _p('e2', 'columns_quote', 'grid10', env={'COLUMNS': 'a"b'}),
         _p('e2', 'columns_control', 'grid10', env={'COLUMNS': 'a\tb'}),
@@ -857,7 +866,7 @@ def e2_probes():
         _p('e2', 'columns_0_mixed', '--icons=never', 'mixed',
            env={'COLUMNS': '0'},
            note='COLUMNS=0 is Set(0): a real grid, one column'),
-        _p('e2', 'columns_plus', '--icons=never', 'grid10',
+        _p('e2', 'columns_plus40', '--icons=never', 'grid10',
            env={'COLUMNS': '+40'}),
         _p('e2', 'columns_over_width', '--width=20', '--icons=never',
            'grid10', env={'COLUMNS': '80'},
@@ -927,9 +936,29 @@ def e2_probes():
            cols=0, note='a zero column report is not terminal-ish: Lines mode'),
         _p('e2', 'pty_zero_rows', '--icons=never', 'mixed', mode='pty',
            cols=80, rows=0,
-           note='terminal_size also requires a non-zero row count: with rows=0 '
-                'eza is in Lines mode, but io::termWidth exposes only the '
-                'column count, so this build cannot see this case (documented)'),
+           note='rows=0 cols=80: terminal_size is None, so the reference '
+                'stays in Lines mode (colour auto on, no automatic classify). '
+                'io::termWidth exposes only the column count, so this build '
+                'sees cols=80, grids by default and enables auto classify '
+                '(0.5-runtime limitation, documented)'),
+        _p('e2', 'pty_zero_rows_F', '-G', '-F', '--icons=never', 'mixed',
+           mode='pty', cols=80, rows=0,
+           note='rows=0: explicit -G grids, but is_a_tty is false so the '
+                'reference adds no auto-classify markers; this build sees '
+                'cols=80 and adds them (documented)'),
+        _p('e2', 'pty_zero_rows_lines_F', '-1', '-F', '--icons=never',
+           'mixed', mode='pty', cols=80, rows=0,
+           note='rows=0: the reference Lines view has no automatic markers; '
+                'this build adds them (documented)'),
+        _p('e2', 'pty_zero_rows_tree_F', '-T', '-F', '--icons=never', 'tree',
+           mode='pty', cols=80, rows=0,
+           note='rows=0: the reference tree has no automatic markers; this '
+                'build adds them (documented)'),
+        _p('e2', 'pty_zero_rows_long_F', '-l', '--no-user', '--bytes',
+           '--time-style=long-iso', '-F', '--icons=never', 'mixed',
+           mode='pty', cols=80, rows=0,
+           note='rows=0: the reference restricted long view has no automatic '
+                'markers; this build adds them (documented)'),
         _p('e2', 'pty_colour_mixed', '--icons=never', 'mixed', mode='pty',
            cols=80, note='auto colour and grid on a real terminal'),
         _p('e2', 'pty_F_mixed', '-F', '--icons=never', 'mixed', mode='pty',
@@ -1568,14 +1597,36 @@ no equal names in recordable trees, and the size/time sort keys are distinct.
   `quoting/broken_relative_long`, `classify/F_long_links`,
   `dirs/d_long_file`, `dirs/d_long_dir`, `dirs/d_long_symlink`) then skips
   rather than absorb an `@` marker.
-- The invalid-UTF-8 shape case stays probe-only until an E2 shape mode
-  exists; there is no shape-comparison runner in P0.
+- Invalid-UTF-8 display is now covered by exact E2 goldens (the `utf8`
+  family) whenever the fixture can create invalid names; the P0 `utf8` probes
+  remain raw-shape evidence. There is still no shape-comparison runner: that
+  means there is no shape oracle, not that lossy display is untested.
 - REFERENCE.md is not byte-for-byte reproducible: the host manifest records
   live host data (e.g. `/proc` entry counts). That is accepted.
 
+- A rows=0 terminal is invisible to `io::termWidth`, which exposes only the
+  column count. The reference's `terminal_size` requires non-zero rows and
+  columns, so with rows=0 it is not terminal-ish: the default view is Lines,
+  explicit `-G` still grids, and automatic classify markers stay off in every
+  view. This build sees the columns and treats the run as terminal-ish (grid
+  by default and auto markers). The `pty_zero_rows*` probes record the
+  reference bytes; this is an accepted 0.5-runtime limitation and no
+  differential case sets rows=0.
+- Rust's `{:?}` Debug escaping of an option value also escapes non-ASCII
+  non-printables (`\\u{a0}`, combining marks, format controls, U+0085,
+  U+2028, U+FEFF) as `\\u{...}`; `debugText` copies such bytes raw. ASCII
+  quote, backslash, NUL, tab/newline/CR, other C0 and DEL are escaped
+  identically. `width_nonascii_escape` records the reference; the divergence
+  is documented.
+- `errors::debugPath` prints an operand's raw bytes in a missing-operand
+  error; the reference's `{path:?}` Debug-escapes invalid UTF-8 and controls.
+  This is an inherited P2 limitation outside P6b's files.
+
 Note for reviewers: `git diff --check` flags trailing whitespace in
-`long/dir_mode000.stderr` (the permission summary line ends with a space).
-That is an exact reference byte, not formatting; do not edit it.
+`long/dir_mode000.stderr` (the permission summary line ends with a space) and
+in `grid/quoting_noquotes_width.stdout` line 2 (`trail ` is a NoQuotes cell
+that keeps its trailing space). Both are exact reference bytes, not
+formatting; do not edit them.
 """
 
 
