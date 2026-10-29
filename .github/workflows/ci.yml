@@ -1,0 +1,101 @@
+# CI for obo: build the compiler and runtime from the promoted seed, run the
+# fast deterministic Linux gates, and, once the P0 harness exists, differentially
+# test eza against the pinned reference.
+#
+# The eza release asset is downloaded outside the repository (into
+# $RUNNER_TEMP/eza-ref) and verified against the pinned tarball and binary
+# SHA-256 digests from obo/design/stdlib-eza-design-v7.md sections 3.1 and 10.1.
+# It is never vendored into, or extracted inside, the checkout.
+#
+# The long mutation gates (obo/tests/mutate_fork.py, mutate_port.py, mutate_io.py)
+# are deliberately not here: they remain local/release gates because of their
+# runtime (design section 11.2).
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EZA_URL: https://github.com/eza-community/eza/releases/download/v0.23.3/eza_x86_64-unknown-linux-gnu.tar.gz
+  EZA_TARBALL_SHA256: 02e818f7b06f2c637b25761731104f1e9d6ea8f6e5924ab05eae69db4ed072a5
+  EZA_BINARY_SHA256: 10457dde35808517d09bcd3bfb6bc386000d06c2126e34b9071e09470a8f7cd8
+
+jobs:
+  linux:
+    name: build and test (Linux x86-64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install and verify the pinned eza reference
+        run: |
+          set -euo pipefail
+          EZA_DIR="$RUNNER_TEMP/eza-ref"
+          mkdir -p "$EZA_DIR"
+          curl -fsSL -o "$EZA_DIR/eza.tar.gz" "$EZA_URL"
+          echo "$EZA_TARBALL_SHA256  $EZA_DIR/eza.tar.gz" | sha256sum -c -
+          tar -xzf "$EZA_DIR/eza.tar.gz" -C "$EZA_DIR"
+          echo "$EZA_BINARY_SHA256  $EZA_DIR/eza" | sha256sum -c -
+          rm -f "$EZA_DIR/eza.tar.gz"
+          # The pinned release prints exactly these three lines. The [+git]
+          # suffix is part of the release string; do not normalize it.
+          expected="$(printf '%s\n' \
+            'eza - A modern, maintained replacement for ls' \
+            'v0.23.3 [+git]' \
+            'https://github.com/eza-community/eza')"
+          actual="$("$EZA_DIR/eza" --version)"
+          if [ "$actual" != "$expected" ]; then
+            echo 'unexpected eza --version output:' >&2
+            printf '%s\n' "$actual" >&2
+            exit 1
+          fi
+          echo "$EZA_DIR" >> "$GITHUB_PATH"
+
+      - name: Build the compiler and runtime
+        run: make -C obo
+
+      - name: Check the language documentation examples
+        run: python3 obo/tests/doc_check.py
+
+      - name: Run the compiler test suite
+        run: python3 obo/tests/run_fork.py
+
+      - name: Build the command-line tools
+        run: make -C obo tools
+
+      - name: Differential-test the tools against GNU coreutils
+        run: python3 obo/tests/tools.py --require-reference
+
+      - name: Run the tool memory cases
+        run: python3 obo/tests/tools.py --memory
+
+      - name: Check the ELF runtime-data segment
+        run: python3 obo/tests/elf_test.py
+
+      - name: Differential-test eza against the pinned reference
+        # Lands before P0: skip cleanly until both P0 artifacts exist, then run
+        # the live differential. A failure with the harness present still fails
+        # the step (no fake pass).
+        run: |
+          set -euo pipefail
+          if [ -f obo/tests/eza.py ] && [ -f obo/tests/eza/VERSION ]; then
+            PATH="$RUNNER_TEMP/eza-ref:$PATH" python3 obo/tests/eza.py --require-reference
+          else
+            echo "eza harness not present yet; skipping"
+          fi
+
+      # Deliberately absent: the long mutation gates (tests/mutate_fork.py,
+      # tests/mutate_port.py, tests/mutate_io.py). They remain local/release
+      # gates because of their runtime; see design section 11.2.
