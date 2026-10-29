@@ -1358,9 +1358,9 @@ That is an exact reference byte, not formatting; do not edit it.
 """
 
 
-def render(results, manifest, reference):
+def render(results, manifest, reference, title='# eza P0 probe report'):
     lines = [
-        '# eza probe report (P0; the e1 group is the P5b E1 re-probe)',
+        title,
         '',
         'Produced by `obo/tests/eza/probe.py` against the authorized pinned',
         'reference. Every byte below is observed output; skipped probes have no',
@@ -1435,6 +1435,8 @@ def main(argv=None):
                     help='the pinned eza binary to execute (required)')
     ap.add_argument('--out', metavar='PATH', required=True,
                     help='Markdown report to write')
+    ap.add_argument('--title', metavar='TEXT', default='# eza P0 probe report',
+                    help='report title line (default: the P0 report title)')
     ap.add_argument('--only', metavar='GROUP[,GROUP]',
                     help='only these groups (or case-name substrings)')
     ap.add_argument('--dt-unknown', metavar='DIR', action='append', default=[],
@@ -1527,7 +1529,7 @@ def main(argv=None):
             print('[%d/%d] %-12s %-32s %s'
                   % (i, len(probes), probe.group, probe.name, status),
                   file=sys.stderr)
-        text = render(results, manifest, reference)
+        text = render(results, manifest, reference, a.title)
         out_dir = os.path.dirname(os.path.abspath(a.out))
         os.makedirs(out_dir, exist_ok=True)
         with open(a.out, 'w', encoding='utf-8', newline='') as f:

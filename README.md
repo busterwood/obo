@@ -25,8 +25,8 @@ borrowed references and run-time-checked handles, with no garbage collector. On 
 benchmarks it uses 2 to 6 times less memory than even an aggressively tuned
 collector, at similar speed, with small changes to source code. It now also has
 its first command-line tools, `cat`, `wc` and `sort`, written in obo in
-`obo/cmd/` and built by `make tools`, plus the first working `eza` E0 core
-(`make eza`, P4); separate differential gates compare them with GNU coreutils
+`obo/cmd/` and built by `make tools`, plus the working `eza` E1 core
+(`make eza`, P4/P5b); separate differential gates compare them with GNU coreutils
 (`obo/tests/tools.py`) and the pinned eza 0.23.3 reference
 (`obo/tests/eza.py`), with recorded goldens as the fallback. Modules are now implemented in both stages:
 source imports and exports (Stage 1: `module`, `import "Name.obx" [as alias]`,
@@ -43,9 +43,9 @@ symbol directory under its output (`build/tools/sym` for `make tools`), created
 by the builder. Concurrent builds must use distinct output directories; a shared
 output has one symbol directory and one probe name.
 The tools live in `cmd/`, and their libraries are source modules under `lib/`:
-`strings`, `paths`, `sort`, `time`, `cli`, `io`, `fmt`, `errors` and `fs`. `cat`,
-`wc` and `sort` import only what they use (`io`/`fmt`/`errors`, plus `strings`
-for `wc` and `sort`); `eza` imports all nine. `fmt` owns the digit and padding
+`strings`, `paths`, `sort`, `time`, `cli`, `io`, `fmt`, `errors`, `fs` and
+`env`. `cat`, `wc` and `sort` import only what they use (`io`/`fmt`/`errors`,
+plus `strings` for `wc` and `sort`); `eza` imports all ten. `fmt` owns the digit and padding
 helpers, and `errors` owns the errno text and the eza-shaped exit constants. The
 exact subset, message forms and caveats are in `obo/cmd/README.md`.
 
@@ -83,7 +83,10 @@ and `OBO_VERSION` 0.3, and its seed was promoted. P4 added the working `eza` E0
 0.23.3) with no compiler change. P5a adds the environment builtins (`isatty`,
 `getenv`), `lib/env.obx`, `io::isTty` and `OBO_VERSION` 0.4; the 0.4 compiler
 recomputes itself to the same 425,985-byte binary (`obo` == stage 2 == stage 3,
-checked with `cmp`), and the seed is promoted once after review.
+checked with `cmp`), and the seed is promoted once after review. P5b (this
+branch, no compiler/runtime/seed change) adds the eza E1 core: the default
+colour palette with `--color`/`--colour`, `NO_COLOR` and the documented
+`LS_COLORS`/`EZA_COLORS` subset; `-T`/`--tree` and `-L`; and `--no-quotes`.
 
 | Metric | Value |
 |---|---:|
@@ -99,10 +102,10 @@ checked with `cmp`), and the seed is promoted once after review.
 | obo suite | 1,157 tests; 527/549 mutants caught + 22 equivalent; 27 runtime/library; 495 port; 27 symbol-file tests; 200 fuzz mutations; 32 metadata checks; 60/69 metadata mutants caught + 9 equivalent |
 | Tools differential gate | 199 checks (191 matrix + 8 serial) vs GNU coreutils 9.4; 2 memory cases (module roots) |
 | Tool binaries | cat 40,961; wc 53,249; sort 53,249 bytes (static, runtime included) |
-| eza E0 differential gate | 272/272 non-memory (214 exact goldens replayed against the pinned reference, 42 live, 16 own) + 2 memory cases |
-| eza E0 binary | 126,977 bytes (static, runtime included; reference eza 0.23.3 is 2,294,768) |
-| eza 10k-entry live peak | 2,185,008 bytes restricted long / 2,184,384 names; `EZA_PEAK_MAX` 2,752,512 |
-| eza 10k-entry max RSS | 2,432 KiB long / 2,432 KiB names; pinned reference about 24.3-25.4 MB long / 12.0 MB names across runs (measurement only) |
+| eza E1 differential gate | 388/388 non-memory cases (324 exact reference goldens, 51 live including 8 pty colour cases, 13 own) + 3 memory cases |
+| eza E1 binary | 172,033 bytes (static, runtime included; reference eza 0.23.3 is 2,294,768) |
+| eza 10k-entry live peak | 2,189,984 bytes restricted long / 2,189,360 names / 2,190,112 tree; `EZA_PEAK_MAX` 2,752,512 (unchanged) |
+| eza 10k-entry max RSS | 2,560 KiB for each of long/names/tree; pinned reference about 25.0 MB long / 12.1 MB names / 14.0 MB tree across runs (measurement only) |
 | Minimal static executable | 28,673 bytes (runtime included) |
 
 Live peak varies by a few hundred bytes with the source path and total
@@ -119,7 +122,10 @@ or seed; their runtime is included in the tool and eza binary sizes above (P3
 and P5a leave the tool sizes unchanged). P4's eza gate was re-measured under
 the merged 0.4 compiler and is unchanged: 272/272, `--memory` 2/2, binary
 126,977 bytes, 10,000-entry live peaks 2,185,008/2,184,384 bytes and max RSS
-2,432 KiB; the reference goldens are unchanged.
+2,432 KiB; the reference goldens are unchanged. P5b re-measured the E1 gate
+(388/388, `--memory` 3/3), the binary (172,033 bytes), the three 10,000-entry
+peaks (2,189,984 / 2,189,360 / 2,190,112 bytes) and max RSS (2,560 KiB each)
+without raising the memory cap.
 Whole modules are compiled into each tool, so the figures track the imported
 module set: the pre-P1 tree (`265564c`) measured cat 36,865 / wc 40,961 / sort
 45,057, the P1+P2a base (`ec244e0`) measured 49,153 / 49,153 / 53,249, and
@@ -161,7 +167,7 @@ coreutils-shaped `cat`, `wc` and `sort`; then `eza` (the maintained exa fork), `
 | 2. Incremental I/O: `openFile`/`readFd`/`writeFd`/`closeFile`, standard fds, `Reader`/`Writer` | done |
 | 3. `cat`, `wc`, `sort` and the GNU differential gate | done |
 | 4. Multiple modules | done: Stage 1 source imports, Stage 2 `.sym`/`--check`; the tools and their libraries are module roots |
-| 5. Stdlib modules and the `eza` core | done through P4: the nine `lib/` modules, P3's `fs`, and the `eza` E0 core with its differential gate; E1 (colour/tree) and E2 (grid/UTF-8) follow |
+| 5. Stdlib modules and the `eza` core | done through P5b: the ten `lib/` modules (P3's `fs`, P5a's `env`), the `eza` E0 core and E1 (colour/tree/`--no-quotes`) with their differential gates; E2 (grid/UTF-8) follows |
 | 6. Methods, interfaces and lambdas | planned |
 | 7. Peephole/optimizer audit | evidence-gated |
 | 8. More tools: `fd`, `hexyl`, `tokei`, `jq` | later |

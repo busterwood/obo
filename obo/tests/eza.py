@@ -129,8 +129,10 @@ FSIZE = 16 * 1024 * 1024                                 # per-process cap
 # The eza memory cap is a measured bound, not the compiler's PEAK_BUDGET:
 # the first gated runs of the two 10,000-entry cases (P4, OBO_STATS=1) peaked
 # at 2,185,008 (long) and 2,184,384 (names) live heap bytes, so the cap is the
-# long measurement plus a 25.97% margin (2,752,512 = 672 * 4096). A few hundred
-# bytes of the peak track the random temp-path length in the environment.
+# long measurement plus a 25.97% margin (2,752,512 = 672 * 4096). P5b adds the
+# tree case and re-measured all three at 2,189,984 / 2,189,360 / 2,190,112
+# bytes, still under the unchanged cap. A few hundred bytes of the peak track
+# the random temp-path length in the environment.
 EZA_PEAK_MAX = 2752512
 VERSION = os.path.join(HERE, 'eza', 'VERSION')
 GOLDEN = os.path.join(HERE, 'eza', 'golden')
