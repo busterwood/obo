@@ -1,8 +1,8 @@
 // wc: count lines, words and bytes, with -l, -w and -c.
 //
 // Built as a module root by tools/build_tools.py: it imports lib/io.obx as
-// `io`, lib/strings.obx as `strings`, lib/fmt.obx as `fmt` and lib/errors.obx
-// as `errors`, and every library name is qualified. The subset is deliberate:
+// `io`, lib/fmt.obx as `fmt` and lib/errors.obx as `errors`, and every library
+// name is qualified. The subset is deliberate:
 // -m, -L, --files0-from, long options, --help and --version are unsupported
 // (see cmd/README.md).
 //
@@ -11,6 +11,18 @@
 // byte (NUL, the other controls, 0x7F..0xFF) is ignored -- it neither starts nor
 // ends a word. Word state resets for each operand; a final line without a
 // newline is not counted as a line.
+//
+// Performance: each requested column takes its own path, because scanning for
+// counts nobody asked for is waste. -c only sums chunk lengths and never looks
+// at a byte. -l runs a newline-only loop unrolled 32 bytes with four
+// accumulators (no per-byte byte count, no word state); the unroll removes loop
+// overhead and keeps the four conditional-add chains independent. When -w is
+// selected the single word state machine counts words and, if -l is also
+// selected, lines in one pass: -lw and -lwc cost about what -w alone costs, and
+// a separate newline pass is measurably slower. The word loop keeps its state
+// and counters in locals and writes them back once per chunk. Every load is a
+// bounds-checked byte load; there is no word-at-a-time builtin, so this is the
+// pure-obo floor (GNU's -l speed comes from memchr, which is SIMD).
 //
 // Output is delayed until every operand has been scanned, because the width
 // depends on the total size. Phase 2 has no stat, so the tool uses the bytes it
@@ -26,7 +38,6 @@
 // failure exit so the counts and the error both appear.
 
 import "../lib/io.obx" as io
-import "../lib/strings.obx" as strings
 import "../lib/fmt.obx" as fmt
 import "../lib/errors.obx" as errors
 
@@ -34,7 +45,7 @@ type Counts = ref record {
     lines: int
     words: int
     bytes: int
-    inWord: bool       // inside a word at the end of the last chunk
+    inWord: int        // 1 inside a word at the end of the last chunk, else 0
 }
 
 type WcStat = ref record {
@@ -50,39 +61,137 @@ type WcOpts = ref record {
     bytes: bool
 }
 
-fn scanChunk(mut c: &Counts, data: &[]byte) {
-    for i in 0..len(data) {
-        let b = data[i]
-        c.bytes += 1
-        if b == '\n' { c.lines += 1 }
-        if strings::isSpace(b) {
-            c.inWord = false
-        } else if strings::isWordByte(b) {
-            if !c.inWord {
-                c.words += 1
-                c.inWord = true
-            }
-        }
+// Newline-only scan, used when lines are requested and words are not; the
+// caller adds len(data) to the byte count. The 32-byte unroll with four
+// accumulators was the fastest shape measured: the four conditional-add chains
+// are independent and the loop condition runs once per 32 bytes. The tail handles
+// the last 0..31 bytes of every chunk (a chunk can end anywhere).
+fn scanLines(mut c: &Counts, data: &[]byte) {
+    var a0 = 0
+    var a1 = 0
+    var a2 = 0
+    var a3 = 0
+    let n = len(data)
+    var i = 0
+    while i + 32 <= n {
+        if data[i] == '\n' { a0 += 1 }
+        if data[i + 1] == '\n' { a1 += 1 }
+        if data[i + 2] == '\n' { a2 += 1 }
+        if data[i + 3] == '\n' { a3 += 1 }
+        if data[i + 4] == '\n' { a0 += 1 }
+        if data[i + 5] == '\n' { a1 += 1 }
+        if data[i + 6] == '\n' { a2 += 1 }
+        if data[i + 7] == '\n' { a3 += 1 }
+        if data[i + 8] == '\n' { a0 += 1 }
+        if data[i + 9] == '\n' { a1 += 1 }
+        if data[i + 10] == '\n' { a2 += 1 }
+        if data[i + 11] == '\n' { a3 += 1 }
+        if data[i + 12] == '\n' { a0 += 1 }
+        if data[i + 13] == '\n' { a1 += 1 }
+        if data[i + 14] == '\n' { a2 += 1 }
+        if data[i + 15] == '\n' { a3 += 1 }
+        if data[i + 16] == '\n' { a0 += 1 }
+        if data[i + 17] == '\n' { a1 += 1 }
+        if data[i + 18] == '\n' { a2 += 1 }
+        if data[i + 19] == '\n' { a3 += 1 }
+        if data[i + 20] == '\n' { a0 += 1 }
+        if data[i + 21] == '\n' { a1 += 1 }
+        if data[i + 22] == '\n' { a2 += 1 }
+        if data[i + 23] == '\n' { a3 += 1 }
+        if data[i + 24] == '\n' { a0 += 1 }
+        if data[i + 25] == '\n' { a1 += 1 }
+        if data[i + 26] == '\n' { a2 += 1 }
+        if data[i + 27] == '\n' { a3 += 1 }
+        if data[i + 28] == '\n' { a0 += 1 }
+        if data[i + 29] == '\n' { a1 += 1 }
+        if data[i + 30] == '\n' { a2 += 1 }
+        if data[i + 31] == '\n' { a3 += 1 }
+        i += 32
     }
+    while i < n {
+        if data[i] == '\n' { a0 += 1 }
+        i += 1
+    }
+    c.lines += a0 + a1 + a2 + a3
 }
 
-fn countReader(mut r: &io::Reader, mut c: &Counts): Result[bool] {
+// Word-only scan, used when words are requested and lines are not; the caller
+// adds len(data) to the byte count. The C-locale rule is inline
+// (strings::isSpace/isWordByte are correct but a call per byte is far too
+// slow). The state is an int so the common word byte updates it with
+// `words += 1 - inWord` instead of a nested branch; the 0/1 int is the same state
+// as a bool. Whitespace is space or 0x09..0x0D; word bytes are 0x21..0x7E;
+// everything else leaves the state alone, so `a\0b` stays one word.
+fn scanWords(mut c: &Counts, data: &[]byte) {
+    var words = c.words
+    var inw = c.inWord
+    let n = len(data)
+    var i = 0
+    while i < n {
+        let b = data[i]
+        if b >= '!' {
+            if b <= '~' {
+                words += 1 - inw
+                inw = 1
+            }
+        } else if b == ' ' || (b >= '\t' && b <= '\r') {
+            inw = 0
+        }
+        i += 1
+    }
+    c.words = words
+    c.inWord = inw
+}
+
+// Words and lines in one pass. A separate newline pass would read every chunk
+// twice and measured slower than this extra newline test, which only runs in the
+// whitespace branch (so it is one comparison per byte outside it).
+fn scanWordsLines(mut c: &Counts, data: &[]byte) {
+    var words = c.words
+    var lines = c.lines
+    var inw = c.inWord
+    let n = len(data)
+    var i = 0
+    while i < n {
+        let b = data[i]
+        if b >= '!' {
+            if b <= '~' {
+                words += 1 - inw
+                inw = 1
+            }
+        } else if b == ' ' || (b >= '\t' && b <= '\r') {
+            if b == '\n' { lines += 1 }
+            inw = 0
+        }
+        i += 1
+    }
+    c.words = words
+    c.lines = lines
+    c.inWord = inw
+}
+
+fn countReader(mut r: &io::Reader, mut c: &Counts, opts: &WcOpts): Result[bool] {
     while true {
         let more = try io::fill(r)
         if !more { return ok(true) }
         let chunk = io::takeChunk(r)
-        scanChunk(c, chunk)
+        c.bytes += len(chunk)
+        if opts.words {
+            if opts.lines { scanWordsLines(c, &chunk) } else { scanWords(c, &chunk) }
+        } else if opts.lines {
+            scanLines(c, &chunk)
+        }
     }
 }
 
 // Scan one operand and append its stat. Returns false when the operand failed
 // (open error: no stat; read error: the partial counts are still appended).
 // Stdin is never opened or closed.
-fn wcOperand(path: string, label: string, mut stats: &[]WcStat): bool {
-    var c = new Counts{lines: 0, words: 0, bytes: 0, inWord: false}
+fn wcOperand(path: string, label: string, opts: &WcOpts, mut stats: &[]WcStat): bool {
+    var c = new Counts{lines: 0, words: 0, bytes: 0, inWord: 0}
     if path == "-" {
         var r = io::newReader(stdin(), 65536)
-        let rr = countReader(r, c)
+        let rr = countReader(r, c, opts)
         match rr {
             ok {
                 append(stats, new WcStat{label: label, counts: c, unknown: true, isStdin: true})
@@ -101,7 +210,7 @@ fn wcOperand(path: string, label: string, mut stats: &[]WcStat): bool {
             let fd = f.value
             defer closeFile(fd)
             var r = io::newReader(fd, 65536)
-            let rr = countReader(r, c)
+            let rr = countReader(r, c, opts)
             match rr {
                 ok {
                     append(stats, new WcStat{label: path, counts: c, unknown: false, isStdin: false})
@@ -204,12 +313,12 @@ fn main() {
     var stats = new []WcStat(0)
     var failed = false
     if len(operands) == 0 {
-        if !wcOperand("-", "", stats) { failed = true }
+        if !wcOperand("-", "", opts, stats) { failed = true }
     } else {
         var k = 0
         while k < len(operands) {
             let p = operands[k]
-            if !wcOperand(p, p, stats) { failed = true }
+            if !wcOperand(p, p, opts, stats) { failed = true }
             k += 1
         }
     }
@@ -233,7 +342,7 @@ fn main() {
         if anyUnknown && width < 7 { width = 7 }
     }
 
-    var total = new Counts{lines: 0, words: 0, bytes: 0, inWord: false}
+    var total = new Counts{lines: 0, words: 0, bytes: 0, inWord: 0}
     var ti = 0
     while ti < len(stats) {
         total.lines += stats[ti].counts.lines
