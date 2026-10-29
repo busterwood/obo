@@ -692,6 +692,13 @@ dependency, and read or write those modules' globals; it runs with no current
 function, so its calls add nothing to any function's effect summary (there is no
 caller to record them in).
 
+The P4 `cmd/eza.obx` is the first headed program root (`module eza`): its
+imports are the explicit `../lib/...` modules, the build writes an unread
+`eza.sym` into the private sym dir, and its `main` returns normally on success
+so the runtime's stats and leak checks run. Because `try` is not allowed in
+`main`, eza matches each `Result` and exits with the eza-shaped status; the
+library calls inside its helpers use `try` as usual.
+
 ### Type identity
 
 A named type is one object for the whole compilation: the defining module's

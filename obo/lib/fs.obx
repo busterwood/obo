@@ -36,8 +36,10 @@
 // (an internal copy: fs does not import paths); fs never resolves symlink
 // targets itself.
 //
-// statArray(path, follow) is the hot form: the runtime's 14-int array unchanged,
-// in the design's order (STAT_* constants), not the kernel's struct order.
+// statArray(path, follow) returns the runtime's 14-int array unchanged, in the
+// design's order (STAT_* constants), not the kernel's struct order; a caller
+// that fills parallel key arrays in a hot loop can use it directly. P4's eza
+// uses the stat/lstat records once per entry instead.
 // stat/lstat build the Stat record and free the array. Both are path-based and
 // resolve a relative path against the process cwd; stat follows symlinks and
 // lstat does not. readlink returns the raw target bytes with no NUL; a dangling

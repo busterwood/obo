@@ -6,9 +6,11 @@
 // entry ids; the caller keeps ownership of the key arrays. Sorting permutes
 // ids only: it never moves owned strings or records, and keys are read through
 // the caller's arrays. All orders are ascending and stable: equal keys keep
-// their relative input order. There is no reverse flag; eza reverses the
-// returned order afterwards (sort::reverse), which is what makes a reversed
-// sort keep its ties in reverse order (a comparator negation would not).
+// their relative input order. There is no reverse flag. eza's -r is a stable
+// descending comparison of the same keys (P4's probe: comparator-equal keys
+// keep readdir order), implemented in cmd/eza.obx; sort::reverse remains a
+// primitive for callers that want a whole-array reversal (it reverses ties),
+// but eza does not use it for -r.
 //
 // The implementation is an iterative bottom-up merge sort with one owned
 // scratch []int: O(n log n), no recursion, no per-comparison allocation. An
@@ -172,7 +174,8 @@ pub fn sortOrderInts(order: &[]int, keys: &[]int): []int {
     return mergeInts(init, keys)
 }
 
-// reverse the whole order end-to-end; [a,b,c] becomes [c,b,a]
+// reverse the whole order end-to-end; [a,b,c] becomes [c,b,a] (this reverses
+// equal-key runs; eza's -r does not use it -- see the module comment)
 pub fn reverse(mut order: &[]int) {
     let n = len(order)
     var i = 0

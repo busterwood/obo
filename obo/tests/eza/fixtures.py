@@ -18,8 +18,8 @@ Recordable trees (relative targets only):
 
     empty/  one/  onedir/  mixed/  modes/  sizes/  times/  names/  ext/
     operands/  quoting/  links/  long/  many/  invalid/  hard/  xattr/
-    tree/  grid1/ grid2/ grid10/ grid100/ gridlong10/ gridlong100/
-    locked/
+    tree/  selflink/  grid1/ grid2/ grid10/ grid100/ gridlong10/
+    gridlong100/ locked/
 
 Live/shape-only trees:
 
@@ -494,6 +494,15 @@ def _locked(root, caps):
     _pin(denied, nosearch, locked)
 
 
+def _selflink(root, caps):
+    """A self-directed link: `d/self -> .` (the synthetic dot target quirk)."""
+    selflink = _dir(root, 'selflink')
+    d = _dir(selflink, 'd')
+    _file(d, 'f', b'self\n')
+    _link(d, 'self', '.')
+    _pin(d, selflink)
+
+
 def _tree(root, caps):
     tree = _dir(root, 'tree')
     _file(tree, 'a.txt', b'a\n')
@@ -551,6 +560,7 @@ def build(root):
         _xattr(root, caps)
         _absolute(root, caps)
         _locked(root, caps)
+        _selflink(root, caps)
         _tree(root, caps)
         # Design section 9.2: the broken relative `../tar get` probe must have
         # no sibling `tar get` in the case directory's parent.

@@ -1,21 +1,25 @@
 # obo command-line tools
 
-The first tools written in obo: `cat`, `wc` and `sort`. Each source file here is
-a module root that imports `../lib/io.obx` as `io`, `../lib/fmt.obx` as `fmt`
-and `../lib/errors.obx` as `errors` (and, for `wc`/`sort`, `../lib/strings.obx`
-as `strings`); every library name is qualified (`io::Writer`, `io::newWriter`,
-`fmt::writePadded`, `errors::text`, ...). `tools/build_tools.py` compiles each
-root directly with the ordinary compiler, dependency-first, and nothing is
-concatenated. The builder creates a symbol directory under its output
-(`build/tools/sym` for `make tools`): symbol writes truncate in place, so
-concurrent builds must use distinct output directories.
+The tools written in obo: `cat`, `wc`, `sort` and the P4 `eza` E0 core. Each
+source file here is a module root that imports `../lib/...` modules by explicit
+relative path; every library name is qualified (`io::Writer`, `io::newWriter`,
+`fmt::writePadded`, `errors::text`, ...). `cat`, `wc` and `sort` are headerless
+roots; `eza.obx` declares `module eza` and imports all nine library modules.
+`tools/build_tools.py` compiles each root directly with the ordinary compiler,
+dependency-first, and nothing is concatenated. The builder creates a symbol
+directory under its output (`build/tools/sym` for `make tools`, `build/eza/sym`
+for `make eza`): symbol writes truncate in place, so concurrent builds must use
+distinct output directories.
 
 ```
 cd obo
 make tools                 # build build/tools/{cat,wc,sort} and build/tools/sym
+make eza                   # build build/eza/eza and build/eza/sym
 python3 tools/build_tools.py [cat] [--out DIR] [--obo PATH] [--rt DIR]
-python3 tests/tools.py --require-reference   # the differential gate
+python3 tests/tools.py --require-reference   # the cat/wc/sort differential gate
 python3 tests/tools.py --memory
+python3 tests/eza.py --require-reference     # the eza E0 differential gate
+python3 tests/eza.py --memory
 ```
 
 The library modules are `lib/io.obx` (`Reader`, `Writer`, the buffered functions
@@ -152,6 +156,142 @@ external merge; a huge input can exhaust memory (the runtime exits 2). `-k`,
 `-t`, `-f`, `-b`, `-d`, `-i`, `-M`, `-h`, `-V`, `-s`, `-c`, `-C`, `-o`, `-m`,
 `-z`, `--parallel`, long options, `--help` and `--version` are absent.
 
+## eza (E0)
+
+```
+eza [-1] [E0 flags] [--] [PATH]
+eza -l --bytes --time-style=long-iso (-n | --no-user) [E0 flags] [PATH]
+```
+
+The first working eza-0.23.3-compatible binary (design section 7, phase P4).
+E0 is deliberately **non-TTY**: stdout is a pipe or file, one entry per line,
+and — since `lines.rs` calls `with_link_paths()` — a symlink prints
+`name -> target` in every E0 view. One operand or none; zero operands mean `.`
+(`eza` on a non-TTY stdin is eza's stdin-file-name mode, a documented
+divergence E0 does not implement). Two or more operands are this build's own
+usage error. The operand is checked with `lstat`, so a dangling symlink operand
+is listed (`link -> target`, broken, no marker), and a directory operand that
+is a symlink to a directory is followed for listing unless `-d`.
+
+Supported flags (everything else is rejected, see below):
+
+| Flags | Behaviour |
+|---|---|
+| `-1`, `--oneline` | one per line (the non-TTY default); last of `-1`/`-l` selects the view |
+| `-l`, `--long` | restricted long only (below) |
+| `-a`, `--all` | count occurrences; one shows dotfiles, two also synthesizes `.`/`..` |
+| `-A`, `--almost-all` | dotfiles without `.`/`..`; `-A -a` is one `-a`, `-A -aa` shows dots |
+| `-d`, `--treat-dirs-as-files`, `--list-dirs` | describe a directory operand as one entry |
+| `-D`, `--only-dirs` / `-f`, `--only-files` | lstat-type filters; both together cancel; operand files are exempt |
+| `-r`, `--reverse` | descending comparison; comparator-equal entries keep readdir order (probed) |
+| `-s`, `--sort` | `name`/`filename` (default, natural fold), `Name`/`Filename`, `size`/`filesize`, `modified`/`date`/`time`/`mod`/`new`/`newest`, `extension`/`ext`, `Extension`/`Ext`, `type` |
+| `--group-directories-first`, `--group-directories-last` | stable final grouping; a symlink to a directory counts as a directory; with both, first wins (probed) |
+| `-F`, `--classify[=WHEN]` | `auto`/`never` no marker on non-TTY; `always` adds `*`, `/`, `\|` or `=`; `automatic` only after `=` |
+| `-B`, `--bytes`, `-n`, `--numeric`, `--no-user`, `--time-style` | restricted-long columns (below) |
+| `--no-permissions`, `--no-filesize`, `--no-time` | suppress that long column (and its separator) |
+| `--color`/`--colour`, `--icons` | bare/`auto`/`automatic`/`never` are no-ops without a TTY; `always` is this build's unsupported error |
+
+Sorting is stable and the golden cases use pairwise comparator-distinct names,
+so readdir order never leaks into a recorded byte. `-r` is the probe-confirmed
+reversed comparison, not a reversal of the finished vector: equal keys and
+comparator-equal names keep their readdir order (`--sort=size -r` on equal
+sizes, `-r` on fold-tied `A`/`a`, and the extension/type name fallbacks were
+probed against the reference). `extension`/`ext` and
+`Extension`/`Ext` use eza's `File::ext` (the substring after the last `.`,
+ASCII-lowercased, `None` before `Some("")`) with the design's two-pass stable
+pipeline and the folded or case-sensitive name fallback respectively; `type`
+pre-orders by case-sensitive natural name and then the rank dir/reg/link/fifo/
+socket/char/block/special. The synthetic `.`'s extension key is
+`File::ext(operand)` (`None` for `.`, `..`, `/` and a dotless operand), `..` is
+always `None`; the key is the operand path even when the operand is a symlink
+to a directory, never the target's extension. `-aa` listings of a relative
+fixture operand are committed only when every listed pair is
+comparator-distinct. `--sort=size`/`--sort=modified` with `-aa` on a
+real-directory operand are live-only: the synthetic dots carry the host
+directory and its parent's metadata. `--sort=none`, `inode`, `changed`, `accessed`, `created`,
+`age`, `old`/`oldest` and `.name`/`.Name`/`.filename`/`.Filename` are rejected
+with this build's own message (`--sort=default` is not an eza value and takes
+eza's own no-setting message).
+
+When the listing operand is a symlink to a directory, the synthetic `.` is the
+symlink itself, not the target directory: kind, mode, size, time and uid come
+from `lstat(operand)`, the row displays `. -> target`, and `-D`/`-f`, type
+sorting and grouping use that lstat kind (`..` is `lstat(join(operand,".."))`).
+Target display and classification reorient the raw target against the operand
+path, not its parent — eza's File at `dir.path` quirk — so
+`-aa links/realdirlink` prints `. -> realdir` with no classify marker, while a
+self-link `. -> .` classifies and groups as a directory; `-aa -F=always` marks
+only the rows whose target resolution against the operand succeeds. A trailing
+slash resolves the operand before the dot rows (`.` is then a directory row).
+These and the `-d ..` rule above contradict design 7.2/7.3; the P0 probe bytes
+win.
+
+Quoting is `QuoteSpaces`: a name containing a space or apostrophe is wrapped in
+single quotes, or double quotes when it contains an apostrophe; `\t`, `\n`,
+`\r` and other controls are escaped (`\u{1b}`), embedded quotes are not, and a
+classify marker follows the closing quote. A directory listing shows names
+only; an input operand shows `parentPrefix(parent) + name`, where the whole
+parent is escaped once (`'x y/sub'/f`, never `'x y'/sub/f`) and a root parent
+emits one `/`. A parented `..` operand is not special: `-d sub/..` prints
+`sub/..`, `-d 'x y/..'` prints `'x y'/..`, and `-d /..` prints `/..` (the P0
+probe; design 7.2's "`.`/`..` return themselves" only holds when the parent is
+empty, i.e. `-d ..`). Target display uses the raw readlink bytes the same way
+(`'a b'/target`) while metadata and classification use `stat` (follow) on
+`paths::join(base, raw)`; a broken target prints the whole raw target escaped
+(`'../tar get'`) with no marker, and an unreadable target prints no arrow.
+
+Restricted long is `-l --bytes --time-style=long-iso` plus `-n` or
+`--no-user`; any other `-l` invocation is this build's usage error. Columns
+are permissions, size, optional numeric user, long-iso UTC date, name. Sizes
+are decimal bytes, right-aligned, with `-` for a directory, symlink, FIFO,
+socket or other non-regular entry; the permission string is eza's (`s`/`S`,
+`t`/`T`, `.` for a regular file, `|` for a FIFO, `s` for a socket); a
+pre-1970 mtime is a `-` date; `--no-user` wins over `-n`; widths are computed
+over the displayed entries and a `-d` invocation uses the one entry. `-aa -l`
+on a real-directory operand is live-only because the `.` row is the listed
+directory and the `..` row its host parent; the committed symlink-operand long
+cases have fixture-owned dot rows. `--time-style=default`/`long-iso` are accepted and ignored without
+`-l`; other styles are this build's error (eza accepts any style in a non-long
+view — a documented narrowing).
+
+Exit classes are eza 0.23.3's: 0 success, 1 write failure
+(`No space left on device (os error 28)` with no prefix), 2 input metadata
+failure (`"path": No such file or directory (os error 2)`), and 3 usage and
+unsupported options. The `errors` module keeps eza's documented permission
+constant 13, but the pinned 0.23.3 binary does not exit 13 for a directory it
+cannot open (the P0 probe records 0), and this build matches the probe. A
+permission-denied directory operand prints the reference's
+`Permission denied: <path> - code: 13`, blank line and
+`Skipped 1 directories due to permission denied: ` summary, and keeps status 0
+(the P0 probe records 0.23.3's behaviour, not the man page's 13). `SIGPIPE`
+keeps the disposition it inherits: E0 installs no handler, so a default parent
+gets the probe's signal 13, while a parent that already ignores SIGPIPE makes a
+closed pipe an EPIPE write error.
+
+**Rejected with this build's own message** (exit 3): tree (`-T`), level
+(`-L`), grid, across, recurse, `--width`, `--no-quotes`, `--follow-symlinks`,
+`--dereference`, `--absolute`, colour scale, ignore globs, git status, the
+long-view column flags other than the three suppressions above, `--total-size`,
+`--hyperlink`, `--mounts`, `--octal-permissions`, `--context`, `--stdin`,
+`--flags`, `--binary`, `--header`, `--inode`, `--links`, `-m`/`--modified`,
+`--changed`, `--blocksize`, `-t`/`--time`, `-u`/`--accessed`, `-U`/`--created`,
+`-@`/`--extended`, `--smart-group`, `--group`, `--no-symlinks`,
+`--show-symlinks`, the `--colour-scale*` spellings and `--icons=always`/
+`--color=always`. `--help`/`--version`/`-?`/`-v` are not in the E0 parser and
+take the ordinary `Unknown argument` path. Values of rejected eza-valid flags
+are still consumed with eza's value mode before the unsupported error
+(`--width=N`, `-I=`, `-L x`).
+
+**Measured (this P4 branch).** eza binary 126,977 bytes (static, runtime
+included; the reference is 2,294,768). On 10,000 entries under
+`OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, restricted long peaks at 2,185,008
+live heap bytes and 2,432 KiB max RSS; the name-only listing peaks at
+2,184,384 and 2,432 KiB. `tests/eza.py --memory` gates on
+`EZA_PEAK_MAX = 2,752,512` bytes (the first long measurement plus a 25.97%
+margin) and on no leak/double-close line. GNU time on the same tree measures
+the reference at about 24.3-25.4 MB max RSS (long) and 12.0 MB (names)
+across runs; that measurement is printed for comparison and is not gated.
+
 ## Diagnostics and divergences
 
 Messages are English and fixed:
@@ -175,11 +315,15 @@ its default disposition, so `sort | head` behaves like coreutils.
 
 ## Metadata (P3) and the path limit
 
-`lib/fs.obx` (P3) is the metadata layer the `eza` core (P4) will use: directory
+`lib/fs.obx` (P3) is the metadata layer the `eza` core (P4) uses: directory
 iteration (`fs::open`/`next`/`close`, which skips `.` and `..` like Rust's
 `read_dir`), `statArray`/`stat`/`lstat` over the runtime's 14-int stat array,
-`readlink` and the type predicates. It is a library module only; `cat`, `wc` and
-`sort` do not import it and their output is unchanged.
+`readlink` and the type predicates. `eza` fills each entry with one lazy lstat
+(only when the view, sort key or marker needs it; the synthetic dots always
+need one), resolves every symlink with `readlink` plus a following `stat`, and
+synthesizes its own `.`/`..` records; `statArray` remains the form for a future
+parallel-key hot loop rather than an E0 caller;
+`cat`, `wc` and `sort` do not import `fs` and their output is unchanged.
 
 The API is path-based: `fs::stat(lstat)`, `fs::readlink` and a tree child's
 `fs::open` take a whole path built with `paths::join(operand, name)`. `cpath`
