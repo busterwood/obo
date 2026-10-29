@@ -1,0 +1,15 @@
+realdir
+exec-target
+file
+'tar get'
+b -> real
+chain -> realfile
+dangling -> nowhere
+exec -> exec-target
+loop1 -> loop2
+loop2 -> loop1
+real -> realdir
+realdirlink -> realdir
+realfile -> file
+spaced -> 'tar get'
+to_realdirlink -> realdirlink

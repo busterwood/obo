@@ -14,7 +14,10 @@ must fail to compile with exit 1 and that substring on stderr (the explicit
 absence tests for paths::base/dir/stem/clean).
 
 Files with a `module Name` header (support.obx) are support modules, not
-cases; they are compiled through each root that imports them. All programs run
+cases; they are compiled through each root that imports them. The discovered
+root and module filenames are compared against EXPECTED_ROOTS and
+EXPECTED_MODULES, so a case that accidentally gains a module header (and thus
+silently stops running) fails the run. All programs run
 under OBO_CHECK=1 and OBX_GC=poison, so a leak or use-after-free fails the
 case. The compiler is $OBO (default obo/obo); all paths are absolute, so the
 runner works from any cwd. No output is written outside the test temp dir.
@@ -38,6 +41,18 @@ CASEDIR = os.path.join(HERE, 'stdlib')
 OBXC = os.path.abspath(os.environ.get('OBO', os.path.join(FORK, 'obo')))
 TMP = tempfile.mkdtemp(prefix='obo-stdlib-')
 atexit.register(shutil.rmtree, TMP, ignore_errors=True)
+
+# Pinned inventory: a case file that accidentally gains a `module` header is
+# reclassified as a support module and silently stops running, so the
+# discovered roots and support modules are checked against these lists.
+EXPECTED_ROOTS = [
+    'cli_errors.obx', 'cli_helpers.obx', 'cli_parse.obx',
+    'paths_absent_base.obx', 'paths_absent_clean.obx',
+    'paths_absent_dir.obx', 'paths_absent_stem.obx', 'paths_table.obx',
+    'sort_orders.obx', 'strings_basic.obx', 'strings_natcmp.obx',
+    'strings_quote.obx', 'strings_split_join.obx', 'time_civil.obx',
+]
+EXPECTED_MODULES = ['support.obx']
 
 failures = []
 
@@ -130,14 +145,28 @@ def main():
         print(f"no compiler at {OBXC}: run make first")
         sys.exit(2)
     files = sorted(f for f in os.listdir(CASEDIR) if f.endswith('.obx'))
+    root_names = []
+    module_names = []
     roots = modules = passed = 0
     for f in files:
-        kind = case(os.path.join(CASEDIR, f))
-        if kind == 'module':
+        path = os.path.join(CASEDIR, f)
+        if is_module(open(path).read()):
+            module_names.append(f)
+            case(path)
             modules += 1
         else:
+            root_names.append(f)
             roots += 1
-            passed += kind == 'pass'
+            passed += case(path) == 'pass'
+    if root_names != EXPECTED_ROOTS:
+        missing = sorted(set(EXPECTED_ROOTS) - set(root_names))
+        extra = sorted(set(root_names) - set(EXPECTED_ROOTS))
+        failures.append(f"test roots changed (missing {missing}, unexpected "
+                        f"{extra}); update EXPECTED_ROOTS -- a case with a "
+                        f"module header no longer runs")
+    if module_names != EXPECTED_MODULES:
+        failures.append(f"support modules changed (got {module_names}, want "
+                        f"{EXPECTED_MODULES}); update EXPECTED_MODULES")
     if roots == 0:
         failures.append(f"no test roots under {CASEDIR}")
     for f in failures:

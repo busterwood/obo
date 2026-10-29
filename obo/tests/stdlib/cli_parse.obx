@@ -222,7 +222,8 @@ fn main() {
     let w3 = t::list1("3")
     operandsEq("level next", p30, w3)
 
-    // long-only required flag
+    // a required flag with both spellings (synthetic --output entry; eza's
+    // -o is --octal-permissions and it has no --output)
     let av31 = t::list2("--output", "x")
     let p31 = parsed("output", cli::parse(av31, 0, sp))
     oneOpt("output", p31, 'o', "output", "x", true)
@@ -256,6 +257,24 @@ fn main() {
     counts("cluster lF eq", p36, 2, 0)
     optAt("cluster lF eq", p36, 0, 'l', "long", "", false)
     optAt("cluster lF eq", p36, 1, 'F', "classify", "always", true)
+    // an earlier prefix flag never takes the split value: VALUE_NONE records
+    // no value and VALUE_OPTIONAL records its default, then the walk reaches
+    // the last prefix flag, which takes the value (eza 0.23.3 parser.rs)
+    let av36a = t::list1("-ls=name")
+    let p36a = parsed("cluster ls eq", cli::parse(av36a, 0, sp))
+    counts("cluster ls eq", p36a, 2, 0)
+    optAt("cluster ls eq", p36a, 0, 'l', "long", "", false)
+    optAt("cluster ls eq", p36a, 1, 's', "sort", "name", true)
+    let av36b = t::list1("-Fs=name")
+    let p36b = parsed("cluster Fs eq", cli::parse(av36b, 0, sp))
+    counts("cluster Fs eq", p36b, 2, 0)
+    optAt("cluster Fs eq", p36b, 0, 'F', "classify", "auto", true)
+    optAt("cluster Fs eq", p36b, 1, 's', "sort", "name", true)
+    let av36c = t::list1("-FF=always")
+    let p36c = parsed("cluster FF eq", cli::parse(av36c, 0, sp))
+    counts("cluster FF eq", p36c, 2, 0)
+    optAt("cluster FF eq", p36c, 0, 'F', "classify", "auto", true)
+    optAt("cluster FF eq", p36c, 1, 'F', "classify", "always", true)
     let av37 = t::list1("-aa")
     let p37 = parsed("cluster aa", cli::parse(av37, 0, sp))
     counts("cluster aa", p37, 2, 0)

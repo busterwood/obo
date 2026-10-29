@@ -2,8 +2,11 @@
 // wording and code 22 (EINVAL): bad values for required (with choices) and
 // optional (no choices) flags, forbidden values on VALUE_NONE flags, unknown
 // long names (whole token vs the name before '='), unknown short bytes, the
-// missing-value forms, the default value validated for an optional flag, and
-// the from bounds. parse() returns the error; it never prints or exits.
+// missing-value forms, the default value validated for an optional flag,
+// split short clusters whose earlier prefix flag is value-taking (only the
+// last prefix flag takes the '=value' remainder), the deferred accept check
+// (a later syntax error wins over an earlier bad value), and the from bounds.
+// parse() returns the error; it never prints or exits.
 //
 // Unpinned choice: the design gives the long missing-value wording
 // ("Flag --sort needs a value ...") but not the short spelling; this module
@@ -124,6 +127,45 @@ fn main() {
     let av26 = t::list1("-l=1")
     expectErr("long short equals", cli::parse(av26, 0, sp),
         "Flag -l cannot take a value")
+
+    // split short cluster: only the LAST prefix flag takes the value. An
+    // earlier VALUE_REQUIRED prefix flag is a missing-value error; an earlier
+    // VALUE_OPTIONAL flag records its default and the walk continues; an
+    // earlier VALUE_NONE flag records no value and the walk continues (eza
+    // 0.23.3 parser.rs)
+    let av26a = t::list1("-sF=always")
+    expectErr("split cluster early required", cli::parse(av26a, 0, sp),
+        "Flag -s needs a value (choices: name, Name, size, extension, Extension, modified, changed, accessed, created, inode, type, none)")
+    let av26b = t::list1("-Is=4")
+    expectErr("split cluster early required no choices", cli::parse(av26b, 0, sp),
+        "Flag -I needs a value")
+    let av26c = t::list1("-ol=9")
+    expectErr("split cluster early required output", cli::parse(av26c, 0, sp),
+        "Flag -o needs a value")
+    let av26d = t::list1("-Fl=always")
+    expectErr("split cluster last forbidden", cli::parse(av26d, 0, sp),
+        "Flag -l cannot take a value")
+    let av26e = t::list1("-FQ=foo")
+    expectErr("split cluster unknown last", cli::parse(av26e, 0, sp),
+        "Unknown argument -Q")
+    let av26f = t::list1("-Fs=foo")
+    expectErr("split cluster bad last value", cli::parse(av26f, 0, sp),
+        "Option --sort (-s) has no \"foo\" setting (choices: name, Name, size, extension, Extension, modified, changed, accessed, created, inode, type, none)")
+
+    // a bad value is reported only after the whole token walk: a syntax error
+    // later in argv wins, as eza parses every token before deduction
+    let av26g = t::list2("--sort=foo", "-Q")
+    expectErr("bad sort then unknown", cli::parse(av26g, 0, sp),
+        "Unknown argument -Q")
+    let av26h = t::list2("--sort==", "-Q")
+    expectErr("sort equals then unknown", cli::parse(av26h, 0, sp),
+        "Unknown argument -Q")
+    let av26i = t::list2("--extra", "-Q")
+    expectErr("bad default then unknown", cli::parse(av26i, 0, sp),
+        "Unknown argument -Q")
+    let av26j = t::list2("--sort=foo", "-l")
+    expectErr("bad sort then valid", cli::parse(av26j, 0, sp),
+        "Option --sort (-s) has no \"foo\" setting (choices: name, Name, size, extension, Extension, modified, changed, accessed, created, inode, type, none)")
 
     // unknown long names: a split long reports only the name before '=',
     // a non-split token is reported whole

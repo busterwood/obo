@@ -16,6 +16,8 @@
 
 ---
 
+> **2026-10-29 literal-policy addendum.** The user approved the numeric literal policy in [numeric-literals-decision-2026-10-29.md](numeric-literals-decision-2026-10-29.md): bare fractional and exponent literals are exact `decimal`; the `f`/`F` suffix marks binary `float`; there is no `m` suffix and no implicit float literal. The `1.23m` examples in section 1 and the original background section are superseded for literal syntax only. The 24-byte/38-digit decimal design, the database analysis and all other recommendations below are unchanged.
+
 ## 1. Executive verdict
 
 **Revised 2026-10-28 (database-first): the right target is a database-compatible fixed decimal, not a copy of `System.Decimal`.** [I]

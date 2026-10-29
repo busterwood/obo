@@ -1,0 +1,16 @@
+sock
+pipe
+spaced -> 'tar get'
+link -> alpha
+dirlink -> dir
+broken -> missing
+'tar get'
+prog
+noexec
+gamma.txt
+alpha
+Beta
+--x
+-
+sub.dir
+dir

@@ -28,13 +28,22 @@
 //     cluster (including a leading '=') or the next token, and VALUE_OPTIONAL
 //     takes a non-empty rest only when it is in consume (else an error) or the
 //     next token only when it is in consume. With a split, the bytes before
-//     '=' are the cluster and the LAST prefix flag takes the split value,
-//     validated against accept. (A value-taking flag before that last byte is
-//     not pinned by the design; this module lets it consume the original
-//     token's remainder after it, the pre-split cluster rule.)
-//   * Values validated against accept when accept is non-empty: a bad required
-//     value is `Option --long (-s) has no "v" setting (choices: ...)`; a bad
-//     optional value is the same without the choices text.
+//     '=' are the cluster and only the LAST prefix flag takes the split value,
+//     validated against accept. An earlier prefix flag mirrors eza 0.23.3:
+//     VALUE_NONE records no value and the walk continues, VALUE_OPTIONAL
+//     records the spec's default and the walk continues, and VALUE_REQUIRED is
+//     `err(missingShortMessage(spec, c), 22)`. A prefix flag never consumes
+//     the remainder of the token (design 5.6 leaves this unpinned).
+//   * Values validated against accept when accept is non-empty, after the
+//     whole token walk (eza parses every token before deduction): a bad
+//     required value is `Option --long (-s) has no "v" setting (choices:
+//     ...)`; a bad optional value is the same without the choices text.
+//     Deferring means a syntax error later in argv wins over an earlier bad
+//     value: `--sort=foo -Q` is `Unknown argument -Q`. Every occurrence is
+//     then validated in occurrence order; eza deduces only the effective
+//     (last) occurrence and in fixed category order, so differing bad values
+//     in one argv can still report a different one. That multi-error
+//     precedence is left to P0/P4.
 //
 // Option.value carries the EFFECTIVE value: an explicit value is copied in;
 // when a bare VALUE_OPTIONAL flag uses a non-empty default, value is that
@@ -137,7 +146,11 @@ fn optionLabel(spec: &FlagSpec): string {
 }
 
 // the bad-value message; withChoices is true only for VALUE_REQUIRED, because
-// eza's Optional bad-value has no choices text even when choices are listed
+// eza's Optional bad-value has no choices text even when choices are listed.
+// The attempted value is inserted raw between the quotes. eza formats it with
+// Rust's OsString Debug (options/error.rs), which escapes quotes, backslashes
+// and control bytes; P1 leaves that to the errors layer (P2), which owns the
+// debug-escaping primitive, and P0's bad values are simple.
 fn noSettingMessage(spec: &FlagSpec, value: string, withChoices: bool): string {
     var msg = "Option " + optionLabel(spec) + " has no \"" + value + "\" setting"
     if withChoices && len(spec.choices) > 0 {
@@ -244,10 +257,6 @@ pub fn parse(args: &[]string, from: int, specs: &[]FlagSpec): Result[Parsed] {
                 if specs[si].mode == VALUE_NONE {
                     return err("Flag --" + specs[si].long + " cannot take a value", 22)
                 }
-                if !accepts(specs[si], value) {
-                    return err(noSettingMessage(specs[si], value,
-                                                specs[si].mode == VALUE_REQUIRED), 22)
-                }
                 append(options, new Option{short: specs[si].short,
                                            long: dup(specs[si].long),
                                            value: dup(value), hasValue: true})
@@ -265,9 +274,6 @@ pub fn parse(args: &[]string, from: int, specs: &[]FlagSpec): Result[Parsed] {
                     }
                     i += 1
                     let value = args[i]
-                    if !accepts(specs[si], value) {
-                        return err(noSettingMessage(specs[si], value, true), 22)
-                    }
                     append(options, new Option{short: specs[si].short,
                                                long: dup(specs[si].long),
                                                value: dup(value), hasValue: true})
@@ -275,17 +281,11 @@ pub fn parse(args: &[]string, from: int, specs: &[]FlagSpec): Result[Parsed] {
                     if i + 1 < len(args) && inList(specs[si].consume, args[i + 1]) {
                         i += 1
                         let value = args[i]
-                        if !accepts(specs[si], value) {
-                            return err(noSettingMessage(specs[si], value, false), 22)
-                        }
                         append(options, new Option{short: specs[si].short,
                                                    long: dup(specs[si].long),
                                                    value: dup(value), hasValue: true})
                     } else {
                         let value = specs[si].default
-                        if !accepts(specs[si], value) {
-                            return err(noSettingMessage(specs[si], value, false), 22)
-                        }
                         append(options, new Option{short: specs[si].short,
                                                    long: dup(specs[si].long),
                                                    value: dup(value),
@@ -309,10 +309,6 @@ pub fn parse(args: &[]string, from: int, specs: &[]FlagSpec): Result[Parsed] {
                         if specs[si].mode == VALUE_NONE {
                             return err("Flag -" + oneChar(c) + " cannot take a value", 22)
                         }
-                        if !accepts(specs[si], value) {
-                            return err(noSettingMessage(specs[si], value,
-                                                        specs[si].mode == VALUE_REQUIRED), 22)
-                        }
                         append(options, new Option{short: c,
                                                    long: dup(specs[si].long),
                                                    value: dup(value), hasValue: true})
@@ -322,26 +318,19 @@ pub fn parse(args: &[]string, from: int, specs: &[]FlagSpec): Result[Parsed] {
                                                    long: dup(specs[si].long),
                                                    value: "", hasValue: false})
                         j += 1
-                    } else {
-                        // design leaves an earlier value-taking prefix flag
-                        // unpinned: it consumes the token's remainder after it
-                        let value = substr(a, j + 1, len(a))
-                        if specs[si].mode == VALUE_REQUIRED {
-                            if !accepts(specs[si], value) {
-                                return err(noSettingMessage(specs[si], value, true), 22)
-                            }
-                        } else {
-                            if !inList(specs[si].consume, value) {
-                                return err("Flag -" + oneChar(c) + " cannot take a value", 22)
-                            }
-                            if !accepts(specs[si], value) {
-                                return err(noSettingMessage(specs[si], value, false), 22)
-                            }
-                        }
+                    } else if specs[si].mode == VALUE_OPTIONAL {
+                        // an earlier optional prefix flag records its default
+                        // and the walk continues (eza 0.23.3 parser.rs)
+                        let value = specs[si].default
                         append(options, new Option{short: c,
                                                    long: dup(specs[si].long),
-                                                   value: dup(value), hasValue: true})
-                        done = true
+                                                   value: dup(value),
+                                                   hasValue: len(value) > 0})
+                        j += 1
+                    } else {
+                        // an earlier required prefix flag is missing its value
+                        // (eza 0.23.3 parser.rs needs-value error)
+                        return err(missingShortMessage(specs[si], c), 22)
                     }
                 }
             } else {
@@ -359,18 +348,12 @@ pub fn parse(args: &[]string, from: int, specs: &[]FlagSpec): Result[Parsed] {
                     } else if specs[si].mode == VALUE_REQUIRED {
                         if j + 1 < len(a) {
                             let value = substr(a, j + 1, len(a))
-                            if !accepts(specs[si], value) {
-                                return err(noSettingMessage(specs[si], value, true), 22)
-                            }
                             append(options, new Option{short: c,
                                                        long: dup(specs[si].long),
                                                        value: dup(value), hasValue: true})
                         } else if i + 1 < len(args) {
                             i += 1
                             let value = args[i]
-                            if !accepts(specs[si], value) {
-                                return err(noSettingMessage(specs[si], value, true), 22)
-                            }
                             append(options, new Option{short: c,
                                                        long: dup(specs[si].long),
                                                        value: dup(value), hasValue: true})
@@ -384,26 +367,17 @@ pub fn parse(args: &[]string, from: int, specs: &[]FlagSpec): Result[Parsed] {
                             if !inList(specs[si].consume, value) {
                                 return err("Flag -" + oneChar(c) + " cannot take a value", 22)
                             }
-                            if !accepts(specs[si], value) {
-                                return err(noSettingMessage(specs[si], value, false), 22)
-                            }
                             append(options, new Option{short: c,
                                                        long: dup(specs[si].long),
                                                        value: dup(value), hasValue: true})
                         } else if i + 1 < len(args) && inList(specs[si].consume, args[i + 1]) {
                             i += 1
                             let value = args[i]
-                            if !accepts(specs[si], value) {
-                                return err(noSettingMessage(specs[si], value, false), 22)
-                            }
                             append(options, new Option{short: c,
                                                        long: dup(specs[si].long),
                                                        value: dup(value), hasValue: true})
                         } else {
                             let value = specs[si].default
-                            if !accepts(specs[si], value) {
-                                return err(noSettingMessage(specs[si], value, false), 22)
-                            }
                             append(options, new Option{short: c,
                                                        long: dup(specs[si].long),
                                                        value: dup(value),
@@ -417,6 +391,21 @@ pub fn parse(args: &[]string, from: int, specs: &[]FlagSpec): Result[Parsed] {
             append(operands, dup(a))
         }
         i += 1
+    }
+    // Value validation runs after the whole token walk, as in eza: every
+    // token is parsed before any option is deduced, so a later unknown,
+    // forbidden-value or missing-value error wins over an earlier bad value.
+    var k = 0
+    while k < len(options) {
+        let si = specByLong(specs, options[k].long)
+        if si >= 0 && specs[si].mode != VALUE_NONE {
+            let value = options[k].value
+            if !accepts(specs[si], value) {
+                return err(noSettingMessage(specs[si], value,
+                                            specs[si].mode == VALUE_REQUIRED), 22)
+            }
+        }
+        k += 1
     }
     return ok(new Parsed{options: options, operands: operands})
 }
