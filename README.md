@@ -55,7 +55,7 @@ fixed point. Its stage test now compares behaviour (same errors, same output whe
 so code generation can improve. Compiling
 its own source it peaked at 1.5 MB resident at the earlier stage (live peak now
 1,646,816 bytes on a 386,590-byte source; the 425,985-byte compiler takes
-0.13 s; see Current status), against 2.5 MB for the same logic on a tuned
+0.11 s; see Current status), against 2.5 MB for the same logic on a tuned
 collector and 1.9 MB on an
 aggressive one. The larger source and its extra checks account for the wall time.
 
@@ -68,9 +68,10 @@ These are one host's measurements, not portable constants: an AMD Ryzen 7
 8745HS under WSL2, CPython 3.12.3, GNU coreutils 9.4 and obo 0.5. The benchmark
 uses warm page cache, one pinned core, medians of repeated runs, timed output
 to `/dev/null`, `LC_ALL=C` and `TZ=UTC`; the command is
-`python3 obo/bench/cli/run.py`. Full tables, binary sizes, memory figures,
-methodology and caveats are in [PERFORMANCE.md](PERFORMANCE.md); how to run and
-read the suite is in [obo/bench/cli/README.md](obo/bench/cli/README.md).
+`python3 obo/bench/cli/run.py` (add `--eza PATH`, or have a matching eza on
+`PATH`, for the optional pinned-eza row). Full tables, binary sizes, memory
+figures, methodology and caveats are in [PERFORMANCE.md](PERFORMANCE.md); how
+to run and read the suite is in [obo/bench/cli/README.md](obo/bench/cli/README.md).
 
 | Workload | obo | Comparison |
 |---|---:|---:|
@@ -123,7 +124,7 @@ measures 546/546 non-memory cases plus 5 memory cases against the pinned eza
 | Compiler built by the seed (`obo`, `--version` 0.5) | 425,985 bytes (sha256 `05542e89…`) |
 | Stage 2 == stage 3 | 425,985 bytes, identical to the seed-built `obo` (checked with `cmp`) |
 | Promoted seed (`--version` 0.5) | 425,985 bytes (sha256 `05542e89…`) |
-| Self-compile wall time | 0.13 s (5 runs, median; 0.12-0.16 s on this host) |
+| Self-compile wall time | 0.11 s (5 runs, median; 0.10-0.12 s on this host) |
 | Self-compile live peak | 1,646,816 bytes |
 | Total allocated | 35,353,648 bytes |
 | Maximum resident set | 2,976 KB (3 runs on this host) |
@@ -134,7 +135,7 @@ measures 546/546 non-memory cases plus 5 memory cases against the pinned eza
 | eza E2 differential gate | 546/546 non-memory cases (462 exact reference goldens, 72 live including 22 pty, 12 own) + 5 memory cases |
 | eza E2 binary | 212,993 bytes (sha256 `53133d23…`; static, runtime included; reference eza 0.23.3 is 2,294,768) |
 | eza 10k-entry live peak | 2,190,032 bytes restricted long / 2,189,408 names / 2,190,160 tree / 2,189,632 colour / 2,189,808 grid; `EZA_PEAK_MAX` 2,752,512 (unchanged) |
-| eza 10k-entry max RSS | 2,560 KiB for each of long/names/tree/colour/grid; pinned reference about 25 MB long / 12 MB names / 14 MB tree / 12 MB colour / 12 MB grid across runs (measurement only) |
+| eza 10k-entry max RSS | 2,560 KiB in the recorded run (reruns varied 2,304-2,560 KiB across views); pinned reference about 24.6 MB long / 12-14 MB other views across runs (measurement only) |
 | Minimal static executable | 28,673 bytes (runtime included) |
 
 Live peak varies by a few hundred bytes with the source path and total

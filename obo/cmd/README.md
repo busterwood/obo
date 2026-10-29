@@ -209,9 +209,10 @@ blocks and written with `writeFd`. On the CLI
 benchmark's 1,000,000 fixed 8-digit lines (warm cache, one core) obo `sort`
 measures 158.7 ms against GNU `sort` 9.4's 233.6 ms and the benchmark's
 Python 545.3 ms; it was about 1,838 ms with the former readLine + index merge.
-Sorted input measures about 63 ms (GNU 85 ms), a 22 MB random variable-length
-file 309 ms (GNU 331 ms), and a 73 MB file whose lines share a 64-byte prefix
-650 ms (GNU 480 ms). Absolute times are fixture-dependent, and on the shapes
+Sorted input measures 56.6 ms (GNU 83.4 ms), a 22 MB random variable-length
+file 256 ms (GNU 312 ms), and a 73 MB file whose lines share a 64-byte prefix
+614 ms (GNU 461 ms), all clean reruns. Absolute times are fixture-dependent,
+and on the shapes
 measured here the shared-prefix file is the one where a comparison sort with
 `memcmp` clearly wins; duplicate-heavy variable-length inputs can favor GNU as
 well, while fixed-width and small-key inputs favor the radix. Peak RSS on the
@@ -438,11 +439,12 @@ included; the reference is 2,294,768). On 10,000 entries under
 `OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, restricted long peaks at 2,190,032
 live heap bytes, the name-only listing at 2,189,408, the tree at 2,190,160,
 the coloured listing at 2,189,632 and the E2 grid at 2,189,808 (2,560 KiB max
-RSS each; the UTF-8 width table is code, not per-entry heap).
+RSS in the recorded run; reruns varied 2,304-2,560 KiB across views; the UTF-8
+width table is code, not per-entry heap).
 `tests/eza.py --memory` keeps the P4 `EZA_PEAK_MAX = 2,752,512` bytes and
 gates on no leak/double-close line. GNU time measures the reference at about
-24.6 MB max RSS (long), 12.0 MB (names), 14.2 MB (tree) and 12.1 MB (colour);
-that measurement is printed for comparison and is not gated.
+24.6 MB max RSS (long), 12.0 MB (names), 14.2 MB (tree) and about 12 MB
+(colour); that measurement is printed for comparison and is not gated.
 
 ### E2: grid, width sources, UTF-8 and lossy names
 

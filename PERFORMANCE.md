@@ -9,13 +9,16 @@ on-demand, not a gate; its source is `obo/bench/cli/`, and the command is:
 python3 obo/bench/cli/run.py
 ```
 
+The optional pinned-eza row needs the reference binary passed with `--eza
+PATH` (or an eza matching the pin on `PATH`); otherwise that row is skipped.
+
 The run took 78.9 s on the host below. The numbers are host-dependent; use
 them for relative comparison, not as portable constants.
 
 ## Host and versions
 
 * CPU: AMD Ryzen 7 8745HS with Radeon 780M graphics.
-* Environment: WSL2, Linux 6.18.54.1-microsoft-standard-WSL2-x86_64-with-glibc2.39.
+* Environment: WSL2, Linux-6.18.54.1-microsoft-standard-WSL2-x86_64-with-glibc2.39.
 * Python: CPython 3.12.3.
 * References: GNU coreutils 9.4; pinned eza v0.23.3, binary sha256
   `10457dde…`.
@@ -122,8 +125,10 @@ Ten thousand entries, `OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`:
 | Colour | 2,189,632 | 2,560 |
 | Grid | 2,189,808 | 2,560 |
 
-The live cap is `EZA_PEAK_MAX = 2,752,512` bytes, unchanged. For comparison,
-the pinned reference measures about 24.6 MB max RSS in long view and 12.0-14.2
+The values are from the recorded run; reruns varied 2,304-2,560 KiB across
+views (names, colour and grid often 2,432). The live cap is
+`EZA_PEAK_MAX = 2,752,512` bytes, unchanged. For comparison,
+the pinned reference measures about 24.6 MB max RSS in long view and 12-14
 MB in the other views on the same trees; that measurement is printed by the
 gate and is not gated.
 
@@ -147,7 +152,7 @@ is no external merge.
 
 | Metric | Value |
 |---|---:|
-| Self-compile wall time | 0.13 s (5 runs, median) |
+| Self-compile wall time | 0.11 s (5 runs, median; 0.10-0.12 s on this host) |
 | Live peak compiling itself | 1,646,816 bytes |
 | Total allocated | 35,353,648 bytes |
 | Maximum resident set | 2,976 KB |
@@ -171,17 +176,18 @@ Leaks are caught separately by the port gate's leak check.
   GNU `sort` by 1.47x on the measured 1,000,000-line fixture, and the numeric
   radix path beats GNU `sort -n` by 2.02x and the plain-integer Python
   reference by 2.42x. These are fixture-specific wins: a 73 MB file whose
-  lines share a 64-byte prefix measured 650 ms for obo against 480 ms for GNU,
-  and duplicate-heavy variable-length input can favour GNU as well. The old
-  readLine + index merge, which measured in seconds, is gone; the current sort
-  is a radix sort.
+  lines share a 64-byte prefix measures 614 ms for obo against 461 ms for GNU
+  in a clean rerun (GNU wins there), while a 22 MB random variable-length file
+  measures 256 ms against GNU's 312 ms, and duplicate-heavy variable-length
+  input can favour GNU as well. The old readLine + index merge, which measured
+  in seconds, is gone; the current sort is a radix sort.
 * **`eza`.** Name-only listing is 2.05x faster than the pinned eza reference,
   but Python's `listdir + sorted` (15.9 ms) and GNU `ls -1` (6.49 ms) are
   faster than obo's 27.8 ms. The eza headline is not raw listing speed: it is
   the 212,993-byte binary (10.8x smaller than the reference), the roughly 2.19
-  MB live peak at 10,000 entries, and byte-for-byte agreement with the
-  reference across the differential gate (546/546 non-memory cases and 5/5
-  memory cases).
+  MB live peak at 10,000 entries, and the gate's 546/546 non-memory
+  differential cases (462 exact reference goldens, 72 live including 22 pty,
+  12 own) plus 5/5 memory peak/leak cases.
 
 ## Caveats
 
