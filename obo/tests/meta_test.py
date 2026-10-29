@@ -5,25 +5,30 @@
 
 Sections (both by default):
   rt        builds tests/rt_meta_test.c with runtime.c and runs every case in
-            its own process: stat/lstat field values against raw newfstatat and
-            hardcoded expectations (all 14 fields and their offsets), symlink
-            follow/no-follow, ENOENT/EINVAL/ENAMETOOLONG, a directory's type, a
-            pre-1970 mtime, readlink bytes/dangling/errors/a 4095-byte target,
-            readDirFd's records and EOF, the max/cap/fd/table check order, a
-            regular-file fd's ENOTDIR, the tracked-closed-fd exit 9 (and EBADF
-            without OBO_CHECK), and the gated OBO_META_FAULT=eintr hook with and
-            without OBO_CHECK. Every case frees its cells and ends in rt_finish,
-            so under OBO_CHECK=1 it is also the leak oracle.
+            its own process: stat/lstat field values against a fresh raw
+            newfstatat (all 14 fields and their offsets) with hardcoded
+            expectations for the known values, symlink follow/no-follow,
+            ENOENT/EINVAL/ENAMETOOLONG, a directory's type, a pre-1970 mtime,
+            readlink bytes/dangling/errors/a 4095-byte target, readDirFd's
+            records and EOF, the max/cap/fd/table check order, a regular-file
+            fd's ENOTDIR, the tracked-closed-fd exit 9 (and EBADF without
+            OBO_CHECK), and the gated OBO_META_FAULT=eintr hook with and without
+            OBO_CHECK. Every case frees its cells and ends in rt_finish, except
+            readdir_closed under OBO_CHECK, which ends in the runtime's exit 9;
+            under OBO_CHECK=1 the others are the leak oracle.
   programs  compiles tests/meta/*.obx as module roots with -I obo/lib and a
             private --sym-dir, then runs each against fixtures created here. The
             listing tests compare names/kinds/inodes with Python's os.listdir
             and os.lstat, the stat tests compare all 14 fields with os.stat and
-            os.lstat, the readlink tests compare the raw target bytes with
-            os.readlink, and the entry-path tests compare paths::join and lstat
-            with os.path.join for an operand outside the cwd and for a "../"
-            operand. Files with // expect: markers are compared in order (and
-            // expect-exit: sets the code). The dedicated missing-close case must
-            exit 8 under OBO_CHECK; normal cases must not.
+            os.lstat both through statArray (stat_fields) and through the Stat
+            record (stat_record), the readlink bytes are compared with
+            os.readlink (the error codes are pinned: EINVAL for a non-symlink or
+            an empty path, ENOENT for a missing path), and the entry-path tests
+            compare paths::join and lstat with os.path.join for an operand
+            outside the cwd and for a "../" operand. Files with // expect:
+            markers are compared in order (and // expect-exit: sets the code).
+            The dedicated missing-close case must exit 8 under OBO_CHECK; normal
+            cases must not.
 
 The programs run with OBO_CHECK=1 and OBX_GC=poison, so a leak or a
 use-after-free fails them. The compiler is $OBO (default obo/obo); all paths are
@@ -376,6 +381,8 @@ def program_invocations(fx):
         ('fs/stat_fields', 'stat_fields.obx', [fx.statfile, fx.rel, fx.sub], None,
          lambda p: check_stat_fields('fs/stat_fields', p,
                                      [fx.statfile, fx.rel, fx.sub])),
+        ('fs/stat_record', 'stat_record.obx', [fx.rel], None,
+         lambda p: check_stat_fields('fs/stat_record', p, [fx.rel])),
         ('fs/readlink', 'readlink.obx', [c[0] for c in rl], None,
          lambda p: check_readlink('fs/readlink', p, rl)),
         ('fs/entry_paths absolute', 'entry_paths.obx', [fx.entries], None,

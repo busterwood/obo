@@ -77,29 +77,31 @@ the promoted seed: `obo/seed/obo` is 421,889 bytes (sha256 `55dab101…`), and
 `.sym`/`--check`); the first command-line tools (`cat`, `wc`, `sort`) and their
 GNU differential gate are done and merged. P3 adds the runtime metadata
 builtins (`readDirFd`, `statPath`, `lstatPath`, `readLinkPath`), `lib/fs.obx`
-and `OBO_VERSION` 0.3; the seed is promoted once after review, so this branch's
-fixed point is established by the promote step, not here.
+and `OBO_VERSION` 0.3; the 0.3 compiler already recomputes itself to the same
+421,889-byte binary (`obo` == stage 2 == stage 3, checked with `cmp`), and the
+seed is promoted once after review.
 
 | Metric | Value |
 |---|---:|
 | Compiler source | 10,492 lines, 384,760 bytes |
 | Compiler built by the seed (`obo`, P3 source, `--version` 0.3) | 421,889 bytes (sha256 `4892cea9…`) |
-| Next-stage compiler (stage 2 == stage 3) | 421,889 bytes, identical to the seed-built `obo` (checked on this branch; `make promote` after review) |
+| Stage 2 == stage 3 | 421,889 bytes, identical to the seed-built `obo` (checked with `cmp`) |
 | Promoted seed (pre-P3, `--version` 0.2) | 421,889 bytes (sha256 `55dab101…`) |
-| Self-compile wall time | 0.11 s (main-tree median; 0.18-0.20 s under this branch's review load) |
+| Self-compile wall time | 0.11 s (main-tree median; 0.18-0.20 s on this branch's loaded review host) |
 | Self-compile live peak | 1,642,416 bytes |
 | Total allocated | 35,253,408 bytes |
 | Maximum resident set | 2,972 KB (5 runs on this branch) |
 | Live-memory budget | 2,000,000 bytes (357,584 spare) |
-| obo suite | 1,147 tests; 527/549 mutants caught + 22 equivalent; 27 runtime/library; 495 port; 27 symbol-file tests; 200 fuzz mutations; 26 metadata checks; 39/43 metadata mutants caught + 4 equivalent |
+| obo suite | 1,147 tests; 527/549 mutants caught + 22 equivalent; 27 runtime/library; 495 port; 27 symbol-file tests; 200 fuzz mutations; 27 metadata checks; 39/43 metadata mutants caught + 4 equivalent |
 | Tools differential gate | 199 checks (191 matrix + 8 serial) vs GNU coreutils 9.4; 2 memory cases (module roots) |
 | Tool binaries | cat 40,961; wc 53,249; sort 53,249 bytes (static, runtime included) |
 | Minimal static executable | 28,673 bytes (runtime included) |
 
 Live peak varies by a few hundred bytes with the source path and total
-allocation by about 1.9 KB; the table keeps the main-tree gate values, and the
-`port_compare` gate in this worktree measures 1,642,416 live and 35,253,408
-allocated (both far under the 2,000,000-byte budget). P3's four builtin
+allocation by about 1.9 KB. The table records the figures measured on this
+branch (wall time and RSS on this review host); the `port_compare` gate here
+measures 1,642,416 live and 35,253,408 allocated, both far under the
+2,000,000-byte budget. P3's four builtin
 branches raised the peak by 6,240 bytes from 1,636,176, well inside the cut
 order of design section 6.8, so no slot was cut. The tools work did not
 change the compiler, runtime or seed; their runtime is included in the tool

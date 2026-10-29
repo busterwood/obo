@@ -1,0 +1,29 @@
+// meta/stat_record.obx: fs::stat and fs::lstat return the Stat record, not the
+// raw array. For one path (a symlink to a regular file in the harness) print
+// all 14 fields of each, in the STAT_* order; tests/meta_test.py compares the
+// "stat" line with Python's os.stat (follows the link) and the "lstat" line
+// with os.lstat (the link itself), so every record field, the follow/no-follow
+// choice and the array-to-record mapping are checked.
+import "fs.obx" as fs
+
+fn show(label: string, s: &fs::Stat) {
+    print(label, " ", s.mode, " ", s.size, " ", s.mtime, " ", s.mtimeNs)
+    print(" ", s.uid, " ", s.gid, " ", s.nlink, " ", s.ino, " ", s.dev, " ", s.rdev)
+    print(" ", s.blksize, " ", s.blocks, " ", s.atime, " ", s.ctime)
+    println("")
+}
+
+fn main() {
+    let a = args()
+    let p = a[2]
+    let r = fs::stat(p)
+    match r {
+        ok(st) { show("stat", st) }
+        err(m, c) { println("stat err ", m, " ", c); exit(1) }
+    }
+    let l = fs::lstat(p)
+    match l {
+        ok(st) { show("lstat", st) }
+        err(m, c) { println("lstat err ", m, " ", c); exit(1) }
+    }
+}
