@@ -36,6 +36,12 @@ import "../lib/time.obx" as time
 import "../lib/fs.obx" as fs
 import "../lib/env.obx" as env
 
+// eza accepts a --width/COLUMNS value up to 2^64-1 and a huge width simply
+// lays every cell on one line. This build stores ints and does not reproduce
+// usize wraparound at the very top of the range, so it clamps the console
+// width: every layout for a real name set is identical far below this bound.
+const GRID_WIDTH_CAP = 1099511627776
+
 // Deduced command-line state. Every field is copied from the effective (last)
 // occurrence of its option; cli.parse has already rejected unknown names and
 // missing required values, and deduce validates the effective values with
@@ -48,7 +54,7 @@ type Opts = ref record {
     sortField: string      // effective --sort value, "" for the default
     groupFirst: bool       // --group-directories-first
     groupLast: bool        // --group-directories-last
-    classifyAlways: bool   // -F=always/--classify=always
+    classifyOn: bool       // the effective classify mode adds markers now
     onlyDirs: bool         // -D
     onlyFiles: bool        // -f
     bytes: bool            // -B/--bytes
@@ -67,6 +73,19 @@ type Opts = ref record {
     levelText: string
     noQuotes: bool         // --no-quotes (outer QuoteStyle::NoQuotes)
     colourOn: bool         // colour is enabled for this run
+    // E2 view and width state. `lastView` is not kept: longView/treeView/
+    // gridView are the deduced Mode. `terminalish` is eza's is_a_tty: the
+    // width is Set (--width>=1 or COLUMNS) or stdout is a terminal. It decides
+    // the default grid view, automatic classify and (out of scope here)
+    // automatic icons; it does NOT enable automatic colour (that uses the real
+    // stdout isatty, probed).
+    across: bool           // -x/--across
+    gridView: bool         // the effective Mode is Grid
+    terminalish: bool
+    widthKnown: bool       // a console width is available (Set, or a TTY)
+    width: int             // console width when widthKnown; 80 is the grid fallback
+    widthSeen: bool        // --width was given (even when it deduced Automatic)
+    widthText: string      // the effective --width value
 }
 
 // One displayed entry.
@@ -421,12 +440,9 @@ fn specs(): []cli::FlagSpec {
 
 // eza-valid option names E0 does not implement.
 fn isUnsupported(name: string): bool {
-    if name == "grid" { return true }
-    if name == "across" { return true }
     if name == "recurse" { return true }
     if name == "dereference" { return true }
     if name == "follow-symlinks" { return true }
-    if name == "width" { return true }
     if name == "absolute" { return true }
     if name == "color-scale" { return true }
     if name == "colour-scale" { return true }
@@ -575,24 +591,76 @@ fn levelValue(s: string): Result[int] {
     return ok(v)
 }
 
+// Parse a --width or COLUMNS value the way eza's `usize` parse does: an
+// optional '+', then decimal digits (leading zeros allowed). Error classes: 1
+// invalid digit, 2 above 2^64-1, 3 empty. Values between 2^63 and 2^64-1 are
+// accepted by the reference and saturate to int max here; the grid layout
+// clamps any absurd width (see GRID_WIDTH_CAP).
+fn widthValue(s: string): Result[int] {
+    var i = 0
+    if i < len(s) && s[i] == '+' { i += 1 }
+    if i >= len(s) { return err("empty", 3) }
+    var start = i
+    while start < len(s) && s[start] == '0' { start += 1 }
+    if start == len(s) { return ok(0) }
+    var digits = 0
+    for j in start..len(s) {
+        if s[j] < '0' || s[j] > '9' { return err("invalid", 1) }
+        digits += 1
+    }
+    if digits > 20 { return err("large", 2) }
+    if digits == 20 {
+        let top = "18446744073709551615"
+        for j in 0..20 {
+            if s[start + j] < top[j] { break }
+            if s[start + j] > top[j] { return err("large", 2) }
+        }
+    }
+    var v = 0
+    var sat = false
+    for j in start..len(s) {
+        let d = int(s[j]) - 48
+        if !sat {
+            if v > 922337203685477580 || (v == 922337203685477580 && d > 7) {
+                sat = true
+                v = 9223372036854775807
+            } else {
+                v = v * 10 + d
+            }
+        }
+    }
+    return ok(v)
+}
+
+fn widthReason(code: int): string {
+    if code == 2 { return "number too large to fit in target type" }
+    if code == 3 { return "cannot parse integer from empty string" }
+    return "invalid digit found in string"
+}
+
 // Turn the parsed option occurrences into the effective state. Returns this
 // build's own usage errors (exit 3 at the caller) for values it does not
 // implement and for the restricted long form.
 fn deduce(options: &[]cli::Option): Result[Opts] {
     var o = new Opts{allCount: 0, almostAll: false, treatDirs: false,
                      reverse: false, sortField: "", groupFirst: false,
-                     groupLast: false, classifyAlways: false, onlyDirs: false,
+                     groupLast: false, classifyOn: false, onlyDirs: false,
                      onlyFiles: false, bytes: false, numeric: false,
                      noUser: false, noPermissions: false, noFilesize: false,
                      noTime: false, timeStyle: "", timeStyleSeen: false,
                      longView: false, treeFlag: false, treeView: false,
                      level: 0, levelSeen: false, levelText: "",
-                     noQuotes: false, colourOn: false}
-    // The effective view flag: 0 none, 1 -l, 2 -1, 3 -T (eza's
-    // has_where_any over --long/--oneline/--grid/--tree takes the last one;
-    // --grid is rejected by this build before it can win). `longSeen` is
-    // separate because a last -T with any -l is a long view too.
+                     noQuotes: false, colourOn: false, across: false,
+                     gridView: false, terminalish: false,
+                     widthKnown: false, width: 0, widthSeen: false,
+                     widthText: ""}
+    // The effective view flag: 0 none, 1 -l, 2 -1, 3 -T, 4 -G (eza's
+    // has_where_any over --long/--oneline/--grid/--tree takes the last one).
+    // `lastGT` is the last of --grid/--tree alone (0 none, 1 grid, 2 tree):
+    // it decides whether a long view becomes GridDetails or a tree. `longSeen`
+    // is separate because a last -T/-G with any -l is a long view too.
     var lastView = 0
+    var lastGT = 0
     var longSeen = false
     var treeSeen = false
     // The effective (last) values of the optional-value flags. eza deduces
@@ -650,6 +718,15 @@ fn deduce(options: &[]cli::Option): Result[Opts] {
         } else if name == "tree" {
             treeSeen = true
             lastView = 3
+            lastGT = 2
+        } else if name == "grid" {
+            lastView = 4
+            lastGT = 1
+        } else if name == "across" {
+            o.across = true
+        } else if name == "width" {
+            o.widthSeen = true
+            o.widthText = value
         } else if name == "level" {
             o.levelText = value
             o.levelSeen = true
@@ -664,17 +741,93 @@ fn deduce(options: &[]cli::Option): Result[Opts] {
         }
         k += 1
     }
-    // eza's view rules (options/view.rs). The last of -l/-1/-T wins; a last
-    // -T with any -l is the long view, and a last -1 makes the command a
-    // lines listing even when -T is present (the DirAction then sees a
-    // non-details view and ignores the tree).
+    // eza's TerminalWidth::deduce and Mode::deduce (options/view.rs). The
+    // --width branch wins over COLUMNS even when it deduces Automatic (0), in
+    // which case COLUMNS is not consulted; a COLUMNS value is Set even when
+    // it is 0. Automatic width is stdout's ioctl width only when stdout is a
+    // terminal; otherwise it is unknown and only an explicit view can grid.
+    let stdoutTty = io::isTty(1)
+    var widthSet = false
+    var consoleWidth = 0
+    if o.widthSeen {
+        let wv = strings::lossy(o.widthText)
+        let wr = widthValue(wv)
+        match wr {
+            ok(v) {
+                if v >= 1 {
+                    widthSet = true
+                    consoleWidth = v
+                }
+                // v == 0 is TerminalWidth::Automatic
+            }
+            err(m, c) {
+                return err("Value \"" + wv + "\" not valid for option --width (-w): " + widthReason(c), 22)
+            }
+        }
+    } else if env::has("COLUMNS") {
+        let cv = env::value("COLUMNS")
+        // eza skips a COLUMNS value that is not valid Unicode (its
+        // into_string fails), so such a value leaves Automatic in place.
+        if strings::isValidUtf8(cv) {
+            let cr = widthValue(cv)
+            match cr {
+                ok(v) {
+                    widthSet = true
+                    consoleWidth = v
+                }
+                err(m, c) {
+                    return err("Value \"" + cv + "\" not valid for environment variable COLUMNS: " + widthReason(c), 22)
+                }
+            }
+        }
+    }
+    // is_a_tty: Set (--width>=1 or COLUMNS) or a real stdout terminal that
+    // reports a non-zero size. The terminal_size crate returns None for a
+    // zero row/column report, so a 0-column pty is NOT terminal-ish (probe:
+    // it stays in Lines mode, with automatic colour on because stdout is
+    // still a terminal, and no automatic classify markers). It selects the
+    // default grid and enables automatic classify; automatic colour keeps
+    // using the real stdout isatty (probed: --width does not colour a pipe).
+    var autoWidthKnown = false
+    var autoWidth = 0
+    if stdoutTty {
+        let tw = io::termWidth(1)
+        if tw > 0 {
+            autoWidthKnown = true
+            autoWidth = tw
+        }
+    }
+    o.terminalish = widthSet || autoWidthKnown
+    if widthSet {
+        o.widthKnown = true
+        o.width = consoleWidth
+    } else if autoWidthKnown {
+        o.widthKnown = true
+        o.width = autoWidth
+    }
+    if o.widthKnown && o.width > GRID_WIDTH_CAP { o.width = GRID_WIDTH_CAP }
+    // eza's view rules (options/view.rs). The last of -l/-1/-T/-G wins; a
+    // last -T/-G with any -l is a long view (Details), and the last of the
+    // -G/-T pair alone decides whether that long view is a tree or eza's
+    // GridDetails. A last -1 makes the command a lines listing even when -T
+    // or -G is present (the DirAction then sees a non-details view).
     o.treeFlag = treeSeen
-    o.longView = lastView == 1 || (lastView == 3 && longSeen)
-    o.treeView = treeSeen && (lastView == 3 || lastView == 1)
+    let longSeenView = lastView == 1 || ((lastView == 3 || lastView == 4) && longSeen)
+    let gridDetails = longSeenView && lastGT == 1
+    o.longView = longSeenView
+    o.treeView = treeSeen && (lastView == 3 || (o.longView && !gridDetails))
+    o.gridView = !o.longView && !o.treeView &&
+                 (lastView == 4 || (lastView == 0 && o.terminalish))
     // --tree with two --all is an error in eza's DotFilter deduction; it is
     // checked before the operand path and regardless of the effective view.
     if treeSeen && o.allCount >= 2 {
         return err("Option --tree is useless given --all --all", 22)
+    }
+    // eza's -l -G/-G -l is GridDetails (long cells arranged in grid
+    // columns); this build implements grid and long separately and rejects
+    // the combination with its own message (documented divergence).
+    if gridDetails {
+        return err("option '--grid' with -l is not supported by this build", 22)
     }
     // Effective-value validation, in eza's last-occurrence model. The cli
     // accept lists are deliberately empty for these flags: validating every
@@ -693,7 +846,12 @@ fn deduce(options: &[]cli::Option): Result[Opts] {
     if len(classifyValue) > 0 && !isWhenValue(classifyValue) {
         return err(noSetting("--classify (-F)", classifyValue, noStrings()), 22)
     }
-    o.classifyAlways = classifyValue == "always"
+    // Classify::deduce: no flag is JustFilenames; always is Always; auto and
+    // automatic mark only when is_a_tty (so --width/COLUMNS turn them on for
+    // a pipe). Probed.
+    o.classifyOn = classifyValue == "always" ||
+                   ((classifyValue == "auto" || classifyValue == "automatic") &&
+                    o.terminalish)
     if len(colorValue) > 0 && !isWhenValue(colorValue) {
         return err(noSetting("--color", colorValue, noStrings()), 22)
     }
@@ -766,8 +924,9 @@ fn operandDisplay(p: string, quoteSpaces: bool): string {
     if p == "/" { return "/" }
     let name = paths::lastComponent(p)
     let parent = paths::parentOf(p)
-    if len(parent) == 0 { return quoteName(name, quoteSpaces) }
-    return strings::parentPrefix(parent, quoteSpaces) + quoteName(name, quoteSpaces)
+    if len(parent) == 0 { return quoteName(strings::lossy(name), quoteSpaces) }
+    return strings::parentPrefix(strings::lossy(parent), quoteSpaces) +
+           quoteName(strings::lossy(name), quoteSpaces)
 }
 
 fn newEntry(name: string, kind: byte, synthetic: byte): Entry {
@@ -803,32 +962,33 @@ fn ezaExt(name: string): string {
 fn dotExtHas(operand: string): bool {
     let name = paths::lastComponent(operand)
     if name == "." || name == ".." || name == "/" { return false }
-    return ezaHasExt(name)
+    return ezaHasExt(strings::lossy(name))
 }
 
 fn dotExtKey(operand: string): string {
     let name = paths::lastComponent(operand)
     if name == "." || name == ".." || name == "/" { return "" }
-    return ezaExt(name)
+    return ezaExt(strings::lossy(name))
 }
 
 fn entryExtHas(e: &Entry, operand: string): bool {
     if int(e.synthetic) == 1 { return dotExtHas(operand) }
     if int(e.synthetic) == 2 { return false }
-    return ezaHasExt(e.name)
+    return ezaHasExt(strings::lossy(e.name))
 }
 
 fn entryExtKey(e: &Entry, operand: string): string {
     if int(e.synthetic) == 1 { return dotExtKey(operand) }
     if int(e.synthetic) == 2 { return "" }
-    return ezaExt(e.name)
+    return ezaExt(strings::lossy(e.name))
 }
 
 // Directory listing names only (no parent prefix); an operand shows its
-// parent prefix and name.
+// parent prefix and name. E2 displays the lossy form of a name (eza's
+// File::filename is to_string_lossy); the raw bytes stay for path lookup.
 fn displayName(v: &View, e: &Entry, quoteSpaces: bool): string {
     if v.single { return operandDisplay(v.operand, quoteSpaces) }
-    return quoteName(e.name, quoteSpaces)
+    return quoteName(strings::lossy(e.name), quoteSpaces)
 }
 
 fn entryPath(v: &View, e: &Entry): string {
@@ -926,7 +1086,7 @@ fn isModifiedSort(f: string): bool {
 
 fn needStat(o: &Opts): bool {
     if o.longView { return true }
-    if o.classifyAlways { return true }
+    if o.classifyOn { return true }
     if o.colourOn { return true }
     if isSizeSort(o.sortField) { return true }
     if isModifiedSort(o.sortField) { return true }
@@ -983,7 +1143,7 @@ fn readDirEntries(mut d: &fs::Dir, mut es: &[]Entry, o: &Opts): Result[bool] {
 fn nameKeys(es: &[]Entry): []string {
     var out = new []string(0)
     for i in 0..len(es) {
-        append(out, es[i].name)
+        append(out, strings::lossy(es[i].name))
     }
     return out
 }
@@ -1266,14 +1426,18 @@ fn markerFor(kind: byte, mode: int): string {
 // unreadable target has no arrow at all (the caller skips it).
 fn targetDisplay(e: &Entry, classify: bool, quoteSpaces: bool): string {
     if e.targetValid {
-        let prefix = strings::parentPrefix(paths::parentOf(e.targetRaw), quoteSpaces)
-        var s = prefix + quoteName(paths::lastComponent(e.targetRaw), true)
+        // eza's target File is built from the raw readlink Path: the parent
+        // prefix is to_string_lossy(parent), the name is the lossy last
+        // component. The raw bytes are only for resolution.
+        let parent = paths::parentOf(e.targetRaw)
+        let prefix = strings::parentPrefix(strings::lossy(parent), quoteSpaces)
+        var s = prefix + quoteName(strings::lossy(paths::lastComponent(e.targetRaw)), true)
         if classify {
             s = s + markerFor(e.targetKind, e.targetMode)
         }
         return s
     }
-    return quoteName(e.targetRaw, quoteSpaces)
+    return quoteName(strings::lossy(e.targetRaw), quoteSpaces)
 }
 
 fn appendStr(mut out: &[]byte, s: string) {
@@ -1346,9 +1510,9 @@ fn appendTargetAndMarker(e: &Entry, o: &Opts, mut out: &[]byte) {
     if int(e.kind) == int(fs::KIND_LNK) {
         if e.linkOk {
             appendStr(out, " -> ")
-            appendStr(out, targetDisplay(e, o.classifyAlways, !o.noQuotes))
+            appendStr(out, targetDisplay(e, o.classifyOn, !o.noQuotes))
         }
-    } else if o.classifyAlways {
+    } else if o.classifyOn {
         appendStr(out, markerFor(e.kind, e.mode))
     }
 }
@@ -2110,16 +2274,21 @@ fn addEntryNameBits(mut bits: &[]Bit, p: &Palette, kind: byte, mode: int,
     addPalEscaped(bits, p, code, SC_CONTROL, name, quoteSpaces)
 }
 
-// The name (and operand parent prefix) of the current entry.
+// The name (and operand parent prefix) of the current entry. Names are the
+// lossy form (eza's File.name), and so is an operand's parent and last
+// component; the raw bytes are only for lookup.
 fn addNameBits(mut bits: &[]Bit, p: &Palette, e: &Entry, v: &View,
                o: &Opts) {
     let quoteSpaces = !o.noQuotes
     if v.single {
-        addParentBits(bits, p, paths::parentOf(v.operand), quoteSpaces)
+        addParentBits(bits, p, strings::lossy(paths::parentOf(v.operand)),
+                      quoteSpaces)
         addEntryNameBits(bits, p, e.kind, e.mode,
-                         paths::lastComponent(v.operand), quoteSpaces)
+                         strings::lossy(paths::lastComponent(v.operand)),
+                         quoteSpaces)
     } else {
-        addEntryNameBits(bits, p, e.kind, e.mode, e.name, quoteSpaces)
+        addEntryNameBits(bits, p, e.kind, e.mode, strings::lossy(e.name),
+                         quoteSpaces)
     }
 }
 
@@ -2140,22 +2309,24 @@ fn addTargetAndMarkerBits(mut bits: &[]Bit, e: &Entry, o: &Opts,
             }
             addPlainBit(bits, " ")
             if e.targetValid {
-                addParentBits(bits, p, paths::parentOf(e.targetRaw), outer)
-                let tname = paths::lastComponent(e.targetRaw)
+                addParentBits(bits, p,
+                              strings::lossy(paths::parentOf(e.targetRaw)),
+                              outer)
+                let tname = strings::lossy(paths::lastComponent(e.targetRaw))
                 if len(tname) > 0 {
                     addEntryNameBits(bits, p, e.targetKind, e.targetMode,
                                      tname, true)
-                    if o.classifyAlways {
+                    if o.classifyOn {
                         let m = markerFor(e.targetKind, e.targetMode)
                         if len(m) > 0 { addPlainBit(bits, m) }
                     }
                 }
             } else {
                 addPalEscaped(bits, p, SC_BROKEN_FILE, SC_BROKEN_CONTROL,
-                              e.targetRaw, outer)
+                              strings::lossy(e.targetRaw), outer)
             }
         }
-    } else if o.classifyAlways {
+    } else if o.classifyOn {
         let m = markerFor(e.kind, e.mode)
         if len(m) > 0 { addPlainBit(bits, m) }
     }
@@ -2395,6 +2566,236 @@ fn emitEntries(es: &[]Entry, order: &[]int, v: &View, o: &Opts, cols: &Cols,
     return ok(true)
 }
 
+fn appendSpaces(mut out: &[]byte, n: int) {
+    var i = 0
+    while i < n {
+        append(out, ' ')
+        i += 1
+    }
+}
+
+// ---------------------------------------------------------------- grid view
+//
+// eza's grid is uutils_term_grid 0.7.0's Grid with Filling::Spaces(2),
+// direction TopToBottom by default and LeftToRight under -x. The rules were
+// read from that crate and re-checked against the pinned reference:
+//   * one cell: one row and one column;
+//   * when the widest cell + 2 exceeds the console width, one column (cells
+//     are never truncated or wrapped; an over-wide name prints in full);
+//   * otherwise start from the lower bound of columns that would fit if every
+//     column were the widest cell, then keep increasing the column count while
+//     the recomputed column widths plus two spaces between columns still fit.
+//     The LAST fitting count wins (a larger count can fit when ragged rows
+//     shrink a column).
+// Column widths are per-column maxima; the last column of a row is not padded
+// and a row that ends before the grid has no trailing spaces. Cell width is
+// strings::displayWidth of the plain quoted name plus the marker, so ANSI
+// bytes and UTF-8 continuation bytes never count.
+
+type GridDim = ref record {
+    rows: int
+    cols: int
+    widths: []int
+}
+
+fn minInt(a: int, b: int): int {
+    if a < b { return a }
+    return b
+}
+
+fn ceilDiv(a: int, b: int): int {
+    var d = a / b
+    if a % b != 0 { d += 1 }
+    return d
+}
+
+// The classify marker on the link itself: grid never shows a target, so a
+// symlink is "@" (even when broken) and other kinds use the lines rule.
+fn cellMarker(e: &Entry, o: &Opts): string {
+    if !o.classifyOn { return "" }
+    if int(e.kind) == int(fs::KIND_LNK) { return "@" }
+    return markerFor(e.kind, e.mode)
+}
+
+// The display width of one cell: the name (with the operand parent prefix for
+// a single operand) plus the marker.
+fn gridCellWidth(e: &Entry, v: &View, o: &Opts): int {
+    let q = !o.noQuotes
+    var w = 0
+    if v.single {
+        let parent = paths::parentOf(v.operand)
+        if len(parent) > 0 {
+            w += strings::quotedWidth(strings::lossy(parent), q)
+            if parent != "/" { w += 1 }
+        }
+        w += strings::quotedWidth(
+            strings::lossy(paths::lastComponent(v.operand)), q)
+    } else {
+        w += strings::quotedWidth(strings::lossy(e.name), q)
+    }
+    let m = cellMarker(e, o)
+    if len(m) > 0 { w += 1 }
+    return w
+}
+
+// Column widths for a fixed row/column count: TopToBottom assigns cell i to
+// column i/rows, LeftToRight to column i%cols.
+fn gridColWidths(widths: &[]int, rows: int, cols: int,
+                 across: bool): []int {
+    var cw = new []int(cols)
+    var idx = 0
+    while idx < len(widths) {
+        var ci = idx / rows
+        if across { ci = idx % cols }
+        if widths[idx] > cw[ci] { cw[ci] = widths[idx] }
+        idx += 1
+    }
+    return cw
+}
+
+fn gridSum(xs: &[]int): int {
+    var s = 0
+    for i in 0..len(xs) { s += xs[i] }
+    return s
+}
+
+// The chosen dimensions for one grid.
+fn gridDims(widths: &[]int, width: int, across: bool): GridDim {
+    let n = len(widths)
+    var empty = new []int(0)
+    if n == 0 { return new GridDim{rows: 0, cols: 0, widths: empty} }
+    var widest = 0
+    for i in 0..n {
+        if widths[i] > widest { widest = widths[i] }
+    }
+    if n == 1 {
+        var one = new []int(1)
+        one[0] = widest
+        return new GridDim{rows: 1, cols: 1, widths: one}
+    }
+    let widestColumn = widest + 2
+    if widestColumn > width {
+        var col = new []int(1)
+        col[0] = widest
+        return new GridDim{rows: n, cols: 1, widths: col}
+    }
+    let minColumns = minInt(n, (width + 2) / widestColumn)
+    let maxRows = ceilDiv(n, minColumns)
+    var potRows = maxRows
+    var potCols = minColumns
+    var potCw = gridColWidths(widths, maxRows, minColumns, across)
+    if maxRows != 1 {
+        var nc = minColumns + 1
+        while nc < n {
+            let sep = (nc - 1) * 2
+            if sep > width { break }
+            let adjusted = width - sep
+            let rows = ceilDiv(n, nc)
+            let cw = gridColWidths(widths, rows, nc, across)
+            if gridSum(&cw) <= adjusted {
+                potRows = rows
+                potCols = nc
+                potCw = copyOrder(&cw)
+            }
+            nc += 1
+        }
+    }
+    return new GridDim{rows: potRows, cols: potCols, widths: potCw}
+}
+
+// The grid name bits: a broken link's name takes the broken style because
+// there is no target to colour (FileName::style with JustFilenames), a valid
+// link keeps the symlink style. The marker is a plain bit.
+fn addGridEntryNameBits(mut bits: &[]Bit, p: &Palette, e: &Entry, name: string,
+                        quoteSpaces: bool) {
+    if int(e.kind) == int(fs::KIND_LNK) && e.linkOk && !e.targetValid {
+        addPalEscaped(bits, p, SC_BROKEN, SC_CONTROL, name, quoteSpaces)
+        return
+    }
+    addEntryNameBits(bits, p, e.kind, e.mode, name, quoteSpaces)
+}
+
+fn addGridNameBits(mut bits: &[]Bit, p: &Palette, e: &Entry, v: &View,
+                   o: &Opts) {
+    let q = !o.noQuotes
+    if v.single {
+        addParentBits(bits, p, strings::lossy(paths::parentOf(v.operand)), q)
+        addGridEntryNameBits(bits, p, e,
+                             strings::lossy(paths::lastComponent(v.operand)),
+                             q)
+    } else {
+        addGridEntryNameBits(bits, p, e, strings::lossy(e.name), q)
+    }
+}
+
+fn renderGridCell(e: &Entry, v: &View, o: &Opts, p: &Palette,
+                  mut out: &[]byte) {
+    let m = cellMarker(e, o)
+    if o.colourOn {
+        var bits = new []Bit(0)
+        addGridNameBits(bits, p, e, v, o)
+        if len(m) > 0 { addPlainBit(bits, m) }
+        emitBitsInto(bits, out)
+    } else {
+        appendStr(out, displayName(v, e, !o.noQuotes))
+        appendStr(out, m)
+    }
+}
+
+// Render the grid rows through a buffered Writer. The console width is the
+// deduced Set/terminal width; an explicit -G with no width at all falls back
+// to 80, as eza's grid renderer does with console_width None.
+fn emitGrid(es: &[]Entry, order: &[]int, v: &View, o: &Opts,
+            p: &Palette): Result[bool] {
+    let n = len(order)
+    if n == 0 { return ok(true) }
+    var widths = new []int(n)
+    var i = 0
+    while i < n {
+        widths[i] = gridCellWidth(es[order[i]], v, o)
+        i += 1
+    }
+    var width = 80
+    if o.widthKnown { width = o.width }
+    let dim = gridDims(widths, width, o.across)
+    // The cell after this one on the same row: +1 across, +rows down.
+    var off = dim.rows
+    if o.across { off = 1 }
+    var w = io::newWriter(stdout(), 65536)
+    var out = new []byte(0)
+    var y = 0
+    while y < dim.rows {
+        truncate(out, 0)
+        var x = 0
+        while x < dim.cols {
+            var cur = y + dim.rows * x
+            if o.across { cur = y * dim.cols + x }
+            if cur >= n { break }
+            renderGridCell(es[order[cur]], v, o, p, out)
+            if x == dim.cols - 1 || cur + off >= n { break }
+            appendSpaces(out, dim.widths[x] - widths[cur])
+            appendStr(out, "  ")
+            x += 1
+        }
+        let rr = writeLine(w, out)
+        match rr {
+            ok { }
+            err { return err(rr.message, rr.code) }
+        }
+        y += 1
+    }
+    return flushWriter(w)
+}
+
+// One entry set through whichever output view is effective. Grid computes no
+// long column widths (the combination is rejected in deduce).
+fn emitAny(es: &[]Entry, order: &[]int, v: &View, o: &Opts,
+           p: &Palette): Result[bool] {
+    if o.gridView { return emitGrid(es, order, v, o, p) }
+    let cols = computeCols(es, o)
+    return emitEntries(es, order, v, o, cols, p)
+}
+
 // ------------------------------------------------------------- entry setup
 
 // Fill the lazy metadata the current options need. Symlink targets are always
@@ -2511,14 +2912,6 @@ fn treePrefixText(anc: string, last: bool): string {
     var b = new []byte(0)
     appendTreePrefix(b, anc, last)
     return strings::fromBytes(b)
-}
-
-fn appendSpaces(mut out: &[]byte, n: int) {
-    var i = 0
-    while i < n {
-        append(out, ' ')
-        i += 1
-    }
 }
 
 // Read, filter, prepare and sort one directory. The whole list is owned by the
@@ -2841,8 +3234,7 @@ fn main() {
                                     ok {
                                         prepareEntries(es, v, od.value)
                                         let order = sortEntries(es, v, od.value)
-                                        let cols = computeCols(es, od.value)
-                                        let er = emitEntries(es, order, v, od.value, cols, pal)
+                                        let er = emitAny(es, order, v, od.value, pal)
                                         match er {
                                             ok { }
                                             err {
@@ -2870,8 +3262,7 @@ fn main() {
                         append(es, newEntry(operand, fs::typeOf(mode), byte(0)))
                         prepareEntries(es, v, od.value)
                         let order = sort::identity(len(es))
-                        let cols = computeCols(es, od.value)
-                        let er = emitEntries(es, order, v, od.value, cols, pal)
+                        let er = emitAny(es, order, v, od.value, pal)
                         match er {
                             ok { }
                             err {
