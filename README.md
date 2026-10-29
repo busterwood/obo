@@ -96,10 +96,10 @@ and `OBO_VERSION` 0.3; the 0.3 compiler recomputes itself to the same
 | obo suite | 1,147 tests; 527/549 mutants caught + 22 equivalent; 27 runtime/library; 495 port; 27 symbol-file tests; 200 fuzz mutations; 27 metadata checks; 39/43 metadata mutants caught + 4 equivalent |
 | Tools differential gate | 199 checks (191 matrix + 8 serial) vs GNU coreutils 9.4; 2 memory cases (module roots) |
 | Tool binaries | cat 40,961; wc 53,249; sort 53,249 bytes (static, runtime included) |
-| eza E0 differential gate | 219/219 non-memory (185 exact goldens replayed against the pinned reference, 29 live, 5 own) + 2 memory cases |
+| eza E0 differential gate | 272/272 non-memory (214 exact goldens replayed against the pinned reference, 42 live, 16 own) + 2 memory cases |
 | eza E0 binary | 126,977 bytes (static, runtime included; reference eza 0.23.3 is 2,294,768) |
-| eza 10k-entry live peak | 2,185,200 bytes restricted long / 2,184,576 names; `EZA_PEAK_MAX` 2,752,512 |
-| eza 10k-entry max RSS | 2,432 KiB long / 2,432 KiB names; pinned reference about 24.7-25.4 MB long / 12.0 MB names across runs (measurement only) |
+| eza 10k-entry live peak | 2,185,008 bytes restricted long / 2,184,384 names; `EZA_PEAK_MAX` 2,752,512 |
+| eza 10k-entry max RSS | 2,432 KiB long / 2,432 KiB names; pinned reference about 24.3-25.4 MB long / 12.0 MB names across runs (measurement only) |
 | Minimal static executable | 28,673 bytes (runtime included) |
 
 Live peak varies by a few hundred bytes with the source path and total

@@ -252,9 +252,9 @@ fn specs(): []cli::FlagSpec {
     append(s, mkSpec(byte(0), "follow-symlinks", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
     append(s, mkSpec('w', "width", cli::VALUE_REQUIRED, noStrings(), noStrings(), noStrings(), ""))
     append(s, mkSpec(byte(0), "no-quotes", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
-    append(s, mkSpec(byte(0), "absolute", cli::VALUE_OPTIONAL, absoluteConsume(), absoluteConsume(), noStrings(), ""))
-    append(s, mkSpec(byte(0), "color-scale", cli::VALUE_OPTIONAL, scaleConsume(), scaleConsume(), noStrings(), ""))
-    append(s, mkSpec(byte(0), "colour-scale", cli::VALUE_OPTIONAL, scaleConsume(), scaleConsume(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "absolute", cli::VALUE_OPTIONAL, absoluteConsume(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "color-scale", cli::VALUE_OPTIONAL, scaleConsume(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "colour-scale", cli::VALUE_OPTIONAL, scaleConsume(), noStrings(), noStrings(), ""))
     append(s, mkSpec(byte(0), "color-scale-mode", cli::VALUE_REQUIRED, noStrings(), noStrings(), stringList2("fixed", "gradient"), ""))
     append(s, mkSpec(byte(0), "colour-scale-mode", cli::VALUE_REQUIRED, noStrings(), noStrings(), stringList2("fixed", "gradient"), ""))
     append(s, mkSpec('I', "ignore-glob", cli::VALUE_REQUIRED, noStrings(), noStrings(), noStrings(), ""))
@@ -364,7 +364,10 @@ fn msg3(a: string, b: string, c: string): string {
 }
 
 fn messageFor(name: string): string {
-    return msg3("option '--", name, "' is not supported by this build")
+    var canonical = name
+    if name == "colour-scale" { canonical = "color-scale" }
+    if name == "colour-scale-mode" { canonical = "color-scale-mode" }
+    return msg3("option '--", canonical, "' is not supported by this build")
 }
 
 fn valueMessage(name: string, value: string): string {
@@ -537,7 +540,6 @@ fn quoteName(name: string): string {
 fn operandDisplay(p: string): string {
     if p == "/" { return "/" }
     let name = paths::lastComponent(p)
-    if name == "." || name == ".." { return name }
     let parent = paths::parentOf(p)
     if len(parent) == 0 { return quoteName(name) }
     return strings::parentPrefix(parent, true) + quoteName(name)
@@ -604,9 +606,21 @@ fn displayName(v: &View, e: &Entry): string {
     return quoteName(e.name)
 }
 
-fn entryPath(v: &View, name: string): string {
+fn entryPath(v: &View, e: &Entry): string {
     if v.single { return v.operand }
-    return paths::join(v.operand, name)
+    if int(e.synthetic) == 1 { return v.operand }
+    return paths::join(v.operand, e.name)
+}
+
+// The target-resolution base: a listing entry (including the synthetic ".")
+// uses the operand directory itself, and a single operand uses its own parent.
+// The synthetic "." is eza's File at dir.path, so its link target is reoriented
+// against dir.path, not the path's parent; this is why `-aa links/realdirlink`
+// shows `. -> realdir` with no classify marker (the probe's bytes), while a
+// self-link `. -> .` classifies. See FORK/cmd README.
+fn targetBase(v: &View): string {
+    if v.single { return v.base }
+    return v.operand
 }
 
 // ---------------------------------------------------------------- metadata
@@ -628,6 +642,17 @@ fn fillStat(mut e: &Entry, path: string) {
             e.statOk = false
         }
     }
+}
+
+// A synthetic "."/".." entry: lstat its own path (the operand itself for ".",
+// join(operand, "..") for ".."), and take kind/mode/size/mtime/uid from that
+// lstat. This is the probe behavior for a symlink-to-directory operand: the
+// "." row is the symlink itself (`. -> target`), not the target directory.
+fn dotEntry(name: string, synthetic: byte, path: string): Entry {
+    var e = newEntry(name, byte(fs::KIND_UNKNOWN), synthetic)
+    fillStat(e, path)
+    if e.statOk { e.kind = fs::typeOf(e.mode) }
+    return e
 }
 
 // readlink plus stat (follow) on the resolved target path. The display uses
@@ -1183,12 +1208,12 @@ fn prepareEntries(mut es: &[]Entry, v: &View, o: &Opts) {
     let wantStat = needStat(o)
     var i = 0
     while i < len(es) {
-        let path = entryPath(v, es[i].name)
+        let path = entryPath(v, es[i])
         if wantStat {
             fillStat(es[i], path)
         }
         if int(es[i].kind) == int(fs::KIND_LNK) {
-            fillTarget(es[i], path, v.base)
+            fillTarget(es[i], path, targetBase(v))
         }
         i += 1
     }
@@ -1247,9 +1272,19 @@ fn main() {
                             ok(d) {
                                 var es = new []Entry(0)
                                 let v = new View{single: false, operand: operand, base: operand}
-                                if dotsEnabled(od.value) && keepKind(byte(fs::KIND_DIR), od.value) {
-                                    append(es, newEntry(".", byte(fs::KIND_DIR), byte(1)))
-                                    append(es, newEntry("..", byte(fs::KIND_DIR), byte(2)))
+                                if dotsEnabled(od.value) {
+                                    let dot = dotEntry(".", byte(1), operand)
+                                    if keepKind(dot.kind, od.value) {
+                                        append(es, dot)
+                                    } else {
+                                        drop(dot)
+                                    }
+                                    let dotdot = dotEntry("..", byte(2), paths::join(operand, ".."))
+                                    if keepKind(dotdot.kind, od.value) {
+                                        append(es, dotdot)
+                                    } else {
+                                        drop(dotdot)
+                                    }
                                 }
                                 let rr = readDirEntries(d, es, od.value)
                                 let cr = fs::close(d)

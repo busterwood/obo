@@ -203,13 +203,28 @@ pipeline and the folded or case-sensitive name fallback respectively; `type`
 pre-orders by case-sensitive natural name and then the rank dir/reg/link/fifo/
 socket/char/block/special. The synthetic `.`'s extension key is
 `File::ext(operand)` (`None` for `.`, `..`, `/` and a dotless operand), `..` is
-always `None`; `-aa` listings of a relative fixture operand are committed only
-when every listed pair is comparator-distinct. `--sort=size`/`--sort=modified`
-with `-aa` are live-only: the synthetic dots carry the host directory and its
-parent's metadata. `--sort=none`, `inode`, `changed`, `accessed`, `created`,
+always `None`; the key is the operand path even when the operand is a symlink
+to a directory, never the target's extension. `-aa` listings of a relative
+fixture operand are committed only when every listed pair is
+comparator-distinct. `--sort=size`/`--sort=modified` with `-aa` on a
+real-directory operand are live-only: the synthetic dots carry the host
+directory and its parent's metadata. `--sort=none`, `inode`, `changed`, `accessed`, `created`,
 `age`, `old`/`oldest` and `.name`/`.Name`/`.filename`/`.Filename` are rejected
 with this build's own message (`--sort=default` is not an eza value and takes
 eza's own no-setting message).
+
+When the listing operand is a symlink to a directory, the synthetic `.` is the
+symlink itself, not the target directory: kind, mode, size, time and uid come
+from `lstat(operand)`, the row displays `. -> target`, and `-D`/`-f`, type
+sorting and grouping use that lstat kind (`..` is `lstat(join(operand,".."))`).
+Target display and classification reorient the raw target against the operand
+path, not its parent — eza's File at `dir.path` quirk — so
+`-aa links/realdirlink` prints `. -> realdir` with no classify marker, while a
+self-link `. -> .` classifies and groups as a directory; `-aa -F=always` marks
+only the rows whose target resolution against the operand succeeds. A trailing
+slash resolves the operand before the dot rows (`.` is then a directory row).
+These and the `-d ..` rule above contradict design 7.2/7.3; the P0 probe bytes
+win.
 
 Quoting is `QuoteSpaces`: a name containing a space or apostrophe is wrapped in
 single quotes, or double quotes when it contains an apostrophe; `\t`, `\n`,
@@ -217,7 +232,10 @@ single quotes, or double quotes when it contains an apostrophe; `\t`, `\n`,
 classify marker follows the closing quote. A directory listing shows names
 only; an input operand shows `parentPrefix(parent) + name`, where the whole
 parent is escaped once (`'x y/sub'/f`, never `'x y'/sub/f`) and a root parent
-emits one `/`. Target display uses the raw readlink bytes the same way
+emits one `/`. A parented `..` operand is not special: `-d sub/..` prints
+`sub/..`, `-d 'x y/..'` prints `'x y'/..`, and `-d /..` prints `/..` (the P0
+probe; design 7.2's "`.`/`..` return themselves" only holds when the parent is
+empty, i.e. `-d ..`). Target display uses the raw readlink bytes the same way
 (`'a b'/target`) while metadata and classification use `stat` (follow) on
 `paths::join(base, raw)`; a broken target prints the whole raw target escaped
 (`'../tar get'`) with no marker, and an unreadable target prints no arrow.
@@ -230,8 +248,9 @@ socket or other non-regular entry; the permission string is eza's (`s`/`S`,
 `t`/`T`, `.` for a regular file, `|` for a FIFO, `s` for a socket); a
 pre-1970 mtime is a `-` date; `--no-user` wins over `-n`; widths are computed
 over the displayed entries and a `-d` invocation uses the one entry. `-aa -l`
-is live-only because the `.` row is the listed directory and the `..` row its
-host parent. `--time-style=default`/`long-iso` are accepted and ignored without
+on a real-directory operand is live-only because the `.` row is the listed
+directory and the `..` row its host parent; the committed symlink-operand long
+cases have fixture-owned dot rows. `--time-style=default`/`long-iso` are accepted and ignored without
 `-l`; other styles are this build's error (eza accepts any style in a non-long
 view — a documented narrowing).
 
@@ -245,7 +264,9 @@ permission-denied directory operand prints the reference's
 `Permission denied: <path> - code: 13`, blank line and
 `Skipped 1 directories due to permission denied: ` summary, and keeps status 0
 (the P0 probe records 0.23.3's behaviour, not the man page's 13). `SIGPIPE`
-keeps its default disposition.
+keeps the disposition it inherits: E0 installs no handler, so a default parent
+gets the probe's signal 13, while a parent that already ignores SIGPIPE makes a
+closed pipe an EPIPE write error.
 
 **Rejected with this build's own message** (exit 3): tree (`-T`), level
 (`-L`), grid, across, recurse, `--width`, `--no-quotes`, `--follow-symlinks`,
@@ -263,10 +284,10 @@ are still consumed with eza's value mode before the unsupported error
 
 **Measured (this P4 branch).** eza binary 126,977 bytes (static, runtime
 included; the reference is 2,294,768). On 10,000 entries under
-`OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, restricted long peaks at 2,185,200
+`OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, restricted long peaks at 2,185,008
 live heap bytes and 2,432 KiB max RSS; the name-only listing peaks at
-2,184,576 and 2,432 KiB. `tests/eza.py --memory` gates on
-`EZA_PEAK_MAX = 2,752,512` bytes (the first long measurement plus a 26.0%
+2,184,384 and 2,432 KiB. `tests/eza.py --memory` gates on
+`EZA_PEAK_MAX = 2,752,512` bytes (the first long measurement plus a 25.97%
 margin) and on no leak/double-close line. GNU time on the same tree measures
 the reference at about 24.3-25.4 MB max RSS (long) and 12.0 MB (names)
 across runs; that measurement is printed for comparison and is not gated.
@@ -298,8 +319,10 @@ its default disposition, so `sort | head` behaves like coreutils.
 iteration (`fs::open`/`next`/`close`, which skips `.` and `..` like Rust's
 `read_dir`), `statArray`/`stat`/`lstat` over the runtime's 14-int stat array,
 `readlink` and the type predicates. `eza` fills each entry with one lazy lstat
-(only when the view, sort key or marker needs it), resolves every symlink with
-`readlink` plus a following `stat`, and synthesizes its own `.`/`..` records;
+(only when the view, sort key or marker needs it; the synthetic dots always
+need one), resolves every symlink with `readlink` plus a following `stat`, and
+synthesizes its own `.`/`..` records; `statArray` remains the form for a future
+parallel-key hot loop rather than an E0 caller;
 `cat`, `wc` and `sort` do not import `fs` and their output is unchanged.
 
 The API is path-based: `fs::stat(lstat)`, `fs::readlink` and a tree child's

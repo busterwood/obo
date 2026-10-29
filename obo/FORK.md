@@ -4447,9 +4447,10 @@ split and the full library prerequisite set (nine modules; `build(['eza'], ...)`
 is the one entry point), the Makefile gains `eza`, `eza-check` and `eza-memory`
 with a private `build/eza/sym`, `tests/eza.py` builds the binary through
 `build_tools.build` and gates it, and `tests/imports.py` compiles four tool
-roots (25/25) plus the eza sort-import rule. Five own usage-error goldens are
-recorded under `golden/own/`; the two own memory cases are run by `--memory`,
-not recorded as goldens.
+roots (25/25) plus the eza sort-import rule. Sixteen own usage-error goldens
+are recorded under `golden/own/`; the two own memory cases are run by
+`--memory`, not recorded as goldens. The fixture generator gains a `selflink/`
+tree (`d/self -> .`) for the dot-target cases.
 
 **Command line.** The parser is `cli.parse` over the complete E0 FlagSpec table:
 every supported flag, plus every eza-valid flag this build rejects so its value
@@ -4483,24 +4484,48 @@ the stdin file-name mode, tree, grid and colour are out). Operand existence is
 `lstat`, so a dangling symlink is listed; a directory operand that is a symlink
 to a directory is followed for listing unless `-d`. A directory listing shows
 names only, an operand shows `parentPrefix(parent) + name` with the whole
-parent escaped once. Synthetic `.`/`..` records are built before the real
-entries when `-a` is counted twice, are exempt from hidden filtering, and obey
-`-D`/`-f`; the `.` extension key is `File::ext(operand)` and `..` is None.
+parent escaped once. A parented `..` operand keeps its prefix (`-d sub/..` is
+`sub/..`, `-d 'x y/..'` is `'x y'/..`, `-d /..` is `/..`); only an empty
+parent makes `-d ..` print `..`. This is a P0-probe contradiction of design
+7.2's "`.`/`..` return themselves" and is tested by committed
+`dirs/d_sub_dotdot`, `dirs/d_spaced_dotdot`, `dirs/d_dot_dotdot` and live
+root/dotdot cases.
+
+Synthetic `.`/`..` records are built before the real entries when `-a` is
+counted twice, are exempt from hidden filtering, and obey `-D`/`-f`. The dots
+are real entries in eza's model: `.` is `lstat(operand)` (so for a
+symlink-to-directory operand it is the link itself, `. -> target`, not the
+target directory), `..` is `lstat(join(operand,".."))`, and their kind/mode/
+size/time/uid drive type sorting, filtering and grouping. Target display and
+classification reorient the raw target against `dir.path` itself, not its
+parent — eza's File-at-dir.path quirk — so `-aa links/realdirlink` is
+`. -> realdir` with no classify marker, while `-aa selflink/d/self` is
+`. -> .`, classifies and groups as a directory; a trailing slash resolves the
+operand first. The `.` extension key is `File::ext(operand)` and `..` is None,
+never the target's extension. These are P0-probe contradictions of design
+7.2/7.3, covered by the committed `aa_symlink_dir`, `aa_selflink`, `-aa -D/-f`,
+type/extension/group and long cases.
+
 Sorting permutes index arrays through `lib/sort.obx`: a stable field sort and,
 under `-r`, a stable descending comparison, then the directory grouping (first
-wins when both grouping flags are given; a followed symlink to a directory
-groups as a directory). The `-r` rule follows the P0 live probe, not the design
+wins when both grouping flags are given; a real symlink to a directory groups
+as a directory, while the synthetic dot follows its operand-base target
+above). The `-r` rule follows the P0 live probe, not the design
 note's vector reversal: comparator-equal keys keep readdir order (probed on
 equal sizes, fold-tied names, and the extension/type name fallbacks), while
 distinct keys sort descending. The committed goldens have distinct keys, so
-both rules agree there; the live probes pin the probe rule. Extension/Ext use
-the design's three-pass pipeline and the folded or case-sensitive name
-fallback; type pre-orders by case-sensitive natural name then rank. Quoting is `QuoteSpaces`; classify markers go on the target of a
-symlink and on the name otherwise. Targets resolve as
-`paths::join(base, raw)` (`base` the listing operand or the operand's parent)
-and are classified with a following `stat`, while the link's own cells stay
-`lstat`; a broken target shows the whole raw target escaped and no marker, and
-an unreadable target shows no arrow.
+both rules agree there; live tie cases (`names/tie_Aa_reverse`,
+`names/tie_pic_reverse`, `sortkeys/size_reverse_ties`,
+`sortkeys/modified_reverse_ties`) and the regenerated REFERENCE.md
+`size_reverse_ties`/`modified_reverse_ties`/`tie_*_reverse` probes pin it.
+Extension/Ext use the design's three-pass pipeline and the folded or
+case-sensitive name fallback; type pre-orders by case-sensitive natural name then rank. Quoting is
+`QuoteSpaces`; classify markers go on the target of a symlink and on the name
+otherwise. Targets resolve as `paths::join(base, raw)` with `base` the listing
+operand (including the synthetic `.`, hence the quirk above) or the single
+operand's parent, and are classified with a following `stat`, while the link's
+own cells stay `lstat`; a broken target shows the whole raw target escaped and
+no marker, and an unreadable target shows no arrow.
 
 Restricted long is `-l --bytes --time-style=long-iso` with `-n` or `--no-user`;
 the columns are permissions (`fmt::modeString`), right-aligned byte size with
@@ -4508,15 +4533,18 @@ the columns are permissions (`fmt::modeString`), right-aligned byte size with
 long-iso UTC date (`-` before the epoch), and the name. `--no-permissions`,
 `--no-filesize` and `--no-time` suppress a column and its separator; with all
 suppressed the line is the name alone. Widths are computed over the displayed
-set, and a `-d` invocation uses its one entry. `-aa -l` is live-only (the dot
-rows are the listed directory and its host parent).
+set, and a `-d` invocation uses its one entry. `-aa -l` on a real directory is
+live-only (the dot rows are the listed directory and its host parent); the
+committed symlink-operand long cases have fixture-owned dot rows.
 
 **Errors.** eza-shaped statuses: 0 success, 1 write error (bare
 `No space left on device (os error 28)`), 2 input metadata failure
 (`"path": ... (os error N)` from `lstat`), 3 usage/unsupported, and the
 permission class as the P0 probe recorded it: a permission-denied directory
 prints the warning and the `Skipped 1 directories ...` summary but keeps
-status 0. `SIGPIPE` keeps its default disposition.
+status 0. `SIGPIPE` keeps the disposition it inherits: E0 installs no
+handler, so the default parent gets the probe's signal 13, while an inherited
+ignore turns a closed pipe into an EPIPE write error.
 
 **Task-scope decisions vs the design note (no design edits).** The P4 scope
 asked for `--no-permissions`, `--no-filesize`, `--no-time` and
@@ -4529,18 +4557,19 @@ Everything else outside E0 is rejected with this build's own message.
 **Measured (this branch).** eza binary 126,977 bytes (static, runtime
 included); the pinned reference binary is 2,294,768 bytes. On 10,000 entries
 under `OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`: restricted long peaks at
-2,185,200 live heap bytes (16,166,832 allocated) and 2,432 KiB max RSS; the
-name-only listing peaks at 2,184,576 (6,565,568 allocated) and 2,432 KiB. `EZA_PEAK_MAX` is
-2,752,512 bytes (the first long measurement plus a 26.0% margin). GNU time on
+2,185,008 live heap bytes (16,166,544 allocated) and 2,432 KiB max RSS; the
+name-only listing peaks at 2,184,384 (6,565,280 allocated) and 2,432 KiB.
+`EZA_PEAK_MAX` is 2,752,512 bytes (the first long measurement plus a 25.97%
+margin). GNU time on
 the same tree measures the reference at about 24.3-25.4 MB (long) and 12.0 MB
 (names) max RSS across the recorded gate runs (for example 24,760/11,992 and
 25,388/11,988 KiB); our tool is about 2.4 MB in both cases. Reference memory is
 printed for comparison and never gated.
 
 **Gates (this branch).** `make`; `make tools`; `make eza`;
-`tests/eza.py --require-reference` 219/219 non-memory cases (185 exact
-reference goldens replayed against the pinned reference, 29 live cases, 5 own
-goldens; 221 cases including the 2 memory cases), 0 failed; `tests/eza.py
+`tests/eza.py --require-reference` 272/272 non-memory cases (214 exact
+reference goldens replayed against the pinned reference, 42 live cases, 16 own
+goldens; 274 cases including the 2 memory cases), 0 failed; `tests/eza.py
 --memory` 2/2 with the peaks/allocations above and no leak or double-close
 line; `tests/tools.py --require-reference` 199/199; `tests/tools.py --memory`
 2/2; `tests/io_test.py --rt --programs --tools` 0 failures; `tests/imports.py`
@@ -4563,7 +4592,11 @@ supported flags and E0 sort fields (including `-r`, the grouping flags, `-F`,
 `-D`/`-f`, the dot filters and restricted long) and a 112-case operand-display
 and `-d` differential over relative, normalized, spaced, absolute and `..`
 operands matched the pinned reference byte-for-byte in stdout, stderr and
-status. The compiler, runtime and seed are untouched by P4.
+status; the B1/B2 fixes and the self-link/spaced-target dot quirks were then
+verified against the reference on the operand, symlink, group, filter, type,
+extension and long forms, and REFERENCE.md was regenerated with the pinned
+binary (360 probes, including the equal-key `-r` and B1/B2 probes). The
+compiler, runtime and seed are untouched by P4.
 
 **Deviations and limits.** (1) Non-TTY only: on a TTY E0 prints lines with no
 colour until E2. (2) Zero operands mean `.`; eza instead reads stdin names when
@@ -4575,18 +4608,27 @@ uses local time. (5) `--time-style` accepts only `long-iso` (with `-l`) or
 invalid-UTF-8 lossy display. (7) The path-based `fs` API keeps the 4096-byte
 joined-path limit and the getdents-to-stat race (design 6.7). (8) Permission
 status follows the P0 probe (0), not the man page's 13. (9) Multiple operands
-are this build's own usage error. (10) `-r` is a stable descending comparison, not the design note's vector
-reversal (which reverses ties); the live reference probes settle this and the
-goldens are tie-free, so no recorded byte changes. (11) The long cells live in
-the `Entry` records (one lazy lstat per entry) rather than the design's
-parallel int arrays; the measured 10,000-entry peak is recorded and capped,
-and the user-visible output is unchanged. Sort-key arrays are locals of the
-ordering helper and are freed before rendering.
+are this build's own usage error. (10) `-r` is a stable descending comparison,
+not the design note's vector reversal (which reverses ties); the live
+reference probes settle this and the tie cases are live-only, so no recorded
+byte changes. (11) The long cells live in the `Entry` records (one lazy lstat
+per entry) rather than the design's parallel int arrays; the measured
+10,000-entry peak is recorded and capped, and the user-visible output is
+unchanged. Sort-key arrays are locals of the ordering helper and are freed
+before rendering. (12) Two further design contradictions follow the P0 probe:
+a parented `..` operand keeps its parent prefix (design 7.2 said `.`/`..`
+return themselves), and a synthetic `.` on a symlink-to-directory operand is
+the symlink, with its target reoriented against the operand path itself
+(design 7.3 modeled it as a directory). Both are covered by committed goldens,
+live cases and REFERENCE.md probes.
 
-**Residual risks.** The two live root-target cases (`eza /tmp` and
-`eza -F=always /tmp`) compare two listings of the host's `/tmp`; on a busy host
-another process can create or remove an entry between the two runs, which is a
-live-case flake, not an output difference (a rerun passes). The xattr `@`
+**Residual risks.** The four live root-target cases (`eza /tmp`,
+`eza -F=always /tmp`, `eza /` and `eza -F=always /`) compare sequential
+listings of the host's directories; on a busy host another process can create
+or remove an entry between the two runs. The harness now re-runs a mismatching
+live-only case once; only when a program's own output changed between the two
+attempts does it skip with "live case unstable: the host listing changed
+between runs" (never a pass, and a stable difference remains a failure). The xattr `@`
 marker is not queried; the harness skips long goldens when the host adds
 ambient xattrs. The memory cap tracks a fixed 10,000-entry fixture; a
 compiler/codegen change that changes the runtime's per-object sizes moves the

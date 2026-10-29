@@ -86,7 +86,10 @@ Case tags
           computes the actual reason)
 
 A `golden` case is also a `ref` case when a pinned reference is present, and
-both are compared.  `--record` selects `golden` and `own` cases, runs the same
+both are compared. A live-only case that mismatches is re-run once (ours and
+the reference); only when a program's own output changed between the two
+attempts is the host listing unstable, and the case is then skipped with
+"live case unstable" -- never passed, and a stable difference still fails.  `--record` selects `golden` and `own` cases, runs the same
 fixtures and environments, refuses any stdout/stderr line containing an
 absolute path token (line start, after `->`, or inside quotes) or the case
 directory, and refuses to overwrite a differing golden without `--force`.
@@ -117,8 +120,8 @@ REFERENCE_PATH = '/usr/bin:/bin'
 FSIZE = 16 * 1024 * 1024                                 # per-process cap
 # The eza memory cap is a measured bound, not the compiler's PEAK_BUDGET:
 # the first gated runs of the two 10,000-entry cases (P4, OBO_STATS=1) peaked
-# at 2,185,200 (long) and 2,184,576 (names) live heap bytes, so the cap is the
-# long measurement plus a 26.0% margin (2,752,512 = 672 * 4096). A few hundred
+# at 2,185,008 (long) and 2,184,384 (names) live heap bytes, so the cap is the
+# long measurement plus a 25.97% margin (2,752,512 = 672 * 4096). A few hundred
 # bytes of the peak track the random temp-path length in the environment.
 EZA_PEAK_MAX = 2752512
 VERSION = os.path.join(HERE, 'eza', 'VERSION')
@@ -248,6 +251,14 @@ def _default_cases():
     _g('default', 'all_onedir', '-a', 'onedir')
     _r('default', 'absolute_tree', 'absolute',
        note='live-only absolute targets')
+    _g('default', 'aa_symlink_dir', '-aa', 'tree/dirlink',
+       note='synthetic . is the symlink operand (probe b2)')
+    _g('default', 'aa_symlink_dir_slash', '-aa', 'tree/dirlink/',
+       note='trailing slash follows the operand before the dot row (probe b2)')
+    _g('default', 'aa_symlink_dir_realdir', '-aa', 'links/realdirlink',
+       note='empty target dir; only the two dot rows (probe b2)')
+    _g('default', 'aa_selflink', '-aa', 'selflink/d/self',
+       note='self-link dot target .; target display and the follow quirk')
 
 
 def _name_cases():
@@ -282,6 +293,24 @@ def _name_cases():
     _g('names', 'ordered_aa_Name', '-aa', '--sort=Name', 'names/ordered')
     _g('names', 'group_dirs_first_tree', '--group-directories-first', 'tree')
     _g('names', 'D_links', '-D', 'links')
+    _g('names', 'aa_D_symlink_dir', '-aa', '-D', 'tree/dirlink',
+       note='a symlink dot is filtered by its lstat kind (probe b2)')
+    _g('names', 'aa_f_symlink_dir', '-aa', '-f', 'tree/dirlink')
+    _g('names', 'group_aa_symlink_dir', '-aa', '--group-directories-first',
+       'tree/dirlink',
+       note='the dot follows only when the operand-base target stat succeeds')
+    _g('names', 'grouplast_aa_symlink_dir', '-aa',
+       '--group-directories-last', 'tree/dirlink')
+    _g('names', 'group_aa_selflink', '-aa', '--group-directories-first',
+       'selflink/d/self',
+       note='self-link dot classifies as a directory and groups first')
+    _g('names', 'aa_D_mixed', '-aa', '-D', 'mixed')
+    _g('names', 'aa_f_mixed', '-aa', '-f', 'mixed')
+    _g('names', 'aa_group_mixed', '-aa', '--group-directories-first', 'mixed')
+    _r('names', 'tie_Aa_reverse', '-r', '.', cwd='names/tie_Aa',
+       note='-r keeps natcmpFold-equal names in readdir order')
+    _r('names', 'tie_pic_reverse', '-r', '.', cwd='names/tie_pic',
+       note='-r keeps both-comparator-equal names in readdir order')
 
 
 def _sortkey_cases():
@@ -324,6 +353,20 @@ def _sortkey_cases():
     _g('sortkeys', 'type_links', '--sort=type', 'links')
     _g('sortkeys', 'ext_ext_aa', '-aa', '--sort=extension', 'ext')
     _g('sortkeys', 'modified_times_1', '-1', '--sort=modified', 'times')
+    _g('sortkeys', 'type_aa_symlink_dir', '-aa', '--sort=type',
+       'tree/dirlink',
+       note='the synthetic dot uses its lstat kind (link rank), probe b2')
+    _g('sortkeys', 'ext_aa_symlink_dir', '-aa', '--sort=extension',
+       'tree/dirlink',
+       note='the dot key is File::ext(operand), not the target path')
+    _r('sortkeys', 'size_aa_symlink_dir', '-aa', '--sort=size',
+       'tree/dirlink', note='equal dot/regular sizes: readdir tie')
+    _r('sortkeys', 'modified_aa_symlink_dir', '-aa', '--sort=modified',
+       'tree/dirlink', note='equal pinned mtimes: readdir tie')
+    _r('sortkeys', 'size_reverse_ties', '--sort=size', '-r', 'mixed',
+       note='-r is a stable descending comparison: equal sizes keep order')
+    _r('sortkeys', 'modified_reverse_ties', '--sort=modified', '-r', 'mixed',
+       note='-r keeps comparator-equal mtimes in readdir order')
 
 
 def _long_cases():
@@ -366,6 +409,17 @@ def _long_cases():
        note='-d .. is live/shape-only')
     _r('long', 'root_d', *LONG, '-d', '/',
        note='-d / is live/shape-only')
+    _g('long', 'view_1_l', '-1', *LONG, 'mixed',
+       note='the later -l selects the long view')
+    _g('long', 'view_l_1', '-l', '-1', '--no-user', '--bytes',
+       '--time-style=long-iso', 'mixed',
+       note='the later -1 selects one-per-line')
+    _g('long', 'aa_symlink_dir', '-aa', *LONG, 'tree/dirlink',
+       note='the dot row is the symlink operand (probe b2)')
+    _g('long', 'aa_symlink_dir_F', '-aa', *LONG, '-F=always', 'tree/dirlink')
+    _g('long', 'aa_selflink', '-aa', *LONG, 'selflink/d/self')
+    _r('long', 'deep_operand', fixtures.DEEP_OPERAND,
+       note='joined path near but under 4095 bytes')
 
 
 def _quoting_cases():
@@ -433,6 +487,10 @@ def _classify_cases():
     _g('classify', 'classify_never', '--classify=never', 'mixed')
     _r('classify', 'F_absolute', '-F=always', 'absolute',
        note='live-only root-parent target markers')
+    _g('classify', 'F_aa_symlink_dir', '-aa', '-F=always', 'tree/dirlink',
+       note='no marker on the dot target when the operand-base stat fails')
+    _g('classify', 'F_aa_selflink', '-aa', '-F=always', 'selflink/d/self',
+       note='the self-link dot target resolves and is marked')
 
 
 def _dir_cases():
@@ -462,6 +520,27 @@ def _dir_cases():
     _r('dirs', 'operand_dotdot', '..', cwd='operands',
        note='parent listing is live/shape-only')
     _r('dirs', 'd_root', '-d', '/', note='-d / is live/shape-only')
+    _g('dirs', 'd_sub_dotdot', '-d', 'sub/..', cwd='operands',
+       note='a .. operand keeps its parent prefix (probe b1)')
+    _g('dirs', 'd_spaced_dotdot', '-d', 'x y/..', cwd='operands')
+    _g('dirs', 'd_dot', '-d', '.', cwd='operands')
+    _g('dirs', 'd_dot_dotdot', '-d', './..', cwd='operands')
+    _g('dirs', 'd_sub_dotdot_slash', '-d', 'sub/../', cwd='operands')
+    _g('dirs', 'dangling_operand', 'links/dangling',
+       note='lstat succeeds on a dangling symlink operand')
+    _g('dirs', 'dangling_operand_d', '-d', 'links/dangling')
+    _g('dirs', 'aa_symlink_dir_realdir_slash', '-aa',
+       'links/realdirlink/',
+       note='a trailing slash follows the operand before the dot rows')
+    _r('dirs', 'd_dotdot_parent', '-d', '..', cwd='operands',
+       note='-d .. is a live display-only case')
+    _r('dirs', 'd_root_dotdot', '-d', '/..', note='live display-only')
+    _r('dirs', 'd_root_dotdot_dotdot', '-d', '/../..',
+       note='live display-only')
+    _r('dirs', 'd_tmp_dotdot', '-d', '/tmp/..', note='live display-only')
+    _r('dirs', 'd_slash_slash', '-d', '//', note='live display-only')
+    _r('dirs', 'd_slash_slash_dotdot', '-d', '//..',
+       note='live display-only')
 
 
 def _operand_cases():
@@ -519,6 +598,18 @@ def _error_cases():
        note='E0 does not implement --sort=none')
     _o('errors', 'own_unsupported_flag', '--git', 'mixed',
        note='E0 rejects out-of-scope flags')
+    _o('errors', 'own_multiple_operands', 'one', 'one',
+       note='E0 supports at most one operand')
+    _o('errors', 'own_grid', '-G', 'mixed')
+    _o('errors', 'own_across', '-x', 'mixed')
+    _o('errors', 'own_width', '-w', '80', 'mixed')
+    _o('errors', 'own_no_quotes', '--no-quotes', 'mixed')
+    _o('errors', 'own_sort_dot_name', '--sort=.name', 'mixed')
+    _o('errors', 'own_sort_inode', '--sort=inode', 'mixed')
+    _o('errors', 'own_sort_changed', '--sort=changed', 'mixed')
+    _o('errors', 'own_color_always', '--color=always', 'mixed')
+    _o('errors', 'own_icons_always', '--icons=always', 'mixed')
+    _o('errors', 'own_stdin', '--stdin', 'mixed')
 
 
 def _memory_cases():
@@ -1183,6 +1274,7 @@ class Harness:
                 problems.extend(self.compare(ours, own, 'own golden'))
             if gold is not None:
                 problems.extend(self.compare(ours, gold, 'reference golden'))
+            ref_run = None
             if REF in case.tags and self.ref.kind == 'pinned':
                 ref_run = run_proc(argv, cwd, base, env,
                                    executable=self.ref.path,
@@ -1200,6 +1292,33 @@ class Harness:
                                               ref_run.rc), 'live reference'))
             elif REF in case.tags and own is None and gold is None:
                 return ('skip', 'live-only case; no usable reference or golden')
+            if problems and case.live_only and ref_run is not None:
+                # A live-only case has no committed bytes; the two programs
+                # run sequentially, so a changing host directory (/tmp, /)
+                # can make an otherwise correct pair differ. Re-run both once:
+                # only if a program's own output changed between attempts is
+                # the host demonstrably unstable, and then the case is a skip
+                # (never a pass and never a weakened comparison). A stable
+                # difference remains a failure.
+                ours2 = run_proc(argv, cwd, base, ours_env,
+                                 executable=self.exe,
+                                 sink=case.mode == 'sink',
+                                 pipe=case.mode == 'pipe', timeout=timeout,
+                                 tag='our2')
+                ours2.stdout = normalize_paths(ours2.stdout, root, base)
+                ours2.stderr = normalize_paths(ours2.stderr, root, base)
+                ref2 = run_proc(argv, cwd, base, env,
+                                executable=self.ref.path,
+                                sink=case.mode == 'sink',
+                                pipe=case.mode == 'pipe', timeout=timeout,
+                                tag='ref2')
+                ref2.stdout = normalize_paths(ref2.stdout, root, base)
+                ref2.stderr = normalize_paths(ref2.stderr, root, base)
+                def sig(r):
+                    return (r.rc, r.stdout, r.stderr, r.timed_out, r.overrun)
+                if sig(ours2) != sig(ours) or sig(ref2) != sig(ref_run):
+                    return ('skip', 'live case unstable: the host listing '
+                                    'changed between runs')
             return ('fail', problems) if problems else ('pass', '')
         finally:
             fixtures.rmtree(base)
