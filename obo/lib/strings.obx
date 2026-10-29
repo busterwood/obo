@@ -13,8 +13,17 @@
 // rule and sort's numeric parser stay in those tools. These functions are byte
 // classification, byte ordering, splitting/joining, whitespace trimming, the
 // eza natural name order (natord-plus-plus), eza's QuoteSpaces escaping and its
-// parent-prefix primitive. Everything is byte-wise: there is no UTF-8 decoding,
-// no locale and no case folding beyond ASCII.
+// parent-prefix primitive. The byte helpers stay byte-wise; P6b (E2) adds one
+// UTF-8 layer for the reference's name handling: natcmp/natcmpFold decode code
+// points, lossy() is Rust's String::from_utf8_lossy (U+FFFD per invalid maximal
+// subpart), displayWidth/quotedWidth measure with unicode-width 0.1.14's
+// per-character widths (the crate behind ansi-width, which eza's grid uses),
+// and isValidUtf8() is the validation eza applies to COLUMNS. The width table
+// is generated from that crate and documented at widthCp; its full parity is
+// limited to the per-character width rule. Lowercasing for the folded
+// comparator is simple single-code-point lowercase over the common Latin,
+// Greek, Cyrillic and fullwidth ranges, not Rust's full to_lowercase (which can
+// expand one character into several); the divergence is documented at lowerCp.
 //
 // The P1 compatibility functions (cmpBytes, errText, digits, appendPadded) were
 // removed in P2: cmp is the byte-order name that survives, errno text lives in
@@ -151,6 +160,673 @@ fn natcmpCore(a: string, b: string, fold: bool): int {
     }
 }
 
+// ------------------------------------------------------------- UTF-8 decoding
+//
+// utf8Step is the one decoder every UTF-8 function uses. It returns a packed
+// value or -1 at the end of the string:
+//
+//     bits 4..  the code point (0..0x10FFFF; U+FFFD for an invalid sequence)
+//     bits 1..3 the bytes consumed (1..4)
+//     bit 0     set when the sequence is invalid (a lossy replacement)
+//
+// Invalid sequences follow Rust's String::from_utf8_lossy exactly: one U+FFFD
+// per maximal invalid subpart, so 0xFF is one replacement, E2 82 at the end is
+// one replacement for both bytes, E2 82 28 is one replacement plus '(', and an
+// overlong or surrogate start byte is one replacement followed by each
+// continuation byte's own replacement. A valid U+FFFD is three bytes and never
+// has the invalid bit, so the two cases cannot be confused.
+
+fn isCont(b: byte): bool {
+    return b >= 0x80 && b <= 0xBF
+}
+
+fn utf8Bad(n: int): int {
+    return (0xFFFD << 4) | (n << 1) | 1
+}
+
+fn utf8Step(s: string, i: int): int {
+    if i >= len(s) { return -1 }
+    let b = s[i]
+    if b < 0x80 {
+        return (int(b) << 4) | 2
+    }
+    if b >= 0xC2 && b <= 0xDF {
+        if i + 1 < len(s) && isCont(s[i + 1]) {
+            let cp = ((int(b) & 0x1F) << 6) | (int(s[i + 1]) & 0x3F)
+            return (cp << 4) | 4
+        }
+        return utf8Bad(1)
+    }
+    if b >= 0xE0 && b <= 0xEF {
+        if i + 1 >= len(s) { return utf8Bad(1) }
+        let b2 = s[i + 1]
+        var ok2 = isCont(b2)
+        if b == 0xE0 && b2 < 0xA0 { ok2 = false }
+        if b == 0xED && b2 >= 0xA0 { ok2 = false }
+        if !ok2 { return utf8Bad(1) }
+        if i + 2 >= len(s) { return utf8Bad(2) }
+        let b3 = s[i + 2]
+        if !isCont(b3) { return utf8Bad(2) }
+        let cp = ((int(b) & 0x0F) << 12) | ((int(b2) & 0x3F) << 6) |
+                 (int(b3) & 0x3F)
+        return (cp << 4) | 6
+    }
+    if b >= 0xF0 && b <= 0xF4 {
+        if i + 1 >= len(s) { return utf8Bad(1) }
+        let b2 = s[i + 1]
+        var ok2 = isCont(b2)
+        if b == 0xF0 && b2 < 0x90 { ok2 = false }
+        if b == 0xF4 && b2 > 0x8F { ok2 = false }
+        if !ok2 { return utf8Bad(1) }
+        if i + 2 >= len(s) { return utf8Bad(2) }
+        let b3 = s[i + 2]
+        if !isCont(b3) { return utf8Bad(2) }
+        if i + 3 >= len(s) { return utf8Bad(3) }
+        let b4 = s[i + 3]
+        if !isCont(b4) { return utf8Bad(3) }
+        let cp = ((int(b) & 0x07) << 18) | ((int(b2) & 0x3F) << 12) |
+                 ((int(b3) & 0x3F) << 6) | (int(b4) & 0x3F)
+        return (cp << 4) | 8
+    }
+    // 0x80..0xC1 (continuation or overlong) and 0xF5..0xFF
+    return utf8Bad(1)
+}
+
+// the byte count of a packed step
+fn stepLen(p: int): int {
+    return (p >> 1) & 7
+}
+
+// True when s is well-formed UTF-8 (Rust str validation).
+pub fn isValidUtf8(s: string): bool {
+    var i = 0
+    while i < len(s) {
+        let p = utf8Step(s, i)
+        if (p & 1) != 0 { return false }
+        i += stepLen(p)
+    }
+    return true
+}
+
+// Rust String::from_utf8_lossy: invalid sequences become U+FFFD and every
+// valid sequence keeps its exact bytes. A valid string is returned unchanged
+// (no copy).
+pub fn lossy(s: string): string {
+    if isValidUtf8(s) { return s }
+    var out = new []byte(0)
+    var i = 0
+    while i < len(s) {
+        let p = utf8Step(s, i)
+        let cp = p >> 4
+        let n = stepLen(p)
+        if (p & 1) != 0 {
+            append(out, byte(0xEF))
+            append(out, byte(0xBF))
+            append(out, byte(0xBD))
+        } else {
+            for k in 0..n { append(out, s[i + k]) }
+        }
+        i += n
+    }
+    return string(out)
+}
+
+// Rust char::is_whitespace (the White_Space property): the exact set the
+// reference's natord compares skip. ASCII space and 0x09..0x0D are included.
+fn isUnicodeSpace(cp: int): bool {
+    if cp == 0x20 { return true }
+    if cp >= 0x09 && cp <= 0x0D { return true }
+    if cp == 0x85 || cp == 0xA0 || cp == 0x1680 { return true }
+    if cp >= 0x2000 && cp <= 0x200A { return true }
+    if cp == 0x2028 || cp == 0x2029 || cp == 0x202F { return true }
+    if cp == 0x205F || cp == 0x3000 { return true }
+    return false
+}
+
+// Simple single-code-point Unicode lowercase for the common blocks: ASCII,
+// Latin-1 Supplement, Latin Extended-A, the basic Greek and Cyrillic blocks and
+// fullwidth A-Z. Rust's char::to_lowercase() is full Unicode lowercase; it can
+// expand one character into several (U+0130 is "i" plus a combining dot) and it
+// covers every script. This table is the documented divergence: an
+// unimplemented character compares by its original code point, and U+0130 is
+// deliberately unchanged rather than expanded.
+fn lowerCp(cp: int): int {
+    if cp >= 'A' && cp <= 'Z' { return cp + 32 }
+    if cp >= 0xC0 && cp <= 0xD6 { return cp + 32 }
+    if cp >= 0xD8 && cp <= 0xDE { return cp + 32 }
+    if cp >= 0x100 && cp <= 0x137 && cp != 0x130 && cp % 2 == 0 {
+        return cp + 1
+    }
+    if cp >= 0x139 && cp <= 0x148 && cp % 2 == 1 { return cp + 1 }
+    if cp >= 0x14A && cp <= 0x177 && cp % 2 == 0 { return cp + 1 }
+    if cp == 0x178 { return 0xFF }
+    if cp >= 0x179 && cp <= 0x17E && cp % 2 == 1 { return cp + 1 }
+    if cp == 0x386 { return 0x3AC }
+    if cp >= 0x388 && cp <= 0x38A { return cp + 37 }
+    if cp == 0x38C { return 0x3CC }
+    if cp >= 0x38E && cp <= 0x38F { return cp + 63 }
+    if cp >= 0x391 && cp <= 0x3A1 { return cp + 32 }
+    if cp >= 0x3A3 && cp <= 0x3AB { return cp + 32 }
+    if cp == 0x3CF { return 0x3D7 }
+    if cp >= 0x400 && cp <= 0x40F { return cp + 80 }
+    if cp >= 0x410 && cp <= 0x42F { return cp + 32 }
+    if cp >= 0xFF21 && cp <= 0xFF3A { return cp + 32 }
+    return cp
+}
+
+// The per-character display width of unicode-width 0.1.14 (the crate
+// ansi-width 0.1.0 uses, and therefore the width eza's grid measures with).
+// The crate returns None for a control character, and ansi_width treats None as
+// 0. The ranges below were generated by enumerating U+00A0..U+10FFFF against
+// the crate's single_char_width; every range has width 0 or 2 (plus U+17D8,
+// width 3) and every code point outside them is width 1. Surrogates cannot
+// occur in decoded UTF-8. This is the full per-character table; the crate's
+// string-level ligature rules do not apply because ansi-width measures each
+// char independently.
+fn widthCp(cp: int): int {
+    if cp < 0x20 { return 0 }
+    if cp < 0x7F { return 1 }
+    if cp < 0xA0 { return 0 }
+    if cp == 0xAD { return 0 }
+    if cp >= 0x300 && cp <= 0x36F { return 0 }
+    if cp >= 0x483 && cp <= 0x489 { return 0 }
+    if cp >= 0x591 && cp <= 0x5BD { return 0 }
+    if cp == 0x5BF { return 0 }
+    if cp >= 0x5C1 && cp <= 0x5C2 { return 0 }
+    if cp >= 0x5C4 && cp <= 0x5C5 { return 0 }
+    if cp == 0x5C7 { return 0 }
+    if cp == 0x605 { return 0 }
+    if cp >= 0x610 && cp <= 0x61A { return 0 }
+    if cp == 0x61C { return 0 }
+    if cp >= 0x64B && cp <= 0x65F { return 0 }
+    if cp == 0x670 { return 0 }
+    if cp >= 0x6D6 && cp <= 0x6DC { return 0 }
+    if cp >= 0x6DF && cp <= 0x6E4 { return 0 }
+    if cp >= 0x6E7 && cp <= 0x6E8 { return 0 }
+    if cp >= 0x6EA && cp <= 0x6ED { return 0 }
+    if cp == 0x70F { return 0 }
+    if cp == 0x711 { return 0 }
+    if cp >= 0x730 && cp <= 0x74A { return 0 }
+    if cp >= 0x7A6 && cp <= 0x7B0 { return 0 }
+    if cp >= 0x7EB && cp <= 0x7F3 { return 0 }
+    if cp == 0x7FD { return 0 }
+    if cp >= 0x816 && cp <= 0x819 { return 0 }
+    if cp >= 0x81B && cp <= 0x823 { return 0 }
+    if cp >= 0x825 && cp <= 0x827 { return 0 }
+    if cp >= 0x829 && cp <= 0x82D { return 0 }
+    if cp >= 0x859 && cp <= 0x85B { return 0 }
+    if cp >= 0x890 && cp <= 0x891 { return 0 }
+    if cp >= 0x898 && cp <= 0x89F { return 0 }
+    if cp >= 0x8CA && cp <= 0x902 { return 0 }
+    if cp == 0x93A { return 0 }
+    if cp == 0x93C { return 0 }
+    if cp >= 0x941 && cp <= 0x948 { return 0 }
+    if cp == 0x94D { return 0 }
+    if cp >= 0x951 && cp <= 0x957 { return 0 }
+    if cp >= 0x962 && cp <= 0x963 { return 0 }
+    if cp == 0x981 { return 0 }
+    if cp == 0x9BC { return 0 }
+    if cp == 0x9BE { return 0 }
+    if cp >= 0x9C1 && cp <= 0x9C4 { return 0 }
+    if cp == 0x9CD { return 0 }
+    if cp == 0x9D7 { return 0 }
+    if cp >= 0x9E2 && cp <= 0x9E3 { return 0 }
+    if cp == 0x9FE { return 0 }
+    if cp >= 0xA01 && cp <= 0xA02 { return 0 }
+    if cp == 0xA3C { return 0 }
+    if cp >= 0xA41 && cp <= 0xA42 { return 0 }
+    if cp >= 0xA47 && cp <= 0xA48 { return 0 }
+    if cp >= 0xA4B && cp <= 0xA4D { return 0 }
+    if cp == 0xA51 { return 0 }
+    if cp >= 0xA70 && cp <= 0xA71 { return 0 }
+    if cp == 0xA75 { return 0 }
+    if cp >= 0xA81 && cp <= 0xA82 { return 0 }
+    if cp == 0xABC { return 0 }
+    if cp >= 0xAC1 && cp <= 0xAC5 { return 0 }
+    if cp >= 0xAC7 && cp <= 0xAC8 { return 0 }
+    if cp == 0xACD { return 0 }
+    if cp >= 0xAE2 && cp <= 0xAE3 { return 0 }
+    if cp >= 0xAFA && cp <= 0xAFF { return 0 }
+    if cp == 0xB01 { return 0 }
+    if cp == 0xB3C { return 0 }
+    if cp >= 0xB3E && cp <= 0xB3F { return 0 }
+    if cp >= 0xB41 && cp <= 0xB44 { return 0 }
+    if cp == 0xB4D { return 0 }
+    if cp >= 0xB55 && cp <= 0xB57 { return 0 }
+    if cp >= 0xB62 && cp <= 0xB63 { return 0 }
+    if cp == 0xB82 { return 0 }
+    if cp == 0xBBE { return 0 }
+    if cp == 0xBC0 { return 0 }
+    if cp == 0xBCD { return 0 }
+    if cp == 0xBD7 { return 0 }
+    if cp == 0xC00 { return 0 }
+    if cp == 0xC04 { return 0 }
+    if cp == 0xC3C { return 0 }
+    if cp >= 0xC3E && cp <= 0xC40 { return 0 }
+    if cp >= 0xC46 && cp <= 0xC48 { return 0 }
+    if cp >= 0xC4A && cp <= 0xC4D { return 0 }
+    if cp >= 0xC55 && cp <= 0xC56 { return 0 }
+    if cp >= 0xC62 && cp <= 0xC63 { return 0 }
+    if cp == 0xC81 { return 0 }
+    if cp == 0xCBC { return 0 }
+    if cp >= 0xCBF && cp <= 0xCC0 { return 0 }
+    if cp == 0xCC2 { return 0 }
+    if cp >= 0xCC6 && cp <= 0xCC8 { return 0 }
+    if cp >= 0xCCA && cp <= 0xCCD { return 0 }
+    if cp >= 0xCD5 && cp <= 0xCD6 { return 0 }
+    if cp >= 0xCE2 && cp <= 0xCE3 { return 0 }
+    if cp >= 0xD00 && cp <= 0xD01 { return 0 }
+    if cp >= 0xD3B && cp <= 0xD3C { return 0 }
+    if cp == 0xD3E { return 0 }
+    if cp >= 0xD41 && cp <= 0xD44 { return 0 }
+    if cp >= 0xD4D && cp <= 0xD4E { return 0 }
+    if cp == 0xD57 { return 0 }
+    if cp >= 0xD62 && cp <= 0xD63 { return 0 }
+    if cp == 0xD81 { return 0 }
+    if cp == 0xDCA { return 0 }
+    if cp == 0xDCF { return 0 }
+    if cp >= 0xDD2 && cp <= 0xDD4 { return 0 }
+    if cp == 0xDD6 { return 0 }
+    if cp == 0xDDF { return 0 }
+    if cp == 0xE31 { return 0 }
+    if cp >= 0xE34 && cp <= 0xE3A { return 0 }
+    if cp >= 0xE47 && cp <= 0xE4E { return 0 }
+    if cp == 0xEB1 { return 0 }
+    if cp >= 0xEB4 && cp <= 0xEBC { return 0 }
+    if cp >= 0xEC8 && cp <= 0xECE { return 0 }
+    if cp >= 0xF18 && cp <= 0xF19 { return 0 }
+    if cp == 0xF35 { return 0 }
+    if cp == 0xF37 { return 0 }
+    if cp == 0xF39 { return 0 }
+    if cp >= 0xF71 && cp <= 0xF7E { return 0 }
+    if cp >= 0xF80 && cp <= 0xF84 { return 0 }
+    if cp >= 0xF86 && cp <= 0xF87 { return 0 }
+    if cp >= 0xF8D && cp <= 0xF97 { return 0 }
+    if cp >= 0xF99 && cp <= 0xFBC { return 0 }
+    if cp == 0xFC6 { return 0 }
+    if cp >= 0x102D && cp <= 0x1030 { return 0 }
+    if cp >= 0x1032 && cp <= 0x1037 { return 0 }
+    if cp >= 0x1039 && cp <= 0x103A { return 0 }
+    if cp >= 0x103D && cp <= 0x103E { return 0 }
+    if cp >= 0x1058 && cp <= 0x1059 { return 0 }
+    if cp >= 0x105E && cp <= 0x1060 { return 0 }
+    if cp >= 0x1071 && cp <= 0x1074 { return 0 }
+    if cp == 0x1082 { return 0 }
+    if cp >= 0x1085 && cp <= 0x1086 { return 0 }
+    if cp == 0x108D { return 0 }
+    if cp == 0x109D { return 0 }
+    if cp >= 0x1100 && cp <= 0x115F { return 2 }
+    if cp >= 0x1160 && cp <= 0x11FF { return 0 }
+    if cp >= 0x135D && cp <= 0x135F { return 0 }
+    if cp >= 0x1712 && cp <= 0x1714 { return 0 }
+    if cp >= 0x1732 && cp <= 0x1733 { return 0 }
+    if cp >= 0x1752 && cp <= 0x1753 { return 0 }
+    if cp >= 0x1772 && cp <= 0x1773 { return 0 }
+    if cp == 0x17A4 { return 2 }
+    if cp >= 0x17B4 && cp <= 0x17B5 { return 0 }
+    if cp >= 0x17B7 && cp <= 0x17BD { return 0 }
+    if cp == 0x17C6 { return 0 }
+    if cp >= 0x17C9 && cp <= 0x17D3 { return 0 }
+    if cp == 0x17D8 { return 3 }
+    if cp == 0x17DD { return 0 }
+    if cp >= 0x180B && cp <= 0x180F { return 0 }
+    if cp >= 0x1885 && cp <= 0x1886 { return 0 }
+    if cp == 0x18A9 { return 0 }
+    if cp >= 0x1920 && cp <= 0x1922 { return 0 }
+    if cp >= 0x1927 && cp <= 0x1928 { return 0 }
+    if cp == 0x1932 { return 0 }
+    if cp >= 0x1939 && cp <= 0x193B { return 0 }
+    if cp >= 0x1A17 && cp <= 0x1A18 { return 0 }
+    if cp == 0x1A1B { return 0 }
+    if cp == 0x1A56 { return 0 }
+    if cp >= 0x1A58 && cp <= 0x1A5E { return 0 }
+    if cp == 0x1A60 { return 0 }
+    if cp == 0x1A62 { return 0 }
+    if cp >= 0x1A65 && cp <= 0x1A6C { return 0 }
+    if cp >= 0x1A73 && cp <= 0x1A7C { return 0 }
+    if cp == 0x1A7F { return 0 }
+    if cp >= 0x1AB0 && cp <= 0x1ACE { return 0 }
+    if cp >= 0x1B00 && cp <= 0x1B03 { return 0 }
+    if cp >= 0x1B34 && cp <= 0x1B3D { return 0 }
+    if cp >= 0x1B42 && cp <= 0x1B43 { return 0 }
+    if cp >= 0x1B6B && cp <= 0x1B73 { return 0 }
+    if cp >= 0x1B80 && cp <= 0x1B81 { return 0 }
+    if cp >= 0x1BA2 && cp <= 0x1BA5 { return 0 }
+    if cp >= 0x1BA8 && cp <= 0x1BA9 { return 0 }
+    if cp >= 0x1BAB && cp <= 0x1BAD { return 0 }
+    if cp == 0x1BE6 { return 0 }
+    if cp >= 0x1BE8 && cp <= 0x1BE9 { return 0 }
+    if cp == 0x1BED { return 0 }
+    if cp >= 0x1BEF && cp <= 0x1BF1 { return 0 }
+    if cp >= 0x1C2C && cp <= 0x1C33 { return 0 }
+    if cp >= 0x1C36 && cp <= 0x1C37 { return 0 }
+    if cp >= 0x1CD0 && cp <= 0x1CD2 { return 0 }
+    if cp >= 0x1CD4 && cp <= 0x1CE0 { return 0 }
+    if cp >= 0x1CE2 && cp <= 0x1CE8 { return 0 }
+    if cp == 0x1CED { return 0 }
+    if cp == 0x1CF4 { return 0 }
+    if cp >= 0x1CF8 && cp <= 0x1CF9 { return 0 }
+    if cp >= 0x1DC0 && cp <= 0x1DFF { return 0 }
+    if cp >= 0x200B && cp <= 0x200F { return 0 }
+    if cp >= 0x202A && cp <= 0x202E { return 0 }
+    if cp >= 0x2060 && cp <= 0x206F { return 0 }
+    if cp >= 0x20D0 && cp <= 0x20F0 { return 0 }
+    if cp >= 0x231A && cp <= 0x231B { return 2 }
+    if cp >= 0x2329 && cp <= 0x232A { return 2 }
+    if cp >= 0x23E9 && cp <= 0x23EC { return 2 }
+    if cp == 0x23F0 { return 2 }
+    if cp == 0x23F3 { return 2 }
+    if cp >= 0x25FD && cp <= 0x25FE { return 2 }
+    if cp >= 0x2614 && cp <= 0x2615 { return 2 }
+    if cp >= 0x2648 && cp <= 0x2653 { return 2 }
+    if cp == 0x267F { return 2 }
+    if cp == 0x2693 { return 2 }
+    if cp == 0x26A1 { return 2 }
+    if cp >= 0x26AA && cp <= 0x26AB { return 2 }
+    if cp >= 0x26BD && cp <= 0x26BE { return 2 }
+    if cp >= 0x26C4 && cp <= 0x26C5 { return 2 }
+    if cp == 0x26CE { return 2 }
+    if cp == 0x26D4 { return 2 }
+    if cp == 0x26EA { return 2 }
+    if cp >= 0x26F2 && cp <= 0x26F3 { return 2 }
+    if cp == 0x26F5 { return 2 }
+    if cp == 0x26FA { return 2 }
+    if cp == 0x26FD { return 2 }
+    if cp == 0x2705 { return 2 }
+    if cp >= 0x270A && cp <= 0x270B { return 2 }
+    if cp == 0x2728 { return 2 }
+    if cp == 0x274C { return 2 }
+    if cp == 0x274E { return 2 }
+    if cp >= 0x2753 && cp <= 0x2755 { return 2 }
+    if cp == 0x2757 { return 2 }
+    if cp >= 0x2795 && cp <= 0x2797 { return 2 }
+    if cp == 0x27B0 { return 2 }
+    if cp == 0x27BF { return 2 }
+    if cp >= 0x2B1B && cp <= 0x2B1C { return 2 }
+    if cp == 0x2B50 { return 2 }
+    if cp == 0x2B55 { return 2 }
+    if cp >= 0x2CEF && cp <= 0x2CF1 { return 0 }
+    if cp >= 0x2DE0 && cp <= 0x2DFF { return 0 }
+    if cp >= 0x2E80 && cp <= 0x2E99 { return 2 }
+    if cp >= 0x2E9B && cp <= 0x2EF3 { return 2 }
+    if cp >= 0x2F00 && cp <= 0x2FD5 { return 2 }
+    if cp >= 0x2FF0 && cp <= 0x3029 { return 2 }
+    if cp >= 0x302A && cp <= 0x302F { return 0 }
+    if cp >= 0x3030 && cp <= 0x303E { return 2 }
+    if cp >= 0x3041 && cp <= 0x3096 { return 2 }
+    if cp >= 0x3099 && cp <= 0x309A { return 0 }
+    if cp >= 0x309B && cp <= 0x30FF { return 2 }
+    if cp >= 0x3105 && cp <= 0x312F { return 2 }
+    if cp >= 0x3131 && cp <= 0x3163 { return 2 }
+    if cp == 0x3164 { return 0 }
+    if cp >= 0x3165 && cp <= 0x318E { return 2 }
+    if cp >= 0x3190 && cp <= 0x31E3 { return 2 }
+    if cp >= 0x31EF && cp <= 0x321E { return 2 }
+    if cp >= 0x3220 && cp <= 0x3247 { return 2 }
+    if cp >= 0x3250 && cp <= 0x4DBF { return 2 }
+    if cp >= 0x4E00 && cp <= 0xA48C { return 2 }
+    if cp >= 0xA490 && cp <= 0xA4C6 { return 2 }
+    if cp >= 0xA66F && cp <= 0xA672 { return 0 }
+    if cp >= 0xA674 && cp <= 0xA67D { return 0 }
+    if cp >= 0xA69E && cp <= 0xA69F { return 0 }
+    if cp >= 0xA6F0 && cp <= 0xA6F1 { return 0 }
+    if cp == 0xA802 { return 0 }
+    if cp == 0xA806 { return 0 }
+    if cp == 0xA80B { return 0 }
+    if cp >= 0xA825 && cp <= 0xA826 { return 0 }
+    if cp == 0xA82C { return 0 }
+    if cp >= 0xA8C4 && cp <= 0xA8C5 { return 0 }
+    if cp >= 0xA8E0 && cp <= 0xA8F1 { return 0 }
+    if cp == 0xA8FA { return 0 }
+    if cp == 0xA8FF { return 0 }
+    if cp >= 0xA926 && cp <= 0xA92D { return 0 }
+    if cp >= 0xA947 && cp <= 0xA951 { return 0 }
+    if cp >= 0xA960 && cp <= 0xA97C { return 2 }
+    if cp >= 0xA980 && cp <= 0xA982 { return 0 }
+    if cp == 0xA9B3 { return 0 }
+    if cp >= 0xA9B6 && cp <= 0xA9B9 { return 0 }
+    if cp >= 0xA9BC && cp <= 0xA9BD { return 0 }
+    if cp == 0xA9E5 { return 0 }
+    if cp >= 0xAA29 && cp <= 0xAA2E { return 0 }
+    if cp >= 0xAA31 && cp <= 0xAA32 { return 0 }
+    if cp >= 0xAA35 && cp <= 0xAA36 { return 0 }
+    if cp == 0xAA43 { return 0 }
+    if cp == 0xAA4C { return 0 }
+    if cp == 0xAA7C { return 0 }
+    if cp == 0xAAB0 { return 0 }
+    if cp >= 0xAAB2 && cp <= 0xAAB4 { return 0 }
+    if cp >= 0xAAB7 && cp <= 0xAAB8 { return 0 }
+    if cp >= 0xAABE && cp <= 0xAABF { return 0 }
+    if cp == 0xAAC1 { return 0 }
+    if cp >= 0xAAEC && cp <= 0xAAED { return 0 }
+    if cp == 0xAAF6 { return 0 }
+    if cp == 0xABE5 { return 0 }
+    if cp == 0xABE8 { return 0 }
+    if cp == 0xABED { return 0 }
+    if cp >= 0xAC00 && cp <= 0xD7A3 { return 2 }
+    if cp >= 0xD7B0 && cp <= 0xD7C6 { return 0 }
+    if cp >= 0xD7CB && cp <= 0xD7FB { return 0 }
+    if cp >= 0xF900 && cp <= 0xFAFF { return 2 }
+    if cp == 0xFB1E { return 0 }
+    if cp >= 0xFE00 && cp <= 0xFE0F { return 0 }
+    if cp >= 0xFE10 && cp <= 0xFE19 { return 2 }
+    if cp >= 0xFE20 && cp <= 0xFE2F { return 0 }
+    if cp >= 0xFE30 && cp <= 0xFE52 { return 2 }
+    if cp >= 0xFE54 && cp <= 0xFE66 { return 2 }
+    if cp >= 0xFE68 && cp <= 0xFE6B { return 2 }
+    if cp == 0xFEFF { return 0 }
+    if cp >= 0xFF01 && cp <= 0xFF60 { return 2 }
+    if cp >= 0xFF9E && cp <= 0xFFA0 { return 0 }
+    if cp >= 0xFFE0 && cp <= 0xFFE6 { return 2 }
+    if cp >= 0xFFF0 && cp <= 0xFFF8 { return 0 }
+    if cp == 0x101FD { return 0 }
+    if cp == 0x102E0 { return 0 }
+    if cp >= 0x10376 && cp <= 0x1037A { return 0 }
+    if cp >= 0x10A01 && cp <= 0x10A03 { return 0 }
+    if cp >= 0x10A05 && cp <= 0x10A06 { return 0 }
+    if cp >= 0x10A0C && cp <= 0x10A0F { return 0 }
+    if cp >= 0x10A38 && cp <= 0x10A3A { return 0 }
+    if cp == 0x10A3F { return 0 }
+    if cp >= 0x10AE5 && cp <= 0x10AE6 { return 0 }
+    if cp >= 0x10D24 && cp <= 0x10D27 { return 0 }
+    if cp >= 0x10EAB && cp <= 0x10EAC { return 0 }
+    if cp >= 0x10EFD && cp <= 0x10EFF { return 0 }
+    if cp >= 0x10F46 && cp <= 0x10F50 { return 0 }
+    if cp >= 0x10F82 && cp <= 0x10F85 { return 0 }
+    if cp == 0x11001 { return 0 }
+    if cp >= 0x11038 && cp <= 0x11046 { return 0 }
+    if cp == 0x11070 { return 0 }
+    if cp >= 0x11073 && cp <= 0x11074 { return 0 }
+    if cp >= 0x1107F && cp <= 0x11081 { return 0 }
+    if cp >= 0x110B3 && cp <= 0x110B6 { return 0 }
+    if cp >= 0x110B9 && cp <= 0x110BA { return 0 }
+    if cp == 0x110C2 { return 0 }
+    if cp >= 0x11100 && cp <= 0x11102 { return 0 }
+    if cp >= 0x11127 && cp <= 0x1112B { return 0 }
+    if cp >= 0x1112D && cp <= 0x11134 { return 0 }
+    if cp == 0x11173 { return 0 }
+    if cp >= 0x11180 && cp <= 0x11181 { return 0 }
+    if cp >= 0x111B6 && cp <= 0x111BE { return 0 }
+    if cp >= 0x111C2 && cp <= 0x111C3 { return 0 }
+    if cp >= 0x111C9 && cp <= 0x111CC { return 0 }
+    if cp == 0x111CF { return 0 }
+    if cp >= 0x1122F && cp <= 0x11231 { return 0 }
+    if cp == 0x11234 { return 0 }
+    if cp >= 0x11236 && cp <= 0x11237 { return 0 }
+    if cp == 0x1123E { return 0 }
+    if cp == 0x11241 { return 0 }
+    if cp == 0x112DF { return 0 }
+    if cp >= 0x112E3 && cp <= 0x112EA { return 0 }
+    if cp >= 0x11300 && cp <= 0x11301 { return 0 }
+    if cp >= 0x1133B && cp <= 0x1133C { return 0 }
+    if cp == 0x1133E { return 0 }
+    if cp == 0x11340 { return 0 }
+    if cp == 0x11357 { return 0 }
+    if cp >= 0x11366 && cp <= 0x1136C { return 0 }
+    if cp >= 0x11370 && cp <= 0x11374 { return 0 }
+    if cp >= 0x11438 && cp <= 0x1143F { return 0 }
+    if cp >= 0x11442 && cp <= 0x11444 { return 0 }
+    if cp == 0x11446 { return 0 }
+    if cp == 0x1145E { return 0 }
+    if cp == 0x114B0 { return 0 }
+    if cp >= 0x114B3 && cp <= 0x114B8 { return 0 }
+    if cp == 0x114BA { return 0 }
+    if cp == 0x114BD { return 0 }
+    if cp >= 0x114BF && cp <= 0x114C0 { return 0 }
+    if cp >= 0x114C2 && cp <= 0x114C3 { return 0 }
+    if cp == 0x115AF { return 0 }
+    if cp >= 0x115B2 && cp <= 0x115B5 { return 0 }
+    if cp >= 0x115BC && cp <= 0x115BD { return 0 }
+    if cp >= 0x115BF && cp <= 0x115C0 { return 0 }
+    if cp >= 0x115DC && cp <= 0x115DD { return 0 }
+    if cp >= 0x11633 && cp <= 0x1163A { return 0 }
+    if cp == 0x1163D { return 0 }
+    if cp >= 0x1163F && cp <= 0x11640 { return 0 }
+    if cp == 0x116AB { return 0 }
+    if cp == 0x116AD { return 0 }
+    if cp >= 0x116B0 && cp <= 0x116B5 { return 0 }
+    if cp == 0x116B7 { return 0 }
+    if cp >= 0x1171D && cp <= 0x1171F { return 0 }
+    if cp >= 0x11722 && cp <= 0x11725 { return 0 }
+    if cp >= 0x11727 && cp <= 0x1172B { return 0 }
+    if cp >= 0x1182F && cp <= 0x11837 { return 0 }
+    if cp >= 0x11839 && cp <= 0x1183A { return 0 }
+    if cp == 0x11930 { return 0 }
+    if cp >= 0x1193B && cp <= 0x1193C { return 0 }
+    if cp >= 0x1193E && cp <= 0x1193F { return 0 }
+    if cp == 0x11941 { return 0 }
+    if cp == 0x11943 { return 0 }
+    if cp >= 0x119D4 && cp <= 0x119D7 { return 0 }
+    if cp >= 0x119DA && cp <= 0x119DB { return 0 }
+    if cp == 0x119E0 { return 0 }
+    if cp >= 0x11A01 && cp <= 0x11A0A { return 0 }
+    if cp >= 0x11A33 && cp <= 0x11A38 { return 0 }
+    if cp >= 0x11A3A && cp <= 0x11A3E { return 0 }
+    if cp == 0x11A47 { return 0 }
+    if cp >= 0x11A51 && cp <= 0x11A56 { return 0 }
+    if cp >= 0x11A59 && cp <= 0x11A5B { return 0 }
+    if cp >= 0x11A84 && cp <= 0x11A96 { return 0 }
+    if cp >= 0x11A98 && cp <= 0x11A99 { return 0 }
+    if cp >= 0x11C30 && cp <= 0x11C36 { return 0 }
+    if cp >= 0x11C38 && cp <= 0x11C3D { return 0 }
+    if cp == 0x11C3F { return 0 }
+    if cp >= 0x11C92 && cp <= 0x11CA7 { return 0 }
+    if cp >= 0x11CAA && cp <= 0x11CB0 { return 0 }
+    if cp >= 0x11CB2 && cp <= 0x11CB3 { return 0 }
+    if cp >= 0x11CB5 && cp <= 0x11CB6 { return 0 }
+    if cp >= 0x11D31 && cp <= 0x11D36 { return 0 }
+    if cp == 0x11D3A { return 0 }
+    if cp >= 0x11D3C && cp <= 0x11D3D { return 0 }
+    if cp >= 0x11D3F && cp <= 0x11D47 { return 0 }
+    if cp >= 0x11D90 && cp <= 0x11D91 { return 0 }
+    if cp == 0x11D95 { return 0 }
+    if cp == 0x11D97 { return 0 }
+    if cp >= 0x11EF3 && cp <= 0x11EF4 { return 0 }
+    if cp >= 0x11F00 && cp <= 0x11F02 { return 0 }
+    if cp >= 0x11F36 && cp <= 0x11F3A { return 0 }
+    if cp == 0x11F40 { return 0 }
+    if cp == 0x11F42 { return 0 }
+    if cp == 0x13440 { return 0 }
+    if cp >= 0x13447 && cp <= 0x13455 { return 0 }
+    if cp >= 0x16AF0 && cp <= 0x16AF4 { return 0 }
+    if cp >= 0x16B30 && cp <= 0x16B36 { return 0 }
+    if cp == 0x16F4F { return 0 }
+    if cp >= 0x16F8F && cp <= 0x16F92 { return 0 }
+    if cp >= 0x16FE0 && cp <= 0x16FE3 { return 2 }
+    if cp == 0x16FE4 { return 0 }
+    if cp >= 0x16FF0 && cp <= 0x16FF1 { return 2 }
+    if cp >= 0x17000 && cp <= 0x187F7 { return 2 }
+    if cp >= 0x18800 && cp <= 0x18CD5 { return 2 }
+    if cp >= 0x18D00 && cp <= 0x18D08 { return 2 }
+    if cp >= 0x1AFF0 && cp <= 0x1AFF3 { return 2 }
+    if cp >= 0x1AFF5 && cp <= 0x1AFFB { return 2 }
+    if cp >= 0x1AFFD && cp <= 0x1AFFE { return 2 }
+    if cp >= 0x1B000 && cp <= 0x1B122 { return 2 }
+    if cp == 0x1B132 { return 2 }
+    if cp >= 0x1B150 && cp <= 0x1B152 { return 2 }
+    if cp == 0x1B155 { return 2 }
+    if cp >= 0x1B164 && cp <= 0x1B167 { return 2 }
+    if cp >= 0x1B170 && cp <= 0x1B2FB { return 2 }
+    if cp >= 0x1BC9D && cp <= 0x1BC9E { return 0 }
+    if cp >= 0x1BCA0 && cp <= 0x1BCA3 { return 0 }
+    if cp >= 0x1CF00 && cp <= 0x1CF2D { return 0 }
+    if cp >= 0x1CF30 && cp <= 0x1CF46 { return 0 }
+    if cp == 0x1D165 { return 0 }
+    if cp >= 0x1D167 && cp <= 0x1D169 { return 0 }
+    if cp >= 0x1D16E && cp <= 0x1D182 { return 0 }
+    if cp >= 0x1D185 && cp <= 0x1D18B { return 0 }
+    if cp >= 0x1D1AA && cp <= 0x1D1AD { return 0 }
+    if cp >= 0x1D242 && cp <= 0x1D244 { return 0 }
+    if cp >= 0x1DA00 && cp <= 0x1DA36 { return 0 }
+    if cp >= 0x1DA3B && cp <= 0x1DA6C { return 0 }
+    if cp == 0x1DA75 { return 0 }
+    if cp == 0x1DA84 { return 0 }
+    if cp >= 0x1DA9B && cp <= 0x1DA9F { return 0 }
+    if cp >= 0x1DAA1 && cp <= 0x1DAAF { return 0 }
+    if cp >= 0x1E000 && cp <= 0x1E006 { return 0 }
+    if cp >= 0x1E008 && cp <= 0x1E018 { return 0 }
+    if cp >= 0x1E01B && cp <= 0x1E021 { return 0 }
+    if cp >= 0x1E023 && cp <= 0x1E024 { return 0 }
+    if cp >= 0x1E026 && cp <= 0x1E02A { return 0 }
+    if cp == 0x1E08F { return 0 }
+    if cp >= 0x1E130 && cp <= 0x1E136 { return 0 }
+    if cp == 0x1E2AE { return 0 }
+    if cp >= 0x1E2EC && cp <= 0x1E2EF { return 0 }
+    if cp >= 0x1E4EC && cp <= 0x1E4EF { return 0 }
+    if cp >= 0x1E8D0 && cp <= 0x1E8D6 { return 0 }
+    if cp >= 0x1E944 && cp <= 0x1E94A { return 0 }
+    if cp == 0x1F004 { return 2 }
+    if cp == 0x1F0CF { return 2 }
+    if cp == 0x1F18E { return 2 }
+    if cp >= 0x1F191 && cp <= 0x1F19A { return 2 }
+    if cp >= 0x1F200 && cp <= 0x1F202 { return 2 }
+    if cp >= 0x1F210 && cp <= 0x1F23B { return 2 }
+    if cp >= 0x1F240 && cp <= 0x1F248 { return 2 }
+    if cp >= 0x1F250 && cp <= 0x1F251 { return 2 }
+    if cp >= 0x1F260 && cp <= 0x1F265 { return 2 }
+    if cp >= 0x1F300 && cp <= 0x1F320 { return 2 }
+    if cp >= 0x1F32D && cp <= 0x1F335 { return 2 }
+    if cp >= 0x1F337 && cp <= 0x1F37C { return 2 }
+    if cp >= 0x1F37E && cp <= 0x1F393 { return 2 }
+    if cp >= 0x1F3A0 && cp <= 0x1F3CA { return 2 }
+    if cp >= 0x1F3CF && cp <= 0x1F3D3 { return 2 }
+    if cp >= 0x1F3E0 && cp <= 0x1F3F0 { return 2 }
+    if cp == 0x1F3F4 { return 2 }
+    if cp >= 0x1F3F8 && cp <= 0x1F43E { return 2 }
+    if cp == 0x1F440 { return 2 }
+    if cp >= 0x1F442 && cp <= 0x1F4FC { return 2 }
+    if cp >= 0x1F4FF && cp <= 0x1F53D { return 2 }
+    if cp >= 0x1F54B && cp <= 0x1F54E { return 2 }
+    if cp >= 0x1F550 && cp <= 0x1F567 { return 2 }
+    if cp == 0x1F57A { return 2 }
+    if cp >= 0x1F595 && cp <= 0x1F596 { return 2 }
+    if cp == 0x1F5A4 { return 2 }
+    if cp >= 0x1F5FB && cp <= 0x1F64F { return 2 }
+    if cp >= 0x1F680 && cp <= 0x1F6C5 { return 2 }
+    if cp == 0x1F6CC { return 2 }
+    if cp >= 0x1F6D0 && cp <= 0x1F6D2 { return 2 }
+    if cp >= 0x1F6D5 && cp <= 0x1F6D7 { return 2 }
+    if cp >= 0x1F6DC && cp <= 0x1F6DF { return 2 }
+    if cp >= 0x1F6EB && cp <= 0x1F6EC { return 2 }
+    if cp >= 0x1F6F4 && cp <= 0x1F6FC { return 2 }
+    if cp >= 0x1F7E0 && cp <= 0x1F7EB { return 2 }
+    if cp == 0x1F7F0 { return 2 }
+    if cp >= 0x1F90C && cp <= 0x1F93A { return 2 }
+    if cp >= 0x1F93C && cp <= 0x1F945 { return 2 }
+    if cp >= 0x1F947 && cp <= 0x1F9FF { return 2 }
+    if cp >= 0x1FA70 && cp <= 0x1FA7C { return 2 }
+    if cp >= 0x1FA80 && cp <= 0x1FA88 { return 2 }
+    if cp >= 0x1FA90 && cp <= 0x1FABD { return 2 }
+    if cp >= 0x1FABF && cp <= 0x1FAC5 { return 2 }
+    if cp >= 0x1FACE && cp <= 0x1FADB { return 2 }
+    if cp >= 0x1FAE0 && cp <= 0x1FAE8 { return 2 }
+    if cp >= 0x1FAF0 && cp <= 0x1FAF8 { return 2 }
+    if cp >= 0x20000 && cp <= 0x2FFFD { return 2 }
+    if cp >= 0x30000 && cp <= 0x3FFFD { return 2 }
+    if cp >= 0xE0000 && cp <= 0xE0FFF { return 0 }
+    return 1
+}
+
 // value equality (strings compare by bytes)
 pub fn eq(a: string, b: string): bool {
     return a == b
@@ -281,14 +957,121 @@ pub fn trim(s: string): string {
     return substr(s, start, end)
 }
 
+// ------------------------------------------------------- the eza name order
+//
+// natord-plus-plus 2.0.0 compares a sequence of chars: Unicode whitespace is
+// skipped at the top of the outer loop, ASCII digit runs compare naturally and
+// everything else compares by code point (folded for compare_ignore_case).
+// E2 decodes UTF-8: invalid bytes compare as U+FFFD, exactly as if the strings
+// had been lossy-decoded by eza first. Pure-ASCII strings keep the byte loop
+// (its order is identical); a string with any byte >= 0x80 takes the code
+// point loop.
+
+fn hasHigh(s: string): bool {
+    for i in 0..len(s) {
+        if s[i] >= 0x80 { return true }
+    }
+    return false
+}
+
+fn isDigitCp(cp: int): bool {
+    return cp >= '0' && cp <= '9'
+}
+
+fn signCp(a: int, b: int): int {
+    if a < b { return -1 }
+    if a > b { return 1 }
+    return 0
+}
+
+// natord::compare_iter over decoded code points (fold selects lowerCp). The
+// structure follows natcmpCore; `pa`/`pb` are the packed current steps, so a
+// read is an index move plus utf8Step.
+fn natcmpUtf8(a: string, b: string, fold: bool): int {
+    var i = 0
+    var j = 0
+    var pa = utf8Step(a, 0)
+    var pb = utf8Step(b, 0)
+    while true {
+        while pa >= 0 && isUnicodeSpace(pa >> 4) {
+            i += stepLen(pa)
+            pa = utf8Step(a, i)
+        }
+        while pb >= 0 && isUnicodeSpace(pb >> 4) {
+            j += stepLen(pb)
+            pb = utf8Step(b, j)
+        }
+        if pa < 0 && pb < 0 { return 0 }
+        if pa < 0 { return -1 }
+        if pb < 0 { return 1 }
+        let ca = pa >> 4
+        let cb = pb >> 4
+        if isDigitCp(ca) && isDigitCp(cb) {
+            if ca == '0' || cb == '0' {
+                // left-aligned matching: 015 < 12
+                if ca != cb { return signCp(ca, cb) }
+                i += stepLen(pa)
+                j += stepLen(pb)
+                pa = utf8Step(a, i)
+                pb = utf8Step(b, j)
+                while pa >= 0 && pb >= 0 && isDigitCp(pa >> 4) &&
+                        isDigitCp(pb >> 4) {
+                    let x = pa >> 4
+                    let y = pb >> 4
+                    if x != y { return signCp(x, y) }
+                    i += stepLen(pa)
+                    j += stepLen(pb)
+                    pa = utf8Step(a, i)
+                    pb = utf8Step(b, j)
+                }
+                if pa >= 0 && isDigitCp(pa >> 4) { return 1 }
+                if pb >= 0 && isDigitCp(pb >> 4) { return -1 }
+                // both runs ended: continue the outer loop
+            } else {
+                // right-aligned matching: 15 < 123
+                var last = 0
+                while pa >= 0 && pb >= 0 && isDigitCp(pa >> 4) &&
+                        isDigitCp(pb >> 4) {
+                    let x = pa >> 4
+                    let y = pb >> 4
+                    if last == 0 && x != y { last = signCp(x, y) }
+                    i += stepLen(pa)
+                    j += stepLen(pb)
+                    pa = utf8Step(a, i)
+                    pb = utf8Step(b, j)
+                }
+                if pa >= 0 && isDigitCp(pa >> 4) { return 1 }
+                if pb >= 0 && isDigitCp(pb >> 4) { return -1 }
+                if last != 0 { return last }
+                // both runs ended equal: continue
+            }
+        } else {
+            var x = ca
+            var y = cb
+            if fold {
+                x = lowerCp(x)
+                y = lowerCp(y)
+            }
+            if x < y { return -1 }
+            if x > y { return 1 }
+            i += stepLen(pa)
+            j += stepLen(pb)
+            pa = utf8Step(a, i)
+            pb = utf8Step(b, j)
+        }
+    }
+}
+
 // eza's name order: natord::compare (case-sensitive) and
-// natord::compare_ignore_case (ASCII fold). -1, 0 or 1.
+// natord::compare_ignore_case (simple Unicode lowercase). -1, 0 or 1.
 pub fn natcmp(a: string, b: string): int {
-    return natcmpCore(a, b, false)
+    if !hasHigh(a) && !hasHigh(b) { return natcmpCore(a, b, false) }
+    return natcmpUtf8(a, b, false)
 }
 
 pub fn natcmpFold(a: string, b: string): int {
-    return natcmpCore(a, b, true)
+    if !hasHigh(a) && !hasHigh(b) { return natcmpCore(a, b, true) }
+    return natcmpUtf8(a, b, true)
 }
 
 // eza's QuoteSpaces escaping (src/output/escape.rs). The rule:
@@ -355,9 +1138,56 @@ pub fn parentPrefix(parent: string, quoteSpaces: bool): string {
     return escaped + "/"
 }
 
-// E0 display width is the byte length; the signature does not change when E2
-// adds UTF-8 decoding/width. Callers that lay out columns must not assume
-// bytes == width in E2.
+// The display width of s: each decoded code point contributes widthCp's width
+// and each invalid maximal subpart contributes one U+FFFD (width 1), matching
+// the reference's lossy display. ASCII is unchanged from E0. This is the
+// per-character rule ansi-width applies to eza's painted grid cells; callers
+// that lay out columns must not use len(s).
 pub fn displayWidth(s: string): int {
-    return len(s)
+    var w = 0
+    var i = 0
+    while i < len(s) {
+        let p = utf8Step(s, i)
+        if (p & 1) != 0 {
+            w += 1
+        } else {
+            w += widthCp(p >> 4)
+        }
+        i += stepLen(p)
+    }
+    return w
+}
+
+// The display width of the text quoteName(name, quoteSpaces) would produce,
+// without building it. Grid cells are measured this way before they are
+// painted. `name` should already be lossy (valid UTF-8); an invalid byte still
+// counts as its U+FFFD replacement. A quoted name adds the two quote
+// characters; an escaped control character contributes its rendered length
+// (\t, \n and \r are two columns; \u{h} is five or six).
+pub fn quotedWidth(name: string, quoteSpaces: bool): int {
+    var needs = false
+    for i in 0..len(name) {
+        let b = name[i]
+        if b == ' ' || b == '\'' { needs = true }
+    }
+    var w = 0
+    if quoteSpaces && needs { w += 2 }
+    var i = 0
+    while i < len(name) {
+        let p = utf8Step(name, i)
+        let cp = p >> 4
+        if (p & 1) != 0 {
+            w += 1
+        } else if cp == 9 || cp == 10 || cp == 13 {
+            w += 2
+        } else if cp < 0x20 || cp == 0x7F {
+            // \u{h}: backslash, u, {, the lowercase hex digits, }
+            w += 5
+            if cp >= 16 { w += 1 }
+        } else {
+            w += widthCp(cp)
+        }
+        i += stepLen(p)
+    }
+    return w
 }

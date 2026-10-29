@@ -7,6 +7,22 @@
 import "strings.obx" as strings
 import "support.obx" as t
 
+// byte builders for sequences that cannot be written as string escapes
+fn bytes2(a: int, b: int): string {
+    var xs = new []byte(2)
+    xs[0] = byte(a)
+    xs[1] = byte(b)
+    return strings::fromBytes(xs)
+}
+
+fn bytes3(a: int, b: int, c: int): string {
+    var xs = new []byte(3)
+    xs[0] = byte(a)
+    xs[1] = byte(b)
+    xs[2] = byte(c)
+    return strings::fromBytes(xs)
+}
+
 fn main() {
     // isSpace: space and 0x09..0x0D only
     t::checkBool("isSpace space", strings::isSpace(' '), true)
@@ -158,17 +174,66 @@ fn main() {
     let high = strings::fromBytes(highBytes)
     t::checkBool("lower high", strings::eq(strings::lowerAscii(high), high), true)
 
-    // displayWidth: E0 is the byte length
+    // displayWidth: E2 is the UTF-8 display width (unicode-width 0.1.14's
+    // per-character widths: controls 0, combining 0, wide/emoji 2, other 1,
+    // invalid bytes one U+FFFD each). ASCII is unchanged.
     t::checkInt("width empty", strings::displayWidth(""), 0)
     t::checkInt("width abc", strings::displayWidth("abc"), 3)
     t::checkInt("width space", strings::displayWidth("a b"), 3)
-    t::checkInt("width tab", strings::displayWidth("a\tb"), 3)
+    t::checkInt("width tab", strings::displayWidth("a\tb"), 2)
+    t::checkInt("width del", strings::displayWidth(bytes3(0x61, 0x7f, 0x62)), 2)
     t::checkInt("width high", strings::displayWidth(hi), 1)
+    t::checkInt("width two invalid", strings::displayWidth(high), 2)
     var utf8Bytes = new []byte(2)
     utf8Bytes[0] = byte(0xc3)
     utf8Bytes[1] = byte(0xa9)
     let utf8 = strings::fromBytes(utf8Bytes)
-    t::checkInt("width utf8", strings::displayWidth(utf8), 2)
+    t::checkInt("width utf8", strings::displayWidth(utf8), 1)
+    t::checkInt("width cjk", strings::displayWidth("中"), 2)
+    t::checkInt("width emoji", strings::displayWidth("😀"), 2)
+    t::checkInt("width fullwidth", strings::displayWidth("ｱ"), 1)
+    t::checkInt("width greek", strings::displayWidth("Ω"), 1)
+    // e + COMBINING ACUTE ACCENT (U+0301): one column
+    var combBytes = new []byte(3)
+    combBytes[0] = byte(0x65)
+    combBytes[1] = byte(0xcc)
+    combBytes[2] = byte(0x81)
+    let comb = strings::fromBytes(combBytes)
+    t::checkInt("width combining", strings::displayWidth(comb), 1)
+    // invalid: lone 0xFF, a truncated 3-byte prefix, an overlong C0 AF, and
+    // the replacement character itself (valid, width 1)
+    var badBytes = new []byte(4)
+    badBytes[0] = byte(0xff)
+    badBytes[1] = byte(0xe2)
+    badBytes[2] = byte(0x82)
+    badBytes[3] = byte(0x28)
+    let bad = strings::fromBytes(badBytes)
+    t::checkInt("width invalid", strings::displayWidth(bad), 3)
+    t::checkBool("valid ascii", strings::isValidUtf8("abc"), true)
+    t::checkBool("valid utf8", strings::isValidUtf8(utf8), true)
+    t::checkBool("valid invalid", strings::isValidUtf8(bad), false)
+    // lossy: one U+FFFD per maximal subpart; invalid becomes EF BF BD
+    var repBytes = new []byte(3)
+    repBytes[0] = byte(0xef)
+    repBytes[1] = byte(0xbf)
+    repBytes[2] = byte(0xbd)
+    let rep = strings::fromBytes(repBytes)
+    t::checkBool("lossy valid unchanged", strings::lossy(utf8) == utf8, true)
+    var ffBytes = new []byte(2)
+    ffBytes[0] = byte(0xff)
+    ffBytes[1] = byte(0x41)
+    let ff = strings::fromBytes(ffBytes)
+    t::checkBool("lossy ff A", strings::lossy(ff) == rep + "A", true)
+    t::checkBool("lossy truncated", strings::lossy(bytes3(0xe2, 0x82, 0x28)) == rep + "(", true)
+    t::checkBool("lossy overlong", strings::lossy(bytes2(0xc0, 0xaf)) == rep + rep, true)
+    // quotedWidth counts the escaped/quoted form without building it
+    t::checkInt("quoted plain", strings::quotedWidth("abc", true), 3)
+    t::checkInt("quoted space", strings::quotedWidth("a b", true), 5)
+    t::checkInt("quoted noquotes", strings::quotedWidth("a b", false), 3)
+    t::checkInt("quoted tab", strings::quotedWidth("a\tb", true), 4)
+    t::checkInt("quoted esc", strings::quotedWidth(bytes3(0x78, 0x1b, 0x79), true), 8)
+    t::checkInt("quoted del", strings::quotedWidth(bytes3(0x78, 0x7f, 0x79), true), 8)
+    t::checkInt("quoted utf8", strings::quotedWidth("中", true), 2)
 
     // trim/trimLeft/trimRight: C-locale whitespace at the ends only
     t::checkStr("trim empty", strings::trim(""), "")

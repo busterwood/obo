@@ -7,6 +7,28 @@
 import "strings.obx" as strings
 import "support.obx" as t
 
+// byte builders for UTF-8 sequences not written literally
+fn bytes1(a: int): string {
+    var xs = new []byte(1)
+    xs[0] = byte(a)
+    return strings::fromBytes(xs)
+}
+
+fn bytes2(a: int, b: int): string {
+    var xs = new []byte(2)
+    xs[0] = byte(a)
+    xs[1] = byte(b)
+    return strings::fromBytes(xs)
+}
+
+fn bytes3(a: int, b: int, c: int): string {
+    var xs = new []byte(3)
+    xs[0] = byte(a)
+    xs[1] = byte(b)
+    xs[2] = byte(c)
+    return strings::fromBytes(xs)
+}
+
 fn checkList(label: string, xs: &[]string, fold: bool) {
     var i = 1
     while i < len(xs) {
@@ -126,6 +148,48 @@ fn main() {
     t::checkInt("sign x100 x99", strings::natcmp("x100", "x99"), 1)
     t::checkInt("sign x0099 x100", strings::natcmp("x0099", "x100"), -1)
     t::checkInt("sign x0100 x0099", strings::natcmp("x0100", "x0099"), 1)
+
+
+    // E2: UTF-8 code points compare by value, not by byte. strcmp order is
+    // the code point order for valid UTF-8, so the interesting cases are the
+    // fold and whitespace rules and invalid bytes.
+    t::checkInt("utf8 e-acute z", strings::natcmp("é", "z"), 1)
+    t::checkInt("utf8 z e-acute", strings::natcmp("z", "é"), -1)
+    t::checkInt("utf8 a e-acute", strings::natcmp("a", "é"), -1)
+    t::checkInt("utf8 cjk z", strings::natcmp("中", "z"), 1)
+    t::checkInt("utf8 emoji cjk", strings::natcmp("😀", "中"), 1)
+    t::checkInt("utf8 emoji omega", strings::natcmp("😀", "Ω"), 1)
+    // e + U+0301 is "e" first, so it sorts before precomposed é
+    var ecomb = bytes3(0x65, 0xcc, 0x81)
+    t::checkInt("utf8 combining e-acute", strings::natcmp(ecomb, "é"), -1)
+    t::checkInt("utf8 combining f", strings::natcmp(ecomb, "f"), -1)
+    // simple lowercase: Latin-1, Greek, Cyrillic and fullwidth pairs
+    t::checkInt("fold Eacute", strings::natcmpFold("É", "é"), 0)
+    t::checkInt("natcmp Eacute", strings::natcmp("É", "é"), -1)
+    t::checkInt("fold sigma", strings::natcmpFold("Σ", "σ"), 0)
+    t::checkInt("fold sigma final", strings::natcmpFold("ς", "σ"), -1)
+    t::checkInt("fold cyrillic", strings::natcmpFold("Ж", "ж"), 0)
+    t::checkInt("fold fullwidth", strings::natcmpFold("Ａ", "ａ"), 0)
+    t::checkInt("fold cjk unchanged", strings::natcmpFold("中", "中"), 0)
+    // Rust char::is_whitespace: NBSP, NEL, EM SPACE and IDEOGRAPHIC SPACE are
+    // skipped like ASCII space
+    let nbsp = bytes2(0xc2, 0xa0)
+    let nel = bytes2(0xc2, 0x85)
+    let emsp = bytes3(0xe2, 0x80, 0x83)
+    let ideosp = bytes3(0xe3, 0x80, 0x80)
+    t::checkInt("utf8 nbsp skip", strings::natcmp("a" + nbsp + "b", "a b"), 0)
+    t::checkInt("utf8 nel skip", strings::natcmpFold("a" + nel + "b", "ab"), 0)
+    t::checkInt("utf8 emsp skip", strings::natcmp("a" + emsp + "b", "a\tb"), 0)
+    t::checkInt("utf8 ideosp skip", strings::natcmpFold("a" + ideosp + "b", " ab"), 0)
+    // invalid bytes compare as the U+FFFD that lossy() would produce; two
+    // different invalid sequences are Equal, and U+FFFD sorts after ASCII
+    let lone = bytes1(0xff)
+    let cont = bytes1(0x80)
+    t::checkInt("utf8 invalid equal", strings::natcmp(lone, cont), 0)
+    t::checkInt("utf8 invalid vs z", strings::natcmp(lone, "z"), 1)
+    t::checkInt("utf8 invalid vs z fold", strings::natcmpFold(cont, "z"), 1)
+    t::checkInt("utf8 invalid prefix", strings::natcmp(bytes2(0xff, 0x41), "A"), 1)
+    t::checkInt("utf8 invalid suffix", strings::natcmp(bytes2(0x41, 0xff), "A"), 1)
 
     println("strings natcmp ok")
 }
