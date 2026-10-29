@@ -68,12 +68,13 @@ the harness is a setup error (exit 2), never a silent all-skip pass.
 
 E0 scope
 --------
-Reference behaviour outside E0 is not in the golden/ref matrix: multiple
-operands, `--no-quotes`, `.name`/`.Name` sorts, `--sort=inode|none`, plain
-`-l`, tree, xattr rows and the no-operand stdin mode are excluded (the exact
-case list and reasons are in `eza/REFERENCE.md`, P0 findings).  Probe evidence
-for those behaviours stays in the probe report; P4 must not reintroduce them
-as differential cases without a design decision.
+Reference behaviour outside E0/E1 is not in the golden/ref matrix: multiple
+operands, `.name`/`.Name` sorts, `--sort=inode|none`, plain `-l`, xattr rows,
+the no-operand stdin mode, icons, grid and non-UTF-8 display are excluded (the
+exact case list and reasons are in `eza/REFERENCE.md`, P0 findings).  E1 adds
+the colour, tree and --no-quotes families; long-column colour and the
+EZA_COLORS UI keys stay out (see cmd/README).  Probe evidence for excluded
+behaviours stays in the probe report.
 
 Case tags
 ---------
@@ -102,15 +103,22 @@ Exit status: 0 pass, 1 test failure, 2 harness/setup failure.
 import argparse
 import atexit
 import concurrent.futures
+import fcntl
 import json
 import os
+import pty
 import re
 import resource
+import select
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
+import termios
+import time
+import tty
 
 HERE = os.path.dirname(os.path.abspath(__file__))        # .../obo/tests
 FORK = os.path.dirname(HERE)                             # .../obo
@@ -121,8 +129,10 @@ FSIZE = 16 * 1024 * 1024                                 # per-process cap
 # The eza memory cap is a measured bound, not the compiler's PEAK_BUDGET:
 # the first gated runs of the two 10,000-entry cases (P4, OBO_STATS=1) peaked
 # at 2,185,008 (long) and 2,184,384 (names) live heap bytes, so the cap is the
-# long measurement plus a 25.97% margin (2,752,512 = 672 * 4096). A few hundred
-# bytes of the peak track the random temp-path length in the environment.
+# long measurement plus a 25.97% margin (2,752,512 = 672 * 4096). P5b adds the
+# tree case and re-measured all three at 2,189,984 / 2,189,360 / 2,190,112
+# bytes, still under the unchanged cap. A few hundred bytes of the peak track
+# the random temp-path length in the environment.
 EZA_PEAK_MAX = 2752512
 VERSION = os.path.join(HERE, 'eza', 'VERSION')
 GOLDEN = os.path.join(HERE, 'eza', 'golden')
@@ -141,7 +151,7 @@ def own_available():
 
 LONG = ('-l', '--no-user', '--bytes', '--time-style=long-iso')
 FAMILIES = ('default', 'names', 'sortkeys', 'long', 'quoting', 'classify',
-            'dirs', 'operands', 'errors', 'memory')
+            'dirs', 'operands', 'errors', 'colour', 'tree', 'memory')
 TAGS = ('ref', 'golden', 'own', 'skip')
 REF, GOLDEN_TAG, OWN, SKIP = TAGS
 
@@ -174,6 +184,11 @@ class Case:
                              % (family, name))
         if live_only and REF not in tags:
             raise SetupError('%s/%s: live-only needs the ref tag' % (family, name))
+        if mode == 'pty' and (GOLDEN_TAG in tags or not live_only):
+            raise SetupError('%s/%s: pty cases are live-only (design 9.4)'
+                             % (family, name))
+        if mode not in ('normal', 'sink', 'pipe', 'pty'):
+            raise SetupError('%s/%s: unknown mode %r' % (family, name, mode))
         if isinstance(requires, str):
             requires = (requires,)
         self.family = family
@@ -441,6 +456,16 @@ def _quoting_cases():
     _g('quoting', 'broken_relative_lines', '-1', 'quoting/brokenrel')
     _g('quoting', 'broken_relative_d_F', '-d', '-F=always',
        'quoting/brokenrel', note='no marker on a broken relative target')
+    _g('quoting', 'no_quotes', '--no-quotes', 'quoting',
+       note='names, parent prefixes and broken targets use NoQuotes; control '
+            'characters stay escaped and a symlink target name keeps QuoteSpaces')
+    _g('quoting', 'no_quotes_lines', '-1', '--no-quotes', 'quoting')
+    _g('quoting', 'no_quotes_long', *LONG, '--no-quotes', 'quoting')
+    _g('quoting', 'no_quotes_classify', '-F=always', '--no-quotes', 'quoting')
+    _g('quoting', 'no_quotes_mixed', '--no-quotes', 'mixed',
+       note='spaced -> tar get keeps its quoted target name')
+    _g('quoting', 'no_quotes_links', '--no-quotes', 'links')
+    _g('quoting', 'no_quotes_tree', '-T', '--no-quotes', 'quoting')
     _r('quoting', 'root_parent_tmp', '/tmp',
        note='valid root-parent operand; live-only')
     _r('quoting', 'root_parent_tmp_F', '-F=always', '/tmp',
@@ -491,6 +516,216 @@ def _classify_cases():
        note='no marker on the dot target when the operand-base stat fails')
     _g('classify', 'F_aa_selflink', '-aa', '-F=always', 'selflink/d/self',
        note='the self-link dot target resolves and is marked')
+
+
+def _colour_cases():
+    # Non-TTY colour is deterministic with --color=always; every golden below
+    # is the pinned reference's exact SGR bytes. TTY auto/NO_COLOR cases use a
+    # pty and are live-only (no committed bytes, design 9.4).
+    _g('colour', 'default_mixed', '--color=always', 'mixed',
+       note='default palette: dir, symlink, executable, regular, FIFO, socket, '
+            'broken link name/arrow/target')
+    _g('colour', 'all_mixed', '--color=always', '-a', 'mixed',
+       note='hidden entries use their kind/extension style; no hidden SGR')
+    _g('colour', 'aa_mixed', '--color=always', '-aa', 'mixed',
+       note='synthetic dot rows are directories')
+    _g('colour', 'modes', '--color=always', 'modes',
+       note='setuid/setgid/sticky have no separate name style; executable '
+            'regular files are green and directories blue')
+    _g('colour', 'links', '--color=always', 'links',
+       note='valid, chained, loop and broken targets')
+    _g('colour', 'categories', '--color=always', 'colours',
+       note='default file-type palette: build/readme, image, video, music, '
+            'lossless, document, compressed, temp, compiled, source, plus '
+            'fi fallback and the no-colour regular file')
+    _g('colour', 'categories_all', '--color=always', '-a', 'colours')
+    _g('colour', 'operand_file', '--color=always', 'mixed/alpha',
+       note='the operand parent prefix uses symlink_path (cyan)')
+    _g('colour', 'operand_dir', '--color=always', 'mixed/dir')
+    _g('colour', 'operand_link', '--color=always', 'mixed/dirlink')
+    _g('colour', 'no_quotes', '--color=always', '--no-quotes', 'mixed')
+    _g('colour', 'classify', '--color=always', '-F=always', 'mixed',
+       note='classify markers are plain bits after the styled name/target')
+    _g('colour', 'tree', '--color=always', '-T', 'tree',
+       note='tree glyphs use punctuation; entry names use the normal palette')
+    _g('colour', 'tree_all', '--color=always', '-T', '-a', 'tree')
+    _g('colour', 'tree_classify', '--color=always', '-T', '-F=always', 'tree')
+    _g('colour', 'tree_error', '--color=always', '-T', 'modes',
+       requires='nonroot',
+       note='the synthetic <Permission denied> child is broken_symlink red')
+    _g('colour', 'bare', '--color', 'mixed',
+       note='bare --color is auto, no colour off a TTY')
+    _g('colour', 'auto', '--color=auto', 'mixed')
+    _g('colour', 'automatic', '--color=automatic', 'mixed')
+    _g('colour', 'never', '--color=never', 'mixed')
+    _g('colour', 'colour_alias', '--colour=always', 'mixed')
+    _g('colour', 'no_color_default', 'mixed', env={'NO_COLOR': '1'},
+       note='NO_COLOR present sets the default to Never')
+    _g('colour', 'no_color_auto', '--color=auto', 'mixed',
+       env={'NO_COLOR': '1'}, note='explicit --color overrides NO_COLOR')
+    _g('colour', 'no_color_always', '--color=always', 'mixed',
+       env={'NO_COLOR': '1'})
+    _g('colour', 'no_color_empty_always', '--color=always', 'mixed',
+       env={'NO_COLOR': ''},
+       note='present-empty NO_COLOR also sets the default; explicit always wins')
+    _g('colour', 'ls_di', '--color=always', 'mixed',
+       env={'LS_COLORS': 'di=01;32'})
+    _g('colour', 'ls_ln', '--color=always', 'mixed',
+       env={'LS_COLORS': 'ln=01;35'})
+    _g('colour', 'ls_ex', '--color=always', 'mixed',
+       env={'LS_COLORS': 'ex=01;36'})
+    _g('colour', 'ls_fi', '--color=always', 'mixed',
+       env={'LS_COLORS': 'fi=01;37'},
+       note='fi is the regular-file fallback, including link targets')
+    _g('colour', 'ls_ext', '--color=always', 'mixed',
+       env={'LS_COLORS': '*.txt=01;31'})
+    _g('colour', 'ls_ext_order_a', '--color=always', 'ext',
+       env={'LS_COLORS': '*.gz=01;31:*.tar.gz=01;32'},
+       note='a later dotted suffix overrides an earlier simple extension')
+    _g('colour', 'ls_ext_order_b', '--color=always', 'ext',
+       env={'LS_COLORS': '*.tar.gz=01;32:*.gz=01;31'},
+       note='definition order decides, not longest suffix')
+    _g('colour', 'ls_ext_case', '--color=always', 'ext',
+       env={'LS_COLORS': '*.TXT=01;31'},
+       note='simple extension keys are case-sensitive')
+    _g('colour', 'ls_empty_value', '--color=always', 'mixed',
+       env={'LS_COLORS': 'di=:*.txt='},
+       note='an empty value is not a pair; the defaults stay')
+    _g('colour', 'ls_invalid_value', '--color=always', 'mixed',
+       env={'LS_COLORS': 'di=bogus'},
+       note='a non-SGR value overrides the slot with the empty style')
+    _g('colour', 'ls_unknown_key', '--color=always', 'mixed',
+       env={'LS_COLORS': 'zz=01;31'},
+       note='unknown keys are ignored by this build (documented divergence)')
+    _g('colour', 'ls_sgr_attrs', '--color=always', 'mixed',
+       env={'LS_COLORS': 'di=4;31'})
+    _g('colour', 'ls_sgr_order', '--color=always', 'mixed',
+       env={'LS_COLORS': 'di=31;1'},
+       note='the SGR parser re-serialises canonically: 1;31')
+    _g('colour', 'ls_sgr_256', '--color=always', 'mixed',
+       env={'LS_COLORS': 'di=38;5;196'})
+    _g('colour', 'ls_sgr_rekind', '--color=always', 'mixed',
+       env={'LS_COLORS': 'di=38;2;1;2;3;31'},
+       note='a later basic colour must not keep stale RGB components')
+    _g('colour', 'ls_ext_plain', '--color=always', 'colours',
+       env={'LS_COLORS': '*.png=0'},
+       note='a mapping with the empty style overrides the default category')
+    _g('colour', 'eza_over_ls', '--color=always', 'mixed',
+       env={'LS_COLORS': 'di=01;34', 'EZA_COLORS': 'di=01;32'})
+    _g('colour', 'exa_fallback', '--color=always', 'mixed',
+       env={'LS_COLORS': 'di=01;34', 'EXA_COLORS': 'di=01;33'})
+    _g('colour', 'eza_over_exa', '--color=always', 'mixed',
+       env={'EZA_COLORS': 'di=01;32', 'EXA_COLORS': 'di=01;33'})
+    _g('colour', 'eza_empty_keeps_ls', '--color=always', 'mixed',
+       env={'LS_COLORS': 'di=01;34', 'EZA_COLORS': ''},
+       note='present-empty EZA_COLORS still displaces EXA_COLORS')
+    _g('colour', 'eza_reset', '--color=always', 'colours',
+       env={'EZA_COLORS': 'reset:di=01;32'},
+       note='reset disables the default file-type palette, LS/fi still apply')
+    _g('colour', 'ls_ln_target', '--color=always', 'mixed',
+       env={'LS_COLORS': 'ln=target'},
+       note='the reference parses the unsupported "target" value to the '
+            'empty style; symlink names are then plain')
+    # TTY/auto live cases (pty; stdout is a terminal, -1 pins the lines view
+    # because grid is E2). Compared live against the reference, never recorded.
+    _r('colour', 'tty_default_auto', '-1', 'mixed', mode='pty',
+       note='default mode on a TTY is auto colour')
+    _r('colour', 'tty_color_auto', '-1', '--color=auto', 'mixed', mode='pty')
+    _r('colour', 'tty_never', '-1', '--color=never', 'mixed', mode='pty')
+    _r('colour', 'tty_no_color', '-1', 'mixed', mode='pty',
+       env={'NO_COLOR': '1'}, note='NO_COLOR default Never on a TTY')
+    _r('colour', 'tty_no_color_auto', '-1', '--color=auto', 'mixed',
+       mode='pty', env={'NO_COLOR': '1'},
+       note='explicit auto overrides NO_COLOR and colours on a TTY')
+    _r('colour', 'tty_bare_no_color', '-1', '--color', 'mixed', mode='pty',
+       env={'NO_COLOR': '1'})
+    _r('colour', 'tty_no_color_empty', '-1', 'mixed', mode='pty',
+       env={'NO_COLOR': ''})
+    _r('colour', 'tty_no_quotes', '-1', '--color=auto', '--no-quotes', 'mixed',
+       mode='pty')
+
+
+def _tree_cases():
+    _g('tree', 'T', '-T', 'tree', note='names only; UTF-8 glyphs; symlink '
+       'directories and broken links are not descended')
+    _g('tree', 'spellout', '--tree', 'tree')
+    _g('tree', 'level0', '-T', '-L', '0', 'tree')
+    _g('tree', 'level1', '-T', '-L', '1', 'tree')
+    _g('tree', 'level2', '-T', '-L', '2', 'tree')
+    _g('tree', 'level3', '-T', '-L', '3', 'tree')
+    _g('tree', 'level_plus', '-T', '-L', '+2', 'tree')
+    _g('tree', 'level_zeros', '-T', '-L', '02', 'tree')
+    _g('tree', 'level_last', '-T', '-L', '1', '-L', '2', 'tree')
+    _g('tree', 'all', '-T', '-a', 'tree')
+    _g('tree', 'all_level2', '-T', '-a', '-L', '2', 'tree')
+    _g('tree', 'almost_all', '-T', '-A', 'tree')
+    _g('tree', 'links', '-T', 'links')
+    _g('tree', 'links_all', '-T', '-a', 'links')
+    _g('tree', 'empty', '-T', 'empty', note='an empty directory prints its line')
+    _g('tree', 'hidden_operand', '-T', 'tree/hidden')
+    _g('tree', 'hidden_operand_a', '-T', '-a', 'tree/hidden')
+    _g('tree', 'long', '-T', *LONG, 'tree',
+       note='cells, then the tree prefix, then the name')
+    _g('tree', 'long_level1', '-T', '-L', '1', *LONG, 'tree')
+    _g('tree', 'long_modes', '-T', *LONG, 'modes', requires='nonroot',
+       note='long column widths are global; the error row is padded')
+    _g('tree', 'long_denied', '-T', *LONG, 'locked/denied',
+       requires='nonroot')
+    _g('tree', 'classify', '-T', '-F=always', 'tree')
+    _g('tree', 'classify_long', '-T', '-F=always', *LONG, 'tree')
+    _g('tree', 'reverse', '-T', '-r', 'tree')
+    _g('tree', 'sort_size', '-T', '--sort=size', 'sizes')
+    _g('tree', 'sort_ext', '-T', '--sort=extension', 'ext')
+    _g('tree', 'sort_type', '-T', '--sort=type', 'mixed')
+    _g('tree', 'group_first', '-T', '--group-directories-first', 'mixed')
+    _g('tree', 'D', '-T', '-D', 'tree',
+       note='a tree level keeps lstat directories only')
+    _g('tree', 'f', '-T', '-f', 'tree',
+       note='--only-files drops the directory root entirely')
+    _g('tree', 'f_D', '-T', '-f', '-D', 'tree')
+    _g('tree', 'f_file', '-T', '-f', 'one/f')
+    _g('tree', 'D_file', '-T', '-D', 'one/f')
+    _g('tree', 'd_treat', '-T', '-d', 'tree',
+       note='tree wins over --treat-dirs-as-files (strict mode is off)')
+    _g('tree', 'oneline_last', '-T', '-1', 'tree',
+       note='the last view flag wins: this is a lines listing')
+    _g('tree', 'oneline_first', '-1', '-T', 'tree')
+    _g('tree', 'long_oneline_last', '-T', '-l', '-1', '--no-user', '--bytes',
+       '--time-style=long-iso', 'tree')
+    _g('tree', 'dot_operand', '-T', '.', cwd='tree')
+    _g('tree', 'path_normalized', '-T', 'tree//d1')
+    _g('tree', 'path_slash', '-T', 'tree//d1/')
+    _g('tree', 'dirlink_operand', '-T', 'tree/dirlink')
+    _g('tree', 'dirlink_slash_operand', '-T', 'tree/dirlink/',
+       note='a trailing slash follows the operand; it is then a directory')
+    _g('tree', 'file_operand', '-T', 'one/f')
+    _g('tree', 'dangling_operand', '-T', 'tree/broken')
+    _g('tree', 'missing_operand', '-T', 'missing')
+    _g('tree', 'error_aa', '-T', '-aa', 'tree')
+    _g('tree', 'error_all_all', '-T', '-a', '-a', 'tree')
+    _g('tree', 'error_level', '-T', '-L', 'x', 'tree')
+    _g('tree', 'error_level_neg', '-T', '-L', '-1', 'tree')
+    _g('tree', 'error_level_plus', '-T', '-L', '+', 'tree',
+       note='Rust usize::from_str: "+" alone is InvalidDigit, not Empty')
+    _g('tree', 'error_level_huge', '-T', '-L', '18446744073709551616', 'tree')
+    _g('tree', 'error_level_empty', '-T', '-L', '', 'tree')
+    _g('tree', 'level_without_tree', '-L', '1', 'tree',
+       note='without -T the level is never parsed (probe)')
+    _g('tree', 'bad_level_without_tree', '-L', 'x', 'tree')
+    _g('tree', 'oneline_aa_error', '-T', '-1', '-aa', 'tree',
+       note='the two -a error is raised even when -1 wins the view')
+    _g('tree', 'denied', '-T', 'locked/denied', requires='nonroot')
+    _g('tree', 'permission_child', '-T', 'modes', requires='nonroot')
+    _r('tree', 'reverse_size_ties', '-T', '-r', '--sort=size', 'mixed',
+       note='tree -r sorts ascending then reverses the vector, so equal sizes '
+            'reverse readdir order')
+    _r('tree', 'reverse_name_ties', '-T', '-r', '.', cwd='names/tie_Aa',
+       note='natcmpFold-equal a/A reverse readdir order in a tree')
+    _r('tree', 'reverse_size_group', '-T', '-r', '--sort=size',
+       '--group-directories-first', 'mixed',
+       note='the vector reverse runs before the stable dirs-first pass')
+    _r('tree', 'dotdot_operand', '-T', '..', cwd='tree/d1',
+       note='parent listing is live/shape-only')
 
 
 def _dir_cases():
@@ -573,14 +808,17 @@ def _error_cases():
     _g('errors', 'bad_sort', '--sort=bogus', 'mixed')
     _g('errors', 'bad_classify', '--classify=bogus', 'mixed')
     _g('errors', 'bad_color', '--color=bogus', 'mixed')
+    _g('errors', 'bad_color_quote', '--color=a"b', 'mixed',
+       note='the reference Debug-escapes the displayed option value')
+    _g('errors', 'bad_color_control', '--color=a\tb', 'mixed')
+    _g('errors', 'bad_level_quote', '-T', '-L', 'a"b', 'tree')
     _g('errors', 'bad_icons', '--icons=bogus', 'mixed')
     _o('errors', 'bad_time_style', '--time-style=bogus', 'mixed',
        note='divergence: the reference accepts and ignores a bad --time-style '
             'in a non-long view; E0 rejects it (own usage error, exit 3)')
-    _o('errors', 'bad_level', '-T', '-L', 'x', 'tree',
-       note='-T/--tree and -L/--level are E1; E0 rejects them as unsupported '
-            'options with its own message (the reference numeric message is '
-            'probe-only evidence)')
+    _g('errors', 'bad_level', '-T', '-L', 'x', 'tree',
+       note='E1 parses the level only when the tree action is active and '
+            'matches the reference numeric message')
     _sk('errors', 'permission_denied', 'locked/denied', requires='nonroot',
         note='skipped when euid is 0')
     _sk('errors', 'permission_denied_entry', 'locked/denied/f',
@@ -603,11 +841,9 @@ def _error_cases():
     _o('errors', 'own_grid', '-G', 'mixed')
     _o('errors', 'own_across', '-x', 'mixed')
     _o('errors', 'own_width', '-w', '80', 'mixed')
-    _o('errors', 'own_no_quotes', '--no-quotes', 'mixed')
     _o('errors', 'own_sort_dot_name', '--sort=.name', 'mixed')
     _o('errors', 'own_sort_inode', '--sort=inode', 'mixed')
     _o('errors', 'own_sort_changed', '--sort=changed', 'mixed')
-    _o('errors', 'own_color_always', '--color=always', 'mixed')
     _o('errors', 'own_icons_always', '--icons=always', 'mixed')
     _o('errors', 'own_stdin', '--stdin', 'mixed')
 
@@ -620,11 +856,17 @@ def _memory_cases():
     _o('memory', 'names_10000', 'many10000', slow=True,
        memory_entries=10000, note='name-only 10,000 entries under '
             'OBO_STATS; EZA_PEAK_MAX and no leak line')
+    _o('memory', 'tree_10000', '-T', 'many10000', slow=True,
+       memory_entries=10000, note='E1 tree over 10,000 entries under '
+            'OBO_STATS; EZA_PEAK_MAX and no leak line')
+    _o('memory', 'colour_10000', '--color=always', 'many10000', slow=True,
+       memory_entries=10000, note='E1 colour over 10,000 entries under '
+            'OBO_STATS; EZA_PEAK_MAX and no leak line')
 
 
 for _builder in (_default_cases, _name_cases, _sortkey_cases, _long_cases,
-                 _quoting_cases, _classify_cases, _dir_cases,
-                 _operand_cases, _error_cases, _memory_cases):
+                 _quoting_cases, _classify_cases, _colour_cases, _tree_cases,
+                 _dir_cases, _operand_cases, _error_cases, _memory_cases):
     _builder()
 
 
@@ -942,8 +1184,94 @@ def _limit():
     resource.setrlimit(resource.RLIMIT_FSIZE, (FSIZE, FSIZE))
 
 
+_PTY_OK = None
+
+
+def pty_available():
+    """True when this host can create a pseudo-terminal for the live TTY
+    colour cases; a failure skips those cases (never passes or fails them)."""
+    global _PTY_OK
+    if _PTY_OK is None:
+        try:
+            master, slave = pty.openpty()
+            os.close(master)
+            os.close(slave)
+            _PTY_OK = True
+        except OSError:
+            _PTY_OK = False
+    return _PTY_OK
+
+
+def run_proc_pty(argv, cwd, io_dir, env, executable=None, timeout=10.0,
+                 tag='out'):
+    """Run with stdout on a raw pseudo-terminal (80x24) and return the bytes
+    unchanged. Used only by the live auto-colour cases: isatty(stdout) is the
+    behaviour under test, and no golden is recorded from a pty."""
+    err_path = os.path.join(io_dir, '.eza-' + tag + '.stderr')
+    master, slave = pty.openpty()
+    ferr = open(err_path, 'wb')
+    timed_out = False
+    overrun = False
+    p = None
+    chunks = []
+    try:
+        fcntl.ioctl(slave, termios.TIOCSWINSZ,
+                    struct.pack('HHHH', 24, 80, 0, 0))
+        tty.setraw(slave)
+        p = subprocess.Popen(argv, executable=executable, cwd=cwd, env=env,
+                             stdin=subprocess.DEVNULL, stdout=slave,
+                             stderr=ferr, start_new_session=True,
+                             preexec_fn=_limit)
+        os.close(slave)
+        slave = None
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            ready, _, _ = select.select([master], [], [], remaining)
+            if not ready:
+                timed_out = True
+                break
+            try:
+                chunk = os.read(master, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+            if sum(len(c) for c in chunks) >= FSIZE:
+                overrun = True
+                break
+        if timed_out or overrun:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except OSError:
+                pass
+        p.wait()
+    finally:
+        if slave is not None:
+            os.close(slave)
+        os.close(master)
+        ferr.close()
+    stdout = b''.join(chunks)
+    with open(err_path, 'rb') as f:
+        stderr = f.read()
+    rc = p.returncode if p is not None else None
+    if not timed_out and (len(stdout) >= FSIZE or len(stderr) >= FSIZE
+                          or rc == -signal.SIGXFSZ):
+        overrun = True
+    return RunResult(rc, stdout, stderr, timed_out, overrun)
+
+
 def run_proc(argv, cwd, io_dir, env, executable=None, sink=False, pipe=False,
-             timeout=10.0, tag='out'):
+             timeout=10.0, tag='out', pseudo=False):
+    if pseudo:
+        if sink or pipe:
+            raise SetupError('pty and sink/pipe modes are exclusive')
+        return run_proc_pty(argv, cwd, io_dir, env, executable=executable,
+                            timeout=timeout, tag=tag)
     out_path = os.path.join(io_dir, '.eza-' + tag + '.stdout')
     err_path = os.path.join(io_dir, '.eza-' + tag + '.stderr')
     stdin = subprocess.DEVNULL
@@ -1179,6 +1507,8 @@ class Harness:
         return env
 
     def skip_reason(self, case, caps):
+        if case.mode == 'pty' and not pty_available():
+            return 'a pseudo-terminal is unavailable on this host'
         if GOLDEN_TAG in case.tags and caps.get('ambient_xattr') \
                 and uses_long_view(case):
             return ('ambient xattrs present; the reference would print the '
@@ -1213,6 +1543,7 @@ class Harness:
                        executable=self.ref.path,
                        sink=case.mode == 'sink',
                        pipe=case.mode == 'pipe',
+                       pseudo=case.mode == 'pty',
                        timeout=60 if case.slow else 10, tag=tag)
         res.stdout = normalize_paths(res.stdout, root, base)
         res.stderr = normalize_paths(res.stderr, root, base)
@@ -1259,7 +1590,9 @@ class Harness:
             timeout = 60 if case.slow else 10
             ours = run_proc(argv, cwd, base, ours_env, executable=self.exe,
                             sink=case.mode == 'sink',
-                            pipe=case.mode == 'pipe', timeout=timeout, tag='our')
+                            pipe=case.mode == 'pipe',
+                            pseudo=case.mode == 'pty', timeout=timeout,
+                            tag='our')
             ours.stdout = normalize_paths(ours.stdout, root, base)
             ours.stderr = normalize_paths(ours.stderr, root, base)
             problems = []
@@ -1280,6 +1613,7 @@ class Harness:
                                    executable=self.ref.path,
                                    sink=case.mode == 'sink',
                                    pipe=case.mode == 'pipe',
+                                   pseudo=case.mode == 'pty',
                                    timeout=timeout, tag='ref')
                 ref_run.stdout = normalize_paths(ref_run.stdout, root, base)
                 ref_run.stderr = normalize_paths(ref_run.stderr, root, base)
@@ -1303,15 +1637,17 @@ class Harness:
                 ours2 = run_proc(argv, cwd, base, ours_env,
                                  executable=self.exe,
                                  sink=case.mode == 'sink',
-                                 pipe=case.mode == 'pipe', timeout=timeout,
-                                 tag='our2')
+                                 pipe=case.mode == 'pipe',
+                                 pseudo=case.mode == 'pty',
+                                 timeout=timeout, tag='our2')
                 ours2.stdout = normalize_paths(ours2.stdout, root, base)
                 ours2.stderr = normalize_paths(ours2.stderr, root, base)
                 ref2 = run_proc(argv, cwd, base, env,
                                 executable=self.ref.path,
                                 sink=case.mode == 'sink',
-                                pipe=case.mode == 'pipe', timeout=timeout,
-                                tag='ref2')
+                                pipe=case.mode == 'pipe',
+                                pseudo=case.mode == 'pty',
+                                timeout=timeout, tag='ref2')
                 ref2.stdout = normalize_paths(ref2.stdout, root, base)
                 ref2.stderr = normalize_paths(ref2.stderr, root, base)
                 def sig(r):

@@ -1,0 +1,11 @@
+tree
+├── a.txt
+├── broken -> missing
+├── d1
+│   ├── b.txt
+│   └── d2
+│       ├── c.txt
+│       └── d3
+├── dirlink -> d1
+├── emptydir
+└── hidden

@@ -1,20 +1,27 @@
-// eza: the P4 E0 core (non-TTY lines, E0 flags and diagnostics).
+// eza: the P5b E1 core (non-TTY lines and tree, colour, --no-quotes).
 //
 // Built as a module root by tools/build_tools.py: it imports the stdlib by
 // explicit relative paths and every library name is qualified. The module is
 // named `eza`; nothing imports it, so the build writes an unread eza.sym into
-// the private sym dir. E0 is non-TTY only: one entry per line (symlink targets
-// included), the hidden/-a/-A rules, the E0 sort keys, -r, directory grouping,
-// quoting, -F, -D/-f, -d, restricted long and the error/exit classes of design
-// section 7. Multiple operands, tree, grid, colour, icons, --no-quotes and the
-// later sort keys are rejected with this build's own message.
+// the private sym dir. This build is non-TTY only in the sense that it never
+// grids: it prints one entry per line (symlink targets included) or a tree.
+// It implements the hidden/-a/-A rules, the E0 sort keys, -r, directory
+// grouping, quoting and --no-quotes, -F, -D/-f, -d, restricted long, -T/-L,
+// --color/--colour with the default palette and the documented
+// LS_COLORS/EZA_COLORS subset, and the error/exit classes of design sections
+// 7 and 8. Multiple operands, grid, icons, -R and the later sort keys are
+// rejected with this build's own message.
 //
 // One operand or none; a listing shows names, an operand shows its parent
 // prefix and name. Entries are read through fs, filtered (-a/-A, -D/-f), sorted
 // through lib/sort, quoted and rendered with symlink targets and -F markers;
 // the restricted long view adds the permission, size, optional uid and date
-// cells. Errors follow eza's exit classes (0/1/2/3); a permission-denied
-// directory keeps the probe's status 0.
+// cells. The tree view walks each directory with an explicit frame stack and
+// applies the same filter/sort at every level. Colour output is built as a
+// sequence of styled text bits and emitted with the pinned reference's
+// minimal-ANSI difference rule (nu-ansi-term 0.50.1 AnsiStrings). Errors
+// follow eza's exit classes (0/1/2/3); a permission-denied directory keeps the
+// probe's status 0.
 
 module eza
 
@@ -27,6 +34,7 @@ import "../lib/cli.obx" as cli
 import "../lib/errors.obx" as errors
 import "../lib/time.obx" as time
 import "../lib/fs.obx" as fs
+import "../lib/env.obx" as env
 
 // Deduced command-line state. Every field is copied from the effective (last)
 // occurrence of its option; cli.parse has already rejected unknown names and
@@ -51,7 +59,13 @@ type Opts = ref record {
     noTime: bool           // --no-time
     timeStyle: string      // effective --time-style value
     timeStyleSeen: bool
-    longView: bool         // the effective view is -l (last of -l/-1)
+    longView: bool         // the effective view is -l (last of -l/-1/-T rules)
+    treeView: bool         // the effective view is a tree (details + tree)
+    level: int             // -L depth when treeView; parsed from levelText
+    levelSeen: bool
+    levelText: string
+    noQuotes: bool         // --no-quotes (outer QuoteStyle::NoQuotes)
+    colourOn: bool         // colour is enabled for this run
 }
 
 // One displayed entry.
@@ -85,6 +99,120 @@ type Cols = ref record {
     sizeWidth: int
     userWidth: int
     dateWidth: int
+}
+
+// ------------------------------------------------------------- colour state
+//
+// A Style mirrors nu-ansi-term 0.50.1's Style (the crate the pinned reference
+// links): eight attributes, then a background and a foreground colour. The
+// colour kinds are 0 none, 1 basic (a raw 30..37/90..97 or 40..47/100..107
+// code), 2 fixed (38;5;n / 48;5;n) and 3 RGB (38;2;r;g;b / 48;2;r;g;b).
+// A style's prefix is written in the crate's order: attributes (1,2,3,4,5,7,8,
+// 9), background, foreground. The default theme and the LS_COLORS parser set
+// only these fields, so this shape is exact for the E1 subset.
+
+type Style = ref record {
+    fg: int
+    fgA: int
+    fgB: int
+    fgC: int
+    bg: int
+    bgA: int
+    bgB: int
+    bgC: int
+    bold: bool
+    dim: bool
+    italic: bool
+    underline: bool
+    blink: bool
+    reverse: bool
+    hidden: bool
+    strike: bool
+}
+
+// One styled piece of a line. TextCellContents in the reference is a vector of
+// such pieces, and the ANSIStrings writer minimises the escape sequences
+// between adjacent pieces. A Bit copies the style's scalar fields so a line
+// never owns a palette style.
+type Bit = ref record {
+    fg: int
+    fgA: int
+    fgB: int
+    fgC: int
+    bg: int
+    bgA: int
+    bgB: int
+    bgC: int
+    bold: bool
+    dim: bool
+    italic: bool
+    underline: bool
+    blink: bool
+    reverse: bool
+    hidden: bool
+    strike: bool
+    text: string
+}
+
+// One ordered `*.EXT` mapping from LS_COLORS or EZA_COLORS. kind 0 is a simple
+// extension key (matched against the bytes after the name's last '.'), kind 1
+// is a key containing a dot, matched as the literal suffix "." + key.
+type ExtPat = ref record {
+    kind: int
+    key: string
+    style: Style
+}
+
+// Palette slots, in the order the array is indexed.
+const SC_NORMAL = 0
+const SC_DIR = 1
+const SC_LNK = 2
+const SC_PIPE = 3
+const SC_BLOCK = 4
+const SC_CHAR = 5
+const SC_SOCK = 6
+const SC_SPECIAL = 7
+const SC_EXE = 8
+const SC_MOUNT = 9
+const SC_PUNCT = 10
+const SC_SYMLINK_PATH = 11
+const SC_CONTROL = 12
+const SC_BROKEN = 13
+const SC_BROKEN_FILE = 14
+const SC_BROKEN_CONTROL = 15
+const SC_IMAGE = 20
+const SC_VIDEO = 21
+const SC_MUSIC = 22
+const SC_LOSSLESS = 23
+const SC_CRYPTO = 24
+const SC_DOCUMENT = 25
+const SC_COMPRESSED = 26
+const SC_TEMP = 27
+const SC_COMPILED = 28
+const SC_BUILD = 29
+const SC_SOURCE = 30
+const SC_SLOTS = 31
+
+// The effective colour theme: 31 style slots, the ordered extension mappings,
+// and whether the default file-type (extension/category) palette applies
+// (EZA_COLORS=reset... turns it off).
+type Palette = ref record {
+    styles: []Style
+    patterns: []ExtPat
+    useDefaultTypes: bool
+}
+
+// One directory being walked in the tree view. `anc` holds one '0'/'1' byte
+// per ancestor level (1 = that ancestor was its parent's last entry); frames
+// are pushed and popped in depth-first order, so no recursion is needed and
+// each open directory is fully read and closed before its children.
+type Frame = ref record {
+    path: string
+    entries: []Entry
+    order: []int
+    next: int
+    depth: int
+    anc: string
 }
 
 // ------------------------------------------------------------------- lists
@@ -295,12 +423,9 @@ fn isUnsupported(name: string): bool {
     if name == "grid" { return true }
     if name == "across" { return true }
     if name == "recurse" { return true }
-    if name == "tree" { return true }
-    if name == "level" { return true }
     if name == "dereference" { return true }
     if name == "follow-symlinks" { return true }
     if name == "width" { return true }
-    if name == "no-quotes" { return true }
     if name == "absolute" { return true }
     if name == "color-scale" { return true }
     if name == "colour-scale" { return true }
@@ -398,14 +523,102 @@ fn choicesText(xs: &[]string): string {
     return s + ")"
 }
 
+// Rust str Debug escaping for a displayed option value (the reference uses
+// `{:?}` in these messages): NUL is \0, tab/newline/CR are \t/\n/\r, quote
+// and backslash are escaped, other C0/DEL bytes are \u{hex} with lowercase
+// hex and no leading zeros, and every other byte is copied.
+fn debugHexDigit(v: int): byte {
+    if v < 10 { return byte(48 + v) }
+    return byte(87 + v)
+}
+
+fn debugText(s: string): string {
+    var out = new []byte(0)
+    for i in 0..len(s) {
+        let b = s[i]
+        if b == 0 {
+            append(out, '\\')
+            append(out, '0')
+        } else if b == '"' {
+            append(out, '\\')
+            append(out, '"')
+        } else if b == '\\' {
+            append(out, '\\')
+            append(out, '\\')
+        } else if b == '\t' {
+            append(out, '\\')
+            append(out, 't')
+        } else if b == '\n' {
+            append(out, '\\')
+            append(out, 'n')
+        } else if b == '\r' {
+            append(out, '\\')
+            append(out, 'r')
+        } else if b < ' ' || b == 127 {
+            append(out, '\\')
+            append(out, 'u')
+            append(out, '{')
+            let v = int(b)
+            if v >= 16 { append(out, debugHexDigit(v / 16)) }
+            append(out, debugHexDigit(v % 16))
+            append(out, '}')
+        } else {
+            append(out, b)
+        }
+    }
+    return strings::fromBytes(out)
+}
+
 // eza's Optional/Option bad-value wording, without the "eza: " prefix.
 fn noSetting(label: string, value: string, choices: []string): string {
-    var m = "Option " + label + " has no \"" + value + "\" setting"
+    var m = "Option " + label + " has no \"" + debugText(value) + "\" setting"
     if len(choices) > 0 {
         let tail = choicesText(choices)
         m = m + tail
     }
     return m
+}
+
+// Parse the -L value the way eza's RecurseOptions does: Rust usize::from_str
+// (an optional '+', decimal digits, leading zeros allowed). The error class is
+// 1 invalid digit, 2 too large (above 2^64-1), 3 empty. Values between
+// 2^63 and 2^64-1 are accepted by the reference and clamp to int max here
+// (they are effectively unlimited depths).
+fn levelValue(s: string): Result[int] {
+    if len(s) == 0 { return err("empty", 3) }
+    var i = 0
+    if s[i] == '+' { i += 1 }
+    if i >= len(s) { return err("invalid", 1) }
+    var start = i
+    while start < len(s) && s[start] == '0' { start += 1 }
+    if start == len(s) { return ok(0) }
+    var digits = 0
+    for j in start..len(s) {
+        if s[j] < '0' || s[j] > '9' { return err("invalid", 1) }
+        digits += 1
+    }
+    if digits > 20 { return err("large", 2) }
+    if digits == 20 {
+        let top = "18446744073709551615"
+        for j in 0..20 {
+            if s[start + j] < top[j] { break }
+            if s[start + j] > top[j] { return err("large", 2) }
+        }
+    }
+    var v = 0
+    var sat = false
+    for j in start..len(s) {
+        let d = int(s[j]) - 48
+        if !sat {
+            if v > 922337203685477580 || (v == 922337203685477580 && d > 7) {
+                sat = true
+                v = 9223372036854775807
+            } else {
+                v = v * 10 + d
+            }
+        }
+    }
+    return ok(v)
 }
 
 // Turn the parsed option occurrences into the effective state. Returns this
@@ -418,7 +631,16 @@ fn deduce(options: &[]cli::Option): Result[Opts] {
                      onlyFiles: false, bytes: false, numeric: false,
                      noUser: false, noPermissions: false, noFilesize: false,
                      noTime: false, timeStyle: "", timeStyleSeen: false,
-                     longView: false}
+                     longView: false, treeView: false,
+                     level: 0, levelSeen: false, levelText: "",
+                     noQuotes: false, colourOn: false}
+    // The effective view flag: 0 none, 1 -l, 2 -1, 3 -T (eza's
+    // has_where_any over --long/--oneline/--grid/--tree takes the last one;
+    // --grid is rejected by this build before it can win). `longSeen` is
+    // separate because a last -T with any -l is a long view too.
+    var lastView = 0
+    var longSeen = false
+    var treeSeen = false
     // The effective (last) values of the optional-value flags. eza deduces
     // only the last occurrence, so an earlier bad value is ignored when a
     // later valid one replaces it (probed: --sort=foo --sort=name lists).
@@ -467,9 +689,18 @@ fn deduce(options: &[]cli::Option): Result[Opts] {
             o.timeStyle = value
             o.timeStyleSeen = true
         } else if name == "long" {
-            o.longView = true
+            longSeen = true
+            lastView = 1
         } else if name == "oneline" {
-            o.longView = false
+            lastView = 2
+        } else if name == "tree" {
+            treeSeen = true
+            lastView = 3
+        } else if name == "level" {
+            o.levelText = value
+            o.levelSeen = true
+        } else if name == "no-quotes" {
+            o.noQuotes = true
         } else if name == "color" || name == "colour" {
             colorValue = value
         } else if name == "icons" {
@@ -478,6 +709,17 @@ fn deduce(options: &[]cli::Option): Result[Opts] {
             return err(messageFor(name), 22)
         }
         k += 1
+    }
+    // eza's view rules (options/view.rs). The last of -l/-1/-T wins; a last
+    // -T with any -l is the long view, and a last -1 makes the command a
+    // lines listing even when -T is present (the DirAction then sees a
+    // non-details view and ignores the tree).
+    o.longView = lastView == 1 || (lastView == 3 && longSeen)
+    o.treeView = treeSeen && (lastView == 3 || lastView == 1)
+    // --tree with two --all is an error in eza's DotFilter deduction; it is
+    // checked before the operand path and regardless of the effective view.
+    if treeSeen && o.allCount >= 2 {
+        return err("Option --tree is useless given --all --all", 22)
     }
     // Effective-value validation, in eza's last-occurrence model. The cli
     // accept lists are deliberately empty for these flags: validating every
@@ -500,14 +742,40 @@ fn deduce(options: &[]cli::Option): Result[Opts] {
     if len(colorValue) > 0 && !isWhenValue(colorValue) {
         return err(noSetting("--color", colorValue, noStrings()), 22)
     }
-    if colorValue == "always" {
-        return err(valueMessage("color", "always"), 22)
+    // NO_COLOR (present at all, even empty) makes the DEFAULT Never; an
+    // explicit --color/--colour overrides it (verified source and probe).
+    // auto needs isatty(stdout()), the P5a builtin.
+    var colourMode = 0
+    if env::has("NO_COLOR") { colourMode = 2 }
+    if len(colorValue) > 0 {
+        if colorValue == "always" {
+            colourMode = 1
+        } else if colorValue == "auto" || colorValue == "automatic" {
+            colourMode = 0
+        } else {
+            colourMode = 2
+        }
     }
+    o.colourOn = colourMode == 1 || (colourMode == 0 && io::isTty(1))
     if len(iconsValue) > 0 && !isWhenValue(iconsValue) {
         return err(noSetting("--icons", iconsValue, noStrings()), 22)
     }
     if iconsValue == "always" {
         return err(valueMessage("icons", "always"), 22)
+    }
+    // -L is only parsed when the tree action is active (eza's DirAction
+    // deduce); without -T an invalid level is silently ignored (probe).
+    if o.treeView && o.levelSeen {
+        let lv = levelValue(o.levelText)
+        match lv {
+            ok(v) { o.level = v }
+            err(m, c) {
+                var tail = "invalid digit found in string"
+                if c == 2 { tail = "number too large to fit in target type" }
+                if c == 3 { tail = "cannot parse integer from empty string" }
+                return err("Value \"" + debugText(o.levelText) + "\" not valid for option --level (-L): " + tail, 22)
+            }
+        }
     }
     if o.longView {
         // Restricted long: -l is only accepted with the explicit
@@ -530,19 +798,21 @@ fn deduce(options: &[]cli::Option): Result[Opts] {
 
 // ----------------------------------------------------------------- display
 
-fn quoteName(name: string): string {
-    return strings::quoteName(name, true)
+fn quoteName(name: string, quoteSpaces: bool): string {
+    return strings::quoteName(name, quoteSpaces)
 }
 
 // An input operand as eza paints it: the parent prefix escaped once with the
 // outer style, then the quoted last component. `.`, `..` and `/` are
 // themselves; the root parent emits a single separator (design 7.2).
-fn operandDisplay(p: string): string {
+// `--no-quotes` turns the outer style into QuoteStyle::NoQuotes but still
+// escapes control characters (quoteName(name, false) semantics).
+fn operandDisplay(p: string, quoteSpaces: bool): string {
     if p == "/" { return "/" }
     let name = paths::lastComponent(p)
     let parent = paths::parentOf(p)
-    if len(parent) == 0 { return quoteName(name) }
-    return strings::parentPrefix(parent, true) + quoteName(name)
+    if len(parent) == 0 { return quoteName(name, quoteSpaces) }
+    return strings::parentPrefix(parent, quoteSpaces) + quoteName(name, quoteSpaces)
 }
 
 fn newEntry(name: string, kind: byte, synthetic: byte): Entry {
@@ -601,9 +871,9 @@ fn entryExtKey(e: &Entry, operand: string): string {
 
 // Directory listing names only (no parent prefix); an operand shows its
 // parent prefix and name.
-fn displayName(v: &View, e: &Entry): string {
-    if v.single { return operandDisplay(v.operand) }
-    return quoteName(e.name)
+fn displayName(v: &View, e: &Entry, quoteSpaces: bool): string {
+    if v.single { return operandDisplay(v.operand, quoteSpaces) }
+    return quoteName(e.name, quoteSpaces)
 }
 
 fn entryPath(v: &View, e: &Entry): string {
@@ -702,6 +972,7 @@ fn isModifiedSort(f: string): bool {
 fn needStat(o: &Opts): bool {
     if o.longView { return true }
     if o.classifyAlways { return true }
+    if o.colourOn { return true }
     if isSizeSort(o.sortField) { return true }
     if isModifiedSort(o.sortField) { return true }
     return false
@@ -947,18 +1218,18 @@ fn negKeys(xs: &[]int): []int {
 // under -r (probe-confirmed: ties keep readdir order), then the directory
 // grouping is a final stable sort in either mode. Every helper keeps input
 // order for equal keys; the committed fixtures also avoid comparator ties.
-fn sortEntries(es: &[]Entry, v: &View, o: &Opts): []int {
+fn sortFieldOrder(es: &[]Entry, v: &View, o: &Opts, desc: bool): []int {
     let f = o.sortField
     var order = sort::identity(len(es))
     if f == "" || f == "name" || f == "filename" {
         let ks = nameKeys(es)
-        order = orderNaturalDir(ks, true, o.reverse)
+        order = orderNaturalDir(ks, true, desc)
     } else if f == "Name" || f == "Filename" {
         let ks = nameKeys(es)
-        order = orderNaturalDir(ks, false, o.reverse)
+        order = orderNaturalDir(ks, false, desc)
     } else if isSizeSort(f) {
         let ks = sizeKeys(es)
-        if o.reverse {
+        if desc {
             let nk = negKeys(ks)
             order = sort::sortOrderInts(&order, &nk)
         } else {
@@ -967,7 +1238,7 @@ fn sortEntries(es: &[]Entry, v: &View, o: &Opts): []int {
     } else if isModifiedSort(f) {
         let ns = nsecKeys(es)
         let sec = secKeys(es)
-        if o.reverse {
+        if desc {
             let nk = negKeys(ns)
             let sk = negKeys(sec)
             let o1 = sort::sortOrderInts(&order, &nk)
@@ -978,11 +1249,11 @@ fn sortEntries(es: &[]Entry, v: &View, o: &Opts): []int {
         }
     } else if f == "extension" || f == "ext" {
         let ks = nameKeys(es)
-        let pre = orderNaturalDir(ks, true, o.reverse)
+        let pre = orderNaturalDir(ks, true, desc)
         let ek = extKeys(es, v.operand)
         let hk = extHasKeys(es, v.operand)
-        let o1 = sortOrderStringsDir(&pre, &ek, o.reverse)
-        if o.reverse {
+        let o1 = sortOrderStringsDir(&pre, &ek, desc)
+        if desc {
             let nh = negKeys(hk)
             order = sort::sortOrderInts(&o1, &nh)
         } else {
@@ -990,11 +1261,11 @@ fn sortEntries(es: &[]Entry, v: &View, o: &Opts): []int {
         }
     } else if f == "Extension" || f == "Ext" {
         let ks = nameKeys(es)
-        let pre = orderNaturalDir(ks, false, o.reverse)
+        let pre = orderNaturalDir(ks, false, desc)
         let ek = extKeys(es, v.operand)
         let hk = extHasKeys(es, v.operand)
-        let o1 = sortOrderStringsDir(&pre, &ek, o.reverse)
-        if o.reverse {
+        let o1 = sortOrderStringsDir(&pre, &ek, desc)
+        if desc {
             let nh = negKeys(hk)
             order = sort::sortOrderInts(&o1, &nh)
         } else {
@@ -1002,21 +1273,40 @@ fn sortEntries(es: &[]Entry, v: &View, o: &Opts): []int {
         }
     } else {
         let ks = nameKeys(es)
-        let pre = orderNaturalDir(ks, false, o.reverse)
+        let pre = orderNaturalDir(ks, false, desc)
         let tk = typeKeys(es)
-        if o.reverse {
+        if desc {
             let rk = negKeys(tk)
             order = sort::sortOrderInts(&pre, &rk)
         } else {
             order = sort::sortOrderInts(&pre, &tk)
         }
     }
+    return order
+}
+
+// The stable dirs-first/last pass shared by both -r models.
+fn groupOrder(es: &[]Entry, o: &Opts, order: []int): []int {
     if o.groupFirst || o.groupLast {
         let gk = groupKeys(es, o)
-        let grouped = sort::sortOrderInts(&order, &gk)
-        order = grouped
+        return sort::sortOrderInts(&order, &gk)
     }
     return order
+}
+
+// Lines/long: eza compares descending in one stable pass, so comparator-equal
+// entries keep readdir order (P4's probe).
+fn sortEntries(es: &[]Entry, v: &View, o: &Opts): []int {
+    let order = sortFieldOrder(es, v, o, o.reverse)
+    return groupOrder(es, o, order)
+}
+
+// Tree: eza sorts once ascending, then reverses the vector when -r (which also
+// reverses ties), then applies the stable dirs-first/last pass.
+fn sortEntriesTree(es: &[]Entry, v: &View, o: &Opts): []int {
+    var order = sortFieldOrder(es, v, o, false)
+    if o.reverse { sort::reverse(order) }
+    return groupOrder(es, o, order)
 }
 
 // ----------------------------------------------------------------- output
@@ -1038,16 +1328,16 @@ fn markerFor(kind: byte, mode: int): string {
 // QuoteSpaces, then the followed-type marker under -F=always. A broken target
 // is the whole raw target escaped with the outer style and never marked; an
 // unreadable target has no arrow at all (the caller skips it).
-fn targetDisplay(e: &Entry, classify: bool): string {
+fn targetDisplay(e: &Entry, classify: bool, quoteSpaces: bool): string {
     if e.targetValid {
-        let prefix = strings::parentPrefix(paths::parentOf(e.targetRaw), true)
-        var s = prefix + quoteName(paths::lastComponent(e.targetRaw))
+        let prefix = strings::parentPrefix(paths::parentOf(e.targetRaw), quoteSpaces)
+        var s = prefix + quoteName(paths::lastComponent(e.targetRaw), true)
         if classify {
             s = s + markerFor(e.targetKind, e.targetMode)
         }
         return s
     }
-    return quoteName(e.targetRaw)
+    return quoteName(e.targetRaw, quoteSpaces)
 }
 
 fn appendStr(mut out: &[]byte, s: string) {
@@ -1120,11 +1410,73 @@ fn appendTargetAndMarker(e: &Entry, o: &Opts, mut out: &[]byte) {
     if int(e.kind) == int(fs::KIND_LNK) {
         if e.linkOk {
             appendStr(out, " -> ")
-            appendStr(out, targetDisplay(e, o.classifyAlways))
+            appendStr(out, targetDisplay(e, o.classifyAlways, !o.noQuotes))
         }
     } else if o.classifyAlways {
         appendStr(out, markerFor(e.kind, e.mode))
     }
+}
+
+// The restricted-long cells plus the separator before the name (the line
+// prefix). With every column suppressed the prefix is empty, so the caller
+// adds no space.
+fn appendLongCells(e: &Entry, o: &Opts, cols: &Cols, mut out: &[]byte) {
+    var first = true
+    if !o.noPermissions {
+        appendStr(out, fmt::modeString(e.mode))
+        first = false
+    }
+    if !o.noFilesize {
+        if !first { append(out, ' ') }
+        let c = sizeCell(e)
+        if c < 0 {
+            appendRightStr(out, "-", cols.sizeWidth)
+        } else {
+            appendRightInt(out, c, cols.sizeWidth)
+        }
+        first = false
+    }
+    if o.numeric && !o.noUser {
+        if !first { append(out, ' ') }
+        appendLeftStr(out, string(e.uid), cols.userWidth)
+        first = false
+    }
+    if !o.noTime {
+        if !first { append(out, ' ') }
+        var ds = "-"
+        if e.statOk && e.mtime >= 0 { ds = time::formatLongIso(e.mtime) }
+        appendLeftStr(out, ds, cols.dateWidth)
+        first = false
+    }
+    if !first { append(out, ' ') }
+}
+
+// The width of the long prefix (the table's total width), used to pad a tree
+// error row, which has no cells.
+fn longPrefixWidth(o: &Opts, cols: &Cols): int {
+    var w = 0
+    var first = true
+    if !o.noPermissions {
+        w += 10
+        first = false
+    }
+    if !o.noFilesize {
+        if !first { w += 1 }
+        w += cols.sizeWidth
+        first = false
+    }
+    if o.numeric && !o.noUser {
+        if !first { w += 1 }
+        w += cols.userWidth
+        first = false
+    }
+    if !o.noTime {
+        if !first { w += 1 }
+        w += cols.dateWidth
+        first = false
+    }
+    if !first { w += 1 }
+    return w
 }
 
 // One line in the current view: the restricted long cells (permissions, size,
@@ -1132,67 +1484,971 @@ fn appendTargetAndMarker(e: &Entry, o: &Opts, mut out: &[]byte) {
 // Suppressed columns and their separators disappear entirely; with every cell
 // suppressed the line is the name alone.
 fn renderLine(e: &Entry, v: &View, o: &Opts, cols: &Cols, mut out: &[]byte) {
-    if o.longView {
-        var first = true
-        if !o.noPermissions {
-            appendStr(out, fmt::modeString(e.mode))
-            first = false
-        }
-        if !o.noFilesize {
-            if !first { append(out, ' ') }
-            let c = sizeCell(e)
-            if c < 0 {
-                appendRightStr(out, "-", cols.sizeWidth)
-            } else {
-                appendRightInt(out, c, cols.sizeWidth)
+    let quoteSpaces = !o.noQuotes
+    if o.longView { appendLongCells(e, o, cols, out) }
+    appendStr(out, displayName(v, e, quoteSpaces))
+    appendTargetAndMarker(e, o, out)
+}
+
+// ------------------------------------------------------- colour: the theme
+
+// The pinned reference's default file-type palette (source
+// src/info/filetype.rs at v0.23.3): a lowercase extension category and a
+// small exact-filename table, plus readme* (Build), a trailing '~' and a
+// leading/trailing '#' (Temp). The compiled-source heuristic (a .o beside its
+// .c) is deliberately not implemented (documented E1 divergence); it needs a
+// directory listing the colour layer does not have. Tables are space
+// separated and checked with exact word comparison, so they can be consts.
+const EXT_BUILD = "ninja "
+const EXT_IMAGE = "arw avif bmp cbr cbz cr2 dvi eps fodg gif heic heif ico j2c j2k jfi jfif jif jp2 jpe jpeg jpf jpg jpx jxl kra krz nef odg orf pbm pgm png pnm ppm ps psd pxm qoi raw svg tif tiff webp xcf xpm "
+const EXT_VIDEO = "avi flv h264 heics m2ts m2v m4v mkv mov mp4 mpeg mpg ogm ogv video vob webm wmv "
+const EXT_MUSIC = "aac m4a mka mp2 mp3 ogg opus wma "
+const EXT_LOSSLESS = "aif aifc aiff alac ape flac pcm wav wv "
+const EXT_CRYPTO = "age asc cer crt csr gpg kbx md5 p12 pem pfx pgp pub sha1 sha224 sha256 sha384 sha512 sig signature "
+const EXT_DOCUMENT = "djvu doc docx eml fodp fods fodt fotd gdoc key keynote numbers odp ods odt pages pdf ppt pptx rtf xls xlsm xlsx "
+const EXT_COMPRESSED = "7z ar arj br bz bz2 bz3 cpio deb dmg gz iso lz lz4 lzh lzma lzo phar qcow qcow2 rar rpm tar taz tbz tbz2 tc tgz tlz txz tz vdi vhd vhdx vmdk xz z zip zst "
+const EXT_TEMP = "bak bk bkp crdownload download fcbak fcstd1 fdmdownload part swn swo swp tmp "
+const EXT_COMPILED = "a bundle class cma cmi cmo cmx dll dylib elc elf ko lib o obj pyc pyd pyo so zwc "
+const EXT_SOURCE = "applescript as asa awk c c++ c++m cabal cc ccm clj cp cpp cppm cr cs css csx cu cxx cxxm cypher d dart di dpr el elm erl ex exs f f90 fcmacro fcscript fnl for fs fsh fsi fsx gd go gradle groovy gvy h h++ hc hh hpp hs htc hxx inc inl ino ipynb ixx java jl js jsx kt kts kusto less lhs lisp ltx lua m malloy matlab ml mli mn nb p pas php pl pm pod pp prql ps1 psd1 psm1 purs py r rb rq rs sass scad scala scm scss sld sql ss swift tcl tex ts v vb vsh zig "
+const FN_BUILD = "BUILD BUILD.bazel Brewfile CMakeLists.txt Cargo.toml Containerfile Dockerfile Earthfile GNUmakefile Gemfile Gruntfile.coffee Gruntfile.js Justfile Makefile PKGBUILD Pipfile Podfile Procfile Rakefile RoboFile.php SConstruct Vagrantfile WORKSPACE bsconfig.json build.gradle build.sbt build.xml composer.json configure flake.nix jsconfig.json justfile makefile meson.build mix.exs package.json pom.xml pyproject.toml tsconfig.json webpack.config.cjs webpack.config.js "
+const FN_CRYPTO = "id_dsa id_ecdsa id_ecdsa_sk id_ed25519 id_ed25519_sk id_rsa "
+
+fn newStyle(): Style {
+    return new Style{fg: 0, fgA: 0, fgB: 0, fgC: 0, bg: 0, bgA: 0, bgB: 0,
+                     bgC: 0, bold: false, dim: false, italic: false,
+                     underline: false, blink: false, reverse: false,
+                     hidden: false, strike: false}
+}
+
+fn styleFg(code: int): Style {
+    var s = newStyle()
+    s.fg = 1
+    s.fgA = code
+    return s
+}
+
+fn styleFgBold(code: int): Style {
+    var s = styleFg(code)
+    s.bold = true
+    return s
+}
+
+fn styleFgUnder(code: int): Style {
+    var s = styleFg(code)
+    s.underline = true
+    return s
+}
+
+fn styleFgBoldUnder(code: int): Style {
+    var s = styleFgUnder(code)
+    s.bold = true
+    return s
+}
+
+fn styleFgBoldDim(): Style {
+    var s = newStyle()
+    s.dim = true
+    return s
+}
+
+fn stylePlain(s: &Style): bool {
+    if s.fg != 0 || s.bg != 0 { return false }
+    if s.bold || s.dim || s.italic || s.underline { return false }
+    if s.blink || s.reverse || s.hidden || s.strike { return false }
+    return true
+}
+
+// The default theme of eza 0.23.3 (src/theme/default_theme.rs). Slots not in
+// the E1 subset stay plain.
+fn newPalette(): Palette {
+    var st = new []Style(0)
+    var i = 0
+    while i < SC_SLOTS {
+        append(st, newStyle())
+        i += 1
+    }
+    st[SC_DIR] = styleFgBold(34)
+    st[SC_LNK] = styleFg(36)
+    st[SC_PIPE] = styleFg(33)
+    st[SC_BLOCK] = styleFgBold(33)
+    st[SC_CHAR] = styleFgBold(33)
+    st[SC_SOCK] = styleFgBold(31)
+    st[SC_SPECIAL] = styleFg(33)
+    st[SC_EXE] = styleFgBold(32)
+    st[SC_MOUNT] = styleFgBoldUnder(34)
+    st[SC_PUNCT] = styleFgBold(90)
+    st[SC_SYMLINK_PATH] = styleFg(36)
+    st[SC_CONTROL] = styleFg(31)
+    st[SC_BROKEN] = styleFg(31)
+    st[SC_BROKEN_FILE] = styleFgUnder(31)
+    st[SC_BROKEN_CONTROL] = styleFgUnder(31)
+    st[SC_IMAGE] = styleFg(35)
+    st[SC_VIDEO] = styleFgBold(35)
+    st[SC_MUSIC] = styleFg(36)
+    st[SC_LOSSLESS] = styleFgBold(36)
+    st[SC_CRYPTO] = styleFgBold(32)
+    st[SC_DOCUMENT] = styleFg(32)
+    st[SC_COMPRESSED] = styleFg(31)
+    st[SC_TEMP] = styleFgBoldDim()
+    st[SC_COMPILED] = styleFg(33)
+    st[SC_BUILD] = styleFgBoldUnder(33)
+    st[SC_SOURCE] = styleFgBold(33)
+    return new Palette{styles: st, patterns: new []ExtPat(0),
+                       useDefaultTypes: true}
+}
+
+// Exact word membership in a space-separated const table.
+fn wordSpanEq(table: string, st: int, en: int, w: string): bool {
+    if en - st != len(w) { return false }
+    var i = 0
+    while i < len(w) {
+        if table[st + i] != w[i] { return false }
+        i += 1
+    }
+    return true
+}
+
+fn wordIn(table: string, w: string): bool {
+    if len(w) == 0 { return false }
+    var i = 0
+    while i < len(table) {
+        while i < len(table) && table[i] == ' ' { i += 1 }
+        var st = i
+        while i < len(table) && table[i] != ' ' { i += 1 }
+        if i > st && wordSpanEq(table, st, i, w) { return true }
+    }
+    return false
+}
+
+// The lowercase bytes after the name's last '.', or "" when there is no dot.
+fn lowerExt(name: string): string {
+    let dot = lastDot(name)
+    if dot < 0 { return "" }
+    return strings::lowerAscii(substr(name, dot + 1, len(name)))
+}
+
+// FileType::get_file_type for the E1 subset (readme*, filename table,
+// lowercase extension table, temp suffixes; no compiled-source heuristic).
+fn fileCategory(name: string, p: &Palette): int {
+    if !p.useDefaultTypes { return 0 }
+    let low = strings::lowerAscii(name)
+    if strings::startsWith(low, "readme") { return SC_BUILD }
+    if wordIn(FN_BUILD, name) { return SC_BUILD }
+    if wordIn(FN_CRYPTO, name) { return SC_CRYPTO }
+    let ext = lowerExt(name)
+    if len(ext) > 0 {
+        if wordIn(EXT_IMAGE, ext) { return SC_IMAGE }
+        if wordIn(EXT_VIDEO, ext) { return SC_VIDEO }
+        if wordIn(EXT_MUSIC, ext) { return SC_MUSIC }
+        if wordIn(EXT_LOSSLESS, ext) { return SC_LOSSLESS }
+        if wordIn(EXT_CRYPTO, ext) { return SC_CRYPTO }
+        if wordIn(EXT_DOCUMENT, ext) { return SC_DOCUMENT }
+        if wordIn(EXT_COMPRESSED, ext) { return SC_COMPRESSED }
+        if wordIn(EXT_TEMP, ext) { return SC_TEMP }
+        if wordIn(EXT_COMPILED, ext) { return SC_COMPILED }
+        if wordIn(EXT_BUILD, ext) { return SC_BUILD }
+        if wordIn(EXT_SOURCE, ext) { return SC_SOURCE }
+    }
+    if strings::endsWith(name, "~") { return SC_TEMP }
+    if len(name) > 0 && name[0] == '#' && name[len(name) - 1] == '#' {
+        return SC_TEMP
+    }
+    return 0
+}
+
+// The last matching `*.` mapping (the reference walks its mappings backwards:
+// a later LS_COLORS/EZA_COLORS pair overrides an earlier one). kind 0 is a
+// simple extension key; kind 1 is a literal suffix containing a dot.
+fn patternIndex(name: string, p: &Palette): int {
+    var i = len(p.patterns) - 1
+    while i >= 0 {
+        let pat = &p.patterns[i]
+        if pat.kind == 0 {
+            let dot = lastDot(name)
+            if dot >= 0 && substr(name, dot + 1, len(name)) == pat.key {
+                return i
             }
-            first = false
+        } else {
+            let k = pat.key
+            if len(name) > len(k) && name[len(name) - len(k) - 1] == '.' &&
+                    strings::endsWith(name, k) {
+                return i
+            }
         }
-        if o.numeric && !o.noUser {
-            if !first { append(out, ' ') }
-            appendLeftStr(out, string(e.uid), cols.userWidth)
-            first = false
+        i -= 1
+    }
+    return -1
+}
+
+// ------------------------------------------------- colour: LS_COLORS parsing
+
+fn firstEqFrom(s: string, from: int): int {
+    var i = from
+    while i < len(s) {
+        if s[i] == '=' { return i }
+        i += 1
+    }
+    return -1
+}
+
+// eza's LSColors::each_pair: split on ':', then split('=').take(3); only a
+// token with exactly one '=' and both sides non-empty is a pair.
+fn isPairToken(tok: string): bool {
+    let e = firstEqFrom(tok, 0)
+    if e <= 0 || e + 1 >= len(tok) { return false }
+    var i = e + 1
+    while i < len(tok) {
+        if tok[i] == '=' { return false }
+        i += 1
+    }
+    return true
+}
+
+fn pairKey(tok: string): string {
+    let e = firstEqFrom(tok, 0)
+    return substr(tok, 0, e)
+}
+
+fn pairValue(tok: string): string {
+    let e = firstEqFrom(tok, 0)
+    return substr(tok, e + 1, len(tok))
+}
+
+// trim_start_matches('0'): the string after its leading zeros ("" for a
+// token made only of zeros).
+fn trimZeros(t: string): string {
+    var i = 0
+    while i < len(t) && t[i] == '0' { i += 1 }
+    return substr(t, i, len(t))
+}
+
+// Rust u8::from_str, roughly: an optional '+', decimal digits, value <= 255.
+// -1 on failure.
+fn parseU8(t: string): int {
+    var i = 0
+    if i < len(t) && t[i] == '+' { i += 1 }
+    if i >= len(t) { return -1 }
+    var v = 0
+    while i < len(t) {
+        if t[i] < '0' || t[i] > '9' { return -1 }
+        v = v * 10 + (int(t[i]) - 48)
+        if v > 255 { return -1 }
+        i += 1
+    }
+    return v
+}
+
+// The colour-kind setters clear the unused components, so a later SGR token
+// that changes the kind cannot leave stale RGB bytes behind (the reference's
+// Colour enum has no such fields). Used by Pair::to_style and highColour.
+fn setFgBasic(mut s: &Style, code: int) {
+    s.fg = 1
+    s.fgA = code
+    s.fgB = 0
+    s.fgC = 0
+}
+
+fn setBgBasic(mut s: &Style, code: int) {
+    s.bg = 1
+    s.bgA = code
+    s.bgB = 0
+    s.bgC = 0
+}
+
+fn setFgFixed(mut s: &Style, n: int) {
+    s.fg = 2
+    s.fgA = n
+    s.fgB = 0
+    s.fgC = 0
+}
+
+fn setBgFixed(mut s: &Style, n: int) {
+    s.bg = 2
+    s.bgA = n
+    s.bgB = 0
+    s.bgC = 0
+}
+
+fn setFgRgb(mut s: &Style, r: int, g: int, b: int) {
+    s.fg = 3
+    s.fgA = r
+    s.fgB = g
+    s.fgC = b
+}
+
+fn setBgRgb(mut s: &Style, r: int, g: int, b: int) {
+    s.bg = 3
+    s.bgA = r
+    s.bgB = g
+    s.bgC = b
+}
+
+// The `38`/`48` extended-colour parser of the reference Pair::to_style:
+// "5;n" selects a fixed colour, "2;r;g;b" an RGB one; it returns the index of
+// the last token consumed. The mode token is matched raw (not zero-trimmed).
+fn highColour(mut s: &Style, parts: &[]string, i: int, isFg: bool): int {
+    var last = i
+    if i + 1 < len(parts) && parts[i + 1] == "5" {
+        last = i + 1
+        if i + 2 < len(parts) {
+            last = i + 2
+            let n = parseU8(parts[i + 2])
+            if n >= 0 {
+                if isFg { setFgFixed(s, n) } else { setBgFixed(s, n) }
+            }
         }
-        if !o.noTime {
-            if !first { append(out, ' ') }
-            var ds = "-"
-            if e.statOk && e.mtime >= 0 { ds = time::formatLongIso(e.mtime) }
-            appendLeftStr(out, ds, cols.dateWidth)
-            first = false
+    } else if i + 1 < len(parts) && parts[i + 1] == "2" {
+        last = i + 1
+        if i + 2 < len(parts) {
+            last = i + 2
+            let r = parseU8(parts[i + 2])
+            if i + 3 < len(parts) {
+                last = i + 3
+                let g = parseU8(parts[i + 3])
+                if i + 4 < len(parts) {
+                    last = i + 4
+                    let b = parseU8(parts[i + 4])
+                    if r >= 0 && g >= 0 && b >= 0 {
+                        if isFg { setFgRgb(s, r, g, b) } else { setBgRgb(s, r, g, b) }
+                    }
+                }
+            }
         }
-        if !first { append(out, ' ') }
-        appendStr(out, displayName(v, e))
-        appendTargetAndMarker(e, o, out)
+    }
+    return last
+}
+
+// Pair::to_style: split the value on ';', zero-trim each token, apply the
+// recognised SGR numbers and ignore everything else. Unknown numbers and
+// invalid extended-colour parameters leave the style unchanged (so a value
+// such as "bogus" parses to the empty style, which still overrides the
+// default slot).
+fn parsePairStyle(value: string): Style {
+    var s = newStyle()
+    let sp = strings::splitByte(value, ';')
+    match sp {
+        ok {
+            let parts = &sp.value
+            var i = 0
+            while i < len(parts) {
+                let t = trimZeros(parts[i])
+                if t == "1" {
+                    s.bold = true
+                } else if t == "2" {
+                    s.dim = true
+                } else if t == "3" {
+                    s.italic = true
+                } else if t == "4" {
+                    s.underline = true
+                } else if t == "5" {
+                    s.blink = true
+                } else if t == "7" {
+                    s.reverse = true
+                } else if t == "8" {
+                    s.hidden = true
+                } else if t == "9" {
+                    s.strike = true
+                } else if t == "30" {
+                    setFgBasic(s, 30)
+                } else if t == "31" {
+                    setFgBasic(s, 31)
+                } else if t == "32" {
+                    setFgBasic(s, 32)
+                } else if t == "33" {
+                    setFgBasic(s, 33)
+                } else if t == "34" {
+                    setFgBasic(s, 34)
+                } else if t == "35" {
+                    setFgBasic(s, 35)
+                } else if t == "36" {
+                    setFgBasic(s, 36)
+                } else if t == "37" {
+                    setFgBasic(s, 37)
+                } else if t == "90" {
+                    setFgBasic(s, 90)
+                } else if t == "91" {
+                    setFgBasic(s, 91)
+                } else if t == "92" {
+                    setFgBasic(s, 92)
+                } else if t == "93" {
+                    setFgBasic(s, 93)
+                } else if t == "94" {
+                    setFgBasic(s, 94)
+                } else if t == "95" {
+                    setFgBasic(s, 95)
+                } else if t == "96" {
+                    setFgBasic(s, 96)
+                } else if t == "97" {
+                    setFgBasic(s, 97)
+                } else if t == "38" {
+                    i = highColour(s, parts, i, true)
+                } else if t == "40" {
+                    setBgBasic(s, 40)
+                } else if t == "41" {
+                    setBgBasic(s, 41)
+                } else if t == "42" {
+                    setBgBasic(s, 42)
+                } else if t == "43" {
+                    setBgBasic(s, 43)
+                } else if t == "44" {
+                    setBgBasic(s, 44)
+                } else if t == "45" {
+                    setBgBasic(s, 45)
+                } else if t == "46" {
+                    setBgBasic(s, 46)
+                } else if t == "47" {
+                    setBgBasic(s, 47)
+                } else if t == "100" {
+                    setBgBasic(s, 100)
+                } else if t == "101" {
+                    setBgBasic(s, 101)
+                } else if t == "102" {
+                    setBgBasic(s, 102)
+                } else if t == "103" {
+                    setBgBasic(s, 103)
+                } else if t == "104" {
+                    setBgBasic(s, 104)
+                } else if t == "105" {
+                    setBgBasic(s, 105)
+                } else if t == "106" {
+                    setBgBasic(s, 106)
+                } else if t == "107" {
+                    setBgBasic(s, 107)
+                } else if t == "48" {
+                    i = highColour(s, parts, i, false)
+                }
+                i += 1
+            }
+        }
+        err { }
+    }
+    return s
+}
+
+// True for the characters that make a `*.` key a real glob in the reference.
+// Those advanced keys are out of E1 and are ignored; a dot alone is supported
+// as the literal-suffix form ("*.tar.gz").
+fn hasGlobChars(t: string): bool {
+    for i in 0..len(t) {
+        let b = t[i]
+        if b == '?' || b == '*' || b == '[' || b == ']' { return true }
+    }
+    return false
+}
+
+fn hasDot(t: string): bool {
+    for i in 0..len(t) {
+        if t[i] == '.' { return true }
+    }
+    return false
+}
+
+// One (key, value) pair. The E1 subset is di, ln, ex, fi and `*.EXT`;
+// everything else (pi/so/bd/cd/or, the EZA_COLORS UI codes, unknown keys and
+// real glob patterns) is ignored. The reference treats an unknown LS_COLORS
+// key as a filename glob; no E1 test file is named like one, and this is a
+// documented divergence.
+fn applyColourPair(mut p: &Palette, tok: string) {
+    if !isPairToken(tok) { return }
+    let key = pairKey(tok)
+    let value = pairValue(tok)
+    if key == "di" {
+        p.styles[SC_DIR] = parsePairStyle(value)
+    } else if key == "ln" {
+        p.styles[SC_LNK] = parsePairStyle(value)
+    } else if key == "ex" {
+        p.styles[SC_EXE] = parsePairStyle(value)
+    } else if key == "fi" {
+        p.styles[SC_NORMAL] = parsePairStyle(value)
+    } else if strings::startsWith(key, "*.") {
+        let rest = substr(key, 2, len(key))
+        if hasGlobChars(rest) { return }
+        var kind = 0
+        if hasDot(rest) { kind = 1 }
+        append(p.patterns, new ExtPat{kind: kind, key: rest,
+                                      style: parsePairStyle(value)})
+    }
+}
+
+fn parseColourVar(mut p: &Palette, s: string) {
+    let sp = strings::splitByte(s, ':')
+    match sp {
+        ok {
+            let parts = &sp.value
+            var i = 0
+            while i < len(parts) {
+                applyColourPair(p, parts[i])
+                i += 1
+            }
+        }
+        err { }
+    }
+}
+
+// LS_COLORS first, then EZA_COLORS (or EXA_COLORS when EZA_COLORS is absent;
+// present-empty still wins). A leading "reset" or "reset:" in the EZA string
+// turns off the default file-type palette. Only called when colour is on.
+fn parseColourEnv(mut p: &Palette) {
+    if env::has("LS_COLORS") {
+        parseColourVar(p, env::value("LS_COLORS"))
+    }
+    var haveExa = false
+    var exa = ""
+    if env::has("EZA_COLORS") {
+        exa = env::value("EZA_COLORS")
+        haveExa = true
+    } else if env::has("EXA_COLORS") {
+        exa = env::value("EXA_COLORS")
+        haveExa = true
+    }
+    if haveExa {
+        if exa == "reset" || strings::startsWith(exa, "reset:") {
+            p.useDefaultTypes = false
+        }
+        parseColourVar(p, exa)
+    }
+}
+
+// ------------------------------------------------------ colour: line pieces
+
+fn addStyleBit(mut bits: &[]Bit, s: &Style, text: string) {
+    append(bits, new Bit{fg: s.fg, fgA: s.fgA, fgB: s.fgB, fgC: s.fgC,
+                         bg: s.bg, bgA: s.bgA, bgB: s.bgB, bgC: s.bgC,
+                         bold: s.bold, dim: s.dim, italic: s.italic,
+                         underline: s.underline, blink: s.blink,
+                         reverse: s.reverse, hidden: s.hidden,
+                         strike: s.strike, text: text})
+}
+
+fn addPlainBit(mut bits: &[]Bit, text: string) {
+    var s = newStyle()
+    addStyleBit(bits, s, text)
+}
+
+fn copyStyle(s: &Style): Style {
+    return new Style{fg: s.fg, fgA: s.fgA, fgB: s.fgB, fgC: s.fgC,
+                     bg: s.bg, bgA: s.bgA, bgB: s.bgB, bgC: s.bgC,
+                     bold: s.bold, dim: s.dim, italic: s.italic,
+                     underline: s.underline, blink: s.blink,
+                     reverse: s.reverse, hidden: s.hidden, strike: s.strike}
+}
+
+fn addPalBit(mut bits: &[]Bit, p: &Palette, code: int, text: string) {
+    var s = copyStyle(&p.styles[code])
+    addStyleBit(bits, s, text)
+}
+
+fn hexDigit(v: int): byte {
+    if v < 10 { return byte(48 + v) }
+    return byte(87 + v)
+}
+
+// The QuoteSpaces escape text for one control byte: \t, \n, \r, else
+// \u{h} with lowercase hex and no leading zeros (strings::quoteName's rule).
+fn appendControlEscape(mut out: &[]byte, b: byte) {
+    append(out, '\\')
+    if b == '\t' {
+        append(out, 't')
+    } else if b == '\n' {
+        append(out, 'n')
+    } else if b == '\r' {
+        append(out, 'r')
     } else {
-        appendStr(out, displayName(v, e))
-        appendTargetAndMarker(e, o, out)
+        append(out, 'u')
+        append(out, '{')
+        let v = int(b)
+        if v >= 16 { append(out, hexDigit(v / 16)) }
+        append(out, hexDigit(v % 16))
+        append(out, '}')
+    }
+}
+
+fn printableByte(b: byte): bool {
+    return b >= ' ' && b != 127
+}
+
+// The reference's output/escape.rs: quote the whole text when the quote style
+// asks for it, and paint controls with the bad style. Adjacent pieces with the
+// same style render with no escape between them, so grouping a run of
+// printable bytes (or a run of controls) into one bit is byte-identical to the
+// reference's per-character bits.
+fn addEscapedBits(mut bits: &[]Bit, good: &Style, bad: &Style, s: string,
+                  quoteSpaces: bool) {
+    var needs = false
+    var hasSingle = false
+    for i in 0..len(s) {
+        if s[i] == ' ' || s[i] == '\'' { needs = true }
+        if s[i] == '\'' { hasSingle = true }
+    }
+    var quote = false
+    var q: byte = '\''
+    if quoteSpaces && needs {
+        quote = true
+        if hasSingle { q = '"' }
+    }
+    if quote {
+        if q == '\'' { addStyleBit(bits, good, "'") } else { addStyleBit(bits, good, "\"") }
+    }
+    var i = 0
+    while i < len(s) {
+        if printableByte(s[i]) {
+            let st = i
+            while i < len(s) && printableByte(s[i]) { i += 1 }
+            addStyleBit(bits, good, substr(s, st, i))
+        } else {
+            var txt = new []byte(0)
+            while i < len(s) && !printableByte(s[i]) {
+                appendControlEscape(txt, s[i])
+                i += 1
+            }
+            let text = strings::fromBytes(txt)
+            addStyleBit(bits, bad, text)
+        }
+    }
+    if quote {
+        if q == '\'' { addStyleBit(bits, good, "'") } else { addStyleBit(bits, good, "\"") }
+    }
+}
+
+fn addPalEscaped(mut bits: &[]Bit, p: &Palette, code: int, badCode: int,
+                 text: string, quoteSpaces: bool) {
+    var g = copyStyle(&p.styles[code])
+    var b = copyStyle(&p.styles[badCode])
+    addEscapedBits(bits, g, b, text, quoteSpaces)
+}
+
+// The parent prefix of an operand or a symlink target: the whole parent is
+// escaped once with the outer quote style and followed by a single separator.
+// The root parent is exactly "/" (parentPrefix's root branch).
+fn addParentBits(mut bits: &[]Bit, p: &Palette, parent: string,
+                 quoteSpaces: bool) {
+    if len(parent) == 0 { return }
+    if parent == "/" {
+        addPalBit(bits, p, SC_SYMLINK_PATH, "/")
+        return
+    }
+    addPalEscaped(bits, p, SC_SYMLINK_PATH, SC_CONTROL, parent, quoteSpaces)
+    addPalBit(bits, p, SC_SYMLINK_PATH, "/")
+}
+
+// The style slot for a file kind, in the reference's File::style order:
+// directory, executable regular, symlink, FIFO, block, char, socket, special.
+// Regular files that are not executable go through colour_file (patterns,
+// then the default file-type palette, then `fi`), handled by the caller.
+fn kindSlot(kind: byte, mode: int): int {
+    if int(kind) == int(fs::KIND_DIR) { return SC_DIR }
+    if int(kind) == int(fs::KIND_REG) { return SC_EXE }
+    if int(kind) == int(fs::KIND_LNK) { return SC_LNK }
+    if int(kind) == int(fs::KIND_FIFO) { return SC_PIPE }
+    if int(kind) == int(fs::KIND_BLK) { return SC_BLOCK }
+    if int(kind) == int(fs::KIND_CHR) { return SC_CHAR }
+    if int(kind) == int(fs::KIND_SOCK) { return SC_SOCK }
+    return SC_SPECIAL
+}
+
+// The name bits for one file: the reference's FileName::style plus
+// escaped_file_name. `name` is the File name (the entry name, the operand's
+// last component, or the target's last component).
+fn addEntryNameBits(mut bits: &[]Bit, p: &Palette, kind: byte, mode: int,
+                    name: string, quoteSpaces: bool) {
+    if int(kind) == int(fs::KIND_REG) {
+        if mode & 0x040 != 0 {
+            addPalEscaped(bits, p, SC_EXE, SC_CONTROL, name, quoteSpaces)
+            return
+        }
+        let idx = patternIndex(name, p)
+        if idx >= 0 {
+            var g = copyStyle(&p.patterns[idx].style)
+            var b = copyStyle(&p.styles[SC_CONTROL])
+            addEscapedBits(bits, g, b, name, quoteSpaces)
+            return
+        }
+        let cat = fileCategory(name, p)
+        addPalEscaped(bits, p, cat, SC_CONTROL, name, quoteSpaces)
+        return
+    }
+    let code = kindSlot(kind, mode)
+    addPalEscaped(bits, p, code, SC_CONTROL, name, quoteSpaces)
+}
+
+// The name (and operand parent prefix) of the current entry.
+fn addNameBits(mut bits: &[]Bit, p: &Palette, e: &Entry, v: &View,
+               o: &Opts) {
+    let quoteSpaces = !o.noQuotes
+    if v.single {
+        addParentBits(bits, p, paths::parentOf(v.operand), quoteSpaces)
+        addEntryNameBits(bits, p, e.kind, e.mode,
+                         paths::lastComponent(v.operand), quoteSpaces)
+    } else {
+        addEntryNameBits(bits, p, e.kind, e.mode, e.name, quoteSpaces)
+    }
+}
+
+// The arrow/target/marker bits of the lines, long and tree views. A valid
+// target is painted by the followed target's kind/extension; a broken target
+// is the whole raw path in broken_symlink + underline. Target names always use
+// QuoteSpaces, and the target parent prefix uses the outer quote style.
+fn addTargetAndMarkerBits(mut bits: &[]Bit, e: &Entry, o: &Opts,
+                          p: &Palette) {
+    let outer = !o.noQuotes
+    if int(e.kind) == int(fs::KIND_LNK) {
+        if e.linkOk {
+            addPlainBit(bits, " ")
+            if e.targetValid {
+                addPalBit(bits, p, SC_PUNCT, "->")
+            } else {
+                addPalBit(bits, p, SC_BROKEN, "->")
+            }
+            addPlainBit(bits, " ")
+            if e.targetValid {
+                addParentBits(bits, p, paths::parentOf(e.targetRaw), outer)
+                let tname = paths::lastComponent(e.targetRaw)
+                if len(tname) > 0 {
+                    addEntryNameBits(bits, p, e.targetKind, e.targetMode,
+                                     tname, true)
+                    if o.classifyAlways {
+                        let m = markerFor(e.targetKind, e.targetMode)
+                        if len(m) > 0 { addPlainBit(bits, m) }
+                    }
+                }
+            } else {
+                addPalEscaped(bits, p, SC_BROKEN_FILE, SC_BROKEN_CONTROL,
+                              e.targetRaw, outer)
+            }
+        }
+    } else if o.classifyAlways {
+        let m = markerFor(e.kind, e.mode)
+        if len(m) > 0 { addPlainBit(bits, m) }
+    }
+}
+
+// ------------------------------------------------ colour: prefix and diffing
+
+fn appendReset(mut out: &[]byte) {
+    append(out, byte(27))
+    append(out, '[')
+    append(out, '0')
+    append(out, 'm')
+}
+
+fn appendStylePrefix(mut out: &[]byte, s: &Style) {
+    if stylePlain(s) { return }
+    append(out, byte(27))
+    append(out, '[')
+    var sep = false
+    if s.bold { if sep { append(out, ';') }; append(out, '1'); sep = true }
+    if s.dim { if sep { append(out, ';') }; append(out, '2'); sep = true }
+    if s.italic { if sep { append(out, ';') }; append(out, '3'); sep = true }
+    if s.underline { if sep { append(out, ';') }; append(out, '4'); sep = true }
+    if s.blink { if sep { append(out, ';') }; append(out, '5'); sep = true }
+    if s.reverse { if sep { append(out, ';') }; append(out, '7'); sep = true }
+    if s.hidden { if sep { append(out, ';') }; append(out, '8'); sep = true }
+    if s.strike { if sep { append(out, ';') }; append(out, '9'); sep = true }
+    // nu-ansi-term writes the background before the foreground.
+    if s.bg != 0 {
+        if sep { append(out, ';') }
+        if s.bg == 1 {
+            appendStr(out, string(s.bgA))
+        } else if s.bg == 2 {
+            appendStr(out, "48;5;")
+            appendStr(out, string(s.bgA))
+        } else {
+            appendStr(out, "48;2;")
+            appendStr(out, string(s.bgA))
+            append(out, ';')
+            appendStr(out, string(s.bgB))
+            append(out, ';')
+            appendStr(out, string(s.bgC))
+        }
+        sep = true
+    }
+    if s.fg != 0 {
+        if sep { append(out, ';') }
+        if s.fg == 1 {
+            appendStr(out, string(s.fgA))
+        } else if s.fg == 2 {
+            appendStr(out, "38;5;")
+            appendStr(out, string(s.fgA))
+        } else {
+            appendStr(out, "38;2;")
+            appendStr(out, string(s.fgA))
+            append(out, ';')
+            appendStr(out, string(s.fgB))
+            append(out, ';')
+            appendStr(out, string(s.fgC))
+        }
+    }
+    append(out, 'm')
+}
+
+fn bitStyle(b: &Bit): Style {
+    return new Style{fg: b.fg, fgA: b.fgA, fgB: b.fgB, fgC: b.fgC,
+                     bg: b.bg, bgA: b.bgA, bgB: b.bgB, bgC: b.bgC,
+                     bold: b.bold, dim: b.dim, italic: b.italic,
+                     underline: b.underline, blink: b.blink,
+                     reverse: b.reverse, hidden: b.hidden, strike: b.strike}
+}
+
+fn bitPlain(b: &Bit): bool {
+    if b.fg != 0 || b.bg != 0 { return false }
+    if b.bold || b.dim || b.italic || b.underline { return false }
+    if b.blink || b.reverse || b.hidden || b.strike { return false }
+    return true
+}
+
+fn bitsEqual(a: &Bit, b: &Bit): bool {
+    if a.fg != b.fg || a.fgA != b.fgA || a.fgB != b.fgB || a.fgC != b.fgC {
+        return false
+    }
+    if a.bg != b.bg || a.bgA != b.bgA || a.bgB != b.bgB || a.bgC != b.bgC {
+        return false
+    }
+    if a.bold != b.bold || a.dim != b.dim || a.italic != b.italic { return false }
+    if a.underline != b.underline || a.blink != b.blink { return false }
+    if a.reverse != b.reverse || a.hidden != b.hidden || a.strike != b.strike {
+        return false
+    }
+    return true
+}
+
+// Difference::Reset: the next style cannot be reached from the previous one
+// without clearing it (an attribute or colour is being removed).
+fn bitsReset(a: &Bit, b: &Bit): bool {
+    if a.bold && !b.bold { return true }
+    if a.dim && !b.dim { return true }
+    if a.italic && !b.italic { return true }
+    if a.underline && !b.underline { return true }
+    if a.blink && !b.blink { return true }
+    if a.reverse && !b.reverse { return true }
+    if a.hidden && !b.hidden { return true }
+    if a.strike && !b.strike { return true }
+    if a.fg != 0 && b.fg == 0 { return true }
+    if a.bg != 0 && b.bg == 0 { return true }
+    return false
+}
+
+// Difference::ExtraStyles: the attributes/colours the next style adds.
+fn bitsExtra(a: &Bit, b: &Bit): Style {
+    var s = newStyle()
+    s.bold = b.bold != a.bold
+    s.dim = b.dim != a.dim
+    s.italic = b.italic != a.italic
+    s.underline = b.underline != a.underline
+    s.blink = b.blink != a.blink
+    s.reverse = b.reverse != a.reverse
+    s.hidden = b.hidden != a.hidden
+    s.strike = b.strike != a.strike
+    if a.fg != b.fg || a.fgA != b.fgA || a.fgB != b.fgB || a.fgC != b.fgC {
+        s.fg = b.fg
+        s.fgA = b.fgA
+        s.fgB = b.fgB
+        s.fgC = b.fgC
+    }
+    if a.bg != b.bg || a.bgA != b.bgA || a.bgB != b.bgB || a.bgC != b.bgC {
+        s.bg = b.bg
+        s.bgA = b.bgA
+        s.bgB = b.bgB
+        s.bgC = b.bgC
+    }
+    return s
+}
+
+// nu-ansi-term 0.50.1 AnsiStrings::write_to_any: the first prefix, then the
+// minimal difference before each next bit, then one final reset when the last
+// bit is styled.
+fn emitBitsInto(bits: &[]Bit, mut out: &[]byte) {
+    if len(bits) == 0 { return }
+    let s0 = bitStyle(bits[0])
+    appendStylePrefix(out, s0)
+    appendStr(out, bits[0].text)
+    var i = 1
+    while i < len(bits) {
+        if !bitsEqual(bits[i - 1], bits[i]) {
+            if bitsReset(bits[i - 1], bits[i]) {
+                appendReset(out)
+                let sn = bitStyle(bits[i])
+                appendStylePrefix(out, sn)
+            } else {
+                let ex = bitsExtra(bits[i - 1], bits[i])
+                appendStylePrefix(out, ex)
+            }
+        }
+        appendStr(out, bits[i].text)
+        i += 1
+    }
+    if !bitPlain(bits[len(bits) - 1]) { appendReset(out) }
+}
+
+// The coloured form of renderLine: the long cells are one plain bit (long
+// column colour is deliberately deferred; see cmd/README), then the styled
+// name and link target. Layout is built first, so ANSI bytes never count in a
+// width.
+fn renderLineColour(e: &Entry, v: &View, o: &Opts, cols: &Cols, p: &Palette,
+                    mut out: &[]byte) {
+    var bits = new []Bit(0)
+    if o.longView {
+        var lp = new []byte(0)
+        appendLongCells(e, o, cols, lp)
+        addPlainBit(bits, strings::fromBytes(lp))
+    }
+    addNameBits(bits, p, e, v, o)
+    addTargetAndMarkerBits(bits, e, o, p)
+    emitBitsInto(bits, out)
+}
+
+fn renderLineAny(e: &Entry, v: &View, o: &Opts, cols: &Cols, p: &Palette,
+                 mut out: &[]byte) {
+    if o.colourOn {
+        renderLineColour(e, v, o, cols, p, out)
+    } else {
+        renderLine(e, v, o, cols, out)
     }
 }
 
 // Write one rendered line per order id through a buffered Writer. A write or
 // flush failure is returned with its errno; the caller prints eza's bare os
 // error and exits 1.
-fn emitEntries(es: &[]Entry, order: &[]int, v: &View, o: &Opts, cols: &Cols): Result[bool] {
+// Write one line (bytes plus newline) through a buffered Writer.
+fn writeLine(mut w: &io::Writer, line: &[]byte): Result[bool] {
+    let r = io::writeBytes(w, line)
+    match r {
+        ok { }
+        err { return err(r.message, r.code) }
+    }
+    let n = io::writeByte(w, byte(10))
+    match n {
+        ok { }
+        err { return err(n.message, n.code) }
+    }
+    return ok(true)
+}
+
+fn flushWriter(mut w: &io::Writer): Result[bool] {
+    let f = io::flush(w)
+    match f {
+        ok { }
+        err { return err(f.message, f.code) }
+    }
+    return ok(true)
+}
+
+fn emitEntries(es: &[]Entry, order: &[]int, v: &View, o: &Opts, cols: &Cols,
+               p: &Palette): Result[bool] {
     var w = io::newWriter(stdout(), 65536)
     var out = new []byte(0)
     var i = 0
     while i < len(order) {
         let id = order[i]
         truncate(out, 0)
-        renderLine(es[id], v, o, cols, out)
-        let r = io::writeBytes(w, out)
+        renderLineAny(es[id], v, o, cols, p, out)
+        let r = writeLine(w, out)
         match r {
             ok { }
             err { return err(r.message, r.code) }
         }
-        let n = io::writeByte(w, byte(10))
-        match n {
-            ok { }
-            err { return err(n.message, n.code) }
-        }
         i += 1
     }
-    let f = io::flush(w)
+    let f = flushWriter(w)
     match f {
         ok { }
         err { return err(f.message, f.code) }
@@ -1219,6 +2475,344 @@ fn prepareEntries(mut es: &[]Entry, v: &View, o: &Opts) {
     }
 }
 
+// ---------------------------------------------------------------- tree view
+//
+// The reference's tree is the details view with a tree prefix; it walks each
+// directory depth-first and applies the hidden/-A, -D/-f, sort and long rules
+// at every level. This build uses an explicit frame stack rather than
+// recursion: a directory is read, filtered, sorted and closed before its first
+// child is printed, so no descriptor stays open across levels and memory is
+// bounded by one directory's entries per open level. Empty directories print
+// their line only; an unreadable directory prints a styled
+// "<Permission denied (os error 13)>" child and continues. Symlink entries are
+// never descended (--follow-symlinks is out of scope), and -L bounds descent
+// with eza's rule: descend only while max > depth (max 0 prints the root
+// alone).
+
+fn treeKeep(kind: byte, o: &Opts): bool {
+    if o.onlyDirs && !o.onlyFiles {
+        return int(kind) == int(fs::KIND_DIR)
+    }
+    // The reference's filter_child_files in recursion keeps everything for
+    // --only-files (and for the both-flags fall-through); only -D alone
+    // restricts a tree level.
+    return true
+}
+
+fn readTreeEntries(mut d: &fs::Dir, mut es: &[]Entry, o: &Opts): Result[bool] {
+    var e = new fs::DirEntry{name: "", ino: 0, kind: 0}
+    var more = true
+    while more {
+        more = try fs::next(d, e)
+        if more {
+            var keep = true
+            if hiddenName(e.name) && !hiddenEnabled(o) { keep = false }
+            if keep && !treeKeep(e.kind, o) { keep = false }
+            if keep {
+                append(es, newEntry(e.name, e.kind, byte(0)))
+            }
+        }
+    }
+    return ok(true)
+}
+
+fn treeTooDeep(depth: int, o: &Opts): bool {
+    return o.levelSeen && o.level <= depth
+}
+
+fn lastFlag(last: bool): string {
+    if last { return "1" }
+    return "0"
+}
+
+// One tree part: "│   " for a non-last ancestor, "    " for a last one, then
+// "├── " or "└── " for this row. The glyph bytes are built from byte values so
+// the source stays ASCII.
+fn appendTreePart(mut out: &[]byte, bar: bool) {
+    if bar {
+        append(out, byte(226))
+        append(out, byte(148))
+        append(out, byte(130))
+        append(out, ' ')
+        append(out, ' ')
+        append(out, ' ')
+    } else {
+        append(out, ' ')
+        append(out, ' ')
+        append(out, ' ')
+        append(out, ' ')
+    }
+}
+
+fn appendTreePrefix(mut out: &[]byte, anc: string, last: bool) {
+    var i = 0
+    while i < len(anc) {
+        appendTreePart(out, anc[i] != '1')
+        i += 1
+    }
+    if last {
+        append(out, byte(226))
+        append(out, byte(148))
+        append(out, byte(148))
+    } else {
+        append(out, byte(226))
+        append(out, byte(148))
+        append(out, byte(156))
+    }
+    append(out, byte(226))
+    append(out, byte(148))
+    append(out, byte(128))
+    append(out, byte(226))
+    append(out, byte(148))
+    append(out, byte(128))
+    append(out, ' ')
+}
+
+fn treePrefixText(anc: string, last: bool): string {
+    var b = new []byte(0)
+    appendTreePrefix(b, anc, last)
+    return strings::fromBytes(b)
+}
+
+fn appendSpaces(mut out: &[]byte, n: int) {
+    var i = 0
+    while i < n {
+        append(out, ' ')
+        i += 1
+    }
+}
+
+// Read, filter, prepare and sort one directory. The whole list is owned by the
+// returned frame; the descriptor is closed before returning.
+fn loadFrame(path: string, depth: int, anc: string,
+             o: &Opts): Result[Frame] {
+    let op = fs::open(path)
+    match op {
+        ok(d) {
+            var es = new []Entry(0)
+            let v = new View{single: false, operand: path, base: path}
+            let rr = readTreeEntries(d, es, o)
+            let cr = fs::close(d)
+            match rr {
+                ok(v0) {
+                    prepareEntries(es, v, o)
+                    let order = sortEntriesTree(es, v, o)
+                    return ok(new Frame{path: path, entries: es,
+                                        order: order, next: 0,
+                                        depth: depth, anc: anc})
+                }
+                err(m, c) {
+                    return err(m, c)
+                }
+            }
+        }
+        err(m, c) {
+            return err(m, c)
+        }
+    }
+}
+
+// Add one entry's cells to the global long-column widths.
+fn noteCols(e: &Entry, o: &Opts, mut cols: &Cols) {
+    if !o.noFilesize {
+        let c = sizeCell(e)
+        var w = 1
+        if c >= 0 { w = fmt::digits(c) }
+        if w > cols.sizeWidth { cols.sizeWidth = w }
+    }
+    if o.numeric && !o.noUser {
+        let w = fmt::digits(e.uid)
+        if w > cols.userWidth { cols.userWidth = w }
+    }
+    if !o.noTime {
+        var w = 1
+        if e.statOk && e.mtime >= 0 { w = 16 }
+        if w > cols.dateWidth { cols.dateWidth = w }
+    }
+}
+
+// The measuring pass for -T -l: the reference's table spans the whole tree,
+// so widths must be known before the first line is printed.
+fn treeMeasure(rootE: &Entry, rootV: &View, o: &Opts, mut cols: &Cols) {
+    noteCols(rootE, o, cols)
+    if int(rootE.kind) != int(fs::KIND_DIR) { return }
+    if treeTooDeep(0, o) { return }
+    var stack = new []Frame(0)
+    let fr = loadFrame(rootV.operand, 1, "", o)
+    match fr {
+        ok(f0) { append(stack, f0) }
+        err(m, c) { return }
+    }
+    while len(stack) > 0 {
+        let n = len(stack) - 1
+        if stack[n].next >= len(stack[n].order) {
+            truncate(stack, n)
+        } else {
+            let eid = stack[n].order[stack[n].next]
+            let nxt = stack[n].next + 1
+            stack[n].next = nxt
+            let depth = stack[n].depth
+            let anc = stack[n].anc
+            let path = stack[n].path
+            let last = nxt == len(stack[n].order)
+            noteCols(stack[n].entries[eid], o, cols)
+            let kind = stack[n].entries[eid].kind
+            if int(kind) == int(fs::KIND_DIR) && !treeTooDeep(depth, o) {
+                let cpath = paths::join(path, stack[n].entries[eid].name)
+                let canc = anc + lastFlag(last)
+                let cf = loadFrame(cpath, depth + 1, canc, o)
+                match cf {
+                    ok(child) { append(stack, child) }
+                    err(m, c) { }
+                }
+            }
+        }
+    }
+}
+
+// The tree list rows are rendered after the global widths are known; the error
+// row has no cells and is padded to the table's total width in long mode.
+fn renderTreeError(anc: string, code: int, o: &Opts, cols: &Cols,
+                   p: &Palette, mut line: &[]byte) {
+    let msg = "<" + errors::osError(code) + ">"
+    if o.colourOn {
+        var bits = new []Bit(0)
+        if o.longView {
+            var pad = new []byte(0)
+            appendSpaces(pad, longPrefixWidth(o, cols))
+            addPlainBit(bits, strings::fromBytes(pad))
+        }
+        addPalBit(bits, p, SC_PUNCT, treePrefixText(anc, true))
+        addPalBit(bits, p, SC_BROKEN, msg)
+        emitBitsInto(bits, line)
+    } else {
+        if o.longView { appendSpaces(line, longPrefixWidth(o, cols)) }
+        appendTreePrefix(line, anc, true)
+        appendStr(line, msg)
+    }
+}
+
+// One normal tree row. `root` suppresses the tree prefix for the operand line.
+fn renderTreeRow(e: &Entry, v: &View, anc: string, last: bool, o: &Opts,
+                 cols: &Cols, p: &Palette, mut line: &[]byte,
+                 root: bool) {
+    if o.colourOn {
+        var bits = new []Bit(0)
+        if o.longView {
+            var lp = new []byte(0)
+            appendLongCells(e, o, cols, lp)
+            addPlainBit(bits, strings::fromBytes(lp))
+        }
+        if !root {
+            addPalBit(bits, p, SC_PUNCT, treePrefixText(anc, last))
+        }
+        addNameBits(bits, p, e, v, o)
+        addTargetAndMarkerBits(bits, e, o, p)
+        emitBitsInto(bits, line)
+    } else {
+        if o.longView { appendLongCells(e, o, cols, line) }
+        if !root { appendTreePrefix(line, anc, last) }
+        appendStr(line, displayName(v, e, !o.noQuotes))
+        appendTargetAndMarker(e, o, line)
+    }
+}
+
+fn treeLoop(mut stack: &[]Frame, o: &Opts, cols: &Cols, p: &Palette,
+            mut w: &io::Writer): Result[bool] {
+    var out = new []byte(0)
+    while len(stack) > 0 {
+        let n = len(stack) - 1
+        if stack[n].next >= len(stack[n].order) {
+            truncate(stack, n)
+        } else {
+            let eid = stack[n].order[stack[n].next]
+            let nxt = stack[n].next + 1
+            stack[n].next = nxt
+            let depth = stack[n].depth
+            let anc = stack[n].anc
+            let path = stack[n].path
+            let last = nxt == len(stack[n].order)
+            let kind = stack[n].entries[eid].kind
+            let name = stack[n].entries[eid].name
+            let cv = new View{single: false, operand: path, base: path}
+            truncate(out, 0)
+            renderTreeRow(stack[n].entries[eid], cv, anc, last, o,
+                          cols, p, out, false)
+            let rr = writeLine(w, out)
+            match rr {
+                ok(v0) { }
+                err(m, c) { return err(m, c) }
+            }
+            if int(kind) == int(fs::KIND_DIR) && !treeTooDeep(depth, o) {
+                let cpath = paths::join(path, name)
+                let canc = anc + lastFlag(last)
+                let cf = loadFrame(cpath, depth + 1, canc, o)
+                match cf {
+                    ok(child) { append(stack, child) }
+                    err(m, c) {
+                        truncate(out, 0)
+                        renderTreeError(canc, c, o, cols, p, out)
+                        let er = writeLine(w, out)
+                        match er {
+                            ok(r0) { }
+                            err(m2, c2) { return err(m2, c2) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return ok(true)
+}
+
+// The tree entry point: root line, children, depth-first frames, flush. The
+// reference filters a directory root out of the files list when --only-files
+// is active (tree treats directories as files and print_files drops lstat
+// directories), so that combination prints nothing at all.
+fn runTree(operand: string, mode: int, o: &Opts,
+           p: &Palette): Result[bool] {
+    if o.onlyFiles && fs::isDir(mode) { return ok(true) }
+    var rootEs = new []Entry(0)
+    append(rootEs, newEntry(operand, fs::typeOf(mode), byte(0)))
+    let vroot = new View{single: true, operand: operand,
+                         base: paths::parentOf(operand)}
+    prepareEntries(rootEs, vroot, o)
+    var cols = new Cols{sizeWidth: 0, userWidth: 0, dateWidth: 0}
+    if o.longView { treeMeasure(rootEs[0], vroot, o, cols) }
+    var w = io::newWriter(stdout(), 65536)
+    var out = new []byte(0)
+    renderTreeRow(rootEs[0], vroot, "", true, o, cols, p, out, true)
+    let rr = writeLine(w, out)
+    match rr {
+        ok(v0) { }
+        err(m, c) { return err(m, c) }
+    }
+    if int(rootEs[0].kind) == int(fs::KIND_DIR) && !treeTooDeep(0, o) {
+        let fr = loadFrame(operand, 1, "", o)
+        match fr {
+            ok(f0) {
+                var stack = new []Frame(0)
+                append(stack, f0)
+                let lr = treeLoop(stack, o, cols, p, w)
+                match lr {
+                    ok(v0) { }
+                    err(m, c) { return err(m, c) }
+                }
+            }
+            err(m, c) {
+                truncate(out, 0)
+                renderTreeError("", c, o, cols, p, out)
+                let er = writeLine(w, out)
+                match er {
+                    ok(v0) { }
+                    err(m2, c2) { return err(m2, c2) }
+                }
+            }
+        }
+    }
+    return flushWriter(w)
+}
+
 // eza's permission-denied diagnostic for a directory it cannot open, followed
 // by the summary block. The status stays 0 (P0 records 0.23.3's exit).
 fn warnPermissionDenied(operand: string) {
@@ -1239,6 +2833,8 @@ fn main() {
             let od = deduce(parsed.value.options)
             match od {
                 ok {
+                    var pal = newPalette()
+                    if od.value.colourOn { parseColourEnv(pal) }
                     let nops = len(parsed.value.operands)
                     if nops > 1 {
                         eprintln("eza: this build supports at most one operand")
@@ -1265,7 +2861,21 @@ fn main() {
                             err { follows = false }
                         }
                     }
-                    let listing = (fs::isDir(mode) || follows) && !od.value.treatDirs
+                    if od.value.treeView {
+                        // Tree treats directory operands as files and then
+                        // walks them (DirAction::Recurse{tree:true}).
+                        let tr = runTree(operand, mode, od.value, pal)
+                        match tr {
+                            ok(v0) { }
+                            err(m, c) {
+                                eprintln(errors::osError(c))
+                                exit(errors::EXIT_FAIL)
+                            }
+                        }
+                        return
+                    }
+                    let dirsAsFiles = od.value.treatDirs
+                    let listing = (fs::isDir(mode) || follows) && !dirsAsFiles
                     if listing {
                         let op = fs::open(operand)
                         match op {
@@ -1293,7 +2903,7 @@ fn main() {
                                         prepareEntries(es, v, od.value)
                                         let order = sortEntries(es, v, od.value)
                                         let cols = computeCols(es, od.value)
-                                        let er = emitEntries(es, order, v, od.value, cols)
+                                        let er = emitEntries(es, order, v, od.value, cols, pal)
                                         match er {
                                             ok { }
                                             err {
@@ -1322,7 +2932,7 @@ fn main() {
                         prepareEntries(es, v, od.value)
                         let order = sort::identity(len(es))
                         let cols = computeCols(es, od.value)
-                        let er = emitEntries(es, order, v, od.value, cols)
+                        let er = emitEntries(es, order, v, od.value, cols, pal)
                         match er {
                             ok { }
                             err {

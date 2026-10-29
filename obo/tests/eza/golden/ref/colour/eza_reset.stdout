@@ -1,0 +1,27 @@
+#
+#hash#
+a.png
+b.jpg
+[36mbroken[0m [31m->[0m [4;31mmissing[0m
+c.mp4
+d.mp3
+e.flac
+[36mexelink[0m [1;90m->[0m [1;32mprog[0m
+f.pdf
+g.gz
+h.zip
+i.tmp
+id_rsa
+j.o
+k.py
+l.c
+m.rs
+Makefile
+n.so
+noext
+noext~
+[36mpnglink[0m [1;90m->[0m a.png
+[1;32mprog[0m
+README
+secret.gpg
+upper.PNG

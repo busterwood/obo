@@ -4830,11 +4830,14 @@ both, 0 differ; `bench/bench.py` runs to completion (obx built for it);
 `tests/meta_test.py` 34 checks (20 rt cases + 14 program invocations); tool
 binaries unchanged (cat 40,961; wc 53,249; sort 53,249 bytes).
 
-**eza E0.** `tests/eza.py --require-reference` 272/272 against the pinned eza
-0.23.3 (sha256 `10457dde…`), `--memory` 2/2 (10,000-entry live peaks
-2,185,008 long / 2,184,384 names, under `EZA_PEAK_MAX` 2,752,512; max RSS
-2,432 KiB both), eza binary 126,977 bytes, reference binary 2,294,768 bytes.
-P5b's E1 is not merged on this branch, so this is the unchanged E0 gate.
+**eza E1 (after merging P5b).** `tests/eza.py --require-reference` 396/396
+non-memory cases against the pinned eza 0.23.3 (sha256 `10457dde…`), 0
+failed; `--memory` 4/4 with 10,000-entry live peaks 2,189,984 long /
+2,189,360 names / 2,190,112 tree / 2,189,584 colour, under `EZA_PEAK_MAX`
+2,752,512; max RSS 2,560 KiB each; eza binary 172,033 bytes (sha256
+`6f0e8472…`), reference 2,294,768. On the merged tree `tests/tools.py
+--require-reference` is 199/199, `tests/imports.py` 26/26, `tests/stdlib.py`
+16/16 and `tests/doc_check.py` 48 examples.
 
 **Fixed point without promote.** The seed-built `obo`, the 0.5 compiler's
 stage 2 and stage 3 are all the same 425,985-byte image (sha256
@@ -4874,3 +4877,116 @@ max RSS 2,976 KB (3 runs), in line with P5a's host figures.
 - `tests/run/term.obx` shares its name with the builtin feature but no module;
   `tests/meta/term_api.obx` is named apart from `io.obx` so the import
   resolves to `lib/io.obx`.
+
+# eza E1: colour, tree and `--no-quotes` (P5b, done)
+
+The eza/stdlib design v7 sections 7.6/7.7/7.11, 8.1/8.2, 9.3/9.4/9.7 and
+11.1 P5b, on the promoted 0.5 seed (main `cc6c420`; P0-P6a merged). P5b
+itself makes no compiler, runtime, seed or Makefile change: every E1 feature
+is in `obo/cmd/eza.obx` and its tests.
+
+**What changed.** `cmd/eza.obx` gains the E1 view rules and the colour
+machinery. The effective view is eza's last-of-`-l`/`-1`/`-T` flag (a last
+`-1` makes `-T` a plain lines listing; a last `-T` with any `-l` is a long
+tree), `-T` sets the tree DirAction, `-L` is parsed only when the tree action
+is active (Rust `usize::from_str` wording; accepted up to 2^64-1, ignored
+without `-T`), tree plus two `-a` is `Option --tree is useless given --all
+--all`, and `--no-quotes` selects the outer NoQuotes style. `--color`/
+`--colour` accepts `always` (no longer an own error); the default is auto, or
+never when `NO_COLOR` is present at all, and an explicit value overrides it.
+`auto` calls the P5a `io::isTty(stdout())` builtin.
+
+The colour layer mirrors the reference's nu-ansi-term 0.50.1 model: a `Style`
+of eight attributes plus background/foreground; the default filekind,
+file-type and `LS_COLORS`/`EZA_COLORS` palettes (di, ln, ex, fi and `*.EXT`);
+a Pair parser with zero-trimmed SGR numbers, 256-colour and RGB forms,
+canonical re-serialisation (attributes, background, foreground), non-SGR
+values overriding a slot with the empty style, empty pairs dropped, and the
+last matching extension pair winning; EZA over LS, EXA as the fallback (an
+empty present EZA still wins), and `reset`/`reset:` disabling the default
+file-type palette. Every line is built as a vector of styled text bits and
+emitted with the reference's AnsiStrings difference rule (one prefix, the
+minimal diff between adjacent pieces, one final reset), which is what makes
+the SGR bytes exact. The default file-type tables from
+`src/info/filetype.rs` are constants; the compiled-source heuristic is the
+one part not implemented. Long cells stay plain (long-column colour is
+deferred with a written note); names, targets, arrows, operand parent
+prefixes and tree glyphs are coloured.
+
+The tree is the details view with names only unless `-l` is effective. It
+uses an explicit frame stack (no recursion, no descriptor held across levels):
+each directory is read, filtered, prepared, sorted and closed before its first
+child prints; `-L` stops when `level <= depth`; only lstat directories are
+descended; empty directories print their line; an unreadable directory prints
+a red `<Permission denied (os error 13)>` child and continues with status 0.
+Long tree widths are global across the whole tree (a measuring pass runs
+first) and an error row is padded to the table width. Filtering follows the
+reference's recursion rules (`-D` alone keeps directories; `-f` drops the
+directory root in the files-list filter; both keeps everything at a level).
+
+**Tests.** `tests/eza.py` gains the `colour` and `tree` families and seven
+`--no-quotes` quoting cases: 400 cases, 396 non-memory (329 exact reference
+goldens, 54 live including eight pty auto-colour cases, 13 own usage errors)
+and four memory cases (the P4 pair, the tree 10,000-entry case and the
+coloured 10,000-entry case). The
+`colours` fixture pins one name per default file-type category, the hidden
+file, an executable, styled and broken targets; the colour goldens are exact
+SGR bytes recorded from the pinned binary. TTY cases run on a raw 80x24 pty
+and are live-only; `--record` refuses pty goldens. `probe.py` has a new `e1`
+group (29 re-probes) and `tests/eza/E1-PROBES.md` records the exact palette,
+LS/EZA semantics, view-flag rules, permission child and `--no-quotes` bytes
+from the same pinned sha256. The old own cases `own_no_quotes`,
+`own_color_always` and `bad_level` are gone (`bad_level` is now a reference
+golden); no E0 case was weakened.
+
+**Review fixes.** A file named `#` is Temp (the reference's starts/ends-with
+rule has no length guard); `-L +` is Rust InvalidDigit, not Empty; tree `-r`
+uses the reference's ascending-then-vector-reverse order (which reverses
+ties) before the dirs-first pass, while lines/long keep the stable descending
+comparison; displayed option values use Rust Debug escaping; stale RGB
+components are cleared when a later SGR token re-kinds a colour; and the
+colour 10,000-entry memory case is under the unchanged cap. The theme
+configuration (`EZA_CONFIG_DIR`, `XDG_CONFIG_HOME`, `~/.config/eza/theme.yml`)
+is not read.
+
+**Probe-wins deviations.** Tree plus `-d` does **not** conflict without
+`EZA_STRICT` (the reference probe prints the tree; strict mode is out), so
+this build does the same. Hidden files, setuid/setgid/sticky names and
+broken-link *names* have no separate SGR in the lines/tree palette (the
+link name stays cyan; the broken arrow is red and the broken target
+red-underlined). `*.EXT` matching is by the reference's definition order, not
+longest suffix. Long-column colour, the EZA UI keys (`xx`, `or`, `pi`/`so`/
+`bd`/`cd`, the permission/size/user/date/git/filename styles), real `?*[]`
+globs, mount-point style, unknown LS keys as filename globs, the
+compiled-source heuristic and non-UTF-8 lossy display (E2) remain out.
+
+**Measured (this branch, merged 0.5 tree).** eza binary 172,033 bytes
+(sha256 `6f0e8472…`; static, runtime included; reference 2,294,768).
+`tests/eza.py --require-reference`: 396/396
+non-memory, 0 failed (reference sha256 `10457dde...`); `--memory`: 4/4, live
+peaks 2,189,984 (restricted long), 2,189,360 (names), 2,190,112 (tree) and
+2,189,584 (colour) bytes, max RSS 2,560 KiB each, under the unchanged
+`EZA_PEAK_MAX = 2,752,512`; the reference measures about 25/12/14/12 MB max
+RSS on the same trees.
+
+**Gates (this branch).** After merging main `cc6c420` (0.5), the required
+P5b gate was re-run: `make`; `make tools`; `make eza`;
+`tests/eza.py --require-reference` 396/396; `--memory` 4/4;
+`tests/tools.py --require-reference` 199/199; `tests/imports.py` 26/26;
+`tests/stdlib.py` 16/16; `tests/doc_check.py` 48 examples. The compiler-suite
+figures below were measured on the pre-merge 0.4 tree
+(`829dd52`) before the coordinator scoped the P5b gate to the E1
+differential, tools/stdlib, the compiler-unchanged confirmation and memory:
+`tests/tools.py --require-reference` 199/199; `--memory` 2/2;
+`tests/io_test.py --rt --programs --tools` 0 failures; `tests/imports.py`
+26/26; `tests/stdlib.py` 16/16; `tests/run_fork.py` 1,157; `tests/elf_test.py`;
+`tests/port_compare.py` 1,174/1,174 live (peak 1,645,424;
+35,359,504 allocated) and the seed comparison 1,052/1,052;
+`tests/mutate_fork.py` 527/549 + 22 equivalent; `tests/mutate_io.py` 27/27;
+`tests/mutate_meta.py` runtime 43/45 + 2 equivalent and compiler 17/24 + 7
+equivalent; `tests/port_test.py` 520/520; `tests/sym_test.py` 27/27;
+`tests/sym_fuzz.py` 200/200; `tests/doc_check.py` 47 examples;
+`tests/homes_check.py` and `tests/homes_edge.py` 1,028 statements / 119
+refused / 0 differ; `tests/meta_test.py` 32; `bench/bench.py`.
+`tests/mutate_port.py` was started but stopped mid-run and is **not**
+claimed.
