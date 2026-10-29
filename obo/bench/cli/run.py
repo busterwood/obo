@@ -6,10 +6,10 @@ equivalents, with GNU tools and the pinned eza as reference points.
                                  [--eza PATH]
 
 NOT a gate: nothing in obo/tests/ and no CI job runs this script. It builds the
-compiler and the repo's wc, sort and eza through the repo's own build rules,
-writes its fixtures into a private temporary directory, checks that every obo
-result agrees with its Python equivalent (and with a reference where one is
-compared), and prints median times. README.md in this directory has the
+compiler and the repo's cat, wc, sort and eza through the repo's own build
+rules, writes its fixtures into a private temporary directory, checks that
+every obo result agrees with its Python equivalent (and with a reference where
+one is compared), and prints median times. README.md in this directory has the
 methodology and the limits of the numbers.
 """
 import argparse
@@ -267,9 +267,10 @@ def build_compiler():
 
 
 def build_tools(tmp, compiler):
-    """Build wc/sort and eza with tools/build_tools.py into private directories."""
+    """Build cat, wc, sort and eza with tools/build_tools.py into private
+    directories. cat is built for its binary size only; it has no benchmark row."""
     built = {}
-    for names, sub in ((('wc', 'sort'), 'tools'), (('eza',), 'eza')):
+    for names, sub in ((('cat', 'wc', 'sort'), 'tools'), (('eza',), 'eza')):
         out = os.path.join(tmp, 'build', sub)
         build_run(
             [sys.executable, os.path.join(FORK, 'tools', 'build_tools.py'),
@@ -468,7 +469,7 @@ def wc_counts(out, count, what):
         raise BenchError(f"{what}: non-numeric wc output: {preview(out)}")
 
 
-def build_groups(sizes, exes, tools, fixtures, py, gnu, eza):
+def build_groups(sizes, exes, tools, fixtures, py, gnu, eza, skipped):
     """Check each pair's output, then return the groups to measure."""
     light = sizes['reps_light']
     heavy = sizes['reps_heavy']
@@ -582,6 +583,28 @@ def build_groups(sizes, exes, tools, fixtures, py, gnu, eza):
                                reference=True))
     groups.append(Group(f'sort {sizes["sort_lines"]:,} lines', sort_impls))
 
+    # sort -n: GNU strnumcmp order on the same fixed-width plain integers. The
+    # Python row is a plain-integer reference (sorted(key=int)) and is kept
+    # only when its bytes are identical here; otherwise it is skipped with a note.
+    obo_sort_n = child([tools['sort'], '-n', ints], 'obo sort -n', capture=True)
+    sort_n_impls = [Impl('obo sort -n', [tools['sort'], '-n', ints], heavy)]
+    if gnu.get('sort'):
+        gnu_sort_n = child([gnu['sort'], '-n', ints], 'GNU sort -n', capture=True)
+        expect_equal('sort -n: obo vs GNU', obo_sort_n, gnu_sort_n)
+        sort_n_impls.append(Impl('GNU sort -n (ref)',
+                                 [gnu['sort'], '-n', ints], heavy, reference=True))
+    py_sort_n_cmd = [py, script('sort_n.py'), ints]
+    py_sort_n = child(py_sort_n_cmd, 'python3 sort -n', capture=True)
+    if py_sort_n == obo_sort_n:
+        sort_n_impls.append(Impl('python3 sorted(key=int) (ref)', py_sort_n_cmd,
+                                 heavy, reference=True))
+    else:
+        skipped.append('sort -n: the python3 sorted(key=int) output is not '
+                       'byte-identical on this fixture; its reference row is '
+                       'skipped')
+    groups.append(Group(f'sort -n {sizes["sort_lines"]:,} lines (numeric order)',
+                        sort_n_impls))
+
     # eza name-only listing
     names = fixtures['names']
     obo_eza = child([tools['eza'], names], 'obo eza', capture=True)
@@ -686,8 +709,8 @@ def make_header(args, sizes, compiler_version, py, py_version, cpu, fixtures):
 def binary_sizes(exes, tools):
     order = [('hello', exes['hello']), ('fib', exes['fib']),
              ('loopsum', exes['loopsum']), ('sieve', exes['sieve']),
-             ('wc (tool)', tools['wc']), ('sort (tool)', tools['sort']),
-             ('eza (tool)', tools['eza'])]
+             ('cat (tool)', tools['cat']), ('wc (tool)', tools['wc']),
+             ('sort (tool)', tools['sort']), ('eza (tool)', tools['eza'])]
     return {label: os.path.getsize(path) for label, path in order}
 
 
@@ -778,7 +801,7 @@ def run(args):
     try:
         say('building the compiler (make -C obo obo)')
         compiler, compiler_version = build_compiler()
-        say('building wc, sort and eza')
+        say('building cat, wc, sort and eza')
         tools = build_tools(tmp, compiler)
         say('compiling the benchmark programs')
         exes = compile_programs(tmp, compiler)
@@ -790,7 +813,8 @@ def run(args):
         eza = pinned_eza(args.eza, skipped)
 
         say('checking that obo, Python and reference outputs agree')
-        groups = build_groups(sizes, exes, tools, fixtures, py, gnu, eza)
+        groups = build_groups(sizes, exes, tools, fixtures, py, gnu, eza,
+                              skipped)
 
         say(f'measuring {sum(len(g.impls) for g in groups)} implementations '
             f'({"quick" if args.quick else "default"})')
