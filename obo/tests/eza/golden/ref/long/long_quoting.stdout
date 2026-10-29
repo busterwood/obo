@@ -1,0 +1,21 @@
+.rw-r--r-- 2 2020-09-13 12:26 '  '
+.rw-r--r-- 2 2020-09-13 12:26 ' '
+drwxr-xr-x - 2020-09-13 12:26 'a b'
+.rw-r--r-- 2 2020-09-13 12:26 "apos'trophe"
+.rw-r--r-- 2 2020-09-13 12:26 back\slash
+.rw-r--r-- 2 2020-09-13 12:26 "both ' and ""
+lrwxrwxrwx - 2020-09-13 12:26 brokenrel -> '../tar get'
+lrwxrwxrwx - 2020-09-13 12:26 'broken spaced' -> 'a b/missing'
+.rw-r--r-- 2 2020-09-13 12:26 cr\rname
+.rw-r--r-- 2 2020-09-13 12:26 ctl\u{1}name
+lrwxrwxrwx - 2020-09-13 12:26 'ctl target' -> ctl\u{1}target
+.rw-r--r-- 2 2020-09-13 12:26 del\u{7f}name
+.rw-r--r-- 2 2020-09-13 12:26 dquote"name
+.rw-r--r-- 2 2020-09-13 12:26 esc\u{1b}name
+.rw-r--r-- 2 2020-09-13 12:26 'lead space'
+.rw-r--r-- 2 2020-09-13 12:26 nl\nname
+.rw-r--r-- 2 2020-09-13 12:26 plain
+.rw-r--r-- 2 2020-09-13 12:26 tab\tname
+.rw-r--r-- 2 2020-09-13 12:26 'trail '
+lrwxrwxrwx - 2020-09-13 12:26 'valid spaced' -> 'a b'/target
+.rw-r--r-- 2 2020-09-13 12:26 'with space'

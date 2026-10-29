@@ -31,10 +31,21 @@ different is a setup error (exit 2), never a skip.  Without it, a live
 reference that does not match `VERSION` is not used as the oracle and cases
 fall back to committed goldens.
 
-TODO(P0-reference): the authorized reference step writes `VERSION` and runs
-`probe.py`; this skeleton never creates or edits `VERSION`.  `--record`
-verifies the pin and writes reference/own goldens plus a manifest, and refuses
-path-leaking output.  It does not write `VERSION`.
+The P0 reference step writes `VERSION` and runs `probe.py`; the harness never
+creates or edits `VERSION`.  `--record` verifies the pin and writes
+reference/own goldens plus a manifest, and refuses path-leaking output.
+
+Own eza and P4 gating
+---------------------
+The own source `cmd/eza.obx` arrives in P4; `own_available()` tests for it.
+While it is absent, `--record` records the selected reference goldens only and
+skips own-tagged cases, a normal run checks the committed reference goldens
+against the pinned reference and skips own cases, and `--memory` exits 2 with
+the P4 message.  Nothing about the reference pin or the reference golden
+checks is relaxed: `--require-reference` still requires the exact version and
+binary hash, and a missing or malformed reference golden is still a setup
+error.  Once `cmd/eza.obx` exists, the designed behaviour returns: build eza
+and compare/record own cases as well.
 
 Case tags
 ---------
@@ -76,9 +87,16 @@ REFERENCE_PATH = '/usr/bin:/bin'
 FSIZE = 16 * 1024 * 1024                                 # per-process cap
 VERSION = os.path.join(HERE, 'eza', 'VERSION')
 GOLDEN = os.path.join(HERE, 'eza', 'golden')
+OWN_SOURCE = os.path.join(FORK, 'cmd', 'eza.obx')       # P4 own source
 
 sys.path.insert(0, os.path.join(HERE, 'eza'))
 import fixtures  # noqa: E402
+
+
+def own_available():
+    """True once the P4 own eza source (`obo/cmd/eza.obx`) exists."""
+    return os.path.isfile(OWN_SOURCE)
+
 
 LONG = ('-l', '--no-user', '--bytes', '--time-style=long-iso')
 FAMILIES = ('default', 'names', 'sortkeys', 'long', 'quoting', 'classify',
@@ -883,10 +901,11 @@ class Harness:
         return self._goldens[key]
 
     def validate_goldens(self):
+        own = own_available()
         for case in self.selection():
             if GOLDEN_TAG in case.tags and self.golden('ref', case) is None:
                 raise SetupError('reference golden missing for ' + case.key)
-            if OWN in case.tags and self.golden('own', case) is None:
+            if OWN in case.tags and own and self.golden('own', case) is None:
                 raise SetupError('own golden missing for ' + case.key)
 
     # -- case plumbing
@@ -950,14 +969,52 @@ class Harness:
                                      'stderr vs ' + what))
         return problems
 
+    def run_reference(self, case, base, root, tag='ref'):
+        env = self.case_env(base, case)
+        argv = [EZA] + self.expand_argv(case, root)
+        res = run_proc(argv, self.run_cwd(root, case), base, env,
+                       executable=self.ref.path,
+                       sink=case.mode == 'sink',
+                       pipe=case.mode == 'pipe',
+                       timeout=60 if case.slow else 10, tag=tag)
+        res.stdout = normalize_paths(res.stdout, root, base)
+        res.stderr = normalize_paths(res.stderr, root, base)
+        return res
+
+    def run_reference_only(self, case, base, root, gold):
+        """P0: `cmd/eza.obx` does not exist yet, so nothing of ours can run.
+
+        Own-tagged cases are skipped.  A `golden` case still runs the pinned
+        reference over the same fixtures and compares it with the committed
+        reference golden, so the recorded matrix is checked against the live
+        reference on this host; live-only cases have no committed bytes and
+        are skipped.
+        """
+        if OWN in case.tags or gold is None:
+            return ('skip', 'own eza not implemented (P4)')
+        if self.ref.kind != 'pinned':
+            return ('skip', 'own eza not implemented (P4); no pinned reference '
+                            'to check the reference golden')
+        ref_run = self.run_reference(case, base, root)
+        problems = []
+        if ref_run.timed_out:
+            problems.append('reference timed out')
+        if ref_run.overrun:
+            problems.append('reference output overrun (>16 MiB)')
+        problems.extend(self.compare(ref_run, gold, 'reference golden'))
+        return ('fail', problems) if problems else ('pass', '')
+
     def run_case(self, case):
         base, root, caps = self.prepare_case(case)
         try:
             skip = self.skip_reason(case, caps)
             if skip:
                 return ('skip', skip)
+            own = self.golden('own', case) if OWN in case.tags else None
+            gold = (self.golden('ref', case)
+                    if GOLDEN_TAG in case.tags else None)
             if self.exe is None:
-                raise SetupError('eza build not implemented (P4)')
+                return self.run_reference_only(case, base, root, gold)
             env = self.case_env(base, case)
             ours_env = dict(env, OBO_CHECK='1', OBX_GC='poison')
             argv = [EZA] + self.expand_argv(case, root)
@@ -976,9 +1033,6 @@ class Harness:
             defect = runtime_defect(ours)
             if defect:
                 problems.append('tool defect: ' + defect)
-            own = self.golden('own', case) if OWN in case.tags else None
-            gold = (self.golden('ref', case)
-                    if GOLDEN_TAG in case.tags else None)
             if own is not None:
                 problems.extend(self.compare(ours, own, 'own golden'))
             if gold is not None:
@@ -1038,6 +1092,8 @@ class Harness:
                 self.failures.append((case, detail))
 
     def run_memory(self):
+        if not own_available():
+            raise SetupError('eza build not implemented (P4)')
         self.build()
         raise SetupError('eza memory cases not implemented (P4)')
 
@@ -1138,6 +1194,10 @@ class Harness:
             raise SetupError('no recordable cases selected')
         ref_cases = [c for c in cases if GOLDEN_TAG in c.tags]
         own_cases = [c for c in cases if OWN in c.tags]
+        if own_cases and not own_available():
+            print('own eza not implemented (P4); skipping %d own goldens'
+                  % len(own_cases))
+            own_cases = []
         if own_cases:
             # TODO(P4): build eza through build_tools.build(['eza'], ...).
             self.build()
@@ -1221,7 +1281,8 @@ def main(argv=None):
         if a.memory:
             h.run_memory()
             return 0
-        h.build()
+        if own_available():
+            h.build()
         h.validate_goldens()
         h.check_manifest()
         h.run_matrix()

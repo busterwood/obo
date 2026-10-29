@@ -1,0 +1,15 @@
+lrwxrwxrwx  - 2020-09-13 12:26 b -> real
+lrwxrwxrwx  - 2020-09-13 12:26 chain -> realfile
+lrwxrwxrwx  - 2020-09-13 12:26 dangling -> nowhere
+lrwxrwxrwx  - 2020-09-13 12:26 exec -> exec-target
+.rwxr-xr-x 10 2020-09-13 12:26 exec-target
+.rw-r--r--  2 2020-09-13 12:26 file
+lrwxrwxrwx  - 2020-09-13 12:26 loop1 -> loop2
+lrwxrwxrwx  - 2020-09-13 12:26 loop2 -> loop1
+lrwxrwxrwx  - 2020-09-13 12:26 real -> realdir
+drwxr-xr-x  - 2020-09-13 12:26 realdir
+lrwxrwxrwx  - 2020-09-13 12:26 realdirlink -> realdir
+lrwxrwxrwx  - 2020-09-13 12:26 realfile -> file
+lrwxrwxrwx  - 2020-09-13 12:26 spaced -> 'tar get'
+.rw-r--r--  7 2020-09-13 12:26 'tar get'
+lrwxrwxrwx  - 2020-09-13 12:26 to_realdirlink -> realdirlink
