@@ -144,6 +144,15 @@ FILES = {
     'split_b': b'b',
     'one': b'one\n',
     'two': b'two\n',
+    # radix-path fixtures: already ordered, reverse ordered, a long common
+    # prefix, lines that are prefixes of each other, a line past the 64 KiB
+    # write block, and runs of duplicate empty lines
+    'sortedin': b'aa\nbb\ncc\n',
+    'revin': b'cc\nbb\naa\n',
+    'prefix': b'a\naa\nab\naaa\nb\na\x00\n\x00\naa\n',
+    'lcp': b''.join(b'a' * 100 + (b'%02d\n' % i) for i in range(20)),
+    'long2': b'y' * 70000 + b'\n' + b'a\n' + b'z' * 70000,
+    'emptydups': b'\n\na\n\n\nb\n\n',
     '-n': b'-n\n',
     '-Z': b'-Z\n',
     'name with space': b'space\n',
@@ -528,6 +537,33 @@ def sort_cases():
         fixtures=['multi_a'])
     add('stdin_words', T, [], stdin=FILES['words'])
     add('dash_alone', T, ['-'], stdin=FILES['words'])
+    # radix path: ordered input, reverse order, shared prefixes, prefix keys
+    add('sorted_in', T, ['sortedin'], fixtures=['sortedin'])
+    add('r_sorted_in', T, ['-r', 'sortedin'], fixtures=['sortedin'])
+    add('u_sorted_in', T, ['-u', 'sortedin'], fixtures=['sortedin'])
+    add('stdin_sorted', T, [], stdin=FILES['sortedin'])
+    add('stdin_rev', T, [], stdin=FILES['revin'])
+    add('prefix', T, ['prefix'], fixtures=['prefix'])
+    add('r_prefix', T, ['-r', 'prefix'], fixtures=['prefix'])
+    add('u_prefix', T, ['-u', 'prefix'], fixtures=['prefix'])
+    add('lcp', T, ['lcp'], fixtures=['lcp'])
+    add('r_lcp', T, ['-r', 'lcp'], fixtures=['lcp'])
+    add('u_lcp', T, ['-u', 'lcp'], fixtures=['lcp'])
+    add('ru_lcp', T, ['-ru', 'lcp'], fixtures=['lcp'])
+    add('n_lcp', T, ['-n', 'lcp'], fixtures=['lcp'])
+    add('nu_lcp', T, ['-nu', 'lcp'], fixtures=['lcp'])
+    add('long2', T, ['long2'], fixtures=['long2'])
+    add('r_long2', T, ['-r', 'long2'], fixtures=['long2'])
+    add('u_long2', T, ['-u', 'long2'], fixtures=['long2'])
+    add('emptydups', T, ['emptydups'], fixtures=['emptydups'])
+    add('u_emptydups', T, ['-u', 'emptydups'], fixtures=['emptydups'])
+    add('ru_emptydups', T, ['-ru', 'emptydups'], fixtures=['emptydups'])
+    add('ru_binary', T, ['-ru', 'binary'], fixtures=['binary'])
+    # multi-file separator: an empty operand on either side of a partial line
+    add('empty_multi_a', T, ['empty', 'multi_a'], fixtures=['empty', 'multi_a'])
+    add('multi_a_empty', T, ['multi_a', 'empty'], fixtures=['multi_a', 'empty'])
+    add('empty_noeol_empty', T, ['empty', 'noeol', 'empty'],
+        fixtures=['empty', 'noeol'])
     # errors: preflight order and read errors, no stdout
     add('missing', T, ['missing'])
     add('multi_a_missing', T, ['multi_a', 'missing'], fixtures=['multi_a'])
