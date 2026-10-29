@@ -10,6 +10,18 @@ promoted seed `obo/seed/obo` is 425,985 bytes and reports
 test, seed, runtime or tool file changes. The only repository write is this
 file.
 
+**Revision after design review.** This version addresses the review's six
+blocking findings and the material nits. The substantive changes are: the
+designator restructure, so a method receiver's place is finalized and its
+value use recorded before the call, and the call result is not corrupted by
+the designator tail (B1, B2, B3); the `.sym` fixture and harness migration,
+with positive symcheck cases asserted (B4); corrected test expectations and
+new module/error cases (B5); the added coverage for receiver shapes, loops,
+owned returns, field origins and declaration errors (B6); and the nits in
+sections 2, 4, 5, 7, 8 and 9. The review's final decisions on the former
+open questions are recorded as decisions in section 12; none is left for the
+user.
+
 Scope is the user's roadmap phase 7: receiver syntax such as
 `fn (r: &T) name(...)`, receiver modes `&` / `mut` / owned, desugared to
 ordinary functions, **static dispatch only**, **no method values**, usable on
@@ -47,21 +59,29 @@ Behaviour probes were compiled with the compiler built from this tree by
    0/1/2 (`obo.obo:7792`), `fnBody`'s parameter setup
    (`obo.obo:8140-8162`), `FnRec.params/pmodes/pfree` (`obo.obo:1110`),
    name resolution and moves for a normal parameter.
-5. **Call emission is the existing call sequence plus a receiver.** `callFn`
-   (`obo.obo:4760`) becomes a wrapper around `callFnWith(f, recv, hasRecv,
-   rline, rcol)`; the receiver is converted, checked, held/moved, and pushed
-   exactly like argument 0, before the explicit arguments. Function-call
-   behaviour and messages must stay byte-identical.
+5. **Call emission is the existing call sequence plus a receiver.** A method
+   call is recognised in `designatorT`'s postfix loop, which **breaks** there;
+   the existing designator tail then finalizes the receiver's place
+   (`root`/`deref`/`path`/`viaHandle`/`borrowed`) and records the receiver's
+   value use exactly once, and only then is `methodCall` invoked; its result
+   is returned directly, so the tail never touches the call result.
+   `callFn` (`obo.obo:4760`) becomes a wrapper around
+   `callFnWith(f, recv, hasRecv, rline, rcol)`; the receiver is converted,
+   checked, held/moved, and pushed exactly like argument 0, before the
+   explicit arguments. Function-call behaviour and messages must stay
+   byte-identical.
 6. **Ownership is free.** `&` receivers are ordinary read-only reference
    parameters; `mut &` receivers ordinary `mut` reference parameters (pfree
    bit 0 is the receiver); owned receivers ordinary by-value parameters. The
    call site reuses `borrowBind`, `consume`, `holdArg`, `argOrderCheck`,
    `noteWrite`, `mutFrees` and the mutation/handle invalidation loops. The
-   only new soundness check is that an **owned receiver through a handle is
-   rejected**: `designatorT` materializes a handle dereference in a register
-   (`obo.obo:5586-5600`), and `consume` returns early for a register
-   (`obo.obo:2878`), so a receiver passed that way would free the object the
-   handle names behind its owner's back.
+   only new soundness check is that an **owned receiver that is the whole
+   object named by a handle is rejected**: after the designator tail the
+   dereference result is a register item with `viaHandle` set, and `consume`
+   returns early for a register (`obo.obo:2878`), so a receiver passed that
+   way would free the object the handle names behind its owner's back. A
+   field or element reached through a handle is a `mem`/`elem` item and
+   takes the existing field/element move error.
 7. **Rejections are precise**, not silent dereferences: methods are declared
    only on a record or closed type **defined in the same module** (aliases to
    it are transparent); no methods on `int`/`byte`/`bool`/`string`/`[]T`/
@@ -96,7 +116,11 @@ Behaviour probes were compiled with the compiler built from this tree by
     `type 'T' has no method 'm'`.
 13. **No method values.** `f()` functions are already callable only
     (`obo.obo:5512`); methods follow the same rule. `b.m` where `m` is a
-    visible method is a specific error, not a borrow or a field.
+    visible method is a specific error, not a borrow or a field. A method
+    call **ends the designator**: `b.m().n`/`b.m()[0]` are syntax errors at
+    the enclosing construct. A function-call prefix keeps its existing
+    behaviour: an owned result is the store-first error before the member
+    name (`make().m()`), a handle result follows the handle rules.
 14. **Compiler source stays in the 0.5 subset** in round 1 (no methods in
     `obo.obo`), so `seed/obo` can build it. The seed is promoted once after
     review, as usual.
@@ -104,9 +128,13 @@ Behaviour probes were compiled with the compiler built from this tree by
     it could adopt later; the differential tools/eza tests must not change
     when that refactor happens.
 
-The two decisions worth the user's eye rather than only a reviewer's are the
-member-namespace strictness (section 12.1) and variant dispatch through the
-closed type (12.2); all other defaults are technical and reversible.
+The review resolved the former open questions (section 12): the
+member-namespace strictness, variant dispatch through the closed type and
+the separate method namespace are kept as designed, owned receivers and
+&/mut handle receivers are included, the source-like `.sym` representation
+and versions are kept, a method named `main` is allowed, and chaining/
+temporaries are documented rather than supported. None of these needs user
+escalation.
 
 ---
 
@@ -132,8 +160,10 @@ Not in scope (extension points only):
   overloading;
 - methods on built-in or derived types (`string`, `[]T`, `?T`, `^T`,
   `Result[T]`), and method declarations for foreign types;
-- method chaining on an owned call result, or calling a method on a temporary
-  (`make().m()`), because a call result is not a designator;
+- method chaining on a method call result (`b.m().n` is a syntax error), and
+  calling a method on an owned temporary (`make().m()` is the existing
+  store-first error); a handle-valued call result follows the existing
+  handle rules;
 - separate compilation of method bodies (there are no object files; a full
   build recompiles every body);
 - debug information;
@@ -162,10 +192,19 @@ Param       ::= "mut"? IDENT ":" ("&" Type | Type)
 - Exactly one receiver, with a name. `fn () name(...)`, `fn (a, b: &T) name(...)`
   and `fn (r: &T) (args)` are errors (section 7).
 - `mut` goes before the receiver's name, exactly as for parameters:
-  `mut r: &T`. `mut r: T` is the existing "write mut r: &T" error;
-  `&mut T` is the existing `parseRefType` hint (`obo.obo:3594`).
+  `mut r: &T`. `mut r: T` reuses the existing parameter message,
+  `mut needs a reference parameter: write mut name: &T`; `&mut T` reuses the
+  existing `parseRefType` hint (`obo.obo:3594`). The `.sym` reader reuses
+  its existing message too, `mut needs a reference parameter: write mut p0:
+  &T` (`obo.obo:9943`), so the committed `mutnoamp` fixture's expectation
+  is unchanged.
 - Modes: `r: T` (owned), `r: &T` (read-only borrow), `mut r: &T` (mutable
-  borrow). No `^T`, `?T`, `&?T`, `[]T`, `string`, `Result[T]`.
+  borrow). No `^T`, `?T`, `&?T`, `[]T`, `string`, `Result[T]`. A `&int`,
+  `&string`, `&bool` or `&^T` receiver is rejected earlier by
+  `parseRefType`'s borrow rule, not by the method-specific message.
+- A receiver literally named `mut` cannot be parsed: the optional mode word
+  is consumed first. Parameters have the same lexical limitation; use
+  another name.
 - `TypeName` must resolve to a **record or closed type that is already
   defined in the current module** (`Type.incomplete` false,
   `Type.owner == curModuleName`, `Type.parent == nil`). A type alias to such a
@@ -193,21 +232,30 @@ Call ::= Designator "." IDENT "(" [Args] ")"
 - The call is recognised inside the existing postfix designator loop
   (`designatorT`, `obo.obo:5577`): after `. ident`, if the current token is
   `(` (`T_LPAREN`), it is a method call; otherwise the existing field access
-  runs. No whitespace sensitivity: `b.push (1)` is also a call.
-- The **receiver must be a designator**: a name (local, parameter, global, or
-  `alias::name` global) followed by any number of `.field`, `[index]` and
-  implicit handle dereferences. `(b).m()`, `make().m()` and `new T{...}.m()`
-  are not method-call syntax. `make().m()` reaches the existing
-  "store this value in a variable first" check when `make()` returns an owned
-  value, or a syntax error when `new` is the base; neither is a new rule.
+  runs. Spaces within the line are insignificant (`b.push (1)` is a call),
+  but the `(` must be on the same logical line as the method name: a newline
+  after an identifier scans as a statement separator (`semiAfter`,
+  `obo.obo:224-230`). A newline after the `.` is fine (`.` continues the
+  line).
+- The **receiver is the designator prefix before `.name(`**: a name (local,
+  parameter, global, or `alias::name` global) followed by any number of
+  `.field`, `[index]` and implicit handle dereferences. `(b).m()` and
+  `new T{...}.m()` are not method-call syntax: the postfix `.` is not parsed
+  after those forms. A function-call prefix is only usable when its result
+  is not an owned temporary: `make().m()` with an owned
+  record/array/optional/Result result is rejected by the postfix loop's
+  existing store-first check (`obo.obo:5582`) *before* the member name is
+  read, and a handle-valued call result (`makeHandle().m()`) follows the
+  existing handle rules. `&place` is not a receiver form.
 - The method name is never qualified: `b.push(1)`, not `lib::b.push` (the
   receiver may be `lib::g`), and there is no `Builder::push(b, 1)` form.
   `Builder::push` resolves `Builder` as a module alias and fails with the
   existing `'Builder' is not a module` error.
-- A method call terminates the designator: `b.m().n` and `b.m()[0]` are
-  rejected by the existing postfix checks (an owned call result is a
-  temporary; `int`/`byte`/`bool`/`string` results cannot be fields or
-  elements). There is no chaining on an owned result; store it in a local.
+- A method call **ends the designator**: `designatorT` returns the call item
+  after the receiver's tail. A following `.`/`[` is a syntax error at the
+  enclosing construct (`b.m().n`, `b.m()[0]`, `b.m().n()`), not a store-first
+  error; store the result in a local to continue. A function-call result
+  keeps its existing postfix behaviour, as above.
 - A method call is an ordinary expression value: it can be a statement (its
   result discarded and freed by the existing rules), a `let`/`var`
   initializer, a `return` value, an argument, an index, a condition, part of
@@ -246,7 +294,10 @@ Call ::= Designator "." IDENT "(" [Args] ")"
     heading`;
   - a heading with no body at module end is
     `method 'T::m' has a forward heading but no body`;
-  - repeated identical headings are allowed, as for functions.
+  - repeated identical headings are allowed, as for functions; a heading
+    or body declared after a method that already has a body is
+    `method 'T::m' is already defined` (a declaration is matched to the
+    prior symbol by receiver type and name before its signature is read).
 - Declare before use: a call to a method with no earlier declaration or
   forward heading is an error. The single-pass compiler cannot know a later
   declaration without a method pre-scan; forward headings are the answer,
@@ -263,6 +314,13 @@ Call ::= Designator "." IDENT "(" [Args] ")"
   invisible in a full build even though the live `Type`/registry contains it.
 - A module may not declare a method on a foreign type, so methods are always
   defined beside their receiver and there is no orphan or coherence problem.
+- **Transitive access is allowed.** If module A exports a function whose
+  result type is defined in module L, and L exports methods for that type, a
+  module B that imports A can call those methods on the value without
+  importing L directly. The canonical `Type` object and its registry entry
+  are the same; in `--check`, the depiface validation loads L's `.sym`
+  (mode 1), so L's methods are present. Test this on a full build and on a
+  source-less check.
 - Qualified names in diagnostics use the declared module name, not the import
   alias: `lib::Builder::push`; inside the module `Builder::push`.
 
@@ -371,7 +429,7 @@ in this order: type check, borrow/ownership, effect and invalidation, push.
 | reference parameter/local | rejected by `consume`: `cannot move out of a reference: a reference only borrows` | re-borrow through the reference's binding | re-borrow; read-only bindings reject the write |
 | through a handle (`h.field`, `h`) | the whole object `h` is **rejected explicitly**; a field/element `h.child` is rejected by `consume`'s field/element rule (section 3.5) | borrow through the handle (`handleSym` root): the callee must be pure under the existing handle-borrow rule | same; the callee must be pure under the same rule |
 | optional (`?T`) | rejected by the existing nil check unless a local was narrowed | same | same |
-| temporary / call result | not method-call syntax (section 2.2) | not method-call syntax; a `&` receiver on a temporary would be the existing "store this value in a variable first: a reference cannot borrow from a temporary" | same |
+| function-call prefix (`make().m()`) | an owned result is rejected by the postfix loop's store-first check before the member name (`obo.obo:5582`); a handle result follows the handle rows | a handle-valued result follows the handle rows; owned results are rejected before the name | same |
 
 A `mut` receiver is legal on a `let` local when the object is writable. This
 is existing language semantics for `mut` parameters, not a new rule: the
@@ -440,17 +498,20 @@ Because the receiver is argument 0, all existing call-site checks see it:
   incomplete type: rejected (section 7).
 - Owned receiver that is the **whole object named by a handle** (`h.m()`):
   rejected with
-  `cannot call a method that takes its receiver by value through a handle: it
-  would free the object; take it into a local first`. Rationale: the handle
-  dereference is materialized as a register (`obo.obo:5586-5600`) and
-  `consume` has no owner to mark (`obo.obo:2878`), so the object would be
-  freed without its owner knowing; `take` into a local first is the fix.
-  The whole dereference is a register item (`rtCall1` returns a `reg`); a
-  field or element reached through a handle (`h.child.m()`,
-  `h.items[i].m()`) is a `mem`/`elem` item and is not this case: it is a
-  field/element move and gets the existing `cannot move out of a field or
-  element` error from `consume` (`Item.path` is deliberately "" for every
-  handle item, so the item mode is the discriminator, not the path).
+  `cannot call a method that takes its receiver by value through a handle:
+  the handle does not own the object; declare the method with '&' or
+  'mut &T', or call it on the owner`. Rationale: the handle dereference is
+  materialized as a register (`obo.obo:5586-5600`) and `consume` has no
+  owner to mark (`obo.obo:2878`), so the object would be freed without its
+  owner knowing. "Take it into a local" is not a remedy (`take` works only
+  on optional places and cannot move the object out of a handle).
+  The check runs on the **finalized** receiver after the designator tail:
+  the whole dereference is a register item with `viaHandle` set. A field or
+  element reached through a handle (`h.child.m()`, `h.items[i].m()`) is a
+  `mem`/`elem` item and is not this case: it is a field/element move and
+  gets the existing `cannot move out of a field or element` error from
+  `consume` (`Item.path` is deliberately "" for every handle item, so the
+  item mode is the discriminator, not the path).
 - Owned receiver on a field/element/global/reference: the existing `consume`
   messages, unchanged.
 - A `mut` receiver through a read-only binding:
@@ -507,7 +568,9 @@ Add to the compiler:
 
 ```obo
 // every method of the whole compilation, in declaration order; each symbol's
-// recv is its canonical receiver type (tVoid for a plain function)
+// recv is its canonical receiver type (tVoid for a plain function). The
+// array holds handles into symArena, which owns the symbols: it never frees
+// one, and releaseTables clears it with the arena.
 var methodSyms = new []^Sym(0)
 ```
 
@@ -517,8 +580,12 @@ var methodSyms = new []^Sym(0)
     recv: ^Type              // the receiver type of a method; tVoid for a plain function
 ```
 
-`newSym` (`obo.obo:1130`) initialises `recv: tVoid`. `releaseTables`
-(`obo.obo:10361`) clears `methodSyms`.
+Placement: `tVoid` is defined at `obo.obo:926`; `newSym` (`obo.obo:1130`)
+initialises `recv: tVoid`, so the field and `newSym` are fine, and the
+registry and helpers must be **declared after `tVoid` and after the `Sym`
+type and `symArena`/`newSym`** (a natural spot is immediately after
+`newSym`/`noFnRec`), because the helpers return `^Sym` and scan the registry.
+`releaseTables` (`obo.obo:10361`) clears `methodSyms` with the other tables.
 
 **Why a flat registry rather than `Type.methods`:** the whole program is one
 image; the canonical receiver `^Type` pointer *is* the type identity in a
@@ -593,41 +660,116 @@ let name = ident()
   `parent == nil`, `!incomplete`; a field collision is checked on the
   receiver type (record fields; for a closed type, every variant's fields and
   variant names).
-- Method call resolution in `designatorT`'s `T_DOT` branch
-  (`obo.obo:5601`), after the handle dereference and the existing
-  incomplete/optional checks, and **before** the closed/record field logic:
+- **Designator restructure for method calls.** Two facts force the control
+  flow:
+  - the receiver's place metadata (`root`, `deref`, `path`, `borrowed`,
+    `viaHandle`) is assigned only by the **tail after the postfix loop**
+    (`obo.obo:5709-5721`). Calling the method from inside the loop would see
+    `root == nil` and `viaHandle == false` for field, element and handle
+    receivers, so `borrowBind` would fail or, worse, the owned-through-handle
+    check could not fire (B1);
+  - the tail also records the designator's reference/suspect read and copies
+    the designator's context onto `x`. Running it on the call result would
+    mark an owned return as `borrowed` and inherit the receiver's handle
+    context (B3).
+
+  So the loop **breaks** at `. name (`; the existing tail runs on the
+  receiver; `methodCall` is invoked after the tail and its result is
+  returned directly:
 
 ```obo
-if sym == T_LPAREN {
-    x = methodCall(x, fname, dline, dcol)     // helper: checks and callFnWith
-} else if x.typ.kind == "closed" { ... existing ... }
-else if x.typ.kind != "record" { ... existing ... }
-else { ... existing field access ... }
+fn designatorT(target: bool): Item {
+    ... base ident/nameItem, root = x.root ...
+    var isCall = false
+    var callName = ""
+    var callLine = 0
+    var callCol = 0
+    while sym == T_DOT || sym == T_LBRACK {
+        ... existing movedRef/reg/optional checks (5578-5585) ...
+        if sym == T_DOT && x.typ.kind == "handle" { ... deref (5586-5600) ... }
+        if sym == T_DOT {
+            next()
+            let mline = tline            // the method name token: dline
+            let mcol = tcol              //                           dcol
+            let fname = ident()
+            if sym == T_LPAREN {         // method call: the receiver is what we have
+                isCall = true
+                callName = fname
+                callLine = mline
+                callCol = mcol
+                break                    // no field item is built
+            }
+            ... existing incomplete/closed/record/field logic (5604-5619) ...
+        } else { ... existing index logic ... }
+    }
+    // the existing tail, except that a method receiver is a value use even
+    // when the enclosing statement was parsed as an assignment target:
+    if s.suspect && (!target || path != "" || isCall) { notePending(...) }       // 5695-5697
+    if s.isRefLocal && (!target || path != "" || isCall) { ... read marks ... }  // 5699-5708
+    x.viaHandle = viaHandle
+    lastPlace = placePath(root, path); lastRaw = path; lastOrigin = hOrig; ...   // 5709-5714
+    if x.sym == nil && root != nil {                                             // 5715-5721
+        x.root = root
+        x.deref = true
+        if !viaHandle { x.path = path }
+        if root.isRef && isOwned(x.typ) { x.borrowed = true }
+    }
+    if isCall { return methodCall(x, callName, callLine, callCol) }
+    return x
+}
 ```
 
-`methodCall`:
+- `callLine`/`callCol` (`dline`/`dcol` below) are the method-name token's
+  line and column, captured before `ident()` consumes it; receiver-mode and
+  ownership errors use the receiver's start (`uline`/`ucol`).
+- The `isCall` override is required because statement and `defer` calls are
+  parsed by `assignmentOrCall` with `designatorT(true)` (`obo.obo:6506`):
+  without it a whole reference-local receiver is not recorded as a read
+  (`obo.obo:5699`), losing `staleUse`/`usedAt`/`suspect` marks and allowing
+  a use-after-free on a later loop iteration (B2). The tail runs once, on
+  the receiver, before the call.
+- `lastPlace`/`lastRaw`/... now describe the receiver for a call. They are
+  read only by `assignmentOrCall`'s assignment branches, and assigning to a
+  call result is rejected by the mode check (`obo.obo:6518`) before they are
+  used.
+- A method call ends the designator (section 2.2). The postfix loop's
+  store-first check (`obo.obo:5582`) still rejects an owned function-call
+  result before its member name, which is the documented temporary
+  behaviour.
 
-1. If the static type is not record/closed: error `<t> has no methods`.
-2. `let m = findMethod(t, fname)`.
-3. If `t.owner != "" && t.owner != curModuleName` and
-   `(m == nil || !m.exported)`: error
-   `module '<owner>' has no exported member '<T>::<fname>' (only 'pub'
-   declarations are visible)`. `<T>` is `m.recv.name` when `m` exists, else
-   `t.name` (or `t.parent.name` for a variant). This is deliberately the
-   same in a full build and in `--check`, whether a private method exists or
-   not.
-4. If `m == nil`: if the static type is a record and has a field `fname`,
-   error `<T> has a field '<fname>', not a method; a field cannot be called`;
-   otherwise error `type '<T>' has no method '<fname>' (declare it before
-   use; use a forward heading for mutual recursion)`.
-5. `callFnWith(m, x, true, dline, dcol)` (rest of section 4.4).
+`methodCall(recv, name, dline, dcol)`:
+
+1. If `recv.typ.incomplete`: `type '<T>' is declared but not yet defined`.
+2. If `recv.typ.kind` is not record/closed: `<t> has no methods`.
+3. If the receiver is a record and has a field `name`: `type '<T>' has a
+   field '<f>', not a method; a field cannot be called`. Visible fields are
+   part of the type across modules, and methods cannot share a field name,
+   so a field match means there is no method. This check comes **before**
+   visibility so a foreign `x.f()` field call gets the field message, not
+   the module-member message.
+4. `let m = findMethod(t, name)`; a variant also searches its closed type.
+5. If `t.owner != "" && t.owner != curModuleName` and
+   `(m == nil || !m.exported)`: `module '<owner>' has no exported member
+   '<T>::<name>' (only 'pub' declarations are visible)`. `<T>` is
+   `m.recv.name` when `m` exists, else the receiver's (or its parent's)
+   name. This is deliberately the same in a full build and in `--check`,
+   whether a private method exists or not.
+6. If `m == nil`: `type '<T>' has no method '<name>' (declare it before use;
+   use a forward heading for mutual recursion)`.
+7. For an owned receiver (`m.fnRec.pmodes[0] == 0`) that is a whole handle
+   dereference (`recv.viaHandle && recv.mode == "reg"`): the owned-through-
+   handle error (section 3.5). A field/element through a handle is
+   `mem`/`elem` and goes to `consume`'s field/element error.
+8. `callFnWith(m, recv, true, dline, dcol)` (rest of section 4.4).
 
 For `.name` **without** `(` on a **record** receiver with no field, if a
 *visible* method exists, error
 `method '<T>::<m>' cannot be used as a value: call it with '(' after its
-name`. On a foreign type with no visible method, fall through to the existing
-`has no field` error, so a private method's existence is not leaked. A
-closed-type receiver keeps the existing
+name`. This is implemented in the existing field branch's `fieldIndex < 0`
+path (`obo.obo:5609-5611`), before the `has no field` error. On a foreign
+type with no visible method, fall through to the existing `has no field`
+error, so a private method's existence is not leaked. A closed-type receiver
+keeps the existing
 `<T> is a closed type: use 'match' to reach its fields` message: a closed
 type has no fields, and that check runs before any method-value check.
 
@@ -681,13 +823,21 @@ the argument loop:
   byte-identical**: `hasRecv = false` takes the old labels and old indices.
   The existing `tests/errors/arg_order.obx` and friends are the gate.
 
-`callMethod` adds the receiver-specific check before calling `callFnWith`:
-for an owned receiver that is a whole handle dereference (`x.viaHandle` and
-`x.mode == "reg"`, the result of the `RT_DEREF` call; `x.path` is "" for
-every handle item, so it cannot be used to tell a field from the whole
-object), reject (section 3.5). Other illegal owned places, including a field
-or element reached through a handle (a `mem`/`elem` item), are rejected by
-`consume` with the existing messages.
+`methodCall` adds the receiver-specific check before calling `callFnWith`:
+for an owned receiver that is a whole handle dereference (`recv.viaHandle`
+and `recv.mode == "reg"`, the result of the `RT_DEREF` call, on the
+**finalized** item; `Item.path` is "" for every handle item, so it cannot be
+used to tell a field from the whole object), reject (section 3.5). Other
+illegal owned places, including a field or element reached through a handle
+(a `mem`/`elem` item), are rejected by `consume` with the existing messages.
+
+The method display (`methodDisplay`, section 4.2) must also be used where a
+function's bare name is printed for the current or a called function:
+`fnBody`'s return-path error (`obo.obo:8167`), `returnStat`'s
+`does not return a value` (`obo.obo:7600`) and `tryExpr`'s
+`try needs a function that returns a Result; 'f' returns ...`
+(`obo.obo:5929`). Designating a method by `T::m` there keeps diagnostics
+consistent; a plain function prints exactly as today.
 
 ### 4.5 Existing scans that must learn about methods
 
@@ -700,7 +850,7 @@ that scans the globals for forward-declared functions must also scan
 | `whileStat` condition lift, `obo.obo:7057-7068` | the condition is emitted into `lifted` and re-emitted after the body; calls to forward-headed functions have their fixups removed and re-added with a displacement (`obo.obo:7107`). A method call in a `while` condition to a forward-headed method would otherwise keep a stale rel32. | scan `methodSyms` with `addr < 0` as well |
 | `fnDecl` register-home retry cleanup, `obo.obo:8279-8285` | when a function body is thrown away and recompiled, fixups of forward-headed functions that point into the discarded range are dropped. Method fixups must be dropped too. | scan `methodSyms` as well |
 | module-end heading check, `obo.obo:8539-8547` | report a method heading with no body | loop over `methodSyms` where `owner == mod.name && addr < 0` |
-| `checkExports`, `obo.obo:8358-8373` | exported method signatures must be closed over private types | loop over `methodSyms` where `owner == curModuleName && exported`, `closureCheck` receiver + params + return, `declName = methodDisplay(f)` |
+| `checkExports`, `obo.obo:8358-8373` | exported method signatures must be closed over private types | loop over `methodSyms` where `owner == curModuleName && exported`, `truncate(closureSeen, 0)` before each method (as the existing loop does per exported symbol), then `closureCheck` receiver + params + return with `declName = methodDisplay(f)` |
 | symbol writer, `obo.obo:9273-9276` | emit the method group | section 5 |
 | symbol order check, `obo.obo:9571-9630` | compare the method order | section 5 |
 
@@ -816,7 +966,12 @@ reader's expectations):
    method; it must be exported; compare every parameter type/mode, return
    type, `freesall`, `writeshandles`, `pfree`, `frees` list and `pf` rows;
    any difference is `symDisagree("method 'T::m'")`. Do not construct or
-   overwrite live symbols.
+   overwrite live symbols. In a full build the dependency's `.sym` is
+   written by `compileUnit` and read immediately by `parseImport`
+   (`obo.obo:8558`, `8435-8441`); mode 0 therefore validates the compiler's
+   **own freshly written file**, not an externally supplied one. A
+   hand-mutated file is exercised in `--check` (mode 1) only; mode-0-only
+   comparison mutants are equivalent (section 8.6).
 7. Mode 1 (`--check`): create the `fn` symbol (fresh `fnRec`, `addr = 0` as
    for functions, owner, `exported = true`, `recv`) and attach it to
    `methodSyms`. Do not put it in `symCurMod.globals` or `exports`: methods
@@ -830,9 +985,10 @@ New reader state:
   `methodSyms` filtered by `owner == symCurMod.name && exported`, in
   registry (declaration) order, maps them to `methodKey`, and compares with
   `symMethodOrder`; mismatch is `symDisagree("the method order")`.
-- `symFinish` mode 0 (`obo.obo:9632-9650`): every live exported method's key
-  must be in `symSeen`; otherwise `symDisagree("method 'T::m'")`. Extra file
-  methods already fail during parsing.
+- `symFinish` mode 0 (`obo.obo:9632-9650`): every live exported method with
+  `owner == symCurMod.name` must have its key in `symSeen`; otherwise
+  `symDisagree("method 'T::m'")`. Extra file methods already fail during
+  parsing.
 - Mode 1's exports loop is unchanged (methods are not globals).
 
 `--reemit-sym` works because the reconstructed module's method symbols carry
@@ -862,7 +1018,7 @@ All reader failures use the existing clean form
 | situation | detail / message |
 |---|---|
 | `fn` then `(` but no receiver name | `expected a receiver name` |
-| `mut p0: Builder` in a file | `mut needs a reference receiver: write mut p0: &T` |
+| `mut p0: Builder` in a file | `mut needs a reference parameter: write mut p0: &T` (the existing reader message) |
 | receiver `[]int`, `int`, `string`, `?T`, `^T`, `Result[T]` | `the receiver must be a record or closed type defined in this module, not <t>` |
 | receiver is a foreign type or an alias | `the receiver must be the defining name of a type in this module` |
 | receiver is a variant | `the receiver cannot be a variant; declare the method on '<C>'` |
@@ -889,7 +1045,8 @@ normally in `--check`; a full build still requires every source
 | closed types | methods may be declared on the closed type; a variant-typed value calls them through one parent step; methods may not be declared on a variant |
 | arrays | not a receiver type; `xs.m()` is `[]T has no methods`; a record element can be a receiver (`xs[i].m()`) |
 | strings | not a receiver type; `s.m()` is `string has no methods`; `string` fields are ordinary fields |
-| handles | an expression through a handle dereferences before method lookup, so `h.m()` is a method on the handle's record type; `&`/`mut` receivers follow the existing borrow-through-handle rules (a call that might free is refused); `^T` is not a receiver type; an owned receiver through a handle is refused |
+| handles | an expression through a handle dereferences before method lookup, so `h.m()` is a method on the handle's record type; `&`/`mut` receivers follow the existing borrow-through-handle rules (a call that might free is refused); `^T` is not a receiver type; an owned receiver through a handle is refused. A recursive method whose receiver is reached through a handle is refused by the pure-callee rule (`pureFn` is false for self and forward headings, `obo.obo:3360`; the handle-borrow check is `obo.obo:4862`), so a graph walk through handles must be iterative (section 8.1) |
+| chaining / temporaries | a method call ends the designator, so `b.m().n` is a syntax error; an owned function-call result is the existing store-first error before the member name; a handle-valued call result uses the handle rules |
 | optionals | `?T` is not a receiver type; after `if x != nil` narrowing a local has type `T` and its methods work; an optional field must be put in a local first (no field narrowing exists) |
 | generics | none exist; methods add none |
 | `Result`/`try` | methods may return `Result[T]`; `try b.load()` works because `try` parses its operand with `factor` and consumes a fresh call result; `Result[T]` is not a receiver type; `match` narrowing of a result then allows a method on the payload |
@@ -915,15 +1072,17 @@ not already name the module), no trailing period.
 |---|---|
 | `fn () name` | `a method needs a receiver, as in 'fn (r: &T) name(...)'` |
 | more than one receiver name | `a method has exactly one receiver` |
-| `mut r: T` | `mut needs a reference receiver: write mut r: &T` |
-| receiver is int/byte/bool/string/array/optional/handle/Result | `a method's receiver must be a record or closed type declared in this module, not <t>` |
+| `mut r: T` | the existing `mut needs a reference parameter: write mut name: &T` (reused by the source and by the `.sym` reader, `obo.obo:9943`) |
+| `&mut T` receiver | the existing `there is one reference type, &T: write mut before the parameter name, as in mut p: &T` (`obo.obo:3594`) |
+| `&int`, `&string`, `&bool`, `&^T` receiver | the existing `only records, closed types and arrays can be borrowed, not <t>` from `parseRefType` |
+| receiver is int/byte/bool/string/array/optional/handle/Result (not `&`) | `a method's receiver must be a record or closed type declared in this module, not <t>` |
 | receiver is a foreign named type | `cannot declare a method on imported type '<M>::<T>'; declare it in the type's own module` |
 | receiver is a variant | `cannot declare a method on variant '<V>'; declare it on its closed type '<C>'` |
 | receiver type incomplete | `type '<T>' is declared but not yet defined` |
 | field collision (record) | `type '<T>' already has a field '<f>'; a method cannot have the same name` |
 | field collision (closed variant) | `type '<C>' already has a field '<f>' in variant '<V>'; a method cannot have the same name` |
 | variant-name collision | `type '<C>' already has a variant '<V>'; a method cannot have the same name` |
-| duplicate method | `method '<T>::<m>' is already defined` |
+| duplicate method (a second body, or a heading/body after a body) | `method '<T>::<m>' is already defined` |
 | heading mismatch | `method '<T>::<m>' does not match its forward heading` |
 | heading with no body | `method '<T>::<m>' has a forward heading but no body` |
 | `pub` method on a private type | `exported '<T>::<m>' uses private type '<T>'; mark '<T>' pub too` |
@@ -938,13 +1097,14 @@ not already name the module), no trailing period.
 | receiver is a built-in/derived type | `<t> has no methods` |
 | receiver type incomplete | `type '<T>' is declared but not yet defined` |
 | nil optional receiver | `'<x>' may be nil: check it with '!= nil' first` |
-| `&`/`mut` receiver on a temporary | `store this value in a variable first: a reference cannot borrow from a temporary` |
+| owned record/array/optional/Result function-call result receiver (`make().m()`) | the existing `store this value in a variable first: otherwise it would never be freed`, raised by the postfix loop before the member name (`obo.obo:5582`) |
+| handle-valued function-call result receiver (`makeHandle().m()`) | not a temporary error: the handle rules apply (whole-handle &/mut allowed only to a pure callee; an owned receiver is the handle error below) |
 | `mut` receiver on a read-only binding | `the receiver of method '<T>::<m>' needs a mut reference, but it is read-only` |
 | owned receiver on a field/element | `cannot move out of a field or element; use take() on an optional one` |
 | owned receiver on a global | `cannot move out of global '<g>'; use take() on an optional one` |
 | owned receiver on a reference | `cannot move out of a reference: a reference only borrows` |
-| owned receiver through a handle | `cannot call a method that takes its receiver by value through a handle: it would free the object; take it into a local first` |
-| `x.f(` where `f` is a field | `type '<T>' has a field '<f>', not a method; a field cannot be called` |
+| owned receiver through a handle | `cannot call a method that takes its receiver by value through a handle: the handle does not own the object; declare the method with '&' or 'mut &T', or call it on the owner` |
+| `x.f(` where `f` is a field (including a foreign type) | `type '<T>' has a field '<f>', not a method; a field cannot be called`; checked before visibility, since fields are visible across modules and cannot share a method's name |
 | method name used as a value (`b.m`) | `method '<T>::<m>' cannot be used as a value: call it with '(' after its name` |
 | arity | `method '<T>::<m>' takes <N> argument(s), not <M>` / `... not more` |
 | wrong receiver/argument type | `the receiver of method '<T>::<m>': cannot use <t> as <t>` / `argument <n> of method '<T>::<m>': cannot use <t> as <t>` |
@@ -967,30 +1127,59 @@ assertion is deleted or relaxed.
 | file | covers |
 |---|---|
 | `methods.obx` | all three receiver modes; field access beside methods; a method calling another method; methods returning int/string/record; calls in `println`, `let`, `if`, `return`; a local whose field and method names differ |
-| `methods_fields.obx` | receivers that are fields, array elements (constant and variable index), globals, and narrowed reference locals/optionals; `for x in xs { x.m() }` |
+| `methods_fields.obx` | receivers that are fields, constant-index elements, variable-index elements, globals, narrowed reference locals/optionals; `for x in xs { x.m() }` |
+| `methods_refs.obx` | B1/B3 acceptance: `&`/`mut` receivers that are a field, a constant-index element, a variable-index element, `h.field` and a whole `h`; a method returning an owned record / optional / `Result` / array on a **whole reference receiver** and on a **field reference receiver**, bound with `let` both inferred and explicitly typed; `ok(b.make())`; a handle-returning method bound to a local (no chain). This is the case that would fail if the receiver place is not finalized or the tail runs on the call result |
 | `methods_closed.obx` | methods on a closed type called through a `Shape`-typed local; a variant value resolving through its parent; a method whose body `match`es the receiver; both `&` and owned closed receivers |
 | `methods_move.obx` | owned receiver consumes a local (leak check proves the free), returns a new record, returns `r` itself, uses `replace` to extract a field; an owned method on an owned parameter moves it onward |
 | `methods_mut.obx` | a `mut` receiver that writes scalars and appends (a reference into the receiver stays valid), called on a `let` local; a non-mutating `&` method; a `mut` method on an array element |
-| `methods_handle.obx` | `&` and pure-`mut` methods through `h.field`/`h` (accepted under the existing handle rules); a graph node type with `?^Node` fields whose methods walk the graph |
-| `methods_defer_try.obx` | a `Result`-returning method and `let v = try b.load()`; `match b.load()`; `defer b.close()`; a `defer` inside a method body |
+| `methods_handle.obx` | an **iterative** graph walk over `?^Node` handles (a recursive handle-receiver call is refused by the pure-callee rule and is an error case); `&` and pure-`mut` methods through `h.field`/`h` accepted under the existing handle rules; a handle-valued function-call result (`makeHandle().m()`) under the handle rules |
+| `methods_defer_try.obx` | a `Result`-returning method and `let v = try b.load()`; `let r = b.load()` then `match r { ... }` (match needs a local); `defer b.close()`; a `defer` inside a method body |
 | `methods_recursion.obx` | forward headings, mutual recursion between two methods, self-recursive tree walk, and a forward-headed method called from a `while` condition (the lifted-condition fixup case of §4.5) |
+| `methods_homes.obx` | a function with enough register pressure to exercise the `homeRetry` path while calling a forward-headed method, so the retry's fixup cleanup covers methods; run under `homes_check`/`obo-noregs` too |
 | `methods_static.obx` | two types with same-named methods return different values; a top-level function with the same name as a method; no dynamic dispatch |
-| `methods_names.obx` | a method named `len`, `main`, `push` beside a function `push`; a method whose name matches another type's field/method; an alias receiver spelling |
+| `methods_names.obx` | a method named `len`, `main`, `push` beside a function `push`; a method whose name matches another type's field/method; an alias receiver spelling; a receiver named `mut` is a documented lexical limitation, not a case |
+| `methods_origins.obx` | field-origin index 0: a `let` handle from a receiver field survives a `mut` method that only appends/writes scalars, and is refused after a `mut` method that frees it (the refusal is an error case) |
 
 ### 8.2 `tests/errors/methods.obx`
 
 One `// ===` section per error, with the exact text from section 7:
-declaring on a variant/foreign/built-in/incomplete type; duplicate method;
-heading mismatch; heading with no body; field/variant-name collision; pub
-method on a private type; unknown local method; private foreign method (a
-module error case, not here); call on string/array; nil optional receiver;
-mut receiver read-only; owned receiver on a field/global/reference/handle;
-`x.f()` where f is a field; `b.m` as a value; arity (too few/too many);
-receiver type mismatch is unreachable through lookup, so the argument-type
-cases cover checkAssign; method value use; a call before declaration without
-a heading; a move inside `&&`/`||`/`defer` of an owned receiver; a later
-argument freeing the receiver; mut-receiver aliasing; receiver through a
-handle to a freeing method; no method on `Result`.
+
+- **declaration:** `fn () name(...)` (no receiver); `fn (a, b: &T) name(...)`
+  (two receivers); `fn (r: &T)` with no name; `mut r: T`; `&int`, `&string`,
+  `&mut T`; a receiver on a variant / foreign / built-in / derived /
+  incomplete type; duplicate method (second body); a heading or body after a
+  body; heading mismatch; heading with no body; field and variant-name
+  collisions; `pub` method on a private type; a receiver named `mut` (the
+  parser's `mut` note, tested as the existing identifier error).
+- **calls:** unknown local method; unknown/private method on a foreign type
+  (module cases, not here); call on string/array/Result; nil optional
+  receiver; mut receiver read-only; owned receiver on a
+  field/global/reference/whole-handle, including an owned receiver that is a
+  **field through a handle** (`h.child.m()`, which must get
+  `cannot move out of a field or element`, not the whole-handle message);
+  `x.f()` where f is a field (local and foreign); `b.m` as a value; arity
+  (too few/too many); argument types; a call before declaration without a
+  heading; a move inside `&&`/`||`/`defer` of an owned receiver; a later
+  argument freeing the receiver; mut-receiver aliasing (both directions);
+  receiver through a handle to a freeing method; `make().m()` (store-first,
+  owned result); `b.m().n` and a handle-returning method's chained result
+  `b.handle().v` (a chain, a syntax error at the enclosing construct).
+- **method-body diagnostics:** a non-void method that can fall off the end
+  (`T::m must return a value on every path`), a void method with `return v`
+  (`T::m does not return a value`) and `try` in a non-Result method
+  (`try needs a function that returns a Result; 'T::m' returns ...`) must
+  name the method through `methodDisplay`, not the bare name.
+- **B2 loop cases:** a whole reference-local receiver used as a statement
+  in a loop, then re-pointed and freed, with the next read refused (the
+  expected loop error); variants with a `mut` receiver, a recursive call in
+  the loop, a handle receiver, and a `defer` that uses the reference.
+- **B6 origins:** a `let` handle made from a receiver field, a `mut` method
+  that frees below the receiver, then a use of the handle refused (the
+  append/scalar acceptance is in `run/methods_origins.obx`).
+- **B5 handle graph:** a recursive method whose receiver is reached through
+  a handle is refused by the pure-callee rule.
+
+The B3 owned-return cases are acceptance cases (section 8.1), not errors.
 
 ### 8.3 Modules and symbol files
 
@@ -998,11 +1187,17 @@ handle to a freeing method; no method on `Result`.
 |---|---|
 | `modules/run/methods` | `lib` exports a `pub` record with `&`, `mut` and owned `pub` methods; `main` calls all of them; one `mut` method frees below the receiver so a reference invalidation crosses the module boundary |
 | `modules/run/methods_closed` | exported closed type with a method; `main` calls it on a variant value through the closed type |
-| `modules/errors/private_method` | calling a private method of an imported type: exact `module ... has no exported member ...` (exit 1) |
+| `modules/run/methods_identity` | `lib` exports `pub fn push(...)` **and** methods named `push` on two record types with distinguishable signatures (different receiver mode, argument and return types); `main` calls the function and both methods. A reader that keyed methods by name only (or mixed them with functions) binds the wrong one |
+| `modules/run/methods_transitive` | B imports A; A's `pub` function returns a type from L; B calls L's exported method on the result without importing L. A full-build case and a source-less `--check` variant (`modules/sym/methods_transitive_check`) |
+| `modules/run/method_main` | a dependency exports `pub fn (b: &Builder) main(): int`; the root calls it. The source main check is gated on plain functions, and the reader's main check is gated too; a full build reads the dependency's `.sym` (a single-file root would not) |
+| `modules/sym/method_main` | the same dependency's committed `.sym` with the method line, checked source-less: exit 0, proving the reader accepts the emitted line |
+| `modules/errors/private_method` | calling a private method of an imported type in a full build: exact `module ... has no exported member ...` (exit 1) |
+| `modules/sym/private_method_check` | the same call checked against the dependency's committed `.sym`, which omits the private method: the same module-member message (the dependency's sym reads successfully; the checked source call is the error, exit 1) |
+| `modules/errors/unknown_method_foreign` | a foreign method name that never existed: the same module-member message (mode-independent) |
 | `modules/errors/foreign_method` | declaring a method on an imported type (exit 1) |
-| `modules/errors/pub_method_private_type` | `pub` method whose receiver type is private (exit 1) |
+| `modules/errors/pub_method_private_type` | `pub` method whose receiver type is private (exit 1); include **two** `pub` methods so the second is only reported if `closureSeen` is truncated per method |
 | `modules/errors/method_heading` | a method heading with no body at module end (exit 1) |
-| `modules/sym/methods` | a `symcheck` tree (the `modules/sym` kind read by `port_compare.py`) whose root calls an imported method; the source-less `--check` behaviour itself is covered by the `sym_test.py` tree below and by a `// example: modules check` block in `LANGUAGE.md` |
+| `modules/sym/methods` | a positive `symcheck` tree (the `modules/sym` kind read by `port_compare.py`) whose root calls an imported method; `expect` says `exit 0`. The source-less `--check` behaviour is also covered by the `sym_test.py` tree below and by a `// example: modules check` block in `LANGUAGE.md` |
 
 `sym_test.py` additions:
 
@@ -1025,66 +1220,168 @@ handle to a freeing method; no method on `Result`.
   receiver a variant; `mut p0: T`; receiver alias spelling; method before
   the type definition; a `pfree` bit 0 with no `pf` row (and a row without
   the bit); unknown summary item; a method line for an unknown type; a
-  second method line for the same key. The reader validates summary
-  **consistency** (bit/row agreement, index range), not semantic truth: a
-  forged `pfree 0x1 pf 0 "..."` on an owned-receiver method is structurally
-  accepted, and a full build's mode-0 comparison against the live summary
-  rejects it, exactly as for functions.
+  method line naming a defining type by an alias; a method line for a type
+  whose shell exists but whose definition has not been read.
 - `sourceless_and_build_requirement`/`check_mode_and_cli`: `--check` against
-  a method-bearing dependency with the source deleted; the checked module's
-  own `.sym` contains its methods; a 0.5/format-1 file is rejected with the
+  a method-bearing dependency with the source deleted, **asserting exit 0**
+  (not merely REF==PORT); the checked module's own `.sym` contains its
+  methods; a deliberately stale 0.5/format-1 file is rejected with the
   format message; `--version` is `obo 0.6 sym-format 2 abi 1`.
+- The version case table in `stale_missing_corrupt_versions`
+  (`sym_test.py:416-428`) becomes: format `obosym 3` (expected
+  `has format 3; this compiler reads 2`), ABI `9` (expected
+  `has ABI 9; this compiler uses 1`) and compiler `"9.9"` (expected
+  `was built by compiler '9.9'; this is '0.6'`), each mutated from the new
+  base `obosym 2`/`abi 1`/`compiler "0.6"`.
 - `golden`/golden tree: `lib.obx` gains two `pub` methods and one private
   method; the committed `expected/*.sym` are regenerated with
   `sym_test.py --update` (the explicit path; the gate only compares).
 
+**Committed `.sym` fixture migration (B4).** There are 79 committed symbol
+files: 76 under `obo/tests/modules/sym/*/symdir` and the 3 golden
+`expected/*.sym`. At this baseline, 78 of the 79 are `obosym 1` and one
+(the `format` fixture) is `obosym 2`; 78 say `compiler "0.5"` (the
+`compiler` fixture already says `"9.9"`), and the `version` fixture already
+has `abi 9`. All must be migrated in the same change, because the
+`modules/sym` cases are read by `port_compare.py` as `symcheck` cases and a
+header rejection would make **both** compilers fail identically (REF==PORT
+still passes, hiding the regression). Migration:
+
+- all fixtures not listed separately below, including every `main.sym` in a
+  symdir, and the goldens: `obosym 2`, `compiler "0.6"`, `abi 1`; the
+  goldens are regenerated by `sym_test.py --update` after the writer bump;
+- `modules/sym/format/symdir/lib.sym`: `obosym 3` (an unsupported format),
+  `compiler "0.6"`; the fixture keeps testing rejection; expected message
+  `has format 3; this compiler reads 2`;
+- `modules/sym/compiler/symdir/lib.sym`: `obosym 2` with
+  `compiler "9.9"`, so the format check passes and the compiler check is
+  reached; expected message
+  `was built by compiler '9.9'; this is '0.6'; rebuild it`;
+- `modules/sym/version/symdir/lib.sym`: `obosym 2`, `compiler "0.6"`,
+  `abi 9`; expected message `has ABI 9; this compiler uses 1; rebuild it`;
+- `valid`, `mainexport`, `reemit_highbits` and every structural case:
+  `obosym 2`/`compiler "0.6"`/`abi 1`.
+
+Headers (`obosym`, `abi`, `compiler`, `source`, `dep`) are outside the
+interface hash, whose bytes start after the `interface` line
+(`LANGUAGE.md` §6), so a header-only migration changes no hash and needs no
+rehash. This is the precedent of the 0.4 -> 0.5 bump, which updated every
+committed `.sym` fixture in the same commit (`FORK.md`, the version bullet
+in "Terminal-size metadata", around lines 4802-4805).
+
+**Harness assertion.** `compare_trees` currently only checks REF==PORT for
+`symcheck` cases, so a migrated-but-wrong fixture can pass by failing
+identically. Add an `expect` file to every `modules/sym` case, reusing the
+`module_test.py` format (`exit N` and exact `stderr ...` lines, with the
+symdir path normalized to `<sym>`), and make `compare_trees` assert that
+REF's outcome matches it before comparing PORT. The classification measured
+at this baseline is:
+
+- **exit 0:** `valid`, `forward_variant`, `transitive_type`, plus the new
+  `methods`, `method_main` and `methods_transitive_check` positives;
+- **exit 1 (the checked source is refused, e.g. a summary-driven
+  use-after-free):** `b6_ac`, `b6_ca`, `b6_stub_ac`, `b6_stub_ca`,
+  `effects_pfree`, `mainexport`, `basename_mismatch`;
+- **exit 2 (a symbol-file error):** every remaining case (`badconst`,
+  `badsummary`, `bitnorow`, `boolval`, `byterange`, `compiler`, `corrupt`,
+  `defnoshell`, `depiface`, `deporder`, `dupexport`, `emptydep`,
+  `eventpath`, `eventprefix`, `format`, `hexhash`, `mutnoamp`,
+  `negative_stale`, `nested_corrupt`, `pfindex`, `scalarref`,
+  `shellmissing`, `stale`, `version`, `wrong_uid`).
+
+Setting the expect files from the measured outcomes (not guesses) is part
+of the implementation; a header migration that turns a positive into a
+failure or an intended error into a pass then fails on REF's own outcome.
+Note that `run_fork.py`/`module_test.py` do **not** run the `modules/sym`
+cases; `port_compare.py` is their only gate, which is why this assertion is
+required rather than optional. `REEMIT_CASES` gets an explicit
+`returncode == 0` and non-empty/canonical output assertion for REF and PORT
+(the `reemit_highbits` fixture must re-emit, not merely agree).
+
 Note on `pf 0` for an owned receiver: the reader validates that a `pfree`
 bit and its rows agree and that the index exists; it does not re-derive
 whether the summary is truthful (symbol files are trusted build outputs).
-The mode-0 comparison against the live summary catches a forged difference
-in a full build; `--check` trusts the file, as it already must.
+Mode 0 compares the writer's own output against the live summary; a forged
+file can only be presented to `--check`, which trusts it, as it already
+must. See §5.3.
 
 ### 8.4 Docs
 
 - `LANGUAGE.md`: a new `## 5a. Methods` section after Handles (lettered so
   the many existing "section N" references do not shift), covering
   declaration, receiver modes, calls, ownership, module qualification,
-  collision rules and no method values; examples marked `// example:`
-  (checked by `doc_check.py`); the version line
-  `obo 0.6 sym-format 2 abi 1`, the `.sym` sample with a method line, the
-  error table additions, and removal of methods from the planned list in
-  §12.
-- `README.md`: feature table/not-yet-done list, `--version` sample, the
-  `.sym` description (format 2), and the size/hash rows after the final
-  build (numbers recorded at merge, not invented).
+  transitive access, collision rules, no method values and the
+  chaining/temporary behaviour; examples marked `// example:` (checked by
+  `doc_check.py`); the version line `obo 0.6 sym-format 2 abi 1`; the
+  `.sym` sample with a method line; the error table additions; removal of
+  methods from the planned list in §12; and the module `main` wording
+  ("Only the root may declare the plain `fn main`; a method named `main` is
+  not an entry point. A dependency's plain `main` is refused ...").
+- `README.md`: the phase table (methods done; interfaces and lambdas remain
+  planned), the "Not yet done" list, the `--version` sample, the `.sym`
+  description (format 2), the current-status prose, and the size/hash rows
+  after the final build (numbers recorded at merge, not invented).
+- `PERFORMANCE.md` and `bench/cli/README.md`: the 0.5 benchmark samples are
+  **historical**; keep the numbers labelled `obo 0.5 / sym-format 1`, add a
+  one-line note that later compiler versions add methods and that the table
+  was not re-measured, and re-run only if the project asks. Do not silently
+  rewrite the numbers.
 - `FORK.md`: a "Methods (done)" record after implementation, following the
-  file's convention, with the final gates and measurements.
+  file's convention, with the final gates and measurements; update the
+  superseded "Methods do not exist yet (section 12 of LANGUAGE.md)"
+  sentence (around line 1307) to point at the record.
 
 ### 8.5 Existing tests and fixtures that must change
 
-- `tests/sym_test.py`: `OBO_VERSION = '0.6'`, `SYM_FORMAT = 2`; the literal
-  symbol snippets at lines ~420, ~694 and ~1060 (`compiler "0.5"`,
-  `obosym 1`) updated to the new format/version.
-- `tests/modules/golden/tree/lib.obx` + `expected/*.sym`: methods added,
-  goldens regenerated once, deliberately. The golden gate still compares
-  byte-for-byte.
-- `tests/port_compare.py`: `SEED_FILE_MIN` entries `(0, 6)` for each new
-  `tests/run/methods*.obx` and `tests/errors/methods.obx`; the module trees
-  are already outside the seed comparison. This is not a weakening: the
-  entry is version-gated and stops applying when the seed reports 0.6.
+- `tests/sym_test.py`: `OBO_VERSION = '0.6'`, `SYM_FORMAT = 2`; the
+  literal symbol snippets at lines ~420, ~694 and ~1060 (`compiler "0.5"`,
+  `obosym 1`) updated; the version case table at ~416-428 becomes format 3
+  (expected `has format 3; this compiler reads 2`), ABI 9, compiler `"9.9"`
+  (expected `this is '0.6'`); `handwritten_interface` and
+  `b6_stub_completion` (which write `obosym 1`/`compiler "0.5"` literals)
+  updated.
+- **Every committed `.sym` fixture** (see the migration in §8.3): 76 under
+  `obo/tests/modules/sym/*/symdir`, plus the 3 golden `expected/*.sym`:
+  - fixtures not listed separately, and the goldens: `obosym 2`,
+    `compiler "0.6"`, `abi 1`;
+  - `format`: `obosym 3`, `compiler "0.6"`; `compiler`: `obosym 2` with
+    `compiler "9.9"`; `version`: `obosym 2`, `compiler "0.6"`, `abi 9`;
+  - all header-only edits; interface hashes are unchanged (headers are not
+    hashed);
+  - the goldens are regenerated with `sym_test.py --update` after the
+    golden tree gains methods; the gate still compares byte-for-byte;
+  - the `mutnoamp` fixture's expected message is unchanged (the reader
+    reuses the parameter wording).
+- `tests/sym_fuzz.py`: `change_version` (line ~202) must mutate the format
+  to a value **other than** the new `SYM_FORMAT`, e.g. `obosym 3`; mutating
+  to 2 would become a no-op once the base file is format 2.
+- `tests/port_compare.py`: add the `expect` files and the REF-outcome /
+  `REEMIT_CASES` assertions of §8.3; `SEED_FILE_MIN` entries `(0, 6)` for
+  each new `tests/run/methods*.obx` and `tests/errors/methods.obx` (the
+  entry skips the case only while the seed's version is below (0, 6); the
+  module trees are already outside the seed comparison). This is not a
+  weakening: it stops applying when the seed reports 0.6.
 - `tests/mutate_fork.py` (and `mutate_port.py` where shared): if the
-  `callFn` refactor moves text matched by existing mutant patterns, those
-  patterns must be retargeted to the new exact text. Likely affected:
-  `read-only references can be passed as mut`, `mut aliases allowed`,
-  `calls check only one root`, `calls ignore depth`, the `ARG_ORDER_MUTANTS`
-  block, and `temporaries can be dropped`. The harness fails on a stale
-  pattern by design; retarget, do not delete.
+  `callFn` refactor or the designator restructure moves text matched by
+  existing mutant patterns, those patterns must be retargeted to the new
+  exact text. Likely affected: `read-only references can be passed as mut`,
+  `mut aliases allowed`, `calls check only one root`, `calls ignore depth`,
+  the `ARG_ORDER_MUTANTS` block, and `temporaries can be dropped`. The
+  harness fails on a stale pattern by design; retarget, do not delete.
 - `tests/port_test.py`: no change; it checks token constants and scanner
   fragments, and does not assert the compiler version.
 - No existing `tests/run`/`tests/errors` program changes: the feature is
   additive.
 - `tests/own_fuzz.py`: unchanged; it does not generate methods (recording
-  that as a limit is better than an unmodelled fuzz).
+  that as a limit is better than an unmodelled fuzz). **Consider** adding a
+  method to the fuzz seed's `LIB` so the fuzzer also mutates a method line
+  (the seed is built by the writer, and the oracle is acceptance-based, so
+  a valid method line is enough); this is optional and must not weaken the
+  existing fuzz.
+- The 0.4 -> 0.5 bump is the precedent for updating every committed `.sym`
+  fixture in the same commit (`FORK.md`, "Terminal-size metadata", the
+  version bullet around lines 4802-4805): "Hashes do not cover the compiler
+  line, so no interface hash changed."
 
 ### 8.6 Mutants
 
@@ -1101,26 +1398,40 @@ a stale snippet fails the gate):
 | receiver not held across later arguments | `errors/methods`: `b.store(clear(b))` |
 | mut-receiver invalidation dropped (`mutFrees` bit 0 forced false) | `run/methods_mut` + `effects_check` cross-module |
 | receiver omitted from `pfree`/`pf` when writing the `.sym` | cross-module invalidation (`modules/run/methods`, `effects_check`) |
+| **methodCall invoked inside the postfix loop** (receiver not finalized) | `run/methods_refs`/`methods_fields`: field, element and handle receivers fail to borrow or the owned-handle case compiles |
+| **`isCall` override removed** (receiver not marked as a value use under `designatorT(true)`) | the B2 loop error case in `errors/methods` (whole reference-local receiver, re-point and free) |
+| **tail run on the call result** (no early return after `methodCall`) | `run/methods_refs`: a `let`-bound owned return on a whole/field reference receiver is refused as a borrowed temporary, or a handle return inherits the receiver context |
+| owned-handle check keyed on `path` instead of `viaHandle && mode == "reg"` | the whole-handle rejection case or the `h.child.m()` field-through-handle exact message, whichever misfires |
+| field-call check after visibility | `errors/methods`: a foreign `x.f()` field call must get the field message, not the module-member message |
+| while-condition lift ignores method fixups | `run/methods_recursion` (forward-headed method called in a `while` condition) |
+| `fnDecl` retry cleanup ignores `methodSyms` | `run/methods_homes` (register-pressure retry with a forward-headed method call); if unobservable, record equivalent |
+| method display not used at `fnBody`/`returnStat`/`tryExpr` | exact-error cases: a non-Result method tried, a value-returning method that falls off the end, a void method returning a value must name `T::m` |
 | writer omits the method group | roundtrip/golden |
 | writer emits private methods | hash/golden + `modules/errors/private_method` |
-| reader attaches a method to the wrong type (uses name only) | two types with same method name (`run/methods_static`, `modules/run/methods`) |
-| reader visibility check dropped | `modules/errors/private_method` |
+| reader attaches a method to the wrong type (uses name only) | `modules/run/methods_identity`: `pub fn push` plus two methods named `push` with distinguishable signatures |
+| reader visibility check dropped | `modules/errors/private_method` (full build) and `modules/sym/private_method_check` (`--check`) |
 | reader accepts a foreign/variant/built-in receiver | `malformed_structures` cases |
-| method order not compared | `symCompareOrder` case |
 | field/method collision check dropped (either direction) | `errors/methods` declaration cases |
 | duplicate method allowed | `errors/methods` duplicate case |
 | forward-heading signature match dropped | `errors/methods` mismatch case |
 | module-end heading check dropped | `modules/errors/method_heading` |
-| while-condition lift ignores method fixups | `run/methods_recursion` (forward-headed method called in a `while` condition) |
 | method call resolves with no type check (any type's method) | `errors/methods` wrong-type cases |
 | method value allowed | `errors/methods` method-value case |
 | unknown-method/field-call message regressions | exact-error tests |
-| `checkExports` skips methods | `modules/errors/pub_method_private_type` |
-| `main` method treated as program main | a module with a method named `main` compiles (`run/methods_names`) |
+| `checkExports` skips methods, or does not truncate `closureSeen` per method | `modules/errors/pub_method_private_type` with two pub methods (the first public-typed, the second private-typed) |
+| reader `main` gating dropped | `modules/run/method_main` full build and `modules/sym/method_main` check |
+| reader field-call ordering dropped | the foreign field-call error case |
+| format/compiler/ABI check accepts any version | the migrated `sym_test` version table and the `format`/`compiler`/`version` fixtures with their expect files |
 
-The while-lift and home-retry mutants are the subtle ones; if the
-implementation cannot make one observable, record it as equivalent with the
-reason (the project's convention) rather than claiming it caught.
+Mutants that only remove the **mode-0 comparison** (the live-interface
+order/signature checks in `symCompareOrder`/`symFnDecl`) are **equivalent**:
+a full build writes the dependency's `.sym` and reads it immediately
+(`compileUnit` at `obo.obo:8558`, `parseImport` at `8435-8441`), so no test
+can interpose a mismatching file; the writer's own output is checked by the
+golden/roundtrip tests instead. Record them as equivalent with that reason,
+not as caught. The while-lift and home-retry mutants are the subtle ones; if
+one cannot be made observable, record it as equivalent with the reason
+(project convention) rather than claiming it was caught.
 
 ---
 
@@ -1137,15 +1448,23 @@ reason (the project's convention) rather than claiming it caught.
    module-end heading check; `checkExports` loop; the two fixup scans
    (`whileStat` lift, `fnDecl` retry); the `main` gating. Add declaration
    errors and declaration-only run programs.
-3. **Calls:** the `designatorT` method branch; `callFnWith`; receiver place
-   rules; labels. Add receiver-mode/move/borrow/alias/arg-order tests.
+3. **Calls:** the `designatorT` restructure (break at `. name (`; the tail
+   runs on the receiver; `isCall` makes it a value use; `methodCall` after
+   the tail and its result returned); `callFnWith`; receiver place rules
+   (including the finalized whole-handle test); labels and displays. Add
+   receiver-mode/move/borrow/alias/arg-order, B1/B2/B3 and chaining tests.
    Existing function-call messages must not change.
-4. **Symbol files:** version bump; `appMethod`; writer group; reader;
-   order lists; `symFinish`; mode-0 comparison; fixtures/goldens/constants.
-   Regenerate goldens explicitly.
-5. **Docs and examples:** `LANGUAGE.md`, `README.md`, `doc_check`.
+4. **Symbol files:** version bump; `appMethod`; writer group; reader; order
+   lists; `symFinish`; mode-0 comparison; **migrate all 76 `modules/sym`
+   fixtures and the 3 goldens, update `sym_test.py`'s constants/literals and
+   `sym_fuzz.py`, and add the symcheck `expect` files and REF/REEMIT
+   assertions** (B4); regenerate goldens explicitly.
+5. **Docs and examples:** `LANGUAGE.md`, `README.md`, `doc_check`;
+   `PERFORMANCE.md`/`bench/cli/README.md` marked historical; `FORK.md`
+   updated after implementation.
 6. **Mutants and gates:** add the method mutants; retarget stale patterns;
-   run every gate (9.5); measure size/peak; fixed point.
+   record the mode-0 equivalents; run every gate (9.5); measure size/peak;
+   fixed point.
 7. **Independent review, fixes, merge, then one `make promote`** (source
    changed). The compiler source must remain free of methods until after the
    promote; using methods in `obo.obo` is a possible later round 2, not this
@@ -1153,8 +1472,9 @@ reason (the project's convention) rather than claiming it caught.
 
 ### 9.2 Files and functions
 
-- `obo/src/obo.obo`: `Sym` (`:992`), `newSym` (`:1130`), registry helpers
-  near `findSym` (`:2450`), `fnDecl` (`:8194`), `fnBody` display name
+- `obo/src/obo.obo`: `Sym` (`:992`), `newSym` (`:1130`), the registry and
+  helpers after `newSym` (they need `tVoid`, `Sym`, `symArena`), `fnDecl`
+  (`:8194`), `fnBody` display name
   (`:8114`), `designatorT` (`:5561`), `callFn`/`callFnWith` (`:4760`),
   `argOrderCheck` (`:4709`), `consume` (`:2861`), `borrowBind` (`:2964`),
   `checkExports` (`:8358`), `whileStat` lift (`:7025`), module end
@@ -1162,11 +1482,16 @@ reason (the project's convention) rather than claiming it caught.
   `symCompareOrder` (`:9571`), `symFinish` (`:9632`), `symFnDecl` (`:9916`),
   `readSym` (`:10167`), `releaseTables` (`:10361`), constants (`:106-111`).
 - Tests: new `tests/run/methods*.obx`; `tests/errors/methods.obx`; new
-  `tests/modules/{run,errors}/...`; `tests/sym_test.py`; goldens;
-  `tests/port_compare.py`; `tests/mutate_fork.py`.
-- Docs: `LANGUAGE.md`, `README.md`, `FORK.md` (after implementation).
+  `tests/modules/{run,errors,sym}/...` trees (including the migrated sym
+  fixtures with `expect` files); `tests/sym_test.py`; the golden tree and
+  `expected/*.sym`; `tests/sym_fuzz.py`; `tests/port_compare.py`;
+  `tests/mutate_fork.py` (and `mutate_port.py` where shared).
+- Docs: `LANGUAGE.md`, `README.md`, `FORK.md` (after implementation);
+  `PERFORMANCE.md` and `bench/cli/README.md` get the historical note.
 - No change: runtime (`obo/runtime/*`), `obo/lib/*`, `obo/cmd/*`,
-  `obo/tools/*`, `tests/own_fuzz.py`, the seeds.
+  `obo/tools/*`, `tests/own_fuzz.py`. The feature commit does **not** touch
+  `seed/obo`; the one promote happens after merge and the independent
+  review, on main, as usual.
 
 ### 9.3 Risks
 
@@ -1175,39 +1500,53 @@ reason (the project's convention) rather than claiming it caught.
    (`arg_order`, `call_targets`, `pure_mut`, ...) plus new receiver tests.
 2. **Receiver held across later arguments** is a soundness rule, not a
    convenience. Gate: `b.store(clear(b))` must be refused at the argument.
-3. **Owned receiver through a handle** is the one genuinely new soundness
-   hazard (the `consume` register early-return). Keep the explicit
-   rejection and its error test.
-4. **Lifted `while` conditions** move code after the body; a method call to
+3. **Receiver place metadata and value-use marks.** The receiver must be
+   finalized by the designator tail *before* `methodCall` (B1), and a
+   statement/defer receiver parsed with `designatorT(true)` must still be
+   recorded as a read (B2). Missing either is a soundness hole, not a
+   message bug; gates are `run/methods_refs`, `run/methods_fields` and the
+   B2 loop error case.
+4. **Call-result corruption.** The tail must not run on the call result
+   (B3); an owned return on a reference receiver must be a legal `let`.
+   Gate: `run/methods_refs`.
+5. **Owned receiver through a handle** is the one genuinely new soundness
+   hazard (the `consume` register early-return). The check must use the
+   **finalized** item (`viaHandle && mode == "reg"`), not `path` (always ""
+   for handle items) and not a pre-tail item (where `viaHandle` is unset).
+   Keep the explicit rejection and its error test.
+6. **Lifted `while` conditions** move code after the body; a method call to
    a forward-headed method in the condition must have its fixup relocated
    with the condition. Forgetting this is a silent miscompile. Gate: a
    dedicated run case.
-5. **Register-home retry** truncates code; forward-headed method fixups in
+7. **Register-home retry** truncates code; forward-headed method fixups in
    the discarded range must be dropped like function fixups.
-6. **Symbol reader/writer drift** is caught by `--reemit-sym`, the golden
-   byte comparison, and mode-0 live comparison; keep all three.
-7. **Visibility differs between a full build (live private methods) and
+8. **Symbol reader/writer drift** is caught by `--reemit-sym`, the golden
+   byte comparison, and the migrated symcheck `expect` assertions. The
+   mode-0 live comparison is defense in depth only: a full build reads the
+   file it just wrote (§5.3), so it cannot see a forged file.
+9. **Visibility differs between a full build (live private methods) and
    `--check` (absent)**. The message policy (section 4.3) must be
    mode-independent; module tests run a full build and `--check` trees run
    the checked mode.
-8. **Memory/size:** one pointer-sized `recv` field per `Sym` and one
-   registry array; no per-type allocations. Measure the compiler's peak (currently 1,646,816
-   live on main, budget 2,000,000). Do not raise `PEAK_BUDGET` without the
-   user (project rule); if needed, a parallel `methodRecvs` array or a lazy
-   structure is the fallback.
-9. **Declaration-order friction:** the receiver type must be defined first;
-   forward method headings are matched per `(type, name)`. A heading on one
-   type does not define a same-named method on another.
-10. **Seed compatibility:** all implementation code uses the 0.5 language
+10. **Memory/size:** one pointer-sized `recv` field per `Sym` and one
+    registry array; no per-type allocations. Measure the compiler's peak
+    (currently 1,646,816 live on main, budget 2,000,000). Do not raise
+    `PEAK_BUDGET` without the user (project rule); if needed, a parallel
+    `methodRecvs` array or a lazy structure is the fallback.
+11. **Declaration-order friction:** the receiver type must be defined first;
+    forward method headings are matched per `(type, name)`. A heading on one
+    type does not define a same-named method on another.
+12. **Seed compatibility:** all implementation code uses the 0.5 language
     subset; the tests use methods but the compiler's own source does not.
 
 ### 9.4 Size and complexity
 
-Estimated `src/obo.obo`: +350 to +450 lines (10,527 → about 10,900, +3.5%),
-plus tests (roughly 800-1,200 lines across `.obx`/Python fixtures/goldens)
-and docs. The feature is medium complexity, on the order of the Result or
-I/O phases: no runtime, no new tokens, no new ABI, but a shared-call-path
-refactor and a symbol-format bump.
+Estimated `src/obo.obo`: +380 to +480 lines (10,527 → about 10,900-11,000,
++3.5-4.5%), plus tests (roughly 900-1,300 lines across
+`.obx`/Python/symcheck fixtures/goldens) and docs. The feature is medium
+complexity, on the order of the Result or I/O phases: no runtime, no new
+tokens, no new ABI, but a shared-call-path refactor, a designator
+restructure and a symbol-format bump with a 79-file fixture migration.
 
 ### 9.5 Gates
 
@@ -1215,15 +1554,18 @@ Per the project's normal set, on the merged tree:
 
 - `run_fork.py` (run, errors, module trees, sym tests, own-fuzz),
   `module_test.py`, `sym_test.py` (golden compare, no `--update`),
-  `doc_check.py`, `homes_check.py`, `elf_test.py`, `io_test.py`;
-- `port_test.py`, `port_compare.py` (including the seed comparison with the
-  new `(0, 6)` skips), `mutate_fork.py`, `mutate_port.py`, `mutate_io.py`;
-- `tools.py` and `eza.py` unchanged and green (no library/tool/source
-  changes);
+  `sym_fuzz.py`, `doc_check.py`, `homes_check.py`, `homes_edge.py`,
+  `elf_test.py`, `io_test.py`, `meta_test.py`;
+- `port_test.py`, `port_compare.py` (the default comparison, the `symcheck`
+  expect assertions and the seed comparison with the new `(0, 6)` skips),
+  `mutate_fork.py`, `mutate_port.py`, `mutate_io.py`;
+- `imports.py` and `stdlib.py` (unchanged libraries; the import/decoy trees
+  must stay green), `tools.py` and `eza.py` unchanged and green (no
+  library/tool/source changes);
 - fixed point: `make obo` with the seed, then stage 2 == stage 3
   (`cmp`), and the measured compiler peak within budget;
 - one seed promotion after the independent review, only if the source
-  changed.
+  changed (on main, after merge; not in the feature commit).
 
 ---
 
@@ -1292,60 +1634,48 @@ methods is a separate decision after the promote.
 
 ---
 
-## 12. Open questions and recommended defaults
+## 12. Decisions (resolved at review; none left for the user)
 
-Only genuine choices are listed. Defaults are the recommendation; each is
+The design review resolved the former open questions as follows. They are
+recorded as decisions so the implementation does not reopen them; each is
 small and reversible except the first two, which shape the surface.
 
-1. **Field/method collision (user-surface).** Default: **forbid** a method
-   and a field with the same name on one type (and a method named like a
-   variant of its closed type). Alternative: allow, since `x.m` and `x.m()`
-   are syntactically distinguishable. Forbidding keeps one member
-   namespace, avoids surprise, and is easy because fields precede methods.
-2. **Variant dispatch (user-surface).** Default: **one parent step**, so a
-   `Circle`-typed value (`let c = new Circle{...}`, or a value narrowed to
-   `Circle` in a `match` arm) can call `Shape::area()`. Alternative: only
-   values statically typed as the closed type may call its methods (the
-   workaround is to move the value into a closed-typed local, e.g.
-   `let s: Shape = c`). The parent step makes methods on closed types
-   actually usable and is unambiguous because variants cannot declare
-   methods.
-3. **Method namespace (user-surface).** Default: **separate from top-level
-   declarations**: a method `push` and a function `push` can coexist.
-   Alternative: share the module namespace, which would forbid such natural
-   pairs for no grammatical gain. (Methods are still keyed by receiver type,
-   so two types may share a method name.)
-4. **Owned receivers in phase 7.** Default: **include** (`r: T`). The
-   roadmap asks for it; the call-site move and body ownership already work.
-   Alternative: defer owned receivers and ship `&`/`mut` only, which would
-   remove `methods_move` and one soundness case.
-5. **Handles.** Default: **allow `&`/`mut` receivers through a handle
-   expression** under the existing handle-borrow rules (only callees that
-   cannot free), and **refuse owned receivers through a handle**.
-   Alternative: refuse all handle receivers in phase 7 for the smallest
-   rule set. Allowing follows field access, which already dereferences
-   handles.
-6. **`.sym` representation and versions.** Default: source-like
-   `fn (p0: &T) m(p1: ...)`, `obosym 2`, compiler `0.6`, ABI `1`.
-   Alternatives: a new `method T m(...)` word (still no new token, but a new
-   grammar word) or a `methods` section; or bumping ABI (not warranted: no
-   layout/calling-convention change). Reviewer-level.
-7. **Method named `main`.** Default: **allow**; it is not the program main,
-   and the two checks that assume functions are gated on `!isMethod`. The
-   alternative is a special-case prohibition.
-8. **Method calls on temporaries / chaining.** Default: **not supported**;
-   the receiver must be a designator, and an owned call result must be
-   stored. This follows from no method values and references not being
-   returnable; supporting it would need an owned-temporary receiver rule
-   and is a separate design.
-9. **Diagnostic spelling.** Default: `T::m` (and `M::T::m`), matching
-   `Module::name`; alternatives `T.m` or a quoted pair. Reviewer-level.
-10. **Declare-before-use for methods.** Default: **yes**, with forward
-    headings (the single-pass constraint; buffering a module is against the
-    architecture). Not really open.
+1. **Field/method collision: forbid.** A method and a field with the same
+   name may not coexist on one type, and a method may not be named like a
+   variant of its closed receiver type. `x.m` and `x.m()` are syntactically
+   distinguishable, but one member namespace avoids surprise and is easy
+   because fields precede methods.
+2. **Variant dispatch: one parent step.** A `Circle`-typed value (a
+   `let c = new Circle{...}` or a value narrowed to `Circle` in a `match`
+   arm) can call `Shape::area()`. Variants cannot declare methods, so the
+   lookup is unambiguous; closed types have no further parent.
+3. **Method namespace: separate from top-level declarations.** A method
+   `push` and a function `push` can coexist; methods are keyed by receiver
+   type, so two types may also share a method name.
+4. **Owned receivers are included** (`r: T`): the roadmap asks for it, and
+   the call-site move and body ownership work through the existing paths.
+5. **Handles:** `&`/`mut` receivers through a handle expression are allowed
+   under the existing handle-borrow rules (only callees that cannot free);
+   an owned receiver through a handle is refused (after the receiver is
+   finalized; B1).
+6. **`.sym` representation and versions:** source-like
+   `fn (p0: &T) m(p1: ...)`, `obosym 2`, compiler `0.6`, ABI `1`. A
+   `method T m(...)` word or a `methods` section is not used; ABI is not
+   bumped (no layout/calling-convention change).
+7. **A method named `main` is allowed;** it is not the program entry, and
+   the source and reader main checks are gated on `!isMethod`, with the
+   module/sym tests of section 8.3.
+8. **No chaining and no owned temporaries.** A method call ends the
+   designator; a following `.`/`[` is a syntax error. An owned function-call
+   result is the existing store-first error before the member name; a
+   handle-valued call result uses the handle rules. This is documented as
+   the actual behaviour, not a promise of temporary support.
+9. **Diagnostic spelling:** `T::m` (and `M::T::m`), matching
+   `Module::name`.
+10. **Declare-before-use with forward headings** (the single-pass
+    constraint; buffering a module is against the architecture).
 
-The user-level items are 1, 2 and 3 (and, weakly, 4 and 5); the rest are
-technical defaults for the reviewer.
+No question remains that genuinely needs the user.
 
 ---
 
@@ -1383,18 +1713,25 @@ bit.
 `b.count()` with `b: Builder` local:
 
 1. `designatorT` reads `b`, gets a `mem` item of type `Builder`;
-   the postfix loop sees `.`, reads `count`, sees `(`.
-2. `findMethod(Builder, "count")` returns the owned-receiver symbol.
-3. `callFnWith`: pad for one parameter; `checkAssign(Builder, b-item,
+   the postfix loop sees `.`, reads `count`, sees `(`, sets `isCall`, and
+   **breaks** without building a field item.
+2. The existing tail runs on the receiver: `root == b`, `path == ""`,
+   `viaHandle == false`; `isCall` makes it record the reference/suspect read
+   even though `assignmentOrCall` parsed with `target = true`.
+3. `methodCall` resolves `findMethod(Builder, "count")` (the owned-receiver
+   symbol) and checks the finalized receiver: not a whole handle deref.
+4. `callFnWith`: pad for one parameter; `checkAssign(Builder, b-item,
    "the receiver of method 'Builder::count'")`; mode 0 so `consume(a)` marks
    `b` moved and invalidates handles/references; push the pointer.
-4. No explicit arguments; `expect(T_RPAREN)`; `E8 rel32` to the method's
+5. No explicit arguments; `expect(T_RPAREN)`; `E8 rel32` to the method's
    address (or a fixup for a forward heading); `afterCall`; result is the
-   return value (or `void`).
+   return value (or `void`). `designatorT` returns it directly, so the
+   designator tail is not applied to it.
 
 `b.add("x")` with `mut`:
 
-1. same until lookup; mode 2.
+1. same until the loop breaks; the tail finalizes the receiver and records
+   its value use; `methodCall` resolves mode 2.
 2. `borrowBind(b)` gives a writable binding of the local; `noteWrite(b)`;
    `holdArg(binding, 0)`.
 3. `checkAssign(Builder, ...)`; `push` the address; parse `"x"`, `consume`
@@ -1403,22 +1740,48 @@ bit.
 4. `mutFrees(f, 0)` decides whether the caller's references into `b` are
    invalidated; `userCalls` increments if the method might free.
 
+`r.m()` where `r` is a whole reference-local statement receiver: the loop
+breaks, the tail sets the read marks because `isCall` is true (B2), and the
+call proceeds; a later re-point/free is seen by the loop checks. A method
+returning an owned record from a `&`/`mut` receiver on `r` or `r.field`
+produces a fresh `reg` item with `borrowed == false` (B3), so
+`let x = r.m()` is accepted.
+
 ### 13.3 Review checklist for the implementation
 
 - [ ] Existing function call messages unchanged (run the error tests before
       and after the `callFn` refactor).
+- [ ] The receiver is finalized by the designator tail before `methodCall`
+      (field, constant/variable element, `h.field`, whole `h` all borrow).
+- [ ] A whole reference-local receiver in a statement/defer is recorded as
+      a read (`isCall`); the B2 loop error test refuses the next use.
+- [ ] The tail is not applied to the call result; owned returns on whole
+      and field reference receivers are accepted as `let`s.
 - [ ] Receiver is held across later arguments; `b.store(clear(b))` refused.
-- [ ] Owned receiver through a handle refused, not silently freed.
+- [ ] Owned receiver through a whole handle refused, not silently freed;
+      a field/element through a handle gets the field/element error.
 - [ ] Method calls in a lifted `while` condition to forward-headed methods
-      have relocated fixups (run case + inspection of `waitFn`/`fixups`).
+      have relocated fixups (run case + inspection of `waitFn`/`fixups`;
+      `waitFn` stores symbols or a kind/index, not a globals index).
 - [ ] Register-home retry drops forward method fixups in discarded code.
+- [ ] `checkExports` truncates `closureSeen` per method and the two-pub-
+      method private-type case is caught.
 - [ ] Full build (`--sym-dir`) and `--check` (source-less) produce the same
-      diagnostics for private/unknown foreign methods.
+      diagnostics for private/unknown foreign methods; transitive access
+      works in both.
+- [ ] A method named `main` compiles in a dependency in a full build and in
+      a symcheck, and is not the program main.
+- [ ] `.sym` migration: all 76 `modules/sym` fixtures and 3 goldens are
+      format 2/0.6/ABI 1 except `format` (3), `compiler` (9.9) and
+      `version` (ABI 9); `sym_fuzz.py` mutates the format to a value other
+      than 2; the symcheck `expect` files and REF/REEMIT assertions are in
+      place and positive cases exit 0.
 - [ ] `--reemit-sym` byte-identical; golden compare without `--update`.
-- [ ] A method named `main` compiles in a dependency and is not treated as
-      the program main.
-- [ ] `--version`, `sym_test.py` constants, golden headers and README docs
-      all say `0.6`/format `2`/ABI `1`.
-- [ ] No methods in `src/obo.obo` in round 1; `seed/obo` still builds it.
+- [ ] `--version`, `sym_test.py` constants, golden headers, README and
+      LANGUAGE docs all say `0.6`/format `2`/ABI `1`; PERFORMANCE/bench 0.5
+      samples are marked historical.
+- [ ] No methods in `src/obo.obo` in round 1; `seed/obo` still builds it;
+      no seed change in the feature commit.
 - [ ] No test assertion deleted; stale mutant patterns retargeted, not
-      removed; peak budget not raised without the user.
+      removed; mode-0-only mutants recorded as equivalent with the reason;
+      peak budget not raised without the user.
