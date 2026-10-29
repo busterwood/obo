@@ -25,7 +25,7 @@ run by CI.
   `cli/README.md` for methodology, sample output and limits.
 
   ```sh
-  python3 obo/bench/cli/run.py          # about 90 s on a recent host
+  python3 obo/bench/cli/run.py          # about 80 s on a recent host
   python3 obo/bench/cli/run.py --quick  # under ~20 s
   ```
 
