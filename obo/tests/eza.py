@@ -1059,6 +1059,13 @@ def _error_cases():
     _g('errors', 'columns_negative', 'mixed', env={'COLUMNS': '-1'})
     _g('errors', 'columns_too_large', 'mixed',
        env={'COLUMNS': '18446744073709551616'})
+    _g('errors', 'width_plus', '--width=+', 'mixed',
+       note='Rust usize::from_str: "+" alone is InvalidDigit, not Empty')
+    _g('errors', 'width_quote', '--width=a"b', 'mixed',
+       note='FailedParse Debug-escapes the displayed value')
+    _g('errors', 'columns_plus', 'mixed', env={'COLUMNS': '+'})
+    _g('errors', 'columns_quote', 'mixed', env={'COLUMNS': 'a"b'})
+    _g('errors', 'columns_control', 'mixed', env={'COLUMNS': 'a\tb'})
     _o('errors', 'own_grid_details', '-l', '-G', '--no-user', '--bytes',
        '--time-style=long-iso', 'mixed',
        note='E2 rejects eza GridDetails (-l with -G) with this build\'s '

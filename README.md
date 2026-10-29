@@ -104,7 +104,7 @@ subset; `-T`/`--tree` and `-L`; and `--no-quotes`.
 | obo suite | 1,165 tests; 527/549 mutants caught + 22 equivalent; 27 runtime/library; 495 port; 27 symbol-file tests; 200 fuzz mutations; 34 metadata checks; 50/52 + 2 and 21/30 + 9 metadata mutants caught/equivalent |
 | Tools differential gate | 199 checks (191 matrix + 8 serial) vs GNU coreutils 9.4; 2 memory cases (module roots) |
 | Tool binaries | cat 40,961; wc 77,825; sort 77,825 bytes (static, runtime included; P6b's UTF-8 width table) |
-| eza E2 differential gate | 541/541 non-memory cases (457 exact reference goldens, 72 live including 22 pty, 12 own) + 5 memory cases |
+| eza E2 differential gate | 546/546 non-memory cases (462 exact reference goldens, 72 live including 22 pty, 12 own) + 5 memory cases |
 | eza E2 binary | 212,993 bytes (sha256 `91a5f2c5…`; static, runtime included; reference eza 0.23.3 is 2,294,768) |
 | eza 10k-entry live peak | 2,190,032 bytes restricted long / 2,189,408 names / 2,190,160 tree / 2,189,632 colour / 2,189,808 grid; `EZA_PEAK_MAX` 2,752,512 (unchanged) |
 | eza 10k-entry max RSS | 2,560 KiB for each of long/names/tree/colour/grid; pinned reference about 25 MB long / 12 MB names / 14 MB tree / 12 MB colour / 12 MB grid across runs (measurement only) |
@@ -129,7 +129,7 @@ on the merged 0.5 tree (396/396, `--memory` 4/4), the binary (172,033 bytes,
 sha256 `6f0e8472…`), the four 10,000-entry peaks (2,189,984 / 2,189,360 /
 2,190,112 / 2,189,584 bytes) and max RSS (2,560 KiB each) without raising the
 memory cap. P6b (after merging P5b's review fixes and main `cc6c420`) measures
-the E2 gate at 541/541 non-memory and `--memory` 5/5, binary 212,993 bytes
+the E2 gate at 546/546 non-memory and `--memory` 5/5, binary 212,993 bytes
 (sha256 `91a5f2c5…`), the five peaks 2,190,032 / 2,189,408 / 2,190,160 /
 2,189,632 / 2,189,808 bytes and 2,560 KiB max RSS each, with the cap
 unchanged.

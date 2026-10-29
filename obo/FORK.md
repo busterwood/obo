@@ -5044,25 +5044,25 @@ a documented limitation). The reference panics from a usize overflow for
 widths within two of `usize::MAX`; this build clamps at 2^40 and prints a
 one-row grid instead. GridDetails and icons stay out.
 
-**Tests.** 546 cases: 541 non-memory (457 exact reference goldens, 72 live
+**Tests.** 551 cases: 546 non-memory (462 exact reference goldens, 72 live
 including 22 pty, 12 own) and five memory cases (long, names, tree, colour,
-grid). New families are `grid` (102) and `utf8` (34) plus twelve E2 error
+grid). New families are `grid` (102) and `utf8` (34) plus seventeen E2 error
 cases; new fixtures are `gridmix`, `utf8`, `utf8bad`, `utf8tie`, `utf8fold`
 and `utf8ws`. Goldens were recorded from the pinned reference (sha256
-`10457dde...`); `--reference=none` passes 469 goldens/own and skips the 72
+`10457dde...`); `--reference=none` passes 474 goldens/own and skips the 72
 live cases.
 
 **Measured (merged tree).** eza binary 212,993 bytes (sha256 `91a5f2c5…`;
 static, runtime included; reference 2,294,768); tools cat 40,961, wc 77,825,
 sort 77,825 bytes (the width table is code). `tests/eza.py
---require-reference`: 541/541 non-memory, 0 failed; `--memory`: 5/5, live
+--require-reference`: 546/546 non-memory, 0 failed; `--memory`: 5/5, live
 peaks 2,190,032 long / 2,189,408 names / 2,190,160 tree / 2,189,632 colour /
 2,189,808 grid, max RSS 2,560 KiB each, under the unchanged
 `EZA_PEAK_MAX = 2,752,512`; the reference measures about 24.6/12.0/14.2/12.1/
 12.0 MB max RSS on the same trees.
 
 **Gates.** `make`; `make tools`; `make eza`; `tests/eza.py
---require-reference` 541/541; `--memory` 5/5; `tests/tools.py` 199/199;
+--require-reference` 546/546; `--memory` 5/5; `tests/tools.py` 199/199;
 `tests/tools.py --memory` 2/2; `tests/stdlib.py` 16/16; `tests/imports.py`
 26/26; `tests/doc_check.py` 48 examples. Under the scoped P6b instruction the
 compiler mutation/port/sym suites were not re-run and are not claimed.

@@ -25,7 +25,7 @@ Reference: ` /tmp/eza-tar-test2/eza `
 - reference path: ` /tmp/eza-tar-test2/eza `
 - reference sha256: ` 10457dde35808517d09bcd3bfb6bc386000d06c2126e34b9071e09470a8f7cd8 `
 - fixture capabilities: ` {'euid': 1000, 'umask': 18, 'pre_epoch': True, 'xattr': True, 'invalid_utf8': True, 'fifo': True, 'socket': True, 'hardlink': True, 'symlink': True, 'deep_path': True, 'nonroot': True, 'dev_full': True, 'ambient_xattr': False} `
-- dt-unknown candidates: ` {'/proc': {'entries': 103, 'unknown': 0, 'sample': []}, '/sys': {'entries': 12, 'unknown': 0, 'sample': []}, '/dev/shm': {'entries': 7, 'unknown': 0, 'sample': []}, '/run': {'entries': 34, 'unknown': 0, 'sample': []}} `
+- dt-unknown candidates: ` {'/proc': {'entries': 97, 'unknown': 0, 'sample': []}, '/sys': {'entries': 12, 'unknown': 0, 'sample': []}, '/dev/shm': {'entries': 7, 'unknown': 0, 'sample': []}, '/run': {'entries': 34, 'unknown': 0, 'sample': []}} `
 
 ## 20. E2 re-probes (P6b: grid, width sources, UTF-8, lossy names)
 
@@ -807,6 +807,110 @@ b''
 
 ```python
 b'eza: Value "18446744073709551616" not valid for option --width (-w): number too large to fit in target type\n'
+```
+
+### width_plus
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '--width=+', 'grid10'] `
+- env extras: ` {} `
+- exit: ` 3 `
+- stdout sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stderr sha256: ` 5a61a04c03c203ab35c688b98c301e6f209d462a9c62a042420630b455c4772a `
+- stdout bytes:
+
+```python
+b''
+```
+
+- stderr bytes:
+
+```python
+b'eza: Value "+" not valid for option --width (-w): invalid digit found in string\n'
+```
+
+- note: ` Rust usize::from_str: "+" alone is InvalidDigit, not Empty `
+
+### width_quote
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '--width=a"b', 'grid10'] `
+- env extras: ` {} `
+- exit: ` 3 `
+- stdout sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stderr sha256: ` 77c6ce0c06c8ed180776495c2b867db0c9a23d4f929776e2a239cbbddd5aac03 `
+- stdout bytes:
+
+```python
+b''
+```
+
+- stderr bytes:
+
+```python
+b'eza: Value "a\\"b" not valid for option --width (-w): invalid digit found in string\n'
+```
+
+- note: ` FailedParse Debug-escapes the displayed value `
+
+### columns_plus
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', 'grid10'] `
+- env extras: ` {'COLUMNS': '+'} `
+- exit: ` 3 `
+- stdout sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stderr sha256: ` 2e8c38d235695a7978c09826a99aa875b758418d44433e476fa2814ee1ef1349 `
+- stdout bytes:
+
+```python
+b''
+```
+
+- stderr bytes:
+
+```python
+b'eza: Value "+" not valid for environment variable COLUMNS: invalid digit found in string\n'
+```
+
+### columns_quote
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', 'grid10'] `
+- env extras: ` {'COLUMNS': 'a"b'} `
+- exit: ` 3 `
+- stdout sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stderr sha256: ` f42cbdab642918054b1de998327c05e696f6cd46e48b70f7a39376c0bd3f1c74 `
+- stdout bytes:
+
+```python
+b''
+```
+
+- stderr bytes:
+
+```python
+b'eza: Value "a\\"b" not valid for environment variable COLUMNS: invalid digit found in string\n'
+```
+
+### columns_control
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', 'grid10'] `
+- env extras: ` {'COLUMNS': 'a\tb'} `
+- exit: ` 3 `
+- stdout sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stderr sha256: ` d26b34c496af30ff49e1263badaae8caec759e8a1aaa27f93d5c9e2355e2dff6 `
+- stdout bytes:
+
+```python
+b''
+```
+
+- stderr bytes:
+
+```python
+b'eza: Value "a\\tb" not valid for environment variable COLUMNS: invalid digit found in string\n'
 ```
 
 ### columns_40_grid100
