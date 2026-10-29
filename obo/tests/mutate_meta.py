@@ -18,9 +18,11 @@ a mutated compiler cannot test the runtime's syscall behaviour:
                            runtime.c) and the fs-level program corpus from
                            tests/meta/*.obx, compiled against the mutant runtime
                            with a private --sym-dir. Each entry.S mutant also
-                           runs rt_io_test's write_read case, so a wrong slot
-                           order cannot pass. A mutant is caught when any case's
-                           exit code or output differs from the baseline.
+                           runs tests/run/io_basic.obx (a compiled program, so
+                           its calls go through the entry.S slot table), and it
+                           runs before the other cases, so a wrong slot order
+                           cannot pass. A mutant is caught when any case's exit
+                           code or output differs from the baseline.
 
   compiler runner          for each compiler mutant, writes src/obo.obo with the
                            mutation to a private file (exactly one match; text
@@ -33,8 +35,8 @@ a mutated compiler cannot test the runtime's syscall behaviour:
                            plus tests/meta/*.obx must compile, run and produce
                            the baseline outcomes. The fd-materialisation case is
                            tests/run/meta.obx's "pin dir inside" line, whose max
-                           argument changes the fd through a `mut &int`
-                           reference.
+                           argument (changeGfd()) changes the global fd that the
+                           call's first argument reads.
 
 Counts are measured, never fixed in advance. A genuinely equivalent mutant is
 listed in EQUIVALENT_RUNTIME or EQUIVALENT_COMPILER with its reason and excluded
