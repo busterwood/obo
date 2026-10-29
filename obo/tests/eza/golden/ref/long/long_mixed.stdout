@@ -1,0 +1,16 @@
+.rw-r--r--  5 2020-09-13 12:26 -
+.rw-r--r--  9 2020-09-13 12:26 --x
+.rw-r--r--  6 2020-09-13 12:26 alpha
+.rw-r--r--  5 2020-09-13 12:26 Beta
+lrwxrwxrwx  - 2020-09-13 12:26 broken -> missing
+drwxr-xr-x  - 2020-09-13 12:26 dir
+lrwxrwxrwx  - 2020-09-13 12:26 dirlink -> dir
+.rw-r--r--  6 2020-09-13 12:26 gamma.txt
+lrwxrwxrwx  - 2020-09-13 12:26 link -> alpha
+.rw-r--r--  3 2020-09-13 12:26 noexec
+|rw-r--r--  - 2020-09-13 12:26 pipe
+.rwxr-xr-x 17 2020-09-13 12:26 prog
+srw-r--r--  - 2020-09-13 12:26 sock
+lrwxrwxrwx  - 2020-09-13 12:26 spaced -> 'tar get'
+drwxr-xr-x  - 2020-09-13 12:26 sub.dir
+.rw-r--r--  7 2020-09-13 12:26 'tar get'

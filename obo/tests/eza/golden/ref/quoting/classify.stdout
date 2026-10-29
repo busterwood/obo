@@ -1,0 +1,20 @@
+' '
+'a b'/
+"apos'trophe"
+back\slash
+"both ' and ""
+brokenrel -> '../tar get'
+'broken spaced' -> 'a b/missing'
+cr\rname
+ctl\u{1}name
+'ctl target' -> ctl\u{1}target
+del\u{7f}name
+dquote"name
+esc\u{1b}name
+'lead space'
+nl\nname
+plain
+tab\tname
+'trail '
+'valid spaced' -> 'a b'/target
+'with space'
