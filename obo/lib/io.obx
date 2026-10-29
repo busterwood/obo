@@ -64,6 +64,14 @@ pub fn isTty(fd: int): bool {
     return isatty(fd)
 }
 
+// The terminal's column count (the terminalWidth builtin's ioctl TIOCGWINSZ), or
+// 0 when the borrowed fd is not a terminal, is invalid, or reports a zero size
+// (unknown); callers fall back to 80. No Result and no fd-table fatal, like
+// isTty. (P6a addition; eza's grid uses it for the real-TTY default width.)
+pub fn termWidth(fd: int): int {
+    return terminalWidth(fd)
+}
+
 // ok(true) = bytes are available, ok(false) = EOF. A short chunk is data, not
 // EOF: the next fill decides. The old chunk is freed by the assignment.
 pub fn fill(mut r: &Reader): Result[bool] {

@@ -18,7 +18,11 @@ Sections (both by default):
             the pty slave as the one true answer) and getenv (rt_init's
             env_base formula, the fixed OBO_META_ENV_* environment, and a
             crafted envp for first-match, empty names, '=', prefixes, a
-            malformed entry and owned copies that survive env mutation). Every
+            malformed entry and owned copies that survive env mutation). P6a adds
+            terminalWidth (negative fds, a regular file, /dev/null, both pipe
+            ends, a directory, a closed tracked fd, a reused number, the pty
+            slave with a set TIOCSWINSZ size, the column not the row, and a zero
+            column count as unknown; the same OBO_META_FAULT=eintr retry). Every
             case frees its cells and ends in rt_finish, except readdir_closed
             under OBO_CHECK, which ends in the runtime's exit 9; under
             OBO_CHECK=1 the others are the leak oracle.
@@ -33,7 +37,8 @@ Sections (both by default):
             compare paths::join and lstat with os.path.join for an operand
             outside the cwd and for a "../" operand. P5a adds meta/env_api.obx (the
             env API and both builtins) and meta/env_shadow.obx (the B3
-            name-shadow compile test). Files with // expect: markers are
+            name-shadow compile test). P6a adds meta/term_api.obx (terminalWidth
+            and io::termWidth on non-terminals). Files with // expect: markers are
             compared in order (and // expect-exit: sets the code). The dedicated
             missing-close case must exit 8 under OBO_CHECK; normal cases must
             not.
@@ -143,6 +148,7 @@ RT_CASES = [
     ('readdir_closed', clean_env(), 9),
     ('readdir_closed', clean_env(check=False), 0),
     ('isatty_checks', clean_env(), 0),
+    ('termwidth_checks', clean_env(), 0),
     ('getenv_real', clean_env(), 0),
     ('getenv_crafted', clean_env(), 0),
     ('eintr', clean_env(fault='eintr'), 0),
@@ -432,6 +438,10 @@ def program_invocations(fx):
          marker_case('env/api', 'env_api.obx')),
         ('env/shadow', 'env_shadow.obx', [], None,
          marker_case('env/shadow', 'env_shadow.obx')),
+        # P6a: terminalWidth and io::termWidth on non-terminals; the pty column
+        # counts are in rt_meta_test.c, which can call ioctl
+        ('io/term_api', 'term_api.obx', [], None,
+         marker_case('io/term_api', 'term_api.obx')),
     ]
 
 

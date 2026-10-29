@@ -55,6 +55,7 @@ _entry:
     slot rt_read_link
     slot rt_isatty
     slot rt_getenv
+    slot rt_term_width
 
     .text
     .macro check f
@@ -105,5 +106,6 @@ check_\f:
     check rt_read_link
     check rt_isatty
     check rt_getenv
+    check rt_term_width
 
     .section .note.GNU-stack,"",@progbits

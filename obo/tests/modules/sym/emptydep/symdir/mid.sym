@@ -1,6 +1,6 @@
 obosym 1
 abi 1
-compiler "0.4"
+compiler "0.5"
 source 0x4e0f1ac9f6ed31a0
 dep a ""
 interface 0x5de799bf252d0e85

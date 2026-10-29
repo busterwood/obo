@@ -1,6 +1,6 @@
 obosym 1
 abi 1
-compiler "0.4"
+compiler "0.5"
 source 0x3b46f420da763694
 interface 0x9842d462cbad731b
 module x
