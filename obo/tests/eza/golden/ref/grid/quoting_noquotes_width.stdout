@@ -1,0 +1,4 @@
+             both ' and "   ctl\u{1}name   esc\u{1b}name  tab\tname
+a b          brokenrel      ctl target     lead space     trail 
+apos'trophe  broken spaced  del\u{7f}name  nl\nname       valid spaced
+back\slash   cr\rname       dquote"name    plain          with space

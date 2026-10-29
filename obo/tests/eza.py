@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The differential gate for `eza` (E0, phase P4).
+"""The differential gate for `eza` (E0, E1 and E2).
 
     python3 tests/eza.py [-k PATTERN] [-v] [-x] [-j N] [--fast]
         [--reference=auto|eza|none] [--require-reference]
@@ -43,18 +43,18 @@ findings.
 against the pinned binary (`-l --no-user --bytes --time-style=long-iso
 --treat-dirs-as-files`); a reference that does not accept it is a setup error.
 
-Own eza and P4 gating
----------------------
+Own eza and P4/P5b/P6b gating
+-----------------------------
 P4 supplies `cmd/eza.obx`; `own_available()` tests for it.  A normal run
 builds it through `build_tools.build(['eza'], private_out, obo, rt)` in the
 harness temp dir (its own `sym/`), compares every golden and live case, and
 checks the own-tagged usage errors against `golden/own/`.  `--record` also
 records those own cases from the built binary.  `--memory` builds eza, creates
-10,000 entries, runs the restricted-long and name-only cases under
+10,000 entries, runs the restricted-long, name-only, tree and grid cases under
 `OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, parses the single
 `obo: N peak bytes, M allocated` line, rejects any leak/double-close line or
 nonzero exit, and enforces the measured `EZA_PEAK_MAX`; it also prints our max
-RSS, the pinned reference's max RSS and both binary sizes for the P4 record
+RSS, the pinned reference's max RSS and both binary sizes for the record
 (measurement only, never gated).
 
 The P0 fallback stays for a tree without the own source: with no own build,
@@ -66,14 +66,15 @@ version and binary hash, and a missing or malformed golden is a setup error.
 With no own build and no usable pinned reference there is nothing to run, so
 the harness is a setup error (exit 2), never a silent all-skip pass.
 
-E0 scope
---------
-Reference behaviour outside E0/E1 is not in the golden/ref matrix: multiple
+Scope
+-----
+Reference behaviour outside E0/E1/E2 is not in the golden/ref matrix: multiple
 operands, `.name`/`.Name` sorts, `--sort=inode|none`, plain `-l`, xattr rows,
-the no-operand stdin mode, icons, grid and non-UTF-8 display are excluded (the
-exact case list and reasons are in `eza/REFERENCE.md`, P0 findings).  E1 adds
-the colour, tree and --no-quotes families; long-column colour and the
-EZA_COLORS UI keys stay out (see cmd/README).  Probe evidence for excluded
+the no-operand stdin mode, icons, GridDetails (`-l` with `-G`) and long-column
+colour are excluded (the exact case list and reasons are in
+`eza/REFERENCE.md`, `eza/E1-PROBES.md` and `eza/E2-PROBES.md`).  E1 adds the
+colour, tree and --no-quotes families; E2 adds the grid and utf8 families, the
+width sources and lossy invalid-UTF-8 names.  Probe evidence for excluded
 behaviours stays in the probe report.
 
 Case tags
@@ -149,7 +150,8 @@ def own_available():
 
 LONG = ('-l', '--no-user', '--bytes', '--time-style=long-iso')
 FAMILIES = ('default', 'names', 'sortkeys', 'long', 'quoting', 'classify',
-            'dirs', 'operands', 'errors', 'colour', 'tree', 'memory')
+            'dirs', 'operands', 'errors', 'colour', 'tree', 'grid', 'utf8',
+            'memory')
 TAGS = ('ref', 'golden', 'own', 'skip')
 REF, GOLDEN_TAG, OWN, SKIP = TAGS
 
@@ -163,7 +165,7 @@ class SetupError(Exception):
 class Case:
     def __init__(self, family, name, argv=(), cwd='', env=None, tags=(),
                  mode='normal', note='', requires=(), slow=False,
-                 live_only=False, memory_entries=0):
+                 live_only=False, memory_entries=0, cols=80):
         if family not in FAMILIES:
             raise SetupError('unknown case family %r for %s' % (family, name))
         tags = set(tags)
@@ -187,6 +189,8 @@ class Case:
                              % (family, name))
         if mode not in ('normal', 'sink', 'pipe', 'pty'):
             raise SetupError('%s/%s: unknown mode %r' % (family, name, mode))
+        if cols < 0:
+            raise SetupError('%s/%s: negative pty column count' % (family, name))
         if isinstance(requires, str):
             requires = (requires,)
         self.family = family
@@ -201,6 +205,7 @@ class Case:
         self.slow = slow
         self.live_only = live_only
         self.memory_entries = memory_entries
+        self.cols = cols
         self.key = family + '/' + name
 
     def __str__(self):
@@ -212,9 +217,9 @@ CASES = []
 
 def _add(family, name, argv=(), cwd='', env=None, tags=(), mode='normal',
          note='', requires=(), slow=False, live_only=False,
-         memory_entries=0):
+         memory_entries=0, cols=80):
     CASES.append(Case(family, name, argv, cwd, env, tags, mode, note,
-                      requires, slow, live_only, memory_entries))
+                      requires, slow, live_only, memory_entries, cols))
 
 
 def _g(family, name, *argv, **kw):
@@ -713,6 +718,205 @@ def _tree_cases():
        note='parent listing is live/shape-only')
 
 
+def _grid_cases():
+    """E2 grid cases. Every grid case passes --icons=never (icon rendering is
+    out of scope and terminal-ish auto icons would otherwise add glyphs) and
+    sets colour explicitly when colour matters. Widths 20/40/80/120 cover the
+    1/2/10/100 short and 10/100 long fixtures plus a mixed-length tree."""
+    for tree in ('grid1', 'grid2', 'grid10', 'grid100', 'gridlong10',
+                 'gridlong100', 'gridmix'):
+        for w in (20, 40, 80, 120):
+            _g('grid', tree + '_w' + str(w), '--width=' + str(w),
+               '--icons=never', tree)
+    _g('grid', 'across_w40_grid10', '-x', '--width=40', '--icons=never',
+       'grid10')
+    _g('grid', 'across_w20_grid100', '-x', '--width=20', '--icons=never',
+       'grid100')
+    _g('grid', 'across_w40_gridmix', '-x', '--width=40', '--icons=never',
+       'gridmix')
+    _g('grid', 'across_w80_gridlong10', '-x', '--width=80', '--icons=never',
+       'gridlong10')
+    _g('grid', 'across_columns_grid10', '-x', '--icons=never', 'grid10',
+       env={'COLUMNS': '20'})
+    # Explicit -G on a non-TTY has no width and falls back to 80; the view
+    # rules are eza's last-of -l/-1/-T/-G with the last of -G/-T deciding a
+    # long view's tree/grid-details split.
+    _g('grid', 'G_fallback_grid100', '-G', '--icons=never', 'grid100')
+    _g('grid', 'G_fallback_mixed', '-G', '--icons=never', 'mixed')
+    _g('grid', 'G_oneline_last', '-G', '-1', '--icons=never', 'mixed',
+       note='-1 last disables grid: line targets are shown')
+    _g('grid', 'oneline_then_G', '-1', '-G', '--icons=never', 'mixed',
+       note='-G last selects grid: no targets')
+    _g('grid', 'tree_then_G', '-T', '-G', '--icons=never', 'grid10')
+    _g('grid', 'G_then_tree', '-G', '-T', '--icons=never', 'grid10')
+    _g('grid', 'long_oneline_G', '-l', '-G', '-1', '--icons=never', 'mixed',
+       note='the last view flag is -1: a lines listing, -l ignored')
+    _g('grid', 'width_long', '--width=40', *LONG, 'mixed',
+       note='width is accepted and ignored by the restricted long view')
+    _g('grid', 'width_tree', '--width=40', '-T', '-L', '1', 'tree')
+    _g('grid', 'width1_mixed', '--width=1', '--icons=never', 'mixed',
+       note='grid at width 1: one cell per line and no link targets')
+    _g('grid', 'width2_gridmix', '--width=2', '--icons=never', 'gridmix')
+    _g('grid', 'width0_lines', '--width=0', '--icons=never', 'mixed',
+       note='--width=0 deduces TerminalWidth::Automatic: non-TTY Lines')
+    _g('grid', 'width0_G', '-G', '--width=0', '--icons=never', 'grid100',
+       note='explicit grid with an unknown width falls back to 80')
+    _g('grid', 'width1000_grid100', '--width=1000', '--icons=never',
+       'grid100')
+    # COLUMNS is a Set width (0 included) and is ignored when --width is
+    # present. It makes eza terminal-ish for the grid and automatic classify,
+    # but automatic colour still needs a real stdout TTY.
+    _g('grid', 'columns_grid100', '--icons=never', 'grid100',
+       env={'COLUMNS': '40'})
+    _g('grid', 'columns_0_mixed', '--icons=never', 'mixed',
+       env={'COLUMNS': '0'})
+    _g('grid', 'columns_plus_grid10', '--icons=never', 'grid10',
+       env={'COLUMNS': '+40'})
+    _g('grid', 'columns_over_width', '--width=20', '--icons=never',
+       'grid10', env={'COLUMNS': '80'})
+    _g('grid', 'columns_classify', '-F', '--icons=never', 'mixed',
+       env={'COLUMNS': '40'}, note='automatic classify is on for a Set width')
+    _g('grid', 'columns_classify_never', '-F=never', '--icons=never',
+       'mixed', env={'COLUMNS': '40'})
+    _g('grid', 'columns_colour_auto', '--color=auto', '--icons=never',
+       'mixed', env={'COLUMNS': '40'},
+       note='--width/COLUMNS do not enable automatic colour (probe)')
+    _g('grid', 'columns_oneline', '-1', '--icons=never', 'mixed',
+       env={'COLUMNS': '20'})
+    _g('grid', 'F_auto_width', '--width=80', '-F', '--icons=never', 'mixed')
+    _g('grid', 'F_always_width', '--width=80', '-F=always', '--icons=never',
+       'mixed')
+    _g('grid', 'F_never_width', '--width=80', '-F=never', '--icons=never',
+       'mixed')
+    _g('grid', 'aa_F_width', '--width=40', '-aa', '-F', '--icons=never',
+       'mixed', note='synthetic dot rows get the directory marker')
+    _g('grid', 'colour_width', '--width=80', '--color=always',
+       '--icons=never', 'mixed')
+    _g('grid', 'colour_F_width', '--width=80', '--color=always', '-F=always',
+       '--icons=never', 'mixed')
+    _g('grid', 'colour_links_width', '--width=80', '--color=always',
+       '--icons=never', 'links',
+       note='grid broken links are red; no arrow or target')
+    _g('grid', 'colour_aa_width', '--width=40', '--color=always', '-aa',
+       '--icons=never', 'mixed')
+    _g('grid', 'colour_auto_width', '--width=80', '--color=auto',
+       '--icons=never', 'mixed')
+    _g('grid', 'colour_never_width', '--width=80', '--color=never',
+       '--icons=never', 'mixed')
+    _g('grid', 'colour_LS_width', '--width=80', '--color=always',
+       '--icons=never', 'mixed', env={'LS_COLORS': 'di=01;32:ln=01;35'})
+    _g('grid', 'quoting_width', '--width=80', '--icons=never', 'quoting')
+    _g('grid', 'quoting_F_width', '--width=80', '-F=always', '--icons=never',
+       'quoting')
+    _g('grid', 'quoting_noquotes_width', '--width=80', '--no-quotes',
+       '--icons=never', 'quoting')
+    _g('grid', 'operand_file', '--width=80', '--icons=never', 'mixed/alpha')
+    _g('grid', 'operand_spaced', '--width=80', '--icons=never',
+       'mixed/tar get')
+    _g('grid', 'operand_dir_d_F', '--width=80', '-d', '-F=always',
+       '--icons=never', 'mixed/dir')
+    _g('grid', 'operand_link', '--width=80', '--icons=never',
+       'links/dangling', note='a symlink operand grids its name only')
+    _g('grid', 'operand_link_F', '--width=80', '-F=always', '--icons=never',
+       'links/dangling')
+    _g('grid', 'operand_link_colour', '--width=80', '--color=always',
+       '--icons=never', 'links/dangling')
+    _g('grid', 'operand_dirlink_colour', '--width=80', '--color=always',
+       '--icons=never', 'links/realdirlink')
+    _g('grid', 'operand_dirlink_d_F', '--width=80', '-d', '-F=always',
+       '--icons=never', 'links/realdirlink')
+    _g('grid', 'reverse_grid10', '--width=20', '-r', '--icons=never',
+       'grid10')
+    _g('grid', 'sort_size', '--width=20', '--sort=size', '--icons=never',
+       'sizes')
+    _g('grid', 'sort_ext', '--width=30', '--sort=extension', '--icons=never',
+       'ext')
+    _g('grid', 'group_first', '--width=30', '--group-directories-first',
+       '--icons=never', 'mixed')
+    _g('grid', 'D_mixed', '--width=40', '-D', '--icons=never', 'mixed')
+    _g('grid', 'f_mixed', '--width=40', '-f', '--icons=never', 'mixed')
+    _g('grid', 'a_mixed', '--width=40', '-a', '--icons=never', 'mixed')
+    _g('grid', 'aa_mixed', '--width=40', '-aa', '--icons=never', 'mixed')
+    _g('grid', 'empty', '--width=40', '--icons=never', 'empty')
+    _g('grid', 'empty_G', '-G', '--icons=never', 'empty')
+    # Real-TTY grid lives on a raw pty with a pinned TIOCSWINSZ; these are
+    # live-only (design 9.4) and the harness re-runs both sides once when a
+    # live pair differs.
+    _r('grid', 'tty_grid_80', '--icons=never', 'grid10', mode='pty', cols=80)
+    _r('grid', 'tty_grid_40', '--icons=never', 'grid10', mode='pty', cols=40)
+    _r('grid', 'tty_grid_20', '--icons=never', 'grid10', mode='pty', cols=20)
+    _r('grid', 'tty_grid_120', '--icons=never', 'grid100', mode='pty',
+       cols=120)
+    _r('grid', 'tty_gridmix_40', '--icons=never', 'gridmix', mode='pty',
+       cols=40)
+    _r('grid', 'tty_mixed_auto', '--icons=never', 'mixed', mode='pty',
+       cols=80, note='auto colour on a real terminal, no explicit flag')
+    _r('grid', 'tty_mixed_F', '-F', '--icons=never', 'mixed', mode='pty',
+       cols=80, note='automatic classify on a real terminal')
+    _r('grid', 'tty_mixed_never', '--color=never', '--icons=never', 'mixed',
+       mode='pty', cols=80)
+    _r('grid', 'tty_columns_20', '--icons=never', 'grid10', mode='pty',
+       cols=80, env={'COLUMNS': '20'})
+    _r('grid', 'tty_width_40', '--width=40', '--icons=never', 'grid10',
+       mode='pty', cols=80)
+    _r('grid', 'tty_width_0', '--width=0', '--icons=never', 'grid10',
+       mode='pty', cols=40)
+    _r('grid', 'tty_oneline', '-1', '--icons=never', 'grid10', mode='pty',
+       cols=40)
+    _r('grid', 'tty_zero_cols', '--icons=never', 'mixed', mode='pty', cols=0,
+       note='a 0x24 pty is not terminal-ish in eza (terminal_size is None): '
+            'Lines mode, colour auto, no classify')
+    _r('grid', 'tty_utf8_20', '--icons=never', 'utf8', mode='pty', cols=20)
+
+
+def _utf8_cases():
+    """E2 UTF-8 names, lossy invalid-UTF-8 names and simple-lowercase folds.
+    The valid-UTF-8 and invalid-byte fixtures have pairwise comparator-distinct
+    lossy names, so their goldens do not depend on readdir order; the tie trees
+    (fold pairs, Unicode whitespace) are live-only."""
+    _g('utf8', 'default', '--icons=never', 'utf8')
+    _g('utf8', 'Name', '--sort=Name', '--icons=never', 'utf8')
+    _g('utf8', 'name', '--sort=name', '--icons=never', 'utf8')
+    _g('utf8', 'reverse', '-r', '--icons=never', 'utf8')
+    _g('utf8', 'lines', '-1', '--icons=never', 'utf8')
+    for w in (10, 12, 20, 40, 80):
+        _g('utf8', 'grid_' + str(w), '--width=' + str(w), '--icons=never',
+           'utf8')
+    _g('utf8', 'grid_across_20', '-x', '--width=20', '--icons=never', 'utf8')
+    _g('utf8', 'grid_F_20', '--width=20', '-F=always', '--icons=never',
+       'utf8')
+    _g('utf8', 'grid_colour_20', '--width=20', '--color=always',
+       '--icons=never', 'utf8')
+    _g('utf8', 'columns_12', '--icons=never', 'utf8',
+       env={'COLUMNS': '12'})
+    _g('utf8', 'fold_Name', '--sort=Name', '--icons=never', 'utf8fold')
+    _g('utf8', 'tie_Name', '--sort=Name', '--icons=never', 'utf8tie')
+    _r('utf8', 'tie_default', '--icons=never', 'utf8tie',
+       note='fold ties E/e-acute, A/a and A-grave/a-grave: readdir order')
+    _r('utf8', 'fold_default', '--icons=never', 'utf8fold',
+       note='sigma/Cyrillic/fullwidth fold ties: readdir order')
+    _r('utf8', 'ws_default', '--icons=never', 'utf8ws',
+       note='Unicode whitespace ties: readdir order')
+    _r('utf8', 'ws_Name', '--sort=Name', '--icons=never', 'utf8ws',
+       note='whitespace is skipped by both comparators: readdir order')
+    _g('utf8', 'bad_default', '--icons=never', 'utf8bad')
+    _g('utf8', 'bad_Name', '--sort=Name', '--icons=never', 'utf8bad')
+    _g('utf8', 'bad_lines', '-1', '--icons=never', 'utf8bad')
+    _g('utf8', 'bad_long', *LONG, '--icons=never', 'utf8bad')
+    _g('utf8', 'bad_grid_20', '--width=20', '--icons=never', 'utf8bad')
+    _g('utf8', 'bad_grid_40', '--width=40', '--icons=never', 'utf8bad')
+    _g('utf8', 'bad_F', '-F=always', '--icons=never', 'utf8bad')
+    _g('utf8', 'bad_colour', '--color=always', '--icons=never', 'utf8bad')
+    _g('utf8', 'bad_colour_grid', '--width=40', '--color=always',
+       '--icons=never', 'utf8bad')
+    _g('utf8', 'bad_aa', '-aa', '--icons=never', 'utf8bad')
+    # a raw-byte operand is looked up by its bytes and displayed lossy
+    _g('utf8', 'bad_operand', b'utf8bad/a-\xff')
+    _g('utf8', 'bad_operand_long', *LONG, b'utf8bad/a-\xff')
+    _g('utf8', 'bad_operand_dir_d', '-d', b'utf8bad/sub-\xff')
+    _g('utf8', 'bad_reverse', '-r', '--icons=never', 'utf8bad')
+
+
 def _dir_cases():
     _g('dirs', 'd_file', '-d', 'f', cwd='operands')
     _g('dirs', 'd_dir', '-d', 'dir', cwd='operands')
@@ -814,14 +1018,28 @@ def _error_cases():
        note='our restricted long mode needs --no-user --bytes '
             '--time-style=long-iso')
     _o('errors', 'own_sort_none', '--sort=none', 'mixed',
-       note='E0 does not implement --sort=none')
+       note='this build does not implement --sort=none')
     _o('errors', 'own_unsupported_flag', '--git', 'mixed',
-       note='E0 rejects out-of-scope flags')
+       note='this build rejects out-of-scope flags')
     _o('errors', 'own_multiple_operands', 'one', 'one',
-       note='E0 supports at most one operand')
-    _o('errors', 'own_grid', '-G', 'mixed')
-    _o('errors', 'own_across', '-x', 'mixed')
-    _o('errors', 'own_width', '-w', '80', 'mixed')
+       note='this build supports at most one operand')
+    _g('errors', 'width_bad', '--width=x', 'mixed')
+    _g('errors', 'width_negative', '--width=-1', 'mixed')
+    _g('errors', 'width_empty_equals', '--width=', 'mixed')
+    _g('errors', 'width_double_equals', '--width==', 'mixed')
+    _g('errors', 'width_too_large', '--width=18446744073709551616', 'mixed')
+    _g('errors', 'width_empty_value', '--width', '', 'mixed')
+    _g('errors', 'columns_bad', 'mixed', env={'COLUMNS': 'x'})
+    _g('errors', 'columns_empty', 'mixed', env={'COLUMNS': ''})
+    _g('errors', 'columns_negative', 'mixed', env={'COLUMNS': '-1'})
+    _g('errors', 'columns_too_large', 'mixed',
+       env={'COLUMNS': '18446744073709551616'})
+    _o('errors', 'own_grid_details', '-l', '-G', '--no-user', '--bytes',
+       '--time-style=long-iso', 'mixed',
+       note='E2 rejects eza GridDetails (-l with -G) with this build\'s '
+            'own message')
+    _o('errors', 'own_grid_details2', '-G', '-l', '--no-user', '--bytes',
+       '--time-style=long-iso', 'mixed')
     _o('errors', 'own_sort_dot_name', '--sort=.name', 'mixed')
     _o('errors', 'own_sort_inode', '--sort=inode', 'mixed')
     _o('errors', 'own_sort_changed', '--sort=changed', 'mixed')
@@ -840,11 +1058,15 @@ def _memory_cases():
     _o('memory', 'tree_10000', '-T', 'many10000', slow=True,
        memory_entries=10000, note='E1 tree over 10,000 entries under '
             'OBO_STATS; EZA_PEAK_MAX and no leak line')
+    _o('memory', 'grid_10000', '--width=80', '--icons=never', 'many10000',
+       slow=True, memory_entries=10000, note='E2 grid over 10,000 entries '
+            'under OBO_STATS; EZA_PEAK_MAX and no leak line')
 
 
 for _builder in (_default_cases, _name_cases, _sortkey_cases, _long_cases,
                  _quoting_cases, _classify_cases, _colour_cases, _tree_cases,
-                 _dir_cases, _operand_cases, _error_cases, _memory_cases):
+                 _grid_cases, _utf8_cases, _dir_cases, _operand_cases,
+                 _error_cases, _memory_cases):
     _builder()
 
 
@@ -857,6 +1079,7 @@ TREE_CAPS = {
     'long': ('fifo', 'socket', 'deep_path'),
     'times': ('pre_epoch',),
     'hard': ('hardlink',),
+    'utf8bad': ('invalid_utf8',),
 }
 
 
@@ -1181,7 +1404,7 @@ def pty_available():
 
 
 def run_proc_pty(argv, cwd, io_dir, env, executable=None, timeout=10.0,
-                 tag='out'):
+                 tag='out', cols=80):
     """Run with stdout on a raw pseudo-terminal (80x24) and return the bytes
     unchanged. Used only by the live auto-colour cases: isatty(stdout) is the
     behaviour under test, and no golden is recorded from a pty."""
@@ -1194,7 +1417,7 @@ def run_proc_pty(argv, cwd, io_dir, env, executable=None, timeout=10.0,
     chunks = []
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ,
-                    struct.pack('HHHH', 24, 80, 0, 0))
+                    struct.pack('HHHH', 24, cols, 0, 0))
         tty.setraw(slave)
         p = subprocess.Popen(argv, executable=executable, cwd=cwd, env=env,
                              stdin=subprocess.DEVNULL, stdout=slave,
@@ -1244,12 +1467,12 @@ def run_proc_pty(argv, cwd, io_dir, env, executable=None, timeout=10.0,
 
 
 def run_proc(argv, cwd, io_dir, env, executable=None, sink=False, pipe=False,
-             timeout=10.0, tag='out', pseudo=False):
+             timeout=10.0, tag='out', pseudo=False, cols=80):
     if pseudo:
         if sink or pipe:
             raise SetupError('pty and sink/pipe modes are exclusive')
         return run_proc_pty(argv, cwd, io_dir, env, executable=executable,
-                            timeout=timeout, tag=tag)
+                            timeout=timeout, tag=tag, cols=cols)
     out_path = os.path.join(io_dir, '.eza-' + tag + '.stdout')
     err_path = os.path.join(io_dir, '.eza-' + tag + '.stderr')
     stdin = subprocess.DEVNULL
@@ -1521,7 +1744,7 @@ class Harness:
                        executable=self.ref.path,
                        sink=case.mode == 'sink',
                        pipe=case.mode == 'pipe',
-                       pseudo=case.mode == 'pty',
+                       pseudo=case.mode == 'pty', cols=case.cols,
                        timeout=60 if case.slow else 10, tag=tag)
         res.stdout = normalize_paths(res.stdout, root, base)
         res.stderr = normalize_paths(res.stderr, root, base)
@@ -1570,7 +1793,7 @@ class Harness:
                             sink=case.mode == 'sink',
                             pipe=case.mode == 'pipe',
                             pseudo=case.mode == 'pty', timeout=timeout,
-                            tag='our')
+                            tag='our', cols=case.cols)
             ours.stdout = normalize_paths(ours.stdout, root, base)
             ours.stderr = normalize_paths(ours.stderr, root, base)
             problems = []
@@ -1592,7 +1815,7 @@ class Harness:
                                    sink=case.mode == 'sink',
                                    pipe=case.mode == 'pipe',
                                    pseudo=case.mode == 'pty',
-                                   timeout=timeout, tag='ref')
+                                   timeout=timeout, tag='ref', cols=case.cols)
                 ref_run.stdout = normalize_paths(ref_run.stdout, root, base)
                 ref_run.stderr = normalize_paths(ref_run.stderr, root, base)
                 if ref_run.timed_out:
@@ -1617,7 +1840,7 @@ class Harness:
                                  sink=case.mode == 'sink',
                                  pipe=case.mode == 'pipe',
                                  pseudo=case.mode == 'pty',
-                                 timeout=timeout, tag='our2')
+                                 timeout=timeout, tag='our2', cols=case.cols)
                 ours2.stdout = normalize_paths(ours2.stdout, root, base)
                 ours2.stderr = normalize_paths(ours2.stderr, root, base)
                 ref2 = run_proc(argv, cwd, base, env,
@@ -1625,7 +1848,7 @@ class Harness:
                                 sink=case.mode == 'sink',
                                 pipe=case.mode == 'pipe',
                                 pseudo=case.mode == 'pty',
-                                timeout=timeout, tag='ref2')
+                                timeout=timeout, tag='ref2', cols=case.cols)
                 ref2.stdout = normalize_paths(ref2.stdout, root, base)
                 ref2.stderr = normalize_paths(ref2.stderr, root, base)
                 def sig(r):
@@ -1931,7 +2154,7 @@ def list_cases():
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        description='Differential gate for eza (E0, P4)')
+        description='Differential gate for eza (E0, E1 and E2)')
     ap.add_argument('-k', metavar='PATTERN',
                     help='only cases whose name/key contains PATTERN')
     ap.add_argument('-v', '--verbose', action='store_true')

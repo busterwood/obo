@@ -11,15 +11,17 @@ The tree is built in a fixed order with explicit modes and mtimes:
 umask(0o022) plus explicit chmod, one pinned mtime per directory after its
 children exist.  Only information the reference can observe through
 lstat/readlink is created: regular files, directories, symlinks, FIFOs and
-Unix sockets, plus an optional user xattr and one invalid-UTF-8 name.  There
-are no device nodes, ACLs or trusted xattrs.
+Unix sockets, plus an optional user xattr, valid UTF-8 names and the
+deliberately invalid-UTF-8 byte names of `utf8bad`.  There are no device
+nodes, ACLs or trusted xattrs.
 
 Recordable trees (relative targets only):
 
     empty/  one/  onedir/  mixed/  modes/  sizes/  times/  names/  ext/
     operands/  quoting/  links/  long/  many/  invalid/  hard/  xattr/
     tree/  selflink/  colours/  grid1/ grid2/ grid10/ grid100/
-    gridlong10/ gridlong100/ locked/
+    gridlong10/ gridlong100/ gridmix/ utf8/ utf8bad/ utf8tie/ utf8fold/
+    utf8ws/ locked/
 
 Live/shape-only trees:
 
@@ -436,6 +438,107 @@ def _grid(root, caps):
         _pin(d)
 
 
+def _gridmix(root, caps):
+    """E2 grid: ten names of lengths 1..10, so column widths differ and the
+    column-count search can keep increasing. Names are pairwise
+    comparator-distinct under both name comparators."""
+    mix = _dir(root, 'gridmix')
+    for name in ('a', 'bb', 'ccc', 'dddd', 'eeeee', 'ffffff', 'ggggggg',
+                 'hhhhhhhh', 'iiiiiiiii', 'jjjjjjjjjj'):
+        _file(mix, name, b'g\n')
+    _pin(mix)
+
+
+def _utf8(root, caps):
+    """E2 valid UTF-8 names: Latin-1 (width 1), a combining sequence (1),
+    Greek (1), CJK (2), halfwidth katakana (1) and an emoji (2), plus two
+    symlinks whose targets are UTF-8 names. Every pair is comparator-distinct
+    under natcmpFold, so the name-order goldens are readdir independent."""
+    d = _dir(root, 'utf8')
+    for name in ('a', 'é', 'f', 'é', '中', '\U0001F600',
+                 'Ω', 'ｱ'):
+        _file(d, name, b'u\n')
+    _link(d, 'é-link', 'é')
+    _link(d, 'comb-link', 'é')
+    _pin(d)
+
+
+def _utf8bad(root, caps):
+    """E2 invalid UTF-8 names, created as raw bytes. The lossy forms are
+    distinct, so the name-order goldens need no readdir tie. The symlinks
+    exercise lossy target display: a broken target with an invalid byte, a
+    broken spaced target, and a valid target whose parent directory and name
+    both carry an invalid byte."""
+    base = os.fsencode(root)
+    try:
+        invalid = os.path.join(base, b'utf8bad')
+        os.mkdir(invalid)
+        os.chmod(invalid, 0o755)
+        for name in (b'a-\xff', b'b-\x80', b'c-\xc3\x28', b'd-\xe2\x82',
+                     b'e-\xf0\x9f\x98', b'f-\xff\xff', b'g-\xc3\xa9'):
+            _raw_file(invalid, name)
+        subdir = os.path.join(invalid, b'sub-\xff')
+        os.mkdir(subdir)
+        os.chmod(subdir, 0o755)
+        _raw_file(subdir, b'f')
+        _raw_link(invalid, b'h-link', b't-\xff')
+        _raw_link(invalid, b'i-link', b'sp-\xff ace')
+        _raw_link(invalid, b'j-link', b'sub-\xff/f')
+        _raw_link(invalid, b'k-link', b'g-\xc3\xa9')
+        _utime(os.path.join(invalid, b'h-link'), follow=False)
+        _utime(os.path.join(invalid, b'i-link'), follow=False)
+        _utime(os.path.join(invalid, b'j-link'), follow=False)
+        _utime(os.path.join(invalid, b'k-link'), follow=False)
+        _utime(subdir)
+        _utime(invalid)
+    except (OSError, UnicodeError):
+        caps['invalid_utf8'] = False
+
+
+def _raw_file(parent, name):
+    path = os.path.join(parent, name)
+    with open(path, 'wb') as f:
+        f.write(b'u\n')
+    os.chmod(path, 0o644)
+    _utime(path)
+
+
+def _raw_link(parent, name, target):
+    path = os.path.join(parent, name)
+    os.symlink(target, path)
+
+
+def _utf8tie(root, caps):
+    """E2 live-only fold ties: É/é, A/a and À/à are Equal under natcmpFold, so
+    the order is readdir order and these cases are never goldens."""
+    d = _dir(root, 'utf8tie')
+    for name in ('É', 'é', 'A', 'a', 'À', 'à'):
+        _file(d, name, b't\n')
+    _pin(d)
+
+
+def _utf8fold(root, caps):
+    """E2 simple-lowercase probes: Greek sigma (including final sigma, which
+    is not folded to sigma), Cyrillic and fullwidth pairs. The folded ties make
+    the default order readdir dependent, so only the case-sensitive Name order
+    is a golden."""
+    d = _dir(root, 'utf8fold')
+    for name in ('Σ', 'σ', 'ς', 'Ж', 'ж',
+                 'Ａ', 'ａ'):
+        _file(d, name, b'f\n')
+    _pin(d)
+
+
+def _utf8ws(root, caps):
+    """E2 live-only Unicode whitespace ties: ASCII space, NBSP, EM SPACE and
+    IDEOGRAPHIC SPACE are all skipped by the reference comparator, so these
+    names compare Equal and the order is readdir dependent."""
+    d = _dir(root, 'utf8ws')
+    for name in ('a b', 'a b', 'a b', 'a　b', 'ab'):
+        _file(d, name, b'w\n')
+    _pin(d)
+
+
 def _invalid(root, caps):
     base = os.fsencode(root)
     try:
@@ -591,6 +694,12 @@ def build(root):
         _long(root, caps)
         _many(root, caps)
         _grid(root, caps)
+        _gridmix(root, caps)
+        _utf8(root, caps)
+        _utf8bad(root, caps)
+        _utf8tie(root, caps)
+        _utf8fold(root, caps)
+        _utf8ws(root, caps)
         _invalid(root, caps)
         _hard(root, caps)
         _xattr(root, caps)
