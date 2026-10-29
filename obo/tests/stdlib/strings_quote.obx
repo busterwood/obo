@@ -1,0 +1,128 @@
+// strings_quote: eza's QuoteSpaces escaping (design 5.1.2 / Appendix B) and
+// parentPrefix (5.1.2 and 5.2). The control-byte rows follow the documented
+// per-byte rule: \u{h} is closed before the next byte, so ESC between x and y
+// is x\u{1b}y (the prose renderings x\u{1by} in the design are missing the
+// closing brace; the 0x1b -> \u{1b} rule row and the sp-ace row agree with
+// this test). Both outer styles are pinned.
+// expect: strings quote ok
+import "strings.obx" as strings
+import "support.obx" as t
+
+fn bytes1(b: byte): string {
+    var out = new []byte(1)
+    out[0] = b
+    return strings::fromBytes(out)
+}
+
+fn main() {
+    // the plain table with quoteSpaces=true
+    t::checkStr("quote plain", strings::quoteName("plain", true), "plain")
+    t::checkStr("quote space", strings::quoteName("a b", true), "'a b'")
+    t::checkStr("quote apostrophe", strings::quoteName("it's", true), "\"it's\"")
+    t::checkStr("quote both", strings::quoteName("a b'c", true), "\"a b'c\"")
+    t::checkStr("quote dquote", strings::quoteName("a\"b c", true), "'a\"b c'")
+    t::checkStr("quote dquote apostrophe", strings::quoteName("a\"b'c d", true),
+                "\"a\"b'c d\"")
+    t::checkStr("quote backslash", strings::quoteName("back\\slash", true),
+                "back\\slash")
+    t::checkStr("quote tab", strings::quoteName("tab\there", true), "tab\\there")
+    t::checkStr("quote lf", strings::quoteName("line\nfeed", true), "line\\nfeed")
+    t::checkStr("quote cr", strings::quoteName("x\ry", true), "x\\ry")
+    t::checkStr("quote tab alone", strings::quoteName("\t", true), "\\t")
+    t::checkStr("quote dash", strings::quoteName("-dash", true), "-dash")
+    t::checkStr("quote space alone", strings::quoteName(" ", true), "' '")
+    t::checkStr("quote two spaces", strings::quoteName("a  b", true), "'a  b'")
+    t::checkStr("quote dquote alone", strings::quoteName("\"", true), "\"")
+
+    // control bytes built from bytes: ESC, DEL, NUL, VT, FF, 0x1f and >= 0x80
+    var escBytes = new []byte(3)
+    escBytes[0] = 'x'
+    escBytes[1] = byte(27)
+    escBytes[2] = 'y'
+    let esc = strings::fromBytes(escBytes)
+    t::checkStr("quote esc", strings::quoteName(esc, true), "x\\u{1b}y")
+
+    var delBytes = new []byte(4)
+    delBytes[0] = 'd'
+    delBytes[1] = 'e'
+    delBytes[2] = 'l'
+    delBytes[3] = byte(127)
+    let del = strings::fromBytes(delBytes)
+    t::checkStr("quote del", strings::quoteName(del, true), "del\\u{7f}")
+
+    var nulBytes = new []byte(1)
+    nulBytes[0] = byte(0)
+    let nul = strings::fromBytes(nulBytes)
+    t::checkStr("quote nul", strings::quoteName(nul, true), "\\u{0}")
+    t::checkStr("quote vt", strings::quoteName(bytes1(byte(11)), true), "\\u{b}")
+    t::checkStr("quote ff", strings::quoteName(bytes1(byte(12)), true), "\\u{c}")
+    t::checkStr("quote us", strings::quoteName(bytes1(byte(31)), true), "\\u{1f}")
+
+    var spEscBytes = new []byte(7)
+    spEscBytes[0] = 's'
+    spEscBytes[1] = 'p'
+    spEscBytes[2] = ' '
+    spEscBytes[3] = 'a'
+    spEscBytes[4] = 'c'
+    spEscBytes[5] = 'e'
+    spEscBytes[6] = byte(27)
+    let spEsc = strings::fromBytes(spEscBytes)
+    t::checkStr("quote spaced esc", strings::quoteName(spEsc, true),
+                "'sp ace\\u{1b}'")
+
+    let high = bytes1(byte(255))
+    t::checkBool("quote high", strings::eq(strings::quoteName(high, true), high), true)
+    let high2 = bytes1(byte(128))
+    t::checkBool("quote high2", strings::eq(strings::quoteName(high2, true), high2), true)
+
+    // quoteSpaces=false: no quotes, spaces and apostrophes raw, controls escaped
+    t::checkStr("noquote plain", strings::quoteName("plain", false), "plain")
+    t::checkStr("noquote space", strings::quoteName("a b", false), "a b")
+    t::checkStr("noquote apostrophe", strings::quoteName("it's", false), "it's")
+    t::checkStr("noquote both", strings::quoteName("a b'c", false), "a b'c")
+    t::checkStr("noquote dquote", strings::quoteName("a\"b c", false), "a\"b c")
+    t::checkStr("noquote tab", strings::quoteName("tab\there", false), "tab\\there")
+    t::checkStr("noquote lf", strings::quoteName("line\nfeed", false), "line\\nfeed")
+    t::checkStr("noquote cr", strings::quoteName("x\ry", false), "x\\ry")
+    t::checkStr("noquote esc", strings::quoteName(esc, false), "x\\u{1b}y")
+    t::checkStr("noquote spaced esc", strings::quoteName(spEsc, false), "sp ace\\u{1b}")
+    t::checkStr("noquote space alone", strings::quoteName(" ", false), " ")
+    t::checkStr("noquote tab alone", strings::quoteName("\t", false), "\\t")
+
+    // parentPrefix: the whole parent is escaped once, then one separator
+    t::checkStr("prefix empty", strings::parentPrefix("", true), "")
+    t::checkStr("prefix empty noquote", strings::parentPrefix("", false), "")
+    t::checkStr("prefix root", strings::parentPrefix("/", true), "/")
+    t::checkStr("prefix root noquote", strings::parentPrefix("/", false), "/")
+    t::checkStr("prefix tmp", strings::parentPrefix("/tmp", true), "/tmp/")
+    t::checkStr("prefix tmp noquote", strings::parentPrefix("/tmp", false), "/tmp/")
+    t::checkStr("prefix spaced abs", strings::parentPrefix("/tmp/x y", true),
+                "'/tmp/x y'/")
+    t::checkStr("prefix spaced abs noquote", strings::parentPrefix("/tmp/x y", false),
+                "/tmp/x y/")
+    t::checkStr("prefix spaced", strings::parentPrefix("x y", true), "'x y'/")
+    t::checkStr("prefix spaced noquote", strings::parentPrefix("x y", false), "x y/")
+    t::checkStr("prefix spaced sub", strings::parentPrefix("x y/sub", true),
+                "'x y/sub'/")
+    t::checkStr("prefix spaced sub noquote", strings::parentPrefix("x y/sub", false),
+                "x y/sub/")
+    t::checkStr("prefix apostrophe", strings::parentPrefix("it's", true),
+                "\"it's\"/")
+    t::checkStr("prefix apostrophe noquote", strings::parentPrefix("it's", false),
+                "it's/")
+
+    // composition with a quoted name: parent prefix, then the name
+    t::checkStr("compose tmp", strings::parentPrefix("/tmp", true) +
+                strings::quoteName("f", true), "/tmp/f")
+    t::checkStr("compose root", strings::parentPrefix("/", true) +
+                strings::quoteName("f", true), "/f")
+    t::checkStr("compose spaced parent", strings::parentPrefix("x y/sub", true) +
+                strings::quoteName("f", true), "'x y/sub'/f")
+    t::checkStr("compose both spaced", strings::parentPrefix("x y", true) +
+                strings::quoteName("a b", true), "'x y'/'a b'")
+    // the -d operand display quotes the whole operand as one unit
+    t::checkStr("compose whole", strings::quoteName("x y/sub/link", true),
+                "'x y/sub/link'")
+
+    println("strings quote ok")
+}

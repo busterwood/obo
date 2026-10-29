@@ -1,0 +1,205 @@
+// strings_basic: the byte classifiers, cmp/cmpBytes/eq, prefix and suffix
+// tests, contains/indexOf/byteAt, fromBytes, lowerAscii, displayWidth and the
+// trim family. Control bytes that cannot be written as string literal escapes
+// (VT, FF, DEL, >= 0x80) are built with fromBytes. cmpBytes is the temporary
+// P1 compatibility wrapper and must agree with cmp.
+// expect: strings basic ok
+import "strings.obx" as strings
+import "support.obx" as t
+
+fn main() {
+    // isSpace: space and 0x09..0x0D only
+    t::checkBool("isSpace space", strings::isSpace(' '), true)
+    t::checkBool("isSpace tab", strings::isSpace('\t'), true)
+    t::checkBool("isSpace lf", strings::isSpace('\n'), true)
+    t::checkBool("isSpace vt", strings::isSpace(byte(11)), true)
+    t::checkBool("isSpace ff", strings::isSpace(byte(12)), true)
+    t::checkBool("isSpace cr", strings::isSpace('\r'), true)
+    t::checkBool("isSpace 08", strings::isSpace(byte(8)), false)
+    t::checkBool("isSpace 0e", strings::isSpace(byte(14)), false)
+    t::checkBool("isSpace nul", strings::isSpace(byte(0)), false)
+    t::checkBool("isSpace a", strings::isSpace('a'), false)
+    t::checkBool("isSpace del", strings::isSpace(byte(127)), false)
+    t::checkBool("isSpace 160", strings::isSpace(byte(160)), false)
+
+    // isBlank: space and tab only (the sort -n skip set)
+    t::checkBool("isBlank space", strings::isBlank(' '), true)
+    t::checkBool("isBlank tab", strings::isBlank('\t'), true)
+    t::checkBool("isBlank lf", strings::isBlank('\n'), false)
+    t::checkBool("isBlank vt", strings::isBlank(byte(11)), false)
+    t::checkBool("isBlank cr", strings::isBlank('\r'), false)
+    t::checkBool("isBlank a", strings::isBlank('a'), false)
+
+    // isPrint: 0x20..0x7E
+    t::checkBool("isPrint space", strings::isPrint(' '), true)
+    t::checkBool("isPrint tilde", strings::isPrint('~'), true)
+    t::checkBool("isPrint a", strings::isPrint('a'), true)
+    t::checkBool("isPrint 1f", strings::isPrint(byte(31)), false)
+    t::checkBool("isPrint del", strings::isPrint(byte(127)), false)
+    t::checkBool("isPrint nul", strings::isPrint(byte(0)), false)
+    t::checkBool("isPrint 128", strings::isPrint(byte(128)), false)
+    t::checkBool("isPrint 200", strings::isPrint(byte(200)), false)
+
+    // isWordByte: 0x21..0x7E
+    t::checkBool("isWordByte bang", strings::isWordByte('!'), true)
+    t::checkBool("isWordByte tilde", strings::isWordByte('~'), true)
+    t::checkBool("isWordByte a", strings::isWordByte('a'), true)
+    t::checkBool("isWordByte 0", strings::isWordByte('0'), true)
+    t::checkBool("isWordByte space", strings::isWordByte(' '), false)
+    t::checkBool("isWordByte tab", strings::isWordByte('\t'), false)
+    t::checkBool("isWordByte del", strings::isWordByte(byte(127)), false)
+    t::checkBool("isWordByte 1f", strings::isWordByte(byte(31)), false)
+
+    // isDigit: '0'..'9'
+    t::checkBool("isDigit 0", strings::isDigit('0'), true)
+    t::checkBool("isDigit 5", strings::isDigit('5'), true)
+    t::checkBool("isDigit 9", strings::isDigit('9'), true)
+    t::checkBool("isDigit slash", strings::isDigit('/'), false)
+    t::checkBool("isDigit colon", strings::isDigit(':'), false)
+    t::checkBool("isDigit a", strings::isDigit('a'), false)
+    t::checkBool("isDigit nul", strings::isDigit(byte(0)), false)
+
+    // cmp: unsigned byte order with the shorter prefix first
+    t::checkInt("cmp empty", strings::cmp("", ""), 0)
+    t::checkInt("cmp empty a", strings::cmp("", "a"), -1)
+    t::checkInt("cmp a empty", strings::cmp("a", ""), 1)
+    t::checkInt("cmp equal", strings::cmp("abc", "abc"), 0)
+    t::checkInt("cmp less", strings::cmp("abc", "abd"), -1)
+    t::checkInt("cmp length", strings::cmp("abc", "ab"), 1)
+    t::checkInt("cmp A a", strings::cmp("A", "a"), -1)
+    t::checkInt("cmp a A", strings::cmp("a", "A"), 1)
+    t::checkInt("cmp z", strings::cmp("abc", "abz"), -1)
+
+    // bytes >= 0x80 compare by unsigned value, not signed
+    var hiBytes = new []byte(1)
+    hiBytes[0] = byte(200)
+    let hi = strings::fromBytes(hiBytes)
+    var delBytes = new []byte(1)
+    delBytes[0] = byte(127)
+    let del = strings::fromBytes(delBytes)
+    t::checkInt("cmp high", strings::cmp(hi, del), 1)
+    t::checkInt("cmp high reverse", strings::cmp(del, hi), -1)
+    t::checkInt("cmp high equal", strings::cmp(hi, hi), 0)
+
+    // cmpBytes (temporary compatibility alias) agrees with cmp
+    t::checkInt("cmpBytes less", strings::cmpBytes("abc", "abd"), -1)
+    t::checkInt("cmpBytes equal", strings::cmpBytes("abc", "abc"), 0)
+    t::checkInt("cmpBytes greater", strings::cmpBytes("b", "a"), 1)
+    t::checkInt("cmpBytes empty", strings::cmpBytes("", "a"), -1)
+
+    // eq: value equality
+    t::checkBool("eq same", strings::eq("abc", "abc"), true)
+    t::checkBool("eq different", strings::eq("abc", "abd"), false)
+    t::checkBool("eq empty", strings::eq("", ""), true)
+    t::checkBool("eq empty a", strings::eq("", "a"), false)
+    t::checkBool("eq case", strings::eq("A", "a"), false)
+
+    // startsWith/endsWith; the empty prefix/suffix matches anything
+    t::checkBool("startsWith yes", strings::startsWith("abc", "ab"), true)
+    t::checkBool("startsWith all", strings::startsWith("abc", "abc"), true)
+    t::checkBool("startsWith empty", strings::startsWith("abc", ""), true)
+    t::checkBool("startsWith long", strings::startsWith("abc", "abcd"), false)
+    t::checkBool("startsWith mid", strings::startsWith("abc", "bc"), false)
+    t::checkBool("startsWith both empty", strings::startsWith("", ""), true)
+    t::checkBool("startsWith empty s", strings::startsWith("", "a"), false)
+    t::checkBool("endsWith yes", strings::endsWith("abc", "bc"), true)
+    t::checkBool("endsWith all", strings::endsWith("abc", "abc"), true)
+    t::checkBool("endsWith empty", strings::endsWith("abc", ""), true)
+    t::checkBool("endsWith long", strings::endsWith("abc", "abcd"), false)
+    t::checkBool("endsWith mid", strings::endsWith("abc", "ab"), false)
+    t::checkBool("endsWith both empty", strings::endsWith("", ""), true)
+    t::checkBool("endsWith empty s", strings::endsWith("", "a"), false)
+    t::checkBool("endsWith space", strings::endsWith("a b", " b"), true)
+
+    // indexOf/contains: byte index of the first match, -1 absent, "" at 0
+    t::checkInt("indexOf na", strings::indexOf("banana", "na"), 2)
+    t::checkInt("indexOf a", strings::indexOf("banana", "a"), 1)
+    t::checkInt("indexOf whole", strings::indexOf("banana", "banana"), 0)
+    t::checkInt("indexOf long", strings::indexOf("banana", "bananas"), -1)
+    t::checkInt("indexOf empty sub", strings::indexOf("banana", ""), 0)
+    t::checkInt("indexOf both empty", strings::indexOf("", ""), 0)
+    t::checkInt("indexOf empty s", strings::indexOf("", "a"), -1)
+    t::checkInt("indexOf overlap", strings::indexOf("aaa", "aa"), 0)
+    t::checkInt("indexOf abc", strings::indexOf("abcabc", "cab"), 2)
+    t::checkInt("indexOf space", strings::indexOf("a b c", " "), 1)
+    t::checkInt("indexOf last", strings::indexOf("abcabc", "c"), 2)
+    t::checkBool("contains yes", strings::contains("banana", "nan"), true)
+    t::checkBool("contains no", strings::contains("banana", "nanz"), false)
+    t::checkBool("contains empty", strings::contains("", ""), true)
+    t::checkBool("contains empty s", strings::contains("", "a"), false)
+
+    // byteAt: in-range bytes only (an out-of-range index is a runtime trap)
+    t::checkByte("byteAt 0", strings::byteAt("abc", 0), 'a')
+    t::checkByte("byteAt 2", strings::byteAt("abc", 2), 'c')
+    t::checkByte("byteAt space", strings::byteAt("a b", 1), ' ')
+    t::checkByte("byteAt high", strings::byteAt(hi, 0), byte(200))
+
+    // fromBytes moves the array and copies the bytes; no UTF-8 validation
+    var emptyBytes = new []byte(0)
+    t::checkStr("fromBytes empty", strings::fromBytes(emptyBytes), "")
+    var hiBytes2 = new []byte(2)
+    hiBytes2[0] = 'h'
+    hiBytes2[1] = 'i'
+    t::checkStr("fromBytes hi", strings::fromBytes(hiBytes2), "hi")
+    var rawBytes = new []byte(3)
+    rawBytes[0] = byte(0)
+    rawBytes[1] = byte(255)
+    rawBytes[2] = 'A'
+    let raw = strings::fromBytes(rawBytes)
+    t::checkInt("fromBytes raw len", len(raw), 3)
+    t::checkByte("fromBytes nul", strings::byteAt(raw, 0), byte(0))
+    t::checkByte("fromBytes ff", strings::byteAt(raw, 1), byte(255))
+    t::checkByte("fromBytes A", strings::byteAt(raw, 2), 'A')
+
+    // lowerAscii: A..Z only; every other byte, including >= 0x80, is copied
+    t::checkStr("lower upper", strings::lowerAscii("ABC"), "abc")
+    t::checkStr("lower mixed", strings::lowerAscii("AbC1"), "abc1")
+    t::checkStr("lower empty", strings::lowerAscii(""), "")
+    t::checkStr("lower aZ", strings::lowerAscii("aZ"), "az")
+    t::checkStr("lower punctuation", strings::lowerAscii("[A`{"), "[a`{")
+    t::checkStr("lower alnum", strings::lowerAscii("AZaz09"), "azaz09")
+    var highBytes = new []byte(2)
+    highBytes[0] = byte(128)
+    highBytes[1] = byte(255)
+    let high = strings::fromBytes(highBytes)
+    t::checkBool("lower high", strings::eq(strings::lowerAscii(high), high), true)
+
+    // displayWidth: E0 is the byte length
+    t::checkInt("width empty", strings::displayWidth(""), 0)
+    t::checkInt("width abc", strings::displayWidth("abc"), 3)
+    t::checkInt("width space", strings::displayWidth("a b"), 3)
+    t::checkInt("width tab", strings::displayWidth("a\tb"), 3)
+    t::checkInt("width high", strings::displayWidth(hi), 1)
+    var utf8Bytes = new []byte(2)
+    utf8Bytes[0] = byte(0xc3)
+    utf8Bytes[1] = byte(0xa9)
+    let utf8 = strings::fromBytes(utf8Bytes)
+    t::checkInt("width utf8", strings::displayWidth(utf8), 2)
+
+    // trim/trimLeft/trimRight: C-locale whitespace at the ends only
+    t::checkStr("trim empty", strings::trim(""), "")
+    t::checkStr("trim spaces", strings::trim("   "), "")
+    t::checkStr("trim inner", strings::trim("  a b  "), "a b")
+    t::checkStr("trim controls", strings::trim("\t\r\n x \n\r\t"), "x")
+    t::checkStr("trim none", strings::trim("a b"), "a b")
+    t::checkStr("trim left only", strings::trim(" a"), "a")
+    t::checkStr("trim right only", strings::trim("a "), "a")
+    var vtBytes = new []byte(3)
+    vtBytes[0] = byte(11)
+    vtBytes[1] = 'x'
+    vtBytes[2] = byte(12)
+    let vt = strings::fromBytes(vtBytes)
+    t::checkStr("trim vt", strings::trim(vt), "x")
+    t::checkStr("trimLeft spaces", strings::trimLeft("  x  "), "x  ")
+    t::checkStr("trimLeft empty", strings::trimLeft(""), "")
+    t::checkStr("trimLeft all", strings::trimLeft("   "), "")
+    t::checkStr("trimLeft controls", strings::trimLeft("\t\nx"), "x")
+    t::checkStr("trimLeft none", strings::trimLeft("x "), "x ")
+    t::checkStr("trimRight spaces", strings::trimRight("  x  "), "  x")
+    t::checkStr("trimRight empty", strings::trimRight(""), "")
+    t::checkStr("trimRight all", strings::trimRight("   "), "")
+    t::checkStr("trimRight controls", strings::trimRight("x\t\r"), "x")
+    t::checkStr("trimRight none", strings::trimRight(" x"), " x")
+
+    println("strings basic ok")
+}

@@ -1,0 +1,206 @@
+// sort_orders: empty/one/duplicate inputs, stable byte and natural orders,
+// orderInts, sortOrder* stability (the returned order is a new array and the
+// input order is left untouched), reverse, sortInts, and the eza-style
+// type-then-extension two-pass pipeline. Every order returns entry ids and
+// never moves the keys.
+// expect: sort orders ok
+import "sort.obx" as sort
+import "support.obx" as t
+
+fn main() {
+    // empty keys: every order is empty
+    let noKeys = t::list0()
+    let o1 = sort::orderStrings(noKeys)
+    let w0 = t::ints0()
+    t::checkOrder("orderStrings empty", o1, w0)
+    let o2 = sort::orderNatural(noKeys, false)
+    t::checkOrder("orderNatural empty", o2, w0)
+    let o3 = sort::orderNatural(noKeys, true)
+    t::checkOrder("orderNatural fold empty", o3, w0)
+    let noInts = t::ints0()
+    let o4 = sort::orderInts(noInts)
+    t::checkOrder("orderInts empty", o4, w0)
+    let id0 = sort::identity(0)
+    t::checkOrder("identity zero", id0, w0)
+    let so1 = sort::sortOrderStrings(id0, noKeys)
+    t::checkOrder("sortOrderStrings empty", so1, w0)
+    let so2 = sort::sortOrderInts(id0, noInts)
+    t::checkOrder("sortOrderInts empty", so2, w0)
+
+    // one key: the only id
+    let oneKey = t::list1("b")
+    let o5 = sort::orderStrings(oneKey)
+    let w1 = t::ints1(0)
+    t::checkOrder("orderStrings one", o5, w1)
+    let o6 = sort::orderNatural(oneKey, true)
+    t::checkOrder("orderNatural one", o6, w1)
+    let oneInt = t::ints1(7)
+    let o7 = sort::orderInts(oneInt)
+    t::checkOrder("orderInts one", o7, w1)
+
+    // byte order: A < B < a < b; equal keys keep input order
+    let mixed = t::list4("B", "a", "A", "b")
+    let o8 = sort::orderStrings(mixed)
+    let w2 = t::ints4(2, 0, 1, 3)
+    t::checkOrder("orderStrings case", o8, w2)
+    let dup = t::list4("b", "a", "b", "a")
+    let o9 = sort::orderStrings(dup)
+    let w3 = t::ints4(1, 3, 0, 2)
+    t::checkOrder("orderStrings duplicate", o9, w3)
+    var dup2 = t::list4("c", "a", "b", "a")
+    append(dup2, "c")
+    append(dup2, "b")
+    let o10 = sort::orderStrings(dup2)
+    let w4 = t::ints6(1, 3, 2, 5, 0, 4)
+    t::checkOrder("orderStrings duplicate2", o10, w4)
+    let prefixes = t::list4("ab", "a", "abc", "")
+    let o11 = sort::orderStrings(prefixes)
+    let w5 = t::ints4(3, 1, 0, 2)
+    t::checkOrder("orderStrings prefix", o11, w5)
+
+    // byte order looks at raw bytes, not numbers: "10" < "2"
+    let numericText = t::list2("2", "10")
+    let o12 = sort::orderStrings(numericText)
+    let w6 = t::ints2(1, 0)
+    t::checkOrder("orderStrings lexicographic", o12, w6)
+
+    // natural order, case-sensitive and folded
+    let nat = t::list4("a2", "A1", "a10", "A2")
+    let o13 = sort::orderNatural(nat, false)
+    let w7 = t::ints4(1, 3, 0, 2)
+    t::checkOrder("orderNatural case", o13, w7)
+    let o14 = sort::orderNatural(nat, true)
+    let w8 = t::ints4(1, 0, 3, 2)
+    t::checkOrder("orderNatural fold", o14, w8)
+    let casePair = t::list4("A", "a", "B", "b")
+    let o15 = sort::orderNatural(casePair, true)
+    let w9 = t::ints4(0, 1, 2, 3)
+    t::checkOrder("orderNatural fold stable", o15, w9)
+    let o16 = sort::orderNatural(casePair, false)
+    let w10 = t::ints4(0, 2, 1, 3)
+    t::checkOrder("orderNatural case order", o16, w10)
+    let nums = t::list4("x10", "x2", "x1", "x01")
+    let o17 = sort::orderNatural(nums, false)
+    let w11 = t::ints4(3, 2, 1, 0)
+    t::checkOrder("orderNatural numbers", o17, w11)
+    let o18 = sort::orderNatural(nums, true)
+    t::checkOrder("orderNatural numbers fold", o18, w11)
+    let near = t::list2("x2", "x02")
+    let o19 = sort::orderNatural(near, true)
+    let w12 = t::ints2(1, 0)
+    t::checkOrder("orderNatural leading zero", o19, w12)
+
+    // orderInts: ascending and stable, negatives first
+    let ints = t::ints5(5, -1, 3, -1, 0)
+    let o20 = sort::orderInts(ints)
+    let w13 = t::ints5(1, 3, 4, 2, 0)
+    t::checkOrder("orderInts values", o20, w13)
+    let ints2 = t::ints4(2, 2, 1, 2)
+    let o21 = sort::orderInts(ints2)
+    let w14 = t::ints4(2, 0, 1, 3)
+    t::checkOrder("orderInts duplicate", o21, w14)
+
+    // sortOrderStrings: stable with respect to the input order
+    let sok = t::list4("b", "a", "b", "a")
+    let inOrder = t::ints4(2, 0, 3, 1)
+    let so = sort::sortOrderStrings(inOrder, sok)
+    let w15 = t::ints4(3, 1, 2, 0)
+    t::checkOrder("sortOrderStrings", so, w15)
+    // the input order is untouched (the function copies it)
+    let w16 = t::ints4(2, 0, 3, 1)
+    t::checkOrder("sortOrderStrings input preserved", inOrder, w16)
+    let soInts = sort::sortOrderInts(inOrder, ints)
+    let w13b = t::ints4(3, 1, 2, 0)
+    t::checkOrder("sortOrderInts", soInts, w13b)
+    let sok2 = t::list4("x", "y", "x", "y")
+    let flat = sort::identity(4)
+    let so3 = sort::sortOrderStrings(flat, sok2)
+    let w17 = t::ints4(0, 2, 1, 3)
+    t::checkOrder("sortOrderStrings duplicate", so3, w17)
+    // sortOrderNatural fold over an order that starts case-mixed
+    let so4 = sort::sortOrderNatural(inOrder, casePair, true)
+    let w18 = t::ints4(0, 1, 2, 3)
+    t::checkOrder("sortOrderNatural fold", so4, w18)
+    let so5 = sort::sortOrderNatural(inOrder, casePair, false)
+    let w19 = t::ints4(0, 2, 1, 3)
+    t::checkOrder("sortOrderNatural case", so5, w19)
+
+    // reverse: whole order end to end, including the empty and one-element cases
+    var rev = t::ints4(0, 1, 2, 3)
+    sort::reverse(rev)
+    let w20 = t::ints4(3, 2, 1, 0)
+    t::checkOrder("reverse four", rev, w20)
+    var rev0 = t::ints0()
+    sort::reverse(rev0)
+    t::checkOrder("reverse empty", rev0, w0)
+    var rev1 = t::ints1(9)
+    sort::reverse(rev1)
+    let wOne = t::ints1(9)
+    t::checkOrder("reverse one", rev1, wOne)
+    var rev2 = t::ints2(1, 2)
+    sort::reverse(rev2)
+    let w21 = t::ints2(2, 1)
+    t::checkOrder("reverse two", rev2, w21)
+    // eza's reverse is a post-sort reversal: ties end up in reverse input order
+    var sortedDup = sort::orderStrings(dup)
+    sort::reverse(sortedDup)
+    let w22 = t::ints4(2, 0, 3, 1)
+    t::checkOrder("reverse sorted ties", sortedDup, w22)
+
+    // sortInts: in-place scalar ascending sort
+    var vals = t::ints5(3, -2, 3, 0, -2)
+    sort::sortInts(vals)
+    let w23 = t::ints5(-2, -2, 0, 3, 3)
+    t::checkOrder("sortInts values", vals, w23)
+    var vals0 = t::ints0()
+    sort::sortInts(vals0)
+    t::checkOrder("sortInts empty", vals0, w0)
+    var vals1 = t::ints1(-5)
+    sort::sortInts(vals1)
+    let wOneNeg = t::ints1(-5)
+    t::checkOrder("sortInts one", vals1, wOneNeg)
+    var vals3 = t::ints3(-5, -1, -10)
+    sort::sortInts(vals3)
+    let w24 = t::ints3(-10, -5, -1)
+    t::checkOrder("sortInts negatives", vals3, w24)
+
+    // identity
+    let id1 = sort::identity(1)
+    t::checkOrder("identity one", id1, w1)
+    let id4 = sort::identity(4)
+    let w25 = t::ints4(0, 1, 2, 3)
+    t::checkOrder("identity four", id4, w25)
+    let id7 = sort::identity(7)
+    let w26 = t::ints7(0, 1, 2, 3, 4, 5, 6)
+    t::checkOrder("identity seven", id7, w26)
+
+    // extension/type two-pass pipeline: the type pass first, then a stable
+    // extension pass, so the extension is primary and the type order survives
+    // as the tie-break; the reverse pass order gives a different result
+    let names = t::list5("b.txt", "a.rs", "c.txt", "d.rs", "e.txt")
+    let typeKeys = t::ints5(1, 1, 1, 1, 0)
+    let extKeys = t::list5("txt", "rs", "txt", "rs", "txt")
+    let byType = sort::orderInts(typeKeys)
+    let byExt = sort::sortOrderStrings(byType, extKeys)
+    let w27 = t::ints5(1, 3, 4, 0, 2)
+    t::checkOrder("pipeline type then ext", byExt, w27)
+    let extFirst = sort::orderStrings(extKeys)
+    let thenType = sort::sortOrderInts(extFirst, typeKeys)
+    let w28 = t::ints5(4, 1, 3, 0, 2)
+    t::checkOrder("pipeline ext then type", thenType, w28)
+    // name pass with extension tie-break: extension primary, name order inside
+    let aNames = t::list4("b.txt", "a.txt", "c.rs", "d.rs")
+    let aExts = t::list4("txt", "txt", "rs", "rs")
+    let nameOrder = sort::orderNatural(aNames, true)
+    let w29 = t::ints4(1, 0, 2, 3)
+    t::checkOrder("pipeline names", nameOrder, w29)
+    let byExt2 = sort::sortOrderStrings(nameOrder, aExts)
+    let w30 = t::ints4(2, 3, 1, 0)
+    t::checkOrder("pipeline names then ext", byExt2, w30)
+
+    // sorting reads through the caller's keys: the key arrays are unchanged
+    t::checkStr("keys preserved", names[0], "b.txt")
+    t::checkInt("type keys preserved", typeKeys[4], 0)
+
+    println("sort orders ok")
+}

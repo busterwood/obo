@@ -1,0 +1,131 @@
+// strings_natcmp: the natord-plus-plus 2.0.0 ASCII orders from Appendix A
+// (case-sensitive and folded), the equality classes, whitespace skipping and
+// the sign contract (-1, 0, 1 exactly). The four crate lists must be strictly
+// ascending; the equality classes are named as such and never asserted as a
+// strict order.
+// expect: strings natcmp ok
+import "strings.obx" as strings
+import "support.obx" as t
+
+fn checkList(label: string, xs: &[]string, fold: bool) {
+    var i = 1
+    while i < len(xs) {
+        var c = strings::natcmp(xs[i - 1], xs[i])
+        if fold { c = strings::natcmpFold(xs[i - 1], xs[i]) }
+        t::checkInt(label + " pair " + string(i), c, -1)
+        i += 1
+    }
+}
+
+fn main() {
+    // crate list 1: a < a0 < a1 < a1a < a1b < a2 < a10 < a20
+    let l1 = t::list5("a", "a0", "a1", "a1a", "a1b")
+    checkList("natcmp list1a", l1, false)
+    checkList("natcmpFold list1a", l1, true)
+    let l1b = t::list4("a1b", "a2", "a10", "a20")
+    checkList("natcmp list1b", l1b, false)
+    checkList("natcmpFold list1b", l1b, true)
+
+    // crate list 2
+    let l2 = t::list4("x2-g8", "x2-y7", "x2-y8", "x8-y8")
+    checkList("natcmp list2", l2, false)
+    checkList("natcmpFold list2", l2, true)
+
+    // crate list 3: leading-zero runs are left-aligned
+    let l3 = t::list5("1.001", "1.002", "1.010", "1.02", "1.1")
+    checkList("natcmp list3a", l3, false)
+    checkList("natcmpFold list3a", l3, true)
+    let l3b = t::list2("1.1", "1.3")
+    checkList("natcmp list3b", l3b, false)
+
+    // crate list 4: the long interleaving of digits, spaces and dots
+    var l4 = new []string(0)
+    append(l4, "1-02")
+    append(l4, "1-2")
+    append(l4, "1-20")
+    append(l4, "10-20")
+    append(l4, "fred")
+    append(l4, "jane")
+    append(l4, "pic1")
+    append(l4, "pic2")
+    append(l4, "pic2a")
+    append(l4, "pic3")
+    append(l4, "pic4")
+    append(l4, "pic4   alpha")
+    append(l4, "pic 4 else")
+    append(l4, "pic4  last")
+    append(l4, "pic5")
+    append(l4, "pic5.07")
+    append(l4, "pic5.08")
+    append(l4, "pic5.13")
+    append(l4, "pic5.113")
+    append(l4, "pic 5 something")
+    append(l4, "pic 6")
+    append(l4, "pic   7")
+    append(l4, "pic100")
+    append(l4, "pic100a")
+    append(l4, "pic120")
+    append(l4, "pic121")
+    append(l4, "pic2000")
+    append(l4, "tom")
+    append(l4, "x2-g8")
+    append(l4, "x2-y7")
+    append(l4, "x2-y8")
+    append(l4, "x8-y8")
+    checkList("natcmp list4", l4, false)
+    checkList("natcmpFold list4", l4, true)
+
+    // digit-run rules: 2 < 10, 01 < 1, 0 < 00, rfc1 < rfc2 < rfc10
+    t::checkInt("natcmp 2 10", strings::natcmp("2", "10"), -1)
+    t::checkInt("natcmp 10 2", strings::natcmp("10", "2"), 1)
+    t::checkInt("natcmp 01 1", strings::natcmp("01", "1"), -1)
+    t::checkInt("natcmp 1 01", strings::natcmp("1", "01"), 1)
+    t::checkInt("natcmp 0 00", strings::natcmp("0", "00"), -1)
+    t::checkInt("natcmp 00 0", strings::natcmp("00", "0"), 1)
+    t::checkInt("natcmp rfc1 rfc2", strings::natcmp("rfc1", "rfc2"), -1)
+    t::checkInt("natcmp rfc2 rfc10", strings::natcmp("rfc2", "rfc10"), -1)
+    t::checkInt("natcmp rfc10 rfc1", strings::natcmp("rfc10", "rfc1"), 1)
+    t::checkInt("natcmpFold 2 10", strings::natcmpFold("2", "10"), -1)
+
+    // equality classes carry their comparator: folding makes case Equal, the
+    // case-sensitive order does not
+    t::checkInt("fold A a", strings::natcmpFold("A", "a"), 0)
+    t::checkInt("fold a A", strings::natcmpFold("a", "A"), 0)
+    t::checkInt("fold README", strings::natcmpFold("README", "readme"), 0)
+    t::checkInt("natcmp A a", strings::natcmp("A", "a"), -1)
+    t::checkInt("natcmp README", strings::natcmp("README", "readme"), -1)
+    t::checkInt("fold B b", strings::natcmpFold("B", "b"), 0)
+    t::checkInt("fold pic4 space", strings::natcmpFold("pic4", "pic 4"), 0)
+    t::checkInt("fold pic4 space rev", strings::natcmpFold("pic 4", "pic4"), 0)
+    t::checkInt("fold a leading space", strings::natcmpFold("a", " a"), 0)
+
+    // whitespace is skipped under both comparators, at the outer loop only
+    t::checkInt("natcmp pic4 space", strings::natcmp("pic4", "pic 4"), 0)
+    t::checkInt("natcmp pic4 space rev", strings::natcmp("pic 4", "pic4"), 0)
+    t::checkInt("natcmp a leading space", strings::natcmp("a", " a"), 0)
+    t::checkInt("natcmp leading both", strings::natcmp(" a", "  a"), 0)
+    t::checkInt("natcmp two inner", strings::natcmp("pic 4", "pic  4"), 0)
+    t::checkInt("natcmp trailing tab", strings::natcmp("a\t", "a"), 0)
+    t::checkInt("natcmp newline", strings::natcmp("a\n", " a"), 0)
+    t::checkInt("natcmp crlf", strings::natcmp("a\r\n", "a"), 0)
+    var vtBytes = new []byte(2)
+    vtBytes[0] = 'a'
+    vtBytes[1] = byte(11)
+    let avt = strings::fromBytes(vtBytes)
+    t::checkInt("natcmp trailing vt", strings::natcmp(avt, "a"), 0)
+    t::checkInt("natcmp fold trailing ff", strings::natcmpFold("a", avt), 0)
+
+    // a whitespace-only string is Equal to the empty string
+    t::checkInt("natcmp spaces empty", strings::natcmp("   ", ""), 0)
+    t::checkInt("natcmp tab empty", strings::natcmp("\t\r\n", ""), 0)
+
+    // signs are exactly -1 and 1, including the first-difference memory path
+    t::checkInt("sign abc abd", strings::natcmp("abc", "abd"), -1)
+    t::checkInt("sign abd abc", strings::natcmp("abd", "abc"), 1)
+    t::checkInt("sign x99 x100", strings::natcmp("x99", "x100"), -1)
+    t::checkInt("sign x100 x99", strings::natcmp("x100", "x99"), 1)
+    t::checkInt("sign x0099 x100", strings::natcmp("x0099", "x100"), -1)
+    t::checkInt("sign x0100 x0099", strings::natcmp("x0100", "x0099"), 1)
+
+    println("strings natcmp ok")
+}

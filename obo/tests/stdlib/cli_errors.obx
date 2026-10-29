@@ -1,0 +1,223 @@
+// cli_errors: every error spelling from design 5.6, with the exact eza 0.23.3
+// wording and code 22 (EINVAL): bad values for required (with choices) and
+// optional (no choices) flags, forbidden values on VALUE_NONE flags, unknown
+// long names (whole token vs the name before '='), unknown short bytes, the
+// missing-value forms, the default value validated for an optional flag, and
+// the from bounds. parse() returns the error; it never prints or exits.
+//
+// Unpinned choice: the design gives the long missing-value wording
+// ("Flag --sort needs a value ...") but not the short spelling; this module
+// and cli.obx use the short token as written: "Flag -s needs a value ...".
+// expect: cli errors ok
+import "cli.obx" as cli
+import "support.obx" as t
+
+fn expectErr(label: string, r: Result[cli::Parsed], want: string) {
+    match r {
+        ok(p) {
+            println("FAIL ", label, ": expected [", want, "] got ok with ",
+                    len(p.options), " options, ", len(p.operands), " operands")
+            exit(1)
+        }
+        err(m, c) {
+            t::checkStr(label + " message", m, want)
+            t::checkInt(label + " code", c, 22)
+        }
+    }
+}
+
+fn main() {
+    let sp = t::cliSpecs()
+
+    // --sort: bad values carry the 12-item choices text
+    let av1 = t::list1("--sort=foo")
+    expectErr("sort bad split",
+        cli::parse(av1, 0, sp),
+        "Option --sort (-s) has no \"foo\" setting (choices: name, Name, size, extension, Extension, modified, changed, accessed, created, inode, type, none)")
+    let av2 = t::list1("--sort=default")
+    expectErr("sort default",
+        cli::parse(av2, 0, sp),
+        "Option --sort (-s) has no \"default\" setting (choices: name, Name, size, extension, Extension, modified, changed, accessed, created, inode, type, none)")
+    let av3 = t::list1("-sfoo")
+    expectErr("sort bad attached",
+        cli::parse(av3, 0, sp),
+        "Option --sort (-s) has no \"foo\" setting (choices: name, Name, size, extension, Extension, modified, changed, accessed, created, inode, type, none)")
+    let av4 = t::list2("-s", "foo")
+    expectErr("sort bad next",
+        cli::parse(av4, 0, sp),
+        "Option --sort (-s) has no \"foo\" setting (choices: name, Name, size, extension, Extension, modified, changed, accessed, created, inode, type, none)")
+    let av5 = t::list1("-s=")
+    expectErr("sort short bare equals",
+        cli::parse(av5, 0, sp),
+        "Option --sort (-s) has no \"=\" setting (choices: name, Name, size, extension, Extension, modified, changed, accessed, created, inode, type, none)")
+    let av6 = t::list1("--sort==")
+    expectErr("sort double equals",
+        cli::parse(av6, 0, sp),
+        "Option --sort (-s) has no \"=\" setting (choices: name, Name, size, extension, Extension, modified, changed, accessed, created, inode, type, none)")
+    let av7 = t::list1("--sort")
+    expectErr("sort missing long",
+        cli::parse(av7, 0, sp),
+        "Flag --sort needs a value (choices: name, Name, size, extension, Extension, modified, changed, accessed, created, inode, type, none)")
+    let av8 = t::list1("-s")
+    expectErr("sort missing short",
+        cli::parse(av8, 0, sp),
+        "Flag -s needs a value (choices: name, Name, size, extension, Extension, modified, changed, accessed, created, inode, type, none)")
+
+    // --classify: optional bad values have no choices text; a trailing '='
+    // does not split; an attached rest not in consume is a forbidden value;
+    // the split '=' form bypasses consume and is validated against accept
+    let av9 = t::list1("--classify=foo")
+    expectErr("classify bad value", cli::parse(av9, 0, sp),
+        "Option --classify (-F) has no \"foo\" setting")
+    let av10 = t::list1("--classify==")
+    expectErr("classify double equals", cli::parse(av10, 0, sp),
+        "Option --classify (-F) has no \"=\" setting")
+    let av11 = t::list1("--classify=")
+    expectErr("classify trailing equals", cli::parse(av11, 0, sp),
+        "Unknown argument --classify=")
+    let av12 = t::list1("-Ffoo")
+    expectErr("classify attached foo", cli::parse(av12, 0, sp),
+        "Flag -F cannot take a value")
+    let av13 = t::list1("-Fl")
+    expectErr("classify attached l", cli::parse(av13, 0, sp),
+        "Flag -F cannot take a value")
+    let av14 = t::list1("-F=")
+    expectErr("classify bare equals", cli::parse(av14, 0, sp),
+        "Flag -F cannot take a value")
+    let av15 = t::list1("-Fautomatic")
+    expectErr("classify attached automatic", cli::parse(av15, 0, sp),
+        "Flag -F cannot take a value")
+    let av16 = t::list1("-F=foo")
+    expectErr("classify split bad value", cli::parse(av16, 0, sp),
+        "Option --classify (-F) has no \"foo\" setting")
+
+    // --color and --icons: optional, long only; --icons rejects always
+    let av17 = t::list1("--color=foo")
+    expectErr("color bad value", cli::parse(av17, 0, sp),
+        "Option --color has no \"foo\" setting")
+    let av18 = t::list1("--color==")
+    expectErr("color double equals", cli::parse(av18, 0, sp),
+        "Option --color has no \"=\" setting")
+    let av19 = t::list1("--color=")
+    expectErr("color trailing equals", cli::parse(av19, 0, sp),
+        "Unknown argument --color=")
+    let av20 = t::list1("--icons=foo")
+    expectErr("icons bad value", cli::parse(av20, 0, sp),
+        "Option --icons has no \"foo\" setting")
+    let av21 = t::list1("--icons=always")
+    expectErr("icons always", cli::parse(av21, 0, sp),
+        "Option --icons has no \"always\" setting")
+    let av22 = t::list1("--icons=")
+    expectErr("icons trailing equals", cli::parse(av22, 0, sp),
+        "Unknown argument --icons=")
+
+    // VALUE_NONE with a value: long split, and the last short in a cluster
+    let av23 = t::list1("--all=x")
+    expectErr("all value", cli::parse(av23, 0, sp),
+        "Flag --all cannot take a value")
+    let av24 = t::list1("-la=value")
+    expectErr("cluster all value", cli::parse(av24, 0, sp),
+        "Flag -a cannot take a value")
+    let av25 = t::list1("-a=")
+    expectErr("all short bare equals", cli::parse(av25, 0, sp),
+        "Unknown argument -=")
+    let av26 = t::list1("-l=1")
+    expectErr("long short equals", cli::parse(av26, 0, sp),
+        "Flag -l cannot take a value")
+
+    // unknown long names: a split long reports only the name before '=',
+    // a non-split token is reported whole
+    let av27 = t::list1("--foo=bar")
+    expectErr("unknown split", cli::parse(av27, 0, sp),
+        "Unknown argument --foo")
+    let av28 = t::list1("--foo==")
+    expectErr("unknown split equals", cli::parse(av28, 0, sp),
+        "Unknown argument --foo")
+    let av29 = t::list1("--foo=")
+    expectErr("unknown trailing equals", cli::parse(av29, 0, sp),
+        "Unknown argument --foo=")
+    let av30 = t::list1("--=x")
+    expectErr("unknown empty name", cli::parse(av30, 0, sp),
+        "Unknown argument --=x")
+    let av31 = t::list1("--help")
+    expectErr("help", cli::parse(av31, 0, sp),
+        "Unknown argument --help")
+    let av32 = t::list1("--version")
+    expectErr("version", cli::parse(av32, 0, sp),
+        "Unknown argument --version")
+    let av33 = t::list1("--help=x")
+    expectErr("help value", cli::parse(av33, 0, sp),
+        "Unknown argument --help")
+    let av34 = t::list1("--version=x")
+    expectErr("version value", cli::parse(av34, 0, sp),
+        "Unknown argument --version")
+    let av35 = t::list1("--sort=")
+    expectErr("sort trailing equals", cli::parse(av35, 0, sp),
+        "Unknown argument --sort=")
+    let av36 = t::list1("--all=")
+    expectErr("all trailing equals", cli::parse(av36, 0, sp),
+        "Unknown argument --all=")
+
+    // unknown short bytes: the first unknown byte of the cluster
+    let av37 = t::list1("-Qfoo")
+    expectErr("unknown short attached", cli::parse(av37, 0, sp),
+        "Unknown argument -Q")
+    let av38 = t::list1("-Q=foo")
+    expectErr("unknown short split", cli::parse(av38, 0, sp),
+        "Unknown argument -Q")
+    let av39 = t::list1("-Q")
+    expectErr("unknown short", cli::parse(av39, 0, sp),
+        "Unknown argument -Q")
+    let av40 = t::list1("-aQ")
+    expectErr("unknown short after known", cli::parse(av40, 0, sp),
+        "Unknown argument -Q")
+
+    // required flags with no choices text
+    let av41 = t::list1("--ignore-glob")
+    expectErr("ignore missing long", cli::parse(av41, 0, sp),
+        "Flag --ignore-glob needs a value")
+    let av42 = t::list1("-I")
+    expectErr("ignore missing short", cli::parse(av42, 0, sp),
+        "Flag -I needs a value")
+    let av43 = t::list1("--output")
+    expectErr("output missing long", cli::parse(av43, 0, sp),
+        "Flag --output needs a value")
+    let av44 = t::list1("-o")
+    expectErr("output missing short", cli::parse(av44, 0, sp),
+        "Flag -o needs a value")
+
+    // a long-only required flag with choices: the label has no "(-x)" part
+    let av45 = t::list1("--time-style=foo")
+    expectErr("time-style bad value", cli::parse(av45, 0, sp),
+        "Option --time-style has no \"foo\" setting (choices: default, long-iso)")
+    let av46 = t::list2("--time-style", "foo")
+    expectErr("time-style bad next", cli::parse(av46, 0, sp),
+        "Option --time-style has no \"foo\" setting (choices: default, long-iso)")
+    let av47 = t::list1("--time-style")
+    expectErr("time-style missing", cli::parse(av47, 0, sp),
+        "Flag --time-style needs a value (choices: default, long-iso)")
+
+    // an optional flag's default is validated like an explicit value
+    let av48 = t::list1("--extra")
+    expectErr("extra default bad", cli::parse(av48, 0, sp),
+        "Option --extra has no \"oops\" setting")
+    let av49 = t::list1("--extra=nope")
+    expectErr("extra bad value", cli::parse(av49, 0, sp),
+        "Option --extra has no \"nope\" setting")
+
+    // from bounds: 0 <= from <= len(args), else invalid argument start (22)
+    let av50 = t::list3("prog", "-a", "d")
+    expectErr("from negative", cli::parse(av50, -1, sp),
+        "invalid argument start")
+    expectErr("from past end", cli::parse(av50, 4, sp),
+        "invalid argument start")
+    expectErr("from very negative", cli::parse(av50, -1000, sp),
+        "invalid argument start")
+    expectErr("from large", cli::parse(av50, 1000000, sp),
+        "invalid argument start")
+    let av51 = t::list0()
+    expectErr("empty from one", cli::parse(av51, 1, sp),
+        "invalid argument start")
+
+    println("cli errors ok")
+}

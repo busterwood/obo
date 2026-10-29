@@ -1,0 +1,224 @@
+// paths_table: the lexical path primitives. isAbsolute/hasTrailingSlash/
+// isDotName, the Rust Path::join shape, ext (Path::extension shape), the
+// lastComponent/parentOf table (verified against rustc 1.87), and the
+// operand-display normalization built from parentOf + lastComponent +
+// strings::parentPrefix (design 7.2: lexical Rust components, not shell
+// cleaning; the root branch never doubles the slash).
+// expect: paths table ok
+import "paths.obx" as paths
+import "strings.obx" as strings
+import "support.obx" as t
+
+// operandDisplay from design 7.2: the whole parent escaped once, then the
+// name escaped separately; an empty parent appends no separator. "/" comes out
+// of lastComponent as "/" and an empty parent, so it stays "/". "." and ".."
+// return themselves through the same path.
+fn operand(p: string, outer: bool): string {
+    let name = paths::lastComponent(p)
+    let parent = paths::parentOf(p)
+    if len(parent) == 0 { return strings::quoteName(name, outer) }
+    return strings::parentPrefix(parent, outer) + strings::quoteName(name, outer)
+}
+
+fn lastEq(label: string, p: string, want: string) {
+    t::checkStr("last " + label, paths::lastComponent(p), want)
+}
+
+fn parentEq(label: string, p: string, want: string) {
+    t::checkStr("parent " + label, paths::parentOf(p), want)
+}
+
+fn extEq(label: string, p: string, want: string) {
+    t::checkStr("ext " + label, paths::ext(p), want)
+}
+
+fn joinEq(label: string, a: string, b: string, want: string) {
+    t::checkStr("join " + label, paths::join(a, b), want)
+}
+
+fn displayEq(label: string, p: string, want: string) {
+    t::checkStr("display " + label, operand(p, true), want)
+}
+
+fn main() {
+    // isAbsolute: non-empty and starts with '/'
+    t::checkBool("abs empty", paths::isAbsolute(""), false)
+    t::checkBool("abs root", paths::isAbsolute("/"), true)
+    t::checkBool("abs double", paths::isAbsolute("//"), true)
+    t::checkBool("abs a", paths::isAbsolute("a"), false)
+    t::checkBool("abs dot", paths::isAbsolute("./a"), false)
+    t::checkBool("abs a slash", paths::isAbsolute("/a"), true)
+    t::checkBool("abs space", paths::isAbsolute(" "), false)
+    t::checkBool("abs dotdot", paths::isAbsolute(".."), false)
+
+    // hasTrailingSlash: non-empty and ends with '/'
+    t::checkBool("trail empty", paths::hasTrailingSlash(""), false)
+    t::checkBool("trail root", paths::hasTrailingSlash("/"), true)
+    t::checkBool("trail double", paths::hasTrailingSlash("//"), true)
+    t::checkBool("trail a", paths::hasTrailingSlash("a"), false)
+    t::checkBool("trail a/", paths::hasTrailingSlash("a/"), true)
+    t::checkBool("trail a//", paths::hasTrailingSlash("a//"), true)
+    t::checkBool("trail a/b", paths::hasTrailingSlash("a/b"), false)
+    t::checkBool("trail ./", paths::hasTrailingSlash("./"), true)
+    t::checkBool("trail dot", paths::hasTrailingSlash("."), false)
+
+    // isDotName: exactly "." or ".."
+    t::checkBool("dotname dot", paths::isDotName("."), true)
+    t::checkBool("dotname dotdot", paths::isDotName(".."), true)
+    t::checkBool("dotname three", paths::isDotName("..."), false)
+    t::checkBool("dotname empty", paths::isDotName(""), false)
+    t::checkBool("dotname a", paths::isDotName("a"), false)
+    t::checkBool("dotname ./", paths::isDotName("./"), false)
+    t::checkBool("dotname dot space", paths::isDotName(". "), false)
+    t::checkBool("dotname space dot", paths::isDotName(" ."), false)
+
+    // ext: the design table
+    extEq("bashrc", ".bashrc", "")
+    extEq("tar.gz", "a.tar.gz", "gz")
+    extEq("a dot", "a.", "")
+    extEq("a..b", "a..b", "b")
+    extEq("dotdot", "..", "")
+    extEq("dot", ".", "")
+    extEq("empty", "", "")
+    // ext: component-aware cases verified with rustc 1.87
+    extEq("sub", "a/b.c", "c")
+    extEq("hidden sub", "dir/.hidden", "")
+    extEq("trailing slash", "a/b.c/", "c")
+    extEq("dotdot x", "..x", "x")
+    extEq("a..", "a..", "")
+    extEq("three dots", "...", "")
+    extEq("x/", "x/.", "")
+    extEq("hidden ext", "a/.b.c", "c")
+    extEq("root", "/", "")
+    extEq("dot component skipped", "a.b/.", "b")
+    extEq("hidden targz", "x/.tar.gz/.", "gz")
+    extEq("b..c", "a/b..c", "c")
+    extEq("d no ext", "a/b..c/d", "")
+    extEq("file dot", "file.", "")
+    extEq("c dot", "a.b/c.", "")
+    extEq("double slash", "a/b//c.d", "d")
+    extEq("dot component", "d/./e.txt", "txt")
+    extEq("hidden trailing", "a/.hidden/", "")
+
+    // join: the design table and the Rust spellings
+    joinEq("empty empty", "", "", "")
+    joinEq("empty a", "", "a", "a")
+    joinEq("a empty", "a", "", "a/")
+    joinEq("a/ empty", "a/", "", "a/")
+    joinEq("a b", "a", "b", "a/b")
+    joinEq("a/ b", "a/", "b", "a/b")
+    joinEq("root b", "/", "b", "/b")
+    joinEq("a /b", "a", "/b", "/b")
+    joinEq("a ../b", "a", "../b", "a/../b")
+    joinEq("dot dotdot", ".", "..", "./..")
+    joinEq("root dotdot", "/", "..", "/..")
+    joinEq("dir/ dotdot", "dir/", "..", "dir/..")
+    joinEq("a// b", "a//", "b", "a//b")
+    joinEq("double root b", "//", "b", "//b")
+    joinEq("a//b c", "a//b", "c", "a//b/c")
+    joinEq("a dot", "a", ".", "a/.")
+    joinEq("dot empty", ".", "", "./")
+    joinEq("a/ /b", "a/", "/b", "/b")
+    joinEq("root root", "/", "/", "/")
+    joinEq("no cleaning", "a", "../b", "a/../b")
+
+    // lastComponent/parentOf: the design table
+    lastEq("root", "/", "/")
+    parentEq("root", "/", "")
+    lastEq("dot", ".", ".")
+    parentEq("dot", ".", "")
+    lastEq("dotdot", "..", "..")
+    parentEq("dotdot", "..", "")
+    lastEq("empty", "", ".")
+    parentEq("empty", "", "")
+    lastEq("a", "a", "a")
+    parentEq("a", "a", "")
+    lastEq("a/", "a/", "a")
+    parentEq("a/", "a/", "")
+    lastEq("a/b", "a/b", "b")
+    parentEq("a/b", "a/b", "a")
+    lastEq("a//b", "a//b", "b")
+    parentEq("a//b", "a//b", "a")
+    lastEq("a/./b", "a/./b", "b")
+    parentEq("a/./b", "a/./b", "a")
+    lastEq("./a", "./a", "a")
+    parentEq("./a", "./a", ".")
+    lastEq("/a", "/a", "a")
+    parentEq("/a", "/a", "/")
+    lastEq("/a/b", "/a/b", "b")
+    parentEq("/a/b", "/a/b", "/a")
+    lastEq("//a", "//a", "a")
+    parentEq("//a", "//a", "/")
+    lastEq("/tmp/dir/", "/tmp/dir/", "dir")
+    parentEq("/tmp/dir/", "/tmp/dir/", "/tmp")
+
+    // lastComponent/parentOf: the verified spellings beyond the design table
+    lastEq("//a/b", "//a/b", "b")
+    parentEq("//a/b", "//a/b", "//a")
+    lastEq("/./a/b", "/./a/b", "b")
+    parentEq("/./a/b", "/./a/b", "/./a")
+    lastEq("a/..//b", "a/..//b", "b")
+    parentEq("a/..//b", "a/..//b", "a/..")
+    lastEq("a/././b", "a/././b", "b")
+    parentEq("a/././b", "a/././b", "a")
+    lastEq("///a/b", "///a/b", "b")
+    parentEq("///a/b", "///a/b", "///a")
+    lastEq("/a//b", "/a//b", "b")
+    parentEq("/a//b", "/a//b", "/a")
+    lastEq("a/b//c//", "a/b//c//", "c")
+    parentEq("a/b//c//", "a/b//c//", "a/b")
+    lastEq("..//a", "..//a", "a")
+    parentEq("..//a", "..//a", "..")
+    lastEq(".././a", ".././a", "a")
+    parentEq(".././a", ".././a", "..")
+    lastEq("a/../b", "a/../b", "b")
+    parentEq("a/../b", "a/../b", "a/..")
+    lastEq("././a", "././a", "a")
+    parentEq("././a", "././a", ".")
+    lastEq("./a/./b/", "./a/./b/", "b")
+    parentEq("./a/./b/", "./a/./b/", "./a")
+    lastEq("x//y//", "x//y//", "y")
+    parentEq("x//y//", "x//y//", "x")
+    lastEq("a/./", "a/./", "a")
+    parentEq("a/./", "a/./", "")
+    lastEq("a/b/", "a/b/", "b")
+    parentEq("a/b/", "a/b/", "a")
+    lastEq("/../a", "/../a", "a")
+    parentEq("/../a", "/../a", "/..")
+    lastEq("/..", "/..", "..")
+    parentEq("/..", "/..", "/")
+    lastEq("/.", "/.", "/")
+    parentEq("/.", "/.", "")
+    lastEq("./", "./", ".")
+    parentEq("./", "./", "")
+    lastEq("...", "...", "...")
+    parentEq("...", "...", "")
+    lastEq("spaced", "a b/c d", "c d")
+    parentEq("spaced", "a b/c d", "a b")
+    lastEq("spaced one", "a b", "a b")
+    parentEq("spaced one", "a b", "")
+    lastEq("hidden", "a/.hidden/", ".hidden")
+    parentEq("hidden", "a/.hidden/", "a")
+    lastEq("dot comp", "d/./e.txt", "e.txt")
+    parentEq("dot comp", "d/./e.txt", "d")
+
+    // operand-display normalization (design 7.2 table)
+    displayEq("a//b", "a//b", "a/b")
+    displayEq("a/./b", "a/./b", "a/b")
+    displayEq("dir/", "dir/", "dir")
+    displayEq("./f", "./f", "./f")
+    displayEq("/tmp/f", "/tmp/f", "/tmp/f")
+    displayEq("root", "/", "/")
+    displayEq("dot", ".", ".")
+    displayEq("dotdot", "..", "..")
+    displayEq("spaced parent", "x y/sub/f", "'x y/sub'/f")
+    displayEq("lexical dotdot", "a/../b", "a/../b")
+    displayEq("lexical dot", "/./a/b", "/./a/b")
+    displayEq("plain", "f", "f")
+    // the name is escaped separately from the parent
+    displayEq("spaced name", "sub/a b", "sub/'a b'")
+    // quoteSpaces=false keeps the parent raw but still adds one slash
+    t::checkStr("display noquote", operand("x y/sub/f", false), "x y/sub/f")
+
+    println("paths table ok")
+}

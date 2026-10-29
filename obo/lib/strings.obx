@@ -1,23 +1,31 @@
-// obo/lib/strings.obx: small byte and string helpers shared by the command-line
-// tools. It is a source module (`module strings`); importers write
+// obo/lib/strings.obx: byte and string helpers shared by the command-line
+// tools and the eza stdlib. It is a source module (`module strings`);
+// importers write
 //
-//     import "../lib/strings.obx" as strings
+//     import "../lib/strings.obx" as strings      // from obo/programs/
+//     import "strings.obx" as strings             // from obo/lib/
 //
 // and reach exported declarations as strings::name. Within a file a declaration
 // may use only earlier declarations, so this file keeps its callees first. It is
 // dependency-free and defines no main.
 //
-module strings
-
 // The tool rules do not live here: cat's numbering and squeeze state, wc's width
-// rule and sort's numeric parser stay in those tools. These functions are only
-// byte classification, byte ordering, decimal formatting and the fixed errno
-// text the tools print.
+// rule and sort's numeric parser stay in those tools. These functions are byte
+// classification, byte ordering, splitting/joining, whitespace trimming, the
+// eza natural name order (natord-plus-plus), eza's QuoteSpaces escaping and its
+// parent-prefix primitive. Everything is byte-wise: there is no UTF-8 decoding,
+// no locale and no case folding beyond ASCII.
 //
-// cmpBytes indexes the strings (a byte comes back) because obo strings support
-// only == and !=, and byte comparisons are unsigned. errText is the C-locale
-// strerror text for the errnos these tools can see; it is English regardless of
-// the user's locale (the differential harness pins LC_ALL=C for the reference).
+// P1 compatibility (design stdlib-eza-design-v7 section 4.3): cmpBytes, errText,
+// digits and appendPadded are temporary. The merged tools (cat, wc, sort) call
+// them and must keep compiling and behaving identically until P2 moves them to
+// errors/fmt. cmpBytes is a wrapper over cmp, whose body is the surviving
+// implementation, so P2 can delete the wrapper without touching cmp.
+//
+// Ownership follows section 5.0: strings are borrowed, returned strings are
+// owed by the caller, and an array parameter is borrowed unless its type is
+// owned, as in fromBytes.
+module strings
 
 // C-locale whitespace: space, tab, LF, VT, FF, CR
 pub fn isSpace(b: byte): bool {
@@ -39,8 +47,14 @@ pub fn isWordByte(b: byte): bool {
     return isPrint(b) && b != ' '
 }
 
-// unsigned byte-wise lexicographic order; -1, 0 or 1
-pub fn cmpBytes(a: string, b: string): int {
+// decimal digit '0'..'9' (natord runs)
+pub fn isDigit(b: byte): bool {
+    return b >= '0' && b <= '9'
+}
+
+// unsigned byte-wise lexicographic order; -1, 0 or 1. The body lives here and
+// cmpBytes is its pre-P2 alias, so cmp survives the compatibility removal.
+pub fn cmp(a: string, b: string): int {
     var n = len(a)
     if len(b) < n { n = len(b) }
     for i in 0..n {
@@ -52,7 +66,15 @@ pub fn cmpBytes(a: string, b: string): int {
     return 0
 }
 
-// the fixed C-locale text for the errnos the tools can encounter
+// temporary P1 compatibility: the merged tools call cmpBytes; P2 removes it and
+// they call cmp instead. Behavior is unchanged.
+pub fn cmpBytes(a: string, b: string): int {
+    return cmp(a, b)
+}
+
+// temporary P1 compatibility: P2 moves this text to errors::text. The fixed
+// C-locale text for the errnos the tools can encounter; LC_ALL=C is pinned by
+// the differential, so this is English regardless of the user's locale.
 pub fn errText(code: int): string {
     if code == 2 { return "No such file or directory" }
     if code == 5 { return "Input/output error" }
@@ -70,7 +92,8 @@ pub fn errText(code: int): string {
     return "error " + string(code)
 }
 
-// decimal digit count of a non-negative int; digits(0) is 1
+// temporary P1 compatibility: P2 moves digits/appendPadded to fmt. Decimal
+// digit count of a non-negative int; digits(0) is 1.
 pub fn digits(n: int): int {
     var d = 1
     var v = n
@@ -81,9 +104,10 @@ pub fn digits(n: int): int {
     return d
 }
 
-// Append n right-aligned in width (width 0 means no padding) to a byte buffer.
-// The digits are produced by an inline power-of-ten loop, so no per-line string
-// is allocated. Used by cat's batched number prefixes.
+// temporary P1 compatibility: P2 moves this to fmt. Append n right-aligned in
+// width (width 0 means no padding) to a byte buffer. The digits are produced by
+// an inline power-of-ten loop, so no per-line string is allocated. Used by cat's
+// batched number prefixes.
 pub fn appendPadded(mut buf: &[]byte, n: int, width: int) {
     var d = digits(n)
     if d < width {
@@ -98,4 +122,302 @@ pub fn appendPadded(mut buf: &[]byte, n: int, width: int) {
         v = v - digit * p
         if p > 1 { p = p / 10 }
     }
+}
+
+// bytes [start, start+len(sub)) of s equal sub; the caller checks the bounds
+fn matchesAt(s: string, start: int, sub: string): bool {
+    for i in 0..len(sub) {
+        if s[start + i] != sub[i] { return false }
+    }
+    return true
+}
+
+// one lowercase hexadecimal digit, 0..15
+fn hexDigit(v: int): byte {
+    if v < 10 { return byte('0' + v) }
+    return byte('a' + (v - 10))
+}
+
+// append the lowercase hex form of a byte with no leading zero: 0 -> "0",
+// 0x1b -> "1b", 0x7f -> "7f" (the \u{...} payload of quoteName)
+fn appendHexByte(mut out: &[]byte, b: byte) {
+    let hi = int(b) / 16
+    let lo = int(b) % 16
+    if hi > 0 { append(out, hexDigit(hi)) }
+    append(out, hexDigit(lo))
+}
+
+// natord-plus-plus 2.0.0 compare_iter in its E0 ASCII form (design Appendix A).
+// fold selects ASCII A..Z folding; digits are unaffected. Whitespace is skipped
+// only at the top of the outer loop, never inside a digit run.
+fn natcmpCore(a: string, b: string, fold: bool): int {
+    var i = 0
+    var j = 0
+    while true {
+        while i < len(a) && isSpace(a[i]) { i += 1 }
+        while j < len(b) && isSpace(b[j]) { j += 1 }
+        if i == len(a) && j == len(b) { return 0 }
+        if i == len(a) { return -1 }
+        if j == len(b) { return 1 }
+        let da = isDigit(a[i])
+        let db = isDigit(b[j])
+        if da && db {
+            if a[i] == '0' || b[j] == '0' {
+                // left-aligned matching: 015 < 12
+                if a[i] != b[j] {
+                    if a[i] < b[j] { return -1 }
+                    return 1
+                }
+                i += 1
+                j += 1
+                while i < len(a) && j < len(b) && isDigit(a[i]) && isDigit(b[j]) {
+                    if a[i] != b[j] {
+                        if a[i] < b[j] { return -1 }
+                        return 1
+                    }
+                    i += 1
+                    j += 1
+                }
+                if i < len(a) && isDigit(a[i]) { return 1 }
+                if j < len(b) && isDigit(b[j]) { return -1 }
+                // both runs ended: continue the outer loop
+            } else {
+                // right-aligned matching: 15 < 123
+                var last = 0
+                while i < len(a) && j < len(b) && isDigit(a[i]) && isDigit(b[j]) {
+                    if last == 0 && a[i] != b[j] {
+                        if a[i] < b[j] { last = -1 } else { last = 1 }
+                    }
+                    i += 1
+                    j += 1
+                }
+                if i < len(a) && isDigit(a[i]) { return 1 }
+                if j < len(b) && isDigit(b[j]) { return -1 }
+                if last != 0 { return last }
+                // both runs ended equal: continue
+            }
+        } else {
+            var ca = a[i]
+            var cb = b[j]
+            if fold {
+                if ca >= 'A' && ca <= 'Z' { ca = byte(ca + 32) }
+                if cb >= 'A' && cb <= 'Z' { cb = byte(cb + 32) }
+            }
+            if ca < cb { return -1 }
+            if ca > cb { return 1 }
+            i += 1
+            j += 1
+        }
+    }
+}
+
+// value equality (strings compare by bytes)
+pub fn eq(a: string, b: string): bool {
+    return a == b
+}
+
+// prefix/suffix tests; an empty prefix or suffix is a prefix/suffix of anything
+pub fn startsWith(s: string, prefix: string): bool {
+    if len(prefix) > len(s) { return false }
+    for i in 0..len(prefix) {
+        if s[i] != prefix[i] { return false }
+    }
+    return true
+}
+
+pub fn endsWith(s: string, suffix: string): bool {
+    if len(suffix) > len(s) { return false }
+    let off = len(s) - len(suffix)
+    for i in 0..len(suffix) {
+        if s[off + i] != suffix[i] { return false }
+    }
+    return true
+}
+
+// first byte index of sub, or -1. The empty substring is found at 0.
+pub fn indexOf(s: string, sub: string): int {
+    let n = len(sub)
+    if n == 0 { return 0 }
+    if n > len(s) { return -1 }
+    var i = 0
+    while i + n <= len(s) {
+        if matchesAt(s, i, sub) { return i }
+        i += 1
+    }
+    return -1
+}
+
+pub fn contains(s: string, sub: string): bool {
+    return indexOf(s, sub) >= 0
+}
+
+// s[i]; the index must be in range (the runtime checks it like any index)
+pub fn byteAt(s: string, i: int): byte {
+    return s[i]
+}
+
+// The array is taken by value: the call moves it into the callee, string(data)
+// copies its bytes, and the callee's array is freed at scope exit. The caller
+// must not use the array after the call. An empty array gives "".
+pub fn fromBytes(data: []byte): string {
+    return string(data)
+}
+
+// ASCII A..Z to a..z; every other byte is copied unchanged
+pub fn lowerAscii(s: string): string {
+    var out = new []byte(0)
+    for i in 0..len(s) {
+        var b = s[i]
+        if b >= 'A' && b <= 'Z' { b = byte(b + 32) }
+        append(out, b)
+    }
+    return string(out)
+}
+
+// Byte-wise split on a non-empty separator. split("", ",") is [""], a trailing
+// separator yields a trailing empty field, and an empty separator is EINVAL.
+pub fn split(s: string, sep: string): Result[[]string] {
+    if len(sep) == 0 { return err("empty separator", 22) }
+    var out = new []string(0)
+    var start = 0
+    var i = 0
+    while i + len(sep) <= len(s) {
+        if matchesAt(s, i, sep) {
+            append(out, substr(s, start, i))
+            i += len(sep)
+            start = i
+        } else {
+            i += 1
+        }
+    }
+    append(out, substr(s, start, len(s)))
+    return ok(out)
+}
+
+// the single-byte fast path of split; a byte separator is always valid
+pub fn splitByte(s: string, sep: byte): Result[[]string] {
+    var out = new []string(0)
+    var start = 0
+    for i in 0..len(s) {
+        if s[i] == sep {
+            append(out, substr(s, start, i))
+            start = i + 1
+        }
+    }
+    append(out, substr(s, start, len(s)))
+    return ok(out)
+}
+
+// parts joined by sep; join([], ",") is "" and join(["a"], ",") is "a"
+pub fn join(parts: &[]string, sep: string): string {
+    var out = new []byte(0)
+    for i in 0..len(parts) {
+        if i > 0 {
+            for j in 0..len(sep) { append(out, sep[j]) }
+        }
+        for j in 0..len(parts[i]) { append(out, parts[i][j]) }
+    }
+    return string(out)
+}
+
+// C-locale whitespace trimming (isSpace: space and 0x09..0x0D)
+pub fn trimLeft(s: string): string {
+    var i = 0
+    while i < len(s) && isSpace(s[i]) { i += 1 }
+    return substr(s, i, len(s))
+}
+
+pub fn trimRight(s: string): string {
+    var i = len(s)
+    while i > 0 && isSpace(s[i - 1]) { i -= 1 }
+    return substr(s, 0, i)
+}
+
+pub fn trim(s: string): string {
+    var start = 0
+    var end = len(s)
+    while start < end && isSpace(s[start]) { start += 1 }
+    while end > start && isSpace(s[end - 1]) { end -= 1 }
+    return substr(s, start, end)
+}
+
+// eza's name order: natord::compare (case-sensitive) and
+// natord::compare_ignore_case (ASCII fold). -1, 0 or 1.
+pub fn natcmp(a: string, b: string): int {
+    return natcmpCore(a, b, false)
+}
+
+pub fn natcmpFold(a: string, b: string): int {
+    return natcmpCore(a, b, true)
+}
+
+// eza's QuoteSpaces escaping (src/output/escape.rs). The rule:
+//   1. needs = the name contains ' ' or '\'';
+//   2. when quoteSpaces && needs, wrap in '"' if the name contains '\'',
+//      otherwise in '\'';
+//   3. \t, \n and \r become \\t, \\n, \\r; every other byte < 0x20 or 0x7f
+//      becomes \u{h} with lowercase hex and no leading zeros; every other byte
+//      is copied unchanged (including \\, ", ' and bytes >= 0x80);
+//   4. quotes wrap the escaped bytes and embedded quotes are not escaped.
+// With quoteSpaces=false no quote characters are added but controls are still
+// escaped. The function is byte-wise and does not validate UTF-8.
+pub fn quoteName(name: string, quoteSpaces: bool): string {
+    var needs = false
+    var hasSingle = false
+    for i in 0..len(name) {
+        let b = name[i]
+        if b == ' ' || b == '\'' { needs = true }
+        if b == '\'' { hasSingle = true }
+    }
+    var quote = false
+    var q: byte = '\''
+    if quoteSpaces && needs {
+        quote = true
+        if hasSingle { q = '"' }
+    }
+    var out = new []byte(0)
+    if quote { append(out, q) }
+    for i in 0..len(name) {
+        let b = name[i]
+        if b == '\t' {
+            append(out, '\\')
+            append(out, 't')
+        } else if b == '\n' {
+            append(out, '\\')
+            append(out, 'n')
+        } else if b == '\r' {
+            append(out, '\\')
+            append(out, 'r')
+        } else if b < ' ' || b == 127 {
+            append(out, '\\')
+            append(out, 'u')
+            append(out, '{')
+            appendHexByte(out, b)
+            append(out, '}')
+        } else {
+            append(out, b)
+        }
+    }
+    if quote { append(out, q) }
+    return string(out)
+}
+
+// The shared parent prefix of an input operand or symlink target: escape the
+// whole parent once with the outer style, then:
+//   "" for an empty parent; "/" for parent "/" (the escaped root already ends
+//   in a separator, so none is added); otherwise the escaped parent plus "/".
+// It does not append a name. "/tmp" gives "/tmp/", "x y/sub" gives
+// "'x y/sub'/"; the caller appends the escaped name.
+pub fn parentPrefix(parent: string, quoteSpaces: bool): string {
+    if len(parent) == 0 { return "" }
+    let escaped = quoteName(parent, quoteSpaces)
+    if parent == "/" { return escaped }
+    return escaped + "/"
+}
+
+// E0 display width is the byte length; the signature does not change when E2
+// adds UTF-8 decoding/width. Callers that lay out columns must not assume
+// bytes == width in E2.
+pub fn displayWidth(s: string): int {
+    return len(s)
 }
