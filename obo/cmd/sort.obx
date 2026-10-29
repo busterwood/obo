@@ -18,8 +18,11 @@
 // -n is GNU's exact decimal strnumcmp, not floating point: optional leading
 // blanks (space/tab), an optional '-', digits, and an optional fractional part.
 // A '+' is not accepted, and parsing stops at the first other byte, so "+2",
-// "1e3" (1), "0x10" (0), "abc" (0) and "--5" (0) follow GNU. Leading integer
-// zeros and trailing fraction zeros are stripped and the parts compare as digit
+// "1e3" (1), "0x10" (0), "abc" (0) and "--5" (0) follow GNU. Only ASCII digits
+// count: GNU 9.4 skips byte 0x80 while scanning the integer digit run, and this
+// build stops at every non-ASCII byte, so high-byte numeric inputs are
+// unsupported and kept out of the differential matrix. Leading integer zeros
+// and trailing fraction zeros are stripped and the parts compare as digit
 // strings, so there is no overflow. A numeric tie uses the whole line as the
 // last-resort comparison; -r reverses that too. -u compares keys only (the whole
 // line, or the numeric value) and keeps the first input occurrence, which a
@@ -51,8 +54,9 @@
 // -n parses every line once into parallel []int key arrays over the same
 // buffer (nothing is copied): the integer digit end with the sign folded in,
 // the significant integer length, the fraction length after trailing zeros,
-// and the integer part's exact int64 value when it has at most 18 digits. When
-// every integer part fits that value, a stable MSD radix sorts line ids by it:
+// and the integer part's exact int64 value when it has at most 18 significant
+// digits. When every integer part fits that value, a stable MSD radix sorts
+// line ids by it:
 // sign category, magnitude byte count, magnitude bytes, then a fraction-digit
 // stage for ties, with every bucket order reversed inside the negative
 // category so magnitudes descend while a stable scatter keeps equal keys in
@@ -67,12 +71,14 @@
 // ascending list (the whole-line tie order included). Ranges of at most
 // CUTOFF elements finish with an insertion sort.
 //
-// Warm-cache medians on 1,000,000-line fixtures (this host, one CPU): -n
-// about 210-230 ms on fixed 8-digit integers against GNU sort 9.4's
-// 420-460 ms, and about 270-310 ms on decimal and all-negative data against
-// GNU's 460-520 ms; the old parser+merge took 2,300-2,800 ms. Peak RSS on the
-// 9 MB fixture is about 80-85 MB against GNU's 140 MB and the old path's
-// 136 MB (a 41 MB long-integer input peaks at about 111 MB).
+// Warm-cache medians on this host, one CPU (absolute times move about 10-15%
+// with host load and are fixture-specific): on the CLI benchmark's 1,000,000
+// fixed 8-digit lines -n is 190-230 ms against GNU sort 9.4's 400-460 ms; our
+// 1,000,000-line decimal and all-negative fixtures are 265-310 ms against
+// GNU's 455-520 ms; the former parser+merge measured 2,100-3,150 ms across
+// these fixtures. Peak RSS on the 9 MB fixture is about 80-85 MB against GNU's
+// 140 MB and the old path's 136 MB (a 41 MB long-integer input peaks at about
+// 104 MB).
 
 import "../lib/errors.obx" as errors
 
@@ -563,11 +569,10 @@ fn buildNumKeys(buf: &[]byte, starts: &[]int, mut xs: &[]int, mut is: &[]int,
 // which is how the non -u last-resort tie-break reaches one sort. Ranges of at
 // most CUTOFF elements finish with the insertion sorts above.
 fn numRadix(buf: &[]byte, starts: &[]int, xs: &[]int, is: &[]int, fs: &[]int,
-            mut order: &[]int, keyOnly: bool) {
+            mut order: &[]int, keyOnly: bool, mut digits: &[]int) {
     let n = len(order)
     if n < 2 { return }
     var aux = new []int(n)
-    var digits = new []int(n)
     var counts = new []int(257)
     var pos = new []int(257)
     var cur = new []int(257)
@@ -1667,7 +1672,9 @@ fn numericLines(buf: &[]byte, starts: &[]int, opts: &SortOpts): []int {
     var order = new []int(n)
     for i in 0..n { order[i] = i }
     if mode == 0 {
-        numRadix(buf, starts, xs, is, fs, order, opts.unique)
+        // vals holds no value here: the exact digit radix reuses it as its
+        // per-element digit scratch, so this path allocates one array less
+        numRadix(buf, starts, xs, is, fs, order, opts.unique, vals)
     } else {
         intRadix(buf, starts, xs, is, fs, vals, order, opts.unique, mode == 2)
     }

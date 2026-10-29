@@ -190,6 +190,20 @@ FILES = {
                   b'-' + b'9' * 60 + b'\n' + b'0.' + b'0' * 45 + b'1\n'),
     'numbig': b'9' * 70000 + b'\n1\n' + b'8' * 70000 + b'\n',
     'nulnum': b'12\x0034\n12\n12x\n\x001\n-0\x00\n \t-7\n',
+    # 240 lines whose integer parts all fit and some lines have fraction
+    # digits, with ties through trailing zeros and zero spellings: the int64
+    # value path past its insertion cutoff, its fraction stage, and the
+    # whole-line tie-break for numerically equal ranges
+    'ndec2': b''.join((b'%d\n' % (i % 5 - 2) +
+                       b'%d.%d\n' % (i % 5 - 2, i % 10) +
+                       b'%d.%d0\n' % (i % 5 - 2, (i * 7) % 10) +
+                       b' -%d.%d\n' % (i % 5, i % 3)) for i in range(60)),
+    # 300 lines of 300-320 digit integers plus a 999- and a 1000-digit line:
+    # the exact digit path's length-decade scheme (>255 significant digits)
+    'nhuge': (b''.join((b'-' if i % 3 == 0 else b'') +
+                       (b'%d' % (i % 9 + 1)) + b'7' * (300 + (i * 7) % 21) +
+                       b'\n' for i in range(300)) +
+              b'1' + b'7' * 998 + b'\n-2' + b'8' * 999 + b'\n'),
 }
 
 SPECS = {name: Spec('file', data=data) for name, data in FILES.items()}
@@ -610,6 +624,18 @@ def sort_cases():
         fixtures=['multi_a'])
     add('n_missing', T, ['-n', 'missing'])
     add('n_dir', T, ['-n', 'dir'], fixtures=['dir'])
+    # more -n coverage: 50,000 lines through the int64 radix past CUTOFF; 240
+    # mixed integer/fraction lines (mode 2) with trailing-zero and zero ties;
+    # 300+ lines of 300-320 digit integers for the length-decade scheme
+    add('n_many', T, ['-n', 'many'], fixtures=['many'], slow=True)
+    add('n_ndec2', T, ['-n', 'ndec2'], fixtures=['ndec2'])
+    add('rn_ndec2', T, ['-rn', 'ndec2'], fixtures=['ndec2'])
+    add('nu_ndec2', T, ['-nu', 'ndec2'], fixtures=['ndec2'])
+    add('rnu_ndec2', T, ['-rnu', 'ndec2'], fixtures=['ndec2'])
+    add('n_nhuge', T, ['-n', 'nhuge'], fixtures=['nhuge'])
+    add('rn_nhuge', T, ['-rn', 'nhuge'], fixtures=['nhuge'])
+    add('nu_nhuge', T, ['-nu', 'nhuge'], fixtures=['nhuge'])
+    add('rnu_nhuge', T, ['-rnu', 'nhuge'], fixtures=['nhuge'])
     add('long2', T, ['long2'], fixtures=['long2'])
     add('r_long2', T, ['-r', 'long2'], fixtures=['long2'])
     add('u_long2', T, ['-u', 'long2'], fixtures=['long2'])
