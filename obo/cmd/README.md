@@ -141,10 +141,10 @@ UTF-8 are preserved and the default order is unsigned byte order (`LC_ALL=C`).
   (`\x801` compares equal to `1`), which is outside the supported ASCII numeric
   grammar and is deliberately not reproduced; high-byte numeric inputs are kept
   out of the differential matrix.
-- `-r` reverses the whole comparison, including the last-resort line comparison.
-  The default path sorts ascending once and reverses the finished order (two
-  distinct lines are never equal, so ties cannot be observed); the numeric path
-  keeps the comparator negation, so its stable tie order is unchanged.
+- `-r` reverses the whole comparison, including the last-resort line
+  comparison. Both paths sort ascending once and reverse the finished order
+  (two distinct default-order lines are never equal, so ties cannot be
+  observed there; with `-n` the whole-line tie order is reversed too).
 - `-u` makes key equality the only equality (the whole line, or the numeric
   value with `-n`) and keeps the first input occurrence.
 
@@ -159,7 +159,9 @@ Sort is in memory: peak is linear in the input. The input is one byte buffer
 plus one start offset per line; a single regular-file operand is read in one
 allocation with no copy, while stdin and several operands hold the read chunks
 until that buffer is assembled (about twice the input, transiently), and `-n`
-adds the exact-decimal keys. There is no external merge; a huge input can
+adds four int arrays indexed by line (integer end, significant integer length,
+fraction length and, when every integer part fits, its int64 value), with no
+per-line keys or strings. There is no external merge; a huge input can
 exhaust memory (the runtime exits 2). `-k`, `-t`, `-f`, `-b`, `-d`, `-i`, `-M`,
 `-h`, `-V`, `-s`, `-c`, `-C`, `-o`, `-m`, `-z`, `--parallel`, long options,
 `--help` and `--version` are absent.
