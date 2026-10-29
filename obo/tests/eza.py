@@ -604,6 +604,9 @@ def _colour_cases():
        note='the SGR parser re-serialises canonically: 1;31')
     _g('colour', 'ls_sgr_256', '--color=always', 'mixed',
        env={'LS_COLORS': 'di=38;5;196'})
+    _g('colour', 'ls_sgr_rekind', '--color=always', 'mixed',
+       env={'LS_COLORS': 'di=38;2;1;2;3;31'},
+       note='a later basic colour must not keep stale RGB components')
     _g('colour', 'ls_ext_plain', '--color=always', 'colours',
        env={'LS_COLORS': '*.png=0'},
        note='a mapping with the empty style overrides the default category')
@@ -702,6 +705,8 @@ def _tree_cases():
     _g('tree', 'error_all_all', '-T', '-a', '-a', 'tree')
     _g('tree', 'error_level', '-T', '-L', 'x', 'tree')
     _g('tree', 'error_level_neg', '-T', '-L', '-1', 'tree')
+    _g('tree', 'error_level_plus', '-T', '-L', '+', 'tree',
+       note='Rust usize::from_str: "+" alone is InvalidDigit, not Empty')
     _g('tree', 'error_level_huge', '-T', '-L', '18446744073709551616', 'tree')
     _g('tree', 'error_level_empty', '-T', '-L', '', 'tree')
     _g('tree', 'level_without_tree', '-L', '1', 'tree',
@@ -711,6 +716,14 @@ def _tree_cases():
        note='the two -a error is raised even when -1 wins the view')
     _g('tree', 'denied', '-T', 'locked/denied', requires='nonroot')
     _g('tree', 'permission_child', '-T', 'modes', requires='nonroot')
+    _r('tree', 'reverse_size_ties', '-T', '-r', '--sort=size', 'mixed',
+       note='tree -r sorts ascending then reverses the vector, so equal sizes '
+            'reverse readdir order')
+    _r('tree', 'reverse_name_ties', '-T', '-r', '.', cwd='names/tie_Aa',
+       note='natcmpFold-equal a/A reverse readdir order in a tree')
+    _r('tree', 'reverse_size_group', '-T', '-r', '--sort=size',
+       '--group-directories-first', 'mixed',
+       note='the vector reverse runs before the stable dirs-first pass')
     _r('tree', 'dotdot_operand', '-T', '..', cwd='tree/d1',
        note='parent listing is live/shape-only')
 
@@ -795,6 +808,10 @@ def _error_cases():
     _g('errors', 'bad_sort', '--sort=bogus', 'mixed')
     _g('errors', 'bad_classify', '--classify=bogus', 'mixed')
     _g('errors', 'bad_color', '--color=bogus', 'mixed')
+    _g('errors', 'bad_color_quote', '--color=a"b', 'mixed',
+       note='the reference Debug-escapes the displayed option value')
+    _g('errors', 'bad_color_control', '--color=a\tb', 'mixed')
+    _g('errors', 'bad_level_quote', '-T', '-L', 'a"b', 'tree')
     _g('errors', 'bad_icons', '--icons=bogus', 'mixed')
     _o('errors', 'bad_time_style', '--time-style=bogus', 'mixed',
        note='divergence: the reference accepts and ignores a bad --time-style '
@@ -841,6 +858,9 @@ def _memory_cases():
             'OBO_STATS; EZA_PEAK_MAX and no leak line')
     _o('memory', 'tree_10000', '-T', 'many10000', slow=True,
        memory_entries=10000, note='E1 tree over 10,000 entries under '
+            'OBO_STATS; EZA_PEAK_MAX and no leak line')
+    _o('memory', 'colour_10000', '--color=always', 'many10000', slow=True,
+       memory_entries=10000, note='E1 colour over 10,000 entries under '
             'OBO_STATS; EZA_PEAK_MAX and no leak line')
 
 

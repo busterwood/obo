@@ -4804,18 +4804,29 @@ reference's recursion rules (`-D` alone keeps directories; `-f` drops the
 directory root in the files-list filter; both keeps everything at a level).
 
 **Tests.** `tests/eza.py` gains the `colour` and `tree` families and seven
-`--no-quotes` quoting cases: 391 cases, 388 non-memory (324 exact reference
-goldens, 51 live including eight pty auto-colour cases, 13 own usage errors)
-and three memory cases (the P4 pair plus the tree 10,000-entry case). The
+`--no-quotes` quoting cases: 400 cases, 396 non-memory (329 exact reference
+goldens, 54 live including eight pty auto-colour cases, 13 own usage errors)
+and four memory cases (the P4 pair, the tree 10,000-entry case and the
+coloured 10,000-entry case). The
 `colours` fixture pins one name per default file-type category, the hidden
 file, an executable, styled and broken targets; the colour goldens are exact
 SGR bytes recorded from the pinned binary. TTY cases run on a raw 80x24 pty
 and are live-only; `--record` refuses pty goldens. `probe.py` has a new `e1`
-group (27 re-probes) and `tests/eza/E1-PROBES.md` records the exact palette,
+group (29 re-probes) and `tests/eza/E1-PROBES.md` records the exact palette,
 LS/EZA semantics, view-flag rules, permission child and `--no-quotes` bytes
 from the same pinned sha256. The old own cases `own_no_quotes`,
 `own_color_always` and `bad_level` are gone (`bad_level` is now a reference
 golden); no E0 case was weakened.
+
+**Review fixes.** A file named `#` is Temp (the reference's starts/ends-with
+rule has no length guard); `-L +` is Rust InvalidDigit, not Empty; tree `-r`
+uses the reference's ascending-then-vector-reverse order (which reverses
+ties) before the dirs-first pass, while lines/long keep the stable descending
+comparison; displayed option values use Rust Debug escaping; stale RGB
+components are cleared when a later SGR token re-kinds a colour; and the
+colour 10,000-entry memory case is under the unchanged cap. The theme
+configuration (`EZA_CONFIG_DIR`, `XDG_CONFIG_HOME`, `~/.config/eza/theme.yml`)
+is not read.
 
 **Probe-wins deviations.** Tree plus `-d` does **not** conflict without
 `EZA_STRICT` (the reference probe prints the tree; strict mode is out), so
@@ -4829,11 +4840,12 @@ globs, mount-point style, unknown LS keys as filename globs, the
 compiled-source heuristic and non-UTF-8 lossy display (E2) remain out.
 
 **Measured (this branch).** eza binary 172,033 bytes (static, runtime
-included; reference 2,294,768). `tests/eza.py --require-reference`: 388/388
-non-memory, 0 failed (reference sha256 `10457dde...`); `--memory`: 3/3, live
-peaks 2,189,984 (restricted long), 2,189,360 (names) and 2,190,112 (tree)
-bytes, max RSS 2,560 KiB each, under the unchanged `EZA_PEAK_MAX = 2,752,512`;
-the reference measures about 25.0/12.1/14.0 MB max RSS on the same trees.
+included; reference 2,294,768). `tests/eza.py --require-reference`: 396/396
+non-memory, 0 failed (reference sha256 `10457dde...`); `--memory`: 4/4, live
+peaks 2,189,984 (restricted long), 2,189,360 (names), 2,190,112 (tree) and
+2,189,584 (colour) bytes, max RSS 2,560 KiB each, under the unchanged
+`EZA_PEAK_MAX = 2,752,512`; the reference measures about 25/12/14/12 MB max
+RSS on the same trees.
 
 **Gates (this branch).** `make`; `make tools`; `make eza`;
 `tests/tools.py --require-reference` 199/199; `--memory` 2/2;

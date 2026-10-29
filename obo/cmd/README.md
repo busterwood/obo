@@ -299,7 +299,11 @@ out); `-L` stops descending when `level <= depth`, so `-L 0` prints the root
 alone. Empty directories print their line only. An unreadable directory prints
 a red synthetic child `<Permission denied (os error 13)>` and continues (status
 0). `--only-files` drops a directory root entirely (eza's files-list filter),
-and `-D` keeps lstat directories at each level. `-T` wins over `-d` because
+and `-D` keeps lstat directories at each level. `-r` in a tree sorts each
+level ascending once and then reverses the whole order (so comparator ties
+reverse with it), then applies the stable dirs-first/last pass; lines and
+long keep the reference's stable descending comparison, where ties keep
+readdir order. `-T` wins over `-d` because
 strict-mode conflict checks are not enabled in this build (the reference probe
 without `EZA_STRICT` does the same). Long tree column widths are global across
 the tree and an error row is padded to the table width. Tree never needs the
@@ -378,10 +382,9 @@ compiled-source heuristic (a `.o` beside its `.c`) and mount-point style are
 not implemented. Plain `-l` is still this build's restricted-long usage
 error, so `-T -l` needs the same `--bytes --time-style=long-iso -n/--no-user`
 flags as any long view. Icons, grid, hyperlinks, non-UTF-8 lossy display (E2)
-and the no-operand stdin mode remain out. A read error in the middle of a
-tree directory (not exercised by the fixtures) drops that level's partial
-entries and prints the error child, where the reference silently stops with
-the entries it read; a directory that cannot be opened is exact. On a TTY
+and the no-operand stdin mode remain out. The eza theme configuration
+(`EZA_CONFIG_DIR`, `XDG_CONFIG_HOME` and `~/.config/eza/theme.yml`) is not
+read: the built-in palette and the environment subset always apply. On a TTY
 this build still prints
 lines (never a grid) and `-F`'s auto mode stays marker-free, while colour
 `auto` does use `isatty(stdout())` as above. The P5b re-probes with exact SGR and

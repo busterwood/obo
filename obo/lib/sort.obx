@@ -6,11 +6,12 @@
 // entry ids; the caller keeps ownership of the key arrays. Sorting permutes
 // ids only: it never moves owned strings or records, and keys are read through
 // the caller's arrays. All orders are ascending and stable: equal keys keep
-// their relative input order. There is no reverse flag. eza's -r is a stable
-// descending comparison of the same keys (P4's probe: comparator-equal keys
-// keep readdir order), implemented in cmd/eza.obx; sort::reverse remains a
-// primitive for callers that want a whole-array reversal (it reverses ties),
-// but eza does not use it for -r.
+// their relative input order. There is no reverse flag. eza's lines/long -r is
+// a stable descending comparison of the same keys (P4's probe:
+// comparator-equal keys keep readdir order), implemented in cmd/eza.obx. The
+// tree view instead sorts ascending once, then reverses the whole vector with
+// sort::reverse when -r (which reverses ties), then applies the stable
+// dirs-first/last pass (the E1 probe).
 //
 // The implementation is an iterative bottom-up merge sort with one owned
 // scratch []int: O(n log n), no recursion, no per-comparison allocation. An
