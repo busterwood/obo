@@ -8,8 +8,10 @@ The reference path is required.  Without it this program exits 2 and writes
 nothing: it never fabricates or replays output.  The reference is executed as
 ``[reference, *argv]`` with ``executable=<absolute path>`` in the exact
 section 9.5 environment, inside a freshly generated fixture tree per probe.
-All host-dependent temporary paths are normalized to ``<root>`` before bytes
-are rendered or hashed.
+All host-dependent temporary paths (the fixture root, the per-probe
+directory and the outer ``mkdtemp``) are normalized to ``<root>`` before bytes
+are rendered or hashed, and a stream that still contains one after
+normalization is refused.
 
 Each probe records its group, name, cwd, argv, stdin bytes, environment
 extras, exit status (including signals), exact stdout/stderr bytes as a
@@ -166,8 +168,6 @@ def dotfiles_probes():
            cwd='ext', note='dot key File::ext(".") = None'),
         _p('dotfiles', 'ext_key_dotdot', '-aa', '--sort=extension', '..',
            cwd='ext', note='dot key File::ext("..") = None'),
-        _p('dotfiles', 'ext_key_root', '-aa', '--sort=extension', '/',
-           cwd='empty', note='dot key File::ext("/") = None; host root data'),
         _p('dotfiles', 'aa_long_mixed', '-aa', '-l', 'mixed',
            note='live/shape-only: dot rows use host parent metadata'),
         _p('dotfiles', 'aa_long_one', '-aa', '-l', 'one',
@@ -207,8 +207,6 @@ def dirs_probes():
         _p('dirs', 'd_sub_link', '-d', 'sub/link', cwd='operands'),
         _p('dirs', 'd_sub_dirlink', '-d', 'sub/dirlink', cwd='operands'),
         _p('dirs', 'd_root', '-d', '/', note='live-only operand display /'),
-        _p('dirs', 'root_listing', '/',
-           note='live-only: host root directory listing'),
     ]
 
 
@@ -338,6 +336,9 @@ def long_probes():
         _p('long', 'sticky', *LONG, 'modes/m1777'),
         _p('long', 'mode000', *LONG, 'modes/m000'),
         _p('long', 'dir_mode000', *LONG, 'modes/d000'),
+        _p('long', 'long_xattr', *LONG, 'xattr',
+           note='xattr fixture: the reference appends @ to the permission '
+                'cell; reference data only, excluded from goldens (9.2/9.4)'),
         _p('long', 'numeric_user', '-l', '-n', 'mixed',
            note='numeric uid; hosts differ, live/shape-only'),
         _p('long', 'no_user', '-l', '--no-user', 'mixed',
@@ -420,16 +421,17 @@ def symlinks_probes():
         _p('symlinks', 'long_dangling', '-l', 'links/dangling'),
         _p('symlinks', 'long_dirlink', '-l', 'links/realdirlink'),
         _p('symlinks', 'long_loop', '-l', 'links/loop1'),
-        _p('symlinks', 'absolute_tmp', 'absolute/tmp',
-           note='live-only absolute target /tmp'),
-        _p('symlinks', 'absolute_tmp_slash', 'absolute/tmp_slash',
-           note='live-only raw target /tmp/'),
-        _p('symlinks', 'absolute_tmp_F', '-F=always', 'absolute/tmp'),
-        _p('symlinks', 'absolute_tmp_slash_F', '-F=always',
-           'absolute/tmp_slash'),
-        _p('symlinks', 'absolute_root', 'absolute/root',
-           note='live-only absolute target /'),
-        _p('symlinks', 'absolute_root_F', '-F=always', 'absolute/root',
+        _p('symlinks', 'absolute_tmp', '-d', 'absolute/tmp',
+           note='-d: absolute target display /tmp, no host listing'),
+        _p('symlinks', 'absolute_tmp_slash', '-d', 'absolute/tmp_slash',
+           note='-d: raw target /tmp/ is normalized to /tmp in the display'),
+        _p('symlinks', 'absolute_tmp_F', '-d', '-F=always', 'absolute/tmp',
+           note='-d with -F=always: /tmp plus the directory marker'),
+        _p('symlinks', 'absolute_tmp_slash_F', '-d', '-F=always',
+           'absolute/tmp_slash', note='-d with -F=always: /tmp/'),
+        _p('symlinks', 'absolute_root', '-d', 'absolute/root',
+           note='-d: absolute target display /'),
+        _p('symlinks', 'absolute_root_F', '-d', '-F=always', 'absolute/root',
            note='expected // with the directory marker'),
         _p('symlinks', 'absolute_space_broken', 'absolute/spaceabs',
            note="expected '/tar get' with no marker"),
@@ -441,7 +443,16 @@ def symlinks_probes():
            'quoting/brokenrel', note='still no marker'),
         _p('symlinks', 'd_sub_link', '-d', 'operands/sub/link'),
         _p('symlinks', 'd_sub_dirlink', '-d', 'operands/sub/dirlink'),
+        _p('symlinks', 'd_sub_link_F', '-d', '-F=always', 'sub/link',
+           cwd='operands',
+           note='cwd-vs-operand-parent: the cwd decoy target is 0644 and '
+                'sub/target is 0755, so resolution uses the operand parent'),
+        _p('symlinks', 'd_sub_dirlink_F', '-d', '-F=always', 'sub/dirlink',
+           cwd='operands', note='operand-parent directory target -> real/'),
         _p('symlinks', 'spaced_parent_link_d', '-d', 'operands/x y/sub/link'),
+        _p('symlinks', 'spaced_parent_link_d_F', '-d', '-F=always',
+           'x y/sub/link', cwd='operands',
+           note="spaced operand parent: 'x y/sub'/link -> target*"),
         _p('symlinks', 'spaced_parent_link_long', '-l', 'operands/x y/sub/link'),
         _p('symlinks', 'spaced_parent_file', 'operands/x y/sub/f'),
     ]
@@ -928,14 +939,24 @@ def _sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def normalize_bytes(data, root, probe_dir):
+def normalize_bytes(data, root, probe_dir, tmp):
+    """Replace every harness temporary path with the `<root>` placeholder.
+
+    `root` (the fixture root) is inside `probe_dir` (the per-probe directory),
+    which is inside `tmp` (the outer mkdtemp).  All three are normalized so a
+    default-TMPDIR run cannot commit the harness's own path; the caller then
+    refuses any stream that still contains one of them raw.
+    """
     data = data.replace(os.fsencode(root), b'<root>')
     data = data.replace(os.fsencode(probe_dir), b'<root>')
+    data = data.replace(os.fsencode(tmp), b'<root>')
     return data
 
 
-def normalize_text(text, root, probe_dir):
-    return text.replace(root, '<root>').replace(probe_dir, '<root>')
+def normalize_text(text, root, probe_dir, tmp):
+    return (text.replace(root, '<root>')
+            .replace(probe_dir, '<root>')
+            .replace(tmp, '<root>'))
 
 
 def capture_probe(reference, probe, tmp):
@@ -978,19 +999,25 @@ def capture_probe(reference, probe, tmp):
         fixtures.rmtree(probe_dir)
         raise SetupError('%s/%s: cannot run the reference: %s'
                          % (probe.group, probe.name, e))
-    stdout = normalize_bytes(stdout, root, probe_dir)
-    stderr = normalize_bytes(stderr, root, probe_dir)
+    stdout = normalize_bytes(stdout, root, probe_dir, tmp)
+    stderr = normalize_bytes(stderr, root, probe_dir, tmp)
+    for stream, data in (('stdout', stdout), ('stderr', stderr)):
+        for path in (root, probe_dir, tmp):
+            if os.fsencode(path) in data:
+                raise SetupError(
+                    '%s/%s: %s still contains the harness path %r after '
+                    'normalization' % (probe.group, probe.name, stream, path))
     if os.path.isabs(probe.cwd):
-        shown_cwd = normalize_text(probe.cwd, root, probe_dir)
+        shown_cwd = normalize_text(probe.cwd, root, probe_dir, tmp)
     else:
         shown_cwd = '<root>' + (('/' + probe.cwd) if probe.cwd else '')
     shown_argv = ['<ref>']
     for arg in probe.argv:
         if isinstance(arg, bytes):
-            shown_argv.append(normalize_bytes(arg, root, probe_dir))
+            shown_argv.append(normalize_bytes(arg, root, probe_dir, tmp))
         else:
-            shown_argv.append(normalize_text(arg, root, probe_dir))
-    shown_env = {k: normalize_text(v, root, probe_dir)
+            shown_argv.append(normalize_text(arg, root, probe_dir, tmp))
+    shown_env = {k: normalize_text(v, root, probe_dir, tmp)
                  for k, v in extras.items()}
     note = probe.note
     if notes:
@@ -1058,30 +1085,83 @@ and `stdin/names_no_operand` treats the stdin lines as input operands;
 `stdin/operand_ignores_stdin` shows stdin is not read when an operand is
 present.
 
-This is a design contradiction recorded by P0; the design note is not edited.
-The harness commits no no-operand reference golden: `default/cwd_dot` uses an
-explicit `.`, and `default/cwd_mixed` (no operand) is live-only.
+Decision for E0: this is a documented non-TTY divergence. E0 does not
+implement stdin file-name mode; no no-operand case is in the diff matrix
+(`default/cwd_mixed` was removed) and the directory-listing intent is covered
+with explicit `.` operands (`default/cwd_dot` and the tie/pty probes). The
+stdin probes stay as evidence. The design note is not edited.
 
-### Host-independent golden matrix (P0 corrections)
+### E0 matrix exclusions (deliberate; P4 must not silently re-add these)
 
-- The quoting fixture now has one all-whitespace name. Every all-whitespace
-  name compares Equal under natord (whitespace is skipped), so two of them
-  made every name-order listing of that tree readdir-order dependent (design
-  9.4). An audit of every recordable tree, including the synthetic `.`/`..`
-  names, found no comparator-equal pair under `natcmp` or `natcmpFold`
-  outside the live-only `names`/`tie_*` trees; extension-key groups and
-  type-rank groups contain no equal names in recordable trees, and the
-  size/time sort keys are distinct.
-- The xattr `@` marker depends on user-xattr support and design 9.2/9.4
-  exclude it from committed goldens; the `long/xattr` case is live-only.
-- `long/dir_mode000` requires a non-root euid (as root the permission-denied
-  warning is absent); it declares `requires='nonroot'` and is skipped when
-  euid is 0.
+Removed from the differential matrix because the behaviour is outside E0
+(probe evidence stays in this report):
+
+- `names/ordered_dot_name`, `names/ordered_dot_Name`,
+  `names/ordered_dot_Name_reverse`: `--sort=.name`/`.Name` are rejected in E0
+  (design 7.11).
+- `quoting/no_quotes`, `quoting/lines_no_quotes`, `quoting/F_no_quotes`:
+  `--no-quotes` is E1.
+- `operands/multiple_files`, `operands/two_directories`: multiple operands are
+  out of E0.
+- `classify/classify_separate_automatic`, `classify/F_separate_automatic`:
+  `automatic` is not in WHEN, so eza treats it as an operand (multiple
+  operands, out of E0).
+- `sortkeys/inode`, `sortkeys/none`: out of E0 (design 7.11).
+- `memory/tree`: tree is E1.
+- `long/xattr`: xattr `@` is not in E0 (design 7.8/9.2/9.4); the
+  `long/long_xattr` probe records the reference behaviour only.
+- `long/default_user`, `long/no_user`: plain `-l` is not E0; only the
+  restricted `-l --no-user --bytes --time-style=long-iso` (or `-n`) form is.
+- `default/cwd_mixed`: no-operand stdin mode (above).
+
+Retagged (still in the matrix, deliberately):
+
+- `errors/bad_time_style` is own-only: the reference accepts and ignores a bad
+  `--time-style` in a non-long view; E0 rejects it (own usage error, exit 3).
+  This is a recorded divergence.
+- `long/aa_mixed`, `long/dot_d`, `long/dotdot_d`, `long/root_d` now use the
+  restricted long invocation; `long/numeric_user` uses
+  `-l -n --bytes --time-style=long-iso`. All five stay live-only because
+  their rows carry host metadata.
+- `long/dir_mode000` declares `requires='nonroot'`.
+- `classify/F_d_sub_link`, `F_d_sub_dirlink`, `F_d_spaced_sub_link` pin
+  cwd-vs-operand-parent target resolution (`sub/link -> target*`,
+  `sub/dirlink -> real/`, `'x y/sub'/link -> target*`).
+
+### Host noise and path leakage
+
+- The absolute-target probes (`symlinks/absolute_tmp*`, `symlinks/absolute_root*`)
+  now use `-d`, so they record the target display instead of listing the
+  host's `/tmp` or `/`. The host-listing probes `dirs/root_listing` and
+  `dotfiles/ext_key_root` were removed; no probe in this report lists a host
+  directory.
+- The probe runner normalizes all three temporary paths (fixture root,
+  per-probe dir and the outer probe `mkdtemp` directory) to `<root>` and
+  refuses a stream that still contains one after normalization, so a
+  default-TMPDIR run cannot commit the harness path.
+
+### Other P0 notes
+
+- DT_UNKNOWN (section 3.4 item 16) remains explicitly **unverified** on this
+  host: `/proc`, `/sys`, `/dev/shm` and `/run` all report d_type != 0 (scan
+  counts in the host manifest). Re-run with `--dt-unknown DIR` on a
+  filesystem that returns an unknown d_type.
+- The section 3.1 required-flags probe is implemented in `tests/eza.py`
+  (`check_reference_flags`): under `--require-reference` the pinned binary
+  must accept `-l --no-user --bytes --time-style=long-iso
+  --treat-dirs-as-files`, else setup exits 2.
+- `--record` deliberately does not write `VERSION`, although design section
+  9.6 lists it among `--record` outputs; keeping VERSION under the authorized
+  reference step is the safer choice stated by the harness docstring.
+- The xattr fixture is protected against ambient xattrs: `fixtures.build`
+  reports `ambient_xattr` when a file we never label carries an xattr
+  (SELinux), and long goldens then skip rather than absorb an `@` marker.
+- The invalid-UTF-8 shape case stays probe-only until an E2 shape mode
+  exists; there is no shape-comparison runner in P0.
 
 Note for reviewers: `git diff --check` flags trailing whitespace in
-`long/dir_mode000.stderr` (the permission summary line ends with a space)
-and in the `quoting/*no_quotes.stdout` goldens (raw `--no-quotes` names).
-These are exact reference bytes, not formatting; do not edit them.
+`long/dir_mode000.stderr` (the permission summary line ends with a space).
+That is an exact reference byte, not formatting; do not edit it.
 """
 
 
@@ -1091,7 +1171,7 @@ def render(results, manifest, reference):
         '',
         'Produced by `obo/tests/eza/probe.py` against the authorized pinned',
         'reference. Every byte below is observed output; skipped probes have no',
-        'output. Temporary fixture paths are normalized to `<root>` and the',
+        'output. Temporary harness paths are normalized to `<root>` and the',
         'reference path to `<ref>`. Absolute-target and host-metadata probes are',
         'live/shape-only and are not committed goldens (design section 9.4).',
         '',

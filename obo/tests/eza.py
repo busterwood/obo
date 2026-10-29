@@ -33,7 +33,15 @@ fall back to committed goldens.
 
 The P0 reference step writes `VERSION` and runs `probe.py`; the harness never
 creates or edits `VERSION`.  `--record` verifies the pin and writes
-reference/own goldens plus a manifest, and refuses path-leaking output.
+reference/own goldens plus a manifest, and refuses path-leaking output.  This
+deliberately differs from a literal reading of design section 9.6 (which lists
+VERSION among `--record` outputs): keeping VERSION under the authorized
+reference step is the safer choice and is recorded in REFERENCE.md's P0
+findings.
+
+`--require-reference` additionally runs the section 3.1 required-flags probe
+against the pinned binary (`-l --no-user --bytes --time-style=long-iso
+--treat-dirs-as-files`); a reference that does not accept it is a setup error.
 
 Own eza and P4 gating
 ---------------------
@@ -44,8 +52,19 @@ against the pinned reference and skips own cases, and `--memory` exits 2 with
 the P4 message.  Nothing about the reference pin or the reference golden
 checks is relaxed: `--require-reference` still requires the exact version and
 binary hash, and a missing or malformed reference golden is still a setup
-error.  Once `cmd/eza.obx` exists, the designed behaviour returns: build eza
-and compare/record own cases as well.
+error.  With no own build and no usable pinned reference there is nothing to
+run, so the harness is a setup error (exit 2), never a silent all-skip pass.
+Once `cmd/eza.obx` exists, the designed behaviour returns: build eza and
+compare/record own cases as well.
+
+E0 scope
+--------
+Reference behaviour outside E0 is not in the golden/ref matrix: multiple
+operands, `--no-quotes`, `.name`/`.Name` sorts, `--sort=inode|none`, plain
+`-l`, tree, xattr rows and the no-operand stdin mode are excluded (the exact
+case list and reasons are in `eza/REFERENCE.md`, P0 findings).  Probe evidence
+for those behaviours stays in the probe report; P4 must not reintroduce them
+as differential cases without a design decision.
 
 Case tags
 ---------
@@ -59,9 +78,11 @@ Case tags
 
 A `golden` case is also a `ref` case when a pinned reference is present, and
 both are compared.  `--record` selects `golden` and `own` cases, runs the same
-fixtures and environments, refuses any stdout/stderr line that starts with `/`
-or contains the case directory, and refuses to overwrite a differing golden
-without `--force`.
+fixtures and environments, refuses any stdout/stderr line containing an
+absolute path token (line start, after `->`, or inside quotes) or the case
+directory, and refuses to overwrite a differing golden without `--force`.
+`--record -k` is refused: the manifest must describe the full golden-tagged
+selection, and the manifest is verified against it on every run.
 
 Exit status: 0 pass, 1 test failure, 2 harness/setup failure.
 """
@@ -189,9 +210,6 @@ def _default_cases():
     _g('default', 'lines_one', '-1', 'one')
     _g('default', 'lines_mixed', '-1', 'mixed')
     _g('default', 'lines_links', '-1', 'links')
-    _r('default', 'cwd_mixed', cwd='mixed',
-       note='no operand: stdin file-name mode (empty stdin), not a cwd listing; '
-            'design section 7.2 contradiction, see REFERENCE.md; live-only')
     _g('default', 'cwd_dot', '.', cwd='mixed')
     _g('default', 'all_empty', '-a', 'empty')
     _g('default', 'all_one', '-a', 'one')
@@ -221,7 +239,6 @@ def _name_cases():
     _g('names', 'ordered_lower', '--sort=name', 'names/ordered')
     _g('names', 'ordered_filename', '--sort=filename', 'names/ordered')
     _g('names', 'ordered_reverse', '-r', 'names/ordered')
-    _g('names', 'ordered_dot_name', '--sort=.name', 'names/ordered')
     _r('names', 'tie_fixture_default', 'names',
        note='readdir-order tie probe, live only')
     _r('names', 'tie_Aa', '.', cwd='names/tie_Aa',
@@ -242,9 +259,6 @@ def _name_cases():
     _g('names', 'D_f_mixed', '-D', '-f', 'mixed')
     _g('names', 'D_reverse_mixed', '-D', '-r', 'mixed')
     _g('names', 'ordered_Name_reverse', '--sort=Name', '-r', 'names/ordered')
-    _g('names', 'ordered_dot_Name', '--sort=.Name', 'names/ordered')
-    _g('names', 'ordered_dot_Name_reverse', '--sort=.Name', '-r',
-       'names/ordered')
     _g('names', 'ordered_filename_reverse', '--sort=filename', '-r',
        'names/ordered')
     _g('names', 'ordered_aa', '-aa', 'names/ordered')
@@ -268,10 +282,6 @@ def _sortkey_cases():
     _g('sortkeys', 'type_reverse', '--sort=type', '-r', 'mixed')
     _g('sortkeys', 'date_alias', '--sort=date', 'times')
     _g('sortkeys', 'newest_alias', '--sort=newest', 'times')
-    _r('sortkeys', 'inode', '--sort=inode', 'mixed',
-       note='host inode order')
-    _r('sortkeys', 'none', '--sort=none', 'mixed',
-       note='readdir order; out of E0 scope')
     _g('sortkeys', 'ext_key_d', '-aa', '--sort=extension', 'd', cwd='ext',
        note='dot key File::ext("d") = None')
     _g('sortkeys', 'ext_key_dx_x', '-aa', '--sort=extension', 'dx.x',
@@ -324,28 +334,22 @@ def _long_cases():
     _g('long', 'dangling', *LONG, 'links/dangling')
     _g('long', 'dir_link', *LONG, 'links/realdirlink')
     _g('long', 'hard', *LONG, 'hard')
-    _r('long', 'xattr', *LONG, 'xattr',
-       note='xattr @ marker is host-dependent; excluded from goldens '
-            '(design 9.2/9.4); live differential only')
     _g('long', 'd_pipe', *LONG, '-d', 'modes/pipe')
     _g('long', 'd_socket', *LONG, '-d', 'modes/sock')
     _g('long', 'd_sub_file', *LONG, '-d', 'operands/sub/f')
     _g('long', 'd_sub_exec', *LONG, '-d', 'operands/sub/target')
     _g('long', 'd_sub_link', *LONG, '-d', 'operands/sub/link')
     _g('long', 'd_sub_dirlink', *LONG, '-d', 'operands/sub/dirlink')
-    _r('long', 'aa_mixed', '-aa', '-l', 'mixed',
-       note='dot rows use host parent metadata')
-    _r('long', 'numeric_user', '-l', '-n', 'mixed',
-       note='numeric uid width varies by host')
-    _r('long', 'default_user', '-l', 'mixed',
-       note='user names are host data')
-    _r('long', 'no_user', '-l', '--no-user', 'mixed',
-       note='non-bytes sizes and default time style')
-    _r('long', 'dot_d', '-l', '-d', '.', cwd='mixed',
+    _r('long', 'aa_mixed', '-aa', *LONG, 'mixed',
+       note='restricted long; dot rows use host parent metadata')
+    _r('long', 'numeric_user', '-l', '-n', '--bytes',
+       '--time-style=long-iso', 'mixed',
+       note='restricted long with numeric uid; width varies by host')
+    _r('long', 'dot_d', *LONG, '-d', '.', cwd='mixed',
        note='-d . is live/shape-only')
-    _r('long', 'dotdot_d', '-l', '-d', '..', cwd='one',
+    _r('long', 'dotdot_d', *LONG, '-d', '..', cwd='one',
        note='-d .. is live/shape-only')
-    _r('long', 'root_d', '-l', '-d', '/',
+    _r('long', 'root_d', *LONG, '-d', '/',
        note='-d / is live/shape-only')
 
 
@@ -353,7 +357,6 @@ def _quoting_cases():
     _g('quoting', 'default', 'quoting')
     _g('quoting', 'lines', '-1', 'quoting')
     _g('quoting', 'long', *LONG, 'quoting')
-    _g('quoting', 'no_quotes', '--no-quotes', 'quoting')
     _g('quoting', 'classify', '-F=always', 'quoting')
     _g('quoting', 'spaced_operand', 'quoting/with space')
     _g('quoting', 'spaced_symlink_operand', 'quoting/valid spaced')
@@ -364,8 +367,6 @@ def _quoting_cases():
        note='still no marker on the broken relative target')
     _g('quoting', 'broken_relative_long', *LONG, 'quoting/brokenrel')
     _g('quoting', 'links_spaced_target', '-1', 'links')
-    _g('quoting', 'lines_no_quotes', '-1', '--no-quotes', 'quoting')
-    _g('quoting', 'F_no_quotes', '-F=always', '--no-quotes', 'quoting')
     _g('quoting', 'spaced_operand_lines', '-1', 'quoting/with space')
     _g('quoting', 'valid_spaced_operand_lines', '-1', 'quoting/valid spaced')
     _g('quoting', 'broken_relative_lines', '-1', 'quoting/brokenrel')
@@ -390,9 +391,6 @@ def _classify_cases():
     _g('classify', 'F_separate', '-F', 'always', 'mixed')
     _g('classify', 'classify_always', '--classify=always', 'mixed')
     _g('classify', 'classify_automatic', '--classify=automatic', 'mixed')
-    _g('classify', 'classify_separate_automatic', '--classify', 'automatic',
-       'mixed', note='`automatic` is not in WHEN and stays an operand')
-    _g('classify', 'F_separate_automatic', '-F', 'automatic', 'mixed')
     _g('classify', 'F_lines', '-1', '-F=always', 'mixed')
     _g('classify', 'F_links', '-F=always', 'links')
     _g('classify', 'F_long_links', *LONG, '-F=always', 'links')
@@ -400,6 +398,17 @@ def _classify_cases():
     _g('classify', 'F_d_dir', '-d', '-F=always', 'dir', cwd='operands')
     _g('classify', 'F_d_symlink', '-d', '-F=always', 'l', cwd='operands')
     _g('classify', 'F_d_dirlink', '-d', '-F=always', 'dl', cwd='operands')
+    _g('classify', 'F_d_sub_link', '-d', '-F=always', 'sub/link',
+       cwd='operands',
+       note='operand parent sub/ has an executable target; the cwd decoy '
+            'target is 0644, so this pins operand-parent resolution')
+    _g('classify', 'F_d_sub_dirlink', '-d', '-F=always', 'sub/dirlink',
+       cwd='operands',
+       note='operand-parent directory target gets the / marker')
+    _g('classify', 'F_d_spaced_sub_link', '-d', '-F=always', 'x y/sub/link',
+       cwd='operands',
+       note='spaced operand parent; `x y/sub` is quoted once and the target '
+            'comes from x y/sub/target')
     _g('classify', 'F_modes', '-F=always', 'modes')
     _g('classify', 'F_tree', '-F=always', 'tree')
     _g('classify', 'F_ext', '-F=always', 'ext')
@@ -443,12 +452,10 @@ def _dir_cases():
 
 def _operand_cases():
     _g('operands', 'file', 'one/f')
-    _g('operands', 'multiple_files', 'operands/f', 'operands/g')
     _g('operands', 'dash_operand', '--', '-', cwd='mixed')
     _g('operands', 'dashdash_name', '--', '--x', cwd='mixed')
     _g('operands', 'hidden_explicit', 'mixed/.hidden')
     _g('operands', 'directory', 'mixed/dir')
-    _g('operands', 'two_directories', 'mixed/dir', 'mixed/sub.dir')
     _g('operands', 'dot_file_normalized', 'operands/./f')
     _r('operands', 'dotdot', '..', cwd='operands',
        note='parent listing is live/shape-only')
@@ -474,7 +481,9 @@ def _error_cases():
     _g('errors', 'bad_classify', '--classify=bogus', 'mixed')
     _g('errors', 'bad_color', '--color=bogus', 'mixed')
     _g('errors', 'bad_icons', '--icons=bogus', 'mixed')
-    _g('errors', 'bad_time_style', '--time-style=bogus', 'mixed')
+    _o('errors', 'bad_time_style', '--time-style=bogus', 'mixed',
+       note='divergence: the reference accepts and ignores a bad --time-style '
+            'in a non-long view; E0 rejects it (own usage error, exit 3)')
     _g('errors', 'bad_level', '-T', '-L', 'x', 'tree')
     _sk('errors', 'permission_denied', 'locked/denied', requires='nonroot',
         note='skipped when euid is 0')
@@ -501,8 +510,6 @@ def _memory_cases():
        note='TODO(P4): parse the single OBO_STATS line and EZA_PEAK_MAX')
     _o('memory', 'names_10000', 'many10000', slow=True,
        memory_entries=10000, note='name-only listing under OBO_STATS')
-    _o('memory', 'tree', '-T', 'tree', slow=True,
-       note='tree case covers iterator buffers')
 
 
 for _builder in (_default_cases, _name_cases, _sortkey_cases, _long_cases,
@@ -565,6 +572,20 @@ def golden_path(kind, case, ext):
     return os.path.join(GOLDEN, kind, case.family, case.name + '.' + ext)
 
 
+def absolute_path_token(line):
+    """The first whitespace-delimited token that names an absolute path.
+
+    A token is absolute when, after any leading quote characters, it starts
+    with `/`.  This rejects `-> /tmp` and `'/tar get'` in addition to a line
+    that itself starts with `/`, so a golden cannot commit host paths after
+    arrows or inside quotes.
+    """
+    for token in line.split():
+        if token.lstrip(b'"\'').startswith(b'/'):
+            return token
+    return None
+
+
 def load_golden(kind, case):
     paths = [golden_path(kind, case, ext)
              for ext in ('stdout', 'stderr', 'exit')]
@@ -581,9 +602,11 @@ def load_golden(kind, case):
         exit_text = f.read().strip()
     for stream, data in (('stdout', stdout), ('stderr', stderr)):
         for i, line in enumerate(data.split(b'\n')):
-            if line.startswith(b'/'):
-                raise SetupError('malformed golden %s/%s: %s line %d starts '
-                                 'with /' % (kind, case.key, stream, i + 1))
+            token = absolute_path_token(line)
+            if token is not None:
+                raise SetupError('malformed golden %s/%s: %s line %d contains '
+                                 'an absolute path token %r'
+                                 % (kind, case.key, stream, i + 1, token))
     try:
         code = int(exit_text)
     except ValueError:
@@ -896,6 +919,35 @@ class Harness:
         if self.ref.kind != 'pinned':
             raise SetupError('--require-reference: ' + self.ref.reason)
 
+    def check_reference_flags(self):
+        """Design 3.1: the pinned reference must accept the E0 required flags.
+
+        The VERSION pin makes this redundant in theory; the probe exists so a
+        wrongly installed reference (B8, e.g. eza 0.18 without
+        --treat-dirs-as-files) fails as a setup error rather than a puzzle of
+        failing cases.
+        """
+        if not self.args.require_reference:
+            return
+        base = tempfile.mkdtemp(prefix='flags-', dir=self.tmp)
+        try:
+            env = probe_env(base)
+            try:
+                p = subprocess.run(
+                    [EZA, '-l', '--no-user', '--bytes',
+                     '--time-style=long-iso', '--treat-dirs-as-files', '.'],
+                    executable=self.ref.path, env=env, cwd=base,
+                    stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+            except (OSError, subprocess.TimeoutExpired) as e:
+                raise SetupError('required flags probe failed to run: %s' % e)
+        finally:
+            fixtures.rmtree(base)
+        if p.returncode != 0:
+            raise SetupError(
+                'required flags probe failed (exit %d): the pinned reference '
+                'does not accept -l --no-user --bytes --time-style=long-iso '
+                '--treat-dirs-as-files: %r' % (p.returncode, p.stderr))
+
     def build(self):
         """P4 builds `eza` through build_tools.build(['eza'], ...)."""
         raise SetupError('eza build not implemented (P4)')
@@ -952,6 +1004,10 @@ class Harness:
         return env
 
     def skip_reason(self, case, caps):
+        if GOLDEN_TAG in case.tags and case.family == 'long' \
+                and caps.get('ambient_xattr'):
+            return ('ambient xattrs present; the reference would print the '
+                    'permission @ marker')
         for key in implied_requires(case):
             if key == 'nonroot' and not caps.get('nonroot'):
                 return 'requires a non-root euid'
@@ -1106,10 +1162,11 @@ class Harness:
     # -- record
     def leak_refusal(self, data, base, root, case, stream):
         for i, line in enumerate(data.split(b'\n')):
-            if line.startswith(b'/'):
+            token = absolute_path_token(line)
+            if token is not None:
                 raise SetupError(
-                    '%s: refusing to record %s line %d starting with /: %r'
-                    % (case.key, stream, i + 1, line))
+                    '%s: refusing to record %s line %d containing an absolute '
+                    'path token %r' % (case.key, stream, i + 1, token))
             for prefix, label in ((os.fsencode(base), 'case directory'),
                                   (os.fsencode(root), 'fixture root')):
                 if prefix and prefix in line:
@@ -1149,7 +1206,7 @@ class Harness:
         finally:
             fixtures.rmtree(base)
 
-    def write_manifest(self, recorded):
+    def write_manifest(self, recorded, skipped=()):
         path = os.path.join(GOLDEN, 'ref', 'MANIFEST')
         os.makedirs(os.path.dirname(path), exist_ok=True)
         data = {
@@ -1165,6 +1222,7 @@ class Harness:
                 'filesystem': fs_type(self.tmp),
             },
             'cases': sorted(recorded),
+            'skipped': sorted('ref/' + key for key in skipped),
             'note': 'P0 skeleton manifest; per-case host metadata is a P4 TODO',
         }
         with open(path, 'w', encoding='utf-8') as f:
@@ -1181,6 +1239,14 @@ class Harness:
         except (OSError, ValueError) as e:
             self.notes.append('manifest unreadable: %s' % e)
             return
+        full = {'ref/' + c.key for c in CASES if GOLDEN_TAG in c.tags}
+        listed = set(data.get('cases', [])) | set(data.get('skipped', []))
+        listed = {key for key in listed if key.startswith('ref/')}
+        if listed != full:
+            raise SetupError(
+                'MANIFEST does not match the golden-tagged case set '
+                '(%d listed, %d expected); re-run --record'
+                % (len(listed), len(full)))
         recorded = data.get('reference', {})
         if self.ref.kind == 'pinned' and recorded.get('sha256') \
                 and recorded['sha256'] != self.ref.sha256:
@@ -1194,6 +1260,10 @@ class Harness:
         if self.ref.kind != 'pinned':
             raise SetupError('--record requires the pinned reference: '
                              + self.ref.reason)
+        if self.args.k:
+            raise SetupError(
+                '--record with -k would write a partial matrix; the manifest '
+                'must describe the full golden selection, so record without -k')
         cases = [c for c in self.selection(memory=False)
                  if GOLDEN_TAG in c.tags or OWN in c.tags]
         if not cases:
@@ -1208,14 +1278,27 @@ class Harness:
             # TODO(P4): build eza through build_tools.build(['eza'], ...).
             self.build()
         recorded = []
+        ref_recorded = []
+        ref_skipped = []
         for case in ref_cases:
             if self.record_case('ref', case, self.ref.path):
                 recorded.append('ref/' + case.key)
+                ref_recorded.append(case.key)
+            else:
+                ref_skipped.append(case.key)
         for case in own_cases:
             if self.record_case('own', case, self.exe):
                 recorded.append('own/' + case.key)
         if ref_cases:
-            self.write_manifest(recorded)
+            expected = {'ref/' + c.key for c in ref_cases}
+            got = ({'ref/' + key for key in ref_recorded}
+                   | {'ref/' + key for key in ref_skipped})
+            if got != expected:
+                raise SetupError(
+                    'recording did not cover the golden-tagged selection '
+                    '(%d of %d cases); manifest not written'
+                    % (len(got), len(expected)))
+            self.write_manifest(recorded, ref_skipped)
         print('recorded %d goldens (%d reference, %d own)'
               % (len(recorded), len(ref_cases), len(own_cases)))
 
@@ -1281,6 +1364,11 @@ def main(argv=None):
         h = Harness(a, tmp)
         h.resolve_reference()
         h.check_require_reference()
+        h.check_reference_flags()
+        if not own_available() and h.ref.kind != 'pinned':
+            raise SetupError(
+                'no own eza build and no usable reference: nothing to run '
+                '(%s)' % h.ref.reason)
         if a.record:
             h.record()
             return 0

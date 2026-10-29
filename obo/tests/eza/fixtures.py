@@ -144,6 +144,18 @@ def _optional(caps, key, fn, *args, **kwargs):
         return False
 
 
+def _has_ambient_xattr(path):
+    """True when `path` already carries an xattr we did not set.
+
+    SELinux or similar can label every file, which makes eza append `@` to
+    the long permission cell; the harness skips long goldens then.
+    """
+    try:
+        return bool(os.listxattr(path, follow_symlinks=False))
+    except (OSError, AttributeError):
+        return False
+
+
 # ----------------------------------------------------------------------- trees
 
 def _empty(root, caps):
@@ -517,6 +529,7 @@ def build(root):
         'deep_path': True,
         'nonroot': os.geteuid() != 0,
         'dev_full': os.path.exists('/dev/full'),
+        'ambient_xattr': False,
     }
     try:
         _empty(root, caps)
@@ -544,6 +557,11 @@ def build(root):
         if os.path.lexists(os.path.join(root, 'tar get')):
             raise RuntimeError('fixture invariant: a root-level "tar get" exists')
         _pin(root)
+        # Sample files we never label ourselves: if the host adds xattrs
+        # (SELinux), long goldens would grow an `@` permission marker.
+        caps['ambient_xattr'] = (
+            _has_ambient_xattr(os.path.join(root, 'mixed', 'alpha'))
+            or _has_ambient_xattr(root))
         return caps
     finally:
         os.umask(old_umask)
