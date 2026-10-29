@@ -199,14 +199,17 @@ def make_fixtures():
 
 
 # ---------------------------------------------------------------- programs
-def compile_program(name):
+def compile_program(name, compiler=None, rt=None, lib=None):
+    """Compile tests/meta/name as a module root; the optional compiler, runtime
+    directory and library directory let mutate_meta.py rebuild the corpus
+    against a mutated runtime or compiler."""
     path = os.path.join(CASEDIR, name)
     if not os.path.isfile(path):
         raise SystemExit(f"tests/meta/{name} is missing")
     symdir = tempfile.mkdtemp(prefix='sym-', dir=TMP)
     exe = os.path.join(tempfile.mkdtemp(prefix='meta-', dir=TMP), name[:-4])
-    p = subprocess.run([run.OBXC, path, '-o', exe, '--rt', FORK, '-I', LIBDIR,
-                        '--sym-dir', symdir],
+    p = subprocess.run([compiler or run.OBXC, path, '-o', exe, '--rt', rt or FORK,
+                        '-I', lib or LIBDIR, '--sym-dir', symdir],
                        capture_output=True, text=True, timeout=120)
     if p.returncode != 0:
         raise SystemExit(f"tests/meta/{name} did not compile: {p.stderr.strip()[:400]}")
@@ -336,70 +339,70 @@ def check_entry_paths(name, p, fx, operand, cwd=None):
     ok(name)
 
 
-def program_section():
-    fx = make_fixtures()
-    exes = {name: compile_program(name) for name in sorted(os.listdir(CASEDIR))
-            if name.endswith('.obx')}
+def marker_case(name, source):
+    def check(p):
+        if check_markers(name, os.path.join(CASEDIR, source), p):
+            ok(name)
+    return check
 
-    def exe(name):
-        return exes[name]
 
-    # listing: names, kinds and inodes against Python; no . or ..
-    p = run_program(exe('list.obx'), [fx.entries])
-    check_list('fs/list', p, fx)
-
-    # stat/lstat: all 14 fields against os.stat/os.lstat, for a pinned regular
-    # file, a symlink (follow and no-follow) and a directory
-    p = run_program(exe('stat_fields.obx'), [fx.statfile, fx.rel, fx.sub])
-    check_stat_fields('fs/stat_fields', p, [fx.statfile, fx.rel, fx.sub])
-
-    # readlink: raw target bytes, a dangling target, and the error codes
-    cases = [(fx.rel, b'target'), (fx.dangling, b'missing'),
-             (fx.longlink, fx.longtarget.encode()),
-             (fx.regular, 22), (fx.missing, 2), ('', 22)]
-    p = run_program(exe('readlink.obx'), [c[0] for c in cases])
-    check_readlink('fs/readlink', p, cases)
-
-    # entry paths: an operand outside the cwd, and a ../ operand from a sibling
-    p = run_program(exe('entry_paths.obx'), [fx.entries])
-    check_entry_paths('fs/entry_paths absolute', p, fx, fx.entries)
-    p = run_program(exe('entry_paths.obx'), [fx.relative], cwd=fx.cwd)
-    check_entry_paths('fs/entry_paths ../', p, fx, fx.relative, cwd=fx.cwd)
-
-    # close idempotence (the fd is >= 0 once, then -1); no leak under OBO_CHECK
-    p = run_program(exe('close_idempotent.obx'), [fx.entries])
-    if check_markers('fs/close_idempotent', os.path.join(CASEDIR, 'close_idempotent.obx'), p):
-        ok('fs/close_idempotent')
-
-    # open and close a directory under OBO_CHECK with no leak
-    p = run_program(exe('open_close.obx'), [fx.entries])
-    if check_markers('fs/open_close', os.path.join(CASEDIR, 'open_close.obx'), p):
-        ok('fs/open_close')
-
-    # fs-level errors: missing paths, a non-symlink readlink, a file as a dir
-    p = run_program(exe('err_paths.obx'), [fx.regular, fx.missing, fx.entries])
-    if check_markers('fs/err_paths', os.path.join(CASEDIR, 'err_paths.obx'), p):
-        ok('fs/err_paths')
-
-    # crafted records: the DT_UNKNOWN lazy-lstat fallback, dot skipping and the
-    # corrupt-record branches (reclen, bounds, missing NUL) with no advance
-    p = run_program(exe('crafted.obx'), [fx.entries])
-    if check_markers('fs/crafted', os.path.join(CASEDIR, 'crafted.obx'), p):
-        ok('fs/crafted')
-
-    # the dedicated bad case: an unclosed directory exits 8 under OBO_CHECK
-    p = run_program(exe('missing_close.obx'), [fx.entries])
+def check_missing_close(p):
+    """the dedicated bad case: the unclosed directory exits 8 under OBO_CHECK"""
+    name = 'fs/missing_close'
     want = os.path.join(CASEDIR, 'missing_close.obx')
     expect, _ = markers(want)
     got = p.stdout.decode('utf-8', 'replace').splitlines()
     if p.returncode != 8:
-        bad('fs/missing_close', f"exit {p.returncode}, expected 8 (the leak trap)")
+        bad(name, f"exit {p.returncode}, expected 8 (the leak trap)")
     elif b'file descriptors leaked: 1' not in p.stderr:
-        bad('fs/missing_close', f"stderr lacks the leak report: {p.stderr[:200]!r}")
+        bad(name, f"stderr lacks the leak report: {p.stderr[:200]!r}")
     elif expect and got != expect:
-        bad('fs/missing_close', f"output {got!r}, expected {expect!r}")
+        bad(name, f"output {got!r}, expected {expect!r}")
     else:
-        ok('fs/missing_close')
+        ok(name)
+
+
+def program_invocations(fx):
+    """(name, source file, args after the scratch dir, cwd, checker) for every
+    program case, in order. mutate_meta.py replays the same invocations against
+    a mutated runtime or compiler and diffs the outcomes, so the corpus lives
+    here only."""
+    rl = [(fx.rel, b'target'), (fx.dangling, b'missing'),
+          (fx.longlink, fx.longtarget.encode()),
+          (fx.regular, 22), (fx.missing, 2), ('', 22)]
+    return [
+        ('fs/list', 'list.obx', [fx.entries], None,
+         lambda p: check_list('fs/list', p, fx)),
+        ('fs/stat_fields', 'stat_fields.obx', [fx.statfile, fx.rel, fx.sub], None,
+         lambda p: check_stat_fields('fs/stat_fields', p,
+                                     [fx.statfile, fx.rel, fx.sub])),
+        ('fs/readlink', 'readlink.obx', [c[0] for c in rl], None,
+         lambda p: check_readlink('fs/readlink', p, rl)),
+        ('fs/entry_paths absolute', 'entry_paths.obx', [fx.entries], None,
+         lambda p: check_entry_paths('fs/entry_paths absolute', p, fx, fx.entries)),
+        ('fs/entry_paths ../', 'entry_paths.obx', [fx.relative], fx.cwd,
+         lambda p: check_entry_paths('fs/entry_paths ../', p, fx, fx.relative,
+                                     cwd=fx.cwd)),
+        ('fs/close_idempotent', 'close_idempotent.obx', [fx.entries], None,
+         marker_case('fs/close_idempotent', 'close_idempotent.obx')),
+        ('fs/open_close', 'open_close.obx', [fx.entries], None,
+         marker_case('fs/open_close', 'open_close.obx')),
+        ('fs/err_paths', 'err_paths.obx', [fx.regular, fx.missing, fx.entries], None,
+         marker_case('fs/err_paths', 'err_paths.obx')),
+        ('fs/crafted', 'crafted.obx', [fx.entries], None,
+         marker_case('fs/crafted', 'crafted.obx')),
+        ('fs/missing_close', 'missing_close.obx', [fx.entries], None,
+         check_missing_close),
+    ]
+
+
+def program_section():
+    fx = make_fixtures()
+    exes = {}
+    for name, file, args, cwd, check in program_invocations(fx):
+        if file not in exes:
+            exes[file] = compile_program(file)
+        check(run_program(exes[file], args, cwd))
 
 
 def main():

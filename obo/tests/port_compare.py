@@ -114,17 +114,30 @@ def main():
     sys.exit(1 if failures else 0)
 
 
-def cases_of(src):
+def cases_of(src, seed=False):
     """(name, text) of every case: the programs, src itself, and the error cases.
     A program that imports modules is compiled as a module root (see the module
-    arguments in compare); there is no source injection."""
+    arguments in compare); there is no source injection.
+
+    In the seed comparison (seed=True) the compiler-feature cases are skipped:
+    the promoted seed predates the P3 metadata builtins, so it rejects
+    tests/run/meta.obx and tests/errors/meta.obx (whose cases use statPath and
+    friends) while the port compiles them; the default comparison (obo and the
+    port from the same source) covers them. This is the only seed-mode
+    exclusion besides the module trees; it disappears when the seed is promoted
+    with P3."""
     cases = []
-    for f in sorted(glob.glob(os.path.join(FORK, 'tests', 'run', '*.obx')) + glob.glob(os.path.join(FORK, 'examples', '*.obx')) +
-                    glob.glob(os.path.join(FORK, 'bench', '*.obx')) + glob.glob(os.path.join(ROOT, 'tests', 'run', '*.obx')) +
-                    glob.glob(os.path.join(ROOT, 'examples', '*.obx')) + [src]):
+    files = sorted(glob.glob(os.path.join(FORK, 'tests', 'run', '*.obx')) + glob.glob(os.path.join(FORK, 'examples', '*.obx')) +
+                   glob.glob(os.path.join(FORK, 'bench', '*.obx')) + glob.glob(os.path.join(ROOT, 'tests', 'run', '*.obx')) +
+                   glob.glob(os.path.join(ROOT, 'examples', '*.obx')) + [src])
+    for f in files:
+        if seed and f in SEED_SKIP:
+            continue
         text = open(f, 'rb').read()
         cases.append((os.path.relpath(f, ROOT), text))
     for f in sorted(glob.glob(os.path.join(FORK, 'tests', 'errors', '*.obx')) + glob.glob(os.path.join(ROOT, 'tests', 'errors', '*.obx'))):
+        if seed and f in SEED_SKIP:
+            continue
         for name, text, _, _ in run.error_cases(f):
             cases.append((name, text.encode()))
     return cases
@@ -144,6 +157,12 @@ def cases_of(src):
 MODDIR = os.path.join(FORK, 'tests', 'modules')
 SEED_REF = os.path.realpath(os.path.join(FORK, 'seed', 'obo'))
 REF_TREE = {}
+
+# The P3 compiler-feature cases use the metadata builtins, which the promoted
+# seed predates. The seed comparison skips these files (see cases_of); the
+# default comparison covers them, and the exclusion goes away with the promote.
+SEED_SKIP = {os.path.join(FORK, 'tests', 'run', 'meta.obx'),
+             os.path.join(FORK, 'tests', 'errors', 'meta.obx')}
 
 
 def tree_cases():
@@ -568,7 +587,7 @@ def compare(tmp, src=SRC, quick=False, workers=None):
     if quick and failures:
         return lines, failures, peak
     modules = os.path.realpath(REF) != SEED_REF
-    cases = cases_of(src)
+    cases = cases_of(src, seed=not modules)
 
     def imports_module(text):
         return any(line.startswith(b'import "') for line in text.splitlines())

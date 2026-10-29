@@ -106,7 +106,7 @@ const T_COLONCOLON = 67
 // OBO_VERSION is the compiler's identity in every .sym's `compiler` line and in --version.
 // Bump OBO_VERSION with each merged compiler feature; bump SYM_FORMAT on any grammar or
 // meaning change; bump SYM_ABI on any layout/calling-convention/descriptor/effect change.
-const OBO_VERSION = "0.2"
+const OBO_VERSION = "0.3"
 const SYM_FORMAT = 1
 const SYM_ABI = 1
 

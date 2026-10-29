@@ -118,10 +118,12 @@ RUNTIME_MUTANTS = {
     'standard descriptors closable': (
         '    if (fd >= 0 && fd < 3 && !tracked)\n',
         '    if (0)\n'),
-    # the fault hook is active without OBO_CHECK (N5)
+    # the fault hook is active without OBO_CHECK (N5). P3 added the metadata
+    # hook to the same gate line, so this anchor was re-anchored in the P3
+    # commit; the count stays 27/27.
     'fault hook not gated': (
-        '    if (!leak_check) { io_fault_eintr = 0; io_fault_short = 0; }\n',
-        '    if (0) { io_fault_eintr = 0; io_fault_short = 0; }\n'),
+        '    if (!leak_check) { io_fault_eintr = 0; io_fault_short = 0; meta_fault_eintr = 0; }\n',
+        '    if (0) { io_fault_eintr = 0; io_fault_short = 0; meta_fault_eintr = 0; }\n'),
 }
 
 LIB_MUTANTS = {
