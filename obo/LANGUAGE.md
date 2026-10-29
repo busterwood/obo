@@ -771,7 +771,7 @@ build** still requires every source; if only a `.sym` exists it reports
 without source` (exit 2). The checked root is exempt from the basename rule (it is
 the root of its check graph), and its `.sym` is named by its declared module name.
 
-`--version` prints `obo 0.4 sym-format 1 abi 1`; the numbers are the `obosym`
+`--version` prints `obo 0.5 sym-format 1 abi 1`; the numbers are the `obosym`
 format, the compiled-program ABI and the compiler version, each checked exactly
 when a `.sym` is read. `--reemit-sym FILE` is a testing hook: it reads a symbol
 file with the reader and prints the canonical re-emission, which the symbol-file
@@ -784,7 +784,7 @@ A `.sym` is text in a language-like declaration syntax, readable by the scanner:
 ```text
 obosym 1
 abi 1
-compiler "0.4"
+compiler "0.5"
 source 0x0123456789abcdef
 dep io "io.obx"
 interface 0xfedcba9876543210
@@ -1214,6 +1214,7 @@ fn main() {}
 | `readLinkPath(path)` | `Result[[]byte]`: the raw symlink target bytes, no NUL |
 | `isatty(fd)` | `bool`: true when the descriptor is a terminal |
 | `getenv(name)` | `?[]byte`: the variable's value, copied; `nil` if absent or the name is invalid |
+| `terminalWidth(fd)` | `int`: the terminal's column count; 0 when the descriptor is not a terminal or the count is unknown |
 | `stdin()`, `stdout()`, `stderr()` | the standard descriptors, 0, 1 and 2 |
 | `args()` | the command-line arguments, as `[]string` |
 | `exit(code)` | stop with the given exit code |
@@ -1385,7 +1386,7 @@ unknown/special when that lstat fails. A malformed record (a length below 20,
 a record past the buffer, or no NUL inside it) is
 `err("bad directory entry", EIO=5)` and the iterator does not advance.
 
-### Environment
+### Environment and terminal size
 
 `isatty(fd)` is `true` only when `ioctl(fd, TCGETS)` succeeds: a negative
 descriptor is `false` before any syscall, and a pipe, a regular file,
@@ -1411,9 +1412,29 @@ fn main() {
 }
 ```
 
-`obo/lib/env.obx` wraps it: `env::get` (the `?[]byte`), `env::has` (present,
-even when empty), `env::value` (a `string`, `""` when absent or empty) and
-`env::getOr(name, fallback)`. `obo/lib/io.obx` adds `io::isTty(fd)`.
+`terminalWidth(fd)` is the terminal's column count from
+`ioctl(fd, TIOCGWINSZ)`: `0` when the descriptor is not a terminal
+(`ENOTTY`), invalid (`EBADF`) or negative, and `0` when the terminal reports a
+zero column count (unknown; a fresh pty may do so). It never consults the fd
+table and allocates nothing, with the same closed/reused-descriptor caveat and
+`EINTR` retry as `isatty`. The descriptor is handed to the kernel as its 32-bit
+`int`, so a value outside 0..0xFFFFFFFF reaches the kernel as its low 32 bits;
+this is pre-existing and shared by `isatty` and the other fd builtins. Callers
+fall back to 80 for an unknown width.
+
+```obo
+// example: runs
+// prints 0 true
+fn main() {
+    let w = terminalWidth(-1)         // not a terminal: 0
+    println(w, " ", w == 0)
+}
+```
+
+`obo/lib/env.obx` wraps `getenv`: `env::get` (the `?[]byte`), `env::has`
+(present, even when empty), `env::value` (a `string`, `""` when absent or
+empty) and `env::getOr(name, fallback)`. `obo/lib/io.obx` adds `io::isTty(fd)`
+and `io::termWidth(fd)`.
 
 ## 9. Runtime checks and exit codes
 
@@ -1525,6 +1546,7 @@ depend on the program.
 | `readLinkPath needs a string path, not <t>` | the argument of `readLinkPath` is not a string. |
 | `isatty needs an int file descriptor, not <t>` | the argument of `isatty` is not an int. |
 | `getenv needs a string name, not <t>` | the argument of `getenv` is not a string. |
+| `terminalWidth needs an int file descriptor, not <t>` | the argument of `terminalWidth` is not an int. |
 
 ## 11. Differences from obx
 
@@ -1536,8 +1558,8 @@ depend on the program.
   at run time.
 - New built-ins: `take`, `drop`, `replace`, `handle`, `alive`, `ok`, `err`,
   `openFile`, `readFd`, `writeFd`, `closeFile`, `readDirFd`, `statPath`,
-  `lstatPath`, `readLinkPath`, `isatty`, `getenv`, `stdin`, `stdout`,
-  `stderr`, and
+  `lstatPath`, `readLinkPath`, `isatty`, `getenv`, `terminalWidth`, `stdin`,
+  `stdout`, `stderr`, and
   the prefix operator `try`.
 - `Result[T]` is a built-in parameterized type, inspected with `match` (including the
   consuming `ok(v)`/`err(m, c)` form).

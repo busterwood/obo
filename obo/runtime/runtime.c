@@ -107,7 +107,7 @@ static int fault_read, fault_write, fault_close;
 /* The metadata fault hook is the same kind of test-only injection: one synthetic
  * EINTR per call kind, inert unless OBO_CHECK=1. */
 static int meta_fault_eintr;
-static int fault_dir, fault_stat, fault_lstat, fault_link, fault_tty;
+static int fault_dir, fault_stat, fault_lstat, fault_link, fault_tty, fault_winsz;
 
 static inline u64 gidx(u64 h) { return (h - heap_start) / GRAN; }
 static inline int  is_start(u64 h) { u64 g = gidx(h); return starts[g >> 3] >> (g & 7) & 1; }
@@ -133,7 +133,10 @@ void rt_init(u64 sbase, u64 gstart, u64 gend) {
     /* the environment order is arbitrary: gate the hook after the whole loop */
     if (!leak_check) { io_fault_eintr = 0; io_fault_short = 0; meta_fault_eintr = 0; }
     if (io_fault_eintr) { fault_read = fault_write = fault_close = 1; }
-    if (meta_fault_eintr) { fault_dir = fault_stat = fault_lstat = fault_link = fault_tty = 1; }
+    if (meta_fault_eintr) {
+        fault_dir = fault_stat = fault_lstat = fault_link = fault_tty = 1;
+        fault_winsz = 1;
+    }
     heap_start = (u64)sys_mmap(HEAP_SIZE);
     if ((i64)heap_start < 0) die("obx: cannot reserve heap\n");
     heap_top = heap_start; heap_end = heap_start + HEAP_SIZE;
@@ -768,6 +771,26 @@ i64 rt_isatty(i64 fd) {
         if (r != -4) break;                                        /* EINTR retried */
     }
     return r == 0;
+}
+
+/* terminalWidth(fd): the terminal's column count from ioctl(fd, TIOCGWINSZ
+ * 0x5413, &winsize), or 0 when fd < 0, the descriptor is not a terminal
+ * (ENOTTY), invalid (EBADF), or the reported column count is zero (unknown).
+ * The kernel writes struct winsize { u16 row, col, xpixel, ypixel }, 8 bytes,
+ * into the 8-byte buffer. No allocation, no Result, no fd-table fatal: a
+ * tracked descriptor that was closed may have been reused by the kernel, and
+ * the ioctl then observes the reused one. EINTR is retried like the metadata
+ * syscalls. */
+i64 rt_term_width(i64 fd) {
+    if (fd < 0) return 0;
+    unsigned short ws[4] = {0, 0, 0, 0};                           /* struct winsize: 8 bytes */
+    i64 r;
+    for (;;) {
+        if (fault_winsz) { fault_winsz = 0; r = -4; } else r = sys3(16, fd, 0x5413, (i64)ws);
+        if (r != -4) break;                                        /* EINTR retried */
+    }
+    if (r != 0) return 0;
+    return (i64)ws[1];                                             /* ws_col; 0 is unknown */
 }
 
 /* getenv(name): the first `name=...` entry of the environment as an owned byte

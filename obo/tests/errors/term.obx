@@ -1,0 +1,41 @@
+// The P6a terminalWidth builtin's compile-time checks. The harness prepends every
+// line before the first "// ===" to each case, so the prelude binds the helper
+// the try-in-an-argument case uses. Each case has exactly one error marker on
+// its line, as in the other error files.
+
+fn getFd(): int { return 0 }
+
+// === terminalWidth fd type
+fn main() {
+    let w = terminalWidth("0")                      // error: terminalWidth needs an int file descriptor, not string
+}
+
+// === terminalWidth bool argument
+fn main() {
+    let w = terminalWidth(true)                     // error: terminalWidth needs an int file descriptor, not bool
+}
+
+// === terminalWidth extra argument
+fn main() {
+    let w = terminalWidth(0, 1)                     // error: expected ')', found ,
+}
+
+// === terminalWidth no argument
+fn main() {
+    let w = terminalWidth()                         // error: expected an expression
+}
+
+// === terminalWidth result as a condition
+fn main() {
+    if terminalWidth(0) { }                         // error: condition must be bool, not int
+}
+
+// === terminalWidth result as a string
+fn main() {
+    let s: string = terminalWidth(0)                // error: initialising 's': cannot use int as string
+}
+
+// === try in a terminalWidth argument
+fn main() {
+    let w = terminalWidth(try getFd())              // error: a try expression cannot be part of a larger expression; assign it to a local first
+}

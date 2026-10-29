@@ -358,15 +358,16 @@ ordinary `Unknown argument` path. Values of rejected eza-valid flags are still
 consumed with eza's value mode before the unsupported error (`--width=N`,
 `-I=`, `-L x`).
 
-**Measured (this P5b branch).** eza binary 172,033 bytes (static, runtime
-included; the reference is 2,294,768). On 10,000 entries under
-`OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, the P5b measurements are 2,189,984
-live heap bytes / 2,560 KiB max RSS for restricted long, 2,189,360 / 2,560
-KiB for the name-only listing, and 2,190,112 / 2,560 KiB for the new tree
-case. `tests/eza.py --memory` keeps the P4 cap `EZA_PEAK_MAX = 2,752,512`
-bytes (not raised) and still checks no leak/double-close line. GNU time on the
-same tree measures the reference at about 25.0 MB max RSS (long), 12.1 MB
-(names) and 14.0 MB (tree) across runs; that measurement is printed for
+**Measured (this P5b branch, merged 0.5 tree).** eza binary 172,033 bytes
+(sha256 `6f0e8472…`; static, runtime included; the reference is 2,294,768).
+On 10,000 entries under `OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, the P5b
+measurements are 2,189,984 live heap bytes / 2,560 KiB max RSS for restricted
+long, 2,189,360 / 2,560 KiB for the name-only listing, 2,190,112 / 2,560 KiB
+for the tree and 2,189,584 / 2,560 KiB for the coloured listing.
+`tests/eza.py --memory` keeps the P4 cap `EZA_PEAK_MAX = 2,752,512` bytes (not
+raised) and still checks no leak/double-close line. GNU time on the same tree
+measures the reference at about 25 MB max RSS (long), 12 MB (names), 14 MB
+(tree) and 12 MB (colour) across runs; that measurement is printed for
 comparison and is not gated.
 
 **Deferred/divergences (colour and tree).** Long-column colour is deferred:

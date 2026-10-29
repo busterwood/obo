@@ -1,0 +1,73 @@
+// meta/term_api.obx: terminalWidth and io::termWidth at the program level.
+// The pty cases with real column counts live in tests/rt_meta_test.c (obo has no
+// ioctl); every descriptor here is not a terminal, so every answer is 0. A
+// closed tracked fd is not a fatal use either: terminalWidth never consults the
+// fd table.
+// expect: negative zero
+// expect: bad zero
+// expect: closed zero
+// expect: null zero
+// expect: file zero
+// expect: wrappers zero
+// expect: int result
+import "io.obx" as io
+
+fn main() {
+    let a = args()
+    let dir = a[1]
+
+    if terminalWidth(-1) != 0 { println("negative width"); exit(1) }
+    if terminalWidth(-987654) != 0 { println("negative big width"); exit(1) }
+    println("negative zero")
+
+    // a number no descriptor uses (the runner closes inherited fds)
+    if terminalWidth(999) != 0 { println("bad width"); exit(1) }
+    println("bad zero")
+
+    let nul = openFile("/dev/null", "r")
+    match nul {
+        ok(fd) {
+            if terminalWidth(fd) != 0 { println("null width"); exit(1) }
+            if io::termWidth(fd) != 0 { println("null io width"); exit(1) }
+            let c = closeFile(fd)
+            match c { ok(v) { } err(m, n) { println("null close ", m, " ", n); exit(1) } }
+            if terminalWidth(fd) != 0 { println("closed width"); exit(1) }
+            if io::termWidth(fd) != 0 { println("closed io width"); exit(1) }
+            println("closed zero")
+            println("null zero")
+        }
+        err(m, c) { println("null open ", m, " ", c); exit(1) }
+    }
+
+    // a regular file created in the scratch directory is not a terminal
+    let path = dir + "/term-file"
+    let w = openFile(path, "w")
+    match w {
+        ok(fd) {
+            let c = closeFile(fd)
+            match c { ok(v) { } err(m, n) { println("file close ", m, " ", n); exit(1) } }
+        }
+        err(m, c) { println("file create ", m, " ", c); exit(1) }
+    }
+    let r = openFile(path, "r")
+    match r {
+        ok(fd) {
+            if terminalWidth(fd) != 0 { println("file width"); exit(1) }
+            if io::termWidth(fd) != 0 { println("file io width"); exit(1) }
+            let c = closeFile(fd)
+            match c { ok(v) { } err(m, n) { println("file close r ", m, " ", n); exit(1) } }
+            println("file zero")
+        }
+        err(m, c) { println("file open ", m, " ", c); exit(1) }
+    }
+    if io::termWidth(-1) != 0 { println("wrapper negative"); exit(1) }
+    if io::termWidth(999) != 0 { println("wrapper bad"); exit(1) }
+    println("wrappers zero")
+
+    // the result type is int: these declarations are the compiler-side check
+    let t: int = terminalWidth(-1)
+    let u: int = io::termWidth(-1)
+    let v: int = terminalWidth(-1) + 1
+    if t + u + v != 1 { println("int arithmetic"); exit(1) }
+    println("int result")
+}

@@ -35,10 +35,11 @@ REF = os.path.abspath(os.environ.get('OBO_REF', os.path.join(FORK, 'obo')))
 SRC = os.path.join(FORK, 'src', 'obo.obo')
 LIBDIR = os.path.join(FORK, 'lib')
 # live peak, in bytes, of the port compiling itself. Lower it when memory improves; raise it only
-# for a reason recorded in FORK.md. The P5a tree measures 1,645,424 bytes live and 35,359,504 bytes
-# total allocation (FORK.md, "Environment metadata: slots 37-38"); the budget stays 2,000,000
-# (354,576 spare above that peak). The figure is for the current tree and varies by a few hundred
-# bytes with the source path. Leaks are caught separately, by port_test's leak check.
+# for a reason recorded in FORK.md. The P6a tree measures 1,646,816 bytes live and 35,353,648 bytes
+# total allocation on main after the 0.5 promote (FORK.md, "Terminal-size metadata: slot 39"); the
+# budget stays 2,000,000 (353,184 spare above that peak). The figure is for the current tree and
+# varies by a few hundred bytes with the source path. Leaks are caught separately, by port_test's
+# leak check.
 PEAK_BUDGET = 2_000_000
 
 
@@ -121,11 +122,12 @@ def cases_of(src, seed=False):
 
     In the seed comparison (seed=True) a case is skipped while the seed predates
     the builtins it uses: a 0.2 seed rejects tests/run/meta.obx and
-    tests/errors/meta.obx (statPath and friends, 0.3), and a 0.3 seed rejects
-    the P5a cases (isatty and getenv, 0.4) and any case importing a library
-    module that uses them (io.obx's isTty). A promoted seed at or above the
-    needed version compares it. The default comparison (obo and the port from
-    the same source) always covers every file. This is the only seed-mode
+    tests/errors/meta.obx (statPath and friends, 0.3), a 0.3 seed rejects the
+    P5a cases (isatty and getenv, 0.4) and any case importing a library module
+    that uses them (io.obx's isTty), and a 0.4 seed rejects the P6a cases
+    (terminalWidth, 0.5) and every case importing io.obx (io::termWidth). A
+    promoted 0.5 seed compares them. The default comparison (obo and the port
+    from the same source) always covers every file. This is the only seed-mode
     exclusion besides the module trees."""
     cases = []
     files = sorted(glob.glob(os.path.join(FORK, 'tests', 'run', '*.obx')) + glob.glob(os.path.join(FORK, 'examples', '*.obx')) +
@@ -163,17 +165,21 @@ REF_TREE = {}
 # promoted, so the seed cannot compile them. Each file is skipped in the seed
 # comparison until the seed's `--version` reaches the version that introduced
 # its builtins; a promoted seed at that version compares it (P3 metadata after
-# 0.3, P5a isatty/getenv after 0.4). A case that imports a library module using
-# a newer builtin is skipped the same way (P5a put isatty in io.obx, so
-# io_reader/io_writer need a 0.4 seed too). The decision reads `REF --version`,
-# cached per executable, so it follows the seed automatically across a promote.
+# 0.3, P5a isatty/getenv after 0.4, P6a terminalWidth after 0.5). A case that
+# imports a library module using a newer builtin is skipped the same way (P5a
+# put isatty in io.obx, so io_reader/io_writer needed a 0.4 seed; P6a adds
+# io::termWidth, so every io.obx importer now needs a 0.5 seed). The decision
+# reads `REF --version`, cached per executable, so it follows the seed
+# automatically across a promote.
 SEED_FILE_MIN = {
     os.path.join(FORK, 'tests', 'run', 'meta.obx'): (0, 3),
     os.path.join(FORK, 'tests', 'errors', 'meta.obx'): (0, 3),
     os.path.join(FORK, 'tests', 'run', 'env.obx'): (0, 4),
     os.path.join(FORK, 'tests', 'errors', 'env.obx'): (0, 4),
+    os.path.join(FORK, 'tests', 'run', 'term.obx'): (0, 5),
+    os.path.join(FORK, 'tests', 'errors', 'term.obx'): (0, 5),
 }
-SEED_LIB_MIN = {'io.obx': (0, 4), 'env.obx': (0, 4)}
+SEED_LIB_MIN = {'io.obx': (0, 5), 'env.obx': (0, 4)}
 _SEED_VERSIONS = {}
 
 
@@ -211,10 +217,15 @@ def import_min(text):
 
 
 def seed_skips(path, text):
-    """True while the seed predates the builtins the case file uses."""
+    """True while the seed predates the builtins the case file uses. A file's
+    own version and its library imports are both required: an explicit entry
+    does not hide a newer library (env.obx is 0.4 itself but imports io.obx for
+    io::isTty; it is io.obx's own terminalWidth definition that the 0.4 seed
+    cannot parse)."""
     need = SEED_FILE_MIN.get(path)
-    if need is None:
-        need = import_min(text)
+    imp = import_min(text)
+    if imp is not None and (need is None or imp > need):
+        need = imp
     if need is None:
         return False
     v = ref_version(REF)

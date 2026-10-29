@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Mutation testing for the P3/P5a metadata features: the runtime/entry.S slots
-and the compiler-source builtins.
+"""Mutation testing for the P3/P5a/P6a metadata features: the runtime/entry.S
+slots and the compiler-source builtins.
 
     python3 obo/tests/mutate_meta.py [pattern]
 
@@ -29,11 +29,11 @@ a mutated compiler cannot test the runtime's syscall behaviour:
                            differs), builds that source with the unmutated
                            compiler into a private compiler executable, and uses
                            it as the compiler for the corpus with a private
-                           sym-dir per case: every tests/errors/{meta,env}.obx
+                           sym-dir per case: every tests/errors/{meta,env,term}.obx
                            case must still be refused with its expected
                            diagnostic (the marker line and text), and
-                           tests/run/{meta,env}.obx plus tests/meta/*.obx must
-                           compile, run and produce the baseline outcomes. The
+                           tests/run/{meta,env,term}.obx plus tests/meta/*.obx
+                           must compile, run and produce the baseline outcomes. The
                            fd-materialisation case is tests/run/meta.obx's "pin
                            dir inside" line, whose max argument (changeGfd())
                            changes the global fd that the call's first argument
@@ -69,9 +69,11 @@ RUNTIME = os.path.join(FORK, 'runtime', 'runtime.c')
 ENTRY = os.path.join(FORK, 'runtime', 'entry.S')
 SRC = os.path.join(FORK, 'src', 'obo.obo')
 ERRFILES = [os.path.join(FORK, 'tests', 'errors', 'meta.obx'),
-            os.path.join(FORK, 'tests', 'errors', 'env.obx')]
+            os.path.join(FORK, 'tests', 'errors', 'env.obx'),
+            os.path.join(FORK, 'tests', 'errors', 'term.obx')]
 RUNFILES = [os.path.join(FORK, 'tests', 'run', 'meta.obx'),
-            os.path.join(FORK, 'tests', 'run', 'env.obx')]
+            os.path.join(FORK, 'tests', 'run', 'env.obx'),
+            os.path.join(FORK, 'tests', 'run', 'term.obx')]
 TMP = tempfile.mkdtemp(prefix='obo-mutate-meta-')
 
 # ---------------------------------------------------------------- runtime mutants
@@ -164,11 +166,11 @@ RUNTIME_MUTANTS = [
        '    check rt_read_dir_fd\n    check rt_close_fd\n')]),
     # P5a: isatty and getenv
     ('isatty result inverted',
-     [('runtime', '    return r == 0;\n}\n\n/* getenv(name)',
-       '    return r != 0;\n}\n\n/* getenv(name)')]),
+     [('runtime', '    return r == 0;\n}\n\n/* terminalWidth(fd):',
+       '    return r != 0;\n}\n\n/* terminalWidth(fd):')]),
     ('isatty true for every non-negative fd',
-     [('runtime', '    return r == 0;\n}\n\n/* getenv(name)',
-       '    return 1;\n}\n\n/* getenv(name)')]),
+     [('runtime', '    return r == 0;\n}\n\n/* terminalWidth(fd):',
+       '    return 1;\n}\n\n/* terminalWidth(fd):')]),
     ('isatty negative fd is true',
      [('runtime', '    if (fd < 0) return 0;\n    u64 t[8];',
        '    if (fd < 0) return 1;\n    u64 t[8];')]),
@@ -212,6 +214,37 @@ RUNTIME_MUTANTS = [
        '    slot rt_getenv\n    slot rt_isatty\n'),
       ('entry', '    check rt_isatty\n    check rt_getenv\n',
        '    check rt_getenv\n    check rt_isatty\n')]),
+    # P6a: terminalWidth
+    ('terminalWidth returns the row count',
+     [('runtime',
+       '    return (i64)ws[1];                                             /* ws_col; 0 is unknown */\n',
+       '    return (i64)ws[0];                                             /* ws_col; 0 is unknown */\n')]),
+    ('terminalWidth always returns 80',
+     [('runtime',
+       '    return (i64)ws[1];                                             /* ws_col; 0 is unknown */\n',
+       '    return 80;                                                     /* ws_col; 0 is unknown */\n')]),
+    ('terminalWidth is off by one',
+     [('runtime',
+       '    return (i64)ws[1];                                             /* ws_col; 0 is unknown */\n',
+       '    return (i64)ws[1] + 1;                                         /* ws_col; 0 is unknown */\n')]),
+    ('terminalWidth uses TIOCSWINSZ instead of TIOCGWINSZ',
+     [('runtime',
+       '        if (fault_winsz) { fault_winsz = 0; r = -4; } else r = sys3(16, fd, 0x5413, (i64)ws);\n',
+       '        if (fault_winsz) { fault_winsz = 0; r = -4; } else r = sys3(16, fd, 0x5414, (i64)ws);\n')]),
+    ('terminalWidth negative fd is 1',
+     [('runtime', 'i64 rt_term_width(i64 fd) {\n    if (fd < 0) return 0;\n',
+       'i64 rt_term_width(i64 fd) {\n    if (fd < 0) return 1;\n')]),
+    ('terminalWidth ioctl EINTR not retried',
+     [('runtime',
+       '        if (fault_winsz) { fault_winsz = 0; r = -4; } else r = sys3(16, fd, 0x5413, (i64)ws);\n'
+       '        if (r != -4) break;                                        /* EINTR retried */\n',
+       '        if (fault_winsz) { fault_winsz = 0; r = -4; } else r = sys3(16, fd, 0x5413, (i64)ws);\n'
+       '        break;\n')]),
+    ('entry.S swaps slots 38 and 39 (both sequences)',
+     [('entry', '    slot rt_getenv\n    slot rt_term_width\n',
+       '    slot rt_term_width\n    slot rt_getenv\n'),
+      ('entry', '    check rt_getenv\n    check rt_term_width\n',
+       '    check rt_term_width\n    check rt_getenv\n')]),
 ]
 
 # each field offset shifted by one slot (+8): a wrong array position
@@ -294,22 +327,22 @@ COMPILER_MUTANTS = [
      [('        if n.mode == "const" && n.val > 1048576 { error("readDirFd count is too large") }\n',
        '        if false { error("readDirFd count is too large") }\n')]),
     ('universe omits statPath',
-     [(' readDirFd statPath lstatPath readLinkPath isatty getenv stdin stdout stderr")',
-       ' readDirFd lstatPath readLinkPath isatty getenv stdin stdout stderr")')]),
+     [(' readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth stdin stdout stderr")',
+       ' readDirFd lstatPath readLinkPath isatty getenv terminalWidth stdin stdout stderr")')]),
     ('callExempt omits readDirFd',
-     [('closeFile readDirFd statPath lstatPath readLinkPath isatty getenv stdin stdout stderr take handle',
-       'closeFile statPath lstatPath readLinkPath isatty getenv stdin stdout stderr take handle')]),
+     [('closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth stdin stdout stderr take handle',
+       'closeFile statPath lstatPath readLinkPath isatty getenv terminalWidth stdin stdout stderr take handle')]),
     ('plausible omits the metadata names',
      [('        if wordAt(q, e, "statPath") || wordAt(q, e, "lstatPath") || wordAt(q, e, "readLinkPath") { return false }\n',
        '')]),
     # P5a: isatty and getenv
     ('universe omits isatty',
-     [(' isatty getenv stdin stdout stderr")', ' getenv stdin stdout stderr")')]),
+     [(' isatty getenv terminalWidth stdin stdout stderr")', ' getenv terminalWidth stdin stdout stderr")')]),
     ('universe omits getenv',
-     [(' isatty getenv stdin stdout stderr")', ' isatty stdin stdout stderr")')]),
+     [(' isatty getenv terminalWidth stdin stdout stderr")', ' isatty terminalWidth stdin stdout stderr")')]),
     ('callExempt omits getenv',
-     [('readLinkPath isatty getenv stdin stdout stderr take',
-       'readLinkPath isatty stdin stdout stderr take')]),
+     [('readLinkPath isatty getenv terminalWidth stdin stdout stderr take',
+       'readLinkPath isatty terminalWidth stdin stdout stderr take')]),
     ('plausible omits getenv',
      [('        if wordAt(q, e, "getenv") { return false }        // ?[]byte, not a scalar; isatty\'s bool is a safe guess\n',
        '')]),
@@ -335,6 +368,24 @@ COMPILER_MUTANTS = [
     ('getenv name not pinned',
      [('        p = pinStr(p)\n        expect(T_RPAREN, "")\n        return rtCall1(RT_GETENV, p, derived("opt", derived("array", tByte)))\n',
        '        p = materialise(p)\n        expect(T_RPAREN, "")\n        return rtCall1(RT_GETENV, p, derived("opt", derived("array", tByte)))\n')]),
+    # P6a: terminalWidth
+    ('universe omits terminalWidth',
+     [(' isatty getenv terminalWidth stdin stdout stderr")',
+       ' isatty getenv stdin stdout stderr")')]),
+    ('callExempt omits terminalWidth',
+     [('readLinkPath isatty getenv terminalWidth stdin stdout stderr take',
+       'readLinkPath isatty getenv stdin stdout stderr take')]),
+    ('terminalWidth fd type check removed',
+     [('        if !isInt(fd.typ) { error("terminalWidth needs an int file descriptor, not " + tname(fd.typ)) }\n',
+       '        if false { error("terminalWidth needs an int file descriptor, not " + tname(fd.typ)) }\n')]),
+    ('terminalWidth fd not materialised',
+     [('        fd = materialise(fd)\n        expect(T_RPAREN, "")\n        return rtCall1(RT_TERM_WIDTH, fd, tInt)\n',
+       '        expect(T_RPAREN, "")\n        return rtCall1(RT_TERM_WIDTH, fd, tInt)\n')]),
+    ('terminalWidth result is bool, not int',
+     [('        return rtCall1(RT_TERM_WIDTH, fd, tInt)\n',
+       '        return rtCall1(RT_TERM_WIDTH, fd, tBool)\n')]),
+    ('terminalWidth uses getenv\'s slot',
+     [('const RT_TERM_WIDTH = 39\n', 'const RT_TERM_WIDTH = 38\n')]),
 ]
 
 EQUIVALENT_COMPILER = {
@@ -359,6 +410,12 @@ EQUIVALENT_COMPILER = {
     'getenv name not pinned':
         'a single argument has no later-argument hazard; materialise and pinStr '
         'read the same local at the same point',
+    'callExempt omits terminalWidth':
+        'callExempt only feeds the register-allocation pre-scan weighting; a '
+        'wrong guess costs a home, not correctness',
+    'terminalWidth fd not materialised':
+        'a single argument has no later-argument hazard, and rtCall loads a '
+        'memory operand itself, so the same descriptor is read at the same point',
 }
 
 

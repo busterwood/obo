@@ -1,7 +1,8 @@
 /* rt_meta_test: the direct oracle for the runtime's metadata contract (design
- * section 6, P3 and P5a). It links runtime.c into its own image (so it may use
- * sys3/sys4 and even set env_base, which is how the crafted-envp case pins
- * getenv's scan rules). It reads the test-only fault ints directly.
+ * section 6, P3, P5a and P6a). It links runtime.c into its own image (so it may
+ * use sys3/sys4, set env_base, which is how the crafted-envp case pins
+ * getenv's scan rules, and open a pty for the terminalWidth cases). It reads the
+ * test-only fault ints directly.
  * alloc_raw and the string helpers) and has its own _entry, which passes the
  * kernel stack to rt_init; the environment therefore reaches the runtime
  * exactly as it does for a compiled program.
@@ -698,6 +699,69 @@ static void case_isatty_checks(const char *dir) {
     rt_finish();
 }
 
+/* terminalWidth: negative fds, a regular file, /dev/null, both pipe ends, a
+ * directory, a tracked closed fd and a reused number are 0; a pty reports the
+ * column count TIOCSWINSZ set, never the row; a zero column count is 0
+ * (unknown). No fd-table consultation means no exit 9 under OBO_CHECK, and the
+ * case allocates nothing, so the leak oracle also passes. */
+static void set_winsize(i64 fd, unsigned short row, unsigned short col) {
+    unsigned short ws[4] = {row, col, 0, 0};
+    CHECK(sys3(16, fd, 0x5414, (i64)ws) == 0);     /* TIOCSWINSZ */
+}
+
+static void case_termwidth_checks(const char *dir) {
+    CHECK(rt_term_width(-1) == 0);
+    CHECK(rt_term_width(-2) == 0);
+    CHECK(rt_term_width(-1000000) == 0);
+    char *p = ajoin(dir, "/file");
+    make_file(p, "x");
+    i64 fd = sys3(2, (i64)p, 0, 0);
+    CHECK(fd >= 0);
+    CHECK(rt_term_width(fd) == 0);                 /* regular file: ENOTTY */
+    CHECK(sys3(3, fd, 0, 0) == 0);
+    fd = sys3(2, (i64)"/dev/null", 0, 0);
+    CHECK(fd >= 0);
+    CHECK(rt_term_width(fd) == 0);                 /* /dev/null: ENOTTY */
+    CHECK(sys3(3, fd, 0, 0) == 0);
+    i64 pf[2];
+    CHECK(sys3(293, (i64)pf, 0, 0) == 0);          /* pipe2(..., 0) */
+    CHECK(rt_term_width(pf[0]) == 0);
+    CHECK(rt_term_width(pf[1]) == 0);
+    CHECK(sys3(3, pf[0], 0, 0) == 0 && sys3(3, pf[1], 0, 0) == 0);
+    char *d = ajoin(dir, "/d");
+    make_dir(d);
+    fd = sys3(2, (i64)d, 0, 0);
+    CHECK(fd >= 0);
+    CHECK(rt_term_width(fd) == 0);                 /* directory: ENOTTY */
+    CHECK(sys3(3, fd, 0, 0) == 0);
+    /* a tracked descriptor that was closed is not a fatal use: terminalWidth
+     * never consults the fd table, so the kernel's EBADF is simply 0 */
+    fd = (i64)open_tracked(p, "r");
+    close_tracked(fd);
+    CHECK(rt_term_width(fd) == 0);
+    /* the number may have been reused by the next open; the ioctl then observes
+     * the reused descriptor, and a regular file is still 0, never a trap */
+    i64 again = sys3(2, (i64)p, 0, 0);
+    CHECK(again >= 0);
+    CHECK(again == fd);                            /* the number really was reused */
+    CHECK(rt_term_width(again) == 0);
+    CHECK(sys3(3, again, 0, 0) == 0);
+    /* the pty: a fresh one may report 0x0, so set a size and read it back; the
+     * column is reported, not the row, and either end sets the same terminal */
+    i64 m, s;
+    open_pty(&m, &s);
+    set_winsize(s, 24, 80);
+    CHECK(rt_term_width(s) == 80);
+    set_winsize(m, 43, 132);
+    CHECK(rt_term_width(s) == 132);
+    set_winsize(s, 24, 40000);                     /* above 16 bits' signed range: u16 widened */
+    CHECK(rt_term_width(s) == 40000);
+    set_winsize(s, 7, 0);                          /* a zero column count is unknown */
+    CHECK(rt_term_width(s) == 0);
+    CHECK(sys3(3, s, 0, 0) == 0 && sys3(3, m, 0, 0) == 0);
+    rt_finish();
+}
+
 /* rt_init records env_base = sp + 8*(argc+2), and getenv reads the fixed
  * environment tests/meta_test.py sets: present, present-empty and absent, plus
  * the invalid names. Every returned array is owned and freed here. */
@@ -807,6 +871,9 @@ static void case_eintr(const char *dir) {
     i64 m, s;
     open_pty(&m, &s);
     CHECK(rt_isatty(s) == 1);
+    set_winsize(s, 24, 80);
+    CHECK(rt_term_width(s) == 80);                     /* the win-size ioctl's EINTR retry */
+    CHECK(rt_term_width(s) == 80);                     /* the fault is consumed once */
     CHECK(sys3(3, s, 0, 0) == 0 && sys3(3, m, 0, 0) == 0);
     rt_finish();
 }
@@ -841,6 +908,7 @@ void test_main(u64 *sp) {
     else if (c_eq(c, "readdir_checks")) case_readdir_checks(path);
     else if (c_eq(c, "readdir_closed")) case_readdir_closed(path);
     else if (c_eq(c, "isatty_checks")) case_isatty_checks(path);
+    else if (c_eq(c, "termwidth_checks")) case_termwidth_checks(path);
     else if (c_eq(c, "getenv_real")) case_getenv_real(path);
     else if (c_eq(c, "getenv_crafted")) case_getenv_crafted(path);
     else if (c_eq(c, "eintr")) case_eintr(path);
