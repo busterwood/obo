@@ -15,16 +15,20 @@ not as portable facts.
 |---|---|---|---|
 | process startup | `hello.obx`, a static binary printing one line | `python3 -c pass`, `python3 -c print("hi")` | — |
 | `fib(32)` | `fib.obx`, recursive | `fib.py`, the same call tree | — |
-| sum `0..100,000,000` | `loopsum.obx`, explicit `while` loop | `loopsum.py`, the same loop | `sumrange.py`: Python's C-level `sum(range(n))`, a different algorithm |
+| sum of integers below `100,000,000` | `loopsum.obx`, explicit `while` loop | `loopsum.py`, the same loop | `sumrange.py`: Python's C-level `sum(range(n))`, a different algorithm |
 | sieve of Eratosthenes `<= 10,000,000` | `sieve.obx` | `sieve.py`, the same bytearray sieve | — |
 | `wc -l` on a 110,000,000-byte file | repo `wc -l` | `wc_lines.py`, chunked newline count | GNU `wc -l` |
 | `wc -lwc` on the same file | repo `wc -lwc` | `wc_full.py`, chunked line/word/byte count | GNU `wc -lwc` |
 | sort 1,000,000 lines | repo `sort` | `sort.py`, `bytes.split(b'\n')` then `list.sort` | GNU `sort` |
 | eza 10,000 names | repo `eza`, name-only non-TTY | `listdir.py`, `sorted(os.listdir(...))` | GNU `ls -1`; the pinned eza when available |
 
-The ratio column is **this row's median divided by the obo row's median** in the
-same workload. `1.00x` is the obo baseline, `20x` means twenty times slower than
-obo, and `0.15x` means this row took 0.15 of obo's time (it is faster).
+The ratio column is **this row's median divided by its base median**. The base
+is the first row of the row's own workload (always the obo row), except for the
+`sum(range(n))` reference: that row computes the same sum as the explicit loop
+by a different algorithm, so it is compared with the obo `loopsum` row of the
+explicit-loop group. `1.00x` is the base, `20x` means twenty times slower than
+the base, and `0.15x` means this row took 0.15 of the base's time (it is
+faster).
 
 Every obo result is checked against its Python equivalent before anything is
 timed: outputs must agree byte for byte, and `wc` counts numerically; the sort
@@ -58,6 +62,7 @@ Requirements:
   `--eza PATH`) only when its `--version` first three lines and binary sha256
   match `obo/tests/eza/VERSION`; otherwise that row is skipped with a note. The
   reference binary is never hardcoded or vendored.
+
 The working directory for builds and fixtures is a private
 `tempfile.mkdtemp(prefix='obo-bench-cli-')`; `--keep` prints its path and leaves
 it in place. The only build output inside the repository is the compiler and
@@ -65,14 +70,15 @@ runtime binaries that `make -C obo obo` normally produces (gitignored).
 
 ## Sample output
 
-One recorded run on the host named in the header. On that host the pinned eza
-binary happened to be at `/tmp/eza-tar-test2/eza` and was passed with `--eza`;
-nothing in the suite knows that path:
+One recorded run on the host named in the header, at commit `619aba8` (the
+documentation commit after it changes no timings). On that host the pinned eza
+binary was passed with `--eza /path/to/eza`; nothing in the suite knows that
+path:
 
 ```text
 obo CLI benchmark suite (on-demand; NOT a gate, not run by CI)
-repo:      /home/chris/obx/.claude/worktrees/bench-cli
-git:       bench-cli @ cc6c420
+repo:      /path/to/bench-cli
+git:       bench-cli @ 619aba8
 compiler:  obo 0.5 sym-format 1 abi 1
 python:    Python 3.12.3  (/usr/bin/python3)
 cpu:       AMD Ryzen 7 8745HS w/ Radeon 780M Graphics
@@ -80,61 +86,61 @@ kernel:    Linux-6.18.54.1-microsoft-standard-WSL2-x86_64-with-glibc2.39
 pin:       CPU 15 (runner and children, single core)
 mode:      default, 5 reps light / 3 heavy, startup 3x40 runs
 fixtures:  text 110,000,000 B, sort 1,000,000 lines, eza 10,000 names
-env:       LC_ALL=C TZ=UTC; stdout to /dev/null; stderr checked
+env:       LC_ALL=C LANG=C TZ=UTC; OBO_*/OBX_*/PYTHON*/POSIXLY_CORRECT unset; timed stdout/stderr to /dev/null
 
 implementation                   median     ratio
 
 process startup (hello; 40 runs per repetition)
-  obo hello (static binary)       0.22 ms     1.00x
-  python3 -c pass                 12.9 ms    58.84x
-  python3 -c print("hi")          12.7 ms    57.90x
+  obo hello (static binary)       0.23 ms     1.00x
+  python3 -c pass                 12.6 ms    54.09x
+  python3 -c print("hi")          12.8 ms    54.81x
 
 fib(32) recursive
-  obo fib                         10.6 ms     1.00x
-  python3 fib.py                 214.6 ms    20.26x
+  obo fib                         10.8 ms     1.00x
+  python3 fib.py                 216.2 ms    19.96x
 
-sum 0..100,000,000 explicit loop
-  obo loopsum                     22.8 ms     1.00x
-  python3 loopsum.py             8,216 ms   360.98x
+sum of integers below 100,000,000 (explicit loop)
+  obo loopsum                     23.4 ms     1.00x
+  python3 loopsum.py             8,855 ms   379.01x
 
 sum(range(100,000,000)) (reference; a different algorithm)
-  python3 sum(range)             906.6 ms    39.83x
+  python3 sum(range)             918.5 ms    39.31x
 
 sieve of Eratosthenes <= 10,000,000
-  obo sieve                      136.9 ms     1.00x
-  python3 sieve.py               2,352 ms    17.18x
+  obo sieve                      137.6 ms     1.00x
+  python3 sieve.py               2,434 ms    17.69x
 
 wc -l on 110,000,000 B
-  obo wc -l                      490.2 ms     1.00x
-  python3 wc_lines.py             71.2 ms     0.15x
-  GNU wc -l (ref)                 11.4 ms     0.02x
+  obo wc -l                       76.9 ms     1.00x
+  python3 wc_lines.py             75.9 ms     0.99x
+  GNU wc -l (ref)                 12.3 ms     0.16x
 
 wc -lwc on 110,000,000 B
-  obo wc -lwc                    485.3 ms     1.00x
-  python3 wc_full.py             477.5 ms     0.98x
-  GNU wc -lwc (ref)              1,015 ms     2.09x
+  obo wc -lwc                    131.4 ms     1.00x
+  python3 wc_full.py             472.8 ms     3.60x
+  GNU wc -lwc (ref)              1,031 ms     7.84x
 
 sort 1,000,000 lines
-  obo sort                       2,075 ms     1.00x
-  python3 sort.py                631.3 ms     0.30x
-  GNU sort (ref)                 297.0 ms     0.14x
+  obo sort                       2,038 ms     1.00x
+  python3 sort.py                630.4 ms     0.31x
+  GNU sort (ref)                 266.2 ms     0.13x
 
 eza 10,000 names
-  obo eza                         24.9 ms     1.00x
-  python3 listdir + sort          22.2 ms     0.89x
-  GNU ls -1 (ref)                 7.41 ms     0.30x
-  pinned eza v0.23.3 (ref)        63.5 ms     2.55x
+  obo eza                         22.4 ms     1.00x
+  python3 listdir + sort          17.8 ms     0.80x
+  GNU ls -1 (ref)                 6.87 ms     0.31x
+  pinned eza v0.23.3 (ref)        60.4 ms     2.70x
 
 binary sizes:
   hello                28,673 B
   fib                  28,673 B
   loopsum              28,673 B
   sieve                28,673 B
-  wc (tool)            53,249 B
+  wc (tool)            45,057 B
   sort (tool)          53,249 B
   eza (tool)          126,977 B
 
-total: 93.4 s on this host; the numbers are host-dependent.
+total: 90.5 s on this host; the numbers are host-dependent.
 ```
 
 `--quick` changes the workload sizes as well as the repetition counts, so its
@@ -144,12 +150,14 @@ loop, a sieve to 1,000,000, an 11,000,000-byte text file, 100,000 sort lines and
 
 ## Methodology
 
-* **Warm page cache.** Each command runs once untimed as a warmup before its
-  timed repetitions; fixtures are written just before the run, so on a host
-  with spare RAM the 110 MB text file and the sort input are in page cache.
-  This is not a cold-I/O benchmark.
+* **Warm page cache.** Each command runs untimed warmups before its timed
+  repetitions: one run normally and five processes for the startup row.
+  Fixtures are written just before the run, so on a host with spare RAM the
+  110 MB text file and the sort input are in page cache. This is not a
+  cold-I/O benchmark.
 * **Output to `/dev/null`.** Timed runs use `/dev/null` for stdout and stderr,
-  so terminal or pipe costs are not measured; correctness runs capture output.
+  so terminal or pipe costs are not measured; a failed timed run is rerun with
+  pipes to report its stderr. Correctness runs capture the outputs they check.
 * **Median.** Default: 5 repetitions for light rows and 3 for heavy rows, and
   the median of those repetitions is reported. The startup row is a median of 3
   batches of 40 processes each, timed as one wall-clock interval per batch and
@@ -159,8 +167,11 @@ loop, a sieve to 1,000,000, an 11,000,000-byte text file, 100,000 sort lines and
   runner rather than wrapping each command in `taskset` keeps the wrapper's
   exec time out of the 0.2 ms startup row. If pinning is unavailable the header
   says so.
-* **Locale and terminal.** `LC_ALL=C`, `TZ=UTC`, stdout is not a TTY; the GNU
-  `ls` and pinned eza reference rows pass `--color=never` explicitly.
+* **Locale and environment.** `LC_ALL=C`, `LANG=C`, `TZ=UTC`; stdout is not a
+  TTY; the GNU `ls` and pinned eza reference rows pass `--color=never`
+  explicitly. The child environment is the caller's with `OBO_*`, `OBX_*`,
+  `PYTHON*` and `POSIXLY_CORRECT` removed, so `OBO_CHECK`, `OBO_STATS`,
+  `OBX_GC`, `PYTHONPATH` and similar settings cannot change what is measured.
 * **No-`subprocess.run(timeout=)` in timed runs.** Its polling adds about a
   millisecond, which would swamp the startup row; timed runs use a blocking
   `waitpid` with a `SIGALRM` deadline instead. Correctness runs use ordinary
@@ -184,9 +195,11 @@ loop, a sieve to 1,000,000, an 11,000,000-byte text file, 100,000 sort lines and
   same work but lean on C: `bytes.count`, `bytes.split`, `list.sort`,
   `sorted(os.listdir)`. That is intentional — these are tool-versus-tool
   comparisons — but a ratio is not a pure language/codegen comparison. In the
-  other direction, obo's `wc` scans byte by byte and obo's `sort` is a merge
-  sort, so its `wc -l` loses to Python's C `bytes.count` while its `wc -lwc`
-  beats GNU's word pass on this fixture.
+  other direction, obo's `wc` scans only the requested columns after wc-fast,
+  so its `wc -l` is at parity with Python's C `bytes.count` (and still behind
+  GNU's optimized `-l`), while its `wc -lwc` beats both Python and GNU's word
+  pass on this fixture; obo's `sort` is a merge sort and trails Python's C
+  `list.sort` and GNU `sort`.
 * **`sum(range(n))` is a reference, not an equivalent.** It is Python's
   C-level builtin and is labeled as a different algorithm; it is in the table to
   show what the same arithmetic costs without a Python-level loop.
@@ -220,8 +233,8 @@ loop, a sieve to 1,000,000, an 11,000,000-byte text file, 100,000 sort lines and
 
 The repo's case discovery globs only the top level: `obo/tests/port_compare.py`
 and `obo/tests/port_test.py` use `obo/bench/*.obx`, which does not recurse into
-`obo/bench/cli/`. Verified in the `bench-cli` worktree with the new files
-present:
+`obo/bench/cli/`. Verified in the `bench-cli` worktree with main (wc-fast,
+`979dec1`) merged and the new files present:
 
 * `python3 obo/tests/port_compare.py` — `stage B: 1182 of 1182 behave the same`
   (exit 0), and `cases_of()` lists none of the files in this directory.
