@@ -9,9 +9,9 @@
 // section 7. Multiple operands, tree, grid, colour, icons, --no-quotes and the
 // later sort keys are rejected with this build's own message.
 //
-// Stage A: the command line, operand model and diagnostics. Directory entries
-// are listed in getdents order without the E0 sort; the later stages add the
-// sort keys, quoting, -F, dot synthesis and restricted long.
+// Stages A and B: the command line, operand model and diagnostics, then
+// directory iteration with synthesized dots, -D/-f, the E0 sort keys, quoting,
+// symlink target display and -F markers. Restricted long follows in stage C.
 
 module eza
 
@@ -50,10 +50,22 @@ type Opts = ref record {
     longView: bool         // the effective view is -l (last of -l/-1)
 }
 
-// One displayed entry. Stage A keeps only the raw name and the kernel type.
+// One displayed entry.
 type Entry = ref record {
     name: string
-    kind: byte
+    kind: byte            // kernel/d_type type (LNK for a symlink)
+    synthetic: byte       // 0 real, 1 synthesized ".", 2 synthesized ".."
+    mode: int             // lstat mode; meaningful when statOk
+    size: int             // lstat size
+    mtime: int            // lstat mtime seconds
+    mtimeNs: int
+    uid: int
+    statOk: bool
+    linkOk: bool          // readlink succeeded
+    targetRaw: string     // raw target bytes as a string
+    targetValid: bool     // stat (follow) on the resolved target succeeded
+    targetKind: byte      // followed type when targetValid
+    targetMode: int       // followed mode when targetValid
 }
 
 // How the entry set was produced: a directory listing (names only) or one
@@ -443,8 +455,58 @@ fn operandDisplay(p: string): string {
     return strings::parentPrefix(parent, true) + quoteName(name)
 }
 
-fn newEntry(name: string, kind: byte): Entry {
-    return new Entry{name: name, kind: kind}
+fn newEntry(name: string, kind: byte, synthetic: byte): Entry {
+    return new Entry{name: name, kind: kind, synthetic: synthetic, mode: 0,
+                     size: 0, mtime: 0, mtimeNs: 0, uid: 0, statOk: false,
+                     linkOk: false, targetRaw: "", targetValid: false,
+                     targetKind: byte(0), targetMode: 0}
+}
+
+// eza's File::ext: the bytes after the last '.' (ASCII-lowercased), with a
+// separate hasExt flag for the Option ordering (None before Some("")).
+fn lastDot(name: string): int {
+    var dot = -1
+    for i in 0..len(name) {
+        if name[i] == '.' { dot = i }
+    }
+    return dot
+}
+
+fn ezaHasExt(name: string): bool {
+    return lastDot(name) >= 0
+}
+
+fn ezaExt(name: string): string {
+    let dot = lastDot(name)
+    if dot < 0 { return "" }
+    return strings::lowerAscii(substr(name, dot + 1, len(name)))
+}
+
+// The synthetic "." entry's extension key is File::ext(dir.path): None when
+// the operand's last component is ".", ".." or "/" (no file_name), otherwise
+// the operand component's own extension. ".." is always None.
+fn dotExtHas(operand: string): bool {
+    let name = paths::lastComponent(operand)
+    if name == "." || name == ".." || name == "/" { return false }
+    return ezaHasExt(name)
+}
+
+fn dotExtKey(operand: string): string {
+    let name = paths::lastComponent(operand)
+    if name == "." || name == ".." || name == "/" { return "" }
+    return ezaExt(name)
+}
+
+fn entryExtHas(e: &Entry, operand: string): bool {
+    if int(e.synthetic) == 1 { return dotExtHas(operand) }
+    if int(e.synthetic) == 2 { return false }
+    return ezaHasExt(e.name)
+}
+
+fn entryExtKey(e: &Entry, operand: string): string {
+    if int(e.synthetic) == 1 { return dotExtKey(operand) }
+    if int(e.synthetic) == 2 { return "" }
+    return ezaExt(e.name)
 }
 
 // Directory listing names only (no parent prefix); an operand shows its
@@ -459,31 +521,342 @@ fn entryPath(v: &View, name: string): string {
     return paths::join(v.operand, name)
 }
 
-// ------------------------------------------------------------------ input
+// ---------------------------------------------------------------- metadata
 
-// Read every kernel entry (fs::next skips "." and "..") into es.
-fn readDirEntries(mut d: &fs::Dir, mut es: &[]Entry): Result[bool] {
+// The lstat fill shared by the long view, the size/modified sort keys, the
+// executable marker and any entry whose type needed a lazily resolved lstat.
+fn fillStat(mut e: &Entry, path: string) {
+    let r = fs::lstat(path)
+    match r {
+        ok {
+            e.statOk = true
+            e.mode = r.value.mode
+            e.size = r.value.size
+            e.mtime = r.value.mtime
+            e.mtimeNs = r.value.mtimeNs
+            e.uid = r.value.uid
+        }
+        err {
+            e.statOk = false
+        }
+    }
+}
+
+// readlink plus stat (follow) on the resolved target path. The display uses
+// the raw target bytes; classification uses the followed type.
+fn fillTarget(mut e: &Entry, path: string, base: string) {
+    let rl = fs::readlink(path)
+    match rl {
+        ok(data) {
+            e.linkOk = true
+            let raw = strings::fromBytes(data)
+            e.targetRaw = raw
+            let tp = paths::join(base, raw)
+            let st = fs::stat(tp)
+            match st {
+                ok {
+                    e.targetValid = true
+                    e.targetKind = fs::typeOf(st.value.mode)
+                    e.targetMode = st.value.mode
+                }
+                err {
+                    e.targetValid = false
+                    e.targetKind = byte(0)
+                    e.targetMode = 0
+                }
+            }
+        }
+        err(m, c) {
+            e.linkOk = false
+        }
+    }
+}
+
+fn isSizeSort(f: string): bool {
+    return f == "size" || f == "filesize"
+}
+
+fn isModifiedSort(f: string): bool {
+    if f == "modified" { return true }
+    if f == "date" { return true }
+    if f == "time" { return true }
+    if f == "mod" { return true }
+    if f == "new" { return true }
+    if f == "newest" { return true }
+    return false
+}
+
+fn needStat(o: &Opts): bool {
+    if o.longView { return true }
+    if o.classifyAlways { return true }
+    if isSizeSort(o.sortField) { return true }
+    if isModifiedSort(o.sortField) { return true }
+    return false
+}
+
+// ------------------------------------------------------------- entry input
+
+fn dotsEnabled(o: &Opts): bool {
+    return o.allCount >= 2
+}
+
+fn hiddenEnabled(o: &Opts): bool {
+    return o.allCount >= 1 || o.almostAll
+}
+
+fn hiddenName(name: string): bool {
+    return len(name) > 0 && name[0] == '.'
+}
+
+// -D/-f: each keeps one lstat type; both together cancel (eza falls through
+// to no filtering). Synthetic dots obey the same rule.
+fn keepKind(kind: byte, o: &Opts): bool {
+    if o.onlyDirs && !o.onlyFiles {
+        return int(kind) == int(fs::KIND_DIR)
+    }
+    if o.onlyFiles && !o.onlyDirs {
+        return int(kind) == int(fs::KIND_REG)
+    }
+    return true
+}
+
+// Hidden filtering (real names only) and -D/-f, before sorting. Synthetic
+// dots are appended by the caller, before the real entries.
+fn readDirEntries(mut d: &fs::Dir, mut es: &[]Entry, o: &Opts): Result[bool] {
     var e = new fs::DirEntry{name: "", ino: 0, kind: 0}
     var more = true
     while more {
         more = try fs::next(d, e)
         if more {
-            append(es, newEntry(e.name, e.kind))
+            var keep = true
+            if hiddenName(e.name) && !hiddenEnabled(o) { keep = false }
+            if keep && !keepKind(e.kind, o) { keep = false }
+            if keep {
+                append(es, newEntry(e.name, e.kind, byte(0)))
+            }
         }
     }
     return ok(true)
 }
 
-// ---------------------------------------------------------------- output
+// --------------------------------------------------------------- ordering
 
-// Write one name per line through a buffered Writer. A write or flush failure
-// is returned with its errno; the caller prints eza's bare os error and exits 1.
-fn emitEntries(es: &[]Entry, v: &View): Result[bool] {
+fn nameKeys(es: &[]Entry): []string {
+    var out = new []string(0)
+    for i in 0..len(es) {
+        append(out, es[i].name)
+    }
+    return out
+}
+
+fn sizeKeys(es: &[]Entry): []int {
+    var out = new []int(0)
+    for i in 0..len(es) {
+        var v = -1
+        if es[i].statOk { v = es[i].size }
+        append(out, v)
+    }
+    return out
+}
+
+// eza's Option<NaiveDateTime>: a pre-1970 (or missing) mtime is None and
+// sorts before every real time.
+fn secKeys(es: &[]Entry): []int {
+    var out = new []int(0)
+    for i in 0..len(es) {
+        var v = -1
+        if es[i].statOk && es[i].mtime >= 0 { v = es[i].mtime }
+        append(out, v)
+    }
+    return out
+}
+
+fn nsecKeys(es: &[]Entry): []int {
+    var out = new []int(0)
+    for i in 0..len(es) {
+        var v = 0
+        if es[i].statOk && es[i].mtime >= 0 { v = es[i].mtimeNs }
+        append(out, v)
+    }
+    return out
+}
+
+fn extKeys(es: &[]Entry, operand: string): []string {
+    var out = new []string(0)
+    for i in 0..len(es) {
+        append(out, entryExtKey(es[i], operand))
+    }
+    return out
+}
+
+fn extHasKeys(es: &[]Entry, operand: string): []int {
+    var out = new []int(0)
+    for i in 0..len(es) {
+        var v = 0
+        if entryExtHas(es[i], operand) { v = 1 }
+        append(out, v)
+    }
+    return out
+}
+
+fn typeRank(kind: byte): int {
+    if int(kind) == int(fs::KIND_DIR) { return 0 }
+    if int(kind) == int(fs::KIND_REG) { return 1 }
+    if int(kind) == int(fs::KIND_LNK) { return 2 }
+    if int(kind) == int(fs::KIND_FIFO) { return 3 }
+    if int(kind) == int(fs::KIND_SOCK) { return 4 }
+    if int(kind) == int(fs::KIND_CHR) { return 5 }
+    if int(kind) == int(fs::KIND_BLK) { return 6 }
+    return 7
+}
+
+fn typeKeys(es: &[]Entry): []int {
+    var out = new []int(0)
+    for i in 0..len(es) {
+        append(out, typeRank(es[i].kind))
+    }
+    return out
+}
+
+// points_to_directory: a directory, or a symlink whose followed target is a
+// directory. Symlink target metadata is filled for every link.
+fn pointsToDir(e: &Entry): bool {
+    if int(e.kind) == int(fs::KIND_DIR) { return true }
+    if int(e.kind) == int(fs::KIND_LNK) {
+        return e.targetValid && int(e.targetKind) == int(fs::KIND_DIR)
+    }
+    return false
+}
+
+fn groupKeys(es: &[]Entry, o: &Opts): []int {
+    var out = new []int(0)
+    for i in 0..len(es) {
+        let d = pointsToDir(es[i])
+        var rank = 0
+        if o.groupFirst {
+            if !d { rank = 1 }
+        } else {
+            if d { rank = 1 }
+        }
+        append(out, rank)
+    }
+    return out
+}
+
+// The stable E0 order: field sort, then -r over the whole order, then the
+// directory grouping (design 7.5). Every helper keeps input order for equal
+// keys; the exact fixtures have no comparator-equal pairs.
+fn sortEntries(es: &[]Entry, v: &View, o: &Opts): []int {
+    let f = o.sortField
+    var order = sort::identity(len(es))
+    if f == "" || f == "name" || f == "filename" {
+        let ks = nameKeys(es)
+        order = sort::orderNatural(ks, true)
+    } else if f == "Name" || f == "Filename" {
+        let ks = nameKeys(es)
+        order = sort::orderNatural(ks, false)
+    } else if isSizeSort(f) {
+        let ks = sizeKeys(es)
+        order = sort::sortOrderInts(&order, &ks)
+    } else if isModifiedSort(f) {
+        let ns = nsecKeys(es)
+        let sec = secKeys(es)
+        let o1 = sort::sortOrderInts(&order, &ns)
+        order = sort::sortOrderInts(&o1, &sec)
+    } else if f == "extension" || f == "ext" {
+        let ks = nameKeys(es)
+        let pre = sort::orderNatural(ks, true)
+        let ek = extKeys(es, v.operand)
+        let hk = extHasKeys(es, v.operand)
+        let o1 = sort::sortOrderStrings(&pre, &ek)
+        order = sort::sortOrderInts(&o1, &hk)
+    } else if f == "Extension" || f == "Ext" {
+        let ks = nameKeys(es)
+        let pre = sort::orderNatural(ks, false)
+        let ek = extKeys(es, v.operand)
+        let hk = extHasKeys(es, v.operand)
+        let o1 = sort::sortOrderStrings(&pre, &ek)
+        order = sort::sortOrderInts(&o1, &hk)
+    } else {
+        let ks = nameKeys(es)
+        let pre = sort::orderNatural(ks, false)
+        let tk = typeKeys(es)
+        order = sort::sortOrderInts(&pre, &tk)
+    }
+    if o.reverse {
+        sort::reverse(order)
+    }
+    if o.groupFirst || o.groupLast {
+        let gk = groupKeys(es, o)
+        let grouped = sort::sortOrderInts(&order, &gk)
+        order = grouped
+    }
+    return order
+}
+
+// ----------------------------------------------------------------- output
+
+// eza's classify markers: directory, executable regular file, FIFO, socket;
+// a symlink never reaches here for a non-grid view (its target is marked).
+fn markerFor(kind: byte, mode: int): string {
+    if int(kind) == int(fs::KIND_DIR) { return "/" }
+    if int(kind) == int(fs::KIND_REG) {
+        if mode & 0x040 != 0 { return "*" }
+        return ""
+    }
+    if int(kind) == int(fs::KIND_FIFO) { return "|" }
+    if int(kind) == int(fs::KIND_SOCK) { return "=" }
+    return ""
+}
+
+// A valid target: parent prefix with the outer style, target name with
+// QuoteSpaces, then the followed-type marker under -F=always. A broken target
+// is the whole raw target escaped with the outer style and never marked; an
+// unreadable target has no arrow at all (the caller skips it).
+fn targetDisplay(e: &Entry, classify: bool): string {
+    if e.targetValid {
+        let prefix = strings::parentPrefix(paths::parentOf(e.targetRaw), true)
+        var s = prefix + quoteName(paths::lastComponent(e.targetRaw))
+        if classify {
+            s = s + markerFor(e.targetKind, e.targetMode)
+        }
+        return s
+    }
+    return quoteName(e.targetRaw)
+}
+
+fn appendStr(mut out: &[]byte, s: string) {
+    for i in 0..len(s) {
+        append(out, s[i])
+    }
+}
+
+// One line in the current view. Stage B is the lines/default/-1/-d form; the
+// restricted long cells arrive in stage C.
+fn renderLine(e: &Entry, v: &View, o: &Opts, mut out: &[]byte) {
+    appendStr(out, displayName(v, e))
+    if int(e.kind) == int(fs::KIND_LNK) {
+        if e.linkOk {
+            appendStr(out, " -> ")
+            appendStr(out, targetDisplay(e, o.classifyAlways))
+        }
+    } else if o.classifyAlways {
+        appendStr(out, markerFor(e.kind, e.mode))
+    }
+}
+
+// Write one rendered line per order id through a buffered Writer. A write or
+// flush failure is returned with its errno; the caller prints eza's bare os
+// error and exits 1.
+fn emitEntries(es: &[]Entry, order: &[]int, v: &View, o: &Opts): Result[bool] {
     var w = io::newWriter(stdout(), 65536)
+    var out = new []byte(0)
     var i = 0
-    while i < len(es) {
-        let line = displayName(v, es[i])
-        let r = io::write(w, line)
+    while i < len(order) {
+        let id = order[i]
+        truncate(out, 0)
+        renderLine(es[id], v, o, out)
+        let r = io::writeBytes(w, out)
         match r {
             ok { }
             err { return err(r.message, r.code) }
@@ -501,6 +874,25 @@ fn emitEntries(es: &[]Entry, v: &View): Result[bool] {
         err { return err(f.message, f.code) }
     }
     return ok(true)
+}
+
+// ------------------------------------------------------------- entry setup
+
+// Fill the lazy metadata the current options need. Symlink targets are always
+// resolved for display (the default/-1/-d and long views show them).
+fn prepareEntries(mut es: &[]Entry, v: &View, o: &Opts) {
+    let wantStat = needStat(o)
+    var i = 0
+    while i < len(es) {
+        let path = entryPath(v, es[i].name)
+        if wantStat {
+            fillStat(es[i], path)
+        }
+        if int(es[i].kind) == int(fs::KIND_LNK) {
+            fillTarget(es[i], path, v.base)
+        }
+        i += 1
+    }
 }
 
 // eza's permission-denied diagnostic for a directory it cannot open, followed
@@ -555,14 +947,18 @@ fn main() {
                         match op {
                             ok(d) {
                                 var es = new []Entry(0)
-                                let rr = readDirEntries(d, es)
+                                let v = new View{single: false, operand: operand, base: operand}
+                                if dotsEnabled(od.value) && keepKind(byte(fs::KIND_DIR), od.value) {
+                                    append(es, newEntry(".", byte(fs::KIND_DIR), byte(1)))
+                                    append(es, newEntry("..", byte(fs::KIND_DIR), byte(2)))
+                                }
+                                let rr = readDirEntries(d, es, od.value)
                                 let cr = fs::close(d)
                                 match rr {
                                     ok {
-                                        let v = new View{single: false,
-                                                         operand: operand,
-                                                         base: operand}
-                                        let er = emitEntries(es, v)
+                                        prepareEntries(es, v, od.value)
+                                        let order = sortEntries(es, v, od.value)
+                                        let er = emitEntries(es, order, v, od.value)
                                         match er {
                                             ok { }
                                             err {
@@ -586,10 +982,11 @@ fn main() {
                         }
                     } else {
                         var es = new []Entry(0)
-                        append(es, newEntry(operand, fs::typeOf(mode)))
-                        let v = new View{single: true, operand: operand,
-                                         base: paths::parentOf(operand)}
-                        let er = emitEntries(es, v)
+                        let v = new View{single: true, operand: operand, base: paths::parentOf(operand)}
+                        append(es, newEntry(operand, fs::typeOf(mode), byte(0)))
+                        prepareEntries(es, v, od.value)
+                        let order = sort::identity(len(es))
+                        let er = emitEntries(es, order, v, od.value)
                         match er {
                             ok { }
                             err {
