@@ -46,7 +46,7 @@ The tools live in `cmd/`, and their libraries are source modules under `lib/`:
 `wc` and `sort` import only what they use (`io`/`fmt`/`errors`, plus `strings`
 for `wc` and `sort`); `fmt` owns the digit and padding helpers, and `errors`
 owns the errno text and the eza-shaped exit constants. The exact subset, message
-forms and caveats are in `obo/LANGUAGE.md` section 6 and `obo/cmd/README.md`.
+forms and caveats are in `obo/cmd/README.md`.
 
 **obx** was the original garbage-collected dialect and the compiler obo grew from.
 It is kept as the historical reference; the "History: mainline obx" section below
@@ -102,11 +102,13 @@ allocation by about 1.9 KB; the table keeps the main-tree gate values, and the
 allocated (both far under the 2,000,000-byte budget). P3's four builtin
 branches raised the peak by 6,240 bytes from 1,636,176, well inside the cut
 order of design section 6.8, so no slot was cut. The tools work did not
-change the compiler, runtime or
-seed; their runtime is included in the tool binary sizes above (P3 leaves
-them unchanged). P2b's `fmt`/`errors` split compiles whole modules into each
-tool, so the tool binaries grew from cat 36,865 / wc 40,961 / sort 45,057 to the
-sizes above; their observable output is byte-identical. The old
+change the compiler, runtime or seed; their runtime is included in the tool
+binary sizes above (P3 leaves them unchanged). Whole modules are compiled into
+each tool, so the figures track the imported module set: the pre-P1 tree
+(`265564c`) measured cat 36,865 / wc 40,961 / sort 45,057, the P1+P2a base
+(`ec244e0`) measured 49,153 / 49,153 / 53,249, and this P2b+P3 tree measures
+40,961 / 53,249 / 53,249. P2b's net effect on that base is cat -8,192,
+wc +4,096, sort 0, with byte-identical observable output. The old
 493,280-byte compiler and seed, tool binaries 108,256/108,256/112,352, and the
 earlier 90,848-byte minimal figure are historical. The
 minimal executable measured in this tree before the fix was 95,968 bytes (the

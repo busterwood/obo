@@ -12,11 +12,12 @@
 //
 // P2 moved digits/appendPadded here from strings and writePadded from io
 // (design stdlib-eza-design-v7 section 5.4). Their behavior and output bytes are
-// unchanged: cat's numbering and wc's padding stay byte-identical. The functions
-// take a non-negative int, which is what the tools count and format; the signed
-// writers (intWidth/writeInt/writeIntRight/writeIntLeft), writeStringPad and
-// octal in the design's wider API are not needed by the P2 tools/tests and are
-// not added speculatively.
+// unchanged: cat's numbering and wc's padding stay byte-identical. These
+// functions take a non-negative int, which is what the tools count and format.
+// The design's wider API (intWidth, writeInt, writeIntRight, writeIntLeft,
+// writeStringPad and octal) belongs to P4: the eza long view needs left- and
+// right-aligned numeric and date cells, and P2 has no caller, so those functions
+// are deliberately deferred there rather than added untested.
 //
 // modeString implements eza's 10-character permission form for the P4 long
 // view, not ls's: the type character is eza's (regular '.', directory 'd',

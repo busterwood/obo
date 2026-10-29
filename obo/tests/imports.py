@@ -196,9 +196,13 @@ def main():
             if not (path.startswith('../lib/') and path.endswith('.obx')):
                 wrong.append(f'{name}: {path}')
     check('tool imports are ../lib paths', not wrong, ', '.join(wrong))
-    check('sort.obx imports no sort module',
-          'import "sort.obx"' not in tool_text['sort.obx'],
-          'cmd/sort.obx must not import sort.obx')
+    sort_imports = []
+    for m in re.finditer(r'^import\s+"([^"]+)"', tool_text['sort.obx'], re.M):
+        path = m.group(1)
+        if path == 'sort.obx' or path.endswith('/sort.obx'):
+            sort_imports.append(path)
+    check('sort.obx imports no sort module', not sort_imports,
+          ', '.join(sort_imports))
 
     # design 4.2 P2: a cmd/-local decoy with a library module's name must not
     # capture the tool's `../lib/...` import. Copy cmd/cat.obx and lib/*.obx into
