@@ -188,12 +188,26 @@ pub fn ints7(a: int, b: int, c: int, d: int, e: int, f: int, g: int): []int {
     return out
 }
 
-// cliSpecs is the shared eza-like flag table for cli_parse and cli_errors:
-//   -a/--all, -A/--almost-all, -s/--sort (required, 12 choices),
-//   -F/--classify, --color and --icons (optional WHEN flags), -I/--ignore-glob
-//   (required, any value), -l/--long, -o/--output (required, no choices),
-//   --level (optional, empty default), --time-style (required, two choices,
-//   no short form) and --extra (optional whose default is not accepted).
+// cliSpecs is the shared flag table for cli_parse and cli_errors. It follows
+// eza 0.23.3's grammar only where noted. Entries marked SYNTHETIC are not
+// eza's real flags: P4 must take its accept sets from the design and eza, not
+// from this table.
+//   - MATCHES eza 0.23.3: -a/--all and -A/--almost-all (Forbidden),
+//     -l/--long (Forbidden), -s/--sort (Necessary with the 12 real choices),
+//     -I/--ignore-glob (Necessary, no choices), -F/--classify and --color
+//     (Optional consume always/auto/never, default auto; accept adds
+//     "automatic", which eza's deduce accepts as an auto alias).
+//   - E0 SUBSET: --icons is Optional with the same consume list, but accept
+//     omits "always" (design B7: E0 rejects --icons=always; real eza accepts
+//     it). --color/--classify accept the full WHEN set plus automatic.
+//   - SYNTHETIC -o/--output: a required flag with a short form; eza's -o is
+//     --octal-permissions (Forbidden) and eza has no --output.
+//   - SYNTHETIC --level: optional with an empty default and no short form;
+//     eza's -L/--level is Necessary.
+//   - SYNTHETIC --time-style choices: an E0 subset (default, long-iso); eza
+//     lists default, long-iso, full-iso, iso, relative.
+//   - SYNTHETIC --extra: exists only to exercise an optional whose default
+//     accept rejects; it has no eza counterpart.
 fn cvals0(): []string {
     return new []string(0)
 }

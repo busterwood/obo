@@ -4116,8 +4116,10 @@ record below.)
 
 Implemented on branch `eza-p2b` on top of a temporary merge of P1 (`5990686`)
 and P2a (`efcac6f`), HEAD `ec244e0`. P2b is the API half of P2 and assumes the
-P2a move. It changes no compiler, runtime, seed or design file, and there is no
-`make promote`.
+P2a move. Main's reviewed P1 merge (`37d7b88`, including the split-cluster fix
+`e03634e` and its EXPECTED_ROOTS inventory) was then merged in cleanly on this
+branch and the full gate was re-run on the merged tree with unchanged counts. The change makes no compiler, runtime, seed or design edit, and there
+is no `make promote`.
 
 ## What changed
 
