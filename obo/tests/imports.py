@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Source-module import and compile matrix (P1/P2).
+"""Source-module import and compile matrix (P1/P2/P3).
 
     python3 obo/tests/imports.py
 

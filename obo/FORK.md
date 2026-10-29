@@ -4394,11 +4394,11 @@ seed-built `obo`, the 0.3 compiler's stage 2 and stage 3 are all the same
 421,889-byte binary (checked with `cmp` on the branch), but `make promote` (and
 its run_fork gate) remains the orchestrator's step after review.
 
-**Measured (this branch, merged with main at `7b1c8b8`, which includes `c3c4db4`).** `make`;
+**Measured (this branch, merged with main at `f87e144`, the P2b merge on top of `7b1c8b8`).** `make`;
 `make tools`; `tests/tools.py --require-reference` 199/199; `--memory` 2/2;
 `tests/io_test.py --rt --programs --tools` 0 failures; `tests/imports.py`
 23/23 (9 stdlib importers, 3 tools, 3 tool-matrix checks, 7 collision/decoy
-trees, 1 lib set); `tests/stdlib.py` 14/14 roots; `tests/run_fork.py`
+trees, 1 lib set); `tests/stdlib.py` 16/16 roots (1 support module); `tests/run_fork.py`
 1,147/1,147 (1,130 + 16 error cases + 1 program); `tests/elf_test.py` (filesz 1,
 memsz 67,328); `tests/port_compare.py` 1,164/1,164 (1,147 + 17), live peak
 1,642,416 (budget 2,000,000; the 0.3 compiler compiling itself reports
@@ -4407,7 +4407,7 @@ memsz 67,328); `tests/port_compare.py` 1,164/1,164 (1,147 + 17), live peak
 `OBO_REF=seed/obo tests/port_compare.py` 1,025/1,025 with the documented
 seed-mode case exclusion; `tests/mutate_fork.py` 527/549 + 22 equivalent;
 `tests/mutate_port.py` 495/495; `tests/mutate_io.py` 27/27; `tests/port_test.py`
-512/512 identical (501 + the 11 new `.obx` files), 9 encoder groups;
+515/515 identical (504 + the 11 new `.obx` files), 9 encoder groups;
 `tests/sym_test.py` 27/27 at 0.3; `tests/sym_fuzz.py` 200/200; `tests/doc_check.py`
 46 examples (45 + the metadata example); `tests/homes_check.py`;
 `tests/homes_edge.py` 1,028 statements, 119 refused by both, 0 differ;
