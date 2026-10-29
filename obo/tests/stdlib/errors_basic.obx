@@ -1,0 +1,96 @@
+// errors_basic: the errors module's errno text, Rust-shaped osError and
+// debugPath quoting, and the eza exit constants (design sections 5.7 and 9.8).
+// debugPath expected values are the rustc 1.87 OsStr Debug forms: quotes,
+// \" \' \\, \0, the \t \r \n short escapes, \u{h} for other controls and DEL,
+// and valid UTF-8 copied byte-wise. Control-byte inputs are built with
+// strings::fromBytes because the source has no \u literal escape.
+// expect: errors basic ok
+import "errors.obx" as errors
+import "strings.obx" as strings
+import "support.obx" as t
+
+fn b1(a: byte): string {
+    var out = new []byte(1)
+    out[0] = a
+    return strings::fromBytes(out)
+}
+
+fn b3(a: byte, b: byte, c: byte): string {
+    var out = new []byte(3)
+    out[0] = a
+    out[1] = b
+    out[2] = c
+    return strings::fromBytes(out)
+}
+
+fn main() {
+    // eza 0.23.3 exit constants, not GNU coreutils' statuses
+    t::checkInt("EXIT_OK", errors::EXIT_OK, 0)
+    t::checkInt("EXIT_FAIL", errors::EXIT_FAIL, 1)
+    t::checkInt("EXIT_PATH", errors::EXIT_PATH, 2)
+    t::checkInt("EXIT_USAGE", errors::EXIT_USAGE, 3)
+    t::checkInt("EXIT_PERMISSION", errors::EXIT_PERMISSION, 13)
+
+    // text: the fixed C-locale strerror subset the tools/metadata paths use
+    t::checkStr("text ENOENT", errors::text(2), "No such file or directory")
+    t::checkStr("text EIO", errors::text(5), "Input/output error")
+    t::checkStr("text EBADF", errors::text(9), "Bad file descriptor")
+    t::checkStr("text EAGAIN", errors::text(11), "Resource temporarily unavailable")
+    t::checkStr("text EACCES", errors::text(13), "Permission denied")
+    t::checkStr("text ENOTDIR", errors::text(20), "Not a directory")
+    t::checkStr("text EISDIR", errors::text(21), "Is a directory")
+    t::checkStr("text EINVAL", errors::text(22), "Invalid argument")
+    t::checkStr("text EMFILE", errors::text(24), "Too many open files")
+    t::checkStr("text ENOSPC", errors::text(28), "No space left on device")
+    t::checkStr("text EPIPE", errors::text(32), "Broken pipe")
+    t::checkStr("text ERANGE", errors::text(34), "Numerical result out of range")
+    t::checkStr("text ENAMETOOLONG", errors::text(36), "File name too long")
+    t::checkStr("text ELOOP", errors::text(40), "Too many levels of symbolic links")
+    t::checkStr("text unknown", errors::text(99), "error 99")
+    t::checkStr("text zero", errors::text(0), "error 0")
+
+    // osError: Rust io::Error's Display: "<text> (os error N)"
+    t::checkStr("osError ENOENT", errors::osError(2),
+        "No such file or directory (os error 2)")
+    t::checkStr("osError EACCES", errors::osError(13),
+        "Permission denied (os error 13)")
+    t::checkStr("osError ENOSPC", errors::osError(28),
+        "No space left on device (os error 28)")
+    t::checkStr("osError unknown", errors::osError(99), "error 99 (os error 99)")
+
+    // debugPath: simple ASCII names are just quoted
+    t::checkStr("debug simple", errors::debugPath("missing"), "\"missing\"")
+    t::checkStr("debug space", errors::debugPath("a b"), "\"a b\"")
+    t::checkStr("debug empty", errors::debugPath(""), "\"\"")
+    // the Rust escapes: apostrophe, double quote and backslash
+    t::checkStr("debug apostrophe", errors::debugPath("a'b"), "\"a\\'b\"")
+    t::checkStr("debug quote", errors::debugPath("a\"b"), "\"a\\\"b\"")
+    t::checkStr("debug backslash", errors::debugPath("a\\b"), "\"a\\\\b\"")
+    // tab, CR and LF use the short escapes
+    t::checkStr("debug tab", errors::debugPath("a\tb"), "\"a\\tb\"")
+    t::checkStr("debug cr", errors::debugPath("a\rb"), "\"a\\rb\"")
+    t::checkStr("debug lf", errors::debugPath("a\nb"), "\"a\\nb\"")
+    // NUL, other controls and DEL use \0 or \u{h} with lowercase hex
+    t::checkStr("debug nul", errors::debugPath(b3('a', byte(0), 'b')), "\"a\\0b\"")
+    t::checkStr("debug control", errors::debugPath(b1(byte(1))), "\"\\u{1}\"")
+    t::checkStr("debug del", errors::debugPath(b1(byte(127))), "\"\\u{7f}\"")
+    // valid UTF-8 bytes are copied, not escaped
+    var utfIn = new []byte(5)
+    utfIn[0] = 'c'
+    utfIn[1] = 'a'
+    utfIn[2] = 'f'
+    utfIn[3] = byte(0xC3)
+    utfIn[4] = byte(0xA9)
+    var utfWant = new []byte(7)
+    utfWant[0] = '"'
+    utfWant[1] = 'c'
+    utfWant[2] = 'a'
+    utfWant[3] = 'f'
+    utfWant[4] = byte(0xC3)
+    utfWant[5] = byte(0xA9)
+    utfWant[6] = '"'
+    t::checkStr("debug utf8", errors::debugPath(strings::fromBytes(utfIn)),
+        strings::fromBytes(utfWant))
+
+    println("errors basic ok")
+}

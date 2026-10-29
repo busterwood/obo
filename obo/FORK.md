@@ -4102,8 +4102,10 @@ statements, 0 differ.
 
 ## Notes and residual risks
 
-The tool binaries have the same sizes as the recorded figures (cat 36,865;
-wc 40,961; sort 45,057); the move changes no tool semantics, and the
+The tool binaries on that branch had the same sizes as the recorded pre-P1
+figures (cat 36,865; wc 40,961; sort 45,057; historical: P1's whole-module
+strings API later changed them, and the merged P2 sizes are in the P2b record);
+the move changes no tool semantics, and the
 differential gate compares stdout, stderr and exit exactly.
 `io_test.py`'s `--programs` flag names the test-program section (`tests/io` and
 `tests/lib`), not the old tool directory; its spelling is CLI surface and was
@@ -4164,12 +4166,21 @@ is no `make promote`.
   `strings::digits` call is gone), `fmt`/`errors` importers are added, and the
   exact lib set is the eight P2 modules. It also gains the design 4.2 P2
   tool-matrix checks: every tool import is an explicit `../lib/*.obx` path,
-  `cmd/sort.obx` imports no sort module, and a scratch `cmd/` tree with
+  `cmd/sort.obx` imports no sort module (`sort.obx` or `../lib/sort.obx`), and
+  a scratch `cmd/` tree with
   `io`/`fmt`/`errors`/`strings` decoys beside `cat.obx` still builds and runs
   against the real `lib/`. That is 22/22 checks (17 P1 + 2 module importers + 3
   tool-matrix); nothing was removed.
 - `obo/tests/stdlib/strings_basic.obx`: the temporary `cmpBytes` agreement
-  block is removed with the function; the `cmp` block remains. 14/14 roots.
+  block is removed with the function; the `cmp` block remains.
+- New P2 coverage roots: `tests/stdlib/errors_basic.obx` (every `text` code
+  including ERANGE 34, `osError` formatting, `debugPath` quoting against the
+  rustc 1.87 forms, `EXIT_*` values), `tests/stdlib/fmt_basic.obx` (`digits`,
+  `appendPadded`, all nine section 5.4 `modeString` examples plus block/char/
+  unknown, and `writePadded` bytes), and `tests/lib/write_byte.obx`
+  (`io::writeByte` threshold, flush-loop and EBADF error semantics, run by
+  `io_test.py` with and without the short-write fault). `tests/stdlib.py`
+  EXPECTED_ROOTS lists the 16 roots; EXPECTED_MODULES keeps `support.obx`.
 - Docs: `README.md` (module list and imports, tool binary sizes, memory
   variance, phase 5 status), `obo/LANGUAGE.md` (io `writeByte`; the module
   list), `obo/cmd/README.md` (modules and imports), `obo/Makefile` (tools
@@ -4191,35 +4202,45 @@ no separators.
 --memory` 2/2 (cat peak 230,352; wc peak 66,384); `tests/io_test.py --rt
 --programs --tools` 0 failures; `tests/imports.py` 22/22 (8 stdlib importers,
 3 tools, 3 tool-matrix, 7 collision/decoy trees, 1 lib set); `tests/stdlib.py`
-14/14 roots (1 support module); `tests/run_fork.py` 1,130/1,130;
+16/16 roots (1 support module); `tests/run_fork.py` 1,130/1,130;
 `tests/elf_test.py` (filesz 1, memsz 67,296; the program runs);
 `tests/port_compare.py` 1,147/1,147 with a 1,636,336-byte live peak (budget
 2,000,000) and 35,078,496 bytes total allocation; `OBO_REF=seed/obo
 tests/port_compare.py` 1,025/1,025; `tests/mutate_io.py` 27/27 (0 missed, 0
-stale, 0 broken); `tests/port_test.py` 501/501 identical, no leaks, 9 encoder
+stale, 0 broken); `tests/port_test.py` 504/504 identical, no leaks, 9 encoder
 groups; `tests/mutate_fork.py` 527/549 caught + 22 equivalent;
 `tests/mutate_port.py` 495/495 caught; `tests/sym_test.py` 27/27;
 `tests/sym_fuzz.py` 200/200; `tests/doc_check.py` 45 examples;
 `tests/homes_check.py`;
 `tests/homes_edge.py` 1,028 statements, 0 differ; `bench/bench.py` runs to
 completion (four workloads, identical outputs; `obx/obxc` built for it).
-`tests/port_test.py` counts 501 tasks on this merged tree, not 486: P1 added 15
-`tests/stdlib/*.obx` roots and the harness compiles every `tests/*/*.obx` file;
-all 501 are identical.
+`tests/port_test.py` counts 504 tasks on this merged tree, not 486: P1 added 15
+`tests/stdlib` files (14 roots and the support module) and P2b adds three test
+files (two stdlib roots and `tests/lib/write_byte.obx`), and the harness
+compiles every `tests/*/*.obx` file; all 504 are identical.
 
 ## Notes and residual risks
 
-- The imported modules are compiled whole into each tool, so `fmt`/`errors`
-  grew the tool binaries: cat 36,865 -> 40,961, wc 40,961 -> 53,249, sort
-  45,057 -> 53,249 bytes. Output, stderr and exit bytes are unchanged
-  (199/199 and 2/2).
-- `modeString`, `osError`, `debugPath`, `report` and `io::writeByte` have no P2
-  caller (P4 uses them); P2 compiles them, and a direct probe reproduced all
-  nine section 5.4 `modeString` examples and Rust 1.87's `OsStr` Debug forms
-  for the recorded ASCII/control cases. `digits`/`appendPadded`/`writePadded`
-  are exercised by cat, wc and `write_padded`.
+- Imported modules are compiled whole into each tool, so the sizes track the
+  module set, not P2b alone: the pre-P1 tree (`265564c`) measured cat 36,865 /
+  wc 40,961 / sort 45,057, the P1+P2a base (`ec244e0`) measured 49,153 /
+  49,153 / 53,249, and this merged P2 tree measures 40,961 / 53,249 / 53,249.
+  P2b's net effect on that base is cat -8,192, wc +4,096, sort 0. Output,
+  stderr and exit bytes are unchanged (199/199 and 2/2).
+- The wider `fmt` API (`intWidth`/`writeInt`/`writeIntRight`/`writeIntLeft`/
+  `writeStringPad`/`octal`) is explicitly P4's: the eza long view needs
+  left- and right-aligned numeric and date cells, and P2 ships only the four
+  functions above, now covered by `fmt_basic` and `write_padded`.
+- `modeString`, `osError`, `debugPath` and `io::writeByte` had no P2 tool
+  caller (P4 uses them); the new `errors_basic`, `fmt_basic` and `write_byte`
+  roots cover them, including all nine section 5.4 `modeString` examples and
+  the rustc 1.87 `debugPath` forms. `digits`/`appendPadded`/`writePadded` are
+  exercised by `fmt_basic`, `write_padded`, cat and wc. `errors::report`
+  writes only to stderr and is not asserted (the stdlib runner compares stdout
+  on success), and the tools do not call it.
 - `tests/imports.py` is 22/22 rather than the P1 17/17 because the module set
   grew by two importers and the design 4.2 P2 tool-matrix adds three checks;
-  no check was removed or skipped.
+  no check was removed or skipped. Its sort guard rejects both `sort.obx` and
+  `../lib/sort.obx` imports.
 - No `writeByte`/`fmt`/`errors` mutants (design section 10.3 coverage
   boundary); `mutate_io` stays 27/27.
