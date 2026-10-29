@@ -137,15 +137,15 @@ UTF-8 are preserved and the default order is unsigned byte order (`LC_ALL=C`).
   `--5` (0), `.5`, `-.5`, `2.` and 40-digit numbers follow GNU's `strnumcmp`,
   with no floating point and no overflow. A leading `+` is not accepted, and
   parsing stops at the first character that is not a digit, `.`, a sign or a
-  leading blank. Only ASCII `0-9` are digits: GNU 9.4's `strnumcmp` additionally
-  treats a leading byte `0x80` inside the integer leading-zero run as a zero
-  (`\x801` compares equal to `1`), which is outside the supported ASCII numeric
-  grammar and is deliberately not reproduced; high-byte numeric inputs are kept
+  leading blank. Only ASCII `0-9` are digits: GNU 9.4's `strnumcmp` skips byte
+  `0x80` while scanning the integer digit run (`"1\x802"` is 12, `"\x801"` is
+  1), and stops at it where a fraction or sign is expected; this build stops at
+  every non-ASCII byte, so high-byte numeric inputs are unsupported and kept
   out of the differential matrix.
-- `-r` reverses the whole comparison, including the last-resort line comparison.
-  The default path sorts ascending once and reverses the finished order (two
-  distinct lines are never equal, so ties cannot be observed); the numeric path
-  keeps the comparator negation, so its stable tie order is unchanged.
+- `-r` reverses the whole comparison, including the last-resort line
+  comparison. Both paths sort ascending once and reverse the finished order
+  (two distinct default-order lines are never equal, so ties cannot be
+  observed there; with `-n` the whole-line tie order is reversed too).
 - `-u` makes key equality the only equality (the whole line, or the numeric
   value with `-n`) and keeps the first input occurrence.
 
@@ -163,7 +163,9 @@ partial line costs one small copy, and a file reporting size 0 -- `/proc` and
 other synthetic regular files do that while holding data -- is read
 incrementally), while stdin and several operands hold the read chunks until
 that buffer is assembled (about twice the input, transiently), and `-n` adds
-the exact-decimal keys. There is no external merge; a huge input can
+four int arrays indexed by line (integer end, significant integer length,
+fraction length and, when every integer part fits, its int64 value), with no
+per-line keys or strings. There is no external merge; a huge input can
 exhaust memory (the runtime exits 2). `-k`, `-t`, `-f`, `-b`, `-d`, `-i`, `-M`,
 `-h`, `-V`, `-s`, `-c`, `-C`, `-o`, `-m`, `-z`, `--parallel`, long options,
 `--help` and `--version` are absent.
@@ -173,8 +175,16 @@ byte positions in the buffer: 257 buckets (byte + 1, with 0 for the line
 terminator so a prefix sorts first), insertion sort below 20 elements, and a
 common-prefix pass that skips a shared byte run instead of paying a counting
 pass per byte; one linear pass detects already-sorted and reverse-sorted input
-and skips the sort. `-n` keeps the exact-decimal keys and the stable merge.
-Output is assembled in 64 KiB blocks and written with `writeFd`. On the CLI
+and skips the sort. `-n` parses every line once into four int arrays indexed by
+line (integer end with the sign, significant integer length, fraction length,
+and the integer part's exact int64 value when every integer part has at most
+18 significant digits) and runs a stable numeric MSD radix over line ids: the
+int64 value when it fits, otherwise the exact decimal digit sequence, with
+reversed bucket
+order inside the negative category and a fraction stage whose terminator sorts
+below `0`; a numerically equal range continues with the whole-line byte radix
+unless `-u`, which is the last-resort tie-break. Output is assembled in 64 KiB
+blocks and written with `writeFd`. On the CLI
 benchmark's 1,000,000 fixed 8-digit lines (warm cache, one core) obo `sort`
 measures about 184 ms against GNU `sort` 9.4's 250 ms and the benchmark's
 Python 604 ms; it was about 1,838 ms with the former readLine + index merge.
@@ -186,10 +196,12 @@ measured here the shared-prefix file is the one where a comparison sort with
 well, while fixed-width and small-key inputs favor the radix. Peak RSS on the
 9 MB/1,000,000-line file is about 41 MB (GNU `sort` 9.4 pinned to one core
 uses about 59 MB there, and about 137 MB unpinned with its default threads)
-and about 103 MB on the 73 MB file; `-n` is about 135 MB because of its key
-records, and remains the slow path (about 2.4 s on 1,000,000 lines) because it
-still parses two owned digit strings per line and merges with a comparator
-call per comparison.
+and about 103 MB on the 73 MB file; `-n` uses about 80-85 MB, and on the CLI
+benchmark's fixed 8-digit fixture measures 190-230 ms against GNU `sort`'s
+400-460 ms, and on our 1,000,000-line decimal and all-negative fixtures
+265-310 ms against 455-520 ms (the former key records and stable merge
+measured 2,100-3,150 ms across these fixtures). Absolute times move about
+10-15% with host load and depend on the fixture.
 
 ## eza (E0, E1 and E2)
 

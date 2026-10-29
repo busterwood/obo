@@ -177,6 +177,33 @@ FILES = {
     # boundary (both must count exactly once)
     'nlbounds': b'x' * 65535 + b'\n' + b'\n' + b'y' * 65534 + b'\n' + b'z',
     'wordbounds': b'a' * 65536 + b'b c\n' + b'd',
+    # -n edge fixtures: numerically equal lines with different text (the
+    # whole-line last-resort tie-break, reversed by -r), zero spellings where
+    # -nu must keep the first input occurrence, very long fractions and
+    # integers (past 40 digits, both key paths), a numeric line whose digits
+    # span the 64 KiB stdin read boundary, and NUL/blank bytes in numeric lines
+    'nties': (b'1 z\n1 a\n01 y\n1.0 b\n-0 A\n0 B\n00 C\n-0.0 D\n0. E\n'
+              b'-1 q\n-01 p\n-1.00 o\n'),
+    'nzero': b'-0 first\n0 second\n00 third\n0.0 fourth\n-0.0 fifth\n',
+    'nlongfrac': (b'1.' + b'0' * 40 + b'5\n1.' + b'0' * 40 + b'4\n'
+                  b'-1.' + b'9' * 50 + b'\n' + b'1' + b'0' * 60 + b'\n'
+                  b'-' + b'9' * 60 + b'\n' + b'0.' + b'0' * 45 + b'1\n'),
+    'numbig': b'9' * 70000 + b'\n1\n' + b'8' * 70000 + b'\n',
+    'nulnum': b'12\x0034\n12\n12x\n\x001\n-0\x00\n \t-7\n',
+    # 240 lines whose integer parts all fit and some lines have fraction
+    # digits, with ties through trailing zeros and zero spellings: the int64
+    # value path past its insertion cutoff, its fraction stage, and the
+    # whole-line tie-break for numerically equal ranges
+    'ndec2': b''.join((b'%d\n' % (i % 5 - 2) +
+                       b'%d.%d\n' % (i % 5 - 2, i % 10) +
+                       b'%d.%d0\n' % (i % 5 - 2, (i * 7) % 10) +
+                       b' -%d.%d\n' % (i % 5, i % 3)) for i in range(60)),
+    # 300 lines of 300-320 digit integers plus a 999- and a 1000-digit line:
+    # the exact digit path's length-decade scheme (>255 significant digits)
+    'nhuge': (b''.join((b'-' if i % 3 == 0 else b'') +
+                       (b'%d' % (i % 9 + 1)) + b'7' * (300 + (i * 7) % 21) +
+                       b'\n' for i in range(300)) +
+              b'1' + b'7' * 998 + b'\n-2' + b'8' * 999 + b'\n'),
 }
 
 SPECS = {name: Spec('file', data=data) for name, data in FILES.items()}
@@ -566,6 +593,49 @@ def sort_cases():
     add('ru_lcp', T, ['-ru', 'lcp'], fixtures=['lcp'])
     add('n_lcp', T, ['-n', 'lcp'], fixtures=['lcp'])
     add('nu_lcp', T, ['-nu', 'lcp'], fixtures=['lcp'])
+    # -n ties: whole-line last-resort (and -r reversing it), -nu keeping the
+    # first input occurrence (0/-0 spellings included), very long fractions and
+    # integers, stdin chunk boundaries, NUL bytes, multiple operands
+    add('n_nties', T, ['-n', 'nties'], fixtures=['nties'])
+    add('rn_nties', T, ['-rn', 'nties'], fixtures=['nties'])
+    add('nu_nties', T, ['-nu', 'nties'], fixtures=['nties'])
+    add('rnu_nties', T, ['-rnu', 'nties'], fixtures=['nties'])
+    add('n_nzero', T, ['-n', 'nzero'], fixtures=['nzero'])
+    add('rn_nzero', T, ['-rn', 'nzero'], fixtures=['nzero'])
+    add('nu_nzero', T, ['-nu', 'nzero'], fixtures=['nzero'])
+    add('rnu_nzero', T, ['-rnu', 'nzero'], fixtures=['nzero'])
+    add('n_nlongfrac', T, ['-n', 'nlongfrac'], fixtures=['nlongfrac'])
+    add('rn_nlongfrac', T, ['-rn', 'nlongfrac'], fixtures=['nlongfrac'])
+    add('nu_nlongfrac', T, ['-nu', 'nlongfrac'], fixtures=['nlongfrac'])
+    add('rnu_nlongfrac', T, ['-rnu', 'nlongfrac'], fixtures=['nlongfrac'])
+    add('n_numbig', T, ['-n', 'numbig'], fixtures=['numbig'])
+    add('n_numbig_stdin', T, [], stdin=FILES['numbig'])
+    add('nu_numbig_stdin', T, ['-nu'], stdin=FILES['numbig'])
+    add('n_nulnum', T, ['-n', 'nulnum'], fixtures=['nulnum'])
+    add('nu_nulnum', T, ['-nu', 'nulnum'], fixtures=['nulnum'])
+    add('rn_nulnum', T, ['-rn', 'nulnum'], fixtures=['nulnum'])
+    add('n_multi_a_multi_b', T, ['-n', 'multi_a', 'multi_b'],
+        fixtures=['multi_a', 'multi_b'])
+    add('n_noeol_multi_b', T, ['-n', 'noeol', 'multi_b'],
+        fixtures=['noeol', 'multi_b'])
+    add('nu_noeol_multi_b', T, ['-nu', 'noeol', 'multi_b'],
+        fixtures=['noeol', 'multi_b'])
+    add('n_dash_multi_a', T, ['-n', '-', 'multi_a'], stdin=b'10 z\n2 q\n',
+        fixtures=['multi_a'])
+    add('n_missing', T, ['-n', 'missing'])
+    add('n_dir', T, ['-n', 'dir'], fixtures=['dir'])
+    # more -n coverage: 50,000 lines through the int64 radix past CUTOFF; 240
+    # mixed integer/fraction lines (mode 2) with trailing-zero and zero ties;
+    # 300+ lines of 300-320 digit integers for the length-decade scheme
+    add('n_many', T, ['-n', 'many'], fixtures=['many'], slow=True)
+    add('n_ndec2', T, ['-n', 'ndec2'], fixtures=['ndec2'])
+    add('rn_ndec2', T, ['-rn', 'ndec2'], fixtures=['ndec2'])
+    add('nu_ndec2', T, ['-nu', 'ndec2'], fixtures=['ndec2'])
+    add('rnu_ndec2', T, ['-rnu', 'ndec2'], fixtures=['ndec2'])
+    add('n_nhuge', T, ['-n', 'nhuge'], fixtures=['nhuge'])
+    add('rn_nhuge', T, ['-rn', 'nhuge'], fixtures=['nhuge'])
+    add('nu_nhuge', T, ['-nu', 'nhuge'], fixtures=['nhuge'])
+    add('rnu_nhuge', T, ['-rnu', 'nhuge'], fixtures=['nhuge'])
     add('long2', T, ['long2'], fixtures=['long2'])
     add('r_long2', T, ['-r', 'long2'], fixtures=['long2'])
     add('u_long2', T, ['-u', 'long2'], fixtures=['long2'])
