@@ -1,6 +1,6 @@
 obosym 1
 abi 1
-compiler "0.2"
+compiler "0.3"
 source 0x66002f09d576072e
 dep lib "lib.obx"
 dep other "other.obx"

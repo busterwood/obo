@@ -15,6 +15,14 @@ static i64 sys3(i64 n, i64 a, i64 b, i64 c) {
     __asm__ volatile ("syscall" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c) : "rcx", "r11", "memory");
     return r;
 }
+/* Four arguments: the fourth goes in r10, which "syscall" does not take from
+ * rcx (it clobbers rcx with the return address). Only newfstatat needs this. */
+static i64 sys4(i64 n, i64 a, i64 b, i64 c, i64 d) {
+    i64 r;
+    register i64 r10 __asm__("r10") = d;
+    __asm__ volatile ("syscall" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c), "r"(r10) : "rcx", "r11", "memory");
+    return r;
+}
 static void *sys_mmap(u64 len) {
     i64 r;
     register i64 r10 __asm__("r10") = 0x22 | 0x4000; /* MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE */
@@ -95,6 +103,10 @@ static int stats;                  /* OBO_STATS=1: report memory at exit */
 static unsigned char fdstate[1024];
 static int io_fault_eintr, io_fault_short;
 static int fault_read, fault_write, fault_close;
+/* The metadata fault hook is the same kind of test-only injection: one synthetic
+ * EINTR per call kind, inert unless OBO_CHECK=1. */
+static int meta_fault_eintr;
+static int fault_dir, fault_stat, fault_lstat, fault_link;
 
 static inline u64 gidx(u64 h) { return (h - heap_start) / GRAN; }
 static inline int  is_start(u64 h) { u64 g = gidx(h); return starts[g >> 3] >> (g & 7) & 1; }
@@ -114,10 +126,12 @@ void rt_init(u64 sbase, u64 gstart, u64 gend) {
         if (starts_with(*env, "OBO_STATS=1")) stats = 1;
         if (starts_with(*env, "OBO_IO_FAULT=eintr")) io_fault_eintr = 1;
         if (starts_with(*env, "OBO_IO_FAULT=short")) io_fault_short = 1;
+        if (starts_with(*env, "OBO_META_FAULT=eintr")) meta_fault_eintr = 1;
     }
     /* the environment order is arbitrary: gate the hook after the whole loop */
-    if (!leak_check) { io_fault_eintr = 0; io_fault_short = 0; }
+    if (!leak_check) { io_fault_eintr = 0; io_fault_short = 0; meta_fault_eintr = 0; }
     if (io_fault_eintr) { fault_read = fault_write = fault_close = 1; }
+    if (meta_fault_eintr) { fault_dir = fault_stat = fault_lstat = fault_link = 1; }
     heap_start = (u64)sys_mmap(HEAP_SIZE);
     if ((i64)heap_start < 0) die("obx: cannot reserve heap\n");
     heap_top = heap_start; heap_end = heap_start + HEAP_SIZE;
@@ -640,6 +654,99 @@ u64 rt_close_fd(i64 fd, u64 descErr, u64 descOk) {
     if (tracked) fdstate[fd] = 2;
     if (r == 0 || r == -4) return ok_cell(descOk, 1);      /* EINTR: Linux already closed it */
     return err_cell(descErr, iomsg_num("cannot close fd ", fd), -r);
+}
+
+/* ---------- metadata: directories, stat and readlink ---------- */
+
+/* newfstatat's flags, and the largest directory buffer readDirFd accepts (a
+ * bigger constant is refused before the allocation, so it cannot OOM). */
+#define AT_FDCWD (-100)
+#define AT_SYMLINK_NOFOLLOW 0x100
+#define MAX_DIR_BUF 1048576
+
+/* readDirFd(fd, max, descErr, descOk): Result[?[]byte]. The checks run before
+ * the max-sized allocation in the design's order: max, its cap, fd, the table;
+ * then one getdents64 (retrying EINTR). A short buffer is data; only 0 is EOF,
+ * and EOF is nil, never an empty array. */
+u64 rt_read_dir_fd(i64 fd, i64 max, u64 descErr, u64 descOk) {
+    flush();
+    if (max <= 0) return err_cell(descErr, iomsg_lit("readDirFd needs a positive count"), 22);
+    if (max > MAX_DIR_BUF) return err_cell(descErr, iomsg_lit("readDirFd count is too large"), 22);
+    if (fd < 0) return err_cell(descErr, iomsg_num("cannot read dir fd ", fd), 9);     /* EBADF */
+    if (fd >= 0 && fd < 1024 && fdstate[fd] == 2) {
+        if (leak_check) die_num("obo: use of a closed file descriptor ", fd, 9);
+        return err_cell(descErr, iomsg_num("cannot read dir fd ", fd), 9);
+    }
+    Array *a = (Array *)rt_alloc_array(max, 4);
+    i64 r;
+    for (;;) {
+        if (fault_dir) { fault_dir = 0; r = -4; } else r = sys3(217, fd, (i64)((char *)a->data + 8), max);
+        if (r != -4) break;                                        /* EINTR retried */
+    }
+    if (r < 0) { rt_free((u64)a); return err_cell(descErr, iomsg_num("cannot read dir fd ", fd), -r); }
+    if (r == 0) { rt_free((u64)a); return ok_cell(descOk, 0); }    /* EOF is nil, never an empty array */
+    a->len = (u64)r;                                               /* whole records; the caller validates */
+    return ok_cell(descOk, (u64)a);
+}
+
+/* statPath/lstatPath share do_stat. cpath rejects empty paths and embedded NULs
+ * (EINVAL); a 4096-byte path is ENAMETOOLONG before conversion. The 144-byte
+ * struct stat is filled at the section 6.6 offsets and copied into the owned
+ * 14-int array in the design's field order; nothing of the raw struct is kept. */
+static u64 do_stat(u64 path, i64 flags, const char *what, int *fault, u64 descErr, u64 descOk) {
+    char p[4096];
+    if (slen(path) >= 4096) return err_cell(descErr, iomsg_str(what, path), 36);   /* ENAMETOOLONG */
+    if (!cpath(path, p)) return err_cell(descErr, iomsg_str(what, path), 22);      /* EINVAL */
+    u64 st[18];                                                    /* 144 bytes, as the kernel expects */
+    i64 r;
+    for (;;) {
+        if (*fault) { *fault = 0; r = -4; } else r = sys4(262, AT_FDCWD, (i64)p, (i64)st, flags);
+        if (r != -4) break;                                        /* EINTR retried */
+    }
+    if (r < 0) return err_cell(descErr, iomsg_str(what, path), -r);
+    Array *a = (Array *)rt_alloc_array(14, 1);
+    u64 *v = (u64 *)((char *)a->data + 8);
+    v[0]  = (u64)(*(unsigned int *)((char *)st + 24));             /* mode (st_mode, u32) */
+    v[1]  = (u64)(*(i64 *)((char *)st + 48));                      /* size (signed) */
+    v[2]  = (u64)(*(i64 *)((char *)st + 88));                      /* mtime seconds */
+    v[3]  = (u64)(*(i64 *)((char *)st + 96));                      /* mtime nanoseconds */
+    v[4]  = (u64)(*(unsigned int *)((char *)st + 28));             /* uid */
+    v[5]  = (u64)(*(unsigned int *)((char *)st + 32));             /* gid */
+    v[6]  = *(u64 *)((char *)st + 16);                             /* nlink */
+    v[7]  = *(u64 *)((char *)st + 8);                              /* ino */
+    v[8]  = *(u64 *)((char *)st + 0);                              /* dev */
+    v[9]  = *(u64 *)((char *)st + 40);                             /* rdev */
+    v[10] = (u64)(*(i64 *)((char *)st + 56));                      /* blksize */
+    v[11] = (u64)(*(i64 *)((char *)st + 64));                      /* blocks */
+    v[12] = (u64)(*(i64 *)((char *)st + 72));                      /* atime seconds */
+    v[13] = (u64)(*(i64 *)((char *)st + 104));                     /* ctime seconds */
+    return ok_cell(descOk, (u64)a);
+}
+u64 rt_stat_path(u64 path, u64 descErr, u64 descOk) {
+    return do_stat(path, 0, "cannot stat ", &fault_stat, descErr, descOk);
+}
+u64 rt_lstat_path(u64 path, u64 descErr, u64 descOk) {
+    return do_stat(path, AT_SYMLINK_NOFOLLOW, "cannot lstat ", &fault_lstat, descErr, descOk);
+}
+
+/* readLinkPath(path): Result[[]byte]. Raw target bytes with no NUL; the API
+ * limit is 4095 bytes, so a full 4096-byte read is ENAMETOOLONG rather than a
+ * silent truncation. A dangling target still succeeds; a non-symlink is EINVAL. */
+u64 rt_read_link(u64 path, u64 descErr, u64 descOk) {
+    char p[4096];
+    char buf[4096];
+    if (slen(path) >= 4096) return err_cell(descErr, iomsg_str("cannot readlink ", path), 36);
+    if (!cpath(path, p)) return err_cell(descErr, iomsg_str("cannot readlink ", path), 22);
+    i64 r;
+    for (;;) {
+        if (fault_link) { fault_link = 0; r = -4; } else r = sys3(89, (i64)p, (i64)buf, 4096);
+        if (r != -4) break;                                        /* EINTR retried */
+    }
+    if (r < 0) return err_cell(descErr, iomsg_str("cannot readlink ", path), -r);
+    if (r == 4096) return err_cell(descErr, iomsg_str("cannot readlink ", path), 36);  /* ENAMETOOLONG */
+    Array *a = (Array *)rt_alloc_array(r, 4);
+    memcpy((char *)a->data + 8, buf, (u64)r);
+    return ok_cell(descOk, (u64)a);                                /* an empty target is a non-nil empty array */
 }
 
 /* args(): the command line, program name first */

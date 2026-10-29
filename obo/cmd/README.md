@@ -172,3 +172,23 @@ to quote-free operand names (successful operands may contain spaces). An empty
 operand is outside the matrix: `openFile` rejects it with `EINVAL`, so ours says
 `cat: : Invalid argument` where GNU prints a quoted empty name. `SIGPIPE` keeps
 its default disposition, so `sort | head` behaves like coreutils.
+
+## Metadata (P3) and the path limit
+
+`lib/fs.obx` (P3) is the metadata layer the `eza` core (P4) will use: directory
+iteration (`fs::open`/`next`/`close`, which skips `.` and `..` like Rust's
+`read_dir`), `statArray`/`stat`/`lstat` over the runtime's 14-int stat array,
+`readlink` and the type predicates. It is a library module only; `cat`, `wc` and
+`sort` do not import it and their output is unchanged.
+
+The API is path-based: `fs::stat(lstat)`, `fs::readlink` and a tree child's
+`fs::open` take a whole path built with `paths::join(operand, name)`. `cpath`
+rejects a path of 4096 bytes or more with `ENAMETOOLONG` (36), so one joined
+path of 4096+ bytes fails where eza's `DirEntry::metadata()` (an `fstatat` on the
+directory fd) would succeed. The same design point is the race between
+`getdents64` and the later path-based stat: an entry replaced in between is
+followed by the new name. E0's exact cases keep joined paths under 4096 bytes;
+the documented future fix is `statAt(dirfd, name)`/`readlinkAt(dirfd, name)` on
+`fs::Dir.fd`, which removes both the limit and the race. There is no `getcwd`
+and no raw `syscall` builtin in P3, and `fs` does not resolve symlink targets
+itself: the caller joins `readlink`'s raw bytes against the link's directory.

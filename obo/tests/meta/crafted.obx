@@ -1,0 +1,128 @@
+// meta/crafted.obx: crafted linux_dirent64 buffers make the branches that a
+// normal filesystem never reaches testable without a special mount:
+//   * the DT_UNKNOWN lazy-lstat fallback (typeOf of lstat's mode), including a
+//     name whose lstat fails (the kind stays KIND_UNKNOWN),
+//   * d_type winning when it is known (a directory reported as DT_REG),
+//   * "." and ".." being skipped,
+//   * a reclen of 0, a reclen past the buffer and a record with no NUL inside:
+//     err("bad directory entry", EIO=5), with pos unchanged so the next call
+//     reports the same error (no infinite loop).
+// The fixture directory is argv[2]: it must hold file.txt (a regular file) and
+// sub (a directory); "absent" does not exist.
+// expect: kind file.txt 8
+// expect: kind sub 4
+// expect: kind absent 0
+// expect: dtype sub 8
+// expect: dots file.txt 8
+// expect: dots2 false
+// expect: bad 5 5
+// expect: bad 5 5
+// expect: bad 5 5
+import "fs.obx" as fs
+
+// one linux_dirent64 record: d_ino and d_off zero, d_reclen u16 at 16, d_type
+// at 18, the NUL-terminated name at 19, zero padding to an 8-byte boundary
+fn rec(name: string, dtype: byte): []byte {
+    let out = new []byte(0)
+    var reclen = 19 + len(name) + 1
+    if reclen % 8 != 0 { reclen = reclen + (8 - reclen % 8) }
+    for i in 0..16 { append(out, 0) }
+    append(out, byte(reclen & 255))
+    append(out, byte(reclen >> 8))
+    append(out, dtype)
+    for i in 0..len(name) { append(out, name[i]) }
+    append(out, 0)
+    while len(out) < reclen { append(out, 0) }
+    return out
+}
+
+// a record of `size` bytes with the reclen field set to `reclen`; with
+// `noNul`, every name byte (19..size) is 'x', so no NUL is inside the record
+fn raw(size: int, reclen: int, noNul: bool): []byte {
+    let out = new []byte(0)
+    for i in 0..size { append(out, 0) }
+    out[16] = byte(reclen & 255)
+    out[17] = byte(reclen >> 8)
+    if noNul {
+        for i in 19..size { out[i] = 'x' }
+    }
+    return out
+}
+
+fn add(mut dst: &[]byte, src: []byte) {
+    for i in 0..len(src) { append(dst, src[i]) }
+}
+
+fn makeDir(dir: string, buf: []byte): fs::Dir {
+    let used = len(buf)
+    let text = string(buf)
+    return new fs::Dir{fd: -1, path: dir, buf: buf, text: text, pos: 0, used: used, eof: true, size: 32768}
+}
+
+// one next, printed as its kind (or an error code)
+fn one(mut d: &fs::Dir, mut e: &fs::DirEntry, label: string) {
+    let n = fs::next(d, e)
+    match n {
+        ok(more) {
+            if more { print(label, " ", e.name, " "); println(int(e.kind)) } else { println(label, "2 false") }
+        }
+        err(msg, c) { println(label, " ", c) }
+    }
+}
+
+// a bad record must report EIO 5 twice: the iterator does not advance
+fn badCase(dir: string, bytes: []byte) {
+    var d = makeDir(dir, bytes)
+    var e = new fs::DirEntry{name: "", ino: 0, kind: 0}
+    let n1 = fs::next(d, e)
+    var c1 = -1
+    match n1 {
+        ok(more) { c1 = -100 }
+        err(msg, code) { c1 = code }
+    }
+    let n2 = fs::next(d, e)
+    var c2 = -1
+    match n2 {
+        ok(more) { c2 = -100 }
+        err(msg, code) { c2 = code }
+    }
+    println("bad ", c1, " ", c2)
+}
+
+fn main() {
+    let a = args()
+    let dir = a[2]
+
+    // 1. DT_UNKNOWN: lstat the entry path, typeOf the mode (or stay unknown)
+    let b1 = new []byte(0)
+    add(b1, rec("file.txt", 0))
+    add(b1, rec("sub", 0))
+    add(b1, rec("absent", 0))
+    var d1 = makeDir(dir, b1)
+    var e1 = new fs::DirEntry{name: "", ino: 0, kind: 0}
+    one(d1, e1, "kind")
+    one(d1, e1, "kind")
+    one(d1, e1, "kind")
+
+    // 2. a known d_type is used as it is, not lstatted
+    let b2 = new []byte(0)
+    add(b2, rec("sub", 8))
+    var d2 = makeDir(dir, b2)
+    var e2 = new fs::DirEntry{name: "", ino: 0, kind: 0}
+    one(d2, e2, "dtype")
+
+    // 3. "." and ".." are skipped
+    let b3 = new []byte(0)
+    add(b3, rec(".", 4))
+    add(b3, rec("..", 4))
+    add(b3, rec("file.txt", 8))
+    var d3 = makeDir(dir, b3)
+    var e3 = new fs::DirEntry{name: "", ino: 0, kind: 0}
+    one(d3, e3, "dots")
+    one(d3, e3, "dots")
+
+    // 4. malformed records: reclen 0, past the buffer, and no NUL inside
+    badCase(dir, raw(24, 0, false))
+    badCase(dir, raw(24, 40, false))
+    badCase(dir, raw(24, 24, true))
+}

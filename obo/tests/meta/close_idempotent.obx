@@ -1,0 +1,27 @@
+// meta/close_idempotent.obx: fs::close closes the borrowed fd once and is
+// idempotent afterwards: the second call is ok(false) with no syscall, and the
+// program ends with no leaked fd under OBO_CHECK=1.
+// expect: first true
+// expect: second false
+import "fs.obx" as fs
+
+fn closeTwice(dir: string): Result[bool] {
+    var d = try fs::open(dir)
+    let c1 = try fs::close(d)
+    if !c1 { return err("the first close was false", 5) }
+    let c2 = try fs::close(d)
+    if c2 { return err("the second close was true", 5) }
+    return ok(true)
+}
+
+fn main() {
+    let a = args()
+    let r = closeTwice(a[2])
+    match r {
+        ok(v) {
+            println("first true")
+            println("second false")
+        }
+        err(m, c) { println("err ", m, " ", c); exit(1) }
+    }
+}

@@ -49,6 +49,10 @@ _entry:
     slot rt_read_fd
     slot rt_write_fd
     slot rt_close_fd
+    slot rt_read_dir_fd
+    slot rt_stat_path
+    slot rt_lstat_path
+    slot rt_read_link
 
     .text
     .macro check f
@@ -93,5 +97,9 @@ check_\f:
     check rt_read_fd
     check rt_write_fd
     check rt_close_fd
+    check rt_read_dir_fd
+    check rt_stat_path
+    check rt_lstat_path
+    check rt_read_link
 
     .section .note.GNU-stack,"",@progbits

@@ -35,9 +35,9 @@ REF = os.path.abspath(os.environ.get('OBO_REF', os.path.join(FORK, 'obo')))
 SRC = os.path.join(FORK, 'src', 'obo.obo')
 LIBDIR = os.path.join(FORK, 'lib')
 # live peak, in bytes, of the port compiling itself. Lower it when memory improves; raise it only
-# for a reason recorded in FORK.md. The current size-fixed tree measures 1,636,176 bytes live and
-# 35,076,608 bytes total allocation (FORK.md, "Compiler size fixes"); the budget stays 2,000,000
-# (363,824 spare above that peak). The figure is for the current tree and varies by a few hundred
+# for a reason recorded in FORK.md. The P3 tree measures 1,642,416 bytes live and 35,253,408 bytes
+# total allocation (FORK.md, "Runtime metadata: slots 33-36"); the budget stays 2,000,000
+# (357,584 spare above that peak). The figure is for the current tree and varies by a few hundred
 # bytes with the source path. Leaks are caught separately, by port_test's leak check.
 PEAK_BUDGET = 2_000_000
 
@@ -114,17 +114,31 @@ def main():
     sys.exit(1 if failures else 0)
 
 
-def cases_of(src):
+def cases_of(src, seed=False):
     """(name, text) of every case: the programs, src itself, and the error cases.
     A program that imports modules is compiled as a module root (see the module
-    arguments in compare); there is no source injection."""
+    arguments in compare); there is no source injection.
+
+    In the seed comparison (seed=True) the compiler-feature cases are skipped
+    while the seed predates them: the 0.2 seed rejects tests/run/meta.obx and
+    tests/errors/meta.obx (whose cases use statPath and friends) while the port
+    compiles them. seed is set only when the reference is the seed AND its
+    `--version` is below 0.3 (see seed_needs_skip), so a promoted 0.3 seed
+    compares the whole corpus. The default comparison (obo and the port from the
+    same source) always covers them. This is the only seed-mode exclusion
+    besides the module trees."""
     cases = []
-    for f in sorted(glob.glob(os.path.join(FORK, 'tests', 'run', '*.obx')) + glob.glob(os.path.join(FORK, 'examples', '*.obx')) +
-                    glob.glob(os.path.join(FORK, 'bench', '*.obx')) + glob.glob(os.path.join(ROOT, 'tests', 'run', '*.obx')) +
-                    glob.glob(os.path.join(ROOT, 'examples', '*.obx')) + [src]):
+    files = sorted(glob.glob(os.path.join(FORK, 'tests', 'run', '*.obx')) + glob.glob(os.path.join(FORK, 'examples', '*.obx')) +
+                   glob.glob(os.path.join(FORK, 'bench', '*.obx')) + glob.glob(os.path.join(ROOT, 'tests', 'run', '*.obx')) +
+                   glob.glob(os.path.join(ROOT, 'examples', '*.obx')) + [src])
+    for f in files:
+        if seed and f in SEED_SKIP:
+            continue
         text = open(f, 'rb').read()
         cases.append((os.path.relpath(f, ROOT), text))
     for f in sorted(glob.glob(os.path.join(FORK, 'tests', 'errors', '*.obx')) + glob.glob(os.path.join(ROOT, 'tests', 'errors', '*.obx'))):
+        if seed and f in SEED_SKIP:
+            continue
         for name, text, _, _ in run.error_cases(f):
             cases.append((name, text.encode()))
     return cases
@@ -144,6 +158,40 @@ def cases_of(src):
 MODDIR = os.path.join(FORK, 'tests', 'modules')
 SEED_REF = os.path.realpath(os.path.join(FORK, 'seed', 'obo'))
 REF_TREE = {}
+
+# The P3 compiler-feature cases use the metadata builtins, which arrived in
+# OBO_VERSION 0.3. A seed older than 0.3 cannot compile these files, so the seed
+# comparison skips them; a promoted 0.3 seed has no such limit and the whole
+# corpus is compared. The decision reads `REF --version`, cached per executable,
+# so it follows the seed automatically across the P3 promote (no edit needed).
+SEED_SKIP = {os.path.join(FORK, 'tests', 'run', 'meta.obx'),
+             os.path.join(FORK, 'tests', 'errors', 'meta.obx')}
+SEED_METADATA_VERSION = (0, 3)
+_SEED_VERSIONS = {}
+
+
+def ref_version(ref):
+    """(major, minor) from `REF --version`, or None if it cannot be read."""
+    key = os.path.realpath(ref)
+    if key in _SEED_VERSIONS:
+        return _SEED_VERSIONS[key]
+    v = None
+    try:
+        p = subprocess.run([ref, '--version'], capture_output=True, text=True, timeout=60)
+        if p.returncode == 0:
+            m = re.match(r'obo\s+(\d+)\.(\d+)', p.stdout.strip())
+            if m:
+                v = (int(m.group(1)), int(m.group(2)))
+    except (OSError, subprocess.TimeoutExpired):
+        v = None
+    _SEED_VERSIONS[key] = v
+    return v
+
+
+def seed_needs_skip():
+    """True while the promoted seed predates the metadata builtins (pre-0.3)."""
+    v = ref_version(REF)
+    return v is not None and v < SEED_METADATA_VERSION
 
 
 def tree_cases():
@@ -568,7 +616,7 @@ def compare(tmp, src=SRC, quick=False, workers=None):
     if quick and failures:
         return lines, failures, peak
     modules = os.path.realpath(REF) != SEED_REF
-    cases = cases_of(src)
+    cases = cases_of(src, seed=not modules and seed_needs_skip())
 
     def imports_module(text):
         return any(line.startswith(b'import "') for line in text.splitlines())

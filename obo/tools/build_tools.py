@@ -27,7 +27,13 @@ message, with absolute paths under ROOT shortened to repo-relative names (so an
 error in a tool names cmd/<tool>.obx at its real line); the builder exits 2.
 The phase-2 probe compiles (does not run) a tiny well-typed program that names
 every incremental-I/O builtin; a failure means phase 2 (openFile, readFd,
-writeFd, closeFile, stdin, stdout, stderr and lib/io.obx) is missing.
+writeFd, closeFile, stdin, stdout, stderr and lib/io.obx) is missing. The
+metadata probe (P3) builds and RUNS a tiny program that calls statPath on a file
+the builder creates and checks its size and type; a compile failure means the
+compiler is old (the name is resolved at compile time), and a run failure,
+including a trapped or leaking run under OBO_CHECK=1, means runtime_text.bin is
+old (the slot jumped to is wrong or absent). A compile-only metadata probe
+would not catch the old runtime, so this one runs a slot.
 
 tests/tools.py imports build() to make its private temporary build, so the build
 rule lives in exactly one place.
@@ -40,7 +46,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../obo
 TOOLS = ('cat', 'wc', 'sort')
 SRCDIR = 'cmd'                       # the tool roots live in obo/cmd/
-LIB_MODULES = ('io.obx', 'strings.obx', 'fmt.obx', 'errors.obx')
+LIB_MODULES = ('io.obx', 'strings.obx', 'fmt.obx', 'errors.obx', 'fs.obx')
 
 PROBE = '''// phase-2 builtin probe: compile only, never run
 fn main() {
@@ -78,6 +84,23 @@ fn main() {
 
 class BuildError(Exception):
     """A setup or compile failure; the caller reports it and exits 2."""
+
+
+META_PROBE = '''// phase-3 metadata probe: built and RUN (one slot, so an old runtime shows)
+fn main() {
+    let a = args()
+    let r = statPath(a[1])
+    match r {
+        ok(f) {
+            if len(f) != 14 { println("metadata probe: field count ", len(f)); exit(1) }
+            if f[0] & 0xF000 != 0x8000 { println("metadata probe: not a regular file"); exit(1) }
+            if f[1] != 3 { println("metadata probe: size ", f[1]); exit(1) }
+            println("ok")
+        }
+        err(m, c) { println("metadata probe: ", m, " (", c, ")"); exit(1) }
+    }
+}
+'''
 
 
 def _read(path):
@@ -132,6 +155,44 @@ def probe(obo, rt, out):
             f"to compile: {first}")
 
 
+def probe_meta(obo, rt, out):
+    """Build and run the metadata probe: one statPath slot, checked on a file
+    this function creates. BuildError if the compiler or the runtime is old."""
+    os.makedirs(out, exist_ok=True)
+    symdir = _symdir(out)
+    src = os.path.join(out, '.meta_probe.obo')
+    exe = os.path.join(out, '.meta_probe')
+    target = os.path.join(out, '.meta_probe_file')
+    with open(src, 'w', encoding='utf-8', newline='') as f:
+        f.write(META_PROBE)
+    with open(target, 'wb') as f:
+        f.write(b'abc')
+    try:
+        rc, _, err = _compile(obo, src, exe, rt, symdir)
+        if rc != 0:
+            first = err.strip().splitlines()[0] if err.strip() else f"exit {rc}"
+            raise BuildError(
+                "phase 3 (metadata) is a prerequisite: the builtin probe failed "
+                f"to compile: {first}")
+        try:
+            p = subprocess.run([exe, target], capture_output=True, text=True,
+                               timeout=60, env=dict(os.environ, OBO_CHECK='1'))
+        except subprocess.TimeoutExpired:
+            raise BuildError("phase 3 (metadata) is a prerequisite: the builtin probe timed out")
+        if p.returncode != 0 or p.stdout != 'ok\n':
+            detail = (p.stderr or p.stdout).strip().splitlines()
+            first = detail[0] if detail else f"exit {p.returncode}"
+            raise BuildError(
+                "phase 3 (metadata) is a prerequisite: the builtin probe failed "
+                f"to run (an old runtime_text.bin?): {first}")
+    finally:
+        for p in (src, exe, target):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
+
 def build(names, out, obo, rt):
     """Build the named tools into out; return their absolute paths.
 
@@ -159,6 +220,7 @@ def build(names, out, obo, rt):
     os.makedirs(out, exist_ok=True)
     symdir = _symdir(out)
     probe(obo, rt, out)
+    probe_meta(obo, rt, out)
 
     built = []
     for name in names:

@@ -42,7 +42,7 @@ symbol directory under its output (`build/tools/sym` for `make tools`), created
 by the builder. Concurrent builds must use distinct output directories; a shared
 output has one symbol directory and one probe name.
 The tools live in `cmd/`, and their libraries are source modules under `lib/`:
-`strings`, `paths`, `sort`, `time`, `cli`, `io`, `fmt` and `errors`. `cat`,
+`strings`, `paths`, `sort`, `time`, `cli`, `io`, `fmt`, `errors` and `fs`. `cat`,
 `wc` and `sort` import only what they use (`io`/`fmt`/`errors`, plus `strings`
 for `wc` and `sort`); `fmt` owns the digit and padding helpers, and `errors`
 owns the errno text and the eza-shaped exit constants. The exact subset, message
@@ -58,7 +58,7 @@ and error case byte-for-byte as the first obo compiler did, and compiles itself 
 fixed point. Its stage test now compares behaviour (same errors, same output when run),
 so code generation can improve. Compiling
 its own source it peaked at 1.5 MB resident at the earlier stage (live peak now
-1,636,176 bytes on a 382,329-byte source; the 421,889-byte compiler takes
+1,642,416 bytes on a 384,760-byte source; the 421,889-byte compiler takes
 0.11 s; see Current status), against 2.5 MB for the same logic on a tuned
 collector and 1.9 MB on an
 aggressive one. The larger source and its extra checks account for the wall time.
@@ -69,42 +69,48 @@ Python compiler before it did.
 ## Current status (29 October 2026)
 
 The ownership compiler is merged and self-hosting. The size-fixed compiler is
-the promoted seed: `obo/seed/obo` and `obo/obo` are both 421,889 bytes (sha256
-`55dab101…`), and `make` rebuilds the same binary, so the compiler is an exact
-fixed point (`seed` == `obo` == stage 2 == stage 3). It trims the runtime data
-segment and uses `leave; ret` epilogues. `Result[T]`/`try` and incremental I/O are done
+the promoted seed: `obo/seed/obo` is 421,889 bytes (sha256 `55dab101…`), and
+`make` rebuilds `obo` to the same size from the current source (sha256
+`4892cea9…` on this P3 branch). It trims the runtime data segment and uses
+`leave; ret` epilogues. `Result[T]`/`try` and incremental I/O are done
 (merged and seeded); modules are done in both stages (source imports and
 `.sym`/`--check`); the first command-line tools (`cat`, `wc`, `sort`) and their
-GNU differential gate are done and merged, with no compiler, runtime or seed
-change from that work.
+GNU differential gate are done and merged. P3 adds the runtime metadata
+builtins (`readDirFd`, `statPath`, `lstatPath`, `readLinkPath`), `lib/fs.obx`
+and `OBO_VERSION` 0.3; the 0.3 compiler already recomputes itself to the same
+421,889-byte binary (`obo` == stage 2 == stage 3, checked with `cmp`), and the
+seed is promoted once after review.
 
 | Metric | Value |
 |---|---:|
-| Compiler source | 10,448 lines, 382,329 bytes |
-| Compiler built by the seed (`obo`) | 421,889 bytes (sha256 `55dab101…`) |
-| Next-stage compiler (stage 2 == stage 3) | 421,889 bytes (same binary) |
-| Promoted seed | 421,889 bytes (sha256 `55dab101…`) |
-| Self-compile wall time | 0.11 s (5 runs; median 0.11 s) |
-| Self-compile live peak | 1,636,176 bytes |
-| Total allocated | 35,076,608 bytes |
-| Maximum resident set | 2,860 KB (5 runs) |
-| Live-memory budget | 2,000,000 bytes (363,824 spare) |
-| obo suite | 1,130 tests; 527/549 mutants caught + 22 equivalent; 27 runtime/library; 495 port; 27 symbol-file tests; 200 fuzz mutations |
+| Compiler source | 10,492 lines, 384,760 bytes |
+| Compiler built by the seed (`obo`, P3 source, `--version` 0.3) | 421,889 bytes (sha256 `4892cea9…`) |
+| Stage 2 == stage 3 | 421,889 bytes, identical to the seed-built `obo` (checked with `cmp`) |
+| Promoted seed (pre-P3, `--version` 0.2) | 421,889 bytes (sha256 `55dab101…`) |
+| Self-compile wall time | 0.11 s (main-tree median; 0.18-0.20 s on this branch's loaded review host) |
+| Self-compile live peak | 1,642,416 bytes |
+| Total allocated | 35,253,408 bytes |
+| Maximum resident set | 2,972 KB (5 runs on this branch) |
+| Live-memory budget | 2,000,000 bytes (357,584 spare) |
+| obo suite | 1,147 tests; 527/549 mutants caught + 22 equivalent; 27 runtime/library; 495 port; 27 symbol-file tests; 200 fuzz mutations; 27 metadata checks; 39/43 metadata mutants caught + 4 equivalent |
 | Tools differential gate | 199 checks (191 matrix + 8 serial) vs GNU coreutils 9.4; 2 memory cases (module roots) |
 | Tool binaries | cat 40,961; wc 53,249; sort 53,249 bytes (static, runtime included) |
 | Minimal static executable | 28,673 bytes (runtime included) |
 
 Live peak varies by a few hundred bytes with the source path and total
-allocation by about 1.9 KB; the table keeps the main-tree gate values, and the
-`port_compare` gate in this worktree measures 1,636,336 live and 35,078,496
-allocated (both far under the 2,000,000-byte budget). The tools work did not
+allocation by about 1.9 KB. The table records the figures measured on this
+branch (wall time and RSS on this review host); the `port_compare` gate here
+measures 1,642,416 live and 35,253,408 allocated, both far under the
+2,000,000-byte budget. P3's four builtin
+branches raised the peak by 6,240 bytes from 1,636,176, well inside the cut
+order of design section 6.8, so no slot was cut. The tools work did not
 change the compiler, runtime or seed; their runtime is included in the tool
-binary sizes above. Whole modules are compiled into each tool, so the figures
-track the imported module set: the pre-P1 tree (`265564c`) measured cat 36,865 /
-wc 40,961 / sort 45,057, the P1+P2a base (`ec244e0`) measured 49,153 / 49,153 /
-53,249, and this P2 tree measures 40,961 / 53,249 / 53,249. P2b's net effect on
-that base is cat -8,192, wc +4,096, sort 0, with byte-identical observable
-output. The old
+binary sizes above (P3 leaves them unchanged). Whole modules are compiled into
+each tool, so the figures track the imported module set: the pre-P1 tree
+(`265564c`) measured cat 36,865 / wc 40,961 / sort 45,057, the P1+P2a base
+(`ec244e0`) measured 49,153 / 49,153 / 53,249, and this P2b+P3 tree measures
+40,961 / 53,249 / 53,249. P2b's net effect on that base is cat -8,192,
+wc +4,096, sort 0, with byte-identical observable output. The old
 493,280-byte compiler and seed, tool binaries 108,256/108,256/112,352, and the
 earlier 90,848-byte minimal figure are historical. The
 minimal executable measured in this tree before the fix was 95,968 bytes (the
@@ -120,11 +126,11 @@ is not like for like; the memory result is the point: about 1.24 MB live against
 
 The earlier 12.1 MB allocation and 30 ms figures in "Direction" describe the smaller
 pre-Result, pre-I/O compiler. The source has grown from 4,552 lines at that stage to
-10,448; total allocation has grown with it, while the live peak stays within the 2 MB
+10,492; total allocation has grown with it, while the live peak stays within the 2 MB
 budget (the Stage 1 module context raised it from 1,244,480 bytes at the Phase 3
 merge to 1,364,240; Stage 2's symbol-file writer and reader raised it to 1,634,720,
-an increase of 270,480 bytes; the size fixes measure 1,636,176, still 363,824 bytes
-under the budget).
+an increase of 270,480 bytes; the size fixes measure 1,636,176, and P3's metadata
+builtins 1,642,416, still 357,584 bytes under the budget).
 
 ### Toward command-line tools
 
@@ -139,7 +145,7 @@ coreutils-shaped `cat`, `wc` and `sort`; then `eza` (the maintained exa fork), `
 | 2. Incremental I/O: `openFile`/`readFd`/`writeFd`/`closeFile`, standard fds, `Reader`/`Writer` | done |
 | 3. `cat`, `wc`, `sort` and the GNU differential gate | done |
 | 4. Multiple modules | done: Stage 1 source imports, Stage 2 `.sym`/`--check`; the tools and their libraries are module roots |
-| 5. Stdlib modules and the `eza` core | in progress: the P1/P2 stdlib modules are in `lib/`; the `eza` core follows P3 |
+| 5. Stdlib modules and the `eza` core | in progress: the P1/P2 modules and P3's `fs` are in `lib/`; the `eza` core (P4) follows |
 | 6. Methods, interfaces and lambdas | planned |
 | 7. Peephole/optimizer audit | evidence-gated |
 | 8. More tools: `fd`, `hexyl`, `tokei`, `jq` | later |
@@ -287,6 +293,7 @@ through a handle) and over the globals `code` and `ownedLocals`; this change did
 | `obo/cmd/` | the first tools: `cat`, `wc`, `sort`, with `README.md` |
 | `obo/tests/` | obo's suite, mutants, the I/O gates and the tools differential gate |
 | `obo/tests/io_test.py` | the runtime and streaming-I/O gates |
+| `obo/tests/meta_test.py` | the metadata runtime and the `fs` module |
 | `obo/tests/elf_test.py` | the emitted image's runtime-data segment |
 | `obo/tests/tools.py` | the tools against GNU coreutils, with models and goldens |
 | `obo/tests/tools/` | recorded GNU/own goldens for the tools gate |
@@ -304,6 +311,8 @@ cd obo && python3 tests/elf_test.py      # the image: trimmed runtime-data segme
 cd obo && python3 tests/io_test.py --rt --programs --tools  # I/O runtime and programs
 cd obo && python3 tests/mutate_fork.py   # obo's mutants
 cd obo && python3 tests/mutate_io.py     # runtime/library mutants
+cd obo && python3 tests/meta_test.py     # the metadata runtime and fs module
+cd obo && python3 tests/mutate_meta.py   # metadata runtime/entry.S and compiler mutants
 cd obo && python3 tests/port_test.py     # the port: tokens and encoder, against obo
 cd obo && python3 tests/port_compare.py  # the port, stage B (everything), with the memory budget
 cd obo && python3 tests/mutate_port.py   # the port's mutants
@@ -315,7 +324,7 @@ cd obo && python3 tests/tools.py --memory              # the two pinned tool mem
 cd obo && python3 bench/bench.py         # memory and time against the collector
 cd obo && ./obo --deps tests/modules/run/basic/main.obx -I tests/modules/run/basic  # dependencies first
 cd obo && mkdir -p /tmp/syms && ./obo --check src/obo.obo --sym-dir /tmp/syms        # check without an executable
-cd obo && ./obo --version                # obo 0.2 sym-format 1 abi 1
+cd obo && ./obo --version                # obo 0.3 sym-format 1 abi 1
 cd obo && ./obo --reemit-sym /tmp/syms/obo.sym   # canonical re-emission (test hook)
 # history: cd obx && make && ./run_tests.sh
 ```
@@ -420,7 +429,7 @@ Implemented:
   Dependencies compile first into one image, initialize once and free their own
   globals; a headerless root is `_root`.
 - Symbol files (`obo/LANGUAGE.md`, section 6): each module with a header writes a
-  text `Name.sym` (format `obosym 1`, ABI 1, compiler `0.2`, FNV-1a source,
+  text `Name.sym` (format `obosym 1`, ABI 1, compiler `0.3`, FNV-1a source,
   interface and dependency-interface hashes); importers read and validate it, and
   `--check SOURCE [--sym-dir DIR]` checks a module against symbol files alone,
   including source-less dependencies. `--emit-sym` writes a single-file root's

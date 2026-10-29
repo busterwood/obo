@@ -1,0 +1,15 @@
+// meta/missing_close.obx: the dedicated bad case. The Dir is opened and never
+// closed (it goes out of scope still holding fd >= 0), so under OBO_CHECK=1 the
+// runtime's fd table reports one leaked descriptor and rt_finish exits 8. The
+// normal fs cases never do this.
+// expect: opened
+import "fs.obx" as fs
+
+fn main() {
+    let a = args()
+    let o = fs::open(a[2])
+    match o {
+        ok(d) { println("opened") }
+        err(m, c) { println("open err ", m, " ", c); exit(1) }
+    }
+}
