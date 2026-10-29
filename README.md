@@ -25,7 +25,7 @@ borrowed references and run-time-checked handles, with no garbage collector. On 
 benchmarks it uses 2 to 6 times less memory than even an aggressively tuned
 collector, at similar speed, with small changes to source code. It now also has
 its first command-line tools, `cat`, `wc` and `sort`, written in obo in
-`obo/programs/` and built by `make tools`; a separate differential gate
+`obo/cmd/` and built by `make tools`; a separate differential gate
 (`obo/tests/tools.py`) compares them with GNU coreutils, with Python models and
 recorded goldens as the fallback. Modules are now implemented in both stages:
 source imports and exports (Stage 1: `module`, `import "Name.obx" [as alias]`,
@@ -34,16 +34,16 @@ source imports and exports (Stage 1: `module`, `import "Name.obx" [as alias]`,
 (Stage 2). A full build still compiles every module body from source; `--check`
 checks a module against its dependencies' symbol files, including dependencies
 without sources. The tools are now module roots: each source in
-`obo/programs/` imports `../lib/io.obx` as `io` and
+`obo/cmd/` imports `../lib/io.obx` as `io` and
 `../lib/strings.obx` as `strings`, and `obo/tools/build_tools.py` compiles it
 directly with the ordinary compiler; nothing is concatenated. Each build gets a
 symbol directory under its output (`build/tools/sym` for `make tools`), created
 by the builder. Concurrent builds must use distinct output directories; a shared
 output has one symbol directory and one probe name.
-The tools still live in `programs/`, and `io::writePadded` stays in the I/O
-module for this migration; a wider stdlib split (a `fmt` module, `cmd/`) is
-later (recorded in `obo/FORK.md`). The exact subset, message forms and caveats
-are in `obo/LANGUAGE.md` section 6 and `obo/programs/README.md`.
+The tools live in `cmd/`, and `io::writePadded` stays in the I/O
+module for this migration; the wider stdlib split (a `fmt` module) is
+later (recorded in `obo/FORK.md`). The exact subset, message forms and
+caveats are in `obo/LANGUAGE.md` section 6 and `obo/cmd/README.md`.
 
 **obx** was the original garbage-collected dialect and the compiler obo grew from.
 It is kept as the historical reference; the "History: mainline obx" section below
@@ -63,7 +63,7 @@ aggressive one. The larger source and its extra checks account for the wall time
 **obo is the language.** obx remains the historical reference it grew from, as the
 Python compiler before it did.
 
-## Current status (28 October 2026)
+## Current status (29 October 2026)
 
 The ownership compiler is merged and self-hosting. The size-fixed compiler is
 the promoted seed: `obo/seed/obo` and `obo/obo` are both 421,889 bytes (sha256
@@ -273,7 +273,7 @@ through a handle) and over the globals `code` and `ownedLocals`; this change did
 | `obo/src/obo.obo` | obo's compiler, in obo, built by `obo/seed/obo` (promote with `make promote`) |
 | `obo/seed/obo` | the trusted previous stage |
 | `obo/lib/` | the source modules `io.obx` (buffered `Reader`/`Writer`, `writePadded`) and `strings.obx` (byte helpers) |
-| `obo/programs/` | the first tools: `cat`, `wc`, `sort`, with `README.md` |
+| `obo/cmd/` | the first tools: `cat`, `wc`, `sort`, with `README.md` |
 | `obo/tests/` | obo's suite, mutants, the I/O gates and the tools differential gate |
 | `obo/tests/io_test.py` | the runtime and streaming-I/O gates |
 | `obo/tests/elf_test.py` | the emitted image's runtime-data segment |

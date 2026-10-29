@@ -4,7 +4,7 @@
 // `io` and lib/strings.obx as `strings`, and every library name is qualified.
 // The subset is deliberate: -k, -t, -f, -b, -d, -i, -M, -h, -V, -s, -c,
 // -C, -o, -m, -z, --parallel, long options, --help and --version are unsupported
-// (see programs/README.md). The whole input is read before anything is written:
+// (see cmd/README.md). The whole input is read before anything is written:
 // an open or read error prints one message and exits 2 with no stdout.
 //
 // Input rules: each operand is split on newlines by readLine; the final partial

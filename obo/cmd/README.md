@@ -20,8 +20,8 @@ python3 tests/tools.py --memory
 The library modules are `lib/io.obx` (`Reader`, `Writer`, the buffered
 functions and `writePadded`) and `lib/strings.obx` (byte classification,
 `cmpBytes`, `errText`, `digits`, `appendPadded`). They stay in `lib/`, the tools
-stay in `programs/`, and `writePadded` stays in `io` for this migration; the
-wider stdlib split (a `fmt` module and a `cmd/` directory) is a later change.
+live in `cmd/`, and `writePadded` stays in `io` for this migration; the wider
+stdlib split (a `fmt` module) is a later change.
 The test programs `tests/run/io_reader.obx`, `tests/run/io_writer.obx` and
 `tests/lib/*.obx` import the same modules and are compiled with `-I lib`.
 
