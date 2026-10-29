@@ -259,7 +259,7 @@ def main(argv=None):
         print(f"build_tools.py: {e}", file=sys.stderr)
         return 2
     for exe in built:
-        print(f"built {exe}")
+        print(f"built {exe} ({os.path.getsize(exe):,} bytes)")
     return 0
 
 

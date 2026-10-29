@@ -75,15 +75,16 @@ runtime binaries that `make -C obo obo` normally produces (gitignored).
 
 ## Sample output
 
-One recorded run on the host named in the header, at commit `e37edc8` (the
-documentation commit after it changes no timings). On that host the pinned eza
+One recorded run on the host named in the header, at `main` commit `06fa982`
+(the merge of the measured tree; the documentation and build-output changes
+after it do not affect timings). On that host the pinned eza
 binary was passed with `--eza /path/to/eza`; nothing in the suite knows that
 path:
 
 ```text
 obo CLI benchmark suite (on-demand; NOT a gate, not run by CI)
 repo:      /path/to/checkout
-git:       bench-sortn @ e37edc8
+git:       main @ 06fa982
 compiler:  obo 0.5 sym-format 1 abi 1
 python:    Python 3.12.3  (/usr/bin/python3)
 cpu:       AMD Ryzen 7 8745HS w/ Radeon 780M Graphics
@@ -96,50 +97,50 @@ env:       LC_ALL=C LANG=C TZ=UTC; OBO_*/OBX_*/PYTHON*/POSIXLY_CORRECT unset; ti
 implementation                       median     ratio
 
 process startup (hello; 40 runs per repetition)
-  obo hello (static binary)           0.21 ms     1.00x
-  python3 -c pass                     11.4 ms    55.16x
-  python3 -c print("hi")              11.2 ms    54.25x
+  obo hello (static binary)           0.20 ms     1.00x
+  python3 -c pass                     11.0 ms    54.60x
+  python3 -c print("hi")              11.1 ms    54.66x
 
 fib(32) recursive
-  obo fib                             10.1 ms     1.00x
-  python3 fib.py                     208.7 ms    20.68x
+  obo fib                             10.0 ms     1.00x
+  python3 fib.py                     206.4 ms    20.57x
 
 sum of integers below 100,000,000 (explicit loop)
-  obo loopsum                         22.6 ms     1.00x
-  python3 loopsum.py                 7,816 ms   346.49x
+  obo loopsum                         21.8 ms     1.00x
+  python3 loopsum.py                 7,343 ms   337.01x
 
 sum(range(100,000,000)) (reference; a different algorithm)
-  python3 sum(range)                 893.5 ms    39.61x
+  python3 sum(range)                 881.3 ms    40.45x
 
 sieve of Eratosthenes <= 10,000,000
-  obo sieve                          122.4 ms     1.00x
-  python3 sieve.py                   2,168 ms    17.70x
+  obo sieve                          127.4 ms     1.00x
+  python3 sieve.py                   2,474 ms    19.43x
 
 wc -l on 110,000,000 B
-  obo wc -l                           78.1 ms     1.00x
-  python3 wc_lines.py                 69.7 ms     0.89x
-  GNU wc -l (ref)                     11.1 ms     0.14x
+  obo wc -l                           79.7 ms     1.00x
+  python3 wc_lines.py                 70.1 ms     0.88x
+  GNU wc -l (ref)                     11.3 ms     0.14x
 
 wc -lwc on 110,000,000 B
-  obo wc -lwc                        123.2 ms     1.00x
-  python3 wc_full.py                 443.8 ms     3.60x
-  GNU wc -lwc (ref)                  987.6 ms     8.01x
+  obo wc -lwc                        124.8 ms     1.00x
+  python3 wc_full.py                 454.9 ms     3.65x
+  GNU wc -lwc (ref)                  972.0 ms     7.79x
 
 sort 1,000,000 lines
-  obo sort                           146.5 ms     1.00x
-  python3 sort.py                    542.6 ms     3.70x
-  GNU sort (ref)                     237.1 ms     1.62x
+  obo sort                           158.7 ms     1.00x
+  python3 sort.py                    545.3 ms     3.44x
+  GNU sort (ref)                     233.6 ms     1.47x
 
 sort -n 1,000,000 lines (numeric order)
-  obo sort -n                        192.8 ms     1.00x
-  GNU sort -n (ref)                  405.6 ms     2.10x
-  python3 sorted(key=int) (ref)      480.1 ms     2.49x
+  obo sort -n                        197.3 ms     1.00x
+  GNU sort -n (ref)                  398.7 ms     2.02x
+  python3 sorted(key=int) (ref)      477.9 ms     2.42x
 
 eza 10,000 names
   obo eza                             27.8 ms     1.00x
-  python3 listdir + sort              15.6 ms     0.56x
-  GNU ls -1 (ref)                     6.20 ms     0.22x
-  pinned eza v0.23.3 (ref)            55.9 ms     2.01x
+  python3 listdir + sort              15.9 ms     0.57x
+  GNU ls -1 (ref)                     6.49 ms     0.23x
+  pinned eza v0.23.3 (ref)            57.0 ms     2.05x
 
 binary sizes:
   hello                28,673 B
@@ -151,7 +152,7 @@ binary sizes:
   sort (tool)          69,633 B
   eza (tool)          212,993 B
 
-total: 79.1 s on this host; the numbers are host-dependent.
+total: 78.9 s on this host; the numbers are host-dependent.
 ```
 
 `--quick` changes the workload sizes as well as the repetition counts, so its
@@ -221,8 +222,8 @@ loop, a sieve to 1,000,000, an 11,000,000-byte text file, 100,000 sort lines and
   isolates the numeric key path, not a different result. `sort_n.py` is a
   plain-integer reference (`sorted(key=int)`), kept only when byte-identical
   and skipped with a note otherwise. obo's `sort -n` uses a stable numeric
-  radix sort and beats GNU `sort -n` on this fixture (about 193 ms against
-  406 ms in the recorded run); that is one fixture, not a general claim.
+  radix sort and beats GNU `sort -n` on this fixture (about 197 ms against
+  399 ms in the recorded run); that is one fixture, not a general claim.
 * **`sum(range(n))` is a reference, not an equivalent.** It is Python's
   C-level builtin and is labeled as a different algorithm; it is in the table to
   show what the same arithmetic costs without a Python-level loop.
@@ -257,11 +258,12 @@ loop, a sieve to 1,000,000, an 11,000,000-byte text file, 100,000 sort lines and
 
 The repo's case discovery globs only the top level: `obo/tests/port_compare.py`
 and `obo/tests/port_test.py` use `obo/bench/*.obx`, which does not recurse into
-`obo/bench/cli/`. Verified in the `bench-sortn` worktree on main `3496032` with
-the new files present:
+`obo/bench/cli/`. Verified on the final tree (`main` `06fa982` plus this
+documentation commit) with the new files present:
 
 * `python3 obo/tests/port_compare.py` — `stage B: 1182 of 1182 behave the same`
-  (exit 0), and `cases_of()` lists none of the files in this directory.
+  (exit 0), `OBO_REF=obo/seed/obo` — `stage B: 1060 of 1060 behave the same`,
+  and `cases_of()` lists none of the files in this directory.
 * `python3 obo/tests/doc_check.py` — `48 examples, 0 problems` (this directory
   adds no `obo/LANGUAGE.md` examples; run for completeness).
 
