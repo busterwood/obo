@@ -59,7 +59,7 @@ and error case byte-for-byte as the first obo compiler did, and compiles itself 
 fixed point. Its stage test now compares behaviour (same errors, same output when run),
 so code generation can improve. Compiling
 its own source it peaked at 1.5 MB resident at the earlier stage (live peak now
-1,642,416 bytes on a 384,760-byte source; the 421,889-byte compiler takes
+1,645,424 bytes on a 385,978-byte source; the 425,985-byte compiler takes
 0.11 s; see Current status), against 2.5 MB for the same logic on a tuned
 collector and 1.9 MB on an
 aggressive one. The larger source and its extra checks account for the wall time.
@@ -69,31 +69,34 @@ Python compiler before it did.
 
 ## Current status (29 October 2026)
 
-The ownership compiler is merged and self-hosting. The size-fixed compiler is
-the promoted seed: `obo/seed/obo` is 421,889 bytes (sha256 `4892cea9…`,
-`--version` 0.3), and `make` rebuilds `obo` to the identical binary from the
-current source (the earlier pre-P3 seed was 0.2, sha256 `55dab101…`). It
-trims the runtime data segment and uses `leave; ret` epilogues. `Result[T]`/`try` and incremental I/O are done
+The ownership compiler is merged and self-hosting. The promoted seed is the P3
+compiler: `obo/seed/obo` is 421,889 bytes (sha256 `4892cea9…`, `--version`
+0.3), and `make` rebuilds `obo` from the current source with it (425,985 bytes,
+sha256 `d9dc0e93…`, on this P5a branch). It trims the runtime data segment and
+uses `leave; ret` epilogues. `Result[T]`/`try` and incremental I/O are done
 (merged and seeded); modules are done in both stages (source imports and
 `.sym`/`--check`); the first command-line tools (`cat`, `wc`, `sort`) and their
-GNU differential gate are done and merged. P3 adds the runtime metadata
+GNU differential gate are done and merged. P3 added the runtime metadata
 builtins (`readDirFd`, `statPath`, `lstatPath`, `readLinkPath`), `lib/fs.obx`
-and `OBO_VERSION` 0.3; the 0.3 compiler recomputes itself to the same
-421,889-byte binary (`seed/obo` == `obo` == stage 2 == stage 3, checked with
-`cmp`), and the seed was promoted at `e8703b2`.
+and `OBO_VERSION` 0.3, and its seed was promoted. P4 added the working `eza` E0
+(`cmd/eza.obx`, 272/272 non-memory differential cases against the pinned eza
+0.23.3) with no compiler change. P5a adds the environment builtins (`isatty`,
+`getenv`), `lib/env.obx`, `io::isTty` and `OBO_VERSION` 0.4; the 0.4 compiler
+recomputes itself to the same 425,985-byte binary (`obo` == stage 2 == stage 3,
+checked with `cmp`), and the seed is promoted once after review.
 
 | Metric | Value |
 |---|---:|
-| Compiler source | 10,492 lines, 384,760 bytes |
-| Compiler built by the seed (`obo`, P3 source, `--version` 0.3) | 421,889 bytes (sha256 `4892cea9…`) |
-| Stage 2 == stage 3 | 421,889 bytes, identical to the seed-built `obo` (checked with `cmp`) |
-| Promoted seed (`--version` 0.3) | 421,889 bytes (sha256 `4892cea9…`) |
-| Self-compile wall time | 0.11 s (main-tree median; 0.18-0.20 s on this branch's loaded review host) |
-| Self-compile live peak | 1,642,416 bytes |
-| Total allocated | 35,253,408 bytes |
-| Maximum resident set | 2,972 KB (5 runs on this branch) |
-| Live-memory budget | 2,000,000 bytes (357,584 spare) |
-| obo suite | 1,147 tests; 527/549 mutants caught + 22 equivalent; 27 runtime/library; 495 port; 27 symbol-file tests; 200 fuzz mutations; 27 metadata checks; 39/43 metadata mutants caught + 4 equivalent |
+| Compiler source | 10,516 lines, 385,978 bytes |
+| Compiler built by the seed (`obo`, P5a source, `--version` 0.4) | 425,985 bytes (sha256 `d9dc0e93…`) |
+| Stage 2 == stage 3 | 425,985 bytes, identical to the seed-built `obo` (checked with `cmp`) |
+| Promoted seed (P3, `--version` 0.3) | 421,889 bytes (sha256 `4892cea9…`) |
+| Self-compile wall time | 0.11 s (main-tree median; 0.16-0.24 s, median 0.19 s, on this branch's loaded review host) |
+| Self-compile live peak | 1,645,424 bytes |
+| Total allocated | 35,359,504 bytes |
+| Maximum resident set | 2,976 KB (5 runs on this branch; one 3,104 KB warm-up) |
+| Live-memory budget | 2,000,000 bytes (354,576 spare) |
+| obo suite | 1,157 tests; 527/549 mutants caught + 22 equivalent; 27 runtime/library; 495 port; 27 symbol-file tests; 200 fuzz mutations; 32 metadata checks; 60/69 metadata mutants caught + 9 equivalent |
 | Tools differential gate | 199 checks (191 matrix + 8 serial) vs GNU coreutils 9.4; 2 memory cases (module roots) |
 | Tool binaries | cat 40,961; wc 53,249; sort 53,249 bytes (static, runtime included) |
 | eza E0 differential gate | 272/272 non-memory (214 exact goldens replayed against the pinned reference, 42 live, 16 own) + 2 memory cases |
@@ -105,23 +108,30 @@ and `OBO_VERSION` 0.3; the 0.3 compiler recomputes itself to the same
 Live peak varies by a few hundred bytes with the source path and total
 allocation by about 1.9 KB. The table records the figures measured on this
 branch (wall time and RSS on this review host); the `port_compare` gate here
-measures 1,642,416 live and 35,253,408 allocated, both far under the
-2,000,000-byte budget. P3's four builtin
-branches raised the peak by 6,240 bytes from 1,636,176, well inside the cut
-order of design section 6.8, so no slot was cut. The tools and eza work did not
-change the compiler, runtime or seed; their runtime is included in the tool and
-eza binary sizes above (P3 leaves them unchanged). Whole modules are compiled into
-each tool, so the figures track the imported module set: the pre-P1 tree
-(`265564c`) measured cat 36,865 / wc 40,961 / sort 45,057, the P1+P2a base
-(`ec244e0`) measured 49,153 / 49,153 / 53,249, and this P2b+P3 tree measures
-40,961 / 53,249 / 53,249. P2b's net effect on that base is cat -8,192,
-wc +4,096, sort 0, with byte-identical observable output. The old
-493,280-byte compiler and seed, tool binaries 108,256/108,256/112,352, and the
-earlier 90,848-byte minimal figure are historical. The
-minimal executable measured in this tree before the fix was 95,968 bytes (the
-difference is the minimal source and runtime revision, not the compiler); the
-fix removes the 67,295-byte zero run from every produced executable (the tool
-`cat` loses 4,096 more because its code crossed a page boundary).
+measures 1,645,424 live and 35,359,504 allocated, both far under the
+2,000,000-byte budget. P3's four builtin branches raised the peak by 6,240
+bytes from 1,636,176, well inside the cut order of design section 6.8; P5a's
+two builtin branches and the longer compiler source raised it by 3,008 more
+(the figure depends on the compiler source path; the lib modules are not
+compiled into the compiler), still 354,576 under the budget, so no slot was
+cut. The tools (P2b) and eza E0 (P4) work did not change the compiler, runtime
+or seed; their runtime is included in the tool and eza binary sizes above (P3
+and P5a leave the tool sizes unchanged). P4's eza gate was re-measured under
+the merged 0.4 compiler and is unchanged: 272/272, `--memory` 2/2, binary
+126,977 bytes, 10,000-entry live peaks 2,185,008/2,184,384 bytes and max RSS
+2,432 KiB; the reference goldens are unchanged.
+Whole modules are compiled into each tool, so the figures track the imported
+module set: the pre-P1 tree (`265564c`) measured cat 36,865 / wc 40,961 / sort
+45,057, the P1+P2a base (`ec244e0`) measured 49,153 / 49,153 / 53,249, and
+this P2b+P3+P5a tree measures 40,961 / 53,249 / 53,249. P2b's net effect on that
+base is cat -8,192, wc +4,096, sort 0, with byte-identical observable output.
+The old 493,280-byte compiler and seed, tool binaries
+108,256/108,256/112,352, and the earlier 90,848-byte minimal figure are
+historical. The minimal executable measured in this tree before the fix was
+95,968 bytes (the difference is the minimal source and runtime revision, not
+the compiler); the fix removes the 67,295-byte zero run from every produced
+executable (the tool `cat` loses 4,096 more because its code crossed a page
+boundary).
 
 For historical comparison, obx's collector-based compiler is 3,222 lines and
 172,768 bytes; it compiles its own 88,731-byte source in about 0.01 s and peaks at
@@ -131,11 +141,12 @@ is not like for like; the memory result is the point: about 1.24 MB live against
 
 The earlier 12.1 MB allocation and 30 ms figures in "Direction" describe the smaller
 pre-Result, pre-I/O compiler. The source has grown from 4,552 lines at that stage to
-10,492; total allocation has grown with it, while the live peak stays within the 2 MB
+10,516; total allocation has grown with it, while the live peak stays within the 2 MB
 budget (the Stage 1 module context raised it from 1,244,480 bytes at the Phase 3
 merge to 1,364,240; Stage 2's symbol-file writer and reader raised it to 1,634,720,
-an increase of 270,480 bytes; the size fixes measure 1,636,176, and P3's metadata
-builtins 1,642,416, still 357,584 bytes under the budget).
+an increase of 270,480 bytes; the size fixes measure 1,636,176, P3's metadata
+builtins 1,642,416, and P5a's environment builtins 1,645,424, still
+354,576 bytes under the budget).
 
 ### Toward command-line tools
 
@@ -329,7 +340,7 @@ cd obo && python3 tests/tools.py --memory              # the two pinned tool mem
 cd obo && python3 bench/bench.py         # memory and time against the collector
 cd obo && ./obo --deps tests/modules/run/basic/main.obx -I tests/modules/run/basic  # dependencies first
 cd obo && mkdir -p /tmp/syms && ./obo --check src/obo.obo --sym-dir /tmp/syms        # check without an executable
-cd obo && ./obo --version                # obo 0.3 sym-format 1 abi 1
+cd obo && ./obo --version                # obo 0.4 sym-format 1 abi 1
 cd obo && ./obo --reemit-sym /tmp/syms/obo.sym   # canonical re-emission (test hook)
 # history: cd obx && make && ./run_tests.sh
 ```
@@ -434,7 +445,7 @@ Implemented:
   Dependencies compile first into one image, initialize once and free their own
   globals; a headerless root is `_root`.
 - Symbol files (`obo/LANGUAGE.md`, section 6): each module with a header writes a
-  text `Name.sym` (format `obosym 1`, ABI 1, compiler `0.3`, FNV-1a source,
+  text `Name.sym` (format `obosym 1`, ABI 1, compiler `0.4`, FNV-1a source,
   interface and dependency-interface hashes); importers read and validate it, and
   `--check SOURCE [--sym-dir DIR]` checks a module against symbol files alone,
   including source-less dependencies. `--emit-sym` writes a single-file root's

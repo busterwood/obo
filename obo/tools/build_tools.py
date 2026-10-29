@@ -51,7 +51,7 @@ EZA = ('eza',)
 ALL = TOOLS + EZA
 SRCDIR = 'cmd'                       # the tool roots live in obo/cmd/
 LIB_MODULES = ('io.obx', 'strings.obx', 'fmt.obx', 'errors.obx', 'fs.obx',
-               'paths.obx', 'sort.obx', 'cli.obx', 'time.obx')
+               'paths.obx', 'sort.obx', 'cli.obx', 'time.obx', 'env.obx')
 
 PROBE = '''// phase-2 builtin probe: compile only, never run
 fn main() {

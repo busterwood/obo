@@ -85,6 +85,7 @@ static u64 *free_small[NCLASS];
 static u64 *free_large;
 static u64 *mstack; static u64 msp, mcap;
 static u64 stack_base, glob_start, glob_end;
+u64 env_base;                          /* the initial stack's envp, for getenv */
 u64 rt_entry_sp;                       /* set by the entry stubs in entry.S */
 static int gc_poison;                  /* debugging modes, from OBX_GC=poison|stress */
 #define POISON 0xDEADBEEFDEADBEEFUL
@@ -106,7 +107,7 @@ static int fault_read, fault_write, fault_close;
 /* The metadata fault hook is the same kind of test-only injection: one synthetic
  * EINTR per call kind, inert unless OBO_CHECK=1. */
 static int meta_fault_eintr;
-static int fault_dir, fault_stat, fault_lstat, fault_link;
+static int fault_dir, fault_stat, fault_lstat, fault_link, fault_tty;
 
 static inline u64 gidx(u64 h) { return (h - heap_start) / GRAN; }
 static inline int  is_start(u64 h) { u64 g = gidx(h); return starts[g >> 3] >> (g & 7) & 1; }
@@ -119,7 +120,8 @@ void rt_init(u64 sbase, u64 gstart, u64 gend) {
     stack_base = sbase; glob_start = gstart; glob_end = gend;
     /* the initial stack holds argc, argv[], NULL, envp[], NULL */
     u64 argc = *(u64 *)sbase;
-    for (char **env = (char **)(sbase + 8 * (argc + 2)); *env; env++) {
+    env_base = sbase + 8 * (argc + 2);
+    for (char **env = (char **)env_base; *env; env++) {
         if (starts_with(*env, "OBX_GC=poison")) gc_poison = 1;
         if (starts_with(*env, "OBX_GC=stress")) gc_poison = 1;
         if (starts_with(*env, "OBO_CHECK=1")) leak_check = 1;
@@ -131,7 +133,7 @@ void rt_init(u64 sbase, u64 gstart, u64 gend) {
     /* the environment order is arbitrary: gate the hook after the whole loop */
     if (!leak_check) { io_fault_eintr = 0; io_fault_short = 0; meta_fault_eintr = 0; }
     if (io_fault_eintr) { fault_read = fault_write = fault_close = 1; }
-    if (meta_fault_eintr) { fault_dir = fault_stat = fault_lstat = fault_link = 1; }
+    if (meta_fault_eintr) { fault_dir = fault_stat = fault_lstat = fault_link = fault_tty = 1; }
     heap_start = (u64)sys_mmap(HEAP_SIZE);
     if ((i64)heap_start < 0) die("obx: cannot reserve heap\n");
     heap_top = heap_start; heap_end = heap_start + HEAP_SIZE;
@@ -747,6 +749,51 @@ u64 rt_read_link(u64 path, u64 descErr, u64 descOk) {
     Array *a = (Array *)rt_alloc_array(r, 4);
     memcpy((char *)a->data + 8, buf, (u64)r);
     return ok_cell(descOk, (u64)a);                                /* an empty target is a non-nil empty array */
+}
+
+/* ---------- environment: isatty and getenv (P5a) ---------- */
+
+/* isatty(fd): true only when ioctl(fd, TCGETS 0x5401) succeeds. fd < 0 is false
+ * before any syscall; a pipe, a regular file, /dev/null, a directory or a closed
+ * descriptor is false (ENOTTY/EBADF) and never an fd-table trap. A tracked
+ * descriptor that was closed may have been reused by the kernel, and then the
+ * ioctl simply observes the reused one. The kernel writes 36 bytes of struct
+ * termios into the buffer, which is larger. */
+i64 rt_isatty(i64 fd) {
+    if (fd < 0) return 0;
+    u64 t[8];                                                      /* 64 bytes > the 36-byte termios */
+    i64 r;
+    for (;;) {
+        if (fault_tty) { fault_tty = 0; r = -4; } else r = sys3(16, fd, 0x5401, (i64)t);
+        if (r != -4) break;                                        /* EINTR retried */
+    }
+    return r == 0;
+}
+
+/* getenv(name): the first `name=...` entry of the environment as an owned byte
+ * array; nil when the name is invalid (empty, an embedded NUL, or a '=') or
+ * absent. An empty value is a non-nil empty array. env_base is the envp that
+ * rt_init recorded from the initial stack; the value is copied, so nothing of
+ * envp is retained and the caller owns the array. */
+u64 rt_getenv(u64 name) {
+    u64 n = slen(name);
+    if (n == 0) return 0;
+    for (u64 i = 0; i < n; i++) {
+        char c = sdata(name)[i];
+        if (!c || c == '=') return 0;
+    }
+    for (char **env = (char **)env_base; *env; env++) {
+        char *e = *env;
+        u64 i = 0;
+        while (i < n && e[i] && e[i] == sdata(name)[i]) i++;
+        if (i != n || e[n] != '=') continue;
+        u64 vn = 0;
+        while (e[n + 1 + vn]) vn++;
+        Array *a = (Array *)rt_alloc_array((i64)vn, 4);
+        memcpy((char *)a->data + 8, e + n + 1, vn);
+        return (u64)a;                                             /* first match wins */
+    }
+    return 0;
 }
 
 /* args(): the command line, program name first */

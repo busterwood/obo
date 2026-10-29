@@ -3552,7 +3552,7 @@ the header and the `source` hash.
 
 Text, line-oriented, parsed by the compiler's scanner. The header is `obosym 1`
 (one identifier; `obo-sym` would scan as three tokens), `abi 1`,
-`compiler "0.3"`, `source 0x…`, one `dep <module> "<path as imported>"` per
+`compiler "0.4"`, `source 0x…`, one `dep <module> "<path as imported>"` per
 unique direct dependency in first-import order, and `interface 0x…`. The body is
 `module <name>`, one `depiface <module> 0x…` per dependency in the same order,
 then declarations. `source` is FNV-1a 64 of the source bytes exactly;
@@ -3605,8 +3605,8 @@ run, re-emit, `--check`).
 FNV-1a 64 with offset basis `0xcbf29ce484222325` and prime `0x100000001b3`, 64-bit
 wrapping. Three exact-match version values: `obosym` (grammar and meaning),
 `abi` (layout, descriptor format, calling convention, global addressing, effect
-summaries, initialization order) and `compiler` (`OBO_VERSION`, currently `0.3`;
-`--version` prints `obo 0.3 sym-format 1 abi 1`). Errors use the per-line §12
+summaries, initialization order) and `compiler` (`OBO_VERSION`, currently `0.4`;
+`--version` prints `obo 0.4 sym-format 1 abi 1`). Errors use the per-line §12
 wording: `has format <n>; this compiler reads <m>`, `has ABI <n>; this compiler
 uses <m>`, `was built by compiler '<v>'; this is '<w>'`, each with
 `; rebuild it` and exit 2 — not one combined message. Bump `OBO_VERSION` with a
@@ -4634,3 +4634,125 @@ ambient xattrs. The memory cap tracks a fixed 10,000-entry fixture; a
 compiler/codegen change that changes the runtime's per-object sizes moves the
 peak and must be re-measured rather than raised (the cap is not the compiler's
 `PEAK_BUDGET`). No E1/E2 feature is present, and the binary is not promoted.
+# Environment metadata: slots 37-38 (P5a, done)
+
+The eza/stdlib design v7 sections 5.8, 8.5 and 11.1, on the promoted 0.3 seed
+(`e8703b2`, 421,889 bytes). Two append-only slots, no renumbering of 0-36; no
+Result cell, no descriptor, no new descriptor kind, no allocation in isatty and
+no runtime-retained program pointer.
+
+| Slot | Builtin | Result |
+|---|---|---|
+| 37 | `isatty(fd)` | `bool` |
+| 38 | `getenv(name)` | `?[]byte` |
+
+## What changed
+
+- `runtime/runtime.c`: `rt_isatty` is false for fd < 0 before any syscall and
+  otherwise `ioctl(fd, TCGETS 0x5401, buf) == 0`, with a 64-byte buffer for the
+  kernel's 36-byte `struct termios` and the design's EINTR retry. It never reads
+  the fd table: a pipe, a regular file, `/dev/null`, a directory or a tracked
+  closed descriptor is false (ENOTTY/EBADF), and a number the kernel reused is
+  observed as it is. `rt_getenv` records `env_base = sbase + 8*(argc+2)` in
+  `rt_init`, rejects an empty name, an embedded NUL or any `=` in the name,
+  scans `envp` for the first `name=` entry and copies the value into an owned
+  byte array; a present empty value is a non-nil empty array and absent is
+  nil. Nothing of `envp` is retained. The test-only `OBO_META_FAULT=eintr`
+  hook now also injects one EINTR for the ioctl (five fault ints, still inert
+  unless `OBO_CHECK=1`). Runtime text grew 448 bytes (15,472 -> 15,920); the
+  data image is unchanged at 67,328 bytes (one global word and one fault int
+  fit the existing alignment).
+- `runtime/entry.S`: slots 37/38 appended in both sequences, after
+  `rt_read_link`.
+- `src/obo.obo`: the universe and callExempt names; `getenv` also leaves the
+  `plausible` scalar guess (isatty's bool is a safe guess); builtin branches
+  with the fd materialised and the name pinned; `rtCall1` for both; slots
+  37/38. No `resultCall` and no descriptor, so no shared-cell contract is
+  involved. `OBO_VERSION` is 0.4.
+- `lib/env.obx`: `get`/`has`/`value`/`getOr` exactly as 5.8, with `has`'s
+  required local and no helper named `string` (the B3 rule); `lib/io.obx`:
+  `isTty`.
+- Tests: `rt_meta_test.c`'s `isatty_checks` (negative fds, a regular file,
+  `/dev/null`, both pipe ends, a directory, a tracked closed fd, a reused
+  number, and the pty slave as the one true answer), `getenv_real` (rt_init's
+  `env_base` formula and the fixed `OBO_META_ENV_*` environment) and
+  `getenv_crafted` (first match, empty names, `=`, prefixes, a malformed entry,
+  an embedded NUL, and owned copies that survive env mutation); `meta_test.py`
+  fixes the environment for every case and adds `tests/meta/env_api.obx` and
+  `env_shadow.obx` (the B3 orders), `tests/run/env.obx` and
+  `tests/errors/env.obx`. `mutate_meta.py` gains 14 runtime/entry.S and 12
+  compiler mutants: the compiler runner replays `tests/run/env.obx` and
+  `tests/errors/env.obx`, and the runtime runner judges the mutated runtime
+  with `rt_meta_test.c` and the `tests/meta` corpus (including
+  `env_api.obx` and `env_shadow.obx`).
+
+## Gates (this branch)
+
+**Measured.** `make`; `make tools`; `tests/tools.py --require-reference`
+199/199; `--memory` 2/2; `tests/io_test.py --rt --programs --tools` 0
+failures; `tests/imports.py` 26/26 on the P4-merged tree (10 stdlib importers, 4
+tools, 4 tool-matrix checks, 7 collision/decoy trees, 1 lib set; 24/24
+before the eza tool and its sort-import check joined); `tests/stdlib.py`
+16/16 roots (1 support module); `tests/run_fork.py` 1,157/1,157 (1,147 + 9
+error cases + 1 program); `tests/elf_test.py` (filesz 1, memsz 67,328);
+`tests/port_compare.py` 1,174/1,174 (1,052 flat + 122 module trees), live peak
+1,645,424 (budget 2,000,000, 354,576 spare) and 35,359,504 allocated;
+`OBO_REF=seed/obo tests/port_compare.py` 1,040/1,040 pre-promote (the 0.3 seed
+cannot parse `io.obx`'s isTty or the env module, so the two P5a case files
+and the two cases importing `io.obx` are version-gated out) and 1,052/1,052 with a
+temporary 0.4 seed copy (the post-promote simulation; the real 0.3 seed was
+restored, sha256 `4892cea9...`); `tests/mutate_fork.py` 527/549 + 22
+equivalent; `tests/mutate_port.py` 495/495; `tests/mutate_io.py` 27/27;
+`tests/mutate_meta.py` 69 mutants: runtime/entry.S 43/45 caught + 2
+equivalent, compiler 17/24 caught + 7 equivalent, 0 missed, 0 stale, 0 broken
+(the previous P3 counts were 30/31 + 1 and 9/12 + 3); `tests/port_test.py`
+520/520 identical (516 + 4 new `.obx` files), 9 encoder groups;
+`tests/sym_test.py` 27/27 at 0.4; `tests/sym_fuzz.py` 200/200;
+`tests/doc_check.py` 47 examples (46 + the environment example);
+`tests/homes_check.py`; `tests/homes_edge.py` 1,028 statements, 119 refused by
+both, 0 differ; `bench/bench.py` runs to completion (obx built for it);
+`tests/meta_test.py` 32 checks (19 rt cases + 13 program invocations). Tool
+binaries unchanged (cat 40,961; wc 53,249; sort 53,249 bytes).
+
+**After merging P4 (main `e53a5e8`, eza E0).** The P4 eza gate re-runs under
+the 0.4 compiler and is unchanged: `tests/eza.py --require-reference`
+272/272 against the pinned eza 0.23.3 (sha256 `10457dde...`), `--memory`
+2/2 (10,000-entry live peaks 2,185,008 long / 2,184,384 names, under
+EZA_PEAK_MAX 2,752,512; max RSS 2,432 KiB both, reference about 24.2/12.0
+MB), eza binary 126,977 bytes, reference binary 2,294,768 bytes; the
+reference goldens are unchanged and the E0/P5a features coexist (eza uses
+no `env`/`isatty` yet, and the P5a builtins do not change the produced eza
+image size). All other P5a counts above are unchanged on the merged tree.
+
+**Fixed point without promote.** The seed-built `obo`, the 0.4 compiler's
+stage 2 and stage 3 are all the same 425,985-byte image (sha256
+`d9dc0e93...`; checked with `cmp`), against the 421,889-byte 0.3 seed. The
+compiler source is 10,516 lines / 385,978 bytes (P3: 10,492 / 384,760).
+
+## Deviations and limits
+
+- The getenv embedded-NUL rule is defence in depth and has an equivalent
+  mutant: an environment entry cannot contain a NUL, so the byte scan cannot
+  match past one either way. The rule still returns nil in the test.
+- The pty master's TCGETS also succeeds on this host's kernel (Linux 6.18);
+  the test asserts the slave, which is always a terminal, and keeps pipe, file,
+  `/dev/null`, a directory and a closed descriptor as the false cases. That is
+  the design's portable rule; the master is deliberately not asserted.
+- The pre-promote seed comparison is 1,040/1,040 rather than the P3 1,042: the
+  0.3 seed cannot parse `io.obx` once it calls isatty, so 4 files / 12 cases
+  are version-gated out of it: `tests/run/env.obx` (1 case),
+  `tests/errors/env.obx` (9), and `tests/run/io_reader.obx` (1) and
+  `tests/run/io_writer.obx` (1), which import `io.obx`. The default
+  comparison always covers them, and a temporary 0.4 seed copy compares the
+  whole flat corpus (1,052/1,052), so the promote loses nothing.
+- A name containing `=` cannot be passed through `subprocess`'s env mapping
+  (Python rejects it), so the `=` rule and first-match order are tested with
+  the crafted `envp` in `rt_meta_test.c`; the fixed real environment covers
+  present, empty and absent.
+- `tests/run/env.obx` shares its file name with the library module it imports.
+  run_fork, port_compare and mutate_meta copy each root to a unique file
+  name before compiling, so the import resolves to `lib/env.obx` and there
+  is no cycle; the two meta_test roots are named `env_api`/`env_shadow`
+  for the same reason. `env_base` stays a non-static global, as
+  `rt_entry_sp` is; the image is a byte concatenation, so no program
+  symbol can collide with it.

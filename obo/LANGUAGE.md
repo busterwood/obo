@@ -771,7 +771,7 @@ build** still requires every source; if only a `.sym` exists it reports
 without source` (exit 2). The checked root is exempt from the basename rule (it is
 the root of its check graph), and its `.sym` is named by its declared module name.
 
-`--version` prints `obo 0.3 sym-format 1 abi 1`; the numbers are the `obosym`
+`--version` prints `obo 0.4 sym-format 1 abi 1`; the numbers are the `obosym`
 format, the compiled-program ABI and the compiler version, each checked exactly
 when a `.sym` is read. `--reemit-sym FILE` is a testing hook: it reads a symbol
 file with the reader and prints the canonical re-emission, which the symbol-file
@@ -784,7 +784,7 @@ A `.sym` is text in a language-like declaration syntax, readable by the scanner:
 ```text
 obosym 1
 abi 1
-compiler "0.3"
+compiler "0.4"
 source 0x0123456789abcdef
 dep io "io.obx"
 interface 0xfedcba9876543210
@@ -1212,6 +1212,8 @@ fn main() {}
 | `statPath(path)` | `Result[[]int]`: the 14 stat fields, following symlinks |
 | `lstatPath(path)` | `Result[[]int]`: the 14 lstat fields, not following symlinks |
 | `readLinkPath(path)` | `Result[[]byte]`: the raw symlink target bytes, no NUL |
+| `isatty(fd)` | `bool`: true when the descriptor is a terminal |
+| `getenv(name)` | `?[]byte`: the variable's value, copied; `nil` if absent or the name is invalid |
 | `stdin()`, `stdout()`, `stderr()` | the standard descriptors, 0, 1 and 2 |
 | `args()` | the command-line arguments, as `[]string` |
 | `exit(code)` | stop with the given exit code |
@@ -1302,15 +1304,17 @@ fn main() {
 
 `obo/lib/io.obx` is a source module (`module io`) that builds buffered
 `Reader`/`Writer` types on these builtins (`fill`, `readLine`, `readN`,
-`readByte`, `takeChunk`, `flush`, `pump`, `count`) and adds `writeByte`;
-importers write `import "../lib/io.obx" as io` (or `"io.obx"` with `-I obo/lib`)
-and qualify the names (`io::newReader`, `io::flush`). Its own header documents
-the API and the fd-is-borrowed rule. The rest of the stdlib is a set of source
+`readByte`, `takeChunk`, `flush`, `pump`, `count`), adds `writeByte` and,
+in P5a, `isTty`. Importers write `import "../lib/io.obx" as io` (or
+`"io.obx"` with `-I obo/lib`) and qualify the names (`io::newReader`,
+`io::flush`). Its own header documents the API and the fd-is-borrowed rule.
+The rest of the stdlib is a set of source
 modules under `obo/lib/`: `strings` (`cmp`, split/join, trim, natord and
 QuoteSpaces helpers), `paths`, `sort`, `time`, `cli`, `fmt` (`digits`,
 `appendPadded`, `writePadded`, `modeString`), `errors` (C-locale errno
-`text`, `osError`, `debugPath` and the eza-shaped `EXIT_*` constants) and `fs`
-(directory iteration, stat/lstat and symlink targets; see "Metadata" below).
+`text`, `osError`, `debugPath` and the eza-shaped `EXIT_*` constants), `fs`
+(directory iteration, stat/lstat and symlink targets; see "Metadata" below)
+and `env` (`get`, `has`, `value`, `getOr`; see "Environment" below).
 P2 moved
 `writePadded` from `io` and the digit/padding helpers from `strings` into
 `fmt`, and removed the four P1 compatibility functions.
@@ -1380,6 +1384,36 @@ kernel's `d_type`; for `DT_UNKNOWN` `next` lazily lstats the entry path
 unknown/special when that lstat fails. A malformed record (a length below 20,
 a record past the buffer, or no NUL inside it) is
 `err("bad directory entry", EIO=5)` and the iterator does not advance.
+
+### Environment
+
+`isatty(fd)` is `true` only when `ioctl(fd, TCGETS)` succeeds: a negative
+descriptor is `false` before any syscall, and a pipe, a regular file,
+`/dev/null`, a directory or a closed descriptor is `false` (`ENOTTY`/`EBADF`),
+never an fd-table trap. A tracked descriptor that was closed may have been
+reused by the kernel, and the ioctl then observes the reused one. There is no
+`Result` and no allocation; the ioctl retries `EINTR` under the same
+`OBO_META_FAULT=eintr` hook as the metadata calls.
+
+`getenv(name)` is `?[]byte`: `nil` when the name is invalid (empty, an
+embedded NUL, or containing `=`) or absent, and a non-nil empty array when the
+variable is present with an empty value. The name is matched as `name=`
+against `envp`; the first match wins, and the value is copied into an array
+the caller owns, so later changes to the environment cannot affect it. There
+is no `setenv` and no enumeration.
+
+```obo
+// example: runs
+// prints false true
+fn main() {
+    let missing = getenv("")          // an empty name is invalid
+    println(isatty(-1), " ", missing == nil)
+}
+```
+
+`obo/lib/env.obx` wraps it: `env::get` (the `?[]byte`), `env::has` (present,
+even when empty), `env::value` (a `string`, `""` when absent or empty) and
+`env::getOr(name, fallback)`. `obo/lib/io.obx` adds `io::isTty(fd)`.
 
 ## 9. Runtime checks and exit codes
 
@@ -1489,6 +1523,8 @@ depend on the program.
 | `statPath needs a string path, not <t>` | the argument of `statPath` is not a string. |
 | `lstatPath needs a string path, not <t>` | the argument of `lstatPath` is not a string. |
 | `readLinkPath needs a string path, not <t>` | the argument of `readLinkPath` is not a string. |
+| `isatty needs an int file descriptor, not <t>` | the argument of `isatty` is not an int. |
+| `getenv needs a string name, not <t>` | the argument of `getenv` is not a string. |
 
 ## 11. Differences from obx
 
@@ -1500,7 +1536,8 @@ depend on the program.
   at run time.
 - New built-ins: `take`, `drop`, `replace`, `handle`, `alive`, `ok`, `err`,
   `openFile`, `readFd`, `writeFd`, `closeFile`, `readDirFd`, `statPath`,
-  `lstatPath`, `readLinkPath`, `stdin`, `stdout`, `stderr`, and
+  `lstatPath`, `readLinkPath`, `isatty`, `getenv`, `stdin`, `stdout`,
+  `stderr`, and
   the prefix operator `try`.
 - `Result[T]` is a built-in parameterized type, inspected with `match` (including the
   consuming `ok(v)`/`err(m, c)` form).

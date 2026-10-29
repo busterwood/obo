@@ -53,6 +53,8 @@ _entry:
     slot rt_stat_path
     slot rt_lstat_path
     slot rt_read_link
+    slot rt_isatty
+    slot rt_getenv
 
     .text
     .macro check f
@@ -101,5 +103,7 @@ check_\f:
     check rt_stat_path
     check rt_lstat_path
     check rt_read_link
+    check rt_isatty
+    check rt_getenv
 
     .section .note.GNU-stack,"",@progbits

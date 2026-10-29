@@ -1,0 +1,41 @@
+// meta/env_shadow.obx: the design's B3 name-shadow compile test. Importing env
+// must leave `string` as the primitive type and string(...) as the conversion:
+// env's helpers are value and getOr, never a helper named string. String-typed
+// declarations, the conversion, and value/getOr appear in several orders and
+// must all compile. The harness's fixed environment makes the answers
+// deterministic (OBO_META_ENV_ABSENT is unset).
+// expect: 7
+// expect: fallback
+// expect: 42x
+// expect: blank|null
+import "env.obx" as env
+
+// a string-typed declaration whose body uses the conversion
+fn digits(n: int): string {
+    return string(n)
+}
+
+// getOr and value before a later string-typed declaration
+fn fallback(): string {
+    return env::getOr("OBO_META_ENV_ABSENT", "fallback")
+}
+
+// a string parameter and a string result after both helpers were used
+fn tail(s: string): string {
+    return s + "x" + env::value("OBO_META_ENV_ABSENT")
+}
+
+fn main() {
+    let d: string = digits(7)
+    println(d)
+    let f: string = fallback()
+    println(f)
+    let s: string = string(42)
+    let t: string = tail(s)
+    println(t)
+    let blank = env::value("OBO_META_ENV_ABSENT")
+    let isBlank: bool = blank == ""
+    let got = env::get("OBO_META_ENV_ABSENT")
+    let absent: bool = got == nil
+    if isBlank && absent { println("blank|null") }
+}

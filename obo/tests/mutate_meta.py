@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Mutation testing for the P3 metadata feature: the runtime/entry.S slots and
-the compiler-source builtins.
+"""Mutation testing for the P3/P5a metadata features: the runtime/entry.S slots
+and the compiler-source builtins.
 
     python3 obo/tests/mutate_meta.py [pattern]
 
@@ -29,14 +29,15 @@ a mutated compiler cannot test the runtime's syscall behaviour:
                            differs), builds that source with the unmutated
                            compiler into a private compiler executable, and uses
                            it as the compiler for the corpus with a private
-                           sym-dir per case: every tests/errors/meta.obx case
-                           must still be refused with its expected diagnostic
-                           (the marker line and text), and tests/run/meta.obx
-                           plus tests/meta/*.obx must compile, run and produce
-                           the baseline outcomes. The fd-materialisation case is
-                           tests/run/meta.obx's "pin dir inside" line, whose max
-                           argument (changeGfd()) changes the global fd that the
-                           call's first argument reads.
+                           sym-dir per case: every tests/errors/{meta,env}.obx
+                           case must still be refused with its expected
+                           diagnostic (the marker line and text), and
+                           tests/run/{meta,env}.obx plus tests/meta/*.obx must
+                           compile, run and produce the baseline outcomes. The
+                           fd-materialisation case is tests/run/meta.obx's "pin
+                           dir inside" line, whose max argument (changeGfd())
+                           changes the global fd that the call's first argument
+                           reads.
 
 Counts are measured, never fixed in advance. A genuinely equivalent mutant is
 listed in EQUIVALENT_RUNTIME or EQUIVALENT_COMPILER with its reason and excluded
@@ -67,8 +68,10 @@ CFLAGS = mt.CFLAGS
 RUNTIME = os.path.join(FORK, 'runtime', 'runtime.c')
 ENTRY = os.path.join(FORK, 'runtime', 'entry.S')
 SRC = os.path.join(FORK, 'src', 'obo.obo')
-ERRFILE = os.path.join(FORK, 'tests', 'errors', 'meta.obx')
-RUNFILE = os.path.join(FORK, 'tests', 'run', 'meta.obx')
+ERRFILES = [os.path.join(FORK, 'tests', 'errors', 'meta.obx'),
+            os.path.join(FORK, 'tests', 'errors', 'env.obx')]
+RUNFILES = [os.path.join(FORK, 'tests', 'run', 'meta.obx'),
+            os.path.join(FORK, 'tests', 'run', 'env.obx')]
 TMP = tempfile.mkdtemp(prefix='obo-mutate-meta-')
 
 # ---------------------------------------------------------------- runtime mutants
@@ -159,6 +162,56 @@ RUNTIME_MUTANTS = [
        '    slot rt_read_dir_fd\n    slot rt_close_fd\n'),
       ('entry', '    check rt_close_fd\n    check rt_read_dir_fd\n',
        '    check rt_read_dir_fd\n    check rt_close_fd\n')]),
+    # P5a: isatty and getenv
+    ('isatty result inverted',
+     [('runtime', '    return r == 0;\n}\n\n/* getenv(name)',
+       '    return r != 0;\n}\n\n/* getenv(name)')]),
+    ('isatty true for every non-negative fd',
+     [('runtime', '    return r == 0;\n}\n\n/* getenv(name)',
+       '    return 1;\n}\n\n/* getenv(name)')]),
+    ('isatty negative fd is true',
+     [('runtime', '    if (fd < 0) return 0;\n    u64 t[8];',
+       '    if (fd < 0) return 1;\n    u64 t[8];')]),
+    ('isatty ioctl EINTR not retried',
+     [('runtime',
+       '        if (fault_tty) { fault_tty = 0; r = -4; } else r = sys3(16, fd, 0x5401, (i64)t);\n'
+       '        if (r != -4) break;                                        /* EINTR retried */\n',
+       '        if (fault_tty) { fault_tty = 0; r = -4; } else r = sys3(16, fd, 0x5401, (i64)t);\n'
+       '        break;\n')]),
+    ('env_base is one word short',
+     [('runtime', '    env_base = sbase + 8 * (argc + 2);\n',
+       '    env_base = sbase + 8 * (argc + 1);\n')]),
+    ('getenv empty name not rejected',
+     [('runtime', '    if (n == 0) return 0;\n    for (u64 i = 0; i < n; i++) {\n',
+       '    if (0) return 0;\n    for (u64 i = 0; i < n; i++) {\n')]),
+    ("getenv '=' in the name not rejected",
+     [('runtime', "        if (!c || c == '=') return 0;\n",
+       '        if (!c) return 0;\n')]),
+    ('getenv embedded NUL not rejected',
+     [('runtime', "        if (!c || c == '=') return 0;\n",
+       "        if (c == '=') return 0;\n")]),
+    ("getenv matches without the entry's '=' terminator",
+     [('runtime', "        if (i != n || e[n] != '=') continue;\n",
+       '        if (i != n) continue;\n')]),
+    ('getenv skips the first environment entry',
+     [('runtime', '    for (char **env = (char **)env_base; *env; env++) {\n        char *e = *env;\n',
+       '    for (char **env = (char **)env_base + 1; *env; env++) {\n        char *e = *env;\n')]),
+    ('getenv does not copy the value',
+     [('runtime', '        memcpy((char *)a->data + 8, e + n + 1, vn);\n',
+       '        (void)vn;\n')]),
+    ('getenv returns nil for an empty value',
+     [('runtime', '        Array *a = (Array *)rt_alloc_array((i64)vn, 4);\n        memcpy(',
+       '        if (vn == 0) return 0;\n        Array *a = (Array *)rt_alloc_array((i64)vn, 4);\n        memcpy(')]),
+    ('entry.S swaps slots 36 and 37 (both sequences)',
+     [('entry', '    slot rt_read_link\n    slot rt_isatty\n',
+       '    slot rt_isatty\n    slot rt_read_link\n'),
+      ('entry', '    check rt_read_link\n    check rt_isatty\n',
+       '    check rt_isatty\n    check rt_read_link\n')]),
+    ('entry.S swaps slots 37 and 38 (both sequences)',
+     [('entry', '    slot rt_isatty\n    slot rt_getenv\n',
+       '    slot rt_getenv\n    slot rt_isatty\n'),
+      ('entry', '    check rt_isatty\n    check rt_getenv\n',
+       '    check rt_getenv\n    check rt_isatty\n')]),
 ]
 
 # each field offset shifted by one slot (+8): a wrong array position
@@ -199,6 +252,10 @@ EQUIVALENT_RUNTIME = {
         'no Linux filesystem can hold a 4096-byte symlink target (the kernel '
         'maximum is 4095), so the ENAMETOOLONG branch has no input; the truncating '
         'mutant is killed by the 4095-byte target instead',
+    'getenv embedded NUL not rejected':
+        'an environment entry is NUL-terminated and cannot hold a NUL in its '
+        'name, so the byte comparison can never match a name past an embedded '
+        'NUL; the rule is defence in depth and both scans return nil',
 }
 
 # ---------------------------------------------------------------- compiler mutants
@@ -237,14 +294,47 @@ COMPILER_MUTANTS = [
      [('        if n.mode == "const" && n.val > 1048576 { error("readDirFd count is too large") }\n',
        '        if false { error("readDirFd count is too large") }\n')]),
     ('universe omits statPath',
-     [(' readDirFd statPath lstatPath readLinkPath stdin stdout stderr")',
-       ' readDirFd lstatPath readLinkPath stdin stdout stderr")')]),
+     [(' readDirFd statPath lstatPath readLinkPath isatty getenv stdin stdout stderr")',
+       ' readDirFd lstatPath readLinkPath isatty getenv stdin stdout stderr")')]),
     ('callExempt omits readDirFd',
-     [('closeFile readDirFd statPath lstatPath readLinkPath stdin stdout stderr take handle',
-       'closeFile statPath lstatPath readLinkPath stdin stdout stderr take handle')]),
+     [('closeFile readDirFd statPath lstatPath readLinkPath isatty getenv stdin stdout stderr take handle',
+       'closeFile statPath lstatPath readLinkPath isatty getenv stdin stdout stderr take handle')]),
     ('plausible omits the metadata names',
      [('        if wordAt(q, e, "statPath") || wordAt(q, e, "lstatPath") || wordAt(q, e, "readLinkPath") { return false }\n',
        '')]),
+    # P5a: isatty and getenv
+    ('universe omits isatty',
+     [(' isatty getenv stdin stdout stderr")', ' getenv stdin stdout stderr")')]),
+    ('universe omits getenv',
+     [(' isatty getenv stdin stdout stderr")', ' isatty stdin stdout stderr")')]),
+    ('callExempt omits getenv',
+     [('readLinkPath isatty getenv stdin stdout stderr take',
+       'readLinkPath isatty stdin stdout stderr take')]),
+    ('plausible omits getenv',
+     [('        if wordAt(q, e, "getenv") { return false }        // ?[]byte, not a scalar; isatty\'s bool is a safe guess\n',
+       '')]),
+    ('isatty fd type check removed',
+     [('        if !isInt(fd.typ) { error("isatty needs an int file descriptor, not " + tname(fd.typ)) }\n',
+       '        if false { error("isatty needs an int file descriptor, not " + tname(fd.typ)) }\n')]),
+    ('getenv name type check removed',
+     [('        if p.typ.kind != "string" { error("getenv needs a string name, not " + tname(p.typ)) }\n',
+       '        if false { error("getenv needs a string name, not " + tname(p.typ)) }\n')]),
+    ('isatty result is int, not bool',
+     [('        return rtCall1(RT_ISATTY, fd, tBool)\n',
+       '        return rtCall1(RT_ISATTY, fd, tInt)\n')]),
+    ('getenv payload is []byte, not ?[]byte',
+     [('        return rtCall1(RT_GETENV, p, derived("opt", derived("array", tByte)))\n',
+       '        return rtCall1(RT_GETENV, p, derived("array", tByte))\n')]),
+    ('isatty uses getenv\'s slot',
+     [('const RT_ISATTY = 37\n', 'const RT_ISATTY = 38\n')]),
+    ('getenv uses isatty\'s slot',
+     [('const RT_GETENV = 38\n', 'const RT_GETENV = 37\n')]),
+    ('isatty fd not materialised',
+     [('        fd = materialise(fd)\n        expect(T_RPAREN, "")\n        return rtCall1(RT_ISATTY, fd, tBool)\n',
+       '        expect(T_RPAREN, "")\n        return rtCall1(RT_ISATTY, fd, tBool)\n')]),
+    ('getenv name not pinned',
+     [('        p = pinStr(p)\n        expect(T_RPAREN, "")\n        return rtCall1(RT_GETENV, p, derived("opt", derived("array", tByte)))\n',
+       '        p = materialise(p)\n        expect(T_RPAREN, "")\n        return rtCall1(RT_GETENV, p, derived("opt", derived("array", tByte)))\n')]),
 ]
 
 EQUIVALENT_COMPILER = {
@@ -257,6 +347,18 @@ EQUIVALENT_COMPILER = {
     'plausible omits the metadata names':
         'plausible only guesses which locals deserve a register; a wrong guess '
         'costs a register, not correctness',
+    'callExempt omits getenv':
+        'callExempt only feeds the register-allocation pre-scan weighting; a '
+        'wrong guess costs a home, not correctness',
+    'plausible omits getenv':
+        'plausible only guesses which locals deserve a register; a wrong guess '
+        'costs a register, not correctness',
+    'isatty fd not materialised':
+        'a single argument has no later-argument hazard, and rtCall loads a memory '
+        'operand itself, so the same descriptor is read at the same point',
+    'getenv name not pinned':
+        'a single argument has no later-argument hazard; materialise and pinStr '
+        'read the same local at the same point',
 }
 
 
@@ -415,7 +517,10 @@ def compile_mutant(compiler, text, name, extra=()):
 
 
 def error_cases():
-    return run.error_cases(ERRFILE)
+    out = []
+    for f in ERRFILES:
+        out += run.error_cases(f)
+    return out
 
 
 def error_outcome(compiler, name, src):
@@ -438,37 +543,56 @@ def error_outcome(compiler, name, src):
     return None
 
 
+def runfile_outcomes(compiler, tag):
+    """[(file basename, (exit, stdout))] for the metadata run programs compiled
+    by `compiler`, or (None, reason). Each compile gets a private sym dir: the
+    env program imports library modules, so it writes .sym files."""
+    outs = []
+    for f in RUNFILES:
+        name = os.path.basename(f)
+        symdir = tempfile.mkdtemp(prefix='sym-', dir=TMP)
+        try:
+            path, exe, p = compile_mutant(compiler, open(f).read(),
+                                          tag + '_' + name[:-4],
+                                          extra=['-I', mt.LIBDIR, '--sym-dir', symdir])
+        except subprocess.TimeoutExpired:
+            return None, f"tests/run/{name}: compile timed out"
+        if p.returncode != 0:
+            return None, f"tests/run/{name}: did not compile: {p.stderr.strip()[:160]}"
+        try:
+            r = subprocess.run([exe, tempfile.mkdtemp(prefix='mm-run-', dir=TMP)],
+                               capture_output=True, env=mt.clean_env(), timeout=120)
+        except subprocess.TimeoutExpired:
+            return None, f"tests/run/{name}: run timed out"
+        outs.append((name, (r.returncode, r.stdout)))
+    return outs, None
+
+
 def baseline_compiler_corpus(fx):
-    """(error reasons must all be None, run/meta outcome, program outcomes)."""
+    """(run-program outcomes, program outcomes); every error diagnostic must
+    already match under the unmutated compiler."""
     for name, src, lo, hi in error_cases():
         reason = error_outcome(run.OBXC, name, src)
         if reason:
             raise SystemExit(f"the baseline compiler fails an error case: {reason}")
-    path, exe, p = compile_mutant(run.OBXC, open(RUNFILE).read(), 'run_meta')
-    if p.returncode != 0:
-        raise SystemExit(f"the baseline compiler cannot compile tests/run/meta.obx: {p.stderr[:300]}")
-    r = subprocess.run([exe, tempfile.mkdtemp(prefix='mm-run-', dir=TMP)],
-                       capture_output=True, env=mt.clean_env())
-    runmeta = (r.returncode, r.stdout)
-    return runmeta, program_outcomes(FORK, fx)
+    runs, why = runfile_outcomes(run.OBXC, 'base_run')
+    if runs is None:
+        raise SystemExit(f"the baseline compiler fails the run corpus: {why}")
+    return runs, program_outcomes(FORK, fx)
 
 
-def judge_compiler(compiler, fx, base_runmeta, base_prog):
+def judge_compiler(compiler, fx, base_runs, base_prog):
     for name, src, lo, hi in error_cases():
         reason = error_outcome(compiler, name, src)
         if reason:
             return reason
-    try:
-        path, exe, p = compile_mutant(compiler, open(RUNFILE).read(), 'run_meta')
-    except subprocess.TimeoutExpired:
-        return "tests/run/meta.obx: compile timed out"
-    if p.returncode != 0:
-        return f"tests/run/meta.obx: did not compile: {p.stderr.strip()[:160]}"
-    r = subprocess.run([exe, tempfile.mkdtemp(prefix='mm-run-', dir=TMP)],
-                       capture_output=True, env=mt.clean_env(), timeout=120)
-    if (r.returncode, r.stdout) != base_runmeta:
-        return (f"tests/run/meta.obx: {(r.returncode, r.stdout[:120])!r} != "
-                f"baseline {base_runmeta[0]}, {base_runmeta[1][:120]!r}")
+    runs, why = runfile_outcomes(compiler, 'run')
+    if runs is None:
+        return why
+    for (name, got), (_, want) in zip(runs, base_runs):
+        if got != want:
+            return (f"tests/run/{name}: {(got[0], got[1][:120])!r} != "
+                    f"baseline {want[0]}, {want[1][:120]!r}")
     try:
         out = program_outcomes(FORK, fx, compiler=compiler)
     except SystemExit as e:
@@ -517,7 +641,7 @@ def try_runtime_mutant(name, edits, base_prog, base_io, need_io):
     return 'caught', f"caught runtime: {name}  ({first})"
 
 
-def try_compiler_mutant(name, edits, base_runmeta, base_prog):
+def try_compiler_mutant(name, edits, base_runs, base_prog):
     work = tempfile.mkdtemp(prefix='mm-', dir=TMP)
     try:
         texts = apply_edits({'obo': open(SRC).read()},
@@ -530,7 +654,7 @@ def try_compiler_mutant(name, edits, base_runmeta, base_prog):
                            capture_output=True, text=True, timeout=120)
         if b.returncode != 0:
             raise Broken(f"the mutant compiler does not compile: {b.stderr.strip()[:160]}")
-        first = judge_compiler(exe, FX, base_runmeta, base_prog)
+        first = judge_compiler(exe, FX, base_runs, base_prog)
     except (Broken, subprocess.CalledProcessError) as e:
         return 'broken', f"BROKEN compiler: {name}: {e}"
     finally:
@@ -557,11 +681,12 @@ def main():
         raise SystemExit(f"the baseline runtime fails ({base_rt}), so no mutant can be judged")
     base_prog = program_outcomes(base_rt_dir, FX)
     base_io = io_outcome(base_rt_dir)
-    base_runmeta, base_prog_c = baseline_compiler_corpus(FX)
+    base_runs, base_prog_c = baseline_compiler_corpus(FX)
     if base_prog != base_prog_c:
         raise SystemExit("the baseline compiler's program outcomes differ from the runtime baseline")
     print(f"baseline: {len(mt.RT_CASES)} rt_meta_test cases, "
-          f"{len(base_prog)} program cases, {len(error_cases())} compiler error cases pass")
+          f"{len(base_prog)} program cases, {len(base_runs)} run programs, "
+          f"{len(error_cases())} compiler error cases pass")
 
     jobs = env_jobs('MUTATE_META_JOBS', 4)
     rt_todo = [(n, e, 'entry' in {w for w, _, _ in e})
@@ -570,7 +695,7 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
         rt_futures = [pool.submit(try_runtime_mutant, n, e, base_prog, base_io, io)
                       for n, e, io in rt_todo]
-        cc_futures = [pool.submit(try_compiler_mutant, n, e, base_runmeta, base_prog)
+        cc_futures = [pool.submit(try_compiler_mutant, n, e, base_runs, base_prog)
                       for n, e in cc_todo]
         rt_results = [f.result() for f in rt_futures]
         cc_results = [f.result() for f in cc_futures]

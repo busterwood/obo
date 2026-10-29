@@ -1,5 +1,7 @@
 /* rt_meta_test: the direct oracle for the runtime's metadata contract (design
- * section 6, P3). It links runtime.c into its own image (so it may use sys3/sys4,
+ * section 6, P3 and P5a). It links runtime.c into its own image (so it may use
+ * sys3/sys4 and even set env_base, which is how the crafted-envp case pins
+ * getenv's scan rules). It reads the test-only fault ints directly.
  * alloc_raw and the string helpers) and has its own _entry, which passes the
  * kernel stack to rt_init; the environment therefore reaches the runtime
  * exactly as it does for a compiled program.
@@ -37,6 +39,7 @@ static void fail(i64 code) { sys3(60, code, 0, 0); for (;;); }
  * rt_str_dec ignores the strings. */
 static char arena[1 << 20];
 static u64 arena_used;
+static u64 harness_sp, harness_argc;      /* the initial stack and argc, for env_base */
 static u64 arena_alloc(u64 n) {
     u64 off = (arena_used + 7) & ~7UL;
     arena_used = off + n;
@@ -234,6 +237,37 @@ static u64 dir_read(i64 fd, i64 max) {
     u64 cell = rt_read_dir_fd(fd, max, (u64)desc_err, (u64)desc_ok_owned);
     CHECK(cell_tag(cell) == (u64)desc_ok_owned);
     return cell;
+}
+
+/* ---------- isatty and getenv (P5a) ---------- */
+static void expect_bytes(u64 a, const char *want, u64 n) {
+    CHECK(a != 0);
+    Array *arr = (Array *)a;
+    CHECK(arr->len == n);
+    for (u64 i = 0; i < n; i++) CHECK(((char *)arr->data + 8)[i] == want[i]);
+}
+
+/* /dev/pts/N for a freshly opened /dev/ptmx master, unlocked. The slave is a
+ * terminal; the master's TCGETS is not asserted (this host's kernel reports it
+ * as a terminal too, but that is not portable). */
+static void open_pty(i64 *master, i64 *slave) {
+    static char path[32];
+    *master = sys3(2, (i64)"/dev/ptmx", 2 | 0x100, 0);      /* O_RDWR|O_NOCTTY */
+    CHECK(*master >= 0);
+    int unlock = 0;
+    CHECK(sys3(16, *master, 0x40045431, (i64)&unlock) == 0); /* TIOCSPTLCK */
+    int n = 0;
+    CHECK(sys3(16, *master, 0x80045430, (i64)&n) == 0);      /* TIOCGPTN */
+    CHECK(n >= 0 && n < 1000000);
+    const char *pre = "/dev/pts/";
+    int k = 0;
+    while (pre[k]) { path[k] = pre[k]; k += 1; }
+    char d[8]; int dn = 0;
+    do { d[dn++] = (char)('0' + n % 10); n /= 10; } while (n);
+    while (dn) path[k++] = d[--dn];
+    path[k] = 0;
+    *slave = sys3(2, (i64)path, 2 | 0x100, 0);
+    CHECK(*slave >= 0);
 }
 
 /* ---------- cases ---------- */
@@ -616,6 +650,123 @@ static void case_readdir_closed(const char *dir) {
     rt_finish();
 }
 
+/* isatty: negative fds, a regular file, /dev/null, both pipe ends, a directory,
+ * a tracked closed fd and a reused number are all false; only the pty slave is
+ * true. No fd-table consultation means no exit 9 under OBO_CHECK, and the case
+ * allocates nothing, so the leak oracle also passes. */
+static void case_isatty_checks(const char *dir) {
+    CHECK(rt_isatty(-1) == 0);
+    CHECK(rt_isatty(-2) == 0);
+    CHECK(rt_isatty(-1000000) == 0);
+    char *p = ajoin(dir, "/file");
+    make_file(p, "x");
+    i64 fd = sys3(2, (i64)p, 0, 0);
+    CHECK(fd >= 0);
+    CHECK(rt_isatty(fd) == 0);                     /* regular file: ENOTTY */
+    CHECK(sys3(3, fd, 0, 0) == 0);
+    fd = sys3(2, (i64)"/dev/null", 0, 0);
+    CHECK(fd >= 0);
+    CHECK(rt_isatty(fd) == 0);                     /* /dev/null: ENOTTY */
+    CHECK(sys3(3, fd, 0, 0) == 0);
+    i64 pf[2];
+    CHECK(sys3(293, (i64)pf, 0, 0) == 0);          /* pipe2(..., 0) */
+    CHECK(rt_isatty(pf[0]) == 0);
+    CHECK(rt_isatty(pf[1]) == 0);
+    CHECK(sys3(3, pf[0], 0, 0) == 0 && sys3(3, pf[1], 0, 0) == 0);
+    char *d = ajoin(dir, "/d");
+    make_dir(d);
+    fd = sys3(2, (i64)d, 0, 0);
+    CHECK(fd >= 0);
+    CHECK(rt_isatty(fd) == 0);                     /* directory: ENOTTY */
+    CHECK(sys3(3, fd, 0, 0) == 0);
+    /* a tracked descriptor that was closed is not a fatal use: isatty never
+     * consults the fd table, so the kernel's EBADF is simply false */
+    fd = (i64)open_tracked(p, "r");
+    close_tracked(fd);
+    CHECK(rt_isatty(fd) == 0);
+    /* the number may have been reused by the next open; the ioctl then observes
+     * the reused descriptor, and a regular file is still false, never a trap */
+    i64 again = sys3(2, (i64)p, 0, 0);
+    CHECK(again >= 0);
+    CHECK(rt_isatty(again) == 0);
+    CHECK(sys3(3, again, 0, 0) == 0);
+    /* the one true answer: the pty slave */
+    i64 m, s;
+    open_pty(&m, &s);
+    CHECK(rt_isatty(s) == 1);
+    CHECK(sys3(3, s, 0, 0) == 0 && sys3(3, m, 0, 0) == 0);
+    rt_finish();
+}
+
+/* rt_init records env_base = sp + 8*(argc+2), and getenv reads the fixed
+ * environment tests/meta_test.py sets: present, present-empty and absent, plus
+ * the invalid names. Every returned array is owned and freed here. */
+static void case_getenv_real(const char *dir) {
+    (void)dir;
+    CHECK(env_base == harness_sp + 8 * (harness_argc + 2));
+    u64 v = rt_getenv(ostr("OBO_META_ENV_PRESENT"));
+    expect_bytes(v, "hello", 5);
+    rt_free(v);
+    v = rt_getenv(ostr("OBO_META_ENV_EMPTY"));
+    CHECK(v != 0);                                 /* present-empty is non-nil */
+    CHECK(((Array *)v)->len == 0);
+    rt_free(v);
+    CHECK(rt_getenv(ostr("OBO_META_ENV_ABSENT")) == 0);
+    CHECK(rt_getenv(ostr("")) == 0);               /* empty name */
+    CHECK(rt_getenv(ostr("A=B")) == 0);            /* '=' in the name */
+    CHECK(rt_getenv(ostrn("OBO_META_ENV\0PRESENT", 19)) == 0);   /* embedded NUL */
+    rt_finish();
+}
+
+/* The crafted envp makes the scan rules observable: first match, the '='
+ * terminator, no prefix match, the empty-name and '=' rules, a malformed entry,
+ * and a copy the caller owns after the environment bytes change. */
+static char c_dup1[] = "OBO_CRAFT_DUP=first";
+static char c_dup2[] = "OBO_CRAFT_DUP=second";
+static char c_empty[] = "OBO_CRAFT_EMPTY=";
+static char c_eqname[] = "CRAFT=NAME=C";
+static char c_prefix[] = "OBO_CRAFT_PREFIX=value";
+static char c_esoteric[] = "=esoteric";
+static char c_malformed[] = "OBO_CRAFT_MALFORMED";
+static char c_short[] = "AB";
+static char c_own[] = "OBO_CRAFT_OWN=owned";
+
+static void case_getenv_crafted(const char *dir) {
+    (void)dir;
+    char *envp[10];
+    envp[0] = c_dup1; envp[1] = c_dup2; envp[2] = c_empty; envp[3] = c_eqname;
+    envp[4] = c_prefix; envp[5] = c_esoteric; envp[6] = c_malformed;
+    envp[7] = c_short; envp[8] = c_own; envp[9] = 0;
+    u64 saved = env_base;
+    env_base = (u64)envp;
+    u64 v = rt_getenv(ostr("OBO_CRAFT_DUP"));      /* first match wins */
+    expect_bytes(v, "first", 5);
+    rt_free(v);
+    v = rt_getenv(ostr("OBO_CRAFT_EMPTY"));
+    CHECK(v != 0);
+    CHECK(((Array *)v)->len == 0);
+    rt_free(v);
+    CHECK(rt_getenv(ostr("OBO_CRAFT_ABSENT")) == 0);
+    CHECK(rt_getenv(ostr("")) == 0);               /* "=esoteric" must not match */
+    CHECK(rt_getenv(ostr("CRAFT=NAME")) == 0);     /* the '=' rule */
+    CHECK(rt_getenv(ostr("OBO_CRAFT_PRE")) == 0);  /* a prefix is not a name */
+    CHECK(rt_getenv(ostr("OBO_CRAFT_MALFORMED")) == 0);   /* entry without '=' */
+    CHECK(rt_getenv(ostr("ABCD")) == 0);           /* entry shorter than the name */
+    CHECK(rt_getenv(ostrn("OBO_CRAFT_DU\0P", 13)) == 0);  /* embedded NUL */
+    u64 a = rt_getenv(ostr("OBO_CRAFT_OWN"));
+    u64 b = rt_getenv(ostr("OBO_CRAFT_OWN"));
+    expect_bytes(a, "owned", 5);
+    CHECK(a != b);                                 /* a fresh copy each call */
+    c_own[14] = 'X';                               /* change the environment bytes */
+    expect_bytes(a, "owned", 5);                   /* the copies are unaffected */
+    expect_bytes(b, "owned", 5);
+    c_own[14] = 'o';
+    rt_free(a);
+    rt_free(b);
+    env_base = saved;
+    rt_finish();
+}
+
 /* one synthetic EINTR per call kind; every call must still succeed. Run with
  * OBO_CHECK=1 and OBO_META_FAULT=eintr (and, for the inert check, without
  * OBO_CHECK). */
@@ -652,6 +803,11 @@ static void case_eintr(const char *dir) {
         rt_free(cell);
     }
     close_tracked((i64)fd);
+    /* the ioctl's EINTR retry: one synthetic EINTR, then the true answer */
+    i64 m, s;
+    open_pty(&m, &s);
+    CHECK(rt_isatty(s) == 1);
+    CHECK(sys3(3, s, 0, 0) == 0 && sys3(3, m, 0, 0) == 0);
     rt_finish();
 }
 
@@ -663,6 +819,8 @@ __asm__(".globl _entry\n"
         "\tcall test_main\n");
 
 void test_main(u64 *sp) {
+    harness_sp = (u64)sp;
+    harness_argc = *(u64 *)sp;
     rt_init((u64)sp, 0, 0);
     u64 argc = *(u64 *)sp;
     char **argv = (char **)(sp + 1);
@@ -682,6 +840,9 @@ void test_main(u64 *sp) {
     else if (c_eq(c, "readdir_empty")) case_readdir_empty(path);
     else if (c_eq(c, "readdir_checks")) case_readdir_checks(path);
     else if (c_eq(c, "readdir_closed")) case_readdir_closed(path);
+    else if (c_eq(c, "isatty_checks")) case_isatty_checks(path);
+    else if (c_eq(c, "getenv_real")) case_getenv_real(path);
+    else if (c_eq(c, "getenv_crafted")) case_getenv_crafted(path);
     else if (c_eq(c, "eintr")) case_eintr(path);
     fail(3);
 }

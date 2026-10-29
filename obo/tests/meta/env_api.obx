@@ -1,0 +1,140 @@
+// meta/env_api.obx: the env module and the isatty/getenv builtins at the program
+// level. tests/meta_test.py fixes the environment of every program it runs
+// (OBO_META_ENV_PRESENT=hello, OBO_META_ENV_EMPTY=, OBO_META_ENV_OWNED=owned)
+// and guarantees OBO_META_ENV_ABSENT is unset, so every answer here is
+// deterministic. The pty-true case (impossible to open from obo) and the
+// duplicate/'='-name scan rules live in tests/rt_meta_test.c's crafted envp.
+// expect: present hello
+// expect: present has
+// expect: present value hello
+// expect: empty len 0
+// expect: empty has
+// expect: empty value blank
+// expect: absent nil
+// expect: absent has false
+// expect: absent value blank
+// expect: getOr fallback
+// expect: getOr present hello
+// expect: getOr empty blank
+// expect: copies independent
+// expect: builtin present hello
+// expect: builtin absent nil
+// expect: isatty negative false
+// expect: isatty closed false
+// expect: isatty null false
+// expect: isatty file false
+// expect: isatty wrappers false
+import "env.obx" as env
+import "io.obx" as io
+
+fn main() {
+    let a = args()
+    let dir = a[1]
+
+    // present: get, has, value
+    let p = env::get("OBO_META_ENV_PRESENT")
+    if p == nil { println("present nil"); exit(1) }
+    if len(p) != 5 { println("present len ", len(p)); exit(1) }
+    let ps = string(p)
+    if ps != "hello" { println("present bytes ", ps); exit(1) }
+    println("present hello")
+    if !env::has("OBO_META_ENV_PRESENT") { println("present has false"); exit(1) }
+    println("present has")
+    let pv = env::value("OBO_META_ENV_PRESENT")
+    if pv != "hello" { println("present value ", pv); exit(1) }
+    println("present value hello")
+
+    // present with an empty value: non-nil empty, has true, value ""
+    let e = env::get("OBO_META_ENV_EMPTY")
+    if e == nil { println("empty nil"); exit(1) }
+    if len(e) != 0 { println("empty len ", len(e)); exit(1) }
+    println("empty len 0")
+    if !env::has("OBO_META_ENV_EMPTY") { println("empty has false"); exit(1) }
+    println("empty has")
+    let ev = env::value("OBO_META_ENV_EMPTY")
+    if ev != "" { println("empty value ", ev); exit(1) }
+    println("empty value blank")
+
+    // absent: nil, has false, value "", getOr fallback
+    let n = env::get("OBO_META_ENV_ABSENT")
+    if n != nil { println("absent present"); exit(1) }
+    println("absent nil")
+    if env::has("OBO_META_ENV_ABSENT") { println("absent has true"); exit(1) }
+    println("absent has false")
+    if env::value("OBO_META_ENV_ABSENT") != "" { println("absent value"); exit(1) }
+    println("absent value blank")
+    if env::getOr("OBO_META_ENV_ABSENT", "fallback") != "fallback" { println("getOr absent"); exit(1) }
+    println("getOr fallback")
+    if env::getOr("OBO_META_ENV_PRESENT", "fallback") != "hello" { println("getOr present"); exit(1) }
+    println("getOr present hello")
+    if env::getOr("OBO_META_ENV_EMPTY", "fallback") != "" { println("getOr empty fallback"); exit(1) }
+    println("getOr empty blank")
+
+    // each get is a fresh owned copy: changing one does not change the other
+    let x = env::get("OBO_META_ENV_OWNED")
+    if x == nil { println("owned nil"); exit(1) }
+    let y = env::get("OBO_META_ENV_OWNED")
+    if y == nil { println("owned nil 2"); exit(1) }
+    x[0] = 'X'
+    if y[0] != 'o' { println("copies shared"); exit(1) }
+    let ys = string(y)
+    if ys != "owned" { println("copy bytes ", ys); exit(1) }
+    println("copies independent")
+
+    // the builtins themselves, with the optional type spelled out
+    let raw: ?[]byte = getenv("OBO_META_ENV_PRESENT")
+    if raw == nil { println("raw nil"); exit(1) }
+    let rs = string(raw)
+    if rs != "hello" { println("raw bytes ", rs); exit(1) }
+    println("builtin present hello")
+    let raw2: ?[]byte = getenv("OBO_META_ENV_ABSENT")
+    if raw2 != nil { println("raw2 present"); exit(1) }
+    println("builtin absent nil")
+
+    // isatty: negative fds, a bad number, /dev/null, a closed tracked fd
+    if isatty(-1) { println("negative tty"); exit(1) }
+    if isatty(-987654) { println("negative big tty"); exit(1) }
+    if isatty(999) { println("bad fd tty"); exit(1) }
+    println("isatty negative false")
+
+    let nul = openFile("/dev/null", "r")
+    match nul {
+        ok(fd) {
+            if isatty(fd) { println("null tty"); exit(1) }
+            if io::isTty(fd) { println("null io tty"); exit(1) }
+            let c = closeFile(fd)
+            match c { ok(v) { } err(m, n2) { println("null close ", m, " ", n2); exit(1) } }
+            if isatty(fd) { println("closed tty"); exit(1) }
+            println("isatty closed false")
+            println("isatty null false")
+        }
+        err(m, c) { println("null open ", m, " ", c); exit(1) }
+    }
+
+    // a regular file: not a terminal, through either wrapper
+    let path = dir + "/env-file"
+    let w = openFile(path, "w")
+    match w {
+        ok(fd) {
+            let c = closeFile(fd)
+            match c { ok(v) { } err(m, n2) { println("file close ", m, " ", n2); exit(1) } }
+        }
+        err(m, c) { println("file create ", m, " ", c); exit(1) }
+    }
+    let r = openFile(path, "r")
+    match r {
+        ok(fd) {
+            if isatty(fd) { println("file tty"); exit(1) }
+            if io::isTty(fd) { println("file io tty"); exit(1) }
+            let c = closeFile(fd)
+            match c { ok(v) { } err(m, n2) { println("file close ", m, " ", n2); exit(1) } }
+            println("isatty file false")
+        }
+        err(m, c) { println("file open ", m, " ", c); exit(1) }
+    }
+    if io::isTty(-1) { println("wrapper negative"); exit(1) }
+    println("isatty wrappers false")
+
+    // the result type is bool: this declaration is the compiler-side check
+    let t: bool = isatty(stdin())
+}
