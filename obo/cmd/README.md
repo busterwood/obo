@@ -183,7 +183,7 @@ Supported flags (everything else is rejected, see below):
 | `-A`, `--almost-all` | dotfiles without `.`/`..`; `-A -a` is one `-a`, `-A -aa` shows dots |
 | `-d`, `--treat-dirs-as-files`, `--list-dirs` | describe a directory operand as one entry |
 | `-D`, `--only-dirs` / `-f`, `--only-files` | lstat-type filters; both together cancel; operand files are exempt |
-| `-r`, `--reverse` | reverse the whole order after the field sort |
+| `-r`, `--reverse` | descending comparison; comparator-equal entries keep readdir order (probed) |
 | `-s`, `--sort` | `name`/`filename` (default, natural fold), `Name`/`Filename`, `size`/`filesize`, `modified`/`date`/`time`/`mod`/`new`/`newest`, `extension`/`ext`, `Extension`/`Ext`, `type` |
 | `--group-directories-first`, `--group-directories-last` | stable final grouping; a symlink to a directory counts as a directory; with both, first wins (probed) |
 | `-F`, `--classify[=WHEN]` | `auto`/`never` no marker on non-TTY; `always` adds `*`, `/`, `\|` or `=`; `automatic` only after `=` |
@@ -263,14 +263,13 @@ are still consumed with eza's value mode before the unsupported error
 
 **Measured (this P4 branch).** eza binary 126,977 bytes (static, runtime
 included; the reference is 2,294,768). On 10,000 entries under
-`OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, restricted long peaks at 2,185,008
+`OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, restricted long peaks at 2,185,200
 live heap bytes and 2,432 KiB max RSS; the name-only listing peaks at
-2,184,384 and 2,432 KiB. `tests/eza.py --memory` gates on
+2,184,576 and 2,432 KiB. `tests/eza.py --memory` gates on
 `EZA_PEAK_MAX = 2,752,512` bytes (the first long measurement plus a 26.0%
 margin) and on no leak/double-close line. GNU time on the same tree measures
-the reference at 24,760 KiB max RSS (long) and 11,992 KiB (names) in the
-recorded run (about 24,200-25,400 KiB long and 12,000 KiB names across runs);
-that measurement is printed for comparison and is not gated.
+the reference at about 24.3-25.4 MB max RSS (long) and 12.0 MB (names)
+across runs; that measurement is printed for comparison and is not gated.
 
 ## Diagnostics and divergences
 

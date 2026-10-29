@@ -117,7 +117,7 @@ REFERENCE_PATH = '/usr/bin:/bin'
 FSIZE = 16 * 1024 * 1024                                 # per-process cap
 # The eza memory cap is a measured bound, not the compiler's PEAK_BUDGET:
 # the first gated runs of the two 10,000-entry cases (P4, OBO_STATS=1) peaked
-# at 2,185,008 (long) and 2,184,384 (names) live heap bytes, so the cap is the
+# at 2,185,200 (long) and 2,184,576 (names) live heap bytes, so the cap is the
 # long measurement plus a 26.0% margin (2,752,512 = 672 * 4096). A few hundred
 # bytes of the peak track the random temp-path length in the environment.
 EZA_PEAK_MAX = 2752512
@@ -1137,9 +1137,9 @@ class Harness:
         are skipped.
         """
         if OWN in case.tags or gold is None:
-            return ('skip', 'own eza not implemented (P4)')
+            return ('skip', 'own eza source absent (P0 fallback)')
         if self.ref.kind != 'pinned':
-            return ('skip', 'own eza not implemented (P4); no pinned reference '
+            return ('skip', 'own eza source absent; no pinned reference '
                             'to check the reference golden')
         ref_run = self.run_reference(case, base, root)
         problems = []
@@ -1248,10 +1248,13 @@ class Harness:
         deliberately not gated (the reference is a different implementation).
         """
         if not own_available():
-            raise SetupError('eza build not implemented (P4)')
+            raise SetupError('eza source absent; the memory gate needs cmd/eza.obx')
         self.build()
         numbers = []
-        for case in self.selection(memory=True):
+        cases = self.selection(memory=True)
+        if not cases:
+            raise SetupError('no memory cases selected')
+        for case in cases:
             base, root, caps = self.prepare_case(case)
             try:
                 env = self.case_env(base, case)
@@ -1266,31 +1269,31 @@ class Harness:
                 other = [x for x in lines
                          if x.startswith(b'obo: ') or x.startswith(b'obx: ')]
                 if res.timed_out:
-                    self.failures.append((case.key, 'timed out'))
+                    self.failures.append((case, 'timed out'))
                     continue
                 if res.rc != 0:
                     self.failures.append(
-                        (case.key, 'exit %s (a leak/double close exits 5/8/9)'
+                        (case, 'exit %s (a leak/double close exits 5/8/9)'
                          % res.rc))
                     continue
                 if len(stats) != 1 or len(other) != 1:
                     self.failures.append(
-                        (case.key, 'stats line missing or duplicated '
+                        (case, 'stats line missing or duplicated '
                          '(leak/double close?): %r' % res.stderr[-400:]))
                     continue
                 m = re.match(pattern, stats[0])
                 peak, alloc = int(m.group(1)), int(m.group(2))
                 if peak > EZA_PEAK_MAX:
                     self.failures.append(
-                        (case.key, 'peak %d > EZA_PEAK_MAX %d live heap bytes'
+                        (case, 'peak %d > EZA_PEAK_MAX %d live heap bytes'
                          % (peak, EZA_PEAK_MAX)))
                     continue
                 numbers.append((case.key, peak, alloc))
                 self.passed += 1
                 print('ok   %s: %d peak bytes, %d allocated (EZA_PEAK_MAX %d)'
                       % (case.key, peak, alloc, EZA_PEAK_MAX))
-                # Measurement only: our own max RSS in the plain case
-                # environment, then the pinned reference over the same tree.
+                # Measurement only: our own max RSS, then the pinned
+                # reference over the same tree.
                 our_argv = [self.exe] + self.expand_argv(case, root)
                 rss = measure_rss(our_argv, self.run_cwd(root, case), env,
                                   os.path.join(base, '.our.stdout'),
@@ -1445,7 +1448,7 @@ class Harness:
         ref_cases = [c for c in cases if GOLDEN_TAG in c.tags]
         own_cases = [c for c in cases if OWN in c.tags]
         if own_cases and not own_available():
-            print('own eza not implemented (P4); skipping %d own goldens'
+            print('own eza source absent; skipping %d own goldens'
                   % len(own_cases))
             own_cases = []
         if own_cases:
@@ -1495,7 +1498,7 @@ def list_cases():
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        description='Differential gate for eza (P0 skeleton)')
+        description='Differential gate for eza (E0, P4)')
     ap.add_argument('-k', metavar='PATTERN',
                     help='only cases whose name/key contains PATTERN')
     ap.add_argument('-v', '--verbose', action='store_true')
@@ -1547,7 +1550,13 @@ def main(argv=None):
             return 0
         if a.memory:
             h.run_memory()
-            return 0
+            for case, detail in h.failures:
+                print('FAIL %s' % case.key)
+                for d in (detail if isinstance(detail, list) else [detail]):
+                    print('     ' + d)
+            print('memory: %d passed, %d failed'
+                  % (h.passed, len(h.failures)))
+            return 1 if h.failures else 0
         if own_available():
             h.build()
         h.validate_goldens()

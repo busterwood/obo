@@ -70,24 +70,24 @@ Python compiler before it did.
 ## Current status (29 October 2026)
 
 The ownership compiler is merged and self-hosting. The size-fixed compiler is
-the promoted seed: `obo/seed/obo` is 421,889 bytes (sha256 `55dab101…`), and
-`make` rebuilds `obo` to the same size from the current source (sha256
-`4892cea9…` on this P3 branch). It trims the runtime data segment and uses
-`leave; ret` epilogues. `Result[T]`/`try` and incremental I/O are done
+the promoted seed: `obo/seed/obo` is 421,889 bytes (sha256 `4892cea9…`,
+`--version` 0.3), and `make` rebuilds `obo` to the identical binary from the
+current source (the earlier pre-P3 seed was 0.2, sha256 `55dab101…`). It
+trims the runtime data segment and uses `leave; ret` epilogues. `Result[T]`/`try` and incremental I/O are done
 (merged and seeded); modules are done in both stages (source imports and
 `.sym`/`--check`); the first command-line tools (`cat`, `wc`, `sort`) and their
 GNU differential gate are done and merged. P3 adds the runtime metadata
 builtins (`readDirFd`, `statPath`, `lstatPath`, `readLinkPath`), `lib/fs.obx`
-and `OBO_VERSION` 0.3; the 0.3 compiler already recomputes itself to the same
-421,889-byte binary (`obo` == stage 2 == stage 3, checked with `cmp`), and the
-seed is promoted once after review.
+and `OBO_VERSION` 0.3; the 0.3 compiler recomputes itself to the same
+421,889-byte binary (`seed/obo` == `obo` == stage 2 == stage 3, checked with
+`cmp`), and the seed was promoted at `e8703b2`.
 
 | Metric | Value |
 |---|---:|
 | Compiler source | 10,492 lines, 384,760 bytes |
 | Compiler built by the seed (`obo`, P3 source, `--version` 0.3) | 421,889 bytes (sha256 `4892cea9…`) |
 | Stage 2 == stage 3 | 421,889 bytes, identical to the seed-built `obo` (checked with `cmp`) |
-| Promoted seed (pre-P3, `--version` 0.2) | 421,889 bytes (sha256 `55dab101…`) |
+| Promoted seed (`--version` 0.3) | 421,889 bytes (sha256 `4892cea9…`) |
 | Self-compile wall time | 0.11 s (main-tree median; 0.18-0.20 s on this branch's loaded review host) |
 | Self-compile live peak | 1,642,416 bytes |
 | Total allocated | 35,253,408 bytes |
@@ -98,8 +98,8 @@ seed is promoted once after review.
 | Tool binaries | cat 40,961; wc 53,249; sort 53,249 bytes (static, runtime included) |
 | eza E0 differential gate | 219/219 non-memory (185 exact goldens replayed against the pinned reference, 29 live, 5 own) + 2 memory cases |
 | eza E0 binary | 126,977 bytes (static, runtime included; reference eza 0.23.3 is 2,294,768) |
-| eza 10k-entry live peak | 2,185,008 bytes restricted long / 2,184,384 names; `EZA_PEAK_MAX` 2,752,512 |
-| eza 10k-entry max RSS | 2,432 KiB long / 2,432 KiB names; pinned reference 24,760 KiB long / 11,992 KiB names in the recorded run (measurement only) |
+| eza 10k-entry live peak | 2,185,200 bytes restricted long / 2,184,576 names; `EZA_PEAK_MAX` 2,752,512 |
+| eza 10k-entry max RSS | 2,432 KiB long / 2,432 KiB names; pinned reference about 24.7-25.4 MB long / 12.0 MB names across runs (measurement only) |
 | Minimal static executable | 28,673 bytes (runtime included) |
 
 Live peak varies by a few hundred bytes with the source path and total

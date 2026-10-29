@@ -9,9 +9,12 @@
 // section 7. Multiple operands, tree, grid, colour, icons, --no-quotes and the
 // later sort keys are rejected with this build's own message.
 //
-// Stages A and B: the command line, operand model and diagnostics, then
-// directory iteration with synthesized dots, -D/-f, the E0 sort keys, quoting,
-// symlink target display and -F markers. Restricted long follows in stage C.
+// One operand or none; a listing shows names, an operand shows its parent
+// prefix and name. Entries are read through fs, filtered (-a/-A, -D/-f), sorted
+// through lib/sort, quoted and rendered with symlink targets and -F markers;
+// the restricted long view adds the permission, size, optional uid and date
+// cells. Errors follow eza's exit classes (0/1/2/3); a permission-denied
+// directory keeps the probe's status 0.
 
 module eza
 
@@ -89,6 +92,13 @@ type Cols = ref record {
 // A fresh empty string array (each call owns its own array).
 fn noStrings(): []string {
     return new []string(0)
+}
+
+fn stringList2(a: string, b: string): []string {
+    var xs = new []string(0)
+    append(xs, a)
+    append(xs, b)
+    return xs
 }
 
 fn stringList3(a: string, b: string, c: string): []string {
@@ -245,8 +255,8 @@ fn specs(): []cli::FlagSpec {
     append(s, mkSpec(byte(0), "absolute", cli::VALUE_OPTIONAL, absoluteConsume(), absoluteConsume(), noStrings(), ""))
     append(s, mkSpec(byte(0), "color-scale", cli::VALUE_OPTIONAL, scaleConsume(), scaleConsume(), noStrings(), ""))
     append(s, mkSpec(byte(0), "colour-scale", cli::VALUE_OPTIONAL, scaleConsume(), scaleConsume(), noStrings(), ""))
-    append(s, mkSpec(byte(0), "color-scale-mode", cli::VALUE_REQUIRED, noStrings(), noStrings(), noStrings(), ""))
-    append(s, mkSpec(byte(0), "colour-scale-mode", cli::VALUE_REQUIRED, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "color-scale-mode", cli::VALUE_REQUIRED, noStrings(), noStrings(), stringList2("fixed", "gradient"), ""))
+    append(s, mkSpec(byte(0), "colour-scale-mode", cli::VALUE_REQUIRED, noStrings(), noStrings(), stringList2("fixed", "gradient"), ""))
     append(s, mkSpec('I', "ignore-glob", cli::VALUE_REQUIRED, noStrings(), noStrings(), noStrings(), ""))
     append(s, mkSpec(byte(0), "git-ignore", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
     append(s, mkSpec(byte(0), "no-symlinks", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
@@ -260,7 +270,7 @@ fn specs(): []cli::FlagSpec {
     append(s, mkSpec(byte(0), "changed", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
     append(s, mkSpec('S', "blocksize", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
     append(s, mkSpec(byte(0), "total-size", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
-    append(s, mkSpec('t', "time", cli::VALUE_REQUIRED, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('t', "time", cli::VALUE_REQUIRED, noStrings(), noStrings(), stringList4("modified", "changed", "accessed", "created"), ""))
     append(s, mkSpec('u', "accessed", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
     append(s, mkSpec('U', "created", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
     append(s, mkSpec(byte(0), "hyperlink", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
