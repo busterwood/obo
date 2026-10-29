@@ -1,0 +1,296 @@
+// support.obx: shared assertions and small array builders for tests/stdlib.
+//
+// This is a module, not a test root. tests/stdlib.py collects only headerless
+// files as cases; every root imports this file from its own directory
+// (importer-directory-first resolution) and LIBDIR supplies the stdlib modules.
+//
+// Each check prints one FAIL line with the label and the mismatching values,
+// then exits 1. Successful checks print nothing; a root prints its single
+// "ok" line at the end and the runner compares stdout against the // expect:
+// markers. Values are compared exactly, never approximately.
+module support
+
+import "cli.obx" as cli
+
+fn fail(label: string, detail: string) {
+    println("FAIL ", label, ": ", detail)
+    exit(1)
+}
+
+pub fn checkInt(label: string, got: int, want: int) {
+    if got != want { fail(label, "got " + string(got) + ", want " + string(want)) }
+}
+
+pub fn checkBool(label: string, got: bool, want: bool) {
+    if got != want {
+        if want { fail(label, "got false, want true") }
+        fail(label, "got true, want false")
+    }
+}
+
+pub fn checkByte(label: string, got: byte, want: byte) {
+    if got != want { fail(label, "got " + string(int(got)) + ", want " + string(int(want))) }
+}
+
+pub fn checkStr(label: string, got: string, want: string) {
+    if got != want { fail(label, "got [" + got + "] want [" + want + "]") }
+}
+
+pub fn checkOrder(label: string, got: &[]int, want: &[]int) {
+    if len(got) != len(want) {
+        fail(label, "length " + string(len(got)) + ", want " + string(len(want)))
+    }
+    for i in 0..len(got) {
+        if got[i] != want[i] {
+            fail(label, "at " + string(i) + " got " + string(got[i]) + ", want " + string(want[i]))
+        }
+    }
+}
+
+pub fn checkStrs(label: string, got: &[]string, want: &[]string) {
+    if len(got) != len(want) {
+        fail(label, "length " + string(len(got)) + ", want " + string(len(want)))
+    }
+    for i in 0..len(got) {
+        if got[i] != want[i] {
+            fail(label, "at " + string(i) + " got [" + got[i] + "] want [" + want[i] + "]")
+        }
+    }
+}
+
+// a successful split result must hold exactly want
+pub fn checkParts(label: string, r: Result[[]string], want: &[]string) {
+    match r {
+        ok(v) { checkStrs(label, v, want) }
+        err(m, c) { fail(label, "unexpected error [" + m + "] code " + string(c)) }
+    }
+}
+
+// a split result must be err(message, EINVAL 22)
+pub fn checkSplitErr(label: string, r: Result[[]string], message: string) {
+    match r {
+        ok(v) { fail(label, "expected an error, got " + string(len(v)) + " parts") }
+        err(m, c) {
+            if m != message { fail(label, "message [" + m + "] want [" + message + "]") }
+            checkInt(label, c, 22)
+        }
+    }
+}
+
+pub fn list0(): []string {
+    return new []string(0)
+}
+
+pub fn list1(a: string): []string {
+    var out = new []string(0)
+    append(out, a)
+    return out
+}
+
+pub fn list2(a: string, b: string): []string {
+    var out = new []string(0)
+    append(out, a)
+    append(out, b)
+    return out
+}
+
+pub fn list3(a: string, b: string, c: string): []string {
+    var out = new []string(0)
+    append(out, a)
+    append(out, b)
+    append(out, c)
+    return out
+}
+
+pub fn list4(a: string, b: string, c: string, d: string): []string {
+    var out = new []string(0)
+    append(out, a)
+    append(out, b)
+    append(out, c)
+    append(out, d)
+    return out
+}
+
+pub fn list5(a: string, b: string, c: string, d: string, e: string): []string {
+    var out = new []string(0)
+    append(out, a)
+    append(out, b)
+    append(out, c)
+    append(out, d)
+    append(out, e)
+    return out
+}
+
+pub fn ints0(): []int {
+    return new []int(0)
+}
+
+pub fn ints1(a: int): []int {
+    var out = new []int(0)
+    append(out, a)
+    return out
+}
+
+pub fn ints2(a: int, b: int): []int {
+    var out = new []int(0)
+    append(out, a)
+    append(out, b)
+    return out
+}
+
+pub fn ints3(a: int, b: int, c: int): []int {
+    var out = new []int(0)
+    append(out, a)
+    append(out, b)
+    append(out, c)
+    return out
+}
+
+pub fn ints4(a: int, b: int, c: int, d: int): []int {
+    var out = new []int(0)
+    append(out, a)
+    append(out, b)
+    append(out, c)
+    append(out, d)
+    return out
+}
+
+pub fn ints5(a: int, b: int, c: int, d: int, e: int): []int {
+    var out = new []int(0)
+    append(out, a)
+    append(out, b)
+    append(out, c)
+    append(out, d)
+    append(out, e)
+    return out
+}
+
+pub fn ints6(a: int, b: int, c: int, d: int, e: int, f: int): []int {
+    var out = new []int(0)
+    append(out, a)
+    append(out, b)
+    append(out, c)
+    append(out, d)
+    append(out, e)
+    append(out, f)
+    return out
+}
+
+pub fn ints7(a: int, b: int, c: int, d: int, e: int, f: int, g: int): []int {
+    var out = new []int(0)
+    append(out, a)
+    append(out, b)
+    append(out, c)
+    append(out, d)
+    append(out, e)
+    append(out, f)
+    append(out, g)
+    return out
+}
+
+// cliSpecs is the shared flag table for cli_parse and cli_errors. It follows
+// eza 0.23.3's grammar only where noted. Entries marked SYNTHETIC are not
+// eza's real flags: P4 must take its accept sets from the design and eza, not
+// from this table.
+//   - MATCHES eza 0.23.3: -a/--all and -A/--almost-all (Forbidden),
+//     -l/--long (Forbidden), -s/--sort (Necessary with the 12 real choices),
+//     -I/--ignore-glob (Necessary, no choices), -F/--classify and --color
+//     (Optional consume always/auto/never, default auto; accept adds
+//     "automatic", which eza's deduce accepts as an auto alias).
+//   - E0 SUBSET: --icons is Optional with the same consume list, but accept
+//     omits "always" (design B7: E0 rejects --icons=always; real eza accepts
+//     it). --color/--classify accept the full WHEN set plus automatic.
+//   - SYNTHETIC -o/--output: a required flag with a short form; eza's -o is
+//     --octal-permissions (Forbidden) and eza has no --output.
+//   - SYNTHETIC --level: optional with an empty default and no short form;
+//     eza's -L/--level is Necessary.
+//   - SYNTHETIC --time-style choices: an E0 subset (default, long-iso); eza
+//     lists default, long-iso, full-iso, iso, relative.
+//   - SYNTHETIC --extra: exists only to exercise an optional whose default
+//     accept rejects; it has no eza counterpart.
+fn cvals0(): []string {
+    return new []string(0)
+}
+
+fn cvals1(a: string): []string {
+    var out = new []string(0)
+    append(out, a)
+    return out
+}
+
+fn cvals2(a: string, b: string): []string {
+    var out = new []string(0)
+    append(out, a)
+    append(out, b)
+    return out
+}
+
+fn cvals3(a: string, b: string, c: string): []string {
+    var out = new []string(0)
+    append(out, a)
+    append(out, b)
+    append(out, c)
+    return out
+}
+
+fn cvals4(a: string, b: string, c: string, d: string): []string {
+    var out = new []string(0)
+    append(out, a)
+    append(out, b)
+    append(out, c)
+    append(out, d)
+    return out
+}
+
+fn sortVals(): []string {
+    var out = new []string(0)
+    append(out, "name")
+    append(out, "Name")
+    append(out, "size")
+    append(out, "extension")
+    append(out, "Extension")
+    append(out, "modified")
+    append(out, "changed")
+    append(out, "accessed")
+    append(out, "created")
+    append(out, "inode")
+    append(out, "type")
+    append(out, "none")
+    return out
+}
+
+pub fn cliSpecs(): []cli::FlagSpec {
+    var out = new []cli::FlagSpec(0)
+    append(out, new cli::FlagSpec{short: 'a', long: "all", mode: cli::VALUE_NONE,
+        consume: cvals0(), accept: cvals0(), choices: cvals0(), default: ""})
+    append(out, new cli::FlagSpec{short: 'A', long: "almost-all", mode: cli::VALUE_NONE,
+        consume: cvals0(), accept: cvals0(), choices: cvals0(), default: ""})
+    append(out, new cli::FlagSpec{short: 's', long: "sort", mode: cli::VALUE_REQUIRED,
+        consume: cvals0(), accept: sortVals(), choices: sortVals(), default: ""})
+    append(out, new cli::FlagSpec{short: 'F', long: "classify", mode: cli::VALUE_OPTIONAL,
+        consume: cvals3("always", "auto", "never"),
+        accept: cvals4("always", "automatic", "auto", "never"),
+        choices: cvals0(), default: "auto"})
+    append(out, new cli::FlagSpec{short: 0, long: "color", mode: cli::VALUE_OPTIONAL,
+        consume: cvals3("always", "auto", "never"),
+        accept: cvals4("always", "automatic", "auto", "never"),
+        choices: cvals0(), default: "auto"})
+    append(out, new cli::FlagSpec{short: 0, long: "icons", mode: cli::VALUE_OPTIONAL,
+        consume: cvals3("always", "auto", "never"),
+        accept: cvals3("automatic", "auto", "never"),
+        choices: cvals0(), default: "auto"})
+    append(out, new cli::FlagSpec{short: 'I', long: "ignore-glob", mode: cli::VALUE_REQUIRED,
+        consume: cvals0(), accept: cvals0(), choices: cvals0(), default: ""})
+    append(out, new cli::FlagSpec{short: 'l', long: "long", mode: cli::VALUE_NONE,
+        consume: cvals0(), accept: cvals0(), choices: cvals0(), default: ""})
+    append(out, new cli::FlagSpec{short: 'o', long: "output", mode: cli::VALUE_REQUIRED,
+        consume: cvals0(), accept: cvals0(), choices: cvals0(), default: ""})
+    append(out, new cli::FlagSpec{short: 0, long: "level", mode: cli::VALUE_OPTIONAL,
+        consume: cvals0(), accept: cvals0(), choices: cvals0(), default: ""})
+    append(out, new cli::FlagSpec{short: 0, long: "time-style", mode: cli::VALUE_REQUIRED,
+        consume: cvals0(), accept: cvals2("default", "long-iso"),
+        choices: cvals2("default", "long-iso"), default: ""})
+    append(out, new cli::FlagSpec{short: 0, long: "extra", mode: cli::VALUE_OPTIONAL,
+        consume: cvals1("ok"), accept: cvals1("ok"), choices: cvals0(), default: "oops"})
+    return out
+}

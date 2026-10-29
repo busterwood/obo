@@ -1,0 +1,9 @@
+// paths_absent_base: base was removed from the v2 paths API (design 5.2);
+// importing paths must not export it.
+// expect-compile-error: module 'paths' has no exported member 'base' (only 'pub' declarations are visible)
+import "paths.obx" as paths
+
+fn main() {
+    let p = paths::base("a/b")
+    println(p)
+}

@@ -1,0 +1,194 @@
+// obo/lib/sort.obx: stable index sorts for the eza ordering model.
+//
+//     import "sort.obx" as sort        // from obo/lib/
+//
+// Every order* / sortOrder* function returns a new owned []int permutation of
+// entry ids; the caller keeps ownership of the key arrays. Sorting permutes
+// ids only: it never moves owned strings or records, and keys are read through
+// the caller's arrays. All orders are ascending and stable: equal keys keep
+// their relative input order. There is no reverse flag; eza reverses the
+// returned order afterwards (sort::reverse), which is what makes a reversed
+// sort keep its ties in reverse order (a comparator negation would not).
+//
+// The implementation is an iterative bottom-up merge sort with one owned
+// scratch []int: O(n log n), no recursion, no per-comparison allocation. An
+// out-of-range id in a caller-supplied order is a caller bug and traps; these
+// functions do not validate orders.
+//
+// orderStrings/orderNatural compare keys directly; sortOrder* sort an existing
+// order (for example the previous sort key's result) stably with respect to
+// that order, which is how eza chains --sort fields and extension/type passes.
+module sort
+
+import "strings.obx" as strings
+
+// compare keys[i] and keys[j]: 0 = byte order, 1 = natural, 2 = natural folded
+fn cmpKey(keys: &[]string, i: int, j: int, mode: int): int {
+    if mode == 1 { return strings::natcmp(keys[i], keys[j]) }
+    if mode == 2 { return strings::natcmpFold(keys[i], keys[j]) }
+    return strings::cmp(keys[i], keys[j])
+}
+
+// stable bottom-up merge sort of order, comparing keys[order[x]]
+fn mergeStrings(order: []int, keys: &[]string, mode: int): []int {
+    let n = len(order)
+    if n < 2 { return order }
+    var aux = new []int(n)
+    var width = 1
+    while width < n {
+        var lo = 0
+        while lo < n {
+            var mid = lo + width
+            if mid > n { mid = n }
+            var hi = mid + width
+            if hi > n { hi = n }
+            var a = lo
+            var b = mid
+            var k = lo
+            while a < mid && b < hi {
+                let c = cmpKey(keys, order[a], order[b], mode)
+                if c <= 0 {
+                    aux[k] = order[a]
+                    a += 1
+                } else {
+                    aux[k] = order[b]
+                    b += 1
+                }
+                k += 1
+            }
+            while a < mid {
+                aux[k] = order[a]
+                a += 1
+                k += 1
+            }
+            while b < hi {
+                aux[k] = order[b]
+                b += 1
+                k += 1
+            }
+            for t in lo..hi { order[t] = aux[t] }
+            lo = hi
+        }
+        width *= 2
+    }
+    return order
+}
+
+// the same merge over ascending int keys, comparing keys[order[x]]
+fn mergeInts(order: []int, keys: &[]int): []int {
+    let n = len(order)
+    if n < 2 { return order }
+    var aux = new []int(n)
+    var width = 1
+    while width < n {
+        var lo = 0
+        while lo < n {
+            var mid = lo + width
+            if mid > n { mid = n }
+            var hi = mid + width
+            if hi > n { hi = n }
+            var a = lo
+            var b = mid
+            var k = lo
+            while a < mid && b < hi {
+                if keys[order[a]] <= keys[order[b]] {
+                    aux[k] = order[a]
+                    a += 1
+                } else {
+                    aux[k] = order[b]
+                    b += 1
+                }
+                k += 1
+            }
+            while a < mid {
+                aux[k] = order[a]
+                a += 1
+                k += 1
+            }
+            while b < hi {
+                aux[k] = order[b]
+                b += 1
+                k += 1
+            }
+            for t in lo..hi { order[t] = aux[t] }
+            lo = hi
+        }
+        width *= 2
+    }
+    return order
+}
+
+// [0, 1, ..., n-1]; n=0 gives an empty order
+pub fn identity(n: int): []int {
+    var out = new []int(n)
+    for i in 0..n { out[i] = i }
+    return out
+}
+
+// a new owned copy of xs (the input order for sortOrder*)
+fn copyInts(xs: &[]int): []int {
+    var out = new []int(len(xs))
+    for i in 0..len(xs) { out[i] = xs[i] }
+    return out
+}
+
+// ascending unsigned byte order of keys
+pub fn orderStrings(keys: &[]string): []int {
+    let init = identity(len(keys))
+    return mergeStrings(init, keys, 0)
+}
+
+// eza name order; fold selects natcmpFold (the default eza order) over natcmp
+pub fn orderNatural(keys: &[]string, fold: bool): []int {
+    var mode = 1
+    if fold { mode = 2 }
+    let init = identity(len(keys))
+    return mergeStrings(init, keys, mode)
+}
+
+// ascending int order of keys
+pub fn orderInts(keys: &[]int): []int {
+    let init = identity(len(keys))
+    return mergeInts(init, keys)
+}
+
+// stable sort of an existing order in unsigned byte order of keys
+pub fn sortOrderStrings(order: &[]int, keys: &[]string): []int {
+    let init = copyInts(order)
+    return mergeStrings(init, keys, 0)
+}
+
+// stable sort of an existing order in eza name order (fold as in orderNatural)
+pub fn sortOrderNatural(order: &[]int, keys: &[]string, fold: bool): []int {
+    var mode = 1
+    if fold { mode = 2 }
+    let init = copyInts(order)
+    return mergeStrings(init, keys, mode)
+}
+
+// stable sort of an existing order by ascending int keys
+pub fn sortOrderInts(order: &[]int, keys: &[]int): []int {
+    let init = copyInts(order)
+    return mergeInts(init, keys)
+}
+
+// reverse the whole order end-to-end; [a,b,c] becomes [c,b,a]
+pub fn reverse(mut order: &[]int) {
+    let n = len(order)
+    var i = 0
+    var j = n - 1
+    while i < j {
+        let tmp = order[i]
+        order[i] = order[j]
+        order[j] = tmp
+        i += 1
+        j -= 1
+    }
+}
+
+// sort values ascending in place (scalar convenience; eza uses orders)
+pub fn sortInts(mut values: &[]int) {
+    let order = orderInts(values)
+    let snapshot = copyInts(values)
+    for i in 0..len(order) { values[i] = snapshot[order[i]] }
+}

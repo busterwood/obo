@@ -1,0 +1,80 @@
+// cli_helpers: argv() against args(), and the token predicates used by parse.
+// These pin the split rule on its own: a trailing '=' does not split, a split
+// needs a non-empty name and at least one byte after the '=', and a non-split
+// long name is the whole rest after "--".
+// expect: cli helpers ok
+import "cli.obx" as cli
+import "support.obx" as t
+
+fn main() {
+    // argv() is args() including argv[0]; the runner passes one scratch dir
+    let a = args()
+    let v = cli::argv()
+    t::checkInt("argv len", len(v), len(a))
+    var i = 0
+    while i < len(a) {
+        t::checkStr("argv " + string(i), v[i], a[i])
+        i += 1
+    }
+    t::checkBool("argv has program", len(v) >= 1, true)
+    t::checkBool("argv has scratch", len(v) >= 2, true)
+
+    // shortName: a[i], or the byte 0 outside the string
+    t::checkByte("shortName 0", cli::shortName("-xQ", 0), '-')
+    t::checkByte("shortName 1", cli::shortName("-xQ", 1), 'x')
+    t::checkByte("shortName 2", cli::shortName("-xQ", 2), 'Q')
+    t::checkByte("shortName 3", cli::shortName("-xQ", 3), byte(0))
+    t::checkByte("shortName -1", cli::shortName("-xQ", -1), byte(0))
+    t::checkByte("shortName empty", cli::shortName("", 0), byte(0))
+    t::checkByte("shortName a", cli::shortName("a", 0), 'a')
+    t::checkByte("shortName --", cli::shortName("--", 1), '-')
+
+    // isLong: at least "--x" (the bare "--" is the terminator, not long)
+    t::checkBool("isLong empty", cli::isLong(""), false)
+    t::checkBool("isLong dash", cli::isLong("-"), false)
+    t::checkBool("isLong terminator", cli::isLong("--"), false)
+    t::checkBool("isLong short", cli::isLong("-a"), false)
+    t::checkBool("isLong short long", cli::isLong("-ab"), false)
+    t::checkBool("isLong x", cli::isLong("--x"), true)
+    t::checkBool("isLong three", cli::isLong("---"), true)
+    t::checkBool("isLong three x", cli::isLong("---x"), true)
+    t::checkBool("isLong empty name", cli::isLong("--=x"), true)
+    t::checkBool("isLong trailing dashes", cli::isLong("a--"), false)
+
+    // longName: "" for non-long; the split name or the whole rest
+    t::checkStr("longName empty", cli::longName(""), "")
+    t::checkStr("longName short", cli::longName("-a"), "")
+    t::checkStr("longName terminator", cli::longName("--"), "")
+    t::checkStr("longName x", cli::longName("--x"), "x")
+    t::checkStr("longName three x", cli::longName("---x"), "-x")
+    t::checkStr("longName split", cli::longName("--sort=name"), "sort")
+    t::checkStr("longName double equals", cli::longName("--foo=="), "foo")
+    t::checkStr("longName trailing equals", cli::longName("--foo="), "foo=")
+    t::checkStr("longName empty prefix", cli::longName("--=x"), "=x")
+    t::checkStr("longName two equals", cli::longName("--a=b=c"), "a")
+    t::checkStr("longName dash name", cli::longName("---=x"), "-")
+
+    // hasLongValue: the same split rule
+    t::checkBool("hasValue empty", cli::hasLongValue(""), false)
+    t::checkBool("hasValue short", cli::hasLongValue("-a"), false)
+    t::checkBool("hasValue x", cli::hasLongValue("--x"), false)
+    t::checkBool("hasValue split", cli::hasLongValue("--sort=name"), true)
+    t::checkBool("hasValue double", cli::hasLongValue("--foo=="), true)
+    t::checkBool("hasValue triple", cli::hasLongValue("--a=b=c"), true)
+    t::checkBool("hasValue dash name", cli::hasLongValue("---=x"), true)
+    t::checkBool("hasValue trailing", cli::hasLongValue("--foo="), false)
+    t::checkBool("hasValue empty prefix", cli::hasLongValue("--=x"), false)
+
+    // longValue: the bytes after the first '=' when the token splits
+    t::checkStr("longValue empty", cli::longValue(""), "")
+    t::checkStr("longValue short", cli::longValue("-a"), "")
+    t::checkStr("longValue x", cli::longValue("--x"), "")
+    t::checkStr("longValue split", cli::longValue("--sort=name"), "name")
+    t::checkStr("longValue double", cli::longValue("--foo=="), "=")
+    t::checkStr("longValue two equals", cli::longValue("--a=b=c"), "b=c")
+    t::checkStr("longValue dash name", cli::longValue("---=x"), "x")
+    t::checkStr("longValue trailing", cli::longValue("--foo="), "")
+    t::checkStr("longValue empty prefix", cli::longValue("--=x"), "")
+
+    println("cli helpers ok")
+}

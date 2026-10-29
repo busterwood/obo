@@ -1,0 +1,109 @@
+// strings_split_join: split/splitByte/join, including the empty input, empty
+// fields, trailing separators, overlapping matches and the empty-separator
+// error. Round trips pin that join reproduces the original bytes.
+// expect: strings split join ok
+import "strings.obx" as strings
+import "support.obx" as t
+
+fn roundTripSplit(label: string, s: string, sep: string) {
+    let r = strings::split(s, sep)
+    match r {
+        ok(v) { t::checkStr(label, strings::join(v, sep), s) }
+        err(m, c) { t::checkStr(label, "error " + m + " " + string(c), "no error") }
+    }
+}
+
+fn roundTripByte(label: string, s: string, sep: byte) {
+    let r = strings::splitByte(s, sep)
+    match r {
+        ok(v) {
+            var wide = new []byte(1)
+            wide[0] = sep
+            t::checkStr(label, strings::join(v, strings::fromBytes(wide)), s)
+        }
+        err(m, c) { t::checkStr(label, "error " + m + " " + string(c), "no error") }
+    }
+}
+
+fn main() {
+    // split: an empty input is one empty field; a trailing separator adds a
+    // trailing empty field; matches do not overlap
+    let w1 = t::list1("")
+    t::checkParts("split empty", strings::split("", ","), w1)
+    let w2 = t::list4("a", "b", "", "c")
+    t::checkParts("split fields", strings::split("a,b,,c", ","), w2)
+    let w3 = t::list3("a", "", "b")
+    t::checkParts("split middle empty", strings::split("a,,b", ","), w3)
+    let w4 = t::list3("", "a", "")
+    t::checkParts("split edge empties", strings::split(",a,", ","), w4)
+    let w5 = t::list2("", "a")
+    t::checkParts("split overlap", strings::split("aaa", "aa"), w5)
+    let w6 = t::list1("abc")
+    t::checkParts("split no match", strings::split("abc", "abcd"), w6)
+    let w7 = t::list2("a", "c")
+    t::checkParts("split byte sep", strings::split("abc", "b"), w7)
+    let w8 = t::list2("", "")
+    t::checkParts("split whole", strings::split("ab", "ab"), w8)
+    let w9 = t::list4("", "a", "-b", "")
+    t::checkParts("split multibyte", strings::split("--a---b--", "--"), w9)
+    let w10 = t::list3("x", "y", "z")
+    t::checkParts("split multibyte2", strings::split("x--y--z", "--"), w10)
+    let w11 = t::list3("a", "b", "c")
+    t::checkParts("split pipe", strings::split("a|b|c", "|"), w11)
+    let w12 = t::list2("", "")
+    t::checkParts("split one sep", strings::split(",", ","), w12)
+
+    // empty separator is EINVAL, checked before the input is examined
+    t::checkSplitErr("split empty sep", strings::split("abc", ""), "empty separator")
+    t::checkSplitErr("split empty both", strings::split("", ""), "empty separator")
+
+    // splitByte: the single-byte fast path
+    let b1 = t::list1("")
+    t::checkParts("splitByte empty", strings::splitByte("", ':'), b1)
+    let b2 = t::list3("a", "b", "")
+    t::checkParts("splitByte trailing", strings::splitByte("a:b:", ':'), b2)
+    let b3 = t::list3("", "", "")
+    t::checkParts("splitByte only seps", strings::splitByte("::", ':'), b3)
+    let b4 = t::list1("abc")
+    t::checkParts("splitByte no match", strings::splitByte("abc", ':'), b4)
+    let b5 = t::list3("a", "b", "c")
+    t::checkParts("splitByte spaces", strings::splitByte("a b c", ' '), b5)
+    let b6 = t::list2("", "")
+    t::checkParts("splitByte one sep", strings::splitByte(":", ':'), b6)
+    let b7 = t::list3("", "a", "")
+    t::checkParts("splitByte edge", strings::splitByte(",a,", ','), b7)
+
+    // join: an empty parts array is "", one part has no separator
+    let empty = t::list0()
+    t::checkStr("join empty", strings::join(empty, ","), "")
+    let one = t::list1("a")
+    t::checkStr("join one", strings::join(one, ","), "a")
+    let three = t::list3("a", "b", "c")
+    t::checkStr("join three", strings::join(three, ","), "a,b,c")
+    let holes = t::list3("a", "", "c")
+    t::checkStr("join holes", strings::join(holes, ","), "a,,c")
+    let empties = t::list3("", "", "")
+    t::checkStr("join empties", strings::join(empties, ","), ",,")
+    let two = t::list2("a", "b")
+    t::checkStr("join empty sep", strings::join(two, ""), "ab")
+    t::checkStr("join comma space", strings::join(two, ", "), "a, b")
+    t::checkStr("join multibyte", strings::join(two, "::"), "a::b")
+    let trail = t::list3("a", "b", "")
+    t::checkStr("join trailing empty", strings::join(trail, "-"), "a-b-")
+    let one2 = t::list1("one")
+    t::checkStr("join one empty sep", strings::join(one2, ""), "one")
+
+    // join(split(s, sep)) reproduces s byte for byte
+    roundTripSplit("roundtrip empty", "", ",")
+    roundTripSplit("roundtrip plain", "a", ",")
+    roundTripSplit("roundtrip fields", "a,b,,c", ",")
+    roundTripSplit("roundtrip sep only", ",", ",")
+    roundTripSplit("roundtrip trailing", "a,,b,", ",")
+    roundTripSplit("roundtrip multibyte", "x--y--z", "--")
+    roundTripSplit("roundtrip overlap", "aaa", "aa")
+    roundTripByte("roundtrip byte", "a:b:", ':')
+    roundTripByte("roundtrip byte empty", "", ':')
+    roundTripByte("roundtrip byte seps", "::", ':')
+
+    println("strings split join ok")
+}
