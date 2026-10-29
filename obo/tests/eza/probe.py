@@ -20,8 +20,10 @@ Markdown with a host manifest.  Probe definitions cover all sixteen section
 3.4 items (version, default output, dotfiles, dirs-as-files, name order, sort
 options, quoting, classify, restricted long, errors/exit, symlink operands,
 colour/icons, grid/--width, tree, environment variables, DT_UNKNOWN) plus an
-invalid-UTF-8 group from sections 3.3 and 8.4 and a stdin group that records
-the observed no-operand stdin behaviour (design section 7.2 contradiction).
+invalid-UTF-8 group from sections 3.3 and 8.4, a stdin group that records
+the observed no-operand stdin behaviour (design section 7.2 contradiction),
+and the P5b E1 re-probe group (the exact colour palette, the LS/EZA subset,
+the tree view-flag rules and --no-quotes).
 
 The ``absolute`` fixture tree and the ``pinned`` directory-metadata probes are
 live/shape-only: they are expected host data and never become committed
@@ -74,6 +76,7 @@ GROUPS = [
     ('dt-unknown', '16. DT_UNKNOWN filesystem'),
     ('utf8', '17. Invalid-UTF-8 names (sections 3.3/8.4; E2)'),
     ('stdin', '18. Stdin file-name mode and the no-operand behaviour'),
+    ('e1', '19. E1 re-probes (P5b: colour, tree, --no-quotes)'),
 ]
 
 
@@ -689,13 +692,84 @@ def utf8_probes():
     ]
 
 
+def e1_probes():
+    """The P5b re-probes: the exact default palette (including hidden and
+    setuid/setgid/sticky entries and the file-type categories), the
+    LS_COLORS/EZA_COLORS subset semantics, the tree view's view-flag and
+    conflict rules, the styled permission-denied child, and --no-quotes.
+    Run with ``--only e1`` to write a separate report."""
+    return [
+        _p('e1', 'colour_palette_all', '--color=always', '-a', 'mixed',
+           note='hidden files have no separate SGR; regular files stay plain'),
+        _p('e1', 'colour_palette_modes', '--color=always', 'modes',
+           note='setuid/setgid/sticky names are executable green, directories '
+                'blue; no special SGR for the mode bits in the name view'),
+        _p('e1', 'colour_filetypes', '--color=always', 'colours',
+           note='default file-type palette: readme/build names, image, video, '
+                'music, lossless, crypto, document, compressed, temp, '
+                'compiled, source, fi fallback'),
+        _p('e1', 'colour_ls_ext_order_a', '--color=always', 'ext',
+           env={'LS_COLORS': '*.gz=01;31:*.tar.gz=01;32'},
+           note='later definition wins; a dotted key is a literal suffix'),
+        _p('e1', 'colour_ls_ext_order_b', '--color=always', 'ext',
+           env={'LS_COLORS': '*.tar.gz=01;32:*.gz=01;31'}),
+        _p('e1', 'colour_ls_ext_case', '--color=always', 'ext',
+           env={'LS_COLORS': '*.TXT=01;31'}),
+        _p('e1', 'colour_ls_empty', '--color=always', 'mixed',
+           env={'LS_COLORS': 'di=:*.txt='},
+           note='an empty value is dropped before the SGR parser'),
+        _p('e1', 'colour_ls_invalid', '--color=always', 'mixed',
+           env={'LS_COLORS': 'di=bogus'},
+           note='a non-SGR value overrides the slot with the empty style'),
+        _p('e1', 'colour_ls_sgr_order', '--color=always', 'mixed',
+           env={'LS_COLORS': 'di=31;1'},
+           note='canonical re-serialisation: bold before colour'),
+        _p('e1', 'colour_eza_over_ls', '--color=always', 'mixed',
+           env={'LS_COLORS': 'di=01;34', 'EZA_COLORS': 'di=01;32'}),
+        _p('e1', 'colour_exa_fallback', '--color=always', 'mixed',
+           env={'LS_COLORS': 'di=01;34', 'EXA_COLORS': 'di=01;33'}),
+        _p('e1', 'colour_eza_empty', '--color=always', 'mixed',
+           env={'LS_COLORS': 'di=01;34', 'EZA_COLORS': ''},
+           note='present-empty EZA_COLORS still displaces EXA_COLORS'),
+        _p('e1', 'colour_ln_target', '--color=always', 'mixed',
+           env={'LS_COLORS': 'ln=target'},
+           note='the unsupported "target" value parses to the empty style'),
+        _p('e1', 'colour_no_quotes', '--color=always', '--no-quotes', 'mixed',
+           note='a valid target name keeps QuoteSpaces; the broken arrow is red'),
+        _p('e1', 'colour_no_color_always', '--color=always', 'mixed',
+           env={'NO_COLOR': '1'},
+           note='an explicit --color overrides the NO_COLOR default'),
+        _p('e1', 'tree_oneline_last', '-T', '-1', 'tree',
+           note='the last view flag wins: a lines listing, not a tree'),
+        _p('e1', 'tree_oneline_first', '-1', '-T', 'tree'),
+        _p('e1', 'tree_d_treat', '-T', '-d', 'tree',
+           note='without strict mode tree wins over -d (no conflict)'),
+        _p('e1', 'tree_error_aa', '-T', '-aa', 'tree'),
+        _p('e1', 'tree_oneline_aa_error', '-T', '-1', '-aa', 'tree',
+           note='the tree/all-all error is independent of the view flag'),
+        _p('e1', 'tree_level_plus', '-T', '-L', '+2', 'tree'),
+        _p('e1', 'tree_level_ignored', '-L', 'x', 'tree',
+           note='without -T the level is never parsed'),
+        _p('e1', 'tree_dirlink_slash', '-T', 'tree/dirlink/',
+           note='a trailing slash follows the operand; the root is a directory'),
+        _p('e1', 'tree_permission_child', '-T', 'modes',
+           requires=('nonroot', 'fifo', 'socket'),
+           note='an unreadable directory prints a red synthetic child'),
+        _p('e1', 'tree_long_permission', '-T', *LONG, 'locked/denied',
+           requires=('nonroot',),
+           note='the error row is padded to the table total width'),
+        _p('e1', 'no_quotes', '--no-quotes', 'quoting'),
+        _p('e1', 'no_quotes_classify', '-F=always', '--no-quotes', 'quoting'),
+    ]
+
+
 def static_probes():
     probes = []
     for fn in (version_probes, default_probes, dotfiles_probes, dirs_probes,
                names_probes, sort_probes, quoting_probes, classify_probes,
                long_probes, errors_probes, symlinks_probes, colour_probes,
                grid_probes, tree_probes, environment_probes, stdin_probes,
-               utf8_probes):
+               utf8_probes, e1_probes):
         probes.extend(fn())
     return probes
 
@@ -1286,7 +1360,7 @@ That is an exact reference byte, not formatting; do not edit it.
 
 def render(results, manifest, reference):
     lines = [
-        '# eza P0 probe report',
+        '# eza probe report (P0; the e1 group is the P5b E1 re-probe)',
         '',
         'Produced by `obo/tests/eza/probe.py` against the authorized pinned',
         'reference. Every byte below is observed output; skipped probes have no',
