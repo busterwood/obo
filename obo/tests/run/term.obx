@@ -7,9 +7,19 @@
 // expect: null zero
 // expect: file zero
 // expect: closed zero
+// expect: computed zero
 // expect: wrappers zero
 // expect: int result
 import "io.obx" as io
+
+var fdCalls = 0
+
+// A computed fd expression: stdout is a file or a pipe under the runners, never
+// a terminal here. Counting the calls pins single evaluation of the argument.
+fn nextFd(): int {
+    fdCalls += 1
+    return 1
+}
 
 fn main() {
     let a = args()
@@ -56,6 +66,11 @@ fn main() {
         err(m, c) { println("file open ", m, " ", c); exit(1) }
     }
     if io::termWidth(-1) != 0 { println("wrapper negative"); exit(1) }
+
+    // a positive computed-expression fd: evaluated once, and not a terminal
+    if terminalWidth(nextFd()) != 0 { println("computed width"); exit(1) }
+    if fdCalls != 1 { println("fd evaluated ", fdCalls, " times"); exit(1) }
+    println("computed zero")
     println("wrappers zero")
 
     // the result type is int: this declaration is the compiler-side check

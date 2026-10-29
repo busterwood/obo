@@ -633,6 +633,7 @@ def _colours(root, caps):
     _file(c, 'secret.gpg', b'k\n')
     _file(c, 'noext', b'n\n')
     _file(c, 'noext~', b'n\n')
+    _file(c, '#', b'h\n')
     _file(c, '#hash#', b'h\n')
     _file(c, '.hidden', b'h\n')
     _file(c, 'prog', b'#!/bin/sh\n', mode=0o755)

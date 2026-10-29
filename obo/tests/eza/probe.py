@@ -726,6 +726,9 @@ def e1_probes():
         _p('e1', 'colour_ls_sgr_order', '--color=always', 'mixed',
            env={'LS_COLORS': 'di=31;1'},
            note='canonical re-serialisation: bold before colour'),
+        _p('e1', 'colour_ls_sgr_rekind', '--color=always', 'mixed',
+           env={'LS_COLORS': 'di=38;2;1;2;3;31'},
+           note='a later basic colour clears the earlier RGB components'),
         _p('e1', 'colour_eza_over_ls', '--color=always', 'mixed',
            env={'LS_COLORS': 'di=01;34', 'EZA_COLORS': 'di=01;32'}),
         _p('e1', 'colour_exa_fallback', '--color=always', 'mixed',
@@ -750,6 +753,8 @@ def e1_probes():
         _p('e1', 'tree_oneline_aa_error', '-T', '-1', '-aa', 'tree',
            note='the tree/all-all error is independent of the view flag'),
         _p('e1', 'tree_level_plus', '-T', '-L', '+2', 'tree'),
+        _p('e1', 'tree_level_plus_alone', '-T', '-L', '+', 'tree',
+           note='Rust usize::from_str: "+" alone is InvalidDigit, not Empty'),
         _p('e1', 'tree_level_ignored', '-L', 'x', 'tree',
            note='without -T the level is never parsed'),
         _p('e1', 'tree_dirlink_slash', '-T', 'tree/dirlink/',
@@ -1567,10 +1572,9 @@ That is an exact reference byte, not formatting; do not edit it.
 """
 
 
-def render(results, manifest, reference):
+def render(results, manifest, reference, title='# eza P0 probe report'):
     lines = [
-        '# eza probe report (P0; group 19 is the P5b E1 re-probe and group 20 '
-        'the P6b E2 re-probe)',
+        title,
         '',
         'Produced by `obo/tests/eza/probe.py` against the authorized pinned',
         'reference. Every byte below is observed output; skipped probes have no',
@@ -1645,6 +1649,8 @@ def main(argv=None):
                     help='the pinned eza binary to execute (required)')
     ap.add_argument('--out', metavar='PATH', required=True,
                     help='Markdown report to write')
+    ap.add_argument('--title', metavar='TEXT', default='# eza P0 probe report',
+                    help='report title line (default: the P0 report title)')
     ap.add_argument('--only', metavar='GROUP[,GROUP]',
                     help='only these groups (or case-name substrings)')
     ap.add_argument('--dt-unknown', metavar='DIR', action='append', default=[],
@@ -1737,7 +1743,7 @@ def main(argv=None):
             print('[%d/%d] %-12s %-32s %s'
                   % (i, len(probes), probe.group, probe.name, status),
                   file=sys.stderr)
-        text = render(results, manifest, reference)
+        text = render(results, manifest, reference, a.title)
         out_dir = os.path.dirname(os.path.abspath(a.out))
         os.makedirs(out_dir, exist_ok=True)
         with open(a.out, 'w', encoding='utf-8', newline='') as f:

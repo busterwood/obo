@@ -1,4 +1,4 @@
-# eza probe report (P0; the e1 group is the P5b E1 re-probe)
+# eza E1 re-probe report (P5b: colour, tree, --no-quotes)
 
 Produced by `obo/tests/eza/probe.py` against the authorized pinned
 reference. Every byte below is observed output; skipped probes have no
@@ -25,7 +25,7 @@ Reference: ` /tmp/eza-install-sim-F2odpb/eza `
 - reference path: ` /tmp/eza-install-sim-F2odpb/eza `
 - reference sha256: ` 10457dde35808517d09bcd3bfb6bc386000d06c2126e34b9071e09470a8f7cd8 `
 - fixture capabilities: ` {'euid': 1000, 'umask': 18, 'pre_epoch': True, 'xattr': True, 'invalid_utf8': True, 'fifo': True, 'socket': True, 'hardlink': True, 'symlink': True, 'deep_path': True, 'nonroot': True, 'dev_full': True, 'ambient_xattr': False} `
-- dt-unknown candidates: ` {'/proc': {'entries': 104, 'unknown': 0, 'sample': []}, '/sys': {'entries': 12, 'unknown': 0, 'sample': []}, '/dev/shm': {'entries': 7, 'unknown': 0, 'sample': []}, '/run': {'entries': 34, 'unknown': 0, 'sample': []}} `
+- dt-unknown candidates: ` {'/proc': {'entries': 106, 'unknown': 0, 'sample': []}, '/sys': {'entries': 12, 'unknown': 0, 'sample': []}, '/dev/shm': {'entries': 8, 'unknown': 0, 'sample': []}, '/run': {'entries': 34, 'unknown': 0, 'sample': []}} `
 
 ## 19. E1 re-probes (P5b: colour, tree, --no-quotes)
 
@@ -79,12 +79,12 @@ b''
 - argv: ` ['<ref>', '--color=always', 'colours'] `
 - env extras: ` {} `
 - exit: ` 0 `
-- stdout sha256: ` fcd5b56353d49a72ee9fd158bd359d8200d22871561a0a5b3282cbc7a6f3ce84 `
+- stdout sha256: ` 8fc7ba8e299971ed81ef4425ebc5b18de12b09f433a11714f8dc73473ba8da1b `
 - stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
 - stdout bytes:
 
 ```python
-b'\x1b[2m#hash#\x1b[0m\n\x1b[35ma.png\x1b[0m\n\x1b[35mb.jpg\x1b[0m\n\x1b[36mbroken\x1b[0m \x1b[31m->\x1b[0m \x1b[4;31mmissing\x1b[0m\n\x1b[1;35mc.mp4\x1b[0m\n\x1b[36md.mp3\x1b[0m\n\x1b[1;36me.flac\x1b[0m\n\x1b[36mexelink\x1b[0m \x1b[1;90m->\x1b[0m \x1b[1;32mprog\x1b[0m\n\x1b[32mf.pdf\x1b[0m\n\x1b[31mg.gz\x1b[0m\n\x1b[31mh.zip\x1b[0m\n\x1b[2mi.tmp\x1b[0m\n\x1b[1;32mid_rsa\x1b[0m\n\x1b[33mj.o\x1b[0m\n\x1b[1;33mk.py\x1b[0m\n\x1b[1;33ml.c\x1b[0m\n\x1b[1;33mm.rs\x1b[0m\n\x1b[1;4;33mMakefile\x1b[0m\n\x1b[33mn.so\x1b[0m\nnoext\n\x1b[2mnoext~\x1b[0m\n\x1b[36mpnglink\x1b[0m \x1b[1;90m->\x1b[0m \x1b[35ma.png\x1b[0m\n\x1b[1;32mprog\x1b[0m\n\x1b[1;4;33mREADME\x1b[0m\n\x1b[1;32msecret.gpg\x1b[0m\n\x1b[35mupper.PNG\x1b[0m\n'
+b'\x1b[2m#\x1b[0m\n\x1b[2m#hash#\x1b[0m\n\x1b[35ma.png\x1b[0m\n\x1b[35mb.jpg\x1b[0m\n\x1b[36mbroken\x1b[0m \x1b[31m->\x1b[0m \x1b[4;31mmissing\x1b[0m\n\x1b[1;35mc.mp4\x1b[0m\n\x1b[36md.mp3\x1b[0m\n\x1b[1;36me.flac\x1b[0m\n\x1b[36mexelink\x1b[0m \x1b[1;90m->\x1b[0m \x1b[1;32mprog\x1b[0m\n\x1b[32mf.pdf\x1b[0m\n\x1b[31mg.gz\x1b[0m\n\x1b[31mh.zip\x1b[0m\n\x1b[2mi.tmp\x1b[0m\n\x1b[1;32mid_rsa\x1b[0m\n\x1b[33mj.o\x1b[0m\n\x1b[1;33mk.py\x1b[0m\n\x1b[1;33ml.c\x1b[0m\n\x1b[1;33mm.rs\x1b[0m\n\x1b[1;4;33mMakefile\x1b[0m\n\x1b[33mn.so\x1b[0m\nnoext\n\x1b[2mnoext~\x1b[0m\n\x1b[36mpnglink\x1b[0m \x1b[1;90m->\x1b[0m \x1b[35ma.png\x1b[0m\n\x1b[1;32mprog\x1b[0m\n\x1b[1;4;33mREADME\x1b[0m\n\x1b[1;32msecret.gpg\x1b[0m\n\x1b[35mupper.PNG\x1b[0m\n'
 ```
 
 - stderr bytes:
@@ -222,6 +222,28 @@ b''
 ```
 
 - note: ` canonical re-serialisation: bold before colour `
+
+### colour_ls_sgr_rekind
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '--color=always', 'mixed'] `
+- env extras: ` {'LS_COLORS': 'di=38;2;1;2;3;31'} `
+- exit: ` 0 `
+- stdout sha256: ` b83c69807bdbc90ea92fd51c7c687713c04fa63e85c0cc81c1dc383d2d1d9448 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b"-\n--x\nalpha\nBeta\n\x1b[36mbroken\x1b[0m \x1b[31m->\x1b[0m \x1b[4;31mmissing\x1b[0m\n\x1b[31mdir\x1b[0m\n\x1b[36mdirlink\x1b[0m \x1b[1;90m->\x1b[0m \x1b[31mdir\x1b[0m\ngamma.txt\n\x1b[36mlink\x1b[0m \x1b[1;90m->\x1b[0m alpha\nnoexec\n\x1b[33mpipe\x1b[0m\n\x1b[1;32mprog\x1b[0m\n\x1b[1;31msock\x1b[0m\n\x1b[36mspaced\x1b[0m \x1b[1;90m->\x1b[0m 'tar get'\n\x1b[31msub.dir\x1b[0m\n'tar get'\n"
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` a later basic colour clears the earlier RGB components `
 
 ### colour_eza_over_ls
 
@@ -476,6 +498,28 @@ b'tree\n\xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 a.txt\n\xe2\x94\x9c\xe2\x94\x80\xe2
 ```python
 b''
 ```
+
+### tree_level_plus_alone
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-T', '-L', '+', 'tree'] `
+- env extras: ` {} `
+- exit: ` 3 `
+- stdout sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stderr sha256: ` 2421c426bffc418394aceb7fee22a345ee30bd5ada97cbfdb0c0a8728d73bb99 `
+- stdout bytes:
+
+```python
+b''
+```
+
+- stderr bytes:
+
+```python
+b'eza: Value "+" not valid for option --level (-L): invalid digit found in string\n'
+```
+
+- note: ` Rust usize::from_str: "+" alone is InvalidDigit, not Empty `
 
 ### tree_level_ignored
 

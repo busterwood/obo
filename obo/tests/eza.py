@@ -50,7 +50,8 @@ builds it through `build_tools.build(['eza'], private_out, obo, rt)` in the
 harness temp dir (its own `sym/`), compares every golden and live case, and
 checks the own-tagged usage errors against `golden/own/`.  `--record` also
 records those own cases from the built binary.  `--memory` builds eza, creates
-10,000 entries, runs the restricted-long, name-only, tree and grid cases under
+10,000 entries, runs the restricted-long, name-only, tree, colour and grid
+cases under
 `OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, parses the single
 `obo: N peak bytes, M allocated` line, rejects any leak/double-close line or
 nonzero exit, and enforces the measured `EZA_PEAK_MAX`; it also prints our max
@@ -130,7 +131,10 @@ FSIZE = 16 * 1024 * 1024                                 # per-process cap
 # The eza memory cap is a measured bound, not the compiler's PEAK_BUDGET:
 # the first gated runs of the two 10,000-entry cases (P4, OBO_STATS=1) peaked
 # at 2,185,008 (long) and 2,184,384 (names) live heap bytes, so the cap is the
-# long measurement plus a 25.97% margin (2,752,512 = 672 * 4096). A few hundred
+# long measurement plus a 25.97% margin (2,752,512 = 672 * 4096). P5b adds the
+# tree and colour cases and P6b the grid case; the merged-tree measurements are
+# 2,190,032 (long), 2,189,408 (names), 2,190,160 (tree), 2,189,632 (colour)
+# and 2,189,808 (grid) bytes, still under the unchanged cap. A few hundred
 # bytes of the peak track the random temp-path length in the environment.
 EZA_PEAK_MAX = 2752512
 VERSION = os.path.join(HERE, 'eza', 'VERSION')
@@ -607,6 +611,9 @@ def _colour_cases():
        note='the SGR parser re-serialises canonically: 1;31')
     _g('colour', 'ls_sgr_256', '--color=always', 'mixed',
        env={'LS_COLORS': 'di=38;5;196'})
+    _g('colour', 'ls_sgr_rekind', '--color=always', 'mixed',
+       env={'LS_COLORS': 'di=38;2;1;2;3;31'},
+       note='a later basic colour must not keep stale RGB components')
     _g('colour', 'ls_ext_plain', '--color=always', 'colours',
        env={'LS_COLORS': '*.png=0'},
        note='a mapping with the empty style overrides the default category')
@@ -705,6 +712,8 @@ def _tree_cases():
     _g('tree', 'error_all_all', '-T', '-a', '-a', 'tree')
     _g('tree', 'error_level', '-T', '-L', 'x', 'tree')
     _g('tree', 'error_level_neg', '-T', '-L', '-1', 'tree')
+    _g('tree', 'error_level_plus', '-T', '-L', '+', 'tree',
+       note='Rust usize::from_str: "+" alone is InvalidDigit, not Empty')
     _g('tree', 'error_level_huge', '-T', '-L', '18446744073709551616', 'tree')
     _g('tree', 'error_level_empty', '-T', '-L', '', 'tree')
     _g('tree', 'level_without_tree', '-L', '1', 'tree',
@@ -714,6 +723,14 @@ def _tree_cases():
        note='the two -a error is raised even when -1 wins the view')
     _g('tree', 'denied', '-T', 'locked/denied', requires='nonroot')
     _g('tree', 'permission_child', '-T', 'modes', requires='nonroot')
+    _r('tree', 'reverse_size_ties', '-T', '-r', '--sort=size', 'mixed',
+       note='tree -r sorts ascending then reverses the vector, so equal sizes '
+            'reverse readdir order')
+    _r('tree', 'reverse_name_ties', '-T', '-r', '.', cwd='names/tie_Aa',
+       note='natcmpFold-equal a/A reverse readdir order in a tree')
+    _r('tree', 'reverse_size_group', '-T', '-r', '--sort=size',
+       '--group-directories-first', 'mixed',
+       note='the vector reverse runs before the stable dirs-first pass')
     _r('tree', 'dotdot_operand', '-T', '..', cwd='tree/d1',
        note='parent listing is live/shape-only')
 
@@ -1001,6 +1018,10 @@ def _error_cases():
     _g('errors', 'bad_sort', '--sort=bogus', 'mixed')
     _g('errors', 'bad_classify', '--classify=bogus', 'mixed')
     _g('errors', 'bad_color', '--color=bogus', 'mixed')
+    _g('errors', 'bad_color_quote', '--color=a"b', 'mixed',
+       note='the reference Debug-escapes the displayed option value')
+    _g('errors', 'bad_color_control', '--color=a\tb', 'mixed')
+    _g('errors', 'bad_level_quote', '-T', '-L', 'a"b', 'tree')
     _g('errors', 'bad_icons', '--icons=bogus', 'mixed')
     _o('errors', 'bad_time_style', '--time-style=bogus', 'mixed',
        note='divergence: the reference accepts and ignores a bad --time-style '
@@ -1061,6 +1082,9 @@ def _memory_cases():
             'OBO_STATS; EZA_PEAK_MAX and no leak line')
     _o('memory', 'tree_10000', '-T', 'many10000', slow=True,
        memory_entries=10000, note='E1 tree over 10,000 entries under '
+            'OBO_STATS; EZA_PEAK_MAX and no leak line')
+    _o('memory', 'colour_10000', '--color=always', 'many10000', slow=True,
+       memory_entries=10000, note='E1 colour over 10,000 entries under '
             'OBO_STATS; EZA_PEAK_MAX and no leak line')
     _o('memory', 'grid_10000', '--width=80', '--icons=never', 'many10000',
        slow=True, memory_entries=10000, note='E2 grid over 10,000 entries '

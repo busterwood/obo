@@ -66,7 +66,6 @@ type Opts = ref record {
     timeStyle: string      // effective --time-style value
     timeStyleSeen: bool
     longView: bool         // the effective view is -l (last of -l/-1/-T rules)
-    treeFlag: bool         // -T/--tree present (the DirAction candidate)
     treeView: bool         // the effective view is a tree (details + tree)
     level: int             // -L depth when treeView; parsed from levelText
     levelSeen: bool
@@ -540,9 +539,55 @@ fn choicesText(xs: &[]string): string {
     return s + ")"
 }
 
+// Rust str Debug escaping for a displayed option value (the reference uses
+// `{:?}` in these messages): NUL is \0, tab/newline/CR are \t/\n/\r, quote
+// and backslash are escaped, other C0/DEL bytes are \u{hex} with lowercase
+// hex and no leading zeros, and every other byte is copied.
+fn debugHexDigit(v: int): byte {
+    if v < 10 { return byte(48 + v) }
+    return byte(87 + v)
+}
+
+fn debugText(s: string): string {
+    var out = new []byte(0)
+    for i in 0..len(s) {
+        let b = s[i]
+        if b == 0 {
+            append(out, '\\')
+            append(out, '0')
+        } else if b == '"' {
+            append(out, '\\')
+            append(out, '"')
+        } else if b == '\\' {
+            append(out, '\\')
+            append(out, '\\')
+        } else if b == '\t' {
+            append(out, '\\')
+            append(out, 't')
+        } else if b == '\n' {
+            append(out, '\\')
+            append(out, 'n')
+        } else if b == '\r' {
+            append(out, '\\')
+            append(out, 'r')
+        } else if b < ' ' || b == 127 {
+            append(out, '\\')
+            append(out, 'u')
+            append(out, '{')
+            let v = int(b)
+            if v >= 16 { append(out, debugHexDigit(v / 16)) }
+            append(out, debugHexDigit(v % 16))
+            append(out, '}')
+        } else {
+            append(out, b)
+        }
+    }
+    return strings::fromBytes(out)
+}
+
 // eza's Optional/Option bad-value wording, without the "eza: " prefix.
 fn noSetting(label: string, value: string, choices: []string): string {
-    var m = "Option " + label + " has no \"" + value + "\" setting"
+    var m = "Option " + label + " has no \"" + debugText(value) + "\" setting"
     if len(choices) > 0 {
         let tail = choicesText(choices)
         m = m + tail
@@ -556,9 +601,10 @@ fn noSetting(label: string, value: string, choices: []string): string {
 // 2^63 and 2^64-1 are accepted by the reference and clamp to int max here
 // (they are effectively unlimited depths).
 fn levelValue(s: string): Result[int] {
+    if len(s) == 0 { return err("empty", 3) }
     var i = 0
-    if i < len(s) && s[i] == '+' { i += 1 }
-    if i >= len(s) { return err("empty", 3) }
+    if s[i] == '+' { i += 1 }
+    if i >= len(s) { return err("invalid", 1) }
     var start = i
     while start < len(s) && s[start] == '0' { start += 1 }
     if start == len(s) { return ok(0) }
@@ -593,13 +639,15 @@ fn levelValue(s: string): Result[int] {
 
 // Parse a --width or COLUMNS value the way eza's `usize` parse does: an
 // optional '+', then decimal digits (leading zeros allowed). Error classes: 1
-// invalid digit, 2 above 2^64-1, 3 empty. Values between 2^63 and 2^64-1 are
+// invalid digit, 2 above 2^64-1, 3 empty (only a zero-length value; a lone
+// "+" is InvalidDigit, as in Rust's usize::from_str). Values between 2^63 and 2^64-1 are
 // accepted by the reference and saturate to int max here; the grid layout
 // clamps any absurd width (see GRID_WIDTH_CAP).
 fn widthValue(s: string): Result[int] {
+    if len(s) == 0 { return err("empty", 3) }
     var i = 0
-    if i < len(s) && s[i] == '+' { i += 1 }
-    if i >= len(s) { return err("empty", 3) }
+    if s[i] == '+' { i += 1 }
+    if i >= len(s) { return err("invalid", 1) }
     var start = i
     while start < len(s) && s[start] == '0' { start += 1 }
     if start == len(s) { return ok(0) }
@@ -648,7 +696,7 @@ fn deduce(options: &[]cli::Option): Result[Opts] {
                      onlyFiles: false, bytes: false, numeric: false,
                      noUser: false, noPermissions: false, noFilesize: false,
                      noTime: false, timeStyle: "", timeStyleSeen: false,
-                     longView: false, treeFlag: false, treeView: false,
+                     longView: false, treeView: false,
                      level: 0, levelSeen: false, levelText: "",
                      noQuotes: false, colourOn: false, across: false,
                      gridView: false, terminalish: false,
@@ -761,7 +809,7 @@ fn deduce(options: &[]cli::Option): Result[Opts] {
                 // v == 0 is TerminalWidth::Automatic
             }
             err(m, c) {
-                return err("Value \"" + wv + "\" not valid for option --width (-w): " + widthReason(c), 22)
+                return err("Value \"" + debugText(wv) + "\" not valid for option --width (-w): " + widthReason(c), 22)
             }
         }
     } else if env::has("COLUMNS") {
@@ -776,7 +824,7 @@ fn deduce(options: &[]cli::Option): Result[Opts] {
                     consoleWidth = v
                 }
                 err(m, c) {
-                    return err("Value \"" + cv + "\" not valid for environment variable COLUMNS: " + widthReason(c), 22)
+                    return err("Value \"" + debugText(cv) + "\" not valid for environment variable COLUMNS: " + widthReason(c), 22)
                 }
             }
         }
@@ -811,7 +859,6 @@ fn deduce(options: &[]cli::Option): Result[Opts] {
     // -G/-T pair alone decides whether that long view is a tree or eza's
     // GridDetails. A last -1 makes the command a lines listing even when -T
     // or -G is present (the DirAction then sees a non-details view).
-    o.treeFlag = treeSeen
     let longSeenView = lastView == 1 || ((lastView == 3 || lastView == 4) && longSeen)
     let gridDetails = longSeenView && lastGT == 1
     o.longView = longSeenView
@@ -886,7 +933,7 @@ fn deduce(options: &[]cli::Option): Result[Opts] {
                 var tail = "invalid digit found in string"
                 if c == 2 { tail = "number too large to fit in target type" }
                 if c == 3 { tail = "cannot parse integer from empty string" }
-                return err("Value \"" + o.levelText + "\" not valid for option --level (-L): " + tail, 22)
+                return err("Value \"" + debugText(o.levelText) + "\" not valid for option --level (-L): " + tail, 22)
             }
         }
     }
@@ -1333,18 +1380,18 @@ fn negKeys(xs: &[]int): []int {
 // under -r (probe-confirmed: ties keep readdir order), then the directory
 // grouping is a final stable sort in either mode. Every helper keeps input
 // order for equal keys; the committed fixtures also avoid comparator ties.
-fn sortEntries(es: &[]Entry, v: &View, o: &Opts): []int {
+fn sortFieldOrder(es: &[]Entry, v: &View, o: &Opts, desc: bool): []int {
     let f = o.sortField
     var order = sort::identity(len(es))
     if f == "" || f == "name" || f == "filename" {
         let ks = nameKeys(es)
-        order = orderNaturalDir(ks, true, o.reverse)
+        order = orderNaturalDir(ks, true, desc)
     } else if f == "Name" || f == "Filename" {
         let ks = nameKeys(es)
-        order = orderNaturalDir(ks, false, o.reverse)
+        order = orderNaturalDir(ks, false, desc)
     } else if isSizeSort(f) {
         let ks = sizeKeys(es)
-        if o.reverse {
+        if desc {
             let nk = negKeys(ks)
             order = sort::sortOrderInts(&order, &nk)
         } else {
@@ -1353,7 +1400,7 @@ fn sortEntries(es: &[]Entry, v: &View, o: &Opts): []int {
     } else if isModifiedSort(f) {
         let ns = nsecKeys(es)
         let sec = secKeys(es)
-        if o.reverse {
+        if desc {
             let nk = negKeys(ns)
             let sk = negKeys(sec)
             let o1 = sort::sortOrderInts(&order, &nk)
@@ -1364,11 +1411,11 @@ fn sortEntries(es: &[]Entry, v: &View, o: &Opts): []int {
         }
     } else if f == "extension" || f == "ext" {
         let ks = nameKeys(es)
-        let pre = orderNaturalDir(ks, true, o.reverse)
+        let pre = orderNaturalDir(ks, true, desc)
         let ek = extKeys(es, v.operand)
         let hk = extHasKeys(es, v.operand)
-        let o1 = sortOrderStringsDir(&pre, &ek, o.reverse)
-        if o.reverse {
+        let o1 = sortOrderStringsDir(&pre, &ek, desc)
+        if desc {
             let nh = negKeys(hk)
             order = sort::sortOrderInts(&o1, &nh)
         } else {
@@ -1376,11 +1423,11 @@ fn sortEntries(es: &[]Entry, v: &View, o: &Opts): []int {
         }
     } else if f == "Extension" || f == "Ext" {
         let ks = nameKeys(es)
-        let pre = orderNaturalDir(ks, false, o.reverse)
+        let pre = orderNaturalDir(ks, false, desc)
         let ek = extKeys(es, v.operand)
         let hk = extHasKeys(es, v.operand)
-        let o1 = sortOrderStringsDir(&pre, &ek, o.reverse)
-        if o.reverse {
+        let o1 = sortOrderStringsDir(&pre, &ek, desc)
+        if desc {
             let nh = negKeys(hk)
             order = sort::sortOrderInts(&o1, &nh)
         } else {
@@ -1388,21 +1435,40 @@ fn sortEntries(es: &[]Entry, v: &View, o: &Opts): []int {
         }
     } else {
         let ks = nameKeys(es)
-        let pre = orderNaturalDir(ks, false, o.reverse)
+        let pre = orderNaturalDir(ks, false, desc)
         let tk = typeKeys(es)
-        if o.reverse {
+        if desc {
             let rk = negKeys(tk)
             order = sort::sortOrderInts(&pre, &rk)
         } else {
             order = sort::sortOrderInts(&pre, &tk)
         }
     }
+    return order
+}
+
+// The stable dirs-first/last pass shared by both -r models.
+fn groupOrder(es: &[]Entry, o: &Opts, order: []int): []int {
     if o.groupFirst || o.groupLast {
         let gk = groupKeys(es, o)
-        let grouped = sort::sortOrderInts(&order, &gk)
-        order = grouped
+        return sort::sortOrderInts(&order, &gk)
     }
     return order
+}
+
+// Lines/long: eza compares descending in one stable pass, so comparator-equal
+// entries keep readdir order (P4's probe).
+fn sortEntries(es: &[]Entry, v: &View, o: &Opts): []int {
+    let order = sortFieldOrder(es, v, o, o.reverse)
+    return groupOrder(es, o, order)
+}
+
+// Tree: eza sorts once ascending, then reverses the vector when -r (which also
+// reverses ties), then applies the stable dirs-first/last pass.
+fn sortEntriesTree(es: &[]Entry, v: &View, o: &Opts): []int {
+    var order = sortFieldOrder(es, v, o, false)
+    if o.reverse { sort::reverse(order) }
+    return groupOrder(es, o, order)
 }
 
 // ----------------------------------------------------------------- output
@@ -1750,7 +1816,7 @@ fn fileCategory(name: string, p: &Palette): int {
         if wordIn(EXT_SOURCE, ext) { return SC_SOURCE }
     }
     if strings::endsWith(name, "~") { return SC_TEMP }
-    if len(name) >= 2 && name[0] == '#' && name[len(name) - 1] == '#' {
+    if len(name) > 0 && name[0] == '#' && name[len(name) - 1] == '#' {
         return SC_TEMP
     }
     return 0
@@ -1838,6 +1904,51 @@ fn parseU8(t: string): int {
     return v
 }
 
+// The colour-kind setters clear the unused components, so a later SGR token
+// that changes the kind cannot leave stale RGB bytes behind (the reference's
+// Colour enum has no such fields). Used by Pair::to_style and highColour.
+fn setFgBasic(mut s: &Style, code: int) {
+    s.fg = 1
+    s.fgA = code
+    s.fgB = 0
+    s.fgC = 0
+}
+
+fn setBgBasic(mut s: &Style, code: int) {
+    s.bg = 1
+    s.bgA = code
+    s.bgB = 0
+    s.bgC = 0
+}
+
+fn setFgFixed(mut s: &Style, n: int) {
+    s.fg = 2
+    s.fgA = n
+    s.fgB = 0
+    s.fgC = 0
+}
+
+fn setBgFixed(mut s: &Style, n: int) {
+    s.bg = 2
+    s.bgA = n
+    s.bgB = 0
+    s.bgC = 0
+}
+
+fn setFgRgb(mut s: &Style, r: int, g: int, b: int) {
+    s.fg = 3
+    s.fgA = r
+    s.fgB = g
+    s.fgC = b
+}
+
+fn setBgRgb(mut s: &Style, r: int, g: int, b: int) {
+    s.bg = 3
+    s.bgA = r
+    s.bgB = g
+    s.bgC = b
+}
+
 // The `38`/`48` extended-colour parser of the reference Pair::to_style:
 // "5;n" selects a fixed colour, "2;r;g;b" an RGB one; it returns the index of
 // the last token consumed. The mode token is matched raw (not zero-trimmed).
@@ -1849,13 +1960,7 @@ fn highColour(mut s: &Style, parts: &[]string, i: int, isFg: bool): int {
             last = i + 2
             let n = parseU8(parts[i + 2])
             if n >= 0 {
-                if isFg {
-                    s.fg = 2
-                    s.fgA = n
-                } else {
-                    s.bg = 2
-                    s.bgA = n
-                }
+                if isFg { setFgFixed(s, n) } else { setBgFixed(s, n) }
             }
         }
     } else if i + 1 < len(parts) && parts[i + 1] == "2" {
@@ -1870,17 +1975,7 @@ fn highColour(mut s: &Style, parts: &[]string, i: int, isFg: bool): int {
                     last = i + 4
                     let b = parseU8(parts[i + 4])
                     if r >= 0 && g >= 0 && b >= 0 {
-                        if isFg {
-                            s.fg = 3
-                            s.fgA = r
-                            s.fgB = g
-                            s.fgC = b
-                        } else {
-                            s.bg = 3
-                            s.bgA = r
-                            s.bgB = g
-                            s.bgC = b
-                        }
+                        if isFg { setFgRgb(s, r, g, b) } else { setBgRgb(s, r, g, b) }
                     }
                 }
             }
@@ -1920,103 +2015,71 @@ fn parsePairStyle(value: string): Style {
                 } else if t == "9" {
                     s.strike = true
                 } else if t == "30" {
-                    s.fg = 1
-                    s.fgA = 30
+                    setFgBasic(s, 30)
                 } else if t == "31" {
-                    s.fg = 1
-                    s.fgA = 31
+                    setFgBasic(s, 31)
                 } else if t == "32" {
-                    s.fg = 1
-                    s.fgA = 32
+                    setFgBasic(s, 32)
                 } else if t == "33" {
-                    s.fg = 1
-                    s.fgA = 33
+                    setFgBasic(s, 33)
                 } else if t == "34" {
-                    s.fg = 1
-                    s.fgA = 34
+                    setFgBasic(s, 34)
                 } else if t == "35" {
-                    s.fg = 1
-                    s.fgA = 35
+                    setFgBasic(s, 35)
                 } else if t == "36" {
-                    s.fg = 1
-                    s.fgA = 36
+                    setFgBasic(s, 36)
                 } else if t == "37" {
-                    s.fg = 1
-                    s.fgA = 37
+                    setFgBasic(s, 37)
                 } else if t == "90" {
-                    s.fg = 1
-                    s.fgA = 90
+                    setFgBasic(s, 90)
                 } else if t == "91" {
-                    s.fg = 1
-                    s.fgA = 91
+                    setFgBasic(s, 91)
                 } else if t == "92" {
-                    s.fg = 1
-                    s.fgA = 92
+                    setFgBasic(s, 92)
                 } else if t == "93" {
-                    s.fg = 1
-                    s.fgA = 93
+                    setFgBasic(s, 93)
                 } else if t == "94" {
-                    s.fg = 1
-                    s.fgA = 94
+                    setFgBasic(s, 94)
                 } else if t == "95" {
-                    s.fg = 1
-                    s.fgA = 95
+                    setFgBasic(s, 95)
                 } else if t == "96" {
-                    s.fg = 1
-                    s.fgA = 96
+                    setFgBasic(s, 96)
                 } else if t == "97" {
-                    s.fg = 1
-                    s.fgA = 97
+                    setFgBasic(s, 97)
                 } else if t == "38" {
                     i = highColour(s, parts, i, true)
                 } else if t == "40" {
-                    s.bg = 1
-                    s.bgA = 40
+                    setBgBasic(s, 40)
                 } else if t == "41" {
-                    s.bg = 1
-                    s.bgA = 41
+                    setBgBasic(s, 41)
                 } else if t == "42" {
-                    s.bg = 1
-                    s.bgA = 42
+                    setBgBasic(s, 42)
                 } else if t == "43" {
-                    s.bg = 1
-                    s.bgA = 43
+                    setBgBasic(s, 43)
                 } else if t == "44" {
-                    s.bg = 1
-                    s.bgA = 44
+                    setBgBasic(s, 44)
                 } else if t == "45" {
-                    s.bg = 1
-                    s.bgA = 45
+                    setBgBasic(s, 45)
                 } else if t == "46" {
-                    s.bg = 1
-                    s.bgA = 46
+                    setBgBasic(s, 46)
                 } else if t == "47" {
-                    s.bg = 1
-                    s.bgA = 47
+                    setBgBasic(s, 47)
                 } else if t == "100" {
-                    s.bg = 1
-                    s.bgA = 100
+                    setBgBasic(s, 100)
                 } else if t == "101" {
-                    s.bg = 1
-                    s.bgA = 101
+                    setBgBasic(s, 101)
                 } else if t == "102" {
-                    s.bg = 1
-                    s.bgA = 102
+                    setBgBasic(s, 102)
                 } else if t == "103" {
-                    s.bg = 1
-                    s.bgA = 103
+                    setBgBasic(s, 103)
                 } else if t == "104" {
-                    s.bg = 1
-                    s.bgA = 104
+                    setBgBasic(s, 104)
                 } else if t == "105" {
-                    s.bg = 1
-                    s.bgA = 105
+                    setBgBasic(s, 105)
                 } else if t == "106" {
-                    s.bg = 1
-                    s.bgA = 106
+                    setBgBasic(s, 106)
                 } else if t == "107" {
-                    s.bg = 1
-                    s.bgA = 107
+                    setBgBasic(s, 107)
                 } else if t == "48" {
                     i = highColour(s, parts, i, false)
                 }
@@ -2928,7 +2991,7 @@ fn loadFrame(path: string, depth: int, anc: string,
             match rr {
                 ok(v0) {
                     prepareEntries(es, v, o)
-                    let order = sortEntries(es, v, o)
+                    let order = sortEntriesTree(es, v, o)
                     return ok(new Frame{path: path, entries: es,
                                         order: order, next: 0,
                                         depth: depth, anc: anc})

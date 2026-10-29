@@ -10,6 +10,11 @@ fn main() {
     let w = terminalWidth("0")                      // error: terminalWidth needs an int file descriptor, not string
 }
 
+// === terminalWidth bool argument
+fn main() {
+    let w = terminalWidth(true)                     // error: terminalWidth needs an int file descriptor, not bool
+}
+
 // === terminalWidth extra argument
 fn main() {
     let w = terminalWidth(0, 1)                     // error: expected ')', found ,

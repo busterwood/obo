@@ -1,4 +1,4 @@
-# eza probe report (P0; group 19 is the P5b E1 re-probe and group 20 the P6b E2 re-probe)
+# eza P6b E2 re-probe report
 
 Produced by `obo/tests/eza/probe.py` against the authorized pinned
 reference. Every byte below is observed output; skipped probes have no
@@ -25,7 +25,7 @@ Reference: ` /tmp/eza-tar-test2/eza `
 - reference path: ` /tmp/eza-tar-test2/eza `
 - reference sha256: ` 10457dde35808517d09bcd3bfb6bc386000d06c2126e34b9071e09470a8f7cd8 `
 - fixture capabilities: ` {'euid': 1000, 'umask': 18, 'pre_epoch': True, 'xattr': True, 'invalid_utf8': True, 'fifo': True, 'socket': True, 'hardlink': True, 'symlink': True, 'deep_path': True, 'nonroot': True, 'dev_full': True, 'ambient_xattr': False} `
-- dt-unknown candidates: ` {'/proc': {'entries': 101, 'unknown': 0, 'sample': []}, '/sys': {'entries': 12, 'unknown': 0, 'sample': []}, '/dev/shm': {'entries': 8, 'unknown': 0, 'sample': []}, '/run': {'entries': 34, 'unknown': 0, 'sample': []}} `
+- dt-unknown candidates: ` {'/proc': {'entries': 103, 'unknown': 0, 'sample': []}, '/sys': {'entries': 12, 'unknown': 0, 'sample': []}, '/dev/shm': {'entries': 7, 'unknown': 0, 'sample': []}, '/run': {'entries': 34, 'unknown': 0, 'sample': []}} `
 
 ## 20. E2 re-probes (P6b: grid, width sources, UTF-8, lossy names)
 
