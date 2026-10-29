@@ -46,7 +46,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../obo
 TOOLS = ('cat', 'wc', 'sort')
 SRCDIR = 'cmd'                       # the tool roots live in obo/cmd/
-LIB_MODULES = ('io.obx', 'strings.obx', 'fmt.obx', 'errors.obx', 'fs.obx')
+LIB_MODULES = ('io.obx', 'strings.obx', 'fmt.obx', 'errors.obx', 'fs.obx', 'env.obx')
 
 PROBE = '''// phase-2 builtin probe: compile only, never run
 fn main() {

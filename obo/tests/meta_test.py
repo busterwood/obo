@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""P3 metadata tests: the runtime's direct contract and the fs module.
+"""P3/P5a metadata tests: the runtime's direct contract and the fs/env modules.
 
     python3 obo/tests/meta_test.py [--rt] [--programs]
 
@@ -13,9 +13,15 @@ Sections (both by default):
             records and EOF, the max/cap/fd/table check order, a regular-file
             fd's ENOTDIR, the tracked-closed-fd exit 9 (and EBADF without
             OBO_CHECK), and the gated OBO_META_FAULT=eintr hook with and without
-            OBO_CHECK. Every case frees its cells and ends in rt_finish, except
-            readdir_closed under OBO_CHECK, which ends in the runtime's exit 9;
-            under OBO_CHECK=1 the others are the leak oracle.
+            OBO_CHECK. P5a adds isatty (negative fds, a file, /dev/null, both
+            pipe ends, a directory, a closed tracked fd, a reused number, and
+            the pty slave as the one true answer) and getenv (rt_init's
+            env_base formula, the fixed OBO_META_ENV_* environment, and a
+            crafted envp for first-match, empty names, '=', prefixes, a
+            malformed entry and owned copies that survive env mutation). Every
+            case frees its cells and ends in rt_finish, except readdir_closed
+            under OBO_CHECK, which ends in the runtime's exit 9; under
+            OBO_CHECK=1 the others are the leak oracle.
   programs  compiles tests/meta/*.obx as module roots with -I obo/lib and a
             private --sym-dir, then runs each against fixtures created here. The
             listing tests compare names/kinds/inodes with Python's os.listdir
@@ -25,15 +31,18 @@ Sections (both by default):
             os.readlink (the error codes are pinned: EINVAL for a non-symlink or
             an empty path, ENOENT for a missing path), and the entry-path tests
             compare paths::join and lstat with os.path.join for an operand
-            outside the cwd and for a "../" operand. Files with // expect:
-            markers are compared in order (and // expect-exit: sets the code).
-            The dedicated missing-close case must exit 8 under OBO_CHECK; normal
-            cases must not.
+            outside the cwd and for a "../" operand. P5a adds meta/env_api.obx (the
+            env API and both builtins) and meta/env_shadow.obx (the B3
+            name-shadow compile test). Files with // expect: markers are
+            compared in order (and // expect-exit: sets the code). The dedicated
+            missing-close case must exit 8 under OBO_CHECK; normal cases must
+            not.
 
-The programs run with OBO_CHECK=1 and OBX_GC=poison, so a leak or a
-use-after-free fails them. The compiler is $OBO (default obo/obo); all paths are
-absolute, so the runner works from any cwd. Nothing is written outside the test
-temp dir.
+The programs and runtime cases run with OBO_CHECK=1 and OBX_GC=poison, so a
+leak or a use-after-free fails them, and with a fixed OBO_META_ENV_* environment
+so getenv's answers are deterministic. The compiler is $OBO (default obo/obo);
+all paths are absolute, so the runner works from any cwd. Nothing is written
+outside the test temp dir.
 
 Exit status is 1 when any case fails; a failed compile or mismatch is reported
 with the compiler's or program's own message.
@@ -69,14 +78,28 @@ failures = []
 passed = 0
 
 
+# The fixed environment the P5a cases read. Every program and runtime case runs
+# with exactly these OBO_META_ENV_* names (the runner's own values are dropped
+# first), so getenv's present/empty/absent answers are deterministic. A name
+# containing '=' cannot be set through subprocess, so the '=' and duplicate
+# rules are tested against the crafted envp in rt_meta_test.c.
+ENV_FIXTURES = {
+    'OBO_META_ENV_PRESENT': 'hello',
+    'OBO_META_ENV_EMPTY': '',
+    'OBO_META_ENV_OWNED': 'owned',
+}
+
+
 def clean_env(check=True, fault=None):
     e = {k: v for k, v in os.environ.items()
-         if k not in ('OBO_CHECK', 'OBO_IO_FAULT', 'OBO_META_FAULT', 'OBX_GC')}
+         if k not in ('OBO_CHECK', 'OBO_IO_FAULT', 'OBO_META_FAULT', 'OBX_GC')
+         and not k.startswith('OBO_META_ENV_')}
     if check:
         e['OBO_CHECK'] = '1'
     if fault:
         e['OBO_META_FAULT'] = fault
     e['OBX_GC'] = 'poison'
+    e.update(ENV_FIXTURES)
     return e
 
 
@@ -119,6 +142,9 @@ RT_CASES = [
     ('readdir_checks', clean_env(), 0),
     ('readdir_closed', clean_env(), 9),
     ('readdir_closed', clean_env(check=False), 0),
+    ('isatty_checks', clean_env(), 0),
+    ('getenv_real', clean_env(), 0),
+    ('getenv_crafted', clean_env(), 0),
     ('eintr', clean_env(fault='eintr'), 0),
     ('eintr', clean_env(check=False, fault='eintr'), 0),
 ]
@@ -400,6 +426,12 @@ def program_invocations(fx):
          marker_case('fs/crafted', 'crafted.obx')),
         ('fs/missing_close', 'missing_close.obx', [fx.entries], None,
          check_missing_close),
+        # P5a: env/isatty with the fixed environment (args after the scratch
+        # dir are empty; the program uses the scratch directory itself)
+        ('env/api', 'env_api.obx', [], None,
+         marker_case('env/api', 'env_api.obx')),
+        ('env/shadow', 'env_shadow.obx', [], None,
+         marker_case('env/shadow', 'env_shadow.obx')),
     ]
 
 

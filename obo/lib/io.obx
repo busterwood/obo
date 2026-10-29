@@ -56,6 +56,14 @@ pub fn newWriter(fd: int, size: int): Writer {
     return new Writer{fd: fd, buf: new []byte(0), size: clampChunk(size)}
 }
 
+// True when the borrowed fd is a terminal (the isatty builtin's ioctl TCGETS).
+// There is no Result and no fd-table fatal: a closed or reused descriptor is
+// simply reported by the kernel (false for EBADF/ENOTTY). (P5a addition; eza's
+// colour auto mode uses it.)
+pub fn isTty(fd: int): bool {
+    return isatty(fd)
+}
+
 // ok(true) = bytes are available, ok(false) = EOF. A short chunk is data, not
 // EOF: the next fill decides. The old chunk is freed by the assignment.
 pub fn fill(mut r: &Reader): Result[bool] {

@@ -119,27 +119,27 @@ def cases_of(src, seed=False):
     A program that imports modules is compiled as a module root (see the module
     arguments in compare); there is no source injection.
 
-    In the seed comparison (seed=True) the compiler-feature cases are skipped
-    while the seed predates them: the 0.2 seed rejects tests/run/meta.obx and
-    tests/errors/meta.obx (whose cases use statPath and friends) while the port
-    compiles them. seed is set only when the reference is the seed AND its
-    `--version` is below 0.3 (see seed_needs_skip), so a promoted 0.3 seed
-    compares the whole corpus. The default comparison (obo and the port from the
-    same source) always covers them. This is the only seed-mode exclusion
-    besides the module trees."""
+    In the seed comparison (seed=True) a case is skipped while the seed predates
+    the builtins it uses: a 0.2 seed rejects tests/run/meta.obx and
+    tests/errors/meta.obx (statPath and friends, 0.3), and a 0.3 seed rejects
+    the P5a cases (isatty and getenv, 0.4) and any case importing a library
+    module that uses them (io.obx's isTty). A promoted seed at or above the
+    needed version compares it. The default comparison (obo and the port from
+    the same source) always covers every file. This is the only seed-mode
+    exclusion besides the module trees."""
     cases = []
     files = sorted(glob.glob(os.path.join(FORK, 'tests', 'run', '*.obx')) + glob.glob(os.path.join(FORK, 'examples', '*.obx')) +
                    glob.glob(os.path.join(FORK, 'bench', '*.obx')) + glob.glob(os.path.join(ROOT, 'tests', 'run', '*.obx')) +
                    glob.glob(os.path.join(ROOT, 'examples', '*.obx')) + [src])
     for f in files:
-        if seed and f in SEED_SKIP:
-            continue
         text = open(f, 'rb').read()
+        if seed and seed_skips(f, text):
+            continue
         cases.append((os.path.relpath(f, ROOT), text))
     for f in sorted(glob.glob(os.path.join(FORK, 'tests', 'errors', '*.obx')) + glob.glob(os.path.join(ROOT, 'tests', 'errors', '*.obx'))):
-        if seed and f in SEED_SKIP:
-            continue
         for name, text, _, _ in run.error_cases(f):
+            if seed and seed_skips(f, text):
+                continue
             cases.append((name, text.encode()))
     return cases
 
@@ -159,14 +159,21 @@ MODDIR = os.path.join(FORK, 'tests', 'modules')
 SEED_REF = os.path.realpath(os.path.join(FORK, 'seed', 'obo'))
 REF_TREE = {}
 
-# The P3 compiler-feature cases use the metadata builtins, which arrived in
-# OBO_VERSION 0.3. A seed older than 0.3 cannot compile these files, so the seed
-# comparison skips them; a promoted 0.3 seed has no such limit and the whole
-# corpus is compared. The decision reads `REF --version`, cached per executable,
-# so it follows the seed automatically across the P3 promote (no edit needed).
-SEED_SKIP = {os.path.join(FORK, 'tests', 'run', 'meta.obx'),
-             os.path.join(FORK, 'tests', 'errors', 'meta.obx')}
-SEED_METADATA_VERSION = (0, 3)
+# The compiler-feature cases use builtins that arrived after the seed was
+# promoted, so the seed cannot compile them. Each file is skipped in the seed
+# comparison until the seed's `--version` reaches the version that introduced
+# its builtins; a promoted seed at that version compares it (P3 metadata after
+# 0.3, P5a isatty/getenv after 0.4). A case that imports a library module using
+# a newer builtin is skipped the same way (P5a put isatty in io.obx, so
+# io_reader/io_writer need a 0.4 seed too). The decision reads `REF --version`,
+# cached per executable, so it follows the seed automatically across a promote.
+SEED_FILE_MIN = {
+    os.path.join(FORK, 'tests', 'run', 'meta.obx'): (0, 3),
+    os.path.join(FORK, 'tests', 'errors', 'meta.obx'): (0, 3),
+    os.path.join(FORK, 'tests', 'run', 'env.obx'): (0, 4),
+    os.path.join(FORK, 'tests', 'errors', 'env.obx'): (0, 4),
+}
+SEED_LIB_MIN = {'io.obx': (0, 4), 'env.obx': (0, 4)}
 _SEED_VERSIONS = {}
 
 
@@ -188,10 +195,30 @@ def ref_version(ref):
     return v
 
 
-def seed_needs_skip():
-    """True while the promoted seed predates the metadata builtins (pre-0.3)."""
+def import_min(text):
+    """The newest version a case's library imports need, or None."""
+    if isinstance(text, bytes):
+        text = text.decode('latin-1')
+    need = None
+    for line in text.splitlines():
+        s = line.strip()
+        if not s.startswith('import "'):
+            continue
+        v = SEED_LIB_MIN.get(os.path.basename(s.split('"', 2)[1]))
+        if v is not None and (need is None or v > need):
+            need = v
+    return need
+
+
+def seed_skips(path, text):
+    """True while the seed predates the builtins the case file uses."""
+    need = SEED_FILE_MIN.get(path)
+    if need is None:
+        need = import_min(text)
+    if need is None:
+        return False
     v = ref_version(REF)
-    return v is not None and v < SEED_METADATA_VERSION
+    return v is not None and v < need
 
 
 def tree_cases():
@@ -616,7 +643,7 @@ def compare(tmp, src=SRC, quick=False, workers=None):
     if quick and failures:
         return lines, failures, peak
     modules = os.path.realpath(REF) != SEED_REF
-    cases = cases_of(src, seed=not modules and seed_needs_skip())
+    cases = cases_of(src, seed=not modules)
 
     def imports_module(text):
         return any(line.startswith(b'import "') for line in text.splitlines())
