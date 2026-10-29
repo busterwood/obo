@@ -1,0 +1,613 @@
+// eza: the P4 E0 core (non-TTY lines, E0 flags and diagnostics).
+//
+// Built as a module root by tools/build_tools.py: it imports the stdlib by
+// explicit relative paths and every library name is qualified. The module is
+// named `eza`; nothing imports it, so the build writes an unread eza.sym into
+// the private sym dir. E0 is non-TTY only: one entry per line (symlink targets
+// included), the hidden/-a/-A rules, the E0 sort keys, -r, directory grouping,
+// quoting, -F, -D/-f, -d, restricted long and the error/exit classes of design
+// section 7. Multiple operands, tree, grid, colour, icons, --no-quotes and the
+// later sort keys are rejected with this build's own message.
+//
+// Stage A: the command line, operand model and diagnostics. Directory entries
+// are listed in getdents order without the E0 sort; the later stages add the
+// sort keys, quoting, -F, dot synthesis and restricted long.
+
+module eza
+
+import "../lib/io.obx" as io
+import "../lib/fmt.obx" as fmt
+import "../lib/strings.obx" as strings
+import "../lib/paths.obx" as paths
+import "../lib/sort.obx" as sort
+import "../lib/cli.obx" as cli
+import "../lib/errors.obx" as errors
+import "../lib/time.obx" as time
+import "../lib/fs.obx" as fs
+
+// Deduced command-line state. Every field is copied from the effective (last)
+// occurrence of its option; cli.parse has already rejected unknown names,
+// missing required values and eza-invalid values with eza's wording.
+type Opts = ref record {
+    allCount: int          // -a/--all occurrences
+    almostAll: bool        // -A
+    treatDirs: bool        // -d/--treat-dirs-as-files/--list-dirs
+    reverse: bool          // -r
+    sortField: string      // effective --sort value, "" for the default
+    groupFirst: bool       // --group-directories-first
+    groupLast: bool        // --group-directories-last
+    classifyAlways: bool   // -F=always/--classify=always
+    onlyDirs: bool         // -D
+    onlyFiles: bool        // -f
+    bytes: bool            // -B/--bytes
+    numeric: bool          // -n
+    noUser: bool           // --no-user
+    noPermissions: bool    // --no-permissions
+    noFilesize: bool       // --no-filesize
+    noTime: bool           // --no-time
+    timeStyle: string      // effective --time-style value
+    timeStyleSeen: bool
+    longView: bool         // the effective view is -l (last of -l/-1)
+}
+
+// One displayed entry. Stage A keeps only the raw name and the kernel type.
+type Entry = ref record {
+    name: string
+    kind: byte
+}
+
+// How the entry set was produced: a directory listing (names only) or one
+// operand (parent prefix + name). `base` is the target-resolution base.
+type View = ref record {
+    single: bool
+    operand: string
+    base: string
+}
+
+// ------------------------------------------------------------------- lists
+
+// A fresh empty string array (each call owns its own array).
+fn noStrings(): []string {
+    return new []string(0)
+}
+
+fn stringList3(a: string, b: string, c: string): []string {
+    var xs = new []string(0)
+    append(xs, a)
+    append(xs, b)
+    append(xs, c)
+    return xs
+}
+
+fn stringList4(a: string, b: string, c: string, d: string): []string {
+    var xs = stringList3(a, b, c)
+    append(xs, d)
+    return xs
+}
+
+// The text after "(choices: ...)" in eza's --sort diagnostics.
+fn sortChoices(): []string {
+    var xs = new []string(0)
+    append(xs, "name")
+    append(xs, "Name")
+    append(xs, "size")
+    append(xs, "extension")
+    append(xs, "Extension")
+    append(xs, "modified")
+    append(xs, "changed")
+    append(xs, "accessed")
+    append(xs, "created")
+    append(xs, "inode")
+    append(xs, "type")
+    append(xs, "none")
+    return xs
+}
+
+// Every value eza 0.23.3 accepts for --sort. cli.parse rejects anything else
+// with eza's no-setting message; E0 then rejects the values it does not
+// implement with this build's own message.
+fn sortAccept(): []string {
+    var xs = new []string(0)
+    append(xs, "name")
+    append(xs, "Name")
+    append(xs, "filename")
+    append(xs, "Filename")
+    append(xs, ".name")
+    append(xs, ".Name")
+    append(xs, ".filename")
+    append(xs, ".Filename")
+    append(xs, "size")
+    append(xs, "filesize")
+    append(xs, "extension")
+    append(xs, "Extension")
+    append(xs, "ext")
+    append(xs, "Ext")
+    append(xs, "type")
+    append(xs, "modified")
+    append(xs, "date")
+    append(xs, "time")
+    append(xs, "mod")
+    append(xs, "new")
+    append(xs, "newest")
+    append(xs, "changed")
+    append(xs, "ch")
+    append(xs, "accessed")
+    append(xs, "acc")
+    append(xs, "created")
+    append(xs, "cr")
+    append(xs, "inode")
+    append(xs, "none")
+    append(xs, "age")
+    append(xs, "old")
+    append(xs, "oldest")
+    return xs
+}
+
+// The WHEN keywords eza's parser consumes as a separate token. `automatic` is
+// accepted only after '=' (the deduction accepts it), never consumed here.
+fn whenConsume(): []string {
+    return stringList3("always", "auto", "never")
+}
+
+fn whenAccept(): []string {
+    return stringList4("always", "auto", "never", "automatic")
+}
+
+fn scaleConsume(): []string {
+    return stringList3("all", "age", "size")
+}
+
+fn absoluteConsume(): []string {
+    return stringList3("on", "follow", "off")
+}
+
+// ------------------------------------------------------------- flag specs
+
+fn mkSpec(short: byte, long: string, mode: int, consume: []string,
+          accept: []string, choices: []string, def: string): cli::FlagSpec {
+    return new cli::FlagSpec{short: short, long: long, mode: mode,
+                             consume: consume, accept: accept,
+                             choices: choices, default: def}
+}
+
+// The E0 parser: the supported flags, plus every eza-valid flag E0 rejects.
+// The rejected ones keep eza's value mode so their values are consumed before
+// this build's unsupported-option error (design 7.11); --help/--version and
+// -?/-v are deliberately absent and take the unknown-name path.
+fn specs(): []cli::FlagSpec {
+    var s = new []cli::FlagSpec(0)
+    // views
+    append(s, mkSpec('1', "oneline", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('l', "long", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    // filters and sorting
+    append(s, mkSpec('a', "all", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('A', "almost-all", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('d', "treat-dirs-as-files", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "list-dirs", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('D', "only-dirs", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('f', "only-files", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('r', "reverse", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('s', "sort", cli::VALUE_REQUIRED, noStrings(), sortAccept(), sortChoices(), ""))
+    append(s, mkSpec(byte(0), "group-directories-first", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "group-directories-last", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    // classify and long columns
+    append(s, mkSpec('F', "classify", cli::VALUE_OPTIONAL, whenConsume(), whenAccept(), noStrings(), "auto"))
+    append(s, mkSpec('B', "bytes", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('n', "numeric", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "no-user", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "no-permissions", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "no-filesize", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "no-time", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "time-style", cli::VALUE_REQUIRED, noStrings(), noStrings(),
+                     stringList4("default", "long-iso", "full-iso", "iso"), ""))
+    // colour and icons: accepted spellings, E0 rejects rendering `always`
+    append(s, mkSpec(byte(0), "color", cli::VALUE_OPTIONAL, whenConsume(), whenAccept(), noStrings(), "auto"))
+    append(s, mkSpec(byte(0), "colour", cli::VALUE_OPTIONAL, whenConsume(), whenAccept(), noStrings(), "auto"))
+    append(s, mkSpec(byte(0), "icons", cli::VALUE_OPTIONAL, whenConsume(), whenAccept(), noStrings(), "auto"))
+    // eza-valid options this build rejects (parsed, then reported by name)
+    append(s, mkSpec('G', "grid", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('x', "across", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('R', "recurse", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('T', "tree", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('L', "level", cli::VALUE_REQUIRED, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('X', "dereference", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "follow-symlinks", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('w', "width", cli::VALUE_REQUIRED, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "no-quotes", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "absolute", cli::VALUE_OPTIONAL, absoluteConsume(), absoluteConsume(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "color-scale", cli::VALUE_OPTIONAL, scaleConsume(), scaleConsume(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "colour-scale", cli::VALUE_OPTIONAL, scaleConsume(), scaleConsume(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "color-scale-mode", cli::VALUE_REQUIRED, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "colour-scale-mode", cli::VALUE_REQUIRED, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('I', "ignore-glob", cli::VALUE_REQUIRED, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "git-ignore", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "no-symlinks", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "show-symlinks", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('b', "binary", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('g', "group", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('h', "header", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('i', "inode", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('H', "links", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('m', "modified", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "changed", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('S', "blocksize", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "total-size", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('t', "time", cli::VALUE_REQUIRED, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('u', "accessed", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('U', "created", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "hyperlink", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('M', "mounts", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "smart-group", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "git", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "no-git", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "git-repos", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "git-repos-no-status", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('@', "extended", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('o', "octal-permissions", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('Z', "context", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "stdin", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('O', "flags", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    return s
+}
+
+// --------------------------------------------------------------- deduction
+
+// eza-valid option names E0 does not implement.
+fn isUnsupported(name: string): bool {
+    if name == "grid" { return true }
+    if name == "across" { return true }
+    if name == "recurse" { return true }
+    if name == "tree" { return true }
+    if name == "level" { return true }
+    if name == "dereference" { return true }
+    if name == "follow-symlinks" { return true }
+    if name == "width" { return true }
+    if name == "no-quotes" { return true }
+    if name == "absolute" { return true }
+    if name == "color-scale" { return true }
+    if name == "colour-scale" { return true }
+    if name == "color-scale-mode" { return true }
+    if name == "colour-scale-mode" { return true }
+    if name == "ignore-glob" { return true }
+    if name == "git-ignore" { return true }
+    if name == "no-symlinks" { return true }
+    if name == "show-symlinks" { return true }
+    if name == "binary" { return true }
+    if name == "group" { return true }
+    if name == "header" { return true }
+    if name == "inode" { return true }
+    if name == "links" { return true }
+    if name == "modified" { return true }
+    if name == "changed" { return true }
+    if name == "blocksize" { return true }
+    if name == "total-size" { return true }
+    if name == "time" { return true }
+    if name == "accessed" { return true }
+    if name == "created" { return true }
+    if name == "hyperlink" { return true }
+    if name == "mounts" { return true }
+    if name == "smart-group" { return true }
+    if name == "git" { return true }
+    if name == "no-git" { return true }
+    if name == "git-repos" { return true }
+    if name == "git-repos-no-status" { return true }
+    if name == "extended" { return true }
+    if name == "octal-permissions" { return true }
+    if name == "context" { return true }
+    if name == "stdin" { return true }
+    if name == "flags" { return true }
+    return false
+}
+
+// eza-valid --sort values excluded from E0 (they need metadata E0 does not
+// collect, the `.name` dot rule, or filesystem order).
+fn isRejectedSort(v: string): bool {
+    if v == ".name" { return true }
+    if v == ".Name" { return true }
+    if v == ".filename" { return true }
+    if v == ".Filename" { return true }
+    if v == "changed" { return true }
+    if v == "ch" { return true }
+    if v == "accessed" { return true }
+    if v == "acc" { return true }
+    if v == "created" { return true }
+    if v == "cr" { return true }
+    if v == "inode" { return true }
+    if v == "none" { return true }
+    if v == "age" { return true }
+    if v == "old" { return true }
+    if v == "oldest" { return true }
+    return false
+}
+
+// Left-associative string concatenation helper for messages.
+fn msg3(a: string, b: string, c: string): string {
+    return a + b + c
+}
+
+fn messageFor(name: string): string {
+    return msg3("option '--", name, "' is not supported by this build")
+}
+
+fn valueMessage(name: string, value: string): string {
+    return "option '--" + name + "=" + value + "' is not supported by this build"
+}
+
+// Turn the parsed option occurrences into the effective state. Returns this
+// build's own usage errors (exit 3 at the caller) for values it does not
+// implement and for the restricted long form.
+fn deduce(options: &[]cli::Option): Result[Opts] {
+    var o = new Opts{allCount: 0, almostAll: false, treatDirs: false,
+                     reverse: false, sortField: "", groupFirst: false,
+                     groupLast: false, classifyAlways: false, onlyDirs: false,
+                     onlyFiles: false, bytes: false, numeric: false,
+                     noUser: false, noPermissions: false, noFilesize: false,
+                     noTime: false, timeStyle: "", timeStyleSeen: false,
+                     longView: false}
+    var k = 0
+    while k < len(options) {
+        let name = options[k].long
+        let value = options[k].value
+        if name == "all" {
+            o.allCount += 1
+        } else if name == "almost-all" {
+            o.almostAll = true
+        } else if name == "treat-dirs-as-files" {
+            o.treatDirs = true
+        } else if name == "list-dirs" {
+            o.treatDirs = true
+        } else if name == "reverse" {
+            o.reverse = true
+        } else if name == "sort" {
+            o.sortField = value
+        } else if name == "group-directories-first" {
+            o.groupFirst = true
+        } else if name == "group-directories-last" {
+            o.groupLast = true
+        } else if name == "classify" {
+            if value == "always" { o.classifyAlways = true }
+        } else if name == "only-dirs" {
+            o.onlyDirs = true
+        } else if name == "only-files" {
+            o.onlyFiles = true
+        } else if name == "bytes" {
+            o.bytes = true
+        } else if name == "numeric" {
+            o.numeric = true
+        } else if name == "no-user" {
+            o.noUser = true
+        } else if name == "no-permissions" {
+            o.noPermissions = true
+        } else if name == "no-filesize" {
+            o.noFilesize = true
+        } else if name == "no-time" {
+            o.noTime = true
+        } else if name == "time-style" {
+            o.timeStyle = value
+            o.timeStyleSeen = true
+        } else if name == "long" {
+            o.longView = true
+        } else if name == "oneline" {
+            o.longView = false
+        } else if name == "color" || name == "colour" {
+            if value == "always" {
+                return err(valueMessage(name, value), 22)
+            }
+        } else if name == "icons" {
+            if value == "always" {
+                return err(valueMessage(name, value), 22)
+            }
+        } else if isUnsupported(name) {
+            return err(messageFor(name), 22)
+        }
+        k += 1
+    }
+    // E0 sort keys only; eza's valid-but-later values get this build's message.
+    if len(o.sortField) > 0 && isRejectedSort(o.sortField) {
+        return err(valueMessage("sort", o.sortField), 22)
+    }
+    if o.longView {
+        // Restricted long: -l is only accepted with the explicit
+        // --bytes --time-style=long-iso (-n | --no-user) form (design 7.8).
+        if o.timeStyleSeen && o.timeStyle != "long-iso" {
+            return err("--time-style=" + o.timeStyle + " is not supported with -l in this build", 22)
+        }
+        if !o.timeStyleSeen || !o.bytes || !(o.numeric || o.noUser) {
+            return err("-l in this build requires --bytes, --time-style=long-iso and -n or --no-user", 22)
+        }
+    } else {
+        // No date column: long-iso and default are accepted and ignored; E0
+        // rejects the other valid styles (a documented divergence).
+        if o.timeStyleSeen && o.timeStyle != "long-iso" && o.timeStyle != "default" {
+            return err("--time-style=" + o.timeStyle + " is not supported in this build", 22)
+        }
+    }
+    return ok(o)
+}
+
+// ----------------------------------------------------------------- display
+
+fn quoteName(name: string): string {
+    return strings::quoteName(name, true)
+}
+
+// An input operand as eza paints it: the parent prefix escaped once with the
+// outer style, then the quoted last component. `.`, `..` and `/` are
+// themselves; the root parent emits a single separator (design 7.2).
+fn operandDisplay(p: string): string {
+    if p == "/" { return "/" }
+    let name = paths::lastComponent(p)
+    if name == "." || name == ".." { return name }
+    let parent = paths::parentOf(p)
+    if len(parent) == 0 { return quoteName(name) }
+    return strings::parentPrefix(parent, true) + quoteName(name)
+}
+
+fn newEntry(name: string, kind: byte): Entry {
+    return new Entry{name: name, kind: kind}
+}
+
+// Directory listing names only (no parent prefix); an operand shows its
+// parent prefix and name.
+fn displayName(v: &View, e: &Entry): string {
+    if v.single { return operandDisplay(v.operand) }
+    return quoteName(e.name)
+}
+
+fn entryPath(v: &View, name: string): string {
+    if v.single { return v.operand }
+    return paths::join(v.operand, name)
+}
+
+// ------------------------------------------------------------------ input
+
+// Read every kernel entry (fs::next skips "." and "..") into es.
+fn readDirEntries(mut d: &fs::Dir, mut es: &[]Entry): Result[bool] {
+    var e = new fs::DirEntry{name: "", ino: 0, kind: 0}
+    var more = true
+    while more {
+        more = try fs::next(d, e)
+        if more {
+            append(es, newEntry(e.name, e.kind))
+        }
+    }
+    return ok(true)
+}
+
+// ---------------------------------------------------------------- output
+
+// Write one name per line through a buffered Writer. A write or flush failure
+// is returned with its errno; the caller prints eza's bare os error and exits 1.
+fn emitEntries(es: &[]Entry, v: &View): Result[bool] {
+    var w = io::newWriter(stdout(), 65536)
+    var i = 0
+    while i < len(es) {
+        let line = displayName(v, es[i])
+        let r = io::write(w, line)
+        match r {
+            ok { }
+            err { return err(r.message, r.code) }
+        }
+        let n = io::writeByte(w, byte(10))
+        match n {
+            ok { }
+            err { return err(n.message, n.code) }
+        }
+        i += 1
+    }
+    let f = io::flush(w)
+    match f {
+        ok { }
+        err { return err(f.message, f.code) }
+    }
+    return ok(true)
+}
+
+// eza's permission-denied diagnostic for a directory it cannot open, followed
+// by the summary block. The status stays 0 (P0 records 0.23.3's exit).
+fn warnPermissionDenied(operand: string) {
+    eprintln("Permission denied: ", operand, " - code: 13")
+    eprintln("")
+    eprintln("Skipped 1 directories due to permission denied: ")
+    eprintln("  ", operand)
+}
+
+// ------------------------------------------------------------------- main
+
+fn main() {
+    let av = args()
+    var sp = specs()
+    let parsed = cli::parse(av, 1, sp)
+    match parsed {
+        ok {
+            let od = deduce(parsed.value.options)
+            match od {
+                ok {
+                    let nops = len(parsed.value.operands)
+                    if nops > 1 {
+                        eprintln("eza: this build supports at most one operand")
+                        exit(errors::EXIT_USAGE)
+                    }
+                    var operand = "."
+                    if nops == 1 { operand = parsed.value.operands[0] }
+                    // The operand existence check is lstat, as in eza: a
+                    // dangling symlink operand exists and is listed.
+                    var mode = 0
+                    let lm = fs::lstat(operand)
+                    match lm {
+                        ok { mode = lm.value.mode }
+                        err {
+                            eprintln(errors::debugPath(operand), ": ", errors::osError(lm.code))
+                            exit(errors::EXIT_PATH)
+                        }
+                    }
+                    var follows = false
+                    if fs::isSymlink(mode) {
+                        let st = fs::stat(operand)
+                        match st {
+                            ok { follows = fs::isDir(st.value.mode) }
+                            err { follows = false }
+                        }
+                    }
+                    let listing = (fs::isDir(mode) || follows) && !od.value.treatDirs
+                    if listing {
+                        let op = fs::open(operand)
+                        match op {
+                            ok(d) {
+                                var es = new []Entry(0)
+                                let rr = readDirEntries(d, es)
+                                let cr = fs::close(d)
+                                match rr {
+                                    ok {
+                                        let v = new View{single: false,
+                                                         operand: operand,
+                                                         base: operand}
+                                        let er = emitEntries(es, v)
+                                        match er {
+                                            ok { }
+                                            err {
+                                                eprintln(errors::osError(er.code))
+                                                exit(errors::EXIT_FAIL)
+                                            }
+                                        }
+                                    }
+                                    err {
+                                        eprintln(operand, ": ", errors::osError(rr.code))
+                                    }
+                                }
+                            }
+                            err(m, c) {
+                                if c == errors::EXIT_PERMISSION {
+                                    warnPermissionDenied(operand)
+                                } else {
+                                    eprintln(operand, ": ", errors::osError(c))
+                                }
+                            }
+                        }
+                    } else {
+                        var es = new []Entry(0)
+                        append(es, newEntry(operand, fs::typeOf(mode)))
+                        let v = new View{single: true, operand: operand,
+                                         base: paths::parentOf(operand)}
+                        let er = emitEntries(es, v)
+                        match er {
+                            ok { }
+                            err {
+                                eprintln(errors::osError(er.code))
+                                exit(errors::EXIT_FAIL)
+                            }
+                        }
+                    }
+                }
+                err {
+                    eprintln("eza: ", od.message)
+                    exit(errors::EXIT_USAGE)
+                }
+            }
+        }
+        err {
+            eprintln("eza: ", parsed.message)
+            exit(errors::EXIT_USAGE)
+        }
+    }
+}

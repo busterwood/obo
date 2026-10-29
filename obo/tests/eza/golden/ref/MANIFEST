@@ -1,5 +1,10 @@
 {
   "cases": [
+    "own/errors/bad_level",
+    "own/errors/bad_time_style",
+    "own/errors/own_long_restricted",
+    "own/errors/own_sort_none",
+    "own/errors/own_unsupported_flag",
     "ref/classify/F_always",
     "ref/classify/F_d_broken",
     "ref/classify/F_d_dir",

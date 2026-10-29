@@ -11,7 +11,9 @@ CFLAGS = -O2 -ffreestanding -fno-builtin -nostdlib -fno-pic -fno-pie -fno-stack-
 # Each build's symbol files live in <out>/sym, created by tools/build_tools.py;
 # build/tools/sym for `make tools`. Symbol writes truncate in place, so tests use
 # private output directories instead of sharing one writable sym dir.
-.PHONY: tools tools-check tools-memory all clean
+.PHONY: tools tools-check tools-memory eza eza-check eza-memory all clean
+OUT_TOOLS = build/tools
+OUT_EZA   = build/eza
 
 all: runtime_text.bin runtime_data.bin obo
 
@@ -55,6 +57,23 @@ tools-check: tools
 
 tools-memory: tools
 	python3 tests/tools.py --memory
+
+# the P4 eza E0 build: only eza, with its own output and sym dir. The builder
+# creates <out>/sym too; these order-only mkdir rules are the Makefile safety
+# net (a sym-dir timestamp must not rebuild anything).
+eza: obo runtime_text.bin runtime_data.bin | $(OUT_EZA)/sym
+	python3 tools/build_tools.py eza --out $(OUT_EZA)
+
+$(OUT_TOOLS)/sym:
+	mkdir -p $@
+$(OUT_EZA)/sym:
+	mkdir -p $@
+
+eza-check: eza
+	python3 tests/eza.py --require-reference
+
+eza-memory: eza
+	python3 tests/eza.py --memory
 
 # make the current compiler the new seed, once it is a fixed point and the suite passes
 promote: obo

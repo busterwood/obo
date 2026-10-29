@@ -111,6 +111,8 @@ GOLDEN = os.path.join(HERE, 'eza', 'golden')
 OWN_SOURCE = os.path.join(FORK, 'cmd', 'eza.obx')       # P4 own source
 
 sys.path.insert(0, os.path.join(HERE, 'eza'))
+sys.path.insert(0, os.path.join(FORK, 'tools'))
+import build_tools  # noqa: E402
 import fixtures  # noqa: E402
 
 
@@ -974,8 +976,21 @@ class Harness:
                 '--treat-dirs-as-files: %r' % (p.returncode, p.stderr))
 
     def build(self):
-        """P4 builds `eza` through build_tools.build(['eza'], ...)."""
-        raise SetupError('eza build not implemented (P4)')
+        """P4 builds `eza` through build_tools.build(['eza'], ...).
+
+        The build lives in a private temporary output directory with its own
+        `sym/`, exactly as tests/tools.py builds the other tools; the compiler
+        and runtime are the tree's own (or $OBO)."""
+        obo = os.path.abspath(os.environ.get('OBO', os.path.join(FORK, 'obo')))
+        out = os.path.join(self.tmp, 'build')
+        try:
+            exes = build_tools.build(['eza'], out, obo, FORK)
+        except build_tools.BuildError as e:
+            raise SetupError('eza build failed: %s' % e)
+        if len(exes) != 1:
+            raise SetupError('build_tools.build returned %d binaries for one '
+                             'name' % len(exes))
+        self.exe = exes[0]
 
     def golden(self, kind, case):
         key = (kind, case.key)
