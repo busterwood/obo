@@ -82,8 +82,9 @@ jobs:
           curl -fsSL --retry 3 --connect-timeout 10 --max-time 60 \
             -o "$EZA_DIR/eza.tar.gz" "$EZA_URL"
           echo "$EZA_TARBALL_SHA256  $EZA_DIR/eza.tar.gz" | sha256sum -c -
-          # Extract only the binary so the PATH directory stays minimal.
-          tar -xzf "$EZA_DIR/eza.tar.gz" -C "$EZA_DIR" eza
+          # Extract only the binary so the PATH directory stays minimal. The
+          # archive names its only member ./eza (not eza); match that path.
+          tar -xzf "$EZA_DIR/eza.tar.gz" -C "$EZA_DIR" ./eza
           echo "$EZA_BINARY_SHA256  $EZA_DIR/eza" | sha256sum -c -
           rm -f "$EZA_DIR/eza.tar.gz"
           # The pinned release prints exactly these three lines. The [+git]
