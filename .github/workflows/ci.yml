@@ -1,24 +1,32 @@
-# CI for obo: build the compiler and runtime from the promoted seed, run the
-# fast deterministic Linux gates, and, once the P0 harness exists, differentially
-# test eza against the pinned reference.
+# CI for obo: build the compiler and runtime from the promoted seed and run the
+# fast deterministic Linux gates that are green today. The eza differential and
+# memory gates are gated on P0 (obo/tests/eza.py + obo/tests/eza/VERSION) and
+# P4 (obo/cmd/eza.obx); until those land they skip with a clear message, so no
+# live differential is claimed before P4.
 #
 # The eza release asset is downloaded outside the repository (into
-# $RUNNER_TEMP/eza-ref) and verified against the pinned tarball and binary
+# runner.temp/eza-ref) and verified against the pinned tarball and binary
 # SHA-256 digests from obo/design/stdlib-eza-design-v7.md sections 3.1 and 10.1.
 # It is never vendored into, or extracted inside, the checkout.
 #
-# The long mutation gates (obo/tests/mutate_fork.py, mutate_port.py, mutate_io.py)
-# are deliberately not here: they remain local/release gates because of their
-# runtime (design section 11.2).
+# Deliberately not here: the long mutation gates (tests/mutate_fork.py,
+# tests/mutate_port.py, tests/mutate_io.py and, from P3, tests/mutate_meta.py),
+# the long port comparisons (tests/port_compare.py, including OBO_REF=seed/obo)
+# and bench/bench.py. They remain local/release gates because of their runtime
+# (design section 11.2).
 name: ci
 
-on:
+'on':
   push:
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   EZA_URL: https://github.com/eza-community/eza/releases/download/v0.23.3/eza_x86_64-unknown-linux-gnu.tar.gz
@@ -28,25 +36,54 @@ env:
 jobs:
   linux:
     name: build and test (Linux x86-64)
-    runs-on: ubuntu-latest
+    # Pin the image (not ubuntu-latest): tests/tools.py requires GNU coreutils
+    # >= 9, and the pinned eza reference is a glibc x86-64 build. Ubuntu 24.04
+    # provides both and keeps the runner surface stable.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Install and verify the pinned eza reference
+      - name: Define the eza reference directory
+        # `runner` is not a valid context in a job-level `env:` block, so
+        # publish the directory once to every later step through GITHUB_ENV.
+        run: echo "EZA_DIR=$RUNNER_TEMP/eza-ref" >> "$GITHUB_ENV"
+
+      - name: Install and verify the pinned eza reference (P0+)
+        # P0 commits both obo/tests/eza.py and obo/tests/eza/VERSION. Before
+        # then, pre-P0 CI must not depend on the external download, so skip
+        # cleanly. Exactly one of the two files is a malformed P0 state and
+        # fails. Once both exist, any download/hash/version failure fails.
         run: |
           set -euo pipefail
-          EZA_DIR="$RUNNER_TEMP/eza-ref"
+          have=0
+          if [ -f obo/tests/eza.py ]; then have=$((have + 1)); fi
+          if [ -f obo/tests/eza/VERSION ]; then have=$((have + 1)); fi
+          case "$have" in
+            0)
+              echo 'P0 eza harness not present yet; skipping the reference install'
+              exit 0
+              ;;
+            2) ;;
+            *)
+              echo 'error: malformed P0 state: obo/tests/eza.py and obo/tests/eza/VERSION must both exist' >&2
+              exit 1
+              ;;
+          esac
           mkdir -p "$EZA_DIR"
-          curl -fsSL -o "$EZA_DIR/eza.tar.gz" "$EZA_URL"
+          curl -fsSL --retry 3 --connect-timeout 10 --max-time 60 \
+            -o "$EZA_DIR/eza.tar.gz" "$EZA_URL"
           echo "$EZA_TARBALL_SHA256  $EZA_DIR/eza.tar.gz" | sha256sum -c -
-          tar -xzf "$EZA_DIR/eza.tar.gz" -C "$EZA_DIR"
+          # Extract only the binary so the PATH directory stays minimal.
+          tar -xzf "$EZA_DIR/eza.tar.gz" -C "$EZA_DIR" eza
           echo "$EZA_BINARY_SHA256  $EZA_DIR/eza" | sha256sum -c -
           rm -f "$EZA_DIR/eza.tar.gz"
           # The pinned release prints exactly these three lines. The [+git]
@@ -75,6 +112,9 @@ jobs:
       - name: Build the command-line tools
         run: make -C obo tools
 
+      - name: Check incremental tool I/O (cat/wc streaming)
+        run: python3 obo/tests/io_test.py --tools
+
       - name: Differential-test the tools against GNU coreutils
         run: python3 obo/tests/tools.py --require-reference
 
@@ -84,18 +124,56 @@ jobs:
       - name: Check the ELF runtime-data segment
         run: python3 obo/tests/elf_test.py
 
-      - name: Differential-test eza against the pinned reference
-        # Lands before P0: skip cleanly until both P0 artifacts exist, then run
-        # the live differential. A failure with the harness present still fails
-        # the step (no fake pass).
+      - name: Differential-test eza against the pinned reference (P4+)
+        # Active only when P0 (obo/tests/eza.py + obo/tests/eza/VERSION) and P4
+        # (obo/cmd/eza.obx) have all landed. Before P0, skip cleanly; a
+        # half-landed P0 harness is malformed and fails; after P0 but before
+        # P4 there is no own eza to build, so skip with an explicit message.
+        # Once active, --require-reference makes a missing/different reference
+        # or any test failure fail the step (no fake pass).
         run: |
           set -euo pipefail
-          if [ -f obo/tests/eza.py ] && [ -f obo/tests/eza/VERSION ]; then
-            PATH="$RUNNER_TEMP/eza-ref:$PATH" python3 obo/tests/eza.py --require-reference
-          else
-            echo "eza harness not present yet; skipping"
+          have=0
+          if [ -f obo/tests/eza.py ]; then have=$((have + 1)); fi
+          if [ -f obo/tests/eza/VERSION ]; then have=$((have + 1)); fi
+          case "$have" in
+            0)
+              echo 'P0 eza harness not present yet; skipping the differential'
+              exit 0
+              ;;
+            2) ;;
+            *)
+              echo 'error: malformed P0 state: obo/tests/eza.py and obo/tests/eza/VERSION must both exist' >&2
+              exit 1
+              ;;
+          esac
+          if [ ! -f obo/cmd/eza.obx ]; then
+            echo 'own eza not implemented (P4); skipping the differential'
+            exit 0
           fi
+          PATH="$EZA_DIR:$PATH" python3 obo/tests/eza.py --require-reference
 
-      # Deliberately absent: the long mutation gates (tests/mutate_fork.py,
-      # tests/mutate_port.py, tests/mutate_io.py). They remain local/release
-      # gates because of their runtime; see design section 11.2.
+      - name: Run the eza memory cases (P4+)
+        # The same P0/P4 gate as the differential: --memory builds own eza, so
+        # it cannot run before cmd/eza.obx exists.
+        run: |
+          set -euo pipefail
+          have=0
+          if [ -f obo/tests/eza.py ]; then have=$((have + 1)); fi
+          if [ -f obo/tests/eza/VERSION ]; then have=$((have + 1)); fi
+          case "$have" in
+            0)
+              echo 'P0 eza harness not present yet; skipping the memory cases'
+              exit 0
+              ;;
+            2) ;;
+            *)
+              echo 'error: malformed P0 state: obo/tests/eza.py and obo/tests/eza/VERSION must both exist' >&2
+              exit 1
+              ;;
+          esac
+          if [ ! -f obo/cmd/eza.obx ]; then
+            echo 'own eza not implemented (P4); skipping the memory cases'
+            exit 0
+          fi
+          PATH="$EZA_DIR:$PATH" python3 obo/tests/eza.py --memory
