@@ -18,8 +18,8 @@ Recordable trees (relative targets only):
 
     empty/  one/  onedir/  mixed/  modes/  sizes/  times/  names/  ext/
     operands/  quoting/  links/  long/  many/  invalid/  hard/  xattr/
-    tree/  selflink/  grid1/ grid2/ grid10/ grid100/ gridlong10/
-    gridlong100/ locked/
+    tree/  selflink/  colours/  grid1/ grid2/ grid10/ grid100/
+    gridlong10/ gridlong100/ locked/
 
 Live/shape-only trees:
 
@@ -503,6 +503,42 @@ def _selflink(root, caps):
     _pin(d, selflink)
 
 
+def _colours(root, caps):
+    """E1 colour fixture: one file per default file-type category, a plain
+    regular file, an executable, a hidden file, a symlink with a styled
+    target, an executable target and a broken link. Names use only ASCII and
+    the mtimes are pinned, so the colour goldens are host independent."""
+    c = _dir(root, 'colours')
+    _file(c, 'README', b'r\n')
+    _file(c, 'Makefile', b'm\n')
+    _file(c, 'a.png', b'p\n')
+    _file(c, 'b.jpg', b'j\n')
+    _file(c, 'c.mp4', b'v\n')
+    _file(c, 'd.mp3', b'm\n')
+    _file(c, 'e.flac', b'f\n')
+    _file(c, 'f.pdf', b'p\n')
+    _file(c, 'g.gz', b'g\n')
+    _file(c, 'h.zip', b'z\n')
+    _file(c, 'i.tmp', b't\n')
+    _file(c, 'j.o', b'o\n')
+    _file(c, 'k.py', b'k\n')
+    _file(c, 'l.c', b'l\n')
+    _file(c, 'm.rs', b'm\n')
+    _file(c, 'n.so', b's\n')
+    _file(c, 'upper.PNG', b'u\n')
+    _file(c, 'id_rsa', b'k\n')
+    _file(c, 'secret.gpg', b'k\n')
+    _file(c, 'noext', b'n\n')
+    _file(c, 'noext~', b'n\n')
+    _file(c, '#hash#', b'h\n')
+    _file(c, '.hidden', b'h\n')
+    _file(c, 'prog', b'#!/bin/sh\n', mode=0o755)
+    _link(c, 'pnglink', 'a.png')
+    _link(c, 'exelink', 'prog')
+    _link(c, 'broken', 'missing')
+    _pin(c)
+
+
 def _tree(root, caps):
     tree = _dir(root, 'tree')
     _file(tree, 'a.txt', b'a\n')
@@ -561,6 +597,7 @@ def build(root):
         _absolute(root, caps)
         _locked(root, caps)
         _selflink(root, caps)
+        _colours(root, caps)
         _tree(root, caps)
         # Design section 9.2: the broken relative `../tar get` probe must have
         # no sibling `tar get` in the case directory's parent.

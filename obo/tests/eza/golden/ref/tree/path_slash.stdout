@@ -1,0 +1,6 @@
+tree/d1
+├── b.txt
+└── d2
+    ├── c.txt
+    └── d3
+        └── d.txt
