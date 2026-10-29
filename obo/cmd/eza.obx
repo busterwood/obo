@@ -76,6 +76,13 @@ type View = ref record {
     base: string
 }
 
+// The restricted-long column widths, computed over the displayed entries.
+type Cols = ref record {
+    sizeWidth: int
+    userWidth: int
+    dateWidth: int
+}
+
 // ------------------------------------------------------------------- lists
 
 // A fresh empty string array (each call owns its own array).
@@ -831,10 +838,67 @@ fn appendStr(mut out: &[]byte, s: string) {
     }
 }
 
-// One line in the current view. Stage B is the lines/default/-1/-d form; the
-// restricted long cells arrive in stage C.
-fn renderLine(e: &Entry, v: &View, o: &Opts, mut out: &[]byte) {
-    appendStr(out, displayName(v, e))
+// Right-align a string in width (width 0: no padding).
+fn appendRightStr(mut out: &[]byte, s: string, width: int) {
+    let pad = width - len(s)
+    if pad > 0 {
+        for i in 0..pad { append(out, ' ') }
+    }
+    appendStr(out, s)
+}
+
+// Right-align a non-negative int in width (width 0: no padding).
+fn appendRightInt(mut out: &[]byte, v: int, width: int) {
+    appendRightStr(out, string(v), width)
+}
+
+// Left-align a string in width (width 0: no padding). E0 widths are bytes.
+fn appendLeftStr(mut out: &[]byte, s: string, width: int) {
+    appendStr(out, s)
+    let pad = width - len(s)
+    if pad > 0 {
+        for i in 0..pad { append(out, ' ') }
+    }
+}
+
+// eza's File::size(): the decimal size of a regular file, -1 (displayed as
+// one '-') for every other type.
+fn sizeCell(e: &Entry): int {
+    if !e.statOk { return -1 }
+    return fs::sizeForLong(e.mode, e.size)
+}
+
+// Widths over the displayed entry set: right-aligned size, left-aligned
+// numeric uid (only with -n and not --no-user) and left-aligned date (16 for
+// any representable mtime, 1 for the lone "-").
+fn computeCols(es: &[]Entry, o: &Opts): Cols {
+    var sw = 0
+    var uw = 0
+    var dw = 0
+    var i = 0
+    while i < len(es) {
+        if !o.noFilesize {
+            let c = sizeCell(es[i])
+            var w = 1
+            if c >= 0 { w = fmt::digits(c) }
+            if w > sw { sw = w }
+        }
+        if o.numeric && !o.noUser {
+            let w = fmt::digits(es[i].uid)
+            if w > uw { uw = w }
+        }
+        if !o.noTime {
+            var w = 1
+            if es[i].statOk && es[i].mtime >= 0 { w = 16 }
+            if w > dw { dw = w }
+        }
+        i += 1
+    }
+    return new Cols{sizeWidth: sw, userWidth: uw, dateWidth: dw}
+}
+
+// The symlink arrow and target, or the classify marker on a non-link name.
+fn appendTargetAndMarker(e: &Entry, o: &Opts, mut out: &[]byte) {
     if int(e.kind) == int(fs::KIND_LNK) {
         if e.linkOk {
             appendStr(out, " -> ")
@@ -845,17 +909,59 @@ fn renderLine(e: &Entry, v: &View, o: &Opts, mut out: &[]byte) {
     }
 }
 
+// One line in the current view: the restricted long cells (permissions, size,
+// user under -n, modified date) then the name, or the lines/default form.
+// Suppressed columns and their separators disappear entirely; with every cell
+// suppressed the line is the name alone.
+fn renderLine(e: &Entry, v: &View, o: &Opts, cols: &Cols, mut out: &[]byte) {
+    if o.longView {
+        var first = true
+        if !o.noPermissions {
+            appendStr(out, fmt::modeString(e.mode))
+            first = false
+        }
+        if !o.noFilesize {
+            if !first { append(out, ' ') }
+            let c = sizeCell(e)
+            if c < 0 {
+                appendRightStr(out, "-", cols.sizeWidth)
+            } else {
+                appendRightInt(out, c, cols.sizeWidth)
+            }
+            first = false
+        }
+        if o.numeric && !o.noUser {
+            if !first { append(out, ' ') }
+            appendLeftStr(out, string(e.uid), cols.userWidth)
+            first = false
+        }
+        if !o.noTime {
+            if !first { append(out, ' ') }
+            var ds = "-"
+            if e.statOk && e.mtime >= 0 { ds = time::formatLongIso(e.mtime) }
+            appendLeftStr(out, ds, cols.dateWidth)
+            first = false
+        }
+        if !first { append(out, ' ') }
+        appendStr(out, displayName(v, e))
+        appendTargetAndMarker(e, o, out)
+    } else {
+        appendStr(out, displayName(v, e))
+        appendTargetAndMarker(e, o, out)
+    }
+}
+
 // Write one rendered line per order id through a buffered Writer. A write or
 // flush failure is returned with its errno; the caller prints eza's bare os
 // error and exits 1.
-fn emitEntries(es: &[]Entry, order: &[]int, v: &View, o: &Opts): Result[bool] {
+fn emitEntries(es: &[]Entry, order: &[]int, v: &View, o: &Opts, cols: &Cols): Result[bool] {
     var w = io::newWriter(stdout(), 65536)
     var out = new []byte(0)
     var i = 0
     while i < len(order) {
         let id = order[i]
         truncate(out, 0)
-        renderLine(es[id], v, o, out)
+        renderLine(es[id], v, o, cols, out)
         let r = io::writeBytes(w, out)
         match r {
             ok { }
@@ -958,7 +1064,8 @@ fn main() {
                                     ok {
                                         prepareEntries(es, v, od.value)
                                         let order = sortEntries(es, v, od.value)
-                                        let er = emitEntries(es, order, v, od.value)
+                                        let cols = computeCols(es, od.value)
+                                        let er = emitEntries(es, order, v, od.value, cols)
                                         match er {
                                             ok { }
                                             err {
@@ -986,7 +1093,8 @@ fn main() {
                         append(es, newEntry(operand, fs::typeOf(mode), byte(0)))
                         prepareEntries(es, v, od.value)
                         let order = sort::identity(len(es))
-                        let er = emitEntries(es, order, v, od.value)
+                        let cols = computeCols(es, od.value)
+                        let er = emitEntries(es, order, v, od.value, cols)
                         match er {
                             ok { }
                             err {
