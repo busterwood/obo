@@ -1,0 +1,40 @@
+// sieve: the sieve of Eratosthenes, counting primes <= n, the same bytearray
+// sieve as sieve.py. The optional argument is n (default 10,000,000);
+// --quick passes 1,000,000.
+
+module sieve
+
+// A non-negative decimal argument, or `default` when it is absent or malformed.
+fn sizeArg(default: int): int {
+    let av = args()
+    if len(av) < 2 { return default }
+    let s = av[1]
+    var v = 0
+    var i = 0
+    while i < len(s) {
+        let b = s[i]
+        if b < '0' || b > '9' { return default }
+        v = v * 10 + int(b) - 48
+        i += 1
+    }
+    return v
+}
+
+fn main() {
+    let n = sizeArg(10000000)
+    let composite = new []bool(n + 1)
+    var count = 0
+    var i = 2
+    while i <= n {
+        if !composite[i] {
+            count += 1
+            var j = i * i
+            while j <= n {
+                composite[j] = true
+                j += i
+            }
+        }
+        i += 1
+    }
+    println(count)
+}

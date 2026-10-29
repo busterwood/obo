@@ -1,0 +1,8 @@
+// hello: the process-startup row. A static obo binary printing one line is
+// compared with `python3 -c pass` and `python3 -c print("hi")`.
+
+module hello
+
+fn main() {
+    println("hi")
+}

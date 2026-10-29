@@ -1,0 +1,29 @@
+// fib: recursive fib(n), the same call tree as fib.py. The optional argument
+// is the n (default 32); --quick passes 30.
+
+module fib
+
+fn fib(n: int): int {
+    if n < 2 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+// A non-negative decimal argument, or `default` when it is absent or malformed.
+fn sizeArg(default: int): int {
+    let av = args()
+    if len(av) < 2 { return default }
+    let s = av[1]
+    var v = 0
+    var i = 0
+    while i < len(s) {
+        let b = s[i]
+        if b < '0' || b > '9' { return default }
+        v = v * 10 + int(b) - 48
+        i += 1
+    }
+    return v
+}
+
+fn main() {
+    println(fib(sizeArg(32)))
+}
