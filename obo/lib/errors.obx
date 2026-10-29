@@ -1,0 +1,123 @@
+// obo/lib/errors.obx: errno text, eza-shaped exit codes and stderr helpers.
+//
+// It is a source module (`module errors`); importers write
+//
+//     import "../lib/errors.obx" as errors    // from obo/cmd/
+//     import "errors.obx" as errors           // from obo/lib/ with -I
+//
+// and reach exported declarations as errors::name. The module is a leaf: it
+// uses only builtins (string, eprintln), so it can be imported anywhere.
+//
+// text moves the merged strings::errText here and extends it with ERANGE (34),
+// which P2's design section 5.7 requires; ELOOP (40) was already present. The
+// text is fixed English, not locale-aware: the eza differential and the tools
+// pin LC_ALL=C. An unknown code is "error N", and a caller decides the exit
+// status deliberately (result codes are errnos, not the runtime trap codes).
+//
+// osError appends " (os error N)" to match Rust io::Error's Display, which eza
+// uses for path and write diagnostics (P0 records `"missing": No such file or
+// directory (os error 2)` and `No space left on device (os error 28)`).
+// debugPath reproduces Rust's OsStr/Path Debug quoting for simple ASCII names
+// (`"name"`): quotes, `\"`/`\'`/`\\`, `\0`, the \t/\r/\n short escapes and
+// `\u{h}` for other control bytes and DEL; valid UTF-8 bytes are copied. Exact
+// stderr fixtures use simple names.
+//
+// Exit constants are eza 0.23.3's, not GNU coreutils': EXIT_PATH=2 is eza's
+// input-path metadata failure, EXIT_USAGE=3 is a command-line problem (not 2),
+// and EXIT_PERMISSION=13 is documented by the man page; P4's probes decide
+// whether the reference really exits 13. report is a convenience, not an exit.
+module errors
+
+pub const EXIT_OK = 0
+pub const EXIT_FAIL = 1          // I/O and runtime error
+pub const EXIT_PATH = 2          // eza input-path metadata failure (0.23.3 source)
+pub const EXIT_USAGE = 3         // command-line problem (not GNU coreutils' 2)
+pub const EXIT_PERMISSION = 13   // documented; the P4 probe records the real status
+
+// The fixed C-locale text for the errnos the tools and metadata paths can
+// encounter; the unknown fallback is "error N".
+pub fn text(code: int): string {
+    if code == 2 { return "No such file or directory" }
+    if code == 5 { return "Input/output error" }
+    if code == 9 { return "Bad file descriptor" }
+    if code == 11 { return "Resource temporarily unavailable" }
+    if code == 13 { return "Permission denied" }
+    if code == 20 { return "Not a directory" }
+    if code == 21 { return "Is a directory" }
+    if code == 22 { return "Invalid argument" }
+    if code == 24 { return "Too many open files" }
+    if code == 28 { return "No space left on device" }
+    if code == 32 { return "Broken pipe" }
+    if code == 34 { return "Numerical result out of range" }
+    if code == 36 { return "File name too long" }
+    if code == 40 { return "Too many levels of symbolic links" }
+    return "error " + string(code)
+}
+
+// Rust io::Error's Display form for an OS error: "<text> (os error N)".
+pub fn osError(code: int): string {
+    return text(code) + " (os error " + string(code) + ")"
+}
+
+// append a lowercase hex byte with no leading zero (the \u{...} payload):
+// 0 -> "0", 0x1b -> "1b", 0x7f -> "7f"
+fn appendHexByte(mut out: &[]byte, b: byte) {
+    let hi = int(b) / 16
+    let lo = int(b) % 16
+    if hi > 0 {
+        if hi < 10 { append(out, byte('0' + hi)) } else { append(out, byte('a' + (hi - 10))) }
+    }
+    if lo < 10 { append(out, byte('0' + lo)) } else { append(out, byte('a' + (lo - 10))) }
+}
+
+// Rust's OsStr/Path Debug quoting for one path, as eza prints it on stderr.
+// From a rustc 1.87 probe: the name in double quotes; `\"`, `\'` and `\\` are
+// backslash-escaped; NUL is \0; \t/\r/\n are the short escapes; every other
+// byte below 0x20 and 0x7F is \u{h} with lowercase hex and no leading zeros;
+// printable ASCII is unchanged. Valid UTF-8 is copied byte-wise, so it prints
+// as the characters Rust prints (E0 names are valid UTF-8; lossy handling of
+// invalid UTF-8 is E2, and exact stderr fixtures use simple ASCII names).
+pub fn debugPath(p: string): string {
+    var out = new []byte(0)
+    append(out, '"')
+    for i in 0..len(p) {
+        let b = p[i]
+        if b == '"' {
+            append(out, '\\')
+            append(out, '"')
+        } else if b == '\'' {
+            append(out, '\\')
+            append(out, '\'')
+        } else if b == '\\' {
+            append(out, '\\')
+            append(out, '\\')
+        } else if b == '\t' {
+            append(out, '\\')
+            append(out, 't')
+        } else if b == '\n' {
+            append(out, '\\')
+            append(out, 'n')
+        } else if b == '\r' {
+            append(out, '\\')
+            append(out, 'r')
+        } else if b == 0 {
+            append(out, '\\')
+            append(out, '0')
+        } else if b < ' ' || b == 127 {
+            append(out, '\\')
+            append(out, 'u')
+            append(out, '{')
+            appendHexByte(out, b)
+            append(out, '}')
+        } else {
+            append(out, b)
+        }
+    }
+    append(out, '"')
+    return string(out)
+}
+
+// "prog: message" plus a newline on stderr; it does not exit.
+pub fn report(prog: string, message: string) {
+    eprintln(prog, ": ", message)
+}

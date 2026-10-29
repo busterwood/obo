@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""P1 import and compile matrix.
+"""Source-module import and compile matrix (P1/P2).
 
     python3 obo/tests/imports.py
 
 Cases:
-  * every stdlib module (io, strings, paths, sort, time, cli) compiles through
-    a tiny importer root built with `-I obo/lib`;
-  * every tool source (programs/cat.obx, wc.obx, sort.obx) compiles with its
+  * every stdlib module (io, strings, paths, sort, time, cli, fmt, errors)
+    compiles through a tiny importer root built with `-I obo/lib`;
+  * every tool source (cmd/cat.obx, wc.obx, sort.obx) compiles with its
     own relative `../lib/...` imports and no -I;
-  * obo/lib holds exactly the P1 module set: io, strings, paths, sort, time and
-    cli. The exact-set check proves env.obx, fs.obx, fmt.obx and errors.obx are
-    not part of P1;
+  * the design 4.2 P2 tool-matrix checks: every tool import is an explicit
+    `../lib/*.obx` path (a cmd/-local decoy with a library module's name is
+    ignored), `cmd/sort.obx` imports no sort module, and a scratch cmd/ tree
+    with io/fmt/errors/strings decoys beside cat.obx still builds and runs
+    against the real lib/ modules;
+  * obo/lib holds exactly the P2 module set: io, strings, paths, sort, time,
+    cli, fmt and errors. The exact-set check proves env.obx and fs.obx are not
+    part of P1/P2 (and that no leftover compatibility module exists);
   * collision/decoy trees pin module resolution and the exact diagnostics:
     a headerless imported module, a self import cycle, a mutual import cycle,
     a headerless local decoy shadowing a lib module, a headed local decoy with
@@ -23,10 +28,12 @@ uses its own --sym-dir under the test temp dir; nothing is written outside it.
 
 Exit 1 when any case fails; a failing case prints the compiler's own message.
 A compile matrix superset: design 4.2 lists no tool sources for P1, but the P1
-task requires every tool to compile, so the tools are added here (additive).
+task requires every tool to compile, so the tools are added here (additive);
+P2 keeps them, now under cmd/, and adds fmt/errors to the stdlib importers.
 """
 import atexit
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -35,7 +42,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 FORK = os.path.dirname(HERE)                      # the obo tree: --rt base
 LIBDIR = os.path.join(FORK, 'lib')
-PROGDIR = os.path.join(FORK, 'programs')
+PROGDIR = os.path.join(FORK, 'cmd')
 OBXC = os.path.abspath(os.environ.get('OBO', os.path.join(FORK, 'obo')))
 TMP = tempfile.mkdtemp(prefix='obo-imports-')
 atexit.register(shutil.rmtree, TMP, ignore_errors=True)
@@ -109,11 +116,21 @@ def bad(name, directory, src, want, extra=()):
     print(f"ok   {name} (exit 1)")
 
 
+def check(name, ok, detail=''):
+    """A direct assertion (design 4.2 P2 static tool-matrix checks)."""
+    global passed
+    if not ok:
+        failures.append(f"{name}: {detail}")
+        return
+    passed += 1
+    print(f"ok   {name}")
+
+
 IMPORTERS = {
     'io': ('import "io.obx" as io\n'
            'fn main() { println(io::clampChunk(4)) }\n', '4\n'),
     'strings': ('import "strings.obx" as strings\n'
-                'fn main() { println(strings::digits(123)) }\n', '3\n'),
+                'fn main() { println(strings::cmp("a", "b")) }\n', '-1\n'),
     'paths': ('import "paths.obx" as paths\n'
               'fn main() { println(paths::isAbsolute("/x")) }\n', 'true\n'),
     'sort': ('import "sort.obx" as sort\n'
@@ -125,12 +142,17 @@ IMPORTERS = {
              'fn main() { println(time::floorDiv(-1, 2)) }\n', '-1\n'),
     'cli': ('import "cli.obx" as cli\n'
             'fn main() { println(cli::longName("--a=b")) }\n', 'a\n'),
+    'fmt': ('import "fmt.obx" as fmt\n'
+            'fn main() { println(fmt::digits(123)) }\n', '3\n'),
+    'errors': ('import "errors.obx" as errors\n'
+               'fn main() { println(errors::text(2)) }\n',
+               'No such file or directory\n'),
 }
 
 TOOLS = ['cat.obx', 'wc.obx', 'sort.obx']
 
-WANT_LIB = {'cli.obx', 'io.obx', 'paths.obx', 'sort.obx', 'strings.obx',
-            'time.obx'}
+WANT_LIB = {'cli.obx', 'errors.obx', 'fmt.obx', 'io.obx', 'paths.obx',
+            'sort.obx', 'strings.obx', 'time.obx'}
 
 
 def main():
@@ -139,7 +161,7 @@ def main():
         print(f"no compiler at {OBXC}: run make first")
         sys.exit(2)
 
-    # The exact P1 lib module set: env/fs/fmt/errors must not exist yet.
+    # The exact P1/P2 lib module set: env/fs belong to later stages.
     got = {f for f in os.listdir(LIBDIR) if f.endswith('.obx')}
     if got != WANT_LIB:
         missing = sorted(WANT_LIB - got)
@@ -159,6 +181,52 @@ def main():
 
     for name in TOOLS:
         good(f'tool {name}', os.path.join(PROGDIR, name))
+
+    # design 4.2 P2: the tool imports are the explicit ../lib paths, so no
+    # same-named file in cmd/ can capture one; sort imports no sort module.
+    tool_text = {}
+    for name in TOOLS:
+        tool_text[name] = open(os.path.join(PROGDIR, name)).read()
+    wrong = []
+    for name in TOOLS:
+        for m in re.finditer(r'^import\s+"([^"]+)"', tool_text[name], re.M):
+            path = m.group(1)
+            if not (path.startswith('../lib/') and path.endswith('.obx')):
+                wrong.append(f'{name}: {path}')
+    check('tool imports are ../lib paths', not wrong, ', '.join(wrong))
+    sort_imports = []
+    for m in re.finditer(r'^import\s+"([^"]+)"', tool_text['sort.obx'], re.M):
+        path = m.group(1)
+        if path == 'sort.obx' or path.endswith('/sort.obx'):
+            sort_imports.append(path)
+    check('sort.obx imports no sort module', not sort_imports,
+          ', '.join(sort_imports))
+
+    # design 4.2 P2: a cmd/-local decoy with a library module's name must not
+    # capture the tool's `../lib/...` import. Copy cmd/cat.obx and lib/*.obx into
+    # a scratch tree, add io/fmt/errors/strings decoys beside the tool, compile
+    # with no -I and run it: only the real lib modules can satisfy cat.
+    decoy_root = workdir()
+    decoy_cmd = os.path.join(decoy_root, 'cmd')
+    os.makedirs(decoy_cmd)
+    shutil.copytree(LIBDIR, os.path.join(decoy_root, 'lib'))
+    shutil.copyfile(os.path.join(PROGDIR, 'cat.obx'),
+                    os.path.join(decoy_cmd, 'cat.obx'))
+    for mod in ('io', 'fmt', 'errors', 'strings'):
+        write(decoy_cmd, mod + '.obx',
+              f'module {mod}\npub fn marker(): int {{ return 99 }}\n')
+    exe = os.path.join(workdir(), 'exe')
+    p = compile_with(os.path.join(decoy_cmd, 'cat.obx'), exe)
+    if p.returncode != 0:
+        check('decoy beside cmd/ tool ignored', False,
+              f'cat.obx did not compile: {p.stderr.strip()[:300]}')
+    else:
+        r = subprocess.run([exe], input=b'x', capture_output=True,
+                           timeout=120)
+        check('decoy beside cmd/ tool ignored',
+              r.returncode == 0 and r.stdout == b'x',
+              f'exit {r.returncode}, stdout {r.stdout!r}, '
+              f'stderr {r.stderr[:200]!r}')
 
     headerless = tree({
         'main.obx': 'import "a.obx" as a\nfn main() { println("x") }\n',
@@ -220,10 +288,11 @@ def main():
 
     for f in failures:
         print('FAIL', f)
-    total = 1 + len(IMPORTERS) + len(TOOLS) + 7
+    total = 1 + len(IMPORTERS) + len(TOOLS) + 3 + 7
     print(f"\n{passed}/{total} import/compile checks passed "
           f"({len(IMPORTERS)} stdlib importers, {len(TOOLS)} tools, "
-          f"7 collision/decoy trees, 1 lib set), {len(failures)} failures")
+          f"3 static tool-matrix checks, 7 collision/decoy trees, "
+          f"1 lib set), {len(failures)} failures")
     sys.exit(1 if failures else 0)
 
 

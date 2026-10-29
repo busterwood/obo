@@ -1,8 +1,8 @@
-// strings_basic: the byte classifiers, cmp/cmpBytes/eq, prefix and suffix
+// strings_basic: the byte classifiers, cmp/eq, prefix and suffix
 // tests, contains/indexOf/byteAt, fromBytes, lowerAscii, displayWidth and the
 // trim family. Control bytes that cannot be written as string literal escapes
-// (VT, FF, DEL, >= 0x80) are built with fromBytes. cmpBytes is the temporary
-// P1 compatibility wrapper and must agree with cmp.
+// (VT, FF, DEL, >= 0x80) are built with fromBytes. The P1 compatibility alias
+// cmpBytes was removed in P2; cmp is the byte-order function.
 // expect: strings basic ok
 import "strings.obx" as strings
 import "support.obx" as t
@@ -80,12 +80,6 @@ fn main() {
     t::checkInt("cmp high", strings::cmp(hi, del), 1)
     t::checkInt("cmp high reverse", strings::cmp(del, hi), -1)
     t::checkInt("cmp high equal", strings::cmp(hi, hi), 0)
-
-    // cmpBytes (temporary compatibility alias) agrees with cmp
-    t::checkInt("cmpBytes less", strings::cmpBytes("abc", "abd"), -1)
-    t::checkInt("cmpBytes equal", strings::cmpBytes("abc", "abc"), 0)
-    t::checkInt("cmpBytes greater", strings::cmpBytes("b", "a"), 1)
-    t::checkInt("cmpBytes empty", strings::cmpBytes("", "a"), -1)
 
     // eq: value equality
     t::checkBool("eq same", strings::eq("abc", "abc"), true)

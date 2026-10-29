@@ -1,0 +1,100 @@
+// fmt_basic: the fmt module's digits/appendPadded, every modeString example
+// from design section 5.4 (plus block, char and unknown type characters), and
+// writePadded's bytes through a Writer (design sections 5.4 and 9.8).
+// expect: fmt basic ok
+import "fmt.obx" as fmt
+import "io.obx" as io
+import "support.obx" as t
+
+// one padded sequence through a Writer, to compare against the direct
+// appendPadded form below; the Writer threshold makes flush cross the writes
+fn writeSeq(mut w: &io::Writer): Result[bool] {
+    try fmt::writePadded(w, 0, 0)
+    try io::write(w, "|")
+    try fmt::writePadded(w, 7, 5)
+    try io::write(w, "|")
+    try fmt::writePadded(w, 1000001, 6)
+    try io::write(w, "\n")
+    return ok(true)
+}
+
+fn expectFile(path: string, want: string) {
+    let got = readFile(path)
+    if got == nil { println("unreadable ", path); exit(1) }
+    if len(got) != len(want) {
+        println("length ", len(got), " want ", len(want)); exit(1)
+    }
+    for i in 0..len(want) {
+        if got[i] != want[i] { println("byte ", i, " differs"); exit(1) }
+    }
+}
+
+fn main() {
+    // digits: non-negative decimal width, digits(0) is 1
+    t::checkInt("digits 0", fmt::digits(0), 1)
+    t::checkInt("digits 1", fmt::digits(1), 1)
+    t::checkInt("digits 9", fmt::digits(9), 1)
+    t::checkInt("digits 10", fmt::digits(10), 2)
+    t::checkInt("digits 99", fmt::digits(99), 2)
+    t::checkInt("digits 100", fmt::digits(100), 3)
+    t::checkInt("digits 999999", fmt::digits(999999), 6)
+    t::checkInt("digits 1000001", fmt::digits(1000001), 7)
+
+    // appendPadded: width 0 means no padding; a wider width is spaces first
+    var pad = new []byte(0)
+    fmt::appendPadded(pad, 0, 0)
+    append(pad, '|')
+    fmt::appendPadded(pad, 0, 2)
+    append(pad, '|')
+    fmt::appendPadded(pad, 7, 5)
+    append(pad, '|')
+    fmt::appendPadded(pad, 42, 1)
+    append(pad, '|')
+    fmt::appendPadded(pad, 1000001, 6)
+    append(pad, '|')
+    fmt::appendPadded(pad, 999999, 8)
+    t::checkStr("appendPadded", string(pad), "0| 0|    7|42|1000001|  999999")
+
+    // modeString: the nine section 5.4 examples, then the remaining type chars
+    t::checkStr("mode regular", fmt::modeString(0x81A4), ".rw-r--r--")
+    t::checkStr("mode dir", fmt::modeString(0x41ED), "drwxr-xr-x")
+    t::checkStr("mode link", fmt::modeString(0xA1FF), "lrwxrwxrwx")
+    t::checkStr("mode fifo", fmt::modeString(0x11A4), "|rw-r--r--")
+    t::checkStr("mode socket", fmt::modeString(0xC1ED), "srwxr-xr-x")
+    t::checkStr("mode setuid", fmt::modeString(0x89ED), ".rwsr-xr-x")
+    t::checkStr("mode setgid", fmt::modeString(0x85ED), ".rwxr-sr-x")
+    t::checkStr("mode sticky", fmt::modeString(0x43FF), "drwxrwxrwt")
+    t::checkStr("mode sticky no exec", fmt::modeString(0x83A4), ".rw-r--r-T")
+    t::checkStr("mode block", fmt::modeString(0x61A4), "brw-r--r--")
+    t::checkStr("mode char", fmt::modeString(0x21A4), "crw-r--r--")
+    t::checkStr("mode unknown", fmt::modeString(0), "?---------")
+
+    // writePadded through a Writer, read back and compared byte for byte
+    let a = args()
+    let path = a[1] + "/fmt_pad.bin"
+    let o = openFile(path, "w")
+    match o {
+        ok(fd) {
+            var w = io::newWriter(fd, 3)
+            let r = writeSeq(w)
+            match r {
+                ok(v) { if !v { println("writePadded false"); exit(1) } }
+                err(m, c) { println("writePadded: ", m, " (", c, ")"); exit(1) }
+            }
+            let f = io::flush(w)
+            match f {
+                ok(v) { if !v { println("flush false"); exit(1) } }
+                err(m, c) { println("flush: ", m, " (", c, ")"); exit(1) }
+            }
+            let cl = closeFile(fd)
+            match cl {
+                ok(v) { }
+                err(m, c) { println("close: ", m, " (", c, ")"); exit(1) }
+            }
+        }
+        err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+    }
+    expectFile(path, "0|    7|1000001\n")
+
+    println("fmt basic ok")
+}

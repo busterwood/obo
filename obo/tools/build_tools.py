@@ -3,9 +3,9 @@
 
     python3 obo/tools/build_tools.py [TOOL ...] [--out DIR] [--obo PATH] [--rt DIR]
 
-Each tool source under programs/ is compiled directly by the ordinary compiler;
-there is no concatenation. cat, wc and sort import ../lib/io.obx as `io` and
-../lib/strings.obx as `strings`, so the compiler compiles those modules
+Each tool source under cmd/ is compiled directly by the ordinary compiler;
+there is no concatenation. The tools import from ../lib (io, strings, fmt and
+errors, as needed), so the compiler compiles those modules
 dependency-first and writes their .sym files. The rule within a file is still
 declare-before-use.
 
@@ -24,7 +24,7 @@ ones), and the generated directory is ignored with the rest of build output.
 There is no cache and no --force: rebuilding three tools is cheap, and a cache
 would add staleness bugs. A compile failure is reported with the compiler's
 message, with absolute paths under ROOT shortened to repo-relative names (so an
-error in a tool names programs/<tool>.obx at its real line); the builder exits 2.
+error in a tool names cmd/<tool>.obx at its real line); the builder exits 2.
 The phase-2 probe compiles (does not run) a tiny well-typed program that names
 every incremental-I/O builtin; a failure means phase 2 (openFile, readFd,
 writeFd, closeFile, stdin, stdout, stderr and lib/io.obx) is missing.
@@ -39,7 +39,8 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../obo
 TOOLS = ('cat', 'wc', 'sort')
-LIB_MODULES = ('io.obx', 'strings.obx')
+SRCDIR = 'cmd'                       # the tool roots live in obo/cmd/
+LIB_MODULES = ('io.obx', 'strings.obx', 'fmt.obx', 'errors.obx')
 
 PROBE = '''// phase-2 builtin probe: compile only, never run
 fn main() {
@@ -141,7 +142,7 @@ def build(names, out, obo, rt):
         if name not in TOOLS:
             raise BuildError(f"unknown tool '{name}' (choose from {', '.join(TOOLS)})")
     for name in names:
-        _read(os.path.join(ROOT, 'programs', name + '.obx'))
+        _read(os.path.join(ROOT, SRCDIR, name + '.obx'))
         for module in LIB_MODULES:
             path = os.path.join(ROOT, 'lib', module)
             if not os.path.isfile(path):
@@ -161,7 +162,7 @@ def build(names, out, obo, rt):
 
     built = []
     for name in names:
-        src = os.path.join(ROOT, 'programs', name + '.obx')
+        src = os.path.join(ROOT, SRCDIR, name + '.obx')
         exe = os.path.join(out, name)
         rc, _, err = _compile(obo, src, exe, rt, symdir)
         if rc != 0:

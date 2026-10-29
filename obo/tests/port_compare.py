@@ -35,9 +35,10 @@ REF = os.path.abspath(os.environ.get('OBO_REF', os.path.join(FORK, 'obo')))
 SRC = os.path.join(FORK, 'src', 'obo.obo')
 LIBDIR = os.path.join(FORK, 'lib')
 # live peak, in bytes, of the port compiling itself. Lower it when memory improves; raise it only
-# for a reason recorded in FORK.md. Raised from 983,000 on 2026-10-26 by the user's decision: the
-# measured peak is 954,896 bytes (FORK.md, "Peak memory (done)"), and a budget about 3% above it
-# left new checker work only about 28 KB of headroom. Leaks are caught separately, by port_test's leak check.
+# for a reason recorded in FORK.md. The current size-fixed tree measures 1,636,176 bytes live and
+# 35,076,608 bytes total allocation (FORK.md, "Compiler size fixes"); the budget stays 2,000,000
+# (363,824 spare above that peak). The figure is for the current tree and varies by a few hundred
+# bytes with the source path. Leaks are caught separately, by port_test's leak check.
 PEAK_BUDGET = 2_000_000
 
 

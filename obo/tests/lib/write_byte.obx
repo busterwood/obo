@@ -1,0 +1,123 @@
+// write_byte: io::writeByte's threshold flush, flush loop and error rule.
+// The Writer buffers below its threshold and flushes on reaching it; a
+// short-write fault (OBO_IO_FAULT=short, OBO_CHECK=1) caps every write syscall
+// at three bytes, so the flush inside writeByte must loop and complete the
+// file; writing through an open read-only fd returns err(EBADF 9) and leaves
+// the appended byte in the Writer's buffer. The driver runs this with and
+// without the fault hook, so both paths must produce the same line.
+// expect: write byte ok
+import "io.obx" as io
+
+fn expectFile(path: string, want: string) {
+    let got = readFile(path)
+    if got == nil { println("unreadable ", path); exit(1) }
+    if len(got) != len(want) {
+        println("length ", len(got), " want ", len(want)); exit(1)
+    }
+    for i in 0..len(want) {
+        if got[i] != want[i] { println("byte ", i, " differs"); exit(1) }
+    }
+}
+
+fn okByte(r: Result[bool], label: string) {
+    match r {
+        ok(v) { if !v { println(label, " false"); exit(1) } }
+        err(m, c) { println(label, ": ", m, " (", c, ")"); exit(1) }
+    }
+}
+
+fn main() {
+    let a = args()
+    let dir = a[1]
+
+    // threshold: threshold 2 buffers the first byte, flushes the second
+    let p1 = dir + "/wb_threshold.bin"
+    let o1 = openFile(p1, "w")
+    match o1 {
+        ok(fd) {
+            var w = io::newWriter(fd, 2)
+            okByte(io::writeByte(w, 'a'), "writeByte a")
+            expectFile(p1, "")
+            okByte(io::writeByte(w, 'b'), "writeByte b")
+            expectFile(p1, "ab")
+            okByte(io::writeByte(w, 'c'), "writeByte c")
+            expectFile(p1, "ab")
+            okByte(io::flush(w), "flush")
+            expectFile(p1, "abc")
+            let cl = closeFile(fd)
+            match cl {
+                ok(v) { }
+                err(m, c) { println("close: ", m, " (", c, ")"); exit(1) }
+            }
+        }
+        err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+    }
+
+    // a full threshold's worth of bytes; under OBO_IO_FAULT=short each write
+    // syscall is capped at three bytes and flush loops to completion
+    let p2 = dir + "/wb_flush.bin"
+    let o2 = openFile(p2, "w")
+    match o2 {
+        ok(fd) {
+            var w = io::newWriter(fd, 8)
+            var i = 0
+            while i < 8 {
+                okByte(io::writeByte(w, byte('0' + i)), "writeByte digit")
+                i += 1
+            }
+            expectFile(p2, "01234567")
+            okByte(io::flush(w), "flush digits")
+            let cl = closeFile(fd)
+            match cl {
+                ok(v) { }
+                err(m, c) { println("close: ", m, " (", c, ")"); exit(1) }
+            }
+        }
+        err(m, c) { println("open: ", m, " (", c, ")"); exit(1) }
+    }
+
+    // error: a read-only open fd fails the write syscall with EBADF (9); the
+    // appended byte stays buffered and a retry fails the same way
+    let p3 = dir + "/wb_error.bin"
+    let oc = openFile(p3, "w")
+    match oc {
+        ok(fd) {
+            let cl = closeFile(fd)
+            match cl {
+                ok(v) { }
+                err(m, c) { println("close create: ", m, " (", c, ")"); exit(1) }
+            }
+        }
+        err(m, c) { println("open create: ", m, " (", c, ")"); exit(1) }
+    }
+    let orFile = openFile(p3, "r")
+    match orFile {
+        ok(fd) {
+            var w = io::newWriter(fd, 1)
+            let r = io::writeByte(w, 'x')
+            match r {
+                ok(v) { println("write to read-only fd succeeded"); exit(1) }
+                err(m, c) {
+                    if c != 9 { println("err code ", c, " want 9"); exit(1) }
+                    if len(w.buf) != 1 { println("buffer ", len(w.buf), " want 1"); exit(1) }
+                }
+            }
+            let f = io::flush(w)
+            match f {
+                ok(v) { println("flush to read-only fd succeeded"); exit(1) }
+                err(m, c) {
+                    if c != 9 { println("flush err code ", c, " want 9"); exit(1) }
+                    if len(w.buf) != 1 { println("flush buffer ", len(w.buf), " want 1"); exit(1) }
+                }
+            }
+            let cl = closeFile(fd)
+            match cl {
+                ok(v) { }
+                err(m, c) { println("close read: ", m, " (", c, ")"); exit(1) }
+            }
+        }
+        err(m, c) { println("open read: ", m, " (", c, ")"); exit(1) }
+    }
+
+    println("write byte ok")
+}

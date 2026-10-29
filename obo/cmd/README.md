@@ -1,11 +1,12 @@
 # obo command-line tools
 
 The first tools written in obo: `cat`, `wc` and `sort`. Each source file here is
-a module root that imports `../lib/io.obx` as `io` and
-`../lib/strings.obx` as `strings`; every library name is qualified
-(`io::Writer`, `io::newWriter`, `strings::errText`, ...). `tools/build_tools.py`
-compiles each root directly with the ordinary compiler, dependency-first, and
-nothing is concatenated. The builder creates a symbol directory under its output
+a module root that imports `../lib/io.obx` as `io`, `../lib/fmt.obx` as `fmt`
+and `../lib/errors.obx` as `errors` (and, for `wc`/`sort`, `../lib/strings.obx`
+as `strings`); every library name is qualified (`io::Writer`, `io::newWriter`,
+`fmt::writePadded`, `errors::text`, ...). `tools/build_tools.py` compiles each
+root directly with the ordinary compiler, dependency-first, and nothing is
+concatenated. The builder creates a symbol directory under its output
 (`build/tools/sym` for `make tools`): symbol writes truncate in place, so
 concurrent builds must use distinct output directories.
 
@@ -17,13 +18,17 @@ python3 tests/tools.py --require-reference   # the differential gate
 python3 tests/tools.py --memory
 ```
 
-The library modules are `lib/io.obx` (`Reader`, `Writer`, the buffered
-functions and `writePadded`) and `lib/strings.obx` (byte classification,
-`cmpBytes`, `errText`, `digits`, `appendPadded`). They stay in `lib/`, the tools
-stay in `programs/`, and `writePadded` stays in `io` for this migration; the
-wider stdlib split (a `fmt` module and a `cmd/` directory) is a later change.
+The library modules are `lib/io.obx` (`Reader`, `Writer`, the buffered functions
+and `writeByte`), `lib/strings.obx` (byte classification, `cmp`, the split/join
+and natord/quote helpers), `lib/fmt.obx` (`digits`, `appendPadded`,
+`writePadded`, `modeString` for the later eza long view) and `lib/errors.obx`
+(the C-locale errno `text`, `osError`, `debugPath`, `report` and the eza-shaped
+`EXIT_*` constants). They stay in `lib/`, and the tools live in `cmd/`; P2 moved
+`writePadded` out of `io` and the digit/padding helpers out of `strings`, and
+the four P1 compatibility functions no longer exist.
 The test programs `tests/run/io_reader.obx`, `tests/run/io_writer.obx` and
-`tests/lib/*.obx` import the same modules and are compiled with `-I lib`.
+`tests/lib/*.obx` import the same modules (`tests/lib/write_padded.obx` imports
+`fmt` too) and are compiled with `-I lib`.
 
 The subset is deliberate and small. Options may be clustered (`-nET`, `-lwc`,
 `-rnu`) and may appear before or after operands; `--` ends option parsing. A lone

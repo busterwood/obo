@@ -1,0 +1,138 @@
+// obo/lib/fmt.obx: number and mode formatting shared by the command-line
+// tools and the eza stdlib.
+//
+// It is a source module (`module fmt`); importers write
+//
+//     import "io.obx" as io            // from obo/lib/ (same directory)
+//     import "../lib/fmt.obx" as fmt   // from obo/cmd/
+//
+// and reach exported declarations as fmt::name. Within a file a declaration may
+// use only earlier declarations, so digits (the only helper they share) comes
+// first. The module imports io for Writer; it has no other dependency.
+//
+// P2 moved digits/appendPadded here from strings and writePadded from io
+// (design stdlib-eza-design-v7 section 5.4). Their behavior and output bytes are
+// unchanged: cat's numbering and wc's padding stay byte-identical. These
+// functions take a non-negative int, which is what the tools count and format.
+// The design's wider API (intWidth, writeInt, writeIntRight, writeIntLeft,
+// writeStringPad and octal) belongs to P4: the eza long view needs left- and
+// right-aligned numeric and date cells, and P2 has no caller, so those functions
+// are deliberately deferred there rather than added untested.
+//
+// modeString implements eza's 10-character permission form for the P4 long
+// view, not ls's: the type character is eza's (regular '.', directory 'd',
+// symlink 'l', FIFO '|', socket 's', block 'b', char 'c', unknown '?'), and the
+// rwx triples use s/S and t/T for setuid/setgid/sticky. It takes a stat mode
+// (type bits included); our tool does not query xattrs, so no trailing '@'.
+//
+// There are no floats and no locale grouping: the eza differential pins
+// LC_ALL=C, where --bytes sizes are plain digits (P0 prints 1234567 and
+// 8388608 without separators), so the design's optional groupDecimal is not
+// added.
+module fmt
+import "io.obx" as io
+
+// Decimal digit count of a non-negative int; digits(0) is 1.
+pub fn digits(n: int): int {
+    var d = 1
+    var v = n
+    while v >= 10 {
+        v = v / 10
+        d += 1
+    }
+    return d
+}
+
+// Append n right-aligned in width (width 0 means no padding) to a byte buffer.
+// The digits are produced by an inline power-of-ten loop, so no per-line string
+// is allocated. Used by cat's batched number prefixes.
+pub fn appendPadded(mut buf: &[]byte, n: int, width: int) {
+    var d = digits(n)
+    if d < width {
+        for i in 0..(width - d) { append(buf, ' ') }
+    }
+    var p = 1
+    for i in 1..d { p *= 10 }
+    var v = n
+    for i in 0..d {
+        let digit = v / p
+        append(buf, byte('0' + digit))
+        v = v - digit * p
+        if p > 1 { p = p / 10 }
+    }
+}
+
+// Write the non-negative int n right-aligned in width (width 0: no padding)
+// through a Writer, flushing at the Writer's threshold. The P2 move of the
+// merged io::writePadded: the same padding, digit loop and flush points, so
+// wc's bytes are unchanged.
+pub fn writePadded(mut w: &io::Writer, n: int, width: int): Result[bool] {
+    var d = digits(n)
+    if d < width {
+        for i in 0..(width - d) {
+            append(w.buf, ' ')
+            if len(w.buf) >= w.size { try io::flush(w) }
+        }
+    }
+    var p = 1
+    for i in 1..d { p *= 10 }
+    var r = n
+    for i in 0..d {
+        let digit = r / p
+        append(w.buf, byte('0' + digit))
+        if len(w.buf) >= w.size { try io::flush(w) }
+        r = r - digit * p
+        if p > 1 { p = p / 10 }
+    }
+    return ok(true)
+}
+
+// bit set in mode -> ch, else '-'
+fn permChar(mode: int, bit: int, ch: byte): byte {
+    if mode & bit != 0 { return ch }
+    return '-'
+}
+
+// eza's 10-character permission string from a stat mode (type bits included).
+// Type: S_IFMT 0o170000; regular 0o100000 '.', directory 0o040000 'd', symlink
+// 0o120000 'l', FIFO 0o010000 '|', socket 0o140000 's', block 0o060000 'b',
+// char 0o020000 'c', anything else '?'. Permissions are the low 12 bits;
+// setuid/setgid/sticky replace the owner/group/other execute character with
+// 's'/'S' and 't'/'T'. The examples are section 5.4's: `.rw-r--r--`,
+// `drwxr-xr-x`, `lrwxrwxrwx`, `|rw-r--r--`, `srwxr-xr-x`, `.rwsr-xr-x`,
+// `.rwxr-sr-x`, `drwxrwxrwt`, `.rw-r--r-T`.
+pub fn modeString(mode: int): string {
+    var out = new []byte(0)
+    let kind = mode & 0x0F000
+    var typeChar = '?'
+    if kind == 0x01000 { typeChar = '|' }
+    if kind == 0x02000 { typeChar = 'c' }
+    if kind == 0x04000 { typeChar = 'd' }
+    if kind == 0x06000 { typeChar = 'b' }
+    if kind == 0x08000 { typeChar = '.' }
+    if kind == 0x0A000 { typeChar = 'l' }
+    if kind == 0x0C000 { typeChar = 's' }
+    append(out, typeChar)
+    append(out, permChar(mode, 0x100, 'r'))
+    append(out, permChar(mode, 0x080, 'w'))
+    if mode & 0x800 != 0 {
+        if mode & 0x040 != 0 { append(out, 's') } else { append(out, 'S') }
+    } else {
+        append(out, permChar(mode, 0x040, 'x'))
+    }
+    append(out, permChar(mode, 0x020, 'r'))
+    append(out, permChar(mode, 0x010, 'w'))
+    if mode & 0x400 != 0 {
+        if mode & 0x008 != 0 { append(out, 's') } else { append(out, 'S') }
+    } else {
+        append(out, permChar(mode, 0x008, 'x'))
+    }
+    append(out, permChar(mode, 0x004, 'r'))
+    append(out, permChar(mode, 0x002, 'w'))
+    if mode & 0x200 != 0 {
+        if mode & 0x001 != 0 { append(out, 't') } else { append(out, 'T') }
+    } else {
+        append(out, permChar(mode, 0x001, 'x'))
+    }
+    return string(out)
+}

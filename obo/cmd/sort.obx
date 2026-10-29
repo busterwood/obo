@@ -1,10 +1,12 @@
 // sort: sort lines, with -n (exact decimal), -r and -u.
 //
 // Built as a module root by tools/build_tools.py: it imports lib/io.obx as
-// `io` and lib/strings.obx as `strings`, and every library name is qualified.
-// The subset is deliberate: -k, -t, -f, -b, -d, -i, -M, -h, -V, -s, -c,
+// `io`, lib/strings.obx as `strings` and lib/errors.obx as `errors`, and every
+// library name is qualified. It imports no `sort` module: the tool's stable
+// index merge and GNU numeric parser are its own. The subset is deliberate:
+// -k, -t, -f, -b, -d, -i, -M, -h, -V, -s, -c,
 // -C, -o, -m, -z, --parallel, long options, --help and --version are unsupported
-// (see programs/README.md). The whole input is read before anything is written:
+// (see cmd/README.md). The whole input is read before anything is written:
 // an open or read error prints one message and exits 2 with no stdout.
 //
 // Input rules: each operand is split on newlines by readLine; the final partial
@@ -33,6 +35,7 @@
 
 import "../lib/io.obx" as io
 import "../lib/strings.obx" as strings
+import "../lib/errors.obx" as errors
 
 type SortOpts = ref record {
     numeric: bool      // -n
@@ -83,7 +86,7 @@ fn magCompare(keys: &[]NumKey, i: int, j: int): int {
     let bi = len(keys[j].ip)
     if ai < bi { return -1 }
     if ai > bi { return 1 }
-    let ic = strings::cmpBytes(keys[i].ip, keys[j].ip)
+    let ic = strings::cmp(keys[i].ip, keys[j].ip)
     if ic != 0 { return ic }
     let af = keys[i].fp
     let bf = keys[j].fp
@@ -119,9 +122,9 @@ fn cmpAt(lines: &[]string, keys: &[]NumKey, i: int, j: int, opts: &SortOpts, key
     var c = 0
     if opts.numeric {
         c = numCompare(keys, i, j)
-        if c == 0 && !keyOnly { c = strings::cmpBytes(lines[i], lines[j]) }
+        if c == 0 && !keyOnly { c = strings::cmp(lines[i], lines[j]) }
     } else {
-        c = strings::cmpBytes(lines[i], lines[j])
+        c = strings::cmp(lines[i], lines[j])
     }
     if opts.reverse { return -c }
     return c
@@ -186,7 +189,7 @@ fn buildKept(lines: &[]string, keys: &[]NumKey, order: &[]int, opts: &SortOpts):
             if opts.numeric {
                 if numCompare(keys, order[i], last) == 0 { keep = false }
             } else {
-                if strings::cmpBytes(lines[order[i]], lines[last]) == 0 { keep = false }
+                if strings::cmp(lines[order[i]], lines[last]) == 0 { keep = false }
             }
         }
         if keep { append(kept, order[i]) }
@@ -234,13 +237,13 @@ fn preflight(operands: &[]string): bool {
                     match c {
                         ok { }
                         err {
-                            eprintln("sort: cannot read: ", p, ": ", strings::errText(c.code))
+                            eprintln("sort: cannot read: ", p, ": ", errors::text(c.code))
                             return false
                         }
                     }
                 }
                 err {
-                    eprintln("sort: cannot read: ", p, ": ", strings::errText(f.code))
+                    eprintln("sort: cannot read: ", p, ": ", errors::text(f.code))
                     return false
                 }
             }
@@ -269,7 +272,7 @@ fn collectOperand(path: string, mut lines: &[]string): bool {
         match rr {
             ok { return true }
             err {
-                eprintln("sort: read failed: -: ", strings::errText(rr.code))
+                eprintln("sort: read failed: -: ", errors::text(rr.code))
                 return false
             }
         }
@@ -284,13 +287,13 @@ fn collectOperand(path: string, mut lines: &[]string): bool {
             match rr {
                 ok { return true }
                 err {
-                    eprintln("sort: read failed: ", path, ": ", strings::errText(rr.code))
+                    eprintln("sort: read failed: ", path, ": ", errors::text(rr.code))
                     return false
                 }
             }
         }
         err {
-            eprintln("sort: cannot read: ", path, ": ", strings::errText(f.code))
+            eprintln("sort: cannot read: ", path, ": ", errors::text(f.code))
             return false
         }
     }

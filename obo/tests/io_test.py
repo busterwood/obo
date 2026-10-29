@@ -11,10 +11,11 @@ Sections (all by default):
             exits 0/8/9, the gated OBO_IO_FAULT hooks with and without
             OBO_CHECK, and no leak on the normal paths.
   programs  compiles tests/io/*.obx (standalone) and tests/lib/*.obx (as module
-            roots importing io.obx, with -I obo/lib and a private sym dir) and
+            roots importing lib modules such as io.obx and fmt.obx, with
+            -I obo/lib and a private sym dir) and
             runs each with its stdin, env and extra arguments; the // expect: and
             // expect-exit: markers are checked as in run_fork.py.
-  tools     builds programs/{cat,wc}.obx with tools/build_tools.py (module
+  tools     builds cmd/{cat,wc}.obx with tools/build_tools.py (module
             roots; nothing is concatenated), checks cat streams a pipe before
             EOF, a 100 KiB binary round trip, wc's line/word/byte counts, and
             both on a file. The full tool semantics live in tests/tools.py.
@@ -178,6 +179,8 @@ def program_section():
     case_lib('short_write.obx', clean_env(check=True, fault='short'))
     case_lib('short_write.obx', check)
     case_lib('write_padded.obx', check)
+    case_lib('write_byte.obx', check)
+    case_lib('write_byte.obx', clean_env(check=True, fault='short'))
 
     # inherited fd: Python opens the file (the number must be >= 3, or the test
     # would exercise the standard-stream refusal instead of the untracked close)

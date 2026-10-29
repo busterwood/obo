@@ -47,6 +47,7 @@ atexit.register(shutil.rmtree, TMP, ignore_errors=True)
 # discovered roots and support modules are checked against these lists.
 EXPECTED_ROOTS = [
     'cli_errors.obx', 'cli_helpers.obx', 'cli_parse.obx',
+    'errors_basic.obx', 'fmt_basic.obx',
     'paths_absent_base.obx', 'paths_absent_clean.obx',
     'paths_absent_dir.obx', 'paths_absent_stem.obx', 'paths_table.obx',
     'sort_orders.obx', 'strings_basic.obx', 'strings_natcmp.obx',
