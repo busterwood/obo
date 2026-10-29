@@ -73,7 +73,6 @@
     "ref/errors/bad_classify",
     "ref/errors/bad_color",
     "ref/errors/bad_icons",
-    "ref/errors/bad_level",
     "ref/errors/bad_sort",
     "ref/errors/dev_full",
     "ref/errors/file_as_directory",

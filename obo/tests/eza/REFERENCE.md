@@ -2,9 +2,11 @@
 
 Produced by `obo/tests/eza/probe.py` against the authorized pinned
 reference. Every byte below is observed output; skipped probes have no
-output. Temporary harness paths are normalized to `<root>` and the
-reference path to `<ref>`. Absolute-target and host-metadata probes are
-live/shape-only and are not committed goldens (design section 9.4).
+output. Temporary harness paths are normalized to `<root>`; probe
+arguments show the reference as `<ref>`, while the report header and
+host manifest record its absolute path and sha256. Absolute-target and
+host-metadata probes are live/shape-only and are not committed goldens
+(design section 9.4).
 
 Reference: ` /tmp/obo-stdlib-v2-eza-src/eza `
 
@@ -23,7 +25,7 @@ Reference: ` /tmp/obo-stdlib-v2-eza-src/eza `
 - reference path: ` /tmp/obo-stdlib-v2-eza-src/eza `
 - reference sha256: ` 10457dde35808517d09bcd3bfb6bc386000d06c2126e34b9071e09470a8f7cd8 `
 - fixture capabilities: ` {'euid': 1000, 'umask': 18, 'pre_epoch': True, 'xattr': True, 'invalid_utf8': True, 'fifo': True, 'socket': True, 'hardlink': True, 'symlink': True, 'deep_path': True, 'nonroot': True, 'dev_full': True, 'ambient_xattr': False} `
-- dt-unknown candidates: ` {'/proc': {'entries': 113, 'unknown': 0, 'sample': []}, '/sys': {'entries': 12, 'unknown': 0, 'sample': []}, '/dev/shm': {'entries': 7, 'unknown': 0, 'sample': []}, '/run': {'entries': 34, 'unknown': 0, 'sample': []}} `
+- dt-unknown candidates: ` {'/proc': {'entries': 101, 'unknown': 0, 'sample': []}, '/sys': {'entries': 12, 'unknown': 0, 'sample': []}, '/dev/shm': {'entries': 7, 'unknown': 0, 'sample': []}, '/run': {'entries': 34, 'unknown': 0, 'sample': []}} `
 
 ## 1. Version, help and binary identity
 
@@ -6917,16 +6919,19 @@ stdin probes stay as evidence. The design note is not edited.
 
 ### E0 matrix exclusions (deliberate; P4 must not silently re-add these)
 
-Removed from the differential matrix because the behaviour is outside E0
-(probe evidence stays in this report):
+Removed from the differential matrix because the behaviour is outside E0.
+Probe evidence remains where probes exist; the exceptions are called out per
+item.
 
 - `names/ordered_dot_name`, `names/ordered_dot_Name`,
   `names/ordered_dot_Name_reverse`: `--sort=.name`/`.Name` are rejected in E0
-  (design 7.11).
+  (design 7.11). Only `--sort=.name` is probed (`names/names_dot_name`); there
+  is no `.Name` probe.
 - `quoting/no_quotes`, `quoting/lines_no_quotes`, `quoting/F_no_quotes`:
   `--no-quotes` is E1.
 - `operands/multiple_files`, `operands/two_directories`: multiple operands are
-  out of E0.
+  out of E0. No direct multiple-operand probe remains; the related evidence is
+  the `automatic`-as-operand probes below (they exit 2).
 - `classify/classify_separate_automatic`, `classify/F_separate_automatic`:
   `automatic` is not in WHEN, so eza treats it as an operand (multiple
   operands, out of E0).
@@ -6934,9 +6939,17 @@ Removed from the differential matrix because the behaviour is outside E0
 - `memory/tree`: tree is E1.
 - `long/xattr`: xattr `@` is not in E0 (design 7.8/9.2/9.4); the
   `long/long_xattr` probe records the reference behaviour only.
+- `errors/bad_level` is retagged own-only: `-T`/`-L` are E1, so E0 rejects
+  them as unsupported options with E0's own message, not eza's numeric level
+  value error. The `errors/bad_value_level` probe keeps the reference bytes.
 - `long/default_user`, `long/no_user`: plain `-l` is not E0; only the
   restricted `-l --no-user --bytes --time-style=long-iso` (or `-n`) form is.
 - `default/cwd_mixed`: no-operand stdin mode (above).
+- `dirs/root_listing`, `sortkeys/ext_key_root`: redundant host-root live
+  cases, removed; their probes were also removed in the host-noise cleanup
+  (B1). The design-required root-parent live cases
+  (`quoting/root_parent_tmp[_F]` for `eza /tmp`, `quoting/root_parent_root[_F]`
+  for `eza /`) remain and do list `/` and `/tmp` in P4 (design 3.4 item 11).
 
 Retagged (still in the matrix, deliberately):
 
@@ -6951,6 +6964,16 @@ Retagged (still in the matrix, deliberately):
 - `classify/F_d_sub_link`, `F_d_sub_dirlink`, `F_d_spaced_sub_link` pin
   cwd-vs-operand-parent target resolution (`sub/link -> target*`,
   `sub/dirlink -> real/`, `'x y/sub'/link -> target*`).
+
+### Host-independent golden matrix (audit)
+
+The quoting fixture has one all-whitespace name. Every all-whitespace name
+compares Equal under natord (whitespace is skipped), so two of them made every
+name-order listing of that tree readdir-order dependent (design 9.4). An
+audit of every recordable tree, including the synthetic `.`/`..` names, found
+no comparator-equal pair under `natcmp` or `natcmpFold` outside the live-only
+`names`/`names/tie_*` trees; extension-key groups and type-rank groups contain
+no equal names in recordable trees, and the size/time sort keys are distinct.
 
 ### Host noise and path leakage
 
@@ -6979,9 +7002,15 @@ Retagged (still in the matrix, deliberately):
   reference step is the safer choice stated by the harness docstring.
 - The xattr fixture is protected against ambient xattrs: `fixtures.build`
   reports `ambient_xattr` when a file we never label carries an xattr
-  (SELinux), and long goldens then skip rather than absorb an `@` marker.
+  (SELinux), and every long-view golden case (detected from `-l`/`--long`,
+  not just the `long` family: also `quoting/long`,
+  `quoting/broken_relative_long`, `classify/F_long_links`,
+  `dirs/d_long_file`, `dirs/d_long_dir`, `dirs/d_long_symlink`) then skips
+  rather than absorb an `@` marker.
 - The invalid-UTF-8 shape case stays probe-only until an E2 shape mode
   exists; there is no shape-comparison runner in P0.
+- REFERENCE.md is not byte-for-byte reproducible: the host manifest records
+  live host data (e.g. `/proc` entry counts). That is accepted.
 
 Note for reviewers: `git diff --check` flags trailing whitespace in
 `long/dir_mode000.stderr` (the permission summary line ends with a space).

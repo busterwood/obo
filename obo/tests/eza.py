@@ -292,8 +292,6 @@ def _sortkey_cases():
        note='dot keys File::ext(".") and File::ext("..") = None')
     _r('sortkeys', 'ext_key_dotdot', '-aa', '--sort=extension', '..',
        cwd='ext', note='parent operand is live/shape-only')
-    _r('sortkeys', 'ext_key_root', '-aa', '--sort=extension', '/', cwd='empty',
-       note='dot key File::ext("/") = None; host root data')
     _r('sortkeys', 'size_aa', '-aa', '--sort=size', 'sizes',
        note='dot keys are host metadata')
     _r('sortkeys', 'modified_aa', '-aa', '--sort=modified', 'times',
@@ -447,7 +445,6 @@ def _dir_cases():
     _r('dirs', 'operand_dotdot', '..', cwd='operands',
        note='parent listing is live/shape-only')
     _r('dirs', 'd_root', '-d', '/', note='-d / is live/shape-only')
-    _r('dirs', 'root_listing', '/', note='host root listing')
 
 
 def _operand_cases():
@@ -484,7 +481,10 @@ def _error_cases():
     _o('errors', 'bad_time_style', '--time-style=bogus', 'mixed',
        note='divergence: the reference accepts and ignores a bad --time-style '
             'in a non-long view; E0 rejects it (own usage error, exit 3)')
-    _g('errors', 'bad_level', '-T', '-L', 'x', 'tree')
+    _o('errors', 'bad_level', '-T', '-L', 'x', 'tree',
+       note='-T/--tree and -L/--level are E1; E0 rejects them as unsupported '
+            'options with its own message (the reference numeric message is '
+            'probe-only evidence)')
     _sk('errors', 'permission_denied', 'locked/denied', requires='nonroot',
         note='skipped when euid is 0')
     _sk('errors', 'permission_denied_entry', 'locked/denied/f',
@@ -538,6 +538,31 @@ def implied_requires(case):
         if any(text == tree or text.startswith(prefix) for text in texts):
             needed.update(keys)
     return needed
+
+
+def uses_long_view(case):
+    """True when the case can select the long view.
+
+    Matches `--long` and short clusters containing `l` (`-l`, `-al`,
+    `-lF=always`).  `-L` is the tree level and does not count.  This is the
+    guard for host-dependent long cells (ambient xattrs, `@` marker).
+    """
+    for arg in case.argv:
+        if not isinstance(arg, str):
+            continue
+        if arg == '--long':
+            return True
+        if arg.startswith('--') or not arg.startswith('-') or len(arg) < 2:
+            continue
+        body = arg[1:].split('=', 1)[0]
+        # -F takes an optional WHEN value that can be attached (`-Falways`);
+        # everything after F is that value, not a flag cluster.
+        cut = body.find('F')
+        if cut != -1:
+            body = body[:cut + 1]
+        if 'l' in body:
+            return True
+    return False
 
 
 def validate_cases():
@@ -1004,10 +1029,10 @@ class Harness:
         return env
 
     def skip_reason(self, case, caps):
-        if GOLDEN_TAG in case.tags and case.family == 'long' \
-                and caps.get('ambient_xattr'):
+        if GOLDEN_TAG in case.tags and caps.get('ambient_xattr') \
+                and uses_long_view(case):
             return ('ambient xattrs present; the reference would print the '
-                    'permission @ marker')
+                    'permission @ marker on a long-view golden')
         for key in implied_requires(case):
             if key == 'nonroot' and not caps.get('nonroot'):
                 return 'requires a non-root euid'
@@ -1188,6 +1213,12 @@ class Harness:
                            pipe=case.mode == 'pipe',
                            timeout=60 if case.slow else 10,
                            tag='ref' if kind == 'ref' else 'own')
+            if res.timed_out:
+                raise SetupError('%s: reference timed out; not recording a '
+                                 'golden' % case.key)
+            if res.overrun:
+                raise SetupError('%s: reference output overrun (>16 MiB); not '
+                                 'recording a golden' % case.key)
             # Refuse leaks on the raw bytes: normalization would mask a fixture
             # path that does not start a line (the containment rule).
             self.leak_refusal(res.stdout, base, root, case, 'stdout')
@@ -1232,13 +1263,15 @@ class Harness:
     def check_manifest(self):
         path = os.path.join(GOLDEN, 'ref', 'MANIFEST')
         if not os.path.exists(path):
-            return
+            raise SetupError('MANIFEST is missing under %s; run --record to '
+                             'regenerate the golden matrix' % GOLDEN)
         try:
             with open(path, encoding='utf-8') as f:
                 data = json.load(f)
         except (OSError, ValueError) as e:
-            self.notes.append('manifest unreadable: %s' % e)
-            return
+            raise SetupError('MANIFEST is unreadable or malformed: %s' % e)
+        if not isinstance(data, dict):
+            raise SetupError('MANIFEST is malformed: expected a JSON object')
         full = {'ref/' + c.key for c in CASES if GOLDEN_TAG in c.tags}
         listed = set(data.get('cases', [])) | set(data.get('skipped', []))
         listed = {key for key in listed if key.startswith('ref/')}
@@ -1248,11 +1281,15 @@ class Harness:
                 '(%d listed, %d expected); re-run --record'
                 % (len(listed), len(full)))
         recorded = data.get('reference', {})
+        if not isinstance(recorded, dict):
+            raise SetupError('MANIFEST reference entry is malformed')
         if self.ref.kind == 'pinned' and recorded.get('sha256') \
                 and recorded['sha256'] != self.ref.sha256:
             self.notes.append('manifest reference sha256 differs from the '
                               'current reference')
         host = data.get('host', {})
+        if not isinstance(host, dict):
+            raise SetupError('MANIFEST host entry is malformed')
         if host.get('euid') is not None and host['euid'] != os.geteuid():
             self.notes.append('manifest euid differs from the current euid')
 
