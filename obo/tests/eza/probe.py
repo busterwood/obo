@@ -913,6 +913,11 @@ def e2_probes():
            cols=20),
         _p('e2', 'pty_zero_cols', '--icons=never', 'mixed', mode='pty',
            cols=0, note='a zero column report is not terminal-ish: Lines mode'),
+        _p('e2', 'pty_zero_rows', '--icons=never', 'mixed', mode='pty',
+           cols=80, rows=0,
+           note='terminal_size also requires a non-zero row count: with rows=0 '
+                'eza is in Lines mode, but io::termWidth exposes only the '
+                'column count, so this build cannot see this case (documented)'),
         _p('e2', 'pty_colour_mixed', '--icons=never', 'mixed', mode='pty',
            cols=80, note='auto colour and grid on a real terminal'),
         _p('e2', 'pty_F_mixed', '-F', '--icons=never', 'mixed', mode='pty',

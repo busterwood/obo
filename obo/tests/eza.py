@@ -763,6 +763,10 @@ def _grid_cases():
        note='explicit grid with an unknown width falls back to 80')
     _g('grid', 'width1000_grid100', '--width=1000', '--icons=never',
        'grid100')
+    _g('grid', 'width_int_max', '--width=9223372036854775807',
+       '--icons=never', 'grid10',
+       note='above the reference usize->int boundary: this build saturates and '
+            'clamps; the layout is the same one-row grid')
     # COLUMNS is a Set width (0 included) and is ignored when --width is
     # present. It makes eza terminal-ish for the grid and automatic classify,
     # but automatic colour still needs a real stdout TTY.

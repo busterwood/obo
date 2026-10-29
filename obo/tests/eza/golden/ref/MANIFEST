@@ -256,6 +256,7 @@
     "ref/grid/width1000_grid100",
     "ref/grid/width1_mixed",
     "ref/grid/width2_gridmix",
+    "ref/grid/width_int_max",
     "ref/grid/width_long",
     "ref/grid/width_tree",
     "ref/long/aa_selflink",

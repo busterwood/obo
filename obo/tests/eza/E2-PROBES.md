@@ -25,7 +25,7 @@ Reference: ` /tmp/eza-tar-test2/eza `
 - reference path: ` /tmp/eza-tar-test2/eza `
 - reference sha256: ` 10457dde35808517d09bcd3bfb6bc386000d06c2126e34b9071e09470a8f7cd8 `
 - fixture capabilities: ` {'euid': 1000, 'umask': 18, 'pre_epoch': True, 'xattr': True, 'invalid_utf8': True, 'fifo': True, 'socket': True, 'hardlink': True, 'symlink': True, 'deep_path': True, 'nonroot': True, 'dev_full': True, 'ambient_xattr': False} `
-- dt-unknown candidates: ` {'/proc': {'entries': 100, 'unknown': 0, 'sample': []}, '/sys': {'entries': 12, 'unknown': 0, 'sample': []}, '/dev/shm': {'entries': 7, 'unknown': 0, 'sample': []}, '/run': {'entries': 34, 'unknown': 0, 'sample': []}} `
+- dt-unknown candidates: ` {'/proc': {'entries': 101, 'unknown': 0, 'sample': []}, '/sys': {'entries': 12, 'unknown': 0, 'sample': []}, '/dev/shm': {'entries': 8, 'unknown': 0, 'sample': []}, '/run': {'entries': 34, 'unknown': 0, 'sample': []}} `
 
 ## 20. E2 re-probes (P6b: grid, width sources, UTF-8, lossy names)
 
@@ -1448,6 +1448,28 @@ b''
 ```
 
 - note: ` a zero column report is not terminal-ish: Lines mode `
+
+### pty_zero_rows
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '--icons=never', 'mixed'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 8268f20970b5f59dccd1e1767fe51b6371ad5941cfe3064ad1284e4a3d784399 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b"-\r\n--x\r\nalpha\r\nBeta\r\n\x1b[36mbroken\x1b[0m \x1b[31m->\x1b[0m \x1b[4;31mmissing\x1b[0m\r\n\x1b[1;34mdir\x1b[0m\r\n\x1b[36mdirlink\x1b[0m \x1b[1;90m->\x1b[0m \x1b[1;34mdir\x1b[0m\r\ngamma.txt\r\n\x1b[36mlink\x1b[0m \x1b[1;90m->\x1b[0m alpha\r\nnoexec\r\n\x1b[33mpipe\x1b[0m\r\n\x1b[1;32mprog\x1b[0m\r\n\x1b[1;31msock\x1b[0m\r\n\x1b[36mspaced\x1b[0m \x1b[1;90m->\x1b[0m 'tar get'\r\n\x1b[1;34msub.dir\x1b[0m\r\n'tar get'\r\n"
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` terminal_size also requires a non-zero row count: with rows=0 eza is in Lines mode, but io::termWidth exposes only the column count, so this build cannot see this case (documented) `
 
 ### pty_colour_mixed
 

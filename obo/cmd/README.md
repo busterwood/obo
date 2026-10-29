@@ -328,8 +328,12 @@ a terminal and the report has non-zero rows and columns, else unknown; the
 grid renderer falls back to 80 only for an unknown width (an explicit `-G`).
 `terminal_size` returns `None` for a zero row **or** zero column report; the
 `io::termWidth` slot exposes only the column count, so this build treats a
-zero-column terminal as unknown (probed) but cannot see a zero-row report
-(documented limitation).
+zero-column terminal as unknown (probed) but cannot see a zero-row report: on
+such a terminal the reference stays in Lines mode while this build grids
+(documented limitation; `E2-PROBES.md` records the reference bytes). Widths
+above `GRID_WIDTH_CAP` (2^40) are clamped; the reference panics from an
+internal `usize` overflow for values within two of `usize::MAX`, and this
+build deliberately prints a one-row grid instead of reproducing a panic.
 
 **Layout.** The reference uses `uutils_term_grid 0.7.0` with
 `Filling::Spaces(2)`. One cell is one row/column; if the widest cell plus two
