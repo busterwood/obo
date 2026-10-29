@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The differential gate for `eza` (P0 skeleton; own build arrives in P4).
+"""The differential gate for `eza` (E0, phase P4).
 
     python3 tests/eza.py [-k PATTERN] [-v] [-x] [-j N] [--fast]
         [--reference=auto|eza|none] [--require-reference]
@@ -45,17 +45,26 @@ against the pinned binary (`-l --no-user --bytes --time-style=long-iso
 
 Own eza and P4 gating
 ---------------------
-The own source `cmd/eza.obx` arrives in P4; `own_available()` tests for it.
-While it is absent, `--record` records the selected reference goldens only and
-skips own-tagged cases, a normal run checks the committed reference goldens
-against the pinned reference and skips own cases, and `--memory` exits 2 with
-the P4 message.  Nothing about the reference pin or the reference golden
-checks is relaxed: `--require-reference` still requires the exact version and
-binary hash, and a missing or malformed reference golden is still a setup
-error.  With no own build and no usable pinned reference there is nothing to
-run, so the harness is a setup error (exit 2), never a silent all-skip pass.
-Once `cmd/eza.obx` exists, the designed behaviour returns: build eza and
-compare/record own cases as well.
+P4 supplies `cmd/eza.obx`; `own_available()` tests for it.  A normal run
+builds it through `build_tools.build(['eza'], private_out, obo, rt)` in the
+harness temp dir (its own `sym/`), compares every golden and live case, and
+checks the own-tagged usage errors against `golden/own/`.  `--record` also
+records those own cases from the built binary.  `--memory` builds eza, creates
+10,000 entries, runs the restricted-long and name-only cases under
+`OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, parses the single
+`obo: N peak bytes, M allocated` line, rejects any leak/double-close line or
+nonzero exit, and enforces the measured `EZA_PEAK_MAX`; it also prints our max
+RSS, the pinned reference's max RSS and both binary sizes for the P4 record
+(measurement only, never gated).
+
+The P0 fallback stays for a tree without the own source: with no own build,
+`--record` records reference goldens only and skips own cases, a normal run
+checks the committed reference goldens against the pinned reference and skips
+own cases, and `--memory` exits 2.  Nothing about the reference pin or the
+reference golden checks is relaxed: `--require-reference` requires the exact
+version and binary hash, and a missing or malformed golden is a setup error.
+With no own build and no usable pinned reference there is nothing to run, so
+the harness is a setup error (exit 2), never a silent all-skip pass.
 
 E0 scope
 --------
@@ -77,7 +86,10 @@ Case tags
           computes the actual reason)
 
 A `golden` case is also a `ref` case when a pinned reference is present, and
-both are compared.  `--record` selects `golden` and `own` cases, runs the same
+both are compared. A live-only case that mismatches is re-run once (ours and
+the reference); only when a program's own output changed between the two
+attempts is the host listing unstable, and the case is then skipped with
+"live case unstable" -- never passed, and a stable difference still fails.  `--record` selects `golden` and `own` cases, runs the same
 fixtures and environments, refuses any stdout/stderr line containing an
 absolute path token (line start, after `->`, or inside quotes) or the case
 directory, and refuses to overwrite a differing golden without `--force`.
@@ -106,11 +118,19 @@ ROOT = os.path.dirname(FORK)                             # repository root
 EZA = 'eza'
 REFERENCE_PATH = '/usr/bin:/bin'
 FSIZE = 16 * 1024 * 1024                                 # per-process cap
+# The eza memory cap is a measured bound, not the compiler's PEAK_BUDGET:
+# the first gated runs of the two 10,000-entry cases (P4, OBO_STATS=1) peaked
+# at 2,185,008 (long) and 2,184,384 (names) live heap bytes, so the cap is the
+# long measurement plus a 25.97% margin (2,752,512 = 672 * 4096). A few hundred
+# bytes of the peak track the random temp-path length in the environment.
+EZA_PEAK_MAX = 2752512
 VERSION = os.path.join(HERE, 'eza', 'VERSION')
 GOLDEN = os.path.join(HERE, 'eza', 'golden')
 OWN_SOURCE = os.path.join(FORK, 'cmd', 'eza.obx')       # P4 own source
 
 sys.path.insert(0, os.path.join(HERE, 'eza'))
+sys.path.insert(0, os.path.join(FORK, 'tools'))
+import build_tools  # noqa: E402
 import fixtures  # noqa: E402
 
 
@@ -231,6 +251,14 @@ def _default_cases():
     _g('default', 'all_onedir', '-a', 'onedir')
     _r('default', 'absolute_tree', 'absolute',
        note='live-only absolute targets')
+    _g('default', 'aa_symlink_dir', '-aa', 'tree/dirlink',
+       note='synthetic . is the symlink operand (probe b2)')
+    _g('default', 'aa_symlink_dir_slash', '-aa', 'tree/dirlink/',
+       note='trailing slash follows the operand before the dot row (probe b2)')
+    _g('default', 'aa_symlink_dir_realdir', '-aa', 'links/realdirlink',
+       note='empty target dir; only the two dot rows (probe b2)')
+    _g('default', 'aa_selflink', '-aa', 'selflink/d/self',
+       note='self-link dot target .; target display and the follow quirk')
 
 
 def _name_cases():
@@ -265,6 +293,24 @@ def _name_cases():
     _g('names', 'ordered_aa_Name', '-aa', '--sort=Name', 'names/ordered')
     _g('names', 'group_dirs_first_tree', '--group-directories-first', 'tree')
     _g('names', 'D_links', '-D', 'links')
+    _g('names', 'aa_D_symlink_dir', '-aa', '-D', 'tree/dirlink',
+       note='a symlink dot is filtered by its lstat kind (probe b2)')
+    _g('names', 'aa_f_symlink_dir', '-aa', '-f', 'tree/dirlink')
+    _g('names', 'group_aa_symlink_dir', '-aa', '--group-directories-first',
+       'tree/dirlink',
+       note='the dot follows only when the operand-base target stat succeeds')
+    _g('names', 'grouplast_aa_symlink_dir', '-aa',
+       '--group-directories-last', 'tree/dirlink')
+    _g('names', 'group_aa_selflink', '-aa', '--group-directories-first',
+       'selflink/d/self',
+       note='self-link dot classifies as a directory and groups first')
+    _g('names', 'aa_D_mixed', '-aa', '-D', 'mixed')
+    _g('names', 'aa_f_mixed', '-aa', '-f', 'mixed')
+    _g('names', 'aa_group_mixed', '-aa', '--group-directories-first', 'mixed')
+    _r('names', 'tie_Aa_reverse', '-r', '.', cwd='names/tie_Aa',
+       note='-r keeps natcmpFold-equal names in readdir order')
+    _r('names', 'tie_pic_reverse', '-r', '.', cwd='names/tie_pic',
+       note='-r keeps both-comparator-equal names in readdir order')
 
 
 def _sortkey_cases():
@@ -307,6 +353,20 @@ def _sortkey_cases():
     _g('sortkeys', 'type_links', '--sort=type', 'links')
     _g('sortkeys', 'ext_ext_aa', '-aa', '--sort=extension', 'ext')
     _g('sortkeys', 'modified_times_1', '-1', '--sort=modified', 'times')
+    _g('sortkeys', 'type_aa_symlink_dir', '-aa', '--sort=type',
+       'tree/dirlink',
+       note='the synthetic dot uses its lstat kind (link rank), probe b2')
+    _g('sortkeys', 'ext_aa_symlink_dir', '-aa', '--sort=extension',
+       'tree/dirlink',
+       note='the dot key is File::ext(operand), not the target path')
+    _r('sortkeys', 'size_aa_symlink_dir', '-aa', '--sort=size',
+       'tree/dirlink', note='equal dot/regular sizes: readdir tie')
+    _r('sortkeys', 'modified_aa_symlink_dir', '-aa', '--sort=modified',
+       'tree/dirlink', note='equal pinned mtimes: readdir tie')
+    _r('sortkeys', 'size_reverse_ties', '--sort=size', '-r', 'mixed',
+       note='-r is a stable descending comparison: equal sizes keep order')
+    _r('sortkeys', 'modified_reverse_ties', '--sort=modified', '-r', 'mixed',
+       note='-r keeps comparator-equal mtimes in readdir order')
 
 
 def _long_cases():
@@ -349,6 +409,17 @@ def _long_cases():
        note='-d .. is live/shape-only')
     _r('long', 'root_d', *LONG, '-d', '/',
        note='-d / is live/shape-only')
+    _g('long', 'view_1_l', '-1', *LONG, 'mixed',
+       note='the later -l selects the long view')
+    _g('long', 'view_l_1', '-l', '-1', '--no-user', '--bytes',
+       '--time-style=long-iso', 'mixed',
+       note='the later -1 selects one-per-line')
+    _g('long', 'aa_symlink_dir', '-aa', *LONG, 'tree/dirlink',
+       note='the dot row is the symlink operand (probe b2)')
+    _g('long', 'aa_symlink_dir_F', '-aa', *LONG, '-F=always', 'tree/dirlink')
+    _g('long', 'aa_selflink', '-aa', *LONG, 'selflink/d/self')
+    _r('long', 'deep_operand', fixtures.DEEP_OPERAND,
+       note='joined path near but under 4095 bytes')
 
 
 def _quoting_cases():
@@ -416,6 +487,10 @@ def _classify_cases():
     _g('classify', 'classify_never', '--classify=never', 'mixed')
     _r('classify', 'F_absolute', '-F=always', 'absolute',
        note='live-only root-parent target markers')
+    _g('classify', 'F_aa_symlink_dir', '-aa', '-F=always', 'tree/dirlink',
+       note='no marker on the dot target when the operand-base stat fails')
+    _g('classify', 'F_aa_selflink', '-aa', '-F=always', 'selflink/d/self',
+       note='the self-link dot target resolves and is marked')
 
 
 def _dir_cases():
@@ -445,6 +520,27 @@ def _dir_cases():
     _r('dirs', 'operand_dotdot', '..', cwd='operands',
        note='parent listing is live/shape-only')
     _r('dirs', 'd_root', '-d', '/', note='-d / is live/shape-only')
+    _g('dirs', 'd_sub_dotdot', '-d', 'sub/..', cwd='operands',
+       note='a .. operand keeps its parent prefix (probe b1)')
+    _g('dirs', 'd_spaced_dotdot', '-d', 'x y/..', cwd='operands')
+    _g('dirs', 'd_dot', '-d', '.', cwd='operands')
+    _g('dirs', 'd_dot_dotdot', '-d', './..', cwd='operands')
+    _g('dirs', 'd_sub_dotdot_slash', '-d', 'sub/../', cwd='operands')
+    _g('dirs', 'dangling_operand', 'links/dangling',
+       note='lstat succeeds on a dangling symlink operand')
+    _g('dirs', 'dangling_operand_d', '-d', 'links/dangling')
+    _g('dirs', 'aa_symlink_dir_realdir_slash', '-aa',
+       'links/realdirlink/',
+       note='a trailing slash follows the operand before the dot rows')
+    _r('dirs', 'd_dotdot_parent', '-d', '..', cwd='operands',
+       note='-d .. is a live display-only case')
+    _r('dirs', 'd_root_dotdot', '-d', '/..', note='live display-only')
+    _r('dirs', 'd_root_dotdot_dotdot', '-d', '/../..',
+       note='live display-only')
+    _r('dirs', 'd_tmp_dotdot', '-d', '/tmp/..', note='live display-only')
+    _r('dirs', 'd_slash_slash', '-d', '//', note='live display-only')
+    _r('dirs', 'd_slash_slash_dotdot', '-d', '//..',
+       note='live display-only')
 
 
 def _operand_cases():
@@ -502,14 +598,28 @@ def _error_cases():
        note='E0 does not implement --sort=none')
     _o('errors', 'own_unsupported_flag', '--git', 'mixed',
        note='E0 rejects out-of-scope flags')
+    _o('errors', 'own_multiple_operands', 'one', 'one',
+       note='E0 supports at most one operand')
+    _o('errors', 'own_grid', '-G', 'mixed')
+    _o('errors', 'own_across', '-x', 'mixed')
+    _o('errors', 'own_width', '-w', '80', 'mixed')
+    _o('errors', 'own_no_quotes', '--no-quotes', 'mixed')
+    _o('errors', 'own_sort_dot_name', '--sort=.name', 'mixed')
+    _o('errors', 'own_sort_inode', '--sort=inode', 'mixed')
+    _o('errors', 'own_sort_changed', '--sort=changed', 'mixed')
+    _o('errors', 'own_color_always', '--color=always', 'mixed')
+    _o('errors', 'own_icons_always', '--icons=always', 'mixed')
+    _o('errors', 'own_stdin', '--stdin', 'mixed')
 
 
 def _memory_cases():
     _o('memory', 'long_10000', '-l', '--no-user', '--bytes',
        '--time-style=long-iso', 'many10000', slow=True, memory_entries=10000,
-       note='TODO(P4): parse the single OBO_STATS line and EZA_PEAK_MAX')
+       note='restricted long over 10,000 entries under OBO_STATS; '
+            'EZA_PEAK_MAX and no leak line')
     _o('memory', 'names_10000', 'many10000', slow=True,
-       memory_entries=10000, note='name-only listing under OBO_STATS')
+       memory_entries=10000, note='name-only 10,000 entries under '
+            'OBO_STATS; EZA_PEAK_MAX and no leak line')
 
 
 for _builder in (_default_cases, _name_cases, _sortkey_cases, _long_cases,
@@ -917,6 +1027,33 @@ def runtime_defect(result):
     return None
 
 
+def measure_rss(argv, cwd, env, out_path, err_path, tag_path):
+    """Run argv and return the child's max RSS in KiB, or None.
+
+    GNU time uses wait4 on the child, so the number is the child's own peak
+    (a fork from the Python harness would include the harness's inherited
+    pages in the child's max RSS). This is a measurement for the P4 record,
+    never a gate; a host without /usr/bin/time simply prints no RSS.
+    """
+    if not os.path.exists('/usr/bin/time'):
+        return None
+    try:
+        with open(out_path, 'wb') as out, open(err_path, 'wb') as err:
+            p = subprocess.run(['/usr/bin/time', '-f', '%M', '-o', tag_path]
+                               + argv, cwd=cwd, env=env,
+                               stdin=subprocess.DEVNULL, stdout=out,
+                               stderr=err, timeout=120)
+        if p.returncode != 0:
+            return None
+        with open(tag_path, encoding='ascii', errors='replace') as f:
+            lines = [x.strip() for x in f if x.strip()]
+        if not lines or not lines[-1].isdigit():
+            return None
+        return int(lines[-1])
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+
+
 class Harness:
     def __init__(self, args, tmp):
         self.args = args
@@ -974,8 +1111,21 @@ class Harness:
                 '--treat-dirs-as-files: %r' % (p.returncode, p.stderr))
 
     def build(self):
-        """P4 builds `eza` through build_tools.build(['eza'], ...)."""
-        raise SetupError('eza build not implemented (P4)')
+        """P4 builds `eza` through build_tools.build(['eza'], ...).
+
+        The build lives in a private temporary output directory with its own
+        `sym/`, exactly as tests/tools.py builds the other tools; the compiler
+        and runtime are the tree's own (or $OBO)."""
+        obo = os.path.abspath(os.environ.get('OBO', os.path.join(FORK, 'obo')))
+        out = os.path.join(self.tmp, 'build')
+        try:
+            exes = build_tools.build(['eza'], out, obo, FORK)
+        except build_tools.BuildError as e:
+            raise SetupError('eza build failed: %s' % e)
+        if len(exes) != 1:
+            raise SetupError('build_tools.build returned %d binaries for one '
+                             'name' % len(exes))
+        self.exe = exes[0]
 
     def golden(self, kind, case):
         key = (kind, case.key)
@@ -1078,9 +1228,9 @@ class Harness:
         are skipped.
         """
         if OWN in case.tags or gold is None:
-            return ('skip', 'own eza not implemented (P4)')
+            return ('skip', 'own eza source absent (P0 fallback)')
         if self.ref.kind != 'pinned':
-            return ('skip', 'own eza not implemented (P4); no pinned reference '
+            return ('skip', 'own eza source absent; no pinned reference '
                             'to check the reference golden')
         ref_run = self.run_reference(case, base, root)
         problems = []
@@ -1124,6 +1274,7 @@ class Harness:
                 problems.extend(self.compare(ours, own, 'own golden'))
             if gold is not None:
                 problems.extend(self.compare(ours, gold, 'reference golden'))
+            ref_run = None
             if REF in case.tags and self.ref.kind == 'pinned':
                 ref_run = run_proc(argv, cwd, base, env,
                                    executable=self.ref.path,
@@ -1141,6 +1292,33 @@ class Harness:
                                               ref_run.rc), 'live reference'))
             elif REF in case.tags and own is None and gold is None:
                 return ('skip', 'live-only case; no usable reference or golden')
+            if problems and case.live_only and ref_run is not None:
+                # A live-only case has no committed bytes; the two programs
+                # run sequentially, so a changing host directory (/tmp, /)
+                # can make an otherwise correct pair differ. Re-run both once:
+                # only if a program's own output changed between attempts is
+                # the host demonstrably unstable, and then the case is a skip
+                # (never a pass and never a weakened comparison). A stable
+                # difference remains a failure.
+                ours2 = run_proc(argv, cwd, base, ours_env,
+                                 executable=self.exe,
+                                 sink=case.mode == 'sink',
+                                 pipe=case.mode == 'pipe', timeout=timeout,
+                                 tag='our2')
+                ours2.stdout = normalize_paths(ours2.stdout, root, base)
+                ours2.stderr = normalize_paths(ours2.stderr, root, base)
+                ref2 = run_proc(argv, cwd, base, env,
+                                executable=self.ref.path,
+                                sink=case.mode == 'sink',
+                                pipe=case.mode == 'pipe', timeout=timeout,
+                                tag='ref2')
+                ref2.stdout = normalize_paths(ref2.stdout, root, base)
+                ref2.stderr = normalize_paths(ref2.stderr, root, base)
+                def sig(r):
+                    return (r.rc, r.stdout, r.stderr, r.timed_out, r.overrun)
+                if sig(ours2) != sig(ours) or sig(ref2) != sig(ref_run):
+                    return ('skip', 'live case unstable: the host listing '
+                                    'changed between runs')
             return ('fail', problems) if problems else ('pass', '')
         finally:
             fixtures.rmtree(base)
@@ -1179,10 +1357,91 @@ class Harness:
                 self.failures.append((case, detail))
 
     def run_memory(self):
+        """The design 9.7 memory gate plus a reference measurement.
+
+        Build eza, run the two 10,000-entry cases (restricted long and
+        name-only) under OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison, parse the one
+        `obo: N peak bytes, M allocated` line, reject any leak/double-close
+        line or nonzero exit, and enforce the measured EZA_PEAK_MAX. The
+        reference RSS and both binary sizes are printed for comparison and are
+        deliberately not gated (the reference is a different implementation).
+        """
         if not own_available():
-            raise SetupError('eza build not implemented (P4)')
+            raise SetupError('eza source absent; the memory gate needs cmd/eza.obx')
         self.build()
-        raise SetupError('eza memory cases not implemented (P4)')
+        numbers = []
+        cases = self.selection(memory=True)
+        if not cases:
+            raise SetupError('no memory cases selected')
+        for case in cases:
+            base, root, caps = self.prepare_case(case)
+            try:
+                env = self.case_env(base, case)
+                env.update({'OBO_CHECK': '1', 'OBX_GC': 'poison',
+                            'OBO_STATS': '1'})
+                argv = [EZA] + self.expand_argv(case, root)
+                res = run_proc(argv, self.run_cwd(root, case), base, env,
+                               executable=self.exe, timeout=120, tag='mem')
+                lines = res.stderr.split(b'\n')
+                pattern = rb'^obo: (\d+) peak bytes, (\d+) allocated$'
+                stats = [x for x in lines if re.match(pattern, x)]
+                other = [x for x in lines
+                         if x.startswith(b'obo: ') or x.startswith(b'obx: ')]
+                if res.timed_out:
+                    self.failures.append((case, 'timed out'))
+                    continue
+                if res.rc != 0:
+                    self.failures.append(
+                        (case, 'exit %s (a leak/double close exits 5/8/9)'
+                         % res.rc))
+                    continue
+                if len(stats) != 1 or len(other) != 1:
+                    self.failures.append(
+                        (case, 'stats line missing or duplicated '
+                         '(leak/double close?): %r' % res.stderr[-400:]))
+                    continue
+                m = re.match(pattern, stats[0])
+                peak, alloc = int(m.group(1)), int(m.group(2))
+                if peak > EZA_PEAK_MAX:
+                    self.failures.append(
+                        (case, 'peak %d > EZA_PEAK_MAX %d live heap bytes'
+                         % (peak, EZA_PEAK_MAX)))
+                    continue
+                numbers.append((case.key, peak, alloc))
+                self.passed += 1
+                print('ok   %s: %d peak bytes, %d allocated (EZA_PEAK_MAX %d)'
+                      % (case.key, peak, alloc, EZA_PEAK_MAX))
+                # Measurement only: our own max RSS, then the pinned
+                # reference over the same tree.
+                our_argv = [self.exe] + self.expand_argv(case, root)
+                rss = measure_rss(our_argv, self.run_cwd(root, case), env,
+                                  os.path.join(base, '.our.stdout'),
+                                  os.path.join(base, '.our.stderr'),
+                                  os.path.join(base, '.our.rss'))
+                if rss is not None:
+                    print('     eza max RSS %d KiB' % rss)
+                if self.ref is not None and self.ref.kind == 'pinned':
+                    ref_env = self.case_env(base, case)
+                    ref_argv = [self.ref.path] + self.expand_argv(case, root)
+                    rss = measure_rss(ref_argv, self.run_cwd(root, case),
+                                      ref_env,
+                                      os.path.join(base, '.ref.stdout'),
+                                      os.path.join(base, '.ref.stderr'),
+                                      os.path.join(base, '.ref.rss'))
+                    if rss is not None:
+                        print('     reference %s: max RSS %d KiB'
+                              % (case.key, rss))
+            finally:
+                fixtures.rmtree(base)
+        if self.exe is not None:
+            print('eza binary size: %d bytes' % os.path.getsize(self.exe))
+        if self.ref is not None and self.ref.kind == 'pinned':
+            try:
+                print('reference binary size: %d bytes'
+                      % os.path.getsize(self.ref.path))
+            except OSError:
+                pass
+        return numbers
 
     # -- record
     def leak_refusal(self, data, base, root, case, stream):
@@ -1254,7 +1513,7 @@ class Harness:
             },
             'cases': sorted(recorded),
             'skipped': sorted('ref/' + key for key in skipped),
-            'note': 'P0 skeleton manifest; per-case host metadata is a P4 TODO',
+            'note': 'P4: reference and own goldens; per-case host metadata is not recorded',
         }
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, sort_keys=True)
@@ -1308,11 +1567,10 @@ class Harness:
         ref_cases = [c for c in cases if GOLDEN_TAG in c.tags]
         own_cases = [c for c in cases if OWN in c.tags]
         if own_cases and not own_available():
-            print('own eza not implemented (P4); skipping %d own goldens'
+            print('own eza source absent; skipping %d own goldens'
                   % len(own_cases))
             own_cases = []
         if own_cases:
-            # TODO(P4): build eza through build_tools.build(['eza'], ...).
             self.build()
         recorded = []
         ref_recorded = []
@@ -1359,7 +1617,7 @@ def list_cases():
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        description='Differential gate for eza (P0 skeleton)')
+        description='Differential gate for eza (E0, P4)')
     ap.add_argument('-k', metavar='PATTERN',
                     help='only cases whose name/key contains PATTERN')
     ap.add_argument('-v', '--verbose', action='store_true')
@@ -1411,7 +1669,13 @@ def main(argv=None):
             return 0
         if a.memory:
             h.run_memory()
-            return 0
+            for case, detail in h.failures:
+                print('FAIL %s' % case.key)
+                for d in (detail if isinstance(detail, list) else [detail]):
+                    print('     ' + d)
+            print('memory: %d passed, %d failed'
+                  % (h.passed, len(h.failures)))
+            return 1 if h.failures else 0
         if own_available():
             h.build()
         h.validate_goldens()

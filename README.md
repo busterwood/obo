@@ -25,9 +25,10 @@ borrowed references and run-time-checked handles, with no garbage collector. On 
 benchmarks it uses 2 to 6 times less memory than even an aggressively tuned
 collector, at similar speed, with small changes to source code. It now also has
 its first command-line tools, `cat`, `wc` and `sort`, written in obo in
-`obo/cmd/` and built by `make tools`; a separate differential gate
-(`obo/tests/tools.py`) compares them with GNU coreutils, with Python models and
-recorded goldens as the fallback. Modules are now implemented in both stages:
+`obo/cmd/` and built by `make tools`, plus the first working `eza` E0 core
+(`make eza`, P4); separate differential gates compare them with GNU coreutils
+(`obo/tests/tools.py`) and the pinned eza 0.23.3 reference
+(`obo/tests/eza.py`), with recorded goldens as the fallback. Modules are now implemented in both stages:
 source imports and exports (Stage 1: `module`, `import "Name.obx" [as alias]`,
 `pub`, `alias::name`, `--deps`, `-I`), and text `.sym` symbol files with
 `--check`, `--sym-dir`, `--emit-sym`, `--version` and staleness/version checks
@@ -44,9 +45,9 @@ output has one symbol directory and one probe name.
 The tools live in `cmd/`, and their libraries are source modules under `lib/`:
 `strings`, `paths`, `sort`, `time`, `cli`, `io`, `fmt`, `errors` and `fs`. `cat`,
 `wc` and `sort` import only what they use (`io`/`fmt`/`errors`, plus `strings`
-for `wc` and `sort`); `fmt` owns the digit and padding helpers, and `errors`
-owns the errno text and the eza-shaped exit constants. The exact subset, message
-forms and caveats are in `obo/cmd/README.md`.
+for `wc` and `sort`); `eza` imports all nine. `fmt` owns the digit and padding
+helpers, and `errors` owns the errno text and the eza-shaped exit constants. The
+exact subset, message forms and caveats are in `obo/cmd/README.md`.
 
 **obx** was the original garbage-collected dialect and the compiler obo grew from.
 It is kept as the historical reference; the "History: mainline obx" section below
@@ -77,11 +78,12 @@ uses `leave; ret` epilogues. `Result[T]`/`try` and incremental I/O are done
 `.sym`/`--check`); the first command-line tools (`cat`, `wc`, `sort`) and their
 GNU differential gate are done and merged. P3 added the runtime metadata
 builtins (`readDirFd`, `statPath`, `lstatPath`, `readLinkPath`), `lib/fs.obx`
-and `OBO_VERSION` 0.3, and its seed was promoted. P5a adds the environment
-builtins (`isatty`, `getenv`), `lib/env.obx`, `io::isTty` and `OBO_VERSION`
-0.4; the 0.4 compiler recomputes itself to the same 425,985-byte binary (`obo`
-== stage 2 == stage 3, checked with `cmp`), and the seed is promoted once after
-review.
+and `OBO_VERSION` 0.3, and its seed was promoted. P4 added the working `eza` E0
+(`cmd/eza.obx`, 272/272 non-memory differential cases against the pinned eza
+0.23.3) with no compiler change. P5a adds the environment builtins (`isatty`,
+`getenv`), `lib/env.obx`, `io::isTty` and `OBO_VERSION` 0.4; the 0.4 compiler
+recomputes itself to the same 425,985-byte binary (`obo` == stage 2 == stage 3,
+checked with `cmp`), and the seed is promoted once after review.
 
 | Metric | Value |
 |---|---:|
@@ -97,6 +99,10 @@ review.
 | obo suite | 1,157 tests; 527/549 mutants caught + 22 equivalent; 27 runtime/library; 495 port; 27 symbol-file tests; 200 fuzz mutations; 32 metadata checks; 60/69 metadata mutants caught + 9 equivalent |
 | Tools differential gate | 199 checks (191 matrix + 8 serial) vs GNU coreutils 9.4; 2 memory cases (module roots) |
 | Tool binaries | cat 40,961; wc 53,249; sort 53,249 bytes (static, runtime included) |
+| eza E0 differential gate | 272/272 non-memory (214 exact goldens replayed against the pinned reference, 42 live, 16 own) + 2 memory cases |
+| eza E0 binary | 126,977 bytes (static, runtime included; reference eza 0.23.3 is 2,294,768) |
+| eza 10k-entry live peak | 2,185,008 bytes restricted long / 2,184,384 names; `EZA_PEAK_MAX` 2,752,512 |
+| eza 10k-entry max RSS | 2,432 KiB long / 2,432 KiB names; pinned reference about 24.3-25.4 MB long / 12.0 MB names across runs (measurement only) |
 | Minimal static executable | 28,673 bytes (runtime included) |
 
 Live peak varies by a few hundred bytes with the source path and total
@@ -108,9 +114,12 @@ bytes from 1,636,176, well inside the cut order of design section 6.8; P5a's
 two builtin branches and the longer compiler source raised it by 3,008 more
 (the figure depends on the compiler source path; the lib modules are not
 compiled into the compiler), still 354,576 under the budget, so no slot was
-cut. The tools work did not change the compiler, runtime or seed; their
-runtime is included in the tool binary sizes above (P3 and P5a leave them
-unchanged).
+cut. The tools (P2b) and eza E0 (P4) work did not change the compiler, runtime
+or seed; their runtime is included in the tool and eza binary sizes above (P3
+and P5a leave the tool sizes unchanged). P4's eza gate was re-measured under
+the merged 0.4 compiler and is unchanged: 272/272, `--memory` 2/2, binary
+126,977 bytes, 10,000-entry live peaks 2,185,008/2,184,384 bytes and max RSS
+2,432 KiB; the reference goldens are unchanged.
 Whole modules are compiled into each tool, so the figures track the imported
 module set: the pre-P1 tree (`265564c`) measured cat 36,865 / wc 40,961 / sort
 45,057, the P1+P2a base (`ec244e0`) measured 49,153 / 49,153 / 53,249, and
@@ -152,7 +161,7 @@ coreutils-shaped `cat`, `wc` and `sort`; then `eza` (the maintained exa fork), `
 | 2. Incremental I/O: `openFile`/`readFd`/`writeFd`/`closeFile`, standard fds, `Reader`/`Writer` | done |
 | 3. `cat`, `wc`, `sort` and the GNU differential gate | done |
 | 4. Multiple modules | done: Stage 1 source imports, Stage 2 `.sym`/`--check`; the tools and their libraries are module roots |
-| 5. Stdlib modules and the `eza` core | in progress: the P1/P2 modules and P3's `fs` are in `lib/`; the `eza` core (P4) follows |
+| 5. Stdlib modules and the `eza` core | done through P4: the nine `lib/` modules, P3's `fs`, and the `eza` E0 core with its differential gate; E1 (colour/tree) and E2 (grid/UTF-8) follow |
 | 6. Methods, interfaces and lambdas | planned |
 | 7. Peephole/optimizer audit | evidence-gated |
 | 8. More tools: `fd`, `hexyl`, `tokei`, `jq` | later |

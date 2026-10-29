@@ -1,0 +1,1346 @@
+// eza: the P4 E0 core (non-TTY lines, E0 flags and diagnostics).
+//
+// Built as a module root by tools/build_tools.py: it imports the stdlib by
+// explicit relative paths and every library name is qualified. The module is
+// named `eza`; nothing imports it, so the build writes an unread eza.sym into
+// the private sym dir. E0 is non-TTY only: one entry per line (symlink targets
+// included), the hidden/-a/-A rules, the E0 sort keys, -r, directory grouping,
+// quoting, -F, -D/-f, -d, restricted long and the error/exit classes of design
+// section 7. Multiple operands, tree, grid, colour, icons, --no-quotes and the
+// later sort keys are rejected with this build's own message.
+//
+// One operand or none; a listing shows names, an operand shows its parent
+// prefix and name. Entries are read through fs, filtered (-a/-A, -D/-f), sorted
+// through lib/sort, quoted and rendered with symlink targets and -F markers;
+// the restricted long view adds the permission, size, optional uid and date
+// cells. Errors follow eza's exit classes (0/1/2/3); a permission-denied
+// directory keeps the probe's status 0.
+
+module eza
+
+import "../lib/io.obx" as io
+import "../lib/fmt.obx" as fmt
+import "../lib/strings.obx" as strings
+import "../lib/paths.obx" as paths
+import "../lib/sort.obx" as sort
+import "../lib/cli.obx" as cli
+import "../lib/errors.obx" as errors
+import "../lib/time.obx" as time
+import "../lib/fs.obx" as fs
+
+// Deduced command-line state. Every field is copied from the effective (last)
+// occurrence of its option; cli.parse has already rejected unknown names and
+// missing required values, and deduce validates the effective values with
+// eza's last-occurrence rule and wording.
+type Opts = ref record {
+    allCount: int          // -a/--all occurrences
+    almostAll: bool        // -A
+    treatDirs: bool        // -d/--treat-dirs-as-files/--list-dirs
+    reverse: bool          // -r
+    sortField: string      // effective --sort value, "" for the default
+    groupFirst: bool       // --group-directories-first
+    groupLast: bool        // --group-directories-last
+    classifyAlways: bool   // -F=always/--classify=always
+    onlyDirs: bool         // -D
+    onlyFiles: bool        // -f
+    bytes: bool            // -B/--bytes
+    numeric: bool          // -n
+    noUser: bool           // --no-user
+    noPermissions: bool    // --no-permissions
+    noFilesize: bool       // --no-filesize
+    noTime: bool           // --no-time
+    timeStyle: string      // effective --time-style value
+    timeStyleSeen: bool
+    longView: bool         // the effective view is -l (last of -l/-1)
+}
+
+// One displayed entry.
+type Entry = ref record {
+    name: string
+    kind: byte            // kernel/d_type type (LNK for a symlink)
+    synthetic: byte       // 0 real, 1 synthesized ".", 2 synthesized ".."
+    mode: int             // lstat mode; meaningful when statOk
+    size: int             // lstat size
+    mtime: int            // lstat mtime seconds
+    mtimeNs: int
+    uid: int
+    statOk: bool
+    linkOk: bool          // readlink succeeded
+    targetRaw: string     // raw target bytes as a string
+    targetValid: bool     // stat (follow) on the resolved target succeeded
+    targetKind: byte      // followed type when targetValid
+    targetMode: int       // followed mode when targetValid
+}
+
+// How the entry set was produced: a directory listing (names only) or one
+// operand (parent prefix + name). `base` is the target-resolution base.
+type View = ref record {
+    single: bool
+    operand: string
+    base: string
+}
+
+// The restricted-long column widths, computed over the displayed entries.
+type Cols = ref record {
+    sizeWidth: int
+    userWidth: int
+    dateWidth: int
+}
+
+// ------------------------------------------------------------------- lists
+
+// A fresh empty string array (each call owns its own array).
+fn noStrings(): []string {
+    return new []string(0)
+}
+
+fn stringList2(a: string, b: string): []string {
+    var xs = new []string(0)
+    append(xs, a)
+    append(xs, b)
+    return xs
+}
+
+fn stringList3(a: string, b: string, c: string): []string {
+    var xs = new []string(0)
+    append(xs, a)
+    append(xs, b)
+    append(xs, c)
+    return xs
+}
+
+fn stringList4(a: string, b: string, c: string, d: string): []string {
+    var xs = stringList3(a, b, c)
+    append(xs, d)
+    return xs
+}
+
+fn stringList5(a: string, b: string, c: string, d: string, e: string): []string {
+    var xs = stringList4(a, b, c, d)
+    append(xs, e)
+    return xs
+}
+
+// The text after "(choices: ...)" in eza's --sort diagnostics.
+fn sortChoices(): []string {
+    var xs = new []string(0)
+    append(xs, "name")
+    append(xs, "Name")
+    append(xs, "size")
+    append(xs, "extension")
+    append(xs, "Extension")
+    append(xs, "modified")
+    append(xs, "changed")
+    append(xs, "accessed")
+    append(xs, "created")
+    append(xs, "inode")
+    append(xs, "type")
+    append(xs, "none")
+    return xs
+}
+
+// Every value eza 0.23.3 accepts for --sort. cli.parse rejects anything else
+// with eza's no-setting message; E0 then rejects the values it does not
+// implement with this build's own message.
+fn sortAccept(): []string {
+    var xs = new []string(0)
+    append(xs, "name")
+    append(xs, "Name")
+    append(xs, "filename")
+    append(xs, "Filename")
+    append(xs, ".name")
+    append(xs, ".Name")
+    append(xs, ".filename")
+    append(xs, ".Filename")
+    append(xs, "size")
+    append(xs, "filesize")
+    append(xs, "extension")
+    append(xs, "Extension")
+    append(xs, "ext")
+    append(xs, "Ext")
+    append(xs, "type")
+    append(xs, "modified")
+    append(xs, "date")
+    append(xs, "time")
+    append(xs, "mod")
+    append(xs, "new")
+    append(xs, "newest")
+    append(xs, "changed")
+    append(xs, "ch")
+    append(xs, "accessed")
+    append(xs, "acc")
+    append(xs, "created")
+    append(xs, "cr")
+    append(xs, "inode")
+    append(xs, "none")
+    append(xs, "age")
+    append(xs, "old")
+    append(xs, "oldest")
+    return xs
+}
+
+// The WHEN keywords eza's parser consumes as a separate token. `automatic` is
+// accepted only after '=' (the deduction accepts it), never consumed here.
+fn whenConsume(): []string {
+    return stringList3("always", "auto", "never")
+}
+
+fn scaleConsume(): []string {
+    return stringList3("all", "age", "size")
+}
+
+fn absoluteConsume(): []string {
+    return stringList3("on", "follow", "off")
+}
+
+// ------------------------------------------------------------- flag specs
+
+fn mkSpec(short: byte, long: string, mode: int, consume: []string,
+          accept: []string, choices: []string, def: string): cli::FlagSpec {
+    return new cli::FlagSpec{short: short, long: long, mode: mode,
+                             consume: consume, accept: accept,
+                             choices: choices, default: def}
+}
+
+// The E0 parser: the supported flags, plus every eza-valid flag E0 rejects.
+// The rejected ones keep eza's value mode so their values are consumed before
+// this build's unsupported-option error (design 7.11); --help/--version and
+// -?/-v are deliberately absent and take the unknown-name path.
+//
+// The accept lists for --sort, --classify, --color/--colour and --icons are
+// empty on purpose: eza deduces only the last occurrence, so `--sort=foo
+// --sort=name` lists (it never validates foo). deduce validates the effective
+// value against the same choices and prints eza's wording. The consume lists
+// stay, because they decide whether a separate next token is a value at all.
+fn specs(): []cli::FlagSpec {
+    var s = new []cli::FlagSpec(0)
+    // views
+    append(s, mkSpec('1', "oneline", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('l', "long", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    // filters and sorting
+    append(s, mkSpec('a', "all", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('A', "almost-all", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('d', "treat-dirs-as-files", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "list-dirs", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('D', "only-dirs", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('f', "only-files", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('r', "reverse", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('s', "sort", cli::VALUE_REQUIRED, noStrings(), noStrings(), sortChoices(), ""))
+    append(s, mkSpec(byte(0), "group-directories-first", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "group-directories-last", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    // classify and long columns
+    append(s, mkSpec('F', "classify", cli::VALUE_OPTIONAL, whenConsume(), noStrings(), noStrings(), "auto"))
+    append(s, mkSpec('B', "bytes", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('n', "numeric", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "no-user", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "no-permissions", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "no-filesize", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "no-time", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "time-style", cli::VALUE_REQUIRED, noStrings(), noStrings(),
+                     stringList5("default", "long-iso", "full-iso", "iso", "relative"), ""))
+    // colour and icons: accepted spellings, E0 rejects rendering `always`
+    append(s, mkSpec(byte(0), "color", cli::VALUE_OPTIONAL, whenConsume(), noStrings(), noStrings(), "auto"))
+    append(s, mkSpec(byte(0), "colour", cli::VALUE_OPTIONAL, whenConsume(), noStrings(), noStrings(), "auto"))
+    append(s, mkSpec(byte(0), "icons", cli::VALUE_OPTIONAL, whenConsume(), noStrings(), noStrings(), "auto"))
+    // eza-valid options this build rejects (parsed, then reported by name)
+    append(s, mkSpec('G', "grid", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('x', "across", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('R', "recurse", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('T', "tree", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('L', "level", cli::VALUE_REQUIRED, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('X', "dereference", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "follow-symlinks", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('w', "width", cli::VALUE_REQUIRED, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "no-quotes", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "absolute", cli::VALUE_OPTIONAL, absoluteConsume(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "color-scale", cli::VALUE_OPTIONAL, scaleConsume(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "colour-scale", cli::VALUE_OPTIONAL, scaleConsume(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "color-scale-mode", cli::VALUE_REQUIRED, noStrings(), noStrings(), stringList2("fixed", "gradient"), ""))
+    append(s, mkSpec(byte(0), "colour-scale-mode", cli::VALUE_REQUIRED, noStrings(), noStrings(), stringList2("fixed", "gradient"), ""))
+    append(s, mkSpec('I', "ignore-glob", cli::VALUE_REQUIRED, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "git-ignore", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "no-symlinks", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "show-symlinks", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('b', "binary", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('g', "group", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('h', "header", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('i', "inode", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('H', "links", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('m', "modified", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "changed", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('S', "blocksize", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "total-size", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('t', "time", cli::VALUE_REQUIRED, noStrings(), noStrings(), stringList4("modified", "changed", "accessed", "created"), ""))
+    append(s, mkSpec('u', "accessed", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('U', "created", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "hyperlink", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('M', "mounts", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "smart-group", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "git", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "no-git", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "git-repos", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "git-repos-no-status", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('@', "extended", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('o', "octal-permissions", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('Z', "context", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec(byte(0), "stdin", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    append(s, mkSpec('O', "flags", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
+    return s
+}
+
+// --------------------------------------------------------------- deduction
+
+// eza-valid option names E0 does not implement.
+fn isUnsupported(name: string): bool {
+    if name == "grid" { return true }
+    if name == "across" { return true }
+    if name == "recurse" { return true }
+    if name == "tree" { return true }
+    if name == "level" { return true }
+    if name == "dereference" { return true }
+    if name == "follow-symlinks" { return true }
+    if name == "width" { return true }
+    if name == "no-quotes" { return true }
+    if name == "absolute" { return true }
+    if name == "color-scale" { return true }
+    if name == "colour-scale" { return true }
+    if name == "color-scale-mode" { return true }
+    if name == "colour-scale-mode" { return true }
+    if name == "ignore-glob" { return true }
+    if name == "git-ignore" { return true }
+    if name == "no-symlinks" { return true }
+    if name == "show-symlinks" { return true }
+    if name == "binary" { return true }
+    if name == "group" { return true }
+    if name == "header" { return true }
+    if name == "inode" { return true }
+    if name == "links" { return true }
+    if name == "modified" { return true }
+    if name == "changed" { return true }
+    if name == "blocksize" { return true }
+    if name == "total-size" { return true }
+    if name == "time" { return true }
+    if name == "accessed" { return true }
+    if name == "created" { return true }
+    if name == "hyperlink" { return true }
+    if name == "mounts" { return true }
+    if name == "smart-group" { return true }
+    if name == "git" { return true }
+    if name == "no-git" { return true }
+    if name == "git-repos" { return true }
+    if name == "git-repos-no-status" { return true }
+    if name == "extended" { return true }
+    if name == "octal-permissions" { return true }
+    if name == "context" { return true }
+    if name == "stdin" { return true }
+    if name == "flags" { return true }
+    return false
+}
+
+// eza-valid --sort values excluded from E0 (they need metadata E0 does not
+// collect, the `.name` dot rule, or filesystem order).
+fn isRejectedSort(v: string): bool {
+    if v == ".name" { return true }
+    if v == ".Name" { return true }
+    if v == ".filename" { return true }
+    if v == ".Filename" { return true }
+    if v == "changed" { return true }
+    if v == "ch" { return true }
+    if v == "accessed" { return true }
+    if v == "acc" { return true }
+    if v == "created" { return true }
+    if v == "cr" { return true }
+    if v == "inode" { return true }
+    if v == "none" { return true }
+    if v == "age" { return true }
+    if v == "old" { return true }
+    if v == "oldest" { return true }
+    return false
+}
+
+// Left-associative string concatenation helper for messages.
+fn msg3(a: string, b: string, c: string): string {
+    return a + b + c
+}
+
+fn messageFor(name: string): string {
+    var canonical = name
+    if name == "colour-scale" { canonical = "color-scale" }
+    if name == "colour-scale-mode" { canonical = "color-scale-mode" }
+    return msg3("option '--", canonical, "' is not supported by this build")
+}
+
+fn valueMessage(name: string, value: string): string {
+    return "option '--" + name + "=" + value + "' is not supported by this build"
+}
+
+// The WHEN values eza's optional-value deduction accepts after '='.
+fn isWhenValue(v: string): bool {
+    return v == "always" || v == "auto" || v == "never" || v == "automatic"
+}
+
+// Linear membership over a caller-built string array (borrowed).
+fn inStrings(xs: &[]string, s: string): bool {
+    for i in 0..len(xs) {
+        if xs[i] == s { return true }
+    }
+    return false
+}
+
+// The "(choices: a, b, c)" tail of a bad-value message; empty for none.
+fn choicesText(xs: &[]string): string {
+    if len(xs) == 0 { return "" }
+    var s = " (choices: "
+    for i in 0..len(xs) {
+        if i > 0 { s = s + ", " }
+        s = s + xs[i]
+    }
+    return s + ")"
+}
+
+// eza's Optional/Option bad-value wording, without the "eza: " prefix.
+fn noSetting(label: string, value: string, choices: []string): string {
+    var m = "Option " + label + " has no \"" + value + "\" setting"
+    if len(choices) > 0 {
+        let tail = choicesText(choices)
+        m = m + tail
+    }
+    return m
+}
+
+// Turn the parsed option occurrences into the effective state. Returns this
+// build's own usage errors (exit 3 at the caller) for values it does not
+// implement and for the restricted long form.
+fn deduce(options: &[]cli::Option): Result[Opts] {
+    var o = new Opts{allCount: 0, almostAll: false, treatDirs: false,
+                     reverse: false, sortField: "", groupFirst: false,
+                     groupLast: false, classifyAlways: false, onlyDirs: false,
+                     onlyFiles: false, bytes: false, numeric: false,
+                     noUser: false, noPermissions: false, noFilesize: false,
+                     noTime: false, timeStyle: "", timeStyleSeen: false,
+                     longView: false}
+    // The effective (last) values of the optional-value flags. eza deduces
+    // only the last occurrence, so an earlier bad value is ignored when a
+    // later valid one replaces it (probed: --sort=foo --sort=name lists).
+    var classifyValue = ""
+    var colorValue = ""
+    var iconsValue = ""
+    var k = 0
+    while k < len(options) {
+        let name = options[k].long
+        let value = options[k].value
+        if name == "all" {
+            o.allCount += 1
+        } else if name == "almost-all" {
+            o.almostAll = true
+        } else if name == "treat-dirs-as-files" {
+            o.treatDirs = true
+        } else if name == "list-dirs" {
+            o.treatDirs = true
+        } else if name == "reverse" {
+            o.reverse = true
+        } else if name == "sort" {
+            o.sortField = value
+        } else if name == "group-directories-first" {
+            o.groupFirst = true
+        } else if name == "group-directories-last" {
+            o.groupLast = true
+        } else if name == "classify" {
+            classifyValue = value
+        } else if name == "only-dirs" {
+            o.onlyDirs = true
+        } else if name == "only-files" {
+            o.onlyFiles = true
+        } else if name == "bytes" {
+            o.bytes = true
+        } else if name == "numeric" {
+            o.numeric = true
+        } else if name == "no-user" {
+            o.noUser = true
+        } else if name == "no-permissions" {
+            o.noPermissions = true
+        } else if name == "no-filesize" {
+            o.noFilesize = true
+        } else if name == "no-time" {
+            o.noTime = true
+        } else if name == "time-style" {
+            o.timeStyle = value
+            o.timeStyleSeen = true
+        } else if name == "long" {
+            o.longView = true
+        } else if name == "oneline" {
+            o.longView = false
+        } else if name == "color" || name == "colour" {
+            colorValue = value
+        } else if name == "icons" {
+            iconsValue = value
+        } else if isUnsupported(name) {
+            return err(messageFor(name), 22)
+        }
+        k += 1
+    }
+    // Effective-value validation, in eza's last-occurrence model. The cli
+    // accept lists are deliberately empty for these flags: validating every
+    // occurrence would reject `--sort=foo --sort=name`, which eza accepts.
+    if len(o.sortField) > 0 {
+        let valid = sortAccept()
+        if !inStrings(valid, o.sortField) {
+            return err(noSetting("--sort (-s)", o.sortField, sortChoices()), 22)
+        }
+        // E0 sort keys only; eza's valid-but-later values get this build's
+        // message.
+        if isRejectedSort(o.sortField) {
+            return err(valueMessage("sort", o.sortField), 22)
+        }
+    }
+    if len(classifyValue) > 0 && !isWhenValue(classifyValue) {
+        return err(noSetting("--classify (-F)", classifyValue, noStrings()), 22)
+    }
+    o.classifyAlways = classifyValue == "always"
+    if len(colorValue) > 0 && !isWhenValue(colorValue) {
+        return err(noSetting("--color", colorValue, noStrings()), 22)
+    }
+    if colorValue == "always" {
+        return err(valueMessage("color", "always"), 22)
+    }
+    if len(iconsValue) > 0 && !isWhenValue(iconsValue) {
+        return err(noSetting("--icons", iconsValue, noStrings()), 22)
+    }
+    if iconsValue == "always" {
+        return err(valueMessage("icons", "always"), 22)
+    }
+    if o.longView {
+        // Restricted long: -l is only accepted with the explicit
+        // --bytes --time-style=long-iso (-n | --no-user) form (design 7.8).
+        if o.timeStyleSeen && o.timeStyle != "long-iso" {
+            return err("--time-style=" + o.timeStyle + " is not supported with -l in this build", 22)
+        }
+        if !o.timeStyleSeen || !o.bytes || !(o.numeric || o.noUser) {
+            return err("-l in this build requires --bytes, --time-style=long-iso and -n or --no-user", 22)
+        }
+    } else {
+        // No date column: long-iso and default are accepted and ignored; E0
+        // rejects the other valid styles (a documented divergence).
+        if o.timeStyleSeen && o.timeStyle != "long-iso" && o.timeStyle != "default" {
+            return err("--time-style=" + o.timeStyle + " is not supported in this build", 22)
+        }
+    }
+    return ok(o)
+}
+
+// ----------------------------------------------------------------- display
+
+fn quoteName(name: string): string {
+    return strings::quoteName(name, true)
+}
+
+// An input operand as eza paints it: the parent prefix escaped once with the
+// outer style, then the quoted last component. `.`, `..` and `/` are
+// themselves; the root parent emits a single separator (design 7.2).
+fn operandDisplay(p: string): string {
+    if p == "/" { return "/" }
+    let name = paths::lastComponent(p)
+    let parent = paths::parentOf(p)
+    if len(parent) == 0 { return quoteName(name) }
+    return strings::parentPrefix(parent, true) + quoteName(name)
+}
+
+fn newEntry(name: string, kind: byte, synthetic: byte): Entry {
+    return new Entry{name: name, kind: kind, synthetic: synthetic, mode: 0,
+                     size: 0, mtime: 0, mtimeNs: 0, uid: 0, statOk: false,
+                     linkOk: false, targetRaw: "", targetValid: false,
+                     targetKind: byte(0), targetMode: 0}
+}
+
+// eza's File::ext: the bytes after the last '.' (ASCII-lowercased), with a
+// separate hasExt flag for the Option ordering (None before Some("")).
+fn lastDot(name: string): int {
+    var dot = -1
+    for i in 0..len(name) {
+        if name[i] == '.' { dot = i }
+    }
+    return dot
+}
+
+fn ezaHasExt(name: string): bool {
+    return lastDot(name) >= 0
+}
+
+fn ezaExt(name: string): string {
+    let dot = lastDot(name)
+    if dot < 0 { return "" }
+    return strings::lowerAscii(substr(name, dot + 1, len(name)))
+}
+
+// The synthetic "." entry's extension key is File::ext(dir.path): None when
+// the operand's last component is ".", ".." or "/" (no file_name), otherwise
+// the operand component's own extension. ".." is always None.
+fn dotExtHas(operand: string): bool {
+    let name = paths::lastComponent(operand)
+    if name == "." || name == ".." || name == "/" { return false }
+    return ezaHasExt(name)
+}
+
+fn dotExtKey(operand: string): string {
+    let name = paths::lastComponent(operand)
+    if name == "." || name == ".." || name == "/" { return "" }
+    return ezaExt(name)
+}
+
+fn entryExtHas(e: &Entry, operand: string): bool {
+    if int(e.synthetic) == 1 { return dotExtHas(operand) }
+    if int(e.synthetic) == 2 { return false }
+    return ezaHasExt(e.name)
+}
+
+fn entryExtKey(e: &Entry, operand: string): string {
+    if int(e.synthetic) == 1 { return dotExtKey(operand) }
+    if int(e.synthetic) == 2 { return "" }
+    return ezaExt(e.name)
+}
+
+// Directory listing names only (no parent prefix); an operand shows its
+// parent prefix and name.
+fn displayName(v: &View, e: &Entry): string {
+    if v.single { return operandDisplay(v.operand) }
+    return quoteName(e.name)
+}
+
+fn entryPath(v: &View, e: &Entry): string {
+    if v.single { return v.operand }
+    if int(e.synthetic) == 1 { return v.operand }
+    return paths::join(v.operand, e.name)
+}
+
+// The target-resolution base: a listing entry (including the synthetic ".")
+// uses the operand directory itself, and a single operand uses its own parent.
+// The synthetic "." is eza's File at dir.path, so its link target is reoriented
+// against dir.path, not the path's parent; this is why `-aa links/realdirlink`
+// shows `. -> realdir` with no classify marker (the probe's bytes), while a
+// self-link `. -> .` classifies. See FORK/cmd README.
+fn targetBase(v: &View): string {
+    if v.single { return v.base }
+    return v.operand
+}
+
+// ---------------------------------------------------------------- metadata
+
+// The lstat fill shared by the long view, the size/modified sort keys, the
+// executable marker and any entry whose type needed a lazily resolved lstat.
+fn fillStat(mut e: &Entry, path: string) {
+    let r = fs::lstat(path)
+    match r {
+        ok {
+            e.statOk = true
+            e.mode = r.value.mode
+            e.size = r.value.size
+            e.mtime = r.value.mtime
+            e.mtimeNs = r.value.mtimeNs
+            e.uid = r.value.uid
+        }
+        err {
+            e.statOk = false
+        }
+    }
+}
+
+// A synthetic "."/".." entry: lstat its own path (the operand itself for ".",
+// join(operand, "..") for ".."), and take kind/mode/size/mtime/uid from that
+// lstat. This is the probe behavior for a symlink-to-directory operand: the
+// "." row is the symlink itself (`. -> target`), not the target directory.
+fn dotEntry(name: string, synthetic: byte, path: string): Entry {
+    var e = newEntry(name, byte(fs::KIND_UNKNOWN), synthetic)
+    fillStat(e, path)
+    if e.statOk { e.kind = fs::typeOf(e.mode) }
+    return e
+}
+
+// readlink plus stat (follow) on the resolved target path. The display uses
+// the raw target bytes; classification uses the followed type.
+fn fillTarget(mut e: &Entry, path: string, base: string) {
+    let rl = fs::readlink(path)
+    match rl {
+        ok(data) {
+            e.linkOk = true
+            let raw = strings::fromBytes(data)
+            e.targetRaw = raw
+            let tp = paths::join(base, raw)
+            let st = fs::stat(tp)
+            match st {
+                ok {
+                    e.targetValid = true
+                    e.targetKind = fs::typeOf(st.value.mode)
+                    e.targetMode = st.value.mode
+                }
+                err {
+                    e.targetValid = false
+                    e.targetKind = byte(0)
+                    e.targetMode = 0
+                }
+            }
+        }
+        err(m, c) {
+            e.linkOk = false
+        }
+    }
+}
+
+fn isSizeSort(f: string): bool {
+    return f == "size" || f == "filesize"
+}
+
+fn isModifiedSort(f: string): bool {
+    if f == "modified" { return true }
+    if f == "date" { return true }
+    if f == "time" { return true }
+    if f == "mod" { return true }
+    if f == "new" { return true }
+    if f == "newest" { return true }
+    return false
+}
+
+fn needStat(o: &Opts): bool {
+    if o.longView { return true }
+    if o.classifyAlways { return true }
+    if isSizeSort(o.sortField) { return true }
+    if isModifiedSort(o.sortField) { return true }
+    return false
+}
+
+// ------------------------------------------------------------- entry input
+
+fn dotsEnabled(o: &Opts): bool {
+    return o.allCount >= 2
+}
+
+fn hiddenEnabled(o: &Opts): bool {
+    return o.allCount >= 1 || o.almostAll
+}
+
+fn hiddenName(name: string): bool {
+    return len(name) > 0 && name[0] == '.'
+}
+
+// -D/-f: each keeps one lstat type; both together cancel (eza falls through
+// to no filtering). Synthetic dots obey the same rule.
+fn keepKind(kind: byte, o: &Opts): bool {
+    if o.onlyDirs && !o.onlyFiles {
+        return int(kind) == int(fs::KIND_DIR)
+    }
+    if o.onlyFiles && !o.onlyDirs {
+        return int(kind) == int(fs::KIND_REG)
+    }
+    return true
+}
+
+// Hidden filtering (real names only) and -D/-f, before sorting. Synthetic
+// dots are appended by the caller, before the real entries.
+fn readDirEntries(mut d: &fs::Dir, mut es: &[]Entry, o: &Opts): Result[bool] {
+    var e = new fs::DirEntry{name: "", ino: 0, kind: 0}
+    var more = true
+    while more {
+        more = try fs::next(d, e)
+        if more {
+            var keep = true
+            if hiddenName(e.name) && !hiddenEnabled(o) { keep = false }
+            if keep && !keepKind(e.kind, o) { keep = false }
+            if keep {
+                append(es, newEntry(e.name, e.kind, byte(0)))
+            }
+        }
+    }
+    return ok(true)
+}
+
+// --------------------------------------------------------------- ordering
+
+fn nameKeys(es: &[]Entry): []string {
+    var out = new []string(0)
+    for i in 0..len(es) {
+        append(out, es[i].name)
+    }
+    return out
+}
+
+fn sizeKeys(es: &[]Entry): []int {
+    var out = new []int(0)
+    for i in 0..len(es) {
+        var v = -1
+        if es[i].statOk { v = es[i].size }
+        append(out, v)
+    }
+    return out
+}
+
+// eza's Option<NaiveDateTime>: a pre-1970 (or missing) mtime is None and
+// sorts before every real time.
+fn secKeys(es: &[]Entry): []int {
+    var out = new []int(0)
+    for i in 0..len(es) {
+        var v = -1
+        if es[i].statOk && es[i].mtime >= 0 { v = es[i].mtime }
+        append(out, v)
+    }
+    return out
+}
+
+fn nsecKeys(es: &[]Entry): []int {
+    var out = new []int(0)
+    for i in 0..len(es) {
+        var v = 0
+        if es[i].statOk && es[i].mtime >= 0 { v = es[i].mtimeNs }
+        append(out, v)
+    }
+    return out
+}
+
+fn extKeys(es: &[]Entry, operand: string): []string {
+    var out = new []string(0)
+    for i in 0..len(es) {
+        append(out, entryExtKey(es[i], operand))
+    }
+    return out
+}
+
+fn extHasKeys(es: &[]Entry, operand: string): []int {
+    var out = new []int(0)
+    for i in 0..len(es) {
+        var v = 0
+        if entryExtHas(es[i], operand) { v = 1 }
+        append(out, v)
+    }
+    return out
+}
+
+fn typeRank(kind: byte): int {
+    if int(kind) == int(fs::KIND_DIR) { return 0 }
+    if int(kind) == int(fs::KIND_REG) { return 1 }
+    if int(kind) == int(fs::KIND_LNK) { return 2 }
+    if int(kind) == int(fs::KIND_FIFO) { return 3 }
+    if int(kind) == int(fs::KIND_SOCK) { return 4 }
+    if int(kind) == int(fs::KIND_CHR) { return 5 }
+    if int(kind) == int(fs::KIND_BLK) { return 6 }
+    return 7
+}
+
+fn typeKeys(es: &[]Entry): []int {
+    var out = new []int(0)
+    for i in 0..len(es) {
+        append(out, typeRank(es[i].kind))
+    }
+    return out
+}
+
+// points_to_directory: a directory, or a symlink whose followed target is a
+// directory. Symlink target metadata is filled for every link.
+fn pointsToDir(e: &Entry): bool {
+    if int(e.kind) == int(fs::KIND_DIR) { return true }
+    if int(e.kind) == int(fs::KIND_LNK) {
+        return e.targetValid && int(e.targetKind) == int(fs::KIND_DIR)
+    }
+    return false
+}
+
+fn groupKeys(es: &[]Entry, o: &Opts): []int {
+    var out = new []int(0)
+    for i in 0..len(es) {
+        let d = pointsToDir(es[i])
+        var rank = 0
+        if o.groupFirst {
+            if !d { rank = 1 }
+        } else {
+            if d { rank = 1 }
+        }
+        append(out, rank)
+    }
+    return out
+}
+
+// A stable merge over an existing order with a string key array. mode 0 is
+// byte order, 1 natural, 2 natural folded. desc is the P0-probed eza rule: a
+// reversed comparator keeps comparator-equal entries in their input order
+// (eza sorts with a stable descending comparison, it does not reverse the
+// resulting vector -- `--sort=size -r` on equal sizes keeps readdir order).
+fn keyCmp(keys: &[]string, i: int, j: int, mode: int): int {
+    if mode == 0 { return strings::cmp(keys[i], keys[j]) }
+    if mode == 1 { return strings::natcmp(keys[i], keys[j]) }
+    return strings::natcmpFold(keys[i], keys[j])
+}
+
+fn mergeDir(order: []int, keys: &[]string, mode: int, desc: bool): []int {
+    let n = len(order)
+    if n < 2 { return order }
+    var aux = new []int(n)
+    var width = 1
+    while width < n {
+        var lo = 0
+        while lo < n {
+            var mid = lo + width
+            if mid > n { mid = n }
+            var hi = mid + width
+            if hi > n { hi = n }
+            var a = lo
+            var b = mid
+            var k = lo
+            while a < mid && b < hi {
+                let c = keyCmp(keys, order[a], order[b], mode)
+                var takeLeft = c <= 0
+                if desc { takeLeft = c >= 0 }
+                if takeLeft {
+                    aux[k] = order[a]
+                    a += 1
+                } else {
+                    aux[k] = order[b]
+                    b += 1
+                }
+                k += 1
+            }
+            while a < mid {
+                aux[k] = order[a]
+                a += 1
+                k += 1
+            }
+            while b < hi {
+                aux[k] = order[b]
+                b += 1
+                k += 1
+            }
+            for t in lo..hi { order[t] = aux[t] }
+            lo = hi
+        }
+        width *= 2
+    }
+    return order
+}
+
+fn copyOrder(xs: &[]int): []int {
+    var out = new []int(len(xs))
+    for i in 0..len(xs) { out[i] = xs[i] }
+    return out
+}
+
+// Stable natural order in the requested direction; comparator-equal names keep
+// their input order in both directions.
+fn orderNaturalDir(keys: &[]string, fold: bool, desc: bool): []int {
+    var mode = 1
+    if fold { mode = 2 }
+    let init = sort::identity(len(keys))
+    return mergeDir(init, keys, mode, desc)
+}
+
+// The same merge over an existing order (the extension pipeline's passes).
+fn sortOrderStringsDir(order: &[]int, keys: &[]string, desc: bool): []int {
+    let init = copyOrder(order)
+    return mergeDir(init, keys, 0, desc)
+}
+
+// A new int array with every key negated: a stable ascending sort of it is the
+// stable descending sort of the original (ties keep their order, unlike the
+// vector reversal the design note describes; the live probe pins this).
+fn negKeys(xs: &[]int): []int {
+    var out = new []int(len(xs))
+    for i in 0..len(xs) { out[i] = -xs[i] }
+    return out
+}
+
+// The E0 order. The field sort is ascending or a stable descending comparison
+// under -r (probe-confirmed: ties keep readdir order), then the directory
+// grouping is a final stable sort in either mode. Every helper keeps input
+// order for equal keys; the committed fixtures also avoid comparator ties.
+fn sortEntries(es: &[]Entry, v: &View, o: &Opts): []int {
+    let f = o.sortField
+    var order = sort::identity(len(es))
+    if f == "" || f == "name" || f == "filename" {
+        let ks = nameKeys(es)
+        order = orderNaturalDir(ks, true, o.reverse)
+    } else if f == "Name" || f == "Filename" {
+        let ks = nameKeys(es)
+        order = orderNaturalDir(ks, false, o.reverse)
+    } else if isSizeSort(f) {
+        let ks = sizeKeys(es)
+        if o.reverse {
+            let nk = negKeys(ks)
+            order = sort::sortOrderInts(&order, &nk)
+        } else {
+            order = sort::sortOrderInts(&order, &ks)
+        }
+    } else if isModifiedSort(f) {
+        let ns = nsecKeys(es)
+        let sec = secKeys(es)
+        if o.reverse {
+            let nk = negKeys(ns)
+            let sk = negKeys(sec)
+            let o1 = sort::sortOrderInts(&order, &nk)
+            order = sort::sortOrderInts(&o1, &sk)
+        } else {
+            let o1 = sort::sortOrderInts(&order, &ns)
+            order = sort::sortOrderInts(&o1, &sec)
+        }
+    } else if f == "extension" || f == "ext" {
+        let ks = nameKeys(es)
+        let pre = orderNaturalDir(ks, true, o.reverse)
+        let ek = extKeys(es, v.operand)
+        let hk = extHasKeys(es, v.operand)
+        let o1 = sortOrderStringsDir(&pre, &ek, o.reverse)
+        if o.reverse {
+            let nh = negKeys(hk)
+            order = sort::sortOrderInts(&o1, &nh)
+        } else {
+            order = sort::sortOrderInts(&o1, &hk)
+        }
+    } else if f == "Extension" || f == "Ext" {
+        let ks = nameKeys(es)
+        let pre = orderNaturalDir(ks, false, o.reverse)
+        let ek = extKeys(es, v.operand)
+        let hk = extHasKeys(es, v.operand)
+        let o1 = sortOrderStringsDir(&pre, &ek, o.reverse)
+        if o.reverse {
+            let nh = negKeys(hk)
+            order = sort::sortOrderInts(&o1, &nh)
+        } else {
+            order = sort::sortOrderInts(&o1, &hk)
+        }
+    } else {
+        let ks = nameKeys(es)
+        let pre = orderNaturalDir(ks, false, o.reverse)
+        let tk = typeKeys(es)
+        if o.reverse {
+            let rk = negKeys(tk)
+            order = sort::sortOrderInts(&pre, &rk)
+        } else {
+            order = sort::sortOrderInts(&pre, &tk)
+        }
+    }
+    if o.groupFirst || o.groupLast {
+        let gk = groupKeys(es, o)
+        let grouped = sort::sortOrderInts(&order, &gk)
+        order = grouped
+    }
+    return order
+}
+
+// ----------------------------------------------------------------- output
+
+// eza's classify markers: directory, executable regular file, FIFO, socket;
+// a symlink never reaches here for a non-grid view (its target is marked).
+fn markerFor(kind: byte, mode: int): string {
+    if int(kind) == int(fs::KIND_DIR) { return "/" }
+    if int(kind) == int(fs::KIND_REG) {
+        if mode & 0x040 != 0 { return "*" }
+        return ""
+    }
+    if int(kind) == int(fs::KIND_FIFO) { return "|" }
+    if int(kind) == int(fs::KIND_SOCK) { return "=" }
+    return ""
+}
+
+// A valid target: parent prefix with the outer style, target name with
+// QuoteSpaces, then the followed-type marker under -F=always. A broken target
+// is the whole raw target escaped with the outer style and never marked; an
+// unreadable target has no arrow at all (the caller skips it).
+fn targetDisplay(e: &Entry, classify: bool): string {
+    if e.targetValid {
+        let prefix = strings::parentPrefix(paths::parentOf(e.targetRaw), true)
+        var s = prefix + quoteName(paths::lastComponent(e.targetRaw))
+        if classify {
+            s = s + markerFor(e.targetKind, e.targetMode)
+        }
+        return s
+    }
+    return quoteName(e.targetRaw)
+}
+
+fn appendStr(mut out: &[]byte, s: string) {
+    for i in 0..len(s) {
+        append(out, s[i])
+    }
+}
+
+// Right-align a string in width (width 0: no padding).
+fn appendRightStr(mut out: &[]byte, s: string, width: int) {
+    let pad = width - len(s)
+    if pad > 0 {
+        for i in 0..pad { append(out, ' ') }
+    }
+    appendStr(out, s)
+}
+
+// Right-align a non-negative int in width (width 0: no padding).
+fn appendRightInt(mut out: &[]byte, v: int, width: int) {
+    appendRightStr(out, string(v), width)
+}
+
+// Left-align a string in width (width 0: no padding). E0 widths are bytes.
+fn appendLeftStr(mut out: &[]byte, s: string, width: int) {
+    appendStr(out, s)
+    let pad = width - len(s)
+    if pad > 0 {
+        for i in 0..pad { append(out, ' ') }
+    }
+}
+
+// eza's File::size(): the decimal size of a regular file, -1 (displayed as
+// one '-') for every other type.
+fn sizeCell(e: &Entry): int {
+    if !e.statOk { return -1 }
+    return fs::sizeForLong(e.mode, e.size)
+}
+
+// Widths over the displayed entry set: right-aligned size, left-aligned
+// numeric uid (only with -n and not --no-user) and left-aligned date (16 for
+// any representable mtime, 1 for the lone "-").
+fn computeCols(es: &[]Entry, o: &Opts): Cols {
+    var sw = 0
+    var uw = 0
+    var dw = 0
+    var i = 0
+    while i < len(es) {
+        if !o.noFilesize {
+            let c = sizeCell(es[i])
+            var w = 1
+            if c >= 0 { w = fmt::digits(c) }
+            if w > sw { sw = w }
+        }
+        if o.numeric && !o.noUser {
+            let w = fmt::digits(es[i].uid)
+            if w > uw { uw = w }
+        }
+        if !o.noTime {
+            var w = 1
+            if es[i].statOk && es[i].mtime >= 0 { w = 16 }
+            if w > dw { dw = w }
+        }
+        i += 1
+    }
+    return new Cols{sizeWidth: sw, userWidth: uw, dateWidth: dw}
+}
+
+// The symlink arrow and target, or the classify marker on a non-link name.
+fn appendTargetAndMarker(e: &Entry, o: &Opts, mut out: &[]byte) {
+    if int(e.kind) == int(fs::KIND_LNK) {
+        if e.linkOk {
+            appendStr(out, " -> ")
+            appendStr(out, targetDisplay(e, o.classifyAlways))
+        }
+    } else if o.classifyAlways {
+        appendStr(out, markerFor(e.kind, e.mode))
+    }
+}
+
+// One line in the current view: the restricted long cells (permissions, size,
+// user under -n, modified date) then the name, or the lines/default form.
+// Suppressed columns and their separators disappear entirely; with every cell
+// suppressed the line is the name alone.
+fn renderLine(e: &Entry, v: &View, o: &Opts, cols: &Cols, mut out: &[]byte) {
+    if o.longView {
+        var first = true
+        if !o.noPermissions {
+            appendStr(out, fmt::modeString(e.mode))
+            first = false
+        }
+        if !o.noFilesize {
+            if !first { append(out, ' ') }
+            let c = sizeCell(e)
+            if c < 0 {
+                appendRightStr(out, "-", cols.sizeWidth)
+            } else {
+                appendRightInt(out, c, cols.sizeWidth)
+            }
+            first = false
+        }
+        if o.numeric && !o.noUser {
+            if !first { append(out, ' ') }
+            appendLeftStr(out, string(e.uid), cols.userWidth)
+            first = false
+        }
+        if !o.noTime {
+            if !first { append(out, ' ') }
+            var ds = "-"
+            if e.statOk && e.mtime >= 0 { ds = time::formatLongIso(e.mtime) }
+            appendLeftStr(out, ds, cols.dateWidth)
+            first = false
+        }
+        if !first { append(out, ' ') }
+        appendStr(out, displayName(v, e))
+        appendTargetAndMarker(e, o, out)
+    } else {
+        appendStr(out, displayName(v, e))
+        appendTargetAndMarker(e, o, out)
+    }
+}
+
+// Write one rendered line per order id through a buffered Writer. A write or
+// flush failure is returned with its errno; the caller prints eza's bare os
+// error and exits 1.
+fn emitEntries(es: &[]Entry, order: &[]int, v: &View, o: &Opts, cols: &Cols): Result[bool] {
+    var w = io::newWriter(stdout(), 65536)
+    var out = new []byte(0)
+    var i = 0
+    while i < len(order) {
+        let id = order[i]
+        truncate(out, 0)
+        renderLine(es[id], v, o, cols, out)
+        let r = io::writeBytes(w, out)
+        match r {
+            ok { }
+            err { return err(r.message, r.code) }
+        }
+        let n = io::writeByte(w, byte(10))
+        match n {
+            ok { }
+            err { return err(n.message, n.code) }
+        }
+        i += 1
+    }
+    let f = io::flush(w)
+    match f {
+        ok { }
+        err { return err(f.message, f.code) }
+    }
+    return ok(true)
+}
+
+// ------------------------------------------------------------- entry setup
+
+// Fill the lazy metadata the current options need. Symlink targets are always
+// resolved for display (the default/-1/-d and long views show them).
+fn prepareEntries(mut es: &[]Entry, v: &View, o: &Opts) {
+    let wantStat = needStat(o)
+    var i = 0
+    while i < len(es) {
+        let path = entryPath(v, es[i])
+        if wantStat {
+            fillStat(es[i], path)
+        }
+        if int(es[i].kind) == int(fs::KIND_LNK) {
+            fillTarget(es[i], path, targetBase(v))
+        }
+        i += 1
+    }
+}
+
+// eza's permission-denied diagnostic for a directory it cannot open, followed
+// by the summary block. The status stays 0 (P0 records 0.23.3's exit).
+fn warnPermissionDenied(operand: string) {
+    eprintln("Permission denied: ", operand, " - code: 13")
+    eprintln("")
+    eprintln("Skipped 1 directories due to permission denied: ")
+    eprintln("  ", operand)
+}
+
+// ------------------------------------------------------------------- main
+
+fn main() {
+    let av = args()
+    var sp = specs()
+    let parsed = cli::parse(av, 1, sp)
+    match parsed {
+        ok {
+            let od = deduce(parsed.value.options)
+            match od {
+                ok {
+                    let nops = len(parsed.value.operands)
+                    if nops > 1 {
+                        eprintln("eza: this build supports at most one operand")
+                        exit(errors::EXIT_USAGE)
+                    }
+                    var operand = "."
+                    if nops == 1 { operand = parsed.value.operands[0] }
+                    // The operand existence check is lstat, as in eza: a
+                    // dangling symlink operand exists and is listed.
+                    var mode = 0
+                    let lm = fs::lstat(operand)
+                    match lm {
+                        ok { mode = lm.value.mode }
+                        err {
+                            eprintln(errors::debugPath(operand), ": ", errors::osError(lm.code))
+                            exit(errors::EXIT_PATH)
+                        }
+                    }
+                    var follows = false
+                    if fs::isSymlink(mode) {
+                        let st = fs::stat(operand)
+                        match st {
+                            ok { follows = fs::isDir(st.value.mode) }
+                            err { follows = false }
+                        }
+                    }
+                    let listing = (fs::isDir(mode) || follows) && !od.value.treatDirs
+                    if listing {
+                        let op = fs::open(operand)
+                        match op {
+                            ok(d) {
+                                var es = new []Entry(0)
+                                let v = new View{single: false, operand: operand, base: operand}
+                                if dotsEnabled(od.value) {
+                                    let dot = dotEntry(".", byte(1), operand)
+                                    if keepKind(dot.kind, od.value) {
+                                        append(es, dot)
+                                    } else {
+                                        drop(dot)
+                                    }
+                                    let dotdot = dotEntry("..", byte(2), paths::join(operand, ".."))
+                                    if keepKind(dotdot.kind, od.value) {
+                                        append(es, dotdot)
+                                    } else {
+                                        drop(dotdot)
+                                    }
+                                }
+                                let rr = readDirEntries(d, es, od.value)
+                                let cr = fs::close(d)
+                                match rr {
+                                    ok {
+                                        prepareEntries(es, v, od.value)
+                                        let order = sortEntries(es, v, od.value)
+                                        let cols = computeCols(es, od.value)
+                                        let er = emitEntries(es, order, v, od.value, cols)
+                                        match er {
+                                            ok { }
+                                            err {
+                                                eprintln(errors::osError(er.code))
+                                                exit(errors::EXIT_FAIL)
+                                            }
+                                        }
+                                    }
+                                    err {
+                                        eprintln(operand, ": ", errors::osError(rr.code))
+                                    }
+                                }
+                            }
+                            err(m, c) {
+                                if c == errors::EXIT_PERMISSION {
+                                    warnPermissionDenied(operand)
+                                } else {
+                                    eprintln(operand, ": ", errors::osError(c))
+                                }
+                            }
+                        }
+                    } else {
+                        var es = new []Entry(0)
+                        let v = new View{single: true, operand: operand, base: paths::parentOf(operand)}
+                        append(es, newEntry(operand, fs::typeOf(mode), byte(0)))
+                        prepareEntries(es, v, od.value)
+                        let order = sort::identity(len(es))
+                        let cols = computeCols(es, od.value)
+                        let er = emitEntries(es, order, v, od.value, cols)
+                        match er {
+                            ok { }
+                            err {
+                                eprintln(errors::osError(er.code))
+                                exit(errors::EXIT_FAIL)
+                            }
+                        }
+                    }
+                }
+                err {
+                    eprintln("eza: ", od.message)
+                    exit(errors::EXIT_USAGE)
+                }
+            }
+        }
+        err {
+            eprintln("eza: ", parsed.message)
+            exit(errors::EXIT_USAGE)
+        }
+    }
+}

@@ -4433,6 +4433,207 @@ seed copy (the post-promote simulation); `tests/mutate_fork.py` 527/549 + 22 equ
 27 checks (16 rt cases + 11 program invocations); `tests/mutate_meta.py` 30/31 + 1 and 9/12 + 3 as above. Tool
 binaries unchanged (cat 40,961; wc 53,249; sort 53,249 bytes).
 
+# eza E0: the first working binary (P4, done)
+
+The eza/stdlib design v7 sections 2.2, 4.1/4.2, 5, 7, 9, 10.1 and 11.1 P4. No
+compiler, runtime or seed change; the branch starts at the final P3 tree
+(`e702029`) and merges main `e8703b2` (P3 merged, 0.3 seed promoted), then
+rebuilds from that promoted seed: `seed/obo` == `obo` == stage 2 == stage 3,
+421,889 bytes, sha256 `4892cea9…`. Nothing in this phase is promoted.
+
+**What changed.** New `obo/cmd/eza.obx`, a headed root (`module eza`) importing
+all nine `../lib/...` modules. `tools/build_tools.py` gains the `EZA`/`ALL`
+split and the full library prerequisite set (nine modules; `build(['eza'], ...)`
+is the one entry point), the Makefile gains `eza`, `eza-check` and `eza-memory`
+with a private `build/eza/sym`, `tests/eza.py` builds the binary through
+`build_tools.build` and gates it, and `tests/imports.py` compiles four tool
+roots (25/25) plus the eza sort-import rule. Sixteen own usage-error goldens
+are recorded under `golden/own/`; the two own memory cases are run by
+`--memory`, not recorded as goldens. The fixture generator gains a `selflink/`
+tree (`d/self -> .`) for the dot-target cases.
+
+**Command line.** The parser is `cli.parse` over the complete E0 FlagSpec table:
+every supported flag, plus every eza-valid flag this build rejects so its value
+is consumed with eza's value mode before this build's own unsupported-option
+error (`--width=N`, `-I=`, `-L x`, `--time-style=iso`). The supported surface is
+`-1`/`--oneline`, restricted `-l`/`--long`, counted `-a`/`--all`, `-A`,
+`-d`/`--treat-dirs-as-files`/`--list-dirs`, `-D`, `-f`, `-r`, `-s`/`--sort`
+(name/filename, Name/Filename, size/filesize, modified/date/time/mod/new/newest,
+extension/Extension/ext/Ext, type), `--group-directories-first` and
+`--group-directories-last`, `-F`/`--classify` (`auto`/`always`/`never`,
+`automatic` only after `=`), `-B`/`--bytes`, `-n`/`--numeric`, `--no-user`,
+`--no-permissions`, `--no-filesize`, `--no-time`, `--time-style`, and the
+no-op non-TTY forms of `--color`/`--colour`/`--icons`. `--help`, `--version`,
+`-?` and `-v` are deliberately absent from the parser and take the ordinary
+unknown-argument path.
+
+Value deduction follows eza's last-occurrence rule by probe, not only the
+design: `--sort=foo --sort=name` lists (the earlier bad value is ignored) and
+`--sort=foo --sort=bar` reports `"bar"`; the same holds for `--classify`,
+`--color`/`--colour` and `--icons`. The cli accept lists for those flags are
+therefore empty and `deduce` validates the effective value with eza's exact
+no-setting/choices wording. `--sort=default` is not an eza value and takes the
+same wording; E0's valid-but-later values (`.name`/`.Name`, changed/accessed/
+created, inode, none, age/old/oldest) take this build's own message. Time-style
+is a documented narrowing: `long-iso` is required with `-l`, `long-iso` and
+`default` are accepted and ignored without it, and the other eza styles are
+this build's error.
+
+**Model and ordering.** One operand or none (zero means `.`; multiple operands,
+the stdin file-name mode, tree, grid and colour are out). Operand existence is
+`lstat`, so a dangling symlink is listed; a directory operand that is a symlink
+to a directory is followed for listing unless `-d`. A directory listing shows
+names only, an operand shows `parentPrefix(parent) + name` with the whole
+parent escaped once. A parented `..` operand keeps its prefix (`-d sub/..` is
+`sub/..`, `-d 'x y/..'` is `'x y'/..`, `-d /..` is `/..`); only an empty
+parent makes `-d ..` print `..`. This is a P0-probe contradiction of design
+7.2's "`.`/`..` return themselves" and is tested by committed
+`dirs/d_sub_dotdot`, `dirs/d_spaced_dotdot`, `dirs/d_dot_dotdot` and live
+root/dotdot cases.
+
+Synthetic `.`/`..` records are built before the real entries when `-a` is
+counted twice, are exempt from hidden filtering, and obey `-D`/`-f`. The dots
+are real entries in eza's model: `.` is `lstat(operand)` (so for a
+symlink-to-directory operand it is the link itself, `. -> target`, not the
+target directory), `..` is `lstat(join(operand,".."))`, and their kind/mode/
+size/time/uid drive type sorting, filtering and grouping. Target display and
+classification reorient the raw target against `dir.path` itself, not its
+parent — eza's File-at-dir.path quirk — so `-aa links/realdirlink` is
+`. -> realdir` with no classify marker, while `-aa selflink/d/self` is
+`. -> .`, classifies and groups as a directory; a trailing slash resolves the
+operand first. The `.` extension key is `File::ext(operand)` and `..` is None,
+never the target's extension. These are P0-probe contradictions of design
+7.2/7.3, covered by the committed `aa_symlink_dir`, `aa_selflink`, `-aa -D/-f`,
+type/extension/group and long cases.
+
+Sorting permutes index arrays through `lib/sort.obx`: a stable field sort and,
+under `-r`, a stable descending comparison, then the directory grouping (first
+wins when both grouping flags are given; a real symlink to a directory groups
+as a directory, while the synthetic dot follows its operand-base target
+above). The `-r` rule follows the P0 live probe, not the design
+note's vector reversal: comparator-equal keys keep readdir order (probed on
+equal sizes, fold-tied names, and the extension/type name fallbacks), while
+distinct keys sort descending. The committed goldens have distinct keys, so
+both rules agree there; live tie cases (`names/tie_Aa_reverse`,
+`names/tie_pic_reverse`, `sortkeys/size_reverse_ties`,
+`sortkeys/modified_reverse_ties`) and the regenerated REFERENCE.md
+`size_reverse_ties`/`modified_reverse_ties`/`tie_*_reverse` probes pin it.
+Extension/Ext use the design's three-pass pipeline and the folded or
+case-sensitive name fallback; type pre-orders by case-sensitive natural name then rank. Quoting is
+`QuoteSpaces`; classify markers go on the target of a symlink and on the name
+otherwise. Targets resolve as `paths::join(base, raw)` with `base` the listing
+operand (including the synthetic `.`, hence the quirk above) or the single
+operand's parent, and are classified with a following `stat`, while the link's
+own cells stay `lstat`; a broken target shows the whole raw target escaped and
+no marker, and an unreadable target shows no arrow.
+
+Restricted long is `-l --bytes --time-style=long-iso` with `-n` or `--no-user`;
+the columns are permissions (`fmt::modeString`), right-aligned byte size with
+`-` for non-regular entries, optional left-aligned numeric uid, left-aligned
+long-iso UTC date (`-` before the epoch), and the name. `--no-permissions`,
+`--no-filesize` and `--no-time` suppress a column and its separator; with all
+suppressed the line is the name alone. Widths are computed over the displayed
+set, and a `-d` invocation uses its one entry. `-aa -l` on a real directory is
+live-only (the dot rows are the listed directory and its host parent); the
+committed symlink-operand long cases have fixture-owned dot rows.
+
+**Errors.** eza-shaped statuses: 0 success, 1 write error (bare
+`No space left on device (os error 28)`), 2 input metadata failure
+(`"path": ... (os error N)` from `lstat`), 3 usage/unsupported, and the
+permission class as the P0 probe recorded it: a permission-denied directory
+prints the warning and the `Skipped 1 directories ...` summary but keeps
+status 0. `SIGPIPE` keeps the disposition it inherits: E0 installs no
+handler, so the default parent gets the probe's signal 13, while an inherited
+ignore turns a closed pipe into an EPIPE write error.
+
+**Task-scope decisions vs the design note (no design edits).** The P4 scope
+asked for `--no-permissions`, `--no-filesize`, `--no-time` and
+`--group-directories-last`, which design v7 lists as later/rejected (§7.8,
+§7.11). They are implemented and their output matches the pinned 0.23.3
+reference byte-for-byte on the live probes, including `-r` and `-aa` for the
+grouping flag and `-n`/`--no-user` interactions for the suppressed columns.
+Everything else outside E0 is rejected with this build's own message.
+
+**Measured (this branch).** eza binary 126,977 bytes (static, runtime
+included); the pinned reference binary is 2,294,768 bytes. On 10,000 entries
+under `OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`: restricted long peaks at
+2,185,008 live heap bytes (16,166,544 allocated) and 2,432 KiB max RSS; the
+name-only listing peaks at 2,184,384 (6,565,280 allocated) and 2,432 KiB.
+`EZA_PEAK_MAX` is 2,752,512 bytes (the first long measurement plus a 25.97%
+margin). GNU time on
+the same tree measures the reference at about 24.3-25.4 MB (long) and 12.0 MB
+(names) max RSS across the recorded gate runs (for example 24,760/11,992 and
+25,388/11,988 KiB); our tool is about 2.4 MB in both cases. Reference memory is
+printed for comparison and never gated.
+
+**Gates (this branch).** `make`; `make tools`; `make eza`;
+`tests/eza.py --require-reference` 272/272 non-memory cases (214 exact
+reference goldens replayed against the pinned reference, 42 live cases, 16 own
+goldens; 274 cases including the 2 memory cases), 0 failed; `tests/eza.py
+--memory` 2/2 with the peaks/allocations above and no leak or double-close
+line; `tests/tools.py --require-reference` 199/199; `tests/tools.py --memory`
+2/2; `tests/io_test.py --rt --programs --tools` 0 failures; `tests/imports.py`
+25/25 (9 stdlib importers, 4 tools, 4 static tool-matrix checks, 7
+collision/decoy trees, 1 lib set; the P3 pre-eza count was 23/23);
+`tests/stdlib.py` 16/16 roots (1 support module); `tests/run_fork.py`
+1,147/1,147; `tests/elf_test.py` (filesz 1, memsz 67,328);
+`tests/port_compare.py` 1,164/1,164, live peak 1,642,416 (budget 2,000,000)
+and 35,253,408 allocated; `OBO_REF=seed/obo tests/port_compare.py`
+1,042/1,042 with the promoted 0.3 seed (no version-gated skip remains);
+`tests/mutate_fork.py` 527/549 + 22 equivalent; `tests/mutate_port.py`
+495/495; `tests/mutate_io.py` 27/27; `tests/mutate_meta.py` 30/31 + 1 and
+9/12 + 3; `tests/port_test.py` 516/516 identical (9 encoder groups);
+`tests/sym_test.py` 27/27 at 0.3; `tests/sym_fuzz.py` 200/200;
+`tests/doc_check.py` 46 examples; `tests/homes_check.py`;
+`tests/homes_edge.py` 1,028 statements, 119 refused by both, 0 differ;
+`tests/meta_test.py` 27 checks; `bench/bench.py` runs to completion (obx built
+for it). Beyond the committed matrix, a 600-combination differential over the
+supported flags and E0 sort fields (including `-r`, the grouping flags, `-F`,
+`-D`/`-f`, the dot filters and restricted long) and a 112-case operand-display
+and `-d` differential over relative, normalized, spaced, absolute and `..`
+operands matched the pinned reference byte-for-byte in stdout, stderr and
+status; the B1/B2 fixes and the self-link/spaced-target dot quirks were then
+verified against the reference on the operand, symlink, group, filter, type,
+extension and long forms, and REFERENCE.md was regenerated with the pinned
+binary (360 probes, including the equal-key `-r` and B1/B2 probes). The
+compiler, runtime and seed are untouched by P4.
+
+**Deviations and limits.** (1) Non-TTY only: on a TTY E0 prints lines with no
+colour until E2. (2) Zero operands mean `.`; eza instead reads stdin names when
+stdin is not a TTY (P0 records this; E0 does not implement it). (3) Restricted
+long only: plain `-l` is an error. (4) Dates are UTC (`TZ=UTC` pinned); eza
+uses local time. (5) `--time-style` accepts only `long-iso` (with `-l`) or
+`long-iso`/`default` (without), a narrowing of eza's accept-and-ignore rule.
+(6) No user/group names, human sizes, device major/minor, xattrs, ACLs or
+invalid-UTF-8 lossy display. (7) The path-based `fs` API keeps the 4096-byte
+joined-path limit and the getdents-to-stat race (design 6.7). (8) Permission
+status follows the P0 probe (0), not the man page's 13. (9) Multiple operands
+are this build's own usage error. (10) `-r` is a stable descending comparison,
+not the design note's vector reversal (which reverses ties); the live
+reference probes settle this and the tie cases are live-only, so no recorded
+byte changes. (11) The long cells live in the `Entry` records (one lazy lstat
+per entry) rather than the design's parallel int arrays; the measured
+10,000-entry peak is recorded and capped, and the user-visible output is
+unchanged. Sort-key arrays are locals of the ordering helper and are freed
+before rendering. (12) Two further design contradictions follow the P0 probe:
+a parented `..` operand keeps its parent prefix (design 7.2 said `.`/`..`
+return themselves), and a synthetic `.` on a symlink-to-directory operand is
+the symlink, with its target reoriented against the operand path itself
+(design 7.3 modeled it as a directory). Both are covered by committed goldens,
+live cases and REFERENCE.md probes.
+
+**Residual risks.** The four live root-target cases (`eza /tmp`,
+`eza -F=always /tmp`, `eza /` and `eza -F=always /`) compare sequential
+listings of the host's directories; on a busy host another process can create
+or remove an entry between the two runs. The harness now re-runs a mismatching
+live-only case once; only when a program's own output changed between the two
+attempts does it skip with "live case unstable: the host listing changed
+between runs" (never a pass, and a stable difference remains a failure). The xattr `@`
+marker is not queried; the harness skips long goldens when the host adds
+ambient xattrs. The memory cap tracks a fixed 10,000-entry fixture; a
+compiler/codegen change that changes the runtime's per-object sizes moves the
+peak and must be re-measured rather than raised (the cap is not the compiler's
+`PEAK_BUDGET`). No E1/E2 feature is present, and the binary is not promoted.
 # Environment metadata: slots 37-38 (P5a, done)
 
 The eza/stdlib design v7 sections 5.8, 8.5 and 11.1, on the promoted 0.3 seed
@@ -4489,8 +4690,9 @@ no runtime-retained program pointer.
 
 **Measured.** `make`; `make tools`; `tests/tools.py --require-reference`
 199/199; `--memory` 2/2; `tests/io_test.py --rt --programs --tools` 0
-failures; `tests/imports.py` 24/24 (10 stdlib importers, 3 tools, 3
-tool-matrix checks, 7 collision/decoy trees, 1 lib set); `tests/stdlib.py`
+failures; `tests/imports.py` 26/26 on the P4-merged tree (10 stdlib importers, 4
+tools, 4 tool-matrix checks, 7 collision/decoy trees, 1 lib set; 24/24
+before the eza tool and its sort-import check joined); `tests/stdlib.py`
 16/16 roots (1 support module); `tests/run_fork.py` 1,157/1,157 (1,147 + 9
 error cases + 1 program); `tests/elf_test.py` (filesz 1, memsz 67,328);
 `tests/port_compare.py` 1,174/1,174 (1,052 flat + 122 module trees), live peak
@@ -4511,6 +4713,16 @@ equivalent, compiler 17/24 caught + 7 equivalent, 0 missed, 0 stale, 0 broken
 both, 0 differ; `bench/bench.py` runs to completion (obx built for it);
 `tests/meta_test.py` 32 checks (19 rt cases + 13 program invocations). Tool
 binaries unchanged (cat 40,961; wc 53,249; sort 53,249 bytes).
+
+**After merging P4 (main `e53a5e8`, eza E0).** The P4 eza gate re-runs under
+the 0.4 compiler and is unchanged: `tests/eza.py --require-reference`
+272/272 against the pinned eza 0.23.3 (sha256 `10457dde...`), `--memory`
+2/2 (10,000-entry live peaks 2,185,008 long / 2,184,384 names, under
+EZA_PEAK_MAX 2,752,512; max RSS 2,432 KiB both, reference about 24.2/12.0
+MB), eza binary 126,977 bytes, reference binary 2,294,768 bytes; the
+reference goldens are unchanged and the E0/P5a features coexist (eza uses
+no `env`/`isatty` yet, and the P5a builtins do not change the produced eza
+image size). All other P5a counts above are unchanged on the merged tree.
 
 **Fixed point without promote.** The seed-built `obo`, the 0.4 compiler's
 stage 2 and stage 3 are all the same 425,985-byte image (sha256

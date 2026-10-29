@@ -15,9 +15,10 @@
 // unchanged: cat's numbering and wc's padding stay byte-identical. These
 // functions take a non-negative int, which is what the tools count and format.
 // The design's wider API (intWidth, writeInt, writeIntRight, writeIntLeft,
-// writeStringPad and octal) belongs to P4: the eza long view needs left- and
-// right-aligned numeric and date cells, and P2 has no caller, so those functions
-// are deliberately deferred there rather than added untested.
+// writeStringPad and octal) was left to P4. P4's eza long view instead uses
+// small private helpers in cmd/eza.obx (right-aligned int/string and
+// left-aligned string cells, plus time::formatLongIso), so those fmt functions
+// remain deliberately deferred rather than added without a caller.
 //
 // modeString implements eza's 10-character permission form for the P4 long
 // view, not ls's: the type character is eza's (regular '.', directory 'd',

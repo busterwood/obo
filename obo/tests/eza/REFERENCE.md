@@ -8,7 +8,7 @@ host manifest record its absolute path and sha256. Absolute-target and
 host-metadata probes are live/shape-only and are not committed goldens
 (design section 9.4).
 
-Reference: ` /tmp/obo-stdlib-v2-eza-src/eza `
+Reference: ` /tmp/eza-install-sim-F2odpb/eza `
 
 ## Host manifest
 
@@ -22,10 +22,10 @@ Reference: ` /tmp/obo-stdlib-v2-eza-src/eza `
 - filesystem: ` ext4 `
 - environment pin: ` PATH=/usr/bin:/bin LC_ALL=C LANG=C LANGUAGE=C TZ=UTC; HOME/TMPDIR per probe; all section 9.5 variables unset unless set `
 - stdin: ` /dev/null unless the probe supplies stdin bytes (group 18) `
-- reference path: ` /tmp/obo-stdlib-v2-eza-src/eza `
+- reference path: ` /tmp/eza-install-sim-F2odpb/eza `
 - reference sha256: ` 10457dde35808517d09bcd3bfb6bc386000d06c2126e34b9071e09470a8f7cd8 `
 - fixture capabilities: ` {'euid': 1000, 'umask': 18, 'pre_epoch': True, 'xattr': True, 'invalid_utf8': True, 'fifo': True, 'socket': True, 'hardlink': True, 'symlink': True, 'deep_path': True, 'nonroot': True, 'dev_full': True, 'ambient_xattr': False} `
-- dt-unknown candidates: ` {'/proc': {'entries': 101, 'unknown': 0, 'sample': []}, '/sys': {'entries': 12, 'unknown': 0, 'sample': []}, '/dev/shm': {'entries': 7, 'unknown': 0, 'sample': []}, '/run': {'entries': 34, 'unknown': 0, 'sample': []}} `
+- dt-unknown candidates: ` {'/proc': {'entries': 107, 'unknown': 0, 'sample': []}, '/sys': {'entries': 12, 'unknown': 0, 'sample': []}, '/dev/shm': {'entries': 7, 'unknown': 0, 'sample': []}, '/run': {'entries': 34, 'unknown': 0, 'sample': []}} `
 
 ## 1. Version, help and binary identity
 
@@ -761,12 +761,12 @@ b''
 - argv: ` ['<ref>', '-aa', '--sort=extension', '..'] `
 - env extras: ` {} `
 - exit: ` 0 `
-- stdout sha256: ` c59371117dbab74fc819f5dd10d4597c75a56af0fd13a46ad72968ca2ee65a98 `
+- stdout sha256: ` f5bd7aa4a25bfcb234748fcf47638bad73f74e6ca513077c75b39bde12849528 `
 - stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
 - stdout bytes:
 
 ```python
-b'.\n..\nabsolute\nempty\next\ngrid1\ngrid2\ngrid10\ngrid100\ngridlong10\ngridlong100\nhard\ninvalid\nlinks\nlocked\nlong\nmany\nmixed\nmodes\nnames\none\nonedir\noperands\nquoting\nsizes\ntimes\ntree\nxattr\n'
+b'.\n..\nabsolute\nempty\next\ngrid1\ngrid2\ngrid10\ngrid100\ngridlong10\ngridlong100\nhard\ninvalid\nlinks\nlocked\nlong\nmany\nmixed\nmodes\nnames\none\nonedir\noperands\nquoting\nselflink\nsizes\ntimes\ntree\nxattr\n'
 ```
 
 - stderr bytes:
@@ -1233,12 +1233,12 @@ b''
 - argv: ` ['<ref>', '..'] `
 - env extras: ` {} `
 - exit: ` 0 `
-- stdout sha256: ` 640c3448dd63ccff90072a752e291c220df26cab10cbb4cb438a58d6d2fa515c `
+- stdout sha256: ` 8bcd51df83dbfa2546f139d575ecab712839d3d8a07af87c015b83086ee819ac `
 - stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
 - stdout bytes:
 
 ```python
-b'absolute\nempty\next\ngrid1\ngrid2\ngrid10\ngrid100\ngridlong10\ngridlong100\nhard\ninvalid\nlinks\nlocked\nlong\nmany\nmixed\nmodes\nnames\none\nonedir\noperands\nquoting\nsizes\ntimes\ntree\nxattr\n'
+b'absolute\nempty\next\ngrid1\ngrid2\ngrid10\ngrid100\ngridlong10\ngridlong100\nhard\ninvalid\nlinks\nlocked\nlong\nmany\nmixed\nmodes\nnames\none\nonedir\noperands\nquoting\nselflink\nsizes\ntimes\ntree\nxattr\n'
 ```
 
 - stderr bytes:
@@ -1368,6 +1368,232 @@ b''
 ```
 
 - note: ` live-only operand display / `
+
+### d_sub_dotdot
+
+- cwd: ` <root>/operands `
+- argv: ` ['<ref>', '-d', 'sub/..'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 9d44529741e78b2468b530e37629bcef9a4bd34a55f456a95a00cd02f8c8fbb8 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'sub/..\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` B1: a .. operand keeps its parent prefix `
+
+### d_spaced_dotdot
+
+- cwd: ` <root>/operands `
+- argv: ` ['<ref>', '-d', 'x y/..'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` eab15134bffa509f39bc4ab92150c72439a2da7dea36b85d842a9dacb5f1a369 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b"'x y'/..\n"
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` B1: 'x y'/.. with the whole parent escaped once `
+
+### d_dot
+
+- cwd: ` <root>/operands `
+- argv: ` ['<ref>', '-d', '.'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` eb4bd64f7014f7d42e9d358035802242741b974e8dfcd37c59f9c21ce29d781e `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'.\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+### d_dotdot
+
+- cwd: ` <root>/operands `
+- argv: ` ['<ref>', '-d', '..'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` e8e2bfb9088b7dec0ac16ade695749de33d1d6c2cd492ca888ee688f5b9399d4 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'..\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+### d_dot_slash_dotdot
+
+- cwd: ` <root>/operands `
+- argv: ` ['<ref>', '-d', './..'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 5d10dec3a231154c0e86946f3e8520d466df6a1ea721721cb166d7a2a96a2451 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'./..\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+### d_sub_dotdot_slash
+
+- cwd: ` <root>/operands `
+- argv: ` ['<ref>', '-d', 'sub/../'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 9d44529741e78b2468b530e37629bcef9a4bd34a55f456a95a00cd02f8c8fbb8 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'sub/..\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` a trailing slash is dropped from the display `
+
+### d_root_dotdot
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-d', '/..'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 99f79c8b0d19078ba10d1fd7a2388044d7f5c3755ef439baea92583130cba45a `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'/..\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+### d_root_dotdot_dotdot
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-d', '/../..'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` b8a4b12668b84849d6c5a5c49d34a20ac04e8c1beb19c84cdaeb120c9f8b81fb `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'/../..\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+### d_tmp_dotdot
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-d', '/tmp/..'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 7dfb7d86a9bd2997a68d4ae1eae25124c74f701374f290d29c4f8a7f7e87e56f `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'/tmp/..\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+### d_slash_slash
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-d', '//'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` f465c3739385890c221dff1a05e578c6cae0d0430e46996d319db7439f884336 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'/\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+### d_slash_slash_dotdot
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-d', '//..'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 99f79c8b0d19078ba10d1fd7a2388044d7f5c3755ef439baea92583130cba45a `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'/..\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
 
 ## 5. Default name order and comparator ties
 
@@ -1621,6 +1847,50 @@ b''
 
 - note: ``live tie: real ` .` beside synthetic .``
 
+### tie_Aa_reverse
+
+- cwd: ` <root>/names/tie_Aa `
+- argv: ` ['<ref>', '-r', '.'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 2fa9938a05497ce89297338ea11764cf46defe36d7d7bae32f964ac843e31cc1 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'a\nA\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` -r keeps natcmpFold-equal A/a in readdir order `
+
+### tie_pic_reverse
+
+- cwd: ` <root>/names/tie_pic `
+- argv: ` ['<ref>', '-r', '.'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 9a4fe679b5035e66bc096d6f108d0243eb2f6631691123002d1fcabe45d17171 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b"'pic 4'\npic4\n"
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` -r keeps pic4/pic 4 (equal under both) in readdir order `
+
 ### group_dirs_first
 
 - cwd: ` <root> `
@@ -1804,6 +2074,50 @@ b''
 ```
 
 - note: ` live/shape-only: dot keys are host metadata `
+
+### size_reverse_ties
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '--sort=size', '-r', 'mixed'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 35d708d6e93c058839680745f3ba7a8ed3b52596b1736bd58a062d3c747e6dd2 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b"dir\nsub.dir\nprog\n--x\nspaced -> 'tar get'\n'tar get'\nbroken -> missing\ngamma.txt\nalpha\nlink -> alpha\n-\nBeta\ndirlink -> dir\nnoexec\npipe\nsock\n"
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` -r is stable descending: equal sizes keep readdir order `
+
+### modified_reverse_ties
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '--sort=modified', '-r', 'mixed'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 15652da2845d28e129c05ea64e9ca4894f582cb85f9c7ba0ca4d53a090861b5c `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b"link -> alpha\nspaced -> 'tar get'\ngamma.txt\n-\nBeta\npipe\nsock\ndirlink -> dir\nnoexec\n'tar get'\nalpha\n--x\nprog\ndir\nbroken -> missing\nsub.dir\n"
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` -r keeps comparator-equal mtimes in readdir order `
 
 ### modified
 
@@ -4699,6 +5013,266 @@ b"'operands/x y/sub'/f\n"
 b''
 ```
 
+### aa_symlink_dir
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-aa', 'tree/dirlink'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` c7f39d79325fe5065bee1688666592b25b69ad0175cbd873d422a5d0e8b866c9 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'. -> d1\n..\nb.txt\nd2\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` B2: the synthetic . is the symlink operand, . -> d1 `
+
+### aa_symlink_dir_F
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-aa', '-F=always', 'tree/dirlink'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 84b61930a5ab145d5dfceeaa74f0c1c3300c80c0be88d02fd3ca936ada2a15a8 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'. -> d1\n../\nb.txt\nd2/\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` B2: no marker on the dot target when the operand-base stat fails `
+
+### aa_symlink_dir_D
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-aa', '-D', 'tree/dirlink'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` b8547248031caf04d79bd4a848b3351ea8e1219404b915d5c6f6e73d3dcee70d `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'..\nd2\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` B2: the dot is filtered by its lstat kind (link excluded) `
+
+### aa_symlink_dir_f
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-aa', '-f', 'tree/dirlink'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` c880c199d0db1b5a2018f30227dacea822699f116f2968637777ed89bf499a94 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'b.txt\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+### aa_symlink_dir_group
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-aa', '--group-directories-first', 'tree/dirlink'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 6067d9b210a1797c188248987c55f852bc942c09afd832ebe85654c306edf31d `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'..\nd2\n. -> d1\nb.txt\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` B2: a link dot groups as a file here `
+
+### aa_symlink_dir_type
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-aa', '--sort=type', 'tree/dirlink'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` e74c788b2a02e64fcc3d6e38f873fdb41dec17efa2592bf002acd19a754e3932 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'..\nd2\nb.txt\n. -> d1\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` B2: the dot has link rank `
+
+### aa_symlink_dir_long
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-aa', '-l', 'tree/dirlink'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 1e7159b7af6cc487d2e9fb6376c7a0444779f9b08b4215a2508a5244e7a9fabc `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'lrwxrwxrwx - chris 13 Sep  2020 . -> d1\ndrwxr-xr-x - chris 13 Sep  2020 ..\n.rw-r--r-- 2 chris 13 Sep  2020 b.txt\ndrwxr-xr-x - chris 13 Sep  2020 d2\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` B2: the dot row shows the symlink cells and target `
+
+### aa_symlink_dir_slash
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-aa', 'tree/dirlink/'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` df79992f90a456b65e0e61e96634786680ae3d463ee0363e4c0645e053db89f2 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'.\n..\nb.txt\nd2\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` B2: a trailing slash makes the dot a directory `
+
+### aa_symlink_dir_realdir
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-aa', 'links/realdirlink'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` ea650ccc624eddcb187c3b3b288e7c8bf771ffabaa0ec7e5f6356dcfefc7f0bb `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'. -> realdir\n..\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` B2: empty target, dot rows only `
+
+### aa_symlink_dir_realdir_F
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-aa', '-F=always', 'links/realdirlink'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 9e7603a36dde7d2fd903b603bec0b15fd8e61904ad61711786786a9329b1d1c0 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'. -> realdir\n../\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+### aa_selflink
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-aa', 'selflink/d/self'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 66dfd5ff8566959ac797d0b9c8763c84a93ba0dff14c7233cfce056612307589 `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'. -> .\n..\nf\nself -> .\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` B2: . -> . resolves with the operand as the target base `
+
+### aa_selflink_F
+
+- cwd: ` <root> `
+- argv: ` ['<ref>', '-aa', '-F=always', 'selflink/d/self'] `
+- env extras: ` {} `
+- exit: ` 0 `
+- stdout sha256: ` 5276ec53ca9defe10482f612ac041436b2c3c49bb8543a62d5fdb0fb790c2e2c `
+- stderr sha256: ` e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 `
+- stdout bytes:
+
+```python
+b'. -> ./\n../\nf\nself -> ./\n'
+```
+
+- stderr bytes:
+
+```python
+b''
+```
+
+- note: ` B2: the self-link target is marked `
+
 ## 12. Colour and icons
 
 ### icons_default
@@ -6916,6 +7490,50 @@ implement stdin file-name mode; no no-operand case is in the diff matrix
 (`default/cwd_mixed` was removed) and the directory-listing intent is covered
 with explicit `.` operands (`default/cwd_dot` and the tie/pty probes). The
 stdin probes stay as evidence. The design note is not edited.
+
+### A parented `..` operand keeps its parent prefix (design 7.2)
+
+Design 7.2 says `.` and `..` operands display as themselves. The pinned binary
+instead applies the same parent-prefix rule as any other operand: `-d sub/..`
+prints `sub/..`, `-d 'x y/..'` prints `'x y'/..`, `-d /..` prints `/..`, and
+`-d /../..` prints `/../..`; only an empty parent (`-d ..`, `-d .`, `-d ./`)
+prints the bare name. Evidence: `dirs/d_sub_dotdot`, `dirs/d_spaced_dotdot`,
+`dirs/d_dot`, `dirs/d_dotdot`, `dirs/d_dot_slash_dotdot`,
+`dirs/d_sub_dotdot_slash`, `dirs/d_root_dotdot`,
+`dirs/d_root_dotdot_dotdot`, `dirs/d_tmp_dotdot`, `dirs/d_slash_slash` and
+`dirs/d_slash_slash_dotdot`. P4 implements the probe rule.
+
+### The synthetic `.` on a symlink-to-directory operand is the link (design 7.3)
+
+Design 7.3 models the synthetic `.` row as a directory whose path is the
+operand. The pinned binary instead reads `lstat(operand)`, so for a
+symlink-to-directory operand the `.` row is the symlink: `-aa tree/dirlink`
+prints `. -> d1` followed by the target directory's children, type sorting
+gives the dot the link rank (`..`, `d2`, `b.txt`, `. -> d1`), `-D` excludes it
+and `-f` excludes both dots, and the restricted long row is `lrwxrwxrwx ... .
+-> d1`. `..` is `lstat(join(operand,".."))`.
+
+Target display and classification reorient the raw target against the operand
+path itself, not its parent: `-aa links/realdirlink` prints `. -> realdir`
+with no marker under `-F=always` (the operand-base stat fails), while
+`-aa selflink/d/self` prints `. -> .` and marks/groups it as a directory, and
+an absolute or `self`-style target resolves and is marked. A trailing slash
+resolves the operand first, so `.` is then a directory row. Evidence:
+`symlinks/aa_symlink_dir*`, `symlinks/aa_selflink*`, plus the P4 committed
+counterparts `default/aa_symlink_dir*`, `names/aa_*_symlink_dir`,
+`sortkeys/*_aa_symlink_dir`, `classify/F_aa_*` and `long/aa_*`. P4 implements
+the probe rule.
+
+### `-r` is a stable descending comparison (design 5.3/7.5)
+
+Design 5.3/7.5 say eza sorts ascending and then reverses the whole vector,
+which would reverse ties. The pinned binary compares descending with a stable
+sort instead: comparator-equal entries keep their readdir order. Evidence:
+`sort/size_reverse_ties` and `sort/modified_reverse_ties` on the mixed tree
+(equal sizes/mtimes), and `names/tie_Aa_reverse`/`names/tie_pic_reverse`
+(fold-tied and both-comparator-tied names). Distinct keys sort descending
+either way, so the committed goldens (all tie-free) are unchanged. P4 uses a
+stable descending comparison and keeps tie cases live-only.
 
 ### E0 matrix exclusions (deliberate; P4 must not silently re-add these)
 

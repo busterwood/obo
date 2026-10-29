@@ -9,11 +9,13 @@ errors, as needed), so the compiler compiles those modules
 dependency-first and writes their .sym files. The rule within a file is still
 declare-before-use.
 
-The default tools are cat, wc and sort. Paths resolve to absolute paths, so the
-builder's behavior does not depend on the caller's cwd: ROOT is the directory
-holding this script's tools/ (that is, obo/); --obo defaults to $OBO or
-ROOT/obo, --rt to ROOT, --out to ROOT/build/tools. The built binaries live under
---out, and every requested tool must compile for the exit status to be 0.
+The default tools are cat, wc and sort; P4 adds eza to the buildable names
+(TOOLS and EZA are separate, so `make tools` does not need eza's newer library
+dependencies and `make eza` builds only eza). Paths resolve to absolute paths,
+so the builder's behavior does not depend on the caller's cwd: ROOT is the
+directory holding this script's tools/ (that is, obo/); --obo defaults to $OBO
+or ROOT/obo, --rt to ROOT, --out to ROOT/build/tools. The built binaries live
+under --out, and every requested tool must compile for the exit status to be 0.
 
 Every build gets its own symbol directory, <out>/sym, which the builder creates:
 symbol-file writes truncate in place, so a shared writable directory across
@@ -45,8 +47,11 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../obo
 TOOLS = ('cat', 'wc', 'sort')
+EZA = ('eza',)
+ALL = TOOLS + EZA
 SRCDIR = 'cmd'                       # the tool roots live in obo/cmd/
-LIB_MODULES = ('io.obx', 'strings.obx', 'fmt.obx', 'errors.obx', 'fs.obx', 'env.obx')
+LIB_MODULES = ('io.obx', 'strings.obx', 'fmt.obx', 'errors.obx', 'fs.obx',
+               'paths.obx', 'sort.obx', 'cli.obx', 'time.obx', 'env.obx')
 
 PROBE = '''// phase-2 builtin probe: compile only, never run
 fn main() {
@@ -200,8 +205,8 @@ def build(names, out, obo, rt):
     if not names:
         raise BuildError("no tools requested")
     for name in names:
-        if name not in TOOLS:
-            raise BuildError(f"unknown tool '{name}' (choose from {', '.join(TOOLS)})")
+        if name not in ALL:
+            raise BuildError(f"unknown tool '{name}' (choose from {', '.join(ALL)})")
     for name in names:
         _read(os.path.join(ROOT, SRCDIR, name + '.obx'))
         for module in LIB_MODULES:

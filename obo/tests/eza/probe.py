@@ -207,6 +207,20 @@ def dirs_probes():
         _p('dirs', 'd_sub_link', '-d', 'sub/link', cwd='operands'),
         _p('dirs', 'd_sub_dirlink', '-d', 'sub/dirlink', cwd='operands'),
         _p('dirs', 'd_root', '-d', '/', note='live-only operand display /'),
+        _p('dirs', 'd_sub_dotdot', '-d', 'sub/..', cwd='operands',
+           note='B1: a .. operand keeps its parent prefix'),
+        _p('dirs', 'd_spaced_dotdot', '-d', 'x y/..', cwd='operands',
+           note="B1: 'x y'/.. with the whole parent escaped once"),
+        _p('dirs', 'd_dot', '-d', '.', cwd='operands'),
+        _p('dirs', 'd_dotdot', '-d', '..', cwd='operands'),
+        _p('dirs', 'd_dot_slash_dotdot', '-d', './..', cwd='operands'),
+        _p('dirs', 'd_sub_dotdot_slash', '-d', 'sub/../', cwd='operands',
+           note='a trailing slash is dropped from the display'),
+        _p('dirs', 'd_root_dotdot', '-d', '/..'),
+        _p('dirs', 'd_root_dotdot_dotdot', '-d', '/../..'),
+        _p('dirs', 'd_tmp_dotdot', '-d', '/tmp/..'),
+        _p('dirs', 'd_slash_slash', '-d', '//'),
+        _p('dirs', 'd_slash_slash_dotdot', '-d', '//..'),
     ]
 
 
@@ -229,6 +243,10 @@ def names_probes():
            note='live tie: a/ a under both comparators'),
         _p('names', 'tie_dot', '-aa', '.', cwd='names/tie_dot',
            note='live tie: real ` .` beside synthetic .'),
+        _p('names', 'tie_Aa_reverse', '-r', '.', cwd='names/tie_Aa',
+           note='-r keeps natcmpFold-equal A/a in readdir order'),
+        _p('names', 'tie_pic_reverse', '-r', '.', cwd='names/tie_pic',
+           note='-r keeps pic4/pic 4 (equal under both) in readdir order'),
         _p('names', 'group_dirs_first', '--group-directories-first', 'mixed'),
         _p('names', 'group_dirs_first_reverse', '--group-directories-first',
            '-r', 'mixed'),
@@ -245,6 +263,10 @@ def sort_probes():
         _p('sort', 'size_reverse', '--sort=size', '-r', 'sizes'),
         _p('sort', 'size_name_only_aa', '-aa', '--sort=size', 'sizes',
            note='live/shape-only: dot keys are host metadata'),
+        _p('sort', 'size_reverse_ties', '--sort=size', '-r', 'mixed',
+           note='-r is stable descending: equal sizes keep readdir order'),
+        _p('sort', 'modified_reverse_ties', '--sort=modified', '-r', 'mixed',
+           note='-r keeps comparator-equal mtimes in readdir order'),
         _p('sort', 'modified', '--sort=modified', 'times'),
         _p('sort', 'time', '--sort=time', 'times'),
         _p('sort', 'modified_reverse', '--sort=modified', '-r', 'times'),
@@ -455,6 +477,32 @@ def symlinks_probes():
            note="spaced operand parent: 'x y/sub'/link -> target*"),
         _p('symlinks', 'spaced_parent_link_long', '-l', 'operands/x y/sub/link'),
         _p('symlinks', 'spaced_parent_file', 'operands/x y/sub/f'),
+        _p('symlinks', 'aa_symlink_dir', '-aa', 'tree/dirlink',
+           note='B2: the synthetic . is the symlink operand, . -> d1'),
+        _p('symlinks', 'aa_symlink_dir_F', '-aa', '-F=always',
+           'tree/dirlink',
+           note='B2: no marker on the dot target when the operand-base stat '
+                'fails'),
+        _p('symlinks', 'aa_symlink_dir_D', '-aa', '-D', 'tree/dirlink',
+           note='B2: the dot is filtered by its lstat kind (link excluded)'),
+        _p('symlinks', 'aa_symlink_dir_f', '-aa', '-f', 'tree/dirlink'),
+        _p('symlinks', 'aa_symlink_dir_group', '-aa',
+           '--group-directories-first', 'tree/dirlink',
+           note='B2: a link dot groups as a file here'),
+        _p('symlinks', 'aa_symlink_dir_type', '-aa', '--sort=type',
+           'tree/dirlink', note='B2: the dot has link rank'),
+        _p('symlinks', 'aa_symlink_dir_long', '-aa', '-l', 'tree/dirlink',
+           note='B2: the dot row shows the symlink cells and target'),
+        _p('symlinks', 'aa_symlink_dir_slash', '-aa', 'tree/dirlink/',
+           note='B2: a trailing slash makes the dot a directory'),
+        _p('symlinks', 'aa_symlink_dir_realdir', '-aa',
+           'links/realdirlink', note='B2: empty target, dot rows only'),
+        _p('symlinks', 'aa_symlink_dir_realdir_F', '-aa', '-F=always',
+           'links/realdirlink'),
+        _p('symlinks', 'aa_selflink', '-aa', 'selflink/d/self',
+           note='B2: . -> . resolves with the operand as the target base'),
+        _p('symlinks', 'aa_selflink_F', '-aa', '-F=always',
+           'selflink/d/self', note='B2: the self-link target is marked'),
     ]
 
 
@@ -1090,6 +1138,50 @@ implement stdin file-name mode; no no-operand case is in the diff matrix
 (`default/cwd_mixed` was removed) and the directory-listing intent is covered
 with explicit `.` operands (`default/cwd_dot` and the tie/pty probes). The
 stdin probes stay as evidence. The design note is not edited.
+
+### A parented `..` operand keeps its parent prefix (design 7.2)
+
+Design 7.2 says `.` and `..` operands display as themselves. The pinned binary
+instead applies the same parent-prefix rule as any other operand: `-d sub/..`
+prints `sub/..`, `-d 'x y/..'` prints `'x y'/..`, `-d /..` prints `/..`, and
+`-d /../..` prints `/../..`; only an empty parent (`-d ..`, `-d .`, `-d ./`)
+prints the bare name. Evidence: `dirs/d_sub_dotdot`, `dirs/d_spaced_dotdot`,
+`dirs/d_dot`, `dirs/d_dotdot`, `dirs/d_dot_slash_dotdot`,
+`dirs/d_sub_dotdot_slash`, `dirs/d_root_dotdot`,
+`dirs/d_root_dotdot_dotdot`, `dirs/d_tmp_dotdot`, `dirs/d_slash_slash` and
+`dirs/d_slash_slash_dotdot`. P4 implements the probe rule.
+
+### The synthetic `.` on a symlink-to-directory operand is the link (design 7.3)
+
+Design 7.3 models the synthetic `.` row as a directory whose path is the
+operand. The pinned binary instead reads `lstat(operand)`, so for a
+symlink-to-directory operand the `.` row is the symlink: `-aa tree/dirlink`
+prints `. -> d1` followed by the target directory's children, type sorting
+gives the dot the link rank (`..`, `d2`, `b.txt`, `. -> d1`), `-D` excludes it
+and `-f` excludes both dots, and the restricted long row is `lrwxrwxrwx ... .
+-> d1`. `..` is `lstat(join(operand,".."))`.
+
+Target display and classification reorient the raw target against the operand
+path itself, not its parent: `-aa links/realdirlink` prints `. -> realdir`
+with no marker under `-F=always` (the operand-base stat fails), while
+`-aa selflink/d/self` prints `. -> .` and marks/groups it as a directory, and
+an absolute or `self`-style target resolves and is marked. A trailing slash
+resolves the operand first, so `.` is then a directory row. Evidence:
+`symlinks/aa_symlink_dir*`, `symlinks/aa_selflink*`, plus the P4 committed
+counterparts `default/aa_symlink_dir*`, `names/aa_*_symlink_dir`,
+`sortkeys/*_aa_symlink_dir`, `classify/F_aa_*` and `long/aa_*`. P4 implements
+the probe rule.
+
+### `-r` is a stable descending comparison (design 5.3/7.5)
+
+Design 5.3/7.5 say eza sorts ascending and then reverses the whole vector,
+which would reverse ties. The pinned binary compares descending with a stable
+sort instead: comparator-equal entries keep their readdir order. Evidence:
+`sort/size_reverse_ties` and `sort/modified_reverse_ties` on the mixed tree
+(equal sizes/mtimes), and `names/tie_Aa_reverse`/`names/tie_pic_reverse`
+(fold-tied and both-comparator-tied names). Distinct keys sort descending
+either way, so the committed goldens (all tie-free) are unchanged. P4 uses a
+stable descending comparison and keeps tie cases live-only.
 
 ### E0 matrix exclusions (deliberate; P4 must not silently re-add these)
 
