@@ -105,10 +105,12 @@ branch (wall time and RSS on this review host); the `port_compare` gate here
 measures 1,645,424 live and 35,359,504 allocated, both far under the
 2,000,000-byte budget. P3's four builtin branches raised the peak by 6,240
 bytes from 1,636,176, well inside the cut order of design section 6.8; P5a's
-two branches, the env module and the longer compiler source raised it by
-3,008 more, still 354,576 under the budget, so no slot was cut. The
-tools work did not change the compiler, runtime or seed; their runtime is
-included in the tool binary sizes above (P3 and P5a leave them unchanged).
+two builtin branches and the longer compiler source raised it by 3,008 more
+(the figure depends on the compiler source path; the lib modules are not
+compiled into the compiler), still 354,576 under the budget, so no slot was
+cut. The tools work did not change the compiler, runtime or seed; their
+runtime is included in the tool binary sizes above (P3 and P5a leave them
+unchanged).
 Whole modules are compiled into each tool, so the figures track the imported
 module set: the pre-P1 tree (`265564c`) measured cat 36,865 / wc 40,961 / sort
 45,057, the P1+P2a base (`ec244e0`) measured 49,153 / 49,153 / 53,249, and

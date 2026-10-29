@@ -15,6 +15,7 @@
 // expect: absent value blank
 // expect: getOr fallback
 // expect: getOr present hello
+// expect: getOr empty blank
 // expect: copies independent
 // expect: builtin present hello
 // expect: builtin absent nil
@@ -66,6 +67,8 @@ fn main() {
     println("getOr fallback")
     if env::getOr("OBO_META_ENV_PRESENT", "fallback") != "hello" { println("getOr present"); exit(1) }
     println("getOr present hello")
+    if env::getOr("OBO_META_ENV_EMPTY", "fallback") != "" { println("getOr empty fallback"); exit(1) }
+    println("getOr empty blank")
 
     // each get is a fresh owned copy: changing one does not change the other
     let x = env::get("OBO_META_ENV_OWNED")

@@ -4480,7 +4480,10 @@ no runtime-retained program pointer.
   fixes the environment for every case and adds `tests/meta/env_api.obx` and
   `env_shadow.obx` (the B3 orders), `tests/run/env.obx` and
   `tests/errors/env.obx`. `mutate_meta.py` gains 14 runtime/entry.S and 12
-  compiler mutants and replays both new corpora in both runners.
+  compiler mutants: the compiler runner replays `tests/run/env.obx` and
+  `tests/errors/env.obx`, and the runtime runner judges the mutated runtime
+  with `rt_meta_test.c` and the `tests/meta` corpus (including
+  `env_api.obx` and `env_shadow.obx`).
 
 ## Gates (this branch)
 
@@ -4524,11 +4527,20 @@ compiler source is 10,516 lines / 385,978 bytes (P3: 10,492 / 384,760).
   `/dev/null`, a directory and a closed descriptor as the false cases. That is
   the design's portable rule; the master is deliberately not asserted.
 - The pre-promote seed comparison is 1,040/1,040 rather than the P3 1,042: the
-  0.3 seed cannot compile `io.obx` once it calls isatty, so `io_reader` and
-  `io_writer` join the four P5a files in the version-gated seed skip. The
-  default comparison always covers them, and a temporary 0.4 seed copy
-  compares the whole flat corpus (1,052/1,052), so the promote loses nothing.
+  0.3 seed cannot parse `io.obx` once it calls isatty, so 4 files / 12 cases
+  are version-gated out of it: `tests/run/env.obx` (1 case),
+  `tests/errors/env.obx` (9), and `tests/run/io_reader.obx` (1) and
+  `tests/run/io_writer.obx` (1), which import `io.obx`. The default
+  comparison always covers them, and a temporary 0.4 seed copy compares the
+  whole flat corpus (1,052/1,052), so the promote loses nothing.
 - A name containing `=` cannot be passed through `subprocess`'s env mapping
   (Python rejects it), so the `=` rule and first-match order are tested with
   the crafted `envp` in `rt_meta_test.c`; the fixed real environment covers
   present, empty and absent.
+- `tests/run/env.obx` shares its file name with the library module it imports.
+  run_fork, port_compare and mutate_meta copy each root to a unique file
+  name before compiling, so the import resolves to `lib/env.obx` and there
+  is no cycle; the two meta_test roots are named `env_api`/`env_shadow`
+  for the same reason. `env_base` stays a non-static global, as
+  `rt_entry_sp` is; the image is a byte concatenation, so no program
+  symbol can collide with it.
