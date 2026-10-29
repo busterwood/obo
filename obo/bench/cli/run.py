@@ -98,8 +98,15 @@ def say(msg):
 
 
 def child_env():
-    env = dict(os.environ)
+    """A predictable child environment: the caller's environment without the
+    variables that change obo runtime behavior (OBO_CHECK, OBO_STATS, OBX_GC,
+    ...), Python startup (PYTHONPATH, PYTHONHOME, ...) or GNU tool parsing
+    (POSIXLY_CORRECT), with the C locale and UTC."""
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(('OBO_', 'OBX_', 'PYTHON'))
+           and key != 'POSIXLY_CORRECT'}
     env['LC_ALL'] = 'C'
+    env['LANG'] = 'C'
     env['TZ'] = 'UTC'
     return env
 
@@ -134,7 +141,11 @@ def wait_deadline(p, timeout):
 
 
 def run_quiet(cmd, what, timeout):
-    """One timed run: no pipes, no polling. Returns the exit status."""
+    """One timed run: no pipes, no polling. Returns the exit status.
+
+    Any interruption (the deadline, Ctrl-C) kills and reaps the child before
+    the exception leaves, so an aborted run does not leave a benchmark process
+    behind."""
     try:
         p = subprocess.Popen(cmd, env=ENV, stdin=DEVNULL,
                              stdout=DEVNULL, stderr=DEVNULL)
@@ -145,10 +156,23 @@ def run_quiet(cmd, what, timeout):
     try:
         return wait_deadline(p, timeout)
     except Deadline:
-        p.kill()
-        p.wait()
+        kill_wait(p)
         raise BenchError(f"{what}: timed out after {timeout} s: "
                          f"{shellish(cmd)}") from None
+    except BaseException:
+        kill_wait(p)
+        raise
+
+
+def kill_wait(p):
+    try:
+        p.kill()
+    except OSError:
+        pass
+    try:
+        p.wait()
+    except OSError:
+        pass
 
 
 def shellish(cmd):
@@ -213,17 +237,28 @@ def rel(path):
 
 # --------------------------------------------------------------------- build
 
-def build_compiler():
-    """make -C obo obo (the repo's own rule); returns (path, --version line)."""
+BUILD_TIMEOUT = 600
+
+
+def build_run(cmd, what, timeout=BUILD_TIMEOUT):
+    """Run a build or compile command with a deadline; failures are BenchErrors."""
     try:
-        p = subprocess.run(['make', '-C', FORK, 'obo'], env=ENV,
-                           capture_output=True, text=True)
+        p = subprocess.run(cmd, env=ENV, stdin=DEVNULL, capture_output=True,
+                           text=True, timeout=timeout)
     except OSError as e:
-        raise BenchError(f"cannot run make: {e}")
+        raise BenchError(f"{what}: cannot run {cmd[0]}: {e}")
+    except subprocess.TimeoutExpired:
+        raise BenchError(f"{what}: timed out after {timeout} s: {shellish(cmd)}")
     if p.returncode != 0:
         detail = (p.stderr or p.stdout).strip()
-        raise BenchError("building the compiler failed: make -C obo obo"
+        raise BenchError(f"{what}: exit {p.returncode}: {shellish(cmd)}"
                          + (f"\n{detail}" if detail else ""))
+    return p
+
+
+def build_compiler():
+    """make -C obo obo (the repo's own rule); returns (path, --version line)."""
+    build_run(['make', '-C', FORK, 'obo'], 'make -C obo obo')
     exe = os.path.join(FORK, 'obo')
     if not os.path.isfile(exe) or not os.access(exe, os.X_OK):
         raise BenchError(f"make reported success but {rel(exe)} is not executable")
@@ -236,14 +271,10 @@ def build_tools(tmp, compiler):
     built = {}
     for names, sub in ((('wc', 'sort'), 'tools'), (('eza',), 'eza')):
         out = os.path.join(tmp, 'build', sub)
-        p = subprocess.run(
+        build_run(
             [sys.executable, os.path.join(FORK, 'tools', 'build_tools.py'),
              *names, '--out', out, '--obo', compiler, '--rt', FORK],
-            env=ENV, capture_output=True, text=True)
-        if p.returncode != 0:
-            detail = (p.stderr or p.stdout).strip()
-            raise BenchError(f"building {' '.join(names)} failed"
-                             + (f"\n{detail}" if detail else ""))
+            f"building {' '.join(names)}")
         for name in names:
             exe = os.path.join(out, name)
             if not os.path.isfile(exe):
@@ -262,13 +293,8 @@ def compile_programs(tmp, compiler):
     for name in PROGRAMS:
         src = script(name + '.obx')
         exe = os.path.join(bindir, name)
-        p = subprocess.run([compiler, src, '-o', exe, '--rt', FORK,
-                            '--sym-dir', symdir],
-                           env=ENV, capture_output=True, text=True)
-        if p.returncode != 0:
-            detail = (p.stderr or p.stdout).strip()
-            raise BenchError(f"compiling {rel(src)} failed"
-                             + (f"\n{detail}" if detail else ""))
+        build_run([compiler, src, '-o', exe, '--rt', FORK, '--sym-dir', symdir],
+                  f"compiling {rel(src)}")
         if not os.path.isfile(exe):
             raise BenchError(f"the compiler reported success but produced no {rel(exe)}")
         exes[name] = exe
@@ -483,7 +509,7 @@ def build_groups(sizes, exes, tools, fixtures, py, gnu, eza):
     obo_loop = child(loop_cmd, 'obo loopsum', capture=True)
     py_loop = child(py_loop_cmd, 'python3 loopsum', capture=True)
     expect_equal('sum loop: obo vs python', obo_loop, py_loop)
-    loop_group = Group(f'sum 0..{n:,} explicit loop', [
+    loop_group = Group(f'sum of integers below {n:,} (explicit loop)', [
         Impl('obo loopsum', loop_cmd, heavy),
         Impl('python3 loopsum.py', py_loop_cmd, heavy),
     ])
@@ -645,7 +671,8 @@ def make_header(args, sizes, compiler_version, py, py_version, cpu, fixtures):
         'reps_heavy': sizes['reps_heavy'],
         'startup_runs': sizes['startup_runs'],
         'startup_batches': sizes['startup_batches'],
-        'environment': 'LC_ALL=C TZ=UTC; stdout to /dev/null; stderr checked',
+        'environment': 'LC_ALL=C LANG=C TZ=UTC; OBO_*/OBX_*/PYTHON*/'
+                       'POSIXLY_CORRECT unset; timed stdout/stderr to /dev/null',
         'fixtures': {
             'text_bytes': fixtures['text_bytes'],
             'text_lines': sizes['text_lines'],
@@ -818,10 +845,11 @@ def main(argv=None):
     args = parse_args(argv)
     try:
         return run(args)
-    except BenchError as e:
+    except (BenchError, OSError) as e:
         print(f'bench: {e}', file=sys.stderr)
-        print('bench: rerun with --keep to inspect the build and fixtures',
-              file=sys.stderr)
+        if not args.keep:
+            print('bench: rerun with --keep to inspect the build and fixtures',
+                  file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         return 130
