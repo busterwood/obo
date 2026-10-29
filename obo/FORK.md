@@ -4810,13 +4810,13 @@ runtime-retained program pointer.
 199/199; `--memory` 2/2; `tests/io_test.py --rt --programs --tools` 0
 failures; `tests/imports.py` 26/26 (10 stdlib importers, 4 tools, 4
 tool-matrix checks, 7 collision/decoy trees, 1 lib set); `tests/stdlib.py`
-16/16 roots (1 support module); `tests/run_fork.py` 1,164/1,164 (1,157 + 1
-run program + 6 error cases); `tests/elf_test.py` (filesz 1, memsz 67,328);
-`tests/port_compare.py` 1,181/1,181 (1,059 flat + 122 tree, CLI and encoder
+16/16 roots (1 support module); `tests/run_fork.py` 1,165/1,165 (1,157 + 1
+run program + 7 error cases); `tests/elf_test.py` (filesz 1, memsz 67,328);
+`tests/port_compare.py` 1,182/1,182 (1,060 flat + 122 tree, CLI and encoder
 cases), live peak 1,646,976 (budget 2,000,000, 353,024 spare) and 35,355,536
 allocated;
 `OBO_REF=seed/obo tests/port_compare.py` 1,049/1,049 pre-promote and
-1,181/1,181 with a temporary 0.5 seed copy (the post-promote simulation; the
+1,182/1,182 with a temporary 0.5 seed copy (the post-promote simulation; the
 real 0.4 seed was restored, sha256 `d9dc0e93…`);
 `tests/mutate_fork.py` 527/549 + 22 equivalent; `tests/mutate_port.py`
 495/495; `tests/mutate_io.py` 27/27; `tests/mutate_meta.py` 82 mutants:
@@ -4845,15 +4845,17 @@ max RSS 2,976 KB (3 runs), in line with P5a's host figures.
 
 ## Deviations and limits
 
-- The pre-promote seed comparison is 1,049/1,049 rather than P5a's full flat
-  1,052: the 0.4 seed cannot parse `io.obx` once it calls `terminalWidth`, so
-  the three flat cases importing it (`tests/run/env.obx`,
-  `tests/run/io_reader.obx` and `tests/run/io_writer.obx`) are version-gated
-  out, as are the new `tests/run/term.obx` and `tests/errors/term.obx` cases.
-  The default comparison and the 0.5-seed simulation cover all 1,181, so the
-  promote loses nothing; no test was weakened. The skip now requires the
-  maximum of a file's own minimum and its imports' minimum, so `env.obx`'s
-  explicit 0.4 does not hide `io.obx`'s 0.5.
+- The pre-promote seed comparison is 1,049/1,049. The full flat corpus is
+  1,060 (P5a's 1,052 + 8 new term cases: `tests/run/term.obx` and the seven
+  `tests/errors/term.obx` cases). The 0.4 seed cannot parse `io.obx` once it
+  calls `terminalWidth`, so it skips 11 of them: the three flat cases
+  importing `io.obx` (`tests/run/env.obx`, `tests/run/io_reader.obx` and
+  `tests/run/io_writer.obx`), `tests/run/term.obx`, and the seven
+  `tests/errors/term.obx` cases. 1,060 - 11 = 1,049. The default comparison
+  and the 0.5-seed simulation cover all 1,182, so the promote loses nothing;
+  no test was weakened. The skip now requires the maximum of a file's own
+  minimum and its imports' minimum, so `env.obx`'s explicit 0.4 does not hide
+  `io.obx`'s 0.5.
 - Two new compiler mutants are genuinely equivalent and recorded, as P5a's
   were: omitting `terminalWidth` from `callExempt` only changes the
   register-allocation pre-scan weighting, and not materialising the fd before
