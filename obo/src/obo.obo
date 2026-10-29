@@ -1262,6 +1262,12 @@ const RT_OPEN_FILE = 29
 const RT_READ_FD = 30
 const RT_WRITE_FD = 31
 const RT_CLOSE_FD = 32
+// metadata (P3): readDirFd, statPath, lstatPath and readLinkPath append slots 33-36; the runtime builds
+// the cells from the same err descriptor and the ok variant of the exact payload type
+const RT_READ_DIR_FD = 33
+const RT_STAT_PATH = 34
+const RT_LSTAT_PATH = 35
+const RT_READ_LINK_PATH = 36
 
 const RAX = 0
 const RCX = 1
@@ -1449,7 +1455,7 @@ fn initCompiler() {
     append(universe, newSym("type", "bool", tBool))
     append(universe, newSym("type", "string", tString))
     append(universe, newSym("type", "Result", tResultCtor))
-    let names = words("print println len gc gcstats exit append truncate substr eprint eprintln readFile writeFile args openFile readFd writeFd closeFile stdin stdout stderr")
+    let names = words("print println len gc gcstats exit append truncate substr eprint eprintln readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath stdin stdout stderr")
     for n in names { append(universe, newSym("builtin", n, nil)) }
     append(universe, newSym("builtin", "ok", nil))
     append(universe, newSym("builtin", "err", nil))
@@ -5269,6 +5275,42 @@ fn builtin(name: string): Item {
         expect(T_RPAREN, "")
         return resultCall3(RT_CLOSE_FD, fd, tBool)
     }
+    if name == "readDirFd" {
+        // readDirFd(fd, max): Result[?[]byte]. The fd is materialised before max runs (as readFd);
+        // a constant max must be positive and at most the runtime's 1 MiB cap.
+        expect(T_LPAREN, "")
+        var fd = nestedExpr()
+        if !isInt(fd.typ) { error("readDirFd needs an int file descriptor, not " + tname(fd.typ)) }
+        fd = materialise(fd)
+        expect(T_COMMA, "")
+        var n = nestedExpr()
+        if !isInt(n.typ) { error("readDirFd needs an int count, not " + tname(n.typ)) }
+        if n.mode == "const" && n.val <= 0 { error("readDirFd needs a positive count") }
+        if n.mode == "const" && n.val > 1048576 { error("readDirFd count is too large") }
+        n = materialise(n)
+        expect(T_RPAREN, "")
+        return resultCall4(RT_READ_DIR_FD, fd, n, derived("opt", derived("array", tByte)))
+    }
+    if name == "statPath" || name == "lstatPath" {
+        // statPath(path) / lstatPath(path): Result[[]int], the 14 fields in the design's order.
+        // The single argument is pinned before the call, as every path builtin is.
+        expect(T_LPAREN, "")
+        var p = nestedExpr()
+        if p.typ.kind != "string" { error(name + " needs a string path, not " + tname(p.typ)) }
+        p = pinStr(p)
+        expect(T_RPAREN, "")
+        if name == "statPath" { return resultCall3(RT_STAT_PATH, p, derived("array", tInt)) }
+        return resultCall3(RT_LSTAT_PATH, p, derived("array", tInt))
+    }
+    if name == "readLinkPath" {
+        // readLinkPath(path): Result[[]byte], the raw target bytes with no NUL.
+        expect(T_LPAREN, "")
+        var p = nestedExpr()
+        if p.typ.kind != "string" { error("readLinkPath needs a string path, not " + tname(p.typ)) }
+        p = pinStr(p)
+        expect(T_RPAREN, "")
+        return resultCall3(RT_READ_LINK_PATH, p, derived("array", tByte))
+    }
     if name == "stdin" || name == "stdout" || name == "stderr" {
         expect(T_LPAREN, "")
         expect(T_RPAREN, "")
@@ -7721,7 +7763,7 @@ type Param = ref record {
 
 // ---- the pre-scan of a function
 
-let callExempt = words("if while for return match defer in else new print println eprint eprintln len gc gcstats exit append truncate substr readFile writeFile args openFile readFd writeFd closeFile stdin stdout stderr take handle alive drop replace int byte string ok err try")
+let callExempt = words("if while for return match defer in else new print println eprint eprintln len gc gcstats exit append truncate substr readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath stdin stdout stderr take handle alive drop replace int byte string ok err try")
 
 fn wordAt(a: int, b: int, w: string): bool {
     if len(w) != b - a { return false }
@@ -7782,7 +7824,9 @@ fn plausible(decl: int, from: int): bool {
         if wordAt(q, e, "substr") || wordAt(q, e, "take") || wordAt(q, e, "replace") || wordAt(q, e, "handle") { return false }
         if wordAt(q, e, "ok") || wordAt(q, e, "err") || wordAt(q, e, "try") { return false }
         if wordAt(q, e, "openFile") || wordAt(q, e, "readFd") || wordAt(q, e, "writeFd") { return false }
-        if wordAt(q, e, "closeFile") || wordAt(q, e, "stdin") || wordAt(q, e, "stdout") || wordAt(q, e, "stderr") { return false }
+        if wordAt(q, e, "closeFile") || wordAt(q, e, "readDirFd") { return false }
+        if wordAt(q, e, "statPath") || wordAt(q, e, "lstatPath") || wordAt(q, e, "readLinkPath") { return false }
+        if wordAt(q, e, "stdin") || wordAt(q, e, "stdout") || wordAt(q, e, "stderr") { return false }
         if wordAt(q, e, "nil") { return false }
     }
     return true
