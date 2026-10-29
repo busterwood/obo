@@ -3552,7 +3552,7 @@ the header and the `source` hash.
 
 Text, line-oriented, parsed by the compiler's scanner. The header is `obosym 1`
 (one identifier; `obo-sym` would scan as three tokens), `abi 1`,
-`compiler "0.4"`, `source 0x…`, one `dep <module> "<path as imported>"` per
+`compiler "0.5"`, `source 0x…`, one `dep <module> "<path as imported>"` per
 unique direct dependency in first-import order, and `interface 0x…`. The body is
 `module <name>`, one `depiface <module> 0x…` per dependency in the same order,
 then declarations. `source` is FNV-1a 64 of the source bytes exactly;
@@ -3605,8 +3605,8 @@ run, re-emit, `--check`).
 FNV-1a 64 with offset basis `0xcbf29ce484222325` and prime `0x100000001b3`, 64-bit
 wrapping. Three exact-match version values: `obosym` (grammar and meaning),
 `abi` (layout, descriptor format, calling convention, global addressing, effect
-summaries, initialization order) and `compiler` (`OBO_VERSION`, currently `0.4`;
-`--version` prints `obo 0.4 sym-format 1 abi 1`). Errors use the per-line §12
+summaries, initialization order) and `compiler` (`OBO_VERSION`, currently `0.5`;
+`--version` prints `obo 0.5 sym-format 1 abi 1`). Errors use the per-line §12
 wording: `has format <n>; this compiler reads <m>`, `has ABI <n>; this compiler
 uses <m>`, `was built by compiler '<v>'; this is '<w>'`, each with
 `; rebuild it` and exit 2 — not one combined message. Bump `OBO_VERSION` with a
@@ -4756,3 +4756,119 @@ compiler source is 10,516 lines / 385,978 bytes (P3: 10,492 / 384,760).
   for the same reason. `env_base` stays a non-static global, as
   `rt_entry_sp` is; the image is a byte concatenation, so no program
   symbol can collide with it.
+
+# Terminal-size metadata: slot 39 (P6a, done)
+
+The eza/stdlib design v7 sections 6.1, 8.5 and 11.1, on the promoted 0.4 seed
+(`829dd52`, 425,985 bytes). One append-only slot, no renumbering of 0-38; no
+Result cell, no descriptor, no new descriptor kind, no allocation and no
+runtime-retained program pointer.
+
+| Slot | Builtin | Result |
+|---|---|---|
+| 39 | `terminalWidth(fd)` | `int` |
+
+## What changed
+
+- `runtime/runtime.c`: `rt_term_width` is 0 for fd < 0 before any syscall and
+  otherwise `ioctl(fd, TIOCGWINSZ 0x5413, ws)`, returning the `ws_col` of the
+  8-byte `struct winsize { u16 row, col, xpixel, ypixel }`. A failed ioctl
+  (ENOTTY/EBADF) and a zero column count (unknown; a fresh pty may be 0x0) are
+  0. It never reads the fd table: a closed descriptor is not a fatal use, and
+  a number the kernel reused is observed as it is. The test-only
+  `OBO_META_FAULT=eintr` hook injects one EINTR for this ioctl too (six fault
+  ints, still inert unless `OBO_CHECK=1`). Runtime text grew 160 bytes
+  (15,920 -> 16,080); the data image is unchanged at 67,328 bytes (the extra
+  fault int fits the existing alignment).
+- `runtime/entry.S`: slot 39 appended in both sequences, after `rt_getenv`.
+- `src/obo.obo`: the universe and callExempt names and the builtin branch, with
+  the fd materialised and `rtCall1` returning `int`. The int result is a safe
+  `plausible` scalar guess, so no negative-list entry (isatty's bool is the
+  same rule); no `resultCall` and no descriptor. `OBO_VERSION` is 0.5.
+- `lib/io.obx`: `termWidth` (unchanged otherwise).
+- Tests: `rt_meta_test.c`'s `termwidth_checks` (negative fds, a regular file,
+  `/dev/null`, both pipe ends, a directory, a tracked closed fd, a reused
+  number, the pty slave with TIOCSWINSZ sizes — the column, not the row — and
+  a zero column count as unknown) and the terminalWidth call in `case_eintr`;
+  `meta_test.py` adds `tests/meta/term_api.obx` (both wrappers on
+  non-terminals), `tests/run/term.obx` and `tests/errors/term.obx`.
+  `mutate_meta.py` gains 7 runtime/entry.S and 6 compiler mutants: the row
+  instead of the column, an always-80 result, an off-by-one, TIOCSWINSZ for
+  TIOCGWINSZ, a true answer for a negative fd, the removed EINTR retry and the
+  slot 38/39 entry swap; the compiler runner replays `tests/run/term.obx` and
+  `tests/errors/term.obx`, and the runtime runner's pty oracle is
+  `termwidth_checks`. The older universe and callExempt mutant anchors were
+  re-anchored to the new lines (they contain `terminalWidth` now), not skipped.
+- Version: `OBO_VERSION` 0.4 -> 0.5; `tests/sym_test.py`'s constant and its
+  `compiler "0.5"` literals, and every committed `.sym` fixture/golden, were
+  updated in the same commit. Hashes do not cover the compiler line, so no
+  interface hash changed.
+
+## Gates (this branch)
+
+**Measured.** `make`; `make tools`; `tests/tools.py --require-reference`
+199/199; `--memory` 2/2; `tests/io_test.py --rt --programs --tools` 0
+failures; `tests/imports.py` 26/26 (10 stdlib importers, 4 tools, 4
+tool-matrix checks, 7 collision/decoy trees, 1 lib set); `tests/stdlib.py`
+16/16 roots (1 support module); `tests/run_fork.py` 1,164/1,164 (1,157 + 1
+run program + 6 error cases); `tests/elf_test.py` (filesz 1, memsz 67,328);
+`tests/port_compare.py` 1,181/1,181 (1,059 flat + 122 tree, CLI and encoder
+cases), live peak 1,646,976 (budget 2,000,000, 353,024 spare) and 35,355,536
+allocated;
+`OBO_REF=seed/obo tests/port_compare.py` 1,049/1,049 pre-promote and
+1,181/1,181 with a temporary 0.5 seed copy (the post-promote simulation; the
+real 0.4 seed was restored, sha256 `d9dc0e93…`);
+`tests/mutate_fork.py` 527/549 + 22 equivalent; `tests/mutate_port.py`
+495/495; `tests/mutate_io.py` 27/27; `tests/mutate_meta.py` 82 mutants:
+runtime/entry.S 50/52 caught + 2 equivalent, compiler 21/30 caught + 9
+equivalent, 0 missed, 0 stale, 0 broken (P5a: 43/45 + 2 and 17/24 + 7);
+`tests/port_test.py` 523/523 identical (520 + 3 new `.obx` files), 9 encoder
+groups; `tests/sym_test.py` 27/27 at 0.5; `tests/sym_fuzz.py` 200/200;
+`tests/doc_check.py` 48 examples (47 + the terminalWidth example);
+`tests/homes_check.py`; `tests/homes_edge.py` 1,028 statements, 119 refused by
+both, 0 differ; `bench/bench.py` runs to completion (obx built for it);
+`tests/meta_test.py` 34 checks (20 rt cases + 14 program invocations); tool
+binaries unchanged (cat 40,961; wc 53,249; sort 53,249 bytes).
+
+**eza E0.** `tests/eza.py --require-reference` 272/272 against the pinned eza
+0.23.3 (sha256 `10457dde…`), `--memory` 2/2 (10,000-entry live peaks
+2,185,008 long / 2,184,384 names, under `EZA_PEAK_MAX` 2,752,512; max RSS
+2,432 KiB both), eza binary 126,977 bytes, reference binary 2,294,768 bytes.
+P5b's E1 is not merged on this branch, so this is the unchanged E0 gate.
+
+**Fixed point without promote.** The seed-built `obo`, the 0.5 compiler's
+stage 2 and stage 3 are all the same 425,985-byte image (sha256
+`05542e89…`; checked with `cmp`), against the 425,985-byte 0.4 seed
+(`d9dc0e93…`). The compiler source is 10,527 lines / 386,590 bytes (P5a:
+10,516 / 385,978). Self-compile wall time is 0.13 s (5 runs, 0.12-0.16 s) and
+max RSS 2,976 KB (3 runs), in line with P5a's host figures.
+
+## Deviations and limits
+
+- The pre-promote seed comparison is 1,049/1,049 rather than P5a's full flat
+  1,052: the 0.4 seed cannot parse `io.obx` once it calls `terminalWidth`, so
+  the three flat cases importing it (`tests/run/env.obx`,
+  `tests/run/io_reader.obx` and `tests/run/io_writer.obx`) are version-gated
+  out, as are the new `tests/run/term.obx` and `tests/errors/term.obx` cases.
+  The default comparison and the 0.5-seed simulation cover all 1,181, so the
+  promote loses nothing; no test was weakened. The skip now requires the
+  maximum of a file's own minimum and its imports' minimum, so `env.obx`'s
+  explicit 0.4 does not hide `io.obx`'s 0.5.
+- Two new compiler mutants are genuinely equivalent and recorded, as P5a's
+  were: omitting `terminalWidth` from `callExempt` only changes the
+  register-allocation pre-scan weighting, and not materialising the fd before
+  a single-argument call is unobservable (there is no later argument, and
+  `rtCall` loads the memory operand at the same point).
+- The entry.S slot 38/39 swap is killed by `env/api` before `term_api`
+  (both go through the table); the runner reports the first failure. The
+  wrong-slot compiler mutant (slot 38, `getenv`) crashes because `rt_getenv`
+  dereferences the descriptor number as a name pointer; the changed outcome
+  (exit -11) is a kill, not a broken mutant.
+- The pty oracle sets `TIOCSWINSZ` before reading, because this host's fresh
+  pty reports 0x0; it checks a zero column count is 0 (unknown) and that
+  setting the size from either end updates the same terminal. The program
+  corpus cannot open a pty from obo (there is no ioctl builtin), so its pty
+  cases stay in `rt_meta_test.c`.
+- `tests/run/term.obx` shares its name with the builtin feature but no module;
+  `tests/meta/term_api.obx` is named apart from `io.obx` so the import
+  resolves to `lib/io.obx`.
