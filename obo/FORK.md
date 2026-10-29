@@ -3552,7 +3552,7 @@ the header and the `source` hash.
 
 Text, line-oriented, parsed by the compiler's scanner. The header is `obosym 1`
 (one identifier; `obo-sym` would scan as three tokens), `abi 1`,
-`compiler "0.2"`, `source 0x…`, one `dep <module> "<path as imported>"` per
+`compiler "0.3"`, `source 0x…`, one `dep <module> "<path as imported>"` per
 unique direct dependency in first-import order, and `interface 0x…`. The body is
 `module <name>`, one `depiface <module> 0x…` per dependency in the same order,
 then declarations. `source` is FNV-1a 64 of the source bytes exactly;
@@ -3605,8 +3605,8 @@ run, re-emit, `--check`).
 FNV-1a 64 with offset basis `0xcbf29ce484222325` and prime `0x100000001b3`, 64-bit
 wrapping. Three exact-match version values: `obosym` (grammar and meaning),
 `abi` (layout, descriptor format, calling convention, global addressing, effect
-summaries, initialization order) and `compiler` (`OBO_VERSION`, currently `0.2`;
-`--version` prints `obo 0.2 sym-format 1 abi 1`). Errors use the per-line §12
+summaries, initialization order) and `compiler` (`OBO_VERSION`, currently `0.3`;
+`--version` prints `obo 0.3 sym-format 1 abi 1`). Errors use the per-line §12
 wording: `has format <n>; this compiler reads <m>`, `has ABI <n>; this compiler
 uses <m>`, `was built by compiler '<v>'; this is '<w>'`, each with
 `; rebuild it` and exit 2 — not one combined message. Bump `OBO_VERSION` with a
@@ -4221,3 +4221,173 @@ all 501 are identical.
   no check was removed or skipped.
 - No `writeByte`/`fmt`/`errors` mutants (design section 10.3 coverage
   boundary); `mutate_io` stays 27/27.
+
+# Runtime metadata: slots 33-36 (P3, done)
+
+The eza/stdlib design v7 sections 5.9, 6.1-6.9, 7.9 and 11.1. Four append-only
+slots, no renumbering of 0-32; no `getcwd`, no `fstatat(dirfd,name)`, no raw
+`syscall` builtin, no `resultCall2`, no new descriptor kind, no runtime-retained
+program pointers.
+
+| Slot | Builtin | Result |
+|---|---|---|
+| 33 | `readDirFd(fd, max)` | `Result[?[]byte]` |
+| 34 | `statPath(path)` | `Result[[]int]` |
+| 35 | `lstatPath(path)` | `Result[[]int]` |
+| 36 | `readLinkPath(path)` | `Result[[]byte]` |
+
+P5a/P6a append 37/38 and 39 later; each is its own compiler feature with its own
+gate and promote.
+
+**ABI (verified in the C harness).** x86-64 Linux `struct stat` is 144 bytes:
+st_dev 0, st_ino 8, st_nlink 16, st_mode 24 (u32), st_uid 28, st_gid 32, pad 36,
+st_rdev 40, st_size 48, st_blksize 56, st_blocks 64, st_atim 72, st_mtim 88,
+st_ctim 104. `newfstatat` is 262 with its flags in r10, so the runtime gains
+`sys4` (r10 bound with a register asm operand, clobbering rcx/r11/memory); every
+other new call is `sys3`: `readlink` 89, `getdents64` 217. `AT_FDCWD` is -100 and
+`AT_SYMLINK_NOFOLLOW` 0x100; raw returns are negative errno. The 14-int array
+order is `mode, size, mtime, mtime_ns, uid, gid, nlink, ino, dev, rdev, blksize,
+blocks, atime, ctime` (the design's, not the kernel's); atime/ctime are seconds,
+mtime has nanoseconds, and ino/dev/rdev are copied as 64-bit values (inodes above
+INT64_MAX are unrepresentable and not expected). `cpath` accepts 4095 bytes,
+rejects 4096+ with ENAMETOOLONG, and rejects empty paths and embedded NULs with
+EINVAL; `readlink` uses a 4096-byte stack buffer and treats a full 4096-byte
+return as ENAMETOOLONG (the API limit is 4095), never a silent truncation.
+
+**Runtime.** `rt_read_dir_fd` flushes text output, then checks in this order:
+max <= 0 (EINVAL), max > 1 MiB (EINVAL), fd < 0 (EBADF), a tracked closed fd
+(exit 9 under OBO_CHECK, otherwise `err(..., EBADF)`), then allocates and calls
+getdents64. A short buffer is data (`len` is set to the count), only 0 is EOF,
+and EOF is `ok(nil)` after the empty array is freed. `rt_stat_path`/
+`rt_lstat_path` share `do_stat`, which converts the path, calls newfstatat with
+flags 0 or `AT_SYMLINK_NOFOLLOW`, and copies the 14 fields from the 144-byte
+struct into an owned int array. `rt_read_link` returns the raw bytes with no NUL
+in an owned byte array. Every helper builds its Result cell from the compiler's
+shared err descriptor and the cached ok variant; the only multi-allocation
+points root their earlier value in `tmp_root[0]`. `getdents64`, `newfstatat` and
+`readlink` retry EINTR; the test-only `OBO_META_FAULT=eintr` hook injects one
+synthetic EINTR per call kind and is inert unless `OBO_CHECK=1` (gated after the
+environment scan, like the I/O hook). The runtime data segment grew by 32 bytes
+(the fault flags and alignment); runtime_text.bin by 2,320 (13,152 -> 15,472);
+runtime.elf is 92,536 bytes.
+
+**Compiler.** The four names join `universe`, `callExempt` and the non-int
+"plausible" negative list. `readDirFd` parses the fd with `nestedExpr`, checks
+`isInt`, materialises it before the max argument runs (as `readFd` does), checks
+the max's type, rejects constant counts outside 1..1048576, materialises max,
+and returns `resultCall4(RT_READ_DIR_FD, fd, max, derived("opt",
+derived("array", tByte)))`. `statPath`/`lstatPath` and `readLinkPath` take one
+string, pin it with `pinStr`, and return `resultCall3` with
+`derived("array", tInt)` / `derived("array", tByte)`. The compiler source does
+not use the new builtins (two-round rule), so the 0.2 seed still builds it.
+
+**The `fs` module.** `lib/fs.obx` is self-contained (builtins only; no import of
+`paths`). Constants: `STAT_*` (0-13, `STAT_FIELDS` 14), `KIND_*` (the DT_*
+values 0/1/2/4/6/8/10/12) and `DIR_BUF` 32768. Types: `Stat`, `DirEntry`
+(name/ino/kind) and `Dir` (borrowed fd; owned path, raw buffer and chunk string;
+pos/used/eof/size). `open` is `openFile(path, "r")`; the operand string is owned
+by the Dir and is the entry-path base. `next` refills when the buffer is
+exhausted, treats `nil` as EOF, copies the chunk once with `string(buf)`, and
+validates every record (reclen >= 20, pos+reclen <= used, a NUL inside the
+record): a bad record is `err("bad directory entry", EIO=5)` without advancing.
+Each name is a `substr` copy; "." and ".." are skipped by name. The kind is
+d_type; for DT_UNKNOWN `next` lazily lstats `entryPath(dir.path, name)` and uses
+`typeOf(mode)`, leaving KIND_UNKNOWN when that lstat fails. (The design's
+Type-resolution bullet is eza's `File::filetype()` fallback; `DirEntry` exposes
+only the resolved kind, so the fallback is realised in `next`. No mounted
+filesystem here returns DT_UNKNOWN, so the crafted-buffer unit test is the
+exercise; the P0 DT_UNKNOWN probe stays unverified on this host.)
+`close` returns ok(false) with no syscall when fd < 0, otherwise closes, sets
+fd = -1 whatever the Result says, and is idempotent. `statArray(path, follow)` is
+the hot form; `stat`/`lstat` build the record and free the array; `readlink`
+returns `readLinkPath`'s raw bytes. `typeOf` maps the S_IFMT bits; the predicates
+use it; `isExecutableFile` is regular && owner-execute (0x040);
+`sizeForLong` is size for a regular file and -1 otherwise.
+
+**Tests.** `tests/rt_meta_test.c` links runtime.c with its own `_entry` and
+creates every fixture through raw syscalls: a file with a known size/mode and
+pinned atime/mtime (all 14 fields against hardcoded values AND against a fresh
+raw newfstatat field by field), stat vs lstat on symlink-to-file and
+symlink-to-dir, a directory's type, a pre-1970 mtime (-100/-200), a uid/gid
+oracle from a host path whose owner and group differ (`stat_owner`; /etc/shadow
+here), ENOENT/EINVAL/ENAMETOOLONG (a 4095-byte multi-component path reaches the
+kernel, while a single 4095-byte component is the kernel's own ENAMETOOLONG
+from NAME_MAX; 4096 is the runtime's cpath check), readlink bytes/dangling/non-symlink
+EINVAL/missing ENOENT/a 4095-byte target, readDirFd's whole records with . and ..
+visible raw and nil EOF, the max/cap/fd/table order (a bad max never allocates),
+a regular-file fd's ENOTDIR, a small max's kernel EINVAL, the tracked-closed-fd
+exit 9 and its no-check EBADF, and the EINTR hook with and without OBO_CHECK.
+Every case ends in rt_finish, so under OBO_CHECK=1 each is also the leak oracle.
+`tests/meta_test.py` builds it and runs `tests/meta/*.obx` against Python
+fixtures: names/kinds/inodes vs os.listdir/os.lstat (no "." or ".."), all 14
+stat and lstat fields vs os.stat/os.lstat for a pinned file, a symlink and a
+directory, raw readlink bytes (including a 4095-byte target) and the error
+codes, entry paths via paths::join for an absolute operand outside the cwd and
+for a "../entries" operand, close idempotence, open/close with no leak, the
+fs-level errors, crafted DT_UNKNOWN/d_type-wins/dot-skip/malformed-record
+records, and the dedicated missing-close exit 8. `tests/run/meta.obx` covers the
+four builtins at the program level (non-consuming and consuming matches, try
+propagation, owned payloads) and the fd-materialisation case:
+`readDirFd(gfd, changeGfd())` must read the fd as it was, so it prints "pin dir
+inside"; a compiler that does not materialise fd prints "pin dir other".
+`tests/errors/meta.obx` has 16 compile cases.
+
+**Mutants.** `tests/mutate_meta.py` has two independent runners and measured
+counts. The runtime/entry.S runner builds each mutant runtime in a private
+directory and judges it with rt_meta_test.c (rebuilt against the mutant
+runtime.c) and the whole tests/meta corpus compiled against the mutant runtime;
+an entry.S mutant also runs tests/run/io_basic.obx, whose calls go through the
+slot table (the C harnesses have their own `_entry` and cannot see entry.S):
+**30/31 caught + 1 equivalent** (the 4096-byte readlink target cannot be
+created; the kernel maximum is 4095). The compiler runner builds a mutated
+compiler from src/obo.obo with the unmutated compiler and requires every
+tests/errors/meta.obx case to keep its exact diagnostic and every program to
+keep its baseline outcome: **9/12 caught + 3 equivalent** (the path pin is
+unobservable with one argument; callExempt and plausible only affect
+register-allocation scoring). 0 missed, 0 stale, 0 broken. The stale
+`mutate_io` hook-gating anchor was re-anchored in the P3 commit (the gate line
+now also clears `meta_fault_eintr`), and mutate_io stays **27/27**.
+
+**Deviations and limits.** (1) The design's `Type resolution` is placed in
+`fs::next`, not deferred to eza, because `DirEntry` has no raw-d_type field; the
+resolved kind is what P4 consumes. (2) `port_compare`'s seed comparison skips
+the two new P3 case files: the promoted 0.2 seed does not know the metadata
+builtins, so it would reject them while the port compiles them; the default
+comparison covers them and the exclusion disappears with the promote. (3) A
+4096-byte symlink target is refused by the kernel, so the runtime's r == 4096
+branch is defence in depth and untestable here. (4) The path limit and the
+getdents64-to-stat race remain (cmd/README.md and design 6.7); the future fix is
+`statAt`/`readlinkAt` on the Dir fd. (5) There is no getcwd; a relative operand
+is resolved by the kernel against the process cwd.
+
+**Version.** `OBO_VERSION` is 0.3 (design 6.9). `tests/sym_test.py` moved its
+module constant and its three literal `compiler "0.3"` expectations in the same
+change; every committed `.sym` fixture and golden under `tests/modules` was
+rebuilt with the compiler line 0.3 (the line is not part of either hash), and
+`--check` must not be run against pre-bump sym dirs. The seed is NOT promoted
+on this branch: the orchestrator reviews, merges and promotes once. With the
+seed still at 0.2, `make` builds the 0.3 compiler from source as before; the
+seed-built `obo`, the 0.3 compiler's stage 2 and stage 3 are all the same
+421,889-byte binary (checked with `cmp` on the branch), but `make promote` (and
+its run_fork gate) remains the orchestrator's step after review.
+
+**Measured (this branch, merged with main at `7b1c8b8`, which includes `c3c4db4`).** `make`;
+`make tools`; `tests/tools.py --require-reference` 199/199; `--memory` 2/2;
+`tests/io_test.py --rt --programs --tools` 0 failures; `tests/imports.py`
+23/23 (9 stdlib importers, 3 tools, 3 tool-matrix checks, 7 collision/decoy
+trees, 1 lib set); `tests/stdlib.py` 14/14 roots; `tests/run_fork.py`
+1,147/1,147 (1,130 + 16 error cases + 1 program); `tests/elf_test.py` (filesz 1,
+memsz 67,328); `tests/port_compare.py` 1,164/1,164 (1,147 + 17), live peak
+1,642,416 (budget 2,000,000; the 0.3 compiler compiling itself reports
+1,642,160 live / 35,250,272 allocated, the port 1,642,416 / 35,253,408; +6,240 from the design baseline 1,636,176 and
++6,080 from the P2b worktree's 1,636,336; allocation 35,253,408, +176,800);
+`OBO_REF=seed/obo tests/port_compare.py` 1,025/1,025 with the documented
+seed-mode case exclusion; `tests/mutate_fork.py` 527/549 + 22 equivalent;
+`tests/mutate_port.py` 495/495; `tests/mutate_io.py` 27/27; `tests/port_test.py`
+512/512 identical (501 + the 11 new `.obx` files), 9 encoder groups;
+`tests/sym_test.py` 27/27 at 0.3; `tests/sym_fuzz.py` 200/200; `tests/doc_check.py`
+46 examples (45 + the metadata example); `tests/homes_check.py`;
+`tests/homes_edge.py` 1,028 statements, 119 refused by both, 0 differ;
+`bench/bench.py` runs to completion (obx built for it); `tests/meta_test.py`
+26 checks; `tests/mutate_meta.py` 30/31 + 1 and 9/12 + 3 as above. Tool
+binaries unchanged (cat 40,961; wc 53,249; sort 53,249 bytes).

@@ -364,6 +364,17 @@ def program_outcomes(rt_dir, fx, compiler=None):
 
 
 def judge_runtime(rt_dir, fx, base_prog, base_io, need_io):
+    # An entry.S slot mutant runs the representative I/O program first, before
+    # any other case can end the judging: its calls go through the slot table,
+    # so a wrong slot order cannot pass unnoticed even if the metadata corpus
+    # happened to agree.
+    if need_io:
+        try:
+            o = io_outcome(rt_dir)
+        except Broken as e:
+            return str(e)
+        if o != base_io:
+            return f"tests/run/io_basic.obx: {o!r} != baseline {base_io!r}"
     err = rt_cases_outcome(rt_dir)
     if err:
         return err
@@ -374,13 +385,6 @@ def judge_runtime(rt_dir, fx, base_prog, base_io, need_io):
     for name in out:
         if out[name] != base_prog[name]:
             return f"{name}: {out[name]!r} != baseline {base_prog[name]!r}"
-    if need_io:
-        try:
-            o = io_outcome(rt_dir)
-        except Broken as e:
-            return str(e)
-        if o != base_io:
-            return f"tests/run/io_basic.obx: {o!r} != baseline {base_io!r}"
     return None
 
 

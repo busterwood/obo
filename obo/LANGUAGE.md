@@ -764,7 +764,7 @@ build** still requires every source; if only a `.sym` exists it reports
 without source` (exit 2). The checked root is exempt from the basename rule (it is
 the root of its check graph), and its `.sym` is named by its declared module name.
 
-`--version` prints `obo 0.2 sym-format 1 abi 1`; the numbers are the `obosym`
+`--version` prints `obo 0.3 sym-format 1 abi 1`; the numbers are the `obosym`
 format, the compiled-program ABI and the compiler version, each checked exactly
 when a `.sym` is read. `--reemit-sym FILE` is a testing hook: it reads a symbol
 file with the reader and prints the canonical re-emission, which the symbol-file
@@ -777,7 +777,7 @@ A `.sym` is text in a language-like declaration syntax, readable by the scanner:
 ```text
 obosym 1
 abi 1
-compiler "0.2"
+compiler "0.3"
 source 0x0123456789abcdef
 dep io "io.obx"
 interface 0xfedcba9876543210
@@ -1201,6 +1201,10 @@ fn main() {}
 | `readFd(fd, max)` | `Result[?[]byte]`: one read of up to `max` bytes; `nil` is end of file |
 | `writeFd(fd, data)` | `Result[int]`: one write of the borrowed `[]byte`; a short count is success |
 | `closeFile(fd)` | `Result[bool]`: `ok(true)` on success |
+| `readDirFd(fd, max)` | `Result[?[]byte]`: one `getdents64` read of up to `max` bytes (at most 1 MiB); `nil` is end of directory |
+| `statPath(path)` | `Result[[]int]`: the 14 stat fields, following symlinks |
+| `lstatPath(path)` | `Result[[]int]`: the 14 lstat fields, not following symlinks |
+| `readLinkPath(path)` | `Result[[]byte]`: the raw symlink target bytes, no NUL |
 | `stdin()`, `stdout()`, `stderr()` | the standard descriptors, 0, 1 and 2 |
 | `args()` | the command-line arguments, as `[]string` |
 | `exit(code)` | stop with the given exit code |
@@ -1297,10 +1301,78 @@ and qualify the names (`io::newReader`, `io::flush`). Its own header documents
 the API and the fd-is-borrowed rule. The rest of the stdlib is a set of source
 modules under `obo/lib/`: `strings` (`cmp`, split/join, trim, natord and
 QuoteSpaces helpers), `paths`, `sort`, `time`, `cli`, `fmt` (`digits`,
-`appendPadded`, `writePadded`, `modeString`) and `errors` (C-locale errno
-`text`, `osError`, `debugPath` and the eza-shaped `EXIT_*` constants). P2 moved
+`appendPadded`, `writePadded`, `modeString`), `errors` (C-locale errno
+`text`, `osError`, `debugPath` and the eza-shaped `EXIT_*` constants) and `fs`
+(directory iteration, stat/lstat and symlink targets; see "Metadata" below).
+P2 moved
 `writePadded` from `io` and the digit/padding helpers from `strings` into
 `fmt`, and removed the four P1 compatibility functions.
+
+### Metadata
+
+`readDirFd(fd, max)` is one `getdents64` read into a fresh byte array. The
+checks run before that array is allocated, in this order: a `max` that is zero
+or negative is `err("readDirFd needs a positive count", EINVAL)`; a `max` over
+1 MiB (1048576) is `err("readDirFd count is too large", EINVAL)`; a negative
+descriptor is `err("cannot read dir fd N", EBADF)`; a tracked descriptor that
+was closed is `err(..., EBADF)`, or exits 9 under `OBO_CHECK=1` with no
+syscall. A constant count outside 1..1048576 is a compile error. The kernel
+returns whole `linux_dirent64` records; a short buffer is data and only a
+zero-byte read is end of directory, reported as `ok(nil)` (never an empty
+array). A descriptor for a regular file gives the kernel's `ENOTDIR`. The call
+flushes pending text output first, as `readFd` does.
+
+`statPath(path)` and `lstatPath(path)` return the 14 numbers of the x86-64
+Linux `struct stat` in this order, which is not the kernel's layout:
+
+| index | field | index | field |
+|---|---|---|---|
+| 0 | mode (`st_mode`, type bits included) | 7 | ino |
+| 1 | size (signed) | 8 | dev |
+| 2 | mtime seconds | 9 | rdev |
+| 3 | mtime nanoseconds | 10 | blksize |
+| 4 | uid | 11 | blocks |
+| 5 | gid | 12 | atime seconds |
+| 6 | nlink | 13 | ctime seconds |
+
+`statPath` follows a symlink; `lstatPath` does not. Both are path-based and
+resolve a relative path against the process cwd. A missing path is ENOENT (2),
+an empty path or an embedded NUL is EINVAL (22) before the syscall, and a path
+of 4096 bytes or more is ENAMETOOLONG (36). `readLinkPath(path)` returns the
+raw target bytes with no NUL: a dangling target still succeeds, a non-symlink
+is EINVAL, and the longest accepted target is 4095 bytes (a full 4096-byte
+target would be ENAMETOOLONG, never a silent truncation). `readlink` does not
+resolve the target; the caller decides how to join it.
+
+```obo
+// example: runs
+// prints 14 true
+fn main() {
+    let r = statPath(".")                  // the directory the check runs in
+    match r {
+        ok { println(len(r.value), " ", r.value[0] & 0xF000 == 0x4000) }
+        err { println(r.message) }
+    }
+}
+```
+
+The directory buffer is 32 KiB by default. `readDirFd`, `statPath`, `lstatPath`
+and `readLinkPath` retry `EINTR`; a test-only `OBO_META_FAULT=eintr` hook (inert
+unless `OBO_CHECK=1`) injects one synthetic `EINTR` per call kind.
+
+`obo/lib/fs.obx` builds the eza-facing surface on these builtins: the `STAT_*`
+and `KIND_*` constants, `Stat`/`DirEntry`/`Dir`, `open` (via `openFile "r"`),
+`next`, `close` (idempotent: a second close is `ok(false)` with no syscall),
+`statArray`/`stat`/`lstat`, `readlink`, `typeOf`, the type predicates and
+`sizeForLong`. **`fs::next` skips the records named exactly `.` and `..`**,
+because eza's Rust `read_dir` never yields them and the eza layer synthesizes
+them itself; every emitted name is a copy (`substr`) that survives refills and
+`close`, and `.`/`..` do not count against the iteration. The entry kind is the
+kernel's `d_type`; for `DT_UNKNOWN` `next` lazily lstats the entry path
+(`paths::join(dir.path, name)`) and uses `typeOf(mode)`, leaving the kind
+unknown/special when that lstat fails. A malformed record (a length below 20,
+a record past the buffer, or no NUL inside it) is
+`err("bad directory entry", EIO=5)` and the iterator does not advance.
 
 ## 9. Runtime checks and exit codes
 
@@ -1403,6 +1475,13 @@ depend on the program.
 | `writeFd needs an int file descriptor, not <t>` | the first argument of `writeFd` is not an int. |
 | `writeFd needs a []byte, not <t>` | the second argument of `writeFd` is not a `[]byte`. |
 | `closeFile needs an int file descriptor, not <t>` | the argument of `closeFile` is not an int. |
+| `readDirFd needs an int file descriptor, not <t>` | the first argument of `readDirFd` is not an int. |
+| `readDirFd needs an int count, not <t>` | the second argument of `readDirFd` is not an int. |
+| `readDirFd needs a positive count` | a constant `readDirFd` count is zero or negative. |
+| `readDirFd count is too large` | a constant `readDirFd` count is over 1048576 (1 MiB). |
+| `statPath needs a string path, not <t>` | the argument of `statPath` is not a string. |
+| `lstatPath needs a string path, not <t>` | the argument of `lstatPath` is not a string. |
+| `readLinkPath needs a string path, not <t>` | the argument of `readLinkPath` is not a string. |
 
 ## 11. Differences from obx
 
@@ -1413,7 +1492,8 @@ depend on the program.
 - Handles (`^T`) are the way to write back-references and graphs. They are checked
   at run time.
 - New built-ins: `take`, `drop`, `replace`, `handle`, `alive`, `ok`, `err`,
-  `openFile`, `readFd`, `writeFd`, `closeFile`, `stdin`, `stdout`, `stderr`, and
+  `openFile`, `readFd`, `writeFd`, `closeFile`, `readDirFd`, `statPath`,
+  `lstatPath`, `readLinkPath`, `stdin`, `stdout`, `stderr`, and
   the prefix operator `try`.
 - `Result[T]` is a built-in parameterized type, inspected with `match` (including the
   consuming `ok(v)`/`err(m, c)` form).
