@@ -3016,8 +3016,8 @@ empty array is an empty line, `'\n'` is stripped and `'\r'` kept, and a line lon
 returned whole. `readByte` returns `ok(-1)` at EOF; `readN` returns nil only if EOF came before any byte;
 `eof` performs no I/O. `flush` loops on short counts, shifting the unwritten tail to the front, and keeps
 the unwritten bytes on error so the caller may retry. `write`/`writeBytes` append a byte at a time and
-flush at the threshold; a string argument is reference-counted by the call as usual. Tools live in
-`obo/programs/` (outside `port_compare`'s example glob) and were built by concatenating the library first;
+flush at the threshold; a string argument is reference-counted by the call as usual. The tools then lived
+in `obo/programs/` (now `obo/cmd/`; outside `port_compare`'s example glob) and were built by concatenating the library first;
 `run_fork.py` applied the same rule to a `tests/run` file that starts with `// prelude: io`. (Both rules
 were replaced by source modules; see "The command-line tools as source modules (done)".) `cat` uses
 `fill` + `takeChunk` + a flush per chunk (so a pipe delivers each chunk at once), not `readN`, which would
@@ -3069,7 +3069,7 @@ parses `args()[2]` with a decimal loop, and the case runs under `OBO_CHECK=1` so
 untracked fd closed exits 9 instead of returning code 9), the stdout refusal, the four filesystem-free
 path/mode errors (`tests/io/path_errors.obx`: empty and NUL paths EINVAL 22, a 4096-byte path
 ENAMETOOLONG 36, and a computed unknown mode EINVAL 22 with its message), and the library boundaries.
-`obo/programs/cat.obx` and `wc.obx` are the tool smoke cases.
+The tool smoke cases are `obo/cmd/cat.obx` and `wc.obx` (then `obo/programs/`).
 
 **Mutants.** `IO_MUTANTS` in `tests/mutate_fork.py` (also imported by `mutate_port.py`: the port compiles
 the I/O cases too, so its Stage B comparison catches each of them), 11 patterns, each matching once: no
@@ -3129,7 +3129,7 @@ untracked and the kernel still handles them.
 ## First command-line tools (done)
 
 The first programs written for their own sake rather than to test the language:
-`cat`, `wc` and `sort` in `obo/programs/`, with a separate differential gate
+`cat`, `wc` and `sort` in `obo/programs/` (now `obo/cmd/`), with a separate differential gate
 (`obo/tests/tools.py`) against GNU coreutils. They use only the language, the
 phase-2 runtime and `lib/io.obo`, so they change no compiler, runtime or seed
 source and the two-round self-hosting rule does not apply. The implementation
@@ -3146,7 +3146,7 @@ cat `-v -e -t -A -u`, wc `-m -L --files0-from`, sort `-k -t -f -b -d -i -M -h
 -V -s -c -C -o -m -z --parallel`, every long option, and `--help`/`--version`
 (they are unrecognized long options, pinned by own goldens). `head` is a natural
 next tool; `tail` needs `seek`/`readAt` or a bounded implementation. The user
-subset, message forms and caveats are in `obo/programs/README.md`.
+subset, message forms and caveats are in `obo/cmd/README.md`.
 
 **Layout and build (Phase 3; superseded by the tools-as-modules record).** There
 were no modules yet, so `obo/tools/build_tools.py`
@@ -3303,7 +3303,7 @@ pin it (CRLF, cross-file, chunk-boundary, double-CR and final-CR cases).
 **Later tools.** `head` (streaming, reuses cat's machinery) is the natural phase
 3b; `tail` waits for `seek`/`readAt` or a documented bounded version; `eza`
 needs `readDir`/`stat`/`isatty`, `fd` needs directory walking, and `jq` needs
-parsing and associative containers. All use `obo/programs/` and the `tests/tools.py`
+parsing and associative containers. All use `obo/cmd/` and the `tests/tools.py`
 spec table as the extension point.
 
 **Decisions.** A separate gate, not part of `make promote`; the release
@@ -3825,11 +3825,12 @@ Stage 2 language as merged.
   every function are `pub`. The module stays dependency-free: `writePadded` (and
   its own digit loop) remains in `io` for this migration, and no `fmt` module was
   added.
-- `obo/programs/{cat,wc,sort}.obx` are module roots. Each imports
+- `obo/programs/{cat,wc,sort}.obx` became module roots. Each imports
   `../lib/io.obx` as `io` and `../lib/strings.obx` as `strings` and qualifies
   every library name (`io::Writer`, `io::newReader`, `io::fill`,
-  `strings::errText`, ...). They remain in `programs/`, not `cmd/`; flags,
-  messages, output bytes and exit codes are unchanged.
+  `strings::errText`, ...). They remained in `programs/`, not `cmd/`, at that
+  stage; flags, messages, output bytes and exit codes were unchanged. (P2a
+  later moved them to `obo/cmd/`; see the P2a record at the end of this file.)
 - `obo/tools/build_tools.py` compiles each root directly; the generated header
   and all concatenation are gone. Every build gets its own `<out>/sym`, created
   by the builder (`build/tools/sym` for `make tools`). Concurrent builds must
@@ -3876,7 +3877,8 @@ The P2 checklist in `/tmp/obo-stdlib-eza-design-v2.md` asks for `lib/fmt.obx`
 (with `writePadded` and `digits` moved there), a `writeByte` addition and a move
 to `cmd/`. Those belong to the wider stdlib split and were deliberately left out
 here: `writePadded` stays in `io`, `strings` keeps `digits`/`appendPadded`, and
-the tools stay in `programs/` with their existing relative imports. The module
+the tools stayed in `programs/` with their existing relative imports (P2a later
+moved them to `cmd/`). The module
 build produces binaries of the same size as the old concatenated build but not
 the same bytes (module compile order and initialization change code layout); the
 differential gate compares behavior, and tool stdout, stderr and exit codes are
@@ -4055,3 +4057,54 @@ The fixed point B == C; B was promoted, and the post-promotion checks
   `filesz == memsz` and is accepted.
 - Before the promotion, `make` built A (493,280); after the promotion, `make`
   builds C == B (421,889), and `seed/obo` == `obo`.
+
+# The tools move to `cmd/` (P2a, done)
+
+Implemented on branch `eza-p2a` on top of `265564c` (the approved v7 design; the
+size-fixed seed is `84558da`). This is the path/source-move part of the design's
+P2 checklist (§4.1, §10.1, §10.3); it changes no compiler, runtime, seed,
+library module or tool semantics. The API half of P2 (add `fmt`/`errors`, remove
+the four compatibility functions, switch the tools) stays for P2b.
+
+## What changed
+
+- `obo/programs/{cat,wc,sort}.obx` and `obo/programs/README.md` moved to
+  `obo/cmd/` with `git mv`. The tool sources are byte-identical apart from the
+  three header comments that pointed at `programs/README.md`; their
+  `import "../lib/io.obx"`/`"../lib/strings.obx"` paths resolve unchanged
+  because `cmd/` and `programs/` are at the same depth under `obo/`.
+- `obo/tools/build_tools.py` gained `SRCDIR = 'cmd'` and both source joins use
+  it; the docstring and diagnostic text name `cmd/<tool>.obx`. The single
+  `build()` entry point, `_compile`, `_read`, `_symdir`, `_map_error`, `probe`
+  and `BuildError` are unchanged. Still no `-I` and no concatenation.
+- `obo/Makefile` (comment above the `tools` target), `README.md` (status, tree,
+  build/status paths), `obo/tests/io_test.py` (the `tools` section docstring)
+  and the historical FORK records now name `cmd/` or mark the old path as past.
+  `tests/tools.py`, `tests/mutate_io.py` and `tests/run_fork.py` needed no
+  change: they use `build_tools.build` and never spell the source directory.
+- No `programs/` live path remains. The approved design note
+  (`design/stdlib-eza-design-v7.md`) deliberately keeps its pre-P2 `programs/`
+  references as the plan of record and was not edited.
+
+## Gates (this branch)
+
+`make` (seed == `obo`, sha256 `55dab101…`); `make tools`; `tests/tools.py
+--require-reference` 199/199; `--memory` 2/2; `io_test.py --rt --programs
+--tools` 0 failures; `run_fork.py` 1,130 passed; `elf_test.py` ok;
+`port_compare.py` 1,147/1,147 and `OBO_REF=seed/obo port_compare.py`
+1,025/1,025 (live peak 1,636,336 bytes in the worktree, budget 2,000,000);
+`mutate_io.py` 27/27; `port_test.py` 486/486; `mutate_fork.py` 527/549 + 22
+equivalent; `mutate_port.py` 495/495; `sym_test.py` 27/27; `sym_fuzz.py`
+200/200; `doc_check.py` 45 examples; `homes_check.py`; `homes_edge.py` 1,028
+statements, 0 differ.
+
+## Notes and residual risks
+
+The tool binaries have the same sizes as the recorded figures (cat 36,865;
+wc 40,961; sort 45,057); the move changes no tool semantics, and the
+differential gate compares stdout, stderr and exit exactly.
+`io_test.py`'s `--programs` flag names the test-program section (`tests/io` and
+`tests/lib`), not the old tool directory; its spelling is CLI surface and was
+kept. The compatibility functions (`strings::cmpBytes`, `errText`, `digits`,
+`appendPadded`) and `io::writePadded` are still present and still used; P2b
+removes them together with the `fmt`/`errors` switch.

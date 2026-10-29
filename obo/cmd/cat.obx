@@ -3,7 +3,7 @@
 // Built as a module root by tools/build_tools.py: it imports lib/io.obx as
 // `io` and lib/strings.obx as `strings`, and every library name is qualified.
 // The subset is deliberate: -v, -e, -t, -A, -u, long options, --help and
-// --version are unsupported (see programs/README.md).
+// --version are unsupported (see cmd/README.md).
 //
 // The logical stream spans operands: the line number, the blank-line squeeze
 // state and a partially written line continue from one file to the next. A

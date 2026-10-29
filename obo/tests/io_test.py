@@ -14,7 +14,7 @@ Sections (all by default):
             roots importing io.obx, with -I obo/lib and a private sym dir) and
             runs each with its stdin, env and extra arguments; the // expect: and
             // expect-exit: markers are checked as in run_fork.py.
-  tools     builds programs/{cat,wc}.obx with tools/build_tools.py (module
+  tools     builds cmd/{cat,wc}.obx with tools/build_tools.py (module
             roots; nothing is concatenated), checks cat streams a pipe before
             EOF, a 100 KiB binary round trip, wc's line/word/byte counts, and
             both on a file. The full tool semantics live in tests/tools.py.

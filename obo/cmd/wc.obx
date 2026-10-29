@@ -3,7 +3,7 @@
 // Built as a module root by tools/build_tools.py: it imports lib/io.obx as
 // `io` and lib/strings.obx as `strings`, and every library name is qualified.
 // The subset is deliberate: -m, -L, --files0-from, long options,
-// --help and --version are unsupported (see programs/README.md).
+// --help and --version are unsupported (see cmd/README.md).
 //
 // The C-locale word rule is GNU's: whitespace (space, tab, LF, VT, FF, CR) ends
 // a word, a printable byte 0x21..0x7E starts or continues one, and every other
