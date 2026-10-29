@@ -1,20 +1,19 @@
 // sort: sort lines, with -n (exact decimal), -r and -u.
 //
-// Built as a module root by tools/build_tools.py: it imports lib/io.obx as
-// `io`, lib/strings.obx as `strings` and lib/errors.obx as `errors`, and every
-// library name is qualified. It imports no `sort` module: the tool's stable
-// index merge and GNU numeric parser are its own. The subset is deliberate:
+// Built as a module root by tools/build_tools.py: it imports lib/strings.obx as
+// `strings` and lib/errors.obx as `errors`, and every library name is qualified.
+// The subset is deliberate:
 // -k, -t, -f, -b, -d, -i, -M, -h, -V, -s, -c,
 // -C, -o, -m, -z, --parallel, long options, --help and --version are unsupported
 // (see cmd/README.md). The whole input is read before anything is written:
 // an open or read error prints one message and exits 2 with no stdout.
 //
-// Input rules: each operand is split on newlines by readLine; the final partial
-// line is a line and the final newline is optional; an empty file has no lines;
-// "\n" is one empty line. A partial final line is finalized before the next
-// operand starts. Every output line ends with '\n', including a final input line
-// that had none. Lines are opaque bytes and default order is unsigned byte
-// order (LC_ALL=C).
+// Input rules: each operand is split on newlines; the final partial line is a
+// line and the final newline is optional; an empty file has no lines; "\n" is
+// one empty line. A partial final line is finalized before the next operand
+// starts. Every output line ends with '\n', including a final input line that
+// had none. Lines are opaque bytes and default order is unsigned byte order
+// (LC_ALL=C).
 //
 // -n is GNU's exact decimal strnumcmp, not floating point: optional leading
 // blanks (space/tab), an optional '-', digits, and an optional fractional part.
@@ -24,7 +23,7 @@
 // strings, so there is no overflow. A numeric tie uses the whole line as the
 // last-resort comparison; -r reverses that too. -u compares keys only (the whole
 // line, or the numeric value) and keeps the first input occurrence, which a
-// stable index merge makes exact.
+// stable sort makes exact.
 //
 // Errors: a named operand is preflighted (open+close) before any is read, so the
 // first operand that cannot be opened wins even when an earlier one is a
@@ -32,8 +31,25 @@
 // directory read prints `sort: read failed: <p>: <text>` and exits 2. A write
 // error prints `sort: write error` and exits 2 (GNU 9.4 prints two lines there;
 // the harness shape-compares).
+//
+// Performance: the whole input becomes one byte buffer -- readFile for a single
+// regular-file operand, a chunked readFd loop plus one copy for stdin and
+// several operands -- and every line in it is followed by the '\n' that ended
+// it (a synthetic one for a final partial line, or to finalize a partial line
+// before the next operand). A line is therefore a start offset into the buffer,
+// and the byte '\n' is its terminator: no per-line allocation, no lengths.
+// Default order is a stable MSD radix sort over those offsets: ranges partition
+// by byte with a counting pass and a stable scatter, the terminator digit sorts
+// below every byte, insertion sort finishes small ranges, and a range whose
+// elements all share a byte jumps over the whole common prefix instead of
+// paying one pass per byte. One linear pass detects already-ascending and
+// descending input, which then skips the sort entirely. -r reverses the finished
+// order (equal default-order lines are identical, and -u keeps the first input
+// occurrence before the reversal). -n keeps the exact-decimal keys and the
+// stable index merge; a key's tie-break compares buffer ranges, and its lines
+// are materialized one at a time for the parser. Output is assembled in 64 KiB
+// blocks and written with writeFd, so a huge input costs one pass per block.
 
-import "../lib/io.obx" as io
 import "../lib/strings.obx" as strings
 import "../lib/errors.obx" as errors
 
@@ -116,23 +132,209 @@ fn numCompare(keys: &[]NumKey, i: int, j: int): int {
     return c
 }
 
-// Compare the lines at indexes i and j. keyOnly drops the whole-line last-resort
-// comparison for -u. reverse is applied last so it reverses the tie-break too.
-fn cmpAt(lines: &[]string, keys: &[]NumKey, i: int, j: int, opts: &SortOpts, keyOnly: bool): int {
-    var c = 0
-    if opts.numeric {
-        c = numCompare(keys, i, j)
-        if c == 0 && !keyOnly { c = strings::cmp(lines[i], lines[j]) }
-    } else {
-        c = strings::cmp(lines[i], lines[j])
+// One readFd chunk. The reader keeps every chunk until the input buffer has
+// been assembled; see collect.
+type Chunk = ref record {
+    data: []byte
+}
+
+// The input buffer, held in a record so a helper can install a freshly built
+// array through a reference (the language moves ownership, never copies it).
+type ByteBuf = ref record {
+    data: []byte
+}
+
+// Read one descriptor to EOF into chunks. A readFd error stops the read; the
+// caller prints the operand-shaped message.
+fn readChunks(fd: int, mut chunks: &[]Chunk): Result[bool] {
+    while true {
+        let got = try readFd(fd, 65536)
+        if got == nil { return ok(true) }
+        let data = got
+        append(chunks, new Chunk{data: data})
     }
+}
+
+// Read one operand ("-" is stdin) into chunks; false means an error was printed.
+fn readOperand(path: string, mut chunks: &[]Chunk): bool {
+    if path == "-" {
+        let rr = readChunks(stdin(), chunks)
+        match rr {
+            ok { return true }
+            err {
+                eprintln("sort: read failed: -: ", errors::text(rr.code))
+                return false
+            }
+        }
+    }
+    let f = openFile(path, "r")
+    match f {
+        ok {
+            let fd = f.value
+            defer closeFile(fd)
+            let rr = readChunks(fd, chunks)
+            match rr {
+                ok { return true }
+                err {
+                    eprintln("sort: read failed: ", path, ": ", errors::text(rr.code))
+                    return false
+                }
+            }
+        }
+        err {
+            eprintln("sort: cannot read: ", path, ": ", errors::text(f.code))
+            return false
+        }
+    }
+}
+
+// Collect every operand (or stdin when there are none) into one buffer. Operand
+// bytes are concatenated; a newline is inserted between two operands only when
+// the earlier one ended mid-line, so each operand's final partial line is
+// finalized before the next starts. A synthetic final newline terminates a
+// partial last line, so every line in the buffer is '\n'-terminated.
+fn collect(operands: &[]string, mut b: &ByteBuf): bool {
+    var chunks = new []Chunk(0)
+    var marks = new []int(0)          // marks[o] = chunk count after operand o
+    if len(operands) == 0 {
+        if !readOperand("-", chunks) { return false }
+        append(marks, len(chunks))
+    } else {
+        var k = 0
+        while k < len(operands) {
+            if !readOperand(operands[k], chunks) { return false }
+            append(marks, len(chunks))
+            k += 1
+        }
+    }
+    var total = 0
+    var ci = 0
+    while ci < len(chunks) {
+        let data = &chunks[ci].data
+        total += len(data)
+        ci += 1
+    }
+    var out = new []byte(total + len(marks) + 1)
+    var pos = 0
+    var op = 0
+    var first = 0
+    while op < len(marks) {
+        let last = marks[op]
+        var count = 0
+        var c = first
+        while c < last {
+            let data = &chunks[c].data
+            count += len(data)
+            c += 1
+        }
+        if count > 0 {
+            if pos > 0 && out[pos - 1] != '\n' {
+                out[pos] = '\n'
+                pos += 1
+            }
+            c = first
+            while c < last {
+                let data = &chunks[c].data
+                let m = len(data)
+                var i = 0
+                while i < m {
+                    out[pos] = data[i]
+                    pos += 1
+                    i += 1
+                }
+                c += 1
+            }
+        }
+        first = last
+        op += 1
+    }
+    if pos > 0 && out[pos - 1] != '\n' {
+        out[pos] = '\n'
+        pos += 1
+    }
+    truncate(out, pos)
+    b.data = out
+    return true
+}
+
+// The single-operand fast path: a plain regular file is read in one allocation
+// and no copy. false (the collect path then reads it) covers stdin, every other
+// file kind and any readFile failure, so the error messages stay the ones the
+// incremental reader produces.
+fn slurpRegular(path: string, mut b: &ByteBuf): bool {
+    if path == "-" { return false }
+    let st = statPath(path)
+    match st {
+        ok {
+            if (st.value[0] & 0xF000) != 0x8000 { return false }
+        }
+        err { return false }
+    }
+    let got = readFile(path)
+    if got == nil { return false }
+    b.data = got
+    let cur = &b.data
+    let n = len(cur)
+    if n > 0 && cur[n - 1] != '\n' {
+        var padded = new []byte(n + 1)
+        var i = 0
+        while i < n {
+            padded[i] = cur[i]
+            i += 1
+        }
+        padded[n] = '\n'
+        b.data = padded
+    }
+    return true
+}
+
+// Start offset of every line; the buffer is empty or ends with '\n', so every
+// newline but the last starts a line.
+fn lineStarts(buf: &[]byte): []int {
+    var starts = new []int(0)
+    let m = len(buf)
+    if m == 0 { return starts }
+    append(starts, 0)
+    var i = 0
+    while i < m {
+        if buf[i] == '\n' && i + 1 < m { append(starts, i + 1) }
+        i += 1
+    }
+    return starts
+}
+
+// Compare the two '\n'-terminated lines starting at a and b: unsigned byte
+// order, where a terminator sorts below every byte (a prefix is smaller).
+fn cmpLines(buf: &[]byte, a: int, b: int): int {
+    var k = 0
+    while true {
+        let ca = buf[a + k]
+        let cb = buf[b + k]
+        if ca != cb {
+            if ca == '\n' { return -1 }
+            if cb == '\n' { return 1 }
+            if ca < cb { return -1 }
+            return 1
+        }
+        if ca == '\n' { return 0 }
+        k += 1
+    }
+}
+
+// Compare lines i and j for -n. keyOnly (-u) drops the whole-line last-resort
+// comparison; reverse is applied last so it reverses the tie-break too.
+fn cmpAt(buf: &[]byte, starts: &[]int, keys: &[]NumKey, i: int, j: int,
+         opts: &SortOpts, keyOnly: bool): int {
+    var c = numCompare(keys, i, j)
+    if c == 0 && !keyOnly { c = cmpLines(buf, starts[i], starts[j]) }
     if opts.reverse { return -c }
     return c
 }
 
-// Stable bottom-up merge over an index array; a []int auxiliary is copied back
+// Stable bottom-up merge over line indexes; a []int auxiliary is copied back
 // after each run, so equal keys keep their input order.
-fn sortIdx(lines: &[]string, keys: &[]NumKey, n: int, opts: &SortOpts, keyOnly: bool): []int {
+fn sortIdx(buf: &[]byte, starts: &[]int, keys: &[]NumKey, n: int,
+           opts: &SortOpts, keyOnly: bool): []int {
     var order = new []int(n)
     for i in 0..n { order[i] = i }
     if n < 2 { return order }
@@ -149,7 +351,7 @@ fn sortIdx(lines: &[]string, keys: &[]NumKey, n: int, opts: &SortOpts, keyOnly: 
             var b = mid
             var k = lo
             while a < mid && b < hi {
-                let c = cmpAt(lines, keys, order[a], order[b], opts, keyOnly)
+                let c = cmpAt(buf, starts, keys, order[a], order[b], opts, keyOnly)
                 if c <= 0 {
                     aux[k] = order[a]
                     a += 1
@@ -177,20 +379,16 @@ fn sortIdx(lines: &[]string, keys: &[]NumKey, n: int, opts: &SortOpts, keyOnly: 
     return order
 }
 
-// -u: equal keys are adjacent after the sort, so compare each candidate with
-// the last kept one; equality is key-only.
-fn buildKept(lines: &[]string, keys: &[]NumKey, order: &[]int, opts: &SortOpts): []int {
+// -n -u: equal numeric keys are adjacent after the sort, so compare each
+// candidate with the last kept one and keep the first.
+fn buildKept(keys: &[]NumKey, order: &[]int): []int {
     var kept = new []int(0)
     var i = 0
     while i < len(order) {
         var keep = true
-        if opts.unique && len(kept) > 0 {
+        if len(kept) > 0 {
             let last = kept[len(kept) - 1]
-            if opts.numeric {
-                if numCompare(keys, order[i], last) == 0 { keep = false }
-            } else {
-                if strings::cmp(lines[order[i]], lines[last]) == 0 { keep = false }
-            }
+            if numCompare(keys, order[i], last) == 0 { keep = false }
         }
         if keep { append(kept, order[i]) }
         i += 1
@@ -198,27 +396,312 @@ fn buildKept(lines: &[]string, keys: &[]NumKey, order: &[]int, opts: &SortOpts):
     return kept
 }
 
-fn emitLines(mut w: &io::Writer, lines: &[]string, kept: &[]int): Result[bool] {
-    var scratch = new []byte(0)
-    var i = 0
-    while i < len(kept) {
-        let line = lines[kept[i]]
-        for j in 0..len(line) {
-            append(scratch, line[j])
-            if len(scratch) >= 65536 {
-                try io::writeBytes(w, scratch)
-                truncate(scratch, 0)
+// 1 = already ascending, 2 = already descending, 0 = unsorted. One pass; a
+// random input decides after a few comparisons, and ordered input is the win.
+fn detect(buf: &[]byte, order: &[]int): int {
+    let n = len(order)
+    if n < 2 { return 1 }
+    var asc = true
+    var desc = true
+    var i = 1
+    while i < n && (asc || desc) {
+        let c = cmpLines(buf, order[i - 1], order[i])
+        if c > 0 { asc = false }
+        if c < 0 { desc = false }
+        i += 1
+    }
+    if asc { return 1 }
+    if desc { return 2 }
+    return 0
+}
+
+// Insertion sort of a small range whose elements already share bytes [0, d) of
+// their keys; the comparison starts at depth d.
+fn insertionRange(buf: &[]byte, mut order: &[]int, lo: int, hi: int, d: int) {
+    var i = lo + 1
+    while i < hi {
+        let s = order[i]
+        var j = i - 1
+        var stop = false
+        while j >= lo && !stop {
+            let t = order[j]
+            var k = d
+            var shift = false
+            var done = false
+            while !done {
+                let ca = buf[s + k]
+                let cb = buf[t + k]
+                if ca != cb {
+                    if cb == '\n' {
+                        shift = false
+                    } else if ca == '\n' {
+                        shift = true
+                    } else {
+                        shift = cb > ca
+                    }
+                    done = true
+                } else {
+                    if ca == '\n' { done = true } else { k += 1 }
+                }
+            }
+            if !shift {
+                stop = true
+            } else {
+                order[j + 1] = order[j]
+                j -= 1
             }
         }
-        append(scratch, '\n')
-        if len(scratch) >= 65536 {
-            try io::writeBytes(w, scratch)
-            truncate(scratch, 0)
+        order[j + 1] = s
+        i += 1
+    }
+}
+
+const CUTOFF = 20
+
+// Stable MSD radix sort over line start offsets. A digit is byte + 1, with 0
+// for the terminator, so 257 buckets carry unsigned byte order and the
+// terminator sorts below every byte. Ranges of at most CUTOFF elements finish
+// with insertion sort. When every element of a range shares the byte at depth d,
+// the range walks the common prefix with its first element and re-queues at the
+// first differing depth, so a long common prefix costs one pass over its bytes
+// instead of one full counting pass per byte.
+fn radix(buf: &[]byte, mut order: &[]int) {
+    let n = len(order)
+    if n < 2 { return }
+    var aux = new []int(n)
+    var counts = new []int(257)
+    var pos = new []int(257)
+    var cur = new []int(257)
+    var used = new []int(0)
+    var stack = new []int(0)          // (lo, hi, depth) triples
+    append(stack, 0)
+    append(stack, n)
+    append(stack, 0)
+    while len(stack) > 0 {
+        let d = stack[len(stack) - 1]
+        truncate(stack, len(stack) - 1)
+        let hi = stack[len(stack) - 1]
+        truncate(stack, len(stack) - 1)
+        let lo = stack[len(stack) - 1]
+        truncate(stack, len(stack) - 1)
+        let lenr = hi - lo
+        if lenr < 2 { } else if lenr <= CUTOFF {
+            insertionRange(buf, order, lo, hi, d)
+        } else {
+            truncate(used, 0)
+            var i = lo
+            while i < hi {
+                let b = buf[order[i] + d]
+                var c = int(b) + 1
+                if b == '\n' { c = 0 }
+                let old = counts[c]
+                counts[c] = old + 1
+                if old == 0 { append(used, c) }
+                i += 1
+            }
+            if len(used) == 1 {
+                let c = used[0]
+                counts[c] = 0
+                if c != 0 {
+                    // every line has a real byte at d; walk the common prefix
+                    // with the range's first line once, capped at the best so
+                    // far, to find the first depth that can separate them
+                    let p = order[lo]
+                    var best = 1073741824
+                    var i3 = lo + 1
+                    while i3 < hi && best > 0 {
+                        let q = order[i3]
+                        var k = d + 1
+                        let lim = d + 1 + best
+                        while k < lim {
+                            let bp = buf[p + k]
+                            if bp != buf[q + k] { break }
+                            if bp == '\n' { break }
+                            k += 1
+                        }
+                        let l = k - (d + 1)
+                        if l < best { best = l }
+                        i3 += 1
+                    }
+                    append(stack, lo)
+                    append(stack, hi)
+                    append(stack, d + 1 + best)
+                }
+            } else {
+                var running = lo
+                var c = 0
+                while c < 257 {
+                    pos[c] = running
+                    cur[c] = running
+                    running += counts[c]
+                    c += 1
+                }
+                var i2 = lo
+                while i2 < hi {
+                    let s = order[i2]
+                    let b = buf[s + d]
+                    var cc = int(b) + 1
+                    if b == '\n' { cc = 0 }
+                    let at = cur[cc]
+                    aux[at] = s
+                    cur[cc] = at + 1
+                    i2 += 1
+                }
+                var t = lo
+                while t < hi {
+                    order[t] = aux[t]
+                    t += 1
+                }
+                var b2 = 1
+                while b2 < 257 {
+                    if counts[b2] > 1 {
+                        append(stack, pos[b2])
+                        append(stack, pos[b2] + counts[b2])
+                        append(stack, d + 1)
+                    }
+                    b2 += 1
+                }
+                var u = 0
+                while u < len(used) {
+                    counts[used[u]] = 0
+                    u += 1
+                }
+            }
+        }
+    }
+}
+
+fn reverseOrder(mut order: &[]int) {
+    var i = 0
+    var j = len(order) - 1
+    while i < j {
+        let t = order[i]
+        order[i] = order[j]
+        order[j] = t
+        i += 1
+        j -= 1
+    }
+}
+
+// Default-order permutation: ascending, already ordered, or already reversed.
+fn orderDefault(buf: &[]byte, starts: &[]int): []int {
+    var order = new []int(len(starts))
+    for i in 0..len(starts) { order[i] = starts[i] }
+    let kind = detect(buf, order)
+    if kind == 2 { reverseOrder(order) }
+    if kind == 0 { radix(buf, order) }
+    return order
+}
+
+// -u in default order: equal whole lines are identical bytes, so adjacent
+// equality keeps the first input occurrence.
+fn uniqBytes(buf: &[]byte, order: &[]int): []int {
+    var kept = new []int(0)
+    var i = 0
+    while i < len(order) {
+        var keep = true
+        if len(kept) > 0 {
+            let last = kept[len(kept) - 1]
+            if cmpLines(buf, order[i], last) == 0 { keep = false }
+        }
+        if keep { append(kept, order[i]) }
+        i += 1
+    }
+    return kept
+}
+
+// The line at start as an owned string, for the -n parser.
+fn lineString(buf: &[]byte, start: int): string {
+    var out = new []byte(0)
+    var i = start
+    while buf[i] != '\n' {
+        append(out, buf[i])
+        i += 1
+    }
+    return string(out)
+}
+
+fn buildKeys(buf: &[]byte, starts: &[]int): []NumKey {
+    var keys = new []NumKey(0)
+    var i = 0
+    while i < len(starts) {
+        let s = lineString(buf, starts[i])
+        append(keys, parseNum(s))
+        i += 1
+    }
+    return keys
+}
+
+// Write exactly data's bytes; a short count retries the unwritten tail.
+fn writeExactly(fd: int, data: &[]byte): Result[bool] {
+    let n = len(data)
+    var off = 0
+    while off < n {
+        if off == 0 {
+            let w = try writeFd(fd, data)
+            if w <= 0 { return err("", 5) }
+            off += w
+        } else {
+            var rest = new []byte(n - off)
+            var i = off
+            while i < n {
+                rest[i - off] = data[i]
+                i += 1
+            }
+            let w2 = try writeFd(fd, rest)
+            if w2 <= 0 { return err("", 5) }
+            off += w2
+        }
+    }
+    return ok(true)
+}
+
+// Emit the lines at the kept start offsets. Blocks are filled by byte copy and
+// flushed with writeFd; a line longer than a block is written on its own.
+fn emit(fd: int, buf: &[]byte, kept: &[]int): Result[bool] {
+    let nb = len(kept)
+    if nb == 0 { return ok(true) }
+    var block = new []byte(65536)
+    var used = 0
+    var i = 0
+    while i < nb {
+        let s = kept[i]
+        var e = s
+        while buf[e] != '\n' { e += 1 }
+        let need = e - s + 1
+        if used + need > 65536 {
+            if used == 65536 {
+                try writeExactly(fd, block)
+            } else if used > 0 {
+                truncate(block, used)
+                try writeExactly(fd, block)
+                block = new []byte(65536)
+            }
+            used = 0
+            if need > 65536 {
+                var piece = new []byte(need)
+                var t = 0
+                while t < need {
+                    piece[t] = buf[s + t]
+                    t += 1
+                }
+                try writeExactly(fd, piece)
+                i += 1
+                continue
+            }
+        }
+        var k = s
+        while k <= e {
+            block[used] = buf[k]
+            used += 1
+            k += 1
         }
         i += 1
     }
-    try io::writeBytes(w, scratch)
-    try io::flush(w)
+    if used > 0 {
+        truncate(block, used)
+        try writeExactly(fd, block)
+    }
     return ok(true)
 }
 
@@ -251,52 +734,6 @@ fn preflight(operands: &[]string): bool {
         i += 1
     }
     return true
-}
-
-fn collectReader(mut r: &io::Reader, mut lines: &[]string): Result[bool] {
-    while true {
-        let line = try io::readLine(r)
-        if line == nil { return ok(true) }
-        let s = string(line)
-        append(lines, s)
-    }
-}
-
-// Read one operand into lines. A read error prints `read failed` here (a
-// directory is caught this way); an open failure (a preflight race) prints
-// `cannot read`. Returns false to stop the tool with exit 2.
-fn collectOperand(path: string, mut lines: &[]string): bool {
-    if path == "-" {
-        var r = io::newReader(stdin(), 65536)
-        let rr = collectReader(r, lines)
-        match rr {
-            ok { return true }
-            err {
-                eprintln("sort: read failed: -: ", errors::text(rr.code))
-                return false
-            }
-        }
-    }
-    let f = openFile(path, "r")
-    match f {
-        ok {
-            let fd = f.value
-            defer closeFile(fd)
-            var r = io::newReader(fd, 65536)
-            let rr = collectReader(r, lines)
-            match rr {
-                ok { return true }
-                err {
-                    eprintln("sort: read failed: ", path, ": ", errors::text(rr.code))
-                    return false
-                }
-            }
-        }
-        err {
-            eprintln("sort: cannot read: ", path, ": ", errors::text(f.code))
-            return false
-        }
-    }
 }
 
 // Apply one short-option character; false means it is not one of ours.
@@ -340,34 +777,34 @@ fn main() {
 
     if !preflight(operands) { exit(2) }
 
-    var lines = new []string(0)
-    if len(operands) == 0 {
-        if !collectOperand("-", lines) { exit(2) }
-    } else {
-        var k = 0
-        while k < len(operands) {
-            let p = operands[k]
-            if !collectOperand(p, lines) { exit(2) }
-            k += 1
-        }
+    var b = new ByteBuf{data: new []byte(0)}
+    var fast = false
+    if len(operands) == 1 { fast = slurpRegular(operands[0], b) }
+    if !fast {
+        if !collect(operands, b) { exit(2) }
     }
 
-    let n = len(lines)
-    var keys = new []NumKey(0)
+    let buf = &b.data
+    let starts = lineStarts(buf)
+    let n = len(starts)
+    var kept = new []int(0)
     if opts.numeric {
+        let keys = buildKeys(buf, starts)
+        let keyOnly = opts.unique
+        kept = sortIdx(buf, starts, keys, n, opts, keyOnly)
+        if opts.unique { kept = buildKept(keys, kept) }
         var ki = 0
-        while ki < n {
-            let key = parseNum(lines[ki])
-            append(keys, key)
+        while ki < len(kept) {
+            kept[ki] = starts[kept[ki]]
             ki += 1
         }
+    } else {
+        kept = orderDefault(buf, starts)
+        if opts.unique { kept = uniqBytes(buf, kept) }
+        if opts.reverse { reverseOrder(kept) }
     }
-    let keyOnly = opts.unique
-    let order = sortIdx(lines, keys, n, opts, keyOnly)
-    let kept = buildKept(lines, keys, order, opts)
 
-    var w = io::newWriter(stdout(), 65536)
-    let er = emitLines(w, lines, kept)
+    let er = emit(stdout(), buf, kept)
     match er {
         ok { }
         err {
