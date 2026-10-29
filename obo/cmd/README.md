@@ -194,10 +194,10 @@ measured here the shared-prefix file is the one where a comparison sort with
 well, while fixed-width and small-key inputs favor the radix. Peak RSS on the
 9 MB/1,000,000-line file is about 41 MB (GNU `sort` 9.4 pinned to one core
 uses about 59 MB there, and about 137 MB unpinned with its default threads)
-and about 103 MB on the 73 MB file; `-n` uses about 80 MB, and on the numeric
-fixture measures about 230 ms for 8-digit integers and about 310 ms for
-decimal and all-negative data, against GNU `sort`'s 460 ms and 510-520 ms (the
-former key records and stable merge took about 2,500-2,800 ms).
+and about 103 MB on the 73 MB file; `-n` uses about 80-85 MB, and on the
+numeric fixture measures about 210-230 ms for 8-digit integers and about
+270-310 ms for decimal and all-negative data, against GNU `sort`'s 420-460 ms
+and 460-520 ms (the former key records and stable merge took 2,300-2,800 ms).
 
 ## eza (E0 + E1)
 

@@ -67,11 +67,12 @@
 // ascending list (the whole-line tie order included). Ranges of at most
 // CUTOFF elements finish with an insertion sort.
 //
-// Warm-cache medians on one 1,000,000-line fixture (8-digit integers, this
-// host, one CPU): -n about 230 ms against GNU sort 9.4's 460 ms; decimal and
-// all-negative fixtures about 310 ms against GNU's 510-520 ms; the old
-// parser+merge took about 2,700-2,800 ms. Peak RSS is about 80 MB against
-// GNU's 140 MB and the old path's 136 MB.
+// Warm-cache medians on 1,000,000-line fixtures (this host, one CPU): -n
+// about 210-230 ms on fixed 8-digit integers against GNU sort 9.4's
+// 420-460 ms, and about 270-310 ms on decimal and all-negative data against
+// GNU's 460-520 ms; the old parser+merge took 2,300-2,800 ms. Peak RSS on the
+// 9 MB fixture is about 80-85 MB against GNU's 140 MB and the old path's
+// 136 MB (a 41 MB long-integer input peaks at about 111 MB).
 
 import "../lib/errors.obx" as errors
 
