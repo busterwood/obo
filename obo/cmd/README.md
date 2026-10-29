@@ -1,7 +1,8 @@
 # obo command-line tools
 
-The tools written in obo: `cat`, `wc`, `sort` and the `eza` E1 core (P4 E0
-plus P5b colour, tree and `--no-quotes`). Each
+The tools written in obo: `cat`, `wc`, `sort` and the `eza` core (E0 lines
+and restricted long, E1 colour/tree/`--no-quotes`, E2 grid/UTF-8/lossy names).
+Each
 source file here is a module root that imports `../lib/...` modules by explicit
 relative path; every library name is qualified (`io::Writer`, `io::newWriter`,
 `fmt::writePadded`, `errors::text`, ...). `cat`, `wc` and `sort` are headerless
@@ -19,7 +20,7 @@ make eza                   # build build/eza/eza and build/eza/sym
 python3 tools/build_tools.py [cat] [--out DIR] [--obo PATH] [--rt DIR]
 python3 tests/tools.py --require-reference   # the cat/wc/sort differential gate
 python3 tests/tools.py --memory
-python3 tests/eza.py --require-reference     # the eza E0+E1 differential gate
+python3 tests/eza.py --require-reference     # the eza E0/E1/E2 differential gate
 python3 tests/eza.py --memory
 ```
 
@@ -158,32 +159,40 @@ external merge; a huge input can exhaust memory (the runtime exits 2). `-k`,
 `-t`, `-f`, `-b`, `-d`, `-i`, `-M`, `-h`, `-V`, `-s`, `-c`, `-C`, `-o`, `-m`,
 `-z`, `--parallel`, long options, `--help` and `--version` are absent.
 
-## eza (E0 + E1)
+## eza (E0, E1 and E2)
 
 ```
-eza [-1|-T] [E1 flags] [--] [PATH]
-eza -l --bytes --time-style=long-iso (-n | --no-user) [E1 flags] [PATH]
+eza [-1|-T|-G] [E2 flags] [--] [PATH]
+eza -l --bytes --time-style=long-iso (-n | --no-user) [E2 flags] [PATH]
 ```
 
-An eza-0.23.3-compatible binary through phase P5b (design sections 7 and 8).
-It never grids: output is one entry per line (the lines view) or a tree, and —
-since the reference calls `with_link_paths()` in those views — a symlink prints
-`name -> target`. Colour is off unless `--color=always` or an `auto` run on a
-TTY asks for it; `--no-quotes` selects eza's `QuoteStyle::NoQuotes` for the
-outer names while control escapes and symlink-target quoting are unchanged.
-One operand or none; zero operands mean `.` (`eza` on a non-TTY stdin is eza's
+The eza-0.23.3-compatible binary. E0 (P4) is the lines/restricted-long core;
+E1 (P5b) adds colour, tree and `--no-quotes`; E2 (P6b) adds grid, the width
+sources, UTF-8 widths/code-point order and lossy invalid-UTF-8 display.
+Without a terminal-ish width the default view is still E0's **non-TTY**
+lines: stdout is a pipe or file, one entry per line, and — since `lines.rs`
+calls `with_link_paths()` — a symlink prints `name -> target` in every
+lines/long/tree view. A real stdout terminal or a Set width (below) selects
+the grid instead; `-1` turns it back off. Colour is off unless
+`--color=always` or an `auto` run on a real terminal asks for it;
+`--no-quotes` selects eza's `QuoteStyle::NoQuotes` for the outer names while
+control escapes and symlink-target quoting are unchanged. One operand or
+none; zero operands mean `.` (`eza` on a non-TTY stdin is eza's
 stdin-file-name mode, a documented divergence this build does not implement).
 Two or more operands are this build's own usage error. The operand is checked
-with `lstat`, so a dangling symlink operand is listed
-(`link -> target`, broken, no marker), and a directory operand that is a
-symlink to a directory is followed for listing unless `-d` or tree mode.
+with `lstat`, so a dangling symlink operand is listed (`link -> target`,
+broken, no marker), and a directory operand that is a symlink to a directory
+is followed for listing unless `-d` or tree mode.
 
 Supported flags (everything else is rejected, see below):
 
 | Flags | Behaviour |
 |---|---|
-| `-1`, `--oneline` | one per line (the non-TTY default); the last of `-1`/`-l`/`-T` selects the view (a last `-1` makes `-T` a plain listing; a last `-T` with any `-l` is a long tree) |
+| `-1`, `--oneline` | one per line (the non-TTY default); the view rule is: a last `-1` is Lines; otherwise any `-l` makes the view long, with the last of `-T`/`-G` picking long tree / GridDetails (rejected here) / plain long; with no `-l`, the last of `-T`/`-G` picks tree or grid |
 | `-l`, `--long` | restricted long only (below) |
+| `-G`, `--grid` | grid regardless of stdout (width falls back to 80); `-l -G` is this build's unsupported GridDetails error |
+| `-x`, `--across` | fill grid rows left to right instead of down columns; ignored by non-grid views |
+| `-w`, `--width=COLS` | set the console width (a value >= 1; `-w40`, `-w=40`, `-w 40` and `--width=40` are the same option, and a missing value is `Flag -w needs a value`); `0` is Automatic; invalid values use the reference's `Value "..."` wording with ASCII Debug escaping (non-ASCII escapes diverge, below) |
 | `-a`, `--all` | count occurrences; one shows dotfiles, two also synthesizes `.`/`..` |
 | `-A`, `--almost-all` | dotfiles without `.`/`..`; `-A -a` is one `-a`, `-A -aa` shows dots |
 | `-d`, `--treat-dirs-as-files`, `--list-dirs` | describe a directory operand as one entry |
@@ -191,21 +200,22 @@ Supported flags (everything else is rejected, see below):
 | `-r`, `--reverse` | descending comparison; comparator-equal entries keep readdir order (probed) |
 | `-s`, `--sort` | `name`/`filename` (default, natural fold), `Name`/`Filename`, `size`/`filesize`, `modified`/`date`/`time`/`mod`/`new`/`newest`, `extension`/`ext`, `Extension`/`Ext`, `type` |
 | `--group-directories-first`, `--group-directories-last` | stable final grouping; a symlink to a directory counts as a directory; with both, first wins (probed) |
-| `-F`, `--classify[=WHEN]` | `auto`/`never` no marker on non-TTY; `always` adds `*`, `/`, `\|` or `=`; `automatic` only after `=` |
+| `-F`, `--classify[=WHEN]` | `always` adds `*`, `/`, `\|`, `=` or `@`; `auto`/`automatic` add markers only when the run is terminal-ish (a real terminal or a Set width); absent and `never` add none |
 | `-B`, `--bytes`, `-n`, `--numeric`, `--no-user`, `--time-style` | restricted-long columns (below) |
 | `--no-permissions`, `--no-filesize`, `--no-time` | suppress that long column (and its separator) |
 | `-T`, `--tree` | depth-first tree with the reference's `├──`/`└──`/`│` glyphs; links are not descended; `-L` bounds depth |
 | `-L`, `--level` | tree depth (parsed only when the tree action is active; ignored without `-T`, as the probe records) |
-| `--color`, `--colour[=WHEN]` | `always`/`auto`/`automatic`/`never` (bare is auto); the default is auto, or never when `NO_COLOR` is present; an explicit value overrides `NO_COLOR` |
+| `--color`, `--colour[=WHEN]` | `always`/`auto`/`automatic`/`never` (bare is auto); the default is auto, or never when `NO_COLOR` is present; an explicit value overrides `NO_COLOR`. `auto` colours only on a real stdout terminal: `--width`/`COLUMNS` do not colour a pipe (E2 probe) |
 | `--no-quotes` | outer names/targets use NoQuotes (controls still escaped; symlink target names keep QuoteSpaces) |
-| `--icons` | bare/`auto`/`automatic`/`never` are no-ops (icons are out of scope); `always` is this build's unsupported error |
+| `--icons` | always no icons in this build: bare/`auto`/`automatic`/`never` are no-ops, `always` is this build's unsupported error |
 
 Sorting is stable and the golden cases use pairwise comparator-distinct names,
 so readdir order never leaks into a recorded byte. `-r` is the probe-confirmed
 reversed comparison, not a reversal of the finished vector: equal keys and
 comparator-equal names keep their readdir order (`--sort=size -r` on equal
 sizes, `-r` on fold-tied `A`/`a`, and the extension/type name fallbacks were
-probed against the reference). `extension`/`ext` and
+probed against the reference). That holds for lines, long and grid; the tree
+view is the exception (it reverses the whole per-level vector, below). `extension`/`ext` and
 `Extension`/`Ext` use eza's `File::ext` (the substring after the last `.`,
 ASCII-lowercased, `None` before `Some("")`) with the design's two-pass stable
 pipeline and the folded or case-sensitive name fallback respectively; `type`
@@ -344,53 +354,163 @@ keeps the disposition it inherits: E0 installs no handler, so a default parent
 gets the probe's signal 13, while a parent that already ignores SIGPIPE makes a
 closed pipe an EPIPE write error.
 
-**Rejected with this build's own message** (exit 3): grid, across, recurse,
-`--width`, `--follow-symlinks`, `--dereference`, `--absolute`, colour scale,
-ignore globs, git status, the long-view column flags other than the three
+**Rejected with this build's own message** (exit 3): recurse (`-R`),
+`--follow-symlinks`, `--dereference`, `--absolute`, colour scale, ignore
+globs, git status, the long-view column flags other than the three
 suppressions above, `--total-size`, `--hyperlink`, `--mounts`,
 `--octal-permissions`, `--context`, `--stdin`, `--flags`, `--binary`,
 `--header`, `--inode`, `--links`, `-m`/`--modified`, `--changed`,
 `--blocksize`, `-t`/`--time`, `-u`/`--accessed`, `-U`/`--created`,
 `-@`/`--extended`, `--smart-group`, `--group`, `--no-symlinks`,
 `--show-symlinks`, the `--colour-scale*` spellings and `--icons=always`.
-`--help`/`--version`/`-?`/`-v` are not in this build's parser and take the
-ordinary `Unknown argument` path. Values of rejected eza-valid flags are still
-consumed with eza's value mode before the unsupported error (`--width=N`,
-`-I=`, `-L x`).
+E2 adds one more own error: `-l` with `-G` (eza's GridDetails; see below).
+`--help`/`--version`/`-?`/`-v` are not in this parser and take the ordinary
+`Unknown argument` path. Values of rejected eza-valid flags are still consumed
+with eza's value mode before the unsupported error (`-I=`, `-L x`).
 
-**Measured (this P5b branch, merged 0.5 tree).** eza binary 172,033 bytes
-(sha256 `6f0e8472…`; static, runtime included; the reference is 2,294,768).
-On 10,000 entries under `OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, the P5b
-measurements are 2,189,984 live heap bytes / 2,560 KiB max RSS for restricted
-long, 2,189,360 / 2,560 KiB for the name-only listing, 2,190,112 / 2,560 KiB
-for the tree and 2,189,584 / 2,560 KiB for the coloured listing.
-`tests/eza.py --memory` keeps the P4 cap `EZA_PEAK_MAX = 2,752,512` bytes (not
-raised) and still checks no leak/double-close line. GNU time on the same tree
-measures the reference at about 25 MB max RSS (long), 12 MB (names), 14 MB
-(tree) and 12 MB (colour) across runs; that measurement is printed for
-comparison and is not gated.
+**Measured (P6b, merged 0.5 tree).** eza binary 212,993 bytes (static, runtime
+included; the reference is 2,294,768). On 10,000 entries under
+`OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, restricted long peaks at 2,190,032
+live heap bytes, the name-only listing at 2,189,408, the tree at 2,190,160,
+the coloured listing at 2,189,632 and the E2 grid at 2,189,808 (2,560 KiB max
+RSS each; the UTF-8 width table is code, not per-entry heap).
+`tests/eza.py --memory` keeps the P4 `EZA_PEAK_MAX = 2,752,512` bytes and
+gates on no leak/double-close line. GNU time measures the reference at about
+24.6 MB max RSS (long), 12.0 MB (names), 14.2 MB (tree) and 12.1 MB (colour);
+that measurement is printed for comparison and is not gated.
 
-**Deferred/divergences (colour and tree).** Long-column colour is deferred:
-the reference colours the permission, size, date and name cells individually
-(the P0 `color_always_long` probe records exact bytes), but this build leaves
-the long cells plain and colours only the name/target; no long-colour case is
-in the differential matrix (design 8.1). The EZA_COLORS UI keys (`xx`, `or`,
-`pi`/`so`/`bd`/`cd`, permission/size/user/date/git styles and the file-type
-category overrides) are advanced keys and are ignored, as are real glob
-patterns with `?*[]`; unknown LS_COLORS keys are ignored (the reference turns
-them into filename globs, which no E1 fixture matches), and the reference's
-compiled-source heuristic (a `.o` beside its `.c`) and mount-point style are
-not implemented. Plain `-l` is still this build's restricted-long usage
-error, so `-T -l` needs the same `--bytes --time-style=long-iso -n/--no-user`
-flags as any long view. Icons, grid, hyperlinks, non-UTF-8 lossy display (E2)
-and the no-operand stdin mode remain out. The eza theme configuration
+### E2: grid, width sources, UTF-8 and lossy names
+
+**View selection.** eza's `Mode::deduce` is not simply "the last flag wins":
+if the last of `-l`, `-1`, `-T` and `-G` is `-1`, the view is Lines.
+Otherwise, if any `-l` is present, the view is long and the last of `-G`/`-T`
+chooses the subtype: `-T` is a long tree, `-G` is GridDetails (rejected here),
+and neither is plain long. With no `-l` and no last `-1`, the last of
+`-T`/`-G` chooses tree or grid; with no view flag at all, it grids when the
+run is *terminal-ish* and uses lines otherwise. Terminal-ish (`is_a_tty`) is:
+a Set width (`--width` >= 1, or `COLUMNS` present and parsable, including `0`)
+or stdout being a real terminal that reports a non-zero size. It selects the grid and enables automatic
+classify markers; it does **not** enable automatic colour, which still needs
+`io::isTty(1)` (probed: `--width=80 --color=auto` on a pipe is plain).
+Explicit `-G` grids even with no width (the grid then lays out for 80 columns).
+A last `-1` is always the lines view, so `-G -1` prints `name -> target` while
+`-1 -G` grids. A symlink-to-directory operand is listed unless `-d`; every
+grid cell is a name only, never a target. `-x` only changes the grid filling
+order. Grid sorting is the lines/long model: `-r` is a stable descending
+comparison, so comparator-equal entries keep readdir order (probed for
+`--sort=size -r`; the tree view is the one that reverses the whole vector).
+
+**Width sources.** `--width=COLS` is parsed as a `usize` (optional `+`,
+leading zeros; the `invalid digit`/`number too large`/`cannot parse integer`
+wording) and only `>= 1` is Set; `0` is `TerminalWidth::Automatic` and also
+suppresses `COLUMNS`. The short forms `-w40`, `-w=40` and `-w 40` are the same
+option; a missing value is `eza: Flag -w needs a value`. Otherwise a
+valid-Unicode `COLUMNS` is Set, `0` included; an invalid-UTF-8 `COLUMNS` is
+ignored like eza's failed `into_string`. The displayed bad value uses Rust
+Debug escaping for ASCII quote, backslash, NUL, tab/newline/CR, other C0 and
+DEL; Rust also escapes non-ASCII non-printables (`\u{a0}`, combining marks,
+format controls, U+0085, U+2028, U+FEFF) as `\u{...}`, which this build copies
+raw (documented divergence; the `width_nonascii_escape` probe records the
+reference). Automatic width is the `io::termWidth(1)` value when stdout is a
+terminal and the report has non-zero rows and columns, else unknown; the grid
+renderer falls back to 80 only for an unknown width (an explicit `-G`).
+`terminal_size` returns `None` for a zero row **or** zero column report; the
+`io::termWidth` slot exposes only the column count. A zero-column terminal is
+therefore not terminal-ish (probed). A rows=0 terminal is also not
+terminal-ish in the reference: the default view is Lines, explicit `-G` still
+grids, and automatic classify markers stay off in every view (grid, lines,
+tree and long), while automatic colour still follows the real stdout isatty.
+This build cannot see the row count, so it treats such a terminal as
+terminal-ish: it grids by default and adds automatic classify markers where
+the reference adds none (accepted 0.5-runtime limitation; `pty_zero_rows*` in
+`E2-PROBES.md` records the reference bytes). Widths above `GRID_WIDTH_CAP`
+(2^40) are clamped; the reference panics from an internal `usize` overflow for
+values within two of `usize::MAX`, and this build deliberately prints a
+one-row grid instead of reproducing a panic.
+
+**Layout.** The reference uses `uutils_term_grid 0.7.0` with
+`Filling::Spaces(2)`. One cell is one row/column; if the widest cell plus two
+does not fit the width, the grid is one column and names are printed in full
+(no truncation or wrapping); otherwise the column count starts at the lower
+bound that would fit if every column were the widest and increases while the
+recomputed per-column maxima plus two spaces per gap still fit, keeping the
+**last** fitting count. `TopToBottom` fills columns down (`-x` fills rows
+across); a row's last cell is never padded and a short final column has no
+trailing spaces. Cell width is `strings::displayWidth` of the plain quoted
+name plus its marker: ANSI bytes and UTF-8 continuation bytes never count.
+The layout rules were checked against the reference for every grid fixture at
+widths 1..200 and both directions (the scratch model matched byte for byte).
+
+**Grid names and markers.** Quoting and control escaping are the lines rule.
+The classify marker goes on the **link** (`link@`, `broken@`, `dir/`,
+`prog*`, `pipe|`, `sock=`), never on a target, and the grid never prints
+`-> target`. With colour, a broken link's whole name takes the broken style
+(red) because its target is not shown; a valid link stays cyan, and the marker
+is a plain bit after the styled name. `--width`/`COLUMNS` enable bare `-F`
+markers; explicit `-F=always` and `-F=never` behave as in E1.
+
+**UTF-8.** `strings::displayWidth` decodes UTF-8 and applies
+unicode-width 0.1.14's per-character widths, the crate behind ansi-width
+(which eza's grid uses): controls 0, combining/zero-width 0, East Asian
+wide/fullwidth and emoji 2, everything else 1, and U+17D8 width 3. The width
+table is a generated range chain in `lib/strings.obx` (U+00A0..U+10FFFF
+enumerated against the crate); it was verified over every Unicode scalar value
+by hashing the per-code-point widths on both sides (identical hash and counts:
+6,261 zero-width, 923,290 width-1, 182,512 width-2, one width-3). The crate's
+string-level ligature rules do not apply because ansi-width measures each
+decoded character. `natcmp`/
+`natcmpFold` decode code points (invalid bytes compare as U+FFFD), skip Rust
+`char::is_whitespace` (ASCII and Unicode whitespace), compare ASCII digit runs
+naturally and otherwise compare code points. Folding is simple
+single-code-point lowercase for ASCII, Latin-1, Latin Extended-A, basic Greek,
+basic Cyrillic and fullwidth A-Z; Rust's full `to_lowercase()` also expands
+some characters into several (U+0130) and covers every script, which is the
+documented divergence: outside the implemented blocks 1,234 scalar values
+(542 ranges) still compare unfolded, and U+0130 — the only multi-character
+expansion — is left unfolded. A pairwise matrix of the curated
+ASCII/Greek/Cyrillic/fullwidth/whitespace strings was checked against
+natord-plus-plus 2.0.0 itself; every pair agrees except the U+0130 pairs.
+
+**Lossy non-UTF-8.** eza's `File.name` and target names are
+`to_string_lossy()`: display, quoting and sorting use the lossy string
+(U+FFFD per invalid maximal subpart), while path lookup keeps the raw bytes.
+`strings::lossy` implements Rust's maximal-subpart rule exactly (one U+FFFD
+for `0xFF`, one for a truncated `E2 82` at the end, one plus `(` for
+`E2 82 28`, one per byte of an overlong/surrogate start, and so on). The
+`utf8bad` fixture covers a lone continuation byte, a bad continuation, a
+truncated 3- and 4-byte prefix, two invalid bytes, a valid UTF-8 neighbour,
+and broken/valid symlink targets with invalid bytes; its goldens are exact
+and host independent.
+
+**GridDetails.** eza's `-l` with `-G` (either order, when the last of
+`-G`/`-T` is `-G`) is `Mode::GridDetails`, long table rows arranged in grid
+columns. This build implements grid and restricted long separately and
+rejects the combination with `option '--grid' with -l is not supported by this
+build` (exit 3, own golden). `-l -G -T` is a long tree and remains supported
+(the last of `-G`/`-T` is `-T`). Icons stay out: every grid test passes
+`--icons=never`, because a terminal-ish width would otherwise make bare
+`--icons` render glyphs in the reference; this build never shows icons.
+
+**Deferred/divergences (colour, tree and E2).** Long-column colour is
+deferred: the reference colours the permission, size, date and name cells
+individually (the P0 `color_always_long` probe records exact bytes), but this
+build leaves the long cells plain and colours only the name/target; no
+long-colour case is in the differential matrix (design 8.1). The EZA_COLORS UI
+keys (`xx`, `or`, `pi`/`so`/`bd`/`cd`, permission/size/user/date/git styles and
+the file-type category overrides) are advanced keys and are ignored, as are
+real glob patterns with `?*[]`; unknown LS_COLORS keys are ignored (the
+reference turns them into filename globs, which no fixture matches), and the
+reference's compiled-source heuristic (a `.o` beside its `.c`) and mount-point
+style are not implemented. Plain `-l` is still this build's restricted-long
+usage error, so `-T -l` needs the same `--bytes --time-style=long-iso
+-n/--no-user` flags as any long view. Icons, hyperlinks, eza's GridDetails
+(`-l` with `-G`) and the no-operand stdin mode remain out; grid, UTF-8 widths,
+code-point ordering and lossy display are E2. The eza theme configuration
 (`EZA_CONFIG_DIR`, `XDG_CONFIG_HOME` and `~/.config/eza/theme.yml`) is not
-read: the built-in palette and the environment subset always apply. On a TTY
-this build still prints
-lines (never a grid) and `-F`'s auto mode stays marker-free, while colour
-`auto` does use `isatty(stdout())` as above. The P5b re-probes with exact SGR and
-tree bytes are in `tests/eza/E1-PROBES.md` (same pinned binary sha256 as
-`REFERENCE.md`).
+read: the built-in palette and the environment subset always apply. The P5b
+and P6b re-probes with exact SGR, tree, grid, width and UTF-8 bytes are in
+`tests/eza/E1-PROBES.md` and `tests/eza/E2-PROBES.md` (same pinned binary
+sha256 as `REFERENCE.md`).
 
 ## Diagnostics and divergences
 
@@ -412,6 +532,12 @@ to quote-free operand names (successful operands may contain spaces). An empty
 operand is outside the matrix: `openFile` rejects it with `EINVAL`, so ours says
 `cat: : Invalid argument` where GNU prints a quoted empty name. `SIGPIPE` keeps
 its default disposition, so `sort | head` behaves like coreutils.
+
+An eza missing-operand error whose name contains invalid UTF-8 bytes is printed
+by `errors::debugPath`, which copies the raw bytes; the reference uses Rust's
+`{path:?}`, which Debug-escapes invalid bytes and control characters. P6b does
+not change `lib/errors.obx`, so this inherited P2 limitation remains and such
+operands are outside the exact error cases.
 
 ## Metadata (P3) and the path limit
 

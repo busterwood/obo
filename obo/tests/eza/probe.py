@@ -22,8 +22,9 @@ options, quoting, classify, restricted long, errors/exit, symlink operands,
 colour/icons, grid/--width, tree, environment variables, DT_UNKNOWN) plus an
 invalid-UTF-8 group from sections 3.3 and 8.4, a stdin group that records
 the observed no-operand stdin behaviour (design section 7.2 contradiction),
-and the P5b E1 re-probe group (the exact colour palette, the LS/EZA subset,
-the tree view-flag rules and --no-quotes).
+the P5b E1 re-probe group (the exact colour palette, the LS/EZA subset, the
+tree view-flag rules and --no-quotes) and the P6b E2 re-probe group (grid
+layout and view rules, --width/COLUMNS, UTF-8 widths and folds, lossy names).
 
 The ``absolute`` fixture tree and the ``pinned`` directory-metadata probes are
 live/shape-only: they are expected host data and never become committed
@@ -77,6 +78,7 @@ GROUPS = [
     ('utf8', '17. Invalid-UTF-8 names (sections 3.3/8.4; E2)'),
     ('stdin', '18. Stdin file-name mode and the no-operand behaviour'),
     ('e1', '19. E1 re-probes (P5b: colour, tree, --no-quotes)'),
+    ('e2', '20. E2 re-probes (P6b: grid, width sources, UTF-8, lossy names)'),
 ]
 
 
@@ -768,13 +770,256 @@ def e1_probes():
     ]
 
 
+def e2_probes():
+    """The P6b re-probes: grid layout at pinned widths (short, long, mixed),
+    -x, -1 and the -G/-T/-l view rules, every width source (--width and
+    COLUMNS with their parse errors), the terminal-ish automatic classify but
+    not automatic colour, grid symlink/marker/quoting/broken-colour rules,
+    real-TTY grids on a pty, valid UTF-8 widths and sort orders, simple
+    lowercase folding, Unicode whitespace ties, and lossy invalid-UTF-8 names
+    and targets. Every grid probe passes --icons=never, including the pty
+    probes. The pty_zero_rows_* probes pin the reference's rows=0 terminal,
+    which io::termWidth cannot see (0.5-runtime limitation). Run with
+    ``--only e2`` for a separate report."""
+    return [
+        # layout: 1/2/10/100 short, 10/100 long and mixed lengths
+        _p('e2', 'width_20_grid10', '--width=20', '--icons=never', 'grid10'),
+        _p('e2', 'width_40_grid10', '--width=40', '--icons=never', 'grid10'),
+        _p('e2', 'width_20_grid100', '--width=20', '--icons=never', 'grid100'),
+        _p('e2', 'width_40_grid100', '--width=40', '--icons=never', 'grid100'),
+        _p('e2', 'width_80_grid100', '--width=80', '--icons=never', 'grid100'),
+        _p('e2', 'width_120_grid100', '--width=120', '--icons=never',
+           'grid100'),
+        _p('e2', 'width_20_gridlong10', '--width=20', '--icons=never',
+           'gridlong10', note='the widest name does not fit: one full name '
+                              'per line, no truncation'),
+        _p('e2', 'width_40_gridlong10', '--width=40', '--icons=never',
+           'gridlong10'),
+        _p('e2', 'width_40_gridlong100', '--width=40', '--icons=never',
+           'gridlong100'),
+        _p('e2', 'width_80_gridlong100', '--width=80', '--icons=never',
+           'gridlong100'),
+        _p('e2', 'width_20_gridmix', '--width=20', '--icons=never', 'gridmix'),
+        _p('e2', 'width_40_gridmix', '--width=40', '--icons=never', 'gridmix'),
+        _p('e2', 'width_1_mixed', '--width=1', '--icons=never', 'mixed',
+           note='width 1 is a real grid: one cell per line, no link targets'),
+        _p('e2', 'width_2_gridmix', '--width=2', '--icons=never', 'gridmix'),
+        _p('e2', 'width_40_x_gridmix', '-x', '--width=40', '--icons=never',
+           'gridmix', note='-x fills left to right'),
+        _p('e2', 'width_20_x_grid10', '-x', '--width=20', '--icons=never',
+           'grid10'),
+        _p('e2', 'width_40_mixed', '--width=40', '--icons=never', 'mixed',
+           note='grid never shows ` -> target`'),
+        _p('e2', 'width_40_quoting', '--width=40', '--icons=never',
+           'quoting', note='cells are quoted/escaped names'),
+        # view rules
+        _p('e2', 'G_fallback_grid100', '-G', '--icons=never', 'grid100',
+           note='explicit -G with no width uses the 80-column fallback'),
+        _p('e2', 'G_oneline_last', '-G', '-1', '--icons=never', 'mixed'),
+        _p('e2', 'oneline_then_G', '-1', '-G', '--icons=never', 'mixed'),
+        _p('e2', 'tree_then_G', '-T', '-G', '--icons=never', 'grid10',
+           note='the last of -G/-T wins'),
+        _p('e2', 'G_then_tree', '-G', '-T', '--icons=never', 'grid10'),
+        _p('e2', 'long_oneline_G', '-l', '-G', '-1', '--icons=never',
+           'mixed'),
+        _p('e2', 'lG_grid10', '-l', '-G', '--no-user', '--bytes',
+           '--time-style=long-iso', '--icons=never', 'grid10',
+           note='eza GridDetails: long rows in grid columns; out of E2 scope '
+                'and rejected by this build'),
+        _p('e2', 'Gl_grid10', '-G', '-l', '--no-user', '--bytes',
+           '--time-style=long-iso', '--icons=never', 'grid10'),
+        _p('e2', 'G_l_T', '-G', '-l', '-T', '--no-user', '--bytes',
+           '--time-style=long-iso', '--icons=never', 'grid2',
+           note='the last of -G/-T is -T: a long tree'),
+        _p('e2', 'l_G_T', '-l', '-G', '-T', '--no-user', '--bytes',
+           '--time-style=long-iso', '--icons=never', 'grid2'),
+        # width sources and parse results
+        _p('e2', 'width_0_mixed', '--width=0', '--icons=never', 'mixed',
+           note='--width=0 is Automatic: non-TTY Lines, targets shown'),
+        _p('e2', 'G_width_0', '-G', '--width=0', '--icons=never', 'grid10'),
+        _p('e2', 'width_plus_40', '--width=+40', '--icons=never', 'grid10'),
+        _p('e2', 'width_leading_zero', '--width=040', '--icons=never',
+           'grid10'),
+        _p('e2', 'width_short_attached', '-w40', '--icons=never', 'grid10'),
+        _p('e2', 'width_short_equals', '-w=40', '--icons=never', 'grid10'),
+        _p('e2', 'width_short_missing', '-w'),
+        _p('e2', 'width_short_next', '-w', 'grid10',
+           note='the next token is the value, not an operand'),
+        _p('e2', 'width_x', '--width=x', 'grid10'),
+        _p('e2', 'width_negative', '--width=-1', 'grid10'),
+        _p('e2', 'width_empty_value', '--width', '', 'grid10'),
+        _p('e2', 'width_empty_equals', '--width=', 'grid10'),
+        _p('e2', 'width_double_equals', '--width==', 'grid10'),
+        _p('e2', 'width_too_large', '--width=18446744073709551616', 'grid10'),
+        _p('e2', 'width_plus', '--width=+', 'grid10',
+           note='Rust usize::from_str: "+" alone is InvalidDigit, not Empty'),
+        _p('e2', 'width_quote', '--width=a"b', 'grid10',
+           note='FailedParse Debug-escapes the displayed value'),
+        _p('e2', 'width_nonascii_escape', '--width=a\u00a0b', 'grid10',
+           note='Rust Debug escapes non-ASCII non-printables as \\u{a0}; the '
+                'build copies them raw (documented divergence)'),
+        _p('e2', 'columns_plus', 'grid10', env={'COLUMNS': '+'}),
+        _p('e2', 'columns_quote', 'grid10', env={'COLUMNS': 'a"b'}),
+        _p('e2', 'columns_control', 'grid10', env={'COLUMNS': 'a\tb'}),
+        _p('e2', 'columns_40_grid100', '--icons=never', 'grid100',
+           env={'COLUMNS': '40'}),
+        _p('e2', 'columns_0_mixed', '--icons=never', 'mixed',
+           env={'COLUMNS': '0'},
+           note='COLUMNS=0 is Set(0): a real grid, one column'),
+        _p('e2', 'columns_plus40', '--icons=never', 'grid10',
+           env={'COLUMNS': '+40'}),
+        _p('e2', 'columns_over_width', '--width=20', '--icons=never',
+           'grid10', env={'COLUMNS': '80'},
+           note='--width wins over COLUMNS'),
+        _p('e2', 'columns_width_0', '--width=0', '--icons=never', 'grid10',
+           env={'COLUMNS': '40'},
+           note='--width=0 still suppresses COLUMNS'),
+        _p('e2', 'columns_x', '--icons=never', 'grid10',
+           env={'COLUMNS': 'x'}),
+        _p('e2', 'columns_empty', '--icons=never', 'grid10',
+           env={'COLUMNS': ''}),
+        _p('e2', 'columns_negative', '--icons=never', 'grid10',
+           env={'COLUMNS': '-1'}),
+        # terminal-ish auto modes: classify yes, colour no
+        _p('e2', 'width_classify_auto', '--width=40', '-F', '--icons=never',
+           'mixed'),
+        _p('e2', 'width_classify_always', '--width=40', '-F=always',
+           '--icons=never', 'mixed'),
+        _p('e2', 'width_classify_never', '--width=40', '-F=never',
+           '--icons=never', 'mixed'),
+        _p('e2', 'G_classify_no_width', '-G', '-F', '--icons=never', 'mixed',
+           note='explicit -G without a width is not terminal-ish: no markers'),
+        _p('e2', 'columns_classify', '-F', '--icons=never', 'mixed',
+           env={'COLUMNS': '40'}),
+        _p('e2', 'columns_colour_auto', '--color=auto', '--icons=never',
+           'mixed', env={'COLUMNS': '40'},
+           note='Set width grids but automatic colour still needs a real '
+                'stdout TTY'),
+        _p('e2', 'width_colour_auto', '--width=80', '--color=auto',
+           '--icons=never', 'mixed'),
+        _p('e2', 'width_colour_always', '--width=80', '--color=always',
+           '--icons=never', 'mixed',
+           note='broken links are red, links cyan; no targets'),
+        _p('e2', 'width_colour_F', '--width=80', '--color=always', '-F=always',
+           '--icons=never', 'mixed', note='the marker is a plain bit on the '
+                                           'styled link name'),
+        _p('e2', 'width_colour_links', '--width=80', '--color=always',
+           '--icons=never', 'links'),
+        _p('e2', 'width_colour_aa', '--width=40', '--color=always', '-aa',
+           '--icons=never', 'mixed'),
+        _p('e2', 'width_aa_F', '--width=40', '-aa', '-F', '--icons=never',
+           'mixed', note='synthetic `.`/`..` are grid cells and take the / '
+                         'marker'),
+        _p('e2', 'width_no_quotes', '--width=40', '--no-quotes',
+           '--icons=never', 'quoting'),
+        _p('e2', 'width_quoting_F', '--width=40', '-F=always', '--icons=never',
+           'quoting'),
+        _p('e2', 'width_d_dir_F', '--width=80', '-d', '-F=always',
+           '--icons=never', 'mixed/dir'),
+        _p('e2', 'width_dangling', '--width=80', '--icons=never',
+           'links/dangling', note='a single symlink operand grids its name '
+                                  'only'),
+        _p('e2', 'width_dangling_F', '--width=80', '-F=always',
+           '--icons=never', 'links/dangling'),
+        _p('e2', 'width_dangling_colour', '--width=80', '--color=always',
+           '--icons=never', 'links/dangling'),
+        _p('e2', 'width_dirlink_d_F', '--width=80', '-d', '-F=always',
+           '--icons=never', 'links/realdirlink'),
+        # real TTY grids (live/shape-only)
+        _p('e2', 'pty_grid_80', '--icons=never', 'grid10', mode='pty',
+           cols=80),
+        _p('e2', 'pty_grid_40', '--icons=never', 'grid10', mode='pty',
+           cols=40),
+        _p('e2', 'pty_grid_20', '--icons=never', 'grid10', mode='pty',
+           cols=20),
+        _p('e2', 'pty_zero_cols', '--icons=never', 'mixed', mode='pty',
+           cols=0, note='a zero column report is not terminal-ish: Lines mode'),
+        _p('e2', 'pty_zero_rows', '--icons=never', 'mixed', mode='pty',
+           cols=80, rows=0,
+           note='rows=0 cols=80: terminal_size is None, so the reference '
+                'stays in Lines mode (colour auto on, no automatic classify). '
+                'io::termWidth exposes only the column count, so this build '
+                'sees cols=80, grids by default and enables auto classify '
+                '(0.5-runtime limitation, documented)'),
+        _p('e2', 'pty_zero_rows_F', '-G', '-F', '--icons=never', 'mixed',
+           mode='pty', cols=80, rows=0,
+           note='rows=0: explicit -G grids, but is_a_tty is false so the '
+                'reference adds no auto-classify markers; this build sees '
+                'cols=80 and adds them (documented)'),
+        _p('e2', 'pty_zero_rows_lines_F', '-1', '-F', '--icons=never',
+           'mixed', mode='pty', cols=80, rows=0,
+           note='rows=0: the reference Lines view has no automatic markers; '
+                'this build adds them (documented)'),
+        _p('e2', 'pty_zero_rows_tree_F', '-T', '-F', '--icons=never', 'tree',
+           mode='pty', cols=80, rows=0,
+           note='rows=0: the reference tree has no automatic markers; this '
+                'build adds them (documented)'),
+        _p('e2', 'pty_zero_rows_long_F', '-l', '--no-user', '--bytes',
+           '--time-style=long-iso', '-F', '--icons=never', 'mixed',
+           mode='pty', cols=80, rows=0,
+           note='rows=0: the reference restricted long view has no automatic '
+                'markers; this build adds them (documented)'),
+        _p('e2', 'pty_colour_mixed', '--icons=never', 'mixed', mode='pty',
+           cols=80, note='auto colour and grid on a real terminal'),
+        _p('e2', 'pty_F_mixed', '-F', '--icons=never', 'mixed', mode='pty',
+           cols=80),
+        _p('e2', 'pty_columns_20', '--icons=never', 'grid10', mode='pty',
+           cols=80, env={'COLUMNS': '20'}),
+        _p('e2', 'pty_width_40', '--width=40', '--icons=never', 'grid10',
+           mode='pty', cols=80),
+        _p('e2', 'pty_width_0', '--width=0', '--icons=never', 'grid10',
+           mode='pty', cols=40),
+        _p('e2', 'pty_oneline', '-1', '--icons=never', 'grid10', mode='pty',
+           cols=40),
+        # UTF-8 widths, order and folding
+        _p('e2', 'utf8_default', '--icons=never', 'utf8',
+           note='code point order: a, e+U+0301, f, e-acute, omega, CJK, '
+                'halfwidth katakana, emoji'),
+        _p('e2', 'utf8_Name', '--sort=Name', '--icons=never', 'utf8'),
+        _p('e2', 'utf8_grid_10', '--width=10', '--icons=never', 'utf8',
+           note='e-acute width 1, CJK/emoji width 2, combining sequence '
+                'width 1'),
+        _p('e2', 'utf8_grid_12', '--width=12', '--icons=never', 'utf8'),
+        _p('e2', 'utf8_grid_20', '--width=20', '--icons=never', 'utf8'),
+        _p('e2', 'utf8_grid_40', '--width=40', '--icons=never', 'utf8'),
+        _p('e2', 'utf8_columns_12', '--icons=never', 'utf8',
+           env={'COLUMNS': '12'}),
+        _p('e2', 'utf8_fold_default', '--icons=never', 'utf8fold',
+           note='sigma/Cyrillic/fullwidth lowercasing; tie order is readdir'),
+        _p('e2', 'utf8_fold_Name', '--sort=Name', '--icons=never', 'utf8fold'),
+        _p('e2', 'utf8_tie_default', '--icons=never', 'utf8tie',
+           note='E-acute/e-acute fold tie: readdir order'),
+        _p('e2', 'utf8_tie_Name', '--sort=Name', '--icons=never', 'utf8tie'),
+        _p('e2', 'utf8_ws_default', '--icons=never', 'utf8ws',
+           note='ASCII space, NBSP, EM SPACE and IDEOGRAPHIC SPACE all '
+                'compare Equal: readdir order'),
+        # lossy invalid UTF-8
+        _p('e2', 'bad_list', '--icons=never', 'utf8bad', requires=('invalid_utf8',),
+           note='one U+FFFD per maximal invalid subpart'),
+        _p('e2', 'bad_Name', '--sort=Name', '--icons=never', 'utf8bad',
+           requires=('invalid_utf8',)),
+        _p('e2', 'bad_long', *LONG, '--icons=never', 'utf8bad',
+           requires=('invalid_utf8',),
+           note='lossy names and lossy symlink targets'),
+        _p('e2', 'bad_grid_20', '--width=20', '--icons=never', 'utf8bad',
+           requires=('invalid_utf8',),
+           note='grid width counts replacements as width 1'),
+        _p('e2', 'bad_grid_40', '--width=40', '--icons=never', 'utf8bad',
+           requires=('invalid_utf8',)),
+        _p('e2', 'bad_colour', '--color=always', '--icons=never', 'utf8bad',
+           requires=('invalid_utf8',)),
+        _p('e2', 'bad_F', '-F=always', '--icons=never', 'utf8bad',
+           requires=('invalid_utf8',)),
+    ]
+
+
 def static_probes():
     probes = []
     for fn in (version_probes, default_probes, dotfiles_probes, dirs_probes,
                names_probes, sort_probes, quoting_probes, classify_probes,
                long_probes, errors_probes, symlinks_probes, colour_probes,
                grid_probes, tree_probes, environment_probes, stdin_probes,
-               utf8_probes, e1_probes):
+               utf8_probes, e1_probes, e2_probes):
         probes.extend(fn())
     return probes
 
@@ -1352,14 +1597,36 @@ no equal names in recordable trees, and the size/time sort keys are distinct.
   `quoting/broken_relative_long`, `classify/F_long_links`,
   `dirs/d_long_file`, `dirs/d_long_dir`, `dirs/d_long_symlink`) then skips
   rather than absorb an `@` marker.
-- The invalid-UTF-8 shape case stays probe-only until an E2 shape mode
-  exists; there is no shape-comparison runner in P0.
+- Invalid-UTF-8 display is now covered by exact E2 goldens (the `utf8`
+  family) whenever the fixture can create invalid names; the P0 `utf8` probes
+  remain raw-shape evidence. There is still no shape-comparison runner: that
+  means there is no shape oracle, not that lossy display is untested.
 - REFERENCE.md is not byte-for-byte reproducible: the host manifest records
   live host data (e.g. `/proc` entry counts). That is accepted.
 
+- A rows=0 terminal is invisible to `io::termWidth`, which exposes only the
+  column count. The reference's `terminal_size` requires non-zero rows and
+  columns, so with rows=0 it is not terminal-ish: the default view is Lines,
+  explicit `-G` still grids, and automatic classify markers stay off in every
+  view. This build sees the columns and treats the run as terminal-ish (grid
+  by default and auto markers). The `pty_zero_rows*` probes record the
+  reference bytes; this is an accepted 0.5-runtime limitation and no
+  differential case sets rows=0.
+- Rust's `{:?}` Debug escaping of an option value also escapes non-ASCII
+  non-printables (`\\u{a0}`, combining marks, format controls, U+0085,
+  U+2028, U+FEFF) as `\\u{...}`; `debugText` copies such bytes raw. ASCII
+  quote, backslash, NUL, tab/newline/CR, other C0 and DEL are escaped
+  identically. `width_nonascii_escape` records the reference; the divergence
+  is documented.
+- `errors::debugPath` prints an operand's raw bytes in a missing-operand
+  error; the reference's `{path:?}` Debug-escapes invalid UTF-8 and controls.
+  This is an inherited P2 limitation outside P6b's files.
+
 Note for reviewers: `git diff --check` flags trailing whitespace in
-`long/dir_mode000.stderr` (the permission summary line ends with a space).
-That is an exact reference byte, not formatting; do not edit it.
+`long/dir_mode000.stderr` (the permission summary line ends with a space) and
+in `grid/quoting_noquotes_width.stdout` line 2 (`trail ` is a NoQuotes cell
+that keeps its trailing space). Both are exact reference bytes, not
+formatting; do not edit them.
 """
 
 

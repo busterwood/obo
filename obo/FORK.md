@@ -4990,3 +4990,96 @@ equivalent; `tests/port_test.py` 520/520; `tests/sym_test.py` 27/27;
 refused / 0 differ; `tests/meta_test.py` 32; `bench/bench.py`.
 `tests/mutate_port.py` was started but stopped mid-run and is **not**
 claimed.
+
+# eza E2: grid, width sources, UTF-8 and lossy names (P6b, done)
+
+The eza/stdlib design v7 sections 8.3/8.4, 9 and 10, on a tree that merges
+`eza-p5b` HEAD `036174d` (the `021f4ee` E1 review fixes plus main `cc6c420`,
+including the P6a review nits and the promoted 0.5 seed) into the P6b branch.
+P6b makes no compiler, runtime, seed or Makefile change; the merge's only
+non-eza files are main's P6a review fixes and seed, which were already
+reviewed on their own branches.
+
+**What changed.** `lib/strings.obx` gains a UTF-8 decoder (`utf8Step`), Rust
+`from_utf8_lossy` maximal-subpart `lossy()`, `isValidUtf8`, display widths
+(`displayWidth`, `quotedWidth`) from a generated unicode-width 0.1.14 range
+table (the crate behind ansi-width, which eza's grid measures with), and
+code-point `natcmp`/`natcmpFold` with Rust `char::is_whitespace` skipping and
+simple lowercase (ASCII, Latin-1, Latin Extended-A, basic Greek/Cyrillic,
+fullwidth A-Z). The table was verified over every Unicode scalar value against
+the crate (identical hash and counts: 6,261 zero-width, 923,290 width-1,
+182,512 width-2, one width-3); the folded comparator leaves 1,234 scalar
+values (542 ranges) outside its blocks unfolded, with U+0130 the only
+multi-character expansion left unfolded (a pairwise natcmp matrix against
+natord-plus-plus 2.0.0 agrees except the U+0130 pairs).
+`cmd/eza.obx` gains eza's `Mode::deduce` view rules (a last `-1` is Lines;
+otherwise any `-l` is a long view whose subtype is chosen by the last of
+`-T`/`-G` — long tree, GridDetails/rejected, or plain long — and with no `-l`
+the last of `-T`/`-G` picks tree or grid; no view flag grids when
+terminal-ish), `TerminalWidth` (`--width` >= 1
+Set, 0 Automatic and suppressing `COLUMNS`; `COLUMNS` Set including 0;
+invalid-UTF-8 COLUMNS ignored; automatic width from `io::termWidth(1)` only
+on a non-zero terminal, else the 80 fallback for explicit `-G`), automatic
+classify from the same terminal-ish flag but automatic colour from real
+stdout isatty, the uutils_term_grid 0.7.0 layout (2-space filling, TTB or `-x`,
+last fitting column count, no truncation, unpadded last column), grid cells
+with the marker on the link and the broken-link name in the broken style, and
+lossy names/operand parents/targets for display, sorting, ext keys and colour
+while raw bytes stay for lookup. `-l` with `-G` (GridDetails) is rejected with
+this build's own message. A rows=0 terminal is invisible to `io::termWidth`
+(only columns are exposed): the reference treats it as non-terminal-ish (Lines
+by default, no auto-classify markers anywhere, explicit `-G` still grids),
+while this build treats it as terminal-ish; the `pty_zero_rows*` probes record
+the reference (accepted 0.5-runtime limitation).
+
+**Merge resolutions.** `cmd/eza.obx` keeps the E2 view/width/grid code and the
+E1 fixes: the removed `treeFlag`, `debugText` Debug escaping, the `-L +`
+InvalidDigit rule, `sortFieldOrder`/`sortEntriesTree` (tree `-r` sorts
+ascending then reverses the vector; lines/long keep stable descending), the
+`#` Temp rule and the colour-kind setters. The E1 fix was propagated to E2:
+`--width`/`COLUMNS` parse errors now ASCII-Debug-escape their value and a
+lone `+` is InvalidDigit, with goldens added; non-ASCII non-printables
+(`\u{a0}`, combining marks, format controls, U+0085, U+2028, U+FEFF) are
+copied raw where Rust's Debug escapes them, a documented divergence pinned by
+the `width_nonascii_escape` probe. Grid sorting uses the lines/long model
+(probed `--sort=size -r` keeps tie readdir order in a grid; the tree is the
+only vector-reversing view). `tests/eza.py`, `fixtures.py` and `probe.py`
+combine both case sets; `E2-PROBES.md` is regenerated with the merged
+`--title` mechanism.
+
+**Probes and deviations.** Design 8.3's claim that `--width` enables automatic
+colour is wrong: only classify/icons use `is_a_tty` (probed). `COLUMNS=0` is a
+real Set(0) grid while `--width=0` is Automatic and suppresses COLUMNS;
+`terminal_size` is None for a zero row or column, so a 0-column pty is not
+terminal-ish (a zero-row terminal cannot be seen through `io::termWidth` and is
+a documented limitation). The reference panics from a usize overflow for
+widths within two of `usize::MAX`; this build clamps at 2^40 and prints a
+one-row grid instead. GridDetails and icons stay out.
+
+**Tests.** 551 cases: 546 non-memory (462 exact reference goldens, 72 live
+including 22 pty, 12 own) and five memory cases (long, names, tree, colour,
+grid). New families are `grid` (102) and `utf8` (34) plus seventeen E2 error
+cases; new fixtures are `gridmix`, `utf8`, `utf8bad`, `utf8tie`, `utf8fold`
+and `utf8ws`. Goldens were recorded from the pinned reference (sha256
+`10457dde...`); `--reference=none` passes 474 goldens/own and skips the 72
+live cases.
+
+**Measured (merged tree).** eza binary 212,993 bytes (sha256 `53133d23…`;
+static, runtime included; reference 2,294,768; the hash moved from the first
+merged build because source line numbers are embedded in the image and the
+review-fix comments changed them); tools cat 40,961, wc 45,057, sort 77,825
+bytes (main's wc-fast is in wc; P6b's width functions add 17,152 bytes and
+the other strings layer 7,840 bytes to strings-importing tools, sort's
++24,576-byte file growth being page-rounded). `tests/eza.py
+--require-reference`: 546/546 non-memory, 0 failed; `--memory`: 5/5, live
+peaks 2,190,032 long / 2,189,408 names / 2,190,160 tree / 2,189,632 colour /
+2,189,808 grid, max RSS 2,560 KiB each, under the unchanged
+`EZA_PEAK_MAX = 2,752,512`; the reference measures about 24.6/12.0/14.2/12.1/
+12.0 MB max RSS on the same trees.
+
+**Gates.** After merging main 557936f (wc-fast plus the bench/cli suite):
+`make`; `make tools`; `make eza`; `tests/eza.py --require-reference` 546/546;
+`--memory` 5/5; `tests/tools.py --require-reference` 222/222 (wc-fast);
+`tests/tools.py --memory` 2/2; `tests/stdlib.py` 16/16; `tests/imports.py`
+26/26; `tests/doc_check.py` 48 examples. Under the scoped P6b instruction the
+compiler mutation/port/sym suites were not re-run and are not claimed.
