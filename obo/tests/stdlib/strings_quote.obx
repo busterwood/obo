@@ -120,7 +120,10 @@ fn main() {
                 strings::quoteName("f", true), "'x y/sub'/f")
     t::checkStr("compose both spaced", strings::parentPrefix("x y", true) +
                 strings::quoteName("a b", true), "'x y'/'a b'")
-    // the -d operand display quotes the whole operand as one unit
+    // quoteName is a whole-string primitive (design 5.1.2 item 7): a whole
+    // path string is escaped and quoted as one unit. Operand display composes
+    // parentPrefix + name (design 7.6), so this is a primitive table entry,
+    // not a reference golden.
     t::checkStr("compose whole", strings::quoteName("x y/sub/link", true),
                 "'x y/sub/link'")
 
