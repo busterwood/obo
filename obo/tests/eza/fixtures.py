@@ -324,8 +324,10 @@ QUOTING_NAMES = (
     'ctl\x01name',
     'lead space',
     'trail ',
+    # One whitespace-only name only: every all-whitespace name compares Equal
+    # under natord (whitespace is skipped), so a second one would make every
+    # name-order listing of this tree readdir-order dependent (design 9.4).
     ' ',
-    '  ',
 )
 
 

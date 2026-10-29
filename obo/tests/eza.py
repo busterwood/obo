@@ -189,7 +189,9 @@ def _default_cases():
     _g('default', 'lines_one', '-1', 'one')
     _g('default', 'lines_mixed', '-1', 'mixed')
     _g('default', 'lines_links', '-1', 'links')
-    _g('default', 'cwd_mixed', cwd='mixed')
+    _r('default', 'cwd_mixed', cwd='mixed',
+       note='no operand: stdin file-name mode (empty stdin), not a cwd listing; '
+            'design section 7.2 contradiction, see REFERENCE.md; live-only')
     _g('default', 'cwd_dot', '.', cwd='mixed')
     _g('default', 'all_empty', '-a', 'empty')
     _g('default', 'all_one', '-a', 'one')
@@ -222,15 +224,15 @@ def _name_cases():
     _g('names', 'ordered_dot_name', '--sort=.name', 'names/ordered')
     _r('names', 'tie_fixture_default', 'names',
        note='readdir-order tie probe, live only')
-    _r('names', 'tie_Aa', cwd='names/tie_Aa',
+    _r('names', 'tie_Aa', '.', cwd='names/tie_Aa',
        note='natcmpFold tie A/a; readdir-order sensitive')
-    _r('names', 'tie_readme', cwd='names/tie_readme',
+    _r('names', 'tie_readme', '.', cwd='names/tie_readme',
        note='natcmpFold tie README/readme')
-    _r('names', 'tie_pic', cwd='names/tie_pic',
+    _r('names', 'tie_pic', '.', cwd='names/tie_pic',
        note='pic4/pic 4 tie under both comparators')
-    _r('names', 'tie_space', cwd='names/tie_space',
+    _r('names', 'tie_space', '.', cwd='names/tie_space',
        note='a/ a tie under both comparators')
-    _r('names', 'tie_dot', '-aa', cwd='names/tie_dot',
+    _r('names', 'tie_dot', '-aa', '.', cwd='names/tie_dot',
        note='real ` .` beside synthetic .')
     _g('names', 'group_dirs_first', '--group-directories-first', 'mixed')
     _g('names', 'group_dirs_first_reverse', '--group-directories-first',
@@ -312,7 +314,9 @@ def _long_cases():
     _g('long', 'setgid', *LONG, 'modes/m2755')
     _g('long', 'sticky', *LONG, 'modes/m1777')
     _g('long', 'mode000', *LONG, 'modes/m000')
-    _g('long', 'dir_mode000', *LONG, 'modes/d000')
+    _g('long', 'dir_mode000', *LONG, 'modes/d000', requires='nonroot',
+       note='mode-000 directory: the permission-denied warning only exists '
+            'for a non-root euid (design 9.4 root rule)')
     _g('long', 'd_file', *LONG, '-d', 'operands/f')
     _g('long', 'd_dir', *LONG, '-d', 'operands/dir')
     _g('long', 'd_symlink', *LONG, '-d', 'operands/l')
@@ -320,7 +324,9 @@ def _long_cases():
     _g('long', 'dangling', *LONG, 'links/dangling')
     _g('long', 'dir_link', *LONG, 'links/realdirlink')
     _g('long', 'hard', *LONG, 'hard')
-    _g('long', 'xattr', *LONG, 'xattr')
+    _r('long', 'xattr', *LONG, 'xattr',
+       note='xattr @ marker is host-dependent; excluded from goldens '
+            '(design 9.2/9.4); live differential only')
     _g('long', 'd_pipe', *LONG, '-d', 'modes/pipe')
     _g('long', 'd_socket', *LONG, '-d', 'modes/sock')
     _g('long', 'd_sub_file', *LONG, '-d', 'operands/sub/f')

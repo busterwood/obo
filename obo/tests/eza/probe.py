@@ -11,14 +11,15 @@ section 9.5 environment, inside a freshly generated fixture tree per probe.
 All host-dependent temporary paths are normalized to ``<root>`` before bytes
 are rendered or hashed.
 
-Each probe records its group, name, cwd, argv, environment extras, exit status
-(including signals), exact stdout/stderr bytes as a Python ``bytes`` literal
-and sha256, and a note.  The report is grouped Markdown with a host manifest.
-Probe definitions cover all sixteen section 3.4 items (version, default output,
-dotfiles, dirs-as-files, name order, sort options, quoting, classify,
-restricted long, errors/exit, symlink operands, colour/icons, grid/--width,
-tree, environment variables, DT_UNKNOWN) plus an invalid-UTF-8 group from
-sections 3.3 and 8.4.
+Each probe records its group, name, cwd, argv, stdin bytes, environment
+extras, exit status (including signals), exact stdout/stderr bytes as a
+Python ``bytes`` literal and sha256, and a note.  The report is grouped
+Markdown with a host manifest.  Probe definitions cover all sixteen section
+3.4 items (version, default output, dotfiles, dirs-as-files, name order, sort
+options, quoting, classify, restricted long, errors/exit, symlink operands,
+colour/icons, grid/--width, tree, environment variables, DT_UNKNOWN) plus an
+invalid-UTF-8 group from sections 3.3 and 8.4 and a stdin group that records
+the observed no-operand stdin behaviour (design section 7.2 contradiction).
 
 The ``absolute`` fixture tree and the ``pinned`` directory-metadata probes are
 live/shape-only: they are expected host data and never become committed
@@ -70,6 +71,7 @@ GROUPS = [
     ('environment', '15. Environment variables'),
     ('dt-unknown', '16. DT_UNKNOWN filesystem'),
     ('utf8', '17. Invalid-UTF-8 names (sections 3.3/8.4; E2)'),
+    ('stdin', '18. Stdin file-name mode and the no-operand behaviour'),
 ]
 
 
@@ -80,7 +82,7 @@ class SetupError(Exception):
 class Probe:
     def __init__(self, group, name, argv=(), cwd='', env=None, mode='normal',
                  cols=0, rows=24, note='', requires=(), timeout=None,
-                 skip=None):
+                 skip=None, stdin=None):
         self.group = group
         self.name = name
         self.argv = list(argv)
@@ -93,6 +95,7 @@ class Probe:
         self.requires = tuple(requires)
         self.timeout = timeout if timeout is not None else TIMEOUT
         self.skip = skip            # a literal skip reason, or None
+        self.stdin = stdin          # bytes fed on stdin, or None for DEVNULL
 
 
 def _p(group, name, *argv, **kw):
@@ -120,7 +123,10 @@ def default_probes():
         _p('default', 'mixed', 'mixed',
            note='lines mode; symlinks render `name -> target`'),
         _p('default', 'mixed_dot_operand', '.', cwd='mixed'),
-        _p('default', 'mixed_no_operand', cwd='mixed'),
+        _p('default', 'mixed_no_operand', cwd='mixed',
+           note='no operand with non-TTY stdin: stdin file-name mode with an '
+                'empty list, not a cwd listing; see the stdin group and the '
+                'P0 finding on design section 7.2'),
         _p('default', 'one_lines', '-1', 'one'),
         _p('default', 'mixed_lines', '-1', 'mixed'),
         _p('default', 'mixed_lines_dot', '-1', '.', cwd='mixed'),
@@ -144,7 +150,8 @@ def dotfiles_probes():
         _p('dotfiles', 'all_mixed', '--all', 'mixed'),
         _p('dotfiles', 'all_all_mixed', '--all', '--all', 'mixed'),
         _p('dotfiles', 'a_repeat_mixed', '-a', '-a', 'mixed'),
-        _p('dotfiles', 'aa_cwd_mixed', '-aa', cwd='mixed'),
+        _p('dotfiles', 'aa_cwd_mixed', '-aa', '.', cwd='mixed',
+           note='-aa on the cwd; explicit . operand (no-operand is stdin mode)'),
         _p('dotfiles', 'aa_name_mixed', '-aa', '--sort=name', 'mixed',
            note='name-only -aa; synthetic dots are comparator-distinct'),
         _p('dotfiles', 'aa_type_mixed', '-aa', '--sort=type', 'mixed'),
@@ -214,15 +221,15 @@ def names_probes():
         _p('names', 'names_lower_name', '--sort=name', 'names'),
         _p('names', 'names_filename', '--sort=filename', 'names'),
         _p('names', 'names_dot_name', '--sort=.name', 'names'),
-        _p('names', 'tie_Aa', cwd='names/tie_Aa',
+        _p('names', 'tie_Aa', '.', cwd='names/tie_Aa',
            note='live tie: A/a under natcmpFold; readdir-order sensitive'),
-        _p('names', 'tie_readme', cwd='names/tie_readme',
+        _p('names', 'tie_readme', '.', cwd='names/tie_readme',
            note='live tie: README/readme under natcmpFold'),
-        _p('names', 'tie_pic', cwd='names/tie_pic',
+        _p('names', 'tie_pic', '.', cwd='names/tie_pic',
            note='live tie: pic4/pic 4 under both comparators'),
-        _p('names', 'tie_space', cwd='names/tie_space',
+        _p('names', 'tie_space', '.', cwd='names/tie_space',
            note='live tie: a/ a under both comparators'),
-        _p('names', 'tie_dot', '-aa', cwd='names/tie_dot',
+        _p('names', 'tie_dot', '-aa', '.', cwd='names/tie_dot',
            note='live tie: real ` .` beside synthetic .'),
         _p('names', 'group_dirs_first', '--group-directories-first', 'mixed'),
         _p('names', 'group_dirs_first_reverse', '--group-directories-first',
@@ -502,16 +509,16 @@ def grid_probes():
            'names'),
         _p('grid', 'x_names', '-x', 'names'),
         _p('grid', 'width_80_x_names', '--width=80', '-x', 'names'),
-        _p('grid', 'pty_default', cwd='names', mode='pty', cols=80,
+        _p('grid', 'pty_default', '.', cwd='names', mode='pty', cols=80,
            note='stdout is a pty: TERM is unset, size from TIOCSWINSZ'),
-        _p('grid', 'pty_cols40', cwd='names', mode='pty', cols=40),
-        _p('grid', 'pty_cols120', cwd='names', mode='pty', cols=120),
-        _p('grid', 'pty_lines', '-1', cwd='names', mode='pty', cols=80),
-        _p('grid', 'pty_color_auto', '--color=auto', cwd='mixed',
+        _p('grid', 'pty_cols40', '.', cwd='names', mode='pty', cols=40),
+        _p('grid', 'pty_cols120', '.', cwd='names', mode='pty', cols=120),
+        _p('grid', 'pty_lines', '-1', '.', cwd='names', mode='pty', cols=80),
+        _p('grid', 'pty_color_auto', '--color=auto', '.', cwd='mixed',
            mode='pty', cols=80),
-        _p('grid', 'pty_icons_always', '--icons=always', cwd='names',
+        _p('grid', 'pty_icons_always', '--icons=always', '.', cwd='names',
            mode='pty', cols=80),
-        _p('grid', 'pty_x', '-x', cwd='names', mode='pty', cols=80),
+        _p('grid', 'pty_x', '-x', '.', cwd='names', mode='pty', cols=80),
     ]
 
 
@@ -590,11 +597,31 @@ def environment_probes():
     ]
 
 
+def stdin_probes():
+    return [
+        _p('stdin', 'empty_no_operand', cwd='mixed', stdin=b'',
+           note='no operands; stdin is a non-TTY pipe with an empty name list'),
+        _p('stdin', 'dot_no_operand', cwd='mixed', stdin=b'.\n',
+           note='no operands; the stdin line "." is an operand and lists the cwd'),
+        _p('stdin', 'names_no_operand', cwd='mixed',
+           stdin=b'alpha\nBeta\ndir\n',
+           note='no operands; stdin lines become input operands'),
+        _p('stdin', 'missing_no_operand', cwd='mixed', stdin=b'missing\n',
+           note='no operands; a missing stdin operand is an input-metadata '
+                'error (exit 2)'),
+        _p('stdin', 'dot_all_no_operand', '-a', cwd='mixed', stdin=b'.\n',
+           note='flags apply to the stdin-provided operand'),
+        _p('stdin', 'operand_ignores_stdin', 'mixed', stdin=b'alpha\n',
+           note='with an operand present stdin is not read'),
+    ]
+
+
 def utf8_probes():
     return [
         _p('utf8', 'list_invalid_dir', 'invalid',
            note='lossy U+FFFD display; E2 shape case'),
-        _p('utf8', 'cwd_invalid_dir', cwd='invalid'),
+        _p('utf8', 'cwd_invalid_dir', '.', cwd='invalid',
+           note='explicit . operand; a no-operand invocation is stdin mode'),
         _p('utf8', 'explicit_invalid_operand', b'bad-\xff-name', cwd='invalid'),
         _p('utf8', 'explicit_invalid_path', b'invalid/bad-\xff-name'),
         _p('utf8', 'long_invalid', *LONG, 'invalid'),
@@ -608,7 +635,8 @@ def static_probes():
     for fn in (version_probes, default_probes, dotfiles_probes, dirs_probes,
                names_probes, sort_probes, quoting_probes, classify_probes,
                long_probes, errors_probes, symlinks_probes, colour_probes,
-               grid_probes, tree_probes, environment_probes, utf8_probes):
+               grid_probes, tree_probes, environment_probes, stdin_probes,
+               utf8_probes):
         probes.extend(fn())
     return probes
 
@@ -762,19 +790,29 @@ def _kill(p, pgid):
         pass
 
 
-def run_reference(reference, argv, cwd, io_dir, env, mode, cols, rows, timeout):
+def run_reference(reference, argv, cwd, io_dir, env, mode, cols, rows, timeout,
+                  stdin_data=None):
     """Run the reference once; return (rc, stdout, stderr, notes).
 
     Capture files live in `io_dir`, never in `cwd`: the cwd is often the
     fixture directory being listed, and an extra file there would change the
-    observation.
+    observation.  `stdin_data` is written to a file in `io_dir` and passed as
+    stdin (a non-TTY pipe equivalent); None passes /dev/null as before.
     """
     out_path = os.path.join(io_dir, 'stdout.bin')
     err_path = os.path.join(io_dir, 'stderr.bin')
+    stdin_path = os.path.join(io_dir, 'stdin.bin')
     notes = []
     timed_out = False
     master = slave = None
     fout = None
+    stdin_file = None
+    stdin = subprocess.DEVNULL
+    if stdin_data is not None:
+        with open(stdin_path, 'wb') as f:
+            f.write(stdin_data)
+        stdin_file = open(stdin_path, 'rb')
+        stdin = stdin_file
     pipe = mode == 'pipe'
     ferr = open(err_path, 'wb')
     p = None
@@ -792,7 +830,7 @@ def run_reference(reference, argv, cwd, io_dir, env, mode, cols, rows, timeout):
             fout = open(out_path, 'wb')
         p = subprocess.Popen(
             argv, executable=reference, cwd=cwd, env=env,
-            stdin=subprocess.DEVNULL, stdout=fout, stderr=ferr,
+            stdin=stdin, stdout=fout, stderr=ferr,
             start_new_session=True, preexec_fn=_limit)
         if mode == 'pty':
             os.close(slave)
@@ -811,6 +849,11 @@ def run_reference(reference, argv, cwd, io_dir, env, mode, cols, rows, timeout):
             ferr.close()
         except OSError:
             pass
+        if stdin_file is not None:
+            try:
+                stdin_file.close()
+            except OSError:
+                pass
         if slave is not None:
             try:
                 os.close(slave)
@@ -853,7 +896,7 @@ def run_reference(reference, argv, cwd, io_dir, env, mode, cols, rows, timeout):
             stdout = f.read()
     with open(err_path, 'rb') as f:
         stderr = f.read()
-    for name in (out_path, err_path):
+    for name in (out_path, err_path, stdin_path):
         try:
             os.unlink(name)
         except OSError:
@@ -916,8 +959,8 @@ def capture_probe(reference, probe, tmp):
         fixtures.rmtree(probe_dir)
         return {'group': probe.group, 'name': probe.name, 'skipped': skip_reason,
                 'note': probe.note, 'argv': [], 'cwd': probe.cwd,
-                'env': {}, 'exit': None, 'stdout': b'', 'stderr': b'',
-                'stdout_sha256': None, 'stderr_sha256': None}
+                'env': {}, 'stdin': probe.stdin, 'exit': None, 'stdout': b'',
+                'stderr': b'', 'stdout_sha256': None, 'stderr_sha256': None}
     cwd = probe.cwd if os.path.isabs(probe.cwd) else os.path.join(root, probe.cwd)
     if not os.path.isdir(cwd):
         fixtures.rmtree(probe_dir)
@@ -930,7 +973,7 @@ def capture_probe(reference, probe, tmp):
     try:
         rc, stdout, stderr, notes = run_reference(
             reference, argv, cwd, probe_dir, env, probe.mode, probe.cols,
-            probe.rows, probe.timeout)
+            probe.rows, probe.timeout, stdin_data=probe.stdin)
     except OSError as e:
         fixtures.rmtree(probe_dir)
         raise SetupError('%s/%s: cannot run the reference: %s'
@@ -959,6 +1002,7 @@ def capture_probe(reference, probe, tmp):
         'cwd': shown_cwd,
         'argv': shown_argv,
         'env': shown_env,
+        'stdin': probe.stdin,
         'exit': rc,
         'stdout': stdout,
         'stderr': stderr,
@@ -996,6 +1040,51 @@ def render_manifest(manifest):
     return lines
 
 
+FINDINGS_MD = """\
+## P0 findings (not probe output)
+
+### Zero operands read stdin when stdin is not a TTY (design 7.2)
+
+Design section 7.2 says "Zero operands means `.`". The pinned binary instead
+selects stdin file-name mode whenever stdin is not a terminal
+(`src/options/stdin.rs` `FilesInput::deduce`; `src/main.rs` substitutes `.`
+only for `FilesInput::Args`). With an empty stdin name list a no-operand
+invocation prints nothing and exits 0, even in a non-empty directory and even
+with `-a`/`-aa`.
+
+Evidence: `default/mixed_no_operand` is empty; in the stdin group,
+`stdin/empty_no_operand` is empty while `stdin/dot_no_operand` lists the cwd
+and `stdin/names_no_operand` treats the stdin lines as input operands;
+`stdin/operand_ignores_stdin` shows stdin is not read when an operand is
+present.
+
+This is a design contradiction recorded by P0; the design note is not edited.
+The harness commits no no-operand reference golden: `default/cwd_dot` uses an
+explicit `.`, and `default/cwd_mixed` (no operand) is live-only.
+
+### Host-independent golden matrix (P0 corrections)
+
+- The quoting fixture now has one all-whitespace name. Every all-whitespace
+  name compares Equal under natord (whitespace is skipped), so two of them
+  made every name-order listing of that tree readdir-order dependent (design
+  9.4). An audit of every recordable tree, including the synthetic `.`/`..`
+  names, found no comparator-equal pair under `natcmp` or `natcmpFold`
+  outside the live-only `names`/`tie_*` trees; extension-key groups and
+  type-rank groups contain no equal names in recordable trees, and the
+  size/time sort keys are distinct.
+- The xattr `@` marker depends on user-xattr support and design 9.2/9.4
+  exclude it from committed goldens; the `long/xattr` case is live-only.
+- `long/dir_mode000` requires a non-root euid (as root the permission-denied
+  warning is absent); it declares `requires='nonroot'` and is skipped when
+  euid is 0.
+
+Note for reviewers: `git diff --check` flags trailing whitespace in
+`long/dir_mode000.stderr` (the permission summary line ends with a space)
+and in the `quoting/*no_quotes.stdout` goldens (raw `--no-quotes` names).
+These are exact reference bytes, not formatting; do not edit them.
+"""
+
+
 def render(results, manifest, reference):
     lines = [
         '# eza P0 probe report',
@@ -1031,6 +1120,11 @@ def render(results, manifest, reference):
             lines.append('- cwd: ' + _code(result['cwd']))
             lines.append('- argv: ' + _code(repr(result['argv'])))
             lines.append('- env extras: ' + _code(repr(result['env'])))
+            if result.get('stdin') is not None:
+                lines.append('- stdin bytes:')
+                lines.append('')
+                lines.append(_bytes_block(result['stdin']))
+                lines.append('')
             lines.append('- exit: ' + _code(_exit_text(result['exit'])))
             lines.append('- stdout sha256: ' + _code(result['stdout_sha256']))
             lines.append('- stderr sha256: ' + _code(result['stderr_sha256']))
@@ -1045,6 +1139,7 @@ def render(results, manifest, reference):
             if result.get('note'):
                 lines.append('- note: ' + _code(result['note']))
                 lines.append('')
+    lines.append(FINDINGS_MD.rstrip('\n'))
     return '\n'.join(lines) + '\n'
 
 
@@ -1141,6 +1236,8 @@ def main(argv=None):
             ('environment pin', 'PATH=/usr/bin:/bin LC_ALL=C LANG=C '
                                 'LANGUAGE=C TZ=UTC; HOME/TMPDIR per probe; '
                                 'all section 9.5 variables unset unless set'),
+            ('stdin', '/dev/null unless the probe supplies stdin bytes '
+                      '(group 18)'),
             ('reference path', reference),
             ('reference sha256', reference_sha),
             ('fixture capabilities', fixture_caps),
