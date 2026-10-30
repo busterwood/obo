@@ -1,0 +1,108 @@
+// Interface equality, step 6 of v3 (design 6.3 and 12.2 E3): identity is not meaningful for any interface form, so
+// every comparison except a nil test is refused with the same text. A ?I place against nil is accepted and narrows;
+// that positive case is in run/ifaces_global_init.obx. The record and closed comparisons are unchanged.
+type Shape = interface {
+    pure fn area(): int
+}
+type Alias = Shape
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+type Holder = ref record { d: Shape; e: Shape }
+var G1: Shape = new Square{s: 1}
+var G2: Shape = new Square{s: 2}
+
+// === owned == owned
+fn f() {
+    let a: Shape = new Square{s: 1}
+    let b: Shape = new Square{s: 2}
+    println(a == b)  // error: interface values cannot be compared; test an optional with '== nil' or '!= nil'
+}
+
+// === owned != owned
+fn f() {
+    let a: Shape = new Square{s: 1}
+    let b: Shape = new Square{s: 2}
+    println(a != b)  // error: interface values cannot be compared; test an optional with '== nil' or '!= nil'
+}
+
+// === optional == optional
+fn f() {
+    let a: ?Shape = new Square{s: 1}
+    let b: ?Shape = new Square{s: 2}
+    println(a == b)  // error: interface values cannot be compared; test an optional with '== nil' or '!= nil'
+}
+
+// === optional == owned
+fn f() {
+    let a: ?Shape = new Square{s: 1}
+    let b: Shape = new Square{s: 2}
+    println(a == b)  // error: interface values cannot be compared; test an optional with '== nil' or '!= nil'
+}
+
+// === owned == optional (the symmetric spelling)
+fn f() {
+    let a: Shape = new Square{s: 1}
+    let b: ?Shape = new Square{s: 2}
+    println(a == b)  // error: interface values cannot be compared; test an optional with '== nil' or '!= nil'
+}
+
+// === owned == nil keeps the existing text
+fn f() {
+    let a: Shape = new Square{s: 1}
+    println(a == nil)  // error: cannot compare Shape with nil
+}
+
+// === an alias of an interface is still an interface
+fn f() {
+    let a: Alias = new Square{s: 1}
+    let b: Shape = new Square{s: 2}
+    println(a == b)  // error: interface values cannot be compared; test an optional with '== nil' or '!= nil'
+}
+
+// === interface fields
+fn f() {
+    let h = new Holder{d: new Square{s: 1}, e: new Square{s: 2}}
+    println(h.d == h.e)  // error: interface values cannot be compared; test an optional with '== nil' or '!= nil'
+}
+
+// === interface elements
+fn f() {
+    let xs = new []Shape(0)
+    append(xs, new Square{s: 1})
+    append(xs, new Square{s: 2})
+    println(xs[0] == xs[1])  // error: interface values cannot be compared; test an optional with '== nil' or '!= nil'
+}
+
+// === a walk variable over interfaces
+fn f() {
+    let xs = new []Shape(0)
+    append(xs, new Square{s: 1})
+    for d in xs {
+        if d == xs[0] { println(1) }  // error: interface values cannot be compared; test an optional with '== nil' or '!= nil'
+    }
+}
+
+// === borrowed interface references
+fn f() {
+    let a: Shape = new Square{s: 1}
+    let b: Shape = new Square{s: 2}
+    let r: &Shape = &a
+    let q: &Shape = &b
+    println(r == q)  // error: interface values cannot be compared; test an optional with '== nil' or '!= nil'
+}
+
+// === an unnarrowed &?I is an optional interface reference
+fn f(o: &?Shape, p: &Shape) {
+    println(o == p)  // error: interface values cannot be compared; test an optional with '== nil' or '!= nil'
+}
+
+// === a narrowed &?I is a &I, and still an interface
+fn f(o: &?Shape, p: &Shape) {
+    if o != nil {
+        if o == p { println(1) }  // error: interface values cannot be compared; test an optional with '== nil' or '!= nil'
+    }
+}
+
+// === interface globals in a global initializer
+var Eq = G1 == G2  // error: interface values cannot be compared; test an optional with '== nil' or '!= nil'

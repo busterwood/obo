@@ -1363,6 +1363,16 @@ INTERFACE_MUTANTS = {
     "interfaces v3 X35: replace on an interface place does not return the old value": (
         "        store(x, v)\n        return makeReg(xt, r)\n",
         "        store(x, v)\n        if isIfaceVal(xt) { return makeConst(xt, 0) }\n        return makeReg(xt, r)\n"),
+    # step 6: the equality, handle and global-initializer guards (design sections 5.4, 6.2, 6.3 and 12.4)
+    "interfaces v3 X32: relation lets interface values through": (
+        "    if (isIfaceVal(x.typ) || isIfaceVal(y.typ)) && kx != \"nil\" && ky != \"nil\" {\n        error(\"interface values cannot be compared; test an optional with '== nil' or '!= nil'\")\n    }\n",
+        "    if false {\n        error(\"interface values cannot be compared; test an optional with '== nil' or '!= nil'\")\n    }\n"),
+    "interfaces v3 handle refusal 0.8: a handle names an interface value": (
+        "        if isIfaceVal(x.typ) { error(\"handles name records and closed types, not \" + tname(x.typ)) }\n",
+        "        if false { error(\"handles name records and closed types, not \" + tname(x.typ)) }\n"),
+    "interfaces v3 global-init call guard: an interface method call is accepted in a global initializer": (
+        "    if curFn == nil {\n        errorAt(\"an interface method cannot be called in a global initializer; call a function that does it, as in var G = initG()\", dline, dcol)\n    }\n",
+        "    if false {\n        errorAt(\"an interface method cannot be called in a global initializer; call a function that does it, as in var G = initG()\", dline, dcol)\n    }\n"),
     # borrowed interfaces (step 5, design sections 4, 6.4 and 12.4): B1's pair copy at a let, at a re-point and
     # in the vtable word; a reference local that is not registered; the &?I local refusal; the global cell
     "interfaces v3 X5: a &I local does not copy its pair (it keeps the source pointer)": (

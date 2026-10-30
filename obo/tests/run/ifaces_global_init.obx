@@ -1,0 +1,53 @@
+// Global initializers and interface equality, step 6 of v3 (design 5.4, 6.3 and 12.1 R7): an owned conversion into a
+// global, a borrowed I place passed as &I (a pointer to the box, with no frame cell), an owned I return moved into a
+// global, and the two nil tests on an optional interface. OBO_CHECK=1 proves that every box is still freed once.
+type Shape = interface {
+    pure fn area(): int
+}
+type Circle = ref record { r: int }
+type Square = ref record { s: int }
+fn (c: &Circle) area(): int { return c.r * c.r }
+fn (s: &Square) area(): int { return s.s }
+impl Shape for Circle
+impl Shape for Square
+
+fn areaOf(d: &Shape): int { return d.area() }
+
+fn makeShape(n: int): Shape {
+    return new Circle{r: n}
+}
+
+fn moveShape(s: Shape): Shape {
+    return s
+}
+
+var G: Shape = new Circle{r: 5}
+var O: ?Shape = new Square{s: 4}
+var N = areaOf(G)                                  // borrowing the global's box needs no cell
+var HasO = O != nil
+var Missing: ?Shape = nil
+var IsMissing = Missing == nil
+var M: Shape = makeShape(3)                        // an owned I return moves into a global
+var P: Shape = moveShape(new Square{s: 6})         // an owned conversion and an owned move
+
+fn main() {
+    println(G.area())                              // expect: 25
+    println(N)                                     // expect: 25
+    println(HasO)                                  // expect: true
+    println(IsMissing)                             // expect: true
+    println(M.area())                              // expect: 9
+    println(P.area())                              // expect: 6
+
+    // ?I == nil and ?I != nil are allowed, and the != arm narrows the local to I
+    let o: ?Shape = new Circle{r: 2}
+    if o != nil {
+        println(o.area())                          // expect: 4
+    }
+    println(o == nil)                              // expect: false
+
+    // concrete handles keep their own behaviour
+    let sq = new Square{s: 7}
+    let h = handle(sq)
+    println(h.s)                                   // expect: 7
+    println("done")                                // expect: done
+}

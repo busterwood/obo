@@ -5642,7 +5642,7 @@ fn builtin(name: string): Item {
         if sym != T_IDENT { error("handle needs a variable, field or element") }
         let x = designator()
         expect(T_RPAREN, "")
-        if isIfaceVal(x.typ) { error("interface values are not implemented yet") }    // handles are step 6
+        if isIfaceVal(x.typ) { error("handles name records and closed types, not " + tname(x.typ)) }
         if (x.mode != "mem" && x.mode != "elem") || (x.typ.kind != "record" && x.typ.kind != "closed") {
             error("handle needs a record or closed-type value that is not optional, not " + tname(x.typ))
         }
@@ -6336,10 +6336,12 @@ fn designatorT(target: bool): Item {
 // A method call on the finalized receiver x. The receiver's place metadata is complete by now
 // (root, deref, path, viaHandle, borrowed) and its value use has been recorded.
 // A call of member name on an owned interface value (v3 7.1): through the receiver's vtable, with the member's
-// synthetic summary standing for the callee (7.3). A call in a global initializer is refused until step 6: the
-// initializer chain has no frame to hold the vtable across the arguments.
+// synthetic summary standing for the callee (7.3). A call in a global initializer is refused before the frame
+// cell and the dispatch: the initializer chain has no frame to hold the vtable across the arguments.
 fn ifaceMethodCall(recv: Item, t: ^Type, name: string, dline: int, dcol: int, rline: int, rcol: int): Item {
-    if curFn == nil { errorAt("interface values are not implemented yet", dline, dcol) }
+    if curFn == nil {
+        errorAt("an interface method cannot be called in a global initializer; call a function that does it, as in var G = initG()", dline, dcol)
+    }
     let m = findIfaceMethod(t, name)
     if m == nil { errorAt("interface '" + tname(t) + "' has no method '" + name + "'", dline, dcol) }
     if m != nil { return callFnWith(m, recv, true, rline, rcol) }
@@ -6855,9 +6857,9 @@ fn relation(): Item {
     noTemp(y)
     let kx = x.typ.kind
     let ky = y.typ.kind
-    // equality of interface values is step 6 (v3 6.3); a test against nil is allowed (it narrows a ?I)
+    // interface identity is not meaningful (v3 6.3); a test against nil is allowed (it narrows a ?I)
     if (isIfaceVal(x.typ) || isIfaceVal(y.typ)) && kx != "nil" && ky != "nil" {
-        error("interface values are not implemented yet")
+        error("interface values cannot be compared; test an optional with '== nil' or '!= nil'")
     }
     if kx == "string" || ky == "string" {
         if kx != ky || (o != T_EQ && o != T_NE) { error("strings can only be compared with == and !=") }

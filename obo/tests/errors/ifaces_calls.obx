@@ -69,7 +69,7 @@ fn f() {
 }
 
 // === a call in a global initializer (step 6)
-var A = G.area()  // error: interface values are not implemented yet
+var A = G.area()  // error: an interface method cannot be called in a global initializer; call a function that does it, as in var G = initG()
 
 // === a field of an interface value is not a method
 fn f() {
