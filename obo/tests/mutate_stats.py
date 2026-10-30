@@ -9,6 +9,14 @@ mutant. With MUTATE_TIMINGS unset the harness writes nothing.
 
 Wall seconds are measured once per stage. Summed subprocess seconds are not wall
 time: several cases run at once, so their sum can exceed the stage's wall.
+
+Subprocess counters are DIRECT subprocess.run launches made by the harness, not
+their descendants. The two gates count different things: mutate_fork counts the
+seed build and the run_fork suite, while mutate_port counts each case compile/run
+inside its comparison. Do not compare those counts as if they measured the same
+number, and do not read a case count (for example run_fork's 1408) as a launch
+count. The header records the input identity; it is a record, not a lock or a
+promise that the inputs did not change, and no result is reused across runs.
 """
 import hashlib
 import json

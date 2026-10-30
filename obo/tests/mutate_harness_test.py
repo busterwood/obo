@@ -13,6 +13,7 @@ import concurrent.futures
 import contextlib
 import io
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -136,8 +137,111 @@ def test_port_peak_margin_still_catches():
 def test_port_stale_catcher_falls_back_to_full():
     # A catcher name that is no longer in the catalogue is reported by
     # validate_catchers and never passed to a mutant as a catch.
-    unknown, reps = mp.validate_catchers({'m': 'no such check'}, ['m'])
-    assert unknown == [('m', 'no such check')] and reps == {}
+    unknown, checks = mp.validate_catchers({'m': 'no such check'}, ['m'])
+    assert unknown == [('m', 'no such check')] and checks == []
+
+
+def test_validate_catchers_returns_every_distinct_check():
+    table = {'a': 'cli --version', 'b': 'cli --version',
+             'c': 'modules/run/basic', 'd': 'no such check'}
+    unknown, checks = mp.validate_catchers(table, ['a', 'b', 'c', 'd'])
+    assert checks == ['cli --version', 'modules/run/basic']
+    assert unknown == [('d', 'no such check')]
+
+
+def test_special_pair_returns_data_and_raises_harness_error():
+    tmp = tempfile.mkdtemp(prefix='special-pair-')
+    try:
+        def good(exe, root, quick, stats=None):
+            return (exe, quick)                         # an ordinary outcome difference
+
+        a, b = pc.special_pair('x', good, tmp, True, 'PORT')
+        assert a != b
+
+        def boom(exe, root, quick, stats=None):
+            raise ValueError('a helper bug, not a mutant outcome')
+
+        try:
+            pc.special_pair('x', boom, tmp, True, 'PORT')
+        except pc.HarnessError as exc:
+            assert 'ValueError' in str(exc)
+        else:
+            raise AssertionError('a raising special helper was not a harness error')
+
+        def slow(exe, root, quick, stats=None):
+            raise subprocess.TimeoutExpired('cmd', 1)
+
+        a, b = pc.special_pair('x', slow, tmp, True, 'PORT')
+        assert a == ('timeout',) and b == ('timeout',)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_fork_summary_uses_actual_statuses_and_notes_catalog_caught():
+    results = [['caught_but_catalog_equiv', 'caught', 'line', 'out', None],
+               ['really_equiv', 'equiv', 'line', 'out', None],
+               ['really_missed', 'missed', 'line', 'out', None]]
+    summary = mf.summarize(results, {'caught_but_catalog_equiv': 'reason',
+                                    'really_equiv': 'reason',
+                                    'missing_from_run': 'reason'})
+    assert summary == {'caught': 1, 'equiv': 1, 'missed': 1,
+                       'catalog_caught': ['caught_but_catalog_equiv']}
+
+
+def test_fork_serial_status_replaces_parallel_status_in_summary():
+    calls = []
+
+    def fake_build(src, fail_fast=False, jobs=1, smoke=False, stats=None):
+        return subprocess.CompletedProcess([], 0, stdout='100 passed, 0 failed in 1 s\n', stderr=''), None
+
+    def fake_try(src, name, jobs=1, stats=None):
+        calls.append((name, jobs))
+        if len(calls) == 1:
+            return 'caught', 'caught  eq', 'timed out'
+        return 'equiv', 'EQUIV   eq: reason', ''
+
+    old = (mf.MUTANTS, mf.MULTI_MUTANTS, mf.EQUIVALENT)
+    mf.MUTANTS, mf.MULTI_MUTANTS, mf.EQUIVALENT = {'eq': [('x', 'y')]}, {}, {'eq': 'reason'}
+    try:
+        with patched(mf, 'build_and_run', fake_build), patched(mf, 'try_mutant', fake_try), \
+             patched(sys, 'argv', ['mutate_fork.py', '']):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                try:
+                    mf.main()
+                except SystemExit as exc:
+                    assert exc.code == 0
+            text = out.getvalue()
+            assert '0/1 mutants caught, 1 equivalent' in text
+            assert 'catalog-equivalent' not in text
+            assert len(calls) == 2 and calls[1][1] == 1     # the serial re-run replaced the catch
+    finally:
+        mf.MUTANTS, mf.MULTI_MUTANTS, mf.EQUIVALENT = old
+
+
+def test_fork_notice_names_catalog_equivalent_mutants_that_were_caught():
+    def fake_build(src, fail_fast=False, jobs=1, smoke=False, stats=None):
+        return subprocess.CompletedProcess([], 0, stdout='100 passed, 0 failed in 1 s\n', stderr=''), None
+
+    def fake_try(src, name, jobs=1, stats=None):
+        return 'caught', 'caught  eq', ''
+
+    old = (mf.MUTANTS, mf.MULTI_MUTANTS, mf.EQUIVALENT)
+    mf.MUTANTS, mf.MULTI_MUTANTS, mf.EQUIVALENT = {'eq': [('x', 'y')]}, {}, {'eq': 'reason'}
+    try:
+        with patched(mf, 'build_and_run', fake_build), patched(mf, 'try_mutant', fake_try), \
+             patched(sys, 'argv', ['mutate_fork.py', '']):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                try:
+                    mf.main()
+                except SystemExit as exc:
+                    assert exc.code == 0
+            text = out.getvalue()
+            assert '1/1 mutants caught, 0 equivalent' in text
+            assert "1 catalog-equivalent mutant(s) were caught by the suite: eq" in text
+    finally:
+        mf.MUTANTS, mf.MULTI_MUTANTS, mf.EQUIVALENT = old
 
 
 def test_fork_equivalent_mutant_runs_to_a_pass():
@@ -209,6 +313,49 @@ def test_baseline_catcher_failure_aborts_the_gate():
         else:
             raise AssertionError('the gate did not abort on a broken baseline catcher')
     assert calls == [False, True]
+
+
+def test_baseline_exception_aborts_before_any_probe_or_mutant():
+    def fake_compare(*args, **kwargs):
+        raise ValueError('broken special helper')
+
+    with patched(pc, 'compare', fake_compare), \
+         patched(sys, 'argv', ['mutate_port.py', 'error message changed']):
+        with contextlib.redirect_stdout(io.StringIO()):
+            try:
+                mp.main()
+            except SystemExit as exc:
+                assert 'harness error' in str(exc)
+            else:
+                raise AssertionError('a broken baseline helper did not abort the gate')
+
+
+def test_baseline_probe_runs_all_selected_catchers_not_one_per_kind():
+    table = {'error message changed': 'cli --version',
+             'condition test compares with 1': 'modules/run/basic'}
+    seen = []
+
+    def fake_compare(tmp, src=None, quick=False, workers=None, catchers=None,
+                     stats=None, catchers_only=False):
+        if catchers_only:
+            seen.append(list(catchers))
+            if stats is not None:
+                stats.set('catcher_cases', len(catchers))
+                stats.set('unknown_catchers', [])
+            # the second, non-representative check fails
+            return ['FAIL modules/run/basic'], ['modules/run/basic differs'], 1
+        return [], [], 1
+
+    with patched(mp, 'TABLE', table), patched(pc, 'compare', fake_compare), \
+         patched(sys, 'argv', ['mutate_port.py', '']):
+        with contextlib.redirect_stdout(io.StringIO()):
+            try:
+                mp.main()
+            except SystemExit as exc:
+                assert 'catcher path' in str(exc)
+            else:
+                raise AssertionError('a non-representative baseline catcher failure did not abort')
+    assert seen == [['cli --version', 'modules/run/basic']]
 
 
 def test_port_main_counts_and_exit_codes():

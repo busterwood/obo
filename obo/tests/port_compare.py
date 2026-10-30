@@ -55,6 +55,12 @@ REF_OUTCOMES = {}
 ADDRESS_SPACE = 5 << 30
 
 
+class HarnessError(RuntimeError):
+    """A bug or setup failure in the harness, not an outcome of the mutant. It is
+    raised, never turned into a caught mutant: a broken helper must fail the gate
+    or abort the baseline, otherwise every mutant could look caught."""
+
+
 def capped(then=None):
     """A preexec_fn for the port's own compiles and runs: then (if given), and the address-space cap."""
     def limits():
@@ -638,6 +644,30 @@ REEMIT_CASES = [
 ]
 
 
+def special_pair(name, fn, tmp, quick, port, stats=None):
+    """(REF outcome, PORT outcome) for one special check. A helper returns data
+    (exit code, output, ...), so a different outcome is a mutant difference and
+    is returned normally. A helper that raises is a harness bug: it becomes a
+    HarnessError and aborts, rather than being appended as a caught mutant. A
+    TimeoutExpired is a load/limit outcome, not a crash, and is returned as the
+    usual ('timeout',) data so the full path can confirm it."""
+    rroot = fresh_dir(os.path.join(tmp, 'special-ref-' + name.replace(' ', '-')))
+    proot = fresh_dir(os.path.join(tmp, 'special-port-' + name.replace(' ', '-')))
+    try:
+        a = fn(REF, rroot, False, stats=stats)
+    except subprocess.TimeoutExpired:
+        a = ('timeout',)
+    except Exception as exc:  # noqa: BLE001 - distinguish a helper bug from mutant data
+        raise HarnessError(f"special {name}: REF helper raised {exc!r}") from exc
+    try:
+        b = fn(port, proot, quick, stats=stats)
+    except subprocess.TimeoutExpired:
+        b = ('timeout',)
+    except Exception as exc:  # noqa: BLE001 - distinguish a helper bug from mutant data
+        raise HarnessError(f"special {name}: PORT helper raised {exc!r}") from exc
+    return a, b
+
+
 def _timeout_failure(failures):
     """True when every failure says only that a process timed out. The quick path
     retries a timeout once with full limits (see both and tree_both); if it still
@@ -712,14 +742,7 @@ def compare_trees(tmp, quick, port, only=None, stats=None):
         if wanted is not None and ('special ' + name) not in wanted:
             continue
         total += 1
-        rroot = fresh_dir(os.path.join(tmp, 'special-ref-' + name.replace(' ', '-')))
-        proot = fresh_dir(os.path.join(tmp, 'special-port-' + name.replace(' ', '-')))
-        try:
-            a = fn(REF, rroot, False, stats=stats)
-            b = fn(port, proot, quick, stats=stats)
-        except Exception as e:  # noqa: BLE001 - a harness problem is a failure, not a crash
-            failures.append(f"special {name}: {e!r}")
-            continue
+        a, b = special_pair(name, fn, tmp, quick, port, stats=stats)
         if a == b:
             same += 1
         else:

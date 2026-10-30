@@ -1662,6 +1662,21 @@ def timing_inputs():
     }
 
 
+def summarize(results, catalog_equiv):
+    """Count the ACTUAL final statuses after any serial re-runs. catalog_equiv is
+    the EQUIVALENT table; a catalog entry that the suite catches is reported in
+    catalog_caught, not reclassified and not hidden. Returns a dict so the summary
+    can be tested without running a compiler."""
+    status = {record[0]: record[1] for record in results}
+    caught = sum(1 for s in status.values() if s == 'caught')
+    equiv = sum(1 for s in status.values() if s == 'equiv')
+    missed = sum(1 for s in status.values() if s == 'missed')
+    catalog_caught = [record[0] for record in results
+                      if record[1] == 'caught' and record[0] in catalog_equiv]
+    return {'caught': caught, 'equiv': equiv, 'missed': missed,
+            'catalog_caught': catalog_caught}
+
+
 def main():
     run_start = time.perf_counter()
     args = sys.argv[1:]
@@ -1743,16 +1758,21 @@ def main():
     for record in results:
         name, s, line, out, st = record
         sink.write({'kind': 'mutant', 'name': name, 'verdict': s, 'line': line, **st.snapshot()})
-    status = {record[0]: record[1] for record in results}
-    missed = [n for n in names if status[n] == 'missed']
-    equiv = sum(1 for n in names if n in EQUIVALENT)
-    sink.write({'kind': 'run', 'wall_seconds': round(time.perf_counter() - run_start, 3),
-                'mutants': len(names), 'missed': len(missed), 'equivalent_named': equiv,
-                'caught_status': sum(1 for record in results if record[1] == 'caught'),
-                'equiv_status': sum(1 for record in results if record[1] == 'equiv'),
-                'jobs': jobs, 'inner_jobs': inner})
-    print(f"\n{len(names) - len(missed) - equiv}/{len(names)} mutants caught, {equiv} equivalent")
-    sys.exit(1 if missed else 0)
+    summary = summarize(results, EQUIVALENT)
+    wall = round(time.perf_counter() - run_start, 3)
+    if sink.path:
+        sink.write({'kind': 'end', 'finished_at': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+                    'wall_seconds': wall, 'mutants': len(names),
+                    'caught': summary['caught'], 'equiv': summary['equiv'],
+                    'missed': summary['missed'],
+                    'catalog_equiv_caught': summary['catalog_caught'],
+                    'jobs': jobs, 'inner_jobs': inner,
+                    'harness': timing_inputs()['harness']})
+    print(f"\n{summary['caught']}/{len(names)} mutants caught, {summary['equiv']} equivalent")
+    if summary['catalog_caught']:
+        print(f"note: {len(summary['catalog_caught'])} catalog-equivalent mutant(s) were caught by "
+              f"the suite: {', '.join(summary['catalog_caught'])}")
+    sys.exit(1 if summary['missed'] else 0)
 
 
 if __name__ == '__main__':

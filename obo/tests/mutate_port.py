@@ -473,31 +473,12 @@ def catchers_for(name, table=None):
     return (check,) if check else ()
 
 
-def catcher_kinds(checks):
-    """One representative check per kind, for the baseline probe."""
-    kinds = {}
-    for check in checks:
-        if check.startswith('cli '):
-            kind = 'cli'
-        elif check.startswith('special '):
-            kind = 'special'
-        elif check.startswith('reemit '):
-            kind = 'reemit'
-        elif check == 'modules/tokens':
-            kind = 'tokens'
-        elif check.startswith('modules/'):
-            kind = 'tree'
-        else:
-            kind = 'flat'
-        kinds.setdefault(kind, check)
-    return kinds
-
-
 def validate_catchers(table, names):
-    """(unknown, representatives) for the selected mutants. An unknown name is
-    only noted: it cannot catch or pass anything. The representatives are run on
-    the unmutated compiler before any mutant is judged, so a broken catcher path
-    aborts the gate instead of making every mutant look caught."""
+    """(unknown, distinct known checks) for the selected mutants, in catalogue
+    order. An unknown name is only noted: it cannot catch or pass anything, and
+    that mutant falls back to the full comparison. Every distinct known check is
+    returned for the baseline probe, not one example per kind, so a broken case
+    cannot hide behind a representative that happens to work."""
     known = pc.known_checks()
     unknown, checks = [], []
     for name in names:
@@ -507,8 +488,9 @@ def validate_catchers(table, names):
         if check not in known:
             unknown.append((name, check))
             continue
-        checks.append(check)
-    return unknown, catcher_kinds(checks)
+        if check not in checks:
+            checks.append(check)
+    return unknown, checks
 
 
 def try_mutant(name, text, base_peak, workers=None, stats=None, use_catchers=True):
@@ -610,6 +592,9 @@ def main():
     base_stats = mutate_stats.Stats()
     try:
         lines, failures, base_peak = pc.compare(tmp, stats=base_stats)
+    except Exception as exc:  # noqa: BLE001 - a broken baseline helper must abort, not judge mutants
+        raise SystemExit(f"the unmutated comparison raised {exc!r}; that is a harness error, "
+                         "not a mutant verdict") from exc
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     base_stats.set('wall_seconds', round(time.perf_counter() - t0, 3))
@@ -627,23 +612,26 @@ def main():
     # them. An unknown name is only noted and falls back to the full comparison;
     # a catcher that fails here is a harness fault, and aborts the gate.
     if os.environ.get('MUTATE_CATCHERS', '1') != '0':
-        unknown, reps = validate_catchers(TABLE, [n for n, _, _ in todo])
+        unknown, checks = validate_catchers(TABLE, [n for n, _, _ in todo])
         for name, check in unknown:
             print(f"note: catcher {check!r} for {name!r} is not in the catalogue; "
                   "the full comparison decides", file=sys.stderr)
-        if reps:
+        if checks:
             probe = mutate_stats.Stats()
             tmp = tempfile.mkdtemp(prefix='obo-mutant-catcher-')
             t0 = time.perf_counter()
             try:
-                plines, pfailures, _ = pc.compare(tmp, quick=True, catchers=list(reps.values()),
+                plines, pfailures, _ = pc.compare(tmp, quick=True, catchers=checks,
                                                   catchers_only=True, stats=probe)
+            except Exception as exc:  # noqa: BLE001 - a helper bug is a gate failure, not a catch
+                raise SystemExit(f"the unmutated compiler's catcher probe raised {exc!r}; "
+                                 "that is a harness error, not a mutant verdict") from exc
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
             probe.set('wall_seconds', round(time.perf_counter() - t0, 3))
             sink.write({'kind': 'catcher-probe', 'verdict': 'passed' if not pfailures else 'failed',
-                        'representatives': reps, **probe.snapshot()})
-            if pfailures or probe.get('unknown_catchers') or probe.get('catcher_cases') != len(reps):
+                        'catcher_checks': checks, **probe.snapshot()})
+            if pfailures or probe.get('unknown_catchers') or probe.get('catcher_cases') != len(checks):
                 print("\n".join(plines))
                 raise SystemExit("the unmutated compiler fails a catcher path (above), so a mutant's "
                                  "catch could not be trusted")
@@ -681,8 +669,11 @@ def main():
         print(line)
         sink.write({'kind': 'mutant', 'name': name, 'verdict': status, 'line': line, **st.snapshot()})
     caught = sum(status == 'caught' for _, _, status, _, _ in results)
-    sink.write({'kind': 'run', 'wall_seconds': round(time.perf_counter() - run_start, 3),
-                'mutants': len(results), 'caught': caught, 'jobs': jobs, 'inner_jobs': workers})
+    if sink.path:
+        sink.write({'kind': 'end', 'finished_at': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+                    'wall_seconds': round(time.perf_counter() - run_start, 3),
+                    'mutants': len(results), 'caught': caught, 'jobs': jobs, 'inner_jobs': workers,
+                    'harness': timing_inputs()['harness']})
     print(f"\n{caught}/{len(results)} mutants caught")
     sys.exit(0 if caught == len(results) else 1)
 

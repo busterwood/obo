@@ -5448,9 +5448,19 @@ tests/mutate_port.py`). `MUTATE_CATCHERS=0` disables the catcher order and runs 
 to choose the file. Timings never appear on stdout and never change a verdict. `python3
 tests/mutate_harness_test.py` runs the harness's own regression tests with fake builders, in a second or so.
 The timing header records the source, seed, runtime, test-tree and harness hashes, the git head, the core
-count and the load average. Per-mutant records add wall seconds, stage seconds, subprocess/compile/run
-counts, case counts, first failure, serial retries and the actual outer/inner job counts. Wall seconds are
-per stage; subprocess counts are summed over concurrent work, so they are not wall time.
+count and the load average; an `end` record records the final wall time and the harness hashes again.
+Per-mutant records add wall seconds, stage seconds, subprocess/compile/run counts, case counts, first
+failure, serial retries and the actual outer/inner job counts. Wall seconds are per stage; subprocess counts
+are summed over concurrent work, so they are not wall time.
+
+The counters are DIRECT `subprocess.run` launches made by the harness, not descendants. The two gates count
+different things: `mutate_fork` counts the seed build and the `run_fork` suite, while `mutate_port` counts
+each case compile/run inside its comparison. They are not comparable with each other, and a case count such
+as run_fork's 1408 is not a launch count. The identity in the header is a record, not a lock or an
+immutability guarantee; nothing is reused across runs. The full-run logs from this branch predate the final
+review nits (probe-all, actual summary, special-helper errors), so they are **pre-final provenance only** for
+counts and per-mutant walls, not the final integrated gate evidence. The orchestrator's run on integrated
+0.8.1 will produce the final logs.
 
 **Catcher-first port mutants.** `tests/mutant_catchers.tsv` maps each port mutant to the check that first
 failed in the authoritative post-promotion `mutate_port` log at `27f09de` (529/529 caught). The table is a
@@ -5462,10 +5472,18 @@ check order, not a verdict cache and not a corpus of expected results:
   comparison, which still runs every case.
 - An out-of-memory catcher difference is returned as caught but is marked for the existing serial re-run
   (the same confirmation `mutate_fork` uses); a load-induced OOM therefore still gets a full re-judgement.
-- The unmutated compiler runs a representative of every catcher kind (flat, tree, CLI, special, reemit,
-  tokens) through the same path before any mutant is judged. A failure there aborts the gate, so a broken
-  catcher cannot make every mutant look caught.
+- The unmutated compiler runs **every distinct check selected by the chosen mutants** through the exact
+  catcher-only path before any mutant is judged, not one example per kind. On the full selection that is 265
+  distinct checks in about 4.0 s and 363 direct subprocess launches. A failure, unknown name or exception
+  there aborts the gate, so a broken non-representative case cannot make every mutant look caught.
+- A special helper raises `HarnessError` (or lets `TimeoutExpired` become `('timeout',)` data) instead of
+  being appended as a caught mutant. A helper bug therefore aborts the gate; a real difference in the
+  helper's returned outcome is still an ordinary mutant catch, and a timeout is left to the full/confirmation
+  path rather than being fatal.
 - Equivalent mutants still run the full suite; no verdict is recorded from a catcher.
+- The absolute live-peak budget (`PEAK_BUDGET`) is checked first and always. The relative 3% margin over the
+  unmutated peak is evaluated only for a mutant that survived every check and returned a peak, so it is
+  redundant with the absolute budget today; it is not a weaker first check and is not removed.
 - The map covers 479 mutants; 24 are caught by the mandatory self-compile/memory check before the catchers,
   and the 26 encoder/image/shape/edge mutants keep their dedicated scripts. If the catalogue changes, the
   stale name is reported and the full comparison decides. Nothing is reused across runs, so the unsafe
@@ -5500,15 +5518,18 @@ like-for-like before evidence, not the old log's elapsed-time bracket.
 `mutate_fork.build_and_run` no longer runs those two suites again after it. The baseline and judge paths are
 still both run and still validated separately (full, then fail-fast with the smoke subset and the inner
 count). On this host the fork baseline fell from 3.211 s in the earlier sample to 2.663 s, and the full-run
-X8 equivalent from 3.193 s to 2.594 s; the 0.55 s duplicate module/.sym work is gone. The full fork run
-reported **605/634 caught with 29 equivalent**, and its per-mutant statuses match the authoritative log line
-for line (607 caught and 27 equivalent by status; the printed equivalent count has always been the number of
-selected names listed in `EQUIVALENT`, and two of those names are caught by their suite — unchanged here,
-not reclassified). Mean per-mutant wall was 1.864 s, median 0.751 s, with seven serial re-runs, the same
-load-confirmation behavior as before. `mutate_io.py` remained 27/27.
+X8 equivalent from 3.193 s to 2.594 s; the 0.55 s duplicate module/.sym work is gone. The full fork run's
+per-mutant statuses, which the final summary now counts directly after serial re-runs, are **607/634 caught,
+27 equivalent**; mean per-mutant wall 1.864 s, median 0.751 s, seven serial re-runs. They match the
+authoritative log line for line. Two names in the `EQUIVALENT` catalogue are caught by their suite
+(`place origin: a callee without rows frees nothing` and `place origin: a callee records every change as not
+strict`); they are not reclassified, and the gate prints a separate note naming them. The old summary line
+counted `EQUIVALENT` membership instead of final status, which is why historical logs say 605 caught / 29
+equivalent; that was a reporting bug, and the historical release evidence is left as it was rather than
+rewritten. `mutate_io.py` remained 27/27.
 
 **Limits.** The catcher map is only as good as the catalog it was learned from; a changed first failure
 costs a full fallback, not a wrong verdict. The current outliers are real work under the mutant (compiling a
 large benchmark through a slower mutant, or a mutated program that runs long), not harness overhead. The
-timings count a stage's wall once and its subprocesses as a sum, so they should be compared stage by stage,
-not added into a single wall figure.
+timings count a stage's wall once and its subprocesses as a sum of direct launches, so they should be
+compared stage by stage, not added into a single wall figure or compared across the two gates.
