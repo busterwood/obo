@@ -842,6 +842,19 @@ implementation.
   X34 a cell is built in a global initializer (E2); X36 `OBO_VERSION` stays `0.6` or `SYM_FORMAT` stays 2, instead of becoming `0.8` / 4 (S-4);
   X37 `containsIface` does not recurse into records, or drops its guard (E9).
 
+(implementation, 2026-10-30) Mutation evidence for this section. X8 is implemented as a faithful load-order
+mutation: the receiver's box pointer is saved as argument 0 and the vtable slot is reserved, the explicit
+arguments run, and only then are `[box]` and `[box + 8]` read into argument 0 and the vtable slot. On legal
+source it is equivalent: `argOrderCheck` holds the receiver and refuses a later argument that moves or frees its
+box (and the mut-alias check refuses one that points inside it), so no accepted call changes either word
+between the arguments and the indirect call. The two older mutants
+that read a wrong stack word or swapped the two words are corruption faults (they crash the first dispatch); they
+are kept as descriptively named extras, not as X8. X15's "forged-method module test" promise is not realizable:
+a `.sym` reader trusts an imported implementation and `implDecl` only sees methods compiled from source, so the
+pfree-subset branch is a defensive check with no honest input; X15 is recorded as equivalent with that precise
+reason. X10 and X37 remain deferred to phase 2a and the lambda stage. This note records implementation evidence;
+it does not change the rules above.
+
 ---
 
 ## 13. Implementation steps and reuse

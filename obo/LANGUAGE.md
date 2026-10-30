@@ -875,9 +875,9 @@ fn main() {
 }
 ```
 
-The typed destinations are `let`/`var` with a type, assignment to a typed place, a call argument, a
-`replace` value, a constructor field, `return`, and an `ok` payload that already has the interface type. Inference
-never creates an interface: `let e = &c` stays `&Circle` and `let e = c` stays `Circle`.
+The typed destinations are `let`/`var` with a type, assignment to a typed place, a call argument, an
+`append` element, a `replace` value, a constructor field, `return`, and an `ok` payload that already has the
+interface type. Inference never creates an interface: `let e = &c` stays `&Circle` and `let e = c` stays `Circle`.
 
 Rules and refusals:
 

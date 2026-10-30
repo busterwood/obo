@@ -5317,8 +5317,7 @@ dispatch mutations are now description-named extras.
 | X5 | caught | `run/ifaces_b1_loop` (saved pair follows the site) |
 | X6 | caught | `run/ifaces_b1_loop` (re-point stores only a pointer) |
 | X7 | caught | `run/ifaces_b1_loop` (vtable word not copied) |
-| X8 | caught | `run/ifaces_calls` (wrong vtable word / crash) |
-| X8b | caught | two-site S4 role swap; `run/ifaces_b1_loop` and the call files fail |
+| X8 | equivalent | the faithful S4 mutation reads the receiver's `obj` and `vtable` after every explicit argument. `argOrderCheck` holds the receiver as argument 0 and refuses a later argument that moves or frees its box (the mut-alias check also refuses a mut argument that points inside it); the box pointer and the two dispatch slots keep the same layout, so legal source observes the same box and table. E6's `h.d.grow(swap(h))` is refused identically; see the precise reason in `mutate_fork.py`. |
 | X9 | caught | E2 store-first: `errors/ifaces_owned` and `errors/ifaces_refs` |
 | X10 | deferred, phase 2a | there is no `^I`; the 0.8 handle refusal (E8a) is a separate extra mutation |
 | X11 | caught | `run/ifaces_refs` / B1 loop and defer rules |
@@ -5358,19 +5357,24 @@ dispatch mutations are now description-named extras.
 | extra: global-init call guard | caught | `errors/ifaces_global_init` |
 | extra: wrong vtable slot | caught | `run/ifaces_calls` |
 | extra: member summary not applied | caught | `errors/ifaces_calls` and `run/ifaces_effects` |
+| extra: wrong vtable stack slot | caught | crashes the first dispatch (`run/ifaces_calls`); a corruption fault, not an S4 load-order fault |
+| extra: obj/vtable words swapped | caught | two-site role swap; crashes the first dispatch (`run/ifaces_calls`, `run/ifaces_b1_loop`); a corruption fault, not an S4 load-order fault |
 
-Counts: 46 interface entries, 44 caught, 2 equivalent (X15, X30), 0 missed/stale/broken. The 36 design rows
-minus X10 and X37 are all represented; the remaining entries are the X8b two-site check, the X36 split, the
-X38 subdivisions and the four extras. No test assertion was deleted or relaxed.
+Counts: 49 table rows: 47 active interface entries (44 caught, 3 equivalent X8/X15/X30) plus the two
+deferred rows X10 and X37. All 47 active entries were run; 0 missed/stale/broken. The 36 design rows minus
+X10 and X37 are all represented; the remaining active entries are the two renamed corrupt-dispatch extras, the
+X36 split, the X38 subdivisions and the four other extras. No test assertion was deleted or relaxed.
 
 ID check against the design: E8a, E10 and E-impl-mismatch are current tests; E8 (phase 2a) and E9/E9a (lambda
 phase) are not implemented and are not claimed. X38 is present as five comparison variants. X39 and X40 are not
-design IDs and no longer appear; the two dispatch mutations are named descriptively instead.
+design IDs and no longer appear. The two old S4 corruption mutations (a wrong stack slot and a two-site role
+swap) are descriptive extras, not X8 or X8b: they crash the first dispatch and do not exercise load order.
 
 ## Gates (this branch)
 
-These were run from `obo/` at the step-7 tree with the 0.6 seed building the 0.8 compiler. The source is
-interface-free, so the bootstrap is the same fact the implementation steps used.
+These were run from `obo/` at the review-fix tree (a8bea53 plus this scoped test/doc change) with the 0.6 seed
+building the 0.8 compiler. The source is interface-free, so the bootstrap is the same fact the implementation
+steps used.
 
 - `run_fork.py`: 1,408 passed, 0 failed.
 - `module_test.py`: 103 passed, 0 failed.
@@ -5388,14 +5392,20 @@ interface-free, so the bootstrap is the same fact the implementation steps used.
   0.7 branch. The source growth crossed a 16 KiB image chunk as recorded for step 6; the step-7 docs and tests
   add no compiler source and do not move the peak.
 - `imports.py`: 26/26; `stdlib.py`: 16/16.
-- `tools.py --require-reference`: 280/280; `eza.py` without a host reference: 474 passed, 0 failed, 72 live
-  reference cases skipped because `eza` is not on this host's PATH (`--require-reference` exits 2 with that
-  message); the skipped cases are the known reference-only ones, and no golden was changed.
+- `tools.py --require-reference`: 280/280.
+- `eza.py --require-reference`: **546 passed, 0 failed, 0 skipped**, run as
+  `PATH=/tmp/eza-install-sim-F2odpb:$PATH make eza-check` (command-scoped PATH only). The reference is the
+  pinned eza v0.23.3 binary with sha256 `10457dde...a8f7cd8`, exactly `tests/eza/VERSION`; `REFERENCE.md`
+  records it as the P0 probe artifact at that path, and its `--version` output matches the pin. `make
+  eza-memory`: 5/5, worst peak 2,190,032 bytes under `EZA_PEAK_MAX` 2,752,512. No golden was changed. The
+  earlier 474/0/72-skipped fallback is superseded by this strict run.
 - Self-hosting: stage2 == stage3 (`cmp`, 507,905 bytes), seed-built `obo` == stage2, `--version` is
   `obo 0.8 sym-format 4 abi 1`, and `seed/obo` remains `0.6 sym-format 2 abi 1`. Seed promotion is deliberately
   not part of this step.
-- `mutate_fork.py` full: 605 of 633 mutants caught, 28 equivalent, 0 missed/stale/broken. The interface
-  subset is 44 caught and 2 equivalent (X15, X30), matching the table above.
+- `mutate_fork.py` full: 605 of 634 mutants caught, 29 equivalent, 0 missed/stale/broken. The interface
+  subset is 47 active entries (X10 and X37 are deferred rows, not run): 44 caught and 3 equivalent (X8, X15,
+  X30), matching the table above. The new X8 is the faithful delayed-read mutation; the two renamed corruption
+  extras are still caught.
 - `mutate_port.py` full: 529 of 529 mutants caught, 0 missed/stale/broken.
 - `mutate_io.py` full: 27 of 27 caught, 0 missed/stale/broken.
 
@@ -5413,9 +5423,13 @@ every pattern matches once and every mutant is judged.
 - The local tier is conservative: a method that writes through a handle or frees a global cannot implement a
   plain interface member. `pure` does not forbid scalar, global or receiver writes; it guarantees no frees and
   no owned writes through a handle.
-- S4 is pinned two ways: X8/X8b mutate the vtable word and the two load roles, and E6 refuses a later argument
-  that may free the receiver's box. A legal call therefore cannot change the box between the two loads and the
-  indirect call; the ordering is defensive as well as observed by the dispatch tests.
+- S4 is pinned by a faithful mutation (X8) that moves the actual `obj`/`vtable` reads after the explicit
+  arguments while keeping argument 0 and the vtable slot in place. It is equivalent on legal source: E6 refuses
+  a later argument that may free or move the receiver's box, and the mut-alias check refuses one that points
+  inside the receiver, so no legal argument can change the place, box or table between the reads and the
+  indirect call. The dispatch run tests pin the valid words and slot. The two
+  old X8/X8b mutations were corruption faults (a wrong stack slot and swapped roles), not load-order tests;
+  they are now named as descriptive extras.
 - `?T -> ?I` is not a conversion; the documented idiom is a narrowed local. `&?I` is parameter/walk-variable
   only. Interfaces cannot be compared or handled in 0.8.
 - The compiler source, runtime, seed and `PEAK_BUDGET` are unchanged. The peak remains under 2,000,000; if a

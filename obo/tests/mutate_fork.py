@@ -920,6 +920,7 @@ EQUIVALENT = {
 
     # interfaces v3 step 2: the summary bits that no reader consults, and the mode-0 check a full build cannot reach
     "interfaces v3 X30: the mode-0 comparison ignores parameter modes": "equivalent for the same reason as the methods' mode-0 checks: a full build reads each import's .sym right after its own writer has rewritten it from the same live interface (compileUnit, writeSym, then readSym in mode 0), and an import must have a header, so no full build reads a file it did not write (a forged lib.sym in the sym dir is overwritten first); --check reads in mode 1, which compares nothing with the live interface. The writer's modes are pinned by the golden and the round trip (a writer that drops mut, X26, is caught there)",
+    "interfaces v3 X8: the receiver's obj and vtable are loaded after the arguments (S4)": "equivalent on legal source: S4's order is defensive. The receiver is held as argument 0 (holdArg), and argOrderCheck refuses any later argument that moves or frees what the receiver points into; the mut-alias check also refuses a mut argument that points inside the receiver. For an interface receiver that is the box or pair slot, so no accepted call can replace, re-point or free the place whose obj and vtable the mutant reads. The mutant still saves the box pointer as argument 0 before the explicit arguments and reserves the vtable slot above them; after the arguments it reads [box] and [box+8] and fills those exact slots, so argument order, layout and the two dispatch words are unchanged. E6's errors/ifaces_calls case `h.d.grow(swap(h))` is rejected identically by the unmutated and mutant compilers, and the full suite (including run/ifaces_calls and run/ifaces_effects) passes without a fault. The only difference is the time of two reads of unchanged box words, which no legal program can observe",
     "interfaces v3 X15: the local tier drops the pfree-subset check": "equivalent in the current architecture: the signature comparison has already required method and member parameter modes to be equal (X38d), and the synthetic S(m) puts a pfree bit on exactly the member's mode-2 parameters. callFn records pfree only for a mode-2 argument, so a source method's pfree mask is a subset of S(m) by construction; a mode-1 parameter cannot be changed and no recorded free can land on it. The branch is defensive for a forged *method* summary, but implDecl only ever sees methods compiled from source: a .sym reader trusts an imported implementation and does not re-run the check, and a root cannot implement an interface for an imported type. The full suite passes without the branch, and there is no honest input that reaches it, so no test can distinguish it.",
 }
 
@@ -1459,7 +1460,7 @@ INTERFACE_MUTANTS = {
         "                if pmut && len(pmodes) < 2 { append(pmodes, 2) } else { append(pmodes, 1) }\n            } else {\n                if pmut { error(\"mut needs a reference parameter: write mut p0: &T\") }\n"),
     # step 4: dispatch through an owned interface value (design sections 7 and 11): the call's vtable word, the
     # slot offset, and the caller's effects from the member's synthetic summary
-    "interfaces v3 X8: the vtable word is read from the wrong pushed slot (S4 order)": (
+    "interfaces v3 dispatch extra: the vtable word is read from the wrong stack slot": (
         "        opMem(0x8B, RAX, mem(RSP, -1, 8 * n, 8), true, false)\n",
         "        opMem(0x8B, RAX, mem(RSP, -1, 8 * n - 8, 8), true, false)\n"),
     # a design-ID-free name: this is an extra dispatch mutation, not one of X1-X38
@@ -1473,9 +1474,18 @@ INTERFACE_MUTANTS = {
 
 # a mutation whose behaviour needs more than one replacement, each of which must occur exactly once
 MULTI_MUTANTS = {
-    # S4, two sites: both words are loaded before the arguments, but with their roles exchanged, which no
-    # single-site X8 replacement can express
-    "interfaces v3 X8b: the receiver's obj and vtable words are swapped (S4, two sites)": [
+    # S4, two sites: the actual reads of the receiver's obj and vtable happen after every explicit
+    # argument has run. The box pointer itself is saved as argument 0 before the arguments, and the
+    # vtable position is reserved, so the call layout and dispatch words stay valid.
+    "interfaces v3 X8: the receiver's obj and vtable are loaded after the arguments (S4)": [
+        ("        if iface && i == 0 {\n            pushIfaceReceiver(a)                   // the box's vtable and object, before any explicit argument runs (v3 7.1)\n",
+         "        if iface && i == 0 {\n            let pb = asReg(a)\n            pushI(0)                               // S4 mutant: the vtable slot, filled after the arguments run\n            depth += 8\n            pushR(pb.r)                            // argument 0: the box pointer; its two words are read after the arguments\n            release(pb.r)\n"),
+        ("            release(r.r)\n        }\n    }\n    releaseArgs(tbase, omark)\n",
+         "            release(r.r)\n        }\n    }\n    if iface {\n        // S4 mutant: read the receiver's obj and vtable only after every explicit argument has run\n        let pb = alloc()\n        opMem(0x8B, pb, mem(RSP, -1, 8 * (n - 1), 8), true, false)\n        let ob = alloc()\n        opMem(0x8B, ob, mem(pb, -1, 0, 8), true, false)\n        opMem(0x8B, pb, mem(pb, -1, 8, 8), true, false)\n        opMem(0x89, pb, mem(RSP, -1, 8 * n, 8), true, false)\n        opMem(0x89, ob, mem(RSP, -1, 8 * (n - 1), 8), true, false)\n        release(ob)\n        release(pb)\n    }\n    releaseArgs(tbase, omark)\n"),
+    ],
+    # S4 extras, two sites: both words are loaded before the arguments, but with their roles exchanged,
+    # which no single-site replacement can express. These are corruption faults, not load-order faults.
+    "interfaces v3 dispatch extra: the receiver's obj and vtable words are swapped (two sites)": [
         ("    opMem(0x8B, vt, mem(b.r, -1, 8, 8), true, false)\n",
          "    opMem(0x8B, vt, mem(b.r, -1, 0, 8), true, false)\n"),
         ("    opMem(0x8B, ob, mem(b.r, -1, 0, 8), true, false)\n",
