@@ -766,6 +766,12 @@ def tail_cases():
     # write failure and the deliberately unsupported options (own goldens)
     add('devfull_oneline', T, ['oneline'], fixtures=['oneline'], sink=True,
         tag='writeerror')
+    # A write failure suppresses output but not later operands' diagnostics;
+    # the one write-error line is printed after them.
+    add('devfull_oneline_missing', T, ['oneline', 'missing'],
+        fixtures=['oneline'], sink=True, tag='writeerror')
+    add('devfull_oneline_dir', T, ['oneline', 'dir'],
+        fixtures=['oneline', 'dir'], sink=True, tag='writeerror')
     add('usage_z', T, ['-Z'], tag='usage')
     add('usage_help', T, ['--help'], tag='usage')
     add('usage_version', T, ['--version'], tag='usage')

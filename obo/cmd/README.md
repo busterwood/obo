@@ -32,7 +32,7 @@ runtime included:
 | `cat` | 40,961 bytes |
 | `wc` | 45,057 bytes |
 | `sort` | 69,633 bytes |
-| `tail` | 40,961 bytes |
+| `tail` | 45,057 bytes |
 | `eza` | 212,993 bytes |
 
 The library modules are `lib/io.obx` (`Reader`, `Writer`, the buffered functions,
@@ -280,14 +280,27 @@ tail: error reading '<operand>': Is a directory
 tail: write error: No space left on device
 ```
 
-A write error stops immediately and never opens a later operand. Any open,
-read or write failure exits 1. Unlike the other tools, `tail` wraps the operand
-in GNU's single quotes; a name containing an apostrophe is not escaped the way
-GNU's quoting does, and exact differential cases use quote-free names
-(spaces are fine). Invalid counts are this build's own one-line messages, e.g.
-`tail: invalid number of lines: '2x'`; a missing `-n` value is `tail: option
-requires an argument -- 'n'`. Deliberately absent: `-f`, `-F`, `-q`, `-v`,
-`-s`, `-z`, `--follow`, `--retry`, `--pid`, `--sleep-interval`, `--max-unchanged-stats`,
+A write error suppresses all further output, but the remaining operands are
+still opened and read so their diagnostics appear; the single `tail: write
+error: <text>` line is printed after them. GNU also continues with later
+operands, but sometimes prints `write error` without the errno text; ours always
+includes it. A follow mode would instead stop at the first write error, because
+continuing forever with a dead output is not useful. Any open, read or write
+failure exits 1. Unlike the other tools, `tail` wraps the operand in GNU's
+single quotes; a name containing an apostrophe is not escaped the way GNU's
+quoting does, and exact differential cases use quote-free names (spaces are
+fine). Invalid counts are this build's own one-line messages, e.g. `tail:
+invalid number of lines: '2x'`; a missing `-n` value is `tail: option requires
+an argument -- 'n'`.
+
+Follow mode is deliberately absent in this build. `lib/io.obx` has blocking
+reads but no sleep/poll timeout, and a regular-file read at EOF returns
+immediately, so a follow loop needs either a busy spin or repeated rereads of
+the whole file; neither is acceptable. There is also no exposed seek/fstat for
+efficient descriptor-based truncation detection. The minimum addition is one
+sleep/timeout primitive (with the resulting compiler/runtime slot change) before
+`-f` can be implemented honestly. Also absent: `-F`, `-q`, `-v`, `-s`, `-z`,
+`--follow`, `--retry`, `--pid`, `--sleep-interval`, `--max-unchanged-stats`,
 the obsolete `-N` spelling, signed counts, count suffixes, `--help`,
 `--version` and every other long option.
 

@@ -53,8 +53,10 @@ type ByteRing = ref record {
 }
 
 type TailState = ref record {
-    failed: bool           // an open or read error happened
-    fatal: bool            // a write error (or byte-mode read error) stopped us
+    failed: bool           // an open, read or write error happened
+    fatal: bool            // byte-mode read error: stop opening later operands
+    writeFailed: bool      // stdout failed; keep diagnosing operands, emit nothing more
+    writeCode: int         // the first write failure's errno
     headerSeen: bool       // a header was already written (multi-operand mode)
 }
 
@@ -129,40 +131,47 @@ fn writeHeader(mut w: &io::Writer, label: string, mut st: &TailState): Result[bo
     return ok(true)
 }
 
-fn writeError(mut st: &TailState, code: int) {
-    eprintln("tail: write error: ", errors::text(code))
-    st.fatal = true
+// Record the first stdout failure and suppress every later write. The message
+// is printed once at exit, after any later operand diagnostics (GNU prints the
+// missing/directory diagnostic before its write error).
+fn noteWriteError(mut st: &TailState, code: int) {
+    if !st.writeFailed {
+        st.writeFailed = true
+        st.writeCode = code
+    }
+    st.failed = true
 }
 
-// Flush the Writer and report a failure once. A false result means the caller
-// must stop opening or reading later operands.
-fn flushOutput(mut w: &io::Writer, mut st: &TailState): bool {
+// Flush pending output unless stdout has already failed. The error stays
+// recorded; the caller continues with later operands to report their errors.
+fn flushOutput(mut w: &io::Writer, mut st: &TailState) {
+    if st.writeFailed { return }
     let fl = io::flush(w)
     match fl {
-        ok { return true }
+        ok { }
         err {
-            writeError(st, fl.code)
-            return false
+            noteWriteError(st, fl.code)
         }
     }
 }
 
-// Read one already-open stream, emitting its tail. Returns false for a fatal
-// write error. A read error is printed and sets failed; byte mode additionally
-// stops before later operands (GNU 9.4 does this, while line mode continues).
+// Read one already-open stream, emitting its tail. Returns false only for a
+// fatal byte-mode read error (or a future follow-mode stop). A write failure
+// suppresses further output but not later operands' diagnostics. A read error is
+// printed and sets failed; byte mode stops before later operands (GNU 9.4 does
+// this, while line mode continues).
 fn processReader(mut r: &io::Reader, label: string, opts: &TailOpts,
                  multi: bool, mut w: &io::Writer, mut st: &TailState): bool {
-    if multi {
+    if multi && !st.writeFailed {
         let hw = writeHeader(w, label, st)
         match hw {
             ok { }
             err {
-                writeError(st, hw.code)
-                return false
+                noteWriteError(st, hw.code)
             }
         }
         // The header precedes any read error on the combined stream, as in GNU.
-        if !flushOutput(w, st) { return false }
+        flushOutput(w, st)
     }
     if opts.lineMode {
         var q = new LineQueue{items: new []Line(0), head: 0, cap: opts.count}
@@ -175,6 +184,7 @@ fn processReader(mut r: &io::Reader, label: string, opts: &TailOpts,
                 return true
             }
         }
+        if st.writeFailed { return true }
         // Copy through a local 64 KiB block: the Writer is a mutable
         // parameter, so a call that writes must not also receive a borrowed
         // line array (the alias check is conservative).
@@ -192,8 +202,8 @@ fn processReader(mut r: &io::Reader, label: string, opts: &TailOpts,
                     match br {
                         ok { }
                         err {
-                            writeError(st, br.code)
-                            return false
+                            noteWriteError(st, br.code)
+                            return true
                         }
                     }
                     truncate(block, 0)
@@ -207,8 +217,8 @@ fn processReader(mut r: &io::Reader, label: string, opts: &TailOpts,
             match br {
                 ok { }
                 err {
-                    writeError(st, br.code)
-                    return false
+                    noteWriteError(st, br.code)
+                    return true
                 }
             }
             truncate(block, 0)
@@ -225,6 +235,7 @@ fn processReader(mut r: &io::Reader, label: string, opts: &TailOpts,
                 return false
             }
         }
+        if st.writeFailed { return true }
         let n = len(ring.buf)
         var block = new []byte(0)
         var k = 0
@@ -237,8 +248,8 @@ fn processReader(mut r: &io::Reader, label: string, opts: &TailOpts,
                 match br {
                     ok { }
                     err {
-                        writeError(st, br.code)
-                        return false
+                        noteWriteError(st, br.code)
+                        return true
                     }
                 }
                 truncate(block, 0)
@@ -250,8 +261,8 @@ fn processReader(mut r: &io::Reader, label: string, opts: &TailOpts,
             match br {
                 ok { }
                 err {
-                    writeError(st, br.code)
-                    return false
+                    noteWriteError(st, br.code)
+                    return true
                 }
             }
             truncate(block, 0)
@@ -259,7 +270,7 @@ fn processReader(mut r: &io::Reader, label: string, opts: &TailOpts,
     }
     // Flush each operand's output so a later open error cannot make an earlier
     // operand's data appear after it on a shared terminal.
-    if !flushOutput(w, st) { return false }
+    flushOutput(w, st)
     return true
 }
 
@@ -399,11 +410,13 @@ fn main() {
     }
 
     // GNU's count 0 prints nothing and does not open operands (even a missing
-    // one), so no header and no diagnostic is produced.
+    // one), so no header and no diagnostic is produced. (A future -f must keep
+    // going here: zero initial output is not the same as no follow.)
     if opts.count == 0 { exit(0) }
 
     var w = io::newWriter(stdout(), 65536)
-    var st = new TailState{failed: false, fatal: false, headerSeen: false}
+    var st = new TailState{failed: false, fatal: false, writeFailed: false,
+                           writeCode: 0, headerSeen: false}
     var multi = false
     if len(operands) == 0 {
         let cont = tailOperand("-", opts, false, w, st)
@@ -420,14 +433,9 @@ fn main() {
             k += 1
         }
     }
-    if !st.fatal {
-        let fl = io::flush(w)
-        match fl {
-            ok { }
-            err {
-                writeError(st, fl.code)
-            }
-        }
+    flushOutput(w, st)
+    if st.writeFailed {
+        eprintln("tail: write error: ", errors::text(st.writeCode))
     }
     if st.fatal || st.failed { exit(1) }
 }
