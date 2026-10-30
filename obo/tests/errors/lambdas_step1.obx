@@ -89,10 +89,51 @@ type BadIfaceRet = fn(): I5  // error: a function value cannot take or return an
 type I6 = interface { fn m() }
 type BadNestedIface = fn(fn(I6): int): int  // error: a function value cannot take or return an interface value
 
+// === a direct interface in an array constructor is refused
+type I6a = interface { fn m() }
+type BadArrIface = fn([]I6a): int  // error: a function value cannot take or return an interface value
+
+// === a direct interface in an optional constructor is refused
+type I6b = interface { fn m() }
+type BadOptIface = fn(?I6b): int  // error: a function value cannot take or return an interface value
+
+// === a direct interface in a Result constructor is refused
+type I6c = interface { fn m() }
+type BadResultIface = fn(Result[I6c]): int  // error: a function value cannot take or return an interface value
+
+// === a direct interface through a borrowed array is refused
+type I6d = interface { fn m() }
+type BadBorrowArrIface = fn(&[]I6d): int  // error: a function value cannot take or return an interface value
+
+// === an array alias of an interface is refused in a function type
+type I6e = interface { fn m() }
+type I6Arr = []I6e
+type BadAliasArrIface = fn(I6Arr): int  // error: a function value cannot take or return an interface value
+
+// === an optional alias of an interface is refused in a function type
+type I6f = interface { fn m() }
+type I6Opt = ?I6f
+type BadAliasOptIface = fn(I6Opt): int  // error: a function value cannot take or return an interface value
+
+// === a Result alias of an interface is refused in a function type
+type I6g = interface { fn m() }
+type I6Res = Result[I6g]
+type BadAliasResIface = fn(I6Res): int  // error: a function value cannot take or return an interface value
+
+// === a borrowed array alias of an interface is refused in a function type
+type I6h = interface { fn m() }
+type I6BorrowArr = []I6h
+type BadAliasBorrowIface = fn(&I6BorrowArr): int  // error: a function value cannot take or return an interface value
+
 // === a record that holds an interface is refused as a function type parameter
 type I7 = interface { fn m() }
 type IfaceHolder = ref record { s: I7 }
 type BadHolder = fn(IfaceHolder): int  // error: a function value cannot take or return 'IfaceHolder': it holds an interface value
+
+// === a record that holds an interface behind an array is refused as a function type parameter
+type I7a = interface { fn m() }
+type IfaceHolderArr = ref record { s: I7a }
+type BadArrHolder = fn([]IfaceHolderArr): int  // error: a function value cannot take or return 'IfaceHolderArr': it holds an interface value
 
 // === a closed type whose variant holds an interface is refused as a function type parameter
 type I8 = interface { fn m() }
@@ -137,6 +178,10 @@ fn f(g: fn(int): int) { println(g) }  // error: cannot print fn(int): int
 fn f(g: fn(int): int): int
 fn f(g: fn(int)): int { return 1 }  // error: 'f' does not match its forward heading
 
-// === a forward heading and a body whose function parameter modes differ do not match
+// === a forward heading and a body whose function parameter types differ do not match
 fn g(f: fn(int): int)
 fn g(f: fn(byte): int) { }  // error: 'g' does not match its forward heading
+
+// === a forward heading and a body whose function parameter modes differ do not match
+fn h(f: fn(&Item): int)
+fn h(f: fn(Item): int) { }  // error: 'h' does not match its forward heading

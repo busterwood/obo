@@ -105,11 +105,11 @@ const T_COLONCOLON = 67
 // Stage 2: the symbol-file format, the compiled-program ABI and the compiler version.
 // OBO_VERSION is the compiler's identity in every .sym's `compiler` line and in --version.
 // Bump OBO_VERSION with each merged compiler feature; additive builtin/runtime
-// extensions use a patch release (0.8 -> 0.8.1), while the 0.9/0.10 lambdas stages
-// remain reserved. Bump SYM_FORMAT on any grammar or meaning change; bump SYM_ABI on
+// extensions use a patch release (0.8 -> 0.8.1); 0.9 is lambdas Stage A and 0.10 is
+// Stage B. Bump SYM_FORMAT on any grammar or meaning change; bump SYM_ABI on
 // any layout/calling-convention/descriptor/effect change.
-const OBO_VERSION = "0.8.1"
-const SYM_FORMAT = 4
+const OBO_VERSION = "0.9"
+const SYM_FORMAT = 5
 const SYM_ABI = 1
 
 fn makeTokNames(): []string {
@@ -1083,6 +1083,15 @@ fn containsIfaceIn(t: ^Type): bool {
 fn rejectFn(t: ^Type, msg: string) { if containsFn(t) { errorAt(msg, 0, 0) } }
 fn rejectIface(t: ^Type, msg: string) { if containsIface(t) { errorAt(msg, 0, 0) } }
 
+fn symTypeText(t: ^Type): string
+
+// A carrier name in a function-type diagnostic: source names use tname; the reader must use the
+// symbol-file spelling, which does not prefix the module being defined.
+fn ifaceFnName(t: ^Type): string {
+    if symMode { return symTypeText(t) }
+    return tname(t)
+}
+
 // The function-type formation site: a direct interface is the plain message; an interface held in a record
 // or closed type, or an incomplete forward shell, names the type that carries it (interfaces v3 10.1).
 fn rejectIfaceFn(t: ^Type) {
@@ -1092,12 +1101,17 @@ fn rejectIfaceFn(t: ^Type) {
         rejectIfaceFn(baseOf(t))
         return
     }
+    if k == "fn" {
+        for i in 0..fnArity(t) { rejectIfaceFn(fnParam(t, i)) }
+        rejectIfaceFn(fnRet(t))
+        return
+    }
     if k == "record" || k == "closed" {
         if t.incomplete {
-            errorAt("a function value cannot take or return '" + tname(t) + "': it is not yet defined; define it before this function type", 0, 0)
+            errorAt("a function value cannot take or return '" + ifaceFnName(t) + "': it is not yet defined; define it before this function type", 0, 0)
         }
         if containsIface(t) {
-            errorAt("a function value cannot take or return '" + tname(t) + "': it holds an interface value", 0, 0)
+            errorAt("a function value cannot take or return '" + ifaceFnName(t) + "': it holds an interface value", 0, 0)
         }
     }
 }
@@ -4189,11 +4203,15 @@ fn parseType(): ^Type {
         // fn (ParamTypes) [: Ret]: owned or read-only & parameters, no mut, structural
         next()
         if sym == T_LBRACK { error("a function type cannot have a capture list") }
-        expect(T_LPAREN, "")
+        if sym != T_LPAREN { error("expected '(' after 'fn'") }
+        next()
         let t = newFnType(tVoid)
         while sym != T_RPAREN {
             var mode = 0
             if sym == T_AMP { next(); mode = 1 }
+            if sym != T_QUESTION && sym != T_LBRACK && sym != T_CARET && sym != T_FN && sym != T_IDENT {
+                error("expected a parameter type")
+            }
             let p = parseType()
             if mode == 1 && !isOwned(p) { error("only records, closed types and arrays can be borrowed, not " + tname(p)) }
             rejectIfaceFn(p)
@@ -10280,6 +10298,21 @@ fn appQuoted(mut b: &[]byte, s: string) {
 // type is, so layout never depends on an alias.
 fn appTypeExpr(mut b: &[]byte, t: ^Type, modName: string) {
     let k = t.kind
+    if k == "fn" {
+        appStr(b, "fn(")
+        for i in 0..fnArity(t) {
+            if i > 0 { appStr(b, ", ") }
+            if fnMode(t, i) == 1 { append(b, '&') }
+            appTypeExpr(b, fnParam(t, i), modName)
+        }
+        append(b, ')')
+        let r = fnRet(t)
+        if r.kind != "void" {
+            appStr(b, ": ")
+            appTypeExpr(b, r, modName)
+        }
+        return
+    }
     if k == "array" {
         appStr(b, "[]")
         appTypeExpr(b, baseOf(t), modName)
@@ -10776,6 +10809,18 @@ fn symWord(w: string) {
 }
 
 fn symTypeText(t: ^Type): string {
+    if t.kind == "fn" {
+        var s = "fn("
+        for i in 0..fnArity(t) {
+            if i > 0 { s = s + ", " }
+            if fnMode(t, i) == 1 { s = s + "&" }
+            s = s + symTypeText(fnParam(t, i))
+        }
+        s = s + ")"
+        let r = fnRet(t)
+        if r.kind != "void" { s = s + ": " + symTypeText(r) }
+        return s
+    }
     if t.kind == "array" { return "[]" + symTypeText(baseOf(t)) }
     if t.kind == "handle" { return "^" + symTypeText(baseOf(t)) }
     if t.kind == "opt" { return "?" + symTypeText(baseOf(t)) }
@@ -10859,6 +10904,7 @@ fn symFinishTypeName(name: string, nline: int, ncol: int): ^Type {
         next()
         let b = symParseType()
         expect(T_RBRACK, "")
+        rejectFn(b, "Result cannot hold a function value")
         return derived("result", b)
     }
     let s = findExport(symCurMod, name)
@@ -10870,16 +10916,47 @@ fn symFinishTypeName(name: string, nline: int, ncol: int): ^Type {
 }
 
 fn symParseType(): ^Type {
+    if sym == T_FN {
+        next()
+        if sym == T_LBRACK { error("a function type cannot have a capture list") }
+        if sym != T_LPAREN { error("expected '(' after 'fn'") }
+        next()
+        let t = newFnType(tVoid)
+        while sym != T_RPAREN {
+            var mode = 0
+            if sym == T_AMP { next(); mode = 1 }
+            if sym != T_QUESTION && sym != T_LBRACK && sym != T_CARET && sym != T_FN && sym != T_IDENT {
+                error("expected a parameter type")
+            }
+            let p = symParseType()
+            if mode == 1 && !isOwned(p) { error("only records, closed types and arrays can be borrowed, not " + symTypeText(p)) }
+            rejectIfaceFn(p)
+            fnAddParam(t, p, mode)
+            if sym != T_RPAREN { expect(T_COMMA, "',' or ')'") }
+        }
+        expect(T_RPAREN, "")
+        if sym == T_COLON {
+            next()
+            let r = symParseType()
+            rejectFn(r, "a function type cannot return a function value")
+            rejectIfaceFn(r)
+            t.base = r
+        }
+        return t
+    }
     if sym == T_QUESTION {
         next()
         let b = symParseType()
+        rejectFn(b, "an optional cannot hold a function value; function values are parameters and locals only")
         if !nonNull(b) { error("only reference types can be optional, not " + symTypeText(b)) }
         return derived("opt", b)
     }
     if sym == T_LBRACK {
         next()
         expect(T_RBRACK, "")
-        return derived("array", symParseType())
+        let b = symParseType()
+        rejectFn(b, "an array cannot hold function values")
+        return derived("array", b)
     }
     if sym == T_CARET {
         next()
@@ -10908,6 +10985,7 @@ fn symFieldList(rec: ^Type) {
         if sym != T_COLON { errorAt("expected ':' after the field name", fline, 1) }
         next()
         let t = symParseType()
+        rejectFn(t, "a record field cannot be a function value; function values are parameters and locals only")
         for i in 0..len(rec.fields) {
             if rec.fields[i].name == fname { error("duplicate field '" + fname + "'") }
         }
@@ -11131,6 +11209,7 @@ fn symIfaceDef(name: string, nline: int, mode: int) {
             var isref = false
             if sym == T_AMP { next(); isref = true }
             let pt = symParseType()
+            rejectFn(pt, "an interface method cannot use a function value; function types are not supported in interfaces")
             if isref {
                 if !isOwned(pt) { error("only records, closed types and arrays can be borrowed, not " + symTypeText(pt)) }
                 if pmut { append(pmodes, 2) } else { append(pmodes, 1) }
@@ -11147,6 +11226,7 @@ fn symIfaceDef(name: string, nline: int, mode: int) {
             next()
             ret = symParseType()
         }
+        rejectFn(ret, "an interface method cannot use a function value; function types are not supported in interfaces")
         let what = "interface method '" + name + "::" + mname + "'"
         if mode == 1 {
             let m = newSym("ifn", mname, nil)
@@ -11192,6 +11272,17 @@ fn symIfaceDef(name: string, nline: int, mode: int) {
 // the type when the caller has read it already, or "" to read the whole type here (B7: it never names or changes a Type)
 fn symAlias(name: string, nline: int, mode: int, lead: string, lline: int, lcol: int) {
     symAfterShells = true
+    if symHas(symShells, name) {
+        if len(lead) == 0 && sym == T_FN {
+            error("a function type cannot be forward-declared: '" + name + "' is already declared as a forward type")
+        }
+        if len(lead) > 0 {
+            let es = findExport(symCurMod, lead)
+            if es != nil && es.kind == "type" && containsFn(symType(es)) {
+                error("a function type cannot be forward-declared: '" + name + "' is already declared as a forward type")
+            }
+        }
+    }
     symClaim(name)
     var t: ^Type = tVoid
     if len(lead) > 0 { t = symFinishTypeName(lead, lline, lcol) } else { t = symParseType() }
@@ -11386,6 +11477,7 @@ fn symConstDecl(mode: int) {
     if sym != T_COLON { error("expected ':' in a constant declaration") }
     next()
     let t = symParseType()
+    rejectFn(t, "a constant cannot hold a function value")
     if sym != T_ASSIGN { error("expected '=' in a constant declaration") }
     next()
     var kind = ""
@@ -11449,6 +11541,7 @@ fn symGlobalDecl(mode: int, kind: string) {
     if sym != T_COLON { error("expected ':' in a global declaration") }
     next()
     let t = symParseType()
+    rejectFn(t, "a function value cannot be a global; it is a parameter or a local")
     symClaim(name)
     append(symGlobalOrder, name)
     if mode == 1 {
@@ -11557,6 +11650,7 @@ fn symFnDecl(mode: int) {
         next()
         ret = symParseType()
     }
+    rejectFn(ret, "a function cannot return a function value; function values are parameters and locals only")
     var freesAll = false
     var writesHandles = false
     var pfree = 0

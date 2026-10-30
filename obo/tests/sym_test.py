@@ -26,8 +26,8 @@ RT = FORK
 GOLD = os.path.join(HERE, 'modules', 'golden')
 UPDATE = '--update' in sys.argv
 
-OBO_VERSION = '0.8.1'
-SYM_FORMAT = 4
+OBO_VERSION = '0.9'
+SYM_FORMAT = 5
 SYM_ABI = 1
 
 
@@ -440,9 +440,9 @@ def stale_missing_corrupt_versions():
         open(p, 'wb').write(base)
         # format / ABI / compiler, each its own exact message
         cases = [
-            (b'obosym 4', b'obosym 3', 'has format 3; this compiler reads 4'),
+            (b'obosym 5', b'obosym 6', 'has format 6; this compiler reads 5'),
             (b'\nabi 1\n', b'\nabi 9\n', 'has ABI 9; this compiler uses 1'),
-            (b'compiler "0.8.1"', b'compiler "9.9"', "was built by compiler '9.9'; this is '0.8.1'"),
+            (b'compiler "0.9"', b'compiler "9.9"', "was built by compiler '9.9'; this is '0.9'"),
         ]
         for old, new, msg in cases:
             data = base
@@ -715,9 +715,9 @@ def handwritten_interface():
     parameter names, summary items in any order, and a pf row at index >= 62."""
     params = ', '.join(f'q{i}: int' for i in range(63))
     uid = fnv(b'many::T')
-    sym = f'''obosym 4
+    sym = f'''obosym 5
 abi 1
-compiler "0.8.1"
+compiler "0.9"
 source 0x{0:016x}
 interface 0x0
 module many
@@ -1105,7 +1105,7 @@ def b6_stub_completion():
     try:
         ok(build(d, s), 'x build')
         m = os.path.join(s, 'm.sym')
-        open(m, 'w').write('obosym 4\nabi 1\ncompiler "0.8.1"\nsource 0x%016x\ninterface 0x0\nmodule m\nfn f() frees 1 x::g\n' % 0)
+        open(m, 'w').write('obosym 5\nabi 1\ncompiler "0.9"\nsource 0x%016x\ninterface 0x0\nmodule m\nfn f() frees 1 x::g\n' % 0)
         rehash(m, lambda b: b)
         for name, imports in (('order1', 'import "m.obx"\nimport "x.obx"'),
                               ('order2', 'import "x.obx"\nimport "m.obx"')):
@@ -1347,9 +1347,9 @@ fn main() {
         if 'fn (p0: &Local) lget(): int' not in main_text:
             raise Fail(f"the checked module's .sym lacks its method: {main_text!r}")
         base = sym_text(libsym)
-        open(libsym, 'wb').write(base.replace(b'obosym 4', b'obosym 1', 1))
+        open(libsym, 'wb').write(base.replace(b'obosym 5', b'obosym 1', 1))
         q = build(d, s, check=True)
-        if q.returncode != 2 or 'has format 1; this compiler reads 4' not in q.stderr:
+        if q.returncode != 2 or 'has format 1; this compiler reads 5' not in q.stderr:
             raise Fail(f"format 1: exit {q.returncode}: {q.stderr.strip()}")
         open(libsym, 'wb').write(base)
         os.rename(os.path.join(d, 'lib.obx.bak'), os.path.join(d, 'lib.obx'))
@@ -1705,26 +1705,227 @@ def stale_format3_interface():
         f.write('obosym 3\nabi 1\ncompiler "0.7"\nsource 0x0000000000000001\ninterface 0x0\nmodule lib\n'
                 'type I = interface { fn m(p0: I): int }\nfn f(p0: I): int\n')
     q = build(d, symdir, check=True)
-    if q.returncode != 2 or 'has format 3; this compiler reads 4; rebuild it' not in q.stderr:
+    if q.returncode != 2 or 'has format 3; this compiler reads 5; rebuild it' not in q.stderr:
         raise Fail(f"stale format-3 interface file: exit {q.returncode}: {q.stderr.strip()}")
     shutil.rmtree(d, ignore_errors=True)
 
 
-def format4_forged_fn_rejected():
-    """Stage A step 1 checkpoint: the format-4 reader has no function-type branch yet, so a
-    rehashed forged signature with `fn(...)` in a parameter is refused as old syntax. Step 2
-    replaces this with the format-5 reader and the malformed-function-type cases."""
-    d, symdir = tree({'lib.obx': 'module lib\npub fn apply(p0: int): int { return p0 }\n',
+FN_LIB = '''module lib
+pub type Item = ref record { n: int }
+pub type I = interface { fn m(p0: int) }
+pub type ArrI = []I
+pub type OptI = ?I
+pub type ResI = Result[I]
+pub type Holder = ref record { s: I }
+pub type Cmp = fn(&Item, &Item): int
+pub type T = ref record { v: int }
+pub var G: int = 0
+pub const C = 7
+pub fn plain(p0: int): int { return p0 }
+pub fn apply(p0: fn(int): int, p1: int): int { return p1 }
+pub fn useCmp(p0: Cmp): int { return 0 }
+pub fn (i: &Item) use(p0: fn(int): int): int { return 0 }
+'''
+
+
+def fn_sym_roundtrip():
+    """Stage A format 5: a public function-type alias, function parameter, method parameter and
+    source-less check/re-emit round-trip. No function value is created or called yet."""
+    d, symdir = tree({'lib.obx': FN_LIB,
                       'main.obx': 'module main\nimport "lib.obx"\nfn main() { }\n'},
-                     prefix='symcase-forged-fn-')
+                     prefix='symcase-fn-roundtrip-')
     try:
-        ok(build(d, symdir, out=os.path.join(d, 'prog')), 'honest format-4 build')
+        ok(build(d, symdir, out=os.path.join(d, 'prog')), 'function-type module build')
+        libpath = os.path.join(symdir, 'lib.sym')
+        lib = sym_text(libpath).decode()
+        for line in ('obosym 5\n', 'abi 1\n', 'compiler "0.9"\n',
+                     'type Cmp = fn(&Item, &Item): int\n',
+                     'fn apply(p0: fn(int): int, p1: int): int\n',
+                     'fn useCmp(p0: fn(&Item, &Item): int): int\n',
+                     'fn (p0: &Item) use(p1: fn(int): int): int\n'):
+            if line not in lib:
+                raise Fail(f"canonical function-type line missing from lib.sym: {line!r}")
+        base = sym_text(libpath)
+        r = reemit(libpath)
+        ok(r, 'reemit lib.sym')
+        if r.stdout != base:
+            raise Fail('lib.sym is not byte-identical after a reader/writer round trip')
+        again = os.path.join(d, 'again')
+        os.makedirs(again)
+        second = os.path.join(again, 'lib.sym')
+        open(second, 'wb').write(r.stdout)
+        r2 = reemit(second)
+        ok(r2, 'second reemit')
+        if r2.stdout != base:
+            raise Fail('the second function-type round trip is not byte-identical')
+        os.unlink(os.path.join(d, 'lib.obx'))
+        ok(build(d, symdir, check=True), 'source-less check with function types')
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def stale_format4_fn_rejected():
+    """A format-4 file (even one whose body now uses function types) is refused before its
+    body is read, with the new format number."""
+    d, symdir = tree({'lib.obx': FN_LIB,
+                      'main.obx': 'module main\nimport "lib.obx"\nfn main() { }\n'},
+                     prefix='symcase-stale-fn-')
+    try:
+        ok(build(d, symdir, out=os.path.join(d, 'prog')), 'honest format-5 build')
         libpath = os.path.join(symdir, 'lib.sym')
         os.unlink(os.path.join(d, 'lib.obx'))
-        mutate(libpath, b'fn apply(p0: int): int\n', b'fn apply(p0: fn(int): int): int\n')
+        mutate(libpath, b'obosym 5', b'obosym 4', recompute=False)
         q = build(d, symdir, check=True)
-        if q.returncode != 2 or 'expected a type' not in q.stderr:
-            raise Fail(f"format-4 forged function type: exit {q.returncode}: {q.stderr.strip()}")
+        if q.returncode != 2 or 'has format 4; this compiler reads 5; rebuild it' not in q.stderr:
+            raise Fail(f"stale format-4 function type: exit {q.returncode}: {q.stderr.strip()}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def forged_fn_positions():
+    """A well-formed, rehashed format-5 file cannot put a function type in a storage,
+    return, constructor, interface or nested-callback position. Each case is rehashed, so
+    the refusal is structural, not a stale-hash accident."""
+    d, symdir = tree({'lib.obx': FN_LIB,
+                      'main.obx': 'module main\nimport "lib.obx"\nfn main() { }\n'},
+                     prefix='symcase-fn-positions-')
+    try:
+        ok(build(d, symdir, out=os.path.join(d, 'prog')), 'function-type module build')
+        libpath = os.path.join(symdir, 'lib.sym')
+        base = sym_text(libpath)
+        os.unlink(os.path.join(d, 'lib.obx'))
+        cases = [
+            (b'type T = ref record { v: int }', b'type T = ref record { v: fn(int): int }',
+             'a record field cannot be a function value'),
+            (b'var G: int', b'var G: fn(int): int',
+             'a function value cannot be a global; it is a parameter or a local'),
+            (b'var G: int', b'var G: Cmp',
+             'a function value cannot be a global; it is a parameter or a local'),
+            (b'const C: int =', b'const C: fn(int): int =',
+             'a constant cannot hold a function value'),
+            (b'const C: int =', b'const C: Cmp =',
+             'a constant cannot hold a function value'),
+            (b'fn plain(p0: int): int', b'fn plain(p0: int): fn(int): int',
+             'a function cannot return a function value; function values are parameters and locals only'),
+            (b'fn plain(p0: int): int', b'fn plain(p0: int): Cmp',
+             'a function cannot return a function value; function values are parameters and locals only'),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn(int): fn(int): int, p1: int): int',
+             'a function type cannot return a function value'),
+            (b'fn plain(p0: int): int', b'fn plain(p0: ?fn(int): int): int',
+             'an optional cannot hold a function value'),
+            (b'fn plain(p0: int): int', b'fn plain(p0: ?Cmp): int',
+             'an optional cannot hold a function value'),
+            (b'fn plain(p0: int): int', b'fn plain(p0: []fn(int): int): int',
+             'an array cannot hold function values'),
+            (b'fn plain(p0: int): int', b'fn plain(p0: []Cmp): int',
+             'an array cannot hold function values'),
+            (b'fn plain(p0: int): int', b'fn plain(p0: Result[fn(int): int]): int',
+             'Result cannot hold a function value'),
+            (b'fn plain(p0: int): int', b'fn plain(p0: Result[Cmp]): int',
+             'Result cannot hold a function value'),
+            (b'fn plain(p0: int): int', b'fn plain(p0: ^fn(int): int): int',
+             'handles name records and closed types, not fn(int): int'),
+            (b'fn plain(p0: int): int', b'fn plain(p0: ^Cmp): int',
+             'handles name records and closed types, not fn(&Item, &Item): int'),
+            (b'fn plain(p0: int): int', b'fn plain(p0: &fn(int): int): int',
+             'only records, closed types and arrays can be borrowed, not fn(int): int'),
+            (b'fn plain(p0: int): int', b'fn plain(p0: &Cmp): int',
+             'only records, closed types and arrays can be borrowed, not fn(&Item, &Item): int'),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn[](int): int, p1: int): int',
+             'a function type cannot have a capture list'),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn int, p1: int): int',
+             "expected '(' after 'fn'"),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn(, p1: int): int',
+             'expected a parameter type'),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn(int int): int, p1: int): int',
+             "expected ',' or ')'"),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn(I): int, p1: int): int',
+             'a function value cannot take or return an interface value'),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn(?I): int, p1: int): int',
+             'a function value cannot take or return an interface value'),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn([]I): int, p1: int): int',
+             'a function value cannot take or return an interface value'),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn(Result[I]): int, p1: int): int',
+             'a function value cannot take or return an interface value'),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn(&[]I): int, p1: int): int',
+             'a function value cannot take or return an interface value'),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn(ArrI): int, p1: int): int',
+             'a function value cannot take or return an interface value'),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn(OptI): int, p1: int): int',
+             'a function value cannot take or return an interface value'),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn(ResI): int, p1: int): int',
+             'a function value cannot take or return an interface value'),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn(&ArrI): int, p1: int): int',
+             'a function value cannot take or return an interface value'),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn(Holder): int, p1: int): int',
+             "a function value cannot take or return 'Holder': it holds an interface value"),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn([]Holder): int, p1: int): int',
+             "a function value cannot take or return 'Holder': it holds an interface value"),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn(fn(I): int): int, p1: int): int',
+             'a function value cannot take or return an interface value'),
+            (b'type I = interface { fn m(p0: int) }',
+             b'type I = interface { fn m(p0: fn(int): int) }',
+             'an interface method cannot use a function value; function types are not supported in interfaces'),
+            (b'type I = interface { fn m(p0: int) }',
+             b'type I = interface { fn m(p0: int): fn(int): int }',
+             'an interface method cannot use a function value; function types are not supported in interfaces'),
+            (b'fn plain(p0: int): int', b'fn (p0: fn(int): int) plain()',
+             'the receiver must be a record or closed type defined in this module, not fn(int): int'),
+            (b'type T = ref record { v: int }', b'type T = fn(int): int',
+             "a function type cannot be forward-declared: 'T' is already declared as a forward type"),
+        ]
+        for old, new, want in cases:
+            open(libpath, 'wb').write(base)
+            mutate(libpath, old, new)
+            q = build(d, symdir, check=True)
+            if q.returncode != 2 or want not in q.stderr:
+                raise Fail(f"{old!r} -> {new!r}: exit {q.returncode}, wanted {want!r}: {q.stderr.strip()}")
+        # The canonical writer puts aliases after definitions, so a record/interface definition
+        # cannot normally name a function-type alias. A forged file can reorder them; the reader
+        # must still refuse the alias spelling with the position message.
+        alias_line = b'type Cmp = fn(&Item, &Item): int\n'
+        bare = base.replace(alias_line, b'')
+        for marker, old, new, want in [
+            (b'type T = ref record { v: int }\n',
+             b'type T = ref record { v: int }', b'type T = ref record { v: Cmp }',
+             'a record field cannot be a function value'),
+            (b'type I = interface { fn m(p0: int) }\n',
+             b'type I = interface { fn m(p0: int) }', b'type I = interface { fn m(p0: Cmp) }',
+             'an interface method cannot use a function value; function types are not supported in interfaces'),
+        ]:
+            at = bare.index(marker)
+            open(libpath, 'wb').write(bare[:at] + alias_line + bare[at:])
+            mutate(libpath, old, new)
+            q = build(d, symdir, check=True)
+            if q.returncode != 2 or want not in q.stderr:
+                raise Fail(f"reordered alias {old!r} -> {new!r}: exit {q.returncode}: {q.stderr.strip()}")
+        # an incomplete forward shell as a function-type parameter
+        manual = ('obosym 5\nabi 1\ncompiler "0.9"\nsource 0x0000000000000001\n'
+                  'interface 0x0\nmodule lib\ntype Later uid 0x%016x\n'
+                  'fn apply(p0: fn(Later): int): int\n' % fnv(b'lib::Later'))
+        open(libpath, 'w').write(manual)
+        rehash(libpath, lambda b: b)
+        q = build(d, symdir, check=True)
+        want = "a function value cannot take or return 'Later': it is not yet defined; define it before this function type"
+        if q.returncode != 2 or want not in q.stderr:
+            raise Fail(f"incomplete shell in a function type: exit {q.returncode}: {q.stderr.strip()}")
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -1852,7 +2053,9 @@ def tests():
         ('sym/iface_owned_check', iface_owned_check),
         ('sym/iface_ref_check', iface_ref_check),
         ('sym/stale_format3_interface', stale_format3_interface),
-        ('sym/format4_forged_fn_rejected', format4_forged_fn_rejected),
+        ('sym/fn_sym_roundtrip', fn_sym_roundtrip),
+        ('sym/stale_format4_fn_rejected', stale_format4_fn_rejected),
+        ('sym/forged_fn_positions', forged_fn_positions),
         ('sym/iface_tier_check', iface_tier_check),
         ('sym/iface_forged_freesall', iface_forged_freesall),
     ]

@@ -9,6 +9,7 @@ pub type Fwd = ref record { c: ?Circle }
 pub type BoxAlias = other::Box
 pub type Holder = ref record { c: ?Circle }
 pub type Alias = []Node
+pub type Cmp = fn(&Node, &Node): int
 pub const Limit = 10
 pub const Mask = byte(255)
 pub const On = true
@@ -24,6 +25,8 @@ pub fn area(s: Shape): int {
     }
 }
 pub fn add(mut n: &Node, v: int) { n.value = n.value + v }
+pub fn useCmp(cmp: Cmp) { }
+pub fn useRaw(cmp: fn(&Node, &Node): int) { }
 pub fn (n: &Node) worth(): int { return n.value }
 pub fn (mut n: &Node) bump() { n.value += 1 }
 pub fn (n: Node) taken(): int { return n.value }

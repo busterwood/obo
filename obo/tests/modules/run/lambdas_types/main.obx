@@ -1,0 +1,9 @@
+module main
+import "lib.obx"
+
+fn main() {
+    let item = new lib::Item{n: 1}
+    println(item.n)
+}
+
+// expect: 1

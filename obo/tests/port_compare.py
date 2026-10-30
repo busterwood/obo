@@ -767,7 +767,7 @@ def compare_trees(tmp, quick, port, only=None, stats=None):
         # merely agree with a port that also failed
         if a.returncode != 0 or b.returncode != 0:
             failures.append(f"reemit {name}: exit obo {a.returncode}, port {b.returncode}")
-        elif not a.stdout or not a.stdout.startswith(b'obosym 4\n') or b'fn many(' not in a.stdout:
+        elif not a.stdout or not a.stdout.startswith(b'obosym 5\n') or b'fn many(' not in a.stdout:
             failures.append(f"reemit {name}: obo's output is not canonical: {a.stdout[:80]!r}")
         else:
             modline = next((l for l in a.stdout.splitlines() if l.startswith(b'module ')), b'module many')
