@@ -5089,7 +5089,7 @@ peaks 2,190,032 long / 2,189,408 names / 2,190,160 tree / 2,189,632 colour /
 26/26; `tests/doc_check.py` 48 examples. Under the scoped P6b instruction the
 compiler mutation/port/sym suites were not re-run and are not claimed.
 
-# Methods: receivers, static dispatch and symbol format 2 (P7/0.6, done)
+# Methods: receivers, static dispatch and symbol format 2 (P7/0.6, done and promoted)
 
 **What changed.** `fn (r: T) m(...)`, `fn (r: &T) m(...)` and
 `fn (mut r: &T) m(...)` declare a method on a local record or closed type;
@@ -5187,11 +5187,14 @@ suspicion not replayed`) were rewritten to valid source mutations in the live co
 removed; each is now caught behaviourally by `handle_deep.obx`. The call refactor
 left `saveRegs()` dead, so it was removed.
 
-**Gates (this branch).** `make` with the 0.5 seed builds `obo` 0.6, 454,657
-bytes, sha256 `90fcad7e…`; stage 2 == stage 3 (`cmp`). `make tools` builds cat
+**Gates (this branch, then the promoted tree at `67799b1`).** `make` with the
+pre-promotion 0.5 seed built `obo` 0.6, 454,657
+bytes, sha256 `90fcad7e…`; the promoted 0.6 seed rebuilds the same image, so
+`seed/obo` == `obo` == stage 2 == stage 3 (`cmp`) and `--version` is
+`obo 0.6 sym-format 2 abi 1`. `make tools` builds cat
 40,961, wc 45,057 and sort 69,633 bytes; `make eza` builds 212,993 bytes.
 `run_fork.py` 1,264 passed; `module_test.py` 91/91; `port_test.py` 537/537 with 9 encoder groups;
-`port_compare.py` 1,283/1,283 stage B and 1,061/1,061 against the seed;
+`port_compare.py` 1,283/1,283 stage B and 1,143/1,143 against the 0.6 seed;
 `sym_test.py` 30/30; `sym_fuzz.py` 200/200; `doc_check.py` 53 examples;
 `homes_check.py` and `homes_edge.py` green; `imports.py` 26/26; `stdlib.py`
 16/16; `io_test.py`, `meta_test.py` 34 checks, `elf_test.py` green;
@@ -5204,9 +5207,11 @@ caught with 26 equivalents, 0 missed/stale/broken; `mutate_io.py` 27/27;
 tree caught 529/529, with 0 missed, 0 stale, 0 broken and no build-failure
 catches (the three repaired mutants are caught behaviourally by
 `handle_deep.obx`; the four method equivalents are excluded as in the fork
-harness). Self-compile: live peak 1,728,928 bytes and
-38,754,240 allocated, within the unchanged 2,000,000-byte budget (271,072 spare);
-the compiler source is 11,027 lines / 407,615 bytes. `bench/bench.py` completed
+harness). Self-compile: live peak 1,728,768 bytes and
+38,752,320 allocated on the main tree, within the unchanged 2,000,000-byte
+budget (271,232 spare); the figure depends on the source path (a longer
+worktree path reports 1,728,928), and the compiler source is 11,027 lines /
+407,615 bytes. `bench/bench.py` completed
 all four workloads and their outputs agree.
 
 **Deviations and limits.** The incomplete-type message reuses the existing
@@ -5223,8 +5228,8 @@ which is the soundness rule, with the measured message. Optionals of `int` or
 method-valued expression and chaining errors use the measured parser texts.
 Interfaces, dynamic dispatch, method values, chaining, static/UFCS calls, methods
 on built-ins/derived/foreign types and an `eza` refactor remain out of scope; the
-compiler's own source stays method-free, so the 0.5 seed builds it and the 0.6
-seed is promoted only after review and merge. The frozen design note's remaining
+compiler's own source stays method-free, so the pre-promotion 0.5 seed built it,
+and the promoted 0.6 seed rebuilds it to the same 454,657-byte image. The frozen design note's remaining
 wording nits (the `closureSeen` fixture wording, receiver parens on one line, and
 the literal `b.store(clear(b))` example) are recorded for a later documentation
 pass; the design file itself is untouched.
