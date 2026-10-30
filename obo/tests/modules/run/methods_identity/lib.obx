@@ -1,0 +1,12 @@
+module lib
+
+pub type Counter = ref record { n: int }
+pub type Bag = ref record { items: []int }
+
+pub fn push(x: int): int { return x + 100 }
+
+pub fn (c: &Counter) push(k: int): int { return c.n + k }
+pub fn (mut b: &Bag) push(s: string): string {
+    append(b.items, len(s))
+    return s
+}

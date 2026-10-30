@@ -1,0 +1,43 @@
+// Methods (design §8.1): a Result-returning method with try, a Result method
+// matched from a local, defer of a method call, and a defer inside a method body.
+type Buf = ref record { items: []string }
+
+fn (b: &Buf) load(): Result[string] { return ok("ok") }
+fn (b: &Buf) fail(): Result[string] { return err("bad") }
+fn (b: &Buf) close() { println("close") }
+fn (b: &Buf) size(): int {
+    defer println("size done")
+    return len(b.items)
+}
+
+fn loadBuf(b: &Buf): Result[string] {
+    let v = try b.load()
+    return ok(v)
+}
+fn failBuf(b: &Buf): Result[string] {
+    let v = try b.fail()
+    return ok(v)
+}
+
+fn main() {
+    let b = new Buf{items: new []string(0)}
+    defer b.close()
+    let r = loadBuf(b)
+    match r {
+        ok { println(r.value) }       // expect: ok
+        err { println("err") }
+    }
+    let f = failBuf(b)
+    match f {
+        ok { println(f.value) }
+        err { println("failed") }     // expect: failed
+    }
+    let direct = b.load()
+    match direct {
+        ok { println(direct.value) }  // expect: ok
+        err { println("err") }
+    }
+    println(b.size())                 // expect: size done
+    // expect: 0
+    // expect: close
+}

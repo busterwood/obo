@@ -1,0 +1,2 @@
+exit 1
+stderr <sym>/dep.sym:7:1: module 'dep' may not declare 'main'; the program root provides it

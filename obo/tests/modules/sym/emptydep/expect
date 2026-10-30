@@ -1,0 +1,2 @@
+exit 2
+stderr obxc: <sym>/mid.sym:5:7: symbol file: a dependency path cannot be empty

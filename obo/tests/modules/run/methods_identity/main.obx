@@ -1,0 +1,12 @@
+module main
+import "lib.obx"
+
+fn main() {
+    let c = new lib::Counter{n: 7}
+    let b = new lib::Bag{items: new []int(0)}
+    println(lib::push(1))             // expect: 101
+    println(c.push(2))                // expect: 9
+    println(b.push("abcd"))           // expect: abcd
+    println(len(b.items))             // expect: 1
+    println(b.items[0])               // expect: 4
+}

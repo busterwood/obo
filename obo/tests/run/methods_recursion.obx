@@ -1,0 +1,52 @@
+// Methods (design §8.1): forward headings, mutual recursion between two methods,
+// a self-recursive tree walk over an owned array of children, and a
+// forward-headed method called from a while condition (the lifted-condition
+// fixup case of §4.5).
+type Tree = ref record { v: int; kids: []Tree }
+type Count = ref record { n: int }
+
+fn (t: &Tree) sum(): int {
+    var s = t.v
+    let kids = &t.kids
+    var i = 0
+    while i < len(kids) {
+        s += kids[i].sum()
+        i += 1
+    }
+    return s
+}
+
+fn (c: &Count) even(n: int): bool
+fn (c: &Count) odd(n: int): bool {
+    if n == 0 { return false }
+    return c.even(n - 1)
+}
+fn (c: &Count) even(n: int): bool {
+    if n == 0 { return true }
+    return c.odd(n - 1)
+}
+
+fn (mut c: &Count) next(): bool
+fn (mut c: &Count) use(): int {
+    var i = 0
+    while c.next() && i < 3 {
+        i += 1
+    }
+    return i
+}
+fn (mut c: &Count) next(): bool {
+    c.n += 1
+    return c.n < 3
+}
+
+fn main() {
+    let t = new Tree{v: 1, kids: new []Tree(0)}
+    append(t.kids, new Tree{v: 2, kids: new []Tree(0)})
+    append(t.kids, new Tree{v: 3, kids: new []Tree(0)})
+    append(t.kids[0].kids, new Tree{v: 4, kids: new []Tree(0)})
+    println(t.sum())                  // expect: 10
+    let c = new Count{n: 0}
+    println(c.even(10))               // expect: true
+    println(c.odd(10))                // expect: false
+    println(c.use())                  // expect: 2
+}

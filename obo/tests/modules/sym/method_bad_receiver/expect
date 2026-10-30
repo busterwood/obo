@@ -1,0 +1,2 @@
+exit 2
+stderr obxc: <sym>/lib.sym:9:14: symbol file: the receiver must be a record or closed type defined in this module, not int

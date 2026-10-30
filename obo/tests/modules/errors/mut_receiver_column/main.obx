@@ -1,0 +1,10 @@
+module main
+type T = ref record { n: int }
+fn (mut t: &T) bump() { t.n += 1 }
+fn ro(r: &T) {
+    r.bump()
+}
+fn main() {
+    let t = new T{n: 1}
+    ro(t)
+}

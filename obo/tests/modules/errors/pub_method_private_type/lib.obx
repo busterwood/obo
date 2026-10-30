@@ -1,0 +1,5 @@
+module lib
+pub type A = ref record { n: int }
+type T = ref record { v: int }
+pub fn (a: &A) one(): int { return a.n }
+pub fn (t: &T) two(): int { return t.v }

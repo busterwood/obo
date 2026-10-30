@@ -1,0 +1,20 @@
+// Methods (design §8.1): two types with same-named methods return different
+// values, a top-level function has the same name as a method, and dispatch is
+// static by the receiver's declared type.
+type A = ref record { n: int }
+type B = ref record { n: int }
+
+fn size(a: &A): int { return a.n * 100 }
+fn (a: &A) size(): int { return a.n }
+fn (b: &B) size(): int { return b.n + 1000 }
+
+fn main() {
+    let a = new A{n: 2}
+    let b = new B{n: 3}
+    println(size(a))                  // expect: 200
+    println(a.size())                 // expect: 2
+    println(b.size())                 // expect: 1003
+    // a reference keeps the declared type: the call is still A::size
+    let ra = &a
+    println(ra.size())                // expect: 2
+}

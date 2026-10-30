@@ -1,0 +1,2 @@
+exit 2
+stderr obxc: <sym>/lib.sym:14:29: symbol file: pf index 62 is out of range

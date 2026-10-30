@@ -1,0 +1,50 @@
+// Methods (design §8.1): receivers that are a field, a constant-index element, a
+// variable-index element, a global, a narrowed reference local and a narrowed
+// optional, and a for walk over an array of records.
+type Item = ref record { v: int }
+type Bag = ref record { first: Item; items: []Item; opt: ?Item }
+
+fn (i: &Item) get(): int { return i.v }
+fn (mut i: &Item) bump() { i.v += 1 }
+fn (b: &Bag) total(): int { return b.first.v + len(b.items) }
+
+var G = new Item{v: 50}
+
+fn main() {
+    let bag = new Bag{first: new Item{v: 1}, items: new []Item(0), opt: nil}
+    append(bag.items, new Item{v: 2})
+    append(bag.items, new Item{v: 3})
+    bag.opt = new Item{v: 9}
+    println(bag.first.get())          // expect: 1
+    bag.first.bump()
+    println(bag.first.get())          // expect: 2
+    println(bag.items[0].get())       // expect: 2
+    bag.items[0].bump()
+    println(bag.items[0].get())       // expect: 3
+    var k = 1
+    println(bag.items[k].get())       // expect: 3
+    bag.items[k].bump()
+    println(bag.items[k].get())       // expect: 4
+    println(G.get())                  // expect: 50
+    G.bump()
+    println(G.get())                  // expect: 51
+    let items = &bag.items
+    println(items[0].get())           // expect: 3
+    let o = take(bag.opt)
+    if o != nil {
+        println(o.get())              // expect: 9
+        o.bump()
+        println(o.get())              // expect: 10
+    }
+    let b = &bag
+    println(b.total())                // expect: 4
+    var sum = 0
+    let walk = &bag.items
+    for x in walk {
+        sum += x.get()
+    }
+    println(sum)                      // expect: 7
+    let first = &bag.first
+    first.bump()
+    println(first.get())              // expect: 3
+}

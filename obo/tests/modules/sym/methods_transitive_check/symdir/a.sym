@@ -1,0 +1,9 @@
+obosym 2
+abi 1
+compiler "0.6"
+source 0xf6569c84545b5483
+dep l "l.obx"
+interface 0xad9822da934bc8c3
+module a
+depiface l 0xa631708ee1698f75
+fn make(p0: int): l::T

@@ -1,0 +1,2 @@
+exit 2
+stderr obxc: <sym>/lib.sym:9:39: symbol file: a constant must have type int, byte, bool or string

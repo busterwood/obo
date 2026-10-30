@@ -1,0 +1,2 @@
+exit 2
+stderr obxc: <sym>/mid.sym:11:1: symbol file: the depiface lines are not in the dependency order

@@ -178,6 +178,20 @@ SEED_FILE_MIN = {
     os.path.join(FORK, 'tests', 'errors', 'env.obx'): (0, 4),
     os.path.join(FORK, 'tests', 'run', 'term.obx'): (0, 5),
     os.path.join(FORK, 'tests', 'errors', 'term.obx'): (0, 5),
+    os.path.join(FORK, 'tests', 'run', 'methods.obx'): (0, 6),
+    os.path.join(FORK, 'tests', 'run', 'methods_refs.obx'): (0, 6),
+    os.path.join(FORK, 'tests', 'run', 'methods_fields.obx'): (0, 6),
+    os.path.join(FORK, 'tests', 'run', 'methods_closed.obx'): (0, 6),
+    os.path.join(FORK, 'tests', 'run', 'methods_move.obx'): (0, 6),
+    os.path.join(FORK, 'tests', 'run', 'methods_mut.obx'): (0, 6),
+    os.path.join(FORK, 'tests', 'run', 'methods_handle.obx'): (0, 6),
+    os.path.join(FORK, 'tests', 'run', 'methods_defer_try.obx'): (0, 6),
+    os.path.join(FORK, 'tests', 'run', 'methods_recursion.obx'): (0, 6),
+    os.path.join(FORK, 'tests', 'run', 'methods_homes.obx'): (0, 6),
+    os.path.join(FORK, 'tests', 'run', 'methods_static.obx'): (0, 6),
+    os.path.join(FORK, 'tests', 'run', 'methods_names.obx'): (0, 6),
+    os.path.join(FORK, 'tests', 'run', 'methods_origins.obx'): (0, 6),
+    os.path.join(FORK, 'tests', 'errors', 'methods.obx'): (0, 6),
 }
 SEED_LIB_MIN = {'io.obx': (0, 5), 'env.obx': (0, 4)}
 _SEED_VERSIONS = {}
@@ -535,6 +549,38 @@ SPECIAL_CASES = [
     ('source-less build', special_sourceless_build),
 ]
 
+def read_symcheck_expect(case_dir):
+    """(exit code, stderr lines) an `expect` file states for a symcheck case."""
+    path = os.path.join(case_dir, 'expect')
+    code, err = 0, []
+    if os.path.exists(path):
+        for line in open(path).read().splitlines():
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if line.startswith('exit '):
+                code = int(line[5:])
+            elif line.startswith('stderr '):
+                err.append(line[7:])
+            else:
+                raise SystemExit(f"{path}: unknown expect line {line!r}")
+    return code, err
+
+
+def symcheck_expect_ok(case_dir, o):
+    """True if REF's own symcheck outcome is the one the case intends. This is
+    checked before REF and PORT are compared, so a blanket reader regression (a
+    header format change, say) fails on the intended positive cases instead of
+    passing because both compilers reject the file identically."""
+    code, errs = read_symcheck_expect(case_dir)
+    if o[0] != 'check' or o[1] != code:
+        return False
+    # exact equality: the expect file states the whole normalized stderr
+    if o[2] != '\n'.join(errs):
+        return False
+    return True
+
+
 REEMIT_CASES = [
     ('reemit high pfree bits', os.path.join(MODDIR, 'sym', 'reemit_highbits', 'symdir', 'many.sym')),
 ]
@@ -549,6 +595,10 @@ def compare_trees(tmp, quick, port):
     for name, kind, case_dir in tree_cases():
         total += 1
         a, b, ref_checks, port_checks = tree_both(name, kind, case_dir, tmp, quick, port)
+        if kind == 'symcheck' and not symcheck_expect_ok(case_dir, a):
+            failures.append(f"{name}: REF's outcome is not the case's intended one: {tree_show(a)!r}")
+            if quick:
+                return same, total, failures
         if a == b:
             same += 1
         else:
@@ -601,10 +651,27 @@ def compare_trees(tmp, quick, port):
         except subprocess.TimeoutExpired:
             failures.append(f"reemit {name}: a run timed out")
             continue
-        if ao == bo:
-            same += 1
+        # a fixture that should re-emit must do so, canonically, rather than
+        # merely agree with a port that also failed
+        if a.returncode != 0 or b.returncode != 0:
+            failures.append(f"reemit {name}: exit obo {a.returncode}, port {b.returncode}")
+        elif not a.stdout or not a.stdout.startswith(b'obosym 2\n') or b'fn many(' not in a.stdout:
+            failures.append(f"reemit {name}: obo's output is not canonical: {a.stdout[:80]!r}")
         else:
-            failures.append(f"reemit {name}: obo {ao[0]}; port {bo[0]}")
+            modline = next((l for l in a.stdout.splitlines() if l.startswith(b'module ')), b'module many')
+            modname = modline.split(b' ', 1)[1].decode()
+            again_dir = fresh_dir(os.path.join(tmp, f'reemit-again-{total}'))
+            again_path = os.path.join(again_dir, modname + '.sym')
+            with open(again_path, 'wb') as fh:
+                fh.write(a.stdout)
+            again = subprocess.run([REF, '--reemit-sym', again_path],
+                                   capture_output=True, timeout=60)
+            if again.returncode != 0 or again.stdout != a.stdout:
+                failures.append(f"reemit {name}: a second re-emission differs")
+            elif ao == bo:
+                same += 1
+            else:
+                failures.append(f"reemit {name}: obo {ao[0]}; port {bo[0]}")
     total += 1
     try:
         a, b = token_outcome(REF), token_outcome(port)

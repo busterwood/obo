@@ -1,0 +1,2 @@
+exit 2
+stderr obxc: <sym>/lib.sym:13:33: symbol file: pfree bit 0 has no pf row

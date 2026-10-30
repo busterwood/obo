@@ -1,0 +1,2 @@
+exit 2
+stderr obxc: symbol file '<sym>/lib.sym' has format 3; this compiler reads 2; rebuild it

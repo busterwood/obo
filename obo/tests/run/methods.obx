@@ -1,0 +1,42 @@
+// Methods (design §8.1): the three receiver modes, fields beside methods, a method
+// calling another, returns of int/string/record, calls in println, let, if and
+// return, and a local whose field and method have different names.
+type Counter = ref record { n: int; label: string }
+type Pair = ref record { a: int; b: int }
+
+fn (c: &Counter) get(): int { return c.n }
+fn (c: &Counter) text(): string { return c.label }
+fn (c: &Counter) pair(): Pair { return new Pair{a: c.n, b: c.n + 1} }
+fn (c: &Counter) doubled(): int { return c.get() * 2 }
+fn (mut c: &Counter) add(k: int) { c.n += k }
+fn (mut c: &Counter) relabel(s: string) { c.label = s }
+fn (c: Counter) consumed(): int { return c.n + 100 }
+
+// a method call in a global initializer, on a global receiver (the method is declared above)
+var Init = new Counter{n: 4, label: "init"}
+var InitN = Init.get()
+
+fn pick(c: &Counter): int {
+    if c.get() > 2 { return c.get() }
+    return 0
+}
+
+fn main() {
+    let c = new Counter{n: 1, label: "one"}
+    println(c.get())                 // expect: 1
+    c.add(2)
+    println(c.get())                 // expect: 3
+    println(c.text())                // expect: one
+    c.relabel("three")
+    println(c.text())                // expect: three
+    let p = c.pair()
+    println(p.a, " ", p.b)           // expect: 3 4
+    println(p.a)                     // expect: 3
+    println(c.doubled())             // expect: 6
+    println(pick(c))                 // expect: 3
+    let n = c.get()
+    println(n)                       // expect: 3
+    println(c.consumed())            // expect: 103
+    println(InitN)                   // expect: 4
+    // c was moved into consumed: nothing may name it again
+}

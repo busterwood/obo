@@ -1,0 +1,269 @@
+type T = ref record { n: int }
+type Item = ref record { v: int }
+type Bag = ref record { items: []Item; n: int }
+type Node = ref record { v: int; items: []Item }
+type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
+type Holder = ref record { i: Item }
+type K = ref record { v: int }
+
+fn mk(v: int): T { return new T{n: v} }
+fn okres(): Result[int] { return ok(1) }
+fn (t: &T) get(): int { return t.n }
+fn (t: &T) clone(): T { return new T{n: t.n} }
+fn (mut t: &T) bump() { t.n += 1 }
+fn (t: T) owned(): int { return t.n }
+fn (t: &T) two(a: int, b: int): int { return a + b }
+fn (i: &Item) getv(): int { return i.v }
+fn (i: Item) oi(): int { return i.v }
+fn (mut i: &Item) keep(mut b: &Bag) { b.n = i.v }
+fn (mut b: &Bag) reset(): int {
+    b.items = new []Item(0)
+    return 0
+}
+fn (b: &Bag) link(): ^Item { return handle(b.items[0]) }
+fn (s: &Shape) area(): int {
+    match s {
+        Circle { return s.r }
+        Rect { return s.w }
+    }
+}
+fn (k: &K) show(): int { return k.v }
+fn (mut k: &K) inc() { k.v += 1 }
+fn (k: &K) down(n: int): int {
+    if n == 0 { return k.v }
+    return k.down(n - 1)
+}
+fn (i: &Item) takei(x: int): int { return i.v + x }
+
+var G = mk(5)
+var G2 = new T{n: 6}
+fn (t: &T) wipeAndKeep(x: &T) { G2 = new T{n: 8} }
+
+// === fn () has no receiver
+fn () norecv(x: int) { }  // error: a method needs a receiver, as in 'fn (r: &T) name(...)'
+// === two receiver names
+fn (a, b: &T) tworecv() { }  // error: a method has exactly one receiver
+// === a receiver with no method name
+fn (r: &T) (x: int) { }  // error: expected a method name after the receiver
+// === mut on an owned receiver
+fn (mut r: T) mutval() { }  // error: mut needs a reference parameter: write mut name: &T
+// === a borrowed int receiver
+fn (r: &int) ampint() { }  // error: only records, closed types and arrays can be borrowed, not int
+// === a borrowed string receiver
+fn (r: &string) ampstr() { }  // error: only records, closed types and arrays can be borrowed, not string
+// === &mut in a receiver
+fn (r: &mut T) ampmut() { }  // error: there is one reference type, &T: write mut before the parameter name
+// === a method on a variant
+fn (c: &Circle) onvariant() { }  // error: cannot declare a method on variant 'Circle'; declare it on its closed type 'Shape'
+// === a method on int
+fn (n: int) onint() { }  // error: a method's receiver must be a record or closed type declared in this module, not int
+// === a method on an array
+fn (xs: []int) onarr() { }  // error: a method's receiver must be a record or closed type declared in this module, not []int
+// === a method on an optional
+fn (o: ?T) onopt() { }  // error: a method's receiver must be a record or closed type declared in this module, not ?T
+// === a method on a handle
+fn (h: ^T) onhandle() { }  // error: a method's receiver must be a record or closed type declared in this module, not ^T
+// === a method on Result
+fn (r: Result[int]) onresult() { }  // error: a method's receiver must be a record or closed type declared in this module, not Result[int]
+// === a method before its type's definition
+type Late
+fn (l: &Late) onlate() { }  // error: Late is declared but not yet defined
+// === a second definition of a method
+fn (t: &T) dup(): int { return 1 }
+fn (t: &T) dup(): int { return 2 }  // error: method 'T::dup' is already defined
+// === a heading after the body
+fn (t: &T) dup2(): int { return 1 }
+fn (t: &T) dup2(): int  // error: method 'T::dup2' is already defined
+// === a heading and a body that differ
+fn (t: &T) mis(x: int): int
+fn (t: &T) mis(y: string): int { return 1 }  // error: method 'T::mis' does not match its forward heading
+// === a heading with no body at the end of the module
+fn (t: &T) nob(): int  // error: method 'T::nob' has a forward heading but no body
+// === a method whose name is a record field
+fn (t: &T) n(): int { return 0 }  // error: type 'T' already has a field 'n'; a method cannot have the same name
+// === a method whose name is a field of a closed type's variant
+fn (s: &Shape) r(): int { return 0 }  // error: type 'Shape' already has a field 'r' in variant 'Circle'; a method cannot have the same name
+// === a method whose name is a variant of its closed type
+fn (s: &Shape) Circle(): int { return 0 }  // error: type 'Shape' already has a variant 'Circle'; a method cannot have the same name
+// === a pub method on a private type
+pub fn (t: &T) show(): int { return t.n }  // error: exported 'T::show' uses private type 'T'; mark 'T' pub too
+// === a receiver literally named mut
+fn (mut: &T) mutname() { }  // error: expected a receiver name
+// === an unknown method of a local type
+fn main() { let t = mk(1); t.nope() }  // error: type 'T' has no method 'nope'
+// === a method call on a string
+fn main() { let s = "x"; s.m() }  // error: string has no methods
+// === a method call on an array
+fn main() { let xs = new []int(0); xs.m() }  // error: []int has no methods
+// === a method call on a Result
+fn main() { let r = okres(); r.m() }  // error: Result[int] has no methods
+// === a method call on an optional that may be nil
+fn main() { let o: ?T = nil; o.get() }  // error: 'o' may be nil: check it with '!= nil' first
+// === a mut receiver through a read-only binding
+fn ro(r: &T) { r.bump() }  // error: the receiver of method 'T::bump' needs a mut reference, but this one is read-only
+// === an owned receiver that is a field
+fn main() { let h = new Holder{i: new Item{v: 1}}; h.i.oi() }  // error: cannot move out of a field or element
+// === an owned receiver that is an element
+fn main() { let b = new Bag{items: new []Item(0), n: 0}; append(b.items, new Item{v: 1}); b.items[0].oi() }  // error: cannot move out of a field or element
+// === an owned receiver that is a global
+fn main() { G2.owned() }  // error: cannot move out of global 'G2'
+// === an owned receiver through a reference
+fn ro2(r: &T) { r.owned() }  // error: cannot move out of a reference: a reference only borrows
+// === an owned receiver that is a whole handle dereference
+fn main() { let b = new T{n: 1}; let h = handle(b); h.owned() }  // error: cannot call a method that takes its receiver by value through a handle
+// === an owned receiver that is a field through a handle
+fn main() { let b = new Bag{items: new []Item(0), n: 0}; append(b.items, new Item{v: 1}); let h = handle(b); h.items[0].oi() }  // error: cannot move out of a field or element
+// === a field called as a method
+fn main() { let t = mk(1); t.n() }  // error: type 'T' has a field 'n', not a method; a field cannot be called
+// === a method used as a value
+fn main() { let t = mk(1); let f = t.get }  // error: method 'T::get' cannot be used as a value
+// === too few arguments
+fn main() { let t = mk(1); t.two(1) }  // error: method 'T::two' takes 2 argument(s), not 1
+// === too many arguments
+fn main() { let t = mk(1); t.two(1, 2, 3) }  // error: method 'T::two' takes 2 argument(s), not more
+// === a wrong argument type
+fn main() { let t = mk(1); t.two(1, "x") }  // error: argument 2 of method 'T::two': cannot use string as int
+// === a call to a method declared later, with no forward heading
+fn main() { let t = mk(1); t.later() }  // error: type 'T' has no method 'later'
+fn (t: &T) later(): int { return t.n }
+// === a move of an owned receiver inside &&
+fn main() { let t = mk(1); if true && t.owned() == 1 { println(1) } }  // error: cannot move 't' inside && or ||
+// === a move of an owned receiver inside defer
+fn main() { let t = mk(1); defer t.owned() }  // error: cannot move 't' inside defer
+// === a later argument frees what the receiver points into
+fn main() { let b = new Bag{items: new []Item(0), n: 0}; append(b.items, new Item{v: 1}); b.items[0].takei(b.reset()) }  // error: argument 1 of method 'Item::takei'
+// === an argument may point inside the mut receiver
+fn (mut i: &Item) put(mut b: &Bag) { b.n = i.v }
+fn main() { let b = new Bag{items: new []Item(0), n: 0}; append(b.items, new Item{v: 1}); b.items[0].put(b) }  // error: the receiver of method 'Item::put' may point inside argument 1, which is mut
+// === a mut receiver's argument may point inside it
+fn (mut n: &Node) take(i: &Item) { n.v = i.v }
+fn main() { let n = new Node{v: 1, items: new []Item(0)}; append(n.items, new Item{v: 2}); n.take(n.items[0]) }  // error: argument 1 of method 'Node::take' may point inside the receiver, which is mut
+// === a reference through a handle to a method that frees
+fn (mut b: &Bag) clear() { b.items = new []Item(0) }
+fn main() { let b = new Bag{items: new []Item(0), n: 0}; let h = handle(b); h.clear() }  // error: cannot pass a reference that borrows through a handle to method 'Bag::clear'
+// === an owned function-call result as a receiver
+fn main() { mk(1).get() }  // error: store this value in a variable first
+// === chaining a method call
+fn main() { let t = mk(1); t.clone().n }  // error: expected ';' or newline, found .
+// === chaining a handle-returning method call
+fn main() { let b = new Bag{items: new []Item(0), n: 0}; append(b.items, new Item{v: 1}); b.link().v }  // error: expected ';' or newline, found .
+// === a non-void method that can fall off the end
+fn (t: &T) falls(): int { let x = 1 }  // error: T::falls must return a value on every path
+// === a void method that returns a value
+fn (t: &T) noret() { return 1 }  // error: T::noret does not return a value
+// === try in a method that does not return a Result
+fn (t: &T) tried(): int { let x = try okres(); return x }  // error: try needs a function that returns a Result; 'T::tried' returns int
+// === a whole reference-local receiver read in a loop, then re-pointed and freed
+fn main() {
+    var a = new K{v: 1}
+    var b = new K{v: 2}
+    var k = &a
+    var i = 0
+    while i < 3 {  // error: 'k' is pointed somewhere new inside the loop
+        k.show()
+        b = new K{v: 3}
+        if i == 1 { k = &b }
+        i += 1
+    }
+}
+// === the same with a mut receiver
+fn main() {
+    var a = new K{v: 1}
+    var b = new K{v: 2}
+    var k = &a
+    var i = 0
+    while i < 3 {  // error: 'k' is pointed somewhere new inside the loop
+        k.inc()
+        b = new K{v: 3}
+        if i == 1 { k = &b }
+        i += 1
+    }
+}
+// === the same with a recursive method
+fn main() {
+    var a = new K{v: 1}
+    var b = new K{v: 2}
+    var k = &a
+    var i = 0
+    while i < 3 {  // error: 'k' is pointed somewhere new inside the loop
+        k.down(2)
+        b = new K{v: 3}
+        if i == 1 { k = &b }
+        i += 1
+    }
+}
+// === a method call through a handle after the handle's object is freed
+fn main() {
+    var a = new K{v: 1}
+    let h = handle(a)
+    a = new K{v: 2}
+    h.show()  // error: handle 'h' may name a freed object
+}
+// === a defer reading a reference the loop re-points and frees
+fn main() {
+    var a = new K{v: 1}
+    var b = new K{v: 2}
+    var k = &a
+    var i = 0
+    while i < 3 {
+        defer k.show()
+        b = new K{v: 3}
+        if i == 1 { k = &b }
+        i += 1
+    }  // error: cannot point 'k' elsewhere while a defer uses it
+}
+// === a handle made from a receiver field, then freed by a mut method
+type Bag2 = ref record { items: []Item }
+fn (mut b: &Bag2) wipe(): int {
+    b.items = new []Item(0)
+    return 0
+}
+fn main() {
+    let b = new Bag2{items: new []Item(0)}
+    append(b.items, new Item{v: 1})
+    let h = handle(b.items[0])
+    println(b.wipe())
+    println(h.v)  // error: handle 'h' may name a freed object
+}
+// === a recursive method whose receiver is reached through a handle
+type Link = ref record { v: int; next: ?^Link }
+fn (l: &Link) walk(): int
+fn (l: &Link) step(): int {
+    let nx = l.next
+    if nx != nil {
+        return nx.walk()  // error: cannot pass a reference that points inside something to method 'Link::walk'
+    }
+    return 0
+}
+fn (l: &Link) walk(): int { return l.step() }
+// === a borrowed array receiver
+fn (xs: &[]int) onarrref() { }  // error: a method's receiver must be a record or closed type declared in this module, not []int
+// === a method call on an optional int that may be nil
+fn main() { let o: ?Bag = nil; o.m() }  // error: 'o' may be nil: check it with '!= nil' first
+// === an owned function-call result of a closed type as a receiver
+type Shape2 = closed { Dot { x: int } }
+fn mks(): Shape2 { return new Dot{x: 1} }
+fn (s: Shape2) take2(): int { match s { Dot { return s.x } } }
+fn main() { mks().take2() }  // error: store this value in a variable first
+// === indexing a method call result
+fn main() { let b = new Bag{items: new []Item(0), n: 0}; append(b.items, new Item{v: 1}); b.link()[0].v }  // error: expected ';' or newline, found [
+// === a heading whose receiver mode differs from the body's
+fn (t: &T) modemis(): int
+fn (mut t: &T) modemis(): int { return 1 }  // error: method 'T::modemis' does not match its forward heading
+// === a same-named method of another type is not this type's method
+fn main() { let k = new K{v: 1}; k.get() }  // error: type 'K' has no method 'get'
+// === a loop using a handle receiver and assigning over its owner
+fn main() {
+    var a = new K{v: 1}
+    let h = handle(a)
+    var i = 0
+    while i < 3 {
+        h.show()
+        a = new K{v: 2}  // error: cannot assign over the owner of handle 'h' inside a loop that uses the handle
+        i += 1
+    }
+}
+// === an owned errval function-call result as a receiver
+fn main() { err("x").m() }  // error: store this value in a variable first
+// === a reference into a global passed to a method that may free it
+fn main() { let t = mk(1); let r = &G2; t.wipeAndKeep(r) }  // error: cannot pass a reference into global 'G2' to method 'T::wipeAndKeep': it might free it

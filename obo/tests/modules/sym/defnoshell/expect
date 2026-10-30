@@ -1,0 +1,2 @@
+exit 2
+stderr obxc: <sym>/lib.sym:7:13: symbol file: type 'Node' has a definition but no shell

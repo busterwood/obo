@@ -1,0 +1,2 @@
+exit 2
+stderr obxc: <sym>/lib.sym:11:36: symbol file: a bool constant must be true or false

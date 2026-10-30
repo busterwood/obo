@@ -1,0 +1,10 @@
+obosym 2
+abi 1
+compiler "0.6"
+source 0x0d3379222e02e51a
+interface 0x366b43f6f152afd5
+module lib
+type Node uid 0x5fca22110fba38d4
+type Node = ref record { v: int }
+fn (p0: int) get(): int
+fn make(p0: int): Node

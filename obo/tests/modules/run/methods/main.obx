@@ -1,0 +1,21 @@
+module main
+import "lib.obx"
+
+fn main() {
+    let b = lib::make()
+    b.add("a")
+    b.add("b")
+    println(b.count())                // expect: 2
+    println(b.at(1))                  // expect: b
+    {
+        let first = &b.items
+        b.add("c")
+        println(first[0])             // expect: a
+    }
+    b.clear()
+    println(b.count())                // expect: 0
+    b.add("z")
+    println(b.count())                // expect: 1
+    let n = b.freeze()
+    println(n)                        // expect: 1
+}

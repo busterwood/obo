@@ -1,0 +1,6 @@
+module main
+import "a.obx"
+fn main() {
+    let t = a::make(4)
+    println(t.value())                // expect: 4
+}

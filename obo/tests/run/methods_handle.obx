@@ -1,0 +1,35 @@
+// Methods (design §8.1): an iterative graph walk over ?^Node handles (& and pure
+// mut methods through h.field and a whole h), and a handle-valued function-call
+// result under the existing handle rules. A recursive handle-receiver call is
+// refused by the pure-callee rule (errors/methods).
+type Node = ref record { v: int; next: ?^Node }
+
+fn (n: &Node) get(): int { return n.v }
+fn (mut n: &Node) set(v: int) { n.v = v }
+var roots = new []Node(0)
+fn mk(v: int): ^Node {
+    append(roots, new Node{v: v, next: nil})
+    return handle(roots[len(roots) - 1])
+}
+
+fn main() {
+    let n1 = new Node{v: 1, next: nil}
+    let n2 = new Node{v: 2, next: nil}
+    let n3 = new Node{v: 3, next: nil}
+    n1.next = handle(n2)
+    n2.next = handle(n3)
+    var h: ?^Node = handle(n1)
+    var sum = 0
+    while h != nil {
+        let cur = h
+        sum += cur.get()
+        cur.set(cur.get() * 10)
+        h = cur.next
+    }
+    println(sum)                      // expect: 6
+    println(n1.v, " ", n2.v, " ", n3.v)   // expect: 10 20 30
+    // a handle-valued function-call result, used under the handle rules
+    println(mk(7).get())              // expect: 7
+    let h7 = mk(8)
+    println(h7.get())                 // expect: 8
+}

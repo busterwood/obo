@@ -103,7 +103,7 @@ MUTANTS = {
     "self-call suspects not marked": [("        if v.isRefLocal && v.refDeep && !v.moved { v.suspect = true }",
                                        "        if false { v.suspect = true }")],
     # a use of a suspect reference is not noted
-    "suspect uses not noted": [("    if s.suspect && (!target || path != \"\") {", "    if false {")],
+    "suspect uses not noted": [("    if s.suspect && (!target || path != \"\" || isCall) {", "    if false {")],
     # pointing a suspect reference elsewhere does not end its suspicion
     "re-pointing keeps suspicion": [("            xs.suspect = false\n", "")],
     # a loop with a recursive call is not checked for references used before the call on the next iteration
@@ -130,16 +130,11 @@ MUTANTS = {
                                                           "    let useBefore = useSeq\n    let entry = snapshot()"),
                                                          ("    let condSt = snapshot()                  // the state when the condition leaves the loop",
                                                           "    let selfBefore = selfCalls\n    let condSt = snapshot()                  // the state when the condition leaves the loop")],
-    # a break's suspicion is carried out of the loop: caught by errors/handle_deep.obx "a recursive call before a break"
-    "break suspicion not recorded": [("                    lp.susp[i] = true\n", "                    if false { lp.susp[i] = true }\n")],
     # the loop-carried suspicion (fix for "a recursive call in a loop, read on the next iteration", the loop check):
     # the state at the body's end, which is where the next iteration starts, is not carried. Caught by
     # errors/handle_deep.obx "a loop's body reads a reference at its top, on the next iteration after a recursive call on one path"
     "loop-carried suspicion from the body's end dropped": [("            if ownedLocals[i].suspect { loops[li].back[i] = true }",
                                                            "            if false { loops[li].back[i] = true }")],
-    # ... and the suspicion a continue carries to the next iteration. Caught by errors/handle_deep.obx
-    # "a recursive call before a continue: the next iteration starts with the reference still deep"
-    "loop-carried suspicion from continue dropped": [("                    if k == T_CONTINUE { lp.back[i] = true }", "                    if false { lp.back[i] = true }")],
     # a body that always leaves keeps its suspicion after the loop. Caught by run/handle_deep.obx "retLeak"
     "terminated loop body's suspicion kept": [("    if term { restore(entry) } else { restoreMoved(entry) }", "    restoreMoved(entry)")],
     # the loop check reports a reference the loop never reads: caught by run/handle_deep.obx "unusedRef"
@@ -148,9 +143,6 @@ MUTANTS = {
     # reads in a loop are not counted: the loop check misses the reads it is for. Caught by errors/handle_deep.obx
     # "a loop's body reads a reference at its top, on the next iteration after a recursive call on one path"
     "reads in a loop not counted": [("            s.staleUse = useSeq\n            s.usedAt = useSeq\n", "            s.staleUse = useSeq\n")],
-    # a deferred recursive call is applied at the defer statement, not where the block ends. Caught by
-    # run/handle_deep.obx "deferRec" (a use after the defer statement)
-    "deferred self-call suspicion kept at the defer": [("    restoreSuspects(before)\n    if selfCalls != sc {", "    if selfCalls == sc { restoreSuspects(before) }\n    if selfCalls != sc {")],
     # a defer body's re-point clears suspicion before the defer has run. Caught by errors/handle_deep.obx
     # "a defer that re-points a reference"
     "a defer's re-point clears suspicion": [("    restoreDeferred(&before)\n", "")],
@@ -220,7 +212,7 @@ MUTANTS = {
     # with it (tests/run/loop_inversion.obx)
     "inverted loop: calls out of the condition not adjusted": [("        putRel(farCalls[k], getRel(farCalls[k]) - d)\n", "")],
     "inverted loop: calls out of the condition not recorded at the new place": [("        farCalls[k] += d\n", "")],
-    "inverted loop: waiting calls in the condition not adjusted": [("append(curModule.globals[waitFn[k]].fnRec.fixups, waitAt[k] + d)", "append(curModule.globals[waitFn[k]].fnRec.fixups, waitAt[k])")],
+    "inverted loop: waiting calls in the condition not adjusted": [("append(waitFn[k].fnRec.fixups, waitAt[k] + d)", "append(waitFn[k].fnRec.fixups, waitAt[k])")],
     "inverted loop: a nested loop lifts its outer loop's waiting calls": [("    let waitFrom = len(waitFn)\n", "    let waitFrom = 0\n")],
     "inverted loop: waiting calls in the condition not lifted": [("        if fwdCalls != fwdFrom {", "        if false {")],
     "inverted loop: links of the true and false lists not adjusted": [("        putRel(at, nxt)\n        at = nxt\n", "        putRel(at, nxt - d)\n        at = nxt\n")],
@@ -270,13 +262,16 @@ MUTANTS.update({
                                                           "    let useBefore = useSeq\n"),
                                                          ("    let condSt = snapshot()                  // the state when the condition leaves the loop",
                                                           "    let selfBefore = selfCalls\n    let condSt = snapshot()                  // the state when the condition leaves the loop")],
-    "break suspicion not recorded": [("                append(lp.exits, now)\n", "                if false { append(lp.exits, now) }\n")],
+    # a break carries a neutral exit state: its suspicion (and every other mark) is not recorded
+    "break suspicion not recorded": [("                append(lp.exits, now)\n", "                append(lp.exits, neutralState(localsIn(&now)))\n                drop(now)\n")],
     "loop-carried suspicion from the body's end dropped": [("        absorb(&loops[li].back, &now)\n", "        if false { absorb(&loops[li].back, &now) }\n")],
-    "loop-carried suspicion from continue dropped": [("                append(lp.conts, now)\n", "                if false { append(lp.conts, now) }\n")],
+    "loop-carried suspicion from continue dropped": [("                append(lp.conts, now)\n", "                append(lp.conts, neutralState(localsIn(&now)))\n                drop(now)\n")],
     "terminated loop body's suspicion kept": [("    if term { restore(&entry) } else { restoreMoved(&entry) }", "    restoreMoved(&entry)")],
     "loop check reports unread references": [("back.flags[localsIn(back) + i] && ownedLocals[i] != lv && ownedLocals[i].usedAt > useBefore {",
                                               "back.flags[localsIn(back) + i] && ownedLocals[i] != lv {")],
-    "deferred self-call suspicion kept at the defer": [("    restoreDeferred(&before)\n", "    if selfCalls == sc { restoreDeferred(&before) }\n")],
+    # the deferred body's recursive calls are replayed where the block is left (replayFrees kind 2);
+    # dropping that replay keeps their suspicion from reaching the older defers and the block exit
+    "deferred self-call suspicion not replayed": [("        } else {\n            markSuspects()\n        }\n", "        } else {\n        }\n")],
     # the join of two bindings keeps the binding of the last path, not the union of the paths
     "binding not joined: last path wins": [("    if a == b || b == noneBind { return a }\n    if a == noneBind { return b }\n",
                                             "    if b == noneBind { return a }\n    if true { return b }\n")],
@@ -310,6 +305,7 @@ from mutate_fork import ARG_ORDER_MUTANTS  # noqa: E402
 MUTANTS.update({k: [v] for k, v in ARG_ORDER_MUTANTS.items() if k not in FORK_EQUIVALENT})
 # a handle's object freed by an assignment over, or a drop of, its owner: the cases of handle_frees.obx
 from mutate_fork import HANDLE_FREE_MUTANTS  # noqa: E402
+from mutate_fork import METHOD_MUTANTS  # noqa: E402
 from mutate_fork import FP_MUTANTS, REF_PATH_MUTANTS, MOVE_MUTANTS, FIELD_MUTANTS  # noqa: E402
 # the I/O builtins: the port compiles the run and error I/O cases (and, for the
 # two module-root programs, the imported library modules), so these compiler
@@ -326,6 +322,7 @@ MUTANTS.update({k: [v] for k, v in MOVE_MUTANTS.items() if k not in FORK_EQUIVAL
 # handles made from a field or an element of an owned local (errors/field_origins.obx, run/field_origins*.obx)
 MUTANTS.update({k: [v] for k, v in FIELD_MUTANTS.items() if k not in FORK_EQUIVALENT})
 MUTANTS.update({k: [v] for k, v in HANDLE_FREE_MUTANTS.items() if k not in FORK_EQUIVALENT})
+MUTANTS.update({k: [v] for k, v in METHOD_MUTANTS.items() if k not in FORK_EQUIVALENT})
 
 
 # register allocation (FORK.md, Phase 2). A home is r12 to r15, taken out of the free list while its local is in
@@ -333,8 +330,8 @@ MUTANTS.update({k: [v] for k, v in HANDLE_FREE_MUTANTS.items() if k not in FORK_
 # the C runtime keeps them. Most are caught by tests/run/register_alloc.obx; the SHAPES ones change speed only
 # and are caught by tests/homes_check.py
 MUTANTS.update({
-    "homes not pushed around obo calls": [("    let saved = usedRegs()\n    pushRegs(saved)\n    setFree(0)",
-                                           "    let saved = usedRegs() & ~homeBits\n    pushRegs(saved)\n    setFree(0)")],
+    "homes not pushed around obo calls": [("    var saved = usedRegs()\n    if hasRecv {",
+                                           "    var saved = usedRegs() & ~homeBits\n    if hasRecv {")],
     "a home released as a temporary": [(" && !containsInt(free, r) && (homeBits & (1 << r)) == 0 { append(free, r) }",
                                         " && !containsInt(free, r) { append(free, r) }")],
     "runtime call clobbers r15": [("    callAbs(RT_TEXT + 8 * slot)\n    if pad != 0 {", "    callAbs(RT_TEXT + 8 * slot)\n    movRI(15, 0)\n    if pad != 0 {")],
@@ -362,7 +359,7 @@ MUTANTS.update({
     # second records again, the checker being the same
     "retry: locals' registers not given up": [("    if len(free) == 0 && homeBits != 0 { giveUpHomes() }\n", "")],
     "retry: code not rewound": [("        truncCode(f.addr)\n        for gi in 0..len(curModule.globals) {", "        for gi in 0..len(curModule.globals) {")],
-    "retry: waiting calls of the first pass kept": [("                while len(fr.fixups) > 0 && fr.fixups[len(fr.fixups) - 1] >= f.addr { truncate(fr.fixups, len(fr.fixups) - 1) }\n", "")],
+    "retry: waiting calls of the first pass kept": [("                let fr = g.fnRec\n                while len(fr.fixups) > 0 && fr.fixups[len(fr.fixups) - 1] >= f.addr { truncate(fr.fixups, len(fr.fixups) - 1) }\n", "                let fr = g.fnRec\n")],
     "retry: argument holders of the first pass kept": [("        truncate(argTemps, tempMark)\n        truncate(symArena, symMark)\n        return true", "        truncate(symArena, symMark)\n        return true")],
     "retry: free list left as the first pass had it": [("    homeBits = 0\n    setFree(0)                          // the registers in pool order: a function starts as the one before it did not leave them\n", "    homeBits = 0\n")],
     "retry: scanner not rewound": [("        pos = sPos\n", "")],

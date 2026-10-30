@@ -1,0 +1,142 @@
+// Methods (design §8.1, B1/B3): & and mut receivers that are a field, a
+// constant-index element, a variable-index element, h.field and a whole handle;
+// owned record/optional/Result/array returns on whole and field reference
+// receivers, bound inferred and explicitly; ok(method()); a handle return bound
+// to a local (a method call ends the designator, so it cannot be chained).
+type Item = ref record { v: int }
+type Bag = ref record { first: Item; items: []Item; count: int }
+
+fn (i: &Item) get(): int { return i.v }
+fn (mut i: &Item) bump() { i.v += 1 }
+fn (i: &Item) clone(): Item { return new Item{v: i.v} }
+fn (i: &Item) maybe(): ?Item {
+    if i.v < 0 { return nil }
+    return new Item{v: i.v + 1}
+}
+fn (i: &Item) res(): Result[int] { return ok(i.v) }
+
+fn (b: &Bag) copy(): Bag { return new Bag{first: b.first.clone(), items: new []Item(0), count: b.count} }
+fn (b: &Bag) nums(): []int {
+    let xs = new []int(0)
+    append(xs, b.first.v)
+    append(xs, b.count)
+    return xs
+}
+fn (b: &Bag) maybeBag(): ?Item {
+    if b.count < 0 { return nil }
+    return new Item{v: b.count}
+}
+fn (b: &Bag) resBag(): Result[int] { return ok(b.count) }
+fn (i: &Item) list(): []int {
+    let xs = new []int(0)
+    append(xs, i.v)
+    return xs
+}
+fn (b: &Bag) link(): ^Item { return handle(b.first) }
+fn (mut b: &Bag) setCount(n: int) { b.count = n }
+fn (mut b: &Bag) add(): int {
+    append(b.items, new Item{v: b.count})
+    return b.count
+}
+
+fn main() {
+    let bag = new Bag{first: new Item{v: 4}, items: new []Item(0), count: 1}
+    append(bag.items, new Item{v: 7})
+    append(bag.items, new Item{v: 8})
+    // field receiver, & and mut
+    println(bag.first.get())          // expect: 4
+    bag.first.bump()
+    println(bag.first.get())          // expect: 5
+    // constant-index element receiver
+    println(bag.items[0].get())       // expect: 7
+    bag.items[0].bump()
+    println(bag.items[0].get())       // expect: 8
+    // variable-index element receiver
+    var i = 1
+    println(bag.items[i].get())       // expect: 8
+    bag.items[i].bump()
+    println(bag.items[i].get())       // expect: 9
+    // whole reference receiver; owned record return, inferred and explicit
+    let b = &bag
+    let c = b.copy()
+    println(c.first.get())            // expect: 5
+    let c2: Bag = b.copy()
+    println(c2.first.get())           // expect: 5
+    // owned optional, Result and array returns on a whole reference receiver
+    let ob: ?Item = b.maybeBag()
+    if ob != nil {
+        println(ob.get())             // expect: 1
+    }
+    let rb = b.resBag()
+    match rb {
+        ok { println(rb.value) }      // expect: 1
+        err { println("err") }
+    }
+    let rbx: Result[int] = b.resBag()
+    match rbx {
+        ok { println(rbx.value) }     // expect: 1
+        err { println("err") }
+    }
+    let ab: []int = b.nums()
+    println(ab[0], " ", ab[1])        // expect: 5 1
+    let oi = b.maybeBag()             // inferred
+    if oi != nil {
+        println(oi.get())             // expect: 1
+    }
+    let ai = b.nums()                 // inferred
+    println(ai[0], " ", ai[1])        // expect: 5 1
+    // the same shapes on a field reference receiver, explicitly typed
+    let fc: Item = b.first.clone()
+    println(fc.get())                 // expect: 5
+    let fo: ?Item = b.first.maybe()
+    if fo != nil {
+        println(fo.get())             // expect: 6
+    }
+    let fr: Result[int] = b.first.res()
+    match fr {
+        ok { println(fr.value) }      // expect: 5
+        err { println("err") }
+    }
+    let fa: []int = b.first.list()
+    println(fa[0])                    // expect: 5
+    let foi = b.first.maybe()         // inferred
+    if foi != nil {
+        println(foi.get())            // expect: 6
+    }
+    let fai = b.first.list()          // inferred
+    println(fai[0])                   // expect: 5
+    // owned optional and Result returns on a whole reference receiver
+    let o: ?Item = b.first.maybe()
+    if o != nil {
+        println(o.get())              // expect: 6
+    }
+    let r = b.first.res()
+    match r {
+        ok { println(r.value) }       // expect: 5
+        err { println("err") }
+    }
+    // owned array return
+    let xs: []int = b.nums()
+    println(xs[0], " ", xs[1])        // expect: 5 1
+    // ok(method()) and a handle return bound to a local
+    let okr = ok(b.first.clone())
+    match okr {
+        ok { println(okr.value.get()) }   // expect: 5
+        err { println("err") }
+    }
+    let h2 = b.link()
+    println(h2.get())                 // expect: 5
+    // h.field and a whole handle receiver
+    let h = handle(bag)
+    println(h.first.get())            // expect: 5
+    h.first.bump()
+    println(h.first.get())            // expect: 6
+    h.setCount(3)
+    println(h.count)                  // expect: 3
+    // a mut method on an element through a whole handle, pure: append only
+    println(h.add())                  // expect: 3
+    // owned results used as statements are freed at once (the leak check sees it)
+    b.first.clone()
+    b.first.maybe()
+    b.first.res()
+}

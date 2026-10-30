@@ -1,0 +1,3 @@
+module lib
+pub type Builder = ref record { n: int }
+pub fn (b: &Builder) main(): int { return b.n + 1 }

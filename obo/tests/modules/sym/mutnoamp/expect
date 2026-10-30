@@ -1,0 +1,2 @@
+exit 2
+stderr obxc: <sym>/lib.sym:13:16: symbol file: mut needs a reference parameter: write mut p0: &T

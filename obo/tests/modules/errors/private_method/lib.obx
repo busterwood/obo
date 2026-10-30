@@ -1,0 +1,4 @@
+module lib
+pub type T = ref record { v: int }
+pub fn make(): T { return new T{v: 1} }
+fn (t: &T) secret(): int { return t.v }

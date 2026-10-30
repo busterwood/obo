@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:7:5: cannot move out of a field or element; use take() on an optional one

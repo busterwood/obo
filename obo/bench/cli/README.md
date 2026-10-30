@@ -7,7 +7,8 @@ host.
 
 **It is not a gate.** No script under `obo/tests/` and no CI job runs it. The
 numbers are host-dependent; treat them as relative measurements from one run,
-not as portable facts.
+not as portable facts. The recorded table is the historical obo 0.5 /
+sym-format 1 sample; obo 0.6 adds methods and was not re-measured.
 
 ## What it measures
 

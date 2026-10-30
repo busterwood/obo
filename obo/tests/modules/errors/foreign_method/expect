@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:3:17: cannot declare a method on imported type 'lib::T'; declare it in the type's own module

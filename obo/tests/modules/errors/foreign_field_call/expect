@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:5:15: type 'lib::T' has a field 'f', not a method; a field cannot be called

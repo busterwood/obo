@@ -1,0 +1,3 @@
+module lib
+pub type T = ref record { v: int }
+pub fn (t: &T) later(): int
