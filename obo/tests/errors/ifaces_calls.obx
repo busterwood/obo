@@ -1,0 +1,106 @@
+// Interface calls, step 4 of v3 (design sections 7, 11 and 12.2, E6): each case is one refusal of a call through an
+// owned interface value. The calls the step allows are in run/ifaces_calls.obx and run/ifaces_effects.obx.
+type Shape = interface {
+    pure fn area(): int
+    mut fn grow(k: int)
+    pure mut fn bump(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s * q.s }
+fn (mut q: &Square) grow(k: int) { q.s += k }
+fn (mut q: &Square) bump(): int {
+    q.s += 1
+    return q.s
+}
+impl Shape for Square
+type Holder = ref record { d: Shape; n: int }
+fn make(n: int): Shape { return new Square{s: n} }
+fn swap(mut h: &Holder): int {
+    h.d = make(9)
+    return 1
+}
+var G: Shape = new Square{s: 1}
+
+// === a member through a handle that may free (E6: a mut member)
+fn f() {
+    var h = new Holder{d: make(1), n: 0}
+    let p = handle(h)
+    p.d.grow(1)  // error: cannot pass a reference that borrows through a handle to interface method 'Shape::grow': it might free what the handle names
+}
+
+// === a mut member on a read-only receiver
+fn f(h: &Holder) {
+    h.d.grow(1)  // error: the receiver of interface method 'Shape::grow' needs a mut reference, but this one is read-only
+}
+
+// === a later argument frees the receiver's box
+fn f() {
+    var h = new Holder{d: make(1), n: 0}
+    h.d.grow(swap(h))  // error: argument 1 of interface method 'Shape::grow' may free what the receiver points into, and runs after it; compute it before the call
+}
+
+// === an unknown member
+fn f() {
+    let a: Shape = make(1)
+    a.zzz()  // error: interface 'Shape' has no method 'zzz'
+}
+
+// === too many arguments
+fn f() {
+    let a: Shape = make(1)
+    a.grow(1, 2)  // error: interface method 'Shape::grow' takes 1 argument(s), not more
+}
+
+// === too few arguments
+fn f() {
+    let a: Shape = make(1)
+    a.grow()  // error: interface method 'Shape::grow' takes 1 argument(s), not 0
+}
+
+// === an argument of the wrong type
+fn f() {
+    let a: Shape = make(1)
+    a.grow("x")  // error: argument 1 of interface method 'Shape::grow': cannot use string as int
+}
+
+// === a call result is a temporary: store it first
+fn f() {
+    let n = make(3).area()  // error: store this value in a variable first: otherwise it would never be freed
+}
+
+// === a call in a global initializer (step 6)
+var A = G.area()  // error: interface values are not implemented yet
+
+// === a field of an interface value is not a method
+fn f() {
+    let a: Shape = make(1)
+    let k = a.s  // error: interface 'Shape' has no fields; it has methods only
+}
+
+// === a member named without its call
+fn f() {
+    let a: Shape = make(1)
+    let g = a.grow  // error: interface method 'Shape::grow' cannot be used as a value: call it with '(' after its name
+}
+
+// === a pure mut implementation that changes below its receiver through a mut member is not pure (the summary of
+// the member is applied at the call, so the implementation's own summary records the free)
+type Mover = interface {
+    pure mut fn put(): int
+}
+type Hold = ref record { d: Shape; k: int }
+fn (mut h: &Hold) put(): int {
+    h.d.grow(1)  // an interface call that frees below h: the implementation may not be pure
+    return h.k
+}
+impl Mover for Hold  // error: method 'Hold::put' is not pure, but interface 'Mover' declares 'put' pure
+
+// === a mut member frees below its receiver: a reference borrowed through a handle is stale after it (E6, summary applied)
+type Pair = ref record { d: Shape; sq: Square; n: int }
+fn f() {
+    var h = new Pair{d: make(1), sq: new Square{s: 1}, n: 0}
+    let p = handle(h)
+    let inner: &Square = p.sq
+    h.d.grow(1)
+    println(inner.s)  // error: 'inner' may point to freed memory
+}

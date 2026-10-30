@@ -1,0 +1,17 @@
+module main
+import "lib.obx"
+// the implementation reads and changes a scalar of its mut argument, and frees nothing
+pub type Quiet = ref record { w: int }
+pub fn (q: &Quiet) size(mut x: &lib::Item): int {
+    x.n += q.w
+    return x.n
+}
+pub impl lib::Reader for Quiet
+
+fn main() {
+    var it = new lib::Item{n: 2, kid: new lib::Kid{v: 7}}
+    let k: &lib::Kid = it.kid                         // a deep live borrow: a free below the argument would stale it
+    let rd: lib::Reader = new Quiet{w: 3}
+    println(rd.size(it), " ", k.v)                    // expect: 5 7
+    println("done")                                   // expect: done
+}

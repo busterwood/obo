@@ -1385,6 +1385,17 @@ INTERFACE_MUTANTS = {
     "interfaces v3 X23: the reader ignores pure": (
         "            setMemberSummary(m, pure)\n            append(ifaceSyms, m)\n",
         "            setMemberSummary(m, false)\n            append(ifaceSyms, m)\n"),
+    # step 4: dispatch through an owned interface value (design sections 7 and 11): the call's vtable word, the
+    # slot offset, and the caller's effects from the member's synthetic summary
+    "interfaces v3 X8: the vtable word is read from the wrong pushed slot (S4 order)": (
+        "        opMem(0x8B, RAX, mem(RSP, -1, 8 * n, 8), true, false)\n",
+        "        opMem(0x8B, RAX, mem(RSP, -1, 8 * n - 8, 8), true, false)\n"),
+    "interfaces v3 X39: the call goes to the wrong vtable slot": (
+        "mem(RAX, -1, 8 * ifaceSlot(f), 8)",
+        "mem(RAX, -1, 8 * ifaceSlot(f) + 8, 8)"),
+    "interfaces v3 X40: the member's summary is not applied to the caller's receiver": (
+        "        if argModes[i] == 2 && mutFrees(f, argIdx[i]) {\n",
+        "        if argModes[i] == 2 && mutFrees(f, argIdx[i]) && !iface {\n"),
 }
 MUTANTS.update(INTERFACE_MUTANTS)
 MUTANTS.update(METHOD_MUTANTS)
@@ -1427,12 +1438,14 @@ def jobs_and_inner():
     return jobs, inner
 
 
-def build_and_run(src, fail_fast=False, jobs=1, smoke=False):
+def build_and_run(src, fail_fast=False, jobs=1, smoke=False, suites=False):
     """Builds the compiler from src, in a directory of its own, and runs run_fork.py
     with it: (the run_fork result, None), or (None, the build's error) when it does
     not build. fail_fast stops run_fork at its first failing test (the verdict is
     unchanged; only the time and the report differ), jobs tests run at once, and
-    smoke tries run_fork's smoke subset first (a reorder: the rest still run)."""
+    smoke tries run_fork's smoke subset first (a reorder: the rest still run). suites also runs the
+    module and .sym suites, which read the compiler too (a .sym reader's mutant is seen only there), after
+    run_fork passes: their output comes first, and a failing suite makes the result a failure."""
     work = tempfile.mkdtemp(prefix='obo-mutant-')
     try:
         with open(os.path.join(work, 'obo.obo'), 'w') as f:
@@ -1449,7 +1462,20 @@ def build_and_run(src, fail_fast=False, jobs=1, smoke=False):
             cmd += ['-j', str(jobs)]
         if smoke:
             cmd.append('--smoke')
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=dict(os.environ, OBO=exe)), None
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=dict(os.environ, OBO=exe))
+        if suites and res.returncode == 0:
+            text, failed = '', []
+            for name in ('module_test.py', 'sym_test.py'):
+                r = subprocess.run([sys.executable, os.path.join(HERE, name)], capture_output=True, text=True,
+                                   timeout=600, env=dict(os.environ, OBO=exe))
+                text += r.stdout + r.stderr
+                if r.returncode != 0:
+                    failed.append(name)
+            if failed:
+                return subprocess.CompletedProcess(cmd, 1, stdout=text + res.stdout + f"suite failed: {' and '.join(failed)}\n",
+                                                    stderr=res.stderr), None
+            return subprocess.CompletedProcess(cmd, 0, stdout=text + res.stdout, stderr=res.stderr), None
+        return res, None
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -1463,7 +1489,7 @@ def try_mutant(src, name, jobs=1):
     text, stale = mutation(src, name)
     if text is None:
         return 'missed', stale, ''
-    p, err = build_and_run(text, fail_fast=True, jobs=jobs,
+    p, err = build_and_run(text, fail_fast=True, jobs=jobs, suites=True,
                            smoke=os.environ.get('MUTATE_SMOKE', '1') != '0')
     if p is None:
         return 'missed', f"BROKEN  {name}: {err}", ''
@@ -1485,7 +1511,7 @@ def main():
     pattern = args[0] if args else ''
     src = open(os.path.join(FORK, 'src', 'obo.obo')).read()
     # the baseline: the unmutated compiler must pass run_fork, or no mutant's failure means anything
-    base, err = build_and_run(src)
+    base, err = build_and_run(src, suites=True)
     if base is None:
         raise SystemExit(f"the unmutated compiler does not build ({err}), so no mutant can be judged")
     if base.returncode != 0:
@@ -1501,7 +1527,7 @@ def main():
     # ... and the same judge path a mutant takes must pass it too, with the full
     # count: a broken invocation would otherwise report every mutant as caught
     smoke = os.environ.get('MUTATE_SMOKE', '1') != '0'
-    judge, err = build_and_run(src, fail_fast=True, jobs=inner, smoke=smoke)
+    judge, err = build_and_run(src, fail_fast=True, jobs=inner, smoke=smoke, suites=True)
     if judge is None:
         raise SystemExit(f"the unmutated compiler does not build ({err}), so no mutant can be judged")
     judge_summary = judge.stdout.strip().splitlines()[-1] if judge.stdout.strip() else ''

@@ -4890,6 +4890,9 @@ fn setItem(mut x: &Item, y: Item) {
 // offset 0 and the vtable of implementation im at offset 8 (v3 4). The box is an owned temporary, so the caller's
 // consume of x is a no-op. The vtable is in rodata; in --check an imported implementation has none (0), and no code runs.
 fn boxInto(dst: ^Type, mut x: &Item, im: ^Impl) {
+    // a full build only ever sees live implementations (symImplDecl adds the .sym's own only in --check), so a zero vtable
+    // here would be a box that calls through to address 0
+    if im.vtable == 0 && !checking { error("internal error: the implementation of '" + tname(dst) + "' has no vtable in this build") }
     consume(x)
     let obj = asReg(copyItem(x))
     let box = rtCall1(RT_ALLOC_RECORD, makeConst(tInt, boxDescriptor()), dst)
@@ -5021,8 +5024,11 @@ fn holdArg(b: ^RefBind, i: int) {
     append(ownedLocals, t)
 }
 
-// "method 'T::m'" for a method, the plain name for a function (whose messages stay byte-identical)
+// "method 'T::m'" for a method, the plain name for a function (whose messages stay byte-identical). The call being
+// checked is an interface method call when callIface is set (callFnWith sets and restores it around each call).
+var callIface = false
 fn callDisplay(meth: bool, name: string): string {
+    if meth && callIface { return "interface method '" + name + "'" }
     if meth { return "method '" + name + "'" }
     return name
 }
@@ -5089,6 +5095,36 @@ fn callFrees(f: ^Sym, i: int, br: ^Sym, known: bool, apath: string) {
     if n == 0 { callFreeEvent(br, apath, true) }
 }
 
+// The vtable slot of interface member f (v3 4): its place among the members of its interface, in declaration order,
+// which is the order implDecl writes the vtable in and the order the .sym reader appends the members in
+fn ifaceSlot(f: ^Sym): int {
+    var k = 0
+    for i in 0..len(ifaceSyms) {
+        let m = ifaceSyms[i]
+        if m == f { return k }
+        if m.recv == f.recv { k += 1 }
+    }
+    error("internal error: interface method '" + f.name + "' has no vtable slot")
+    return 0
+}
+
+// The dispatch loads of an interface call (v3 7.1, S4), made for argument 0 and so before any explicit argument runs.
+// a is the receiver place, which holds its box: the vtable is read from [box+8] and pushed first, so it lies above
+// the arguments; then the object from [box] is pushed as argument 0. The box's register is only read, never written,
+// since it may be a home register of a local.
+fn pushIfaceReceiver(a: Item) {
+    let b = asReg(a)
+    let vt = alloc()
+    opMem(0x8B, vt, mem(b.r, -1, 8, 8), true, false)
+    pushR(vt)
+    release(vt)
+    let ob = alloc()
+    opMem(0x8B, ob, mem(b.r, -1, 0, 8), true, false)
+    release(b.r)
+    pushR(ob)
+    release(ob)
+}
+
 fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item
 
 fn callFn(f: ^Sym): Item { return callFnWith(f, nil, false, 0, 0) }
@@ -5096,8 +5132,13 @@ fn callFn(f: ^Sym): Item { return callFnWith(f, nil, false, 0, 0) }
 // The call: the receiver, if any, is parameter 0 and runs before the explicit arguments. For a plain
 // function (hasRecv false) every label and index is the old one, so its messages are unchanged.
 fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item {
+    // an interface member (kind "ifn") is called through the receiver's vtable, and its synthetic summary stands for the callee
+    let iface = f.kind == "ifn"
+    let savedIface = callIface
+    callIface = iface
     var fname = qualifiedSymName(f)
     if hasRecv { fname = methodDisplay(f) }
+    if iface { fname = ifaceMethodDisplay(f) }
     let meth = hasRecv
     var start = 1
     if !hasRecv { start = 0 }
@@ -5111,7 +5152,10 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
     setFree(0)
     let n = len(f.fnRec.params)
     let narg = n - start
-    let pad = (depth + 8 * n) % 16
+    // the words the call pops: the arguments, and for an interface call the vtable word above them (v3 7.1)
+    var nw = n
+    if iface { nw = n + 1 }
+    let pad = (depth + 8 * nw) % 16
     if pad != 0 {
         aluRI(5, RSP, 8)
         depth += 8
@@ -5179,7 +5223,9 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
             tline = savedTokLine
             tcol = savedTokCol
         }
-        if a.mode == "const" && fits32(a.val) {
+        if iface && i == 0 {
+            pushIfaceReceiver(a)                   // the box's vtable and object, before any explicit argument runs (v3 7.1)
+        } else if a.mode == "const" && fits32(a.val) {
             pushI(a.val)                           // no register needed
             depth += 8
             drop(a)
@@ -5260,21 +5306,28 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
     }
     afterCall(f)
     if movesFn(f) { userCalls += 1 }              // only calls that might free count
-    emit(0xE8)
-    emit32(0)
-    let at = pc() - 4
-    if f.addr >= 0 {
-        fix(at, f.addr)
-        append(farCalls, at)
+    if iface {
+        // the vtable word lies above the n arguments, at [rsp + 8n]: call the member's slot through it (v3 4, 7.1)
+        opMem(0x8B, RAX, mem(RSP, -1, 8 * n, 8), true, false)
+        opMem(0xFF, 2, mem(RAX, -1, 8 * ifaceSlot(f), 8), false, false)
     } else {
-        append(f.fnRec.fixups, at)
-        fwdCalls += 1
+        emit(0xE8)
+        emit32(0)
+        let at = pc() - 4
+        if f.addr >= 0 {
+            fix(at, f.addr)
+            append(farCalls, at)
+        } else {
+            append(f.fnRec.fixups, at)
+            fwdCalls += 1
+        }
     }
-    if n > 0 || pad != 0 {
-        aluRI(0, RSP, 8 * n + pad)
-        depth -= 8 * n + pad
+    if nw > 0 || pad != 0 {
+        aluRI(0, RSP, 8 * nw + pad)
+        depth -= 8 * nw + pad
     }
     restoreRegs(saved)
+    callIface = savedIface
     if f.ret == tVoid { return voidItem() }
     let r = alloc()
     movRR(r, RAX)
@@ -6000,7 +6053,12 @@ fn designatorT(target: bool): Item {
             }
             if x.typ.incomplete { error(tname(x.typ) + " is declared but not yet defined") }
             if x.typ.kind == "closed" { error(tname(x.typ) + " is a closed type: use 'match' to reach its fields") }
-            if x.typ.kind == "iface" { error("interface values are not implemented yet") }
+            if x.typ.kind == "iface" {
+                // a member named without its call (v3 11); any other name is a field, and an interface has none
+                let mv = findIfaceMethod(x.typ, fname)
+                if mv != nil { error("interface method '" + ifaceMethodDisplay(mv) + "' cannot be used as a value: call it with '(' after its name") }
+                error("interface '" + tname(x.typ) + "' has no fields; it has methods only")
+            }
             if x.typ.kind != "record" { error(tname(x.typ) + " has no fields") }
             let rt0 = x.typ
             let fi = fieldIndex(rt0, fname)
@@ -6130,10 +6188,21 @@ fn designatorT(target: bool): Item {
 
 // A method call on the finalized receiver x. The receiver's place metadata is complete by now
 // (root, deref, path, viaHandle, borrowed) and its value use has been recorded.
+// A call of member name on an owned interface value (v3 7.1): through the receiver's vtable, with the member's
+// synthetic summary standing for the callee (7.3). A call in a global initializer is refused until step 6: the
+// initializer chain has no frame to hold the vtable across the arguments.
+fn ifaceMethodCall(recv: Item, t: ^Type, name: string, dline: int, dcol: int, rline: int, rcol: int): Item {
+    if curFn == nil { errorAt("interface values are not implemented yet", dline, dcol) }
+    let m = findIfaceMethod(t, name)
+    if m == nil { errorAt("interface '" + tname(t) + "' has no method '" + name + "'", dline, dcol) }
+    if m != nil { return callFnWith(m, recv, true, rline, rcol) }
+    return voidItem()
+}
+
 fn methodCall(recv: Item, name: string, dline: int, dcol: int, rline: int, rcol: int): Item {
     let t = recv.typ
     if t.incomplete { errorAt(tname(t) + " is declared but not yet defined", dline, dcol) }
-    if t.kind == "iface" { errorAt("interface values are not implemented yet", dline, dcol) }    // calls are step 4
+    if t.kind == "iface" { return ifaceMethodCall(recv, t, name, dline, dcol, rline, rcol) }
     if t.kind != "record" && t.kind != "closed" { errorAt(tname(t) + " has no methods", dline, dcol) }
     if t.kind == "record" && fieldIndex(t, name) >= 0 {
         errorAt("type '" + tname(t) + "' has a field '" + name + "', not a method; a field cannot be called", dline, dcol)

@@ -1572,7 +1572,8 @@ def stale_format3_interface():
 # the imported-member tier cases of module_test (tests/modules/{run,errors}/iface_tier_*): each is also run
 # with its library read from the .sym alone (--check), which rebuilds the members' summaries in the reader
 IFACE_TIER_CASES = ['run/iface_tier_bits', 'errors/iface_tier_global', 'errors/iface_tier_handle',
-                    'errors/iface_tier_pure_param', 'errors/iface_tier_pure_recv']
+                    'errors/iface_tier_pure_param', 'errors/iface_tier_pure_recv',
+                    'run/iface_calls', 'run/iface_call_tiers']
 
 
 def iface_tier_check():
