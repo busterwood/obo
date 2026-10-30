@@ -1483,6 +1483,51 @@ def stale_format3_interface():
 
 
 
+# the imported-member tier cases of module_test (tests/modules/{run,errors}/iface_tier_*): each is also run
+# with its library read from the .sym alone (--check), which rebuilds the members' summaries in the reader
+IFACE_TIER_CASES = ['run/iface_tier_bits', 'errors/iface_tier_global', 'errors/iface_tier_handle',
+                    'errors/iface_tier_pure_param', 'errors/iface_tier_pure_recv']
+
+
+def iface_tier_check():
+    """S-2 (tier checks): a downstream impl of an imported interface gets the same verdict from a full
+    build (the live summary) and from --check against lib.sym alone (the reader's summary), with the
+    same message, and that verdict is the module case's own expect file."""
+    base = os.path.join(HERE, 'modules')
+    for case in IFACE_TIER_CASES:
+        src = os.path.join(base, case)
+        want_exit, want_err = 0, ''
+        expect = os.path.join(src, 'expect')
+        if os.path.exists(expect):
+            for line in open(expect).read().splitlines():
+                if line.startswith('exit '):
+                    want_exit = int(line[5:])
+                elif line.startswith('stderr '):
+                    want_err = line[7:]
+        d = tempfile.mkdtemp(prefix='symcase-tier-')
+        try:
+            for name in os.listdir(src):
+                if name.endswith('.obx'):
+                    shutil.copyfile(os.path.join(src, name), os.path.join(d, name))
+            symdir = os.path.join(d, 'sym')
+            os.makedirs(symdir)
+            full = build(d, symdir, out=os.path.join(d, 'prog'))
+            # the library's .sym is written before the root is checked, so --check still has it when the root refuses
+            for name in os.listdir(d):
+                if name.endswith('.obx') and name != 'main.obx':
+                    os.unlink(os.path.join(d, name))
+            chk = build(d, symdir, check=True)
+            problems = []
+            if full.returncode != want_exit or full.stderr.strip().replace(d + os.sep, '') != want_err:
+                problems.append(f"full build exit {full.returncode}: {full.stderr.strip()!r}")
+            if chk.returncode != want_exit or chk.stderr.strip().replace(d + os.sep, '') != want_err:
+                problems.append(f"--check exit {chk.returncode}: {chk.stderr.strip()!r}")
+            if problems:
+                raise Fail(f"{case}, wanted exit {want_exit} and {want_err!r}: " + '; '.join(problems))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 def tests():
     return [
         ('sym/roundtrip_rich', roundtrip_rich),
@@ -1519,6 +1564,7 @@ def tests():
         ('sym/iface_private_impl', iface_private_impl),
         ('sym/iface_reader_refusals', iface_reader_refusals),
         ('sym/stale_format3_interface', stale_format3_interface),
+        ('sym/iface_tier_check', iface_tier_check),
     ]
 
 

@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:9:28: method 'Late::f' cannot implement 'lib::Sink::f': it writes an owned value through a handle, or calls a function that is not defined yet; interface methods may only change what is below their own mut parameters

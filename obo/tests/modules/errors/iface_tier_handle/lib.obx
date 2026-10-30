@@ -1,0 +1,6 @@
+module lib
+pub type Bag = ref record { items: []int }
+pub type Holder = ref record { b: ^Bag }
+pub type Sink = interface {
+    fn f(mut p0: &Holder): int
+}

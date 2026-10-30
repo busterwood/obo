@@ -1,0 +1,11 @@
+module main
+import "lib.obx"
+// a pure mut member: the implementation may change its receiver's scalars, not free below it
+pub type Quiet = ref record { w: int; o: ?lib::Leaf }
+pub fn (mut q: &Quiet) bump(): int {
+    q.o = nil
+    q.w += 1
+    return q.w
+}
+pub impl lib::Counter for Quiet
+fn main() {}

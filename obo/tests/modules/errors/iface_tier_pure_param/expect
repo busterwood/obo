@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:9:31: method 'Quiet::size' is not pure, but interface 'lib::Reader' declares 'size' pure

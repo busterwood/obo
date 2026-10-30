@@ -1,0 +1,11 @@
+module main
+import "lib.obx"
+// a plain member: the implementation may not free a global
+var G = new lib::Item{n: 1}
+pub type Late = ref record { k: int }
+pub fn (l: &Late) f(p0: &lib::Item): int {
+    G = new lib::Item{n: 2}
+    return p0.n
+}
+pub impl lib::Sink for Late
+fn main() {}

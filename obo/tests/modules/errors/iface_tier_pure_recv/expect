@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:10:32: method 'Quiet::bump' is not pure, but interface 'lib::Counter' declares 'bump' pure
