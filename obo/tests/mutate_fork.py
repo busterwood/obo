@@ -1434,7 +1434,7 @@ INTERFACE_MUTANTS = {
         "    if x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: a reference cannot borrow from a temporary\")\n    }\n",
         "    if false && x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: a reference cannot borrow from a temporary\")\n    }\n"),
     "interfaces v3 X36a: SYM_FORMAT stays 2": ("const SYM_FORMAT = 4\n", "const SYM_FORMAT = 2\n"),
-    "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.9\"\n", "const OBO_VERSION = \"0.6\"\n"),
+    "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.8.1\"\n", "const OBO_VERSION = \"0.6\"\n"),
 
     # summary reconstruction (S-2): setMemberSummary is shared by the source and the reader
     "interfaces v3 X18: the receiver bit is omitted for mut fn": (

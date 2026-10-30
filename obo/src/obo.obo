@@ -104,9 +104,11 @@ const T_COLONCOLON = 67
 
 // Stage 2: the symbol-file format, the compiled-program ABI and the compiler version.
 // OBO_VERSION is the compiler's identity in every .sym's `compiler` line and in --version.
-// Bump OBO_VERSION with each merged compiler feature; bump SYM_FORMAT on any grammar or
-// meaning change; bump SYM_ABI on any layout/calling-convention/descriptor/effect change.
-const OBO_VERSION = "0.9"
+// Bump OBO_VERSION with each merged compiler feature; additive builtin/runtime
+// extensions use a patch release (0.8 -> 0.8.1), while the 0.9/0.10 lambdas stages
+// remain reserved. Bump SYM_FORMAT on any grammar or meaning change; bump SYM_ABI on
+// any layout/calling-convention/descriptor/effect change.
+const OBO_VERSION = "0.8.1"
 const SYM_FORMAT = 4
 const SYM_ABI = 1
 

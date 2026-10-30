@@ -1,6 +1,6 @@
 obosym 4
 abi 1
-compiler "0.9"
+compiler "0.8.1"
 source 0x0000000000000000
 interface 0xb6a90d57ceabec6c
 module m

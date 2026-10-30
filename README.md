@@ -21,8 +21,8 @@ measurements.
 
 The promoted seed is **obo 0.8, symbol format 4, ABI 1** (507,905 bytes,
 sha256 `673ae7ba…`). The current source adds `sleepMs` and builds a 512,001-byte
-**obo 0.9** compiler from that seed; stage 2 == stage 3, checked with `cmp`. The
-new compiler is not promoted here.
+**obo 0.8.1** compiler from that seed; stage 2 == stage 3, checked with `cmp`. The
+new compiler is not promoted here. Version policy: additive builtin/runtime extensions use patch releases such as 0.8.1; the 0.9 and 0.10 numbers stay reserved for the lambda stages.
 
 - **Language.** Single ownership, moves, borrowed `&T` references, checked `^T`
   handles, effect summaries, `Result[T]`/`try`, incremental I/O, modules and
@@ -53,7 +53,7 @@ new compiler is not promoted here.
 |---|---:|
 | Compiler source | 12,056 lines, 454,332 bytes |
 | Compiler and seed (`--version`) | 507,905 bytes, sha256 `673ae7ba…`, `obo 0.8 sym-format 4 abi 1` |
-| Self-host fixed point | stage 2 == stage 3, 512,001 bytes; the 0.8 seed builds the 0.9 compiler |
+| Self-host fixed point | stage 2 == stage 3, 512,001 bytes; the 0.8 seed builds the 0.8.1 compiler |
 | Self-compile wall time | 0.14 s (5 runs, median on this host; host-dependent) |
 | Self-compile live peak | 1,947,824 bytes |
 | Total allocated | 44,629,104 bytes (port comparison) |
@@ -248,7 +248,7 @@ cd obo && python3 tests/tools.py --memory              # the three pinned tool m
 cd obo && python3 bench/bench.py         # memory and time against the collector
 cd obo && ./obo --deps tests/modules/run/basic/main.obx -I tests/modules/run/basic  # dependencies first
 cd obo && mkdir -p /tmp/syms && ./obo --check src/obo.obo --sym-dir /tmp/syms        # check without an executable
-cd obo && ./obo --version                # obo 0.9 sym-format 4 abi 1
+cd obo && ./obo --version                # obo 0.8.1 sym-format 4 abi 1
 cd obo && ./obo --reemit-sym /tmp/syms/obo.sym   # canonical re-emission (test hook)
 ```
 

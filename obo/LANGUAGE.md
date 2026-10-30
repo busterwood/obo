@@ -799,7 +799,7 @@ module) is the spelling throughout.
 
 An interface is a named set of methods that a record or closed type can implement. A value of interface type is
 either an **owned box** (`I`, `?I`) or a **borrowed pair** (`&I`, `mut &I`, `&?I`); an interface is never a value
-of its own kind with fields or identity. The implemented form is `0.8`; lambdas are `0.9`/`0.10`, and handles to
+of its own kind with fields or identity. The implemented form is `0.8`; additive builtin/runtime extensions use patch releases such as `0.8.1`, while lambdas remain `0.9`/`0.10`, and handles to
 interfaces (`^I`) are a later phase.
 
 ### Declarations and implementations
