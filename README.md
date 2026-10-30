@@ -186,7 +186,10 @@ The aim is a compiler you can trust, so the process matters as much as the code.
   planted in a copy of the compiler, each of which the suite must catch. A mutant
   that survives marks a gap in the tests. The mutation suites run fail-fast, with a
   smoke subset first and parallel cases; a verdict cache was designed, found unsound,
-  and is not shipped.
+  and is not shipped. The port mutants try the check that caught them in the last
+  authoritative run first (`MUTATE_CATCHERS=0` turns this off), then run the full
+  comparison on a pass or an unknown check, so this changes the order and not the
+  verdict. `MUTATE_TIMINGS=path` records per-stage/per-mutant timings outside the tree.
 - **Oracles that don't depend on a compiler**: expected output written beside the
   code, objdump for the encoder, a Python model for the fuzzer, a counting runtime
   that fails any program ending with live objects (exit 5) or freeing twice (exit 6).
@@ -235,6 +238,7 @@ cd obo && python3 tests/elf_test.py      # the image: trimmed runtime-data segme
 cd obo && python3 tests/io_test.py --rt --programs --tools  # I/O runtime and programs
 cd obo && python3 tests/mutate_fork.py   # obo's mutants
 cd obo && python3 tests/mutate_io.py     # runtime/library mutants
+cd obo && python3 tests/mutate_harness_test.py  # the mutation harness's own tests (fake builders)
 cd obo && python3 tests/meta_test.py     # the metadata runtime and fs module
 cd obo && python3 tests/mutate_meta.py   # metadata runtime/entry.S and compiler mutants
 cd obo && python3 tests/port_test.py     # the port: tokens and encoder, against obo

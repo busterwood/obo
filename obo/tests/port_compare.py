@@ -29,7 +29,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FORK = os.path.dirname(HERE)
 ROOT = os.path.join(os.path.dirname(FORK), 'obx')
 sys.path.insert(0, os.path.join(ROOT, 'tests'))
+sys.path.insert(0, HERE)
 import run  # noqa: E402  (for error_cases)
+import mutate_stats  # noqa: E402  (optional timings and counters)
 
 REF = os.path.abspath(os.environ.get('OBO_REF', os.path.join(FORK, 'obo')))
 SRC = os.path.join(FORK, 'src', 'obo.obo')
@@ -53,6 +55,12 @@ REF_OUTCOMES = {}
 ADDRESS_SPACE = 5 << 30
 
 
+class HarnessError(RuntimeError):
+    """A bug or setup failure in the harness, not an outcome of the mutant. It is
+    raised, never turned into a caught mutant: a broken helper must fail the gate
+    or abort the baseline, otherwise every mutant could look caught."""
+
+
 def capped(then=None):
     """A preexec_fn for the port's own compiles and runs: then (if given), and the address-space cap."""
     def limits():
@@ -69,16 +77,19 @@ def timed_out(o):
 
 
 def outcome(exe, src_path, out_path, scratch, compile_limit=120, run_limit=60, capped_run=False,
-            module_args=()):
+            module_args=(), stats=None):
     """('ok', (exit code, stdout, stderr)) for a program that compiles, run with
     OBO_CHECK=1 and a fresh scratch directory as its argument (as run.py does);
     ('error', 'line:col: message') or ('crash', ...) for one that does not. The case's
     directory is written <tmp> in the result, so outcomes from different directories
     compare. Also returns the seconds the compile and the run took. capped_run puts the
-    compile and the run under the address-space cap (the port's own, in quick mode)."""
+    compile and the run under the address-space cap (the port's own, in quick mode).
+    stats, when given, counts the subprocesses (see mutate_stats.Stats)."""
     tmp = os.path.dirname(src_path)
     t0 = time.monotonic()
     try:
+        if stats is not None:
+            stats.add('subprocesses')
         p = subprocess.run([exe, src_path, '-o', out_path, '--rt', FORK, *module_args],
                            capture_output=True, text=True,
                            env=dict(os.environ, OBO_CHECK='1'), timeout=compile_limit,
@@ -86,6 +97,8 @@ def outcome(exe, src_path, out_path, scratch, compile_limit=120, run_limit=60, c
     except subprocess.TimeoutExpired:
         return ('crash', f"no result in {compile_limit:.0f} s"), compile_limit, 0
     t1 = time.monotonic()
+    if stats is not None:
+        stats.add('compiles')
     if p.returncode == 1 and p.stderr.startswith(src_path + ':'):
         return ('error', p.stderr[len(src_path) + 1:].strip().replace(tmp, '<tmp>')), t1 - t0, 0
     if p.returncode != 0:
@@ -93,12 +106,16 @@ def outcome(exe, src_path, out_path, scratch, compile_limit=120, run_limit=60, c
     shutil.rmtree(scratch, ignore_errors=True)
     os.mkdir(scratch)                    # the same path for both runs, so output naming it agrees
     try:
+        if stats is not None:
+            stats.add('subprocesses')
         r = subprocess.run([out_path, scratch], capture_output=True, timeout=run_limit,
                            preexec_fn=capped(run._limits) if capped_run else run._limits,
                            env=dict(os.environ, OBO_CHECK='1'))
     except subprocess.TimeoutExpired:
         return ('ok', ('timeout', b'', b'')), t1 - t0, run_limit
     t2 = time.monotonic()
+    if stats is not None:
+        stats.add('runs')
     tmpb = tmp.encode()
     return ('ok', (r.returncode, r.stdout.replace(tmpb, b'<tmp>'), r.stderr.replace(tmpb, b'<tmp>'))), t1 - t0, t2 - t1
 
@@ -324,18 +341,23 @@ def sym_map(d):
     return out
 
 
-def tree_outcome(exe, kind, case_dir, out_path, scratch, symdir, compile_limit=120, run_limit=60, capped_run=False):
+def tree_outcome(exe, kind, case_dir, out_path, scratch, symdir, compile_limit=120, run_limit=60,
+                 capped_run=False, stats=None):
     if kind == 'deps':
         args = [exe, '--deps', os.path.join(case_dir, 'main.obx'), '-I', case_dir]
         for d in tree_includes(case_dir):
             args += ['-I', d]
         t0 = time.monotonic()
         try:
+            if stats is not None:
+                stats.add('subprocesses')
             p = subprocess.run(args, capture_output=True, text=True, timeout=compile_limit,
                                preexec_fn=capped() if capped_run else None)
         except subprocess.TimeoutExpired:
             return ('crash', f"no result in {compile_limit:.0f} s"), compile_limit, 0
         t1 = time.monotonic()
+        if stats is not None:
+            stats.add('compiles')
         return ('deps', p.returncode, tree_norm(p.stdout, case_dir), tree_norm(p.stderr, case_dir)), t1 - t0, 0
     if kind == 'symcheck':
         # a committed symdir is copied, because --check writes the checked module's .sym
@@ -345,33 +367,45 @@ def tree_outcome(exe, kind, case_dir, out_path, scratch, symdir, compile_limit=1
         args = [exe, '--check', os.path.join(case_dir, 'main.obx'), '-I', case_dir, '--sym-dir', symdir]
         t0 = time.monotonic()
         try:
+            if stats is not None:
+                stats.add('subprocesses')
             p = subprocess.run(args, capture_output=True, text=True, timeout=compile_limit,
                                preexec_fn=capped() if capped_run else None)
         except subprocess.TimeoutExpired:
             return ('crash', f"no result in {compile_limit:.0f} s"), compile_limit, 0
         t1 = time.monotonic()
+        if stats is not None:
+            stats.add('compiles')
         return ('check', p.returncode, tree_norm(p.stderr, case_dir).replace(symdir, '<sym>'), sym_map(symdir)), t1 - t0, 0
     fresh_dir(symdir)
     t0 = time.monotonic()
     try:
+        if stats is not None:
+            stats.add('subprocesses')
         p = subprocess.run(tree_args(exe, case_dir, out_path, symdir), capture_output=True, text=True,
                            env=dict(os.environ, OBO_CHECK='1'), timeout=compile_limit,
                            preexec_fn=capped() if capped_run else None)
     except subprocess.TimeoutExpired:
         return ('crash', f"no result in {compile_limit:.0f} s"), compile_limit, 0
     t1 = time.monotonic()
+    if stats is not None:
+        stats.add('compiles')
     syms = sym_map(symdir)
     if p.returncode != 0:
         return ('error', p.returncode, tree_norm(p.stderr, case_dir).replace(symdir, '<sym>'), syms), t1 - t0, 0
     shutil.rmtree(scratch, ignore_errors=True)
     os.mkdir(scratch)
     try:
+        if stats is not None:
+            stats.add('subprocesses')
         r = subprocess.run([out_path, scratch], capture_output=True, timeout=run_limit,
                            preexec_fn=capped(run._limits) if capped_run else run._limits,
                            env=dict(os.environ, OBO_CHECK='1'))
     except subprocess.TimeoutExpired:
         return ('ok', ('timeout', b'', b''), syms), t1 - t0, run_limit
     t2 = time.monotonic()
+    if stats is not None:
+        stats.add('runs')
     sb = scratch.encode()
     return ('ok', (r.returncode, r.stdout.replace(sb, b'<scratch>'), r.stderr.replace(sb, b'<scratch>')), syms), t1 - t0, t2 - t1
 
@@ -388,7 +422,7 @@ def header_of(path):
     return False
 
 
-def check_each_module(exe, case_dir, symdir, tmp, tag, compile_limit=120, capped_run=False):
+def check_each_module(exe, case_dir, symdir, tmp, tag, compile_limit=120, capped_run=False, stats=None):
     """The outcome of --check for every source in the tree that has a module header,
     against a copy of the build's sym directory. Both compilers must agree."""
     out = {}
@@ -406,11 +440,15 @@ def check_each_module(exe, case_dir, symdir, tmp, tag, compile_limit=120, capped
         for d in tree_includes(case_dir):
             args += ['-I', d]
         try:
+            if stats is not None:
+                stats.add('subprocesses')
             p = subprocess.run(args, capture_output=True, text=True, timeout=compile_limit,
                                preexec_fn=capped() if capped_run else None)
         except subprocess.TimeoutExpired:
             out[f] = ('timeout',)
             continue
+        if stats is not None:
+            stats.add('compiles')
         out[f] = (p.returncode, tree_norm(p.stderr, case_dir).replace(cd, '<sym>'), sym_map(cd).get(f[:-4] + '.sym'))
     return out
 
@@ -425,7 +463,7 @@ def tree_show(o):
     return f"{o[0]} {o[1]!r}"
 
 
-def tree_both(name, kind, case_dir, tmp, quick, port):
+def tree_both(name, kind, case_dir, tmp, quick, port, stats=None):
     main = os.path.join(case_dir, 'main.obx')
     tag = name.replace('/', '-')
     ref_exe = os.path.join(tmp, 'tree-ref-' + tag)
@@ -436,24 +474,28 @@ def tree_both(name, kind, case_dir, tmp, quick, port):
     port_sym = os.path.join(tmp, 'tree-port-sym-' + tag)
     ref = REF_TREE.get(name)
     if ref is None:
-        o, tc, tr = tree_outcome(REF, kind, case_dir, ref_exe, ref_scratch, ref_sym)
+        o, tc, tr = tree_outcome(REF, kind, case_dir, ref_exe, ref_scratch, ref_sym, stats=stats)
         ref_checks = {}
         if kind in ('run',) and o[0] == 'ok':
-            ref_checks = check_each_module(REF, case_dir, ref_sym, tmp, 'ref-' + tag)
+            ref_checks = check_each_module(REF, case_dir, ref_sym, tmp, 'ref-' + tag, stats=stats)
         ref = REF_TREE[name] = (o, ref_checks, tc, tr)
     o, ref_checks, tc, tr = ref
     limits = (min(120, max(10, 20 * tc)), min(60, max(5, 20 * tr))) if quick else (120, 60)
-    o2, tc, tr = tree_outcome(port, kind, case_dir, port_exe, port_scratch, port_sym, *limits, capped_run=quick)
+    o2, tc, tr = tree_outcome(port, kind, case_dir, port_exe, port_scratch, port_sym, *limits,
+                              capped_run=quick, stats=stats)
     if quick and o != o2 and timed_out(o2):
-        o2, tc, tr = tree_outcome(port, kind, case_dir, port_exe, port_scratch, port_sym, 120, 60, capped_run=True)
+        o2, tc, tr = tree_outcome(port, kind, case_dir, port_exe, port_scratch, port_sym, 120, 60,
+                                  capped_run=True, stats=stats)
     port_checks = {}
     if kind in ('run',) and o2[0] == 'ok':
         port_checks = check_each_module(port, case_dir, port_sym, tmp, 'port-' + tag,
-                                        limits[0], capped_run=quick)
+                                        limits[0], capped_run=quick, stats=stats)
     return (o, o2, ref_checks, port_checks)
 
 
-def token_outcome(exe):
+def token_outcome(exe, stats=None):
+    if stats is not None:
+        stats.add('subprocesses')
     p = subprocess.run([exe, '--tokens', os.path.join(MODDIR, 'tokens.obx')],
                        capture_output=True, text=True, timeout=60)
     return (p.returncode, p.stdout, p.stderr)
@@ -467,8 +509,10 @@ CLI_CASES = [
 ]
 
 
-def special_run(cmd, quick, cwd=None):
+def special_run(cmd, quick, cwd=None, stats=None):
     try:
+        if stats is not None:
+            stats.add('subprocesses')
         return subprocess.run(cmd, capture_output=True, text=True, timeout=60 if quick else 120,
                               cwd=cwd, preexec_fn=capped() if quick else None)
     except subprocess.TimeoutExpired:
@@ -489,54 +533,53 @@ def special_syms(d):
     return tuple(out)
 
 
-def special_emit_sym(exe, root, quick):
+def special_emit_sym(exe, root, quick, stats=None):
     tree = os.path.join(root, 't')
     os.makedirs(tree)
     src = os.path.join(tree, 'single.obx')
     open(src, 'w').write('module single\npub fn f(): int { return 1 }\nfn main() { println(f()) }\n')
     sym = os.path.join(root, 'sym')
     os.makedirs(sym)
-    p = special_run([exe, src, '--emit-sym', '-o', os.path.join(root, 'p'), '--rt', FORK, '--sym-dir', sym], quick)
+    p = special_run([exe, src, '--emit-sym', '-o', os.path.join(root, 'p'), '--rt', FORK, '--sym-dir', sym], quick, stats=stats)
     if p is None:
         return ('timeout',)
     return (p.returncode, special_norm(p.stderr, root), special_syms(sym))
 
 
-def special_emit_headerless(exe, root, quick):
+def special_emit_headerless(exe, root, quick, stats=None):
     src = os.path.join(root, 'nohdr.obx')
     open(src, 'w').write('fn main() { }\n')
     sym = os.path.join(root, 'sym')
     os.makedirs(sym)
-    p = special_run([exe, src, '--emit-sym', '-o', os.path.join(root, 'p'), '--rt', FORK, '--sym-dir', sym], quick)
+    p = special_run([exe, src, '--emit-sym', '-o', os.path.join(root, 'p'), '--rt', FORK, '--sym-dir', sym], quick, stats=stats)
     if p is None:
         return ('timeout',)
     return (p.returncode, special_norm(p.stderr, root), special_syms(sym))
 
 
-def special_check_headerless(exe, root, quick):
+def special_check_headerless(exe, root, quick, stats=None):
     src = os.path.join(root, 'nohdr.obx')
     open(src, 'w').write('fn main() { }\n')
     sym = os.path.join(root, 'sym')
     os.makedirs(sym)
-    p = special_run([exe, '--check', src, '--sym-dir', sym], quick)
+    p = special_run([exe, '--check', src, '--sym-dir', sym], quick, stats=stats)
     if p is None:
         return ('timeout',)
     return (p.returncode, special_norm(p.stderr, root), special_syms(sym))
 
 
-def special_default_symdir(exe, root, quick):
+def special_default_symdir(exe, root, quick, stats=None):
     tree = os.path.join(root, 't')
     os.makedirs(tree)
     open(os.path.join(tree, 'lib.obx'), 'w').write('module lib\npub fn f(): int { return 1 }\n')
     open(os.path.join(tree, 'main.obx'), 'w').write('module main\nimport "lib.obx"\nfn main() { println(lib::f()) }\n')
-    p = special_run([exe, os.path.join(tree, 'main.obx'), '-o', os.path.join(root, 'p'), '--rt', FORK, '-I', tree],
-                    quick, cwd=root)
+    p = special_run([exe, os.path.join(tree, 'main.obx'), '-o', os.path.join(root, 'p'), '--rt', FORK, '-I', tree], quick, cwd=root, stats=stats)
     if p is None:
         return ('timeout',)
     return (p.returncode, special_norm(p.stderr, root), special_syms(tree), special_syms(root))
 
 
-def special_sourceless_build(exe, root, quick):
+def special_sourceless_build(exe, root, quick, stats=None):
     tree = os.path.join(root, 't')
     os.makedirs(tree)
     lib = os.path.join(tree, 'lib.obx')
@@ -545,12 +588,12 @@ def special_sourceless_build(exe, root, quick):
     sym = os.path.join(root, 'sym')
     os.makedirs(sym)
     p = special_run([exe, os.path.join(tree, 'main.obx'), '-o', os.path.join(root, 'p'), '--rt', FORK,
-                     '-I', tree, '--sym-dir', sym], quick)
+                     '-I', tree, '--sym-dir', sym], quick, stats=stats)
     if p is None or p.returncode != 0:
         return ('setup', p.returncode if p else 'timeout')
     os.unlink(lib)
     p = special_run([exe, os.path.join(tree, 'main.obx'), '-o', os.path.join(root, 'p2'), '--rt', FORK,
-                     '-I', tree, '--sym-dir', sym], quick)
+                     '-I', tree, '--sym-dir', sym], quick, stats=stats)
     if p is None:
         return ('timeout',)
     return (p.returncode, special_norm(p.stderr, root))
@@ -601,15 +644,62 @@ REEMIT_CASES = [
 ]
 
 
-def compare_trees(tmp, quick, port):
+def special_pair(name, fn, tmp, quick, port, stats=None):
+    """(REF outcome, PORT outcome) for one special check. A helper returns data
+    (exit code, output, ...), so a different outcome is a mutant difference and
+    is returned normally. A helper that raises is a harness bug: it becomes a
+    HarnessError and aborts, rather than being appended as a caught mutant. A
+    TimeoutExpired is a load/limit outcome, not a crash, and is returned as the
+    usual ('timeout',) data so the full path can confirm it."""
+    rroot = fresh_dir(os.path.join(tmp, 'special-ref-' + name.replace(' ', '-')))
+    proot = fresh_dir(os.path.join(tmp, 'special-port-' + name.replace(' ', '-')))
+    try:
+        a = fn(REF, rroot, False, stats=stats)
+    except subprocess.TimeoutExpired:
+        a = ('timeout',)
+    except Exception as exc:  # noqa: BLE001 - distinguish a helper bug from mutant data
+        raise HarnessError(f"special {name}: REF helper raised {exc!r}") from exc
+    try:
+        b = fn(port, proot, quick, stats=stats)
+    except subprocess.TimeoutExpired:
+        b = ('timeout',)
+    except Exception as exc:  # noqa: BLE001 - distinguish a helper bug from mutant data
+        raise HarnessError(f"special {name}: PORT helper raised {exc!r}") from exc
+    return a, b
+
+
+def _timeout_failure(failures):
+    """True when every failure says only that a process timed out. The quick path
+    retries a timeout once with full limits (see both and tree_both); if it still
+    only times out, the full path decides, so a loaded host is not a catch."""
+    if not failures:
+        return False
+    words = ('timed out', 'timeout', 'no result in')
+    return all(any(w in f.lower() for w in words) for f in failures)
+
+
+def _oom_failure(failures):
+    """True when a failure includes an out-of-memory report. It is returned as a
+    catch (the unmutated compiler does not run out of memory) but marked for the
+    serial re-run, which is the confirmation step; if it was the load, the serial
+    run decides instead."""
+    return bool(failures) and any('out of memory' in f.lower() for f in failures)
+
+
+def compare_trees(tmp, quick, port, only=None, stats=None):
     """(same, total, failures) for the module trees, the .sym fixtures, the CLI and
-    the token dump."""
+    the token dump. only, when given, is a set of check names (a tree case name,
+    'cli NAME', 'special NAME', 'reemit NAME' or 'modules/tokens'): the others are
+    not run, which is how a mutant's catcher runs one check without the rest."""
     if os.path.realpath(REF) == SEED_REF:
         return 0, 0, []
+    wanted = None if only is None else set(only)
     same, total, failures = 0, 0, []
     for name, kind, case_dir in tree_cases():
+        if wanted is not None and name not in wanted:
+            continue
         total += 1
-        a, b, ref_checks, port_checks = tree_both(name, kind, case_dir, tmp, quick, port)
+        a, b, ref_checks, port_checks = tree_both(name, kind, case_dir, tmp, quick, port, stats=stats)
         if kind == 'symcheck' and not symcheck_expect_ok(case_dir, a):
             failures.append(f"{name}: REF's outcome is not the case's intended one: {tree_show(a)!r}")
             if quick:
@@ -625,12 +715,18 @@ def compare_trees(tmp, quick, port):
             if quick:
                 return same, total, failures
     # a .sym fixture tree for the CLI (--check with -o is rejected)
+    cli_wanted = wanted is None or any(('cli ' + n) in wanted for n, _ in CLI_CASES)
     cli_dir = os.path.join(tmp, 'cli')
-    os.makedirs(cli_dir, exist_ok=True)
-    open(os.path.join(cli_dir, 'main.obx'), 'w').write('module main\nfn main() { }\n')
+    if cli_wanted:
+        os.makedirs(cli_dir, exist_ok=True)
+        open(os.path.join(cli_dir, 'main.obx'), 'w').write('module main\nfn main() { }\n')
     for name, make in CLI_CASES:
+        if wanted is not None and ('cli ' + name) not in wanted:
+            continue
         total += 1
         try:
+            if stats is not None:
+                stats.add('subprocesses', 2)
             a = subprocess.run(make(REF, cli_dir), capture_output=True, text=True, timeout=60)
             b = subprocess.run(make(port, cli_dir), capture_output=True, text=True, timeout=60)
             ao = (a.returncode, a.stdout, a.stderr)
@@ -643,22 +739,21 @@ def compare_trees(tmp, quick, port):
         else:
             failures.append(f"cli {name}: obo {ao!r}; port {bo!r}")
     for name, fn in SPECIAL_CASES:
-        total += 1
-        rroot = fresh_dir(os.path.join(tmp, 'special-ref-' + name.replace(' ', '-')))
-        proot = fresh_dir(os.path.join(tmp, 'special-port-' + name.replace(' ', '-')))
-        try:
-            a = fn(REF, rroot, False)
-            b = fn(port, proot, quick)
-        except Exception as e:  # noqa: BLE001 - a harness problem is a failure, not a crash
-            failures.append(f"special {name}: {e!r}")
+        if wanted is not None and ('special ' + name) not in wanted:
             continue
+        total += 1
+        a, b = special_pair(name, fn, tmp, quick, port, stats=stats)
         if a == b:
             same += 1
         else:
             failures.append(f"special {name}: obo {a!r}; port {b!r}")
     for name, path in REEMIT_CASES:
+        if wanted is not None and ('reemit ' + name) not in wanted:
+            continue
         total += 1
         try:
+            if stats is not None:
+                stats.add('subprocesses', 2)
             a = subprocess.run([REF, '--reemit-sym', path], capture_output=True, timeout=60)
             b = subprocess.run([port, '--reemit-sym', path], capture_output=True, timeout=60)
             ao = (a.returncode, a.stdout, a.stderr)
@@ -679,6 +774,8 @@ def compare_trees(tmp, quick, port):
             again_path = os.path.join(again_dir, modname + '.sym')
             with open(again_path, 'wb') as fh:
                 fh.write(a.stdout)
+            if stats is not None:
+                stats.add('subprocesses')
             again = subprocess.run([REF, '--reemit-sym', again_path],
                                    capture_output=True, timeout=60)
             if again.returncode != 0 or again.stdout != a.stdout:
@@ -687,37 +784,128 @@ def compare_trees(tmp, quick, port):
                 same += 1
             else:
                 failures.append(f"reemit {name}: obo {ao[0]}; port {bo[0]}")
-    total += 1
-    try:
-        a, b = token_outcome(REF), token_outcome(port)
-    except subprocess.TimeoutExpired:
-        failures.append("modules/tokens: a --tokens run timed out")
-        return same, total, failures
-    if a == b:
-        same += 1
-    else:
-        failures.append(f"modules/tokens: obo {a[0]}; port {b[0]}")
+    if wanted is None or 'modules/tokens' in wanted:
+        total += 1
+        try:
+            a, b = token_outcome(REF, stats=stats), token_outcome(port, stats=stats)
+        except subprocess.TimeoutExpired:
+            failures.append("modules/tokens: a --tokens run timed out")
+            return same, total, failures
+        if a == b:
+            same += 1
+        else:
+            failures.append(f"modules/tokens: obo {a[0]}; port {b[0]}")
     return same, total, failures
 
 
-def compare(tmp, src=SRC, quick=False, workers=None):
+def case_rank(name):
+    """A cheap-first order for the quick (mutant) path: error cases are compile-only,
+    then run programs, then examples, then the compiler itself, and the benchmarks
+    last. The full path keeps the catalogue's order and still runs everything."""
+    if ':' in name and not name.endswith('.obx'):
+        return 0                                   # an error case: one compile, no run
+    if '/bench/' in name:
+        return 4
+    if name.endswith('src/obo.obo') or name.endswith('/obo.obo'):
+        return 3
+    if '/examples/' in name:
+        return 2
+    return 1
+
+
+def ordered_cases(cases, quick):
+    """The cases to run, in a cheap-first order on the quick path only."""
+    if not quick:
+        return cases
+    return sorted(cases, key=lambda nt: case_rank(nt[0]))
+
+
+_KNOWN_CHECKS = None
+
+
+def known_checks():
+    """Every check name a catcher may select: flat cases, tree cases, CLI, special,
+    reemit and the token dump. Used to reject a stale catcher entry instead of
+    silently treating it as a pass. The catalogue is fixed for a run, so it is
+    built once."""
+    global _KNOWN_CHECKS
+    if _KNOWN_CHECKS is None:
+        names = set(n for n, _ in cases_of(SRC))
+        names.update(n for n, _, _ in tree_cases())
+        names.update('cli ' + n for n, _ in CLI_CASES)
+        names.update('special ' + n for n, _ in SPECIAL_CASES)
+        names.update('reemit ' + n for n, _ in REEMIT_CASES)
+        names.add('modules/tokens')
+        _KNOWN_CHECKS = names
+    return _KNOWN_CHECKS
+
+
+def run_catchers(keys, flat_text, run_flat, run_tree, stats=None):
+    """Run the selected checks in order, before the full comparison. Returns
+    (failing key or None, transient or not, unknown keys). A key that is not in
+    the catalogue is unknown: it is reported and ignored, never a pass or a catch
+    on its own. A transient result is left to the full path, which retries it at
+    full limits. So a catcher can only shorten a run when it finds a real
+    difference; otherwise every case still runs."""
+    unknown = []
+    for key in dict.fromkeys(keys):
+        if key in flat_text:
+            a, b = run_flat(flat_text[key])
+            if a != b:
+                if timed_out(b):
+                    if stats is not None:
+                        stats.add('retries')
+                    continue
+                if b[0] == 'crash' and 'out of memory' in str(b).lower():
+                    return key, True, unknown
+                return key, False, unknown
+        elif key in known_checks():
+            failures = run_tree(key)
+            if failures:
+                if _timeout_failure(failures):
+                    if stats is not None:
+                        stats.add('retries')
+                    continue
+                if _oom_failure(failures):
+                    return key, True, unknown
+                return key, False, unknown
+        else:
+            unknown.append(key)
+    return None, False, unknown
+
+
+def compare(tmp, src=SRC, quick=False, workers=None, catchers=None, stats=None,
+            catchers_only=False):
     """Compares the port built from src with REF on every case, in the directory tmp.
     Returns the report's lines, the failures, and the port's live peak compiling itself
     (None if it did not report one). quick, for a mutant: stops at the first failure,
     and allows each case 20 times what REF took, so a mutant that loops is soon caught.
     workers is the number of case comparisons at once (default: one per core); a
     caller that runs several comparisons side by side passes a smaller number so
-    that the total stays about the core count."""
+    that the total stays about the core count.
+
+    catchers, a mutant only, is a list of check names to try before the full
+    comparison (flat case, tree case, CLI, special, reemit or modules/tokens). A
+    catcher that differs ends the comparison; one that passes, or is unknown, falls
+    through to the full comparison. catchers_only runs just that preface and returns,
+    which is how the baseline verifies the catcher paths. stats, when given, receives
+    stage seconds and thread-safe subprocess/case counts (see mutate_stats)."""
+    if stats is None:
+        stats = mutate_stats.Stats()
     PORT = os.path.join(tmp, 'obo_port')
     t0 = time.monotonic()
+    stats.add('subprocesses')
     b = subprocess.run([REF, src, '-o', PORT, '--rt', FORK], capture_output=True, text=True)
+    build = time.monotonic() - t0
+    stats.set('build_seconds', round(build, 3))
     if b.returncode != 0:
         if quick:
+            stats.set('first_failure_stage', 'build')
             return [], ["the port does not compile: " + b.stderr.strip()[:200]], None
         raise SystemExit("the port does not compile: " + b.stderr)
-    build = time.monotonic() - t0
     lines, failures, peak = [], [], None
     try:
+        stats.add('subprocesses')
         p = subprocess.run([PORT, src, '-o', os.path.join(tmp, 'self'), '--rt', FORK], capture_output=True, text=True,
                            env=dict(os.environ, OBO_CHECK='1', OBO_STATS='1'),
                            timeout=min(120, max(10, 20 * build)) if quick else 120,
@@ -727,12 +915,14 @@ def compare(tmp, src=SRC, quick=False, workers=None):
         p, m = subprocess.CompletedProcess([], 'timeout', '', ''), None
     if p.returncode != 0 or not m:
         failures.append(f"memory: no OBO_STATS report (exit {p.returncode}): {p.stderr.strip()[:200]}")
+        stats.set('first_failure_stage', 'memory')
     else:
         peak, total = int(m.group(1)), int(m.group(2))
         lines.append(f"memory: compiling itself, the port peaks at {peak:,} bytes live "
                      f"(budget {PEAK_BUDGET:,}) and allocates {total:,} in total")
         if peak > PEAK_BUDGET:
             failures.append(f"memory: live peak {peak:,} bytes is over the budget of {PEAK_BUDGET:,}")
+            stats.set('first_failure_stage', 'memory')
     if quick and failures:
         return lines, failures, peak
     modules = os.path.realpath(REF) != SEED_REF
@@ -759,25 +949,86 @@ def compare(tmp, src=SRC, quick=False, workers=None):
         if ref is None:
             ref = REF_OUTCOMES[text] = outcome(
                 REF, case, case + '.ref', scratch,
-                module_args=module_args(case + '.refsym', needs_modules))
+                module_args=module_args(case + '.refsym', needs_modules), stats=stats)
         o, tc, tr = ref
         limits = (min(120, max(10, 20 * tc)), min(60, max(5, 20 * tr))) if quick else (120, 60)
         args = module_args(case + '.portsym', needs_modules)
         p = outcome(PORT, case, case + '.port', scratch, *limits, capped_run=quick,
-                    module_args=args)[0]
+                    module_args=args, stats=stats)[0]
         if quick and o != p and timed_out(p):
             # a timeout on a loaded machine is not a mismatch: judge the case again with the full limits
+            stats.add('retries')
             p = outcome(PORT, case, case + '.port', scratch, 120, 60, capped_run=True,
-                        module_args=args)[0]
+                        module_args=args, stats=stats)[0]
         return o, p
+
+    # Catchers: a mutant's known first failing check, run before the full sweep.
+    # The full sweep still runs on a pass (or an unknown name), so this changes
+    # the order, not the verdict.
+    if quick and catchers:
+        flat_text = {name: text for name, text in cases}
+        t = time.monotonic()
+        before = stats.get('subprocesses', 0)
+        stats.set('catcher_cases', len(list(dict.fromkeys(catchers))))
+        key, transient, unknown = run_catchers(
+            catchers, flat_text, both,
+            lambda k: compare_trees(tmp, quick, PORT, only={k}, stats=stats)[2],
+            stats=stats)
+        stats.set('catcher_seconds', round(time.monotonic() - t, 3))
+        stats.set('catcher_subprocesses', stats.get('subprocesses', 0) - before)
+        if unknown:
+            stats.set('unknown_catchers', unknown)
+        if key is not None:
+            stats.set('first_failure_stage', 'catcher')
+            stats.set('first_failure_case', key)
+            stats.set('catcher_transient', transient)
+            return [f"FAIL {key}"], [f"catcher {key} differs from REF"], peak
+        if catchers_only:
+            return lines + [f"catchers: {stats.get('catcher_cases', 0)} passed"], [], peak
+
+    ordered = ordered_cases(cases, quick)
+    unique = list(dict.fromkeys(text for _, text in ordered))
+    name_of = {}
+    for name, text in ordered:
+        name_of.setdefault(text, name)
     results = {}
-    with concurrent.futures.ThreadPoolExecutor(workers or os.cpu_count()) as pool:   # the programs run for seconds
-        futures = {pool.submit(both, text): text for text in dict.fromkeys(text for _, text in cases)}
-        for f in concurrent.futures.as_completed(futures):
-            a, b = results[futures[f]] = f.result()
-            if quick and a != b:
-                pool.shutdown(cancel_futures=True)
+    t = time.monotonic()
+    before = stats.get('subprocesses', 0)
+    width = workers or os.cpu_count() or 1
+    with concurrent.futures.ThreadPoolExecutor(width) as pool:
+        pending = {}
+        it = iter(unique)
+        stop = False
+
+        def fill():
+            # bound the in-flight cases, as run_fork does: with a failure, the
+            # cases not started are cancelled and nothing waits behind them
+            while not stop and len(pending) < width:
+                try:
+                    text = next(it)
+                except StopIteration:
+                    return
+                pending[pool.submit(both, text)] = text
+
+        fill()
+        while pending:
+            done, _ = concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED)
+            for f in done:
+                text = pending.pop(f)
+                a, b = f.result()
+                results[text] = (a, b)
+                if quick and a != b and not stop:
+                    stats.set('first_failure_stage', 'flat')
+                    stats.set('first_failure_case', name_of.get(text, text[:80]))
+                    stop = True
+            if stop:
+                for f in pending:
+                    f.cancel()
                 break
+            fill()
+    stats.set('flat_seconds', round(time.monotonic() - t, 3))
+    stats.set('flat_cases', len(results))
+    stats.set('flat_subprocesses', stats.get('subprocesses', 0) - before)
     same = 0
     for name, text in cases:
         if text not in results:
@@ -788,7 +1039,19 @@ def compare(tmp, src=SRC, quick=False, workers=None):
         else:
             show = lambda o: o[1] if o[0] != 'ok' else f"runs: exit {o[1][0]}, stdout {o[1][1][-80:]!r}, stderr {o[1][2][-80:]!r}"
             failures.append(f"{name}: obo {show(a)!r}; port {show(b)!r}")
-    tree_same, tree_total, tree_failures = compare_trees(tmp, quick, PORT)
+    # A definitive flat failure already fails the mutant: the module trees add
+    # nothing to the verdict and are skipped on the quick path.
+    if quick and failures:
+        return lines + ["FAIL " + f for f in failures[:12]], failures, peak
+    t = time.monotonic()
+    before = stats.get('subprocesses', 0)
+    tree_same, tree_total, tree_failures = compare_trees(tmp, quick, PORT, stats=stats)
+    stats.set('tree_seconds', round(time.monotonic() - t, 3))
+    stats.set('tree_cases', tree_total)
+    stats.set('tree_subprocesses', stats.get('subprocesses', 0) - before)
+    if tree_failures and stats.get('first_failure_stage') is None:
+        stats.set('first_failure_stage', 'trees')
+        stats.set('first_failure_case', tree_failures[0][:120])
     failures += tree_failures
     same += tree_same
     total = len(cases) + tree_total
