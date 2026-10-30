@@ -1710,6 +1710,25 @@ def stale_format3_interface():
     shutil.rmtree(d, ignore_errors=True)
 
 
+def format4_forged_fn_rejected():
+    """Stage A step 1 checkpoint: the format-4 reader has no function-type branch yet, so a
+    rehashed forged signature with `fn(...)` in a parameter is refused as old syntax. Step 2
+    replaces this with the format-5 reader and the malformed-function-type cases."""
+    d, symdir = tree({'lib.obx': 'module lib\npub fn apply(p0: int): int { return p0 }\n',
+                      'main.obx': 'module main\nimport "lib.obx"\nfn main() { }\n'},
+                     prefix='symcase-forged-fn-')
+    try:
+        ok(build(d, symdir, out=os.path.join(d, 'prog')), 'honest format-4 build')
+        libpath = os.path.join(symdir, 'lib.sym')
+        os.unlink(os.path.join(d, 'lib.obx'))
+        mutate(libpath, b'fn apply(p0: int): int\n', b'fn apply(p0: fn(int): int): int\n')
+        q = build(d, symdir, check=True)
+        if q.returncode != 2 or 'expected a type' not in q.stderr:
+            raise Fail(f"format-4 forged function type: exit {q.returncode}: {q.stderr.strip()}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 
 # the imported-member tier cases of module_test (tests/modules/{run,errors}/iface_tier_*): each is also run
 # with its library read from the .sym alone (--check), which rebuilds the members' summaries in the reader
@@ -1833,6 +1852,7 @@ def tests():
         ('sym/iface_owned_check', iface_owned_check),
         ('sym/iface_ref_check', iface_ref_check),
         ('sym/stale_format3_interface', stale_format3_interface),
+        ('sym/format4_forged_fn_rejected', format4_forged_fn_rejected),
         ('sym/iface_tier_check', iface_tier_check),
         ('sym/iface_forged_freesall', iface_forged_freesall),
     ]

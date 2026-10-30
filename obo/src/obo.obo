@@ -936,7 +936,38 @@ fn baseOf(t: ^Type): ^Type {
     return tVoid
 }
 
+// A function type is structural: kind "fn", base is the return type, and fields are the parameters in
+// order. A parameter's field name is "" for an owned parameter and "&" for a read-only one; its offset is
+// its index. No Type field is added for this (lambdas design 5.1; do not use this syntax in the compiler).
+fn newFnType(ret: ^Type): ^Type { return newType("fn", "", ret) }
+
+fn fnAddParam(t: ^Type, p: ^Type, mode: int) {
+    var modeName = ""
+    if mode == 1 { modeName = "&" }
+    append(t.fields, new Field{name: modeName, offset: len(t.fields), typ: p})
+}
+
+fn fnArity(t: ^Type): int { return len(t.fields) }
+fn fnParam(t: ^Type, i: int): ^Type { return t.fields[i].typ }
+fn fnMode(t: ^Type, i: int): int {
+    if t.fields[i].name == "&" { return 1 }
+    return 0
+}
+fn fnRet(t: ^Type): ^Type { return baseOf(t) }
+
 fn tname(t: ^Type): string {
+    if t.kind == "fn" {
+        var s = "fn("
+        for i in 0..fnArity(t) {
+            if i > 0 { s = s + ", " }
+            if fnMode(t, i) == 1 { s = s + "&" }
+            s = s + tname(fnParam(t, i))
+        }
+        s = s + ")"
+        let r = fnRet(t)
+        if r.kind != "void" { s = s + ": " + tname(r) }
+        return s
+    }
     if t.kind == "array" { return "[]" + tname(baseOf(t)) }
     if t.kind == "handle" { return "^" + tname(baseOf(t)) }
     if t.kind == "opt" { return "?" + tname(baseOf(t)) }
@@ -956,12 +987,23 @@ fn isRef(t: ^Type): bool {
 }
 
 fn nonNull(t: ^Type): bool {
-    return t.kind == "record" || t.kind == "closed" || t.kind == "iface" || t.kind == "array" || t.kind == "handle" || t.kind == "result"
+    return t.kind == "record" || t.kind == "closed" || t.kind == "iface" || t.kind == "array" ||
+        t.kind == "handle" || t.kind == "result" || t.kind == "fn"
 }
 
 fn same(a: ^Type, b: ^Type): bool {
     if a == b { return true }
     if a.kind != b.kind { return false }
+    if a.kind == "fn" {
+        // exact structural identity: parameter count, modes, types and return; no variance
+        if !same(fnRet(a), fnRet(b)) { return false }
+        if fnArity(a) != fnArity(b) { return false }
+        for i in 0..fnArity(a) {
+            if fnMode(a, i) != fnMode(b, i) { return false }
+            if !same(fnParam(a, i), fnParam(b, i)) { return false }
+        }
+        return true
+    }
     if a.kind == "array" || a.kind == "opt" || a.kind == "handle" { return same(baseOf(a), baseOf(b)) }
     return a.kind == "int" || a.kind == "byte" || a.kind == "bool" || a.kind == "string" ||
         a.kind == "void" || a.kind == "nil"
@@ -979,6 +1021,85 @@ fn assignable(dst: ^Type, src: ^Type): bool {
         return assignable(baseOf(dst), src)
     }
     return false
+}
+
+// A function type hidden behind a constructor or an alias: an alias resolves to the same ^Type, so a
+// kind == "fn" test at the constructor is not enough (lambdas design 5.2). A record field cannot be a
+// function value (fieldList refuses it), so this does not recurse into record fields.
+fn containsFn(t: ^Type): bool {
+    if t.kind == "fn" { return true }
+    if t.kind == "array" || t.kind == "opt" || t.kind == "handle" || t.kind == "result" {
+        return containsFn(baseOf(t))
+    }
+    return false
+}
+
+// The visited records/closed types of one containsIface query. Each top-level query starts empty; only the
+// recursive helper appends, so a recursive record terminates and a stale list can never hide a hit.
+var ifaceSeen = new []^Type(0)
+
+fn containsIfaceIn(t: ^Type): bool
+
+fn containsIface(t: ^Type): bool {
+    truncate(ifaceSeen, 0)
+    return containsIfaceIn(t)
+}
+
+// An interface in a function type's parameters or return, through a constructor, or through a record or
+// closed type's fields (interfaces may be fields under interfaces v3 section 10.1). An incomplete forward
+// shell is treated as containing one: its fields are not known yet.
+fn containsIfaceIn(t: ^Type): bool {
+    if t.kind == "iface" { return true }
+    if t.kind == "array" || t.kind == "opt" || t.kind == "handle" || t.kind == "result" {
+        return containsIfaceIn(baseOf(t))
+    }
+    if t.kind == "fn" {
+        for i in 0..fnArity(t) {
+            if containsIfaceIn(fnParam(t, i)) { return true }
+        }
+        return containsIfaceIn(fnRet(t))
+    }
+    if t.kind == "record" || t.kind == "closed" {
+        if t.incomplete { return true }
+        for i in 0..len(ifaceSeen) {
+            if ifaceSeen[i] == t { return false }
+        }
+        append(ifaceSeen, t)
+        if t.kind == "record" {
+            for i in 0..len(t.fields) {
+                if containsIfaceIn(t.fields[i].typ) { return true }
+            }
+        } else {
+            for v in 0..len(t.variants) {
+                for i in 0..len(t.variants[v].fields) {
+                    if containsIfaceIn(t.variants[v].fields[i].typ) { return true }
+                }
+            }
+        }
+    }
+    return false
+}
+
+fn rejectFn(t: ^Type, msg: string) { if containsFn(t) { errorAt(msg, 0, 0) } }
+fn rejectIface(t: ^Type, msg: string) { if containsIface(t) { errorAt(msg, 0, 0) } }
+
+// The function-type formation site: a direct interface is the plain message; an interface held in a record
+// or closed type, or an incomplete forward shell, names the type that carries it (interfaces v3 10.1).
+fn rejectIfaceFn(t: ^Type) {
+    let k = t.kind
+    if k == "iface" { errorAt("a function value cannot take or return an interface value", 0, 0) }
+    if k == "array" || k == "opt" || k == "handle" || k == "result" {
+        rejectIfaceFn(baseOf(t))
+        return
+    }
+    if k == "record" || k == "closed" {
+        if t.incomplete {
+            errorAt("a function value cannot take or return '" + tname(t) + "': it is not yet defined; define it before this function type", 0, 0)
+        }
+        if containsIface(t) {
+            errorAt("a function value cannot take or return '" + tname(t) + "': it holds an interface value", 0, 0)
+        }
+    }
 }
 
 // the index of a record's field, or -1 (fields are reached through the type's handle)
@@ -4064,16 +4185,44 @@ fn widen(s: ^Sym) {
 // =========================================================== type syntax
 
 fn parseType(): ^Type {
+    if sym == T_FN {
+        // fn (ParamTypes) [: Ret]: owned or read-only & parameters, no mut, structural
+        next()
+        if sym == T_LBRACK { error("a function type cannot have a capture list") }
+        expect(T_LPAREN, "")
+        let t = newFnType(tVoid)
+        while sym != T_RPAREN {
+            var mode = 0
+            if sym == T_AMP { next(); mode = 1 }
+            let p = parseType()
+            if mode == 1 && !isOwned(p) { error("only records, closed types and arrays can be borrowed, not " + tname(p)) }
+            rejectIfaceFn(p)
+            fnAddParam(t, p, mode)
+            if sym != T_RPAREN { expect(T_COMMA, "',' or ')'") }
+        }
+        expect(T_RPAREN, "")
+        if sym == T_COLON {
+            next()
+            let r = parseType()
+            rejectFn(r, "a function type cannot return a function value")
+            rejectIfaceFn(r)
+            t.base = r
+        }
+        return t
+    }
     if sym == T_QUESTION {
         next()
         let b = parseType()
+        rejectFn(b, "an optional cannot hold a function value; function values are parameters and locals only")
         if !nonNull(b) { error("only reference types can be optional, not " + tname(b)) }
         return derived("opt", b)
     }
     if sym == T_LBRACK {
         next()
         expect(T_RBRACK, "")
-        return derived("array", parseType())
+        let b = parseType()
+        rejectFn(b, "an array cannot hold function values")
+        return derived("array", b)
     }
     if sym == T_CARET {
         next()
@@ -4109,6 +4258,7 @@ fn finishTypeName(name: string, uline: int, ucol: int): ^Type {
         next()
         let b = parseType()
         expect(T_RBRACK, "")
+        rejectFn(b, "Result cannot hold a function value")
         return derived("result", b)
     }
     return t
@@ -4136,6 +4286,7 @@ fn fieldList(rec: ^Type) {
         }
         expect(T_COLON, "")
         let t = parseType()
+        rejectFn(t, "a record field cannot be a function value; function values are parameters and locals only")
         for n in names {
             if fieldIndex(rec, n) >= 0 { error("duplicate field '" + n + "'") }
             append(rec.fields, new Field{name: n, offset: offset, typ: t})
@@ -4252,12 +4403,17 @@ fn typeDecl(isPub: bool) {
                 return
             }
             if fwd != nil {
+                let ws = findSym(curModule.globals, w)
+                if ws != nil && ws.kind == "type" && containsFn(symType(ws)) {
+                    errorAt("a function type cannot be forward-declared: '" + name + "' is already declared as a forward type", wline, wcol)
+                }
                 errorAt("'" + name + "' was declared as a forward type: define it as a ref record or closed type", wline, wcol)
             }
             typeAlias(name, line, isPub, finishTypeName(w, wline, wcol))
             return
         }
         if fwd != nil {
+            if sym == T_FN { error("a function type cannot be forward-declared: '" + name + "' is already declared as a forward type") }
             error("'" + name + "' was declared as a forward type: define it as a ref record or closed type")
         }
         typeAlias(name, line, isPub, parseType())   // an alias key: it maps to this object; it never names it (B7)
@@ -5106,6 +5262,7 @@ fn ifaceConvert(dst: ^Type, mut x: &Item, what: string) {
 fn checkAssign(dst: ^Type, mut x: &Item, what: string) {
     if x.typ == tVoid { error(what + ": expression has no value") }
     if dst.kind == "byte" && x.mode == "const" && x.typ.kind == "int" && x.val >= 0 && x.val <= 255 { return }
+    if dst.kind == "fn" && x.typ.kind == "nil" { error("a function value can never be nil") }
     if assignable(dst, x.typ) { return }
     if isIfaceVal(dst) {
         ifaceConvert(dst, x, what)
@@ -5548,6 +5705,7 @@ fn builtin(name: string): Item {
         if v.typ == tVoid { error("ok needs a value, not a void expression") }
         if v.typ.kind == "nil" { error("ok(nil) has no type: give the payload a name first, as in 'let n: ?Node = nil; ok(n)'") }
         if v.typ.kind == "errval" { error("ok cannot hold an error value: type it as a Result first, as in 'let inner: Result[int] = err(...); ok(inner)'") }
+        rejectFn(v.typ, "Result cannot hold a function value")
         if v.borrowed { error("ok takes ownership of its value: it cannot hold a borrowed reference") }
         consume(v)
         let rt = derived("result", v.typ)
@@ -6872,6 +7030,11 @@ fn relation(): Item {
     noTemp(y)
     let kx = x.typ.kind
     let ky = y.typ.kind
+    // a function value has no identity to compare; the nil side is checked first (Section 9.3)
+    if kx == "fn" || ky == "fn" {
+        if kx == "nil" || ky == "nil" { error("a function value can never be nil") }
+        error("function values cannot be compared")
+    }
     // interface identity is not meaningful (v3 6.3); a test against nil is allowed (it narrows a ?I)
     if (isIfaceVal(x.typ) || isIfaceVal(y.typ)) && kx != "nil" && ky != "nil" {
         error("interface values cannot be compared; test an optional with '== nil' or '!= nil'")
@@ -7038,6 +7201,7 @@ fn varDecl(kind: string, isGlobal: bool, isPub: bool) {
         let pt = parseRefType()
         t = pt
         declRef = refMode
+        if isGlobal { rejectFn(pt, "a function value cannot be a global; it is a parameter or a local") }
         if declRef > 0 && isGlobal { error("references cannot be global") }
         if declRef > 0 { refuseOptionalIfaceLocal(pt) }
     }
@@ -8965,6 +9129,7 @@ fn parseParams(mut params: &[]Param, member: bool) {
         }
         expect(T_COLON, "")
         let t = parseRefType()
+        if member { rejectFn(t, "an interface method cannot use a function value; function types are not supported in interfaces") }
         var mode = refMode
         if pmut {
             if mode == 0 { error("mut needs a reference parameter: write mut name: &T") }
@@ -9054,6 +9219,7 @@ fn ifaceDecl(name: string, line: int, isPub: bool) {
             next()
             ret = parseType()
         }
+        rejectFn(ret, "an interface method cannot use a function value; function types are not supported in interfaces")
         if sym != T_RBRACE { expect(T_SEMI, "';' or newline") }
         skipSemis()
         let m = newSym("ifn", mname, nil)
@@ -9132,6 +9298,7 @@ fn fnDecl(isPub: bool) {
         next()
         ret = parseType()
     }
+    rejectFn(ret, "a function cannot return a function value; function values are parameters and locals only")
     var f = newSym("fn", name, nil)
     if isMethod {
         memberCollision(recvType, name)
@@ -9364,6 +9531,7 @@ fn constDecl(isPub: bool) {
     expect(T_ASSIGN, "")
     let x = expression()
     if x.mode != "const" { error("constant value must be known at compile time") }
+    rejectFn(x.typ, "a constant cannot hold a function value")
     if x.typ.kind == "nil" { error("a constant cannot be nil; use a typed optional var or let") }
     let s = newSym("const", name, x.typ)
     s.value = x.val
@@ -9380,6 +9548,11 @@ fn closureCheck(t: ^Type, declName: string, variant: string, line: int) {
     let k = t.kind
     if k == "array" || k == "opt" || k == "handle" || k == "result" {
         closureCheck(baseOf(t), declName, variant, line)
+        return
+    }
+    if k == "fn" {
+        for i in 0..fnArity(t) { closureCheck(fnParam(t, i), declName, variant, line) }
+        closureCheck(fnRet(t), declName, variant, line)
         return
     }
     if k != "record" && k != "closed" && k != "iface" { return }
