@@ -1,93 +1,105 @@
 # obo
 
-A small Oberon-derived language and its compiler, built to answer one question:
-**can a language keep Oberon's simplicity and manage memory without a garbage
-collector, and without Rust's complications?**
+obo is a small Oberon-derived language and compiler for Linux x86-64, built to
+answer one question: **can a language keep Oberon's simplicity and manage memory
+without a garbage collector, and without Rust's complications?**
 
-Oberon showed how much a small language and a single-pass compiler can do, but it
-relies on a collector. Rust removed the collector, at the price of lifetimes,
-exclusive borrows and a borrow checker that dictates program structure. We think
-there is a middle way, and this repository is the experiment that tests it: the
-group borrowing model (designed by Nick Smith, explained by Evan Ovadia in
-[Valen's Memory Safety](https://verdagon.dev/blog/valen-group-borrowing)), built
-into a Wirth-style language, with a compiler that has no AST and no intermediate
-representation and writes x86-64 machine code straight into an ELF executable.
+It uses single ownership, borrowed references and run-time-checked handles — the
+group borrowing model designed by Nick Smith and explained by Evan Ovadia in
+[Valen's Memory Safety](https://verdagon.dev/blog/valen-group-borrowing) — with
+no collector, no lifetime annotations and no `unsafe`. The compiler is
+single-pass: no AST, no intermediate representation, and x86-64 machine code
+written straight into a static ELF executable.
 
-## Where things stand
+**History:** obo grew out of **obx**, the original garbage-collected dialect and
+compiler. obx is kept in `obx/` as the historical reference; the current compiler
+is `obo/src/obo.obo`. See [HISTORY.md](HISTORY.md) for the obx language,
+architecture and tests, the ownership fork, milestone chronology and earlier
+measurements.
 
-**obo** is the language and compiler this repository is about: single ownership,
-borrowed references and run-time-checked handles, with no garbage collector. On the
-benchmarks it uses 2 to 6 times less memory than even an aggressively tuned
-collector, at similar speed, with small changes to source code. It now also has
-its command-line tools, `cat`, `wc` and `sort`, written in obo in
-`obo/cmd/` and built by `make tools`, plus the working `eza` E2 core
-(`make eza`); separate differential gates compare them with GNU coreutils
-(`obo/tests/tools.py`) and the pinned eza 0.23.3 reference
-(`obo/tests/eza.py`), with recorded goldens as the fallback. Modules are now implemented in both stages:
-source imports and exports (Stage 1: `module`, `import "Name.obx" [as alias]`,
-`pub`, `alias::name`, `--deps`, `-I`), and text `.sym` symbol files with
-`--check`, `--sym-dir`, `--emit-sym`, `--version` and staleness/version checks
-(Stage 2). A full build still compiles every module body from source; `--check`
-checks a module against its dependencies' symbol files, including dependencies
-without sources. The tools are now module roots: each source in `obo/cmd/`
-imports the `../lib/...` modules it uses (`cat` and `wc` take `io`, `fmt` and
-`errors`; `sort` takes `errors` only), and `obo/tools/build_tools.py` compiles it directly
-with the ordinary compiler; nothing is concatenated. Each build gets a
-symbol directory under its output (`build/tools/sym` for `make tools`), created
-by the builder. Concurrent builds must use distinct output directories; a shared
-output has one symbol directory and one probe name.
-The tools live in `cmd/`, and their libraries are source modules under `lib/`:
-`strings`, `paths`, `sort`, `time`, `cli`, `io`, `fmt`, `errors`, `fs` and
-`env`. `cat`, `wc` and `sort` import only what they use (`cat` and `wc` take
-`io`/`fmt`/`errors`; `sort` takes `errors` only); `eza` imports all ten. `fmt`
-owns the digit and padding
-helpers, and `errors` owns the errno text and the eza-shaped exit constants. The
-exact subset, message forms and caveats are in `obo/cmd/README.md`.
+## Current state (30 October 2026)
 
-**obx** was the original garbage-collected dialect and the compiler obo grew from.
-It is kept as the historical reference; the "History: mainline obx" section below
-describes it, not the current direction.
+The promoted release is **obo 0.8, symbol format 4, ABI 1**. It is merged and
+self-hosting: `obo/seed/obo` is 507,905 bytes (sha256 `673ae7ba…`), and `make`
+builds the same 507,905-byte image from the current source; `seed/obo` == `obo` ==
+stage 2 == stage 3, checked with `cmp`.
 
-The decisive test was the compiler itself. obo's compiler has been rewritten in
-the obo dialect (`obo/src/obo.obo`), and it compiled every test program
-and error case byte-for-byte as the first obo compiler did, and compiles itself to a
-fixed point. Its stage test now compares behaviour (same errors, same output when run),
-so code generation can improve. Compiling
-its own source it peaked at 1.5 MB resident at the earlier stage (live peak now
-1,945,680 bytes on a 454,332-byte source, and the 507,905-byte 0.8 compiler
-rebuilds itself exactly; see Current status), against 2.5 MB for the
-same logic on a tuned
-collector and 1.9 MB on an
-aggressive one. The larger source and its extra checks account for the wall time.
+- **Language.** Single ownership, moves, borrowed `&T` references, checked `^T`
+  handles, effect summaries, `Result[T]`/`try`, incremental I/O, modules and
+  text `.sym` symbol files, methods, and first-class interfaces (owning `I`/`?I`,
+  borrowed `&I`/`&?I`, dynamic dispatch and effect tiers). The full reference is
+  [obo/LANGUAGE.md](obo/LANGUAGE.md).
+- **Compiler.** 12,056 lines / 454,332 bytes of obo source. The 0.8 source adds
+  first-class interfaces and stays interface-free itself, so the pre-promotion
+  0.6 seed can build it. The 0.6 seed (454,657 bytes, sha256 `90fcad7e…`) and the
+  0.5 compiler (425,985 bytes) are historical.
+- **Tools.** `cat`, `wc`, `sort` and the `eza` E2 core are written in obo and
+  built by `make tools` / `make eza`. Differential gates compare them with GNU
+  coreutils 9.4 (`obo/tests/tools.py`) and pinned eza 0.23.3
+  (`obo/tests/eza.py`), with recorded goldens as fallback.
+- **Modules.** Both stages are implemented: source imports and exports
+  (`module`, `import "Name.obx" [as alias]`, `pub`, `alias::name`, `--deps`,
+  `-I`) and `.sym` files with `--check`, `--sym-dir`, `--emit-sym`, `--version`
+  and staleness/version checks. A full build still compiles every module body
+  from source; `--check` checks against dependencies' symbol files, including
+  dependencies without sources.
+- **Library and tools.** The ten modules under `obo/lib/` are `strings`, `paths`,
+  `sort`, `time`, `cli`, `io`, `fmt`, `errors`, `fs` and `env`. Each tool is a
+  module root and imports only what it uses; `obo/tools/build_tools.py` compiles
+  it directly with the ordinary compiler, with nothing concatenated. The exact
+  subsets and caveats are in [obo/cmd/README.md](obo/cmd/README.md).
 
-**obo is the language.** obx remains the historical reference it grew from, as the
-Python compiler before it did.
+| Current metric | Value |
+|---|---:|
+| Compiler source | 12,056 lines, 454,332 bytes |
+| Compiler and seed (`--version`) | 507,905 bytes, sha256 `673ae7ba…`, `obo 0.8 sym-format 4 abi 1` |
+| Fixed point | `seed/obo` == `obo` == stage 2 == stage 3, 507,905 bytes |
+| Self-compile wall time | 0.14 s (5 runs, median on this host; host-dependent) |
+| Self-compile live peak | 1,945,680 bytes; port comparison 1,945,760 |
+| Total allocated | 44,586,880 bytes (port comparison 44,588,160) |
+| Maximum resident set | 3,696 KB (3 runs on this host) |
+| Live-memory budget | 2,000,000 bytes (54,320 spare; port 54,240) |
+| obo suite | 1,408 tests; 103 `module_test` checks; `sym_test.py` 38/38; `sym_fuzz.py` 200/200; `port_test` 556/556 with 9 encoder groups; `port_compare` 1,420/1,420; 56 doc examples; 26/26 import checks; 16/16 stdlib roots |
+| Tools differential gate | 280 checks vs GNU coreutils 9.4; 2 memory cases |
+| Tool binaries | cat 40,961; wc 45,057; sort 69,633 bytes (static, runtime included) |
+| eza E2 differential gate | 546/546 non-memory cases (462 exact reference goldens, 72 live including 22 pty, 12 own) + 5/5 memory cases |
+| eza E2 binary | 212,993 bytes (sha256 `53133d23…`; static, runtime included; reference eza 0.23.3 is 2,294,768) |
+| eza 10k-entry live peak | worst 2,190,160 bytes; `EZA_PEAK_MAX` 2,752,512 (a distinct eza cap, not the compiler budget) |
+| eza 10k-entry max RSS | 2,560 KiB in the recorded run; reference about 24.6 MB long / 12-14 MB other views |
+| Minimal static executable | 28,673 bytes (runtime included) |
+
+The compiler budget is 2,000,000 bytes live and 54,320 bytes remain spare, so no
+slot was cut and the budget was not raised. Interface work moved the peak from
+the 0.6 tree's 1,646,816 to 1,945,680 bytes. The live peak varies by a few
+hundred bytes with the source path and total allocation by about 2 KB; the port
+comparison measures 1,945,760 live.
 
 ## Performance
 
 These are one host's measurements, not portable constants: an AMD Ryzen 7
-8745HS under WSL2, CPython 3.12.3, GNU coreutils 9.4 and obo 0.5. They are the
-historical 0.5 / sym-format 1 run: 0.6 adds methods at compile time only, and
-the 0.6-built benchmark programs and tools are byte-identical to the 0.5-built
-ones, so the runtime rows still describe 0.6 (the compiler row below is the
-promoted 0.8 compiler). The benchmark
-uses warm page cache, one pinned core, medians of repeated runs, timed output
-to `/dev/null`, `LC_ALL=C` and `TZ=UTC`; the command is
-`python3 obo/bench/cli/run.py` (add `--eza PATH`, or have a matching eza on
-`PATH`, for the optional pinned-eza row). Full tables, binary sizes, memory
-figures, methodology and caveats are in [PERFORMANCE.md](PERFORMANCE.md); how
-to run and read the suite is in [obo/bench/cli/README.md](obo/bench/cli/README.md).
+8745HS under WSL2, CPython 3.12.3, GNU coreutils 9.4, pinned eza 0.23.3 and
+**obo 0.8 sym-format 4 abi 1**, main `9290396`. The table is the second of two
+default runs on 30 October 2026; the first run agreed within normal variance
+except for the eza row, which was the outlier (55.9 ms obo / 66.9 ms pinned;
+the second run is shown). The benchmark uses warm page cache, one pinned core,
+medians of repeated runs, timed output to `/dev/null`, `LC_ALL=C` and `TZ=UTC`;
+the command is `python3 obo/bench/cli/run.py` (add `--eza PATH`, or have a
+matching eza on `PATH`, for the pinned-eza row). Full tables, binary sizes,
+memory figures, methodology and caveats are in [PERFORMANCE.md](PERFORMANCE.md);
+how to run and read the suite is in
+[obo/bench/cli/README.md](obo/bench/cli/README.md). The earlier 0.5 / 0.6
+sample is historical and lives in [HISTORY.md](HISTORY.md).
 
 | Workload | obo | Comparison |
 |---|---:|---:|
-| Process startup | 0.20 ms | Python 11.0 ms (54.6x slower) |
-| `fib(32)` recursive | 10.0 ms | Python 206.4 ms (20.6x slower) |
-| Sum below 100,000,000, explicit loop | 21.8 ms | Python 7,343 ms (337x slower) |
-| Sieve of Eratosthenes to 10,000,000 | 127.4 ms | Python 2,474 ms (19.4x slower) |
-| `wc -lwc`, 110 MB | 124.8 ms | Python 454.9 ms (3.65x slower); GNU 972.0 ms (7.79x slower) |
-| `sort`, 1,000,000 lines | 158.7 ms | Python 545.3 ms (3.44x slower); GNU 233.6 ms (1.47x slower) |
-| `sort -n`, 1,000,000 lines | 197.3 ms | GNU 398.7 ms (2.02x slower); Python 477.9 ms (2.42x slower) |
-| `eza`, 10,000 names | 27.8 ms | pinned eza 57.0 ms (2.05x slower); Python 15.9 ms and GNU `ls` 6.49 ms are faster |
+| Process startup | 0.24 ms | Python 12.8 ms (53.7x slower) |
+| `fib(32)` recursive | 10.6 ms | Python 216.9 ms (20.5x slower) |
+| Sum below 100,000,000, explicit loop | 23.4 ms | Python 7,511 ms (321.5x slower) |
+| Sieve of Eratosthenes to 10,000,000 | 135.2 ms | Python 2,392 ms (17.7x slower) |
+| `wc -lwc`, 110 MB | 131.7 ms | Python 474.5 ms (3.60x slower); GNU 1,038 ms (7.88x slower) |
+| `sort`, 1,000,000 lines | 162.9 ms | Python 602.0 ms (3.70x slower); GNU 256.5 ms (1.57x slower) |
+| `sort -n`, 1,000,000 lines | 255.1 ms | GNU 434.7 ms (1.70x slower); Python 516.4 ms (2.02x slower) |
+| `eza`, 10,000 names | 30.4 ms | pinned eza 59.2 ms (1.94x slower); Python 16.3 ms and GNU `ls` 6.55 ms are faster |
 
 The compiler is a 507,905-byte static binary (the promoted 0.8 seed); the tools are cat 40,961, wc
 45,057 and sort 69,633 bytes; eza is 212,993 bytes against 2,294,768 for the
@@ -97,143 +109,24 @@ the runtime included. The honest shape of these numbers is in
 `wc -l` is at Python parity and behind GNU, eza is slower than Python and `ls`
 on names (its case is size and memory), and the sort rows are fixture-specific.
 
-## Current status (30 October 2026)
+## Roadmap
 
-The ownership compiler is merged and self-hosting. The promoted seed is the
-0.8 compiler: `obo/seed/obo` is 507,905 bytes (sha256 `673ae7ba…`, `--version`
-`obo 0.8 sym-format 4 abi 1`), and `make` builds the same 507,905-byte image
-from the current source: `seed/obo` == `obo` == stage 2 == stage 3, checked
-with `cmp`. The 0.8 source adds first-class interfaces; the compiler's own
-source remains interface-free, which is why the pre-promotion 0.6 seed could
-build it. The 0.6 seed (454,657 bytes, sha256 `90fcad7e…`) is historical.
-`Result[T]`/`try` and incremental I/O are done (merged and seeded); modules
-are done in both stages (source imports and `.sym`/`--check`); the
-command-line tools (`cat`, `wc`, `sort`) and their GNU differential gate are
-done and merged, with `wc` scanning only the requested columns and `sort` using
-a stable radix sort plus a numeric radix path for `-n`. P3 added the runtime
-metadata builtins (`readDirFd`, `statPath`, `lstatPath`, `readLinkPath`),
-`lib/fs.obx` and `OBO_VERSION` 0.3, and its seed was promoted. P4 added the
-`eza` E0 lines/restricted-long core with no compiler change. P5a added the
-environment builtins (`isatty`, `getenv`), `lib/env.obx`, `io::isTty` and
-`OBO_VERSION` 0.4, and its seed was promoted. P6a added the terminal-size
-builtin `terminalWidth`, `io::termWidth` and `OBO_VERSION` 0.5; its 0.5
-compiler recomputed itself to the same 425,985-byte binary (`obo` == stage 2 ==
-stage 3, checked with `cmp`) and its seed was promoted (historical: sha256
-`05542e89…`). P7 (methods) added
-receiver syntax `fn (r: T|&T|mut &T) name(...)`, `place.name(args)` calls,
-static dispatch, receiver ownership and module/symbol-file support, with
-`OBO_VERSION` 0.6 and symbol format 2 (ABI stays 1); it is merged and its seed
-is promoted (`67799b1`). P5b added the eza E1 work: the default colour palette with
-`--color`/`--colour`, `NO_COLOR` and the documented `LS_COLORS`/`EZA_COLORS` subset; `-T`/`--tree` and `-L`; and
-`--no-quotes`. P6b added the eza E2 work: grid and width sources, UTF-8 widths
-and code-point order, and lossy non-UTF-8 display. The eza differential gate now
-measures 546/546 non-memory cases plus 5 memory cases against the pinned eza
-0.23.3. P8 (interfaces) added owning `I`/`?I`, borrowed `&I`/`&?I`, dynamic
-dispatch and effect tiers, with `OBO_VERSION` 0.8 and symbol format 4 (ABI
-stays 1); it is merged and its seed is promoted. The 0.8 compiler has 1,408
-`run_fork` tests, 1,420/1,420 Stage B cases and 556/556 port-token cases.
+The next language work is **lambdas**: Stage A at 0.9 and Stage B at 0.10, with
+symbol format 5; `^I` follows Stage B. The design is in
+[obo/design/lambdas-design.md](obo/design/lambdas-design.md).
 
-| Metric | Value |
-|---|---:|
-| Compiler source | 12,056 lines, 454,332 bytes |
-| Compiler built by the seed (`obo`, `--version` 0.8) | 507,905 bytes (sha256 `673ae7ba…`) |
-| Fixed point | `seed/obo` == `obo` == stage 2 == stage 3, 507,905 bytes (checked with `cmp`) |
-| Promoted seed (`--version` 0.8) | 507,905 bytes (sha256 `673ae7ba…`) |
-| Self-compile wall time | 0.14 s (5 runs, median on this host; host-dependent) |
-| Self-compile live peak | 1,945,680 bytes |
-| Total allocated | 44,586,880 bytes |
-| Maximum resident set | 3,696 KB (3 runs on this host) |
-| Live-memory budget | 2,000,000 bytes (54,320 spare) |
-| obo suite | 1,408 tests (`run_fork.py`); 103 `module_test` checks; `sym_test.py` 38/38; `sym_fuzz.py` 200/200; `port_test` 556/556 with 9 encoder groups; `port_compare` 1,420/1,420; 56 doc examples; 26/26 import checks; 16/16 stdlib roots |
-| Tools differential gate | 280 checks vs GNU coreutils 9.4; 2 memory cases (module roots) |
-| Tool binaries | cat 40,961; wc 45,057; sort 69,633 bytes (static, runtime included) |
-| eza E2 differential gate | 546/546 non-memory cases (462 exact reference goldens, 72 live including 22 pty, 12 own) + 5 memory cases |
-| eza E2 binary | 212,993 bytes (sha256 `53133d23…`; static, runtime included; reference eza 0.23.3 is 2,294,768) |
-| eza 10k-entry live peak | 2,190,032 bytes restricted long / 2,189,408 names / 2,190,160 tree / 2,189,632 colour / 2,189,808 grid; `EZA_PEAK_MAX` 2,752,512 (unchanged) |
-| eza 10k-entry max RSS | 2,560 KiB in the recorded run (reruns varied 2,304-2,560 KiB across views); pinned reference about 24.6 MB long / 12-14 MB other views across runs (measurement only) |
-| Minimal static executable | 28,673 bytes (runtime included) |
-
-Live peak varies by a few hundred bytes with the source path and total
-allocation by about 2 KB. The table records the main-tree figures (1,945,680
-live and 44,586,880 allocated); the port comparison measures 1,945,760 live.
-Both are far under the 2,000,000-byte budget (54,320 spare). The interfaces v3
-source (0.8 / format 4) is 12,056 lines / 454,332 bytes. P3's four
-builtin branches raised the 0.6 peak by 6,240 bytes from 1,636,176, well inside the cut order of design section 6.8; P5a's
-two builtin branches and the longer compiler source raised it by 3,008 more,
-P6a's terminal-size branch brought the 0.6 figure to 1,646,816, and P7's
-methods brought it to 1,728,768 (the figure depends on the compiler source
-path; the lib modules are not compiled into the compiler). Interfaces brought
-it to 1,945,680, still 54,320 under the budget, so no slot was cut and the
-budget was not raised. The
-tools (P2b), eza and the `wc`/`sort` performance work did not change the
-compiler, runtime or seed; their runtime is included in the tool and eza
-binary sizes above. P4's eza gate was re-measured under
-the merged 0.4 compiler and is unchanged: 272/272, `--memory` 2/2, binary
-126,977 bytes, 10,000-entry live peaks 2,185,008/2,184,384 bytes and max RSS
-2,432 KiB; the reference goldens are unchanged. P5b re-measured the E1 gate
-on the merged 0.5 tree (396/396, `--memory` 4/4), the binary (172,033 bytes,
-sha256 `6f0e8472…`), the four 10,000-entry peaks (2,189,984 / 2,189,360 /
-2,190,112 / 2,189,584 bytes) and max RSS (2,560 KiB each) without raising the
-memory cap. P6b (after merging P5b's review fixes and main `cc6c420`) measures
-the E2 gate at 546/546 non-memory and `--memory` 5/5, binary 212,993 bytes
-(sha256 `53133d23…`), the five peaks 2,190,032 / 2,189,408 / 2,190,160 /
-2,189,632 / 2,189,808 bytes and 2,560 KiB max RSS each, with the cap
-unchanged. Main's wc-fast merge makes `wc` 45,057
-bytes and the tools gate 280/280; the radix rewrite leaves `sort` at 69,633
-bytes.
-Whole modules are compiled into each tool, so the figures track the imported
-module set: the pre-P1 tree (`265564c`) measured cat 36,865 / wc 40,961 / sort
-45,057, the P1+P2a base (`ec244e0`) measured 49,153 / 49,153 / 53,249, and
-the merged tree measures 40,961 / 45,057 / 69,633. P2b's net effect on that
-base is cat -8,192, wc +4,096, sort 0, with byte-identical observable output;
-wc-fast and the sort rewrite account for the later changes.
-The old 493,280-byte compiler and seed, tool binaries
-108,256/108,256/112,352, and the earlier 90,848-byte minimal figure are
-historical. The minimal executable measured in this tree before the fix was
-95,968 bytes (the difference is the minimal source and runtime revision, not
-the compiler); the fix removes the 67,295-byte zero run from every produced
-executable (the tool `cat` loses 4,096 more because its code crossed a page
-boundary).
-
-For historical comparison, obx's collector-based compiler is 3,222 lines and
-172,768 bytes; it compiles its own 88,731-byte source in about 0.01 s and peaks at
-8,832 KB resident. obo's source is 3.3× larger and carries more checks, so wall time
-is not like for like; the memory result is the point: about 1.24 MB live against
-8.8 MB resident.
-
-The earlier 12.1 MB allocation and 30 ms figures in "Direction" describe the smaller
-pre-Result, pre-I/O compiler. The source has grown from 4,552 lines at that stage to
-11,027; total allocation has grown with it, while the live peak stays within the 2 MB
-budget (the Stage 1 module context raised it from 1,244,480 bytes at the Phase 3
-merge to 1,364,240; Stage 2's symbol-file writer and reader raised it to 1,634,720,
-an increase of 270,480 bytes; the size fixes measure 1,636,176, P3's metadata
-builtins 1,642,416, P5a's environment builtins 1,645,424, P6a's
-terminal-size builtin 1,646,816, and P7's methods 1,728,768, still 271,232
-bytes under the budget).
-
-### Toward command-line tools
-
-The target is a small, GC-free language for real command-line tools: first the
-coreutils-shaped `cat`, `wc` and `sort`; then `eza` (the maintained exa fork), `fd`,
-`hexyl`, `tokei`, and `jq` once the float decision is made.
-
-| Phase | Status |
+| Work | State |
 |---|---|
-| 0. Ownership compiler, self-hosting fixed point | done |
-| 1. `Result[T]`, `ok`/`err`, `try`, consuming `match` | done |
-| 2. Incremental I/O: `openFile`/`readFd`/`writeFd`/`closeFile`, standard fds, `Reader`/`Writer` | done |
-| 3. `cat`, `wc`, `sort` and the GNU differential gate | done |
-| 4. Multiple modules | done: Stage 1 source imports, Stage 2 `.sym`/`--check`; the tools and their libraries are module roots |
-| 5. Stdlib modules and the `eza` core | done: the ten `lib/` modules (P3's `fs`, P5a's `env`), the `eza` core E0/E1/E2 (lines/long, colour/tree, grid/UTF-8/lossy names) and the `wc`/`sort` performance work, with their differential gates |
-| 6. Methods | done: `fn (r: T\|&T\|mut &T) name(...)`, `place.name(args)`, static dispatch, receiver ownership, module/`.sym` support (0.6) |
-| 6a. Interfaces | done: owning `I`/`?I`, borrowed `&I`/`&?I`, dispatch, effect tiers, globals; compiler 0.8, symbol format 4 (seed promoted) |
-| 6b. Lambdas | planned: Stage A 0.9, Stage B 0.10, symbol format 5; `^I` follows Stage B |
-| 7. Peephole/optimizer audit | evidence-gated |
-| 8. More tools: `fd`, `hexyl`, `tokei`, `jq` | later |
+| Lambdas | next: Stage A 0.9, Stage B 0.10, symbol format 5; `^I` follows Stage B |
+| Peephole/optimizer audit | evidence-gated |
+| More tools: `fd`, `hexyl`, `tokei`, `jq` | later |
+| Floats, concurrency, networking, TUI | deliberately later; `jq` and `hyperfine` would need the float decision first |
 
-Floats, concurrency, networking and TUI work are deliberately later; `jq` and
-`hyperfine` are the first things that would need a float decision. Generic modules
-are not planned.
+Also not yet done: generic modules (not planned), value records, `inout`
+parameters, a `>>>` logical shift, and debug info. Effect summaries for functions
+that call each other through forward headings remain a checker limit. Current
+design notes are indexed in [obo/design/README.md](obo/design/README.md); they are
+authoritative documents, not history.
 
 ## The model, in one page
 
@@ -305,64 +198,8 @@ The aim is a compiler you can trust, so the process matters as much as the code.
 - **Edits by script.** Large changes are made by patch scripts that assert every
   replacement matches exactly once (`obo/tools/`), so they are repeatable and
   reviewable.
-- **Problems reported plainly**, including holes in work already done. Two
-  use-after-free holes in obo were found this way; one is closed, one is next.
-
-## Direction
-
-In order:
-
-1. **Assignment targets across calls** (done). In `b.items[0].next = h(b)` the
-   target's address is computed before `h` runs, so a call that frees it could write
-   into freed memory. Assigning to a field or element from a call that might free
-   is now an error; the value is computed first. The same holds for compound
-   assignment, `append`, `truncate`, `replace`, and an index whose index calls such a
-   function (LANGUAGE.md section 12).
-2. **One kind of reference** (done). `&T` is the only reference type. A parameter
-   that changes what it points to is declared `mut p: &T`; `&mut T` is an error with
-   that hint. A local reference is changeable exactly when what it borrows is.
-3. **Finer paths, inferred** (done). A reference records the field or constant-index
-   element it borrows, and a change invalidates only the references under the place
-   it changed: changing `w.b` leaves a reference to `w.a` valid, and two mutable
-   elements at known different indexes can be passed together. Changes through a
-   reference are still coarse.
-4. **The port's speed.** It allocated 28.6 MB to compile itself, and now allocates 12.1 MB
-   (measured below). Steps 1 to 3 should let it shed workarounds written for stricter rules (copies, index loops, storing
-   temporaries first), and each one removed is also a measure of simplicity: how
-   far obo code must differ from straightforward code. A change through a handle now
-   frees what references inside something point into, and the compiler checks that (done);
-   no rewrite of the port's own code was needed to satisfy the rule. A reference's binding is
-   now kept for each path, so a reference re-pointed on one branch is checked on every path (done; `obo/FORK.md`, "Reference bindings per path").
-5. **The move** (done). obo's compiler is the port, built by a committed seed
-   (`obo/seed/obo`), with `make promote` checking the fixed point and the suite before
-   replacing the seed. The mutants run against the port, and `obo-on-obx.obx` is
-   retired to `obo/legacy/`.
-6. **Then the language again**: modules (done: source imports, `pub`,
-   `alias::name`, `--deps`, `.sym` symbol files, `--check` and separate checking),
-   methods (done in 0.6), interfaces (done in 0.8), and the rest of the list under
-   "Not yet done" (lambdas next), each designed to fit the single pass and the ownership model.
-
-**How we will know it worked:** the compiler uses clearly less memory than a tuned
-collector, at the same speed; the port reads like ordinary code; and every error
-message says what to do instead.
-
-Measured (item 4, after items 1 to 3): compiling each compiler's own source takes
-about 0.01 to 0.02 s in both. The obo port (4552 lines) had a live peak of 1.3 MB and
-allocated 28.6 MB before the allocation work; after it, 1.05 MB and 12.3 MB (FORK.md,
-Phase 4). The cheaper code of Phase 1 brought the total to 12.1 MB and moved the peak to
-1.08 MB, reached now while the code buffer grows (FORK.md, Phase 1); the checks across calls
-brought it to 1.10 MB; loop inversion (one jump per iteration instead of two, FORK.md) made the tight loop 7% faster and left the live peak at 1.17 MB. The checks added since raised it to 1.27 MB; code kept in fixed-size chunks, the tables freed before the image, the runtime read after the compile and shared derived types brought it to 0.97 MB (FORK.md, "Peak memory"). On main, with Phase 2's register allocation, the live peak was 1.06 MB; Phase 2 accounts for the difference. Moving the function-only fields of `Sym` into a per-function record (`FnRec`) brought it to 0.95 MB (954,912 bytes). obx's compiler (3222 lines), with the
-collector, peaks at 8.8 MB. Wall time is about 30 ms, down from 33 ms. Also done:
-eight loops that only walked an array now borrow it and loop with `for` (the index form was a workaround for the walk rule). The loop over `globals` at exit now
-walks by borrowing too. It was blocked by two false positives: a self-call counted as
-freeing anything (fixed in the checker, `run/globals.obx`, `errors/references.obx`), and
-the `rtCall`/`rtCall1` cycle through a forward heading (broken in the source). Effect
-summaries across mutually recursive groups remain a checker limit. The walks over `f.fnRec.freed`
-and `t.variants` now borrow through their handles and loop with `for`. The rule, in one
-sentence: a reference borrowed through a handle is invalidated by any change, through a
-handle or a handle temporary included, and by any call that might free, and cannot be passed
-to such a call. Index loops remain over `f.fnRec.pmodes`, `f.fnRec.fixups`, `t.fields` and `rec.fields` (each reached
-through a handle) and over the globals `code` and `ownedLocals`; this change did not rewrite them.
+- **Problems reported plainly**, including holes in work already done; a known
+  hole stays in the bug list until it is closed, not quietly dropped.
 
 ## Finding your way
 
@@ -370,9 +207,10 @@ through a handle) and over the globals `code` and `ownedLocals`; this change did
 |---|---|
 | `obo/src/obo.obo` | obo's compiler, in obo, built by `obo/seed/obo` (promote with `make promote`) |
 | `obo/seed/obo` | the trusted previous stage |
-| `obo/lib/` | the source modules under `lib/`: `strings` (byte helpers), `paths`, `sort`, `time`, `cli`, `io` (buffered `Reader`/`Writer`, `writeByte`), `fmt` (digits, padding, `modeString`) and `errors` (errno text, exit codes) |
-| `obo/cmd/` | the first tools: `cat`, `wc`, `sort`, with `README.md` |
-| `obo/tests/` | obo's suite, mutants, the I/O gates and the tools differential gate |
+| `obo/LANGUAGE.md` | the current language reference, including known holes |
+| `obo/lib/` | the ten source modules: `strings`, `paths`, `sort`, `time`, `cli`, `io` (buffered `Reader`/`Writer`, `writeByte`), `fmt`, `errors`, `fs` and `env` |
+| `obo/cmd/` | the tools: `cat`, `wc`, `sort` and `eza`, with `README.md` and their subsets |
+| `obo/tests/` | obo's suite, mutants, the I/O, tools and eza gates |
 | `obo/tests/io_test.py` | the runtime and streaming-I/O gates |
 | `obo/tests/meta_test.py` | the metadata runtime and the `fs` module |
 | `obo/tests/elf_test.py` | the emitted image's runtime-data segment |
@@ -380,13 +218,18 @@ through a handle) and over the globals `code` and `ownedLocals`; this change did
 | `obo/tests/tools/` | recorded GNU/own goldens for the tools gate |
 | `obo/runtime/` | obo's runtime: no collector, leak and double-free counting |
 | `obo/FORK.md` | design decisions, milestones, measurements and findings |
+| `obo/design/` | authoritative design notes (interfaces, lambdas, tools, numerics) |
 | `obo/tools/build_tools.py` | builds the tool module roots directly (no concatenation) |
 | `obo/tools/` | the patch scripts behind each change |
-| `obx/` | history: the original GC compiler, suite and stage tests (see History) |
+| `HISTORY.md` | the obx predecessor, the ownership fork, milestones and earlier measurements |
+| `obx/` | the historical GC compiler, suite and stage tests (see `HISTORY.md`) |
+| `PERFORMANCE.md` | the current benchmark result, full tables, methodology and caveats |
 
 ```
 cd obo && make                           # obo: build from the committed seed
-cd obo && make tools                     # obo's first tools: build/tools/{cat,wc,sort}
+cd obo && make tools                     # build/tools/{cat,wc,sort}
+cd obo && make eza                       # build/eza/eza
+cd obo && python3 tests/doc_check.py     # LANGUAGE.md examples
 cd obo && python3 tests/run_fork.py      # obo's tests, leak check always on
 cd obo && python3 tests/elf_test.py      # the image: trimmed runtime-data segment
 cd obo && python3 tests/io_test.py --rt --programs --tools  # I/O runtime and programs
@@ -407,279 +250,10 @@ cd obo && ./obo --deps tests/modules/run/basic/main.obx -I tests/modules/run/bas
 cd obo && mkdir -p /tmp/syms && ./obo --check src/obo.obo --sym-dir /tmp/syms        # check without an executable
 cd obo && ./obo --version                # obo 0.8 sym-format 4 abi 1
 cd obo && ./obo --reemit-sym /tmp/syms/obo.sym   # canonical re-emission (test hook)
-# history: cd obx && make && ./run_tests.sh
 ```
 
----
-
-# History: mainline obx (the original dialect)
-
-This section is kept as history: obx is the GC dialect obo grew from, and the
-design record references it. Current obo plans are in the status and roadmap above.
-
-A self-hosting, single-pass compiler for a small Oberon-derived language with
-C-style braces, written in the Wirth tradition: no AST, no intermediate
-representation, and x86-64 machine code written straight into a static Linux ELF
-executable with no assembler or linker involved. The compiler is written in obx.
-
-```
-cd obx
-make                         # the runtime (needs gcc), then obxc from seed/obxc
-./obxc examples/shapes.obx --rt .
-./examples/shapes
-./run_tests.sh               # the full suite, under twenty seconds
-```
-
-## The language
-
-```
-module shapes
-
-type Shape = closed {            // closed hierarchy: match must be exhaustive
-    Circle { r: int }
-    Rect   { w, h: int }
-}
-
-type Node = ref record { value: int; next: ?Node }   // ?T may be nil, T never is
-
-fn area(s: Shape): int {
-    match s {                    // s narrows to the variant in each arm
-        Circle { return 3 * s.r * s.r }
-        Rect   { return s.w * s.h }
-    }
-}
-
-fn sum(list: ?Node): int {
-    var total = 0                // local type inference
-    var p = list
-    while p != nil {             // p is a Node inside the loop
-        total += p.value
-        p = p.next
-    }
-    return total
-}
-
-fn main() {
-    defer println("bye")         // runs at every exit from the block
-    let n = new Node{value: 1}   // let = immutable binding
-    for i in 0..3 { println(i, " ", area(new Rect{w: i, h: 2})) }
-}
-```
-
-Implemented:
-
-- `int` (64-bit), `byte`, `bool`, `string` (immutable bytes; zero value is ""),
-  `[]T` arrays, `ref record` types, `closed` variant types, `?T` optionals.
-- Arrays grow in place with `append(a, x)` and shrink with `truncate(a, n)`; every
-  reference sees the change. Indexing is bounds-checked at the moment of access, so
-  `a[i] = f()` is safe even if `f` grows `a`. `new []T(0)` works for any element
-  type; a non-zero length needs element types that can start as zero.
-- Strings index to bytes (`s[i]`), with `substr(s, from, to)`, `len`, `+`, `==`, and
-  `string(bytes)` to build one from a `[]byte`.
-- `byte` values take part in arithmetic as ints and widen to `int` automatically;
-  narrowing needs `byte(x)`, which keeps the low 8 bits. Character literals (`'a'`,
-  `'\n'`) are bytes.
-- Hex literals (`0xFF`, `0xFFFF_FFFF_FFFF_FFFF` wraps to -1) and Go-precedence
-  bitwise operators: `& | ^ << >>` and unary `~`. `>>` is arithmetic and shift counts
-  are taken mod 64.
-- Forward type declarations (`type Sym`), so record and closed types can refer to
-  each other. A forward type can be used in declarations at once; its fields only
-  once it is defined.
-- `var`/`let` with type inference, `const` with compile-time folding, module globals
-  with initialisers that may call earlier functions.
-- `if`/`else if`/`else`, `while`, `for i in a..b`, `for x in array`, `break`,
-  `continue`, `defer` (block-scoped, Zig style), `return`.
-- `match` on a closed type (arms are variants, exhaustive unless there is an `else`)
-  or on an `int` or `byte`, where arms are lists of constants:
-  `match c { 'a', 'e' { ... } 10 { ... } else { ... } }`. The subject is evaluated
-  once; duplicate values are errors; an integer match terminates only with `else`.
-- Short-circuit `&&` and `||`, compound assignment `+= -= *=`, string `+` and `==`.
-- Built-ins: `print`, `println`, `eprint`, `eprintln` (stderr), `len`,
-  `append`, `truncate`, `substr`, conversions `int()`, `byte()`, and `string()`
-  (of an int, giving its digits, or of a `[]byte`; of a single byte it is an error,
-  since the character and the number are both plausible readings),
-  `readFile(path): ?[]byte`, `writeFile(path, data, executable): bool`,
-  `args(): []string`, `gc`, `gcstats`, `exit`.
-- obo adds `Result[T]` with `ok(v)` and `err(message[, code])`, the prefix
-  operator `try`, and the consuming `match` form `ok(v) { ... }`/`err(m, c) { ... }`
-  (`obo/LANGUAGE.md`, section 7); mainline obx has no result type.
-- Source modules (`obo/LANGUAGE.md`, section 6): `module Name`, imported files
-  named `Name.obx`, `import "Name.obx" [as alias]` before declarations, `-I DIR`
-  search paths, `pub` exports with everything else private, `alias::name`
-  qualification, and `obo --deps SOURCE [-I DIR]...` for a tree's source list.
-  Dependencies compile first into one image, initialize once and free their own
-  globals; a headerless root is `_root`.
-- Symbol files (`obo/LANGUAGE.md`, section 6): each module with a header writes a
-  text `Name.sym` (format `obosym 4`, ABI 1, compiler `0.8`, FNV-1a source,
-  interface and dependency-interface hashes); importers read and validate it, and
-  `--check SOURCE [--sym-dir DIR]` checks a module against symbol files alone,
-  including source-less dependencies. `--emit-sym` writes a single-file root's
-  interface; `--version` prints the three version numbers; `-o` is rejected with
-  `--check`/`--deps` (as are the three modes with each other). `--reemit-sym FILE`
-  is a test hook that reads a symbol file and prints its canonical re-emission.
-  Generated symbol files are ignored under `.obo/sym`; a build without
-  `--sym-dir` writes next to the root source, so use `--sym-dir .obo/sym`. The
-  tools' builder uses its own `<out>/sym` instead (`obo/build/tools/sym` for
-  `make tools`), also ignored with the rest of `obo/build/`.
-  `tests/modules/golden/expected/*.sym` are committed byte-goldens.
-- Automatic semicolon insertion at line ends, as in Go.
-
-## Safety checks at compile time
-
-- Non-null references by default: field access and indexing on a `?T` are rejected until a
-  `!= nil` check (in `if`, `while`, `&&`, or an early `return`) narrows it.
-- Narrowing is invalidated by assignment, and assigning a possibly-nil value inside a
-  loop to a variable checked outside that loop is an error. Defer bodies see no
-  narrowing, since they run later.
-- `new` must supply every non-null reference field; non-null variables need an
-  initial value; arrays of non-null references are rejected.
-- `match` must cover every variant or have an `else`.
-- Functions must return on every path; `let` bindings cannot be assigned.
-
-## Architecture
-
-The compiler, `src/obxc.obx`, is laid out in the order it is read: scanner,
-x64 encoder, types and items, expressions, statements, declarations, ELF writer.
-
-- **Scanner** with Go-style semicolon insertion. It works on bytes: columns count
-  bytes and identifiers are ASCII. Token kinds are integer constants.
-- **Parser and code generator interleaved**: each `term`, `relation` and statement
-  emits code as soon as it is recognised.
-- **Items** (`const`, `mem`, `reg`, `cond`) delay emission: a local is `[rbp-16]` until
-  something forces a load, constants become immediates, and comparisons stay as
-  condition codes with true/false jump lists for `&&`, `||` and `!`.
-- **Fixups** resolve forward jumps, calls to forward-declared functions and the frame
-  size, which is patched into the prologue once the body is compiled.
-- **Registers** are allocated stack-fashion from rbx and r8 to r15; all live registers
-  are pushed around every call.
-- **Defer** compiles each deferred statement once as a local subroutine and emits a
-  `call` at every exit from its block.
-- **Global initialisers** become code chunks linked by jumps and run before `main`.
-- **Memory**: a mark-sweep collector in a small freestanding C runtime. Heap scanning
-  is precise (type descriptors emitted by the compiler); stack and globals are scanned
-  conservatively. The contract is that every root, including the arguments of the
-  runtime call itself, is on the obx stack whenever the runtime is entered; the
-  collector scans only obx frames, never the runtime's own, so the contract is
-  enforced rather than met by luck. The runtime is linked at a fixed address and
-  reached through a jump table whose stubs check stack alignment.
-
-Runtime errors exit with code 2 (negative array length, out of memory), 3 (index
-out of range in an array, string, `substr` or `truncate`, with the line) or 4
-(internal error). Division by zero is currently a hardware trap (SIGFPE).
-
-Generated code is roughly at `gcc -O0` speed or a little better, and around 3x slower
-than `gcc -O2` on call-heavy code. obxc compiles its own 3,100 lines in about 20 ms,
-roughly 150,000 lines a second.
-
-## Tests
-
-`./run_tests.sh` runs about 920 tests in under twenty seconds (`-k name` filters,
-`-v` lists every test). Details of each kind are in the docstring of `tests/run.py`.
-
-- **Program tests** (`tests/run/`): one file per feature area, with expected output,
-  exit code and stderr written as comments beside the code that produces them.
-  Includes runtime traps and garbage collector tests designed to catch premature
-  freeing.
-- **Error tests** (`tests/errors/`): about 180 programs that must fail, each checked
-  for the exact line and message. One file holds many cases separated by
-  `// === name`.
-- **GC stress**: every program test runs again with `OBX_GC=stress`, which collects
-  at every allocation and poisons freed memory, so a missing root shows up as
-  corrupted output rather than depending on when a collection happens to land.
-  Normal runs use `OBX_GC=poison`. Both modes work on any obx program.
-- **Encoder**: around 14,000 x64 instruction forms, every register and addressing
-  mode the code generator can emit, cross-checked against objdump.
-- **Fuzzing**: random integer and boolean expression programs checked against a
-  Python model of 64-bit arithmetic and short-circuit evaluation
-  (`--fuzz 2000` for a longer run).
-- **Golden output** for the examples, and **determinism** (identical output from
-  identical input).
-
-`python3 tests/mutate.py` checks the suite itself: it plants 47 deliberate bugs in
-copies of obxc one at a time, builds each with the bootstrap, and confirms the suite
-fails without help from the stage tests (`--part 1/4` runs a quarter). When adding
-a feature, add a mutant or two that break it; one that survives marks a gap.
-
-The runtime also checks the calling convention on every entry: a misaligned stack
-traps immediately with exit code 4 rather than crashing later.
-
-## Self-hosting
-
-`src/obxc.obx` is the obx compiler, written in obx: about 3,100 lines covering
-the whole language, the x64 encoder and the ELF writer. It is the only compiler.
-The original compiler, written in Python, is kept in `legacy/` for reference only;
-nothing builds or tests with it. The test tooling is still Python (the runner, the
-fuzzer's model, the mutation driver), since it needs no compiler of its own.
-
-```
-cd obx
-make                                  # runtime, then obxc built by seed/obxc
-./obxc examples/shapes.obx --rt .     # obxc SOURCE [-o OUT] [--rt RUNTIME_DIR]
-./run_tests.sh                        # the suite, against ./obxc
-make promote                          # make ./obxc the new seed (see below)
-```
-
-`seed/obxc` is a committed binary: the trusted previous stage. obxc compiles
-its own source in about 20 ms.
-
-### Changing the compiler
-
-Tests use oracles that don't depend on any compiler: expected output, exit codes
-and errors written beside the code, objdump for the encoder, a Python model for
-the fuzzer, poisoned memory for the collector, and golden token dumps. On top of
-those, the **stage tests** compare the compiler under test with the bootstrap on
-every program, error case, token stream and encoder script, and check that it
-reaches a fixed point compiling itself.
-
-- A refactoring should leave the stage tests passing: nothing observable changes.
-- A deliberate change to code generation or messages shows up as stage differences.
-  Review them, then `make promote`, which checks the fixed point and the rest of
-  the suite before copying the new compiler to `seed/obxc`.
-- A new language feature takes two rounds: implement it without using it in
-  obxc's source, and promote; then obxc can use it. Integer `match` went this way:
-  first implemented, then obxc's token kinds became integer constants and its
-  dispatch chains became `match` statements (`tools/intern_tokens.py` did the
-  mechanical part), with the stage tests confirming the output was unchanged.
-
-## Not yet done
-
-Interfaces are implemented in 0.8 (owning and borrowed values, dispatch and effect tiers; see
-`obo/LANGUAGE.md` §5b). Lambdas (Stage A 0.9, Stage B 0.10), generic
-modules, value records, inout parameters, `^I` after lambda Stage B, a `>>>` logical shift, and debug info are
-not yet done. Each was designed earlier
-to fit the single pass. Also: effect summaries for functions that call each other through
-forward headings.
-
-### Future work: a peephole optimizer
-
-The generated code is register-based, but unoptimised: a value is often stored to a
-local and immediately reloaded (`mov [rbp-8],rbx` then `mov r8,[rbp-8]`), and
-`sub rsp,0x0` is emitted for functions with no locals. Options, in the order we would
-try them:
-
-- **Emit-time peephole.** Before each instruction is appended, look back at the last
-  one or two and rewrite them if they match. This keeps the compiler single-pass. A
-  rewrite is only safe if no jump or call target falls between the instructions, so
-  the compiler must record its fixup and label positions and stop rewriting there.
-- **Post-pass.** A separate pass over the finished code, which must also rewrite every
-  jump and call offset. Needs a relocation table the compiler does not yet have.
-
-Rules that any rewrite must keep:
-
-- **Keep the stores.** The runtime's collector scans the obx stack conservatively, so
-  a value that lives only in a register could be missed. Only reloads may become
-  register moves (`mov r8,rbx`); stores stay.
-- **Keep the call sequence.** Live registers are pushed around every runtime call, and
-  the stack alignment check depends on the exact stack depth at each call.
-
-Candidate rewrites: reload-after-store to a register move; dropping the zero-size
-`sub rsp,0x0`; computing a result directly in `rax` rather than copying it there.
-
-Checks for any rewrite: the encoder test (objdump cross-check) must still pass for
-new instruction forms; the stage tests will show every change in generated code as a
-difference against the bootstrap, which must be reviewed and then promoted; each rewrite
-gets a mutant, so the suite proves it is exercised; and the benchmarks show whether the
-gain is real.
+The historical obx build and test commands are in
+[HISTORY.md](HISTORY.md#building-obx).
 
 ## License
 

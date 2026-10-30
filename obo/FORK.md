@@ -2053,7 +2053,7 @@ so sharing them changes no result. Only the basic types are compared by identity
 
 ### Peephole pass (measured; built later, with loop-head alignment: see the next section)
 
-The obx design (`README.md`, "Future work: a peephole optimizer") still applies: an
+The obx design (`HISTORY.md`, "Future work: an obx peephole optimizer") still applies: an
 emit-time pass that keeps the compiler single-pass. The plan said to revisit it only if
 the reloads that remain after Phase 2 are measurable on the benchmarks. They are not.
 

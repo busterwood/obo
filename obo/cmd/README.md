@@ -129,16 +129,16 @@ padded cases (the one-byte unreadable fixture's digit count is checked so the
 visible output agrees). `-m`, `-L`, `--files0-from`, long options, `--help` and
 `--version` are absent.
 
-**Performance (merged tree).** `wc` scans only the columns the command line
-asks for: `-c` sums chunk lengths without looking at a byte, `-l` runs a
-newline-only loop unrolled 32 bytes with four accumulators, and a single word
-state machine counts words and, when `-l` is also selected, lines in one pass,
-so `-lw`/`-lwc` cost about what `-w` alone costs. On the CLI benchmark's
-110,000,000-byte text file (warm cache, one core), `-l` measures 79.7 ms,
-slightly behind Python's C `bytes.count` (70.1 ms) and behind GNU `wc -l`
-(11.3 ms, whose `memchr` loop is SIMD); `-lwc` measures 124.8 ms against
-Python's chunked counter (454.9 ms) and GNU `wc -lwc` (972.0 ms), beating both
-by 3.65x and 7.79x. Absolute times are fixture-dependent.
+**Performance (0.8 run, 30 October 2026).** `wc` scans only the columns the
+command line asks for: `-c` sums chunk lengths without looking at a byte, `-l`
+runs a newline-only loop unrolled 32 bytes with four accumulators, and a single
+word state machine counts words and, when `-l` is also selected, lines in one
+pass, so `-lw`/`-lwc` cost about what `-w` alone costs. On the CLI benchmark's
+110,000,000-byte text file (warm cache, one core), `-l` measures 78.9 ms,
+slightly behind Python's C `bytes.count` (73.8 ms) and behind GNU `wc -l`
+(12.0 ms, whose `memchr` loop is SIMD); `-lwc` measures 131.7 ms against
+Python's chunked counter (474.5 ms) and GNU `wc -lwc` (1,038 ms), beating both
+by 3.60x and 7.88x. Absolute times are fixture-dependent.
 
 ## sort
 
@@ -191,39 +191,38 @@ exhaust memory (the runtime exits 2). `-k`, `-t`, `-f`, `-b`, `-d`, `-i`, `-M`,
 `-h`, `-V`, `-s`, `-c`, `-C`, `-o`, `-m`, `-z`, `--parallel`, long options,
 `--help` and `--version` are absent.
 
-**Performance (merged tree).** The default order is a stable MSD radix sort over
-byte positions in the buffer: 257 buckets (byte + 1, with 0 for the line
-terminator so a prefix sorts first), insertion sort below 20 elements, and a
-common-prefix pass that skips a shared byte run instead of paying a counting
-pass per byte; one linear pass detects already-sorted and reverse-sorted input
-and skips the sort. `-n` parses every line once into four int arrays indexed by
-line (integer end with the sign, significant integer length, fraction length,
-and the integer part's exact int64 value when every integer part has at most
-18 significant digits) and runs a stable numeric MSD radix over line ids: the
-int64 value when it fits, otherwise the exact decimal digit sequence, with
-reversed bucket
-order inside the negative category and a fraction stage whose terminator sorts
-below `0`; a numerically equal range continues with the whole-line byte radix
-unless `-u`, which is the last-resort tie-break. Output is assembled in 64 KiB
-blocks and written with `writeFd`. On the CLI
-benchmark's 1,000,000 fixed 8-digit lines (warm cache, one core) obo `sort`
-measures 158.7 ms against GNU `sort` 9.4's 233.6 ms and the benchmark's
-Python 545.3 ms; it was about 1,838 ms with the former readLine + index merge.
-Sorted input measures 56.6 ms (GNU 83.4 ms), a 22 MB random variable-length
-file 256 ms (GNU 312 ms), and a 73 MB file whose lines share a 64-byte prefix
-614 ms (GNU 461 ms), all clean reruns. Absolute times are fixture-dependent,
-and on the shapes
-measured here the shared-prefix file is the one where a comparison sort with
-`memcmp` clearly wins; duplicate-heavy variable-length inputs can favor GNU as
-well, while fixed-width and small-key inputs favor the radix. Peak RSS on the
-9 MB/1,000,000-line file is 40.8 MB (GNU `sort` 9.4 pinned to one core
-uses about 59 MB there, and 136.8 MB unpinned with its default threads)
-and about 103 MB on the 73 MB file; `-n` uses 79.9 MB on the 9 MB fixture
-(the former key records and stable merge measured 135.6 MB), and on the CLI
-benchmark's fixed 8-digit fixture measures 197.3 ms against GNU `sort -n`'s
-398.7 ms, and on our 1,000,000-line decimal and all-negative fixtures
-265-310 ms against 455-520 ms. Absolute times move about
-10-15% with host load and depend on the fixture.
+**Performance (0.8 run, 30 October 2026).** The default order is a stable MSD
+radix sort over byte positions in the buffer: 257 buckets (byte + 1, with 0 for
+the line terminator so a prefix sorts first), insertion sort below 20 elements,
+and a common-prefix pass that skips a shared byte run instead of paying a
+counting pass per byte; one linear pass detects already-sorted and
+reverse-sorted input and skips the sort. `-n` parses every line once into four
+int arrays indexed by line (integer end with the sign, significant integer
+length, fraction length, and the integer part's exact int64 value when every
+integer part has at most 18 significant digits) and runs a stable numeric MSD
+radix over line ids: the int64 value when it fits, otherwise the exact decimal
+digit sequence, with reversed bucket order inside the negative category and a
+fraction stage whose terminator sorts below `0`; a numerically equal range
+continues with the whole-line byte radix unless `-u`, which is the last-resort
+tie-break. Output is assembled in 64 KiB blocks and written with `writeFd`. On
+the CLI benchmark's 1,000,000 fixed 8-digit lines (warm cache, one core) obo
+`sort` measures 162.9 ms against GNU `sort` 9.4's 256.5 ms and the benchmark's
+Python 602.0 ms; it was about 1,838 ms with the former readLine + index merge.
+Earlier clean reruns measured sorted input at 56.6 ms (GNU 83.4 ms), a 22 MB
+random variable-length file at 256 ms (GNU 312 ms), and a 73 MB file whose
+lines share a 64-byte prefix at 614 ms (GNU 461 ms); those are separate fixtures
+and were not repeated for the 0.8 run. Absolute times are fixture-dependent,
+and on the shapes measured here the shared-prefix file is the one where a
+comparison sort with `memcmp` clearly wins; duplicate-heavy variable-length
+inputs can favor GNU as well, while fixed-width and small-key inputs favor the
+radix. Peak RSS on the 9 MB/1,000,000-line file is 40.8 MB (GNU `sort` 9.4
+pinned to one core uses about 59 MB there, and 136.8 MB unpinned with its
+default threads) and about 103 MB on the 73 MB file; `-n` uses 79.9 MB on the
+9 MB fixture (the former key records and stable merge measured 135.6 MB). On
+the CLI benchmark's fixed 8-digit fixture `-n` measures 255.1 ms against GNU
+`sort -n`'s 434.7 ms, and on our 1,000,000-line decimal and all-negative
+fixtures it measured 265-310 ms against 455-520 ms in an earlier run. Absolute
+times move about 10-15% with host load and depend on the fixture.
 
 ## eza (E0, E1 and E2)
 

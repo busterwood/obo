@@ -7,8 +7,9 @@ known point, and the compiler rejects any program that could read freed memory.
 This describes the language as the compiler in `obo/src/obo.obo`
 implements it. Syntax not covered here (declarations, `if`, `while`, `for`,
 `match`, `defer`, closed types, constants, literals, operators) is the same as
-obx; see the language section of the root `README.md`. Rules that are planned
-rather than implemented are marked as such, and section 12 lists known holes.
+obx; see [the obx language section of HISTORY.md](../HISTORY.md#the-obx-language).
+Rules that are planned rather than implemented are marked as such, and section
+12 lists known holes.
 
 The examples are checked against the compiler. A block marked
 `// example: runs` is a complete program that must compile and exit 0, and each

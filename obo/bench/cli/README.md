@@ -7,11 +7,12 @@ host.
 
 **It is not a gate.** No script under `obo/tests/` and no CI job runs it. The
 numbers are host-dependent; treat them as relative measurements from one run,
-not as portable facts. The recorded table is the historical obo 0.5 /
-sym-format 1 sample. obo 0.6 adds methods at compile time only, and the 0.5 and
-0.6 seeds build byte-identical programs and tool binaries, so the medians and
-sizes below still hold; on the 0.6 tree the header's compiler line read
-`obo 0.6 sym-format 2 abi 1`.
+not as portable facts. The recorded table below is a current obo 0.8 run
+measured on 30 October 2026 at main `9290396` (the second of two default runs).
+Everything on the obo side was built from that tree by `run.py`; the program
+and tool binaries are byte-identical to the earlier 0.5/0.6 builds, but these
+times were re-measured. The historical 0.5 / 0.6 sample and its provenance are
+in [`HISTORY.md`](../../../HISTORY.md).
 
 ## What it measures
 
@@ -79,17 +80,15 @@ runtime binaries that `make -C obo obo` normally produces (gitignored).
 
 ## Sample output
 
-One recorded run on the host named in the header, at `main` commit `06fa982`
-(the merge of the measured tree; the documentation and build-output changes
-after it do not affect timings). On that host the pinned eza
-binary was passed with `--eza /path/to/eza`; nothing in the suite knows that
-path:
+One recorded run on the host named in the header, at `main` commit `9290396`.
+On that host the pinned eza binary was passed with `--eza /path/to/eza`;
+nothing in the suite knows that path:
 
 ```text
 obo CLI benchmark suite (on-demand; NOT a gate, not run by CI)
 repo:      /path/to/checkout
-git:       main @ 06fa982
-compiler:  obo 0.5 sym-format 1 abi 1
+git:       main @ 9290396
+compiler:  obo 0.8 sym-format 4 abi 1
 python:    Python 3.12.3  (/usr/bin/python3)
 cpu:       AMD Ryzen 7 8745HS w/ Radeon 780M Graphics
 kernel:    Linux-6.18.54.1-microsoft-standard-WSL2-x86_64-with-glibc2.39
@@ -101,50 +100,50 @@ env:       LC_ALL=C LANG=C TZ=UTC; OBO_*/OBX_*/PYTHON*/POSIXLY_CORRECT unset; ti
 implementation                       median     ratio
 
 process startup (hello; 40 runs per repetition)
-  obo hello (static binary)           0.20 ms     1.00x
-  python3 -c pass                     11.0 ms    54.60x
-  python3 -c print("hi")              11.1 ms    54.66x
+  obo hello (static binary)           0.24 ms     1.00x
+  python3 -c pass                     12.8 ms    53.72x
+  python3 -c print("hi")              12.2 ms    51.50x
 
 fib(32) recursive
-  obo fib                             10.0 ms     1.00x
-  python3 fib.py                     206.4 ms    20.57x
+  obo fib                             10.6 ms     1.00x
+  python3 fib.py                     216.9 ms    20.54x
 
 sum of integers below 100,000,000 (explicit loop)
-  obo loopsum                         21.8 ms     1.00x
-  python3 loopsum.py                 7,343 ms   337.01x
+  obo loopsum                         23.4 ms     1.00x
+  python3 loopsum.py                 7,511 ms   321.52x
 
 sum(range(100,000,000)) (reference; a different algorithm)
-  python3 sum(range)                 881.3 ms    40.45x
+  python3 sum(range)                 937.6 ms    40.13x
 
 sieve of Eratosthenes <= 10,000,000
-  obo sieve                          127.4 ms     1.00x
-  python3 sieve.py                   2,474 ms    19.43x
+  obo sieve                          135.2 ms     1.00x
+  python3 sieve.py                   2,392 ms    17.69x
 
 wc -l on 110,000,000 B
-  obo wc -l                           79.7 ms     1.00x
-  python3 wc_lines.py                 70.1 ms     0.88x
-  GNU wc -l (ref)                     11.3 ms     0.14x
+  obo wc -l                           78.9 ms     1.00x
+  python3 wc_lines.py                 73.8 ms     0.94x
+  GNU wc -l (ref)                     12.0 ms     0.15x
 
 wc -lwc on 110,000,000 B
-  obo wc -lwc                        124.8 ms     1.00x
-  python3 wc_full.py                 454.9 ms     3.65x
-  GNU wc -lwc (ref)                  972.0 ms     7.79x
+  obo wc -lwc                        131.7 ms     1.00x
+  python3 wc_full.py                 474.5 ms     3.60x
+  GNU wc -lwc (ref)                1,038 ms       7.88x
 
 sort 1,000,000 lines
-  obo sort                           158.7 ms     1.00x
-  python3 sort.py                    545.3 ms     3.44x
-  GNU sort (ref)                     233.6 ms     1.47x
+  obo sort                           162.9 ms     1.00x
+  python3 sort.py                    602.0 ms     3.70x
+  GNU sort (ref)                     256.5 ms     1.57x
 
 sort -n 1,000,000 lines (numeric order)
-  obo sort -n                        197.3 ms     1.00x
-  GNU sort -n (ref)                  398.7 ms     2.02x
-  python3 sorted(key=int) (ref)      477.9 ms     2.42x
+  obo sort -n                        255.1 ms     1.00x
+  GNU sort -n (ref)                  434.7 ms     1.70x
+  python3 sorted(key=int) (ref)      516.4 ms     2.02x
 
 eza 10,000 names
-  obo eza                             27.8 ms     1.00x
-  python3 listdir + sort              15.9 ms     0.57x
-  GNU ls -1 (ref)                     6.49 ms     0.23x
-  pinned eza v0.23.3 (ref)            57.0 ms     2.05x
+  obo eza                             30.4 ms     1.00x
+  python3 listdir + sort              16.3 ms     0.54x
+  GNU ls -1 (ref)                     6.55 ms     0.22x
+  pinned eza v0.23.3 (ref)            59.2 ms     1.94x
 
 binary sizes:
   hello                28,673 B
@@ -156,16 +155,17 @@ binary sizes:
   sort (tool)          69,633 B
   eza (tool)          212,993 B
 
-total: 78.9 s on this host; the numbers are host-dependent.
+total: 83.3 s on this host; the numbers are host-dependent.
 ```
 
-The sample is the recorded 0.5 run. It was re-measured on the promoted 0.6
-tree: the header's compiler line read `obo 0.6 sym-format 2 abi 1`, and every
-obo-side program and tool binary was byte-identical (cat 40,961, wc 45,057,
-sort 69,633, eza 212,993, sha256 `53133d23…`, and the four bench programs
-28,673 each), so the medians were unchanged. The compiler itself is now the
-promoted 0.8 seed (507,905 bytes); the 0.6 compiler (454,657 bytes) and the
-0.5 compiler (425,985 bytes) are historical.
+The obo-side binaries are byte-identical to the saved 0.5/0.6 builds (cat
+40,961, wc 45,057, sort 69,633, eza 212,993, sha256 `53133d23…`, and the four
+bench programs 28,673 each), but these medians were re-measured on 0.8 rather
+than carried over. The first of the two runs measured eza at 55.9 ms (pinned
+66.9 ms); the table above is the second run. The compiler is the promoted 0.8
+seed (507,905 bytes); the 0.6 compiler (454,657 bytes) and the 0.5 compiler
+(425,985 bytes) are historical. The earlier 0.5 / 0.6 sample is preserved in
+[`HISTORY.md`](../../../HISTORY.md).
 
 `--quick` changes the workload sizes as well as the repetition counts, so its
 absolute times are not comparable with default rows: `fib(30)`, a 10,000,000
@@ -270,13 +270,6 @@ loop, a sieve to 1,000,000, an 11,000,000-byte text file, 100,000 sort lines and
 
 The repo's case discovery globs only the top level: `obo/tests/port_compare.py`
 and `obo/tests/port_test.py` use `obo/bench/*.obx`, which does not recurse into
-`obo/bench/cli/`. Verified on the final tree (`main` `67799b1` plus this
-documentation commit) with the new files present:
-
-* `python3 obo/tests/port_compare.py` — `stage B: 1283 of 1283 behave the same`
-  (exit 0), `OBO_REF=obo/seed/obo` — `stage B: 1143 of 1143 behave the same`,
-  and `cases_of()` lists none of the files in this directory.
-* `python3 obo/tests/doc_check.py` — `53 examples, 0 problems` (this directory
-  adds no `obo/LANGUAGE.md` examples; run for completeness).
-
-CI (`.github/workflows/ci.yml`) does not invoke `obo/bench/` at all.
+`obo/bench/cli/`. These programs are therefore not part of the port gates, and
+`obo/tests/doc_check.py` does not read this directory. CI
+(`.github/workflows/ci.yml`) does not invoke `obo/bench/` at all.
