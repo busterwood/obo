@@ -50,30 +50,25 @@ fn main() {
     }
     println(saved.area(), " ", last.area())           // expect: 3 2
 
-    // concrete borrows at one site in a loop: each pass converts a different concrete
-    // object, so each pass has a different vtable; a pair saved on an earlier pass
-    // keeps its own obj and vtable
-    let sq = new Square{s: 4}
-    let rc = new Rect{w: 2, h: 3}
-    let sq2 = new Square{s: 9}
-    var fromFirst: &Shape = &sq
-    var fromRect: &Shape = &rc
-    i = 0
-    while i < 3 {
-        if i == 0 {
-            let cur: &Shape = &sq
-            fromFirst = cur
-        } else if i == 1 {
-            let cur: &Shape = &rc
-            fromRect = cur
-        } else {
-            let cur: &Shape = &sq2
-            // no save: this pass's different vtable must not reach the saved pairs
-            if cur.area() < 0 { fromFirst = cur }
-        }
-        i += 1
+    // one pair-copy site in a loop over mixed owned interfaces: the sources are interface
+    // elements, not concrete conversions, but their vtables alternate Square/Rect/Square.
+    // 'cur' and the destination saved into start on Square's vtable, so the single 'cur = d'
+    // site must replace a prior vtable on the Rect pass. If the copy took only obj, the saved
+    // Rect would dispatch Square.area and print 2; a later pass must not disturb the save.
+    let mixed = new []Shape(0)
+    append(mixed, new Square{s: 4})
+    append(mixed, new Rect{w: 2, h: 3})
+    append(mixed, new Square{s: 9})
+    let anchor = new Square{s: 0}
+    var cur: &Shape = &anchor
+    var kept: &Shape = &anchor
+    var pass = 0
+    for d in mixed {
+        cur = d
+        if pass == 1 { kept = cur }
+        pass += 1
     }
-    println(fromFirst.area(), " ", fromRect.area())   // expect: 4 6
+    println(kept.area(), " ", cur.area())             // expect: 6 9
 
     // the per-site cell of an argument is consumed by the call, while a local copied from it stays put
     var held: &Shape = &items[0]
