@@ -1,10 +1,12 @@
 # obo performance
 
-This page records the final benchmark run of obo 0.5: the compiler, four small
+This page records the benchmark run of obo 0.5: the compiler, four small
 programs, and the `cat`, `wc`, `sort` and `eza` tools, compared with CPython
-3.12.3, GNU coreutils 9.4 and the pinned eza 0.23.3 reference. It is a
-historical 0.5 / sym-format 1 sample: obo 0.6 adds methods (a compile-time
-feature with no runtime change) and this table was not re-measured. The suite is
+3.12.3, GNU coreutils 9.4 and the pinned eza 0.23.3 reference. The runtime rows
+are the historical 0.5 / sym-format 1 sample, but they still describe 0.6: 0.6
+adds methods at compile time only, and the 0.5 and 0.6 seeds build
+byte-identical benchmark and tool binaries (verified with `cmp`), so the suite
+was not re-run. The compiler row is the promoted 0.6 compiler. The suite is
 on-demand, not a gate; its source is `obo/bench/cli/`, and the command is:
 
 ```sh
@@ -24,7 +26,8 @@ them for relative comparison, not as portable constants.
 * Python: CPython 3.12.3.
 * References: GNU coreutils 9.4; pinned eza v0.23.3, binary sha256
   `10457dde…`.
-* Compiler: obo 0.5, sym-format 1, abi 1.
+* Compiler: obo 0.6, sym-format 2, abi 1. The measured program and tool
+  binaries are byte-identical to their 0.5-seed builds.
 
 ## Methodology
 
@@ -106,12 +109,16 @@ text/data.
 | `wc` (tool) | 45,057 |
 | `sort` (tool) | 69,633 |
 | `eza` (tool) | 212,993 |
-| obo compiler | 425,985 |
+| obo compiler | 454,657 |
 | pinned eza v0.23.3 reference (not obo code) | 2,294,768 |
 
-The compiler is the promoted 0.5 seed (sha256 `05542e89…`), and it rebuilds
-itself to the same 425,985 bytes. The eza binary is about 10.8x smaller than
-the pinned reference.
+The compiler is the promoted 0.6 seed (sha256 `90fcad7e…`), and it rebuilds
+itself to the same 454,657 bytes. The benchmark programs and tools are
+byte-identical to their 0.5-seed builds, so their sizes are unchanged (cat
+40,961, wc 45,057, sort 69,633, eza 212,993, sha256 `53133d23…`; the four
+small programs 28,673 each). The eza binary is about 10.8x smaller than the
+pinned reference. The 0.5 seed and its 425,985-byte compiler (sha256
+`05542e89…`) are historical.
 
 ## Memory
 
@@ -154,14 +161,15 @@ is no external merge.
 
 | Metric | Value |
 |---|---:|
-| Self-compile wall time | 0.11 s (5 runs, median; 0.10-0.12 s on this host) |
-| Live peak compiling itself | 1,646,816 bytes |
-| Total allocated | 35,353,648 bytes |
-| Maximum resident set | 2,976 KB |
-| Live-memory budget | 2,000,000 bytes (353,184 spare) |
+| Self-compile wall time | 0.12 s (5 runs, median; host-dependent) |
+| Live peak compiling itself | 1,728,768 bytes |
+| Total allocated | 38,752,320 bytes |
+| Maximum resident set | 3,260 KB |
+| Live-memory budget | 2,000,000 bytes (271,232 spare) |
 
-The live peak varies by a few hundred bytes with the compiler source path.
-Leaks are caught separately by the port gate's leak check.
+The live peak varies by a few hundred bytes with the compiler source path (the
+main-tree measurement is shown). Leaks are caught separately by the port gate's
+leak check.
 
 ## Interpretation
 

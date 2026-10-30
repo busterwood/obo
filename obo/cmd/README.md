@@ -489,7 +489,8 @@ grids, and automatic classify markers stay off in every view (grid, lines,
 tree and long), while automatic colour still follows the real stdout isatty.
 This build cannot see the row count, so it treats such a terminal as
 terminal-ish: it grids by default and adds automatic classify markers where
-the reference adds none (accepted 0.5-runtime limitation; `pty_zero_rows*` in
+the reference adds none (accepted runtime limitation: slot 39 exposes only the
+column count, and the runtime is unchanged since 0.5; `pty_zero_rows*` in
 `E2-PROBES.md` records the reference bytes). Widths above `GRID_WIDTH_CAP`
 (2^40) are clamped; the reference panics from an internal `usize` overflow for
 values within two of `usize::MAX`, and this build deliberately prints a

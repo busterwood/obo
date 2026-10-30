@@ -8,7 +8,10 @@ host.
 **It is not a gate.** No script under `obo/tests/` and no CI job runs it. The
 numbers are host-dependent; treat them as relative measurements from one run,
 not as portable facts. The recorded table is the historical obo 0.5 /
-sym-format 1 sample; obo 0.6 adds methods and was not re-measured.
+sym-format 1 sample. obo 0.6 adds methods at compile time only, and the 0.5 and
+0.6 seeds build byte-identical programs and tool binaries, so the medians and
+sizes below still hold; only the header's compiler line changes, to
+`obo 0.6 sym-format 2 abi 1`.
 
 ## What it measures
 
@@ -156,6 +159,13 @@ binary sizes:
 total: 78.9 s on this host; the numbers are host-dependent.
 ```
 
+The sample is the recorded 0.5 run. On the promoted 0.6 tree the header's
+compiler line reads `obo 0.6 sym-format 2 abi 1`; every obo-side program and
+tool binary is byte-identical (cat 40,961, wc 45,057, sort 69,633, eza 212,993,
+sha256 `53133d23…`, and the four bench programs 28,673 each), so the medians
+are unchanged. The compiler itself is now the promoted 0.6 seed (454,657
+bytes); the 0.5 compiler (425,985 bytes) is historical.
+
 `--quick` changes the workload sizes as well as the repetition counts, so its
 absolute times are not comparable with default rows: `fib(30)`, a 10,000,000
 loop, a sieve to 1,000,000, an 11,000,000-byte text file, 100,000 sort lines and
@@ -259,13 +269,13 @@ loop, a sieve to 1,000,000, an 11,000,000-byte text file, 100,000 sort lines and
 
 The repo's case discovery globs only the top level: `obo/tests/port_compare.py`
 and `obo/tests/port_test.py` use `obo/bench/*.obx`, which does not recurse into
-`obo/bench/cli/`. Verified on the final tree (`main` `06fa982` plus this
+`obo/bench/cli/`. Verified on the final tree (`main` `67799b1` plus this
 documentation commit) with the new files present:
 
-* `python3 obo/tests/port_compare.py` — `stage B: 1182 of 1182 behave the same`
-  (exit 0), `OBO_REF=obo/seed/obo` — `stage B: 1060 of 1060 behave the same`,
+* `python3 obo/tests/port_compare.py` — `stage B: 1283 of 1283 behave the same`
+  (exit 0), `OBO_REF=obo/seed/obo` — `stage B: 1143 of 1143 behave the same`,
   and `cases_of()` lists none of the files in this directory.
-* `python3 obo/tests/doc_check.py` — `48 examples, 0 problems` (this directory
+* `python3 obo/tests/doc_check.py` — `53 examples, 0 problems` (this directory
   adds no `obo/LANGUAGE.md` examples; run for completeness).
 
 CI (`.github/workflows/ci.yml`) does not invoke `obo/bench/` at all.
