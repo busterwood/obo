@@ -1691,7 +1691,7 @@ depend on the program.
 | `a method's receiver must be a record or closed type declared in this module, not <t>` | a built-in, array, optional, handle or `Result` receiver. |
 | `cannot declare a method on imported type '<M>::<T>'; declare it in the type's own module` | a method on a foreign type. |
 | `cannot declare a method on variant '<V>'; declare it on its closed type '<C>'` | a method on a variant. |
-| `type '<T>' is declared but not yet defined` | a method on a forward type before its definition. |
+| `<T> is declared but not yet defined` | a method on a forward type before its definition. |
 | `type '<T>' already has a field '<f>'; a method cannot have the same name` | a method/field name collision on its receiver type (also the closed-variant form `... in variant '<V>'`). |
 | `type '<C>' already has a variant '<V>'; a method cannot have the same name` | a method named like a variant of its closed receiver type. |
 | `method '<T>::<m>' is already defined` | a second body, or a heading after a body. |

@@ -5147,10 +5147,14 @@ message, field-through-handle, chaining/temporaries and method-body names. New
 module trees: `run/methods`, `methods_closed`, `methods_identity`,
 `methods_transitive`, `method_main`; `errors/private_method`,
 `unknown_method_foreign`, `foreign_method`, `foreign_field_call`,
-`pub_method_private_type`, `method_heading`; `sym/methods`, `method_main`,
+`pub_method_private_type`, `method_heading`, `owned_receiver_column` and
+`mut_receiver_column`; `sym/methods`, `method_main`,
 `methods_transitive_check`, `private_method_check` and `method_bad_receiver`.
-`sym_test.py` gained method coverage in the rich round trip, `hash_methods`,
-`malformed_methods` and `methods_sourceless_check`; the golden tree gained
+`errors/arg_order.obx` gains a mixed by-value/reference signature pinning the
+plain function alias numbering, and `sym_test.py` gained method coverage in the
+rich round trip, `hash_methods`, `malformed_methods` and
+`methods_sourceless_check`, plus a hand-written method line with a receiver name
+that is not `p0` and summary items in reverse order. the golden tree gained
 `worth`/`bump`/`taken` methods and was regenerated explicitly with
 `sym_test.py --update`. All 79 pre-existing committed `.sym` files were migrated
 in the same change (76 `modules/sym` fixtures and 3 goldens): format 2 / compiler
@@ -5158,8 +5162,9 @@ in the same change (76 `modules/sym` fixtures and 3 goldens): format 2 / compile
 ABI 9. Every `modules/sym` case now has an `expect` file, and `port_compare`
 asserts REF's own outcome against it before comparing PORT, so a blanket reader
 regression cannot pass as "both compilers reject it alike"; `REEMIT_CASES` are
-asserted exit 0, canonical and idempotent. `sym_fuzz.py` mutates the format to 3
-and its seed declares a method. `port_compare.py` skips the method programs and
+asserted exit 0, canonical and idempotent. `sym_fuzz.py` mutates the format to the next
+format read from the seed (so a future bump cannot make it a no-op) and its seed
+declares a method. `port_compare.py` skips the method programs and
 `errors/methods.obx` only while the reference seed is below `(0, 6)`.
 
 **Mutants.** 38 method mutants were added, including parser/declaration,
@@ -5173,13 +5178,20 @@ wrote; only `--check` can see a forged file, and by design it trusts it). The
 retry-cleanup mutant was made observable by putting the forward-headed method
 call inside the hot loop of `run/methods_homes.obx` (the stale rel32 corrupts
 executed code; without the scan the program segfaults). Existing mutant patterns
-moved by the `callFn`/designator refactor were retargeted, not deleted.
+moved by the `callFn`/designator refactor were retargeted (15 changed patterns:
+11 in the fork dictionary and 4 port-only), not deleted. Three pre-existing port
+mutants that had been counted caught only because the mutated compiler no longer
+built (`break suspicion not recorded`, `loop-carried suspicion from continue
+dropped`, `deferred self-call suspicion kept at the defer`, now `deferred self-call
+suspicion not replayed`) were rewritten to valid source mutations in the live code, with their dead shadowed duplicates
+removed; each is now caught behaviourally by `handle_deep.obx`. The call refactor
+left `saveRegs()` dead, so it was removed.
 
 **Gates (this branch).** `make` with the 0.5 seed builds `obo` 0.6, 454,657
-bytes, sha256 `8b9dfcc3…`; stage 2 == stage 3 (`cmp`). `make tools` builds cat
+bytes, sha256 `90fcad7e…`; stage 2 == stage 3 (`cmp`). `make tools` builds cat
 40,961, wc 45,057 and sort 69,633 bytes; `make eza` builds 212,993 bytes.
-`run_fork.py` 1,261 passed; `port_test.py` 537/537 with 9 encoder groups;
-`port_compare.py` 1,280/1,280 stage B and 1,060/1,060 against the seed;
+`run_fork.py` 1,264 passed; `module_test.py` 91/91; `port_test.py` 537/537 with 9 encoder groups;
+`port_compare.py` 1,283/1,283 stage B and 1,061/1,061 against the seed;
 `sym_test.py` 30/30; `sym_fuzz.py` 200/200; `doc_check.py` 53 examples;
 `homes_check.py` and `homes_edge.py` green; `imports.py` 26/26; `stdlib.py`
 16/16; `io_test.py`, `meta_test.py` 34 checks, `elf_test.py` green;
@@ -5188,20 +5200,21 @@ bytes, sha256 `8b9dfcc3…`; stage 2 == stage 3 (`cmp`). `make tools` builds cat
 `--memory` 5/5 with the unchanged 2,752,512-byte cap. `mutate_fork.py` 561/587
 caught with 26 equivalents, 0 missed/stale/broken; `mutate_io.py` 27/27;
 `mutate_meta.py` runtime 50/52 (2 equivalent) and compiler 21/30 (9 equivalent),
-0 missed; `mutate_port.py` ran cold on the final tree and caught 528/529. The
-miss was the pre-existing `homes not pushed around obo calls` pattern, which the
-`callFn` refactor left matching the now-dead `saveRegs()` helper; retargeted to
-the live `callFnWith` save sequence and re-run alone it is caught, so all 529
-non-equivalent mutants are caught on the final harness (0 stale, 0 broken; the
-four method equivalents are excluded as in the fork harness). Self-compile: live peak 1,728,944 bytes and
-38,734,688 allocated, within the unchanged 2,000,000-byte budget (271,056 spare);
-the compiler source is 11,016 lines / 406,840 bytes. `bench/bench.py` completed
+0 missed; `mutate_port.py` full cold sweep on the revised harness and final
+tree caught 529/529, with 0 missed, 0 stale, 0 broken and no build-failure
+catches (the three repaired mutants are caught behaviourally by
+`handle_deep.obx`; the four method equivalents are excluded as in the fork
+harness). Self-compile: live peak 1,728,928 bytes and
+38,754,240 allocated, within the unchanged 2,000,000-byte budget (271,072 spare);
+the compiler source is 11,027 lines / 407,615 bytes. `bench/bench.py` completed
 all four workloads and their outputs agree.
 
 **Deviations and limits.** The incomplete-type message reuses the existing
 `<T> is declared but not yet defined` text rather than the design note's
-`type '<T>' ...` spelling. Receiver-mode and ownership diagnostics point at the
-method name/dot; the review allowed this unless the receiver start were threaded.
+`type '<T>' ...` spelling. Receiver type, mode and ownership diagnostics point
+at the receiver's start (threaded from the designator); a method's own
+type/name/visibility errors point at the method name. The two column-pinned module cases
+(`owned_receiver_column`, `mut_receiver_column`) hold this.
 The design's literal `b.store(clear(b))` is not an error when the outer receiver
 is a whole `&Bag` and `clear` only frees below it (the bag itself stays valid);
 the tests use an element receiver and a callee that frees below the receiver,
@@ -5211,4 +5224,7 @@ method-valued expression and chaining errors use the measured parser texts.
 Interfaces, dynamic dispatch, method values, chaining, static/UFCS calls, methods
 on built-ins/derived/foreign types and an `eza` refactor remain out of scope; the
 compiler's own source stays method-free, so the 0.5 seed builds it and the 0.6
-seed is promoted only after review and merge.
+seed is promoted only after review and merge. The frozen design note's remaining
+wording nits (the `closureSeen` fixture wording, receiver parens on one line, and
+the literal `b.store(clear(b))` example) are recorded for a later documentation
+pass; the design file itself is untouched.
