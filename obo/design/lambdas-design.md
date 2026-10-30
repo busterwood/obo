@@ -111,10 +111,14 @@ over-scope.
     `argOrderCheck`, `obo.obo:4773-4814`), appears in the mut-alias,
     deep-reference, handle-borrow and global-reference checks
     (`obo.obo:4960-5023`), and is invalidated by the reference machinery. A
-    pure callee (which every callback-taking helper can be) accepts deep,
-    handle-rooted and global-rooted captures because it cannot free or write
-    through them; an impure callee refuses them exactly like a reference
-    argument. There are no new ownership rules, only new bindings.
+    handle-safe callee (`pureFn(f) && !f.writesHandles`, which every callback
+    helper can be) accepts deep, handle-rooted and global-rooted captures;
+    the per-kind rules also allow a deep capture to a callee that is impure
+    only because it frees an unrelated global, and always allow a
+    whole-object capture. The check is made at the creating call; a later
+    call forwarding the closure repeats none, and section 5.4 gives the
+    soundness argument.
+    There are no new ownership rules, only new bindings.
 13. **Every function value is pure; an indirect call is a pure call.** A
     lambda body is checked after it is compiled against the compiler's own
     purity predicate (`pureFn` and `!writesHandles`, the `handleSafe` shape
@@ -142,18 +146,26 @@ over-scope.
 15. **Restrictions keep the nested compiler tractable:** no lambda literal in
     a `while` condition (the condition is lifted and truncated,
     `obo.obo:7251-7252`, then re-emitted, `7309-7310`), none in a `defer`
-    body (out-of-line compiled, `obo.obo:7834-7907`), none at top level, and
-    a lambda body may not call a function whose body is still being compiled
-    (an active enclosing function; its summary is not final). A lambda has no
-    name and cannot call itself; recursion through an already-defined pure
-    function and a function value is allowed and pure.
+    body (out-of-line compiled, `obo.obo:7834-7907`), no lambda initializer
+    of a global or `const` (a bare top-level `fn` is a declaration and never
+    reaches the lambda parser), and a lambda body may not call a function
+    whose body is still being compiled (an active enclosing function; its
+    summary is not final). A lambda has no name and cannot call itself;
+    recursion through an already-defined pure function and a function value
+    is allowed and pure.
 
 The genuine user-facing forks are the conservative capture rule (explicit,
 read-only, call-argument-only), the **pure-callback** restriction (a lambda
 may not free a global or free owned state through a handle; it can still append to a
 global array or write scalar globals), and the exclusion of named function
-values (`sort(xs, compare)` needs a lambda wrapper). Section 14 records the
-defaults and the extension paths; none blocks review.
+values (`sort(xs, compare)` needs a lambda wrapper). The design review
+accepted the recommended defaults on every fork: explicit read-only
+call-argument-only captures, no named function values, pure-only lambda
+bodies (a receiving callee may be impure only for a whole-object capture),
+rejecting string/interface captures, ABI 1, and Stage A then Stage B as
+separate merges/promotes. These are not open questions for this pass; no user
+escalation is needed. Section 14 keeps them recorded with their defaults and
+extension paths.
 
 ---
 
@@ -281,18 +293,44 @@ FnParamType  ::= [ "&" ] Type
   modules' structurally equal types) are the same type for assignment and
   `.sym` comparison. No nominal identity, no variance.
 - A function type is allowed as:
-  - a parameter type of a function, method or lambda (a bare `fn(...)`, not
-    `&fn(...)`);
-  - a local `let`/`var` type (the local needs an initializer);
+  - a parameter type of a function, method or lambda: a bare `fn(...)` or an
+    alias to one (not `&fn(...)`);
+  - a local `let`/`var` type: a bare `fn(...)` or an alias to one (the local
+    needs an initializer);
   - the right-hand side of a `type` alias (`type Cmp = fn(&Item, &Item):
-    int`);
-  - an exported type alias (subject to the export closure rules).
-- A function type is rejected as: a function/method/lambda/interface-member
-  return type; a record or variant field; an array element (`[]fn`); an
-  optional (`?fn`); a handle (`^fn`); a reference (`&fn`); a `Result` payload
-  (`Result[fn]`); a global; a constant; a method receiver; an interface
-  member parameter in v1; and inside a function type as a return type (a
-  function value cannot return a function value).
+    int`), including an exported alias (subject to the export closure rules).
+- Everywhere else a function type is rejected, **including through an alias
+  and through a constructor**:
+  - function/method/lambda/interface-member return types (a lambda may not
+    return a function value);
+  - record and closed-type fields;
+  - `?T`, `[]T`, `Result[T]`, `^T` and `&T`: `?Cmp`, `[]Cmp`, `Result[Cmp]`,
+    `^Cmp` and `&Cmp` are rejected exactly like the raw `?fn`/`[]fn`/
+    `Result[fn]`/`^fn`/`&fn`;
+  - globals, constants, method receivers, interface member parameters and
+    returns (v1);
+  - a function type **inside another function type as a return type** (a
+    function value cannot return a function value). A function type
+    parameter may itself be a function type (higher-order callbacks).
+- **Aliases are not a loophole.** The parser cannot know at a constructor
+  that its base is an alias to a function type, so the restriction is a
+  recursive `containsFn(t)` check at every constructor and storage/return
+  position (source and reader), not a `t.kind == "fn"` test in the `fn`
+  branch. An alias resolves to the same underlying `^Type`, so
+  `containsFn` sees it; `?Cmp`, `[]Cmp`, `Result[Cmp]` and a field/global/
+  return of `Cmp` are all refused with the same messages as their raw forms.
+- **No interface component in a function type in v1.** Every parameter and
+  the return of a function type is checked with `containsIface(t)`; a
+  direct interface type or an alias to one is rejected with
+  `a function value cannot take or return an interface value`. Ordinary
+  functions may take interface parameters (the interfaces design), but a
+  function value's ABI and captures assume owned/read-only/non-interface
+  words; allowing an interface there would need the interface cell/token
+  representation in the function-value contract.
+- `nonNull(fn)` is true, so an uninitialized `var f: fn(...)` is the existing
+  "needs an initial value" error; the `?` constructor checks the kind (and
+  `containsFn`) explicitly before `nonNull`, so `?fn`/`?Cmp` are refused with
+  the optional message rather than being formed.
 - A type alias to a function type is transparent, like every alias. A
   function type has no owner, name or uid; an alias symbol points at it. The
   `.sym` writer always emits the underlying `fn(...)` expression, never the
@@ -431,7 +469,7 @@ not assign to it, move it or free it.
 |---|---|---|
 | top-level `fn name(...)` | function declaration (`obo.obo:8440-8565`) | unchanged |
 | top-level `fn (r: &T) name(...)` | method declaration (`obo.obo:8446-8469`) | unchanged |
-| top-level `fn (a, b: &T) ...` | method error | unchanged; a top-level lambda is not a declaration |
+| top-level `fn (a, b: &T) ...` | method error | unchanged; a top-level `fn` is always a declaration, so this never becomes a lambda literal |
 | expression `fn (` | `expected an expression` (probed) | lambda literal |
 | type position `fn (` | `expected identifier` (probed) | function type |
 | record literal `new T{...}` | expression (`obo.obo:5923-6007`) | unchanged; a lambda starts with `fn`, so no block/record ambiguity |
@@ -540,12 +578,14 @@ fn main() {
   handle, does not free below a mut-reference parameter (it has none), and
   is not a forward heading (`pureFn`, `obo.obo:3440-3446`; the interfaces
   design uses the same `handleSafe` shape). A body that fails is rejected:
-  `a lambda must be pure: it may not free a global or write through a
-  handle; call a pure function instead`. A body may allocate, read globals,
-  write scalar globals, append to a global or owned array, call pure
-  functions/methods, call another function value (which is also pure), and
-  take/free owned parameters; none of those makes it impure by this
-  predicate.
+  `a lambda must be pure: it may not free a global or free owned state
+  through a handle; call a pure function instead`. A body may allocate, read
+  globals, write scalar globals, append to a global or owned array, call
+  I/O builtins (`print`, `println`, file/fd reads and writes; they do not
+  free), call pure functions/methods, call another function value (which is
+  also pure), and take/free owned parameters; none of those makes it impure
+  by this predicate. A scalar write through a captured handle is also
+  pure; only a write that frees owned state through the handle is not.
 - **An indirect call is a pure call.** Its synthetic callee is
   `addr = 0, freesAll = false, writesHandles = false, pfree = 0, freed = []`,
   so `pureFn` is true and `afterCall` (`obo.obo:3540-3572`) does nothing: the
@@ -619,11 +659,17 @@ type, not by syntax:
   optional word; for a `Result`, the cell pointer). The hidden function
   loads it into a hidden reference-like local at entry; field access,
   indexing, narrowing and non-consuming `match` work through the existing
-  reference machinery. The hidden binding is read-only: writes, moves,
-  `drop`, `take`, `replace`, `append` and `mut` method calls are refused by
-  the existing messages (`cannot change through '<x>': it is a read-only
-  reference`, `cannot move out of a reference: a reference only borrows`,
-  etc.).
+  reference machinery. The capture symbol's **declared** type is the
+  enclosing local's type (`?T`, `Result[T]`, the record, the array). An
+  `if o != nil` or `match` arm pushes the ordinary narrowing entry for that
+  symbol, so inside the arm the body sees the narrowed type `T`, not `?T`;
+  the narrowing stack is per hidden function (the island starts with it
+  empty) and the write checks still see the read-only binding. An optional
+  cannot be `match`ed; the optional test uses `if o != nil`. The hidden
+  binding is read-only: writes, moves, `drop`, `take`, `replace`, `append`
+  and `mut` method calls are refused by the existing messages (`cannot
+  change through '<x>': it is a read-only reference`, `cannot move out of a
+  reference: a reference only borrows`, etc.).
 - A scalar snapshot is a `let` local: reads are allowed, writes are refused
   with `cannot change captured '<x>': captures are read-only; pass a mutable
   parameter instead` (the compiler records capture symbols so the assignment
@@ -644,9 +690,12 @@ type, not by syntax:
   a parameter`) because a copy would need a reference-count increment and a
   matching decrement at the end of the call; owned captures are deferred
   (section 4.7). Interface values are rejected
-  (`cannot capture interface value '<x>'; pass it as a parameter`) because
-  interfaces are in flight and their cell/token representation should settle
-  first.
+  (`cannot capture interface value '<x>'; function values cannot take
+  interface values in v1`) because a function type has no interface
+  parameter or return, so the value could not be used or forwarded from the
+  body anyway; the interfaces cell/token representation is also still
+  settling. The message does not suggest passing the interface as a
+  parameter, because it cannot be one.
 
 ### 4.3 The environment cell
 
@@ -705,25 +754,35 @@ cell: [ code ][ cap0 ][ cap1 ] ... [ cap(ncap-1) ]
 - **No hidden frees.** The environment owns nothing: no capture is owned, no
   destructor is emitted, and the frame block is plain words. There is no
   free to attribute to the wrong owner and no double free. The hidden body's
-  purity check also guarantees it does not free a global or write through a
-  handle. This is why owned captures (records/arrays/strings) are deferred:
+  purity check also guarantees it does not free a global or free owned state
+  through a handle. This is why owned captures (records/arrays/strings) are
+  deferred:
   they would need a destructor run exactly once at the end of the call,
   including on `try` error paths, and a cleanup convention in the call
   sequence (section 4.7).
-- **The creator's call-site checks cover the call.** A capturing closure
-  argument's capture bindings are held across the later arguments and enter
-  the mut-alias/deep/handle/global checks (section 5.4). A pure callee (the
-  normal callback helper) cannot free a captured object through its own
-  arguments: its function value parameters are read-only, and any mut
-  reference parameters it has carry `pfree` 0 (it writes scalars/appends but
-  frees nothing below them); it does not write through handles or free
-  globals. A later argument that moves/frees a capture is refused at the
-  call. An impure callee (one that frees a global for other reasons) is
-  treated exactly as today: a deep/handle/global-rooted capture is refused
-  like a reference argument. The callee cannot acquire a new reference to
-  the capture target except through the arguments at entry, which were
-  vetted. It can pass the closure onward, but the same argument checks run
-  at each call; the creator's frame stays live throughout.
+- **The creator's call-site checks cover the call chain.** A capturing
+  closure argument's capture bindings are held across the later arguments
+  and enter the mut-alias/deep/handle/global checks (section 5.4). A
+  handle-safe callee (`pureFn(f) && !f.writesHandles`, the normal callback
+  helper) cannot free a captured object through its own arguments: its
+  function value parameters are read-only, and any mut reference parameters
+  it has carry `pfree` 0 (it writes scalars/appends but frees nothing below
+  them); it does not free owned state through a handle or free globals. A
+  later argument that moves/frees a capture is refused at the call. An
+  impure callee is treated by the per-kind rules: a deep capture is refused
+  when it may write through a handle or its body is not known; a
+  handle-rooted capture is refused unless `handleSafe`; a global-rooted
+  capture is refused when `mightFree`; a whole-object capture is still
+  accepted. The callee cannot acquire a new reference to the capture target
+  except through the arguments at entry, which were vetted. It can pass the
+  closure onward. That later call has no capture binding and repeats no
+  check; it is sound because the first callee's summary is complete and
+  includes every transitive effect (a later hop that could free the capture
+  would have set `writesHandles`, `mightFree` or `pfree` in the first
+  callee's summary, refusing the creator's capture), the closure exposes no
+  reference to its environment, and the creator's frame stays live
+  throughout. Section 5.4 states the argument; the implementation tests the
+  two-hop cases (section 10).
 - **The callee's call is pure.** Calling a function value does not make the
   callee `freesAll`/`writesHandles`; a helper that only calls a callback and
   writes scalars/appends can itself be pure and accept deep element
@@ -743,11 +802,11 @@ cell: [ code ][ cap0 ][ cap1 ] ... [ cap(ncap-1) ]
 | attempted use | result |
 |---|---|
 | capturing literal in a `let`/`var` initializer or assignment RHS | `a capturing lambda may only be passed directly as a call argument` |
-| capturing literal in a return value | the return type is not a function type (it cannot be); plus the call-argument rule |
-| capturing literal in a record field/array/global/`Result`/optional | the type is rejected at formation (section 2.2) |
-| capturing literal in a `while` condition | `a lambda literal cannot appear in a while condition; bind it to a local before the loop` |
-| capturing literal in a `defer` body | `a lambda literal cannot appear in a defer body; bind it to a local before the defer` |
-| capturing literal at top level/global/constant initializer | `a lambda can only be created inside a function` |
+| capturing literal in a return value | `a capturing lambda may only be passed directly as a call argument`; `lambdaExpr` checks the call context before the return type is considered, and a function return type cannot be a function type in any case |
+| capturing literal in a record field/array/global/`Result`/optional | the storage type is rejected at formation (section 2.2), so a valid one cannot be written; if it appears in an expression that is not a direct call argument, `lambdaExpr` reports the call-argument rule first |
+| capturing literal in a `while` condition | `a lambda literal cannot appear in a while condition; move the call out of the condition before the loop` |
+| capturing literal in a `defer` body | `a lambda literal cannot appear in a defer body; move the call out of the defer` |
+| capturing literal in a global or `const` initializer | `a lambda can only be created inside a function` (a bare top-level `fn` is a declaration and does not reach this check) |
 | capturing a string/interface | section 4.2 messages |
 | capturing a moved/freed local | the existing moved/freed message at the capture name |
 | writing/moving/freeing a read-only capture inside the body | the existing read-only-reference/move messages |
@@ -849,11 +908,23 @@ fn fnRet(t: ^Type): ^Type { return baseOf(t) }
   error); `same` and `assignable` gain the structural branch;
   `tname`/`symTypeText`/`appTypeExpr` gain the expression branch.
 - `same(a,b)` for functions: same return (`same(a.base,b.base)`), same arity,
-  and for every parameter the same mode name and `same` type. There is no
-  recursion through a function type (a function type cannot be forward-
-  declared or contain itself), so the recursion terminates.
+  and for every parameter the same mode name and `same` type. `same`
+  recurses through **nested function-type parameters** (higher-order
+  callbacks); the recursion follows the finite source/symbol type
+  expression. A self-referential function type is impossible in source (a
+  fn alias cannot be forward-declared, and a shell followed by a fn alias is
+  rejected), and the reader rejects the same shapes, so the recursion
+  terminates. A recursive **record** type is compared by pointer identity
+  (`same`'s existing record rule), not traversed.
 - `assignable(fn,fn)` is `same`; a byte/int or variant/closed rule never
   applies to functions. No variance: `fn(byte)` is not a `fn(int)`.
+- `containsFn(t)` / `containsIface(t)` / `rejectFn(t,msg)` /
+  `rejectIface(t,msg)` are new recursive helpers used at every constructor and
+  every forbidden position (section 5.2); they are not a `Type` field. They
+  recurse through `array`/`opt`/`handle`/`result` bases and, for
+  `containsIface`, through a function type's parameters and return; they do
+  not recurse into record fields (a function/interface field is rejected at
+  the definition, and a recursive record must not loop the helper).
 - A function type is not a named type; `reservedTypeName` and `nameType` are
   untouched. A type alias gives it a source name, but the writer emits the
   underlying type (`appTypeExpr`, `obo.obo:9350-9378`) and the reader
@@ -867,17 +938,22 @@ registration in `curModule.globals`, `visibleGlobals`, `exports` or
 (`obo.obo:1172-1175`) returns `"a lambda"` for `kind == "lambda"` so body
 diagnostics read `a lambda must return a value on every path`,
 `a lambda that returns a value needs a return type` (a void lambda with a
-`return value`), and `try needs a function that returns a Result; a lambda
-returns ...`. The symbol's `FnRec.params` are `[env] + visible parameters`;
-its `FnRec.pmodes` are `[1] + visible modes`; its summary is local and never
-written to a `.sym`.
+`return value`), and `try needs a function that returns a Result; 'a lambda'
+returns ...` (the existing `try` message quotes `callableName`, so the
+quoted form is `'a lambda' returns`, not `a lambda returns`). The symbol's
+`FnRec.params` are `[env] + visible parameters`; its `FnRec.pmodes` are
+`[1] + visible modes`; its summary is local and never written to a `.sym`.
 
-`releaseTables` (`obo.obo:10860-10879`) needs no new registry: hidden
-symbols live in `symArena` like any function symbol. Nothing refers to them
-after the island's code and cell are final, so the implementation may truncate
-`symArena`/`fnArena` to the island's marks at that point (the recommended
-cleanup) or leave them to the enclosing function's `fnBody` truncation; no
-global registry is added either way.
+`releaseTables` (`obo.obo:10860-10879`) gains the new per-compile state:
+`captureSyms = new []^Sym(0)` (0), `fnStack = new []^Sym(0)`, and the
+context counters `lambdaArgOK = 0`, `inWhileCond = false`, so an aborted
+compile cannot leave a registry or a context flag behind. Hidden symbols
+themselves live in `symArena` like any function symbol, and their `FnRec`s
+in `fnArena`; nothing refers to them after the island's code and cell are
+final. The default leaves `symArena`/`fnArena`/`argTemps` to the enclosing
+function/compile; the optional cleanup truncates all three together to the
+island's entry length after the purity check (5.3.1). `captureSyms` and
+`fnStack` are the only new registries.
 
 ### 5.2 Parser and checker
 
@@ -885,8 +961,8 @@ global registry is added either way.
 return lambdaExpr() }`. `lambdaExpr`:
 
 1. `next()` after `fn`; if `sym == T_LBRACK`, parse a non-empty capture list
-   of identifiers, resolving each with the outer-local rules (the capture
-   list resolution below); expect `]`, then `(`.
+   of identifiers **as names only** (reject an empty list, a duplicate, and
+   the mode-word form; do not resolve them yet); expect `]`, then `(`.
 2. Parse the parameter list with the same parameter machinery as `fnDecl`
    (`obo.obo:8485-8511`), rejecting `mut`; parse the optional return type
    with `parseType`; reject a function return type.
@@ -894,7 +970,12 @@ return lambdaExpr() }`. `lambdaExpr`:
    return; it is the value's type. There is no inference from a destination.
 4. Check context: `curFn != nil`; not in a while condition; not in a defer
    body; a capture list requires the call-argument context and rejects a
-   non-call context; a capture name must not duplicate a parameter.
+   non-call context. Then, now that the parameter names are known, check
+   each capture name against them (`capture '<x>' is also a parameter of the
+   lambda` wins over the not-a-local error), then resolve the remaining
+   names with the outer-local rules (the capture list resolution below).
+   Resolving after the parameter parse is what makes `capture also a
+   parameter` reachable in one pass; the outer blocks are still open.
 5. Create the hidden symbol/`FnRec`; emit the code island (5.3); **check the
    hidden function's purity** (`pureFn(hidden) && !hidden.writesHandles` and
    `hidden.fnRec.pfree == 0`) and reject an impure body with the section 9.2
@@ -914,43 +995,74 @@ borrowed, not fn(...)`; the same message is used inside a function type
 parameter.
 
 **Function-type restrictions** are enforced where types are formed, in source
-and in the `.sym` reader:
-- `parseType`/`symParseType`: reject `?fn`, `[]fn`, `Result[fn]`, and a
-  function return type in the fn branch; `^fn` is rejected by the handle
-  rule (`obo.obo:3985-3990`); `&fn` by `parseRefType`.
-- `fieldList` (`obo.obo:4016-4047`) and `symFieldList` (`obo.obo:9898-9916`):
-  reject a field whose type is `fn` with the function-specific message.
-- `varDecl` (`obo.obo:6553-6677`) and `symGlobalDecl`
-  (`obo.obo:10274-10302`): reject a global of function type; a global
-  lambda initializer is rejected earlier by `curFn == nil`.
-- `fnDecl` (`obo.obo:8512-8516`) and `symFnDecl` (`obo.obo:10384-10388`):
-  reject a function/method return type of `fn`.
-- `constDecl` (`obo.obo:8634-8646`): a lambda is not a compile-time constant;
-  the existing message fires.
-- `ok` (`obo.obo:5100-5117`): reject a function payload
-  (`Result cannot hold a function value`).
-- `relation` (`obo.obo:6385-6480`): add a `fn` check before the
-  reference/primitive comparison. A fn/fn comparison is
-  `function values cannot be compared`; a fn/nil comparison is
-  `a function value can never be nil` (check the nil side first). Without
-  this, two function values would compare their cell pointers as integers.
-  `checkAssign` must not add its usual nil hint (`declare it as ?fn(...)`)
-  for a function destination, because `?fn` is not a type; the nil assignment
-  reports `a function value can never be nil`.
-- `builtin` print (`obo.obo:5137-5163`), `handle` (`5203-5225`), `take`
-  (`5331`), `replace` (`5226`), `drop` (`5289`), `alive` (`5308`) keep their
-  existing type errors; the function type's `tname` makes them precise
-  (`cannot print fn(int): int`, `handles name records and closed types, not
-  fn(...)`, etc.).
-- Interface member parsing (after interfaces merges) rejects a function type
-  in a parameter or return (`an interface method cannot use a function value;
-  function types are not supported in interfaces`). There is no interface
-  function type in v1.
-- `closureCheck` (`obo.obo:8652-8681`) gains a `fn` branch: check every
-  parameter type and the return type, so a `pub` function or alias that
-  mentions a private type inside a callback signature is refused with the
-  existing `mark '<T>' pub too` remedy. `checkExports` (`obo.obo:8683-8706`)
-  then covers `pub fn`/method/alias signatures automatically.
+and in the `.sym` reader. They are **recursive**, because an alias or a
+constructor can hide a function type from a `kind == "fn"` test:
+
+```obo
+fn containsFn(t: ^Type): bool {
+    if t.kind == "fn" { return true }
+    if t.kind == "array" || t.kind == "opt" || t.kind == "handle" || t.kind == "result" {
+        return containsFn(baseOf(t))
+    }
+    return false
+}
+fn containsIface(t: ^Type): bool {
+    if t.kind == "iface" { return true }
+    if t.kind == "array" || t.kind == "opt" || t.kind == "handle" || t.kind == "result" {
+        return containsIface(baseOf(t))
+    }
+    if t.kind == "fn" {
+        for i in 0..len(t.fields) {
+            if containsIface(t.fields[i].typ) { return true }
+        }
+        return containsIface(baseOf(t))
+    }
+    return false
+}
+fn rejectFn(t: ^Type, msg: string) { if containsFn(t) { error(msg) } }
+fn rejectIface(t: ^Type, msg: string) { if containsIface(t) { error(msg) } }
+```
+
+`containsFn` returns true for a bare function type and for a function type
+behind `?`/`[]`/`^`/`Result`; an alias resolves to the same `^Type`, so
+`?Cmp`/`[]Cmp`/`Result[Cmp]` are caught. `containsIface` additionally walks
+a function type's parameters and return, so an interface hidden inside a
+nested callback type is caught. A record or closed type cannot contain a
+function or interface field (those field checks reject it at the definition),
+so neither helper recurses into record fields; this also avoids a loop on a
+recursive record.
+
+The position matrix (source and reader mirror it):
+
+| position | check |
+|---|---|
+| `parseType`/`symParseType` `?T` | after parsing the base, `rejectFn` with the optional message; the explicit kind check runs **before** `nonNull`. An interface in an optional is the interfaces phase's rule, not this check |
+| `[]T` | after parsing the base, `rejectFn` with the array message; an interface array is the interfaces rule |
+| `Result[T]` | after parsing the payload, `rejectFn` with the Result message; an interface payload is the interfaces rule |
+| `^T` | the existing record/closed kind rule; a fn/iface alias is rejected by kind (and `containsFn`/`containsIface` defensively) |
+| `&T` | `parseRefType`/reader borrow rule: `isOwned(fn/iface)` is false, so `&Cmp`/`&I` are rejected |
+| record/closed field (`fieldList`, `symFieldList`) | `rejectFn(field type, field message)`; interface fields are the interfaces phase's rule |
+| global (`varDecl`, `symGlobalDecl`) | `rejectFn(declared or inferred type, global message)`; a global lambda initializer is caught by `curFn == nil` first for an inferred global, and by the declared-type check for an explicit `var F: Cmp` |
+| local (`varDecl`) | allow a bare function type/alias (`kind == "fn"`); `?Cmp`/`[]Cmp`/`Result[Cmp]` were rejected by the constructors; a record type with a fn field cannot exist |
+| function/method/lambda return (`fnDecl`, `symFnDecl`, lambda header) | `rejectFn(ret, return message)`; a function type returning a function type is rejected inside the fn type too |
+| constants (`constDecl`, `symConstDecl`) | a lambda is not a compile-time constant; `rejectFn(expression type)` defensively |
+| `ok` | `rejectFn(payload, "Result cannot hold a function value")` |
+| `relation` | a fn/fn comparison is `function values cannot be compared`; a fn/nil comparison is `a function value can never be nil` (check the nil side first); a composite containing fn is impossible because the constructors rejected it |
+| method receiver (`methodRecvType`, `symFnDecl`) | `rejectFn`/`rejectIface` with the receiver message (the existing kind check already rejects a bare fn/iface) |
+| interface member parameter/return | `rejectFn`/`rejectIface` with `an interface method cannot use a function value...` |
+| function type parameter/return (fn branch) | `rejectIface` on every parameter and the return (`a function value cannot take or return an interface value`); `rejectFn` on the **return** only (a function-type parameter is allowed) |
+| `.sym` alias RHS (`symTypeDecl`) | the constructors above reject `?Cmp`/`[]Cmp`/`Result[Cmp]`; a bare fn alias is allowed and emitted |
+
+`checkAssign` must not add its usual nil hint (`declare it as ?fn(...)`) for
+a function destination, because `?fn` is not a type; the nil assignment
+reports `a function value can never be nil`. `builtin` print, handle, take,
+replace, drop and alive keep their existing type errors; `tname` supplies
+`fn(...)` where those messages include a type (section 9 pins the exact
+strings). `closureCheck` (`obo.obo:8652-8681`) gains a `fn` branch: check
+every parameter type and the return type, so a `pub` function or alias that
+mentions a private type inside a callback signature is refused with the
+existing `mark '<T>' pub too` remedy; `checkExports` (`obo.obo:8683-8706`)
+then covers `pub fn`/method/alias signatures automatically.
 
 **Indirect call.** `designatorT` (`obo.obo:5706-5890`) after `nameItem` and
 before the not-a-function check:
@@ -990,7 +1102,13 @@ found symbol:
 - call the normal `nameItem` path for the moved/freed/handle-use checks, or
   an equivalent check that preserves those diagnostics; for a handle, also
   call `deadHandleCheck` so a tracked `let` handle already known dead is
-  refused at the capture name (an untracked handle is the runtime residual);
+  refused at the capture name (an untracked handle is the runtime residual).
+  This includes the **use marks**: a captured reference local or parameter
+  advances `useSeq` and sets `usedAt`/`staleUse` like naming it, and a
+  captured tracked handle sets `lastNamed`/`usedAt` (unless dead or
+  `alive`), so an enclosing `defer`'s use detection and the loop's
+  handle-naming check see the capture as a use. Without the marks a capture
+  can slip past `deferH`/`usedAt > useAt` or a loop's moved-handle check;
 - classify it by type (4.2) and reject strings/interfaces;
 - create a capture record `LambdaCap { outer: ^Sym; name: string; kind: int;
   typ: ^Type; bind: ?^RefBind }` in declaration order;
@@ -1013,7 +1131,14 @@ normally and shadows an outer local/global.
 - `lambdaArgOK > 0` (new counter, incremented around the `nestedExpr()` of a
   call argument in `callFnWith` and in `callValue`) is required for a capture
   list. A non-capturing literal needs no flag.
-The flag is a counter so nested calls restore correctly. The type system
+The flag is a counter so nested calls restore correctly. The island's
+`LamCtx` saves `lambdaArgOK` and sets it to **0** while the lambda body is
+compiled, restoring it on exit (5.3.1): the permission belongs to the outer
+call site, not to the body, so a capturing literal in a `let` inside a
+call-argument lambda is rejected rather than inheriting it. `inWhileCond`
+and `inDefer` are saved and reset to false in the same island state, even
+though a literal cannot start an island while either is set; the reset is
+defensive against a future statement that composes them. The type system
 prevents a capturing literal from being stored in a field/array/global or
 returned, but the flag rejects the explicit capture-list form outside a call
 argument with the specific message.
@@ -1036,13 +1161,15 @@ budget without the user).
 
 1. Record the code position `over = jmp()` (an unconditional jump over the
    island); `entry = pc()`.
-2. Save the outer context into a `LamCtx` record (5.3.1); replace the
-   function-level arrays with fresh ones; set `curFn` to the hidden symbol,
-   `free`/`homeBits`/`homeCap` to a fresh function with `homes = false`,
-   `frame = 0`, `depth = 0`, `blocks` fresh, `ownedLocals` fresh,
-   `narrowStack`/`loops` fresh, defer/origin/guard/pending arrays fresh,
-   `trySite = tryNest = 0`, `condDepth = 0`, `pinned = nil`,
-   `inDefer = false`, `noreturn = false`, and the peephole state invalid.
+2. Save the outer context into a `LamCtx` record and install the island's
+   fresh state (5.3.1): fresh function-level arrays, `curFn` the hidden
+   symbol, homes off (`homeCap = 0`; there is no `homes` global), the outer
+   pre-scan saved and the island's scan arrays empty, `frame = 0`,
+   `depth = 0`, `loopdepth = 0`, `guardIdx = 0`, `lambdaArgOK = 0`,
+   `inWhileCond = false`, `inDefer = false`, `noreturn = false`, and the
+   peephole state invalid. The island's first holder is at
+   `argTempsUsed = len(argTemps)`, and `captureSyms` keeps the outer
+   captures of an enclosing lambda (5.3.1).
 3. Emit the hidden prologue (`push rbp; mov rbp,rsp; sub rsp, 0` with a
    frame-size patch, as `fnBody`, `obo.obo:8334-8342`); open the root block;
    declare the environment parameter at the ABI offset `16 + 8 * nvis`
@@ -1056,19 +1183,26 @@ budget without the user).
    (`returnStat` gains a `kind == "lambda"` check for this message).
 5. Close the blocks, emit the epilogue if the body did not terminate
    (`obo.obo:8385`), patch the hidden frame size, and call `dropFrame` if the
-   hidden frame is zero (`obo.obo:7985-7998`). The final `f.addr` is the
-   entry stored in the cell.
+   hidden frame is zero (`obo.obo:7985-7998`). Before clearing it, run the
+   same `if pendLine > 0 && hidden.writesHandles` pending error `fnBody` runs
+   (`obo.obo:8392-8393`), so a suspect recursive use reports at its line
+   rather than as a generic impurity. The final `f.addr` is the entry stored
+   in the cell.
 6. Restore the outer context (including the outer `curFn`, so the hidden
    symbol is no longer "being compiled"); check `pureFn(hidden) &&
-   !hidden.writesHandles` and `hidden.fnRec.pfree == 0`; `fixHere1(over)`;
-   emit the cell (5.4) and continue the outer expression.
+   !hidden.writesHandles` and `hidden.fnRec.pfree == 0` on the hidden symbol;
+   truncate `captureSyms` to the saved length and, if the optional cleanup
+   is used, truncate `symArena`/`fnArena` **and `argTemps` to the entry
+   length together** (5.3.1); `fixHere1(over)`; build the outer-side capture
+   binding (5.4) and emit the cell; continue the outer expression.
 
 The island is ordinary code in the same chunk stream. The `jmp` over it
 means the outer path never falls into it; the hidden `ret` never falls into
 the outer path. The outer `dropFrame` at the end of the outer function only
 moves the outer entry; the island is not contiguous with it. `farCalls` is
-saved/truncated around the island (the hidden body's direct calls are
-relative and already fixed; they do not need the outer `dropFrame`'s repair),
+saved and replaced with a fresh array around the island (the hidden body's
+direct calls are relative and already fixed; they do not need the outer
+`dropFrame`'s repair),
 so a call inside the island to a forward-headed function has its fixup on the
 callee, not on the island, and the existing `fnDecl` retry cleanup
 (`obo.obo:8596-8610`) still sees it when the outer function is retried.
@@ -1086,56 +1220,193 @@ close/epilogue/frame patch) into helpers shared with `fnBody`, or write a
 context save/restore. Duplicating the whole `fnBody` is rejected: it would
 drift.
 
-**Register homes inside the island are off.** `homes = false` makes `pickHome`
-return -1 (`obo.obo:3734-3736`) and `homeCap = 0` (`obo.obo:8330-8333`), so
-there is no pre-scan and no nested `homeRetry`/`giveUpHomes` (`obo.obo:2149-
-2155`). The hidden body's int/bool locals live in memory; captures are loaded
-into memory; this is a small cost for a callback body and removes the hardest
-piece of nested state (a retry inside a retry). The outer function's homes
-are saved/restored and keep working; a captured outer local in a home
-register is simply read (a copy), not spilled.
+**Register homes inside the island are off.** The island does not call
+`scanFunction`; it saves the outer pre-scan and installs empty scan arrays,
+sets `homeCap = 0`, and `pickHome` gains an early `homeCap <= 0` return (in
+addition to the existing `REG_HOMES == 0 || curFn == nil || inDefer ||
+homeRetry` guard, `obo.obo:3734-3736`). There is therefore no pre-scan and no
+nested `homeRetry`/`giveUpHomes` (`obo.obo:2149-2155`). The hidden body's
+int/bool locals live in memory; captures are loaded into memory; this is a
+small cost for a callback body and removes the hardest piece of nested state
+(a retry inside a retry). The outer function's homes are saved/restored and
+keep working; a captured outer local in a home register is simply read (a
+copy), not spilled.
 
 **Code size and dropFrame.** A hidden body with no locals gets its entry
 moved by `dropFrame` before the cell is emitted, so the cell always stores
 the final `CODE_BASE + f.addr`. The outer function's `dropFrame` is only for
 the outer entry; the island's entry is not a call target of any rel32.
 
-#### 5.3.1 The saved context
+#### 5.3.1 The saved context and the island's fresh state
 
-The outer context record (all arrays are saved as handles, not copied) must
-cover at least:
+`lambdaExpr` builds a `LamCtx` from two distinct kinds of entry: a **saved**
+outer value, restored verbatim, and a **fresh** value installed for the
+island. The island never mutates an outer array in place. An array that must
+survive is saved and restored as a handle (the island gets a fresh array) or,
+for an arena, truncated to a saved length. This section is the checklist the
+implementation and its review follow; a missed entry is a compiler-state bug,
+not a semantic one.
 
-- registers/homes: `homeBits`, `homeCap`, `free`, `homeRetry`;
-- frame/code: `frame`, `depth`, `farCalls`, `fwdCalls`, `lifted`, `waitFn`,
-  `waitAt`, `barrier`, peephole fields `cpAt`, `cpEnd`, `cpDst`, `cpSrc`,
-  `foldAt`, `foldEnd`, `foldHome`, `foldT`, `foldForm`, `foldOpc`, `foldArg`;
+**Saved and restored.** The outer values, in this order:
+
+- registers/homes: `homeBits`, `homeCap`, `homeRetry`, `free`;
+- frame/code: `frame`, `depth`, `fwdCalls`, `lifted`, `waitFn`, `waitAt`,
+  `farCalls`, `barrier`;
 - scopes: `blocks`, `fnBlock`, `ownedLocals`, `narrowStack`, `loops`,
   `depthJumps`, `originSyms`, `originDead`, `originLive`, `originPath`,
   `originNar`;
 - defers: `deferH`, `deferAt`, `deferFrees`, `deferFreeEv`, `dfBlock`,
   `dfIndex`, `dfOwner`, `dfEv`, `deferUses`, `deferMark`, `inDefer`;
-- loop/free logs: `freeLog`, `freeArena`, `arenaBase`, `recording`,
+- loop/free/held logs: `freeLog`, `freeArena`, `arenaBase`, `recording`,
+  `heldKey`, `heldPath`, `heldForeign`, `heldHit`, `heldStore`, `heldWhole`,
   `pendSym`, `pendDepth`, `frLine`, `frCol`, `pendWhat`, `pendOwn`,
   `pendNest`, `pendLine`, `pendCol`, `pendMsg`, `contSeq`, `brkSeq`,
-  `orSeq`, `freeSeq`, `truncKeep`;
+  `orSeq`, `freeSeq`, `truncKeep`, `replayFree`;
 - guards/alive: `guardStart`, `guardSym`, `guardFollow`, `guardFree`,
   `guardNeg`, `guardOpen`, `guardIdx`, `guardMark`, `inAlive`;
 - names/uses: `lastNamed`, `lastNamedPrev`, `lastDesigName`, `lastPlace`,
   `lastRaw`, `lastOrigin`, `lastIdent`, `lastViaHandle`, `lastFnBind`;
 - function state: `curFn`, `selfCalls`, `userCalls`, `useSeq`, `trySite`,
-  `tryNest`, `noreturn`, `condDepth`, `pinned`;
-- arena marks: `bindArena`, `symArena`, `argTemps`, `argTempsUsed`,
-  `farCalls`, `freeArena`, `fnArena` as lengths to truncate after the
-  island.
+  `tryNest`, `noreturn`, `condDepth`, `pinned`, `inWhileCond`,
+  `lambdaArgOK`, `loopdepth`;
+- pre-scan: `scanBytes`, `scanAt`, `scanLen`, `scanScore`, `scanPend`,
+  `scanCalls` (the outer function's pre-scan; `pickHome` reads it);
+- lengths: `bindArena`, `symArena`, `fnArena`, `argTemps` (length) and
+  `argTempsUsed`, `len(captureSyms)`, `len(fnStack)`.
 
-The declarations of most of these are in `obo.obo:1448-1517`, `2573-2576`,
-`3695-3701`, `4745-4746`, `4767-4768`, `1072-1087`, `1459-1500`. The list is
-the compiler's own function-level state; an implementer should diff it
-against `fnBody`/`fnDecl`'s save list (`obo.obo:8573-8628`) and `deferStat`'s
-save list (`obo.obo:7838-7873`) rather than trusting a hand count. The
-scanner position is **not** restored after the body: the body's tokens are
-consumed and the outer expression continues after `}`. Only a function-level
-retry rewinds the scanner.
+The scanner fields (`pos`, `line`, `col`, `last`, `sym`, `sval`, `ival`,
+`tline`, `tcol`) are deliberately **not** saved or restored: the island's
+tokens are consumed and the outer expression continues after `}`. Rewinding
+them would reparse `fn`; only a function-level retry rewinds the scanner
+(`fnDecl`, `obo.obo:8574-8585`).
+
+**Fresh for the island.** After the save:
+
+- `blocks`, `ownedLocals`, `narrowStack`, `loops`, `depthJumps`,
+  `originSyms`, `originDead`, `originLive`, `originPath`, `originNar`,
+  `deferH`, `deferAt`, `deferFrees`, `deferFreeEv`, `dfBlock`, `dfIndex`,
+  `dfOwner`, `dfEv`, `deferUses`, `freeLog`, `freeArena`, the six `held*`
+  arrays, the seven `pend*`/`fr*` arrays, `lifted`, `waitFn`, `waitAt` and
+  `farCalls` are **new empty arrays** (`farCalls` included: the outer
+  function's pending repairs live in its own array, and truncating the same
+  array in place would lose them);
+- `free` is a new array, then `setFree(0)` fills it for the hidden pool;
+- `homeBits = 0`, `homeCap = 0`, `homeRetry = false` (homes are off, see
+  below; `homeCap = 0` is what turns them off, there is no `homes` global);
+- `frame = 0`, `depth = 0`, `fwdCalls = 0`, `barrier = 0`;
+- `recording = 0`, `arenaBase = 0`, `freeSeq = 0`, `contSeq = 0`,
+  `brkSeq = 0`, `orSeq = 0`, `truncKeep = -1`, `replayFree = false`;
+- `deferMark = -1`, `inDefer = false`, `inWhileCond = false`,
+  `lambdaArgOK = 0` (the B1 island reset: a capturing literal in a `let`
+  inside a call-argument lambda must not inherit the outer call's
+  permission), `loopdepth = 0`;
+- `guardStart = -10`, `guardSym = nil`, `guardFollow = 0`, `guardFree = 0`,
+  `guardNeg = false`, `guardOpen = false`, `guardIdx = 0`,
+  `guardMark = nil`, `inAlive = false` (the island inside an outer
+  `alive(h) && ...` condition must not carry the outer `guardIdx` into the
+  island's fresh `originDead`; even where the existing bound check makes
+  that index unreachable, the state is reset, not inherited);
+- names/uses: `lastNamed = nil`, `lastNamedPrev = 0`, `lastDesigName = ""`,
+  `lastPlace = ""`, `lastRaw = ""`, `lastOrigin = nil`, `lastIdent = nil`,
+  `lastViaHandle = false`, `lastFnBind = nil`;
+- function state: `selfCalls = 0`, `userCalls = 0`, `useSeq = 0`,
+  `trySite = 0`, `tryNest = 0`, `noreturn = false`, `condDepth = 0`,
+  `pinned = nil`; `curFn` is the hidden symbol; `fnBlock` is the index of
+  the hidden root block (opened in step 3);
+- pre-scan: `scanBytes`/`scanAt`/`scanLen`/`scanScore`/`scanPend` are new
+  empty arrays and `scanCalls = 0`. `scanFunction` is never called for an
+  island; the outer pre-scan is restored afterwards. `pickHome` also gains
+  an early `if homeCap <= 0 { return -1 }` so a no-homes function cannot
+  read or clear a stale pre-scan through `scannedName`/`noteDeclared`.
+
+**Policy summary (one row per array group; every array in 5.3.1 is in one).**
+
+| arrays | policy |
+|---|---|
+| `blocks`, `ownedLocals`, `narrowStack`, `loops`, `depthJumps`, `originSyms`, `originDead`, `originLive`, `originPath`, `originNar`, `deferH`, `deferAt`, `deferFrees`, `deferFreeEv`, `dfBlock`, `dfIndex`, `dfOwner`, `dfEv`, `deferUses`, `freeLog`, `freeArena`, `heldKey`, `heldPath`, `heldForeign`, `heldHit`, `heldStore`, `heldWhole`, `pendSym`, `pendDepth`, `frLine`, `frCol`, `pendWhat`, `pendOwn`, `pendNest` | save the outer handle, install a **new empty** array, restore the handle |
+| `lifted`, `waitFn`, `waitAt`, `farCalls` | same (a fresh array, not a truncation: the outer entries live in the outer array) |
+| `free` | save the handle; install a fresh array and `setFree(0)`; restore |
+| `scanBytes`, `scanAt`, `scanLen`, `scanScore`, `scanPend` | save the handles; install empty arrays; restore; `scanCalls` is a saved scalar reset to 0 |
+| `argTemps` | **shared**; save `argTempsUsed` and the entry length; entry base `len(argTemps)`; restore the count; truncate to the entry length only with the optional `symArena`/`fnArena` cleanup, never alone |
+| `captureSyms` | **shared**; save the length; append the island's captures; truncate back to the saved length |
+| `fnStack` | **shared**; push the hidden symbol, pop on exit; save the length only to assert balance |
+| `bindArena` | length mark; leave to the enclosing `fnBody` truncation, or truncate only after the capture binding is built |
+| `symArena`, `fnArena` | length marks; default leave to the function/compile end; optional cleanup truncates them **together with `argTemps`** after the purity check |
+| `pos`, `line`, `col`, `last`, `sym`, `sval`, `ival`, `tline`, `tcol` | **not saved/restored**; the island consumes its tokens and the outer expression continues after `}` |
+
+**Arena policy.** `symArena`, `fnArena` and `bindArena` are not arrays with
+outer live elements to save; they are append-only arenas. The island records
+their lengths at entry. `bindArena` is left to the enclosing `fnBody`
+truncation or truncated only **after** the literal's capture binding has
+been built (section 5.5).
+
+The **default** is to leave `symArena`, `fnArena` and `argTemps` to the
+enclosing function: `fnBody` truncates `symArena` and `argTemps` to the
+function's marks at its end (`obo.obo:8395-8397`), and `fnArena` lives until
+the compile ends. This is the simple, unquestionably safe policy: no handle
+to a hidden `^Sym`/`FnRec` is ever used after its arena slot is gone, and the
+pool symbols an island appended can be reused by later calls exactly as the
+existing pool reuses symbols within a function (their `symArena` entries are
+still there). The cost is one hidden `Sym` and `FnRec` per literal per
+function pass (retries add more) until the enclosing function ends; the
+compiler source itself uses no lambdas in round 1, so the compiler peak gate
+does not move.
+
+**Optional cleanup:** truncate `symArena`, `fnArena` **and `argTemps` to the
+island's entry length together**, after the purity check and before the
+capture binding is built. All three must move together: if `symArena` is
+truncated while a pool symbol created by the island remains in `argTemps`,
+the next `holdArg` would reuse a handle to a freed `Sym` slot; if `fnArena`
+alone is truncated, a hidden `Sym` left in `symArena` holds a stale `FnRec`
+handle. Truncating `argTemps` to the entry **length** (not to
+`argTempsUsed`) preserves every outer live holder below it and every holder
+of an enclosing island (they are below the inner entry length). Nested
+islands are safe: the inner truncates only its own tail, and the outer
+truncates only what remains above its own entry length once all inner
+islands have finished. The peak with cleanup is `(nesting depth + 1)` hidden
+symbols and `FnRec`s plus the capture symbols of the deepest island; without
+cleanup it is one per literal in the function. A `FnRec` is never left with
+a symbol that has been truncated, and no `pfFn` row points at a hidden
+`FnRec` (`pfree` is 0). The cleanup is an optimization; the default is the
+safe leave-to-the-function policy.
+
+**`argTemps` policy.** `argTemps` is a pool shared by the whole compile
+(`obo.obo:4767-4781`). The island must neither overwrite the outer holders
+that are still live below `argTempsUsed` nor leave its own used entries to be
+mistaken for live ones:
+
+- at entry save `argTempsUsed` as `sTemps` and set
+  `argTempsUsed = len(argTemps)`: the island's first holder is a fresh entry
+  after every existing one, so no outer live holder is touched;
+- inside, `holdArg` may append new `^Sym`s; these are ordinary pool entries
+  and may be reused later;
+- at exit restore `argTempsUsed = sTemps`. If the arenas are left to the
+  enclosing function (the default), do **not** truncate `argTemps`: its
+  symbols are reused by design and remain valid because their `symArena`
+  slots are still live. If the optional cleanup truncates `symArena`, it
+  must truncate `argTemps` to the same entry **length** in the same step
+  (5.3.1); truncating to `sTemps` instead would remove live holders of an
+  enclosing island but truncating to the entry length never does. Never
+  truncate `argTemps` without truncating `symArena`: the pool would keep
+  handles to freed symbols.
+
+**`captureSyms` policy.** A new registry `var captureSyms = new []^Sym(0)`
+holds the capture symbols of the lambdas being compiled, for the
+capture-specific diagnostics (section 9). `lambdaExpr` saves
+`len(captureSyms)`, appends its capture symbols as it creates them, and
+truncates back to the saved length on exit. It is **not** reset to empty at
+entry: a nested lambda inside a lambda body can capture the enclosing
+lambda's capture symbols, and an assignment to such a capture must still get
+the capture message, not the generic immutable-local one. At the top level
+of a compile the length is 0 because `releaseTables` clears it (section 5.1).
+The same save/truncate pattern applies to the collision-free names; no
+capture symbol is ever looked up by name outside its own hidden body.
+
+**`fnStack` policy.** `fnStack` (section 5.5) is shared on purpose: the
+island pushes the hidden symbol and the outer function stays on the stack, so
+a call from the island to an under-construction outer callee is detected. The
+LamCtx saves `len(fnStack)` only to assert that the push/pop is balanced; it
+does not reset the stack.
 
 **Peephole.** Do not restore a pending fold across the island. The outer code
 before the literal may have a fold pending; the island's code is not on the
@@ -1183,11 +1454,17 @@ rEnv = load [rbp + env.offset]        // the hidden parameter 0 slot
 rVal = load [rEnv + 8 + 8*i]
 store [rbp + capSym[i].offset] = rVal
 ```
-The capture symbol is an `isRef`/`isRefLocal=false` local for an
-owned/reference capture (slot holds the pointer, read-only bind), a normal
-`let` local for a scalar/handle/function-value capture. The symbols are
-declared in the hidden root block before the body; `nameItem`/field access
-then use the ordinary paths.
+Every capture symbol is a `let` local (`kind = "let"`), so a bare
+assignment to an owned/reference/handle/function-value capture gets the
+ordinary `'<x>' is immutable (declared with let)` message. For an
+owned/reference capture it is also `isRef` with `isRefLocal = false` (the
+slot holds the pointer, read-only bind); a scalar/handle/function-value
+capture is an ordinary value local. The scalar captures are also listed in
+`captureSyms`, and `assignmentOrCall` checks that membership for a scalar
+**before** the generic `let` test, so a scalar capture assignment gets
+`cannot change captured '<x>': captures are read-only; pass a mutable
+parameter instead`. The symbols are declared in the hidden root block before
+the body; `nameItem`/field access then use the ordinary paths.
 
 **Indirect call.** `callValue(x, line, col)`:
 1. Materialise the callee cell pointer and store it in a hidden frame temp
@@ -1221,6 +1498,10 @@ then use the ordinary paths.
 type, `ret` from the type, `addr = 0`, `freesAll = false`,
 `writesHandles = false`, `pfree = 0`, `freed` empty) so the existing
 `afterCall`/`mutFrees`/`mightFree`/`argOrderCheck` machinery works unchanged.
+The synthetic symbol and its `FnRec` are **locals of `callValue`**, not
+`newSym`/`newFnRec` arena entries: they live only for the call's compilation,
+so an indirect call site costs no `symArena` or `fnArena` growth and leaves
+no handle behind. Only a lambda literal's hidden symbol uses the arenas.
 The symbol is pure by construction; the lambda purity check (section 3.4) is
 what makes that sound. It is never looked up or called directly. The display
 name for messages is the callee local's name: `function value '<f>'`; the
@@ -1258,13 +1539,61 @@ The union is built with `arenaBind` (`obo.obo:1089-1103`). The pseudo-entry is
 the same shape as a reference argument, so the existing loops print
 `argument <i> of <f> may point inside argument <j>, which is mut` and the
 global/handle/deep messages; the design adds the capture wording in section 9
-where the closure is the held argument. The important soundness rule is:
-**a capture binding that is deep (`anyDeep`), handle-rooted (`handleSym`) or
-global-rooted is refused when the callee is not pure** by the existing
-checks. A callback helper is pure (the normal case) and allows them; an
-impure callee that also takes the closure (e.g., one that frees a global for
-its own reasons) refuses them exactly like a reference argument. The mut
-argument overlap check is unchanged and conservative even for a pure callee.
+where the closure is the held argument.
+
+A capture binding is checked by the existing per-kind argument rules, with
+one deliberate strengthening for a **handle-rooted** capture:
+- deep (`anyDeep`): the existing deep-reference rule, `f.addr < 0 ||
+  f == curFn || f.writesHandles`, with its existing message. A callee that
+  frees a global for its own reasons but never writes through a handle does
+  not threaten a reference into a local object, so it is allowed, exactly as
+  for an ordinary deep reference argument.
+- handle-rooted (`handleSym`): **handle safe**, `handleSafe(f) = pureFn(f) &&
+  !f.writesHandles`. The ordinary handle-reference check uses `!pureFn(f)`,
+  but `pureFn` alone does not exclude `writesHandles` (a transitive call that
+  may free through a handle can leave `pureFn` true). A handle-rooted
+  capture can be called later while the handle's target is live, so the
+  stricter test is used for the capture binding. This is the interfaces
+  design's `handleSafe` shape.
+- global-rooted: the existing `mightFree(f, g)` rule and message.
+A **whole-object owned local or parameter** capture (and a scalar, handle or
+function-value capture with no root) passes even an impure callee: the
+closure body is pure, the captured object cannot be moved or mutably aliased
+by another argument of the same call (the hold and the mut-alias loop refuse
+it), and the callee cannot free that object through an unrelated reference.
+A callback helper is handle-safe in the normal case and allows deep,
+handle-rooted and global-rooted captures; an impure callee that writes
+through a handle refuses a deep/handle capture, and one that may free a
+global refuses a global-rooted capture, exactly like a reference argument.
+The mut argument overlap check is unchanged and conservative even for a
+handle-safe callee: the capture binding's `deeps` flag is false for a
+whole-object capture, so the existing pair loop refuses only a mut argument
+that overlaps a **deep** capture; a whole-object capture with a mut argument
+to the same object is the ordinary read-only-plus-mut pattern and is
+accepted (run case).
+
+**Later calls do not repeat the capture check.** The binding exists **only at
+the call that receives the literal**. When a function-typed parameter or
+local is passed onward, the later call has no capture binding, and the design
+does not pretend the same checks run there. The conclusion is sound because
+the first callee's effect summary is complete at the creator's call (declare
+before use; the active-call rule excludes a callee whose body is still on the
+compile stack) and already includes every transitive effect. If the first
+callee, directly or through any callee it forwards the closure to, could
+free through a handle, `writesHandles` propagates into the first summary and
+the creator's deep or handle capture would have been refused; if it could
+free the captured global, `freed`/`mightFree` propagates and the
+global-rooted capture would have been refused; a handle-rooted capture is
+refused unless the first callee is fully `handleSafe`. The closure value
+itself exposes no
+reference to its environment, so a later callee cannot name a capture root
+except through arguments the creator passed, and the creator's call checked
+those against the capture binding (mut-alias, arg-order, deep/handle/global).
+A later callee cannot store, return or outlive the function value (section
+1), so it cannot keep even that indirect access. A whole-object capture is
+safe for the same reason and needs no purity at all. This is why the
+soundness rests on the first callee's summary plus the creator's holder, not
+on a check at each hop.
 
 **No hidden calls to the runtime.** A function value is called with the
 compiler's own calling convention, not a runtime slot. The runtime is
@@ -1286,22 +1615,28 @@ keeps the existing alignment contract.
 | `methodSyms`/`methodCall` | methods are functions with a receiver | function types are allowed in method parameter lists; no method values; no change to the registry |
 | `checkExports`/`closureCheck` | exported signatures must be closed over public types | recurse through function types |
 | `relation` | `==` on two function values would compare pointers | reject comparison |
-| `releaseTables` | arenas are cleared between compiles | no new registry; hidden symbols live in `symArena` and die with the enclosing function's truncation |
+| `releaseTables` | per-compile tables are cleared between compiles | add `captureSyms = new []^Sym(0)`, `fnStack = new []^Sym(0)`, `lambdaArgOK = 0`, `inWhileCond = false`; hidden symbols and `FnRec`s die with the paired `symArena`/`fnArena` truncation (5.3.1) |
 
-**Arena/state cleanup.** After the island is final and the cell emitted,
-restore the fresh arrays and truncate `argTemps`/`farCalls` to their marks.
-Do **not** truncate `bindArena` before the literal's capture binding is
-built: that binding is a new `RefBind` in `bindArena` (it uses only outer
-symbols and their pre-island binds) and must survive until the call argument
-loop. The simplest safe rule is to leave the island's `bindArena` entries to
-the enclosing function's `fnBody` truncation (`obo.obo:8395`); if memory
-matters, `symArena`/`fnArena` may be truncated to the island's marks after
-the purity check and before the capture binding is built (nothing else refers
-to the hidden symbol; the hidden `FnRec`'s `freed` list holds persistent
-global symbols and its `pfree` is 0, so no `pfFn` row points at it). If a
-future change gives a hidden lambda a `pfree` bit, the `pf` rows must be
-truncated with the symbol; the current restriction (owned/read-only
-parameters, read-only captures) keeps that from happening.
+**Arena/state cleanup.** After the island is final and the cell emitted:
+restore every saved handle and scalar from the `LamCtx`; restore
+`argTempsUsed` to the outer mark; truncate `captureSyms` to the saved
+length; set the peephole invalid. By default leave `symArena`/`fnArena`/
+`argTemps` to the enclosing function (5.3.1). If the optional cleanup is
+used, truncate `symArena`/`fnArena` and `argTemps` to the entry length
+**together**. Do **not** truncate `bindArena` before the literal's capture
+binding is built: that binding is a new `RefBind` in `bindArena` (it uses
+only outer symbols and their pre-island binds) and must survive until the
+call argument loop. The simplest safe rule is to leave the island's
+`bindArena` entries to the enclosing function's `fnBody` truncation
+(`obo.obo:8395`). If a future change gives a hidden lambda a `pfree` bit,
+the `pf` rows must be truncated with the symbol; the current restrictions
+(owned/read-only parameters, read-only captures) keep `pfree` 0. The order is
+fixed: close the hidden body; restore the outer `LamCtx`; check
+`pureFn(hidden) && !hidden.writesHandles && hidden.pfree == 0` on the hidden
+symbol object (restoring outer state does not touch it); then the optional
+arena truncation; then the capture binding and the cell. The purity check
+must precede the truncation, and the capture binding must follow the restore
+because it uses the outer symbols.
 
 ### 5.6 No new tokens or keywords
 
@@ -1401,19 +1736,40 @@ part of that signature's line; a function-type alias is in the alias group.
 - `symParseType` (`obo.obo:9847-9895`) gains a `T_FN` branch mirroring
   `parseType`: `fn`, reject `[`, `(`, parameters with an optional `&`
   (reject `&` on a non-owned type, including `&fn(...)`), `)`, optional
-  `: Ret`, reject a function return, construct the structural type.
-- `symFieldList` (`9898-9916`) rejects a function field with the specific
-  detail; `symGlobalDecl` (`10274-10302`) rejects a function global;
-  `symConstDecl` (`10211-10273`) never sees a function constant (its type
-  check is primitive); `symFnDecl` (`10304-10599`) rejects a function return
-  and parses function-typed parameters as mode 0. A method receiver of
-  function type is rejected by the existing
+  `: Ret`, `rejectIface` on every parameter and the return, `rejectFn` on
+  the return, construct the structural type. Its `?`, `[]` and `Result`
+  branches apply the same recursive `rejectFn` check **after parsing the
+  base**, so `?Cmp`/`[]Cmp`/`Result[Cmp]` are refused exactly like
+  `?fn`/`[]fn`/`Result[fn]`; `^Cmp` is refused by the handle kind rule (and
+  a defensive `containsFn`), `&Cmp` by the reader's borrow rule (`isOwned`
+  false). An interface in an optional/array/Result is the interfaces
+  reader's rule; the lambda reader adds only the interface-inside-a-function
+  check in the fn branch above.
+- `symFieldList` (`9898-9916`) calls `rejectFn(field type, field message)`;
+  `symGlobalDecl` (`10274-10302`) calls `rejectFn(declared type, global
+  message)`; `symConstDecl` (`10211-10273`) never sees a function constant
+  (its type check is primitive, plus a defensive `rejectFn`); `symFnDecl`
+  (`10304-10599`) calls `rejectFn(ret, return message)` and parses
+  function-typed parameters as mode 0. A parameter that is an alias to a
+  function type is allowed; a parameter that is `?Cmp`/`[]Cmp`/
+  `Result[Cmp]` was rejected by `symParseType`; a parameter whose type
+  contains an interface is rejected. A method receiver of function type is
+  rejected by `rejectFn` and the existing
   `the receiver must be a record or closed type defined in this module,
   not fn(...)`.
-- `symTypeDecl` (`10040-10209`): the alias path accepts a function type and
-  registers the alias; a forward shell followed by a function alias is
+- `symTypeDecl` (`10040-10209`): the alias path accepts a **bare** function
+  type (or an alias to one) and registers the alias; a `?Cmp`/`[]Cmp`/
+  `Result[Cmp]` RHS is rejected by `symParseType`; record/closed fields are
+  checked by `symFieldList`; a forward shell followed by a function alias is
   rejected (`a function type cannot be forward-declared: '<T>' is already
   declared as a forward type`); a duplicate alias is the existing error.
+- A `.sym` function type whose parameter/return contains an interface is
+  rejected with `a function value cannot take or return an interface value`,
+  in the fn branch, not only at a top-level parameter/return.
+- The reader's restrictions are the **same recursive helpers** as the
+  source's (`containsFn`/`containsIface`/`rejectFn`/`rejectIface`); a symbol
+  file cannot smuggle a function type through an alias or a constructor that
+  source would refuse.
 - `symTypeText` (`9783-9790`) gains the `fn` branch for diagnostics.
 - Mode 1 (`--check`) creates the function type object; mode 0 compares the
   live and parsed types with the structural `same`. The reader does not
@@ -1529,20 +1885,29 @@ It is registered for the function-valued argument exactly like a reference
 argument (mode 1) but no reference is pushed. A later argument that moves or
 frees a captured root marks the holder moved and `argOrderCheck` refuses
 (`argument <j> of <f> may free what argument <i> captures, and runs after
-it; compute it before the call`). A mut argument that may overlap a capture
-is refused by the pair loop (`argument <i> of <f> captures a place that
-argument <j> changes, which is mut`, and the reverse). A capture binding with
-a deep place, a handle root or a global root is refused when the callee is
-impure (`freesAll`/`writesHandles`), exactly as a reference argument is
-today (`cannot pass a reference that points inside something to <f>: it
-writes through a handle...`, `cannot pass a reference that borrows through a
-handle to <f>: it might free what the handle names`, `cannot pass a reference
-into global '<g>' to <f>: it might free it`; the closure wording is in
-section 9.3). A **pure** callback helper passes all of them: it cannot free,
+it; compute it before the call`). A mut argument that may overlap a **deep**
+capture is refused by the pair loop (`argument <i> of <f> captures a place
+that argument <j> changes, which is mut`, and the reverse); a whole-object
+capture has `deeps = false`, so a mut argument to the same object is the
+ordinary read-only-plus-mut pattern and is accepted. A deep capture uses
+the existing deep-reference rule (`f.addr < 0 || f == curFn ||
+f.writesHandles`); a handle-rooted capture uses the stricter
+`handleSafe(f) = pureFn(f) && !f.writesHandles`; a global-rooted capture
+uses `mightFree(f, g)`. The messages are the existing reference messages
+with the closure wording of section 9.3 (`cannot pass a closure that
+captures a reference inside something to <f>: it writes through a handle,
+which could free it`, `cannot pass a closure that captures a reference
+through a handle to <f>: it might free what the handle names`, `cannot pass
+a closure that captures a reference into global '<g>' to <f>: it might free
+it`). A **handle-safe** callback helper passes all of them: it cannot free,
 free through a handle or free a global, which is what those checks care
 about (it may still write scalar fields or append through a mut parameter).
-An impure callee for other reasons refuses deep/handle/global captures. A
-whole-object local/parameter capture is the safest shape and always passes.
+A whole-object local/parameter capture is the safest shape and passes even
+an impure callee, subject to the same hold and mut-alias checks. The check
+is made **once**, at the creating call; a later call that receives the
+closure through a function-typed parameter or local has no binding, and
+section 5.4 states why the first callee's complete summary plus the
+creator's holder make that sound.
 
 ### 7.3 Aliasing, moves and invalidation by example
 
@@ -1763,18 +2128,22 @@ names, no trailing period, types through `tname`. `<T>` is a type,
 | situation | message |
 |---|---|
 | lambda parameter declared `mut` | `a lambda parameter cannot be mut; a function value takes owned or read-only parameters` |
-| lambda `return value` with no return type | `a lambda that returns a value needs a return type` |
+| lambda `return value` with no return type | `a lambda that returns a value needs a return type` (the hidden body has a void return; `returnStat` checks `kind == "lambda"` and reports this, not the generic return-value error) |
+| lambda with a return type but a fall-through path | `a lambda must return a value on every path` (the hidden `fnBody` call's name is `a lambda`; the existing `must return a value on every path` form with that name) |
+| lambda body uses `try` but the lambda does not return a `Result` | `try needs a function that returns a Result; 'a lambda' returns <t>` (the existing `try` message quotes `callableName`; `what` is `tname(ret)` or `nothing` for a void lambda) |
+| `var f: fn(...)` with no initializer | the existing `'<f>' of type fn(...) needs an initial value (it cannot be nil)` (`nonNull(fn)` is true) |
 | empty capture list | `a capture list needs at least one name` |
 | duplicate capture | `capture '<x>' given twice` |
 | capture also a lambda parameter | `capture '<x>' is also a parameter of the lambda` |
 | function type with a capture list | `a function type cannot have a capture list` |
-| function return type | `a function cannot return a function value; function values are parameters and locals only` |
+| function/method/lambda declaration return type | `a function cannot return a function value; function values are parameters and locals only` (a lambda is a function; the same string) |
+| function type expression whose return is a function type (`fn(...): fn(...)`) | `a function type cannot return a function value` (the fn-type parser, source and reader) |
 | record/closed field | `a record field cannot be a function value; function values are parameters and locals only` |
 | array element/`[]fn` | `an array cannot hold function values` |
-| optional | `an optional cannot hold a function value; function values are parameters and locals only` |
+| optional | `an optional cannot hold a function value; function values are parameters and locals only`. This is chosen for `?fn` and for an alias `?Cmp`, before `nonNull` is consulted (otherwise the existing needs-initial-value message would win); the explicit kind check is in the `?` branch after parsing the base |
 | `Result[fn]` | `Result cannot hold a function value` |
 | global | `a function value cannot be a global; it is a parameter or a local` |
-| constant | `a constant cannot hold a function value` |
+| constant | a source constant cannot hold one: a lambda initializer is caught by `a lambda can only be created inside a function`, a named function by the not-a-value error, and a function-typed local cannot be a constant. `a constant cannot hold a function value` is a **reader-only** defensive check (`symConstDecl`); do not write a source test expecting it |
 | handle type `^fn` / `handle(f)` | the existing handle-rule messages (`handles name records and closed types, not fn(...)` for the type; `handle needs a record or closed-type value that is not optional, not fn(...)` for the builtin) |
 | borrowed function type | `only records, closed types and arrays can be borrowed, not fn(...)` (existing) |
 | method receiver | `a method's receiver must be a record or closed type declared in this module, not fn(...)` (existing) |
@@ -1786,23 +2155,26 @@ names, no trailing period, types through `tname`. `<T>` is a type,
 
 | situation | message |
 |---|---|
-| lambda at top level/global/const (`curFn == nil`) | `a lambda can only be created inside a function` |
-| lambda literal in a while condition | `a lambda literal cannot appear in a while condition; bind it to a local before the loop` |
-| lambda literal in a defer body | `a lambda literal cannot appear in a defer body; bind it to a local before the defer` |
+| lambda initializer of a global or a `const` (`curFn == nil`) | `a lambda can only be created inside a function` |
+| a bare lambda at top level | **not this message**: a top-level `fn` starts a function or method declaration, so `fn (x: int): int { ... }` reaches the method-receiver parser and reports `a method's receiver must be a record or closed type declared in this module, not int` (or `expected a receiver name` for `fn ()`). Do not write a test expecting the lambda message here |
+| lambda literal in a while condition | `a lambda literal cannot appear in a while condition; move the call out of the condition before the loop` |
+| lambda literal in a defer body | `a lambda literal cannot appear in a defer body; move the call out of the defer` |
 | capturing literal outside a call argument | `a capturing lambda may only be passed directly as a call argument` |
 | capture name not a local/parameter | `'<x>' is not a local variable or parameter; a lambda uses globals directly, without capturing` |
 | capture name is a top-level function | `cannot capture function '<f>'; call it directly` |
 | enclosing local not listed in the capture list | `'<x>' is a local of the enclosing function; add it to the lambda's capture list: fn [<x>](...)` |
 | capture of a string | `cannot capture '<x>': strings are owned; pass it as a parameter` |
-| capture of an interface value | `cannot capture interface value '<x>'; pass it as a parameter` |
-| a capture mode word (`fn [mut x]`, `fn [move x]`) | `captures are read-only: write fn [x]; mutable and owned captures are not supported` (the parser reads the second word as a capture name; check for this intent before resolving, or let the not-a-local error stand) |
+| capture of an interface value | `cannot capture interface value '<x>'; function values cannot take interface values in v1` |
+| a capture mode word (`fn [mut x]`, `fn [move x]`) | `captures are read-only: write fn [x]; mutable and owned captures are not supported`. One behavior, not two: when the first name in a capture list is the identifier `mut` or `move` and the next token is an identifier, report this message immediately; otherwise resolve the name normally. The test pins this string |
+| bare assignment to a captured object or reference (`b = other`, `r = other`) | the existing `'<x>' is immutable (declared with let)`: the capture symbol is a `let`, and bare assignment is re-pointing the local, not writing through it. It is **not** the capture-specific message |
+| assignment to a captured scalar | `cannot change captured '<x>': captures are read-only; pass a mutable parameter instead` (the `captureSyms` registry lets `assignmentOrCall` distinguish a capture symbol from an ordinary immutable local) |
+| field/index write through a captured object or reference | the existing `cannot change through '<x>': it is a read-only reference` (the capture binding is read-only) |
 | a lambda body naming the local it is being assigned to | the existing `undeclared identifier '<x>' (declare before use; use a forward heading for mutual recursion)`; a lambda has no name and cannot recurse directly |
 | write/move/free of a read-only capture | the existing read-only-reference/move messages, e.g. `cannot change through '<x>': it is a read-only reference`, `cannot move out of a reference: a reference only borrows` |
-| scalar capture assignment | `cannot change captured '<x>': captures are read-only; pass a mutable parameter instead` (the implementation marks capture symbols with a `captureSyms` list or a `capture` flag so `assignmentOrCall` can say this instead of the generic immutable-local message) |
 | capture of a moved local | `'<x>' was moved and has no value here` (existing) |
 | capture of a freed reference | `'<x>' may point to freed memory: something under what it points into was changed; point it again first` (existing) |
 | impure lambda body (frees a global, frees owned state through a handle, calls an impure/forward-headed function) | `a lambda must be pure: it may not free a global or free owned state through a handle; call a pure function instead` |
-| call to an active enclosing function or method | `cannot call '<f>' from a lambda while it is being compiled: its effects are not known yet` |
+| call to an active enclosing function or method | `cannot call '<f>' from a lambda while it is being compiled: its effects are not known yet` (for a method `<f>` is `methodDisplay`, e.g. `T::m`; the ordinary self-recursive call `f == curFn` keeps its existing handling and is not this error) |
 
 ### 9.3 Calls and capture arguments
 
@@ -1819,12 +2191,15 @@ names, no trailing period, types through `tname`. `<T>` is a type,
 | `f == nil` (relation) | `a function value can never be nil` (checked before the general function-value comparison) |
 | `f = nil` (assignment) | `a function value can never be nil` |
 | `println(f)` | `cannot print fn(...)` (existing) |
-| `drop`/`take`/`replace`/`handle`/`alive` | their existing owned/optional/handle messages, with `fn(...)` in `tname` |
+| `drop(f)` | `drop needs a local variable holding an owned value` (no type name in this message) |
+| `take(f)` | `take needs an optional variable, field or element holding an owned value` (no type name) |
+| `replace(f, ...)` | `replace needs a variable, field or element holding an owned value` (no type name) |
+| `handle(f)` / `alive(f)` | `handle needs a record or closed-type value that is not optional, not fn(...)` / `alive needs a handle, not fn(...)` (these two do use `tname`) |
 | later argument frees a capture | `argument <j> of <f> may free what argument <i> captures, and runs after it; compute it before the call` |
-| mut argument overlaps a capture | `argument <i> of <f> captures a place that argument <j> changes, which is mut` / the receiver form |
-| deep capture to an **impure** callee (one that frees a global/frees through a handle for its own reasons; a pure callback helper accepts it) | `cannot pass a closure that captures a reference inside something to <f>: it writes through a handle, which could free it` |
-| handle-rooted capture to an impure callee | `cannot pass a closure that captures a reference through a handle to <f>: it might free what the handle names` |
-| global-rooted capture to an impure callee that may free it | `cannot pass a closure that captures a reference into global '<g>' to <f>: it might free it` |
+| mut argument overlaps a **deep** capture | `argument <i> of <f> captures a place that argument <j> changes, which is mut` / the receiver form; a whole-object capture with a mut argument to the same object is accepted, not this error |
+| deep capture to a callee that may free through a handle (`f.addr < 0`, `f == curFn` or `f.writesHandles`; a handle-safe callback helper accepts it) | `cannot pass a closure that captures a reference inside something to <f>: it writes through a handle, which could free it` |
+| handle-rooted capture to a callee that is not `handleSafe` (`pureFn(f) && !f.writesHandles`) | `cannot pass a closure that captures a reference through a handle to <f>: it might free what the handle names` |
+| global-rooted capture to a callee for which `mightFree(f, g)` | `cannot pass a closure that captures a reference into global '<g>' to <f>: it might free it` |
 | capture holder runs after a move | the existing `argument <n> of <f> may free what argument <m> points into...` / capture wording above |
 
 ### 9.4 Symbol files
@@ -1856,26 +2231,41 @@ adds the capture-list cases.
 | `lambdas_effects.obx` | an indirect call is pure: a deep reference into an array passed to the callback stays valid after the call; a helper that calls the callback and writes scalars/appends stays pure and can be imported into a pure context; a lambda that appends to a global array or writes a scalar global is accepted; a callback result that is owned/string is freed correctly; an impure lambda body is an error case (10.2) |
 | `lambdas_sort.obx` | the comparator-shaped insertion sort of an index array over `[]Item` with a non-capturing `fn(&Item,&Item): int`; ascending and descending; a `[]int` comparator taking ints by value; stable equal-key order; see 10.5 |
 | `lambdas_homes.obx` | a function with register-homed int locals and a lambda literal, run under `homes_check`/`homes_edge` and the `obo-noregs` build; the island does not disturb the outer homes |
-| `lambdas_scope.obx` | a lambda in a block, a loop body, a match arm and a method body; an indirect call through a function-typed local in an if/while condition (the literal is bound before the loop, never in it); a defer's *call* (not its literal); the same non-capturing literal executed twice uses the same read-only cell |
+| `lambdas_scope.obx` | a lambda in a block, a loop body, a match arm and a method body; an indirect call through a function-typed local in an if/while condition (the literal is bound before the loop, never in it); a defer's *call* (not its literal); a call whose arguments contain nested calls and a non-capturing literal; a new local declared after a lambda literal; the same non-capturing literal executed twice uses the same read-only cell |
 
 ### 10.2 Stage A error programs (`tests/errors/lambdas.obx`)
 
 One `// ===` section per error with the exact section 9 text:
 
 - declaration: `mut` lambda parameter; return value without a return type;
-  empty capture list; function return; field; array; optional; `Result`;
-  global; constant; handle; `&fn`; method receiver; interface member (module
-  tree if interfaces are merged); forward shell + alias; private type inside
-  an exported callback signature (module tree).
+  a lambda with a return type and a fall-through; `try` in a non-`Result`
+  lambda; an uninitialized `var f: fn(...)`; empty capture list; function
+  return; field; array; optional; `Result`; global; constant (the reader-only
+  form is in 9.4); handle; `&fn`; method receiver; interface member (module
+  tree if interfaces is merged); forward shell + alias; private type inside
+  an exported callback signature (module tree). Every storage/return
+  position is repeated through a `pub type Cmp = fn(...)` alias: `?Cmp`,
+  `[]Cmp`, `Result[Cmp]`, `^Cmp`, a record/closed field, a global, a
+  `const`, and a return, so an alias cannot smuggle a function type where
+  the raw form is refused.
 - calls: non-function local call (unchanged message); arity (too few/too
   many); argument type/mode (owned vs `&`, `&` to owned, owned to `&`);
   calling a function value with a record argument when it expects `&T`;
   `f().n`, `f()[0]`, `f.m()`, `f[i]`; `f == g`, `f == nil`, `f = nil`;
   `println(f)`, `drop(f)`, `take(f)`, `replace(f, ...)`, `handle(f)`,
-  `alive(f)`, `match f`, `for x in f`, `if f`, `f + 1`, `&f`.
-- contexts: a lambda literal at top level/global/`const`; in a while
+  `alive(f)`, `match f`, `for x in f`, `if f`, `f + 1`, `&f`, `ok(f)`; a
+  function type as a higher-order parameter (`fn(fn(int): int): int`) is
+  accepted, while a function type as a return (`fn(...): fn(...)`) is
+  rejected. For the generic forms whose message comes from an existing
+  construct (`match f`, `for x in f`, `if f`, `f + 1`, `&f`, `ok(f)`), the
+  error file pins the existing text produced at that construct; no new
+  lambda string is invented for them.
+- contexts: a lambda initializer of a global or a `const`; in a while
   condition; in a defer body; a call to the active enclosing function; a
-  lambda literal used as a statement; a lambda literal invoked directly.
+  lambda literal used as a statement; a lambda literal invoked directly. A
+  bare `fn` at top level is **not** a lambda: it is parsed as a function or
+  method declaration, so the test for it expects the receiver/syntax error
+  (9.2), not `a lambda can only be created inside a function`.
 - effects: a function value argument that moves the object a later argument
   needs; an indirect call in an assignment target across a call; an impure
   lambda body (`a lambda must be pure...`) for a body that frees a global,
@@ -1887,35 +2277,71 @@ One `// ===` section per error with the exact section 9 text:
 
 | file | covers |
 |---|---|
-| `lambda_closures.obx` | `fn [n]` scalar snapshot; `fn [b]` whole record read-only (field reads and a read-only method); `fn [xs]` whole array read-only; a captured optional and `Result` (non-consuming match); capture list order; a capture used inside an if/while in the body; a callback called twice |
-| `lambda_refs.obx` | capturing a reference parameter/whole-object reference and a reference into a field/element (accepted when passed to a **pure** callback helper: the pure callee cannot free it; refused when passed to an impure function that also takes the callback); a captured tracked `let` handle whose owner is moved later (refused at the call) |
+| `lambda_closures.obx` | `fn [n]` scalar snapshot; `fn [b]` whole record read-only (field reads and a read-only method); `fn [xs]` whole array read-only; a captured optional read through `if o != nil` narrowing (an optional cannot be `match`ed; the narrowed type, not the declared `?T`, is what the arm sees); a captured `Result` whose payload is a closed type, read with a non-consuming `match` and bound by `let` (the payload is not moved out); capture list order; a capture used inside an if/while in the body; a callback called twice |
+| `lambda_refs.obx` | capturing a reference parameter/whole-object reference and a reference into a field/element (accepted when passed to a **handle-safe** callback helper: it cannot free it; a deep capture is refused when the callee writes through a handle or its body is unknown, a handle-rooted capture when it is not handle-safe, a global-rooted capture when `mightFree`); a deep capture accepted by a callee that is impure only because it frees an unrelated global; a whole-object capture passed to an impure callee and to a forward-headed callee (both accepted) and the same closure passed with a mut argument to the same object (accepted; only a deep capture overlaps); a captured tracked `let` handle whose owner is moved later (refused at the call) |
 | `lambda_handles.obx` | capturing a `^T` handle by value and **reading** through it in the callback (pure); a **scalar write** through the captured handle is accepted and pure; a write that **frees an owned field** through it is an error case (`a lambda must be pure...`); a handle capture with a tracked origin refused when the owner is moved; a `// expect-exit: 7` case for an untracked stale field handle |
 | `lambda_methods.obx` | a lambda in a method body capturing the `&`/`mut &`/owned receiver read-only; a method taking a callback and calling it; a lambda capturing a `&` receiver and calling a read-only method; a `mut` method call through the capture refused (error case) |
-| `lambda_modules.obx` | a module tree: main passes a capturing closure to `lib::apply`, which calls it; a two-hop call (`lib1` → `lib2`) with the closure; a scalar, record and handle capture (read-only); `lib::apply`'s summary is **pure** (it calls a pure callback), so an importer may pass a deep capture; a separate impure function that also takes a callback refuses a deep capture |
+| `lambda_modules.obx` | a module tree: main passes a capturing closure to `lib::apply`, which calls it; a two-hop **pure** call (`lib1` → `lib2`) with the closure (accepted: the first summary is complete); a two-hop chain where `lib1` forwards the closure to an impure `lib2` that writes through a handle (refused at the creator's deep/handle capture because `lib1`'s summary is then `writesHandles`); a scalar, record and handle capture (read-only); `lib::apply`'s summary is **handle-safe** (it calls a pure callback), so an importer may pass a deep capture; a separate impure function that writes through a handle and takes a callback refuses a deep capture but accepts a whole-object one |
 | `lambda_sort_capture.obx` | the comparator shape with a captured `Opts` record read-only and a captured scalar; ascending/descending; a sort helper that calls the pure callback and has a `mut` array parameter; the helper is pure and accepts `&items[i]` deep references; a callback appending to a global result array (pure state channel) |
-| `closures_scope.obx` | a capturing literal in a loop body (each iteration), in an if arm, in a match arm, in a method call argument; a non-capturing lambda local in a defer; nested lambdas (an inner non-capturing and a capturing inner capturing an outer lambda's local) |
+| `closures_scope.obx` | a capturing literal in a loop body (each iteration), in an if arm, in a match arm, in a method call argument; a non-capturing lambda local in a defer; nested lambdas (an inner non-capturing and a capturing inner capturing an outer lambda's local and **an outer lambda's capture**, the capture-of-capture case) |
+| `lambda_state.obx` | a capturing literal inside an `alive(h) && apply(...)` condition (the island's guard reset); a literal in an index expression while the array is held (`xs[pick(fn ...)]`), in an `append` value while the array is held, and in a `replace` value while the array is held; a call whose earlier argument is a reference and whose later argument is a capturing literal whose body makes a call (the island's argument holders start at `len(argTemps)`); a call whose arguments contain calls and a lambda; a new local declared after a capturing literal; homed outer locals with a same-name hidden local under `homes_check` |
 
 ### 10.4 Stage B error programs (`tests/errors/closures.obx`)
 
 - the capture-list diagnostics (unknown/global/function/string/interface/
   duplicate/also-a-parameter/unlisted local);
-- capture of a moved local or a freed reference;
+- capture of a moved local or a freed reference, including a local the
+  program `drop`ped before the literal is evaluated (the closure is created
+  after the drop, so the capture name is already moved; `'<x>' was moved and
+  has no value here`); a later argument that drops the captured root is the
+  distinct arg-order case above;
 - write/move/free/drop/take/replace/append/mut-method on a read-only capture;
 - capturing literal in a `let`/assignment/return/field/array/global/
-  `Result`/optional/while condition/defer/top level;
-- a later argument that moves/frees a capture (the capture wording);
-- a mut argument that overlaps a capture (both directions, including a
-  method receiver);
-- a deep/handle-rooted/global-rooted capture passed to an **impure** callee
-  that also takes the callback (one that frees a global/frees through a handle for
-  its own reasons); a pure callback helper accepts them (a run case);
+  `Result`/optional/while condition/defer/global or `const` initializer; and a capturing literal
+  in a `let` inside the body of a lambda that is itself a call argument (the
+  B1 `lambdaArgOK` island reset);
+- a later argument that moves/frees/drops/takes the captured root, or calls
+  a function that does so (the capture wording);
+- a mut argument that overlaps a **deep** capture (a capture of `x.f` or
+  `&x.f`), in both directions and including a method receiver; a
+  **whole-object** capture with a mut argument to the same object is the
+  accepted run case in `lambda_refs.obx`, not an error; a whole-object
+  capture with a later argument that moves the captured local (before the
+  closure argument or after it) is an ordinary move/arg-order error;
+- a deep capture passed to a callee that writes through a handle, a
+  handle-rooted capture passed to a callee that is not handle-safe (in
+  particular one that `pureFn` passes but `writesHandles` fails), and a
+  global-rooted capture passed to a callee that may free that global; a
+  handle-safe callback helper accepts all of them (a run case); a
+  whole-object capture is accepted by an impure callee (a run case); a deep
+  capture is still accepted by a callee that is impure only because it frees
+  an unrelated global (a run case);
+- a two-hop refusal: the creator passes a closure to `lib1`, which forwards
+  it to an impure `lib2`; `lib1`'s summary is impure, so the creator's deep
+  capture is refused. The two-hop pure acceptance is a run case;
 - a captured tracked let-handle whose owner is dropped/moved by a later
   argument;
 - an acceptance case (a run program, not this error file): a callback called
   after the callee's mut argument frees an unrelated object, where the
   capture binding does not overlap that argument;
 - a callback with an owned parameter that is moved out of by a later arg
-  (the ordinary argument-order error).
+  (the ordinary argument-order error);
+- a lambda body that frees a global record or global array (`drop g`,
+  `truncate(g, ...)`, assigning over an owned global) and one that frees
+  owned state through a captured handle: the `a lambda must be pure...`
+  error;
+- a call to a method whose body is the active enclosing method (the
+  active-call rule, not only the function form);
+- a function type containing an interface in any position: a parameter, the
+  return, a nested callback parameter, and an alias to the interface used as
+  one of those; the source forms and their `.sym` forms. (An interface in an
+  optional/array/Result outside a function type belongs to the interfaces
+  phase's own error tests, not this file);
+- the constructor/alias storage smuggling forms: `var f: ?Cmp`,
+  `var a: []Cmp`, `var r: Result[Cmp]`, `var h: ^Cmp`, a record/closed field
+  of `Cmp`, a global `Cmp`, a `const` lambda, a return `Cmp`, and the same
+  through a `.sym` alias; every source position is repeated in the reader
+  (10.6).
 
 ### 10.5 The sorting-comparator and tool-callback shape
 
@@ -1982,12 +2408,13 @@ fn main() {
 |---|---|
 | `modules/run/lambdas` | `lib` exports `pub fn apply(x: int, f: fn(int): int): int` and a `pub type Cmp = fn(&Item,&Item): int`; main passes non-capturing lambdas, a lambda wrapper for a named function, and a function value from a local; calls work and the function value crosses the module boundary |
 | `modules/run/lambda_closures` | main passes a capturing closure to `lib::apply`; lib calls it; scalar/record/handle captures (read-only); a two-hop module call; `lib::apply`'s summary is pure in `lib.sym` (a callback call does not make it impure) |
-| `modules/run/lambda_transitive` | L exports a function type alias and a function taking it; A imports L and exports `fn run(cb: lib::Cmp)`; B imports only A and passes a lambda to `a::run`; the structural type travels in A's `.sym` as `fn(...)`, not `lib::Cmp` |
+| `modules/run/lambda_transitive` | L exports a **scalar** function type alias (`pub type Cmp = fn(int,int): int`) and a function taking it; A imports L and exports `fn run(cb: lib::Cmp)`; B imports **only A** and passes `fn (a: int, b: int): int { ... }` to `a::run` (B cannot spell `lib::Cmp`; the alias spelling is only in A). The tree must build and exit 0, not merely compare REF==PORT. Assert that A's `.sym` carries the transitive dependency chain to L (the existing `depiface`/`deps` line) even though B does not import L, and that the structural type in A's `.sym` is `fn(int,int): int`, not `lib::Cmp`. This is the transitive-chain assertion reviewers asked for. |
 | `modules/sym/lambdas` | a positive `symcheck` tree: a committed `.sym` with `fn(...)` in a signature and a `type Cmp = fn(...)` alias; a source-less checked root passes a lambda; exit 0 |
 | `modules/sym/lambda_transitive_check` | the transitive tree source-less; exit 0 (not merely REF==PORT) |
 | `modules/errors/lambda_signature` | passing a lambda whose parameter modes/types/return differ from the imported parameter: the exact `argument ... cannot use fn(...) as fn(...)` |
-| `modules/errors/lambda_storage` | an attempt to store a function value in an exported record/global/return in a dependency; the source/module error |
-| `modules/errors/lambda_capture` | a capturing literal in a `let`/while/defer in a checked module; the section 9 messages |
+| `modules/errors/lambda_storage` | an attempt to store a function value in an exported record/global/return in a dependency, through a bare fn type and through an alias (`?Cmp`, `[]Cmp`, `Result[Cmp]`, `^Cmp`, field `Cmp`, global `Cmp`, return `Cmp`); the source/module error |
+| `modules/errors/lambda_sym_types` | a hand-written committed `.sym` with `?Cmp`, `[]Cmp`, `Result[Cmp]`, `^Cmp`, a field/global/return/const of `Cmp`, and an interface inside a function type; each is rejected by the reader with the section 9.4 detail, exit nonzero |
+| `modules/errors/lambda_capture` | a capturing literal in a `let`/while/defer in a checked module; a capturing literal in a `let` inside a call-argument lambda; a later argument that drops the capture root; a call to the active enclosing method; a lambda body that frees a global record/array; the section 9 messages |
 | golden tree | `lib.obx` gains a pub function with a `fn(&Item,&Item): int` parameter and a `pub type Cmp = fn(...)`; the 3 `expected/*.sym` are regenerated explicitly |
 
 `sym_test.py` additions:
@@ -2003,8 +2430,12 @@ fn main() {
   interface as today.
 - `malformed_structures` with a fn type as the fixture: `fn` in a field,
   global, return, array, optional, Result, interface member; malformed
-  `fn(`, `fn(&int)`, `fn(...): fn(...)`, a missing `)`; alias spelling;
-  duplicate alias; forward shell + fn alias; a fn type in a method receiver.
+  `fn(`, `fn(&int)`, `fn(...): fn(...)`, a missing `)`; alias spelling in
+  every one of those positions (`?Cmp`, `[]Cmp`, `Result[Cmp]`, `^Cmp`,
+  field/global/return/const `Cmp`); an interface in a function parameter,
+  return and nested callback; duplicate alias; forward shell + fn alias; a
+  fn type in a method receiver. Each malformed input must fail on the
+  **same** detail as its source form, not on a generic syntax error.
 - `sourceless_and_build_requirement`: `--check` against a source-less
   dependency with a fn-typed parameter and alias, asserting exit 0; the
   checked module's own `.sym` contains its fn signature; a stale 0.7/format-3
@@ -2033,8 +2464,8 @@ expectation.
 - `tests/port_compare.py`: `SEED_FILE_MIN` `(0, 8)` for each Stage A
   `tests/run/lambdas*.obx` and `tests/errors/lambdas.obx`; `(0, 9)` for the
   Stage B `lambda_closures.obx`/`lambda_refs.obx`/`lambda_handles.obx`/
-  `lambda_methods.obx`/`lambda_sort_capture.obx`/`closures_scope.obx` and
-  `tests/errors/closures.obx`; the keys are the absolute
+  `lambda_methods.obx`/`lambda_sort_capture.obx`/`closures_scope.obx`/
+  `lambda_state.obx` and `tests/errors/closures.obx`; the keys are the absolute
   `os.path.join(FORK, 'tests', ...)` paths used by the existing map; module
   trees are outside the seed comparison and use the new compiler's gates.
   Extend the symcheck `expect`/REEMIT assertions.
@@ -2054,7 +2485,7 @@ expectation.
 - `tests/own_fuzz.py` is unchanged; it does not generate lambdas (record as
   a limit). `elf_test.py`/`io_test.py`/`meta_test.py` run unchanged.
 
-### 10.8 Mutants (~25 targets; the exact snippets are captured at implementation)
+### 10.8 Mutants (~40 targets; the exact snippets are captured at implementation)
 
 | mutant | expected catcher |
 |---|---|
@@ -2062,6 +2493,9 @@ expectation.
 | `tname`/`appTypeExpr` has no fn branch | wrong diagnostics/golden |
 | `parseType`/`symParseType` fn branch drops a parameter mode | wrong type/mode acceptance |
 | fn allowed as a field/global/array/optional/Result/return | the corresponding error case |
+| `containsFn` missing at one constructor (`?`/`[]`/`Result`) or in the reader | the alias-spelling smuggling case is accepted in that position |
+| `containsFn` checks only `kind == "fn"` (not an alias spelling) | `?Cmp`/`[]Cmp`/`Result[Cmp]` accepted although the raw form is refused |
+| interface allowed inside a function type (source or reader) | the interface-in-fn-type error cases |
 | lambda parameter `mut` accepted | errors |
 | hidden body compiled in the outer frame/no prologue | run crash/wrong output |
 | env not pushed first (or pushed after the args) | shifted arguments/wrong output |
@@ -2077,11 +2511,24 @@ expectation.
 | capturing literal outside a call argument accepted | errors |
 | lambda literal in a while condition accepted | miscompile/crash |
 | lambda literal in a defer accepted | state corruption/crash |
+| `lambdaArgOK` not saved/reset to 0 in the island (B1) | a capturing literal in a `let` inside a call-argument lambda is accepted; its holder has no capture binding and the run crashes/UAFs |
+| scan state not saved/restored, or `pickHome` has no `homeCap <= 0` early return | `homes_check`: an outer home candidate is cleared by a nested island, or the outer pre-scan is read after the island |
+| `guard*` not reset in the island | a lambda inside `alive(h) && ...` uses the outer `guardIdx` against fresh `originDead` (bounds trap) or skips the guard |
+| `argTempsUsed` not set to `len(argTemps)` at island entry | the island overwrites a live outer argument holder; a later argument's capture/arg-order check is wrong or a run UAF |
+| `captureSyms` not truncated, or not cleared in `releaseTables` | a capture diagnostic fires for an ordinary immutable local in a later function, or is missing for a capture-of-capture |
+| island keeps `recording`/`inWhileCond`/`inDefer`/`loopdepth` from the outer body | a capture/read-only check fires or is skipped depending on where the literal sits |
 | capture list unknown/global/function name accepted | errors |
 | capture of a moved/freed local accepted | use-after-free error case |
 | read-only capture made writable | write compiles/mutates |
 | capture binding not held across later args | arg-order use-after-free |
 | capture binding not in the mut-alias checks (or in the global/handle/deep checks for an impure callee) | overlap/capture accepted where refused |
+| handle-rooted capture accepted for a callee that is `pureFn` but `writesHandles` (`handleSafe` replaced by `pureFn`) | the handle capture to a writes-through-handle callee is accepted; run frees it |
+| deep/global capture acceptance ignores `writesHandles`/`mightFree` | a deep/global capture to a freeing callee is accepted; run frees it |
+| whole-object capture treated as deep for the mut-alias check | the accepted whole-object-capture-plus-mut-argument run case is refused |
+| propagated closure re-checked as if a capture binding existed (or first callee summary ignored) | the two-hop pure acceptance is refused, or the two-hop impure refusal is accepted |
+| indirect call's cell temp held only in a pool register across the argument pushes | a nested call in an argument clobbers it, so the wrong cell is called (run crash) |
+| optional capture narrowing skipped (body uses the declared `?T` instead of the narrowed type) | the narrowed-capture run case fails to compile or reads an optional as a value |
+| capture-of-capture not resolved through the enclosing lambda's capture symbols | the inner literal cannot capture the outer capture, or captures the wrong object |
 | string/interface capture accepted | errors/leak |
 | active enclosing function call allowed | unsound summary (record equivalent if unobservable) |
 | `.sym` writer omits the fn type/modes | roundtrip/golden |
@@ -2143,7 +2590,7 @@ On the merged tree, per stage:
    parameters, `dropFrame`/cell, `callValue`, the `designatorT` path, the
    `call qword ptr [cell]` emitter, the pure synthetic callee and the lambda
    purity check (`pureFn(hidden) && !hidden.writesHandles`), the context
-   restrictions (while/defer/top-level/active call), and the missing-cell/
+   restrictions (while/defer/global or const initializer/active call), and the missing-cell/
    storage diagnostics. Add the Stage A run/error/module tests; run the
    existing error tests before and after the call-path change to prove direct
    call messages are byte-identical.
@@ -2151,8 +2598,10 @@ On the merged tree, per stage:
    compiler peak; do not touch captures yet.
 4. **Stage A docs, mutants, review, merge, promote 0.8.** LANGUAGE section
    after the interfaces section (lettered `5c` if interfaces is `5b`),
-   README phase/status/version, FORK record after implementation; mutants;
-   all gates; one promote.
+   README phase/status/version **including the split of the old `6a.
+   Interfaces and lambdas` row into the interfaces row and a separate
+   lambdas row** (11.2), FORK record after implementation; mutants; all
+   gates; one promote.
 5. **Stage B capture list and environment.** Capture-list parser/resolution,
    `LambdaCap`, capture symbols/prologue, frame cell, `lastFnBind` and the
    capture binding, argument holds/mut-alias/deep/handle/global checks,
@@ -2201,14 +2650,18 @@ On the merged tree, per stage:
     `symFnDecl` `10304-10599`; `symReadDecls` `10601-10623`; `readSym`
     `10665-10836`; `reemitSym` `10845-10858`; `releaseTables`
     `10860-10879`; constants `109-111`.
-  - new: `newFnType`/`fnAddParam`/`fnArity`/`fnParam`/`fnMode`/`fnRet`,
-    `lambdaExpr`, `LambdaCap`, `lambdaBody`, the `LamCtx` save/restore,
-    `callValue`, `fnValueSym`, the indirect-call emitter helper, the
-    while/defer/arg context flags, and the capture-list resolver.
+  - new: `newFnType`/`fnAddParam`/`fnArity`/`fnParam`/`fnMode`/`fnRet`;
+    `containsFn`/`containsIface`/`rejectFn`/`rejectIface`; `lambdaExpr`,
+    `LambdaCap`, `lambdaBody`, the `LamCtx` save/restore, `callValue`, the
+    hidden-symbol and `FnRec` construction, the indirect-call emitter
+    helper; the `inWhileCond`/`lambdaArgOK` context flags, the `captureSyms`
+    and `fnStack` registries, the `lastFnBind` metadata, the capture-list
+    resolver, and the `pickHome` `homeCap <= 0` early return.
 - Tests: new `tests/run/lambdas*.obx`, `lambda_closures.obx`,
   `lambda_refs.obx`, `lambda_handles.obx`, `lambda_methods.obx`,
-  `lambda_sort.obx`, `lambda_sort_capture.obx`; `tests/errors/lambdas.obx`,
-  `closures.obx`; new `tests/modules/{run,errors,sym}/...` trees; the
+  `lambda_sort.obx`, `lambda_sort_capture.obx`, `closures_scope.obx`,
+  `lambda_state.obx`; `tests/errors/lambdas.obx`, `closures.obx`; new
+  `tests/modules/{run,errors,sym}/...` trees; the
   migrated `.sym` fixtures and goldens; `sym_test.py`, `sym_fuzz.py`,
   `port_compare.py`, `port_test.py`, `mutate_fork.py`/`mutate_port.py`;
   `doc_check` examples.
@@ -2216,7 +2669,16 @@ On the merged tree, per stage:
   planned-list removal, version), `README.md` (phase table, not-yet list,
   version, `.sym` description, size/status), `FORK.md` (after
   implementation), `obo/design/README.md` entry (at implementation time; this
-  design pass is asked to commit only this file). `PERFORMANCE.md` and
+  design pass is asked to commit only this file). **README phase-table
+  reconciliation:** the current single row `6a. Interfaces and lambdas |
+  planned` is split by whichever document merges first. The interfaces merge
+  turns it into `6a. Interfaces | done ... (0.7)`; the lambdas stage adds
+  `6b. Lambdas | done: non-capturing function values (0.8)` and
+  `6c. Capturing closures | done: call-scoped captures (0.9)` (or one `6b`
+  row spanning both stages until Stage B lands). Do not leave "lambdas" in
+  the interfaces row after interfaces merges, and do not mark Stage B done
+  while Stage A is the merged state. The "not yet" list, the version
+  sentence and the `.sym` description follow the same stage that landed. `PERFORMANCE.md` and
   `bench/cli/README.md`: keep the version-labelled samples and add the same
   one-line historical note the earlier phases use if they name the compiler
   version; do not re-measure or rewrite the numbers.
@@ -2263,14 +2725,16 @@ On the merged tree, per stage:
    skipped in the seed comparison until the promote.
 8. **Memory/peak.** The design avoids `Type`/`Item` layout changes (function
    parameters use `Type.fields`; the capture binding is a global). The hidden
-   symbols and `FnRec`s live in the existing arenas; truncate `symArena`/
-   `fnArena` to the island's marks after the purity check if desired (nothing
-   refers to them; the hidden summary has no `pf` rows because its parameters
-   are owned/read-only and its captures are read-only), but leave `bindArena`
-   to the enclosing function's end so the literal's capture binding survives
-   to the call argument loop. Measure the peak and do not raise `PEAK_BUDGET`
-   without the user. Fallbacks: a `fnBind` Item field (measure) or a
-   per-lambda symbol registry (if a stale handle appears).
+   symbols and `FnRec`s live in the existing arenas. The default is to leave
+   `symArena`/`fnArena`/`argTemps` to the enclosing function (symArena and
+   argTemps are truncated by `fnBody`; fnArena lives to the compile end), so
+   no pool symbol can outlive its `Sym` slot. The optional cleanup truncates
+   all three to the island's entry length after the purity check, never one
+   alone (5.3.1). Leave `bindArena` to the enclosing function's end so the
+   literal's capture binding survives to the call argument loop. Measure the
+   peak and do not raise `PEAK_BUDGET` without the user. Fallbacks: a
+   `fnBind` Item field (measure) or a per-lambda symbol registry (if a stale
+   handle appears).
 9. **Encoder change.** `FF /2` is a new emitted form; the objdump group must
    cover both `call r/m64` and `call qword ptr [r]`, including a high
    register (REX.B) if the pool can allocate one.
@@ -2281,13 +2745,16 @@ On the merged tree, per stage:
 
 ### 11.4 Size and complexity
 
-Estimated `src/obo.obo`: Stage A +550 to +800 lines (function type
-representation/parse/write/read, the lambda literal, the island context
-save/restore, the indirect call, restrictions/diagnostics), Stage B +350 to
-+550 (capture list, environment cell/prologue, argument bindings), roughly
-+900 to +1,350 lines total (after interfaces, about 12,000 → 12,900-13,350).
-Tests: roughly 1,500-2,100 lines across `.obx`, Python, module/sym trees,
-goldens and mutants; docs. The feature is medium-high complexity: no runtime
+Estimated `src/obo.obo`: Stage A +650 to +900 lines (function type
+representation/parse/write/read, the lambda literal, the full `LamCtx`
+save/restore including the pre-scan and guard state, the indirect call,
+restrictions/diagnostics), Stage B +400 to +600 (capture list, environment
+cell/prologue, argument bindings, the capture registry), roughly +1,050 to
++1,500 lines total (after interfaces, about 12,000 → 13,050-13,500). Tests:
+roughly 1,800-2,500 lines across `.obx`, Python, module/sym trees, goldens
+and mutants, including the `lambda_state.obx` fixtures and the expanded
+error/mutant lists; docs. The B1-B7 review fixes (island state, recursive
+restrictions, capture rules, diagnostics/tests) account for the upper end. The feature is medium-high complexity: no runtime
 change and no ABI change under the recommendation, but a nested compile, a
 new type kind, a call-path extension and a symbol-format bump with a
 fixture migration. Stage A is comparable to methods; Stage B is a smaller
@@ -2317,7 +2784,7 @@ review.
 | functions | a lambda is an unnamed function body; a function value is not a function symbol; a named function is still not a value (section 14) |
 | methods | a method may take function-typed parameters and call them; a method cannot return a function value; a method cannot be a function value (no method values); a function value cannot be a receiver (function types have no methods); a lambda in a method body may capture the receiver read-only |
 | method values | explicitly out. `b.m` remains `method '<T>::<m>' cannot be used as a value: call it with '(' after its name` (`obo.obo:5768-5772`). A lambda capturing the receiver and calling a **read-only** method is the v1 stand-in; a `mut` method needs a `mut` capture, which is deferred, or a later `pure mut`/effect extension |
-| interfaces | v1 excludes function types from interface member signatures, interface values as function parameters/returns, interfaces of function types, and capturing interface values. A lambda cannot implement or convert to an interface. A function value cannot be an interface value. The features are orthogonal; if both merge, add the exclusions in the interface member parser/reader and the capture resolver |
+| interfaces | v1 excludes function types from interface member signatures, interface values as **function-value** parameters/returns (ordinary functions may take an interface parameter; a function type may not), interfaces of function types, and capturing interface values. A lambda cannot implement or convert to an interface. A function value cannot be an interface value. The features are orthogonal; if both merge, add the exclusions in the interface member parser/reader and the capture resolver |
 | interface implementations | an impl's methods are ordinary methods; an extra method with a function-typed parameter that is not in the interface is allowed, but a method matched to an interface member cannot have a signature the interface cannot express |
 | closures capturing method receivers | allowed read-only (`&`/`mut &` capture a pointer read-only; an owned receiver is a whole-object read-only borrow), subject to the call-site capture binding checks. A `mut` capture of a receiver is deferred with the other mut captures |
 | function values as method parameters/returns | parameters yes; returns no (the return rule applies to every function/method/lambda). A method's `.sym` line carries the function type; the reader/mode-0 comparison uses structural `same` |
@@ -2331,8 +2798,8 @@ review.
 - **Source syntax is additive.** Expression `fn (` is invalid today
   (`expected an expression`, probed); type-position `fn (` is invalid today
   (`expected identifier`, probed); a call on a non-function local is an
-  error; a capturing `fn [` is invalid at top level (the method parser
-  errors). No valid program changes meaning. The only new restrictions apply
+  error; `fn [` at top level is invalid (a top-level `fn` is a declaration
+  and no lambda expression is parsed there). No valid program changes meaning. The only new restrictions apply
   to constructs that do not exist yet.
 - **Function values are second-class**, so they do not change record layout,
   descriptors, global addressing or initialization. `.sym` ABI stays 1 under
@@ -2383,7 +2850,8 @@ review.
    strings/interfaces rejected; no `mut`/owned captures in v1.
 6. **Scope:** a capturing lambda literal is only a direct call argument; a
    non-capturing lambda is a full second-class value. No lambda literal in a
-   while condition or defer body, and none at top level.
+   while condition or defer body, and no lambda initializer of a global or
+   `const`.
 7. **Effects/purity:** every function value is pure (the lambda body is
    checked); an indirect call is a pure call, no devirtualisation; a lambda
    may not call an active enclosing function. Impure callbacks are out in
@@ -2397,6 +2865,17 @@ review.
     implemented on the Stage A branch before its promote.
 
 ### 14.2 Genuine user-level questions (with recommended defaults)
+
+**Status after the design review:** the reviewer accepted the recommended
+default for each item below, and the coordinator confirmed that no user
+escalation is requested in this pass. They are recorded so the implementation
+does not silently change them; a future change reopens the question with the
+user. The accepted values are: explicit, read-only, call-argument-only
+captures; no named function values; pure-only lambda bodies (a callee that
+receives the closure follows the ordinary reference rules, with
+`handleSafe` for a handle-rooted capture; a whole-object capture passes an
+impure callee); reject string and interface captures; ABI 1; Stage A then
+Stage B as separate merges/promotes.
 
 1. **Capture ergonomics.** The recommended Stage B is explicit, read-only,
    call-argument-only. Is that enough for the intended sorting/tool work, or
@@ -2419,7 +2898,13 @@ review.
    the callee above the lambda. Is that sufficient for the tool refactor, or
    does the user need a genuinely impure callback (an effect type, or a
    `pure`/impure qualifier with conservative call effects)? **Default:** pure
-   callbacks in v1; an impure callback form is a later extension.
+   callbacks in v1; an impure callback form is a later extension. The
+   review's "pure-only callbacks" default refers to the **lambda body**, and
+   is accepted: no impure lambda body is ever callable. A receiving callee is
+   not required to be pure; it follows the per-kind reference rules in 5.4
+   (whole-object captures pass an impure callee, handle-rooted captures need
+   `handleSafe`). Do not read the default as "only pure functions may take a
+   callback".
 4. **Strings and interface captures.** Both are rejected. A user can capture
    a record containing a string, or pass the string as a callback parameter.
    **Default:** reject in v1; strings need a reference-count + call-cleanup
@@ -2553,12 +3038,20 @@ lambda body, purity marker, code address, cell word or capture appears.
 
 ### 15.3 Compile-state checklist for the island
 
-Before the body: save at least the groups in 5.3.1 (homes/registers,
-frame/code, scopes, defers, loop/free logs, guards, names/uses, function
-state, arena marks). Replace the function-level arrays with fresh ones; set
-`curFn` to the hidden symbol; set `homes = false`; reset `depth = frame = 0`,
-`trySite = tryNest = 0`, `condDepth = 0`, `pinned = nil`, `inDefer = false`,
-`noreturn = false`; invalidate the peephole.
+Before the body: save every group in 5.3.1 (homes/registers, frame/code,
+scopes, defers, loop/free/held logs, guards, names/uses, function state,
+pre-scan, arena marks and lengths). Replace the function-level arrays with
+fresh ones; set `curFn` to the hidden symbol; set `homeCap = 0` (there is no
+`homes` global) and give `pickHome` a `homeCap <= 0` early return; save the
+outer `scanBytes`/`scanAt`/`scanLen`/`scanScore`/`scanPend`/`scanCalls` and
+install empty scan arrays; reset `depth = frame = 0`, `loopdepth = 0`,
+`trySite = tryNest = 0`, `condDepth = 0`, `pinned = nil`,
+`inDefer = false`, `inWhileCond = false`, `lambdaArgOK = 0`,
+`noreturn = false`; reset `guardStart = -10`, `guardSym = nil`,
+`guardFollow = guardFree = guardIdx = 0`, `guardNeg = guardOpen =
+inAlive = false`, `guardMark = nil`; set `argTempsUsed = len(argTemps)`;
+save `len(captureSyms)` (do not clear it) and append the island's captures;
+invalidate the peephole.
 
 During the body: parse the header, declare the env/visible/capture symbols,
 open the root and body blocks, compile `statSeq`, enforce the return-path
@@ -2566,12 +3059,14 @@ rule, close blocks, run the hidden defers, emit the epilogue and patch the
 hidden frame, drop a zero-frame entry.
 
 After the body: restore every saved group; check the hidden function's
-purity and fix the `jmp`; truncate `argTemps`/`farCalls` to their marks;
-truncate `symArena`/`fnArena` only after the purity check if desired, and
-**not** `bindArena` before the literal's capture binding is built (build the
-binding after the truncation, or leave `bindArena` to the enclosing
-function's end); restore the outer arrays; return the hidden entry and the
-capture list to the cell/code emission step.
+purity and fix the `jmp`; restore `argTempsUsed` to the outer mark;
+truncate `captureSyms` to the saved length; by default leave
+`symArena`/`fnArena`/`argTemps` to the enclosing function, or truncate all
+three to the entry length **together** after the purity check if the optional
+cleanup is used; **never** truncate `bindArena` before the literal's capture
+binding is built (build the binding after the truncation, or leave
+`bindArena` to the enclosing function's end); return the hidden entry and
+the capture list to the cell/code emission step.
 
 ### 15.4 Review checklist for the implementation
 
@@ -2579,15 +3074,28 @@ capture list to the cell/code emission step.
       unchanged.
 - [ ] Every function-type restriction has an exact error test in source and
       in the `.sym` reader: return, field, array, optional, Result, global,
-      constant, handle, borrow, receiver, interface member.
+      constant, handle, borrow, receiver, interface member; every one is
+      repeated through an alias (`?Cmp`, `[]Cmp`, `Result[Cmp]`, `^Cmp`,
+      field/global/return/const `Cmp`); an interface in any function-type
+      parameter/return is refused; the reader applies the same recursive
+      `containsFn`/`containsIface` checks.
 - [ ] The lambda parser rejects `mut` parameters, an empty capture list,
       duplicate captures, a capture that is also a parameter, and a function
       return; a non-void body must return on every path.
-- [ ] The three `fn` contexts are distinct; a top-level lambda is not
-      silently parsed as a method with a confusing success.
+- [ ] The `fn` contexts are distinct: a lambda initializer of a global or
+      `const` reports `a lambda can only be created inside a function`; a
+      bare top-level `fn (x: int): int { ... }` is diagnosed by the
+      method-receiver rule (it is a declaration); a lambda in a while
+      condition or defer body is refused.
 - [ ] The island saves/restores every function-level global; a missed field
       is caught by a run/error test with a lambda inside a complex
-      expression, not just a simple statement.
+      expression, not just a simple statement. Specifically tested: the
+      outer pre-scan and `pickHome`, `guard*` (a lambda inside
+      `alive(h) && ...`), `lambdaArgOK` (a capturing literal in a `let`
+      inside a call-argument lambda), `inWhileCond`/`inDefer`,
+      `argTempsUsed`/`argTemps`, `captureSyms` (a capture-of-capture and a
+      later function's immutable local), the held/free logs (a literal in a
+      held index/append/replace value), and `fnStack` balance.
 - [ ] A lambda literal in a while condition or defer body is rejected before
       code emission; a call through a function-typed local in a while
       condition is accepted and lifted safely (no rel32).
@@ -2611,11 +3119,16 @@ capture list to the cell/code emission step.
       directly; scalar snapshots and whole-object read-only captures behave
       as documented.
 - [ ] A capturing literal outside a call argument is rejected; one in a
-      let/assignment/return/while/defer/top level has the exact message.
+      let/assignment/return/while/defer or a global/const initializer has
+      the exact message (a bare top-level `fn` is the declaration case).
 - [ ] A capture binding is held across later arguments, appears in the
       mut-alias/global/handle/deep checks, and a later move/free is refused;
-      a whole-object or deep capture is accepted by a pure comparator helper;
-      an impure callee refuses a deep/handle/global capture.
+      a whole-object capture is accepted even by an impure callee (and with
+      a mut argument to the same object); a deep capture follows the existing
+      deep rule, a handle-rooted capture requires `handleSafe`, and a
+      global-rooted capture follows `mightFree`; the mut-overlap error uses
+      a deep capture, not a whole-object one; a forwarded closure has no
+      second binding and the soundness rests on the first callee's summary.
 - [ ] Owned/reference captures cannot be written/moved/freed; a mut method
       call through a capture is refused. A handle capture allows reads and
       scalar writes; a write that frees owned state through it makes the
@@ -2629,7 +3142,10 @@ capture list to the cell/code emission step.
       private type inside a callback is refused.
 - [ ] The compiler source uses no lambda/function-type syntax in round 1;
       the previous seed builds it; fixed point stage2 == stage3; peak within
-      budget; no seed change in the feature commit.
+      budget; no seed change in the feature commit. The hidden `FnRec`/
+      `Sym` growth (one per literal per pass by default; bounded by nesting
+      with the optional cleanup) is measured and recorded; the cleanup, if
+      used, truncates `symArena`, `fnArena` and `argTemps` together.
 - [ ] No existing assertion deleted; stale mutant patterns retargeted, not
       removed; mode-0-only/context-flag mutants recorded equivalent with the
       reason; the tools/library/eza outputs unchanged.
