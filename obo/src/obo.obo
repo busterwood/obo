@@ -106,7 +106,7 @@ const T_COLONCOLON = 67
 // OBO_VERSION is the compiler's identity in every .sym's `compiler` line and in --version.
 // Bump OBO_VERSION with each merged compiler feature; bump SYM_FORMAT on any grammar or
 // meaning change; bump SYM_ABI on any layout/calling-convention/descriptor/effect change.
-const OBO_VERSION = "0.8"
+const OBO_VERSION = "0.9"
 const SYM_FORMAT = 4
 const SYM_ABI = 1
 
@@ -1399,9 +1399,12 @@ const RT_LSTAT_PATH = 35
 const RT_READ_LINK_PATH = 36
 // environment (P5a): isatty(fd): bool and getenv(name): ?[]byte append slots 37-38; neither builds
 // a Result cell or passes a descriptor. terminalWidth(fd): int appends slot 39 (P6a), likewise.
+// sleepMs(ms): Result[bool] appends slot 40; it passes the shared err descriptor and
+// the ok-bool variant, like the other Result-returning runtime helpers.
 const RT_ISATTY = 37
 const RT_GETENV = 38
 const RT_TERM_WIDTH = 39
+const RT_SLEEP = 40
 
 const RAX = 0
 const RCX = 1
@@ -1589,7 +1592,7 @@ fn initCompiler() {
     append(universe, newSym("type", "bool", tBool))
     append(universe, newSym("type", "string", tString))
     append(universe, newSym("type", "Result", tResultCtor))
-    let names = words("print println len gc gcstats exit append truncate substr eprint eprintln readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth stdin stdout stderr")
+    let names = words("print println len gc gcstats exit append truncate substr eprint eprintln readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr")
     for n in names { append(universe, newSym("builtin", n, nil)) }
     append(universe, newSym("builtin", "ok", nil))
     append(universe, newSym("builtin", "err", nil))
@@ -5916,6 +5919,16 @@ fn builtin(name: string): Item {
         expect(T_RPAREN, "")
         return rtCall1(RT_TERM_WIDTH, fd, tInt)
     }
+    if name == "sleepMs" {
+        // sleepMs(ms): Result[bool]. A negative or larger-than-24.8-day count is a runtime
+        // error; the argument is materialised so a call cannot change it while it runs.
+        expect(T_LPAREN, "")
+        var ms = nestedExpr()
+        if !isInt(ms.typ) { error("sleepMs needs an int millisecond count, not " + tname(ms.typ)) }
+        ms = materialise(ms)
+        expect(T_RPAREN, "")
+        return resultCall3(RT_SLEEP, ms, tBool)
+    }
     if name == "getenv" {
         // getenv(name): ?[]byte, owned. Absent is nil and a present empty value is a non-nil empty
         // array. The name is pinned before the call, as every path builtin's argument is.
@@ -8498,7 +8511,7 @@ type Param = ref record {
 
 // ---- the pre-scan of a function
 
-let callExempt = words("if while for return match defer in else new print println eprint eprintln len gc gcstats exit append truncate substr readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth stdin stdout stderr take handle alive drop replace int byte string ok err try")
+let callExempt = words("if while for return match defer in else new print println eprint eprintln len gc gcstats exit append truncate substr readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr take handle alive drop replace int byte string ok err try")
 
 fn wordAt(a: int, b: int, w: string): bool {
     if len(w) != b - a { return false }

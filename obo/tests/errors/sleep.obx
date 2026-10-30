@@ -1,0 +1,38 @@
+// The sleepMs builtin's compile-time checks. Each case has exactly one error
+// marker on its line, as in the other error files.
+
+// === sleepMs string count
+fn main() {
+    let a = sleepMs("1")                            // error: sleepMs needs an int millisecond count, not string
+}
+
+// === sleepMs bool count
+fn main() {
+    let a = sleepMs(true)                           // error: sleepMs needs an int millisecond count, not bool
+}
+
+// === sleepMs extra argument
+fn main() {
+    let a = sleepMs(1, 2)                           // error: expected ')', found ,
+}
+
+// === sleepMs no argument
+fn main() {
+    let a = sleepMs()                               // error: expected an expression
+}
+
+// === sleepMs result as a condition
+fn main() {
+    if sleepMs(1) { }                               // error: condition must be bool, not Result[bool]
+}
+
+// === sleepMs result as a bool
+fn main() {
+    let b: bool = sleepMs(1)                        // error: initialising 'b': cannot use Result[bool] as bool
+}
+
+// === try in a sleepMs argument
+fn getMs(): int { return 0 }
+fn main() {
+    let a = sleepMs(try getMs())                    // error: a try expression cannot be part of a larger expression; assign it to a local first
+}

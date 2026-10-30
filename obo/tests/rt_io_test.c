@@ -75,6 +75,11 @@ static void close_ok(u64 fd) {
     CHECK(cell_payload(cell) == 1);
     rt_free(cell);
 }
+static i64 now_ms(void) {
+    struct { i64 sec, nsec; } ts;
+    CHECK(sys3(228, 1, (i64)&ts, 0) == 0);          /* clock_gettime(CLOCK_MONOTONIC) */
+    return ts.sec * 1000 + ts.nsec / 1000000;
+}
 
 /* the cell layout: the tag is the descriptor passed, the ok payload is at +0,
  * the err message at +0 and the code at +8; the descriptors free what they own. */
@@ -333,6 +338,54 @@ static void case_inert(const char *path) {
     rt_finish();
 }
 
+/* sleepMs: zero returns at once, a positive count does not return early, and
+ * the invalid counts are Result errors with no wait. The lower bound is below
+ * the requested time so scheduler/syscall overhead cannot make it flaky. */
+static void case_sleep(const char *path) {
+    (void)path;
+    i64 t0 = now_ms();
+    u64 cell = rt_sleep(0, (u64)desc_err, (u64)desc_ok_bool);
+    i64 t1 = now_ms();
+    CHECK(cell_tag(cell) == (u64)desc_ok_bool);
+    CHECK(cell_payload(cell) == 1);
+    CHECK(t1 - t0 < 1000);
+    rt_free(cell);
+
+    t0 = now_ms();
+    cell = rt_sleep(30, (u64)desc_err, (u64)desc_ok_bool);
+    t1 = now_ms();
+    CHECK(cell_tag(cell) == (u64)desc_ok_bool);
+    CHECK(cell_payload(cell) == 1);
+    CHECK(t1 - t0 >= 20);
+    rt_free(cell);
+
+    cell = rt_sleep(-1, (u64)desc_err, (u64)desc_ok_bool);
+    CHECK(cell_tag(cell) == (u64)desc_err);
+    CHECK(cell_code(cell) == 22);
+    CHECK(str_eq_c(cell_msg(cell), "sleepMs needs a non-negative count"));
+    rt_free(cell);
+    cell = rt_sleep(MAX_SLEEP_MS + 1, (u64)desc_err, (u64)desc_ok_bool);
+    CHECK(cell_tag(cell) == (u64)desc_err);
+    CHECK(cell_code(cell) == 34);
+    CHECK(str_eq_c(cell_msg(cell), "sleepMs count is too large"));
+    rt_free(cell);
+    rt_finish();
+}
+
+/* the OBO_META_FAULT=eintr hook injects one EINTR before the real nanosleep;
+ * the retry must still wait and return ok(true), with no leak */
+static void case_sleep_eintr(const char *path) {
+    (void)path;
+    i64 t0 = now_ms();
+    u64 cell = rt_sleep(20, (u64)desc_err, (u64)desc_ok_bool);
+    i64 t1 = now_ms();
+    CHECK(cell_tag(cell) == (u64)desc_ok_bool);
+    CHECK(cell_payload(cell) == 1);
+    CHECK(t1 - t0 >= 10);
+    rt_free(cell);
+    rt_finish();
+}
+
 void test_main(u64 *sp);
 __asm__(".globl _entry\n"
         ".section .text\n"
@@ -363,5 +416,7 @@ void test_main(u64 *sp) {
     else if (c_eq(c, "eintr")) case_eintr(path);
     else if (c_eq(c, "short")) case_short(path);
     else if (c_eq(c, "inert")) case_inert(path);
+    else if (c_eq(c, "sleep")) case_sleep(path);
+    else if (c_eq(c, "sleep_eintr")) case_sleep_eintr(path);
     fail(3);
 }

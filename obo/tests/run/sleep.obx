@@ -1,0 +1,41 @@
+// sleep: the sleepMs builtin at the program level, run by run_fork.py. The
+// direct runtime timings and the EINTR retry are in tests/rt_io_test.c; this
+// pins the Result shape, the zero/positive success and the two bounds.
+// expect: zero true
+// expect: small true
+// expect: negative EINVAL
+// expect: large ERANGE
+fn main() {
+    let z = sleepMs(0)
+    match z {
+        ok(v) {
+            if !v { println("zero false"); exit(1) }
+            println("zero true")
+        }
+        err(m, c) { println("zero err ", m, " ", c); exit(1) }
+    }
+    let s = sleepMs(5)
+    match s {
+        ok(v) {
+            if !v { println("small false"); exit(1) }
+            println("small true")
+        }
+        err(m, c) { println("small err ", m, " ", c); exit(1) }
+    }
+    let n = sleepMs(-1)
+    match n {
+        ok(v) { println("negative ok ", v); exit(1) }
+        err(m, c) {
+            if c != 22 { println("negative code ", c); exit(1) }
+            println("negative EINVAL")
+        }
+    }
+    let b = sleepMs(2147483648)
+    match b {
+        ok(v) { println("large ok ", v); exit(1) }
+        err(m, c) {
+            if c != 34 { println("large code ", c); exit(1) }
+            println("large ERANGE")
+        }
+    }
+}

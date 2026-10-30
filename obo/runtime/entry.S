@@ -56,6 +56,7 @@ _entry:
     slot rt_isatty
     slot rt_getenv
     slot rt_term_width
+    slot rt_sleep
 
     .text
     .macro check f
@@ -107,5 +108,6 @@ check_\f:
     check rt_isatty
     check rt_getenv
     check rt_term_width
+    check rt_sleep
 
     .section .note.GNU-stack,"",@progbits
