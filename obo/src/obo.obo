@@ -4077,16 +4077,15 @@ fn finishTypeName(name: string, uline: int, ucol: int): ^Type {
 }
 
 // Interface values are owned (v3 step 3): I, ?I, []I, Result[I] and the rest are declared and held like records. A
-// borrowed interface (&I, mut &I, &?I, and &[]I) is still refused where it could be a local or an argument: step 5
-// adds those. Interface member signatures are not refused: parseParams and ifaceDecl do not call this for them.
-fn holdsIface(t: ^Type): bool {
-    if t.kind == "iface" { return true }
-    if t.kind == "array" || t.kind == "opt" || t.kind == "result" { return holdsIface(baseOf(t)) }
-    return false
-}
-
+// borrowed interface itself (&I, mut &I, &?I) is still refused where it could be a local or an argument: step 5
+// adds those. A borrowed container of interface values (&[]I, &Result[I]) is an ordinary owned container held by
+// a reference, so the existing reference rules already support it; only the immediate interface, or the optional
+// interface, is refused. Interface member signatures are not refused: parseParams and ifaceDecl do not call this
+// for them.
 fn noBorrowedIface(t: ^Type) {
-    if holdsIface(t) { error("interface values are not implemented yet") }
+    if t.kind == "iface" || (t.kind == "opt" && baseOf(t).kind == "iface") {
+        error("interface values are not implemented yet")
+    }
 }
 
 fn fieldList(rec: ^Type) {
@@ -6888,6 +6887,8 @@ fn varDecl(kind: string, isGlobal: bool, isPub: bool) {
         next()
         if isGlobal { fixHere1(initLink) }
         var x = tailExpr()
+        // an inferred reference local takes the same rules as an explicit one: &I and &?I are step 5
+        if !isGlobal && t == nil && x.borrowed { noBorrowedIface(x.typ) }
         if !isGlobal && (declRef > 0 || (t == nil && x.borrowed)) {
             // a reference local: it borrows, nothing is moved or freed
             var rt = x.typ

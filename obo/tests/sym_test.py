@@ -1531,6 +1531,111 @@ def iface_owned_check():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def iface_borrow_check():
+    """Step 5 boundary: a borrowed container of interface values (&[]Shape, &Result[Shape]) is ordinary
+    reference borrowing, so it compiles and round-trips through lib.sym; a borrowed interface itself, inferred
+    or explicit, stays refused with the same text in a full build and in --check."""
+    lib = '''module lib
+pub type Shape = interface {
+    pure fn area(): int
+}
+pub type Square = ref record { s: int }
+pub fn (q: &Square) area(): int { return q.s }
+pub impl Shape for Square
+pub fn total(xs: &[]Shape): int {
+    var sum = 0
+    var i = 0
+    while i < len(xs) {
+        sum += xs[i].area()
+        i += 1
+    }
+    return sum
+}
+pub fn peek(r: &Result[Shape]): int {
+    match r {
+        ok { return r.value.area() }
+        err { return -1 }
+    }
+}
+'''
+    main = '''module main
+import "lib.obx"
+fn main() {
+    let xs = new []lib::Shape(0)
+    append(xs, new lib::Square{s: 2})
+    println(lib::total(&xs))
+    let s: lib::Shape = new lib::Square{s: 3}
+    let res: Result[lib::Shape] = ok(s)
+    println(lib::peek(&res))
+}
+'''
+    d = tempfile.mkdtemp(prefix='symcase-borrow-')
+    try:
+        write_tree(d, {'lib.obx': lib, 'main.obx': main})
+        symdir = os.path.join(d, 'sym')
+        os.makedirs(symdir)
+        exe = os.path.join(d, 'prog')
+        ok(build(d, symdir, out=exe), 'borrowed-container full build')
+        full_main = sym_text(os.path.join(symdir, 'main.sym'))
+        q = subprocess.run([exe], capture_output=True, text=True, timeout=60)
+        if q.returncode != 0 or q.stdout != '2\n3\n':
+            raise Fail(f"borrowed-container run: exit {q.returncode}, stdout {q.stdout!r}")
+        os.rename(os.path.join(d, 'lib.obx'), os.path.join(d, 'lib.obx.bak'))
+        chk = os.path.join(d, 'sym-check')
+        shutil.copytree(symdir, chk)
+        ok(build(d, chk, check=True), 'borrowed-container source-less check')
+        if sym_text(os.path.join(chk, 'main.sym')) != full_main:
+            raise Fail('the source-less --check main.sym differs from the full build')
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+    prelude = '''module main
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+fn make(): Shape { return new Square{s: 1} }
+'''
+    direct = '''fn main() {
+    let s: Shape = make()
+    var r = &s
+    println(r.area())
+}
+'''
+    optional = '''type Holder = ref record { o: ?Shape }
+fn main() {
+    let h = new Holder{o: make()}
+    var r = &h.o
+    if r != nil { println(r.area()) }
+}
+'''
+    alias = '''type S = Shape
+fn main() {
+    let s: S = make()
+    var r = &s
+    println(r.area())
+}
+'''
+    want = 'interface values are not implemented yet'
+    for name, body in (('direct', direct), ('optional', optional), ('alias', alias)):
+        d = tempfile.mkdtemp(prefix='symcase-infer-' + name + '-')
+        try:
+            write_tree(d, {'main.obx': prelude + body})
+            symdir = os.path.join(d, 'sym')
+            os.makedirs(symdir)
+            full = build(d, symdir, out=os.path.join(d, 'prog'))
+            chk = build(d, symdir, check=True)
+            for what, q in (('full build', full), ('--check', chk)):
+                if q.returncode != 1 or want not in q.stderr:
+                    raise Fail(f"inferred {name} {what}: exit {q.returncode}: {q.stderr.strip()}")
+            if full.stderr != chk.stderr:
+                raise Fail(f"inferred {name} full and --check texts differ: {full.stderr!r} vs {chk.stderr!r}")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 def iface_reader_refusals():
     """S-5: each malformed interface or impl line in lib.sym (its hash recomputed, so
     the structural checks run) is refused with the reader's own message."""
@@ -1689,6 +1794,7 @@ def tests():
         ('sym/iface_private_impl', iface_private_impl),
         ('sym/iface_reader_refusals', iface_reader_refusals),
         ('sym/iface_owned_check', iface_owned_check),
+        ('sym/iface_borrow_check', iface_borrow_check),
         ('sym/stale_format3_interface', stale_format3_interface),
         ('sym/iface_tier_check', iface_tier_check),
         ('sym/iface_forged_freesall', iface_forged_freesall),

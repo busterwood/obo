@@ -236,6 +236,51 @@ fn f() {
     let r: &?Shape = o  // error: interface values are not implemented yet
 }
 
+// === a mut borrowed optional interface parameter (step 5)
+type Shape = interface {
+    pure fn area(): int
+}
+fn f(mut p: &?Shape) {  // error: interface values are not implemented yet
+}
+
+// === an inferred borrowed interface local (step 5)
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+fn f() {
+    let a: Shape = new Square{s: 1}
+    var r = &a  // error: interface values are not implemented yet
+}
+
+// === an inferred borrowed optional interface local (step 5)
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+type Holder = ref record { o: ?Shape }
+fn f() {
+    let h = new Holder{o: new Square{s: 1}}
+    var r = &h.o  // error: interface values are not implemented yet
+}
+
+// === an inferred borrowed interface local through an alias (step 5)
+type Shape = interface {
+    pure fn area(): int
+}
+type S = Shape
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+fn f() {
+    let a: S = new Square{s: 1}
+    var r = &a  // error: interface values are not implemented yet
+}
+
 // === an interface is not compared with nil
 type Shape = interface {
     pure fn area(): int
