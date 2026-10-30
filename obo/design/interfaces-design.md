@@ -7,7 +7,8 @@ Status: **design only**, for independent review. Baseline: `main` at `85ce90e`
 `LANGUAGE.md` 1,853 lines, `FORK.md` 5,085 lines; the promoted seed
 `obo/seed/obo` is 425,985 bytes and reports `obo 0.5 sym-format 1 abi 1`.
 Nothing is implemented by this pass: no source, test, seed, runtime or tool file
-changes. The only repository write is this file.
+changes. The only repository writes are this file and its one-line entry in
+`obo/design/README.md`.
 
 **The methods implementation is in flight.** The approved methods design
 (`obo/design/methods-design.md`) targets `OBO_VERSION "0.6"`, `SYM_FORMAT 2`,
@@ -20,6 +21,22 @@ must rebase on the methods merge and the line numbers will then shift; treat
 function names as the anchors. The recommended interface version bump is
 `OBO_VERSION "0.7"`, `SYM_FORMAT 3`, `SYM_ABI` stays `1`; if the final methods
 phase uses different numbers, rebase these.
+
+**Revision after design review.** This version addresses the review's four
+blocking findings and the material nits: (1) `findImplFor` is explicitly
+visibility-filtered and the missing-impl diagnostics are mode-independent, with
+full/check tests for a foreign type with no visible implementation; (2) the
+read-only impure interface-call rule is restated precisely: the whole-object
+receiver binding survives, but `afterCall` with `writesHandles`/`freesAll`
+invalidates every deep reference, including references into the receiver, and a
+deep receiver itself; (3) the purity proof now covers owned by-value parameters
+through ownership uniqueness, the receiver hold and the unconditional
+`handleSym` hit in `hitBy`, with tests; (4) the load-bearing safety cases are
+enumerated in section 9.6 with concrete tests, and unobservable ones recorded
+with reasons. The final decisions are unchanged: keep the `pure` contract,
+explicit `pub impl`, `let`-only interface locals, no nil, `d: I`/`mut d: I`,
+variant parent step, no interface-to-interface conversion, no forward shells or
+mutual interface parameters, no addresses in `.sym`, and no devirtualisation.
 
 Every claim about the current compiler below was checked against
 `obo/src/obo.obo` at this baseline; `file:line` references are to that file, and
@@ -166,23 +183,28 @@ feature in flight, design review before implementation.
 InterfaceDecl ::= "type" IDENT "=" "interface" "{" { NEWLINE } { Member } "}"
 Member        ::= [ "pure" ] [ "mut" ] "fn" IDENT "(" [ Params ] ")" [ ":" Type ]
                   ( NEWLINE | ";" )
-Params        ::= Param ( "," Param )*
-Param         ::= [ "mut" ] IDENT ":" ( "&" Type | Type )
+Params        ::= ParamGroup ( "," ParamGroup )*
+ParamGroup    ::= [ "mut" ] IDENT ( "," IDENT )* ":" ( "&" Type | Type )
 ```
 
 - The word `interface` is contextual: it is recognised only after the `=` of a
-  `type` declaration **when the next token is `{`**. It is an ordinary
-  identifier everywhere else. This needs one token of state that the parser
-  already has, not lookahead or buffering: `typeDecl` consumes the identifier
-  after `=`; if it is `interface` and the current token is `{`, this is an
-  interface definition; otherwise the identifier was the start of an alias
-  type expression, and `typeDecl` resolves it as the ordinary type name
-  `interface` (including the `interface::member` spelling). Thus an existing
-  `type X = interface` alias still means what it meant, and no token constant,
-  keyword-table entry or scanner rule changes. As with `ref record` and
-  `closed`, `interface` and `{` are on one logical line; a newline after
-  `interface` scans as a statement separator and the construct is an alias, as
-  today.
+  `type` declaration, and only when the current token is **`T_IDENT`**. The
+  branch consumes that identifier into `w` and tests `w == "interface"` plus
+  the **next** token `{`. If both hold, this is an interface definition.
+  Otherwise the consumed identifier starts an alias type expression and a
+  factored **name tail** (`finishTypeName(w)`) resolves it exactly as
+  `parseType` would after reading a name: `int`/`byte`/`bool`/`string` return
+  their primitive types, `Result` followed by `[` parses `Result[T]`, a
+  qualified `w::member` resolves through the module alias/export, and any other
+  name is looked up as a type. Tokens `?`, `[]`, `^`, `ref` and `closed` are not
+  `T_IDENT`, so `type X = ?T`, `type X = []T`, `type X = ^T` and
+  `type X = Result[T]` keep their existing paths (the last enters the branch
+  only at the `Result` identifier and is finished by the name tail). Thus an
+  existing `type X = interface` alias still means what it meant, and no token
+  constant, keyword-table entry or scanner rule changes. As with
+  `ref record` and `closed`, `interface` and `{` are on one logical line; a
+  newline after `interface` scans as a statement separator and the construct is
+  an alias, as today.
 - `pure` and `mut` are contextual member modifiers, in that order. A member
   with neither has a read-only (`&T`) receiver; `mut` gives it a mutable
   (`mut &T`) receiver; `pure` is the purity contract of section 4.5. There is no
@@ -190,7 +212,10 @@ Param         ::= [ "mut" ] IDENT ":" ( "&" Type | Type )
   never owns its target.
 - An interface needs at least one member. Duplicate member names are an error.
 - Members are separated by newlines or `;`, exactly like record fields.
-  Parameter names are syntax only and are canonicalised in the symbol file.
+  `ParamGroup` mirrors the function parameter parser: one type and mode can be
+  shared by several names (`mut a, b: &T`), and each name is one positional
+  parameter. Parameter names are syntax only and are canonicalised in the
+  symbol file; the signature's data is the ordered list of types and modes.
 - `pub` is not allowed on a member; the interface type's own `pub` exports the
   whole method set. A member's parameter list may use `mut` reference
   parameters and interface-typed parameters like any function.
@@ -237,9 +262,15 @@ TypeName  ::= IDENT            // the defining name of a type in this module
 - One implementation per `(receiver type, interface type)`. A second one is
   `type 'T' already implements interface 'I'`. Because the receiver must be
   local, two modules cannot both declare it.
-- `pub impl` is exported; a private impl is invisible to importers. A `pub`
-  impl requires both the interface and the receiver type to be exported (the
-  existing export closure rules are extended).
+- `pub impl` is exported; a private impl is invisible to importers. Conversion
+  lookup (`findImplFor`, section 5.1) accepts only
+  `impl.owner == curModuleName || impl.exported`, so the same rejection happens
+  in a full build (where the private live impl exists) and in `--check` (where
+  it was never written). A failed lookup for a foreign receiver reports the
+  module-member error, naming the parent closed type for a variant; a local
+  receiver with no visible impl reports no-implementation (section 8.3). A
+  `pub` impl requires both the interface and the receiver type to be exported
+  (the existing export closure rules are extended).
 - The implementation's methods may be private. Importers call through the
   interface's signatures, never through the concrete method names. The vtable
   address is live data in the defining module, not a symbol-file address.
@@ -261,7 +292,16 @@ The rules are semantic, not syntactic:
 
 - **Copy:** the source's static type is exactly the destination interface type
   (aliases transparent). `let e: I = d` copies the one-word cell pointer and
-  rebinds to the same target.
+  rebinds to the same target. An **inferred copy** `let e = d` is blessed and
+  does the same: `varDecl`'s existing reference-local branch sees a borrowed
+  value of interface type and creates an interface reference local with the
+  same binding. Inference never creates an interface from `&T` or an owned `T`;
+  `let e = &b` remains an ordinary reference local to `b`, and `let e = b`
+  remains an owned local of `T`. The inferred form is still subject to the
+  bound-once rule: `var e = d` is rejected with the same
+  `an interface value must be declared with let` error as `var e: I` (the
+  generic reference-local branch must check the inferred type before creating
+  a mutable reference local).
 - **Borrow:** the source is a **borrowed** item of a concrete record or closed
   type `T`. This is produced by `&place` (factor `T_AMP`,
   `obo.obo:5882-5891`), by a read of a reference parameter/local
@@ -416,8 +456,9 @@ cell: [ token: u64 ][ vtable: u64 ]       // 16 bytes, 8-byte aligned
 
 - `token` is a **runtime handle token** (the same representation as `^T`): the
   object's offset in 16-byte units plus the generation of its heap block
-  (`runtime.c:311-315`). A borrow construction creates it with `RT_HANDLE`; a
-  handle construction copies the existing token.
+  (`runtime.c:311-315`). A borrow construction creates it with `RT_HANDLE`
+  (which reads the header; the construction-liveness limit is in section 3.6);
+  a handle construction copies the existing token without reading the object.
 - `vtable` is the address of the `(concrete type, interface)` vtable in
   read-only data. `--check` uses a dummy address because it discards code.
 - Both construction paths store a token, so dispatch is uniform:
@@ -442,9 +483,10 @@ cell: [ token: u64 ][ vtable: u64 ]       // 16 bytes, 8-byte aligned
   (`obo.obo:3027-3033`) so the existing reference machinery tracks validity,
   aliasing, loops, defers and moves. It is not an owned local; scope exit frees
   nothing.
-- `var d: I = ...` is rejected: `an interface value must be declared with let:
-  it is bound once and cannot be reassigned`. There is no interface assignment
-  anywhere; `mut d: I` parameters mutate the *target*, not the pair.
+- `var d: I = ...`, and the inferred `var e = d`, are rejected:
+  `an interface value must be declared with let: it is bound once and cannot be
+  reassigned`. There is no interface assignment anywhere; `mut d: I`
+  parameters mutate the *target*, not the pair.
 - `let d: I` with no initialiser is rejected: `an interface value needs an
   initial value; it cannot be nil`.
 - A function parameter is `d: I` (read-only target) or `mut d: I` (mutable
@@ -511,10 +553,20 @@ one-parent-step dispatch.
   a writable interface value to a `d: I` parameter is a legal downgrade;
   passing a read-only one to `mut d: I` is
   `argument N of f needs a mut interface value, but this one is read-only`.
-- Read-only members may be called on any interface value. A read-only member
-  cannot free below its receiver, so it cannot invalidate references into it;
-  an impure read-only member can still free globals or through handles, which
-  the conservative summary records.
+- Read-only members may be called on any interface value. The member cannot
+  free below its receiver, so its receiver has no pfree bit 0 event. But an
+  **impure read-only member's synthetic summary sets `freesAll` and
+  `writesHandles`**, and `afterCall` then calls `invalidateDeep(nil)` and
+  `invalidate(handleSym, ...)`, and invalidates every visible global. The
+  consequence is precise: a whole-object receiver binding (`deep == false`)
+  **on an accepted call** stays valid, but **every deep reference, including
+  references into the receiver, is invalidated**; a receiver whose own binding
+  is deep (a field/element borrow) is itself invalidated. An impure call on a
+  global-rooted receiver is refused before codegen by the global check, so it
+  is not an exception here. Only a pure read-only member leaves references
+  valid. A mut member adds the receiver's pfree events and can invalidate the
+  receiver's roots as well. Section 9.6 records the exact accept/reject cases;
+  §4.5 states the same rule for effect summaries.
 - Aliasing is the existing reference model. Two interface values copied from
   one construction share the cell and bind the same roots. A mut call through
   one invalidates references into the target exactly as a mut method call does
@@ -531,10 +583,22 @@ one-parent-step dispatch.
 
 ### 3.6 Nil, dangling and runtime checks
 
-- **There is no nil interface value.** Interface locals require an initialiser;
-  `var` is rejected; `?I` is not a type; no literal produces an interface; a
-  parameter always receives a well-formed cell from a caller. `d == nil` is a
-  type error (interface values cannot be compared).
+- **There is no nil interface *cell*.** Interface locals require an
+  initialiser; `var` is rejected; `?I` is not a type; no literal produces an
+  interface; a parameter always receives a constructed cell from a caller.
+  `d == nil` is a type error (interface values cannot be compared). A zero
+  handle token can only arise from a nil handle, which the type system
+  prevents (`^T` is non-null and `?^T` must be narrowed); if one is ever
+  stored, the first `RT_DEREF` exits 7 rather than dereferencing nil. A
+  conversion adds no separate nil check.
+- **Construction-time liveness.** A borrow conversion calls `RT_HANDLE`, which
+  reads the object's header to capture its generation; it does not validate
+  that the source borrow is live. The reference rules guarantee that for
+  visible frees. A hidden free *before* a borrow conversion would make
+  `RT_HANDLE` an unvalidated read, the same residual class as an existing
+  hidden reference use; the token guards frees **after** construction. A
+  handle conversion copies a token without reading the object, so a stale
+  handle field is caught by the first `RT_DEREF` (section 9.6d).
 - A **borrow-rooted** value is valid by the reference rules while its binding is
   valid. A hidden free the compiler cannot see is still caught by the token:
   `RT_DEREF` exits 7 if the generation is gone.
@@ -543,8 +607,8 @@ one-parent-step dispatch.
   handle (`itemBind`, `obo.obo:2938-2941`), so **any visible change or free, and
   any call that might free, invalidates it at compile time**. This is
   deliberately conservative: a handle-rooted interface value may need to be
-  made again after an unrelated allocation/free, just as a `&h.field` reference
-  does. The value is not registered in the compiler's `originSyms` let-handle
+  made again after an unrelated free, just as a `&h.field` reference does;
+  allocation alone does not invalidate it. The value is not registered in the compiler's `originSyms` let-handle
   origin lists, so a `let` handle's specific dead mark is not copied; the
   `handleSym` invalidation and the runtime token together are the guarantee.
   Calls do `RT_DEREF` every time, so a hidden free the compiler cannot see is
@@ -571,8 +635,11 @@ one-parent-step dispatch.
 An interface value never implicitly becomes a concrete value, and a concrete
 value never implicitly becomes an interface value at a call site; the
 destination's declared type drives the explicit conversion (section 2.3).
-Binding a variable of interface type is the only way to make dynamic dispatch
-possible.
+A local of interface type, or an interface conversion passed as an argument,
+is how a value reaches a dynamic call; the callee then dispatches through the
+same slot machinery. Allocation alone does not make a value interface-typed,
+and (as section 3.6 says) allocation alone does not invalidate a handle-rooted
+binding.
 
 ### 4.2 The implementation registry and the vtable
 
@@ -588,8 +655,10 @@ vtable(T, I) = [ address of T::m0, address of T::m1, ... ]
 - `T` is the record or closed type the impl names. A variant value uses its
   closed type's vtable; the method expects `&C` and the object is a `C`-layout
   variant, which is exactly what the methods phase's parent step already does.
-- The implementation must be in `T`'s own module. `findImplFor(recv, I)` tries
-  `(recv, I)` and, for a variant, one parent step.
+- The implementation must be in `T`'s own module. The conversion lookup is
+  visibility-filtered `findImplFor(recv, I)` (section 5.1): it tries the
+  visible `(recv, I)` pair and, for a variant, one visible parent step; a raw
+  private pair is used only by the writer/mode-0 validation.
 - Methods must be **defined** before the impl. Then their addresses are final
   even though `dropFrame` can move a function's entry (`obo.obo:7777-7791`),
   because that happens inside the method's own `fnDecl` before the impl is
@@ -675,16 +744,26 @@ summary. The compiler needs a sound, static summary for every interface call:
     borrows through a handle is refused by the existing handle-borrow rule
     (`obo.obo:4859-4866`).
   A read-only member keeps `pfree` bit 0 clear (it cannot free below its
-  receiver), but its global/handle effects are the worst case.
+  receiver), but its global/handle effects are the worst case. Precisely,
+  `afterCall` sees `writesHandles` and calls `invalidateDeep(nil)`, so **every
+  deep reference, including references into the receiver, is invalidated**; a
+  whole-object receiver binding (`deep == false`) survives on an accepted
+  call, while a receiver whose own binding is deep is itself invalidated. An
+  impure global-rooted receiver is refused before this point. Only the absent
+  pfree bit 0 says the callee cannot free below the receiver; it does not say
+  references into it stay valid.
 - A member **marked `pure`** requires every implementation to satisfy
   `pureFn(method) && !method.writesHandles`: it is compiled, does not free a
   global, does not write/free through a handle, and frees nothing below any
-  parameter (`pureFn`, `obo.obo:3359-3366`). `pure` here is the compiler's
-  ownership/effect predicate, not a promise of no observable side effects: a
-  pure `mut` member may still write scalars or append. The synthetic call summary then
-  has `freesAll=false`, `writesHandles=false`, `freed` empty and `pfree=0`; the
-  call is pure by the compiler's own predicate, keeps references valid and may
-  be made through a handle-rooted value.
+  *reference* parameter (`pureFn`, `obo.obo:3359-3366`). Owned by-value
+  parameters are allowed and may be freed by the callee; section 4.5's proof
+  covers why they cannot alias the receiver's target in an accepted call.
+  `pure` here is the compiler's ownership/effect predicate, not a promise of no
+  observable side effects: a pure `mut` member may still write scalars or
+  append. The synthetic call summary then has `freesAll=false`,
+  `writesHandles=false`, `freed` empty and `pfree=0`; the call is pure by the
+  compiler's own predicate, keeps references valid and may be made through a
+  handle-rooted value.
 - The purity check happens at the impl, after the method body is compiled and
   before the vtable is emitted. A method that calls a forward-headed function
   is conservatively impure (`pureFn` returns false for `addr < 0`), so the
@@ -694,6 +773,39 @@ summary. The compiler needs a sound, static summary for every interface call:
   declaration and recheck only when they rebuild. The interface's purity bits
   are part of its interface hash, so a purity change rebuilds dependants and
   their impls.
+
+**Owned by-value parameters.** `pureFn` does not count mode-0 parameters, and
+`fnBody` frees an owned parameter at return, so a pure member may take an owned
+argument. This does not break the handle-rooted argument:
+
+- **Uniqueness.** Moving the argument transfers the only owner into the callee;
+  the object is freed at the callee's return, after the member call itself has
+  completed.
+- **No alias can survive the move.** `consume(owner)` calls
+  `invalidate(owner, all = true)` (`consume`, `obo.obo:2861-2896`). `hitBy`
+  returns true unconditionally for a binding whose root is `handleSym`
+  (`obo.obo:3111-3121`), so moving an owned value that is, or **owns through
+  owned fields/elements**, the receiver's target invalidates a handle-rooted
+  receiver binding; a reference-rooted binding at that owner is hit by the
+  same invalidation. A handle or borrow inside the owned value is not ownership
+  containment and does not free the target when the owned value is freed.
+  The receiver is held with `holdArg`/`argOrderCheck` before the later argument
+  runs, so an owned argument that moves the receiver's owner or ancestor is
+  refused at that argument (`argument N ... may free what the receiver points
+  into ...`, or the moved-reference error if the argument runs first).
+- **Early free in the callee.** If the callee frees an owned argument early, an
+  accepted call guarantees that the argument is not the receiver's target or
+  ancestor: moving such an argument would have invalidated the receiver binding
+  and the call would have been rejected. A pure member may therefore free any
+  owned argument it receives without endangering the receiver.
+
+Tests: a pure `mut` member appending an unrelated owned argument compiles and
+runs; an owned argument that is the receiver's owner/ancestor beside a
+handle-rooted or borrow-rooted receiver is rejected by the hold/consume checks
+(section 9.6). If review prefers a simpler rule, the fallback is to ban mode-0
+parameters on `pure` members at the interface declaration, impl check and
+symbol reader; the proof above is the reason the recommended design does not
+need that restriction.
 
 **Why handle-rooted calls need this.** A handle names an object whose owner the
 callee does not know. If an impure member could free that object through a
@@ -778,11 +890,25 @@ is deliberate: it makes `pureFn` treat a pure synthetic as compiled, while
 fn ifaceMethodsOf(t: ^Type): []^Sym         // ifaceSyms filtered by recv == t
 fn findIfaceMethod(t: ^Type, name: string): ?^Sym
 fn ifaceMethodDisplay(f: ^Sym): string      // I::m or M::I::m
-fn findImplIn(recv: ^Type, iface: ^Type): ?^Impl
-fn findImplFor(recv: ^Type, iface: ^Type): ?^Impl   // one parent step for a variant
+fn findImplIn(recv: ^Type, iface: ^Type): ?^Impl     // raw pair lookup, no visibility
+fn findImplFor(recv: ^Type, iface: ^Type): ?^Impl    // visible only; one parent step for a variant
 fn implKey(i: ^Impl): string                // recv.name + " as " + interface key
+fn implBase(recv: ^Type): ^Type              // recv, or its closed parent for a variant
+fn implMissing(recv: ^Type, iface: ^Type)     // the mode-independent error; never returns
 fn handleSafe(f: ^Sym): bool { return pureFn(f) && !f.writesHandles }
 ```
+
+`findImplFor` is the **only** lookup used by conversions and is
+visibility-filtered: it accepts a pair only when
+`impl.owner == curModuleName || impl.exported`, then tries the receiver and,
+for a variant, one `parent` step. `findImplIn`/the raw registry remain available
+for the writer and mode-0 validation, which must see private live impls.
+The filter is applied identically in a full build and in `--check`; a private
+live impl in another module is rejected even though the full-build registry
+contains it. `implMissing` names the parent closed type `C` for a variant `V`:
+a foreign `C` gives the module-member error, a local `C` (or a local `V` with a
+local or no parent implementation) gives the no-implementation error. No
+conversion site may bypass this helper with a raw lookup.
 
 `releaseTables` (`obo.obo:10361-10379`) clears `ifaceSyms`, `impls` and
 `implArena` with the other arenas. The registries are declared after `tVoid`
@@ -803,11 +929,13 @@ change and per-type list allocation, and matches the methods phase's
   every other identifier remains `expected a declaration`. No valid source
   changes meaning. An `impl` identifier inside a function is still an ordinary
   identifier.
-- `typeDecl` (`obo.obo:3968-4059`) gains the contextual branch after `=`:
-  consume an identifier; if it is `interface` and the current token is `{`, it
-  is an interface definition; otherwise the consumed identifier is the start of
-  an alias type expression and is resolved as the type name `interface`
-  (including `interface::member`). The interface branch creates and declares
+- `typeDecl` (`obo.obo:3968-4059`) gains the contextual branch after `=`
+  **only when `sym == T_IDENT`**: save `w = sval`, `next()`, and if
+  `w == "interface"` and `sym == T_LBRACE`, parse an interface definition;
+  otherwise call a factored `finishTypeName(w)` that reproduces the name tail of
+  `parseType` (`int`/`byte`/`bool`/`string`, `Result` + `[T]`, `w::member`, or
+  a bare lookup). The `?`, `[]`, `^`, `ref` and `closed` paths never enter this
+  branch, so existing aliases are untouched. The interface branch creates and declares
   the type symbol at the start (a prior `type I` shell is the forward-shell
   error, section 2.1), sets `kind = "iface"`, parses members until `}`, rejects
   an empty interface and duplicate names, checks the export closure later, and
@@ -861,7 +989,9 @@ change and per-type list allocation, and matches the methods phase's
   The methods phase already restructures the loop to break at `. name (` and to
   run the existing tail on the receiver before calling out; interfaces reuse
   that structure, with `isCall` also covering an interface receiver so a
-  statement/defer use is recorded as a read.
+  statement/defer use is recorded as a read. Without it, a loop-carried
+  invalidation of an interface local can hide the previous iteration's use; the
+  statement/defer loop regressions are the load-bearing case 9.6c.
 - `checkAssign` (`obo.obo:4640-4657`) continues to use `assignable`
   (`obo.obo:968-980`). `assignable(I, I)` is true by pointer identity;
   concrete-to-interface and handle-to-interface are deliberately **false** so
@@ -875,14 +1005,19 @@ change and per-type list allocation, and matches the methods phase's
   1. if `x.typ == dst`: copy; `bind = itemBind(x)`; no cell;
   2. else if `x.typ.kind == "iface"`: the interface-to-interface error (a
      different nominal interface never converts);
-  3. else if `x.typ.kind == "handle"`: `T = baseOf(x.typ)`; resolve
-     `findImplFor(T, dst)`; `bind = singleBind(handleSym, true, "", true, nil)`;
+  3. else if `x.typ.kind == "handle"`: `T = baseOf(x.typ)`;
+     `impl = findImplFor(T, dst)`; if nil, `implMissing(T, dst)`;
+     `bind = singleBind(handleSym, true, "", true, nil)`;
      token = the handle value; new cell;
   4. else if `x.borrowed` and `x.typ` is a record/closed `T`:
-     `bind = borrowBind(x)`; resolve `findImplFor(T, dst)`; token =
+     `impl = findImplFor(T, dst)`; if nil, `implMissing(T, dst)`;
+     `bind = borrowBind(x)`; token =
      `rtCall1(RT_HANDLE, x, derived("handle", T))`; new cell;
   5. else the owned/unsupported error (an owned `T`, a borrowed array/string/
      `Result`, or an optional).
+  Resolving the impl *before* `borrowBind`/`RT_HANDLE` also avoids a runtime
+  token on an unsupported source type. `impl` is the visible `Impl` whose
+  `vtable` is stored in the cell.
   The cell is allocated with two hidden frame slots; the token and
   `impl.vtable` are stored; the result item is a `reg` holding the cell
   address, `borrowed = true`, type `dst`, with `IfaceVal.bind` carrying the
@@ -891,6 +1026,12 @@ change and per-type list allocation, and matches the methods phase's
 - `ifaceValue` rejects `curFn == nil` (`an interface value cannot be created
   outside a function`), because there is no frame for the cell. A global
   initialiser therefore cannot create one, even indirectly as a call argument.
+- The one conversion path that does not call `ifaceValue` is an **inferred
+  copy** `let e = d`: `varDecl`'s existing reference-local branch sees a
+  borrowed value of interface type and creates an interface reference local
+  with the same binding and cell pointer. `varDecl` must reject `var e = d`
+  with the bound-once error before taking that branch. This path is a copy,
+  never a conversion: `let e = &b` remains a reference local of `b`.
 - The binding's `writable` bit is the only mutability check. A `mut` member
   call with `!binding.writable` is the read-only error; the receiver is never
   silently downgraded.
@@ -921,17 +1062,26 @@ and effect loops, with the differences that matter:
    existing `borrowBind` writability check, `holdArg`, `argOrderCheck`, and the
    receiver-aware alias/global/handle loops. Arity counts the explicit
    parameters (`len(params) - 1`).
-5. **Handle-rooted check:** if the receiver binding has a `handleSym` root,
-   require `handleSafe(f)`; an impure member is the handle error. Explicit
-   arguments whose binding is handle-rooted are passed to the member with the
-   existing handle-borrow check, using `handleSafe(f)` (the member is the
-   callee); if the member is impure, the argument is refused.
+5. **Handle-rooted check:** scan **every root** of the receiver binding, not
+   just the first; a joined reference (`var r = &n; if c { r = &h.field }`) has
+   several roots and any `handleSym` root requires `handleSafe(f)`. An impure
+   member is the handle error. The same all-roots scan applies to the
+   global-rooted check (`mightFree` for each global root). Explicit arguments
+   whose binding is handle-rooted are passed to the member with the existing
+   handle-borrow check, using `handleSafe(f)` (the member is the callee); if
+   the member is impure, the argument is refused.
 6. **Effects:** use `f.freesAll`, `f.writesHandles`, `f.fnRec.pfree` and
    `afterCall(f)` exactly as a direct call does. For an impure `mut` receiver,
-   `mutFrees(f, 0)` invalidates the receiver's roots and records the pfree
-   events; for an impure read-only receiver the receiver roots are not
-   invalidated (the member cannot free below the receiver), but globals and
-   handle/deep references are.
+   `mutFrees(f, 0)` invalidates **every root** of the receiver's binding and
+   records the pfree events for each; the alias/global loops likewise scan every
+   root. For an impure **read-only** receiver the receiver pfree path
+   is skipped (bit 0 is clear), but the synthetic summary's
+   `writesHandles`/`freesAll` make `afterCall` call `invalidateDeep(nil)` and
+   `invalidate(handleSym, ...)`: every deep reference, including references
+   into the receiver, is invalidated, and a receiver whose own binding is deep
+   is invalidated too. A whole-object receiver binding survives on an accepted
+   call; an impure global-rooted receiver was refused at step 5. The exact
+   accept/reject cases are in section 9.6.
 7. **Call:** after the args are pushed, load the vtable from the hidden slot
    and emit `FF /2` with a memory operand:
    `call qword ptr [vtable + 8*slot]`. No tag bits are used in this design.
@@ -964,9 +1114,11 @@ on the dynamic type.
   (`obo.obo:6971-6985`, `7025-7118`) nor the `fnDecl` retry cleanup
   (`obo.obo:8279-8285`) needs an interface entry. Hidden cells and vtable slots
   are rbp-relative frame slots, which the same re-emission reuses correctly.
-- `isMethod(s)` from the methods phase must not classify an `"ifn"` symbol as a
-  concrete method; it is only consulted for `methodSyms` entries, but the
-  helper should check the registry/kind to be safe.
+- `isMethod(s)` from the methods phase must be
+  `s.kind == "fn" && s.recv != tVoid` **and** the symbol must be a member of
+  `methodSyms`; an interface synthetic has `recv == I`, so a `recv != tVoid`
+  test alone would misclassify it. All method scans (writer filter, heading
+  check, `checkExports`, fixup cleanup) must use the registry/kind form.
 
 ### 5.6 No new tokens
 
@@ -1056,25 +1208,31 @@ Canonical group order (one deterministic order, matching the reader):
 ### 6.3 Reader
 
 - `symTypeDecl` (`obo.obo:9652-9822`) accepts the interface definition. It
-  applies the same `{` test after `=`: `interface` followed by `{` is an
-  interface definition, while `interface` followed by anything else is the
-  start of an alias type expression (so a type named `interface` round-trips).
-  There is no interface shell line. Mode 1 creates and registers the `Type`
+  applies the same **`T_IDENT` branch** after `=`: save `w = sval`, `next()`;
+  if `w == "interface"` and `sym == T_LBRACE`, it is an interface definition;
+  otherwise a factored `symFinishTypeName(w)` reproduces the name tail of
+  `symParseType` (`int`/`byte`/`bool`/`string`, `Result + [T]`, `w::member`,
+  or a bare exported-type lookup), so `type X = Result[T]` and a type named
+  `interface` both round-trip. The `?`, `[]`, `^`, `ref` and `closed` branches
+  are untouched. There is no interface shell line. Mode 1 creates and registers the `Type`
   (`kind = iface`, `incomplete = true`, uid from the key) and its exported type
   symbol at the definition before parsing members, so a self-referential
   parameter resolves through `findExport`; mode 0 finds the live `iface` type
-  and requires it complete. A preceding `type I uid ...` shell for the same name is the
+  and requires it complete, exported, kind `iface`, with
+  `uid == fnv1a(owner + "::" + name)` (there is no file uid to compare). A preceding `type I uid ...` shell for the same name is the
   forward-shell error. The definition claims the exported name with
   `symClaim` in both modes (there is no shell to claim it), and mode 0 checks
   that the live type is exported. The definition parser reads members in order,
   creates the synthetic symbols in mode 1, compares them with the live
   `ifaceMethodsOf(t)` in mode 0 (name, receiver mode, purity, parameter
   types/modes, return type, count and order), and clears `incomplete`.
-  Duplicate member names are a file error. `symShells` therefore contains only
-  record/closed names; `symDefined` contains interfaces too. An interface
-  return is rejected; `[]I`, `Result[I]` and `?I` are rejected by the shared
-  type parser; an interface field/global is rejected by the field/global
-  readers. Because an interface definition registers `kind = iface`
+  Duplicate member names are a file error. At the definition it sets
+  `symAfterShells = true` and appends the name to `symDefined` in both modes;
+  `symShells` therefore contains only record/closed names, while `symDefined`
+  contains interfaces too. An interface
+  return is rejected; `[]I`, `Result[I]` and `?I` are rejected by the reader's
+  own `symParseType` (not by assuming `parseType` is shared); an interface
+  field/global is rejected by `symFieldList`/`symGlobalDecl`. Because an interface definition registers `kind = iface`
   immediately, a later record definition with an interface field is rejected,
   and an earlier record definition that names the interface fails as an
   unknown type (there is no shell to make it forward-referenceable).
@@ -1085,8 +1243,9 @@ Canonical group order (one deterministic order, matching the reader):
   mode as today; `pfree`/`pf` parameter indices are unchanged.
 - A new `symImplDecl(mode)` reads `impl`, an interface type, `for`, and a local
   receiver name. It validates the interface kind, the receiver
-  (record/closed, not a variant, defined by this module, complete, exported),
-  and the unique pair. Mode 1 creates an `Impl` with `vtable = 0` and empty
+  (record/closed, not a variant, defined by this module, complete, exported,
+  and spelled by its **defining name**: an alias spelling is rejected, as the
+  writer never emits one), and the unique pair. Mode 1 creates an `Impl` with `vtable = 0` and empty
   slots; mode 0 requires the live exported impl, compares the pair and does not
   construct or overwrite live data. The line is appended to `symImplOrder` in
   both modes, after validation, for the mode-0 order comparison.
@@ -1110,9 +1269,15 @@ Canonical group order (one deterministic order, matching the reader):
   pointer.
 - An imported implementation is visible only if its `Impl.exported` is true,
   regardless of whether the build has the private live record (`--check` does
-  not). The error is the existing module-member form:
+  not): `findImplFor` filters on `owner == curModuleName || exported`. A failed
+  lookup for a foreign receiver reports the module-member form
   `module 'M' has no exported implementation of 'I' for 'T' (only 'pub'
-  implementations are visible)`.
+  implementations are visible)`, where `T` is the parent closed type for a
+  variant; a local receiver with no visible impl reports
+  `type 'T' does not implement interface 'I'`. Both messages are produced by
+  `implMissing` and are identical in full and check modes. A *foreign type with
+  no implementation at all* therefore gets the module-member message, not
+  "does not implement"; the tests cover full and source-less check.
 - A module may implement an interface from a module it imports for a type it
   owns. It may not implement for a foreign type. Two modules cannot both
   implement the same pair.
@@ -1140,19 +1305,23 @@ Canonical group order (one deterministic order, matching the reader):
   the ABI is unchanged.
 - `SYM_ABI` stays `1`: record layout, descriptor format, calling convention,
   global addressing, effect-summary meaning and initialization order are
-  unchanged. An interface parameter is one word; an interface call uses the
-  existing C-like one-pointer argument convention; the cell and vtable are
-  generated-code-private and never cross an ABI boundary. The vtable is new
-  rodata but is not a descriptor and is not shared through object files.
+  unchanged. The **one-word argument convention is unchanged**: an interface
+  parameter is one word (a cell pointer), and interface calls use the existing
+  one-pointer argument convention. The **cell layout and vtable layout are
+  new**, but they cross module boundaries only inside one image and are
+  **gated by `SYM_FORMAT 3`/compiler `0.7` exact-match**, not by the ABI
+  number: a 0.6 compiler rejects a format-3 file, and every format-3 reader is
+  a 0.7 compiler with the same cell layout. The vtable is new rodata, not a
+  descriptor, and is not shared through object files.
 - A 0.6/format-2 file is rejected with
   `has format 2; this compiler reads 3; rebuild it`; a 0.7 compiler's file is
   rejected by an older compiler. Rebuild, do not reuse stale artifacts.
 - All 76 `tests/modules/sym/*/symdir` files and the 3 golden
   `expected/*.sym` files migrate in the same change to
-  `obosym 3`/`compiler "0.7"`/`abi 1`, except the `format`, `compiler` and
-  `version` fixtures, which keep testing rejection:
-  `format` becomes `obosym 4` (expected reads 3), `compiler` becomes format 3
-  with `"9.9"`, `version` becomes format 3/0.7 with ABI 9. Headers are outside
+  `obosym 3`/`compiler "0.7"`/`abi 1`. The three version fixtures are migrated
+  too, to the new base plus their rejection value (they are not left at an old
+  format): `format` becomes `obosym 4` (expected reads 3), `compiler` becomes
+  format 3 with `"9.9"`, `version` becomes format 3/0.7 with ABI 9. Headers are outside
   the interface hash, so the migration itself changes no hash; the golden
   interface and impl additions do, and the goldens are regenerated explicitly
   with `sym_test.py --update`.
@@ -1165,7 +1334,7 @@ Canonical group order (one deterministic order, matching the reader):
 |---|---|
 | borrows | an interface borrow is a reference local: `makeRefLocal`, `borrowBind`, `itemBind`, `invalidate`, `heldPush`, loop/defer states all apply. A move/assignment/drop of the owner invalidates the interface value. |
 | handles | a handle conversion copies the token and binds through `handleSym`; dispatch dereferences at every call, so a hidden free exits 7. Like any reference through a handle, the value is invalidated by any visible free/change and by any call that might free, so construct it near its use and re-convert after an unrelated freeing call. Impure members are refused through handle-rooted values; pure ones are allowed. |
-| mut receivers | require `binding.writable`; a mut call invalidates references below the target and records pfree events, as a direct mut call does. A pure mut member frees nothing below the target, so references stay valid, matching a direct scalar-writing/append-only method. |
+| mut receivers | require `binding.writable`; a mut call invalidates references below the target and records pfree events, as a direct mut call does. A pure mut member frees nothing below the target, so references stay valid, matching a direct scalar-writing/append-only method. An **impure read-only** member cannot free below its receiver (no pfree bit 0), but its `writesHandles`/`freesAll` summary makes `afterCall` invalidate every deep reference, including references into the receiver; a whole-object receiver binding survives on an accepted call (a global-rooted impure call is refused) and a deep receiver is itself invalidated. |
 | owned values | owned concrete values are rejected as interface sources. A moved owner invalidates the interface value; an interface value is never moved or freed. |
 | aliases | copies share the cell and the binding; a mut call through one invalidates references into the target through all bindings; the receiver itself remains valid. |
 | `defer` | interface locals and parameters are reference-like; defer-use, replay and invalidation rules apply. A `let` interface local used by a defer is checked at block exits. Cells are frame-resident and live while the defer runs. |
@@ -1202,7 +1371,7 @@ trailing period, types through `tname`, interface methods as `I::m` (and
 | interface `Result` payload | `Result cannot hold an interface value` |
 | interface global | `an interface value cannot be a global; it is a parameter or a local` |
 | interface function/method return | `a function cannot return an interface value; interface values are parameters and locals only` |
-| `var` interface local | `an interface value must be declared with let: it is bound once and cannot be reassigned` |
+| `var` interface local (explicit `var e: I` or inferred `var e = d`) | `an interface value must be declared with let: it is bound once and cannot be reassigned` |
 | interface local without initialiser | `an interface value needs an initial value; it cannot be nil` |
 | conversion outside a function | `an interface value cannot be created outside a function` |
 
@@ -1229,8 +1398,8 @@ trailing period, types through `tname`, interface methods as `I::m` (and
 |---|---|
 | owned source | `cannot use owned '<T>' as interface '<I>': borrow it with '&' or make a handle with handle(...)` |
 | unsupported source | `cannot use <t> as interface '<I>'` |
-| no implementation | `type '<T>' does not implement interface '<I>'` |
-| private foreign impl | `module '<M>' has no exported implementation of '<I>' for '<T>' (only 'pub' implementations are visible)` |
+| local receiver, no visible impl | `type '<T>' does not implement interface '<I>'` (for a local variant, `<T>` is the variant; the closed parent is named in the detail if useful) |
+| foreign receiver, no exported impl (private or absent) | `module '<M>' has no exported implementation of '<I>' for '<T>' (only 'pub' implementations are visible)`; for a variant `<T>` is the parent closed type `<C>` |
 | interface-to-interface | `cannot use interface '<I1>' as '<I2>': interface values do not convert; convert from the original value` |
 | unknown member | `interface '<I>' has no method '<m>'` |
 | member used as a value | `interface method '<I>::<m>' cannot be used as a value: call it with '(' after its name` |
@@ -1251,9 +1420,10 @@ trailing period, types through `tname`, interface methods as `I::m` (and
 
 | situation | detail |
 |---|---|
-| malformed interface/member | `expected a method name in the interface`; `duplicate interface method 'm'`; `an interface method cannot return an interface value; interface values are parameters and locals only` |
-| interface in a field/global/array/`Result` | the source messages above |
-| unknown/duplicate impl | `duplicate implementation of 'I' for 'T'`; `'X' is not an interface type`; `the receiver of an implementation must be a type defined in this module`; `an implementation's receiver cannot be a variant; use its closed type` |
+| malformed interface/member | `expected a method name in the interface`; `duplicate interface method 'm'`; `an interface needs at least one method`; `an interface method cannot return an interface value; interface values are parameters and locals only` |
+| interface in a field/global/array/`Result`, including a function signature | `a record field cannot be an interface value`; `an interface value cannot be a global`; `an array cannot hold interface values`; `Result cannot hold an interface value` |
+| `p0: &I` in a function signature | the existing borrow rule, `only records, closed types and arrays can be borrowed, not I` |
+| unknown/duplicate impl | `duplicate implementation of 'I' for 'T'`; `'X' is not an interface type`; `the receiver of an implementation must be a type defined in this module`; `an implementation's receiver cannot be a variant; use its closed type`; an alias receiver spelling: `the receiver of an implementation must be the defining name of a type in this module` |
 | interface not yet defined | `type 'I' is declared but not yet defined` |
 | live/file disagreement | the existing `symbol file '<p>' disagrees with the compiled interface of '<m>' for <decl>; rebuild it`, with `interface 'I'`, `interface method 'I::m'`, `implementation 'I for T'` or `the implementation order` as `<decl>` |
 | format/ABI/compiler | `has format <n>; this compiler reads 3; rebuild it`, `has ABI 9; this compiler uses 1; rebuild it`, `was built by compiler '9.9'; this is '0.7'; rebuild it` |
@@ -1270,22 +1440,22 @@ files, REF/REEMIT assertions, fixture migration) are the precedent.
 
 | file | covers |
 |---|---|
-| `ifaces.obx` | one interface, two record types, borrow conversions, copies, dynamic dispatch, same-named methods on both types returning different values; a concrete static call beside an interface call |
+| `ifaces.obx` | one interface, two record types, borrow conversions, explicit and inferred (`let e = d`) copies, dynamic dispatch, same-named methods on both types returning different values; a concrete static call beside an interface call; `let e = &b` stays a concrete reference and `let e = b` stays owned `T` |
 | `ifaces_mut.obx` | `mut` members, writable/read-only targets, `mut d: I` parameters, scalar/append writes keeping references valid, a mut member that frees below the target invalidating a reference (error case in `errors/ifaces.obx`), a `let` interface local calling a mut member |
-| `ifaces_handle.obx` | handle conversions, pure read-only and pure mut members through handles, a handle field and `handle(x)`, a handle-rooted value passed to a pure function; `ifaces_handle_dead.obx` with `// exit: 7` after the owner is freed |
+| `ifaces_handle.obx` | handle conversions, pure read-only and pure mut members through handles, a handle field and `handle(x)`, a handle-rooted value passed to a pure function; `ifaces_handle_dead.obx` stores a stale handle token in a record/field, frees the owner behind the compiler's `let`-handle tracking, then converts the stale field after the free and calls: the first `RT_DEREF` exits 7, marker `// expect-exit: 7` |
 | `ifaces_closed.obx` | an impl on a closed type, calls through a closed-typed local, a variant source and a match-narrowed source using the parent impl |
 | `ifaces_params.obx` | `d: I` and `mut d: I` parameters, passing/copying interface values onward, a Result-returning interface member with `try`, `defer d.close()` |
 | `ifaces_alias.obx` | interface and type aliases, two structurally identical interfaces in one module dispatching separately, a type implementing two interfaces with one shared method |
 | `ifaces_scope.obx` | interface locals in blocks and loops, conversions in call arguments, recursion, a defer using an interface local, no assignment/return/field |
-| `ifaces_effects.obx` | pure versus impure members; a reference into the receiver stays valid after a pure mut call and is refused after an impure one; a global-rooted borrow refused for an impure member |
+| `ifaces_effects.obx` | pure versus impure members; a reference into the receiver stays valid after a pure mut call and is refused after an impure one; an **impure read-only** call leaves a whole-object receiver valid but invalidates a reference into the receiver (and invalidates a deep receiver itself); a pure read-only call keeps both; a global-rooted borrow refused for an impure member; a joined multi-root receiver is checked on every root |
 | `ifaces_homes.obx` | register pressure with interface cells and calls, run under the homes checks and `obo-noregs` |
 
 ### 9.2 Error programs (`tests/errors/ifaces.obx`)
 
 One `// ===` section per error with the exact section 8 text: empty interface;
 duplicate member; forward interface shell; `pub` member; interface return;
-interface field/array/Result/global; `var` interface; missing initialiser;
-owned source; non-implementing
+interface field/array/Result/global; `var` interface (explicit `var e: I` and
+inferred `var e = d`); missing initialiser; owned source; non-implementing
 type; private foreign impl; interface-to-interface; unknown member; member as a
 value; field access; read-only mut receiver; arity; argument types; impure
 handle-rooted call; impure global-rooted call; later argument freeing the
@@ -1298,7 +1468,19 @@ signature mismatches (receiver mode, parameter type, parameter mode, return);
 impure implementation of a pure member; `pub` impl with private types; missing
 `impl` before a conversion; `impl` after the conversion (declare-before-use);
 a handle-rooted interface value used after a visible free, an assignment over
-its owner, or an impure call (the reference invalidation error).
+its owner, or an impure call (the reference invalidation error). Additional
+load-bearing sections: two-level handle propagation (`fn f(d: I) { d.impure() }`
+called with a handle-rooted value, versus a pure `g(d: I) { d.pureMember() }`
+which accepts it); a joined multi-root receiver
+(`var r = &n; if c { r = &h.field }; let d: I = r; d.impure()`), which must be
+refused because one joined root is `handleSym`, and an all-local joined
+receiver whose mut call invalidates references into every root; a read-only
+impure call with a reference into the receiver, and one with a deep receiver;
+the `isCall` statement/defer cases (an interface local used as a loop statement
+or in a defer, an owner freed afterwards, the next use refused); an owned
+argument that is the receiver's owner/ancestor beside a handle-rooted or
+borrow-rooted receiver (hold/consume rejection); and a handle-rooted value used
+after a visible free (compile-time invalidation, not exit 7).
 
 ### 9.3 Modules and symbol files
 
@@ -1307,11 +1489,14 @@ its owner, or an impure call (the reference invalidation error).
 | `modules/run/ifaces` | lib exports a pub interface, pub record types, pub methods (`&`, `mut`, pure and impure) and pub impls; main converts borrows and calls all members; a mut impure call invalidates a reference across the module boundary |
 | `modules/run/ifaces_handle` | lib exports a handle-producing function and a pure interface; main converts `handle(c)` and calls pure members; a separate error tree passes a handle-rooted value to an impure function |
 | `modules/run/ifaces_closed` | an exported closed type implements an interface; main calls through a variant value |
-| `modules/run/ifaces_transitive` | B imports A; A's function returns L's type; B converts it to L's exported interface and calls it without importing L; a source-less `--check` variant (`modules/sym/ifaces_transitive_check`, exit 0) |
+| `modules/run/ifaces_transitive` | L exports `I`, `T` and a pub impl; A imports L and exports `fn make(): lib::T` and `fn use(d: lib::I)`. B imports only A: `let t = a::make(); a::use(&t)`. B never names or imports L; the conversion target comes from A's exported parameter type `lib::I`, and the impl comes from L's transitively loaded interface. An exported alias (`pub type LI = lib::I`) is the alternative naming route. `modules/sym/ifaces_transitive_check` deletes A's and L's sources, keeps their syms, checks B source-less, and asserts **exit 0** (not merely REF==PORT) |
 | `modules/run/ifaces_downstream` | lib exports the interface and a function taking it; main defines a type, a pub impl and the methods, converts a borrow, and calls `lib::use(...)`; the dependency's call dispatches through a vtable emitted in the root's module |
 | `modules/run/ifaces_identity` | two interfaces with the same method names/signatures and two impls; calls dispatch through the right vtable; an alias does not create a second type |
 | `modules/errors/private_impl` | converting to a dependency's interface whose impl is private: exact module-member error (full build) |
 | `modules/sym/private_impl_check` | the same against the dependency's committed `.sym` that omits the private impl: same message, exit 1 |
+| `modules/errors/foreign_no_impl` | a foreign record **and** a foreign variant whose closed parent has no implementation at all, converted to a dependency interface: the module-member error; the variant form names the parent closed type `C`, not the variant (full build) |
+| `modules/sym/foreign_no_impl_check` | the same source checked source-less against the dependency's syms: the same module-member messages, not `does not implement`, exit 1 |
+| `modules/run/ifaces_private_methods` | a `pub impl` whose concrete methods are private: an importer converts `&t` and calls through the interface successfully; the methods are not in the type's `.sym` |
 | `modules/errors/pub_impl_private_type` | `pub impl` with a private interface or receiver type: closure error |
 | `modules/errors/foreign_impl` | `impl` for an imported type |
 | `modules/errors/impl_order` | an `impl` before a method body, or a conversion before its impl: declare-before-use errors |
@@ -1335,17 +1520,23 @@ its owner, or an impure call (the reference invalidation error).
 - `effects_check`: a pure member called through a handle compiles; an impure
   member through a handle is refused; a mut interface call that frees below the
   receiver rejects a caller's reference into it across a module; a pure mut
-  call does not; an impure member marks `freesall`/`writeshandles` in the
-  dependent's view.
-- `malformed_structures`: duplicate interface member; interface in a field
-  (including one that names an interface defined later, which must fail as an
-  unknown type because there is no interface shell); interface return;
-  interface array/Result; `&I` parameter; duplicate impl; impl for a
-  foreign/variant/built-in receiver; impl naming a non-interface; impl before
-  the interface/type definition; a `type I uid ...` shell followed by an
-  interface definition (forward-shell error); a duplicate interface
-  definition; a missing/extra interface member in mode 0 (if observable); a
-  bad purity/mut marker.
+  call does not; an **impure read-only** call rejects a caller's deep reference
+  into the receiver but accepts a whole-object receiver; a pure read-only call
+  accepts both; an impure member marks `freesall`/`writeshandles` in the
+  dependent's view; a joined multi-root receiver is invalidated/error-checked
+  on every root.
+- `malformed_structures`: duplicate interface member; empty
+  `type I = interface { }`; interface in a field (including one that names an
+  interface defined later, which must fail as an unknown type because there is
+  no interface shell); interface return; `[]I` and `Result[I]` in a **function
+  signature** as well as in a field/global/type definition; `p0: &I` in a
+  function signature (the reader's borrow rule must reject it, not misparse it);
+  duplicate impl; impl for a foreign/variant/built-in receiver; impl naming a
+  non-interface; impl receiver written as an **alias spelling** (the reader
+  requires the defining name); impl before the interface/type definition; a
+  `type I uid ...` shell followed by an interface definition (forward-shell
+  error); a duplicate interface definition; a missing/extra interface member in
+  mode 0 (if observable); a bad purity/mut marker.
 - `sourceless_and_build_requirement`/`check_mode_and_cli`: `--check` against a
   source-less dependency with an interface and a pub impl, asserting **exit 0**;
   the checked module's own `.sym` contains its interface/impl lines; a stale
@@ -1376,10 +1567,12 @@ may gain an interface/impl line; `own_fuzz.py` is unchanged.
 - `tests/sym_fuzz.py`: `change_version` (line ~202) mutates to 4; the fuzz
   accepts a valid interface/impl seed if added, without weakening.
 - `tests/port_compare.py`: `SEED_FILE_MIN` entries `(0, 7)` for each new
-  `tests/run/ifaces*.obx` and `tests/errors/ifaces.obx`; the module trees are
-  outside the seed comparison; the `expect`/`REEMIT_CASES` assertions are
-  extended to the new symcheck cases. This is not a weakening: the skip stops
-  when the seed reports 0.7.
+  `tests/run/ifaces*.obx` and `tests/errors/ifaces.obx`; the keys are the
+  absolute `os.path.join(FORK, 'tests', ...)` paths used by the existing map
+  (`port_compare.py:174-181`), not bare names. The module trees are outside the
+  seed comparison; the `expect`/`REEMIT_CASES` assertions are extended to the
+  new symcheck cases. This is not a weakening: the skip stops when the seed
+  reports 0.7.
 - `tests/mutate_fork.py` (and `mutate_port.py` where shared): add
   `IFACE_MUTANTS`; retarget any pattern moved by the methods/designator/call
   changes; a stale pattern fails the gate by design, so retarget, do not
@@ -1389,7 +1582,7 @@ may gain an interface/impl line; `own_fuzz.py` is unchanged.
   compiled and run at implementation time.
 - No existing run/error program changes; the feature is additive.
 
-### 9.5 Mutants (28 targets)
+### 9.5 Mutants (34 targets)
 
 | mutant | expected catcher |
 |---|---|
@@ -1400,6 +1593,8 @@ may gain an interface/impl line; `own_fuzz.py` is unchanged.
 | interface-in-field check dropped | `errors/ifaces` field case |
 | interface-in-array/`Result`/return/global checks dropped | the corresponding error cases |
 | `var` interface local / reassignment accepted | `errors/ifaces`; the cell-reuse value test |
+| inferred `var e = d` skips the bound-once check in the generic reference-local branch | `errors/ifaces` inferred-`var` case |
+| inferred `let e = d` loses the binding/vtable or is rejected | `run/ifaces` inferred-copy case |
 | missing initialiser accepted (zero cell) | `errors/ifaces`; run crash/exit 7 |
 | read-only mut receiver check dropped | `errors/ifaces` read-only case; `run/ifaces_mut` |
 | receiver token not dereferenced before the call | `run/ifaces`/`ifaces_handle` wrong output or exit 7/crash |
@@ -1409,12 +1604,16 @@ may gain an interface/impl line; `own_fuzz.py` is unchanged.
 | handle-rooted impure call allowed (drop the `handleSafe` check) | `errors/ifaces` handle case; a run crash/exit |
 | purity not checked at the impl (impure method in a pure slot) | `errors/ifaces` purity case; then unsafe handle call |
 | impure synthetic summary treated pure (drop `freesall`/`writeshandles`) | a run/error case where a mut interface call frees below the receiver and a reference is used; without invalidation the program compiles and reads freed memory |
+| read-only impure member's summary drops `writeshandles` (deep references stay valid) | `ifaces_effects`: a reference into the receiver must be refused after an impure read-only call |
 | pure synthetic summary treated impure | a pure handle-rooted call is unexpectedly refused; run test fails |
 | receiver not held across later arguments | `errors/ifaces`: `d.store(clearTarget(...))` |
-| receiver not recorded as a read in a statement/defer (`isCall` dropped) | a loop use-after-free error case |
+| receiver not recorded as a read in a statement/defer (`isCall` dropped) | 9.6c loop/defer use-after-free error case |
+| handle/global check scans only the first root of a joined binding | 9.6b joined multi-root receiver (one root `handleSym`) |
+| pure contract lets an owned argument alias the receiver (receiver hold/owned-arg invalidation skipped) | 9.6e owned owner/ancestor argument beside a handle-rooted or borrow-rooted receiver |
 | interface copy loses the binding or the cell/vtable | a run case with two copies and two destinations |
 | interface-to-interface conversion allowed | `errors/ifaces` conversion case |
-| impl visibility ignored (private foreign impl accepted) | `modules/errors/private_impl` and `modules/sym/private_impl_check` |
+| visibility filter dropped from `findImplFor` (`owner == curModuleName || exported`) | `modules/errors/private_impl` (a full build must not use the live private impl) and `modules/sym/private_impl_check` (check mode must agree) |
+| a failed `findImplFor` reports no-implementation for a foreign receiver instead of the module-member error | `modules/errors/foreign_no_impl` and `modules/sym/foreign_no_impl_check`; the variant form must name the parent closed type |
 | writer omits/emits private impls | golden/roundtrip and the private-impl module case |
 | reader ignores impl lines or interface order/modes/purity | `sym_test` roundtrip/golden and the malformed cases |
 | interface parameter mode 2 treated as 1 (writability not checked) | `errors/ifaces` read-only argument to `mut d: I`; `run/ifaces_mut` |
@@ -1427,6 +1626,39 @@ signatures) are equivalent for the same reason as the methods design: a full
 build writes and immediately reads its own file. Record them as equivalent, not
 caught. If the homes/while-lift interaction with interface calls is
 unobservable, record that reason too.
+
+### 9.6 Load-bearing safety cases
+
+These are the cases that carry the soundness argument; each has a named test.
+If one cannot be made observable, the gate records it as equivalent with the
+reason rather than claiming it was caught.
+
+| case | test | expected |
+|---|---|---|
+| (a) two-level handle propagation | `errors/ifaces`: `fn f(d: I) { d.impureMember() }` (an impure **read-only** member, so the read-only parameter can call it); `let d: I = h; f(d)` | `f` is impure (`freesAll`/`writesHandles` propagate), so passing the handle-rooted value is refused by the handle-borrow/pure check; a pure `fn g(d: I) { d.pureMember() }` is accepted with the same value |
+| (b) joined multi-root receiver | `errors/ifaces`: `var r = &n; if c { r = &h.field }; let d: I = r; d.impure()`, arranged so the local root is first and the `handleSym` root is not first | refused because every root of the joined binding is scanned; a first-root-only scan would miss the handle root and compile. An all-local joined receiver's mut call invalidates references into every root (run/error pair in `ifaces_effects`) |
+| (c) `isCall` loop/defer use-after-free | `errors/ifaces`: an interface local used as a statement in a loop, owner freed after the call, next iteration refused; a `defer d.m()` with a free before the block end | the next use is refused with the existing moved/freed-reference error (`freedRefMsg`), and the defer with the existing defer-use error. The interface local is a reference local; the statement/defer form must record the receiver as a value use (`isCall`). If the immutable binding makes the loop case observationally equivalent to the existing moved check, record that reason and keep the defer case (which uses `noteDeferUse`) |
+| (d) exit 7 after a stale token | `run/ifaces_handle_dead.obx`, marker `// expect-exit: 7`: a stale handle token stored in a record/field after its owner is freed, converted after the free, then called | the first `RT_DEREF` exits 7. A handle-rooted value made *before* the visible free is compile-time invalidated, so the stale token must come from the field, not from a tracked `let` handle |
+| (e) pure owned parameter | `run/ifaces_effects`: a pure `mut` member appends an unrelated owned argument; `errors/ifaces`: an owned argument that is the receiver's owner/ancestor beside a handle-rooted or borrow-rooted receiver | unrelated owned argument accepted and stored; owner/ancestor argument refused at the held receiver/argument check (section 4.5 proof) |
+| (f) pub impl, private concrete methods | `modules/run/ifaces_private_methods` | an importer converts `&t` and calls through the interface; the private methods are absent from the type's `.sym`, and the vtable in the defining module still points at them |
+| (g) reader malformed shapes | `sym_test.py` `malformed_structures`, plus `ifaces.obx` source cases | `[]I` and `Result[I]` in a function signature (not only a field), an implementation receiver written as an alias spelling, an empty `interface { }`, and `p0: &I` in a function signature are all rejected with the exact section 8 detail |
+| (h) read-only impure effects | `run/ifaces_effects.obx` and the module `effects_check` | a whole-object receiver binding survives; a deep reference into the receiver is refused; a deep receiver is itself invalidated; a pure read-only call accepts both |
+
+Two residual limits are recorded, not tested as successes:
+
+- **No nil cell.** Every interface value points to a constructed cell; a zero
+  token can only come from a nil handle, which the type system prevents
+  (`^T` is non-null and `?^T` must be narrowed), and the first `RT_DEREF` then
+  exits 7 rather than dereferencing nil. A conversion does not add a separate
+  nil check.
+- **Construction-time liveness.** `RT_HANDLE` reads the object's header to
+  capture the generation; it does not validate that the source borrow is live.
+  The compiler's reference rules guarantee that for visible frees. A hidden
+  free *before* a borrow conversion would make `RT_HANDLE` an unvalidated read,
+  the same residual class as an existing hidden reference use; the token guards
+  frees **after** construction. A handle conversion copies a token and does not
+  read the object, so a stale handle field is caught by the first `RT_DEREF`
+  (case d).
 
 ---
 
@@ -1451,15 +1683,23 @@ unobservable, record that reason too.
    and `checkExports`; module-end/reader main gating. Add declaration errors and
    declaration-only run programs.
 3. **Conversion and parameters.** `ifaceValue` and its frame cells;
-   `varDecl`'s interface branch; `fnDecl`/`fnBody` interface parameter modes;
-   argument conversion in `callFnWith`; binding/writability and the read-only
-   errors; copies, loops and defers. Add construction/ownership tests.
+   `varDecl`'s interface branch (including inferred `let e = d`, and the
+   `var e = d` rejection); `fnDecl`/`fnBody` interface parameter modes;
+   argument conversion in `callFnWith`; visibility-filtered `findImplFor` and
+   `implMissing` with the full/check `private_impl`/`foreign_no_impl` tests;
+   binding/writability and the read-only errors; copies, loops and defers. Add
+   construction/ownership tests.
 4. **Dispatch and codegen.** `designatorT`'s interface branch and `isCall`;
    `ifaceCall` (receiver bind/hold, token/deref, hidden vtable slot, argument
    loop, effect checks, indirect call, result); synthetic pure/impure
    summaries; vtable emission at `impl` (methods defined first); handle-rooted
    and global-rooted checks; homes/while-lift tests. Add the run and error
    tests. Existing function-call messages must not change.
+   **Checkpoint A (after step 4):** run the entire existing suite plus the new
+   run/error tests, the homes checks and the ownership cases; measure the
+   compiler's live peak; fix all call/effect/dispatch problems before touching
+   the symbol format. This is the last point where a failure is confined to the
+   type checker/codegen rather than mixed with the fixture migration.
 5. **Symbol files.** Version bump; writer interface definitions and impl group
    plus the parameter writer; reader interface/impl parsing, order lists,
    `symFinish`, mode-0 comparison; migrate all 76 fixtures and the 3 goldens,
@@ -1490,14 +1730,20 @@ constants `109-111`; `Type` `882-895`; `newType` `899`; `isOwned` `2497`;
 `2938`; `makeRefLocal` `3027`; `invalidate` `3192`; `afterCall` `3459`;
 `mutFrees` `3348`; `pureFn` `3359`; `callFrees` `4740`; `recordParamFree`
 `3424`; `holdArg` `4692`; `argOrderCheck` `4709`; `relation` `6188`;
-`assignmentOrCall` `6502`; `tryExpr` `5914`; `deferStat` `7626`; `rodAlign`
-`1953`; `rod64` `1957`; `descriptor` `1988`; `closureCheck` `8327`;
-`checkExports` `8358`; `compileUnit` `8451`; `appTypeDef` `9077`;
-`appTypeShell` `9069`; `appFn` `9137`; `symBody` `9211`; `symText` `9281`;
-`symTypeDecl` `9652`; `symFnDecl` `9916`; `symReadDecls` `10103`; `readSym`
-`10167`; `symCompareOrder` `9571`; `symFinish` `9632`; `releaseTables` `10361`.
+`assignmentOrCall` `6502`; `tryExpr` `5914`; `deferStat` `7626`; `ok`
+`4957`; `rodAlign` `1953`; `rod64` `1957`; `descriptor` `1988`;
+`closureCheck` `8327`; `checkExports` `8358`; `compileUnit` `8451`;
+`appTypeDef` `9077`; `appTypeShell` `9069`; `appFn` `9137`; `symBody` `9211`;
+`symText` `9281`; `symParseType` `9471`; `symFieldList` `9522`;
+`symTypeDecl` `9652`; `symGlobalDecl` `9886`; `symFnDecl` `9916`;
+`symReadDecls` `10103`; `readSym` `10167`; `symCompareOrder` `9571`;
+`symFinish` `9632`; `releaseTables` `10361`.
+The reader has its own type/field/global parsers (`symParseType`,
+`symFieldList`, `symGlobalDecl`); the design does not assume `parseType`,
+`fieldList` or `varDecl` are shared with the symbol reader.
 New: `Impl`, registries, `ifaceValue`, `IfaceVal`, `ifaceCall`,
-`ifaceMethodsOf`, `findIfaceMethod`, `findImplFor`, `implDecl`, `symImplDecl`,
+`ifaceMethodsOf`, `findIfaceMethod`, `findImplIn`, `findImplFor`, `implBase`,
+`implMissing`, `implDecl`, `symImplDecl`, `symFinishTypeName`, `finishTypeName`,
 `appImpl`, the interface branch of `appTypeDef`, the frame-cell helper and the
 indirect-call emitter.
 
@@ -1526,7 +1772,9 @@ expect files); `tests/sym_test.py`; the golden tree and `expected/*.sym`; the
 4. **Handle token for borrow conversions.** It adds an `RT_HANDLE` per borrow
    conversion and an `RT_DEREF` per call, and turns a hidden free that the
    compiler cannot see into exit 7 rather than a read of freed memory. Test
-   `exit: 7`.
+   `// expect-exit: 7` with a stale token stored in a record/field (a
+   handle-rooted value made before a visible free is compile-time invalidated,
+   so it cannot supply the exit-7 case).
 5. **Vtable address finality.** Methods must be defined before the impl because
    `dropFrame` rewrites entries; the ordering check is a correctness gate, not
    a convenience. A mutant that accepts a heading must be caught.
@@ -1552,9 +1800,9 @@ expect files); `tests/sym_test.py`; the golden tree and `expected/*.sym`; the
 
 ### 10.4 Size and complexity
 
-Estimated `src/obo.obo`: +700 to +900 lines (after the methods phase, roughly
-10,900-11,000 → about 11,600-11,900, +6-8% over the current baseline), plus
-tests (roughly 1,400-2,000 lines across `.obx`, Python, symcheck fixtures,
+Estimated `src/obo.obo`: +800 to +1,100 lines (after the methods phase, roughly
+10,900-11,000 → about 11,700-12,100, +7-10% over the current baseline), plus
+tests (roughly 1,500-2,100 lines across `.obx`, Python, symcheck fixtures,
 goldens and mutants) and docs. The feature is medium-high complexity: no
 runtime, no new tokens, no ABI change, but a new type kind, a conversion path,
 an indirect call path, a purity contract, a vtable/impl mechanism and a
@@ -1592,9 +1840,9 @@ Per the project's normal set, on the merged tree:
 - **`.sym` is not compatible across the format bump.** A 0.6 compiler rejects a
   0.7 file (`has format 3; this compiler reads 2`) and a 0.7 compiler rejects a
   0.6 file (`has format 2; this compiler reads 3`). Rebuild, do not reuse stale
-  artifacts. ABI 1 means compiled programs' layout/calling convention and
-  existing summaries are unchanged; only the new declarations and generated
-  interface code are new.
+  artifacts. ABI 1 means existing layouts, the one-word calling convention and
+  existing summaries are unchanged; the new cell/vtable layout is format-3
+  gated, and only the new declarations and generated interface code are new.
 - **`--check`, `--sym-dir`, `--emit-sym`, `--reemit-sym`** keep their
   semantics. `--check` reconstructs interfaces and impls, uses a dummy vtable
   and discards code; it can check a source-less dependency tree with interfaces
