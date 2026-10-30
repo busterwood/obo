@@ -5582,3 +5582,83 @@ and `io: closeFile swaps the descriptors` 22.96 s; port `inverted for loop: test
 **Limits.** The timing headers identify the inputs but are not a lock; no verdict is reused. The io and meta
 runners do not emit per-mutant timings, so only their gate walls and CPU are reported. The metadata anchor
 repair changed the tests-tree digest and is reflected above; the compiler, runtime and seed did not change.
+## Stage A lambdas: implementation, memory recovery and final gates
+
+Stage A is implemented on the isolated lambdas branch at `obo 0.9`, symbol
+format 5, ABI 1, built by the unchanged promoted `0.8` seed
+(`507,905` bytes, sha256 `673ae7ba…`). It adds structural function types,
+non-capturing `fn (...) { ... }` literals, the one-word cell ABI with a hidden
+environment argument and indirect `call qword ptr [cell]` dispatch, the
+second-class position firewall, the pure-callback rules and 0.9/format-5 symbol
+support. Capture lists, owned/read-only captures, `^I` and Stage B remain
+deferred.
+
+The first implementation crossed the 2,000,000-byte compiler self-compile budget
+at 2,060,608 live bytes. The recovery kept the budget and checks unchanged and
+added two reviewed pieces:
+
+- zero-capacity arrays share four static read-only data blocks (kinds 1/2/4/6),
+  never written or freed, with the array header ABI unchanged; appends still
+  allocate a fresh heap block and preserve doubling growth. The runtime text is
+  17,168 bytes and data 67,360 bytes.
+- the per-`FreeRec` `nonFresh` slice became two integer bounds into one global
+  `nonFreshLog`; the flat log is saved/restored with `freeLog`/`freeArena`, and
+  `loopLogEnd` trims only the records it removes. The checked NF_CHECK corpus
+  covers flat ranges, pre-loop defer slices, loop truncation, nested islands,
+  break/continue/try/defer/homes and many literal bodies.
+
+After codegen, the compiler self-compile peaks are three identical direct runs at
+`1,963,248` bytes and a stage-3 peak of `1,963,296`; the port comparison peaks at
+`1,963,616`. The final source is `488,954` bytes, the binary `540,673` bytes, and
+the emitted code is `478,526` bytes in 29 full chunks plus 3,390 bytes in the
+current chunk. Direct headroom is 36,752 bytes. Stage 2 equals stage 3 byte for
+byte. These are compiler-self measurements; the 120/240/480-literal private
+workloads are large-input compile tests, not the compiler budget.
+
+Permanent regression catchers include the outer-name lifetime test, the
+non-env implicit-capture cases, the bounded 100/200/400 call-site arena test,
+the checked NF_CHECK harness and the direct empty-array runtime cases. The
+runtime empty-block guards, static-free and unknown-kind contracts are also
+exercised privately; permanent mutation catalog routing is recorded in the
+Step 4 mutant matrix below.
+
+
+### Stage A final gate evidence (feature branch `2da9ed1` + Step 4)
+
+The final Step 4 source is `488,954` bytes (12,953 lines, sha256 `5ba392c4…`), the
+compiler binary `540,673` bytes (`3d369273…`), and emitted code `478,526` bytes:
+29 full chunks plus 3,390 bytes in the current chunk (12,994 spare). The unchanged
+0.8 seed is `673ae7ba…`; runtime text/data are 17,168/67,360 bytes. Three
+self-compile runs peak at 1,963,248 live bytes, stage 3 at 1,963,296, and the port
+comparison at 1,963,616 (hard budget 2,000,000); stage 2 == stage 3 byte for byte.
+Maximum RSS is 3,640 KiB. The early implementation crossed the budget at
+2,060,608; the approved empty-array and flat-`nonFreshLog` recovery removed that
+growth without changing the budget or checks.
+
+Functional gates on the frozen source/tests: `run_fork` **1544 passed**, including
+the checked NF_CHECK log gate and the 100/200/400 call-site arena bound; `module_test`
+**106**; `sym_test` **42** with golden comparison and no `--update`; `sym_fuzz`
+200/200; `doc_check` **62 examples, 0 problems**; `homes_check` **13** with lambda and
+interface programs in both register modes plus loop-head padding; `homes_edge` 1028
+statements, 119 refused, 0 differ; `io_test` 0 failures; `meta_test` 34; `elf_test`
+ok; `port_test` **573/573** with 10 encoder groups; `port_compare` **1551/1551**
+behave the same; `tools.py` **509**; strict pinned `eza.py` **554** with reference
+sha256 `10457dde…`. `memory_log_check` passed four checked sources.
+
+Mutation gates:
+
+| Gate | Result |
+|---|---|
+| `mutate_fork` | **651/679 caught, 28 equivalent** (679 names / 681 anchors) |
+| `mutate_port` | **529/529 caught** (529 names / 534 unique replacement tuples) |
+| `mutate_io` | **29/30 caught, 1 equivalent** (three new runtime empty-array guards; zero-array heap allocation is memory-only and caught by the self-host peak gate) |
+| `mutate_meta` | **71/82 caught, 11 equivalent** (50/52 runtime, 21/30 compiler) |
+
+New Stage A mutants: 44 caught and one reasoned equivalent (`X5` constructor
+recursion is defence in depth because every constructor rejects a function base
+at formation). The new set covers function-type identity/writer/reader, position
+firewalls and aliases, interface firewall/X37 recursion and incomplete shells,
+forward aliases, lambda parsing/contexts, purity/active calls, hidden env, cell
+and argument ABI, zero-frame cell entry, arena-local synthetic callees, outer-name
+stack restore and nonFreshLog range/trim/island restore. Stage B capture-list and
+capture-binding mutants are explicitly deferred, not counted as equivalents.

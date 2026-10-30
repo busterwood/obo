@@ -1,16 +1,18 @@
 # Lambdas (phase 9) — design note
 
-Status: **design only**, for independent review. Baseline: `main` at
-`90ad7d3` (`Merge branch 'docs-06': document the promoted 0.6 seed`), read-only
-in the worktree `/home/chris/obx/.claude/worktrees/lambdas-design` on branch
-`lambdas-design`. The compiler source is 11,027 lines (`obo/src/obo.obo`),
-`LANGUAGE.md` 2,081 lines, `FORK.md` 5,235 lines; the promoted seed
-`obo/seed/obo` reports `obo 0.6 sym-format 2 abi 1`. The interfaces
-implementation is in flight on another branch and is not merged; this design
-targets the interface baseline `0.8`/format `4` and therefore targets
-`0.9`/format `5` for Stage A and `0.10`/format `5` for Stage B (section 6.5).
-Nothing is implemented by this pass: no source, test, seed, runtime or tool
-file changes. The only repository write is this file.
+Status: **Stage A implemented on the lambdas feature branch, pending final
+release review; Stage B is design-only/deferred.** Historical baseline for this
+note: `main` at `90ad7d3` (`Merge branch 'docs-06': document the promoted 0.6
+seed`), read-only in the worktree
+`/home/chris/obx/.claude/worktrees/lambdas-design` on branch `lambdas-design`.
+The historical compiler source was 11,027 lines and the promoted seed reported
+`obo 0.6 sym-format 2 abi 1`; those numbers are retained as history. The current
+branch targets the interface baseline `0.8`/format `4` and implements Stage A as
+`0.9`/format `5`; Stage B remains `0.10`/format `5` (section 6.5). The unchanged
+0.8 seed still builds the branch compiler; no seed promotion has occurred here.
+The runtime empty-array memory package is approved and separate; Stage A includes
+non-capturing literals, structural function types and indirect calls, but no
+capture lists or `^I`.
 
 > 2026-10-30 version shift: interfaces is now `0.8`/format `4` (`obo/design/interfaces-v3-design.md`), so Stage A is `0.9`/format `5` and Stage B is `0.10`/format `5`; interfaces v3 also requires `containsIface` to recurse into record and closed fields (v3 section 10). Also amended 2026-10-30: `containsIface` now recurses into record and closed fields with a visited list and treats an incomplete forward shell as containing an interface (section 5.2 snippet), and the interface-exclusion reasons now cite interfaces v3; no lambda rule is loosened.
 

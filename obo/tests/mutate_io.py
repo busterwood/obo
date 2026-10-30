@@ -124,6 +124,15 @@ RUNTIME_MUTANTS = {
     'fault hook not gated': (
         '    if (!leak_check) { io_fault_eintr = 0; io_fault_short = 0; meta_fault_eintr = 0; }\n',
         '    if (0) { io_fault_eintr = 0; io_fault_short = 0; meta_fault_eintr = 0; }\n'),
+    'empty append frees the static block': (
+        '        if (!is_empty_data(a->data)) free_block(a->data - GRAN);\n',
+        '        free_block(a->data - GRAN);\n'),
+    'empty array free pushes the static block': (
+        '            if (body[2] && !is_empty_data(body[2])) mstack[msp++] = body[2];\n',
+        '            if (body[2]) mstack[msp++] = body[2];\n'),
+    'zero array alloc gets a heap block': (
+        '    u64 b = n ? new_block(kind, esize, (u64)n) : empty_data(kind);\n',
+        '    u64 b = new_block(kind, esize, (u64)n);\n'),
 }
 
 LIB_MUTANTS = {
@@ -159,6 +168,15 @@ LIB_MUTANTS = {
     'takeChunk copies the wrong suffix': (
         '    for i in start..len(all) { append(out, all[i]) }\n',
         '    for i in start + 1..len(all) { append(out, all[i]) }\n'),
+}
+
+# Mutants that change only allocation policy, not program-observable behaviour. They are not
+# claimed as io-test catches; the compiler self-host peak gate is the memory oracle.
+EQUIVALENT = {
+    'zero array alloc gets a heap block':
+        'equivalent for program semantics: the block is still freed through the array and every '
+        'append/truncate/free path is unchanged; the regression is memory-only and is caught by '
+        'the compiler self-host 2M peak gate, not by an io program oracle',
 }
 
 # ---------------------------------------------------------------- cases
@@ -198,6 +216,7 @@ CASES = [
     case('run/io_reader', 'tests/run/io_reader.obx', env=clean_env(check=True)),
     case('run/io_writer', 'tests/run/io_writer.obx', env=clean_env(check=True)),
     case('run/io_defer', 'tests/run/io_defer.obx', env=clean_env(check=True)),
+    case('run/empty_arrays', 'tests/run/empty_arrays.obx', env=clean_env(check=True)),
     case('io/short_read', 'tests/io/short_read.obx', env=clean_env(check=True), stdin=b'0123456789'),
     case('io/fault_eintr', 'tests/io/fault_eintr.obx', env=clean_env(check=True, fault='eintr')),
     case('io/fault_inert', 'tests/io/fault_inert.obx', env=clean_env(fault='short')),
@@ -314,7 +333,7 @@ def main():
     print(f"baseline: {sum(1 for c in CASES if pattern in c['name'])} cases passed")
 
     # every pattern must still match exactly once
-    stale, broken, caught, missed = [], [], [], []
+    stale, broken, caught, missed, equiv = [], [], [], [], []
     jobs = [('runtime', n, o, t) for n, (o, t) in RUNTIME_MUTANTS.items()] + \
            [('library', n, o, t) for n, (o, t) in LIB_MUTANTS.items()]
     for kind, name, old, new in jobs:
@@ -324,6 +343,9 @@ def main():
         n = src.count(old)
         if n != 1:
             stale.append(f"STALE  {kind}: {name} (pattern found {n} times)")
+            continue
+        if kind == 'runtime' and name in EQUIVALENT:
+            equiv.append(f"EQUIV  runtime: {name}: {EQUIVALENT[name]}")
             continue
         work = tempfile.mkdtemp(prefix='mio-', dir=TMP)
         try:
@@ -352,10 +374,10 @@ def main():
             missed.append(f"MISSED {kind}: {name}")
         else:
             caught.append(f"caught {kind}: {name}  ({first})")
-    for line in caught + missed + stale + broken:
+    for line in caught + missed + stale + broken + equiv:
         print(line)
-    total = len(caught) + len(missed) + len(stale) + len(broken)
-    print(f"\n{len(caught)}/{total} mutants caught, {len(missed)} missed, "
+    total = len(caught) + len(missed) + len(stale) + len(broken) + len(equiv)
+    print(f"\n{len(caught)}/{total} mutants caught, {len(equiv)} equivalent, {len(missed)} missed, "
           f"{len(stale)} stale, {len(broken)} broken")
     sys.exit(1 if (missed or stale or broken) else 0)
 

@@ -148,3 +148,20 @@ fn main() { let env = 8; let f = fn (): int { return env }; println(f()) }  // e
 
 // === a nested lambda cannot implicitly use an outer lambda parameter named env
 fn main() { let f = fn (env: int): int { let g = fn (): int { return env }; return g() }; println(f(2)) }  // error: 'env' is a local of the enclosing function; add it to the lambda's capture list: fn [env](...)
+
+// === an ordinary enclosing local cannot be captured implicitly
+fn main() { let x = 7; let f = fn (): int { return x }; println(f()) }  // error: 'x' is a local of the enclosing function; add it to the lambda's capture list: fn [x](...)
+
+// === an ordinary enclosing parameter cannot be captured implicitly
+fn outerX(y: int): int { let f = fn (): int { return y }; return f() }  // error: 'y' is a local of the enclosing function; add it to the lambda's capture list: fn [y](...)
+fn main2() { println(outerX(7)) }
+
+// === an enclosing loop local cannot be captured implicitly
+fn main() { var i = 0; while i < 1 { let z = 7; let f = fn (): int { return z }; println(f()); i += 1 } }  // error: 'z' is a local of the enclosing function; add it to the lambda's capture list: fn [z](...)
+
+// === an enclosing match binding cannot be captured implicitly
+fn main() { match 1 { 1 { let z = 7; let f = fn (): int { return z }; println(f()) } else { println(0) } } }  // error: 'z' is a local of the enclosing function; add it to the lambda's capture list: fn [z](...)
+
+// === a type-position name shadowed by an outer local keeps the lambda rejection
+type T = ref record { n: int }
+fn main() { let T = 1; let f = fn (): int { let v: T = 0; return T }; println(f()) }  // error: 'T' is a local of the enclosing function; add it to the lambda's capture list: fn [T](...)

@@ -852,8 +852,10 @@ that read a wrong stack word or swapped the two words are corruption faults (the
 are kept as descriptively named extras, not as X8. X15's "forged-method module test" promise is not realizable:
 a `.sym` reader trusts an imported implementation and `implDecl` only sees methods compiled from source, so the
 pfree-subset branch is a defensive check with no honest input; X15 is recorded as equivalent with that precise
-reason. X10 and X37 remain deferred to phase 2a and the lambda stage. This note records implementation evidence;
-it does not change the rules above.
+reason. X10 remains deferred to phase 2a. X37 is now implemented and covered in the lambdas Stage A
+work: `containsIface` recurses into record and closed fields with a visited list and treats an incomplete
+forward shell as containing an interface. This note records implementation evidence; it does not change the
+rules above.
 
 ---
 

@@ -32,6 +32,8 @@ poisoned, so use after free shows up as garbage.
 """
 import concurrent.futures
 import os
+import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -106,6 +108,46 @@ def program_test(p):
                                            '--sym-dir', symdir])
 
 
+def call_arena_bound():
+    """Synthetic indirect-call metadata is local, not retained in symArena/fnArena per call site.
+    The generated helper has no new literal bodies: only its function-typed parameter is called at
+    100/200/400 sites. The bound is against the same generated workload, not the compiler's own budget."""
+    d = tempfile.mkdtemp(prefix='arena-', dir=run.TMP)
+    peaks = {}
+    for n in (100, 200, 400):
+        src = os.path.join(d, 'calls-%d.obx' % n)
+        body = '+'.join(['f(1)'] * n)
+        with open(src, 'w') as f:
+            f.write('fn helper(f: fn(int): int): int { return ' + body + ' }\n'
+                    'fn main() { let inc = fn (x: int): int { return x + 1 }; println(helper(inc)) }\n')
+        exe = os.path.join(d, 'calls-%d' % n)
+        sym = os.path.join(d, 'sym-%d' % n)
+        os.makedirs(sym)
+        p = subprocess.run([run.OBXC, src, '-o', exe, '--rt', FORK, '--sym-dir', sym],
+                           capture_output=True, text=True, timeout=120,
+                           env=dict(os.environ, OBO_STATS='1'))
+        if p.returncode != 0:
+            raise run.Fail('call-arena source %d did not compile: %s' % (n, p.stderr.strip()[:300]))
+        m = re.search(r'obo: (\d+) peak bytes', p.stderr)
+        if not m:
+            raise run.Fail('call-arena source %d printed no peak: %s' % (n, p.stderr.strip()[:200]))
+        peaks[n] = int(m.group(1))
+    if peaks[400] > 350000:
+        raise run.Fail('400 indirect call sites peak at %d (bound 350000); synthetic callee metadata is retained' % peaks[400])
+    if peaks[400] - peaks[100] > 120000:
+        raise run.Fail('call-site growth %d..%d peaks %d..%d; synthetic callee metadata grows per site'
+                       % (100, 400, peaks[100], peaks[400]))
+
+
+def checked_log_gate():
+    """Builds the checked NF_CHECK compiler from the current/mutant source and runs the log
+    lifecycle corpus. A mutant source is supplied by mutate_fork through OBO_MUTANT_SRC."""
+    p = subprocess.run([sys.executable, os.path.join(HERE, 'memory_log_check.py')],
+                       capture_output=True, text=True, timeout=300, env=os.environ.copy())
+    if p.returncode != 0:
+        raise run.Fail((p.stdout + p.stderr).strip()[:500])
+
+
 def main():
     args = sys.argv[1:]
     pattern = args[args.index('-k') + 1] if '-k' in args else ''
@@ -129,6 +171,8 @@ def main():
     # the image: the runtime-data segment's file size is the nonzero prefix, its
     # memory size the full image, and the program built by the compiler runs
     tests.append(("image/runtime_data_segment", lambda: elf_test.check(run.OBXC)))
+    tests.append(("lambda/call-arena-bound", call_arena_bound))
+    tests.append(("lambda/checked-log-gate", checked_log_gate))
     smoke_names = set()
     if smoke:
         known = {name for name, _ in tests}

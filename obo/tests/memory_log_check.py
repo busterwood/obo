@@ -17,7 +17,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 FORK = os.path.dirname(HERE)
 SEED = os.path.join(FORK, 'seed', 'obo')
-SRC = os.path.join(FORK, 'src', 'obo.obo')
+SRC = os.environ.get('OBO_MUTANT_SRC', os.path.join(FORK, 'src', 'obo.obo'))
 RT = FORK
 
 

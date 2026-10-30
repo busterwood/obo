@@ -203,3 +203,8 @@ fn g(f: fn(byte): int) { }  // error: 'g' does not match its forward heading
 // === a forward heading and a body whose function parameter modes differ do not match
 fn h(f: fn(&Item): int)
 fn h(f: fn(Item): int) { }  // error: 'h' does not match its forward heading
+
+// === an incomplete shell held by a record is refused through the field walk
+type LaterShell
+type HolderShell = ref record { l: LaterShell }
+type BadShellHolder = fn(HolderShell): int  // error: a function value cannot take or return 'HolderShell': it holds an interface value

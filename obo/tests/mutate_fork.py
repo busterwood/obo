@@ -894,6 +894,7 @@ MUTANTS.update(MODULE_MUTANTS)
 
 # mutants that survive by design: each removes a test that is redundant, so the behaviour is unchanged
 EQUIVALENT = {
+    "lambdas X5: containsFn does not recurse constructors": "equivalent as defence in depth: parseType, finishTypeName and symParseType reject a function base at every ?/[]/Result constructor before the container is stored, so no accepted source or symbol file can form a function type behind one; the recursive containsFn remains a belt-and-braces check",
     "methods: closureSeen is not truncated per method": "equivalent: only a local named type that is not exported is an error in closureCheck, and it errors the first time it is seen, so sharing closureSeen across methods cannot suppress an error; a foreign type is marked seen and skipped, and an anonymous type has no name to check. Truncating per method keeps the visit set small and matches the function loop; it is not observable",
     "methods: the mode-0 method order check is dropped": "equivalent: a full build writes the dependency's .sym and reads it immediately (compileUnit then parseImport), so no test can interpose a file with a different method order; the writer's own order is checked by the golden and round-trip tests",
     "methods: the mode-0 missing method check is dropped": "equivalent for the same reason: in mode 0 a full build compares the file its own writer just produced from the same live method registry, so no live exported method can be missing from it; a hand-supplied file is read only by --check (mode 1), which does not run the mode-0 missing-method check",
@@ -1498,6 +1499,124 @@ MULTI_MUTANTS = {
 MUTANTS.update(INTERFACE_MUTANTS)
 MUTANTS.update(METHOD_MUTANTS)
 
+LAMBDA_MUTANTS = {
+    # source/reader function-type model and firewall
+    "lambdas X1: same has no function branch": (
+        '    if a.kind == "fn" {\n', '    if false {\n'),
+    "lambdas X2: tname has no function branch": (
+        'fn tname(t: ^Type): string {\n    if t.kind == "fn" {\n', 'fn tname(t: ^Type): string {\n    if false {\n'),
+    "lambdas X3: writer has no function branch": (
+        '    if k == "fn" {\n        appStr(b, "fn(")\n', '    if false {\n        appStr(b, "fn(")\n'),
+    "lambdas X4: symTypeText has no function branch": (
+        'fn symTypeText(t: ^Type): string {\n    if t.kind == "fn" {\n',
+        'fn symTypeText(t: ^Type): string {\n    if false {\n'),
+    "lambdas X5: containsFn does not recurse constructors": (
+        '    if t.kind == "array" || t.kind == "opt" || t.kind == "handle" || t.kind == "result" {\n        return containsFn(baseOf(t))\n    }\n',
+        '    if t.kind == "array" || t.kind == "opt" || t.kind == "handle" || t.kind == "result" {\n        return false\n    }\n'),
+    "lambdas X6: containsIface ignores record/closed fields": (
+        '    if t.kind == "record" || t.kind == "closed" {\n        if t.incomplete { return true }\n',
+        '    if false {\n        if t.incomplete { return true }\n'),
+    "lambdas X7: containsIface accepts an incomplete shell": (
+        '        if t.incomplete { return true }\n', '        if false { return true }\n'),
+    "lambdas X8: closureCheck does not recurse function types": (
+        '    if k == "fn" {\n        for i in 0..fnArity(t) { closureCheck(fnParam(t, i), declName, variant, line) }\n',
+        '    if false {\n        for i in 0..fnArity(t) { closureCheck(fnParam(t, i), declName, variant, line) }\n'),
+    "lambdas X9: reader field accepts a function value": (
+        '        let t = symParseType()\n        rejectFn(t, "a record field cannot be a function value; function values are parameters and locals only")\n',
+        '        let t = symParseType()\n'),
+    "lambdas X10: reader global accepts a function value": (
+        '    rejectFn(t, "a function value cannot be a global; it is a parameter or a local")\n', ''),
+    "lambdas X11: reader constant accepts a function value": (
+        '    rejectFn(t, "a constant cannot hold a function value")\n', ''),
+    "lambdas X12: reader return accepts a function value": (
+        '    rejectFn(ret, "a function cannot return a function value; function values are parameters and locals only")\n    var freesAll = false\n',
+        '    var freesAll = false\n'),
+    "lambdas X9a: source optional accepts a function value": (
+        '        let b = parseType()\n        rejectFn(b, "an optional cannot hold a function value; function values are parameters and locals only")\n',
+        '        let b = parseType()\n'),
+    "lambdas X9b: reader optional accepts a function value": (
+        '        let b = symParseType()\n        rejectFn(b, "an optional cannot hold a function value; function values are parameters and locals only")\n',
+        '        let b = symParseType()\n'),
+    "lambdas X9c: source array accepts a function value": (
+        '        let b = parseType()\n        rejectFn(b, "an array cannot hold function values")\n',
+        '        let b = parseType()\n'),
+    "lambdas X9d: reader array accepts a function value": (
+        '        let b = symParseType()\n        rejectFn(b, "an array cannot hold function values")\n',
+        '        let b = symParseType()\n'),
+    "lambdas X9e: source Result accepts a function value": (
+        '        let b = parseType()\n        expect(T_RBRACK, "")\n        rejectFn(b, "Result cannot hold a function value")\n',
+        '        let b = parseType()\n        expect(T_RBRACK, "")\n'),
+    "lambdas X9f: reader Result accepts a function value": (
+        '        let b = symParseType()\n        expect(T_RBRACK, "")\n        rejectFn(b, "Result cannot hold a function value")\n',
+        '        let b = symParseType()\n        expect(T_RBRACK, "")\n'),
+    "lambdas X9g: source field accepts a function value": (
+        '        let t = parseType()\n        rejectFn(t, "a record field cannot be a function value; function values are parameters and locals only")\n',
+        '        let t = parseType()\n'),
+    "lambdas X9h: source global accepts a function value": (
+        '        if isGlobal { rejectFn(pt, "a function value cannot be a global; it is a parameter or a local") }\n', ''),
+    "lambdas X9i: source return accepts a function value": (
+        '    rejectFn(ret, "a function cannot return a function value; function values are parameters and locals only")\n    var f = newSym("fn", name, nil)\n',
+        '    var f = newSym("fn", name, nil)\n'),
+    "lambdas X9j: source interface member parameter accepts a function value": (
+        '        if member { rejectFn(t, "an interface method cannot use a function value; function types are not supported in interfaces") }\n', ''),
+    "lambdas X9k: source interface member return accepts a function value": (
+        '        rejectFn(ret, "an interface method cannot use a function value; function types are not supported in interfaces")\n        if sym != T_RBRACE { expect(T_SEMI, "\';\' or newline") }\n',
+        '        if sym != T_RBRACE { expect(T_SEMI, "\';\' or newline") }\n'),
+    "lambdas X9l: reader interface member parameter accepts a function value": (
+        '            rejectFn(pt, "an interface method cannot use a function value; function types are not supported in interfaces")\n', ''),
+    "lambdas X9m: reader interface member return accepts a function value": (
+        '        rejectFn(ret, "an interface method cannot use a function value; function types are not supported in interfaces")\n        let what = "interface method \'" + name + "::" + mname + "\'"\n',
+        '        let what = "interface method \'" + name + "::" + mname + "\'"\n'),
+    "lambdas X13: source forward shell accepts a function alias": (
+        "            if sym == T_FN { error(\"a function type cannot be forward-declared: '\" + name + \"' is already declared as a forward type\") }\n", ''),
+    "lambdas X14: lambda parameter accepts mut": (
+        '        if sym == T_IDENT && sval == "mut" {\n            error("a lambda parameter cannot be mut; a function value takes owned or read-only parameters")\n        }\n',
+        '        if false {\n            error("a lambda parameter cannot be mut; a function value takes owned or read-only parameters")\n        }\n'),
+    "lambdas X15: lambda literal allowed in a while condition": (
+        '    if inWhileCond { error("a lambda literal cannot appear in a while condition; move the call out of the condition before the loop") }\n', ''),
+    "lambdas X16: lambda literal allowed in a defer body": (
+        '    if inDefer { error("a lambda literal cannot appear in a defer body; move the call out of the defer") }\n', ''),
+    "lambdas X17: lambda allowed outside a function": (
+        '    if curFn == nil { error("a lambda can only be created inside a function") }\n', ''),
+    "lambdas X18: capture list accepted": (
+        '    if sym == T_LBRACK {\n        error("a capture list is not supported yet; this compiler implements non-capturing lambdas only")\n    }\n',
+        '    if false {\n        error("a capture list is not supported yet; this compiler implements non-capturing lambdas only")\n    }\n'),
+    "lambdas X19: lambda purity check dropped": (
+        '    if !(pureFn(f) && !f.writesHandles && f.fnRec.pfree == 0) {\n', '    if false {\n'),
+    "lambdas X20: active enclosing call allowed": (
+        '    if !fnval && f != curFn && inFnStack(f) {\n', '    if false {\n'),
+    "lambdas X21: hidden environment pushed after the arguments": (
+        '    if fnval {\n        if recv == nil { error("internal error: a function value call without a cell") }\n        if recv != nil {\n            let e = copyItem(recv)\n',
+        '    if false {\n        if recv == nil { error("internal error: a function value call without a cell") }\n        if recv != nil {\n            let e = copyItem(recv)\n'),
+    "lambdas X22: indirect call reads the wrong cell word": (
+        '            opMem(0xFF, 2, mem(e.r, -1, 0, 8), false, false)\n',
+        '            opMem(0xFF, 2, mem(e.r, -1, 8, 8), false, false)\n'),
+    "lambdas X23: indirect cell is not materialised": (
+        '    let dst = localItem(cell, tInt)\n    store(dst, x)\n',
+        '    let dst = localItem(cell, tInt)\n'),
+    "lambdas X24: synthetic callee is marked freesAll": (
+        '    let f = handle(sa[0])\n',
+        '    let f = handle(sa[0])\n    f.freesAll = true\n'),
+    "lambdas X25: synthetic callee returns from an arena": (
+        '    let fa = new []FnRec(0)\n',
+        '    let leak = newSym("fncall", "function value \'" + name + "\'", nil)\n    let fa = new []FnRec(0)\n'),
+    "lambdas X26: hidden environment is named env": (
+        'name: "a lambda\'s environment"', 'name: "env"'),
+    "lambdas X27: outer-name stack is not truncated": (
+        '    truncate(lambdaOuterNames, outerFrom)\n', ''),
+    "lambdas X28: outer-name lookup check dropped": (
+        '        if lambdaOuterNames[i] == name {\n', '        if false {\n'),
+    "lambdas X29: cell keeps the pre-dropFrame entry": (
+        '    rod64(CODE_BASE + f.addr)\n', '    rod64(CODE_BASE + entry)\n'),
+    "lambdas X30: nonFresh range ignores the slice end": (
+        '        for q in r.nfFrom..r.nfTo {\n', '        for q in r.nfFrom..r.nfFrom {\n'),
+    "lambdas X31: loop log end does not trim nonFreshLog": (
+        '        if arenaBase < len(freeArena) { truncate(nonFreshLog, freeArena[arenaBase].nfFrom) }\n', ''),
+    "lambdas X32: island does not restore nonFreshLog": (
+        '    replace(nonFreshLog, replace(c.nonFreshLog, new []int(0)))\n', ''),
+}
+MUTANTS.update(LAMBDA_MUTANTS)
+
 def apply_edits(src, edits):
     """Apply replacements in order; each must match exactly once. Returns
     (text, None), or (None, the stale message) for a pattern that no longer
@@ -1586,7 +1705,8 @@ def build_and_run(src, fail_fast=False, jobs=1, smoke=False, stats=None):
         t = time.perf_counter()
         if stats is not None:
             stats.add('subprocesses')
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=dict(os.environ, OBO=exe))
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
+                             env=dict(os.environ, OBO=exe, OBO_MUTANT_SRC=os.path.join(work, 'obo.obo')))
         if stats is not None:
             stats.set('suite_seconds', round(time.perf_counter() - t, 3))
             stats.add('suites')
