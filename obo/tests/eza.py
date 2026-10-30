@@ -84,7 +84,8 @@ Case tags
           host-dependent); skipped when no usable reference exists and no
           golden is available
   golden  a recorded reference triple exists under golden/ref/
-  own     our own usage/unsupported error, pinned under golden/own/
+  own     our own usage/unsupported error or subset help, pinned under
+          golden/own/
   skip    conditionally skipped by platform/root/capability (the runner also
           computes the actual reason)
 
@@ -154,8 +155,8 @@ def own_available():
 
 LONG = ('-l', '--no-user', '--bytes', '--time-style=long-iso')
 FAMILIES = ('default', 'names', 'sortkeys', 'long', 'quoting', 'classify',
-            'dirs', 'operands', 'errors', 'colour', 'tree', 'grid', 'utf8',
-            'memory')
+            'dirs', 'operands', 'errors', 'help', 'colour', 'tree', 'grid',
+            'utf8', 'memory')
 TAGS = ('ref', 'golden', 'own', 'skip')
 REF, GOLDEN_TAG, OWN, SKIP = TAGS
 
@@ -995,6 +996,8 @@ def _operand_cases():
     _g('operands', 'file', 'one/f')
     _g('operands', 'dash_operand', '--', '-', cwd='mixed')
     _g('operands', 'dashdash_name', '--', '--x', cwd='mixed')
+    _g('operands', 'dashdash_help', '--', '--help',
+       note='after --, --help is a literal operand and takes the path error')
     _g('operands', 'hidden_explicit', 'mixed/.hidden')
     _g('operands', 'directory', 'mixed/dir')
     _g('operands', 'dot_file_normalized', 'operands/./f')
@@ -1015,6 +1018,10 @@ def _error_cases():
     _g('errors', 'unknown_long_double_eq', '--foo==', 'mixed')
     _g('errors', 'unknown_long_empty', '--foo=', 'mixed')
     _g('errors', 'unknown_long_weird', '--=x', 'mixed')
+    _g('errors', 'help_value', '--help=x', 'mixed',
+       note='--help is a VALUE_NONE flag; a value is the reference ForbiddenValue')
+    _g('errors', 'help_unknown', '--help', '--bad', 'mixed',
+       note='the whole argv is parsed before help acts: unknown names still win')
     _g('errors', 'missing_value_sort', '--sort')
     _g('errors', 'missing_value_width', '--width')
     _g('errors', 'missing_value_level', '-L')
@@ -1082,6 +1089,19 @@ def _error_cases():
     _o('errors', 'own_stdin', '--stdin', 'mixed')
 
 
+def _help_cases():
+    """Own help text: the upstream --help advertises options this build does
+    not implement, so these are own goldens rather than reference goldens."""
+    _o('help', 'long', '--help')
+    _o('help', 'short', '-?')
+    _o('help', 'missing_operand', 'missing', '--help',
+       note='help wins after parsing without lstat of the operand')
+    _o('help', 'option_after', '--help', '-l',
+       note='help wins before the restricted-long deduction')
+    _o('help', 'dev_full', '--help', mode='sink', requires='dev_full',
+       note='help write failure uses the exit-1 bare os error path')
+
+
 def _memory_cases():
     _o('memory', 'long_10000', '-l', '--no-user', '--bytes',
        '--time-style=long-iso', 'many10000', slow=True, memory_entries=10000,
@@ -1104,7 +1124,7 @@ def _memory_cases():
 for _builder in (_default_cases, _name_cases, _sortkey_cases, _long_cases,
                  _quoting_cases, _classify_cases, _colour_cases, _tree_cases,
                  _grid_cases, _utf8_cases, _dir_cases, _operand_cases,
-                 _error_cases, _memory_cases):
+                 _error_cases, _help_cases, _memory_cases):
     _builder()
 
 

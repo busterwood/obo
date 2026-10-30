@@ -33,10 +33,10 @@ stage 2 == stage 3, checked with `cmp`.
   first-class interfaces and stays interface-free itself, so the pre-promotion
   0.6 seed can build it. The 0.6 seed (454,657 bytes, sha256 `90fcad7e…`) and the
   0.5 compiler (425,985 bytes) are historical.
-- **Tools.** `cat`, `wc`, `sort`, `head` and the `eza` E2 core are written in
-  obo and built by `make tools` / `make eza`. Differential gates compare them
-  with GNU coreutils 9.4 (`obo/tests/tools.py`) and pinned eza 0.23.3
-  (`obo/tests/eza.py`), with recorded goldens as fallback.
+- **Tools.** `cat`, `wc`, `sort`, `head` and the partial `eza` reimplementation
+  are written in obo and built by `make tools` / `make eza`. Differential gates
+  compare them with GNU coreutils 9.4 (`obo/tests/tools.py`) and pinned eza
+  0.23.3 (`obo/tests/eza.py`), with recorded goldens as fallback.
 - **Modules.** Both stages are implemented: source imports and exports
   (`module`, `import "Name.obx" [as alias]`, `pub`, `alias::name`, `--deps`,
   `-I`) and `.sym` files with `--check`, `--sym-dir`, `--emit-sym`, `--version`
@@ -62,9 +62,9 @@ stage 2 == stage 3, checked with `cmp`.
 | obo suite | 1,408 tests; 103 `module_test` checks; `sym_test.py` 38/38; `sym_fuzz.py` 200/200; `port_test` 556/556 with 9 encoder groups; `port_compare` 1,420/1,420; 56 doc examples; 27/27 import checks; 16/16 stdlib roots |
 | Tools differential gate | 371 checks vs GNU coreutils 9.4; 3 memory cases |
 | Tool binaries | cat 40,961; wc 45,057; sort 69,633; head 40,961 bytes (static, runtime included) |
-| eza E2 differential gate | 546/546 non-memory cases (462 exact reference goldens, 72 live including 22 pty, 12 own) + 5/5 memory cases |
-| eza E2 binary | 212,993 bytes (sha256 `53133d23…`; static, runtime included; reference eza 0.23.3 is 2,294,768) |
-| eza 10k-entry live peak | worst 2,190,160 bytes; `EZA_PEAK_MAX` 2,752,512 (a distinct eza cap, not the compiler budget) |
+| eza differential gate | 554/554 non-memory cases (465 exact reference goldens, 72 live including 22 pty, 17 own) + 5/5 memory cases |
+| eza binary | 217,089 bytes (sha256 `6a2b8f89…`; static, runtime included; reference eza 0.23.3 is 2,294,768) |
+| eza 10k-entry live peak | worst 2,190,480 bytes; `EZA_PEAK_MAX` 2,752,512 (a distinct eza cap, not the compiler budget) |
 | eza 10k-entry max RSS | 2,560 KiB in the recorded run; reference about 24.6 MB long / 12-14 MB other views |
 | Minimal static executable | 28,673 bytes (runtime included) |
 
@@ -99,10 +99,10 @@ sample is historical and lives in [HISTORY.md](HISTORY.md).
 | `wc -lwc`, 110 MB | 131.7 ms | Python 474.5 ms (3.60x slower); GNU 1,038 ms (7.88x slower) |
 | `sort`, 1,000,000 lines | 162.9 ms | Python 602.0 ms (3.70x slower); GNU 256.5 ms (1.57x slower) |
 | `sort -n`, 1,000,000 lines | 255.1 ms | GNU 434.7 ms (1.70x slower); Python 516.4 ms (2.02x slower) |
-| `eza`, 10,000 names | 30.4 ms | pinned eza 59.2 ms (1.94x slower); Python 16.3 ms and GNU `ls` 6.55 ms are faster |
+| `eza`, 10,000 names | 30.4 ms (pre-help 212,993 B; not re-measured) | pinned eza 59.2 ms (1.94x slower); Python 16.3 ms and GNU `ls` 6.55 ms are faster |
 
 The compiler is a 507,905-byte static binary (the promoted 0.8 seed); the tools are cat 40,961, wc
-45,057, sort 69,633 and head 40,961 bytes; eza is 212,993 bytes against 2,294,768 for the
+45,057, sort 69,633 and head 40,961 bytes; eza is 217,089 bytes against 2,294,768 for the
 pinned eza 0.23.3 reference. Every obo binary is freestanding and static, with
 the runtime included. The honest shape of these numbers is in
 [PERFORMANCE.md](PERFORMANCE.md): pure compute is far ahead of CPython, while

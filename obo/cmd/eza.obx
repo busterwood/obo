@@ -8,9 +8,10 @@
 // It implements the hidden/-a/-A rules, the E0 sort keys, -r, directory
 // grouping, quoting and --no-quotes, -F, -D/-f, -d, restricted long, -T/-L,
 // --color/--colour with the default palette and the documented
-// LS_COLORS/EZA_COLORS subset, and the error/exit classes of design sections
-// 7 and 8. Multiple operands, grid, icons, -R and the later sort keys are
-// rejected with this build's own message.
+// LS_COLORS/EZA_COLORS subset, --help/-?, and the error/exit classes of design
+// sections 7 and 8. Multiple operands, grid details, icons, -R and the later
+// sort keys are rejected with this build's own message. --help prints this
+// build's own subset text, not the upstream eza help.
 //
 // One operand or none; a listing shows names, an operand shows its parent
 // prefix and name. Entries are read through fs, filtered (-a/-A, -D/-f), sorted
@@ -351,8 +352,11 @@ fn mkSpec(short: byte, long: string, mode: int, consume: []string,
 
 // The E0 parser: the supported flags, plus every eza-valid flag E0 rejects.
 // The rejected ones keep eza's value mode so their values are consumed before
-// this build's unsupported-option error (design 7.11); --help/--version and
-// -?/-v are deliberately absent and take the unknown-name path.
+// this build's unsupported-option error (design 7.11); --version and -v are
+// deliberately absent and take the unknown-name path. --help/-? are ordinary
+// VALUE_NONE specs, so an unknown option or missing value later in argv still
+// wins over help (the pinned reference's ordering), while help itself is
+// handled before operand lookup and deduction.
 //
 // The accept lists for --sort, --classify, --color/--colour and --icons are
 // empty on purpose: eza deduces only the last occurrence, so `--sort=foo
@@ -361,6 +365,8 @@ fn mkSpec(short: byte, long: string, mode: int, consume: []string,
 // stay, because they decide whether a separate next token is a value at all.
 fn specs(): []cli::FlagSpec {
     var s = new []cli::FlagSpec(0)
+    // meta
+    append(s, mkSpec('?', "help", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
     // views
     append(s, mkSpec('1', "oneline", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
     append(s, mkSpec('l', "long", cli::VALUE_NONE, noStrings(), noStrings(), noStrings(), ""))
@@ -2605,6 +2611,120 @@ fn flushWriter(mut w: &io::Writer): Result[bool] {
     return ok(true)
 }
 
+// ---------------------------------------------------------------- help text
+//
+// This is this build's own text, not a copy of the pinned reference's --help:
+// the reference advertises options (plain -l with human-readable sizes, -b,
+// -h, multiple operands, recurse, git, ...) that this partial implementation
+// rejects. Keep the working restricted long form and the human-size /
+// header limitation explicit.
+
+fn helpText(): string {
+    var lines = new []string(0)
+    append(lines, "Usage:")
+    append(lines, "  eza [options] [--] [PATH]")
+    append(lines, "  eza -l --bytes --time-style=long-iso (-n | --no-user) [options] [--] [PATH]")
+    append(lines, "")
+    append(lines, "obo eza is a partial behavioural reimplementation of eza 0.23.3,")
+    append(lines, "not a drop-in replacement. It lists one PATH (default \".\") and")
+    append(lines, "implements only the options below. Options outside this subset are")
+    append(lines, "rejected, never silently accepted.")
+    append(lines, "")
+    append(lines, "META OPTIONS")
+    append(lines, "  -?, --help                 show this help and exit")
+    append(lines, "")
+    append(lines, "DISPLAY OPTIONS")
+    append(lines, "  -1, --oneline              display one entry per line")
+    append(lines, "  -l, --long                 restricted long view (see LONG VIEW)")
+    append(lines, "  -G, --grid                 display entries as a grid")
+    append(lines, "  -x, --across               fill grid rows left to right")
+    append(lines, "  -T, --tree                 recurse into directories as a tree")
+    append(lines, "  -L, --level DEPTH          limit tree depth (used only with -T)")
+    append(lines, "  -w, --width COLS           set screen width in columns (0 = automatic)")
+    append(lines, "  -F, --classify[=WHEN]      markers: always, auto/automatic, never")
+    append(lines, "  --color, --colour[=WHEN]   colour: always, auto/automatic, never")
+    append(lines, "  --icons[=WHEN]             auto/automatic/never accepted; no icons drawn")
+    append(lines, "  --no-quotes                do not quote file names containing spaces")
+    append(lines, "")
+    append(lines, "FILTERING AND SORTING OPTIONS")
+    append(lines, "  -a, --all                  show dot files; twice also adds \".\" and \"..\"")
+    append(lines, "  -A, --almost-all           show dot files without \".\" and \"..\"")
+    append(lines, "  -d, --treat-dirs-as-files, --list-dirs")
+    append(lines, "                             list a directory operand as one entry")
+    append(lines, "  -D, --only-dirs            list directories only")
+    append(lines, "  -f, --only-files           list regular files only")
+    append(lines, "  -r, --reverse              reverse the sort order")
+    append(lines, "  -s, --sort FIELD           name/filename (default), Name/Filename,")
+    append(lines, "                             size/filesize, extension/ext, Extension/Ext,")
+    append(lines, "                             modified/date/time/mod/new/newest, type")
+    append(lines, "                             Other eza sort fields are rejected.")
+    append(lines, "  --group-directories-first  list directories before other entries")
+    append(lines, "  --group-directories-last   list directories after other entries")
+    append(lines, "")
+    append(lines, "LONG VIEW OPTIONS")
+    append(lines, "  The working long form in this build is:")
+    append(lines, "    eza -l --bytes --time-style=long-iso -n PATH")
+    append(lines, "    eza -l --bytes --time-style=long-iso --no-user PATH")
+    append(lines, "  It prints permissions, a raw decimal byte size, user or numeric uid,")
+    append(lines, "  a long-iso date, and the name. Plain \"eza -l\" is not supported.")
+    append(lines, "  Human-readable sizes are NOT implemented: eza's default 1.0k/1.0M")
+    append(lines, "  format and -b/--binary are unsupported. -h/--header is also")
+    append(lines, "  unsupported. Those options are rejected, not silently accepted.")
+    append(lines, "  -B, --bytes                show raw byte sizes (required with -l)")
+    append(lines, "  -n, --numeric              show numeric user ids")
+    append(lines, "  --no-user                  omit the user column")
+    append(lines, "  --no-permissions           omit the permissions column")
+    append(lines, "  --no-filesize              omit the size column")
+    append(lines, "  --no-time                  omit the date column")
+    append(lines, "  --time-style STYLE         long-iso with -l; default/long-iso otherwise")
+    append(lines, "")
+    append(lines, "EXAMPLES")
+    append(lines, "  eza                        list the current directory")
+    append(lines, "  eza -1 PATH                one entry per line")
+    append(lines, "  eza -a PATH                include dot files")
+    append(lines, "  eza -T -L 2 PATH           tree view to depth 2")
+    append(lines, "  eza --sort=modified -r PATH")
+    append(lines, "                             newest modification time first")
+    append(lines, "  eza -l --bytes --time-style=long-iso --no-user PATH")
+    append(lines, "                             the supported long view")
+    append(lines, "")
+    append(lines, "NOTES")
+    append(lines, "  * At most one operand is supported; more is a usage error.")
+    append(lines, "  * Zero operands mean \".\"; eza's stdin file-name mode is not supported.")
+    append(lines, "  * -R, --follow-symlinks, --dereference, --absolute, -I, git options,")
+    append(lines, "    --hyperlink, --stdin, -i, -H, -g, -b, -h, -t, -u, -U, --total-size,")
+    append(lines, "    --octal-permissions and --context are among the rejected options.")
+    append(lines, "  * --help wins over operands and supported options once argv parses;")
+    append(lines, "    unknown options and missing values are still errors.")
+    append(lines, "  * Exit status: 0 success, 1 write error, 2 path error, 3 usage error.")
+    return strings::join(lines, "\n") + "\n"
+}
+
+fn hasHelp(options: &[]cli::Option): bool {
+    for i in 0..len(options) {
+        if options[i].long == "help" { return true }
+    }
+    return false
+}
+
+// Print the subset help on stdout. No operand lookup or directory read happens
+// first; a write or flush error is returned for main's exit-1 write-error path.
+fn printHelp(): Result[bool] {
+    let text = helpText()
+    var w = io::newWriter(stdout(), 65536)
+    let r = io::write(w, text)
+    match r {
+        ok { }
+        err { return err(r.message, r.code) }
+    }
+    let f = io::flush(w)
+    match f {
+        ok { }
+        err { return err(f.message, f.code) }
+    }
+    return ok(true)
+}
+
 fn emitEntries(es: &[]Entry, order: &[]int, v: &View, o: &Opts, cols: &Cols,
                p: &Palette): Result[bool] {
     var w = io::newWriter(stdout(), 65536)
@@ -3225,6 +3345,19 @@ fn main() {
     let parsed = cli::parse(av, 1, sp)
     match parsed {
         ok {
+            // Help is actioned after the whole argv has parsed (so a later
+            // unknown name or missing value still wins, as the reference does)
+            // but before deduction, operand lookup or any directory scan.
+            if hasHelp(parsed.value.options) {
+                let hr = printHelp()
+                match hr {
+                    ok { return }
+                    err {
+                        eprintln(errors::osError(hr.code))
+                        exit(errors::EXIT_FAIL)
+                    }
+                }
+            }
             let od = deduce(parsed.value.options)
             match od {
                 ok {

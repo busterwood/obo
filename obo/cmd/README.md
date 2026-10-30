@@ -34,7 +34,7 @@ runtime included:
 | `wc` | 45,057 bytes |
 | `sort` | 69,633 bytes |
 | `head` | 40,961 bytes |
-| `eza` | 212,993 bytes |
+| `eza` | 217,089 bytes |
 
 The library modules are `lib/io.obx` (`Reader`, `Writer`, the buffered functions,
 `writeByte` and `isTty`), `lib/strings.obx` (byte classification, `cmp`, the
@@ -57,10 +57,10 @@ options are the exception to clustering: `-n` and `-c` take the rest of the
 token or the next argument, so `-n5`, `-n 5`, `-c5` and `-c 5` work, and the
 last of `-n`/`-c` wins. An unknown short
 option prints one line, `tool: invalid option -- 'X'`; an unknown long option
-prints `tool: unrecognized option '--foo'`. There is no `Try 'tool --help'` line,
-because `--help` and `--version` are themselves unsupported (they are
-unrecognized long options). Usage errors exit 1 for `cat`/`wc`/`head` and 2 for
-`sort`.
+prints `tool: unrecognized option '--foo'`. For `cat`, `wc`, `sort` and
+`head` there is no `Try 'tool --help'` line, because their `--help` and
+`--version` are unrecognized long options; `eza` has its own `--help`/`-?`
+(below). Usage errors exit 1 for `cat`/`wc`/`head` and 2 for `sort`.
 
 ## cat
 
@@ -295,9 +295,15 @@ eza [-1|-T|-G] [E2 flags] [--] [PATH]
 eza -l --bytes --time-style=long-iso (-n | --no-user) [E2 flags] [PATH]
 ```
 
-The eza-0.23.3-compatible binary. E0 (P4) is the lines/restricted-long core;
-E1 (P5b) adds colour, tree and `--no-quotes`; E2 (P6b) adds grid, the width
-sources, UTF-8 widths/code-point order and lossy invalid-UTF-8 display.
+A partial behavioural reimplementation of eza 0.23.3, not a drop-in
+replacement. E0 (P4) is the lines/restricted-long core; E1 (P5b) adds colour,
+tree and `--no-quotes`; E2 (P6b) adds grid, the width sources, UTF-8
+widths/code-point order and lossy invalid-UTF-8 display. `--help`/`-?` print
+this build's own subset text (it deliberately differs from upstream eza's help,
+which advertises options this build rejects) and exit 0. Help is handled after
+the whole argv parses but before deduction or operand lookup: `--help missing`
+prints help without an `lstat`, `--help --bad` still reports the unknown
+option, and `-- --help` is a literal operand.
 Without a terminal-ish width the default view is still E0's **non-TTY**
 lines: stdout is a pipe or file, one entry per line, and — since `lines.rs`
 calls `with_link_paths()` — a symlink prints `name -> target` in every
@@ -317,6 +323,7 @@ Supported flags (everything else is rejected, see below):
 
 | Flags | Behaviour |
 |---|---|
+| `-?`, `--help` | print this build's own subset help on stdout and exit 0; no operand lookup or directory scan. `--help --bad` still takes the unknown-option error, and `-- --help` is a literal operand |
 | `-1`, `--oneline` | one per line (the non-TTY default); the view rule is: a last `-1` is Lines; otherwise any `-l` makes the view long, with the last of `-T`/`-G` picking long tree / GridDetails (rejected here) / plain long; with no `-l`, the last of `-T`/`-G` picks tree or grid |
 | `-l`, `--long` | restricted long only (below) |
 | `-G`, `--grid` | grid regardless of stdout (width falls back to 80); `-l -G` is this build's unsupported GridDetails error |
@@ -456,11 +463,14 @@ with `QuoteSpaces` (so `spaced -> 'tar get'` keeps its quotes), while that
 target's parent prefix and a broken target use the outer style.
 
 Restricted long is `-l --bytes --time-style=long-iso` plus `-n` or
-`--no-user`; any other `-l` invocation is this build's usage error. Columns
-are permissions, size, optional numeric user, long-iso UTC date, name. Sizes
-are decimal bytes, right-aligned, with `-` for a directory, symlink, FIFO,
-socket or other non-regular entry; the permission string is eza's (`s`/`S`,
-`t`/`T`, `.` for a regular file, `|` for a FIFO, `s` for a socket); a
+`--no-user`; any other `-l` invocation, including plain `eza -l`, is this
+build's usage error. eza's default human-readable size field (`1.0k`, `1.0M`)
+and the `-b`/`--binary` and `-h`/`--header` options are not implemented;
+`--bytes` is mandatory. Columns are permissions, size, optional numeric user,
+long-iso UTC date, name. Sizes are decimal bytes, right-aligned, with `-` for a
+directory, symlink, FIFO, socket or other non-regular entry; the permission
+string is eza's (`s`/`S`, `t`/`T`, `.` for a regular file, `|` for a FIFO, `s`
+for a socket); a
 pre-1970 mtime is a `-` date; `--no-user` wins over `-n`; widths are computed
 over the displayed entries and a `-d` invocation uses the one entry. `-aa -l`
 on a real-directory operand is live-only because the `.` row is the listed
@@ -493,17 +503,23 @@ suppressions above, `--total-size`, `--hyperlink`, `--mounts`,
 `-@`/`--extended`, `--smart-group`, `--group`, `--no-symlinks`,
 `--show-symlinks`, the `--colour-scale*` spellings and `--icons=always`.
 E2 adds one more own error: `-l` with `-G` (eza's GridDetails; see below).
-`--help`/`--version`/`-?`/`-v` are not in this parser and take the ordinary
-`Unknown argument` path. Values of rejected eza-valid flags are still consumed
-with eza's value mode before the unsupported error (`-I=`, `-L x`).
+`--version`/`-v` are not in this parser and take the ordinary
+`Unknown argument` path. `--help`/`-?` are `VALUE_NONE` flags, so
+`--help=x` is `Flag --help cannot take a value` and `-?=x` is
+`Flag -? cannot take a value`; `--help=` is `Unknown argument --help=`
+and `-?=` is `Unknown argument -=`. Values of rejected
+eza-valid flags are still consumed with eza's value mode before the unsupported
+error (`-I=`, `-L x`).
 
-**Measured (merged tree).** eza binary 212,993 bytes (static, runtime
-included; the reference is 2,294,768). On 10,000 entries under
-`OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, restricted long peaks at 2,190,032
-live heap bytes, the name-only listing at 2,189,408, the tree at 2,190,160,
-the coloured listing at 2,189,632 and the E2 grid at 2,189,808 (2,560 KiB max
+**Measured (help build).** eza binary 217,089 bytes (static, runtime included;
+4,096 bytes larger than the 212,993-byte E2 binary because of the help text;
+the reference is 2,294,768). On 10,000 entries under
+`OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, restricted long peaks at 2,190,352
+live heap bytes, the name-only listing at 2,189,728, the tree at 2,190,480,
+the coloured listing at 2,189,952 and the E2 grid at 2,190,128 (2,560 KiB max
 RSS in the recorded run; reruns varied 2,304-2,560 KiB across views; the UTF-8
-width table is code, not per-entry heap).
+width table is code, not per-entry heap). These entry paths do not execute
+help; a help run is 33,792 peak bytes.
 `tests/eza.py --memory` keeps the P4 `EZA_PEAK_MAX = 2,752,512` bytes and
 gates on no leak/double-close line. GNU time measures the reference at about
 24.6 MB max RSS (long), 12.0 MB (names), 14.2 MB (tree) and about 12 MB
