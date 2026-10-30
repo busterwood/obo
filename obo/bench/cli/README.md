@@ -158,11 +158,13 @@ binary sizes:
 total: 83.3 s on this host; the numbers are host-dependent.
 ```
 
-The obo-side binaries are byte-identical to the saved 0.5/0.6 builds (cat
-40,961, wc 45,057, sort 69,633, eza 212,993, sha256 `53133d23…`, and the four
-bench programs 28,673 each), but these medians were re-measured on 0.8 rather
-than carried over. The first of the two runs measured eza at 55.9 ms (pinned
-66.9 ms); the table above is the second run. The compiler is the promoted 0.8
+The obo-side binaries used for these medians are byte-identical to the saved
+0.5/0.6 builds (cat 40,961, wc 45,057, sort 69,633, eza 212,993, sha256
+`53133d23…`, and the four bench programs 28,673 each), but these medians were
+re-measured on 0.8 rather than carried over. The current tree's eza is 217,089
+bytes after adding `--help`; these eza medians were not re-measured. The first
+of the two runs measured eza at 55.9 ms (pinned 66.9 ms); the table above is
+the second run. The compiler is the promoted 0.8
 seed (507,905 bytes); the 0.6 compiler (454,657 bytes) and the 0.5 compiler
 (425,985 bytes) are historical. The earlier 0.5 / 0.6 sample is preserved in
 [`HISTORY.md`](../../../HISTORY.md).

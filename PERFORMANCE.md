@@ -29,9 +29,10 @@ them for relative comparison, not as portable constants.
 * References: GNU coreutils 9.4; pinned eza v0.23.3, binary sha256
   `10457dde…`.
 * Compiler: `obo 0.8 sym-format 4 abi 1`, the promoted seed; the measured
-  program and tool binaries are byte-identical to their 0.5/0.6 builds
-  (verified by size and, for eza, sha256 `53133d23…`), but every median on this
-  page was measured again on 30 October 2026.
+  programs and `cat`/`wc`/`sort` are byte-identical to their 0.5/0.6 builds,
+  while the eza timing row used the 212,993-byte pre-help build (sha256
+  `53133d23…`). Every median on this page was measured again on 30 October
+  2026; the current 217,089-byte eza help build was not re-benchmarked.
 
 ## Methodology
 
@@ -112,17 +113,20 @@ text/data.
 | `cat` (tool) | 40,961 |
 | `wc` (tool) | 45,057 |
 | `sort` (tool) | 69,633 |
-| `eza` (tool) | 212,993 |
+| `eza` (tool) | 217,089 |
 | obo compiler | 507,905 |
 | pinned eza v0.23.3 reference (not obo code) | 2,294,768 |
 
 The compiler is the promoted 0.8 seed (sha256 `673ae7ba…`), and it rebuilds
-itself to the same 507,905 bytes. The benchmark programs and tools were built
-from the current tree in this run; their sizes are byte-identical to the saved
-0.5/0.6 builds (cat 40,961, wc 45,057, sort 69,633, eza 212,993, sha256
-`53133d23…`; the four small programs 28,673 each). The eza binary is about
-10.8x smaller than the pinned reference. The 0.5 seed and its 425,985-byte
-compiler (sha256 `05542e89…`) are historical.
+itself to the same 507,905 bytes. The benchmark programs, `cat`, `wc`, `sort`
+and the 212,993-byte `eza` binary used for the CLI timings were built from the
+earlier tree; the current tree's `eza` is 217,089 bytes (sha256 `28ebeb14…`)
+after adding `--help`. The timings were not re-measured, and the listing
+benchmark does not execute help. `cat`, `wc` and `sort` remain byte-identical to
+the saved 0.5/0.6 builds (40,961, 45,057 and 69,633 bytes; the four small
+programs are 28,673 each). The current eza binary is about 10.6x smaller than
+the pinned reference. The 0.5 seed and its 425,985-byte compiler (sha256
+`05542e89…`) are historical.
 
 ## Memory
 
@@ -132,15 +136,17 @@ Ten thousand entries, `OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`:
 
 | View | Live peak (bytes) | Max RSS (KiB) |
 |---|---:|---:|
-| Restricted long | 2,190,032 | 2,560 |
-| Names | 2,189,408 | 2,560 |
-| Tree | 2,190,160 | 2,560 |
-| Colour | 2,189,632 | 2,560 |
-| Grid | 2,189,808 | 2,560 |
+| Restricted long | 2,190,352 | 2,560 |
+| Names | 2,189,728 | 2,560 |
+| Tree | 2,190,480 | 2,560 |
+| Colour | 2,189,952 | 2,560 |
+| Grid | 2,190,128 | 2,560 |
 
-The values are from the post-promotion 0.8 measurement on 30 October 2026;
-reruns varied 2,304-2,560 KiB across views (names, colour and grid often 2,432).
-The live cap is `EZA_PEAK_MAX = 2,752,512` bytes, unchanged. For comparison,
+The values are from the help build on 30 October 2026 (help is not executed by
+these entry paths, so the small difference from the earlier E2 record is the
+random temporary-path length); reruns varied 2,304-2,560 KiB across views
+(names, colour and grid often 2,432). The live cap is
+`EZA_PEAK_MAX = 2,752,512` bytes, unchanged. For comparison,
 the pinned reference measures about 24.6 MB max RSS in long view and 12-14
 MB in the other views on the same trees; that measurement is printed by the
 gate and is not gated.
@@ -200,10 +206,11 @@ leak check.
 * **`eza`.** Name-only listing is 1.94x faster than the pinned eza reference,
   but Python's `listdir + sorted` (16.3 ms) and GNU `ls -1` (6.55 ms) are faster
   than obo's 30.4 ms. The eza headline is not raw listing speed: it is the
-  212,993-byte binary (10.8x smaller than the reference), the roughly 2.19 MB
-  live peak at 10,000 entries, and the gate's 546/546 non-memory differential
-  cases (462 exact reference goldens, 72 live including 22 pty, 12 own) plus
-  5/5 memory peak/leak cases.
+  217,089-byte current binary (10.6x smaller than the reference; the timing run
+  used the earlier 212,993-byte build), the roughly 2.19 MB live peak at 10,000
+  entries, and the gate's 554/554 non-memory differential cases (465 exact
+  reference goldens, 72 live including 22 pty, 17 own) plus 5/5 memory
+  peak/leak cases.
 
 ## Caveats
 

@@ -1,0 +1,73 @@
+Usage:
+  eza [options] [--] [PATH]
+  eza -l --bytes --time-style=long-iso (-n | --no-user) [options] [--] [PATH]
+
+obo eza is a partial, source-compatible subset of eza 0.23.3, not a full
+port. It lists one PATH (default ".") and implements only the options
+below. Options outside this subset are rejected, never silently accepted.
+
+META OPTIONS
+  -?, --help                 show this help and exit
+
+DISPLAY OPTIONS
+  -1, --oneline              display one entry per line
+  -l, --long                 restricted long view (see LONG VIEW)
+  -G, --grid                 display entries as a grid
+  -x, --across               fill grid rows left to right
+  -T, --tree                 recurse into directories as a tree
+  -L, --level DEPTH          limit tree depth (used only with -T)
+  -w, --width COLS           set screen width in columns (0 = automatic)
+  -F, --classify[=WHEN]      type markers: always, auto, never
+  --color, --colour[=WHEN]   colour: always, auto, never
+  --icons[=WHEN]             accepted except always; no icons are drawn
+  --no-quotes                do not quote file names containing spaces
+
+FILTERING AND SORTING OPTIONS
+  -a, --all                  show dot files; twice also adds "." and ".."
+  -A, --almost-all           show dot files without "." and ".."
+  -d, --treat-dirs-as-files, --list-dirs
+                             list a directory operand as one entry
+  -D, --only-dirs            list directories only
+  -f, --only-files           list regular files only
+  -r, --reverse              reverse the sort order
+  -s, --sort FIELD           name (default), Name, size, extension,
+                             Extension, modified, type (and eza aliases)
+  --group-directories-first  list directories before other entries
+  --group-directories-last   list directories after other entries
+
+LONG VIEW OPTIONS
+  The working long form in this build is:
+    eza -l --bytes --time-style=long-iso -n PATH
+    eza -l --bytes --time-style=long-iso --no-user PATH
+  It prints permissions, a raw decimal byte size, user or numeric uid,
+  a long-iso date, and the name. Plain "eza -l" is not supported.
+  Human-readable sizes are NOT implemented: eza's default 1.0k/1.0M
+  format and -b/--binary are unsupported. -h/--header is also
+  unsupported. Those options are rejected, not silently accepted.
+  -B, --bytes                show raw byte sizes (required with -l)
+  -n, --numeric              show numeric user ids
+  --no-user                  omit the user column
+  --no-permissions           omit the permissions column
+  --no-filesize              omit the size column
+  --no-time                  omit the date column
+  --time-style STYLE         long-iso with -l; default/long-iso otherwise
+
+EXAMPLES
+  eza                        list the current directory
+  eza -1 PATH                one entry per line
+  eza -a PATH                include dot files
+  eza -T -L 2 PATH           tree view to depth 2
+  eza --sort=modified -r PATH
+                             newest modification time first
+  eza -l --bytes --time-style=long-iso --no-user PATH
+                             the supported long view
+
+NOTES
+  * At most one operand is supported; more is a usage error.
+  * Zero operands mean "."; eza's stdin file-name mode is not supported.
+  * -R, --follow-symlinks, --dereference, --absolute, -I, git options,
+    --hyperlink, --stdin, -i, -H, -g, -b, -h, -t, -u, -U, --total-size,
+    --octal-permissions and --context are among the rejected options.
+  * --help wins over operands and supported options once argv parses;
+    unknown options and missing values are still errors.
+  * Exit status: 0 success, 1 write error, 2 path error, 3 usage error.
