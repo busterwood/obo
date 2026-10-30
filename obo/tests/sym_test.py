@@ -26,8 +26,8 @@ RT = FORK
 GOLD = os.path.join(HERE, 'modules', 'golden')
 UPDATE = '--update' in sys.argv
 
-OBO_VERSION = '0.6'
-SYM_FORMAT = 2
+OBO_VERSION = '0.8'
+SYM_FORMAT = 4
 SYM_ABI = 1
 
 
@@ -440,9 +440,9 @@ def stale_missing_corrupt_versions():
         open(p, 'wb').write(base)
         # format / ABI / compiler, each its own exact message
         cases = [
-            (b'obosym 2', b'obosym 3', 'has format 3; this compiler reads 2'),
+            (b'obosym 4', b'obosym 3', 'has format 3; this compiler reads 4'),
             (b'\nabi 1\n', b'\nabi 9\n', 'has ABI 9; this compiler uses 1'),
-            (b'compiler "0.6"', b'compiler "9.9"', "was built by compiler '9.9'; this is '0.6'"),
+            (b'compiler "0.8"', b'compiler "9.9"', "was built by compiler '9.9'; this is '0.8'"),
         ]
         for old, new, msg in cases:
             data = base
@@ -715,9 +715,9 @@ def handwritten_interface():
     parameter names, summary items in any order, and a pf row at index >= 62."""
     params = ', '.join(f'q{i}: int' for i in range(63))
     uid = fnv(b'many::T')
-    sym = f'''obosym 2
+    sym = f'''obosym 4
 abi 1
-compiler "0.6"
+compiler "0.8"
 source 0x{0:016x}
 interface 0x0
 module many
@@ -1105,7 +1105,7 @@ def b6_stub_completion():
     try:
         ok(build(d, s), 'x build')
         m = os.path.join(s, 'm.sym')
-        open(m, 'w').write('obosym 2\nabi 1\ncompiler "0.6"\nsource 0x%016x\ninterface 0x0\nmodule m\nfn f() frees 1 x::g\n' % 0)
+        open(m, 'w').write('obosym 4\nabi 1\ncompiler "0.8"\nsource 0x%016x\ninterface 0x0\nmodule m\nfn f() frees 1 x::g\n' % 0)
         rehash(m, lambda b: b)
         for name, imports in (('order1', 'import "m.obx"\nimport "x.obx"'),
                               ('order2', 'import "x.obx"\nimport "m.obx"')):
@@ -1347,14 +1347,140 @@ fn main() {
         if 'fn (p0: &Local) lget(): int' not in main_text:
             raise Fail(f"the checked module's .sym lacks its method: {main_text!r}")
         base = sym_text(libsym)
-        open(libsym, 'wb').write(base.replace(b'obosym 2', b'obosym 1', 1))
+        open(libsym, 'wb').write(base.replace(b'obosym 4', b'obosym 1', 1))
         q = build(d, s, check=True)
-        if q.returncode != 2 or 'has format 1; this compiler reads 2' not in q.stderr:
+        if q.returncode != 2 or 'has format 1; this compiler reads 4' not in q.stderr:
             raise Fail(f"format 1: exit {q.returncode}: {q.stderr.strip()}")
         open(libsym, 'wb').write(base)
         os.rename(os.path.join(d, 'lib.obx.bak'), os.path.join(d, 'lib.obx'))
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+IFACE_LIB = '''module lib
+pub type Shape = interface {
+    pure fn area(): int
+    mut fn grow(k: int)
+}
+pub type Circle = ref record { r: int }
+pub fn (c: &Circle) area(): int { return 3 * c.r * c.r }
+pub fn (mut c: &Circle) grow(k: int) { c.r += k }
+pub impl Shape for Circle
+type Hidden = interface { pure fn area(): int }
+impl Hidden for Circle
+'''
+
+IFACE_MAIN = '''module main
+import "lib.obx"
+fn main() {
+    let c = new lib::Circle{r: 2}
+    c.grow(1)
+    println(c.area())
+}
+'''
+
+
+def iface_tree():
+    """A fresh tree with the interface lib and main, built with its sources into a sym dir."""
+    d = tempfile.mkdtemp(prefix='symcase-iface-')
+    write_tree(d, {'lib.obx': IFACE_LIB, 'main.obx': IFACE_MAIN})
+    symdir = os.path.join(d, 'sym')
+    os.makedirs(symdir)
+    ok(build(d, symdir, out=os.path.join(d, 'prog')), 'interface tree build')
+    return d, symdir
+
+
+def iface_private_impl():
+    """S-6: a private interface and its private impl are not written to lib.sym; a
+    source-less --check of main writes a main.sym byte-identical to the full build's."""
+    d, symdir = iface_tree()
+    libsym = sym_text(os.path.join(symdir, 'lib.sym'))
+    if b'Hidden' in libsym:
+        raise Fail(f"a private interface reached lib.sym: {libsym!r}")
+    if b'impl Shape for Circle' not in libsym:
+        raise Fail(f"the exported impl is missing from lib.sym: {libsym!r}")
+    full_main = sym_text(os.path.join(symdir, 'main.sym'))
+    os.rename(os.path.join(d, 'lib.obx'), os.path.join(d, 'lib.obx.bak'))
+    chk = os.path.join(d, 'sym-check')
+    shutil.copytree(symdir, chk)
+    ok(build(d, chk, check=True), 'source-less check')
+    if sym_text(os.path.join(chk, 'main.sym')) != full_main:
+        raise Fail('the source-less --check main.sym differs from the full build')
+    shutil.rmtree(d, ignore_errors=True)
+
+
+def iface_summary_matrix():
+    """S-2: the committed all-forms interface tree (every member form of the v3 3.2
+    table) checks source-less and writes a main.sym byte-identical to a full build
+    of the same root, and its lib.sym re-emits unchanged."""
+    src = os.path.join(HERE, 'modules', 'sym', 'iface_sig')
+    d = tempfile.mkdtemp(prefix='symcase-matrix-')
+    for name in ('lib.obx', 'dep.obx', 'main.obx'):
+        shutil.copyfile(os.path.join(src, name), os.path.join(d, name))
+    symdir = os.path.join(d, 'sym')
+    os.makedirs(symdir)
+    ok(build(d, symdir, out=os.path.join(d, 'prog')), 'full build of the all-forms tree')
+    full_main = sym_text(os.path.join(symdir, 'main.sym'))
+    lib_text = sym_text(os.path.join(symdir, 'lib.sym'))
+    r = reemit(os.path.join(symdir, 'lib.sym'))
+    if r.returncode != 0 or r.stdout != lib_text:
+        raise Fail('the all-forms lib.sym does not re-emit unchanged')
+    for name in ('lib.obx', 'dep.obx'):
+        os.unlink(os.path.join(d, name))
+    chk = os.path.join(d, 'sym-check')
+    shutil.copytree(symdir, chk)
+    ok(build(d, chk, check=True), 'source-less check of the all-forms tree')
+    if sym_text(os.path.join(chk, 'main.sym')) != full_main:
+        raise Fail('the source-less --check main.sym differs from the full build')
+    shutil.rmtree(d, ignore_errors=True)
+
+
+# (old, new, expected stderr text) for lib.sym, each refused at its reader line
+IFACE_REFUSALS = [
+    ('pure fn area(): int', 'mut pure fn area(): int', "'pure' and 'mut' come before 'fn'"),
+    ('mut fn grow(p0: int)', 'pure fn area(): int', "duplicate interface method 'area'"),
+    ('mut fn grow(p0: int)', 'mut fn grow(mut p0: int)', 'mut needs a reference parameter'),
+    ('mut fn grow(p0: int)', 'mut fn grow(p0: &int)', 'only records, closed types and arrays can be borrowed, not int'),
+    ('impl Shape for Circle\n', 'impl Shape for Circle\nimpl Shape for Circle\n', 'duplicate implementation'),
+]
+
+
+def iface_reader_refusals():
+    """S-5: each malformed interface or impl line in lib.sym (its hash recomputed, so
+    the structural checks run) is refused with the reader's own message."""
+    d, symdir = iface_tree()
+    libpath = os.path.join(symdir, 'lib.sym')
+    base = sym_text(libpath)
+    os.unlink(os.path.join(d, 'lib.obx'))
+    try:
+        for old, new, want in IFACE_REFUSALS:
+            if base.count(old.encode()) != 1:
+                raise Fail(f"{old!r} occurs {base.count(old.encode())} times in lib.sym")
+            with open(libpath, 'wb') as f:
+                f.write(base)
+            mutate(libpath, old.encode(), new.encode())
+            q = build(d, symdir, check=True)
+            if q.returncode != 2 or want not in q.stderr:
+                raise Fail(f"{old!r} -> {new!r}: exit {q.returncode}, wanted '{want}': {q.stderr.strip()}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def stale_format3_interface():
+    """S-4: a format-3 symbol file that uses an interface type as a parameter is refused
+    by the format check before its body is read."""
+    d = tempfile.mkdtemp(prefix='symcase-stale-')
+    write_tree(d, {'main.obx': 'module main\nimport "lib.obx"\nfn main() { }\n'})
+    symdir = os.path.join(d, 'sym')
+    os.makedirs(symdir)
+    with open(os.path.join(symdir, 'lib.sym'), 'w') as f:
+        f.write('obosym 3\nabi 1\ncompiler "0.7"\nsource 0x0000000000000001\ninterface 0x0\nmodule lib\n'
+                'type I = interface { fn m(p0: I): int }\nfn f(p0: I): int\n')
+    q = build(d, symdir, check=True)
+    if q.returncode != 2 or 'has format 3; this compiler reads 4; rebuild it' not in q.stderr:
+        raise Fail(f"stale format-3 interface file: exit {q.returncode}: {q.stderr.strip()}")
+    shutil.rmtree(d, ignore_errors=True)
+
 
 
 def tests():
@@ -1389,6 +1515,10 @@ def tests():
         ('sym/forward_variant_check', forward_variant_check),
         ('sym/b6_stub_completion', b6_stub_completion),
         ('sym/nested_sym_error', nested_sym_error),
+        ('sym/iface_summary_matrix', iface_summary_matrix),
+        ('sym/iface_private_impl', iface_private_impl),
+        ('sym/iface_reader_refusals', iface_reader_refusals),
+        ('sym/stale_format3_interface', stale_format3_interface),
     ]
 
 

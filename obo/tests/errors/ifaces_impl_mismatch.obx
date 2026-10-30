@@ -64,3 +64,12 @@ type I = interface {
 type Circle = ref record { r: int }
 impl I for Circle  // error: type 'Circle' has no method 'f' to implement interface 'I'
 fn (c: &Circle) f(p0: int): int { return 1 }
+
+// === an optional borrowed parameter for a borrowed one: the mode is part of both spellings
+type U = ref record { n: int }
+type T = ref record { n: int }
+type I = interface {
+    fn f(p0: &?U)
+}
+fn (t: &T) f(p0: &U) { }
+impl I for T  // error: method 'T::f' does not match interface 'I' method 'f': argument 1 must be &?U, not &U

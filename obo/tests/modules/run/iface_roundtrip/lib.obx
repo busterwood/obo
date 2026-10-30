@@ -1,0 +1,10 @@
+module lib
+// the interface and its implementation for Circle are exported; the program calls the methods directly
+pub type Shape = interface {
+    pure fn area(): int
+    mut fn grow(k: int)
+}
+pub type Circle = ref record { r: int }
+pub fn (c: &Circle) area(): int { return 3 * c.r * c.r }
+pub fn (mut c: &Circle) grow(k: int) { c.r += k }
+pub impl Shape for Circle

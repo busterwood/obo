@@ -1,2 +1,0 @@
-exit 1
-stderr lib.obx:3:1: interfaces cannot be exported yet

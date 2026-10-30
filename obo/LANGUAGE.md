@@ -971,7 +971,7 @@ build** still requires every source; if only a `.sym` exists it reports
 without source` (exit 2). The checked root is exempt from the basename rule (it is
 the root of its check graph), and its `.sym` is named by its declared module name.
 
-`--version` prints `obo 0.6 sym-format 2 abi 1`; the numbers are the `obosym`
+`--version` prints `obo 0.8 sym-format 4 abi 1`; the numbers are the `obosym`
 format, the compiled-program ABI and the compiler version, each checked exactly
 when a `.sym` is read. `--reemit-sym FILE` is a testing hook: it reads a symbol
 file with the reader and prints the canonical re-emission, which the symbol-file
@@ -982,9 +982,9 @@ tests compare byte-for-byte.
 A `.sym` is text in a language-like declaration syntax, readable by the scanner:
 
 ```text
-obosym 2
+obosym 4
 abi 1
-compiler "0.6"
+compiler "0.8"
 source 0x0123456789abcdef
 dep io "io.obx"
 interface 0xfedcba9876543210

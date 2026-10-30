@@ -3551,9 +3551,9 @@ the header and the `source` hash.
 
 ## The format
 
-Text, line-oriented, parsed by the compiler's scanner. The header is `obosym 2`
+Text, line-oriented, parsed by the compiler's scanner. The header is `obosym 4`
 (one identifier; `obo-sym` would scan as three tokens), `abi 1`,
-`compiler "0.6"`, `source 0x…`, one `dep <module> "<path as imported>"` per
+`compiler "0.8"`, `source 0x…`, one `dep <module> "<path as imported>"` per
 unique direct dependency in first-import order, and `interface 0x…`. The body is
 `module <name>`, one `depiface <module> 0x…` per dependency in the same order,
 then declarations. `source` is FNV-1a 64 of the source bytes exactly;
@@ -3610,8 +3610,8 @@ run, re-emit, `--check`).
 FNV-1a 64 with offset basis `0xcbf29ce484222325` and prime `0x100000001b3`, 64-bit
 wrapping. Three exact-match version values: `obosym` (grammar and meaning),
 `abi` (layout, descriptor format, calling convention, global addressing, effect
-summaries, initialization order) and `compiler` (`OBO_VERSION`, currently `0.6`;
-`--version` prints `obo 0.6 sym-format 2 abi 1`). Errors use the per-line §12
+summaries, initialization order) and `compiler` (`OBO_VERSION`, currently `0.8`;
+`--version` prints `obo 0.8 sym-format 4 abi 1`). Errors use the per-line §12
 wording: `has format <n>; this compiler reads <m>`, `has ABI <n>; this compiler
 uses <m>`, `was built by compiler '<v>'; this is '<w>'`, each with
 `; rebuild it` and exit 2 — not one combined message. Bump `OBO_VERSION` with a

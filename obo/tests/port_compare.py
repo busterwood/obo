@@ -192,6 +192,10 @@ SEED_FILE_MIN = {
     os.path.join(FORK, 'tests', 'run', 'methods_names.obx'): (0, 6),
     os.path.join(FORK, 'tests', 'run', 'methods_origins.obx'): (0, 6),
     os.path.join(FORK, 'tests', 'errors', 'methods.obx'): (0, 6),
+    os.path.join(FORK, 'tests', 'run', 'ifaces_decl.obx'): (0, 8),
+    os.path.join(FORK, 'tests', 'errors', 'ifaces_decl.obx'): (0, 8),
+    os.path.join(FORK, 'tests', 'errors', 'ifaces_tiers.obx'): (0, 8),
+    os.path.join(FORK, 'tests', 'errors', 'ifaces_impl_mismatch.obx'): (0, 8),
 }
 SEED_LIB_MIN = {'io.obx': (0, 5), 'env.obx': (0, 4)}
 _SEED_VERSIONS = {}
@@ -655,7 +659,7 @@ def compare_trees(tmp, quick, port):
         # merely agree with a port that also failed
         if a.returncode != 0 or b.returncode != 0:
             failures.append(f"reemit {name}: exit obo {a.returncode}, port {b.returncode}")
-        elif not a.stdout or not a.stdout.startswith(b'obosym 2\n') or b'fn many(' not in a.stdout:
+        elif not a.stdout or not a.stdout.startswith(b'obosym 4\n') or b'fn many(' not in a.stdout:
             failures.append(f"reemit {name}: obo's output is not canonical: {a.stdout[:80]!r}")
         else:
             modline = next((l for l in a.stdout.splitlines() if l.startswith(b'module ')), b'module many')

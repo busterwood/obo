@@ -11,7 +11,7 @@ type Holder = ref record { b: ^Bag }
 fn (mut h: &Holder) f() {
     h.b.items = new []int(0)
 }
-impl I for Holder  // error: method 'Holder::f' cannot implement 'I::f': it writes an owned value through a handle
+impl I for Holder  // error: method 'Holder::f' cannot implement 'I::f': it writes an owned value through a handle, or calls a function that is not defined yet
 
 // === a plain member, and a method that frees a global
 type I = interface {
@@ -23,15 +23,14 @@ fn (mut t: &T) f() { G = new T{n: 2} }
 impl I for T  // error: method 'T::f' cannot implement 'I::f': it frees global 'G'
 
 // === a plain member, and a method that calls a function that is only a forward heading
-// (a call to an uncompiled function is conservatively a write through a handle, so the handle text is what
-// the refusal reports; the method is refused either way)
+// (a call to an uncompiled function is conservatively a write through a handle, so the refusal names both causes)
 type I = interface {
     mut fn f()
 }
 type T = ref record { n: int }
 fn later(): int
 fn (mut t: &T) f() { let x = later() }
-impl I for T  // error: method 'T::f' cannot implement 'I::f': it writes an owned value through a handle
+impl I for T  // error: method 'T::f' cannot implement 'I::f': it writes an owned value through a handle, or calls a function that is not defined yet
 fn later(): int { return 1 }
 
 // === a pure member, and a method that frees a global

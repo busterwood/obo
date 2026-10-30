@@ -1320,6 +1320,54 @@ METHOD_MUTANTS = {
         "            if false { symDisagree(what) }\n"),
 }
 
+# interfaces v3 step 2 (design section 12.2, encoding and version rows): the writer, the reader and the
+# version constants. Each pattern occurs once in src/obo.obo; a stale pattern is a missed verdict.
+INTERFACE_MUTANTS = {
+    "interfaces v3 X25: an interface gets a shell line": (
+        "    return symDefines(s, modName) && symType(s).kind != \"iface\"\n",
+        "    return symDefines(s, modName)\n"),
+    "interfaces v3 X26: the writer drops mut on a member parameter": (
+        "        if i > 1 { appStr(b, \", \") }\n        if f.fnRec.pmodes[i] == 2 { appStr(b, \"mut \") }\n",
+        "        if i > 1 { appStr(b, \", \") }\n        if false { appStr(b, \"mut \") }\n"),
+    "interfaces v3 X27: the writer drops a member return type": (
+        "        if m.ret != tVoid {\n            appStr(b, \": \")\n            appTypeExpr(b, m.ret, modName)\n",
+        "        if false {\n            appStr(b, \": \")\n            appTypeExpr(b, m.ret, modName)\n"),
+    "interfaces v3 X28: the reader parses an owned interface parameter as mode 1": (
+        "                append(pmodes, 0)\n            }\n            append(ptypes, pt)\n",
+        "                if pt.kind == \"iface\" { append(pmodes, 1) } else { append(pmodes, 0) }\n            }\n            append(ptypes, pt)\n"),
+    "interfaces v3 X29: the reader accepts mut on an owned parameter": (
+        "                if pmut { error(\"mut needs a reference parameter: write mut p0: &T\") }\n                append(pmodes, 0)\n            }\n            append(ptypes, pt)\n",
+        "                append(pmodes, 0)\n            }\n            append(ptypes, pt)\n"),
+    "interfaces v3 X30: the mode-0 comparison ignores parameter modes": (
+        "if !same(lm.fnRec.params[k], ptypes[k]) || lm.fnRec.pmodes[k] != pmodes[k] { symDisagree(what) }",
+        "if !same(lm.fnRec.params[k], ptypes[k]) { symDisagree(what) }"),
+    "interfaces v3 X31: the source parser accepts mut on an interface parameter": (
+        "            if mode == 0 { error(\"mut needs a reference parameter: write mut name: &T\") }\n",
+        ""),
+    "interfaces v3 X36a: SYM_FORMAT stays 2": ("const SYM_FORMAT = 4\n", "const SYM_FORMAT = 2\n"),
+    "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.8\"\n", "const OBO_VERSION = \"0.6\"\n"),
+
+    # summary reconstruction (S-2): setMemberSummary is shared by the source and the reader
+    "interfaces v3 X18: the receiver bit is omitted for mut fn": (
+        "        if i < 62 && m.fnRec.pmodes[i] == 2 { m.fnRec.pfree = m.fnRec.pfree | (1 << i) }\n",
+        "        if i > 0 && i < 62 && m.fnRec.pmodes[i] == 2 { m.fnRec.pfree = m.fnRec.pfree | (1 << i) }\n"),
+    "interfaces v3 X19: the bits go on mode-1 parameters too": (
+        "        if i < 62 && m.fnRec.pmodes[i] == 2 { m.fnRec.pfree",
+        "        if i < 62 && m.fnRec.pmodes[i] >= 1 { m.fnRec.pfree"),
+    "interfaces v3 X20: only the first mode-2 parameter gets its bit": (
+        "        if i < 62 && m.fnRec.pmodes[i] == 2 { m.fnRec.pfree",
+        "        if i < 62 && m.fnRec.pmodes[i] == 2 && m.fnRec.pfree == 0 { m.fnRec.pfree"),
+    "interfaces v3 X21: writesHandles is set on every member": (
+        "    m.freesAll = false\n    m.writesHandles = false\n    m.fnRec.pfree = 0\n",
+        "    m.freesAll = false\n    m.writesHandles = true\n    m.fnRec.pfree = 0\n"),
+    "interfaces v3 X22: a pure mut member gets the receiver bit": (
+        "    if pure { return }\n    for i in 0..len(m.fnRec.pmodes) {\n",
+        "    if pure && m.fnRec.pmodes[0] != 2 { return }\n    for i in 0..len(m.fnRec.pmodes) {\n"),
+    "interfaces v3 X23: the reader ignores pure": (
+        "            setMemberSummary(m, pure)\n            append(ifaceSyms, m)\n",
+        "            setMemberSummary(m, false)\n            append(ifaceSyms, m)\n"),
+}
+MUTANTS.update(INTERFACE_MUTANTS)
 MUTANTS.update(METHOD_MUTANTS)
 
 def mutation(src, name):

@@ -1,0 +1,8 @@
+obosym 4
+abi 1
+compiler "0.8"
+source 0xb164cfce8c1ba708
+interface 0xefcef5b786525eed
+module dep
+type T2 uid 0xa9e8c62695d092a8
+type T2 = ref record { w: int }

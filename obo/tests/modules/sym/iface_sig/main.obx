@@ -1,0 +1,6 @@
+module main
+import "lib.obx"
+fn main() {
+    let t = new lib::T{v: 1}
+    println(t.v)
+}
