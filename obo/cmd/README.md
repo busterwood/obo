@@ -295,13 +295,13 @@ eza [-1|-T|-G] [E2 flags] [--] [PATH]
 eza -l --bytes --time-style=long-iso (-n | --no-user) [E2 flags] [PATH]
 ```
 
-A partial, source-compatible subset of eza 0.23.3, not a full port. E0 (P4)
-is the lines/restricted-long core; E1 (P5b) adds colour, tree and
-`--no-quotes`; E2 (P6b) adds grid, the width sources, UTF-8 widths/code-point
-order and lossy invalid-UTF-8 display. `--help`/`-?` print this build's own
-subset text (it deliberately differs from upstream eza's help, which
-advertises options this build rejects) and exit 0. Help is handled after the
-whole argv parses but before deduction or operand lookup: `--help missing`
+A partial behavioural reimplementation of eza 0.23.3, not a drop-in
+replacement. E0 (P4) is the lines/restricted-long core; E1 (P5b) adds colour,
+tree and `--no-quotes`; E2 (P6b) adds grid, the width sources, UTF-8
+widths/code-point order and lossy invalid-UTF-8 display. `--help`/`-?` print
+this build's own subset text (it deliberately differs from upstream eza's help,
+which advertises options this build rejects) and exit 0. Help is handled after
+the whole argv parses but before deduction or operand lookup: `--help missing`
 prints help without an `lstat`, `--help --bad` still reports the unknown
 option, and `-- --help` is a literal operand.
 Without a terminal-ish width the default view is still E0's **non-TTY**
@@ -505,8 +505,9 @@ suppressions above, `--total-size`, `--hyperlink`, `--mounts`,
 E2 adds one more own error: `-l` with `-G` (eza's GridDetails; see below).
 `--version`/`-v` are not in this parser and take the ordinary
 `Unknown argument` path. `--help`/`-?` are `VALUE_NONE` flags, so
-`--help=x`/`-?=x` take the reference's `Flag --help cannot take a value`
-wording while `--help=` remains `Unknown argument --help=`. Values of rejected
+`--help=x` is `Flag --help cannot take a value` and `-?=x` is
+`Flag -? cannot take a value`; `--help=` is `Unknown argument --help=`
+and `-?=` is `Unknown argument -=`. Values of rejected
 eza-valid flags are still consumed with eza's value mode before the unsupported
 error (`-I=`, `-L x`).
 
@@ -518,7 +519,7 @@ live heap bytes, the name-only listing at 2,189,728, the tree at 2,190,480,
 the coloured listing at 2,189,952 and the E2 grid at 2,190,128 (2,560 KiB max
 RSS in the recorded run; reruns varied 2,304-2,560 KiB across views; the UTF-8
 width table is code, not per-entry heap). These entry paths do not execute
-help; a help run is 33,616 peak bytes.
+help; a help run is 33,792 peak bytes.
 `tests/eza.py --memory` keeps the P4 `EZA_PEAK_MAX = 2,752,512` bytes and
 gates on no leak/double-close line. GNU time measures the reference at about
 24.6 MB max RSS (long), 12.0 MB (names), 14.2 MB (tree) and about 12 MB

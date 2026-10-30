@@ -2,9 +2,10 @@ Usage:
   eza [options] [--] [PATH]
   eza -l --bytes --time-style=long-iso (-n | --no-user) [options] [--] [PATH]
 
-obo eza is a partial, source-compatible subset of eza 0.23.3, not a full
-port. It lists one PATH (default ".") and implements only the options
-below. Options outside this subset are rejected, never silently accepted.
+obo eza is a partial behavioural reimplementation of eza 0.23.3,
+not a drop-in replacement. It lists one PATH (default ".") and
+implements only the options below. Options outside this subset are
+rejected, never silently accepted.
 
 META OPTIONS
   -?, --help                 show this help and exit
@@ -17,9 +18,9 @@ DISPLAY OPTIONS
   -T, --tree                 recurse into directories as a tree
   -L, --level DEPTH          limit tree depth (used only with -T)
   -w, --width COLS           set screen width in columns (0 = automatic)
-  -F, --classify[=WHEN]      type markers: always, auto, never
-  --color, --colour[=WHEN]   colour: always, auto, never
-  --icons[=WHEN]             accepted except always; no icons are drawn
+  -F, --classify[=WHEN]      markers: always, auto/automatic, never
+  --color, --colour[=WHEN]   colour: always, auto/automatic, never
+  --icons[=WHEN]             auto/automatic/never accepted; no icons drawn
   --no-quotes                do not quote file names containing spaces
 
 FILTERING AND SORTING OPTIONS
@@ -30,8 +31,10 @@ FILTERING AND SORTING OPTIONS
   -D, --only-dirs            list directories only
   -f, --only-files           list regular files only
   -r, --reverse              reverse the sort order
-  -s, --sort FIELD           name (default), Name, size, extension,
-                             Extension, modified, type (and eza aliases)
+  -s, --sort FIELD           name/filename (default), Name/Filename,
+                             size/filesize, extension/ext, Extension/Ext,
+                             modified/date/time/mod/new/newest, type
+                             Other eza sort fields are rejected.
   --group-directories-first  list directories before other entries
   --group-directories-last   list directories after other entries
 

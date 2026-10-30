@@ -7,12 +7,13 @@ host.
 
 **It is not a gate.** No script under `obo/tests/` and no CI job runs it. The
 numbers are host-dependent; treat them as relative measurements from one run,
-not as portable facts. The recorded table below is a current obo 0.8 run
-measured on 30 October 2026 at main `9290396` (the second of two default runs).
-Everything on the obo side was built from that tree by `run.py`; the program
-and tool binaries are byte-identical to the earlier 0.5/0.6 builds, but these
-times were re-measured. The historical 0.5 / 0.6 sample and its provenance are
-in [`HISTORY.md`](../../../HISTORY.md).
+not as portable facts. The recorded table below is an obo 0.8 run measured on
+30 October 2026 at main `9290396` (the pre-help benchmark tree). Everything on
+the obo side was built from that tree by `run.py`; that tree's eza is the
+212,993-byte binary (sha256 `53133d23…`). The current help build is 217,089
+bytes, and these eza medians were not re-measured. The times were re-measured
+on that tree, not carried forward. The historical 0.5 / 0.6 sample and its
+provenance are in [`HISTORY.md`](../../../HISTORY.md).
 
 ## What it measures
 
@@ -158,15 +159,15 @@ binary sizes:
 total: 83.3 s on this host; the numbers are host-dependent.
 ```
 
-The obo-side binaries used for these medians are byte-identical to the saved
-0.5/0.6 builds (cat 40,961, wc 45,057, sort 69,633, eza 212,993, sha256
-`53133d23…`, and the four bench programs 28,673 each), but these medians were
+The obo-side binaries used for these medians were built from benchmark tree
+`9290396` (pre-help): cat 40,961, wc 45,057, sort 69,633, eza 212,993 (sha256
+`53133d23…`), and the four bench programs 28,673 each. These medians were
 re-measured on 0.8 rather than carried over. The current tree's eza is 217,089
 bytes after adding `--help`; these eza medians were not re-measured. The first
 of the two runs measured eza at 55.9 ms (pinned 66.9 ms); the table above is
-the second run. The compiler is the promoted 0.8
-seed (507,905 bytes); the 0.6 compiler (454,657 bytes) and the 0.5 compiler
-(425,985 bytes) are historical. The earlier 0.5 / 0.6 sample is preserved in
+the second run. The compiler is the promoted 0.8 seed (507,905 bytes); the 0.6
+compiler (454,657 bytes) and the 0.5 compiler (425,985 bytes) are historical.
+The earlier 0.5 / 0.6 sample is preserved in
 [`HISTORY.md`](../../../HISTORY.md).
 
 `--quick` changes the workload sizes as well as the repetition counts, so its

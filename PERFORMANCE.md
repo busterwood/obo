@@ -1,15 +1,17 @@
 # obo performance
 
-This page records the current benchmark run of obo 0.8: the compiler, four
-small programs, and the `cat`, `wc`, `sort` and `eza` tools, compared with
-CPython 3.12.3, GNU coreutils 9.4 and the pinned eza 0.23.3 reference. It was
-measured on 30 October 2026 at main `9290396`, as the second of two default
-runs. The obo side is `obo 0.8 sym-format 4 abi 1`; the benchmark programs and
-tools were built from the current tree by `obo/bench/cli/run.py`. Their binaries
-are byte-identical to the earlier 0.5/0.6 builds, but the times below were
-re-measured, not carried forward. The historical 0.5 / 0.6 sample is preserved
-in [HISTORY.md](HISTORY.md). The suite is on-demand, not a gate; its source is
-`obo/bench/cli/`, and the command is:
+This page records the benchmark run of obo 0.8: the compiler, four small
+programs, and the `cat`, `wc`, `sort` and `eza` tools, compared with CPython
+3.12.3, GNU coreutils 9.4 and the pinned eza 0.23.3 reference. It was measured
+on 30 October 2026 at main `9290396` (the pre-help benchmark tree), as the
+second of two default runs. The obo side is `obo 0.8 sym-format 4 abi 1`; the
+benchmark programs and tools were built from that tree by
+`obo/bench/cli/run.py`. That tree's eza is the 212,993-byte binary (sha256
+`53133d23…`) used for the eza timing row; the current help build is 217,089
+bytes and was not re-benchmarked. The times below were re-measured, not carried
+forward from the historical 0.5 / 0.6 sample in [HISTORY.md](HISTORY.md). The
+suite is on-demand, not a gate; its source is `obo/bench/cli/`, and the command
+is:
 
 ```sh
 python3 obo/bench/cli/run.py
@@ -28,11 +30,11 @@ them for relative comparison, not as portable constants.
 * Python: CPython 3.12.3.
 * References: GNU coreutils 9.4; pinned eza v0.23.3, binary sha256
   `10457dde…`.
-* Compiler: `obo 0.8 sym-format 4 abi 1`, the promoted seed; the measured
-  programs and `cat`/`wc`/`sort` are byte-identical to their 0.5/0.6 builds,
-  while the eza timing row used the 212,993-byte pre-help build (sha256
-  `53133d23…`). Every median on this page was measured again on 30 October
-  2026; the current 217,089-byte eza help build was not re-benchmarked.
+* Compiler: `obo 0.8 sym-format 4 abi 1`, the promoted seed; the benchmark
+  tree `9290396` built the programs and tools catalogued below. The eza timing
+  row used that tree's 212,993-byte binary (sha256 `53133d23…`). Every median
+  on this page was measured on 30 October 2026; the current 217,089-byte eza
+  help build was not re-benchmarked.
 
 ## Methodology
 
@@ -119,14 +121,13 @@ text/data.
 
 The compiler is the promoted 0.8 seed (sha256 `673ae7ba…`), and it rebuilds
 itself to the same 507,905 bytes. The benchmark programs, `cat`, `wc`, `sort`
-and the 212,993-byte `eza` binary used for the CLI timings were built from the
-earlier tree; the current tree's `eza` is 217,089 bytes (sha256 `28ebeb14…`)
-after adding `--help`. The timings were not re-measured, and the listing
-benchmark does not execute help. `cat`, `wc` and `sort` remain byte-identical to
-the saved 0.5/0.6 builds (40,961, 45,057 and 69,633 bytes; the four small
-programs are 28,673 each). The current eza binary is about 10.6x smaller than
-the pinned reference. The 0.5 seed and its 425,985-byte compiler (sha256
-`05542e89…`) are historical.
+and the 212,993-byte `eza` binary used for the CLI timings were built from
+benchmark tree `9290396` (pre-help). The current tree's `eza` is 217,089 bytes
+(sha256 `6a2b8f89…`) after adding `--help`. The timings were not re-measured,
+and the listing benchmark does not execute help. `cat`, `wc` and `sort` are
+40,961, 45,057 and 69,633 bytes; the four small programs are 28,673 each. The
+current eza binary is about 10.6x smaller than the pinned reference. The 0.5
+seed and its 425,985-byte compiler (sha256 `05542e89…`) are historical.
 
 ## Memory
 
@@ -207,10 +208,10 @@ leak check.
   but Python's `listdir + sorted` (16.3 ms) and GNU `ls -1` (6.55 ms) are faster
   than obo's 30.4 ms. The eza headline is not raw listing speed: it is the
   217,089-byte current binary (10.6x smaller than the reference; the timing run
-  used the earlier 212,993-byte build), the roughly 2.19 MB live peak at 10,000
-  entries, and the gate's 554/554 non-memory differential cases (465 exact
-  reference goldens, 72 live including 22 pty, 17 own) plus 5/5 memory
-  peak/leak cases.
+  used benchmark tree `9290396`'s 212,993-byte build), the roughly 2.19 MB live
+  peak at 10,000 entries, and the gate's 554/554 non-memory differential cases
+  (465 exact reference goldens, 72 live including 22 pty, 17 own) plus 5/5
+  memory peak/leak cases.
 
 ## Caveats
 
