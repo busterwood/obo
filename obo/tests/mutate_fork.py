@@ -182,10 +182,10 @@ MUTANTS = {
     "index does not hold its array": ("            let hp = heldPush(root, viaHandle, hOrig, hIdent, placePath(root, path), path)", "            let hp = -1"),
     "replace does not hold its place": ("        let hp = heldPush(tr, x.viaHandle, orig, ident, place, raw)", "        let hp = -1"),
     "append and truncate do not hold their array": ("        let hp = heldPush(r0, aVia, aOrig, aIdent, aPlace, aRaw)", "        let hp = -1"),
-    "plain assignments do not hold their target": ("            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            let y = tailExpr()",
-                                                    "            let y = tailExpr()"),
-    "compound assignments do not hold their target": ("            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            var y = tailExpr()",
-                                                      "            var y = tailExpr()"),
+    "plain assignments do not hold their target": ("            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            var y = tailExpr()\n            pinned = savedPin\n            checkAssign(dtype, y, \"assignment\")\n",
+                                                    "            var y = tailExpr()\n            pinned = savedPin\n            checkAssign(dtype, y, \"assignment\")\n"),
+    "compound assignments do not hold their target": ("            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            var y = tailExpr()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n",
+                                                      "            var y = tailExpr()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n"),
     "reference places ignore the binding's path": ("            let p = heldAt(b, i, raw, r)\n            if o == handleSym {\n                heldAdd(nil, true, false, \"\")", "            let p = raw\n            if o == handleSym {\n                heldAdd(nil, true, false, \"\")"),
 }
 
@@ -641,8 +641,8 @@ MODULE_MUTANTS = {
     "modules: scanner state not restored after an import": ("    visibleGlobals = savedVisible\n    restoreScan(ss)\n}", "    visibleGlobals = savedVisible\n}"),
     "modules: imports not bound": ("    append(curModule.imports, new Import{alias: alias, mod: dep, raw: raw})",
                                  "    if false { append(curModule.imports, new Import{alias: alias, mod: dep, raw: raw}) }"),
-    "modules: B7 alias key overwrites the shared type": ("        let t = parseType()                      // an alias key: it maps to this object; it never names it (B7)\n",
-                                                          "        let t = parseType()                      // an alias key: it maps to this object; it never names it (B7)\n        t.owner = curModuleName\n"),
+    "modules: B7 alias key overwrites the shared type": ("fn typeAlias(name: string, line: int, isPub: bool, t: ^Type) {\n    registerTypeAlias(curModuleName, name, t)\n",
+                                                          "fn typeAlias(name: string, line: int, isPub: bool, t: ^Type) {\n    t.owner = curModuleName\n    registerTypeAlias(curModuleName, name, t)\n"),
     "modules: _root accepted in a dependency": ("        if !isRoot && mod.name == \"_root\" {", "        if false {"),
     "modules: main in a dependency allowed": ("    if !isMethod && name == \"main\" && !curModule.isRoot {", "    if false {"),
     "modules: pub inside a function accepted": ("        T_PUB { error(\"'pub' is only allowed on top-level declarations\") }", "        T_PUB { next() }"),
@@ -670,7 +670,7 @@ MODULE_MUTANTS = {
 }
 SYM_MUTANTS = {
     # ---- writer: canonical declarations, order and summaries
-    "sym: shells omitted": ("        if s.exported && symDefines(s, modName) { appTypeShell(b, s) }",
+    "sym: shells omitted": ("        if s.exported && symHasShell(s, modName) { appTypeShell(b, s) }",
                             "        if false { appTypeShell(b, s) }"),
     "sym: definitions omitted": ("            appTypeDef(b, mod.globals[best], modName)",
                                  "            let skippedDef = best"),
@@ -744,8 +744,8 @@ SYM_MUTANTS = {
     "sym: pfree bit without a pf row accepted": ("            if !have { error(\"pfree bit \" + string(i) + \" has no pf row\") }",
                                                  "            if false { error(\"pfree bit \" + string(i) + \" has no pf row\") }"),
     "sym: pfree high bits not ignored": ("    let low = pfree & 0x3FFFFFFFFFFFFFFF", "    let low = pfree"),
-    "sym: mut without a reference accepted": ("            if pmut { error(\"mut needs a reference parameter: write mut p0: &T\") }",
-                                              "            if false { error(\"mut needs a reference parameter: write mut p0: &T\") }"),
+    "sym: mut without a reference accepted": ("            if pmut { error(\"mut needs a reference parameter: write mut p0: &T\") }\n            append(ptypes, symParseType())\n",
+                                              "            append(ptypes, symParseType())\n"),
     "sym: scalar borrow accepted": ("            if !isOwned(t) { error(\"only records, closed types and arrays can be borrowed, not \" + symTypeText(t)) }",
                                     "            if false { error(\"only records, closed types and arrays can be borrowed, not \" + symTypeText(t)) }"),
     "sym: non-primitive constant accepted": ("    if t != tInt && t != tByte && t != tBool && t != tString {",
@@ -920,6 +920,7 @@ EQUIVALENT = {
 
     # interfaces v3 step 2: the summary bits that no reader consults, and the mode-0 check a full build cannot reach
     "interfaces v3 X30: the mode-0 comparison ignores parameter modes": "equivalent for the same reason as the methods' mode-0 checks: a full build reads each import's .sym right after its own writer has rewritten it from the same live interface (compileUnit, writeSym, then readSym in mode 0), and an import must have a header, so no full build reads a file it did not write (a forged lib.sym in the sym dir is overwritten first); --check reads in mode 1, which compares nothing with the live interface. The writer's modes are pinned by the golden and the round trip (a writer that drops mut, X26, is caught there)",
+    "interfaces v3 X15: the local tier drops the pfree-subset check": "equivalent in the current architecture: the signature comparison has already required method and member parameter modes to be equal (X38d), and the synthetic S(m) puts a pfree bit on exactly the member's mode-2 parameters. callFn records pfree only for a mode-2 argument, so a source method's pfree mask is a subset of S(m) by construction; a mode-1 parameter cannot be changed and no recorded free can land on it. The branch is defensive for a forged *method* summary, but implDecl only ever sees methods compiled from source: a .sym reader trusts an imported implementation and does not re-run the check, and a root cannot implement an interface for an imported type. The full suite passes without the branch, and there is no honest input that reaches it, so no test can distinguish it.",
 }
 
 
@@ -1208,8 +1209,8 @@ MUTANTS.update(SIZE_MUTANTS)
 
 METHOD_MUTANTS = {
     "methods: an owned receiver is not consumed": (
-        "        } else {\n            consume(a)\n            argOrderCheck(tbase, fname, meth, i, argLine, argCol)\n        }\n",
-        "        } else {\n            if i > 0 { consume(a) }\n            argOrderCheck(tbase, fname, meth, i, argLine, argCol)\n        }\n"),
+        "            checkAssign(f.fnRec.params[i], a, argLabel(meth, i, start) + \" of \" + callDisplay(meth, fname))\n            consume(a)\n            argOrderCheck(tbase, fname, meth, i, argLine, argCol)\n",
+        "            checkAssign(f.fnRec.params[i], a, argLabel(meth, i, start) + \" of \" + callDisplay(meth, fname))\n            if i > 0 { consume(a) }\n            argOrderCheck(tbase, fname, meth, i, argLine, argCol)\n"),
     "methods: an owned receiver through a handle is allowed": (
         "        if m.fnRec.pmodes[0] == 0 && recv.viaHandle && recv.mode == \"reg\" {\n",
         "        if false {\n"),
@@ -1268,8 +1269,8 @@ METHOD_MUTANTS = {
         "        if m.owner == modName && m.exported { appMethod(b, m, modName) }\n",
         "        if m.owner == modName { appMethod(b, m, modName) }\n"),
     "methods: lookup ignores the receiver type": (
-        "        if m.recv == t && m.name == name { return m }\n",
-        "        if m.name == name { return m }\n"),
+        "fn findMethodIn(t: ^Type, name: string): ?^Sym {\n    for i in 0..len(methodSyms) {\n        let m = methodSyms[i]\n        if m.recv == t && m.name == name { return m }\n",
+        "fn findMethodIn(t: ^Type, name: string): ?^Sym {\n    for i in 0..len(methodSyms) {\n        let m = methodSyms[i]\n        if m.name == name { return m }\n"),
     "methods: the call visibility check is dropped": (
         "    if t.owner != \"\" && t.owner != curModuleName && (m == nil || !m.exported) {\n",
         "    if false {\n"),
@@ -1319,8 +1320,8 @@ METHOD_MUTANTS = {
         "        if lm == nil { symDisagree(what) }\n",
         "        if false { symDisagree(what) }\n"),
     "methods: the mode-0 method signature check is dropped": (
-        "            if !same(lm.ret, ret) { symDisagree(what) }\n",
-        "            if false { symDisagree(what) }\n"),
+        "            if !same(lm.ret, ret) { symDisagree(what) }\n            if lm.freesAll != freesAll || lm.writesHandles != writesHandles { symDisagree(what) }\n",
+        "            if false { symDisagree(what) }\n            if lm.freesAll != freesAll || lm.writesHandles != writesHandles { symDisagree(what) }\n"),
 }
 
 # interfaces v3 step 2 (design section 12.2, encoding and version rows): the writer, the reader and the
@@ -1347,6 +1348,41 @@ INTERFACE_MUTANTS = {
     "interfaces v3 X31: the source parser accepts mut on an interface parameter": (
         "            if mode == 0 { error(\"mut needs a reference parameter: write mut name: &T\") }\n",
         ""),
+    # the implementation tier check (step 1, design 7.2 and 12.4): each conjunct
+    "interfaces v3 X12: the local tier drops the writesHandles check": (
+        "            if cm.writesHandles { error(tier + \"it writes an owned value through a handle, or calls a function that is not defined yet\" + rule) }\n",
+        "            if false { error(tier + \"it writes an owned value through a handle, or calls a function that is not defined yet\" + rule) }\n"),
+    "interfaces v3 X13: the local tier drops the freesAll check": (
+        "            if cm.freesAll {\n",
+        "            if false {\n"),
+    "interfaces v3 X14: the local tier drops the freed-globals check": (
+        "            if len(cm.fnRec.freed) > 0 {\n",
+        "            if false {\n"),
+    "interfaces v3 X15: the local tier drops the pfree-subset check": (
+        "            if (cm.fnRec.pfree & ~m.fnRec.pfree) != 0 {\n",
+        "            if false {\n"),
+    "interfaces v3 X16: a pure member is checked with the local tier": (
+        "        if m.pureMember {\n            if !pureFn(cm) || cm.writesHandles {\n",
+        "        if false {\n            if !pureFn(cm) || cm.writesHandles {\n"),
+    "interfaces v3 X17: a local member is checked with the pure tier": (
+        "        if m.pureMember {\n            if !pureFn(cm) || cm.writesHandles {\n",
+        "        if true {\n            if !pureFn(cm) || cm.writesHandles {\n"),
+    # X38: each signature comparison the implementation check makes
+    "interfaces v3 X38a: the receiver-mode comparison is dropped": (
+        "        if cm.fnRec.pmodes[0] != m.fnRec.pmodes[0] {\n",
+        "        if false {\n"),
+    "interfaces v3 X38b: the argument-count comparison is dropped": (
+        "        if len(cm.fnRec.params) != len(m.fnRec.params) {\n",
+        "        if false {\n"),
+    "interfaces v3 X38c: the argument-type comparison is dropped": (
+        "            if !same(cm.fnRec.params[i], m.fnRec.params[i]) {\n",
+        "            if false {\n"),
+    "interfaces v3 X38d: the argument-mode comparison is dropped": (
+        "            if cm.fnRec.pmodes[i] != m.fnRec.pmodes[i] {\n",
+        "            if false {\n"),
+    "interfaces v3 X38e: the return-type comparison is dropped": (
+        "        if !same(cm.ret, m.ret) {\n",
+        "        if false {\n"),
     # owned conversions and ownership (step 3, design section 12.4)
     "interfaces v3 X1: the box descriptor owns nothing": (
         "        append(ptrs, 0)\n",
@@ -1418,17 +1454,33 @@ INTERFACE_MUTANTS = {
     "interfaces v3 X23: the reader ignores pure": (
         "            setMemberSummary(m, pure)\n            append(ifaceSyms, m)\n",
         "            setMemberSummary(m, false)\n            append(ifaceSyms, m)\n"),
+    "interfaces v3 X24: the reader ignores a mut mode on a later parameter": (
+        "                if pmut { append(pmodes, 2) } else { append(pmodes, 1) }\n            } else {\n                if pmut { error(\"mut needs a reference parameter: write mut p0: &T\") }\n",
+        "                if pmut && len(pmodes) < 2 { append(pmodes, 2) } else { append(pmodes, 1) }\n            } else {\n                if pmut { error(\"mut needs a reference parameter: write mut p0: &T\") }\n"),
     # step 4: dispatch through an owned interface value (design sections 7 and 11): the call's vtable word, the
     # slot offset, and the caller's effects from the member's synthetic summary
     "interfaces v3 X8: the vtable word is read from the wrong pushed slot (S4 order)": (
         "        opMem(0x8B, RAX, mem(RSP, -1, 8 * n, 8), true, false)\n",
         "        opMem(0x8B, RAX, mem(RSP, -1, 8 * n - 8, 8), true, false)\n"),
-    "interfaces v3 X39: the call goes to the wrong vtable slot": (
+    # a design-ID-free name: this is an extra dispatch mutation, not one of X1-X38
+    "interfaces v3 dispatch: the call goes to the wrong vtable slot": (
         "mem(RAX, -1, 8 * ifaceSlot(f), 8)",
         "mem(RAX, -1, 8 * ifaceSlot(f) + 8, 8)"),
-    "interfaces v3 X40: the member's summary is not applied to the caller's receiver": (
+    "interfaces v3 dispatch: the member's summary is not applied to the caller's receiver": (
         "        if argModes[i] == 2 && mutFrees(f, argIdx[i]) {\n",
         "        if argModes[i] == 2 && mutFrees(f, argIdx[i]) && !iface {\n"),
+}
+
+# a mutation whose behaviour needs more than one replacement, each of which must occur exactly once
+MULTI_MUTANTS = {
+    # S4, two sites: both words are loaded before the arguments, but with their roles exchanged, which no
+    # single-site X8 replacement can express
+    "interfaces v3 X8b: the receiver's obj and vtable words are swapped (S4, two sites)": [
+        ("    opMem(0x8B, vt, mem(b.r, -1, 8, 8), true, false)\n",
+         "    opMem(0x8B, vt, mem(b.r, -1, 0, 8), true, false)\n"),
+        ("    opMem(0x8B, ob, mem(b.r, -1, 0, 8), true, false)\n",
+         "    opMem(0x8B, ob, mem(b.r, -1, 8, 8), true, false)\n"),
+    ],
 }
 MUTANTS.update(INTERFACE_MUTANTS)
 MUTANTS.update(METHOD_MUTANTS)
@@ -1436,7 +1488,16 @@ MUTANTS.update(METHOD_MUTANTS)
 def mutation(src, name):
     """The mutant's source text, or (None, the stale-pattern message) when its
     pattern no longer matches once. A stale pattern is a 'missed' verdict: the
-    gate fails rather than skipping the mutant."""
+    gate fails rather than skipping the mutant. A MULTI_MUTANTS entry applies every
+    replacement in order, each of which must match exactly once."""
+    if name in MULTI_MUTANTS:
+        text = src
+        for k, (old, new) in enumerate(MULTI_MUTANTS[name], 1):
+            n = text.count(old)
+            if n != 1:
+                return None, f"STALE   {name} (site {k} found {n} times)"
+            text = text.replace(old, new)
+        return text, None
     old, new = PORT_PATTERNS.get(name, MUTANTS[name])
     n = src.count(old)
     if n != 1:
@@ -1568,7 +1629,7 @@ def main():
         print(judge.stdout.rstrip())
         raise SystemExit(f"run_fork -x{' --smoke' if smoke else ''} -j {inner} does not pass the unmutated "
                          "compiler (above), so a mutant's failure could not be trusted")
-    names = [n for n in MUTANTS if pattern in n]
+    names = [n for n in list(MUTANTS) + list(MULTI_MUTANTS) if pattern in n]
     status = {}
     outputs = {}
     with concurrent.futures.ThreadPoolExecutor(jobs) as pool:      # each mutant is a separate build and suite run

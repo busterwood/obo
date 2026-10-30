@@ -14,6 +14,16 @@ type Shape = interface {
 type Named = interface {
     pure fn label(): string
 }
+// R5: a member takes owned interface arguments and returns an owned interface value; ?I and []I parameters
+// move into the member like any other owned value.
+type Chain = interface {
+    pure fn value(): int
+    pure fn join(a: Chain, b: Chain): int
+    pure fn pass(o: Chain): Chain
+    pure fn opt(o: ?Chain): int
+    pure fn total(xs: []Chain): int
+}
+type Leaf = ref record { v: int }
 
 type Square = ref record { s: int }
 type Rect = ref record { w: int; h: int }
@@ -99,6 +109,22 @@ fn make(n: int): Shape {
     if n % 2 == 0 { return new Square{s: n} }
     return new Rect{w: n, h: 1}
 }
+
+fn (l: &Leaf) value(): int { return l.v }
+fn (l: &Leaf) join(a: Chain, b: Chain): int { return l.v + a.value() + b.value() }
+fn (l: &Leaf) pass(o: Chain): Chain { return o }
+fn (l: &Leaf) opt(o: ?Chain): int {
+    if o != nil { return o.value() }
+    return 0
+}
+fn (l: &Leaf) total(xs: []Chain): int {
+    var sum = 0
+    for x in xs { sum += x.value() }
+    return sum
+}
+impl Chain for Leaf
+
+fn makeLeaf(n: int): Chain { return new Leaf{v: n} }
 
 // a try in a function that returns a Result: the err of a member is passed on
 fn checked(s: Shape, k: int): Result[int] {
@@ -193,5 +219,16 @@ fn main() {
         i += 1
     }
     println(sum)                                                           // expect: 57
+
+    // members with owned interface arguments and an owned interface return (R5)
+    let leaf: Chain = new Leaf{v: 1}
+    println(leaf.join(new Leaf{v: 4}, makeLeaf(5)))                         // expect: 10
+    let passed = leaf.pass(makeLeaf(6))
+    println(passed.value())                                                // expect: 6
+    println(leaf.opt(nil), " ", leaf.opt(makeLeaf(7)))                     // expect: 0 7
+    let xs = new []Chain(0)
+    append(xs, new Leaf{v: 2})
+    append(xs, makeLeaf(3))
+    println(leaf.total(xs))                                                // expect: 5
     println("done")                                                        // expect: done
 }

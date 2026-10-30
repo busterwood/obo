@@ -175,14 +175,14 @@ MUTANTS = {
     # cheap code generation (FORK.md, Phase 1). A misaligned stack at a runtime call is trapped by the
     # runtime's entry stubs (exit 4), so a wrong depth shows up as a mismatch
     "runtime call pad dropped when misaligned": [("    let pad = depth % 16\n", "    let pad = 0\n")],
-    "obo call pad dropped when misaligned": [("    let pad = (depth + 8 * n) % 16\n", "    let pad = 0\n")],
+    "obo call pad dropped when misaligned": [("    let pad = (depth + 8 * nw) % 16\n", "    let pad = 0\n")],
     "push imm not counted in the depth": [("            pushI(a.val)                           // no register needed\n            depth += 8\n",
                                            "            pushI(a.val)                           // no register needed\n")],
     # an imm8 push for a value that needs imm32: caught by the objdump cross-check
     "push imm8 for any imm32": [("    if fits8(v) {\n        emit(0x6A)", "    if fits32(v) {\n        emit(0x6A)")],
     "constant runtime argument lost": [("                append(argConsts, a.val)\n", "                append(argConsts, 0)\n")],
     # a function without locals loses its 'sub rsp,0': its entry moves 7 bytes on and its body stays (see "entry:" below)
-    "dropped frame: calls to known functions not recorded": [("        fix(at, f.addr)\n        append(farCalls, at)\n", "        fix(at, f.addr)\n")],
+    "dropped frame: calls to known functions not recorded": [("            fix(at, f.addr)\n            append(farCalls, at)\n", "            fix(at, f.addr)\n")],
     # the boundaries of push imm8 and imm32, caught by the same program (Stage B, not only the objdump group)
     "push imm8 up to 128": [("fn pushI(v: int) {\n    if fits8(v) {", "fn pushI(v: int) {\n    if v >= -128 && v <= 128 {")],
     "push imm8 from -129": [("fn pushI(v: int) {\n    if fits8(v) {", "fn pushI(v: int) {\n    if v >= -129 && v < 128 {")],
@@ -205,8 +205,8 @@ MUTANTS = {
     "held: index does not hold its array": [('            let hp = heldPush(root, viaHandle, hOrig, hIdent, placePath(root, path), path)', '            let hp = -1')],
     "held: replace does not hold its place": [('        let hp = heldPush(tr, x.viaHandle, orig, ident, place, raw)', '        let hp = -1')],
     "held: append and truncate do not hold their array": [('        let hp = heldPush(r0, aVia, aOrig, aIdent, aPlace, aRaw)', '        let hp = -1')],
-    "held: plain assignments do not hold their target": [('            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            let y = tailExpr()', '            let y = tailExpr()')],
-    "held: compound assignments do not hold their target": [('            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            var y = tailExpr()', '            var y = tailExpr()')],
+    "held: plain assignments do not hold their target": [('            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            var y = tailExpr()\n            pinned = savedPin\n            checkAssign(dtype, y, "assignment")\n', '            var y = tailExpr()\n            pinned = savedPin\n            checkAssign(dtype, y, "assignment")\n')],
+    "held: compound assignments do not hold their target": [('            if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }\n            var y = tailExpr()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n', '            var y = tailExpr()\n            pinned = savedPin\n            checkTargetAcrossCall(x, xs, r0, callsBefore, line, col)\n')],
     "held: reference places ignore the binding's path": [('            let p = heldAt(b, i, raw, r)\n            if o == handleSym {\n                heldAdd(nil, true, false, "")', '            let p = raw\n            if o == handleSym {\n                heldAdd(nil, true, false, "")')],
     # loop inversion: a while loop's condition moves after its body, and each kind of position it holds must move
     # with it (tests/run/loop_inversion.obx)

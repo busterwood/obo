@@ -199,6 +199,7 @@ SEED_FILE_MIN = {
     os.path.join(FORK, 'tests', 'run', 'ifaces_borrowed.obx'): (0, 8),
     os.path.join(FORK, 'tests', 'run', 'ifaces_b1_loop.obx'): (0, 8),
     os.path.join(FORK, 'tests', 'run', 'ifaces_refs.obx'): (0, 8),
+    os.path.join(FORK, 'tests', 'run', 'ifaces_homes.obx'): (0, 8),
     os.path.join(FORK, 'tests', 'errors', 'ifaces_decl.obx'): (0, 8),
     os.path.join(FORK, 'tests', 'errors', 'ifaces_tiers.obx'): (0, 8),
     os.path.join(FORK, 'tests', 'errors', 'ifaces_impl_mismatch.obx'): (0, 8),

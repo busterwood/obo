@@ -156,7 +156,10 @@ Live peak varies by a few hundred bytes with the source path and total
 allocation by about 1.9 KB. The table records the main-tree figures (1,728,768
 live and 38,752,320 allocated); a longer worktree path measures 1,728,928
 live and 38,754,208 allocated. Both are far under the
-2,000,000-byte budget. P3's four
+2,000,000-byte budget. On the interfaces v3 branch (0.8 / format 4, final review
+and seed promotion pending) the source is 12,056 lines / 454,332 bytes and the
+self-compile peak is 1,945,648 bytes live (1,945,952 in the port comparison),
+about 54 KB under the unchanged budget; `seed/obo` remains 0.6. P3's four
 builtin branches raised the peak by 6,240 bytes from 1,636,176, well inside the cut order of design section 6.8; P5a's
 two builtin branches and the longer compiler source raised it by 3,008 more,
 P6a's terminal-size branch brought the main-tree figure to 1,646,816, and P7's
@@ -224,7 +227,8 @@ coreutils-shaped `cat`, `wc` and `sort`; then `eza` (the maintained exa fork), `
 | 4. Multiple modules | done: Stage 1 source imports, Stage 2 `.sym`/`--check`; the tools and their libraries are module roots |
 | 5. Stdlib modules and the `eza` core | done: the ten `lib/` modules (P3's `fs`, P5a's `env`), the `eza` core E0/E1/E2 (lines/long, colour/tree, grid/UTF-8/lossy names) and the `wc`/`sort` performance work, with their differential gates |
 | 6. Methods | done: `fn (r: T\|&T\|mut &T) name(...)`, `place.name(args)`, static dispatch, receiver ownership, module/`.sym` support (0.6) |
-| 6a. Interfaces and lambdas | planned |
+| 6a. Interfaces | done: owning `I`/`?I`, borrowed `&I`/`&?I`, dispatch, effect tiers, globals; compiler 0.8, symbol format 4 (seed promotion after final review) |
+| 6b. Lambdas | planned: Stage A 0.9, Stage B 0.10, symbol format 5; `^I` follows Stage B |
 | 7. Peephole/optimizer audit | evidence-gated |
 | 8. More tools: `fd`, `hexyl`, `tokei`, `jq` | later |
 
@@ -336,8 +340,8 @@ In order:
    retired to `obo/legacy/`.
 6. **Then the language again**: modules (done: source imports, `pub`,
    `alias::name`, `--deps`, `.sym` symbol files, `--check` and separate checking),
-   methods (done in 0.6), interfaces, and the rest of the list under "Not yet
-   done", each designed to fit the single pass and the ownership model.
+   methods (done in 0.6), interfaces (done in 0.8), and the rest of the list under
+   "Not yet done" (lambdas next), each designed to fit the single pass and the ownership model.
 
 **How we will know it worked:** the compiler uses clearly less memory than a tuned
 collector, at the same speed; the port reads like ordinary code; and every error
@@ -640,8 +644,10 @@ reaches a fixed point compiling itself.
 
 ## Not yet done
 
-Interfaces, lambdas, generic
-modules, value records, inout parameters, a `>>>` logical shift, and debug info. Each was designed earlier
+Interfaces are implemented in 0.8 (owning and borrowed values, dispatch and effect tiers; see
+`obo/LANGUAGE.md` §5b). Lambdas (Stage A 0.9, Stage B 0.10), generic
+modules, value records, inout parameters, `^I` after lambda Stage B, a `>>>` logical shift, and debug info are
+not yet done. Each was designed earlier
 to fit the single pass. Also: effect summaries for functions that call each other through
 forward headings.
 

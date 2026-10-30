@@ -13,6 +13,7 @@ type Named = interface {
 type Square = ref record { s: int; label: string }
 type Circle = closed { Round { r: int }; Flat { w: int; h: int } }
 type Holder = ref record { d: Shape; maybe: ?Shape; items: []Shape; r: Result[Shape] }
+type Maybe = ref record { o: ?Square }
 
 fn (q: &Square) area(): int { return q.s * q.s }
 impl Shape for Square
@@ -45,6 +46,25 @@ fn pick(o: ?Shape): ?Shape {
 
 fn sink(s: Shape) {
     let t = s
+}
+
+// the 5.3 idiom for a stored ?T: narrow a taken local, then move it into a typed Shape. The nil case leaves
+// the block, and the other arm drops the local, so the optional local is consumed on every path.
+fn narrowEarly(h: Maybe): int {
+    let t = take(h.o)
+    if t == nil { return 0 }
+    let s: Shape = t
+    return s.area()
+}
+
+fn narrowElse(h: Maybe, mut out: &[]Shape) {
+    let t = take(h.o)
+    if t != nil {
+        let s: Shape = t
+        append(out, s)
+    } else {
+        drop(t)
+    }
 }
 
 fn main() {
@@ -105,5 +125,17 @@ fn main() {
     let ns = new Square{s: 8, label: "ns"}
     append(h.items, ns)
     println(len(h.items))                               // expect: 4
+
+    // R4: a closed value borrowed as &I uses the parent's implementation, and the 5.3 idiom has its early
+    // return and else-drop shapes
+    let cv: Circle = new Round{r: 4}
+    let cvd: &Shape = &cv
+    println(cvd.area())                                 // expect: 48
+    println(narrowEarly(new Maybe{o: new Square{s: 3, label: "n"}}))  // expect: 9
+    println(narrowEarly(new Maybe{o: nil}))             // expect: 0
+    let out = new []Shape(0)
+    narrowElse(new Maybe{o: new Square{s: 4, label: "e"}}, &out)
+    narrowElse(new Maybe{o: nil}, &out)
+    println(len(out), " ", out[0].area())               // expect: 1 16
     println("done")                                      // expect: done
 }
