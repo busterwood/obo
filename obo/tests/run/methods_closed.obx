@@ -1,0 +1,45 @@
+// Methods (design §8.1): methods on a closed type, called through a Shape-typed
+// local, through a variant value (one parent step), with a body that matches the
+// receiver, and with both & and owned receivers.
+type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
+
+fn (s: &Shape) area(): int {
+    match s {
+        Circle { return 3 * s.r * s.r }
+        Rect { return s.w * s.h }
+    }
+}
+fn (s: Shape) takeArea(): int {
+    match s {
+        Circle { return 3 * s.r * s.r }
+        Rect { return s.w * s.h }
+    }
+}
+fn (s: &Shape) name(): string {
+    match s {
+        Circle { return "circle" }
+        Rect { return "rect" }
+    }
+}
+
+fn main() {
+    let s: Shape = new Circle{r: 2}
+    println(s.area())                 // expect: 12
+    match s {
+        Circle { println(s.area()) }  // expect: 12
+        Rect { println(0) }
+    }
+    match s {
+        Circle { println(s.name()) }  // expect: circle
+        Rect { println("other") }
+    }
+    let c = new Circle{r: 3}
+    println(c.area())                 // expect: 27
+    let q: Shape = new Rect{w: 2, h: 5}
+    println(q.area())                 // expect: 10
+    // owned closed receivers, on a closed local and on a variant value
+    let t: Shape = new Rect{w: 1, h: 4}
+    println(t.takeArea())             // expect: 4
+    let v = new Circle{r: 1}
+    println(v.takeArea())             // expect: 3
+}

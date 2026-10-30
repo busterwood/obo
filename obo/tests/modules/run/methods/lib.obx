@@ -1,0 +1,16 @@
+module lib
+
+pub type Builder = ref record { items: []string; n: int }
+
+pub fn make(): Builder { return new Builder{items: new []string(0), n: 0} }
+pub fn (b: &Builder) count(): int { return b.n }
+pub fn (b: &Builder) at(i: int): string { return b.items[i] }
+pub fn (mut b: &Builder) add(s: string) {
+    append(b.items, s)
+    b.n += 1
+}
+pub fn (mut b: &Builder) clear() {
+    b.items = new []string(0)
+    b.n = 0
+}
+pub fn (b: Builder) freeze(): int { return b.n }

@@ -103,7 +103,7 @@ MUTANTS = {
     "self-call suspects not marked": [("        if v.isRefLocal && v.refDeep && !v.moved { v.suspect = true }",
                                        "        if false { v.suspect = true }")],
     # a use of a suspect reference is not noted
-    "suspect uses not noted": [("    if s.suspect && (!target || path != \"\") {", "    if false {")],
+    "suspect uses not noted": [("    if s.suspect && (!target || path != \"\" || isCall) {", "    if false {")],
     # pointing a suspect reference elsewhere does not end its suspicion
     "re-pointing keeps suspicion": [("            xs.suspect = false\n", "")],
     # a loop with a recursive call is not checked for references used before the call on the next iteration
@@ -220,7 +220,7 @@ MUTANTS = {
     # with it (tests/run/loop_inversion.obx)
     "inverted loop: calls out of the condition not adjusted": [("        putRel(farCalls[k], getRel(farCalls[k]) - d)\n", "")],
     "inverted loop: calls out of the condition not recorded at the new place": [("        farCalls[k] += d\n", "")],
-    "inverted loop: waiting calls in the condition not adjusted": [("append(curModule.globals[waitFn[k]].fnRec.fixups, waitAt[k] + d)", "append(curModule.globals[waitFn[k]].fnRec.fixups, waitAt[k])")],
+    "inverted loop: waiting calls in the condition not adjusted": [("append(waitFn[k].fnRec.fixups, waitAt[k] + d)", "append(waitFn[k].fnRec.fixups, waitAt[k])")],
     "inverted loop: a nested loop lifts its outer loop's waiting calls": [("    let waitFrom = len(waitFn)\n", "    let waitFrom = 0\n")],
     "inverted loop: waiting calls in the condition not lifted": [("        if fwdCalls != fwdFrom {", "        if false {")],
     "inverted loop: links of the true and false lists not adjusted": [("        putRel(at, nxt)\n        at = nxt\n", "        putRel(at, nxt - d)\n        at = nxt\n")],
@@ -310,6 +310,7 @@ from mutate_fork import ARG_ORDER_MUTANTS  # noqa: E402
 MUTANTS.update({k: [v] for k, v in ARG_ORDER_MUTANTS.items() if k not in FORK_EQUIVALENT})
 # a handle's object freed by an assignment over, or a drop of, its owner: the cases of handle_frees.obx
 from mutate_fork import HANDLE_FREE_MUTANTS  # noqa: E402
+from mutate_fork import METHOD_MUTANTS  # noqa: E402
 from mutate_fork import FP_MUTANTS, REF_PATH_MUTANTS, MOVE_MUTANTS, FIELD_MUTANTS  # noqa: E402
 # the I/O builtins: the port compiles the run and error I/O cases (and, for the
 # two module-root programs, the imported library modules), so these compiler
@@ -326,6 +327,7 @@ MUTANTS.update({k: [v] for k, v in MOVE_MUTANTS.items() if k not in FORK_EQUIVAL
 # handles made from a field or an element of an owned local (errors/field_origins.obx, run/field_origins*.obx)
 MUTANTS.update({k: [v] for k, v in FIELD_MUTANTS.items() if k not in FORK_EQUIVALENT})
 MUTANTS.update({k: [v] for k, v in HANDLE_FREE_MUTANTS.items() if k not in FORK_EQUIVALENT})
+MUTANTS.update({k: [v] for k, v in METHOD_MUTANTS.items() if k not in FORK_EQUIVALENT})
 
 
 # register allocation (FORK.md, Phase 2). A home is r12 to r15, taken out of the free list while its local is in
@@ -362,7 +364,7 @@ MUTANTS.update({
     # second records again, the checker being the same
     "retry: locals' registers not given up": [("    if len(free) == 0 && homeBits != 0 { giveUpHomes() }\n", "")],
     "retry: code not rewound": [("        truncCode(f.addr)\n        for gi in 0..len(curModule.globals) {", "        for gi in 0..len(curModule.globals) {")],
-    "retry: waiting calls of the first pass kept": [("                while len(fr.fixups) > 0 && fr.fixups[len(fr.fixups) - 1] >= f.addr { truncate(fr.fixups, len(fr.fixups) - 1) }\n", "")],
+    "retry: waiting calls of the first pass kept": [("                let fr = g.fnRec\n                while len(fr.fixups) > 0 && fr.fixups[len(fr.fixups) - 1] >= f.addr { truncate(fr.fixups, len(fr.fixups) - 1) }\n", "                let fr = g.fnRec\n")],
     "retry: argument holders of the first pass kept": [("        truncate(argTemps, tempMark)\n        truncate(symArena, symMark)\n        return true", "        truncate(symArena, symMark)\n        return true")],
     "retry: free list left as the first pass had it": [("    homeBits = 0\n    setFree(0)                          // the registers in pool order: a function starts as the one before it did not leave them\n", "    homeBits = 0\n")],
     "retry: scanner not rewound": [("        pos = sPos\n", "")],

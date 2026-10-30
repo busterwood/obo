@@ -1,0 +1,27 @@
+// Methods (design §8.1): methods named len, main and push beside a top-level
+// function push and the builtin len; a method whose name is another type's
+// field; a receiver declared through an alias spelling. (A receiver named 'mut'
+// cannot be parsed: the optional mode word is consumed first; that is the same
+// lexical limitation parameters have, and no test can spell it.)
+type A = ref record { n: int }
+type B = ref record { n: int; push: int }
+type Alias = A
+
+fn push(x: int): int { return x + 1 }
+fn (a: &A) push(x: int): int { return a.n + x }
+fn (a: &A) len(): int { return a.n }
+fn (a: &A) main(): int { return 9 }
+fn (a: &Alias) viaAlias(): int { return a.n }
+
+fn main() {
+    let a = new A{n: 10}
+    let b = new B{n: 20, push: 30}
+    println(push(1))                  // expect: 2
+    println(a.push(2))                // expect: 12
+    println(a.len())                  // expect: 10
+    println(10)                       // expect: 10
+    println(a.main())                 // expect: 9
+    println(a.viaAlias())             // expect: 10
+    println(b.push)                   // expect: 30
+    println(len("abc"))               // expect: 3
+}

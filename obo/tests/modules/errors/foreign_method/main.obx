@@ -1,0 +1,4 @@
+module main
+import "lib.obx"
+fn (t: &lib::T) bad(): int { return t.v }
+fn main() { }

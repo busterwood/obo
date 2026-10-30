@@ -1,0 +1,30 @@
+// Methods (design §8.1): a mut receiver that writes scalars and appends (a
+// reference into the receiver stays valid across the call), called on a let
+// local; a non-mutating & method; a mut method on an array element.
+type Bag = ref record { items: []int; n: int }
+
+fn (mut b: &Bag) add(v: int) {
+    append(b.items, v)
+    b.n += 1
+}
+fn (mut b: &Bag) setn(v: int) { b.n = v }
+fn (b: &Bag) lenv(): int { return b.n }
+
+fn main() {
+    let b = new Bag{items: new []int(0), n: 0}
+    append(b.items, 4)
+    let r = &b.items
+    b.add(5)
+    println(r[0])                     // expect: 4
+    println(b.lenv())                 // expect: 1
+    b.setn(8)
+    println(r[0])                     // expect: 4
+    println(b.lenv())                 // expect: 8
+    let xs = new []Bag(0)
+    append(xs, new Bag{items: new []int(0), n: 0})
+    xs[0].setn(7)
+    println(xs[0].lenv())             // expect: 7
+    let e = &xs[0]
+    e.setn(9)
+    println(e.lenv())                 // expect: 9
+}

@@ -1,0 +1,6 @@
+module main
+import "lib.obx"
+fn main() {
+    let b = new lib::Builder{n: 4}
+    println(b.main())                 // expect: 5
+}

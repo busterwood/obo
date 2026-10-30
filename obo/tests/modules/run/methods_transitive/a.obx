@@ -1,0 +1,3 @@
+module a
+import "l.obx"
+pub fn make(v: int): l::T { return new l::T{v: v} }

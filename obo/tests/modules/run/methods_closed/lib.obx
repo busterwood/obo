@@ -1,0 +1,11 @@
+module lib
+
+pub type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
+
+pub fn (s: &Shape) area(): int {
+    match s {
+        Circle { return 3 * s.r * s.r }
+        Rect { return s.w * s.h }
+    }
+}
+pub fn makeCircle(r: int): Shape { return new Circle{r: r} }

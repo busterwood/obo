@@ -275,8 +275,8 @@ DEFER_USE_MUTANTS = {
     # a break or continue leaves to a block above the function's own (a return runs the defers down to fnBlock)
     "defer uses not checked at a break or continue": ("    while i >= downTo {\n        callDefers(i)\n",
                                                       "    while i >= downTo {\n        if downTo == fnBlock { callDefers(i) } else {\n            var mD = len(blocks[i].defers) - 1\n            while mD >= 0 {\n                callLocal(blocks[i].defers[mD])\n                replayFrees(i, mD)\n                mD -= 1\n            }\n        }\n"),
-    "defer uses not checked at a return without a value": ("        if sym != T_SEMI && sym != T_RBRACE { error(f.name + \" does not return a value\") }\n        runDefers(fnBlock)\n",
-                                                           "        if sym != T_SEMI && sym != T_RBRACE { error(f.name + \" does not return a value\") }\n" + unchecked_exit("fnBlock")),
+    "defer uses not checked at a return without a value": ("        if sym != T_SEMI && sym != T_RBRACE { error(callableName(f) + \" does not return a value\") }\n        runDefers(fnBlock)\n",
+                                                           "        if sym != T_SEMI && sym != T_RBRACE { error(callableName(f) + \" does not return a value\") }\n" + unchecked_exit("fnBlock")),
     "defer uses not checked at a return with a value": ("            release(x.r)\n            runDefers(fnBlock)\n",
                                                         "            release(x.r)\n" + unchecked_exit("fnBlock")),
     "a defer's uses are not recorded": ("        if inDefer && s.isRefLocal { noteDeferUse(s) }\n", ""),
@@ -347,9 +347,9 @@ MUTANTS.update(ORIGIN_MUTANTS)
 # releaseArgs); errors/arg_order.obx and run/arg_order.obx show them
 ARG_ORDER_MUTANTS = {
     'a reference argument is not held': ('            holdArg(b, i)\n', ''),
-    'no check after a reference argument': ('            argOrderCheck(tbase, fname, i, argLine, argCol)\n            holdArg(b, i)\n',
+    'no check after a reference argument': ('            argOrderCheck(tbase, fname, meth, i, argLine, argCol)\n            holdArg(b, i)\n',
         '            holdArg(b, i)\n'),
-    'no check after a by-value argument': ('            consume(a)\n            argOrderCheck(tbase, fname, i, argLine, argCol)\n',
+    'no check after a by-value argument': ('            consume(a)\n            argOrderCheck(tbase, fname, meth, i, argLine, argCol)\n',
         '            consume(a)\n'),
     'the holder pool never grows': ('    if argTempsUsed == len(argTemps) {\n', '    if argTempsUsed < 0 {\n'),
     'an argument holder is not a reference local': ('        s.isRefLocal = true\n        append(argTemps, s)\n',
@@ -357,22 +357,22 @@ ARG_ORDER_MUTANTS = {
     'an argument holder keeps its old binding': ('    t.bind = b\n    t.suspect = false\n', '    t.suspect = false\n'),
     'an argument holder keeps its old suspicion': ('    t.suspect = false\n    t.value = i\n', '    t.value = i\n'),
     'an argument holder keeps its old index': ('    t.value = i\n    append(ownedLocals, t)\n', '    append(ownedLocals, t)\n'),
-    'a freed argument is not refused': ('        if t.moved {\n            errorAt("argument "', '        if false {\n            errorAt("argument "'),
-    'a suspect argument is not noted': ('        if t.suspect {\n            notePending(line, col, "argument "',
-        '        if false {\n            notePending(line, col, "argument "'),
+    'a freed argument is not refused': ('        if t.moved {\n            errorAt(argLabel', '        if false {\n            errorAt(argLabel'),
+    'a suspect argument is not noted': ('        if t.suspect {\n            notePending(line, col, argLabel',
+        '        if false {\n            notePending(line, col, argLabel'),
     'the check reaches the holders of enclosing calls': ('    for k in tbase..argTempsUsed {\n        let t = argTemps[k]\n',
         '    for k in 0..argTempsUsed {\n        let t = argTemps[k]\n'),
-    'only the newest holder is refused': ('        if t.moved {\n            errorAt("argument "',
-        '        if t.moved && k == argTempsUsed - 1 {\n            errorAt("argument "'),
+    'only the newest holder is refused': ('        if t.moved {\n            errorAt(argLabel',
+        '        if t.moved && k == argTempsUsed - 1 {\n            errorAt(argLabel'),
     'argument holders are not reused': ('    argTempsUsed = tbase\n    truncate(ownedLocals, omark)\n', '    truncate(ownedLocals, omark)\n'),
     'argument holders stay live after the call': ('    argTempsUsed = tbase\n    truncate(ownedLocals, omark)\n', '    argTempsUsed = tbase\n'),
     "a call's holders are not released": ('    releaseArgs(tbase, omark)\n    if sym != T_RPAREN', '    if sym != T_RPAREN'),
     "a function's argument holders outlive it": ('    truncate(bindArena, bindMark)\n    truncate(argTemps, tempMark)\n', '    truncate(bindArena, bindMark)\n'),
     "writeFile's bytes are not held": ('        holdArg(itemBind(d), 1)\n', ''),
     "writeFile's bytes are held as another argument": ('        holdArg(itemBind(d), 1)\n', '        holdArg(itemBind(d), 0)\n'),
-    "writeFile's flag is not checked": ('        argOrderCheck(tbase, name, 2, eLine, eCol)\n', ''),
-    "writeFile's holder is not released": ('        argOrderCheck(tbase, name, 2, eLine, eCol)\n        releaseArgs(tbase, omark)\n',
-        '        argOrderCheck(tbase, name, 2, eLine, eCol)\n'),
+    "writeFile's flag is not checked": ('        argOrderCheck(tbase, name, false, 2, eLine, eCol)\n', ''),
+    "writeFile's holder is not released": ('        argOrderCheck(tbase, name, false, 2, eLine, eCol)\n        releaseArgs(tbase, omark)\n',
+        '        argOrderCheck(tbase, name, false, 2, eLine, eCol)\n'),
 }
 MUTANTS.update(ARG_ORDER_MUTANTS)
 
@@ -644,7 +644,7 @@ MODULE_MUTANTS = {
     "modules: B7 alias key overwrites the shared type": ("        let t = parseType()                      // an alias key: it maps to this object; it never names it (B7)\n",
                                                           "        let t = parseType()                      // an alias key: it maps to this object; it never names it (B7)\n        t.owner = curModuleName\n"),
     "modules: _root accepted in a dependency": ("        if !isRoot && mod.name == \"_root\" {", "        if false {"),
-    "modules: main in a dependency allowed": ("    if name == \"main\" && !curModule.isRoot {", "    if false {"),
+    "modules: main in a dependency allowed": ("    if !isMethod && name == \"main\" && !curModule.isRoot {", "    if false {"),
     "modules: pub inside a function accepted": ("        T_PUB { error(\"'pub' is only allowed on top-level declarations\") }", "        T_PUB { next() }"),
     "modules: pub import accepted": ("            if sym == T_IMPORT { errorAt(\"'pub' applies to declarations, not imports\", pline, pcol) }",
                                      "            if false { errorAt(\"'pub' applies to declarations, not imports\", pline, pcol) }"),
@@ -795,9 +795,9 @@ SYM_MUTANTS = {
     symMode = savedSymMode"""),
     "sym: imported function is a forward heading": ("        f.addr = 0                                    // known: a complete imported summary, never a forward heading",
                                                      "        f.addr = -1"),
-    "sym: imported pfree dropped": ("        f.fnRec.pfree = low", "        f.fnRec.pfree = 0"),
-    "sym: imported parameter modes dropped": ("            append(f.fnRec.pmodes, pmodes[k])",
-                                              "            append(f.fnRec.pmodes, 0)"),
+    "sym: imported pfree dropped": ("\n        f.fnRec.pfree = low\n", "\n        f.fnRec.pfree = 0\n"),
+    "sym: imported parameter modes dropped": ("\n            append(f.fnRec.pmodes, pmodes[k])\n",
+                                              "\n            append(f.fnRec.pmodes, 0)\n"),
     "sym: imported freed keys dropped": ("""        for k in 0..len(freedOwners) {
             append(f.fnRec.freed, globalSym(freedOwners[k], freedNames[k]))
         }""",
@@ -891,6 +891,10 @@ MUTANTS.update(MODULE_MUTANTS)
 
 # mutants that survive by design: each removes a test that is redundant, so the behaviour is unchanged
 EQUIVALENT = {
+    "methods: closureSeen is not truncated per method": "equivalent: only a local named type that is not exported is an error in closureCheck, and it errors the first time it is seen, so sharing closureSeen across methods cannot suppress an error; a foreign type is marked seen and skipped, and an anonymous type has no name to check. Truncating per method keeps the visit set small and matches the function loop; it is not observable",
+    "methods: the mode-0 method order check is dropped": "equivalent: a full build writes the dependency's .sym and reads it immediately (compileUnit then parseImport), so no test can interpose a file with a different method order; the writer's own order is checked by the golden and round-trip tests",
+    "methods: the mode-0 missing method check is dropped": "equivalent for the same reason: only a hand-supplied .sym could omit a live exported method, and a full build reads the file it just wrote; --check does not run the mode-0 comparison",
+    "methods: the mode-0 method signature check is dropped": "equivalent for the same reason: a full build compares its own freshly written signature with the live one; a forged file is only ever shown to --check, which trusts it by design (the .sym trust model)",
     "a closed block's defer handles stay": "equivalent since origins per path: originFree finds the handles of a defer through originSyms, which a closed block drops, and a handle compares by generation, so a stale deferH entry never equals a later entry",
     "a loop does not restore the live marks from before it": "equivalent since loopOriginPend tests the live mark: a move of the owner in a loop, with the handle declared outside it and live at the move, is refused if the loop names the handle and otherwise sets movedLoop, which refuses naming it after the loop (errors/origin_paths.obx, the zero-trip loop after a moving return arm, is refused that way); a handle declared inside is gone at the loop's end; so the live mark after the loop is never read",
     "a defer body is checked against a binding that is not the same place": "equivalent: a reference that a defer body uses may not be pointed elsewhere while the defer is declared (deferUses), so the binding at the block's end is the one the defer was declared with, and the two are covered either way",
@@ -1198,6 +1202,125 @@ SIZE_MUTANTS = {
 }
 MUTANTS.update(SIZE_MUTANTS)
 
+
+METHOD_MUTANTS = {
+    "methods: an owned receiver is not consumed": (
+        "        } else {\n            consume(a)\n            argOrderCheck(tbase, fname, meth, i, argLine, argCol)\n        }\n",
+        "        } else {\n            if i > 0 { consume(a) }\n            argOrderCheck(tbase, fname, meth, i, argLine, argCol)\n        }\n"),
+    "methods: an owned receiver through a handle is allowed": (
+        "        if m.fnRec.pmodes[0] == 0 && recv.viaHandle && recv.mode == \"reg\" {\n",
+        "        if false {\n"),
+    "methods: every receiver is read-only": (
+        "    if isMethod { append(params, new Param{name: recvName, typ: recvType, mode: recvMode}) }\n",
+        "    if isMethod { append(params, new Param{name: recvName, typ: recvType, mode: 1}) }\n"),
+    "methods: a mut receiver's writability is not checked": (
+        "            if f.fnRec.pmodes[i] == 2 && !b.writable {\n",
+        "            if false {\n"),
+    "methods: the receiver is not parameter 0": (
+        "    if isMethod { append(params, new Param{name: recvName, typ: recvType, mode: recvMode}) }\n",
+        "    if false { append(params, new Param{name: recvName, typ: recvType, mode: recvMode}) }\n"),
+    "methods: the receiver is not held across later arguments": (
+        "            argOrderCheck(tbase, fname, meth, i, argLine, argCol)\n            holdArg(b, i)\n",
+        "            argOrderCheck(tbase, fname, meth, i, argLine, argCol)\n            if i > start { holdArg(b, i) }\n"),
+    "methods: a mut receiver's invalidation is dropped": (
+        "        if argModes[i] == 2 && mutFrees(f, argIdx[i]) {\n",
+        "        if argModes[i] == 2 && argIdx[i] != 0 && mutFrees(f, argIdx[i]) {\n"),
+    "methods: the writer omits the receiver summary": (
+        "    if f.fnRec.pfree != 0 {\n",
+        "    if f.fnRec.pfree != 0 && !isMethod(f) {\n"),
+    "methods: the receiver is not finalized": (
+        "    if x.sym == nil && root != nil {\n        x.root = root\n",
+        "    if x.sym == nil && root != nil && !isCall {\n        x.root = root\n"),
+    "methods: isCall does not mark a receiver read": (
+        "    if s.isRefLocal && (!target || path != \"\" || isCall) {        // a read, not a re-pointing: see loopBindCheck\n",
+        "    if s.isRefLocal && (!target || path != \"\") {        // a read, not a re-pointing: see loopBindCheck\n"),
+    "methods: a method call has no value": (
+        "    if isCall { return methodCall(x, callName, callLine, callCol) }\n",
+        "    if isCall {\n        methodCall(x, callName, callLine, callCol)\n        return voidItem()\n    }\n"),
+    "methods: the owned-handle test uses path": (
+        "        if m.fnRec.pmodes[0] == 0 && recv.viaHandle && recv.mode == \"reg\" {\n",
+        "        if m.fnRec.pmodes[0] == 0 && recv.viaHandle && recv.path == \"\" {\n"),
+    "methods: the field-call check is dropped": (
+        "    if t.kind == \"record\" && fieldIndex(t, name) >= 0 {\n",
+        "    if false {\n"),
+    "methods: the while lift ignores method fixups": (
+        "                if m.owner == curModuleName && m.addr < 0 {\n",
+        "                if false {\n"),
+    "methods: the retry cleanup ignores methods": (
+        "            if m.addr < 0 {\n",
+        "            if false {\n"),
+    "methods: fnBody names a method by its bare name": (
+        "    if isMethod { dname = methodDisplay(f) }\n",
+        "    if false { dname = methodDisplay(f) }\n"),
+    "methods: returnStat names a method by its bare name": (
+        "        if sym != T_SEMI && sym != T_RBRACE { error(callableName(f) + \" does not return a value\") }\n",
+        "        if sym != T_SEMI && sym != T_RBRACE { error(f.name + \" does not return a value\") }\n"),
+    "methods: tryExpr names a method by its bare name": (
+        "        errorAt(\"try needs a function that returns a Result; '\" + callableName(fr) + \"' returns \" + what, tl, tc)\n",
+        "        errorAt(\"try needs a function that returns a Result; '\" + fr.name + \"' returns \" + what, tl, tc)\n"),
+    "methods: the writer omits the method group": (
+        "        if m.owner == modName && m.exported { appMethod(b, m, modName) }\n",
+        "        if false { appMethod(b, m, modName) }\n"),
+    "methods: the writer emits private methods": (
+        "        if m.owner == modName && m.exported { appMethod(b, m, modName) }\n",
+        "        if m.owner == modName { appMethod(b, m, modName) }\n"),
+    "methods: lookup ignores the receiver type": (
+        "        if m.recv == t && m.name == name { return m }\n",
+        "        if m.name == name { return m }\n"),
+    "methods: the call visibility check is dropped": (
+        "    if t.owner != \"\" && t.owner != curModuleName && (m == nil || !m.exported) {\n",
+        "    if false {\n"),
+    "methods: the reader accepts any receiver type": (
+        "        if recvType.kind != \"record\" && recvType.kind != \"closed\" {\n",
+        "        if false {\n"),
+    "methods: a method/field collision is allowed": (
+        "    for i in 0..len(t.fields) {\n        if t.fields[i].name == name {\n            error(\"type '\" + tname(t) + \"' already has a field '\" + name + \"'; a method cannot have the same name\")\n        }\n    }\n",
+        "    for i in 0..len(t.fields) {\n        if false {\n            error(\"type '\" + tname(t) + \"' already has a field '\" + name + \"'; a method cannot have the same name\")\n        }\n    }\n"),
+    "methods: a forward heading's signature is ignored": (
+        "                for i in 0..len(params) {\n                    if !same(f.fnRec.params[i], params[i].typ) || f.fnRec.pmodes[i] != params[i].mode { ok = false }\n                }\n            }\n            if !ok { error(\"method '\" + methodKey(prior) + \"' does not match its forward heading\") }\n",
+        "                for i in 0..len(params) {\n                }\n            }\n            if !ok { error(\"method '\" + methodKey(prior) + \"' does not match its forward heading\") }\n"),
+    "methods: the module-end method heading check is dropped": (
+        "\n        if m.owner == curModuleName && m.addr < 0 {\n",
+        "\n        if false {\n"),
+    "methods: checkExports skips methods": (
+        "        if m.owner == curModuleName && m.exported {\n            truncate(closureSeen, 0)\n",
+        "        if false {\n            truncate(closureSeen, 0)\n"),
+    "methods: closureSeen is not truncated per method": (
+        "        if m.owner == curModuleName && m.exported {\n            truncate(closureSeen, 0)\n            for p in 0..len(m.fnRec.params)",
+        "        if m.owner == curModuleName && m.exported {\n            for p in 0..len(m.fnRec.params)"),
+    "methods: the reader's main check is not gated on a method": (
+        "    if !isMethod && name == \"main\" {\n",
+        "    if name == \"main\" {\n"),
+    "methods: the reader drops a mut receiver's mode": (
+        "        if pmut {\n            if !isref { error(\"mut needs a reference parameter: write mut p0: &T\") }\n            recvMode = 2\n        } else if isref {\n",
+        "        if pmut {\n            if !isref { error(\"mut needs a reference parameter: write mut p0: &T\") }\n            recvMode = 1\n        } else if isref {\n"),
+    "methods: the writer drops a mut receiver's mode": (
+        "    if f.fnRec.pmodes[0] == 2 { appStr(b, \"mut \") }\n",
+        "    if false { appStr(b, \"mut \") }\n"),
+    "methods: the format check accepts any format": (
+        "    if fmt != SYM_FORMAT {\n",
+        "    if false {\n"),
+    "methods: a method call on a built-in type has no methods check": (
+        "    if t.kind != \"record\" && t.kind != \"closed\" { errorAt(tname(t) + \" has no methods\", dline, dcol) }\n",
+        "    if false { errorAt(tname(t) + \" has no methods\", dline, dcol) }\n"),
+    "methods: the method-value message is dropped": (
+        "                if mv != nil && (mv.owner == curModuleName || mv.exported) {\n                    error(\"method '\" + methodDisplay(mv) + \"' cannot be used as a value: call it with '(' after its name\")\n                }\n",
+        "                if mv != nil && (mv.owner == curModuleName || mv.exported) {\n                }\n"),
+    "methods: a handle receiver may go to a freeing method": (
+        "            if b.roots[p] == handleSym && !pureFn(f) {\n",
+        "            if b.roots[p] == handleSym && !pureFn(f) && false {\n"),
+    "methods: the mode-0 method order check is dropped": (
+        "    if !symSameList(symMethodOrder, liveMethods) { symDisagree(\"the method order\") }\n",
+        "    if false { symDisagree(\"the method order\") }\n"),
+    "methods: the mode-0 missing method check is dropped": (
+        "        if lm == nil { symDisagree(what) }\n",
+        "        if false { symDisagree(what) }\n"),
+    "methods: the mode-0 method signature check is dropped": (
+        "            if !same(lm.ret, ret) { symDisagree(what) }\n",
+        "            if false { symDisagree(what) }\n"),
+}
+
+MUTANTS.update(METHOD_MUTANTS)
 
 def mutation(src, name):
     """The mutant's source text, or (None, the stale-pattern message) when its

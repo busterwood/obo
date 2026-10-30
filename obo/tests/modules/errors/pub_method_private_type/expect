@@ -1,0 +1,2 @@
+exit 1
+stderr lib.obx:5:1: exported 'T::two' uses private type 'T'; mark 'T' pub too

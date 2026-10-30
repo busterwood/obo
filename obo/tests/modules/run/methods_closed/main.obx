@@ -1,0 +1,9 @@
+module main
+import "lib.obx"
+
+fn main() {
+    let s = lib::makeCircle(2)
+    println(s.area())                 // expect: 12
+    let c = new lib::Circle{r: 3}
+    println(c.area())                 // expect: 27
+}

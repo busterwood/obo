@@ -1,0 +1,41 @@
+// Methods (design §8.1): a method with enough register pressure to exercise the
+// homeRetry path while calling a forward-headed method, so the retry's fixup
+// cleanup (which must scan methodSyms) covers methods. The call is inside the
+// hot loop: a stale fixup left behind by the discarded first pass would corrupt
+// code the second pass executes.
+type P = ref record { x: int; y: int }
+
+var ga = new []int(0)
+var gp = new P{x: 1, y: 2}
+var gps = new []P(0)
+
+fn (h: &P) later(): int
+
+fn (h: &P) heavy(n: int): int {       // out of registers with locals in them: compiled again with none
+    var v = 1
+    var i = 0
+    var u = 2
+    var w = 3
+    while i < n {
+        v += i; u += v; w += u; v += w; u += i; w += v; v += u; w += i; u += w
+        let k = h.later()
+        v += k
+        i += 1
+    }
+    ga[i & 3] = gps[i & 1].x + gp.x * ga[i & 3]
+    ga[i & 3] += gps[i & 1].x + gp.x * ga[i & 3]
+    return v + u + w
+}
+
+fn (h: &P) later(): int { return h.x }
+
+fn main() {
+    append(ga, 1)
+    append(ga, 2)
+    append(ga, 3)
+    append(ga, 4)
+    append(gps, new P{x: 1, y: 2})
+    append(gps, new P{x: 3, y: 4})
+    let p = new P{x: 5, y: 6}
+    println(p.heavy(3))               // expect: 2538
+}

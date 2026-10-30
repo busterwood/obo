@@ -1,0 +1,39 @@
+// Methods (design §8.1): an owned receiver consumes a local (the leak check
+// proves the free), returns a new record, returns itself, extracts a field with
+// replace, and moves an owned parameter onward inside a method.
+type Builder = ref record { items: []string; n: int }
+type Frozen = ref record { items: []string; n: int }
+
+fn make(): Builder { return new Builder{items: new []string(0), n: 0} }
+
+fn (b: Builder) freeze(): Frozen {
+    let items = replace(b.items, new []string(0))
+    return new Frozen{items: items, n: b.n}
+}
+fn (b: Builder) self(): Builder { return b }
+fn (b: Builder) count(): int { return b.n }
+fn (b: Builder) destroy() { drop(b) }
+fn (b: Builder) onward(): int {
+    let c = b.self()
+    return c.count()
+}
+
+fn main() {
+    let a = make()
+    let fa = a.freeze()
+    println(fa.n)                     // expect: 0
+    var b = make()
+    b.n = 5
+    let fb = b.freeze()
+    println(fb.n)                     // expect: 5
+    var c = make()
+    c.n = 7
+    let d = c.self()
+    println(d.count())                // expect: 7
+    var e = make()
+    e.n = 9
+    println(e.onward())               // expect: 9
+    let f = make()
+    f.destroy()
+    println(1)                        // expect: 1
+}

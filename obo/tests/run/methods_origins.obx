@@ -1,0 +1,27 @@
+// Methods (design §8.1, B6): field-origin index 0. A let handle made from the
+// receiver's field survives a mut method that only appends and writes scalars;
+// a mut method that frees the field's array kills it (errors/methods).
+type Item = ref record { v: int }
+type Bag = ref record { items: []Item; n: int }
+
+fn (mut b: &Bag) add(): int {
+    append(b.items, new Item{v: 2})
+    b.n += 1
+    return b.n
+}
+fn (mut b: &Bag) scalar(): int {
+    b.n += 1
+    return b.n
+}
+
+fn main() {
+    let b = new Bag{items: new []Item(0), n: 0}
+    append(b.items, new Item{v: 1})
+    let h = handle(b.items[0])
+    println(h.v)                      // expect: 1
+    println(b.add())                  // expect: 1
+    println(h.v)                      // expect: 1
+    println(b.scalar())               // expect: 2
+    println(h.v)                      // expect: 1
+    println(len(b.items))             // expect: 2
+}
