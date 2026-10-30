@@ -54,8 +54,9 @@ and error case byte-for-byte as the first obo compiler did, and compiles itself 
 fixed point. Its stage test now compares behaviour (same errors, same output when run),
 so code generation can improve. Compiling
 its own source it peaked at 1.5 MB resident at the earlier stage (live peak now
-1,646,816 bytes on a 386,590-byte source; the 425,985-byte compiler takes
-0.11 s; see Current status), against 2.5 MB for the same logic on a tuned
+1,728,944 bytes on a 406,840-byte source; the 454,657-byte 0.6 compiler is
+built by the 0.5 seed in 0.4 s, and the self-compile wall time was 0.11 s for
+0.5; see Current status), against 2.5 MB for the same logic on a tuned
 collector and 1.9 MB on an
 aggressive one. The larger source and its extra checks account for the wall time.
 
@@ -65,7 +66,9 @@ Python compiler before it did.
 ## Performance
 
 These are one host's measurements, not portable constants: an AMD Ryzen 7
-8745HS under WSL2, CPython 3.12.3, GNU coreutils 9.4 and obo 0.5. The benchmark
+8745HS under WSL2, CPython 3.12.3, GNU coreutils 9.4 and obo 0.5. They are the
+historical 0.5 / sym-format 1 run: 0.6 adds methods (a compile-time feature with
+no runtime change), and the suite was not re-measured. The benchmark
 uses warm page cache, one pinned core, medians of repeated runs, timed output
 to `/dev/null`, `LC_ALL=C` and `TZ=UTC`; the command is
 `python3 obo/bench/cli/run.py` (add `--eza PATH`, or have a matching eza on
@@ -92,14 +95,17 @@ the runtime included. The honest shape of these numbers is in
 `wc -l` is at Python parity and behind GNU, eza is slower than Python and `ls`
 on names (its case is size and memory), and the sort rows are fixture-specific.
 
-## Current status (29 October 2026)
+## Current status (30 October 2026)
 
-The ownership compiler is merged and self-hosting. The promoted seed is the 0.5
-compiler: `obo/seed/obo` is 425,985 bytes (sha256 `05542e89…`, `--version`
-0.5), and `make` rebuilds `obo` from the current source with it (425,985 bytes,
-sha256 `05542e89…`). It trims the runtime data segment and uses `leave; ret`
-epilogues. `Result[T]`/`try` and incremental I/O are done (merged and seeded);
-modules are done in both stages (source imports and `.sym`/`--check`); the
+The ownership compiler is merged and self-hosting. The promoted seed is still the
+0.5 compiler: `obo/seed/obo` is 425,985 bytes (sha256 `05542e89…`, `--version`
+0.5), and `make` builds the 0.6 compiler from the current source with it
+(454,657 bytes, sha256 `8b9dfcc3…`). The 0.6 source adds methods; the 0.5 seed
+builds it because the compiler's own source remains in the 0.5 subset (no
+methods in `src/obo.obo`), and stage 2 == stage 3 is checked with `cmp`. The
+0.6 seed is promoted only after the independent review and merge.
+`Result[T]`/`try` and incremental I/O are done (merged and seeded); modules
+are done in both stages (source imports and `.sym`/`--check`); the
 command-line tools (`cat`, `wc`, `sort`) and their GNU differential gate are
 done and merged, with `wc` scanning only the requested columns and `sort` using
 a stable radix sort plus a numeric radix path for `-n`. P3 added the runtime
@@ -110,26 +116,30 @@ environment builtins (`isatty`, `getenv`), `lib/env.obx`, `io::isTty` and
 `OBO_VERSION` 0.4, and its seed was promoted. P6a added the terminal-size
 builtin `terminalWidth`, `io::termWidth` and `OBO_VERSION` 0.5; the 0.5
 compiler recomputes itself to the same 425,985-byte binary (`obo` == stage 2 ==
-stage 3, checked with `cmp`), and the 0.5 seed is promoted. P5b added the eza
-E1 work: the default colour palette with `--color`/`--colour`, `NO_COLOR` and
-the documented `LS_COLORS`/`EZA_COLORS` subset; `-T`/`--tree` and `-L`; and
+stage 3, checked with `cmp`), and the 0.5 seed is promoted. P7 (methods) adds
+receiver syntax `fn (r: T|&T|mut &T) name(...)`, `place.name(args)` calls,
+static dispatch, receiver ownership and module/symbol-file support, with
+`OBO_VERSION` 0.6 and symbol format 2 (ABI stays 1); this branch does not
+promote it. P5b added the eza E1 work: the default colour palette with
+`--color`/`--colour`, `NO_COLOR` and the documented `LS_COLORS`/`EZA_COLORS` subset; `-T`/`--tree` and `-L`; and
 `--no-quotes`. P6b added the eza E2 work: grid and width sources, UTF-8 widths
 and code-point order, and lossy non-UTF-8 display. The eza differential gate now
 measures 546/546 non-memory cases plus 5 memory cases against the pinned eza
-0.23.3.
+0.23.3. The methods compiler has 1,261 `run_fork` tests, 1,280/1,280 default
+Stage B cases and 1,060/1,060 against the 0.5 seed.
 
 | Metric | Value |
 |---|---:|
-| Compiler source | 10,527 lines, 386,590 bytes |
-| Compiler built by the seed (`obo`, `--version` 0.5) | 425,985 bytes (sha256 `05542e89…`) |
-| Stage 2 == stage 3 | 425,985 bytes, identical to the seed-built `obo` (checked with `cmp`) |
-| Promoted seed (`--version` 0.5) | 425,985 bytes (sha256 `05542e89…`) |
-| Self-compile wall time | 0.11 s (5 runs, median; 0.10-0.12 s on this host) |
-| Self-compile live peak | 1,646,816 bytes |
-| Total allocated | 35,353,648 bytes |
-| Maximum resident set | 2,976 KB (3 runs on this host) |
-| Live-memory budget | 2,000,000 bytes (353,184 spare) |
-| obo suite | 1,165 tests (`run_fork.py`); `port_compare` 1,182/1,182 (stage B) and 1,060/1,060 (against the seed); 48 doc examples; 26/26 import checks; 16/16 stdlib roots |
+| Compiler source | 11,016 lines, 406,840 bytes |
+| Compiler built by the seed (`obo`, `--version` 0.6) | 454,657 bytes (sha256 `8b9dfcc3…`) |
+| Stage 2 == stage 3 | 454,657 bytes, identical to the seed-built `obo` (checked with `cmp`) |
+| Promoted seed (`--version` 0.5) | 425,985 bytes (sha256 `05542e89…`; 0.6 is not promoted in this change) |
+| Self-compile wall time | 0.13 s (5 runs, median; 0.12-0.15 s under the gate load on this host) |
+| Self-compile live peak | 1,728,944 bytes |
+| Total allocated | 38,734,688 bytes |
+| Maximum resident set | 3,120 KB (3 runs on this host) |
+| Live-memory budget | 2,000,000 bytes (271,056 spare) |
+| obo suite | 1,261 tests (`run_fork.py`); `port_compare` 1,280/1,280 (stage B) and 1,060/1,060 (against the seed); 53 doc examples; 26/26 import checks; 16/16 stdlib roots; 30/30 symbol-file tests |
 | Tools differential gate | 280 checks vs GNU coreutils 9.4; 2 memory cases (module roots) |
 | Tool binaries | cat 40,961; wc 45,057; sort 69,633 bytes (static, runtime included) |
 | eza E2 differential gate | 546/546 non-memory cases (462 exact reference goldens, 72 live including 22 pty, 12 own) + 5 memory cases |
@@ -139,15 +149,15 @@ measures 546/546 non-memory cases plus 5 memory cases against the pinned eza
 | Minimal static executable | 28,673 bytes (runtime included) |
 
 Live peak varies by a few hundred bytes with the source path and total
-allocation by about 1.9 KB. The table records the figures measured on the main
-checkout (wall time and RSS on this host); a longer worktree path measures
-1,646,976 live and 35,355,568 allocated, both far under the 2,000,000-byte
-budget. P3's four builtin branches raised the peak by 6,240
-bytes from 1,636,176, well inside the cut order of design section 6.8; P5a's
+allocation by about 1.9 KB. The table records the figures measured in this
+worktree (1,728,944 live and 38,734,688 allocated), both far under the
+2,000,000-byte budget; the figure depends on the source path. P3's four
+builtin branches raised the peak by 6,240 bytes from 1,636,176, well inside the cut order of design section 6.8; P5a's
 two builtin branches and the longer compiler source raised it by 3,008 more,
-and P6a's terminal-size branch brought the main-tree figure to 1,646,816 (the
-figure depends on the compiler source path; the lib modules are not compiled
-into the compiler), still 353,184 under the budget, so no slot was cut. The
+P6a's terminal-size branch brought the main-tree figure to 1,646,816, and P7's
+methods brought it to 1,728,944 (the figure depends on the compiler source
+path; the lib modules are not compiled into the compiler), still 271,056 under
+the budget, so no slot was cut and the budget was not raised. The
 tools (P2b), eza and the `wc`/`sort` performance work did not change the
 compiler, runtime or seed; their runtime is included in the tool and eza
 binary sizes above. P4's eza gate was re-measured under
@@ -186,12 +196,13 @@ is not like for like; the memory result is the point: about 1.24 MB live against
 
 The earlier 12.1 MB allocation and 30 ms figures in "Direction" describe the smaller
 pre-Result, pre-I/O compiler. The source has grown from 4,552 lines at that stage to
-10,527; total allocation has grown with it, while the live peak stays within the 2 MB
+11,016; total allocation has grown with it, while the live peak stays within the 2 MB
 budget (the Stage 1 module context raised it from 1,244,480 bytes at the Phase 3
 merge to 1,364,240; Stage 2's symbol-file writer and reader raised it to 1,634,720,
 an increase of 270,480 bytes; the size fixes measure 1,636,176, P3's metadata
-builtins 1,642,416, P5a's environment builtins 1,645,424, and P6a's
-terminal-size builtin 1,646,816, still 353,184 bytes under the budget).
+builtins 1,642,416, P5a's environment builtins 1,645,424, P6a's
+terminal-size builtin 1,646,816, and P7's methods 1,728,944, still 271,056
+bytes under the budget).
 
 ### Toward command-line tools
 
@@ -207,7 +218,8 @@ coreutils-shaped `cat`, `wc` and `sort`; then `eza` (the maintained exa fork), `
 | 3. `cat`, `wc`, `sort` and the GNU differential gate | done |
 | 4. Multiple modules | done: Stage 1 source imports, Stage 2 `.sym`/`--check`; the tools and their libraries are module roots |
 | 5. Stdlib modules and the `eza` core | done: the ten `lib/` modules (P3's `fs`, P5a's `env`), the `eza` core E0/E1/E2 (lines/long, colour/tree, grid/UTF-8/lossy names) and the `wc`/`sort` performance work, with their differential gates |
-| 6. Methods, interfaces and lambdas | planned |
+| 6. Methods | done: `fn (r: T\|&T\|mut &T) name(...)`, `place.name(args)`, static dispatch, receiver ownership, module/`.sym` support (0.6) |
+| 6a. Interfaces and lambdas | planned |
 | 7. Peephole/optimizer audit | evidence-gated |
 | 8. More tools: `fd`, `hexyl`, `tokei`, `jq` | later |
 
@@ -319,8 +331,8 @@ In order:
    retired to `obo/legacy/`.
 6. **Then the language again**: modules (done: source imports, `pub`,
    `alias::name`, `--deps`, `.sym` symbol files, `--check` and separate checking),
-   methods and interfaces, and the rest of the list under "Not yet done", each
-   designed to fit the single pass and the ownership model.
+   methods (done in 0.6), interfaces, and the rest of the list under "Not yet
+   done", each designed to fit the single pass and the ownership model.
 
 **How we will know it worked:** the compiler uses clearly less memory than a tuned
 collector, at the same speed; the port reads like ordinary code; and every error
@@ -385,7 +397,7 @@ cd obo && python3 tests/tools.py --memory              # the two pinned tool mem
 cd obo && python3 bench/bench.py         # memory and time against the collector
 cd obo && ./obo --deps tests/modules/run/basic/main.obx -I tests/modules/run/basic  # dependencies first
 cd obo && mkdir -p /tmp/syms && ./obo --check src/obo.obo --sym-dir /tmp/syms        # check without an executable
-cd obo && ./obo --version                # obo 0.5 sym-format 1 abi 1
+cd obo && ./obo --version                # obo 0.6 sym-format 2 abi 1
 cd obo && ./obo --reemit-sym /tmp/syms/obo.sym   # canonical re-emission (test hook)
 # history: cd obx && make && ./run_tests.sh
 ```
@@ -490,7 +502,7 @@ Implemented:
   Dependencies compile first into one image, initialize once and free their own
   globals; a headerless root is `_root`.
 - Symbol files (`obo/LANGUAGE.md`, section 6): each module with a header writes a
-  text `Name.sym` (format `obosym 1`, ABI 1, compiler `0.5`, FNV-1a source,
+  text `Name.sym` (format `obosym 2`, ABI 1, compiler `0.6`, FNV-1a source,
   interface and dependency-interface hashes); importers read and validate it, and
   `--check SOURCE [--sym-dir DIR]` checks a module against symbol files alone,
   including source-less dependencies. `--emit-sym` writes a single-file root's
@@ -623,7 +635,7 @@ reaches a fixed point compiling itself.
 
 ## Not yet done
 
-Methods and interfaces, lambdas, generic
+Interfaces, lambdas, generic
 modules, value records, inout parameters, a `>>>` logical shift, and debug info. Each was designed earlier
 to fit the single pass. Also: effect summaries for functions that call each other through
 forward headings.

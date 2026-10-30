@@ -2,7 +2,9 @@
 
 This page records the final benchmark run of obo 0.5: the compiler, four small
 programs, and the `cat`, `wc`, `sort` and `eza` tools, compared with CPython
-3.12.3, GNU coreutils 9.4 and the pinned eza 0.23.3 reference. The suite is
+3.12.3, GNU coreutils 9.4 and the pinned eza 0.23.3 reference. It is a
+historical 0.5 / sym-format 1 sample: obo 0.6 adds methods (a compile-time
+feature with no runtime change) and this table was not re-measured. The suite is
 on-demand, not a gate; its source is `obo/bench/cli/`, and the command is:
 
 ```sh

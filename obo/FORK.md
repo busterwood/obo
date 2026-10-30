@@ -1304,8 +1304,9 @@ raised). Main's source alone measures 1,257,104 in the same way, so the merged r
 more than the 5,040 it cost on 03296b6. The cause was not separated out: the two changes' costs do not add
 up, as the image-buffer growth in "Reference bindings per path" did not.
 
-**Not covered.** No existing test expectation changed, and the port needed no rewrite. Methods do not
-exist yet (section 12 of `LANGUAGE.md`). The fuzzer has an argument-order kind (see "Handle-owner and reference false positives").
+**Not covered.** No existing test expectation changed, and the port needed no rewrite. Methods did not
+exist yet at this point (section 12 of `LANGUAGE.md`); the methods record at the end of this file
+supersedes this sentence. The fuzzer has an argument-order kind (see "Handle-owner and reference false positives").
 
 ## Assignment over a handle's owner (done)
 
@@ -3550,9 +3551,9 @@ the header and the `source` hash.
 
 ## The format
 
-Text, line-oriented, parsed by the compiler's scanner. The header is `obosym 1`
+Text, line-oriented, parsed by the compiler's scanner. The header is `obosym 2`
 (one identifier; `obo-sym` would scan as three tokens), `abi 1`,
-`compiler "0.5"`, `source 0x…`, one `dep <module> "<path as imported>"` per
+`compiler "0.6"`, `source 0x…`, one `dep <module> "<path as imported>"` per
 unique direct dependency in first-import order, and `interface 0x…`. The body is
 `module <name>`, one `depiface <module> 0x…` per dependency in the same order,
 then declarations. `source` is FNV-1a 64 of the source bytes exactly;
@@ -3562,7 +3563,8 @@ outside the hash. No address, offset, descriptor, pointer, timestamp or absolute
 path appears.
 
 Canonical emission order: shells for exported record/closed types (source order),
-their definitions (source order), aliases, constants, globals, functions.
+their definitions (source order), aliases, constants, globals, methods
+(declaration order), functions.
 Private declarations are skipped without reordering the exported ones. A record
 lists fields in declaration order (offsets are recomputed as one 8-byte word
 each); a closed type lists variants in declaration order. Field and signature
@@ -3570,7 +3572,10 @@ types are emitted as their underlying type, never an alias name. Constants are
 primitive (int/byte as 16 hex digits, bool as true/false, string as
 `hex "<bytes>"`, including `hex ""`); globals are `var`/`let` with no
 initializer; function parameters are always canonical `p0`, `p1`, … (renaming a
-source parameter changes only the source hash). Summary items are emitted
+source parameter changes only the source hash). A method is a source-like
+heading whose first parameter is the receiver, `fn ([mut ]p0: [&]T) m(...)`; the
+receiver is always `p0`, so `pfree` bit 0 and `pf 0 …` are its summary, and only
+exported methods are emitted. Summary items are emitted
 `freesall`, `writeshandles`, `pfree`, `frees N key…`, then `pf` rows by parameter
 and insertion order; the reader accepts any order. `frees` keys are
 `Module::name`, may name a private or transitive global, and a key for a module
@@ -3605,8 +3610,8 @@ run, re-emit, `--check`).
 FNV-1a 64 with offset basis `0xcbf29ce484222325` and prime `0x100000001b3`, 64-bit
 wrapping. Three exact-match version values: `obosym` (grammar and meaning),
 `abi` (layout, descriptor format, calling convention, global addressing, effect
-summaries, initialization order) and `compiler` (`OBO_VERSION`, currently `0.5`;
-`--version` prints `obo 0.5 sym-format 1 abi 1`). Errors use the per-line §12
+summaries, initialization order) and `compiler` (`OBO_VERSION`, currently `0.6`;
+`--version` prints `obo 0.6 sym-format 2 abi 1`). Errors use the per-line §12
 wording: `has format <n>; this compiler reads <m>`, `has ABI <n>; this compiler
 uses <m>`, `was built by compiler '<v>'; this is '<w>'`, each with
 `; rebuild it` and exit 2 — not one combined message. Bump `OBO_VERSION` with a
@@ -5083,3 +5088,123 @@ peaks 2,190,032 long / 2,189,408 names / 2,190,160 tree / 2,189,632 colour /
 `tests/tools.py --memory` 2/2; `tests/stdlib.py` 16/16; `tests/imports.py`
 26/26; `tests/doc_check.py` 48 examples. Under the scoped P6b instruction the
 compiler mutation/port/sym suites were not re-run and are not claimed.
+
+# Methods: receivers, static dispatch and symbol format 2 (P7/0.6, done)
+
+**What changed.** `fn (r: T) m(...)`, `fn (r: &T) m(...)` and
+`fn (mut r: &T) m(...)` declare a method on a local record or closed type;
+`place.name(args)` calls it. The receiver is hidden parameter `p0`, with
+`pmodes[0]` 0/1/2, so the existing ownership, borrow, effect-summary, pfree and
+pf machinery applies unchanged (bit 0 is the receiver). Static dispatch only: one
+method per `(Type, name)`, one parent step for a variant, no method values, no
+chaining (`b.m().n` is `expected ';' or newline, found .`), and an owned result
+of a function call is still the store-first error before the member name.
+
+The compiler keeps one flat `methodSyms` registry of `Sym`s in declaration order,
+keyed logically by `(canonical Type, name)`; `Sym.recv` is `tVoid` for a plain
+function. `findMethodIn/findMethod/methodKey/methodDisplay` are the table. The
+parser breaks the postfix designator at `. name (`, runs the existing tail on the
+receiver (so a field, element, reference or handle receiver is finalized and its
+value use recorded, including when the statement was parsed as an assignment
+target), then calls `methodCall` and returns its result directly. `callFn`
+became a wrapper over `callFnWith(f, recv, hasRecv, line, col)`: the receiver is
+converted, checked, held/moved and pushed as argument 0; every plain-function
+label and index is unchanged. Receiver place registers are excluded from the
+saved-register set (home registers used as an index are not), and no temporary
+`Item` owns the receiver.
+
+The one new soundness rule is an owned receiver that is the whole object named by
+a handle (`h.m()`): the dereference is a register temporary and `consume` has no
+owner to mark, so it is refused explicitly. A field or element through a handle
+(`h.child.m()`, `h.items[i].m()`) is a `mem`/`elem` item and takes the existing
+field/element move error; `&`/`mut` receivers through handles follow the existing
+pure-callee rule. Methods are declared only on complete local record/closed types
+(aliases transparent); fields and variants share the member namespace; methods
+are a separate namespace from top-level names; `pub` is sticky and an exported
+method needs an exported receiver. Declaration order is source order with forward
+headings per `(Type, name)`. The while-condition lift, the home-retry fixup
+cleanup, the module-end heading check and `checkExports` (with
+`truncate(closureSeen, 0)` per method) all scan `methodSyms`; `waitFn` now holds
+symbols rather than globals indexes.
+
+The symbol format is `obosym 2`, compiler `0.6`, ABI `1`: a method is emitted as
+`fn ([mut ]p0: [&]T) name(p1: ...): Ret summary` in a method group between the
+globals and the functions, and the receiver is always parameter 0. `--check`
+reconstructs methods and checks calls against them, including a source-less
+dependency; a private method of a foreign type gives the same module-member
+error in a full build and in `--check`. A method named `main` is readable and is
+not the program entry. `--version` is `obo 0.6 sym-format 2 abi 1`.
+
+**Tests and fixtures.** Thirteen `tests/run/methods*.obx` programs (receiver
+modes, fields/elements/globals/narrowed optionals, B1/B3 receiver shapes and
+owned returns, closed types, moves, mut/append, iterative handle walks,
+defer/try, forward headings and mutual recursion, a while-condition forward
+method, the home-retry case with the call inside the hot loop, static dispatch,
+names/aliases and field origins). `tests/errors/methods.obx` has 69 sections
+covering every declaration and call diagnostic, the B2 loop/re-point cases
+(including mut, recursive, handle and defer variants), the owned-through-handle
+message, field-through-handle, chaining/temporaries and method-body names. New
+module trees: `run/methods`, `methods_closed`, `methods_identity`,
+`methods_transitive`, `method_main`; `errors/private_method`,
+`unknown_method_foreign`, `foreign_method`, `foreign_field_call`,
+`pub_method_private_type`, `method_heading`; `sym/methods`, `method_main`,
+`methods_transitive_check`, `private_method_check` and `method_bad_receiver`.
+`sym_test.py` gained method coverage in the rich round trip, `hash_methods`,
+`malformed_methods` and `methods_sourceless_check`; the golden tree gained
+`worth`/`bump`/`taken` methods and was regenerated explicitly with
+`sym_test.py --update`. All 79 pre-existing committed `.sym` files were migrated
+in the same change (76 `modules/sym` fixtures and 3 goldens): format 2 / compiler
+`0.6` / ABI 1, with `format` at `obosym 3`, `compiler` at `"9.9"` and `version` at
+ABI 9. Every `modules/sym` case now has an `expect` file, and `port_compare`
+asserts REF's own outcome against it before comparing PORT, so a blanket reader
+regression cannot pass as "both compilers reject it alike"; `REEMIT_CASES` are
+asserted exit 0, canonical and idempotent. `sym_fuzz.py` mutates the format to 3
+and its seed declares a method. `port_compare.py` skips the method programs and
+`errors/methods.obx` only while the reference seed is below `(0, 6)`.
+
+**Mutants.** 38 method mutants were added, including parser/declaration,
+method-table lookup, receiver finalization and read marks, owned-handle, label
+and display, writer group/private/summary/mode, reader receiver/main/order and
+the mode-0 comparisons. Four are recorded equivalent with reasons: the
+`closureSeen` truncation (only an erroring private type or a skipped foreign type
+can be in the set, so sharing it cannot hide an error), and the three mode-0
+method order/missing/signature checks (a full build reads the `.sym` it just
+wrote; only `--check` can see a forged file, and by design it trusts it). The
+retry-cleanup mutant was made observable by putting the forward-headed method
+call inside the hot loop of `run/methods_homes.obx` (the stale rel32 corrupts
+executed code; without the scan the program segfaults). Existing mutant patterns
+moved by the `callFn`/designator refactor were retargeted, not deleted.
+
+**Gates (this branch).** `make` with the 0.5 seed builds `obo` 0.6, 454,657
+bytes, sha256 `8b9dfcc3…`; stage 2 == stage 3 (`cmp`). `make tools` builds cat
+40,961, wc 45,057 and sort 69,633 bytes; `make eza` builds 212,993 bytes.
+`run_fork.py` 1,261 passed; `port_test.py` 537/537 with 9 encoder groups;
+`port_compare.py` 1,280/1,280 stage B and 1,060/1,060 against the seed;
+`sym_test.py` 30/30; `sym_fuzz.py` 200/200; `doc_check.py` 53 examples;
+`homes_check.py` and `homes_edge.py` green; `imports.py` 26/26; `stdlib.py`
+16/16; `io_test.py`, `meta_test.py` 34 checks, `elf_test.py` green;
+`tools.py --require-reference` 280/280 and `--memory` 2/2; `eza.py
+--require-reference` 546/546 (pinned eza 0.23.3, sha256 `10457dde…`) and
+`--memory` 5/5 with the unchanged 2,752,512-byte cap. `mutate_fork.py` 561/587
+caught with 26 equivalents, 0 missed/stale/broken; `mutate_io.py` 27/27;
+`mutate_meta.py` runtime 50/52 (2 equivalent) and compiler 21/30 (9 equivalent),
+0 missed; `mutate_port.py` 529/529 caught (the four method equivalents are excluded as
+in the fork harness). Self-compile: live peak 1,728,944 bytes and
+38,734,688 allocated, within the unchanged 2,000,000-byte budget (271,056 spare);
+the compiler source is 11,016 lines / 406,840 bytes. `bench/bench.py` completed
+all four workloads and their outputs agree.
+
+**Deviations and limits.** The incomplete-type message reuses the existing
+`<T> is declared but not yet defined` text rather than the design note's
+`type '<T>' ...` spelling. Receiver-mode and ownership diagnostics point at the
+method name/dot; the review allowed this unless the receiver start were threaded.
+The design's literal `b.store(clear(b))` is not an error when the outer receiver
+is a whole `&Bag` and `clear` only frees below it (the bag itself stays valid);
+the tests use an element receiver and a callee that frees below the receiver,
+which is the soundness rule, with the measured message. Optionals of `int` or
+`string` do not exist, so the nil-receiver row is tested with `?T`/`?Bag`; a
+method-valued expression and chaining errors use the measured parser texts.
+Interfaces, dynamic dispatch, method values, chaining, static/UFCS calls, methods
+on built-ins/derived/foreign types and an `eza` refactor remain out of scope; the
+compiler's own source stays method-free, so the 0.5 seed builds it and the 0.6
+seed is promoted only after review and merge.
