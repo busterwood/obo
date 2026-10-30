@@ -134,10 +134,10 @@ Stage B cases and 1,060/1,060 against the 0.5 seed.
 | Compiler built by the seed (`obo`, `--version` 0.6) | 454,657 bytes (sha256 `8b9dfcc3…`) |
 | Stage 2 == stage 3 | 454,657 bytes, identical to the seed-built `obo` (checked with `cmp`) |
 | Promoted seed (`--version` 0.5) | 425,985 bytes (sha256 `05542e89…`; 0.6 is not promoted in this change) |
-| Self-compile wall time | 0.13 s (5 runs, median; 0.12-0.15 s under the gate load on this host) |
+| Self-compile wall time | 0.12 s (5 runs, median; 0.11-0.12 s on this host) |
 | Self-compile live peak | 1,728,944 bytes |
 | Total allocated | 38,734,688 bytes |
-| Maximum resident set | 3,120 KB (3 runs on this host) |
+| Maximum resident set | 3,248 KB (3 runs on this host) |
 | Live-memory budget | 2,000,000 bytes (271,056 spare) |
 | obo suite | 1,261 tests (`run_fork.py`); `port_compare` 1,280/1,280 (stage B) and 1,060/1,060 (against the seed); 53 doc examples; 26/26 import checks; 16/16 stdlib roots; 30/30 symbol-file tests |
 | Tools differential gate | 280 checks vs GNU coreutils 9.4; 2 memory cases (module roots) |
