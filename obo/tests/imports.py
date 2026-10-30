@@ -6,8 +6,8 @@
 Cases:
   * every stdlib module (io, strings, paths, sort, time, cli, fmt, errors, fs,
     env) compiles through a tiny importer root built with `-I obo/lib`;
-  * every tool source (cmd/cat.obx, wc.obx, sort.obx, eza.obx) compiles
-    with its own relative `../lib/...` imports and no -I;
+  * every tool source (cmd/cat.obx, wc.obx, sort.obx, head.obx, eza.obx)
+    compiles with its own relative `../lib/...` imports and no -I;
   * the design 4.2 P2/P4 tool-matrix checks: every tool import is an explicit
     `../lib/*.obx` path (a cmd/-local decoy with a library module's name is
     ignored), `cmd/sort.obx` imports no sort module, `cmd/eza.obx` imports
@@ -157,7 +157,7 @@ IMPORTERS = {
             'absent\n'),
 }
 
-TOOLS = ['cat.obx', 'wc.obx', 'sort.obx', 'eza.obx']
+TOOLS = ['cat.obx', 'wc.obx', 'sort.obx', 'head.obx', 'eza.obx']
 
 WANT_LIB = {'cli.obx', 'env.obx', 'errors.obx', 'fmt.obx', 'fs.obx',
             'io.obx', 'paths.obx', 'sort.obx', 'strings.obx', 'time.obx'}

@@ -33,9 +33,9 @@ stage 2 == stage 3, checked with `cmp`.
   first-class interfaces and stays interface-free itself, so the pre-promotion
   0.6 seed can build it. The 0.6 seed (454,657 bytes, sha256 `90fcad7e…`) and the
   0.5 compiler (425,985 bytes) are historical.
-- **Tools.** `cat`, `wc`, `sort` and the `eza` E2 core are written in obo and
-  built by `make tools` / `make eza`. Differential gates compare them with GNU
-  coreutils 9.4 (`obo/tests/tools.py`) and pinned eza 0.23.3
+- **Tools.** `cat`, `wc`, `sort`, `head` and the `eza` E2 core are written in
+  obo and built by `make tools` / `make eza`. Differential gates compare them
+  with GNU coreutils 9.4 (`obo/tests/tools.py`) and pinned eza 0.23.3
   (`obo/tests/eza.py`), with recorded goldens as fallback.
 - **Modules.** Both stages are implemented: source imports and exports
   (`module`, `import "Name.obx" [as alias]`, `pub`, `alias::name`, `--deps`,
@@ -59,9 +59,9 @@ stage 2 == stage 3, checked with `cmp`.
 | Total allocated | 44,586,880 bytes (port comparison 44,588,160) |
 | Maximum resident set | 3,696 KB (3 runs on this host) |
 | Live-memory budget | 2,000,000 bytes (54,320 spare; port 54,240) |
-| obo suite | 1,408 tests; 103 `module_test` checks; `sym_test.py` 38/38; `sym_fuzz.py` 200/200; `port_test` 556/556 with 9 encoder groups; `port_compare` 1,420/1,420; 56 doc examples; 26/26 import checks; 16/16 stdlib roots |
-| Tools differential gate | 280 checks vs GNU coreutils 9.4; 2 memory cases |
-| Tool binaries | cat 40,961; wc 45,057; sort 69,633 bytes (static, runtime included) |
+| obo suite | 1,408 tests; 103 `module_test` checks; `sym_test.py` 38/38; `sym_fuzz.py` 200/200; `port_test` 556/556 with 9 encoder groups; `port_compare` 1,420/1,420; 56 doc examples; 27/27 import checks; 16/16 stdlib roots |
+| Tools differential gate | 358 checks vs GNU coreutils 9.4; 2 memory cases |
+| Tool binaries | cat 40,961; wc 45,057; sort 69,633; head 40,961 bytes (static, runtime included) |
 | eza E2 differential gate | 546/546 non-memory cases (462 exact reference goldens, 72 live including 22 pty, 12 own) + 5/5 memory cases |
 | eza E2 binary | 212,993 bytes (sha256 `53133d23…`; static, runtime included; reference eza 0.23.3 is 2,294,768) |
 | eza 10k-entry live peak | worst 2,190,160 bytes; `EZA_PEAK_MAX` 2,752,512 (a distinct eza cap, not the compiler budget) |
@@ -102,7 +102,7 @@ sample is historical and lives in [HISTORY.md](HISTORY.md).
 | `eza`, 10,000 names | 30.4 ms | pinned eza 59.2 ms (1.94x slower); Python 16.3 ms and GNU `ls` 6.55 ms are faster |
 
 The compiler is a 507,905-byte static binary (the promoted 0.8 seed); the tools are cat 40,961, wc
-45,057 and sort 69,633 bytes; eza is 212,993 bytes against 2,294,768 for the
+45,057, sort 69,633 and head 40,961 bytes; eza is 212,993 bytes against 2,294,768 for the
 pinned eza 0.23.3 reference. Every obo binary is freestanding and static, with
 the runtime included. The honest shape of these numbers is in
 [PERFORMANCE.md](PERFORMANCE.md): pure compute is far ahead of CPython, while
@@ -209,7 +209,7 @@ The aim is a compiler you can trust, so the process matters as much as the code.
 | `obo/seed/obo` | the trusted previous stage |
 | `obo/LANGUAGE.md` | the current language reference, including known holes |
 | `obo/lib/` | the ten source modules: `strings`, `paths`, `sort`, `time`, `cli`, `io` (buffered `Reader`/`Writer`, `writeByte`), `fmt`, `errors`, `fs` and `env` |
-| `obo/cmd/` | the tools: `cat`, `wc`, `sort` and `eza`, with `README.md` and their subsets |
+| `obo/cmd/` | the tools: `cat`, `wc`, `sort`, `head` and `eza`, with `README.md` and their subsets |
 | `obo/tests/` | obo's suite, mutants, the I/O, tools and eza gates |
 | `obo/tests/io_test.py` | the runtime and streaming-I/O gates |
 | `obo/tests/meta_test.py` | the metadata runtime and the `fs` module |
@@ -227,7 +227,7 @@ The aim is a compiler you can trust, so the process matters as much as the code.
 
 ```
 cd obo && make                           # obo: build from the committed seed
-cd obo && make tools                     # build/tools/{cat,wc,sort}
+cd obo && make tools                     # build/tools/{cat,wc,sort,head}
 cd obo && make eza                       # build/eza/eza
 cd obo && python3 tests/doc_check.py     # LANGUAGE.md examples
 cd obo && python3 tests/run_fork.py      # obo's tests, leak check always on

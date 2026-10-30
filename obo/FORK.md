@@ -3302,8 +3302,9 @@ out of the differential matrix. The first green run missed GNU's `-E` CR rule;
 the implementation review found it, and the matrix, model, goldens and docs now
 pin it (CRLF, cross-file, chunk-boundary, double-CR and final-CR cases).
 
-**Later tools.** `head` (streaming, reuses cat's machinery) is the natural phase
-3b; `tail` waits for `seek`/`readAt` or a documented bounded version; `eza`
+**Later tools.** `head` is implemented in `cmd/head.obx` as a streaming first
+lines/bytes tool with GNU's multiple-operand headers (see `cmd/README.md`);
+`tail` waits for `seek`/`readAt` or a documented bounded version; `eza`
 needs `readDir`/`stat`/`isatty`, `fd` needs directory walking, and `jq` needs
 parsing and associative containers. All use `obo/cmd/` and the `tests/tools.py`
 spec table as the extension point.

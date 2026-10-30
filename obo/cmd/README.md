@@ -1,12 +1,13 @@
 # obo command-line tools
 
-The tools written in obo: `cat`, `wc`, `sort` and the `eza` core (E0 lines
-and restricted long, E1 colour/tree/`--no-quotes`, E2 grid/UTF-8/lossy names).
-Each
+The tools written in obo: `cat`, `wc`, `sort`, `head` and the `eza` core (E0
+lines and restricted long, E1 colour/tree/`--no-quotes`, E2 grid/UTF-8/lossy
+names). Each
 source file here is a module root that imports `../lib/...` modules by explicit
 relative path; every library name is qualified (`io::Writer`, `io::newWriter`,
-`fmt::writePadded`, `errors::text`, ...). `cat`, `wc` and `sort` are headerless
-roots; `eza.obx` declares `module eza` and imports all ten library modules.
+`fmt::writePadded`, `errors::text`, ...). `cat`, `wc`, `sort` and `head` are
+headerless roots; `eza.obx` declares `module eza` and imports all ten library
+modules.
 `tools/build_tools.py` compiles each root directly with the ordinary compiler,
 dependency-first, and nothing is concatenated. The builder creates a symbol
 directory under its output (`build/tools/sym` for `make tools`, `build/eza/sym`
@@ -15,10 +16,10 @@ distinct output directories.
 
 ```
 cd obo
-make tools                 # build build/tools/{cat,wc,sort} and build/tools/sym
+make tools                 # build build/tools/{cat,wc,sort,head} and build/tools/sym
 make eza                   # build build/eza/eza and build/eza/sym
 python3 tools/build_tools.py [cat] [--out DIR] [--obo PATH] [--rt DIR]
-python3 tests/tools.py --require-reference   # the cat/wc/sort differential gate
+python3 tests/tools.py --require-reference   # the cat/wc/sort/head differential gate
 python3 tests/tools.py --memory
 python3 tests/eza.py --require-reference     # the eza E0/E1/E2 differential gate
 python3 tests/eza.py --memory
@@ -32,6 +33,7 @@ runtime included:
 | `cat` | 40,961 bytes |
 | `wc` | 45,057 bytes |
 | `sort` | 69,633 bytes |
+| `head` | 40,961 bytes |
 | `eza` | 212,993 bytes |
 
 The library modules are `lib/io.obx` (`Reader`, `Writer`, the buffered functions,
@@ -50,11 +52,15 @@ The test programs `tests/run/io_reader.obx`, `tests/run/io_writer.obx` and
 The subset is deliberate and small. Options may be clustered (`-nET`, `-lwc`,
 `-rnu`) and may appear before or after operands; `--` ends option parsing. A lone
 `-` is always an operand meaning stdin (so a file literally named `-` cannot be
-reached), and a file whose name begins with `-` needs `--`. An unknown short
+reached), and a file whose name begins with `-` needs `--`. `head`'s count
+options are the exception to clustering: `-n` and `-c` take the rest of the
+token or the next argument, so `-n5`, `-n 5`, `-c5` and `-c 5` work, and the
+last of `-n`/`-c` wins. An unknown short
 option prints one line, `tool: invalid option -- 'X'`; an unknown long option
 prints `tool: unrecognized option '--foo'`. There is no `Try 'tool --help'` line,
 because `--help` and `--version` are themselves unsupported (they are
-unrecognized long options). Usage errors exit 1 for `cat`/`wc` and 2 for `sort`.
+unrecognized long options). Usage errors exit 1 for `cat`/`wc`/`head` and 2 for
+`sort`.
 
 ## cat
 
@@ -92,6 +98,48 @@ and continues with the next operand (a directory opens and fails on read with
 immediately and never opens a later operand. Exit 1 if anything failed.
 Deliberately absent: `-v`, `-e`, `-t`, `-A`, `-u`, long options, `--help`,
 `--version`.
+
+## head
+
+```
+head [-n COUNT | -c COUNT] [--] [FILE ...]
+```
+
+Prints the first 10 lines of each operand by default, the first `COUNT` lines
+with `-n`, or the first `COUNT` bytes with `-c`; the last of `-n`/`-c` wins.
+`COUNT` is an optional `+` followed by one to 18 ASCII digits (leading zeros
+allowed), so `0` is valid and a limit past the input copies the whole operand.
+The tool reads with a 64 KiB `io::Reader` and writes through an `io::Writer`; it
+stops reading as soon as the limit is reached and never holds a whole operand.
+`-n` stops after the newline that completes the last requested line; a final
+line without a newline is copied at EOF only when fewer than `COUNT` complete
+lines exist. `-n 0`/`-c 0` open the operand and, with several operands, print its
+header, but read nothing.
+
+No operands (or `-`) reads standard input. With two or more operands each is
+introduced by GNU's `==> NAME <==` line, with one blank line between groups;
+`-` is `standard input`. A single operand has no header. The header is written
+after a successful open and before reading, so a missing operand has no header,
+while a directory has one and then fails on read; a failed operand does not
+disturb the blank-line grouping of later files. The limit resets for every
+operand.
+
+Errors: an open failure prints
+`head: cannot open '<operand>' for reading: <text>`; a read failure prints
+`head: error reading '<operand>': <text>` (a directory is `Is a directory`).
+Both set failure and continue with the next operand. A write error prints
+`head: write error: <text>`, stops immediately, never opens a later operand and
+exits 1. Exit 1 if anything failed, else 0.
+
+Deliberately absent: negative counts (`-n -1`, GNU's all-but-last form), size
+suffixes (`1k`), `-q`/`--quiet`, `-v`/`--verbose`, `-z`/`--zero-terminated`,
+every other long option, and `--help`/`--version` (they take the ordinary
+unrecognized-long-option path). Counts are limited to 18 digits; a negative,
+suffixed or too-long count is `head: invalid number of lines: '<value>'` or
+`head: invalid number of bytes: '<value>'`, and a missing value is
+`head: option requires an argument -- 'n'` (or `'c'`). Operand names are printed
+verbatim in headers and diagnostics; GNU quotes unusual names, so exact-name
+cases use quote-free operands.
 
 ## wc
 
@@ -591,6 +639,9 @@ wc: write error
 sort: cannot read: <operand>: Permission denied
 sort: read failed: <operand>: Is a directory
 sort: write error
+head: cannot open '<operand>' for reading: No such file or directory
+head: error reading '<operand>': Is a directory
+head: write error: No space left on device
 ```
 
 GNU quotes operands that contain spaces, quotes or control characters; these
@@ -616,7 +667,7 @@ iteration (`fs::open`/`next`/`close`, which skips `.` and `..` like Rust's
 need one), resolves every symlink with `readlink` plus a following `stat`, and
 synthesizes its own `.`/`..` records; `statArray` remains the form for a future
 parallel-key hot loop rather than an E0 caller;
-`cat`, `wc` and `sort` do not import `fs` and their output is unchanged.
+`cat`, `wc`, `sort` and `head` do not import `fs` and their output is unchanged.
 
 The API is path-based: `fs::stat(lstat)`, `fs::readlink` and a tree child's
 `fs::open` take a whole path built with `paths::join(operand, name)`. `cpath`

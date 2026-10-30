@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The differential gate for the obo command-line tools (cat, wc, sort).
+"""The differential gate for the obo command-line tools (cat, wc, sort, head).
 
     python3 tests/tools.py [-k PATTERN] [-v] [-x] [-j N]
         [--reference=auto|gnu|busybox|any|none] [--require-reference]
@@ -62,7 +62,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 FORK = os.path.dirname(HERE)                      # .../obo
 ROOT = os.path.dirname(FORK)                      # repository root
-TOOLS = ('cat', 'wc', 'sort')
+TOOLS = ('cat', 'wc', 'sort', 'head')
 REFERENCE_PATH = '/usr/bin:/bin'
 FSIZE = 16 * 1024 * 1024                          # per-process output cap
 MEMORY_PEAK_MAX = 1048576
@@ -672,16 +672,195 @@ def sort_cases():
     add('usage_help', T, ['--help'], tag='usage')
 
 
+def head_cases():
+    T = 'head'
+    # default is the first 10 lines; counts include 0 and values past the input
+    add('empty', T, ['empty'], fixtures=['empty'], golden=True)
+    add('oneline', T, ['oneline'], fixtures=['oneline'])
+    add('twelve_default', T, ['twelve'], fixtures=['twelve'], golden=True)
+    add('n3_twelve', T, ['-n', '3', 'twelve'], fixtures=['twelve'])
+    add('n10_twelve', T, ['-n', '10', 'twelve'], fixtures=['twelve'])
+    add('n0_oneline', T, ['-n', '0', 'oneline'], fixtures=['oneline'],
+        golden=True)
+    add('n0_empty', T, ['-n', '0', 'empty'], fixtures=['empty'])
+    add('n100_oneline', T, ['-n', '100', 'oneline'], fixtures=['oneline'])
+    add('c0_oneline', T, ['-c', '0', 'oneline'], fixtures=['oneline'])
+    add('c100_oneline', T, ['-c', '100', 'oneline'], fixtures=['oneline'])
+    # a final partial line is copied at EOF but is not a counted line
+    add('noeol', T, ['noeol'], fixtures=['noeol'], golden=True)
+    add('n1_noeol', T, ['-n', '1', 'noeol'], fixtures=['noeol'])
+    add('n2_noeol', T, ['-n', '2', 'noeol'], fixtures=['noeol'])
+    add('n3_noeol', T, ['-n', '3', 'noeol'], fixtures=['noeol'])
+    add('c2_noeol', T, ['-c', '2', 'noeol'], fixtures=['noeol'])
+    add('c3_noeol', T, ['-c', '3', 'noeol'], fixtures=['noeol'])
+    # line and byte limits across the 64 KiB reader chunks
+    add('n1_longline', T, ['-n', '1', 'longline'], fixtures=['longline'])
+    add('n2_longline', T, ['-n', '2', 'longline'], fixtures=['longline'])
+    add('c1_longline', T, ['-c', '1', 'longline'], fixtures=['longline'])
+    add('c65536_longline', T, ['-c', '65536', 'longline'],
+        fixtures=['longline'])
+    add('c70000_longline', T, ['-c', '70000', 'longline'],
+        fixtures=['longline'])
+    add('c100000_longline', T, ['-c', '100000', 'longline'],
+        fixtures=['longline'])
+    add('c100001_longline', T, ['-c', '100001', 'longline'],
+        fixtures=['longline'])
+    add('c200001_longline', T, ['-c', '200001', 'longline'],
+        fixtures=['longline'])
+    # binary/NUL bytes are opaque
+    add('binary', T, ['binary'], fixtures=['binary'], golden=True)
+    add('n1_binary', T, ['-n', '1', 'binary'], fixtures=['binary'])
+    add('c1_binary', T, ['-c', '1', 'binary'], fixtures=['binary'])
+    add('nul', T, ['nul'], fixtures=['nul'])
+    add('c1_nul', T, ['-c', '1', 'nul'], fixtures=['nul'])
+    # stdin: no operand, an explicit '-', and mixed with files
+    add('stdin_words', T, [], stdin=FILES['words'])
+    add('n2_stdin', T, ['-n', '2'], stdin=FILES['words'])
+    add('c3_stdin', T, ['-c', '3'], stdin=FILES['words'])
+    add('dash_words', T, ['-'], stdin=FILES['words'])
+    add('n2_dash', T, ['-n', '2', '-'], stdin=FILES['words'])
+    add('n1_dash_multi_a', T, ['-n', '1', '-', 'multi_a'],
+        stdin=b's1\ns2\n', fixtures=['multi_a'])
+    add('n1_multi_a_dash', T, ['-n', '1', 'multi_a', '-'],
+        stdin=b's1\ns2\n', fixtures=['multi_a'])
+    add('n1_multi_a_dash_multi_b', T, ['-n', '1', 'multi_a', '-', 'multi_b'],
+        stdin=b's1\ns2\n', fixtures=['multi_a', 'multi_b'])
+    add('n1_dash_dash', T, ['-n', '1', '-', '-'], stdin=b's1\ns2\n')
+    # several operands: GNU headers, one blank line between groups
+    add('n2_multi_a_multi_b', T, ['-n', '2', 'multi_a', 'multi_b'],
+        fixtures=['multi_a', 'multi_b'], golden=True)
+    add('default_multi_a_multi_b', T, ['multi_a', 'multi_b'],
+        fixtures=['multi_a', 'multi_b'])
+    add('n0_multi_a_multi_b', T, ['-n', '0', 'multi_a', 'multi_b'],
+        fixtures=['multi_a', 'multi_b'])
+    add('n1_empty_multi_a', T, ['-n', '1', 'empty', 'multi_a'],
+        fixtures=['empty', 'multi_a'])
+    add('n1_multi_a_empty', T, ['-n', '1', 'multi_a', 'empty'],
+        fixtures=['multi_a', 'empty'])
+    add('n1_multi_a_multi_a', T, ['-n', '1', 'multi_a', 'multi_a'],
+        fixtures=['multi_a'])
+    # options: joined values, +, leading zeros, and the last of -n/-c wins
+    add('n2_joined', T, ['-n2', 'twelve'], fixtures=['twelve'])
+    add('n2_after_operand', T, ['twelve', '-n', '2'], fixtures=['twelve'])
+    add('c2_joined', T, ['-c2', 'twelve'], fixtures=['twelve'])
+    add('n_plus2', T, ['-n', '+2', 'twelve'], fixtures=['twelve'])
+    add('n_leading_zero', T, ['-n', '02', 'twelve'], fixtures=['twelve'])
+    add('n_then_c', T, ['-n', '2', '-c', '3', 'twelve'], fixtures=['twelve'])
+    add('c_then_n', T, ['-c', '3', '-n', '2', 'twelve'], fixtures=['twelve'])
+    add('ddash_dash_n', T, ['-n', '1', '--', '-n'], fixtures=['-n'])
+    add('n1_name_with_space', T, ['-n', '1', 'name with space'],
+        fixtures=['name with space'])
+    # errors: open errors have no header, read errors keep theirs, and the
+    # remaining operands still print
+    add('missing', T, ['missing'])
+    add('missing_oneline', T, ['missing', 'oneline'], fixtures=['oneline'],
+        golden=True)
+    add('n1_missing_multi_a', T, ['-n', '1', 'missing', 'multi_a'],
+        fixtures=['multi_a'])
+    add('n1_multi_a_missing_multi_b', T,
+        ['-n', '1', 'multi_a', 'missing', 'multi_b'],
+        fixtures=['multi_a', 'multi_b'])
+    add('dir', T, ['dir'], fixtures=['dir'])
+    add('n1_dir', T, ['-n', '1', 'dir'], fixtures=['dir'], golden=True)
+    add('n0_dir', T, ['-n', '0', 'dir'], fixtures=['dir'])
+    add('n0_dir_multi_a', T, ['-n', '0', 'dir', 'multi_a'],
+        fixtures=['dir', 'multi_a'])
+    add('n1_dir_multi_a', T, ['-n', '1', 'dir', 'multi_a'],
+        fixtures=['dir', 'multi_a'])
+    add('n1_multi_a_dir_multi_b', T,
+        ['-n', '1', 'multi_a', 'dir', 'multi_b'],
+        fixtures=['multi_a', 'dir', 'multi_b'])
+    add('unreadable', T, ['unreadable'], fixtures=['unreadable'],
+        note='skip if unreadable is readable')
+    add('n1_unreadable_multi_a', T, ['-n', '1', 'unreadable', 'multi_a'],
+        fixtures=['unreadable', 'multi_a'],
+        note='skip if unreadable is readable')
+    # /dev/full: COUNT 0 issues no write and is modeled; a real write is a
+    # writeerror with our own golden
+    add('devfull_n0_oneline', T, ['-n', '0', 'oneline'],
+        fixtures=['oneline'], sink=True, golden=True)
+    add('devfull_oneline', T, ['oneline'], fixtures=['oneline'], sink=True,
+        tag='writeerror')
+    # usage messages are ours, pinned by own goldens
+    add('usage_z', T, ['-Z'], tag='usage')
+    add('usage_help', T, ['--help'], tag='usage')
+    add('usage_version', T, ['--version'], tag='usage')
+    add('usage_missing_n', T, ['-n'], tag='usage')
+    add('usage_missing_c', T, ['-c'], tag='usage')
+    add('usage_invalid_n', T, ['-n', 'x'], tag='usage')
+    add('usage_invalid_c', T, ['-c', 'x'], tag='usage')
+    add('usage_negative_n', T, ['-n', '-1'], tag='usage')
+    add('usage_suffix_n', T, ['-n', '1k'], tag='usage')
+
+
 cat_cases()
 wc_cases()
 sort_cases()
+head_cases()
 CASES.sort(key=lambda c: (TOOLS.index(c.tool), c.name))
 
 # ------------------------------------------------------------------------ models
 
 
+def parse_head_argv(argv):
+    """head's option grammar: -n/-c take a value, the last one wins, and '--'
+    ends option parsing. Returns (mode, count, operands)."""
+    mode = 'lines'
+    count = 10
+    operands = []
+    end = False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if not end and a == '--':
+            end = True
+        elif not end and len(a) > 1 and a.startswith('-'):
+            if len(a) > 2 and a[1] == '-':
+                raise ModelError(f"head: unrecognized option '{a}'")
+            j = 1
+            while j < len(a):
+                ch = a[j]
+                if ch not in 'nc':
+                    raise ModelError(f"head: invalid option -- '{ch}'")
+                if j + 1 < len(a):
+                    value = a[j + 1:]
+                    j = len(a)
+                else:
+                    i += 1
+                    if i >= len(argv):
+                        raise ModelError(
+                            f"head: option requires an argument -- '{ch}'")
+                    value = argv[i]
+                    j = len(a)
+                n = parse_count(value)
+                if n is None:
+                    kind = 'bytes' if ch == 'c' else 'lines'
+                    raise ModelError(
+                        f"head: invalid number of {kind}: '{value}'")
+                mode = 'bytes' if ch == 'c' else 'lines'
+                count = n
+        else:
+            operands.append(a)
+        i += 1
+    return mode, count, operands
+
+
+def parse_count(s):
+    """The tool's count grammar: an optional '+', then 1..18 ASCII digits."""
+    body = s[1:] if s.startswith('+') else s
+    if not body or len(body) > 18:
+        return None
+    for ch in body:
+        if ch < '0' or ch > '9':
+            return None
+    return int(body)
+
+
 def parse_argv(tool, argv):
     """GNU-style permutation, a lone '-' as an operand, '--' ends options."""
+    if tool == 'head':
+        mode, count, operands = parse_head_argv(argv)
+        return ({'c'} if mode == 'bytes' else {'n'}), operands, 1
     opts = set()
     operands = []
     end = False
@@ -1009,7 +1188,70 @@ def model_sort(world, argv, stdin_bytes):
     return 0, out, b''
 
 
-MODELS = {'cat': model_cat, 'wc': model_wc, 'sort': model_sort}
+def first_lines(data, n):
+    """The first n newline-terminated pieces; a final partial line is included
+    when EOF arrives before the limit (GNU head's line rule)."""
+    if n == 0 or not data:
+        return b''
+    seen = 0
+    for i, b in enumerate(data):
+        if b == 0x0A:
+            seen += 1
+            if seen == n:
+                return data[:i + 1]
+    return data
+
+
+def model_head(world, argv, stdin_bytes):
+    mode, count, operands = parse_head_argv(argv)
+    multi = len(operands) > 1
+    if not operands:
+        operands = ['-']
+    out = bytearray()
+    err = bytearray()
+    failed = False
+    printed = False
+    stdin_used = False
+    for name in operands:
+        label = 'standard input' if name == '-' else name
+        kind = 'stdin' if name == '-' else kind_of(name, world)
+        if kind == 'missing':
+            err.extend(b"head: cannot open '" + os.fsencode(name) +
+                       b"' for reading: No such file or directory\n")
+            failed = True
+            continue
+        if kind == 'unreadable':
+            err.extend(b"head: cannot open '" + os.fsencode(name) +
+                       b"' for reading: Permission denied\n")
+            failed = True
+            continue
+        # a file/directory open succeeded (or this is stdin): header first
+        if multi:
+            if printed:
+                out.extend(b'\n')
+            out.extend(b'==> ' + os.fsencode(label) + b' <==\n')
+            printed = True
+        if count == 0:
+            continue
+        if kind == 'dir':
+            err.extend(b"head: error reading '" + os.fsencode(name) +
+                       b"': Is a directory\n")
+            failed = True
+            continue
+        if kind == 'stdin':
+            data = b'' if stdin_used else stdin_bytes
+            stdin_used = True
+        else:
+            data = world[name].bytes()
+        if mode == 'bytes':
+            out.extend(data[:count])
+        else:
+            out.extend(first_lines(data, count))
+    return (1 if failed else 0), bytes(out), bytes(err)
+
+
+MODELS = {'cat': model_cat, 'wc': model_wc, 'sort': model_sort,
+          'head': model_head}
 
 
 # -------------------------------------------------------------------- reference
@@ -1616,13 +1858,15 @@ class Harness:
     def stream_case(self, k):
         if k and 'stream' not in k:
             return
-        exe = self.ctx['cat'].exe
         env = {'PATH': REFERENCE_PATH, 'LC_ALL': 'C', 'LANG': 'C', 'LANGUAGE': 'C',
                'TZ': 'UTC', 'HOME': self.tmp, 'TMPDIR': self.tmp,
                'OBO_CHECK': '1', 'OBX_GC': 'poison'}
         for label, argv, want in (
-                ('cat streams before EOF', [exe], b'abc\n'),
-                ('cat -n streams before EOF', [exe, '-n'], b'     1\tabc\n')):
+                ('cat streams before EOF', [self.ctx['cat'].exe], b'abc\n'),
+                ('cat -n streams before EOF', [self.ctx['cat'].exe, '-n'],
+                 b'     1\tabc\n'),
+                ('head -n 1 streams before EOF',
+                 [self.ctx['head'].exe, '-n', '1'], b'abc\n')):
             p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, env=env,
                                  start_new_session=True)
@@ -1668,7 +1912,8 @@ class Harness:
         env = {'PATH': REFERENCE_PATH, 'LC_ALL': 'C', 'LANG': 'C', 'LANGUAGE': 'C',
                'TZ': 'UTC', 'HOME': d, 'TMPDIR': d,
                'OBO_CHECK': '1', 'OBX_GC': 'poison'}
-        for tool, args in (('cat', ['ab']), ('wc', ['ab']), ('sort', ['ab'])):
+        for tool, args in (('cat', ['ab']), ('wc', ['ab']), ('sort', ['ab']),
+                           ('head', ['ab'])):
             label = f'{tool} does not read stdin when it is not an operand'
             p = subprocess.Popen([self.ctx[tool].exe, *args], cwd=d, env=env,
                                  stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
@@ -1976,7 +2221,7 @@ def main(argv=None):
         ref_line = (f'reference: any (GNU coreutils {version}): stdout/exit exact, '
                     'stderr shape')
     elif kinds == {'gnu'}:
-        ref_line = f'reference: GNU coreutils {version} (cat, wc, sort)'
+        ref_line = f'reference: GNU coreutils {version} (cat, wc, sort, head)'
     elif kinds == {'none'}:
         ref_line = (f'reference: none; {h.golden_usage["model"]} modeled cases via '
                     f'models, {h.golden_usage["gnu"]} gnu goldens, '
