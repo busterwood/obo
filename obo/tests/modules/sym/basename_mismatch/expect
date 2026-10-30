@@ -1,0 +1,2 @@
+exit 1
+stderr <sym>/wrong.sym:1:1: module 'other' must be in a file named other.obx (found wrong.obx)

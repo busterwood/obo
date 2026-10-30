@@ -106,8 +106,8 @@ const T_COLONCOLON = 67
 // OBO_VERSION is the compiler's identity in every .sym's `compiler` line and in --version.
 // Bump OBO_VERSION with each merged compiler feature; bump SYM_FORMAT on any grammar or
 // meaning change; bump SYM_ABI on any layout/calling-convention/descriptor/effect change.
-const OBO_VERSION = "0.5"
-const SYM_FORMAT = 1
+const OBO_VERSION = "0.6"
+const SYM_FORMAT = 2
 const SYM_ABI = 1
 
 fn makeTokNames(): []string {
@@ -1030,6 +1030,7 @@ type Sym = ref record {
     freesAll: bool            // fn: it might free anything (or isn't compiled yet)
     writesHandles: bool       // fn: it frees owned objects through a handle (directly, by a callee, or a forward heading)
     home: int                 // an int or bool local held in this register (r12 to r15) instead of a stack slot, or -1
+    recv: ^Type               // a method's receiver type; tVoid for a plain function
 }
 
 // A reference local's binding, on one path: what it may point into. Its roots are owned locals,
@@ -1129,8 +1130,48 @@ var symArena = new []Sym(0)            // owns every symbol; the rest of the com
 
 fn newSym(kind: string, name: string, t: ?^Type): ^Sym {
     append(symArena, new Sym{kind: kind, name: name, typ: t, bind: noBind, addr: -1, fnRec: noFnRec,
-                   ret: tVoid, line: -1, home: -1})
+                   ret: tVoid, line: -1, home: -1, recv: tVoid})
     return handle(symArena[len(symArena) - 1])
+}
+
+// every method of the whole compilation, in declaration order; each symbol's recv is its canonical
+// receiver type (tVoid for a plain function). The array holds handles into symArena, which owns the
+// symbols: it never frees one, and releaseTables clears it with the arena.
+var methodSyms = new []^Sym(0)
+
+fn isMethod(s: ^Sym): bool { return s.recv != tVoid }
+
+// the method with this receiver type and name, in this one type (no parent step)
+fn findMethodIn(t: ^Type, name: string): ?^Sym {
+    for i in 0..len(methodSyms) {
+        let m = methodSyms[i]
+        if m.recv == t && m.name == name { return m }
+    }
+    return nil
+}
+
+// the method a receiver of type t calls: t's own, or one parent step for a variant
+fn findMethod(t: ^Type, name: string): ?^Sym {
+    let m = findMethodIn(t, name)
+    if m != nil { return m }
+    let p = t.parent
+    if p != nil { return findMethodIn(p, name) }
+    return nil
+}
+
+// the key of a method in its module: Type::name
+fn methodKey(s: ^Sym): string { return s.recv.name + "::" + s.name }
+
+// a method's name in diagnostics: T::m, or M::T::m when it belongs to another module
+fn methodDisplay(s: ^Sym): string {
+    if s.owner != "" && s.owner != curModuleName { return s.owner + "::" + s.recv.name + "::" + s.name }
+    return s.recv.name + "::" + s.name
+}
+
+// an error message names a function by its bare name and a method by T::m
+fn callableName(s: ^Sym): string {
+    if isMethod(s) { return methodDisplay(s) }
+    return s.name
 }
 
 // the root of a reference that borrows through a handle: the handle may name any
@@ -1208,6 +1249,36 @@ fn dupItem(x: &Item): Item {
     y.scale = x.scale
     y.line = x.line
     y.strTemp = x.strTemp
+    y.home = x.home
+    return y
+}
+
+// a full copy of an item, every place field included (dupItem is only for a value about to be re-read).
+// A method receiver is copied so that the callee-side item can be consumed without moving the optional
+// holder, which the ownership rules would otherwise see moved on one path only.
+fn copyItem(x: &Item): Item {
+    let y = newItem(x.mode, x.typ)
+    y.val = x.val
+    y.base = x.base
+    y.index = x.index
+    y.disp = x.disp
+    y.r = x.r
+    y.cc = x.cc
+    y.sym = x.sym
+    y.readonly = x.readonly
+    y.width = x.width
+    y.scale = x.scale
+    y.line = x.line
+    y.root = x.root
+    y.strTemp = x.strTemp
+    y.borrowed = x.borrowed
+    y.viaHandle = x.viaHandle
+    y.deref = x.deref
+    y.movedRef = x.movedRef
+    y.hOrigin = x.hOrigin
+    y.pOwner = x.pOwner
+    y.pPath = x.pPath
+    y.path = x.path
     y.home = x.home
     return y
 }
@@ -1439,7 +1510,7 @@ var frame = 0
 var farCalls = new []int(0)       // where the current function's calls out of its body keep their rel32
 var fwdCalls = 0                  // calls to functions not yet defined, so far (a while condition may hold some)
 var lifted = new []byte(0)        // the code of the conditions of the while loops being compiled, lifted out until their bodies are done
-var waitFn = new []int(0)         // their calls that wait for a later function: which function (in globals)
+var waitFn = new []^Sym(0)        // their calls that wait for a later function: which function or method
 var waitAt = new []int(0)         // and where the call is
 var inDefer = false
 var noreturn = false
@@ -2103,6 +2174,24 @@ fn releaseItem(x: &Item) {
         if x.base >= 0 && x.base != RBP { release(x.base) }
         if x.index >= 0 { release(x.index) }
     }
+}
+
+// the pool registers an item holds its place in. A method receiver was evaluated before its call,
+// and the call consumes those registers: they are not saved and restored around it as an outer
+// expression's registers are (that would leak them on every call).
+fn itemRegs(x: &Item): int {
+    // a home register belongs to a local and is saved around every call like any other local;
+    // only the pool registers the receiver's place was built in are consumed
+    if x.mode == "reg" {
+        if x.r >= 0 && (homeBits & (1 << x.r)) == 0 { return 1 << x.r }
+        return 0
+    }
+    var set = 0
+    if x.mode == "mem" || x.mode == "elem" {
+        if x.base >= 0 && x.base != RBP && (homeBits & (1 << x.base)) == 0 { set = set | (1 << x.base) }
+        if x.index >= 0 && (homeBits & (1 << x.index)) == 0 { set = set | (1 << x.index) }
+    }
+    return set
 }
 
 // the registers in use, as a set: bit r is set for register r
@@ -4703,17 +4792,31 @@ fn holdArg(b: ^RefBind, i: int) {
     append(ownedLocals, t)
 }
 
+// "method 'T::m'" for a method, the plain name for a function (whose messages stay byte-identical)
+fn callDisplay(meth: bool, name: string): string {
+    if meth { return "method '" + name + "'" }
+    return name
+}
+
+// an argument of a call as diagnostics name it: argument N for a source argument, the receiver for a
+// method's parameter 0. i is a parameter index and start is 1 for a method call, 0 for a function's.
+fn argLabel(meth: bool, i: int, start: int): string {
+    if !meth { return "argument " + string(i + 1) }
+    if i == 0 { return "the receiver" }
+    return "argument " + string(i - start + 1)
+}
+
 // argument j has run (and been moved, if it is passed by value): an argument held before it that it
 // invalidated would reach the callee pointing to freed memory. A recursive call in it that may write
 // through a handle is reported at the end of the body, as the other suspect uses are
-fn argOrderCheck(tbase: int, fname: string, j: int, line: int, col: int) {
+fn argOrderCheck(tbase: int, fname: string, meth: bool, j: int, line: int, col: int) {
     for k in tbase..argTempsUsed {
         let t = argTemps[k]
         if t.moved {
-            errorAt("argument " + string(j + 1) + " of " + fname + " may free what argument " + string(t.value + 1) + " points into, and runs after it; compute it before the call", line, col)
+            errorAt(argLabel(meth, j, 1) + " of " + callDisplay(meth, fname) + " may free what " + argLabel(meth, t.value, 1) + " points into, and runs after it; compute it before the call", line, col)
         }
         if t.suspect {
-            notePending(line, col, "argument " + string(j + 1) + " of " + fname + " makes a recursive call that writes through a handle, which could free what argument " + string(t.value + 1) + " points into; compute it before the call")
+            notePending(line, col, argLabel(meth, j, 1) + " of " + callDisplay(meth, fname) + " makes a recursive call that writes through a handle, which could free what " + argLabel(meth, t.value, 1) + " points into; compute it before the call")
         }
     }
 }
@@ -4757,10 +4860,28 @@ fn callFrees(f: ^Sym, i: int, br: ^Sym, known: bool, apath: string) {
     if n == 0 { callFreeEvent(br, apath, true) }
 }
 
-fn callFn(f: ^Sym): Item {
-    let fname = qualifiedSymName(f)
-    let saved = saveRegs()
+fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item
+
+fn callFn(f: ^Sym): Item { return callFnWith(f, nil, false, 0, 0) }
+
+// The call: the receiver, if any, is parameter 0 and runs before the explicit arguments. For a plain
+// function (hasRecv false) every label and index is the old one, so its messages are unchanged.
+fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item {
+    var fname = qualifiedSymName(f)
+    if hasRecv { fname = methodDisplay(f) }
+    let meth = hasRecv
+    var start = 1
+    if !hasRecv { start = 0 }
+    // saveRegs, except that the receiver's own place registers are not outer live registers: the
+    // call consumes them (see itemRegs)
+    var saved = usedRegs()
+    if hasRecv {
+        if recv != nil { saved = saved & ~itemRegs(recv) }
+    }
+    pushRegs(saved)
+    setFree(0)
     let n = len(f.fnRec.params)
+    let narg = n - start
     let pad = (depth + 8 * n) % 16
     if pad != 0 {
         aluRI(5, RSP, 8)
@@ -4776,16 +4897,28 @@ fn callFn(f: ^Sym): Item {
     let tbase = argTempsUsed
     let omark = len(ownedLocals)
     for i in 0..n {
-        if sym == T_RPAREN { error(fname + " takes " + string(n) + " argument(s), not " + string(i)) }
-        if i > 0 { expect(T_COMMA, "") }
-        let argLine = tline
-        let argCol = tcol
-        let a = nestedExpr()
-        checkAssign(f.fnRec.params[i], a, "argument " + string(i + 1) + " of " + fname)
+        var argLine = tline
+        var argCol = tcol
+        var a = voidItem()
+        if i == 0 && hasRecv {
+            if recv == nil { error("internal error: a method call without a receiver") }
+            if recv != nil {
+                a = copyItem(recv)
+                argLine = rline
+                argCol = rcol
+            }
+        } else {
+            if sym == T_RPAREN { error(callDisplay(meth, fname) + " takes " + string(narg) + " argument(s), not " + string(i - start)) }
+            if i > start { expect(T_COMMA, "") }
+            argLine = tline
+            argCol = tcol
+            a = nestedExpr()
+        }
+        checkAssign(f.fnRec.params[i], a, argLabel(meth, i, start) + " of " + callDisplay(meth, fname))
         if f.fnRec.pmodes[i] > 0 {
             let b = borrowBind(a)
             if f.fnRec.pmodes[i] == 2 && !b.writable {
-                error("argument " + string(i + 1) + " of " + fname + " needs a mut reference, but this one is read-only")
+                error(argLabel(meth, i, start) + " of " + callDisplay(meth, fname) + " needs a mut reference, but this one is read-only")
             }
             // a mut argument writes through the reference it is passed by
             if f.fnRec.pmodes[i] == 2 { noteWrite(a) }
@@ -4797,11 +4930,11 @@ fn callFn(f: ^Sym): Item {
                 deepLine = argLine
                 deepCol = argCol
             }
-            argOrderCheck(tbase, fname, i, argLine, argCol)
+            argOrderCheck(tbase, fname, meth, i, argLine, argCol)
             holdArg(b, i)
         } else {
             consume(a)
-            argOrderCheck(tbase, fname, i, argLine, argCol)
+            argOrderCheck(tbase, fname, meth, i, argLine, argCol)
         }
         if a.mode == "const" && fits32(a.val) {
             pushI(a.val)                           // no register needed
@@ -4814,17 +4947,17 @@ fn callFn(f: ^Sym): Item {
         }
     }
     releaseArgs(tbase, omark)
-    if sym != T_RPAREN { error(fname + " takes " + string(n) + " argument(s), not more") }
+    if sym != T_RPAREN { error(callDisplay(meth, fname) + " takes " + string(narg) + " argument(s), not more") }
     expect(T_RPAREN, "")
     // a reference inside something may not go to a callee that writes through a handle, since the
     // handle may name what it is inside. A callee with only a forward heading is assumed to write.
     if deepLine > 0 {
         if f == curFn {
-            notePending(deepLine, deepCol, "cannot pass a reference that points inside something to " + fname + ": it writes through a handle, which could free it")
+            notePending(deepLine, deepCol, "cannot pass a reference that points inside something to " + callDisplay(meth, fname) + ": it writes through a handle, which could free it")
         } else if f.addr < 0 {
-            errorAt("cannot pass a reference that points inside something to " + fname + ": its body is not known yet, so it is assumed to write through a handle, which could free it", deepLine, deepCol)
+            errorAt("cannot pass a reference that points inside something to " + callDisplay(meth, fname) + ": its body is not known yet, so it is assumed to write through a handle, which could free it", deepLine, deepCol)
         } else if f.writesHandles {
-            errorAt("cannot pass a reference that points inside something to " + fname + ": it writes through a handle, which could free it", deepLine, deepCol)
+            errorAt("cannot pass a reference that points inside something to " + callDisplay(meth, fname) + ": it writes through a handle, which could free it", deepLine, deepCol)
         }
     }
     // a mut reference and another that may point inside it could let the callee
@@ -4840,7 +4973,7 @@ fn callFn(f: ^Sym): Item {
                         let rj = bj.roots[q]
                         // two places in one root may be told apart: elements known to differ
                         if bj.deeps[q] && reaches(ri, rj) && (ri != rj || pathsOverlap(bi.paths[p], bj.paths[q])) {
-                            error("argument " + string(j + 1) + " of " + fname + " may point inside argument " + string(i + 1) + ", which is mut")
+                            error(argLabel(meth, argIdx[j], start) + " of " + callDisplay(meth, fname) + " may point inside " + argLabel(meth, argIdx[i], start) + ", which is mut")
                         }
                     }
                 }
@@ -4852,7 +4985,7 @@ fn callFn(f: ^Sym): Item {
         for p in 0..len(b.roots) {
             let ar = b.roots[p]
             if ar.storage == "global" && mightFree(f, ar) {
-                error("cannot pass a reference into global '" + qualifiedSymName(ar) + "' to " + fname + ": it might free it")
+                error("cannot pass a reference into global '" + qualifiedSymName(ar) + "' to " + callDisplay(meth, fname) + ": it might free it")
             }
         }
     }
@@ -4860,7 +4993,7 @@ fn callFn(f: ^Sym): Item {
         let b = argBinds[i]
         for p in 0..len(b.roots) {
             if b.roots[p] == handleSym && !pureFn(f) {
-                error("cannot pass a reference that borrows through a handle to " + fname + ": it might free what the handle names")
+                error("cannot pass a reference that borrows through a handle to " + callDisplay(meth, fname) + ": it might free what the handle names")
             }
         }
     }
@@ -5046,7 +5179,7 @@ fn builtin(name: string): Item {
         let eLine = tline
         let eCol = tcol
         let e = nestedExpr()
-        argOrderCheck(tbase, name, 2, eLine, eCol)
+        argOrderCheck(tbase, name, false, 2, eLine, eCol)
         releaseArgs(tbase, omark)
         if e.typ.kind != "bool" { error("writeFile needs a bool saying whether the file is executable") }
         expect(T_RPAREN, "")
@@ -5500,6 +5633,7 @@ fn builtin(name: string): Item {
 }
 
 fn designatorT(target: bool): Item
+fn methodCall(recv: Item, name: string, dline: int, dcol: int): Item
 
 fn designator(): Item { return designatorT(false) }
 
@@ -5574,6 +5708,10 @@ fn designatorT(target: bool): Item {
     var hOrig: ?^Sym = nil
     var hIdent: ?^Sym = nil
     var handles = 0
+    var isCall = false
+    var callName = ""
+    var callLine = 0
+    var callCol = 0
     while sym == T_DOT || sym == T_LBRACK {
         if x.movedRef {
             if s.isRefLocal { error(freedRefMsg(qname)) }
@@ -5600,13 +5738,27 @@ fn designatorT(target: bool): Item {
         }
         if sym == T_DOT {
             next()
+            let mline = tline
+            let mcol = tcol
             let fname = ident()
+            if sym == T_LPAREN {
+                // a method call ends the designator: the receiver is finalized by the tail below
+                isCall = true
+                callName = fname
+                callLine = mline
+                callCol = mcol
+                break
+            }
             if x.typ.incomplete { error(tname(x.typ) + " is declared but not yet defined") }
             if x.typ.kind == "closed" { error(tname(x.typ) + " is a closed type: use 'match' to reach its fields") }
             if x.typ.kind != "record" { error(tname(x.typ) + " has no fields") }
             let rt0 = x.typ
             let fi = fieldIndex(rt0, fname)
             if fi < 0 {
+                let mv = findMethod(rt0, fname)
+                if mv != nil && (mv.owner == curModuleName || mv.exported) {
+                    error("method '" + methodDisplay(mv) + "' cannot be used as a value: call it with '(' after its name")
+                }
                 error(tname(rt0) + " has no field '" + fname + "'")
                 return x
             }
@@ -5692,11 +5844,13 @@ fn designatorT(target: bool): Item {
             path = path + seg
         }
     }
-    // a use of a suspect reference (not just pointing it elsewhere): see afterCall
-    if s.suspect && (!target || path != "") {
+    // a use of a suspect reference (not just pointing it elsewhere): see afterCall.
+    // A method call is a value use of its receiver even when the statement was parsed as an
+    // assignment target (designatorT(true) in assignmentOrCall), so isCall forces the read marks.
+    if s.suspect && (!target || path != "" || isCall) {
         notePending(uline, ucol, "'" + qname + "' may point to freed memory: a recursive call writes through a handle, which could free what it points into")
     }
-    if s.isRefLocal && (!target || path != "") {        // a read, not a re-pointing: see loopBindCheck
+    if s.isRefLocal && (!target || path != "" || isCall) {        // a read, not a re-pointing: see loopBindCheck
         useSeq += 1
         if !s.fresh {
             s.staleUse = useSeq
@@ -5720,7 +5874,39 @@ fn designatorT(target: bool): Item {
         // nothing can be moved out through a reference, so this can only be a borrow
         if root.isRef && isOwned(x.typ) { x.borrowed = true }
     }
+    if isCall { return methodCall(x, callName, callLine, callCol) }
     return x
+}
+
+// A method call on the finalized receiver x. The receiver's place metadata is complete by now
+// (root, deref, path, viaHandle, borrowed) and its value use has been recorded.
+fn methodCall(recv: Item, name: string, dline: int, dcol: int): Item {
+    let t = recv.typ
+    if t.incomplete { errorAt(tname(t) + " is declared but not yet defined", dline, dcol) }
+    if t.kind != "record" && t.kind != "closed" { errorAt(tname(t) + " has no methods", dline, dcol) }
+    if t.kind == "record" && fieldIndex(t, name) >= 0 {
+        errorAt("type '" + tname(t) + "' has a field '" + name + "', not a method; a field cannot be called", dline, dcol)
+    }
+    let m = findMethod(t, name)
+    if t.owner != "" && t.owner != curModuleName && (m == nil || !m.exported) {
+        // the same message in a full build and in --check: a private method never leaks
+        var tn = t.name
+        var mm = m
+        if mm != nil { tn = mm.recv.name }
+        errorAt("module '" + t.owner + "' has no exported member '" + tn + "::" + name + "' (only 'pub' declarations are visible)", dline, dcol)
+    }
+    if m == nil {
+        errorAt("type '" + tname(t) + "' has no method '" + name + "' (declare it before use; use a forward heading for mutual recursion)", dline, dcol)
+    }
+    if m != nil {
+        // an owned receiver that is the whole object named by a handle: the dereference is a temporary
+        // register item, and consuming it would free the object without its owner knowing
+        if m.fnRec.pmodes[0] == 0 && recv.viaHandle && recv.mode == "reg" {
+            errorAt("cannot call a method that takes its receiver by value through a handle: the handle does not own the object; declare the method with '&' or 'mut &T', or call it on the owner", dline, dcol)
+        }
+        return callFnWith(m, recv, true, dline, dcol)
+    }
+    return voidItem()
 }
 
 fn newExpr(): Item {
@@ -5926,7 +6112,7 @@ fn tryExpr(): Item {
     if fr.ret.kind != "result" {
         var what = "nothing"
         if fr.ret != tVoid { what = tname(fr.ret) }
-        errorAt("try needs a function that returns a Result; '" + fr.name + "' returns " + what, tl, tc)
+        errorAt("try needs a function that returns a Result; '" + callableName(fr) + "' returns " + what, tl, tc)
     }
     next()
     var e = factor()
@@ -7059,7 +7245,18 @@ fn whileStat(): bool {
                 if curModule.globals[g].kind == "fn" && curModule.globals[g].addr < 0 {
                     let fr = curModule.globals[g].fnRec
                     while len(fr.fixups) > 0 && fr.fixups[len(fr.fixups) - 1] >= top {
-                        append(waitFn, g)
+                        append(waitFn, curModule.globals[g])
+                        append(waitAt, fr.fixups[len(fr.fixups) - 1])
+                        truncate(fr.fixups, len(fr.fixups) - 1)
+                    }
+                }
+            }
+            for mi in 0..len(methodSyms) {
+                let m = methodSyms[mi]
+                if m.owner == curModuleName && m.addr < 0 {
+                    let fr = m.fnRec
+                    while len(fr.fixups) > 0 && fr.fixups[len(fr.fixups) - 1] >= top {
+                        append(waitFn, m)
                         append(waitAt, fr.fixups[len(fr.fixups) - 1])
                         truncate(fr.fixups, len(fr.fixups) - 1)
                     }
@@ -7104,7 +7301,7 @@ fn whileStat(): bool {
         farCalls[k] += d
         putRel(farCalls[k], getRel(farCalls[k]) - d)
     }
-    for k in waitFrom..len(waitFn) { append(curModule.globals[waitFn[k]].fnRec.fixups, waitAt[k] + d) }
+    for k in waitFrom..len(waitFn) { append(waitFn[k].fnRec.fixups, waitAt[k] + d) }
     truncate(waitFn, waitFrom)
     truncate(waitAt, waitFrom)
     let tl = shiftWaits(x.T, d)
@@ -7597,7 +7794,7 @@ fn returnStat() {
         if len(blocks[i].defers) > 0 { active = true }
     }
     if f.ret == tVoid {
-        if sym != T_SEMI && sym != T_RBRACE { error(f.name + " does not return a value") }
+        if sym != T_SEMI && sym != T_RBRACE { error(callableName(f) + " does not return a value") }
         runDefers(fnBlock)
     } else {
         let x0 = expression()
@@ -8191,13 +8388,91 @@ fn fnBody(f: ^Sym, name: string, ret: ^Type, params: &[]Param, homes: bool): boo
 }
 
 
+// the collision a method's name makes with a member of its receiver type (section 2.3), if any
+fn memberCollision(t: ^Type, name: string) {
+    if t.kind == "closed" {
+        for i in 0..len(t.variants) {
+            let v = t.variants[i]
+            if v.name == name {
+                error("type '" + tname(t) + "' already has a variant '" + v.name + "'; a method cannot have the same name")
+            }
+            for k in 0..len(v.fields) {
+                if v.fields[k].name == name {
+                    error("type '" + tname(t) + "' already has a field '" + name + "' in variant '" + v.name + "'; a method cannot have the same name")
+                }
+            }
+        }
+        return
+    }
+    for i in 0..len(t.fields) {
+        if t.fields[i].name == name {
+            error("type '" + tname(t) + "' already has a field '" + name + "'; a method cannot have the same name")
+        }
+    }
+}
+
+// checks the receiver type a method declares on (section 7.1) and returns it
+fn methodRecvType(t: ^Type) {
+    if t.incomplete { error(tname(t) + " is declared but not yet defined") }
+    if t.kind != "record" && t.kind != "closed" {
+        error("a method's receiver must be a record or closed type declared in this module, not " + tname(t))
+    }
+    if t.owner != "" && t.owner != curModuleName {
+        error("cannot declare a method on imported type '" + tname(t) + "'; declare it in the type's own module")
+    }
+    let pp = t.parent
+    if pp != nil {
+        error("cannot declare a method on variant '" + tname(t) + "'; declare it on its closed type '" + pp.name + "'")
+    }
+}
+
 fn fnDecl(isPub: bool) {
     let hline = tline
-    let name = ident()
-    if name == "main" && !curModule.isRoot {
+    var isMethod = false
+    var recvName = ""
+    var recvType = tVoid
+    var recvMode = 0
+    if sym == T_LPAREN {
+        isMethod = true
+        let rline = tline
+        next()
+        // the receiver, exactly one: [mut] name: [&] Type
+        var pmut = false
+        if sym == T_IDENT && sval == "mut" { next(); pmut = true }
+        if sym != T_IDENT {
+            if sym == T_RPAREN { errorAt("a method needs a receiver, as in 'fn (r: &T) name(...)'", rline, tcol) }
+            error("expected a receiver name")
+        }
+        recvName = ident()
+        if sym == T_COMMA { error("a method has exactly one receiver") }
+        expect(T_COLON, "")
+        recvType = parseRefType()
+        recvMode = refMode
+        if pmut {
+            if recvMode == 0 { error("mut needs a reference parameter: write mut name: &T") }
+            recvMode = 2
+        }
+        if sym == T_COMMA { error("a method has exactly one receiver") }
+        expect(T_RPAREN, "")
+        methodRecvType(recvType)
+    }
+    var name = ""
+    if isMethod {
+        if sym != T_IDENT { error("expected a method name after the receiver") }
+        name = ident()
+    } else {
+        name = ident()
+    }
+    if isMethod {
+        // a declaration is matched to a prior method before its signature is read
+        let early = findMethodIn(recvType, name)
+        if early != nil && early.addr >= 0 { error("method '" + methodKey(early) + "' is already defined") }
+    }
+    if !isMethod && name == "main" && !curModule.isRoot {
         errorAt("module '" + curModule.name + "' may not declare 'main'; the program root provides it", hline, 1)
     }
     let params = new []Param(0)
+    if isMethod { append(params, new Param{name: recvName, typ: recvType, mode: recvMode}) }
     expect(T_LPAREN, "")
     while sym != T_RPAREN {
         // `mut` before the names: the function may change what the parameter points to
@@ -8228,30 +8503,60 @@ fn fnDecl(isPub: bool) {
         next()
         ret = parseType()
     }
-    let prior = findSym(curModule.globals, name)
     var f = newSym("fn", name, nil)
-    if prior != nil && prior.kind == "fn" && prior.addr < 0 {
-        f = prior
-        var ok = len(f.fnRec.params) == len(params) && same(f.ret, ret)
-        if ok {
-            for i in 0..len(params) {
-                if !same(f.fnRec.params[i], params[i].typ) || f.fnRec.pmodes[i] != params[i].mode { ok = false }
+    if isMethod {
+        memberCollision(recvType, name)
+        let prior = findMethodIn(recvType, name)
+        if prior != nil {
+            f = prior
+            if prior.addr >= 0 { error("method '" + methodKey(prior) + "' is already defined") }
+            var ok = len(f.fnRec.params) == len(params) && same(f.ret, ret)
+            if ok {
+                for i in 0..len(params) {
+                    if !same(f.fnRec.params[i], params[i].typ) || f.fnRec.pmodes[i] != params[i].mode { ok = false }
+                }
             }
+            if !ok { error("method '" + methodKey(prior) + "' does not match its forward heading") }
+        } else {
+            f.fnRec = newFnRec()
+            for p in params {
+                append(f.fnRec.params, p.typ)
+                append(f.fnRec.pmodes, p.mode)
+            }
+            f.ret = ret
+            f.line = hline
+            f.owner = curModuleName
+            f.recv = recvType
+            append(methodSyms, f)
         }
-        if !ok { error("'" + name + "' does not match its forward heading") }
     } else {
-        f.fnRec = newFnRec()
-        declare(f)
-        for p in params {
-            append(f.fnRec.params, p.typ)
-            append(f.fnRec.pmodes, p.mode)
+        let prior = findSym(curModule.globals, name)
+        if prior != nil && prior.kind == "fn" && prior.addr < 0 {
+            f = prior
+            var ok = len(f.fnRec.params) == len(params) && same(f.ret, ret)
+            if ok {
+                for i in 0..len(params) {
+                    if !same(f.fnRec.params[i], params[i].typ) || f.fnRec.pmodes[i] != params[i].mode { ok = false }
+                }
+            }
+            if !ok { error("'" + name + "' does not match its forward heading") }
+        } else {
+            f.fnRec = newFnRec()
+            declare(f)
+            for p in params {
+                append(f.fnRec.params, p.typ)
+                append(f.fnRec.pmodes, p.mode)
+            }
+            f.ret = ret
+            f.line = hline
         }
-        f.ret = ret
-        f.line = hline
     }
     if isPub { f.exported = true }               // sticky across a forward heading and its body
     if sym != T_LBRACE { return }
-    if f.addr >= 0 { error("'" + name + "' is already defined") }
+    if f.addr >= 0 {
+        if isMethod { error("method '" + methodKey(f) + "' is already defined") }
+        error("'" + name + "' is already defined")
+    }
     f.addr = pc()
     for fi in 0..len(f.fnRec.fixups) { fix(f.fnRec.fixups[fi], f.addr) }   // calls waiting for this address
     curFn = f
@@ -8274,12 +8579,21 @@ fn fnDecl(isPub: bool) {
     let sAll = f.freesAll
     let sWrites = f.writesHandles
     homeRetry = false
-    if fnBody(f, name, ret, &params, true) {
+    var dname = name
+    if isMethod { dname = methodDisplay(f) }
+    if fnBody(f, dname, ret, &params, true) {
         truncCode(f.addr)
         for gi in 0..len(curModule.globals) {
             let g = curModule.globals[gi]
             if g.kind == "fn" && g.addr < 0 {
                 let fr = g.fnRec
+                while len(fr.fixups) > 0 && fr.fixups[len(fr.fixups) - 1] >= f.addr { truncate(fr.fixups, len(fr.fixups) - 1) }
+            }
+        }
+        for mi in 0..len(methodSyms) {
+            let m = methodSyms[mi]
+            if m.addr < 0 {
+                let fr = m.fnRec
                 while len(fr.fixups) > 0 && fr.fixups[len(fr.fixups) - 1] >= f.addr { truncate(fr.fixups, len(fr.fixups) - 1) }
             }
         }
@@ -8301,7 +8615,7 @@ fn fnDecl(isPub: bool) {
         tline = sTline
         tcol = sTcol
         homeRetry = false
-        fnBody(f, name, ret, &params, false)
+        fnBody(f, dname, ret, &params, false)
     }
     curFn = nil
 }
@@ -8368,6 +8682,14 @@ fn checkExports() {
             } else if s.kind == "type" {
                 closureCheck(symType(s), s.name, "", s.line)
             }
+        }
+    }
+    for mi in 0..len(methodSyms) {
+        let m = methodSyms[mi]
+        if m.owner == curModuleName && m.exported {
+            truncate(closureSeen, 0)
+            for p in 0..len(m.fnRec.params) { closureCheck(m.fnRec.params[p], methodDisplay(m), "", m.line) }
+            closureCheck(m.ret, methodDisplay(m), "", m.line)
         }
     }
 }
@@ -8543,6 +8865,12 @@ fn compileUnit(path: string, display: string, isRoot: bool) {
         }
         if s.kind == "fn" && s.addr < 0 {
             errorAt("function '" + s.name + "' has a forward heading but no body", s.line, 1)
+        }
+    }
+    for mi in 0..len(methodSyms) {
+        let m = methodSyms[mi]
+        if m.owner == curModuleName && m.addr < 0 {
+            errorAt("method '" + methodKey(m) + "' has a forward heading but no body", m.line, 1)
         }
     }
     checkExports()
@@ -9134,13 +9462,10 @@ fn appGlobal(mut b: &[]byte, s: ^Sym, modName: string) {
     append(b, '\n')
 }
 
-fn appFn(mut b: &[]byte, f: ^Sym, modName: string) {
-    appStr(b, "fn ")
-    appStr(b, f.name)
-    append(b, '(')
-    let n = len(f.fnRec.params)
-    for i in 0..n {
-        if i > 0 { appStr(b, ", ") }
+// parameters from index `from` on, as pN: [&]Type (the receiver is always p0 for a method)
+fn appParams(mut b: &[]byte, f: ^Sym, from: int, count: int, modName: string) {
+    for i in from..count {
+        if i > from { appStr(b, ", ") }
         if f.fnRec.pmodes[i] == 2 { appStr(b, "mut ") }
         append(b, 'p')
         appInt(b, i)
@@ -9148,11 +9473,11 @@ fn appFn(mut b: &[]byte, f: ^Sym, modName: string) {
         if f.fnRec.pmodes[i] > 0 { append(b, '&') }
         appTypeExpr(b, f.fnRec.params[i], modName)
     }
-    append(b, ')')
-    if f.ret != tVoid {
-        appStr(b, ": ")
-        appTypeExpr(b, f.ret, modName)
-    }
+}
+
+// the shared summary: effects, freed globals and per-parameter pf rows
+fn appFnSummary(mut b: &[]byte, f: ^Sym) {
+    let n = len(f.fnRec.params)
     if f.freesAll { appStr(b, " freesall") }
     if f.writesHandles { appStr(b, " writeshandles") }
     if f.fnRec.pfree != 0 {
@@ -9178,6 +9503,41 @@ fn appFn(mut b: &[]byte, f: ^Sym, modName: string) {
             }
         }
     }
+}
+
+fn appFn(mut b: &[]byte, f: ^Sym, modName: string) {
+    appStr(b, "fn ")
+    appStr(b, f.name)
+    append(b, '(')
+    let n = len(f.fnRec.params)
+    appParams(b, f, 0, n, modName)
+    append(b, ')')
+    if f.ret != tVoid {
+        appStr(b, ": ")
+        appTypeExpr(b, f.ret, modName)
+    }
+    appFnSummary(b, f)
+    append(b, '\n')
+}
+
+// a method as a source-like function whose first parameter is the receiver
+fn appMethod(mut b: &[]byte, f: ^Sym, modName: string) {
+    appStr(b, "fn (")
+    if f.fnRec.pmodes[0] == 2 { appStr(b, "mut ") }
+    appStr(b, "p0: ")
+    if f.fnRec.pmodes[0] > 0 { append(b, '&') }
+    appTypeExpr(b, f.fnRec.params[0], modName)
+    appStr(b, ") ")
+    appStr(b, f.name)
+    append(b, '(')
+    let n = len(f.fnRec.params)
+    appParams(b, f, 1, n, modName)
+    append(b, ')')
+    if f.ret != tVoid {
+        appStr(b, ": ")
+        appTypeExpr(b, f.ret, modName)
+    }
+    appFnSummary(b, f)
     append(b, '\n')
 }
 
@@ -9270,7 +9630,11 @@ fn symBody(mod: ^Module): []byte {
             appGlobal(b, s, modName)
         }
     }
-    for i in 0..len(mod.globals) {                  // 6. functions
+    for i in 0..len(methodSyms) {                   // 6. methods, in declaration order
+        let m = methodSyms[i]
+        if m.owner == modName && m.exported { appMethod(b, m, modName) }
+    }
+    for i in 0..len(mod.globals) {                  // 7. functions
         let s = mod.globals[i]
         if s.exported && s.kind == "fn" { appFn(b, s, modName) }
     }
@@ -9334,6 +9698,7 @@ var symDefined = new []string(0)
 var symAliasOrder = new []string(0)
 var symConstOrder = new []string(0)
 var symGlobalOrder = new []string(0)
+var symMethodOrder = new []string(0)
 var symFnOrder = new []string(0)
 var symAfterShells = false
 
@@ -9626,6 +9991,12 @@ fn symCompareOrder() {
     if !symSameList(symAliasOrder, liveAliases) { symDisagree("the type alias order") }
     if !symSameList(symConstOrder, liveConsts) { symDisagree("the constant order") }
     if !symSameList(symGlobalOrder, liveGlobals) { symDisagree("the global order") }
+    let liveMethods = new []string(0)
+    for i in 0..len(methodSyms) {
+        let m = methodSyms[i]
+        if m.owner == symCurMod.name && m.exported { append(liveMethods, methodKey(m)) }
+    }
+    if !symSameList(symMethodOrder, liveMethods) { symDisagree("the method order") }
     if !symSameList(symFnOrder, liveFns) { symDisagree("the function order") }
 }
 
@@ -9645,6 +10016,12 @@ fn symFinish(mode: int) {
     for i in 0..len(symCurMod.globals) {
         let s = symCurMod.globals[i]
         if s.exported && !symHas(symSeen, s.name) { symDisagree("exported '" + s.name + "'") }
+    }
+    for i in 0..len(methodSyms) {
+        let m = methodSyms[i]
+        if m.owner == symCurMod.name && m.exported && !symHas(symSeen, methodKey(m)) {
+            symDisagree("method '" + methodKey(m) + "'")
+        }
     }
     symCompareOrder()
 }
@@ -9914,10 +10291,52 @@ fn symGlobalDecl(mode: int, kind: string) {
 }
 
 fn symFnDecl(mode: int) {
+    var isMethod = false
+    var recvType = tVoid
+    var recvMode = 0
+    if sym == T_LPAREN {
+        // a method: fn ([mut] name: [&] Type) name(...)
+        isMethod = true
+        next()
+        var pmut = false
+        if sym == T_IDENT && sval == "mut" { pmut = true; next() }
+        if sym != T_IDENT { error("expected a receiver name") }
+        ident()                                        // the receiver's name is syntax only
+        if sym != T_COLON { error("expected ':' after the receiver name") }
+        next()
+        var isref = false
+        if sym == T_AMP { next(); isref = true }
+        if pmut {
+            if !isref { error("mut needs a reference parameter: write mut p0: &T") }
+            recvMode = 2
+        } else if isref {
+            recvMode = 1
+        }
+        var spelling = ""
+        if sym == T_IDENT { spelling = sval }
+        recvType = symParseType()
+        expect(T_RPAREN, "")
+        if recvType.kind != "record" && recvType.kind != "closed" {
+            error("the receiver must be a record or closed type defined in this module, not " + symTypeText(recvType))
+        }
+        if recvType.owner == "" || recvType.owner != symCurMod.name {
+            error("the receiver must be the defining name of a type in this module")
+        }
+        let rpar = recvType.parent
+        if rpar != nil {
+            error("the receiver cannot be a variant; declare the method on '" + rpar.name + "'")
+        }
+        if recvType.name != spelling {
+            error("the receiver must be the defining name of a type in this module")
+        }
+    }
     if sym != T_IDENT { error("expected a function name") }
     let nline = tline
     let name = ident()
-    if name == "main" {
+    if isMethod && !symHas(symDefined, recvType.name) {
+        error("method '" + recvType.name + "::" + name + "' comes before the definition of type '" + recvType.name + "'")
+    }
+    if !isMethod && name == "main" {
         eprintln(srcPath, ":", nline, ":", 1, ": module '", symCurMod.name,
                  "' may not declare 'main'; the program root provides it")
         exit(1)
@@ -9926,6 +10345,10 @@ fn symFnDecl(mode: int) {
     next()
     let ptypes = new []^Type(0)
     let pmodes = new []int(0)
+    if isMethod {
+        append(ptypes, recvType)
+        append(pmodes, recvMode)
+    }
     while sym != T_RPAREN {
         var pmut = false
         if sym == T_IDENT && sval == "mut" { pmut = true; next() }
@@ -10040,6 +10463,70 @@ fn symFnDecl(mode: int) {
             if !have { error("pfree bit " + string(i) + " has no pf row") }
         }
         i += 1
+    }
+    if isMethod {
+        let key = recvType.name + "::" + name
+        let what = "method '" + key + "'"
+        symClaim(key)
+        append(symMethodOrder, key)
+        if mode == 1 {
+            let f = newSym("fn", name, nil)
+            f.fnRec = newFnRec()
+            for k in 0..len(ptypes) {
+                append(f.fnRec.params, ptypes[k])
+                append(f.fnRec.pmodes, pmodes[k])
+            }
+            f.ret = ret
+            f.freesAll = freesAll
+            f.writesHandles = writesHandles
+            f.fnRec.pfree = low
+            f.addr = 0
+            f.owner = symCurMod.name
+            f.exported = true
+            f.line = nline
+            f.recv = recvType
+            for k in 0..len(freedOwners) {
+                append(f.fnRec.freed, globalSym(freedOwners[k], freedNames[k]))
+            }
+            for k in 0..len(rowIdx) {
+                append(pfFn, f)
+                append(pfIdx, rowIdx[k])
+                append(pfEv, rowEv[k])
+            }
+            append(methodSyms, f)
+            return
+        }
+        let lm = findMethodIn(recvType, name)
+        if lm == nil { symDisagree(what) }
+        if lm != nil {
+            if !lm.exported || lm.recv != recvType { symDisagree(what) }
+            if lm.kind != "fn" { symDisagree(what) }
+            if len(lm.fnRec.params) != len(ptypes) { symDisagree(what) }
+            for k in 0..len(ptypes) {
+                if !same(lm.fnRec.params[k], ptypes[k]) || lm.fnRec.pmodes[k] != pmodes[k] {
+                    symDisagree(what)
+                }
+            }
+            if !same(lm.ret, ret) { symDisagree(what) }
+            if lm.freesAll != freesAll || lm.writesHandles != writesHandles { symDisagree(what) }
+            if lm.fnRec.pfree != low { symDisagree(what) }
+            if len(lm.fnRec.freed) != len(freedOwners) { symDisagree(what) }
+            for k in 0..len(freedOwners) {
+                let g = globalAtKey(keyOf(freedOwners[k], freedNames[k]))
+                if g == nil || lm.fnRec.freed[k] != g { symDisagree(what) }
+            }
+            var r = 0
+            for k in 0..len(ptypes) {
+                for q in 0..len(pfFn) {
+                    if pfFn[q] == lm && pfIdx[q] == k {
+                        if r >= len(rowIdx) || rowIdx[r] != k || rowEv[r] != pfEv[q] { symDisagree(what) }
+                        r += 1
+                    }
+                }
+            }
+            if r != len(rowIdx) { symDisagree(what) }
+        }
+        return
     }
     symClaim(name)
     append(symFnOrder, name)
@@ -10325,6 +10812,7 @@ fn readSym(symPath: string, expected: string, mode: int, display: string, srcCan
     symAliasOrder = new []string(0)
     symConstOrder = new []string(0)
     symGlobalOrder = new []string(0)
+    symMethodOrder = new []string(0)
     symFnOrder = new []string(0)
     symAfterShells = false
     symReadDecls(mode)
@@ -10360,6 +10848,7 @@ fn reemitSym(path: string) {
 
 fn releaseTables() {
     symArena = new []Sym(0)
+    methodSyms = new []^Sym(0)
     typeArena = new []Type(0)
     bindArena = new []RefBind(0)
     universe = new []^Sym(0)

@@ -26,8 +26,8 @@ RT = FORK
 GOLD = os.path.join(HERE, 'modules', 'golden')
 UPDATE = '--update' in sys.argv
 
-OBO_VERSION = '0.5'
-SYM_FORMAT = 1
+OBO_VERSION = '0.6'
+SYM_FORMAT = 2
 SYM_ABI = 1
 
 
@@ -141,6 +141,7 @@ pub type Node = ref record { value: int; next: ?Node }
 pub type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
 pub type Builder = ref record { items: []int }
 pub type Holder = ref record { c: ?Circle }
+pub type Bag = ref record { items: []Node; n: int }
 pub type Text = []string
 pub type NodeAlias = Node
 pub type CircleAlias = Circle
@@ -167,6 +168,15 @@ pub fn put(mut b: &Builder, v: int) { append(b.items, v) }
 pub fn clear(mut b: &Builder) { truncate(b.items, 0) }
 pub fn wipe() { Cache = new []Node(0); freesall = 0 }
 pub fn pure(x: int): int { return x + hidden() }
+
+pub fn (n: &Node) worth(): int { return n.value }
+pub fn (mut b: &Bag) add(n: Node) {
+    append(b.items, n)
+    b.n += 1
+}
+pub fn (mut b: &Bag) reset() { b.items = new []Node(0) }
+pub fn (b: Bag) count(): int { return len(b.items) }
+fn (b: &Bag) secret(): int { return b.n }
 '''
 
 RICH_MAIN = '''module main
@@ -178,6 +188,12 @@ fn main() {
     let c = new lib::Circle{r: 2}
     println(lib::area(c))
     println(lib::Empty == "", " ", lib::Negative)
+    println(n.worth())
+    let b = new lib::Bag{items: new []lib::Node(0), n: 0}
+    b.add(lib::make(3))
+    println(b.n)
+    b.reset()
+    println(b.count())
 }
 '''
 
@@ -199,6 +215,15 @@ def roundtrip_rich():
             want = sym_text(os.path.join(s, name))
             if p.stdout != want:
                 raise Fail(f"re-emission of {name} is not byte-identical")
+        lib = sym_text(os.path.join(s, 'lib.sym')).decode()
+        for line in ('fn (p0: &Node) worth(): int',
+                     'fn (mut p0: &Bag) add(p1: Node)',
+                     'fn (mut p0: &Bag) reset() pfree 0x1 pf 0 "=/items"',
+                     'fn (p0: Bag) count(): int'):
+            if line not in lib:
+                raise Fail(f"method line missing from lib.sym: {line!r}")
+        if 'secret' in lib:
+            raise Fail('a private method was emitted')
         ok(build(d, s, check=True), 'check')      # variants keep their parent in check mode
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -415,9 +440,9 @@ def stale_missing_corrupt_versions():
         open(p, 'wb').write(base)
         # format / ABI / compiler, each its own exact message
         cases = [
-            (b'obosym 1', b'obosym 2', 'has format 2; this compiler reads 1'),
+            (b'obosym 2', b'obosym 3', 'has format 3; this compiler reads 2'),
             (b'\nabi 1\n', b'\nabi 9\n', 'has ABI 9; this compiler uses 1'),
-            (b'compiler "0.5"', b'compiler "9.9"', "was built by compiler '9.9'; this is '0.5'"),
+            (b'compiler "0.6"', b'compiler "9.9"', "was built by compiler '9.9'; this is '0.6'"),
         ]
         for old, new, msg in cases:
             data = base
@@ -689,9 +714,9 @@ def handwritten_interface():
     """The reader accepts grammar the writer does not emit: pfree 0x0, arbitrary
     parameter names, summary items in any order, and a pf row at index >= 62."""
     params = ', '.join(f'q{i}: int' for i in range(63))
-    sym = f'''obosym 1
+    sym = f'''obosym 2
 abi 1
-compiler "0.5"
+compiler "0.6"
 source 0x{0:016x}
 interface 0x0
 module many
@@ -812,6 +837,11 @@ pub fn clear(mut a: &[]Node) { truncate(a, 0) }
 pub fn pure(x: int): int { return x + 1 }
 pub fn takeWhole(mut b: &Box) { b.items = new []Node(0) }
 pub fn hw(mut a: &[]Node, h: ^Bag): int { h.items = new []Node(0); return 1 }
+pub var gNode: Node = new Node{v: 9}
+pub fn (mut b: &Box) addOnly(n: Node) { append(b.items, n) }
+pub fn (mut b: &Box) clear2() { b.items = new []Node(0) }
+pub fn (mut b: &Box) wipeG() { gNode = new Node{v: 10} }
+pub fn (mut b: &Box) viaH(h: ^Bag) { h.items = new []Node(0) }
 ''',
         'main.obx': 'module main\nimport "lib.obx"\nfn main() { println(lib::pure(1)) }\n'}
     d, s = tree(files)
@@ -822,11 +852,19 @@ pub fn hw(mut a: &[]Node, h: ^Bag): int { h.items = new []Node(0); return 1 }
         ('readonly to mut', 'fn f(r: &[]lib::Node) { lib::appendOnly(r, 1) } fn main() { }', 1),
         ('deep to writer', 'fn main() { let b = new lib::Bag{items: new []lib::Node(0)}; let xs = new []lib::Node(0); append(xs, new lib::Node{v: 1}); let r = &xs[0]; println(lib::hw(xs, handle(b))); println(r.v) }', 1),
         ('takeWhole rejected', 'fn main() { let b = new lib::Box{items: new []lib::Node(0)}; append(b.items, new lib::Node{v: 1}); let p = &b.items[0]; lib::takeWhole(b); println(p.v) }', 1),
+        ('method append accepted', 'fn main() { let b = new lib::Box{items: new []lib::Node(0)}; append(b.items, new lib::Node{v: 1}); let r = &b.items[0]; b.addOnly(new lib::Node{v: 2}); println(r.v) }', 0),
+        ('method clear rejected', 'fn main() { let b = new lib::Box{items: new []lib::Node(0)}; append(b.items, new lib::Node{v: 1}); let r = &b.items[0]; b.clear2(); println(r.v) }', 1),
+        ('method frees global rejected', 'fn main() { let b = new lib::Box{items: new []lib::Node(0)}; let r = &lib::gNode; b.wipeG(); println(r.v) }', 1),
+        ('method writes handle rejected', 'fn main() { let b = new lib::Box{items: new []lib::Node(0)}; let bag = new lib::Bag{items: new []lib::Node(0)}; let xs = new []lib::Node(0); append(xs, new lib::Node{v: 1}); let r = &xs[0]; b.viaH(handle(bag)); println(r.v) }', 1),
     ]
     try:
         ok(build(d, s), 'build')
         text = sym_text(os.path.join(s, 'lib.sym')).decode()
-        for want in ('pfree 0x1 pf 0 "!"', 'pfree 0x1 pf 0 "=/items"', 'freesall writeshandles'):
+        for want in ('pfree 0x1 pf 0 "!"', 'pfree 0x1 pf 0 "=/items"', 'freesall writeshandles',
+                     'fn (mut p0: &Box) addOnly(p1: Node)',
+                     'fn (mut p0: &Box) clear2() pfree 0x1 pf 0 "=/items"',
+                     'fn (mut p0: &Box) wipeG() frees 1 lib::gNode',
+                     'fn (mut p0: &Box) viaH(p1: ^Bag) freesall writeshandles'):
             if want not in text:
                 raise Fail(f"summary item missing: {want!r} in {text!r}")
         for name, body, want in cases:
@@ -1057,7 +1095,7 @@ def b6_stub_completion():
     try:
         ok(build(d, s), 'x build')
         m = os.path.join(s, 'm.sym')
-        open(m, 'w').write('obosym 1\nabi 1\ncompiler "0.5"\nsource 0x%016x\ninterface 0x0\nmodule m\nfn f() frees 1 x::g\n' % 0)
+        open(m, 'w').write('obosym 2\nabi 1\ncompiler "0.6"\nsource 0x%016x\ninterface 0x0\nmodule m\nfn f() frees 1 x::g\n' % 0)
         rehash(m, lambda b: b)
         for name, imports in (('order1', 'import "m.obx"\nimport "x.obx"'),
                               ('order2', 'import "x.obx"\nimport "m.obx"')):
@@ -1112,6 +1150,203 @@ def duplicate_import_pair():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def hash_methods():
+    """Method interface data: a private body or a parameter rename changes the
+    source hash only; a method rename or receiver-mode change changes the
+    interface; a private method is not interface data; a pub method and its order
+    are."""
+    base = '''module lib
+pub type M = ref record { v: int }
+pub fn (m: &M) get(k: int): int { return m.v + k }
+fn (m: &M) hidden(): int { return m.v }
+pub fn (m: &M) one(): int { return 1 }
+pub fn (m: &M) two(): int { return 2 }
+'''
+    main = 'module main\nimport "lib.obx"\nfn main() { }\n'
+
+    def iface(text):
+        d, s = tree({'lib.obx': text, 'main.obx': main})
+        try:
+            ok(build(d, s), 'build')
+            return sym_header(os.path.join(s, 'lib.sym'))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    b0 = iface(base)
+    if 'fn (p0: &M) get(p1: int): int' not in b0['body'] or 'hidden' in b0['body']:
+        raise Fail(f"the base method interface is wrong: {b0['body']!r}")
+    h = iface(base.replace('fn (m: &M) hidden(): int { return m.v }',
+                           'fn (m: &M) hidden(): int { return m.v + 1 }'))
+    if h['source'] == b0['source'] or h['interface'] != b0['interface']:
+        raise Fail('a private method body change must change source only')
+    h = iface(base.replace('pub fn (m: &M) get(k: int): int { return m.v + k }',
+                           'pub fn (r: &M) get(q: int): int { return r.v + q }'))
+    if h['source'] == b0['source'] or h['interface'] != b0['interface']:
+        raise Fail('a receiver/argument rename must change source only')
+    if 'fn (p0: &M) get(p1: int): int' not in h['body']:
+        raise Fail('the writer did not keep canonical p0/p1 after a rename')
+    h = iface(base.replace('pub fn (m: &M) get(k: int): int { return m.v + k }',
+                           'pub fn (m: &M) fetch(k: int): int { return m.v + k }'))
+    if h['interface'] == b0['interface']:
+        raise Fail('renaming a pub method must change the interface hash')
+    h = iface(base.replace('pub fn (m: &M) get(k: int): int { return m.v + k }',
+                           'pub fn (mut m: &M) get(k: int): int { return m.v + k }'))
+    if h['interface'] == b0['interface']:
+        raise Fail('a receiver-mode change must change the interface hash')
+    h = iface(base + 'fn (m: &M) more(): int { return 3 }\n')
+    if h['source'] == b0['source'] or h['interface'] != b0['interface']:
+        raise Fail('adding a private method must keep the interface hash')
+    h = iface(base + 'pub fn (m: &M) more(): int { return 3 }\n')
+    if h['interface'] == b0['interface']:
+        raise Fail('adding a pub method must change the interface hash')
+    h = iface(base.replace('pub fn (m: &M) one(): int { return 1 }\npub fn (m: &M) two(): int { return 2 }',
+                           'pub fn (m: &M) two(): int { return 2 }\npub fn (m: &M) one(): int { return 1 }'))
+    if h['interface'] == b0['interface']:
+        raise Fail('reordering two pub methods must change the interface hash')
+
+
+def malformed_methods():
+    """Reader validation of a method line: structure, receiver kind and identity,
+    position, duplicate keys and the summary indexes (0 is the receiver)."""
+    base = '''module lib
+pub type Node = ref record { v: int }
+pub type Bag = ref record { items: []Node; n: int }
+pub type NodeAlias = Node
+pub type Shape = closed { Dot { x: int } }
+pub fn (n: &Node) get(): int { return n.v }
+pub fn (mut b: &Bag) clear() { b.items = new []Node(0) }
+fn (n: &Node) hidden(): int { return n.v }
+'''
+    files = {'lib.obx': base, 'main.obx': 'module main\nimport "lib.obx"\nfn main() { }\n'}
+    d, s = tree(files)
+    lib = os.path.join(s, 'lib.sym')
+    try:
+        ok(build(d, s), 'base')
+        base_sym = sym_text(lib)
+        cases = [
+            ('duplicate method key',
+             b'fn (p0: &Node) get(): int',
+             b'fn (p0: &Node) get(): int\nfn (p0: &Node) get(): int',
+             "duplicate exported name 'Node::get'"),
+            ('receiver is int', b'fn (p0: &Node) get()', b'fn (p0: int) get()',
+             'the receiver must be a record or closed type defined in this module, not int'),
+            ('receiver is an array', b'fn (p0: &Node) get()', b'fn (p0: &[]int) get()',
+             'the receiver must be a record or closed type defined in this module, not []int'),
+            ('receiver is a variant', b'fn (p0: &Node) get()', b'fn (p0: &Dot) get()',
+             "the receiver cannot be a variant; declare the method on 'Shape'"),
+            ('receiver mut without &', b'fn (mut p0: &Bag) clear()', b'fn (mut p0: Bag) clear()',
+             'mut needs a reference parameter'),
+            ('receiver named by an alias', b'fn (p0: &Node) get()', b'fn (p0: &NodeAlias) get()',
+             'the receiver must be the defining name of a type in this module'),
+            ('receiver of an unknown type', b'fn (p0: &Node) get()', b'fn (p0: &Nope) get()',
+             "unknown type 'Nope'"),
+            ('method pfree bit with no row', b'pfree 0x1 pf 0 "=/items"', b'pfree 0x1',
+             'pfree bit 0 has no pf row'),
+            ('method pf row with no bit', b'pfree 0x1 pf 0 "=/items"', b'pf 0 "=/items"',
+             'pf row for parameter 0 has no pfree bit'),
+            ('method unknown summary item', b'fn (p0: &Node) get(): int',
+             b'fn (p0: &Node) get(): int frobnicate', "unknown summary item 'frobnicate'"),
+        ]
+        for name, old, new, detail in cases:
+            if base_sym.count(old) != 1:
+                raise Fail(f"fixture {name}: {old!r} occurs {base_sym.count(old)} times")
+            open(lib, 'wb').write(base_sym)
+            mutate(lib, old, new)
+            q = build(d, s, check=True)
+            if q.returncode != 2 or 'symbol file:' not in q.stderr or detail not in q.stderr:
+                raise Fail(f"{name}: exit {q.returncode}: {q.stderr.strip()}")
+        line = b'fn (p0: &Node) get(): int\n'
+        def move_before(b):
+            b = b.replace(line, b'', 1)
+            at = b.index(b'type Node uid ')
+            return b[:at] + line + b[at:]
+        open(lib, 'wb').write(base_sym)
+        rehash(lib, move_before)
+        q = build(d, s, check=True)
+        # before even the shell the type does not resolve: the existing unknown-type error
+        if q.returncode != 2 or "unknown type 'Node'" not in q.stderr:
+            raise Fail(f"method before the shell: exit {q.returncode}: {q.stderr.strip()}")
+        def move_between(b):
+            b = b.replace(line, b'', 1)
+            at = b.index(b'type Node = ref record')
+            return b[:at] + line + b[at:]
+        open(lib, 'wb').write(base_sym)
+        rehash(lib, move_between)
+        q = build(d, s, check=True)
+        if q.returncode != 2 or "comes before the definition of type 'Node'" not in q.stderr:
+            raise Fail(f"method between shell and definition: exit {q.returncode}: {q.stderr.strip()}")
+        files2 = {
+            'other.obx': 'module other\npub type Box = ref record { v: int }\n',
+            'lib.obx': 'module lib\nimport "other.obx"\npub type Node = ref record { v: int }\n'
+                       'pub fn (n: &Node) get(): int { return n.v }\n',
+            'main.obx': 'module main\nimport "lib.obx"\nfn main() { }\n',
+        }
+        d2, s2 = tree(files2)
+        try:
+            ok(build(d2, s2), 'foreign base')
+            lib2 = os.path.join(s2, 'lib.sym')
+            data = sym_text(lib2).replace(b'fn (p0: &Node) get(): int',
+                                          b'fn (p0: &other::Box) get(): int', 1)
+            open(lib2, 'wb').write(data)
+            rehash(lib2, lambda b: b)
+            q = build(d2, s2, check=True)
+            if q.returncode != 2 or 'the receiver must be the defining name of a type in this module' not in q.stderr:
+                raise Fail(f"foreign receiver: exit {q.returncode}: {q.stderr.strip()}")
+        finally:
+            shutil.rmtree(d2, ignore_errors=True)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def methods_sourceless_check():
+    """A method-bearing dependency checks source-less with exit 0; the checked
+    module's own .sym carries its methods; a format-1 file is rejected."""
+    files = {
+        'lib.obx': '''module lib
+pub type T = ref record { v: int }
+pub fn make(v: int): T { return new T{v: v} }
+pub fn (t: &T) get(): int { return t.v }
+pub fn (mut t: &T) bump() { t.v += 1 }
+''',
+        'main.obx': '''module main
+import "lib.obx"
+pub type Local = ref record { n: int }
+pub fn (l: &Local) lget(): int { return l.n }
+fn main() {
+    let t = lib::make(2)
+    t.bump()
+    println(t.get())
+}
+'''}
+    d, s = tree(files)
+    try:
+        ok(build(d, s), 'base')
+        libsym = os.path.join(s, 'lib.sym')
+        text = sym_text(libsym).decode()
+        for line in ('fn (p0: &T) get(): int', 'fn (mut p0: &T) bump()'):
+            if line not in text:
+                raise Fail(f"lib.sym lacks {line!r}")
+        r = reemit(libsym)
+        ok(r, 'reemit lib')
+        if r.stdout != sym_text(libsym):
+            raise Fail('the method-bearing lib.sym does not round-trip')
+        os.rename(os.path.join(d, 'lib.obx'), os.path.join(d, 'lib.obx.bak'))
+        q = build(d, s, check=True)
+        ok(q, 'source-less check with methods')
+        main_text = sym_text(os.path.join(s, 'main.sym')).decode()
+        if 'fn (p0: &Local) lget(): int' not in main_text:
+            raise Fail(f"the checked module's .sym lacks its method: {main_text!r}")
+        base = sym_text(libsym)
+        open(libsym, 'wb').write(base.replace(b'obosym 2', b'obosym 1', 1))
+        q = build(d, s, check=True)
+        if q.returncode != 2 or 'has format 1; this compiler reads 2' not in q.stderr:
+            raise Fail(f"format 1: exit {q.returncode}: {q.stderr.strip()}")
+        open(libsym, 'wb').write(base)
+        os.rename(os.path.join(d, 'lib.obx.bak'), os.path.join(d, 'lib.obx'))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def tests():
     return [
         ('sym/roundtrip_rich', roundtrip_rich),
@@ -1130,6 +1365,9 @@ def tests():
         ('sym/b6_stub_order', b6_stub_order),
         ('sym/b7_aliases', b7_aliases),
         ('sym/effects_check', effects_check),
+        ('sym/hash_methods', hash_methods),
+        ('sym/malformed_methods', malformed_methods),
+        ('sym/methods_sourceless_check', methods_sourceless_check),
         ('sym/scanner_restore', scanner_restore),
         ('sym/reader_does_not_use_lookup', reader_does_not_use_lookup),
         ('sym/module_names_int_result', module_names_int_result),

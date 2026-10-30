@@ -1,0 +1,2 @@
+exit 2
+stderr obxc: <sym>/lib.sym:13:43: symbol file: a pf event starts with '=' or '!', not 'x'

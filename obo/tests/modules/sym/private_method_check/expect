@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:5:15: module 'lib' has no exported member 'T::secret' (only 'pub' declarations are visible)

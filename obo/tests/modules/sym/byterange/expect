@@ -1,0 +1,2 @@
+exit 2
+stderr obxc: <sym>/lib.sym:10:38: symbol file: a byte constant must be between 0 and 255

@@ -1,0 +1,9 @@
+obosym 2
+abi 1
+compiler "0.6"
+source 0xfc617d784985eed9
+interface 0xe967acac8be817ce
+module lib
+type T uid 0x2bd2b8a37148a914
+type T = ref record { v: int }
+fn make(): T

@@ -1,0 +1,7 @@
+module main
+import "lib.obx"
+fn main() {
+    let b = lib::make()
+    b.add("a")
+    println(b.count())
+}

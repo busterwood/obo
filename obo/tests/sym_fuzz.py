@@ -67,6 +67,7 @@ pub fn area(s: Shape): int {
     }
 }
 pub fn add(mut n: &Node, v: int) { n.value = n.value + v }
+pub fn (n: &Node) valueOf(): int { return n.value }
 pub fn clear(mut a: &[]Node) { truncate(a, 0) }
 pub fn wipe() { hidden = nil; cache = nil; freesall = 0 }
 pub fn pure(x: int): int { return x + hiddenFn() }
@@ -76,7 +77,7 @@ MAIN = '''module main
 import "lib.obx"
 fn main() {
     let n = lib::make(2)
-    println(lib::area(new lib::Circle{r: 1}), " ", lib::Mask, " ", lib::On, " ", n.value)
+    println(lib::area(new lib::Circle{r: 1}), " ", lib::Mask, " ", lib::On, " ", n.value, " ", n.valueOf())
 }
 '''
 
@@ -177,7 +178,7 @@ def swap_lines(rng, data):
 
 @mutator
 def replace_identifier(rng, data):
-    names = [b'Node', b'Shape', b'Circle', b'cache', b'Limit', b'make', b'area', b'add']
+    names = [b'Node', b'Shape', b'Circle', b'cache', b'Limit', b'make', b'area', b'add', b'valueOf']
     old = rng.choice(names)
     new = rng.choice([b'Nope', b'Other', b'broken', b'9x'])
     return data.replace(old, new, 1)
@@ -199,7 +200,7 @@ def replace_number(rng, data):
 def change_version(rng, data):
     choice = rng.randrange(3)
     if choice == 0:
-        return re.sub(rb'(?m)^obosym \d+$', b'obosym 2', data, count=1)
+        return re.sub(rb'(?m)^obosym \d+$', b'obosym 3', data, count=1)
     if choice == 1:
         return re.sub(rb'(?m)^abi \d+$', b'abi 9', data, count=1)
     return re.sub(rb'(?m)^compiler "[^"]*"$', b'compiler "9.9"', data, count=1)
@@ -226,6 +227,7 @@ def corrupt_summary(rng, data):
         (b' frees 2 ', b' frees 3 '),
         (b'mut p0: &Node', b'mut p0: Node'),
         (b'p0: int', b'p0: &int'),
+        (b'fn (p0: &Node) valueOf(): int', b'fn (p0: int) valueOf(): int'),
     ]
     old, new = rng.choice(options)
     return data.replace(old, new, 1)

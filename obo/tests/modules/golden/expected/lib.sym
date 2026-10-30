@@ -1,9 +1,9 @@
-obosym 1
+obosym 2
 abi 1
-compiler "0.5"
-source 0x581c58722e661f3b
+compiler "0.6"
+source 0x8643f1a941784054
 dep other "other.obx"
-interface 0xf701cc563e21d048
+interface 0x1091b97ac05a4131
 module lib
 depiface other 0xaf82ae64d770c496
 type Node uid 0x5fca22110fba38d4
@@ -22,6 +22,9 @@ const On: bool = true
 const Greeting: string = hex "68690a"
 var Cache: []Node
 let Root: Node
+fn (p0: &Node) worth(): int
+fn (mut p0: &Node) bump()
+fn (p0: Node) taken(): int
 fn make(p0: int): Node
 fn area(p0: Shape): int
 fn add(mut p0: &Node, p1: int)

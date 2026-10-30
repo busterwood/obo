@@ -1,0 +1,6 @@
+module main
+import "lib.obx"
+fn main() {
+    let n = lib::make(2)
+    println(n.get())
+}

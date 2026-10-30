@@ -1,0 +1,2 @@
+exit 2
+stderr obxc: <sym>/mid.sym:9:6: symbol file: expected a parameter name

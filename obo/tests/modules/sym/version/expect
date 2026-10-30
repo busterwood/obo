@@ -1,0 +1,2 @@
+exit 2
+stderr obxc: symbol file '<sym>/lib.sym' has ABI 9; this compiler uses 1; rebuild it

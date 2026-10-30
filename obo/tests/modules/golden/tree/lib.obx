@@ -24,3 +24,7 @@ pub fn area(s: Shape): int {
     }
 }
 pub fn add(mut n: &Node, v: int) { n.value = n.value + v }
+pub fn (n: &Node) worth(): int { return n.value }
+pub fn (mut n: &Node) bump() { n.value += 1 }
+pub fn (n: Node) taken(): int { return n.value }
+fn (n: &Node) hiddenm(): int { return 1 }

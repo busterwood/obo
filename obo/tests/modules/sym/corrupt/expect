@@ -1,0 +1,2 @@
+exit 2
+stderr obxc: symbol file '<sym>/lib.sym' is corrupt (interface hash); rebuild it

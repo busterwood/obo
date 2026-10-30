@@ -1,0 +1,2 @@
+exit 2
+stderr obxc: <sym>/lib.sym:13:43: symbol file: malformed pf event path '!/': empty segment

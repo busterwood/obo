@@ -1,0 +1,2 @@
+exit 2
+stderr obxc: <sym>/lib.sym:4:8: symbol file: malformed source hash: expected 0x and 16 hexadecimal digits, found 0x1234

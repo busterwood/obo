@@ -1,0 +1,2 @@
+exit 2
+stderr obxc: symbol file '<sym>/mid.sym' depends on 'lib' with interface hash 0x0000000000000001, but 'lib' has 0x12fd18c48546fcf6; rebuild the dependent module
