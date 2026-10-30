@@ -7,10 +7,12 @@ in the worktree `/home/chris/obx/.claude/worktrees/lambdas-design` on branch
 `LANGUAGE.md` 2,081 lines, `FORK.md` 5,235 lines; the promoted seed
 `obo/seed/obo` reports `obo 0.6 sym-format 2 abi 1`. The interfaces
 implementation is in flight on another branch and is not merged; this design
-targets the interface baseline `0.7`/format `3` and therefore targets
-`0.8`/format `4` for Stage A and `0.9`/format `4` for Stage B (section 6.5).
+targets the interface baseline `0.8`/format `4` and therefore targets
+`0.9`/format `5` for Stage A and `0.10`/format `5` for Stage B (section 6.5).
 Nothing is implemented by this pass: no source, test, seed, runtime or tool
 file changes. The only repository write is this file.
+
+> 2026-10-30 version shift: interfaces is now `0.8`/format `4` (`obo/design/interfaces-v3-design.md`), so Stage A is `0.9`/format `5` and Stage B is `0.10`/format `5`; interfaces v3 also requires `containsIface` to recurse into record and closed fields (v3 section 10). Also amended 2026-10-30: `containsIface` now recurses into record and closed fields with a visited list and treats an incomplete forward shell as containing an interface (section 5.2 snippet), and the interface-exclusion reasons now cite interfaces v3; no lambda rule is loosened.
 
 Every claim about the current compiler below was checked against
 `obo/src/obo.obo` at this baseline; `file:line` references are to that file,
@@ -141,7 +143,7 @@ over-scope.
     writer emits `fn(int, &T): bool` in parameter, alias and (never) return
     or field positions; the reader parses it. A lambda body is local source
     and never appears in a `.sym`; no code or environment address is ever
-    written. Format becomes `obosym 4`, compiler `0.8` (Stage A) / `0.9`
+    written. Format becomes `obosym 5`, compiler `0.9` (Stage A) / `0.10`
     (Stage B), ABI stays `1`, and all committed `.sym` fixtures migrate.
 15. **Restrictions keep the nested compiler tractable:** no lambda literal in
     a `while` condition (the condition is lifted and truncated,
@@ -328,8 +330,8 @@ FnParamType  ::= [ "&" ] Type
   `fn (d: I): int` would form a value the `fn(...)` type syntax refuses.
   Ordinary functions may take interface parameters (the interfaces design),
   but a function value's ABI and captures assume owned/read-only/non-interface
-  words; allowing an interface there would need the interface cell/token
-  representation in the function-value contract.
+  words; excluded in v1 to keep the two features separate; interfaces v3
+  (owning boxes, `&I` borrows) makes this a later, staged relaxation (v3 section 10).
 - `nonNull(fn)` is true, so an uninitialized `var f: fn(...)` is the existing
   "needs an initial value" error; the `?` constructor checks the kind (and
   `containsFn`) explicitly before `nonNull`, so `?fn`/`?Cmp` are refused with
@@ -522,7 +524,7 @@ hidden code: fn (env: int, visible params...) -> ret
 | array element, `[]fn`, `Result[fn]` | no | same |
 | global, constant | no | same |
 | optional `?fn`, handle `^fn`, reference `&fn` | no | same |
-| interface value, interface member signature | no (v1) | interfaces are a separate second-class representation |
+| interface value, interface member signature | no (v1) | excluded in v1 to keep the two features separate; interfaces v3 (owning boxes, `&I` borrows) makes this a later, staged relaxation (v3 section 10) |
 | method receiver | no | function types have no methods |
 | `match`, `==`, `drop`, `take`, `replace`, `handle`, `alive`, `println` | no | not a record/int/handle/owned value |
 
@@ -696,8 +698,8 @@ type, not by syntax:
   (`cannot capture interface value '<x>'; function values cannot take
   interface values in v1`) because a function type has no interface
   parameter or return, so the value could not be used or forwarded from the
-  body anyway; the interfaces cell/token representation is also still
-  settling. The message does not suggest passing the interface as a
+  body anyway; excluded in v1 to keep the two features separate; interfaces v3
+  (owning boxes, `&I` borrows) makes this a later, staged relaxation (v3 section 10). The message does not suggest passing the interface as a
   parameter, because it cannot be one.
 
 ### 4.3 The environment cell
@@ -926,9 +928,10 @@ fn fnRet(t: ^Type): ^Type { return baseOf(t) }
   `rejectIface(t,msg)` are new recursive helpers used at every constructor and
   every forbidden position (section 5.2); they are not a `Type` field. They
   recurse through `array`/`opt`/`handle`/`result` bases and, for
-  `containsIface`, through a function type's parameters and return; they do
-  not recurse into record fields (a function/interface field is rejected at
-  the definition, and a recursive record must not loop the helper).
+  `containsIface`, through a function type's parameters and return; `containsFn` does
+  not recurse into record fields, because a function-typed field is still rejected at the definition, so it need not.
+  `containsIface` does recurse into record and closed fields, because interface fields are legal under interfaces v3
+  (`interfaces-v3-design.md`, section 10.1); a visited list keeps a recursive record from looping.
 - A function type is not a named type; `reservedTypeName` and `nameType` are
   untouched. A type alias gives it a source name, but the writer emits the
   underlying type (`appTypeExpr`, `obo.obo:9350-9378`) and the reader
@@ -1018,16 +1021,40 @@ fn containsFn(t: ^Type): bool {
     }
     return false
 }
+var ifaceSeen = new []^Type(0)      // visited records and closed types of containsIface alone
+
 fn containsIface(t: ^Type): bool {
+    truncate(ifaceSeen, 0)          // each top-level query starts with an empty list
+    return containsIfaceIn(t)
+}
+fn containsIfaceIn(t: ^Type): bool {        // a new helper
     if t.kind == "iface" { return true }
     if t.kind == "array" || t.kind == "opt" || t.kind == "handle" || t.kind == "result" {
-        return containsIface(baseOf(t))
+        return containsIfaceIn(baseOf(t))
     }
     if t.kind == "fn" {
         for i in 0..len(t.fields) {
-            if containsIface(t.fields[i].typ) { return true }
+            if containsIfaceIn(t.fields[i].typ) { return true }
         }
-        return containsIface(baseOf(t))
+        return containsIfaceIn(baseOf(t))
+    }
+    if t.kind == "record" || t.kind == "closed" {
+        if t.incomplete { return true }     // a forward shell: its fields are not known yet
+        for i in 0..len(ifaceSeen) {
+            if ifaceSeen[i] == t { return false }
+        }
+        append(ifaceSeen, t)
+        if t.kind == "record" {
+            for i in 0..len(t.fields) {
+                if containsIfaceIn(t.fields[i].typ) { return true }
+            }
+        } else {
+            for v in 0..len(t.variants) {
+                for i in 0..len(t.variants[v].fields) {
+                    if containsIfaceIn(t.variants[v].fields[i].typ) { return true }
+                }
+            }
+        }
     }
     return false
 }
@@ -1039,10 +1066,10 @@ fn rejectIface(t: ^Type, msg: string) { if containsIface(t) { error(msg) } }
 behind `?`/`[]`/`^`/`Result`; an alias resolves to the same `^Type`, so
 `?Cmp`/`[]Cmp`/`Result[Cmp]` are caught. `containsIface` additionally walks
 a function type's parameters and return, so an interface hidden inside a
-nested callback type is caught. A record or closed type cannot contain a
-function or interface field (those field checks reject it at the definition),
-so neither helper recurses into record fields; this also avoids a loop on a
-recursive record.
+nested callback type is caught. `containsIface` also recurses into record and closed fields, because interface
+fields are legal under interfaces v3 (`interfaces-v3-design.md`, section 10.1), so a record that holds an interface
+is caught; its visited list keeps a recursive record from looping. A function-typed field is still rejected at the
+definition, so `containsFn` does not recurse into record fields.
 
 The position matrix (source and reader mirror it):
 
@@ -1053,7 +1080,7 @@ The position matrix (source and reader mirror it):
 | `Result[T]` | after parsing the payload, `rejectFn` with the Result message; an interface payload is the interfaces rule |
 | `^T` | the existing record/closed kind rule; a fn/iface alias is rejected by kind (and `containsFn`/`containsIface` defensively) |
 | `&T` | `parseRefType`/reader borrow rule: `isOwned(fn/iface)` is false, so `&Cmp`/`&I` are rejected |
-| record/closed field (`fieldList`, `symFieldList`) | `rejectFn(field type, field message)`; interface fields are the interfaces phase's rule |
+| record/closed field (`fieldList`, `symFieldList`) | `rejectFn(field type, field message)`; interface fields are legal under interfaces v3 (`interfaces-v3-design.md`, section 6.2), and `containsIface` looks inside them (section 5.2) |
 | global (`varDecl`, `symGlobalDecl`) | in `varDecl`, immediately after parsing a declared type (before the no-initializer/`nonNull` branch) call `rejectFn(t, global message)`, so `var G: Cmp` reports the function-value global message, not needs-initial-value; for an inferred global, `rejectFn` on the inferred type, with a global lambda initializer caught by `curFn == nil` first (`var F = fn ...` reports the lambda-inside-function message). `symGlobalDecl` applies `rejectFn` to its explicit type |
 | local (`varDecl`) | allow a bare function type/alias (`kind == "fn"`); `?Cmp`/`[]Cmp`/`Result[Cmp]` were rejected by the constructors; a record type with a fn field cannot exist |
 | function/method/lambda return (`fnDecl`, `symFnDecl`, lambda header) | `rejectFn(ret, return message)`; a function type returning a function type is rejected inside the fn type too |
@@ -1756,12 +1783,12 @@ part of that signature's line; a function-type alias is in the alias group.
   change; the interface hash covers the new type expressions automatically.
   A lambda body change is source-only, so it changes `source` and not
   `interface`.
-- Version constants (`obo.obo:109-111`): Stage A `OBO_VERSION "0.8"`,
-  `SYM_FORMAT 4`, `SYM_ABI 1`; Stage B `OBO_VERSION "0.9"`, `SYM_FORMAT 4`,
-  `SYM_ABI 1`. `--version` prints `obo 0.8 sym-format 4 abi 1` (Stage A) /
-  `obo 0.9 sym-format 4 abi 1` (Stage B).
-- Why format 4: the `.sym` grammar gains `fn(...)` type expressions, so a
-  format-3 reader must reject a format-4 file and vice versa. Why ABI 1:
+- Version constants (`obo.obo:109-111`): Stage A `OBO_VERSION "0.9"`,
+  `SYM_FORMAT 5`, `SYM_ABI 1`; Stage B `OBO_VERSION "0.10"`, `SYM_FORMAT 5`,
+  `SYM_ABI 1`. `--version` prints `obo 0.9 sym-format 5 abi 1` (Stage A) /
+  `obo 0.10 sym-format 5 abi 1` (Stage B).
+- Why format 5: the `.sym` grammar gains `fn(...)` type expressions, so a
+  format-4 reader must reject a format-5 file and vice versa. Why ABI 1:
   every existing layout, descriptor, calling convention, global address and
   summary meaning is unchanged; a function value is one ordinary argument
   word; the hidden env parameter is internal to lambda code and never
@@ -1850,11 +1877,11 @@ part of that signature's line; a function-type alias is in the alias group.
 
 ### 6.5 Versioning and fixtures
 
-- Stage A targets `0.8`/format `4`/ABI `1`; Stage B targets
-  `0.9`/format `4`/ABI `1`. If the interfaces merge lands with different
+- Stage A targets `0.9`/format `5`/ABI `1`; Stage B targets
+  `0.10`/format `5`/ABI `1`. If the interfaces merge lands with different
   numbers, shift: Stage A = interfaces version + 1 and format + 1; Stage B =
   Stage A version + 1, format unchanged. The interfaces design currently
-  targets `0.7`/format `3`.
+  targets `0.8`/format `4`.
 - **Fixture migration.** At this baseline there are 85 committed `*.sym`
   files under `obo/tests/modules/sym/*/symdir` plus 3 golden
   `obo/tests/modules/golden/expected/*.sym` = 88 files. The header
@@ -1863,25 +1890,25 @@ part of that signature's line; a function-type alias is in the alias group.
   and one `abi 9` (the `version` fixture). Recount after interfaces (the
   methods design counted 79 earlier; the tree has grown) and migrate
   **every** committed `.sym` in the same change:
-  Stage A — all to `obosym 4` / `compiler "0.8"` / `abi 1`, except `format`
-  → `obosym 5` (message `has format 5; this compiler reads 4`), `compiler` →
-  format 4 with `"9.9"`, `version` → format 4/0.8 with `abi 9`; the goldens
+  Stage A — all to `obosym 5` / `compiler "0.9"` / `abi 1`, except `format`
+  → `obosym 6` (message `has format 6; this compiler reads 5`), `compiler` →
+  format 5 with `"9.9"`, `version` → format 5/0.9 with `abi 9`; the goldens
   are regenerated explicitly with `sym_test.py --update` after the golden
   tree gains a function-typed parameter and alias. Stage B — all files'
-  `compiler` line to `"0.9"` (format/ABI unchanged; headers are outside the
+  `compiler` line to `"0.10"` (format/ABI unchanged; headers are outside the
   interface hash, so no hash changes), `compiler` fixture stays `"9.9"`,
-  `sym_test.py` expects `0.9`; the goldens are re-emitted, byte-identical
+  `sym_test.py` expects `0.10`; the goldens are re-emitted, byte-identical
   except the header.
 - `sym_test.py` constants/literals (`OBO_VERSION`, `SYM_FORMAT`, the version
   table, `handwritten_interface`, `b6_stub_completion`) move with each
-  version. `sym_fuzz.py`'s `change_version` mutates the format to `5` (not
-  4) and its seed may gain a function-typed line without weakening the
-  oracle. `port_compare.py` gets `SEED_FILE_MIN` entries `(0, 8)` for the new
-  Stage A run/error files and `(0, 9)` for Stage B; module/sym trees are
+  version. `sym_fuzz.py`'s `change_version` mutates the format to `6` (not
+  5) and its seed may gain a function-typed line without weakening the
+  oracle. `port_compare.py` gets `SEED_FILE_MIN` entries `(0, 9)` for the new
+  Stage A run/error files and `(0, 10)` for Stage B; module/sym trees are
   outside the seed comparison and rely on the new compiler's own gates.
 - A full build writes the dependency's `.sym` and reads it immediately; the
   reader's mode 0 comparison is defence in depth. A `--check` against a
-  forged but well-formed format-4 file trusts it, as the `.sym` trust model
+  forged but well-formed format-5 file trusts it, as the `.sym` trust model
   already says.
 
 ---
@@ -2253,7 +2280,7 @@ names, no trailing period, types through `tname`. `<T>` is a type,
 | forward shell then fn alias | `a function type cannot be forward-declared: '<T>' is already declared as a forward type` |
 | duplicate alias/name | the existing `duplicate exported name '<name>'` |
 | live/file disagreement | the existing `symbol file '<p>' disagrees with the compiled interface of '<m>' for fn '<name>'; rebuild it` (a function-typed signature is compared by structural `same`) |
-| format/ABI/compiler | `has format <n>; this compiler reads 4; rebuild it`; `has ABI 9; this compiler uses 1; rebuild it`; `was built by compiler '9.9'; this is '0.8'; rebuild it` (Stage B: `'0.9'`) |
+| format/ABI/compiler | `has format <n>; this compiler reads 5; rebuild it`; `has ABI 9; this compiler uses 1; rebuild it`; `was built by compiler '9.9'; this is '0.9'; rebuild it` (Stage B: `'0.10'`) |
 
 ---
 
@@ -2490,11 +2517,11 @@ fn main() {
   **same** detail as its source form, not on a generic syntax error.
 - `sourceless_and_build_requirement`: `--check` against a source-less
   dependency with a fn-typed parameter and alias, asserting exit 0; the
-  checked module's own `.sym` contains its fn signature; a stale 0.7/format-3
-  file is rejected with `has format 3; this compiler reads 4`; `--version` is
-  `obo 0.8 sym-format 4 abi 1` (Stage A) / `0.9` (Stage B).
-- Version table: format `5` (expected `has format 5; this compiler reads 4`),
-  ABI `9`, compiler `"9.9"` (expected `this is '0.8'` / `'0.9'`), each
+  checked module's own `.sym` contains its fn signature; a stale 0.8/format-4
+  file is rejected with `has format 4; this compiler reads 5`; `--version` is
+  `obo 0.9 sym-format 5 abi 1` (Stage A) / `0.10` (Stage B).
+- Version table: format `6` (expected `has format 6; this compiler reads 5`),
+  ABI `9`, compiler `"9.9"` (expected `this is '0.9'` / `'0.10'`), each
   mutated from the new base.
 - Golden: regenerate after the golden tree gains the fn parameter/alias.
 
@@ -2503,18 +2530,18 @@ interfaces); all migrate in the same change; the `format`/`compiler`/`version`
 fixtures are migrated to the new base plus their rejection value; the
 goldens are regenerated explicitly. Headers are outside the interface hash,
 so a header-only migration changes no hash. Stage B changes only the
-`compiler` line to `"0.9"` (and the goldens' header) plus `sym_test`'s
+`compiler` line to `"0.10"` (and the goldens' header) plus `sym_test`'s
 expectation.
 
 ### 10.7 Existing tests and fixtures
 
-- `tests/sym_test.py`: `OBO_VERSION = '0.8'`, `SYM_FORMAT = 4` (Stage A);
-  `OBO_VERSION = '0.9'` (Stage B); version table/literals; the new RICH
+- `tests/sym_test.py`: `OBO_VERSION = '0.9'`, `SYM_FORMAT = 5` (Stage A);
+  `OBO_VERSION = '0.10'` (Stage B); version table/literals; the new RICH
   cases; the fixture migration.
-- `tests/sym_fuzz.py`: `change_version` mutates to `5`; the fuzz seed may
+- `tests/sym_fuzz.py`: `change_version` mutates to `6`; the fuzz seed may
   gain a fn-typed line; no oracle weakening.
-- `tests/port_compare.py`: `SEED_FILE_MIN` `(0, 8)` for each Stage A
-  `tests/run/lambdas*.obx` and `tests/errors/lambdas.obx`; `(0, 9)` for the
+- `tests/port_compare.py`: `SEED_FILE_MIN` `(0, 9)` for each Stage A
+  `tests/run/lambdas*.obx` and `tests/errors/lambdas.obx`; `(0, 10)` for the
   Stage B `lambda_closures.obx`/`lambda_refs.obx`/`lambda_handles.obx`/
   `lambda_methods.obx`/`lambda_sort_capture.obx`/`closures_scope.obx`/
   `lambda_state.obx` and `tests/errors/closures.obx`; the keys are the absolute
@@ -2603,7 +2630,7 @@ On the merged tree, per stage:
   `sym_fuzz.py`, `doc_check.py`, `homes_check.py`, `homes_edge.py`,
   `elf_test.py`, `io_test.py`, `meta_test.py`;
 - `port_test.py`, `port_compare.py` (the default comparison, the symcheck
-  expect assertions and the seed comparison with the new `(0, 8)`/`(0, 9)`
+  expect assertions and the seed comparison with the new `(0, 9)`/`(0, 10)`
   skips), `mutate_fork.py`, `mutate_port.py`, `mutate_io.py`;
 - `imports.py`, `stdlib.py`, `tools.py` and `eza.py` unchanged and green
   (no library/tool/source changes);
@@ -2621,7 +2648,7 @@ On the merged tree, per stage:
 ### 11.1 Ordered steps
 
 0. **Wait for interfaces.** Rebase on the interfaces merge and its seed
-   promote; confirm `0.7`/format 3/ABI 1 and the fixture count; shift the
+   promote; confirm `0.8`/format 4/ABI 1 and the fixture count; shift the
    target numbers if interfaces used different values. Do not implement on
    the 0.6 tree while interfaces is in flight.
 1. **Data model and restrictions, no behaviour.** The `fn` type encoding and
@@ -2633,11 +2660,11 @@ On the merged tree, per stage:
    header's `rejectIface` (the header is a function-type formation site);
    and `varDecl`'s global declared-type `rejectFn` **immediately after**
    `parseRefType`, before the no-initializer/`nonNull` branch. Build with the
-   0.7 seed; the full existing suite must pass unchanged.
+   0.8 seed; the full existing suite must pass unchanged.
 2. **Function types in `.sym`, version bump and fixtures.** `appTypeExpr`,
    `symTypeText`, `appParams`/`appFn`/`appMethod`/`appTypeAlias`;
    `symFieldList`/`symGlobalDecl`/`symFnDecl`/`symTypeDecl` restrictions;
-   `OBO_VERSION "0.8"`/`SYM_FORMAT 4`; migrate all committed `.sym`
+   `OBO_VERSION "0.9"`/`SYM_FORMAT 5`; migrate all committed `.sym`
    fixtures and the goldens; update `sym_test.py`/`sym_fuzz.py`; add a
    module/sym case with a fn-typed parameter and alias (the function is
    declared but not yet called). This is the format checkpoint.
@@ -2652,7 +2679,7 @@ On the merged tree, per stage:
    call messages are byte-identical.
    **Checkpoint A:** full suite + new tests + homes checks; measure the
    compiler peak; do not touch captures yet.
-4. **Stage A docs, mutants, review, merge, promote 0.8.** LANGUAGE section
+4. **Stage A docs, mutants, review, merge, promote 0.9.** LANGUAGE section
    after the interfaces section (lettered `5c` if interfaces is `5b`),
    README phase/status/version **including the split of the old `6a.
    Interfaces and lambdas` row into the interfaces row and a separate
@@ -2665,7 +2692,7 @@ On the merged tree, per stage:
    string/interface rejection, active-call rule, diagnostics. Add the Stage
    B run/error/module tests.
    **Checkpoint B:** full suite + Stage B tests + homes checks; peak; then
-   docs/mutants/review/merge/promote 0.9 (format stays 4).
+   docs/mutants/review/merge/promote 0.10 (format stays 5).
 6. **Adoption (separate branch, after the promote):** a `lib/sort.obx`
    comparator helper and/or an `eza` comparator refactor using the shapes in
    10.5; differential outputs unchanged; no compiler/tool source change in
@@ -2728,9 +2755,9 @@ On the merged tree, per stage:
   design pass is asked to commit only this file). **README phase-table
   reconciliation:** the current single row `6a. Interfaces and lambdas |
   planned` is split by whichever document merges first. The interfaces merge
-  turns it into `6a. Interfaces | done ... (0.7)`; the lambdas stage adds
-  `6b. Lambdas | done: non-capturing function values (0.8)` and
-  `6c. Capturing closures | done: call-scoped captures (0.9)` (or one `6b`
+  turns it into `6a. Interfaces | done ... (0.8)`; the lambdas stage adds
+  `6b. Lambdas | done: non-capturing function values (0.9)` and
+  `6c. Capturing closures | done: call-scoped captures (0.10)` (or one `6b`
   row spanning both stages until Stage B lands). Do not leave "lambdas" in
   the interfaces row after interfaces merges, and do not mark Stage B done
   while Stage A is the merged state. The "not yet" list, the version
@@ -2840,7 +2867,7 @@ review.
 | functions | a lambda is an unnamed function body; a function value is not a function symbol; a named function is still not a value (section 14) |
 | methods | a method may take function-typed parameters and call them; a method cannot return a function value; a method cannot be a function value (no method values); a function value cannot be a receiver (function types have no methods); a lambda in a method body may capture the receiver read-only |
 | method values | explicitly out. `b.m` remains `method '<T>::<m>' cannot be used as a value: call it with '(' after its name` (`obo.obo:5768-5772`). A lambda capturing the receiver and calling a **read-only** method is the v1 stand-in; a `mut` method needs a `mut` capture, which is deferred, or a later `pure mut`/effect extension |
-| interfaces | v1 excludes function types from interface member signatures, interface values as **function-value** parameters/returns (ordinary functions may take an interface parameter; a function type may not), interfaces of function types, and capturing interface values. A lambda cannot implement or convert to an interface. A function value cannot be an interface value. The features are orthogonal; if both merge, add the exclusions in the interface member parser/reader and the capture resolver |
+| interfaces | v1 excludes function types from interface member signatures, interface values as **function-value** parameters/returns (ordinary functions may take an interface parameter; a function type may not), interfaces of function types, and capturing interface values. A lambda cannot implement or convert to an interface. A function value cannot be an interface value. Excluded in v1 to keep the two features separate; interfaces v3 (owning boxes, `&I` borrows) makes this a later, staged relaxation (v3 section 10); the exclusions live in the interface member parser/reader and the capture resolver |
 | interface implementations | an impl's methods are ordinary methods; an extra method with a function-typed parameter that is not in the interface is allowed, but a method matched to an interface member cannot have a signature the interface cannot express |
 | closures capturing method receivers | allowed read-only (`&`/`mut &` capture a pointer read-only; an owned receiver is a whole-object read-only borrow), subject to the call-site capture binding checks. A `mut` capture of a receiver is deferred with the other mut captures |
 | function values as method parameters/returns | parameters yes; returns no (the return rule applies to every function/method/lambda). A method's `.sym` line carries the function type; the reader/mode-0 comparison uses structural `same` |
@@ -2860,11 +2887,11 @@ review.
 - **Function values are second-class**, so they do not change record layout,
   descriptors, global addressing or initialization. `.sym` ABI stays 1 under
   the recommendation; existing records/functions/methods are unchanged.
-- **`.sym` is not compatible across format 4.** A 0.7/format-3 compiler
-  rejects a format-4 file (`has format 4; this compiler reads 3`) and a
-  0.8/format-4 compiler rejects a format-3 file (`has format 3; this compiler
-  reads 4`). Rebuild, do not reuse stale artifacts. Stage B keeps format 4
-  and changes only the compiler version (a 0.8 compiler rejects a 0.9 file
+- **`.sym` is not compatible across format 5.** A 0.8/format-4 compiler
+  rejects a format-5 file (`has format 5; this compiler reads 4`) and a
+  0.9/format-5 compiler rejects a format-4 file (`has format 4; this compiler
+  reads 5`). Rebuild, do not reuse stale artifacts. Stage B keeps format 5
+  and changes only the compiler version (a 0.9 compiler rejects a 0.10 file
   with the compiler message).
 - **`--check`, `--sym-dir`, `--emit-sym`, `--reemit-sym`** keep their
   semantics; `--check` reconstructs function types, compiles (and discards)
@@ -2874,8 +2901,8 @@ review.
   the compiler source uses no new syntax; the fixed point is stage2 ==
   stage3. The feature commit does not touch `seed/obo`; one promote per stage
   happens on main after review.
-- **`--version`** changes to `obo 0.8 sym-format 4 abi 1` (Stage A) and
-  `obo 0.9 sym-format 4 abi 1` (Stage B); README/LANGUAGE/tests/goldens are
+- **`--version`** changes to `obo 0.9 sym-format 5 abi 1` (Stage A) and
+  `obo 0.10 sym-format 5 abi 1` (Stage B); README/LANGUAGE/tests/goldens are
   updated.
 - **The golden fixtures are regenerated explicitly**, not silently: the
   committed headers change and the golden tree gains a fn-typed parameter
@@ -2913,7 +2940,7 @@ review.
    may not call an active enclosing function. Impure callbacks are out in
    v1.
 8. **Symbols:** function types in parameters/aliases only; no addresses or
-   lambda bodies; `obosym 4`/compiler `0.8` (Stage A) and `0.9` (Stage B),
+   lambda bodies; `obosym 5`/compiler `0.9` (Stage A) and `0.10` (Stage B),
    ABI `1`; all fixtures migrate.
 9. **Round 1:** no lambda/function-type syntax in `obo.obo`, the library or
    the tools; adoption is a separate branch after promotion.
@@ -2964,13 +2991,14 @@ Stage B as separate merges/promotes.
 4. **Strings and interface captures.** Both are rejected. A user can capture
    a record containing a string, or pass the string as a callback parameter.
    **Default:** reject in v1; strings need a reference-count + call-cleanup
-   story, interfaces should settle first.
+   story; interface captures are a later, staged relaxation under interfaces
+   v3 (section 10).
 5. **ABI number.** The recommendation is `SYM_ABI 1` because the
    function-value convention is internal and format-gated. If the user/review
    prefers a conservative ABI bump, use 2 and migrate the ABI fixture.
    **Default:** 1.
 6. **Stage split.** Implementing Stage A first, promoting, then Stage B is
-   recommended. A single 0.8 merge of both is possible but larger and makes
+   recommended. A single 0.9 merge of both is possible but larger and makes
    the capture-lifetime review and the fixture migration land together.
    **Default:** two stages.
 
@@ -2993,14 +3021,14 @@ Stage B as separate merges/promotes.
   (section 4.7).
 - **String/interface captures.** Extension: a string capture with an
   increment at creation and a decrement after the call (including the `try`
-  error path); an interface capture once the interface cell/token
-  representation is settled.
+  error path); an interface capture: excluded in v1 to keep the two features separate; interfaces v3 (owning boxes, `&I` borrows)
+  makes this a later, staged relaxation (v3 section 10).
 - **Function types in interfaces, interface values as callbacks, interfaces
   of function types.** Extension after both features settle; the interface
   member grammar and impl matching would need a function-type expression. A
   pure interface member could call a function value and stay pure; an
-  interface value as a callback would need the interface cell/token
-  representation to be capturable.
+  interface value as a callback is excluded in v1 to keep the two features separate; interfaces v3 (owning boxes,
+  `&I` borrows) makes this a later, staged relaxation (v3 section 10).
 - **Impure/effectful callbacks.** Extension: a `pure`/impure qualifier on
   function types (reusing the interfaces `pure` word) or a named effect
   type; a pure value keeps the pure call path, an impure value uses the
@@ -3023,9 +3051,9 @@ Stage B as separate merges/promotes.
 ### 15.1 A `.sym` fragment
 
 ```text
-obosym 4
+obosym 5
 abi 1
-compiler "0.8"
+compiler "0.9"
 source 0x0123456789abcdef
 dep io "io.obx"
 interface 0xfedcba9876543210
