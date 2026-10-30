@@ -38,6 +38,15 @@ explicit `pub impl`, `let`-only interface locals, no nil, `d: I`/`mut d: I`,
 variant parent step, no interface-to-interface conversion, no forward shells or
 mutual interface parameters, no addresses in `.sym`, and no devirtualisation.
 
+**Revision after the second review.** The factored name-tail helpers are now
+specified in the actual `parseType`/`symParseType` order: `T_COLONCOLON` first,
+then primitives/`Result`/lookup, with source and `.sym` type-declaration-alias
+tests for modules named `int`/`Result`. The owned-argument acceptance case is
+rooted explicitly (borrow-rooted receiver or a fresh register temporary,
+because any owned-local move hits a `handleSym` binding); the stale-token test
+order, the three-version-fixture migration wording and the
+"after construction" qualification of hidden-free detection are aligned.
+
 Every claim about the current compiler below was checked against
 `obo/src/obo.obo` at this baseline; `file:line` references are to that file, and
 `runtime.c` references are to `obo/runtime/runtime.c`. The design assumes the
@@ -193,10 +202,19 @@ ParamGroup    ::= [ "mut" ] IDENT ( "," IDENT )* ":" ( "&" Type | Type )
   the **next** token `{`. If both hold, this is an interface definition.
   Otherwise the consumed identifier starts an alias type expression and a
   factored **name tail** (`finishTypeName(w)`) resolves it exactly as
-  `parseType` would after reading a name: `int`/`byte`/`bool`/`string` return
-  their primitive types, `Result` followed by `[` parses `Result[T]`, a
-  qualified `w::member` resolves through the module alias/export, and any other
-  name is looked up as a type. Tokens `?`, `[]`, `^`, `ref` and `closed` are not
+  `parseType` would after reading a name, **in the same order**:
+  `finishTypeName` checks **`T_COLONCOLON` first** and resolves a qualified
+  `w::member` through the module alias/export; only then does it take the
+  bare-name path, where `int`/`byte`/`bool`/`string` resolve to their primitive
+  types (universe type symbols), `Result` followed by `[` parses `Result[T]`,
+  and any other name is looked up as a type. This order is load-bearing for a
+  symbol-file alias such as `type X = int::T` or `type Y = Result::T` where
+  `int`/`Result` is a **module name** (the existing
+  `sym/module_names_int_result` precedent); primitives-before-`::` would return
+  `int`/`Result` and leave `::T` unconsumed. Source spellings of such an alias
+  use the explicit import alias (`ii::T`), because an import alias may not be a
+  built-in name; the emitted `.sym` uses the declared module name and is the
+  collision case. Tokens `?`, `[]`, `^`, `ref` and `closed` are not
   `T_IDENT`, so `type X = ?T`, `type X = []T`, `type X = ^T` and
   `type X = Result[T]` keep their existing paths (the last enters the branch
   only at the `Result` identifier and is finished by the name tail). Thus an
@@ -600,8 +618,8 @@ one-parent-step dispatch.
   handle conversion copies a token without reading the object, so a stale
   handle field is caught by the first `RT_DEREF` (section 9.6d).
 - A **borrow-rooted** value is valid by the reference rules while its binding is
-  valid. A hidden free the compiler cannot see is still caught by the token:
-  `RT_DEREF` exits 7 if the generation is gone.
+  valid. A hidden free the compiler cannot see **after construction** is still
+  caught by the token: `RT_DEREF` exits 7 if the generation is gone.
 - A **handle-rooted** value names whatever the handle named at conversion. Its
   binding roots at `handleSym`, exactly like a reference that borrows through a
   handle (`itemBind`, `obo.obo:2938-2941`), so **any visible change or free, and
@@ -611,8 +629,8 @@ one-parent-step dispatch.
   allocation alone does not invalidate it. The value is not registered in the compiler's `originSyms` let-handle
   origin lists, so a `let` handle's specific dead mark is not copied; the
   `handleSym` invalidation and the runtime token together are the guarantee.
-  Calls do `RT_DEREF` every time, so a hidden free the compiler cannot see is
-  exit 7, not a use-after-free. There is no `alive` on interface values; check
+  Calls do `RT_DEREF` every time, so a hidden free the compiler cannot see
+  **after construction** is exit 7, not a use-after-free. There is no `alive` on interface values; check
   the original handle if a probe is needed, understanding that the answer can
   go stale.
 - Runtime exits are the backstop for hidden aliases; visible frees are compile
@@ -793,6 +811,16 @@ argument. This does not break the handle-rooted argument:
   runs, so an owned argument that moves the receiver's owner or ancestor is
   refused at that argument (`argument N ... may free what the receiver points
   into ...`, or the moved-reference error if the argument runs first).
+- **Conservative consequence for handle-rooted receivers.** Because `hitBy`
+  treats every `handleSym`-rooted binding as hit by *any* `invalidate`, moving
+  **any owned local** invalidates a handle-rooted receiver or argument holder,
+  even when the local is unrelated to the target. The hold check therefore
+  refuses an unrelated owned **local** argument beside a handle-rooted
+  receiver. The accepted-and-stored case must use a **borrow-rooted receiver
+  whose binding has no `handleSym` root** (an ordinary local/field borrow,
+  whose roots do not include the moved local) or a **fresh register temporary**
+  (`new ...`; `consume` returns early for a register, so nothing is
+  invalidated). This is conservative but sound.
 - **Early free in the callee.** If the callee frees an owned argument early, an
   accepted call guarantees that the argument is not the receiver's target or
   ancestor: moving such an argument would have invalidated the receiver binding
@@ -800,12 +828,14 @@ argument. This does not break the handle-rooted argument:
   owned argument it receives without endangering the receiver.
 
 Tests: a pure `mut` member appending an unrelated owned argument compiles and
-runs; an owned argument that is the receiver's owner/ancestor beside a
-handle-rooted or borrow-rooted receiver is rejected by the hold/consume checks
-(section 9.6). If review prefers a simpler rule, the fallback is to ban mode-0
-parameters on `pure` members at the interface declaration, impl check and
-symbol reader; the proof above is the reason the recommended design does not
-need that restriction.
+runs when the receiver is an **ordinary borrow-rooted** value (no `handleSym`
+root) or the argument is a fresh register temporary; an unrelated owned local
+beside a handle-rooted receiver is conservatively refused by the hold check; an
+owned argument that is the receiver's owner/ancestor beside a handle-rooted or
+ordinary borrow-rooted receiver is rejected (section 9.6e). If review prefers a simpler rule, the fallback is to
+ban mode-0 parameters on `pure` members at the interface declaration, impl
+check and symbol reader; the proof above is the reason the recommended design
+does not need that restriction.
 
 **Why handle-rooted calls need this.** A handle names an object whose owner the
 callee does not know. If an impure member could free that object through a
@@ -933,9 +963,11 @@ change and per-type list allocation, and matches the methods phase's
   **only when `sym == T_IDENT`**: save `w = sval`, `next()`, and if
   `w == "interface"` and `sym == T_LBRACE`, parse an interface definition;
   otherwise call a factored `finishTypeName(w)` that reproduces the name tail of
-  `parseType` (`int`/`byte`/`bool`/`string`, `Result` + `[T]`, `w::member`, or
-  a bare lookup). The `?`, `[]`, `^`, `ref` and `closed` paths never enter this
-  branch, so existing aliases are untouched. The interface branch creates and declares
+  `parseType` **with its order**: `sym == T_COLONCOLON` first (qualified
+  `w::member` through `exportOf`), then the bare name (`int`/`byte`/`bool`/
+  `string` universe types, `Result` + `[T]`, or `lookup`). The `?`, `[]`, `^`,
+  `ref` and `closed` paths never enter this branch, so existing aliases are
+  untouched. The interface branch creates and declares
   the type symbol at the start (a prior `type I` shell is the forward-shell
   error, section 2.1), sets `kind = "iface"`, parses members until `}`, rejects
   an empty interface and duplicate names, checks the export closure later, and
@@ -1211,10 +1243,13 @@ Canonical group order (one deterministic order, matching the reader):
   applies the same **`T_IDENT` branch** after `=`: save `w = sval`, `next()`;
   if `w == "interface"` and `sym == T_LBRACE`, it is an interface definition;
   otherwise a factored `symFinishTypeName(w)` reproduces the name tail of
-  `symParseType` (`int`/`byte`/`bool`/`string`, `Result + [T]`, `w::member`,
-  or a bare exported-type lookup), so `type X = Result[T]` and a type named
-  `interface` both round-trip. The `?`, `[]`, `^`, `ref` and `closed` branches
-  are untouched. There is no interface shell line. Mode 1 creates and registers the `Type`
+  `symParseType` **with its order**: **`T_COLONCOLON` first**
+  (`symQualifiedType`), then `int`/`byte`/`bool`/`string`, then `Result +
+  [T]`, then `findExport`. Checking `::` last would break a valid symbol-file
+  alias to a module named `int` or `Result` (`type X = int::T`,
+  `type Y = Result::T`; FORK.md:3598-3603). With this order `type X =
+  Result[T]` and a type named `interface` both round-trip. The `?`, `[]`, `^`,
+  `ref` and `closed` branches are untouched. There is no interface shell line. Mode 1 creates and registers the `Type`
   (`kind = iface`, `incomplete = true`, uid from the key) and its exported type
   symbol at the definition before parsing members, so a self-referential
   parameter resolves through `findExport`; mode 0 finds the live `iface` type
@@ -1442,12 +1477,12 @@ files, REF/REEMIT assertions, fixture migration) are the precedent.
 |---|---|
 | `ifaces.obx` | one interface, two record types, borrow conversions, explicit and inferred (`let e = d`) copies, dynamic dispatch, same-named methods on both types returning different values; a concrete static call beside an interface call; `let e = &b` stays a concrete reference and `let e = b` stays owned `T` |
 | `ifaces_mut.obx` | `mut` members, writable/read-only targets, `mut d: I` parameters, scalar/append writes keeping references valid, a mut member that frees below the target invalidating a reference (error case in `errors/ifaces.obx`), a `let` interface local calling a mut member |
-| `ifaces_handle.obx` | handle conversions, pure read-only and pure mut members through handles, a handle field and `handle(x)`, a handle-rooted value passed to a pure function; `ifaces_handle_dead.obx` stores a stale handle token in a record/field, frees the owner behind the compiler's `let`-handle tracking, then converts the stale field after the free and calls: the first `RT_DEREF` exits 7, marker `// expect-exit: 7` |
+| `ifaces_handle.obx` | handle conversions, pure read-only and pure mut members through handles, a handle field and `handle(x)`, a handle-rooted value passed to a pure function; `ifaces_handle_dead.obx` stores a handle in a record/field while the owner is alive, frees the owner behind the compiler's `let`-handle tracking, then converts the now-stale field after the free and calls: the first `RT_DEREF` exits 7, marker `// expect-exit: 7` |
 | `ifaces_closed.obx` | an impl on a closed type, calls through a closed-typed local, a variant source and a match-narrowed source using the parent impl |
 | `ifaces_params.obx` | `d: I` and `mut d: I` parameters, passing/copying interface values onward, a Result-returning interface member with `try`, `defer d.close()` |
 | `ifaces_alias.obx` | interface and type aliases, two structurally identical interfaces in one module dispatching separately, a type implementing two interfaces with one shared method |
 | `ifaces_scope.obx` | interface locals in blocks and loops, conversions in call arguments, recursion, a defer using an interface local, no assignment/return/field |
-| `ifaces_effects.obx` | pure versus impure members; a reference into the receiver stays valid after a pure mut call and is refused after an impure one; an **impure read-only** call leaves a whole-object receiver valid but invalidates a reference into the receiver (and invalidates a deep receiver itself); a pure read-only call keeps both; a global-rooted borrow refused for an impure member; a joined multi-root receiver is checked on every root |
+| `ifaces_effects.obx` | pure versus impure members; a reference into the receiver stays valid after a pure mut call and is refused after an impure one; an **impure read-only** call leaves a whole-object receiver valid but invalidates a reference into the receiver (and invalidates a deep receiver itself); a pure read-only call keeps both; a global-rooted borrow refused for an impure member; a joined multi-root receiver is checked on every root; a pure mut member stores an unrelated owned argument with an ordinary borrow-rooted receiver and with a fresh `new` temporary through a handle-rooted receiver (while an unrelated owned local beside a handle-rooted receiver is refused) |
 | `ifaces_homes.obx` | register pressure with interface cells and calls, run under the homes checks and `obo-noregs` |
 
 ### 9.2 Error programs (`tests/errors/ifaces.obx`)
@@ -1479,8 +1514,11 @@ impure call with a reference into the receiver, and one with a deep receiver;
 the `isCall` statement/defer cases (an interface local used as a loop statement
 or in a defer, an owner freed afterwards, the next use refused); an owned
 argument that is the receiver's owner/ancestor beside a handle-rooted or
-borrow-rooted receiver (hold/consume rejection); and a handle-rooted value used
-after a visible free (compile-time invalidation, not exit 7).
+borrow-rooted receiver (hold/consume rejection); an unrelated owned **local**
+beside a handle-rooted receiver (the conservative `handleSym` invalidation
+rejects it, while a borrow-rooted receiver or a fresh `new` temporary accepts
+the unrelated owned value); and a handle-rooted value used after a visible free
+(compile-time invalidation, not exit 7).
 
 ### 9.3 Modules and symbol files
 
@@ -1548,9 +1586,11 @@ after a visible free (compile-time invalidation, not exit 7).
 - `golden`/golden tree: add the interface and impl; regenerate with
   `sym_test.py --update` explicitly; the gate only compares.
 
-Fixture migration: all 76 `modules/sym/*/symdir` files and the 3 goldens become
-`obosym 3`/`compiler "0.7"`/`abi 1` except `format` (4), `compiler` (format 3,
-`"9.9"`) and `version` (format 3, ABI 9). The symcheck `expect` files and the
+Fixture migration: all 76 `modules/sym/*/symdir` files and the 3 goldens are
+migrated to the new base `obosym 3`/`compiler "0.7"`/`abi 1`. The three version
+fixtures are migrated too, to the new base plus their mutated rejection value:
+`format` 4, `compiler` format 3 with `"9.9"`, and `version` format 3/0.7 with
+ABI 9. The symcheck `expect` files and the
 REF-outcome/REEMIT assertions added by the methods phase are extended to the new
 interface cases; positive cases must exit 0, not merely agree with a broken REF.
 `sym_fuzz.py`'s `change_version` mutates the format to `4` (not 3) and its seed
@@ -1562,6 +1602,16 @@ may gain an interface/impl line; `own_fuzz.py` is unchanged.
   table and the current literal snippets (the baseline writes `obosym 1` and
   `compiler "0.5"`; after methods they are 2/0.6) updated to 3/0.7;
   `handwritten_interface`/`b6_stub_completion` write format 3/0.7.
+- Extend `module_names_int_result` with **type-declaration aliases** to modules
+  named `int`/`Result`: a `mid` module imports `int.obx as ii` and
+  `Result.obx as rr` and exports `pub type IntT = ii::T` and
+  `pub type ResT = rr::T` (source aliases must use the explicit import aliases;
+  `int`/`Result` cannot be import aliases). Build and run a main that uses
+  `mid::IntT`/`mid::ResT`; assert `mid.sym` contains
+  `type IntT = int::T` and `type ResT = Result::T`; `--reemit-sym mid.sym`
+  byte-identically (the reader's `symFinishTypeName` must check `::` first);
+  `--check` main against the tree. This is the type-declaration-alias case the
+  existing test lacked (it only has `ii::make()`/`rr::r()` and `Result[int]`).
 - Every committed `.sym` fixture as above; header-only migration needs no
   rehash, the goldens are regenerated after their interface/impl additions.
 - `tests/sym_fuzz.py`: `change_version` (line ~202) mutates to 4; the fuzz
@@ -1582,7 +1632,7 @@ may gain an interface/impl line; `own_fuzz.py` is unchanged.
   compiled and run at implementation time.
 - No existing run/error program changes; the feature is additive.
 
-### 9.5 Mutants (34 targets)
+### 9.5 Mutants (35 targets)
 
 | mutant | expected catcher |
 |---|---|
@@ -1619,6 +1669,7 @@ may gain an interface/impl line; `own_fuzz.py` is unchanged.
 | interface parameter mode 2 treated as 1 (writability not checked) | `errors/ifaces` read-only argument to `mut d: I`; `run/ifaces_mut` |
 | impl accepted before the methods are defined (zero address in the vtable) | `errors/ifaces` ordering case; a run crash |
 | interface method arity/labels regress | exact-error tests |
+| `finishTypeName`/`symFinishTypeName` checks primitives/`Result` before `T_COLONCOLON` | `sym_test` extended `module_names_int_result`: `type IntT = int::T`/`type ResT = Result::T` fail to reemit/check or leave `::T` unconsumed |
 | vtable address stored as a `.sym` address or not fixed after `dropFrame` | roundtrip/golden and the defined-before-impl tests |
 
 Mutants that only remove the mode-0 live comparison (interface/impl order and
@@ -1638,8 +1689,8 @@ reason rather than claiming it was caught.
 | (a) two-level handle propagation | `errors/ifaces`: `fn f(d: I) { d.impureMember() }` (an impure **read-only** member, so the read-only parameter can call it); `let d: I = h; f(d)` | `f` is impure (`freesAll`/`writesHandles` propagate), so passing the handle-rooted value is refused by the handle-borrow/pure check; a pure `fn g(d: I) { d.pureMember() }` is accepted with the same value |
 | (b) joined multi-root receiver | `errors/ifaces`: `var r = &n; if c { r = &h.field }; let d: I = r; d.impure()`, arranged so the local root is first and the `handleSym` root is not first | refused because every root of the joined binding is scanned; a first-root-only scan would miss the handle root and compile. An all-local joined receiver's mut call invalidates references into every root (run/error pair in `ifaces_effects`) |
 | (c) `isCall` loop/defer use-after-free | `errors/ifaces`: an interface local used as a statement in a loop, owner freed after the call, next iteration refused; a `defer d.m()` with a free before the block end | the next use is refused with the existing moved/freed-reference error (`freedRefMsg`), and the defer with the existing defer-use error. The interface local is a reference local; the statement/defer form must record the receiver as a value use (`isCall`). If the immutable binding makes the loop case observationally equivalent to the existing moved check, record that reason and keep the defer case (which uses `noteDeferUse`) |
-| (d) exit 7 after a stale token | `run/ifaces_handle_dead.obx`, marker `// expect-exit: 7`: a stale handle token stored in a record/field after its owner is freed, converted after the free, then called | the first `RT_DEREF` exits 7. A handle-rooted value made *before* the visible free is compile-time invalidated, so the stale token must come from the field, not from a tracked `let` handle |
-| (e) pure owned parameter | `run/ifaces_effects`: a pure `mut` member appends an unrelated owned argument; `errors/ifaces`: an owned argument that is the receiver's owner/ancestor beside a handle-rooted or borrow-rooted receiver | unrelated owned argument accepted and stored; owner/ancestor argument refused at the held receiver/argument check (section 4.5 proof) |
+| (d) exit 7 after a stale token | `run/ifaces_handle_dead.obx`, marker `// expect-exit: 7`: a handle is stored in a record/field **while its owner is alive**; the owner is then freed behind the compiler's `let`-handle tracking; the now-stale field is converted after the free and called | the first `RT_DEREF` exits 7. A handle-rooted value made *before* the visible free is compile-time invalidated, so the stale token must come from the field, not from a tracked `let` handle |
+| (e) pure owned parameter | `run/ifaces_effects`: a pure `mut` member stores an unrelated owned argument with an **ordinary borrow-rooted** receiver (no `handleSym` root), and with a **fresh `new` temporary** through a **handle-rooted** receiver; `errors/ifaces`: an unrelated owned **local** beside a handle-rooted receiver, and an owned argument that is the receiver's owner/ancestor beside a handle-rooted or ordinary borrow-rooted receiver | the ordinary-borrow and fresh-register cases are accepted and stored; the owned-local-beside-handle-rooted case is **conservatively refused** (any owned-local move hits a `handleSym` binding); the owner/ancestor cases are refused by the held receiver/argument check (section 4.5 proof) |
 | (f) pub impl, private concrete methods | `modules/run/ifaces_private_methods` | an importer converts `&t` and calls through the interface; the private methods are absent from the type's `.sym`, and the vtable in the defining module still points at them |
 | (g) reader malformed shapes | `sym_test.py` `malformed_structures`, plus `ifaces.obx` source cases | `[]I` and `Result[I]` in a function signature (not only a field), an implementation receiver written as an alias spelling, an empty `interface { }`, and `p0: &I` in a function signature are all rejected with the exact section 8 detail |
 | (h) read-only impure effects | `run/ifaces_effects.obx` and the module `effects_check` | a whole-object receiver binding survives; a deep reference into the receiver is refused; a deep receiver is itself invalidated; a pure read-only call accepts both |
@@ -1772,9 +1823,10 @@ expect files); `tests/sym_test.py`; the golden tree and `expected/*.sym`; the
 4. **Handle token for borrow conversions.** It adds an `RT_HANDLE` per borrow
    conversion and an `RT_DEREF` per call, and turns a hidden free that the
    compiler cannot see into exit 7 rather than a read of freed memory. Test
-   `// expect-exit: 7` with a stale token stored in a record/field (a
-   handle-rooted value made before a visible free is compile-time invalidated,
-   so it cannot supply the exit-7 case).
+   `// expect-exit: 7` by storing a handle in a record/field while its owner is
+   alive, freeing the owner behind the compiler's tracking, and converting the
+   now-stale field after the free (a handle-rooted value made before a visible
+   free is compile-time invalidated, so it cannot supply the exit-7 case).
 5. **Vtable address finality.** Methods must be defined before the impl because
    `dropFrame` rewrites entries; the ordering check is a correctness gate, not
    a convenience. A mutant that accepts a heading must be caught.
