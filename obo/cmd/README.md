@@ -280,8 +280,11 @@ future data (multi-file initial headers are still printed).
 Multiple followed files use GNU's headers only when the output file changes:
 the initial headers, then a blank line and `==> <operand> <==` before a chunk
 from a different file. A second chunk from the same file, including a >64 KiB
-append read in several 64 KiB blocks, has no repeated header. stdin (`-` or no
-operands) is followed until EOF; a pipe or terminal at EOF exits 0, and a
+append read in several 64 KiB blocks, has no repeated header. A header is
+recorded when it is emitted, not when the operand later succeeds: an operand
+whose header prints and whose read then fails still counts as the last output,
+so a later chunk from an earlier follower prints its header again. stdin (`-` or
+no operands) is followed until EOF; a pipe or terminal at EOF exits 0, and a
 regular-file stdin also exits there (a documented narrowing from GNU, which
 keeps following it).
 

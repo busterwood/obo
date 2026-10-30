@@ -2199,6 +2199,78 @@ class Harness:
             if p.poll() is None:
                 self._follow_stop(p)
 
+        # a header emitted by an operand that then fails to read still counts
+        # as the last emitted output. A later chunk from an earlier successful
+        # follower must therefore print its header again.
+        with open(os.path.join(d, 'headfail.txt'), 'wb') as f:
+            f.write(b'a1\n')
+        os.makedirs(os.path.join(d, 'headdir'), exist_ok=True)
+        p = self._follow_start(d, ['-n0', '-f', 'headfail.txt', 'headdir'])
+        try:
+            got = self._follow_read(p, b'==> headfail.txt <==\n\n==> headdir <==\n')
+            check('follow failed-operand initial headers',
+                  got == b'==> headfail.txt <==\n\n==> headdir <==\n', repr(got))
+            self._follow_write(os.path.join(d, 'headfail.txt'), b'a2\n')
+            got = self._follow_read(p, b'\n==> headfail.txt <==\na2\n')
+            check('follow header after failed operand',
+                  got == b'\n==> headfail.txt <==\na2\n', repr(got))
+            _rc, err = self._follow_stop(p)
+            check('follow failed-operand read error',
+                  b"error reading 'headdir'" in err, repr(err))
+        finally:
+            if p.poll() is None:
+                self._follow_stop(p)
+
+        # the same a+directory sequence against GNU tail
+        if self.refs['tail'].kind == 'gnu':
+            with open(os.path.join(d, 'headfail2.txt'), 'wb') as f:
+                f.write(b'a1\n')
+            os.makedirs(os.path.join(d, 'headdir2'), exist_ok=True)
+            ours_out = open(os.path.join(d, 'headfail-ours.out'), 'wb')
+            ours_err = open(os.path.join(d, 'headfail-ours.err'), 'wb')
+            ref_out = open(os.path.join(d, 'headfail-ref.out'), 'wb')
+            ref_err = open(os.path.join(d, 'headfail-ref.err'), 'wb')
+            po = subprocess.Popen([self.ctx['tail'].exe, '-n0', '-f',
+                                   'headfail2.txt', 'headdir2'], cwd=d,
+                                  env=self._follow_env(),
+                                  stdin=subprocess.DEVNULL, stdout=ours_out,
+                                  stderr=ours_err, start_new_session=True)
+            pr = subprocess.Popen(['tail', '-n0', '-f', 'headfail2.txt',
+                                   'headdir2'], cwd=d, env=self._follow_env(),
+                                  stdin=subprocess.DEVNULL, stdout=ref_out,
+                                  stderr=ref_err,
+                                  executable=self.refs['tail'].path,
+                                  start_new_session=True)
+            try:
+                time.sleep(0.5)
+                self._follow_write(os.path.join(d, 'headfail2.txt'), b'a2\n')
+                time.sleep(1.5)
+            finally:
+                for p2 in (po, pr):
+                    if p2.poll() is None:
+                        try:
+                            os.killpg(p2.pid, signal.SIGTERM)
+                        except OSError:
+                            pass
+                for p2 in (po, pr):
+                    try:
+                        p2.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            os.killpg(p2.pid, signal.SIGKILL)
+                        except OSError:
+                            pass
+                        p2.wait(timeout=5)
+                for fh in (ours_out, ours_err, ref_out, ref_err):
+                    fh.close()
+            with open(os.path.join(d, 'headfail-ours.out'), 'rb') as f:
+                our_bytes = f.read()
+            with open(os.path.join(d, 'headfail-ref.out'), 'rb') as f:
+                ref_bytes = f.read()
+            check('follow GNU failed-operand header differential',
+                  our_bytes == ref_bytes,
+                  describe(our_bytes, ref_bytes, 'stdout'))
+
         # the same header sequence against GNU tail, not only our expectation
         if self.refs['tail'].kind == 'gnu':
             for name in ('gfa', 'gfb'):

@@ -52,7 +52,7 @@ new compiler is not promoted here. Version policy: additive builtin/runtime exte
 | Current metric | Value |
 |---|---:|
 | Compiler source | 12,056 lines, 454,332 bytes |
-| Compiler and seed (`--version`) | 507,905 bytes, sha256 `673ae7ba…`, `obo 0.8 sym-format 4 abi 1` |
+| Compiler and seed (`--version`) | seed 507,905 bytes, sha256 `673ae7ba…`, `obo 0.8`; compiler 512,001 bytes, `obo 0.8.1`, sym-format 4, abi 1 |
 | Self-host fixed point | stage 2 == stage 3, 512,001 bytes; the 0.8 seed builds the 0.8.1 compiler |
 | Self-compile wall time | 0.14 s (5 runs, median on this host; host-dependent) |
 | Self-compile live peak | 1,947,952 bytes |
@@ -60,7 +60,7 @@ new compiler is not promoted here. Version policy: additive builtin/runtime exte
 | Maximum resident set | 3,640 KB (5 runs on this host) |
 | Live-memory budget | 2,000,000 bytes (52,048 spare) |
 | obo suite | 1,416 tests; 103 `module_test` checks; `sym_test.py` 38/38; `sym_fuzz.py` 200/200; `port_test` 558/558 with 9 encoder groups; `port_compare` 1,428/1,428; 57 doc examples; 27/27 import checks; 16/16 stdlib roots |
-| Tools differential gate | 414 checks vs GNU coreutils 9.4; 3 memory cases |
+| Tools differential gate | 418 checks vs GNU coreutils 9.4; 3 memory cases |
 | Tool binaries | cat 45,057; wc 49,153; sort 73,729; tail 53,249 bytes (static, runtime included) |
 | eza E2 differential gate | 546/546 non-memory cases (462 exact reference goldens, 72 live including 22 pty, 12 own) + 5/5 memory cases |
 | eza E2 binary | 217,089 bytes (static, runtime included; reference eza 0.23.3 is 2,294,768) |

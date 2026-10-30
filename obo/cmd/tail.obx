@@ -60,6 +60,7 @@ type ReadStats = ref record {
 type Follow = ref record {
     path: string
     label: string
+    opid: int              // operand position, distinct even for repeated paths
     fd: int
     isStdin: bool
     dev: int
@@ -96,7 +97,7 @@ type TailState = ref record {
     writeFailed: bool      // stdout failed; keep diagnosing operands, emit nothing more
     writeCode: int         // the first write failure's errno
     headerSeen: bool       // a header was already written (multi-operand mode)
-    lastOut: int           // follower index of the last output, or -1
+    lastOut: int           // operand id whose header was last emitted, or -1
     sawOperand: bool       // at least one operand opened/read successfully
     operandOk: bool        // the operand just processed succeeded
 }
@@ -207,13 +208,13 @@ fn flushOutput(mut w: &io::Writer, mut st: &TailState) {
 // suppresses further output but not later operands' diagnostics. A read error is
 // printed and sets failed; byte mode stops before later operands (GNU 9.4 does
 // this, while line mode continues).
-fn processReader(mut r: &io::Reader, label: string, opts: &TailOpts,
-                 multi: bool, mut stats: &ReadStats,
+fn processReader(mut r: &io::Reader, label: string, outId: int,
+                 opts: &TailOpts, multi: bool, mut stats: &ReadStats,
                  mut w: &io::Writer, mut st: &TailState): bool {
     if multi && !st.writeFailed {
         let hw = writeHeader(w, label, st)
         match hw {
-            ok { }
+            ok { st.lastOut = outId }
             err {
                 noteWriteError(st, hw.code)
             }
@@ -327,13 +328,13 @@ fn processReader(mut r: &io::Reader, label: string, opts: &TailOpts,
 // Read one operand. "-" is stdin and is never opened or closed; the header
 // label for it is GNU's "standard input". Returns false only for a fatal write
 // error; open and read errors are printed here and continue.
-fn tailOperand(path: string, opts: &TailOpts, multi: bool,
+fn tailOperand(path: string, opts: &TailOpts, multi: bool, outId: int,
                mut w: &io::Writer, mut st: &TailState): bool {
     st.operandOk = false
     if path == "-" {
         var r = io::newReader(stdin(), 65536)
         var stats = new ReadStats{bytes: 0, failed: false}
-        let cont = processReader(r, "standard input", opts, multi, stats, w, st)
+        let cont = processReader(r, "standard input", outId, opts, multi, stats, w, st)
         if cont && !stats.failed { st.operandOk = true }
         return cont
     }
@@ -344,7 +345,7 @@ fn tailOperand(path: string, opts: &TailOpts, multi: bool,
             defer closeFile(fd)
             var r = io::newReader(fd, 65536)
             var stats = new ReadStats{bytes: 0, failed: false}
-            let cont = processReader(r, path, opts, multi, stats, w, st)
+            let cont = processReader(r, path, outId, opts, multi, stats, w, st)
             if cont && !stats.failed { st.operandOk = true }
             return cont
         }
@@ -377,7 +378,7 @@ fn closeFollowers(mut followers: &[]Follow) {
 // count 0), and append it to the follower list. Non-regular named operands are
 // handled by the ordinary non-follow path and are not followed; stdin is
 // followed until EOF. Returns false only for a write failure.
-fn startFollow(path: string, opts: &TailOpts, multi: bool,
+fn startFollow(path: string, opts: &TailOpts, multi: bool, outId: int,
                mut followers: &[]Follow, mut w: &io::Writer,
                mut st: &TailState): bool {
     st.operandOk = false
@@ -386,20 +387,14 @@ fn startFollow(path: string, opts: &TailOpts, multi: bool,
         match probe {
             ok {
                 if (probe.value[0] & 0xF000) != 0x8000 {
-                    let cont = tailOperand(path, opts, multi, w, st)
-                    if cont && st.operandOk {
-                        st.sawOperand = true
-                        st.lastOut = -1
-                    }
+                    let cont = tailOperand(path, opts, multi, outId, w, st)
+                    if cont && st.operandOk { st.sawOperand = true }
                     return cont
                 }
             }
             err {
-                let cont = tailOperand(path, opts, multi, w, st)
-                if cont && st.operandOk {
-                    st.sawOperand = true
-                    st.lastOut = -1
-                }
+                let cont = tailOperand(path, opts, multi, outId, w, st)
+                if cont && st.operandOk { st.sawOperand = true }
                 return cont
             }
         }
@@ -449,17 +444,14 @@ fn startFollow(path: string, opts: &TailOpts, multi: bool,
         if !stable {
             let c = closeFile(fd)
             match c { ok { } err { } }
-            let cont = tailOperand(path, opts, multi, w, st)
-            if cont && st.operandOk {
-                st.sawOperand = true
-                st.lastOut = -1
-            }
+            let cont = tailOperand(path, opts, multi, outId, w, st)
+            if cont && st.operandOk { st.sawOperand = true }
             return cont
         }
     }
     var stats = new ReadStats{bytes: 0, failed: false}
     var r = io::newReader(fd, 65536)
-    let cont = processReader(r, label, opts, multi, stats, w, st)
+    let cont = processReader(r, label, outId, opts, multi, stats, w, st)
     if !cont || st.writeFailed {
         if !isStdin {
             let c = closeFile(fd)
@@ -477,13 +469,11 @@ fn startFollow(path: string, opts: &TailOpts, multi: bool,
     }
     st.sawOperand = true
     st.operandOk = true
-    let idx = len(followers)
-    append(followers, new Follow{path: path, label: label, fd: fd,
+    append(followers, new Follow{path: path, label: label, opid: outId, fd: fd,
                                  isStdin: isStdin, dev: dev, ino: ino,
                                  consumed: stats.bytes, size: size,
                                  suspect: (!isStdin && size == 0 && stats.bytes > 0),
                                  active: true})
-    if multi { st.lastOut = idx }
     return true
 }
 
@@ -567,10 +557,11 @@ fn followLoop(mut followers: &[]Follow, opts: &TailOpts, multi: bool,
                                     f.suspect = true
                                 }
                                 gotData = true
-                                if multi && st.lastOut != i {
+                                if multi && st.lastOut != f.opid {
+                                    let opid = f.opid
                                     let hw = writeHeader(w, f.label, st)
                                     match hw {
-                                        ok { st.lastOut = i }
+                                        ok { st.lastOut = opid }
                                         err { noteWriteError(st, hw.code) }
                                     }
                                     flushOutput(w, st)
@@ -759,12 +750,12 @@ fn main() {
     if opts.follow {
         var followers = new []Follow(0)
         if len(operands) == 0 {
-            let cont = startFollow("-", opts, false, followers, w, st)
+            let cont = startFollow("-", opts, false, 0, followers, w, st)
             if !cont { st.fatal = true }
         } else {
             var k = 0
             while k < len(operands) {
-                let cont = startFollow(operands[k], opts, multi, followers, w, st)
+                let cont = startFollow(operands[k], opts, multi, k, followers, w, st)
                 if !cont {
                     st.fatal = true
                     break
@@ -788,12 +779,12 @@ fn main() {
         }
         closeFollowers(followers)
     } else if len(operands) == 0 {
-        let cont = tailOperand("-", opts, false, w, st)
+        let cont = tailOperand("-", opts, false, 0, w, st)
         if !cont { st.fatal = true }
     } else {
         var k = 0
         while k < len(operands) {
-            let cont = tailOperand(operands[k], opts, multi, w, st)
+            let cont = tailOperand(operands[k], opts, multi, k, w, st)
             if !cont {
                 st.fatal = true
                 break
