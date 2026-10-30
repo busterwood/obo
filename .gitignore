@@ -19,3 +19,6 @@ __pycache__/
 # generated symbol files (the golden fixtures under obo/tests/modules/golden are committed)
 /obo/.obo/
 **/.obo/sym/
+
+# local helper script
+/deepseek.sh
