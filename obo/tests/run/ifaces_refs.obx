@@ -42,6 +42,9 @@ fn maybe(o: &?Shape): int {
     }
     return -1
 }
+fn bumpOpt(mut o: &?Shape) {
+    if o != nil { o.grow(100) }
+}
 fn resultArea(r: &Result[Shape]): int {
     match r {
         ok { return r.value.area() }
@@ -108,6 +111,12 @@ fn main() {
     println(maybe(s))                                            // expect: 36
     println(maybe(r))                                            // expect: 16
     println(maybe(&c))                                           // expect: 16
+
+    // a mut &?I parameter narrows and calls a mut member: a non-nil optional field and a nil place
+    bumpOpt(&h.o)
+    println(maybe(&h.o))                                         // expect: 11664
+    bumpOpt(&no)
+    println(maybe(&no))                                          // expect: -1
 
     // walks over []I, []?I and borrowed arrays: a walk variable is the element's box pointer
     var sum = 0

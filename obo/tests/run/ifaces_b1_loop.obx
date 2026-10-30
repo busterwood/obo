@@ -6,8 +6,11 @@ type Shape = interface {
     pure fn area(): int
 }
 type Square = ref record { s: int }
+type Rect = ref record { w: int; h: int }
 fn (q: &Square) area(): int { return q.s }
+fn (r: &Rect) area(): int { return r.w * r.h }
 impl Shape for Square
+impl Shape for Rect
 
 fn areaOf(d: &Shape): int { return d.area() }
 
@@ -46,6 +49,31 @@ fn main() {
         n += 1
     }
     println(saved.area(), " ", last.area())           // expect: 3 2
+
+    // concrete borrows at one site in a loop: each pass converts a different concrete
+    // object, so each pass has a different vtable; a pair saved on an earlier pass
+    // keeps its own obj and vtable
+    let sq = new Square{s: 4}
+    let rc = new Rect{w: 2, h: 3}
+    let sq2 = new Square{s: 9}
+    var fromFirst: &Shape = &sq
+    var fromRect: &Shape = &rc
+    i = 0
+    while i < 3 {
+        if i == 0 {
+            let cur: &Shape = &sq
+            fromFirst = cur
+        } else if i == 1 {
+            let cur: &Shape = &rc
+            fromRect = cur
+        } else {
+            let cur: &Shape = &sq2
+            // no save: this pass's different vtable must not reach the saved pairs
+            if cur.area() < 0 { fromFirst = cur }
+        }
+        i += 1
+    }
+    println(fromFirst.area(), " ", fromRect.area())   // expect: 4 6
 
     // the per-site cell of an argument is consumed by the call, while a local copied from it stays put
     var held: &Shape = &items[0]

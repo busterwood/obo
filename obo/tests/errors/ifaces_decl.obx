@@ -62,3 +62,66 @@ type I = interface {
     fn a()
 }
 fn f(): I { return nil }  // error: return value: cannot use nil as I (I can never be nil; declare it as ?I)
+
+// === an implementation of a record that is not an interface
+type T = ref record { n: int }
+type U = ref record { n: int }
+impl T for U  // error: 'T' is not an interface type
+
+// === an implementation for a basic type
+type I = interface {
+    fn a()
+}
+impl I for int  // error: an interface can only be implemented by a record or closed type, not int
+
+// === an implementation before the receiver's methods
+type I = interface {
+    fn a()
+}
+type T = ref record { n: int }
+impl I for T  // error: type 'T' has no method 'a' to implement interface 'I'
+
+// === an implementation for a receiver that is declared but not defined
+type I = interface {
+    fn a()
+}
+type T
+impl I for T  // error: type 'T' is declared but not yet defined
+
+// === an implementation for a variant
+type I = interface {
+    fn a()
+}
+type S = closed { A { n: int } }
+impl I for A  // error: cannot implement an interface for variant 'A'; declare it on its closed type 'S'
+
+// === a second implementation of the same pair
+type I = interface {
+    fn a()
+}
+type T = ref record { n: int }
+fn (t: &T) a() { }
+impl I for T
+impl I for T  // error: type 'T' already implements interface 'I'
+
+// === a pub implementation of a private interface
+type I = interface {
+    fn a()
+}
+pub type T = ref record { n: int }
+fn (t: &T) a() { }
+pub impl I for T  // error: exported implementation of 'I' for 'T' uses private type 'I'; mark 'I' pub too
+
+// === a pub implementation of a private receiver
+pub type I = interface {
+    fn a()
+}
+type T = ref record { n: int }
+fn (t: &T) a() { }
+pub impl I for T  // error: exported implementation of 'I' for 'T' uses private type 'T'; mark 'T' pub too
+
+// === a pub interface whose member names a private type
+type X = ref record { n: int }
+pub type I = interface {  // error: exported 'I' uses private type 'X'; mark 'X' pub too
+    fn a(p0: X)
+}
