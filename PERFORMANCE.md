@@ -6,7 +6,7 @@ programs, and the `cat`, `wc`, `sort` and `eza` tools, compared with CPython
 are the historical 0.5 / sym-format 1 sample, but they still describe 0.6: 0.6
 adds methods at compile time only, and the 0.5 and 0.6 seeds build
 byte-identical benchmark and tool binaries (verified with `cmp`), so the suite
-was not re-run. The compiler row is the promoted 0.6 compiler. The suite is
+was not re-run. The compiler row is the promoted 0.8 compiler. The suite is
 on-demand, not a gate; its source is `obo/bench/cli/`, and the command is:
 
 ```sh
@@ -26,7 +26,8 @@ them for relative comparison, not as portable constants.
 * Python: CPython 3.12.3.
 * References: GNU coreutils 9.4; pinned eza v0.23.3, binary sha256
   `10457dde…`.
-* Compiler: obo 0.6, sym-format 2, abi 1. The measured program and tool
+* Compiler: the benchmark run used obo 0.6, sym-format 2, abi 1; the current
+  promoted compiler is 0.8, sym-format 4, abi 1. The measured program and tool
   binaries are byte-identical to their 0.5-seed builds.
 
 ## Methodology
@@ -109,12 +110,12 @@ text/data.
 | `wc` (tool) | 45,057 |
 | `sort` (tool) | 69,633 |
 | `eza` (tool) | 212,993 |
-| obo compiler | 454,657 |
+| obo compiler | 507,905 |
 | pinned eza v0.23.3 reference (not obo code) | 2,294,768 |
 
-The compiler is the promoted 0.6 seed (sha256 `90fcad7e…`), and it rebuilds
-itself to the same 454,657 bytes. The benchmark programs and tools are
-byte-identical to their 0.5-seed builds, so their sizes are unchanged (cat
+The compiler is the promoted 0.8 seed (sha256 `673ae7ba…`), and it rebuilds
+itself to the same 507,905 bytes. The 0.5-seed benchmark programs and tools
+measured above are historical, and their sizes are unchanged (cat
 40,961, wc 45,057, sort 69,633, eza 212,993, sha256 `53133d23…`; the four
 small programs 28,673 each). The eza binary is about 10.8x smaller than the
 pinned reference. The 0.5 seed and its 425,985-byte compiler (sha256
@@ -161,11 +162,11 @@ is no external merge.
 
 | Metric | Value |
 |---|---:|
-| Self-compile wall time | 0.12 s (5 runs, median; host-dependent) |
-| Live peak compiling itself | 1,728,768 bytes |
-| Total allocated | 38,752,320 bytes |
-| Maximum resident set | 3,260 KB |
-| Live-memory budget | 2,000,000 bytes (271,232 spare) |
+| Self-compile wall time | 0.14 s (5 runs, median; host-dependent) |
+| Live peak compiling itself | 1,945,680 bytes |
+| Total allocated | 44,586,880 bytes |
+| Maximum resident set | 3,696 KB |
+| Live-memory budget | 2,000,000 bytes (54,320 spare) |
 
 The live peak varies by a few hundred bytes with the compiler source path (the
 main-tree measurement is shown). Leaks are caught separately by the port gate's

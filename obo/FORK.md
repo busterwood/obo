@@ -5234,14 +5234,15 @@ wording nits (the `closureSeen` fixture wording, receiver parens on one line, an
 the literal `b.store(clear(b))` example) are recorded for a later documentation
 pass; the design file itself is untouched.
 
-# Interfaces: owning values, borrowed pairs and dispatch (v3/0.8, implemented; seed promotion pending)
+# Interfaces: owning values, borrowed pairs and dispatch (v3/0.8, implemented and promoted)
 
 Status: steps 1 to 6 are implemented and independently reviewed (the final step-6 source review approved
 `8b8ca74`). Step 7 adds this record, the LANGUAGE.md section, permanent tests and the complete mutant/gate run.
-Nothing is merged or promoted here: `seed/obo` is still `obo 0.6 sym-format 2 abi 1`, and the compiler source
-remains free of interface syntax, so the 0.6 seed builds the 0.8 compiler. One seed promotion follows final
-review. `^I` is phase 2a, after lambdas Stage A (0.9) and Stage B (0.10, both symbol format 5). The superseded
-owning/v2 notes and `interfaces-design.md` remain historical; `interfaces-v3-design.md` is the authority.
+The design branch was merged into main at `61dd4ec`, the implementation branch at `302b5d9`, and the seed was
+promoted once to 0.8 (`seed/obo` is 507,905 bytes, sha256 `673ae7ba…`, `obo 0.8 sym-format 4 abi 1`). The
+compiler source remains free of interface syntax, so the pre-promotion 0.6 seed built the 0.8 compiler. `^I` is
+phase 2a, after lambdas Stage A (0.9) and Stage B (0.10, both symbol format 5). The superseded owning/v2 notes
+and `interfaces-design.md` remain historical; `interfaces-v3-design.md` is the authority.
 
 ## What is in 0.8
 
@@ -5370,11 +5371,11 @@ phase) are not implemented and are not claimed. X38 is present as five compariso
 design IDs and no longer appear. The two old S4 corruption mutations (a wrong stack slot and a two-site role
 swap) are descriptive extras, not X8 or X8b: they crash the first dispatch and do not exercise load order.
 
-## Gates (this branch)
+## Gates (this branch, then the promoted main tree)
 
 These were run from `obo/` at the review-fix tree (a8bea53 plus this scoped test/doc change) with the 0.6 seed
-building the 0.8 compiler. The source is interface-free, so the bootstrap is the same fact the implementation
-steps used.
+building the 0.8 compiler, and repeated after promotion on main. The source is interface-free, so the bootstrap
+is the same fact the implementation steps used.
 
 - `run_fork.py`: 1,408 passed, 0 failed.
 - `module_test.py`: 103 passed, 0 failed.
@@ -5386,22 +5387,22 @@ steps used.
 - `homes_edge.py`: 1,028 statements, 119 refused by both, 0 differ.
 - `elf_test.py`, `io_test.py` and `meta_test.py`: green (34 metadata checks, 0 failures).
 - `port_test.py`: 556 of 556 identical, no leaks, 9 encoder groups.
-- `port_compare.py`: 1,420 of 1,420 behave the same; the port peaks at **1,945,952 bytes live** (budget
-  `2,000,000`, 54,048 spare) and allocates 44,590,272 bytes in total. A direct `OBO_STATS=1 ./obo src/obo.obo`
-  run measures 1,945,648 live / 44,586,848 allocated, so the margin is about 54 KB, not the 92 KB of the paused
-  0.7 branch. The source growth crossed a 16 KiB image chunk as recorded for step 6; the step-7 docs and tests
-  add no compiler source and do not move the peak.
+- `port_compare.py`: 1,420 of 1,420 behave the same; the port peaks at **1,945,760 bytes live** (budget
+  `2,000,000`, 54,240 spare) and allocates 44,588,160 bytes in total. A direct `OBO_STATS=1 ./seed/obo
+  src/obo.obo` run measures 1,945,680 live / 44,586,880 allocated, so the margin is about 54 KB, not the 92 KB
+  of the paused 0.7 branch. The source growth crossed a 16 KiB image chunk as recorded for step 6; the step-7
+  docs and tests add no compiler source and do not move the peak.
 - `imports.py`: 26/26; `stdlib.py`: 16/16.
 - `tools.py --require-reference`: 280/280.
 - `eza.py --require-reference`: **546 passed, 0 failed, 0 skipped**, run as
   `PATH=/tmp/eza-install-sim-F2odpb:$PATH make eza-check` (command-scoped PATH only). The reference is the
   pinned eza v0.23.3 binary with sha256 `10457dde...a8f7cd8`, exactly `tests/eza/VERSION`; `REFERENCE.md`
   records it as the P0 probe artifact at that path, and its `--version` output matches the pin. `make
-  eza-memory`: 5/5, worst peak 2,190,032 bytes under `EZA_PEAK_MAX` 2,752,512. No golden was changed. The
+  eza-memory`: 5/5, worst peak 2,190,160 bytes under `EZA_PEAK_MAX` 2,752,512. No golden was changed. The
   earlier 474/0/72-skipped fallback is superseded by this strict run.
-- Self-hosting: stage2 == stage3 (`cmp`, 507,905 bytes), seed-built `obo` == stage2, `--version` is
-  `obo 0.8 sym-format 4 abi 1`, and `seed/obo` remains `0.6 sym-format 2 abi 1`. Seed promotion is deliberately
-  not part of this step.
+- Self-hosting: stage2 == stage3 (`cmp`, 507,905 bytes), seed-built `obo` == stage2, and `--version` is
+  `obo 0.8 sym-format 4 abi 1`. The promoted `seed/obo` is the same image (sha256 `673ae7ba…`); the 0.6 seed
+  (454,657 bytes, sha256 `90fcad7e…`) is historical.
 - `mutate_fork.py` full: 605 of 634 mutants caught, 29 equivalent, 0 missed/stale/broken. The interface
   subset is 47 active entries (X10 and X37 are deferred rows, not run): 44 caught and 3 equivalent (X8, X15,
   X30), matching the table above. The new X8 is the faithful delayed-read mutation; the two renamed corruption

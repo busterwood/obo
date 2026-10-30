@@ -10,7 +10,7 @@ numbers are host-dependent; treat them as relative measurements from one run,
 not as portable facts. The recorded table is the historical obo 0.5 /
 sym-format 1 sample. obo 0.6 adds methods at compile time only, and the 0.5 and
 0.6 seeds build byte-identical programs and tool binaries, so the medians and
-sizes below still hold; only the header's compiler line changes, to
+sizes below still hold; on the 0.6 tree the header's compiler line read
 `obo 0.6 sym-format 2 abi 1`.
 
 ## What it measures
@@ -159,12 +159,13 @@ binary sizes:
 total: 78.9 s on this host; the numbers are host-dependent.
 ```
 
-The sample is the recorded 0.5 run. On the promoted 0.6 tree the header's
-compiler line reads `obo 0.6 sym-format 2 abi 1`; every obo-side program and
-tool binary is byte-identical (cat 40,961, wc 45,057, sort 69,633, eza 212,993,
-sha256 `53133d23…`, and the four bench programs 28,673 each), so the medians
-are unchanged. The compiler itself is now the promoted 0.6 seed (454,657
-bytes); the 0.5 compiler (425,985 bytes) is historical.
+The sample is the recorded 0.5 run. It was re-measured on the promoted 0.6
+tree: the header's compiler line read `obo 0.6 sym-format 2 abi 1`, and every
+obo-side program and tool binary was byte-identical (cat 40,961, wc 45,057,
+sort 69,633, eza 212,993, sha256 `53133d23…`, and the four bench programs
+28,673 each), so the medians were unchanged. The compiler itself is now the
+promoted 0.8 seed (507,905 bytes); the 0.6 compiler (454,657 bytes) and the
+0.5 compiler (425,985 bytes) are historical.
 
 `--quick` changes the workload sizes as well as the repetition counts, so its
 absolute times are not comparable with default rows: `fib(30)`, a 10,000,000
