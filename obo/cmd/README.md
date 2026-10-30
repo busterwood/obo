@@ -29,11 +29,11 @@ runtime included:
 
 | Tool | Size |
 |---|---:|
-| `cat` | 40,961 bytes |
-| `wc` | 45,057 bytes |
-| `sort` | 69,633 bytes |
-| `tail` | 45,057 bytes |
-| `eza` | 212,993 bytes |
+| `cat` | 45,057 bytes |
+| `wc` | 49,153 bytes |
+| `sort` | 73,729 bytes |
+| `tail` | 53,249 bytes |
+| `eza` | 217,089 bytes |
 
 The library modules are `lib/io.obx` (`Reader`, `Writer`, the buffered functions,
 `writeByte` and `isTty`), `lib/strings.obx` (byte classification, `cmp`, the
@@ -232,8 +232,8 @@ times move about 10-15% with host load and depend on the fixture.
 ## tail
 
 ```
-tail [-n COUNT | -c COUNT] [--] [FILE ...]
-tail [--lines[=]COUNT | --bytes[=]COUNT] [--] [FILE ...]
+tail [-f] [-n COUNT | -c COUNT] [--] [FILE ...]
+tail [-f] [--lines[=]COUNT | --bytes[=]COUNT] [--] [FILE ...]
 ```
 
 Prints the last 10 lines of each operand by default. `-n`/`--lines` selects a
@@ -249,9 +249,11 @@ line when the input does not end in a newline. Output is the exact retained
 bytes: no newline is added, and a missing final newline stays missing. An input
 ending in a newline has no extra empty line after it (`a\nb\n` with `-n 1` is
 `b\n`); `-n 1` on `a\n\n` is the blank line `\n`. Byte mode emits the last
-COUNT bytes verbatim, including NUL and invalid UTF-8. `-n0` and `-c0` print
-nothing and — matching GNU 9.4 — do not open the operands, so a missing operand
-produces no diagnostic and exit 0.
+COUNT bytes verbatim, including NUL and invalid UTF-8. Without `-f`, `-n0` and
+`-c0` print nothing and — matching GNU 9.4 — do not open the operands, so a
+missing operand produces no diagnostic and exit 0. With `-f`, count 0 still
+opens and monitors the operands; it prints no existing data but keeps the
+future-data path (and, for multiple files, the initial headers) working.
 
 With two or more operands each is counted independently and a successfully
 opened operand gets GNU's header, `==> <operand> <==`, with `standard input`
@@ -261,14 +263,41 @@ fails. A directory opens and fails when read, after its header is written, as
 in GNU. Line mode continues with later operands after a read error; byte mode
 stops there (GNU 9.4's behaviour).
 
-There is no `seek`/`readAt` builtin, so the implementation is the bounded
+`-f` keeps named regular-file descriptors open after the initial tail, then
+polls once per second with `sleepMs(1000)`: each poll reads appended bytes and
+flushes them immediately, and a full round that found no data sleeps before the
+next one. It never busy-spins and never rereads an unchanged file; idle CPU is
+effectively zero. An unterminated line stays unterminated: appended bytes are
+emitted raw, not re-tailored. `-n0 -f` and `-c0 -f` print no existing content but
+still monitor future data (multi-file initial headers are still printed).
+
+Multiple followed files use GNU's headers: the initial headers, then a blank
+line and `==> <operand> <==` before each new chunk. stdin (`-` or no operands)
+is followed until EOF; a pipe or terminal at EOF exits 0, and a regular-file
+stdin also exits there (a documented narrowing from GNU, which keeps following
+it). Non-regular named operands use the ordinary non-follow path and are not
+polled.
+
+Each poll calls `statPath` and compares device and inode. If the path still
+names the same file and its size is below the bytes already consumed, the
+descriptor is closed, the path is reopened from the start and
+`tail: <path>: file truncated` is printed; the current file content is then
+treated as new data. This matches GNU's observed truncation output without a
+seek, but a renamed or unlinked file's truncation is not detected (the old
+descriptor is kept), a file truncated and regrown past the old size between
+polls is not detected, and path replacement is not followed. There is no
+`-F`/name follow or rotation support. A read error stops following that file;
+if no files remain the command exits 1. A write error stops the whole follow
+loop at once (never continuing forever with dead output).
+
+There is no `seek`/`readAt` builtin, so the non-follow implementation is the bounded
 streaming tail rather than GNU's backwards seek: a ring of at most COUNT lines
 (line mode) or COUNT bytes (byte mode) holds the required trailing data while
 the input is read once. Memory is O(the retained trailing bytes) plus one 64 KiB
 read/write block, never the whole input; metadata grows only to the number of
 retained lines. A single line longer than the trailing requirement is retained
 whole because printing it requires those bytes (a 16 MiB file with no newline
-and `-n 10` peaks at about 25 MB; `-c 100` on the same file peaks at 66,784 live
+and `-n 10` peaks at about 25 MB; `-c 100` on the same file peaks at 66,848 live
 heap bytes). Each file is read to EOF even when COUNT is small, so this build
 cannot stop early on a regular file the way a seeking tail can.
 
@@ -284,7 +313,7 @@ A write error suppresses all further output, but the remaining operands are
 still opened and read so their diagnostics appear; the single `tail: write
 error: <text>` line is printed after them. GNU also continues with later
 operands, but sometimes prints `write error` without the errno text; ours always
-includes it. A follow mode would instead stop at the first write error, because
+includes it. Follow mode instead stops at the first write error, because
 continuing forever with a dead output is not useful. Any open, read or write
 failure exits 1. Unlike the other tools, `tail` wraps the operand in GNU's
 single quotes; a name containing an apostrophe is not escaped the way GNU's
@@ -293,13 +322,14 @@ fine). Invalid counts are this build's own one-line messages, e.g. `tail:
 invalid number of lines: '2x'`; a missing `-n` value is `tail: option requires
 an argument -- 'n'`.
 
-Follow mode is deliberately absent in this build. `lib/io.obx` has blocking
-reads but no sleep/poll timeout, and a regular-file read at EOF returns
-immediately, so a follow loop needs either a busy spin or repeated rereads of
-the whole file; neither is acceptable. There is also no exposed seek/fstat for
-efficient descriptor-based truncation detection. The minimum addition is one
-sleep/timeout primitive (with the resulting compiler/runtime slot change) before
-`-f` can be implemented honestly. Also absent: `-F`, `-q`, `-v`, `-s`, `-z`,
+Follow mode holds one descriptor per named regular operand and the last
+incremental read chunk; it does not accumulate output or the historical file.
+A poll that finds data loops again immediately to drain it, so a large append
+does not wait a second per 64 KiB chunk. The same 64 KiB read block and the
+line/byte rings bound the non-follow path; follow mode does not add a whole-file
+buffer.
+
+Also absent: `-F`/name follow and rotation, `-q`, `-v`, `-s`, `-z`,
 `--follow`, `--retry`, `--pid`, `--sleep-interval`, `--max-unchanged-stats`,
 the obsolete `-N` spelling, signed counts, count suffixes, `--help`,
 `--version` and every other long option.
@@ -513,7 +543,7 @@ E2 adds one more own error: `-l` with `-G` (eza's GridDetails; see below).
 `Unknown argument` path. Values of rejected eza-valid flags are still consumed
 with eza's value mode before the unsupported error (`-I=`, `-L x`).
 
-**Measured (merged tree).** eza binary 212,993 bytes (static, runtime
+**Measured (merged tree).** eza binary 217,089 bytes (static, runtime
 included; the reference is 2,294,768). On 10,000 entries under
 `OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, restricted long peaks at 2,190,032
 live heap bytes, the name-only listing at 2,189,408, the tree at 2,190,160,

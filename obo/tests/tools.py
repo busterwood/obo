@@ -843,7 +843,9 @@ def parse_tail_argv(argv):
                 j = 1
                 while j < len(a):
                     ch = a[j]
-                    if ch in 'nc':
+                    if ch == 'f':
+                        j += 1
+                    elif ch in 'nc':
                         if j + 1 < len(a):
                             value = a[j + 1:]
                             j = len(a)
@@ -1805,7 +1807,7 @@ class Harness:
         return problems
 
     # -- modes
-    SERIAL_NAMES = ('stream', 'pipeline', 'stdin_unread')
+    SERIAL_NAMES = ('stream', 'pipeline', 'stdin_unread', 'follow')
 
     def run_matrix(self):
         cases = CASES
@@ -1856,11 +1858,13 @@ class Harness:
 
     def run_serial_cases(self):
         k = self.args.k
-        if k and not any(k in n for n in ('stream', 'pipeline', 'stdin_unread')):
+        if k and not any(k in n for n in ('stream', 'pipeline', 'stdin_unread',
+                                           'follow')):
             return
         self.stream_case(k)
         self.stdin_unread_case(k)
         self.pipeline_case(k)
+        self.follow_case(k)
 
     def _special_dir(self):
         d = os.path.join(self.tmp, 'special')
@@ -2000,6 +2004,232 @@ class Harness:
                 self.passed += 1
                 if self.args.verbose:
                     print(f'ok   {label}')
+
+    # -- follow mode
+    def _follow_env(self):
+        return {'PATH': REFERENCE_PATH, 'LC_ALL': 'C', 'LANG': 'C',
+                'LANGUAGE': 'C', 'TZ': 'UTC', 'HOME': self.tmp,
+                'TMPDIR': self.tmp, 'OBO_CHECK': '1', 'OBX_GC': 'poison'}
+
+    def _follow_start(self, cwd, args):
+        return subprocess.Popen([self.ctx['tail'].exe, *args], cwd=cwd,
+                                env=self._follow_env(), stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                start_new_session=True)
+
+    def _follow_read(self, p, want, timeout=5.0):
+        got = b''
+        deadline = time.time() + timeout
+        while len(got) < len(want):
+            left = deadline - time.time()
+            if left <= 0:
+                break
+            ready, _, _ = select.select([p.stdout], [], [], left)
+            if not ready:
+                break
+            chunk = os.read(p.stdout.fileno(), len(want) - len(got))
+            if not chunk:
+                break
+            got += chunk
+        return got
+
+    def _follow_quiet(self, p, seconds=0.4):
+        ready, _, _ = select.select([p.stdout], [], [], seconds)
+        if not ready:
+            return b''
+        return os.read(p.stdout.fileno(), 4096)
+
+    def _follow_write(self, path, data, mode='ab'):
+        with open(path, mode) as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+
+    def _follow_stop(self, p):
+        if p.poll() is None:
+            try:
+                os.killpg(p.pid, signal.SIGTERM)
+            except OSError:
+                pass
+        try:
+            p.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            p.wait(timeout=5)
+        err = p.stderr.read()
+        p.stdout.close()
+        p.stderr.close()
+        if p.poll() is None:
+            raise RuntimeError('follow process did not terminate')
+        return p.returncode, err
+
+    def follow_case(self, k):
+        if k and 'follow' not in k:
+            return
+        d = os.path.join(self.tmp, 'follow')
+        os.makedirs(d, exist_ok=True)
+
+        def run_one(label, argv, stdin_data=None, timeout=8):
+            p = subprocess.run([self.ctx['tail'].exe, *argv], cwd=d,
+                               env=self._follow_env(), input=stdin_data,
+                               capture_output=True, timeout=timeout)
+            return p
+
+        def check(label, ok, detail=''):
+            if ok:
+                self.passed += 1
+                if self.args.verbose:
+                    print(f'ok   {label}')
+            else:
+                self.failures.append((label, detail))
+
+        # initial tail, appended text, appended newline, and an unterminated line
+        path = os.path.join(d, 'append.txt')
+        with open(path, 'wb') as f:
+            f.write(b'one\ntwo\n')
+        p = self._follow_start(d, ['-n', '1', '-f', 'append.txt'])
+        try:
+            got = self._follow_read(p, b'two\n')
+            check('follow append initial', got == b'two\n', repr(got))
+            self._follow_write(path, b'three\n')
+            got = self._follow_read(p, b'three\n')
+            check('follow append line', got == b'three\n', repr(got))
+            self._follow_write(path, b'four')
+            got = self._follow_read(p, b'four')
+            check('follow append unterminated', got == b'four', repr(got))
+            self._follow_write(path, b'\n')
+            got = self._follow_read(p, b'\n')
+            check('follow append finish line', got == b'\n', repr(got))
+            _rc, err = self._follow_stop(p)
+            check('follow append stderr', err == b'', repr(err))
+        finally:
+            if p.poll() is None:
+                self._follow_stop(p)
+
+        # count 0 prints no existing data but still monitors future data
+        path = os.path.join(d, 'zero.txt')
+        with open(path, 'wb') as f:
+            f.write(b'old\n')
+        p = self._follow_start(d, ['-n0', '-f', 'zero.txt'])
+        try:
+            got = self._follow_quiet(p)
+            check('follow n0 initial quiet', got == b'', repr(got))
+            self._follow_write(path, b'new\n')
+            got = self._follow_read(p, b'new\n')
+            check('follow n0 future', got == b'new\n', repr(got))
+            _rc, err = self._follow_stop(p)
+            check('follow n0 stderr', err == b'', repr(err))
+        finally:
+            if p.poll() is None:
+                self._follow_stop(p)
+
+        # same-inode truncation: reopen from the start and report it
+        path = os.path.join(d, 'trunc.txt')
+        with open(path, 'wb') as f:
+            f.write(b'a\nb\n')
+        p = self._follow_start(d, ['-n', '1', '-f', 'trunc.txt'])
+        try:
+            got = self._follow_read(p, b'b\n')
+            check('follow truncate initial', got == b'b\n', repr(got))
+            self._follow_write(path, b'c\n', mode='wb')
+            got = self._follow_read(p, b'c\n')
+            check('follow truncate reopen', got == b'c\n', repr(got))
+            self._follow_write(path, b'd\n')
+            got = self._follow_read(p, b'd\n')
+            check('follow truncate append', got == b'd\n', repr(got))
+            _rc, err = self._follow_stop(p)
+            check('follow truncate notice', b'file truncated' in err, repr(err))
+        finally:
+            if p.poll() is None:
+                self._follow_stop(p)
+
+        # byte count on an unterminated file, then raw appended bytes
+        path = os.path.join(d, 'bytes.txt')
+        with open(path, 'wb') as f:
+            f.write(b'abc')
+        p = self._follow_start(d, ['-c', '2', '-f', 'bytes.txt'])
+        try:
+            got = self._follow_read(p, b'bc')
+            check('follow bytes initial', got == b'bc', repr(got))
+            self._follow_write(path, b'de')
+            got = self._follow_read(p, b'de')
+            check('follow bytes append', got == b'de', repr(got))
+            self._follow_write(path, b'\n')
+            got = self._follow_read(p, b'\n')
+            check('follow bytes newline', got == b'\n', repr(got))
+            _rc, err = self._follow_stop(p)
+            check('follow bytes stderr', err == b'', repr(err))
+        finally:
+            if p.poll() is None:
+                self._follow_stop(p)
+
+        # multiple operands: initial headers and a header before each new chunk
+        with open(os.path.join(d, 'fa.txt'), 'wb') as f:
+            f.write(b'a1\n')
+        with open(os.path.join(d, 'fb.txt'), 'wb') as f:
+            f.write(b'b1\n')
+        p = self._follow_start(d, ['-n0', '-f', 'fa.txt', 'fb.txt'])
+        try:
+            got = self._follow_read(p, b'==> fa.txt <==\n\n==> fb.txt <==\n')
+            check('follow multi headers', got == b'==> fa.txt <==\n\n==> fb.txt <==\n',
+                  repr(got))
+            self._follow_write(os.path.join(d, 'fa.txt'), b'a2\n')
+            got = self._follow_read(p, b'\n==> fa.txt <==\na2\n')
+            check('follow multi chunk header', got == b'\n==> fa.txt <==\na2\n',
+                  repr(got))
+            _rc, err = self._follow_stop(p)
+            check('follow multi stderr', err == b'', repr(err))
+        finally:
+            if p.poll() is None:
+                self._follow_stop(p)
+
+        # a write failure stops the follow loop instead of running forever
+        path = os.path.join(d, 'wf.txt')
+        with open(path, 'wb') as f:
+            f.write(b'a\nb\n')
+        with open('/dev/full', 'wb') as sink:
+            p = subprocess.run([self.ctx['tail'].exe, '-n1', '-f', 'wf.txt'],
+                               cwd=d, env=self._follow_env(),
+                               stdout=sink, stderr=subprocess.PIPE, timeout=8)
+        check('follow write error exit', p.returncode == 1, str(p.returncode))
+        check('follow write error message', b'write error' in p.stderr,
+              repr(p.stderr))
+
+        # all operands missing: report and exit instead of polling forever
+        p = run_one('follow', ['-f', 'missing-follow'])
+        check('follow missing exit', p.returncode == 1, str(p.returncode))
+        check('follow missing errors',
+              b"cannot open 'missing-follow'" in p.stderr and
+              b'no files remaining' in p.stderr, repr(p.stderr))
+
+        # stdin at EOF exits normally (and runs the leak check/cleanup)
+        p = run_one('follow', ['-n1', '-f', '-'], stdin_data=b'x\ny\n')
+        check('follow stdin exit', p.returncode == 0, str(p.returncode))
+        check('follow stdin output', p.stdout == b'y\n', repr(p.stdout))
+        check('follow stdin stderr', p.stderr == b'', repr(p.stderr))
+
+        # an idle follow sleeps: CPU must stay far below wall time
+        path = os.path.join(d, 'idle.txt')
+        with open(path, 'wb') as f:
+            f.write(b'x\n')
+        p = self._follow_start(d, ['-f', 'idle.txt'])
+        try:
+            got = self._follow_read(p, b'x\n')
+            check('follow idle initial', got == b'x\n', repr(got))
+            before = resource.getrusage(resource.RUSAGE_CHILDREN)
+            time.sleep(1.6)
+            after = resource.getrusage(resource.RUSAGE_CHILDREN)
+            cpu = ((after.ru_utime - before.ru_utime) +
+                   (after.ru_stime - before.ru_stime))
+            _rc, err = self._follow_stop(p)
+            check('follow idle cpu', cpu < 0.5, f'{cpu:.3f} CPU seconds')
+            check('follow idle stderr', err == b'', repr(err))
+        finally:
+            if p.poll() is None:
+                self._follow_stop(p)
 
     # -- memory mode
     def run_memory(self):

@@ -2,9 +2,9 @@
 //
 // Built as a module root by tools/build_tools.py: it imports lib/io.obx as
 // `io` and lib/errors.obx as `errors`, and every library name is qualified.
-// The subset is deliberate: -f, -F, -q, -v, -s, -z, the obsolete -N spelling,
-// signed counts, long options other than --lines/--bytes, --help and --version
-// are unsupported (see cmd/README.md).
+// The subset is deliberate: -F/name follow and rotation, -q, -v, -s, -z, the
+// obsolete -N spelling, signed counts, long options other than --lines/--bytes,
+// --help and --version are unsupported (see cmd/README.md).
 //
 // There is no seek/readAt builtin, so this is the bounded streaming tail: a
 // line-queue ring holds only the last COUNT lines and a byte ring holds only
@@ -20,9 +20,18 @@
 // headers; an operand that cannot be opened gets no header. Like GNU, each
 // operand's count is independent.
 //
+// -f keeps named regular-file descriptors open, prints the initial tail, then
+// polls once per second: each poll reads appended bytes, flushes them, and
+// sleeps only when a full round found no data. A same-inode shrink reopens the
+// path from the start and reports `file truncated`; a replaced or unlinked path
+// keeps the old descriptor (descriptor follow, not -F). Non-regular named
+// operands are not followed. stdin is followed until EOF. With -n0/-c0 follow
+// prints no existing data (but still prints initial headers in multi mode) and
+// monitors only future data. A write error stops the follow loop.
+//
 // Errors follow GNU's quote-free-name forms: `cannot open '<path>' for reading:
-// <text>` and `error reading '<path>': <text>`. A write error stops at once
-// with `write error: <text>`. Any failure exits 1.
+// <text>` and `error reading '<path>': <text>`. In non-follow mode a write error
+// suppresses output but later operands are still diagnosed. Any failure exits 1.
 
 import "../lib/io.obx" as io
 import "../lib/errors.obx" as errors
@@ -30,6 +39,27 @@ import "../lib/errors.obx" as errors
 type TailOpts = ref record {
     lineMode: bool         // -n/--lines (the default) or -c/--bytes
     count: int
+    follow: bool           // -f: keep the descriptors open and poll for appended data
+}
+
+type ReadStats = ref record {
+    bytes: int             // every byte read from the stream, retained or not
+    failed: bool           // a readFd error ended the scan
+}
+
+// One followed operand. path and label are the operand; fd is kept open until
+// the loop ends. dev/ino come from the opening statPath; consumed is the byte
+// count read from the current file, used with the path's size to detect a
+// same-inode truncation. stdin has no path metadata and no truncation check.
+type Follow = ref record {
+    path: string
+    label: string
+    fd: int
+    isStdin: bool
+    dev: int
+    ino: int
+    consumed: int
+    active: bool
 }
 
 type Line = ref record {
@@ -73,12 +103,15 @@ fn addLine(mut q: &LineQueue, line: Line) {
 // Read a stream to EOF, keeping only the last cap lines. Each newline ends a
 // line (the newline is part of the line); a final partial line is a line too,
 // and an empty stream has no lines.
-fn collectLines(mut r: &io::Reader, cap: int, mut q: &LineQueue): Result[bool] {
+fn collectLines(mut r: &io::Reader, cap: int, mut q: &LineQueue,
+                mut stats: &ReadStats): Result[bool] {
     var cur = new []byte(0)
     while true {
         let more = try io::fill(r)
         if !more { break }
         let chunk = io::takeChunk(r)
+        stats.bytes += len(chunk)
+        if cap <= 0 { continue }
         var i = 0
         while i < len(chunk) {
             let b = chunk[i]
@@ -90,7 +123,7 @@ fn collectLines(mut r: &io::Reader, cap: int, mut q: &LineQueue): Result[bool] {
             i += 1
         }
     }
-    if len(cur) > 0 {
+    if cap > 0 && len(cur) > 0 {
         addLine(q, new Line{data: cur})
         cur = new []byte(0)
     }
@@ -98,11 +131,14 @@ fn collectLines(mut r: &io::Reader, cap: int, mut q: &LineQueue): Result[bool] {
 }
 
 // Read a stream to EOF, keeping only the last cap bytes.
-fn collectBytes(mut r: &io::Reader, cap: int, mut ring: &ByteRing): Result[bool] {
+fn collectBytes(mut r: &io::Reader, cap: int, mut ring: &ByteRing,
+                mut stats: &ReadStats): Result[bool] {
     while true {
         let more = try io::fill(r)
         if !more { break }
         let chunk = io::takeChunk(r)
+        stats.bytes += len(chunk)
+        if cap <= 0 { continue }
         var i = 0
         while i < len(chunk) {
             let b = chunk[i]
@@ -161,7 +197,8 @@ fn flushOutput(mut w: &io::Writer, mut st: &TailState) {
 // printed and sets failed; byte mode stops before later operands (GNU 9.4 does
 // this, while line mode continues).
 fn processReader(mut r: &io::Reader, label: string, opts: &TailOpts,
-                 multi: bool, mut w: &io::Writer, mut st: &TailState): bool {
+                 multi: bool, mut stats: &ReadStats,
+                 mut w: &io::Writer, mut st: &TailState): bool {
     if multi && !st.writeFailed {
         let hw = writeHeader(w, label, st)
         match hw {
@@ -175,12 +212,13 @@ fn processReader(mut r: &io::Reader, label: string, opts: &TailOpts,
     }
     if opts.lineMode {
         var q = new LineQueue{items: new []Line(0), head: 0, cap: opts.count}
-        let rr = collectLines(r, opts.count, q)
+        let rr = collectLines(r, opts.count, q, stats)
         match rr {
             ok { }
             err {
                 eprintln("tail: error reading '", label, "': ", errors::text(rr.code))
                 st.failed = true
+                stats.failed = true
                 return true
             }
         }
@@ -225,12 +263,13 @@ fn processReader(mut r: &io::Reader, label: string, opts: &TailOpts,
         }
     } else {
         var ring = new ByteRing{buf: new []byte(0), head: 0, cap: opts.count}
-        let rr = collectBytes(r, opts.count, ring)
+        let rr = collectBytes(r, opts.count, ring, stats)
         match rr {
             ok { }
             err {
                 eprintln("tail: error reading '", label, "': ", errors::text(rr.code))
                 st.failed = true
+                stats.failed = true
                 // GNU byte mode gives up after a read error; line mode goes on
                 return false
             }
@@ -281,7 +320,8 @@ fn tailOperand(path: string, opts: &TailOpts, multi: bool,
                mut w: &io::Writer, mut st: &TailState): bool {
     if path == "-" {
         var r = io::newReader(stdin(), 65536)
-        return processReader(r, "standard input", opts, multi, w, st)
+        var stats = new ReadStats{bytes: 0, failed: false}
+        return processReader(r, "standard input", opts, multi, stats, w, st)
     }
     let f = openFile(path, "r")
     match f {
@@ -289,7 +329,8 @@ fn tailOperand(path: string, opts: &TailOpts, multi: bool,
             let fd = f.value
             defer closeFile(fd)
             var r = io::newReader(fd, 65536)
-            return processReader(r, path, opts, multi, w, st)
+            var stats = new ReadStats{bytes: 0, failed: false}
+            return processReader(r, path, opts, multi, stats, w, st)
         }
         err {
             eprintln("tail: cannot open '", path, "' for reading: ", errors::text(f.code))
@@ -297,6 +338,212 @@ fn tailOperand(path: string, opts: &TailOpts, multi: bool,
         }
     }
     return true
+}
+
+// Close one named follower, ignoring a close failure (the file is being
+// abandoned; a close error cannot make a later read work).
+fn closeFollower(f: &Follow) {
+    if f.isStdin || !f.active { return }
+    let c = closeFile(f.fd)
+    match c { ok { } err { } }
+}
+
+fn closeFollowers(mut followers: &[]Follow) {
+    var i = 0
+    while i < len(followers) {
+        closeFollower(followers[i])
+        followers[i].active = false
+        i += 1
+    }
+}
+
+// Open one follow operand, print its initial tail (or only its header for
+// count 0), and append it to the follower list. Non-regular named operands are
+// handled by the ordinary non-follow path and are not followed; stdin is
+// followed until EOF. Returns false only for a write failure.
+fn startFollow(path: string, opts: &TailOpts, multi: bool,
+               mut followers: &[]Follow, mut w: &io::Writer,
+               mut st: &TailState): bool {
+    if path != "-" {
+        let probe = statPath(path)
+        match probe {
+            ok {
+                if (probe.value[0] & 0xF000) != 0x8000 {
+                    return tailOperand(path, opts, multi, w, st)
+                }
+            }
+            err {
+                return tailOperand(path, opts, multi, w, st)
+            }
+        }
+    }
+    var label = "standard input"
+    var isStdin = true
+    var fd = 0
+    if path != "-" {
+        label = path
+        isStdin = false
+        let of = openFile(path, "r")
+        match of {
+            ok { fd = of.value }
+            err {
+                eprintln("tail: cannot open '", path, "' for reading: ", errors::text(of.code))
+                st.failed = true
+                return true
+            }
+        }
+    }
+    var dev = 0
+    var ino = 0
+    if !isStdin {
+        let sp = statPath(path)
+        match sp {
+            ok {
+                dev = sp.value[8]
+                ino = sp.value[7]
+            }
+            err { }
+        }
+    }
+    var stats = new ReadStats{bytes: 0, failed: false}
+    var r = io::newReader(fd, 65536)
+    let cont = processReader(r, label, opts, multi, stats, w, st)
+    if !cont || st.writeFailed {
+        if !isStdin {
+            let c = closeFile(fd)
+            match c { ok { } err { } }
+        }
+        return !st.writeFailed
+    }
+    if stats.failed {
+        if !isStdin {
+            let c = closeFile(fd)
+            match c { ok { } err { } }
+        }
+        return true
+    }
+    append(followers, new Follow{path: path, label: label, fd: fd,
+                                 isStdin: isStdin, dev: dev, ino: ino,
+                                 consumed: stats.bytes, active: true})
+    return true
+}
+
+// Poll every followed descriptor once. A read of nil is EOF, not an error: a
+// named regular file just waits for more bytes, while stdin's EOF ends that
+// follower (a pipe has no future data). Before each read a path stat detects
+// a same-inode shrink; the file is then reopened from the start and its current
+// content is treated as new data. A replaced or unlinked path keeps the old
+// descriptor: this is descriptor follow, not -F/name follow.
+fn followLoop(mut followers: &[]Follow, opts: &TailOpts, multi: bool,
+              mut w: &io::Writer, mut st: &TailState) {
+    while true {
+        var gotData = false
+        var i = 0
+        while i < len(followers) {
+            var f = followers[i]
+            if f.active {
+                if !f.isStdin {
+                    let sp = statPath(f.path)
+                    match sp {
+                        ok {
+                            if sp.value[7] == f.ino && sp.value[8] == f.dev &&
+                               sp.value[1] < f.consumed {
+                                closeFollower(f)
+                                f.active = false
+                                let of = openFile(f.path, "r")
+                                match of {
+                                    ok {
+                                        f.fd = of.value
+                                        f.consumed = 0
+                                        f.active = true
+                                        let sp2 = statPath(f.path)
+                                        match sp2 {
+                                            ok {
+                                                f.dev = sp2.value[8]
+                                                f.ino = sp2.value[7]
+                                            }
+                                            err { }
+                                        }
+                                        eprintln("tail: ", f.path, ": file truncated")
+                                    }
+                                    err {
+                                        eprintln("tail: cannot open '", f.path,
+                                                 "' for reading: ", errors::text(of.code))
+                                        st.failed = true
+                                    }
+                                }
+                            }
+                        }
+                        err { }        // path gone: keep following the old descriptor
+                    }
+                }
+                if f.active {
+                    let rr = readFd(f.fd, 65536)
+                    match rr {
+                        ok {
+                            let v = take(rr.value)
+                            if v != nil {
+                                f.consumed += len(v)
+                                gotData = true
+                                if multi {
+                                    let hw = writeHeader(w, f.label, st)
+                                    match hw {
+                                        ok { }
+                                        err { noteWriteError(st, hw.code) }
+                                    }
+                                    flushOutput(w, st)
+                                }
+                                if !st.writeFailed {
+                                    let br = io::writeBytes(w, &v)
+                                    match br {
+                                        ok { }
+                                        err { noteWriteError(st, br.code) }
+                                    }
+                                    flushOutput(w, st)
+                                }
+                                if st.writeFailed {
+                                    closeFollowers(followers)
+                                    return
+                                }
+                            } else if f.isStdin {
+                                // A pipe/terminal at EOF has no future bytes;
+                                // GNU's -f on such stdin exits. A regular-file
+                                // stdin also exits here (documented limit).
+                                f.active = false
+                            }
+                        }
+                        err {
+                            eprintln("tail: error reading '", f.label, "': ",
+                                     errors::text(rr.code))
+                            st.failed = true
+                            closeFollower(f)
+                            f.active = false
+                        }
+                    }
+                }
+            }
+            i += 1
+        }
+        var anyActive = false
+        var j = 0
+        while j < len(followers) {
+            if followers[j].active { anyActive = true }
+            j += 1
+        }
+        if !anyActive { return }
+        if !gotData {
+            let sl = sleepMs(1000)
+            match sl {
+                ok { }
+                err {
+                    eprintln("tail: sleep error: ", sl.message)
+                    st.failed = true
+                    closeFollowers(followers)
+                    return
+                }
+            }
+        }
+    }
 }
 
 // Unsigned decimal count. Empty, a sign, whitespace or any non-digit is
@@ -339,7 +586,7 @@ fn setCount(mut o: &TailOpts, lineMode: bool, value: string) {
 
 fn main() {
     let argv = args()
-    var opts = new TailOpts{lineMode: true, count: 10}
+    var opts = new TailOpts{lineMode: true, count: 10, follow: false}
     var operands = new []string(0)
     var endOpts = false
     var i = 1
@@ -380,7 +627,10 @@ fn main() {
                 var j = 1
                 while j < len(a) {
                     let c = a[j]
-                    if c == 'n' || c == 'c' {
+                    if c == 'f' {
+                        opts.follow = true
+                        j += 1
+                    } else if c == 'n' || c == 'c' {
                         var value = ""
                         if j + 1 < len(a) {
                             value = substr(a, j + 1, len(a))
@@ -410,19 +660,44 @@ fn main() {
     }
 
     // GNU's count 0 prints nothing and does not open operands (even a missing
-    // one), so no header and no diagnostic is produced. (A future -f must keep
-    // going here: zero initial output is not the same as no follow.)
-    if opts.count == 0 { exit(0) }
+    // one), so no header and no diagnostic is produced. Follow mode is the
+    // exception: it still opens and monitors, just without initial output.
+    if opts.count == 0 && !opts.follow { exit(0) }
 
     var w = io::newWriter(stdout(), 65536)
     var st = new TailState{failed: false, fatal: false, writeFailed: false,
                            writeCode: 0, headerSeen: false}
     var multi = false
-    if len(operands) == 0 {
+    if len(operands) > 1 { multi = true }
+    if opts.follow {
+        var followers = new []Follow(0)
+        if len(operands) == 0 {
+            let cont = startFollow("-", opts, false, followers, w, st)
+            if !cont { st.fatal = true }
+        } else {
+            var k = 0
+            while k < len(operands) {
+                let cont = startFollow(operands[k], opts, multi, followers, w, st)
+                if !cont {
+                    st.fatal = true
+                    break
+                }
+                k += 1
+            }
+        }
+        if !st.writeFailed {
+            if len(followers) == 0 {
+                eprintln("tail: no files remaining")
+                st.failed = true
+            } else {
+                followLoop(followers, opts, multi, w, st)
+            }
+        }
+        closeFollowers(followers)
+    } else if len(operands) == 0 {
         let cont = tailOperand("-", opts, false, w, st)
         if !cont { st.fatal = true }
     } else {
-        if len(operands) > 1 { multi = true }
         var k = 0
         while k < len(operands) {
             let cont = tailOperand(operands[k], opts, multi, w, st)
