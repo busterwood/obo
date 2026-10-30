@@ -19,17 +19,22 @@ more than the core count only contends. A comparison alone uses one worker per c
     python3 obo/tests/mutate_port.py [pattern]"""
 import concurrent.futures
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(os.path.dirname(HERE), 'src', 'obo.obo')
 sys.path.insert(0, HERE)
 import port_compare as pc  # noqa: E402
+import mutate_stats  # noqa: E402
 
 DEFAULT_JOBS = 4                # outer mutants; MUTATE_JOBS overrides
+TRANSIENT = re.compile(r'timed out|out of memory|no result in', re.IGNORECASE)
+CATCHER_FILE = os.path.join(HERE, 'mutant_catchers.tsv')
 
 MARK = "    let symMark = len(symArena)                 // the function's own symbols start here\n"
 FREE = "    truncate(symArena, symMark)                 // and nothing refers to them any more\n"
@@ -424,21 +429,110 @@ MUTANTS.update({
 MEMORY_MARGIN = 1.03
 
 
-def try_mutant(name, text, base_peak, workers=None):
+def apply_edits(src, edits):
+    """Apply a mutant's replacements in order; each must match exactly once.
+    Returns (text, None), or (None, stale message) when any site no longer
+    matches, which the gate reports as a miss rather than skipping the mutant."""
+    text = src
+    for k, (old, new) in enumerate(edits, 1):
+        n = text.count(old)
+        if n != 1:
+            where = f" (site {k} found {n} times)" if len(edits) > 1 else f" (pattern found {n} times)"
+            return None, f"STALE   {where}"
+        text = text.replace(old, new)
+    return text, None
+
+
+def load_catchers(path=CATCHER_FILE):
+    """{mutant: check name} from the committed first-failure table. The table is an
+    order, not a verdict: a check that passes, or a name the catalogue no longer
+    has, falls through to the full comparison (see FORK.md)."""
+    out = {}
+    if not os.path.exists(path):
+        return out
+    with open(path) as f:
+        for line in f:
+            line = line.rstrip('\n')
+            if not line or line.startswith('#') or '\t' not in line:
+                continue
+            name, check = line.split('\t', 1)
+            out[name] = check
+    return out
+
+
+TABLE = load_catchers()
+
+
+def catchers_for(name, table=None):
+    """The check names to try first for a mutant. The environment switch
+    MUTATE_CATCHERS=0 turns the ordering off, for an all-full comparison."""
+    if os.environ.get('MUTATE_CATCHERS', '1') == '0':
+        return ()
+    table = TABLE if table is None else table
+    check = table.get(name)
+    return (check,) if check else ()
+
+
+def catcher_kinds(checks):
+    """One representative check per kind, for the baseline probe."""
+    kinds = {}
+    for check in checks:
+        if check.startswith('cli '):
+            kind = 'cli'
+        elif check.startswith('special '):
+            kind = 'special'
+        elif check.startswith('reemit '):
+            kind = 'reemit'
+        elif check == 'modules/tokens':
+            kind = 'tokens'
+        elif check.startswith('modules/'):
+            kind = 'tree'
+        else:
+            kind = 'flat'
+        kinds.setdefault(kind, check)
+    return kinds
+
+
+def validate_catchers(table, names):
+    """(unknown, representatives) for the selected mutants. An unknown name is
+    only noted: it cannot catch or pass anything. The representatives are run on
+    the unmutated compiler before any mutant is judged, so a broken catcher path
+    aborts the gate instead of making every mutant look caught."""
+    known = pc.known_checks()
+    unknown, checks = [], []
+    for name in names:
+        check = table.get(name)
+        if check is None:
+            continue
+        if check not in known:
+            unknown.append((name, check))
+            continue
+        checks.append(check)
+    return unknown, catcher_kinds(checks)
+
+
+def try_mutant(name, text, base_peak, workers=None, stats=None, use_catchers=True):
     """('caught' or 'missed', the line to print) for one mutant, in its own directory.
     workers is the number of case comparisons inside this mutant; the caller sets
-    it so that outer mutants x workers is about the core count."""
+    it so that outer mutants x workers is about the core count. stats, when given,
+    collects the stage seconds and counts; it never changes the verdict."""
     tmp = tempfile.mkdtemp(prefix='obo-mutant-')
     try:
         path = os.path.join(tmp, 'mutant.obx')
         open(path, 'w').write(text)
         if name in IMAGE:
+            stage = 'image'
+            if stats is not None:
+                stats.add('subprocesses')
             r = subprocess.run([sys.executable, os.path.join(HERE, 'elf_test.py'), '--source', path],
                                capture_output=True, text=True, cwd=HERE, timeout=300)
             lines = (r.stdout + r.stderr).strip().splitlines()
             failures = [l for l in lines if l.startswith('FAIL')] or \
                        ([lines[-1] if lines else f'exit {r.returncode}'] if r.returncode != 0 else [])
         elif name in ENCODER:
+            stage = 'encoder'
+            if stats is not None:
+                stats.add('subprocesses')
             r = subprocess.run([sys.executable, '-c', f"import port_test as pt; pt.SRC = {path!r}; pt.main()"],
                                capture_output=True, text=True, cwd=HERE)
             lines = (r.stdout + r.stderr).strip().splitlines()
@@ -446,7 +540,10 @@ def try_mutant(name, text, base_peak, workers=None):
                        ([lines[-1] if lines else f'exit {r.returncode}'] if r.returncode != 0 else [])
         elif name in EDGE or name in SHAPES:
             # the register-allocation checks: caught when their script exits nonzero
+            stage = 'edge' if name in EDGE else 'shapes'
             module, fn = ('homes_edge', 'he') if name in EDGE else ('homes_check', 'hc')
+            if stats is not None:
+                stats.add('subprocesses')
             r = subprocess.run([sys.executable, '-c', f"import {module} as {fn}; {fn}.SRC = {path!r}; {fn}.main()"],
                                capture_output=True, text=True, cwd=HERE)
             lines = (r.stdout + r.stderr).strip().splitlines()
@@ -454,35 +551,70 @@ def try_mutant(name, text, base_peak, workers=None):
                        ([l for l in lines if l.startswith('FAIL') or 'does not compile' in l] or
                         [lines[-1] if lines else f'exit {r.returncode}'])
         else:
-            lines, failures, peak = pc.compare(tmp, path, quick=True, workers=workers)
+            stage = 'compare'
+            lines, failures, peak = pc.compare(tmp, path, quick=True, workers=workers,
+                                               catchers=catchers_for(name) if use_catchers else (),
+                                               stats=stats)
             failures = ["FAIL " + f for f in failures]
             if not failures and peak is not None and peak > base_peak * MEMORY_MARGIN:
                 failures = [f"FAIL peak {peak:,} is over the unmutated {base_peak:,} by more than 3%"]
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+    if stats is not None:
+        stats.set('stage', stage)
+        stats.set('transient', bool(failures and (stats.get('catcher_transient')
+                                                  or TRANSIENT.search(failures[0]))))
     if failures:
         return 'caught', f"caught  {name:40s} {failures[0][:110]}"
     return 'missed', f"MISSED  {name:40s} {lines[-1].strip() if lines else ''}"
 
 
+def timing_inputs():
+    runtime = {}
+    for name in ('runtime.c', 'entry.S', 'rt.ld'):
+        runtime[name] = mutate_stats.sha256_file(os.path.join(os.path.dirname(HERE), 'runtime', name))
+    return {
+        'source': mutate_stats.sha256_file(SRC),
+        'ref': mutate_stats.sha256_file(pc.REF),
+        'ref_version': pc.ref_version(pc.REF),
+        'runtime': runtime,
+        'tests': mutate_stats.dir_digest(HERE),
+        'harness': {
+            'mutate_port.py': mutate_stats.sha256_file(os.path.abspath(__file__)),
+            'port_compare.py': mutate_stats.sha256_file(os.path.join(HERE, 'port_compare.py')),
+            'mutate_stats.py': mutate_stats.sha256_file(os.path.join(HERE, 'mutate_stats.py')),
+            'mutant_catchers.tsv': mutate_stats.sha256_file(CATCHER_FILE),
+        },
+    }
+
+
 def main():
+    run_start = time.perf_counter()
     pattern = sys.argv[1] if len(sys.argv) > 1 else ''
     src = open(SRC).read()
     todo = []
     for name, edits in MUTANTS.items():
         if pattern not in name:
             continue
-        text = src
-        for old, new in edits:
-            assert text.count(old) == 1, f"mutant '{name}': expected one match for {old!r}"
-            text = text.replace(old, new)
-        todo.append((name, text))
+        text, stale = apply_edits(src, edits)
+        todo.append((name, text, stale))
+    sink = mutate_stats.Sink('mutate-port-timings')
+    if sink.path:
+        print(f"note: timings go to {sink.path}", file=sys.stderr)
+        sink.write(mutate_stats.header('mutate_port', timing_inputs(),
+                                       {'git_head': mutate_stats.git_head(os.path.dirname(HERE)),
+                                        'ref': os.path.abspath(pc.REF)}))
     # the unmutated comparison: its peak, and REF's outcomes, which every mutant's comparison reuses
     tmp = tempfile.mkdtemp(prefix='obo-mutant-base-')
+    t0 = time.perf_counter()
+    base_stats = mutate_stats.Stats()
     try:
-        lines, failures, base_peak = pc.compare(tmp)
+        lines, failures, base_peak = pc.compare(tmp, stats=base_stats)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+    base_stats.set('wall_seconds', round(time.perf_counter() - t0, 3))
+    sink.write({'kind': 'baseline', 'verdict': 'passed' if not failures else 'failed',
+                **base_stats.snapshot()})
     if failures:
         print("\n".join(lines))
         raise SystemExit("the unmutated port fails Stage B, so no mutant can be judged")
@@ -491,11 +623,66 @@ def main():
     # product about the core count, or the extra workers only contend for the
     # process spawns the cases are made of
     workers = env_jobs('MUTATE_INNER_JOBS', 0) or max(1, (os.cpu_count() or 1) // jobs)
+    # Verify the catcher paths on the unmutated compiler before any mutant uses
+    # them. An unknown name is only noted and falls back to the full comparison;
+    # a catcher that fails here is a harness fault, and aborts the gate.
+    if os.environ.get('MUTATE_CATCHERS', '1') != '0':
+        unknown, reps = validate_catchers(TABLE, [n for n, _, _ in todo])
+        for name, check in unknown:
+            print(f"note: catcher {check!r} for {name!r} is not in the catalogue; "
+                  "the full comparison decides", file=sys.stderr)
+        if reps:
+            probe = mutate_stats.Stats()
+            tmp = tempfile.mkdtemp(prefix='obo-mutant-catcher-')
+            t0 = time.perf_counter()
+            try:
+                plines, pfailures, _ = pc.compare(tmp, quick=True, catchers=list(reps.values()),
+                                                  catchers_only=True, stats=probe)
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+            probe.set('wall_seconds', round(time.perf_counter() - t0, 3))
+            sink.write({'kind': 'catcher-probe', 'verdict': 'passed' if not pfailures else 'failed',
+                        'representatives': reps, **probe.snapshot()})
+            if pfailures or probe.get('unknown_catchers') or probe.get('catcher_cases') != len(reps):
+                print("\n".join(plines))
+                raise SystemExit("the unmutated compiler fails a catcher path (above), so a mutant's "
+                                 "catch could not be trusted")
+
+    def work(item):
+        name, text, stale = item
+        st = mutate_stats.Stats()
+        t = time.perf_counter()
+        if text is None:
+            status, line = 'missed', f"MISSED  {name:40s} {stale}"
+        else:
+            status, line = try_mutant(name, text, base_peak, workers, stats=st)
+        st.set('wall_seconds', round(time.perf_counter() - t, 3))
+        st.set('jobs', jobs)
+        st.set('inner_jobs', workers)
+        st.set('cpus', os.cpu_count())
+        return name, text, status, line, st
+
     with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
-        results = list(pool.map(lambda m: try_mutant(m[0], m[1], base_peak, workers), todo))
-    for _, line in results:
+        results = list(pool.map(work, todo))
+    # A failure that reads as a timeout or out of memory may be the load, not the
+    # mutant: run it again alone and report that result, as mutate_fork does.
+    for i, (name, text, status, line, st) in enumerate(results):
+        if status == 'caught' and st.get('transient') and text is not None:
+            retry = mutate_stats.Stats()
+            t = time.perf_counter()
+            status2, line2 = try_mutant(name, text, base_peak, 1, stats=retry)
+            retry.set('wall_seconds', round(time.perf_counter() - t, 3))
+            retry.set('jobs', 1)
+            retry.set('inner_jobs', 1)
+            retry.set('cpus', os.cpu_count())
+            retry.set('retry_of', 'parallel')
+            results[i] = (name, text, status2, line2 + "   (serial re-run: the parallel run timed out or ran out of memory)", retry)
+    for name, text, status, line, st in results:
         print(line)
-    caught = sum(status == 'caught' for status, _ in results)
+        sink.write({'kind': 'mutant', 'name': name, 'verdict': status, 'line': line, **st.snapshot()})
+    caught = sum(status == 'caught' for _, _, status, _, _ in results)
+    sink.write({'kind': 'run', 'wall_seconds': round(time.perf_counter() - run_start, 3),
+                'mutants': len(results), 'caught': caught, 'jobs': jobs, 'inner_jobs': workers})
     print(f"\n{caught}/{len(results)} mutants caught")
     sys.exit(0 if caught == len(results) else 1)
 

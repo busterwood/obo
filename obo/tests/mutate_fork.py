@@ -23,11 +23,14 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 TRANSIENT = re.compile(r'timed out|out of memory', re.IGNORECASE)   # run_fork's wording for a load failure
 HERE = os.path.dirname(os.path.abspath(__file__))
 FORK = os.path.dirname(HERE)
 DEFAULT_JOBS = os.cpu_count() or 1
+sys.path.insert(0, HERE)
+import mutate_stats  # noqa: E402  (optional timings and counters)
 
 # Patterns for the port where the text differs from the original obx compiler.
 PORT_PATTERNS = {
@@ -1495,24 +1498,31 @@ MULTI_MUTANTS = {
 MUTANTS.update(INTERFACE_MUTANTS)
 MUTANTS.update(METHOD_MUTANTS)
 
+def apply_edits(src, edits):
+    """Apply replacements in order; each must match exactly once. Returns
+    (text, None), or (None, the stale message) for a pattern that no longer
+    matches, which the gate reports as a miss rather than skipping the mutant."""
+    text = src
+    multi = len(edits) > 1
+    for k, (old, new) in enumerate(edits, 1):
+        n = text.count(old)
+        if n != 1:
+            where = f" (site {k} found {n} times)" if multi else f" (pattern found {n} times)"
+            return None, f"STALE  {where}"
+        text = text.replace(old, new)
+    return text, None
+
+
 def mutation(src, name):
     """The mutant's source text, or (None, the stale-pattern message) when its
     pattern no longer matches once. A stale pattern is a 'missed' verdict: the
     gate fails rather than skipping the mutant. A MULTI_MUTANTS entry applies every
     replacement in order, each of which must match exactly once."""
-    if name in MULTI_MUTANTS:
-        text = src
-        for k, (old, new) in enumerate(MULTI_MUTANTS[name], 1):
-            n = text.count(old)
-            if n != 1:
-                return None, f"STALE   {name} (site {k} found {n} times)"
-            text = text.replace(old, new)
-        return text, None
-    old, new = PORT_PATTERNS.get(name, MUTANTS[name])
-    n = src.count(old)
-    if n != 1:
-        return None, f"STALE   {name} (pattern found {n} times)"
-    return src.replace(old, new), None
+    edits = MULTI_MUTANTS[name] if name in MULTI_MUTANTS else [PORT_PATTERNS.get(name, MUTANTS[name])]
+    text, stale = apply_edits(src, edits)
+    if stale is not None:
+        return None, f"STALE   {name}{stale[len('STALE  '):]}"
+    return text, None
 
 
 def env_jobs(var, default):
@@ -1542,21 +1552,28 @@ def jobs_and_inner():
     return jobs, inner
 
 
-def build_and_run(src, fail_fast=False, jobs=1, smoke=False, suites=False):
+def build_and_run(src, fail_fast=False, jobs=1, smoke=False, stats=None):
     """Builds the compiler from src, in a directory of its own, and runs run_fork.py
     with it: (the run_fork result, None), or (None, the build's error) when it does
     not build. fail_fast stops run_fork at its first failing test (the verdict is
     unchanged; only the time and the report differ), jobs tests run at once, and
-    smoke tries run_fork's smoke subset first (a reorder: the rest still run). suites also runs the
-    module and .sym suites, which read the compiler too (a .sym reader's mutant is seen only there), after
-    run_fork passes: their output comes first, and a failing suite makes the result a failure."""
+    smoke tries run_fork's smoke subset first (a reorder: the rest still run).
+
+    run_fork already includes the module and .sym suites, so they are not run
+    again here; a .sym reader's mutant is still seen by run_fork's own cases."""
     work = tempfile.mkdtemp(prefix='obo-mutant-')
     try:
         with open(os.path.join(work, 'obo.obo'), 'w') as f:
             f.write(src)
         exe = os.path.join(work, 'obo')
+        t = time.perf_counter()
+        if stats is not None:
+            stats.add('subprocesses')
         b = subprocess.run([os.path.join(FORK, 'seed', 'obo'), os.path.join(work, 'obo.obo'), '-o', exe, '--rt', FORK],
                            capture_output=True, text=True)
+        if stats is not None:
+            stats.set('build_seconds', round(time.perf_counter() - t, 3))
+            stats.add('builds')
         if b.returncode != 0:
             return None, b.stderr.strip()[:120]
         cmd = [sys.executable, os.path.join(HERE, 'run_fork.py')]
@@ -1566,56 +1583,103 @@ def build_and_run(src, fail_fast=False, jobs=1, smoke=False, suites=False):
             cmd += ['-j', str(jobs)]
         if smoke:
             cmd.append('--smoke')
+        t = time.perf_counter()
+        if stats is not None:
+            stats.add('subprocesses')
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=dict(os.environ, OBO=exe))
-        if suites and res.returncode == 0:
-            text, failed = '', []
-            for name in ('module_test.py', 'sym_test.py'):
-                r = subprocess.run([sys.executable, os.path.join(HERE, name)], capture_output=True, text=True,
-                                   timeout=600, env=dict(os.environ, OBO=exe))
-                text += r.stdout + r.stderr
-                if r.returncode != 0:
-                    failed.append(name)
-            if failed:
-                return subprocess.CompletedProcess(cmd, 1, stdout=text + res.stdout + f"suite failed: {' and '.join(failed)}\n",
-                                                    stderr=res.stderr), None
-            return subprocess.CompletedProcess(cmd, 0, stdout=text + res.stdout, stderr=res.stderr), None
+        if stats is not None:
+            stats.set('suite_seconds', round(time.perf_counter() - t, 3))
+            stats.add('suites')
+            m = re.search(r'(\d+) passed, (\d+) failed(?:, (\d+) not run)?', res.stdout)
+            if m:
+                stats.set('cases_passed', int(m.group(1)))
+                stats.set('cases_failed', int(m.group(2)))
+                stats.set('cases_not_run', int(m.group(3) or 0))
         return res, None
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def try_mutant(src, name, jobs=1):
+def try_mutant(src, name, jobs=1, stats=None):
     """The verdict on one mutant: (status, line, output), status being 'caught', 'missed' or 'equiv'.
     Mutants run side by side, each in a build directory of its own. The suite stops at
     the first failing test: a suite with one failing test fails, so the verdict holds.
     The smoke subset runs first; a failure there is a failure of the full suite, and a
-    pass still runs every other test, so 'missed' always means the full suite passed."""
+    pass still runs every other test, so 'missed' always means the full suite passed.
+    stats, when given, collects the build and suite seconds and counts."""
     text, stale = mutation(src, name)
     if text is None:
         return 'missed', stale, ''
-    p, err = build_and_run(text, fail_fast=True, jobs=jobs, suites=True,
-                           smoke=os.environ.get('MUTATE_SMOKE', '1') != '0')
+    p, err = build_and_run(text, fail_fast=True, jobs=jobs,
+                           smoke=os.environ.get('MUTATE_SMOKE', '1') != '0', stats=stats)
     if p is None:
         return 'missed', f"BROKEN  {name}: {err}", ''
     lines = p.stdout.strip().splitlines()
     detail = next((l.strip() for l in lines if l.startswith('     ')), '')
     caught = p.returncode != 0
+    if stats is not None:
+        stats.set('exit_code', p.returncode)
+        stats.set('first_failure', next((l.strip() for l in lines if l.startswith('FAIL')), None))
+        m = re.search(r'(\d+) passed, (\d+) failed(?:, (\d+) not run)?', p.stdout)
+        if m:
+            stats.set('cases_passed', int(m.group(1)))
+            stats.set('cases_failed', int(m.group(2)))
+            stats.set('cases_not_run', int(m.group(3) or 0))
     if not caught and name in EQUIVALENT:
+        if stats is not None:
+            stats.set('verdict', 'equiv')
         return 'equiv', f"EQUIV   {name}: {EQUIVALENT[name]}", ''
     early = " (smoke)" if "(in the smoke subset)" in p.stdout else ""
     line = f"{'caught' if caught else 'MISSED'}  {name:<36} {lines[-1].split(' in ')[0] if lines else ''}  {detail[:60]}{early}"
+    if stats is not None:
+        stats.set('verdict', 'caught' if caught else 'missed')
+        stats.set('transient', bool(caught and TRANSIENT.search(p.stdout + p.stderr)))
+        stats.set('smoke_hit', bool(early))
     return ('caught' if caught else 'missed'), line, p.stdout + p.stderr
 
 
+def timing_inputs():
+    runtime = {}
+    for name in ('runtime.c', 'entry.S', 'rt.ld'):
+        runtime[name] = mutate_stats.sha256_file(os.path.join(FORK, 'runtime', name))
+    seed = os.path.join(FORK, 'seed', 'obo')
+    try:
+        p = subprocess.run([seed, '--version'], capture_output=True, text=True, timeout=10)
+        seed_version = p.stdout.strip() if p.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired):
+        seed_version = None
+    return {
+        'source': mutate_stats.sha256_file(os.path.join(FORK, 'src', 'obo.obo')),
+        'seed': mutate_stats.sha256_file(seed),
+        'seed_version': seed_version,
+        'runtime': runtime,
+        'tests': mutate_stats.dir_digest(HERE),
+        'harness': {
+            'mutate_fork.py': mutate_stats.sha256_file(os.path.abspath(__file__)),
+            'run_fork.py': mutate_stats.sha256_file(os.path.join(HERE, 'run_fork.py')),
+            'mutate_stats.py': mutate_stats.sha256_file(os.path.join(HERE, 'mutate_stats.py')),
+        },
+    }
+
+
 def main():
+    run_start = time.perf_counter()
     args = sys.argv[1:]
     options = [a for a in args if a.startswith('-')]
     if options:
         raise SystemExit(f"unknown option {options[0]!r}: the script takes a mutant-name pattern only")
     pattern = args[0] if args else ''
     src = open(os.path.join(FORK, 'src', 'obo.obo')).read()
+    sink = mutate_stats.Sink('mutate-fork-timings')
+    if sink.path:
+        print(f"note: timings go to {sink.path}", file=sys.stderr)
+        sink.write(mutate_stats.header('mutate_fork', timing_inputs(),
+                                       {'git_head': mutate_stats.git_head(FORK)}))
     # the baseline: the unmutated compiler must pass run_fork, or no mutant's failure means anything
-    base, err = build_and_run(src, suites=True)
+    base_stats = mutate_stats.Stats()
+    t = time.perf_counter()
+    base, err = build_and_run(src, stats=base_stats)
+    base_stats.set('wall_seconds', round(time.perf_counter() - t, 3))
     if base is None:
         raise SystemExit(f"the unmutated compiler does not build ({err}), so no mutant can be judged")
     if base.returncode != 0:
@@ -1627,11 +1691,15 @@ def main():
         print(base.stdout.rstrip())
         raise SystemExit("run_fork does not report a full pass on the unmutated compiler (above), "
                          "so no mutant can be judged")
+    sink.write({'kind': 'baseline', 'verdict': 'passed', **base_stats.snapshot()})
     jobs, inner = jobs_and_inner()
     # ... and the same judge path a mutant takes must pass it too, with the full
     # count: a broken invocation would otherwise report every mutant as caught
     smoke = os.environ.get('MUTATE_SMOKE', '1') != '0'
-    judge, err = build_and_run(src, fail_fast=True, jobs=inner, smoke=smoke, suites=True)
+    judge_stats = mutate_stats.Stats()
+    t = time.perf_counter()
+    judge, err = build_and_run(src, fail_fast=True, jobs=inner, smoke=smoke, stats=judge_stats)
+    judge_stats.set('wall_seconds', round(time.perf_counter() - t, 3))
     if judge is None:
         raise SystemExit(f"the unmutated compiler does not build ({err}), so no mutant can be judged")
     judge_summary = judge.stdout.strip().splitlines()[-1] if judge.stdout.strip() else ''
@@ -1639,22 +1707,50 @@ def main():
         print(judge.stdout.rstrip())
         raise SystemExit(f"run_fork -x{' --smoke' if smoke else ''} -j {inner} does not pass the unmutated "
                          "compiler (above), so a mutant's failure could not be trusted")
+    sink.write({'kind': 'judge', 'verdict': 'passed', **judge_stats.snapshot()})
     names = [n for n in list(MUTANTS) + list(MULTI_MUTANTS) if pattern in n]
-    status = {}
-    outputs = {}
+
+    def work(name):
+        st = mutate_stats.Stats()
+        t = time.perf_counter()
+        result = try_mutant(src, name, inner, stats=st)
+        st.set('wall_seconds', round(time.perf_counter() - t, 3))
+        st.set('jobs', jobs)
+        st.set('inner_jobs', inner)
+        st.set('cpus', os.cpu_count())
+        return name, result, st
+
+    results = []
     with concurrent.futures.ThreadPoolExecutor(jobs) as pool:      # each mutant is a separate build and suite run
-        for name, (s, line, out) in zip(names, pool.map(lambda n: try_mutant(src, n, inner), names)):
+        for name, (s, line, out), st in pool.map(work, names):
             print(line, flush=True)
-            status[name], outputs[name] = s, out
+            results.append([name, s, line, out, st])
     # a caught mutant whose failure is a timeout or an out-of-memory may be the load, not the mutant:
     # run it again alone, and report that result
-    for name in names:
-        if status[name] == 'caught' and TRANSIENT.search(outputs[name]):
-            s, line, out = try_mutant(src, name)
-            print(f"{line}   (serial re-run: the parallel run timed out or ran out of memory)", flush=True)
-            status[name] = s
+    for record in results:
+        name, s, line, out, st = record
+        if s == 'caught' and TRANSIENT.search(out):
+            retry = mutate_stats.Stats()
+            t = time.perf_counter()
+            s2, line2, out2 = try_mutant(src, name, stats=retry)
+            retry.set('wall_seconds', round(time.perf_counter() - t, 3))
+            retry.set('jobs', 1)
+            retry.set('inner_jobs', 1)
+            retry.set('cpus', os.cpu_count())
+            retry.set('retry_of', 'parallel')
+            print(f"{line2}   (serial re-run: the parallel run timed out or ran out of memory)", flush=True)
+            record[:] = [name, s2, line2, out2, retry]
+    for record in results:
+        name, s, line, out, st = record
+        sink.write({'kind': 'mutant', 'name': name, 'verdict': s, 'line': line, **st.snapshot()})
+    status = {record[0]: record[1] for record in results}
     missed = [n for n in names if status[n] == 'missed']
     equiv = sum(1 for n in names if n in EQUIVALENT)
+    sink.write({'kind': 'run', 'wall_seconds': round(time.perf_counter() - run_start, 3),
+                'mutants': len(names), 'missed': len(missed), 'equivalent_named': equiv,
+                'caught_status': sum(1 for record in results if record[1] == 'caught'),
+                'equiv_status': sum(1 for record in results if record[1] == 'equiv'),
+                'jobs': jobs, 'inner_jobs': inner})
     print(f"\n{len(names) - len(missed) - equiv}/{len(names)} mutants caught, {equiv} equivalent")
     sys.exit(1 if missed else 0)
 

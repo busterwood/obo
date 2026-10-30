@@ -5436,3 +5436,79 @@ every pattern matches once and every mutant is judged.
   only. Interfaces cannot be compared or handled in 0.8.
 - The compiler source, runtime, seed and `PEAK_BUDGET` are unchanged. The peak remains under 2,000,000; if a
   future change exceeded it, the rule is to stop and report rather than raise the budget.
+
+## Mutation harness: catcher-first port and timings (2026-10-30)
+
+The mutation gates keep every check and every verdict; this change only shortens the work done before a
+mutant is caught, and records where the time went.
+
+**Usage.** The normal commands are unchanged (`python3 tests/mutate_fork.py`, `python3
+tests/mutate_port.py`). `MUTATE_CATCHERS=0` disables the catcher order and runs every comparison in full.
+`MUTATE_TIMINGS=1` writes JSON lines to a new file under the system temporary directory; set it to a path
+to choose the file. Timings never appear on stdout and never change a verdict. `python3
+tests/mutate_harness_test.py` runs the harness's own regression tests with fake builders, in a second or so.
+The timing header records the source, seed, runtime, test-tree and harness hashes, the git head, the core
+count and the load average. Per-mutant records add wall seconds, stage seconds, subprocess/compile/run
+counts, case counts, first failure, serial retries and the actual outer/inner job counts. Wall seconds are
+per stage; subprocess counts are summed over concurrent work, so they are not wall time.
+
+**Catcher-first port mutants.** `tests/mutant_catchers.tsv` maps each port mutant to the check that first
+failed in the authoritative post-promotion `mutate_port` log at `27f09de` (529/529 caught). The table is a
+check order, not a verdict cache and not a corpus of expected results:
+
+- A catcher that differs from REF catches the mutant (a real outcome difference; the memory peak check is
+  unchanged and still runs first for every mutant).
+- A catcher that passes, an unknown/stale check name, or a pass after a timeout falls through to the full
+  comparison, which still runs every case.
+- An out-of-memory catcher difference is returned as caught but is marked for the existing serial re-run
+  (the same confirmation `mutate_fork` uses); a load-induced OOM therefore still gets a full re-judgement.
+- The unmutated compiler runs a representative of every catcher kind (flat, tree, CLI, special, reemit,
+  tokens) through the same path before any mutant is judged. A failure there aborts the gate, so a broken
+  catcher cannot make every mutant look caught.
+- Equivalent mutants still run the full suite; no verdict is recorded from a catcher.
+- The map covers 479 mutants; 24 are caught by the mandatory self-compile/memory check before the catchers,
+  and the 26 encoder/image/shape/edge mutants keep their dedicated scripts. If the catalogue changes, the
+  stale name is reported and the full comparison decides. Nothing is reused across runs, so the unsafe
+  startup/end-hash verdict cache removed earlier is not reintroduced; the timing header states the inputs
+  and the run assumes they do not change while it is in progress.
+
+The quick path also orders the full fallback cheap-first (error cases, run programs, examples, the compiler
+itself, benchmarks last) and skips the module trees once a flat case has definitively failed. The
+non-mutant `port_compare.py` keeps its original catalogue order and still runs everything.
+
+**Measured evidence.** Same host, 16 cores, `MUTATE_JOBS=1`, `MUTATE_INNER_JOBS=4`, warm reference cache,
+one port comparison at a time; before from the earlier targeted profile, after from the same seven mutants
+with catchers on. These are wall seconds, not a controlled benchmark.
+
+| Port mutant | before | after | after path |
+|---|---:|---:|---|
+| `error message changed` | 1.948 | 0.328 | flat catcher |
+| `condition test compares with 1` | 1.688 | 0.325 | flat catcher |
+| `callee frees not recorded` | 4.640 | 0.327 | flat catcher |
+| `parameters kept` | 0.309 | 0.303 | memory (unchanged) |
+| `sym: imported pf rows dropped` | 5.706 | 0.354 | reemit catcher |
+| `sym: --version reports the wrong format` | 5.572 | 0.320 | CLI catcher |
+| `align: loops not padded` | 0.749 | 0.761 | `homes_check` (unchanged) |
+
+The full port run after the change caught **529/529**, with 479 caught by a catcher, 24 by the memory
+check and 26 by their dedicated script; one OOM catcher was serial-confirmed. Per-mutant walls summed to
+469.7 s (mean 0.888 s, median 0.394 s) with four outer mutants at a time; the full baseline comparison took
+6.696 s. Before the change the same gate had no per-stage timings, so the matched sample above is the
+like-for-like before evidence, not the old log's elapsed-time bracket.
+
+**Fork changes.** `run_fork.py` already includes `module_test.tests()` and `sym_test.tests()`, so
+`mutate_fork.build_and_run` no longer runs those two suites again after it. The baseline and judge paths are
+still both run and still validated separately (full, then fail-fast with the smoke subset and the inner
+count). On this host the fork baseline fell from 3.211 s in the earlier sample to 2.663 s, and the full-run
+X8 equivalent from 3.193 s to 2.594 s; the 0.55 s duplicate module/.sym work is gone. The full fork run
+reported **605/634 caught with 29 equivalent**, and its per-mutant statuses match the authoritative log line
+for line (607 caught and 27 equivalent by status; the printed equivalent count has always been the number of
+selected names listed in `EQUIVALENT`, and two of those names are caught by their suite — unchanged here,
+not reclassified). Mean per-mutant wall was 1.864 s, median 0.751 s, with seven serial re-runs, the same
+load-confirmation behavior as before. `mutate_io.py` remained 27/27.
+
+**Limits.** The catcher map is only as good as the catalog it was learned from; a changed first failure
+costs a full fallback, not a wrong verdict. The current outliers are real work under the mutant (compiling a
+large benchmark through a slower mutant, or a mutated program that runs long), not harness overhead. The
+timings count a stage's wall once and its subprocesses as a sum, so they should be compared stage by stage,
+not added into a single wall figure.

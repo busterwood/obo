@@ -1,0 +1,484 @@
+# First-failing check for each port mutant, learned from the authoritative
+# post-promotion run at 27f09de (mutate_port.log: 529/529 caught). This is
+# only a check order, not a verdict cache: a catcher that passes, or a name
+# not in the catalogue, falls back to the full comparison. See FORK.md.
+# format: mutant<TAB>check
+a block drops the frees made in the loops inside it	fp_loops.obx:a free in an inner loop that repeats it, then a break
+a block drops the moves it made	fp_loops.obx:the owner moved before a break, the handle used after the loop
+a block that ends drops its frees whatever follows	alive_narrow.obx:a loop in the guarded block that uses and frees
+a block with a continue in it drops its frees	fp_loops.obx:a free before a continue: the next iteration uses the handle
+a break arm's marks are not kept for after the loop	fp_loops.obx:a free before a break, the handle used after the loop
+a break drops the frees of the loops outside the one it leaves	fp_loops.obx:a free before a break arm: the free is in the arm's block, but an outer loop repeats the use
+a break is not counted	fp_loops.obx:a free before a break, the handle used after the loop
+a call with a mut parameter counts as moving	../obo/tests/run/move_bits.obx
+a callee that frees anything is pure	call_targets.obx:append to a field through a handle
+a callee that frees below a mut argument is pure	assignments.obx:a call that might free the array being assigned into is an error
+a callee that frees globals is pure	call_targets.obx:compound assignment to a field of a global
+a callee with a forward heading is pure	pure_mut.obx:a forward heading in an index is a call that might free
+a carried invalidation is reported at the wrong place	fp_refs.obx:a mut callee that frees in a loop, the reference read in the loop
+a change through a reference local is at the whole root	../obo/tests/run/fp_refs.obx
+a closed block's dead marks stay	../obo/tests/run/alive_narrow.obx
+a closed block's defer frees stay	../obo/tests/run/handle_frees.obx
+a closed block's handles stay in the origin list	../obo/tests/run/alive_narrow.obx
+a continue is not counted as leaving the loop	fp_loops.obx:an arm that frees, then continues or returns
+a copy of a dead handle is a use	../obo/tests/run/fp_loops.obx
+a copy of a handle not known to be dead is no use	fp_loops.obx:a copy of a handle before the free is a use of it in the next iteration
+a copy of a reference not pointed afresh in a loop keeps its place	ref_local_paths.obx:a copy of a reference not pointed afresh in a loop is changed through: the original may be elsewhere next time
+a dead mark refuses every handle	../obo/tests/run/field_origins.obx
+a defer body's frees mark handles where it is declared	../obo/tests/run/handle_frees.obx
+a defer records every handle	../obo/tests/run/handle_frees.obx
+a defer's check covers the uses of the newer defers	../obo/tests/run/defer_uses.obx
+a defer's frees are not recorded	field_origins.obx:the free in a defer body, the handle used after it
+a defer's frees are not replayed where its block is left	field_origins.obx:the free in a defer body, the handle used after it
+a defer's handles are not recorded	field_origins.obx:the free in a defer, the handle used by an earlier defer
+a defer's invalidated reference is not refused	defer_uses.obx:a defer reads a reference whose target is freed by a call
+a defer's re-point clears suspicion	../obo/tests/run/handle_deep.obx
+a defer's reference may point beyond its declared targets	defer_uses.obx:a defer reads a reference that is pointed at a new target and the target is freed
+a defer's reference pointed elsewhere is not refused	defer_uses.obx:a defer reads a reference that is pointed at a new target and the target is freed
+a defer's suspect reference is not reported	defer_uses.obx:a recursive call that writes through a handle, then the block's end, where the defer reads a reference inside something
+a defer's uses are not recorded	defer_uses.obx:a defer reads a reference that is pointed at a new target and the target is freed
+a drop frees no handle	field_origins.obx:the owner dropped
+a free anywhere in a root misses the places held in it	ref_local_paths.obx:a held place under a reference that is not pointed afresh in a loop: it may be elsewhere on the next iteration
+a free before a break is never dropped	../obo/tests/run/fp_loops.obx
+a free before a return is never dropped	../obo/tests/run/fp_loops.obx
+a free does not mark the handle dead	../obo/tests/run/fp_loops.obx
+a free in a loop is not reported	alive_narrow.obx:a loop in the guarded block that uses and frees
+a free in a loop is refused without a use there	../obo/tests/run/fp_loops.obx
+a free is checked at the end of the innermost loop	fp_loops.obx:a free before a break arm: the free is in the arm's block, but an outer loop repeats the use
+a free is refused by a defer using another owner's handle	../obo/tests/run/field_origins.obx
+a freed argument is not refused	arg_order.obx:an element of an array passed by reference, then the array moved by a later argument
+a handle declared in the loop it is moved in is refused	../obo/tests/run/alive_narrow.obx
+a handle's naming is not recorded	alive_narrow.obx:a loop in the guarded block that uses and frees
+a handle's naming is not recorded once a move clears its origin	field_origins.obx:in a loop that uses the handle
+a held place anywhere in a root misses the frees in it	ref_local_paths.obx:a held place under a reference not pointed afresh in a loop, a pure function in the index frees an element
+a held place under a reference not pointed afresh in a loop is a known place	ref_local_paths.obx:a held place under a reference that is not pointed afresh in a loop: it may be elsewhere on the next iteration
+a held place under a reference with no known place is a known place	ref_local_paths.obx:a held place under a reference that points into either of two places: a replace through it frees the array indexed
+a home released as a temporary	../obo/bench/array_obo.obx
+a join drops a reference invalidated on one path	one_path_uses.obx:write after an if without else that invalidates it
+a join of a place and the place below it keeps the longer	ref_local_paths.obx:a reference to a node on one path and to its child on the other: the places join to the whole root
+a join of a place and the place below it keeps the shorter	ref_bindings.obx:a reference joined from a place and the place below it: a change at the lower place is seen
+a join of two places keeps the first	field_origins.obx:a truncate through a reference with no known place, the elements it keeps are not known
+a let copy of a dead handle is alive	alive_narrow.obx:a copy of a dead handle made after the if
+a let handle gets no dead mark	../obo/tests/run/alive_narrow.obx
+a let handle's loop depth is not recorded	alive_narrow.obx:a loop in the guarded block that uses and frees
+a local in a register as a statement accepted	register_alloc.obx:a hot bool local used as a statement
+a local's register used as the caller's copy	../obo/examples/hello.obx
+a loop does not record where its reads begin	../obo/tests/run/fp_loops.obx
+a loop's back edge drops a reference invalidated on the way round	fp_refs.obx:a mut callee that frees in a loop, the reference read in the loop
+a loop's exit drops a carried invalidation	one_path_uses.obx:read after a while loop that invalidates it on a pass, and is left through its condition
+a loop's exit marks are not applied after it	fp_loops.obx:a free before a break, the handle used after the loop
+a match arm is not an arm	../obo/tests/run/handle_frees.obx
+a match does not take the join	handle_frees.obx:an assignment in the first arm of a match on a closed type
+a match join drops a reference invalidated on one path	one_path_uses.obx:read after a match that invalidates it in one arm
+a match's else is not an arm	handle_frees.obx:an assignment in the else arm of a match on a closed type
+a move clears no handle's origin	held_places.obx:a handle's array indexed by a replace of the array that a replace moved out of its owner
+a move in a loop is not reported	field_origins.obx:a move of the owner in a loop that uses the handle
+a move in a loop is refused without a use there	../obo/tests/run/fp_loops.obx
+a moved owner leaves its handle free to be named	fp_loops.obx:the owner moved in a loop, the handle named after the loop
+a mut argument invalidates the whole root	../obo/tests/run/ref_local_paths.obx
+a mut argument passed on is not recorded as freed	fp_refs.obx:a mut argument passed on: the caller inherits the free of the global it passed
+a mut callee is assumed to free nothing	aliasing.obx:a mut call through a parameter reaches a global
+a nested bracket in an index ends the look-ahead	../obo/tests/run/string_index_pin.obx
+a newer defer's frees are applied after the older one's check	defer_uses.obx:two defers: the newer one frees what the older one reads
+a parameter is recorded by the wrong place	../obo/tests/run/ifaces_calls.obx
+a path through a reference local is dropped	../obo/tests/run/field_origins.obx
+a re-point after the join keeps the invalidation	../obo/tests/run/one_path.obx
+a read of a reference pointed afresh counts for the loop	fp_refs.obx:a loop's recursive call, the reference read before it is pointed afresh
+a read of an invalidated reference is not refused	aliasing.obx:a change through a parameter may free inside a global: the parameter may be it
+a recursive callee is assumed to free nothing	field_origins.obx:a recursive callee frees anywhere below the argument
+a reference argument is not held	arg_order.obx:an element of an array passed by reference, then the array moved by a later argument
+a reference derived from a reference local is anywhere in its root	../obo/tests/run/fp_refs.obx
+a reference ignores its own place for a change through it	../obo/tests/run/ref_local_paths.obx
+a reference not pointed afresh in a loop keeps its place	ref_local_paths.obx:a re-point inside a loop: the next iteration changes through the other place
+a reference to a whole object is taken to be anywhere	../obo/tests/run/field_origins.obx
+a reference with no known place is taken to know it	field_origins.obx:a change through a reference with no known place
+a replace of a reference local is allowed	fp_refs.obx:a replace of a reference only borrows
+a replayed free is checked against the defers again	../obo/tests/run/handle_frees.obx
+a returning arm's marks are kept for after the loop	../obo/tests/run/fp_loops.obx
+a string index pins only when the call is its first token	../obo/tests/run/string_index_pin.obx
+a string index with a call holds no reference of its own	../obo/tests/run/string_index_pin.obx
+a suspect argument is not noted	arg_order.obx:a recursive call that writes through a handle, in an argument after a deep reference
+a take of a reference local is allowed	fp_refs.obx:a take of a reference only borrows
+a temporary handle is given no origin	../obo/tests/run/held_places.obx
+a truncate of strings through a handle records no free	move_bits.obx:a handle's array of strings, indexed by a call that truncates it (a truncate through a handle frees strings)
+a truncate records no free	call_targets.obx:an index through a mut array parameter whose index calls a function
+a use through a dead handle is not refused	alive_narrow.obx:a free in the guarded block before the use
+a var handle is given its origin	held_places.obx:a var handle made from the owner: it has no origin, so a move of another local through it is refused
+a whole object and a place below it share one entry	handle_deep.obx:a loop's body reads a reference at its top, on the next iteration after a recursive call on one path
+a write through an invalidated reference gets the owned message	one_path_uses.obx:write after an if without else that invalidates it
+alive counts as a use	../obo/tests/run/fp_loops.obx
+alive hides the earlier uses of the handle	fp_loops.obx:alive does not hide an earlier use of the handle
+alive of any expression is no use	fp_loops.obx:the owner moved in a loop, the handle passed on inside alive
+an argument holder is not a reference local	arg_order.obx:a deep reference local passed, then a later argument's call frees through a handle what it points into
+an argument holder keeps its old binding	arg_order.obx:an element of an array passed by reference, then the array moved by a later argument
+an argument holder keeps its old index	arg_order.obx:the second argument held, the third frees what it points into
+an argument holder keeps its old suspicion	../obo/tests/run/arg_order.obx
+an arm starts from the marks of the arm before	../obo/tests/run/alive_narrow.obx
+an arm that ends keeps its marks for what follows	../obo/tests/run/fp_loops.obx
+an arm's marks are not joined	alive_narrow.obx:a use in the else arm
+an assignment clears the origins of the handles	../obo/tests/run/fp_loops.obx
+an assignment frees no handle	../obo/tests/run/fp_loops.obx
+an if with an else does not take the join	../obo/tests/run/origin_paths.obx
+an if without an else does not take the join	../obo/tests/run/alive_narrow.obx
+an inner defer's uses are not passed outwards	defer_uses.obx:a defer inside a defer body uses a reference from outside both
+an inner defer's uses of the body's own locals are not guarded	../obo/tests/run/defer_uses.obx
+an int match arm is not an arm	field_origins.obx:the free in a match arm
+an int match does not take the join	field_origins.obx:the free in a match arm
+an int match's else is not an arm	handle_frees.obx:an assignment in the else arm of a match on an int
+an unknown element is taken for none of the known ones	field_origins.obx:an element with a variable index, another element assigned over
+append targets not checked	call_targets.obx:append to a field, the call frees the array the field is in
+binding not joined: last path wins	../obo/tests/run/defer_uses.obx
+body write doesn't invalidate deep refs	handle_deep.obx:a change through a handle to the object a reference parameter names
+break suspicion not recorded	handle_deep.obx:a recursive call before a break, with a reference made shallow before the loop's end and used after the loop
+call-site deep-argument check dropped	handle_deep.obx:a reference inside something passed to a forward-declared writer
+callee frees not recorded	references.obx:passing a reference into a global to a function that frees it
+callee writes keep deep refs	arg_order.obx:a deep reference local passed, then a later argument's call frees through a handle what it points into
+change through a borrowed handle reference doesn't invalidate deep refs	handle_deep.obx:a change through a reference that was borrowed through a handle frees what a borrow from an owned variable points into
+compound targets not checked	call_targets.obx:compound assignment to a field of a global
+condition test compares with 1	../obo/tests/run/arg_order.obx
+constant runtime argument lost	../obo/examples/defer.obx
+defer uses not checked at a break or continue	defer_uses.obx:a break leaves the block with a reference that the defer uses pointed elsewhere
+defer uses not checked at a return with a value	defer_uses.obx:a return leaves the block with a reference that the defer uses pointed elsewhere
+defer uses not checked at a return without a value	defer_uses.obx:a return without a value, with the reference the defer uses freed or pointed elsewhere
+defer uses not checked at the block's end	defer_uses.obx:a defer reads a reference whose target is freed after the defer statement
+deferred self-call check dropped	arg_order.obx:a recursive call that writes through a handle, in an argument after a deep reference
+deferred self-call suspicion not replayed	handle_deep.obx:a deferred recursive call runs where the block ends: a reference used after the block is suspect
+dropped frame: calls to known functions not recorded	../obo/bench/fib_obo.obx
+entry: calls to itself keep the old entry	../obo/bench/fib_obo.obx
+entry: prologue not moved	../obo/bench/fib_obo.obx
+entry: stays where it was	../obo/bench/fib_obo.obx
+entry: waiting calls keep the old entry	../obo/tests/run/code_shapes.obx
+error message changed	examples/shapes.obx
+field targets assigned across calls	assignments.obx:a call that might free the array being assigned into is an error
+flag not inherited from callees	handle_deep.obx:a writer two calls down frees a borrow from an owned variable
+fold: a different local	../obo/tests/run/peephole.obx
+fold: a loaded operand taken for a register (alu)	../obo/tests/run/peephole.obx
+fold: a loaded operand taken for a register (imul)	../obo/tests/run/peephole.obx
+fold: immediate changed	../obo/bench/array_obo.obx
+fold: imul by an immediate keeps the temporary	../obo/tests/run/peephole.obx
+fold: more was emitted after the operation	../obo/tests/run/peephole.obx
+fold: operand register is the temporary	../obo/bench/array_obo.obx
+fold: the operation need not follow the copy	../obo/tests/run/peephole.obx
+for limit in the variable's register	../obo/bench/strings_gc.obx
+forward heading deep argument allowed	handle_deep.obx:a reference inside something passed to a forward-declared writer
+forward heading not assumed to write	handle_deep.obx:a forward-declared writer frees a borrow from an owned variable
+forward heading not inherited	references.obx:a free two calls down through a function with a forward heading
+frame dropped although there are locals	../obo/bench/array_obo.obx
+frees through a parameter are not recorded	../obo/tests/run/env.obx
+handle assignment across calls allowed	call_targets.obx:compound assignment through a handle
+handle borrows passable to freeing calls	handles.obx:a reference through a handle passed to a call that might free
+handle borrows survive calls	handle_calls.obx:a self-call might free what a borrow through a handle points into
+handle borrows survive other changes	arg_order.obx:a reference through a handle temporary, then its owner moved by a later argument
+handle temporaries invalidate nothing	handles.obx:truncate through a handle temporary frees what a borrow through a handle points into
+handle temporary assignments record nothing	handles.obx:a call whose body changes through a handle temporary, then a use of a borrow through a handle
+handle writes not recorded	arg_order.obx:a deep reference local passed, then a later argument's call frees through a handle what it points into
+held arrays ignore mut parameters	call_targets.obx:an array parameter appended from a call that replaces the global it may name
+held: append and truncate do not hold their array	call_targets.obx:an append whose value replaces the array it appends to, the old array consumed by a pure call
+held: compound assignments do not hold their target	call_targets.obx:a compound assignment to an element field, its value replacing the array the element is in
+held: identity exemption removed	../obo/tests/run/held_places.obx
+held: identity frees do not reach their entries	held_places.obx:a handle parameter's array indexed by a replace of that same array: the same identity and path
+held: index does not hold its array	call_targets.obx:a whole record replaced inside an index of its own array, the old record consumed by a pure call
+held: moves do not free handle targets	call_targets.obx:a handle to an element's array indexed by a pure move of the array the element is in
+held: moves do not reach held handle targets	call_targets.obx:a handle to an element's array indexed by a pure move of the array the element is in
+held: origin ignored when freeing	../obo/tests/run/held_places.obx
+held: origin ignored when holding	../obo/tests/run/held_places.obx
+held: owned frees ignore the path	../obo/tests/run/call_targets.obx
+held: plain assignments do not hold their target	call_targets.obx:a plain assignment to an element's array, its value replacing the array the element is in
+held: reference parameters take their owner's place	../obo/tests/run/held_places.obx
+held: reference places ignore the binding's path	held_places.obx:a reference's place: a replace frees a field below the path the reference names
+held: replace does not free what it holds	call_targets.obx:a field's array indexed by a pure call that consumes the old array the index replaces
+held: replace does not hold its place	call_targets.obx:a replace whose value replaces the record its target is in: the store would write into a freed record
+held: same-identity frees ignore the path	../obo/tests/run/held_places.obx
+held: store exemption not applied through handles	../obo/tests/run/held_places.obx
+held: take does not free what it holds	held_places.obx:a take through a handle made inside a narrowed block frees the place the handle holds
+held: whole local arrays hit by identity frees	../obo/tests/run/held_places.obx
+homes not pushed around obo calls	../obo/tests/run/loop_align.obx
+image: the epilogue returns with int3	../obo/bench/lists_obo.obx
+index of a field, element or whole local not checked for moves	call_targets.obx:an index of a whole local array whose index moves the array
+index targets not checked	call_targets.obx:an index target whose index calls a function
+indexes of mut parameters unchecked	call_targets.obx:an index through a mut array parameter whose index calls a function
+inverted for loop: test jumps back to its own top	../obo/bench/lists_obo.obx
+inverted loop: a nested loop lifts its outer loop's waiting calls	../obo/tests/run/loop_inversion.obx
+inverted loop: calls out of the condition not adjusted	../obo/tests/run/loop_inversion.obx
+inverted loop: calls out of the condition not recorded at the new place	../obo/tests/run/loop_inversion.obx
+inverted loop: continue goes to the body, not the condition	../obo/tests/run/loop_inversion.obx
+inverted loop: continue goes to the end of the condition	../obo/tests/run/defer_uses.obx
+inverted loop: waiting calls in the condition not adjusted	../obo/tests/run/loop_inversion.obx
+inverted loop: waiting calls in the condition not lifted	../obo/tests/run/loop_align.obx
+io: closeFile swaps the descriptors	../obo/tests/run/env.obx
+io: openFile does not pin the path	../obo/tests/run/io_pin_path.obx
+io: openFile ignores the mode	../obo/tests/run/env.obx
+io: readFd does not materialise the fd	../obo/tests/run/io_pin_fd.obx
+io: readFd passes max as the fd	../obo/tests/run/io_after_close.obx
+io: stdout and stderr swap	../obo/tests/run/io_stdout_order.obx
+io: the mode argument bypasses nestedExpr	io.obx:try in an I/O argument
+io: writeFd consumes its data	../obo/tests/run/env.obx
+io: writeFd does not materialise the fd	../obo/tests/run/io_pin_fd.obx
+io: writeFd drops noTemp	io.obx:writeFd transient data
+io: wrong ok descriptor (fresh variant)	../obo/tests/run/env.obx
+join keeps only the first root	defer_uses.obx:the reference is pointed elsewhere on one path only
+loop back-edge binding check dropped	methods.obx:a whole reference-local receiver read in a loop, then re-pointed and freed
+loop check reports unread references	../obo/tests/run/fp_refs.obx
+loop self-call check dropped	fp_refs.obx:a loop's recursive call, the reference read before it is pointed afresh
+loop self-call counter taken after the condition	handle_deep.obx:a recursive call in a while condition, with a reference used in the condition before it
+loop-carried suspicion from continue dropped	handle_deep.obx:a recursive call before a continue: the next iteration starts with the reference still deep
+loop-carried suspicion from the body's end dropped	fp_refs.obx:a mut callee that frees in a loop, the reference read in the loop
+methods: a forward heading's signature is ignored	methods.obx:a heading and a body that differ
+methods: a handle receiver may go to a freeing method	pure_mut.obx:append to a handle's array with a value that calls a function that truncates the same array
+methods: a method call has no value	../obo/tests/run/ifaces_calls.obx
+methods: a method call on a built-in type has no methods check	methods.obx:a method call on a Result
+methods: a method/field collision is allowed	methods.obx:a method whose name is a record field
+methods: a mut receiver's invalidation is dropped	aliasing.obx:a mut call through a parameter reaches another parameter
+methods: a mut receiver's writability is not checked	ifaces_calls.obx:a mut member on a read-only receiver
+methods: an owned receiver through a handle is allowed	methods.obx:an owned receiver that is a whole handle dereference
+methods: checkExports skips methods	methods.obx:a pub method on a private type
+methods: every receiver is read-only	../obo/tests/run/ifaces_calls.obx
+methods: fnBody names a method by its bare name	methods.obx:a non-void method that can fall off the end
+methods: isCall does not mark a receiver read	methods.obx:a whole reference-local receiver read in a loop, then re-pointed and freed
+methods: lookup ignores the receiver type	../obo/tests/run/ifaces_b1_loop.obx
+methods: returnStat names a method by its bare name	methods.obx:a void method that returns a value
+methods: the call visibility check is dropped	modules/errors/private_method
+methods: the field-call check is dropped	methods.obx:a field called as a method
+methods: the format check accepts any format	modules/sym/format
+methods: the method-value message is dropped	methods.obx:a method used as a value
+methods: the module-end method heading check is dropped	methods.obx:a heading with no body at the end of the module
+methods: the owned-handle test uses path	methods.obx:an owned receiver that is a field through a handle
+methods: the reader accepts any receiver type	modules/sym/method_bad_receiver
+methods: the reader drops a mut receiver's mode	modules/run/iface_calls
+methods: the reader's main check is not gated on a method	modules/run/method_main
+methods: the receiver is not finalized	../obo/tests/run/ifaces_borrowed.obx
+methods: the receiver is not held across later arguments	arg_order.obx:a deep reference local passed, then a later argument's call frees through a handle what it points into
+methods: the receiver is not parameter 0	../obo/tests/run/ifaces_b1_loop.obx
+methods: the retry cleanup ignores methods	../obo/tests/run/methods_homes.obx
+methods: the while lift ignores method fixups	../obo/tests/run/methods_recursion.obx
+methods: the writer drops a mut receiver's mode	modules/run/iface_calls
+methods: the writer emits private methods	modules/run/iface_calls
+methods: the writer omits the method group	modules/run/iface_call_tiers
+methods: the writer omits the receiver summary	modules/run/iface_tier_bits
+methods: tryExpr names a method by its bare name	methods.obx:try in a method that does not return a Result
+modules: -I ignored	../obo/tests/run/env.obx
+modules: B2 freed keys propagated only when visible	modules/errors/transitive_free
+modules: B4 path normalization keeps .	modules/run/identity_b4
+modules: B7 alias key overwrites the shared type	modules/run/registry
+modules: T_COLONCOLON is 66	modules/tokens
+modules: _root accepted in a dependency	modules/errors/root_reserved
+modules: a module imported twice is compiled twice	modules/run/duplicate_imports
+modules: alias lookup takes any module	../obo/tests/run/env.obx
+modules: alias/declaration clash allowed	modules/errors/alias_clash
+modules: basename rule dropped	modules/errors/basename
+modules: built-in import alias allowed	modules/errors/alias_builtin
+modules: closed variants not exported	modules/run/closed
+modules: closure skips closed variant fields (B5)	modules/errors/private_recursive_variant
+modules: const nil allowed	modules/errors/const_nil
+modules: cycle detection dropped	modules/errors/cycle2
+modules: duplicate alias allowed	modules/errors/duplicate_alias
+modules: duplicate module names allowed	modules/errors/duplicate_module
+modules: exports ignored (all private)	../obo/tests/run/env.obx
+modules: exports ignored (all public)	modules/errors/private_fn
+modules: import paths need not end in .obx	modules/errors/import_not_obx
+modules: import syntax not required	modules/errors/no_header
+modules: imported global lookup returns a copy	modules/errors/imported_global_free
+modules: imported globals not invalidated	arg_order.obx:an element of a global, then a later argument's call frees the global
+modules: imported pmodes dropped	ifaces_calls.obx:a mut member on a read-only receiver
+modules: imports after declarations allowed	modules/errors/import_after_decl
+modules: imports not bound	../obo/tests/run/env.obx
+modules: main in a dependency allowed	modules/errors/main_in_dependency
+modules: module globals share one slot	../obo/tests/run/arg_order.obx
+modules: private-type closure dropped	ifaces_decl.obx:a pub implementation of a private interface
+modules: pub import accepted	modules/errors/pub_import
+modules: pub inside a function accepted	modules/errors/pub_in_function
+modules: reserved type names allowed	modules/errors/reserved_int
+modules: scanner state not restored after an import	../obo/tests/run/env.obx
+modules: teardown frees imported globals too	modules/run/descriptors
+modules: teardown frees no module globals	../obo/examples/lists.obx
+modules: token names lack ::	modules/tokens
+moves do not check the loop	field_origins.obx:a move of the owner in a loop that uses the handle
+multiplication by a constant writes the local	../obo/bench/loop_obo.obx
+naming a handle after a loop moved its owner is allowed	fp_loops.obx:the owner moved in a loop, the handle named after the loop
+naming a moved handle in alive is refused	../obo/tests/run/fp_loops.obx
+no call counts as moving	assignments.obx:a call that might free the array being assigned into is an error
+no check after a by-value argument	arg_order.obx:an element of an array passed by reference, then the array moved by a later argument
+no check after a reference argument	arg_order.obx:a later reference argument whose index replaces what the earlier one points into
+obo call pad dropped when misaligned	../obo/bench/trees_obo.obx
+one register for two live locals	../obo/bench/alloc_obo.obx
+only the first mut parameter is checked for frees	move_bits.obx:the 63rd parameter is always assumed to free: a callee that only appends through it is moving
+only the newest holder is refused	arg_order.obx:two arguments held, the third frees what the first points into
+origin not cleared by a consume	../obo/tests/run/handle_frees.obx
+origin not cleared by a replace of a whole local	held_places.obx:a handle's array indexed by an index that moves the object: a replace moves the old object out of its owner
+origin not cleared by an assignment over a whole local	../obo/tests/run/fp_loops.obx
+parameter not loaded into its register	../obo/tests/run/io_pin_path.obx
+path join keeps the shorter path (the spec's rule)	ref_bindings.obx:a reference joined from a place and the place below it: a change at the lower place is seen
+place origin: a call frees the argument itself for an unknown callee	../obo/tests/run/field_origins.obx
+place origin: a callee records an unknown place as a place	../obo/tests/run/field_origins.obx
+place origin: a callee records its changes as anywhere	../obo/tests/run/field_origins.obx
+place origin: a change through a handle stops tracking	field_origins.obx:a free through a handle to another owner does not stop the tracking
+place origin: a change through a reference is not at its place	../obo/tests/run/field_origins.obx
+place origin: a change through a reference is not placed in each root	field_origins.obx:a change through a reference that may point at the owner or another
+place origin: a change through a reference with no known place is not below the root	../obo/tests/run/field_origins.obx
+place origin: a copy of a field handle is not tracked	field_origins.obx:a field assigned over, in a branch
+place origin: a copy takes no place from the handle it copies	field_origins.obx:a copy of the handle, made after
+place origin: a defer that uses a field handle does not stop a free of its place	field_origins.obx:the free in a defer, the handle used by an earlier defer
+place origin: a defer that uses a field handle stops a free of another place	../obo/tests/run/field_origins.obx
+place origin: a direct change frees nothing	field_origins.obx:an element with a constant index assigned over
+place origin: a direct change is at the whole owner	../obo/tests/run/field_origins.obx
+place origin: a field handle gets no origin	field_origins.obx:a field assigned over
+place origin: a free below a place frees a place of the same depth	../obo/tests/run/field_origins.obx
+place origin: a free below the place frees the handle	../obo/tests/run/field_origins.obx
+place origin: a free in a defer is replayed at the whole owner	../obo/tests/run/field_origins.obx
+place origin: a free of a place frees a handle to the whole object	../obo/tests/run/field_origins.obx
+place origin: a free of a place in a defer is not recorded	field_origins.obx:the free in a defer body, the handle used after it
+place origin: a free of a place in a loop is not judged	field_origins.obx:an element freed in a loop that uses the handle
+place origin: a free of another owner frees it	../obo/tests/run/field_origins.obx
+place origin: a free of another place frees it	../obo/tests/run/field_origins.obx
+place origin: a free that is strict frees the place itself	../obo/tests/run/field_origins.obx
+place origin: a handle takes no place from its item	field_origins.obx:a field assigned over, in a branch
+place origin: a handle through a handle gets an origin	../obo/tests/run/field_origins.obx
+place origin: a move of the owner in a loop ignores a field handle	field_origins.obx:a move of the owner in a loop that uses the handle
+place origin: a mut call frees nothing below its argument	field_origins.obx:a mut call that frees below its argument
+place origin: a mut call is at the whole root	../obo/tests/run/field_origins.obx
+place origin: a mut callee frees anywhere below its argument	../obo/tests/run/field_origins.obx
+place origin: a nested call adds no rows to the caller	field_origins.obx:a callee two calls deep that frees the place
+place origin: a recursive call stops tracking	field_origins.obx:a recursive call does not stop the tracking
+place origin: a replace of a place frees nothing	field_origins.obx:a deeper place, an ancestor replaced
+place origin: a replace through a handle to the owner frees nothing	field_origins.obx:a replace through a handle to the owner
+place origin: a row is added twice	../obo/tests/run/env.obx
+place origin: a segment is counted by its brackets	../obo/tests/run/field_origins.obx
+place origin: a strict free in a defer is replayed as a free of the place	../obo/tests/run/field_origins.obx
+place origin: a truncate frees nothing	field_origins.obx:the array truncated
+place origin: a truncate is not strict	../obo/tests/run/field_origins.obx
+place origin: a truncate keeps a variable index	field_origins.obx:a variable index, the array truncated by a constant count
+place origin: a truncate of an array in a place is at the array	../obo/tests/run/field_origins.obx
+place origin: a truncate through a handle to the owner frees nothing	field_origins.obx:a truncate through a handle to the owner
+place origin: a truncate through a reference with no known place keeps elements	field_origins.obx:a truncate through a reference with no known place, the elements it keeps are not known
+place origin: a truncate with a constant count frees the elements it keeps	../obo/tests/run/field_origins.obx
+place origin: a truncate with a constant count keeps the element at the count	field_origins.obx:the array truncated
+place origin: a write through a handle to the owner frees nothing	field_origins.obx:a write through a handle to the owner
+place origin: a write through a handle to the owner is at the whole owner	../obo/tests/run/field_origins.obx
+place origin: an anywhere row does not replace the others	field_origins.obx:a callee with more places than the summary keeps frees any place below the argument
+place origin: an argument with no known place is taken to know it	field_origins.obx:a callee that sets an element, given a reference with no known place
+place origin: an assignment over a place frees nothing	field_origins.obx:a field assigned over
+place origin: the place is not kept	field_origins.obx:a field assigned over, in a branch
+place origin: the places are not dropped with the block	../obo/tests/run/field_origins.obx
+place origin: the places of a callee are not added to the argument	../obo/tests/run/field_origins.obx
+place origin: the rows of a callee are all not strict	../obo/tests/run/field_origins.obx
+place origin: the rows of a callee are all strict	field_origins.obx:a mut call that frees below its argument
+place origin: the rows of a parameter have no limit	field_origins.obx:a callee with more places than the summary keeps frees any place below the argument
+push imm not counted in the depth	../obo/tests/run/result.obx
+push imm32 masked	../obo/tests/run/code_shapes.obx
+push imm8 from -129	../obo/tests/run/code_shapes.obx
+push imm8 up to 128	../obo/tests/run/code_shapes.obx
+re-pointing keeps suspicion	../obo/tests/run/fp_refs.obx
+reads in a loop not counted	fp_refs.obx:a loop's recursive call, the reference pointed afresh on one path only
+recursive call is pure	handle_calls.obx:a self-call might free what a borrow through a handle points into
+recursive call might free	references.obx:a reference into a global passed to a recursive call: the body frees it
+recursive call skips invalidation	references.obx:a recursive call may free a global: a reference into it is invalid after the call
+refMut not ANDed at a join	ref_bindings.obx:a reference writable on one path and read-only on the other: writing through it is refused
+replace field targets not checked	call_targets.obx:replace a field, the value's call frees the array
+retry: argument holders of the first pass kept	../obo/tests/run/methods_homes.obx
+retry: code not rewound	../obo/tests/run/loop_align.obx
+retry: locals' registers not given up	../obo/tests/run/loop_align.obx
+retry: scanner not rewound	../obo/tests/run/loop_align.obx
+retry: token not restored	../obo/tests/run/loop_align.obx
+retry: waiting calls of the first pass kept	../obo/tests/run/register_pressure.obx
+runtime call clobbers r15	../obo/bench/alloc_obo.obx
+runtime call pad dropped when misaligned	../obo/bench/alloc_obo.obx
+scalar truncate invalidates deep references	../obo/tests/run/handle_deep.obx
+scalar truncate through a handle is a write	../obo/tests/run/handle_deep.obx
+self-call suspects not marked	arg_order.obx:a recursive call that writes through a handle, in an argument after a deep reference
+shallow references invalidated by handle writes	../obo/tests/run/arg_order.obx
+suspect not joined at if or match	defer_uses.obx:the reference is pointed elsewhere on one path only
+suspect uses not noted	handle_deep.obx:a recursive call writes through a handle, and a reference inside something is used after it
+sym: --check does not set check mode	modules/sym/b6_ac
+sym: --emit-sym ignored	special emit-sym
+sym: --version reports the wrong format	cli --version
+sym: -o accepted with --check	cli check with -o
+sym: ABI check accepts any version	modules/sym/version
+sym: B6 defining global creates a fresh symbol	modules/sym/b6_ac
+sym: B6 global stub not reused	modules/sym/b6_ac
+sym: B7 alias key creates a new type	modules/run/registry
+sym: alias to a variant omitted	modules/run/closed
+sym: aliases omitted	modules/run/registry
+sym: body hash not checked	modules/sym/corrupt
+sym: bool constant value unchecked	modules/sym/boolval
+sym: byte constant range unchecked	modules/sym/byterange
+sym: canonical parameter names lost	modules/run/aliases
+sym: checked module needs no header	special check headerless
+sym: closed variants omitted	modules/run/closed
+sym: compiler check accepts any version	modules/sym/compiler
+sym: constants omitted	modules/run/constants
+sym: default sym-dir is the current directory	special default sym-dir
+sym: definition order reversed	../obo/tests/run/env.obx
+sym: definition without a shell accepted	modules/sym/defnoshell
+sym: definitions omitted	../obo/tests/run/env.obx
+sym: dep header lines omitted	modules/run/aliases
+sym: dependency basename check dropped	modules/sym/basename_mismatch
+sym: dependency interface order not checked	modules/sym/deporder
+sym: depiface body lines omitted	modules/run/aliases
+sym: depiface hash not checked	modules/sym/depiface
+sym: duplicate exported names accepted	modules/sym/dupexport
+sym: duplicate imports not deduped	modules/run/aliases
+sym: empty dependency path accepted	modules/sym/emptydep
+sym: format check accepts any version	modules/sym/format
+sym: frees list omitted	modules/errors/imported_global_free
+sym: freesall omitted	modules/errors/transitive_all
+sym: functions omitted	../obo/tests/run/env.obx
+sym: globals omitted	modules/run/aliases
+sym: headerless --emit-sym accepted	special emit-sym headerless
+sym: imported freed keys dropped	modules/sym/b6_ac
+sym: imported function is a forward heading	modules/run/descriptors
+sym: imported parameter modes dropped	modules/run/effects_ok
+sym: imported pf rows dropped	reemit reemit high pfree bits
+sym: imported pfree dropped	modules/sym/effects_pfree
+sym: int constants written in decimal	modules/run/constants
+sym: interface line writes zero	../obo/tests/run/env.obx
+sym: live module globals not registered	modules/errors/imported_global_free
+sym: live type registry not filled	../obo/tests/run/env.obx
+sym: local type expressions lose their bare name	modules/run/closed
+sym: malformed hexadecimal hash accepted	modules/sym/hexhash
+sym: malformed summary event path accepted	modules/sym/eventpath
+sym: malformed summary event prefix accepted	modules/sym/eventprefix
+sym: module line omitted	../obo/tests/run/env.obx
+sym: mut without a reference accepted	modules/sym/mutnoamp
+sym: negative source hash treated as absent	modules/sym/b6_ac
+sym: non-primitive constant accepted	modules/sym/badconst
+sym: pf index not bounded	modules/sym/pfindex
+sym: pf row without its pfree bit accepted	modules/sym/badsummary
+sym: pf rows omitted	../obo/tests/run/env.obx
+sym: pfree bit without a pf row accepted	modules/sym/bitnorow
+sym: pfree high bits not ignored	reemit reemit high pfree bits
+sym: pfree omitted	../obo/tests/run/env.obx
+sym: reader resolves bare types through lookup	../obo/tests/run/env.obx
+sym: record fields reversed	../obo/tests/run/env.obx
+sym: scalar borrow accepted	modules/sym/scalarref
+sym: scanner state not restored after a .sym read	../obo/tests/run/env.obx
+sym: shell completeness unchecked	modules/sym/shellmissing
+sym: shell uid not validated	modules/sym/wrong_uid
+sym: shells omitted	../obo/tests/run/env.obx
+sym: single-file build writes a root .sym	modules/errors/missing_main
+sym: source hash not validated	modules/sym/negative_stale
+sym: source line carries the interface hash	../obo/tests/run/env.obx
+sym: source-less build message not used	special source-less build
+sym: string constant bytes replaced by the address	modules/run/constants
+sym: sym-dir write failure ignored	../obo/tests/run/env.obx
+sym: symMode not restored after a nested read	modules/sym/nested_corrupt
+sym: transitive dependency interface not loaded	modules/run/deep_import
+sym: type and global keys lose the module prefix	modules/run/closed
+sym: variant parent not set	modules/run/closed
+sym: writeshandles omitted	modules/errors/transitive_all
+terminated loop body's suspicion kept	../obo/tests/run/handle_deep.obx
+the 63rd parameter is assumed to free nothing	move_bits.obx:the 63rd parameter is always assumed to free: a callee that only appends through it is moving
+the check reaches the holders of enclosing calls	arg_order.obx:an element of an array passed by reference, then the array moved by a later argument
+the else branch is not an arm	../obo/tests/run/alive_narrow.obx
+the jumps of inner loops are counted as leaving the outer one	../obo/tests/run/fp_loops.obx
+the loop check ignores where a handle was declared	../obo/tests/run/alive_narrow.obx
+the loop move rule refuses a dead handle	../obo/tests/run/fp_loops.obx
+the then branch is not an arm	../obo/tests/run/alive_narrow.obx
+the top of a loop does not check a carried invalidation	fp_refs.obx:a mut callee that frees in a loop, the reference read in the loop
+the top of a loop reports a for-each variable pointed afresh	../obo/tests/run/one_path.obx
+the walk of a reference is not a read of it	fp_refs.obx:a loop's recursive call, the reference walked on every iteration
+truncate targets not checked	call_targets.obx:truncate a field, the count's call frees the array
+uninitialised local not zeroed	../obo/tests/run/register_alloc.obx
+walk source not counted as a read	fp_refs.obx:a loop's recursive call, the reference walked on every iteration
+writeFile's bytes are held as another argument	arg_order.obx:writeFile's bytes, then its flag argument replaces them
+writeFile's bytes are not held	arg_order.obx:writeFile's bytes, then its flag argument replaces them
+writeFile's flag is not checked	arg_order.obx:writeFile's bytes, then its flag argument replaces them
