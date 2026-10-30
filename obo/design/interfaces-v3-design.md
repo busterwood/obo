@@ -692,7 +692,7 @@ point to freed memory...`; `cannot point 'k' elsewhere while a defer uses it: ..
 | missing method / not yet defined | `type 'T' has no method 'm' to implement interface 'I'` / `method 'T::m' must be defined before the implementation of interface 'I'` |
 | signature mismatch | `method 'T::m' does not match interface 'I' method 'm': <detail>`: `the receiver must be 'mut &T'`, `it takes N argument(s), not M`, `argument N must be <t>, not <t>`, `argument N must be '<mode>'` (`'I'`, `'&I'`, `'mut &I'`), `it must return <t>, not <t>` |
 | impure for a `pure` member | `method 'T::m' is not pure, but interface 'I' declares 'm' pure` |
-| local tier | `method 'T::m' cannot implement 'I::m': ` then one of `it writes an owned value through a handle`, `it frees global 'g'`, `it might free anything, because it calls a function that is not compiled yet; define that function first`, `it frees below a parameter that the member does not declare mut`; the first two continue `; interface methods may only change what is below their own mut parameters` |
+| local tier | `method 'T::m' cannot implement 'I::m': ` then one of `it writes an owned value through a handle, or calls a function that is not defined yet`, `it frees global 'g'`, `it might free anything, because it calls a function that is not compiled yet; define that function first`, `it frees below a parameter that the member does not declare mut`; the first two continue `; interface methods may only change what is below their own mut parameters` |
 | borrow as owned | `cannot use a borrowed 'T' as owned interface 'I': move the value in, or take the interface as '&I'` |
 | `?T` source | `cannot use ?T as interface 'I' (it may be nil: take it into a local, return if nil, then convert the local)` |
 | other sources | `cannot use interface 'I2' as 'I': interface values do not convert`; `cannot use <t> as interface 'I'`; `cannot use ^T as interface 'I'` |
@@ -702,6 +702,8 @@ point to freed memory...`; `cannot point 'k' elsewhere while a defer uses it: ..
 | interface method call in a global initializer | `an interface method cannot be called in a global initializer; call a function that does it, as in var G = initG()` |
 | `&I` or `&?I` returned, or stored in a field, element or global | the existing `&T` rule, unchanged: `references cannot be global` for a global (the compiler's declaration check). LANGUAGE.md §10 has no separate text for a return, field or element; LANGUAGE.md §4 states the rule: `References are for parameters and local variables only. They cannot be stored in fields, elements or globals, and cannot be returned.` |
 | equality | `interface values cannot be compared; test an optional with '== nil' or '!= nil'` |
+
+(implementation, 2026-10-30) The first local-tier text is the merged `writesHandles` text. `afterCall` sets `writesHandles` for a call to a function that is not defined yet, so a method that makes such a call is refused with `it writes an owned value through a handle, or calls a function that is not defined yet`, not with a separate text. The `freesAll` text stays for the forged-input case: a `.sym` that marks a library function `freesall` without `writeshandles`. The check comes after the `writesHandles` check, so an honest input never reaches it.
 
 **New: calls and handles**
 
@@ -806,6 +808,10 @@ Every case is written with the change; no existing assertion is deleted or relax
 - **S-5 positions:** a `.sym` with an interface field, array, global, `Result`, optional and return (accepted);
   `mut p0: I` (rejected with the reader text); `^I` (rejected before 2a); a duplicate member; a bad marker
   order.
+  (implementation, 2026-10-30) Until step 3, the reader refuses an interface type in a field, an array, a global,
+  a return or an ordinary function's parameter with `interface values are not implemented yet`, just as the source
+  does. Interface member parameters and results are read in step 2; the accepted positions above are the step 3
+  target.
 - **S-6 impl lines:** duplicate, foreign receiver, variant receiver, alias spelling (0.7 §9.3), and in
   `modules/errors` a private `impl` that is invisible to importers with identical text in full and `--check`
   builds.

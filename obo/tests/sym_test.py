@@ -1442,6 +1442,9 @@ IFACE_REFUSALS = [
     ('mut fn grow(p0: int)', 'mut fn grow(mut p0: int)', 'mut needs a reference parameter'),
     ('mut fn grow(p0: int)', 'mut fn grow(p0: &int)', 'only records, closed types and arrays can be borrowed, not int'),
     ('impl Shape for Circle\n', 'impl Shape for Circle\nimpl Shape for Circle\n', 'duplicate implementation'),
+    # a ';' is not a parameter separator (the function-heading reader refuses it the same way)
+    ('mut fn grow(p0: int)', 'mut fn grow(p0: int; p1: int)', "expected ',' or ')'"),
+    ('mut fn grow(p0: int)', 'mut fn grow(p0: int;)', "expected ',' or ')'"),
 ]
 
 
@@ -1528,6 +1531,44 @@ def iface_tier_check():
             shutil.rmtree(d, ignore_errors=True)
 
 
+IFACE_FORGED = {
+    'lib.obx': 'module lib\npub fn fwd(): int { return 1 }\n',
+    'mid.obx': ('module mid\nimport "lib.obx"\npub type I = interface { mut fn f() }\n'
+                'pub type T = ref record { k: int }\n'
+                'pub fn (mut t: &T) f() {\n    let x = lib::fwd()\n    t.k = x\n}\n'
+                'pub impl I for T\n'),
+    'main.obx': 'module main\nimport "mid.obx"\nfn main() { }\n',
+}
+
+
+def iface_forged_freesall():
+    """7.2 (freesAll conjunct): a forged lib.sym that marks a library function freesall with no writeshandles
+    (the hash recomputed) makes the impl of mid.obx's interface refused by --check, and the honest file is
+    accepted. Without the conjunct the forged file is accepted."""
+    d = tempfile.mkdtemp(prefix='symcase-forged-')
+    try:
+        write_tree(d, IFACE_FORGED)
+        symdir = os.path.join(d, 'sym')
+        os.makedirs(symdir)
+        ok(build(d, symdir, out=os.path.join(d, 'prog')), 'honest interface build')
+        libpath = os.path.join(symdir, 'lib.sym')
+        base = sym_text(libpath)
+        if base.count(b'fn fwd(): int\n') != 1:
+            raise Fail(f"lib.sym does not hold the expected heading: {base!r}")
+        os.unlink(os.path.join(d, 'lib.obx'))
+        ok(build(d, symdir, root='mid.obx', check=True), 'honest source-less check')
+        with open(libpath, 'wb') as f:
+            f.write(base)
+        mutate(libpath, b'fn fwd(): int\n', b'fn fwd(): int freesall\n')
+        q = build(d, symdir, root='mid.obx', check=True)
+        want = ("method 'T::f' cannot implement 'I::f': it might free anything, because it calls a function "
+                "that is not compiled yet; define that function first")
+        if q.returncode != 1 or want not in q.stderr:
+            raise Fail(f"forged freesall: exit {q.returncode}, wanted 1 and '{want}': {q.stderr.strip()}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def tests():
     return [
         ('sym/roundtrip_rich', roundtrip_rich),
@@ -1565,6 +1606,7 @@ def tests():
         ('sym/iface_reader_refusals', iface_reader_refusals),
         ('sym/stale_format3_interface', stale_format3_interface),
         ('sym/iface_tier_check', iface_tier_check),
+        ('sym/iface_forged_freesall', iface_forged_freesall),
     ]
 
 

@@ -8933,6 +8933,11 @@ fn implDecl(isPub: bool) {
             if len(cm.fnRec.freed) > 0 {
                 error(tier + "it frees global '" + qualifiedSymName(cm.fnRec.freed[0]) + "'" + rule)
             }
+            // reached only with a forged .sym: a library function marked freesall and not writeshandles (honest
+            // summaries set both, and the writesHandles check above refuses those first)
+            if cm.freesAll {
+                error(tier + "it might free anything, because it calls a function that is not compiled yet; define that function first")
+            }
             if (cm.fnRec.pfree & ~m.fnRec.pfree) != 0 {
                 error(tier + "it frees below a parameter that the member does not declare mut")
             }
@@ -10351,7 +10356,7 @@ fn symDisagree(decl: string) {
 }
 
 // the key of an implementation in a file's order and duplicate lists: 'I for T', I qualified when it is foreign
-fn symImplKey(im: ^Impl): string { return symTypeText(im.iface) + " for " + im.recv.name }
+fn symImplKey(iface: ^Type, recv: ^Type): string { return symTypeText(iface) + " for " + recv.name }
 
 fn symSameList(a: &[]string, b: &[]string): bool {
     if len(a) != len(b) { return false }
@@ -10428,7 +10433,7 @@ fn symCompareOrder() {
     let liveImpls = new []string(0)
     for i in 0..len(impls) {
         let im = impls[i]
-        if im.owner == symCurMod.name && im.exported { append(liveImpls, symImplKey(im)) }
+        if im.owner == symCurMod.name && im.exported { append(liveImpls, symImplKey(im.iface, im.recv)) }
     }
     if !symSameList(symImplOrder, liveImpls) { symDisagree("the implementation order") }
     if !symSameList(symFnOrder, liveFns) { symDisagree("the function order") }
@@ -10459,8 +10464,8 @@ fn symFinish(mode: int) {
     }
     for i in 0..len(impls) {
         let im = impls[i]
-        if im.owner == symCurMod.name && im.exported && !symHas(symImplSeen, symImplKey(im)) {
-            symDisagree("implementation '" + symImplKey(im) + "'")
+        if im.owner == symCurMod.name && im.exported && !symHas(symImplSeen, symImplKey(im.iface, im.recv)) {
+            symDisagree("implementation '" + symImplKey(im.iface, im.recv) + "'")
         }
     }
     symCompareOrder()
@@ -10551,7 +10556,7 @@ fn symIfaceDef(name: string, nline: int, mode: int) {
                 append(pmodes, 0)
             }
             append(ptypes, pt)
-            if sym == T_SEMI { next() } else if sym != T_RPAREN { expect(T_COMMA, "',' or ')'") }
+            if sym != T_RPAREN { expect(T_COMMA, "',' or ')'") }
         }
         expect(T_RPAREN, "")
         var ret = tVoid
@@ -11210,7 +11215,7 @@ fn symImplDecl(mode: int) {
     if rt.parent != nil {
         error("an implementation's receiver cannot be a variant; use its closed type")
     }
-    let key = symTypeText(it) + " for " + rname
+    let key = symImplKey(it, rt)                   // rt.name is rname here: a mismatch exited above
     if symHas(symImplSeen, key) {
         error("duplicate implementation of '" + symTypeText(it) + "' for '" + rname + "'")
     }

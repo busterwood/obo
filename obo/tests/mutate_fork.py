@@ -919,7 +919,6 @@ EQUIVALENT = {
     "image: the epilogue is the old two-instruction sequence": "equivalent: x86 leave is defined as mov rsp,rbp; pop rbp (RSP := RBP, then RBP := Pop()) and has no other effect, so the old five-byte encoding and leave; ret produce the same registers, flags and memory; only the code size differs, and the behavioural gates do not compare produced bytes",
 
     # interfaces v3 step 2: the summary bits that no reader consults, and the mode-0 check a full build cannot reach
-    "interfaces v3 X19: the bits go on mode-1 parameters too": "equivalent: FnRec.pfree is read only at mode-2 indices. mutFrees is asked about an argument only when argModes[i] == 2, and argModes is the callee's own parameter mode, and pureFn tests pmodes[i] == 2 before mutFrees; no other reader consults the bits, and a symbol file never carries a member's bits. The implementation check (v3 7.2) subtracts the member's bits from the method's, and a method has no bit at a mode-1 index, since a read-only parameter cannot be changed (cannot change through 'p': it is a read-only reference) or passed where a mut parameter is needed",
     "interfaces v3 X30: the mode-0 comparison ignores parameter modes": "equivalent for the same reason as the methods' mode-0 checks: a full build reads each import's .sym right after its own writer has rewritten it from the same live interface (compileUnit, writeSym, then readSym in mode 0), and an import must have a header, so no full build reads a file it did not write (a forged lib.sym in the sym dir is overwritten first); --check reads in mode 1, which compares nothing with the live interface. The writer's modes are pinned by the golden and the round trip (a writer that drops mut, X26, is caught there)",
 }
 
@@ -1357,7 +1356,7 @@ INTERFACE_MUTANTS = {
         "        if i > 0 && i < 62 && m.fnRec.pmodes[i] == 2 { m.fnRec.pfree = m.fnRec.pfree | (1 << i) }\n"),
     "interfaces v3 X19: the bits go on mode-1 parameters too": (
         "        if i < 62 && m.fnRec.pmodes[i] == 2 { m.fnRec.pfree",
-        "        if i < 62 && m.fnRec.pmodes[i] >= 1 { m.fnRec.pfree"),
+        "        if i < 62 && m.fnRec.pmodes[i] == 1 { m.fnRec.pfree"),
     "interfaces v3 X20: only the first mode-2 parameter gets its bit": (
         "        if i < 62 && m.fnRec.pmodes[i] == 2 { m.fnRec.pfree",
         "        if i < 62 && m.fnRec.pmodes[i] == 2 && m.fnRec.pfree == 0 { m.fnRec.pfree"),

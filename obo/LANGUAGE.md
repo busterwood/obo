@@ -994,6 +994,7 @@ type Builder uid 0x3333333333333333
 type Builder = ref record { items: []string; count: int }
 type Node = ref record { value: int; next: ?Node }
 type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
+type Sized = interface { pure fn size(): int; mut fn fill(mut p0: &Builder) }
 type Text = []string
 const Limit: int = 0x000000000000000a
 const Empty: string = hex "6e6f6e65"
@@ -1001,6 +1002,7 @@ var Cache: []Node
 let Default: int
 fn (p0: &Builder) length(): int
 fn (mut p0: &Builder) reset() pfree 0x1 pf 0 "=/items" frees 1 strings::scratch
+impl Sized for Builder
 fn split(p0: string, p1: string): []string
 ```
 
@@ -1016,10 +1018,11 @@ fn split(p0: string, p1: string): []string
   changes every dependent's interface hash; a body-only change does not. Import
   order is part of the hash because it determines initialization order.
 - Declarations are emitted in canonical groups: shells for exported record/closed
-  types (source order), their definitions (source order), aliases, constants,
-  globals, methods (declaration order), functions. Private declarations are skipped without reordering the
-  exported ones. No address, offset, descriptor, pointer, timestamp or absolute
-  path appears.
+  types (source order), their definitions (source order; an exported interface
+  has a definition line and no shell), aliases, constants, globals, methods
+  (declaration order), implementations (declaration order), functions. Private
+  declarations are skipped without reordering the exported ones. No address,
+  offset, descriptor, pointer, timestamp or absolute path appears.
 - A record definition lists its fields in declaration order (offsets are
   recomputed: one 8-byte word each); a closed definition lists its variants in
   declaration order. Every exported record/closed type has a shell line first, so
@@ -1046,10 +1049,29 @@ fn split(p0: string, p1: string): []string
   `/field`, `/[n]` and `/[]` segments. Summary items may be read in any order; the
   writer emits `freesall`, `writeshandles`, `pfree`, `frees`, then `pf` rows by
   parameter and insertion order.
+- An exported interface is one definition line, `type I = interface { ... }`,
+  with no shell line. Its members follow in declaration order, separated by `;`.
+  A member is `fn name(params): T` with an optional result, and its markers come
+  before `fn`: `pure` if the member is pure, then `mut` if its receiver is mutable,
+  as in `pure mut fn m(p0: int): T`. The receiver is not written (it is parameter 0,
+  borrowed for `fn` and mutable for `mut fn`). The explicit parameters are named
+  `p0`, `p1`, ... and carry their modes: `p0: T` (owned), `p0: &T` (borrowed) and
+  `mut p0: &T` (mutable). A member line has no summary items. The reader builds
+  each member's summary from its markers and modes: a `pure` member has an empty
+  summary, and any other member has a `pfree` bit on each mutable parameter (the
+  receiver included, for `mut fn`), with no flags and no globals.
+- An exported implementation is one line after the methods, `impl I for T`. `I` is
+  the interface, qualified as `M::I` when it belongs to another module. `T` is the
+  receiver's bare name: a record or closed type of this module, not an alias and
+  not a variant.
+- Only `pub` interfaces and `pub impl` lines are written. A private interface is
+  not in the file, and neither is a private `impl`, so an importer cannot name
+  either one.
 
 The reader validates hashes, versions, shells, field/variant structure, duplicate
-keys and exports, parameter modes, constants, `frees` counts and keys, and the
-`pf`/`pfree` consistency before using any value. Malformed files are
+keys and exports, parameter modes, constants, `frees` counts and keys, the
+`pf`/`pfree` consistency, and the interface member markers, modes and `impl` lines
+before using any value. Malformed files are
 `obxc: <sympath>:<line>:<col>: symbol file: <detail>` (exit 2).
 
 ### Versions and the trust model
@@ -1071,6 +1093,14 @@ files are trusted build outputs: a forged but well-formed interface can make
 `--check` against untrusted symbol files, and do not treat a `.sym` as a security
 boundary. A full build re-reads and validates the freshly written interface, so a
 missed version bump only affects `--check` against stale artifacts.
+
+The reader rebuilds each interface member's summary from its markers and parameter
+modes, as above, so a caller's effect check uses the marker. It does not re-run the
+implementation checks (the signature and effect-tier checks of a method against
+its interface) on an `impl` line. A full build checks that the pair is the exported
+live implementation, which the defining module's own compile has already checked;
+`--check` accepts the line as written. A forged `pure` marker or `impl` line is
+therefore not caught by `--check`.
 
 Generated `.sym` files under the build convention (`.obo/sym`) are gitignored;
 an arbitrary `--sym-dir` is not automatically ignored. A build without
@@ -1162,8 +1192,12 @@ fn secret(): int { return 1 }
 | compiler mismatch | `obxc: symbol file '<p>' was built by compiler '<v>'; this is '<w>'; rebuild it` | 2 |
 | corrupt body hash | `obxc: symbol file '<p>' is corrupt (interface hash); rebuild it` | 2 |
 | dependency interface mismatch | `obxc: symbol file '<p>' depends on '<d>' with interface hash <h>, but '<d>' has <h2>; rebuild the dependent module` | 2 |
-| `.sym` vs a build's live interface | `obxc: symbol file '<p>' disagrees with the compiled interface of '<m>' for <decl>; rebuild it` | 2 |
+| `.sym` vs a build's live interface | `obxc: symbol file '<p>' disagrees with the compiled interface of '<m>' for <decl>; rebuild it`, where `<decl>` is `interface 'I'`, `interface method 'I::m'`, `implementation 'I for T'` or an order such as `the implementation order` | 2 |
 | malformed `.sym` | `obxc: <sympath>:<line>:<col>: symbol file: <detail>` | 2 |
+| malformed interface member | `obxc: <sympath>:<line>:<col>: symbol file: <detail>`, where `<detail>` is `'pure' and 'mut' come before 'fn'`, `expected a method name in the interface`, `duplicate interface method '<m>'`, `an interface needs at least one method` or `expected ';' or '}'` | 2 |
+| malformed interface parameter | `obxc: <sympath>:<line>:<col>: symbol file: <detail>`, where `<detail>` is `expected a parameter name`, `expected ':' after the parameter name`, `mut needs a reference parameter: write mut p0: &T`, `only records, closed types and arrays can be borrowed, not <t>` or `expected ',' or ')', found <token>` (a `;` between parameters is refused with this one) | 2 |
+| malformed interface name | `obxc: <sympath>:<line>:<col>: symbol file: <detail>`, where `<detail>` is `an interface cannot be forward-declared: '<I>' is already declared`, or `duplicate definition of type '<I>'` | 2 |
+| malformed `impl` line | `obxc: <sympath>:<line>:<col>: symbol file: <detail>`, where `<detail>` is `expected a receiver type name`, `the receiver of an implementation must be the defining name of a type in this module`, `the receiver of an implementation must be a type defined in this module`, `an implementation's receiver cannot be a variant; use its closed type`, `type '<T>' is declared but not yet defined`, `'<t>' is not an interface type` or `duplicate implementation of '<I>' for '<T>'` | 2 |
 | source-less dependency in a build | `obxc: cannot read module '<m>' at <paths>; only --check may use a symbol file without source` | 2 |
 | sym-dir missing or unwritable | `obxc: symbol-file directory '<dir>' does not exist or is not writable` | 2 |
 | `-o` with `--check`/`--deps` | `obxc: -o cannot be used with --check or --deps` | 2 |
