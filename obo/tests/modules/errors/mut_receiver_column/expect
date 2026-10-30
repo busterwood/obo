@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:5:5: the receiver of method 'T::bump' needs a mut reference, but this one is read-only

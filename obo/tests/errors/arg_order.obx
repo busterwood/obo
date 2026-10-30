@@ -203,3 +203,11 @@ fn main() {
     append(b.data, byte(65))
     println(writeFile("/dev/null", b.data, zapData(b)))  // error: argument 3 of writeFile may free what argument 2 points into
 }
+// === a mixed by-value first argument: the plain-function alias diagnostic numbers the references it was given
+type R = ref record { n: int; items: []R }
+fn f(k: int, mut a: &R, b: &R) { }
+fn main() {
+    let r = new R{n: 1, items: new []R(0)}
+    append(r.items, new R{n: 2, items: new []R(0)})
+    f(0, r, r.items[0])  // error: argument 2 of f may point inside argument 1, which is mut
+}

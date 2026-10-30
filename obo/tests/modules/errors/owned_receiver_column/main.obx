@@ -1,0 +1,8 @@
+module main
+type Item = ref record { v: int }
+type Holder = ref record { i: Item }
+fn (i: Item) oi(): int { return i.v }
+fn main() {
+    let h = new Holder{i: new Item{v: 1}}
+    h.i.oi()
+}

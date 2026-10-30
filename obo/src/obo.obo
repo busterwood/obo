@@ -2409,14 +2409,6 @@ fn materialise(x: Item): Item {
 
 // =================================================================== calls
 
-// the registers in use are pushed, and all of them are free for the callee
-fn saveRegs(): int {
-    let saved = usedRegs()
-    pushRegs(saved)
-    setFree(0)
-    return saved
-}
-
 // the saved registers are popped, and the ones that were not in use are free again
 fn restoreRegs(saved: int) {
     popRegs(saved)
@@ -4900,12 +4892,22 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
         var argLine = tline
         var argCol = tcol
         var a = voidItem()
+        var restorePos = false
+        var savedTokLine = 0
+        var savedTokCol = 0
         if i == 0 && hasRecv {
             if recv == nil { error("internal error: a method call without a receiver") }
             if recv != nil {
                 a = copyItem(recv)
                 argLine = rline
                 argCol = rcol
+                // a receiver's type/mode/ownership errors are at the receiver's start, not at the
+                // call's current token: checkAssign, borrowBind and consume report through error()
+                savedTokLine = tline
+                savedTokCol = tcol
+                tline = rline
+                tcol = rcol
+                restorePos = true
             }
         } else {
             if sym == T_RPAREN { error(callDisplay(meth, fname) + " takes " + string(narg) + " argument(s), not " + string(i - start)) }
@@ -4935,6 +4937,10 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
         } else {
             consume(a)
             argOrderCheck(tbase, fname, meth, i, argLine, argCol)
+        }
+        if restorePos {
+            tline = savedTokLine
+            tcol = savedTokCol
         }
         if a.mode == "const" && fits32(a.val) {
             pushI(a.val)                           // no register needed
@@ -4973,7 +4979,12 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
                         let rj = bj.roots[q]
                         // two places in one root may be told apart: elements known to differ
                         if bj.deeps[q] && reaches(ri, rj) && (ri != rj || pathsOverlap(bi.paths[p], bj.paths[q])) {
-                            error(argLabel(meth, argIdx[j], start) + " of " + callDisplay(meth, fname) + " may point inside " + argLabel(meth, argIdx[i], start) + ", which is mut")
+                            // a plain function numbers the references it was given (the old argBinds indexes);
+                            // a method numbers source arguments, with the receiver as parameter 0
+                            var lj = j
+                            var li = i
+                            if meth { lj = argIdx[j]; li = argIdx[i] }
+                            error(argLabel(meth, lj, start) + " of " + callDisplay(meth, fname) + " may point inside " + argLabel(meth, li, start) + ", which is mut")
                         }
                     }
                 }
@@ -5633,7 +5644,7 @@ fn builtin(name: string): Item {
 }
 
 fn designatorT(target: bool): Item
-fn methodCall(recv: Item, name: string, dline: int, dcol: int): Item
+fn methodCall(recv: Item, name: string, dline: int, dcol: int, rline: int, rcol: int): Item
 
 fn designator(): Item { return designatorT(false) }
 
@@ -5874,13 +5885,13 @@ fn designatorT(target: bool): Item {
         // nothing can be moved out through a reference, so this can only be a borrow
         if root.isRef && isOwned(x.typ) { x.borrowed = true }
     }
-    if isCall { return methodCall(x, callName, callLine, callCol) }
+    if isCall { return methodCall(x, callName, callLine, callCol, uline, ucol) }
     return x
 }
 
 // A method call on the finalized receiver x. The receiver's place metadata is complete by now
 // (root, deref, path, viaHandle, borrowed) and its value use has been recorded.
-fn methodCall(recv: Item, name: string, dline: int, dcol: int): Item {
+fn methodCall(recv: Item, name: string, dline: int, dcol: int, rline: int, rcol: int): Item {
     let t = recv.typ
     if t.incomplete { errorAt(tname(t) + " is declared but not yet defined", dline, dcol) }
     if t.kind != "record" && t.kind != "closed" { errorAt(tname(t) + " has no methods", dline, dcol) }
@@ -5902,9 +5913,9 @@ fn methodCall(recv: Item, name: string, dline: int, dcol: int): Item {
         // an owned receiver that is the whole object named by a handle: the dereference is a temporary
         // register item, and consuming it would free the object without its owner knowing
         if m.fnRec.pmodes[0] == 0 && recv.viaHandle && recv.mode == "reg" {
-            errorAt("cannot call a method that takes its receiver by value through a handle: the handle does not own the object; declare the method with '&' or 'mut &T', or call it on the owner", dline, dcol)
+            errorAt("cannot call a method that takes its receiver by value through a handle: the handle does not own the object; declare the method with '&' or 'mut &T', or call it on the owner", rline, rcol)
         }
-        return callFnWith(m, recv, true, dline, dcol)
+        return callFnWith(m, recv, true, rline, rcol)
     }
     return voidItem()
 }
