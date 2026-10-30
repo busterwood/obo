@@ -26,7 +26,7 @@ RT = FORK
 GOLD = os.path.join(HERE, 'modules', 'golden')
 UPDATE = '--update' in sys.argv
 
-OBO_VERSION = '0.8'
+OBO_VERSION = '0.8.1'
 SYM_FORMAT = 4
 SYM_ABI = 1
 
@@ -442,7 +442,7 @@ def stale_missing_corrupt_versions():
         cases = [
             (b'obosym 4', b'obosym 3', 'has format 3; this compiler reads 4'),
             (b'\nabi 1\n', b'\nabi 9\n', 'has ABI 9; this compiler uses 1'),
-            (b'compiler "0.8"', b'compiler "9.9"', "was built by compiler '9.9'; this is '0.8'"),
+            (b'compiler "0.8.1"', b'compiler "9.9"', "was built by compiler '9.9'; this is '0.8.1'"),
         ]
         for old, new, msg in cases:
             data = base
@@ -717,7 +717,7 @@ def handwritten_interface():
     uid = fnv(b'many::T')
     sym = f'''obosym 4
 abi 1
-compiler "0.8"
+compiler "0.8.1"
 source 0x{0:016x}
 interface 0x0
 module many
@@ -1105,7 +1105,7 @@ def b6_stub_completion():
     try:
         ok(build(d, s), 'x build')
         m = os.path.join(s, 'm.sym')
-        open(m, 'w').write('obosym 4\nabi 1\ncompiler "0.8"\nsource 0x%016x\ninterface 0x0\nmodule m\nfn f() frees 1 x::g\n' % 0)
+        open(m, 'w').write('obosym 4\nabi 1\ncompiler "0.8.1"\nsource 0x%016x\ninterface 0x0\nmodule m\nfn f() frees 1 x::g\n' % 0)
         rehash(m, lambda b: b)
         for name, imports in (('order1', 'import "m.obx"\nimport "x.obx"'),
                               ('order2', 'import "x.obx"\nimport "m.obx"')):

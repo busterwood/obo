@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""The differential gate for the obo command-line tools (cat, wc, sort, head).
+"""The differential gate for the obo command-line tools
+(cat, wc, sort, head, tail).
 
     python3 tests/tools.py [-k PATTERN] [-v] [-x] [-j N]
         [--reference=auto|gnu|busybox|any|none] [--require-reference]
@@ -41,7 +42,7 @@ in v1 (its padding is implementation-specific).
 GNU on stdout/exit (and exact stderr where it is compared) and exits 2 on a
 disagreement, so the fallback cannot rot silently. `--record` writes gnu goldens
 (modeled cases only, golden-marked subset only) and gnu/VERSION, and refuses a
-stderr line beginning with `/`. `--memory` runs the three pinned memory cases
+stderr line beginning with `/`. `--memory` runs the four pinned memory cases
 instead of the matrix. Exit status: 0 pass, 1 test failure, 2 harness/setup
 failure.
 """
@@ -62,7 +63,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 FORK = os.path.dirname(HERE)                      # .../obo
 ROOT = os.path.dirname(FORK)                      # repository root
-TOOLS = ('cat', 'wc', 'sort', 'head')
+TOOLS = ('cat', 'wc', 'sort', 'head', 'tail')
 REFERENCE_PATH = '/usr/bin:/bin'
 FSIZE = 16 * 1024 * 1024                          # per-process output cap
 MEMORY_PEAK_MAX = 1048576
@@ -809,10 +810,120 @@ def head_cases():
     add('usage_19digits_n', T, ['-n', '1000000000000000000'], tag='usage')
 
 
+def tail_cases():
+    T = 'tail'
+    # default (last 10 lines) over the shared stream fixtures
+    for name in ('empty', 'newline', 'noeol', 'oneline', 'blanks', 'spaces',
+                 'tabs', 'crlf', 'words', 'nul', 'binary', 'invalid_utf8',
+                 'longline', 'long100', 'twelve'):
+        add(name, T, [name], fixtures=[name])
+    # -n: zero, one, exactly the line count, more than the input, and the
+    # final partial line with no newline
+    add('n0_empty', T, ['-n', '0', 'empty'], fixtures=['empty'])
+    add('n0_oneline', T, ['-n0', 'oneline'], fixtures=['oneline'])
+    add('n1_noeol', T, ['-n', '1', 'noeol'], fixtures=['noeol'])
+    add('n2_noeol', T, ['-n', '2', 'noeol'], fixtures=['noeol'])
+    add('n10_noeol', T, ['-n', '10', 'noeol'], fixtures=['noeol'])
+    add('n1_twelve', T, ['-n', '1', 'twelve'], fixtures=['twelve'])
+    add('n5_twelve', T, ['-n', '5', 'twelve'], fixtures=['twelve'])
+    add('n12_twelve', T, ['-n', '12', 'twelve'], fixtures=['twelve'])
+    add('n100_twelve', T, ['-n', '100', 'twelve'], fixtures=['twelve'])
+    add('n1_blanks', T, ['-n', '1', 'blanks'], fixtures=['blanks'])
+    add('n2_blanks', T, ['-n', '2', 'blanks'], fixtures=['blanks'])
+    # -c: zero, one, exact, more than the input, no final newline, binary/NUL
+    add('c0_oneline', T, ['-c', '0', 'oneline'], fixtures=['oneline'])
+    add('c1_twelve', T, ['-c', '1', 'twelve'], fixtures=['twelve'])
+    add('c5_twelve', T, ['-c', '5', 'twelve'], fixtures=['twelve'])
+    add('c100_twelve', T, ['-c', '100', 'twelve'], fixtures=['twelve'])
+    add('c1_noeol', T, ['-c', '1', 'noeol'], fixtures=['noeol'])
+    add('c2_noeol', T, ['-c', '2', 'noeol'], fixtures=['noeol'])
+    add('c1000_binary', T, ['-c', '1000', 'binary'], fixtures=['binary'])
+    add('c1_binary', T, ['-c', '1', 'binary'], fixtures=['binary'])
+    add('c1_nul', T, ['-c', '1', 'nul'], fixtures=['nul'])
+    add('n2_nul', T, ['-n', '2', 'nul'], fixtures=['nul'])
+    # a line far past the read/write block size, alone and with a neighbour
+    add('n1_longline', T, ['-n', '1', 'longline'], fixtures=['longline'])
+    add('n2_longline', T, ['-n', '2', 'longline'], fixtures=['longline'])
+    add('c1_longline', T, ['-c', '1', 'longline'], fixtures=['longline'])
+    add('c100000_longline', T, ['-c', '100000', 'longline'],
+        fixtures=['longline'])
+    # multiple operands: headers, empty files, and an error between files
+    add('n1_multi_a_multi_b', T, ['-n', '1', 'multi_a', 'multi_b'],
+        fixtures=['multi_a', 'multi_b'])
+    add('n2_empty_oneline', T, ['-n', '2', 'empty', 'oneline'],
+        fixtures=['empty', 'oneline'])
+    add('n1_oneline_empty', T, ['-n', '1', 'oneline', 'empty'],
+        fixtures=['oneline', 'empty'])
+    add('n0_two', T, ['-n', '0', 'oneline', 'twelve'],
+        fixtures=['oneline', 'twelve'])
+    add('n0_missing', T, ['-n', '0', 'missing'])
+    add('c0_missing', T, ['-c', '0', 'missing'])
+    add('missing_oneline', T, ['-n', '1', 'missing', 'oneline'],
+        fixtures=['oneline'])
+    add('oneline_missing', T, ['-n', '1', 'oneline', 'missing'],
+        fixtures=['oneline'])
+    add('dir', T, ['-n', '1', 'dir'], fixtures=['dir'])
+    add('oneline_dir', T, ['-n', '1', 'oneline', 'dir'],
+        fixtures=['oneline', 'dir'])
+    add('dir_oneline', T, ['-n', '1', 'dir', 'oneline'],
+        fixtures=['dir', 'oneline'])
+    # byte mode stops after a read error, unlike line mode (GNU 9.4)
+    add('c_dir_oneline', T, ['-c', '10', 'dir', 'oneline'],
+        fixtures=['dir', 'oneline'])
+    add('c_dir_missing', T, ['-c', '10', 'dir', 'missing'],
+        fixtures=['dir'])
+    add('missing_twelve', T, ['-n', '1', 'missing', 'twelve'],
+        fixtures=['twelve'])
+    add('name_with_space', T, ['-n', '1', 'name with space'],
+        fixtures=['name with space'])
+    # stdin, a lone '-' and mixed stdin/files (the header is "standard input")
+    add('stdin_words', T, [], stdin=FILES['words'])
+    add('n1_stdin', T, ['-n', '1'], stdin=FILES['words'])
+    add('c2_stdin', T, ['-c', '2'], stdin=FILES['words'])
+    add('dash_words', T, ['-'], stdin=FILES['words'])
+    add('dash_multi_a', T, ['-n', '1', '-', 'multi_a'], stdin=b'z\n',
+        fixtures=['multi_a'])
+    add('multi_a_dash', T, ['-n', '1', 'multi_a', '-'], stdin=b'z\n',
+        fixtures=['multi_a'])
+    add('n1_stdin_noeol', T, ['-n', '1'], stdin=b'a\nb')
+    add('c1_stdin_noeol', T, ['-c', '1'], stdin=b'a\nb')
+    # option spellings, permutation, -- and last-option-wins
+    add('attached_n2', T, ['-n2', 'twelve'], fixtures=['twelve'])
+    add('attached_c3', T, ['-c3', 'twelve'], fixtures=['twelve'])
+    add('long_lines_eq', T, ['--lines=2', 'twelve'], fixtures=['twelve'])
+    add('long_lines_space', T, ['--lines', '2', 'twelve'], fixtures=['twelve'])
+    add('long_bytes_eq', T, ['--bytes=3', 'twelve'], fixtures=['twelve'])
+    add('long_bytes_space', T, ['--bytes', '3', 'twelve'], fixtures=['twelve'])
+    add('last_option_wins', T, ['-n', '2', '-c', '1', 'twelve'],
+        fixtures=['twelve'])
+    add('last_option_wins_long', T, ['-c1', '--lines=2', 'twelve'],
+        fixtures=['twelve'])
+    add('option_after_operand', T, ['twelve', '-n', '1'], fixtures=['twelve'])
+    add('ddash_oneline', T, ['--', 'oneline'], fixtures=['oneline'])
+    add('ddash_dash_n', T, ['--', '-n'], fixtures=['-n'])
+    # write failure and the deliberately unsupported options (own goldens)
+    add('devfull_oneline', T, ['oneline'], fixtures=['oneline'], sink=True,
+        tag='writeerror')
+    # A write failure suppresses output but not later operands' diagnostics;
+    # the one write-error line is printed after them.
+    add('devfull_oneline_missing', T, ['oneline', 'missing'],
+        fixtures=['oneline'], sink=True, tag='writeerror')
+    add('devfull_oneline_dir', T, ['oneline', 'dir'],
+        fixtures=['oneline', 'dir'], sink=True, tag='writeerror')
+    add('usage_z', T, ['-Z'], tag='usage')
+    add('usage_help', T, ['--help'], tag='usage')
+    add('usage_version', T, ['--version'], tag='usage')
+    add('usage_invalid_lines', T, ['-n', '2x', 'oneline'], tag='usage')
+    add('usage_invalid_bytes', T, ['--bytes=x', 'oneline'], tag='usage')
+    add('usage_missing_n', T, ['-n'], tag='usage')
+    add('usage_missing_lines', T, ['--lines'], tag='usage')
+
+
 cat_cases()
 wc_cases()
 sort_cases()
 head_cases()
+tail_cases()
 CASES.sort(key=lambda c: (TOOLS.index(c.tool), c.name))
 
 # ------------------------------------------------------------------------ models
@@ -872,11 +983,90 @@ def parse_count(s):
     return int(body)
 
 
+def parse_tail_count(value, line_mode):
+    """The implemented unsigned-decimal count: no sign, no suffix, no overflow."""
+    if not value or any(ch < '0' or ch > '9' for ch in value):
+        what = 'lines' if line_mode else 'bytes'
+        raise ModelError(f"tail: invalid number of {what}: '{value}'")
+    n = int(value)
+    if n > (1 << 63) - 1:
+        what = 'lines' if line_mode else 'bytes'
+        raise ModelError(f"tail: invalid number of {what}: '{value}'")
+    return n
+
+
+def parse_tail_argv(argv):
+    """The tail subset: -n/-c, --lines/--bytes, attached values and --."""
+    line_mode = True
+    count = 10
+    operands = []
+    end = False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if not end and a == '--':
+            end = True
+        elif not end and len(a) > 1 and a.startswith('-'):
+            if len(a) > 2 and a[1] == '-':
+                if a.startswith('--lines') and (len(a) == 7 or a[7] == '='):
+                    if len(a) == 7:
+                        if i + 1 >= len(argv):
+                            raise ModelError(
+                                "tail: option '--lines' requires an argument")
+                        i += 1
+                        value = argv[i]
+                    else:
+                        value = a[8:]
+                    line_mode = True
+                    count = parse_tail_count(value, True)
+                elif a.startswith('--bytes') and (len(a) == 7 or a[7] == '='):
+                    if len(a) == 7:
+                        if i + 1 >= len(argv):
+                            raise ModelError(
+                                "tail: option '--bytes' requires an argument")
+                        i += 1
+                        value = argv[i]
+                    else:
+                        value = a[8:]
+                    line_mode = False
+                    count = parse_tail_count(value, False)
+                else:
+                    raise ModelError(f"tail: unrecognized option '{a}'")
+            else:
+                j = 1
+                while j < len(a):
+                    ch = a[j]
+                    if ch == 'f':
+                        j += 1
+                    elif ch in 'nc':
+                        if j + 1 < len(a):
+                            value = a[j + 1:]
+                            j = len(a)
+                        else:
+                            if i + 1 >= len(argv):
+                                raise ModelError(
+                                    f"tail: option requires an argument -- '{ch}'")
+                            i += 1
+                            value = argv[i]
+                            j = len(a)
+                        line_mode = ch == 'n'
+                        count = parse_tail_count(value, line_mode)
+                    else:
+                        raise ModelError(f"tail: invalid option -- '{ch}'")
+        else:
+            operands.append(a)
+        i += 1
+    return line_mode, count, operands
+
+
 def parse_argv(tool, argv):
     """GNU-style permutation, a lone '-' as an operand, '--' ends options."""
     if tool == 'head':
         mode, count, operands = parse_head_argv(argv)
         return ({'c'} if mode == 'bytes' else {'n'}), operands, 1
+    if tool == 'tail':
+        line_mode, _count, operands = parse_tail_argv(argv)
+        return ({'n'} if line_mode else {'c'}), operands, 1
     opts = set()
     operands = []
     end = False
@@ -1268,8 +1458,76 @@ def model_head(world, argv, stdin_bytes):
     return (1 if failed else 0), bytes(out), bytes(err)
 
 
+def tail_lines(data, n):
+    """The last n lines: a final partial line counts, an empty input has none."""
+    if n <= 0 or not data:
+        return b''
+    starts = [0]
+    for i, b in enumerate(data):
+        if b == 0x0A and i + 1 < len(data):
+            starts.append(i + 1)
+    if n >= len(starts):
+        return data
+    return data[starts[len(starts) - n]:]
+
+
+def model_tail(world, argv, stdin_bytes):
+    line_mode, count, operands = parse_tail_argv(argv)
+    if count == 0:
+        # GNU -n0/-c0 prints nothing and does not open operands, so a missing
+        # operand produces no diagnostic and the exit status stays 0.
+        return 0, b'', b''
+    if not operands:
+        operands = ['-']
+    multi = len(operands) > 1
+    out = bytearray()
+    err = bytearray()
+    failed = False
+    header_seen = False
+    stdin_used = False
+    for name in operands:
+        label = 'standard input' if name == '-' else name
+        kind = 'stdin' if name == '-' else kind_of(name, world)
+        if kind == 'missing':
+            err.extend(b"tail: cannot open '" + os.fsencode(name) +
+                       b"' for reading: No such file or directory\n")
+            failed = True
+            continue
+        if kind == 'unreadable':
+            err.extend(b"tail: cannot open '" + os.fsencode(name) +
+                       b"' for reading: Permission denied\n")
+            failed = True
+            continue
+        # a successfully opened operand gets a header before its data (or its
+        # read error); an operand that failed to open gets none
+        if multi:
+            if header_seen:
+                out.extend(b'\n')
+            out.extend(b'==> ' + os.fsencode(label) + b' <==\n')
+            header_seen = True
+        if kind == 'dir':
+            err.extend(b"tail: error reading '" + os.fsencode(name) +
+                       b"': Is a directory\n")
+            failed = True
+            # GNU 9.4's byte mode stops before later operands after a read
+            # error; line mode continues with them.
+            if not line_mode:
+                break
+            continue
+        if kind == 'stdin':
+            data = b'' if stdin_used else stdin_bytes
+            stdin_used = True
+        else:
+            data = world[name].bytes()
+        if line_mode:
+            out.extend(tail_lines(data, count))
+        elif count:
+            out.extend(data[-count:])
+    return (1 if failed else 0), bytes(out), bytes(err)
+
+
 MODELS = {'cat': model_cat, 'wc': model_wc, 'sort': model_sort,
-          'head': model_head}
+          'head': model_head, 'tail': model_tail}
 
 
 # -------------------------------------------------------------------- reference
@@ -1809,7 +2067,8 @@ class Harness:
         return problems
 
     # -- modes
-    SERIAL_NAMES = ('stream', 'pipeline', 'stdin_unread', 'stdin_position')
+    SERIAL_NAMES = ('stream', 'pipeline', 'stdin_unread', 'stdin_position',
+                    'follow')
 
     def run_matrix(self):
         cases = CASES
@@ -1861,12 +2120,13 @@ class Harness:
     def run_serial_cases(self):
         k = self.args.k
         if k and not any(k in n for n in ('stream', 'pipeline', 'stdin_unread',
-                                          'stdin_position')):
+                                          'stdin_position', 'follow')):
             return
         self.stream_case(k)
         self.stdin_unread_case(k)
         self.stdin_position_case(k)
         self.pipeline_case(k)
+        self.follow_case(k)
 
     def _special_dir(self):
         d = os.path.join(self.tmp, 'special')
@@ -2139,6 +2399,502 @@ class Harness:
                 if self.args.verbose:
                     print(f'ok   {label}')
 
+    # -- follow mode
+    def _follow_env(self):
+        return {'PATH': REFERENCE_PATH, 'LC_ALL': 'C', 'LANG': 'C',
+                'LANGUAGE': 'C', 'TZ': 'UTC', 'HOME': self.tmp,
+                'TMPDIR': self.tmp, 'OBO_CHECK': '1', 'OBX_GC': 'poison'}
+
+    def _follow_start(self, cwd, args):
+        return subprocess.Popen([self.ctx['tail'].exe, *args], cwd=cwd,
+                                env=self._follow_env(), stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                start_new_session=True)
+
+    def _follow_read(self, p, want, timeout=5.0):
+        got = b''
+        deadline = time.time() + timeout
+        while len(got) < len(want):
+            left = deadline - time.time()
+            if left <= 0:
+                break
+            ready, _, _ = select.select([p.stdout], [], [], left)
+            if not ready:
+                break
+            chunk = os.read(p.stdout.fileno(), len(want) - len(got))
+            if not chunk:
+                break
+            got += chunk
+        return got
+
+    def _follow_quiet(self, p, seconds=0.4):
+        ready, _, _ = select.select([p.stdout], [], [], seconds)
+        if not ready:
+            return b''
+        return os.read(p.stdout.fileno(), 4096)
+
+    def _follow_write(self, path, data, mode='ab'):
+        with open(path, mode) as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+
+    def _follow_stop(self, p):
+        if p.poll() is None:
+            try:
+                os.killpg(p.pid, signal.SIGTERM)
+            except OSError:
+                pass
+        try:
+            p.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            p.wait(timeout=5)
+        err = p.stderr.read()
+        p.stdout.close()
+        p.stderr.close()
+        if p.poll() is None:
+            raise RuntimeError('follow process did not terminate')
+        return p.returncode, err
+
+    def follow_case(self, k):
+        if k and 'follow' not in k:
+            return
+        d = os.path.join(self.tmp, 'follow')
+        os.makedirs(d, exist_ok=True)
+
+        def run_one(label, argv, stdin_data=None, timeout=8):
+            p = subprocess.run([self.ctx['tail'].exe, *argv], cwd=d,
+                               env=self._follow_env(), input=stdin_data,
+                               capture_output=True, timeout=timeout)
+            return p
+
+        def check(label, ok, detail=''):
+            if ok:
+                self.passed += 1
+                if self.args.verbose:
+                    print(f'ok   {label}')
+            else:
+                self.failures.append((label, detail))
+
+        # initial tail, appended text, appended newline, and an unterminated line
+        path = os.path.join(d, 'append.txt')
+        with open(path, 'wb') as f:
+            f.write(b'one\ntwo\n')
+        p = self._follow_start(d, ['-n', '1', '-f', 'append.txt'])
+        try:
+            got = self._follow_read(p, b'two\n')
+            check('follow append initial', got == b'two\n', repr(got))
+            self._follow_write(path, b'three\n')
+            got = self._follow_read(p, b'three\n')
+            check('follow append line', got == b'three\n', repr(got))
+            self._follow_write(path, b'four')
+            got = self._follow_read(p, b'four')
+            check('follow append unterminated', got == b'four', repr(got))
+            self._follow_write(path, b'\n')
+            got = self._follow_read(p, b'\n')
+            check('follow append finish line', got == b'\n', repr(got))
+            _rc, err = self._follow_stop(p)
+            check('follow append stderr', err == b'', repr(err))
+        finally:
+            if p.poll() is None:
+                self._follow_stop(p)
+
+        # count 0 prints no existing data but still monitors future data
+        path = os.path.join(d, 'zero.txt')
+        with open(path, 'wb') as f:
+            f.write(b'old\n')
+        p = self._follow_start(d, ['-n0', '-f', 'zero.txt'])
+        try:
+            got = self._follow_quiet(p)
+            check('follow n0 initial quiet', got == b'', repr(got))
+            self._follow_write(path, b'new\n')
+            got = self._follow_read(p, b'new\n')
+            check('follow n0 future', got == b'new\n', repr(got))
+            _rc, err = self._follow_stop(p)
+            check('follow n0 stderr', err == b'', repr(err))
+        finally:
+            if p.poll() is None:
+                self._follow_stop(p)
+
+        # same-inode truncation: reopen from the start and report it
+        path = os.path.join(d, 'trunc.txt')
+        with open(path, 'wb') as f:
+            f.write(b'a\nb\n')
+        p = self._follow_start(d, ['-n', '1', '-f', 'trunc.txt'])
+        try:
+            got = self._follow_read(p, b'b\n')
+            check('follow truncate initial', got == b'b\n', repr(got))
+            self._follow_write(path, b'c\n', mode='wb')
+            got = self._follow_read(p, b'c\n')
+            check('follow truncate reopen', got == b'c\n', repr(got))
+            self._follow_write(path, b'd\n')
+            got = self._follow_read(p, b'd\n')
+            check('follow truncate append', got == b'd\n', repr(got))
+            _rc, err = self._follow_stop(p)
+            check('follow truncate notice', b'file truncated' in err, repr(err))
+        finally:
+            if p.poll() is None:
+                self._follow_stop(p)
+
+        # byte count on an unterminated file, then raw appended bytes
+        path = os.path.join(d, 'bytes.txt')
+        with open(path, 'wb') as f:
+            f.write(b'abc')
+        p = self._follow_start(d, ['-c', '2', '-f', 'bytes.txt'])
+        try:
+            got = self._follow_read(p, b'bc')
+            check('follow bytes initial', got == b'bc', repr(got))
+            self._follow_write(path, b'de')
+            got = self._follow_read(p, b'de')
+            check('follow bytes append', got == b'de', repr(got))
+            self._follow_write(path, b'\n')
+            got = self._follow_read(p, b'\n')
+            check('follow bytes newline', got == b'\n', repr(got))
+            _rc, err = self._follow_stop(p)
+            check('follow bytes stderr', err == b'', repr(err))
+        finally:
+            if p.poll() is None:
+                self._follow_stop(p)
+
+        # multiple operands: a header only when the output file switches. A
+        # second chunk from the same file has no header, including a >64 KiB
+        # append that takes several read chunks.
+        with open(os.path.join(d, 'fa.txt'), 'wb') as f:
+            f.write(b'a1\n')
+        with open(os.path.join(d, 'fb.txt'), 'wb') as f:
+            f.write(b'b1\n')
+        p = self._follow_start(d, ['-n0', '-f', 'fa.txt', 'fb.txt'])
+        try:
+            got = self._follow_read(p, b'==> fa.txt <==\n\n==> fb.txt <==\n')
+            check('follow multi headers', got == b'==> fa.txt <==\n\n==> fb.txt <==\n',
+                  repr(got))
+            self._follow_write(os.path.join(d, 'fa.txt'), b'a2\n')
+            got = self._follow_read(p, b'\n==> fa.txt <==\na2\n')
+            check('follow multi chunk header', got == b'\n==> fa.txt <==\na2\n',
+                  repr(got))
+            self._follow_write(os.path.join(d, 'fa.txt'), b'a3\n')
+            got = self._follow_read(p, b'a3\n')
+            check('follow same file no header', got == b'a3\n', repr(got))
+            big = b'x' * 70000 + b'\n'
+            self._follow_write(os.path.join(d, 'fa.txt'), big)
+            got = self._follow_read(p, big, timeout=8)
+            check('follow big same file no header', got == big, repr(got[:20]))
+            self._follow_write(os.path.join(d, 'fb.txt'), b'b2\n')
+            got = self._follow_read(p, b'\n==> fb.txt <==\nb2\n')
+            check('follow switch header', got == b'\n==> fb.txt <==\nb2\n',
+                  repr(got))
+            _rc, err = self._follow_stop(p)
+            check('follow multi stderr', err == b'', repr(err))
+        finally:
+            if p.poll() is None:
+                self._follow_stop(p)
+
+        # a header emitted by an operand that then fails to read still counts
+        # as the last emitted output. A later chunk from an earlier successful
+        # follower must therefore print its header again.
+        with open(os.path.join(d, 'headfail.txt'), 'wb') as f:
+            f.write(b'a1\n')
+        os.makedirs(os.path.join(d, 'headdir'), exist_ok=True)
+        p = self._follow_start(d, ['-n0', '-f', 'headfail.txt', 'headdir'])
+        try:
+            got = self._follow_read(p, b'==> headfail.txt <==\n\n==> headdir <==\n')
+            check('follow failed-operand initial headers',
+                  got == b'==> headfail.txt <==\n\n==> headdir <==\n', repr(got))
+            self._follow_write(os.path.join(d, 'headfail.txt'), b'a2\n')
+            got = self._follow_read(p, b'\n==> headfail.txt <==\na2\n')
+            check('follow header after failed operand',
+                  got == b'\n==> headfail.txt <==\na2\n', repr(got))
+            _rc, err = self._follow_stop(p)
+            check('follow failed-operand read error',
+                  b"error reading 'headdir'" in err, repr(err))
+        finally:
+            if p.poll() is None:
+                self._follow_stop(p)
+
+        # the same a+directory sequence against GNU tail
+        if self.refs['tail'].kind == 'gnu':
+            with open(os.path.join(d, 'headfail2.txt'), 'wb') as f:
+                f.write(b'a1\n')
+            os.makedirs(os.path.join(d, 'headdir2'), exist_ok=True)
+            ours_out = open(os.path.join(d, 'headfail-ours.out'), 'wb')
+            ours_err = open(os.path.join(d, 'headfail-ours.err'), 'wb')
+            ref_out = open(os.path.join(d, 'headfail-ref.out'), 'wb')
+            ref_err = open(os.path.join(d, 'headfail-ref.err'), 'wb')
+            po = subprocess.Popen([self.ctx['tail'].exe, '-n0', '-f',
+                                   'headfail2.txt', 'headdir2'], cwd=d,
+                                  env=self._follow_env(),
+                                  stdin=subprocess.DEVNULL, stdout=ours_out,
+                                  stderr=ours_err, start_new_session=True)
+            pr = subprocess.Popen(['tail', '-n0', '-f', 'headfail2.txt',
+                                   'headdir2'], cwd=d, env=self._follow_env(),
+                                  stdin=subprocess.DEVNULL, stdout=ref_out,
+                                  stderr=ref_err,
+                                  executable=self.refs['tail'].path,
+                                  start_new_session=True)
+            try:
+                time.sleep(0.5)
+                self._follow_write(os.path.join(d, 'headfail2.txt'), b'a2\n')
+                time.sleep(1.5)
+            finally:
+                for p2 in (po, pr):
+                    if p2.poll() is None:
+                        try:
+                            os.killpg(p2.pid, signal.SIGTERM)
+                        except OSError:
+                            pass
+                for p2 in (po, pr):
+                    try:
+                        p2.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            os.killpg(p2.pid, signal.SIGKILL)
+                        except OSError:
+                            pass
+                        p2.wait(timeout=5)
+                for fh in (ours_out, ours_err, ref_out, ref_err):
+                    fh.close()
+            with open(os.path.join(d, 'headfail-ours.out'), 'rb') as f:
+                our_bytes = f.read()
+            with open(os.path.join(d, 'headfail-ref.out'), 'rb') as f:
+                ref_bytes = f.read()
+            check('follow GNU failed-operand header differential',
+                  our_bytes == ref_bytes,
+                  describe(our_bytes, ref_bytes, 'stdout'))
+
+        # the same header sequence against GNU tail, not only our expectation
+        if self.refs['tail'].kind == 'gnu':
+            for name in ('gfa', 'gfb'):
+                with open(os.path.join(d, name), 'wb') as f:
+                    f.write((b'a1\n' if name == 'gfa' else b'b1\n'))
+            ours_out = open(os.path.join(d, 'gnu-ours.out'), 'wb')
+            ours_err = open(os.path.join(d, 'gnu-ours.err'), 'wb')
+            ref_out = open(os.path.join(d, 'gnu-ref.out'), 'wb')
+            ref_err = open(os.path.join(d, 'gnu-ref.err'), 'wb')
+            po = subprocess.Popen([self.ctx['tail'].exe, '-n0', '-f',
+                                   'gfa', 'gfb'], cwd=d, env=self._follow_env(),
+                                  stdin=subprocess.DEVNULL, stdout=ours_out,
+                                  stderr=ours_err, start_new_session=True)
+            pr = subprocess.Popen(['tail', '-n0', '-f', 'gfa', 'gfb'], cwd=d,
+                                  env=self._follow_env(), stdin=subprocess.DEVNULL,
+                                  stdout=ref_out, stderr=ref_err,
+                                  executable=self.refs['tail'].path,
+                                  start_new_session=True)
+            try:
+                time.sleep(0.5)
+                self._follow_write(os.path.join(d, 'gfa'), b'a1\n')
+                time.sleep(1.4)
+                self._follow_write(os.path.join(d, 'gfa'), b'a2\n')
+                time.sleep(1.4)
+                big = b'y' * 70000 + b'\n'
+                self._follow_write(os.path.join(d, 'gfa'), big)
+                time.sleep(1.5)
+                self._follow_write(os.path.join(d, 'gfb'), b'b1\n')
+                time.sleep(1.5)
+            finally:
+                for p2 in (po, pr):
+                    if p2.poll() is None:
+                        try:
+                            os.killpg(p2.pid, signal.SIGTERM)
+                        except OSError:
+                            pass
+                for p2 in (po, pr):
+                    try:
+                        p2.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            os.killpg(p2.pid, signal.SIGKILL)
+                        except OSError:
+                            pass
+                        p2.wait(timeout=5)
+                for fh in (ours_out, ours_err, ref_out, ref_err):
+                    fh.close()
+            with open(os.path.join(d, 'gnu-ours.out'), 'rb') as f:
+                our_bytes = f.read()
+            with open(os.path.join(d, 'gnu-ref.out'), 'rb') as f:
+                ref_bytes = f.read()
+            check('follow GNU header differential', our_bytes == ref_bytes,
+                  describe(our_bytes, ref_bytes, 'stdout'))
+            with open(os.path.join(d, 'gnu-ours.err'), 'rb') as f:
+                our_err = f.read()
+            with open(os.path.join(d, 'gnu-ref.err'), 'rb') as f:
+                ref_err = f.read()
+            check('follow GNU stderr differential', our_err == ref_err,
+                  describe(our_err, ref_err, 'stderr'))
+
+        # a write failure stops the follow loop instead of running forever
+        path = os.path.join(d, 'wf.txt')
+        with open(path, 'wb') as f:
+            f.write(b'a\nb\n')
+        with open('/dev/full', 'wb') as sink:
+            p = subprocess.run([self.ctx['tail'].exe, '-n1', '-f', 'wf.txt'],
+                               cwd=d, env=self._follow_env(),
+                               stdout=sink, stderr=subprocess.PIPE, timeout=8)
+        check('follow write error exit', p.returncode == 1, str(p.returncode))
+        check('follow write error message', b'write error' in p.stderr,
+              repr(p.stderr))
+
+        # all operands missing: report and exit instead of polling forever
+        p = run_one('follow', ['-f', 'missing-follow'])
+        check('follow missing exit', p.returncode == 1, str(p.returncode))
+        check('follow missing errors',
+              b"cannot open 'missing-follow'" in p.stderr and
+              b'no files remaining' in p.stderr, repr(p.stderr))
+
+        # a successful non-regular operand is not a missing file: /dev/null
+        # exits 0 after its ordinary read, while missing-only still exits 1
+        p = run_one('follow', ['-f', '/dev/null'])
+        check('follow devnull exit', p.returncode == 0, str(p.returncode))
+        check('follow devnull output', p.stdout == b'', repr(p.stdout))
+        check('follow devnull stderr', p.stderr == b'', repr(p.stderr))
+
+        # a FIFO with a writer that closes is read once and then exits 0 for
+        # this build (GNU keeps polling it; documented narrowing)
+        fifo = os.path.join(d, 'follow.fifo')
+        if hasattr(os, 'mkfifo'):
+            try:
+                os.mkfifo(fifo)
+            except FileExistsError:
+                pass
+            p = subprocess.Popen([self.ctx['tail'].exe, '-f', 'follow.fifo'],
+                                 cwd=d, env=self._follow_env(),
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, start_new_session=True)
+            wrote = False
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                try:
+                    wfd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+                    os.write(wfd, b'x\n')
+                    os.close(wfd)
+                    wrote = True
+                    break
+                except OSError:
+                    time.sleep(0.05)
+            try:
+                out, err = p.communicate(timeout=8)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                out, err = p.communicate()
+            try:
+                os.unlink(fifo)
+            except OSError:
+                pass
+            check('follow fifo writer', wrote)
+            check('follow fifo exit', p.returncode == 0, str(p.returncode))
+            check('follow fifo output', out == b'x\n', repr(out))
+            check('follow fifo stderr', err == b'', repr(err))
+
+        # equal-size (or larger) truncate-and-rewrite between polls is not
+        # observable from path size alone: document the limitation in a test
+        path = os.path.join(d, 'equal.txt')
+        with open(path, 'wb') as f:
+            f.write(b'a\nb\n')
+        p = self._follow_start(d, ['-n1', '-f', 'equal.txt'])
+        try:
+            got = self._follow_read(p, b'b\n')
+            check('follow equal initial', got == b'b\n', repr(got))
+            self._follow_write(path, b'c\nd\n', mode='wb')
+            quiet = self._follow_quiet(p, 0.6)
+            check('follow equal regrow unseen', quiet == b'', repr(quiet))
+            self._follow_write(path, b'e\n')
+            got = self._follow_read(p, b'e\n')
+            check('follow equal future append', got == b'e\n', repr(got))
+            _rc, err = self._follow_stop(p)
+            check('follow equal no truncate claim', b'file truncated' not in err,
+                  repr(err))
+        finally:
+            if p.poll() is None:
+                self._follow_stop(p)
+
+        # a path replacement must not steal the old descriptor: appends to the
+        # unlinked original still arrive, and the new path is not adopted
+        path = os.path.join(d, 'replace.txt')
+        with open(path, 'wb') as f:
+            f.write(b'a\nb\n')
+        oldfd = os.open(path, os.O_RDWR | os.O_APPEND)
+        p = self._follow_start(d, ['-n1', '-f', 'replace.txt'])
+        try:
+            got = self._follow_read(p, b'b\n')
+            check('follow replace initial', got == b'b\n', repr(got))
+            with open(os.path.join(d, 'newtmp'), 'wb') as f:
+                f.write(b'n1\nn2\n')
+            os.replace(os.path.join(d, 'newtmp'), path)
+            os.write(oldfd, b'old3\n')
+            got = self._follow_read(p, b'old3\n')
+            check('follow replace keeps old fd', got == b'old3\n', repr(got))
+            _rc, err = self._follow_stop(p)
+            check('follow replace no truncate message', b'file truncated' not in err,
+                  repr(err))
+        finally:
+            if p.poll() is None:
+                self._follow_stop(p)
+            os.close(oldfd)
+
+        # stdin at EOF exits normally (and runs the leak check/cleanup)
+        p = run_one('follow', ['-n1', '-f', '-'], stdin_data=b'x\ny\n')
+        check('follow stdin exit', p.returncode == 0, str(p.returncode))
+        check('follow stdin output', p.stdout == b'y\n', repr(p.stdout))
+        check('follow stdin stderr', p.stderr == b'', repr(p.stderr))
+
+        # an idle follow sleeps: CPU must stay far below wall time
+        path = os.path.join(d, 'idle.txt')
+        with open(path, 'wb') as f:
+            f.write(b'x\n')
+        p = self._follow_start(d, ['-f', 'idle.txt'])
+        try:
+            got = self._follow_read(p, b'x\n')
+            check('follow idle initial', got == b'x\n', repr(got))
+            before = resource.getrusage(resource.RUSAGE_CHILDREN)
+            time.sleep(1.6)
+            after = resource.getrusage(resource.RUSAGE_CHILDREN)
+            cpu = ((after.ru_utime - before.ru_utime) +
+                   (after.ru_stime - before.ru_stime))
+            _rc, err = self._follow_stop(p)
+            check('follow idle cpu', cpu < 0.5, f'{cpu:.3f} CPU seconds')
+            check('follow idle stderr', err == b'', repr(err))
+        finally:
+            if p.poll() is None:
+                self._follow_stop(p)
+
+        # a zero-size pseudo-regular file (proc) must not spin: its metadata
+        # cannot prove truncation, so the poll sleeps even when a read made
+        # progress
+        proc = '/proc/uptime'
+        if os.path.isfile(proc):
+            before = resource.getrusage(resource.RUSAGE_CHILDREN)
+            p = subprocess.Popen([self.ctx['tail'].exe, '-f', proc], cwd=d,
+                                 env=self._follow_env(), stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.PIPE, start_new_session=True)
+            try:
+                time.sleep(1.5)
+                after = resource.getrusage(resource.RUSAGE_CHILDREN)
+                cpu = ((after.ru_utime - before.ru_utime) +
+                       (after.ru_stime - before.ru_stime))
+                try:
+                    os.killpg(p.pid, signal.SIGTERM)
+                except OSError:
+                    pass
+                p.wait(timeout=5)
+                err = p.stderr.read()
+                p.stderr.close()
+                check('follow proc cpu', cpu < 0.5, f'{cpu:.3f} CPU seconds')
+                check('follow proc stderr', err == b'', repr(err))
+            finally:
+                if p.poll() is None:
+                    try:
+                        os.killpg(p.pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+                    p.wait(timeout=5)
+
     # -- memory mode
     def run_memory(self):
         d = os.path.join(self.tmp, 'memory')
@@ -2157,6 +2913,9 @@ class Harness:
             # memory flat
             ('head -n 1 sparse16m', [self.ctx['head'].exe, '-n', '1',
                                      'sparse16m'], True),
+            # 16 MiB of input, 100 retained bytes: the byte ring is bounded
+            ('tail -c 100 sparse16m',
+             [self.ctx['tail'].exe, '-c', '100', 'sparse16m'], True),
         ]
         numbers = []
         for label, argv, devnull in cases:
@@ -2375,7 +3134,7 @@ def main(argv=None):
         ref_line = (f'reference: any (GNU coreutils {version}): stdout/exit exact, '
                     'stderr shape')
     elif kinds == {'gnu'}:
-        ref_line = f'reference: GNU coreutils {version} (cat, wc, sort, head)'
+        ref_line = f'reference: GNU coreutils {version} (cat, wc, sort, head, tail)'
     elif kinds == {'none'}:
         ref_line = (f'reference: none; {h.golden_usage["model"]} modeled cases via '
                     f'models, {h.golden_usage["gnu"]} gnu goldens, '

@@ -799,7 +799,7 @@ module) is the spelling throughout.
 
 An interface is a named set of methods that a record or closed type can implement. A value of interface type is
 either an **owned box** (`I`, `?I`) or a **borrowed pair** (`&I`, `mut &I`, `&?I`); an interface is never a value
-of its own kind with fields or identity. The implemented form is `0.8`; lambdas are `0.9`/`0.10`, and handles to
+of its own kind with fields or identity. The implemented form is `0.8`; additive builtin/runtime extensions use patch releases such as `0.8.1`, while lambdas remain `0.9`/`0.10`, and handles to
 interfaces (`^I`) are a later phase.
 
 ### Declarations and implementations
@@ -1182,7 +1182,7 @@ build** still requires every source; if only a `.sym` exists it reports
 without source` (exit 2). The checked root is exempt from the basename rule (it is
 the root of its check graph), and its `.sym` is named by its declared module name.
 
-`--version` prints `obo 0.8 sym-format 4 abi 1`; the numbers are the `obosym`
+`--version` prints `obo 0.8.1 sym-format 4 abi 1`; the numbers are the `obosym`
 format, the compiled-program ABI and the compiler version, each checked exactly
 when a `.sym` is read. `--reemit-sym FILE` is a testing hook: it reads a symbol
 file with the reader and prints the canonical re-emission, which the symbol-file
@@ -1664,6 +1664,7 @@ fn main() {}
 | `isatty(fd)` | `bool`: true when the descriptor is a terminal |
 | `getenv(name)` | `?[]byte`: the variable's value, copied; `nil` if absent or the name is invalid |
 | `terminalWidth(fd)` | `int`: the terminal's column count; 0 when the descriptor is not a terminal or the count is unknown |
+| `sleepMs(ms)` | `Result[bool]`: wait at least `ms` milliseconds (`0..2147483647`) |
 | `stdin()`, `stdout()`, `stderr()` | the standard descriptors, 0, 1 and 2 |
 | `args()` | the command-line arguments, as `[]string` |
 | `exit(code)` | stop with the given exit code |
@@ -1880,6 +1881,33 @@ fn main() {
 }
 ```
 
+`sleepMs(ms)` waits at least `ms` milliseconds and returns `ok(true)`. The
+accepted range is `0..2147483647` (about 24.8 days); a negative count is
+`err("sleepMs needs a non-negative count", EINVAL)` and a larger one is
+`err("sleepMs count is too large", ERANGE)`, both before any syscall. It uses
+`nanosleep` and retries `EINTR` with the kernel's remaining time; pending text
+output is flushed before the wait, so a prompt is visible. Zero returns without
+a syscall. The test-only `OBO_META_FAULT=eintr` hook injects one synthetic
+interruption.
+
+```obo
+// example: runs
+// prints true
+// prints 22
+fn main() {
+    let z = sleepMs(0)
+    match z {
+        ok(v) { println(v) }
+        err(m, c) { println(m) }
+    }
+    let n = sleepMs(-1)
+    match n {
+        ok(v) { println("unexpected") }
+        err(m, c) { println(c) }
+    }
+}
+```
+
 `obo/lib/env.obx` wraps `getenv`: `env::get` (the `?[]byte`), `env::has`
 (present, even when empty), `env::value` (a `string`, `""` when absent or
 empty) and `env::getOr(name, fallback)`. `obo/lib/io.obx` adds `io::isTty(fd)`
@@ -2020,6 +2048,7 @@ depend on the program.
 | `isatty needs an int file descriptor, not <t>` | the argument of `isatty` is not an int. |
 | `getenv needs a string name, not <t>` | the argument of `getenv` is not a string. |
 | `terminalWidth needs an int file descriptor, not <t>` | the argument of `terminalWidth` is not an int. |
+| `sleepMs needs an int millisecond count, not <t>` | the argument of `sleepMs` is not an int. |
 
 ## 11. Differences from obx
 
@@ -2031,8 +2060,8 @@ depend on the program.
   at run time.
 - New built-ins: `take`, `drop`, `replace`, `handle`, `alive`, `ok`, `err`,
   `openFile`, `readFd`, `writeFd`, `closeFile`, `readDirFd`, `statPath`,
-  `lstatPath`, `readLinkPath`, `isatty`, `getenv`, `terminalWidth`, `stdin`,
-  `stdout`, `stderr`, and
+  `lstatPath`, `readLinkPath`, `isatty`, `getenv`, `terminalWidth`, `sleepMs`,
+  `stdin`, `stdout`, `stderr`, and
   the prefix operator `try`.
 - `Result[T]` is a built-in parameterized type, inspected with `match` (including the
   consuming `ok(v)`/`err(m, c)` form).

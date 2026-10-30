@@ -9,7 +9,8 @@ Sections (all by default):
             N1/N2 precedence, close-state marking (an EINTR or a failed close
             still marks the table), "w" truncation, the unknown-mode error,
             exits 0/8/9, the gated OBO_IO_FAULT hooks with and without
-            OBO_CHECK, and no leak on the normal paths.
+            OBO_CHECK, sleepMs timing/bounds/EINTR, and no leak on the normal
+            paths.
   programs  compiles tests/io/*.obx (standalone) and tests/lib/*.obx (as module
             roots importing lib modules such as io.obx and fmt.obx, with
             -I obo/lib and a private sym dir) and
@@ -53,14 +54,16 @@ CFLAGS = ('-O2 -ffreestanding -fno-builtin -nostdlib -fno-pic -fno-pie '
 failures = []
 
 
-def clean_env(check=False, fault=None):
+def clean_env(check=False, fault=None, meta_fault=None):
     """The runner's environment without the I/O variables, then the requested ones."""
     e = {k: v for k, v in os.environ.items()
-         if k not in ('OBO_CHECK', 'OBO_IO_FAULT', 'OBX_GC')}
+         if k not in ('OBO_CHECK', 'OBO_IO_FAULT', 'OBO_META_FAULT', 'OBX_GC')}
     if check:
         e['OBO_CHECK'] = '1'
     if fault:
         e['OBO_IO_FAULT'] = fault
+    if meta_fault:
+        e['OBO_META_FAULT'] = meta_fault
     e['OBX_GC'] = 'poison'
     return e
 
@@ -139,6 +142,8 @@ RT_CASES = [
     ('eintr', clean_env(check=True, fault='eintr'), 0),
     ('short', clean_env(check=True, fault='short'), 0),
     ('inert', clean_env(fault='short'), 0),
+    ('sleep', clean_env(check=True), 0),
+    ('sleep_eintr', clean_env(check=True, meta_fault='eintr'), 0),
 ]
 
 

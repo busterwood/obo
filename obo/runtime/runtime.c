@@ -108,6 +108,7 @@ static int fault_read, fault_write, fault_close;
  * EINTR per call kind, inert unless OBO_CHECK=1. */
 static int meta_fault_eintr;
 static int fault_dir, fault_stat, fault_lstat, fault_link, fault_tty, fault_winsz;
+static int fault_sleep;
 
 static inline u64 gidx(u64 h) { return (h - heap_start) / GRAN; }
 static inline int  is_start(u64 h) { u64 g = gidx(h); return starts[g >> 3] >> (g & 7) & 1; }
@@ -136,6 +137,7 @@ void rt_init(u64 sbase, u64 gstart, u64 gend) {
     if (meta_fault_eintr) {
         fault_dir = fault_stat = fault_lstat = fault_link = fault_tty = 1;
         fault_winsz = 1;
+        fault_sleep = 1;
     }
     heap_start = (u64)sys_mmap(HEAP_SIZE);
     if ((i64)heap_start < 0) die("obx: cannot reserve heap\n");
@@ -791,6 +793,36 @@ i64 rt_term_width(i64 fd) {
     }
     if (r != 0) return 0;
     return (i64)ws[1];                                             /* ws_col; 0 is unknown */
+}
+
+/* sleepMs(ms): wait at least ms milliseconds, or return a Result error for a
+ * negative or absurd count. The accepted range is 0..2147483647 (about 24.8
+ * days), which keeps every timespec calculation exact and gives an overflow
+ * test a fast answer. nanosleep is syscall 35; EINTR retries with the kernel's
+ * remaining time. The result is ok(true); no heap is allocated for the wait
+ * itself, only the Result cell every Result-returning builtin returns. */
+#define MAX_SLEEP_MS 2147483647LL
+static i64 io_sleep(i64 ms) {
+    struct { i64 sec, nsec; } req, rem;
+    req.sec = ms / 1000;
+    req.nsec = (ms % 1000) * 1000000;
+    for (;;) {
+        i64 r;
+        if (fault_sleep) { fault_sleep = 0; rem.sec = req.sec; rem.nsec = req.nsec; r = -4; }
+        else r = sys3(35, (i64)&req, (i64)&rem, 0);
+        if (r != -4) return r;
+        req.sec = rem.sec;
+        req.nsec = rem.nsec;
+    }
+}
+u64 rt_sleep(i64 ms, u64 descErr, u64 descOk) {
+    if (ms < 0) return err_cell(descErr, iomsg_lit("sleepMs needs a non-negative count"), 22);
+    if (ms > MAX_SLEEP_MS) return err_cell(descErr, iomsg_lit("sleepMs count is too large"), 34);
+    if (ms == 0) return ok_cell(descOk, 1);
+    flush();
+    i64 r = io_sleep(ms);
+    if (r < 0) return err_cell(descErr, iomsg_lit("sleepMs failed"), -r);
+    return ok_cell(descOk, 1);
 }
 
 /* getenv(name): the first `name=...` entry of the environment as an owned byte

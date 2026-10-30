@@ -19,24 +19,24 @@ measurements.
 
 ## Current state (30 October 2026)
 
-The promoted release is **obo 0.8, symbol format 4, ABI 1**. It is merged and
-self-hosting: `obo/seed/obo` is 507,905 bytes (sha256 `673ae7ba…`), and `make`
-builds the same 507,905-byte image from the current source; `seed/obo` == `obo` ==
-stage 2 == stage 3, checked with `cmp`.
+The promoted seed is **obo 0.8, symbol format 4, ABI 1** (507,905 bytes,
+sha256 `673ae7ba…`). The current source adds `sleepMs` and builds a 512,001-byte
+**obo 0.8.1** compiler from that seed; stage 2 == stage 3, checked with `cmp`. The
+new compiler is not promoted here. Version policy: additive builtin/runtime extensions use patch releases such as 0.8.1; the 0.9 and 0.10 numbers stay reserved for the lambda stages.
 
 - **Language.** Single ownership, moves, borrowed `&T` references, checked `^T`
   handles, effect summaries, `Result[T]`/`try`, incremental I/O, modules and
   text `.sym` symbol files, methods, and first-class interfaces (owning `I`/`?I`,
   borrowed `&I`/`&?I`, dynamic dispatch and effect tiers). The full reference is
   [obo/LANGUAGE.md](obo/LANGUAGE.md).
-- **Compiler.** 12,056 lines / 454,332 bytes of obo source. The 0.8 source adds
-  first-class interfaces and stays interface-free itself, so the pre-promotion
-  0.6 seed can build it. The 0.6 seed (454,657 bytes, sha256 `90fcad7e…`) and the
+- **Compiler.** 12,071 lines / 455,137 bytes of obo source. The current source
+  adds first-class interfaces and `sleepMs`, and stays interface-free itself, so
+  the pre-promotion 0.6 seed can build it. The 0.6 seed (454,657 bytes, sha256 `90fcad7e…`) and the
   0.5 compiler (425,985 bytes) are historical.
-- **Tools.** `cat`, `wc`, `sort`, `head` and the partial `eza` reimplementation
-  are written in obo and built by `make tools` / `make eza`. Differential gates
-  compare them with GNU coreutils 9.4 (`obo/tests/tools.py`) and pinned eza
-  0.23.3 (`obo/tests/eza.py`), with recorded goldens as fallback.
+- **Tools.** `cat`, `wc`, `sort`, `head`, `tail` and the partial `eza`
+  reimplementation are written in obo and built by `make tools` / `make eza`.
+  Differential gates compare them with GNU coreutils 9.4 (`obo/tests/tools.py`)
+  and pinned eza 0.23.3 (`obo/tests/eza.py`), with recorded goldens as fallback.
 - **Modules.** Both stages are implemented: source imports and exports
   (`module`, `import "Name.obx" [as alias]`, `pub`, `alias::name`, `--deps`,
   `-I`) and `.sym` files with `--check`, `--sym-dir`, `--emit-sym`, `--version`
@@ -51,28 +51,28 @@ stage 2 == stage 3, checked with `cmp`.
 
 | Current metric | Value |
 |---|---:|
-| Compiler source | 12,056 lines, 454,332 bytes |
-| Compiler and seed (`--version`) | 507,905 bytes, sha256 `673ae7ba…`, `obo 0.8 sym-format 4 abi 1` |
-| Fixed point | `seed/obo` == `obo` == stage 2 == stage 3, 507,905 bytes |
+| Compiler source | 12,071 lines, 455,137 bytes |
+| Compiler and seed (`--version`) | seed 507,905 bytes, sha256 `673ae7ba…`, `obo 0.8`; compiler 512,001 bytes, `obo 0.8.1`, sym-format 4, abi 1 |
+| Self-host fixed point | stage 2 == stage 3, 512,001 bytes; the 0.8 seed builds the 0.8.1 compiler |
 | Self-compile wall time | 0.14 s (5 runs, median on this host; host-dependent) |
-| Self-compile live peak | 1,945,680 bytes; port comparison 1,945,760 |
-| Total allocated | 44,586,880 bytes (port comparison 44,588,160) |
-| Maximum resident set | 3,696 KB (3 runs on this host) |
-| Live-memory budget | 2,000,000 bytes (54,320 spare; port 54,240) |
-| obo suite | 1,408 tests; 103 `module_test` checks; `sym_test.py` 38/38; `sym_fuzz.py` 200/200; `port_test` 556/556 with 9 encoder groups; `port_compare` 1,420/1,420; 56 doc examples; 27/27 import checks; 16/16 stdlib roots |
-| Tools differential gate | 371 checks vs GNU coreutils 9.4; 3 memory cases |
-| Tool binaries | cat 40,961; wc 45,057; sort 69,633; head 40,961 bytes (static, runtime included) |
-| eza differential gate | 554/554 non-memory cases (465 exact reference goldens, 72 live including 22 pty, 17 own) + 5/5 memory cases |
-| eza binary | 217,089 bytes (sha256 `6a2b8f89…`; static, runtime included; reference eza 0.23.3 is 2,294,768) |
+| Self-compile live peak | 1,947,712 bytes (port comparison) |
+| Total allocated | 44,626,480 bytes (port comparison) |
+| Maximum resident set | 3,640 KB (5 runs on this host) |
+| Live-memory budget | 2,000,000 bytes (52,288 spare) |
+| obo suite | 1,416 tests; 103 `module_test` checks; `sym_test.py` 38/38; `sym_fuzz.py` 200/200; `port_test` 558/558 with 9 encoder groups; `port_compare` 1,428/1,428; 57 doc examples; 28/28 import checks; 16/16 stdlib roots |
+| Tools differential gate | 509 checks vs GNU coreutils 9.4; 4 memory cases |
+| Tool binaries | cat 45,057; wc 49,153; sort 73,729; head 45,057; tail 53,249 bytes (static, runtime included) |
+| eza E2 differential gate | 554/554 non-memory cases (465 exact reference goldens, 72 live including 22 pty, 17 own) + 5/5 memory cases |
+| eza E2 binary | 221,185 bytes (static, runtime included; reference eza 0.23.3 is 2,294,768) |
 | eza 10k-entry live peak | worst 2,190,480 bytes; `EZA_PEAK_MAX` 2,752,512 (a distinct eza cap, not the compiler budget) |
 | eza 10k-entry max RSS | 2,560 KiB in the recorded run; reference about 24.6 MB long / 12-14 MB other views |
-| Minimal static executable | 28,673 bytes (runtime included) |
+| Minimal static executable | 32,769 bytes (runtime included) |
 
-The compiler budget is 2,000,000 bytes live and 54,320 bytes remain spare, so no
-slot was cut and the budget was not raised. Interface work moved the peak from
-the 0.6 tree's 1,646,816 to 1,945,680 bytes. The live peak varies by a few
-hundred bytes with the source path and total allocation by about 2 KB; the port
-comparison measures 1,945,760 live.
+The compiler budget is 2,000,000 bytes live and 52,288 bytes remain spare, so no
+slot was cut and the budget was not raised. The current tree peaks at 1,947,712
+bytes in the port comparison (1,947,584 in the direct stage-2 compile). The live
+peak varies by a few hundred bytes with the source path and total allocation by
+about 2 KB.
 
 ## Performance
 
@@ -101,8 +101,8 @@ sample is historical and lives in [HISTORY.md](HISTORY.md).
 | `sort -n`, 1,000,000 lines | 255.1 ms | GNU 434.7 ms (1.70x slower); Python 516.4 ms (2.02x slower) |
 | `eza`, 10,000 names | 30.4 ms (pre-help 212,993 B; not re-measured) | pinned eza 59.2 ms (1.94x slower); Python 16.3 ms and GNU `ls` 6.55 ms are faster |
 
-The compiler is a 507,905-byte static binary (the promoted 0.8 seed); the tools are cat 40,961, wc
-45,057, sort 69,633 and head 40,961 bytes; eza is 217,089 bytes against 2,294,768 for the
+The compiler is a 512,001-byte static binary built by the 0.8 seed; the tools are cat 45,057, wc
+49,153, sort 73,729, head 45,057 and tail 53,249 bytes; eza is 221,185 bytes against 2,294,768 for the
 pinned eza 0.23.3 reference. Every obo binary is freestanding and static, with
 the runtime included. The honest shape of these numbers is in
 [PERFORMANCE.md](PERFORMANCE.md): pure compute is far ahead of CPython, while
@@ -209,7 +209,7 @@ The aim is a compiler you can trust, so the process matters as much as the code.
 | `obo/seed/obo` | the trusted previous stage |
 | `obo/LANGUAGE.md` | the current language reference, including known holes |
 | `obo/lib/` | the ten source modules: `strings`, `paths`, `sort`, `time`, `cli`, `io` (buffered `Reader`/`Writer`, `writeByte`), `fmt`, `errors`, `fs` and `env` |
-| `obo/cmd/` | the tools: `cat`, `wc`, `sort`, `head` and `eza`, with `README.md` and their subsets |
+| `obo/cmd/` | the tools: `cat`, `wc`, `sort`, `head`, `tail` and `eza`, with `README.md` and their subsets |
 | `obo/tests/` | obo's suite, mutants, the I/O, tools and eza gates |
 | `obo/tests/io_test.py` | the runtime and streaming-I/O gates |
 | `obo/tests/meta_test.py` | the metadata runtime and the `fs` module |
@@ -227,7 +227,7 @@ The aim is a compiler you can trust, so the process matters as much as the code.
 
 ```
 cd obo && make                           # obo: build from the committed seed
-cd obo && make tools                     # build/tools/{cat,wc,sort,head}
+cd obo && make tools                     # build/tools/{cat,wc,sort,head,tail}
 cd obo && make eza                       # build/eza/eza
 cd obo && python3 tests/doc_check.py     # LANGUAGE.md examples
 cd obo && python3 tests/run_fork.py      # obo's tests, leak check always on
@@ -244,11 +244,11 @@ cd obo && python3 tests/sym_test.py      # symbol files: writer, reader, --check
 cd obo && python3 tests/sym_fuzz.py      # deterministic .sym corruption fuzzing
 cd obo && python3 tests/tools.py         # the tools vs GNU; models/goldens without it
 cd obo && python3 tests/tools.py --require-reference   # tools vs GNU coreutils (release checklist)
-cd obo && python3 tests/tools.py --memory              # the three pinned tool memory cases
+cd obo && python3 tests/tools.py --memory              # the four pinned tool memory cases
 cd obo && python3 bench/bench.py         # memory and time against the collector
 cd obo && ./obo --deps tests/modules/run/basic/main.obx -I tests/modules/run/basic  # dependencies first
 cd obo && mkdir -p /tmp/syms && ./obo --check src/obo.obo --sym-dir /tmp/syms        # check without an executable
-cd obo && ./obo --version                # obo 0.8 sym-format 4 abi 1
+cd obo && ./obo --version                # obo 0.8.1 sym-format 4 abi 1
 cd obo && ./obo --reemit-sym /tmp/syms/obo.sym   # canonical re-emission (test hook)
 ```
 

@@ -7,8 +7,8 @@ on 30 October 2026 at main `9290396` (the pre-help benchmark tree), as the
 second of two default runs. The obo side is `obo 0.8 sym-format 4 abi 1`; the
 benchmark programs and tools were built from that tree by
 `obo/bench/cli/run.py`. That tree's eza is the 212,993-byte binary (sha256
-`53133d23…`) used for the eza timing row; the current help build is 217,089
-bytes and was not re-benchmarked. The times below were re-measured, not carried
+`53133d23…`) used for the eza timing row; the current merged help build is
+221,185 bytes and was not re-benchmarked. The times below were re-measured, not carried
 forward from the historical 0.5 / 0.6 sample in [HISTORY.md](HISTORY.md). The
 suite is on-demand, not a gate; its source is `obo/bench/cli/`, and the command
 is:
@@ -33,8 +33,8 @@ them for relative comparison, not as portable constants.
 * Compiler: `obo 0.8 sym-format 4 abi 1`, the promoted seed; the benchmark
   tree `9290396` built the programs and tools catalogued below. The eza timing
   row used that tree's 212,993-byte binary (sha256 `53133d23…`). Every median
-  on this page was measured on 30 October 2026; the current 217,089-byte eza
-  help build was not re-benchmarked.
+  on this page was measured on 30 October 2026; the current 221,185-byte eza
+  help build (with the larger sleep runtime) was not re-benchmarked.
 
 ## Methodology
 
@@ -112,22 +112,26 @@ text/data.
 | `fib` | 28,673 |
 | `loopsum` | 28,673 |
 | `sieve` | 28,673 |
-| `cat` (tool) | 40,961 |
-| `wc` (tool) | 45,057 |
-| `sort` (tool) | 69,633 |
-| `eza` (tool) | 217,089 |
-| obo compiler | 507,905 |
+| `cat` (tool, benchmark tree) | 40,961 |
+| `wc` (tool, benchmark tree) | 45,057 |
+| `sort` (tool, benchmark tree) | 69,633 |
+| `eza` (tool, benchmark tree) | 212,993 |
+| `eza` (current merged help build) | 221,185 |
+| obo compiler (benchmark tree, promoted 0.8 seed) | 507,905 |
+| obo compiler (current 0.8.1, not promoted) | 512,001 |
 | pinned eza v0.23.3 reference (not obo code) | 2,294,768 |
 
-The compiler is the promoted 0.8 seed (sha256 `673ae7ba…`), and it rebuilds
-itself to the same 507,905 bytes. The benchmark programs, `cat`, `wc`, `sort`
-and the 212,993-byte `eza` binary used for the CLI timings were built from
-benchmark tree `9290396` (pre-help). The current tree's `eza` is 217,089 bytes
-(sha256 `6a2b8f89…`) after adding `--help`. The timings were not re-measured,
-and the listing benchmark does not execute help. `cat`, `wc` and `sort` are
-40,961, 45,057 and 69,633 bytes; the four small programs are 28,673 each. The
-current eza binary is about 10.6x smaller than the pinned reference. The 0.5
-seed and its 425,985-byte compiler (sha256 `05542e89…`) are historical.
+The compiler is the promoted 0.8 seed (sha256 `673ae7ba…`); the current source
+builds a 512,001-byte `obo 0.8.1` from that seed (not promoted), and the seed
+still rebuilds itself to the same 507,905 bytes. The benchmark programs, `cat`,
+`wc`, `sort` and the 212,993-byte `eza` binary used for the CLI timings were
+built from benchmark tree `9290396` (pre-help). The current tree's `eza` is
+221,185 bytes after adding `--help` on the larger sleep runtime. The current
+`cat`, `wc`, `sort`, `head` and `tail` are 45,057, 49,153, 73,729, 45,057 and
+53,249 bytes. The timings were not re-measured, and the listing benchmark does
+not execute help. The current eza binary is about 10.4x smaller than the pinned
+reference. The 0.5 seed and its 425,985-byte compiler (sha256 `05542e89…`) are
+historical.
 
 ## Memory
 
@@ -175,10 +179,10 @@ is no external merge.
 | Metric | Value |
 |---|---:|
 | Self-compile wall time | 0.14 s (5 runs, median; host-dependent) |
-| Live peak compiling itself | 1,945,680 bytes |
-| Total allocated | 44,586,880 bytes |
-| Maximum resident set | 3,696 KB |
-| Live-memory budget | 2,000,000 bytes (54,320 spare) |
+| Live peak compiling itself | 1,947,712 bytes |
+| Total allocated | 44,626,480 bytes |
+| Maximum resident set | 3,640 KB |
+| Live-memory budget | 2,000,000 bytes (52,288 spare) |
 
 The live peak varies by a few hundred bytes with the compiler source path (the
 main-tree measurement is shown). Leaks are caught separately by the port gate's
@@ -207,7 +211,7 @@ leak check.
 * **`eza`.** Name-only listing is 1.94x faster than the pinned eza reference,
   but Python's `listdir + sorted` (16.3 ms) and GNU `ls -1` (6.55 ms) are faster
   than obo's 30.4 ms. The eza headline is not raw listing speed: it is the
-  217,089-byte current binary (10.6x smaller than the reference; the timing run
+  221,185-byte current binary (10.4x smaller than the reference; the timing run
   used benchmark tree `9290396`'s 212,993-byte build), the roughly 2.19 MB live
   peak at 10,000 entries, and the gate's 554/554 non-memory differential cases
   (465 exact reference goldens, 72 live including 22 pty, 17 own) plus 5/5

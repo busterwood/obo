@@ -1,6 +1,6 @@
 obosym 4
 abi 1
-compiler "0.8"
+compiler "0.8.1"
 source 0x8643f1a941784054
 dep other "other.obx"
 interface 0x1091b97ac05a4131

@@ -3611,9 +3611,11 @@ run, re-emit, `--check`).
 FNV-1a 64 with offset basis `0xcbf29ce484222325` and prime `0x100000001b3`, 64-bit
 wrapping. Three exact-match version values: `obosym` (grammar and meaning),
 `abi` (layout, descriptor format, calling convention, global addressing, effect
-summaries, initialization order) and `compiler` (`OBO_VERSION`, currently `0.8`;
-`--version` prints `obo 0.8 sym-format 4 abi 1`). Errors use the per-line §12
-wording: `has format <n>; this compiler reads <m>`, `has ABI <n>; this compiler
+summaries, initialization order) and `compiler` (`OBO_VERSION`, currently `0.8.1`;
+`--version` prints `obo 0.8.1 sym-format 4 abi 1`). Additive builtin/runtime
+extensions use an approved patch release (0.8 -> 0.8.1), while 0.9/0.10 stay
+reserved for the lambda stages; `obosym` stays 4 and `abi` stays 1. Errors use
+the per-line §12 wording: `has format <n>; this compiler reads <m>`, `has ABI <n>; this compiler
 uses <m>`, `was built by compiler '<v>'; this is '<w>'`, each with
 `; rebuild it` and exit 2 — not one combined message. Bump `OBO_VERSION` with a
 compiler feature, `obosym` on a grammar/meaning change and `abi` on a layout/ABI

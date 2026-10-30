@@ -1,13 +1,12 @@
 # obo command-line tools
 
-The tools written in obo: `cat`, `wc`, `sort`, `head` and the `eza` core (E0
-lines and restricted long, E1 colour/tree/`--no-quotes`, E2 grid/UTF-8/lossy
-names). Each
-source file here is a module root that imports `../lib/...` modules by explicit
-relative path; every library name is qualified (`io::Writer`, `io::newWriter`,
-`fmt::writePadded`, `errors::text`, ...). `cat`, `wc`, `sort` and `head` are
-headerless roots; `eza.obx` declares `module eza` and imports all ten library
-modules.
+The tools written in obo: `cat`, `wc`, `sort`, `head`, `tail` and the `eza`
+core (E0 lines and restricted long, E1 colour/tree/`--no-quotes`, E2
+grid/UTF-8/lossy names). Each source file here is a module root that imports
+`../lib/...` modules by explicit relative path; every library name is qualified
+(`io::Writer`, `io::newWriter`, `fmt::writePadded`, `errors::text`, ...).
+`cat`, `wc`, `sort`, `head` and `tail` are headerless roots; `eza.obx`
+declares `module eza` and imports all ten library modules.
 `tools/build_tools.py` compiles each root directly with the ordinary compiler,
 dependency-first, and nothing is concatenated. The builder creates a symbol
 directory under its output (`build/tools/sym` for `make tools`, `build/eza/sym`
@@ -16,10 +15,10 @@ distinct output directories.
 
 ```
 cd obo
-make tools                 # build build/tools/{cat,wc,sort,head} and build/tools/sym
+make tools                 # build build/tools/{cat,wc,sort,head,tail} and build/tools/sym
 make eza                   # build build/eza/eza and build/eza/sym
 python3 tools/build_tools.py [cat] [--out DIR] [--obo PATH] [--rt DIR]
-python3 tests/tools.py --require-reference   # the cat/wc/sort/head differential gate
+python3 tests/tools.py --require-reference   # the cat/wc/sort/head/tail differential gate
 python3 tests/tools.py --memory
 python3 tests/eza.py --require-reference     # the eza E0/E1/E2 differential gate
 python3 tests/eza.py --memory
@@ -30,11 +29,12 @@ runtime included:
 
 | Tool | Size |
 |---|---:|
-| `cat` | 40,961 bytes |
-| `wc` | 45,057 bytes |
-| `sort` | 69,633 bytes |
-| `head` | 40,961 bytes |
-| `eza` | 217,089 bytes |
+| `cat` | 45,057 bytes |
+| `wc` | 49,153 bytes |
+| `sort` | 73,729 bytes |
+| `head` | 45,057 bytes |
+| `tail` | 53,249 bytes |
+| `eza` | 221,185 bytes |
 
 The library modules are `lib/io.obx` (`Reader`, `Writer`, the buffered functions,
 `writeByte` and `isTty`), `lib/strings.obx` (byte classification, `cmp`, the
@@ -49,18 +49,19 @@ The test programs `tests/run/io_reader.obx`, `tests/run/io_writer.obx` and
 `tests/lib/*.obx` import the same modules (`tests/lib/write_padded.obx` imports
 `fmt` too) and are compiled with `-I lib`.
 
-The subset is deliberate and small. Options may be clustered (`-nET`, `-lwc`,
-`-rnu`) and may appear before or after operands; `--` ends option parsing. A lone
-`-` is always an operand meaning stdin (so a file literally named `-` cannot be
-reached), and a file whose name begins with `-` needs `--`. `head`'s count
-options are the exception to clustering: `-n` and `-c` take the rest of the
-token or the next argument, so `-n5`, `-n 5`, `-c5` and `-c 5` work, and the
-last of `-n`/`-c` wins. An unknown short
-option prints one line, `tool: invalid option -- 'X'`; an unknown long option
-prints `tool: unrecognized option '--foo'`. For `cat`, `wc`, `sort` and
-`head` there is no `Try 'tool --help'` line, because their `--help` and
-`--version` are unrecognized long options; `eza` has its own `--help`/`-?`
-(below). Usage errors exit 1 for `cat`/`wc`/`head` and 2 for `sort`.
+The subset is deliberate and small. `cat`, `wc` and `sort` options may be
+clustered (`-nET`, `-lwc`, `-rnu`) and may appear before or after operands.
+`head`'s and `tail`'s `-n`/`-c` take a value (attached, `-n5`, or the next
+argument) and their options may also appear before or after operands; `tail`
+additionally supports `--lines`/`--bytes` as its only long options, while
+`head` has none. For every tool, `--` ends option parsing. A lone `-` is always
+an operand meaning stdin (so a file literally named `-` cannot be reached), and
+a file whose name begins with `-` needs `--`. An unknown short option prints one
+line, `tool: invalid option -- 'X'`; an unknown long option prints `tool:
+unrecognized option '--foo'`. For `cat`, `wc`, `sort`, `head` and `tail` there is
+no `Try 'tool --help'` line, because their `--help` and `--version` are
+unrecognized long options; `eza` has its own `--help`/`-?` (below). Usage errors
+exit 1 for `cat`/`wc`/`head`/`tail` and 2 for `sort`.
 
 ## cat
 
@@ -288,6 +289,148 @@ the CLI benchmark's fixed 8-digit fixture `-n` measures 255.1 ms against GNU
 fixtures it measured 265-310 ms against 455-520 ms in an earlier run. Absolute
 times move about 10-15% with host load and depend on the fixture.
 
+## tail
+
+```
+tail [-f] [-n COUNT | -c COUNT] [--] [FILE ...]
+tail [-f] [--lines[=]COUNT | --bytes[=]COUNT] [--] [FILE ...]
+```
+
+Prints the last 10 lines of each operand by default. `-n`/`--lines` selects a
+line count and `-c`/`--bytes` a byte count; the value may be attached (`-n5`),
+separate (`-n 5`, `--lines 5`) or after `=` (`--lines=5`). The last of
+`-n`/`--lines` and `-c`/`--bytes` wins. A count is unsigned decimal (leading
+zeros allowed), including `0`; signed counts (`-n -5`, `-n +5`), size suffixes
+and the obsolete `-5` spelling are unsupported. No operands (or `-`) reads
+standard input, and options may appear before or after operands.
+
+Line mode keeps the last COUNT newline-terminated lines, plus a final partial
+line when the input does not end in a newline. Output is the exact retained
+bytes: no newline is added, and a missing final newline stays missing. An input
+ending in a newline has no extra empty line after it (`a\nb\n` with `-n 1` is
+`b\n`); `-n 1` on `a\n\n` is the blank line `\n`. Byte mode emits the last
+COUNT bytes verbatim, including NUL and invalid UTF-8. Without `-f`, `-n0` and
+`-c0` print nothing and — matching GNU 9.4 — do not open the operands, so a
+missing operand produces no diagnostic and exit 0. With `-f`, count 0 still
+opens and monitors the operands; it prints no existing data but keeps the
+future-data path (and, for multiple files, the initial headers) working.
+
+With two or more operands each is counted independently and a successfully
+opened operand gets GNU's header, `==> <operand> <==`, with `standard input`
+for `-`; a blank line separates consecutive headers. An operand that cannot be
+opened gets no header. Earlier operands' output is kept when a later operand
+fails. A directory opens and fails when read, after its header is written, as
+in GNU. Line mode continues with later operands after a read error; byte mode
+stops there (GNU 9.4's behaviour).
+
+`-f` keeps named regular-file descriptors open after the initial tail, then
+polls once per second with `sleepMs(1000)`. Each poll reads appended bytes and
+flushes them immediately; a full round that found no data sleeps before the
+next one. A descriptor whose path metadata looks like a pseudo-file (zero size
+while bytes were read, or a size below the bytes already consumed) is also slept
+between rounds even when a read returned data, so a `/proc`-style source cannot
+spin. For ordinary regular files this never busy-spins and never rereads an
+unchanged file; idle CPU is effectively zero. This is not a universal no-spin
+promise for every pseudo-filesystem file.
+
+An unterminated line stays unterminated: appended bytes are emitted raw, not
+re-tailored. `-n0 -f` and `-c0 -f` print no existing content but still monitor
+future data (multi-file initial headers are still printed).
+
+Multiple followed files use GNU's headers only when the output file changes:
+the initial headers, then a blank line and `==> <operand> <==` before a chunk
+from a different file. A second chunk from the same file, including a >64 KiB
+append read in several 64 KiB blocks, has no repeated header. A header is
+recorded when it is emitted, not when the operand later succeeds: an operand
+whose header prints and whose read then fails still counts as the last output,
+so a later chunk from an earlier follower prints its header again. stdin (`-` or
+no operands) is followed until EOF; a pipe or terminal at EOF exits 0, and a
+regular-file stdin also exits there (a documented narrowing from GNU, which
+keeps following it).
+
+Repeated identical operands are independent followers: each occurrence gets its
+own descriptor and operand id. When both are `-f` operands and the same append
+becomes visible to both, the appended bytes can be emitted twice (once per
+follower), and the duplicate chunks carry the same path label. GNU `tail`
+deduplicates identical followed names, so this build does not claim exact GNU
+follow behaviour for repeated operands; the header/dedup cases in the gate do
+not cover that sequence as an exact-pass requirement.
+
+Non-regular named operands use the ordinary non-follow path and are not polled.
+A successful ordinary read (`/dev/null`, or a FIFO whose writer closed) exits 0
+after that read; GNU keeps a FIFO alive, so this is a documented narrowing. Only
+when no operand opened/read successfully is `tail: no files remaining` printed
+with exit 1. A directory prints its read error and then that no-files line; GNU
+may add its own "cannot follow end of this type of file" diagnostic, which this
+build does not reproduce.
+
+Each poll calls `statPath` and compares device and inode. If the path still
+looks like the same inode and its size is below the bytes already consumed, the
+path is opened as a candidate while the old descriptor remains open. Only if a
+post-open path stat still matches the original device/inode is the candidate
+adopted; the old descriptor is closed at that point, `tail: <path>: file
+truncated` is printed, and the current content is treated as new data. A
+mismatch closes only the candidate and retains the old descriptor, identity and
+offset, so a path replacement does not steal the followed file. A path stat
+cannot prove what an open descriptor names (and inode reuse/ABA remains
+possible), so this is a best-effort mitigation, not a TOCTOU-free identity
+check. A genuinely race-free descriptor follow needs `fstatFd(fd)` (and `seekFd`
+to avoid rereading after truncation); neither is in this build. No safety claim
+stronger than this is made.
+
+A renamed or unlinked file's truncation is not detected (the old descriptor is
+kept). A file truncated and regrown to the same size or larger between polls is
+also not detected: the heuristic only observes a size below the consumed byte
+count, and mtime/ctime are deliberately not used because ordinary in-place
+writes change them without truncating. There is no `-F`/name follow or rotation
+support. A read error stops following that file; if no files remain the command
+exits 1. A write error stops the whole follow loop at once (never continuing
+forever with dead output).
+
+There is no `seek`/`readAt` builtin, so the non-follow implementation is the bounded
+streaming tail rather than GNU's backwards seek: a ring of at most COUNT lines
+(line mode) or COUNT bytes (byte mode) holds the required trailing data while
+the input is read once. Memory is O(the retained trailing bytes) plus one 64 KiB
+read/write block, never the whole input; metadata grows only to the number of
+retained lines. A single line longer than the trailing requirement is retained
+whole because printing it requires those bytes (a 16 MiB file with no newline
+and `-n 10` peaks at about 25 MB; `-c 100` on the same file peaks at 66,864 live
+heap bytes). Each file is read to EOF even when COUNT is small, so this build
+cannot stop early on a regular file the way a seeking tail can.
+
+Errors use GNU's forms for quote-free names and continue with the next operand:
+
+```
+tail: cannot open '<operand>' for reading: No such file or directory
+tail: error reading '<operand>': Is a directory
+tail: write error: No space left on device
+```
+
+A write error suppresses all further output, but the remaining operands are
+still opened and read so their diagnostics appear; the single `tail: write
+error: <text>` line is printed after them. GNU also continues with later
+operands, but sometimes prints `write error` without the errno text; ours always
+includes it. Follow mode instead stops at the first write error, because
+continuing forever with a dead output is not useful. Any open, read or write
+failure exits 1. Unlike the other tools, `tail` wraps the operand in GNU's
+single quotes; a name containing an apostrophe is not escaped the way GNU's
+quoting does, and exact differential cases use quote-free names (spaces are
+fine). Invalid counts are this build's own one-line messages, e.g. `tail:
+invalid number of lines: '2x'`; a missing `-n` value is `tail: option requires
+an argument -- 'n'`.
+
+Follow mode holds one descriptor per named regular operand and the last
+incremental read chunk; it does not accumulate output or the historical file.
+A poll that finds data loops again immediately to drain it, so a large append
+does not wait a second per 64 KiB chunk (pseudo-file suspects always sleep one
+round). The same 64 KiB read block and the line/byte rings bound the non-follow
+path; follow mode does not add a whole-file buffer.
+
+Also absent: `-F`/name follow and rotation, `-q`, `-v`, `-s`, `-z`,
+`--follow`, `--retry`, `--pid`, `--sleep-interval`, `--max-unchanged-stats`,
+the obsolete `-N` spelling, signed counts, count suffixes, `--help`,
+`--version` and every other long option.
+
 ## eza (E0, E1 and E2)
 
 ```
@@ -511,9 +654,10 @@ and `-?=` is `Unknown argument -=`. Values of rejected
 eza-valid flags are still consumed with eza's value mode before the unsupported
 error (`-I=`, `-L x`).
 
-**Measured (help build).** eza binary 217,089 bytes (static, runtime included;
-4,096 bytes larger than the 212,993-byte E2 binary because of the help text;
-the reference is 2,294,768). On 10,000 entries under
+**Measured (merged help build).** eza binary 221,185 bytes (static, runtime
+included; 4,096 bytes above the 217,089-byte pre-sleep help build from the
+larger runtime, and 8,192 above the 212,993-byte pre-help E2 binary; the
+reference is 2,294,768). On 10,000 entries under
 `OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, restricted long peaks at 2,190,352
 live heap bytes, the name-only listing at 2,189,728, the tree at 2,190,480,
 the coloured listing at 2,189,952 and the E2 grid at 2,190,128 (2,560 KiB max
@@ -674,14 +818,19 @@ sort: write error
 head: cannot open '<operand>' for reading: No such file or directory
 head: error reading '<operand>': Is a directory
 head: write error: No space left on device
+tail: cannot open '<operand>' for reading: No such file or directory
+tail: error reading '<operand>': Is a directory
+tail: write error: No space left on device
 ```
 
-GNU quotes operands that contain spaces, quotes or control characters; these
-tools print the operand bytes verbatim. The harness restricts exact-stderr cases
-to quote-free operand names (successful operands may contain spaces). An empty
-operand is outside the matrix: `openFile` rejects it with `EINVAL`, so ours says
-`cat: : Invalid argument` where GNU prints a quoted empty name. `SIGPIPE` keeps
-its default disposition, so `sort | head` behaves like coreutils.
+GNU quotes operands that contain spaces, quotes or control characters;
+`cat`/`wc`/`sort` print the operand bytes verbatim, while `tail` wraps the raw
+operand in single quotes (spaces work; an apostrophe is not GNU-escaped). The
+harness restricts exact-stderr cases to quote-free operand names (successful
+operands may contain spaces). An empty operand is outside the matrix:
+`openFile` rejects it with `EINVAL`, so ours says `cat: : Invalid argument`
+where GNU prints a quoted empty name. `SIGPIPE` keeps its default disposition,
+so `sort | head` behaves like coreutils.
 
 An eza missing-operand error whose name contains invalid UTF-8 bytes is printed
 by `errors::debugPath`, which copies the raw bytes; the reference uses Rust's
@@ -699,7 +848,7 @@ iteration (`fs::open`/`next`/`close`, which skips `.` and `..` like Rust's
 need one), resolves every symlink with `readlink` plus a following `stat`, and
 synthesizes its own `.`/`..` records; `statArray` remains the form for a future
 parallel-key hot loop rather than an E0 caller;
-`cat`, `wc`, `sort` and `head` do not import `fs` and their output is unchanged.
+`cat`, `wc`, `sort`, `head` and `tail` do not import `fs` and their output is unchanged.
 
 The API is path-based: `fs::stat(lstat)`, `fs::readlink` and a tree child's
 `fs::open` take a whole path built with `paths::join(operand, name)`. `cpath`

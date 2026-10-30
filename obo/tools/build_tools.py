@@ -9,9 +9,10 @@ errors, as needed), so the compiler compiles those modules
 dependency-first and writes their .sym files. The rule within a file is still
 declare-before-use.
 
-The default tools are cat, wc, sort and head; P4 adds eza to the buildable names
-(TOOLS and EZA are separate, so `make tools` does not need eza's newer library
-dependencies and `make eza` builds only eza). Paths resolve to absolute paths,
+The default tools are cat, wc, sort, head and tail; P4 adds eza to the
+buildable names (TOOLS and EZA are separate, so `make tools` does not need
+eza's newer library dependencies and `make eza` builds only eza). Paths
+resolve to absolute paths,
 so the builder's behavior does not depend on the caller's cwd: ROOT is the
 directory holding this script's tools/ (that is, obo/); --obo defaults to $OBO
 or ROOT/obo, --rt to ROOT, --out to ROOT/build/tools. The built binaries live
@@ -23,7 +24,7 @@ concurrent builds is forbidden. Callers that build concurrently pass distinct
 --out directories (tests/tools.py and tests/io_test.py use private temporary
 ones), and the generated directory is ignored with the rest of build output.
 
-There is no cache and no --force: rebuilding four tools is cheap, and a cache
+There is no cache and no --force: rebuilding five tools is cheap, and a cache
 would add staleness bugs. A compile failure is reported with the compiler's
 message, with absolute paths under ROOT shortened to repo-relative names (so an
 error in a tool names cmd/<tool>.obx at its real line); the builder exits 2.
@@ -35,7 +36,11 @@ the builder creates and checks its size and type; a compile failure means the
 compiler is old (the name is resolved at compile time), and a run failure,
 including a trapped or leaking run under OBO_CHECK=1, means runtime_text.bin is
 old (the slot jumped to is wrong or absent). A compile-only metadata probe
-would not catch the old runtime, so this one runs a slot.
+would not catch the old runtime, so this one runs a slot. The sleep probe builds
+and RUNS `sleepMs(0)` for the appended slot 40 as a best-effort availability
+check. It is not an ABI guard: a new compiler with an old runtime is unsupported,
+and the old slot-40 experiment traps with the runtime's generic misaligned-stack
+error, which is incidental rather than a designed compatibility check.
 
 tests/tools.py imports build() to make its private temporary build, so the build
 rule lives in exactly one place.
@@ -46,7 +51,7 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../obo
-TOOLS = ('cat', 'wc', 'sort', 'head')
+TOOLS = ('cat', 'wc', 'sort', 'head', 'tail')
 EZA = ('eza',)
 ALL = TOOLS + EZA
 SRCDIR = 'cmd'                       # the tool roots live in obo/cmd/
@@ -103,6 +108,21 @@ fn main() {
             println("ok")
         }
         err(m, c) { println("metadata probe: ", m, " (", c, ")"); exit(1) }
+    }
+}
+'''
+
+
+SLEEP_PROBE = '''// slot-40 probe: built and RUN as a best-effort availability check. This is
+// not an ABI guard; a new compiler with an old runtime is unsupported.
+fn main() {
+    let r = sleepMs(0)
+    match r {
+        ok(v) {
+            if !v { println("sleep probe: false"); exit(1) }
+            println("ok")
+        }
+        err(m, c) { println("sleep probe: ", m, " (", c, ")"); exit(1) }
     }
 }
 '''
@@ -198,6 +218,43 @@ def probe_meta(obo, rt, out):
                 pass
 
 
+def probe_sleep(obo, rt, out):
+    """Build and run a sleepMs(0) best-effort availability probe. It exercises
+    runtime slot 40 but is not an ABI guard: a new compiler with an old runtime
+    is unsupported and may trap unpredictably. BuildError if the probe does not
+    compile or run."""
+    os.makedirs(out, exist_ok=True)
+    symdir = _symdir(out)
+    src = os.path.join(out, '.sleep_probe.obo')
+    exe = os.path.join(out, '.sleep_probe')
+    with open(src, 'w', encoding='utf-8', newline='') as f:
+        f.write(SLEEP_PROBE)
+    try:
+        rc, _, err = _compile(obo, src, exe, rt, symdir)
+        if rc != 0:
+            first = err.strip().splitlines()[0] if err.strip() else f"exit {rc}"
+            raise BuildError(
+                "sleepMs (runtime slot 40) is a prerequisite: the builtin probe "
+                f"failed to compile: {first}")
+        try:
+            p = subprocess.run([exe], capture_output=True, text=True,
+                               timeout=60, env=dict(os.environ, OBO_CHECK='1'))
+        except subprocess.TimeoutExpired:
+            raise BuildError("sleepMs (runtime slot 40) is a prerequisite: the builtin probe timed out")
+        if p.returncode != 0 or p.stdout != 'ok\n':
+            detail = (p.stderr or p.stdout).strip().splitlines()
+            first = detail[0] if detail else f"exit {p.returncode}"
+            raise BuildError(
+                "sleepMs (runtime slot 40) is a prerequisite: the builtin probe "
+                f"failed to run (an old runtime_text.bin?): {first}")
+    finally:
+        for p in (src, exe):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
+
 def build(names, out, obo, rt):
     """Build the named tools into out; return their absolute paths.
 
@@ -226,6 +283,7 @@ def build(names, out, obo, rt):
     symdir = _symdir(out)
     probe(obo, rt, out)
     probe_meta(obo, rt, out)
+    probe_sleep(obo, rt, out)
 
     built = []
     for name in names:
