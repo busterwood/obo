@@ -134,3 +134,17 @@ fn main() { let f = fn (it: Item2): int { return it.n }; let a = new Item2{n: 1}
 // === a later argument that moves a held reference is refused
 type Item3 = ref record { n: int }
 fn main() { let f = fn (r: &Item3, it: Item3): int { return r.n + it.n }; let a = new Item3{n: 1}; println(f(&a, a)) }  // error: argument 2 of function value 'f' may free what argument 1 points into, and runs after it; compute it before the call
+
+// === an enclosing local named env cannot be captured implicitly
+fn main() { let env = 7; let f = fn (): int { return env }; println(f()) }  // error: 'env' is a local of the enclosing function; add it to the lambda's capture list: fn [env](...)
+
+// === an enclosing parameter named env cannot be captured implicitly
+fn outerEnv(env: int): int { let f = fn (): int { return env }; return f() }  // error: 'env' is a local of the enclosing function; add it to the lambda's capture list: fn [env](...)
+fn main2() { println(outerEnv(7)) }
+
+// === a global env does not let an outer local env fall through
+var env = 7
+fn main() { let env = 8; let f = fn (): int { return env }; println(f()) }  // error: 'env' is a local of the enclosing function; add it to the lambda's capture list: fn [env](...)
+
+// === a nested lambda cannot implicitly use an outer lambda parameter named env
+fn main() { let f = fn (env: int): int { let g = fn (): int { return env }; return g() }; println(f(2)) }  // error: 'env' is a local of the enclosing function; add it to the lambda's capture list: fn [env](...)

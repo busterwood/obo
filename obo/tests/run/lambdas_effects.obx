@@ -1,6 +1,7 @@
 type Item = ref record { n: int }
 var G = 0
 var XS: []int = new []int(0)
+var GS = ""
 
 fn call(f: fn(int): int): int { return f(1) }
 
@@ -30,6 +31,11 @@ fn main() {
         ok(v) { println(v) }
         err(m, c) { println(m) }
     }
+    let sf = fn (): int { GS = "x"; return len(GS) }
+    println(sf())
+    let saved = GS
+    GS = "y"
+    println(saved, " ", GS)
 }
 
 // expect: 1
@@ -39,3 +45,5 @@ fn main() {
 // expect: s
 // expect: 8
 // expect: 9
+// expect: 1
+// expect: x y

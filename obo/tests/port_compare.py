@@ -230,6 +230,8 @@ SEED_FILE_MIN = {
     os.path.join(FORK, 'tests', 'run', 'lambdas_sort.obx'): (0, 9),
     os.path.join(FORK, 'tests', 'run', 'lambdas_homes.obx'): (0, 9),
     os.path.join(FORK, 'tests', 'run', 'lambdas_scope.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'run', 'lambdas_env.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'run', 'lambdas_env_type.obx'): (0, 9),
     os.path.join(FORK, 'tests', 'run', 'lambdas_types.obx'): (0, 9),
     os.path.join(FORK, 'tests', 'errors', 'lambdas.obx'): (0, 9),
     os.path.join(FORK, 'tests', 'errors', 'lambdas_step1.obx'): (0, 9),

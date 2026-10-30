@@ -882,6 +882,7 @@ type Param = ref record {
 }
 
 var fnStack = new []^Sym(0)       // functions and lambda bodies being compiled, for active-callee checks
+var lambdaOuterNames = new []string(0)  // enclosing local/parameter names while a lambda body compiles
 
 type Field = ref record {
     name: string
@@ -2887,6 +2888,11 @@ fn lookup(name: string): ^Sym {
         let s = findSym(blocks[i].syms, name)
         if s != nil { return s }
         i -= 1
+    }
+    for i in 0..len(lambdaOuterNames) {
+        if lambdaOuterNames[i] == name {
+            error("'" + name + "' is a local of the enclosing function; add it to the lambda's capture list: fn [" + name + "](...)")
+        }
     }
     let g = findSym(curModule.globals, name)              // never an import: qualified names only
     if g != nil { return g }
@@ -5843,11 +5849,14 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
 // ordinary argument/effect checks apply and afterCall has no effect.
 fn callValue(x: Item, name: string, line: int, col: int): Item {
     let t = x.typ
-    let f = newSym("fncall", "function value '" + name + "'", nil)
-    f.fnRec = newFnRec()
-    f.ret = fnRet(t)
-    f.addr = 0
-    f.owner = ""
+    let fa = new []FnRec(0)
+    append(fa, new FnRec{fixups: new []int(0), params: new []^Type(0),
+                         pmodes: new []int(0), freed: new []^Sym(0)})
+    let fr = handle(fa[0])
+    let sa = new []Sym(0)
+    append(sa, new Sym{kind: "fncall", name: "function value '" + name + "'", fnRec: fr,
+                       ret: fnRet(t), bind: noBind, recv: tVoid, addr: 0})
+    let f = handle(sa[0])
     for i in 0..fnArity(t) {
         append(f.fnRec.params, fnParam(t, i))
         append(f.fnRec.pmodes, fnMode(t, i))
@@ -6926,11 +6935,17 @@ fn lambdaExpr(): Item {
     f.line = hline
     f.addr = entry
     let hp = new []Param(0)
-    append(hp, new Param{name: "env", typ: tInt, mode: 1})
+    append(hp, new Param{name: "a lambda's environment", typ: tInt, mode: 1})
     for p in params { append(hp, new Param{name: p.name, typ: p.typ, mode: p.mode}) }
     for p in hp {
         append(f.fnRec.params, p.typ)
         append(f.fnRec.pmodes, p.mode)
+    }
+    let outerFrom = len(lambdaOuterNames)
+    for bi in 0..len(blocks) {
+        for si in 0..len(blocks[bi].syms) {
+            append(lambdaOuterNames, blocks[bi].syms[si].name)
+        }
     }
     let c = new LamCtx{
         homeBits: homeBits, homeCap: homeCap, homeRetry: homeRetry,
@@ -7055,6 +7070,7 @@ fn lambdaExpr(): Item {
     append(fnStack, f)
     lambdaBody(f, ret, &hp)
     truncate(fnStack, c.fnStackLen)
+    truncate(lambdaOuterNames, outerFrom)
     homeBits = c.homeBits
     homeCap = c.homeCap
     homeRetry = c.homeRetry
@@ -12754,6 +12770,7 @@ fn releaseTables() {
     symArena = new []Sym(0)
     methodSyms = new []^Sym(0)
     fnStack = new []^Sym(0)
+    lambdaOuterNames = new []string(0)
     inWhileCond = false
     typeArena = new []Type(0)
     bindArena = new []RefBind(0)
