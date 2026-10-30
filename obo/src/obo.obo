@@ -1180,8 +1180,8 @@ fn callableName(s: ^Sym): string {
 // An interface is a named type (kind "iface") whose members are synthetic symbols in ifaceSyms, in
 // declaration order. They belong to no module's namespace and are not in methodSyms, so every method
 // scan leaves them out. An implementation pairs a record or closed type with an interface (checked
-// at its declaration, implDecl). Interface values are not implemented yet: a declaration that would
-// hold one is refused (noIfaceValues).
+// at its declaration, implDecl). An implementation has a vtable in rodata (v3 4). An owned interface value
+// is a box (boxInto, checkAssign); calls through one, equality and handles are refused until their steps.
 
 type Impl = ref record {
     iface: ^Type
@@ -1189,6 +1189,7 @@ type Impl = ref record {
     owner: string
     exported: bool
     line: int
+    vtable: int               // the address of its vtable in rodata (v3 4): 0 for an impl read from a .sym, which has no code
 }
 
 var ifaceSyms = new []^Sym(0)       // the members of every interface, declaration order
@@ -4075,15 +4076,16 @@ fn finishTypeName(name: string, uline: int, ucol: int): ^Type {
     return t
 }
 
-// Interface values are not implemented yet (v3 step 1): a declaration that would hold one is refused.
-// Interface member signatures are the exception; parseParams and ifaceDecl do not call this for them.
+// Interface values are owned (v3 step 3): I, ?I, []I, Result[I] and the rest are declared and held like records. A
+// borrowed interface (&I, mut &I, &?I, and &[]I) is still refused where it could be a local or an argument: step 5
+// adds those. Interface member signatures are not refused: parseParams and ifaceDecl do not call this for them.
 fn holdsIface(t: ^Type): bool {
     if t.kind == "iface" { return true }
     if t.kind == "array" || t.kind == "opt" || t.kind == "result" { return holdsIface(baseOf(t)) }
     return false
 }
 
-fn noIfaceValues(t: ^Type) {
+fn noBorrowedIface(t: ^Type) {
     if holdsIface(t) { error("interface values are not implemented yet") }
 }
 
@@ -4100,7 +4102,6 @@ fn fieldList(rec: ^Type) {
         }
         expect(T_COLON, "")
         let t = parseType()
-        noIfaceValues(t)
         for n in names {
             if fieldIndex(rec, n) >= 0 { error("duplicate field '" + n + "'") }
             append(rec.fields, new Field{name: n, offset: offset, typ: t})
@@ -4817,20 +4818,157 @@ fn heldPop(mark: int) {
     truncate(heldWhole, mark)
 }
 
-fn checkAssign(dst: ^Type, x: &Item, what: string) {
+// ================================================ interface values (v3 section 5)
+
+// The destination types that hold an interface value: I, and ?I (a box pointer, or 0 for nil)
+fn isIfaceVal(t: ^Type): bool { return t.kind == "iface" || (t.kind == "opt" && baseOf(t).kind == "iface") }
+
+// the interface a destination of type I or ?I holds
+fn ifaceOf(t: ^Type): ^Type {
+    if t.kind == "opt" { return baseOf(t) }
+    return t
+}
+
+// the box descriptor (v3 4): one owned word at offset 0, the object, and no strings. It is made the first time a box
+// is needed and is shared by every interface, so rt_free frees a box and then its object through the object's header.
+var boxDescAddr = 0
+
+fn boxDescriptor(): int {
+    if boxDescAddr == 0 {
+        let ptrs = new []int(0)
+        append(ptrs, 0)
+        let strs = new []int(0)
+        boxDescAddr = descriptor(16, ptrs, strs)
+    }
+    return boxDescAddr
+}
+
+// The implementation of interface it for a value of type rt (a variant uses its closed type's), if this module may
+// see it: its own, or a pub one of an imported module (a private implementation is invisible to importers).
+fn visibleImpl(rt: ^Type, it: ^Type): ?^Impl {
+    let p = rt.parent
+    var im: ?^Impl = nil
+    if p != nil { im = findImplIn(p, it) } else { im = findImplIn(rt, it) }
+    if im == nil { return nil }
+    if im.owner != curModuleName && !im.exported { return nil }
+    return im
+}
+
+// Replaces what x holds by y, a temporary of its own (the box made for an owned conversion)
+fn setItem(mut x: &Item, y: Item) {
+    x.mode = y.mode
+    x.typ = y.typ
+    x.val = y.val
+    x.base = y.base
+    x.index = y.index
+    x.disp = y.disp
+    x.r = y.r
+    x.cc = y.cc
+    x.T = 0
+    x.F = 0
+    x.nt = nil
+    x.nf = nil
+    x.width = y.width
+    x.scale = y.scale
+    x.line = y.line
+    x.sym = nil
+    x.readonly = false
+    x.root = nil
+    x.strTemp = false
+    x.borrowed = false
+    x.viaHandle = false
+    x.deref = false
+    x.movedRef = false
+    x.hOrigin = nil
+    x.pOwner = nil
+    x.pPath = ""
+    x.path = ""
+    x.home = false
+}
+
+// Moves the owned value x (a record or closed value) into a new box of type dst (I or ?I), which holds x's object at
+// offset 0 and the vtable of implementation im at offset 8 (v3 4). The box is an owned temporary, so the caller's
+// consume of x is a no-op. The vtable is in rodata; in --check an imported implementation has none (0), and no code runs.
+fn boxInto(dst: ^Type, mut x: &Item, im: ^Impl) {
+    consume(x)
+    let obj = asReg(copyItem(x))
+    let box = rtCall1(RT_ALLOC_RECORD, makeConst(tInt, boxDescriptor()), dst)
+    opMem(0x89, obj.r, mem(box.r, -1, 0, 8), true, false)
+    opMem(0xC7, 0, mem(box.r, -1, 8, 8), true, false)
+    emit32(im.vtable)
+    release(obj.r)
+    setItem(x, box)
+}
+
+// The refusal of an assignment that no conversion makes: the seed's message, with its hints and v3's Result hint (5.2)
+fn refuseAssign(dst: ^Type, x: &Item, what: string) {
+    var hint = ""
+    if x.typ.kind == "nil" && nonNull(dst) {
+        hint = " (" + tname(dst) + " can never be nil; declare it as ?" + tname(dst) + ")"
+    } else if dst.kind != "opt" && x.typ.kind == "opt" {
+        hint = " (it may be nil: check it with '!= nil' first)"
+    } else if x.typ.kind == "errval" {
+        hint = " (err(...) is an error cell; the destination must be a Result[T])"
+    } else if dst.kind == "result" && x.typ.kind == "result" && baseOf(dst).kind == "iface" {
+        hint = "; store it first: let s: " + tname(baseOf(dst)) + " = ...; return ok(s)"
+    }
+    error(what + ": cannot use " + tname(x.typ) + " as " + tname(dst) + hint)
+}
+
+// Converts x to a destination of type dst that holds an interface (I or ?I), or refuses it (v3 5.1-5.3). Assignable
+// sources (nil, I, ?I) never get here. An owned record or closed value is moved into a box, after the impl check.
+fn ifaceConvert(dst: ^Type, mut x: &Item, what: string) {
+    let src = x.typ
+    let it = ifaceOf(dst)
+    let sk = src.kind
+    if sk == "opt" {
+        let b = baseOf(src)
+        if b.kind == "record" || b.kind == "closed" {
+            error(what + ": cannot use " + tname(src) + " as interface '" + tname(it) +
+                  "' (it may be nil: take it into a local, return if nil, then convert the local)")
+        }
+        if b.kind == "iface" { refuseAssign(dst, x, what) }
+        error(what + ": cannot use " + tname(src) + " as interface '" + tname(it) + "'")
+    }
+    if sk == "iface" {
+        error(what + ": cannot use interface '" + tname(src) + "' as '" + tname(it) + "': interface values do not convert")
+    }
+    if sk == "nil" { refuseAssign(dst, x, what) }
+    if sk != "record" && sk != "closed" {
+        error(what + ": cannot use " + tname(src) + " as interface '" + tname(it) + "'")
+    }
+    let s = x.sym
+    if x.borrowed || (s != nil && s.isRef) {
+        error(what + ": cannot use a borrowed '" + tname(src) + "' as owned interface '" + tname(it) +
+              "': move the value in, or take the interface as '&" + tname(it) + "'")
+    }
+    // a variant has no implementation of its own: its closed type's one is used (0.7 4.4)
+    var base = src
+    let p = src.parent
+    if p != nil { base = p }
+    let im = visibleImpl(src, it)
+    if im == nil {
+        if base.owner == curModuleName {
+            error(what + ": type '" + tname(base) + "' does not implement interface '" + tname(it) + "'")
+        }
+        error(what + ": module '" + base.owner + "' has no exported implementation of '" + tname(it) + "' for '" +
+              base.name + "' (only 'pub' implementations are visible)")
+        return                                        // error exits; this return only narrows im
+    }
+    boxInto(dst, x, im)
+}
+
+// The check at every typed destination: x must be assignable to dst, or convert to it (interface destinations).
+// x may be rewritten: a value converted to an interface is replaced by its box (the owned temporary x now is).
+fn checkAssign(dst: ^Type, mut x: &Item, what: string) {
     if x.typ == tVoid { error(what + ": expression has no value") }
     if dst.kind == "byte" && x.mode == "const" && x.typ.kind == "int" && x.val >= 0 && x.val <= 255 { return }
-    if !assignable(dst, x.typ) {
-        var hint = ""
-        if x.typ.kind == "nil" && nonNull(dst) {
-            hint = " (" + tname(dst) + " can never be nil; declare it as ?" + tname(dst) + ")"
-        } else if dst.kind != "opt" && x.typ.kind == "opt" {
-            hint = " (it may be nil: check it with '!= nil' first)"
-        } else if x.typ.kind == "errval" {
-            hint = " (err(...) is an error cell; the destination must be a Result[T])"
-        }
-        error(what + ": cannot use " + tname(x.typ) + " as " + tname(dst) + hint)
+    if assignable(dst, x.typ) { return }
+    if isIfaceVal(dst) {
+        ifaceConvert(dst, x, what)
+        return
     }
+    refuseAssign(dst, x, what)
 }
 
 // ============================================================ expressions
@@ -5305,6 +5443,7 @@ fn builtin(name: string): Item {
         if sym != T_IDENT { error("handle needs a variable, field or element") }
         let x = designator()
         expect(T_RPAREN, "")
+        if isIfaceVal(x.typ) { error("interface values are not implemented yet") }    // handles are step 6
         if (x.mode != "mem" && x.mode != "elem") || (x.typ.kind != "record" && x.typ.kind != "closed") {
             error("handle needs a record or closed-type value that is not optional, not " + tname(x.typ))
         }
@@ -5861,6 +6000,7 @@ fn designatorT(target: bool): Item {
             }
             if x.typ.incomplete { error(tname(x.typ) + " is declared but not yet defined") }
             if x.typ.kind == "closed" { error(tname(x.typ) + " is a closed type: use 'match' to reach its fields") }
+            if x.typ.kind == "iface" { error("interface values are not implemented yet") }
             if x.typ.kind != "record" { error(tname(x.typ) + " has no fields") }
             let rt0 = x.typ
             let fi = fieldIndex(rt0, fname)
@@ -5993,6 +6133,7 @@ fn designatorT(target: bool): Item {
 fn methodCall(recv: Item, name: string, dline: int, dcol: int, rline: int, rcol: int): Item {
     let t = recv.typ
     if t.incomplete { errorAt(tname(t) + " is declared but not yet defined", dline, dcol) }
+    if t.kind == "iface" { errorAt("interface values are not implemented yet", dline, dcol) }    // calls are step 4
     if t.kind != "record" && t.kind != "closed" { errorAt(tname(t) + " has no methods", dline, dcol) }
     if t.kind == "record" && fieldIndex(t, name) >= 0 {
         errorAt("type '" + tname(t) + "' has a field '" + name + "', not a method; a field cannot be called", dline, dcol)
@@ -6023,7 +6164,6 @@ fn newExpr(): Item {
     next()
     if sym == T_LBRACK {
         let t = parseType()
-        noIfaceValues(t)
         expect(T_LPAREN, "")
         let n = nestedExpr()
         if !isInt(n.typ) { error("array length must be int") }
@@ -6069,7 +6209,7 @@ fn newExpr(): Item {
         }
         append(given, fname)
         expect(T_COLON, "")
-        let v = nestedExpr()
+        var v = nestedExpr()
         checkAssign(fty, v, "field '" + fname + "'")
         consume(v)
         let dst = mem(p.r, -1, foff, 8)
@@ -6499,6 +6639,10 @@ fn relation(): Item {
     noTemp(y)
     let kx = x.typ.kind
     let ky = y.typ.kind
+    // equality of interface values is step 6 (v3 6.3); a test against nil is allowed (it narrows a ?I)
+    if (isIfaceVal(x.typ) || isIfaceVal(y.typ)) && kx != "nil" && ky != "nil" {
+        error("interface values are not implemented yet")
+    }
     if kx == "string" || ky == "string" {
         if kx != ky || (o != T_EQ && o != T_NE) { error("strings can only be compared with == and !=") }
         let r = rtCall2(RT_STREQ, x, y, tInt)
@@ -6659,10 +6803,10 @@ fn varDecl(kind: string, isGlobal: bool, isPub: bool) {
     if sym == T_COLON {
         next()
         let pt = parseRefType()
-        noIfaceValues(pt)
         t = pt
         declRef = refMode
         if declRef > 0 && isGlobal { error("references cannot be global") }
+        if declRef > 0 { noBorrowedIface(pt) }
     }
     var gsym = newSym(kind, name, t)
     gsym.line = nameLine
@@ -6674,7 +6818,7 @@ fn varDecl(kind: string, isGlobal: bool, isPub: bool) {
     if sym == T_ASSIGN {
         next()
         if isGlobal { fixHere1(initLink) }
-        let x = tailExpr()
+        var x = tailExpr()
         if !isGlobal && (declRef > 0 || (t == nil && x.borrowed)) {
             // a reference local: it borrows, nothing is moved or freed
             var rt = x.typ
@@ -6691,7 +6835,8 @@ fn varDecl(kind: string, isGlobal: bool, isPub: bool) {
             declare(v)
             return
         }
-        if x.borrowed && t != nil && x.mode != "const" {
+        // a borrowed value for an interface destination is refused by checkAssign (v3 5.1), with its own text
+        if x.borrowed && t != nil && x.mode != "const" && !isIfaceVal(t) {
             error("cannot move out of a reference: declare '" + name + "' as &" + tname(t) + " to borrow")
         }
         var tt = x.typ
@@ -6842,7 +6987,7 @@ fn assignmentOrCall(): bool {
             if deferMark >= 0 && declaredBefore(xs, deferMark) {
                 errorAt("cannot point '" + xs.name + "' elsewhere in a defer: a defer body runs where its block is left, and the change would not be seen there", line, col)
             }
-            let y = tailExpr()
+            var y = tailExpr()
             checkAssign(dtype, y, "assignment")
             let nb = borrowBind(y)
             if !assignable(x.typ, y.typ) { widen(xs) }
@@ -6876,7 +7021,7 @@ fn assignmentOrCall(): bool {
             if x.deref && r0 != nil && r0.storage == "local" { pinned = r0 }
             var hp = -1
             if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }
-            let y = tailExpr()
+            var y = tailExpr()
             pinned = savedPin
             checkAssign(dtype, y, "assignment")
             consume(y)
@@ -7485,6 +7630,7 @@ fn forStat() {
         fix(jcc(CC_L), top)
     } else {
         if x.typ.kind != "array" { error("cannot iterate over " + tname(x.typ)) }
+        if isIfaceVal(baseOf(x.typ)) { error("interface values are not implemented yet") }    // a walk variable borrows: step 5
         noTemp(x)
         let walked = x.sym
         if walked == nil || walked.storage != "local" {
@@ -7910,7 +8056,7 @@ fn returnStat() {
         if sym != T_SEMI && sym != T_RBRACE { error(callableName(f) + " does not return a value") }
         runDefers(fnBlock)
     } else {
-        let x0 = expression()
+        var x0 = expression()
         checkAssign(f.ret, x0, "return value")
         consume(x0)
         let x = asReg(x0)
@@ -8542,7 +8688,7 @@ fn methodRecvType(t: ^Type) {
 // Parses the parameter groups of a function or an interface member, from after its '(' through its ')':
 // each group is [mut] name[, name]* ':' type. A parameter of interface type is owned (p: I), borrowed (p: &I)
 // or mutable (mut p: &I), as any record; `mut p: I` is refused like any owned mut. A member may take
-// interface values (member is true); a function may not yet (noIfaceValues).
+// interface values (member is true); a borrowed interface parameter is refused for now (noBorrowedIface).
 fn parseParams(mut params: &[]Param, member: bool) {
     while sym != T_RPAREN {
         // `mut` before the names: the function may change what the parameter points to
@@ -8564,7 +8710,7 @@ fn parseParams(mut params: &[]Param, member: bool) {
             if mode == 0 { error("mut needs a reference parameter: write mut name: &T") }
             mode = 2
         }
-        if !member { noIfaceValues(t) }
+        if !member && mode > 0 { noBorrowedIface(t) }
         for n in names { append(params, new Param{name: n, typ: t, mode: mode}) }
         if sym != T_RPAREN { expect(T_COMMA, "',' or ')'") }
     }
@@ -8726,7 +8872,6 @@ fn fnDecl(isPub: bool) {
     if sym == T_COLON {
         next()
         ret = parseType()
-        noIfaceValues(ret)
     }
     var f = newSym("fn", name, nil)
     if isMethod {
@@ -8892,6 +9037,7 @@ fn implDecl(isPub: bool) {
         error("type '" + tname(rt) + "' already implements interface '" + tname(it) + "'")
     }
     let members = ifaceMethodsOf(it)
+    var slots = new []^Sym(0)              // the implementing method of each member, in declaration order (the vtable)
     for m in members {
         let cm = findMethodIn(rt, m.name)
         if cm == nil {
@@ -8942,8 +9088,14 @@ fn implDecl(isPub: bool) {
                 error(tier + "it frees below a parameter that the member does not declare mut")
             }
         }
+        append(slots, cm)
     }
-    append(implArena, new Impl{iface: it, recv: rt, owner: curModuleName, exported: isPub, line: iline})
+    // the vtable (v3 4): one code address per member, slot k at 8*k. Every method is defined by now, so its address is
+    // final. It lives in rodata, which is one image, so an importer in the same build reaches it through the Impl.
+    rodAlign()
+    let vt = RODATA_BASE + len(rodata)
+    for cm in slots { rod64(CODE_BASE + cm.addr) }
+    append(implArena, new Impl{iface: it, recv: rt, owner: curModuleName, exported: isPub, line: iline, vtable: vt})
     append(impls, handle(implArena[len(implArena) - 1]))
 }
 
@@ -10324,7 +10476,6 @@ fn symFieldList(rec: ^Type) {
         if sym != T_COLON { errorAt("expected ':' after the field name", fline, 1) }
         next()
         let t = symParseType()
-        noIfaceValues(t)
         for i in 0..len(rec.fields) {
             if rec.fields[i].name == fname { error("duplicate field '" + fname + "'") }
         }
@@ -10866,7 +11017,6 @@ fn symGlobalDecl(mode: int, kind: string) {
     if sym != T_COLON { error("expected ':' in a global declaration") }
     next()
     let t = symParseType()
-    noIfaceValues(t)
     symClaim(name)
     append(symGlobalOrder, name)
     if mode == 1 {
@@ -10975,8 +11125,9 @@ fn symFnDecl(mode: int) {
         next()
         ret = symParseType()
     }
-    for k in 0..len(ptypes) { noIfaceValues(ptypes[k]) }
-    noIfaceValues(ret)
+    for k in 0..len(ptypes) {
+        if pmodes[k] > 0 { noBorrowedIface(ptypes[k]) }
+    }
     var freesAll = false
     var writesHandles = false
     var pfree = 0
@@ -11222,7 +11373,7 @@ fn symImplDecl(mode: int) {
     append(symImplSeen, key)
     append(symImplOrder, key)
     if mode == 1 {
-        append(implArena, new Impl{iface: it, recv: rt, owner: symCurMod.name, exported: true, line: nline})
+        append(implArena, new Impl{iface: it, recv: rt, owner: symCurMod.name, exported: true, line: nline, vtable: 0})
         append(impls, handle(implArena[len(implArena) - 1]))
         return
     }

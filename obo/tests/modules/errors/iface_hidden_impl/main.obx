@@ -1,0 +1,5 @@
+module main
+import "lib.obx"
+fn main() {
+    let h: lib::Shape = new lib::Hidden{s: 1}
+}

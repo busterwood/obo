@@ -1347,6 +1347,22 @@ INTERFACE_MUTANTS = {
     "interfaces v3 X31: the source parser accepts mut on an interface parameter": (
         "            if mode == 0 { error(\"mut needs a reference parameter: write mut name: &T\") }\n",
         ""),
+    # owned conversions and ownership (step 3, design section 12.4)
+    "interfaces v3 X1: the box descriptor owns nothing": (
+        "        append(ptrs, 0)\n",
+        ""),
+    "interfaces v3 X2: a conversion does not consume its source": (
+        "    consume(x)\n    let obj = asReg(copyItem(x))\n",
+        "    let obj = asReg(copyItem(x))\n"),
+    "interfaces v3 X3: a variant is boxed with its own vtable, not the parent's": (
+        "    if p != nil { im = findImplIn(p, it) } else { im = findImplIn(rt, it) }\n",
+        "    im = findImplIn(rt, it)\n"),
+    "interfaces v3 X4: nil converted to ?I allocates a box": (
+        "    if assignable(dst, x.typ) { return }\n    if isIfaceVal(dst) {\n",
+        "    if assignable(dst, x.typ) {\n        if isIfaceVal(dst) && x.typ.kind == \"nil\" { setItem(x, rtCall1(RT_ALLOC_RECORD, makeConst(tInt, boxDescriptor()), dst)) }\n        return\n    }\n    if isIfaceVal(dst) {\n"),
+    "interfaces v3 X35: replace on an interface place does not return the old value": (
+        "        store(x, v)\n        return makeReg(xt, r)\n",
+        "        store(x, v)\n        if isIfaceVal(xt) { return makeConst(xt, 0) }\n        return makeReg(xt, r)\n"),
     "interfaces v3 X36a: SYM_FORMAT stays 2": ("const SYM_FORMAT = 4\n", "const SYM_FORMAT = 2\n"),
     "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.8\"\n", "const OBO_VERSION = \"0.6\"\n"),
 

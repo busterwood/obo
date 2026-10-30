@@ -1,0 +1,21 @@
+module lib
+// the interface, its implementation for Square and the owned uses that cross the module boundary (v3 step 3)
+pub type Shape = interface {
+    pure fn area(): int
+}
+pub type Square = ref record { s: int }
+pub fn (q: &Square) area(): int { return q.s * q.s }
+pub impl Shape for Square
+
+pub type Holder = ref record { d: Shape; maybe: ?Shape; items: []Shape; r: Result[Shape] }
+
+pub var G: Shape = new Square{s: 1}
+
+// a lib function returns an owned interface value to its importer
+pub fn make(n: int): Shape {
+    return new Square{s: n}
+}
+
+pub fn wrap(s: Shape): Result[Shape] {
+    return ok(s)
+}

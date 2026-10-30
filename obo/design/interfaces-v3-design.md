@@ -808,10 +808,6 @@ Every case is written with the change; no existing assertion is deleted or relax
 - **S-5 positions:** a `.sym` with an interface field, array, global, `Result`, optional and return (accepted);
   `mut p0: I` (rejected with the reader text); `^I` (rejected before 2a); a duplicate member; a bad marker
   order.
-  (implementation, 2026-10-30) Until step 3, the reader refuses an interface type in a field, an array, a global,
-  a return or an ordinary function's parameter with `interface values are not implemented yet`, just as the source
-  does. Interface member parameters and results are read in step 2; the accepted positions above are the step 3
-  target.
 - **S-6 impl lines:** duplicate, foreign receiver, variant receiver, alias spelling (0.7 §9.3), and in
   `modules/errors` a private `impl` that is invisible to importers with identical text in full and `--check`
   builds.

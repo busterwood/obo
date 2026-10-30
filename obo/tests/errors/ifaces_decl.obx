@@ -1,6 +1,6 @@
 // Interface declarations and implementation headers (v3 step 1, E1 of design section 12.2): each case is one
-// refusal from the section 11 table that step 1 implements, plus the interface-value refusal that stands in
-// for the values not yet built.
+// refusal from the section 11 table that step 1 implements. Owned interface values are step 3 (ifaces_owned.obx);
+// borrowed ones are refused until step 5.
 
 // === an interface needs at least one method
 type I = interface {
@@ -57,25 +57,13 @@ type I = interface {
 type T = ref record { n: int }
 fn (t: I) m() { }  // error: a method's receiver must be a record or closed type declared in this module, not I
 
-// === an interface value as a function parameter (not built yet)
+// === an interface value as a function result: nil is not an owned interface
 type I = interface {
     fn a()
 }
-fn f(p: I) { }  // error: interface values are not implemented yet
+fn f(): I { return nil }  // error: return value: cannot use nil as I (I can never be nil; declare it as ?I)
 
-// === an interface value as a function result (not built yet)
-type I = interface {
-    fn a()
-}
-fn f(): I { return nil }  // error: interface values are not implemented yet
-
-// === an interface value as a record field (not built yet)
-type I = interface {
-    fn a()
-}
-type R = ref record { d: I }  // error: interface values are not implemented yet
-
-// === a function over a member's interface parameter (the method cannot be built yet)
+// === a function over a member's interface parameter (a borrowed interface is step 5)
 type I = interface {
     fn a(p0: &I)
 }

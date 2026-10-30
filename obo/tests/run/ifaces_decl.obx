@@ -1,6 +1,6 @@
 // Interfaces, step 1 of v3 (design section 13): declarations, member markers, parameter modes and
-// implementations, checked at compile time. No interface value is made yet, so the program calls each
-// implementing method directly; the point is that the declarations compile and the program runs.
+// implementations, checked at compile time. The program calls each implementing method directly; the
+// owned interface values that step 3 adds are in ifaces_owned.obx.
 pub type Shape = interface {
     pure fn area(): int
     mut fn grow(k: int)

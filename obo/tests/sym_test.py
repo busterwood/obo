@@ -1448,6 +1448,89 @@ IFACE_REFUSALS = [
 ]
 
 
+# Step 3 (v3 5.1, 6): an owned interface crosses the module boundary in every position the reader accepts
+IFACE_OWNED_LIB = '''module lib
+pub type Shape = interface {
+    pure fn area(): int
+}
+pub type Square = ref record { s: int }
+pub fn (q: &Square) area(): int { return q.s * q.s }
+pub impl Shape for Square
+pub type Holder = ref record { d: Shape; maybe: ?Shape; items: []Shape; r: Result[Shape] }
+pub var G: Shape = new Square{s: 1}
+pub fn make(n: int): Shape {
+    return new Square{s: n}
+}
+pub fn wrap(s: Shape): Result[Shape] {
+    return ok(s)
+}
+'''
+IFACE_OWNED_MAIN = '''module main
+import "lib.obx"
+fn main() {
+    let t: lib::Shape = lib::make(3)
+    let h = new lib::Holder{d: t, maybe: nil, items: new []lib::Shape(0), r: lib::wrap(new lib::Square{s: 2})}
+    println(len(h.items))
+}
+'''
+IFACE_HIDDEN_LIB = '''module lib
+pub type Shape = interface {
+    pure fn area(): int
+}
+pub type Hidden = ref record { s: int }
+fn (h: &Hidden) area(): int { return h.s }
+impl Shape for Hidden
+'''
+IFACE_HIDDEN_MAIN = '''module main
+import "lib.obx"
+fn main() {
+    let h: lib::Shape = new lib::Hidden{s: 1}
+}
+'''
+
+
+def iface_owned_check():
+    """Step 3: a pub lib function returns lib::Shape and holds the interface in a field, a global and a
+    Result; a source-less --check of main writes a main.sym byte-identical to the full build's. A private
+    implementation is refused by importers with the same text in a full build and in --check."""
+    d = tempfile.mkdtemp(prefix='symcase-owned-')
+    try:
+        write_tree(d, {'lib.obx': IFACE_OWNED_LIB, 'main.obx': IFACE_OWNED_MAIN})
+        symdir = os.path.join(d, 'sym')
+        os.makedirs(symdir)
+        ok(build(d, symdir, out=os.path.join(d, 'prog')), 'owned full build')
+        full_main = sym_text(os.path.join(symdir, 'main.sym'))
+        os.rename(os.path.join(d, 'lib.obx'), os.path.join(d, 'lib.obx.bak'))
+        chk = os.path.join(d, 'sym-check')
+        shutil.copytree(symdir, chk)
+        ok(build(d, chk, check=True), 'owned source-less check')
+        if sym_text(os.path.join(chk, 'main.sym')) != full_main:
+            raise Fail('the source-less --check main.sym differs from the full build')
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+    # the same refusal text from a full build and from --check (the importer reads lib.sym only in --check)
+    d = tempfile.mkdtemp(prefix='symcase-hidden-')
+    try:
+        write_tree(d, {'lib.obx': IFACE_HIDDEN_LIB, 'main.obx': IFACE_HIDDEN_MAIN})
+        symdir = os.path.join(d, 'sym')
+        os.makedirs(symdir)
+        full = build(d, symdir, out=os.path.join(d, 'prog'))
+        want = "module 'lib' has no exported implementation of 'lib::Shape' for 'Hidden'"
+        if full.returncode != 1 or want not in full.stderr:
+            raise Fail(f"full build: exit {full.returncode}: {full.stderr.strip()}")
+        os.rename(os.path.join(d, 'lib.obx'), os.path.join(d, 'lib.obx.bak'))
+        chk = os.path.join(d, 'sym-check')
+        shutil.copytree(symdir, chk)
+        q = build(d, chk, check=True)
+        if q.returncode != 1 or want not in q.stderr:
+            raise Fail(f"--check: exit {q.returncode}: {q.stderr.strip()}")
+        if full.stderr.replace(d + os.sep, '') != q.stderr.replace(d + os.sep, ''):
+            raise Fail(f"full and --check texts differ: {full.stderr!r} vs {q.stderr!r}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def iface_reader_refusals():
     """S-5: each malformed interface or impl line in lib.sym (its hash recomputed, so
     the structural checks run) is refused with the reader's own message."""
@@ -1604,6 +1687,7 @@ def tests():
         ('sym/iface_summary_matrix', iface_summary_matrix),
         ('sym/iface_private_impl', iface_private_impl),
         ('sym/iface_reader_refusals', iface_reader_refusals),
+        ('sym/iface_owned_check', iface_owned_check),
         ('sym/stale_format3_interface', stale_format3_interface),
         ('sym/iface_tier_check', iface_tier_check),
         ('sym/iface_forged_freesall', iface_forged_freesall),

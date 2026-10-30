@@ -1,0 +1,248 @@
+// Interface values, step 3 of v3 (design section 11, E2): each case is one refusal of an owned conversion, or one
+// use that a later step builds (calls, fields, equality, handles, borrowed interfaces) and is refused until then.
+
+// === an optional record converts to an interface only after it is narrowed
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+fn f() {
+    let q: ?Square = new Square{s: 1}
+    let b: Shape = q  // error: cannot use ?Square as interface 'Shape' (it may be nil: take it into a local, return if nil, then convert the local)
+}
+
+// === an unnarrowed optional interface is not an interface
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+fn f(o: ?Shape) {
+    let g: Shape = o  // error: cannot use ?Shape as Shape (it may be nil: check it with '!= nil' first)
+}
+
+// === another interface does not convert
+type Shape = interface {
+    pure fn area(): int
+}
+type Named = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+impl Named for Square
+fn f() {
+    let n: Named = new Square{s: 1}
+    let s: Shape = n  // error: cannot use interface 'Named' as 'Shape': interface values do not convert
+}
+
+// === a pointer handle is not an owned record
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+fn f() {
+    var s = new Square{s: 1}
+    let p = handle(s)
+    let b: Shape = p  // error: cannot use ^Square as interface 'Shape'
+}
+
+// === an array is not a record
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+fn f() {
+    let a = new []Square(0)
+    let b: Shape = a  // error: cannot use []Square as interface 'Shape'
+}
+
+// === a string is not a record
+type Shape = interface {
+    pure fn area(): int
+}
+fn f() {
+    let b: Shape = "x"  // error: cannot use string as interface 'Shape'
+}
+
+// === a Result of a record is not a Result of an interface: store the value first
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+fn f() {
+    let v: Result[Square] = ok(new Square{s: 1})
+    let w: Result[Shape] = v  // error: cannot use Result[Square] as Result[Shape]; store it first: let s: Shape = ...; return ok(s)
+}
+
+// === an ok(...) of a record is not an ok of an interface
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+fn f() {
+    let w: Result[Shape] = ok(new Square{s: 1})  // error: cannot use Result[Square] as Result[Shape]; store it first: let s: Shape = ...; return ok(s)
+}
+
+// === a record with no implementation of the interface
+type Shape = interface {
+    pure fn area(): int
+}
+type Plain = ref record { s: int }
+fn f() {
+    let a: Shape = new Plain{s: 1}  // error: type 'Plain' does not implement interface 'Shape'
+}
+
+// === a borrowed record is not moved into an interface
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+fn f() {
+    let s = new Square{s: 1}
+    let r: &Square = s
+    let a: Shape = r  // error: cannot use a borrowed 'Square' as owned interface 'Shape': move the value in, or take the interface as '&Shape'
+}
+
+// === nil is not an owned interface
+type Shape = interface {
+    pure fn area(): int
+}
+fn g(): Shape {
+    return nil  // error: return value: cannot use nil as Shape (Shape can never be nil; declare it as ?Shape)
+}
+
+// === a method call through an interface (step 4)
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+fn f() {
+    let a: Shape = new Square{s: 1}
+    println(a.area())  // error: interface values are not implemented yet
+}
+
+// === a field of an interface value (step 4)
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+fn f() {
+    let a: Shape = new Square{s: 1}
+    println(a.s)  // error: interface values are not implemented yet
+}
+
+// === equality of interface values (step 6)
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+fn f() {
+    let a: Shape = new Square{s: 1}
+    let b: Shape = new Square{s: 2}
+    println(a == b)  // error: interface values are not implemented yet
+}
+
+// === equality of optional interface values (step 6)
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+fn f() {
+    let a: ?Shape = new Square{s: 1}
+    let b: ?Shape = new Square{s: 2}
+    println(a == b)  // error: interface values are not implemented yet
+}
+
+// === a handle to an interface value (step 6)
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+fn f() {
+    let a: Shape = new Square{s: 1}
+    let h = handle(a)  // error: interface values are not implemented yet
+}
+
+// === a walk over an array of interface values (step 5)
+type Shape = interface {
+    pure fn area(): int
+}
+fn f(arr: []Shape) {
+    for x in arr {  // error: interface values are not implemented yet
+    }
+}
+
+// === a borrowed interface parameter (step 5)
+type Shape = interface {
+    pure fn area(): int
+}
+fn f(p: &Shape) {  // error: interface values are not implemented yet
+}
+
+// === a mut borrowed interface parameter (step 5)
+type Shape = interface {
+    pure fn area(): int
+}
+fn f(mut p: &Shape) {  // error: interface values are not implemented yet
+}
+
+// === a borrowed interface local (step 5)
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+fn f() {
+    let a: Shape = new Square{s: 1}
+    let r: &Shape = a  // error: interface values are not implemented yet
+}
+
+// === a borrowed optional interface local (step 5)
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+fn f() {
+    let o: ?Shape = new Square{s: 1}
+    let r: &?Shape = o  // error: interface values are not implemented yet
+}
+
+// === an interface is not compared with nil
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+fn f() {
+    let a: Shape = new Square{s: 1}
+    println(a == nil)  // error: cannot compare Shape with nil
+}
