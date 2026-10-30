@@ -322,9 +322,12 @@ FnParamType  ::= [ "&" ] Type
 - **No interface component in a function type in v1.** Every parameter and
   the return of a function type is checked with `containsIface(t)`; a
   direct interface type or an alias to one is rejected with
-  `a function value cannot take or return an interface value`. Ordinary
-  functions may take interface parameters (the interfaces design), but a
-  function value's ABI and captures assume owned/read-only/non-interface
+  `a function value cannot take or return an interface value`. The lambda
+  header is a function-type formation site too, so `lambdaExpr` applies the
+  same check to each parsed header parameter and the return (5.2); otherwise
+  `fn (d: I): int` would form a value the `fn(...)` type syntax refuses.
+  Ordinary functions may take interface parameters (the interfaces design),
+  but a function value's ABI and captures assume owned/read-only/non-interface
   words; allowing an interface there would need the interface cell/token
   representation in the function-value contract.
 - `nonNull(fn)` is true, so an uninitialized `var f: fn(...)` is the existing
@@ -780,9 +783,10 @@ cell: [ code ][ cap0 ][ cap1 ] ... [ cap(ncap-1) ]
   includes every transitive effect (a later hop that could free the capture
   would have set `writesHandles`, `mightFree` or `pfree` in the first
   callee's summary, refusing the creator's capture), the closure exposes no
-  reference to its environment, and the creator's frame stays live
-  throughout. Section 5.4 states the argument; the implementation tests the
-  two-hop cases (section 10).
+  language-visible reference to its environment (a handle a lambda returns
+  is an ordinary token, covered by the handle liveness residual), and the
+  creator's frame stays live throughout. Section 5.4 states the argument;
+  the implementation tests the two-hop cases (section 10).
 - **The callee's call is pure.** Calling a function value does not make the
   callee `freesAll`/`writesHandles`; a helper that only calls a callback and
   writes scalars/appends can itself be pure and accept deep element
@@ -965,9 +969,17 @@ return lambdaExpr() }`. `lambdaExpr`:
    the mode-word form; do not resolve them yet); expect `]`, then `(`.
 2. Parse the parameter list with the same parameter machinery as `fnDecl`
    (`obo.obo:8485-8511`), rejecting `mut`; parse the optional return type
-   with `parseType`; reject a function return type.
+   with `parseType`; reject a function return type; call `rejectIface` on
+   **every parsed header parameter and on the return** with
+   `a function value cannot take or return an interface value`. The lambda
+   header is a function-type formation site, so this is required even though
+   the `fn(...)` type syntax already rejects an interface: otherwise
+   `fn (d: I): int`, `fn (): I`, or an alias to `I` would form a function
+   value the type syntax refuses.
 3. Build the lambda's function type from the parameter types/modes and
-   return; it is the value's type. There is no inference from a destination.
+   return; it is the value's type. Belt-and-braces, call `rejectIface` on the
+   constructed type recursively (it walks nested callback parameters too);
+   there is no inference from a destination.
 4. Check context: `curFn != nil`; not in a while condition; not in a defer
    body; a capture list requires the call-argument context and rejects a
    non-call context. Then, now that the parameter names are known, check
@@ -1042,7 +1054,7 @@ The position matrix (source and reader mirror it):
 | `^T` | the existing record/closed kind rule; a fn/iface alias is rejected by kind (and `containsFn`/`containsIface` defensively) |
 | `&T` | `parseRefType`/reader borrow rule: `isOwned(fn/iface)` is false, so `&Cmp`/`&I` are rejected |
 | record/closed field (`fieldList`, `symFieldList`) | `rejectFn(field type, field message)`; interface fields are the interfaces phase's rule |
-| global (`varDecl`, `symGlobalDecl`) | `rejectFn(declared or inferred type, global message)`; a global lambda initializer is caught by `curFn == nil` first for an inferred global, and by the declared-type check for an explicit `var F: Cmp` |
+| global (`varDecl`, `symGlobalDecl`) | in `varDecl`, immediately after parsing a declared type (before the no-initializer/`nonNull` branch) call `rejectFn(t, global message)`, so `var G: Cmp` reports the function-value global message, not needs-initial-value; for an inferred global, `rejectFn` on the inferred type, with a global lambda initializer caught by `curFn == nil` first (`var F = fn ...` reports the lambda-inside-function message). `symGlobalDecl` applies `rejectFn` to its explicit type |
 | local (`varDecl`) | allow a bare function type/alias (`kind == "fn"`); `?Cmp`/`[]Cmp`/`Result[Cmp]` were rejected by the constructors; a record type with a fn field cannot exist |
 | function/method/lambda return (`fnDecl`, `symFnDecl`, lambda header) | `rejectFn(ret, return message)`; a function type returning a function type is rejected inside the fn type too |
 | constants (`constDecl`, `symConstDecl`) | a lambda is not a compile-time constant; `rejectFn(expression type)` defensively |
@@ -1051,7 +1063,19 @@ The position matrix (source and reader mirror it):
 | method receiver (`methodRecvType`, `symFnDecl`) | `rejectFn`/`rejectIface` with the receiver message (the existing kind check already rejects a bare fn/iface) |
 | interface member parameter/return | `rejectFn`/`rejectIface` with `an interface method cannot use a function value...` |
 | function type parameter/return (fn branch) | `rejectIface` on every parameter and the return (`a function value cannot take or return an interface value`); `rejectFn` on the **return** only (a function-type parameter is allowed) |
+| lambda header parameter/return (`lambdaExpr`) | `rejectIface` on every parsed header parameter and the return, and again recursively on the constructed lambda type (`a function value cannot take or return an interface value`); this is a separate formation site from the `fn(...)` type syntax and catches `fn (d: I): int`, `fn (): I`, an alias to `I`, and a nested lambda header |
 | `.sym` alias RHS (`symTypeDecl`) | the constructors above reject `?Cmp`/`[]Cmp`/`Result[Cmp]`; a bare fn alias is allowed and emitted |
+
+**`varDecl` order.** In `varDecl` (`obo.obo:6553-6677`) the global
+declared-type check runs **immediately after** `t = parseRefType()`, before
+the `if sym == T_ASSIGN` branch and before the no-initializer/`nonNull`
+branch: `if isGlobal && t != nil { rejectFn(t, global message) }`. Otherwise
+`var G: Cmp` with no initializer would hit `nonNull(fn)` and report
+`'G' of type fn(...) needs an initial value` instead of the function-value
+global message; the test pins the latter. A local `var f: fn(...)` with no
+initializer keeps the existing needs-initial-value error. For an inferred
+global `var F = fn ...`, the lambda literal is rejected first by
+`curFn == nil`, so the lambda-inside-function message wins.
 
 `checkAssign` must not add its usual nil hint (`declare it as ?fn(...)`) for
 a function destination, because `?fn` is not a type; the nil assignment
@@ -1103,12 +1127,15 @@ found symbol:
   an equivalent check that preserves those diagnostics; for a handle, also
   call `deadHandleCheck` so a tracked `let` handle already known dead is
   refused at the capture name (an untracked handle is the runtime residual).
-  This includes the **use marks**: a captured reference local or parameter
-  advances `useSeq` and sets `usedAt`/`staleUse` like naming it, and a
-  captured tracked handle sets `lastNamed`/`usedAt` (unless dead or
-  `alive`), so an enclosing `defer`'s use detection and the loop's
-  handle-naming check see the capture as a use. Without the marks a capture
-  can slip past `deferH`/`usedAt > useAt` or a loop's moved-handle check;
+  This includes the **use marks as the ordinary name use records them**: a
+  captured reference **local** advances `useSeq` and sets
+  `usedAt`/`staleUse`; a reference **parameter** is not `isRefLocal`, and
+  `nameItem` does not advance its `useSeq` (the capture still copies its
+  binding and runs the moved/freed/suspect checks). A captured tracked
+  handle sets `lastNamed`/`usedAt` (unless dead or `alive`), so an enclosing
+  `defer`'s use detection and the loop's handle-naming check see the capture
+  as a use. Without the marks a capture can slip past `deferH`/`usedAt >
+  useAt` or a loop's moved-handle check;
 - classify it by type (4.2) and reject strings/interfaces;
 - create a capture record `LambdaCap { outer: ^Sym; name: string; kind: int;
   typ: ^Type; bind: ?^RefBind }` in declaration order;
@@ -1554,23 +1581,28 @@ one deliberate strengthening for a **handle-rooted** capture:
   may free through a handle can leave `pureFn` true). A handle-rooted
   capture can be called later while the handle's target is live, so the
   stricter test is used for the capture binding. This is the interfaces
-  design's `handleSafe` shape.
+  design's `handleSafe` shape. The implementation tags the capture
+  pseudo-entry (a parallel `argIsCapture` flag alongside `argBinds`) and
+  applies this test only to that entry; ordinary reference arguments keep
+  the existing `!pureFn(f)` test, so no existing acceptance or message
+  changes.
 - global-rooted: the existing `mightFree(f, g)` rule and message.
 A **whole-object owned local or parameter** capture (and a scalar, handle or
 function-value capture with no root) passes even an impure callee: the
-closure body is pure, the captured object cannot be moved or mutably aliased
-by another argument of the same call (the hold and the mut-alias loop refuse
-it), and the callee cannot free that object through an unrelated reference.
-A callback helper is handle-safe in the normal case and allows deep,
-handle-rooted and global-rooted captures; an impure callee that writes
-through a handle refuses a deep/handle capture, and one that may free a
-global refuses a global-rooted capture, exactly like a reference argument.
-The mut argument overlap check is unchanged and conservative even for a
-handle-safe callee: the capture binding's `deeps` flag is false for a
-whole-object capture, so the existing pair loop refuses only a mut argument
-that overlaps a **deep** capture; a whole-object capture with a mut argument
-to the same object is the ordinary read-only-plus-mut pattern and is
-accepted (run case).
+closure body is pure, a later argument that **moves** the captured local is
+refused by the hold and `argOrderCheck`, and the callee cannot free that
+object through an unrelated reference. A mut reference to the same whole
+object is accepted: the closure reads current fields through its read-only
+binding, which is the ordinary read-only-plus-mut pattern. Only a **deep**
+capture overlaps a mut argument and is refused by the pair loop; the
+whole-object binding's `deeps` flag is false. A callback helper is
+handle-safe in the normal case and allows deep, handle-rooted and
+global-rooted captures; an impure callee that writes through a handle
+refuses a deep/handle capture, and one that may free a global refuses a
+global-rooted capture, exactly like a reference argument. The mut-alias loop
+is unchanged; because the whole-object binding's `deeps` flag is false, only
+a deep capture overlap is refused, and the whole-object-plus-mut case is an
+accepted run case.
 
 **Later calls do not repeat the capture check.** The binding exists **only at
 the call that receives the literal**. When a function-typed parameter or
@@ -1578,17 +1610,25 @@ local is passed onward, the later call has no capture binding, and the design
 does not pretend the same checks run there. The conclusion is sound because
 the first callee's effect summary is complete at the creator's call (declare
 before use; the active-call rule excludes a callee whose body is still on the
-compile stack) and already includes every transitive effect. If the first
+compile stack) and already includes every transitive effect. The exception is
+an ordinary self-call (`f == curFn`), which the active-call rule exempts and
+whose summary is therefore incomplete; the per-kind rules treat it as
+unknown (deep sees `f == curFn`, handle fails `handleSafe`/`pureFn`, global
+fails `mightFree`), while a whole-object capture remains safe. If the first
 callee, directly or through any callee it forwards the closure to, could
 free through a handle, `writesHandles` propagates into the first summary and
 the creator's deep or handle capture would have been refused; if it could
 free the captured global, `freed`/`mightFree` propagates and the
 global-rooted capture would have been refused; a handle-rooted capture is
-refused unless the first callee is fully `handleSafe`. The closure value
-itself exposes no
-reference to its environment, so a later callee cannot name a capture root
+refused unless the first callee is fully `handleSafe`. The function value
+exposes no language-visible reference to its environment (the env word is
+not accessible to source), so a later callee cannot name a capture root
 except through arguments the creator passed, and the creator's call checked
 those against the capture binding (mut-alias, arg-order, deep/handle/global).
+A lambda can **return a handle** to a captured object; that handle is an
+ordinary `^T` token, covered by the existing handle liveness residual (a
+stale handle traps with exit 7) and by the handle-rooted capture rules while
+the closure is live, not a reference to the environment.
 A later callee cannot store, return or outlive the function value (section
 1), so it cannot keep even that indirect access. A whole-object capture is
 safe for the same reason and needs no purity at all. This is why the
@@ -1611,11 +1651,11 @@ keeps the existing alignment contract.
 | `fnDecl` retry, `obo.obo:8592-8629` | outer home retry truncates the code from `f.addr`, which includes the island; forward-headed fixups from the island are >= `f.addr` and the existing scans truncate them (`8596-8610`) | no new scan; the island is recompiled by the retry; homes are off inside so there is no nested retry |
 | active-call rule | a call in a lambda body to a function/method whose body is still on the compile stack has an incomplete effect summary | maintain `fnStack: []^Sym`, pushed in `fnDecl` before `fnBody` (methods too) and around the island; `callFnWith`/`methodCall` reject a callee that is in the stack and is not `curFn`; the ordinary self-recursive call (`f == curFn`) keeps its existing handling |
 | `dropFrame`, `obo.obo:7985-7998` | rewrites a zero-frame entry and repoints calls to the old entry | called for the island before its cell is emitted; the cell stores the final entry |
-| `farCalls` | used by the outer `dropFrame` | save/truncate around the island; the hidden body's own calls are relative and already fixed |
+| `farCalls` | used by the outer `dropFrame`; the outer array holds pending repairs | save the outer handle and install a **fresh array** for the island, then restore the handle; truncating in place would lose the outer pending repairs. The hidden body's own calls are relative and already fixed |
 | `methodSyms`/`methodCall` | methods are functions with a receiver | function types are allowed in method parameter lists; no method values; no change to the registry |
 | `checkExports`/`closureCheck` | exported signatures must be closed over public types | recurse through function types |
 | `relation` | `==` on two function values would compare pointers | reject comparison |
-| `releaseTables` | per-compile tables are cleared between compiles | add `captureSyms = new []^Sym(0)`, `fnStack = new []^Sym(0)`, `lambdaArgOK = 0`, `inWhileCond = false`; hidden symbols and `FnRec`s die with the paired `symArena`/`fnArena` truncation (5.3.1) |
+| `releaseTables` | per-compile tables are cleared between compiles | add `captureSyms = new []^Sym(0)`, `fnStack = new []^Sym(0)`, `lambdaArgOK = 0`, `inWhileCond = false`. By default hidden `Sym`s die with `fnBody`'s `symArena` truncation and hidden `FnRec`s at compile end (`fnArena`); the paired `symArena`/`fnArena`/`argTemps` cleanup is optional (5.3.1) |
 
 **Arena/state cleanup.** After the island is final and the cell emitted:
 restore every saved handle and scalar from the `LamCtx`; restore
@@ -2147,6 +2187,7 @@ names, no trailing period, types through `tname`. `<T>` is a type,
 | handle type `^fn` / `handle(f)` | the existing handle-rule messages (`handles name records and closed types, not fn(...)` for the type; `handle needs a record or closed-type value that is not optional, not fn(...)` for the builtin) |
 | borrowed function type | `only records, closed types and arrays can be borrowed, not fn(...)` (existing) |
 | method receiver | `a method's receiver must be a record or closed type declared in this module, not fn(...)` (existing) |
+| function type or lambda header parameter/return is an interface or an alias to one | `a function value cannot take or return an interface value` (the `fn(...)` type syntax and the lambda header both apply it; a nested callback parameter is caught recursively) |
 | interface member signature | `an interface method cannot use a function value; function types are not supported in interfaces` |
 | forward type then fn alias | `a function type cannot be forward-declared: '<T>' is already declared as a forward type` |
 | exported signature mentions a private type inside a fn type | `exported '<f>' uses private type '<T>'; mark '<T>' pub too` (existing, via `closureCheck`) |
@@ -2240,14 +2281,21 @@ One `// ===` section per error with the exact section 9 text:
 - declaration: `mut` lambda parameter; return value without a return type;
   a lambda with a return type and a fall-through; `try` in a non-`Result`
   lambda; an uninitialized `var f: fn(...)`; empty capture list; function
-  return; field; array; optional; `Result`; global; constant (the reader-only
-  form is in 9.4); handle; `&fn`; method receiver; interface member (module
-  tree if interfaces is merged); forward shell + alias; private type inside
+  return; field; array; optional; `Result`; global (including a declared
+  `var G: Cmp` with no initializer, which reports the global function-value
+  message, not needs-initial-value); handle; `&fn`; method receiver;
+  interface member (module tree if interfaces is merged); forward shell +
+  alias; private type inside
   an exported callback signature (module tree). Every storage/return
   position is repeated through a `pub type Cmp = fn(...)` alias: `?Cmp`,
-  `[]Cmp`, `Result[Cmp]`, `^Cmp`, a record/closed field, a global, a
-  `const`, and a return, so an alias cannot smuggle a function type where
-  the raw form is refused.
+  `[]Cmp`, `Result[Cmp]`, `^Cmp`, a record/closed field, a global, and a
+  return, so an alias cannot smuggle a function type where the raw form is
+  refused. In this Stage A file (after interfaces merge), the lambda header
+  forms `fn (d: I): int`, `fn (): I`, and their aliases are also declared
+  here; a nested lambda header repeats the case. Source `const` has no type
+  annotation, so a `const Cmp` case belongs to the `.sym` malformed list
+  (10.6), not this source file; the source `const X = lambda` case is the
+  `curFn == nil` message in the contexts list.
 - calls: non-function local call (unchanged message); arity (too few/too
   many); argument type/mode (owned vs `&`, `&` to owned, owned to `&`);
   calling a function value with a record argument when it expects `&T`;
@@ -2334,9 +2382,13 @@ One `// ===` section per error with the exact section 9 text:
   active-call rule, not only the function form);
 - a function type containing an interface in any position: a parameter, the
   return, a nested callback parameter, and an alias to the interface used as
-  one of those; the source forms and their `.sym` forms. (An interface in an
-  optional/array/Result outside a function type belongs to the interfaces
-  phase's own error tests, not this file);
+  one of those; the source forms and their `.sym` forms. Also the lambda
+  header as a separate formation site: `fn (d: I): int { ... }`,
+  `fn (): I { ... }`, an alias to `I` in each position, and a nested lambda
+  header whose inner header takes or returns `I`; each reports
+  `a function value cannot take or return an interface value`. (An interface
+  in an optional/array/Result outside a function type belongs to the
+  interfaces phase's own error tests, not this file);
 - the constructor/alias storage smuggling forms: `var f: ?Cmp`,
   `var a: []Cmp`, `var r: Result[Cmp]`, `var h: ^Cmp`, a record/closed field
   of `Cmp`, a global `Cmp`, a `const` lambda, a return `Cmp`, and the same
@@ -2496,6 +2548,7 @@ expectation.
 | `containsFn` missing at one constructor (`?`/`[]`/`Result`) or in the reader | the alias-spelling smuggling case is accepted in that position |
 | `containsFn` checks only `kind == "fn"` (not an alias spelling) | `?Cmp`/`[]Cmp`/`Result[Cmp]` accepted although the raw form is refused |
 | interface allowed inside a function type (source or reader) | the interface-in-fn-type error cases |
+| lambda header skips `rejectIface` (only the `fn(...)` type syntax checks) | `fn (d: I): int`, `fn (): I`, an alias, and the nested-lambda-header cases are accepted |
 | lambda parameter `mut` accepted | errors |
 | hidden body compiled in the outer frame/no prologue | run crash/wrong output |
 | env not pushed first (or pushed after the args) | shifted arguments/wrong output |
@@ -2576,7 +2629,10 @@ On the merged tree, per stage:
    `fnRet`); `same`/`assignable`/`tname`; `isOwned`/`isRef`/`nonNull`;
    `parseType`/`symParseType` branches and every storage restriction;
    `fieldList`/`varDecl`/`fnDecl`/`constDecl`/`ok`/`relation` checks;
-   `closureCheck`; interface-member rejection (if merged). Build with the
+   `closureCheck`; interface-member rejection (if merged); the lambda
+   header's `rejectIface` (the header is a function-type formation site);
+   and `varDecl`'s global declared-type `rejectFn` **immediately after**
+   `parseRefType`, before the no-initializer/`nonNull` branch. Build with the
    0.7 seed; the full existing suite must pass unchanged.
 2. **Function types in `.sym`, version bump and fixtures.** `appTypeExpr`,
    `symTypeText`, `appParams`/`appFn`/`appMethod`/`appTypeAlias`;
@@ -3077,8 +3133,13 @@ the capture list to the cell/code emission step.
       constant, handle, borrow, receiver, interface member; every one is
       repeated through an alias (`?Cmp`, `[]Cmp`, `Result[Cmp]`, `^Cmp`,
       field/global/return/const `Cmp`); an interface in any function-type
-      parameter/return is refused; the reader applies the same recursive
-      `containsFn`/`containsIface` checks.
+      parameter/return is refused, including the separate lambda-header
+      site (`fn (d: I): int`, `fn (): I`, aliases, nested headers); the
+      reader applies the same recursive `containsFn`/`containsIface` checks.
+- [ ] `varDecl` applies the global declared-type `rejectFn` immediately
+      after `parseRefType`, before the no-initializer/`nonNull` branch, so
+      `var G: Cmp` reports the global function-value message; the test pins
+      it.
 - [ ] The lambda parser rejects `mut` parameters, an empty capture list,
       duplicate captures, a capture that is also a parameter, and a function
       return; a non-void body must return on every path.
