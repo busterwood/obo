@@ -1,0 +1,14 @@
+module lib
+// the pfree bits of an imported member: a plain member may change what is below its mut parameters (p1 and
+// p2 here, not the read-only p0), a pure member may change nothing that a call can see, a pure mut member may
+// change its receiver's scalars
+pub type Leaf = ref record { v: int }
+pub type Item = ref record { n: int; o: ?Leaf }
+pub type Sink = interface {
+    fn f(p0: &Item, mut p1: &Item, mut p2: &Item): int
+}
+pub type Reader = interface {
+    pure fn area(): int
+    pure mut fn bump(): int
+    pure fn size(mut p0: &Item): int
+}

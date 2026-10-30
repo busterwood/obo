@@ -1,0 +1,84 @@
+// Borrowed interfaces, B1 (v3 4, 12.1 R2): a conversion site inside a loop rewrites one frame cell, but every
+// &I local owns its own two-word pair slot, so a value saved from an earlier pass keeps its own object and
+// vtable. best = cur, an argument's per-site cell, and a walk variable saved across passes are the three ways
+// a stale cell could otherwise be aliased. OBO_CHECK=1 proves that no box or object leaks.
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+type Rect = ref record { w: int; h: int }
+fn (q: &Square) area(): int { return q.s }
+fn (r: &Rect) area(): int { return r.w * r.h }
+impl Shape for Square
+impl Shape for Rect
+
+fn areaOf(d: &Shape): int { return d.area() }
+
+fn main() {
+    let items = new []Shape(0)
+    append(items, new Square{s: 3})
+    append(items, new Square{s: 8})
+    append(items, new Square{s: 2})
+
+    // a conversion site in a loop, and a saved &I local
+    var best: &Shape = &items[0]
+    var first: &Shape = &items[0]
+    var i = 0
+    while i < len(items) {
+        let cur: &Shape = &items[i]
+        if i == 0 { first = cur }
+        if cur.area() > best.area() { best = cur }
+        i += 1
+    }
+    println(best.area(), " ", first.area())          // expect: 8 3
+
+    // re-pointing a var stores a pair copy, not a pointer to the site's cell
+    var chosen: &Shape = &items[0]
+    for d in items {
+        if d.area() == 8 { chosen = &items[2] }
+    }
+    println(chosen.area())                            // expect: 2
+
+    // a walk variable is the element's box pointer, not a copied pair: save it across passes
+    var saved: &Shape = &items[0]
+    var last: &Shape = &items[0]
+    var n = 0
+    for d in items {
+        if n == 0 { saved = d }
+        last = d
+        n += 1
+    }
+    println(saved.area(), " ", last.area())           // expect: 3 2
+
+    // one pair-copy site in a loop over mixed owned interfaces: the sources are interface
+    // elements, not concrete conversions, but their vtables alternate Square/Rect/Square.
+    // 'cur' and the destination saved into start on Square's vtable, so the single 'cur = d'
+    // site must replace a prior vtable on the Rect pass. If the copy took only obj, the saved
+    // Rect would dispatch Square.area and print 2; a later pass must not disturb the save.
+    let mixed = new []Shape(0)
+    append(mixed, new Square{s: 4})
+    append(mixed, new Rect{w: 2, h: 3})
+    append(mixed, new Square{s: 9})
+    let anchor = new Square{s: 0}
+    var cur: &Shape = &anchor
+    var kept: &Shape = &anchor
+    var pass = 0
+    for d in mixed {
+        cur = d
+        if pass == 1 { kept = cur }
+        pass += 1
+    }
+    println(kept.area(), " ", cur.area())             // expect: 6 9
+
+    // the per-site cell of an argument is consumed by the call, while a local copied from it stays put
+    var held: &Shape = &items[0]
+    var sum = 0
+    i = 0
+    while i < len(items) {
+        held = &items[i]
+        sum += areaOf(&items[i])
+        i += 1
+    }
+    println(sum, " ", held.area())                    // expect: 13 2
+    println("done")                                   // expect: done
+}

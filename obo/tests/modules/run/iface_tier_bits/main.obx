@@ -1,0 +1,42 @@
+module main
+import "lib.obx"
+// the member's p2 is mut: the method may free what is below it
+pub type Late = ref record { k: int }
+pub fn (l: &Late) f(p0: &lib::Item, mut p1: &lib::Item, mut p2: &lib::Item): int {
+    p2.o = nil
+    return p0.n + p1.n + p2.n
+}
+pub impl lib::Sink for Late
+// the member's p1 is mut: a method that frees only below p1
+pub type Early = ref record { k: int }
+pub fn (e: &Early) f(p0: &lib::Item, mut p1: &lib::Item, mut p2: &lib::Item): int {
+    p1.o = nil
+    return p0.n + p1.n + p2.n
+}
+pub impl lib::Sink for Early
+// a pure member and a method that is pure: it reads, and writes nothing
+pub type Quiet = ref record { w: int }
+pub fn (q: &Quiet) area(): int { return q.w * q.w }
+pub fn (mut q: &Quiet) bump(): int {
+    q.w += 1
+    return q.w
+}
+pub fn (q: &Quiet) size(mut p0: &lib::Item): int {
+    p0.n += 1
+    return p0.n
+}
+pub impl lib::Reader for Quiet
+fn main() {
+    let late = new Late{k: 1}
+    let early = new Early{k: 2}
+    let a = new lib::Item{n: 1, o: new lib::Leaf{v: 5}}
+    let b = new lib::Item{n: 2, o: new lib::Leaf{v: 6}}
+    let c = new lib::Item{n: 3, o: new lib::Leaf{v: 7}}
+    println(late.f(a, b, c))
+    println(early.f(a, b, c))
+    let q = new Quiet{w: 3}
+    println(q.area(), " ", q.bump(), " ", q.size(a))
+}
+// expect: 6
+// expect: 6
+// expect: 9 4 2

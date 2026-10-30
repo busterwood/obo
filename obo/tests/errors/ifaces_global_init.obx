@@ -1,0 +1,26 @@
+// Interface method calls in global initializers, step 6 of v3 (design 5.4, 11 and 12.2 E10): the init chain has no
+// frame to hold the vtable, so a call is refused before the frame cell and the dispatch. The check is at the call,
+// so a nested argument and a compound expression are caught as well, and the arity is irrelevant. The workaround,
+// a function called from the initializer, is what adds the interface value.
+type Shape = interface {
+    pure fn area(): int
+    pure fn add(a: int, b: int): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+fn (q: &Square) add(a: int, b: int): int { return q.s + a + b }
+impl Shape for Square
+var G: Shape = new Square{s: 1}
+fn id(n: int): int { return n }
+
+// === a direct call with no arguments
+var A = G.area()  // error: an interface method cannot be called in a global initializer; call a function that does it, as in var G = initG()
+
+// === a call nested in an argument
+var A = id(G.area())  // error: an interface method cannot be called in a global initializer; call a function that does it, as in var G = initG()
+
+// === a call in a compound expression
+var A = G.area() + 1  // error: an interface method cannot be called in a global initializer; call a function that does it, as in var G = initG()
+
+// === a call with many arguments
+var A = G.add(1, 2)  // error: an interface method cannot be called in a global initializer; call a function that does it, as in var G = initG()

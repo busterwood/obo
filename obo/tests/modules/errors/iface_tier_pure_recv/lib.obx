@@ -1,0 +1,5 @@
+module lib
+pub type Leaf = ref record { v: int }
+pub type Counter = interface {
+    pure mut fn bump(): int
+}

@@ -1,0 +1,132 @@
+// R9 (v3 12.1): an interface-heavy program used by homes_check in both register modes and by port_compare.
+// It keeps owned and borrowed values live across dispatch, copies a &I pair in a loop, narrows an optional,
+// nests interface calls in many-argument calls and walks an owned group, so a codegen or register-mode
+// difference changes its output. OBO_CHECK=1 also proves every box is freed exactly once.
+type Shape = interface {
+    pure fn area(): int
+    mut fn grow(k: int)
+    pure fn label(): string
+    pure mut fn bump(): int
+}
+type Apply = interface {
+    pure fn apply(a: Shape, b: &Shape, k: int): int
+}
+type Square = ref record { s: int; tag: string }
+type Rect = ref record { w: int; h: int; tag: string }
+type Group = ref record { items: []Shape; tag: string }
+
+fn (q: &Square) area(): int { return q.s * q.s }
+fn (mut q: &Square) grow(k: int) { q.s += k }
+fn (q: &Square) label(): string { return q.tag }
+fn (mut q: &Square) bump(): int {
+    q.s += 1
+    return q.s
+}
+fn (r: &Rect) area(): int { return r.w * r.h }
+fn (mut r: &Rect) grow(k: int) { r.w += k; r.h += k }
+fn (r: &Rect) label(): string { return r.tag }
+fn (mut r: &Rect) bump(): int {
+    r.w += 1
+    return r.w
+}
+fn (g: &Group) area(): int {
+    var sum = 0
+    var i = 0
+    while i < len(g.items) {
+        sum += g.items[i].area()
+        i += 1
+    }
+    return sum
+}
+fn (mut g: &Group) grow(k: int) {
+    var i = 0
+    while i < len(g.items) {
+        g.items[i].grow(k)
+        i += 1
+    }
+}
+fn (g: &Group) label(): string { return g.tag }
+fn (mut g: &Group) bump(): int {
+    g.items[0].bump()
+    return len(g.items)
+}
+impl Shape for Square
+impl Shape for Rect
+impl Shape for Group
+
+fn (g: &Group) apply(a: Shape, b: &Shape, k: int): int {
+    return g.area() + a.area() + b.area() + k
+}
+impl Apply for Group
+
+fn total(xs: &[]Shape): int {
+    var sum = 0
+    var i = 0
+    while i < len(xs) {
+        sum += xs[i].area()
+        i += 1
+    }
+    return sum
+}
+
+fn many(a: Shape, b: Shape, c: Shape, d: &Shape, e: &Shape, k: int, j: int): int {
+    return a.area() + b.area() + c.area() + d.area() + e.area() + k + j
+}
+
+fn makeShape(n: int): Shape {
+    if n % 2 == 0 { return new Square{s: n, tag: "square"} }
+    return new Rect{w: n, h: 2, tag: "rect"}
+}
+
+fn main() {
+    let shapes = new []Shape(0)
+    append(shapes, makeShape(2))
+    append(shapes, new Rect{w: 3, h: 4, tag: "rect"})
+    append(shapes, new Square{s: 5, tag: "square"})
+    println(total(&shapes))                                  // expect: 41
+
+    // every element is changed through the member; the sum is read again through a borrowed parameter
+    var i = 0
+    while i < len(shapes) {
+        shapes[i].grow(1)
+        i += 1
+    }
+    println(total(&shapes))                                  // expect: 65
+
+    // a saved &I pair from an earlier pass keeps its object and vtable
+    var best: &Shape = &shapes[0]
+    var first: &Shape = &shapes[0]
+    i = 0
+    while i < len(shapes) {
+        let cur: &Shape = &shapes[i]
+        if i == 0 { first = cur }
+        if cur.area() > best.area() { best = cur }
+        i += 1
+    }
+    println(first.area(), " ", best.area())                  // expect: 9 36
+
+    // a separate owned group dispatches recursively; its member applies an owned and a borrowed argument
+    let gitems = new []Shape(0)
+    append(gitems, makeShape(2))
+    append(gitems, makeShape(3))
+    let g: Apply = new Group{items: gitems, tag: "group"}
+    println(g.apply(makeShape(4), best, 3))                  // expect: 65
+    let manySum = many(makeShape(6), new Square{s: 1, tag: "s"}, new Rect{w: 1, h: 1, tag: "r"},
+                       first, best, 2, 4)
+    println(manySum)                                         // expect: 89
+
+    // an optional receiver narrows to an owned interface local, then calls a mut member
+    let o: ?Shape = new Square{s: 7, tag: "opt"}
+    if o != nil {
+        o.grow(1)
+        println(o.area())                                    // expect: 64
+    }
+    println(o == nil)                                        // expect: false
+
+    // a field, an element and a nested call as the receiver of a many-argument member
+    let holder = new Group{items: new []Shape(0), tag: "h"}
+    append(holder.items, makeShape(2))
+    append(holder.items, makeShape(3))
+    println(holder.apply(makeShape(8), &holder.items[0], holder.items[1].area()))  // expect: 84
+    println("done")                                          // expect: done
+}

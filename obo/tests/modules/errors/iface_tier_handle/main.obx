@@ -1,0 +1,10 @@
+module main
+import "lib.obx"
+// a plain member: the implementation may not write an owned value through a handle, even below a mut parameter
+pub type Late = ref record { k: int }
+pub fn (l: &Late) f(mut p0: &lib::Holder): int {
+    p0.b.items = new []int(0)
+    return 1
+}
+pub impl lib::Sink for Late
+fn main() {}

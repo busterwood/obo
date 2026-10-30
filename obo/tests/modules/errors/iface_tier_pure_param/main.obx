@@ -1,0 +1,10 @@
+module main
+import "lib.obx"
+// a pure member: the implementation may not free anything below its mut parameter
+pub type Quiet = ref record { w: int }
+pub fn (q: &Quiet) size(mut p0: &lib::Item): int {
+    p0.o = nil
+    return p0.n
+}
+pub impl lib::Reader for Quiet
+fn main() {}

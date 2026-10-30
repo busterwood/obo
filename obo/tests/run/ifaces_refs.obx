@@ -1,0 +1,155 @@
+// Borrowed interfaces, step 5 of v3 (12.1 R6, 7.1 and 6.4): &I and mut &I locals, parameters and walk variables;
+// a concrete record, a field and an element borrowed as &I; an owned interface place borrowed without a cell;
+// many and nested arguments; a join; a defer over an unchanged reference; &?I parameters and walk variables,
+// narrowed to &I; aliases; and ordinary borrowed array and Result containers. OBO_CHECK=1 proves every box is
+// freed exactly once.
+type Shape = interface {
+    pure fn area(): int
+    mut fn grow(k: int)
+}
+type Apply = interface {
+    pure fn apply(d: &Shape): int
+}
+type Square = ref record { s: int }
+type Rect = ref record { w: int; h: int }
+type Holder = ref record { d: Shape; o: ?Shape; items: []Shape }
+type S = Shape
+
+fn (q: &Square) area(): int { return q.s * q.s }
+fn (mut q: &Square) grow(k: int) { q.s += k }
+fn (r: &Rect) area(): int { return r.w * r.h }
+fn (mut r: &Rect) grow(k: int) { r.w += k }
+fn (q: &Square) apply(d: &Shape): int { return q.s + d.area() }
+impl Shape for Square
+impl Shape for Rect
+impl Apply for Square
+
+fn describe(d: &Shape): int { return d.area() }
+fn aliasArea(d: &S): int { return d.area() }
+fn twice(d: &Shape): int { return describe(d) + d.area() }
+fn many(d: &Shape, k: int, e: &Shape): int { return d.area() + k + e.area() }
+fn bump(mut d: &Shape): int {
+    d.grow(1)
+    return d.area()
+}
+fn growAll(mut xs: &[]Shape, k: int) {
+    for d in xs { d.grow(k) }
+}
+fn maybe(o: &?Shape): int {
+    if o != nil {
+        let d: &Shape = o
+        return d.area()
+    }
+    return -1
+}
+fn bumpOpt(mut o: &?Shape) {
+    if o != nil { o.grow(100) }
+}
+fn resultArea(r: &Result[Shape]): int {
+    match r {
+        ok { return r.value.area() }
+        err { return -1 }
+    }
+}
+var GS: Shape = new Square{s: 2}
+var GA = describe(GS)                 // borrowing an owned I global needs no cell
+
+fn withDefer() {
+    let c = new Square{s: 6}
+    let r: &Shape = &c
+    defer println(r.area())
+    r.grow(0)
+}
+
+fn main() {
+    println(GA)                                                  // expect: 4
+    let c = new Square{s: 3}
+    let d = new Rect{w: 2, h: 5}
+    let r: &Shape = &c
+    println(r.area(), " ", describe(&c), " ", describe(c))       // expect: 9 9 9
+    println(describe(r), " ", twice(r), " ", aliasArea(r))       // expect: 9 18 9
+    let m: &S = &d
+    println(m.area())                                            // expect: 10
+
+    // many and nested calls, and a member whose parameter is &Shape
+    println(many(&c, m.area(), &d))                              // expect: 29
+    let ap: Apply = new Square{s: 2}
+    println(ap.apply(&c), " ", ap.apply(r))                      // expect: 11 11
+
+    // mut &I parameters (concrete and owned interface sources), and mut &[]I
+    println(bump(r), " ", c.s)                                   // expect: 16 4
+    let s: Shape = new Square{s: 5}
+    let q: &Shape = s
+    println(bump(q), " ", s.area())                              // expect: 36 36
+    let items = new []Shape(0)
+    append(items, new Square{s: 1})
+    append(items, new Rect{w: 3, h: 4})
+    growAll(&items, 2)
+    println(items[0].area(), " ", items[1].area())               // expect: 9 20
+
+    // fields and elements, borrowed as &I
+    let hitems = new []Shape(0)
+    append(hitems, new Square{s: 1})
+    append(hitems, new Rect{w: 3, h: 4})
+    let h = new Holder{d: new Square{s: 7}, o: new Square{s: 8}, items: hitems}
+    let f: &Shape = &h.d
+    let e: &Shape = &h.items[1]
+    println(f.area(), " ", e.area())                             // expect: 49 12
+
+    // a join: both arms point at concrete locals, and the reference is used after it
+    var j: &Shape = &c
+    if c.s > 0 { j = &d } else { j = &c }
+    println(j.area())                                            // expect: 10
+    var k: &Shape = &d
+    k = &c
+    println(k.area())                                            // expect: 16
+
+    // &?I parameters: nil, a ?I place, an I place, a &I and a concrete borrow; a narrowed copy becomes &I
+    println(maybe(&h.o))                                         // expect: 64
+    let no: ?Shape = nil
+    println(maybe(&no))                                          // expect: -1
+    println(maybe(s))                                            // expect: 36
+    println(maybe(r))                                            // expect: 16
+    println(maybe(&c))                                           // expect: 16
+
+    // a mut &?I parameter narrows and calls a mut member: a non-nil optional field and a nil place
+    bumpOpt(&h.o)
+    println(maybe(&h.o))                                         // expect: 11664
+    bumpOpt(&no)
+    println(maybe(&no))                                          // expect: -1
+
+    // walks over []I, []?I and borrowed arrays: a walk variable is the element's box pointer
+    var sum = 0
+    for x in items { sum += x.area() }
+    println(sum)                                                 // expect: 29
+    let ropts = new []?Shape(3)
+    ropts[0] = new Square{s: 2}
+    ropts[1] = nil
+    ropts[2] = new Rect{w: 1, h: 6}
+    var os = 0
+    for x in ropts {
+        if x != nil {
+            let held: &Shape = x
+            os += held.area()
+        }
+    }
+    println(os)                                                  // expect: 10
+    let ritems = &items
+    var rs = 0
+    for x in ritems { rs += x.area() }
+    println(rs)                                                  // expect: 29
+    let ropts2 = &ropts
+    var os2 = 0
+    for x in ropts2 { if x != nil { os2 += x.area() } }
+    println(os2)                                                 // expect: 10
+
+    // a defer over a &I reference that is never pointed elsewhere is accepted
+    withDefer()                                                  // expect: 36
+
+    // ordinary borrowed containers of interface values keep their existing rule
+    let sv: Shape = new Square{s: 4}
+    let res: Result[Shape] = ok(sv)
+    let rr = &res
+    println(resultArea(rr))                                      // expect: 16
+    println("done")                                              // expect: done
+}

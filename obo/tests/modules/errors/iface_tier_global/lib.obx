@@ -1,0 +1,5 @@
+module lib
+pub type Item = ref record { n: int }
+pub type Sink = interface {
+    fn f(p0: &Item): int
+}

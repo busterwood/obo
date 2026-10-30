@@ -1,0 +1,2 @@
+module dep
+pub type T2 = ref record { w: int }

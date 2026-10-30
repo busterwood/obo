@@ -125,6 +125,10 @@ while nothing it may point into has been changed.
 
 - References are for parameters and local variables only. They cannot be stored
   in fields, elements or globals, and cannot be returned.
+- A reference to an interface value (`&I`, `mut &I`) follows exactly these rules.
+  In particular it is a parameter or a local, never a field, element, global or
+  return type; the compiler refuses those positions with the same messages as
+  `&T`, because the spelling in the type position is what it rejects.
 - Passing an owned value to a reference parameter borrows it. The caller keeps
   ownership:
 
@@ -790,6 +794,212 @@ pub fn (b: &Builder) count(): int { return b.n }
 The method diagnostics are in section 10; `T::m` (and `lib::T::m` for another
 module) is the spelling throughout.
 
+## 5b. Interfaces
+
+An interface is a named set of methods that a record or closed type can implement. A value of interface type is
+either an **owned box** (`I`, `?I`) or a **borrowed pair** (`&I`, `mut &I`, `&?I`); an interface is never a value
+of its own kind with fields or identity. The implemented form is `0.8`; lambdas are `0.9`/`0.10`, and handles to
+interfaces (`^I`) are a later phase.
+
+### Declarations and implementations
+
+```text
+type Shape = interface {
+    pure fn area(): int
+    mut fn grow(k: int)
+    pure mut fn bump(): int
+}
+
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s * q.s }
+fn (mut q: &Square) grow(k: int) { q.s += k }
+fn (mut q: &Square) bump(): int { q.s += 1; return q.s }
+impl Shape for Square
+```
+
+- `type I = interface { ... }` declares an interface; it needs at least one member, is never forward-declared,
+  and a member is `[pure] [mut] fn name(params)[: T]`. `pure` and `mut` come before `fn`; `pub` is not allowed
+  on a member (mark the interface type `pub`). A member cannot take or return a function value.
+- A member's receiver is parameter 0: borrowed for `fn`, mutable for `mut fn`; it is not written in the member.
+  Explicit parameters are owned `p: T`, borrowed `p: &T`, or mutable borrowed `mut p: &T`. `mut p: T` is the
+  existing `mut needs a reference parameter` error. Interface types may appear as parameter and return types.
+- `impl I for T` is a conformance declaration with no body. `T` is a record or closed type defined in this
+  module, by its defining name, not a variant and not an alias; `I` is an interface (qualified `M::I` across
+  modules). Interfaces, implementations and methods are declared before use. A type may implement several
+  interfaces, and two interfaces may share member names.
+- The implementation must match every member exactly: receiver mode (`mut fn` needs `mut &T`, `fn` needs `&T`),
+  argument count, argument types, argument modes, and return type. A `pure` member needs a method that is pure.
+  A plain or `mut` member (the **local** tier) needs a method that writes no owned value through a handle, frees
+  no global, does not call an uncompiled function, and frees nothing below a parameter the member does not
+  declare `mut`. A method must be defined before its implementation.
+- A `pub impl` is visible to importers; a private implementation is not. An imported private implementation
+  is reported as `module 'M' has no exported implementation of 'I' for 'T' (only 'pub' implementations are
+  visible)`.
+
+### Owned values, moves and conversions
+
+`I` is a box holding the object pointer and its vtable; `?I` is nil or a box. Converting a record or closed
+value into `I` at a typed destination allocates a box and **moves** the value into it. A variant uses its
+closed parent's implementation and vtable.
+
+```obo
+// example: runs
+// prints 25
+// prints 13
+// prints 25
+type Shape = interface {
+    pure fn area(): int
+    mut fn grow(k: int)
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s * q.s }
+fn (mut q: &Square) grow(k: int) { q.s += k }
+impl Shape for Square
+
+fn total(xs: &[]Shape): int {
+    var sum = 0
+    for s in xs { sum += s.area() }
+    return sum
+}
+
+fn main() {
+    let a: Shape = new Square{s: 3}
+    a.grow(2)
+    println(a.area())                       // 25
+    let xs = new []Shape(0)
+    append(xs, new Square{s: 2})
+    append(xs, new Square{s: 3})
+    println(total(&xs))                     // 13
+    let o: ?Shape = new Square{s: 5}
+    if o != nil { println(o.area()) }       // 25
+}
+```
+
+The typed destinations are `let`/`var` with a type, assignment to a typed place, a call argument, an
+`append` element, a `replace` value, a constructor field, `return`, and an `ok` payload that already has the
+interface type. Inference never creates an interface: `let e = &c` stays `&Circle` and `let e = c` stays `Circle`.
+
+Rules and refusals:
+
+- `T` or a variant that implements `I` moves into a box. A borrowed `T` cannot become owned: `cannot use a
+  borrowed 'T' as owned interface 'I': move the value in, or take the interface as '&I'`.
+- An owned `I` moves as a box, with no allocation; `I -> ?I` widens. An `&I` only borrows; moving out of it is
+  `cannot move out of a reference: a reference only borrows`.
+- `?T -> ?I` and `?T -> I` are not conversions in this version: `cannot use ?T as interface 'I' (it may be nil:
+  take it into a local, return if nil, then convert the local)`. Narrow a taken local and move that local:
+
+  ```obo
+  // example: runs
+  // prints 9
+  type Shape = interface { pure fn area(): int }
+  type Square = ref record { s: int }
+  fn (q: &Square) area(): int { return q.s * q.s }
+  impl Shape for Square
+  type Holder = ref record { o: ?Square }
+
+  fn main() {
+      let h = new Holder{o: new Square{s: 3}}
+      let t = take(h.o)
+      if t == nil { return }
+      let s: Shape = t
+      println(s.area())
+  }
+  ```
+
+  In an `if`/`else`, consume the local in both arms: `if t != nil { let s: Shape = t; append(out, s) } else {
+  drop(t) }`. A field cannot be narrowed directly; take it into a local first.
+- Another interface does not convert: `cannot use interface 'I2' as 'I': interface values do not convert`.
+  Arrays, strings, scalars and `Result[T]` are not records: `cannot use <t> as interface 'I'`. An `ok(new T)`
+  where `Result[I]` is wanted is refused with the store-first hint. A `^T` is not owned: `cannot use ^T as
+  interface 'I'`.
+- A conversion needs a visible implementation. A local missing one is `type 'T' does not implement interface
+  'I'`; a foreign one is `module 'M' has no exported implementation of 'I' for 'T' (only 'pub' implementations
+  are visible)`.
+
+Owned interface values follow the record ownership rules without exception. `let e = d` moves the box; a
+by-value parameter consumes it; assigning an `I` field frees the old box and its object; scope exit, `drop`,
+`truncate`, array/`Result` teardown and global teardown free boxes. `take` works only on optionals and returns
+an optional; `replace(place, new)` moves the old value out of a non-optional field, element or global and
+stores the new one. A plain `let` cannot move out of a field or element.
+
+### Borrowed interfaces
+
+`&I` is a pointer to a `{obj, vtable}` pair. It is second-class: parameters, locals and `for` walk variables
+only; never stored in a field, element or global, never returned. Every `&I` local owns its own pair slot, and
+`let`, `var` and re-point copy both words into it (the B1 rule), so a value saved from an earlier loop pass
+does not follow a later conversion. A concrete `&c` argument uses a frame cell for the call; an owned `I` place
+is borrowed without a cell by pointing at its box.
+
+```obo
+// example: runs
+// prints 16 16
+// prints 25
+type Shape = interface {
+    pure fn area(): int
+    mut fn grow(k: int)
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s * q.s }
+fn (mut q: &Square) grow(k: int) { q.s += k }
+impl Shape for Square
+
+fn describe(d: &Shape): int { return d.area() }
+fn bump(mut d: &Shape): int {
+    d.grow(1)
+    return d.area()
+}
+
+fn main() {
+    let c = new Square{s: 4}
+    let d: &Shape = &c
+    println(d.area(), " ", describe(&c))          // 16 16
+    println(bump(d))                              // 25
+}
+```
+
+An `&I` is a reference local, so the reference rules apply: a visible change that may free the target
+invalidates it, a loop must re-point it on every path or none, and it cannot be pointed elsewhere while a
+`defer` uses it. `&?I` is only a parameter or a walk variable (explicit and inferred locals are refused:
+`an optional interface reference can only be a parameter or a walk variable; narrow it to a '&I' local`).
+A non-nil `&?I` narrows to `&I`; take a copied `&I` local with `let d: &I = o`.
+
+### Calls, effects and globals
+
+Any designator of type `I`, `&I` or a narrowed `&?I` can be a receiver: a local, parameter, field, element,
+global, `Result` value, or walk variable. A call through an interface is a direct call on the box's object
+(argument 0), with the object and vtable loaded before the explicit arguments. A `mut` member needs a writable
+receiver. The caller uses the member's synthetic summary, not the implementation's:
+
+- `pure` means the member frees nothing and writes no owned value through a handle. It may still write scalars,
+  globals and its receiver, so `pure` does **not** forbid those writes.
+- A plain or `mut` member may free only below its own `mut` parameters (the receiver for `mut fn`), so a call
+  invalidates references below those places. It never frees a global or writes through a handle.
+
+A reference borrowed through a handle can be passed only to a member that cannot free; otherwise the message
+is `cannot pass a reference that borrows through a handle to interface method 'I::m': it might free what the
+handle names`. A later argument that may free the receiver is refused: `argument N of interface method 'I::m'
+may free what the receiver points into, and runs after it; compute it before the call`.
+
+Global initializers may contain owned conversions, borrowing an owned `I` global, and moving an owned `I` value
+into a global. A concrete-to-`&I` conversion that would need a cell is refused: `cannot create a borrowed
+interface value in a global initializer: pass the concrete value to a function that makes it`. An interface
+method call anywhere in a global initializer is refused: `an interface method cannot be called in a global
+initializer; call a function that does it, as in var G = initG()`.
+
+### Equality, handles and limits
+
+Interface values cannot be compared: `interface values cannot be compared; test an optional with '== nil' or
+'!= nil'`. `?I == nil` and `?I != nil` are allowed and narrow; `I == nil` keeps `cannot compare I with nil`.
+`handle` still names records and closed types only in this phase: `handles name records and closed types, not I`
+(and `not ?I` for an optional). `^I`, `alive` of an interface and a `pure mut` write through a handle are later
+work.
+
+Not in this phase: interface-to-interface conversion, structural typing, variance, superinterfaces, downcasts,
+type tests, owned-receiver members, method values, an impure member tier, `?T -> ?I`, and `^I`. An interface
+member cannot take or return a function value; the lambda firewall is part of the lambda phase. An interface
+value cannot be `new`-ed, used as a constant, `match`ed, or printed: `new I` is `'I' is not a record type`,
+`new []I(n > 0)` starts as nil (use `[]?I` or start empty), and a missing initializer is the existing nil error.
+
 ## 6. Modules
 
 Modules: one source file is one **module**, imported modules are compiled
@@ -971,7 +1181,7 @@ build** still requires every source; if only a `.sym` exists it reports
 without source` (exit 2). The checked root is exempt from the basename rule (it is
 the root of its check graph), and its `.sym` is named by its declared module name.
 
-`--version` prints `obo 0.6 sym-format 2 abi 1`; the numbers are the `obosym`
+`--version` prints `obo 0.8 sym-format 4 abi 1`; the numbers are the `obosym`
 format, the compiled-program ABI and the compiler version, each checked exactly
 when a `.sym` is read. `--reemit-sym FILE` is a testing hook: it reads a symbol
 file with the reader and prints the canonical re-emission, which the symbol-file
@@ -982,9 +1192,9 @@ tests compare byte-for-byte.
 A `.sym` is text in a language-like declaration syntax, readable by the scanner:
 
 ```text
-obosym 2
+obosym 4
 abi 1
-compiler "0.6"
+compiler "0.8"
 source 0x0123456789abcdef
 dep io "io.obx"
 interface 0xfedcba9876543210
@@ -994,6 +1204,7 @@ type Builder uid 0x3333333333333333
 type Builder = ref record { items: []string; count: int }
 type Node = ref record { value: int; next: ?Node }
 type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
+type Sized = interface { pure fn size(): int; mut fn fill(mut p0: &Builder) }
 type Text = []string
 const Limit: int = 0x000000000000000a
 const Empty: string = hex "6e6f6e65"
@@ -1001,6 +1212,7 @@ var Cache: []Node
 let Default: int
 fn (p0: &Builder) length(): int
 fn (mut p0: &Builder) reset() pfree 0x1 pf 0 "=/items" frees 1 strings::scratch
+impl Sized for Builder
 fn split(p0: string, p1: string): []string
 ```
 
@@ -1016,10 +1228,11 @@ fn split(p0: string, p1: string): []string
   changes every dependent's interface hash; a body-only change does not. Import
   order is part of the hash because it determines initialization order.
 - Declarations are emitted in canonical groups: shells for exported record/closed
-  types (source order), their definitions (source order), aliases, constants,
-  globals, methods (declaration order), functions. Private declarations are skipped without reordering the
-  exported ones. No address, offset, descriptor, pointer, timestamp or absolute
-  path appears.
+  types (source order), their definitions (source order; an exported interface
+  has a definition line and no shell), aliases, constants, globals, methods
+  (declaration order), implementations (declaration order), functions. Private
+  declarations are skipped without reordering the exported ones. No address,
+  offset, descriptor, pointer, timestamp or absolute path appears.
 - A record definition lists its fields in declaration order (offsets are
   recomputed: one 8-byte word each); a closed definition lists its variants in
   declaration order. Every exported record/closed type has a shell line first, so
@@ -1046,10 +1259,29 @@ fn split(p0: string, p1: string): []string
   `/field`, `/[n]` and `/[]` segments. Summary items may be read in any order; the
   writer emits `freesall`, `writeshandles`, `pfree`, `frees`, then `pf` rows by
   parameter and insertion order.
+- An exported interface is one definition line, `type I = interface { ... }`,
+  with no shell line. Its members follow in declaration order, separated by `;`.
+  A member is `fn name(params): T` with an optional result, and its markers come
+  before `fn`: `pure` if the member is pure, then `mut` if its receiver is mutable,
+  as in `pure mut fn m(p0: int): T`. The receiver is not written (it is parameter 0,
+  borrowed for `fn` and mutable for `mut fn`). The explicit parameters are named
+  `p0`, `p1`, ... and carry their modes: `p0: T` (owned), `p0: &T` (borrowed) and
+  `mut p0: &T` (mutable). A member line has no summary items. The reader builds
+  each member's summary from its markers and modes: a `pure` member has an empty
+  summary, and any other member has a `pfree` bit on each mutable parameter (the
+  receiver included, for `mut fn`), with no flags and no globals.
+- An exported implementation is one line after the methods, `impl I for T`. `I` is
+  the interface, qualified as `M::I` when it belongs to another module. `T` is the
+  receiver's bare name: a record or closed type of this module, not an alias and
+  not a variant.
+- Only `pub` interfaces and `pub impl` lines are written. A private interface is
+  not in the file, and neither is a private `impl`, so an importer cannot name
+  either one.
 
 The reader validates hashes, versions, shells, field/variant structure, duplicate
-keys and exports, parameter modes, constants, `frees` counts and keys, and the
-`pf`/`pfree` consistency before using any value. Malformed files are
+keys and exports, parameter modes, constants, `frees` counts and keys, the
+`pf`/`pfree` consistency, and the interface member markers, modes and `impl` lines
+before using any value. Malformed files are
 `obxc: <sympath>:<line>:<col>: symbol file: <detail>` (exit 2).
 
 ### Versions and the trust model
@@ -1071,6 +1303,14 @@ files are trusted build outputs: a forged but well-formed interface can make
 `--check` against untrusted symbol files, and do not treat a `.sym` as a security
 boundary. A full build re-reads and validates the freshly written interface, so a
 missed version bump only affects `--check` against stale artifacts.
+
+The reader rebuilds each interface member's summary from its markers and parameter
+modes, as above, so a caller's effect check uses the marker. It does not re-run the
+implementation checks (the signature and effect-tier checks of a method against
+its interface) on an `impl` line. A full build checks that the pair is the exported
+live implementation, which the defining module's own compile has already checked;
+`--check` accepts the line as written. A forged `pure` marker or `impl` line is
+therefore not caught by `--check`.
 
 Generated `.sym` files under the build convention (`.obo/sym`) are gitignored;
 an arbitrary `--sym-dir` is not automatically ignored. A build without
@@ -1162,8 +1402,12 @@ fn secret(): int { return 1 }
 | compiler mismatch | `obxc: symbol file '<p>' was built by compiler '<v>'; this is '<w>'; rebuild it` | 2 |
 | corrupt body hash | `obxc: symbol file '<p>' is corrupt (interface hash); rebuild it` | 2 |
 | dependency interface mismatch | `obxc: symbol file '<p>' depends on '<d>' with interface hash <h>, but '<d>' has <h2>; rebuild the dependent module` | 2 |
-| `.sym` vs a build's live interface | `obxc: symbol file '<p>' disagrees with the compiled interface of '<m>' for <decl>; rebuild it` | 2 |
+| `.sym` vs a build's live interface | `obxc: symbol file '<p>' disagrees with the compiled interface of '<m>' for <decl>; rebuild it`, where `<decl>` is `interface 'I'`, `interface method 'I::m'`, `implementation 'I for T'` or an order such as `the implementation order` | 2 |
 | malformed `.sym` | `obxc: <sympath>:<line>:<col>: symbol file: <detail>` | 2 |
+| malformed interface member | `obxc: <sympath>:<line>:<col>: symbol file: <detail>`, where `<detail>` is `'pure' and 'mut' come before 'fn'`, `expected a method name in the interface`, `duplicate interface method '<m>'`, `an interface needs at least one method` or `expected ';' or '}'` | 2 |
+| malformed interface parameter | `obxc: <sympath>:<line>:<col>: symbol file: <detail>`, where `<detail>` is `expected a parameter name`, `expected ':' after the parameter name`, `mut needs a reference parameter: write mut p0: &T`, `only records, closed types and arrays can be borrowed, not <t>` or `expected ',' or ')', found <token>` (a `;` between parameters is refused with this one) | 2 |
+| malformed interface name | `obxc: <sympath>:<line>:<col>: symbol file: <detail>`, where `<detail>` is `an interface cannot be forward-declared: '<I>' is already declared`, or `duplicate definition of type '<I>'` | 2 |
+| malformed `impl` line | `obxc: <sympath>:<line>:<col>: symbol file: <detail>`, where `<detail>` is `expected a receiver type name`, `the receiver of an implementation must be the defining name of a type in this module`, `the receiver of an implementation must be a type defined in this module`, `an implementation's receiver cannot be a variant; use its closed type`, `type '<T>' is declared but not yet defined`, `'<t>' is not an interface type` or `duplicate implementation of '<I>' for '<T>'` | 2 |
 | source-less dependency in a build | `obxc: cannot read module '<m>' at <paths>; only --check may use a symbol file without source` | 2 |
 | sym-dir missing or unwritable | `obxc: symbol-file directory '<dir>' does not exist or is not writable` | 2 |
 | `-o` with `--check`/`--deps` | `obxc: -o cannot be used with --check or --deps` | 2 |
@@ -2077,5 +2321,6 @@ into and points the reference afresh before it reads it again is accepted too (`
 `loopCache`).
 
 **Planned.** The language features listed as not yet done in the root
-`README.md` also apply: interfaces, lambdas, generic modules, value records,
-`inout` parameters, and debug information. Methods are implemented (section 5a).
+`README.md` also apply: lambdas, generic modules, value records,
+`inout` parameters, and debug information. Methods (section 5a) and interfaces
+(section 5b) are implemented; `^I` waits for lambda Stage B.

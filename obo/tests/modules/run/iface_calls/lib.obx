@@ -1,0 +1,19 @@
+module lib
+// an interface and a type of the library: a factory, and library functions that call through the interface (v3 step 4)
+pub type Shape = interface {
+    pure fn area(): int
+    mut fn grow(k: int)
+}
+pub type Square = ref record { s: int }
+pub fn (q: &Square) area(): int { return q.s * q.s }
+pub fn (mut q: &Square) grow(k: int) { q.s += k }
+pub impl Shape for Square
+
+pub fn make(n: int): Shape {
+    return new Square{s: n}
+}
+
+// the library calls its own interface on owned values it was given
+pub fn total(a: Shape, b: Shape): int {
+    return a.area() + b.area()
+}

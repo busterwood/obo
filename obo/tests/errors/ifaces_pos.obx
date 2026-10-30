@@ -1,0 +1,67 @@
+// Borrowed interfaces and interface positions, step 5 of v3 (12.2 E4): the position rules are the record rules
+// unchanged. An interface is not a record, a constant or an initial nil value, an owned interface has no default,
+// and a reference to an interface has the reference positions only. The existing &T text is deliberately reused
+// verbatim, as v3 11 requires.
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+type Holder = ref record { d: Shape }
+fn make(): Shape { return new Square{s: 1} }
+
+// === new I is not a record literal
+fn f() {
+    let a = new Shape{}  // error: 'Shape' is not a record type
+}
+
+// === a const cannot be an interface value made by a call
+const C = make()  // error: constant value must be known at compile time
+
+// === a new []I needs a length of zero, because its elements cannot start as nil
+fn f() {
+    let a = new []Shape(3)  // error: array elements of type Shape would start as nil; use []?Shape, or start empty with new []Shape(0) and append
+}
+
+// === a field of interface type needs a value
+fn f() {
+    let h = new Holder{}  // error: Holder needs a value for d (it cannot be nil)
+}
+
+// === a local of interface type needs an initial value
+fn f() {
+    var a: Shape  // error: 'a' of type Shape needs an initial value (it cannot be nil)
+}
+
+// === match does not take an interface value
+fn f() {
+    let a = make()
+    match a {  // error: match needs an int, byte, closed type or Result, not Shape
+        else { println(1) }
+    }
+}
+
+// === println does not take an interface value
+fn f() {
+    let a = make()
+    println(a)  // error: cannot print Shape
+}
+
+// === alive does not take an interface value
+fn f() {
+    let a = make()
+    println(alive(a))  // error: alive needs a handle, not Shape
+}
+
+// === drop needs an owned local, not a &I reference
+fn f() {
+    let c = new Square{s: 1}
+    let r: &Shape = &c
+    drop(r)  // error: drop needs a local variable holding an owned value
+}
+
+// === a &?I local is refused; it may only be a parameter or a walk variable
+fn f(o: ?Shape) {
+    let r: &?Shape = &o  // error: an optional interface reference can only be a parameter or a walk variable; narrow it to a '&I' local
+}

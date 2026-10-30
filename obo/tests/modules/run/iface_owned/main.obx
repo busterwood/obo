@@ -1,0 +1,22 @@
+module main
+import "lib.obx"
+// the importer's own type, implementing the imported interface here
+type Mine = ref record { s: int }
+fn (m: &Mine) area(): int { return m.s + 1 }
+impl lib::Shape for Mine
+
+fn main() {
+    let s = lib::make(4)
+    let t: lib::Shape = s
+    let m: lib::Shape = new Mine{s: 2}
+    let c: lib::Shape = new lib::Square{s: 6}
+    let h = new lib::Holder{d: t, maybe: nil, items: new []lib::Shape(0), r: lib::wrap(c)}
+    append(h.items, m)
+    append(h.items, new lib::Square{s: 3})
+    println(len(h.items))                // expect: 2
+    h.maybe = lib::make(5)
+    let x = take(h.maybe)
+    drop(x)
+    println(h.maybe == nil)              // expect: true
+    println("done")                      // expect: done
+}

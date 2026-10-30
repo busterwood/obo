@@ -106,8 +106,8 @@ const T_COLONCOLON = 67
 // OBO_VERSION is the compiler's identity in every .sym's `compiler` line and in --version.
 // Bump OBO_VERSION with each merged compiler feature; bump SYM_FORMAT on any grammar or
 // meaning change; bump SYM_ABI on any layout/calling-convention/descriptor/effect change.
-const OBO_VERSION = "0.6"
-const SYM_FORMAT = 2
+const OBO_VERSION = "0.8"
+const SYM_FORMAT = 4
 const SYM_ABI = 1
 
 fn makeTokNames(): []string {
@@ -880,7 +880,7 @@ type Field = ref record {
 }
 
 type Type = ref record {
-    kind: string              // int byte bool string void nil record closed array opt result resultctor errval
+    kind: string              // int byte bool string void nil record closed iface array opt result resultctor errval
     name: string
     owner: string             // the module a named type belongs to; "" for primitives, derived and built-ins
     uid: int                  // FNV-1a 64 of owner + "::" + name; 0 when the type has no key (B7: aliases never set it)
@@ -954,7 +954,7 @@ fn isRef(t: ^Type): bool {
 }
 
 fn nonNull(t: ^Type): bool {
-    return t.kind == "record" || t.kind == "closed" || t.kind == "array" || t.kind == "handle" || t.kind == "result"
+    return t.kind == "record" || t.kind == "closed" || t.kind == "iface" || t.kind == "array" || t.kind == "handle" || t.kind == "result"
 }
 
 fn same(a: ^Type, b: ^Type): bool {
@@ -1009,6 +1009,7 @@ type Sym = ref record {
     isStr: bool               // a string local, holding one reference
     isRef: bool               // a reference: a parameter or local that borrows
     isRefLocal: bool          // a reference local (its validity is tracked)
+    pairSlot: bool            // a &I local: its slot is the two-word pair itself (v3 B1)
     hOrigin: ?^Sym            // a let handle to a whole owned local: the local its object is in
     hDepth: int              // a let handle that had an origin when declared: its loop depth + 1 (0 for the others); its uses
                              // are counted (usedAt) even after a move clears the origin
@@ -1029,6 +1030,7 @@ type Sym = ref record {
     iterating: bool           // a for loop is walking this array
     freesAll: bool            // fn: it might free anything (or isn't compiled yet)
     writesHandles: bool       // fn: it frees owned objects through a handle (directly, by a callee, or a forward heading)
+    pureMember: bool          // ifn: an interface member declared pure (its summary is pfree 0; the tier check reads this)
     home: int                 // an int or bool local held in this register (r12 to r15) instead of a stack slot, or -1
     recv: ^Type               // a method's receiver type; tVoid for a plain function
 }
@@ -1174,6 +1176,59 @@ fn callableName(s: ^Sym): string {
     return s.name
 }
 
+// ========================================================== interfaces
+//
+// An interface is a named type (kind "iface") whose members are synthetic symbols in ifaceSyms, in
+// declaration order. They belong to no module's namespace and are not in methodSyms, so every method
+// scan leaves them out. An implementation pairs a record or closed type with an interface (checked
+// at its declaration, implDecl). An implementation has a vtable in rodata (v3 4). An owned interface value
+// is a box (boxInto, checkAssign); calls through one, equality and handles are refused until their steps.
+
+type Impl = ref record {
+    iface: ^Type
+    recv: ^Type
+    owner: string
+    exported: bool
+    line: int
+    vtable: int               // the address of its vtable in rodata (v3 4): 0 for an impl read from a .sym, which has no code
+}
+
+var ifaceSyms = new []^Sym(0)       // the members of every interface, declaration order
+var impls = new []^Impl(0)          // every declared implementation, declaration order
+var implArena = new []Impl(0)       // owns the implementation records
+
+// the members of the interface t, in declaration order
+fn ifaceMethodsOf(t: ^Type): []^Sym {
+    var out = new []^Sym(0)
+    for i in 0..len(ifaceSyms) {
+        if ifaceSyms[i].recv == t { append(out, ifaceSyms[i]) }
+    }
+    return out
+}
+
+fn findIfaceMethod(t: ^Type, name: string): ?^Sym {
+    for i in 0..len(ifaceSyms) {
+        let m = ifaceSyms[i]
+        if m.recv == t && m.name == name { return m }
+    }
+    return nil
+}
+
+// an interface method's name in diagnostics: I::m, or M::I::m when it belongs to another module
+fn ifaceMethodDisplay(f: ^Sym): string {
+    if f.owner != "" && f.owner != curModuleName { return f.owner + "::" + f.recv.name + "::" + f.name }
+    return f.recv.name + "::" + f.name
+}
+
+// the implementation of this pair in this module, if any
+fn findImplIn(recv: ^Type, iface: ^Type): ?^Impl {
+    for i in 0..len(impls) {
+        let im = impls[i]
+        if im.recv == recv && im.iface == iface { return im }
+    }
+    return nil
+}
+
 // the root of a reference that borrows through a handle: the handle may name any
 // object, so any change, and any call that might free, may free what it points into
 let handleSym = newSym("var", "a handle's target", nil)
@@ -1206,6 +1261,7 @@ type Item = ref record {
     root: ?^Sym                // the variable a designator starts from
     strTemp: bool             // a fresh string whose reference nothing owns yet
     borrowed: bool            // the value is a reference (borrowed, not owned)
+    pair: bool                // a &I local's own two-word pair slot: reading it gives the slot's address
     viaHandle: bool           // the designator went through a handle
     deref: bool               // the designator goes through a field or element
     movedRef: bool            // a moved local named as an assignment target
@@ -1250,6 +1306,7 @@ fn dupItem(x: &Item): Item {
     y.line = x.line
     y.strTemp = x.strTemp
     y.home = x.home
+    y.pair = x.pair
     return y
 }
 
@@ -1272,6 +1329,7 @@ fn copyItem(x: &Item): Item {
     y.root = x.root
     y.strTemp = x.strTemp
     y.borrowed = x.borrowed
+    y.pair = x.pair
     y.viaHandle = x.viaHandle
     y.deref = x.deref
     y.movedRef = x.movedRef
@@ -2276,6 +2334,13 @@ fn load(x: Item): Item {
         cpSrc = x.r
         return makeReg(x.typ, c)
     }
+    if x.mode == "mem" && x.pair {
+        // a &I local's own pair slot: its value is the pair's address, not its first word (v3 B1)
+        releaseItem(x)
+        let c = alloc()
+        opMem(0x8D, c, memOf(x), true, false)
+        return makeReg(x.typ, c)
+    }
     var r = 0
     if x.mode == "const" {
         r = alloc()
@@ -2576,7 +2641,7 @@ var pinned: ?^Sym = nil            // a local being assigned through
 var userCalls = 0                 // calls to obx functions compiled so far
 
 fn isOwned(t: ^Type): bool {
-    if t.kind == "record" || t.kind == "closed" || t.kind == "array" { return true }
+    if t.kind == "record" || t.kind == "closed" || t.kind == "iface" || t.kind == "array" { return true }
     if t.kind == "opt" { return isOwned(baseOf(t)) }
     // a Result is one owned cell. errval is the type of an err(...) temporary, which is already an
     // allocated cell: it must be owned too, or a discarded err(...) would leak and noTemp would let it
@@ -3667,6 +3732,7 @@ fn invalidateOwnedChange(x: &Item) {
 }
 
 fn parseType(): ^Type
+fn finishTypeName(name: string, uline: int, ucol: int): ^Type
 
 fn parseRefType(): ^Type {
     refMode = 0
@@ -3786,6 +3852,8 @@ fn homeFor(s: ^Sym, name: string, declares: bool) {
     }
 }
 
+fn isPairLocal(s: ^Sym): bool
+
 // where a local is: its register, or its slot
 fn localItem(s: ^Sym, t: ^Type): Item {
     if s.home >= 0 {
@@ -3797,6 +3865,7 @@ fn localItem(s: ^Sym, t: ^Type): Item {
     let x = newItem("mem", t)
     x.base = RBP
     x.disp = s.offset
+    x.pair = s.pairSlot
     return x
 }
 
@@ -3940,6 +4009,25 @@ fn newLocal(name: string, t: ^Type, kind: string): ^Sym {
     return s
 }
 
+// A &I local owns a two-word pair slot of its own (v3 B1). The item at s.offset is its address, at
+// s.offset+8 its vtable, so a pair copied from a call site's cell or another reference is still its own.
+fn newPairLocal(name: string, t: ^Type, kind: string): ^Sym {
+    frame += 16
+    let s = newSym(kind, name, t)
+    s.storage = "local"
+    s.pairSlot = true
+    s.offset = -frame
+    if len(name) > 0 { return declare(s) }
+    return s
+}
+
+fn newRefLocalSlot(name: string, t: ^Type, kind: string, pair: bool): ^Sym {
+    if pair { return newPairLocal(name, t, kind) }
+    return newLocal(name, t, kind)
+}
+
+fn isPairLocal(s: ^Sym): bool { return s.pairSlot }
+
 fn varType(s: ^Sym): ^Type {
     var i = len(narrowStack) - 1
     while i >= 0 {
@@ -3992,6 +4080,14 @@ fn parseType(): ^Type {
     let uline = tline
     let ucol = tcol
     let name = ident()
+    return finishTypeName(name, uline, ucol)
+}
+
+// The name tail of a type expression, once its leading name has been read: the order of parseType, so a
+// declaration's alias and a symbol-file alias resolve alike. T_COLONCOLON is checked first: a symbol-file
+// alias may name a module called int or Result (`type X = int::T`), and primitives-before-'::' would
+// return int and leave '::T' unconsumed.
+fn finishTypeName(name: string, uline: int, ucol: int): ^Type {
     if sym == T_COLONCOLON {
         next()
         if sym != T_IDENT { error("expected a type name after '::'") }
@@ -4011,6 +4107,15 @@ fn parseType(): ^Type {
         return derived("result", b)
     }
     return t
+}
+
+// A reference to an interface (v3 step 5) is a reference local like any other: &I and mut &I may be parameters,
+// locals and walk variables. The one exception is &?I as a local (explicit or inferred): a nil-or-pair local
+// would need a flag the representation does not have, so it may only be a parameter or a walk variable (v3 6.4).
+fn refuseOptionalIfaceLocal(t: ^Type) {
+    if t.kind == "opt" && baseOf(t).kind == "iface" {
+        error("an optional interface reference can only be a parameter or a walk variable; narrow it to a '&I' local")
+    }
 }
 
 fn fieldList(rec: ^Type) {
@@ -4045,6 +4150,9 @@ fn fieldList(rec: ^Type) {
     }
     rec.desc = descriptor(offset, ptrs, strs)
 }
+
+fn ifaceDecl(name: string, line: int, isPub: bool)
+fn typeAlias(name: string, line: int, isPub: bool, t: ^Type)
 
 fn typeDecl(isPub: bool) {
     let line = tline
@@ -4127,16 +4235,37 @@ fn typeDecl(isPub: bool) {
         expect(T_RBRACE, "")
         if len(ct.variants) == 0 { error("a closed type needs at least one variant") }
     } else {
+        // the contextual interface definition ('interface' then '{'); any other identifier starts an alias,
+        // whose name tail is read as parseType reads it
+        if sym == T_IDENT {
+            let wline = tline
+            let wcol = tcol
+            let w = sval
+            next()
+            if w == "interface" && sym == T_LBRACE {
+                ifaceDecl(name, line, isPub)
+                return
+            }
+            if fwd != nil {
+                errorAt("'" + name + "' was declared as a forward type: define it as a ref record or closed type", wline, wcol)
+            }
+            typeAlias(name, line, isPub, finishTypeName(w, wline, wcol))
+            return
+        }
         if fwd != nil {
             error("'" + name + "' was declared as a forward type: define it as a ref record or closed type")
         }
-        let t = parseType()                      // an alias key: it maps to this object; it never names it (B7)
-        registerTypeAlias(curModuleName, name, t)
-        let s = newSym("type", name, t)
-        s.line = line
-        declare(s)
-        if isPub { s.exported = true }
+        typeAlias(name, line, isPub, parseType())   // an alias key: it maps to this object; it never names it (B7)
     }
+}
+
+// an alias of a type: it maps the name to the same object and never names it (B7)
+fn typeAlias(name: string, line: int, isPub: bool, t: ^Type) {
+    registerTypeAlias(curModuleName, name, t)
+    let s = newSym("type", name, t)
+    s.line = line
+    declare(s)
+    if isPub { s.exported = true }
 }
 
 // A target located before a value that calls a function: the call could free what the
@@ -4718,20 +4847,266 @@ fn heldPop(mark: int) {
     truncate(heldWhole, mark)
 }
 
-fn checkAssign(dst: ^Type, x: &Item, what: string) {
+// ================================================ interface values (v3 section 5)
+
+// The destination types that hold an interface value: I, and ?I (a box pointer, or 0 for nil)
+fn isIfaceVal(t: ^Type): bool { return t.kind == "iface" || (t.kind == "opt" && baseOf(t).kind == "iface") }
+
+// Set around the checkAssign at a reference destination (&I, mut &I, &?I parameter or a &I local): a concrete
+// source then borrows into a frame cell instead of moving into a box. 0 everywhere else.
+var convBorrow = 0
+// While a &I local's initialiser or re-point is checked, convPairOn says its own pair slot at convPairDisp is the
+// destination: the conversion fills it directly, so no call-site cell is made for a local (v3 4, B1).
+var convPairOn = false
+var convPairDisp = 0
+
+// the interface a destination of type I or ?I holds
+fn ifaceOf(t: ^Type): ^Type {
+    if t.kind == "opt" { return baseOf(t) }
+    return t
+}
+
+// the box descriptor (v3 4): one owned word at offset 0, the object, and no strings. It is made the first time a box
+// is needed and is shared by every interface, so rt_free frees a box and then its object through the object's header.
+var boxDescAddr = 0
+
+fn boxDescriptor(): int {
+    if boxDescAddr == 0 {
+        let ptrs = new []int(0)
+        append(ptrs, 0)
+        let strs = new []int(0)
+        boxDescAddr = descriptor(16, ptrs, strs)
+    }
+    return boxDescAddr
+}
+
+// The implementation of interface it for a value of type rt (a variant uses its closed type's), if this module may
+// see it: its own, or a pub one of an imported module (a private implementation is invisible to importers).
+fn visibleImpl(rt: ^Type, it: ^Type): ?^Impl {
+    let p = rt.parent
+    var im: ?^Impl = nil
+    if p != nil { im = findImplIn(p, it) } else { im = findImplIn(rt, it) }
+    if im == nil { return nil }
+    if im.owner != curModuleName && !im.exported { return nil }
+    return im
+}
+
+// Replaces what x holds by y, a temporary of its own (the box made for an owned conversion)
+fn setItem(mut x: &Item, y: Item) {
+    x.mode = y.mode
+    x.typ = y.typ
+    x.val = y.val
+    x.base = y.base
+    x.index = y.index
+    x.disp = y.disp
+    x.r = y.r
+    x.cc = y.cc
+    x.T = 0
+    x.F = 0
+    x.nt = nil
+    x.nf = nil
+    x.width = y.width
+    x.scale = y.scale
+    x.line = y.line
+    x.sym = nil
+    x.readonly = false
+    x.root = nil
+    x.strTemp = false
+    x.borrowed = false
+    x.pair = false
+    x.viaHandle = false
+    x.deref = false
+    x.movedRef = false
+    x.hOrigin = nil
+    x.pOwner = nil
+    x.pPath = ""
+    x.path = ""
+    x.home = false
+}
+
+// Moves the owned value x (a record or closed value) into a new box of type dst (I or ?I), which holds x's object at
+// offset 0 and the vtable of implementation im at offset 8 (v3 4). The box is an owned temporary, so the caller's
+// consume of x is a no-op. The vtable is in rodata; in --check an imported implementation has none (0), and no code runs.
+fn boxInto(dst: ^Type, mut x: &Item, im: ^Impl) {
+    // a full build only ever sees live implementations (symImplDecl adds the .sym's own only in --check), so a zero vtable
+    // here would be a box that calls through to address 0
+    if im.vtable == 0 && !checking { error("internal error: the implementation of '" + tname(dst) + "' has no vtable in this build") }
+    consume(x)
+    let obj = asReg(copyItem(x))
+    let box = rtCall1(RT_ALLOC_RECORD, makeConst(tInt, boxDescriptor()), dst)
+    opMem(0x89, obj.r, mem(box.r, -1, 0, 8), true, false)
+    opMem(0xC7, 0, mem(box.r, -1, 8, 8), true, false)
+    emit32(im.vtable)
+    release(obj.r)
+    setItem(x, box)
+}
+
+// A frame cell holding a borrowed concrete object and its vtable (v3 4, 5.1): the &I value is the cell's address,
+// and the cell lives in the converting function's frame, so it cannot escape. Per-site cells are built only for
+// call arguments, which are consumed within the call; a &I local's own pair slot is filled directly instead.
+fn ifacePairCell(vtable: int, obj: Item, t: ^Type): Item {
+    if vtable == 0 && !checking { error("internal error: the implementation of '" + tname(t) + "' has no vtable in this build") }
+    frame += 16
+    let off = -frame
+    let o = asReg(obj)
+    opMem(0x89, o.r, mem(RBP, -1, off, 8), true, false)
+    release(o.r)
+    opMem(0xC7, 0, mem(RBP, -1, off + 8, 8), true, false)
+    emit32(vtable)
+    let c = alloc()
+    opMem(0x8D, c, mem(RBP, -1, off, 8), true, false)
+    let res = makeReg(t, c)
+    res.borrowed = true
+    return res
+}
+
+// Copies the {obj, vtable} pair that x points at into a &I local's own two-word slot (v3 B1). It never stores a
+// pointer to another local's slot or to a conversion site's cell, so a loop that rewrites its cell cannot change
+// a pair saved from an earlier pass.
+fn storePair(dst: Item, source: Item) {
+    let src = asReg(source)
+    let lo = alloc()
+    opMem(0x8B, lo, mem(src.r, -1, 0, 8), true, false)
+    opMem(0x89, lo, memOf(dst), true, false)
+    release(lo)
+    let hi = alloc()
+    opMem(0x8B, hi, mem(src.r, -1, 8, 8), true, false)
+    opMem(0x89, hi, mem(RBP, -1, dst.disp + 8, 8), true, false)
+    release(hi)
+    release(src.r)
+}
+
+// The refusal of an assignment that no conversion makes: the seed's message, with its hints and v3's Result hint (5.2)
+fn refuseAssign(dst: ^Type, x: &Item, what: string) {
+    var hint = ""
+    if x.typ.kind == "nil" && nonNull(dst) {
+        hint = " (" + tname(dst) + " can never be nil; declare it as ?" + tname(dst) + ")"
+    } else if dst.kind != "opt" && x.typ.kind == "opt" {
+        hint = " (it may be nil: check it with '!= nil' first)"
+    } else if x.typ.kind == "errval" {
+        hint = " (err(...) is an error cell; the destination must be a Result[T])"
+    } else if dst.kind == "result" && x.typ.kind == "result" && baseOf(dst).kind == "iface" {
+        hint = "; store it first: let s: " + tname(baseOf(dst)) + " = ...; return ok(s)"
+    }
+    error(what + ": cannot use " + tname(x.typ) + " as " + tname(dst) + hint)
+}
+
+// A concrete source at a reference destination (v3 5.1): its object is borrowed, not moved, so the pair can point
+// at the caller's object. The binding was taken by borrowBind before this call (that is what may refuse a
+// temporary), and the impl is checked before any code is made. A frame cell has no home in a global initializer.
+fn ifaceBorrowConvert(dst: ^Type, mut x: &Item, what: string) {
+    let src = x.typ
+    let it = ifaceOf(dst)
+    let sk = src.kind
+    if sk == "iface" {
+        error(what + ": cannot use interface '" + tname(src) + "' as '" + tname(it) + "': interface values do not convert")
+    }
+    if sk == "nil" { refuseAssign(dst, x, what) }
+    if sk == "opt" {
+        let b = baseOf(src)
+        if b.kind == "record" || b.kind == "closed" {
+            error(what + ": cannot use " + tname(src) + " as interface '" + tname(it) +
+                  "' (it may be nil: take it into a local, return if nil, then convert the local)")
+        }
+        if b.kind == "iface" { refuseAssign(dst, x, what) }
+        error(what + ": cannot use " + tname(src) + " as interface '" + tname(it) + "'")
+    }
+    if sk != "record" && sk != "closed" {
+        error(what + ": cannot use " + tname(src) + " as interface '" + tname(it) + "'")
+    }
+    // a variant has no implementation of its own: its closed type's one is used (0.7 4.4)
+    var base = src
+    let p = src.parent
+    if p != nil { base = p }
+    let im = visibleImpl(src, it)
+    if im == nil {
+        if base.owner == curModuleName {
+            error(what + ": type '" + tname(base) + "' does not implement interface '" + tname(it) + "'")
+        }
+        error(what + ": module '" + base.owner + "' has no exported implementation of '" + tname(it) + "' for '" +
+              base.name + "' (only 'pub' implementations are visible)")
+        return
+    }
+    if curFn == nil {
+        error(what + ": cannot create a borrowed interface value in a global initializer: pass the concrete value to a function that makes it")
+    }
+    if convPairOn {
+        // a &I local's own pair slot: fill it directly; there is no call-site cell to copy from (B1). The item
+        // handed back points at that slot, so the caller's ordinary pair copy reads and writes the same words.
+        let o = asReg(copyItem(x))
+        opMem(0x89, o.r, mem(RBP, -1, convPairDisp, 8), true, false)
+        release(o.r)
+        opMem(0xC7, 0, mem(RBP, -1, convPairDisp + 8, 8), true, false)
+        emit32(im.vtable)
+        let c = alloc()
+        opMem(0x8D, c, mem(RBP, -1, convPairDisp, 8), true, false)
+        setItem(x, makeReg(dst, c))
+        x.borrowed = true
+        return
+    }
+    let cell = ifacePairCell(im.vtable, copyItem(x), dst)
+    setItem(x, cell)
+    x.borrowed = true
+}
+
+// Converts x to a destination of type dst that holds an interface (I or ?I), or refuses it (v3 5.1-5.3). Assignable
+// sources (nil, I, ?I) never get here. An owned record or closed value is moved into a box, after the impl check.
+fn ifaceConvert(dst: ^Type, mut x: &Item, what: string) {
+    if convBorrow > 0 {
+        ifaceBorrowConvert(dst, x, what)
+        return
+    }
+    let src = x.typ
+    let it = ifaceOf(dst)
+    let sk = src.kind
+    if sk == "opt" {
+        let b = baseOf(src)
+        if b.kind == "record" || b.kind == "closed" {
+            error(what + ": cannot use " + tname(src) + " as interface '" + tname(it) +
+                  "' (it may be nil: take it into a local, return if nil, then convert the local)")
+        }
+        if b.kind == "iface" { refuseAssign(dst, x, what) }
+        error(what + ": cannot use " + tname(src) + " as interface '" + tname(it) + "'")
+    }
+    if sk == "iface" {
+        error(what + ": cannot use interface '" + tname(src) + "' as '" + tname(it) + "': interface values do not convert")
+    }
+    if sk == "nil" { refuseAssign(dst, x, what) }
+    if sk != "record" && sk != "closed" {
+        error(what + ": cannot use " + tname(src) + " as interface '" + tname(it) + "'")
+    }
+    let s = x.sym
+    if x.borrowed || (s != nil && s.isRef) {
+        error(what + ": cannot use a borrowed '" + tname(src) + "' as owned interface '" + tname(it) +
+              "': move the value in, or take the interface as '&" + tname(it) + "'")
+    }
+    // a variant has no implementation of its own: its closed type's one is used (0.7 4.4)
+    var base = src
+    let p = src.parent
+    if p != nil { base = p }
+    let im = visibleImpl(src, it)
+    if im == nil {
+        if base.owner == curModuleName {
+            error(what + ": type '" + tname(base) + "' does not implement interface '" + tname(it) + "'")
+        }
+        error(what + ": module '" + base.owner + "' has no exported implementation of '" + tname(it) + "' for '" +
+              base.name + "' (only 'pub' implementations are visible)")
+        return                                        // error exits; this return only narrows im
+    }
+    boxInto(dst, x, im)
+}
+
+// The check at every typed destination: x must be assignable to dst, or convert to it (interface destinations).
+// x may be rewritten: a value converted to an interface is replaced by its box (the owned temporary x now is).
+fn checkAssign(dst: ^Type, mut x: &Item, what: string) {
     if x.typ == tVoid { error(what + ": expression has no value") }
     if dst.kind == "byte" && x.mode == "const" && x.typ.kind == "int" && x.val >= 0 && x.val <= 255 { return }
-    if !assignable(dst, x.typ) {
-        var hint = ""
-        if x.typ.kind == "nil" && nonNull(dst) {
-            hint = " (" + tname(dst) + " can never be nil; declare it as ?" + tname(dst) + ")"
-        } else if dst.kind != "opt" && x.typ.kind == "opt" {
-            hint = " (it may be nil: check it with '!= nil' first)"
-        } else if x.typ.kind == "errval" {
-            hint = " (err(...) is an error cell; the destination must be a Result[T])"
-        }
-        error(what + ": cannot use " + tname(x.typ) + " as " + tname(dst) + hint)
+    if assignable(dst, x.typ) { return }
+    if isIfaceVal(dst) {
+        ifaceConvert(dst, x, what)
+        return
     }
+    refuseAssign(dst, x, what)
 }
 
 // ============================================================ expressions
@@ -4784,8 +5159,11 @@ fn holdArg(b: ^RefBind, i: int) {
     append(ownedLocals, t)
 }
 
-// "method 'T::m'" for a method, the plain name for a function (whose messages stay byte-identical)
+// "method 'T::m'" for a method, the plain name for a function (whose messages stay byte-identical). The call being
+// checked is an interface method call when callIface is set (callFnWith sets and restores it around each call).
+var callIface = false
 fn callDisplay(meth: bool, name: string): string {
+    if meth && callIface { return "interface method '" + name + "'" }
     if meth { return "method '" + name + "'" }
     return name
 }
@@ -4852,6 +5230,36 @@ fn callFrees(f: ^Sym, i: int, br: ^Sym, known: bool, apath: string) {
     if n == 0 { callFreeEvent(br, apath, true) }
 }
 
+// The vtable slot of interface member f (v3 4): its place among the members of its interface, in declaration order,
+// which is the order implDecl writes the vtable in and the order the .sym reader appends the members in
+fn ifaceSlot(f: ^Sym): int {
+    var k = 0
+    for i in 0..len(ifaceSyms) {
+        let m = ifaceSyms[i]
+        if m == f { return k }
+        if m.recv == f.recv { k += 1 }
+    }
+    error("internal error: interface method '" + f.name + "' has no vtable slot")
+    return 0
+}
+
+// The dispatch loads of an interface call (v3 7.1, S4), made for argument 0 and so before any explicit argument runs.
+// a is the receiver place, which holds its box: the vtable is read from [box+8] and pushed first, so it lies above
+// the arguments; then the object from [box] is pushed as argument 0. The box's register is only read, never written,
+// since it may be a home register of a local.
+fn pushIfaceReceiver(a: Item) {
+    let b = asReg(a)
+    let vt = alloc()
+    opMem(0x8B, vt, mem(b.r, -1, 8, 8), true, false)
+    pushR(vt)
+    release(vt)
+    let ob = alloc()
+    opMem(0x8B, ob, mem(b.r, -1, 0, 8), true, false)
+    release(b.r)
+    pushR(ob)
+    release(ob)
+}
+
 fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item
 
 fn callFn(f: ^Sym): Item { return callFnWith(f, nil, false, 0, 0) }
@@ -4859,8 +5267,13 @@ fn callFn(f: ^Sym): Item { return callFnWith(f, nil, false, 0, 0) }
 // The call: the receiver, if any, is parameter 0 and runs before the explicit arguments. For a plain
 // function (hasRecv false) every label and index is the old one, so its messages are unchanged.
 fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item {
+    // an interface member (kind "ifn") is called through the receiver's vtable, and its synthetic summary stands for the callee
+    let iface = f.kind == "ifn"
+    let savedIface = callIface
+    callIface = iface
     var fname = qualifiedSymName(f)
     if hasRecv { fname = methodDisplay(f) }
+    if iface { fname = ifaceMethodDisplay(f) }
     let meth = hasRecv
     var start = 1
     if !hasRecv { start = 0 }
@@ -4874,7 +5287,10 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
     setFree(0)
     let n = len(f.fnRec.params)
     let narg = n - start
-    let pad = (depth + 8 * n) % 16
+    // the words the call pops: the arguments, and for an interface call the vtable word above them (v3 7.1)
+    var nw = n
+    if iface { nw = n + 1 }
+    let pad = (depth + 8 * nw) % 16
     if pad != 0 {
         aluRI(5, RSP, 8)
         depth += 8
@@ -4916,9 +5332,19 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
             argCol = tcol
             a = nestedExpr()
         }
-        checkAssign(f.fnRec.params[i], a, argLabel(meth, i, start) + " of " + callDisplay(meth, fname))
         if f.fnRec.pmodes[i] > 0 {
-            let b = borrowBind(a)
+            var b: ^RefBind = noBind
+            if isIfaceVal(f.fnRec.params[i]) {
+                // the binding comes first: an interface conversion builds a frame cell only after borrowBind succeeds
+                b = borrowBind(a)
+                let savedConv = convBorrow
+                convBorrow = 1
+                checkAssign(f.fnRec.params[i], a, argLabel(meth, i, start) + " of " + callDisplay(meth, fname))
+                convBorrow = savedConv
+            } else {
+                checkAssign(f.fnRec.params[i], a, argLabel(meth, i, start) + " of " + callDisplay(meth, fname))
+                b = borrowBind(a)
+            }
             if f.fnRec.pmodes[i] == 2 && !b.writable {
                 error(argLabel(meth, i, start) + " of " + callDisplay(meth, fname) + " needs a mut reference, but this one is read-only")
             }
@@ -4935,6 +5361,7 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
             argOrderCheck(tbase, fname, meth, i, argLine, argCol)
             holdArg(b, i)
         } else {
+            checkAssign(f.fnRec.params[i], a, argLabel(meth, i, start) + " of " + callDisplay(meth, fname))
             consume(a)
             argOrderCheck(tbase, fname, meth, i, argLine, argCol)
         }
@@ -4942,7 +5369,9 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
             tline = savedTokLine
             tcol = savedTokCol
         }
-        if a.mode == "const" && fits32(a.val) {
+        if iface && i == 0 {
+            pushIfaceReceiver(a)                   // the box's vtable and object, before any explicit argument runs (v3 7.1)
+        } else if a.mode == "const" && fits32(a.val) {
             pushI(a.val)                           // no register needed
             depth += 8
             drop(a)
@@ -5023,21 +5452,28 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
     }
     afterCall(f)
     if movesFn(f) { userCalls += 1 }              // only calls that might free count
-    emit(0xE8)
-    emit32(0)
-    let at = pc() - 4
-    if f.addr >= 0 {
-        fix(at, f.addr)
-        append(farCalls, at)
+    if iface {
+        // the vtable word lies above the n arguments, at [rsp + 8n]: call the member's slot through it (v3 4, 7.1)
+        opMem(0x8B, RAX, mem(RSP, -1, 8 * n, 8), true, false)
+        opMem(0xFF, 2, mem(RAX, -1, 8 * ifaceSlot(f), 8), false, false)
     } else {
-        append(f.fnRec.fixups, at)
-        fwdCalls += 1
+        emit(0xE8)
+        emit32(0)
+        let at = pc() - 4
+        if f.addr >= 0 {
+            fix(at, f.addr)
+            append(farCalls, at)
+        } else {
+            append(f.fnRec.fixups, at)
+            fwdCalls += 1
+        }
     }
-    if n > 0 || pad != 0 {
-        aluRI(0, RSP, 8 * n + pad)
-        depth -= 8 * n + pad
+    if nw > 0 || pad != 0 {
+        aluRI(0, RSP, 8 * nw + pad)
+        depth -= 8 * nw + pad
     }
     restoreRegs(saved)
+    callIface = savedIface
     if f.ret == tVoid { return voidItem() }
     let r = alloc()
     movRR(r, RAX)
@@ -5206,6 +5642,7 @@ fn builtin(name: string): Item {
         if sym != T_IDENT { error("handle needs a variable, field or element") }
         let x = designator()
         expect(T_RPAREN, "")
+        if isIfaceVal(x.typ) { error("handles name records and closed types, not " + tname(x.typ)) }
         if (x.mode != "mem" && x.mode != "elem") || (x.typ.kind != "record" && x.typ.kind != "closed") {
             error("handle needs a record or closed-type value that is not optional, not " + tname(x.typ))
         }
@@ -5671,6 +6108,7 @@ fn nameItem(s: ^Sym, name: string, target: bool): Item {
         x.disp = s.offset
         x.sym = s
         x.root = s
+        x.pair = isPairLocal(s)
         x.hOrigin = s.hOrigin
         if s.hDepth > 0 {
             useSeq += 1
@@ -5762,6 +6200,12 @@ fn designatorT(target: bool): Item {
             }
             if x.typ.incomplete { error(tname(x.typ) + " is declared but not yet defined") }
             if x.typ.kind == "closed" { error(tname(x.typ) + " is a closed type: use 'match' to reach its fields") }
+            if x.typ.kind == "iface" {
+                // a member named without its call (v3 11); any other name is a field, and an interface has none
+                let mv = findIfaceMethod(x.typ, fname)
+                if mv != nil { error("interface method '" + ifaceMethodDisplay(mv) + "' cannot be used as a value: call it with '(' after its name") }
+                error("interface '" + tname(x.typ) + "' has no fields; it has methods only")
+            }
             if x.typ.kind != "record" { error(tname(x.typ) + " has no fields") }
             let rt0 = x.typ
             let fi = fieldIndex(rt0, fname)
@@ -5891,9 +6335,23 @@ fn designatorT(target: bool): Item {
 
 // A method call on the finalized receiver x. The receiver's place metadata is complete by now
 // (root, deref, path, viaHandle, borrowed) and its value use has been recorded.
+// A call of member name on an owned interface value (v3 7.1): through the receiver's vtable, with the member's
+// synthetic summary standing for the callee (7.3). A call in a global initializer is refused before the frame
+// cell and the dispatch: the initializer chain has no frame to hold the vtable across the arguments.
+fn ifaceMethodCall(recv: Item, t: ^Type, name: string, dline: int, dcol: int, rline: int, rcol: int): Item {
+    if curFn == nil {
+        errorAt("an interface method cannot be called in a global initializer; call a function that does it, as in var G = initG()", dline, dcol)
+    }
+    let m = findIfaceMethod(t, name)
+    if m == nil { errorAt("interface '" + tname(t) + "' has no method '" + name + "'", dline, dcol) }
+    if m != nil { return callFnWith(m, recv, true, rline, rcol) }
+    return voidItem()
+}
+
 fn methodCall(recv: Item, name: string, dline: int, dcol: int, rline: int, rcol: int): Item {
     let t = recv.typ
     if t.incomplete { errorAt(tname(t) + " is declared but not yet defined", dline, dcol) }
+    if t.kind == "iface" { return ifaceMethodCall(recv, t, name, dline, dcol, rline, rcol) }
     if t.kind != "record" && t.kind != "closed" { errorAt(tname(t) + " has no methods", dline, dcol) }
     if t.kind == "record" && fieldIndex(t, name) >= 0 {
         errorAt("type '" + tname(t) + "' has a field '" + name + "', not a method; a field cannot be called", dline, dcol)
@@ -5969,7 +6427,7 @@ fn newExpr(): Item {
         }
         append(given, fname)
         expect(T_COLON, "")
-        let v = nestedExpr()
+        var v = nestedExpr()
         checkAssign(fty, v, "field '" + fname + "'")
         consume(v)
         let dst = mem(p.r, -1, foff, 8)
@@ -6399,6 +6857,10 @@ fn relation(): Item {
     noTemp(y)
     let kx = x.typ.kind
     let ky = y.typ.kind
+    // interface identity is not meaningful (v3 6.3); a test against nil is allowed (it narrows a ?I)
+    if (isIfaceVal(x.typ) || isIfaceVal(y.typ)) && kx != "nil" && ky != "nil" {
+        error("interface values cannot be compared; test an optional with '== nil' or '!= nil'")
+    }
     if kx == "string" || ky == "string" {
         if kx != ky || (o != T_EQ && o != T_NE) { error("strings can only be compared with == and !=") }
         let r = rtCall2(RT_STREQ, x, y, tInt)
@@ -6558,9 +7020,11 @@ fn varDecl(kind: string, isGlobal: bool, isPub: bool) {
     var declRef = 0
     if sym == T_COLON {
         next()
-        t = parseRefType()
+        let pt = parseRefType()
+        t = pt
         declRef = refMode
         if declRef > 0 && isGlobal { error("references cannot be global") }
+        if declRef > 0 { refuseOptionalIfaceLocal(pt) }
     }
     var gsym = newSym(kind, name, t)
     gsym.line = nameLine
@@ -6572,24 +7036,41 @@ fn varDecl(kind: string, isGlobal: bool, isPub: bool) {
     if sym == T_ASSIGN {
         next()
         if isGlobal { fixHere1(initLink) }
-        let x = tailExpr()
+        var x = tailExpr()
+        // an inferred reference local takes the same rules as an explicit one; &?I may only be a parameter or a
+        // walk variable, so both spellings are refused here (v3 6.4)
+        if !isGlobal && t == nil && x.borrowed { refuseOptionalIfaceLocal(x.typ) }
         if !isGlobal && (declRef > 0 || (t == nil && x.borrowed)) {
-            // a reference local: it borrows, nothing is moved or freed
+            // a reference local: it borrows, nothing is moved or freed. An interface conversion builds its frame
+            // cell only after borrowBind succeeds (v3 5.1), so its binding comes first; a &T local keeps the old
+            // check-then-borrow order, and its messages with it.
             var rt = x.typ
             if t != nil { rt = t }
-            checkAssign(rt, x, "initialising '" + name + "'")
-            let nb = borrowBind(x)
-            let v = newLocal("", rt, kind)
+            let pair = rt.kind == "iface"
+            let v = newRefLocalSlot("", rt, kind, pair)
             v.name = name
-            let dst = newItem("mem", rt)
-            dst.base = RBP
-            dst.disp = v.offset
+            let dst = localItem(v, rt)
+            var nb: ^RefBind = noBind
+            if pair {
+                nb = borrowBind(x)
+                let savedConv = convBorrow
+                convBorrow = 1
+                convPairOn = true
+                convPairDisp = dst.disp
+                checkAssign(rt, x, "initialising '" + name + "'")
+                convPairOn = false
+                convBorrow = savedConv
+            } else {
+                checkAssign(rt, x, "initialising '" + name + "'")
+                nb = borrowBind(x)
+            }
             makeRefLocal(v, nb)
-            store(dst, x)
+            if pair { storePair(dst, x) } else { store(dst, x) }
             declare(v)
             return
         }
-        if x.borrowed && t != nil && x.mode != "const" {
+        // a borrowed value for an interface destination is refused by checkAssign (v3 5.1), with its own text
+        if x.borrowed && t != nil && x.mode != "const" && !isIfaceVal(t) {
             error("cannot move out of a reference: declare '" + name + "' as &" + tname(t) + " to borrow")
         }
         var tt = x.typ
@@ -6740,11 +7221,23 @@ fn assignmentOrCall(): bool {
             if deferMark >= 0 && declaredBefore(xs, deferMark) {
                 errorAt("cannot point '" + xs.name + "' elsewhere in a defer: a defer body runs where its block is left, and the change would not be seen there", line, col)
             }
-            let y = tailExpr()
-            checkAssign(dtype, y, "assignment")
-            let nb = borrowBind(y)
+            var y = tailExpr()
+            var nb: ^RefBind = noBind
+            if x.typ.kind == "iface" {
+                nb = borrowBind(y)
+                let savedConv = convBorrow
+                convBorrow = 1
+                convPairOn = true
+                convPairDisp = x.disp
+                checkAssign(dtype, y, "assignment")
+                convPairOn = false
+                convBorrow = savedConv
+            } else {
+                checkAssign(dtype, y, "assignment")
+                nb = borrowBind(y)
+            }
             if !assignable(x.typ, y.typ) { widen(xs) }
-            store(x, y)
+            if x.pair { storePair(x, y) } else { store(x, y) }
             // the parent may be xs itself, or one below it (a reference copied from xs's own value): then
             // it is xs's old parent, so that the parents stay a chain
             let oldParent = xs.bind.parent
@@ -6774,7 +7267,7 @@ fn assignmentOrCall(): bool {
             if x.deref && r0 != nil && r0.storage == "local" { pinned = r0 }
             var hp = -1
             if x.deref || x.viaHandle { hp = heldPushStore(r0, x.viaHandle, torig, tident, tplace, traw) }
-            let y = tailExpr()
+            var y = tailExpr()
             pinned = savedPin
             checkAssign(dtype, y, "assignment")
             consume(y)
@@ -7808,7 +8301,7 @@ fn returnStat() {
         if sym != T_SEMI && sym != T_RBRACE { error(callableName(f) + " does not return a value") }
         runDefers(fnBlock)
     } else {
-        let x0 = expression()
+        var x0 = expression()
         checkAssign(f.ret, x0, "return value")
         consume(x0)
         let x = asReg(x0)
@@ -8437,6 +8930,139 @@ fn methodRecvType(t: ^Type) {
     }
 }
 
+// Parses the parameter groups of a function or an interface member, from after its '(' through its ')':
+// each group is [mut] name[, name]* ':' type. A parameter of interface type is owned (p: I), borrowed (p: &I)
+// or mutable (mut p: &I), as any record; `mut p: I` is refused like any owned mut. A member and an ordinary
+// function take the same interface parameter forms (v3 3.2).
+fn parseParams(mut params: &[]Param, member: bool) {
+    while sym != T_RPAREN {
+        // `mut` before the names: the function may change what the parameter points to
+        var pmut = false
+        if sym == T_IDENT && sval == "mut" {
+            next()
+            pmut = true
+        }
+        let names = new []string(0)
+        append(names, ident())
+        while sym == T_COMMA {
+            next()
+            append(names, ident())
+        }
+        expect(T_COLON, "")
+        let t = parseRefType()
+        var mode = refMode
+        if pmut {
+            if mode == 0 { error("mut needs a reference parameter: write mut name: &T") }
+            mode = 2
+        }
+        for n in names { append(params, new Param{name: n, typ: t, mode: mode}) }
+        if sym != T_RPAREN { expect(T_COMMA, "',' or ')'") }
+    }
+    expect(T_RPAREN, "")
+}
+
+// The synthetic summary of an interface member (v3 7.4), from its marker and its parameter modes alone, so a
+// symbol file's reader can rebuild it identically: a pure member frees nothing; any other member may free below
+// each of its mut parameters (the receiver for 'mut fn'), and nothing else. Parameters from 62 on need no bit,
+// since mutFrees already answers yes for them. The member has no globals and writes no handles.
+// What 'pure' guarantees to a caller: the member frees nothing and writes no owned value through a handle. It may
+// still write scalars, globals and receivers, so a caller must not infer "no writes" from 'pure'.
+fn setMemberSummary(m: ^Sym, pure: bool) {
+    m.freesAll = false
+    m.writesHandles = false
+    m.fnRec.pfree = 0
+    if pure { return }
+    for i in 0..len(m.fnRec.pmodes) {
+        if i < 62 && m.fnRec.pmodes[i] == 2 { m.fnRec.pfree = m.fnRec.pfree | (1 << i) }
+    }
+}
+
+// A contextual interface definition, from its '{' (typeDecl has read 'interface'). The type symbol is declared
+// before the members are parsed, so a member may name the interface itself. A prior 'type I' has already fixed
+// the name's kind, so there is no forward interface shell.
+fn ifaceDecl(name: string, line: int, isPub: bool) {
+    let prior = findSym(curModule.globals, name)
+    if prior != nil {
+        if prior.kind == "type" && symType(prior).incomplete {
+            errorAt("an interface cannot be forward-declared: '" + name + "' is already declared", line, 1)
+        }
+        errorAt("'" + name + "' is already declared in this scope", line, 1)
+    }
+    let t = newType("iface", name, nil)
+    nameType(t, name)
+    t.line = line
+    t.incomplete = true
+    let s = newSym("type", name, t)
+    s.line = line
+    declare(s)
+    if isPub { s.exported = true }
+    expect(T_LBRACE, "")
+    skipSemis()
+    var count = 0
+    while sym != T_RBRACE {
+        let mline = tline
+        var pure = false
+        var mutrecv = false
+        while true {
+            if sym == T_PUB {
+                error("'pub' is not allowed on an interface member; mark the interface type pub")
+            }
+            if sym == T_IDENT && sval == "pure" && !pure && !mutrecv {
+                next()
+                pure = true
+                continue
+            }
+            if sym == T_IDENT && sval == "mut" && !mutrecv {
+                next()
+                mutrecv = true
+                continue
+            }
+            if sym == T_IDENT && (sval == "pure" || sval == "mut") {
+                error("'pure' and 'mut' come before 'fn'")
+            }
+            break
+        }
+        if sym != T_FN { error("expected a method name in the interface") }
+        next()
+        if sym != T_IDENT { error("expected a method name in the interface") }
+        let mname = ident()
+        if findIfaceMethod(t, mname) != nil { error("interface '" + name + "' already has method '" + mname + "'") }
+        // the receiver is parameter 0: borrowed for 'fn', mutable for 'mut fn'
+        var params = new []Param(0)
+        var recvMode = 1
+        if mutrecv { recvMode = 2 }
+        append(params, new Param{name: "p0", typ: t, mode: recvMode})
+        expect(T_LPAREN, "")
+        parseParams(&params, true)
+        var ret = tVoid
+        if sym == T_COLON {
+            next()
+            ret = parseType()
+        }
+        if sym != T_RBRACE { expect(T_SEMI, "';' or newline") }
+        skipSemis()
+        let m = newSym("ifn", mname, nil)
+        m.fnRec = newFnRec()
+        for p in params {
+            append(m.fnRec.params, p.typ)
+            append(m.fnRec.pmodes, p.mode)
+        }
+        m.ret = ret
+        m.owner = curModuleName
+        m.exported = isPub
+        m.recv = t
+        m.line = mline
+        m.addr = 0
+        m.pureMember = pure
+        setMemberSummary(m, pure)
+        append(ifaceSyms, m)
+        count += 1
+    }
+    expect(T_RBRACE, "")
+    if count == 0 { error("an interface needs at least one method") }
+    t.incomplete = false
+}
+
 fn fnDecl(isPub: bool) {
     let hline = tline
     var isMethod = false
@@ -8485,30 +9111,7 @@ fn fnDecl(isPub: bool) {
     let params = new []Param(0)
     if isMethod { append(params, new Param{name: recvName, typ: recvType, mode: recvMode}) }
     expect(T_LPAREN, "")
-    while sym != T_RPAREN {
-        // `mut` before the names: the function may change what the parameter points to
-        var pmut = false
-        if sym == T_IDENT && sval == "mut" {
-            next()
-            pmut = true
-        }
-        let names = new []string(0)
-        append(names, ident())
-        while sym == T_COMMA {
-            next()
-            append(names, ident())
-        }
-        expect(T_COLON, "")
-        let t = parseRefType()
-        var mode = refMode
-        if pmut {
-            if mode == 0 { error("mut needs a reference parameter: write mut name: &T") }
-            mode = 2
-        }
-        for n in names { append(params, new Param{name: n, typ: t, mode: mode}) }
-        if sym != T_RPAREN { expect(T_COMMA, "',' or ')'") }
-    }
-    expect(T_RPAREN, "")
+    parseParams(&params, false)
     var ret = tVoid
     if sym == T_COLON {
         next()
@@ -8631,6 +9234,115 @@ fn fnDecl(isPub: bool) {
     curFn = nil
 }
 
+// how a parameter or receiver of a given mode is spelled in a mismatch message: T, &T, mut &T
+fn modeSpelling(t: ^Type, mode: int): string {
+    if mode == 2 { return "mut &" + tname(t) }
+    if mode == 1 { return "&" + tname(t) }
+    return tname(t)
+}
+
+// [pub] impl I for T (v3 3.3, 7.2): a conformance declaration with no body. Every member of I must be matched
+// by a method of T of the same name, already defined, with the same receiver mode, parameter count, types and
+// modes, and the same return type. A pure member needs a pure method; a plain member needs a method that
+// changes only what is below its own mut parameters, so an importer may trust the member's marker. The
+// methods are ordinary top-level declarations of T's module.
+fn implDecl(isPub: bool) {
+    let iline = tline
+    let it = parseType()
+    if it.incomplete { error("type '" + tname(it) + "' is declared but not yet defined") }
+    if it.kind != "iface" { error("'" + tname(it) + "' is not an interface type") }
+    if sym != T_FOR { error("expected 'for' after the interface") }
+    next()
+    if sym != T_IDENT { error("expected a type name after 'for'") }
+    let rline = tline
+    let rcol = tcol
+    let rname = ident()
+    if sym == T_COLONCOLON {
+        // a qualified receiver names an imported type; finishTypeName resolves it, so an unknown module or type is
+        // reported as usual
+        let qt = finishTypeName(rname, rline, rcol)
+        errorAt("cannot implement an interface for imported type '" + tname(qt) + "'; declare the implementation in the type's own module", rline, rcol)
+    }
+    let rs = lookup(rname)
+    if rs.kind != "type" { error("'" + rname + "' is not a type") }
+    let rt = symType(rs)
+    if rt.incomplete { error("type '" + tname(rt) + "' is declared but not yet defined") }
+    if rt.kind != "record" && rt.kind != "closed" {
+        error("an interface can only be implemented by a record or closed type, not " + tname(rt))
+    }
+    if rt.owner != curModuleName {
+        error("cannot implement an interface for imported type '" + tname(rt) + "'; declare the implementation in the type's own module")
+    }
+    let rp = rt.parent
+    if rp != nil {
+        error("cannot implement an interface for variant '" + tname(rt) + "'; declare it on its closed type '" + rp.name + "'")
+    }
+    if findImplIn(rt, it) != nil {
+        error("type '" + tname(rt) + "' already implements interface '" + tname(it) + "'")
+    }
+    let members = ifaceMethodsOf(it)
+    var slots = new []^Sym(0)              // the implementing method of each member, in declaration order (the vtable)
+    for m in members {
+        let cm = findMethodIn(rt, m.name)
+        if cm == nil {
+            error("type '" + tname(rt) + "' has no method '" + m.name + "' to implement interface '" + tname(it) + "'")
+            return                                    // error exits; this return only narrows cm for the checks below
+        }
+        if cm.addr < 0 {
+            error("method '" + methodKey(cm) + "' must be defined before the implementation of interface '" + tname(it) + "'")
+        }
+        let mism = "method '" + methodKey(cm) + "' does not match interface '" + tname(it) + "' method '" + m.name + "': "
+        if cm.fnRec.pmodes[0] != m.fnRec.pmodes[0] {
+            error(mism + "the receiver must be '" + modeSpelling(rt, m.fnRec.pmodes[0]) + "'")
+        }
+        if len(cm.fnRec.params) != len(m.fnRec.params) {
+            error(mism + "it takes " + string(len(m.fnRec.params) - 1) + " argument(s), not " + string(len(cm.fnRec.params) - 1))
+        }
+        for i in 1..len(m.fnRec.params) {
+            if !same(cm.fnRec.params[i], m.fnRec.params[i]) {
+                error(mism + "argument " + string(i) + " must be " + modeSpelling(m.fnRec.params[i], m.fnRec.pmodes[i]) +
+                      ", not " + modeSpelling(cm.fnRec.params[i], cm.fnRec.pmodes[i]))
+            }
+            if cm.fnRec.pmodes[i] != m.fnRec.pmodes[i] {
+                error(mism + "argument " + string(i) + " must be '" + modeSpelling(m.fnRec.params[i], m.fnRec.pmodes[i]) + "'")
+            }
+        }
+        if !same(cm.ret, m.ret) {
+            error(mism + "it must return " + tname(m.ret) + ", not " + tname(cm.ret))
+        }
+        // the tier check (v3 7.2): what the member's marker promises, the method must keep
+        if m.pureMember {
+            if !pureFn(cm) || cm.writesHandles {
+                error("method '" + methodKey(cm) + "' is not pure, but interface '" + tname(it) + "' declares '" + m.name + "' pure")
+            }
+        } else {
+            let tier = "method '" + methodKey(cm) + "' cannot implement '" + ifaceMethodDisplay(m) + "': "
+            let rule = "; interface methods may only change what is below their own mut parameters"
+            // a call to a function that is not defined yet also sets writesHandles (afterCall)
+            if cm.writesHandles { error(tier + "it writes an owned value through a handle, or calls a function that is not defined yet" + rule) }
+            if len(cm.fnRec.freed) > 0 {
+                error(tier + "it frees global '" + qualifiedSymName(cm.fnRec.freed[0]) + "'" + rule)
+            }
+            // reached only with a forged .sym: a library function marked freesall and not writeshandles (honest
+            // summaries set both, and the writesHandles check above refuses those first)
+            if cm.freesAll {
+                error(tier + "it might free anything, because it calls a function that is not compiled yet; define that function first")
+            }
+            if (cm.fnRec.pfree & ~m.fnRec.pfree) != 0 {
+                error(tier + "it frees below a parameter that the member does not declare mut")
+            }
+        }
+        append(slots, cm)
+    }
+    // the vtable (v3 4): one code address per member, slot k at 8*k. Every method is defined by now, so its address is
+    // final. It lives in rodata, which is one image, so an importer in the same build reaches it through the Impl.
+    rodAlign()
+    let vt = RODATA_BASE + len(rodata)
+    for cm in slots { rod64(CODE_BASE + cm.addr) }
+    append(implArena, new Impl{iface: it, recv: rt, owner: curModuleName, exported: isPub, line: iline, vtable: vt})
+    append(impls, handle(implArena[len(implArena) - 1]))
+}
+
 fn constDecl(isPub: bool) {
     let line = tline
     let name = ident()
@@ -8655,7 +9367,7 @@ fn closureCheck(t: ^Type, declName: string, variant: string, line: int) {
         closureCheck(baseOf(t), declName, variant, line)
         return
     }
-    if k != "record" && k != "closed" { return }
+    if k != "record" && k != "closed" && k != "iface" { return }
     for q in 0..len(closureSeen) {
         if closureSeen[q] == t { return }
     }
@@ -8669,6 +9381,15 @@ fn closureCheck(t: ^Type, declName: string, variant: string, line: int) {
         }
     }
     if t.owner != "" && t.owner != curModuleName { return }     // a foreign interface is its module's to check
+    if k == "iface" {
+        // every member's parameters and return type are part of the interface
+        let ms = ifaceMethodsOf(t)
+        for m in ms {
+            for p in 1..len(m.fnRec.params) { closureCheck(m.fnRec.params[p], declName, "", line) }
+            closureCheck(m.ret, declName, "", line)
+        }
+        return
+    }
     if k == "closed" {
         for i in 0..len(t.variants) {
             closureCheck(t.variants[i], declName, t.variants[i].name, line)
@@ -8701,6 +9422,21 @@ fn checkExports() {
             truncate(closureSeen, 0)
             for p in 0..len(m.fnRec.params) { closureCheck(m.fnRec.params[p], methodDisplay(m), "", m.line) }
             closureCheck(m.ret, methodDisplay(m), "", m.line)
+        }
+    }
+    for ii in 0..len(impls) {
+        let im = impls[ii]
+        if im.owner == curModuleName && im.exported {
+            let isym = findSym(curModule.globals, im.iface.name)
+            if isym != nil && im.iface.owner == curModuleName && !isym.exported {
+                errorAt("exported implementation of '" + tname(im.iface) + "' for '" + tname(im.recv) +
+                        "' uses private type '" + im.iface.name + "'; mark '" + im.iface.name + "' pub too", im.line, 1)
+            }
+            let rs = findSym(curModule.globals, im.recv.name)
+            if rs != nil && !rs.exported {
+                errorAt("exported implementation of '" + tname(im.iface) + "' for '" + tname(im.recv) +
+                        "' uses private type '" + im.recv.name + "'; mark '" + im.recv.name + "' pub too", im.line, 1)
+            }
         }
     }
 }
@@ -8864,7 +9600,14 @@ fn compileUnit(path: string, display: string, isRoot: bool) {
                 next()
                 constDecl(isPub)
             }
-            else { error("expected a declaration") }
+            else {
+                if k == T_IDENT && sval == "impl" {
+                    next()
+                    implDecl(isPub)
+                } else {
+                    error("expected a declaration")
+                }
+            }
         }
         if sym != T_EOF { expect(T_SEMI, "newline") }
         skipSemis()
@@ -9390,12 +10133,18 @@ fn appFields(mut b: &[]byte, rec: ^Type, modName: string) {
     append(b, '}')
 }
 
-// a declaration in the source grammar that defines a type (as opposed to an alias key)
+// a declaration in the source grammar that defines a type (as opposed to an alias key): a record, a closed type
+// or an interface
 fn symDefines(s: ^Sym, modName: string): bool {
     if s.kind != "type" { return false }
     let t = symType(s)
     if t.parent != nil { return false }
-    return (t.kind == "record" || t.kind == "closed") && t.owner == modName && t.name == s.name
+    return (t.kind == "record" || t.kind == "closed" || t.kind == "iface") && t.owner == modName && t.name == s.name
+}
+
+// a definition with a shell line: records and closed types. An interface has none: its definition line registers it.
+fn symHasShell(s: ^Sym, modName: string): bool {
+    return symDefines(s, modName) && symType(s).kind != "iface"
 }
 
 // a variant's own exported symbol (emitted inside its closed type, never as an alias)
@@ -9413,6 +10162,43 @@ fn appTypeShell(mut b: &[]byte, s: ^Sym) {
     append(b, '\n')
 }
 
+// an interface member's explicit parameters only, named p0, p1, ... (the receiver is not in the textual signature);
+// a parameter is written with its mode: `&` for a borrow, `mut` before the name for a mutable one
+fn appIfaceParams(mut b: &[]byte, f: ^Sym, modName: string) {
+    for i in 1..len(f.fnRec.params) {
+        if i > 1 { appStr(b, ", ") }
+        if f.fnRec.pmodes[i] == 2 { appStr(b, "mut ") }
+        append(b, 'p')
+        appInt(b, i - 1)
+        appStr(b, ": ")
+        if f.fnRec.pmodes[i] > 0 { append(b, '&') }
+        appTypeExpr(b, f.fnRec.params[i], modName)
+    }
+}
+
+// the body of an interface definition, members in declaration order: interface { pure fn m(p0: T): R; mut fn n(p0: &I) }
+fn appIface(mut b: &[]byte, t: ^Type, modName: string) {
+    appStr(b, "interface {")
+    let ms = ifaceMethodsOf(t)
+    for i in 0..len(ms) {
+        if i > 0 { append(b, ';') }
+        append(b, ' ')
+        let m = ms[i]
+        if m.pureMember { appStr(b, "pure ") }
+        if m.fnRec.pmodes[0] == 2 { appStr(b, "mut ") }
+        appStr(b, "fn ")
+        appStr(b, m.name)
+        append(b, '(')
+        appIfaceParams(b, m, modName)
+        append(b, ')')
+        if m.ret != tVoid {
+            appStr(b, ": ")
+            appTypeExpr(b, m.ret, modName)
+        }
+    }
+    appStr(b, " }")
+}
+
 fn appTypeDef(mut b: &[]byte, s: ^Sym, modName: string) {
     let t = symType(s)
     appStr(b, "type ")
@@ -9420,6 +10206,12 @@ fn appTypeDef(mut b: &[]byte, s: ^Sym, modName: string) {
     if t.kind == "record" {
         appStr(b, " = ref record ")
         appFields(b, t, modName)
+        append(b, '\n')
+        return
+    }
+    if t.kind == "iface" {
+        appStr(b, " = ")
+        appIface(b, t, modName)
         append(b, '\n')
         return
     }
@@ -9516,6 +10308,15 @@ fn appFnSummary(mut b: &[]byte, f: ^Sym) {
     }
 }
 
+// an implementation line: impl I for R, R the defining name of a type of this module (I qualified when foreign)
+fn appImpl(mut b: &[]byte, im: ^Impl, modName: string) {
+    appStr(b, "impl ")
+    appTypeExpr(b, im.iface, modName)
+    appStr(b, " for ")
+    appStr(b, im.recv.name)
+    append(b, '\n')
+}
+
 fn appFn(mut b: &[]byte, f: ^Sym, modName: string) {
     appStr(b, "fn ")
     appStr(b, f.name)
@@ -9595,7 +10396,7 @@ fn symBody(mod: ^Module): []byte {
     }
     for i in 0..len(mod.globals) {                  // 1. shells
         let s = mod.globals[i]
-        if s.exported && symDefines(s, modName) { appTypeShell(b, s) }
+        if s.exported && symHasShell(s, modName) { appTypeShell(b, s) }
     }
     // Definitions follow their *definition* line, not the symbol's first (forward)
     // position: a forward type declared before a closed type may name one of its
@@ -9645,7 +10446,11 @@ fn symBody(mod: ^Module): []byte {
         let m = methodSyms[i]
         if m.owner == modName && m.exported { appMethod(b, m, modName) }
     }
-    for i in 0..len(mod.globals) {                  // 7. functions
+    for i in 0..len(impls) {                        // 7. implementations, in declaration order
+        let im = impls[i]
+        if im.owner == modName && im.exported { appImpl(b, im, modName) }
+    }
+    for i in 0..len(mod.globals) {                  // 8. functions
         let s = mod.globals[i]
         if s.exported && s.kind == "fn" { appFn(b, s, modName) }
     }
@@ -9711,6 +10516,8 @@ var symConstOrder = new []string(0)
 var symGlobalOrder = new []string(0)
 var symMethodOrder = new []string(0)
 var symFnOrder = new []string(0)
+var symImplOrder = new []string(0)
+var symImplSeen = new []string(0)
 var symAfterShells = false
 
 fn symDisagree(decl: string)
@@ -9785,7 +10592,7 @@ fn symTypeText(t: ^Type): string {
     if t.kind == "handle" { return "^" + symTypeText(baseOf(t)) }
     if t.kind == "opt" { return "?" + symTypeText(baseOf(t)) }
     if t.kind == "result" { return "Result[" + symTypeText(baseOf(t)) + "]" }
-    if t.owner != "" { return t.owner + "::" + t.name }
+    if t.owner != "" && t.owner != symCurMod.name { return t.owner + "::" + t.name }
     return t.name
 }
 
@@ -9844,6 +10651,36 @@ fn symQualifiedType(mname: string, member: string, line: int, col: int): ^Type {
     return tVoid
 }
 
+fn symParseType(): ^Type
+
+// the name tail of a type expression, once its leading name has been read: the order of finishTypeName ('::' first,
+// so a symbol-file alias may name a module called int or Result)
+fn symFinishTypeName(name: string, nline: int, ncol: int): ^Type {
+    if sym == T_COLONCOLON {
+        next()
+        if sym != T_IDENT { error("expected a type name after '::'") }
+        let member = ident()
+        return symQualifiedType(name, member, nline, ncol)
+    }
+    if name == "int" { return tInt }
+    if name == "byte" { return tByte }
+    if name == "bool" { return tBool }
+    if name == "string" { return tString }
+    if name == "Result" {
+        if sym != T_LBRACK { error("Result needs a type: write Result[T]") }
+        next()
+        let b = symParseType()
+        expect(T_RBRACK, "")
+        return derived("result", b)
+    }
+    let s = findExport(symCurMod, name)
+    if s != nil {
+        if s.kind == "type" { return symType(s) }
+    }
+    errorAt("unknown type '" + name + "'", nline, ncol)
+    return tVoid
+}
+
 fn symParseType(): ^Type {
     if sym == T_QUESTION {
         next()
@@ -9869,29 +10706,7 @@ fn symParseType(): ^Type {
     let nline = tline
     let ncol = tcol
     let name = ident()
-    if sym == T_COLONCOLON {
-        next()
-        if sym != T_IDENT { error("expected a type name after '::'") }
-        let member = ident()
-        return symQualifiedType(name, member, nline, ncol)
-    }
-    if name == "int" { return tInt }
-    if name == "byte" { return tByte }
-    if name == "bool" { return tBool }
-    if name == "string" { return tString }
-    if name == "Result" {
-        if sym != T_LBRACK { error("Result needs a type: write Result[T]") }
-        next()
-        let b = symParseType()
-        expect(T_RBRACK, "")
-        return derived("result", b)
-    }
-    let s = findExport(symCurMod, name)
-    if s != nil {
-        if s.kind == "type" { return symType(s) }
-    }
-    errorAt("unknown type '" + name + "'", nline, ncol)
-    return tVoid
+    return symFinishTypeName(name, nline, ncol)
 }
 
 // parses { field: type; ... } into rec's (empty) field list, in declaration order
@@ -9935,6 +10750,9 @@ fn symDisagree(decl: string) {
     exit(2)
 }
 
+// the key of an implementation in a file's order and duplicate lists: 'I for T', I qualified when it is foreign
+fn symImplKey(iface: ^Type, recv: ^Type): string { return symTypeText(iface) + " for " + recv.name }
+
 fn symSameList(a: &[]string, b: &[]string): bool {
     if len(a) != len(b) { return false }
     for i in 0..len(a) {
@@ -9956,8 +10774,8 @@ fn symCompareOrder() {
         if s.kind == "type" {
             if symIsVariantSym(s) { continue }
             let t = symType(s)
-            if (t.kind == "record" || t.kind == "closed") && t.owner == symCurMod.name && t.name == s.name {
-                append(liveTypes, s.name)
+            if symDefines(s, symCurMod.name) {
+                if t.kind != "iface" { append(liveTypes, s.name) }
             } else {
                 append(liveAliases, s.name)
             }
@@ -9976,8 +10794,7 @@ fn symCompareOrder() {
     for i in 0..len(symCurMod.globals) {
         let s = symCurMod.globals[i]
         if !s.exported || s.kind != "type" || symIsVariantSym(s) { continue }
-        let t = symType(s)
-        if (t.kind == "record" || t.kind == "closed") && t.owner == symCurMod.name && t.name == s.name {
+        if symDefines(s, symCurMod.name) {
             append(liveDefs, s.name)
             append(liveLines, s.line)
         }
@@ -10008,6 +10825,12 @@ fn symCompareOrder() {
         if m.owner == symCurMod.name && m.exported { append(liveMethods, methodKey(m)) }
     }
     if !symSameList(symMethodOrder, liveMethods) { symDisagree("the method order") }
+    let liveImpls = new []string(0)
+    for i in 0..len(impls) {
+        let im = impls[i]
+        if im.owner == symCurMod.name && im.exported { append(liveImpls, symImplKey(im.iface, im.recv)) }
+    }
+    if !symSameList(symImplOrder, liveImpls) { symDisagree("the implementation order") }
     if !symSameList(symFnOrder, liveFns) { symDisagree("the function order") }
 }
 
@@ -10034,7 +10857,173 @@ fn symFinish(mode: int) {
             symDisagree("method '" + methodKey(m) + "'")
         }
     }
+    for i in 0..len(impls) {
+        let im = impls[i]
+        if im.owner == symCurMod.name && im.exported && !symHas(symImplSeen, symImplKey(im.iface, im.recv)) {
+            symDisagree("implementation '" + symImplKey(im.iface, im.recv) + "'")
+        }
+    }
     symCompareOrder()
+}
+
+// A .sym interface definition (v3 8.1): `interface { members }` after `type I =`, with no shell line. Mode 1 registers
+// the type before its members are read, so a member may name the interface itself. Mode 0 compares the members with
+// the live interface, in order: name, marker, receiver and parameter modes, parameter types and result type.
+// Member summaries are built by setMemberSummary, the helper the source path uses, so --check and a full build agree.
+fn symIfaceDef(name: string, nline: int, mode: int) {
+    if symHas(symShells, name) {
+        error("an interface cannot be forward-declared: '" + name + "' is already declared")
+    }
+    if symHas(symDefined, name) { error("duplicate definition of type '" + name + "'") }
+    symAfterShells = true
+    symClaim(name)
+    let key = keyOf(symCurMod.name, name)
+    var t: ^Type = tVoid
+    var live = new []^Sym(0)
+    if mode == 1 {
+        if typeAtKey(key) != nil { error("duplicate type key '" + key + "'") }
+        let nt = newType("iface", name, nil)
+        nt.owner = symCurMod.name
+        nt.uid = fnv1a(key)
+        nt.incomplete = true
+        registerType(nt, symCurMod.name, name)
+        let s = newSym("type", name, nt)
+        s.owner = symCurMod.name
+        s.exported = true
+        s.line = nline
+        append(symCurMod.globals, s)
+        t = nt
+    } else {
+        let got = typeAtKey(key)
+        if got == nil { symDisagree("interface '" + name + "'") }
+        if got != nil { t = got }
+        if t.uid != fnv1a(key) { symDisagree("interface '" + name + "'") }
+        if t.kind != "iface" || t.incomplete { symDisagree("interface '" + name + "'") }
+        let es = findExport(symCurMod, name)
+        if es == nil { symDisagree("interface '" + name + "'") }
+        if es != nil {
+            if es.kind != "type" || symType(es) != t { symDisagree("interface '" + name + "'") }
+        }
+        live = ifaceMethodsOf(t)
+    }
+    expect(T_LBRACE, "")
+    skipSemis()
+    let names = new []string(0)
+    var count = 0
+    while sym != T_RBRACE {
+        let mline = tline
+        var pure = false
+        var mutrecv = false
+        if sym == T_IDENT && sval == "pure" { next(); pure = true }
+        if sym == T_IDENT && sval == "mut" { next(); mutrecv = true }
+        if sym == T_IDENT && (sval == "pure" || sval == "mut") {
+            error("'pure' and 'mut' come before 'fn'")
+        }
+        if sym != T_FN { error("expected a method name in the interface") }
+        next()
+        if sym != T_IDENT { error("expected a method name in the interface") }
+        let mname = ident()
+        if symHas(names, mname) { error("duplicate interface method '" + mname + "'") }
+        append(names, mname)
+        // the receiver is parameter 0: borrowed for 'fn', mutable for 'mut fn'
+        let ptypes = new []^Type(0)
+        let pmodes = new []int(0)
+        var recvMode = 1
+        if mutrecv { recvMode = 2 }
+        append(ptypes, t)
+        append(pmodes, recvMode)
+        expect(T_LPAREN, "")
+        while sym != T_RPAREN {
+            var pmut = false
+            if sym == T_IDENT && sval == "mut" { next(); pmut = true }
+            if sym != T_IDENT { error("expected a parameter name") }
+            ident()                                       // parameter names are syntax only
+            if sym != T_COLON { error("expected ':' after the parameter name") }
+            next()
+            var isref = false
+            if sym == T_AMP { next(); isref = true }
+            let pt = symParseType()
+            if isref {
+                if !isOwned(pt) { error("only records, closed types and arrays can be borrowed, not " + symTypeText(pt)) }
+                if pmut { append(pmodes, 2) } else { append(pmodes, 1) }
+            } else {
+                if pmut { error("mut needs a reference parameter: write mut p0: &T") }
+                append(pmodes, 0)
+            }
+            append(ptypes, pt)
+            if sym != T_RPAREN { expect(T_COMMA, "',' or ')'") }
+        }
+        expect(T_RPAREN, "")
+        var ret = tVoid
+        if sym == T_COLON {
+            next()
+            ret = symParseType()
+        }
+        let what = "interface method '" + name + "::" + mname + "'"
+        if mode == 1 {
+            let m = newSym("ifn", mname, nil)
+            m.fnRec = newFnRec()
+            for k in 0..len(ptypes) {
+                append(m.fnRec.params, ptypes[k])
+                append(m.fnRec.pmodes, pmodes[k])
+            }
+            m.ret = ret
+            m.owner = symCurMod.name
+            m.exported = true
+            m.recv = t
+            m.line = mline
+            m.addr = 0
+            m.pureMember = pure
+            setMemberSummary(m, pure)
+            append(ifaceSyms, m)
+        } else {
+            if count >= len(live) { symDisagree(what) }
+            let lm = live[count]
+            if lm.name != mname || lm.pureMember != pure { symDisagree(what) }
+            if len(lm.fnRec.params) != len(ptypes) { symDisagree(what) }
+            for k in 0..len(ptypes) {
+                if !same(lm.fnRec.params[k], ptypes[k]) || lm.fnRec.pmodes[k] != pmodes[k] { symDisagree(what) }
+            }
+            if !same(lm.ret, ret) { symDisagree(what) }
+        }
+        count += 1
+        if sym == T_SEMI { next() } else if sym != T_RBRACE { error("expected ';' or '}'") }
+        skipSemis()
+    }
+    expect(T_RBRACE, "")
+    if count == 0 { error("an interface needs at least one method") }
+    if mode == 1 {
+        t.incomplete = false
+    } else if count != len(live) {
+        symDisagree("interface '" + name + "'")
+    }
+    append(symDefined, name)
+}
+
+// a type alias (the name is claimed before its type is read, as the writer's order needs). lead is the first name of
+// the type when the caller has read it already, or "" to read the whole type here (B7: it never names or changes a Type)
+fn symAlias(name: string, nline: int, mode: int, lead: string, lline: int, lcol: int) {
+    symAfterShells = true
+    symClaim(name)
+    var t: ^Type = tVoid
+    if len(lead) > 0 { t = symFinishTypeName(lead, lline, lcol) } else { t = symParseType() }
+    append(symAliasOrder, name)
+    if mode == 1 {
+        let key = keyOf(symCurMod.name, name)
+        if typeAtKey(key) != nil { error("duplicate type key '" + key + "'") }
+        registerTypeAlias(symCurMod.name, name, t)
+        let s = newSym("type", name, t)
+        s.owner = symCurMod.name
+        s.exported = true
+        s.line = nline
+        append(symCurMod.globals, s)
+        return
+    }
+    let es = findExport(symCurMod, name)
+    if es == nil { symDisagree("type '" + name + "'") }
+    if es != nil {
+        if es.kind != "type" || !same(symType(es), t) { symDisagree("type '" + name + "'") }
+    }
 }
 
 fn symTypeDecl(mode: int) {
@@ -10185,27 +11174,21 @@ fn symTypeDecl(mode: int) {
         append(symDefined, name)
         return
     }
-    // a type alias: it maps the name to the underlying Type; it never names or changes one (B7)
-    symAfterShells = true
-    symClaim(name)
-    let t = symParseType()
-    append(symAliasOrder, name)
-    if mode == 1 {
-        let key = keyOf(symCurMod.name, name)
-        if typeAtKey(key) != nil { error("duplicate type key '" + key + "'") }
-        registerTypeAlias(symCurMod.name, name, t)
-        let s = newSym("type", name, t)
-        s.owner = symCurMod.name
-        s.exported = true
-        s.line = nline
-        append(symCurMod.globals, s)
+    // an interface definition (no shell line), or a type alias: an alias maps the name to the underlying Type and
+    // never names or changes one (B7)
+    if sym == T_IDENT {
+        let w = sval
+        let wline = tline
+        let wcol = tcol
+        next()
+        if w == "interface" && sym == T_LBRACE {
+            symIfaceDef(name, nline, mode)
+            return
+        }
+        symAlias(name, nline, mode, w, wline, wcol)
         return
     }
-    let es = findExport(symCurMod, name)
-    if es == nil { symDisagree("type '" + name + "'") }
-    if es != nil {
-        if es.kind != "type" || !same(symType(es), t) { symDisagree("type '" + name + "'") }
-    }
+    symAlias(name, nline, mode, "", 0, 0)
 }
 
 fn symConstDecl(mode: int) {
@@ -10598,6 +11581,47 @@ fn symFnDecl(mode: int) {
     }
 }
 
+// A .sym implementation line (v3 8.1): impl I for R, R the defining name of a record or closed type of this module.
+// The reader does not re-run the tier check (7.2): the defining module checked it when it compiled the impl, and an
+// importer trusts that check. Mode 1 records the pair; mode 0 requires the live exported impl of the same pair.
+fn symImplDecl(mode: int) {
+    let nline = tline
+    let it = symParseType()
+    if it.kind != "iface" { error("'" + symTypeText(it) + "' is not an interface type") }
+    expect(T_FOR, "")
+    if sym != T_IDENT { error("expected a receiver type name") }
+    let rname = ident()
+    let found = findExport(symCurMod, rname)
+    if found == nil {
+        error("the receiver of an implementation must be the defining name of a type in this module")
+        return
+    }
+    let rt = symType(found)
+    if rt.owner != symCurMod.name || rt.name != rname {
+        error("the receiver of an implementation must be the defining name of a type in this module")
+    }
+    if rt.incomplete { error("type '" + rname + "' is declared but not yet defined") }
+    if rt.kind != "record" && rt.kind != "closed" {
+        error("the receiver of an implementation must be a type defined in this module")
+    }
+    if rt.parent != nil {
+        error("an implementation's receiver cannot be a variant; use its closed type")
+    }
+    let key = symImplKey(it, rt)                   // rt.name is rname here: a mismatch exited above
+    if symHas(symImplSeen, key) {
+        error("duplicate implementation of '" + symTypeText(it) + "' for '" + rname + "'")
+    }
+    append(symImplSeen, key)
+    append(symImplOrder, key)
+    if mode == 1 {
+        append(implArena, new Impl{iface: it, recv: rt, owner: symCurMod.name, exported: true, line: nline, vtable: 0})
+        append(impls, handle(implArena[len(implArena) - 1]))
+        return
+    }
+    let live = findImplIn(rt, it)
+    if live == nil || !live.exported { symDisagree("implementation '" + key + "'") }
+}
+
 fn symReadDecls(mode: int) {
     skipSemis()
     while sym != T_EOF {
@@ -10614,6 +11638,9 @@ fn symReadDecls(mode: int) {
         } else if sym == T_FN {
             next()
             symFnDecl(mode)
+        } else if sym == T_IDENT && sval == "impl" {
+            next()
+            symImplDecl(mode)
         } else {
             error("expected a declaration")
         }
@@ -10825,6 +11852,8 @@ fn readSym(symPath: string, expected: string, mode: int, display: string, srcCan
     symGlobalOrder = new []string(0)
     symMethodOrder = new []string(0)
     symFnOrder = new []string(0)
+    symImplOrder = new []string(0)
+    symImplSeen = new []string(0)
     symAfterShells = false
     symReadDecls(mode)
     symFinish(mode)

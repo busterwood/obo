@@ -1,0 +1,141 @@
+// Interfaces, step 3 of v3 (design sections 4 to 6): owned interface values. A record or closed value converts to I
+// or ?I and moves into a box (the object and its vtable); an I or ?I then lives in a local, a field, an element, a
+// global or a Result, and is freed with its object. Calls through an interface are step 4, so this program checks
+// what step 3 can observe: nil-ness, and that every box and object is freed exactly once (OBO_CHECK=1 fails on a leak
+// or a double free).
+type Shape = interface {
+    pure fn area(): int
+}
+type Named = interface {
+    pure fn area(): int
+}
+
+type Square = ref record { s: int; label: string }
+type Circle = closed { Round { r: int }; Flat { w: int; h: int } }
+type Holder = ref record { d: Shape; maybe: ?Shape; items: []Shape; r: Result[Shape] }
+type Maybe = ref record { o: ?Square }
+
+fn (q: &Square) area(): int { return q.s * q.s }
+impl Shape for Square
+impl Named for Square
+
+fn (c: &Circle) area(): int {
+    match c {
+        Round { return c.r * c.r * 3 }
+        Flat { return c.w * c.h }
+    }
+}
+impl Shape for Circle
+
+var G: Shape = new Square{s: 1, label: "g"}
+var O: ?Shape = new Round{r: 5}
+
+fn make(n: int): Shape {
+    return new Square{s: n, label: "m"}
+}
+
+fn wrap(s: Shape): Result[Shape] {
+    return ok(s)
+}
+
+fn pick(o: ?Shape): ?Shape {
+    if o == nil { return nil }
+    let s: Shape = o
+    return s
+}
+
+fn sink(s: Shape) {
+    let t = s
+}
+
+// the 5.3 idiom for a stored ?T: narrow a taken local, then move it into a typed Shape. The nil case leaves
+// the block, and the other arm drops the local, so the optional local is consumed on every path.
+fn narrowEarly(h: Maybe): int {
+    let t = take(h.o)
+    if t == nil { return 0 }
+    let s: Shape = t
+    return s.area()
+}
+
+fn narrowElse(h: Maybe, mut out: &[]Shape) {
+    let t = take(h.o)
+    if t != nil {
+        let s: Shape = t
+        append(out, s)
+    } else {
+        drop(t)
+    }
+}
+
+fn main() {
+    let h = new Holder{d: new Square{s: 1, label: "a"}, maybe: nil, items: new []Shape(0), r: wrap(new Round{r: 2})}
+    println(h.maybe == nil)                              // expect: true
+    append(h.items, new Square{s: 5, label: "e"})
+    append(h.items, make(6))
+    let f: Shape = new Flat{w: 2, h: 3}
+    append(h.items, f)
+    println(len(h.items))                                // expect: 3
+    h.d = new Flat{w: 1, h: 1}                           // the old d is freed here
+    h.maybe = new Square{s: 7, label: "m"}
+    let old = replace(h.items[0], new Round{r: 9})       // the old element comes back owned
+    drop(old)
+    let x = take(h.maybe)
+    drop(x)
+    println(h.maybe == nil)                              // expect: true
+    let q: ?Shape = new Round{r: 4}
+    let p = pick(q)
+    println(p == nil)                                    // expect: false
+    sink(make(8))
+    let arr = new []?Shape(2)
+    arr[0] = new Square{s: 3, label: "z"}
+    arr[1] = nil
+    println(arr[1] == nil)                               // expect: true
+    G = new Round{r: 2}                                  // the old global is freed here
+    O = nil
+    let g = replace(G, new Square{s: 9, label: "g3"})
+    drop(g)
+    let gx: ?Shape = take(O)
+    println(gx == nil)                                   // expect: true
+    let nm: Named = new Square{s: 6, label: "n"}
+    drop(nm)
+    let r = wrap(new Square{s: 4, label: "w"})
+    match r {
+        ok(v) {
+            let w: Shape = v
+            drop(w)
+        }
+        err(m, c) { println(m) }
+    }
+    var k: Shape = new Square{s: 1, label: "k"}
+    k = new Round{r: 3}                                  // the old box and object are freed here
+    sink(k)
+    var cnt = 0
+    while cnt < 3 {
+        let tmp: Shape = new Square{s: cnt, label: "loop"}
+        cnt += 1
+    }
+    // a closed value (a variant's parent) moves into its box, with the closed type's implementation
+    let cc: Circle = new Flat{w: 2, h: 2}
+    let cs: Shape = cc
+    sink(cs)
+    // a named record moves into its box: the local is not freed a second time
+    let named = new Square{s: 7, label: "nm"}
+    let moved: Shape = named
+    sink(moved)
+    let ns = new Square{s: 8, label: "ns"}
+    append(h.items, ns)
+    println(len(h.items))                               // expect: 4
+
+    // R4: a closed value borrowed as &I uses the parent's implementation, and the 5.3 idiom has its early
+    // return and else-drop shapes
+    let cv: Circle = new Round{r: 4}
+    let cvd: &Shape = &cv
+    println(cvd.area())                                 // expect: 48
+    println(narrowEarly(new Maybe{o: new Square{s: 3, label: "n"}}))  // expect: 9
+    println(narrowEarly(new Maybe{o: nil}))             // expect: 0
+    let out = new []Shape(0)
+    narrowElse(new Maybe{o: new Square{s: 4, label: "e"}}, &out)
+    narrowElse(new Maybe{o: nil}, &out)
+    println(len(out), " ", out[0].area())               // expect: 1 16
+    println("done")                                      // expect: done
+}

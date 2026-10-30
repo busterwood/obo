@@ -1,0 +1,19 @@
+module main
+import "lib.obx"
+// the importer's own type implements the imported interface, and its calls are dispatched through the box
+type Mine = ref record { s: int }
+fn (m: &Mine) area(): int { return m.s + 1 }
+fn (mut m: &Mine) grow(k: int) { m.s += 2 * k }
+impl lib::Shape for Mine
+
+fn main() {
+    let a: lib::Shape = lib::make(3)                  // a lib type, built by a lib function
+    let b: lib::Shape = new lib::Square{s: 2}         // a lib type, converted here
+    let m: lib::Shape = new Mine{s: 4}                // a main type under the lib interface
+    println(a.area(), " ", b.area(), " ", m.area())   // expect: 9 4 5
+    m.grow(1)
+    b.grow(2)
+    println(b.area(), " ", m.area())                  // expect: 16 7
+    println(lib::total(a, new lib::Square{s: 1}))     // expect: 10
+    println("done")                                   // expect: done
+}

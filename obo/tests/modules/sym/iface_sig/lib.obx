@@ -1,0 +1,20 @@
+module lib
+import "dep.obx"
+
+// every member form of the v3 3.2 table: owned, borrowed, mutable and optional parameters, and each receiver mode
+pub type T = ref record { v: int }
+pub type I = interface {
+    pure fn m0(p0: &T, p1: int): T
+    pure mut fn m1(mut p0: &T)
+    pure fn m2(p0: &I, mut p1: &I): string
+    fn m3(p0: ?T, p1: []T): Result[int]
+    fn m4(p0: dep::T2): dep::T2
+    pure fn m5(p0: &I): I
+    fn m6(p0: ?I, p1: []I): ?I
+    fn m7(p0: I): Result[I]
+    fn m8(p0: &?I)
+    mut fn m9(mut p0: &?I)
+    fn m10()
+    mut fn m11(p0: int)
+    pure mut fn m12()
+}

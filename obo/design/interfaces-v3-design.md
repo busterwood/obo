@@ -692,7 +692,7 @@ point to freed memory...`; `cannot point 'k' elsewhere while a defer uses it: ..
 | missing method / not yet defined | `type 'T' has no method 'm' to implement interface 'I'` / `method 'T::m' must be defined before the implementation of interface 'I'` |
 | signature mismatch | `method 'T::m' does not match interface 'I' method 'm': <detail>`: `the receiver must be 'mut &T'`, `it takes N argument(s), not M`, `argument N must be <t>, not <t>`, `argument N must be '<mode>'` (`'I'`, `'&I'`, `'mut &I'`), `it must return <t>, not <t>` |
 | impure for a `pure` member | `method 'T::m' is not pure, but interface 'I' declares 'm' pure` |
-| local tier | `method 'T::m' cannot implement 'I::m': ` then one of `it writes an owned value through a handle`, `it frees global 'g'`, `it might free anything, because it calls a function that is not compiled yet; define that function first`, `it frees below a parameter that the member does not declare mut`; the first two continue `; interface methods may only change what is below their own mut parameters` |
+| local tier | `method 'T::m' cannot implement 'I::m': ` then one of `it writes an owned value through a handle, or calls a function that is not defined yet`, `it frees global 'g'`, `it might free anything, because it calls a function that is not compiled yet; define that function first`, `it frees below a parameter that the member does not declare mut`; the first two continue `; interface methods may only change what is below their own mut parameters` |
 | borrow as owned | `cannot use a borrowed 'T' as owned interface 'I': move the value in, or take the interface as '&I'` |
 | `?T` source | `cannot use ?T as interface 'I' (it may be nil: take it into a local, return if nil, then convert the local)` |
 | other sources | `cannot use interface 'I2' as 'I': interface values do not convert`; `cannot use <t> as interface 'I'`; `cannot use ^T as interface 'I'` |
@@ -702,6 +702,8 @@ point to freed memory...`; `cannot point 'k' elsewhere while a defer uses it: ..
 | interface method call in a global initializer | `an interface method cannot be called in a global initializer; call a function that does it, as in var G = initG()` |
 | `&I` or `&?I` returned, or stored in a field, element or global | the existing `&T` rule, unchanged: `references cannot be global` for a global (the compiler's declaration check). LANGUAGE.md §10 has no separate text for a return, field or element; LANGUAGE.md §4 states the rule: `References are for parameters and local variables only. They cannot be stored in fields, elements or globals, and cannot be returned.` |
 | equality | `interface values cannot be compared; test an optional with '== nil' or '!= nil'` |
+
+(implementation, 2026-10-30) The first local-tier text is the merged `writesHandles` text. `afterCall` sets `writesHandles` for a call to a function that is not defined yet, so a method that makes such a call is refused with `it writes an owned value through a handle, or calls a function that is not defined yet`, not with a separate text. The `freesAll` text stays for the forged-input case: a `.sym` that marks a library function `freesall` without `writeshandles`. The check comes after the `writesHandles` check, so an honest input never reaches it.
 
 **New: calls and handles**
 
@@ -839,6 +841,19 @@ implementation.
 - **Other rules:** X32 `relation` lets `I == I` or `?I == ?I` through (E3); X33 a `&?I` local is accepted (E4);
   X34 a cell is built in a global initializer (E2); X36 `OBO_VERSION` stays `0.6` or `SYM_FORMAT` stays 2, instead of becoming `0.8` / 4 (S-4);
   X37 `containsIface` does not recurse into records, or drops its guard (E9).
+
+(implementation, 2026-10-30) Mutation evidence for this section. X8 is implemented as a faithful load-order
+mutation: the receiver's box pointer is saved as argument 0 and the vtable slot is reserved, the explicit
+arguments run, and only then are `[box]` and `[box + 8]` read into argument 0 and the vtable slot. On legal
+source it is equivalent: `argOrderCheck` holds the receiver and refuses a later argument that moves or frees its
+box (and the mut-alias check refuses one that points inside it), so no accepted call changes either word
+between the arguments and the indirect call. The two older mutants
+that read a wrong stack word or swapped the two words are corruption faults (they crash the first dispatch); they
+are kept as descriptively named extras, not as X8. X15's "forged-method module test" promise is not realizable:
+a `.sym` reader trusts an imported implementation and `implDecl` only sees methods compiled from source, so the
+pfree-subset branch is a defensive check with no honest input; X15 is recorded as equivalent with that precise
+reason. X10 and X37 remain deferred to phase 2a and the lambda stage. This note records implementation evidence;
+it does not change the rules above.
 
 ---
 

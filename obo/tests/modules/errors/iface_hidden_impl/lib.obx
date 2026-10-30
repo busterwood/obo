@@ -1,0 +1,8 @@
+module lib
+// Hidden has a private implementation of the exported interface: no importer may convert it (v3 5.1)
+pub type Shape = interface {
+    pure fn area(): int
+}
+pub type Hidden = ref record { s: int }
+fn (h: &Hidden) area(): int { return h.s }
+impl Shape for Hidden

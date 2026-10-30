@@ -1,0 +1,15 @@
+module main
+import "lib.obx"
+// a downstream implementation: the receiver is local, the interface is imported
+pub type Square = ref record { s: int }
+pub fn (q: &Square) area(): int { return q.s * q.s }
+pub fn (mut q: &Square) grow(k: int) { q.s += k }
+pub impl lib::Shape for Square
+fn main() {
+    let c = new lib::Circle{r: 2}
+    c.grow(1)
+    let q = new Square{s: 3}
+    q.grow(1)
+    println(c.area(), " ", q.area())
+}
+// expect: 27 16

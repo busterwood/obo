@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:4:46: initialising 'h': module 'lib' has no exported implementation of 'lib::Shape' for 'Hidden' (only 'pub' implementations are visible)

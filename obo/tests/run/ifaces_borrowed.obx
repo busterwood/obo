@@ -1,0 +1,52 @@
+// Borrowed containers of interface values (v3 12.1 R1): a &[]Shape parameter, an explicit and an inferred
+// &[]Shape local, and a &Result[Shape] parameter and local are ordinary references to owned containers, so they
+// are accepted before step 5 adds the borrowed-interface forms themselves. The containers own their boxes; the
+// references own nothing, and OBO_CHECK=1 proves that every box is freed exactly once.
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s * q.s }
+impl Shape for Square
+
+fn make(n: int): Shape { return new Square{s: n} }
+
+fn total(xs: &[]Shape): int {
+    var sum = 0
+    var i = 0
+    while i < len(xs) {
+        sum += xs[i].area()
+        i += 1
+    }
+    return sum
+}
+
+fn first(r: &Result[Shape]): int {
+    match r {
+        ok { return r.value.area() }
+        err { return -1 }
+    }
+}
+
+fn main() {
+    let xs = new []Shape(0)
+    append(xs, make(2))
+    append(xs, make(3))
+    println(total(&xs))                                  // expect: 13
+    let rxs: &[]Shape = &xs
+    println(total(rxs))                                  // expect: 13
+    let ixs = &xs
+    println(total(ixs))                                  // expect: 13
+
+    let res: Result[Shape] = ok(make(5))
+    println(first(&res))                                 // expect: 25
+    let rres: &Result[Shape] = &res
+    println(first(rres))                                 // expect: 25
+
+    // an ordinary borrowed container is unchanged: the same rules and the same result
+    let ns = new []int(0)
+    append(ns, 7)
+    let rns: &[]int = &ns
+    println(len(rns))                                    // expect: 1
+    println("done")                                      // expect: done
+}

@@ -105,6 +105,10 @@ fn main() {
 }
 """
 
+# R9 (v3 12.1): an interface-heavy program in both register modes. It is also tests/run/ifaces_homes.obx,
+# so port_compare and run_fork exercise the same source.
+INTERFACES = open(os.path.join(FORK, 'tests', 'run', 'ifaces_homes.obx')).read()
+
 # the peephole (FORK.md, "Peephole pass"): `x = x op y` on a local in a register is one instruction on the
 # local, in every form, also at the first instruction of a loop body (a jump target); no temporary is copied back
 FOLDS = """
@@ -230,6 +234,45 @@ def loop_heads(rows):
     return heads
 
 
+def no_regs_compiler(tmp):
+    """(the compiler built from SRC with REG_HOMES = 0, None) or (None, why). The same source is used,
+    so a mutant's register-mode behaviour is compared with itself, not with a different tree."""
+    text = open(SRC).read()
+    text, n = re.subn(r'^const REG_HOMES = [0-9]+$', 'const REG_HOMES = 0', text, count=1, flags=re.M)
+    if n != 1:
+        return None, 'the source has no single REG_HOMES constant'
+    path = os.path.join(tmp, 'noregs.obo')
+    open(path, 'w').write(text)
+    exe = os.path.join(tmp, 'noregs')
+    b = subprocess.run([REF, path, '-o', exe, '--rt', FORK], capture_output=True, text=True)
+    if b.returncode != 0:
+        return None, 'the no-registers compiler does not build: ' + b.stderr.strip()
+    return exe, None
+
+
+def run_outcome(exe, src, out):
+    c = subprocess.run([exe, src, '-o', out, '--rt', FORK], capture_output=True, text=True)
+    if c.returncode != 0:
+        return ('refused', c.stderr.strip())
+    r = subprocess.run([out], capture_output=True, text=True,
+                       env=dict(os.environ, OBO_CHECK='1', OBX_GC='poison'))
+    return ('ran', r.returncode, r.stdout, r.stderr)
+
+
+def both_modes(port, tmp):
+    """The interface-heavy program compiles and runs with the same result with register homes on and off."""
+    noregs, why = no_regs_compiler(tmp)
+    if why:
+        return why
+    src = os.path.join(tmp, 'ifaces.obx')
+    open(src, 'w').write(INTERFACES)
+    a = run_outcome(port, src, os.path.join(tmp, 'ifaces-reg'))
+    b = run_outcome(noregs, src, os.path.join(tmp, 'ifaces-noregs'))
+    if a != b:
+        return f'the interface-heavy program differs: register homes {a[:2]}, none {b[:2]}'
+    return None
+
+
 # program, most stack-slot instructions allowed, and a pattern that no instruction may match
 PROGRAMS = {
     'the tight loop': (open(os.path.join(FORK, 'bench', 'loop_obo.obx')).read(), 0, BACK),
@@ -241,6 +284,7 @@ PROGRAMS = {
     'loop heads are aligned': (LOOPS, 200, None),
     'a bool parameter is a candidate': (BOOLPARAM, 2, None),
     'the limit of a for loop is given back with its variable': (MORE, 16, None),
+    'an interface-heavy program': (INTERFACES, 200, None),
 }
 
 
@@ -287,6 +331,12 @@ def main():
             print(f'FAIL {name}: {n} instructions use a stack slot, at most {most} allowed')
         else:
             print(f'ok   {name}: {n} stack-slot instructions')
+    why = both_modes(port, tmp)
+    if why:
+        bad += 1
+        print('FAIL ' + why)
+    else:
+        print('ok   the interface-heavy program in both register modes')
     # the port compiles itself: every padding length from 1 to 31 occurs among its loop heads
     exe = os.path.join(tmp, 'self')
     c = subprocess.run([port, SRC, '-o', exe, '--rt', FORK], capture_output=True, text=True)

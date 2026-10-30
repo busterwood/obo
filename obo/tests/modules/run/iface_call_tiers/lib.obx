@@ -1,0 +1,8 @@
+module lib
+// a pure member with a mut parameter: an implementation may change the argument's scalars, and frees nothing below it,
+// so a caller keeps its live borrows of the argument, a deep one included (v3 7.2: the summary is rebuilt from the markers alone)
+pub type Kid = ref record { v: int }
+pub type Item = ref record { n: int; kid: Kid }
+pub type Reader = interface {
+    pure fn size(mut x: &Item): int
+}

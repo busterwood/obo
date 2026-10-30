@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:6:12: cannot implement an interface for imported type 'lib::T'; declare the implementation in the type's own module

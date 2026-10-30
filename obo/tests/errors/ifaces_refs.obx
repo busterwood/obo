@@ -1,0 +1,111 @@
+// Borrowed interfaces, step 5 of v3 (12.2 E7 and E4): the existing reference rules apply to &I unchanged
+// (stale after a change or a drop, a loop's truncate, a defer that would see a new target, no move out of a
+// reference), &?I is a parameter or a walk variable only, and a reference cannot be stored, returned or global,
+// exactly as &T is spelled and refused today.
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+fn make(): Shape { return new Square{s: 1} }
+fn areaOf(d: &Shape): int { return d.area() }
+var C = new Square{s: 2}
+
+// === a &I reference after its owner is assigned over
+fn f() {
+    var c = new Square{s: 1}
+    let r: &Shape = &c
+    c = new Square{s: 2}
+    println(r.area())  // error: 'r' may point to freed memory: something under what it points into was changed; point it again first
+}
+
+// === a &I reference after its owner is dropped
+fn f() {
+    let a: Shape = new Square{s: 1}
+    let r: &Shape = a
+    drop(a)
+    println(r.area())  // error: 'r' may point to freed memory: something under what it points into was changed; point it again first
+}
+
+// === a &I reference into an array element after the array is truncated
+fn f() {
+    let a = new []Shape(0)
+    append(a, new Square{s: 1})
+    let r: &Shape = &a[0]
+    truncate(a, 0)
+    println(r.area())  // error: 'r' may point to freed memory: something under what it points into was changed; point it again first
+}
+
+// === a &I reference pointed elsewhere while a defer uses it
+fn f() {
+    let c = new Square{s: 1}
+    let d = new Square{s: 2}
+    var r: &Shape = &c
+    defer println(r.area())
+    r = &d
+}  // error: cannot point 'r' elsewhere while a defer uses it: the defer runs where its block is left, and would use the new target
+
+// === a &I reference is not moved
+fn f() {
+    let c = new Square{s: 1}
+    let r: &Shape = &c
+    let s: Shape = r  // error: cannot move out of a reference: a reference only borrows
+}
+
+// === a &I reference cannot be stored in a field
+type Holder = ref record { d: &Shape }  // error: expected identifier
+
+// === a &I reference cannot be returned
+fn g(): &Shape {  // error: expected identifier
+    let c = new Square{s: 1}
+    return &c
+}
+
+// === a &I reference cannot be global
+var G: &Shape  // error: references cannot be global
+
+// === an explicit &?I local is refused
+fn f(o: ?Shape) {
+    let r: &?Shape = &o  // error: an optional interface reference can only be a parameter or a walk variable; narrow it to a '&I' local
+}
+
+// === an inferred &?I local is refused
+type OptHolder = ref record { o: ?Shape }
+fn f() {
+    let h = new OptHolder{o: new Square{s: 1}}
+    var r = &h.o  // error: an optional interface reference can only be a parameter or a walk variable; narrow it to a '&I' local
+}
+
+// === an explicit &?I local through an alias is refused
+type Opt = ?Shape
+fn f(o: Opt) {
+    let r: &Opt = &o  // error: an optional interface reference can only be a parameter or a walk variable; narrow it to a '&I' local
+}
+
+// === an inferred &?I local through an alias is refused
+type Opt2 = ?Shape
+type AliasHolder = ref record { o: Opt2 }
+fn f() {
+    let h = new AliasHolder{o: new Square{s: 2}}
+    var r = &h.o  // error: an optional interface reference can only be a parameter or a walk variable; narrow it to a '&I' local
+}
+
+// === take cannot change a &?I parameter
+fn f(o: &?Shape) {
+    let x = take(o)  // error: take cannot change 'o': it is immutable
+    drop(x)
+}
+
+// === a temporary concrete value cannot be borrowed into a &I argument
+fn f() {
+    println(areaOf(new Square{s: 1}))  // error: store this value in a variable first: a reference cannot borrow from a temporary
+}
+
+// === a temporary owned interface value cannot be borrowed into a &I argument
+fn f() {
+    println(areaOf(make()))  // error: store this value in a variable first: a reference cannot borrow from a temporary
+}
+
+// === a global initializer cannot create a borrowed interface cell
+var A = areaOf(&C)  // error: argument 1 of areaOf: cannot create a borrowed interface value in a global initializer: pass the concrete value to a function that makes it

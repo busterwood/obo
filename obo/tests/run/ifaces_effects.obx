@@ -1,0 +1,39 @@
+// Interface calls and the caller's effects (v3 7.3, mutants X21 and X22): a call uses the member's synthetic summary,
+// not the implementation's, so a plain member through a handle, and a pure mut member, leave live references valid.
+type Probe = interface {
+    fn look(k: int): int
+    pure mut fn bump(): int
+}
+type Square = ref record { s: int }
+type Holder = ref record { d: Probe; sq: Square; n: int }
+
+fn (q: &Square) look(k: int): int { return q.s + k }
+fn (mut q: &Square) bump(): int {
+    q.s += 1
+    return q.s
+}
+impl Probe for Square
+
+// X21: a plain member does not write through handles, so a reference borrowed through a handle stays valid across it
+fn plainThroughHandle() {
+    var h = new Holder{d: new Square{s: 1}, sq: new Square{s: 4}, n: 7}
+    let p = handle(h)
+    let inner: &Square = p.sq
+    println(p.d.look(2), " ", inner.s)
+}
+
+// X22: a pure mut member frees nothing, so a handle-borrowed reference stays valid across the call, and the call
+// through a handle is accepted (a plain or mut member through a handle would invalidate it)
+fn pureMutThroughHandle() {
+    var h = new Holder{d: new Square{s: 1}, sq: new Square{s: 4}, n: 7}
+    let p = handle(h)
+    let inner: &Square = p.sq
+    println(p.d.bump(), " ", inner.s)
+}
+
+fn main() {
+    plainThroughHandle()
+    pureMutThroughHandle()
+}
+// expect: 3 4
+// expect: 2 4

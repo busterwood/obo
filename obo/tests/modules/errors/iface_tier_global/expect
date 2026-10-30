@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:10:28: method 'Late::f' cannot implement 'lib::Sink::f': it frees global 'G'; interface methods may only change what is below their own mut parameters

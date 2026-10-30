@@ -3551,9 +3551,9 @@ the header and the `source` hash.
 
 ## The format
 
-Text, line-oriented, parsed by the compiler's scanner. The header is `obosym 2`
+Text, line-oriented, parsed by the compiler's scanner. The header is `obosym 4`
 (one identifier; `obo-sym` would scan as three tokens), `abi 1`,
-`compiler "0.6"`, `source 0x…`, one `dep <module> "<path as imported>"` per
+`compiler "0.8"`, `source 0x…`, one `dep <module> "<path as imported>"` per
 unique direct dependency in first-import order, and `interface 0x…`. The body is
 `module <name>`, one `depiface <module> 0x…` per dependency in the same order,
 then declarations. `source` is FNV-1a 64 of the source bytes exactly;
@@ -3610,8 +3610,8 @@ run, re-emit, `--check`).
 FNV-1a 64 with offset basis `0xcbf29ce484222325` and prime `0x100000001b3`, 64-bit
 wrapping. Three exact-match version values: `obosym` (grammar and meaning),
 `abi` (layout, descriptor format, calling convention, global addressing, effect
-summaries, initialization order) and `compiler` (`OBO_VERSION`, currently `0.6`;
-`--version` prints `obo 0.6 sym-format 2 abi 1`). Errors use the per-line §12
+summaries, initialization order) and `compiler` (`OBO_VERSION`, currently `0.8`;
+`--version` prints `obo 0.8 sym-format 4 abi 1`). Errors use the per-line §12
 wording: `has format <n>; this compiler reads <m>`, `has ABI <n>; this compiler
 uses <m>`, `was built by compiler '<v>'; this is '<w>'`, each with
 `; rebuild it` and exit 2 — not one combined message. Bump `OBO_VERSION` with a
@@ -5233,3 +5233,204 @@ and the promoted 0.6 seed rebuilds it to the same 454,657-byte image. The frozen
 wording nits (the `closureSeen` fixture wording, receiver parens on one line, and
 the literal `b.store(clear(b))` example) are recorded for a later documentation
 pass; the design file itself is untouched.
+
+# Interfaces: owning values, borrowed pairs and dispatch (v3/0.8, implemented; seed promotion pending)
+
+Status: steps 1 to 6 are implemented and independently reviewed (the final step-6 source review approved
+`8b8ca74`). Step 7 adds this record, the LANGUAGE.md section, permanent tests and the complete mutant/gate run.
+Nothing is merged or promoted here: `seed/obo` is still `obo 0.6 sym-format 2 abi 1`, and the compiler source
+remains free of interface syntax, so the 0.6 seed builds the 0.8 compiler. One seed promotion follows final
+review. `^I` is phase 2a, after lambdas Stage A (0.9) and Stage B (0.10, both symbol format 5). The superseded
+owning/v2 notes and `interfaces-design.md` remain historical; `interfaces-v3-design.md` is the authority.
+
+## What is in 0.8
+
+- **The three value tiers, interface spelling.** `I` / `?I` are owned boxes; `&I` / `mut &I` / `&?I` are
+  borrowed pairs; `^I` is not implemented yet. An `I` box is a pointer to `{obj, vtable}` (32 bytes with the
+  header); the object is owned and `rt_free` frees it with the box. `isOwned(I)` is true, so moves, fields,
+  arrays, `Result`, globals, `take`, `replace`, `drop` and teardown use the existing owned rules.
+- **Declarations and implementations.** `type I = interface { ... }` with `[pure] [mut] fn` members;
+  `impl I for T` for a record or closed type of the defining module, after the methods. A member's receiver is
+  parameter 0 (borrowed or mutable). Explicit parameters are owned `p: T`, borrowed `p: &T` or mutable
+  `mut p: &T`; `mut p: T` is refused. A type may implement several interfaces; a variant uses its closed
+  parent's implementation and vtable. A member cannot take or return a function value.
+- **Conversions.** A concrete record or closed value (including a variant) moves into a new box at a typed
+  destination; `T -> ?I` boxes then widens, and `nil -> ?I` is 0. `I -> I` moves the box, `I -> ?I` widens.
+  A borrowed source is refused with the move-in/`&I` hint; `?T -> I`/`?I` is refused with the narrow-local
+  idiom; another interface, arrays, scalars, strings, `Result[T]` and `^T` have their own existing refusals.
+  `ok(new T)` where `Result[I]` is wanted keeps the store-first hint. Inference never produces an interface.
+- **Borrowed pairs.** A `&I` is a pointer to a copied pair. Parameters, locals and `for` walk variables;
+  never a field, element, global or return. Every `&I` local owns its pair slot and `let`/`var`/re-point copy
+  both words (B1), so a value saved from an earlier loop pass does not follow a later conversion. A concrete
+  argument uses a per-site frame cell; borrowing an owned `I` place points at its box without a cell. `&?I` is a
+  parameter or walk variable only, and narrows to `&I`; explicit/inferred `&?I` locals are refused.
+- **Calls and effects.** An `I`, `&I` or narrowed `&?I` designator is a receiver (local, parameter, field,
+  element, global, `Result` value, walk variable). Dispatch is a direct call on `obj` with the vtable slot; both
+  words are loaded before the explicit arguments (S4). The caller uses the member's synthetic summary: a
+  `pure` member frees nothing and writes no owned value through a handle (it may still write scalars, globals
+  and its receiver); a plain/`mut` member may free only below its own `mut` parameters. A member never frees a
+  global or writes through a handle. Handle-borrowed receivers, global receivers, later freeing arguments and
+  mut aliases keep their existing checks under the interface display.
+- **Globals and guards.** Owned conversions, borrowing an owned `I` global and moving an owned `I` into a
+  global are allowed in a global initializer; a conversion that needs a cell and any interface method call are
+  refused with the v3 texts (E10). Interface values cannot be compared; only `== nil` / `!= nil` on `?I` are
+  allowed. `handle` still names records and closed types only in 0.8.
+- **Versions and symbols.** `OBO_VERSION "0.8"`, `SYM_FORMAT 4`, ABI 1. Interfaces have a definition line, no
+  shell; implementations follow methods; member markers and modes are encoded and the reader rebuilds each
+  member's summary with the same helper as the source path.
+
+The compiler's own source is still interface-free, so this round's bootstrap does not use the feature.
+
+## Permanent tests
+
+The interface run files are `ifaces_decl`, `ifaces_owned`, `ifaces_calls`, `ifaces_effects`, `ifaces_borrowed`,
+`ifaces_b1_loop`, `ifaces_refs`, `ifaces_global_init` and the new `ifaces_homes`. Step 7 closes the R4/R5 gaps
+without a new giant file:
+
+- R4: `run/ifaces_owned` adds the third `?T -> I` idiom shape (`else { drop(t) }`), the early-return and
+  take-into-local shapes, and a variant borrowed as `&I` through the parent's vtable.
+- R5: `run/ifaces_calls` adds a member that takes owned `Chain` arguments (including `?Chain` and `[]Chain`) and
+  returns an owned `Chain`.
+- R9: `run/ifaces_homes` is an interface-heavy program (owned/borrowed/optional/nested/many-argument calls,
+  a saved `&I` pair, a group, a walk). `homes_check.py` compiles and runs it with the register-home compiler and
+  with a compiler rebuilt from the same source with `REG_HOMES = 0`, requiring identical output, and also checks
+  its stack-slot count and loop alignment. `port_compare.py` includes the same file as a normal run case.
+
+The error files are `ifaces_decl`, `ifaces_conv` (in `ifaces_owned`), `ifaces_eq`, `ifaces_pos`,
+`ifaces_tiers`, `ifaces_impl_mismatch`, `ifaces_calls`, `ifaces_refs`, `ifaces_handle` (0.8 E8a) and
+`ifaces_global_init` (E10); the module and `.sym` cases are `modules/{run,errors,sym}` and the `sym_test.py`
+S-1 to S-6 cases. E8 (phase 2a), E9 and E9a (lambda phase) are not present because their features are not
+implemented in 0.8; the design IDs are not invented for this phase.
+
+## Mutant coverage (design section 12.4, X1-X38)
+
+`mutate_fork.py` now runs the interface suite with each mutant. A named variant such as X36a/X36b or X38a-X38e
+is a subdivision of the design's row, not a new design ID. X39/X40 were never design IDs; the two extra
+dispatch mutations are now description-named extras.
+
+| id | verdict | catcher or exact reason |
+|---|---|---|
+| X1 | caught | `run/ifaces_owned` under OBO_CHECK=1 (leaked boxes/objects) |
+| X2 | caught | `run/ifaces_owned` (double free) |
+| X3 | caught | `run/ifaces_owned` (a variant boxed with the wrong vtable) |
+| X4 | caught | `run/ifaces_owned` (nil optional allocates) |
+| X5 | caught | `run/ifaces_b1_loop` (saved pair follows the site) |
+| X6 | caught | `run/ifaces_b1_loop` (re-point stores only a pointer) |
+| X7 | caught | `run/ifaces_b1_loop` (vtable word not copied) |
+| X8 | equivalent | the faithful S4 mutation reads the receiver's `obj` and `vtable` after every explicit argument. `argOrderCheck` holds the receiver as argument 0 and refuses a later argument that moves or frees its box (the mut-alias check also refuses a mut argument that points inside it); the box pointer and the two dispatch slots keep the same layout, so legal source observes the same box and table. E6's `h.d.grow(swap(h))` is refused identically; see the precise reason in `mutate_fork.py`. |
+| X9 | caught | E2 store-first: `errors/ifaces_owned` and `errors/ifaces_refs` |
+| X10 | deferred, phase 2a | there is no `^I`; the 0.8 handle refusal (E8a) is a separate extra mutation |
+| X11 | caught | `run/ifaces_refs` / B1 loop and defer rules |
+| X12 | caught | `errors/ifaces_tiers` and `modules/errors/iface_tier_handle` |
+| X13 | caught | `sym/iface_forged_freesall` (source-less `--check` of the defining module) |
+| X14 | caught | `errors/ifaces_tiers` and `modules/errors/iface_tier_global` |
+| X15 | equivalent | signature mode equality (X38d) plus S(m) from the same modes makes a source method's pfree mask a subset; `callFn` records pfree only on mode-2 arguments and a mode-1 parameter cannot be changed. The branch only guards a forged *method* summary, which `implDecl` never sees (the reader trusts imported impls, and a root cannot implement for an imported type). The full suite passes without it; no honest input can distinguish it. |
+| X16 | caught | `errors/ifaces_tiers` and `errors/ifaces_calls` pure cases |
+| X17 | caught | valid local-tier implementations (`run/ifaces_decl`, `ifaces_calls`, `ifaces_refs`) are rejected |
+| X18 | caught | `modules/run/iface_tier_bits` and the source-less tier check |
+| X19 | caught | `modules/run/iface_tier_bits` |
+| X20 | caught | `modules/run/iface_tier_bits` (second mut parameter) |
+| X21 | caught | `run/ifaces_effects` (a plain member through a handle) |
+| X22 | caught | `run/ifaces_effects` (a pure `mut` member through a handle) |
+| X23 | caught | `modules/run/iface_call_tiers` source-less check |
+| X24 | caught | `sym/iface_summary_matrix` (reader mode at index >= 2 differs on re-emission) |
+| X25 | caught | golden/round-trip symbol tests |
+| X26 | caught | golden/round-trip member mode |
+| X27 | caught | golden/round-trip return type and member order |
+| X28 | caught | `iface_sig` full build / re-emission |
+| X29 | caught | `sym/iface_reader_refusals` |
+| X30 | equivalent | a full build compares a `.sym` its own writer just wrote from the same live interface; `--check` (mode 1) does not run the mode-0 comparison, and a forged file is trusted by design. Writer modes are pinned by the golden and round trip (X26). |
+| X31 | caught | `errors/ifaces_decl` (source `mut p: I`) |
+| X32 | caught | `errors/ifaces_eq` |
+| X33 | caught | `errors/ifaces_pos` / `errors/ifaces_owned` (`&?I` local) |
+| X34 | caught | `errors/ifaces_owned` / `errors/ifaces_global_init` (cell in a global) |
+| X35 | caught | `run/ifaces_owned` (`replace` returns the old interface) |
+| X36a | caught | symbol version/stale tests and the golden header |
+| X36b | caught | symbol version/stale tests and the golden header |
+| X37 | deferred, lambda phase | `containsIface` and function values do not exist in 0.8; inventing an equivalent would test code that is not there |
+| X38a | caught | `errors/ifaces_impl_mismatch` receiver mode |
+| X38b | caught | `errors/ifaces_impl_mismatch` argument count |
+| X38c | caught | `errors/ifaces_impl_mismatch` argument type |
+| X38d | caught | `errors/ifaces_impl_mismatch` argument mode |
+| X38e | caught | `errors/ifaces_impl_mismatch` return type |
+| extra: 0.8 handle refusal | caught | `errors/ifaces_handle` |
+| extra: global-init call guard | caught | `errors/ifaces_global_init` |
+| extra: wrong vtable slot | caught | `run/ifaces_calls` |
+| extra: member summary not applied | caught | `errors/ifaces_calls` and `run/ifaces_effects` |
+| extra: wrong vtable stack slot | caught | crashes the first dispatch (`run/ifaces_calls`); a corruption fault, not an S4 load-order fault |
+| extra: obj/vtable words swapped | caught | two-site role swap; crashes the first dispatch (`run/ifaces_calls`, `run/ifaces_b1_loop`); a corruption fault, not an S4 load-order fault |
+
+Counts: 49 table rows: 47 active interface entries (44 caught, 3 equivalent X8/X15/X30) plus the two
+deferred rows X10 and X37. All 47 active entries were run; 0 missed/stale/broken. The 36 design rows minus
+X10 and X37 are all represented; the remaining active entries are the two renamed corrupt-dispatch extras, the
+X36 split, the X38 subdivisions and the four other extras. No test assertion was deleted or relaxed.
+
+ID check against the design: E8a, E10 and E-impl-mismatch are current tests; E8 (phase 2a) and E9/E9a (lambda
+phase) are not implemented and are not claimed. X38 is present as five comparison variants. X39 and X40 are not
+design IDs and no longer appear. The two old S4 corruption mutations (a wrong stack slot and a two-site role
+swap) are descriptive extras, not X8 or X8b: they crash the first dispatch and do not exercise load order.
+
+## Gates (this branch)
+
+These were run from `obo/` at the review-fix tree (a8bea53 plus this scoped test/doc change) with the 0.6 seed
+building the 0.8 compiler. The source is interface-free, so the bootstrap is the same fact the implementation
+steps used.
+
+- `run_fork.py`: 1,408 passed, 0 failed.
+- `module_test.py`: 103 passed, 0 failed.
+- `sym_test.py`: 38 passed, 0 failed, golden compare with no `--update`.
+- `sym_fuzz.py`: 200/200 clean.
+- `doc_check.py`: 56 examples, 0 problems.
+- `homes_check.py`: all programs green, including the interface-heavy program in both register modes and the
+  32 padding lengths.
+- `homes_edge.py`: 1,028 statements, 119 refused by both, 0 differ.
+- `elf_test.py`, `io_test.py` and `meta_test.py`: green (34 metadata checks, 0 failures).
+- `port_test.py`: 556 of 556 identical, no leaks, 9 encoder groups.
+- `port_compare.py`: 1,420 of 1,420 behave the same; the port peaks at **1,945,952 bytes live** (budget
+  `2,000,000`, 54,048 spare) and allocates 44,590,272 bytes in total. A direct `OBO_STATS=1 ./obo src/obo.obo`
+  run measures 1,945,648 live / 44,586,848 allocated, so the margin is about 54 KB, not the 92 KB of the paused
+  0.7 branch. The source growth crossed a 16 KiB image chunk as recorded for step 6; the step-7 docs and tests
+  add no compiler source and do not move the peak.
+- `imports.py`: 26/26; `stdlib.py`: 16/16.
+- `tools.py --require-reference`: 280/280.
+- `eza.py --require-reference`: **546 passed, 0 failed, 0 skipped**, run as
+  `PATH=/tmp/eza-install-sim-F2odpb:$PATH make eza-check` (command-scoped PATH only). The reference is the
+  pinned eza v0.23.3 binary with sha256 `10457dde...a8f7cd8`, exactly `tests/eza/VERSION`; `REFERENCE.md`
+  records it as the P0 probe artifact at that path, and its `--version` output matches the pin. `make
+  eza-memory`: 5/5, worst peak 2,190,032 bytes under `EZA_PEAK_MAX` 2,752,512. No golden was changed. The
+  earlier 474/0/72-skipped fallback is superseded by this strict run.
+- Self-hosting: stage2 == stage3 (`cmp`, 507,905 bytes), seed-built `obo` == stage2, `--version` is
+  `obo 0.8 sym-format 4 abi 1`, and `seed/obo` remains `0.6 sym-format 2 abi 1`. Seed promotion is deliberately
+  not part of this step.
+- `mutate_fork.py` full: 605 of 634 mutants caught, 29 equivalent, 0 missed/stale/broken. The interface
+  subset is 47 active entries (X10 and X37 are deferred rows, not run): 44 caught and 3 equivalent (X8, X15,
+  X30), matching the table above. The new X8 is the faithful delayed-read mutation; the two renamed corruption
+  extras are still caught.
+- `mutate_port.py` full: 529 of 529 mutants caught, 0 missed/stale/broken.
+- `mutate_io.py` full: 27 of 27 caught, 0 missed/stale/broken.
+
+Eight pre-existing patterns in `mutate_fork.py` and four in `mutate_port.py` had been left stale by earlier
+refactors, including the interface-source work (moved argument lines, the reader's two-pattern names, the shell
+predicate, and the alias/method lookup and receiver-consume lines). They were retargeted to the current source
+and still express the same mutation; none was deleted or relabelled. The full runs above are the evidence that
+every pattern matches once and every mutant is judged.
+
+## Limits and deferred phases
+
+- `^I`, the S1 handle rule, E8 and X10 are phase 2a, after lambdas Stage B. `handle` keeps the 0.8 refusal and
+  E8a covers it. `containsIface`, function values, E9, E9a and X37 belong to the lambda stage; they are not
+  claimed as current tests.
+- The local tier is conservative: a method that writes through a handle or frees a global cannot implement a
+  plain interface member. `pure` does not forbid scalar, global or receiver writes; it guarantees no frees and
+  no owned writes through a handle.
+- S4 is pinned by a faithful mutation (X8) that moves the actual `obj`/`vtable` reads after the explicit
+  arguments while keeping argument 0 and the vtable slot in place. It is equivalent on legal source: E6 refuses
+  a later argument that may free or move the receiver's box, and the mut-alias check refuses one that points
+  inside the receiver, so no legal argument can change the place, box or table between the reads and the
+  indirect call. The dispatch run tests pin the valid words and slot. The two
+  old X8/X8b mutations were corruption faults (a wrong stack slot and swapped roles), not load-order tests;
+  they are now named as descriptive extras.
+- `?T -> ?I` is not a conversion; the documented idiom is a narrowed local. `&?I` is parameter/walk-variable
+  only. Interfaces cannot be compared or handled in 0.8.
+- The compiler source, runtime, seed and `PEAK_BUDGET` are unchanged. The peak remains under 2,000,000; if a
+  future change exceeded it, the rule is to stop and report rather than raise the budget.

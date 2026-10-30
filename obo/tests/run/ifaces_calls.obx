@@ -1,0 +1,234 @@
+// Interface calls, step 4 of v3 (design sections 7 and 13, R5): every receiver form of an owned interface value
+// (a local, a parameter, a field, an element, a global and a narrowed optional), dispatch to two record types, a
+// closed type and a recursive group, a factory, members declared in another order from the methods that implement
+// them, one type under two interfaces, a mut member that changes the object, Result and try returns, and many
+// arguments with nested interface calls. Each expect line pins the code the member ran.
+type Shape = interface {
+    pure fn area(): int
+    mut fn grow(k: int)
+    pure fn label(): string
+    pure mut fn bump(): int
+    pure fn fallible(k: int): Result[int]
+    pure fn mix(a: int, b: int, c: int, d: int, e: int, f: int, g: int): int
+}
+type Named = interface {
+    pure fn label(): string
+}
+// R5: a member takes owned interface arguments and returns an owned interface value; ?I and []I parameters
+// move into the member like any other owned value.
+type Chain = interface {
+    pure fn value(): int
+    pure fn join(a: Chain, b: Chain): int
+    pure fn pass(o: Chain): Chain
+    pure fn opt(o: ?Chain): int
+    pure fn total(xs: []Chain): int
+}
+type Leaf = ref record { v: int }
+
+type Square = ref record { s: int }
+type Rect = ref record { w: int; h: int }
+type Circle = closed { Round { r: int }; Flat { w: int; h: int } }
+type Group = ref record { items: []Shape }
+type Holder = ref record { d: Shape; kids: []Shape }
+
+// the implementations are written in the reverse order of the members they implement
+fn (g: &Group) mix(a: int, b: int, c: int, d: int, e: int, f: int, k: int): int {
+    return a + b + c + d + e + f + k
+}
+fn (g: &Group) label(): string { return "group" }
+fn (mut g: &Group) bump(): int { return len(g.items) }
+fn (mut g: &Group) grow(k: int) {
+    var i = 0
+    while i < len(g.items) {
+        g.items[i].grow(k)                    // a member of each element: the same dispatch, one level down
+        i += 1
+    }
+}
+fn (g: &Group) area(): int {
+    var total = 0
+    var i = 0
+    while i < len(g.items) {
+        total += g.items[i].area()            // recursion through an interface
+        i += 1
+    }
+    return total
+}
+fn (g: &Group) fallible(k: int): Result[int] { return ok(g.area() + k) }
+impl Shape for Group
+
+fn (c: &Circle) mix(a: int, b: int, c2: int, d: int, e: int, f: int, g: int): int { return a + b + c2 + d + e + f + g }
+fn (c: &Circle) fallible(k: int): Result[int] { return ok(k) }
+fn (mut c: &Circle) bump(): int { return 7 }
+fn (c: &Circle) label(): string { return "circle" }
+fn (mut c: &Circle) grow(k: int) {
+    match c {
+        Round { c.r += k }
+        Flat { c.w += k }
+    }
+}
+fn (c: &Circle) area(): int {
+    match c {
+        Round { return 3 * c.r * c.r }
+        Flat { return c.w * c.h }
+    }
+}
+impl Shape for Circle
+
+fn (mut r: &Rect) bump(): int {
+    r.h += 1
+    return r.h
+}
+fn (r: &Rect) fallible(k: int): Result[int] { return ok(r.w + k) }
+fn (r: &Rect) mix(a: int, b: int, c: int, d: int, e: int, f: int, g: int): int {
+    return a + b + c + d + e + f + g + r.h
+}
+fn (r: &Rect) label(): string { return "rect" }
+fn (mut r: &Rect) grow(k: int) { r.w += k }
+fn (r: &Rect) area(): int { return r.w * r.h }
+impl Shape for Rect
+
+fn (q: &Square) mix(a: int, b: int, c: int, d: int, e: int, f: int, g: int): int {
+    return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g + q.s
+}
+fn (q: &Square) fallible(k: int): Result[int] {
+    if k < 0 { return err("negative") }
+    return ok(q.s + k)
+}
+fn (mut q: &Square) bump(): int {
+    q.s += 1
+    return q.s
+}
+fn (q: &Square) label(): string { return "square" }
+fn (mut q: &Square) grow(k: int) { q.s += k }
+fn (q: &Square) area(): int { return q.s * q.s }
+impl Shape for Square
+impl Named for Square
+
+// a factory: the caller owns the box
+fn make(n: int): Shape {
+    if n % 2 == 0 { return new Square{s: n} }
+    return new Rect{w: n, h: 1}
+}
+
+fn (l: &Leaf) value(): int { return l.v }
+fn (l: &Leaf) join(a: Chain, b: Chain): int { return l.v + a.value() + b.value() }
+fn (l: &Leaf) pass(o: Chain): Chain { return o }
+fn (l: &Leaf) opt(o: ?Chain): int {
+    if o != nil { return o.value() }
+    return 0
+}
+fn (l: &Leaf) total(xs: []Chain): int {
+    var sum = 0
+    for x in xs { sum += x.value() }
+    return sum
+}
+impl Chain for Leaf
+
+fn makeLeaf(n: int): Chain { return new Leaf{v: n} }
+
+// a try in a function that returns a Result: the err of a member is passed on
+fn checked(s: Shape, k: int): Result[int] {
+    let v = try s.fallible(k)
+    return ok(v * 10)
+}
+
+// a parameter is an owned receiver: the callee changes it and reads it back
+fn growAndRead(p: Shape, k: int): int {
+    p.grow(k)
+    return p.area()
+}
+
+var G: Shape = new Square{s: 2}
+
+fn main() {
+    let sq = make(4)
+    let rc = make(3)
+    println(sq.area(), " ", rc.area(), " ", sq.label(), " ", rc.label())   // expect: 16 3 square rect
+    let nm: Named = new Square{s: 9}
+    println(nm.label())                                                    // expect: square
+    var cc: Shape = new Flat{w: 2, h: 5}
+    println(cc.area(), " ", cc.label())                                    // expect: 10 circle
+    cc.grow(1)
+    println(cc.area())                                                     // expect: 15
+    let rr: Shape = new Round{r: 1}
+    println(rr.area(), " ", rr.bump())                                     // expect: 3 7
+
+    // a group owns its elements; grow reaches each one, and area sums them through the interface
+    let g = new Group{items: new []Shape(0)}
+    append(g.items, make(4))
+    append(g.items, make(3))
+    append(g.items, new Round{r: 1})
+    var grp: Shape = g
+    println(grp.area(), " ", grp.label())                                  // expect: 22 group
+    grp.grow(1)
+    println(grp.area(), " ", grp.bump())                                   // expect: 41 3
+    println(grp.mix(1, 2, 3, 4, 5, 6, 7))                                  // expect: 28
+    let res = checked(grp, 1)
+    match res {
+        ok { println(res.value) }                                          // expect: 420
+        err { println("err") }
+    }
+    let bad = checked(make(2), -1)
+    match bad {
+        ok { println(bad.value) }
+        err { println("failed") }                                          // expect: failed
+    }
+
+    // a parameter receiver, and a factory result passed straight in
+    println(growAndRead(make(5), 2))                                       // expect: 7
+
+    // many arguments; the nested interface calls are evaluated, left to right, before the call
+    let p: Shape = new Square{s: 1}
+    let q: Shape = new Rect{w: 2, h: 3}
+    println(p.mix(q.area(), q.bump(), 3, 4, 5, 6, p.area()))               // expect: 108
+
+    // a field, an element and a global receiver, and a narrowed optional
+    let h = new Holder{d: make(4), kids: new []Shape(0)}
+    h.d.grow(2)
+    println(h.d.area())                                                    // expect: 36
+    append(h.kids, make(3))
+    append(h.kids, make(2))
+    h.kids[1].grow(5)
+    println(h.kids[0].area(), " ", h.kids[1].area())                       // expect: 3 49
+    h.kids[0].grow(1)
+    println(h.kids[0].area())                                              // expect: 4
+    G.grow(3)
+    println(G.area(), " ", G.bump())                                       // expect: 25 6
+    let o: ?Shape = make(6)
+    if o != nil {
+        println(o.area())                                                  // expect: 36
+    }
+
+    // a mixed list, walked with while and changed element by element
+    let shapes = new []Shape(0)
+    append(shapes, make(2))
+    append(shapes, make(5))
+    append(shapes, new Round{r: 3})
+    var sum = 0
+    var i = 0
+    while i < len(shapes) {
+        sum += shapes[i].area()
+        i += 1
+    }
+    println(sum)                                                           // expect: 36
+    shapes[2].grow(1)
+    sum = 0
+    i = 0
+    while i < len(shapes) {
+        sum += shapes[i].area()
+        i += 1
+    }
+    println(sum)                                                           // expect: 57
+
+    // members with owned interface arguments and an owned interface return (R5)
+    let leaf: Chain = new Leaf{v: 1}
+    println(leaf.join(new Leaf{v: 4}, makeLeaf(5)))                         // expect: 10
+    let passed = leaf.pass(makeLeaf(6))
+    println(passed.value())                                                // expect: 6
+    println(leaf.opt(nil), " ", leaf.opt(makeLeaf(7)))                     // expect: 0 7
+    let xs = new []Chain(0)
+    append(xs, new Leaf{v: 2})
+    append(xs, makeLeaf(3))
+    println(leaf.total(xs))                                                // expect: 5
+    println("done")                                                        // expect: done
+}

@@ -1,0 +1,7 @@
+module main
+import "lib.obx"
+type I = interface {
+    fn f(): int
+}
+impl I for lib::T
+fn main() { }

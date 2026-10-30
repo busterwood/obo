@@ -1,0 +1,88 @@
+// Interfaces, step 1 of v3 (design section 13): declarations, member markers, parameter modes and
+// implementations, checked at compile time. The program calls each implementing method directly; the
+// owned interface values that step 3 adds are in ifaces_owned.obx.
+pub type Shape = interface {
+    pure fn area(): int
+    mut fn grow(k: int)
+    pure mut fn bump(): int
+}
+
+type Named = interface {
+    pure fn name(): string
+    mut fn rename(p0: string)
+}
+
+// members that take or return interface values: declared, not implemented yet
+type Wide = interface {
+    fn scaled(p0: &Wide, mut p1: &Wide): int
+    fn fill(p0: ?Wide, p1: []Wide): Result[Wide]
+    fn pick(): Wide
+}
+
+type Square = ref record { s: int; label: string }
+type Circle = closed { Round { r: int }; Flat { w: int; h: int } }
+
+fn (q: &Square) area(): int { return q.s * q.s }
+fn (mut q: &Square) grow(k: int) { q.s += k }
+fn (mut q: &Square) bump(): int {
+    q.s += 1
+    return q.s
+}
+fn (q: &Square) name(): string { return q.label }
+fn (mut q: &Square) rename(p0: string) { q.label = p0 }
+
+impl Shape for Square
+impl Named for Square
+
+fn (c: &Circle) area(): int {
+    match c {
+        Round { return c.r * c.r * 3 }
+        Flat { return c.w * c.h }
+    }
+}
+fn (mut c: &Circle) grow(k: int) {
+    match c {
+        Round { c.r += k }
+        Flat { c.w += k }
+    }
+}
+fn (mut c: &Circle) bump(): int {
+    c.grow(1)
+    return c.area()
+}
+
+impl Shape for Circle
+
+// a method may be named main; it is not the program's entry
+fn (q: &Square) main(): int { return 42 }
+
+// a recursive mut implementation meets a plain member: it changes only what is below its own receiver
+type Node = ref record { v: int; kids: []Node }
+type Visit = interface {
+    mut fn visit()
+}
+fn (mut n: &Node) visit() {
+    for i in 0..len(n.kids) { n.kids[i].visit() }
+    n.v += 1
+}
+impl Visit for Node
+
+fn main() {
+    let q = new Square{s: 2, label: "q"}
+    println(q.area())            // expect: 4
+    q.grow(3)
+    println(q.area())            // expect: 25
+    println(q.bump())            // expect: 6
+    q.rename("r")
+    println(q.name())            // expect: r
+    println(q.main())            // expect: 42
+    let c: Circle = new Round{r: 1}
+    c.grow(1)
+    println(c.area())            // expect: 12
+    let f: Circle = new Flat{w: 2, h: 5}
+    println(f.bump())            // expect: 15
+    let root = new Node{v: 1, kids: new []Node(0)}
+    append(root.kids, new Node{v: 10, kids: new []Node(0)})
+    root.visit()
+    println(root.v, " ", root.kids[0].v)   // expect: 2 11
+}
