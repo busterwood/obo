@@ -21,6 +21,12 @@ fn main() { var h: ^Cmp }  // error: handles name records and closed types, not 
 // === a function value cannot be borrowed
 fn f(c: &Cmp) { }  // error: only records, closed types and arrays can be borrowed, not fn(&Item, &Item): int
 
+// === an interface member cannot take a borrowed function value
+type Iborrow = interface { fn m(p0: &fn(int): int) }  // error: only records, closed types and arrays can be borrowed, not fn(int): int
+
+// === a method receiver cannot be a borrowed function value
+fn (r: &fn(int): int) bad() { }  // error: only records, closed types and arrays can be borrowed, not fn(int): int
+
 // === a record field cannot be a function value
 type Holder = ref record { c: Cmp }  // error: a record field cannot be a function value; function values are parameters and locals only
 
@@ -55,6 +61,18 @@ type BadRet = fn(int): fn(int): int  // error: a function type cannot return a f
 
 // === a function type cannot return a function type through an alias
 type BadRetAlias = fn(int): Cmp  // error: a function type cannot return a function value
+
+// === a raw function type cannot end its parameter list with a comma
+type BadTrailingRaw = fn(int,)  // error: expected a parameter type
+
+// === a function type cannot end an alias parameter with a comma
+type BadTrailingAlias = fn(Cmp,)  // error: expected a parameter type
+
+// === a borrowed function type parameter cannot end with a comma
+type BadTrailingBorrow = fn(&Item,)  // error: expected a parameter type
+
+// === a nested function type cannot end its parameter list with a comma
+type BadTrailingNested = fn(fn(int,))  // error: expected a parameter type
 
 // === a function type cannot have a capture list
 type BadCapture = fn[](int): int  // error: a function type cannot have a capture list

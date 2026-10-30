@@ -1341,11 +1341,11 @@ INTERFACE_MUTANTS = {
         "        if m.ret != tVoid {\n            appStr(b, \": \")\n            appTypeExpr(b, m.ret, modName)\n",
         "        if false {\n            appStr(b, \": \")\n            appTypeExpr(b, m.ret, modName)\n"),
     "interfaces v3 X28: the reader parses an owned interface parameter as mode 1": (
-        "                append(pmodes, 0)\n            }\n            append(ptypes, pt)\n",
-        "                if pt.kind == \"iface\" { append(pmodes, 1) } else { append(pmodes, 0) }\n            }\n            append(ptypes, pt)\n"),
+        "                append(pmodes, 0)\n            }\n            rejectFn(pt, \"an interface method cannot use a function value; function types are not supported in interfaces\")\n            append(ptypes, pt)\n",
+        "                if pt.kind == \"iface\" { append(pmodes, 1) } else { append(pmodes, 0) }\n            }\n            rejectFn(pt, \"an interface method cannot use a function value; function types are not supported in interfaces\")\n            append(ptypes, pt)\n"),
     "interfaces v3 X29: the reader accepts mut on an owned parameter": (
-        "                if pmut { error(\"mut needs a reference parameter: write mut p0: &T\") }\n                append(pmodes, 0)\n            }\n            append(ptypes, pt)\n",
-        "                append(pmodes, 0)\n            }\n            append(ptypes, pt)\n"),
+        "                if pmut { error(\"mut needs a reference parameter: write mut p0: &T\") }\n                append(pmodes, 0)\n            }\n            rejectFn(pt, \"an interface method cannot use a function value; function types are not supported in interfaces\")\n            append(ptypes, pt)\n",
+        "                append(pmodes, 0)\n            }\n            rejectFn(pt, \"an interface method cannot use a function value; function types are not supported in interfaces\")\n            append(ptypes, pt)\n"),
     "interfaces v3 X30: the mode-0 comparison ignores parameter modes": (
         "if !same(lm.fnRec.params[k], ptypes[k]) || lm.fnRec.pmodes[k] != pmodes[k] { symDisagree(what) }",
         "if !same(lm.fnRec.params[k], ptypes[k]) { symDisagree(what) }"),

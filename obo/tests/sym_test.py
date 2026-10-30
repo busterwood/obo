@@ -1719,6 +1719,8 @@ pub type ResI = Result[I]
 pub type Holder = ref record { s: I }
 pub type Cmp = fn(&Item, &Item): int
 pub type T = ref record { v: int }
+pub type Closed = closed { V { v: int } }
+pub type NodeI = ref record { next: ?NodeI; s: I }
 pub var G: int = 0
 pub const C = 7
 pub fn plain(p0: int): int { return p0 }
@@ -1797,6 +1799,8 @@ def forged_fn_positions():
         cases = [
             (b'type T = ref record { v: int }', b'type T = ref record { v: fn(int): int }',
              'a record field cannot be a function value'),
+            (b'type Closed = closed { V { v: int } }', b'type Closed = closed { V { v: fn(int): int } }',
+             'a record field cannot be a function value'),
             (b'var G: int', b'var G: fn(int): int',
              'a function value cannot be a global; it is a parameter or a local'),
             (b'var G: int', b'var G: Cmp',
@@ -1842,7 +1846,19 @@ def forged_fn_positions():
              b'fn apply(p0: fn(, p1: int): int',
              'expected a parameter type'),
             (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn(int,): int, p1: int): int',
+             'expected a parameter type'),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn(int,int,): int, p1: int): int',
+             'expected a parameter type'),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn(&Item,): int, p1: int): int',
+             'expected a parameter type'),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
              b'fn apply(p0: fn(int int): int, p1: int): int',
+             "expected ',' or ')'"),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn(int: int, p1: int): int',
              "expected ',' or ')'"),
             (b'fn apply(p0: fn(int): int, p1: int): int',
              b'fn apply(p0: fn(I): int, p1: int): int',
@@ -1878,6 +1894,12 @@ def forged_fn_positions():
              b'fn apply(p0: fn([]Holder): int, p1: int): int',
              "a function value cannot take or return 'Holder': it holds an interface value"),
             (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn(NodeI): int, p1: int): int',
+             "a function value cannot take or return 'NodeI': it holds an interface value"),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
+             b'fn apply(p0: fn(fn(Holder): int): int, p1: int): int',
+             "a function value cannot take or return 'Holder': it holds an interface value"),
+            (b'fn apply(p0: fn(int): int, p1: int): int',
              b'fn apply(p0: fn(fn(I): int): int, p1: int): int',
              'a function value cannot take or return an interface value'),
             (b'type I = interface { fn m(p0: int) }',
@@ -1886,8 +1908,13 @@ def forged_fn_positions():
             (b'type I = interface { fn m(p0: int) }',
              b'type I = interface { fn m(p0: int): fn(int): int }',
              'an interface method cannot use a function value; function types are not supported in interfaces'),
+            (b'type I = interface { fn m(p0: int) }',
+             b'type I = interface { fn m(p0: &fn(int): int) }',
+             'only records, closed types and arrays can be borrowed, not fn(int): int'),
             (b'fn plain(p0: int): int', b'fn (p0: fn(int): int) plain()',
              'the receiver must be a record or closed type defined in this module, not fn(int): int'),
+            (b'fn plain(p0: int): int', b'fn (p0: &fn(int): int) plain()',
+             'only records, closed types and arrays can be borrowed, not fn(int): int'),
             (b'type T = ref record { v: int }', b'type T = fn(int): int',
              "a function type cannot be forward-declared: 'T' is already declared as a forward type"),
         ]
@@ -1916,6 +1943,17 @@ def forged_fn_positions():
             q = build(d, symdir, check=True)
             if q.returncode != 2 or want not in q.stderr:
                 raise Fail(f"reordered alias {old!r} -> {new!r}: exit {q.returncode}: {q.stderr.strip()}")
+        # a forward shell redefined through a bare function-type alias
+        marker = b'type T = ref record { v: int }\n'
+        bare2 = base.replace(alias_line, b'')
+        at = bare2.index(marker)
+        open(libpath, 'wb').write(bare2[:at] + alias_line + b'type T = Cmp\n' +
+                                  bare2[at + len(marker):])
+        rehash(libpath, lambda b: b)   # the spliced file changes the hashed body
+        q = build(d, symdir, check=True)
+        want = "a function type cannot be forward-declared: 'T' is already declared as a forward type"
+        if q.returncode != 2 or want not in q.stderr:
+            raise Fail(f"forward shell through a bare alias: exit {q.returncode}: {q.stderr.strip()}")
         # an incomplete forward shell as a function-type parameter
         manual = ('obosym 5\nabi 1\ncompiler "0.9"\nsource 0x0000000000000001\n'
                   'interface 0x0\nmodule lib\ntype Later uid 0x%016x\n'
@@ -1929,6 +1967,27 @@ def forged_fn_positions():
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
+
+
+def qualified_fnfwd_alias():
+    """A forward shell redefined through a qualified function-type alias is refused with the
+    forward-function diagnostic, even though the alias lives in another module's .sym."""
+    d, symdir = tree({'dep.obx': 'module dep\npub type Cmp = fn(int): int\n',
+                      'lib.obx': 'module lib\nimport "dep.obx"\npub type T = ref record { v: int }\n',
+                      'main.obx': 'module main\nimport "lib.obx"\nfn main() { }\n'},
+                     prefix='symcase-qfn-fwd-')
+    try:
+        ok(build(d, symdir, out=os.path.join(d, 'prog')), 'qualified forward build')
+        libpath = os.path.join(symdir, 'lib.sym')
+        mutate(libpath, b'type T = ref record { v: int }\n', b'type T = dep::Cmp\n')
+        os.unlink(os.path.join(d, 'lib.obx'))
+        os.unlink(os.path.join(d, 'dep.obx'))
+        q = build(d, symdir, check=True)
+        want = "a function type cannot be forward-declared: 'T' is already declared as a forward type"
+        if q.returncode != 2 or want not in q.stderr:
+            raise Fail(f"qualified function alias forward: exit {q.returncode}: {q.stderr.strip()}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 # the imported-member tier cases of module_test (tests/modules/{run,errors}/iface_tier_*): each is also run
@@ -2056,6 +2115,7 @@ def tests():
         ('sym/fn_sym_roundtrip', fn_sym_roundtrip),
         ('sym/stale_format4_fn_rejected', stale_format4_fn_rejected),
         ('sym/forged_fn_positions', forged_fn_positions),
+        ('sym/qualified_fnfwd_alias', qualified_fnfwd_alias),
         ('sym/iface_tier_check', iface_tier_check),
         ('sym/iface_forged_freesall', iface_forged_freesall),
     ]

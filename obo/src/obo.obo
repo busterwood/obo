@@ -4216,7 +4216,10 @@ fn parseType(): ^Type {
             if mode == 1 && !isOwned(p) { error("only records, closed types and arrays can be borrowed, not " + tname(p)) }
             rejectIfaceFn(p)
             fnAddParam(t, p, mode)
-            if sym != T_RPAREN { expect(T_COMMA, "',' or ')'") }
+            if sym != T_RPAREN {
+                expect(T_COMMA, "',' or ')'")
+                if sym == T_RPAREN { error("expected a parameter type") }
+            }
         }
         expect(T_RPAREN, "")
         if sym == T_COLON {
@@ -10932,7 +10935,10 @@ fn symParseType(): ^Type {
             if mode == 1 && !isOwned(p) { error("only records, closed types and arrays can be borrowed, not " + symTypeText(p)) }
             rejectIfaceFn(p)
             fnAddParam(t, p, mode)
-            if sym != T_RPAREN { expect(T_COMMA, "',' or ')'") }
+            if sym != T_RPAREN {
+                expect(T_COMMA, "',' or ')'")
+                if sym == T_RPAREN { error("expected a parameter type") }
+            }
         }
         expect(T_RPAREN, "")
         if sym == T_COLON {
@@ -11209,7 +11215,6 @@ fn symIfaceDef(name: string, nline: int, mode: int) {
             var isref = false
             if sym == T_AMP { next(); isref = true }
             let pt = symParseType()
-            rejectFn(pt, "an interface method cannot use a function value; function types are not supported in interfaces")
             if isref {
                 if !isOwned(pt) { error("only records, closed types and arrays can be borrowed, not " + symTypeText(pt)) }
                 if pmut { append(pmodes, 2) } else { append(pmodes, 1) }
@@ -11217,6 +11222,7 @@ fn symIfaceDef(name: string, nline: int, mode: int) {
                 if pmut { error("mut needs a reference parameter: write mut p0: &T") }
                 append(pmodes, 0)
             }
+            rejectFn(pt, "an interface method cannot use a function value; function types are not supported in interfaces")
             append(ptypes, pt)
             if sym != T_RPAREN { expect(T_COMMA, "',' or ')'") }
         }
@@ -11280,6 +11286,17 @@ fn symAlias(name: string, nline: int, mode: int, lead: string, lline: int, lcol:
             let es = findExport(symCurMod, lead)
             if es != nil && es.kind == "type" && containsFn(symType(es)) {
                 error("a function type cannot be forward-declared: '" + name + "' is already declared as a forward type")
+            }
+            if sym == T_COLONCOLON {
+                var m = symModuleByName(lead)
+                if m == nil { m = moduleByName(lead) }
+                if m != nil {
+                    let qt = symFinishTypeName(lead, lline, lcol)
+                    if containsFn(qt) {
+                        error("a function type cannot be forward-declared: '" + name + "' is already declared as a forward type")
+                    }
+                }
+                error("duplicate exported name '" + name + "'")
             }
         }
     }
@@ -11591,6 +11608,9 @@ fn symFnDecl(mode: int) {
         if sym == T_IDENT { spelling = sval }
         recvType = symParseType()
         expect(T_RPAREN, "")
+        if isref && !isOwned(recvType) {
+            error("only records, closed types and arrays can be borrowed, not " + symTypeText(recvType))
+        }
         if recvType.kind != "record" && recvType.kind != "closed" {
             error("the receiver must be a record or closed type defined in this module, not " + symTypeText(recvType))
         }
