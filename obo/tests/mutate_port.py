@@ -130,16 +130,11 @@ MUTANTS = {
                                                           "    let useBefore = useSeq\n    let entry = snapshot()"),
                                                          ("    let condSt = snapshot()                  // the state when the condition leaves the loop",
                                                           "    let selfBefore = selfCalls\n    let condSt = snapshot()                  // the state when the condition leaves the loop")],
-    # a break's suspicion is carried out of the loop: caught by errors/handle_deep.obx "a recursive call before a break"
-    "break suspicion not recorded": [("                    lp.susp[i] = true\n", "                    if false { lp.susp[i] = true }\n")],
     # the loop-carried suspicion (fix for "a recursive call in a loop, read on the next iteration", the loop check):
     # the state at the body's end, which is where the next iteration starts, is not carried. Caught by
     # errors/handle_deep.obx "a loop's body reads a reference at its top, on the next iteration after a recursive call on one path"
     "loop-carried suspicion from the body's end dropped": [("            if ownedLocals[i].suspect { loops[li].back[i] = true }",
                                                            "            if false { loops[li].back[i] = true }")],
-    # ... and the suspicion a continue carries to the next iteration. Caught by errors/handle_deep.obx
-    # "a recursive call before a continue: the next iteration starts with the reference still deep"
-    "loop-carried suspicion from continue dropped": [("                    if k == T_CONTINUE { lp.back[i] = true }", "                    if false { lp.back[i] = true }")],
     # a body that always leaves keeps its suspicion after the loop. Caught by run/handle_deep.obx "retLeak"
     "terminated loop body's suspicion kept": [("    if term { restore(entry) } else { restoreMoved(entry) }", "    restoreMoved(entry)")],
     # the loop check reports a reference the loop never reads: caught by run/handle_deep.obx "unusedRef"
@@ -148,9 +143,6 @@ MUTANTS = {
     # reads in a loop are not counted: the loop check misses the reads it is for. Caught by errors/handle_deep.obx
     # "a loop's body reads a reference at its top, on the next iteration after a recursive call on one path"
     "reads in a loop not counted": [("            s.staleUse = useSeq\n            s.usedAt = useSeq\n", "            s.staleUse = useSeq\n")],
-    # a deferred recursive call is applied at the defer statement, not where the block ends. Caught by
-    # run/handle_deep.obx "deferRec" (a use after the defer statement)
-    "deferred self-call suspicion kept at the defer": [("    restoreSuspects(before)\n    if selfCalls != sc {", "    if selfCalls == sc { restoreSuspects(before) }\n    if selfCalls != sc {")],
     # a defer body's re-point clears suspicion before the defer has run. Caught by errors/handle_deep.obx
     # "a defer that re-points a reference"
     "a defer's re-point clears suspicion": [("    restoreDeferred(&before)\n", "")],
@@ -270,13 +262,16 @@ MUTANTS.update({
                                                           "    let useBefore = useSeq\n"),
                                                          ("    let condSt = snapshot()                  // the state when the condition leaves the loop",
                                                           "    let selfBefore = selfCalls\n    let condSt = snapshot()                  // the state when the condition leaves the loop")],
-    "break suspicion not recorded": [("                append(lp.exits, now)\n", "                if false { append(lp.exits, now) }\n")],
+    # a break carries a neutral exit state: its suspicion (and every other mark) is not recorded
+    "break suspicion not recorded": [("                append(lp.exits, now)\n", "                append(lp.exits, neutralState(localsIn(&now)))\n                drop(now)\n")],
     "loop-carried suspicion from the body's end dropped": [("        absorb(&loops[li].back, &now)\n", "        if false { absorb(&loops[li].back, &now) }\n")],
-    "loop-carried suspicion from continue dropped": [("                append(lp.conts, now)\n", "                if false { append(lp.conts, now) }\n")],
+    "loop-carried suspicion from continue dropped": [("                append(lp.conts, now)\n", "                append(lp.conts, neutralState(localsIn(&now)))\n                drop(now)\n")],
     "terminated loop body's suspicion kept": [("    if term { restore(&entry) } else { restoreMoved(&entry) }", "    restoreMoved(&entry)")],
     "loop check reports unread references": [("back.flags[localsIn(back) + i] && ownedLocals[i] != lv && ownedLocals[i].usedAt > useBefore {",
                                               "back.flags[localsIn(back) + i] && ownedLocals[i] != lv {")],
-    "deferred self-call suspicion kept at the defer": [("    restoreDeferred(&before)\n", "    if selfCalls == sc { restoreDeferred(&before) }\n")],
+    # the deferred body's recursive calls are replayed where the block is left (replayFrees kind 2);
+    # dropping that replay keeps their suspicion from reaching the older defers and the block exit
+    "deferred self-call suspicion not replayed": [("        } else {\n            markSuspects()\n        }\n", "        } else {\n        }\n")],
     # the join of two bindings keeps the binding of the last path, not the union of the paths
     "binding not joined: last path wins": [("    if a == b || b == noneBind { return a }\n    if a == noneBind { return b }\n",
                                             "    if b == noneBind { return a }\n    if true { return b }\n")],

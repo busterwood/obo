@@ -893,7 +893,7 @@ MUTANTS.update(MODULE_MUTANTS)
 EQUIVALENT = {
     "methods: closureSeen is not truncated per method": "equivalent: only a local named type that is not exported is an error in closureCheck, and it errors the first time it is seen, so sharing closureSeen across methods cannot suppress an error; a foreign type is marked seen and skipped, and an anonymous type has no name to check. Truncating per method keeps the visit set small and matches the function loop; it is not observable",
     "methods: the mode-0 method order check is dropped": "equivalent: a full build writes the dependency's .sym and reads it immediately (compileUnit then parseImport), so no test can interpose a file with a different method order; the writer's own order is checked by the golden and round-trip tests",
-    "methods: the mode-0 missing method check is dropped": "equivalent for the same reason: only a hand-supplied .sym could omit a live exported method, and a full build reads the file it just wrote; --check does not run the mode-0 comparison",
+    "methods: the mode-0 missing method check is dropped": "equivalent for the same reason: in mode 0 a full build compares the file its own writer just produced from the same live method registry, so no live exported method can be missing from it; a hand-supplied file is read only by --check (mode 1), which does not run the mode-0 missing-method check",
     "methods: the mode-0 method signature check is dropped": "equivalent for the same reason: a full build compares its own freshly written signature with the live one; a forged file is only ever shown to --check, which trusts it by design (the .sym trust model)",
     "a closed block's defer handles stay": "equivalent since origins per path: originFree finds the handles of a defer through originSyms, which a closed block drops, and a handle compares by generation, so a stale deferH entry never equals a later entry",
     "a loop does not restore the live marks from before it": "equivalent since loopOriginPend tests the live mark: a move of the owner in a loop, with the handle declared outside it and live at the move, is refused if the loop names the handle and otherwise sets movedLoop, which refuses naming it after the loop (errors/origin_paths.obx, the zero-trip loop after a moving return arm, is refused that way); a handle declared inside is gone at the loop's end; so the live mark after the loop is never read",
@@ -1235,8 +1235,8 @@ METHOD_MUTANTS = {
         "    if s.isRefLocal && (!target || path != \"\" || isCall) {        // a read, not a re-pointing: see loopBindCheck\n",
         "    if s.isRefLocal && (!target || path != \"\") {        // a read, not a re-pointing: see loopBindCheck\n"),
     "methods: a method call has no value": (
-        "    if isCall { return methodCall(x, callName, callLine, callCol) }\n",
-        "    if isCall {\n        methodCall(x, callName, callLine, callCol)\n        return voidItem()\n    }\n"),
+        "    if isCall { return methodCall(x, callName, callLine, callCol, uline, ucol) }\n",
+        "    if isCall {\n        methodCall(x, callName, callLine, callCol, uline, ucol)\n        return voidItem()\n    }\n"),
     "methods: the owned-handle test uses path": (
         "        if m.fnRec.pmodes[0] == 0 && recv.viaHandle && recv.mode == \"reg\" {\n",
         "        if m.fnRec.pmodes[0] == 0 && recv.viaHandle && recv.path == \"\" {\n"),

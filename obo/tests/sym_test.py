@@ -714,12 +714,16 @@ def handwritten_interface():
     """The reader accepts grammar the writer does not emit: pfree 0x0, arbitrary
     parameter names, summary items in any order, and a pf row at index >= 62."""
     params = ', '.join(f'q{i}: int' for i in range(63))
+    uid = fnv(b'many::T')
     sym = f'''obosym 2
 abi 1
 compiler "0.6"
 source 0x{0:016x}
 interface 0x0
 module many
+type T uid 0x{uid:016x}
+type T = ref record {{ v: int }}
+fn (mut obj: &T) go(k: int) pf 0 "!" pfree 0x1
 fn many({params}): int pf 62 "!" pfree 0xc000000000000000
 '''
     d = tempfile.mkdtemp(prefix='handsym-')
@@ -738,8 +742,14 @@ fn many({params}): int pf 62 "!" pfree 0xc000000000000000
         r = reemit(p)
         ok(r, 'reemit hand-written')
         text = r.stdout.decode()
-        if 'pfree' in text or 'q0' in text or 'pf 62 "!"' not in text:
+        # the receiver name is syntax only; the method's summary items are canonicalised
+        if 'q0' in text or 'obj' in text or 'fn (mut p0: &T) go(p1: int) pfree 0x1 pf 0 "!"' not in text:
             raise Fail(f"re-emission is not canonical: {text!r}")
+        fn_line = next((l for l in text.splitlines() if l.startswith('fn many(')), '')
+        if 'pf 62 "!"' not in fn_line:
+            raise Fail(f"the 63-parameter function lost its high pf row: {text!r}")
+        if 'pfree' in fn_line:
+            raise Fail(f"the function's high pfree bits were not ignored: {fn_line!r}")
     finally:
         shutil.rmtree(d, ignore_errors=True)
 

@@ -575,9 +575,9 @@ def symcheck_expect_ok(case_dir, o):
     code, errs = read_symcheck_expect(case_dir)
     if o[0] != 'check' or o[1] != code:
         return False
-    for e in errs:
-        if e not in o[2]:
-            return False
+    # exact equality: the expect file states the whole normalized stderr
+    if o[2] != '\n'.join(errs):
+        return False
     return True
 
 

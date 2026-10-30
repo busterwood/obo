@@ -200,7 +200,11 @@ def replace_number(rng, data):
 def change_version(rng, data):
     choice = rng.randrange(3)
     if choice == 0:
-        return re.sub(rb'(?m)^obosym \d+$', b'obosym 3', data, count=1)
+        m = re.search(rb'(?m)^obosym (\d+)$', data)
+        if not m:
+            return data
+        # the next format: derived from the file, so a future bump does not make this a no-op
+        return re.sub(rb'(?m)^obosym \d+$', b'obosym ' + str(int(m.group(1)) + 1).encode(), data, count=1)
     if choice == 1:
         return re.sub(rb'(?m)^abi \d+$', b'abi 9', data, count=1)
     return re.sub(rb'(?m)^compiler "[^"]*"$', b'compiler "9.9"', data, count=1)
