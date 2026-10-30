@@ -193,9 +193,19 @@ SEED_FILE_MIN = {
     os.path.join(FORK, 'tests', 'run', 'methods_origins.obx'): (0, 6),
     os.path.join(FORK, 'tests', 'errors', 'methods.obx'): (0, 6),
     os.path.join(FORK, 'tests', 'run', 'ifaces_decl.obx'): (0, 8),
+    os.path.join(FORK, 'tests', 'run', 'ifaces_owned.obx'): (0, 8),
+    os.path.join(FORK, 'tests', 'run', 'ifaces_calls.obx'): (0, 8),
+    os.path.join(FORK, 'tests', 'run', 'ifaces_effects.obx'): (0, 8),
+    os.path.join(FORK, 'tests', 'run', 'ifaces_borrowed.obx'): (0, 8),
+    os.path.join(FORK, 'tests', 'run', 'ifaces_b1_loop.obx'): (0, 8),
+    os.path.join(FORK, 'tests', 'run', 'ifaces_refs.obx'): (0, 8),
     os.path.join(FORK, 'tests', 'errors', 'ifaces_decl.obx'): (0, 8),
     os.path.join(FORK, 'tests', 'errors', 'ifaces_tiers.obx'): (0, 8),
     os.path.join(FORK, 'tests', 'errors', 'ifaces_impl_mismatch.obx'): (0, 8),
+    os.path.join(FORK, 'tests', 'errors', 'ifaces_owned.obx'): (0, 8),
+    os.path.join(FORK, 'tests', 'errors', 'ifaces_calls.obx'): (0, 8),
+    os.path.join(FORK, 'tests', 'errors', 'ifaces_pos.obx'): (0, 8),
+    os.path.join(FORK, 'tests', 'errors', 'ifaces_refs.obx'): (0, 8),
 }
 SEED_LIB_MIN = {'io.obx': (0, 5), 'env.obx': (0, 4)}
 _SEED_VERSIONS = {}

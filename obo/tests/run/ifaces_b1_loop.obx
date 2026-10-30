@@ -1,0 +1,61 @@
+// Borrowed interfaces, B1 (v3 4, 12.1 R2): a conversion site inside a loop rewrites one frame cell, but every
+// &I local owns its own two-word pair slot, so a value saved from an earlier pass keeps its own object and
+// vtable. best = cur, an argument's per-site cell, and a walk variable saved across passes are the three ways
+// a stale cell could otherwise be aliased. OBO_CHECK=1 proves that no box or object leaks.
+type Shape = interface {
+    pure fn area(): int
+}
+type Square = ref record { s: int }
+fn (q: &Square) area(): int { return q.s }
+impl Shape for Square
+
+fn areaOf(d: &Shape): int { return d.area() }
+
+fn main() {
+    let items = new []Shape(0)
+    append(items, new Square{s: 3})
+    append(items, new Square{s: 8})
+    append(items, new Square{s: 2})
+
+    // a conversion site in a loop, and a saved &I local
+    var best: &Shape = &items[0]
+    var first: &Shape = &items[0]
+    var i = 0
+    while i < len(items) {
+        let cur: &Shape = &items[i]
+        if i == 0 { first = cur }
+        if cur.area() > best.area() { best = cur }
+        i += 1
+    }
+    println(best.area(), " ", first.area())          // expect: 8 3
+
+    // re-pointing a var stores a pair copy, not a pointer to the site's cell
+    var chosen: &Shape = &items[0]
+    for d in items {
+        if d.area() == 8 { chosen = &items[2] }
+    }
+    println(chosen.area())                            // expect: 2
+
+    // a walk variable is the element's box pointer, not a copied pair: save it across passes
+    var saved: &Shape = &items[0]
+    var last: &Shape = &items[0]
+    var n = 0
+    for d in items {
+        if n == 0 { saved = d }
+        last = d
+        n += 1
+    }
+    println(saved.area(), " ", last.area())           // expect: 3 2
+
+    // the per-site cell of an argument is consumed by the call, while a local copied from it stays put
+    var held: &Shape = &items[0]
+    var sum = 0
+    i = 0
+    while i < len(items) {
+        held = &items[i]
+        sum += areaOf(&items[i])
+        i += 1
+    }
+    println(sum, " ", held.area())                    // expect: 13 2
+    println("done")                                   // expect: done
+}

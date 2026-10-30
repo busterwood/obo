@@ -1531,10 +1531,11 @@ def iface_owned_check():
         shutil.rmtree(d, ignore_errors=True)
 
 
-def iface_borrow_check():
-    """Step 5 boundary: a borrowed container of interface values (&[]Shape, &Result[Shape]) is ordinary
-    reference borrowing, so it compiles and round-trips through lib.sym; a borrowed interface itself, inferred
-    or explicit, stays refused with the same text in a full build and in --check."""
+def iface_ref_check():
+    """Step 5: a &Shape argument, a concrete borrow and an inferred &I local cross the module boundary and
+    round-trip through lib.sym; a source-less --check writes the same main.sym as the full build. An inferred
+    &I local is now accepted, while an explicit or inferred &?I local is refused with the same text in a full
+    build and in --check."""
     lib = '''module lib
 pub type Shape = interface {
     pure fn area(): int
@@ -1557,6 +1558,11 @@ pub fn peek(r: &Result[Shape]): int {
         err { return -1 }
     }
 }
+pub fn describe(d: &Shape): int { return d.area() }
+pub fn maybe(o: &?Shape): int {
+    if o != nil { return o.area() }
+    return -1
+}
 '''
     main = '''module main
 import "lib.obx"
@@ -1565,25 +1571,33 @@ fn main() {
     append(xs, new lib::Square{s: 2})
     println(lib::total(&xs))
     let s: lib::Shape = new lib::Square{s: 3}
+    println(lib::describe(&s))
     let res: Result[lib::Shape] = ok(s)
     println(lib::peek(&res))
+    let c = new lib::Square{s: 6}
+    let r: &lib::Shape = &c
+    println(lib::describe(r))
+    let o: ?lib::Shape = new lib::Square{s: 5}
+    println(lib::maybe(&o))
+    let n: ?lib::Shape = nil
+    println(lib::maybe(&n))
 }
 '''
-    d = tempfile.mkdtemp(prefix='symcase-borrow-')
+    d = tempfile.mkdtemp(prefix='symcase-ref-')
     try:
         write_tree(d, {'lib.obx': lib, 'main.obx': main})
         symdir = os.path.join(d, 'sym')
         os.makedirs(symdir)
         exe = os.path.join(d, 'prog')
-        ok(build(d, symdir, out=exe), 'borrowed-container full build')
+        ok(build(d, symdir, out=exe), 'borrowed-interface full build')
         full_main = sym_text(os.path.join(symdir, 'main.sym'))
         q = subprocess.run([exe], capture_output=True, text=True, timeout=60)
-        if q.returncode != 0 or q.stdout != '2\n3\n':
-            raise Fail(f"borrowed-container run: exit {q.returncode}, stdout {q.stdout!r}")
+        if q.returncode != 0 or q.stdout != '2\n3\n3\n6\n5\n-1\n':
+            raise Fail(f"borrowed-interface run: exit {q.returncode}, stdout {q.stdout!r}")
         os.rename(os.path.join(d, 'lib.obx'), os.path.join(d, 'lib.obx.bak'))
         chk = os.path.join(d, 'sym-check')
         shutil.copytree(symdir, chk)
-        ok(build(d, chk, check=True), 'borrowed-container source-less check')
+        ok(build(d, chk, check=True), 'borrowed-interface source-less check')
         if sym_text(os.path.join(chk, 'main.sym')) != full_main:
             raise Fail('the source-less --check main.sym differs from the full build')
     finally:
@@ -1604,13 +1618,6 @@ fn make(): Shape { return new Square{s: 1} }
     println(r.area())
 }
 '''
-    optional = '''type Holder = ref record { o: ?Shape }
-fn main() {
-    let h = new Holder{o: make()}
-    var r = &h.o
-    if r != nil { println(r.area()) }
-}
-'''
     alias = '''type S = Shape
 fn main() {
     let s: S = make()
@@ -1618,9 +1625,39 @@ fn main() {
     println(r.area())
 }
 '''
-    want = 'interface values are not implemented yet'
-    for name, body in (('direct', direct), ('optional', optional), ('alias', alias)):
+    for name, body in (('direct', direct), ('alias', alias)):
         d = tempfile.mkdtemp(prefix='symcase-infer-' + name + '-')
+        try:
+            write_tree(d, {'main.obx': prelude + body})
+            symdir = os.path.join(d, 'sym')
+            os.makedirs(symdir)
+            exe = os.path.join(d, 'prog')
+            ok(build(d, symdir, out=exe), f'inferred {name} full build')
+            q = subprocess.run([exe], capture_output=True, text=True, timeout=60)
+            if q.returncode != 0 or q.stdout != '1\n':
+                raise Fail(f"inferred {name} run: exit {q.returncode}, stdout {q.stdout!r}")
+            ok(build(d, symdir, check=True), f'inferred {name} --check')
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    optional = '''type Holder = ref record { o: ?Shape }
+fn main() {
+    let h = new Holder{o: make()}
+    var r = &h.o
+    if r != nil { println(r.area()) }
+}
+'''
+    optional_alias = '''type O = ?Shape
+type Holder = ref record { o: O }
+fn main() {
+    let h = new Holder{o: make()}
+    let r: &O = &h.o
+    if r != nil { println(r.area()) }
+}
+'''
+    want = "an optional interface reference can only be a parameter or a walk variable; narrow it to a '&I' local"
+    for name, body in (('optional', optional), ('optional-alias', optional_alias)):
+        d = tempfile.mkdtemp(prefix='symcase-optref-' + name + '-')
         try:
             write_tree(d, {'main.obx': prelude + body})
             symdir = os.path.join(d, 'sym')
@@ -1629,9 +1666,9 @@ fn main() {
             chk = build(d, symdir, check=True)
             for what, q in (('full build', full), ('--check', chk)):
                 if q.returncode != 1 or want not in q.stderr:
-                    raise Fail(f"inferred {name} {what}: exit {q.returncode}: {q.stderr.strip()}")
+                    raise Fail(f"optional reference {name} {what}: exit {q.returncode}: {q.stderr.strip()}")
             if full.stderr != chk.stderr:
-                raise Fail(f"inferred {name} full and --check texts differ: {full.stderr!r} vs {chk.stderr!r}")
+                raise Fail(f"optional reference {name} full and --check texts differ: {full.stderr!r} vs {chk.stderr!r}")
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
@@ -1794,7 +1831,7 @@ def tests():
         ('sym/iface_private_impl', iface_private_impl),
         ('sym/iface_reader_refusals', iface_reader_refusals),
         ('sym/iface_owned_check', iface_owned_check),
-        ('sym/iface_borrow_check', iface_borrow_check),
+        ('sym/iface_ref_check', iface_ref_check),
         ('sym/stale_format3_interface', stale_format3_interface),
         ('sym/iface_tier_check', iface_tier_check),
         ('sym/iface_forged_freesall', iface_forged_freesall),

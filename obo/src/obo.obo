@@ -1009,6 +1009,7 @@ type Sym = ref record {
     isStr: bool               // a string local, holding one reference
     isRef: bool               // a reference: a parameter or local that borrows
     isRefLocal: bool          // a reference local (its validity is tracked)
+    pairSlot: bool            // a &I local: its slot is the two-word pair itself (v3 B1)
     hOrigin: ?^Sym            // a let handle to a whole owned local: the local its object is in
     hDepth: int              // a let handle that had an origin when declared: its loop depth + 1 (0 for the others); its uses
                              // are counted (usedAt) even after a move clears the origin
@@ -1260,6 +1261,7 @@ type Item = ref record {
     root: ?^Sym                // the variable a designator starts from
     strTemp: bool             // a fresh string whose reference nothing owns yet
     borrowed: bool            // the value is a reference (borrowed, not owned)
+    pair: bool                // a &I local's own two-word pair slot: reading it gives the slot's address
     viaHandle: bool           // the designator went through a handle
     deref: bool               // the designator goes through a field or element
     movedRef: bool            // a moved local named as an assignment target
@@ -1304,6 +1306,7 @@ fn dupItem(x: &Item): Item {
     y.line = x.line
     y.strTemp = x.strTemp
     y.home = x.home
+    y.pair = x.pair
     return y
 }
 
@@ -1326,6 +1329,7 @@ fn copyItem(x: &Item): Item {
     y.root = x.root
     y.strTemp = x.strTemp
     y.borrowed = x.borrowed
+    y.pair = x.pair
     y.viaHandle = x.viaHandle
     y.deref = x.deref
     y.movedRef = x.movedRef
@@ -2328,6 +2332,13 @@ fn load(x: Item): Item {
         cpEnd = here()
         cpDst = c
         cpSrc = x.r
+        return makeReg(x.typ, c)
+    }
+    if x.mode == "mem" && x.pair {
+        // a &I local's own pair slot: its value is the pair's address, not its first word (v3 B1)
+        releaseItem(x)
+        let c = alloc()
+        opMem(0x8D, c, memOf(x), true, false)
         return makeReg(x.typ, c)
     }
     var r = 0
@@ -3841,6 +3852,8 @@ fn homeFor(s: ^Sym, name: string, declares: bool) {
     }
 }
 
+fn isPairLocal(s: ^Sym): bool
+
 // where a local is: its register, or its slot
 fn localItem(s: ^Sym, t: ^Type): Item {
     if s.home >= 0 {
@@ -3852,6 +3865,7 @@ fn localItem(s: ^Sym, t: ^Type): Item {
     let x = newItem("mem", t)
     x.base = RBP
     x.disp = s.offset
+    x.pair = s.pairSlot
     return x
 }
 
@@ -3995,6 +4009,25 @@ fn newLocal(name: string, t: ^Type, kind: string): ^Sym {
     return s
 }
 
+// A &I local owns a two-word pair slot of its own (v3 B1). The item at s.offset is its address, at
+// s.offset+8 its vtable, so a pair copied from a call site's cell or another reference is still its own.
+fn newPairLocal(name: string, t: ^Type, kind: string): ^Sym {
+    frame += 16
+    let s = newSym(kind, name, t)
+    s.storage = "local"
+    s.pairSlot = true
+    s.offset = -frame
+    if len(name) > 0 { return declare(s) }
+    return s
+}
+
+fn newRefLocalSlot(name: string, t: ^Type, kind: string, pair: bool): ^Sym {
+    if pair { return newPairLocal(name, t, kind) }
+    return newLocal(name, t, kind)
+}
+
+fn isPairLocal(s: ^Sym): bool { return s.pairSlot }
+
 fn varType(s: ^Sym): ^Type {
     var i = len(narrowStack) - 1
     while i >= 0 {
@@ -4076,15 +4109,12 @@ fn finishTypeName(name: string, uline: int, ucol: int): ^Type {
     return t
 }
 
-// Interface values are owned (v3 step 3): I, ?I, []I, Result[I] and the rest are declared and held like records. A
-// borrowed interface itself (&I, mut &I, &?I) is still refused where it could be a local or an argument: step 5
-// adds those. A borrowed container of interface values (&[]I, &Result[I]) is an ordinary owned container held by
-// a reference, so the existing reference rules already support it; only the immediate interface, or the optional
-// interface, is refused. Interface member signatures are not refused: parseParams and ifaceDecl do not call this
-// for them.
-fn noBorrowedIface(t: ^Type) {
-    if t.kind == "iface" || (t.kind == "opt" && baseOf(t).kind == "iface") {
-        error("interface values are not implemented yet")
+// A reference to an interface (v3 step 5) is a reference local like any other: &I and mut &I may be parameters,
+// locals and walk variables. The one exception is &?I as a local (explicit or inferred): a nil-or-pair local
+// would need a flag the representation does not have, so it may only be a parameter or a walk variable (v3 6.4).
+fn refuseOptionalIfaceLocal(t: ^Type) {
+    if t.kind == "opt" && baseOf(t).kind == "iface" {
+        error("an optional interface reference can only be a parameter or a walk variable; narrow it to a '&I' local")
     }
 }
 
@@ -4822,6 +4852,14 @@ fn heldPop(mark: int) {
 // The destination types that hold an interface value: I, and ?I (a box pointer, or 0 for nil)
 fn isIfaceVal(t: ^Type): bool { return t.kind == "iface" || (t.kind == "opt" && baseOf(t).kind == "iface") }
 
+// Set around the checkAssign at a reference destination (&I, mut &I, &?I parameter or a &I local): a concrete
+// source then borrows into a frame cell instead of moving into a box. 0 everywhere else.
+var convBorrow = 0
+// While a &I local's initialiser or re-point is checked, convPairOn says its own pair slot at convPairDisp is the
+// destination: the conversion fills it directly, so no call-site cell is made for a local (v3 4, B1).
+var convPairOn = false
+var convPairDisp = 0
+
 // the interface a destination of type I or ?I holds
 fn ifaceOf(t: ^Type): ^Type {
     if t.kind == "opt" { return baseOf(t) }
@@ -4875,6 +4913,7 @@ fn setItem(mut x: &Item, y: Item) {
     x.root = nil
     x.strTemp = false
     x.borrowed = false
+    x.pair = false
     x.viaHandle = false
     x.deref = false
     x.movedRef = false
@@ -4902,6 +4941,41 @@ fn boxInto(dst: ^Type, mut x: &Item, im: ^Impl) {
     setItem(x, box)
 }
 
+// A frame cell holding a borrowed concrete object and its vtable (v3 4, 5.1): the &I value is the cell's address,
+// and the cell lives in the converting function's frame, so it cannot escape. Per-site cells are built only for
+// call arguments, which are consumed within the call; a &I local's own pair slot is filled directly instead.
+fn ifacePairCell(vtable: int, obj: Item, t: ^Type): Item {
+    if vtable == 0 && !checking { error("internal error: the implementation of '" + tname(t) + "' has no vtable in this build") }
+    frame += 16
+    let off = -frame
+    let o = asReg(obj)
+    opMem(0x89, o.r, mem(RBP, -1, off, 8), true, false)
+    release(o.r)
+    opMem(0xC7, 0, mem(RBP, -1, off + 8, 8), true, false)
+    emit32(vtable)
+    let c = alloc()
+    opMem(0x8D, c, mem(RBP, -1, off, 8), true, false)
+    let res = makeReg(t, c)
+    res.borrowed = true
+    return res
+}
+
+// Copies the {obj, vtable} pair that x points at into a &I local's own two-word slot (v3 B1). It never stores a
+// pointer to another local's slot or to a conversion site's cell, so a loop that rewrites its cell cannot change
+// a pair saved from an earlier pass.
+fn storePair(dst: Item, source: Item) {
+    let src = asReg(source)
+    let lo = alloc()
+    opMem(0x8B, lo, mem(src.r, -1, 0, 8), true, false)
+    opMem(0x89, lo, memOf(dst), true, false)
+    release(lo)
+    let hi = alloc()
+    opMem(0x8B, hi, mem(src.r, -1, 8, 8), true, false)
+    opMem(0x89, hi, mem(RBP, -1, dst.disp + 8, 8), true, false)
+    release(hi)
+    release(src.r)
+}
+
 // The refusal of an assignment that no conversion makes: the seed's message, with its hints and v3's Result hint (5.2)
 fn refuseAssign(dst: ^Type, x: &Item, what: string) {
     var hint = ""
@@ -4917,9 +4991,71 @@ fn refuseAssign(dst: ^Type, x: &Item, what: string) {
     error(what + ": cannot use " + tname(x.typ) + " as " + tname(dst) + hint)
 }
 
+// A concrete source at a reference destination (v3 5.1): its object is borrowed, not moved, so the pair can point
+// at the caller's object. The binding was taken by borrowBind before this call (that is what may refuse a
+// temporary), and the impl is checked before any code is made. A frame cell has no home in a global initializer.
+fn ifaceBorrowConvert(dst: ^Type, mut x: &Item, what: string) {
+    let src = x.typ
+    let it = ifaceOf(dst)
+    let sk = src.kind
+    if sk == "iface" {
+        error(what + ": cannot use interface '" + tname(src) + "' as '" + tname(it) + "': interface values do not convert")
+    }
+    if sk == "nil" { refuseAssign(dst, x, what) }
+    if sk == "opt" {
+        let b = baseOf(src)
+        if b.kind == "record" || b.kind == "closed" {
+            error(what + ": cannot use " + tname(src) + " as interface '" + tname(it) +
+                  "' (it may be nil: take it into a local, return if nil, then convert the local)")
+        }
+        if b.kind == "iface" { refuseAssign(dst, x, what) }
+        error(what + ": cannot use " + tname(src) + " as interface '" + tname(it) + "'")
+    }
+    if sk != "record" && sk != "closed" {
+        error(what + ": cannot use " + tname(src) + " as interface '" + tname(it) + "'")
+    }
+    // a variant has no implementation of its own: its closed type's one is used (0.7 4.4)
+    var base = src
+    let p = src.parent
+    if p != nil { base = p }
+    let im = visibleImpl(src, it)
+    if im == nil {
+        if base.owner == curModuleName {
+            error(what + ": type '" + tname(base) + "' does not implement interface '" + tname(it) + "'")
+        }
+        error(what + ": module '" + base.owner + "' has no exported implementation of '" + tname(it) + "' for '" +
+              base.name + "' (only 'pub' implementations are visible)")
+        return
+    }
+    if curFn == nil {
+        error(what + ": cannot create a borrowed interface value in a global initializer: pass the concrete value to a function that makes it")
+    }
+    if convPairOn {
+        // a &I local's own pair slot: fill it directly; there is no call-site cell to copy from (B1). The item
+        // handed back points at that slot, so the caller's ordinary pair copy reads and writes the same words.
+        let o = asReg(copyItem(x))
+        opMem(0x89, o.r, mem(RBP, -1, convPairDisp, 8), true, false)
+        release(o.r)
+        opMem(0xC7, 0, mem(RBP, -1, convPairDisp + 8, 8), true, false)
+        emit32(im.vtable)
+        let c = alloc()
+        opMem(0x8D, c, mem(RBP, -1, convPairDisp, 8), true, false)
+        setItem(x, makeReg(dst, c))
+        x.borrowed = true
+        return
+    }
+    let cell = ifacePairCell(im.vtable, copyItem(x), dst)
+    setItem(x, cell)
+    x.borrowed = true
+}
+
 // Converts x to a destination of type dst that holds an interface (I or ?I), or refuses it (v3 5.1-5.3). Assignable
 // sources (nil, I, ?I) never get here. An owned record or closed value is moved into a box, after the impl check.
 fn ifaceConvert(dst: ^Type, mut x: &Item, what: string) {
+    if convBorrow > 0 {
+        ifaceBorrowConvert(dst, x, what)
+        return
+    }
     let src = x.typ
     let it = ifaceOf(dst)
     let sk = src.kind
@@ -5196,9 +5332,19 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
             argCol = tcol
             a = nestedExpr()
         }
-        checkAssign(f.fnRec.params[i], a, argLabel(meth, i, start) + " of " + callDisplay(meth, fname))
         if f.fnRec.pmodes[i] > 0 {
-            let b = borrowBind(a)
+            var b: ^RefBind = noBind
+            if isIfaceVal(f.fnRec.params[i]) {
+                // the binding comes first: an interface conversion builds a frame cell only after borrowBind succeeds
+                b = borrowBind(a)
+                let savedConv = convBorrow
+                convBorrow = 1
+                checkAssign(f.fnRec.params[i], a, argLabel(meth, i, start) + " of " + callDisplay(meth, fname))
+                convBorrow = savedConv
+            } else {
+                checkAssign(f.fnRec.params[i], a, argLabel(meth, i, start) + " of " + callDisplay(meth, fname))
+                b = borrowBind(a)
+            }
             if f.fnRec.pmodes[i] == 2 && !b.writable {
                 error(argLabel(meth, i, start) + " of " + callDisplay(meth, fname) + " needs a mut reference, but this one is read-only")
             }
@@ -5215,6 +5361,7 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
             argOrderCheck(tbase, fname, meth, i, argLine, argCol)
             holdArg(b, i)
         } else {
+            checkAssign(f.fnRec.params[i], a, argLabel(meth, i, start) + " of " + callDisplay(meth, fname))
             consume(a)
             argOrderCheck(tbase, fname, meth, i, argLine, argCol)
         }
@@ -5961,6 +6108,7 @@ fn nameItem(s: ^Sym, name: string, target: bool): Item {
         x.disp = s.offset
         x.sym = s
         x.root = s
+        x.pair = isPairLocal(s)
         x.hOrigin = s.hOrigin
         if s.hDepth > 0 {
             useSeq += 1
@@ -6874,7 +7022,7 @@ fn varDecl(kind: string, isGlobal: bool, isPub: bool) {
         t = pt
         declRef = refMode
         if declRef > 0 && isGlobal { error("references cannot be global") }
-        if declRef > 0 { noBorrowedIface(pt) }
+        if declRef > 0 { refuseOptionalIfaceLocal(pt) }
     }
     var gsym = newSym(kind, name, t)
     gsym.line = nameLine
@@ -6887,21 +7035,35 @@ fn varDecl(kind: string, isGlobal: bool, isPub: bool) {
         next()
         if isGlobal { fixHere1(initLink) }
         var x = tailExpr()
-        // an inferred reference local takes the same rules as an explicit one: &I and &?I are step 5
-        if !isGlobal && t == nil && x.borrowed { noBorrowedIface(x.typ) }
+        // an inferred reference local takes the same rules as an explicit one; &?I may only be a parameter or a
+        // walk variable, so both spellings are refused here (v3 6.4)
+        if !isGlobal && t == nil && x.borrowed { refuseOptionalIfaceLocal(x.typ) }
         if !isGlobal && (declRef > 0 || (t == nil && x.borrowed)) {
-            // a reference local: it borrows, nothing is moved or freed
+            // a reference local: it borrows, nothing is moved or freed. An interface conversion builds its frame
+            // cell only after borrowBind succeeds (v3 5.1), so its binding comes first; a &T local keeps the old
+            // check-then-borrow order, and its messages with it.
             var rt = x.typ
             if t != nil { rt = t }
-            checkAssign(rt, x, "initialising '" + name + "'")
-            let nb = borrowBind(x)
-            let v = newLocal("", rt, kind)
+            let pair = rt.kind == "iface"
+            let v = newRefLocalSlot("", rt, kind, pair)
             v.name = name
-            let dst = newItem("mem", rt)
-            dst.base = RBP
-            dst.disp = v.offset
+            let dst = localItem(v, rt)
+            var nb: ^RefBind = noBind
+            if pair {
+                nb = borrowBind(x)
+                let savedConv = convBorrow
+                convBorrow = 1
+                convPairOn = true
+                convPairDisp = dst.disp
+                checkAssign(rt, x, "initialising '" + name + "'")
+                convPairOn = false
+                convBorrow = savedConv
+            } else {
+                checkAssign(rt, x, "initialising '" + name + "'")
+                nb = borrowBind(x)
+            }
             makeRefLocal(v, nb)
-            store(dst, x)
+            if pair { storePair(dst, x) } else { store(dst, x) }
             declare(v)
             return
         }
@@ -7058,10 +7220,22 @@ fn assignmentOrCall(): bool {
                 errorAt("cannot point '" + xs.name + "' elsewhere in a defer: a defer body runs where its block is left, and the change would not be seen there", line, col)
             }
             var y = tailExpr()
-            checkAssign(dtype, y, "assignment")
-            let nb = borrowBind(y)
+            var nb: ^RefBind = noBind
+            if x.typ.kind == "iface" {
+                nb = borrowBind(y)
+                let savedConv = convBorrow
+                convBorrow = 1
+                convPairOn = true
+                convPairDisp = x.disp
+                checkAssign(dtype, y, "assignment")
+                convPairOn = false
+                convBorrow = savedConv
+            } else {
+                checkAssign(dtype, y, "assignment")
+                nb = borrowBind(y)
+            }
             if !assignable(x.typ, y.typ) { widen(xs) }
-            store(x, y)
+            if x.pair { storePair(x, y) } else { store(x, y) }
             // the parent may be xs itself, or one below it (a reference copied from xs's own value): then
             // it is xs's old parent, so that the parents stay a chain
             let oldParent = xs.bind.parent
@@ -7700,7 +7874,6 @@ fn forStat() {
         fix(jcc(CC_L), top)
     } else {
         if x.typ.kind != "array" { error("cannot iterate over " + tname(x.typ)) }
-        if isIfaceVal(baseOf(x.typ)) { error("interface values are not implemented yet") }    // a walk variable borrows: step 5
         noTemp(x)
         let walked = x.sym
         if walked == nil || walked.storage != "local" {
@@ -8757,8 +8930,8 @@ fn methodRecvType(t: ^Type) {
 
 // Parses the parameter groups of a function or an interface member, from after its '(' through its ')':
 // each group is [mut] name[, name]* ':' type. A parameter of interface type is owned (p: I), borrowed (p: &I)
-// or mutable (mut p: &I), as any record; `mut p: I` is refused like any owned mut. A member may take
-// interface values (member is true); a borrowed interface parameter is refused for now (noBorrowedIface).
+// or mutable (mut p: &I), as any record; `mut p: I` is refused like any owned mut. A member and an ordinary
+// function take the same interface parameter forms (v3 3.2).
 fn parseParams(mut params: &[]Param, member: bool) {
     while sym != T_RPAREN {
         // `mut` before the names: the function may change what the parameter points to
@@ -8780,7 +8953,6 @@ fn parseParams(mut params: &[]Param, member: bool) {
             if mode == 0 { error("mut needs a reference parameter: write mut name: &T") }
             mode = 2
         }
-        if !member && mode > 0 { noBorrowedIface(t) }
         for n in names { append(params, new Param{name: n, typ: t, mode: mode}) }
         if sym != T_RPAREN { expect(T_COMMA, "',' or ')'") }
     }
@@ -11194,9 +11366,6 @@ fn symFnDecl(mode: int) {
     if sym == T_COLON {
         next()
         ret = symParseType()
-    }
-    for k in 0..len(ptypes) {
-        if pmodes[k] > 0 { noBorrowedIface(ptypes[k]) }
     }
     var freesAll = false
     var writesHandles = false

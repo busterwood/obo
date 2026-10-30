@@ -1363,6 +1363,29 @@ INTERFACE_MUTANTS = {
     "interfaces v3 X35: replace on an interface place does not return the old value": (
         "        store(x, v)\n        return makeReg(xt, r)\n",
         "        store(x, v)\n        if isIfaceVal(xt) { return makeConst(xt, 0) }\n        return makeReg(xt, r)\n"),
+    # borrowed interfaces (step 5, design sections 4, 6.4 and 12.4): B1's pair copy at a let, at a re-point and
+    # in the vtable word; a reference local that is not registered; the &?I local refusal; the global cell
+    "interfaces v3 X5: a &I local does not copy its pair (it keeps the source pointer)": (
+        "            makeRefLocal(v, nb)\n            if pair { storePair(dst, x) } else { store(dst, x) }\n",
+        "            makeRefLocal(v, nb)\n            if pair { store(dst, x) } else { store(dst, x) }\n"),
+    "interfaces v3 X6: re-pointing a &I local stores a pointer, not a pair copy": (
+        "            if x.pair { storePair(x, y) } else { store(x, y) }\n",
+        "            if x.pair { store(x, y) } else { store(x, y) }\n"),
+    "interfaces v3 X7: a &I let copies obj but writes the vtable over it": (
+        "    opMem(0x89, hi, mem(RBP, -1, dst.disp + 8, 8), true, false)\n",
+        "    opMem(0x89, hi, mem(RBP, -1, dst.disp, 8), true, false)\n"),
+    "interfaces v3 X11: a &I local is not registered as a reference local": (
+        "            makeRefLocal(v, nb)\n",
+        "            if rt.kind != \"iface\" { makeRefLocal(v, nb) } else { v.isRef = true }\n"),
+    "interfaces v3 X33: a &?I local is accepted": (
+        "fn refuseOptionalIfaceLocal(t: ^Type) {\n    if t.kind == \"opt\" && baseOf(t).kind == \"iface\" {\n",
+        "fn refuseOptionalIfaceLocal(t: ^Type) {\n    if false {\n"),
+    "interfaces v3 X34: a cell is built in a global initializer": (
+        "    if curFn == nil {\n        error(what + \": cannot create a borrowed interface value in a global initializer: pass the concrete value to a function that makes it\")\n    }\n",
+        "    if false {\n        error(what + \": cannot create a borrowed interface value in a global initializer: pass the concrete value to a function that makes it\")\n    }\n"),
+    "interfaces v3 X9: a temporary may be borrowed into a cell": (
+        "    if x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: a reference cannot borrow from a temporary\")\n    }\n",
+        "    if false && x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: a reference cannot borrow from a temporary\")\n    }\n"),
     "interfaces v3 X36a: SYM_FORMAT stays 2": ("const SYM_FORMAT = 4\n", "const SYM_FORMAT = 2\n"),
     "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.8\"\n", "const OBO_VERSION = \"0.6\"\n"),
 

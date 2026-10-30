@@ -125,6 +125,10 @@ while nothing it may point into has been changed.
 
 - References are for parameters and local variables only. They cannot be stored
   in fields, elements or globals, and cannot be returned.
+- A reference to an interface value (`&I`, `mut &I`) follows exactly these rules.
+  In particular it is a parameter or a local, never a field, element, global or
+  return type; the compiler refuses those positions with the same messages as
+  `&T`, because the spelling in the type position is what it rejects.
 - Passing an owned value to a reference parameter borrows it. The caller keeps
   ownership:
 

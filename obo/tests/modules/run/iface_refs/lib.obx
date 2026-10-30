@@ -1,0 +1,39 @@
+module lib
+// Borrowed interfaces across a module boundary (v3 step 5): a &Shape parameter, a member whose parameter is
+// &Shape, a &?Shape parameter and a mut &[]Shape parameter. The importer converts its own concrete values and
+// its own implementation of the imported interface at these call sites.
+pub type Shape = interface {
+    pure fn area(): int
+    mut fn grow(k: int)
+}
+pub type Apply = interface {
+    pure fn apply(d: &Shape): int
+}
+pub type Square = ref record { s: int }
+pub type Rect = ref record { w: int; h: int }
+pub type Holder = ref record { d: Shape; o: ?Shape; items: []Shape }
+
+pub fn (q: &Square) area(): int { return q.s * q.s }
+pub fn (mut q: &Square) grow(k: int) { q.s += k }
+pub fn (r: &Rect) area(): int { return r.w * r.h }
+pub fn (mut r: &Rect) grow(k: int) { r.w += k }
+pub fn (q: &Square) apply(d: &Shape): int { return q.s + d.area() }
+pub impl Shape for Square
+pub impl Shape for Rect
+pub impl Apply for Square
+
+pub fn describe(d: &Shape): int { return d.area() }
+pub fn growIt(mut d: &Shape, k: int): int {
+    d.grow(k)
+    return d.area()
+}
+pub fn maybe(o: &?Shape): int {
+    if o != nil {
+        let d: &Shape = o
+        return d.area()
+    }
+    return -1
+}
+pub fn growAll(mut xs: &[]Shape, k: int) {
+    for x in xs { x.grow(k) }
+}

@@ -1,0 +1,65 @@
+module main
+import "lib.obx"
+
+type LocalShape = lib::Shape
+type Mine = ref record { s: int }
+fn (m: &Mine) area(): int { return m.s + 1 }
+fn (mut m: &Mine) grow(k: int) { m.s += k }
+impl lib::Shape for Mine
+
+fn main() {
+    let c = new lib::Square{s: 3}
+    println(lib::describe(&c), " ", lib::describe(c))             // expect: 9 9
+    let s: lib::Shape = new lib::Square{s: 4}
+    let r: &lib::Shape = s
+    println(lib::describe(r))                                     // expect: 16
+    let lr: &LocalShape = &c
+    println(lib::describe(lr))                                    // expect: 9
+
+    // the importer's own type implements the imported interface, and is borrowed as the imported &Shape
+    let m = new Mine{s: 5}
+    let mr: &lib::Shape = &m
+    println(lib::describe(&m), " ", lib::describe(mr))            // expect: 6 6
+    println(lib::growIt(mr, 2), " ", m.s)                         // expect: 8 7
+
+    // a member declared with a &Shape parameter, called through an interface value
+    let ap: lib::Apply = new lib::Square{s: 2}
+    println(ap.apply(&c), " ", ap.apply(r))                       // expect: 11 18
+
+    // fields and elements borrowed as &I, and a mut &[]I parameter
+    let items = new []lib::Shape(0)
+    append(items, new lib::Square{s: 1})
+    append(items, new lib::Rect{w: 2, h: 3})
+    lib::growAll(&items, 2)
+    println(items[0].area(), " ", items[1].area())                // expect: 9 12
+    let h = new lib::Holder{d: new lib::Square{s: 7}, o: new lib::Square{s: 8}, items: items}
+    let f: &lib::Shape = &h.d
+    let e: &lib::Shape = &h.items[0]
+    println(f.area(), " ", e.area())                              // expect: 49 9
+
+    // &?I sources: a field, an I place, a &I local, and nil
+    println(lib::maybe(&h.o))                                     // expect: 64
+    println(lib::maybe(s))                                        // expect: 16
+    println(lib::maybe(r))                                        // expect: 16
+    let none: ?lib::Shape = nil
+    println(lib::maybe(&none))                                    // expect: -1
+
+    // walks over []I and []?I from the importer
+    let opts = new []?lib::Shape(3)
+    opts[0] = new lib::Square{s: 2}
+    opts[1] = nil
+    opts[2] = new Mine{s: 3}
+    var sum = 0
+    for x in opts {
+        if x != nil {
+            let held: &lib::Shape = x
+            sum += held.area()
+        }
+    }
+    println(sum)                                                  // expect: 8
+    let ropts = &opts
+    sum = 0
+    for x in ropts { if x != nil { sum += x.area() } }
+    println(sum)                                                  // expect: 8
+    println("done")                                               // expect: done
+}

@@ -1,6 +1,6 @@
 // Interface values, step 3 of v3 (design section 11, E2): each case is one refusal of an owned conversion, or one
-// use that a later step builds (equality, handles, borrowed interfaces) and is refused until then. Calls are step 4
-// and are in ifaces_calls.obx.
+// use that a later step builds (equality and handles) and is refused until then, or the step 5 rule that an optional
+// interface reference cannot be a local. Calls are step 4 and are in ifaces_calls.obx.
 
 // === an optional record converts to an interface only after it is narrowed
 type Shape = interface {
@@ -189,41 +189,6 @@ fn f() {
     let h = handle(a)  // error: interface values are not implemented yet
 }
 
-// === a walk over an array of interface values (step 5)
-type Shape = interface {
-    pure fn area(): int
-}
-fn f(arr: []Shape) {
-    for x in arr {  // error: interface values are not implemented yet
-    }
-}
-
-// === a borrowed interface parameter (step 5)
-type Shape = interface {
-    pure fn area(): int
-}
-fn f(p: &Shape) {  // error: interface values are not implemented yet
-}
-
-// === a mut borrowed interface parameter (step 5)
-type Shape = interface {
-    pure fn area(): int
-}
-fn f(mut p: &Shape) {  // error: interface values are not implemented yet
-}
-
-// === a borrowed interface local (step 5)
-type Shape = interface {
-    pure fn area(): int
-}
-type Square = ref record { s: int }
-fn (q: &Square) area(): int { return q.s }
-impl Shape for Square
-fn f() {
-    let a: Shape = new Square{s: 1}
-    let r: &Shape = a  // error: interface values are not implemented yet
-}
-
 // === a borrowed optional interface local (step 5)
 type Shape = interface {
     pure fn area(): int
@@ -233,26 +198,7 @@ fn (q: &Square) area(): int { return q.s }
 impl Shape for Square
 fn f() {
     let o: ?Shape = new Square{s: 1}
-    let r: &?Shape = o  // error: interface values are not implemented yet
-}
-
-// === a mut borrowed optional interface parameter (step 5)
-type Shape = interface {
-    pure fn area(): int
-}
-fn f(mut p: &?Shape) {  // error: interface values are not implemented yet
-}
-
-// === an inferred borrowed interface local (step 5)
-type Shape = interface {
-    pure fn area(): int
-}
-type Square = ref record { s: int }
-fn (q: &Square) area(): int { return q.s }
-impl Shape for Square
-fn f() {
-    let a: Shape = new Square{s: 1}
-    var r = &a  // error: interface values are not implemented yet
+    let r: &?Shape = o  // error: an optional interface reference can only be a parameter or a walk variable; narrow it to a '&I' local
 }
 
 // === an inferred borrowed optional interface local (step 5)
@@ -265,20 +211,7 @@ impl Shape for Square
 type Holder = ref record { o: ?Shape }
 fn f() {
     let h = new Holder{o: new Square{s: 1}}
-    var r = &h.o  // error: interface values are not implemented yet
-}
-
-// === an inferred borrowed interface local through an alias (step 5)
-type Shape = interface {
-    pure fn area(): int
-}
-type S = Shape
-type Square = ref record { s: int }
-fn (q: &Square) area(): int { return q.s }
-impl Shape for Square
-fn f() {
-    let a: S = new Square{s: 1}
-    var r = &a  // error: interface values are not implemented yet
+    var r = &h.o  // error: an optional interface reference can only be a parameter or a walk variable; narrow it to a '&I' local
 }
 
 // === an interface is not compared with nil
