@@ -9,9 +9,9 @@ errors, as needed), so the compiler compiles those modules
 dependency-first and writes their .sym files. The rule within a file is still
 declare-before-use.
 
-The default tools are cat, wc and sort; P4 adds eza to the buildable names
-(TOOLS and EZA are separate, so `make tools` does not need eza's newer library
-dependencies and `make eza` builds only eza). Paths resolve to absolute paths,
+The default tools are cat, wc, sort and tail; P4 adds eza to the buildable
+names (TOOLS and EZA are separate, so `make tools` does not need eza's newer
+library dependencies and `make eza` builds only eza). Paths resolve to absolute paths,
 so the builder's behavior does not depend on the caller's cwd: ROOT is the
 directory holding this script's tools/ (that is, obo/); --obo defaults to $OBO
 or ROOT/obo, --rt to ROOT, --out to ROOT/build/tools. The built binaries live
@@ -46,7 +46,7 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../obo
-TOOLS = ('cat', 'wc', 'sort')
+TOOLS = ('cat', 'wc', 'sort', 'tail')
 EZA = ('eza',)
 ALL = TOOLS + EZA
 SRCDIR = 'cmd'                       # the tool roots live in obo/cmd/

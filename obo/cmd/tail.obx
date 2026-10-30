@@ -1,0 +1,433 @@
+// tail: print the last lines (default 10) or bytes of each operand.
+//
+// Built as a module root by tools/build_tools.py: it imports lib/io.obx as
+// `io` and lib/errors.obx as `errors`, and every library name is qualified.
+// The subset is deliberate: -f, -F, -q, -v, -s, -z, the obsolete -N spelling,
+// signed counts, long options other than --lines/--bytes, --help and --version
+// are unsupported (see cmd/README.md).
+//
+// There is no seek/readAt builtin, so this is the bounded streaming tail: a
+// line-queue ring holds only the last COUNT lines and a byte ring holds only
+// the last COUNT bytes. Memory is therefore O(the trailing data that must be
+// printed) and O(min(input, COUNT)) metadata, never the whole input. A single
+// very long final line costs that line's bytes, which is the data the command
+// is required to print.
+//
+// -n/--lines and -c/--bytes share one count and the last one wins, as in GNU.
+// A count is unsigned decimal; 0 prints nothing and (like GNU) does not open
+// operands. With two or more operands, a successfully opened operand gets the
+// GNU header (`==> name <==`, `standard input` for -) and a blank line between
+// headers; an operand that cannot be opened gets no header. Like GNU, each
+// operand's count is independent.
+//
+// Errors follow GNU's quote-free-name forms: `cannot open '<path>' for reading:
+// <text>` and `error reading '<path>': <text>`. A write error stops at once
+// with `write error: <text>`. Any failure exits 1.
+
+import "../lib/io.obx" as io
+import "../lib/errors.obx" as errors
+
+type TailOpts = ref record {
+    lineMode: bool         // -n/--lines (the default) or -c/--bytes
+    count: int
+}
+
+type Line = ref record {
+    data: []byte           // the line including its newline, except at EOF
+}
+
+// A ring of at most cap lines. Until it fills, items is the lines in input
+// order and head is 0; afterwards items[head] is the oldest line.
+type LineQueue = ref record {
+    items: []Line
+    head: int
+    cap: int
+}
+
+// A ring of at most cap bytes. Until it fills, buf is the input in order and
+// head is 0; afterwards buf[head] is the oldest byte.
+type ByteRing = ref record {
+    buf: []byte
+    head: int
+    cap: int
+}
+
+type TailState = ref record {
+    failed: bool           // an open or read error happened
+    fatal: bool            // a write error (or byte-mode read error) stopped us
+    headerSeen: bool       // a header was already written (multi-operand mode)
+}
+
+fn addLine(mut q: &LineQueue, line: Line) {
+    if q.cap <= 0 { return }
+    if len(q.items) < q.cap {
+        append(q.items, line)
+    } else {
+        let old = replace(q.items[q.head], line)
+        q.head = (q.head + 1) % q.cap
+    }
+}
+
+// Read a stream to EOF, keeping only the last cap lines. Each newline ends a
+// line (the newline is part of the line); a final partial line is a line too,
+// and an empty stream has no lines.
+fn collectLines(mut r: &io::Reader, cap: int, mut q: &LineQueue): Result[bool] {
+    var cur = new []byte(0)
+    while true {
+        let more = try io::fill(r)
+        if !more { break }
+        let chunk = io::takeChunk(r)
+        var i = 0
+        while i < len(chunk) {
+            let b = chunk[i]
+            append(cur, b)
+            if b == '\n' {
+                addLine(q, new Line{data: cur})
+                cur = new []byte(0)
+            }
+            i += 1
+        }
+    }
+    if len(cur) > 0 {
+        addLine(q, new Line{data: cur})
+        cur = new []byte(0)
+    }
+    return ok(true)
+}
+
+// Read a stream to EOF, keeping only the last cap bytes.
+fn collectBytes(mut r: &io::Reader, cap: int, mut ring: &ByteRing): Result[bool] {
+    while true {
+        let more = try io::fill(r)
+        if !more { break }
+        let chunk = io::takeChunk(r)
+        var i = 0
+        while i < len(chunk) {
+            let b = chunk[i]
+            if len(ring.buf) < cap {
+                append(ring.buf, b)
+            } else {
+                ring.buf[ring.head] = b
+                ring.head = (ring.head + 1) % cap
+            }
+            i += 1
+        }
+    }
+    return ok(true)
+}
+
+// Write one GNU header, preceded by a blank line when an earlier operand
+// already printed one.
+fn writeHeader(mut w: &io::Writer, label: string, mut st: &TailState): Result[bool] {
+    if st.headerSeen {
+        try io::writeByte(w, '\n')
+    }
+    try io::write(w, "==> ")
+    try io::write(w, label)
+    try io::write(w, " <==\n")
+    st.headerSeen = true
+    return ok(true)
+}
+
+fn writeError(mut st: &TailState, code: int) {
+    eprintln("tail: write error: ", errors::text(code))
+    st.fatal = true
+}
+
+// Flush the Writer and report a failure once. A false result means the caller
+// must stop opening or reading later operands.
+fn flushOutput(mut w: &io::Writer, mut st: &TailState): bool {
+    let fl = io::flush(w)
+    match fl {
+        ok { return true }
+        err {
+            writeError(st, fl.code)
+            return false
+        }
+    }
+}
+
+// Read one already-open stream, emitting its tail. Returns false for a fatal
+// write error. A read error is printed and sets failed; byte mode additionally
+// stops before later operands (GNU 9.4 does this, while line mode continues).
+fn processReader(mut r: &io::Reader, label: string, opts: &TailOpts,
+                 multi: bool, mut w: &io::Writer, mut st: &TailState): bool {
+    if multi {
+        let hw = writeHeader(w, label, st)
+        match hw {
+            ok { }
+            err {
+                writeError(st, hw.code)
+                return false
+            }
+        }
+        // The header precedes any read error on the combined stream, as in GNU.
+        if !flushOutput(w, st) { return false }
+    }
+    if opts.lineMode {
+        var q = new LineQueue{items: new []Line(0), head: 0, cap: opts.count}
+        let rr = collectLines(r, opts.count, q)
+        match rr {
+            ok { }
+            err {
+                eprintln("tail: error reading '", label, "': ", errors::text(rr.code))
+                st.failed = true
+                return true
+            }
+        }
+        // Copy through a local 64 KiB block: the Writer is a mutable
+        // parameter, so a call that writes must not also receive a borrowed
+        // line array (the alias check is conservative).
+        var block = new []byte(0)
+        let total = len(q.items)
+        var k = 0
+        while k < total {
+            var idx = k
+            if total >= q.cap { idx = (q.head + k) % q.cap }
+            var j = 0
+            while j < len(q.items[idx].data) {
+                append(block, q.items[idx].data[j])
+                if len(block) >= 65536 {
+                    let br = io::writeBytes(w, &block)
+                    match br {
+                        ok { }
+                        err {
+                            writeError(st, br.code)
+                            return false
+                        }
+                    }
+                    truncate(block, 0)
+                }
+                j += 1
+            }
+            k += 1
+        }
+        if len(block) > 0 {
+            let br = io::writeBytes(w, &block)
+            match br {
+                ok { }
+                err {
+                    writeError(st, br.code)
+                    return false
+                }
+            }
+            truncate(block, 0)
+        }
+    } else {
+        var ring = new ByteRing{buf: new []byte(0), head: 0, cap: opts.count}
+        let rr = collectBytes(r, opts.count, ring)
+        match rr {
+            ok { }
+            err {
+                eprintln("tail: error reading '", label, "': ", errors::text(rr.code))
+                st.failed = true
+                // GNU byte mode gives up after a read error; line mode goes on
+                return false
+            }
+        }
+        let n = len(ring.buf)
+        var block = new []byte(0)
+        var k = 0
+        while k < n {
+            var idx = k
+            if n >= ring.cap { idx = (ring.head + k) % ring.cap }
+            append(block, ring.buf[idx])
+            if len(block) >= 65536 {
+                let br = io::writeBytes(w, &block)
+                match br {
+                    ok { }
+                    err {
+                        writeError(st, br.code)
+                        return false
+                    }
+                }
+                truncate(block, 0)
+            }
+            k += 1
+        }
+        if len(block) > 0 {
+            let br = io::writeBytes(w, &block)
+            match br {
+                ok { }
+                err {
+                    writeError(st, br.code)
+                    return false
+                }
+            }
+            truncate(block, 0)
+        }
+    }
+    // Flush each operand's output so a later open error cannot make an earlier
+    // operand's data appear after it on a shared terminal.
+    if !flushOutput(w, st) { return false }
+    return true
+}
+
+// Read one operand. "-" is stdin and is never opened or closed; the header
+// label for it is GNU's "standard input". Returns false only for a fatal write
+// error; open and read errors are printed here and continue.
+fn tailOperand(path: string, opts: &TailOpts, multi: bool,
+               mut w: &io::Writer, mut st: &TailState): bool {
+    if path == "-" {
+        var r = io::newReader(stdin(), 65536)
+        return processReader(r, "standard input", opts, multi, w, st)
+    }
+    let f = openFile(path, "r")
+    match f {
+        ok {
+            let fd = f.value
+            defer closeFile(fd)
+            var r = io::newReader(fd, 65536)
+            return processReader(r, path, opts, multi, w, st)
+        }
+        err {
+            eprintln("tail: cannot open '", path, "' for reading: ", errors::text(f.code))
+            st.failed = true
+        }
+    }
+    return true
+}
+
+// Unsigned decimal count. Empty, a sign, whitespace or any non-digit is
+// invalid; a value past the int range is invalid too (a count that large cannot
+// describe more data than this build can hold).
+fn parseCount(s: string): Result[int] {
+    if len(s) == 0 { return err("empty count", 22) }
+    var v = 0
+    var i = 0
+    while i < len(s) {
+        let b = s[i]
+        if b < '0' || b > '9' { return err("not a decimal count", 22) }
+        let d = int(b) - 48
+        if v > (9223372036854775807 - d) / 10 {
+            return err("count is too large", 34)
+        }
+        v = v * 10 + d
+        i += 1
+    }
+    return ok(v)
+}
+
+fn setCount(mut o: &TailOpts, lineMode: bool, value: string) {
+    let pr = parseCount(value)
+    match pr {
+        ok {
+            o.lineMode = lineMode
+            o.count = pr.value
+        }
+        err {
+            if lineMode {
+                eprintln("tail: invalid number of lines: '", value, "'")
+            } else {
+                eprintln("tail: invalid number of bytes: '", value, "'")
+            }
+            exit(1)
+        }
+    }
+}
+
+fn main() {
+    let argv = args()
+    var opts = new TailOpts{lineMode: true, count: 10}
+    var operands = new []string(0)
+    var endOpts = false
+    var i = 1
+    while i < len(argv) {
+        let a = argv[i]
+        if !endOpts && a == "--" {
+            endOpts = true
+        } else if !endOpts && len(a) > 1 && a[0] == '-' {
+            if len(a) > 2 && a[1] == '-' {
+                let n = len(a)
+                if n >= 7 && substr(a, 0, 7) == "--lines" && (n == 7 || a[7] == '=') {
+                    if n == 7 {
+                        if i + 1 >= len(argv) {
+                            eprintln("tail: option '--lines' requires an argument")
+                            exit(1)
+                        }
+                        i += 1
+                        setCount(opts, true, argv[i])
+                    } else {
+                        setCount(opts, true, substr(a, 8, n))
+                    }
+                } else if n >= 7 && substr(a, 0, 7) == "--bytes" && (n == 7 || a[7] == '=') {
+                    if n == 7 {
+                        if i + 1 >= len(argv) {
+                            eprintln("tail: option '--bytes' requires an argument")
+                            exit(1)
+                        }
+                        i += 1
+                        setCount(opts, false, argv[i])
+                    } else {
+                        setCount(opts, false, substr(a, 8, n))
+                    }
+                } else {
+                    eprintln("tail: unrecognized option '", a, "'")
+                    exit(1)
+                }
+            } else {
+                var j = 1
+                while j < len(a) {
+                    let c = a[j]
+                    if c == 'n' || c == 'c' {
+                        var value = ""
+                        if j + 1 < len(a) {
+                            value = substr(a, j + 1, len(a))
+                            j = len(a)
+                        } else {
+                            if i + 1 >= len(argv) {
+                                let ch = substr(a, j, j + 1)
+                                eprintln("tail: option requires an argument -- '", ch, "'")
+                                exit(1)
+                            }
+                            i += 1
+                            value = argv[i]
+                            j = len(a)
+                        }
+                        setCount(opts, c == 'n', value)
+                    } else {
+                        let ch = substr(a, j, j + 1)
+                        eprintln("tail: invalid option -- '", ch, "'")
+                        exit(1)
+                    }
+                }
+            }
+        } else {
+            append(operands, a)
+        }
+        i += 1
+    }
+
+    // GNU's count 0 prints nothing and does not open operands (even a missing
+    // one), so no header and no diagnostic is produced.
+    if opts.count == 0 { exit(0) }
+
+    var w = io::newWriter(stdout(), 65536)
+    var st = new TailState{failed: false, fatal: false, headerSeen: false}
+    var multi = false
+    if len(operands) == 0 {
+        let cont = tailOperand("-", opts, false, w, st)
+        if !cont { st.fatal = true }
+    } else {
+        if len(operands) > 1 { multi = true }
+        var k = 0
+        while k < len(operands) {
+            let cont = tailOperand(operands[k], opts, multi, w, st)
+            if !cont {
+                st.fatal = true
+                break
+            }
+            k += 1
+        }
+    }
+    if !st.fatal {
+        let fl = io::flush(w)
+        match fl {
+            ok { }
+            err {
+                writeError(st, fl.code)
+            }
+        }
+    }
+    if st.fatal || st.failed { exit(1) }
+}
