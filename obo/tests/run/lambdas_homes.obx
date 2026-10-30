@@ -1,0 +1,17 @@
+fn main() {
+    var a = 1
+    var b = 2
+    var c = 3
+    let f = fn (x: int): int {
+        var y = x + 1
+        var z = y * 2
+        return z
+    }
+    println(a + b + c, " ", f(4))
+    a = f(a)
+    b = a + b
+    println(a, " ", b)
+}
+
+// expect: 6 10
+// expect: 4 6

@@ -1,0 +1,28 @@
+fn twice(x: int): int { return x * 2 }
+fn apply(f: fn(int): int, x: int): int { return f(x) }
+fn pass(f: fn(int): int, x: int): int { return apply(f, x) }
+fn okf(x: int): Result[int] { return ok(x) }
+fn tryv(f: fn(int): Result[int], x: int): Result[int] {
+    let v = try f(x)
+    return ok(v + 1)
+}
+
+fn main() {
+    let inc = fn (x: int): int { return x + 1 }
+    println(apply(inc, 2))
+    println(pass(inc, 3))
+    println(apply(fn (x: int): int { return twice(x) }, 4))
+    let r = tryv(fn (x: int): Result[int] { return ok(x) }, 5)
+    match r {
+        ok(v) { println(v) }
+        err(m, c) { println(m) }
+    }
+    let wrap = fn (f: fn(int): int): int { return f(6) }
+    println(wrap(inc))
+}
+
+// expect: 3
+// expect: 4
+// expect: 8
+// expect: 6
+// expect: 7

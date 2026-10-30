@@ -875,6 +875,14 @@ type RefBind
 type FnRec
 type PState
 
+type Param = ref record {
+    name: string
+    typ: ^Type
+    mode: int                 // 0 owned, 1 &, 2 mut
+}
+
+var fnStack = new []^Sym(0)       // functions and lambda bodies being compiled, for active-callee checks
+
 type Field = ref record {
     name: string
     offset: int
@@ -1202,7 +1210,8 @@ type FreeRec = ref record {
     all: bool
     path: string
     via: ?^Sym           // the reference a change is made through: references it was derived from stay valid (see invalidate)
-    nonFresh: []int      // the owned locals that were reference locals not pointed afresh when the change was made
+    nfFrom: int          // the record's slice of nonFreshLog: the owned locals that were reference locals not
+    nfTo: int            // pointed afresh when the change was made
 }
 
 // the frees logged so far, while a loop or a defer body is being compiled: the loop's exits are the states
@@ -1210,7 +1219,20 @@ type FreeRec = ref record {
 // log where it ends and replayed where its block is left (see deferStat and callDefers)
 var freeLog = new []^FreeRec(0)
 var freeArena = new []FreeRec(0)     // the records freeLog points into; the outermost loop's are dropped at its end
+var nonFreshLog = new []int(0)       // the nonFresh index lists, one contiguous slice per free record
 var arenaBase = 0                    // where the outermost loop's records begin in freeArena
+const NF_CHECK = false               // test builds flip this to check every log range and the release lifecycle
+fn verifyNonFresh() {
+    if !NF_CHECK { return }
+    for i in 0..len(freeArena) {
+        if freeArena[i].nfFrom < 0 || freeArena[i].nfFrom > freeArena[i].nfTo ||
+           freeArena[i].nfTo > len(nonFreshLog) {
+            eprintln("NFCHECK bad record ", i, ": ", freeArena[i].nfFrom, "..", freeArena[i].nfTo,
+                     " len ", len(nonFreshLog))
+            exit(9)
+        }
+    }
+}
 // the loops being compiled, a count: frees are logged while it is not zero, or in a defer body
 var recording = 0
 
@@ -1311,6 +1333,13 @@ fn methodDisplay(s: ^Sym): string {
 fn callableName(s: ^Sym): string {
     if isMethod(s) { return methodDisplay(s) }
     return s.name
+}
+
+fn inFnStack(f: ^Sym): bool {
+    for i in 0..len(fnStack) {
+        if fnStack[i] == f { return true }
+    }
+    return false
 }
 
 // ========================================================== interfaces
@@ -1625,6 +1654,117 @@ type Loop = ref record {
     exitDead: []?^Sym          // the dead marks (originDead) of the arms that leave by a break or a continue, for after the loop
 }
 
+// The outer function state saved around a lambda's code island. It is a value record, not an arena:
+// every field is a saved handle or scalar from 5.3.1, and restoring it must not touch the island's
+// hidden symbols (those stay in symArena for the enclosing function, as the design's default policy).
+type LamCtx = ref record {
+    homeBits: int
+    homeCap: int
+    homeRetry: bool
+    free: []int
+    frame: int
+    depth: int
+    fwdCalls: int
+    lifted: []byte
+    waitFn: []^Sym
+    waitAt: []int
+    farCalls: []int
+    barrier: int
+    blocks: []Block
+    fnBlock: int
+    ownedLocals: []^Sym
+    narrowStack: []NEntry
+    loops: []Loop
+    depthJumps: []int
+    originSyms: []^Sym
+    originDead: []?^Sym
+    originLive: []?^Sym
+    originPath: []string
+    originNar: []bool
+    deferH: []^Sym
+    deferAt: []int
+    deferFrees: []^Sym
+    deferFreeEv: []string
+    dfBlock: []int
+    dfIndex: []int
+    dfOwner: []^Sym
+    dfEv: []string
+    deferUses: []bool
+    deferMark: int
+    inDefer: bool
+    freeLog: []^FreeRec
+    freeArena: []FreeRec
+    nonFreshLog: []int
+    arenaBase: int
+    recording: int
+    heldKey: []?^Sym
+    heldPath: []string
+    heldForeign: []bool
+    heldHit: []bool
+    heldStore: []bool
+    heldWhole: []bool
+    pendSym: []^Sym
+    pendDepth: []int
+    frLine: []int
+    frCol: []int
+    pendWhat: []string
+    pendOwn: []^Sym
+    pendNest: []int
+    pendLine: int
+    pendCol: int
+    pendMsg: string
+    contSeq: int
+    brkSeq: int
+    orSeq: int
+    freeSeq: int
+    truncKeep: int
+    replayFree: bool
+    guardStart: int
+    guardSym: ?^Sym
+    guardFollow: int
+    guardFree: int
+    guardNeg: bool
+    guardOpen: bool
+    guardIdx: int
+    guardMark: ?^Sym
+    inAlive: bool
+    lastNamed: ?^Sym
+    lastNamedPrev: int
+    lastDesigName: string
+    lastPlace: string
+    lastRaw: string
+    lastOrigin: ?^Sym
+    lastIdent: ?^Sym
+    lastViaHandle: bool
+    curFn: ?^Sym
+    selfCalls: int
+    userCalls: int
+    useSeq: int
+    trySite: int
+    tryNest: int
+    noreturn: bool
+    condDepth: int
+    pinned: ?^Sym
+    inWhileCond: bool
+    loopdepth: int
+    scanBytes: []byte
+    scanAt: []int
+    scanLen: []int
+    scanScore: []int
+    scanPend: []bool
+    scanCalls: int
+    bindLen: int
+    symLen: int
+    fnLen: int
+    argLen: int
+    argTempsUsed: int
+    fnStackLen: int
+    callIface: bool
+    convBorrow: int
+    convPairOn: bool
+    convPairDisp: int
+}
+
 fn makePool(): []int {
     let p = new []int(0)
     append(p, 3)
@@ -1711,6 +1851,7 @@ var lifted = new []byte(0)        // the code of the conditions of the while loo
 var waitFn = new []^Sym(0)        // their calls that wait for a later function: which function or method
 var waitAt = new []int(0)         // and where the call is
 var inDefer = false
+var inWhileCond = false           // a lambda literal is not allowed in a while condition
 var noreturn = false
 var initLink = 0
 
@@ -3370,12 +3511,14 @@ fn pathsOverlap(a: string, b: string): bool {
 // replayed where its block is left (see replayFrees).
 fn logFree(kind: int, root: ?^Sym, all: bool, path: string, via: ?^Sym) {
     if recording == 0 && !inDefer { return }
-    var nf = new []int(0)
+    let nfFrom = len(nonFreshLog)
     for i in 0..len(ownedLocals) {
-        if ownedLocals[i].isRefLocal && !ownedLocals[i].fresh { append(nf, i) }
+        if ownedLocals[i].isRefLocal && !ownedLocals[i].fresh { append(nonFreshLog, i) }
     }
-    append(freeArena, new FreeRec{kind: kind, root: root, all: all, path: path, via: via, nonFresh: nf})
+    append(freeArena, new FreeRec{kind: kind, root: root, all: all, path: path, via: via,
+                                  nfFrom: nfFrom, nfTo: len(nonFreshLog)})
     append(freeLog, handle(freeArena[len(freeArena) - 1]))
+    verifyNonFresh()
 }
 
 // the start of a loop, or of its condition: the outermost one remembers where its records begin
@@ -3389,8 +3532,11 @@ fn loopLogStart() {
 fn loopLogEnd() {
     recording -= 1
     if recording == 0 && !inDefer {
+        verifyNonFresh()
+        if arenaBase < len(freeArena) { truncate(nonFreshLog, freeArena[arenaBase].nfFrom) }
         truncate(freeLog, 0)
         truncate(freeArena, arenaBase)
+        verifyNonFresh()
     }
 }
 
@@ -3938,7 +4084,7 @@ fn netScore(k: int): int { return scanScore[k] - 2 * scanCalls }
 // do better and are yet to be declared in the function would still have one. declares is false for a
 // second register of the same local (a for loop's limit).
 fn pickHome(name: string, declares: bool): int {
-    if REG_HOMES == 0 || curFn == nil || inDefer || homeRetry { return -1 }
+    if REG_HOMES == 0 || curFn == nil || inDefer || homeRetry || homeCap <= 0 { return -1 }
     let k = scannedName(name)
     if k < 0 { return -1 }
     if declares { scanPend[k] = false }
@@ -5452,11 +5598,15 @@ fn callFn(f: ^Sym): Item { return callFnWith(f, nil, false, 0, 0) }
 fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item {
     // an interface member (kind "ifn") is called through the receiver's vtable, and its synthetic summary stands for the callee
     let iface = f.kind == "ifn"
+    let fnval = f.kind == "fncall"
     let savedIface = callIface
     callIface = iface
     var fname = qualifiedSymName(f)
     if hasRecv { fname = methodDisplay(f) }
     if iface { fname = ifaceMethodDisplay(f) }
+    if !fnval && f != curFn && inFnStack(f) {
+        error("cannot call '" + fname + "' from a lambda while it is being compiled: its effects are not known yet")
+    }
     let meth = hasRecv
     var start = 1
     if !hasRecv { start = 0 }
@@ -5472,13 +5622,28 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
     let narg = n - start
     // the words the call pops: the arguments, and for an interface call the vtable word above them (v3 7.1)
     var nw = n
-    if iface { nw = n + 1 }
+    if iface || fnval { nw = n + 1 }
     let pad = (depth + 8 * nw) % 16
     if pad != 0 {
         aluRI(5, RSP, 8)
         depth += 8
     }
     expect(T_LPAREN, "")
+    if fnval {
+        if recv == nil { error("internal error: a function value call without a cell") }
+        if recv != nil {
+            let e = copyItem(recv)
+            if e.mode == "const" && fits32(e.val) {
+                pushI(e.val)
+                depth += 8
+                drop(e)
+            } else {
+                let er = asReg(e)
+                pushR(er.r)
+                release(er.r)
+            }
+        }
+    }
     var argBinds = new []^RefBind(0)
     let argModes = new []int(0)
     let argVias = new []?^Sym(0)
@@ -5635,7 +5800,14 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
     }
     afterCall(f)
     if movesFn(f) { userCalls += 1 }              // only calls that might free count
-    if iface {
+    if fnval {
+        if recv == nil { error("internal error: a function value call without a cell") }
+        if recv != nil {
+            let e = asReg(copyItem(recv))
+            opMem(0xFF, 2, mem(e.r, -1, 0, 8), false, false)
+            release(e.r)
+        }
+    } else if iface {
         // the vtable word lies above the n arguments, at [rsp + 8n]: call the member's slot through it (v3 4, 7.1)
         opMem(0x8B, RAX, mem(RSP, -1, 8 * n, 8), true, false)
         opMem(0xFF, 2, mem(RAX, -1, 8 * ifaceSlot(f), 8), false, false)
@@ -5663,6 +5835,27 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
     let res = makeReg(f.ret, r)
     res.strTemp = f.ret == tString               // the caller now holds the returned reference
     return res
+}
+
+// An indirect call of a function-typed local/parameter. The cell pointer is materialised in a frame
+// temporary before any visible argument runs; callFnWith then pushes it as hidden argument 0 and
+// dispatches through qword [cell]. The synthetic callee is pure with the visible signature, so all
+// ordinary argument/effect checks apply and afterCall has no effect.
+fn callValue(x: Item, name: string, line: int, col: int): Item {
+    let t = x.typ
+    let f = newSym("fncall", "function value '" + name + "'", nil)
+    f.fnRec = newFnRec()
+    f.ret = fnRet(t)
+    f.addr = 0
+    f.owner = ""
+    for i in 0..fnArity(t) {
+        append(f.fnRec.params, fnParam(t, i))
+        append(f.fnRec.pmodes, fnMode(t, i))
+    }
+    let cell = newLocal("", tInt, "var")
+    let dst = localItem(cell, tInt)
+    store(dst, x)
+    return callFnWith(f, localItem(cell, tInt), false, line, col)
 }
 
 fn describe(x: &Item): string {
@@ -6342,7 +6535,8 @@ fn designatorT(target: bool): Item {
     let s = designatorSym(name, uline, ucol)
     let qname = lastDesigName
     var x = nameItem(s, qname, target)
-    if sym == T_LPAREN && (s.kind == "var" || s.kind == "let" || s.kind == "const") {
+    let isFnCall = sym == T_LPAREN && x.typ.kind == "fn"
+    if sym == T_LPAREN && !isFnCall && (s.kind == "var" || s.kind == "let" || s.kind == "const") {
         error("'" + qname + "' is not a function")
     }
     let root = x.root
@@ -6380,6 +6574,9 @@ fn designatorT(target: bool): Item {
             viaHandle = true
         }
         if sym == T_DOT {
+            if x.typ.kind == "fn" {
+                error("a function value has no fields or methods; call it with '(' after its name")
+            }
             next()
             let mline = tline
             let mcol = tcol
@@ -6523,6 +6720,7 @@ fn designatorT(target: bool): Item {
         // nothing can be moved out through a reference, so this can only be a borrow
         if root.isRef && isOwned(x.typ) { x.borrowed = true }
     }
+    if isFnCall { return callValue(x, qname, uline, ucol) }
     if isCall { return methodCall(x, callName, callLine, callCol, uline, ucol) }
     return x
 }
@@ -6663,6 +6861,310 @@ fn newExpr(): Item {
 // in FORK.md; the state capture happens after consume (see the comment in the body).
 fn tryExpr(): Item
 
+fn lambdaBody(f: ^Sym, ret: ^Type, params: &[]Param)
+fn lambdaExpr(): Item
+
+// Lambda parameters: the same groups as a function's, without mut, with the lambda-specific diagnostic.
+fn lambdaParams(mut params: &[]Param) {
+    while sym != T_RPAREN {
+        if sym == T_IDENT && sval == "mut" {
+            error("a lambda parameter cannot be mut; a function value takes owned or read-only parameters")
+        }
+        let names = new []string(0)
+        append(names, ident())
+        while sym == T_COMMA {
+            next()
+            append(names, ident())
+        }
+        expect(T_COLON, "")
+        let t = parseRefType()
+        let mode = refMode
+        rejectIfaceFn(t)
+        for n in names { append(params, new Param{name: n, typ: t, mode: mode}) }
+        if sym != T_RPAREN {
+            expect(T_COMMA, "',' or ')'")
+            if sym == T_RPAREN { error("expected a parameter type") }
+        }
+    }
+    expect(T_RPAREN, "")
+}
+
+// fn (Params) [: Ret] { Body }: a non-capturing lambda literal. The body is a code island compiled
+// with its own frame and function state; the outer state is saved in LamCtx and restored before the
+// literal's read-only cell is emitted.
+fn lambdaExpr(): Item {
+    let hline = tline
+    let hcol = tcol
+    next()
+    if sym == T_LBRACK {
+        error("a capture list is not supported yet; this compiler implements non-capturing lambdas only")
+    }
+    expect(T_LPAREN, "")
+    let params = new []Param(0)
+    lambdaParams(&params)
+    var ret = tVoid
+    if sym == T_COLON {
+        next()
+        ret = parseType()
+    }
+    rejectFn(ret, "a function cannot return a function value; function values are parameters and locals only")
+    for p in params { rejectIfaceFn(p.typ) }
+    rejectIfaceFn(ret)
+    let ft = newFnType(ret)
+    for p in params { fnAddParam(ft, p.typ, p.mode) }
+    rejectIfaceFn(ft)
+    if curFn == nil { error("a lambda can only be created inside a function") }
+    if inWhileCond { error("a lambda literal cannot appear in a while condition; move the call out of the condition before the loop") }
+    if inDefer { error("a lambda literal cannot appear in a defer body; move the call out of the defer") }
+    if sym != T_LBRACE { error("a lambda body needs '{'") }
+    let over = jmp()
+    let entry = pc()
+    let f = newSym("lambda", "a lambda", nil)
+    f.fnRec = newFnRec()
+    f.ret = ret
+    f.owner = curModuleName
+    f.line = hline
+    f.addr = entry
+    let hp = new []Param(0)
+    append(hp, new Param{name: "env", typ: tInt, mode: 1})
+    for p in params { append(hp, new Param{name: p.name, typ: p.typ, mode: p.mode}) }
+    for p in hp {
+        append(f.fnRec.params, p.typ)
+        append(f.fnRec.pmodes, p.mode)
+    }
+    let c = new LamCtx{
+        homeBits: homeBits, homeCap: homeCap, homeRetry: homeRetry,
+        free: replace(free, new []int(0)),
+        frame: frame, depth: depth, fwdCalls: fwdCalls,
+        lifted: replace(lifted, new []byte(0)),
+        waitFn: replace(waitFn, new []^Sym(0)),
+        waitAt: replace(waitAt, new []int(0)),
+        farCalls: replace(farCalls, new []int(0)),
+        barrier: barrier, blocks: replace(blocks, new []Block(0)), fnBlock: fnBlock,
+        ownedLocals: replace(ownedLocals, new []^Sym(0)),
+        narrowStack: replace(narrowStack, new []NEntry(0)),
+        loops: replace(loops, new []Loop(0)),
+        depthJumps: replace(depthJumps, new []int(0)),
+        originSyms: replace(originSyms, new []^Sym(0)),
+        originDead: replace(originDead, new []?^Sym(0)),
+        originLive: replace(originLive, new []?^Sym(0)),
+        originPath: replace(originPath, new []string(0)),
+        originNar: replace(originNar, new []bool(0)),
+        deferH: replace(deferH, new []^Sym(0)),
+        deferAt: replace(deferAt, new []int(0)),
+        deferFrees: replace(deferFrees, new []^Sym(0)),
+        deferFreeEv: replace(deferFreeEv, new []string(0)),
+        dfBlock: replace(dfBlock, new []int(0)),
+        dfIndex: replace(dfIndex, new []int(0)),
+        dfOwner: replace(dfOwner, new []^Sym(0)),
+        dfEv: replace(dfEv, new []string(0)),
+        deferUses: replace(deferUses, new []bool(0)),
+        deferMark: deferMark, inDefer: inDefer,
+        freeLog: replace(freeLog, new []^FreeRec(0)),
+        freeArena: replace(freeArena, new []FreeRec(0)),
+        nonFreshLog: replace(nonFreshLog, new []int(0)),
+        arenaBase: arenaBase, recording: recording,
+        heldKey: replace(heldKey, new []?^Sym(0)),
+        heldPath: replace(heldPath, new []string(0)),
+        heldForeign: replace(heldForeign, new []bool(0)),
+        heldHit: replace(heldHit, new []bool(0)),
+        heldStore: replace(heldStore, new []bool(0)),
+        heldWhole: replace(heldWhole, new []bool(0)),
+        pendSym: replace(pendSym, new []^Sym(0)),
+        pendDepth: replace(pendDepth, new []int(0)),
+        frLine: replace(frLine, new []int(0)),
+        frCol: replace(frCol, new []int(0)),
+        pendWhat: replace(pendWhat, new []string(0)),
+        pendOwn: replace(pendOwn, new []^Sym(0)),
+        pendNest: replace(pendNest, new []int(0)),
+        pendLine: pendLine, pendCol: pendCol, pendMsg: pendMsg, contSeq: contSeq, brkSeq: brkSeq,
+        orSeq: orSeq, freeSeq: freeSeq, truncKeep: truncKeep, replayFree: replayFree,
+        guardStart: guardStart, guardSym: guardSym, guardFollow: guardFollow, guardFree: guardFree,
+        guardNeg: guardNeg, guardOpen: guardOpen, guardIdx: guardIdx, guardMark: guardMark,
+        inAlive: inAlive, lastNamed: lastNamed, lastNamedPrev: lastNamedPrev,
+        lastDesigName: lastDesigName, lastPlace: lastPlace, lastRaw: lastRaw,
+        lastOrigin: lastOrigin, lastIdent: lastIdent, lastViaHandle: lastViaHandle, curFn: curFn,
+        selfCalls: selfCalls, userCalls: userCalls, useSeq: useSeq, trySite: trySite,
+        tryNest: tryNest, noreturn: noreturn, condDepth: condDepth, pinned: pinned,
+        inWhileCond: inWhileCond, loopdepth: loopdepth,
+        scanBytes: replace(scanBytes, new []byte(0)),
+        scanAt: replace(scanAt, new []int(0)),
+        scanLen: replace(scanLen, new []int(0)),
+        scanScore: replace(scanScore, new []int(0)),
+        scanPend: replace(scanPend, new []bool(0)),
+        scanCalls: scanCalls,
+        bindLen: len(bindArena), symLen: len(symArena), fnLen: len(fnArena), argLen: len(argTemps),
+        argTempsUsed: argTempsUsed, fnStackLen: len(fnStack), callIface: callIface,
+        convBorrow: convBorrow, convPairOn: convPairOn, convPairDisp: convPairDisp
+    }
+    setFree(0)
+    homeBits = 0
+    homeCap = 0
+    homeRetry = false
+    frame = 0
+    depth = 0
+    fwdCalls = 0
+    barrier = 0
+    recording = 0
+    arenaBase = 0
+    freeSeq = 0
+    contSeq = 0
+    brkSeq = 0
+    orSeq = 0
+    truncKeep = -1
+    replayFree = false
+    deferMark = -1
+    inDefer = false
+    inWhileCond = false
+    loopdepth = 0
+    guardStart = -10
+    guardSym = nil
+    guardFollow = 0
+    guardFree = 0
+    guardNeg = false
+    guardOpen = false
+    guardIdx = 0
+    guardMark = nil
+    inAlive = false
+    lastNamed = nil
+    lastNamedPrev = 0
+    lastDesigName = ""
+    lastPlace = ""
+    lastRaw = ""
+    lastOrigin = nil
+    lastIdent = nil
+    lastViaHandle = false
+    selfCalls = 0
+    userCalls = 0
+    useSeq = 0
+    trySite = 0
+    tryNest = 0
+    noreturn = false
+    condDepth = 0
+    pinned = nil
+    scanCalls = 0
+    pendLine = 0
+    pendCol = 0
+    pendMsg = ""
+    callIface = false
+    convBorrow = 0
+    convPairOn = false
+    convPairDisp = 0
+    argTempsUsed = len(argTemps)
+    curFn = f
+    append(fnStack, f)
+    lambdaBody(f, ret, &hp)
+    truncate(fnStack, c.fnStackLen)
+    homeBits = c.homeBits
+    homeCap = c.homeCap
+    homeRetry = c.homeRetry
+    replace(free, replace(c.free, new []int(0)))
+    frame = c.frame
+    depth = c.depth
+    fwdCalls = c.fwdCalls
+    replace(lifted, replace(c.lifted, new []byte(0)))
+    replace(waitFn, replace(c.waitFn, new []^Sym(0)))
+    replace(waitAt, replace(c.waitAt, new []int(0)))
+    replace(farCalls, replace(c.farCalls, new []int(0)))
+    barrier = c.barrier
+    replace(blocks, replace(c.blocks, new []Block(0)))
+    fnBlock = c.fnBlock
+    replace(ownedLocals, replace(c.ownedLocals, new []^Sym(0)))
+    replace(narrowStack, replace(c.narrowStack, new []NEntry(0)))
+    replace(loops, replace(c.loops, new []Loop(0)))
+    replace(depthJumps, replace(c.depthJumps, new []int(0)))
+    replace(originSyms, replace(c.originSyms, new []^Sym(0)))
+    replace(originDead, replace(c.originDead, new []?^Sym(0)))
+    replace(originLive, replace(c.originLive, new []?^Sym(0)))
+    replace(originPath, replace(c.originPath, new []string(0)))
+    replace(originNar, replace(c.originNar, new []bool(0)))
+    replace(deferH, replace(c.deferH, new []^Sym(0)))
+    replace(deferAt, replace(c.deferAt, new []int(0)))
+    replace(deferFrees, replace(c.deferFrees, new []^Sym(0)))
+    replace(deferFreeEv, replace(c.deferFreeEv, new []string(0)))
+    replace(dfBlock, replace(c.dfBlock, new []int(0)))
+    replace(dfIndex, replace(c.dfIndex, new []int(0)))
+    replace(dfOwner, replace(c.dfOwner, new []^Sym(0)))
+    replace(dfEv, replace(c.dfEv, new []string(0)))
+    replace(deferUses, replace(c.deferUses, new []bool(0)))
+    deferMark = c.deferMark
+    inDefer = c.inDefer
+    replace(freeLog, replace(c.freeLog, new []^FreeRec(0)))
+    replace(freeArena, replace(c.freeArena, new []FreeRec(0)))
+    replace(nonFreshLog, replace(c.nonFreshLog, new []int(0)))
+    arenaBase = c.arenaBase
+    recording = c.recording
+    replace(heldKey, replace(c.heldKey, new []?^Sym(0)))
+    replace(heldPath, replace(c.heldPath, new []string(0)))
+    replace(heldForeign, replace(c.heldForeign, new []bool(0)))
+    replace(heldHit, replace(c.heldHit, new []bool(0)))
+    replace(heldStore, replace(c.heldStore, new []bool(0)))
+    replace(heldWhole, replace(c.heldWhole, new []bool(0)))
+    replace(pendSym, replace(c.pendSym, new []^Sym(0)))
+    replace(pendDepth, replace(c.pendDepth, new []int(0)))
+    replace(frLine, replace(c.frLine, new []int(0)))
+    replace(frCol, replace(c.frCol, new []int(0)))
+    replace(pendWhat, replace(c.pendWhat, new []string(0)))
+    replace(pendOwn, replace(c.pendOwn, new []^Sym(0)))
+    replace(pendNest, replace(c.pendNest, new []int(0)))
+    pendLine = c.pendLine
+    pendCol = c.pendCol
+    pendMsg = c.pendMsg
+    contSeq = c.contSeq
+    brkSeq = c.brkSeq
+    orSeq = c.orSeq
+    freeSeq = c.freeSeq
+    truncKeep = c.truncKeep
+    replayFree = c.replayFree
+    guardStart = c.guardStart
+    guardSym = c.guardSym
+    guardFollow = c.guardFollow
+    guardFree = c.guardFree
+    guardNeg = c.guardNeg
+    guardOpen = c.guardOpen
+    guardIdx = c.guardIdx
+    guardMark = c.guardMark
+    inAlive = c.inAlive
+    lastNamed = c.lastNamed
+    lastNamedPrev = c.lastNamedPrev
+    lastDesigName = c.lastDesigName
+    lastPlace = c.lastPlace
+    lastRaw = c.lastRaw
+    lastOrigin = c.lastOrigin
+    lastIdent = c.lastIdent
+    lastViaHandle = c.lastViaHandle
+    curFn = c.curFn
+    selfCalls = c.selfCalls
+    userCalls = c.userCalls
+    useSeq = c.useSeq
+    trySite = c.trySite
+    tryNest = c.tryNest
+    noreturn = c.noreturn
+    condDepth = c.condDepth
+    pinned = c.pinned
+    inWhileCond = c.inWhileCond
+    loopdepth = c.loopdepth
+    replace(scanBytes, replace(c.scanBytes, new []byte(0)))
+    replace(scanAt, replace(c.scanAt, new []int(0)))
+    replace(scanLen, replace(c.scanLen, new []int(0)))
+    replace(scanScore, replace(c.scanScore, new []int(0)))
+    replace(scanPend, replace(c.scanPend, new []bool(0)))
+    scanCalls = c.scanCalls
+    argTempsUsed = c.argTempsUsed
+    callIface = c.callIface
+    convBorrow = c.convBorrow
+    convPairOn = c.convPairOn
+    convPairDisp = c.convPairDisp
+    fixHere1(over)
+    if !(pureFn(f) && !f.writesHandles && f.fnRec.pfree == 0) {
+        error("a lambda must be pure: it may not free a global or free owned state through a handle; call a pure function instead")
+    }
+    rodAlign()
+    let cell = RODATA_BASE + len(rodata)
+    rod64(CODE_BASE + f.addr)
+    return makeConst(ft, cell)
+}
+
 fn factor(): Item {
     let k = sym
     if k == T_INT {
@@ -6739,6 +7241,7 @@ fn factor(): Item {
         x.borrowed = true
         return x
     }
+    if k == T_FN { return lambdaExpr() }
     if k == T_IDENT { return designator() }
     error("expected an expression")
     return voidItem()
@@ -7783,8 +8286,8 @@ fn loopBodyV(entry: PState, line: int, col: int, lv: ?^Sym, nOuter: int, selfBef
     var hit = new []bool(n)
     for j in logFrom..len(freeLog) {
         let r = freeLog[j]
-        for q in 0..len(r.nonFresh) {
-            let i = r.nonFresh[q]
+        for q in r.nfFrom..r.nfTo {
+            let i = nonFreshLog[q]
             if i < n && !hit[i] && freeHits(ownedLocals[i], back.binds[i], r) { hit[i] = true }
         }
     }
@@ -7927,7 +8430,10 @@ fn whileStat(): bool {
     var top = pc()
     let farFrom = len(farCalls)
     let fwdFrom = fwdCalls
+    let savedWhile = inWhileCond
+    inWhileCond = true
     var x = expression()
+    inWhileCond = savedWhile
     let forever = x.mode == "const" && x.typ.kind == "bool" && x.val == 1
     let liftFrom = len(lifted)               // this loop's part of lifted, waitFn and waitAt starts here
     let waitFrom = len(waitFn)
@@ -8498,7 +9004,10 @@ fn returnStat() {
         if len(blocks[i].defers) > 0 { active = true }
     }
     if f.ret == tVoid {
-        if sym != T_SEMI && sym != T_RBRACE { error(callableName(f) + " does not return a value") }
+        if sym != T_SEMI && sym != T_RBRACE {
+            if f.kind == "lambda" { error("a lambda that returns a value needs a return type") }
+            error(callableName(f) + " does not return a value")
+        }
         runDefers(fnBlock)
     } else {
         var x0 = expression()
@@ -8688,12 +9197,6 @@ fn dropFrame(at: int, f: ^Sym) {
         if ((p + 4 + getRel(p)) & 0xFFFFFFFF) == old { fix(p, f.addr) }   // getRel is unsigned
     }
     for fi in 0..len(f.fnRec.fixups) { fix(f.fnRec.fixups[fi], f.addr) }
-}
-
-type Param = ref record {
-    name: string
-    typ: ^Type
-    mode: int                 // 0 owned, 1 &, 2 mut
 }
 
 // ---- the pre-scan of a function
@@ -9092,6 +9595,63 @@ fn fnBody(f: ^Sym, name: string, ret: ^Type, params: &[]Param, homes: bool): boo
 }
 
 
+// The hidden lambda body. It mirrors fnBody's prologue/parameter/body/epilogue skeleton but never
+// releases the enclosing function's state: the enclosing LamCtx restores it, and the hidden symbol,
+// its FnRec and the island's argument holders stay in the shared arenas (the safe default policy).
+fn lambdaBody(f: ^Sym, ret: ^Type, params: &[]Param) {
+    homeBits = 0
+    setFree(0)
+    pendLine = 0
+    frame = 0
+    depth = 0
+    truncate(farCalls, 0)
+    homeCap = 0
+    emit(0x55)
+    emit(0x48)
+    emit(0x89)
+    emit(0xE5)
+    emit(0x48)
+    emit(0x81)
+    emit(0xEC)
+    let frameAt = pc()
+    emit32(0)
+    openBlock()
+    fnBlock = len(blocks) - 1
+    let n = len(params)
+    for i in 0..n {
+        let s = newSym("var", params[i].name, params[i].typ)
+        s.storage = "local"
+        s.isParam = true
+        s.offset = 16 + 8 * (n - 1 - i)
+        declare(s)
+        if params[i].mode > 0 {
+            s.isRef = true
+            s.bind = singleBind(s, false, "", params[i].mode == 2, nil)
+            s.kind = "let"
+        } else if isOwned(params[i].typ) {
+            addOwnedLocal(s)
+        }
+        if params[i].typ.kind == "string" { addStrLocal(s) }
+    }
+    expect(T_LBRACE, "")
+    openBlock()
+    let term = statSeq()
+    expect(T_RBRACE, "")
+    if !term && ret != tVoid { error("a lambda must return a value on every path") }
+    closeBlock(term)
+    closeBlock(term)
+    homeBits = 0
+    if !term { epilogue() }
+    let size = (frame + 15) & ~15
+    if size == 0 {
+        dropFrame(frameAt, f)
+    } else {
+        putRel(frameAt, size)
+    }
+    if pendLine > 0 && f.writesHandles { errorAt(pendMsg, pendLine, pendCol) }
+    pendLine = 0
+}
+
 // the collision a method's name makes with a member of its receiver type (section 2.3), if any
 fn memberCollision(t: ^Type, name: string) {
     if t.kind == "closed" {
@@ -9398,6 +9958,7 @@ fn fnDecl(isPub: bool) {
     homeRetry = false
     var dname = name
     if isMethod { dname = methodDisplay(f) }
+    append(fnStack, f)
     if fnBody(f, dname, ret, &params, true) {
         truncCode(f.addr)
         for gi in 0..len(curModule.globals) {
@@ -9434,6 +9995,7 @@ fn fnDecl(isPub: bool) {
         homeRetry = false
         fnBody(f, dname, ret, &params, false)
     }
+    truncate(fnStack, len(fnStack) - 1)
     curFn = nil
 }
 
@@ -12191,6 +12753,8 @@ fn reemitSym(path: string) {
 fn releaseTables() {
     symArena = new []Sym(0)
     methodSyms = new []^Sym(0)
+    fnStack = new []^Sym(0)
+    inWhileCond = false
     typeArena = new []Type(0)
     bindArena = new []RefBind(0)
     universe = new []^Sym(0)
@@ -12206,6 +12770,20 @@ fn releaseTables() {
     globalKeys = new []string(0)
     globalRegistry = new []^Sym(0)
     symLoadNames = new []string(0)
+    if NF_CHECK {
+        verifyNonFresh()
+        if len(freeArena) == 0 && len(nonFreshLog) != 0 {
+            eprintln("NFCHECK orphaned nonFresh log at release: nf=", len(nonFreshLog), " log=", len(freeLog))
+            exit(9)
+        }
+    }
+    truncate(nonFreshLog, 0)
+    truncate(freeLog, 0)
+    truncate(freeArena, 0)
+    if NF_CHECK && (len(nonFreshLog) != 0 || len(freeLog) != 0 || len(freeArena) != 0) {
+        eprintln("NFCHECK release cleanup left logs: nf=", len(nonFreshLog), " log=", len(freeLog), " arena=", len(freeArena))
+        exit(9)
+    }
 }
 
 // The runtime is read once before the compile, so that a missing one is reported before

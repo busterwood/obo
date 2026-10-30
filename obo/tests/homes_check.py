@@ -108,6 +108,7 @@ fn main() {
 # R9 (v3 12.1): an interface-heavy program in both register modes. It is also tests/run/ifaces_homes.obx,
 # so port_compare and run_fork exercise the same source.
 INTERFACES = open(os.path.join(FORK, 'tests', 'run', 'ifaces_homes.obx')).read()
+LAMBDAS = open(os.path.join(FORK, 'tests', 'run', 'lambdas_homes.obx')).read()
 
 # the peephole (FORK.md, "Peephole pass"): `x = x op y` on a local in a register is one instruction on the
 # local, in every form, also at the first instruction of a loop body (a jump target); no temporary is copied back
@@ -260,16 +261,18 @@ def run_outcome(exe, src, out):
 
 
 def both_modes(port, tmp):
-    """The interface-heavy program compiles and runs with the same result with register homes on and off."""
+    """The interface-heavy and lambda-island programs compile and run with the same result with
+    register homes on and off."""
     noregs, why = no_regs_compiler(tmp)
     if why:
         return why
-    src = os.path.join(tmp, 'ifaces.obx')
-    open(src, 'w').write(INTERFACES)
-    a = run_outcome(port, src, os.path.join(tmp, 'ifaces-reg'))
-    b = run_outcome(noregs, src, os.path.join(tmp, 'ifaces-noregs'))
-    if a != b:
-        return f'the interface-heavy program differs: register homes {a[:2]}, none {b[:2]}'
+    for tag, text in (('ifaces', INTERFACES), ('lambdas', LAMBDAS)):
+        src = os.path.join(tmp, tag + '.obx')
+        open(src, 'w').write(text)
+        a = run_outcome(port, src, os.path.join(tmp, tag + '-reg'))
+        b = run_outcome(noregs, src, os.path.join(tmp, tag + '-noregs'))
+        if a != b:
+            return f'the {tag} program differs: register homes {a[:2]}, none {b[:2]}'
     return None
 
 
@@ -285,6 +288,7 @@ PROGRAMS = {
     'a bool parameter is a candidate': (BOOLPARAM, 2, None),
     'the limit of a for loop is given back with its variable': (MORE, 16, None),
     'an interface-heavy program': (INTERFACES, 200, None),
+    'a lambda-heavy program': (LAMBDAS, 200, None),
 }
 
 

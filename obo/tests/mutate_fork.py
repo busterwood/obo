@@ -278,8 +278,8 @@ DEFER_USE_MUTANTS = {
     # a break or continue leaves to a block above the function's own (a return runs the defers down to fnBlock)
     "defer uses not checked at a break or continue": ("    while i >= downTo {\n        callDefers(i)\n",
                                                       "    while i >= downTo {\n        if downTo == fnBlock { callDefers(i) } else {\n            var mD = len(blocks[i].defers) - 1\n            while mD >= 0 {\n                callLocal(blocks[i].defers[mD])\n                replayFrees(i, mD)\n                mD -= 1\n            }\n        }\n"),
-    "defer uses not checked at a return without a value": ("        if sym != T_SEMI && sym != T_RBRACE { error(callableName(f) + \" does not return a value\") }\n        runDefers(fnBlock)\n",
-                                                           "        if sym != T_SEMI && sym != T_RBRACE { error(callableName(f) + \" does not return a value\") }\n" + unchecked_exit("fnBlock")),
+    "defer uses not checked at a return without a value": ("        if sym != T_SEMI && sym != T_RBRACE {\n            if f.kind == \"lambda\" { error(\"a lambda that returns a value needs a return type\") }\n            error(callableName(f) + \" does not return a value\")\n        }\n        runDefers(fnBlock)\n",
+                                                           "        if sym != T_SEMI && sym != T_RBRACE {\n            if f.kind == \"lambda\" { error(\"a lambda that returns a value needs a return type\") }\n            error(callableName(f) + \" does not return a value\")\n        }\n" + unchecked_exit("fnBlock")),
     "defer uses not checked at a return with a value": ("            release(x.r)\n            runDefers(fnBlock)\n",
                                                         "            release(x.r)\n" + unchecked_exit("fnBlock")),
     "a defer's uses are not recorded": ("        if inDefer && s.isRefLocal { noteDeferUse(s) }\n", ""),
@@ -1261,8 +1261,8 @@ METHOD_MUTANTS = {
         "    if isMethod { dname = methodDisplay(f) }\n",
         "    if false { dname = methodDisplay(f) }\n"),
     "methods: returnStat names a method by its bare name": (
-        "        if sym != T_SEMI && sym != T_RBRACE { error(callableName(f) + \" does not return a value\") }\n",
-        "        if sym != T_SEMI && sym != T_RBRACE { error(f.name + \" does not return a value\") }\n"),
+        "        if sym != T_SEMI && sym != T_RBRACE {\n            if f.kind == \"lambda\" { error(\"a lambda that returns a value needs a return type\") }\n            error(callableName(f) + \" does not return a value\")\n        }\n",
+        "        if sym != T_SEMI && sym != T_RBRACE {\n            if f.kind == \"lambda\" { error(\"a lambda that returns a value needs a return type\") }\n            error(f.name + \" does not return a value\")\n        }\n"),
     "methods: tryExpr names a method by its bare name": (
         "        errorAt(\"try needs a function that returns a Result; '\" + callableName(fr) + \"' returns \" + what, tl, tc)\n",
         "        errorAt(\"try needs a function that returns a Result; '\" + fr.name + \"' returns \" + what, tl, tc)\n"),

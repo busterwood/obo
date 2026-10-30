@@ -224,7 +224,14 @@ SEED_FILE_MIN = {
     os.path.join(FORK, 'tests', 'errors', 'ifaces_calls.obx'): (0, 8),
     os.path.join(FORK, 'tests', 'errors', 'ifaces_pos.obx'): (0, 8),
     os.path.join(FORK, 'tests', 'errors', 'ifaces_refs.obx'): (0, 8),
+    os.path.join(FORK, 'tests', 'run', 'lambdas.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'run', 'lambdas_higher.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'run', 'lambdas_effects.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'run', 'lambdas_sort.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'run', 'lambdas_homes.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'run', 'lambdas_scope.obx'): (0, 9),
     os.path.join(FORK, 'tests', 'run', 'lambdas_types.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'errors', 'lambdas.obx'): (0, 9),
     os.path.join(FORK, 'tests', 'errors', 'lambdas_step1.obx'): (0, 9),
 }
 SEED_LIB_MIN = {'io.obx': (0, 5), 'env.obx': (0, 4)}
