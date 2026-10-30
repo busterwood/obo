@@ -29,7 +29,7 @@ new compiler is not promoted here. Version policy: additive builtin/runtime exte
   text `.sym` symbol files, methods, and first-class interfaces (owning `I`/`?I`,
   borrowed `&I`/`&?I`, dynamic dispatch and effect tiers). The full reference is
   [obo/LANGUAGE.md](obo/LANGUAGE.md).
-- **Compiler.** 12,069 lines / 455,006 bytes of obo source. The current source
+- **Compiler.** 12,071 lines / 455,137 bytes of obo source. The current source
   adds first-class interfaces and `sleepMs`, and stays interface-free itself, so
   the pre-promotion 0.6 seed can build it. The 0.6 seed (454,657 bytes, sha256 `90fcad7e…`) and the
   0.5 compiler (425,985 bytes) are historical.
@@ -55,12 +55,12 @@ new compiler is not promoted here. Version policy: additive builtin/runtime exte
 | Compiler and seed (`--version`) | 507,905 bytes, sha256 `673ae7ba…`, `obo 0.8 sym-format 4 abi 1` |
 | Self-host fixed point | stage 2 == stage 3, 512,001 bytes; the 0.8 seed builds the 0.8.1 compiler |
 | Self-compile wall time | 0.14 s (5 runs, median on this host; host-dependent) |
-| Self-compile live peak | 1,947,824 bytes |
-| Total allocated | 44,629,104 bytes (port comparison) |
+| Self-compile live peak | 1,947,952 bytes |
+| Total allocated | 44,629,488 bytes (port comparison) |
 | Maximum resident set | 3,640 KB (5 runs on this host) |
-| Live-memory budget | 2,000,000 bytes (52,176 spare) |
+| Live-memory budget | 2,000,000 bytes (52,048 spare) |
 | obo suite | 1,416 tests; 103 `module_test` checks; `sym_test.py` 38/38; `sym_fuzz.py` 200/200; `port_test` 558/558 with 9 encoder groups; `port_compare` 1,428/1,428; 57 doc examples; 27/27 import checks; 16/16 stdlib roots |
-| Tools differential gate | 393 checks vs GNU coreutils 9.4; 3 memory cases |
+| Tools differential gate | 414 checks vs GNU coreutils 9.4; 3 memory cases |
 | Tool binaries | cat 45,057; wc 49,153; sort 73,729; tail 53,249 bytes (static, runtime included) |
 | eza E2 differential gate | 546/546 non-memory cases (462 exact reference goldens, 72 live including 22 pty, 12 own) + 5/5 memory cases |
 | eza E2 binary | 217,089 bytes (static, runtime included; reference eza 0.23.3 is 2,294,768) |
@@ -68,9 +68,9 @@ new compiler is not promoted here. Version policy: additive builtin/runtime exte
 | eza 10k-entry max RSS | 2,560 KiB in the recorded run; reference about 24.6 MB long / 12-14 MB other views |
 | Minimal static executable | 32,769 bytes (runtime included) |
 
-The compiler budget is 2,000,000 bytes live and 52,176 bytes remain spare, so no
-slot was cut and the budget was not raised. The current tree peaks at 1,947,824
-bytes in the port comparison (1,947,552 in the direct stage-2 compile). The live
+The compiler budget is 2,000,000 bytes live and 52,048 bytes remain spare, so no
+slot was cut and the budget was not raised. The current tree peaks at 1,947,952
+bytes in the port comparison (1,947,680 in the direct stage-2 compile). The live
 peak varies by a few hundred bytes with the source path and total allocation by
 about 2 KB.
 

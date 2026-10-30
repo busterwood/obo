@@ -35,9 +35,11 @@ the builder creates and checks its size and type; a compile failure means the
 compiler is old (the name is resolved at compile time), and a run failure,
 including a trapped or leaking run under OBO_CHECK=1, means runtime_text.bin is
 old (the slot jumped to is wrong or absent). A compile-only metadata probe
-would not catch the old runtime, so this one runs a slot. The sleep probe does
-the same for the appended slot 40: it builds and RUNS `sleepMs(0)`, so a runtime
-whose entry table stops at slot 39 fails cleanly instead of jumping past it.
+would not catch the old runtime, so this one runs a slot. The sleep probe builds
+and RUNS `sleepMs(0)` for the appended slot 40 as a best-effort availability
+check. It is not an ABI guard: a new compiler with an old runtime is unsupported,
+and the old slot-40 experiment traps with the runtime's generic misaligned-stack
+error, which is incidental rather than a designed compatibility check.
 
 tests/tools.py imports build() to make its private temporary build, so the build
 rule lives in exactly one place.
@@ -110,8 +112,8 @@ fn main() {
 '''
 
 
-SLEEP_PROBE = '''// slot-40 probe: built and RUN, so an old runtime_text.bin cannot silently
-// jump past its entry table when a tool calls sleepMs
+SLEEP_PROBE = '''// slot-40 probe: built and RUN as a best-effort availability check. This is
+// not an ABI guard; a new compiler with an old runtime is unsupported.
 fn main() {
     let r = sleepMs(0)
     match r {
@@ -216,9 +218,10 @@ def probe_meta(obo, rt, out):
 
 
 def probe_sleep(obo, rt, out):
-    """Build and run a sleepMs(0) probe: it exercises runtime slot 40, so an
-    old runtime that lacks the slot fails here instead of jumping past its
-    entry table when a tool runs. BuildError if the compiler or runtime is old."""
+    """Build and run a sleepMs(0) best-effort availability probe. It exercises
+    runtime slot 40 but is not an ABI guard: a new compiler with an old runtime
+    is unsupported and may trap unpredictably. BuildError if the probe does not
+    compile or run."""
     os.makedirs(out, exist_ok=True)
     symdir = _symdir(out)
     src = os.path.join(out, '.sleep_probe.obo')

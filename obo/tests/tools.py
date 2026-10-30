@@ -2166,7 +2166,9 @@ class Harness:
             if p.poll() is None:
                 self._follow_stop(p)
 
-        # multiple operands: initial headers and a header before each new chunk
+        # multiple operands: a header only when the output file switches. A
+        # second chunk from the same file has no header, including a >64 KiB
+        # append that takes several read chunks.
         with open(os.path.join(d, 'fa.txt'), 'wb') as f:
             f.write(b'a1\n')
         with open(os.path.join(d, 'fb.txt'), 'wb') as f:
@@ -2180,11 +2182,82 @@ class Harness:
             got = self._follow_read(p, b'\n==> fa.txt <==\na2\n')
             check('follow multi chunk header', got == b'\n==> fa.txt <==\na2\n',
                   repr(got))
+            self._follow_write(os.path.join(d, 'fa.txt'), b'a3\n')
+            got = self._follow_read(p, b'a3\n')
+            check('follow same file no header', got == b'a3\n', repr(got))
+            big = b'x' * 70000 + b'\n'
+            self._follow_write(os.path.join(d, 'fa.txt'), big)
+            got = self._follow_read(p, big, timeout=8)
+            check('follow big same file no header', got == big, repr(got[:20]))
+            self._follow_write(os.path.join(d, 'fb.txt'), b'b2\n')
+            got = self._follow_read(p, b'\n==> fb.txt <==\nb2\n')
+            check('follow switch header', got == b'\n==> fb.txt <==\nb2\n',
+                  repr(got))
             _rc, err = self._follow_stop(p)
             check('follow multi stderr', err == b'', repr(err))
         finally:
             if p.poll() is None:
                 self._follow_stop(p)
+
+        # the same header sequence against GNU tail, not only our expectation
+        if self.refs['tail'].kind == 'gnu':
+            for name in ('gfa', 'gfb'):
+                with open(os.path.join(d, name), 'wb') as f:
+                    f.write((b'a1\n' if name == 'gfa' else b'b1\n'))
+            ours_out = open(os.path.join(d, 'gnu-ours.out'), 'wb')
+            ours_err = open(os.path.join(d, 'gnu-ours.err'), 'wb')
+            ref_out = open(os.path.join(d, 'gnu-ref.out'), 'wb')
+            ref_err = open(os.path.join(d, 'gnu-ref.err'), 'wb')
+            po = subprocess.Popen([self.ctx['tail'].exe, '-n0', '-f',
+                                   'gfa', 'gfb'], cwd=d, env=self._follow_env(),
+                                  stdin=subprocess.DEVNULL, stdout=ours_out,
+                                  stderr=ours_err, start_new_session=True)
+            pr = subprocess.Popen(['tail', '-n0', '-f', 'gfa', 'gfb'], cwd=d,
+                                  env=self._follow_env(), stdin=subprocess.DEVNULL,
+                                  stdout=ref_out, stderr=ref_err,
+                                  executable=self.refs['tail'].path,
+                                  start_new_session=True)
+            try:
+                time.sleep(0.5)
+                self._follow_write(os.path.join(d, 'gfa'), b'a1\n')
+                time.sleep(1.4)
+                self._follow_write(os.path.join(d, 'gfa'), b'a2\n')
+                time.sleep(1.4)
+                big = b'y' * 70000 + b'\n'
+                self._follow_write(os.path.join(d, 'gfa'), big)
+                time.sleep(1.5)
+                self._follow_write(os.path.join(d, 'gfb'), b'b1\n')
+                time.sleep(1.5)
+            finally:
+                for p2 in (po, pr):
+                    if p2.poll() is None:
+                        try:
+                            os.killpg(p2.pid, signal.SIGTERM)
+                        except OSError:
+                            pass
+                for p2 in (po, pr):
+                    try:
+                        p2.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            os.killpg(p2.pid, signal.SIGKILL)
+                        except OSError:
+                            pass
+                        p2.wait(timeout=5)
+                for fh in (ours_out, ours_err, ref_out, ref_err):
+                    fh.close()
+            with open(os.path.join(d, 'gnu-ours.out'), 'rb') as f:
+                our_bytes = f.read()
+            with open(os.path.join(d, 'gnu-ref.out'), 'rb') as f:
+                ref_bytes = f.read()
+            check('follow GNU header differential', our_bytes == ref_bytes,
+                  describe(our_bytes, ref_bytes, 'stdout'))
+            with open(os.path.join(d, 'gnu-ours.err'), 'rb') as f:
+                our_err = f.read()
+            with open(os.path.join(d, 'gnu-ref.err'), 'rb') as f:
+                ref_err = f.read()
+            check('follow GNU stderr differential', our_err == ref_err,
+                  describe(our_err, ref_err, 'stderr'))
 
         # a write failure stops the follow loop instead of running forever
         path = os.path.join(d, 'wf.txt')
@@ -2204,6 +2277,99 @@ class Harness:
         check('follow missing errors',
               b"cannot open 'missing-follow'" in p.stderr and
               b'no files remaining' in p.stderr, repr(p.stderr))
+
+        # a successful non-regular operand is not a missing file: /dev/null
+        # exits 0 after its ordinary read, while missing-only still exits 1
+        p = run_one('follow', ['-f', '/dev/null'])
+        check('follow devnull exit', p.returncode == 0, str(p.returncode))
+        check('follow devnull output', p.stdout == b'', repr(p.stdout))
+        check('follow devnull stderr', p.stderr == b'', repr(p.stderr))
+
+        # a FIFO with a writer that closes is read once and then exits 0 for
+        # this build (GNU keeps polling it; documented narrowing)
+        fifo = os.path.join(d, 'follow.fifo')
+        if hasattr(os, 'mkfifo'):
+            try:
+                os.mkfifo(fifo)
+            except FileExistsError:
+                pass
+            p = subprocess.Popen([self.ctx['tail'].exe, '-f', 'follow.fifo'],
+                                 cwd=d, env=self._follow_env(),
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, start_new_session=True)
+            wrote = False
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                try:
+                    wfd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+                    os.write(wfd, b'x\n')
+                    os.close(wfd)
+                    wrote = True
+                    break
+                except OSError:
+                    time.sleep(0.05)
+            try:
+                out, err = p.communicate(timeout=8)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                out, err = p.communicate()
+            try:
+                os.unlink(fifo)
+            except OSError:
+                pass
+            check('follow fifo writer', wrote)
+            check('follow fifo exit', p.returncode == 0, str(p.returncode))
+            check('follow fifo output', out == b'x\n', repr(out))
+            check('follow fifo stderr', err == b'', repr(err))
+
+        # equal-size (or larger) truncate-and-rewrite between polls is not
+        # observable from path size alone: document the limitation in a test
+        path = os.path.join(d, 'equal.txt')
+        with open(path, 'wb') as f:
+            f.write(b'a\nb\n')
+        p = self._follow_start(d, ['-n1', '-f', 'equal.txt'])
+        try:
+            got = self._follow_read(p, b'b\n')
+            check('follow equal initial', got == b'b\n', repr(got))
+            self._follow_write(path, b'c\nd\n', mode='wb')
+            quiet = self._follow_quiet(p, 0.6)
+            check('follow equal regrow unseen', quiet == b'', repr(quiet))
+            self._follow_write(path, b'e\n')
+            got = self._follow_read(p, b'e\n')
+            check('follow equal future append', got == b'e\n', repr(got))
+            _rc, err = self._follow_stop(p)
+            check('follow equal no truncate claim', b'file truncated' not in err,
+                  repr(err))
+        finally:
+            if p.poll() is None:
+                self._follow_stop(p)
+
+        # a path replacement must not steal the old descriptor: appends to the
+        # unlinked original still arrive, and the new path is not adopted
+        path = os.path.join(d, 'replace.txt')
+        with open(path, 'wb') as f:
+            f.write(b'a\nb\n')
+        oldfd = os.open(path, os.O_RDWR | os.O_APPEND)
+        p = self._follow_start(d, ['-n1', '-f', 'replace.txt'])
+        try:
+            got = self._follow_read(p, b'b\n')
+            check('follow replace initial', got == b'b\n', repr(got))
+            with open(os.path.join(d, 'newtmp'), 'wb') as f:
+                f.write(b'n1\nn2\n')
+            os.replace(os.path.join(d, 'newtmp'), path)
+            os.write(oldfd, b'old3\n')
+            got = self._follow_read(p, b'old3\n')
+            check('follow replace keeps old fd', got == b'old3\n', repr(got))
+            _rc, err = self._follow_stop(p)
+            check('follow replace no truncate message', b'file truncated' not in err,
+                  repr(err))
+        finally:
+            if p.poll() is None:
+                self._follow_stop(p)
+            os.close(oldfd)
 
         # stdin at EOF exits normally (and runs the leak check/cleanup)
         p = run_one('follow', ['-n1', '-f', '-'], stdin_data=b'x\ny\n')
@@ -2230,6 +2396,38 @@ class Harness:
         finally:
             if p.poll() is None:
                 self._follow_stop(p)
+
+        # a zero-size pseudo-regular file (proc) must not spin: its metadata
+        # cannot prove truncation, so the poll sleeps even when a read made
+        # progress
+        proc = '/proc/uptime'
+        if os.path.isfile(proc):
+            before = resource.getrusage(resource.RUSAGE_CHILDREN)
+            p = subprocess.Popen([self.ctx['tail'].exe, '-f', proc], cwd=d,
+                                 env=self._follow_env(), stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.PIPE, start_new_session=True)
+            try:
+                time.sleep(1.5)
+                after = resource.getrusage(resource.RUSAGE_CHILDREN)
+                cpu = ((after.ru_utime - before.ru_utime) +
+                       (after.ru_stime - before.ru_stime))
+                try:
+                    os.killpg(p.pid, signal.SIGTERM)
+                except OSError:
+                    pass
+                p.wait(timeout=5)
+                err = p.stderr.read()
+                p.stderr.close()
+                check('follow proc cpu', cpu < 0.5, f'{cpu:.3f} CPU seconds')
+                check('follow proc stderr', err == b'', repr(err))
+            finally:
+                if p.poll() is None:
+                    try:
+                        os.killpg(p.pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+                    p.wait(timeout=5)
 
     # -- memory mode
     def run_memory(self):

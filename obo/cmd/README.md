@@ -264,31 +264,57 @@ in GNU. Line mode continues with later operands after a read error; byte mode
 stops there (GNU 9.4's behaviour).
 
 `-f` keeps named regular-file descriptors open after the initial tail, then
-polls once per second with `sleepMs(1000)`: each poll reads appended bytes and
-flushes them immediately, and a full round that found no data sleeps before the
-next one. It never busy-spins and never rereads an unchanged file; idle CPU is
-effectively zero. An unterminated line stays unterminated: appended bytes are
-emitted raw, not re-tailored. `-n0 -f` and `-c0 -f` print no existing content but
-still monitor future data (multi-file initial headers are still printed).
+polls once per second with `sleepMs(1000)`. Each poll reads appended bytes and
+flushes them immediately; a full round that found no data sleeps before the
+next one. A descriptor whose path metadata looks like a pseudo-file (zero size
+while bytes were read, or a size below the bytes already consumed) is also slept
+between rounds even when a read returned data, so a `/proc`-style source cannot
+spin. For ordinary regular files this never busy-spins and never rereads an
+unchanged file; idle CPU is effectively zero. This is not a universal no-spin
+promise for every pseudo-filesystem file.
 
-Multiple followed files use GNU's headers: the initial headers, then a blank
-line and `==> <operand> <==` before each new chunk. stdin (`-` or no operands)
-is followed until EOF; a pipe or terminal at EOF exits 0, and a regular-file
-stdin also exits there (a documented narrowing from GNU, which keeps following
-it). Non-regular named operands use the ordinary non-follow path and are not
-polled.
+An unterminated line stays unterminated: appended bytes are emitted raw, not
+re-tailored. `-n0 -f` and `-c0 -f` print no existing content but still monitor
+future data (multi-file initial headers are still printed).
+
+Multiple followed files use GNU's headers only when the output file changes:
+the initial headers, then a blank line and `==> <operand> <==` before a chunk
+from a different file. A second chunk from the same file, including a >64 KiB
+append read in several 64 KiB blocks, has no repeated header. stdin (`-` or no
+operands) is followed until EOF; a pipe or terminal at EOF exits 0, and a
+regular-file stdin also exits there (a documented narrowing from GNU, which
+keeps following it).
+
+Non-regular named operands use the ordinary non-follow path and are not polled.
+A successful ordinary read (`/dev/null`, or a FIFO whose writer closed) exits 0
+after that read; GNU keeps a FIFO alive, so this is a documented narrowing. Only
+when no operand opened/read successfully is `tail: no files remaining` printed
+with exit 1. A directory prints its read error and then that no-files line; GNU
+may add its own "cannot follow end of this type of file" diagnostic, which this
+build does not reproduce.
 
 Each poll calls `statPath` and compares device and inode. If the path still
-names the same file and its size is below the bytes already consumed, the
-descriptor is closed, the path is reopened from the start and
-`tail: <path>: file truncated` is printed; the current file content is then
-treated as new data. This matches GNU's observed truncation output without a
-seek, but a renamed or unlinked file's truncation is not detected (the old
-descriptor is kept), a file truncated and regrown past the old size between
-polls is not detected, and path replacement is not followed. There is no
-`-F`/name follow or rotation support. A read error stops following that file;
-if no files remain the command exits 1. A write error stops the whole follow
-loop at once (never continuing forever with dead output).
+looks like the same inode and its size is below the bytes already consumed, the
+path is opened as a candidate while the old descriptor remains open. Only if a
+post-open path stat still matches the original device/inode is the candidate
+adopted; the old descriptor is closed at that point, `tail: <path>: file
+truncated` is printed, and the current content is treated as new data. A
+mismatch closes only the candidate and retains the old descriptor, identity and
+offset, so a path replacement does not steal the followed file. A path stat
+cannot prove what an open descriptor names (and inode reuse/ABA remains
+possible), so this is a best-effort mitigation, not a TOCTOU-free identity
+check. A genuinely race-free descriptor follow needs `fstatFd(fd)` (and `seekFd`
+to avoid rereading after truncation); neither is in this build. No safety claim
+stronger than this is made.
+
+A renamed or unlinked file's truncation is not detected (the old descriptor is
+kept). A file truncated and regrown to the same size or larger between polls is
+also not detected: the heuristic only observes a size below the consumed byte
+count, and mtime/ctime are deliberately not used because ordinary in-place
+writes change them without truncating. There is no `-F`/name follow or rotation
+support. A read error stops following that file; if no files remain the command
+exits 1. A write error stops the whole follow loop at once (never continuing
+forever with dead output).
 
 There is no `seek`/`readAt` builtin, so the non-follow implementation is the bounded
 streaming tail rather than GNU's backwards seek: a ring of at most COUNT lines
@@ -297,7 +323,7 @@ the input is read once. Memory is O(the retained trailing bytes) plus one 64 KiB
 read/write block, never the whole input; metadata grows only to the number of
 retained lines. A single line longer than the trailing requirement is retained
 whole because printing it requires those bytes (a 16 MiB file with no newline
-and `-n 10` peaks at about 25 MB; `-c 100` on the same file peaks at 66,848 live
+and `-n 10` peaks at about 25 MB; `-c 100` on the same file peaks at 66,864 live
 heap bytes). Each file is read to EOF even when COUNT is small, so this build
 cannot stop early on a regular file the way a seeking tail can.
 
@@ -325,9 +351,9 @@ an argument -- 'n'`.
 Follow mode holds one descriptor per named regular operand and the last
 incremental read chunk; it does not accumulate output or the historical file.
 A poll that finds data loops again immediately to drain it, so a large append
-does not wait a second per 64 KiB chunk. The same 64 KiB read block and the
-line/byte rings bound the non-follow path; follow mode does not add a whole-file
-buffer.
+does not wait a second per 64 KiB chunk (pseudo-file suspects always sleep one
+round). The same 64 KiB read block and the line/byte rings bound the non-follow
+path; follow mode does not add a whole-file buffer.
 
 Also absent: `-F`/name follow and rotation, `-q`, `-v`, `-s`, `-z`,
 `--follow`, `--retry`, `--pid`, `--sleep-interval`, `--max-unchanged-stats`,

@@ -21,13 +21,19 @@
 // operand's count is independent.
 //
 // -f keeps named regular-file descriptors open, prints the initial tail, then
-// polls once per second: each poll reads appended bytes, flushes them, and
-// sleeps only when a full round found no data. A same-inode shrink reopens the
-// path from the start and reports `file truncated`; a replaced or unlinked path
-// keeps the old descriptor (descriptor follow, not -F). Non-regular named
-// operands are not followed. stdin is followed until EOF. With -n0/-c0 follow
-// prints no existing data (but still prints initial headers in multi mode) and
-// monitors only future data. A write error stops the follow loop.
+// polls once per second: each poll reads appended bytes and flushes them. A
+// round sleeps when it found no data, and also for a pseudo-file suspect (size
+// 0/unreliable) even when a read made progress, so /proc-style sources cannot
+// spin. Multiple files print a header only when the output file switches. A
+// same-inode shrink opens a candidate while the old fd stays open; the candidate
+// is adopted only after a matching post-stat, otherwise the old descriptor and
+// offset are retained. Path stats cannot prove fd identity (ABA remains), so
+// this is best-effort, not TOCTOU-free. A replaced or unlinked path keeps the
+// old descriptor (descriptor follow, not -F). Non-regular named operands are read
+// once by the ordinary path: success exits 0, failure plus no successful
+// operand gives `no files remaining` and exit 1. stdin is followed until EOF.
+// With -n0/-c0 follow prints no existing data (but still prints initial headers
+// in multi mode) and monitors only future data. A write error stops the loop.
 //
 // Errors follow GNU's quote-free-name forms: `cannot open '<path>' for reading:
 // <text>` and `error reading '<path>': <text>`. In non-follow mode a write error
@@ -59,6 +65,8 @@ type Follow = ref record {
     dev: int
     ino: int
     consumed: int
+    size: int              // the last path size observed (0 for pseudo-files)
+    suspect: bool          // path metadata looks unreliable (pseudo-regular file)
     active: bool
 }
 
@@ -88,6 +96,9 @@ type TailState = ref record {
     writeFailed: bool      // stdout failed; keep diagnosing operands, emit nothing more
     writeCode: int         // the first write failure's errno
     headerSeen: bool       // a header was already written (multi-operand mode)
+    lastOut: int           // follower index of the last output, or -1
+    sawOperand: bool       // at least one operand opened/read successfully
+    operandOk: bool        // the operand just processed succeeded
 }
 
 fn addLine(mut q: &LineQueue, line: Line) {
@@ -318,10 +329,13 @@ fn processReader(mut r: &io::Reader, label: string, opts: &TailOpts,
 // error; open and read errors are printed here and continue.
 fn tailOperand(path: string, opts: &TailOpts, multi: bool,
                mut w: &io::Writer, mut st: &TailState): bool {
+    st.operandOk = false
     if path == "-" {
         var r = io::newReader(stdin(), 65536)
         var stats = new ReadStats{bytes: 0, failed: false}
-        return processReader(r, "standard input", opts, multi, stats, w, st)
+        let cont = processReader(r, "standard input", opts, multi, stats, w, st)
+        if cont && !stats.failed { st.operandOk = true }
+        return cont
     }
     let f = openFile(path, "r")
     match f {
@@ -330,7 +344,9 @@ fn tailOperand(path: string, opts: &TailOpts, multi: bool,
             defer closeFile(fd)
             var r = io::newReader(fd, 65536)
             var stats = new ReadStats{bytes: 0, failed: false}
-            return processReader(r, path, opts, multi, stats, w, st)
+            let cont = processReader(r, path, opts, multi, stats, w, st)
+            if cont && !stats.failed { st.operandOk = true }
+            return cont
         }
         err {
             eprintln("tail: cannot open '", path, "' for reading: ", errors::text(f.code))
@@ -364,25 +380,48 @@ fn closeFollowers(mut followers: &[]Follow) {
 fn startFollow(path: string, opts: &TailOpts, multi: bool,
                mut followers: &[]Follow, mut w: &io::Writer,
                mut st: &TailState): bool {
+    st.operandOk = false
     if path != "-" {
         let probe = statPath(path)
         match probe {
             ok {
                 if (probe.value[0] & 0xF000) != 0x8000 {
-                    return tailOperand(path, opts, multi, w, st)
+                    let cont = tailOperand(path, opts, multi, w, st)
+                    if cont && st.operandOk {
+                        st.sawOperand = true
+                        st.lastOut = -1
+                    }
+                    return cont
                 }
             }
             err {
-                return tailOperand(path, opts, multi, w, st)
+                let cont = tailOperand(path, opts, multi, w, st)
+                if cont && st.operandOk {
+                    st.sawOperand = true
+                    st.lastOut = -1
+                }
+                return cont
             }
         }
     }
     var label = "standard input"
     var isStdin = true
     var fd = 0
+    var dev = 0
+    var ino = 0
+    var size = 0
     if path != "-" {
         label = path
         isStdin = false
+        let pre = statPath(path)
+        match pre {
+            ok {
+                dev = pre.value[8]
+                ino = pre.value[7]
+                size = pre.value[1]
+            }
+            err { }
+        }
         let of = openFile(path, "r")
         match of {
             ok { fd = of.value }
@@ -392,17 +431,30 @@ fn startFollow(path: string, opts: &TailOpts, multi: bool,
                 return true
             }
         }
-    }
-    var dev = 0
-    var ino = 0
-    if !isStdin {
-        let sp = statPath(path)
-        match sp {
+        // A path stat cannot prove what the opened descriptor names, but it can
+        // reject a pre/post mismatch; fall back to one ordinary read instead of
+        // following an unverified descriptor. The residual open/stat race is
+        // documented in cmd/README.md.
+        var stable = false
+        let post = statPath(path)
+        match post {
             ok {
-                dev = sp.value[8]
-                ino = sp.value[7]
+                if post.value[7] == ino && post.value[8] == dev {
+                    stable = true
+                    size = post.value[1]
+                }
             }
             err { }
+        }
+        if !stable {
+            let c = closeFile(fd)
+            match c { ok { } err { } }
+            let cont = tailOperand(path, opts, multi, w, st)
+            if cont && st.operandOk {
+                st.sawOperand = true
+                st.lastOut = -1
+            }
+            return cont
         }
     }
     var stats = new ReadStats{bytes: 0, failed: false}
@@ -420,20 +472,30 @@ fn startFollow(path: string, opts: &TailOpts, multi: bool,
             let c = closeFile(fd)
             match c { ok { } err { } }
         }
+        st.operandOk = false
         return true
     }
+    st.sawOperand = true
+    st.operandOk = true
+    let idx = len(followers)
     append(followers, new Follow{path: path, label: label, fd: fd,
                                  isStdin: isStdin, dev: dev, ino: ino,
-                                 consumed: stats.bytes, active: true})
+                                 consumed: stats.bytes, size: size,
+                                 suspect: (!isStdin && size == 0 && stats.bytes > 0),
+                                 active: true})
+    if multi { st.lastOut = idx }
     return true
 }
 
 // Poll every followed descriptor once. A read of nil is EOF, not an error: a
 // named regular file just waits for more bytes, while stdin's EOF ends that
-// follower (a pipe has no future data). Before each read a path stat detects
-// a same-inode shrink; the file is then reopened from the start and its current
-// content is treated as new data. A replaced or unlinked path keeps the old
-// descriptor: this is descriptor follow, not -F/name follow.
+// follower (a pipe has no future data). Before each read a path stat detects a
+// same-inode shrink; a candidate is opened while the old fd stays open and is
+// adopted only when its post-open path stat still matches the original identity.
+// A mismatch keeps the old fd and offset. Path stats cannot prove fd identity,
+// so this is a best-effort check with a documented ABA window; a replaced or
+// unlinked path keeps the old descriptor (descriptor follow, not -F).
+// Pseudo-file suspects sleep every round and never infer truncation from size.
 fn followLoop(mut followers: &[]Follow, opts: &TailOpts, multi: bool,
               mut w: &io::Writer, mut st: &TailState) {
     while true {
@@ -446,31 +508,44 @@ fn followLoop(mut followers: &[]Follow, opts: &TailOpts, multi: bool,
                     let sp = statPath(f.path)
                     match sp {
                         ok {
-                            if sp.value[7] == f.ino && sp.value[8] == f.dev &&
-                               sp.value[1] < f.consumed {
-                                closeFollower(f)
-                                f.active = false
+                            f.size = sp.value[1]
+                            if !f.suspect && sp.value[7] == f.ino &&
+                               sp.value[8] == f.dev && sp.value[1] < f.consumed {
+                                // Keep the old descriptor open until a candidate
+                                // passes the identity check. A path check cannot
+                                // prove what an fd names, so a mismatch retains
+                                // the old fd and its offset.
                                 let of = openFile(f.path, "r")
                                 match of {
                                     ok {
-                                        f.fd = of.value
-                                        f.consumed = 0
-                                        f.active = true
-                                        let sp2 = statPath(f.path)
-                                        match sp2 {
+                                        let cand = of.value
+                                        var adopt = false
+                                        var csize = 0
+                                        let post = statPath(f.path)
+                                        match post {
                                             ok {
-                                                f.dev = sp2.value[8]
-                                                f.ino = sp2.value[7]
+                                                if post.value[7] == f.ino &&
+                                                   post.value[8] == f.dev {
+                                                    adopt = true
+                                                    csize = post.value[1]
+                                                }
                                             }
                                             err { }
                                         }
-                                        eprintln("tail: ", f.path, ": file truncated")
+                                        if adopt {
+                                            closeFollower(f)
+                                            f.fd = cand
+                                            f.consumed = 0
+                                            f.size = csize
+                                            f.suspect = false
+                                            f.active = true
+                                            eprintln("tail: ", f.path, ": file truncated")
+                                        } else {
+                                            let c = closeFile(cand)
+                                            match c { ok { } err { } }
+                                        }
                                     }
-                                    err {
-                                        eprintln("tail: cannot open '", f.path,
-                                                 "' for reading: ", errors::text(of.code))
-                                        st.failed = true
-                                    }
+                                    err { }        // retain the old descriptor
                                 }
                             }
                         }
@@ -478,17 +553,24 @@ fn followLoop(mut followers: &[]Follow, opts: &TailOpts, multi: bool,
                     }
                 }
                 if f.active {
+                    let before = f.consumed
                     let rr = readFd(f.fd, 65536)
                     match rr {
                         ok {
                             let v = take(rr.value)
                             if v != nil {
                                 f.consumed += len(v)
+                                if !f.suspect && !f.isStdin && f.size < before {
+                                    // /proc-style files report no usable size:
+                                    // treat them as pseudo and never infer a
+                                    // truncation from it.
+                                    f.suspect = true
+                                }
                                 gotData = true
-                                if multi {
+                                if multi && st.lastOut != i {
                                     let hw = writeHeader(w, f.label, st)
                                     match hw {
-                                        ok { }
+                                        ok { st.lastOut = i }
                                         err { noteWriteError(st, hw.code) }
                                     }
                                     flushOutput(w, st)
@@ -525,13 +607,17 @@ fn followLoop(mut followers: &[]Follow, opts: &TailOpts, multi: bool,
             i += 1
         }
         var anyActive = false
+        var anySuspect = false
         var j = 0
         while j < len(followers) {
-            if followers[j].active { anyActive = true }
+            if followers[j].active {
+                anyActive = true
+                if followers[j].suspect { anySuspect = true }
+            }
             j += 1
         }
         if !anyActive { return }
-        if !gotData {
+        if !gotData || anySuspect {
             let sl = sleepMs(1000)
             match sl {
                 ok { }
@@ -666,7 +752,8 @@ fn main() {
 
     var w = io::newWriter(stdout(), 65536)
     var st = new TailState{failed: false, fatal: false, writeFailed: false,
-                           writeCode: 0, headerSeen: false}
+                           writeCode: 0, headerSeen: false, lastOut: -1,
+                           sawOperand: false, operandOk: false}
     var multi = false
     if len(operands) > 1 { multi = true }
     if opts.follow {
@@ -687,8 +774,14 @@ fn main() {
         }
         if !st.writeFailed {
             if len(followers) == 0 {
-                eprintln("tail: no files remaining")
-                st.failed = true
+                // A successful ordinary read of a non-regular operand (for
+                // example /dev/null or a FIFO at EOF) is not a missing file:
+                // it exits 0 after that read. Only when no operand succeeded
+                // is the GNU "no files remaining" failure appropriate.
+                if !st.sawOperand {
+                    eprintln("tail: no files remaining")
+                    st.failed = true
+                }
             } else {
                 followLoop(followers, opts, multi, w, st)
             }
