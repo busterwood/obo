@@ -60,7 +60,7 @@ stage 2 == stage 3, checked with `cmp`.
 | Maximum resident set | 3,696 KB (3 runs on this host) |
 | Live-memory budget | 2,000,000 bytes (54,320 spare; port 54,240) |
 | obo suite | 1,408 tests; 103 `module_test` checks; `sym_test.py` 38/38; `sym_fuzz.py` 200/200; `port_test` 556/556 with 9 encoder groups; `port_compare` 1,420/1,420; 56 doc examples; 27/27 import checks; 16/16 stdlib roots |
-| Tools differential gate | 358 checks vs GNU coreutils 9.4; 2 memory cases |
+| Tools differential gate | 371 checks vs GNU coreutils 9.4; 3 memory cases |
 | Tool binaries | cat 40,961; wc 45,057; sort 69,633; head 40,961 bytes (static, runtime included) |
 | eza E2 differential gate | 546/546 non-memory cases (462 exact reference goldens, 72 live including 22 pty, 12 own) + 5/5 memory cases |
 | eza E2 binary | 212,993 bytes (sha256 `53133d23…`; static, runtime included; reference eza 0.23.3 is 2,294,768) |
@@ -244,7 +244,7 @@ cd obo && python3 tests/sym_test.py      # symbol files: writer, reader, --check
 cd obo && python3 tests/sym_fuzz.py      # deterministic .sym corruption fuzzing
 cd obo && python3 tests/tools.py         # the tools vs GNU; models/goldens without it
 cd obo && python3 tests/tools.py --require-reference   # tools vs GNU coreutils (release checklist)
-cd obo && python3 tests/tools.py --memory              # the two pinned tool memory cases
+cd obo && python3 tests/tools.py --memory              # the three pinned tool memory cases
 cd obo && python3 bench/bench.py         # memory and time against the collector
 cd obo && ./obo --deps tests/modules/run/basic/main.obx -I tests/modules/run/basic  # dependencies first
 cd obo && mkdir -p /tmp/syms && ./obo --check src/obo.obo --sym-dir /tmp/syms        # check without an executable

@@ -14,10 +14,18 @@
 //
 // With two or more operands GNU prints `==> NAME <==` before each one and one
 // blank line between groups; a single operand has no header. `-` is the
-// operand "standard input". An open error prints before that operand's header
+// operand "standard input". Repeated `-` operands share one buffered Reader, so
+// unread bytes remain for the next `-` even when file operands intervene; a
+// COUNT of 0 never reads it. An open error prints before that operand's header
 // (so the header is absent), while a directory opens and fails when read (so
-// its header is present). Open/read errors set the failure and continue; a
-// write error stops immediately, never opens a later operand, and exits 1.
+// its header is present). Open/read errors set the failure and continue.
+//
+// The Writer buffers up to 64 KiB, so a write error is observed only when a
+// flush reaches the broken output. Small output followed by failing operands
+// can therefore print their diagnostics before the final write error (GNU does
+// the same); once a write error is detected, the tool stops and opens no later
+// operand. Once output fills the 64 KiB buffer, the flush attempts the write
+// and detects a broken sink early. Exit 1 after any failure.
 
 import "../lib/io.obx" as io
 import "../lib/errors.obx" as errors
@@ -32,6 +40,7 @@ type HeadState = ref record {
     printed: bool         // at least one operand header was written
     failed: bool          // an open/read error happened
     fatal: bool           // a write error happened
+    pending: []byte       // unread suffix of the shared stdin chunk
 }
 
 // Decimal count with an optional leading '+'. The return value is -1 for an
@@ -69,12 +78,14 @@ fn flushScratch(mut w: &io::Writer, mut scratch: &[]byte, mut st: &HeadState): b
     }
 }
 
-// Copy the useful prefix of one chunk into scratch and write it. Line mode
-// stops at the newline that completes the requested line; byte mode stops at
-// the requested byte. The scratch is bounded at 64 KiB, so a long line does not
-// grow it with the line.
+// Copy the useful prefix of data into scratch and write it. Line mode stops at
+// the newline that completes the requested line; byte mode stops at the
+// requested byte. Returns the number of consumed bytes, or -1 after a write
+// error. headReader keeps the unconsumed suffix for repeated stdin, so the next
+// '-' resumes exactly where this one stopped. The scratch is bounded at
+// 64 KiB, so a long line does not grow it with the line.
 fn headChunk(mut w: &io::Writer, mut scratch: &[]byte, data: &[]byte,
-             opts: &HeadOpts, mut st: &HeadState): bool {
+             opts: &HeadOpts, mut st: &HeadState): int {
     if opts.bytesMode {
         var take = len(data)
         if take > st.remaining { take = st.remaining }
@@ -82,38 +93,69 @@ fn headChunk(mut w: &io::Writer, mut scratch: &[]byte, data: &[]byte,
         while k < take {
             append(scratch, data[k])
             if len(scratch) >= 65536 {
-                if !flushScratch(w, scratch, st) { return false }
+                if !flushScratch(w, scratch, st) { return -1 }
             }
             k += 1
         }
         st.remaining -= take
-    } else {
-        var k = 0
-        var done = false
-        while k < len(data) && !done {
-            let b = data[k]
-            append(scratch, b)
-            k += 1
-            if b == '\n' {
-                st.remaining -= 1
-                if st.remaining == 0 { done = true }
-            }
+        if !flushScratch(w, scratch, st) { return -1 }
+        return take
+    }
+    var k = 0
+    var done = false
+    while k < len(data) && !done {
+        let b = data[k]
+        append(scratch, b)
+        k += 1
+        if b == '\n' {
+            st.remaining -= 1
+            if st.remaining == 0 { done = true }
         }
     }
-    return flushScratch(w, scratch, st)
+    if !flushScratch(w, scratch, st) { return -1 }
+    return k
+}
+
+// Keep the bytes after used in st.pending (a fresh array; the chunk itself is
+// owned by the caller and is discarded).
+fn keepPending(mut st: &HeadState, chunk: &[]byte, used: int) {
+    let left = len(chunk) - used
+    if left <= 0 {
+        st.pending = new []byte(0)
+        return
+    }
+    var rest = new []byte(left)
+    var i = 0
+    while i < left {
+        rest[i] = chunk[used + i]
+        i += 1
+    }
+    st.pending = rest
 }
 
 // Stream one Reader until the limit is reached or EOF. A write error is
 // reported here (st.fatal); a read error is returned as err for the operand
-// handler, which prints it and continues with the next operand.
+// handler, which prints it and continues with the next operand. takeChunk moves
+// a whole chunk out of the Reader; preserve (stdin) keeps the unconsumed suffix
+// in st.pending for the next '-', while a file operand can discard it.
 fn headReader(mut r: &io::Reader, mut w: &io::Writer, mut scratch: &[]byte,
-              opts: &HeadOpts, mut st: &HeadState): Result[bool] {
+              opts: &HeadOpts, preserve: bool,
+              mut st: &HeadState): Result[bool] {
     if st.remaining == 0 { return ok(true) }
+    if preserve && len(st.pending) > 0 {
+        let pending = replace(st.pending, new []byte(0))
+        let used = headChunk(w, scratch, pending, opts, st)
+        if used < 0 { return ok(false) }
+        keepPending(st, pending, used)
+        if st.remaining == 0 { return ok(true) }
+    }
     while st.remaining > 0 {
         let more = try io::fill(r)
         if !more { return ok(true) }
         let chunk = io::takeChunk(r)
-        if !headChunk(w, scratch, chunk, opts, st) { return ok(false) }
+        let used = headChunk(w, scratch, chunk, opts, st)
+        if used < 0 { return ok(false) }
+        if preserve { keepPending(st, chunk, used) }
     }
     return ok(true)
 }
@@ -151,17 +193,18 @@ fn headerFor(mut w: &io::Writer, label: string, multi: bool,
 
 // Read one operand. Returns false only for a fatal write error; open and read
 // errors are printed here and return true (continue with the next operand).
-// Stdin ("-" or no operands) is never opened or closed.
+// All '-' operands share stdinReader, so bytes left in its current chunk are
+// not discarded when a file operand intervenes. Stdin is never opened/closed.
 fn headOperand(path: string, mut w: &io::Writer, mut scratch: &[]byte,
-               opts: &HeadOpts, multi: bool, mut st: &HeadState): bool {
+               mut stdinReader: &io::Reader, opts: &HeadOpts, multi: bool,
+               mut st: &HeadState): bool {
     st.remaining = opts.count
     var label = path
     if path == "-" { label = "standard input" }
     if path == "-" {
         if !headerFor(w, label, multi, st) { return false }
         if opts.count == 0 { return true }
-        var r = io::newReader(stdin(), 65536)
-        let rr = headReader(r, w, scratch, opts, st)
+        let rr = headReader(stdinReader, w, scratch, opts, true, st)
         match rr {
             ok { if !rr.value { return false } }
             err {
@@ -179,7 +222,7 @@ fn headOperand(path: string, mut w: &io::Writer, mut scratch: &[]byte,
             if !headerFor(w, path, multi, st) { return false }
             if opts.count == 0 { return true }
             var r = io::newReader(fd, 65536)
-            let rr = headReader(r, w, scratch, opts, st)
+            let rr = headReader(r, w, scratch, opts, false, st)
             match rr {
                 ok { if !rr.value { return false } }
                 err {
@@ -264,10 +307,11 @@ fn main() {
 
     var w = io::newWriter(stdout(), 65536)
     var scratch = new []byte(0)
-    var st = new HeadState{remaining: opts.count, printed: false, failed: false, fatal: false}
+    var stdinReader = io::newReader(stdin(), 65536)
+    var st = new HeadState{remaining: opts.count, printed: false, failed: false, fatal: false, pending: new []byte(0)}
     var k = 0
     while k < len(operands) {
-        let cont = headOperand(operands[k], w, scratch, opts, multi, st)
+        let cont = headOperand(operands[k], w, scratch, stdinReader, opts, multi, st)
         if !cont { break }
         k += 1
     }

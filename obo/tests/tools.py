@@ -41,7 +41,7 @@ in v1 (its padding is implementation-specific).
 GNU on stdout/exit (and exact stderr where it is compared) and exits 2 on a
 disagreement, so the fallback cannot rot silently. `--record` writes gnu goldens
 (modeled cases only, golden-marked subset only) and gnu/VERSION, and refuses a
-stderr line beginning with `/`. `--memory` runs the two pinned memory cases
+stderr line beginning with `/`. `--memory` runs the three pinned memory cases
 instead of the matrix. Exit status: 0 pass, 1 test failure, 2 harness/setup
 failure.
 """
@@ -725,7 +725,15 @@ def head_cases():
         stdin=b's1\ns2\n', fixtures=['multi_a'])
     add('n1_multi_a_dash_multi_b', T, ['-n', '1', 'multi_a', '-', 'multi_b'],
         stdin=b's1\ns2\n', fixtures=['multi_a', 'multi_b'])
-    add('n1_dash_dash', T, ['-n', '1', '-', '-'], stdin=b's1\ns2\n')
+    # GNU's line-mode pipe reader reads ahead, so its second '-' can see EOF;
+    # this stdin has one line, where both implementations agree. The buffered
+    # repeated-stdin semantics are covered by the c* cases and the serial
+    # stdin_position test.
+    add('n1_dash_dash', T, ['-n', '1', '-', '-'], stdin=b's1\n')
+    add('c1_dash_dash', T, ['-c', '1', '--', '-', '-'], stdin=b'abc')
+    add('c2_dash_dash', T, ['-c', '2', '-', '-'], stdin=b'abcdef')
+    add('c1_dash_multi_a_dash', T, ['-c', '1', '-', 'multi_a', '-'],
+        stdin=b'xyz', fixtures=['multi_a'])
     # several operands: GNU headers, one blank line between groups
     add('n2_multi_a_multi_b', T, ['-n', '2', 'multi_a', 'multi_b'],
         fixtures=['multi_a', 'multi_b'], golden=True)
@@ -745,6 +753,8 @@ def head_cases():
     add('c2_joined', T, ['-c2', 'twelve'], fixtures=['twelve'])
     add('n_plus2', T, ['-n', '+2', 'twelve'], fixtures=['twelve'])
     add('n_leading_zero', T, ['-n', '02', 'twelve'], fixtures=['twelve'])
+    add('n18_oneline', T, ['-n', '999999999999999999', 'oneline'],
+        fixtures=['oneline'])
     add('n_then_c', T, ['-n', '2', '-c', '3', 'twelve'], fixtures=['twelve'])
     add('c_then_n', T, ['-c', '3', '-n', '2', 'twelve'], fixtures=['twelve'])
     add('ddash_dash_n', T, ['-n', '1', '--', '-n'], fixtures=['-n'])
@@ -781,6 +791,11 @@ def head_cases():
         fixtures=['oneline'], sink=True, golden=True)
     add('devfull_oneline', T, ['oneline'], fixtures=['oneline'], sink=True,
         tag='writeerror')
+    add('devfull_oneline_missing_multi_a', T,
+        ['oneline', 'missing', 'multi_a'],
+        fixtures=['oneline', 'multi_a'], sink=True, tag='writeerror')
+    add('devfull_longline_multi_a', T, ['longline', 'multi_a'],
+        fixtures=['longline', 'multi_a'], sink=True, tag='writeerror')
     # usage messages are ours, pinned by own goldens
     add('usage_z', T, ['-Z'], tag='usage')
     add('usage_help', T, ['--help'], tag='usage')
@@ -791,6 +806,7 @@ def head_cases():
     add('usage_invalid_c', T, ['-c', 'x'], tag='usage')
     add('usage_negative_n', T, ['-n', '-1'], tag='usage')
     add('usage_suffix_n', T, ['-n', '1k'], tag='usage')
+    add('usage_19digits_n', T, ['-n', '1000000000000000000'], tag='usage')
 
 
 cat_cases()
@@ -1211,7 +1227,7 @@ def model_head(world, argv, stdin_bytes):
     err = bytearray()
     failed = False
     printed = False
-    stdin_used = False
+    stdin_pos = 0
     for name in operands:
         label = 'standard input' if name == '-' else name
         kind = 'stdin' if name == '-' else kind_of(name, world)
@@ -1239,14 +1255,16 @@ def model_head(world, argv, stdin_bytes):
             failed = True
             continue
         if kind == 'stdin':
-            data = b'' if stdin_used else stdin_bytes
-            stdin_used = True
+            data = stdin_bytes[stdin_pos:]
         else:
             data = world[name].bytes()
         if mode == 'bytes':
-            out.extend(data[:count])
+            chunk = data[:count]
         else:
-            out.extend(first_lines(data, count))
+            chunk = first_lines(data, count)
+        out.extend(chunk)
+        if kind == 'stdin':
+            stdin_pos += len(chunk)
     return (1 if failed else 0), bytes(out), bytes(err)
 
 
@@ -1791,7 +1809,7 @@ class Harness:
         return problems
 
     # -- modes
-    SERIAL_NAMES = ('stream', 'pipeline', 'stdin_unread')
+    SERIAL_NAMES = ('stream', 'pipeline', 'stdin_unread', 'stdin_position')
 
     def run_matrix(self):
         cases = CASES
@@ -1842,10 +1860,12 @@ class Harness:
 
     def run_serial_cases(self):
         k = self.args.k
-        if k and not any(k in n for n in ('stream', 'pipeline', 'stdin_unread')):
+        if k and not any(k in n for n in ('stream', 'pipeline', 'stdin_unread',
+                                          'stdin_position')):
             return
         self.stream_case(k)
         self.stdin_unread_case(k)
+        self.stdin_position_case(k)
         self.pipeline_case(k)
 
     def _special_dir(self):
@@ -1936,6 +1956,133 @@ class Harness:
                 self.passed += 1
                 if self.args.verbose:
                     print(f'ok   {label}')
+        for flag in ('-n', '-c'):
+            label = f'head {flag} 0 does not read an open stdin pipe'
+            p = subprocess.Popen([self.ctx['head'].exe, flag, '0', '-'],
+                                 cwd=d, env=env, stdin=subprocess.PIPE,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.PIPE, start_new_session=True)
+            try:
+                p.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                os.killpg(p.pid, signal.SIGKILL)
+                p.wait()
+                self.failures.append((label, 'blocked reading stdin'))
+                continue
+            finally:
+                try:
+                    p.stdin.close()
+                except OSError:
+                    pass
+            if p.returncode != 0:
+                self.failures.append((label, f'exit {p.returncode}'))
+            else:
+                self.passed += 1
+                if self.args.verbose:
+                    print(f'ok   {label}')
+
+    def stdin_position_case(self, k):
+        if k and 'stdin_position' not in k:
+            return
+        d = self._special_dir()
+        env = {'PATH': REFERENCE_PATH, 'LC_ALL': 'C', 'LANG': 'C', 'LANGUAGE': 'C',
+               'TZ': 'UTC', 'HOME': d, 'TMPDIR': d,
+               'OBO_CHECK': '1', 'OBX_GC': 'poison'}
+        exe = self.ctx['head'].exe
+        ref = self.refs['head']
+
+        def run(argv, stdin_data=None, stdin_path=None, executable=None):
+            if stdin_path is not None:
+                with open(stdin_path, 'rb') as f:
+                    return subprocess.run(argv, executable=executable, cwd=d,
+                                          env=env, stdin=f,
+                                          capture_output=True, timeout=30)
+            return subprocess.run(argv, executable=executable, cwd=d, env=env,
+                                  input=stdin_data, capture_output=True,
+                                  timeout=30)
+
+        # Seekable stdin: line mode can resume after a file operand in GNU, so
+        # this is an exact compatibility case with real file stdin.
+        sp = os.path.join(d, 'stdin_lines')
+        with open(sp, 'wb') as f:
+            f.write(b'a\nb\nc\n')
+        argv = [exe, '-n', '1', '-', 'ab', '-']
+        ours = run(argv, stdin_path=sp)
+        want = (b'==> standard input <==\na\n\n==> ab <==\na\n\n'
+                b'==> standard input <==\nb\n')
+        label = 'head reuses seekable stdin across a file operand'
+        if ours.returncode != 0 or ours.stdout != want or ours.stderr:
+            self.failures.append(
+                (label, f'exit {ours.returncode}, stdout {ours.stdout!r}, '
+                        f'stderr {ours.stderr!r}'))
+        else:
+            self.passed += 1
+            if self.args.verbose:
+                print(f'ok   {label}')
+        if ref.kind in ('gnu', 'gnu-old') and ref.path:
+            ref_run = run(['head', '-n', '1', '-', 'ab', '-'], stdin_path=sp,
+                          executable=ref.path)
+            if (ref_run.returncode, ref_run.stdout, ref_run.stderr) != (
+                    ours.returncode, ours.stdout, ours.stderr):
+                self.failures.append(
+                    (label + ' vs reference',
+                     f'ours {ours.returncode} {ours.stdout!r} {ours.stderr!r}; '
+                     f'reference {ref_run.returncode} {ref_run.stdout!r} '
+                     f'{ref_run.stderr!r}'))
+
+        # A pipe has no rewind. Our logical semantics preserve the unread bytes
+        # of the shared reader; GNU 9.4's line reader reads ahead and can make
+        # the later '-' see EOF. Assert our documented behavior, record the
+        # reference difference as a note, and keep byte mode in the exact matrix
+        # and seekable line mode above.
+        data = b's1\ns2\n'
+        ours = run([exe, '-n', '1', '-', '-'], stdin_data=data)
+        want = (b'==> standard input <==\ns1\n\n'
+                b'==> standard input <==\ns2\n')
+        label = 'head preserves buffered line stdin on a pipe'
+        if ours.returncode != 0 or ours.stdout != want or ours.stderr:
+            self.failures.append(
+                (label, f'exit {ours.returncode}, stdout {ours.stdout!r}, '
+                        f'stderr {ours.stderr!r}'))
+        else:
+            self.passed += 1
+            if self.args.verbose:
+                print(f'ok   {label}')
+        if ref.kind in ('gnu', 'gnu-old') and ref.path:
+            ref_run = run(['head', '-n', '1', '-', '-'], stdin_data=data,
+                          executable=ref.path)
+            if (ref_run.returncode, ref_run.stdout, ref_run.stderr) != (
+                    ours.returncode, ours.stdout, ours.stderr):
+                self.notes.append(
+                    'head -n 1 - - on a pipe: GNU line read-ahead sees EOF '
+                    f'({ref_run.stdout!r}); this build preserves buffered '
+                    f'bytes ({ours.stdout!r})')
+
+        # Large byte input over a pipe: the 64 KiB boundary must not make the
+        # second '-' skip or repeat a chunk.
+        data = b''.join(b'line%d\n' % i for i in range(20000))
+        ours = run([exe, '-c', '65537', '-', '-'], stdin_data=data)
+        hdr = b'==> standard input <==\n'
+        want = hdr + data[:65537] + b'\n' + hdr + data[65537:131074]
+        label = 'head resumes large byte stdin at the 64 KiB boundary'
+        if ours.returncode != 0 or ours.stdout != want or ours.stderr:
+            self.failures.append(
+                (label, f'exit {ours.returncode}, stdout differs, '
+                        f'stderr {ours.stderr!r}'))
+        else:
+            self.passed += 1
+            if self.args.verbose:
+                print(f'ok   {label}')
+        if ref.kind in ('gnu', 'gnu-old') and ref.path:
+            ref_run = run(['head', '-c', '65537', '-', '-'], stdin_data=data,
+                          executable=ref.path)
+            if (ref_run.returncode, ref_run.stdout, ref_run.stderr) != (
+                    ours.returncode, ours.stdout, ours.stderr):
+                self.failures.append(
+                    (label + ' vs reference',
+                     f'ours {ours.returncode} len {len(ours.stdout)} '
+                     f'{ours.stderr!r}; reference {ref_run.returncode} '
+                     f'len {len(ref_run.stdout)} {ref_run.stderr!r}'))
 
     def pipeline_case(self, k):
         if k and 'pipeline' not in k:
@@ -1950,6 +2097,8 @@ class Harness:
              [self.ctx['wc'].exe, '-l'], b'1\n'),
             ('cat -n ab | sort -n', [self.ctx['cat'].exe, '-n', 'ab'],
              [self.ctx['sort'].exe, '-n'], b'     1\ta\n'),
+            ('cat multi_a | head -n 1', [self.ctx['cat'].exe, 'multi_a'],
+             [self.ctx['head'].exe, '-n', '1'], b'b\n'),
         ]
         if head:
             pipelines.append(('sort multi_a | head -n 1',
@@ -2003,6 +2152,11 @@ class Harness:
         cases = [
             ('cat sparse16m', [self.ctx['cat'].exe, 'sparse16m'], True),
             ('wc -lwc sparse16m', [self.ctx['wc'].exe, '-lwc', 'sparse16m'], False),
+            # no newline in the 16 MiB sparse input: line mode copies it all,
+            # so a bounded scratch and chunk-sized Reader are what keep peak
+            # memory flat
+            ('head -n 1 sparse16m', [self.ctx['head'].exe, '-n', '1',
+                                     'sparse16m'], True),
         ]
         numbers = []
         for label, argv, devnull in cases:

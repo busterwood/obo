@@ -124,12 +124,27 @@ while a directory has one and then fails on read; a failed operand does not
 disturb the blank-line grouping of later files. The limit resets for every
 operand.
 
+Repeated `-` operands share one buffered stdin stream: bytes not emitted by one
+`-` remain available to the next, including when file operands intervene, and
+`-n 0`/`-c 0` never consume stdin. GNU 9.4's line-mode pipe reader reads ahead,
+so `printf 's1\ns2\n' | head -n 1 - -` can print an empty second group there;
+this build deliberately preserves the buffered bytes. The seekable line-mode
+case in the gate agrees with GNU, and repeated byte counts (including a 64 KiB
+boundary) are exact matrix cases. This is a buffered-stream contract, not an
+attempt to reproduce descriptor positions.
+
 Errors: an open failure prints
 `head: cannot open '<operand>' for reading: <text>`; a read failure prints
 `head: error reading '<operand>': <text>` (a directory is `Is a directory`).
-Both set failure and continue with the next operand. A write error prints
-`head: write error: <text>`, stops immediately, never opens a later operand and
-exits 1. Exit 1 if anything failed, else 0.
+Both set failure and continue with the next operand.
+
+The `io::Writer` buffers up to 64 KiB, so a write error is observed when a flush
+reaches the broken output. With small output and later operands, a later
+open/read diagnostic can precede the final `head: write error` (GNU behaves the
+same); once a write error is detected, head stops and opens no later operand.
+Output large enough to fill the buffer detects the failure during the first
+operand and stops there. Both shapes are pinned by `/dev/full` write-error
+cases. Exit 1 if anything failed, else 0.
 
 Deliberately absent: negative counts (`-n -1`, GNU's all-but-last form), size
 suffixes (`1k`), `-q`/`--quiet`, `-v`/`--verbose`, `-z`/`--zero-terminated`,
@@ -137,9 +152,10 @@ every other long option, and `--help`/`--version` (they take the ordinary
 unrecognized-long-option path). Counts are limited to 18 digits; a negative,
 suffixed or too-long count is `head: invalid number of lines: '<value>'` or
 `head: invalid number of bytes: '<value>'`, and a missing value is
-`head: option requires an argument -- 'n'` (or `'c'`). Operand names are printed
-verbatim in headers and diagnostics; GNU quotes unusual names, so exact-name
-cases use quote-free operands.
+`head: option requires an argument -- 'n'` (or `'c'`). Operand bytes are embedded
+in headers and in the single quotes of diagnostics without GNU's quoting or
+escaping, so a name containing a quote, newline or control byte is not rendered
+the way GNU renders it; exact-name cases use quote-free operands.
 
 ## wc
 
