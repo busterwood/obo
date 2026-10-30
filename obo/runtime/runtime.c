@@ -243,6 +243,7 @@ typedef struct { u64 len, cap, data, esize; } Array;
 #define KIND(h) (((u64 *)(h))[0] & 0xFFFFFFFFUL)   /* the high half holds the block's generation */
 
 static void free_block(u64 h) {
+    if (h < heap_start || h >= heap_top) die_code("obo: invalid free outside the heap\n", 6);
     u64 *hdr = (u64 *)h, size = hdr[1] & 0xFFFFFFF0UL;      /* high bits: a string's reference count */
     clr_start(h);
     hdr[0] = ((hdr[0] >> 32) + 1) << 32;                    /* a new generation: old handles go stale */
@@ -256,6 +257,29 @@ static void free_block(u64 h) {
     if (g < NCLASS) { link[0] = (u64)free_small[g]; free_small[g] = (u64 *)h; }
     else            { link[0] = (u64)free_large;    free_large = (u64 *)h; }
 }
+
+/* A zero-capacity array's data block is a static const block in the runtime's
+ * read-only segment: one per supported element kind. It has a valid fake header
+ * (kind, size) but is never written (len == 0) or freed; a real heap block
+ * replaces it on the first append. */
+static const u64 empty_blocks[4][4] __attribute__((aligned(16))) = {
+    {1, 32, 0, 0}, {2, 32, 0, 0}, {4, 32, 0, 0}, {6, 32, 0, 0}
+};
+static u64 empty_data(u64 kind) {
+    if (kind == 1) return (u64)&empty_blocks[0][2];
+    if (kind == 2) return (u64)&empty_blocks[1][2];
+    if (kind == 4) return (u64)&empty_blocks[2][2];
+    if (kind == 6) return (u64)&empty_blocks[3][2];
+    die("obx: internal error: empty array kind\n");
+    return 0;
+}
+static int is_empty_data(u64 p) {
+    return p == (u64)&empty_blocks[0][2] || p == (u64)&empty_blocks[1][2] ||
+           p == (u64)&empty_blocks[2][2] || p == (u64)&empty_blocks[3][2];
+}
+#ifdef OBO_RUNTIME_GUARD_TEST
+void rt_test_free_static(void) { free_block((u64)&empty_blocks[0][0]); }
+#endif
 
 /* Strings are reference counted: the high 32 bits of the header's size word
  * hold the count minus one, so a fresh string (count 1) needs no update.
@@ -290,7 +314,7 @@ void rt_free(u64 p) {
         u64 *body = (u64 *)q;
         if (kind == 3) die_code("obo: internal error: freeing a string\n", 6);
         if (kind == 5) {
-            if (body[2]) mstack[msp++] = body[2];
+            if (body[2] && !is_empty_data(body[2])) mstack[msp++] = body[2];
         } else if (kind == 2) {
             for (u64 i = 0; i < body[0]; i++) if (body[1 + i]) mstack[msp++] = body[1 + i];
         } else if (kind == 6) {
@@ -376,8 +400,9 @@ static u64 new_block(u64 kind, u64 esize, u64 cap) {
 /* kind: 1 = ints and bools, 2 = owned references, 4 = bytes, 6 = strings */
 u64 rt_alloc_array(i64 n, u64 kind) {
     if (n < 0) die("obx: negative array length\n");
+    if (kind != 1 && kind != 2 && kind != 4 && kind != 6) die("obx: internal error: empty array kind\n");
     u64 esize = kind == 4 ? 1 : 8;
-    u64 b = new_block(kind, esize, (u64)n);
+    u64 b = n ? new_block(kind, esize, (u64)n) : empty_data(kind);
     tmp_root[0] = b;
     Array *a = (Array *)alloc_raw(5, sizeof(Array));
     tmp_root[0] = 0;
@@ -393,7 +418,7 @@ void rt_append(Array *a, u64 v) {
         u64 kind = KIND(a->data - GRAN);
         u64 b = new_block(kind, a->esize, cap);
         memcpy((char *)b + 8, (char *)a->data + 8, a->len * a->esize);
-        free_block(a->data - GRAN);
+        if (!is_empty_data(a->data)) free_block(a->data - GRAN);
         a->data = b; a->cap = cap;
     }
     char *slot = (char *)a->data + 8 + a->len * a->esize;

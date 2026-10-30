@@ -1,0 +1,48 @@
+// Zero-capacity arrays of every supported element kind share read-only data blocks until the first append.
+type Box = ref record { xs: []int; ss: []string; bs: []byte; bb: []bool }
+var G: []int = new []int(0)
+var GB: []byte = new []byte(0)
+
+fn main() {
+    var ints: []int = new []int(0)
+    append(ints, 1)
+    append(ints, 2)
+    truncate(ints, 0)
+    append(ints, 3)
+
+    var bools: []bool = new []bool(0)
+    append(bools, true)
+    var bytesv: []byte = new []byte(0)
+    append(bytesv, byte(7))
+    var strings: []string = new []string(0)
+    append(strings, "x")
+
+    let box = new Box{xs: new []int(0), ss: new []string(0), bs: new []byte(0), bb: new []bool(0)}
+    append(box.xs, 4)
+    append(box.ss, "y")
+    append(box.bs, byte(1))
+    append(box.bb, false)
+
+    append(G, 5)
+    append(GB, byte(6))
+
+    var opt: ?[]int = new []int(0)
+    if opt != nil { append(opt, 7) }
+
+    var outer: [][]int = new [][]int(0)
+    let inner = new []int(0)
+    append(inner, 8)
+    append(outer, inner)
+
+    var taken: ?[]int = new []int(0)
+    let old = take(taken)
+    if old != nil { truncate(old, 0) }
+    var replaced: []int = new []int(0)
+    let oldr = replace(replaced, new []int(1))
+    drop(oldr)
+
+    println(len(ints), " ", len(bools), " ", len(bytesv), " ", len(strings), " ",
+            len(box.xs), " ", len(box.ss), " ", len(G), " ", len(GB), " ", len(outer))
+}
+
+// expect: 1 1 1 1 1 1 1 1 1

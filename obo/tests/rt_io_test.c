@@ -12,6 +12,7 @@
  *
  *     python3 obo/tests/io_test.py --rt      (builds and runs every case)
  */
+#define OBO_RUNTIME_GUARD_TEST
 #include "../runtime/runtime.c"
 
 /* the descriptors the compiler passes: err [16, 0, 1, 0], scalar ok [8, 0, 0],
@@ -386,6 +387,77 @@ static void case_sleep_eintr(const char *path) {
     rt_finish();
 }
 
+/* empty arrays: one static data block per kind, append growth to a heap block,
+ * truncate-then-append, owned/string/handle/nested element cleanup, and 100 KiB
+ * growth from both an empty and a non-empty array. */
+static void case_empty_arrays(const char *path) {
+    (void)path;
+    Array *a = (Array *)rt_alloc_array(0, 1);
+    CHECK(a->len == 0 && a->cap == 0 && is_empty_data(a->data));
+    CHECK(KIND(a->data - GRAN) == 1);
+    rt_append(a, 7);
+    CHECK(a->len == 1 && a->cap == 8 && !is_empty_data(a->data));
+    rt_truncate(a, 0, 0);
+    rt_append(a, 9);
+    CHECK(a->len == 1);
+    rt_free((u64)a);
+
+    a = (Array *)rt_alloc_array(0, 4);
+    CHECK(a->len == 0 && is_empty_data(a->data) && KIND(a->data - GRAN) == 4);
+    rt_append(a, 255);
+    CHECK(((unsigned char *)(a->data + 8))[0] == 255);
+    rt_free((u64)a);
+
+    u64 s = rt_concat(mkstr("a"), mkstr("b"));
+    a = (Array *)rt_alloc_array(0, 6);
+    CHECK(is_empty_data(a->data) && KIND(a->data - GRAN) == 6);
+    rt_append(a, s);
+    rt_free((u64)a);
+
+    a = (Array *)rt_alloc_array(0, 2);
+    CHECK(is_empty_data(a->data) && KIND(a->data - GRAN) == 2);
+    rt_append(a, rt_alloc_record(desc_ok_int));
+    rt_free((u64)a);
+
+    Array *inner = (Array *)rt_alloc_array(0, 1);
+    a = (Array *)rt_alloc_array(0, 2);
+    rt_append(a, (u64)inner);
+    rt_free((u64)a);
+
+    a = (Array *)rt_alloc_array(0, 1);
+    for (u64 i = 0; i < 100000; i++) rt_append(a, i);
+    CHECK(a->len == 100000);
+    rt_free((u64)a);
+
+    a = (Array *)rt_alloc_array(1, 1);
+    for (u64 i = 0; i < 100000; i++) rt_append(a, i);
+    rt_truncate(a, 0, 0);
+    rt_append(a, 1);
+    CHECK(a->len == 1);
+    rt_free((u64)a);
+
+    u64 rec = rt_alloc_record(desc_ok_int);
+    a = (Array *)rt_alloc_array(0, 1);
+    rt_append(a, rt_handle(rec));
+    rt_free((u64)a);
+    rt_free(rec);
+    rt_finish();
+}
+
+/* the heap-range guard must reject a static empty data block before touching
+ * the free lists; this hook exists only in this test harness build. */
+static void case_static_free(const char *path) {
+    (void)path;
+    rt_test_free_static();
+    fail(1);
+}
+
+static void case_unknown_kind(const char *path) {
+    (void)path;
+    rt_alloc_array(0, 3);
+    fail(1);
+}
+
 void test_main(u64 *sp);
 __asm__(".globl _entry\n"
         ".section .text\n"
@@ -418,5 +490,8 @@ void test_main(u64 *sp) {
     else if (c_eq(c, "inert")) case_inert(path);
     else if (c_eq(c, "sleep")) case_sleep(path);
     else if (c_eq(c, "sleep_eintr")) case_sleep_eintr(path);
+    else if (c_eq(c, "empty_arrays")) case_empty_arrays(path);
+    else if (c_eq(c, "static_free")) case_static_free(path);
+    else if (c_eq(c, "unknown_kind")) case_unknown_kind(path);
     fail(3);
 }
