@@ -1,0 +1,146 @@
+// Interface declarations and implementation headers (v3 step 1, E1 of design section 12.2): each case is one
+// refusal from the section 11 table that step 1 implements, plus the interface-value refusal that stands in
+// for the values not yet built.
+
+// === an interface needs at least one method
+type I = interface {
+}  // error: an interface needs at least one method
+
+// === a second member with the same name
+type I = interface {
+    fn a()
+    fn a()  // error: interface 'I' already has method 'a'
+}
+
+// === pure and mut after fn
+type I = interface {
+    mut pure fn a()  // error: 'pure' and 'mut' come before 'fn'
+}
+
+// === pub on a member
+type I = interface {
+    pub fn a()  // error: 'pub' is not allowed on an interface member; mark the interface type pub
+}
+
+// === a forward shell, then the definition
+type I
+type I = interface {  // error: an interface cannot be forward-declared: 'I' is already declared
+    fn a()
+}
+
+// === a member with no name
+type I = interface {
+    fn ()  // error: expected a method name in the interface
+}
+
+// === mut on an owned interface parameter of a function
+type I = interface {
+    fn a()
+}
+fn f(mut p: I) { }  // error: mut needs a reference parameter: write mut name: &T
+
+// === mut on an owned interface receiver
+type I = interface {
+    fn a()
+}
+fn (mut r: I) m() { }  // error: mut needs a reference parameter: write mut name: &T
+
+// === mut on an owned interface parameter of a member
+type I = interface {
+    fn a(mut p0: I)  // error: mut needs a reference parameter: write mut name: &T
+}
+
+// === an interface as a receiver
+type I = interface {
+    fn a()
+}
+type T = ref record { n: int }
+fn (t: I) m() { }  // error: a method's receiver must be a record or closed type declared in this module, not I
+
+// === an interface value as a function parameter (not built yet)
+type I = interface {
+    fn a()
+}
+fn f(p: I) { }  // error: interface values are not implemented yet
+
+// === an interface value as a function result (not built yet)
+type I = interface {
+    fn a()
+}
+fn f(): I { return nil }  // error: interface values are not implemented yet
+
+// === an interface value as a record field (not built yet)
+type I = interface {
+    fn a()
+}
+type R = ref record { d: I }  // error: interface values are not implemented yet
+
+// === a function over a member's interface parameter (the method cannot be built yet)
+type I = interface {
+    fn a(p0: &I)
+}
+type T = ref record { n: int }
+fn (t: &T) a(o: &I) { }  // error: interface values are not implemented yet
+
+// === an implementation of a record that is not an interface
+type T = ref record { n: int }
+type U = ref record { n: int }
+impl T for U  // error: 'T' is not an interface type
+
+// === an implementation for a basic type
+type I = interface {
+    fn a()
+}
+impl I for int  // error: an interface can only be implemented by a record or closed type, not int
+
+// === an implementation before the receiver's methods
+type I = interface {
+    fn a()
+}
+type T = ref record { n: int }
+impl I for T  // error: type 'T' has no method 'a' to implement interface 'I'
+
+// === an implementation for a receiver that is declared but not defined
+type I = interface {
+    fn a()
+}
+type T
+impl I for T  // error: type 'T' is declared but not yet defined
+
+// === an implementation for a variant
+type I = interface {
+    fn a()
+}
+type S = closed { A { n: int } }
+impl I for A  // error: cannot implement an interface for variant 'A'; declare it on its closed type 'S'
+
+// === a second implementation of the same pair
+type I = interface {
+    fn a()
+}
+type T = ref record { n: int }
+fn (t: &T) a() { }
+impl I for T
+impl I for T  // error: type 'T' already implements interface 'I'
+
+// === a pub implementation of a private interface
+type I = interface {
+    fn a()
+}
+pub type T = ref record { n: int }
+fn (t: &T) a() { }
+pub impl I for T  // error: exported implementation of 'I' for 'T' uses private type 'I'; mark 'I' pub too
+
+// === a pub implementation of a private receiver
+pub type I = interface {
+    fn a()
+}
+type T = ref record { n: int }
+fn (t: &T) a() { }
+pub impl I for T  // error: exported implementation of 'I' for 'T' uses private type 'T'; mark 'T' pub too
+
+// === a pub interface whose member names a private type
+type X = ref record { n: int }
+pub type I = interface {  // error: exported 'I' uses private type 'X'; mark 'X' pub too
+    fn a(p0: X)
+}

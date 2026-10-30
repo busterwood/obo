@@ -1,0 +1,66 @@
+// An implementation whose method does not have the member's signature (v3 section 3.3, the E-impl-mismatch
+// row of section 12.2). Each case is refused at its impl line, with the comparison's own detail.
+
+// === a read-only receiver for a mut member (the mutant X38 case)
+type I = interface {
+    mut fn grow(k: int)
+}
+type Circle = ref record { r: int }
+fn (c: &Circle) grow(k: int) { }
+impl I for Circle  // error: method 'Circle::grow' does not match interface 'I' method 'grow': the receiver must be 'mut &Circle'
+
+// === a mut receiver for a read-only member
+type I = interface {
+    fn area(): int
+}
+type Circle = ref record { r: int }
+fn (mut c: &Circle) area(): int { return 1 }
+impl I for Circle  // error: method 'Circle::area' does not match interface 'I' method 'area': the receiver must be '&Circle'
+
+// === a different parameter count
+type I = interface {
+    fn f(p0: int): int
+}
+type Circle = ref record { r: int }
+fn (c: &Circle) f(p0: int, p1: int): int { return 1 }
+impl I for Circle  // error: method 'Circle::f' does not match interface 'I' method 'f': it takes 1 argument(s), not 2
+
+// === a different parameter type
+type I = interface {
+    fn f(p0: int): int
+}
+type Circle = ref record { r: int }
+fn (c: &Circle) f(p0: string): int { return 1 }
+impl I for Circle  // error: method 'Circle::f' does not match interface 'I' method 'f': argument 1 must be int, not string
+
+// === a different parameter mode: a mut parameter for a borrowed one
+type Circle = ref record { r: int }
+type I = interface {
+    fn f(p0: &Circle): int
+}
+fn (c: &Circle) f(mut p0: &Circle): int { return 1 }
+impl I for Circle  // error: method 'Circle::f' does not match interface 'I' method 'f': argument 1 must be '&Circle'
+
+// === a different return type
+type I = interface {
+    fn f(p0: int): int
+}
+type Circle = ref record { r: int }
+fn (c: &Circle) f(p0: int): string { return "" }
+impl I for Circle  // error: method 'Circle::f' does not match interface 'I' method 'f': it must return int, not string
+
+// === an owned receiver for a borrowed member
+type I = interface {
+    fn f(p0: int): int
+}
+type Circle = ref record { r: int }
+fn (c: Circle) f(p0: int): int { return 1 }
+impl I for Circle  // error: method 'Circle::f' does not match interface 'I' method 'f': the receiver must be '&Circle'
+
+// === a method defined after its implementation
+type I = interface {
+    fn f(p0: int): int
+}
+type Circle = ref record { r: int }
+impl I for Circle  // error: type 'Circle' has no method 'f' to implement interface 'I'
+fn (c: &Circle) f(p0: int): int { return 1 }

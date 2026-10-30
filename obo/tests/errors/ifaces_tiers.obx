@@ -1,0 +1,65 @@
+// The implementation check of the member tiers (v3 section 7.2, E5 of section 12.2). A method implements a
+// plain member only if it changes nothing but what is below its own mut parameters, and a pure member only
+// if it is pure. Each case is refused at its impl line.
+
+// === a plain member, and a method that writes an owned value through a handle
+type I = interface {
+    mut fn f()
+}
+type Bag = ref record { items: []int }
+type Holder = ref record { b: ^Bag }
+fn (mut h: &Holder) f() {
+    h.b.items = new []int(0)
+}
+impl I for Holder  // error: method 'Holder::f' cannot implement 'I::f': it writes an owned value through a handle
+
+// === a plain member, and a method that frees a global
+type I = interface {
+    mut fn f()
+}
+type T = ref record { n: int }
+var G = new T{n: 1}
+fn (mut t: &T) f() { G = new T{n: 2} }
+impl I for T  // error: method 'T::f' cannot implement 'I::f': it frees global 'G'
+
+// === a plain member, and a method that calls a function that is only a forward heading
+// (a call to an uncompiled function is conservatively a write through a handle, so the handle text is what
+// the refusal reports; the method is refused either way)
+type I = interface {
+    mut fn f()
+}
+type T = ref record { n: int }
+fn later(): int
+fn (mut t: &T) f() { let x = later() }
+impl I for T  // error: method 'T::f' cannot implement 'I::f': it writes an owned value through a handle
+fn later(): int { return 1 }
+
+// === a pure member, and a method that frees a global
+type I = interface {
+    pure fn f()
+}
+type T = ref record { n: int }
+var G = new T{n: 1}
+fn (t: &T) f() { G = new T{n: 2} }
+impl I for T  // error: method 'T::f' is not pure, but interface 'I' declares 'f' pure
+
+// === a pure member, and a method that writes an owned value through a handle
+type I = interface {
+    pure mut fn f()
+}
+type Bag = ref record { items: []int }
+type Holder = ref record { b: ^Bag }
+fn (mut h: &Holder) f() {
+    h.b.items = new []int(0)
+}
+impl I for Holder  // error: method 'Holder::f' is not pure, but interface 'I' declares 'f' pure
+
+// === a pure member, and a method that calls a function that is only a forward heading
+type I = interface {
+    pure fn f(): int
+}
+type T = ref record { n: int }
+fn later(): int
+fn (t: &T) f(): int { return later() }
+impl I for T  // error: method 'T::f' is not pure, but interface 'I' declares 'f' pure
+fn later(): int { return 1 }
