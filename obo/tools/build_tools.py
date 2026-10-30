@@ -9,7 +9,7 @@ errors, as needed), so the compiler compiles those modules
 dependency-first and writes their .sym files. The rule within a file is still
 declare-before-use.
 
-The default tools are cat, wc and sort; P4 adds eza to the buildable names
+The default tools are cat, wc, sort and head; P4 adds eza to the buildable names
 (TOOLS and EZA are separate, so `make tools` does not need eza's newer library
 dependencies and `make eza` builds only eza). Paths resolve to absolute paths,
 so the builder's behavior does not depend on the caller's cwd: ROOT is the
@@ -23,7 +23,7 @@ concurrent builds is forbidden. Callers that build concurrently pass distinct
 --out directories (tests/tools.py and tests/io_test.py use private temporary
 ones), and the generated directory is ignored with the rest of build output.
 
-There is no cache and no --force: rebuilding three tools is cheap, and a cache
+There is no cache and no --force: rebuilding four tools is cheap, and a cache
 would add staleness bugs. A compile failure is reported with the compiler's
 message, with absolute paths under ROOT shortened to repo-relative names (so an
 error in a tool names cmd/<tool>.obx at its real line); the builder exits 2.
@@ -46,7 +46,7 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # .../obo
-TOOLS = ('cat', 'wc', 'sort')
+TOOLS = ('cat', 'wc', 'sort', 'head')
 EZA = ('eza',)
 ALL = TOOLS + EZA
 SRCDIR = 'cmd'                       # the tool roots live in obo/cmd/

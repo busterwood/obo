@@ -1,0 +1,326 @@
+// head: print the first 10 lines (or -n COUNT lines, or -c COUNT bytes) of
+// each operand, with GNU's multiple-operand headers.
+//
+// Built as a module root by tools/build_tools.py: it imports lib/io.obx as
+// `io` and lib/errors.obx as `errors`, and every library name is qualified.
+// The subset is deliberate: negative counts, size suffixes, -q, -v, -z, long
+// options, --help and --version are unsupported (see cmd/README.md).
+//
+// Input is read incrementally with io::Reader and written through an
+// io::Writer; the tool never holds a whole operand. Line mode counts '\n'
+// bytes and stops after the requested line (a final partial line is copied at
+// EOF but is not a line). Byte mode copies exactly COUNT bytes. COUNT 0 still
+// opens the operand and prints its header, but reads nothing, matching GNU.
+//
+// With two or more operands GNU prints `==> NAME <==` before each one and one
+// blank line between groups; a single operand has no header. `-` is the
+// operand "standard input". Repeated `-` operands share one buffered Reader, so
+// unread bytes remain for the next `-` even when file operands intervene; a
+// COUNT of 0 never reads it. An open error prints before that operand's header
+// (so the header is absent), while a directory opens and fails when read (so
+// its header is present). Open/read errors set the failure and continue.
+//
+// The Writer buffers up to 64 KiB, so a write error is observed only when a
+// flush reaches the broken output. Small output followed by failing operands
+// can therefore print their diagnostics before the final write error (GNU does
+// the same); once a write error is detected, the tool stops and opens no later
+// operand. Once output fills the 64 KiB buffer, the flush attempts the write
+// and detects a broken sink early. Exit 1 after any failure.
+
+import "../lib/io.obx" as io
+import "../lib/errors.obx" as errors
+
+type HeadOpts = ref record {
+    bytesMode: bool       // -c instead of -n
+    count: int            // 0..999999999999999999
+}
+
+type HeadState = ref record {
+    remaining: int        // units left in the current operand
+    printed: bool         // at least one operand header was written
+    failed: bool          // an open/read error happened
+    fatal: bool           // a write error happened
+    pending: []byte       // unread suffix of the shared stdin chunk
+}
+
+// Decimal count with an optional leading '+'. The return value is -1 for an
+// unsupported count: a negative sign, a suffix, an empty string or more than
+// 18 digits. 18 digits keep v * 10 + digit inside a signed 64-bit int and let a
+// too-large limit saturate to "the whole operand" without overflow.
+fn parseCount(s: string): int {
+    var i = 0
+    if len(s) > 0 && s[0] == '+' { i = 1 }
+    if i >= len(s) { return -1 }
+    if len(s) - i > 18 { return -1 }
+    var v = 0
+    while i < len(s) {
+        let b = s[i]
+        if b < '0' || b > '9' { return -1 }
+        v = v * 10 + int(b) - 48
+        i += 1
+    }
+    return v
+}
+
+fn writeError(mut st: &HeadState, code: int) {
+    eprintln("head: write error: ", errors::text(code))
+    st.fatal = true
+}
+
+// Flush the pending scratch bytes. false means a write error was printed and
+// the whole tool must stop.
+fn flushScratch(mut w: &io::Writer, mut scratch: &[]byte, mut st: &HeadState): bool {
+    if len(scratch) == 0 { return true }
+    let wr = io::writeBytes(w, scratch)
+    match wr {
+        ok { truncate(scratch, 0); return true }
+        err { writeError(st, wr.code); return false }
+    }
+}
+
+// Copy the useful prefix of data into scratch and write it. Line mode stops at
+// the newline that completes the requested line; byte mode stops at the
+// requested byte. Returns the number of consumed bytes, or -1 after a write
+// error. headReader keeps the unconsumed suffix for repeated stdin, so the next
+// '-' resumes exactly where this one stopped. The scratch is bounded at
+// 64 KiB, so a long line does not grow it with the line.
+fn headChunk(mut w: &io::Writer, mut scratch: &[]byte, data: &[]byte,
+             opts: &HeadOpts, mut st: &HeadState): int {
+    if opts.bytesMode {
+        var take = len(data)
+        if take > st.remaining { take = st.remaining }
+        var k = 0
+        while k < take {
+            append(scratch, data[k])
+            if len(scratch) >= 65536 {
+                if !flushScratch(w, scratch, st) { return -1 }
+            }
+            k += 1
+        }
+        st.remaining -= take
+        if !flushScratch(w, scratch, st) { return -1 }
+        return take
+    }
+    var k = 0
+    var done = false
+    while k < len(data) && !done {
+        let b = data[k]
+        append(scratch, b)
+        k += 1
+        if b == '\n' {
+            st.remaining -= 1
+            if st.remaining == 0 { done = true }
+        }
+    }
+    if !flushScratch(w, scratch, st) { return -1 }
+    return k
+}
+
+// Keep the bytes after used in st.pending (a fresh array; the chunk itself is
+// owned by the caller and is discarded).
+fn keepPending(mut st: &HeadState, chunk: &[]byte, used: int) {
+    let left = len(chunk) - used
+    if left <= 0 {
+        st.pending = new []byte(0)
+        return
+    }
+    var rest = new []byte(left)
+    var i = 0
+    while i < left {
+        rest[i] = chunk[used + i]
+        i += 1
+    }
+    st.pending = rest
+}
+
+// Stream one Reader until the limit is reached or EOF. A write error is
+// reported here (st.fatal); a read error is returned as err for the operand
+// handler, which prints it and continues with the next operand. takeChunk moves
+// a whole chunk out of the Reader; preserve (stdin) keeps the unconsumed suffix
+// in st.pending for the next '-', while a file operand can discard it.
+fn headReader(mut r: &io::Reader, mut w: &io::Writer, mut scratch: &[]byte,
+              opts: &HeadOpts, preserve: bool,
+              mut st: &HeadState): Result[bool] {
+    if st.remaining == 0 { return ok(true) }
+    if preserve && len(st.pending) > 0 {
+        let pending = replace(st.pending, new []byte(0))
+        let used = headChunk(w, scratch, pending, opts, st)
+        if used < 0 { return ok(false) }
+        keepPending(st, pending, used)
+        if st.remaining == 0 { return ok(true) }
+    }
+    while st.remaining > 0 {
+        let more = try io::fill(r)
+        if !more { return ok(true) }
+        let chunk = io::takeChunk(r)
+        let used = headChunk(w, scratch, chunk, opts, st)
+        if used < 0 { return ok(false) }
+        if preserve { keepPending(st, chunk, used) }
+    }
+    return ok(true)
+}
+
+// GNU's header for one operand, with the blank line before every group after
+// the first. false means a write error was printed and the tool must stop.
+fn headerFor(mut w: &io::Writer, label: string, multi: bool,
+             mut st: &HeadState): bool {
+    if !multi { return true }
+    if st.printed {
+        let nl = io::write(w, "\n")
+        match nl {
+            ok { }
+            err { writeError(st, nl.code); return false }
+        }
+    }
+    let hd = io::write(w, "==> ")
+    match hd {
+        ok { }
+        err { writeError(st, hd.code); return false }
+    }
+    let nm = io::write(w, label)
+    match nm {
+        ok { }
+        err { writeError(st, nm.code); return false }
+    }
+    let end = io::write(w, " <==\n")
+    match end {
+        ok { }
+        err { writeError(st, end.code); return false }
+    }
+    st.printed = true
+    return true
+}
+
+// Read one operand. Returns false only for a fatal write error; open and read
+// errors are printed here and return true (continue with the next operand).
+// All '-' operands share stdinReader, so bytes left in its current chunk are
+// not discarded when a file operand intervenes. Stdin is never opened/closed.
+fn headOperand(path: string, mut w: &io::Writer, mut scratch: &[]byte,
+               mut stdinReader: &io::Reader, opts: &HeadOpts, multi: bool,
+               mut st: &HeadState): bool {
+    st.remaining = opts.count
+    var label = path
+    if path == "-" { label = "standard input" }
+    if path == "-" {
+        if !headerFor(w, label, multi, st) { return false }
+        if opts.count == 0 { return true }
+        let rr = headReader(stdinReader, w, scratch, opts, true, st)
+        match rr {
+            ok { if !rr.value { return false } }
+            err {
+                eprintln("head: error reading '", label, "': ", errors::text(rr.code))
+                st.failed = true
+            }
+        }
+        return true
+    }
+    let f = openFile(path, "r")
+    match f {
+        ok {
+            let fd = f.value
+            defer closeFile(fd)
+            if !headerFor(w, path, multi, st) { return false }
+            if opts.count == 0 { return true }
+            var r = io::newReader(fd, 65536)
+            let rr = headReader(r, w, scratch, opts, false, st)
+            match rr {
+                ok { if !rr.value { return false } }
+                err {
+                    eprintln("head: error reading '", path, "': ", errors::text(rr.code))
+                    st.failed = true
+                }
+            }
+        }
+        err {
+            eprintln("head: cannot open '", path, "' for reading: ", errors::text(f.code))
+            st.failed = true
+        }
+    }
+    return true
+}
+
+// Apply one count option and its value. The last -n/-c wins, as GNU's does.
+fn setCount(mut opts: &HeadOpts, bytesMode: bool, value: string): bool {
+    let n = parseCount(value)
+    if n < 0 {
+        if bytesMode {
+            eprintln("head: invalid number of bytes: '", value, "'")
+        } else {
+            eprintln("head: invalid number of lines: '", value, "'")
+        }
+        return false
+    }
+    opts.bytesMode = bytesMode
+    opts.count = n
+    return true
+}
+
+fn main() {
+    let argv = args()
+    var opts = new HeadOpts{bytesMode: false, count: 10}
+    var operands = new []string(0)
+    var endOpts = false
+    var i = 1
+    while i < len(argv) {
+        let a = argv[i]
+        if !endOpts && a == "--" {
+            endOpts = true
+        } else if !endOpts && len(a) > 1 && a[0] == '-' {
+            if len(a) > 2 && a[1] == '-' {
+                eprintln("head: unrecognized option '", a, "'")
+                exit(1)
+            }
+            var j = 1
+            while j < len(a) {
+                let c = a[j]
+                if c != 'n' && c != 'c' {
+                    let ch = substr(a, j, j + 1)
+                    eprintln("head: invalid option -- '", ch, "'")
+                    exit(1)
+                }
+                var value = ""
+                if j + 1 < len(a) {
+                    value = substr(a, j + 1, len(a))
+                } else {
+                    i += 1
+                    if i >= len(argv) {
+                        let ch = substr(a, j, j + 1)
+                        eprintln("head: option requires an argument -- '", ch, "'")
+                        exit(1)
+                    }
+                    value = argv[i]
+                }
+                if !setCount(opts, c == 'c', value) { exit(1) }
+                j = len(a)
+            }
+        } else {
+            append(operands, a)
+        }
+        i += 1
+    }
+
+    var multi = len(operands) > 1
+    if len(operands) == 0 {
+        append(operands, "-")
+        multi = false
+    }
+
+    var w = io::newWriter(stdout(), 65536)
+    var scratch = new []byte(0)
+    var stdinReader = io::newReader(stdin(), 65536)
+    var st = new HeadState{remaining: opts.count, printed: false, failed: false, fatal: false, pending: new []byte(0)}
+    var k = 0
+    while k < len(operands) {
+        let cont = headOperand(operands[k], w, scratch, stdinReader, opts, multi, st)
+        if !cont { break }
+        k += 1
+    }
+    if !st.fatal {
+        let fl = io::flush(w)
+        match fl {
+            ok { }
+            err { writeError(st, fl.code) }
+        }
+    }
+    if st.fatal || st.failed { exit(1) }
+}
