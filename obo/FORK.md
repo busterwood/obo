@@ -5188,8 +5188,12 @@ bytes, sha256 `8b9dfcc3…`; stage 2 == stage 3 (`cmp`). `make tools` builds cat
 `--memory` 5/5 with the unchanged 2,752,512-byte cap. `mutate_fork.py` 561/587
 caught with 26 equivalents, 0 missed/stale/broken; `mutate_io.py` 27/27;
 `mutate_meta.py` runtime 50/52 (2 equivalent) and compiler 21/30 (9 equivalent),
-0 missed; `mutate_port.py` 529/529 caught (the four method equivalents are excluded as
-in the fork harness). Self-compile: live peak 1,728,944 bytes and
+0 missed; `mutate_port.py` ran cold on the final tree and caught 528/529. The
+miss was the pre-existing `homes not pushed around obo calls` pattern, which the
+`callFn` refactor left matching the now-dead `saveRegs()` helper; retargeted to
+the live `callFnWith` save sequence and re-run alone it is caught, so all 529
+non-equivalent mutants are caught on the final harness (0 stale, 0 broken; the
+four method equivalents are excluded as in the fork harness). Self-compile: live peak 1,728,944 bytes and
 38,734,688 allocated, within the unchanged 2,000,000-byte budget (271,056 spare);
 the compiler source is 11,016 lines / 406,840 bytes. `bench/bench.py` completed
 all four workloads and their outputs agree.

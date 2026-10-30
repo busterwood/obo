@@ -335,8 +335,8 @@ MUTANTS.update({k: [v] for k, v in METHOD_MUTANTS.items() if k not in FORK_EQUIV
 # the C runtime keeps them. Most are caught by tests/run/register_alloc.obx; the SHAPES ones change speed only
 # and are caught by tests/homes_check.py
 MUTANTS.update({
-    "homes not pushed around obo calls": [("    let saved = usedRegs()\n    pushRegs(saved)\n    setFree(0)",
-                                           "    let saved = usedRegs() & ~homeBits\n    pushRegs(saved)\n    setFree(0)")],
+    "homes not pushed around obo calls": [("    var saved = usedRegs()\n    if hasRecv {",
+                                           "    var saved = usedRegs() & ~homeBits\n    if hasRecv {")],
     "a home released as a temporary": [(" && !containsInt(free, r) && (homeBits & (1 << r)) == 0 { append(free, r) }",
                                         " && !containsInt(free, r) { append(free, r) }")],
     "runtime call clobbers r15": [("    callAbs(RT_TEXT + 8 * slot)\n    if pad != 0 {", "    callAbs(RT_TEXT + 8 * slot)\n    movRI(15, 0)\n    if pad != 0 {")],
