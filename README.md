@@ -60,6 +60,7 @@ new compiler is not promoted here. Version policy: additive builtin/runtime exte
 | Maximum resident set | 3,640 KB (5 runs on this host) |
 | Live-memory budget | 2,000,000 bytes (52,288 spare) |
 | obo suite | 1,416 tests; 103 `module_test` checks; `sym_test.py` 38/38; `sym_fuzz.py` 200/200; `port_test` 558/558 with 9 encoder groups; `port_compare` 1,428/1,428; 57 doc examples; 28/28 import checks; 16/16 stdlib roots |
+| Mutation gates (at `29492ba`) | `mutate_fork` 607/634 + 27 equivalent; `mutate_port` 529/529; `mutate_io` 27/27; `mutate_meta` 71/82 + 11 equivalent |
 | Tools differential gate | 509 checks vs GNU coreutils 9.4; 4 memory cases |
 | Tool binaries | cat 45,057; wc 49,153; sort 73,729; head 45,057; tail 53,249 bytes (static, runtime included) |
 | eza E2 differential gate | 554/554 non-memory cases (465 exact reference goldens, 72 live including 22 pty, 17 own) + 5/5 memory cases |

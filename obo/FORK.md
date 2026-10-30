@@ -5461,8 +5461,8 @@ each case compile/run inside its comparison. They are not comparable with each o
 as run_fork's 1408 is not a launch count. The identity in the header is a record, not a lock or an
 immutability guarantee; nothing is reused across runs. The full-run logs from this branch predate the final
 review nits (probe-all, actual summary, special-helper errors), so they are **pre-final provenance only** for
-counts and per-mutant walls, not the final integrated gate evidence. The orchestrator's run on integrated
-0.8.1 will produce the final logs.
+counts and per-mutant walls, not the final integrated gate evidence. The final integrated run on 0.8.1 is
+recorded in the next section.
 
 **Catcher-first port mutants.** `tests/mutant_catchers.tsv` maps each port mutant to the check that first
 failed in the authoritative post-promotion `mutate_port` log at `27f09de` (529/529 caught). The table is a
@@ -5535,3 +5535,50 @@ costs a full fallback, not a wrong verdict. The current outliers are real work u
 large benchmark through a slower mutant, or a mutated program that runs long), not harness overhead. The
 timings count a stage's wall once and its subprocesses as a sum of direct launches, so they should be
 compared stage by stage, not added into a single wall figure or compared across the two gates.
+
+## Mutation harness: final integrated 0.8.1 validation (2026-10-30)
+
+One frozen-tree run of all four mutation gates at `29492ba` (the reviewed merge `9fc2dfd` plus the
+metadata-anchor repair `29492ba`), with the default jobs and no source or test edits while the matrix ran.
+Provenance: source sha256 `8f9f9a1d4b962fff670f147c2d935f498b5cbae84338c47251c62b44b04b7f7b` (12,071 lines,
+455,137 bytes), unchanged seed sha256 `673ae7ba13cec45be14eeb99d8f638e8418ed2ac0cd91787aa4a18c54a407374`,
+compiler 512,001 bytes sha256 `8ac35d769e86e7dd4c3ce980d1e4a65eee51957e1ad2c008e57389ebcef9f590`
+(`obo 0.8.1`), runtime `a12f3edf…`, entry `7b9bf0ea…`, `rt.ld` `ca3d7a64…`, and tests tree
+`09262ed86f35aef4fcc9b6982135bab6758f10d46d05549e42fe263cd872237d`. The timing headers and end records
+repeat these hashes. Logs are in `/tmp/opencode/fast-gate-integration-20261030-1828` (temporary).
+
+| Gate | Result | Gate wall | CPU (user+sys) | Per-mutant wall sum; median / p95 | Paths / retries |
+|---|---:|---:|---:|---:|---|
+| `mutate_fork` | 607/634 caught, 27 equivalent | 183.259 s | 575.12 + 283.44 s | 1,201.162 s; 0.759 / 4.594 s | full suite; 7 serial confirmations |
+| `mutate_port` | 529/529 caught | 118.532 s | 206.53 + 44.61 s | 427.051 s; 0.347 / 0.714 s | 479 catcher, 24 memory, 26 dedicated, 0 full fallback; 1 serial confirmation |
+| `mutate_io` | 27/27 caught | 6.85 s | 6.04 + 1.94 s | not instrumented | sequential; 0 missed/stale/broken |
+| `mutate_meta` | 71/82 caught, 11 equivalent (50/52 runtime + 21/30 compiler) | 128.60 s | 46.58 + 20.08 s | not instrumented | 0 missed/stale/broken |
+
+The port gate's fresh baseline full comparison took 5.842 s and peaked at 1,947,712 live bytes (budget
+2,000,000); the pre-mutant catcher probe ran all 265 distinct checks in 5.083 s with 363 direct launches and
+passed. The fork baseline and judge each ran 1,416 cases. Direct-launch counts are the harness's own
+`subprocess.run` calls, not descendants: 1,268 mutant-stage launches in `mutate_fork` (1,272 with
+baseline/judge), and 1,840 in `mutate_port`'s mutant stages (3,299 in the full baseline and 363 in the
+catcher probe); do not compare them across gates.
+
+The fork's final per-name statuses match the old post-promotion log exactly after serial re-runs: 607
+caught and 27 equivalent, with 0 status changes (the old summary's 605/29 was the membership bug). The two
+catalog-equivalent entries `place origin: a callee without rows frees nothing` and `place origin: a callee
+records every change as not strict` are caught by the suite in both runs and are still listed as
+equivalents, with the separate notice. `mutate_port` and `mutate_io` likewise have 0 per-name changes. The
+seven repaired metadata anchors are now caught or equivalent as in the older 0.8 run (three `callExempt`
+entries remain equivalent); no new transition was hidden. The 0.8.1 sleep tests added no new fork mutant
+status changes.
+
+Host: 16 cores, AMD Ryzen 7 8745HS, load averages 0.14 to 3.13 during the matrix; fork ran 16 outer x 1
+inner, port 4 x 4, meta 4, io sequential. These are gate walls from the harness end records (GNU time for
+io/meta), not a controlled whole-gate benchmark. The per-mutant walls sum concurrent work, so they exceed
+the gate wall; they are not CPU time. Outliers were real mutant work, not harness overhead: fork
+`interfaces v3 X7` 55.02 s, `X5` 45.05 s, `X4` 36.36 s, `image: the epilogue returns with int3` 32.56 s
+and `io: closeFile swaps the descriptors` 22.96 s; port `inverted for loop: test jumps back to its own top`
+35.34 s, `retry: waiting calls of the first pass kept` 27.14 s and `image: the epilogue returns with int3`
+26.78 s. The older 0.8 before/after sample remains supporting evidence only, as labelled above.
+
+**Limits.** The timing headers identify the inputs but are not a lock; no verdict is reused. The io and meta
+runners do not emit per-mutant timings, so only their gate walls and CPU are reported. The metadata anchor
+repair changed the tests-tree digest and is reflected above; the compiler, runtime and seed did not change.
