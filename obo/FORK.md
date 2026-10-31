@@ -5799,14 +5799,14 @@ the old one-candidate exact formatter). Full old gates: `run_fork` 1544,
 `port_compare` 1551, `port_test` 573, `sym_test` 42, `doc_check` 62,
 `mutate_io` 30/30, harness 27. No new F3B mutant/release matrix is claimed.
 
-**Memory.** Final direct self-compile is `2,030,368` peak bytes (stage-3
-`2,030,384`; port `2,030,736`), source `13,417` lines / `504,421` bytes, binary
-`569,345` bytes, runtime text/data `26,272`/`67,360`. Headroom under the
-unchanged `2,500,000` cap is `469,632` bytes. `nm -u runtime.o` is empty and the
-fixed point holds (`b02429d0…`). Float release identity remains unassigned;
-Stage B `0.10` is not used.
+**Memory.** Final direct self-compile is `2,030,320` peak bytes (three runs;
+stage-3 `2,030,336`; port `2,030,688`, RSS 31,488 KiB), source `13,417` lines /
+`504,413` bytes, binary `569,345` bytes, runtime text/data `26,272`/`67,360`.
+Headroom under the unchanged `2,500,000` cap is `469,680` bytes. `nm -u runtime.o`
+is empty and the fixed point holds (`30124be9…`). Release identity is the
+candidate `0.10`/format 6/ABI 1; Stage B is next planned as `0.11`.
 
-## Float F3B preparation (unreleased, WIP; no final matrix)
+## Float F3B preparation (historical; superseded by the 0.10 candidate below)
 
 `floatBits` is no longer a public builtin. It is an internal diagnostic available
 only with the explicit `--test-float-bits` CLI flag; without it the compiler
@@ -5840,3 +5840,43 @@ Current gates after this preparation: `run_fork` **1554 passed**, `port_compare`
 `mutate_harness_test` 27, standalone `float_f1` **19 groups** under normal and
 `obo-noregs`. The release identity/format decision is still open; this is not a
 release candidate and no final full matrix is claimed.
+
+## Float 0.10 release candidate (format 6)
+
+The user approved floats before Stage B: the candidate identity is
+**`OBO_VERSION = 0.10`, `SYM_FORMAT = 6`, `SYM_ABI = 1`**. ABI 1 is intentional:
+float remains one word in GPR/stack, the parameter/return convention is the same,
+and runtime slots 0..40 retain their old prefix; slots 41..58 append. Stage B is
+now next planned as **0.11**, not 0.10.
+
+**Fixture migration.** 91 committed `.sym` fixtures moved from format 5 /
+`compiler "0.9"` to format 6 / `compiler "0.10"`; the intentional format fixture
+moved from 6 to 7 (expected `has format 7; this compiler reads 6`), `compiler
+"9.9"` and `abi 9` exceptions remain. Headers are outside the interface hash, so
+body hashes were not recomputed. `sym_test.py` was updated to actual compiler
+identity; no `--update` was used. Public float constants use exactly `0x` plus 16
+lowercase hex bits in format 6; format 5 is rejected before the float body is
+read. A new `modules/run/float_exports` source case covers float aliases,
+constants, globals, record fields, arrays and functions.
+
+**Frozen release gates (source/tests at this checkpoint):**
+`run_fork` **1555**, `memory_log_check` 4 sources, `float_f1` **19 groups** in
+normal and `obo-noregs` modes, `module_test` **107**, `sym_test` **42**,
+`sym_fuzz` **200/200**, `doc_check` **62**, `homes_check` and `homes_edge`
+pass, `elf_test`, `io_test`, `meta_test` **34**, `port_test` **573/573 with 10
+encoder groups**, default `port_compare` **1552/1552**, 0.8 seed compare
+**1269/1269**, imports **28/28**, stdlib **16/16**, tools **509/509 + memory
+4/4**, pinned eza **554/554 + memory 5/5**. Full `mutate_fork` **654/682 caught,
+28 equivalent**, `mutate_port` **531/531**, `mutate_io` **36/36**, `mutate_meta`
+**71/82 caught, 11 equivalent**, harness **27/27**. The 0.9-seed comparison is a
+non-gate diagnostic: it reports expected format/header differences (1439/1552)
+because the old 0.9 compiler emits format 5.
+
+**Final measurements:** direct self-compile **2,030,320** live bytes (three
+runs), stage-3 **2,030,336**, port **2,030,688** (RSS 31,488 KiB), headroom under
+2,500,000 **469,680**; source **13,417 lines / 504,413 bytes**, compiler binary
+**569,345 bytes**, runtime text/data **26,272/67,360**, `nm -u runtime.o` empty,
+fixed point sha256 **`30124be958a772db7b0236b212ee526fd209c3b357a080beeaf57c6966a1cd83`**.
+The compiler is still built by the local old 0.8 seed; main's promoted 0.9 seed
+and the future 0.10 promotion are integration concerns after independent review.
+No merge, push, promotion or seed copy was done.

@@ -1,0 +1,22 @@
+module main
+import "lib.obx"
+// expect: 1.5
+// expect: 0.5
+// expect: -0
+// expect: 1.5
+// expect: true
+// expect: true
+// expect: true
+fn main() {
+    println(lib::half(3f))
+    println(string(lib::Half))
+    println(string(lib::NegZero))
+    println(lib::Global)
+    let x: lib::Real = 2f
+    println(x == 2f)
+    let p = new lib::Pair{a: 2.5f, b: 3}
+    println(p.a == 2.5f)
+    let xs: lib::Floats = new []float(0)
+    append(xs, 1.5f)
+    println(xs[0] == 1.5f)
+}

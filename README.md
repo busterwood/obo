@@ -20,12 +20,14 @@ measurements.
 > **Numeric WIP branch.** This worktree adds the unreleased float implementation
 > on top of the Stage A line. Its compiler is currently 13,417 lines / 504,421
 > bytes, binary 569,345 bytes; the local seed is still the old 0.8 compiler
-> (`673ae7ba…`). The branch identity remains WIP `0.9`/format 5/ABI 1; the float
-> symbol grammar needs a release format bump and is not claimed compatible or
-> promoted. The 2,500,000-byte numeric budget and the separate 30,000-byte
+> (`673ae7ba…`). The numeric release candidate is **`0.10` / format 6 / ABI 1**
+> (floats first); Stage B is the next planned stage as `0.11`, not implemented
+> here. The float symbol grammar is format-6-only; no format-5 compatibility is
+> claimed. The 2,500,000-byte numeric budget and the separate 30,000-byte
 > empty-array regression oracle are described in `obo/tests/peak_budget.py` and
 > `obo/FORK.md`. Main/history status below is the Stage A record, not a claim
-> about this numeric branch.
+> about this numeric branch; the local seed remains the old unpromoted 0.8
+> compiler.
 
 ## Current state (30 October 2026)
 
@@ -35,8 +37,8 @@ compiler, symbol format 5, ABI 1** from that unchanged seed; stage 2 == stage 3,
 checked with `cmp`. This is a release candidate on the lambdas branch, not a
 merged or promoted compiler; `main` remains the 0.8.1 line until the final review,
 integration and one promotion. Version policy: additive builtin/runtime
-extensions use patch releases such as 0.8.1; Stage A is 0.9, while Stage B remains
-reserved for 0.10.
+extensions use patch releases such as 0.8.1; Stage A history is 0.9/format 5,
+while this numeric branch is 0.10/format 6 and Stage B is the next planned 0.11.
 
 - **Language.** Single ownership, moves, borrowed `&T` references, checked `^T`
   handles, effect summaries, `Result[T]`/`try`, incremental I/O, modules and
@@ -69,8 +71,8 @@ reserved for 0.10.
 | Current metric | Value |
 |---|---:|
 | Compiler source | 12,953 lines, 488,954 bytes |
-| Compiler and seed (`--version`) | seed 507,905 bytes, sha256 `673ae7ba…`, `obo 0.8`; branch compiler 540,673 bytes, `obo 0.9`, sym-format 5, abi 1 |
-| Self-host fixed point | stage 2 == stage 3, 540,673 bytes; the 0.8 seed builds the 0.9 branch compiler |
+| Compiler and seed (`--version`) | local seed 507,905 bytes, sha256 `673ae7ba…`, `obo 0.8`; numeric branch compiler `obo 0.10`, sym-format 6, abi 1 (bytes in the numeric note) |
+| Self-host fixed point | stage 2 == stage 3 for the numeric branch; the old local 0.8 seed builds it |
 | Self-compile wall time | 0.15 s (3 runs on this host; host-dependent) |
 | Self-compile live peak | 1,963,248 bytes direct; 1,963,616 bytes port comparison (budget 2,000,000) |
 | Total allocated | 42,923,352 bytes direct; 42,926,784 bytes port comparison |
@@ -130,15 +132,15 @@ on names (its case is size and memory), and the sort rows are fixture-specific.
 ## Roadmap
 
 **Lambdas Stage A** (non-capturing literals, structural function types and
-indirect calls) is implemented on this feature branch as `0.9`/format 5 and is
+indirect calls) was implemented as Stage A `0.9`/format 5; the numeric branch advances the candidate to `0.10`/format 6 and is
 awaiting final review/integration. The unchanged 0.8 seed remains the promoted
-compiler on `main`. Stage B (`0.10` capture lists) and `^I` remain later work.
+compiler on `main`. Stage B (capture lists) is next planned as `0.11`; `^I` remains later work.
 The design is in [obo/design/lambdas-design.md](obo/design/lambdas-design.md).
 
 | Work | State |
 |---|---|
-| Lambdas Stage A | implemented on the lambdas branch at 0.9/format 5, pending final review and promotion |
-| Lambdas Stage B | next after Stage A release: 0.10, capture lists; `^I` follows Stage B |
+| Lambdas Stage A | implemented historically at 0.9/format 5; numeric candidate is 0.10/format 6 |
+| Lambdas Stage B | next after floats: 0.11, capture lists; `^I` follows Stage B |
 | Peephole/optimizer audit | evidence-gated |
 | More tools: `fd`, `hexyl`, `tokei`, `jq` | later |
 | Floats, concurrency, networking, TUI | deliberately later; `jq` and `hyperfine` would need the float decision first |
@@ -273,7 +275,7 @@ cd obo && python3 tests/tools.py --memory              # the four pinned tool me
 cd obo && python3 bench/bench.py         # memory and time against the collector
 cd obo && ./obo --deps tests/modules/run/basic/main.obx -I tests/modules/run/basic  # dependencies first
 cd obo && mkdir -p /tmp/syms && ./obo --check src/obo.obo --sym-dir /tmp/syms        # check without an executable
-cd obo && ./obo --version                # branch: obo 0.9 sym-format 5 abi 1
+cd obo && ./obo --version                # numeric candidate: obo 0.10 sym-format 6 abi 1
 cd obo && ./obo --reemit-sym /tmp/syms/obo.sym   # canonical re-emission (test hook)
 ```
 

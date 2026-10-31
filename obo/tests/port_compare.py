@@ -197,6 +197,11 @@ SEED_FILE_MIN = {
     # sleepMs is an additive 0.8.1 builtin; the promoted 0.8 seed cannot parse it.
     os.path.join(FORK, 'tests', 'run', 'sleep.obx'): (0, 9),
     os.path.join(FORK, 'tests', 'errors', 'sleep.obx'): (0, 9),
+    # Numeric float cases are not in the flat old-file globs (they run from
+    # run_fork's explicit compact/reader gates).  If a future harness adds
+    # them, the seed comparison skips them until the 0.10 float identity.
+    os.path.join(FORK, 'tests', 'float_core.obx'): (0, 10),
+    os.path.join(FORK, 'tests', 'float_errors.obx'): (0, 10),
     os.path.join(FORK, 'tests', 'run', 'methods.obx'): (0, 6),
     os.path.join(FORK, 'tests', 'run', 'methods_refs.obx'): (0, 6),
     os.path.join(FORK, 'tests', 'run', 'methods_fields.obx'): (0, 6),
@@ -779,7 +784,7 @@ def compare_trees(tmp, quick, port, only=None, stats=None):
         # merely agree with a port that also failed
         if a.returncode != 0 or b.returncode != 0:
             failures.append(f"reemit {name}: exit obo {a.returncode}, port {b.returncode}")
-        elif not a.stdout or not a.stdout.startswith(b'obosym 5\n') or b'fn many(' not in a.stdout:
+        elif not a.stdout or not a.stdout.startswith(b'obosym 6\n') or b'fn many(' not in a.stdout:
             failures.append(f"reemit {name}: obo's output is not canonical: {a.stdout[:80]!r}")
         else:
             modline = next((l for l in a.stdout.splitlines() if l.startswith(b'module ')), b'module many')

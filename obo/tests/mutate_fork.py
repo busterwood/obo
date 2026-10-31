@@ -656,7 +656,7 @@ MODULE_MUTANTS = {
     "modules: -I ignored": ("        for k in 0..len(incDirs) { append(cands, joinDirPath(incDirs[k], raw)) }\n", ""),
     "modules: module globals share one slot": ("        gsym.offset = GLOBAL_BASE + gsize", "        gsym.offset = GLOBAL_BASE"),
     "modules: T_COLONCOLON is 66": ("const T_COLONCOLON = 67", "const T_COLONCOLON = 66"),
-    "modules: token names lack ::": ("try ::\"", "try\""),
+    "modules: token names lack ::": ("try :: float\"", "try float\""),
     "modules: pre-scan forgets the :: of a qualified literal": ("""        } else if c == ':' {
             // `new lib::Node{...}`: the `::` is part of the type name, so the member word after it is
             // still the type a record literal names. Treating the `::` like `new` keeps afterNew set
@@ -731,7 +731,8 @@ SYM_MUTANTS = {
                                        "        if false {"),
     "sym: transitive dependency interface not loaded": ("            dm = loadSymCheck(joinDirPath(symDir, dn + \".sym\"), dn, depPaths[i], cand)",
                                                         "            dm = handle(noModule)"),
-    "sym: malformed hexadecimal hash accepted": ("    if !isHex16(text) {", "    if false {"),
+    "sym: malformed hexadecimal hash accepted": (
+        '    if !isHex16(text) {\n        error("malformed " + what', '    if false {\n        error("malformed " + what'),
     "sym: dependency interface order not checked": ("        if depIfNames[i] != depNames[i] {",
                                                     "        if false {"),
     "sym: empty dependency path accepted": ("        if len(dp) == 0 { error(\"a dependency path cannot be empty\") }",
@@ -751,7 +752,7 @@ SYM_MUTANTS = {
                                               "            append(ptypes, symParseType())\n"),
     "sym: scalar borrow accepted": ("            if !isOwned(t) { error(\"only records, closed types and arrays can be borrowed, not \" + symTypeText(t)) }",
                                     "            if false { error(\"only records, closed types and arrays can be borrowed, not \" + symTypeText(t)) }"),
-    "sym: non-primitive constant accepted": ("    if t != tInt && t != tByte && t != tBool && t != tString {",
+    "sym: non-primitive constant accepted": ("    if t != tInt && t != tByte && t != tBool && t != tString && t != tFloat {",
                                              "    if false {"),
     "sym: byte constant range unchecked": ("    if t == tByte && (v < 0 || v > 255) { error(\"a byte constant must be between 0 and 255\") }",
                                            "    if false { error(\"a byte constant must be between 0 and 255\") }"),
@@ -915,8 +916,6 @@ EQUIVALENT = {
     "origin needs no whole path": "a designator with a path has no sym (only a whole name sets it), so wholeOwnerOf gives nil",
     "origin of a global is kept": "owned is set only for locals (addOwnedLocal), so a global never has an origin",
     "place origin: a handle of a reference or a global gets an origin": "equivalent: no event is ever raised for an owner that is a reference or a global (placeFreeIn, originMove and the mut-call hook all test that it is an owned local), so such an origin is never freed and never moved; run/field_origins_param.obx and field_origins_global.obx still trap at run time",
-    "place origin: a callee without rows frees nothing": "defensive: a parameter's bit is set only by recordParamFree, which adds a row, so a set bit always has one",
-    "place origin: a callee records every change as not strict": "equivalent: the strictness of a row matters only for a place that holds a record (the place itself survives a strict event), and a strict change is a truncate, whose place is an array, which no handle names; the anywhere row has its own encoding",
     "place origin: a row beside an anywhere row is kept": "equivalent: the events of a row below an anywhere row are covered by it",
     "a handle root of a reference is not an identity (held)": "equivalent because the older heldLost check on the reference local catches the case, not the held entry: under the mutant foreign is false, so heldMove does not hit",
     "modules: pre-scan forgets the :: of a qualified literal": "equivalent: the pre-scan only estimates register pressure. A qualified record literal is then not counted as a record literal, which can underestimate the live registers and give the function more register homes, or exhaust its temporaries and make it run out and be compiled again with none (homeRetry); both produce the same code semantics. homeRetry is the documented fallback (FORK.md, modules Stage 1); tests/homes_check.py still passes either way, and tests/run/modules is a correctness oracle only",
@@ -1449,8 +1448,8 @@ INTERFACE_MUTANTS = {
     "interfaces v3 X9: a temporary may be borrowed into a cell": (
         "    if x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: a reference cannot borrow from a temporary\")\n    }\n",
         "    if false && x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: a reference cannot borrow from a temporary\")\n    }\n"),
-    "interfaces v3 X36a: SYM_FORMAT stays 2": ("const SYM_FORMAT = 5\n", "const SYM_FORMAT = 2\n"),
-    "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.9\"\n", "const OBO_VERSION = \"0.6\"\n"),
+    "interfaces v3 X36a: SYM_FORMAT stays 2": ("const SYM_FORMAT = 6\n", "const SYM_FORMAT = 2\n"),
+    "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.10\"\n", "const OBO_VERSION = \"0.6\"\n"),
 
     # summary reconstruction (S-2): setMemberSummary is shared by the source and the reader
     "interfaces v3 X18: the receiver bit is omitted for mut fn": (

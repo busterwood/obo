@@ -59,10 +59,11 @@ explicit checked string parser and returns `Result[float]`; malformed input is
 code 22 and overflow code 34, while underflow gives signed zero/subnormal.
 There is no `float -> int` conversion in this checkpoint.
 
-Float constants are raw binary64 bit patterns in `.sym`; the current WIP format
+Float constants are raw binary64 bit patterns in `.sym`; candidate format 6
 requires exactly `0x` plus 16 lowercase hexadecimal digits. The format is
-experimental and must be versioned before release. `floatBits` is an internal
-test diagnostic, available only with `--test-float-bits`, not a public API.
+float-specific; format 5 does not carry the float public grammar. `floatBits` is
+an internal test diagnostic, available only with `--test-float-bits`, not a
+public API.
 
 ## 2. Ownership
 
@@ -827,7 +828,7 @@ module) is the spelling throughout.
 
 An interface is a named set of methods that a record or closed type can implement. A value of interface type is
 either an **owned box** (`I`, `?I`) or a **borrowed pair** (`&I`, `mut &I`, `&?I`); an interface is never a value
-of its own kind with fields or identity. The implemented form is `0.8`; additive builtin/runtime extensions use patch releases such as `0.8.1`, while lambdas remain `0.9`/`0.10`, and handles to
+of its own kind with fields or identity. The implemented form is `0.8`; additive builtin/runtime extensions use patch releases such as `0.8.1`, while the numeric candidate is `0.10`/format 6; Stage B is next planned as `0.11`, and handles to
 interfaces (`^I`) are a later phase.
 
 ### Declarations and implementations
@@ -1137,8 +1138,8 @@ fn main() {
 ```
 
 Capturing closures, owned/read-only capture lists, stored function values and impure callbacks
-are later work. Stage B (`fn [x](...)`) remains reserved for `0.10`; interface handles `^I`
-remain later. The implemented compiler is `0.9`/format 5, built by the promoted `0.8` seed until
+are later work. Stage B (`fn [x](...)`) is next planned as `0.11`; interface handles `^I`
+remain later. The numeric candidate is `0.10`/format 6, built by the old local `0.8` seed until
 the promotion after final review.
 
 ## 6. Modules

@@ -109,8 +109,8 @@ const T_FLOAT = 68              // a float literal token; float is a type name, 
 // extensions use a patch release (0.8 -> 0.8.1); 0.9 is lambdas Stage A and 0.10 is
 // Stage B. Bump SYM_FORMAT on any grammar or meaning change; bump SYM_ABI on
 // any layout/calling-convention/descriptor/effect change.
-const OBO_VERSION = "0.9"
-const SYM_FORMAT = 5
+const OBO_VERSION = "0.10"
+const SYM_FORMAT = 6
 const SYM_ABI = 1
 
 fn makeTokNames(): []string {
@@ -7629,7 +7629,7 @@ fn factor(): Item {
             if x.mode == "const" { return makeConst(tFloat, x.val ^ 0x8000000000000000) }
             return rtCall1(RT_F_NEG, x, tFloat)
         }
-        if !isInt(x.typ) { error("'" + tokName(k) + "' needs an int or float") }
+        if !isInt(x.typ) { error("'" + tokName(k) + "' needs an int") }
         if x.mode == "const" {
             if k == T_MINUS { return makeConst(tInt, -x.val) }
             return makeConst(tInt, ~x.val)

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Targeted F1 scalar-float checks.
+"""Float release-candidate checks (candidate 0.10, format 6).
 
-This is a checkpoint runner, not a release gate.  It uses the worktree's
-compiler and runtime; it does not require a numeric OBO_VERSION or a new
-symbol-file format.  Exact literal bits are checked through the checkpoint-only
-floatBits diagnostic, against an independent integer/Fraction oracle.
+The full runner uses the worktree compiler/runtime and the internal
+--test-float-bits diagnostic, against an independent integer/Fraction oracle.
+The compact `run_fork` gates exercise the same feature without the 12,580-value
+power-of-two matrix.
 """
 from __future__ import annotations
 
@@ -559,6 +559,18 @@ def test_float_const_reader_matrix() -> None:
             raise AssertionError(f"reader accepted malformed float const {bad!r}")
         if "stale" in q.stderr.lower():
             raise AssertionError(f"reader rejected {bad!r} as stale, not structural: {q.stderr}")
+    # Format 5 is rejected before the new float grammar is read.
+    old5 = valid.replace("obosym 6", "obosym 5", 1)
+    bd = os.path.join(d, "old5")
+    os.makedirs(bd)
+    shutil.copyfile(os.path.join(d, "main.obx"), os.path.join(bd, "main.obx"))
+    with open(os.path.join(bd, "lib.sym"), "w") as f:
+        f.write(old5)
+    q = run([OBO, os.path.join(bd, "main.obx"), "--check",
+             "-I", bd, "--sym-dir", bd, "--test-float-bits"])
+    if q.returncode != 2 or "has format 5; this compiler reads 6" not in q.stderr:
+        raise AssertionError(f"format-5 float file was not rejected first: {q.stderr}")
+
     # Canonical high-bit/NaN raw bits remain accepted.
     for raw in ("0x7ff8000000000000", "0x8000000000000000", "0x0000000000000000"):
         text = valid.replace("const Half: float = 0x3fe0000000000000",
