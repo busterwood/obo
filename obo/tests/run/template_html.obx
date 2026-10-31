@@ -1,0 +1,95 @@
+// Compiler-known html/htmlRaw template literals (0.15): contexts and trust.
+
+import "html.obx" as html
+
+fn show(h: &Html) { println(html::toText(h)) }
+
+fn main() {
+    let s = "&<>\"'"
+    let text = html`<p>${s}</p>`
+    show(text)  // expect: <p>&amp;&lt;&gt;&quot;&#39;</p>
+
+    let dq = html`<a title="${s}">x</a>`
+    show(dq)  // expect: <a title="&amp;&lt;&gt;&quot;&#39;">x</a>
+
+    let sq = html`<a title='${s}'>x</a>`
+    show(sq)  // expect: <a title='&amp;&lt;&gt;&quot;&#39;'>x</a>
+
+    // URL attributes: relative allowed, scheme allow-list, attribute encoding
+    let rel = "42"
+    let u1 = html`<a href="/u/${rel}">a</a>`
+    show(u1)  // expect: <a href="/u/42">a</a>
+    let u2 = html`<a href="${"https://example.com/a?b=1&c=2"}">a</a>`
+    show(u2)  // expect: <a href="https://example.com/a?b=1&amp;c=2">a</a>
+    let u3 = html`<a href="${"HTTP://Example.COM/x"}">a</a>`
+    show(u3)  // expect: <a href="HTTP://Example.COM/x">a</a>
+    let u4 = html`<a href="${"mailto:a@b"}">a</a>`
+    show(u4)  // expect: <a href="mailto:a@b">a</a>
+    let u5 = html`<a href="${"?q=1#f"}">a</a>`
+    show(u5)  // expect: <a href="?q=1#f">a</a>
+    let u6 = html`<a href="${"//host/x"}">a</a>`
+    show(u6)  // expect: <a href="//host/x">a</a>
+
+    // UTF-8 passes through; literal entities stay exactly as written
+    let utf = "é☃"
+    let e = html`<p>${utf} &amp; &#39; &copy;</p>`
+    show(e)  // expect: <p>é☃ &amp; &#39; &copy;</p>
+
+    // escaping is one pass, not idempotent
+    let already = "&amp;"
+    let once = html`${already}`
+    show(once)  // expect: &amp;amp;
+
+    // controls: NUL is numeric; an attribute also escapes tab and newline
+    let nul = "\0"
+    let ct = html`<p>${nul}</p>`
+    show(ct)  // expect: <p>&#0;</p>
+    let ctl = "\t\n"
+    let ca = html`<p title="${ctl}">x</p>`
+    show(ca)  // expect: <p title="&#9;&#10;">x</p>
+
+    // an Html fragment is claimed-safe markup, inserted once and not escaped
+    let body = html`<b>${s}</b>`
+    let page = html`<p>${body}</p>`
+    show(page)  // expect: <p><b>&amp;&lt;&gt;&quot;&#39;</b></p>
+
+    // copy allows reuse; the plain fragment is consumed
+    let frag = html`<i>${s}</i>`
+    let p1 = html`<div>${html.copy(frag)}</div>`
+    let p2 = html`<section>${frag}</section>`
+    show(p1)  // expect: <div><i>&amp;&lt;&gt;&quot;&#39;</i></div>
+    show(p2)  // expect: <section><i>&amp;&lt;&gt;&quot;&#39;</i></section>
+
+    // []Html concatenates in order; an empty array is empty output
+    var rows = new []Html(0)
+    append(rows, html`<li>${"a&"}</li>`)
+    append(rows, html`<li>${"b"}</li>`)
+    let list = html`<ul>${rows}</ul>`
+    show(list)  // expect: <ul><li>a&amp;</li><li>b</li></ul>
+    var noRows = new []Html(0)
+    let empty = html`<ul>${noRows}</ul>`
+    show(empty)  // expect: <ul></ul>
+
+    // scalar holes are encoded as text, then escaped for the context
+    let n = 7
+    let t = true
+    let f = 1.5f
+    let d = 12.3400
+    let scalars = html`<p>${n} ${t} ${f} ${d}</p>`
+    show(scalars)  // expect: <p>7 true 1.5 12.3400</p>
+    let sattr = html`<p title="${n} ${t} ${d}">x</p>`
+    show(sattr)  // expect: <p title="7 true 12.3400">x</p>
+
+    // htmlRaw is an explicit literal-only raw constructor
+    let raw = htmlRaw`<b>raw &amp; \` ok</b>`
+    show(raw)  // expect: <b>raw &amp; ` ok</b>
+
+    // explicit trusted construction composes with the tag
+    let trusted = html::raw("<em>trusted</em>")
+    let out = html`<p>${trusted}</p>`
+    show(out)  // expect: <p><em>trusted</em></p>
+
+    // a nested literal is just an ordinary Html hole
+    let nested = html`<p>${html`<b>${"x<"}</b>`}</p>`
+    show(nested)  // expect: <p><b>x&lt;</b></p>
+}

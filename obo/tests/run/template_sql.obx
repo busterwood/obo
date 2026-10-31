@@ -1,0 +1,194 @@
+// Compiler-known sql/sqlRaw template literals (0.15).
+
+fn showArg(a: &SqlArg) {
+    match a {
+        Null { println("null") }
+        Int { println("int ", a.v) }
+        Bool { println("bool ", a.v) }
+        Float { println("float ", a.v) }
+        Str { println("str ", a.v) }
+        Bytes { println("bytes ", len(a.v)) }
+        DecimalText { println("dec ", string(a.v)) }
+    }
+}
+
+fn showSql(q: &Sql) {
+    let ts = &q.text
+    let ps = &q.params
+    println("texts ", len(ts), " params ", len(ps))
+    for t in ts { println("t[", t, "]") }
+    for a in ps { showArg(a) }
+}
+
+fn apply(f: fn(int): int): int { return f(2) }
+
+fn main() {
+    // literal text and bind order
+    let q = sql`SELECT * FROM account WHERE id = ${7} AND name = ${"O'Brien"} AND active = ${true}`
+    showSql(q)  // expect: texts 4 params 3
+    // expect: t[SELECT * FROM account WHERE id = ]
+    // expect: t[ AND name = ]
+    // expect: t[ AND active = ]
+    // expect: t[]
+    // expect: int 7
+    // expect: str O'Brien
+    // expect: bool true
+
+    // a string is always a bind, never SQL text
+    let evil = "x'; DROP TABLE account; --"
+    let n = sql`SELECT ${evil}`
+    showSql(n)  // expect: texts 2 params 1
+    // expect: t[SELECT ]
+    // expect: t[]
+    // expect: str x'; DROP TABLE account; --
+
+    // bytes move into a Bytes argument; decimal is exact display text; null is explicit
+    var b = new []byte(0)
+    append(b, 'a')
+    append(b, byte(0))
+    append(b, 'z')
+    let v = sql`${b} ${1.2300} ${sqlNull()}`
+    showSql(v)  // expect: texts 4 params 3
+    // expect: t[]
+    // expect: t[ ]
+    // expect: t[ ]
+    // expect: t[]
+    // expect: bytes 3
+    // expect: dec 1.2300
+    // expect: null
+
+    // float is a binary64 bind, not formatted SQL text
+    let f = 1.5f
+    let fq = sql`${f}`
+    let fp = &fq.params
+    showArg(fp[0])  // expect: float 1.5
+
+    // copy lets a fragment be reused; a plain Sql hole consumes it
+    let base = sql`region = ${"EU"}`
+    let a = sql`SELECT * FROM t WHERE ${sql.copy(base)}`
+    showSql(a)  // expect: texts 2 params 1
+    // expect: t[SELECT * FROM t WHERE region = ]
+    // expect: t[]
+    // expect: str EU
+    let c = sql`SELECT * FROM u WHERE ${base}`
+    showSql(c)  // expect: texts 2 params 1
+    // expect: t[SELECT * FROM u WHERE region = ]
+    // expect: t[]
+    // expect: str EU
+
+    // sqlJoin and sqlWhere compose fragments and their parameters
+    var parts = new []Sql(0)
+    append(parts, sql`name = ${"a"}`)
+    append(parts, sql`id = ${2}`)
+    let joined = sqlJoin(parts, sqlRaw`, `)
+    showSql(joined)  // expect: texts 3 params 2
+    // expect: t[name = ]
+    // expect: t[, id = ]
+    // expect: t[]
+    // expect: str a
+    // expect: int 2
+
+    var where = new []Sql(0)
+    append(where, sql`name = ${"a"}`)
+    append(where, sql`id = ${2}`)
+    let w = sql`SELECT * FROM t ${sqlWhere(where)}`
+    showSql(w)  // expect: texts 3 params 2
+    // expect: t[SELECT * FROM t WHERE (name = ]
+    // expect: t[ AND id = ]
+    // expect: t[)]
+    // expect: str a
+    // expect: int 2
+
+    var none = new []Sql(0)
+    let empty = sqlWhere(none)
+    showSql(empty)  // expect: texts 1 params 0
+    // expect: t[]
+
+    // a hole may span lines without a statement-ending semicolon
+    let ml = sql`SELECT ${
+        1 +
+        2
+    }`
+    showSql(ml)  // expect: texts 2 params 1
+    // expect: t[SELECT ]
+    // expect: t[]
+    // expect: int 3
+
+    // a nested template is an ordinary Sql fragment
+    let inner = sql`x = ${1}`
+    let outer = sql`SELECT ${inner}`
+    showSql(outer)  // expect: texts 2 params 1
+    // expect: t[SELECT x = ]
+    // expect: t[]
+    // expect: int 1
+
+    // raw literal: only \` and \${ escape; $tag$ and ? are literal SQL text
+    let r = sqlRaw`SELECT $tag$hi$tag$, \`, \${x}, \\x`
+    showSql(r)  // expect: texts 1 params 0
+    // expect: t[SELECT $tag$hi$tag$, `, ${x}, \\x]
+
+    // a heap string argument keeps a reference of its own
+    var hb = new []byte(0)
+    append(hb, 'h')
+    append(hb, 'i')
+    let heap = string(hb)
+    let hq = sql`${heap}`
+    showSql(hq)  // expect: texts 2 params 1
+    // expect: t[]
+    // expect: t[]
+    // expect: str hi
+
+    // sqlBytes copies; the caller keeps its array
+    var src = new []byte(0)
+    append(src, 'q')
+    let arg = sqlBytes(src)
+    let sb = sql`${arg}`
+    println("kept ", len(src))  // expect: kept 1
+    showSql(sb)  // expect: texts 2 params 1
+    // expect: t[]
+    // expect: t[]
+    // expect: bytes 1
+
+    // duplicate and mixed values keep left-to-right parameter order
+    let mix = sql`${1} ${1} ${"1"} ${1.50}`
+    showSql(mix)  // expect: texts 5 params 4
+    // expect: t[]
+    // expect: t[ ]
+    // expect: t[ ]
+    // expect: t[ ]
+    // expect: t[]
+    // expect: int 1
+    // expect: int 1
+    // expect: str 1
+    // expect: dec 1.50
+
+    // decimal transport is exact text: display when exact, canonical when the
+    // display scale was capped, never a rounded value
+    let tiny = 1e-20 * 1e-20
+    let tq = sql`${tiny}`
+    showSql(tq)  // expect: texts 2 params 1
+    // expect: t[]
+    // expect: t[]
+    // expect: dec 0.0000000000000000000000000000000000000001
+
+    // a lambda body inside a hole keeps its own statement boundaries
+    let lq = sql`${apply(fn (x: int): int {
+        return x + 1
+    })}`
+    showSql(lq)  // expect: texts 2 params 1
+    // expect: t[]
+    // expect: t[]
+    // expect: int 3
+
+    // tag names are contextual: ordinary identifiers named sql/html still work
+    let sql = 5
+    let html = "h"
+    println(sql, " ", html)  // expect: 5 h
+
+    // chunks are raw: newlines, UTF-8 and backslashes survive
+    let raw = sql`SELECT 'é'
+FROM t WHERE p = 'C:\tmp'`
+    showSql(raw)  // expect: texts 1 params 0
+    // expect: t[SELECT 'é'
+    // expect: FROM t WHERE p = 'C:\tmp']
+}

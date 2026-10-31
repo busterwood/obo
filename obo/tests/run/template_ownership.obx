@@ -1,0 +1,52 @@
+// Template builders are ordinary owned locals: loops, early exits and arrays
+// must free them exactly once under OBO_CHECK=1.
+
+import "html.obx" as html
+
+fn makeBase(region: string): Sql {
+    let q = sql`region = ${region}`
+    return q
+}
+
+fn page(n: int): Html {
+    if n < 0 { return html`<p>none</p>` }
+    return html`<p>${n}</p>`
+}
+
+fn main() {
+    var count = 0
+    for i in 0..50 {
+        let q = sql`SELECT ${i}`
+        let ps = &q.params
+        count += len(ps)
+    }
+    println(count)  // expect: 50
+
+    // an early break frees the builders made on the way out
+    for i in 0..10 {
+        let h = html`<p>${i}</p>`
+        let t = sql`${i}`
+        if i == 3 { break }
+    }
+
+    // fragments accumulated in a loop, then joined and consumed
+    var rows = new []Sql(0)
+    for i in 0..5 { append(rows, sql`${i}`) }
+    let joined = sqlJoin(rows, sqlRaw`, `)
+    println(len(joined.params))  // expect: 5
+
+    // returning a template from a function moves it to the caller
+    let base = makeBase("EU")
+    let q = sql`SELECT * FROM t WHERE ${base}`
+    println(len(q.params))  // expect: 1
+
+    // early returns on both sides of a branch
+    let a = page(-1)
+    let b = page(7)
+    println(len(html::toText(a)), " ", len(html::toText(b)))  // expect: 11 8
+
+    // a template used directly as a discarded expression is freed at once
+    sql`SELECT ${1}`
+    html`<p>${2}</p>`
+    println("ok")  // expect: ok
+}

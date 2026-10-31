@@ -1,0 +1,9 @@
+// A URL hole validates its scheme at run time; javascript: is not allowed.
+
+fn main() {
+    let url = "javascript:alert(1)"
+    let h = html`<a href="${url}">x</a>`
+    println("unreachable")
+}
+// expect-exit: 10
+// expect-stderr: obo: URL scheme is not allowed

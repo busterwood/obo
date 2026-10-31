@@ -113,6 +113,31 @@ MUTANTS = [
 # directory; the compiler is rebuilt from the unmutated source so the test
 # programs embed the mutant runtime.  Each item is (name, file, old, new).
 RUNTIME_MUTANTS = [
+    # template decimal transport and escaping (0.15)
+    ("template: SQL decimal text is always canonical",
+     "runtime.c",
+     "    int canonical = 0;",
+     "    int canonical = 1;"),
+    ("template: SQL decimal display does not fall back to canonical",
+     "runtime.c",
+     "    if (st == DEC_INEXACT) { st = dec_format_canonical_len(v, &n); canonical = 1; }\n",
+     ""),
+    ("template: SQL Str argument takes no string reference",
+     "runtime.c",
+     "    } else if (tag == 4) {\n        v[0] = rt_str_inc(value);",
+     "    } else if (tag == 4) {\n        v[0] = value;"),
+    ("template: spliced parameters all use the first argument",
+     "runtime.c",
+     "                tpl_sql_add_arg(sql, tpl_clone(((u64 *)((char *)fp->data + 8))[i - 1]));",
+     "                tpl_sql_add_arg(sql, tpl_clone(((u64 *)((char *)fp->data + 8))[0]));"),
+    ("template: HTML does not escape ampersand",
+     "runtime.c",
+     "        if (b == '&') { memcpy(q, amp, 5); q += 5; }",
+     "        if (b == 0) { memcpy(q, amp, 5); q += 5; }"),
+    ("template: URL scheme allow-list drops https",
+     "runtime.c",
+     "    return tpl_scheme_is(p, i, \"http\") || tpl_scheme_is(p, i, \"https\") ||\n           tpl_scheme_is(p, i, \"mailto\");",
+     "    return tpl_scheme_is(p, i, \"http\") ||\n           tpl_scheme_is(p, i, \"mailto\");"),
     # existing arithmetic/runtime decimal mutants
     ("multiply cap is computed from operand a",
      "decimal24_core.inc",
@@ -338,15 +363,16 @@ def run_text_suite(rt, work, verbose):
     return True
 
 
-def run_suite(exe, rt, work, verbose, runtime_dir=None):
+def run_suite(exe, rt, work, verbose, runtime_dir=None, patterns=('decimal',)):
     env = dict(os.environ, OBO=exe, OBO_RT=rt)
-    r = subprocess.run([sys.executable, RUNNER, '-k', 'decimal'],
-                       capture_output=True, text=True, timeout=300, env=env)
-    if r.returncode != 0:
-        if verbose:
-            for line in (r.stdout + r.stderr).splitlines()[:8]:
-                print('        ' + line)
-        return False
+    for pattern in patterns:
+        r = subprocess.run([sys.executable, RUNNER, '-k', pattern],
+                           capture_output=True, text=True, timeout=300, env=env)
+        if r.returncode != 0:
+            if verbose:
+                for line in (r.stdout + r.stderr).splitlines()[:8]:
+                    print('        ' + line)
+            return False
     return run_text_suite(runtime_dir or rt, work, verbose)
 
 
@@ -401,7 +427,8 @@ def main():
                 print(f"BROKEN  {name}: compiler did not build: {p.stderr.strip()[:140]}")
                 broken += 1
                 continue
-            if not run_suite(exe, rt, tmp, verbose):
+            pats = ('template_sql', 'template_html') if name.startswith('template:') else ('decimal',)
+            if not run_suite(exe, rt, tmp, verbose, patterns=pats):
                 caught += 1
                 print(f"caught  {name}")
             else:
