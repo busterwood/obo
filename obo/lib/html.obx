@@ -51,10 +51,10 @@
 // NUL never reaches the output. C1 controls encoded as UTF-8 are non-ASCII and
 // pass through; they are not interpreted here.
 //
-// Escaping is deliberately not idempotent: escapeText("&amp;") is
-// "&amp;amp;". That is correct for a value that has already been escaped once;
-// do not pass an already-escaped string through escapeText again. raw is the
-// way to insert a fragment once, and join does not escape its inputs.
+// Escaping is one pass, not idempotent: escapeText("&amp;") is "&amp;amp;".
+// An already-encoded string is encoded again, so do not pass one through an
+// escaper. raw is the way to insert a fragment once, and join does not escape
+// its inputs.
 //
 // URL policy. validateUrl accepts a relative reference (including `/path`,
 // `?query`, `#frag` and `//host/path`) or an absolute URL whose scheme is
@@ -68,11 +68,13 @@
 // call: this function validates the scheme and then attribute-encodes; it does
 // not percent-encode or otherwise rewrite the path/query. The returned Html is
 // attribute-value content for a quoted href/src, not a complete tag or raw
-// markup.
+// markup. It is element-agnostic: a validated URL is not a policy for
+// script-src, base href or other navigation/control attributes.
 //
-// Ownership: Html owns its text. raw consumes its argument; escapeText,
-// escapeAttr and validateUrl build a new string; join borrows the array and
-// elements. There is no implicit array conversion or separator.
+// Ownership: Html owns its text. raw stores its own reference to the string,
+// so the caller's binding stays valid; escapeText, escapeAttr and validateUrl
+// build a new string; join borrows the array and elements. There is no implicit
+// array conversion or separator.
 module html
 
 // Claimed-safe HTML content. The field is public by design: direct construction
@@ -99,6 +101,9 @@ fn appendDecimal(mut out: &[]byte, n: int) {
     if n >= 100 {
         append(out, byte('0' + n / 100))
         n = n % 100
+        append(out, byte('0' + n / 10))
+        append(out, byte('0' + n % 10))
+        return
     }
     if n >= 10 {
         append(out, byte('0' + n / 10))

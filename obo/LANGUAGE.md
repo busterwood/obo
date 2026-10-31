@@ -2020,13 +2020,13 @@ attribute value (both quote types), `validateUrl` allow-lists relative,
 `http`, `https` and `mailto` URLs and attribute-encodes the result, and `join`
 concatenates `Html` fragments without escaping them. Trust is a documented
 convention, not type enforcement: direct `new html::Html{text: ...}` is legal
-and equivalent to `raw`. Escaping is once-only, so an already-encoded string is
-escaped again and `raw` must not be fed untrusted values. There is deliberately
-no API for script/style bodies, comments, unquoted attributes or dynamic
-tag/attribute names, and no sanitizer. The future compiler-known `html` tag will
-lower literal chunks to `raw` and holes to these context functions; until then,
-this module is the builder-only form. Its header documents the byte, control
-and URL policies.
+and equivalent to `raw`. Escaping is one pass and not idempotent: an
+already-encoded string is encoded again, and `raw` must not be fed untrusted
+values. There is deliberately no API for script/style bodies, comments,
+unquoted attributes or dynamic tag/attribute names, and no sanitizer. The
+future compiler-known `html` tag will lower literal chunks to `raw` and holes
+to these context functions; until then, this module is the builder-only form.
+Its header documents the byte, control and URL policies.
 
 ### Metadata
 

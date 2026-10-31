@@ -47,6 +47,7 @@ import own_fuzz  # noqa: E402
 import module_test  # noqa: E402
 import sym_test  # noqa: E402
 import elf_test  # noqa: E402
+import html_lib_test  # noqa: E402
 
 run.OBXC = os.path.abspath(os.environ.get('OBO', os.path.join(FORK, 'obo')))
 run.ROOT = FORK                                   # --rt: the fork's runtime
@@ -171,6 +172,7 @@ def main():
     # the image: the runtime-data segment's file size is the nonzero prefix, its
     # memory size the full image, and the program built by the compiler runs
     tests.append(("image/runtime_data_segment", lambda: elf_test.check(run.OBXC)))
+    tests.append(("html/decimal-private", html_lib_test.decimal_private))
     tests.append(("lambda/call-arena-bound", call_arena_bound))
     tests.append(("float/core", lambda: program_test(os.path.join(HERE, "float_core.obx"))))
     def float_reader_gate():

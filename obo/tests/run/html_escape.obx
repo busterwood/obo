@@ -3,9 +3,9 @@
 // The module is imported through -I obo/lib like the other library modules.
 // Every check prints one line; the expect comments are compared in order.
 // The cases pin the documented byte output, UTF-8 pass-through, both quote
-// types, NUL/control handling, double escaping, raw construction, join order
-// and the URL scheme policy. A failure prints FAIL and therefore differs from
-// the expected stdout.
+// types, NUL/control handling, double escaping, raw construction, join order,
+// the URL scheme policy and adversarial encodings. A failure prints FAIL and
+// therefore differs from the expected stdout.
 import "html.obx" as html
 
 fn check(label: string, got: string, want: string) {
@@ -54,6 +54,46 @@ fn delString(): string {
     return string(b)
 }
 
+fn allControls(): string {
+    var b = new []byte(0)
+    for i in 0..32 { append(b, byte(i)) }
+    append(b, byte(127))
+    return string(b)
+}
+
+fn bytes3(a: byte, b: byte, c: byte): string {
+    let out = new []byte(3)
+    out[0] = a
+    out[1] = b
+    out[2] = c
+    return string(out)
+}
+
+fn twoBytePrefix(a: byte, b: byte, suffix: string): string {
+    var out = new []byte(0)
+    append(out, a)
+    append(out, b)
+    for i in 0..len(suffix) { append(out, suffix[i]) }
+    return string(out)
+}
+
+fn threeBytePrefix(a: byte, b: byte, c: byte, suffix: string): string {
+    var out = new []byte(0)
+    append(out, a)
+    append(out, b)
+    append(out, c)
+    for i in 0..len(suffix) { append(out, suffix[i]) }
+    return string(out)
+}
+
+fn checkInt(label: string, got: int, want: int) {
+    if got == want {
+        println("ok ", label)
+    } else {
+        println("FAIL ", label, " got ", got, " want ", want)
+    }
+}
+
 fn urlOk(label: string, url: string, want: string) {
     let r = html::validateUrl(url)
     match r {
@@ -86,7 +126,7 @@ fn main() {
     check("text-empty", escaped(""), "")
     // expect: ok text-empty
 
-    // Escaping is once-only: already-encoded text is escaped again.
+    // Escaping is one pass, not idempotent: encoded text is encoded again.
     check("text-double", escaped("&amp; &quot;"),
           "&amp;amp; &amp;quot;")
     // expect: ok text-double
@@ -102,6 +142,36 @@ fn main() {
     check("text-whitespace", escaped("a\tb\nc\rd"),
           "a\tb\nc\rd")
     // expect: ok text-whitespace
+    let badIn = bytes3('x', byte(0x80), 'y')
+    let badWant = bytes3('x', byte(0x80), 'y')
+    let badOut = html::escapeText(badIn)
+    check("text-invalid-utf8", badOut.text, badWant)
+    // expect: ok text-invalid-utf8
+
+    // 100k+ input: length and both ends are exact, not sampled.
+    var longBuf = new []byte(0)
+    append(longBuf, '&')
+    for i in 0..100000 { append(longBuf, 'a') }
+    append(longBuf, '<')
+    let longSource = string(longBuf)
+    let longText = html::escapeText(longSource)
+    checkInt("long-text-len", len(longText.text), 100009)
+    // expect: ok long-text-len
+    check("long-text-prefix", substr(longText.text, 0, 5), "&amp;")
+    // expect: ok long-text-prefix
+    check("long-text-suffix",
+          substr(longText.text, len(longText.text) - 4, len(longText.text)),
+          "&lt;")
+    // expect: ok long-text-suffix
+    let longAttr = html::escapeAttr(longSource)
+    checkInt("long-attr-len", len(longAttr.text), 100009)
+    // expect: ok long-attr-len
+    check("long-attr-prefix", substr(longAttr.text, 0, 5), "&amp;")
+    // expect: ok long-attr-prefix
+    check("long-attr-suffix",
+          substr(longAttr.text, len(longAttr.text) - 4, len(longAttr.text)),
+          "&lt;")
+    // expect: ok long-attr-suffix
 
     // Quoted attribute values: both quote characters are escaped, and
     // tab/LF/CR become references instead of raw whitespace.
@@ -120,12 +190,21 @@ fn main() {
     check("attr-whitespace", attr("a\tb\nc\rd"),
           "a&#9;b&#10;c&#13;d")
     // expect: ok attr-whitespace
+    check("attr-all-controls", attr(allControls()),
+          "&#0;&#1;&#2;&#3;&#4;&#5;&#6;&#7;&#8;&#9;&#10;&#11;&#12;&#13;&#14;&#15;&#16;&#17;&#18;&#19;&#20;&#21;&#22;&#23;&#24;&#25;&#26;&#27;&#28;&#29;&#30;&#31;&#127;")
+    // expect: ok attr-all-controls
 
     // raw is the explicit trusted constructor and does not escape.
     check("raw-passthrough", rawText("<b>&</b>"), "<b>&</b>")
     // expect: ok raw-passthrough
     check("raw-empty", rawText(""), "")
     // expect: ok raw-empty
+    var original = "abc"
+    let rawH = html::raw(original)
+    check("raw-caller-binding", original, "abc")
+    // expect: ok raw-caller-binding
+    check("raw-value", rawH.text, "abc")
+    // expect: ok raw-value
     let direct = new html::Html{text: "<i>direct</i>"}
     check("direct-construction", direct.text, "<i>direct</i>")
     // expect: ok direct-construction
@@ -171,6 +250,40 @@ fn main() {
           "https://example.com/?q=&quot;x&quot;&amp;a=&#39;b&#39;")
     // expect: ok url-quotes
 
+    // HTML-entity text is relative (no colon) and & is escaped, so a browser
+    // cannot decode a second time into javascript:. Percent-encoded colons
+    // are not decoded into a scheme by the URL parser either.
+    urlOk("url-entity-colon", "javascript&#58;alert(1)",
+          "javascript&amp;#58;alert(1)")
+    // expect: ok url-entity-colon
+    urlOk("url-entity-colon-hex", "javascript&#x3a;alert(1)",
+          "javascript&amp;#x3a;alert(1)")
+    // expect: ok url-entity-colon-hex
+    urlOk("url-entity-j", "&#106;avascript:alert(1)",
+          "&amp;#106;avascript:alert(1)")
+    // expect: ok url-entity-j
+    urlOk("url-entity-named", "javascript&colon;alert(1)",
+          "javascript&amp;colon;alert(1)")
+    // expect: ok url-entity-named
+    urlOk("url-pct-colon", "javascript%3aalert(1)",
+          "javascript%3aalert(1)")
+    // expect: ok url-pct-colon
+    urlErr("url-pct-j", "%6aavascript:alert(1)",
+           "URL scheme is not allowed")
+    // expect: ok url-pct-j
+
+    // Backslash is not a scheme byte. A leading backslash leaves an invalid
+    // scheme; after a slash the reference is relative and is still escaped.
+    urlErr("url-backslash", "\\javascript:alert(1)",
+           "URL scheme is not allowed")
+    // expect: ok url-backslash
+    urlOk("url-backslash-path", "/\\javascript:alert(1)",
+          "/\\javascript:alert(1)")
+    // expect: ok url-backslash-path
+    urlErr("url-backslash-double", "\\\\javascript:alert(1)",
+           "URL scheme is not allowed")
+    // expect: ok url-backslash-double
+
     // Rejected schemes, including mixed case, data/vbscript/file/blob.
     urlErr("url-js", "javascript:alert(1)", "URL scheme is not allowed")
     // expect: ok url-js
@@ -209,4 +322,25 @@ fn main() {
     urlErr("url-control-path", "https://example.com/a\0b",
            "URL contains an ASCII space or control byte")
     // expect: ok url-control-path
+
+    // Unicode whitespace, separators, BOM and C1 before a scheme are not ASCII
+    // bytes of a valid scheme, so the scheme is refused.
+    urlErr("url-unicode-nbsp",
+           twoBytePrefix(byte(0xC2), byte(0xA0), "javascript:alert(1)"),
+           "URL scheme is not allowed")
+    // expect: ok url-unicode-nbsp
+    urlErr("url-unicode-line",
+           threeBytePrefix(byte(0xE2), byte(0x80), byte(0xA8),
+                           "javascript:alert(1)"),
+           "URL scheme is not allowed")
+    // expect: ok url-unicode-line
+    urlErr("url-bom",
+           threeBytePrefix(byte(0xEF), byte(0xBB), byte(0xBF),
+                           "javascript:alert(1)"),
+           "URL scheme is not allowed")
+    // expect: ok url-bom
+    urlErr("url-c1",
+           twoBytePrefix(byte(0xC2), byte(0x85), "javascript:alert(1)"),
+           "URL scheme is not allowed")
+    // expect: ok url-c1
 }
