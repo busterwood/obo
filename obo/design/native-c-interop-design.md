@@ -1,11 +1,12 @@
 # Native C interop (`cinterop`) — design note
 
-Status: **design proposal, not implemented.** Date: 2026-10-31. Baseline:
-`main` at `befa626` (`obo: promote the 0.9 seed and release Stage A lambdas`),
-compiler `0.9`, `.sym` format 5, ABI 1. The only work approved here is a
-one-time generic capability and an experimental prototype for review. This is
-not approval of a full production API, not a stable format, and not permission
-to merge, push or promote a seed.
+Status: **design proposal; experimental prototype exists (section 14), not a
+production implementation.** Date: 2026-10-31. Baseline: `main` at `befa626`
+(`obo: promote the 0.9 seed and release Stage A lambdas`), compiler `0.9`,
+`.sym` format 5, ABI 1. The only work approved here is a one-time generic
+capability and an experimental prototype for review. This is not approval of a
+full production API, not a stable format, and not permission to merge, push or
+promote a seed.
 
 The prototype lives outside the public compiler surface under
 `obo/experimental/cinterop/`. It is labelled experimental. Nothing in this note
@@ -299,12 +300,13 @@ link around it:
 3. Link with the system `cc`/`ld`, a linker script that places the obo sections
    at their existing fixed virtual addresses, a small hosted startup object,
    the generated shim object and the requested system library.
-4. The startup uses the normal dynamic loader and `__libc_start_main`, so
-   glibc constructors, TLS, IFUNC resolution and libpq's dependencies behave
-   normally. A small C `main` builds the initial-stack-shaped block that
-   `rt_init` expects and jumps to the obo entry. This synthetic block is a
-   prototype boundary; production should add a proper entry function that
-   takes `argc/argv/envp` explicitly.
+4. The startup uses the host `crt1.o`/`crti.o`/`crtn.o` and therefore the
+   normal dynamic loader and `__libc_start_main` path, so glibc constructors,
+   TLS, IFUNC resolution and libpq's dependencies behave normally. A small C
+   `main` builds the initial-stack-shaped block that `rt_init` expects and
+   jumps to the obo entry. This synthetic block is a prototype boundary;
+   production should add a proper entry function that takes `argc/argv/envp`
+   explicitly.
 5. The final artifact must be `ET_EXEC` (non-PIE), not a PIE/shared object,
    and the obo segments must be at the expected addresses. This avoids an
    ASLR relocation rewrite of obo's absolute cells.
@@ -348,11 +350,16 @@ These are design requirements, not implemented v1 behavior:
   before `PQclear` and must use `PQgetlength`. Embedded NUL is preserved in a
   byte array; converting to an obo string must reject embedded NUL rather than
   silently truncate.
-- `PQerrorMessage` is borrowed from the connection; copy it before the next
-  operation that can invalidate it.
+- SQL `NULL` is `PQgetisnull`, distinct from an empty string or a zero-length
+  byte array. Null must never be inferred from a pointer value or a length.
+- `PQresultStatus` decides success/error/empty/tuples-ok; an error result still
+  owns a `PGresult` and is cleared with `PQclear`. `PQerrorMessage` is borrowed
+  from the connection or result and is copied before the next operation that
+  can invalidate it.
 - Query text passed to C must be a stable NUL-terminated buffer for the call.
   An obo string containing an embedded NUL is rejected; arbitrary byte arrays
-  are not silently treated as C strings.
+  are not silently treated as C strings. Input buffers must stay stable for the
+  whole call, including any callback-free parameter array.
 - Binary/text format, `PQftype`, `PQfmod` and `PQtypmod` are preserved. Unknown
   types are an error, never silently turned into a float. `money` is never
   converted to a binary float. Exact decimal is future work and must not reuse
@@ -539,10 +546,119 @@ Plan:
 
 ## 14. Prototype results
 
-Not yet run. This section is filled only after the actual prototype executes;
-research claims above are not rewritten as completed work. Each result records
-the command, the exit status, the observed stdout/stderr, the final ELF type
-and segments, and any blocked component.
+Recorded from the actual prototype in this worktree, 2026-10-31. The design
+commit is `cd90a2d`; the prototype code and tests are the working-tree changes
+committed separately after this document. Artifacts and logs are under
+`/tmp/opencode/c-interop-prototype-20261031/`.
+
+### 14.1 Scalar end to end (P0/P1/P2)
+
+Command:
+
+```sh
+python3 obo/experimental/cinterop/cinterop.py build \
+  obo/experimental/cinterop/examples/scalar.cbind \
+  obo/experimental/cinterop/examples/scalar_app.obx \
+  --out /tmp/opencode/c-interop-prototype-20261031/scalar --obo obo/obo
+```
+
+Observed: build succeeded; the ordinary obo application printed `scalar ok`
+and exited 0. The test covers `zero`, signed 64-bit `identity`, `add`, and
+`sum3`..`sum8` (0..8 arguments), plus `align6`, `align7`, `align8`.
+
+Generated `.sym` for the wrapper is ordinary format 5 with no native extension
+(`fn add(p0: int, p1: int): int writeshandles`), and the application import is
+an ordinary `import "hello.obx"`.
+
+Final artifact:
+
+- `readelf -h`: `Type: EXEC (Executable file)`, entry `0x3000000`.
+- `readelf -l`: `.obo.text` at `0x401000`, `.obo.rodata` at `0x08000000`,
+  `.obo.bss` at `0x0C000000`, `.obo.rttext` at `0x10000000`,
+  `.obo.rtdata` at `0x20000000`; host CRT/PLT/dynamic tables above.
+- `nm -u`: only `__libc_start_main@GLIBC_2.34`, a normal dynamic-loader
+  reference; no `obo_native_*` unresolved thunk.
+- `ldd`: `libc.so.6`, the normal interpreter.
+
+The freestanding ABI probe (`gcc -nostdlib -no-pie`, no libc) linked the
+generated shim and scalar objects, ran with exit 0, and had an empty `nm -u`.
+It checks the result plus `rbx`, `rbp`, `r12..r15` preservation and the
+odd/even 7/8-argument alignment paths.
+
+### 14.2 libpq availability and version (P3)
+
+Host facts observed read-only:
+
+- `/usr/lib/x86_64-linux-gnu/libpq.so.5` and `libpq.so.5.16` exist.
+- `/usr/include/postgresql/libpq-fe.h` is absent.
+- `pkg-config --modversion libpq` reports no package (the command is absent or
+  the `.pc` file is not installed).
+- No database connection, query, server, socket or service action was taken.
+
+The probe therefore uses the documented fallback: a manual
+`extern int PQlibVersion(void);` declaration in the generated C input and
+`-l:libpq.so.5`. Build succeeded; the application printed:
+
+```
+PQlibVersion=160015
+```
+
+`ldd` shows `libpq.so.5` plus its normal dependencies (`libssl.so.3`,
+`libcrypto.so.3`, GSS/Kerberos, LDAP, SASL, GnuTLS and others), which is the
+expected hosted dynamic-loader path. `nm -u` has `PQlibVersion` (resolved by
+the dynamic loader at run time) and `__libc_start_main`, not an unresolved
+`obo_native_*` thunk.
+
+### 14.3 Negative and regression gates
+
+The targeted test command is:
+
+```sh
+python3 obo/experimental/cinterop/tests/test_cinterop.py
+```
+
+Observed: `libpq: PQlibVersion=160015`, `cinterop tests ok`, exit 0. It also
+passes these failures:
+
+- wrong arity against a provided C header (`add` declared with one argument):
+  rejected by the generated C signature check before execution;
+- platform mismatch (`aarch64-linux-gnu`): rejected by the spec validator;
+- direct `cinterop` use without `--native-relocs`: rejected by the compiler;
+- modified `native.o`: rejected by manifest hash verification;
+- edited wrapper source with the old manifest: rejected as stale.
+
+Regression results:
+
+- `python3 tests/module_test.py`: 106 passed, 0 failed.
+- `python3 tests/elf_test.py`: pass.
+- `python3 tests/run_fork.py --smoke`: 1544 passed, 0 failed.
+- A normal non-native program compiled by the seed and by the new compiler is
+  byte-identical.
+- The new compiler builds itself byte-identically (fixed point).
+- Product peak: seed `1,988,576` bytes; new compiler `1,989,008` bytes;
+  delta `+432` bytes, below the approved `2,500,000` cap. No cap increase and
+  no check weakening.
+
+### 14.4 What is still missing
+
+This is a real scalar/link prototype, not the full generic backend:
+
+- The compiler still emits a fixed `ET_EXEC`; the tool extracts its load
+  regions into an object. A production backend should emit a real relocatable
+  object with sections/relocations directly.
+- The startup is the prototype synthetic-stack plus host `crt1.o` bridge.
+  Production needs a supported `argc/argv/envp`, constructor, TLS, IFUNC and
+  termination contract.
+- Ownership/effect mapping for `PGconn`, `PGresult`, `malloc`, borrowed bytes
+  and automatic `PQfinish`/`PQclear` is designed but not implemented.
+- No callbacks, variadics, structs by value, TLS, floats, decimals or
+  binary-only module import.
+- Hash checks are provenance/corruption checks, not memory-safety proofs.
+- No per-library compiler edits and no PQ-specific compiler code exist; a
+  second independent scalar library (the libpq probe) used the same seam.
+
+Status: **stop at the prototype checkpoint for separate architecture/security
+review.** Not merged, pushed, promoted or seed-copied.
 
 ## 15. Open questions and review focus
 

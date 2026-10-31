@@ -1,0 +1,13 @@
+long zero(void);
+int neg32(void);
+long identity(long a);
+long add(long a, long b);
+long sum3(long a, long b, long c);
+long sum4(long a, long b, long c, long d);
+long sum5(long a, long b, long c, long d, long e);
+long sum6(long a, long b, long c, long d, long e, long f);
+long sum7(long a, long b, long c, long d, long e, long f, long g);
+long sum8(long a, long b, long c, long d, long e, long f, long g, long h);
+long align6(long a, long b, long c, long d, long e, long f);
+long align7(long a, long b, long c, long d, long e, long f, long g);
+long align8(long a, long b, long c, long d, long e, long f, long g, long h);

@@ -1,0 +1,25 @@
+{
+  "format": "cinterop-proto/0",
+  "module": "hello",
+  "platform": "x86_64-linux-gnu",
+  "abi": "sysv-amd64",
+  "sources": ["scalar.c", "scalar_abi.S"],
+  "headers": ["scalar.h"],
+  "libs": [],
+  "cflags": [],
+  "functions": [
+    {"name": "zero", "symbol": "zero", "args": [], "ret": "i64", "effects": ["pure"]},
+    {"name": "neg32", "symbol": "neg32", "args": [], "ret": "i32", "effects": ["pure"]},
+    {"name": "identity", "symbol": "identity", "args": ["i64"], "ret": "i64", "effects": ["pure"]},
+    {"name": "add", "symbol": "add", "args": ["i64", "i64"], "ret": "i64", "effects": ["pure"]},
+    {"name": "sum3", "symbol": "sum3", "args": ["i64", "i64", "i64"], "ret": "i64", "effects": ["pure"]},
+    {"name": "sum4", "symbol": "sum4", "args": ["i64", "i64", "i64", "i64"], "ret": "i64", "effects": ["pure"]},
+    {"name": "sum5", "symbol": "sum5", "args": ["i64", "i64", "i64", "i64", "i64"], "ret": "i64", "effects": ["pure"]},
+    {"name": "sum6", "symbol": "sum6", "args": ["i64", "i64", "i64", "i64", "i64", "i64"], "ret": "i64", "effects": ["pure"]},
+    {"name": "sum7", "symbol": "sum7", "args": ["i64", "i64", "i64", "i64", "i64", "i64", "i64"], "ret": "i64", "effects": ["pure"]},
+    {"name": "sum8", "symbol": "sum8", "args": ["i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64"], "ret": "i64", "effects": ["pure"]},
+    {"name": "align6", "symbol": "align6", "args": ["i64", "i64", "i64", "i64", "i64", "i64"], "ret": "i64", "effects": ["pure"]},
+    {"name": "align7", "symbol": "align7", "args": ["i64", "i64", "i64", "i64", "i64", "i64", "i64"], "ret": "i64", "effects": ["pure"]},
+    {"name": "align8", "symbol": "align8", "args": ["i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64"], "ret": "i64", "effects": ["pure"]}
+  ]
+}
