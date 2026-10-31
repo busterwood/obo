@@ -1,0 +1,478 @@
+module app
+
+import "sqlite.obx"
+
+// Exact decimal boundary tests over the real libsqlite3 adapter. TEXT is the
+// supported storage class; INTEGER is accepted as exact i64 text with dscale 0;
+// REAL is rejected and BLOB is not decimal. NUMERIC/INTEGER affinity traps are
+// demonstrated rather than hidden.
+
+fn check(ok: bool, name: string, code: int) {
+    if !ok {
+        println("FAIL ", name)
+        exit(code)
+    }
+}
+
+fn zeros(n: int): string {
+    var b = new []byte(0)
+    for i in 0..n { append(b, '0') }
+    return string(b)
+}
+
+fn dec_err(st: &sqlite::Stmt, col: int, name: string, want_code: int,
+           want_msg: string): Result[bool] {
+    let r = st.decimal(col)
+    match r {
+        ok(v) { return err(name + ": unexpectedly ok", 1) }
+        err(m, c) {
+            if c != want_code { return err(name + ": code " + string(c), 2) }
+            if m != want_msg { return err(name + ": message " + m, 3) }
+            return ok(true)
+        }
+    }
+}
+
+fn dec_ok(st: &sqlite::Stmt, col: int, name: string, want_can: string,
+          want_dscale: int): Result[bool] {
+    let r = st.decimal(col)
+    match r {
+        ok(v) {
+            let can = try decimal::canonical(v)
+            if can != want_can { return err(name + ": canonical " + can, 4) }
+            if decimal::dscale(v) != want_dscale {
+                return err(name + ": dscale " + string(decimal::dscale(v)), 5)
+            }
+            return ok(true)
+        }
+        err(m, c) { return err(name + ": " + m + " (" + string(c) + ")", 6) }
+    }
+}
+
+fn bind_err(name: string, r: Result[bool], want_code: int): Result[bool] {
+    match r {
+        ok(v) { return err(name + ": unexpectedly ok", 7) }
+        err(m, c) {
+            if c != want_code { return err(name + ": code " + string(c), 8) }
+            return ok(true)
+        }
+    }
+}
+
+fn one_text(c: &sqlite::Connection, sql: string): Result[string] {
+    let st = try c.prepare(sql)
+    let row = try st.step()
+    if !row { st.close(); return err("query returned no row", 9) }
+    let v = try st.column_text(0)
+    let done = try st.step()
+    if done { st.close(); return err("query returned extra row", 10) }
+    st.close()
+    return ok(v)
+}
+
+fn one_decimal(c: &sqlite::Connection, sql: string): Result[decimal] {
+    let st = try c.prepare(sql)
+    let row = try st.step()
+    if !row { st.close(); return err("query returned no row", 11) }
+    let v = try st.decimal(0)
+    let done = try st.step()
+    if done { st.close(); return err("query returned extra row", 12) }
+    st.close()
+    return ok(v)
+}
+
+fn one_decimal_err(c: &sqlite::Connection, sql: string, name: string,
+                   want_code: int, want_msg: string): Result[bool] {
+    let st = try c.prepare(sql)
+    let row = try st.step()
+    if !row { st.close(); return err(name + ": no row", 13) }
+    let r = try dec_err(&st, 0, name, want_code, want_msg)
+    st.close()
+    return ok(r)
+}
+
+fn insert_value(c: &sqlite::Connection, table: string, id: int,
+                value: decimal, p: int, s: int, checked: bool): Result[bool] {
+    let sql = "INSERT INTO " + table + "(id,v) VALUES(?1,?2)"
+    let st = try c.prepare(sql)
+    let i = try st.bind_int(1, id)
+    if !i { st.close(); return err("bind id", 14) }
+    var b = false
+    if checked {
+        b = try sqlite::bind_decimal(&st, 2, value, p, s)
+    } else {
+        b = try sqlite::bind_decimal_unchecked(&st, 2, value)
+    }
+    if !b { st.close(); return err("bind decimal", 15) }
+    let row = try st.step()
+    if row { st.close(); return err("insert returned a row", 16) }
+    st.close()
+    return ok(true)
+}
+
+fn typeof_id(c: &sqlite::Connection, table: string, id: int): Result[string] {
+    let sql = "SELECT typeof(v) FROM " + table + " WHERE id=" + string(id)
+    return one_text(c, sql)
+}
+
+fn table_value(c: &sqlite::Connection, table: string, id: int): Result[decimal] {
+    let sql = "SELECT v FROM " + table + " WHERE id=" + string(id)
+    return one_decimal(c, sql)
+}
+
+fn table_err(c: &sqlite::Connection, table: string, id: int, name: string,
+             want_code: int, want_msg: string): Result[bool] {
+    let sql = "SELECT v FROM " + table + " WHERE id=" + string(id)
+    return one_decimal_err(c, sql, name, want_code, want_msg)
+}
+
+fn text_tests(c: &sqlite::Connection): Result[bool] {
+    let made = try c.exec("CREATE TABLE t_text(id INTEGER PRIMARY KEY, v TEXT)")
+    if !made { return err("create text", 20) }
+    let v1 = try decimal::parse("1.2300")
+    let v2 = try decimal::parse("0.0000")
+    let v3 = try decimal::parse("1000")
+    let i1 = try insert_value(c, "t_text", 1, v1, 10, 4, true)
+    let i2 = try insert_value(c, "t_text", 2, v2, 10, 4, true)
+    let i3 = try insert_value(c, "t_text", 3, v3, 10, 0, true)
+    if !i1 || !i2 || !i3 { return err("insert text", 21) }
+    let ty = try typeof_id(c, "t_text", 1)
+    if ty != "text" { return err("text affinity type " + ty, 22) }
+    let d1 = try table_value(c, "t_text", 1)
+    let c1 = try decimal::canonical(d1)
+    if c1 != "1.23" || decimal::dscale(d1) != 4 {
+        return err("text round trip " + c1, 23)
+    }
+    let d2 = try table_value(c, "t_text", 2)
+    let c2 = try decimal::canonical(d2)
+    if c2 != "0" || decimal::dscale(d2) != 4 {
+        return err("text zero scale", 24)
+    }
+    let d3 = try table_value(c, "t_text", 3)
+    let c3 = try decimal::canonical(d3)
+    if c3 != "1000" || decimal::dscale(d3) != 0 {
+        return err("text integer", 25)
+    }
+    return ok(true)
+}
+
+fn affinity_tests(c: &sqlite::Connection): Result[bool] {
+    let made = try c.exec("CREATE TABLE t_num(id INTEGER PRIMARY KEY, v NUMERIC)")
+    if !made { return err("create numeric", 30) }
+    let made2 = try c.exec("CREATE TABLE t_int(id INTEGER PRIMARY KEY, v INTEGER)")
+    if !made2 { return err("create integer", 31) }
+
+    let a = try decimal::parse("1.00")
+    let b = try decimal::parse("1.0")
+    let z = try decimal::parse("0.0000")
+    let r = try decimal::parse("1.2300")
+    let ia = try insert_value(c, "t_num", 1, a, 10, 2, true)
+    let ib = try insert_value(c, "t_num", 2, b, 10, 1, true)
+    let iz = try insert_value(c, "t_num", 3, z, 10, 4, true)
+    let ir = try insert_value(c, "t_num", 4, r, 10, 4, true)
+    let ja = try insert_value(c, "t_int", 1, a, 10, 2, true)
+    let jr = try insert_value(c, "t_int", 2, r, 10, 4, true)
+    if !ia || !ib || !iz || !ir || !ja || !jr { return err("affinity insert", 32) }
+
+    let ta = try typeof_id(c, "t_num", 1)
+    if ta != "integer" { return err("numeric integer type " + ta, 33) }
+    let tb = try typeof_id(c, "t_num", 2)
+    if tb != "integer" { return err("numeric 1.0 type " + tb, 34) }
+    let tz = try typeof_id(c, "t_num", 3)
+    if tz != "integer" { return err("numeric zero type " + tz, 35) }
+    let tr = try typeof_id(c, "t_num", 4)
+    if tr != "real" { return err("numeric real type " + tr, 36) }
+
+    // Integer-valued decimals lose display scale but stay exact.
+    let da = try table_value(c, "t_num", 1)
+    let ca = try decimal::canonical(da)
+    if ca != "1" || decimal::dscale(da) != 0 {
+        return err("numeric integer value", 37)
+    }
+    let db = try table_value(c, "t_num", 2)
+    let cb = try decimal::canonical(db)
+    if cb != "1" || decimal::dscale(db) != 0 {
+        return err("numeric 1.0 value", 38)
+    }
+    let dz = try table_value(c, "t_num", 3)
+    let cz = try decimal::canonical(dz)
+    if cz != "0" || decimal::dscale(dz) != 0 {
+        return err("numeric zero value", 39)
+    }
+    let er = try table_err(c, "t_num", 4, "numeric real", 
+                           sqlite::DEC_DB_INEXACT_STORAGE,
+                           "SQLite REAL storage is not exact decimal")
+    if !er { return err("numeric real err", 40) }
+    let ji = try typeof_id(c, "t_int", 1)
+    if ji != "integer" { return err("integer affinity type " + ji, 41) }
+    let dj = try table_value(c, "t_int", 1)
+    let cj = try decimal::canonical(dj)
+    if cj != "1" || decimal::dscale(dj) != 0 {
+        return err("integer affinity value", 42)
+    }
+    let ej = try table_err(c, "t_int", 2, "integer real",
+                           sqlite::DEC_DB_INEXACT_STORAGE,
+                           "SQLite REAL storage is not exact decimal")
+    if !ej { return err("integer real err", 43) }
+    return ok(true)
+}
+
+fn storage_tests(c: &sqlite::Connection): Result[bool] {
+    // INTEGER is SQLite's exact i64-to-text rendering, dscale 0.
+    let big = try one_decimal(c, "SELECT 9223372036854775807")
+    let cbig = try decimal::canonical(big)
+    if cbig != "9223372036854775807" || decimal::dscale(big) != 0 {
+        return err("i64 max", 50)
+    }
+    let small = try one_decimal(c, "SELECT -9223372036854775808")
+    let csmall = try decimal::canonical(small)
+    if csmall != "-9223372036854775808" || decimal::dscale(small) != 0 {
+        return err("i64 min", 51)
+    }
+    let zero = try one_decimal(c, "SELECT 0")
+    let czero = try decimal::canonical(zero)
+    if czero != "0" || decimal::dscale(zero) != 0 { return err("int zero", 52) }
+
+    let r1 = try one_decimal_err(c, "SELECT 1.23", "real 1.23",
+                                 sqlite::DEC_DB_INEXACT_STORAGE,
+                                 "SQLite REAL storage is not exact decimal")
+    let r2 = try one_decimal_err(c, "SELECT 1e300", "real big",
+                                 sqlite::DEC_DB_INEXACT_STORAGE,
+                                 "SQLite REAL storage is not exact decimal")
+    let r3 = try one_decimal_err(c, "SELECT -0.0", "real neg zero",
+                                 sqlite::DEC_DB_INEXACT_STORAGE,
+                                 "SQLite REAL storage is not exact decimal")
+    let r4 = try one_decimal_err(c, "SELECT x'312e3233'", "blob",
+                                 sqlite::DEC_DB_NOT_DECIMAL,
+                                 "value is not numeric decimal data")
+    if !r1 || !r2 || !r3 || !r4 { return err("storage class errors", 53) }
+
+    let n = try one_decimal_err(c, "SELECT NULL", "null",
+                                sqlite::DEC_DB_NULL, "SQL NULL")
+    let e = try one_decimal_err(c, "SELECT ''", "empty",
+                                sqlite::DEC_DB_TEXT_INVALID,
+                                "invalid decimal text")
+    let z = try one_decimal(c, "SELECT '0'")
+    let cz = try decimal::canonical(z)
+    if !n || !e || cz != "0" || decimal::dscale(z) != 0 {
+        return err("null empty zero", 54)
+    }
+
+    // NUL: bind_text rejects it before SQLite; a TEXT cell made through SQL is
+    // read as invalid, and a BLOB cell is rejected earlier as non-decimal.
+    let st = try c.prepare("SELECT ?1")
+    var nul = new []byte(0)
+    append(nul, '1')
+    append(nul, byte(0))
+    append(nul, '2')
+    let ne = try bind_err("bind NUL", st.bind_text(1, string(nul)), 2)
+    st.close()
+    let n1 = try one_decimal_err(c, "SELECT CAST(x'310032' AS TEXT)", "text NUL",
+                                 sqlite::DEC_DB_TEXT_INVALID,
+                                 "invalid decimal text")
+    let n2 = try one_decimal_err(c, "SELECT CAST(x'310032' AS BLOB)", "blob NUL",
+                                 sqlite::DEC_DB_NOT_DECIMAL,
+                                 "value is not numeric decimal data")
+    if !ne || !n1 || !n2 { return err("NUL policy", 55) }
+
+    let b1 = try one_decimal_err(c, "SELECT ' 1'", "leading space",
+                                 sqlite::DEC_DB_TEXT_INVALID,
+                                 "invalid decimal text")
+    let b2 = try one_decimal_err(c, "SELECT '1 '", "trailing space",
+                                 sqlite::DEC_DB_TEXT_INVALID,
+                                 "invalid decimal text")
+    let b3 = try one_decimal_err(c, "SELECT '1_000'", "underscore",
+                                 sqlite::DEC_DB_TEXT_INVALID,
+                                 "invalid decimal text")
+    let b4 = try one_decimal_err(c, "SELECT '0x10'", "hex",
+                                 sqlite::DEC_DB_TEXT_INVALID,
+                                 "invalid decimal text")
+    let b5 = try one_decimal_err(c, "SELECT '.5'", "leading point",
+                                 sqlite::DEC_DB_TEXT_INVALID,
+                                 "invalid decimal text")
+    let b6 = try one_decimal_err(c, "SELECT '1.'", "trailing point",
+                                 sqlite::DEC_DB_TEXT_INVALID,
+                                 "invalid decimal text")
+    let b7 = try one_decimal_err(c, "SELECT '1..2'", "double point",
+                                 sqlite::DEC_DB_TEXT_INVALID,
+                                 "invalid decimal text")
+    if !b1 || !b2 || !b3 || !b4 || !b5 || !b6 || !b7 {
+        return err("bad text", 56)
+    }
+    let f1 = try one_decimal_err(c, "SELECT 'NaN'", "NaN",
+                                 sqlite::DEC_DB_NONFINITE,
+                                 "non-finite numeric is not representable")
+    let f2 = try one_decimal_err(c, "SELECT 'Infinity'", "Infinity",
+                                 sqlite::DEC_DB_NONFINITE,
+                                 "non-finite numeric is not representable")
+    let f3 = try one_decimal_err(c, "SELECT '-Infinity'", "-Infinity",
+                                 sqlite::DEC_DB_NONFINITE,
+                                 "non-finite numeric is not representable")
+    if !f1 || !f2 || !f3 { return err("nonfinite", 57) }
+
+    let p1 = try one_decimal_err(c, "SELECT '1e-70000'", "display",
+                                 sqlite::DEC_DB_DISPLAY_RANGE,
+                                 "decimal display scale is outside uint16")
+    let p2 = try one_decimal_err(c, "SELECT '1e40000'", "exponent",
+                                 sqlite::DEC_DB_EXPONENT,
+                                 "decimal exponent is outside int16")
+    let p3 = try one_decimal_err(c, "SELECT '999999999999999999999999999999999999999'",
+                                 "precision", sqlite::DEC_DB_PRECISION,
+                                 "decimal text has more than 38 significant digits")
+    if !p1 || !p2 || !p3 { return err("parse statuses", 58) }
+
+    let d38 = try one_decimal(c, "SELECT '99999999999999999999999999999999999999'")
+    let c38 = try decimal::canonical(d38)
+    if c38 != "99999999999999999999999999999999999999" || decimal::dscale(d38) != 0 {
+        return err("38 digits", 59)
+    }
+    return ok(true)
+}
+
+fn binding_tests(c: &sqlite::Connection): Result[bool] {
+    let made = try c.exec("CREATE TABLE t_bind(id INTEGER PRIMARY KEY, v TEXT)")
+    if !made { return err("create bind", 60) }
+    let v = try decimal::parse("1.23456")
+    let st = try c.prepare("INSERT INTO t_bind(id,v) VALUES(1,?1)")
+    let e1 = try bind_err("checked rounding", sqlite::bind_decimal(&st, 1, v, 10, 4),
+                          sqlite::DEC_DB_SCALE)
+    st.close()
+    let v2 = try decimal::parse("1234567.890")
+    let st2 = try c.prepare("INSERT INTO t_bind(id,v) VALUES(1,?1)")
+    let e2 = try bind_err("checked precision", sqlite::bind_decimal(&st2, 1, v2, 10, 4),
+                          sqlite::DEC_DB_RANGE)
+    st2.close()
+    let st3 = try c.prepare("INSERT INTO t_bind(id,v) VALUES(1,?1)")
+    let e3 = try bind_err("checked metadata", sqlite::bind_decimal(&st3, 1, v, 0, 4),
+                          sqlite::DEC_DB_METADATA)
+    st3.close()
+    let vn = try decimal::parse("1500")
+    let st4 = try c.prepare("INSERT INTO t_bind(id,v) VALUES(1,?1)")
+    let e4 = try bind_err("negative scale rounding",
+                          sqlite::bind_decimal(&st4, 1, vn, 2, -3),
+                          sqlite::DEC_DB_SCALE)
+    st4.close()
+    if !e1 || !e2 || !e3 || !e4 { return err("bind checked errors", 61) }
+
+    let okv = try decimal::parse("99000")
+    let okb = try insert_value(c, "t_bind", 10, okv, 2, -3, true)
+    if !okb { return err("negative scale fit", 62) }
+    let d = try table_value(c, "t_bind", 10)
+    let can = try decimal::canonical(d)
+    if can != "99000" || decimal::dscale(d) != 0 {
+        return err("negative scale value", 63)
+    }
+
+    // SQLite has no PostgreSQL dscale cap: a 16,384-place value round-trips.
+    let tiny = try decimal::parse("1e-16384")
+    let tb = try insert_value(c, "t_bind", 11, tiny, 0, 0, false)
+    if !tb { return err("tiny insert", 64) }
+    let dt = try table_value(c, "t_bind", 11)
+    let ct = try decimal::canonical(dt)
+    if ct != "1e-16384" || decimal::dscale(dt) != 16384 {
+        return err("tiny round trip " + ct, 65)
+    }
+    return ok(true)
+}
+
+fn boundary_tests(c: &sqlite::Connection): Result[bool] {
+    let made = try c.exec("CREATE TABLE t_big(id INTEGER PRIMARY KEY, v TEXT)")
+    if !made { return err("create big", 70) }
+
+    let s32768 = try decimal::parse("1e-32768")
+    let s32767 = try decimal::parse("1e32767")
+    let s65535 = try decimal::parse("0e-65535")
+    let s38low = try decimal::parse("12345678901234567890123456789012345678e-32768")
+    let i1 = try insert_value(c, "t_big", 1, s32768, 0, 0, false)
+    let i2 = try insert_value(c, "t_big", 2, s32767, 0, 0, false)
+    let i3 = try insert_value(c, "t_big", 3, s65535, 0, 0, false)
+    let i4 = try insert_value(c, "t_big", 4, s38low, 0, 0, false)
+    if !i1 || !i2 || !i3 || !i4 { return err("boundary insert", 71) }
+
+    let d1 = try table_value(c, "t_big", 1)
+    let c1 = try decimal::canonical(d1)
+    if c1 != "1e-32768" || decimal::dscale(d1) != 32768 {
+        return err("dscale 32768", 72)
+    }
+    let d2 = try table_value(c, "t_big", 2)
+    let c2 = try decimal::canonical(d2)
+    if c2 != "1e32767" || decimal::dscale(d2) != 0 {
+        return err("magnitude 32767", 73)
+    }
+    let d3 = try table_value(c, "t_big", 3)
+    let c3 = try decimal::canonical(d3)
+    if c3 != "0" || decimal::dscale(d3) != 65535 {
+        return err("dscale 65535", 74)
+    }
+    let d4 = try table_value(c, "t_big", 4)
+    let c4 = try decimal::canonical(d4)
+    if c4 != "1.2345678901234567890123456789012345678e-32731" ||
+       decimal::dscale(d4) != 32768 {
+        return err("38 digit low exponent " + c4, 75)
+    }
+
+    // Read-side has no 98,342-byte bind bound: 100,001 leading zeros parse.
+    let long = zeros(100000) + "1"
+    let st = try c.prepare("INSERT INTO t_big(id,v) VALUES(5,?1)")
+    let bt = try st.bind_text(1, long)
+    if !bt { st.close(); return err("long bind", 76) }
+    let row = try st.step()
+    if row { st.close(); return err("long insert row", 77) }
+    st.close()
+    let d5 = try table_value(c, "t_big", 5)
+    let c5 = try decimal::canonical(d5)
+    if c5 != "1" || decimal::dscale(d5) != 0 {
+        return err("long read", 78)
+    }
+
+    // A copy failure above the 16 MiB registry bound is size/plumbing code 2,
+    // never empty text.
+    let bigerr = try one_decimal_err(c, "SELECT CAST(zeroblob(17000000) AS TEXT)",
+                                     "copy failure", 2,
+                                     "column value is too large to copy or allocation failed")
+    if !bigerr { return err("copy failure", 79) }
+    return ok(true)
+}
+
+fn run(c: &sqlite::Connection): Result[bool] {
+    let a = try text_tests(c)
+    let b = try affinity_tests(c)
+    let d = try storage_tests(c)
+    let e = try binding_tests(c)
+    let f = try boundary_tests(c)
+    if !a || !b || !d || !e || !f { return err("section failed", 80) }
+    return ok(true)
+}
+
+fn main() {
+    let a = args()
+    var path = ":memory:"
+    if len(a) == 2 {
+        path = a[1]
+    } else if len(a) != 1 {
+        println("usage: app [database-path]")
+        exit(64)
+    }
+    let made = sqlite::open(path)
+    match made {
+        ok(conn) {
+            defer conn.close()
+            let r = run(&conn)
+            match r {
+                ok(v) { println("sqlite_decimal=ok") }
+                err(m, c) {
+                    println("sqlite_decimal_error=", m, " code=", c)
+                    exit(1)
+                }
+            }
+            check(conn.close(), "connection close", 90)
+            check(!conn.close(), "connection double close", 91)
+        }
+        err(m, c) { println("open_error=", m, " code=", c); exit(2) }
+    }
+    check(sqlite::live_resources() == 0, "live", 92)
+    check(sqlite::live_connections() == 0, "conns", 93)
+    check(sqlite::live_statements() == 0, "stmts", 94)
+    check(sqlite::live_buffers() == 0, "buffers", 95)
+    println("live=", sqlite::live_resources())
+}

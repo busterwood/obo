@@ -41,6 +41,12 @@ LIBPQ_FAKE = os.path.join(DB, 'postgres', 'postgres_fake.cbind')
 SQLITE = os.path.join(DB, 'sqlite', 'sqlite.cbind')
 PG_EX = os.path.join(DB, 'postgres', 'examples')
 SQ_EX = os.path.join(DB, 'sqlite', 'examples')
+PG_DECIMAL_APP = os.path.join(PG_EX, 'postgres_decimal_fake_app.obx')
+PG_DECIMAL_LIVE_APP = os.path.join(PG_EX, 'postgres_decimal_live_app.obx')
+SQ_DECIMAL_APP = os.path.join(SQ_EX, 'sqlite_decimal_app.obx')
+FORBIDDEN_FLOAT_TOKENS = (
+    'strtod', 'atof', 'sscanf', '%f', 'column_double', 'numeric_recv',
+)
 PG_DECL_FILES = [
     ('declaration_0', os.path.join(TOOL, 'toolkit', 'libpq_decls.h')),
     ('declaration_1', os.path.join(DB, 'postgres', 'postgres_adapter.h')),
@@ -171,6 +177,119 @@ def postgres_fake_obo(tmp):
     check_declaration_hash(manifest(out), PG_DECL_FILES, 'postgres fake')
     verify(out)
     print('postgres fake-libpq obo packet encoder: ok')
+    return app
+
+
+def postgres_decimal_fake_obo(tmp):
+    out = os.path.join(tmp, 'pg_decimal_fake_obo')
+    app = must_build(LIBPQ_FAKE, PG_DECIMAL_APP, out,
+                     'postgres decimal fake obo')
+    p = need(run([app]), 'postgres decimal fake obo run')
+    if 'postgres_decimal_fake=ok' not in p.stdout:
+        raise Fail('postgres decimal fake suite failed:\n%s' % p.stdout)
+    ldd = need(run(['ldd', app]), 'postgres decimal fake ldd')
+    if 'libpq.so.5' in ldd.stdout:
+        raise Fail('postgres decimal fake app unexpectedly links real libpq')
+    check_declaration_hash(manifest(out), PG_DECL_FILES, 'postgres decimal fake')
+    verify(out)
+    print('postgres decimal binding/read-back over fake libpq: ok')
+    return app
+
+
+def sqlite_decimal(tmp):
+    if not sqlite_present():
+        print('sqlite decimal: skipped (libsqlite3.so.0 is absent)')
+        return None
+    out = os.path.join(tmp, 'sq_decimal')
+    app = must_build(SQLITE, SQ_DECIMAL_APP, out, 'sqlite decimal')
+    path = os.path.join(tmp, 'decimal_oracle.db')
+    for suffix in ('', '-journal', '-wal', '-shm'):
+        try:
+            os.unlink(path + suffix)
+        except FileNotFoundError:
+            pass
+    try:
+        p = need(run([app, path]), 'sqlite decimal run')
+        expect_lines(p.stdout, ['sqlite_decimal=ok', 'live=0'], 'sqlite decimal')
+        import sqlite3
+        conn = sqlite3.connect(path)
+        try:
+            text_rows = conn.execute(
+                'SELECT id, typeof(v), quote(v) FROM t_text ORDER BY id'
+            ).fetchall()
+            want_text = [(1, 'text', "'1.2300'"),
+                         (2, 'text', "'0.0000'"),
+                         (3, 'text', "'1000'")]
+            if text_rows != want_text:
+                raise Fail('python TEXT oracle disagrees: %r' % (text_rows,))
+
+            # NUMERIC/INTEGER affinity: integral text becomes INTEGER and
+            # loses display scale; 1.2300 becomes REAL.
+            num_rows = conn.execute(
+                'SELECT id, typeof(v), quote(v) FROM t_num ORDER BY id'
+            ).fetchall()
+            want_num = [(1, 'integer', '1'), (2, 'integer', '1'),
+                        (3, 'integer', '0'), (4, 'real', '1.23')]
+            if num_rows != want_num:
+                raise Fail('python NUMERIC affinity oracle disagrees: %r'
+                           % (num_rows,))
+            int_rows = conn.execute(
+                'SELECT id, typeof(v), quote(v) FROM t_int ORDER BY id'
+            ).fetchall()
+            want_int = [(1, 'integer', '1'), (2, 'real', '1.23')]
+            if int_rows != want_int:
+                raise Fail('python INTEGER affinity oracle disagrees: %r'
+                           % (int_rows,))
+
+            kind, n, value = conn.execute(
+                'SELECT typeof(v), length(v), v FROM t_big WHERE id=5'
+            ).fetchone()
+            if (kind, n) != ('text', 100001):
+                raise Fail('python long-text oracle disagrees: %r'
+                           % ((kind, n),))
+            if set(value) != {'0', '1'} or not value.endswith('1'):
+                raise Fail('python long-text content disagrees')
+        finally:
+            conn.close()
+    finally:
+        for suffix in ('', '-journal', '-wal', '-shm'):
+            try:
+                os.unlink(path + suffix)
+            except FileNotFoundError:
+                pass
+    m = manifest(out)
+    if m.get('signature_check') != 'declarations-only':
+        raise Fail('sqlite decimal signature_check is %r'
+                   % m.get('signature_check'))
+    check_declaration_hash(m, SQLITE_DECL_FILES, 'sqlite decimal')
+    verify(out)
+    print('sqlite decimal bind/read/affinity/NUL/large Python oracle: ok')
+    return app
+
+
+def no_float_gate(exes):
+    sources = [
+        os.path.join(DB, 'postgres', 'postgres.obx'),
+        os.path.join(DB, 'postgres', 'postgres_adapter.c'),
+        os.path.join(DB, 'sqlite', 'sqlite.obx'),
+        os.path.join(DB, 'sqlite', 'sqlite_adapter.c'),
+    ]
+    for path in sources:
+        text = open(path, encoding='utf-8').read()
+        for token in FORBIDDEN_FLOAT_TOKENS:
+            if token in text:
+                raise Fail('%s contains forbidden float token %r'
+                           % (path, token))
+    for exe in exes:
+        if exe is None or not os.path.exists(exe):
+            continue
+        p = need(run(['nm', '-u', exe]), 'nm -u %s' % exe)
+        for token in ('strtod', 'atof', 'pow', 'ldexp',
+                      'sqlite3_column_double', 'numeric_recv'):
+            if token in p.stdout:
+                raise Fail('%s imports forbidden float symbol %r'
+                           % (exe, token))
+    print('no-float source/nm gate: ok')
 
 
 def postgres_fake_c(tmp):
@@ -211,6 +330,7 @@ def sqlite_memory(tmp):
     check_declaration_hash(m, SQLITE_DECL_FILES, 'sqlite')
     verify(out)
     print('sqlite in-memory: ok')
+    return app
 
 
 def sqlite_file(tmp):
@@ -335,18 +455,40 @@ def postgres_live(tmp):
     print('live postgres SELECT-only smoke: ok (explicit CINTEROP_TEST_DSN)')
 
 
+def postgres_decimal_live(tmp):
+    dsn = os.environ.get('CINTEROP_TEST_DSN')
+    if not dsn:
+        print('live postgres decimal: skipped (set CINTEROP_TEST_DSN to run)')
+        return
+    if not libpq_present():
+        raise Fail('CINTEROP_TEST_DSN is set but libpq.so.5 is absent')
+    out = os.path.join(tmp, 'pg_decimal_live')
+    app = must_build(LIBPQ, PG_DECIMAL_LIVE_APP, out, 'postgres decimal live')
+    p = run([app, dsn], timeout=60)
+    if p.returncode != 0:
+        raise Fail('live postgres decimal app failed (exit %d):\n%s'
+                   % (p.returncode, p.stdout + p.stderr))
+    expect_lines(p.stdout, ['postgres_decimal_live=ok'], 'live postgres decimal')
+    print('live postgres decimal SELECT-only vectors: ok')
+
+
 def main():
     os.makedirs(TMPROOT, exist_ok=True)
     tmp = tempfile.mkdtemp(prefix='db-adapters-test-', dir=TMPROOT)
     try:
         postgres_fake_c(tmp)
-        postgres_fake_obo(tmp)
+        fake_app = postgres_fake_obo(tmp)
+        decimal_fake_app = postgres_decimal_fake_obo(tmp)
         sqlite_c(tmp)
-        sqlite_memory(tmp)
+        sqlite_app = sqlite_memory(tmp)
+        decimal_sqlite_app = sqlite_decimal(tmp)
         sqlite_file(tmp)
+        no_float_gate([fake_app, decimal_fake_app, sqlite_app,
+                       decimal_sqlite_app])
         sanitizers(tmp)
         postgres_probe(tmp)
         postgres_live(tmp)
+        postgres_decimal_live(tmp)
         print('db adapter tests ok')
         return 0
     except Fail as e:

@@ -511,6 +511,54 @@ def typmod(p: int, s: int) -> int:
     return ((p << 16) | (s & 0x7ff)) + 4
 
 
+PG_DSCALE_MAX = 16383
+PG_MAX_PRECISION = 1000
+PG_MIN_SCALE = -1000
+PG_MAX_SCALE = 1000
+
+# Invalid raw typmods from the boundary design: 0..3 are not numeric typmods,
+# -2 is not unconstrained, and the remaining values decode to p/s outside the
+# PostgreSQL numeric metadata range.
+TYPMOD_INVALID = [0, 1, 2, 3, -2, 4, 65601540, 66541, 66587]
+
+
+def decode_typmod(value: int):
+    """Decode a PGresult numeric typmod to (precision, scale, constrained).
+
+    Returns None for anything that is not -1 or a valid decoded numeric(p,s).
+    This is the independent oracle for the adapter's DecimalType decode.
+    """
+    if value == -1:
+        return (0, 0, False)
+    if value < 4:
+        return None
+    t = value - 4
+    p = (t >> 16) & 0xFFFF
+    s = (((t & 0x7FF) ^ 1024) - 1024)
+    if p < 1 or p > PG_MAX_PRECISION or s < PG_MIN_SCALE or s > PG_MAX_SCALE:
+        return None
+    return (p, s, True)
+
+
+def build_public_typmod_cases() -> dict:
+    """Encode/decode vectors, plus the invalid typmods a fake result can carry."""
+    encoded = []
+    for name, value in TYPMOD_VECTORS.items():
+        if name == "unconstrained":
+            continue
+        p, s = name[len("numeric("):-1].split(",")
+        p = int(p)
+        s = int(s)
+        encoded.append({"name": name, "p": p, "s": s, "typmod": value,
+                        "decode": [p, s, True]})
+    return {
+        "format": "obo-decimal-typmod-oracle-v1",
+        "unconstrained": {"typmod": -1, "decode": [0, 0, False]},
+        "encoded": encoded,
+        "invalid": list(TYPMOD_INVALID),
+    }
+
+
 __all__ = [
     "OK", "OVERFLOW", "UNSUPPORTED_EXACT", "INEXACT", "INVALID", "DIV_ZERO",
     "UNSUPPORTED_RANGE", "PRECISION_OVERFLOW", "EXPONENT_RANGE",
@@ -519,5 +567,7 @@ __all__ = [
     "build_text_cases", "FORMAT_ONLY",
     "parse_public_text", "build_public_text_cases", "check_public",
     "build_public_check_cases", "TYPMOD_VECTORS", "typmod",
+    "PG_DSCALE_MAX", "PG_MAX_PRECISION", "PG_MIN_SCALE", "PG_MAX_SCALE",
+    "TYPMOD_INVALID", "decode_typmod", "build_public_typmod_cases",
 ]
 

@@ -18,9 +18,11 @@ The packages deliberately stay small:
 
 Both packages accept scalars and return exact bytes/text, with explicit NULL
 flags rather than length inference. PostgreSQL columns expose type OID and
-typmod, and numeric/text values are never routed through a float. Neither
-package implements SQL templates, HTML templates, a decimal wire format,
-callbacks, automatic finalizers, or a schema/ORM layer.
+typmod, and numeric/text values are never routed through a float. Scalar
+`decimal` values bind and read back as exact decimal text (PostgreSQL numeric
+OID 1700, SQLite TEXT); there is no binary numeric wire format. Neither package
+implements SQL templates, HTML templates, callbacks, automatic finalizers, or a
+schema/ORM layer.
 
 ## Ownership and cleanup
 
@@ -118,6 +120,41 @@ fn main() {
   probe host, so the cbind is explicitly `declarations-only`; hashes are
   provenance checks, not header proof.
 
+### PostgreSQL decimal boundary
+
+`Param` has two decimal kinds: `PARAM_DECIMAL` (5) carries exact decimal text
+and binds as OID 1700 in text format, and `PARAM_DECIMAL_NULL` (6) is a typed
+SQL NULL with OID 1700 (needed for `SELECT $1` with no target type). Use:
+
+```obo
+postgres::param_decimal(value, p, s)      // checked default
+postgres::param_decimal_unchecked(value)  // unconstrained/deliberate coercion
+postgres::param_decimal_null()
+let meta = rows.decimal_type(col)         // precision, scale, constrained
+let d = rows.decimal(row, col)            // Result[decimal]
+```
+
+- The default binder is checked: it calls `decimal::check` first and returns
+  `1010` (would round), `1011` (exceeds precision) or `1012` (invalid p/s)
+  before sending. `param_decimal_unchecked` is the explicit opt-out.
+- Emitted text is the exact display form. If only the display scale exceeds
+  PostgreSQL's 16,383 limit, the exact canonical form is sent instead; a value
+  whose normalized exponent is below -16,383 returns `1013` before the call.
+- `Rows.fmt` is 0 for `execute()` and 1 for `execute_binary()`.
+  `Rows.decimal` checks, in order: NULL (`1001`), binary format (`1003`), OID
+  1700 (`1002`), typmod (`1012`), exact text (`1006`/`1007`/`1008`/`1009`),
+  non-finite (`1004`), then `decimal::check` for a constrained column
+  (`1010`/`1011`). NULL wins over every other failure.
+- `decimal_type` accepts only OID 1700; a domain over numeric or any other OID
+  is `1002`. It decodes the upstream typmod formula, including negative scale,
+  and rejects out-of-range metadata rather than returning an unconstrained
+  record. The text keeps its own dscale; a negative column scale is metadata
+  only.
+- The C packet reader re-validates the strict public grammar and caps decimal
+  text at 98,342 bytes. Empty text, `.5`, `1.`, `1..2`, `1e`, underscores,
+  `0x`, whitespace, `NaN`/`Infinity`, NUL and non-ASCII are rejected. There is
+  no float path and no interpolation.
+
 Runnable apps: `postgres/examples/postgres_probe_app.obx` (real libpq link and
 `PQmakeEmptyPGresult` ownership without a connection), `postgres_live_app.obx`
 (opt-in SELECT-only smoke test), `postgres_outlives_app.obx`, and
@@ -207,8 +244,37 @@ does not require the header: tests still run declarations-only on a host with
 only the runtime library. The cross-check changed no declaration (all
 prototypes, constness, enum values and `SQLITE_TRANSIENT` matched).
 
-Runnable apps: `sqlite/examples/sqlite_memory_app.obx` and
-`sqlite_file_app.obx`.
+### SQLite decimal boundary
+
+```obo
+sqlite::bind_decimal(st, index, value, p, s)  // checked default
+sqlite::bind_decimal_unchecked(st, index, value)
+let d = st.decimal(col)                       // Result[decimal]
+```
+
+- Decimal storage is `TEXT` containing exact decimal text. The default binder
+  calls `decimal::check` and returns `1010`/`1011`/`1012`; SQLite has no `(p,s)`
+  enforcement, so this is the only schema gate. `_unchecked` is the explicit
+  opt-out. Neither function binds REAL.
+- `Stmt.decimal` rejects SQL NULL (`1001`), REAL (`1005`) and BLOB (`1002`),
+  then parses exact TEXT bytes. INTEGER is accepted as SQLite's exact i64-to-text
+  rendering with dscale 0. Empty/NUL/non-ASCII text is `1006`; `NaN`/`Infinity`
+  is `1004`; precision/exponent/display-scale parse failures map to
+  `1007`/`1008`/`1009`.
+- Declare decimal columns `TEXT`. NUMERIC/INTEGER affinity converts integral
+  text such as `1.00`, `1.0` and `0.0000` to INTEGER and loses display scale
+  (accepted, dscale 0); non-integral text becomes REAL and is rejected as
+  `1005`. The tests demonstrate both traps. REAL affinity always becomes REAL
+  and is rejected.
+- `bind_text` still rejects embedded NUL before SQLite. A TEXT cell written by
+  SQL can contain NUL and reads as `1006`; a BLOB is `1002` first. A copy failure
+  above the 16 MiB registry bound is the size/plumbing code `2`, never empty
+  text. Read-side text is not capped at 98,342 bytes: a 100,001-byte
+  leading-zero cell parses as `1`.
+- SQLite TEXT has no numeric ordering; sort after parsing in obo.
+
+Runnable apps: `sqlite/examples/sqlite_memory_app.obx`,
+`sqlite_decimal_app.obx` and `sqlite_file_app.obx`.
 
 ## Tests
 
@@ -219,9 +285,10 @@ python3 obo/experimental/db/tests/test_db_adapters.py
 The suite covers:
 
 - deterministic fake-libpq C tests: typed packet/OIDs, empty text/bytea, NULL,
-  binary NUL, 33-parameter rejection, malformed packets, SQL/text NUL, bounds,
-  allocation failure, invalid conninfo diagnostic, double close,
-  result-outlives-connection and live counters;
+  binary NUL, decimal kind 5/6 and its strict grammar/invalid/oversize vectors,
+  33-parameter rejection, malformed packets, SQL/text NUL, bounds, allocation
+  failure, invalid conninfo diagnostic, double close, result-outlives-connection
+  and live counters;
 - an obo-level fake-libpq packet encoder test: typed text/int/blob/NULL params,
   binary NUL, exact numeric text and OID/typmod, no real libpq dependency;
 - real libpq link/PGresult ownership with no connection, plus invalid-conninfo
@@ -234,6 +301,14 @@ The suite covers:
 - real SQLite tempfile under `/tmp`, compared with Python's `sqlite3` module as
   an independent oracle for `typeof`, NULL, empty text and BLOB bytes, then
   removed;
+- PostgreSQL decimal binding/read-back over the fake libpq: exact display and
+  canonical text, checked error codes, typed NULL, typmod vectors and invalid
+  metadata, NULL-vs-binary order, non-finite and parse-status mapping;
+- SQLite decimal TEXT/INTEGER/REAL/BLOB storage, NUMERIC and INTEGER affinity
+  traps, NULL/empty/zero, NUL policy, dscale 32768/65535 and 38-digit boundaries,
+  large read-side text, copy-failure code `2`, and checked binder errors;
+- the public decimal text oracle's typmod decode/validation and PostgreSQL
+  display-scale boundary vectors; a no-float source scan and `nm -u` check;
 - manifest checks that the declarations-only header is hashed as a provenance
   input (without claiming a compiled header check);
 - ASAN/UBSAN builds of both C adapter suites.
@@ -256,9 +331,13 @@ is not a skip because the committed adapter is declarations-only.
 
 - No production driver, prepared-statement cache, notifications, COPY, TLS
   policy, connection pool, migrations, transactions API or ORM.
-- No SQL/HTML templates and no decimal wire format yet; these are separate
-  future work. Numeric text is preserved exactly, but there is no decimal
-  arithmetic in obo here.
+- No SQL/HTML templates (`SqlArg.DecimalText`) and no binary numeric wire format
+  yet; these are separate future work. Scalar exact decimal text is implemented.
+- No decimal fields, `?decimal`, decimal arrays, `decimal(p,s)` language type or
+  `DecimalOrNull` wrapper. NULL is error-only (`is_null` first); `DEC_DB_NULL`
+  1001 is a defensive fallback.
+- Domains over numeric, COPY, arrays, intervals, prepared-statement caches and
+  catalog/typmod discovery beyond the result metadata are out of scope.
 - No source float arguments/results in the native contract. SQLite REAL columns
   are exposed through SQLite's text conversion only; do not use this adapter for
   a floating-point protocol.

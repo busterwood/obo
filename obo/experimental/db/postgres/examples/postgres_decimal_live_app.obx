@@ -1,0 +1,436 @@
+module app
+
+import "postgres.obx"
+
+// Opt-in SELECT-only decimal boundary tests. The only argument is an explicitly
+// authorized conninfo. No DDL, roles, databases, schema or server settings are
+// changed. Every Connection and Rows is closed explicitly.
+
+fn check(ok: bool, name: string, code: int) {
+    if !ok {
+        println("FAIL ", name)
+        exit(code)
+    }
+}
+
+fn dec_err(name: string, r: Result[decimal], want_code: int,
+           want_msg: string, exit_code: int) {
+    match r {
+        ok(v) { println("FAIL ", name, " unexpectedly ok"); exit(exit_code) }
+        err(m, c) {
+            check(c == want_code, name + " code", exit_code)
+            check(m == want_msg, name + " message", exit_code)
+        }
+    }
+}
+
+fn param_err(name: string, r: Result[postgres::Param], want_code: int,
+             exit_code: int) {
+    match r {
+        ok(p) { println("FAIL ", name, " unexpectedly ok"); exit(exit_code) }
+        err(m, c) { check(c == want_code, name + " code", exit_code) }
+    }
+}
+
+fn exec_param(c: &postgres::Connection, sql: string,
+              p: postgres::Param): Result[postgres::Rows] {
+    var ps = new []postgres::Param(0)
+    append(ps, p)
+    return postgres::execute(c, sql, ps)
+}
+
+fn exec_result(c: &postgres::Connection, sql: string,
+               r: Result[postgres::Param]): Result[postgres::Rows] {
+    match r {
+        ok(p) { return exec_param(c, sql, p) }
+        err(m, n) { return err(m, n) }
+    }
+}
+
+fn param_text(c: &postgres::Connection, name: string, sql: string,
+              r: Result[postgres::Param], want: string, exit_code: int) {
+    let q = exec_result(c, sql, r)
+    match q {
+        ok(rows) {
+            defer rows.close()
+            check(rows.status() == postgres::PGRES_TUPLES_OK, name + " status",
+                  exit_code)
+            let t = rows.text(0, 0)
+            match t {
+                ok(v) { check(v == want, name + " text", exit_code) }
+                err(m, n) { println("FAIL ", name, " text ", m, " ", n); exit(exit_code) }
+            }
+        }
+        err(m, n) { println("FAIL ", name, " exec ", m, " ", n); exit(exit_code) }
+    }
+}
+
+fn param_read_result(c: &postgres::Connection, name: string, sql: string,
+                     r: Result[postgres::Param], want_can: string,
+                     want_dscale: int, exit_code: int) {
+    match r {
+        ok(p) {
+            let q = exec_param(c, sql, p)
+            match q {
+                ok(rows) {
+                    defer rows.close()
+                    check(rows.status() == postgres::PGRES_TUPLES_OK,
+                          name + " status", exit_code)
+                    let d = rows.decimal(0, 0)
+                    match d {
+                        ok(v) {
+                            let can = decimal::canonical(v)
+                            match can {
+                                ok(s) {
+                                    check(s == want_can, name + " canonical",
+                                          exit_code)
+                                    check(decimal::dscale(v) == want_dscale,
+                                          name + " dscale", exit_code)
+                                }
+                                err(m, n) {
+                                    println("FAIL ", name, " can ", m, " ", n)
+                                    exit(exit_code)
+                                }
+                            }
+                        }
+                        err(m, n) {
+                            println("FAIL ", name, " read ", m, " ", n)
+                            exit(exit_code)
+                        }
+                    }
+                }
+                err(m, n) { println("FAIL ", name, " exec ", m, " ", n); exit(exit_code) }
+            }
+        }
+        err(m, n) { println("FAIL ", name, " param ", m, " ", n); exit(exit_code) }
+    }
+}
+
+fn query(c: &postgres::Connection, sql: string): Result[postgres::Rows] {
+    return postgres::query(c, sql)
+}
+
+fn type_vec(c: &postgres::Connection, name: string, p: int, s: int,
+            exit_code: int) {
+    let sql = "SELECT NULL::numeric(" + string(p) + "," + string(s) + ")"
+    let q = query(c, sql)
+    match q {
+        ok(rows) {
+            defer rows.close()
+            check(rows.status() == postgres::PGRES_TUPLES_OK, name + " status",
+                  exit_code)
+            let t = rows.decimal_type(0)
+            match t {
+                ok(v) {
+                    check(v.precision == p, name + " precision", exit_code)
+                    check(v.scale == s, name + " scale", exit_code)
+                    check(v.constrained, name + " constrained", exit_code)
+                    dec_err(name + " null", rows.decimal(0, 0),
+                            postgres::DEC_DB_NULL, "SQL NULL", exit_code)
+                }
+                err(m, n) { println("FAIL ", name, " type ", m, " ", n); exit(exit_code) }
+            }
+        }
+        err(m, n) { println("FAIL ", name, " exec ", m, " ", n); exit(exit_code) }
+    }
+}
+
+fn read_ok(c: &postgres::Connection, name: string, sql: string,
+           want_can: string, want_dscale: int, exit_code: int) {
+    let q = query(c, sql)
+    match q {
+        ok(rows) {
+            defer rows.close()
+            check(rows.status() == postgres::PGRES_TUPLES_OK, name + " status",
+                  exit_code)
+            let d = rows.decimal(0, 0)
+            match d {
+                ok(v) {
+                    let can = decimal::canonical(v)
+                    match can {
+                        ok(s) {
+                            check(s == want_can, name + " canonical", exit_code)
+                            check(decimal::dscale(v) == want_dscale,
+                                  name + " dscale", exit_code)
+                        }
+                        err(m, n) { println("FAIL ", name, " can ", m, " ", n); exit(exit_code) }
+                    }
+                }
+                err(m, n) { println("FAIL ", name, " read ", m, " ", n); exit(exit_code) }
+            }
+        }
+        err(m, n) { println("FAIL ", name, " exec ", m, " ", n); exit(exit_code) }
+    }
+}
+
+fn read_err(c: &postgres::Connection, name: string, sql: string,
+            want_code: int, want_msg: string, exit_code: int) {
+    let q = query(c, sql)
+    match q {
+        ok(rows) {
+            defer rows.close()
+            dec_err(name, rows.decimal(0, 0), want_code, want_msg, exit_code)
+        }
+        err(m, n) { println("FAIL ", name, " exec ", m, " ", n); exit(exit_code) }
+    }
+}
+
+fn server_error(c: &postgres::Connection, name: string, sql: string,
+                exit_code: int) {
+    let q = query(c, sql)
+    match q {
+        ok(rows) {
+            defer rows.close()
+            check(rows.status() == postgres::PGRES_FATAL_ERROR, name + " status",
+                  exit_code)
+            let em = rows.error_message()
+            check(len(em) > 0, name + " message", exit_code)
+        }
+        err(m, n) { println("FAIL ", name, " exec ", m, " ", n); exit(exit_code) }
+    }
+}
+
+fn main() {
+    let a = args()
+    if len(a) != 2 {
+        println("usage: app <conninfo>")
+        exit(64)
+    }
+    let made = postgres::open(a[1])
+    match made {
+        ok(conn) {
+            defer conn.close()
+
+            // Parameter binding: display text, checked default, typed NULL and
+            // the untyped-placeholder path that proves OID 1700 is explicit.
+            let one = decimal::parse("1.2300")
+            match one {
+                ok(v) {
+                    param_text(&conn, "unchecked cast", "SELECT $1::numeric",
+                               postgres::param_decimal_unchecked(v), "1.2300", 1)
+                    param_text(&conn, "checked cast", "SELECT $1::numeric(10,4)",
+                               postgres::param_decimal(v, 10, 4), "1.2300", 2)
+                    param_text(&conn, "untyped placeholder", "SELECT $1",
+                               postgres::param_decimal(v, 10, 4), "1.2300", 3)
+                }
+                err(m, c) { println("FAIL parse ", m, " ", c); exit(4) }
+            }
+            var nulls = new []postgres::Param(0)
+            append(nulls, postgres::param_decimal_null())
+            let nq = postgres::execute(&conn, "SELECT $1", nulls)
+            match nq {
+                ok(rows) {
+                    defer rows.close()
+                    check(rows.status() == postgres::PGRES_TUPLES_OK,
+                          "typed null status", 5)
+                    let isn = rows.is_null(0, 0)
+                    match isn {
+                        ok(v) { check(v, "typed null value", 6) }
+                        err(m, c) { println("FAIL typed null ", m, " ", c); exit(7) }
+                    }
+                }
+                err(m, c) { println("FAIL typed null exec ", m, " ", c); exit(8) }
+            }
+
+            // Checked binders reject rounding/overflow before the call.
+            param_err("checked round", postgres::param_decimal(1.23456, 10, 4),
+                      postgres::DEC_DB_SCALE, 9)
+            param_err("checked neg scale", postgres::param_decimal(decimal(1500), 2, -3),
+                      postgres::DEC_DB_SCALE, 10)
+            param_err("checked neg 99999", postgres::param_decimal(decimal(99999), 2, -3),
+                      postgres::DEC_DB_SCALE, 11)
+            param_err("checked deep", postgres::param_decimal(1.5e999, 1000, -1000),
+                      postgres::DEC_DB_SCALE, 12)
+            param_err("pg range", postgres::param_decimal_unchecked(1e-16384),
+                      postgres::DEC_DB_PG_RANGE, 13)
+            let s38 = decimal::parse("12345678901234567890123456789012345678e-32768")
+            match s38 {
+                ok(v) {
+                    param_err("38 low exponent", postgres::param_decimal_unchecked(v),
+                              postgres::DEC_DB_PG_RANGE, 14)
+                }
+                err(m, c) { println("FAIL 38 parse ", m, " ", c); exit(15) }
+            }
+
+            // Unchecked rounding is visible as the server's stored value.
+            param_text(&conn, "unchecked rounds", "SELECT $1::numeric(10,4)",
+                       postgres::param_decimal_unchecked(1.23456), "1.2346", 16)
+            // Checked negative-scale fit and metadata decode.
+            let neg = exec_result(&conn, "SELECT $1::numeric(2,-3)",
+                                  postgres::param_decimal(decimal(12000), 2, -3))
+            match neg {
+                ok(rows) {
+                    defer rows.close()
+                    check(rows.status() == postgres::PGRES_TUPLES_OK,
+                          "neg scale status", 17)
+                    let t = rows.decimal_type(0)
+                    match t {
+                        ok(v) {
+                            check(v.precision == 2 && v.scale == -3 &&
+                                  v.constrained, "neg scale meta", 18)
+                        }
+                        err(m, c) { println("FAIL neg meta ", m, " ", c); exit(19) }
+                    }
+                    let d = rows.decimal(0, 0)
+                    match d {
+                        ok(v) {
+                            check(decimal::dscale(v) == 0, "neg scale dscale", 20)
+                            let can = decimal::canonical(v)
+                            match can {
+                                ok(s) { check(s == "12000", "neg scale value", 21) }
+                                err(m, c) { println("FAIL neg can ", m, " ", c); exit(22) }
+                            }
+                        }
+                        err(m, c) { println("FAIL neg read ", m, " ", c); exit(23) }
+                    }
+                }
+                err(m, c) { println("FAIL neg exec ", m, " ", c); exit(24) }
+            }
+            let unr = exec_result(&conn, "SELECT $1::numeric(2,-3)",
+                                  postgres::param_decimal_unchecked(decimal(99999)))
+            match unr {
+                ok(rows) {
+                    defer rows.close()
+                    check(rows.status() == postgres::PGRES_FATAL_ERROR,
+                          "unchecked overflow status", 25)
+                }
+                err(m, c) { println("FAIL unchecked overflow ", m, " ", c); exit(26) }
+            }
+
+            // Read-back values, typmods and dscale preservation.
+            read_ok(&conn, "unconstrained 1.0000", "SELECT 1.0000::numeric",
+                    "1", 4, 27)
+            read_ok(&conn, "constrained 1", "SELECT 1::numeric(10,4)",
+                    "1", 4, 28)
+            read_ok(&conn, "zero", "SELECT 0::numeric", "0", 0, 29)
+            read_ok(&conn, "zero dscale", "SELECT 0.0000::numeric", "0", 4, 30)
+            read_ok(&conn, "38 digits",
+                    "SELECT 99999999999999999999999999999999999999::numeric",
+                    "99999999999999999999999999999999999999", 0, 31)
+            server_error(&conn, "server overflow", "SELECT 1.2345::numeric(2,3)", 32)
+            server_error(&conn, "below pg range", "SELECT 1e-16384::numeric", 33)
+
+            // Lower boundary: 1e-16383 is representable; 16384 is not.
+            let low = query(&conn, "SELECT 1e-16383::numeric")
+            match low {
+                ok(rows) {
+                    defer rows.close()
+                    check(rows.status() == postgres::PGRES_TUPLES_OK,
+                          "1e-16383 status", 34)
+                    let d = rows.decimal(0, 0)
+                    match d {
+                        ok(v) {
+                            let can = decimal::canonical(v)
+                            match can {
+                                ok(s) {
+                                    check(s == "1e-16383", "1e-16383 value", 35)
+                                    check(decimal::dscale(v) == 16383,
+                                          "1e-16383 dscale", 36)
+                                }
+                                err(m, c) { println("FAIL low can ", m, " ", c); exit(37) }
+                            }
+                        }
+                        err(m, c) { println("FAIL low read ", m, " ", c); exit(38) }
+                    }
+                }
+                err(m, c) { println("FAIL low exec ", m, " ", c); exit(39) }
+            }
+
+            // Canonical fallback through a bind: 16,384 display places become
+            // exact canonical text, and the value survives.
+            param_read_result(&conn, "dscale fallback", "SELECT $1",
+                              postgres::param_decimal_unchecked(1.0e-16383),
+                              "1e-16383", 16383, 40)
+            param_read_result(&conn, "normalised fallback", "SELECT $1",
+                              postgres::param_decimal_unchecked(1000e-16384),
+                              "1e-16381", 16381, 41)
+            let base = 1.20 * 1.5
+            param_read_result(&conn, "normalised arithmetic", "SELECT $1",
+                              postgres::param_decimal_unchecked(base * 1e-16382),
+                              "1.8e-16382", 16383, 42)
+            var forty = new []byte(0)
+            append(forty, '0')
+            append(forty, '.')
+            for i in 0..39 { append(forty, '0') }
+            append(forty, '1')
+            param_read_result(&conn, "canonical fixed", "SELECT $1",
+                              postgres::param_decimal_unchecked(1e-20 * 1e-20),
+                              string(forty), 40, 43)
+
+            // Non-finite, NULL and error mapping.
+            read_err(&conn, "NaN", "SELECT 'NaN'::numeric",
+                     postgres::DEC_DB_NONFINITE,
+                     "non-finite numeric is not representable", 45)
+            read_err(&conn, "Infinity", "SELECT 'Infinity'::numeric",
+                     postgres::DEC_DB_NONFINITE,
+                     "non-finite numeric is not representable", 46)
+            read_err(&conn, "negative infinity", "SELECT '-Infinity'::numeric",
+                     postgres::DEC_DB_NONFINITE,
+                     "non-finite numeric is not representable", 47)
+            read_err(&conn, "null", "SELECT NULL::numeric",
+                     postgres::DEC_DB_NULL, "SQL NULL", 48)
+            read_err(&conn, "39 digits",
+                     "SELECT 999999999999999999999999999999999999999::numeric",
+                     postgres::DEC_DB_PRECISION,
+                     "decimal text has more than 38 significant digits", 49)
+            read_err(&conn, "exponent", "SELECT 1e40000::numeric",
+                     postgres::DEC_DB_EXPONENT,
+                     "decimal exponent is outside int16", 50)
+
+            // Typmod vectors, including negative scale and the 1000 bounds.
+            type_vec(&conn, "numeric(1,0)", 1, 0, 51)
+            type_vec(&conn, "numeric(10,2)", 10, 2, 52)
+            type_vec(&conn, "numeric(10,4)", 10, 4, 53)
+            type_vec(&conn, "numeric(10,-2)", 10, -2, 54)
+            type_vec(&conn, "numeric(2,-3)", 2, -3, 55)
+            type_vec(&conn, "numeric(3,5)", 3, 5, 56)
+            type_vec(&conn, "numeric(38,0)", 38, 0, 57)
+            type_vec(&conn, "numeric(1000,0)", 1000, 0, 58)
+            type_vec(&conn, "numeric(1000,1000)", 1000, 1000, 59)
+            type_vec(&conn, "numeric(1000,-1000)", 1000, -1000, 60)
+
+            let un = query(&conn, "SELECT 1.2345::numeric")
+            match un {
+                ok(rows) {
+                    defer rows.close()
+                    let t = rows.decimal_type(0)
+                    match t {
+                        ok(v) {
+                            check(!v.constrained, "unconstrained flag", 61)
+                            check(v.precision == 0 && v.scale == 0,
+                                  "unconstrained meta", 62)
+                        }
+                        err(m, c) { println("FAIL un meta ", m, " ", c); exit(63) }
+                    }
+                }
+                err(m, c) { println("FAIL un exec ", m, " ", c); exit(64) }
+            }
+
+            // Binary result format is rejected after NULL wins.
+            let bq = postgres::execute_binary(&conn, "SELECT 1.23::numeric",
+                                              new []postgres::Param(0))
+            match bq {
+                ok(rows) {
+                    defer rows.close()
+                    dec_err("binary", rows.decimal(0, 0),
+                            postgres::DEC_DB_BINARY,
+                            "binary decimal result is not supported", 65)
+                }
+                err(m, c) { println("FAIL binary ", m, " ", c); exit(66) }
+            }
+            let bn = postgres::execute_binary(&conn, "SELECT NULL::numeric",
+                                              new []postgres::Param(0))
+            match bn {
+                ok(rows) {
+                    defer rows.close()
+                    dec_err("binary null", rows.decimal(0, 0),
+                            postgres::DEC_DB_NULL, "SQL NULL", 67)
+                }
+                err(m, c) { println("FAIL binary null ", m, " ", c); exit(68) }
+            }
+        }
+        err(m, c) { println("connect_error=", m, " code=", c); exit(69) }
+    }
+    check(postgres::live_resources() == 0, "live", 70)
+    println("postgres_decimal_live=ok")
+}
