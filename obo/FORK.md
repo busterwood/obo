@@ -6051,9 +6051,10 @@ documentation only; evidence logs remain private under `/tmp/opencode`.
 ## Stage B capture-list release candidate (0.11, format 6, ABI 1)
 
 Status: **implemented on the isolated review branch and stopped for independent
-review; not merged, pushed or promoted.** The five Stage B commits were
-forward-ported onto main `4a072cf5f5db8fe661ac65ff6de06e6ec` (the released
-floats line) with `git rebase`, not merged. The approved F1/F2 float work,
+review; not merged, pushed or promoted.** The six Stage B commits are the five
+original commits forward-ported onto main `4a072cf5f5db8fe661ac65ff6de06e6ec`
+(the released floats line) with `git rebase`, plus the final `765df3b`
+completion commit; nothing was merged. The approved F1/F2 float work,
 firewall/source fixes and the shared 2,500,000-byte budget survived the rebase;
 documentation conflicts were resolved by keeping main's released record and
 adding the Stage B text, never by blind overwrite. The promoted `seed/obo`
@@ -6115,10 +6116,14 @@ equivalence was introduced.
 to `obosym 6` / `compiler "0.11"` (headers only; body hashes were not
 recomputed). The three intentional exceptions retain `obosym 7`, `compiler
 "9.9"` and `abi 9`. Against the released 0.10 seed, `OBO_REF=obo/seed/obo`
-reports **1,393/1,393 identical**, exit 0, with no unexpected skips; the seven
-Stage B capture files carry an explicit `(0, 11)` minimum in
-`tests/port_compare.py` and are skipped only because the 0.10 seed cannot
-compile capture syntax. A promoted 0.11 seed would compare them.
+reports **1,393/1,393 identical**, exit 0, with no unexpected skips. The nine
+Stage B `(0, 11)` entries (8 run files plus `errors/closures.obx`) carry an
+explicit minimum in `tests/port_compare.py` and are skipped only because the
+0.10 seed cannot compile capture syntax. The default 1,641 comprises 1,476 flat
+and 165 non-flat cases (154 module tree/symcheck, 4 CLI, 5 special, 1 reemit and
+1 token check); the 248-case difference is those 165 non-flat cases plus 83
+skipped flat cases (8 run files and 75 error cases). A promoted 0.11 seed would
+compare all of them.
 
 **Evidence and remaining risk.** Logs and a manifest are under
 `/tmp/opencode/lambda-stage-b-final-20261031-...` (private). Remaining work is
