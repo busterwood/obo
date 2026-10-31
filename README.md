@@ -167,6 +167,18 @@ fragmentation and the high-water mark remain part of a process's footprint;
 address-space cap in `port_compare.py` is a harness safety limit, not a runtime
 default.
 
+Regression note from the runtime-only Stage B rebase: the 4 GiB default maps a
+32 MiB starts bitmap and a 512 MiB worklist; the 16 GiB ceiling maps a 128 MiB
+starts bitmap and the same capped 512 MiB worklist. The recorded 16 GiB
+`heap_test` run peaks at about 16.625 GiB of virtual address space and 264 KiB of
+maximum RSS while touching only a few pages. The change adds no runtime
+jump-table slot, so every existing index, including the hosted exit slot 59, is
+unchanged and decimal's future appended slots do not collide. Compiler source,
+version, symbol format and ABI are unchanged; a compiler rebuilt with this
+runtime has the same 585,729-byte size but a different image sha256
+(`c1d73e3c…`, rather than the released `198f3268…`) because the runtime text is
+embedded in every executable.
+
 ## Roadmap
 
 **Lambdas Stage A** (non-capturing literals, structural function types and
