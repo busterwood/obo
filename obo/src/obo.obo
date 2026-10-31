@@ -7875,12 +7875,12 @@ fn designatorT(target: bool): Item {
             let rt0 = x.typ
             let fi = fieldIndex(rt0, fname)
             if fi < 0 {
-                if rt0.owner != "" && rt0.owner != curModuleName && hasPrivateFields(rt0) {
-                    errorAt(privateFieldMsg(rt0, fname), mline, mcol)
-                }
                 let mv = findMethod(rt0, fname)
                 if mv != nil && (mv.owner == curModuleName || mv.exported) {
                     error("method '" + methodDisplay(mv) + "' cannot be used as a value: call it with '(' after its name")
+                }
+                if rt0.owner != "" && rt0.owner != curModuleName && hasPrivateFields(rt0) {
+                    errorAt(privateFieldMsg(rt0, fname), mline, mcol)
                 }
                 error(tname(rt0) + " has no field '" + fname + "'")
                 return x

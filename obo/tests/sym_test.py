@@ -2181,6 +2181,7 @@ pub type Mixed = ref record {
 }
 pub type Empty = ref record { }
 pub fn mk(): Mixed { return new Mixed{a: 1, b: new []byte(0), c: "x", d: 2} }
+pub fn (x: &Mixed) peek(): int { return x.a }
 ''',
         'main.obx': '''module main
 import "lib.obx"
@@ -2208,8 +2209,18 @@ fn main() {
         ok(r, 'reemit')
         if r.stdout != text:
             raise Fail('--reemit-sym is not byte-identical')
+        # a visible method used as a value names the method, not a private field
+        open(os.path.join(d, 'bad.obx'), 'w').write(
+            'module main\nimport "lib.obx"\nfn main() { let x = lib::mk(); let f = x.peek }\n')
+        want = "method 'lib::Mixed::peek' cannot be used as a value: call it with '(' after its name"
+        q = build(d, s, root='bad.obx')
+        if q.returncode != 1 or want not in q.stderr:
+            raise Fail(f"full method-as-value: exit {q.returncode}: {q.stderr.strip()}")
         os.rename(os.path.join(d, 'lib.obx'), os.path.join(d, 'lib.obx.bak'))
         ok(build(d, s, check=True), 'source-less positive')
+        q = build(d, s, root='bad.obx', check=True)
+        if q.returncode != 1 or want not in q.stderr:
+            raise Fail(f"checked method-as-value: exit {q.returncode}: {q.stderr.strip()}")
         open(os.path.join(d, 'bad.obx'), 'w').write(
             'module main\nimport "lib.obx"\nfn main() { let x = lib::mk(); println(x.b) }\n')
         q = build(d, s, root='bad.obx', check=True)
@@ -2348,6 +2359,21 @@ pub fn reset(mut r: &R) {
 }
 '''
     main = 'module main\nimport "lib.obx"\nfn main() { let r = lib::make(); lib::reset(r) }\n'
+    # design section 11.1 field_visibility_pf_leak: the private field list is
+    # opaque, while the exported summary names "buf" and is not redacted.
+    d, s = tree({'lib.obx': base, 'main.obx': main})
+    try:
+        ok(build(d, s, out=os.path.join(d, 'p')), 'pf leak build')
+        lib = os.path.join(s, 'lib.sym')
+        text = sym_text(lib)
+        if b'type R = ref record { priv; priv }' not in text:
+            raise Fail(f'private field list is not opaque: {text!r}')
+        if b'fn reset(mut p0: &R) pfree 0x1 pf 0 "=/buf"' not in text:
+            raise Fail(f'private summary path is missing or redacted: {text!r}')
+        if reemit(lib).stdout != text:
+            raise Fail('pf-leak fixture re-emission is not byte-identical')
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
     def ihash(src):
         d, s = tree({'lib.obx': src, 'main.obx': main})
         try:

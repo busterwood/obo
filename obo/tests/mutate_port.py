@@ -305,7 +305,19 @@ from mutate_fork import ORIGIN_MUTANTS, EQUIVALENT as FORK_EQUIVALENT  # noqa: E
 MUTANTS.update({k: [v] for k, v in ORIGIN_MUTANTS.items() if k not in FORK_EQUIVALENT})
 # Stage 1 modules: the module trees of port_compare exercise these (see FORK.md)
 from mutate_fork import MODULE_MUTANTS  # noqa: E402
-MUTANTS.update({k: [v] for k, v in MODULE_MUTANTS.items() if k not in FORK_EQUIVALENT})
+# These mutants change the .sym reader/writer in ways that only sym_test.py's
+# dynamic fixtures observe (bare/private markers, --reemit priviface, the
+# source-less carrier bit). port_compare does not run sym_test, so mutate_fork
+# judges them; keeping them here would report a false miss for a real check.
+PORT_SYMTEST_ONLY = {
+    "field visibility: writer drops the parsed privateIface flag",
+    "field visibility: reader accepts a bare field",
+    "field visibility: reader accepts a private field in a variant",
+    "field visibility: containsIfaceIn ignores privateIface",
+    "field visibility: containsIface keeps a stale visited set",
+}
+MUTANTS.update({k: [v] for k, v in MODULE_MUTANTS.items()
+                if k not in FORK_EQUIVALENT and k not in PORT_SYMTEST_ONLY})
 # argument order: the error and run cases of arg_order.obx show them, as for the defer uses
 from mutate_fork import ARG_ORDER_MUTANTS  # noqa: E402
 MUTANTS.update({k: [v] for k, v in ARG_ORDER_MUTANTS.items() if k not in FORK_EQUIVALENT})
@@ -581,6 +593,9 @@ def main():
             continue
         text, stale = apply_edits(src, edits)
         todo.append((name, text, stale))
+    if pattern == '':
+        print(f"note: {len(PORT_SYMTEST_ONLY)} symmetric reader/writer mutants are judged by "
+              "mutate_fork's sym_test fixtures, not the port comparison", flush=True)
     sink = mutate_stats.Sink('mutate-port-timings')
     if sink.path:
         print(f"note: timings go to {sink.path}", file=sys.stderr)
