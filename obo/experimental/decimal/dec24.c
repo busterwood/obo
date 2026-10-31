@@ -40,12 +40,25 @@ static inline void divq(uint64_t hi, uint64_t lo, uint64_t d,
 int dec_div128_64(uint64_t hi, uint64_t lo, uint64_t d,
                   uint64_t *qhi, uint64_t *qlo, uint64_t *rem) {
     if (d == 0) return DEC_DIV_ZERO;
-    uint64_t q1, r1, q2, r2;
-    divq(0, hi, d, &q1, &r1);
-    divq(r1, lo, d, &q2, &r2);
-    *qhi = q1;
-    *qlo = q2;
-    *rem = r2;
+    uint64_t qh = 0, rh = hi, ql, r;
+    /* Skip the high-word DIV when the high word already fits the divisor.
+     * Division by ten uses the compiler's reciprocal sequence. */
+    if (d == 10) {
+        qh = hi / 10;
+        rh = hi % 10;
+        if (hi == 0) {
+            *qhi = 0;
+            *qlo = lo / 10;
+            *rem = lo % 10;
+            return DEC_OK;
+        }
+    } else if (hi >= d) {
+        divq(0, hi, d, &qh, &rh);
+    }
+    divq(rh, lo, d, &ql, &r);
+    *qhi = qh;
+    *qlo = ql;
+    *rem = r;
     return DEC_OK;
 }
 
@@ -154,12 +167,8 @@ int dec_div256_64(dec_u256 *q, uint64_t *rem, const dec_u256 *n, uint64_t d) {
     dec_u256 out = {{0, 0, 0, 0}};
     uint64_t r = 0;
     for (int i = 3; i >= 0; i--) {
-        uint64_t qh, ql, rr;
-        int st = dec_div128_64(r, n->w[i], d, &qh, &ql, &rr);
-        if (st != DEC_OK) return st;
-        if (qh != 0) return DEC_OVERFLOW; /* rem < d makes qh zero */
-        out.w[i] = ql;
-        r = rr;
+        /* Induction: r < d before each DIV, so the 64-bit quotient fits. */
+        divq(r, n->w[i], d, &out.w[i], &r);
     }
     *q = out;
     *rem = r;
@@ -206,15 +215,96 @@ int dec_div256_128(dec_u256 *q, dec_u256 *rem,
     return DEC_OK;
 }
 
+static const dec_u256 dec_pow10_u256[78] = {
+    {{0x0000000000000001ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x000000000000000aULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x0000000000000064ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x00000000000003e8ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x0000000000002710ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x00000000000186a0ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x00000000000f4240ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x0000000000989680ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x0000000005f5e100ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x000000003b9aca00ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x00000002540be400ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x000000174876e800ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x000000e8d4a51000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x000009184e72a000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x00005af3107a4000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x00038d7ea4c68000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x002386f26fc10000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x016345785d8a0000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x0de0b6b3a7640000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x8ac7230489e80000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x6bc75e2d63100000ULL, 0x0000000000000005ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x35c9adc5dea00000ULL, 0x0000000000000036ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x19e0c9bab2400000ULL, 0x000000000000021eULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x02c7e14af6800000ULL, 0x000000000000152dULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x1bcecceda1000000ULL, 0x000000000000d3c2ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x161401484a000000ULL, 0x0000000000084595ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0xdcc80cd2e4000000ULL, 0x000000000052b7d2ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x9fd0803ce8000000ULL, 0x00000000033b2e3cULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x3e25026110000000ULL, 0x00000000204fce5eULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x6d7217caa0000000ULL, 0x00000001431e0faeULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x4674edea40000000ULL, 0x0000000c9f2c9cd0ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0xc0914b2680000000ULL, 0x0000007e37be2022ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x85acef8100000000ULL, 0x000004ee2d6d415bULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x38c15b0a00000000ULL, 0x0000314dc6448d93ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x378d8e6400000000ULL, 0x0001ed09bead87c0ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x2b878fe800000000ULL, 0x0013426172c74d82ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0xb34b9f1000000000ULL, 0x00c097ce7bc90715ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x00f436a000000000ULL, 0x0785ee10d5da46d9ULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x098a224000000000ULL, 0x4b3b4ca85a86c47aULL, 0x0000000000000000ULL, 0x0000000000000000ULL}},
+    {{0x5f65568000000000ULL, 0xf050fe938943acc4ULL, 0x0000000000000002ULL, 0x0000000000000000ULL}},
+    {{0xb9f5610000000000ULL, 0x6329f1c35ca4bfabULL, 0x000000000000001dULL, 0x0000000000000000ULL}},
+    {{0x4395ca0000000000ULL, 0xdfa371a19e6f7cb5ULL, 0x0000000000000125ULL, 0x0000000000000000ULL}},
+    {{0xa3d9e40000000000ULL, 0xbc627050305adf14ULL, 0x0000000000000b7aULL, 0x0000000000000000ULL}},
+    {{0x6682e80000000000ULL, 0x5bd86321e38cb6ceULL, 0x00000000000072cbULL, 0x0000000000000000ULL}},
+    {{0x011d100000000000ULL, 0x9673df52e37f2410ULL, 0x0000000000047bf1ULL, 0x0000000000000000ULL}},
+    {{0x0b22a00000000000ULL, 0xe086b93ce2f768a0ULL, 0x00000000002cd76fULL, 0x0000000000000000ULL}},
+    {{0x6f5a400000000000ULL, 0xc5433c60ddaa1640ULL, 0x0000000001c06a5eULL, 0x0000000000000000ULL}},
+    {{0x5986800000000000ULL, 0xb4a05bc8a8a4de84ULL, 0x00000000118427b3ULL, 0x0000000000000000ULL}},
+    {{0x7f41000000000000ULL, 0x0e4395d69670b12bULL, 0x00000000af298d05ULL, 0x0000000000000000ULL}},
+    {{0xf88a000000000000ULL, 0x8ea3da61e066ebb2ULL, 0x00000006d79f8232ULL, 0x0000000000000000ULL}},
+    {{0xb564000000000000ULL, 0x926687d2c40534fdULL, 0x000000446c3b15f9ULL, 0x0000000000000000ULL}},
+    {{0x15e8000000000000ULL, 0xb8014e3ba83411e9ULL, 0x000002ac3a4edbbfULL, 0x0000000000000000ULL}},
+    {{0xdb10000000000000ULL, 0x300d0e549208b31aULL, 0x00001aba4714957dULL, 0x0000000000000000ULL}},
+    {{0x8ea0000000000000ULL, 0xe0828f4db456ff0cULL, 0x00010b46c6cdd6e3ULL, 0x0000000000000000ULL}},
+    {{0x9240000000000000ULL, 0xc51999090b65f67dULL, 0x000a70c3c40a64e6ULL, 0x0000000000000000ULL}},
+    {{0xb680000000000000ULL, 0xb2fffa5a71fba0e7ULL, 0x006867a5a867f103ULL, 0x0000000000000000ULL}},
+    {{0x2100000000000000ULL, 0xfdffc78873d4490dULL, 0x04140c78940f6a24ULL, 0x0000000000000000ULL}},
+    {{0x4a00000000000000ULL, 0xebfdcb54864ada83ULL, 0x28c87cb5c89a2571ULL, 0x0000000000000000ULL}},
+    {{0xe400000000000000ULL, 0x37e9f14d3eec8920ULL, 0x97d4df19d6057673ULL, 0x0000000000000001ULL}},
+    {{0xe800000000000000ULL, 0x2f236d04753d5b48ULL, 0xee50b7025c36a080ULL, 0x000000000000000fULL}},
+    {{0x1000000000000000ULL, 0xd762422c946590d9ULL, 0x4f2726179a224501ULL, 0x000000000000009fULL}},
+    {{0xa000000000000000ULL, 0x69d695bdcbf7a87aULL, 0x17877cec0556b212ULL, 0x0000000000000639ULL}},
+    {{0x4000000000000000ULL, 0x2261d969f7ac94caULL, 0xeb4ae1383562f4b8ULL, 0x0000000000003e3aULL}},
+    {{0x8000000000000000ULL, 0x57d27e23acbdcfe6ULL, 0x30eccc3215dd8f31ULL, 0x0000000000026e4dULL}},
+    {{0x0000000000000000ULL, 0x6e38ed64bf6a1f01ULL, 0xe93ff9f4daa797edULL, 0x0000000000184f03ULL}},
+    {{0x0000000000000000ULL, 0x4e3945ef7a25360aULL, 0x1c7fc3908a8bef46ULL, 0x0000000000f31627ULL}},
+    {{0x0000000000000000ULL, 0x0e3cbb5ac5741c64ULL, 0x1cfda3a5697758bfULL, 0x00000000097edd87ULL}},
+    {{0x0000000000000000ULL, 0x8e5f518bb6891be8ULL, 0x21e864761ea97776ULL, 0x000000005ef4a747ULL}},
+    {{0x0000000000000000ULL, 0x8fb92f75215b1710ULL, 0x5313ec9d329eaaa1ULL, 0x00000003b58e88c7ULL}},
+    {{0x0000000000000000ULL, 0x9d3bda934d8ee6a0ULL, 0x3ec73e23fa32aa4fULL, 0x00000025179157c9ULL}},
+    {{0x0000000000000000ULL, 0x245689c107950240ULL, 0x73c86d67c5faa71cULL, 0x00000172ebad6ddcULL}},
+    {{0x0000000000000000ULL, 0x6b61618a4bd21680ULL, 0x85d4460dbbca8719ULL, 0x00000e7d34c64a9cULL}},
+    {{0x0000000000000000ULL, 0x31cdcf66f634e100ULL, 0x3a4abc8955e946feULL, 0x000090e40fbeea1dULL}},
+    {{0x0000000000000000ULL, 0xf20a1a059e10ca00ULL, 0x46eb5d5d5b1cc5edULL, 0x0005a8e89d752524ULL}},
+    {{0x0000000000000000ULL, 0x746504382ca7e400ULL, 0xc531a5a58f1fbb4bULL, 0x003899162693736aULL}},
+    {{0x0000000000000000ULL, 0x8bf22a31be8ee800ULL, 0xb3f07877973d50f2ULL, 0x0235fadd81c2822bULL}},
+    {{0x0000000000000000ULL, 0x7775a5f171951000ULL, 0x0764b4abe8652979ULL, 0x161bcca7119915b5ULL}},
+    {{0x0000000000000000ULL, 0xaa987b6e6fd2a000ULL, 0x49ef0eb713f39ebeULL, 0xdd15fe86affad912ULL}},
+};
 int dec_u256_digits(const dec_u256 *a) {
-    dec_u256 t = *a;
-    int digits = 0;
-    while (!dec_u256_is_zero(&t)) {
-        uint64_t rem;
-        if (dec_div256_64(&t, &rem, &t, 10) != DEC_OK) return -1;
-        digits++;
-    }
-    return digits;
+    int limb = 3;
+    while (limb >= 0 && a->w[limb] == 0) limb--;
+    if (limb < 0) return 0;
+    unsigned bits = (unsigned)limb * 64u + 64u -
+                    (unsigned)__builtin_clzll(a->w[limb]);
+    /* log10(2) ~= 1233/4096; the table compare corrects the estimate. */
+    int d = (int)(((bits - 1u) * 1233u) >> 12) + 1;
+    if (d < 78 && dec_u256_cmp(a, &dec_pow10_u256[d]) >= 0) d++;
+    return d;
 }
 
 /* --------------------------- decimal helpers --------------------------- */
@@ -283,6 +373,51 @@ static int mode_ok(unsigned mode) {
 /* Round a 256-bit magnitude to at most 38 digits.
  * k_done receives the number of decimal places removed (including a
  * post-carry normalization by one digit). */
+static const uint64_t dec_pow10_u64[20] = {
+    0x0000000000000001ULL,
+    0x000000000000000aULL,
+    0x0000000000000064ULL,
+    0x00000000000003e8ULL,
+    0x0000000000002710ULL,
+    0x00000000000186a0ULL,
+    0x00000000000f4240ULL,
+    0x0000000000989680ULL,
+    0x0000000005f5e100ULL,
+    0x000000003b9aca00ULL,
+    0x00000002540be400ULL,
+    0x000000174876e800ULL,
+    0x000000e8d4a51000ULL,
+    0x000009184e72a000ULL,
+    0x00005af3107a4000ULL,
+    0x00038d7ea4c68000ULL,
+    0x002386f26fc10000ULL,
+    0x016345785d8a0000ULL,
+    0x0de0b6b3a7640000ULL,
+    0x8ac7230489e80000ULL
+};
+
+/* Drop k decimal digits from q in up to 19-digit chunks, capturing the first
+ * discarded digit and a sticky flag for the final rounding. */
+static int dec_drop_digits(dec_u256 *q, int k, int *first, int *sticky) {
+    *first = 0;
+    *sticky = 0;
+    while (k > 0) {
+        int take = k > 19 ? 19 : k;
+        uint64_t rem = 0;
+        int st = dec_div256_64(q, &rem, q, dec_pow10_u64[take]);
+        if (st != DEC_OK) return st;
+        k -= take;
+        if (k > 0) {
+            *sticky |= rem != 0;
+        } else {
+            uint64_t p = dec_pow10_u64[take - 1];
+            *first = (int)(rem / p);
+            *sticky |= rem % p != 0;
+        }
+    }
+    return DEC_OK;
+}
+
 static int round_to_38(dec_u256 *v, int sign, unsigned mode, int *k_done) {
     if (!mode_ok(mode)) return DEC_INVALID;
     if (dec_u256_is_zero(v)) {
@@ -297,13 +432,8 @@ static int round_to_38(dec_u256 *v, int sign, unsigned mode, int *k_done) {
     int k = digits - 38;
     dec_u256 q = *v;
     int first = 0, sticky = 0;
-    for (int i = 0; i < k; i++) {
-        uint64_t rem;
-        int st = dec_div256_64(&q, &rem, &q, 10);
-        if (st != DEC_OK) return st;
-        if (i == k - 1) first = (int)rem;
-        else if (rem != 0) sticky = 1;
-    }
+    int st = dec_drop_digits(&q, k, &first, &sticky);
+    if (st != DEC_OK) return st;
     int inc = 0;
     switch (mode) {
         case DEC_ROUND_HALF_EVEN:
@@ -356,9 +486,11 @@ static int round_to_38(dec_u256 *v, int sign, unsigned mode, int *k_done) {
 
 static int u256_mul_pow10(dec_u256 *a, int shift) {
     if (shift < 0) return DEC_INVALID;
-    for (int i = 0; i < shift; i++) {
-        int st = u256_mul_small(a, 10);
+    while (shift > 0) {
+        int take = shift > 19 ? 19 : shift;
+        int st = u256_mul_small(a, dec_pow10_u64[take]);
         if (st != DEC_OK) return st;
+        shift -= take;
     }
     return DEC_OK;
 }
@@ -531,13 +663,9 @@ int dec_quantize(dec24 *dst, const dec24 *a, uint16_t target_dscale,
             sticky = 1;
             c.w[0] = c.w[1] = c.w[2] = c.w[3] = 0;
         } else {
-            for (uint64_t i = 0; i < k; i++) {
-                uint64_t rem;
-                int st = dec_div256_64(&c, &rem, &c, 10);
-                if (st != DEC_OK) return st;
-                if (i == k - 1) first = (int)rem;
-                else if (rem != 0) sticky = 1;
-            }
+            int st = dec_drop_digits(&c, (int)k, &first, &sticky);
+            if (st != DEC_OK) return st;
+
         }
         int inc = decide_increment(mode, sign, first, sticky, &c);
         if (inc == -1) {
@@ -578,36 +706,8 @@ int dec_cmp(const dec24 *a, const dec24 *b) {
     uint64_t alo = a->lo, ahi = a->hi;
     uint64_t blo = b->lo, bhi = b->hi;
     int ae = (int16_t)a->exp, be = (int16_t)b->exp;
-    int adigits = 0, bdigits = 0;
-    for (;;) {
-        uint64_t qh, ql, rem;
-        if (dec_div128_64(ahi, alo, 10, &qh, &ql, &rem) != DEC_OK || rem != 0) break;
-        ahi = qh; alo = ql; ae++;
-    }
-    /* Count digits of the trailing-zero-stripped coefficients.  Adjusted
-     * exponent exp + digits is the magnitude scale; comparing raw exponents
-     * alone is wrong when the digit counts differ (1e78 vs 9.08e109). */
-    {
-        uint64_t th = ahi, tl = alo;
-        do {
-            uint64_t qh, ql, rem;
-            if (dec_div128_64(th, tl, 10, &qh, &ql, &rem) != DEC_OK) break;
-            th = qh; tl = ql; adigits++;
-        } while (th != 0 || tl != 0);
-    }
-    for (;;) {
-        uint64_t qh, ql, rem;
-        if (dec_div128_64(bhi, blo, 10, &qh, &ql, &rem) != DEC_OK || rem != 0) break;
-        bhi = qh; blo = ql; be++;
-    }
-    {
-        uint64_t th = bhi, tl = blo;
-        do {
-            uint64_t qh, ql, rem;
-            if (dec_div128_64(th, tl, 10, &qh, &ql, &rem) != DEC_OK) break;
-            th = qh; tl = ql; bdigits++;
-        } while (th != 0 || tl != 0);
-    }
+    dec_u256 ac = {{alo, ahi, 0, 0}}, bc = {{blo, bhi, 0, 0}};
+    int adigits = dec_u256_digits(&ac), bdigits = dec_u256_digits(&bc);
     int aa = ae + adigits, ba = be + bdigits;
     int mag;
     if (aa != ba) {
