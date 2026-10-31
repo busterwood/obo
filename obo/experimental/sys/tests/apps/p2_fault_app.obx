@@ -1,0 +1,512 @@
+// P2 scripted-fault root: built only with the link-time fake backend and the
+// test control surface. It prints only backend-independent status names.
+module app
+
+import "sysplatform.obx" as platform
+import "sysaddress.obx" as address
+import "sysnet.obx" as net
+import "sysreactor.obx" as reactor
+import "sysclock.obx" as clock
+import "sysresolve.obx" as resolve
+import "syswaitio.obx" as waitio
+import "sysstream.obx" as stream
+import "sysbuffer.obx" as buffer
+import "syserrors.obx" as errors
+import "sysfakectl.obx" as fake
+
+fn show(label: string, code: int) {
+    let k = errors::kind(code)
+    println(label, "=", errors::text(&k))
+}
+
+fn mk(s: string): []byte {
+    let out = new []byte(len(s))
+    for i in 0..len(s) { out[i] = s[i] }
+    return out
+}
+
+fn portOf(a: address::Address): int {
+    var port = 0
+    match a {
+        IPv4 { port = a.port }
+        IPv6 { port = a.port }
+        UnixPath { }
+        UnixAbstract { }
+    }
+    return port
+}
+
+fn deadlineAfter(ms: int): clock::Deadline {
+    let now = clock::monotonic()
+    match now {
+        ok(n) {
+            let d = clock::durationMs(ms)
+            match d {
+                ok(dur) {
+                    let dl = clock::after(&n, &dur)
+                    match dl { ok(x) { return x } err(m,c) { } }
+                }
+                err(m,c) { }
+            }
+        }
+        err(m,c) { }
+    }
+    return clock::forever()
+}
+
+type Pair = ref record { pub client: ?net::Connection; pub server: ?net::Connection }
+
+fn pair(): Result[Pair] {
+    let bindAddr = try address::parseNumeric("127.0.0.1", 0)
+    let opts = net::listenOptions()
+    let l = try net::listen(&bindAddr, &opts)
+    let local = try net::listenerLocalAddress(&l)
+    let target = try address::parseNumeric("127.0.0.1", portOf(local))
+    let c = try net::connect(&target)
+    let f = try net::finishConnect(&c)
+    let s = try net::accept(&l)
+    let lc = try net::closeListener(&l)
+    let cv: ?net::Connection = c
+    let sv: ?net::Connection = s
+    return ok(new Pair{client: cv, server: sv})
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini { ok(v) { println("init=", v) } err(m,c) { show("init", c) } }
+    let reset = fake::reset()
+    println("fake_reset=", reset)
+
+    // Listen and accept pressure.
+    let bindAddr = address::parseNumeric("127.0.0.1", 0)
+    match bindAddr {
+        ok(addr) {
+            let opts = net::listenOptions()
+            fake::push(fake::CLASS_NET_LISTEN, -24)
+            let bad = net::listen(&addr, &opts)
+            match bad { ok(v) { println("scripted_listen=ok") } err(m,c) { show("scripted_listen", c) } }
+            let made = net::listen(&addr, &opts)
+            match made {
+                ok(l) {
+                    let empty = net::accept(&l)
+                    match empty { ok(v) { println("empty_accept=ok") } err(m,c) { show("empty_accept", c) } }
+                    let local = net::listenerLocalAddress(&l)
+                    var port = 0
+                    match local { ok(a) { port = portOf(a) } err(m,c) { } }
+                    let target = address::parseNumeric("127.0.0.1", port)
+                    match target {
+                        ok(t) {
+                            let cc = net::connect(&t)
+                            match cc {
+                                ok(c) {
+                                    let f = net::finishConnect(&c)
+                                    fake::push(fake::CLASS_ACCEPT, -24)
+                                    let pressured = net::accept(&l)
+                                    match pressured { ok(v) { println("accept_emfile=ok") } err(m,c) { show("accept_emfile", c) } }
+                                    let accepted = net::accept(&l)
+                                    match accepted {
+                                        ok(s) {
+                                            let cs = net::closeConnection(&s)
+                                            let cc2 = net::closeConnection(&c)
+                                            match cs { ok(v) { } err(m,c) { } }
+                                            match cc2 { ok(v) { } err(m,c) { } }
+                                        }
+                                        err(m,c) { show("accept_after_pressure", c) }
+                                    }
+                                }
+                                err(m,c) { show("pressure_connect", c) }
+                            }
+                        }
+                        err(m,c) { show("pressure_target", c) }
+                    }
+                    let lc = net::closeListener(&l)
+                    match lc { ok(v) { } err(m,c) { } }
+                }
+                err(m,c) { show("pressure_listen", c) }
+            }
+        }
+        err(m,c) { show("pressure_addr", c) }
+    }
+
+    // Pending connect: EAGAIN is still an owned pending connection.
+    let bind2 = address::parseNumeric("127.0.0.1", 0)
+    match bind2 {
+        ok(addr) {
+            let opts = net::listenOptions()
+            let made = net::listen(&addr, &opts)
+            match made {
+                ok(l) {
+                    let local = net::listenerLocalAddress(&l)
+                    var port = 0
+                    match local { ok(a) { port = portOf(a) } err(m,c) { } }
+                    let target = address::parseNumeric("127.0.0.1", port)
+                    match target {
+                        ok(t) {
+                            fake::push(fake::CLASS_CONNECT, -11)
+                            let cc = net::connect(&t)
+                            match cc {
+                                ok(c) {
+                                    fake::push(fake::CLASS_FINISH_CONNECT, 0)
+                                    let f1 = net::finishConnect(&c)
+                                    match f1 { ok(v) { println("pending_first=", v) } err(m,c) { show("pending_first", c) } }
+                                    let f2 = net::finishConnect(&c)
+                                    match f2 { ok(v) { println("pending_second=", v) } err(m,c) { show("pending_second", c) } }
+                                    let acc = net::accept(&l)
+                                    match acc { ok(s) { let cs = net::closeConnection(&s); match cs { ok(v) { } err(m,c) { } } } err(m,c) { show("pending_accept", c) } }
+                                    let cc2 = net::closeConnection(&c)
+                                    match cc2 { ok(v) { } err(m,c) { } }
+                                }
+                                err(m,c) { show("pending_connect", c) }
+                            }
+                        }
+                        err(m,c) { show("pending_target", c) }
+                    }
+                    let lc = net::closeListener(&l)
+                    match lc { ok(v) { } err(m,c) { } }
+                }
+                err(m,c) { show("pending_listen", c) }
+            }
+        }
+        err(m,c) { show("pending_addr", c) }
+    }
+
+    // Failed finishConnect then intoStream preserves the state error and retires.
+    let bind3 = address::parseNumeric("127.0.0.1", 0)
+    match bind3 {
+        ok(addr) {
+            let opts = net::listenOptions()
+            let made = net::listen(&addr, &opts)
+            match made {
+                ok(l) {
+                    let local = net::listenerLocalAddress(&l)
+                    var port = 0
+                    match local { ok(a) { port = portOf(a) } err(m,c) { } }
+                    let target = address::parseNumeric("127.0.0.1", port)
+                    match target {
+                        ok(t) {
+                            fake::push(fake::CLASS_CONNECT, -115)
+                            let cc = net::connect(&t)
+                            match cc {
+                                ok(c) {
+                                    fake::push(fake::CLASS_FINISH_CONNECT, -111)
+                                    let f = net::finishConnect(&c)
+                                    match f { ok(v) { println("fail_finish=ok") } err(m,c) { show("fail_finish", c) } }
+                                    let st = net::intoStream(&c)
+                                    match st { ok(s) { println("fail_into=ok") } err(m,c) { show("fail_into", c) } }
+                                    let ret = net::closeConnection(&c)
+                                    match ret { ok(v) { println("fail_retired=", !v) } err(m,c) { show("fail_retired", c) } }
+                                }
+                                err(m,c) { show("fail_connect", c) }
+                            }
+                        }
+                        err(m,c) { show("fail_target", c) }
+                    }
+                    let lc = net::closeListener(&l)
+                    match lc { ok(v) { } err(m,c) { } }
+                }
+                err(m,c) { show("fail_listen", c) }
+            }
+        }
+        err(m,c) { show("fail_addr", c) }
+    }
+
+    // Short and EAGAIN transfers.
+    let p = pair()
+    match p {
+        ok(pr) {
+            let co = take(pr.client)
+            let so = take(pr.server)
+            if co == nil {
+                drop(co)
+                drop(so)
+                println("pair=nil")
+            } else {
+            let client: net::Connection = co
+            if so == nil {
+                drop(so)
+                println("pair=nil")
+            } else {
+            let server: net::Connection = so
+            let hello = mk("hello")
+            let zread = net::readSome(&client, 0)
+            match zread { ok(v) { println("zero_read=ok") } err(m,c) { show("zero_read", c) } }
+            let rangeWrite = net::writeSome(&client, &hello, 5, 2)
+            match rangeWrite { ok(v) { println("range_write=ok") } err(m,c) { show("range_write", c) } }
+            let bigRead = net::readSome(&client, net::MAX_CHUNK + 1)
+            match bigRead { ok(v) { println("big_read=ok") } err(m,c) { show("big_read", c) } }
+            let daddr = address::parseNumeric("127.0.0.1", 0)
+            match daddr {
+                ok(da) {
+                    let madeD = net::bindDatagram(&da)
+                    match madeD {
+                        ok(dg) {
+                            let neg = net::receive(&dg, -1)
+                            match neg { ok(v) { println("neg_recv=ok") } err(m,c) { show("neg_recv", c) } }
+                            let huge = net::receive(&dg, net::MAX_DATAGRAM + 1)
+                            match huge { ok(v) { println("huge_recv=ok") } err(m,c) { show("huge_recv", c) } }
+                            let tooBig = new []byte(net::MAX_DATAGRAM + 1)
+                            let sendBig = net::send(&dg, &da, &tooBig)
+                            match sendBig { ok(v) { println("big_send=ok") } err(m,c) { show("big_send", c) } }
+                            let dc = net::closeDatagram(&dg)
+                            match dc { ok(v) { } err(m,c) { } }
+                        }
+                        err(m,c) { show("bounds_dgram", c) }
+                    }
+                }
+                err(m,c) { show("bounds_addr", c) }
+            }
+            let longHostChars = new []byte(256)
+            for i in 0..256 { longHostChars[i] = 97 }
+            let longHost = resolve::resolveBlocking(string(longHostChars), "80", resolve::FAMILY_IPV4, resolve::SOCKET_STREAM)
+            match longHost { ok(v) { println("long_host=ok") } err(m,c) { show("long_host", c) } }
+            fake::push(fake::CLASS_CONN_WRITE, 2)
+            let sw = net::writeSome(&client, &hello, 0, 5)
+            match sw { ok(n) { println("short_write=", n) } err(m,c) { show("short_write", c) } }
+            let sr = net::readSome(&server, 5)
+            match sr { ok(v) { if v == nil { println("short_read=nil") } else { println("short_read=", string(v)) } } err(m,c) { show("short_read", c) } }
+            let w2 = net::writeSome(&client, &hello, 0, 5)
+            fake::push(fake::CLASS_CONN_READ, 1)
+            let sr2 = net::readSome(&server, 5)
+            match sr2 { ok(v) { if v == nil { println("read_short=nil") } else { println("read_short=", len(v)) } } err(m,c) { show("read_short", c) } }
+            fake::push(fake::CLASS_CONN_READ, -11)
+            let eg = net::readSome(&server, 5)
+            match eg { ok(v) { println("read_eagain=ok") } err(m,c) { show("read_eagain", c) } }
+            fake::push(fake::CLASS_CONN_WRITE, -11)
+            let ew = net::writeSome(&client, &hello, 0, 5)
+            match ew { ok(v) { println("write_eagain=ok") } err(m,c) { show("write_eagain", c) } }
+            let cc = net::closeConnection(&client)
+            let cs = net::closeConnection(&server)
+            match cc { ok(v) { } err(m,c) { } }
+            match cs { ok(v) { } err(m,c) { } }
+            }
+            }
+        }
+        err(m,c) { show("pair", c) }
+    }
+
+    // EINTR does not reset the one absolute deadline; no data remains.
+    let p2 = pair()
+    match p2 {
+        ok(pr) {
+            let co = take(pr.client)
+            let so = take(pr.server)
+            if co == nil {
+                drop(co)
+                drop(so)
+                println("pair=nil")
+            } else {
+            let client: net::Connection = co
+            if so == nil {
+                drop(so)
+                println("pair=nil")
+            } else {
+            let server: net::Connection = so
+            let rc = reactor::create(8, 8)
+            match rc {
+                ok(r) {
+                    let cs = net::intoStream(&client)
+                    match cs {
+                        ok(cstream) {
+                            let ps = net::intoStream(&server)
+                            match ps {
+                                ok(pstream) {
+                                    let cancel = waitio::cancellation()
+                                    match cancel {
+                                        ok(cx) {
+                                            let out = buffer::make(8)
+                                            match out {
+                                                ok(b) {
+                                                    let dl = deadlineAfter(10)
+                                                    let tiny = buffer::make(2)
+                                                    match tiny {
+                                                        ok(tb) {
+                                                            let tooMany = waitio::readExactUntil(&pstream, &r, 3, &tb, &dl, &cx)
+                                                            match tooMany { ok(v) { println("wait_bounds=ok") } err(m,c) { show("wait_bounds", c) } }
+                                                        }
+                                                        err(m,c) { show("wait_bounds_buf", c) }
+                                                    }
+                                                    let deadlineNs = dl.nanos
+                                                    fake::push(fake::CLASS_CONN_READ, -4)
+                                                    let rr = waitio::readExactUntil(&pstream, &r, 4, &b, &dl, &cx)
+                                                    match rr { ok(v) { println("eintr_read=ok") } err(m,c) { show("eintr_read", c) } }
+                                                    let now = fake::now()
+                                                    println("eintr_at_deadline=", now == deadlineNs)
+                                                }
+                                                err(m,c) { show("eintr_buf", c) }
+                                            }
+                                            let ccl = waitio::closeCancellation(&cx)
+                                            match ccl { ok(v) { } err(m,c) { } }
+                                        }
+                                        err(m,c) { show("eintr_cancel", c) }
+                                    }
+                                    let pcl = stream::close(&pstream)
+                                    match pcl { ok(v) { } err(m,c) { } }
+                                }
+                                err(m,c) { show("eintr_pstream", c) }
+                            }
+                            let ccl = stream::close(&cstream)
+                            match ccl { ok(v) { } err(m,c) { } }
+                        }
+                        err(m,c) { show("eintr_cstream", c) }
+                    }
+                    let rcl = reactor::close(&r)
+                    match rcl { ok(v) { } err(m,c) { } }
+                }
+                err(m,c) { show("eintr_reactor", c) }
+            }
+            }
+            }
+        }
+        err(m,c) { show("eintr_pair", c) }
+    }
+
+    // Partial progress is retained when the deadline expires.
+    let p3 = pair()
+    match p3 {
+        ok(pr) {
+            let co = take(pr.client)
+            let so = take(pr.server)
+            if co == nil {
+                drop(co)
+                drop(so)
+                println("pair=nil")
+            } else {
+            let client: net::Connection = co
+            if so == nil {
+                drop(so)
+                println("pair=nil")
+            } else {
+            let server: net::Connection = so
+            let rc = reactor::create(8, 8)
+            match rc {
+                ok(r) {
+                    let two = mk("ab")
+                    let w = net::writeSome(&client, &two, 0, 2)
+                    match w { ok(n) { } err(m,c) { } }
+                    let ps = net::intoStream(&server)
+                    match ps {
+                        ok(pstream) {
+                            let cancel = waitio::cancellation()
+                            match cancel {
+                                ok(cx) {
+                                    let out = buffer::make(8)
+                                    match out {
+                                        ok(b) {
+                                            let dl = deadlineAfter(10)
+                                            let rr = waitio::readExactUntil(&pstream, &r, 4, &b, &dl, &cx)
+                                            match rr { ok(v) { println("progress=ok") } err(m,c) { show("progress", c) } }
+                                            println("progress_bytes=", b.end - b.start)
+                                        }
+                                        err(m,c) { show("progress_buf", c) }
+                                    }
+                                    let ccl = waitio::closeCancellation(&cx)
+                                    match ccl { ok(v) { } err(m,c) { } }
+                                }
+                                err(m,c) { show("progress_cancel", c) }
+                            }
+                            let pcl = stream::close(&pstream)
+                            match pcl { ok(v) { } err(m,c) { } }
+                        }
+                        err(m,c) { show("progress_pstream", c) }
+                    }
+                    let rcl = reactor::close(&r)
+                    match rcl { ok(v) { } err(m,c) { } }
+                }
+                err(m,c) { show("progress_reactor", c) }
+            }
+            let cc = net::closeConnection(&client)
+            match cc { ok(v) { } err(m,c) { } }
+            }
+            }
+        }
+        err(m,c) { show("progress_pair", c) }
+    }
+
+    // Resolver EAI categories stay distinct from errno and from each other.
+    fake::push(fake::CLASS_RESOLVE, -(100000 + 3))
+    let rt = resolve::resolveBlocking("example.test", "80", resolve::FAMILY_IPV4, resolve::SOCKET_STREAM)
+    match rt { ok(v) { println("resolve_tmp=ok") } err(m,c) { show("resolve_tmp", c) } }
+    fake::push(fake::CLASS_RESOLVE, -(100000 + 2))
+    let rn = resolve::resolveBlocking("example.test", "80", resolve::FAMILY_IPV4, resolve::SOCKET_STREAM)
+    match rn { ok(v) { println("resolve_none=ok") } err(m,c) { show("resolve_none", c) } }
+    fake::push(fake::CLASS_RESOLVE, -(200000 + 5))
+    let rs = resolve::resolveBlocking("example.test", "80", resolve::FAMILY_IPV4, resolve::SOCKET_STREAM)
+    match rs { ok(v) { println("resolve_sys=ok") } err(m,c) { show("resolve_sys", c) } }
+    let rv = resolve::resolveNumeric("not-an-ip", "80", resolve::FAMILY_ANY, resolve::SOCKET_STREAM)
+    match rv { ok(v) { println("resolve_num=ok") } err(m,c) { show("resolve_num", c) } }
+
+    // Watch and timer quota pressure.
+    let rc2 = reactor::create(1, 1)
+    match rc2 {
+        ok(r) {
+            let bind4 = address::parseNumeric("127.0.0.1", 0)
+            match bind4 {
+                ok(addr) {
+                    let opts = net::listenOptions()
+                    let lm = net::listen(&addr, &opts)
+                    match lm {
+                        ok(l) {
+                            let local = net::listenerLocalAddress(&l)
+                            var port = 0
+                            match local { ok(a) { port = portOf(a) } err(m,c) { } }
+                            let target = address::parseNumeric("127.0.0.1", port)
+                            match target {
+                                ok(t) {
+                                    let cc = net::connect(&t)
+                                    match cc {
+                                        ok(c) {
+                                            let first = net::watchConnection(&r, &c, false, true, 1)
+                                            match first {
+                                                ok(w1) {
+                                                    let second = net::watchListener(&r, &l, 2)
+                                                    match second { ok(w2) { println("watch_limit=ok") } err(m,c) { show("watch_limit", c) } }
+                                                    let rm = reactor::remove(&w1)
+                                                    match rm { ok(v) { } err(m,c) { } }
+                                                }
+                                                err(m,c) { show("watch_first", c) }
+                                            }
+                                            let cc2 = net::closeConnection(&c)
+                                            match cc2 { ok(v) { } err(m,c) { } }
+                                        }
+                                        err(m,c) { show("watch_connect", c) }
+                                    }
+                                }
+                                err(m,c) { show("watch_target", c) }
+                            }
+                            let lc = net::closeListener(&l)
+                            match lc { ok(v) { } err(m,c) { } }
+                        }
+                        err(m,c) { show("watch_listen", c) }
+                    }
+                }
+                err(m,c) { show("watch_addr", c) }
+            }
+            let at = deadlineAfter(10)
+            let period = clock::durationNs(0)
+            match period {
+                ok(pd) {
+                    let t1 = reactor::timer(&r, &at, &pd, 1)
+                    match t1 {
+                        ok(timer) {
+                            let t2 = reactor::timer(&r, &at, &pd, 2)
+                            match t2 { ok(timer2) { println("timer_limit=ok") } err(m,c) { show("timer_limit", c) } }
+                            let ct = reactor::cancelTimer(&timer)
+                            match ct { ok(v) { } err(m,c) { } }
+                        }
+                        err(m,c) { show("timer_first", c) }
+                    }
+                }
+                err(m,c) { show("timer_period", c) }
+            }
+            let rcl = reactor::close(&r)
+            match rcl { ok(v) { } err(m,c) { } }
+        }
+        err(m,c) { show("quota_reactor", c) }
+    }
+
+    let cnt = platform::counts()
+    match cnt { ok(c) { println("counts_resources=", c.resources) } err(m,c) { show("counts", c) } }
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.cleanupFailures) } err(m,c) { show("shutdown", c) } }
+}

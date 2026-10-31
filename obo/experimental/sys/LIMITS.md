@@ -1,22 +1,26 @@
-# Experimental sys P0/P1a limits
+# Experimental sys P0/P1a/P2 limits
 
-These limits are part of the P0/P1a boundary proof. They are deliberately
+These limits are part of the P0/P1a/P2 boundary proof. They are deliberately
 explicit rather than hidden behind a stable-looking API.
 
 ## Scope
 
-- **P0 plus P1a.** P0 provided the identity/error/byte seam. P1a adds owned
+- **P0, P1a and P2.** P0 provided the identity/error/byte seam; P1a adds owned
   `File`, anchored `Directory`/`Iterator`, metadata snapshots, clocks,
-  `getrandom`, concrete streams and bounded buffers. There is still no mapping,
-  calendar, reactor, socket, DNS, process, signal, environment mutation,
-  terminal or logging API, and no atomic replacement or full path-containment
-  helper.
+  `getrandom`, concrete streams and bounded buffers; P2 adds numeric addresses,
+  TCP/UDP/Unix sockets, an epoll reactor, cancellation/deadline helpers and
+  blocking resolution. There is still no mapping, calendar, process, signal,
+  environment mutation, terminal or logging API, no atomic replacement, no
+  reactive DNS and no full path-containment helper.
 - **One process context, single thread.** The managed table and C registry are
   process globals. There is no worker context selection, lock, atomic or TSAN
   claim.
 - **Linux x86-64 real backend.** The real adapter uses openat/read/write/lseek/
-  ftruncate/fstat/statx/getdents64/clock_gettime/getrandom and P0's eventfd
-  fixture. Other platforms would need a different adapter and are not claimed.
+  ftruncate/fstat/statx/getdents64/clock_gettime/getrandom, socket/bind/listen/
+  accept4/connect/recv/send/sendto/recvmsg/shutdown, epoll/eventfd, poll for
+  nonblocking connect completion, and getaddrinfo. Other platforms would need a
+  different adapter and are not claimed. The v1 reactor is level-triggered only;
+  there is no poll-reference backend or edge-triggered mode.
 - **Hosted cinterop only.** The package uses the experimental hosted
   cinterop link (non-PIE fixed layout). The freestanding compiler/runtime is
   unchanged and does not link this package.
@@ -41,7 +45,8 @@ explicit rather than hidden behind a stable-looking API.
   swept on insertion; an **open** entry whose shell died is a leak record and is
   never silently swept. It keeps its slot until explicit shutdown, so repeated
   omission of close can exhaust the slot/resource cap.
-- Public record fields are writable in 0.12. An exact copied live hint aliases
+- Documented value/shell fields are explicitly `pub` under 0.13 private-by-default
+  records and remain writable by callers. An exact copied live hint aliases
   the same entry **only while the registered owner shell is alive**; after the
   owner dies the same hint fails the liveness check. A replaced same-kind `res`
   is the documented alias/steal limitation. A copied hint cannot create a C
@@ -77,6 +82,17 @@ explicit rather than hidden behind a stable-looking API.
 | Path string | 4095 bytes | 4095 bytes |
 | One directory component name | 255 bytes | 255 bytes |
 | Metadata packet | 16 fields | 128 bytes |
+| Address packet / resolver record | 160 bytes | 160 bytes |
+| IPv4 / IPv6 address | 4 / 16 octets | 4 / 16 octets |
+| Port / IPv6 scope | 0..65535 / 0..2^32-1 | same |
+| Unix path / abstract name | 107 bytes | 107 bytes |
+| One TCP/Unix stream transfer | 1 MiB | 1 MiB (`MAX_CHUNK`) |
+| One datagram message | 65507 bytes | 65507 bytes (`MAX_DATAGRAM`) |
+| One reactor batch | 64 events | 4096 requested, 64 returned (`MAX_BATCH`) |
+| Reactor watches / timers | configured at create | 65536 each |
+| Resolver results | 64 | 64 (`MAX_RESULTS`) |
+| Resolver host / service text | 255 / 31 bytes | 255 / 31 bytes |
+| Vector parts / total | 64 / 1 MiB | 64 / 1 MiB |
 
 `Options.maxResources`, `maxShells` and `maxNativeBytes` must be positive and
 within the ceilings. The native byte quota charges the **logical payload
@@ -165,13 +181,23 @@ allocate past the stated capacity.
   call is capped at 1 MiB. Fake deterministic entropy exists only in the
   test-only fake link and is never an application-selected production mode.
 
-## P1b/P2 deferrals
+## P3/P4 and P2 deferrals
 
 P1b owns `chmod`, `sync`, rename/link/symlink, `replaceAtomic`, `openBeneath`,
-directory mutation and durability reporting. P2 owns mappings, readiness,
-reactor/wait helpers, sockets, resolution and process supervision. Vector I/O,
-half-close and socket dispatch on `Stream` are also later. No thread, atomic,
-channel or synchronization kind is created by P0/P1a.
+directory mutation and durability reporting. P3 owns process spawn/reaping,
+pipes/redirection, process groups, signals, cwd policy, supervisor examples and
+the resolver policy/helper decision. P4 owns threads and synchronization; no
+worker, atomic, channel, sender or receiver kind is created here.
+
+P2 deliberately defers mappings (despite the older phase note), multicast
+membership, ancillary data/fd passing, peer credentials, connected UDP,
+`sendmmsg`/`recvmmsg`, scatter/gather native syscalls (the obo `writeVector`
+composes one bounded contiguous transfer), edge-triggered readiness, a poll
+reference backend, reactive DNS (`beginResolve`/`watchResolve`), a resolver
+cache/TTL and any hidden helper process. `resolveBlocking` has **no finite
+deadline**; it can block indefinitely in NSS/DNS and must not run inside a
+reactor loop. `syswaitio` helpers require a dedicated reactor because they
+consume readiness batches.
 
 ## Backends and tests
 
@@ -188,20 +214,30 @@ channel or synchronization kind is created by P0/P1a.
   still consumes the fake resource, modeling Linux close. It is a deterministic
   contract/fault fixture, not a filesystem implementation: its directory child
   namespace (`sub`) and metadata policy are intentionally shallow.
+- The fake P2 backend uses in-memory paired connections, queued datagrams,
+  scripted readiness/errors and a fake monotonic clock. It has no kernel socket,
+  epoll or DNS: blocked readiness is represented by explicit scripts/queues,
+  and an infinite `wait` with nothing ready returns an empty batch instead of
+  hanging the single-threaded test process. Scripted close/shutdown errors still
+  consume the fake object. It proves contract/state/error behavior, not kernel
+  TCP/UDP semantics.
 - `sysshells` contains P0-only `File`/`Stream` type-identity fixtures, not I/O
   APIs. Compiler-negative fixtures assert that `^File` cannot be passed where
   `^Stream` or `^platform::Resource` is required. The P1a `sysfile::File` and
   `sysstream::Stream` are separate concrete modules.
-- Tests assume a local Linux host with a C compiler. No network service, DNS,
-  database, host limit change or persistent data is used.
+- Tests assume a local Linux host with a C compiler. Loopback IPv4/IPv6 and Unix
+  sockets are used; no external network service or DNS is required. The only
+  process-limit change is a short RLIMIT_NOFILE adjustment inside the C harness
+  to observe EMFILE, restored immediately. No database or persistent user data
+  is touched.
 
 ## Compatibility and provenance
 
 - This package makes **no version, ABI, symbol-format or seed reservation**.
-  It is source plus trusted C on the existing 0.12/cinterop seam. It does not
-  modify `obo/src/obo.obo`, the runtime, `seed/`, symbol format 6 or ABI 1.
+  It is source plus trusted C on the existing 0.13/cinterop seam. It does not
+  modify `obo/src/obo.obo`, the runtime, `seed/`, symbol format 7 or ABI 1.
 - The `.cbind` format is the existing experimental `cinterop-proto/1`. Hashes in
   the manifest are provenance/corruption checks, not signatures.
 - Experimental APIs may change with a migration note. Nothing here is stable;
-  P1a adds owned File/Directory/clock/getrandom, metadata, concrete streams and
-  bounded buffers on the reviewed P0 seam. P1b/P2 remain deferred.
+  P2 adds addresses, sockets, the reactor, waitio and blocking resolution on the
+  reviewed P0/P1a seam. P1b, P3 and P4 remain deferred.

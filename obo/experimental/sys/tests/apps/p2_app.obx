@@ -1,0 +1,958 @@
+// P2 conformance root: built against the Linux adapter and the scripted fake.
+// It prints only backend-independent properties (booleans, status names, and
+// canonical address text), never ports, event order or wall-clock values.
+module app
+
+import "sysplatform.obx" as platform
+import "sysaddress.obx" as address
+import "sysnet.obx" as net
+import "sysreactor.obx" as reactor
+import "sysclock.obx" as clock
+import "sysresolve.obx" as resolve
+import "syswaitio.obx" as waitio
+import "sysstream.obx" as stream
+import "sysbuffer.obx" as buffer
+import "sysfile.obx" as file
+import "sysbytes.obx" as bytesbuf
+import "syserrors.obx" as errors
+
+fn show(label: string, code: int) {
+    let k = errors::kind(code)
+    println(label, "=", errors::text(&k))
+}
+
+fn mk(s: string): []byte {
+    let out = new []byte(len(s))
+    for i in 0..len(s) { out[i] = s[i] }
+    return out
+}
+
+fn deadlineAfter(ms: int): clock::Deadline {
+    let now = clock::monotonic()
+    match now {
+        ok(n) {
+            let d = clock::durationMs(ms)
+            match d {
+                ok(dur) {
+                    let dl = clock::after(&n, &dur)
+                    match dl { ok(x) { return x } err(m,c) { } }
+                }
+                err(m,c) { }
+            }
+        }
+        err(m,c) { }
+    }
+    return clock::forever()
+}
+
+fn portOf(a: address::Address): int {
+    var port = 0
+    match a {
+        IPv4 { port = a.port }
+        IPv6 { port = a.port }
+        UnixPath { }
+        UnixAbstract { }
+    }
+    return port
+}
+
+fn hasEvent(events: &[]reactor::Event, tag: int, readable: bool,
+            writable: bool, timer: bool, wake: bool): bool {
+    for i in 0..len(events) {
+        let e = events[i]
+        if e.tag == tag && e.readable == readable && e.writable == writable &&
+           e.timer == timer && e.wake == wake {
+            return true
+        }
+    }
+    return false
+}
+
+fn anyTimer(events: &[]reactor::Event): bool {
+    for i in 0..len(events) {
+        if events[i].timer { return true }
+    }
+    return false
+}
+
+fn timerTicks(events: &[]reactor::Event): int {
+    for i in 0..len(events) {
+        if events[i].timer { return events[i].ticks }
+    }
+    return 0
+}
+
+fn anyWake(events: &[]reactor::Event): bool {
+    for i in 0..len(events) {
+        if events[i].wake { return true }
+    }
+    return false
+}
+
+fn addressChecks() {
+    let good4 = address::parseNumeric("127.0.0.1", 80)
+    match good4 {
+        ok(a) {
+            let f = address::format(&a)
+            match f { ok(s) { println("addr4=", s) } err(m,c) { show("addr4_fmt", c) } }
+            println("addr4_port=", portOf(a))
+        }
+        err(m,c) { show("addr4", c) }
+    }
+    let good6 = address::parseNumeric("2001:db8::1", 443)
+    match good6 {
+        ok(a) {
+            let f = address::format(&a)
+            match f { ok(s) { println("addr6=", s) } err(m,c) { show("addr6_fmt", c) } }
+        }
+        err(m,c) { show("addr6", c) }
+    }
+    let loop6 = address::parseNumeric("::1", 0)
+    match loop6 {
+        ok(a) {
+            let f = address::format(&a)
+            match f { ok(s) { println("addr6_loop=", s) } err(m,c) { show("addr6_loop_fmt", c) } }
+        }
+        err(m,c) { show("addr6_loop", c) }
+    }
+    let zero6 = address::parseNumeric("::", 0)
+    match zero6 {
+        ok(a) {
+            let f = address::format(&a)
+            match f { ok(s) { println("addr6_zero=", s) } err(m,c) { show("addr6_zero_fmt", c) } }
+        }
+        err(m,c) { show("addr6_zero", c) }
+    }
+    let full6 = address::parseNumeric("1:2:3:4:5:6:7:8", 0)
+    match full6 {
+        ok(a) {
+            let f = address::format(&a)
+            match f { ok(s) { println("addr6_full=", s) } err(m,c) { show("addr6_full_fmt", c) } }
+        }
+        err(m,c) { show("addr6_full", c) }
+    }
+    let octets = new []byte(16)
+    octets[0] = 32
+    octets[1] = 1
+    octets[15] = 1
+    let scoped: address::Address = new address::IPv6{octets: octets, port: 0, scope: 3}
+    let sf = address::format(&scoped)
+    match sf { ok(s) { println("addr6_scope=", s) } err(m,c) { show("addr6_scope_fmt", c) } }
+
+    let bad1 = address::parseNumeric("01.2.3.4", 80)
+    match bad1 { ok(a) { println("bad_octal=ok") } err(m,c) { show("bad_octal", c) } }
+    let bad2 = address::parseNumeric("256.1.1.1", 80)
+    match bad2 { ok(a) { println("bad_byte=ok") } err(m,c) { show("bad_byte", c) } }
+    let bad3 = address::parseNumeric("1.2.3", 80)
+    match bad3 { ok(a) { println("bad_short=ok") } err(m,c) { show("bad_short", c) } }
+    let bad4 = address::parseNumeric("1:2:3", 80)
+    match bad4 { ok(a) { println("bad_v6=ok") } err(m,c) { show("bad_v6", c) } }
+    let bad5 = address::parseNumeric("[::1]", 80)
+    match bad5 { ok(a) { println("bad_bracket=ok") } err(m,c) { show("bad_bracket", c) } }
+    let bad6 = address::parseNumeric("127.0.0.1", 65536)
+    match bad6 { ok(a) { println("bad_port=ok") } err(m,c) { show("bad_port", c) } }
+    let bad7 = address::parseNumeric("2001:db8::1", -1)
+    match bad7 { ok(a) { println("bad_port2=ok") } err(m,c) { show("bad_port2", c) } }
+
+    let short4: address::Address = new address::IPv4{octets: new []byte(3), port: 0}
+    let v1 = address::validate(&short4)
+    match v1 { ok(v) { println("short4=ok") } err(m,c) { show("short4", c) } }
+    let short6: address::Address = new address::IPv6{octets: new []byte(15), port: 0, scope: 0}
+    let v2 = address::validate(&short6)
+    match v2 { ok(v) { println("short6=ok") } err(m,c) { show("short6", c) } }
+    let negScope: address::Address = new address::IPv6{octets: new []byte(16), port: 0, scope: -1}
+    let v3 = address::validate(&negScope)
+    match v3 { ok(v) { println("neg_scope=ok") } err(m,c) { show("neg_scope", c) } }
+    let emptyPath: address::Address = new address::UnixPath{path: ""}
+    let v4 = address::validate(&emptyPath)
+    match v4 { ok(v) { println("empty_path=ok") } err(m,c) { show("empty_path", c) } }
+    var longName = new []byte(108)
+    for i in 0..108 { longName[i] = 97 }
+    let longPath: address::Address = new address::UnixPath{path: string(longName)}
+    let v5 = address::validate(&longPath)
+    match v5 { ok(v) { println("long_path=ok") } err(m,c) { show("long_path", c) } }
+    let emptyAbs: address::Address = new address::UnixAbstract{name: new []byte(0)}
+    let v6 = address::validate(&emptyAbs)
+    match v6 { ok(v) { println("empty_abs=ok") } err(m,c) { show("empty_abs", c) } }
+    let goodAbs: address::Address = new address::UnixAbstract{name: mk("abc")}
+    let af = address::format(&goodAbs)
+    match af { ok(s) { println("abs_fmt=", s) } err(m,c) { show("abs_fmt", c) } }
+}
+
+fn finishWait(r: &reactor::Reactor, c: &net::Connection): Result[bool] {
+    let w = try net::watchConnection(r, c, false, true, 93)
+    let dl = deadlineAfter(2000)
+    let events = try reactor::wait(r, &dl, 2)
+    let rm = try reactor::remove(&w)
+    return net::finishConnect(c)
+}
+
+fn acceptWait(r: &reactor::Reactor,
+              l: &net::Listener): Result[net::Connection] {
+    for turn in 0..8 {
+        let got = net::accept(l)
+        match got {
+            ok(c) { return ok(c) }
+            err(m, code) {
+                if !errors::isWouldBlock(code) { return err(m, code) }
+            }
+        }
+        let w = try net::watchListener(r, l, 91)
+        let dl = deadlineAfter(2000)
+        let events = try reactor::wait(r, &dl, 2)
+        let rm = try reactor::remove(&w)
+    }
+    return net::accept(l)
+}
+
+fn readWait(r: &reactor::Reactor, c: &net::Connection,
+            max: int): Result[?[]byte] {
+    for turn in 0..8 {
+        let got = net::readSome(c, max)
+        match got {
+            ok(data) { return ok(data) }
+            err(m, code) {
+                if !errors::isWouldBlock(code) { return err(m, code) }
+            }
+        }
+        let w = try net::watchConnection(r, c, true, false, 94)
+        let dl = deadlineAfter(2000)
+        let events = try reactor::wait(r, &dl, 2)
+        let rm = try reactor::remove(&w)
+    }
+    return net::readSome(c, max)
+}
+
+fn receiveWait(r: &reactor::Reactor, d: &net::Datagram,
+               max: int): Result[net::Packet] {
+    for turn in 0..8 {
+        let got = net::receive(d, max)
+        match got {
+            ok(p) { return ok(p) }
+            err(m, code) {
+                if !errors::isWouldBlock(code) { return err(m, code) }
+            }
+        }
+        let src = try net::sourceDatagram(d)
+        let w = try reactor::watchResource(r, src, true, false, 92)
+        let dl = deadlineAfter(2000)
+        let events = try reactor::wait(r, &dl, 2)
+        let rm = try reactor::remove(&w)
+    }
+    return net::receive(d, max)
+}
+
+fn tcpRoundTrip(family: int) {
+    var addrText = "127.0.0.1"
+    if family == 6 { addrText = "::1" }
+    let pa = address::parseNumeric(addrText, 0)
+    match pa {
+        ok(bindAddr) {
+            let opts = net::listenOptions()
+            let made = net::listen(&bindAddr, &opts)
+            match made {
+                ok(listener) {
+                    let local = net::listenerLocalAddress(&listener)
+                    var port = 0
+                    match local {
+                        ok(a) { port = portOf(a) }
+                        err(m,c) { show("tcp_local", c) }
+                    }
+                    println("tcp", family, "_port=", port > 0)
+                    let targ = address::parseNumeric(addrText, port)
+                    match targ {
+                        ok(target) {
+                            let rc = reactor::create(32, 32)
+                            match rc {
+                                ok(r) {
+                                    let lw = net::watchListener(&r, &listener, 11)
+                                    match lw {
+                                        ok(lwatch) {
+                                            let cc = net::connect(&target)
+                                            match cc {
+                                                ok(conn) {
+                                                    let cw = net::watchConnection(&r, &conn, false, true, 12)
+                                                    match cw {
+                                                        ok(cwatch) {
+                                                            var lready = false
+                                                            var cready = false
+                                                            let dl1 = deadlineAfter(2000)
+                                                            let ev1 = reactor::wait(&r, &dl1, 16)
+                                                            match ev1 {
+                                                                ok(events) {
+                                                                    if hasEvent(&events, 11, true, false, false, false) { lready = true }
+                                                                    if hasEvent(&events, 12, false, true, false, false) { cready = true }
+                                                                }
+                                                                err(m,c) { show("tcp_wait", c) }
+                                                            }
+                                                            let rmc0 = reactor::remove(&cwatch)
+                                                            match rmc0 { ok(v) { } err(m,c) { } }
+                                                            for turn in 0..4 {
+                                                                if lready { break }
+                                                                let dl2 = deadlineAfter(2000)
+                                                                let ev2 = reactor::wait(&r, &dl2, 16)
+                                                                match ev2 {
+                                                                    ok(events) {
+                                                                        if hasEvent(&events, 11, true, false, false, false) { lready = true }
+                                                                    }
+                                                                    err(m,c) { show("tcp_wait2", c) }
+                                                                }
+                                                            }
+                                                            println("tcp", family, "_events=", lready, ",", cready)
+                                                            let fc = net::finishConnect(&conn)
+                                                            match fc { ok(v) { println("tcp", family, "_finish=", v) } err(m,c) { show("tcp_finish", c) } }
+                                                            let lrm0 = reactor::remove(&lwatch)
+                                                            match lrm0 { ok(v) { } err(m,c) { } }
+                                                            let acc = acceptWait(&r, &listener)
+                                                            match acc {
+                                                                ok(peerConn) {
+                                                                    println("tcp", family, "_accept=true")
+                                                                    let hello = mk("hello")
+                                                                    let w = net::writeSome(&conn, &hello, 0, 5)
+                                                                    match w { ok(n) { println("tcp", family, "_write=", n) } err(m,c) { show("tcp_write", c) } }
+                                                                    let rd = readWait(&r, &peerConn, 5)
+                                                                    match rd { ok(v) { if v == nil { println("tcp", family, "_read=nil") } else { println("tcp", family, "_read=", string(v)) } } err(m,c) { show("tcp_read", c) } }
+                                                                    let sh = net::shutdownWrite(&conn)
+                                                                    match sh { ok(v) { println("tcp", family, "_shutdown=", v) } err(m,c) { show("tcp_shutdown", c) } }
+                                                                    let eof = readWait(&r, &peerConn, 5)
+                                                                    match eof { ok(v) { if v == nil { println("tcp", family, "_eof=nil") } else { println("tcp", family, "_eof=data") } } err(m,c) { show("tcp_eof", c) } }
+                                                                    let sh2 = net::shutdownWrite(&conn)
+                                                                    match sh2 { ok(v) { println("tcp", family, "_shutdown_idem=", v) } err(m,c) { show("tcp_shutdown2", c) } }
+                                                                    let st = net::intoStream(&peerConn)
+                                                                    match st {
+                                                                        ok(s) {
+                                                                            let sc = stream::shutdownWrite(&s)
+                                                                            match sc { ok(v) { println("tcp", family, "_stream_shutdown=", v) } err(m,c) { show("stream_shutdown", c) } }
+                                                                            let cls = stream::close(&s)
+                                                                            match cls { ok(v) { println("tcp", family, "_stream_close=", v) } err(m,c) { show("stream_close", c) } }
+                                                                        }
+                                                                        err(m,c) { show("into_stream", c) }
+                                                                    }
+                                                                    let cc2 = net::closeConnection(&conn)
+                                                                    match cc2 { ok(v) { println("tcp", family, "_close=", v) } err(m,c) { show("tcp_close", c) } }
+                                                                }
+                                                                err(m,c) { show("tcp_accept", c) }
+                                                            }
+                                                        }
+                                                        err(m,c) { show("tcp_cwatch", c) }
+                                                    }
+                                                    let lc = net::closeListener(&listener)
+                                                    match lc { ok(v) { println("tcp", family, "_listener_close=", v) } err(m,c) { show("tcp_lclose", c) } }
+                                                }
+                                                err(m,c) { show("tcp_connect", c) }
+                                            }
+                                        }
+                                        err(m,c) { show("tcp_lwatch", c) }
+                                    }
+                                    let rcl = reactor::close(&r)
+                                    match rcl { ok(v) { } err(m,c) { show("tcp_rclose", c) } }
+                                }
+                                err(m,c) { show("tcp_reactor", c) }
+                            }
+                        }
+                        err(m,c) { show("tcp_target", c) }
+                    }
+                }
+                err(m,c) { show("tcp_listen", c) }
+            }
+        }
+        err(m,c) { show("tcp_parse", c) }
+    }
+}
+
+fn unixStream(path: string) {
+    let ua: address::Address = new address::UnixPath{path: path}
+    let opts = net::listenOptions()
+    let made = net::listen(&ua, &opts)
+    match made {
+        ok(listener) {
+            let rc = reactor::create(16, 16)
+            match rc {
+                ok(r) {
+                    let lw = net::watchListener(&r, &listener, 21)
+                    match lw {
+                        ok(lwatch) {
+                            let cc = net::connect(&ua)
+                            match cc {
+                                ok(conn) {
+                                    let cw = net::watchConnection(&r, &conn, false, true, 22)
+                                    match cw {
+                                        ok(cwatch) {
+                                            var lready = false
+                                            var cready = false
+                                            let dl1 = deadlineAfter(2000)
+                                            let ev1 = reactor::wait(&r, &dl1, 8)
+                                            match ev1 {
+                                                ok(events) {
+                                                    if hasEvent(&events, 21, true, false, false, false) { lready = true }
+                                                    if hasEvent(&events, 22, false, true, false, false) { cready = true }
+                                                }
+                                                err(m,c) { show("unix_wait", c) }
+                                            }
+                                            let rmc0 = reactor::remove(&cwatch)
+                                            match rmc0 { ok(v) { } err(m,c) { } }
+                                            for turn in 0..4 {
+                                                if lready { break }
+                                                let dl2 = deadlineAfter(2000)
+                                                let ev2 = reactor::wait(&r, &dl2, 8)
+                                                match ev2 {
+                                                    ok(events) {
+                                                        if hasEvent(&events, 21, true, false, false, false) { lready = true }
+                                                    }
+                                                    err(m,c) { show("unix_wait2", c) }
+                                                }
+                                            }
+                                            println("unix_stream_ready=", lready, ",", cready)
+                                            let fc = net::finishConnect(&conn)
+                                            match fc { ok(v) { println("unix_finish=", v) } err(m,c) { show("unix_finish", c) } }
+                                            let lrm0 = reactor::remove(&lwatch)
+                                            match lrm0 { ok(v) { } err(m,c) { } }
+                                            let acc = acceptWait(&r, &listener)
+                                            match acc {
+                                                ok(peer) {
+                                                    let text = mk("unix")
+                                                    let w = net::writeSome(&conn, &text, 0, 4)
+                                                    match w { ok(n) { println("unix_write=", n) } err(m,c) { show("unix_write", c) } }
+                                                    let rd = readWait(&r, &peer, 4)
+                                                    match rd { ok(v) { if v == nil { println("unix_read=nil") } else { println("unix_read=", string(v)) } } err(m,c) { show("unix_read", c) } }
+                                                    let ccp = net::closeConnection(&peer)
+                                                    match ccp { ok(v) { println("unix_peer_close=", v) } err(m,c) { show("unix_peer_close", c) } }
+                                                }
+                                                err(m,c) { show("unix_accept", c) }
+                                            }
+                                        }
+                                        err(m,c) { show("unix_cwatch", c) }
+                                    }
+                                    let cc2 = net::closeConnection(&conn)
+                                    match cc2 { ok(v) { println("unix_conn_close=", v) } err(m,c) { show("unix_conn_close", c) } }
+                                }
+                                err(m,c) { show("unix_connect", c) }
+                            }
+                        }
+                        err(m,c) { show("unix_lwatch", c) }
+                    }
+                    let rcl = reactor::close(&r)
+                    match rcl { ok(v) { } err(m,c) { } }
+                }
+                err(m,c) { show("unix_reactor", c) }
+            }
+            let lc = net::closeListener(&listener)
+            match lc { ok(v) { println("unix_listener_close=", v) } err(m,c) { show("unix_lclose", c) } }
+        }
+        err(m,c) { show("unix_listen", c) }
+    }
+}
+
+fn peerText(p: net::Packet): string {
+    let value = take(p.peer)
+    if value == nil {
+        return "nil"
+    } else {
+        let a: address::Address = value
+        let f = address::format(&a)
+        match f { ok(s) { return s } err(m,c) { return "bad" } }
+    }
+}
+
+fn datagramChecks(pathA: string, pathB: string) {
+    let aa: address::Address = new address::UnixPath{path: pathA}
+    let ab: address::Address = new address::UnixPath{path: pathB}
+    let ma = net::bindDatagram(&aa)
+    match ma {
+        ok(sender) {
+            let mb = net::bindDatagram(&ab)
+            match mb {
+                ok(receiver) {
+                    let la = net::datagramLocalAddress(&sender)
+                    match la { ok(a) { println("dgram_local=", portOf(a) == 0) } err(m,c) { show("dgram_local", c) } }
+                    let empty = new []byte(0)
+                    let es = net::send(&sender, &ab, &empty)
+                    match es { ok(n) { println("dgram_empty_send=", n) } err(m,c) { show("dgram_empty_send", c) } }
+                    let er = net::receive(&receiver, 16)
+                    match er {
+                        ok(p) {
+                            println("dgram_empty_len=", len(p.bytes), " trunc=", p.truncated, " orig=", p.originalSize)
+                            println("dgram_empty_peer=", peerText(p) == pathA)
+                        }
+                        err(m,c) { show("dgram_empty_recv", c) }
+                    }
+                    var payload = new []byte(100)
+                    for i in 0..100 { payload[i] = byte(i) }
+                    let ps = net::send(&sender, &ab, &payload)
+                    match ps { ok(n) { println("dgram_send=", n) } err(m,c) { show("dgram_send", c) } }
+                    let tr = net::receive(&receiver, 10)
+                    match tr {
+                        ok(p) {
+                            println("dgram_trunc=", p.truncated, " orig=", p.originalSize, " len=", len(p.bytes))
+                            println("dgram_peer=", peerText(p) == pathA)
+                        }
+                        err(m,c) { show("dgram_trunc_recv", c) }
+                    }
+                    let sr = net::send(&sender, &ab, &payload)
+                    match sr { ok(n) { } err(m,c) { show("dgram_send2", c) } }
+                    let full = net::receive(&receiver, 100)
+                    match full { ok(p) { println("dgram_full=", p.truncated, ",", p.originalSize, ",", len(p.bytes)) } err(m,c) { show("dgram_full", c) } }
+                    let rb = net::setReceiveBuffer(&receiver, 65536)
+                    match rb { ok(v) { println("dgram_rcvbuf=", v) } err(m,c) { show("dgram_rcvbuf", c) } }
+                    let sb = net::setSendBuffer(&sender, 65536)
+                    match sb { ok(v) { println("dgram_sndbuf=", v) } err(m,c) { show("dgram_sndbuf", c) } }
+                    let bc = net::setBroadcast(&sender, true)
+                    match bc { ok(v) { println("dgram_broadcast=", v) } err(m,c) { show("dgram_broadcast", c) } }
+                    let crc = net::closeDatagram(&receiver)
+                    match crc { ok(v) { println("dgram_recv_close=", v) } err(m,c) { show("dgram_recv_close", c) } }
+                }
+                err(m,c) { show("dgram_bind_b", c) }
+            }
+            let csc = net::closeDatagram(&sender)
+            match csc { ok(v) { println("dgram_send_close=", v) } err(m,c) { show("dgram_send_close", c) } }
+        }
+        err(m,c) { show("dgram_bind_a", c) }
+    }
+}
+
+fn udpLoopback() {
+    let pa = address::parseNumeric("127.0.0.1", 0)
+    match pa {
+        ok(bindAddr) {
+            let ma = net::bindDatagram(&bindAddr)
+            match ma {
+                ok(sender) {
+                    let la = net::datagramLocalAddress(&sender)
+                    var port = 0
+                    match la { ok(a) { port = portOf(a) } err(m,c) { show("udp_local", c) } }
+                    println("udp_port=", port > 0)
+                    let tb = address::parseNumeric("127.0.0.1", 0)
+                    match tb {
+                        ok(bindB) {
+                            let mb = net::bindDatagram(&bindB)
+                            match mb {
+                                ok(receiver) {
+                                    let lb = net::datagramLocalAddress(&receiver)
+                                    var portB = 0
+                                    match lb { ok(a) { portB = portOf(a) } err(m,c) { show("udp_local_b", c) } }
+                                    let to = address::parseNumeric("127.0.0.1", portB)
+                                    match to {
+                                        ok(dest) {
+                                            let text = mk("udp")
+                                            let s = net::send(&sender, &dest, &text)
+                                            match s { ok(n) { println("udp_send=", n) } err(m,c) { show("udp_send", c) } }
+                                            let rr = reactor::create(8, 8)
+                                            match rr {
+                                                ok(rx) {
+                                                    let r = receiveWait(&rx, &receiver, 8)
+                                                    match r {
+                                                        ok(p) {
+                                                            println("udp_recv=", len(p.bytes))
+                                                            println("udp_peer=", peerText(p) == "127.0.0.1")
+                                                        }
+                                                        err(m,c) { show("udp_recv", c) }
+                                                    }
+                                                    let rrc = reactor::close(&rx)
+                                                    match rrc { ok(v) { } err(m,c) { } }
+                                                }
+                                                err(m,c) { show("udp_reactor", c) }
+                                            }
+                                        }
+                                        err(m,c) { show("udp_dest", c) }
+                                    }
+                                    let cr = net::closeDatagram(&receiver)
+                                    match cr { ok(v) { } err(m,c) { } }
+                                }
+                                err(m,c) { show("udp_bind_b", c) }
+                            }
+                        }
+                        err(m,c) { show("udp_bind_b_addr", c) }
+                    }
+                    let cs = net::closeDatagram(&sender)
+                    match cs { ok(v) { } err(m,c) { } }
+                }
+                err(m,c) { show("udp_bind_a", c) }
+            }
+        }
+        err(m,c) { show("udp_bind_addr", c) }
+    }
+}
+
+fn fairnessCheck(r: &reactor::Reactor, l: &net::Listener,
+                  target: &address::Address): Result[bool] {
+    let conn1 = try net::connect(target)
+    let conn2 = try net::connect(target)
+    let w1 = try net::watchConnection(r, &conn1, false, true, 41)
+    let w2 = try net::watchConnection(r, &conn2, false, true, 42)
+    println("fair_watches=true,true")
+    var seen1 = false
+    var seen2 = false
+    for turn in 0..2 {
+        let dl = deadlineAfter(2000)
+        let events = try reactor::wait(r, &dl, 1)
+        if hasEvent(&events, 41, false, true, false, false) { seen1 = true }
+        if hasEvent(&events, 42, false, true, false, false) { seen2 = true }
+    }
+    let rr1 = try reactor::remove(&w1)
+    let rr2 = try reactor::remove(&w2)
+    let p1 = try acceptWait(r, l)
+    let p2 = try acceptWait(r, l)
+    let c1 = try net::closeConnection(&p1)
+    let c2 = try net::closeConnection(&p2)
+    let cc1 = try net::closeConnection(&conn1)
+    let cc2 = try net::closeConnection(&conn2)
+    return ok(seen1 && seen2)
+}
+
+fn reactorChecks() {
+    let rc = reactor::create(32, 32)
+    match rc {
+        ok(r) {
+            let now = clock::monotonic()
+            match now {
+                ok(inst) {
+                    let piece = clock::durationMs(10)
+                    match piece {
+                        ok(period) {
+                            let at = clock::after(&inst, &period)
+                            match at {
+                                ok(dl) {
+                                    let tm = reactor::timer(&r, &dl, &period, 31)
+                                    match tm {
+                                        ok(timer) {
+                                            let sleep = clock::durationMs(35)
+                                            match sleep { ok(d) { let sl = clock::sleep(&d); match sl { ok(v) { } err(m,c) { } } } err(m,c) { } }
+                                            let until = deadlineAfter(100)
+                                            let ev = reactor::wait(&r, &until, 8)
+                                            match ev { ok(events) { println("timer_fired=", anyTimer(&events), " ticks_ok=", timerTicks(&events) >= 2) } err(m,c) { show("timer_wait", c) } }
+                                            let ct = reactor::cancelTimer(&timer)
+                                            match ct { ok(v) { println("timer_cancel=", v) } err(m,c) { show("timer_cancel", c) } }
+                                        }
+                                        err(m,c) { show("timer", c) }
+                                    }
+                                }
+                                err(m,c) { show("timer_at", c) }
+                            }
+                        }
+                        err(m,c) { show("timer_period", c) }
+                    }
+                }
+                err(m,c) { show("timer_now", c) }
+            }
+            let wk = reactor::wake(&r)
+            match wk { ok(v) { println("reactor_wake=", v) } err(m,c) { show("wake", c) } }
+            let until2 = deadlineAfter(100)
+            let wev = reactor::wait(&r, &until2, 8)
+            match wev { ok(events) { println("wake_event=", anyWake(&events)) } err(m,c) { show("wake_wait", c) } }
+            // Fairness with two ready subscriptions; one event per batch.
+            let pa = address::parseNumeric("127.0.0.1", 0)
+            match pa {
+                ok(bindAddr) {
+                    let lo = net::listenOptions()
+                    let lm = net::listen(&bindAddr, &lo)
+                    match lm {
+                        ok(l) {
+                            var port = 0
+                            let la = net::listenerLocalAddress(&l)
+                            match la { ok(a) { port = portOf(a) } err(m,c) { } }
+                            let ta = address::parseNumeric("127.0.0.1", port)
+                            match ta {
+                                ok(target) {
+                                    let fair = fairnessCheck(&r, &l, &target)
+                                    match fair { ok(v) { println("fairness=", v) } err(m,c) { show("fairness", c) } }
+                                }
+                                err(m,c) { show("fair_target", c) }
+                            }
+                            let lc = net::closeListener(&l)
+                            match lc { ok(v) { } err(m,c) { } }
+                        }
+                        err(m,c) { show("fair_listen", c) }
+                    }
+                }
+                err(m,c) { show("fair_addr", c) }
+            }
+            // Stale watch: close the endpoint, remove must be false, wait empty.
+            let pa2 = address::parseNumeric("127.0.0.1", 0)
+            match pa2 {
+                ok(bindAddr) {
+                    let lo = net::listenOptions()
+                    let lm = net::listen(&bindAddr, &lo)
+                    match lm {
+                        ok(l) {
+                            var port = 0
+                            let la = net::listenerLocalAddress(&l)
+                            match la { ok(a) { port = portOf(a) } err(m,c) { } }
+                            let ta = address::parseNumeric("127.0.0.1", port)
+                            match ta {
+                                ok(target) {
+                                    let cc = net::connect(&target)
+                                    match cc {
+                                        ok(conn) {
+                                            let cw = net::watchConnection(&r, &conn, false, true, 51)
+                                            match cw {
+                                                ok(watch) {
+                                                    let cl = net::closeConnection(&conn)
+                                                    match cl { ok(v) { } err(m,c) { } }
+                                                    let rm = reactor::remove(&watch)
+                                                    match rm { ok(v) { println("stale_remove=", v) } err(m,c) { show("stale_remove", c) } }
+                                                    let dl = deadlineAfter(20)
+                                                    let ev = reactor::wait(&r, &dl, 4)
+                                                    match ev { ok(events) { println("stale_events=", len(events)) } err(m,c) { show("stale_wait", c) } }
+                                                }
+                                                err(m,c) { show("stale_watch", c) }
+                                            }
+                                        }
+                                        err(m,c) { show("stale_connect", c) }
+                                    }
+                                }
+                                err(m,c) { show("stale_target", c) }
+                            }
+                            let lc = net::closeListener(&l)
+                            match lc { ok(v) { } err(m,c) { } }
+                        }
+                        err(m,c) { show("stale_listen", c) }
+                    }
+                }
+                err(m,c) { show("stale_addr", c) }
+            }
+            let st = reactor::stop(&r)
+            match st { ok(v) { println("reactor_stop=", v) } err(m,c) { show("stop", c) } }
+            let dl3 = deadlineAfter(20)
+            let sev = reactor::wait(&r, &dl3, 4)
+            match sev { ok(events) { println("stop_wait=ok") } err(m,c) { show("stop_wait", c) } }
+            let st2 = reactor::stop(&r)
+            match st2 { ok(v) { println("reactor_stop2=", v) } err(m,c) { } }
+            let rcl = reactor::close(&r)
+            match rcl { ok(v) { println("reactor_close=", v) } err(m,c) { show("reactor_close", c) } }
+        }
+        err(m,c) { show("reactor", c) }
+    }
+}
+
+fn resolverChecks() {
+    let n = resolve::resolveNumeric("127.0.0.1", "80", resolve::FAMILY_IPV4, resolve::SOCKET_STREAM)
+    match n { ok(list) { println("resolve_num=", len(list)) } err(m,c) { show("resolve_num", c) } }
+    let v6 = resolve::resolveNumeric("::1", "80", resolve::FAMILY_IPV6, resolve::SOCKET_DATAGRAM)
+    match v6 { ok(list) { println("resolve_num6=", len(list)) } err(m,c) { show("resolve_num6", c) } }
+    let bad = resolve::resolveNumeric("not-an-ip", "80", resolve::FAMILY_ANY, resolve::SOCKET_STREAM)
+    match bad { ok(list) { println("resolve_bad=ok") } err(m,c) { show("resolve_bad", c) } }
+    let fam = resolve::resolveBlocking("127.0.0.1", "80", 7, resolve::SOCKET_STREAM)
+    match fam { ok(list) { println("resolve_family=ok") } err(m,c) { show("resolve_family", c) } }
+    let srv = resolve::resolveBlocking("127.0.0.1", "not-a-service-xyz", resolve::FAMILY_IPV4, resolve::SOCKET_STREAM)
+    match srv { ok(list) { println("resolve_service=ok") } err(m,c) { show("resolve_service", c) } }
+    let local = resolve::resolveBlocking("localhost", "80", resolve::FAMILY_ANY, resolve::SOCKET_STREAM)
+    match local { ok(list) { println("resolve_local=", len(list) >= 1) } err(m,c) { show("resolve_local", c) } }
+}
+
+fn waitioChecks() {
+    let pa = address::parseNumeric("127.0.0.1", 0)
+    match pa {
+        ok(bindAddr) {
+            let lo = net::listenOptions()
+            let lm = net::listen(&bindAddr, &lo)
+            match lm {
+                ok(l) {
+                    var port = 0
+                    let la = net::listenerLocalAddress(&l)
+                    match la { ok(a) { port = portOf(a) } err(m,c) { show("waitio_local", c) } }
+                    let ta = address::parseNumeric("127.0.0.1", port)
+                    match ta {
+                        ok(target) {
+                            let cc = net::connect(&target)
+                            match cc {
+                                ok(conn) {
+                                    let rc = reactor::create(16, 16)
+                                    match rc {
+                                        ok(r) {
+                                            let cw = net::watchConnection(&r, &conn, false, true, 61)
+                                            match cw {
+                                                ok(cwatch) {
+                                                    let dl0 = deadlineAfter(2000)
+                                                    let ev0 = reactor::wait(&r, &dl0, 4)
+                                                    match ev0 { ok(v) { } err(m,c) { show("waitio_ready", c) } }
+                                                    let rmc0 = reactor::remove(&cwatch)
+                                                    match rmc0 { ok(v) { } err(m,c) { } }
+                                                    let fc = net::finishConnect(&conn)
+                                                    match fc { ok(v) { } err(m,c) { show("waitio_finish", c) } }
+                                                    let acc = acceptWait(&r, &l)
+                                                    match acc {
+                                                        ok(peer) {
+                                                            let cs = net::intoStream(&conn)
+                                                            match cs {
+                                                                ok(cstream) {
+                                                                    let ps = net::intoStream(&peer)
+                                                                    match ps {
+                                                                        ok(pstream) {
+                                                                            let cm = waitio::cancellation()
+                                                                            match cm {
+                                                                                ok(cancel) {
+                                                                                    let pre = waitio::request(&cancel)
+                                                                                    match pre { ok(v) { } err(m,c) { } }
+                                                                                    let buf = buffer::make(32)
+                                                                                    match buf {
+                                                                                        ok(b) {
+                                                                                            let dl = deadlineAfter(100)
+                                                                                            let rr = waitio::readExactUntil(&pstream, &r, 1, &b, &dl, &cancel)
+                                                                                            match rr { ok(v) { println("cancel_read=ok") } err(m,c) { show("cancel_read", c) } }
+                                                                                        }
+                                                                                        err(m,c) { show("waitio_buf", c) }
+                                                                                    }
+                                                                                    let ccl = waitio::closeCancellation(&cancel)
+                                                                                    match ccl { ok(v) { } err(m,c) { } }
+                                                                                }
+                                                                                err(m,c) { show("waitio_cancel", c) }
+                                                                            }
+                                                                            let cm2 = waitio::cancellation()
+                                                                            match cm2 {
+                                                                                ok(cancel2) {
+                                                                                    let text = mk("hello")
+                                                                                    let cursor = new buffer::Cursor{done: 0}
+                                                                                    let dl = deadlineAfter(2000)
+                                                                                    let wr = waitio::writeAllUntil(&cstream, &r, &text, &cursor, &dl, &cancel2)
+                                                                                    match wr { ok(v) { println("waitio_write=", v, " done=", cursor.done) } err(m,c) { show("waitio_write", c) } }
+                                                                                    let out = buffer::make(32)
+                                                                                    match out {
+                                                                                        ok(ob) {
+                                                                                            let dl2 = deadlineAfter(2000)
+                                                                                            let rr = waitio::readExactUntil(&pstream, &r, 5, &ob, &dl2, &cancel2)
+                                                                                            match rr { ok(v) { println("waitio_read=", v, " avail=", ob.end - ob.start) } err(m,c) { show("waitio_read", c) } }
+                                                                                        }
+                                                                                        err(m,c) { show("waitio_out", c) }
+                                                                                    }
+                                                                                    let ccl2 = waitio::closeCancellation(&cancel2)
+                                                                                    match ccl2 { ok(v) { } err(m,c) { } }
+                                                                                }
+                                                                                err(m,c) { show("waitio_cancel2", c) }
+                                                                            }
+                                                                            // Deadline with no data: retain progress and report TimedOut.
+                                                                            let cm3 = waitio::cancellation()
+                                                                            match cm3 {
+                                                                                ok(cancel3) {
+                                                                                    let out2 = buffer::make(16)
+                                                                                    match out2 {
+                                                                                        ok(ob2) {
+                                                                                            let dl3 = deadlineAfter(10)
+                                                                                            let rr = waitio::readExactUntil(&pstream, &r, 4, &ob2, &dl3, &cancel3)
+                                                                                            match rr { ok(v) { println("deadline_read=ok") } err(m,c) { show("deadline_read", c) } }
+                                                                                        }
+                                                                                        err(m,c) { show("waitio_out2", c) }
+                                                                                    }
+                                                                                    let pref = waitio::request(&cancel3)
+                                                                                    match pref { ok(v) { } err(m,c) { } }
+                                                                                    let out3 = buffer::make(16)
+                                                                                    match out3 {
+                                                                                        ok(ob3) {
+                                                                                            let dl4 = deadlineAfter(50)
+                                                                                            let rr = waitio::readExactUntil(&pstream, &r, 1, &ob3, &dl4, &cancel3)
+                                                                                            match rr { ok(v) { println("cancel_wait=ok") } err(m,c) { show("cancel_wait", c) } }
+                                                                                        }
+                                                                                        err(m,c) { show("waitio_out3", c) }
+                                                                                    }
+                                                                                    let ccl3 = waitio::closeCancellation(&cancel3)
+                                                                                    match ccl3 { ok(v) { } err(m,c) { } }
+                                                                                }
+                                                                                err(m,c) { show("waitio_cancel3", c) }
+                                                                            }
+                                                                            let pcl = stream::close(&pstream)
+                                                                            match pcl { ok(v) { } err(m,c) { } }
+                                                                        }
+                                                                        err(m,c) { show("waitio_pstream", c) }
+                                                                    }
+                                                                    let ccl2 = stream::close(&cstream)
+                                                                    match ccl2 { ok(v) { } err(m,c) { } }
+                                                                }
+                                                                err(m,c) { show("waitio_cstream", c) }
+                                                            }
+                                                        }
+                                                        err(m,c) { show("waitio_accept", c) }
+                                                    }
+                                                }
+                                                err(m,c) { show("waitio_cwatch", c) }
+                                            }
+                                            let rcl = reactor::close(&r)
+                                            match rcl { ok(v) { } err(m,c) { } }
+                                        }
+                                        err(m,c) { show("waitio_reactor", c) }
+                                    }
+                                }
+                                err(m,c) { show("waitio_connect", c) }
+                            }
+                        }
+                        err(m,c) { show("waitio_target", c) }
+                    }
+                    let lc = net::closeListener(&l)
+                    match lc { ok(v) { } err(m,c) { } }
+                }
+                err(m,c) { show("waitio_listen", c) }
+            }
+        }
+        err(m,c) { show("waitio_addr", c) }
+    }
+}
+
+fn fileWatch(path: string) {
+    // Create the fixture so the scripted fake has a logical file; the real
+    // backend creates the same private test path.
+    let make = file::readOptions()
+    make.write = true
+    make.create = true
+    make.truncate = true
+    let cf = file::open(path, &make)
+    match cf {
+        ok(f) { let c = file::close(&f); match c { ok(v) { } err(m,c) { } } }
+        err(m,c) { show("file_create", c) }
+    }
+    let opts = file::readOptions()
+    let f = file::open(path, &opts)
+    match f {
+        ok(opened) {
+            let rc = reactor::create(8, 8)
+            match rc {
+                ok(r) {
+                    let s = file::intoStream(&opened)
+                    match s {
+                        ok(st) {
+                            let src = stream::source(&st)
+                            match src {
+                                ok(source) {
+                                    let w = reactor::watchResource(&r, source, true, false, 71)
+                                    match w { ok(v) { println("file_watch=ok") } err(m,c) { show("file_watch", c) } }
+                                }
+                                err(m,c) { show("file_source", c) }
+                            }
+                            let cl = stream::close(&st)
+                            match cl { ok(v) { } err(m,c) { } }
+                        }
+                        err(m,c) { show("file_into", c) }
+                    }
+                    let rcl = reactor::close(&r)
+                    match rcl { ok(v) { } err(m,c) { } }
+                }
+                err(m,c) { show("file_reactor", c) }
+            }
+        }
+        err(m,c) { show("file_open", c) }
+    }
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini { ok(v) { println("init=", v) } err(m,c) { show("init", c) } }
+    println("caps=", platform::hasCapability("network.tcp"), ",", platform::hasCapability("reactor.epoll"), ",", platform::hasCapability("resolve.blocking"))
+
+    addressChecks()
+    tcpRoundTrip(4)
+    tcpRoundTrip(6)
+    let av = args()
+    let unixA = av[1]
+    let unixB = av[2]
+    let textPath = av[3]
+    unixStream(unixA)
+    datagramChecks(unixB, textPath)
+    udpLoopback()
+    reactorChecks()
+    resolverChecks()
+    waitioChecks()
+    fileWatch(av[4])
+
+    let cnt = platform::counts()
+    match cnt { ok(c) { println("counts=", c.resources, ",", c.shells) } err(m,c) { show("counts", c) } }
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.shells, ",", c.cleanupFailures) } err(m,c) { show("shutdown", c) } }
+}
