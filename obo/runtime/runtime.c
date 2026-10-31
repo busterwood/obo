@@ -927,51 +927,11 @@ void rt_print_str(u64 s) { if (s) putb(sdata(s), slen(s)); }
 void rt_print_bool(i64 b) { puts_(b ? "true" : "false"); }
 void rt_newline(void) { putb("\n", 1); }
 
-/* Provisional 17-significant-digit scientific formatting.  This is deliberately
- * not claimed to be shortest-round-trip yet; it is stable and parses back to the
- * same bits.  Long double on x86-64 has enough precision for this first step. */
+/* Shortest binary64 formatting, defined after the exact big-integer helpers. */
+static int fmt_shortest(u64 bits, char *b);
+
 static int fmt_f(u64 bits, char *b) {
-    int o = 0;
-    u64 sign = bits >> 63;
-    u64 ef = (bits >> 52) & 0x7ff;
-    u64 frac = bits & 0x000fffffffffffffUL;
-    if (ef == 0x7ff) {
-        if (frac) { b[o++] = 'n'; b[o++] = 'a'; b[o++] = 'n'; }
-        else {
-            if (sign) b[o++] = '-';
-            b[o++] = 'i'; b[o++] = 'n'; b[o++] = 'f';
-        }
-        return o;
-    }
-    if (ef == 0 && frac == 0) {
-        if (sign) b[o++] = '-';
-        b[o++] = '0';
-        return o;
-    }
-    if (sign) b[o++] = '-';
-    long double x = (long double)f_from_bits(bits & 0x7fffffffffffffffUL);
-    int e10 = 0;
-    while (x >= 10.0L) { x /= 10.0L; e10++; }
-    while (x < 1.0L) { x *= 10.0L; e10--; }
-    long double scaled = x;
-    for (int k = 0; k < 16; k++) scaled *= 10.0L;
-    i64 n = (i64)(scaled + 0.5L);
-    if (n >= 100000000000000000LL) { n /= 10; e10++; }
-    char d[17];
-    for (int k = 16; k >= 0; k--) { d[k] = (char)('0' + (int)(n % 10)); n /= 10; }
-    int nd = 17;
-    while (nd > 1 && d[nd - 1] == '0') nd--;
-    b[o++] = d[0];
-    if (nd > 1) {
-        b[o++] = '.';
-        for (int k = 1; k < nd; k++) b[o++] = d[k];
-    }
-    b[o++] = 'e';
-    if (e10 < 0) { b[o++] = '-'; e10 = -e10; } else b[o++] = '+';
-    if (e10 >= 100) { b[o++] = (char)('0' + e10 / 100); e10 %= 100; }
-    b[o++] = (char)('0' + e10 / 10);
-    b[o++] = (char)('0' + e10 % 10);
-    return o;
+    return fmt_shortest(bits, b);
 }
 
 u64 rt_f_to_str(u64 bits) {
@@ -1170,6 +1130,161 @@ static int float_bits_from_parts(const Big *n, int p, int sticky, u64 *out) {
 
 /* parseFloat(string): Result[float].  Malformed input is EINVAL 22; a value
  * beyond binary64 range is ERANGE 34.  Underflow returns signed zero/subnormal. */
+static void bi_div10(Big *a, u32 *rem) {
+    u64 r = 0;
+    for (int i = a->n - 1; i >= 0; i--) {
+        u64 cur = (r << 32) | a->w[i];
+        a->w[i] = (u32)(cur / 10);
+        r = cur % 10;
+    }
+    *rem = (u32)r;
+    bi_trim(a);
+}
+static void bi_pow5(Big *out, int k) {
+    Big r, base, sq;
+    bi_set(&r, 1);
+    bi_set(&base, 5);
+    while (k > 0) {
+        if (k & 1) { bi_mul_big(&sq, &r, &base); bi_copy(&r, &sq); }
+        k >>= 1;
+        if (k > 0) { bi_mul_big(&sq, &base, &base); bi_copy(&base, &sq); }
+    }
+    bi_copy(out, &r);
+}
+/* Exact finite decimal digits of a binary64 magnitude: value = digits * 10^e10. */
+static int exact_digits(u64 bits, char *digits, int *len, int *e10) {
+    u64 ef = (bits >> 52) & 0x7ff;
+    u64 frac = bits & 0x000fffffffffffffUL;
+    if (ef == 0 && frac == 0) { digits[0] = '0'; *len = 1; *e10 = 0; return 0; }
+    u64 M = ef == 0 ? frac : ((1ULL << 52) | frac);
+    int B = ef == 0 ? -1074 : (int)ef - 1023 - 52;
+    Big n, t, p5;
+    bi_set(&n, M);
+    if (B >= 0) {
+        bi_shl(&t, &n, B);
+        bi_copy(&n, &t);
+        *e10 = 0;
+    } else {
+        int k = -B;
+        bi_pow5(&p5, k);
+        bi_mul_big(&t, &n, &p5);
+        bi_copy(&n, &t);
+        *e10 = -k;
+    }
+    char rev[1200];
+    int nr = 0;
+    while (n.n > 0) {
+        u32 r;
+        bi_div10(&n, &r);
+        if (nr >= (int)sizeof(rev)) return -1;
+        rev[nr++] = (char)('0' + (int)r);
+    }
+    if (nr == 0) { digits[0] = '0'; *len = 1; *e10 = 0; return 0; }
+    for (int i = 0; i < nr; i++) digits[i] = rev[nr - 1 - i];
+    *len = nr;
+    return 0;
+}
+static unsigned long long pow10u(int p) {
+    unsigned long long v = 1;
+    while (p-- > 0) v *= 10ULL;
+    return v;
+}
+static int shortest_positive(u64 bits, char *b) {
+    char d[1200];
+    int L = 0, e10 = 0;
+    if (exact_digits(bits, d, &L, &e10)) return -1;
+    unsigned long long q = 0;
+    int qe = 0, qn = 0;
+    for (int p = 1; p <= 17 && p <= L; p++) {
+        unsigned long long prefix = 0;
+        for (int i = 0; i < p; i++) prefix = prefix * 10ULL + (unsigned long long)(d[i] - '0');
+        int next = p < L ? d[p] - '0' : 0;
+        int rest = 0;
+        for (int i = p + 1; i < L; i++) if (d[i] != '0') { rest = 1; break; }
+        int up = next > 5 || (next == 5 && (rest || (prefix & 1)));
+        unsigned long long cand = prefix + (up ? 1 : 0);
+        int e = e10 + L - p;
+        unsigned long long lim = pow10u(p);
+        if (cand == lim) { cand = lim / 10; e++; }
+        Big cb;
+        bi_set(&cb, cand);
+        u64 rb;
+        if (!float_bits_from_parts(&cb, e, 0, &rb) && rb == bits) {
+            q = cand; qe = e; qn = p; break;
+        }
+    }
+    if (qn == 0) {
+        // 17 significant digits always suffice; this is a defensive fallback.
+        unsigned long long prefix = 0;
+        int p = L < 17 ? L : 17;
+        for (int i = 0; i < p; i++) prefix = prefix * 10ULL + (unsigned long long)(d[i] - '0');
+        q = prefix; qe = e10 + L - p; qn = p;
+    }
+    while (qn > 1 && q % 10 == 0) { q /= 10; qn--; qe++; }
+    char qd[20];
+    int nd = 0;
+    unsigned long long x = q;
+    do { qd[nd++] = (char)('0' + (int)(x % 10)); x /= 10; } while (x);
+    // reverse
+    for (int i = 0; i < nd / 2; i++) { char t = qd[i]; qd[i] = qd[nd - 1 - i]; qd[nd - 1 - i] = t; }
+    int k = qe + nd - 1;
+    int o = 0;
+    if (nd == 1) b[o++] = qd[0];
+    else { b[o++] = qd[0]; b[o++] = '.'; for (int i = 1; i < nd; i++) b[o++] = qd[i]; }
+    if (k >= -6 && k <= 20) {
+        // Re-render in fixed notation from the canonical digits.
+        o = 0;
+        if (qe >= 0) {
+            for (int i = 0; i < nd; i++) b[o++] = qd[i];
+            for (int i = 0; i < qe; i++) b[o++] = '0';
+            if (nd == 0) b[o++] = '0';
+        } else {
+            int point = nd + qe;
+            if (point > 0) {
+                for (int i = 0; i < point; i++) b[o++] = qd[i];
+                b[o++] = '.';
+                for (int i = point; i < nd; i++) b[o++] = qd[i];
+            } else {
+                b[o++] = '0'; b[o++] = '.';
+                for (int i = 0; i < -point; i++) b[o++] = '0';
+                for (int i = 0; i < nd; i++) b[o++] = qd[i];
+            }
+        }
+        return o;
+    }
+    // Scientific notation, at least two exponent digits.
+    int o2 = 0;
+    b[o2++] = qd[0];
+    if (nd > 1) { b[o2++] = '.'; for (int i = 1; i < nd; i++) b[o2++] = qd[i]; }
+    b[o2++] = 'e';
+    int ek = k;
+    if (ek < 0) { b[o2++] = '-'; ek = -ek; } else b[o2++] = '+';
+    if (ek >= 100) { b[o2++] = (char)('0' + ek / 100); ek %= 100; }
+    b[o2++] = (char)('0' + ek / 10);
+    b[o2++] = (char)('0' + ek % 10);
+    return o2;
+}
+static int fmt_shortest(u64 bits, char *b) {
+    int o = 0;
+    u64 sign = bits >> 63;
+    u64 ef = (bits >> 52) & 0x7ff;
+    u64 frac = bits & 0x000fffffffffffffUL;
+    if (ef == 0x7ff) {
+        if (frac) { b[o++] = 'n'; b[o++] = 'a'; b[o++] = 'n'; }
+        else { if (sign) b[o++] = '-'; b[o++] = 'i'; b[o++] = 'n'; b[o++] = 'f'; }
+        return o;
+    }
+    if (ef == 0 && frac == 0) {
+        if (sign) b[o++] = '-';
+        b[o++] = '0';
+        return o;
+    }
+    if (sign) b[o++] = '-';
+    int n = shortest_positive(bits & 0x7fffffffffffffffUL, b + o);
+    if (n < 0) return -1;
+    return o + n;
+}
+
 u64 rt_f_parse(u64 s, u64 descErr, u64 descOk) {
     const char *p = sdata(s);
     u64 n = slen(s);

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import random
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -235,6 +236,216 @@ def test_separators() -> None:
 '''
     run_ok(src, "parse-underscore", ["22", "22"])
 
+
+def test_shortest_format() -> None:
+    src = r'''fn main() {
+    println(1.5f)
+    println(0.1f)
+    println(1f)
+    println(-1f)
+    println(1000000f)
+    println(10000000f)
+    println(0.000001f)
+    println(0.0000001f)
+    println(5e-324f)
+    println(1.7976931348623157e308f)
+    println(9007199254740993f)
+    println(-0f)
+    println(1f / 0f)
+    println(-1f / 0f)
+    println(0f / 0f)
+}
+'''
+    expected = ["1.5", "0.1", "1", "-1", "1000000", "10000000",
+                "0.000001", "1e-07", "5e-324",
+                "1.7976931348623157e+308", "9007199254740992", "-0",
+                "inf", "-inf", "nan"]
+    run_ok(src, "shortest-style", expected)
+
+
+def test_shortest_property() -> None:
+    import struct as _struct
+    rng = random.Random(0xF3A10)
+    vals = [0x0000000000000000, 0x8000000000000000,
+            0x0000000000000001, 0x000fffffffffffff,
+            0x0010000000000000, 0x7fefffffffffffff]
+    while len(vals) < 1000:
+        b = rng.getrandbits(64)
+        if ((b >> 52) & 0x7ff) != 0x7ff:
+            vals.append(b)
+    lines = ["fn main() {"]
+    for i, b in enumerate(vals):
+        f = _struct.unpack(">d", _struct.pack(">Q", b))[0]
+        text = repr(f)
+        lines.append(f'    let a{i} = parseFloat("{text}")')
+        lines.append(f'    match a{i} {{ ok(v) {{ println(string(v)) }} err(m,c) {{ println("{i}") }} }}')
+    lines.append("}")
+    d = tempfile.mkdtemp(prefix="float-f1-short-")
+    r, exe = compile_src("\n".join(lines) + "\n", d, "shortest")
+    if r.returncode != 0:
+        raise AssertionError(f"shortest: compile failed:\n{r.stderr}")
+    q = run([exe], env=dict(os.environ, OBO_CHECK="1", OBX_GC="poison"))
+    if q.returncode != 0:
+        raise AssertionError(f"shortest: run failed:\n{q.stderr}")
+    got = q.stdout.splitlines()
+    if len(got) != len(vals):
+        raise AssertionError(f"shortest: {len(got)} outputs for {len(vals)} values")
+    for b, text in zip(vals, got):
+        rb, over = fv.bits_for_text(text)
+        if rb == 0 and text.startswith("-"):
+            rb = 1 << 63
+        if over or rb != b:
+            raise AssertionError(f"shortest roundtrip failed for {b:016x}: {text!r}")
+        # Python repr is an independent shortest-decimal reference for count.
+        def sig(s):
+            t = s.strip().lower()
+            if "e" in t:
+                t = t.split("e")[0]
+            t = t.lstrip("+-").replace(".", "").lstrip("0")
+            return len(t.rstrip("0")) if t else 1
+        py = repr(_struct.unpack(">d", _struct.pack(">Q", b))[0])
+        if sig(text) > sig(py):
+            raise AssertionError(f"not shortest for {b:016x}: {text!r} vs {py!r}")
+
+
+def test_constants() -> None:
+    src = r'''const A = 1.5f
+const B = -0f
+const C = 5e-324f
+fn main() {
+    println(floatBits(A) == 0x3ff8000000000000)
+    println(floatBits(B) == 0x8000000000000000)
+    println(floatBits(C) == 0x1)
+    println(A == 1.5f)
+}
+'''
+    run_ok(src, "constants", ["true"] * 4)
+    compile_error("const X = 1f + 2f\nfn main() { println(floatBits(X)) }\n",
+                  "const-arithmetic", "constant value must be known")
+    compile_error("fn main() { let x: ?float = nil }\n",
+                  "optional-float", "only reference types can be optional")
+
+
+def test_value_positions() -> None:
+    src = r'''type Pair = ref record { a: float; b: int }
+type Choice = closed { One { x: float }; Two { y: float; z: int } }
+type Iface = interface {
+    pure fn scale(x: float, k: int): float
+    pure fn get(): float
+}
+type Impl = ref record { v: float }
+fn (p: &Impl) scale(x: float, k: int): float { return x * float(k) }
+fn (p: &Impl) get(): float { return p.v }
+impl Iface for Impl
+var G: float
+var H: float = 2.5f
+fn mix(a: int, b: float, c: int, d: float): float { return b + d }
+fn main() {
+    let p = new Pair{a: 1.5f, b: 2}
+    println(p.a == 1.5f)
+    p.a = p.a + 1f
+    println(p.a == 2.5f)
+    let c: Choice = new One{x: 2.5f}
+    match c {
+        One { println(c.x == 2.5f) }
+        Two { println(false) }
+    }
+    let a = new []float(0)
+    append(a, 1.5f)
+    append(a, 2.5f)
+    append(a, 3.5f)
+    truncate(a, 1)
+    println(len(a) == 1 && a[0] == 1.5f)
+    println(G == 0f)
+    println(H == 2.5f)
+    let f = fn (a: int, b: float, c: int, d: float): float { return b + d }
+    println(f(1, 2f, 3, 4f) == 6f)
+    println(mix(1, 2f, 3, 4f) == 6f)
+    let i: Iface = new Impl{v: 3f}
+    println(i.scale(2f, 3) == 6f)
+    println(i.get() == 3f)
+    let r: Result[float] = ok(1.5f)
+    match r {
+        ok(v) { println(v == 1.5f) }
+        err(m, c) { println(false) }
+    }
+}
+'''
+    run_ok(src, "value-positions", ["true"] * 11)
+
+
+def test_module_constants() -> None:
+    d = tempfile.mkdtemp(prefix="float-f1-constmod-")
+    sym = os.path.join(d, "sym")
+    os.makedirs(sym)
+    lib = os.path.join(d, "lib.obx")
+    with open(lib, "w") as f:
+        f.write('''module lib
+pub type Real = float
+pub type Pair = ref record { a: float; b: int }
+pub type Floats = []float
+pub const Half = 0.5f
+pub const NegZero = -0f
+pub var Global: float = 1.5f
+pub fn half(x: Real): Real { return x * Half }
+''')
+    with open(os.path.join(d, "main.obx"), "w") as f:
+        f.write('''module main
+import "lib.obx"
+fn main() {
+    println(lib::half(3f) == 1.5f)
+    println(floatBits(lib::Half) == 0x3fe0000000000000)
+    println(floatBits(lib::NegZero) == 0x8000000000000000)
+    println(lib::Global == 1.5f)
+    let x: lib::Real = 2f
+    println(x == 2f)
+    let p = new lib::Pair{a: 2.5f, b: 3}
+    println(p.a == 2.5f)
+    let a: lib::Floats = new []float(0)
+    append(a, 1.5f)
+    println(a[0] == 1.5f)
+}
+''')
+    exe = os.path.join(d, "main")
+    r = run([OBO, os.path.join(d, "main.obx"), "-o", exe, "--rt", RT,
+             "-I", d, "--sym-dir", sym])
+    if r.returncode != 0:
+        raise AssertionError(f"constant module: compile failed:\n{r.stderr}")
+    q = run([exe, os.path.join(d, "main-run")],
+            env=dict(os.environ, OBO_CHECK="1", OBX_GC="poison"))
+    if q.returncode != 0 or q.stdout.splitlines() != ["true"] * 7:
+        raise AssertionError(f"constant module: run {q.returncode}: {q.stdout!r} {q.stderr!r}")
+    text = open(os.path.join(sym, "lib.sym")).read()
+    re = run([OBO, "--reemit-sym", os.path.join(sym, "lib.sym")])
+    if re.returncode != 0 or re.stdout != text:
+        raise AssertionError(f"constant module: reemit mismatch\n{re.stderr}")
+    for line in ("type Real = float", "const Half: float = 0x3fe0000000000000",
+                 "const NegZero: float = 0x8000000000000000",
+                 "var Global: float", "fn half(p0: float): float"):
+        if line not in text:
+            raise AssertionError(f"constant module: missing {line!r}\n{text}")
+    bad = os.path.join(d, "bad")
+    os.makedirs(bad)
+    shutil.copyfile(os.path.join(d, "main.obx"), os.path.join(bad, "main.obx"))
+    badsym = text.replace("const Half: float = 0x3fe0000000000000",
+                          "const Half: float = true")
+    with open(os.path.join(bad, "lib.sym"), "w") as f:
+        f.write(badsym)
+    bad_run = run([OBO, os.path.join(bad, "main.obx"), "--check",
+                   "-I", bad, "--sym-dir", bad])
+    if bad_run.returncode == 0:
+        raise AssertionError(f"malformed float constant was not rejected:\n{bad_run.stderr}")
+
+    hidden = lib + ".hidden"
+    os.rename(lib, hidden)
+    try:
+        c = run([OBO, os.path.join(d, "main.obx"), "--check",
+                 "-I", d, "--sym-dir", sym])
+        if c.returncode != 0:
+            raise AssertionError(f"source-less check failed:\n{c.stderr}")
+    finally:
+        os.rename(hidden, lib)
+
 def test_arithmetic() -> None:
     src = r'''fn main() {
     let pz = 0f
@@ -370,8 +581,8 @@ def test_print_and_parse() -> None:
     match f { ok(v) { println(signbit(v)) } err(m, c) { println(false) } }
 }
 '''
-    expected = ["1.5e+00", "1.0000000000000001e-01", "-0", "inf", "-inf",
-                "nan", "1.5e+00", "true", "34", "22", "true", "true", "true"]
+    expected = ["1.5", "0.1", "-0", "inf", "-inf", "nan", "1.5",
+                "true", "34", "22", "true", "true", "true"]
     run_ok(src, "print-parse", expected)
 
 
@@ -437,10 +648,15 @@ def main() -> int:
     test_exponent_bounds(); total += 1
     test_int_conversions(); total += 1
     test_separators(); total += 1
+    test_constants(); total += 1
+    test_value_positions(); total += 1
+    test_module_constants(); total += 1
     test_scalars_and_lambdas(); total += 1
     test_containers(); total += 1
     test_module_signature(); total += 1
     test_print_and_parse(); total += 1
+    test_shortest_format(); total += 1
+    test_shortest_property(); total += 1
     test_parse_random_and_format_roundtrip(); total += 1
     test_errors(); total += 1
     print(f"float_f1: ok ({total} groups)")

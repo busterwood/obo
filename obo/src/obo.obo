@@ -7624,6 +7624,7 @@ fn factor(): Item {
         let x = factor()
         if x.typ.kind == "float" {
             if k != T_MINUS { error("'~' needs an int") }
+            if x.mode == "const" { return makeConst(tFloat, x.val ^ 0x8000000000000000) }
             return rtCall1(RT_F_NEG, x, tFloat)
         }
         if !isInt(x.typ) { error("'" + tokName(k) + "' needs an int or float") }
@@ -10565,9 +10566,6 @@ fn constDecl(isPub: bool) {
     if x.mode != "const" { error("constant value must be known at compile time") }
     rejectFn(x.typ, "a constant cannot hold a function value")
     if x.typ.kind == "nil" { error("a constant cannot be nil; use a typed optional var or let") }
-    if x.typ.kind == "float" {
-        error("float constants are not available in this checkpoint")
-    }
     let s = newSym("const", name, x.typ)
     s.value = x.val
     s.line = line
@@ -12536,12 +12534,12 @@ fn symConstDecl(mode: int) {
     } else {
         error("expected a constant value")
     }
-    if t != tInt && t != tByte && t != tBool && t != tString {
+    if t != tInt && t != tByte && t != tBool && t != tString && t != tFloat {
         error("a constant must have type int, byte, bool or string")
     }
     if t == tString && kind != "string" { error("a string constant needs a hex byte string") }
     if t == tBool && kind != "bool" { error("a bool constant must be true or false") }
-    if (t == tInt || t == tByte) && kind != "int" { error("an integer constant needs an integer value") }
+    if (t == tInt || t == tByte || t == tFloat) && kind != "int" { error("an integer/float constant needs a hexadecimal value") }
     if t == tByte && (v < 0 || v > 255) { error("a byte constant must be between 0 and 255") }
     symClaim(name)
     append(symConstOrder, name)

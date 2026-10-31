@@ -5694,7 +5694,7 @@ uses `obo/tests/peak_budget.py` with `PEAK_BUDGET = 2_500_000` decimal bytes.
 This is not a change to the historical lambda release budget, which remains
 `2,000,000` in its own record. The zero-array heap-allocation mutant is
 additionally judged by the same-source self-compile delta: after the exact
-converter the latest measured baseline is 2,027,664 and the mutant 2,073,264, a
+converter the latest measured baseline is 2,027,600 and the mutant 2,073,200, a
 45,600-byte regression (historical pre-float delta 44,672); the shared oracle
 requires at least 30,000 bytes over baseline. This keeps the
 empty-array saving caught even when both peaks are below the new absolute cap.
@@ -5718,11 +5718,10 @@ compiler identity. `print`/`println` accept float, `string(float)` returns a
 string, and `parseFloat(string): Result[float]` is the explicit checked
 parser. There is no implicit string/numeric conversion and no float-to-int yet.
 
-Formatting is **provisional 17-significant-digit scientific notation**, not
-claimed shortest: ordinary finite values use one digit, a point, up to 16
-further significant digits with trailing zeros removed, and `e±NN`. Special
-spellings are `nan`, `inf`, `-inf` and `-0`; NaN payloads are not printed or
-specified. This is a stable round-trip checkpoint, not a final public style.
+The F2 formatter was a provisional 17-significant-digit scientific notation,
+not claimed shortest. **F3A below replaces it with a shortest round-trip
+formatter**; special spellings remain `nan`, `inf`, `-inf` and `-0`, and NaN
+payloads are not printed or specified.
 `parseFloat` accepts finite decimal/exponent text, `nan`, `inf`/`infinity` and
 signs, returns EINVAL 22 for malformed text and ERANGE 34 for overflow;
 underflow yields signed zero/subnormal. Literal overflow remains a compile
@@ -5733,8 +5732,8 @@ audit, both compiler and runtime use an exact base-2^16/2^32 big-integer
 converter: up to 1200 significant decimal digits plus sticky, exact rational
 comparison, binary search against binary64 neighbours, and a midpoint/tie
 decision. This replaces the broken approximate 4x32 accumulator; it is not
-`strtod`, host float, `long double` rounding, libc or libgcc. Formatting remains
-a provisional `long double` 17-digit display path. Runtime text/data are
+`strtod`, host float, `long double` rounding, libc or libgcc. The F2 formatting path was provisional; F3A replaces it with the exact
+shortest formatter described below. Runtime text/data are
 `23,904`/`67,360`; no undefined runtime symbols.
 
 After the exact converter and separator fix, direct self-compile is
@@ -5748,6 +5747,52 @@ separated fraction), parse strictness, special spellings, malformed/overflow
 `Result` codes, and expected bits from an independent Fraction model. The independent audit
 corpora pass; targeted fix re-review is still required.
 
-Unimplemented: shortest-round-trip formatting, float constants and public
-`.sym` release format/version, float-to-int, and the final public API/style
-decision.
+Unimplemented at F2: shortest-round-trip formatting and float constants; F3A
+below adds both. The public `.sym` release format/version, float-to-int and the
+final API/style decision remain open.
+
+## Float F3A checkpoint (unreleased, WIP)
+
+**Formatter.** The provisional 17-digit display path is replaced by a shortest
+round-trip formatter. It computes the exact finite decimal expansion with the
+runtime big integers, then tries 1..17 significant digits; each candidate is
+rounded to the nearest decimal (ties-to-even) and accepted only when the exact
+same parser maps it back to the original bits. The first accepted precision is
+the shortest. Output uses fixed notation for decimal exponents -6..20 and
+scientific notation otherwise, with `e±NN`; `-0`, `nan`, `inf` and `-inf` keep
+their prior spellings. No x87/long-double result determines correctness.
+
+**Constants.** Source `const X = 1.5f` and `const X = -0f` are usable; unary
+minus is a sign-bit const fold. Other constant arithmetic is **not** folded and
+is rejected with the existing “constant value must be known” diagnostic rather
+than silently using integer operations. Exported float constants use the WIP
+symbol format's raw 16-hex-bit payload, e.g. `const Half: float =
+0x3fe0000000000000`; `--check` source-less and `--reemit-sym` are byte-tested.
+This is format-5 WIP, not a release-compatible format: float is a new builtin
+type, so the format must be bumped before merge/release.
+
+**Positions.** Tests cover record and closed fields, arrays append/truncate,
+zero/initialized globals, locals and register-home-disabled builds, direct and
+method parameters/returns, interface dispatch with float members, structural
+function types with mixed int/float arguments, lambda hidden-env calls,
+`Result[float]`, module aliases/constants/globals, malformed symbol input and
+GC poison. The one-word stack/GPR ABI is unchanged; no Stage B captures or
+decimal values are involved.
+
+**Tests.** `tests/float_f1.py` passes 17 groups under the normal compiler and
+under `obo-noregs`: separator restoration, exact fixed counterexamples,
+199-case literal audit, 384-case parse audit, 1,000-case shortest property
+against an independent Python repr digit-count reference, 250 parse/format
+round-trip candidates, constants and source-less symbols, and the value-position
+matrix. A private 10,000-value parse/format/parse run completed in 0.696 s
+runtime (10 batches; 5.2 s compile); format-only 1,000 values took 0.062 s vs
+0.001 s for the old provisional path. Full old gates: `run_fork` 1544,
+`port_compare` 1551, `port_test` 573, `sym_test` 42, `doc_check` 62,
+`mutate_io` 30/30, harness 27. No new F3B mutant/release matrix is claimed.
+
+**Memory.** Final direct self-compile is `2,027,184` peak bytes (stage-3
+`2,027,200`; port `2,027,552`), source `13,388` lines / `503,120` bytes, binary
+`565,249` bytes, runtime text/data `26,032`/`67,360`. Headroom under the
+unchanged `2,500,000` cap is `472,816` bytes. `nm -u runtime.o` is empty and the
+fixed point holds (`ef9873fd…`). Float release identity remains unassigned;
+Stage B `0.10` is not used.

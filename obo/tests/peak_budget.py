@@ -9,7 +9,7 @@ zero-capacity array blocks, while the zero-allocation mutant allocates a heap
 block for every empty array.  The pre-float historical delta was 44,672 bytes
 (baseline 1,963,664 -> mutant 2,008,336); after the exact float converter the
 fresh numeric-branch delta is 45,600 bytes (latest same-source run baseline
-2,027,664 -> mutant 2,073,264).  The absolute cap alone cannot catch it once the baseline is above
+2,027,600 -> mutant 2,073,200).  The absolute cap alone cannot catch it once the baseline is above
 2,000,000, so mutate_io additionally requires the mutant's self-compile peak to
 exceed the same-source baseline by at least EMPTY_ARRAY_MIN_DELTA.  Path/temp-dir
 variance is only hundreds of bytes; 30,000 bytes is a deliberately conservative
@@ -19,7 +19,7 @@ floor below both measured deltas and above that noise.
 PEAK_BUDGET = 2_500_000
 
 # Fresh exact-converter measurement is 45,600 bytes (latest run baseline
-# 2,027,664 -> mutant 2,073,264); the old 44,672 was the pre-float historical
+# 2,027,600 -> mutant 2,073,200); the old 44,672 was the pre-float historical
 # figure.  These
 # numbers are illustrative, not a fixed guarantee.  30,000 is the documented
 # contract: above path noise and below the shared-empty-block saving.
