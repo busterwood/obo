@@ -2184,6 +2184,15 @@ Environment variables:
 - `OBX_GC=poison` overwrites freed memory, so a use of freed memory shows up as
   garbage rather than as a value that happens to still be there.
 - `OBO_STATS=1` prints the exact live peak and total allocation at exit.
+- `OBO_HEAP_LIMIT` sets the runtime heap arena. The compiled default is 4 GiB
+  and the compiled ceiling is 16 GiB. The value is bytes or bytes with an exact
+  `KiB`, `MiB` or `GiB` suffix, a multiple of 16, at least 64 KiB and at most
+  the ceiling. Invalid or above-ceiling values print
+  `obo: invalid OBO_HEAP_LIMIT: <value>` and exit 2 before mapping; there is no
+  silent clamp. The limit controls the arena, not any single object: one
+  allocation's payload remains at most 4 GiB - 32 bytes. `MAP_NORESERVE` means
+  the arena is address space, not committed RAM; `RLIMIT_AS`, cgroups and host
+  overcommit still apply.
 
 ## 10. Compile errors
 
