@@ -349,11 +349,11 @@ MUTANTS.update(ORIGIN_MUTANTS)
 # argument order: a reference argument is held while the later arguments run (holdArg, argOrderCheck,
 # releaseArgs); errors/arg_order.obx and run/arg_order.obx show them
 ARG_ORDER_MUTANTS = {
-    'a reference argument is not held': ('            holdArg(b, i)\n', ''),
-    'no check after a reference argument': ('            argOrderCheck(tbase, fname, meth, i, argLine, argCol)\n            holdArg(b, i)\n',
-        '            holdArg(b, i)\n'),
-    'no check after a by-value argument': ('            consume(a)\n            argOrderCheck(tbase, fname, meth, i, argLine, argCol)\n',
-        '            consume(a)\n'),
+    'a reference argument is not held': ('            holdArg(b, i, false)\n', ''),
+    'no check after a reference argument': ('            argOrderCheck(tbase, fname, meth, i, argLine, argCol)\n            holdArg(b, i, false)\n',
+        '            holdArg(b, i, false)\n'),
+    'no check after a by-value argument': ('            } else {\n                // no argBinds entry here, so no argIsCapture entry either: the two stay parallel\n                argOrderCheck(tbase, fname, meth, i, argLine, argCol)\n            }\n',
+        '            } else {\n                // no argBinds entry here, so no argIsCapture entry either: the two stay parallel\n            }\n'),
     'the holder pool never grows': ('    if argTempsUsed == len(argTemps) {\n', '    if argTempsUsed < 0 {\n'),
     'an argument holder is not a reference local': ('        s.isRefLocal = true\n        append(argTemps, s)\n',
         '        append(argTemps, s)\n'),
@@ -371,8 +371,8 @@ ARG_ORDER_MUTANTS = {
     'argument holders stay live after the call': ('    argTempsUsed = tbase\n    truncate(ownedLocals, omark)\n', '    argTempsUsed = tbase\n'),
     "a call's holders are not released": ('    releaseArgs(tbase, omark)\n    if sym != T_RPAREN', '    if sym != T_RPAREN'),
     "a function's argument holders outlive it": ('    truncate(bindArena, bindMark)\n    truncate(argTemps, tempMark)\n', '    truncate(bindArena, bindMark)\n'),
-    "writeFile's bytes are not held": ('        holdArg(itemBind(d), 1)\n', ''),
-    "writeFile's bytes are held as another argument": ('        holdArg(itemBind(d), 1)\n', '        holdArg(itemBind(d), 0)\n'),
+    "writeFile's bytes are not held": ('        holdArg(itemBind(d), 1, false)\n', ''),
+    "writeFile's bytes are held as another argument": ('        holdArg(itemBind(d), 1, false)\n', '        holdArg(itemBind(d), 0, false)\n'),
     "writeFile's flag is not checked": ('        argOrderCheck(tbase, name, false, 2, eLine, eCol)\n', ''),
     "writeFile's holder is not released": ('        argOrderCheck(tbase, name, false, 2, eLine, eCol)\n        releaseArgs(tbase, omark)\n',
         '        argOrderCheck(tbase, name, false, 2, eLine, eCol)\n'),
@@ -926,7 +926,7 @@ EQUIVALENT = {
     "interfaces v3 X8: the receiver's obj and vtable are loaded after the arguments (S4)": "equivalent on legal source: S4's order is defensive. The receiver is held as argument 0 (holdArg), and argOrderCheck refuses any later argument that moves or frees what the receiver points into; the mut-alias check also refuses a mut argument that points inside the receiver. For an interface receiver that is the box or pair slot, so no accepted call can replace, re-point or free the place whose obj and vtable the mutant reads. The mutant still saves the box pointer as argument 0 before the explicit arguments and reserves the vtable slot above them; after the arguments it reads [box] and [box+8] and fills those exact slots, so argument order, layout and the two dispatch words are unchanged. E6's errors/ifaces_calls case `h.d.grow(swap(h))` is rejected identically by the unmutated and mutant compilers, and the full suite (including run/ifaces_calls and run/ifaces_effects) passes without a fault. The only difference is the time of two reads of unchanged box words, which no legal program can observe",
     "interfaces v3 X15: the local tier drops the pfree-subset check": "equivalent in the current architecture: the signature comparison has already required method and member parameter modes to be equal (X38d), and the synthetic S(m) puts a pfree bit on exactly the member's mode-2 parameters. callFn records pfree only for a mode-2 argument, so a source method's pfree mask is a subset of S(m) by construction; a mode-1 parameter cannot be changed and no recorded free can land on it. The branch is defensive for a forged *method* summary, but implDecl only ever sees methods compiled from source: a .sym reader trusts an imported implementation and does not re-run the check, and a root cannot implement an interface for an imported type. The full suite passes without the branch, and there is no honest input that reaches it, so no test can distinguish it.",
     "lambdas B12: island does not reset lastFnBind": "equivalent as defence in depth: nestedExpr and tailExpr clear lastFnBind at the start of every argument and top-level expression, so at an island entry it is already nil for the literal being compiled; no accepted source can make the missing island reset observable. The LamCtx save/reset remains a defensive invariant.",
-    "lambdas B25: island does not reset the alive guard": "equivalent as defence in depth: an island is entered after the outer alive call has returned, so inAlive is already false; guardOpen is false and guardIdx is only read by a following conjunction guard. An inner alive's tokSeq is later than the outer guardStart+1, so it cannot be mistaken for the first guard, and the island installs fresh originDead/originSyms arrays, so the stale index is not read. The reset remains a defensive invariant; the guard tests pass with and without it.",
+    "lambdas B25: island guardStart is not reset": "equivalent as defence in depth: an island is entered after the outer alive call has returned, so inAlive is already false; guardOpen is false and guardIdx is only read by a following conjunction guard. An inner alive's tokSeq is later than the outer guardStart+1, so it cannot be mistaken for the first guard, and the island installs fresh originDead/originSyms arrays, so the stale index is not read. The guardStart reset remains a defensive invariant; the guard tests pass with and without it.",
 }
 
 
@@ -1227,8 +1227,8 @@ MUTANTS.update(SIZE_MUTANTS)
 
 METHOD_MUTANTS = {
     "methods: an owned receiver is not consumed": (
-        "            checkAssign(f.fnRec.params[i], a, argLabel(meth, i, start) + \" of \" + callDisplay(meth, fname))\n            consume(a)\n            argOrderCheck(tbase, fname, meth, i, argLine, argCol)\n",
-        "            checkAssign(f.fnRec.params[i], a, argLabel(meth, i, start) + \" of \" + callDisplay(meth, fname))\n            if i > 0 { consume(a) }\n            argOrderCheck(tbase, fname, meth, i, argLine, argCol)\n"),
+        "            checkAssign(f.fnRec.params[i], a, argLabel(meth, i, start) + \" of \" + callDisplay(meth, fname))\n            consume(a)\n            let cb = lfb\n",
+        "            checkAssign(f.fnRec.params[i], a, argLabel(meth, i, start) + \" of \" + callDisplay(meth, fname))\n            if i > 0 { consume(a) }\n            let cb = lfb\n"),
     "methods: an owned receiver through a handle is allowed": (
         "        if m.fnRec.pmodes[0] == 0 && recv.viaHandle && recv.mode == \"reg\" {\n",
         "        if false {\n"),
@@ -1242,8 +1242,8 @@ METHOD_MUTANTS = {
         "    if isMethod { append(params, new Param{name: recvName, typ: recvType, mode: recvMode}) }\n",
         "    if false { append(params, new Param{name: recvName, typ: recvType, mode: recvMode}) }\n"),
     "methods: the receiver is not held across later arguments": (
-        "            argOrderCheck(tbase, fname, meth, i, argLine, argCol)\n            holdArg(b, i)\n",
-        "            argOrderCheck(tbase, fname, meth, i, argLine, argCol)\n            if i > start { holdArg(b, i) }\n"),
+        "            argOrderCheck(tbase, fname, meth, i, argLine, argCol)\n            holdArg(b, i, false)\n",
+        "            argOrderCheck(tbase, fname, meth, i, argLine, argCol)\n            if i > start { holdArg(b, i, false) }\n"),
     "methods: a mut receiver's invalidation is dropped": (
         "        if argModes[i] == 2 && mutFrees(f, argIdx[i]) {\n",
         "        if argModes[i] == 2 && argIdx[i] != 0 && mutFrees(f, argIdx[i]) {\n"),
@@ -1329,8 +1329,8 @@ METHOD_MUTANTS = {
         "                if mv != nil && (mv.owner == curModuleName || mv.exported) {\n                    error(\"method '\" + methodDisplay(mv) + \"' cannot be used as a value: call it with '(' after its name\")\n                }\n",
         "                if mv != nil && (mv.owner == curModuleName || mv.exported) {\n                }\n"),
     "methods: a handle receiver may go to a freeing method": (
-        "            if b.roots[p] == handleSym && !pureFn(f) {\n",
-        "            if b.roots[p] == handleSym && !pureFn(f) && false {\n"),
+        "        for p in 0..len(b.roots) {\n            if b.roots[p] == handleSym {\n",
+        "        for p in 0..len(b.roots) {\n            if b.roots[p] == handleSym && i != 0 {\n"),
     "methods: the mode-0 method order check is dropped": (
         "    if !symSameList(symMethodOrder, liveMethods) { symDisagree(\"the method order\") }\n",
         "    if false { symDisagree(\"the method order\") }\n"),
@@ -1451,7 +1451,7 @@ INTERFACE_MUTANTS = {
         "    if x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: a reference cannot borrow from a temporary\")\n    }\n",
         "    if false && x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: a reference cannot borrow from a temporary\")\n    }\n"),
     "interfaces v3 X36a: SYM_FORMAT stays 2": ("const SYM_FORMAT = 6\n", "const SYM_FORMAT = 2\n"),
-    "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.10\"\n", "const OBO_VERSION = \"0.6\"\n"),
+    "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.11\"\n", "const OBO_VERSION = \"0.6\"\n"),
 
     # summary reconstruction (S-2): setMemberSummary is shared by the source and the reader
     "interfaces v3 X18: the receiver bit is omitted for mut fn": (
@@ -1497,8 +1497,8 @@ MULTI_MUTANTS = {
     "interfaces v3 X8: the receiver's obj and vtable are loaded after the arguments (S4)": [
         ("        if iface && i == 0 {\n            pushIfaceReceiver(a)                   // the box's vtable and object, before any explicit argument runs (v3 7.1)\n",
          "        if iface && i == 0 {\n            let pb = asReg(a)\n            pushI(0)                               // S4 mutant: the vtable slot, filled after the arguments run\n            depth += 8\n            pushR(pb.r)                            // argument 0: the box pointer; its two words are read after the arguments\n            release(pb.r)\n"),
-        ("            release(r.r)\n        }\n    }\n    releaseArgs(tbase, omark)\n",
-         "            release(r.r)\n        }\n    }\n    if iface {\n        // S4 mutant: read the receiver's obj and vtable only after every explicit argument has run\n        let pb = alloc()\n        opMem(0x8B, pb, mem(RSP, -1, 8 * (n - 1), 8), true, false)\n        let ob = alloc()\n        opMem(0x8B, ob, mem(pb, -1, 0, 8), true, false)\n        opMem(0x8B, pb, mem(pb, -1, 8, 8), true, false)\n        opMem(0x89, pb, mem(RSP, -1, 8 * n, 8), true, false)\n        opMem(0x89, ob, mem(RSP, -1, 8 * (n - 1), 8), true, false)\n        release(ob)\n        release(pb)\n    }\n    releaseArgs(tbase, omark)\n"),
+        ("            release(r.r)\n        }\n    }\n    // argIsCapture is appended exactly when argBinds is appended; the checks below index them together\n",
+         "            release(r.r)\n        }\n    }\n    if iface {\n        // S4 mutant: read the receiver's obj and vtable only after every explicit argument has run\n        let pb = alloc()\n        opMem(0x8B, pb, mem(RSP, -1, 8 * (n - 1), 8), true, false)\n        let ob = alloc()\n        opMem(0x8B, ob, mem(pb, -1, 0, 8), true, false)\n        opMem(0x8B, pb, mem(pb, -1, 8, 8), true, false)\n        opMem(0x89, pb, mem(RSP, -1, 8 * n, 8), true, false)\n        opMem(0x89, ob, mem(RSP, -1, 8 * (n - 1), 8), true, false)\n        release(ob)\n        release(pb)\n    }\n    // argIsCapture is appended exactly when argBinds is appended; the checks below index them together\n"),
     ],
     # S4 extras, two sites: both words are loaded before the arguments, but with their roles exchanged,
     # which no single-site replacement can express. These are corruption faults, not load-order faults.
@@ -1632,16 +1632,16 @@ MUTANTS.update(LAMBDA_MUTANTS)
 
 LAMBDA_B_MUTANTS = {
     # Stage B capture-list parser and classifier
-    "lambdas B1: empty capture list accepted": (
+    "lambdas B1: empty capture list diagnostic lost": (
         '        if sym == T_RBRACK { error("a capture list needs at least one name") }\n',
         '        if false { error("a capture list needs at least one name") }\n'),
-    "lambdas B2: duplicate capture accepted": (
+    "lambdas B2: duplicate capture diagnostic lost": (
         "                if capNames[i] == cn { error(\"capture '\" + cn + \"' given twice\") }\n",
         "                if false { error(\"capture '\" + cn + \"' given twice\") }\n"),
-    "lambdas B3: mut/move capture mode accepted": (
+    "lambdas B3: mut/move capture-mode diagnostic lost": (
         '            if (cn == "mut" || cn == "move") && sym == T_IDENT {\n                error("captures are read-only: write fn [x]; mutable and owned captures are not supported")\n            }\n',
         '            if false {\n                error("captures are read-only: write fn [x]; mutable and owned captures are not supported")\n            }\n'),
-    "lambdas B4: capture also a parameter accepted": (
+    "lambdas B4: also-a-parameter diagnostic lost": (
         "            if p.name == cn { error(\"capture '\" + cn + \"' is also a parameter of the lambda\") }\n",
         "            if false { error(\"capture '\" + cn + \"' is also a parameter of the lambda\") }\n"),
     "lambdas B5: unknown capture accepted": (
@@ -1659,9 +1659,18 @@ LAMBDA_B_MUTANTS = {
     "lambdas B9: record/closed interface capture accepted": (
         '            } else if containsIface(ct) {\n',
         '            } else if false {\n'),
-    "lambdas B10: incomplete capture gets the interface message": (
-        '            if ct.incomplete {\n                error(tname(ct) + " is declared but not yet defined")\n',
-        '            if false {\n                error(tname(ct) + " is declared but not yet defined")\n'),
+    "lambdas B10: incomplete capture only checks the top-level shell": (
+        '            let inc = incompleteCarrier(ct)\n            if inc != nil {\n',
+        '            let inc = incompleteCarrier(ct)\n            if inc != nil && ct.incomplete {\n'),
+    "lambdas B26: incomplete carrier follows only the top-level type": (
+        '    if t.kind == "array" || t.kind == "opt" || t.kind == "handle" || t.kind == "result" {\n        return incompleteCarrierIn(baseOf(t))\n    }\n    if t.kind == "record" || t.kind == "closed" {\n        if t.incomplete { return t }\n',
+        '    if t.kind == "record" || t.kind == "closed" {\n        if t.incomplete { return t }\n'),
+    "lambdas B27: float scalar capture has no snapshot mode": (
+        '            if ct.kind == "int" || ct.kind == "byte" || ct.kind == "bool" || ct.kind == "float" {\n',
+        '            if ct.kind == "int" || ct.kind == "byte" || ct.kind == "bool" {\n'),
+    "lambdas B28: float capture write gets the immutable message": (
+        '            } else if isCaptureSym(xs) && (isInt(symType(xs)) || symType(xs).kind == "bool" || symType(xs).kind == "float") {\n',
+        '            } else if isCaptureSym(xs) && (isInt(symType(xs)) || symType(xs).kind == "bool") {\n'),
     "lambdas B11: island does not reset lambdaArgOK": (
         '    lastFnBind = nil\n    lambdaArgOK = 0\n    selfCalls = 0\n',
         '    lastFnBind = nil\n    selfCalls = 0\n'),
@@ -1697,7 +1706,7 @@ LAMBDA_B_MUTANTS = {
         '                            if meth {\n'),
     "lambdas B24: the literal does not publish its capture binding": (
         '    lastFnBind = captureBind(&caps)\n', '    lastFnBind = nil\n'),
-    "lambdas B25: island does not reset the alive guard": (
+    "lambdas B25: island guardStart is not reset": (
         '    guardStart = -10\n    guardSym = nil\n    guardFollow = 0\n    guardFree = 0\n    guardNeg = false\n    guardOpen = false\n    guardIdx = 0\n    guardMark = nil\n    inAlive = false\n    lastNamed = nil\n',
         '    guardStart = guardStart\n    guardSym = nil\n    guardFollow = 0\n    guardFree = 0\n    guardNeg = false\n    guardOpen = false\n    guardIdx = 0\n    guardMark = nil\n    inAlive = false\n    lastNamed = nil\n'),
     "lambdas B22: island does not reset argTempsUsed": (

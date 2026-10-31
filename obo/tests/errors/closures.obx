@@ -89,6 +89,9 @@ fn main() { var b = new Box{v: 1}; let r = &b; drop(b); println(apply(1, fn [r](
 // === a captured scalar cannot be written
 fn main() { let n = 1; println(apply(1, fn [n](x: int): int { n = 2; return x })) }  // error: cannot change captured 'n': captures are read-only; pass a mutable parameter instead
 
+// === a captured float cannot be written
+fn main() { let f = 1.5f; println(apply(1, fn [f](x: int): int { f = 2.5f; return x })) }  // error: cannot change captured 'f': captures are read-only; pass a mutable parameter instead
+
 // === a captured object is read-only
 fn main() { let b = new Box{v: 1}; println(apply(1, fn [b](x: int): int { b.v = 2; return x })) }  // error: cannot change through 'b': it is a read-only reference
 
@@ -104,6 +107,9 @@ fn main() { let xs = new []int(0); append(xs, 1); println(apply(1, fn [xs](x: in
 // === a captured object cannot be moved out
 fn eat(b: Box): int { return 1 }
 fn main() { let b = new Box{v: 1}; println(apply(1, fn [b](x: int): int { return eat(b) })) }  // error: cannot move out of a reference: a reference only borrows
+
+// === a captured object cannot be dropped
+fn main() { let b = new Box{v: 1}; println(apply(1, fn [b](x: int): int { drop(b); return x })) }  // error: drop needs a local variable holding an owned value
 
 // === a captured array cannot be appended
 fn main() { let xs = new []int(0); println(apply(1, fn [xs](x: int): int { append(xs, 2); return x })) }  // error: append changes the array, but 'xs' is a read-only reference
@@ -146,6 +152,27 @@ fn main() { let n = 1; println(apply(1, fn (x: int): int { let g = fn [n](y: int
 // === a later argument may not move a captured object
 fn main() { let b = new Box{v: 1}; println(use2(fn [b](x: int): int { return x + b.v }, b)) }  // error: argument 2 of use2 may free what argument 1 captures, and runs after it; compute it before the call
 
+// === a later argument that calls a freeing function may not free a captured object
+fn consume(b: Box): int { drop(b); return 5 }
+fn use3(f: fn(int): int, n: int, m: int): int { return f(n) + m }
+fn main() { let b = new Box{v: 1}; println(use3(fn [b](x: int): int { return x + b.v }, 1, consume(b))) }  // error: argument 3 of use3 may free what argument 1 captures, and runs after it; compute it before the call
+
+// === a later argument that truncates a global may not free a global-rooted capture
+var GT = new Bag{items: new []Box(0), n: 0}
+fn truncGlobal(): int { truncate(GT.items, 0); return 3 }
+fn use3(f: fn(int): int, n: int, m: int): int { return f(n) + m }
+fn main() { append(GT.items, new Box{v: 1}); let r = &GT.items[0]; println(use3(fn [r](x: int): int { return x + r.v }, 1, truncGlobal())) }  // error: argument 3 of use3 may free what argument 1 captures, and runs after it; compute it before the call
+
+// === a later argument that assigns over a global may free a global-rooted capture
+var GA = new Bag{items: new []Box(0), n: 0}
+fn freeGlobal(): int { GA = new Bag{items: new []Box(0), n: 0}; return 3 }
+fn use3(f: fn(int): int, n: int, m: int): int { return f(n) + m }
+fn main() { append(GA.items, new Box{v: 1}); let r = &GA.items[0]; println(use3(fn [r](x: int): int { return x + r.v }, 1, freeGlobal())) }  // error: argument 3 of use3 may free what argument 1 captures, and runs after it; compute it before the call
+
+// === a callback with an owned parameter whose argument is moved by a later argument
+fn useOwned(f: fn(Box): int, b: Box, c: Box): int { return f(b) + c.v }
+fn main() { let b = new Box{v: 1}; println(useOwned(fn (x: Box): int { return x.v }, b, b)) }  // error: 'b' was moved and has no value here
+
 // === a mut argument may not overlap a deep capture
 fn main() { var b = new Bag{items: new []Box(0), n: 0}; append(b.items, new Box{v: 1}); let d = &b.items[0]; println(useBag(fn [d](x: int): int { return x + d.v }, b)) }  // error: argument 1 of useBag captures a place that argument 2 changes, which is mut
 
@@ -185,6 +212,54 @@ fn main() { println(0) }
 type ForwardCap
 fn capForward(h: ForwardCap): int { return apply(1, fn [h](x: int): int { return x }) }  // error: ForwardCap is declared but not yet defined
 type ForwardCap = ref record { d: int }
+fn main() { println(0) }
+
+// === an optional forward shell capture names the shell, not an interface
+type ForwardOpt
+fn capForwardOpt(o: ?ForwardOpt): int { return apply(1, fn [o](x: int): int { return x }) }  // error: ForwardOpt is declared but not yet defined
+type ForwardOpt = ref record { d: int }
+fn main() { println(0) }
+
+// === an array of a forward shell capture names the shell, not an interface
+type ForwardArr
+fn capForwardArr(a: []ForwardArr): int { return apply(1, fn [a](x: int): int { return x }) }  // error: ForwardArr is declared but not yet defined
+type ForwardArr = ref record { d: int }
+fn main() { println(0) }
+
+// === a Result of a forward shell capture names the shell, not an interface
+type ForwardRes
+fn capForwardRes(r: Result[ForwardRes]): int { return apply(1, fn [r](x: int): int { return x }) }  // error: ForwardRes is declared but not yet defined
+type ForwardRes = ref record { d: int }
+fn main() { println(0) }
+
+// === a record field that is a forward shell is incomplete, not an interface
+type ForwardField
+type ForwardFieldHolder = ref record { f: ForwardField }
+fn capForwardField(h: ForwardFieldHolder): int { return apply(1, fn [h](x: int): int { return x }) }  // error: ForwardField is declared but not yet defined
+type ForwardField = ref record { d: int }
+fn main() { println(0) }
+
+// === a closed variant field that is a forward shell is incomplete, not an interface
+type ForwardVariant
+type ForwardVariantHolder = closed { WithForward { f: ForwardVariant } }
+fn capForwardVariant(h: ForwardVariantHolder): int { return apply(1, fn [h](x: int): int { return x }) }  // error: ForwardVariant is declared but not yet defined
+type ForwardVariant = ref record { d: int }
+fn main() { println(0) }
+
+// === a float capture with a mode word remains unsupported
+fn main() { let x = 1.5f; println(apply(1, fn [mut x](y: int): int { return y })) }  // error: captures are read-only: write fn [x]; mutable and owned captures are not supported
+
+// === a float capture moved into the list remains unsupported
+fn main() { let x = 1.5f; println(apply(1, fn [move x](y: int): int { return y })) }  // error: captures are read-only: write fn [x]; mutable and owned captures are not supported
+
+// === a record that holds a float and an interface still reports the interface
+type FloatIface = ref record { f: float; d: I }
+fn capFloatIface(h: FloatIface): int { return apply(1, fn [h](x: int): int { return x }) }  // error: cannot capture 'h': its type holds an interface value; function values cannot take interface values in v1
+fn main() { println(0) }
+
+// === a closed type that holds a float and an interface still reports the interface
+type FloatIfaceClosed = closed { WithBoth { f: float; d: I } }
+fn capFloatIfaceClosed(h: FloatIfaceClosed): int { return apply(1, fn [h](x: int): int { return x }) }  // error: cannot capture 'h': its type holds an interface value; function values cannot take interface values in v1
 fn main() { println(0) }
 
 // === a record that holds an interface cannot be captured

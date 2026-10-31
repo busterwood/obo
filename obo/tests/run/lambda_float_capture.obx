@@ -1,0 +1,88 @@
+// Stage B float captures: a float is one raw binary64 word, so it is captured by the same one-word
+// scalar snapshot as int/byte/bool. Float aliases and parameters follow the same mode; records,
+// closed types, arrays, optionals and Results are still read-only borrows of the whole local, and a
+// float field/element/payload is read through that borrow. Globals and constants are used directly.
+type FRec = ref record { f: float }
+type FShape = closed { FA { f: float } FB { f: float } }
+type FNum = float
+const CF = 1.25f
+var GF = 2.5f
+
+fn applyF(x: int, f: fn(int): float): float { return f(x) }
+fn idf(v: float): float { return v }
+
+fn capParam(v: float): float {
+    return applyF(1, fn [v](x: int): float { return v + float(x) })
+}
+
+fn main() {
+    // a float literal snapshot
+    let a = 1.5f
+    println(applyF(1, fn [a](x: int): float { return a + float(x) }))
+
+    // a float alias has the same one-word mode
+    let b: FNum = 2.5f
+    println(applyF(1, fn [b](x: int): float { return b + float(x) }))
+
+    // a float parameter is captured like any other scalar parameter
+    println(capParam(4.5f))
+
+    // a captured float is an ordinary value argument, not a reference
+    println(applyF(1, fn [b](x: int): float { return idf(b) }))
+
+    // a constant and a global are used directly; only the local float is captured
+    let c = 1f
+    println(applyF(1, fn [c](x: int): float { return c + CF + GF + float(x) - 1f }))
+
+    // a float record field through a read-only whole-record borrow
+    let r = new FRec{f: 3.5f}
+    println(applyF(1, fn [r](x: int): float { return r.f }))
+
+    // a float array element through a read-only whole-array borrow
+    let xs = new []float(0)
+    append(xs, 4.5f)
+    println(applyF(1, fn [xs](x: int): float { return xs[0] }))
+
+    // a Result[float] payload read by a non-consuming match
+    let res = ok(5.5f)
+    println(applyF(1, fn [res](x: int): float {
+        match res {
+            ok { return res.value }
+            err { return 0f }
+        }
+    }))
+
+    // an optional float record narrowed with if != nil
+    let maybe: ?FRec = new FRec{f: 6.5f}
+    println(applyF(1, fn [maybe](x: int): float {
+        if maybe != nil { return maybe.f }
+        return 0f
+    }))
+
+    // a captured float in a closed variant
+    let sh: FShape = new FA{f: 9.5f}
+    println(applyF(1, fn [sh](x: int): float {
+        match sh {
+            FA { return sh.f }
+            FB { return 0f }
+        }
+    }))
+
+    // capture-of-capture: the inner lambda captures the outer float capture
+    let d = 7.5f
+    println(applyF(1, fn [d](x: int): float {
+        return applyF(0, fn [d](y: int): float { return d })
+    }))
+}
+
+// expect: 2.5
+// expect: 3.5
+// expect: 5.5
+// expect: 2.5
+// expect: 4.75
+// expect: 3.5
+// expect: 4.5
+// expect: 5.5
+// expect: 6.5
+// expect: 9.5
+// expect: 7.5

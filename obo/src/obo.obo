@@ -106,10 +106,11 @@ const T_FLOAT = 68              // a float literal token; float is a type name, 
 // Stage 2: the symbol-file format, the compiled-program ABI and the compiler version.
 // OBO_VERSION is the compiler's identity in every .sym's `compiler` line and in --version.
 // Bump OBO_VERSION with each merged compiler feature; additive builtin/runtime
-// extensions use a patch release (0.8 -> 0.8.1); 0.9 is lambdas Stage A and 0.10 is
-// Stage B. Bump SYM_FORMAT on any grammar or meaning change; bump SYM_ABI on
+// extensions use a patch release (0.8 -> 0.8.1); 0.9 is lambdas Stage A, 0.10 is
+// numeric floats and 0.11 is Stage B capture lists. Bump SYM_FORMAT on any grammar
+// or meaning change; bump SYM_ABI on
 // any layout/calling-convention/descriptor/effect change.
-const OBO_VERSION = "0.10"
+const OBO_VERSION = "0.11"
 const SYM_FORMAT = 6
 const SYM_ABI = 1
 
@@ -1435,6 +1436,47 @@ fn containsIfaceIn(t: ^Type): bool {
         }
     }
     return false
+}
+
+// The first incomplete forward shell reachable from a capture's type. A direct shell names itself; a
+// ?/[]/^/Result constructor is followed to its element, and a record/closed type is searched through its
+// fields. This must run before containsIface for a capture: containsIface deliberately treats an incomplete
+// shell as interface-bearing (fail closed), but an incomplete `type F` is not an interface and the capture
+// diagnostic must name F as "declared but not yet defined". Cycles terminate through incSeen.
+var incSeen = new []^Type(0)
+
+fn incompleteCarrierIn(t: ^Type): ?^Type
+
+fn incompleteCarrier(t: ^Type): ?^Type {
+    truncate(incSeen, 0)
+    return incompleteCarrierIn(t)
+}
+
+fn incompleteCarrierIn(t: ^Type): ?^Type {
+    if t.kind == "array" || t.kind == "opt" || t.kind == "handle" || t.kind == "result" {
+        return incompleteCarrierIn(baseOf(t))
+    }
+    if t.kind == "record" || t.kind == "closed" {
+        if t.incomplete { return t }
+        for i in 0..len(incSeen) {
+            if incSeen[i] == t { return nil }
+        }
+        append(incSeen, t)
+        if t.kind == "record" {
+            for i in 0..len(t.fields) {
+                let f = incompleteCarrierIn(t.fields[i].typ)
+                if f != nil { return f }
+            }
+        } else {
+            for v in 0..len(t.variants) {
+                for i in 0..len(t.variants[v].fields) {
+                    let f = incompleteCarrierIn(t.variants[v].fields[i].typ)
+                    if f != nil { return f }
+                }
+            }
+        }
+    }
+    return nil
 }
 
 fn rejectFn(t: ^Type, msg: string) { if containsFn(t) { errorAt(msg, 0, 0) } }
@@ -7578,8 +7620,9 @@ fn lambdaExpr(): Item {
         if lambdaArgOK <= 0 { error("a capturing lambda may only be passed directly as a call argument") }
     }
     // Resolve the capture names against the enclosing function's open blocks. Globals and functions are
-    // used directly; a string or interface value has no v1 capture mode; everything else is a scalar
-    // snapshot, a read-only borrow/reference copy, a handle token copy or a function-cell copy.
+    // used directly; a string or interface value has no v1 capture mode; an int/byte/bool/float is a
+    // one-word snapshot, an owned object/reference is a read-only borrow/reference copy, and a handle or
+    // function value copies its token or cell pointer.
     let caps = new []LambdaCap(0)
     for i in 0..len(capNames) {
         let cn = capNames[i]
@@ -7613,8 +7656,11 @@ fn lambdaExpr(): Item {
             if ct.kind == "string" {
                 error("cannot capture '" + cn + "': strings are owned; pass it as a parameter")
             }
-            if ct.incomplete {
-                error(tname(ct) + " is declared but not yet defined")
+            let inc = incompleteCarrier(ct)
+            if inc != nil {
+                // Run before the interface classifier: containsIface treats a forward shell as
+                // interface-bearing (fail closed), but an incomplete type is not an interface.
+                error(tname(inc) + " is declared but not yet defined")
             } else if isIfaceVal(ct) {
                 error("cannot capture interface value '" + cn + "'; function values cannot take interface values in v1")
             } else if containsIface(ct) {
@@ -7622,7 +7668,8 @@ fn lambdaExpr(): Item {
                 error("cannot capture '" + cn + "': its type holds an interface value; function values cannot take interface values in v1")
             }
             var ck = 0
-            if ct.kind == "int" || ct.kind == "byte" || ct.kind == "bool" {
+            if ct.kind == "int" || ct.kind == "byte" || ct.kind == "bool" || ct.kind == "float" {
+                // float is one raw binary64 word, so a scalar snapshot is the same one-word copy as int.
                 ck = 0
             } else if ct.kind == "handle" {
                 ck = 2
@@ -8708,7 +8755,7 @@ fn assignmentOrCall(): bool {
             let xs = x.sym
             if xs == nil {
                 errorAt("strings are immutable", line, col)
-            } else if isCaptureSym(xs) && (isInt(symType(xs)) || symType(xs).kind == "bool") {
+            } else if isCaptureSym(xs) && (isInt(symType(xs)) || symType(xs).kind == "bool" || symType(xs).kind == "float") {
                 errorAt("cannot change captured '" + qualifiedSymName(xs) + "': captures are read-only; pass a mutable parameter instead", line, col)
             } else {
                 errorAt("'" + qualifiedSymName(xs) + "' is immutable (declared with let)", line, col)

@@ -250,6 +250,7 @@ SEED_FILE_MIN = {
     os.path.join(FORK, 'tests', 'run', 'closures_scope.obx'): (0, 11),
     os.path.join(FORK, 'tests', 'run', 'lambda_methods.obx'): (0, 11),
     os.path.join(FORK, 'tests', 'run', 'lambda_state.obx'): (0, 11),
+    os.path.join(FORK, 'tests', 'run', 'lambda_float_capture.obx'): (0, 11),
     os.path.join(FORK, 'tests', 'errors', 'closures.obx'): (0, 11),
 }
 SEED_LIB_MIN = {'io.obx': (0, 5), 'env.obx': (0, 4)}

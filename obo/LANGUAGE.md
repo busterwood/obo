@@ -829,8 +829,8 @@ An interface is a named set of methods that a record or closed type can implemen
 either an **owned box** (`I`, `?I`) or a **borrowed pair** (`&I`, `mut &I`, `&?I`); an interface is never a value
 of its own kind with fields or identity. Interfaces arrived in `0.8`; additive
 builtin/runtime extensions use patch releases such as the historical `0.8.1`.
-Lambdas are `0.9`, numeric floats are `0.10`/format 6, Stage B is next planned
-as `0.11`, and handles to interfaces (`^I`) are a later phase.
+Lambdas are `0.9`, numeric floats are `0.10`/format 6, Stage B capture lists are
+`0.11`/format 6, and handles to interfaces (`^I`) are a later phase.
 
 ### Declarations and implementations
 
@@ -1138,12 +1138,110 @@ fn main() {
 }
 ```
 
-Capturing closures, owned/read-only capture lists, stored function values and impure callbacks
-are later work. Stage B (`fn [x](...)`) is next planned as `0.11`; interface handles `^I`
-remain later. The implemented compiler is `0.10`/format 6; the promoted `0.10`
-seed reproduces it. The historical `0.9` seed (`540,673` bytes, sha256
-`3d369273…`) built it once for the release promotion, and the historical `0.8`
-seed (`507,905` bytes, sha256 `673ae7ba…`) built the 0.9 compiler.
+Stored function values, owned or mutable captures, string/interface captures and impure
+callbacks are later work. Stage B capture lists (`fn [x](...)`) are implemented in section 5d;
+interface handles `^I` remain later. The implemented compiler is `0.11`/format 6/ABI 1; the
+promoted `0.10` seed built it once for the release promotion. The historical `0.9` seed
+(`540,673` bytes, sha256 `3d369273…`) built the 0.10 compiler, and the historical `0.8` seed
+(`507,905` bytes, sha256 `673ae7ba…`) built the 0.9 compiler.
+
+## 5d. Capturing lambdas (Stage B, 0.11/format 6/ABI 1)
+
+A capturing lambda writes an explicit capture list: `fn [a, b](Params) [: Ret] { Body }`.
+Each name must resolve to a local or parameter of the immediately enclosing function; an
+uncaptured enclosing local is an error, and module globals/functions are used directly.
+The list is resolved at the literal's source position and the cell is filled left to right.
+There is no `mut` or `move` capture syntax.
+
+A scalar `int`/`byte`/`bool`/`float` is captured by **value snapshot**. A float snapshot is
+its one raw binary64 word, exactly as stored in a local, parameter or field; no conversion,
+rounding or host-float path is involved. A record, closed type, array, optional or `Result`
+is captured as a **read-only borrow of the whole local**. A `&T` reference copies its
+read-only binding; a `^T` handle copies its token (a tracked `let` handle also holds its
+origin owner); a function value copies its cell pointer. Float aliases and float parameters
+follow the scalar snapshot rule, and a record/closed/array/optional/`Result` that holds a
+float is allowed through the ordinary read-only borrow, so a float field, element or
+`Result[float]` payload is read in the body. A float constant or global is used directly,
+without a capture list, like any other global. A string or interface value is rejected, as
+is a record/closed/array/optional/`Result` whose type holds an interface value, even when it
+also holds a float; `mut`/`move` captures remain unsupported. A forward-declared type is
+reported as incomplete, not as interface-bearing: a direct shell and a shell reached through
+`?`/`[]`/`^`/`Result` or a record/closed field all report
+`<T> is declared but not yet defined`.
+
+The body may read fields/elements, narrow an optional with `if x != nil`, narrow an optional
+or `Result` payload in an arm, match a closed type or a `Result` non-consumingly, and call
+read-only methods. It may not write, move, drop, take, replace, truncate or append the
+captured owned value, point a captured reference elsewhere, or call a `mut` method through
+it; a captured scalar write is
+`cannot change captured 'x': captures are read-only; pass a mutable parameter instead`.
+
+```obo
+// example: runs
+// prints 8
+fn apply(x: int, f: fn(int): int): int { return f(x) }
+fn main() {
+    let n = 7
+    println(apply(1, fn [n](x: int): int { return x + n }))
+}
+```
+
+```obo
+// example: runs
+// prints 6
+type Item = ref record { n: int }
+fn apply(x: int, f: fn(int): int): int { return f(x) }
+fn main() {
+    let item = new Item{n: 5}
+    println(apply(1, fn [item](x: int): int { return x + item.n }))
+}
+```
+
+A capturing literal may appear **only as a direct call argument**. It cannot be bound to a
+`let`/`var`, assigned, returned, stored in a field/array/global/`Result`/optional, wrapped in
+parentheses, or created in a `while` condition, a `defer` body or a global/constant
+initializer. The callee may keep it in a local/parameter, copy it, forward it inside the call
+chain, call it, or put it in a `defer`; it cannot store it beyond the call or return it. The
+creator's frame cell is plain stack memory: no heap allocation, no destructor, no escape.
+
+The hidden environment is **one read-only parameter**, a pointer to
+`[code][cap0]...[capN]` in the creator's frame; it is not one hidden parameter per capture and
+it is not a source name (a user `env` is ordinary). The one-word value ABI, symbol format 6
+and ABI 1 are unchanged: capture lists add grammar and a frame cell, not a new calling
+convention.
+
+The creating call holds the capture binding across later arguments exactly like a read-only
+reference argument. A later argument that moves/frees the captured root is refused; a `mut`
+argument that overlaps a **deep** capture is refused. A whole-object capture is accepted even
+by an impure callee; a deep capture needs a callee that does not write through a handle and
+whose body is known; a handle-rooted capture needs a handle-safe callee; a global-rooted
+capture needs a callee that cannot free that global. The check is made at the creating call;
+later forwarding relies on the first callee's complete effect summary.
+
+The lambda body itself is pure under the existing predicate: it may allocate, write scalar
+globals, append to owned/global arrays, use I/O builtins and call pure functions or function
+values, but may not free a global, free owned state through a handle, call an impure or
+forward-headed function, or call the function/method whose body is still being compiled. A
+receiving callee may still be impure for the per-kind capture rules above.
+
+```obo
+// example: error: a capturing lambda may only be passed directly as a call argument
+fn apply(x: int, f: fn(int): int): int { return f(x) }
+fn main() {
+    let n = 1
+    let f = fn [n](x: int): int { return x }
+    println(apply(1, f))
+}
+```
+
+```obo
+// example: error: cannot change captured 'n'
+fn apply(x: int, f: fn(int): int): int { return f(x) }
+fn main() {
+    let n = 1
+    println(apply(1, fn [n](x: int): int { n = 2; return x }))
+}
+```
 
 ## 6. Modules
 
@@ -2496,6 +2594,6 @@ into and points the reference afresh before it reads it again is accepted too (`
 `loopCache`).
 
 **Planned.** The language features listed as not yet done in the root
-`README.md` also apply: lambdas, generic modules, value records,
-`inout` parameters, and debug information. Methods (section 5a) and interfaces
-(section 5b) are implemented; `^I` waits for lambda Stage B.
+`README.md` also apply: generic modules, value records, `inout` parameters, and
+debug information. Lambdas Stage A and Stage B (sections 5c and 5d), methods
+(section 5a) and interfaces (section 5b) are implemented; `^I` remains later.

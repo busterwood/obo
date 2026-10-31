@@ -336,9 +336,9 @@ COMPILER_MUTANTS = [
        '')]),
     # P5a: isatty and getenv
     ('universe omits isatty',
-     [(' isatty getenv terminalWidth sleepMs stdin stdout stderr isNaN isInf signbit floatBits parseFloat")', ' getenv terminalWidth sleepMs stdin stdout stderr isNaN isInf signbit floatBits parseFloat")')]),
+     [(' isatty getenv terminalWidth sleepMs stdin stdout stderr isNaN isInf signbit floatBits parseFloat __cinterop")', ' getenv terminalWidth sleepMs stdin stdout stderr isNaN isInf signbit floatBits parseFloat __cinterop")')]),
     ('universe omits getenv',
-     [(' isatty getenv terminalWidth sleepMs stdin stdout stderr isNaN isInf signbit floatBits parseFloat")', ' isatty terminalWidth sleepMs stdin stdout stderr isNaN isInf signbit floatBits parseFloat")')]),
+     [(' isatty getenv terminalWidth sleepMs stdin stdout stderr isNaN isInf signbit floatBits parseFloat __cinterop")', ' isatty terminalWidth sleepMs stdin stdout stderr isNaN isInf signbit floatBits parseFloat __cinterop")')]),
     ('callExempt omits getenv',
      [('readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr take',
        'readLinkPath isatty terminalWidth sleepMs stdin stdout stderr take')]),
@@ -369,8 +369,8 @@ COMPILER_MUTANTS = [
        '        p = materialise(p)\n        expect(T_RPAREN, "")\n        return rtCall1(RT_GETENV, p, derived("opt", derived("array", tByte)))\n')]),
     # P6a: terminalWidth
     ('universe omits terminalWidth',
-     [(' isatty getenv terminalWidth sleepMs stdin stdout stderr isNaN isInf signbit floatBits parseFloat")',
-       ' isatty getenv sleepMs stdin stdout stderr isNaN isInf signbit floatBits parseFloat")')]),
+     [(' isatty getenv terminalWidth sleepMs stdin stdout stderr isNaN isInf signbit floatBits parseFloat __cinterop")',
+       ' isatty getenv sleepMs stdin stdout stderr isNaN isInf signbit floatBits parseFloat __cinterop")')]),
     ('callExempt omits terminalWidth',
      [('readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr take',
        'readLinkPath isatty getenv sleepMs stdin stdout stderr take')]),

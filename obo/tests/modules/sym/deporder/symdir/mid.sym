@@ -1,6 +1,6 @@
 obosym 6
 abi 1
-compiler "0.10"
+compiler "0.11"
 source 0x9c6980b442eb46e1
 dep b "b.obx"
 dep a "a.obx"

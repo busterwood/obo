@@ -247,7 +247,7 @@ IMAGE = {"image: the runtime data keeps its zero tail",
 MUTANTS.update({
     "handle borrows survive other changes": [("if r == handleSym || r == root && (all || b.deeps[i] && underPath(b.paths[i], path)) { return true }",
                                               "if (r == handleSym && root == r) || r == root && (all || b.deeps[i] && underPath(b.paths[i], path)) { return true }")],
-    "handle borrows passable to freeing calls": [("            if b.roots[p] == handleSym && !pureFn(f) {", "            if false {")],
+    "handle borrows passable to freeing calls": [("            if b.roots[p] == handleSym {\n                var bad = !pureFn(f)\n", "            if b.roots[p] == handleSym && false {\n                var bad = !pureFn(f)\n")],
     "handle temporaries invalidate nothing": [("if x.viaHandle { invalidate(handleSym, via, false, \"\") }",
                                                "if x.viaHandle && r != nil { invalidate(handleSym, via, false, \"\") }")],
     "handle temporary assignments record nothing": [("                } else if x.deref || x.viaHandle {\n                    invalidateOwnedChange(x)\n                    recordFreeChange(x, false)\n",

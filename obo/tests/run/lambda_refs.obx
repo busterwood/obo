@@ -29,6 +29,13 @@ fn freeG(f: fn(int): int, n: int): int {
     G = new Bag{items: new []Box(0), n: 0}
     return f(n)
 }
+// A mut argument and a later owned argument free objects unrelated to a whole-object capture; the
+// callback runs after both and the capture binding does not overlap either free.
+fn mixed(mut a: &Bag, f: fn(int): int, c: Box): int {
+    truncate(a.items, 0)
+    drop(c)
+    return f(1)
+}
 
 fn main() {
     let b = new Box{v: 4}
@@ -65,6 +72,12 @@ fn main() {
     let hh = handle(hb)
     let hr = &hh.items[0]
     println(pure2(fn [hr](x: int): int { return x + hr.v }, 1))
+
+    let ma = new Bag{items: new []Box(0), n: 0}
+    append(ma.items, new Box{v: 2})
+    let cap = new Box{v: 9}
+    let victim = new Box{v: 1}
+    println(mixed(ma, fn [cap](x: int): int { return x + cap.v }, victim))
 }
 
 // expect: 5
@@ -77,3 +90,4 @@ fn main() {
 // expect: 3
 // expect: 11
 // expect: 5
+// expect: 10
