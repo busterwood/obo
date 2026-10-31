@@ -83,52 +83,270 @@ MUTANTS = [
      'if false {\n        error("decimal rounding mode must be 0..7")\n    }\n    let sv = load(scale)'),
     ("decimal request stores mode over scale",
      "    md.disp = at + 8\n", "    md.disp = at\n"),
+    # public decimal text compiler paths
+    ("decimal::parse dispatches to format",
+     "    return resultCall3(RT_DEC_PARSE, s, tDecimal)",
+     "    return resultCall3(RT_DEC_FORMAT, s, tDecimal)"),
+    ("decimal::format dispatches to canonical",
+     "    return resultCall3(RT_DEC_FORMAT, decPtr(a), tString)",
+     "    return resultCall3(RT_DEC_CANONICAL, decPtr(a), tString)"),
+    ("decimal::canonical dispatches to format",
+     "    return resultCall3(RT_DEC_CANONICAL, decPtr(a), tString)",
+     "    return resultCall3(RT_DEC_FORMAT, decPtr(a), tString)"),
+    ("decimal::check swaps precision and scale",
+     "    return decimalCheck(a, p, s)", "    return decimalCheck(a, s, p)"),
+    ("decimal::exponent returns dscale",
+     "    return rtCall1(RT_DEC_EXPONENT, decPtr(a), tInt)",
+     "    return rtCall1(RT_DEC_DSCALE, decPtr(a), tInt)"),
+    ("decimal::dscale returns exponent",
+     "    return rtCall1(RT_DEC_DSCALE, decPtr(a), tInt)",
+     "    return rtCall1(RT_DEC_EXPONENT, decPtr(a), tInt)"),
+    ("check request writes precision over scale",
+     "    let pd = newItem(\"mem\", tInt)\n    pd.base = RBP\n    pd.disp = at\n    store(pd, pv)",
+     "    let pd = newItem(\"mem\", tInt)\n    pd.base = RBP\n    pd.disp = at + 8\n    store(pd, pv)"),
+    ("check request writes scale over precision",
+     "    let sd = newItem(\"mem\", tInt)\n    sd.base = RBP\n    sd.disp = at + 8\n    store(sd, sv)",
+     "    let sd = newItem(\"mem\", tInt)\n    sd.base = RBP\n    sd.disp = at\n    store(sd, sv)"),
 ]
 
-# Runtime mutants are built in a private runtime directory; the compiler is
-# rebuilt from the unmutated source so the test programs embed the mutant runtime.
+# Runtime, core-include and entry-table mutants are built in a private runtime
+# directory; the compiler is rebuilt from the unmutated source so the test
+# programs embed the mutant runtime.  Each item is (name, file, old, new).
 RUNTIME_MUTANTS = [
+    # existing arithmetic/runtime decimal mutants
     ("multiply cap is computed from operand a",
+     "decimal24_core.inc",
      "int intd = rt_dec_coeff_digits(r) + (int)(int16_t)r->exp;",
      "int intd = rt_dec_coeff_digits(a) + (int)(int16_t)a->exp;"),
     ("runtime scale validation is dropped",
+     "decimal24_core.inc",
      "    if (*scale < 0 || *scale > 32768) return DEC_UNSUPPORTED_RANGE;\n", ""),
+    # decimal24_core.inc: public grammar and core text semantics
+    ("public grammar allows a missing integer part",
+     "decimal24_core.inc",
+     "    if (i == int_start) return 0;              /* mandatory integer digit */",
+     "    if (i == int_start) return 1;              /* mandatory integer digit */"),
+    ("public grammar allows a trailing point",
+     "decimal24_core.inc",
+     "        if (i == frac_start) return 0;         /* '1.' is invalid */",
+     "        if (i == frac_start) return 1;         /* '1.' is invalid */"),
+    ("core parser accepts trailing whitespace or underscores",
+     "decimal24_core.inc",
+     "    if (i != len) return DEC_INVALID;",
+     "    if (0) return DEC_INVALID;"),
+    ("precision limit becomes 39 digits",
+     "decimal24_core.inc",
+     "    if (p->sig < 38) {",
+     "    if (p->sig < 39) {"),
+    ("parse dscale ignores the explicit exponent",
+     "decimal24_core.inc",
+     "    __int128 dscale = (__int128)frac_digits - explicit_exp;",
+     "    __int128 dscale = (__int128)frac_digits;"),
+    ("parse display scale clamps at 65534",
+     "decimal24_core.inc",
+     "    if (dscale > 65535) return DEC_DISPLAY_RANGE;",
+     "    if (dscale > 65534) return DEC_DISPLAY_RANGE;"),
+    ("parse exponent lower bound becomes -32767",
+     "decimal24_core.inc",
+     "    if (exp_final < -32768) return DEC_EXPONENT_RANGE;",
+     "    if (exp_final < -32767) return DEC_EXPONENT_RANGE;"),
+    ("upper rescue allows 37 coefficient zeros",
+     "decimal24_core.inc",
+     "        if (shift > (__int128)(38 - digits)) return DEC_EXPONENT_RANGE;",
+     "        if (shift > (__int128)(37 - digits)) return DEC_EXPONENT_RANGE;"),
+    ("negative zero keeps its sign",
+     "decimal24_core.inc",
+     "    if (lo == 0 && hi == 0) {\n        d->sign = 0;\n        d->exp = 0;",
+     "    if (lo == 0 && hi == 0) {\n        d->sign = (uint8_t)sign;\n        d->exp = 0;"),
+    ("parse precision status becomes exponent range",
+     "decimal24_core.inc",
+     "    if (acc.overflow) return DEC_PRECISION_OVERFLOW;",
+     "    if (acc.overflow) return DEC_EXPONENT_RANGE;"),
+    ("canonical fixed threshold is 127",
+     "decimal24_core.inc",
+     "#define DEC_TEXT_CANON_FIXED_MAX 128u",
+     "#define DEC_TEXT_CANON_FIXED_MAX 127u"),
+    ("canonical keeps coefficient trailing zeros",
+     "decimal24_core.inc",
+     "    int sd = len - trailing;",
+     "    int sd = len;"),
+    ("canonical adjusted exponent is off by one",
+     "decimal24_core.inc",
+     "    int adj = e + len - 1;",
+     "    int adj = e + len;"),
+    ("format INEXACT boundary is inclusive",
+     "decimal24_core.inc",
+     "    if ((__int128)e + (__int128)s + (__int128)trailing < 0) return DEC_INEXACT;",
+     "    if ((__int128)e + (__int128)s + (__int128)trailing <= 0) return DEC_INEXACT;"),
+    ("format writes dscale-1 fraction digits",
+     "decimal24_core.inc",
+     "        for (int j = 0; j < (int)l.dscale; j++) {",
+     "        for (int j = 0; j < (int)l.dscale - 1; j++) {"),
+    ("format truncates a dropped nonzero digit",
+     "decimal24_core.inc",
+     "    if ((__int128)e + (__int128)s + (__int128)trailing < 0) return DEC_INEXACT;",
+     "    if ((__int128)e + (__int128)s + (__int128)trailing < -1) return DEC_INEXACT;"),
+    ("check trailing-zero comparison is inclusive",
+     "decimal24_core.inc",
+     "        if (k < 0 && (i64)trailing < -k)",
+     "        if (k < 0 && (i64)trailing <= -k)"),
+    ("check ignores coefficient trailing zeros",
+     "decimal24_core.inc",
+     "        if (k < 0 && (i64)trailing < -k)",
+     "        if (k < 0 && (i64)0 < -k)"),
+    ("check precision comparison is strict",
+     "decimal24_core.inc",
+     "        if ((i64)len + k > p)",
+     "        if ((i64)len + k >= p)"),
+    ("check p range includes zero",
+     "decimal24_core.inc",
+     "    if (p < 1 || p > 1000 || s < -1000 || s > 1000)",
+     "    if (p < 0 || p > 1000 || s < -1000 || s > 1000)"),
+    ("exponent returns the raw stored exponent",
+     "decimal24_core.inc",
+     "    return (i64)(int16_t)a->exp + (i64)trailing;",
+     "    return (i64)(int16_t)a->exp;"),
+    ("dscale reads the exponent field",
+     "decimal24_core.inc",
+     "    return (i64)a->dscale;",
+     "    return (i64)(int16_t)a->exp;"),
+    ("formatter length is one byte long",
+     "decimal24_core.inc",
+     "    size_t req = (size_t)int_digits + (s ? 1u + (size_t)s : 0u) +\n                 (v->sign ? 1u : 0u);",
+     "    size_t req = (size_t)int_digits + (s ? 1u + (size_t)s : 0u) +\n                 (v->sign ? 1u : 0u) + 1u;"),
+    ("text allocation failure becomes display range",
+     "decimal24_core.inc",
+     "    if (!sp) return rt_dec_text_err(descErr, DEC_BUFFER_SMALL, op);",
+     "    if (!sp) return rt_dec_text_err(descErr, DEC_DISPLAY_RANGE, op);"),
+    ("ok cell allocation failure becomes display range",
+     "decimal24_core.inc",
+     "    if (!c) return rt_dec_text_err(descErr, DEC_BUFFER_SMALL, (int)op);",
+     "    if (!c) return rt_dec_text_err(descErr, DEC_DISPLAY_RANGE, (int)op);"),
+    # runtime.c: the recoverable allocator and the fatal diagnostics
+    ("alloc_raw loses its object-too-large reason",
+     "runtime.c",
+     '    if (payload > MAX_PAYLOAD) die("obx: object too large\\n");',
+     '    if (payload > MAX_PAYLOAD) die("obx: out of memory\\n");'),
+    ("alloc_raw loses its out-of-memory reason",
+     "runtime.c",
+     '    if (!p) die("obx: out of memory\\n");',
+     '    if (!p) die("obx: object too large\\n");'),
+    ("alloc_raw_try dies on an over-large payload",
+     "runtime.c",
+     "    if (payload > MAX_PAYLOAD) return 0;",
+     '    if (payload > MAX_PAYLOAD) die("obx: object too large\\n");'),
+]
+
+ENTRY_MUTANTS = [
+    ("entry slot 73 targets format", "    slot rt_dec_parse_text", "    slot rt_dec_format_text"),
+    ("entry slot 74 targets canonical", "    slot rt_dec_format_text", "    slot rt_dec_canonical_text"),
+    ("entry slot 75 targets format", "    slot rt_dec_canonical_text", "    slot rt_dec_format_text"),
+    ("entry slot 76 targets parse", "    slot rt_dec_check", "    slot rt_dec_parse_text"),
+    ("entry slot 77 targets dscale", "    slot rt_dec_exponent", "    slot rt_dec_dscale"),
+    ("entry slot 78 targets exponent", "    slot rt_dec_dscale", "    slot rt_dec_exponent"),
 ]
 
 
-def build_runtime_mutant(work, old, new):
+def build_runtime_mutant(work, filename, old, new):
     rt = os.path.join(work, 'rt')
     if os.path.isdir(rt):
         shutil.rmtree(rt)
     os.makedirs(rt)
-    for name in ('runtime.c', 'entry.S', 'rt.ld'):
+    for name in ('runtime.c', 'entry.S', 'rt.ld', 'decimal24_core.inc'):
         shutil.copy(os.path.join(RUNTIME, name), rt)
-    inc = open(RT_INC).read()
-    if inc.count(old) != 1:
-        return None, f"runtime pattern occurs {inc.count(old)} times"
-    open(os.path.join(rt, 'decimal24_core.inc'), 'w').write(inc.replace(old, new))
-    subprocess.run(['gcc', *CFLAGS, '-c', 'runtime.c', '-o', 'runtime.o'],
-                   cwd=rt, check=True, capture_output=True)
-    subprocess.run(['gcc', '-c', 'entry.S', '-o', 'entry.o'],
-                   cwd=rt, check=True, capture_output=True)
-    subprocess.run(['ld', '-T', 'rt.ld', '-o', 'runtime.elf', 'entry.o', 'runtime.o'],
-                   cwd=rt, check=True, capture_output=True)
-    subprocess.run(['objcopy', '-O', 'binary', '-j', '.text', 'runtime.elf',
-                    'runtime_text.bin'], cwd=rt, check=True, capture_output=True)
-    subprocess.run(['objcopy', '-O', 'binary', '-j', '.data', '--set-section-flags',
-                    '.data=alloc,load,contents', 'runtime.elf', 'runtime_data.bin'],
-                   cwd=rt, check=True, capture_output=True)
+    path = os.path.join(rt, filename)
+    text = open(path).read()
+    if text.count(old) != 1:
+        return None, f"pattern occurs {text.count(old)} times in {filename}"
+    open(path, 'w').write(text.replace(old, new))
+    try:
+        subprocess.run(['gcc', *CFLAGS, '-c', 'runtime.c', '-o', 'runtime.o'],
+                       cwd=rt, check=True, capture_output=True)
+        subprocess.run(['gcc', '-c', 'entry.S', '-o', 'entry.o'],
+                       cwd=rt, check=True, capture_output=True)
+        subprocess.run(['ld', '-T', 'rt.ld', '-o', 'runtime.elf', 'entry.o', 'runtime.o'],
+                       cwd=rt, check=True, capture_output=True)
+        subprocess.run(['objcopy', '-O', 'binary', '-j', '.text', 'runtime.elf',
+                        'runtime_text.bin'], cwd=rt, check=True, capture_output=True)
+        subprocess.run(['objcopy', '-O', 'binary', '-j', '.data', '--set-section-flags',
+                        '.data=alloc,load,contents', 'runtime.elf', 'runtime_data.bin'],
+                       cwd=rt, check=True, capture_output=True)
+    except subprocess.CalledProcessError as exc:
+        err = (exc.stderr or b'').decode('utf-8', 'replace').strip()
+        return None, f"runtime build failed: {err[:180]}"
     return rt, None
 
 
-def run_suite(exe, rt, verbose):
+# The C text harness is built against the mutant runtime too, so allocator,
+# formatter-bound and entry-slot failures have a direct catcher outside the
+# language tests.
+TEXT_CASES = [
+    ('max_output', '4MiB', 0, None),
+    ('try_bad', '64KiB', 0, None),
+    ('try_reuse', '64KiB', 0, None),
+    ('alloc_too_large', '64KiB', 2, 'obx: object too large\\n'),
+    ('alloc_oom', '64KiB', 2, 'obx: out of memory\\n'),
+    ('parse10', '64KiB', 0, None),
+    ('format10', '64KiB', 0, None),
+    ('canonical10', '64KiB', 0, None),
+    ('check10', '64KiB', 0, None),
+    ('bad_exp_sign', '64KiB', 10, 'obo: decimal invalid value\\n'),
+    ('bad_exp_coeff', '64KiB', 10, 'obo: decimal invalid value\\n'),
+    ('bad_exp_flags', '64KiB', 10, 'obo: decimal invalid value\\n'),
+    ('bad_exp_pad', '64KiB', 10, 'obo: decimal invalid value\\n'),
+    ('bad_dscale_sign', '64KiB', 10, 'obo: decimal invalid value\\n'),
+    ('bad_dscale_coeff', '64KiB', 10, 'obo: decimal invalid value\\n'),
+    ('bad_format', '64KiB', 0, None),
+    ('bad_canonical', '64KiB', 0, None),
+    ('bad_check', '64KiB', 0, None),
+]
+
+
+def run_text_suite(rt, work, verbose):
+    src = os.path.join(HERE, 'rt_dec_text_test.c')
+    text = open(src).read()
+    text = text.replace('#include "../runtime/runtime.c"',
+                        '#include "%s/runtime.c"' % rt)
+    mut = os.path.join(work, 'rt_dec_text_test.c')
+    open(mut, 'w').write(text)
+    obj = os.path.join(work, 'rt_dec_text_test.o')
+    exe = os.path.join(work, 'rt_dec_text_test')
+    p = subprocess.run(['gcc', *CFLAGS, '-c', mut, '-o', obj],
+                       capture_output=True, text=True, timeout=120)
+    if p.returncode != 0:
+        if verbose: print('        text harness did not compile:', p.stderr.strip()[:160])
+        return False
+    p = subprocess.run(['ld', '-T', os.path.join(rt, 'rt.ld'), '-o', exe, obj],
+                       capture_output=True, text=True, timeout=120)
+    if p.returncode != 0:
+        if verbose: print('        text harness did not link:', p.stderr.strip()[:160])
+        return False
+    for case, limit, want, stderr in TEXT_CASES:
+        env = {k: v for k, v in os.environ.items()
+               if k not in ('OBO_HEAP_LIMIT', 'OBO_CHECK', 'OBO_STATS', 'OBX_GC')}
+        env['OBO_HEAP_LIMIT'] = limit
+        env['OBO_CHECK'] = '1'
+        env['OBX_GC'] = 'poison'
+        r = subprocess.run([exe, case], capture_output=True, text=True,
+                           timeout=120, env=env)
+        if r.returncode != want or (stderr is not None and r.stderr != stderr):
+            if verbose:
+                print(f'        text case {case}: exit {r.returncode} want {want}; '
+                      f'stderr {r.stderr.strip()[:120]!r}')
+            return False
+    return True
+
+
+def run_suite(exe, rt, work, verbose):
     env = dict(os.environ, OBO=exe, OBO_RT=rt)
     r = subprocess.run([sys.executable, RUNNER, '-k', 'decimal'],
                        capture_output=True, text=True, timeout=300, env=env)
-    if verbose and r.returncode != 0:
-        for line in (r.stdout + r.stderr).splitlines()[:8]:
-            print('        ' + line)
-    return r.returncode == 0
+    if r.returncode != 0:
+        if verbose:
+            for line in (r.stdout + r.stderr).splitlines()[:8]:
+                print('        ' + line)
+        return False
+    return run_text_suite(rt, work, verbose)
 
 
 def main():
@@ -154,14 +372,14 @@ def main():
                 print(f"BROKEN  {name}: mutant did not compile: {p.stderr.strip()[:140]}")
                 broken += 1
                 continue
-            if not run_suite(exe, FORK, verbose):
+            if not run_suite(exe, FORK, tmp, verbose):
                 caught += 1
                 print(f"caught  {name}")
             else:
                 missed += 1
                 print(f"MISSED  {name}")
-        for name, old, new in RUNTIME_MUTANTS:
-            rt, err = build_runtime_mutant(tmp, old, new)
+        for name, filename, old, new in RUNTIME_MUTANTS:
+            rt, err = build_runtime_mutant(tmp, filename, old, new)
             if rt is None:
                 print(f"BROKEN  {name}: {err}")
                 broken += 1
@@ -175,7 +393,28 @@ def main():
                 print(f"BROKEN  {name}: compiler did not build: {p.stderr.strip()[:140]}")
                 broken += 1
                 continue
-            if not run_suite(exe, rt, verbose):
+            if not run_suite(exe, rt, tmp, verbose):
+                caught += 1
+                print(f"caught  {name}")
+            else:
+                missed += 1
+                print(f"MISSED  {name}")
+        for name, old, new in ENTRY_MUTANTS:
+            rt, err = build_runtime_mutant(tmp, 'entry.S', old, new)
+            if rt is None:
+                print(f"BROKEN  {name}: {err}")
+                broken += 1
+                continue
+            src = os.path.join(tmp, 'src.obo')
+            exe = os.path.join(tmp, 'obo-rt')
+            open(src, 'w').write(text)
+            p = subprocess.run([SEED, src, '-o', exe, '--rt', rt],
+                               capture_output=True, text=True, timeout=180)
+            if p.returncode != 0:
+                print(f"BROKEN  {name}: compiler did not build: {p.stderr.strip()[:140]}")
+                broken += 1
+                continue
+            if not run_suite(exe, rt, tmp, verbose):
                 caught += 1
                 print(f"caught  {name}")
             else:
@@ -183,7 +422,8 @@ def main():
                 print(f"MISSED  {name}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    print(f"\n{caught} caught, {missed} missed, {broken} broken (of {len(MUTANTS) + len(RUNTIME_MUTANTS)})")
+    total = len(MUTANTS) + len(RUNTIME_MUTANTS) + len(ENTRY_MUTANTS)
+    print(f"\n{caught} caught, {missed} missed, {broken} broken (of {total})")
     return 1 if missed or broken else 0
 
 
