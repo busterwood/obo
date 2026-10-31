@@ -1,6 +1,8 @@
 # TLS transport adapter
 
-Status: **design for independent review; no implementation authorized.**
+Status: **revision 2 design for focused independent re-review; no
+implementation authorized.** Revision 2 resolves the blockers/major issues
+from the independent review of `ea02b29`; see §15.1 for the resolution map.
 Baseline: current `main` `2364add3a7ad0a02ec9412b6834a36a510d45f32`,
 released obo `0.12`, symbol format 6, ABI 1. Date: 2026-10-31.
 No compiler, ABI, symbol-format or package version is reserved by this note.
@@ -29,7 +31,7 @@ review questions.
 ## 1. Decision and scope
 
 Build a **server-side TLS 1.2/1.3 transport adapter over TCP** on top of the
-approved `sysstream`/`sysreactor`/`syswaitio` layer, using the system
+approved `sysstream`/`sysreactor` layer, using the system
 **OpenSSL 3.0** `libssl.so.3` and `libcrypto.so.3` through **memory BIOs**.
 The adapter exposes an ordinary obo byte stream and a small handshake/close
 state machine. It does not parse HTTP, does not own application protocol
@@ -42,13 +44,15 @@ Summary of decisions:
 | Provider | OpenSSL 3.0 from the operating system; no vendored crypto implementation |
 | Build inputs | OpenSSL development headers required; declarations-only rejected for TLS |
 | Native boundary | scalar `long` C ABI; memory BIOs; no `SSL*`/`BIO*`/`X509*` to obo |
-| Ownership | owned `TlsContext` and `TlsSession` shells; session owns its `Stream`; explicit close |
+| Ownership | owned `TlsContext` and `TlsSession` shells; **non-optional** owned `Stream`; target private `transport`; explicit close |
 | Version policy | TLS 1.2 minimum, TLS 1.3 maximum, no fallback |
-| ALPN | server selects `h2` or `http/1.1` from a copied C policy; no obo callback |
-| Client mode | optional later; server first |
-| Session resumption | disabled by default; no 0-RTT |
+| ALPN | default `http/1.1`; `h2` only after HTTP/2; `Require` enforced by C ClientHello-presence + select callbacks |
+| Client mode | separate design; server first |
+| Session resumption | **disabled entirely in v1; no option, no 0-RTT** |
+| Output | every progress outcome carries `want`; explicit `flush`; no stranded Finished/close_notify |
+| Handshake helper | step API only in P2T-b; `handshakeUntil` deferred |
 | Hosting | hosted build only; no freestanding TLS, no hidden threads |
-| Phase | P2T after syslib P2 and the cinterop hosted qualification |
+| Phase | P2T after syslib P2 **approval and implementation** plus cinterop hosted qualification |
 
 ### 1.1 Scope
 
@@ -57,8 +61,9 @@ Summary of decisions:
 - ALPN negotiation for `h2` and `http/1.1`.
 - Certificate chain and private key loading from bounded PEM bytes, with
   explicit trust anchors for client-certificate verification.
-- Nonblocking handshake, read, write and shutdown steps; explicit
-  `WantRead`/`WantWrite`; absolute caller deadlines; no hidden retries.
+- Nonblocking handshake, read, write, **flush** and multi-step shutdown;
+  explicit `WantRead`/`WantWrite`/`want`; absolute caller deadlines; no hidden
+  retries and no stranded output.
 - Peer certificate identity and verification result as copied value records.
 - Per-context and per-session resource identity, generation checks, explicit
   close and leak counters.
@@ -95,7 +100,7 @@ Summary of decisions:
 | Stream contract | `obo/design/systems-stdlib-design.md`:888–925 defines `sysstream::Stream`, `readSome`/`writeSome`, `readInto`/`writeFrom`, half-close and explicit close | The TLS session must consume an owned `Stream`; it must not expose a raw fd or bypass partial-transfer rules |
 | Bounded buffers | systems design:927–968 defines `sysbuffer::Buffer`, limits and step APIs | TLS uses one bounded staging buffer per direction; no unbounded record reassembly in obo |
 | Reactor | systems design:1227–1310 defines `sysreactor`, level-triggered readiness, timers, `watchResource`, `wait` | TLS steps return `WantRead`/`WantWrite`; the application owns readiness and deadlines |
-| Wait helpers | systems design:970–1018 defines `syswaitio` deadline/cancellation helpers | `handshakeUntil` may use the same discipline; it must not restart a deadline |
+| Wait helpers | systems design:970–1018 defines `syswaitio` deadline/cancellation helpers | P2T-b does **not** use them: no TLS helper blocks in `reactor::wait`, so no cancellation-wake claim |
 | TLS readiness | systems design:1614–1646 (§10) says a TLS engine may use C-side memory BIOs with explicit feed/drain and no obo callback; result must distinguish need-read/write from fatal | This note adopts memory BIOs and explicit outcomes |
 | Shell identity | systems design:251–307 defines `res: platform::Resource`, `source`/`requireKind`, generations and public-field limits | `TlsContext`/`TlsSession` are concrete shells with `res`; no `tok` field |
 | Error model | systems design:311–398 defines named library codes, no global `lastError`, no hidden retries | TLS has its own code family and outcome types |
@@ -133,7 +138,7 @@ MODULESDIR: "/usr/lib/x86_64-linux-gnu/ossl-modules"
 | Development headers | **absent** at `/usr/include/openssl` |
 | `libssl-dev` | available as `3.0.13-0ubuntu3.16`; fetched privately with `apt-get download` and extracted without installing |
 | Header evidence | `opensslv.h`: `OPENSSL_VERSION_STR "3.0.13"`, `OPENSSL_VERSION_NUMBER 0x300000d0`; exact header hashes below |
-| QUIC | `grep -rn QUIC` over the extracted headers found no QUIC API; `nm -D libssl.so.3 | grep -i quic` found no symbol |
+| QUIC | targeted `grep -E 'SSL_QUIC|OSSL_QUIC|QUIC_'` and `nm -D libssl.so.3 | grep -E 'SSL_QUIC|OSSL_QUIC|QUIC_'` found no QUIC API. A bare `grep -i quic` is not used: it matches `..._QUICK` identifiers. The conclusion (no QUIC API in 3.0.13) is unchanged |
 | IFUNC | this build's `libssl.so.3` and `libcrypto.so.3` expose no dynamic `IFUNC` symbols; `libssl.so.3` carries IBT/SHSTK GNU property notes. This is an observation about this build, not a general OpenSSL guarantee |
 | Symbol versions | `OPENSSL_3.0.0` and `OPENSSL_3.0.3` version nodes exist; the core SSL functions checked for this design resolve to `OPENSSL_3.0.0`; the linker records the exact node for every referenced symbol |
 | Security level | compiled default `OPENSSL_TLS_SECURITY_LEVEL=2`; the adapter also sets level 2 explicitly |
@@ -144,6 +149,10 @@ Exact extracted-header hashes (SHA-256), for the provenance record only:
 ssl.h             710a4527f2d6871dcdda2bb9e0f157b98bd8bde88f09664de6f89950a2a8606d
 opensslv.h        724c362124239abc4b77decaf5d5f70af61476ea0fa84b1cb7a97c15957c1415
 x509v3.h          045ccc247078cdce3285e4a932fbda6bc4d62e31a67c9940d8bfafa1a4015914
+x509.h            6f6c2476067bf3f2320ee59fa051ea9836acba4a82fd0f034b214ce5b2f5c995
+x509_vfy.h        8f4b78478d697614edad17c08ca34317ccfefd594ec053d444e842aaecebb14d
+err.h             3cc1e1dbda3781fec4f515b1d61e31c39c6e76b802b3150e7c977b0b0a213608
+bio.h             9dde507c18007338ee90517748b2b468cf416b4738f56a68baab0b4bb362cbc0
 opensslconf.h     890184233890bacd52fd420fef07befad411b9a318b97efbf36f46673d3e7841
 configuration.h   eee44bb7885f6e6b9a2a139100a7751c2564f1b83090ed237f178c1470737046
 ```
@@ -165,14 +174,19 @@ established the intended mechanics:
 | `OPENSSL_init_ssl(OPENSSL_INIT_NO_LOAD_CONFIG, NULL)` | succeeds; `OpenSSL_version_num()` = `0x300000d0` |
 | TLS 1.3 handshake with two memory BIO pairs, self-signed `localhost` certificate | succeeds; `TLS_AES_256_GCM_SHA384`; ALPN selects `h2` |
 | TLS 1.2 with ALPN server list `h2` and client list `http/1.1`, server policy fatal | handshake fails with OpenSSL reason `no application protocol` (`0x0A0000EB`); no fallback |
+| Server `Require` with a client that sends **no ALPN**, using only the ALPN select callback | handshake **succeeds**; the select callback is not called (`alpn_calls=0`). This is why the design adds a C ClientHello-presence callback |
+| Same no-ALPN client with `SSL_CTX_set_client_hello_cb` checking `SSL_client_hello_get0_ext(...ALPN...)` | callback is invoked, reports the extension absent, and aborts with `SSL_AD_MISSING_EXTENSION`; the handshake fails |
+| Required client cert, client sends none | `SSL_ERROR_SSL`, verify result `0`, reason `peer did not return a certificate`; maps to `NoPeerCertificate` |
 | Client `SSL_set1_host("localhost")` with the test CA | verify result `0` |
 | Client `SSL_set1_host("wrong.example")` | verify result `62` (`X509_V_ERR_HOSTNAME_MISMATCH`); `SSL_get_error` = `SSL_ERROR_SSL` |
 | `SSL_shutdown` on both peers, then drain | first call returns `0` on each; second returns `1`; `SSL_SENT_SHUTDOWN`/`SSL_RECEIVED_SHUTDOWN` become set |
 | Application data through memory BIOs | 21 plaintext bytes written, 21 read, no loss; `ERR_get_error()` remains `0` |
 
-The probe did not test the obo cinterop hosted startup, certificate expiry,
-client certificates, fragmentation at every byte boundary, or the full test
-matrix in §10. Those remain implementation gates.
+The private/review probes did not test the obo cinterop hosted startup,
+certificate expiry/revocation, fragmentation at every byte boundary, or the
+full test matrix in §10. Those remain implementation gates. The no-ALPN and
+required-client-certificate probes are recorded because they changed the
+design (ClientHello callback; `NoPeerCertificate` mapping).
 
 ## 3. Library and build decision
 
@@ -229,13 +243,14 @@ header itself is the reviewed ABI contract. OpenSSL is different:
 
 A declarations-only **adapter** header is still correct for the functions the
 TLS adapter exports: `tls_*.h` declares only `long tls_x(long, ...)`. The
-`.cbind` should use `headers` for `openssl/ssl.h` and the adapter header, and
-`signature_check: header`. The OpenSSL headers are trusted build input, not
-vendored source.
+`.cbind` should use `headers` for `openssl/ssl.h`, the OpenSSL headers it
+includes (`x509v3.h`, `x509_vfy.h`, `bio.h`, `err.h`, ...) and the adapter
+header, with `signature_check: header`. The OpenSSL headers are trusted build
+input, not vendored source.
 
 **cinterop prerequisite found during this design:** `generate_sigcheck`
 (`obo/experimental/cinterop/cinterop.py`:206–220) includes the header names
-from the spec, but the signature-check compile at line 798 is:
+from the spec, but the signature-check compile at line 790 is:
 
 ```python
 run([cc, '-c', '-fno-pie', '-Werror', '-I', spec_dir, sig_path, '-o', sig_o])
@@ -272,8 +287,8 @@ toolkit review.
     `OPENSSL_version_num()` at build and first run;
   - symbol version node used (`OPENSSL_3.0.0`);
   - header package version and hashes of at least `ssl.h`, `opensslv.h`,
-    `x509v3.h`, `err.h`, `bio.h`, `x509.h`, `opensslconf.h`,
-    `configuration.h`;
+    `x509v3.h`, `x509_vfy.h`, `err.h`, `bio.h`, `x509.h`, `provider.h`,
+    `opensslconf.h`, `configuration.h`;
   - compiler/toolchain string and cinterop manifest hash.
 - Use `-Wl,-z,relro,-z,now` and non-executable stack. The existing cinterop
   link already sets `-Wl,-z,noexecstack`; add the RELRO/NOW flags.
@@ -346,16 +361,21 @@ library, not as a sandbox.
   own error queue is thread-local; the hosted process has glibc TLS, but the
   adapter must not use `__thread` and must not claim general thread support.
 - OpenSSL may use `pthread_once`, `getrandom`, `clock_gettime`, `mmap`,
-  `atexit` and constructors. The cinterop hosted startup now runs normal CRT
-  constructors and atexit handlers, but that is not a TLS/OpenSSL guarantee
-  until a fixture passes. P2T-a must build and run a C fixture **through the
-  cinterop hosted startup**, not a normal `gcc` main, that:
+  `atexit` and constructors. The cinterop hosted subset tests normal CRT
+  constructors/atexit/stdio; it does **not** claim arbitrary-library
+  constructors, OpenSSL TLS or IFUNC. P2T-a must build and run a C fixture
+  **through the cinterop hosted startup**, not a normal `gcc` main, that:
   1. calls `OPENSSL_init_ssl(OPENSSL_INIT_NO_LOAD_CONFIG, NULL)`;
-  2. creates a server and client context with memory BIOs;
-  3. performs a self-signed TLS 1.3 handshake and an application-data
+  2. explicitly loads the default provider and calls `RAND_bytes`;
+  3. creates a server and client context with memory BIOs;
+  4. performs a self-signed TLS 1.3 handshake and an application-data
      roundtrip;
-  4. returns scalar status through the cinterop seam;
-  5. runs under ASAN/UBSAN in the separate C harness.
+  5. exercises `pthread_once`, `clock_gettime`/`mmap` and the thread-local
+     error queue;
+  6. asserts `atexit`/`OPENSSL_cleanup` ordering and a post-cleanup
+     no-crash check;
+  7. returns scalar status through the cinterop seam;
+  8. runs under ASAN/UBSAN in the separate C harness.
   Until this passes, the TLS adapter is not accepted, and no HTTPS claim is
   made.
 - The cinterop fixed image is non-PIE `ET_EXEC` with fixed addresses. OpenSSL
@@ -389,10 +409,12 @@ library, not as a sandbox.
 ### 4.1 Dependency DAG
 
 ```text
-systls -> sysplatform, sysstream, syserrors, sysclock, sysreactor, syswaitio
+systls -> sysplatform, sysstream, sysclock, sysreactor
 ```
 
-`systls` does **not** import `sysnet`, `sysfile`, HTTP/1.1 or HTTP/2. An
+`systls` does **not** import `sysnet`, `sysfile`, `sysbuffer`, `syswaitio`,
+HTTP/1.1 or HTTP/2. TLS uses C-owned staging buffers, not `sysbuffer`; it has no
+public cancellation helper in P2T-b. An
 application obtains a connected `sysstream::Stream` from `sysnet` (or a test
 fixture), then hands it to `systls::accept`. Certificate and key bytes are read
 by the application with `sysfile` (bounded reads) or supplied from a test
@@ -411,7 +433,7 @@ layout at systems design §12.1.
 | Cipher/version policy | macro names and control numbers | `ContextOptions`, ALPN/version enums | OpenSSL defaults, security level, provider |
 | Certificate parsing | PEM/DER, chain order, X509 names/SAN/time | bounded PEM bytes, copied identity | parser changes, SAN edge cases |
 | Error queue | lib/reason/alert codes, queue lifetime | `Failure`, `text`, `verifyText` | OpenSSL error text and reason codes |
-| Transport ownership | `Stream` shell and byte movement | `TlsSession.transport` (owned, documented) | buffer sizes, pump order |
+| Transport ownership | `Stream` shell and byte movement | non-optional `TlsSession.transport` (target private) | buffer sizes, pump order |
 | Callback policy | C function pointers and C-side copied lists | ALPN/SNI/verify enums | multi-cert selection, ticket keys |
 | Counters | C atomics/plain counters in v1 | `Counts`, `contextCounts` | future per-worker context |
 
@@ -461,11 +483,20 @@ dead open entries are leak records, not silently swept.
 - `TlsContext` owns one `SSL_CTX*` and its certificate/key/trust policy. It
   does not own sessions.
 - `TlsSession` owns one `SSL*`, its two memory BIOs and exactly one
-  `stream::Stream` in the `transport` field. The `Stream` is moved into the
-  session at `accept`/`connect`; the session closes it on `close`. The public
-  `transport` field is untrusted like `res`: a replaced field is closed if it
-  is live, which is the same documented alias/steal limit, not a capability
-  bypass.
+  `stream::Stream` in the non-optional `transport` field. The `Stream` is
+  moved into the session at `accept`/`connect`; the session closes it on
+  `close`. There is no `none` session state.
+- **Public-field hard limitation, stated without a security claim.** In the
+  current `0.11`/`0.12` public-field language shape, a caller can replace
+  `transport` with another live `Stream`; TLS ciphertext/plaintext then goes
+  to that stream and `close` closes it. `transport` has no kind/generation
+  binding check equivalent to `res`. This is a trusted-obo hazard, not a
+  capability boundary. The intended field-visibility shape is `pub res` on
+  both shells and private `transport`, with `accept`/`connect` as the only
+  constructors. Until
+  that lands, this design does not claim protection against a caller who
+  mutates the session record. Every step still revalidates `KIND_STREAM`;
+  a closed/invalid transport returns `InvalidResource`/`Closed`.
 - Record drop frees only the obo record. It never calls `SSL_free`,
   `SSL_CTX_free` or `stream::close`.
 - `defer` is the normal cleanup. Register the context defer first and the
@@ -491,6 +522,7 @@ dead open entries are leak records, not silently swept.
 |---|---|---|---|
 | `Open/Unconfigured` (server: no cert+key; client: not ready) | `NotConfigured` | allowed | `ok(true)`, retire |
 | `Open/Ready` | allowed; increments live sessions | `Busy` if live sessions; otherwise allowed | `ok(true)` if no sessions; `Busy` otherwise |
+| `Poisoned` | `Configuration` | `Configuration` | `ok(true)`, retire |
 | `Closing` | `Closed` | `Closed` | `ok(false)` |
 | `Closed` | `Closed` | `Closed` | `ok(false)` |
 
@@ -498,7 +530,12 @@ A server context becomes `Ready` only after a certificate chain and a matching
 private key are loaded. A client context becomes `Ready` after its verify
 policy and trust store are established. A context loads its certificate and
 key once; to change identity, create a new context. Policy setters are allowed
-only before the first session; after that they return `Busy`.
+only before the first session; after that they return `Busy`. If a setter or
+certificate/key load fails after partial native mutation, the context becomes
+`Poisoned`: all further configuration and `accept`/`connect` return
+`Configuration`; only `closeContext` is allowed. A failed trust-bundle
+replacement is atomic and leaves the previous store intact, so it does not
+poison the context.
 
 ### 4.6 Session state table
 
@@ -516,38 +553,26 @@ only before the first session; after that they return `Busy`.
 shows the common combinations. TLS 1.3 close_notify is unidirectional, so a
 peer may half-close and continue reading. `readSome` after `RecvClosed`
 returns `Eof`; `writeSome` may still succeed until local close_notify.
+`flush` is valid in `Established`, `SendClosed` and `RecvClosed`; every
+progress outcome carries `want` when output remains.
 
 ### 4.7 Leak counters
 
-```obo
-pub type Counts = ref record {
-    liveContexts: int
-    liveSessions: int
-    handshakesStarted: int
-    handshakesCompleted: int
-    handshakeFailures: int
-    verifyFailures: int
-    alpnRejections: int
-    truncations: int
-    ciphertextPending: int
-    plaintextPending: int
-}
-pub type ContextCounts = ref record {
-    liveSessions: int
-    maxSessions: int
-    handshakesStarted: int
-    handshakesCompleted: int
-    handshakeFailures: int
-}
-pub fn counts(): Result[Counts]
-pub fn contextCounts(ctx: &TlsContext): Result[ContextCounts]
-```
+`Counts` and `ContextCounts` are defined once in the API block (§5). Counts are
+per systems context (one process context in v1). `liveSessions` includes
+handshaking and established sessions.
 
-Counts are per systems context (one process context in v1). `liveSessions`
-includes handshaking and established sessions. `ciphertextPending` and
-`plaintextPending` are the sums of `BIO_ctrl_pending` over live sessions,
-bounded by the per-session caps. `platform::counts()` also reports
-`KIND_TLS_CONTEXT`/`KIND_TLS_SESSION`, so the leak oracle has both views.
+- `ciphertextPending` is `rbio pending + wbio pending + C staging bytes` over
+  live sessions. C staging is included; a short transport write must not hide
+  pending output from the counter or from `want`.
+- `plaintextPending` is `SSL_pending` over live sessions. There is no obo-side
+  plaintext queue; a future obo queue must be added to this counter.
+- `contextBytes` is the adapter-owned charge for contexts and live sessions
+  (BIO/staging/handshake/certificate buffers). `maxContextBytes` is the
+  configured aggregate cap. OpenSSL's internal heap is **not** fully charged.
+
+`platform::counts()` also reports `KIND_TLS_CONTEXT`/`KIND_TLS_SESSION`, so the
+leak oracle has both views.
 
 OpenSSL's internal heap is **not** fully charged to `platform::maxNativeBytes`.
 The adapter enforces per-session BIO/certificate caps; ASAN/LSAN and the
@@ -600,10 +625,8 @@ keywords or borrowed returns are invented.
 module systls
 import "sysplatform.obx" as platform
 import "sysstream.obx" as stream
-import "syserrors.obx" as errors
 import "sysclock.obx" as clock
 import "sysreactor.obx" as reactor
-import "syswaitio.obx" as waitio
 
 pub const KIND_TLS_CONTEXT = 23
 pub const KIND_TLS_SESSION = 24
@@ -611,7 +634,7 @@ pub const KIND_TLS_SESSION = 24
 pub type TlsContext = ref record { res: platform::Resource }
 pub type TlsSession = ref record {
     res: platform::Resource
-    transport: ?stream::Stream
+    transport: stream::Stream
 }
 
 pub type Role = closed { Server {} Client {} }
@@ -628,37 +651,42 @@ pub type ContextOptions = ref record {
     maxVersion: Version
     verify: VerifyMode
     alpn: AlpnPolicy
-    sessionTickets: bool
     requireSni: bool
     verifyDepth: int
     maxSessions: int
     maxHandshakeBytes: int
+    maxContextBytes: int
 }
 pub type ServerIdentity = closed {
     Dns { name: string }
     Ip { text: string }
 }
 
+pub type Want = closed { None {} Read {} Write {} ReadWrite {} }
 pub type Step = closed { Done {} WantRead {} WantWrite {} }
 pub type ReadOutcome = closed {
-    Data { bytes: []byte }
-    Eof {}
+    Data { bytes: []byte; want: Want }
+    Eof { want: Want }
     WantRead {}
     WantWrite {}
 }
 pub type WriteOutcome = closed {
-    Wrote { count: int }
+    Wrote { count: int; want: Want }
     WantRead {}
     WantWrite {}
 }
+pub type FlushOutcome = closed { Done {} WantWrite {} }
 pub type ShutdownOutcome = closed {
     Done {}
-    Sent {}
-    PeerClosed {}
+    Sent { want: Want }
+    PeerClosed { want: Want }
     WantRead {}
     WantWrite {}
 }
-pub type Want = closed { None {} Read {} Write {} ReadWrite {} }
+pub type Pending = ref record {
+    plaintext: int
+    ciphertext: int
+}
 
 pub type PeerVerification = closed {
     NotRequested {}
@@ -695,6 +723,8 @@ pub type Counts = ref record {
     truncations: int
     ciphertextPending: int
     plaintextPending: int
+    contextBytes: int
+    maxContextBytes: int
 }
 pub type ContextCounts = ref record {
     liveSessions: int
@@ -702,9 +732,15 @@ pub type ContextCounts = ref record {
     handshakesStarted: int
     handshakesCompleted: int
     handshakeFailures: int
+    bytesCharged: int
+    maxBytes: int
 }
 
 pub type Failure = closed {
+    InvalidArgument {}
+    Range {}
+    InvalidResource {}
+    Closed {}
     HandshakeFailed {}
     ProtocolAlert { description: int }
     ProtocolViolation {}
@@ -713,6 +749,7 @@ pub type Failure = closed {
     CertificateRejected {}
     KeyRejected {}
     Configuration {}
+    AlpnRequired {}
     NoApplicationProtocol {}
     AlpnMismatch {}
     Truncated {}
@@ -721,8 +758,6 @@ pub type Failure = closed {
     ResourceLimit {}
     Busy {}
     NotConfigured {}
-    TimedOut {}
-    Cancelled {}
     Unsupported {}
     Internal {}
 }
@@ -733,7 +768,7 @@ pub fn createContext(options: &ContextOptions): Result[TlsContext]
 
 pub fn loadCertificateChain(ctx: &TlsContext, pem: &[]byte): Result[bool]
 pub fn loadPrivateKey(ctx: &TlsContext, pem: &[]byte): Result[bool]
-pub fn addTrustedCertificates(ctx: &TlsContext,
+pub fn setTrustedCertificates(ctx: &TlsContext,
                               pem: &[]byte): Result[bool]
 pub fn useSystemTrustStore(ctx: &TlsContext): Result[bool]
 pub fn setAlpn(ctx: &TlsContext, policy: &AlpnPolicy): Result[bool]
@@ -748,21 +783,24 @@ pub fn accept(ctx: &TlsContext,
 pub fn connect(ctx: &TlsContext, transport: stream::Stream,
                identity: &ServerIdentity): Result[TlsSession]
 pub fn handshakeStep(s: &TlsSession): Result[Step]
-pub fn handshakeUntil(s: &TlsSession, r: &reactor::Reactor,
-                      until: &clock::Deadline,
-                      cancel: &waitio::Cancellation): Result[HandshakeInfo]
 pub fn readSome(s: &TlsSession, max: int): Result[ReadOutcome]
 pub fn writeSome(s: &TlsSession, bytes: &[]byte, offset: int,
                  count: int): Result[WriteOutcome]
+pub fn flush(s: &TlsSession): Result[FlushOutcome]
 pub fn shutdownStep(s: &TlsSession): Result[ShutdownOutcome]
-pub fn pending(s: &TlsSession): Result[int]
+pub fn shutdownWrite(s: &TlsSession): Result[bool]
+pub fn pending(s: &TlsSession): Result[Pending]
 pub fn want(s: &TlsSession): Result[Want]
+pub fn wantsRead(s: &TlsSession): Result[bool]
+pub fn wantsWrite(s: &TlsSession): Result[bool]
 pub fn info(s: &TlsSession): Result[HandshakeInfo]
 pub fn peerIdentity(s: &TlsSession): Result[PeerIdentity]
 pub fn alpn(s: &TlsSession): Result[?string]
+pub fn source(s: &TlsSession): Result[^platform::Resource]
 pub fn watch(s: &TlsSession, r: &reactor::Reactor,
              readable: bool, writable: bool,
              tag: int): Result[reactor::Watch]
+pub fn isSecure(s: &TlsSession): bool
 pub fn close(s: &TlsSession): Result[bool]
 pub fn closeContext(ctx: &TlsContext): Result[bool]
 pub fn failure(code: int): Failure
@@ -787,15 +825,18 @@ pub fn contextCounts(ctx: &TlsContext): Result[ContextCounts]
   - `Disabled`: no ALPN extension;
   - `Prefer`: select the first server-preference protocol present in the
     client list; if none, no ALPN (NOACK);
-  - `Require`: same selection, but no overlap is a fatal handshake alert.
+  - `Require`: the ClientHello must contain the ALPN extension **and** the
+    select callback must find an overlap. Absence is rejected by a C-only
+    `client_hello_cb` with `SSL_AD_MISSING_EXTENSION`; no overlap is rejected
+    by the ALPN select callback with alert 120. Both fail the handshake.
   Protocols: 1..16 entries, each 1..255 bytes, no NUL, no duplicates, total
   <=1024 bytes. Empty `Prefer`/`Require` is `InvalidArgument`.
-- `sessionTickets`: server-only in v1; `true` enables per-process tickets
-  with no 0-RTT. On a client context, `true` is `Unsupported` in v1; client
-  resumption is later. Default `false`.
+- **Session tickets are disabled in v1 and are not an option.** There is no
+  ticket configuration field; no ticket key, no resumption, no 0-RTT. A future
+  shared-key design needs its own review.
 - `requireSni`: server-only; requires a non-empty SNI, but does **not** select
-  a certificate in v1. It is a presence policy, not hostname authorization.
-  On a client context, `true` is `Configuration`. Default `false`.
+  a certificate and does **not** authorize a name in v1. It is a presence
+  policy. On a client context, `true` is `Configuration`. Default `false`.
 - `verifyDepth`: 0..16, default 8.
 - `maxSessions`: 1..4096, default 256. Exceeding it makes `accept`/`connect`
   return `ResourceLimit` after closing the transport; there is no hidden
@@ -803,12 +844,23 @@ pub fn contextCounts(ctx: &TlsContext): Result[ContextCounts]
 - `maxHandshakeBytes`: 16 KiB..8 MiB, default 1 MiB. It bounds ciphertext
   fed during the handshake; exceeding it fails the session with
   `ResourceLimit`.
+- `maxContextBytes`: 1 MiB..1 GiB, default 64 MiB. It bounds the sum of
+  adapter-owned context/session buffers (BIO pending, C staging, handshake
+  accumulation, certificate/key/trust copies). Exceeding it fails the
+  operation with `ResourceLimit`; OpenSSL's internal heap is outside this
+  budget and is documented separately.
 - `serverOptions()` defaults: server, TLS 1.2–1.3, verify `None`, ALPN
-  `Prefer(["h2","http/1.1"])`, tickets off, SNI not required, depth 8,
-  256 sessions, 1 MiB handshake.
+  `Prefer(["http/1.1"])`, SNI not required, depth 8, 256 sessions, 1 MiB
+  handshake, 64 MiB context budget. `h2` is **not** advertised until the
+  HTTP/2 layer exists; an application enabling it sets
+  `Prefer(["h2","http/1.1"])` or `Require(["h2"])` explicitly.
 - `clientOptions()` defaults: client, TLS 1.2–1.3, verify `Required`, ALPN
-  `Prefer(["h2","http/1.1"])`, tickets off, depth 8, 64 sessions, 1 MiB
-  handshake.
+  `Prefer(["http/1.1"])`, depth 8, 64 sessions, 1 MiB handshake, 64 MiB
+  context budget.
+- `TlsSession.transport` is non-optional; there is no nil/none session
+  transport. In v0.11 public-field source a caller can replace it; the target
+  field-visibility shape is `pub res` plus private `transport` and
+  construction only through `accept`/`connect` (see §4.4).
 
 ### 5.2 Context functions
 
@@ -817,7 +869,12 @@ pub fn contextCounts(ctx: &TlsContext): Result[ContextCounts]
 shell. It calls `OPENSSL_init_ssl(OPENSSL_INIT_NO_LOAD_CONFIG, NULL)` once
 (process-global, idempotent) and checks `OPENSSL_version_num() >= 0x30000000`,
 major 3. If initialization or version check fails, it returns
-`Configuration`/`Unsupported`; no context token is created.
+`Configuration`/`Unsupported`; no context token is created. Fixed context
+overhead and later certificate/key/trust copies are charged to
+`maxContextBytes`; exceeding it returns `ResourceLimit` before any session.
+`Require` installs both the C ClientHello presence callback and the ALPN
+select callback;
+`Prefer` installs only the select callback; `Disabled` installs neither.
 
 `loadCertificateChain`:
 
@@ -826,20 +883,28 @@ major 3. If initialization or version check fails, it returns
 - parses with `PEM_read_bio_X509`; rejects trailing garbage that is not a
   certificate (bounded scan), and fails if the first object is not a
   certificate;
-- installs the leaf with `SSL_CTX_use_certificate` and each intermediate with
-  `SSL_CTX_add_extra_chain_cert` (which takes ownership);
+- installs the leaf with `SSL_CTX_use_certificate` (which increments the
+  `X509` reference count) and each intermediate with
+  `SSL_CTX_add_extra_chain_cert` (which takes ownership); the adapter frees
+  its parsed leaf with `X509_free` after install and does not free the
+  intermediates it transferred;
 - supports RSA, ECDSA P-256/P-384 and Ed25519 keys through OpenSSL; rejects
   weak keys through security level 2 and the configured cipher/group policy;
 - does not read a path, does not follow a symlink, does not block on a file.
   The application reads bytes with bounded `sysfile` operations.
+- Parses the whole chain before installing anything. An install failure after
+  partial native mutation poisons the context; the caller creates a new one.
+  Every parsed `X509` is freed on every failure path.
 
 `loadPrivateKey`:
 
 - input is bounded PEM (<=64 KiB), unencrypted PKCS#8/PKCS#1/SEC1;
 - parses with `PEM_read_bio_PrivateKey` and a C-only no-password callback, so
   an encrypted key fails cleanly instead of prompting on stdin;
-- calls `SSL_CTX_use_PrivateKey` and `SSL_CTX_check_private_key`; a mismatch is
-  `KeyRejected`;
+- parses the key completely before installing; `SSL_CTX_use_PrivateKey`
+  increments the `EVP_PKEY` reference count, so the adapter frees its parsed
+  key with `EVP_PKEY_free` after install. `SSL_CTX_check_private_key` must
+  pass; a mismatch is `KeyRejected` and poisons the context.
 - zeroizes the C-side copy with `OPENSSL_cleanse` and frees it. The caller's
   obo array is not zeroized by the adapter; callers should load keys from a
   file with restrictive permissions and drop the array promptly. Encrypted
@@ -850,28 +915,46 @@ major 3. If initialization or version check fails, it returns
   a session). To change identity, create a new context. A server `accept` with
   no certificate or key is `NotConfigured`.
 
-`addTrustedCertificates` parses a bounded PEM bundle (<=4 MiB, <=256
-certificates) and adds each certificate to the `SSL_CTX`'s `X509_STORE` with
-`X509_STORE_add_cert`. A duplicate certificate (`X509_R_CERT_ALREADY_IN_HASH_TABLE`)
-is accepted idempotently. It does not use `SSL_CTX_load_verify_locations` with
-an application path; paths are the caller's responsibility.
-`useSystemTrustStore` is client-only and calls
-`SSL_CTX_set_default_verify_paths`; server client-certificate verification
-should use an explicit bundle.
+`setTrustedCertificates` **replaces** the context's trust store atomically.
+It parses a bounded PEM bundle (<=4 MiB, <=256 certificates) into a temporary
+list, creates a new `X509_STORE`, adds every certificate (a duplicate
+`X509_R_CERT_ALREADY_IN_HASH_TABLE` is accepted idempotently; the store takes
+its own reference), frees the parsed certificates, and only then swaps the
+store into the `SSL_CTX` with `SSL_CTX_set_cert_store` (which takes ownership
+of the new store and frees the old one). On any parse/add failure the
+temporary store and parsed certificates are freed and the previous store
+remains intact. It does not use `SSL_CTX_load_verify_locations` with an
+application path; paths are the caller's responsibility. One call configures
+the whole bundle; there is no partial-add API.
+
+`useSystemTrustStore` is client-only. It builds a new `X509_STORE`, calls
+`X509_STORE_set_default_paths` on that store, and swaps it into the `SSL_CTX`
+atomically; a failure frees the new store and leaves the previous one intact.
+OpenSSL's default paths honor `SSL_CERT_FILE` and `SSL_CERT_DIR`; the adapter
+documents that client trust-store mode inherits those environment variables
+unless the application clears them. For deterministic trust, use
+`setTrustedCertificates`. Server client-certificate verification must use an
+explicit bundle.
 
 `setAlpn` replaces the context's copied ALPN policy, validates it exactly as
-`createContext` does, and updates or clears
-`SSL_CTX_set_alpn_select_cb`. `setMinVersion`/`setMaxVersion` validate
+`createContext` does, and updates or clears the ALPN select and ClientHello
+presence callbacks. `setMinVersion`/`setMaxVersion` validate
 `minVersion <= maxVersion` and call `SSL_CTX_set_min_proto_version`/
-`SSL_CTX_set_max_proto_version`. All three are `Busy` after the first session;
-a failed setter returns `Configuration`, and the caller must not assume the
-previous policy was preserved.
+`SSL_CTX_set_max_proto_version`.
 
-`setCipherSuites`/`setCipherList`/`setGroups` validate each token (1..64
-printable ASCII, no `:`, total <=1024), join with `:`, and call
-`SSL_CTX_set_ciphersuites`/`SSL_CTX_set_cipher_list`/`SSL_CTX_set1_groups_list`.
-A zero return is `Configuration`. They are `Busy` after the first session.
-The defaults are in §8.
+All policy setters validate and stage their inputs before mutating OpenSSL.
+If a setter fails after a native mutation, the context becomes `Poisoned`;
+the caller must destroy it, not continue with a mixed policy. A trust-store
+replacement is atomic and does not poison on failure. All policy setters are
+`Busy` after the first session.
+
+`setCipherSuites` applies **TLS 1.3** cipher suites; `setCipherList` applies
+**TLS 1.2** cipher suites. They are separate on purpose: setting one does not
+set the other. `setGroups` applies both protocol versions. Each validates and
+joins its tokens (1..64 printable ASCII, no `:`, total <=1024) and calls
+`SSL_CTX_set_ciphersuites`/`SSL_CTX_set_cipher_list`/
+`SSL_CTX_set1_groups_list`; a zero return is `Configuration` and poisons the
+context. The defaults are in §8.
 
 `closeContext` returns `Busy` if any live session belongs to the context.
 Otherwise it poisons the generation, calls `SSL_CTX_free`, retires the entry
@@ -881,21 +964,26 @@ and returns `true`. A second close is `false`.
 
 `accept(ctx, transport)`:
 
-- requires `Role.Server`, a ready context, and a live `Stream`;
-- checks `maxSessions`; on overflow closes `transport` and returns
-  `ResourceLimit`;
+- requires `Role.Server`, a `Ready` context (not `Poisoned`), and a live
+  `Stream`; `Configuration`/`InvalidResource` otherwise;
+- checks `maxSessions` and the `maxContextBytes` admission charge; on overflow
+  closes `transport` and returns `ResourceLimit`;
 - calls `SSL_new`, creates two memory BIOs, `SSL_set_bio` (which transfers BIO
   ownership), sets accept state and registers a `KIND_TLS_SESSION` entry;
-- moves `transport` into the session record. On any failure, frees the SSL/BIO
-  state exactly once, closes `transport` exactly once, and returns the error.
+- moves the non-optional `transport` into the session record. On any failure,
+  frees the SSL/BIO state exactly once, closes `transport` exactly once, and
+  returns the error.
 - It does not perform the handshake and does not read/write the transport.
+  The session record is constructed only by this function (or `connect`); in
+  v0.11 a caller can still `new` the public record, which yields an
+  unregistered `res` and fails `InvalidResource`.
 
 `connect(ctx, transport, identity)` is the symmetric client path for P2T-c:
 
 - requires `Role.Client`;
 - `ServerIdentity.Dns` sets SNI and `SSL_set1_host`; `ServerIdentity.Ip` sets
   the IP verification parameter with `X509_VERIFY_PARAM_set1_ip_asc`;
-- hostname verification flags include `X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS`;
+- `SSL_set_hostflags` includes `X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS`;
 - it does not disable verification unless the context explicitly uses
   `VerifyMode.None`;
 - until implemented, it returns `Unsupported` and closes the transport.
@@ -904,28 +992,29 @@ and returns `true`. A second close is `false`.
 
 `handshakeStep` advances at most one bounded pump step:
 
-- if the session is already `Established`/`SendClosed`/`RecvClosed`, returns
-  `Done`;
-- if closed/failed, returns systems `Closed`;
-- otherwise it may perform at most one transport read, one transport write and
-  two `SSL_do_handshake` calls, and returns `Done`, `WantRead` or `WantWrite`;
+- if output (C staging or write BIO) is pending, it flushes one bounded chunk
+  first; if output remains, it returns `WantWrite` and does not call
+  `SSL_do_handshake`;
+- if the session is already `Established`/`SendClosed`/`RecvClosed` and output
+  is empty, it returns `Done`;
+- if closed/failed, it returns `Closed`;
+- otherwise it calls `SSL_do_handshake` **once**. On success it sets
+  `Established`; it returns `Done` only when the write BIO and C staging are
+  empty. If new output is pending, it returns `WantWrite` without a second
+  write.
+- `WANT_READ` returns `WantRead`; the wrapper may perform one transport read
+  and feed the C rbio in the same step, but it does not call
+  `SSL_do_handshake` a second time. `WANT_WRITE` returns `WantWrite`.
 - it never waits for readiness, never sleeps, never loops on `WouldBlock`, and
   never restarts a deadline.
 
-`handshakeUntil` is the named compound helper. It requires a dedicated
-reactor (the same restriction as `syswaitio`; systems design:1010–1018). It:
-
-1. checks the cancellation flag before each step;
-2. calls `handshakeStep`;
-3. on `WantRead`/`WantWrite`, sets the corresponding watch interest on the
-   transport and calls `reactor::wait` with the **same absolute deadline**;
-4. recomputes remaining time from the monotonic clock on every wait;
-5. returns `TimedOut` at the deadline, `Cancelled` on cancellation, or the
-   fatal TLS error;
-6. removes its temporary watch on every exit.
-
-It does not close the session on timeout/cancel; the caller decides. A server
-should use a finite deadline (for example 10 seconds) for every handshake.
+`handshakeUntil` is **not part of P2T-b**. It is deferred until `sysreactor`/
+`syswaitio` has a reviewed cancellation-wake contract (or a caller-provided
+watch source that does not consume unrelated events). P2T-b uses the step API
+with the application's existing reactor: call `handshakeStep`, watch the
+transport according to `want(s)`, call `reactor::wait` with one absolute
+deadline, and repeat. There is no `forever()` example and no helper that
+pretends to wake a blocked `wait` from outside.
 
 `info` is valid after the handshake (`Established`, `SendClosed` or
 `RecvClosed`); before that it is `NotReady`. It copies:
@@ -945,13 +1034,17 @@ step and inspect its outcome.
 `readSome(s, max)`:
 
 - `max` must be 1..65536; otherwise `Range`;
-- before handshake: `NotReady`; after close: systems `Closed`;
-- if `SSL_pending(s) > 0`, it may return data immediately without touching the
-  transport;
-- otherwise it may perform at most one transport read and at most two
-  `SSL_read_ex` calls (the second only after feeding newly read ciphertext);
-- returns `Data{bytes}` (owned array, 1..max bytes), `Eof` after a peer
-  close_notify, `WantRead`/`WantWrite` for readiness, or a fatal `Result.err`;
+- before handshake: `NotReady`; after close: `Closed`;
+- if output (C staging or write BIO) is pending, it flushes one bounded chunk
+  first. If output remains, it returns `WantWrite` and performs no read; this
+  prevents a response/KeyUpdate from being stranded behind a read wait.
+- if `SSL_pending(s) > 0`, it may return data without touching the transport;
+  otherwise it may perform at most one transport read and feed the C rbio.
+- it calls `SSL_read_ex` **once**. It returns `Data{bytes, want}` (owned array,
+  1..max bytes), `Eof{want}` after a peer close_notify, `WantRead`/
+  `WantWrite` for readiness, or a fatal `Result.err`. `want` is `Write` when
+  control output (KeyUpdate/alert) remains, otherwise `None`/`Read` as
+  appropriate.
 - a transport EOF without a received close_notify is `Truncated`, never
   `Eof`. This is a security rule, not a convenience;
 - a zero-length plaintext record is not application data; OpenSSL handles it;
@@ -961,32 +1054,51 @@ step and inspect its outcome.
 
 - validates `0 <= offset <= len(bytes)`, `0 <= count`, and
   `offset + count <= len(bytes)` with checked arithmetic; `count` <=65536;
-- `count == 0` returns `Wrote{0}` after validation;
-- before handshake: `NotReady`; after local close_notify/close: systems
-  `Closed`;
-- if ciphertext is already pending in the write BIO, it flushes at most one
-  bounded chunk first and returns `WantWrite` if not fully flushed; it does
-  not accept new plaintext while the write BIO is over its cap;
-- otherwise it calls `SSL_write_ex` once, with partial-write mode enabled, and
-  returns `Wrote{n}` for the accepted prefix. It never replays bytes; the
-  caller advances its own cursor by `n`;
+- `count == 0` returns `Wrote{0, want}` after validation and performs no
+  flush. Use `flush(s)` when no new plaintext is available.
+- before handshake: `NotReady`; after local close_notify/close: `Closed`;
+- if output is already pending, it flushes at most one bounded chunk first and
+  returns `WantWrite` if not fully drained; it does not accept new plaintext
+  while output remains.
+- otherwise it calls `SSL_write_ex` **once**, with partial-write mode enabled,
+  and returns `Wrote{n, want}` for the accepted prefix. It does **not** flush
+  the newly produced ciphertext in the same step; `want=Write` tells the caller
+  to call `flush`/`handshakeStep` next. It never replays bytes; the caller
+  advances its own cursor by `n`.
 - `SSL_write_ex` may return `WantRead` (for example a TLS 1.3 KeyUpdate or a
   post-handshake control message); the adapter returns `WantRead` and accepts
-  no plaintext on that call;
-- if a transport write fails while flushing ciphertext, the session is
+  no plaintext on that call.
+- if a transport write fails while flushing prior output, the session is
   failed and the error is returned; do not report `Wrote{n}` as if the bytes
   reached the peer.
 
+`flush(s)`:
+
+- drains one bounded chunk of output per call: C staging first, then the write
+  BIO into C staging. It never refills staging while it is non-empty.
+- returns `Done` only when both C staging and the write BIO are empty;
+  `WantWrite` if the transport accepted a short prefix or would block.
+- `flush` performs at most one transport write and never calls
+  `SSL_write_ex`/`SSL_read_ex`/`SSL_shutdown`; it cannot return `WantRead`.
+
 `shutdownStep(s)` drives `SSL_shutdown`:
 
-- first flushes pending ciphertext; if it cannot, returns `WantWrite`;
-- `SSL_shutdown` returning `1`: both directions are shut down, `Done`;
-- returning `0` with no pending ciphertext: local close_notify was sent,
-  `Sent`;
+- if output is pending, it flushes one bounded chunk first; if output remains,
+  returns `WantWrite`;
+- calls `SSL_shutdown` **once**. Returning `1`: both directions are shut down
+  and output is empty, `Done`;
+- returning `0`: local close_notify is queued; return `Sent{want}`;
+  `want=Write` if output remains, otherwise `None`;
 - `SSL_ERROR_ZERO_RETURN`: peer close_notify arrived before ours,
-  `PeerClosed`; calling again sends our close_notify and returns `Sent`/`Done`;
+  `PeerClosed{want}`; calling again sends our close_notify and returns
+  `Sent`/`Done`;
 - `WantRead`/`WantWrite`: return the corresponding outcome;
 - any fatal error: fail the session.
+
+`shutdownWrite(s)` is the HTTP-facing best-effort operation: it calls
+`shutdownStep` once and returns `true` only when local close_notify is queued
+and output is drained; `false` means call again after `wantsWrite`/`flush`.
+It does not wait for the peer's close_notify.
 
 `close(s)`:
 
@@ -1035,26 +1147,37 @@ diagnostic. It is for humans, not branching. Branch on
 This is proposed usage, not a compilable module:
 
 ```obo
-fn serve(ctx: &systls::TlsContext, transport: stream::Stream,
-         r: &sysreactor::Reactor): Result[bool] {
-    let session = try systls::accept(ctx, transport)
-    defer systls::close(session)
-    let cancel = try syswaitio::cancellation()
-    defer syswaitio::closeCancellation(cancel)
-    let deadline = sysclock::forever()
-    let hello = try systls::handshakeUntil(session, r, deadline, cancel)
-    // hello.alpn is "h2", "http/1.1" or nil.
-    // Dispatch to the HTTP layer; never parse HTTP here.
-    return ok(true)
+fn driveHandshake(s: &systls::TlsSession, r: &sysreactor::Reactor,
+                  until: &clock::Deadline): Result[bool] {
+    var w = try systls::watch(s, r, true, false, 1)
+    defer sysreactor::remove(w)
+    while true {
+        match systls::handshakeStep(s) {
+            ok(step) {
+                match step {
+                    Done {} { return ok(true) }
+                    WantRead {} {
+                        try sysreactor::modify(w, true, false)
+                        try sysreactor::wait(r, until, 1)
+                    }
+                    WantWrite {} {
+                        try sysreactor::modify(w, false, true)
+                        try sysreactor::wait(r, until, 1)
+                    }
+                }
+            }
+            err(message, code) { return err(message, code) }
+        }
+    }
+    return ok(false)
 }
 ```
 
-The caller obtains `transport` from `sysnet::accept` plus
-`sysnet::intoStream`, or from a test fixture. The example is about TLS, not
-the listener loop.
-
-The example uses `forever()` only to show the helper signature. A real server
-uses a finite handshake deadline and a cancellation source tied to shutdown.
+A multi-connection server uses the same `handshakeStep`/`want`/`watch` calls
+inside its existing event loop and application tags; it does not hide a
+per-connection blocking helper. The deadline is absolute and caller-owned.
+`handshakeUntil` is deferred (see §11.4), because the public reactor/waitio
+API has no cancellation-wake registration for a new helper.
 
 ## 6. Nonblocking state machine
 
@@ -1110,58 +1233,76 @@ retry/WANT_READ rather than a false EOF. The wbio is read with `BIO_read`.
 Every public step obeys these invariants:
 
 1. **Bounded work.** At most one `sysstream::readSome`, one
-   `sysstream::writeSome`, and two OpenSSL I/O calls per step. No unbounded
-   loop, no sleep, no hidden thread.
+   `sysstream::writeSome`, and one OpenSSL I/O call (`SSL_do_handshake`,
+   `SSL_read_ex`, `SSL_write_ex` or `SSL_shutdown`) per step. No unbounded
+   loop, no sleep, no hidden thread. A step that flushes prior output may
+   perform the write and skip the OpenSSL call; it never performs two writes.
 2. **No hidden wait.** `WouldBlock` from the transport becomes `WantRead` or
    `WantWrite`; it is never retried inside the same call.
 3. **No hidden retry.** `Interrupted`, `EINTR`, `EAGAIN`, a partial write or a
    `WANT_*` result is returned as control flow. The caller retries with the
    same absolute deadline.
 4. **No byte loss.** A plaintext prefix accepted by `SSL_write_ex` is
-   reported exactly once; a ciphertext prefix written to the transport is
-   removed from the C staging buffer exactly once. A short transport write
-   leaves the remainder pending in C.
-5. **No unbounded growth.** rbio/wbio pending bytes, handshake bytes,
-   certificate size, ALPN list and session count are capped. Exceeding a cap
-   fails the session; bytes are not silently dropped or truncated.
-6. **No TLS parsing in obo.** OpenSSL reassembles records, handles KeyUpdate
+   reported exactly once in `Wrote{n,want}`; a ciphertext prefix written to
+   the transport is removed from the C staging buffer exactly once. A short
+   transport write leaves the remainder pending in C and is reported by
+   `want=Write`.
+5. **No output stranding.** Every step that can produce output flushes prior
+   output first and returns `WantWrite` if it remains. `Done`, `Data` and
+   `Wrote` carry `want` when output still needs a write. `flush` is the
+   explicit drain operation.
+6. **No unbounded growth.** rbio/wbio pending bytes, C staging, handshake
+   bytes, certificate size, ALPN list, session count and the per-context
+   aggregate budget are capped. Exceeding a cap fails the session; bytes are
+   not silently dropped or truncated.
+7. **No TLS parsing in obo.** OpenSSL reassembles records, handles KeyUpdate
    and alerts. obo moves opaque ciphertext and reads plaintext.
 
 ### 6.3 Handshake states
 
 | Condition | Result | Next state |
 |---|---|---|
-| `SSL_do_handshake` returns 1 | `Step.Done` | `Established` |
-| `SSL_ERROR_WANT_READ` and no transport data pending | `Step.WantRead` | `Handshaking` |
+| prior output pending, flush not done | `Step.WantWrite` | `Handshaking` |
+| `SSL_do_handshake` returns 1 and output empty | `Step.Done` | `Established` |
+| `SSL_do_handshake` returns 1 and output pending | `Step.WantWrite` | `Established` |
+| `SSL_ERROR_WANT_READ` | `Step.WantRead` | `Handshaking` |
 | `SSL_ERROR_WANT_WRITE` | `Step.WantWrite` | `Handshaking` |
 | `SSL_ERROR_ZERO_RETURN` | fatal `HandshakeFailed` | `Failed` |
 | `SSL_ERROR_SYSCALL`, ret 0, empty error queue | `Truncated` | `Failed` |
 | `SSL_ERROR_SYSCALL`, ret < 0, errno | `Transport{sysCode}` | `Failed` |
-| `SSL_ERROR_SSL` + verify result non-OK | `VerifyFailed{code}` | `Failed` |
-| `SSL_ERROR_SSL` + captured alert | `ProtocolAlert{description}` | `Failed` |
+| `SSL_ERROR_SSL` + `SSL_R_UNEXPECTED_EOF_WHILE_READING` | `Truncated` | `Failed` |
+| `SSL_ERROR_SSL` + `alpn_required_missing` flag | `AlpnRequired` | `Failed` |
 | `SSL_ERROR_SSL` + `SSL_R_NO_APPLICATION_PROTOCOL` | `NoApplicationProtocol` | `Failed` |
+| `SSL_ERROR_SSL` + `SSL_R_PEER_DID_NOT_RETURN_A_CERTIFICATE` or `SSL_R_TLSV13_ALERT_CERTIFICATE_REQUIRED` | `NoPeerCertificate` | `Failed` |
+| `SSL_ERROR_SSL` + verify result non-OK | `VerifyFailed{code}` | `Failed` |
+| `SSL_ERROR_SSL` + received alert only | `ProtocolAlert{description}` | `Failed` |
 | other `SSL_ERROR_SSL` | `HandshakeFailed`/`ProtocolViolation` | `Failed` |
-| `BIO`/handshake byte cap exceeded | `ResourceLimit` | `Failed` |
+| `BIO`/handshake/context byte cap exceeded | `ResourceLimit` | `Failed` |
 | transport `Closed`/EOF before close_notify | `Truncated`/`Transport{Closed}` | `Failed` |
 
 `SSL_get_error` is called immediately after the SSL call, before any other
 OpenSSL call that could change the error queue. `errno` is copied immediately
-after a `SSL_ERROR_SYSCALL` result.
+after a `SSL_ERROR_SYSCALL` result. The per-session `alpn_required_missing`
+flag is set only by the C `client_hello_cb`; it takes precedence over a sent
+alert so the server's own missing-ALPN rejection is never mislabeled
+`ProtocolAlert`.
 
 ### 6.4 Read states
 
 | Condition | Result |
 |---|---|
-| `SSL_read_ex` returns 1 with `n > 0` | `Data{bytes}` |
-| `SSL_pending > 0`, no transport read needed | `Data{bytes}` |
-| `SSL_ERROR_ZERO_RETURN` | `Eof` (peer close_notify) |
+| output pending before read | flush one chunk; `WantWrite` if incomplete |
+| `SSL_read_ex` returns 1 with `n > 0` | `Data{bytes, want}` |
+| `SSL_pending > 0`, no transport read needed | `Data{bytes, want}` |
+| `SSL_ERROR_ZERO_RETURN` | `Eof{want}` (peer close_notify) |
 | `SSL_ERROR_WANT_READ` | `WantRead` |
 | `SSL_ERROR_WANT_WRITE` | `WantWrite` |
 | transport `WouldBlock` | `WantRead` |
 | transport `Interrupted` | `err(Transport{Interrupted})` |
-| transport EOF and `SSL_RECEIVED_SHUTDOWN` set | `Eof` |
+| transport EOF and `SSL_RECEIVED_SHUTDOWN` set | `Eof{want}` |
 | transport EOF and no close_notify | `err(Truncated)` |
 | `SSL_ERROR_SYSCALL`, ret 0, empty queue | `err(Truncated)` |
+| `SSL_ERROR_SSL` + `SSL_R_UNEXPECTED_EOF_WHILE_READING` | `err(Truncated)` |
 | `SSL_ERROR_SYSCALL`, errno | `err(Transport{sysCode})` |
 | `SSL_ERROR_SSL` verify/protocol | `err(VerifyFailed/ProtocolAlert/ProtocolViolation)` |
 
@@ -1172,31 +1313,51 @@ buffer; the adapter returns `WantRead` until a complete record is available.
 
 | Condition | Result |
 |---|---|
-| wbio above cap | `err(ResourceLimit)`; fail session |
-| wbio pending before new plaintext | flush one chunk; `WantWrite` if incomplete |
-| `SSL_write_ex` returns 1 with `n > 0` | `Wrote{n}`; flush wbio opportunistically |
+| wbio/staging above cap | `err(ResourceLimit)`; fail session |
+| output pending before new plaintext | flush one chunk; `WantWrite` if incomplete |
+| `SSL_write_ex` returns 1 with `n > 0` | `Wrote{n, want}`; no flush of new output |
 | `SSL_write_ex` returns 1 with `n == 0` and count > 0 | `err(Internal)`; invariant violation |
 | `SSL_ERROR_WANT_READ` | `WantRead` (no plaintext accepted) |
 | `SSL_ERROR_WANT_WRITE` | `WantWrite` (no plaintext accepted) |
 | `SSL_ERROR_ZERO_RETURN` | `err(Transport{Closed})` |
-| transport failure during flush | `err(Transport{sysCode})`; fail session |
-| `count == 0` | `Wrote{0}` |
+| transport failure during prior-output flush | `err(Transport{sysCode})`; fail session |
+| `count == 0` | `Wrote{0, want}`; no flush |
 
-`SSL_MODE_ENABLE_PARTIAL_WRITE` is set so `SSL_write_ex` can return a short
-accepted prefix. The caller must not replay bytes before `offset + count`
-unless the previous call returned a fatal error.
+`SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER |
+SSL_MODE_RELEASE_BUFFERS` is set. `SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER` allows
+a retry after `WANT_READ`/`WANT_WRITE` even if the obo wrapper's C staging
+address changed; the caller must still retry the same plaintext bytes and
+length. The adapter copies the caller's slice into a stable per-session C
+buffer before `SSL_write_ex`, so the address is normally stable anyway.
+
+`flush` states:
+
+| Condition | Result |
+|---|---|
+| C staging empty and wbio empty | `Done` |
+| C staging non-empty, transport accepts all | continue to wbio; `Done` if empty |
+| transport accepts a short prefix | `WantWrite`; staging retains remainder |
+| transport `WouldBlock` | `WantWrite` |
+| transport `Interrupted` | `err(Transport{Interrupted})` |
+| transport `Closed` | `err(Transport{Closed})` |
 
 ### 6.6 Shutdown and close_notify
 
 | Condition | Result |
 |---|---|
-| `SSL_shutdown` returns 1 | `Done` |
-| `SSL_shutdown` returns 0, wbio flushed | `Sent` |
-| `SSL_shutdown` returns 0, wbio pending | `WantWrite` |
-| `SSL_ERROR_ZERO_RETURN` | `PeerClosed`; call again to send ours |
+| output pending before close_notify | flush one chunk; `WantWrite` if incomplete |
+| `SSL_shutdown` returns 1 and output empty | `Done` |
+| `SSL_shutdown` returns 0 | `Sent{want}`; `want=Write` if output remains |
+| `SSL_ERROR_ZERO_RETURN` | `PeerClosed{want}`; call again to send ours |
 | `SSL_ERROR_WANT_READ` | `WantRead` |
 | `SSL_ERROR_WANT_WRITE` | `WantWrite` |
 | `SSL_ERROR_SYSCALL`/`SSL_ERROR_SSL` | fatal; close |
+
+`shutdownStep` never performs a second transport write after `SSL_shutdown`;
+the new close_notify is reported by `want=Write` and the next `flush`/
+`shutdownStep` sends it. `shutdownWrite` is the HTTP-facing best-effort call:
+`true` only when local close_notify is queued and output is drained; `false`
+means call again after `wantsWrite`/`flush`.
 
 The adapter does **not** call `stream::shutdownWrite` automatically after
 sending close_notify. The application may do so after `Sent` if it wants the
@@ -1205,8 +1366,10 @@ a deadline. `close` closes the transport regardless.
 
 Truncation rule: once the handshake is established, a transport EOF without
 `SSL_RECEIVED_SHUTDOWN` is `Truncated`. A clean peer close_notify sets
-`SSL_RECEIVED_SHUTDOWN`; `readSome` then returns `Eof`. This prevents a
-network attacker from turning a truncated response into a shorter valid one.
+`SSL_RECEIVED_SHUTDOWN`; `readSome` then returns `Eof`. `SSL_OP_IGNORE_UNEXPECTED_EOF`
+is **not** set. `SSL_ERROR_SSL` + `SSL_R_UNEXPECTED_EOF_WHILE_READING` is also
+mapped to `Truncated`, as a defense-in-depth path. This prevents a network
+attacker from turning a truncated response into a shorter valid one.
 
 ### 6.7 Renegotiation, KeyUpdate and tickets
 
@@ -1218,18 +1381,17 @@ network attacker from turning a truncated response into a shorter valid one.
 - TLS 1.3 KeyUpdate is handled by OpenSSL. It is not application data; a
   `SSL_read_ex`/`SSL_write_ex` may return `WANT_READ`/`WANT_WRITE` while
   OpenSSL processes it. The adapter's pump handles that without exposing the
-  control message.
-- Session tickets are **disabled by default** on servers:
-  `SSL_OP_NO_TICKET` and `SSL_CTX_set_num_tickets(ctx, 0)`. This avoids
-  ticket-key distribution and replay surface in v1. If `sessionTickets` is
-  explicitly enabled, OpenSSL generates per-process random ticket keys; there
-  is no cross-process resumption and no 0-RTT. A future shared-key design
-  needs a C-only ticket-key callback and a key-provisioning type.
+  control message. If KeyUpdate produces output, the outcome carries
+  `want=Write`; `flush`/`handshakeStep` drains it. `readSome` flushes prior
+  output before reading, so a KeyUpdate cannot livelock behind a read wait.
+- **Session tickets are disabled and there is no public option.** Set
+  `SSL_OP_NO_TICKET` and `SSL_CTX_set_num_tickets(ctx, 0)` unconditionally.
+  No ticket key, no resumption, no 0-RTT in v1. A future shared-key design
+  needs its own review and a C-only ticket-key callback.
 - 0-RTT is out of scope: `SSL_CTX_set_max_early_data(ctx, 0)`, no
   `SSL_read_early_data`/`SSL_write_early_data`, no early-data callback.
-- Session resumption on the client side is later; the v1 server can issue
-  tickets only when explicitly enabled, but the public client API does not
-  cache sessions.
+- Client-side session cache/resumption is later; the v1 client does not cache
+  sessions.
 
 ### 6.8 Buffer and resource limits
 
@@ -1240,6 +1402,8 @@ network attacker from turning a truncated response into a shorter valid one.
 | Ciphertext feed chunk | <=65,536 bytes | step argument |
 | rbio pending | <=131,072 bytes | `BIO_ctrl_pending` before/after feed; `ResourceLimit` |
 | wbio pending | <=131,072 bytes | flush before more writes; `ResourceLimit` |
+| C staging per direction | <=131,072 bytes | bounded chunk; included in counters |
+| Aggregate context bytes | `maxContextBytes`, default 64 MiB | charge/release on accept/feed/close; `ResourceLimit` |
 | Handshake ciphertext total | `maxHandshakeBytes`, default 1 MiB | per-session counter; `ResourceLimit` |
 | Certificate chain | <=1 MiB PEM, <=16 certs, each DER <=256 KiB | loader validation |
 | Private key | <=64 KiB PEM | loader validation |
@@ -1251,7 +1415,9 @@ network attacker from turning a truncated response into a shorter valid one.
 
 These are protocol-independent caps. HTTP may impose smaller header/body
 limits above TLS; TLS must not be configured above these without a reviewed
-change.
+change. `SSL_CTX_set_max_cert_list` is a macro that returns the previous
+limit, not a success flag; the adapter does not treat its return value as an
+error.
 
 ## 7. C callback containment
 
@@ -1264,13 +1430,14 @@ argument is a C-owned `tls_context`/`tls_session` that outlives the
 | Callback | Where registered | C-only state | Allowed work | Forbidden |
 |---|---|---|---|---|
 | ALPN select | `SSL_CTX_set_alpn_select_cb` | copied server protocol list + policy enum | `SSL_select_next_proto`; return `OK`, `NOACK` or `ALERT_FATAL` | obo call, per-handshake unbounded allocation, logging |
+| ClientHello ALPN presence | `SSL_CTX_set_client_hello_cb` | `Require` flag | `SSL_client_hello_get0_ext(...ALPN...)`; absent -> `*al = SSL_AD_MISSING_EXTENSION`, return `SSL_CLIENT_HELLO_ERROR` | any other ClientHello parsing, obo call, per-request allocation |
 | SNI | `SSL_CTX_set_tlsext_servername_callback` | `requireSni` flag; later a C cert table | `SSL_get_servername`, length/emptiness check, later `SSL_set_SSL_CTX` | obo call, dynamic cert from application state |
 | Verify | `SSL_CTX_set_verify(ctx, mode, NULL)` | none in v1 | OpenSSL default chain verification | custom callback in v1; hostname checks belong to `SSL_set1_host` |
-| Ticket key | not installed in v1 | future C key array | HMAC/OpenSSL ticket API if enabled later | obo call, 0-RTT |
-| Info | `SSL_set_info_callback` | last alert send/receive codes, state | record alert codes/state for diagnostics | logging secrets/plaintext |
+| Ticket key | not installed (tickets always off) | none | none | obo call, 0-RTT, ticket keys |
+| Info | `SSL_set_info_callback` | separate received/sent alert codes, state | record received vs sent alert codes/state for diagnostics | logging secrets/plaintext |
 | Keylog | not installed | none | none | exposing traffic secrets |
 | Msg | not installed | none | debug-only C harness if needed | production use |
-| Cert selection (`cert_cb`/`client_hello_cb`) | not installed | none | none in v1 | application-driven certificate selection |
+| Certificate selection (`cert_cb`) | not installed | none | none in v1 | application-driven certificate selection |
 | PSK/early data/OCSP | not installed | none | none in v1 | replay/stapling policy in obo |
 
 How a C callback selects policy without obo state:
@@ -1279,13 +1446,20 @@ How a C callback selects policy without obo state:
   verify mode, cipher lists and limits, copies them into a C `tls_context`,
   and registers static C functions. The policy is immutable once the first
   session exists; setters return `Busy` after that point.
-- The ALPN callback reads only the copied protocol array and policy enum. It
-  writes the selected protocol through OpenSSL's `out`/`outlen`, not through
-  obo memory.
+- The ALPN select callback reads only the copied protocol array and policy
+  enum. It writes the selected protocol through OpenSSL's `out`/`outlen`, not
+  through obo memory.
+- The ClientHello callback runs only for `Require`, checks that the ALPN
+  extension is present with `SSL_client_hello_get0_ext`, and sets a
+  **per-session** C `alpn_required_missing` flag (SSL ex-data), never a global
+  or context flag, on absence. It does not select a protocol, parse other
+  extensions or call obo.
 - The SNI callback reads only the C `requireSni` flag and the OpenSSL-provided
   server name. It returns an alert code, not an obo error.
-- The info callback records alert descriptions and handshake state in the C
-  session for the next `tls_*` call to copy into a `Failure`. It never logs.
+- The info callback records **received** and **sent** alert descriptions
+  separately in the C session. Error mapping uses the received alert for
+  `ProtocolAlert`; a local sent alert (for example our own ALPN rejection) is
+  classified by the local reason/flag, never as a peer alert. It never logs.
 - If multi-certificate selection is added later, the C context holds an array
   of pre-created `SSL_CTX*` and exact/pattern names; the SNI callback selects
   one with `SSL_set_SSL_CTX`. The array is built from obo bytes at
@@ -1295,6 +1469,8 @@ Unsupported in v1:
 
 - any callback that needs per-request obo state (routing, tenant lookup,
   database-backed certificate selection);
+- a ClientHello callback beyond ALPN presence; certificate selection via
+  `cert_cb` or ClientHello parsing is not installed;
 - custom verify policy expressed in obo;
 - asynchronous private-key operations or an external crypto provider;
 - OCSP/CRL fetching callbacks, stapling;
@@ -1311,10 +1487,15 @@ Unsupported in v1:
 - `SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION)` and
   `SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION)`.
 - Belt-and-braces: `SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1`.
+- `SSL_OP_IGNORE_UNEXPECTED_EOF` is **not** set; unexpected EOF remains a
+  truncation error, not a clean close.
 - No downgrade retry. If a peer offers only TLS 1.1, the handshake fails. The
   application must not retry with a lower minimum.
 
 ### 8.2 Cipher suites and groups
+
+`setCipherSuites` applies only the TLS 1.3 list; `setCipherList` applies only
+the TLS 1.2 list. Setting one does not change the other.
 
 TLS 1.3 (`SSL_CTX_set_ciphersuites`), default order:
 
@@ -1382,7 +1563,7 @@ ECDHE-RSA-AES128-GCM-SHA256
   successful handshake, `peer.present` distinguishes absent from present.
 - `Required`: `SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT`; no
   certificate is a handshake failure.
-- Trust anchors come from `addTrustedCertificates` (explicit bundle) for
+- Trust anchors come from `setTrustedCertificates` (explicit bundle) for
   server client-auth. `useSystemTrustStore` is client-only.
 - `SSL_CTX_set_verify_depth(ctx, depth)` with default 8.
 - No custom verify callback in v1. The default OpenSSL verification is used;
@@ -1392,6 +1573,12 @@ ECDHE-RSA-AES128-GCM-SHA256
   authorize an application identity. The HTTP/application layer maps the
   verified subject/SAN/fingerprint to an authorization decision. TLS does not
   invent roles.
+- **No revocation checking in v1.** `VerifyMode.Required` verifies chain,
+  validity time and (client mode) hostname; it does **not** fetch or check
+  CRLs/OCSP. A revoked-but-otherwise-valid certificate is accepted unless the
+  deployment supplies its own revocation policy outside this adapter. CRL/OCSP
+  support is a separate design. The test matrix includes a revoked fixture to
+  make this limitation visible.
 
 ### 8.5 Hostname verification (client mode)
 
@@ -1405,21 +1592,38 @@ ECDHE-RSA-AES128-GCM-SHA256
   `PeerVerification.NotRequested`, not `Verified`.
 - A hostname mismatch is `VerifyFailed{62}` (or the corresponding
   `X509_V_ERR_*`) and the session fails. No fallback to a different name.
+- `useSystemTrustStore` uses OpenSSL's default paths, which honor
+  `SSL_CERT_FILE` and `SSL_CERT_DIR`. Client trust-store mode therefore
+  inherits those environment variables unless the application clears them; for
+  deterministic trust use `setTrustedCertificates`. A rogue environment must
+  not silently replace an explicit bundle.
 
 ### 8.6 SNI, ALPN and protocol selection
 
 - Server SNI is captured for `info.serverName`; in v1 it does not select a
   certificate. `requireSni` only requires a non-empty SNI and is off by
-  default. It is not hostname authorization.
+  default. It is **not** hostname authorization.
+- **SNI must not be used for authorization or tenant routing in v1.** With one
+  certificate, the server cannot verify through this API that its own
+  certificate covers the SNI; `PeerIdentity` describes the peer's certificate,
+  not the server's. SNI is for logging only until a `contextInfo`/
+  `serverIdentity` (own certificate SANs) or multi-certificate selector is
+  designed.
 - Multi-certificate SNI selection is deferred. If added, it is C-side policy
   with pre-registered contexts; no obo callback.
 - Server ALPN:
   - `Prefer`: select the first server-preference protocol present in the
     client list; if none, `SSL_TLSEXT_ERR_NOACK` and the connection proceeds
     without ALPN. The HTTP layer may then choose HTTP/1.1 or reject.
-  - `Require`: no overlap is `SSL_TLSEXT_ERR_ALERT_FATAL`; OpenSSL sends
+  - `Require`: the C ClientHello callback rejects a missing ALPN extension
+    with `SSL_AD_MISSING_EXTENSION`; the handshake fails with `AlpnRequired`.
+    If the extension is present but there is no overlap, the ALPN select
+    callback returns `SSL_TLSEXT_ERR_ALERT_FATAL`; OpenSSL sends
     `no_application_protocol` (alert 120) and the handshake fails with
     `NoApplicationProtocol`.
+  - The default `serverOptions()` offers only `http/1.1`. `h2` is advertised
+    only after the HTTP/2 layer exists; an application enabling it sets the
+    policy explicitly.
 - Client ALPN:
   - `Disabled`: no ALPN extension;
   - `Prefer`: offer the list; accept whatever the server selects;
@@ -1439,11 +1643,11 @@ ECDHE-RSA-AES128-GCM-SHA256
   post-handshake auth.
 - `SSL_OP_NO_COMPRESSION`; TLS compression is off. HTTP content compression is
   a separate codec/HTTP decision.
-- `SSL_OP_NO_TICKET` and `SSL_CTX_set_num_tickets(ctx, 0)` by default.
-- `SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_OFF)` by default.
-- If tickets are explicitly enabled: per-process random keys, no 0-RTT, no
-  shared cross-process cache, no ticket key in obo. Multi-process ticket keys
-  require a C-only callback and a key-provisioning design.
+- `SSL_OP_NO_TICKET` and `SSL_CTX_set_num_tickets(ctx, 0)` unconditionally.
+- `SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_OFF)`. There is no
+  ticket key, no resumption and no 0-RTT in v1. Multi-process ticket keys
+  would need a C-only callback and a key-provisioning design, which is a
+  separate review.
 - Secure renegotiation is OpenSSL's default; unsafe legacy renegotiation is
   not enabled (`SSL_OP_LEGACY_SERVER_CONNECT` is not set,
   `SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION` is not set).
@@ -1453,6 +1657,11 @@ ECDHE-RSA-AES128-GCM-SHA256
 ### 8.8 Error queue, secrets and logging
 
 - Before every public C operation, call `ERR_clear_error()`.
+- The error queue is thread-local but shared with every OpenSSL user on the
+  same thread, including libpq. The adapter owns the queue only around its own
+  call and can erase another component's pending errors; other components must
+  read errors immediately. This is a documented process-wide interaction, not
+  a TLS-only guarantee.
 - After a failure, call `SSL_get_error` first, capture `errno` immediately for
   `SSL_ERROR_SYSCALL`, then drain `ERR_get_error()` in a bounded loop (at most
   16 entries). Format each entry with `ERR_error_string_n` into a fixed C
@@ -1481,11 +1690,17 @@ ECDHE-RSA-AES128-GCM-SHA256
 - Per-context `maxSessions`; `accept` fails closed with `ResourceLimit`.
 - Per-session `maxHandshakeBytes` (default 1 MiB); `SSL_CTX_set_max_cert_list`
   (256 KiB); verify depth <=16.
+- Per-context `maxContextBytes` (default 64 MiB) charges rbio/wbio/C staging,
+  handshake accumulation, certificate/key/trust copies and fixed session
+  overhead. A feed/accept that would exceed it fails with `ResourceLimit`
+  before allocating; closing a session releases its charge. OpenSSL's
+  internal heap is outside this budget, so the default is not a total RSS
+  bound; it is the adapter-owned DoS bound.
 - No renegotiation, no 0-RTT, no client-controlled unbounded certificate
   fetching, no OCSP callback.
 - The application sets a finite absolute handshake deadline (for example
-  10 seconds) and a cancellation source. TLS has no internal timer and no
-  hidden worker.
+  10 seconds) and checks its own shutdown flag between steps. TLS has no
+  internal timer, no hidden worker and no cancellation-wake claim in P2T-b.
 - The reactor should watch the transport only when `want(s)` says read/write;
   otherwise a writable socket causes a hot loop. Disable write interest when
   no ciphertext is pending.
@@ -1512,69 +1727,86 @@ ECDHE-RSA-AES128-GCM-SHA256
 
 ### 9.1 Result taxonomy
 
-TLS has its own fatal error family, distinct from `sysstream`/`syserrors`
-codes. `systls::failure(code)` classifies a numeric TLS code; `systls::text`
-returns a diagnostic. Callers branch on the `Failure` variant or on
-`Step`/`ReadOutcome`/`WriteOutcome`/`ShutdownOutcome`, never on a raw number.
+**One `systls` code family.** Every public `systls` function returns a TLS code
+for every `Result.err`; callers must not pass a `systls` code to
+`syserrors::kind` or a systems code to `systls::failure`. `sysplatform`/
+`sysstream` validation and I/O errors are translated at the module boundary:
+`InvalidResource`, `InvalidArgument`, `Range`, `Closed` and
+`Transport{sysCode}` are TLS variants, not bare systems codes. The nested
+`Transport{sysCode}` preserves the original systems code as payload.
+
+`failure(code)` reconstructs the variant and its payload. The encoding is
+library-private and not an ABI: the high byte is a TLS failure kind; the low
+24 bits are the payload (0 when absent). A systems `sysCode`, `X509_V_ERR_*`
+code or alert description that exceeds 24 bits is clamped to `0xFFFFFF` in the
+payload and preserved in the text; current systems/X509/alert codes fit. The
+kind values are assigned at implementation; they do not reuse positive
+`syserrors` numbers. A code outside the TLS kind range returns `Failure.Internal`
+from `failure(code)`; callers should not pass systems codes. `text(code)`
+formats the kind and payload; callers branch on `failure(code)`.
 
 Control flow is **not** a fatal error:
 
 - `Step.WantRead`, `Step.WantWrite`;
 - `ReadOutcome.WantRead`, `ReadOutcome.WantWrite`;
 - `WriteOutcome.WantRead`, `WriteOutcome.WantWrite`;
+- `FlushOutcome.WantWrite`;
 - `ShutdownOutcome.WantRead`, `ShutdownOutcome.WantWrite`.
 
-A `Result.err` is always fatal for that operation. `WantRead`/`WantWrite` do
-not appear as `Failure` codes. This avoids the ambiguity of using a single
-error code both for readiness and for a broken connection.
+A `Result.err` fails that operation; it may be recoverable (`Busy`,
+`NotConfigured`, `InvalidArgument`) or connection-fatal (`ProtocolViolation`,
+`Truncated`). `WantRead`/`WantWrite` never appear as `Failure` codes.
 
 | Failure | Meaning | Typical cause |
 |---|---|---|
+| `InvalidArgument` | malformed input/options | empty ALPN list, bad offset |
+| `Range` | length/limit out of range | `readSome(max)` > 65536 |
+| `InvalidResource` | stale/wrong-kind shell or transport | forged `res`, closed stream |
+| `Closed` | session/context already closed | use after close |
 | `HandshakeFailed` | handshake ended without a usable session | peer alert, version/cipher mismatch |
-| `ProtocolAlert{description}` | peer sent a fatal alert | captured by the C info callback |
+| `ProtocolAlert{description}` | **peer** sent a fatal alert | received alert captured by the info callback |
 | `ProtocolViolation` | malformed/illegal protocol data | OpenSSL `SSL_ERROR_SSL` without a more specific class |
 | `VerifyFailed{code}` | chain/hostname verification failed | `X509_V_ERR_*` code |
 | `NoPeerCertificate` | required client certificate absent | server `VerifyMode.Required` |
 | `CertificateRejected` | certificate parse/load/policy failure | malformed PEM, weak key, bad chain |
 | `KeyRejected` | private key parse/mismatch/encrypted | wrong key, encrypted key in v1 |
-| `Configuration` | invalid options/policy | empty ALPN, min>max, setter after session |
-| `NoApplicationProtocol` | server ALPN `Require` had no overlap | fatal alert 120 |
+| `Configuration` | invalid/poisoned policy | setter failure, invalid option, poisoned context |
+| `AlpnRequired` | server `Require` and client sent no ALPN | ClientHello callback rejected absence |
+| `NoApplicationProtocol` | server `Require` and no overlap | fatal alert 120 |
 | `AlpnMismatch` | client post-handshake ALPN check failed | no/other protocol |
 | `Truncated` | transport EOF without close_notify | network cut, peer crash |
 | `NotReady` | handshake not complete | read/write before `Done` |
 | `Transport{sysCode}` | sysstream failure | `WouldBlock` is mapped to Want; other codes are fatal |
-| `ResourceLimit` | session/handshake/BIO/cert cap exceeded | DoS defense |
+| `ResourceLimit` | session/handshake/BIO/cert/context cap exceeded | DoS defense |
 | `Busy` | context has live sessions, or setter after session | lifecycle |
 | `NotConfigured` | server certificate/key missing | `accept` too early |
-| `TimedOut` | helper deadline reached | `handshakeUntil` |
-| `Cancelled` | helper cancellation requested | `handshakeUntil` |
 | `Unsupported` | client mode/QUIC/0-RTT/feature absent | phase boundary |
 | `Internal` | invariant violation | adapter bug; fail closed |
 
-Resource validation errors (`InvalidResource`, `InvalidArgument`, `Range`,
-and the systems `Closed` for an already-closed shell) use the systems error
-family; the TLS module does not duplicate them. A wrong-kind/forged `res` is
-`InvalidResource` before any C TLS call. A closed `Stream` encountered during
-a TLS step is mapped to the TLS `Transport{Closed}` diagnostic; a closed
-`TlsSession`/`TlsContext` shell uses the systems `Closed`.
+A wrong-kind/forged `res` is `InvalidResource` before any C TLS call. A closed
+`Stream` encountered during a TLS step is `Transport{Closed}`; a closed
+`TlsSession`/`TlsContext` shell is `Closed`.
 
 ### 9.2 OpenSSL-to-TLS mapping
 
-| OpenSSL condition | Mapping |
+| OpenSSL condition (checked in this order) | Mapping |
 |---|---|
-| `SSL_ERROR_NONE` with a successful call | operation-specific success |
+| C `alpn_required_missing` flag set | `AlpnRequired`; takes precedence over sent alert 109 |
+| `SSL_ERROR_SSL` + reason `SSL_R_NO_APPLICATION_PROTOCOL` | `NoApplicationProtocol`; takes precedence over received alert 120 |
+| `SSL_ERROR_SSL` + reason `SSL_R_PEER_DID_NOT_RETURN_A_CERTIFICATE` or `SSL_R_TLSV13_ALERT_CERTIFICATE_REQUIRED` | `NoPeerCertificate` |
+| `SSL_ERROR_SSL` + reason `SSL_R_UNEXPECTED_EOF_WHILE_READING` | `Truncated` |
+| `SSL_ERROR_SSL` + `SSL_get_verify_result != X509_V_OK` | `VerifyFailed{verifyCode}` |
+| `SSL_ERROR_SSL` + received alert code | `ProtocolAlert{description}` |
+| `SSL_ERROR_SSL` + only a sent alert | local reason policy: `AlpnRequired`/`NoApplicationProtocol`/`Configuration`; never `ProtocolAlert` |
+| `SSL_ERROR_SSL`, other | `ProtocolViolation`/`HandshakeFailed` |
+| `SSL_ERROR_SYSCALL`, ret < 0, `errno` | `Transport{sysCode}`; capture `errno` first |
+| `SSL_ERROR_SYSCALL`, ret == 0, error queue empty | `Truncated` |
 | `SSL_ERROR_WANT_READ` | `WantRead` outcome; not fatal |
 | `SSL_ERROR_WANT_WRITE` | `WantWrite` outcome; not fatal |
 | `SSL_ERROR_ZERO_RETURN` | `Eof`/`PeerClosed`; clean close_notify |
-| `SSL_ERROR_SYSCALL`, ret < 0, `errno` | `Transport{sysCode}`; capture `errno` first |
-| `SSL_ERROR_SYSCALL`, ret == 0, error queue empty | `Truncated` |
-| `SSL_ERROR_SSL`, `SSL_get_verify_result != X509_V_OK` | `VerifyFailed{code}` |
-| `SSL_ERROR_SSL`, captured alert | `ProtocolAlert{description}` |
-| `SSL_ERROR_SSL`, reason `SSL_R_NO_APPLICATION_PROTOCOL` | `NoApplicationProtocol` |
-| `SSL_ERROR_SSL`, other | `ProtocolViolation`/`HandshakeFailed` |
 | `SSL_ERROR_WANT_X509_LOOKUP` | `Unsupported`; no lookup callback |
 | `SSL_ERROR_WANT_ASYNC`/`WANT_ASYNC_JOB` | `Unsupported`; no async engine |
-| `SSL_ERROR_WANT_CLIENT_HELLO_CB` | `Unsupported`; no client-hello callback |
+| `SSL_ERROR_WANT_CLIENT_HELLO_CB` | `Internal`; our ClientHello callback never returns RETRY |
 | `SSL_ERROR_WANT_RETRY_VERIFY` | `Internal`; no custom verify |
 | `SSL_new`/`SSL_CTX_new` returns NULL | `ResourceLimit` (allocation) or `Internal`; drain queue |
 | `BIO_new`/cert parse allocation failure | `ResourceLimit` |
@@ -1583,35 +1815,37 @@ a TLS step is mapped to the TLS `Transport{Closed}` diagnostic; a closed
 | no cert/key at `accept` | `NotConfigured` |
 | live sessions at `closeContext` | `Busy` |
 | cap exceeded | `ResourceLimit` |
-| closed session/context shell | systems `Closed` |
+| closed session/context shell | `Closed` |
 
 `SSL_get_error` must be called with the exact return value of the immediately
 preceding SSL I/O call. Do not call `SSL_get_error` after a diagnostic helper
-that may call OpenSSL. Do not call `ERR_get_error` before `SSL_get_error`.
+that may call OpenSSL. Do not call `ERR_get_error` before `SSL_get_error`. The
+info callback keeps received and sent alert codes in separate fields; only a
+received alert can become `ProtocolAlert`.
 
 ### 9.3 No hidden retries
 
 - `SSL_MODE_AUTO_RETRY` is not set.
-- No loop on `EINTR`, `EAGAIN`, `WantRead` or `WantWrite` inside a public step.
-- `handshakeUntil` is the only named compound helper. Its loop is finite,
-  uses one absolute deadline, checks cancellation, and removes watches on
-  every exit. It never restarts the deadline after a partial handshake or an
-  interrupt.
+- No loop on `EINTR`, `EAGAIN`, `WantRead`, `WantWrite` or partial output
+  inside a public step. A step returns its outcome; the caller loops.
+- There is no public `handshakeUntil` in P2T-b. The caller's loop uses the
+  step API with one absolute deadline; it must not restart the deadline after
+  a partial handshake, an interrupt or a short write.
 - `close` is not retried after `EINTR`; the systems stream close rule applies.
 - A failed handshake is not retried with a lower version, a different cipher,
   or verification disabled.
 
 ### 9.4 Deadlines, cancellation and close
 
-- Every step is nonblocking. The caller owns the reactor and the deadline.
-- `handshakeUntil` takes `&clock::Deadline` and
-  `&waitio::Cancellation`; it checks both before each step and after each
-  wait. `forever()` is allowed by the signature, but a server should use a
-  finite deadline.
-- Cancellation is a native flag; it is sticky. The helper does not close the
-  session on cancellation; the caller closes it. There is no hidden close.
+- Every step is nonblocking. The caller owns the reactor, the watch and the
+  absolute deadline. `watch`/`reactor::wait` are used directly; there is no
+  hidden per-connection helper in P2T-b.
+- Cancellation: P2T-b has no TLS helper that blocks in `reactor::wait`, so it
+  does not claim cancellation wake. A future `handshakeUntil`/cancel helper
+  requires a `sysreactor`/`syswaitio` cancellation-wake contract or a
+  caller-provided watch source; that is a separate systems design.
 - A session must not be closed concurrently from another thread in v1. The
-  owner closes it after the helper returns. If a future worker model allows
+  owner closes it after a step returns. If a future worker model allows
   cross-thread cancellation, it needs T2 and a separate review.
 - Closing the underlying `Stream` behind a live session is a caller error.
   Subsequent TLS operations map the stream's `Closed` to
@@ -1647,7 +1881,9 @@ hermetic script with recorded hashes):
   `notAfter`, generated with `openssl ca` or a fixed fixture);
 - a self-signed certificate not in the trust store;
 - a chain with an intermediate CA, plus a missing-intermediate case;
-- a client certificate signed by the test CA, and an untrusted client cert;
+- a client certificate signed by the test CA, an untrusted client cert, and a
+  revoked-but-otherwise-valid client cert for the documented no-revocation
+  limitation;
 - a weak RSA 1024 key (rejected by security level 2);
 - an encrypted private key (must fail cleanly, no stdin prompt);
 - malformed PEM, a chain over the size/count limit, and a certificate/key
@@ -1665,12 +1901,19 @@ README stating they are test-only and not trust anchors for production.
   handshake is complete.
 - Split the ClientHello, ServerHello, certificate, CertificateVerify and
   Finished messages; verify no data loss and no busy loop.
+- Force a TLS 1.3 HelloRetryRequest (for example a client key share group the
+  server does not accept) and assert the step loop handles the second
+  ClientHello within the handshake byte cap without a stall.
 - Drive `WantRead`/`WantWrite` at every step with a scripted transport that
   returns `WouldBlock` for N calls, then data. Assert the absolute deadline is
   unchanged and no byte is duplicated.
 - Verify `handshakeStep` performs bounded work and never blocks.
-- Verify `handshakeUntil` times out at the deadline, cancels, removes its
-  watch, and leaves the session closable.
+- Complete a handshake with a transport that accepts one byte at a time;
+  assert the peer receives Finished and `handshakeStep` does not return
+  `Done` while C staging/write BIO output remains. Assert `want=Write` and a
+  following `flush` drains it.
+- Verify a step loop using `watch`/`reactor::wait` honors the same absolute
+  deadline and removes its watch on error; no `handshakeUntil` helper exists.
 
 ### 10.3 ALPN and SNI
 
@@ -1678,13 +1921,20 @@ README stating they are test-only and not trust anchors for production.
 - Client offers only `http/1.1`: `http/1.1` selected.
 - Client offers only `h2`, server `Prefer`: `h2` selected.
 - No overlap, server `Prefer`: no ALPN; handshake succeeds; `info.alpn == nil`.
-- No overlap, server `Require`: handshake fails with
-  `NoApplicationProtocol`; `openssl s_client` observes alert 120.
+- No overlap, server `Require` with ALPN present: handshake fails with
+  `NoApplicationProtocol` (not `ProtocolAlert{120}`); `openssl s_client`
+  observes alert 120.
+- **Client `Disabled` (no ALPN extension), server `Require`: handshake must
+  fail with `AlpnRequired`.** The C ClientHello callback must be invoked and
+  reject absence; `alpn_calls` being zero is a test failure, not a pass.
 - Client `Require` with no server ALPN: client returns `AlpnMismatch` and
   closes; no fallback.
-- Client `Disabled`: no ALPN extension; server `Require` fails.
+- Default `serverOptions()` does not advertise `h2`; it offers only
+  `http/1.1`. A P2T-d HTTP/1.1 server with `curl --http2` either negotiates
+  `http/1.1` or cleanly refuses; it never negotiates `h2` and then closes.
 - SNI present/absent; `requireSni=true` rejects absent SNI with
-  `unrecognized_name`; `info.serverName` is copied correctly.
+  `unrecognized_name`; `info.serverName` is copied correctly. SNI is not used
+  for authorization in v1.
 - ALPN protocol list limits: empty, 17 entries, 256-byte entry, duplicate,
   NUL, over 1024 bytes; all rejected before C.
 
@@ -1694,6 +1944,9 @@ README stating they are test-only and not trust anchors for production.
 - Untrusted/self-signed: `VerifyFailed` with the expected `X509_V_ERR_*`.
 - Expired and not-yet-valid: `VerifyFailed` with the expected code.
 - Hostname mismatch (client): `VerifyFailed{62}`.
+- **Old protocol versions**: `openssl s_client -tls1_1`/`-tls1` fail; no
+  downgrade retry. Cipher/group/security-level mismatch fails; a 1024-bit
+  certificate is rejected at load.
 - IP SAN verification with `ServerIdentity.Ip`.
 - Wildcard certificate: exact and partial-wildcard behavior; partial
   wildcards rejected by the host flags.
@@ -1704,6 +1957,16 @@ README stating they are test-only and not trust anchors for production.
 - Encrypted key: clean `KeyRejected`, no prompt, no hang.
 - Server client-auth `None`/`Optional`/`Required`: no cert, valid cert,
   invalid cert, untrusted cert, expired cert.
+- **Required client cert, no cert**: server returns `NoPeerCertificate`, not
+  `HandshakeFailed`/`ProtocolViolation`; the mapping covers
+  `SSL_R_PEER_DID_NOT_RETURN_A_CERTIFICATE` and
+  `SSL_R_TLSV13_ALERT_CERTIFICATE_REQUIRED`.
+- **Revocation limitation**: a revoked-but-otherwise-valid client certificate
+  is accepted in v1; the test asserts the documented behavior (no CRL/OCSP).
+- **System trust environment**: with a rogue `SSL_CERT_FILE`, the documented
+  behavior is either the environment-supplied trust store (if the application
+  uses `useSystemTrustStore`) or no effect (if it uses an explicit
+  `setTrustedCertificates` bundle); the test does not claim silent isolation.
 - `PeerIdentity` fields for a known certificate: subject, issuer, SANs,
   timestamps, SHA-256 fingerprint match an independent `openssl x509` output.
 
@@ -1720,21 +1983,37 @@ README stating they are test-only and not trust anchors for production.
 - Peer close_notify first: `PeerClosed`; local `shutdownStep` sends ours;
   `Done`.
 - Truncation: close the transport after a partial response without
-  close_notify; peer `readSome` returns `Truncated`, not `Eof`.
+  close_notify; peer `readSome` returns `Truncated`, not `Eof`. Also truncate
+  mid-record and assert `SSL_R_UNEXPECTED_EOF_WHILE_READING` maps to
+  `Truncated`; `SSL_OP_IGNORE_UNEXPECTED_EOF` is not set.
 - Close during handshake; close after `Failed`; repeated close false.
 - Partial transport writes: scripted transport accepts 1 byte at a time;
-  ciphertext is retained in C, no duplicate/loss; `writeSome` short counts are
-  honored; no `Wrote{n}` without accepted bytes.
-- wbio/rbio cap: force over-cap; `ResourceLimit`, session failed, no
+  ciphertext is retained in C, no duplicate/loss; `writeSome` returns
+  `Wrote{n, want=Write}` for the accepted prefix; the caller advances by `n`
+  and `flush` drains the rest. Assert no replay and no stall.
+- **Accepted prefix + blocked flush**: force a short write after
+  `SSL_write_ex` accepts `n`; assert the outcome carries both `n` and
+  `want=Write`. A subsequent `flush` drains without reaccepting plaintext.
+- **Response then next request**: write a response with a 1-byte transport,
+  call `readSome` for the next request, and assert no deadlock: `readSome`
+  returns `WantWrite`/flushes pending output before waiting for input.
+- **Moved write buffer retry**: retry `SSL_write_ex` after `WANT_WRITE` with a
+  moved/reallocated C buffer and assert no `SSL_R_BAD_WRITE_RETRY`.
+- `writeSome(count=0)` returns `Wrote{0,want}` and does not flush; `flush`
+  is the explicit drain path.
+- wbio/rbio/staging cap: force over-cap; `ResourceLimit`, session failed, no
   unbounded allocation.
+- **Aggregate cap**: open sessions until `maxContextBytes` would be exceeded;
+  assert `ResourceLimit`, no partial session, and charges released on close.
 - Large certificate chain near the limit; handshake byte counter triggers.
 
 ### 10.6 Session tickets, resumption and 0-RTT
 
-- Default: server issues no ticket (`SSL_OP_NO_TICKET`, num_tickets 0);
-  `openssl s_client -reconnect` does not resume; no ticket in the handshake.
-- Explicit tickets enabled in a test context: same-process resumption works;
-  cross-process resumption does not (per-process keys); no 0-RTT.
+- Tickets are unconditionally off (`SSL_OP_NO_TICKET`, num_tickets 0); no
+  ticket appears in the handshake. Use `-sess_out`/`-sess_in` for any future
+  TLS 1.3 resumption test; `-reconnect` is not used for TLS 1.3.
+- There is no public ticket option; a test that tries to enable it must not
+  compile (or the option is absent from `ContextOptions`).
 - A client early-data attempt is not accepted; no early-data callback.
 - Ticket key material never appears in obo, logs or `Counts`.
 
@@ -1746,7 +2025,11 @@ README stating they are test-only and not trust anchors for production.
 - Fairness: a busy session does not starve handshakes; the reactor's batch
   cap is respected.
 - A handshake deadline closes only the slow session; other sessions continue.
-- Cancellation wakes `handshakeUntil`; the session remains closable.
+- There is no TLS cancellation-wake helper in P2T-b; a caller-side shutdown
+  flag is checked between steps, and the session remains closable.
+- `maxSessions` overflow closes the offered transport exactly once and leaves
+  no session token; a forced `SSL_new`/`BIO_new` failure frees/closes exactly
+  once; a failed handshake removes its watch.
 - No hidden thread is created; check process thread count before/after.
 
 ### 10.8 Leak counters and lifecycle
@@ -1760,6 +2043,19 @@ README stating they are test-only and not trust anchors for production.
 - Double close session/context returns false; no double `SSL_free`.
 - Forged/wrong-kind `res`: `InvalidResource` before C; same-kind alias is
   documented and does not crash.
+- **Transport replacement**: in the v0.11 public-field shape, replacing
+  `transport` with another live `Stream` redirects TLS I/O and `close`; the
+  test documents this trusted-obo hazard. It is not a pass for a security
+  claim. Under private-by-default fields, a negative compile test must reject
+  external construction/field access.
+- **Partial trust bundle**: a bundle whose Nth certificate is malformed leaves
+  the previous store intact; a setter that fails after native mutation leaves
+  the context `Poisoned` and every later `accept` returns `Configuration`.
+- **Error family**: `Busy`, `ResourceLimit`, `NotConfigured` and
+  `InvalidResource` are decoded by `systls::failure(code)`, not by
+  `syserrors::kind(code)`; no bare systems code crosses the public `systls`
+  boundary. `Transport{code}`, `VerifyFailed{code}` and
+  `ProtocolAlert{description}` round-trip their payloads.
 - `exit()` runs no defers; the hosted exit path runs libc atexit; the leak
   oracle is not fooled by process exit in a test harness.
 - ASAN/LSAN: no leaks from the adapter; OpenSSL global allocations may be
@@ -1775,7 +2071,8 @@ README stating they are test-only and not trust anchors for production.
   `-fsanitize=fuzzer,address,undefined`; assert bounded memory, no crash, no
   out-of-bounds, and a fatal TLS error for invalid input.
 - Fuzz PEM parsing with malformed/oversized chains and keys.
-- Fuzz ALPN protocol lists and options validation.
+- Fuzz ALPN protocol lists, ClientHello ALPN extension presence/length and
+  options validation.
 - Run `valgrind`/LSAN on normal success, error and truncation paths.
 
 ### 10.10 No plaintext on the wire; no pointer/callback escape
@@ -1793,14 +2090,16 @@ README stating they are test-only and not trust anchors for production.
 - Compiler-negative test: `^TlsSession` cannot be passed where `^Stream` or
   `^Resource` is required; a runtime forged `res` is rejected by
   `requireKind`.
-- Callback audit: ALPN/SNI/info callbacks contain no `__cinterop`, no obo
-  symbol, no allocation of obo objects; they only touch C state and OpenSSL.
+- Callback audit: ClientHello/ALPN/SNI/info callbacks contain no
+  `__cinterop`, no obo symbol, no allocation of obo objects; they only touch C
+  state and OpenSSL. The ClientHello callback only checks ALPN presence.
 - A C fixture that tries to store an obo callback pointer in `SSL_CTX` must
   not compile/link through the approved ABI.
 
 ### 10.11 `openssl s_client` and `curl`
 
-Against a local TLS echo/HTTP fixture, with the test CA:
+Against a local TLS echo/HTTP fixture configured for the listed ALPN policy,
+with the test CA:
 
 ```sh
 openssl s_client -connect 127.0.0.1:PORT -servername localhost \
@@ -1816,8 +2115,8 @@ ALPN extension.
 
 Expected: TLS 1.3/1.2, expected cipher, expected ALPN, verify result 0, clean
 close_notify. A mismatch name or missing CA fails with a nonzero verify
-result. `-reconnect` checks resumption only when tickets are explicitly
-enabled.
+result. Tickets are off in v1; no resumption is expected. Any future TLS 1.3
+resumption check uses `-sess_out`/`-sess_in`, not `-reconnect`.
 
 After HTTP/1.1 integration:
 
@@ -1825,7 +2124,8 @@ After HTTP/1.1 integration:
 curl --http1.1 --cacert ca.pem https://localhost:PORT/
 ```
 
-After HTTP/2 integration, if the local curl has HTTP/2:
+After HTTP/2 integration, if the local curl has HTTP/2 and the listener
+advertises `h2`:
 
 ```sh
 curl --http2 --cacert ca.pem https://localhost:PORT/
@@ -1840,15 +2140,20 @@ HTTP/1.1. No external network is used.
 P2T is accepted only when:
 
 1. the hosted OpenSSL/cinterop qualification fixture passes;
-2. the full local handshake/ALPN/certificate/truncation matrix passes;
-3. `openssl s_client` (TLS 1.2 and 1.3, ALPN h2/http1.1/none) passes;
-4. leak counters return to zero after every path and the omitted-close oracle
+2. **ALPN `Require` rejects a client with no ALPN extension (`AlpnRequired`)**
+   and no-overlap (`NoApplicationProtocol`), with the exact variant asserted;
+3. **no `Done`/`Data`/`Wrote` outcome strands pending Finished, close_notify,
+   KeyUpdate, alert or application ciphertext**; the 1-byte-transport,
+   response-then-read, accepted-prefix and flush tests pass;
+4. the full local handshake/ALPN/certificate/truncation matrix passes;
+5. `openssl s_client` (TLS 1.2 and 1.3, ALPN h2/http1.1/none) passes;
+6. leak counters return to zero after every path and the omitted-close oracle
    fails deliberately;
-5. ASAN/UBSAN and the ciphertext fuzzer pass;
-6. no plaintext sentinel appears on the wire and no pointer/callback escape is
+7. ASAN/UBSAN and the ciphertext fuzzer pass;
+8. no plaintext sentinel appears on the wire and no pointer/callback escape is
    found;
-7. the design's limits and error mapping are exercised, not only the happy
-   path.
+9. the design's limits, aggregate context cap, atomic/poisoned setters and
+   single error family are exercised, not only the happy path.
 
 ## 11. Phases and dependencies
 
@@ -1856,29 +2161,40 @@ P2T is accepted only when:
 
 | Phase | Scope / exit | Dependencies | Rough effort |
 |---|---|---|---|
-| **P2T-a: build and hosted qualification** | OpenSSL header package/sysroot, manifest provenance, `-z now`, cinterop sigcheck include fix, hosted OpenSSL memory-BIO handshake fixture, ASAN/UBSAN harness; no public API | syslib P2 build; cinterop hosted CRT/exit; libssl-dev; local cert fixtures | 1–2 weeks |
-| **P2T-b: server TLS** | `TlsContext`/`TlsSession`, cert/key/CA loading, server handshake, ALPN, read/write/shutdown, peer identity, errors, counts, core tests, `openssl s_client` TLS echo | P2T-a; `sysstream`/`sysbuffer`/`sysreactor`/`syswaitio`; platform registry | 3–4 weeks |
-| **P2T-c: client mode** | `connect`, SNI/hostname verification, system trust, client certs, resumption policy, curl/s_client client tests | P2T-b | 1–2 weeks |
-| **P2T-d: HTTP/1.1 integration** | Dispatch on ALPN; HTTP/1.1 over `TlsSession`; graceful shutdown (HTTP response then close_notify); curl --http1.1 | P2T-b; HTTP/1.1 design | 1–2 weeks (HTTP side) |
-| **P2T-e: HTTP/2 integration** | ALPN `h2`; HTTP/2 framing over `TlsSession`; GOAWAY then close_notify; curl --http2 | P2T-b; HTTP/2 design | HTTP/2 design effort, not TLS |
+| **P2T-a: build and hosted qualification** | OpenSSL header package/sysroot, manifest provenance, `-z now`, cinterop sigcheck include fix, hosted OpenSSL memory-BIO handshake fixture, ASAN/UBSAN harness; no public API | syslib P2 approval/implementation; cinterop hosted CRT/exit; libssl-dev; local cert fixtures | 1–2 weeks |
+| **P2T-b: server TLS** | `TlsContext`/`TlsSession`, cert/key/CA loading, server handshake, ALPN (ClientHello presence + select), read/write/**flush**/multi-step shutdown, peer identity, single error family, counts, core tests, `openssl s_client` TLS echo | P2T-a; `sysstream`/`sysreactor`/`sysplatform`/`sysclock`; no `sysbuffer`/`syswaitio` TLS dependency | 2–3 weeks |
+| **P2T-c: client mode (separate design)** | `connect`, SNI/hostname verification, system trust, client certs, curl/s_client client tests; no resumption in v1 | P2T-b | 1–2 weeks |
+| **P2T-d: HTTP/1.1 integration** | Dispatch on ALPN; HTTP/1.1 over `TlsSession`; default ALPN `http/1.1`; graceful shutdown (HTTP response then close_notify); curl --http1.1 | P2T-b; HTTP/1.1 design | 1–2 weeks (HTTP side) |
+| **P2T-e: HTTP/2 integration** | ALPN `h2` only after the HTTP/2 layer; GOAWAY then close_notify; curl --http2 | P2T-b; HTTP/2 design | HTTP/2 design effort, not TLS |
 | **Later: QUIC/HTTP/3** | Separate transport; no OpenSSL 3.0 QUIC API | New library/design | Not estimated here |
 
 The systems design's P2T estimate is 3–6 engineer-weeks (systems design:1867).
-The split above is consistent with that range; P2T-c/d/e can land separately.
+The split here is 1–2 (a) + 2–3 (b) + 1–2 (c) = **4–7**, so it supersedes the
+earlier 3–6 estimate for this scope. P2T-c is a separate design; it is not a
+prerequisite for P2T-b/d. P2T-d must not advertise `h2`; a `curl --http2`
+client offering `h2` and `http/1.1` negotiates `http/1.1` or is cleanly
+refused, never negotiated-then-closed.
 
 ### 11.2 What must exist first
 
-- **syslib P2**: `sysstream` (partial read/write, half-close, close),
-  `sysbuffer` (bounded buffers), `sysreactor` (level readiness, timers,
-  `watchResource`, `wait`), `syswaitio` (deadline/cancellation helpers),
-  `sysplatform` (resource registry, `requireKind`, counts, shutdown).
+- **syslib P2 approval and implementation**: P2T is blocked on P2 being
+  approved and implemented, not merely on a build command. TLS requires
+  `sysstream` (partial read/write, half-close, close), `sysreactor` (level
+  readiness, timers, `watchResource`, `wait`), `sysplatform` (resource
+  registry, `requireKind`, counts, shutdown) and `sysclock` (peer certificate
+  timestamps). TLS does **not** require `sysbuffer` or `syswaitio`; HTTP may
+  use those independently.
 - **cinterop hosted qualification**: normal CRT startup, constructors,
   atexit, stdio, `exit_group` semantics; scalar seam. The existing cinterop
   checkpoint covers much of this for scalar/libpq/zlib, but not OpenSSL/TLS.
+  P2T-a must explicitly assert provider load, `RAND_bytes`, `pthread_once`,
+  `clock_gettime`/`mmap`, the thread-local error queue, `atexit`/
+  `OPENSSL_cleanup` ordering, and a post-cleanup no-crash check.
 - **cinterop header-mode include fix**: `include_dirs`/`cflags` applied to the
-  signature check; otherwise a private `libssl-dev` sysroot cannot be used.
-- **cinterop link flags**: RELRO/NOW; otherwise missing symbols can fail
-  mid-request.
+  signature check (`cinterop.py:790`); otherwise a private `libssl-dev`
+  sysroot cannot be used.
+- **cinterop link flags**: RELRO/NOW (`cinterop.py:821–824`); otherwise
+  missing symbols can fail mid-request.
 - **OpenSSL build dependency**: `libssl-dev` headers, `libssl.so.3` and
   `libcrypto.so.3` at runtime.
 - **Test fixtures**: local CA, server/client certs, expired/mismatch/weak
@@ -1889,14 +2205,35 @@ The split above is consistent with that range; P2T-c/d/e can land separately.
 
 ### 11.3 HTTP/1.1 and HTTP/2 integration contract
 
-- The HTTP layer receives an established `TlsSession` and the `HandshakeInfo`
-  from `handshakeUntil`/`info`.
+- The HTTP layer receives an established `TlsSession` and `HandshakeInfo` from
+  `systls::info`; it drives the handshake with `handshakeStep` + `want` +
+  `watch` and one absolute deadline. There is no `handshakeUntil`.
 - It selects the protocol from `info.alpn`:
-  - `h2` -> HTTP/2;
+  - `h2` -> HTTP/2, only if the HTTP/2 layer is present;
   - `http/1.1` -> HTTP/1.1;
   - `nil` -> HTTP/1.1 if the listener policy allows it, otherwise close.
-- It uses only `readSome`/`writeSome`/`shutdownStep`/`close`; it never touches
+- It uses `readSome`/`writeSome`/`flush`/`shutdownStep`/`shutdownWrite`/
+  `wantsRead`/`wantsWrite`/`source`/`alpn`/`info`/`close`; it never touches
   `session.transport` directly and never calls OpenSSL.
+- The required methods for a neutral `http1tls` adapter are:
+  - `handshakeStep(): Result[http1::Handshake]` mapping `systls::Step` to
+    `Complete`/`WantRead`/`WantWrite`;
+  - `readInto(dst, offset, max): Result[int]` mapping `Data`/`Eof`/`Want*`
+    to `>0`/`0`/`WouldBlock`;
+  - `writeFrom(src, offset, count): Result[int]` mapping `Wrote{n,want}` to
+    `n` and preserving pending output via `wantsWrite`;
+  - the neutral adapter maps `Want*` to `syserrors::WouldBlock` for the HTTP
+    interface; `systls` itself uses outcome variants, not systems codes;
+  - `flush(): Result[bool]` mapping `FlushOutcome.Done` to `true`;
+  - `shutdownWrite(): Result[bool]` mapping the best-effort close_notify;
+  - `wantsRead(): bool`, `wantsWrite(): bool` from `want`;
+  - `source(): Result[^platform::Resource]`, `isSecure(): bool`, `close()`.
+  - `alpn(): Result[?string]` and `info(): Result[HandshakeInfo]` are outside
+    the minimal `Transport` interface but required for ALPN dispatch.
+  - `Data{want=Write}` and `Wrote{n,want=Write}` set the adapter's want state;
+    the HTTP loop flushes before waiting/reading.
+  - The adapter never exposes a callback; every method is a synchronous
+    bounded step.
 - HTTP/1.1 request parsing, header limits, chunked framing and keep-alive are
   above TLS. HTTP/2 connection preface, SETTINGS, HPACK, stream state and
   GOAWAY are above TLS.
@@ -1907,8 +2244,10 @@ The split above is consistent with that range; P2T-c/d/e can land separately.
 - Client certificate identity: the HTTP/application layer may use
   `info.peer` for authentication/authorization. TLS verifies the chain; it
   does not assign roles.
-- SNI: with one certificate, `info.serverName` is for logging/routing only if
-  the certificate covers the name; multi-cert selection is later.
+- SNI: with one certificate, `info.serverName` is for logging only in v1. It
+  must not be used for authorization or tenant routing: the API does not expose
+  the server certificate's own SANs. Multi-cert selection/`contextInfo` is
+  later.
 - No HTTP parsing, ALPN-specific framing, header injection or response
   generation in TLS.
 
@@ -1916,8 +2255,12 @@ The split above is consistent with that range; P2T-c/d/e can land separately.
 
 - TLS is hosted-only. Freestanding static images stay single-threaded and
   have no TLS; use a supervised process or a plaintext local path.
-- Client mode (P2T-c) reuses the same context/session types and memory BIO
-  pump. It adds hostname verification, system trust and client session cache.
+- **`handshakeUntil` is deferred.** It needs a `sysreactor`/`syswaitio`
+  cancellation-wake contract or a caller-provided watch source that does not
+  consume unrelated events. P2T-b uses the step API only.
+- Client mode (P2T-c) is a separate design; it reuses the same context/session
+  types and memory BIO pump, but adds hostname verification, system trust and
+  its own review. There is no client session cache/resumption in v1.
 - QUIC/HTTP/3 is separate. OpenSSL 3.0.13 lacks the QUIC API; do not emulate
   it with TLS-over-UDP or a hand-written QUIC stack.
 - DTLS is not planned.
@@ -1978,6 +2321,19 @@ The split above is consistent with that range; P2T-c/d/e can land separately.
     design; use spawn/exec or initialize after fork.
 18. **Using `readFile` for private keys/certificates.** Unbounded read and a
     path API; use bounded `sysfile` reads and explicit limits.
+19. **Public optional `transport` with no binding.** A `?Stream` creates a
+    `none` state and a live replacement redirects ciphertext/plaintext and
+    close. Use non-optional `transport`; target private field/explicit
+    constructor. The v0.11 public-field hazard is documented, not claimed
+    safe.
+20. **`handshakeUntil` in P2T-b without a cancellation-wake contract.** It
+    cannot be woken by `syswaitio::request` through the public reactor, and a
+    dedicated-reactor helper conflicts with a shared multi-connection loop.
+    Ship the step API; defer the helper.
+21. **A write outcome that cannot express accepted bytes plus pending
+    output.** `WantWrite` after accepting `n` bytes loses the prefix;
+    `Wrote{n}` without `want` hides pending ciphertext. Every progress
+    outcome carries `want`; `flush` is explicit.
 
 ## 13. Open choices and recommendations
 
@@ -1985,19 +2341,20 @@ The split above is consistent with that range; P2T-c/d/e can land separately.
 |---|---|---|
 | TLS provider | OpenSSL 3.0 system libraries | BoringSSL/GnuTLS need a new dependency, ABI and build story; static OpenSSL loses system updates |
 | Headers vs declarations-only | Headers required; `signature_check: header` | Declarations-only can silently mis-set security macros/control numbers |
-| Server vs client first | Server first (P2T-b); client later (P2T-c) | Client-first delays the HTTPS server goal and adds hostname/trust work |
-| Session resumption | Off by default; no 0-RTT; explicit tickets later | On-by-default tickets need key distribution and replay policy; 0-RTT needs anti-replay |
-| SNI multi-cert | One certificate per context in v1; C-side multi-cert later | Multi-cert needs a C SNI selector, cert table and a new API; not required for a single-site server |
-| ALPN default | `Prefer(["h2","http/1.1"])`; `Require` for h2-only endpoints | `Require` by default breaks clients without ALPN; `Prefer` lets HTTP/1.1 work |
+| Server vs client first | Server first (P2T-b); client is a separate design (P2T-c) | Client-first delays the HTTPS server goal and adds hostname/trust work |
+| Session resumption | **Disabled entirely in v1; no option, no 0-RTT** | Ticket keys, rotation and replay surface are unnecessary for the first server |
+| SNI multi-cert | One certificate per context in v1; SNI logging only, never authorization; C-side multi-cert later | Multi-cert needs a C SNI selector, cert table, own-cert SAN API and a new review |
+| ALPN default | `Prefer(["http/1.1"])`; `h2` only when HTTP/2 exists; `Require` after the ClientHello-presence fix | Advertising h2 before h2 exists negotiates a protocol the server cannot speak |
 | Client certificate default | Server `None`; client `Required` | Server `Required` by default breaks public clients; client `None` by default silently disables authentication |
 | Private key encryption | Unencrypted PEM in v1; encrypted keys need a `SecretBytes` design | Passphrase in an obo string is not zeroized; prompting on stdin is unacceptable |
 | Cipher policy | Explicit AEAD/ECDHE lists + security level 2 | OpenSSL defaults change across versions; explicit policy is reviewable |
-| Error API | Outcome types for want/close; fatal `Failure` codes | Using one error code for both readiness and failure is ambiguous |
-| Handshake helper | Primary step API; `handshakeUntil` for bounded loops | A blocking helper with no deadline is a DoS vector |
+| Error API | One `systls` code family; outcomes carry `want`; fatal `Failure` codes with packed payloads | Mixed systems/TLS codes and payload-less errors are ambiguous |
+| Transport field | Non-optional; target `pub res` + private `transport`/explicit constructor; v0.11 public field documented as trusted-obo hazard | Optional/public transport creates a `none` state and silent redirect/close |
+| Handshake helper | Step API only in P2T-b; `handshakeUntil` deferred | A helper without cancellation wake and a shared-reactor rule is unimplementable |
 | Context close with sessions | `Busy`; close sessions first | Allowing context close with live sessions complicates policy lifetime and counters |
-| Ticket key sharing | Per-process keys if enabled; no cross-process in v1 | Shared keys need a C callback and a provisioning/rotation design |
+| Ticket key sharing | Not enabled in v1 | Shared keys need a C callback and a provisioning/rotation design |
 | QUIC/HTTP/3 | Separate later design; OpenSSL 3.5+ or a QUIC library | Emulating QUIC on 3.0 is unsafe and non-conformant |
-| Manifest extension | Add `openssl` provenance/sidecar and `link_flags` after toolkit review | Cramming metadata into `resolved_libraries` loses version/header detail |
+| Manifest extension | Add `openssl` provenance/sidecar and `link_flags`; the build must verify the sidecar | Cramming metadata into `resolved_libraries` loses version/header detail |
 
 ## 14. Invariants and review gates
 
@@ -2006,73 +2363,115 @@ The split above is consistent with that range; P2T-c/d/e can land separately.
 1. No `SSL*`, `BIO*`, `X509*`, `EVP_PKEY*`, C struct or function pointer
    crosses into obo. The C ABI is scalar `long` plus bounded buffer tokens.
 2. No C callback calls obo, allocates an obo object or retains an obo pointer.
-3. A `TlsSession` owns exactly one `Stream`; `close` closes it exactly once;
-   record drop never closes it.
+3. A `TlsSession` owns exactly one non-optional `Stream`; `close` closes it
+   exactly once; record drop never closes it. The v0.11 public `transport`
+   field is a documented trusted-obo hazard, not a security boundary.
 4. A `TlsContext` cannot close while sessions live; `closeContext` returns
-   `Busy`.
+   `Busy`; a failed setter/load puts it in `Poisoned`.
 5. `WantRead`/`WantWrite` are outcomes, never fatal errors; a `Result.err`
    fails that operation (which may be recoverable, for example `Busy`, or
    connection-fatal, for example `ProtocolViolation`).
 6. No hidden retry, no `SSL_MODE_AUTO_RETRY`, no deadline restart, no
    renegotiation, no fallback to a lower TLS version.
-7. A transport EOF without close_notify is `Truncated`, never `Eof`.
-8. All buffers are bounded: plaintext, ciphertext, handshake, certificate,
-   key, ALPN, sessions. Over-cap fails closed.
-9. Every C error is copied into a bounded diagnostic; the error queue is
-   drained; no pointer escapes.
-10. Private key bytes are never logged and are zeroized in C; the obo input
+7. No output stranding: `Done`/`Data`/`Wrote` carry `want` when output remains;
+   `flush` is the explicit drain; `handshakeStep` never returns `Done` with
+   pending Finished/close_notify output.
+8. A transport EOF without close_notify is `Truncated`, never `Eof`;
+   `SSL_OP_IGNORE_UNEXPECTED_EOF` is not set.
+9. Every `systls` public error is in the single TLS code family; platform/
+   stream errors are translated, with `Transport{sysCode}` payload. Every C
+   error is copied into a bounded diagnostic; the queue is drained; no pointer
+   escapes.
+10. ALPN `Require` rejects a missing extension in a C ClientHello callback and
+    a no-overlap in the select callback; neither can silently succeed.
+11. All buffers are bounded: plaintext, ciphertext, handshake, certificate,
+    key, ALPN, sessions and the aggregate `maxContextBytes`. Over-cap fails
+    closed.
+12. Private key bytes are never logged and are zeroized in C; the obo input
     array is caller-owned and not zeroized.
-11. TLS is hosted-only and single-threaded in v1; no shell crosses a worker;
+13. TLS is hosted-only and single-threaded in v1; no shell crosses a worker;
     no `fork` with live TLS.
-12. The build records OpenSSL package, header hashes, library paths/hashes,
+14. The build records OpenSSL package, header hashes, library paths/hashes,
     build IDs, version/symbol nodes and toolchain; runtime checks the major
     version and required symbols.
 
 ### 14.2 Review questions
 
 - Is the systems platform registry (not a second `cres` table) the right
-  identity owner for TLS contexts/sessions?
-- Is `TlsSession.transport: ?stream::Stream` acceptable given public fields,
-  or should TLS wait for private-by-default fields / an explicit stream
-  transfer? The design documents the alias/steal limitation, but a reviewer
-  may prefer a platform transfer.
-- Is the `handshakeUntil` helper in P2T-b, or should only the step API ship
-  first?
-- Should ALPN default to `Prefer` or `Require` for the first HTTPS server?
-- Is per-process ticket resumption worth enabling at all in v1, or should
-  tickets be disabled with no option until a shared-key design exists?
-- Should client mode be P2T-c or a separate follow-on design with its own
-  trust-store policy?
+  identity owner for TLS contexts/sessions? (Recommendation: yes.)
+- When does private-by-default field visibility land, and can `pub res` +
+  private `transport` be adopted at that point? Until then the public field is
+  a documented trusted-obo hazard.
+- What exact `sysreactor`/`syswaitio` contract is needed before a future
+  `handshakeUntil`/cancellation helper can be reviewed? P2T-b ships steps only.
+- Is `Prefer(["http/1.1"])` the right default until HTTP/2 exists, and what
+  listener policy should a `nil` ALPN result have?
 - Is the proposed `PeerIdentity` field set sufficient for HTTP authentication,
   or does the HTTP layer need raw certificate DER/chain access? (Raw DER would
   be a bounded byte copy, not an `X509*`.)
 - Should the build require an exact OpenSSL patch (`0x300000d0`) or accept any
-  compatible `3.0.x`? The recommendation is major-3 minimum and exact only for
-  a pinned deployment.
+  compatible `3.0.x`? Recommendation: major-3 minimum, exact only for a
+  pinned deployment.
 - Is a `tls-provenance.json` sidecar preferable to extending the cinterop
-  manifest schema? The cbind format is experimental; a sidecar avoids a
-  schema change but duplicates verification.
+  manifest schema? The sidecar must be verified by the build/link gate.
 - Does the cinterop signature-check include-dir fix belong in P2T-a or in a
   separate cinterop patch? It is a prerequisite for a private `libssl-dev`
   sysroot.
 - Should the cinterop link always use RELRO/NOW, or only for TLS? Always is
   safer but changes every native package; a TLS-only option is smaller.
-- Does the HTTP/2 design require any TLS extension beyond ALPN (for example
-  session tickets for connection coalescing)? The TLS adapter should not grow
-  HTTP-specific policy.
+- Does the HTTP/2 design require any TLS extension beyond ALPN? (No tickets
+  are available in v1; do not grow HTTP-specific policy in TLS.)
 
 ## 15. Conclusion
 
 The implementable path is narrow and reviewable: system OpenSSL 3.0, required
-headers, memory BIOs, a `TlsContext`/`TlsSession` pair over `sysstream`, a
-bounded pump with explicit `WantRead`/`WantWrite`, C-only ALPN/SNI/info
-callbacks, explicit close and a strict TLS 1.2/1.3 policy. It does not parse
-HTTP, does not expose OpenSSL pointers, does not call back into obo and does
-not hide retries or deadlines. The first deliverable is a server-side TLS echo
-that `openssl s_client` can drive; HTTP/1.1 and HTTP/2 consume the same byte
-stream after their own designs land. QUIC/HTTP/3 and client mode are separate
-follow-ons.
+headers, memory BIOs, a non-optional owned `TlsContext`/`TlsSession` pair over
+`sysstream`, a bounded step pump with explicit `WantRead`/`WantWrite` and
+`flush`, ALPN presence enforced by a C ClientHello callback plus a select
+callback, C-only SNI/info callbacks, explicit close and a strict TLS 1.2/1.3
+policy. It does not parse HTTP, expose OpenSSL pointers, call back into obo,
+hide retries or return `Done` with stranded Finished/close_notify output. The
+first deliverable is a server-side TLS echo that `openssl s_client` can drive;
+HTTP/1.1 and HTTP/2 consume the same byte stream after their own designs land.
+QUIC/HTTP/3 and client mode are separate follow-ons.
 
 No implementation, compiler change, ABI change, version reservation, merge,
-push or seed promotion is authorized by this note. Stop for independent
-review.
+push or seed promotion is authorized by this note. Stop for focused
+independent re-review.
+
+### 15.1 Resolution map for the `ea02b29` review
+
+| Review item | Resolution in revision 2 |
+|---|---|
+| B1 ALPN `Require` absent extension | C-only `SSL_CTX_set_client_hello_cb` checks `SSL_client_hello_get0_ext(...ALPN...)`; absent -> `SSL_AD_MISSING_EXTENSION` + `SSL_CLIENT_HELLO_ERROR`; `AlpnRequired`. No-overlap remains select-callback alert 120/`NoApplicationProtocol`. Tests assert both variants. |
+| B2 stranded output / no flush | Added `flush`/`FlushOutcome`; every step flushes prior output first; `handshakeStep` returns `Done` only when C staging and write BIO are empty; `readSome` flushes before waiting; `writeSome(0)` is explicitly not a flush. |
+| B3 accepted bytes + want | `Wrote{count,want}`, `Data{bytes,want}`, `Eof{want}`, `Sent{want}`, `PeerClosed{want}`; `want` is `None/Read/Write/ReadWrite`; no replay. |
+| B4 `handshakeUntil` / cancellation / shared reactor | Removed from P2T-b. Step API + `watch` + `reactor::wait` with one absolute deadline; `forever()` removed. Helper deferred until reactor/waitio has a cancellation-wake contract. |
+| B5 optional public transport | `transport` is non-optional `stream::Stream`; target `pub res` + private `transport`; v0.11 public-field replacement is documented as a trusted-obo hazard, not a security boundary; no `none` state. |
+| B6 partial policy/trust | `setTrustedCertificates` replaces the store atomically; other setters stage/validate and poison the context on failure; `Poisoned` state; tests for Nth-cert failure. |
+| M1 moving write buffer | `SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER` + stable C staging; test retry after `WANT_*` with moved buffer. |
+| M2 required client cert | Map `SSL_R_PEER_DID_NOT_RETURN_A_CERTIFICATE` and `SSL_R_TLSV13_ALERT_CERTIFICATE_REQUIRED` to `NoPeerCertificate`; exact test. |
+| M3 alert precedence | Info callback separates received/sent alerts; only received -> `ProtocolAlert`; `AlpnRequired`/`NoApplicationProtocol`/`NoPeerCertificate` checked first. |
+| M4 pending counters | `ciphertextPending = rbio + wbio + C staging`; `plaintextPending = SSL_pending`; `pending(s): Pending`. |
+| M5 aggregate cap | `maxContextBytes`, default 64 MiB; charge/release; `contextBytes`/`maxContextBytes`; test. |
+| M6 revocation | Explicit v1 limitation: chain/time/hostname only, no CRL/OCSP; revoked cert accepted test. |
+| M7 error namespace/payload | One `systls` code family; platform/stream translated; `Transport{sysCode}`/`VerifyFailed{code}`/`ProtocolAlert{description}` packed and decoded by `failure(code)`; exact-family tests. |
+| M8 two writes per step | One transport write per step; `Wrote{n,want}` reports new output without a second write; `shutdownStep` reports `Sent{want}`. |
+| M9 unexpected EOF | `SSL_OP_IGNORE_UNEXPECTED_EOF` not set; `SSL_R_UNEXPECTED_EOF_WHILE_READING` -> `Truncated`; mid-record test. |
+| M10 default ALPN h2 | `serverOptions()`/`clientOptions()` default `Prefer(["http/1.1"])`; `h2` only after HTTP/2; P2T-d test. |
+| M11 `SSL_CERT_FILE`/`SSL_CERT_DIR` | Documented; `useSystemTrustStore` inherits them; explicit bundle recommended; test. |
+| M12 shared error queue | Documented: adapter clears/drains only around its calls; other components must read errors immediately. |
+| M13 hosted qualification | Fixture now asserts provider load, `RAND_bytes`, `pthread_once`, clock/mmap, TLS error queue, atexit/`OPENSSL_cleanup`, post-cleanup no-crash. |
+| M14 cert/key ownership | `SSL_CTX_use_certificate`/`use_PrivateKey` refcount; free parsed `X509`/`EVP_PKEY`; `add_extra_chain_cert`/store take ownership; failure-path test. |
+| M15 SNI authorization | SNI is logging only in v1; no own-cert SAN API; `PeerIdentity` is peer cert, not server cert. |
+
+Minor corrections: signature-check line is `cinterop.py:790`; QUIC check uses
+targeted `SSL_QUIC|OSSL_QUIC|QUIC_` patterns and notes `..._QUICK` false
+positives; hosted-startup wording is qualified; the example uses `clock::` and
+references/`watch` (no `forever`/`handshakeUntil`); the DAG omits
+`sysbuffer`/`syswaitio`; the phase estimate is 4–7 and explicitly supersedes
+3–6; P2T is blocked on P2 approval; `s_client` resumption guidance uses
+`-sess_out`/`-sess_in`; `Counts` is declared once; TLS 1.3 vs 1.2 cipher
+setters are documented separately; system trust paths are additive but replaced
+atomically; `ProtocolAlert` is received-only; `max_cert_list` return convention
+is noted; `handshakeStep` makes one SSL call.
