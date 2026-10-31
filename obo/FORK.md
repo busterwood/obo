@@ -5684,28 +5684,32 @@ bits in GPR/stack words; freestanding C helpers 41–55 use C `double`/SSE2
 internally and integer-only arguments/results. Seed 0.8 still builds the
 compiler source because the compiler itself uses no float syntax.
 
-Measured direct self-compile: `2,028,976` peak bytes; source is `13,371`
-lines / `501,497` bytes, binary `557,057` bytes, runtime text/data
-`18,240`/`67,360`. The parser alone adds about `20,224` bytes (private
-no-parser variant: `2,008,752`).
+The original F1/F2 checkpoint measured `2,028,976` peak bytes; the exact
+converter checkpoint is `2,026,816` direct (`2,026,832` stage 3), source
+`13,380` lines / `502,674` bytes, binary `561,153` bytes, runtime text/data
+`23,904`/`67,360`.
 
 **Numeric-branch budget (user-approved 2026-10-31).** The numeric worktree
 uses `obo/tests/peak_budget.py` with `PEAK_BUDGET = 2_500_000` decimal bytes.
 This is not a change to the historical lambda release budget, which remains
 `2,000,000` in its own record. The zero-array heap-allocation mutant is
-additionaly judged by the same-source self-compile delta: the measured
-baseline is 2,029,376 and the mutant 2,075,744, a 46,368-byte regression; the
-shared oracle requires at least 30,000 bytes over baseline. This keeps the
+additionally judged by the same-source self-compile delta: after the exact
+converter the fresh measured baseline is 2,027,232 and the mutant 2,072,832, a
+45,600-byte regression (historical pre-float delta 44,672); the shared oracle
+requires at least 30,000 bytes over baseline. This keeps the
 empty-array saving caught even when both peaks are below the new absolute cap.
 No check was weakened.
 
-Tests: `tests/float_f1.py` passes (pinned literal bits, 295 finite seeded random
-literals, arithmetic/NaN/±Inf/signed-zero/subnormal, scalars/params/returns,
-lambda/function-type calls, containers, module signature, int conversion, error
-cases, GC poison); `run_fork.py` 1544 passed, 0 failed; `port_test.py` 573/573;
-`sym_test.py` 42 passed; `doc_check.py` 62 examples, 0 problems. Unimplemented:
-float text parse/format/print, float constants/`.sym` release format, and the
-full container/symbol release matrix.
+Tests after the converter fix: `tests/float_f1.py` passes 11 groups (pinned
+literal bits, 295 finite seeded random literals, exact fixed counterexamples,
+long mantissas, arithmetic/NaN/±Inf/signed-zero/subnormal,
+scalars/params/returns, lambda/function-type calls, containers, module
+signature, int conversion, exponent bounds, error cases, GC poison);
+`run_fork.py` 1544 passed; `port_test.py` 573/573; `sym_test.py` 42 passed;
+`doc_check.py` 62 examples, 0 problems. The audit's independent literal corpus
+(199 finite cases) and parse corpus (384 cases) both pass. Unimplemented:
+shortest formatting, float constants/`.sym` release format, float-to-int, and
+the full container/symbol release matrix.
 
 ## Float F2 checkpoint (unreleased, WIP)
 
@@ -5724,19 +5728,24 @@ signs, returns EINVAL 22 for malformed text and ERANGE 34 for overflow;
 underflow yields signed zero/subnormal. Literal overflow remains a compile
 error, distinct from this runtime `Result`.
 
-Implementation: runtime slots 56–58 append after 40; the parse uses the same
-exact 4x32-limb/sticky conversion in freestanding C with `divq` limb division,
-not `strtod`, `long double` rounding or libgcc. Formatting uses `long double`
-for the provisional 17-digit display path. Runtime text/data are
-`22,688`/`67,360`; no undefined runtime symbols.
+Implementation: runtime slots 56–58 append after 40. After the independent
+audit, both compiler and runtime use an exact base-2^16/2^32 big-integer
+converter: up to 1200 significant decimal digits plus sticky, exact rational
+comparison, binary search against binary64 neighbours, and a midpoint/tie
+decision. This replaces the broken approximate 4x32 accumulator; it is not
+`strtod`, host float, `long double` rounding, libc or libgcc. Formatting remains
+a provisional `long double` 17-digit display path. Runtime text/data are
+`23,904`/`67,360`; no undefined runtime symbols.
 
-Measured direct self-compile: `2,031,184` peak bytes (stage-3 `2,031,200`),
-source `13,384` lines / `502,001` bytes, binary `561,153` bytes. Under the
-approved `2,500,000` cap with `468,816` bytes headroom. Fixed point holds
-(stage2 == stage3). `tests/float_f1.py` now has 8 groups including 250 parse/format candidates (247 finite round-trip cases), special spellings, malformed/overflow `Result` codes,
-and exact parse bits against Python struct. The F1 128-bit literal conversion
-still needs an independent adversarial IEEE edge audit; the tests are not a
-claim that it is proven for every input.
+After the exact converter, direct self-compile is `2,026,816` peak bytes
+(stage-3 `2,026,832`), source `13,380` lines / `502,674` bytes, binary
+`561,153` bytes. Under the approved `2,500,000` cap with `473,184` bytes
+headroom. Fixed point holds (stage2 == stage3). `tests/float_f1.py` has 11
+groups including 250 parse/format candidates (247 finite round-trip cases),
+six exact audit counterexamples with pinned SHA-256 text, long mantissas,
+huge-exponent bounds, special spellings, malformed/overflow `Result` codes,
+and expected bits from an independent Fraction model. The independent audit
+corpora pass; targeted fix re-review is still required.
 
 Unimplemented: shortest-round-trip formatting, float constants and public
 `.sym` release format/version, float-to-int, and the final public API/style

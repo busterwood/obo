@@ -4,13 +4,12 @@
 This is a checkpoint runner, not a release gate.  It uses the worktree's
 compiler and runtime; it does not require a numeric OBO_VERSION or a new
 symbol-file format.  Exact literal bits are checked through the checkpoint-only
-floatBits diagnostic, against Python struct/float as an independent oracle.
+floatBits diagnostic, against an independent integer/Fraction oracle.
 """
 from __future__ import annotations
 
 import os
 import random
-import struct
 import subprocess
 import sys
 import tempfile
@@ -21,19 +20,29 @@ OBO = os.environ.get("OBO", os.path.join(FORK, "obo"))
 RT = FORK
 
 
+import float_conversion_vectors as fv
+from float_conversion_vectors import bits_for_text
+from fractions import Fraction
+
+
 def bits(literal: str) -> int:
     """Expected binary64 bits for a finite literal with f/F suffix."""
     text = literal[:-1]
-    return struct.unpack(">Q", struct.pack(">d", float(text)))[0]
+    b, over = bits_for_text(text)
+    if over:
+        raise AssertionError(f"expected finite literal: {literal}")
+    if b == 0 and text.strip().startswith("-"):
+        b = 1 << 63
+    return b
 
 
 def signed_bits(b: int) -> int:
     return b if b < (1 << 63) else b - (1 << 64)
 
 
-def run(cmd, **kw):
+def run(cmd, timeout=120, **kw):
     return subprocess.run(cmd, cwd=FORK, text=True, capture_output=True,
-                          timeout=120, **kw)
+                          timeout=timeout, **kw)
 
 
 def compile_src(src: str, d: str, name: str):
@@ -59,9 +68,12 @@ def run_ok(src: str, name: str, expected: list[str]) -> None:
         raise AssertionError(f"{name}: output {got!r} != {expected!r}")
 
 
-def compile_error(src: str, name: str, needle: str) -> None:
+def compile_error(src: str, name: str, needle: str, timeout: int = 120) -> None:
     d = tempfile.mkdtemp(prefix="float-f1-err-")
-    r, _ = compile_src(src, d, name)
+    p = os.path.join(d, name + ".obx")
+    with open(p, "w") as f:
+        f.write(src)
+    r = run([OBO, p, "-o", os.path.join(d, name), "--rt", RT], timeout=timeout)
     if r.returncode == 0:
         raise AssertionError(f"{name}: expected a compile error")
     if needle not in r.stderr:
@@ -100,16 +112,86 @@ def test_literal_bits() -> int:
         ds = "".join(str(rng.randrange(10)) for _ in range(nd + nf))
         text = ds[:-nf] + "." + ds[-nf:] if nf else ds
         lit = f"{sign}{text}e{rng.randint(-320, 300)}f"
-        f = float(lit[:-1])
-        if f in (float("inf"), float("-inf")):
+        b, over = bits_for_text(lit[:-1])
+        if over:
             continue
-        lines.append(f"    if floatBits({lit}) != 0x{bits(lit):016x} {{ println({n}) }}")
+        if b == 0 and sign == "-":
+            b = 1 << 63
+        lines.append(f"    if floatBits({lit}) != 0x{b:016x} {{ println({n}) }}")
         n += 1
     lines.append("    println(-1)")
     lines.append("}")
     run_ok("\n".join(lines) + "\n", "literal-random", ["-1"])
     return len(literals) + n
 
+
+
+def test_fixed_conversion_cases() -> None:
+    cases = fv.fixed_cases()
+    lines = ["fn main() {"]
+    for i, c in enumerate(cases):
+        h = fv.sha256_text(c["text"])
+        assert h == fv.FIXED_SHA[c["name"]], (c["name"], h)
+        lines.append(f'    if floatBits({c["text"]}f) != 0x{c["bits"]:016x} {{ println({i}) }}')
+        lines.append(f'    let r{i} = parseFloat("{c["text"]}")')
+        lines.append(f'    match r{i} {{ ok(v) {{ if floatBits(v) != 0x{c["bits"]:016x} {{ println({i}) }} }} err(m,c) {{ println({i}) }} }}')
+    long_cases = fv.random_cases(0x51A6, 2, long=True)
+    base = len(cases)
+    for k, c in enumerate(long_cases):
+        i = base + k
+        lines.append(f'    if floatBits({c["text"]}f) != 0x{c["bits"]:016x} {{ println({i}) }}')
+        lines.append(f'    let r{i} = parseFloat("{c["text"]}")')
+        lines.append(f'    match r{i} {{ ok(v) {{ if floatBits(v) != 0x{c["bits"]:016x} {{ println({i}) }} }} err(m,c) {{ println({i}) }} }}')
+    lines += ["    println(-1)", "}"]
+    run_ok("\n".join(lines) + "\n", "fixed-conversion", ["-1"])
+
+    threshold = fv.exact_decimal(Fraction(2) ** 1024 - Fraction(2) ** 970)
+    compile_error(f"fn main() {{ let x = {threshold}f }}\n",
+                  "overflow-threshold", "float literal out of range")
+
+    src = f'''fn main() {{
+    let a = parseFloat("{threshold}")
+    match a {{ ok(v) {{ println(0) }} err(m,c) {{ println(c) }} }}
+    let b = parseFloat("1e18446744073709551616")
+    match b {{ ok(v) {{ println(0) }} err(m,c) {{ println(c) }} }}
+    let c = parseFloat("1e-18446744073709551616")
+    match c {{ ok(v) {{ println(floatBits(v)) }} err(m,c) {{ println(c) }} }}
+    let d = parseFloat("0e999999999999999999")
+    match d {{ ok(v) {{ println(floatBits(v)) }} err(m,c) {{ println(c) }} }}
+    let e = parseFloat("0.00e4002")
+    match e {{ ok(v) {{ println(floatBits(v)) }} err(m,c) {{ println(c) }} }}
+}}
+'''
+    run_ok(src, "parse-bounds", ["34", "34", "0", "0", "0"])
+
+
+def test_exponent_bounds() -> None:
+    for lit in ("1e18446744073709551616f", "1e18446744073709551618f",
+                "1e999999999999999999999f"):
+        compile_error(f"fn main() {{ let x = {lit} }}\n",
+                      "huge-positive", "float literal out of range", timeout=5)
+    src = r'''fn main() {
+    if floatBits(1e-18446744073709551616f) != 0 { println(0) }
+    if floatBits(1e-100000000000000000f) != 0 { println(1) }
+    if floatBits(0e999999999999999999f) != 0 { println(2) }
+    if floatBits(-0e999999999999999999f) != 0x8000000000000000 { println(3) }
+    println(-1)
+}
+'''
+    run_ok(src, "huge-negative-zero", ["-1"])
+
+
+def test_int_conversions() -> None:
+    vals = [0, 1, 3, 9007199254740992, 9007199254740993,
+            9223372036854775807]
+    lines = ["fn main() {"]
+    for i, n in enumerate(vals):
+        b, over = fv.bits_for_fraction(Fraction(n))
+        assert not over
+        lines.append(f"    if floatBits(float({n})) != 0x{b:016x} {{ println({i}) }}")
+    lines.append("    println(-1)")
+    lines.append("}")
+    run_ok("\n".join(lines) + "\n", "int-conversions", ["-1"])
 
 def test_arithmetic() -> None:
     src = r'''fn main() {
@@ -263,10 +345,11 @@ def test_parse_random_and_format_roundtrip() -> None:
         text = ds[:-nf] + "." + ds[-nf:] if nf else ds
         es = "e" + str(rng.randint(-320, 300)) if rng.randrange(2) else ""
         text = f"{sign}{text}{es}"
-        f = float(text)
-        if f in (float("inf"), float("-inf")):
+        b, over = bits_for_text(text)
+        if over:
             continue
-        b = struct.unpack(">Q", struct.pack(">d", f))[0]
+        if b == 0 and text.startswith("-"):
+            b = 1 << 63
         lines.append(f'    let a{n} = parseFloat("{text}")')
         lines.append(f'    match a{n} {{ ok(v) {{ if floatBits(v) != 0x{b:016x} {{ println({n}) }}; let t = string(v); let r = parseFloat(t); match r {{ ok(w) {{ if floatBits(w) != floatBits(v) {{ println({n}) }} }} err(m,c) {{ println({n}) }} }} }} err(m,c) {{ println({n}) }} }}')
         n += 1
@@ -308,6 +391,9 @@ def main() -> int:
     total = 0
     test_literal_bits(); total += 1
     test_arithmetic(); total += 1
+    test_fixed_conversion_cases(); total += 1
+    test_exponent_bounds(); total += 1
+    test_int_conversions(); total += 1
     test_scalars_and_lambdas(); total += 1
     test_containers(); total += 1
     test_module_signature(); total += 1

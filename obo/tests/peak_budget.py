@@ -6,13 +6,14 @@ budget (which remains 2,000,000 in its own release record).
 
 The empty-array fault is a *savings regression*: the normal runtime shares
 zero-capacity array blocks, while the zero-allocation mutant allocates a heap
-block for every empty array.  Its previous measured self-compile delta was
-44,672 bytes (baseline 1,963,664 -> mutant 2,008,336).  The absolute cap alone
-cannot catch it once the baseline is above 2,000,000, so mutate_io additionally
-requires the mutant's self-compile peak to exceed the same-source baseline by
-at least EMPTY_ARRAY_MIN_DELTA.  Path/temp-dir variance is only hundreds of
-bytes; 30,000 bytes is a deliberately conservative floor below the known
-shared-block cost and above that noise.
+block for every empty array.  The pre-float historical delta was 44,672 bytes
+(baseline 1,963,664 -> mutant 2,008,336); after the exact float converter the
+fresh numeric-branch delta is 45,600 bytes (baseline 2,027,232 -> mutant
+2,072,832).  The absolute cap alone cannot catch it once the baseline is above
+2,000,000, so mutate_io additionally requires the mutant's self-compile peak to
+exceed the same-source baseline by at least EMPTY_ARRAY_MIN_DELTA.  Path/temp-dir
+variance is only hundreds of bytes; 30,000 bytes is a deliberately conservative
+floor below both measured deltas and above that noise.
 """
 
 PEAK_BUDGET = 2_500_000

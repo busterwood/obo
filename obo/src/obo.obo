@@ -140,9 +140,6 @@ var sym = -1              // kind of the current token: "ident", "int", "==", "f
 var sval = ""             // identifier text or string literal bytes
 var ival = 0              // integer or character value
 var ftext = ""           // the text of a float literal, converted when it is used
-var flE = 0               // binary exponent of the float-literal accumulator
-var flSticky = false      // nonzero bits below the float-literal accumulator
-var flGuard = false       // the guard bit of the last right shift
 var tokSeq = 0                   // the tokens read so far (the index of the current one)
 var tline = 0             // where the current token starts
 var tcol = 0
@@ -382,228 +379,215 @@ fn scanNumber() {
 }
 
 // ================================================= float literal conversion
-// A 4x32-bit accumulator with a binary exponent and a sticky bit.  It keeps
-// 128 significant bits, which is enough to round every finite decimal literal
-// to binary64 exactly; no host float or external process is used.
-const FL_MASK = 0xFFFFFFFF
-var flW = new []int(4)
+// Exact decimal-to-binary64 conversion.  A base-2^16 big integer holds the
+// significand, and a separate decimal exponent drives an exact rational
+// comparison against binary64 candidates.  Up to 1200 significant decimal
+// digits are retained plus a sticky flag; 1200 exceeds the at-most-1077-digit
+// terminating decimal of any binary64 midpoint, so truncation is exact for
+// round-to-nearest binary64 (the tail can only break an otherwise exact tie).
+const FL_MAX_SIG = 1200
 
-fn flZero() { for i in 0..4 { flW[i] = 0 } }
-fn flAny(): bool { return flW[0] != 0 || flW[1] != 0 || flW[2] != 0 || flW[3] != 0 }
-fn flBitLen32(v: int): int {
-    var n = 0
-    var x = v
-    while x > 0 { n += 1; x = x >> 1 }
-    return n
+fn biTrim(a: []int): []int {
+    var n = len(a)
+    while n > 0 && a[n - 1] == 0 { n -= 1 }
+    if n != len(a) { truncate(a, n) }
+    return a
 }
-fn flBitLen(): int {
-    var i = 3
+fn biFromU64(v: int): []int {
+    let a = new []int(0)
+    var x = v
+    while x > 0 {
+        append(a, x & 0xFFFF)
+        x = x >> 16
+    }
+    return biTrim(a)
+}
+fn biMulSmall(a: &[]int, m: int): []int {
+    let out = new []int(0)
+    var carry = 0
+    for i in 0..len(a) {
+        let v = a[i] * m + carry
+        append(out, v & 0xFFFF)
+        carry = v >> 16
+    }
+    while carry > 0 {
+        append(out, carry & 0xFFFF)
+        carry = carry >> 16
+    }
+    return biTrim(out)
+}
+fn biAddSmall(a: &[]int, d: int): []int {
+    let out = new []int(0)
+    var carry = d
+    for i in 0..len(a) {
+        let v = a[i] + carry
+        append(out, v & 0xFFFF)
+        carry = v >> 16
+    }
+    while carry > 0 {
+        append(out, carry & 0xFFFF)
+        carry = carry >> 16
+    }
+    return biTrim(out)
+}
+fn biShl(a: &[]int, bits: int): []int {
+    if bits <= 0 {
+        let same = new []int(0)
+        for i in 0..len(a) { append(same, a[i]) }
+        return same
+    }
+    let word = bits / 16
+    let rem = bits % 16
+    let out = new []int(0)
+    for i in 0..word { append(out, 0) }
+    var carry = 0
+    for i in 0..len(a) {
+        let v = (a[i] << rem) + carry
+        append(out, v & 0xFFFF)
+        carry = v >> 16
+    }
+    while carry > 0 {
+        append(out, carry & 0xFFFF)
+        carry = carry >> 16
+    }
+    return biTrim(out)
+}
+fn biCmp(a: &[]int, b: &[]int): int {
+    if len(a) < len(b) { return -1 }
+    if len(a) > len(b) { return 1 }
+    var i = len(a) - 1
     while i >= 0 {
-        if flW[i] != 0 { return i * 32 + flBitLen32(flW[i]) }
+        if a[i] < b[i] { return -1 }
+        if a[i] > b[i] { return 1 }
         i -= 1
     }
     return 0
 }
-fn flShl(n: int) {
-    if n <= 0 { return }
-    if n >= 128 { flZero(); return }
-    let wi = n / 32
-    let bi = n % 32
-    let out = new []int(4)
-    var i = 3
-    while i >= 0 {
-        let src = i - wi
-        if src >= 0 {
-            var v = (flW[src] << bi) & FL_MASK
-            if bi > 0 && src - 1 >= 0 {
-                v = v | ((flW[src - 1] >> (32 - bi)) & FL_MASK)
-            }
-            out[i] = v
+fn biMulBig(a: &[]int, b: &[]int): []int {
+    let out = new []int(0)
+    for i in 0..len(a) + len(b) + 1 { append(out, 0) }
+    for i in 0..len(a) {
+        var carry = 0
+        for j in 0..len(b) {
+            let v = out[i + j] + a[i] * b[j] + carry
+            out[i + j] = v & 0xFFFF
+            carry = v >> 16
         }
-        i -= 1
-    }
-    for i in 0..4 { flW[i] = out[i] }
-}
-fn flShr(n: int): bool {
-    if n <= 0 { return false }
-    if n >= 128 {
-        let lost = flAny()
-        flZero()
-        return lost
-    }
-    let wi = n / 32
-    let bi = n % 32
-    let out = new []int(4)
-    var i = 0
-    while i < 4 {
-        let src = i + wi
-        if src < 4 {
-            var v = (flW[src] >> bi) & FL_MASK
-            if bi > 0 && src + 1 < 4 {
-                v = v | ((flW[src + 1] << (32 - bi)) & FL_MASK)
-            }
-            out[i] = v
+        var k = i + len(b)
+        while carry > 0 {
+            let v = out[k] + carry
+            out[k] = v & 0xFFFF
+            carry = v >> 16
+            k += 1
         }
-        i += 1
     }
-    var lost = false
-    var k = 0
-    while k < wi {
-        if flW[k] != 0 { lost = true }
-        k += 1
-    }
-    if bi > 0 && wi < 4 && (flW[wi] & ((1 << bi) - 1)) != 0 { lost = true }
-    for i in 0..4 { flW[i] = out[i] }
-    return lost
+    return biTrim(out)
 }
-fn flNormalize() {
-    let bl = flBitLen()
-    if bl > 128 {
-        let s = bl - 128
-        let lost = flShr(s)
-        flE += s
-        if lost { flSticky = true }
-    }
+fn biMulU64(a: &[]int, v: int): []int {
+    let b = biFromU64(v)
+    return biMulBig(a, &b)
 }
-fn flMul10() {
-    var carry = 0
-    for i in 0..4 {
-        let v = flW[i] * 10 + carry
-        flW[i] = v & FL_MASK
-        carry = v >> 32
-    }
-    if carry != 0 {
-        let s = flBitLen32(carry)
-        let out = new []int(4)
-        var i = 3
-        while i >= 0 {
-            var v = (flW[i] >> s) & FL_MASK
-            if s > 0 {
-                if i == 3 {
-                    v = v | ((carry << (32 - s)) & FL_MASK)
-                } else {
-                    v = v | ((flW[i + 1] << (32 - s)) & FL_MASK)
-                }
-            }
-            out[i] = v
-            i -= 1
+fn biPow10(k: int): []int {
+    var r = biFromU64(1)
+    var base = biFromU64(10)
+    var e = k
+    while e > 0 {
+        if (e & 1) != 0 { r = biMulBig(&r, &base) }
+        e = e >> 1
+        if e > 0 {
+            let sq = biMulBig(&base, &base)
+            base = sq
         }
-        if s > 0 && (flW[0] & ((1 << s) - 1)) != 0 { flSticky = true }
-        for i in 0..4 { flW[i] = out[i] }
-        flE += s
-        flNormalize()
     }
+    return r
 }
-fn flAddDigit(d: int) {
-    var carry = d
-    var i = 0
-    while i < 4 && carry != 0 {
-        let v = flW[i] + carry
-        flW[i] = v & FL_MASK
-        carry = v >> 32
-        i += 1
-    }
-    if carry != 0 {
-        let lost = (flW[0] & 1) != 0
-        var j = 3
-        while j > 0 {
-            flW[j] = (flW[j] >> 1) | ((flW[j - 1] & 1) << 31)
-            j -= 1
-        }
-        flW[0] = flW[0] >> 1
-        flW[3] = flW[3] | (1 << 31)
-        flE += 1
-        if lost { flSticky = true }
-        flNormalize()
-    }
-}
-fn flDiv10() {
-    let bl = flBitLen()
-    let k = 128 - bl
-    if k > 0 {
-        flShl(k)
-        flE -= k
-    }
-    var rem = 0
-    var i = 3
-    while i >= 0 {
-        let cur = (rem << 32) | flW[i]
-        flW[i] = cur / 10
-        rem = cur % 10
-        i -= 1
-    }
-    if rem != 0 { flSticky = true }
-}
-fn flLow64(): int { return flW[0] | (flW[1] << 32) }
-fn flBitAt(pos: int): bool {
-    if pos < 0 || pos >= 128 { return false }
-    return ((flW[pos / 32] >> (pos % 32)) & 1) != 0
-}
-fn flAnyBelow(pos: int): bool {
-    if pos <= 0 { return false }
-    var full = pos / 32
-    var i = 0
-    while i < full {
-        if flW[i] != 0 { return true }
-        i += 1
-    }
-    let rem = pos % 32
-    if rem > 0 && full < 4 && (flW[full] & ((1 << rem) - 1)) != 0 { return true }
-    return false
-}
-fn flLeftBits(k: int): int {
-    flGuard = false
-    flShl(k)
-    return flLow64()
-}
-fn flRightBits(k: int): int {
-    if k <= 0 { return flLeftBits(-k) }
-    if k >= 128 {
-        if flAny() { flSticky = true }
-        flGuard = false
-        flZero()
-        return 0
-    }
-    flGuard = flBitAt(k - 1)
-    if flAnyBelow(k - 1) { flSticky = true }
-    flShr(k)
-    return flLow64()
-}
-fn floatToBits(): int {
-    if !flAny() { return 0 }
-    let bl = flBitLen()
-    let ev = flE + bl - 1
-    if ev < -1022 {
-        let k = -(flE + 1074)
-        var q = 0
-        if k > 0 {
-            q = flRightBits(k)
+
+// Compare N*10^p (plus sticky below its last retained decimal unit) with
+// M*2^B.  p, pow and a are prepared once for a literal.
+fn cmpBin(n: &[]int, p: int, pow: &[]int, a: &[]int, sticky: bool,
+           M: int, B: int): int {
+    var c = 0
+    if p >= 0 {
+        if B >= 0 {
+            let mb = biFromU64(M)
+            let r = biShl(&mb, B)
+            c = biCmp(a, &r)
         } else {
-            q = flLeftBits(-k)
+            let l = biShl(a, -B)
+            let mb = biFromU64(M)
+            c = biCmp(&l, &mb)
         }
-        if flGuard && (flSticky || (q & 1) != 0) { q += 1 }
-        if q == 0 { return 0 }
-        if q >= (1 << 52) { return 1 << 52 }
-        return q
-    }
-    if ev > 1023 { fail("float literal out of range") }
-    var q = 0
-    var e2 = 0
-    if bl > 53 {
-        let sh = bl - 53
-        q = flRightBits(sh)
-        e2 = flE + sh
     } else {
-        q = flLeftBits(53 - bl)
-        e2 = flE - (53 - bl)
+        let mp = biMulU64(pow, M)
+        if B >= 0 {
+            let r = biShl(&mp, B)
+            c = biCmp(n, &r)
+        } else {
+            let l = biShl(n, -B)
+            c = biCmp(&l, &mp)
+        }
     }
-    if flGuard && (flSticky || (q & 1) != 0) { q += 1 }
-    if q == (1 << 53) { q = q >> 1; e2 += 1 }
-    let E = e2 + 52
-    if E > 1023 { fail("float literal out of range") }
-    if E >= -1022 { return ((E + 1023) << 52) | (q - (1 << 52)) }
-    return q
+    if c == 0 && sticky { return 1 }
+    return c
 }
+
+fn cmpBits(n: &[]int, p: int, pow: &[]int, a: &[]int, sticky: bool, bits: int): int {
+    if bits == 0 { return 1 }
+    let e = (bits >> 52) & 0x7ff
+    let f = bits & 0xfffffffffffff
+    var M = f
+    var B = -1074
+    if e != 0 {
+        M = (1 << 52) | f
+        B = e - 1023 - 52
+    }
+    return cmpBin(n, p, &pow, &a, sticky, M, B)
+}
+
+fn floatBitsFromParts(n: &[]int, p: int, sticky: bool): int {
+    if len(n) == 0 { return 0 }
+    var pk = p
+    if pk < 0 { pk = -pk }
+    let pow = biPow10(pk)
+    var a = new []int(0)
+    if p >= 0 { a = biMulBig(n, &pow) }
+    // 2^1024 - 2^970 is the overflow midpoint; equality is overflow.
+    if cmpBin(n, p, &pow, &a, sticky, (1 << 54) - 1, 970) >= 0 {
+        fail("float literal out of range")
+    }
+    var lo = 0
+    var hi = 0x7fefffffffffffff
+    while lo < hi {
+        let mid = lo + (hi - lo + 1) / 2
+        if cmpBits(n, p, &pow, &a, sticky, mid) >= 0 { lo = mid } else { hi = mid - 1 }
+    }
+    if cmpBits(n, p, &pow, &a, sticky, lo) == 0 { return lo }
+    // Value is above max finite but below the overflow midpoint.
+    if lo == 0x7fefffffffffffff { return lo }
+    var c = 0
+    if lo == 0 {
+        c = cmpBin(n, p, &pow, &a, sticky, 1, -1075)  // half the minimum subnormal
+    } else {
+        let hi2 = lo + 1
+        let elo = (lo >> 52) & 0x7ff
+        let ehi = (hi2 >> 52) & 0x7ff
+        var mlo = lo & 0xfffffffffffff
+        var mhi = hi2 & 0xfffffffffffff
+        var blo = -1074
+        var bhi = -1074
+        if elo != 0 { mlo = (1 << 52) | mlo; blo = elo - 1023 - 52 }
+        if ehi != 0 { mhi = (1 << 52) | mhi; bhi = ehi - 1023 - 52 }
+        var b = blo
+        if bhi < b { b = bhi }
+        let mmid = (mlo << (blo - b)) + (mhi << (bhi - b))
+        c = cmpBin(n, p, &pow, &a, sticky, mmid, b - 1)
+    }
+    if c < 0 { return lo }
+    if c > 0 { return lo + 1 }
+    if (lo & 1) == 0 { return lo }
+    return lo + 1
+}
+
 fn floatLiteralBits(s: string): int {
     var epos = -1
     var i = 0
@@ -619,56 +603,68 @@ fn floatLiteralBits(s: string): int {
         if s[i] == '.' { dot = i; break }
         i += 1
     }
-    var exp10 = 0
+    var explicit = 0
+    var huge = false
+    var eneg = false
     if epos >= 0 {
         var j = epos + 1
-        var neg = false
         if j < len(s) && (s[j] == '+' || s[j] == '-') {
-            neg = s[j] == '-'
+            eneg = s[j] == '-'
             j += 1
         }
         if j >= len(s) { fail("a float exponent needs digits") }
+        let ecap = len(s) + 5000
         var any = false
         while j < len(s) {
             if !isDigit(s[j]) { fail("bad float exponent") }
-            exp10 = exp10 * 10 + (s[j] - '0')
+            let dv = s[j] - '0'
+            if explicit > (ecap - dv) / 10 { huge = true } else { explicit = explicit * 10 + dv }
             any = true
             j += 1
         }
         if !any { fail("a float exponent needs digits") }
-        if neg { exp10 = -exp10 }
+        if eneg { explicit = -explicit }
     }
-    if dot >= 0 { exp10 = exp10 - (mend - dot - 1) }
-    flZero()
-    flE = 0
-    flSticky = false
-    flGuard = false
+    var n = new []int(0)
+    var sig = 0
+    var discarded = 0
+    var sticky = false
+    var frac = 0
+    var any = false
+    dot = -1
     i = 0
     while i < mend {
         let c = s[i]
-        if c != '.' && c != '_' {
+        if c == '.' { dot = i; i += 1 } else {
             if !isDigit(c) { fail("bad float literal") }
-            flMul10()
-            flAddDigit(c - '0')
-        }
-        i += 1
-    }
-    if exp10 > 0 {
-        var j = 0
-        while j < exp10 {
-            flMul10()
-            if flE > 1100 { fail("float literal out of range") }
-            j += 1
-        }
-    } else if exp10 < 0 {
-        var j = 0
-        while j < -exp10 {
-            flDiv10()
-            if flBitLen() == 0 && flE < -1300 { return 0 }
-            j += 1
+            any = true
+            if dot >= 0 { frac += 1 }
+            let d = c - '0'
+            if sig == 0 && d == 0 {
+                i += 1
+            } else {
+                sig += 1
+                if sig <= FL_MAX_SIG {
+                    n = biMulSmall(&n, 10)
+                    n = biAddSmall(&n, d)
+                } else {
+                    discarded += 1
+                    if d != 0 { sticky = true }
+                }
+                i += 1
+            }
         }
     }
-    return floatToBits()
+    if !any { fail("a float literal needs digits") }
+    if len(n) == 0 { return 0 }
+    if huge {
+        if eneg { return 0 }
+        fail("float literal out of range")
+    }
+    var p = explicit - frac + discarded
+    if p > 4000 { fail("float literal out of range") }
+    if p < -4000 { return 0 }
+    return floatBitsFromParts(&n, p, sticky)
 }
 
 fn scanChar() {
