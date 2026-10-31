@@ -79,6 +79,12 @@ fn printHead(p: &hp::Parser): Result[bool] {
         let h = try hp::headerAt(p, i)
         println("H ", hexString(h.name), " ", hexString(h.value))
     }
+    let hv = try hp::headerValue(p, "Host")
+    if hv == nil {
+        println("HV none")
+    } else {
+        println("HV ", hexString(hv.name), " ", hexString(hv.value))
+    }
     let state = hp::continueState(p)
     println("CONT ", contText(&state))
     return ok(true)
@@ -144,6 +150,111 @@ fn pump(mut p: &hp::Parser, showNeed: bool, mark: bool): Result[bool] {
     return ok(false)
 }
 
+
+fn pumpHeadOnly(mut p: &hp::Parser, showNeed: bool, mark: bool): Result[bool] {
+    var guard = 0
+    var bodyPending = false
+    while guard < 100000 {
+        guard += 1
+        if bodyPending {
+            let ev = try hp::readBody(p, 2)
+            match ev {
+                BodyData {
+                    println("BODY ", len(ev.bytes), " ", hexBytes(&ev.bytes))
+                }
+                BodyEnd {
+                    println("END")
+                    for i in 0..hp::trailerCount(p) {
+                        let h = try hp::trailerAt(p, i)
+                        println("T ", hexString(h.name), " ", hexString(h.value))
+                    }
+                    let state = hp::continueState(p)
+                    println("CONTAFTER ", contText(&state))
+                    bodyPending = false
+                }
+                NeedRead {
+                    if showNeed { println("NEED") }
+                    return ok(true)
+                }
+                Error {
+                    println("ERR ", ev.status, " ", ev.message)
+                    println("FAILED")
+                    return ok(false)
+                }
+                Failed {
+                    println("FAILED")
+                    return ok(false)
+                }
+                Closed {
+                    println("CLOSED")
+                    return ok(false)
+                }
+                HeadReady {
+                    println("UNEXPECTEDHEAD")
+                    return ok(false)
+                }
+            }
+        } else {
+            let ev = try hp::nextHead(p)
+            match ev {
+                NeedRead {
+                    if showNeed { println("NEED") }
+                    return ok(true)
+                }
+                HeadReady {
+                    let shown = try printHead(p)
+                    if mark {
+                        let due = hp::continueDue(p)
+                        if due {
+                            let sent = try hp::markContinueSent(p)
+                            println("CONTSENT")
+                        }
+                    }
+                    let gate = hp::nextHead(p)
+                    match gate {
+                        ok(v) { println("GATE unexpected") }
+                        err(m, c) { println("GATE err ", c) }
+                    }
+                    bodyPending = true
+                }
+                Error {
+                    println("ERR ", ev.status, " ", ev.message)
+                    println("FAILED")
+                    return ok(false)
+                }
+                Failed {
+                    println("FAILED")
+                    return ok(false)
+                }
+                Closed {
+                    println("CLOSED")
+                    return ok(false)
+                }
+                BodyData {
+                    println("UNEXPECTEDBODY")
+                    return ok(false)
+                }
+                BodyEnd {
+                    println("UNEXPECTEDEND")
+                    return ok(false)
+                }
+            }
+        }
+    }
+    println("LOOP")
+    return ok(false)
+}
+
+fn headerEnd(data: &[]byte): int {
+    for i in 0..len(data) {
+        if i + 3 < len(data) && data[i] == '\r' && data[i + 1] == '\n' &&
+           data[i + 2] == '\r' && data[i + 3] == '\n' {
+            return i + 4
+        }
+    }
+    return len(data)
+}
+
 fn feedAll(mut p: &hp::Parser, data: &[]byte, chunk: int): Result[bool] {
     var pos = 0
     while pos < len(data) {
@@ -165,9 +276,68 @@ fn run(mode: string, limitsName: string, data: &[]byte): Result[bool] {
     let limits = limitsFor(limitsName)
     let made = try hp::makeParser(&limits)
     var p = made
-    var showNeed = mode == "whole" || mode == "mark"
+    var showNeed = mode == "whole" || mode == "mark" || mode == "headonly"
     var mark = mode == "mark"
     var terminal = false
+    let cap = limits.maxHeaderBytes + limits.maxHeaderLine
+    var chunk = 4096
+    if chunk > cap { chunk = cap }
+    if mode == "seq" || mode == "eof-feed" {
+        let split = headerEnd(data)
+        let first = new []byte(split)
+        for i in 0..split { first[i] = data[i] }
+        let second = new []byte(len(data) - split)
+        for i in split..len(data) { second[i - split] = data[i] }
+        let fed = try feedAll(&p, &first, chunk)
+        if mode == "eof-feed" {
+            let ended = try hp::eof(&p)
+        }
+        if fed {
+            let keep = try pump(&p, true, false)
+            if !keep { terminal = true }
+        } else {
+            terminal = true
+        }
+        let accepted2 = try feedAll(&p, &second, chunk)
+        println("FEED2 ", accepted2)
+        if accepted2 {
+            let keep2 = try pump(&p, true, false)
+            if !keep2 { terminal = true }
+        } else {
+            let keep2 = try pump(&p, true, false)
+            if !keep2 { terminal = true }
+        }
+        if !terminal {
+            let e = try hp::eof(&p)
+            let final = try pump(&p, true, false)
+        }
+        return ok(true)
+    }
+    if mode == "eof-buffered" {
+        let fed = try feedAll(&p, data, chunk)
+        if fed {
+            let ended = try hp::eof(&p)
+            let keep = try pump(&p, true, false)
+            if !keep { terminal = true }
+        } else {
+            terminal = true
+        }
+        return ok(true)
+    }
+    if mode == "headonly" {
+        let fed = try feedAll(&p, data, chunk)
+        if fed {
+            let keep = try pumpHeadOnly(&p, true, false)
+            if !keep { terminal = true }
+        } else {
+            terminal = true
+        }
+        if !terminal {
+            let e = try hp::eof(&p)
+            let final = try pumpHeadOnly(&p, true, false)
+        }
+        return ok(true)
+    }
     if mode == "byte" || mode == "frag" {
         var pos = 0
         var open = true
@@ -196,14 +366,12 @@ fn run(mode: string, limitsName: string, data: &[]byte): Result[bool] {
             pos += n
         }
     } else {
-        let cap = limits.maxHeaderBytes + limits.maxHeaderLine
-        var chunk = 4096
-        if chunk > cap { chunk = cap }
         let fed = try feedAll(&p, data, chunk)
         if fed {
             let keep = try pump(&p, showNeed, mark)
             if !keep { terminal = true }
         } else {
+            let keep = try pump(&p, true, mark)
             terminal = true
         }
     }

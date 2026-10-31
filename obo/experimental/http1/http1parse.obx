@@ -47,6 +47,8 @@ pub type Parser = ref record {
     errorStatus: int
     errorMessage: string
     eofSeen: bool
+    terminalClosed: bool
+    scan: int
     head: core::RequestInfo
     headReady: bool
     headEmitted: bool
@@ -160,6 +162,8 @@ pub fn makeParser(limits: &core::Limits): Result[Parser] {
         errorStatus: 0,
         errorMessage: "",
         eofSeen: false,
+        terminalClosed: false,
+        scan: 0,
         head: emptyInfo(),
         headReady: false,
         headEmitted: false,
@@ -215,6 +219,7 @@ fn compact(mut p: &Parser) {
 }
 
 fn consumeBytes(mut p: &Parser, n: int) {
+    p.scan = 0
     p.start += n
     if p.start == p.end {
         p.start = 0
@@ -225,7 +230,11 @@ fn consumeBytes(mut p: &Parser, n: int) {
 }
 
 pub fn feed(mut p: &Parser, data: &[]byte): Result[bool] {
-    if p.failed || p.state == S_FAILED { return ok(false) }
+    // After a clean EOF or a terminal Closed, input cannot be added. Buffered
+    // bytes from before the EOF may still be parsed by next/readBody.
+    if p.failed || p.state == S_FAILED || p.eofSeen || p.terminalClosed {
+        return ok(false)
+    }
     let n = len(data)
     if n == 0 { return ok(true) }
     if n > p.cap - p.end {
@@ -256,8 +265,14 @@ pub fn requestNumber(p: &Parser): int { return p.requestsStarted }
 // over-limit line fails the parser.
 fn findLine(mut p: &Parser, maxLine: int, tooLongStatus: int): int {
     let n = avail(p)
-    if n == 0 { return -1 }
-    var i = 0
+    if n == 0 {
+        p.scan = 0
+        return -1
+    }
+    // `scan` is relative to p.start and survives feed/compact. A one-byte feed
+    // resumes where the previous scan stopped instead of rescanning the line.
+    var i = p.scan
+    if i < 0 || i > n { i = 0 }
     while i < n {
         let b = p.buf[p.start + i]
         if b == '\n' {
@@ -270,10 +285,15 @@ fn findLine(mut p: &Parser, maxLine: int, tooLongStatus: int): int {
                 fail(p, tooLongStatus, "HTTP line exceeds its configured limit")
                 return -1
             }
+            p.scan = 0
             return p.start + i - 1
         }
         if b == '\r' {
-            if i + 1 >= n { return -1 }
+            if i + 1 >= n {
+                // The CR might be followed by the missing LF on the next feed.
+                p.scan = i
+                return -1
+            }
             if p.buf[p.start + i + 1] != '\n' {
                 fail(p, 400, "bare CR in a header or start line")
                 return -1
@@ -285,6 +305,7 @@ fn findLine(mut p: &Parser, maxLine: int, tooLongStatus: int): int {
         }
         i += 1
     }
+    p.scan = n
     if n > maxLine {
         fail(p, tooLongStatus, "HTTP line exceeds its configured limit")
     }
@@ -1103,7 +1124,7 @@ fn finalizeHeaders(mut p: &Parser) {
     p.head.hasBody = hasBody
     p.head.expectContinue = p.expectHeader && hasBody && !p.http10
     p.head.close = p.closeRequested || p.http10
-    p.lastKeepAlive = !p.http10 && !p.closeRequested &&
+    p.lastKeepAlive = p.limits.pipelining && !p.head.close &&
                       p.requestsStarted < p.limits.maxRequests
     p.head.keepAlive = p.lastKeepAlive
     p.hasBody = hasBody
@@ -1479,6 +1500,11 @@ fn startNext(mut p: &Parser) {
         p.emit = EV_CLOSED
         return
     }
+    if avail(p) == 0 && p.eofSeen {
+        p.emit = EV_CLOSED
+        return
+    }
+    p.scan = 0
     p.head = emptyInfo()
     p.headReady = false
     p.headEmitted = false
@@ -1533,7 +1559,10 @@ fn makeEvent(mut p: &Parser): Event {
         return new BodyData{bytes: bytes}
     }
     if kind == EV_END { return new BodyEnd{} }
-    if kind == EV_CLOSED { return new Closed{} }
+    if kind == EV_CLOSED {
+        p.terminalClosed = true
+        return new Closed{}
+    }
     if kind == EV_ERR { return errorEvent(p) }
     return new Failed{}
 }
@@ -1541,6 +1570,10 @@ fn makeEvent(mut p: &Parser): Event {
 fn drive(mut p: &Parser): Result[Event] {
     if p.failed {
         return ok(errorEvent(p))
+    }
+    if p.terminalClosed {
+        let closedEvent: Event = new Closed{}
+        return ok(closedEvent)
     }
     if p.state == S_COMPLETE {
         startNext(p)
@@ -1578,7 +1611,29 @@ fn drive(mut p: &Parser): Result[Event] {
     return ok(makeEvent(p))
 }
 
+// H1a0 streaming convenience: next may return BodyData after HeadReady without
+// a separate readBody call. The H1a Connection must use nextHead instead, which
+// refuses to stream a body implicitly.
 pub fn next(mut p: &Parser): Result[Event] {
+    p.bodyCap = BODY_STEP
+    return drive(p)
+}
+
+// Head-only gate for the future H1a Connection: parse a request head, errors,
+// NeedRead or Closed, but never return BodyData. While a body is unread this
+// returns InvalidState; the caller must use readBody to reach BodyEnd first.
+pub fn nextHead(mut p: &Parser): Result[Event] {
+    if p.failed {
+        return ok(errorEvent(p))
+    }
+    if p.terminalClosed {
+        let closedEvent: Event = new Closed{}
+        return ok(closedEvent)
+    }
+    if p.headReady && !p.complete {
+        return err("nextHead requires readBody while the request body is unread",
+                   core::ERR_INVALID_STATE)
+    }
     p.bodyCap = BODY_STEP
     return drive(p)
 }
@@ -1601,6 +1656,6 @@ pub fn readBody(mut p: &Parser, max: int): Result[Event] {
 // becomes a protocol error; an idle connection closes; an exact complete
 // message is unaffected.
 pub fn eof(mut p: &Parser): Result[bool] {
-    p.eofSeen = true
+    if !p.failed && !p.terminalClosed { p.eofSeen = true }
     return ok(true)
 }

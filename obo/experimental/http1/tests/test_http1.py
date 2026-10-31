@@ -193,6 +193,8 @@ def test_valid_requests():
     expect(h['close'] == 'false', 'no close')
     expect(headers(lines) == [(b'Host', b'example.com'),
                               (b'User-Agent', b'tester')], 'ordered headers')
+    expect('HV 486f7374 6578616d706c652e636f6d' in lines,
+           'headerValue returns an owned copy for Host', repr(lines))
     expect('END' in lines and 'CLOSED' in lines, 'GET completes and closes at EOF')
 
     post = (b'POST /submit HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\n\r\nhello')
@@ -244,6 +246,23 @@ def test_pipelining():
     # pipelining=false: buffered second request is a protocol error.
     lines = parse_case('pipeline-disabled', data, limits='nopipe', modes=('whole',))
     expect(err_status(lines) == 400, 'pipelining=false rejects buffered bytes', repr(lines))
+
+    # pipelining=false with no buffered bytes: close after the first message and
+    # reject a second request fed later in the same parser.
+    two = (b'GET /one HTTP/1.1\r\nHost: h\r\n\r\n'
+           b'GET /two HTTP/1.1\r\nHost: h\r\n\r\n')
+    lines = run_parser('seq', 'nopipe', two)
+    heads = [head_info(l) for l in lines if l.startswith('HEAD ')]
+    expect([bytes.fromhex(h['target']) for h in heads] == [b'/one'],
+           'pipelining=false does not accept a sequential second request', repr(lines))
+    expect('CLOSED' in lines and 'FEED2 false' in lines,
+           'pipelining=false is terminal after the first message', repr(lines))
+
+    # The same sequential feed is accepted with pipelining enabled.
+    lines = run_parser('seq', 'default', two)
+    heads = [head_info(l) for l in lines if l.startswith('HEAD ')]
+    expect([bytes.fromhex(h['target']) for h in heads] == [b'/one', b'/two'],
+           'sequential keep-alive accepts the second request', repr(lines))
 
 
 def test_smuggling():
@@ -407,6 +426,60 @@ def test_continue():
     expect('CONT due' in lines, 'manual autoContinue leaves the interim response due', repr(lines))
 
 
+def test_eof_terminality():
+    # Idle clean EOF closes; a partial request is a protocol error; a complete
+    # message ends normally.
+    lines = run_parser('whole', 'default', b'')
+    expect('CLOSED' in lines and 'ERR' not in '\n'.join(lines),
+           'idle EOF closes silently', repr(lines))
+
+    lines = run_parser('whole', 'default', b'GET / HTTP/1.1\r\nHost: h')
+    expect(err_status(lines) == 400, 'partial EOF is 400', repr(lines))
+
+    lines = run_parser('whole', 'default', b'GET / HTTP/1.1\r\nHost: h\r\n\r\n')
+    expect('END' in lines and 'CLOSED' in lines and 'ERR' not in '\n'.join(lines),
+           'complete-message EOF closes after BodyEnd', repr(lines))
+
+    # A clean EOF is terminal: extra input is refused, while bytes already
+    # buffered before the EOF still parse.
+    two = (b'GET /one HTTP/1.1\r\nHost: h\r\n\r\n'
+           b'GET /two HTTP/1.1\r\nHost: h\r\n\r\n')
+    lines = run_parser('eof-feed', 'default', two)
+    heads = [head_info(l) for l in lines if l.startswith('HEAD ')]
+    expect([bytes.fromhex(h['target']) for h in heads] == [b'/one'],
+           'feed after clean EOF is refused', repr(lines))
+    expect('FEED2 false' in lines and 'CLOSED' in lines,
+           'Closed stays terminal after feed', repr(lines))
+
+    lines = run_parser('eof-buffered', 'default', two)
+    heads = [head_info(l) for l in lines if l.startswith('HEAD ')]
+    expect([bytes.fromhex(h['target']) for h in heads] == [b'/one', b'/two'],
+           'buffered pipelined requests parse before EOF Closed', repr(lines))
+    expect(lines.count('CLOSED') == 1, 'one terminal Closed event', repr(lines))
+
+    lines = run_parser('eof-buffered', 'default',
+                       b'GET / HTTP/1.1\r\nHost: h\r\n')
+    expect(err_status(lines) == 400, 'EOF before headers is not completed by buffered bytes',
+           repr(lines))
+
+
+def test_head_only_and_read_body():
+    body = (b'POST /body HTTP/1.1\r\nHost: h\r\nX: v\r\n'
+            b'Content-Length: 5\r\n\r\nhello')
+    lines = run_parser('headonly', 'default', body)
+    expect('GATE err 1' in lines, 'nextHead refuses to stream an unread body', repr(lines))
+    chunks = [line for line in lines if line.startswith('BODY ')]
+    expect(chunks and all(int(line.split()[1]) <= 2 for line in chunks),
+           'readBody honours its max bound', repr(chunks))
+    expect(body_bytes(lines) == b'hello', 'readBody returns the whole body', repr(lines))
+    expect('END' in lines and 'CLOSED' in lines, 'head-only driver completes', repr(lines))
+
+    lines = run_parser('headonly', 'default',
+                       b'GET / HTTP/1.1\r\nHost: h\r\n\r\n')
+    expect('GATE err 1' in lines and 'END' in lines and 'CLOSED' in lines,
+           'nextHead requires readBody even for a bodyless request', repr(lines))
+
+
 def test_limits_exact():
     target128 = b'GET /' + b'a' * 127 + b' HTTP/1.1\r\nHost: h\r\n\r\n'
     lines = parse_case('target-exact', target128, limits='small')
@@ -448,6 +521,21 @@ def test_limits_exact():
     expect(err_status(lines) is None and body_bytes(lines) == b'aaaaa',
            'exact maxChunkCount accepted', repr(lines))
 
+    # Metadata counts every chunk-size line including the final 0 line. Three
+    # 32-byte lines, one 29-byte line and the 3-byte last line total exactly 128.
+    meta32 = b'1;a=' + b'x' * 26 + b'\r\n'
+    meta29 = b'1;a=' + b'x' * 23 + b'\r\n'
+    metadata_exact = (b'POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n' +
+                      (meta32 + b'a\r\n') * 3 + meta29 + b'a\r\n' + b'0\r\n\r\n')
+    lines = parse_case('chunk-metadata-exact', metadata_exact, limits='small')
+    expect(err_status(lines) is None and body_bytes(lines) == b'aaaa',
+           'exact maxChunkMetadata accepted', repr(lines))
+    metadata_over = (b'POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n' +
+                     (meta32 + b'a\r\n') * 3 + b'1;a=' + b'x' * 24 + b'\r\na\r\n' +
+                     b'0\r\n\r\n')
+    lines = parse_case('chunk-metadata-over-exact', metadata_over, limits='small')
+    expect(err_status(lines) == 400, 'maxChunkMetadata + 1 is 400', repr(lines))
+
 
 def test_fuzz():
     rng = random.Random(0x48545450)
@@ -471,6 +559,34 @@ def test_fuzz():
         expect(lines and (lines[-1] in ('FAILED', 'CLOSED') or
                           any(l.startswith('ERR ') for l in lines)),
                'fuzz %d: no terminal result' % i, repr(lines))
+
+    # All-or-nothing feed: a payload larger than the fixed input buffer reports
+    # FEEDFULL and enters a terminal error; no prefix is silently dropped.
+    big = b'GET /one HTTP/1.1\r\nHost: h\r\n\r\n' + b'A' * 800
+    lines = run_parser('whole', 'small', big)
+    expect(lines and lines[0] == 'FEEDFULL', 'feed-full is reported', repr(lines))
+    expect(err_status(lines) in (400, 414), 'feed-full is terminal', repr(lines))
+
+    # Independent model: generated fixed-length requests compared with expected
+    # method/path/query/header/body values.
+    rng2 = random.Random(0x4d4f44454c)
+    methods = ['GET', 'POST', 'PUT', 'DELETE']
+    for i in range(24):
+        method = methods[i % len(methods)]
+        path = ('/p%d' % i).encode()
+        query = ('q=%d' % (i * 3)).encode()
+        body = bytes(rng2.randrange(256) for _ in range(i % 7))
+        req = (method.encode() + b' ' + path + b'?' + query + b' HTTP/1.1\r\n'
+               b'Host: model\r\nX-Index: ' + str(i).encode() + b'\r\n'
+               b'Content-Length: ' + str(len(body)).encode() + b'\r\n\r\n' + body)
+        lines = parse_case('model-%d' % i, req, modes=('whole', 'byte'))
+        h = head_info(lines[0])
+        expect(h['method'] == method, 'model method %d' % i)
+        expect(bytes.fromhex(h['target']) == path + b'?' + query, 'model target %d' % i)
+        expect(bytes.fromhex(h['path']) == path, 'model path %d' % i)
+        expect(bytes.fromhex(h['query']) == query, 'model query %d' % i)
+        expect(body_bytes(lines) == body, 'model body %d' % i)
+        expect('HV 486f7374 6d6f64656c' in lines, 'model Host headerValue %d' % i)
 
     # Random raw-byte fragmentation of a valid request and a chunked request.
     valid = [b'GET /x?y=1 HTTP/1.1\r\nHost: h\r\nX: v\r\n\r\n',
@@ -592,6 +708,67 @@ def test_writer_fixed_chunked():
     cmds = ['ctx GET 0 0 %d 0' % DATE_SECONDS, 'begin 205', 'body 61', 'end']
     lines = run_writer('default', cmds)
     expect(any(l.startswith('ERR ') for l in lines), '205 rejects body bytes', repr(lines))
+
+    cmds = ['ctx GET 0 0 %d 0' % DATE_SECONDS, 'begin 304', 'end', 'take']
+    lines = run_writer('default', cmds)
+    expect(outputs(lines) == response(304, 'Not Modified', []),
+           '304 without a length omits Content-Length')
+
+    # 256-byte response header block exactly (small limits) and one byte over.
+    exact_value = '61' * 176
+    cmds = ['ctx GET 0 0 %d 0' % DATE_SECONDS, 'begin 200',
+            'header 58 ' + exact_value, 'end', 'take']
+    lines = run_writer('small', cmds)
+    expect('ERR' not in '\n'.join(lines) and len(outputs(lines)) == 256,
+           'exact maxResponseHeaderBytes accepted', repr(lines))
+    over_value = '61' * 177
+    cmds = ['ctx GET 0 0 %d 0' % DATE_SECONDS, 'begin 200',
+            'header 58 ' + over_value, 'end', 'take']
+    lines = run_writer('small', cmds)
+    expect(any(l.startswith('ERR ') for l in lines),
+           'maxResponseHeaderBytes + 1 is refused', repr(lines))
+
+    cmds = ['ctx GET 0 0 %d 0' % DATE_SECONDS, 'begin 200', 'begin 200']
+    lines = run_writer('default', cmds)
+    expect(any(l.startswith('ERR ') for l in lines), 'double beginResponse rejected')
+    cmds = ['ctx GET 0 0 %d 0' % DATE_SECONDS, 'begin 200', 'length 0',
+            'end', 'end']
+    lines = run_writer('default', cmds)
+    expect(sum(1 for l in lines if l.startswith('ERR ')) >= 1,
+           'double endResponse rejected', repr(lines))
+    cmds = ['ctx GET 0 0 %d 0' % DATE_SECONDS, 'begin 200', 'length 1',
+            'body 61', 'header 58 62']
+    lines = run_writer('default', cmds)
+    expect(any(l.startswith('ERR ') for l in lines), 'late setHeader rejected', repr(lines))
+
+    # Trailer count and byte caps.
+    cmds = ['ctx GET 0 0 %d 0' % DATE_SECONDS,
+            'trailers 582d41,582d42,582d43', 'begin 200', 'body 61', 'end']
+    lines = run_writer('small', cmds)
+    expect(any(l.startswith('ERR ') for l in lines), 'response trailer name cap', repr(lines))
+    big = '61' * 40
+    cmds = ['ctx GET 0 0 %d 0' % DATE_SECONDS,
+            'trailers 582d41,582d42', 'begin 200', 'body 61',
+            'addtrailer 582d41 ' + big, 'addtrailer 582d42 ' + big, 'end']
+    lines = run_writer('small', cmds)
+    expect(any(l.startswith('ERR ') for l in lines), 'response trailer byte cap', repr(lines))
+
+    # A fixed-length overrun fails after headers were committed; exactly one
+    # status line exists and no second response begins.
+    cmds = ['ctx GET 0 0 %d 0' % DATE_SECONDS, 'begin 200', 'length 1',
+            'body 6162', 'take']
+    lines = run_writer('default', cmds)
+    out = outputs(lines)
+    expect(out.count(b'HTTP/1.1 ') == 1 and b'200 OK' in out,
+           'error after partial response does not emit a second status line', repr(out))
+
+    # Repeated writeText with the same string value.
+    cmds = ['ctx GET 0 0 %d 0' % DATE_SECONDS, 'begin 200',
+            'textrepeat 6162 3', 'end', 'take']
+    lines = run_writer('default', cmds)
+    want = response(200, 'OK', [('Transfer-Encoding', 'chunked')],
+                    b'2\r\nab\r\n2\r\nab\r\n2\r\nab\r\n0\r\n\r\n')
+    expect(outputs(lines) == want, 'repeated writeText exact framing', repr(outputs(lines)))
 
 
 def test_writer_rules_and_injection():
@@ -739,6 +916,17 @@ def test_writer_errors_and_date():
     expect(lines.startswith('TS 941878177 '), 'RFC850 1999 from 1970', lines)
     lines = run_date(['parse', 1767225600, 'Wednesday, 06-Nov-96 08:49:37 GMT'])
     expect(lines.startswith('TS '), 'RFC850 full Wednesday weekday', lines)
+    lines = run_date(['parse', 1727740800, 'Sun, 06-Nov-94 08:49:37 GMT'])
+    expect(lines.startswith('ERR '), 'RFC850 rejects a three-letter weekday', lines)
+
+    # The 50-year rule is timestamp-granular, not year-only.
+    text = 'Sunday, 06-Nov-76 08:49:37 GMT'
+    lines = run_date(['parse', 1793954977, text])   # candidate is exactly +50y
+    expect(lines == 'TS 3371878177 0', 'RFC850 exact 50-year boundary stays future', lines)
+    lines = run_date(['parse', 1793954978, text])   # candidate is < +50y
+    expect(lines == 'TS 3371878177 0', 'RFC850 just under 50 years stays future', lines)
+    lines = run_date(['parse', 1793954976, text])   # candidate is > +50y
+    expect(lines == 'TS 216118177 0', 'RFC850 just over 50 years rolls back', lines)
 
     for bad in ['Sun, 06 Nov 1994 08:49:37 GMT x',
                 'Sun, 31 Feb 1994 08:49:37 GMT',
@@ -746,6 +934,11 @@ def test_writer_errors_and_date():
                 'Sun, 06 Nov 1994 08:49:37 UTC']:
         lines = run_date(['parse', 1727740800, bad])
         expect(lines.startswith('ERR '), 'bad date rejected: %r' % bad, lines)
+
+    for limits in ['badbuf', 'badstart', 'badchunk']:
+        lines = run_writer(limits, [])
+        expect(lines and lines[0].startswith('ERR '),
+               'validateLimits rejects %s' % limits, repr(lines))
 
 
 def main():
@@ -755,6 +948,8 @@ def main():
         ('smuggling corpus', test_smuggling),
         ('HTTP/1.0 and target forms', test_http10_and_forms),
         ('100-continue state', test_continue),
+        ('EOF terminality', test_eof_terminality),
+        ('nextHead and readBody', test_head_only_and_read_body),
         ('exact limits', test_limits_exact),
         ('fuzz and fragmentation', test_fuzz),
         ('response fixed/chunked', test_writer_fixed_chunked),

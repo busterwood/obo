@@ -73,14 +73,13 @@ fn appendStatus(mut out: &[]byte, status: int) {
 }
 
 fn hexWidth(n: int): int {
-    if n < 16 { return 1 }
-    if n < 256 { return 2 }
-    if n < 4096 { return 3 }
-    if n < 65536 { return 4 }
-    if n < 1048576 { return 5 }
-    if n < 16777216 { return 6 }
-    if n < 268435456 { return 7 }
-    return 8
+    var width = 1
+    var v = n
+    while v >= 16 {
+        v = v / 16
+        width += 1
+    }
+    return width
 }
 
 fn appendHex(mut out: &[]byte, n: int) {
@@ -325,6 +324,13 @@ fn buildHeaders(mut r: &Response, finalNoBody: bool): Result[[]byte] {
         appendText(out, "\r\n")
     }
     for i in 0..len(r.headers) {
+        // Fields are entry-validated, but commit revalidates them so a future
+        // implementation change cannot put an unvalidated value on the wire.
+        if !core::isToken(r.headers[i].name) ||
+           !core::isFieldValue(r.headers[i].value) {
+            return err("response header failed commit revalidation",
+                       core::ERR_INVALID_ARGUMENT)
+        }
         appendText(out, r.headers[i].name)
         appendText(out, ": ")
         appendText(out, r.headers[i].value)

@@ -315,12 +315,26 @@ fn parseImf(text: string): Result[DateValue] {
     return makeDate(year, mon, day, sod)
 }
 
+// The same wall-clock time `years` calendar years later. A Feb 29 target in a
+// non-leap year clamps to Feb 28; this is the RFC 850 50-year comparison point.
+fn secondsPlusYears(nowSeconds: int, years: int): int {
+    let days = floorDiv(nowSeconds, SECONDS_PER_DAY)
+    let sod = nowSeconds - days * SECONDS_PER_DAY
+    let c = civilFromDays(days)
+    let y = c.y + years
+    var d = c.d
+    if !validCivil(y, c.m, d) { d = 28 }
+    return daysFromCivil(y, c.m, d) * SECONDS_PER_DAY + sod
+}
+
 fn parseRfc850(text: string, nowSeconds: int): Result[DateValue] {
     var comma = -1
     for i in 0..len(text) {
         if text[i] == ',' { comma = i; break }
     }
-    if comma < 3 { return err("RFC 850 date has no weekday separator", 22) }
+    if comma < 6 {
+        return err("RFC 850 requires a full weekday name", 22)
+    }
     if !knownWeekday(text, 0, comma) { return err("RFC 850 weekday is unknown", 22) }
     if comma + 2 > len(text) || text[comma + 1] != ' ' {
         return err("RFC 850 date has a malformed weekday separator", 22)
@@ -345,8 +359,23 @@ fn parseRfc850(text: string, nowSeconds: int): Result[DateValue] {
     let nowCivil = civilFromDays(nowDays)
     let nowYear = nowCivil.y
     var year = (nowYear / 100) * 100 + yy
-    if year > nowYear + 50 { year -= 100 }
-    if year < 1 { year += 100 }
+    let candidate = makeDate(year, mon, day, sod)
+    match candidate {
+        ok(v) {
+            // Timestamp granularity: compare the candidate instant with the
+            // same instant 50 calendar years after the reference time.
+            if v.seconds > secondsPlusYears(nowSeconds, 50) {
+                year -= 100
+                if year < 1 { year += 100 }
+            }
+        }
+        err(m, c) {
+            // A candidate such as Feb 29 in a non-leap century is not a valid
+            // instant; try the previous century before rejecting the value.
+            year -= 100
+            if year < 1 { year += 100 }
+        }
+    }
     return makeDate(year, mon, day, sod)
 }
 
