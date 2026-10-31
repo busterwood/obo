@@ -35,10 +35,11 @@ reserved for 0.10.
   types and non-capturing lambda literals with indirect calls. Stage B capture
   lists and `^I` are later. The full reference is
   [obo/LANGUAGE.md](obo/LANGUAGE.md).
-- **Compiler.** 12,071 lines / 455,137 bytes of obo source. The current source
-  adds first-class interfaces and `sleepMs`, and stays interface-free itself, so
-  the pre-promotion 0.6 seed can build it. The 0.6 seed (454,657 bytes, sha256 `90fcad7e…`) and the
-  0.5 compiler (425,985 bytes) are historical.
+- **Compiler.** 12,953 lines / 488,954 bytes of obo source. The branch adds
+  Stage A function types and non-capturing lambdas to the 0.8/format-4 interfaces
+  line while keeping the compiler source in the pre-lambda subset, so the promoted
+  0.8 seed (507,905 bytes, sha256 `673ae7ba…`) builds the 0.9 branch compiler. The
+  0.6 and 0.5 seeds and their compiler sizes are historical.
 - **Tools.** `cat`, `wc`, `sort`, `head`, `tail` and the partial `eza`
   reimplementation are written in obo and built by `make tools` / `make eza`.
   Differential gates compare them with GNU coreutils 9.4 (`obo/tests/tools.py`)
@@ -64,9 +65,9 @@ reserved for 0.10.
 | Self-compile live peak | 1,963,248 bytes direct; 1,963,616 bytes port comparison (budget 2,000,000) |
 | Total allocated | 42,923,352 bytes direct; 42,926,784 bytes port comparison |
 | Maximum resident set | 3,640 KB (3 runs on this host) |
-| Live-memory budget | 2,000,000 bytes (52,288 spare) |
-| obo suite | 1,416 tests; 103 `module_test` checks; `sym_test.py` 38/38; `sym_fuzz.py` 200/200; `port_test` 558/558 with 9 encoder groups; `port_compare` 1,428/1,428; 57 doc examples; 28/28 import checks; 16/16 stdlib roots |
-| Mutation gates (at `29492ba`) | `mutate_fork` 607/634 + 27 equivalent; `mutate_port` 529/529; `mutate_io` 27/27; `mutate_meta` 71/82 + 11 equivalent |
+| Live-memory budget | 2,000,000 bytes: 36,752 spare direct / 36,384 port comparison |
+| obo suite | 1,544 `run_fork` tests; 106 `module_test`; `sym_test.py` 42/42; `sym_fuzz.py` 200/200; `port_test` 573/573 with 10 encoder groups; `port_compare` 1,551/1,551; 62 doc examples; 28/28 import checks; 16/16 stdlib roots |
+| Mutation gates (at `03d3885`) | `mutate_fork` 651/679 + 28 equivalent; `mutate_port` 529/529; `mutate_io` 30/30 (including the self-host memory oracle); `mutate_meta` 71/82 + 11 equivalent |
 | Tools differential gate | 509 checks vs GNU coreutils 9.4; 4 memory cases |
 | Tool binaries | cat 45,057; wc 49,153; sort 73,729; head 45,057; tail 53,249 bytes (static, runtime included) |
 | eza E2 differential gate | 554/554 non-memory cases (465 exact reference goldens, 72 live including 22 pty, 17 own) + 5/5 memory cases |
@@ -75,11 +76,11 @@ reserved for 0.10.
 | eza 10k-entry max RSS | 2,560 KiB in the recorded run; reference about 24.6 MB long / 12-14 MB other views |
 | Minimal static executable | 32,769 bytes (runtime included) |
 
-The compiler budget is 2,000,000 bytes live and 52,288 bytes remain spare, so no
-slot was cut and the budget was not raised. The current tree peaks at 1,947,712
-bytes in the port comparison (1,947,584 in the direct stage-2 compile). The live
-peak varies by a few hundred bytes with the source path and total allocation by
-about 2 KB.
+The compiler budget is 2,000,000 bytes live. The final branch tree peaks at
+1,963,248 bytes in three direct self-compiles and 1,963,616 bytes in the port
+comparison: 36,752 and 36,384 bytes spare respectively. No budget was raised and
+no check was weakened. The live peak varies by a few hundred bytes with the source
+path and total allocation by about 2 KB.
 
 ## Performance
 

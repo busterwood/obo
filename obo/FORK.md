@@ -5651,12 +5651,16 @@ Mutation gates:
 |---|---|
 | `mutate_fork` | **651/679 caught, 28 equivalent** (679 names / 681 anchors) |
 | `mutate_port` | **529/529 caught** (529 names / 534 unique replacement tuples) |
-| `mutate_io` | **29/30 caught, 1 equivalent** (three new runtime empty-array guards; zero-array heap allocation is memory-only and caught by the self-host peak gate) |
+| `mutate_io` | **30/30 caught** (three new runtime empty-array guards; the zero-array heap-allocation mutant is caught by the specialized self-host memory oracle: baseline compiler peak 1,963,664, mutant-runtime compiler peak 2,008,336, budget 2,000,000) |
 | `mutate_meta` | **71/82 caught, 11 equivalent** (50/52 runtime, 21/30 compiler) |
 
 New Stage A mutants: 44 caught and one reasoned equivalent (`X5` constructor
 recursion is defence in depth because every constructor rejects a function base
-at formation). The new set covers function-type identity/writer/reader, position
+at formation). The standalone seed comparison was run from the repository root
+as `OBO_REF=obo/seed/obo python3 obo/tests/port_compare.py`: it reported a
+`(0, 8)` reference and **1269/1269** identical outcomes, with 14 legitimate
+`(0, 9)` skips (10 lambda run files, 2 lambda error files, and the 0.8.1
+`sleepMs` run/error files). Existing pre-0.9 cases were retained. The new set covers function-type identity/writer/reader, position
 firewalls and aliases, interface firewall/X37 recursion and incomplete shells,
 forward aliases, lambda parsing/contexts, purity/active calls, hidden env, cell
 and argument ABI, zero-frame cell entry, arena-local synthetic callees, outer-name

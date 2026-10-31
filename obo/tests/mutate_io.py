@@ -35,6 +35,9 @@ run.OBXC = os.path.abspath(os.environ.get('OBO', os.path.join(FORK, 'obo')))
 run.ROOT = FORK
 LIBDIR = os.path.join(FORK, 'lib')
 RUNTIME = os.path.join(FORK, 'runtime', 'runtime.c')
+SRC = os.path.join(FORK, 'src', 'obo.obo')
+SEED = os.path.join(FORK, 'seed', 'obo')
+PEAK_BUDGET = 2_000_000
 CFLAGS = ('-O2 -ffreestanding -fno-builtin -nostdlib -fno-pic -fno-pie '
           '-fno-stack-protector -fno-asynchronous-unwind-tables -mcmodel=small '
           '-fno-tree-loop-distribute-patterns -Wall').split()
@@ -170,14 +173,11 @@ LIB_MUTANTS = {
         '    for i in start + 1..len(all) { append(out, all[i]) }\n'),
 }
 
-# Mutants that change only allocation policy, not program-observable behaviour. They are not
-# claimed as io-test catches; the compiler self-host peak gate is the memory oracle.
-EQUIVALENT = {
-    'zero array alloc gets a heap block':
-        'equivalent for program semantics: the block is still freed through the array and every '
-        'append/truncate/free path is unchanged; the regression is memory-only and is caught by '
-        'the compiler self-host 2M peak gate, not by an io program oracle',
-}
+# Runtime mutants with no program-observable semantic difference are judged by the actual
+# compiler self-host memory oracle: a compiler built against the mutant runtime must compile
+# src/obo.obo within the same 2,000,000-byte live-peak budget. The normal program suite is
+# still run first for every mutant.
+MEMORY_MUTANTS = {'zero array alloc gets a heap block'}
 
 # ---------------------------------------------------------------- cases
 def clean_env(check=False, fault=None):
@@ -307,6 +307,61 @@ def build_runtime(src_text, work):
     return rt
 
 
+class MemoryOracleError(Exception):
+    pass
+
+
+def build_runtime_compiler(rt_dir, work):
+    """Build the current compiler against rt_dir. The compiler embeds this runtime, so its
+    allocator during a later self-compile is the mutant runtime, not the --rt of the output."""
+    exe = os.path.join(work, 'compiler')
+    p = subprocess.run([SEED, SRC, '-o', exe, '--rt', rt_dir],
+                       capture_output=True, text=True, timeout=300)
+    if p.returncode != 0:
+        raise MemoryOracleError('compiler build failed: ' + p.stderr.strip()[:300])
+    return exe
+
+
+def parse_peak(returncode, stderr):
+    if returncode != 0:
+        raise MemoryOracleError('self-compile failed: ' + stderr.strip()[:300])
+    m = re.search(r'obo: (\d+) peak bytes', stderr)
+    if not m:
+        raise MemoryOracleError('self-compile reported no live peak')
+    return int(m.group(1))
+
+
+def runtime_peak(rt_dir, work):
+    """Live peak of the compiler built against rt_dir compiling the current source. The same
+    compiler is then run with --rt rt_dir for the output image; the reported peak is the
+    compiler's own runtime because that runtime was linked into the compiler executable."""
+    exe = build_runtime_compiler(rt_dir, work)
+    out = os.path.join(work, 'self.out')
+    env = dict(os.environ)
+    env.pop('OBO_CHECK', None)
+    env.pop('OBX_GC', None)
+    env['OBO_STATS'] = '1'
+    p = subprocess.run([exe, SRC, '-o', out, '--rt', rt_dir],
+                       capture_output=True, text=True, timeout=300, env=env)
+    return parse_peak(p.returncode, p.stderr)
+
+
+def memory_baseline():
+    work = tempfile.mkdtemp(prefix='mio-memory-base-', dir=TMP)
+    try:
+        rt = build_runtime(open(RUNTIME).read(), work)
+        try:
+            peak = runtime_peak(rt, work)
+        except MemoryOracleError as e:
+            raise SystemExit('memory baseline harness failure: ' + str(e))
+        if peak > PEAK_BUDGET:
+            raise SystemExit(f'the unmutated runtime baseline peaks at {peak}, over {PEAK_BUDGET}')
+        print(f'memory baseline: unmutated runtime/compiler peak {peak} bytes')
+        return peak
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def judge(rt_dir, lib_dir, pattern):
     """The first failing case's message for one mutant, or None if all pass."""
     for c in CASES:
@@ -331,6 +386,7 @@ def main():
     if first is not None:
         raise SystemExit(f"the baseline fails ({first}), so no mutant can be judged")
     print(f"baseline: {sum(1 for c in CASES if pattern in c['name'])} cases passed")
+    base_peak = memory_baseline()
 
     # every pattern must still match exactly once
     stale, broken, caught, missed, equiv = [], [], [], [], []
@@ -343,9 +399,6 @@ def main():
         n = src.count(old)
         if n != 1:
             stale.append(f"STALE  {kind}: {name} (pattern found {n} times)")
-            continue
-        if kind == 'runtime' and name in EQUIVALENT:
-            equiv.append(f"EQUIV  runtime: {name}: {EQUIVALENT[name]}")
             continue
         work = tempfile.mkdtemp(prefix='mio-', dir=TMP)
         try:
@@ -365,6 +418,18 @@ def main():
                 open(os.path.join(lib_dir, 'io.obx'), 'w').write(
                     src.replace(old, new))
             first = judge(rt, lib_dir, pattern)
+            if first is None and kind == 'runtime' and name in MEMORY_MUTANTS:
+                try:
+                    peak = runtime_peak(rt, work)
+                except MemoryOracleError as e:
+                    broken.append(f"BROKEN {kind}: {name}: {e}")
+                    continue
+                if peak > PEAK_BUDGET:
+                    first = (f"memory: live peak {peak} bytes is over the budget of {PEAK_BUDGET} "
+                             f"(baseline {base_peak}); the compiler embeds the mutant runtime")
+                else:
+                    first = (f"memory: live peak {peak} bytes stays within the budget of {PEAK_BUDGET} "
+                             f"(baseline {base_peak})")
         except subprocess.CalledProcessError as e:
             broken.append(f"BROKEN {kind}: {name}: {e.stderr.decode()[:160]}")
             continue
@@ -372,6 +437,8 @@ def main():
             shutil.rmtree(work, ignore_errors=True)
         if first is None:
             missed.append(f"MISSED {kind}: {name}")
+        elif first.startswith('memory: live peak') and 'stays within' in first:
+            missed.append(f"MISSED {kind}: {name}  ({first})")
         else:
             caught.append(f"caught {kind}: {name}  ({first})")
     for line in caught + missed + stale + broken + equiv:

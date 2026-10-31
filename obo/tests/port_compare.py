@@ -195,6 +195,9 @@ SEED_FILE_MIN = {
     os.path.join(FORK, 'tests', 'errors', 'env.obx'): (0, 4),
     os.path.join(FORK, 'tests', 'run', 'term.obx'): (0, 5),
     os.path.join(FORK, 'tests', 'errors', 'term.obx'): (0, 5),
+    # sleepMs is an additive 0.8.1 builtin; the promoted 0.8 seed cannot parse it.
+    os.path.join(FORK, 'tests', 'run', 'sleep.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'errors', 'sleep.obx'): (0, 9),
     os.path.join(FORK, 'tests', 'run', 'methods.obx'): (0, 6),
     os.path.join(FORK, 'tests', 'run', 'methods_refs.obx'): (0, 6),
     os.path.join(FORK, 'tests', 'run', 'methods_fields.obx'): (0, 6),

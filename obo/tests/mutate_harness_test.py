@@ -21,6 +21,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import mutate_fork as mf  # noqa: E402
+import mutate_io as mio  # noqa: E402
 import mutate_port as mp  # noqa: E402
 import port_compare as pc  # noqa: E402
 
@@ -413,6 +414,49 @@ def test_concurrent_mutants_use_isolated_scratch_dirs():
             results = list(pool.map(lambda n: mp.try_mutant(n, 'src', 1, use_catchers=False), names))
     assert [r[0] for r in results] == ['missed'] * 4
     assert len(seen) == 4 and len(set(seen)) == 4
+
+
+def test_memory_oracle_missing_stats_is_a_harness_error():
+    try:
+        mio.parse_peak(0, 'no stats here')
+    except mio.MemoryOracleError as exc:
+        assert 'no live peak' in str(exc)
+    else:
+        raise AssertionError('missing live peak was accepted')
+
+
+def test_memory_oracle_compile_failure_is_not_a_catch():
+    try:
+        mio.parse_peak(7, 'crash')
+    except mio.MemoryOracleError as exc:
+        assert 'self-compile failed' in str(exc)
+    else:
+        raise AssertionError('a failed self-compile was accepted')
+
+
+def test_memory_baseline_over_budget_aborts():
+    with patched(mio, 'build_runtime', lambda src, work: work), \
+         patched(mio, 'runtime_peak', lambda rt, work: mio.PEAK_BUDGET + 1):
+        try:
+            mio.memory_baseline()
+        except SystemExit as exc:
+            assert 'baseline' in str(exc) and 'over' in str(exc)
+        else:
+            raise AssertionError('an over-budget baseline did not abort')
+
+
+def test_memory_baseline_oracle_failure_aborts():
+    def fail(rt, work):
+        raise mio.MemoryOracleError('no live peak')
+
+    with patched(mio, 'build_runtime', lambda src, work: work), \
+         patched(mio, 'runtime_peak', fail):
+        try:
+            mio.memory_baseline()
+        except SystemExit as exc:
+            assert 'memory baseline harness failure' in str(exc)
+        else:
+            raise AssertionError('a broken baseline oracle did not abort')
 
 
 def main():
