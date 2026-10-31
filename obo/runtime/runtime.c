@@ -113,7 +113,9 @@ static void die(const char *msg) { die_code(msg, 2); }
  * and the positive errno at +8. The compiler passes both descriptors to each
  * I/O helper, and match compares the header tag against the cached variants,
  * so the helpers must use exactly the descriptor they are given. */
-#define HEAP_SIZE (1UL << 32)
+#define HEAP_DEFAULT (4UL << 30)    /* 4,294,967,296 bytes: 4 GiB */
+#define HEAP_CEILING (16UL << 30)   /* 17,179,869,184 bytes: 16 GiB */
+#define HEAP_MIN     (64UL << 10)   /* 65,536 bytes: 64 KiB */
 #define GRAN 16
 #define NCLASS 65
 #define MARK 1UL
@@ -125,10 +127,11 @@ static void die(const char *msg) { die_code(msg, 2); }
 #define MAX_PAYLOAD (MAX_OBJECT - GRAN)
 
 static u64 heap_start, heap_top, heap_end;
+static u64 heap_size;                  /* resolved arena size: default 4 GiB, ceiling 16 GiB */
 static unsigned char *starts;          /* one bit per granule: an object header starts here */
 static u64 *free_small[NCLASS];
 static u64 *free_large;
-static u64 *mstack; static u64 msp, mcap;
+static u64 *mstack; static u64 msp, mcap;   /* free/mark worklist; virtual, scaled, capped */
 static u64 stack_base, glob_start, glob_end;
 u64 env_base;                          /* the initial stack's envp, for getenv */
 u64 rt_entry_sp;                       /* set by the entry stubs in entry.S */
@@ -162,12 +165,65 @@ static inline void clr_start(u64 h) { u64 g = gidx(h); starts[g >> 3] &= (unsign
 
 static int starts_with(const char *s, const char *p) { while (*p) if (*s++ != *p++) return 0; return 1; }
 
+/* OBO_HEAP_LIMIT is a canonical, unsigned whole number of bytes: no sign, no
+ * leading zero, no whitespace, no fraction or exponent, and an optional exact
+ * binary suffix KiB, MiB or GiB.  The value must be a multiple of one granule
+ * and in [HEAP_MIN, HEAP_CEILING]; it is never clamped.  4294967296 means
+ * 4 GiB, 17179869184 means the compiled 16 GiB ceiling. */
+static int heap_parse_size(const char *v, u64 *out) {
+    const char *p = v;
+    if (!*p) return 0;
+    if (*p == '0' && p[1] != 0) return 0;                 /* canonical: no leading zero */
+    u64 n = 0;
+    while (*p >= '0' && *p <= '9') {
+        u64 d = (u64)(*p - '0');
+        if (n > (~0UL - d) / 10) return 0;
+        n = n * 10 + d;
+        p++;
+    }
+    if (p == v) return 0;                                 /* empty, sign or whitespace */
+    u64 mul = 1;
+    if (*p) {
+        if      (p[0] == 'K' && p[1] == 'i' && p[2] == 'B' && !p[3]) mul = 1UL << 10;
+        else if (p[0] == 'M' && p[1] == 'i' && p[2] == 'B' && !p[3]) mul = 1UL << 20;
+        else if (p[0] == 'G' && p[1] == 'i' && p[2] == 'B' && !p[3]) mul = 1UL << 30;
+        else return 0;                                    /* fraction, exponent or bad suffix */
+    }
+    if (n > ~0UL / mul) return 0;                         /* overflow */
+    n *= mul;
+    if (n < HEAP_MIN || n > HEAP_CEILING) return 0;       /* below the floor or above the ceiling */
+    if (n & (GRAN - 1)) return 0;                         /* not a whole number of granules */
+    *out = n;
+    return 1;
+}
+
+static void heap_limit_bad(const char *v) {
+    flush();
+    const char *m = "obo: invalid OBO_HEAP_LIMIT: ";
+    u64 n = 0; while (m[n]) n++;
+    sys3(1, 2, (i64)m, n);
+    n = 0; while (v[n]) n++;
+    sys3(1, 2, (i64)v, n);
+    sys3(1, 2, (i64)"\n", 1);
+    OBO_EXIT(2);
+    for (;;);
+}
+
 void rt_init(u64 sbase, u64 gstart, u64 gend) {
     stack_base = sbase; glob_start = gstart; glob_end = gend;
+    heap_size = HEAP_DEFAULT;
     /* the initial stack holds argc, argv[], NULL, envp[], NULL */
     u64 argc = *(u64 *)sbase;
     env_base = sbase + 8 * (argc + 2);
+    int heap_limit_seen = 0;
     for (char **env = (char **)env_base; *env; env++) {
+        if (starts_with(*env, "OBO_HEAP_LIMIT=")) {
+            /* the first entry wins, like getenv; validate before any mapping */
+            if (!heap_limit_seen) {
+                heap_limit_seen = 1;
+                if (!heap_parse_size(*env + 15, &heap_size)) heap_limit_bad(*env + 15);
+            }
+        }
         if (starts_with(*env, "OBX_GC=poison")) gc_poison = 1;
         if (starts_with(*env, "OBX_GC=stress")) gc_poison = 1;
         if (starts_with(*env, "OBO_CHECK=1")) leak_check = 1;
@@ -184,13 +240,19 @@ void rt_init(u64 sbase, u64 gstart, u64 gend) {
         fault_winsz = 1;
         fault_sleep = 1;
     }
-    heap_start = (u64)sys_mmap(HEAP_SIZE);
+    heap_start = (u64)sys_mmap(heap_size);
     if ((i64)heap_start < 0) die("obx: cannot reserve heap\n");
-    if (heap_start > ~0UL - HEAP_SIZE) die("obx: cannot reserve heap\n");
-    heap_top = heap_start; heap_end = heap_start + HEAP_SIZE;
-    starts = sys_mmap(HEAP_SIZE / GRAN / 8);
+    if (heap_start > ~0UL - heap_size) die("obx: cannot reserve heap\n");
+    heap_top = heap_start; heap_end = heap_start + heap_size;
+    /* One start bit per 16-byte granule: 32 MiB at 4 GiB, 128 MiB at 16 GiB. */
+    starts = sys_mmap(heap_size / GRAN / 8);
     if ((i64)starts < 0) die("obx: cannot reserve heap metadata\n");
-    mcap = 1UL << 26;
+    /* The free/mark worklist scales with the arena but stays capped at 512 MiB
+     * of virtual address space (2^26 words) and never below 128 KiB. */
+    u64 entries = heap_size / (GRAN * 4);
+    if (entries < (1UL << 14)) entries = 1UL << 14;
+    if (entries > (1UL << 26)) entries = 1UL << 26;
+    mcap = entries;
     mstack = sys_mmap(mcap * 8);
     if ((i64)mstack < 0) die("obx: cannot reserve heap metadata\n");
 }
@@ -401,7 +463,9 @@ void rt_free(u64 p) {
 }
 
 /* Handles: the object's offset in the heap (in 16-byte units) and, in the
- * high half, the generation of its block when the handle was taken. 0 is nil. */
+ * high half, the generation of its block when the handle was taken. 0 is nil.
+ * The low half is a granule offset, so it addresses 2^32 * 16 = 64 GiB; the
+ * 30-bit maximum of a 16 GiB arena leaves the generation half untouched. */
 u64 rt_handle(u64 p) {
     if (!p) return 0;
     return ((p - heap_start) / GRAN) | (((u64 *)(p - GRAN))[0] >> 32) << 32;
