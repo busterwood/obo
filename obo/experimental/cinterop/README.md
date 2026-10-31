@@ -1,12 +1,15 @@
 # Experimental C interop (`cinterop`)
 
-Status: **hardening checkpoint pending independent rereview.** The prototype
-was repaired after the architecture/security review of `a29f35d`, merged with
-released `0.10` main, and now has an explicit-defer cleanup story, a guarded
-hosted entry stack with proper C exit/atexit/stdio shutdown, and a second real
-library (zlib). This is still an experimental, trusted-build probe, not a
-production API, not a stable format, and not approved for merge, push, promotion
-or seed copy.
+Status: **P2T-a cinterop prerequisites implemented; hardening checkpoint
+pending independent rereview.** The prototype was repaired after the
+architecture/security review of `a29f35d`, merged with released `0.10` main, and
+now has an explicit-defer cleanup story, a guarded hosted entry stack with
+proper C exit/atexit/stdio shutdown, a second real library (zlib), validated
+private include roots/cflags and full RELRO/immediate binding on hosted links.
+A hosted OpenSSL 3.0 memory-BIO/TLS 1.3 qualification also passes. This is still
+an experimental, trusted-build probe, not a production API, not a stable format,
+and not approved for merge, push, promotion or seed copy. It does **not** add a
+TLS adapter API or change the compiler, symbol format, ABI or package version.
 Design:
 [`../../design/native-c-interop-design.md`](../../design/native-c-interop-design.md).
 
@@ -230,6 +233,73 @@ The probe output is `PQlibVersion=160015`, an empty `PGRES_TUPLES_OK` result
 with status 2, successful close, and `live=0`. It does not connect to a
 database, send SQL, start a server, open a socket or use a service.
 
+### Private include roots, cflags and link hardening
+
+A `.cbind` may list `include_dirs` and `cflags`. The same flags are applied to:
+
+- the generated C signature check (`signature_check: header`), and
+- every binding source compile.
+
+That matters for a private sysroot: the explicit `headers` list is not enough
+when `openssl/ssl.h` includes other headers from the include root. A relative
+include directory must stay inside the spec directory or the obo tree; an
+absolute include directory is allowed only when written explicitly. Symlink
+resolution is checked too. The manifest records `include_dirs`, `include_paths`,
+`cflags`, and `header_deps` (the transitive preprocessor inputs, with SHA-256),
+so a changed private header is detected by `verify` instead of being ambient
+state. The generated wrapper/spec does not need absolute build paths; committed
+bindings should use repository-relative paths, and a cbind for a private root
+can be generated inside the private build directory.
+
+Every hosted cinterop link now gets `-Wl,-z,relro`, `-Wl,-z,now` and
+`-Wl,-z,noexecstack` by default. The final ELF must contain a non-empty
+`PT_GNU_RELRO` and `BIND_NOW`/`DF_1_NOW`; `validate_final` and `verify` both
+check this. The separate freestanding runtime/seed build is unchanged. A
+missing or incompatible shared-library symbol therefore fails at process load,
+not on a later request.
+
+### Hosted OpenSSL 3.0 qualification (P2T-a prerequisite)
+
+The test suite qualifies the hosted runtime against the system OpenSSL 3.0
+libraries without installing development packages or using root:
+
+```sh
+# If /usr/include/openssl is absent, the test uses the installed libssl3t64
+# version and runs, in a private cache:
+#   apt-get download libssl-dev=<installed version>
+#   dpkg-deb -x libssl-dev_<version>_amd64.deb <private-root>
+# It then adds <private-root>/usr/include and
+# <private-root>/usr/include/x86_64-linux-gnu as include_dirs.
+python3 experimental/cinterop/tests/test_cinterop.py
+```
+
+The C fixture (`tests/openssl_qualify.c`) is linked through `cinterop.py` with
+`-l:libssl.so.3 -l:libcrypto.so.3` and checks:
+
+- `OPENSSL_init_ssl(OPENSSL_INIT_NO_LOAD_CONFIG)`, `OpenSSL_version_num` and the
+  default provider;
+- `RAND_bytes`;
+- a generated self-signed cert/key, parsed back from PEM memory BIOs;
+- `SSL_CTX_new(TLS_server_method)`, minimum TLS 1.2, maximum TLS 1.3;
+- a TLS 1.3 handshake over memory BIOs with ALPN `http/1.1` and an application
+  data roundtrip;
+- `pthread_once`, `clock_gettime`, `mmap` and thread-local `errno`/OpenSSL error
+  queue isolation;
+- linked constructor, libc atexit, unflushed C stdio, `OPENSSL_atexit` ordering,
+  explicit `OPENSSL_cleanup`, and a post-cleanup no-crash check;
+- full RELRO/NOW and the expected `libssl.so.3`/`libcrypto.so.3` dependencies.
+
+The same C fixture also runs under ASAN/UBSAN as a separate harness. The test
+skips only when `libssl.so.3`/`libcrypto.so.3` are absent (or
+`CINTEROP_TEST_NO_OPENSSL=1` is explicitly set). With the library present, a
+failed header download, build or qualification is a test failure. Extracted
+headers are never committed, and no committed build depends on `/tmp`.
+
+This qualifies the hosted CRT/loader/OpenSSL interaction for the approved TLS
+adapter work. It is **not** the TLS adapter: there is no `TlsContext`,
+`TlsSession`, certificate-policy or ALPN public API yet, no general TLS/IFUNC
+guarantee, and no change to the compiler, symbol format, ABI or package version.
+
 The live PostgreSQL smoke test is **opt-in**. Pass an explicitly authorized
 conninfo; the test app uses only `SELECT`s and explicit closes:
 
@@ -279,6 +349,14 @@ It also builds and runs:
   `exit(7)` and `OBO_CHECK` exit 8;
 - a second real library, zlib: real system header, in-memory binary
   compress/uncompress roundtrip, API errors and explicit close;
+- private `include_dirs`/`cflags`: a header reachable only through the include
+  root must work in the signature check and source compile, and its absence or
+  a missing cflag must fail (relative escapes are rejected);
+- RELRO/NOW: `readelf` sees `GNU_RELRO` and `BIND_NOW`/`FLAGS_1 NOW`;
+- hosted OpenSSL 3.0: private `libssl-dev` extraction, real `libssl.so.3`/
+  `libcrypto.so.3` link, TLS 1.3 memory-BIO/ALPN handshake, provider/RAND,
+  thread-local state, constructor/atexit/stdio/`OPENSSL_cleanup`, and a separate
+  ASAN/UBSAN run;
 - ASAN/UBSAN runs of the fake adapter, zlib adapter and guarded-stack fixture;
 - the opt-in live local PostgreSQL smoke test when `CINTEROP_TEST_DSN` is set.
 
@@ -294,11 +372,12 @@ declarations-only SQLite adapter, both explicit-close and tested.
   sections/relocations directly.
 - Hosted startup uses host `crt1.o`/`crti.o`/`crtbegin.o`/`crtend.o`/`crtn.o`,
   `.init_array`/`.fini_array` placement, and a guarded `mmap` stack. Constructors,
-  atexit and C stdio flush are tested in this hosted subset. TLS and IFUNC are
-  **not** claimed; the normal CRT/loader support for arbitrary library TLS/IFUNC
-  needs its own fixtures and review. The baseline freestanding runtime still
-  exits by raw syscall; only the separate cinterop hosted runtime uses the exit
-  callback.
+  atexit and C stdio flush are tested in this hosted subset. Hosted OpenSSL 3.0
+  passes the qualification above, including its use of libc TLS and
+  `pthread_once`. General TLS/IFUNC support for arbitrary libraries is still
+  **not** claimed, and the TLS adapter API does not exist yet. The baseline
+  freestanding runtime still exits by raw syscall; only the separate cinterop
+  hosted runtime uses the exit callback.
 - The final layout is non-PIE and fixed-address; ASLR/PIE is unsupported.
 - C is trusted and unchecked. A malicious `.cbind`, header/declaration or
   same-signature sidecar is within the trusted build input, not sandboxed.

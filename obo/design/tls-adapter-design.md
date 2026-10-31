@@ -1,9 +1,11 @@
 # TLS transport adapter
 
-Status: **revision 3 design for focused independent re-review; no
-implementation authorized.** Revision 3 resolves R1/R2/R3 from the re-review
-of `2c8a824`; revision 2 resolved the earlier `ea02b29` blockers/major issues.
-See §15.1 for the resolution map.
+Status: **revision 3 design for focused independent re-review; no TLS adapter
+implementation authorized.** The narrow P2T-a cinterop prerequisites were
+implemented separately and are recorded in §16; that does not authorize
+P2T-b/d. Revision 3 resolves R1/R2/R3 from the re-review of `2c8a824`;
+revision 2 resolved the earlier `ea02b29` blockers/major issues. See §15.1 for
+the resolution map.
 Baseline: current `main` `2364add3a7ad0a02ec9412b6834a36a510d45f32`,
 released obo `0.12`, symbol format 6, ABI 1. Date: 2026-10-31.
 No compiler, ABI, symbol-format or package version is reserved by this note.
@@ -2242,11 +2244,12 @@ refused, never negotiated-then-closed.
   P2T-a must explicitly assert provider load, `RAND_bytes`, `pthread_once`,
   `clock_gettime`/`mmap`, the thread-local error queue, `atexit`/
   `OPENSSL_cleanup` ordering, and a post-cleanup no-crash check.
-- **cinterop header-mode include fix**: `include_dirs`/`cflags` applied to the
-  signature check (`cinterop.py:790`); otherwise a private `libssl-dev`
-  sysroot cannot be used.
-- **cinterop link flags**: RELRO/NOW (`cinterop.py:821–824`); otherwise
-  missing symbols can fail mid-request.
+- **cinterop header-mode include fix** (implemented, §16): `include_dirs`/
+  `cflags` applied to the signature check and every binding source compile;
+  otherwise a private `libssl-dev` sysroot cannot be used.
+- **cinterop link flags** (implemented, §16): RELRO/NOW are the hosted-link
+  default and the final ELF is checked; otherwise missing symbols can fail
+  mid-request.
 - **OpenSSL build dependency**: `libssl-dev` headers, `libssl.so.3` and
   `libcrypto.so.3` at runtime.
 - **Test fixtures**: local CA, server/client certs, expired/mismatch/weak
@@ -2552,3 +2555,45 @@ references/`watch` (no `forever`/`handshakeUntil`); the DAG omits
 setters are documented separately; system trust paths are additive but replaced
 atomically; `ProtocolAlert` is received-only; `max_cert_list` return convention
 is noted; `handshakeStep` makes one SSL call.
+
+## 16. P2T-a prerequisite implementation status (2026-10-31)
+
+Status: **cinterop prerequisites implemented; no TLS adapter code; pending
+independent review.** This section records the narrow work authorized before
+P2T-b. It does not amend the API in §5 and does not authorize P2T-b/d.
+
+Implemented in `obo/experimental/cinterop`:
+
+- `include_dirs` and `cflags` are applied to both the generated signature-check
+  compile and every binding source compile. Relative include roots may not
+  escape the spec directory/obo tree; symlink resolution is checked; absolute
+  roots are explicit build inputs. Transitive headers are hashed into the
+  manifest (`header_deps`), and no extracted header is committed.
+- Hosted cinterop links always pass `-Wl,-z,relro,-z,now,-z,noexecstack`. The
+  linker script now emits `PT_GNU_RELRO` (via `DATA_SEGMENT_ALIGN`/
+  `RELRO_END`/`DATA_SEGMENT_END`) and the tool rejects an ELF without a
+  non-empty RELRO segment or `BIND_NOW`/`DF_1_NOW`. The freestanding base
+  runtime and seed are unchanged.
+- The hosted OpenSSL 3.0 qualification fetches the matching `libssl-dev`
+  without root (`apt-get download` + `dpkg-deb -x`, cache keyed by the
+  installed `libssl3t64` version) and links `libssl.so.3`/`libcrypto.so.3`
+  through cinterop. It covers `OPENSSL_version_num`, provider load,
+  `RAND_bytes`, min TLS 1.2/max TLS 1.3, a generated self-signed cert/key, a
+  TLS 1.3 memory-BIO handshake with ALPN `http/1.1`, application data,
+  `pthread_once`, clock/mmap, thread-local `errno`/error queue, constructor,
+  libc atexit, C stdio flush, `OPENSSL_atexit` ordering and explicit
+  `OPENSSL_cleanup` with a post-cleanup check. A separate ASAN/UBSAN harness
+  runs the same fixture.
+
+Deliberate limits:
+
+- no `TlsContext`, `TlsSession`, certificate policy, ALPN public API, server
+  listener or HTTP integration; those remain P2T-b and later;
+- no general TLS/IFUNC guarantee for arbitrary libraries, no claim that a
+  hosted OpenSSL run proves the adapter's policy;
+- no compiler, `.sym` format, ABI, package-version or seed change;
+- no committed extracted headers and no committed build that depends on
+  `/tmp`; the test cache is private and regenerated/fetched as needed;
+- the qualification skips only when the runtime libraries are genuinely absent
+  (or an explicit test opt-out is set); a header/build failure with the library
+  present fails the test.
