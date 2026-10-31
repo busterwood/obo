@@ -9,7 +9,9 @@ private include roots/cflags and full RELRO/immediate binding on hosted links.
 A hosted OpenSSL 3.0 memory-BIO/TLS 1.3 qualification also passes. This is still
 an experimental, trusted-build probe, not a production API, not a stable format,
 and not approved for merge, push, promotion or seed copy. It does **not** add a
-TLS adapter API or change the compiler, symbol format, ABI or package version.
+TLS adapter API to the toolkit or change the compiler, symbol format, ABI or
+package version; the separate experimental P2T-b server adapter under
+`../tls/` consumes this seam.
 Design:
 [`../../design/native-c-interop-design.md`](../../design/native-c-interop-design.md).
 
@@ -312,9 +314,11 @@ failed header download, build or qualification is a test failure. Extracted
 headers are never committed, and no committed build depends on `/tmp`.
 
 This qualifies the hosted CRT/loader/OpenSSL interaction for the approved TLS
-adapter work. It is **not** the TLS adapter: there is no `TlsContext`,
-`TlsSession`, certificate-policy or ALPN public API yet, no general TLS/IFUNC
-guarantee, and no change to the compiler, symbol format, ABI or package version.
+adapter work. It is **not** the TLS adapter itself: the separate experimental
+P2T-b adapter under `../tls/` provides `TlsContext`/`TlsSession`,
+certificate-policy and ALPN; this qualification makes no general TLS/IFUNC
+guarantee and does not change the compiler, symbol format, ABI or package
+version.
 
 The live PostgreSQL smoke test is **opt-in**. Pass an explicitly authorized
 conninfo; the test app uses only `SELECT`s and explicit closes:
@@ -392,7 +396,9 @@ declarations-only SQLite adapter, both explicit-close and tested.
   atexit and C stdio flush are tested in this hosted subset. Hosted OpenSSL 3.0
   passes the qualification above, including its use of libc TLS and
   `pthread_once`. General TLS/IFUNC support for arbitrary libraries is still
-  **not** claimed, and the TLS adapter API does not exist yet. The baseline
+  **not** claimed. The experimental P2T-b TLS adapter now exists under
+  `../tls/`; the cinterop qualification itself still makes no such claim. The
+  baseline
   freestanding runtime still exits by raw syscall; only the separate cinterop
   hosted runtime uses the exit callback.
 - The final layout is non-PIE and fixed-address; ASLR/PIE is unsupported.
