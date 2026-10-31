@@ -1,0 +1,39 @@
+// Test driver for the H1a0 HTTP-date helpers. Not a public API.
+import "http1date.obx" as date
+
+fn toInt(s: string): int {
+    if len(s) == 0 { return 0 }
+    var i = 0
+    var sign = 1
+    if s[0] == '-' { sign = -1; i = 1 }
+    var v = 0
+    while i < len(s) {
+        if s[i] < '0' || s[i] > '9' { return 0 }
+        v = v * 10 + int(s[i]) - int('0')
+        i += 1
+    }
+    return sign * v
+}
+
+fn main() {
+    let argv = args()
+    if len(argv) < 2 {
+        println("ERR usage")
+        return
+    }
+    if argv[1] == "fmt" && len(argv) >= 4 {
+        let r = date::formatHttpDate(toInt(argv[2]), toInt(argv[3]))
+        match r {
+            ok(text) { println("DATE ", text) }
+            err(m, c) { println("ERR ", c, " ", m) }
+        }
+    } else if argv[1] == "parse" && len(argv) >= 4 {
+        let r = date::parseHttpDate(argv[3], toInt(argv[2]))
+        match r {
+            ok(v) { println("TS ", v.seconds, " ", v.nanos) }
+            err(m, c) { println("ERR ", c, " ", m) }
+        }
+    } else {
+        println("ERR usage")
+    }
+}

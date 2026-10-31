@@ -11,7 +11,7 @@ CFLAGS = -O2 -ffreestanding -fno-builtin -nostdlib -fno-pic -fno-pie -fno-stack-
 # Each build's symbol files live in <out>/sym, created by tools/build_tools.py;
 # build/tools/sym for `make tools`. Symbol writes truncate in place, so tests use
 # private output directories instead of sharing one writable sym dir.
-.PHONY: tools tools-check tools-memory eza eza-check eza-memory sys-p0 sys-p1a sys-p2 all clean
+.PHONY: tools tools-check tools-memory eza eza-check eza-memory sys-p0 sys-p1a sys-p2 http1 all clean
 OUT_TOOLS = build/tools
 OUT_EZA   = build/eza
 
@@ -89,6 +89,11 @@ sys-p1a: obo
 # readiness/timers/wake, cancellation/deadline helpers and blocking resolution.
 sys-p2: obo
 	python3 experimental/sys/tests/test_sys_p2.py
+
+# Experimental HTTP/1.1 H1a0: pure in-memory parser, serializer and date tests.
+# No sockets, TLS, clock or reactor are involved.
+http1: obo runtime_text.bin runtime_data.bin
+	python3 experimental/http1/tests/test_http1.py
 
 # make the current compiler the new seed, once it is a fixed point and the suite passes
 promote: obo

@@ -1,0 +1,222 @@
+// Test driver for the H1a0 response serializer. Not a public API.
+import "http1core.obx" as core
+import "http1write.obx" as w
+
+fn hexBytes(b: &[]byte): string {
+    let digits = "0123456789abcdef"
+    var out = new []byte(0)
+    for i in 0..len(b) {
+        let v = int(b[i])
+        append(out, digits[(v / 16) % 16])
+        append(out, digits[v % 16])
+    }
+    return string(out)
+}
+
+fn hexVal(b: byte): int {
+    if b >= '0' && b <= '9' { return int(b) - int('0') }
+    if b >= 'a' && b <= 'f' { return int(b) - int('a') + 10 }
+    if b >= 'A' && b <= 'F' { return int(b) - int('A') + 10 }
+    return -1
+}
+
+fn decodeHex(s: string): []byte {
+    let out = new []byte(0)
+    if s == "-" { return out }
+    var i = 0
+    while i + 1 < len(s) {
+        let hi = hexVal(s[i])
+        let lo = hexVal(s[i + 1])
+        if hi < 0 || lo < 0 { return out }
+        append(out, byte(hi * 16 + lo))
+        i += 2
+    }
+    return out
+}
+
+fn toInt(s: string): int {
+    if len(s) == 0 { return 0 }
+    var i = 0
+    var sign = 1
+    if s[0] == '-' { sign = -1; i = 1 }
+    var v = 0
+    while i < len(s) {
+        if s[i] < '0' || s[i] > '9' { return 0 }
+        v = v * 10 + int(s[i]) - int('0')
+        i += 1
+    }
+    return sign * v
+}
+
+fn splitSpaces(s: string): []string {
+    let out = new []string(0)
+    var i = 0
+    while i < len(s) {
+        while i < len(s) && (s[i] == ' ' || s[i] == '\t') { i += 1 }
+        if i >= len(s) { break }
+        let start = i
+        while i < len(s) && s[i] != ' ' && s[i] != '\t' { i += 1 }
+        append(out, substr(s, start, i))
+    }
+    return out
+}
+
+fn decodeHexList(s: string): []string {
+    let out = new []string(0)
+    if s == "-" { return out }
+    var i = 0
+    while true {
+        var j = i
+        while j < len(s) && s[j] != ',' { j += 1 }
+        let part = substr(s, i, j)
+        let bytes = decodeHex(part)
+        append(out, string(bytes))
+        if j >= len(s) { break }
+        i = j + 1
+    }
+    return out
+}
+
+fn hexText(s: string): string {
+    let bytes = decodeHex(s)
+    return string(bytes)
+}
+
+fn limitsFor(name: string): core::Limits {
+    var l = core::defaultLimits()
+    if name == "small" {
+        l.maxStartLine = 256
+        l.maxTarget = 128
+        l.maxHeaderBytes = 512
+        l.maxHeaderCount = 5
+        l.maxHeaderLine = 256
+        l.maxBody = 16
+        l.maxChunkLine = 64
+        l.maxChunkSize = 16
+        l.maxChunkCount = 5
+        l.maxChunkMetadata = 128
+        l.maxTrailerBytes = 64
+        l.maxTrailerCount = 2
+        l.maxResponseHeaderBytes = 256
+        l.maxResponseBuffer = 256
+        l.maxResponseTrailerCount = 2
+        l.maxResponseTrailerBytes = 64
+        l.maxPipelineBytes = 512
+        l.maxRequests = 2
+    }
+    if name == "server" { l.serverName = "obo" }
+    return l
+}
+
+fn showBool(r: Result[bool]) {
+    match r {
+        ok(v) { println("OK ", v) }
+        err(m, c) { println("ERR ", c, " ", m) }
+    }
+}
+
+fn showInt(r: Result[int]) {
+    match r {
+        ok(v) { println("OK ", v) }
+        err(m, c) { println("ERR ", c, " ", m) }
+    }
+}
+
+fn main() {
+    let argv = args()
+    if len(argv) < 3 {
+        println("ERR usage limits commands")
+        return
+    }
+    let contextLimits = limitsFor(argv[1])
+    let initial = w::makeResponse(&contextLimits, "GET", false, false, 0, 0)
+    match initial {
+        ok(start) {
+            var resp = start
+            let file = readFile(argv[2])
+            if file == nil {
+                println("ERR cannot read command file")
+                return
+            }
+            let text = string(file)
+            var pos = 0
+            while pos < len(text) {
+                var stop = pos
+                while stop < len(text) && text[stop] != '\n' { stop += 1 }
+                var line = substr(text, pos, stop)
+                if len(line) > 0 && line[len(line) - 1] == '\r' {
+                    line = substr(line, 0, len(line) - 1)
+                }
+                let parts = splitSpaces(line)
+                if len(parts) > 0 {
+                    let cmd = parts[0]
+                    if cmd == "ctx" && len(parts) >= 6 {
+                        let made = w::makeResponse(&contextLimits, parts[1],
+                                                   toInt(parts[2]) != 0,
+                                                   toInt(parts[3]) != 0,
+                                                   toInt(parts[4]), toInt(parts[5]))
+                        match made {
+                            ok(v) { resp = v; println("CTX") }
+                            err(m, c) { println("ERR ", c, " ", m) }
+                        }
+                    } else if cmd == "begin" && len(parts) >= 2 {
+                        showBool(w::beginResponse(&resp, toInt(parts[1])))
+                    } else if cmd == "breason" && len(parts) >= 3 {
+                        showBool(w::beginResponseWithReason(&resp, toInt(parts[1]),
+                                                            hexText(parts[2])))
+                    } else if cmd == "header" && len(parts) >= 3 {
+                        showBool(w::setHeader(&resp, hexText(parts[1]),
+                                               hexText(parts[2])))
+                    } else if cmd == "length" && len(parts) >= 2 {
+                        showBool(w::setLength(&resp, toInt(parts[1])))
+                    } else if cmd == "trailers" && len(parts) >= 2 {
+                        let names = decodeHexList(parts[1])
+                        showBool(w::setTrailerNames(&resp, &names))
+                    } else if cmd == "addtrailer" && len(parts) >= 3 {
+                        showBool(w::addTrailer(&resp, hexText(parts[1]),
+                                                hexText(parts[2])))
+                    } else if cmd == "body" && len(parts) >= 2 {
+                        let bytes = decodeHex(parts[1])
+                        showInt(w::writeBody(&resp, &bytes, 0, len(bytes)))
+                    } else if cmd == "text" && len(parts) >= 2 {
+                        let bytes = decodeHex(parts[1])
+                        let s = string(bytes)
+                        showInt(w::writeText(&resp, s, 0, len(s)))
+                    } else if cmd == "end" {
+                        showBool(w::endResponse(&resp))
+                    } else if cmd == "take" {
+                        let out = w::takeOutput(&resp)
+                        match out {
+                            ok(v) { println("OUT ", hexBytes(&v)) }
+                            err(m, c) { println("ERR ", c, " ", m) }
+                        }
+                    } else if cmd == "error" && len(parts) >= 4 {
+                        let made = w::errorResponse(&contextLimits, toInt(parts[1]),
+                                                    toInt(parts[2]) != 0,
+                                                    toInt(parts[3]) != 0,
+                                                    784111777, 0)
+                        match made {
+                            ok(v) { println("OUT ", hexBytes(&v)) }
+                            err(m, c) { println("ERR ", c, " ", m) }
+                        }
+                    } else if cmd == "continue" {
+                        let v = w::continueBytes()
+                        println("OUT ", hexBytes(&v))
+                    } else if cmd == "pending" {
+                        println("PENDING ", w::pending(&resp))
+                    } else if cmd == "committed" {
+                        println("STATE ", w::isCommitted(&resp))
+                    } else if cmd == "done" {
+                        println("STATE ", w::isDone(&resp))
+                    } else if cmd == "failed" {
+                        println("STATE ", w::hasFailed(&resp))
+                    } else {
+                        println("ERR unknown command")
+                    }
+                }
+                pos = stop + 1
+            }
+        }
+        err(m, c) { println("ERR ", c, " ", m) }
+    }
+}
