@@ -9,8 +9,11 @@ module sysshells
 
 import "sysplatform.obx" as platform
 
-pub type File = ref record { res: platform::Resource }
-pub type Stream = ref record { res: platform::Resource }
+// P0 shells expose `res` publicly: tests construct them and the typed modules
+// borrow the inner Resource. P1a should replace this with owned File/Stream
+// constructors and accessors.
+pub type File = ref record { pub res: platform::Resource }
+pub type Stream = ref record { pub res: platform::Resource }
 
 pub fn emptyFile(): File {
     return new File{res: new platform::Resource{reserved: 0}}

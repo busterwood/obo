@@ -11,7 +11,7 @@ module systestres
 
 import "sysplatform.obx" as platform
 
-pub type TestResource = ref record { res: platform::Resource }
+pub type TestResource = ref record { pub res: platform::Resource }
 
 pub fn open(): Result[TestResource] {
     let r = try platform::_create(platform::KIND_TEST_RESOURCE, 0, 0)

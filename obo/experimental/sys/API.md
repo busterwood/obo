@@ -50,20 +50,23 @@ pub fn text(k: &Kind): string
 ## `sysplatform`
 
 ```obo
-pub type Resource = ref record { reserved: int }
+// P0 public-field limitation: tests and typed shells construct/read these
+// records directly. P1a should add constructors/accessors and make the fields
+// private again.
+pub type Resource = ref record { pub reserved: int }
 
 pub type Options = ref record {
-    maxResources: int
-    maxShells: int
-    maxNativeBytes: int
-    ignorePipeSignal: bool
+    pub maxResources: int
+    pub maxShells: int
+    pub maxNativeBytes: int
+    pub ignorePipeSignal: bool
 }
 
 pub type Counts = ref record {
-    resources: int
-    shells: int
-    nativeBytes: int
-    cleanupFailures: int
+    pub resources: int
+    pub shells: int
+    pub nativeBytes: int
+    pub cleanupFailures: int
 }
 
 pub const KIND_FILE = 1          // planned kinds 1..22 are not implemented in P0
@@ -195,7 +198,7 @@ pub fn close(b: &Bytes): Result[bool]
 ## `systestres` (P0 fixture, not a future File)
 
 ```obo
-pub type TestResource = ref record { res: platform::Resource }
+pub type TestResource = ref record { pub res: platform::Resource }
 
 pub fn open(): Result[TestResource]
 pub fn openAlt(): Result[TestResource]
