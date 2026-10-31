@@ -23,10 +23,36 @@ EX = os.path.join(TOOL, 'examples')
 OBO = os.path.abspath(os.environ.get('OBO', os.path.join(REPO, 'obo', 'obo')))
 TOOLPY = os.path.join(TOOL, 'cinterop.py')
 TMPROOT = '/tmp/opencode'
+LIBPQ_PROBE_PATHS = [
+    '/lib/x86_64-linux-gnu/libpq.so.5',
+    '/usr/lib/x86_64-linux-gnu/libpq.so.5',
+]
 
 
 class Fail(Exception):
     pass
+
+
+def libpq_present():
+    # One policy for every real-libpq test: skip only when the declared
+    # libpq.so.5 paths are absent. If the library is present, a build failure is
+    # a test failure, not a skip.
+    if os.environ.get('CINTEROP_TEST_NO_LIBPQ') == '1':
+        return False
+    return any(os.path.exists(p) for p in LIBPQ_PROBE_PATHS)
+
+
+def libpq_skip(label):
+    print('%s: skipped (libpq.so.5 is absent from the declared probe paths)' % label)
+
+
+ZLIB_HEADER = '/usr/include/zlib.h'
+ZLIB_PROBE_PATHS = ['/usr/lib/x86_64-linux-gnu/libz.so.1',
+                    '/lib/x86_64-linux-gnu/libz.so.1']
+
+
+def zlib_present():
+    return os.path.exists(ZLIB_HEADER) and any(os.path.exists(p) for p in ZLIB_PROBE_PATHS)
 
 
 def run(cmd, **kw):
@@ -130,6 +156,67 @@ def startup(tmp, scalar_out):
         if want == 127 and (p.returncode != 127 or 'startup stack overflow' not in p.stderr):
             raise Fail("near-limit overflow did not fail cleanly at %d vars: %d %s"
                        % (n, p.returncode, p.stderr[:200]))
+
+    p = run([app], env={'OBO_CINTEROP_STACK_BYTES': '4096'})
+    if p.returncode != 127 or 'invalid stack size' not in p.stderr:
+        raise Fail("invalid guarded-stack size was not rejected cleanly: %d %s"
+                   % (p.returncode, p.stderr[:200]))
+
+    # Guarded stack: touching either guard is a controlled SIGSEGV, not a
+    # write into adjacent memory. No signal handler is installed.
+    guard = os.path.join(tmp, 'guard_stack_test')
+    need(run(['gcc', '-O2', '-o', guard,
+              os.path.join(HERE, 'guard_stack_test.c'),
+              os.path.join(TOOL, 'host_stack.c')]), 'guard stack C build')
+    p = need(run([guard, 'ok']), 'guard stack ok run')
+    if 'guard_stack=ok' not in p.stdout:
+        raise Fail("guard stack normal run failed:\n%s" % p.stdout)
+    p = need(run([guard, 'invalid']), 'guard stack invalid run')
+    if 'invalid_rejected=' not in p.stdout:
+        raise Fail("guard stack invalid-size run did not report a clean error")
+    for mode in ('low', 'high'):
+        p = run([guard, mode])
+        if p.returncode != -11:
+            raise Fail("guard stack %s did not die by SIGSEGV: %d %s"
+                       % (mode, p.returncode, p.stderr[:120]))
+
+    # The actual obo entry stack is guarded too: deep recursion must fault on
+    # the guard page rather than corrupting its neighbours.
+    deep = os.path.join(tmp, 'deep_recursion')
+    p = build(os.path.join(EX, 'scalar.cbind'), os.path.join(EX, 'deep_recursion_app.obx'), deep)
+    if p.returncode != 0:
+        raise Fail("deep-recursion app build failed:\n%s" % (p.stderr or p.stdout))
+    p = run([os.path.join(deep, 'app')], env={'OBO_CINTEROP_STACK_BYTES': '524288'}, timeout=20)
+    if p.returncode != -11:
+        raise Fail("deep recursion did not hit the stack guard: %d %s"
+                   % (p.returncode, p.stderr[:120]))
+
+    # Proper hosted shutdown: constructors, atexit and C stdio flushing run, and
+    # exit statuses from normal return, exit() and OBO_CHECK are preserved.
+    shutdown_out = os.path.join(tmp, 'shutdown')
+    need(build(os.path.join(EX, 'shutdown.cbind'), os.path.join(EX, 'shutdown_app.obx'),
+               shutdown_out), 'shutdown app build')
+    p = need(run([os.path.join(shutdown_out, 'app')]), 'shutdown app run')
+    if 'shutdown-app' not in p.stdout or 'cstdio-flush' not in p.stdout:
+        raise Fail("hosted normal shutdown did not flush C stdio:\n%s" % p.stdout)
+    if 'ctor-ran' not in p.stderr or 'atexit-ran' not in p.stderr:
+        raise Fail("hosted normal shutdown did not run constructor/atexit:\n%s" % p.stderr)
+    exit_out = os.path.join(tmp, 'shutdown_exit')
+    need(build(os.path.join(EX, 'shutdown.cbind'), os.path.join(EX, 'shutdown_exit_app.obx'),
+               exit_out), 'shutdown exit build')
+    p = run([os.path.join(exit_out, 'app')])
+    if p.returncode != 7 or 'before-exit' not in p.stdout or 'cstdio-flush' not in p.stdout:
+        raise Fail("hosted exit(7) did not preserve status/flush: %d %r %r"
+                   % (p.returncode, p.stdout, p.stderr))
+    if 'atexit-ran' not in p.stderr:
+        raise Fail("hosted exit(7) did not run atexit")
+    leak_out = os.path.join(tmp, 'shutdown_leak')
+    need(build(os.path.join(EX, 'shutdown.cbind'), os.path.join(EX, 'shutdown_leak_app.obx'),
+               leak_out), 'shutdown leak build')
+    p = run([os.path.join(leak_out, 'app')], env={'OBO_CHECK': '1'})
+    if p.returncode != 8 or 'file descriptors leaked' not in p.stderr or 'atexit-ran' not in p.stderr:
+        raise Fail("hosted OBO_CHECK failure did not preserve exit 8/atexit: %d %r"
+                   % (p.returncode, p.stderr))
 
 
 def negative(tmp, scalar_out):
@@ -362,13 +449,25 @@ def negative(tmp, scalar_out):
     json.dump(m, open(mpath, 'w'))
     if verify(copy).returncode == 0:
         raise Fail("manifest symbol/thunk rewrite was not rejected against the spec")
+    # Host/start objects are required build roles, not optional extras.
+    copy = os.path.join(tmp, 'prov_hostrole')
+    shutil.copytree(prov, copy)
+    mpath = os.path.join(copy, 'manifest.json')
+    m = json.load(open(mpath))
+    for k, rel in list(m['paths'].items()):
+        m['paths'][k] = os.path.join(copy, rel) if not os.path.isabs(rel) else rel
+    m['files'].pop('host_object')
+    m['paths'].pop('host_object')
+    json.dump(m, open(mpath, 'w'))
+    if verify(copy).returncode == 0:
+        raise Fail("manifest missing required host_object role was not rejected")
+
 
 
 
 def pq(tmp):
-    libs = ['/lib/x86_64-linux-gnu/libpq.so.5', '/usr/lib/x86_64-linux-gnu/libpq.so.5']
-    if not any(os.path.exists(p) for p in libs):
-        print('libpq: blocked (no libpq.so.5 on the declared probe paths)')
+    if not libpq_present():
+        libpq_skip('libpq version probe')
         return
     out = os.path.join(tmp, 'pq')
     p = build(os.path.join(EX, 'pq.cbind'), os.path.join(EX, 'pq_app.obx'), out)
@@ -394,13 +493,33 @@ def template(tmp):
     if p.returncode != 0:
         raise Fail("template build failed:\n%s" % (p.stderr or p.stdout))
     p = need(run([os.path.join(out, 'app')]), 'template run')
-    if 'byte0=0' not in p.stdout or 'closed=true' not in p.stdout or 'live=0' not in p.stdout:
+    if 'byte0=0' not in p.stdout or 'live=0' not in p.stdout:
         raise Fail("template output mismatch:\n%s" % p.stdout)
     need(verify(out), 'template manifest verify')
     print('template dry-run: ok')
 
 
+def timeout_parse(tmp):
+    if not libpq_present():
+        libpq_skip('libpq timeout parser')
+        return
+    exe = os.path.join(tmp, 'timeout_parse_test')
+    cc = os.environ.get('CC', 'gcc')
+    need(run([cc, '-O2', '-I', os.path.join(TOOL, 'toolkit'), '-o', exe,
+              os.path.join(HERE, 'timeout_parse_test.c'),
+              os.path.join(TOOL, 'toolkit', 'cres.c'),
+              os.path.join(TOOL, 'toolkit', 'libpq_adapter.c'),
+              '-Wl,--wrap=PQconnectdb', '-l:libpq.so.5']), 'timeout parse C build')
+    p = need(run([exe]), 'timeout parse C run')
+    if 'timeout parse tests ok' not in p.stdout:
+        raise Fail("timeout parse C tests failed:\n%s" % p.stdout)
+    print('libpq timeout parser: ok')
+
+
 def libpq_result(tmp):
+    if not libpq_present():
+        libpq_skip('libpq result probe')
+        return
     out = os.path.join(tmp, 'libpq_result')
     p = build(os.path.join(EX, 'libpq.cbind'), os.path.join(EX, 'libpq_probe_app.obx'), out)
     if p.returncode != 0:
@@ -458,7 +577,97 @@ def libpq_fake(tmp):
     p = need(run([os.path.join(leakout, 'app')]), 'fake libpq leak app run')
     if 'live=1' not in p.stdout or 'conns=1' not in p.stdout:
         raise Fail("fake libpq leak app did not expose the missing close:\n%s" % p.stdout)
-    print('fake libpq wrapper: ok (leak counter detects an omitted close)')
+    deferout = os.path.join(tmp, 'fake_defer')
+    p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_defer_app.obx'), deferout)
+    if p.returncode != 0:
+        raise Fail("fake libpq defer app build failed:\n%s" % (p.stderr or p.stdout))
+    p = need(run([os.path.join(deferout, 'app')]), 'fake libpq defer app run')
+    for line in ('query_ok=true', 'early_error=7', 'nested_ok=true',
+                 'loop_closes=3', 'buffer_ok=true', 'live=0', 'conns=0',
+                 'results=0', 'buffers=0'):
+        if line not in p.stdout:
+            raise Fail("fake libpq defer output missing %r:\n%s" % (line, p.stdout))
+    print('fake libpq wrapper: ok (explicit defer cleanup and leak counter)')
+    outlives = os.path.join(tmp, 'fake_outlives')
+    p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_outlives_app.obx'), outlives)
+    if p.returncode != 0:
+        raise Fail("fake libpq outlives app build failed:\n%s" % (p.stderr or p.stdout))
+    p = need(run([os.path.join(outlives, 'app')]), 'fake libpq outlives app run')
+    for line in ('result_after_conn_close=1.234567890123456789', 'live=0',
+                 'conns=0', 'results=0', 'live_result_outlives_conn=ok'):
+        if line not in p.stdout:
+            raise Fail("fake libpq outlives output missing %r:\n%s" % (line, p.stdout))
+    print('fake libpq result-outlives-connection: ok')
+
+
+def zlib_second(tmp):
+    if not zlib_present():
+        print('zlib second library: skipped (header or libz.so.1 absent)')
+        return
+    out = os.path.join(tmp, 'zlib')
+    p = build(os.path.join(EX, 'zlib.cbind'), os.path.join(EX, 'zlib_app.obx'), out)
+    if p.returncode != 0:
+        raise Fail("zlib second-library build failed:\n%s" % (p.stderr or p.stdout))
+    p = need(run([os.path.join(out, 'app')]), 'zlib second-library run')
+    for line in ('zlib-version=', 'compressed_len=', 'roundtrip_len=6',
+                 'small_error=', 'bad_error=', 'live=0', 'zlib_smoke=ok'):
+        if line not in p.stdout:
+            raise Fail("zlib output missing %r:\n%s" % (line, p.stdout))
+    ldd = need(run(['ldd', os.path.join(out, 'app')]), 'zlib ldd')
+    if 'libz.so.1' not in ldd.stdout:
+        raise Fail("zlib app does not link libz.so.1")
+    m = json.load(open(os.path.join(out, 'manifest.json')))
+    if m.get('signature_check') != 'header':
+        raise Fail("zlib signature_check is %r, expected header" % m.get('signature_check'))
+    need(verify(out), 'zlib manifest verify')
+
+    exe = os.path.join(tmp, 'zlib_adapter_test')
+    cc = os.environ.get('CC', 'gcc')
+    need(run([cc, '-O2', '-I', os.path.join(TOOL, 'toolkit'),
+              '-I', os.path.join(TOOL, 'examples'), '-o', exe,
+              os.path.join(HERE, 'zlib_adapter_test.c'),
+              os.path.join(TOOL, 'toolkit', 'cres.c'),
+              os.path.join(TOOL, 'examples', 'zlib_adapter.c'),
+              '-l:libz.so.1']), 'zlib adapter C build')
+    p = need(run([exe]), 'zlib adapter C run')
+    if 'zlib adapter tests ok' not in p.stdout:
+        raise Fail("zlib adapter C tests failed:\n%s" % p.stdout)
+    print('zlib second library: ok (real header, in-memory roundtrip)')
+
+
+def sanitizer_adapters(tmp):
+    cc = os.environ.get('CC', 'gcc')
+    common = ['-O1', '-g', '-fsanitize=address,undefined',
+              '-fno-sanitize-recover=all', '-fno-omit-frame-pointer',
+              '-I', os.path.join(TOOL, 'toolkit'),
+              '-I', os.path.join(TOOL, 'examples')]
+    fake = os.path.join(tmp, 'fake_adapter_asan')
+    need(run([cc, *common, '-o', fake,
+              os.path.join(HERE, 'fake_adapter_test.c'),
+              os.path.join(TOOL, 'toolkit', 'cres.c'),
+              os.path.join(TOOL, 'toolkit', 'libpq_adapter.c'),
+              os.path.join(HERE, 'fake_libpq.c')]), 'fake adapter ASAN/UBSAN build')
+    p = need(run([fake]), 'fake adapter ASAN/UBSAN run')
+    if 'fake adapter tests ok' not in p.stdout:
+        raise Fail("fake adapter ASAN/UBSAN failed:\n%s" % p.stdout)
+    g = os.path.join(tmp, 'guard_stack_asan')
+    need(run([cc, *common, '-o', g,
+              os.path.join(HERE, 'guard_stack_test.c'),
+              os.path.join(TOOL, 'host_stack.c')]), 'guard stack ASAN/UBSAN build')
+    p = need(run([g, 'ok']), 'guard stack ASAN/UBSAN run')
+    if 'guard_stack=ok' not in p.stdout:
+        raise Fail("guard stack ASAN/UBSAN failed:\n%s" % p.stdout)
+    if zlib_present():
+        z = os.path.join(tmp, 'zlib_adapter_asan')
+        need(run([cc, *common, '-o', z,
+                  os.path.join(HERE, 'zlib_adapter_test.c'),
+                  os.path.join(TOOL, 'toolkit', 'cres.c'),
+                  os.path.join(TOOL, 'examples', 'zlib_adapter.c'),
+                  '-l:libz.so.1']), 'zlib adapter ASAN/UBSAN build')
+        p = need(run([z]), 'zlib adapter ASAN/UBSAN run')
+        if 'zlib adapter tests ok' not in p.stdout:
+            raise Fail("zlib adapter ASAN/UBSAN failed:\n%s" % p.stdout)
+    print('ASAN/UBSAN adapter tests: ok')
 
 
 def libpq_live(tmp):
@@ -466,6 +675,8 @@ def libpq_live(tmp):
     if not dsn:
         print('live libpq: skipped (set CINTEROP_TEST_DSN to run the opt-in local smoke test)')
         return
+    if not libpq_present():
+        raise Fail("CINTEROP_TEST_DSN is set but libpq.so.5 is absent")
     out = os.path.join(tmp, 'live')
     p = build(os.path.join(EX, 'libpq.cbind'), os.path.join(EX, 'libpq_live_app.obx'), out)
     if p.returncode != 0:
@@ -490,9 +701,12 @@ def main():
         negative(tmp, out)
         pq(tmp)
         template(tmp)
+        timeout_parse(tmp)
         libpq_result(tmp)
         fake_adapter(tmp)
         libpq_fake(tmp)
+        zlib_second(tmp)
+        sanitizer_adapters(tmp)
         libpq_live(tmp)
         print('cinterop tests ok')
         return 0

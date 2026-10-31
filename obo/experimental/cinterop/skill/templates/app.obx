@@ -6,8 +6,8 @@ fn main() {
     let made = demo::open(4)
     match made {
         ok(d) {
+            defer d.close()
             println("byte0=", d.byte_at(0))
-            println("closed=", d.close())
         }
         err(m, c) { println("open error ", m, " ", c); exit(1) }
     }

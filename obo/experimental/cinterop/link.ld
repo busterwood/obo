@@ -27,11 +27,16 @@ SECTIONS
   . = 0x03000000;
   .plt : { *(.plt) *(.plt.*) *(.iplt) }
   .text : { *(.text) *(.text.*) }
+  .init : { *(.init) }
+  .fini : { *(.fini) }
   . = ALIGN(0x1000);
   ASSERT(. <= 0x03010000, "host .text exceeds its 64 KiB slot")
   .rodata : { *(.rodata) *(.rodata.*) }
   . = ALIGN(0x1000);
   .data : { *(.data) *(.data.*) *(.got) *(.got.*) }
+  .preinit_array : { *(.preinit_array) }
+  .init_array : { *(.init_array) *(.ctors) }
+  .fini_array : { *(.fini_array) *(.dtors) }
   .bss : { *(.bss) *(.bss.*) *(COMMON) }
   . = ALIGN(0x1000);
   /* The synthetic 1 MiB stack dominates this slot; the adapter's small static

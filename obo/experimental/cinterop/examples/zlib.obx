@@ -1,0 +1,51 @@
+// Second small library on the same generic toolkit: in-memory zlib compression.
+// Explicit close via `defer`; no zlib pointer or automatic finalizer is exposed.
+module zlib
+
+import "buffer.obx"
+
+fn text_of(b: []byte): Result[string] {
+    for i in 0..len(b) {
+        if b[i] == byte(0) { return err("bytes contain an embedded NUL", 1) }
+    }
+    return ok(string(b))
+}
+
+pub fn version(): Result[string] {
+    let t = __cinterop("zlib_version_buf")
+    if t <= 0 { return err("zlib version copy failed", 2) }
+    let b = buffer::wrap(t)
+    defer b.close()
+    let data = b.to_bytes()
+    return text_of(data)
+}
+
+pub fn compress(data: []byte, level: int): Result[buffer::Buffer] {
+    let made = buffer::from_bytes(data)
+    match made {
+        ok(inp) {
+            let t = __cinterop("zlib_compress", inp.tok, level)
+            inp.close()
+            if t <= 0 { return err("zlib compress failed", 3) }
+            return ok(buffer::wrap(t))
+        }
+        err(m, c) { return err(m, c) }
+    }
+}
+
+pub fn uncompress(data: []byte, out_len: int): Result[buffer::Buffer] {
+    let made = buffer::from_bytes(data)
+    match made {
+        ok(inp) {
+            let t = __cinterop("zlib_uncompress", inp.tok, out_len)
+            inp.close()
+            if t <= 0 { return err("zlib uncompress failed", 4) }
+            return ok(buffer::wrap(t))
+        }
+        err(m, c) { return err(m, c) }
+    }
+}
+
+pub fn live(): int {
+    return buffer::live()
+}

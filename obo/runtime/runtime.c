@@ -16,6 +16,23 @@ static i64 sys3(i64 n, i64 a, i64 b, i64 c) {
     __asm__ volatile ("syscall" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c) : "rcx", "r11", "memory");
     return r;
 }
+
+/* The baseline freestanding runtime exits by raw syscall. The cinterop build
+ * compiles a separate hosted variant (-DOBO_HOSTED_EXIT) whose exit paths call
+ * a host C callback first, so libc atexit handlers and stdio flush run. The
+ * baseline preprocessor expansion is the same syscall it always was. */
+#ifdef OBO_HOSTED_EXIT
+static void (*host_exit_cb)(i64);
+void rt_set_host_exit(u64 fn) { host_exit_cb = (void (*)(i64))fn; }
+static void exit_process(i64 code) {
+    if (host_exit_cb != 0) host_exit_cb(code);
+    sys3(60, code, 0, 0);
+    for (;;);
+}
+#define OBO_EXIT(code) exit_process(code)
+#else
+#define OBO_EXIT(code) sys3(60, code, 0, 0)
+#endif
 /* Four arguments: the fourth goes in r10, which "syscall" does not take from
  * rcx (it clobbers rcx with the return address). Only newfstatat needs this. */
 static i64 sys4(i64 n, i64 a, i64 b, i64 c, i64 d) {
@@ -76,7 +93,7 @@ static void put_int(i64 v) {
     if (v < 0) b[--i] = '-';
     putb(b + i, 24 - i);
 }
-static void die_code(const char *msg, i64 code) { flush(); u64 n = 0; while (msg[n]) n++; sys3(1, 2, (i64)msg, n); sys3(60, code, 0, 0); for (;;); }
+static void die_code(const char *msg, i64 code) { flush(); u64 n = 0; while (msg[n]) n++; sys3(1, 2, (i64)msg, n); OBO_EXIT(code); for (;;); }
 static void die(const char *msg) { die_code(msg, 2); }
 
 /* ---------- heap ---------- */
@@ -398,7 +415,7 @@ void rt_finish(void) {
             char b[24]; int i = 24; u64 u = nfd; do { b[--i] = (char)('0' + u % 10); u /= 10; } while (u);
             while (i < 24) msg[n++] = b[i++];
             msg[n++] = '\n';
-            sys3(1, 2, (i64)msg, n); sys3(60, 8, 0, 0);
+            sys3(1, 2, (i64)msg, n); OBO_EXIT(8);
         }
     }
     if (leak_check && live_owned) {
@@ -407,9 +424,9 @@ void rt_finish(void) {
         char b[24]; int i = 24; u64 u = live_owned; do { b[--i] = (char)('0' + u % 10); u /= 10; } while (u);
         while (i < 24) msg[n++] = b[i++];
         msg[n++] = '\n';
-        sys3(1, 2, (i64)msg, n); sys3(60, 5, 0, 0);
+        sys3(1, 2, (i64)msg, n); OBO_EXIT(5);
     }
-    sys3(60, 0, 0, 0);
+    OBO_EXIT(0);
     for (;;);
 }
 
@@ -611,7 +628,7 @@ static void die_num(const char *pre, i64 v, i64 code) {
     if (v < 0) b[--i] = '-';
     while (i < 24) msg[n++] = b[i++];
     msg[n++] = '\n';
-    sys3(1, 2, (i64)msg, n); sys3(60, code, 0, 0); for (;;);
+    sys3(1, 2, (i64)msg, n); OBO_EXIT(code); for (;;);
 }
 static int str_is(u64 s, const char *t) {
     u64 n = slen(s), i = 0;
@@ -1395,7 +1412,7 @@ void rt_panic_bounds(i64 line) {
     char b[24]; int i = 24; u64 u = (u64)line; do { b[--i] = (char)('0' + u % 10); u /= 10; } while (u);
     while (i < 24) msg[n++] = b[i++];
     msg[n++] = '\n';
-    sys3(1, 2, (i64)msg, n); sys3(60, 3, 0, 0); for (;;);
+    sys3(1, 2, (i64)msg, n); OBO_EXIT(3); for (;;);
 }
 
 void rt_misaligned(void) {
@@ -1403,4 +1420,4 @@ void rt_misaligned(void) {
     die_code("obx: internal error: misaligned stack in a runtime call\n", 4);
 }
 
-void rt_exit(i64 code) { flush(); sys3(60, code, 0, 0); for (;;); }
+void rt_exit(i64 code) { flush(); OBO_EXIT(code); for (;;); }

@@ -8,7 +8,8 @@ Files:
 
 - `adapter.c`, `adapter.h` — a C adapter using the toolkit registry. The
   exported ABI is scalar (`long` in/out); the raw pointer stays in C.
-- `wrapper.obx` — the maintained ordinary obo wrapper with explicit close.
+- `wrapper.obx` — the maintained ordinary obo wrapper with borrowed explicit
+  close and `defer` usage.
 - `library.cbind` — the reviewable contract for the adapter API and tools.
 - `app.obx` — a small consumer used as a dry-run smoke test.
 
@@ -33,7 +34,9 @@ For a complete real library example, read:
 - `../../examples/libpq.cbind` and `../../examples/libpq.obx` (the maintained wrapper);
 - `../../toolkit/libpq_adapter.c` (packet parsing, PQexecParams, result copies);
 - `../../tests/fake_libpq.c` and `../../tests/fake_adapter_test.c`
-  (deterministic ownership/error tests).
+  (deterministic ownership/error tests);
+- `../../examples/libpq_defer_app.obx` and `../../examples/zlib_app.obx`
+  (explicit `defer` cleanup and a second real library).
 
 Keep the explicit-close contract. Do not add a destructor to an ordinary obo
 record and do not return a C pointer as an integer.

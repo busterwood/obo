@@ -348,5 +348,8 @@
         "impure"
       ]
     }
+  ],
+  "wrapper_sources": [
+    "buffer.obx"
   ]
 }

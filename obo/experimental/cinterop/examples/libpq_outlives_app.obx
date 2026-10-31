@@ -1,0 +1,42 @@
+module app
+
+import "libpq.obx"
+
+// A PGresult remains usable after its PGconn is closed; both still close exactly
+// once. This is an explicit lifetime exercise, not automatic ownership.
+fn bytes_of(s: string): []byte {
+    var b = new []byte(0)
+    for i in 0..len(s) { append(b, s[i]) }
+    return b
+}
+
+fn main() {
+    let made = libpq::connect(bytes_of("fake-ok"))
+    match made {
+        ok(conn) {
+            let q = libpq::query(&conn, bytes_of("SELECT 42::int AS n"))
+            match q {
+                ok(rows) {
+                    defer rows.close()
+                    if rows.status() != libpq::PGRES_TUPLES_OK { exit(1) }
+                    if !conn.close() { exit(2) }
+                    if !rows.is_open() { exit(3) }
+                    let v = rows.text(0, 3)
+                    match v {
+                        ok(s) {
+                            if s != "1.234567890123456789" { exit(4) }
+                            println("result_after_conn_close=", s)
+                        }
+                        err(m, c) { println("read error ", m, " ", c); exit(5) }
+                    }
+                }
+                err(m, c) { println("query error ", m, " ", c); exit(6) }
+            }
+        }
+        err(m, c) { println("connect error ", m, " ", c); exit(7) }
+    }
+    println("live=", libpq::live_resources())
+    println("conns=", libpq::live_connections())
+    println("results=", libpq::live_results())
+    println("live_result_outlives_conn=ok")
+}

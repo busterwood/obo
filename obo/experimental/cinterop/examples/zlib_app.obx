@@ -1,0 +1,74 @@
+module app
+
+import "zlib.obx"
+import "buffer.obx"
+
+fn bytes_of(s: string): []byte {
+    var b = new []byte(0)
+    for i in 0..len(s) { append(b, s[i]) }
+    return b
+}
+
+fn check(ok: bool, name: string, code: int) {
+    if !ok {
+        println("FAIL ", name)
+        exit(code)
+    }
+}
+
+fn main() {
+    let v = zlib::version()
+    match v {
+        ok(s) { println("zlib-version=", s) }
+        err(m, c) { println("version error ", m, " ", c); exit(1) }
+    }
+
+    // Binary input with embedded NUL and high bytes.
+    var data = new []byte(0)
+    append(data, byte(0))
+    append(data, byte(255))
+    append(data, byte(65))
+    append(data, byte(0))
+    append(data, byte(1))
+    append(data, byte(2))
+    let n = len(data)
+    let c = zlib::compress(data, 6)
+    match c {
+        ok(cb) {
+            defer cb.close()
+            check(cb.len() > 0, "compressed length", 2)
+            println("compressed_len=", cb.len())
+            let u = zlib::uncompress(cb.to_bytes(), n)
+            match u {
+                ok(ub) {
+                    defer ub.close()
+                    check(ub.len() == n, "roundtrip length", 3)
+                    let out = ub.to_bytes()
+                    check(int(out[0]) == 0, "roundtrip byte0", 4)
+                    check(int(out[1]) == 255, "roundtrip byte1", 5)
+                    check(int(out[2]) == 65, "roundtrip byte2", 6)
+                    check(int(out[3]) == 0, "roundtrip byte3", 7)
+                    println("roundtrip_len=", len(out))
+                }
+                err(m, c) { println("uncompress error ", m, " ", c); exit(8) }
+            }
+            // Too-small output buffer is an API error, not a crash or leak.
+            let small = zlib::uncompress(cb.to_bytes(), n - 1)
+            match small {
+                ok(b) { b.close(); println("unexpected_small_ok"); exit(9) }
+                err(m, c) { println("small_error=", c) }
+            }
+        }
+        err(m, c) { println("compress error ", m, " ", c); exit(10) }
+    }
+
+    let bad = zlib::uncompress(bytes_of("not a zlib stream"), 64)
+    match bad {
+        ok(b) { b.close(); println("unexpected_bad_ok"); exit(11) }
+        err(m, c) { println("bad_error=", c) }
+    }
+
+    println("live=", zlib::live())
+    check(zlib::live() == 0, "buffer leak", 12)
+    println("zlib_smoke=ok")
+}

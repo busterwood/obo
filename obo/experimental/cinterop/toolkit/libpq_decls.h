@@ -21,6 +21,19 @@ typedef struct pg_conn PGconn;
 typedef struct pg_result PGresult;
 typedef unsigned int Oid;
 
+/* PQconninfoOption: documented public layout. Used only to ask libpq whether
+ * the trusted conninfo already names connect_timeout; this is not a hand-rolled
+ * conninfo parser. */
+typedef struct PQconninfoOption {
+    char *keyword;
+    char *envvar;
+    char *compiled;
+    char *val;
+    char *label;
+    char *dispchar;
+    int dispsize;
+} PQconninfoOption;
+
 /* ConnStatusType */
 #define CONNECTION_OK 0
 #define CONNECTION_BAD 1
@@ -41,6 +54,10 @@ typedef unsigned int Oid;
 #define PGRES_TUPLES_CHUNK 12
 
 extern int PQlibVersion(void);
+
+extern PQconninfoOption *PQconninfoParse(const char *conninfo, char **errmsg);
+extern void PQconninfoFree(PQconninfoOption *connOptions);
+extern void PQfreemem(void *ptr);
 
 extern PGconn *PQconnectdb(const char *conninfo);
 extern int PQstatus(const PGconn *conn);

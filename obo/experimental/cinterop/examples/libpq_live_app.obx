@@ -29,6 +29,7 @@ fn main() {
     let made = libpq::connect(dsn)
     match made {
         ok(conn) {
+            defer conn.close()
             println("server_version=", libpq::lib_version())
 
             // 1. Parameterized text, NULL vs empty, exact numeric text/OID/typmod.
@@ -44,6 +45,7 @@ fn main() {
                 vals, flags)
             match q1 {
                 ok(rows) {
+                    defer rows.close()
                     if rows.status() != libpq::PGRES_TUPLES_OK {
                         println("q1 status=", rows.status())
                         let em = rows.error_message()
@@ -71,7 +73,6 @@ fn main() {
                     check(rows.ftype(3) == 1700, "q1 numeric OID", 11)
                     check(rows.fmod(3) == -1, "q1 numeric typmod", 12)
                     println("numeric_text=", "1.234567890123456789", " oid=1700 typmod=-1")
-                    check(rows.close(), "q1 close", 13)
                 }
                 err(m, c) { println("q1 error ", m, " ", c); exit(14) }
             }
@@ -87,6 +88,7 @@ fn main() {
                 bytes_of("SELECT $1::text AS a, $2::text AS b"), nv, nf)
             match q2 {
                 ok(rows) {
+                    defer rows.close()
                     check(rows.status() == 2, "q2 status", 15)
                     check(rows.is_null(0, 0), "q2 null param", 16)
                     check(!rows.is_null(0, 1), "q2 empty param not null", 17)
@@ -97,7 +99,6 @@ fn main() {
                         err(m, c) { println("q2 b error ", m, " ", c); exit(20) }
                     }
                     println("null_and_empty=ok")
-                    check(rows.close(), "q2 close", 21)
                 }
                 err(m, c) { println("q2 error ", m, " ", c); exit(22) }
             }
@@ -106,11 +107,11 @@ fn main() {
             let q3 = libpq::query(&conn, bytes_of("SELECT * FROM obo_cinterop_no_such_table"))
             match q3 {
                 ok(rows) {
+                    defer rows.close()
                     check(rows.status() == libpq::PGRES_FATAL_ERROR, "q3 error status", 23)
                     let em = rows.error_message()
                     check(len(em) > 0, "q3 error message", 24)
                     println("sql_error_length=", len(em))
-                    check(rows.close(), "q3 close", 25)
                 }
                 err(m, c) { println("q3 query error ", m, " ", c); exit(26) }
             }
@@ -121,6 +122,7 @@ fn main() {
                 new []?[]byte(0), new []bool(0))
             match q4 {
                 ok(rows) {
+                    defer rows.close()
                     check(rows.status() == 2, "q4 status", 27)
                     check(rows.nfields() == 1, "q4 fields", 28)
                     check(rows.length(0, 0) == 3, "q4 binary length", 29)
@@ -135,12 +137,10 @@ fn main() {
                         err(m, c) { println("q4 value error ", m, " ", c); exit(34) }
                     }
                     println("binary_bytes=00ff41 len=3")
-                    check(rows.close(), "q4 close", 35)
                 }
                 err(m, c) { println("q4 error ", m, " ", c); exit(36) }
             }
 
-            check(conn.close(), "connection close", 37)
         }
         err(m, c) { println("connect error code=", c); exit(38) }
     }
