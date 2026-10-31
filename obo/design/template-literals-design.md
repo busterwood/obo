@@ -1,8 +1,13 @@
-# Typed template literals: SQL values and escaped HTML
+# Template domains: typed SQL and context-escaped HTML
 
 **Date:** 2026-10-31
-**Status:** design proposal, not approved and not implemented. No source, test,
-runtime, seed, version or format changes in this pass.
+**Status:** design proposal, not approved as a whole and not implemented. SQL
+semantics remain the agreed part; the HTML/domain abstraction is for review. No
+source, test, runtime, seed, version or format changes in this pass.
+**Revision 2 (follow-up):** keeps the agreed SQL semantics and presents SQL and
+HTML as two built-in instances of one semantic **template domain** abstraction.
+The types remain separate; there is no public `SafeString` or cross-domain
+supertype.
 **Baseline:** `main` at `c6c4d3f3ce18f3aa872e4ba0880ccdac7e7257de`; isolated
 worktree `/home/chris/.local/share/opencode/worktree/fa36f3/template-literals-design`,
 branch `template-literals-design`; compiler 13,550 lines / 509,773 bytes.
@@ -13,21 +18,22 @@ copied articles). Examples are proposals, not compiled examples.
 ## 0. Recommendation
 
 Add compiler-known `sql` and `html` template tags, plus literal-only trusted
-forms `sqlRaw` and `htmlRaw`. A tag is not a user-defined variadic function; the
-compiler classifies each hole:
+forms `sqlRaw` and `htmlRaw`. They are two **instances of one template-domain
+mechanism**, not one generic escape: each has a nominal fragment type, an
+`ENCODE` policy for values, `SPLICE` for trusted fragments, array semantics and
+context rules.
 
-- SQL: scalar -> bound parameter; `Sql` -> composable fragment; `string` never
-  becomes SQL text.
-- HTML: scalar -> escaped in context; `Html` -> trusted markup, inserted raw.
-- Arrays: `[]Sql` joined explicitly (`sqlJoin`, `sqlAnd`, `sqlOr`); `[]Html`
-  concatenates. Neither is guessed.
-- Raw SQL/HTML requires an explicit literal tag. No `string -> Sql/Html` casts;
+- SQL: scalar -> bound parameter; `Sql` -> fragment; `string` never SQL text.
+- HTML: scalar -> context-escaped; `Html` -> trusted markup, inserted raw.
+- Arrays: `[]Sql` joined explicitly; `[]Html` concatenates. Neither is guessed.
+- Raw SQL/HTML needs an explicit literal tag; no `string -> Sql/Html` cast and
   no cross-domain `SafeString`.
 
-This borrows JavaScript's syntax, not its dynamic tag protocol. Obo has no
-variadic functions or user-defined generic tuples, so a JS-style tag needs a new
-language feature. Compiler-known tags give the compiler the chunks, hole types
-and HTML context that a JS library sees only at runtime.
+This borrows JavaScript's syntax, not its dynamic tag protocol. Obo lacks
+variadic/user-generic tuples, so a JS-style tag would need a new language
+feature. Compiler-known tags give the compiler the chunks, hole types and HTML
+context a JS library sees only at runtime. The domain descriptor is internal;
+public tags stay separate in v1.
 
 ## 1. Scope and threat model
 
@@ -36,8 +42,8 @@ fragments; HTML data cannot become markup; trusted markup is explicit; optional
 predicates and lists stay readable.
 
 **Non-goals:** DB driver, SQL parser/schema, dialect quoting, full HTML
-sanitizer, dynamic tag/attribute names, CSP, JS/CSS encoding, user-defined tags,
-template files, or arbitrary `string -> Sql`/`Html`.
+sanitizer, dynamic tag/attribute names, CSP, JS/CSS encoding, user-defined
+tags/domains, template files, or arbitrary `string -> Sql`/`Html`.
 
 **Threat model:** the template author is trusted; request, file, service and
 database data are not. SQL values are data; identifiers, sort directions and
@@ -46,7 +52,64 @@ attributes, URLs, script and CSS are distinct contexts. Raw strings are code.
 Stored data is still untrusted when it reaches a query or page (second-order
 injection). A DB syntax error is a query bug, not an injection escape.
 
-## 2. SQL: values and fragments
+## 2. The shared abstraction: template domains
+
+SQL and HTML are two instances of one semantic pattern, a **template domain**.
+A domain is the compiler-known policy for one output language. It defines:
+
+1. the nominal **trusted-fragment type** (`Sql`, `Html`) and its trusted
+   constructors (the tag and the literal-only raw tag);
+2. the **value policy** for an ordinary hole: SQL binds a parameter, HTML
+   performs the context-specific escape;
+3. **splice** rules for a trusted fragment: SQL merges text/parameters, HTML
+   appends already-safe markup;
+4. **array/join** policy: `[]Sql` is joined explicitly; `[]Html` concatenates;
+5. **context/validation** rules: SQL value-vs-structure and identifiers; HTML
+   text/attribute/URL and rejected script/style/tag-name contexts;
+6. a **once-only trust boundary**: encoded data is never treated as a fragment,
+   and a fragment is never encoded a second time.
+
+For every hole the domain chooses exactly one action:
+
+```text
+ENCODE(value, context)   -> domain-specific encoded representation
+SPLICE(trustedFragment)  -> domain-specific composition
+```
+
+That is the unification. It is not "turn everything into escaped text": the
+encoded representation is different in each domain. A plain `string` is always
+`ENCODE`; it is never auto-spliced as SQL syntax or trusted HTML. A trusted
+fragment is always `SPLICE`; it is not re-escaped. The compiler rejects a value
+that is neither a supported scalar nor that domain's fragment type.
+
+A conceptual domain descriptor is useful for the compiler, but it is **not a
+proposed public Obo interface**:
+
+```text
+domain = {
+  name, fragmentType, rawTag,
+  encode(context, value) -> emission | typeError,
+  splice(fragment)     -> emission,
+  combine(a, b), join(parts, separator),
+  contextState, render
+}
+```
+
+Obo has no associated types or generic modules, so this is an internal table of
+type IDs and lowering functions in v1, not a user-extensible interface. An
+implementation may share the fragment-builder skeleton (`texts` plus opaque
+hole payloads), but the public values stay nominal and domain-specific. There is
+deliberately no `Template`, `Fragment`, `SafeString` or `Escapable` supertype.
+A common supertype would invite passing a `Sql` where an `Html` is expected, the
+classic confused-deputy failure. A Slack-style mrkdwn fragment or any third
+output language would be another domain: safety in one grammar says nothing
+about another. `Sql`/`Html` are built-in instances, not the whole universe.
+
+## 3. SQL: values and fragments
+
+In the SQL domain, `ENCODE(value)` appends an argument and a placeholder, not
+quoted text; `SPLICE(Sql)` merges parts and arguments. The encoded result is a
+text/argument pair, not bytes, which is why SQL is not just another HTML escaper.
 
 ```obo
 let q = sql`SELECT * FROM account WHERE id = ${id} AND name = ${name}`
@@ -94,7 +157,12 @@ are not design targets: `IS` expects `NULL`/`TRUE`/`FALSE` or a defined test, an
 explicit structure or a future null-aware predicate for null tests. The template
 does not validate SQL syntax.
 
-## 3. HTML: context and trust
+## 4. HTML: context and trust
+
+In the HTML domain, `ENCODE(value, context)` returns bytes that are safe as text
+or as a quoted attribute value; `SPLICE(Html)` appends already-safe markup. There
+is no parameter side channel, unlike SQL, and no attribute context is allowed to
+accept an `Html` fragment.
 
 ```obo
 let card = html`<div class="card">
@@ -140,36 +208,93 @@ fragments may intentionally open elements. This is narrower than Go
 `html/template`, but avoids whole-template analysis and does not pretend to
 sanitize rich HTML.
 
-## 4. Prior art and why not JS tags
+## 5. The two domains side by side
 
-JavaScript tags receive a frozen strings array plus variadic values and may
-paste, bind or ignore them. `sql-template-tag` and Slonik use fragments, explicit
-`join`, and a trusted `raw`; Slonik permits execution only through its tag.
-node-postgres passes text and values separately; Rust `sqlx` separates `push`
-from `push_bind`; C# `FormattableString` keeps format plus arguments but leaves
-safety to the consumer. TypeScript can type tag shape, not SQL/HTML safety.
+| aspect | SQL domain | HTML domain |
+|---|---|---|
+| ordinary value | `ENCODE` -> placeholder plus bound argument; no value text | `ENCODE` -> entity/URL bytes for the current context |
+| trusted fragment | `SPLICE(Sql)` -> merge text and parameter lists | `SPLICE(Html)` -> append already-safe markup bytes |
+| arrays | `[]Sql` joined explicitly; empty list is the caller's decision | `[]Html` concatenates; empty array is empty output |
+| context | value vs syntax; identifiers and sort order are fixed/allow-listed | text vs quoted attribute vs URL; script/style/tag names rejected |
+| once-only | a bound value never becomes text; a fragment is trusted once | a value is encoded once; `Html` is never encoded again |
+| errors | unsupported hole type; hole in raw literal; `$n` collision | `Html` in attribute; hole in script/style/tag name; unsafe URL |
+
+`HtmlAttrs` is the HTML domain's trusted attribute-list fragment; it is not a
+`Sql` fragment and cannot be spliced into SQL. `SqlArg` is the SQL domain's
+bound-value representation; it cannot be spliced into HTML.
+
+```obo
+let q = sql`SELECT ${someHtml}`   // error: Html is not a SQL value or fragment
+let p = html`<p>${someSql}</p>`   // error: Sql is not Html or a scalar
+```
+
+## 6. Why escaping and parameterization are different
+
+HTML escaping is a **transformation** of a value into bytes that the HTML parser
+will read as text or as a quoted attribute value. SQL parameterization is not a
+string transformation at all: the value is removed from the SQL text and sent
+beside it, so the SQL parser never sees it. Quoting a value into SQL is a
+different, dialect- and configuration-dependent operation and is not equivalent
+(and is not safe for identifiers). Parameterization also preserves the typed
+value—exact decimal, binary length, NULL—rather than flattening it to text.
+
+Both still fit `ENCODE` because both are domain-owned encodings, but their
+codomains differ: SQL produces a placeholder plus a side value; HTML produces
+safe bytes. For this reason a public generic `escape(value)` is wrong. SQL
+`ENCODE` may need to append to a parameter list and later choose a dialect
+placeholder; HTML `ENCODE` needs parser context and URL policy. The shared
+abstraction is the typed hole, the trusted fragment, composition and once-only
+trust—not one encoder function.
+
+## 7. Prior art and why not JS tags
+
+SQL builders separate data from structure: node-postgres passes text and values
+separately; `sql-template-tag`/Slonik compose fragments with explicit `join` and
+trusted `raw`; Rust `sqlx` separates `push` from `push_bind`; C#
+`FormattableString` keeps format plus arguments but leaves safety to its
+consumer. TypeScript can type tag shape, not SQL safety.
 
 HTML prior art separates contexts: Go `html/template` has contextual escaping and
 typed `HTML`/`HTMLAttr`/`URL`/`JS`/`CSS`; Razor encodes strings but renders
-`IHtmlContent`; Jinja/MarkupSafe distinguish escaped `Markup`; JSX has
-`dangerouslySetInnerHTML`; Svelte has `{@html}`; Askama has `| safe`. The lesson
-is per-context trusted types and an explicit unsafe path.
+`IHtmlContent`; Jinja/MarkupSafe distinguish escaped `Markup`; JSX and Svelte
+make raw HTML explicit (`dangerouslySetInnerHTML`, `{@html}`); Askama has
+`| safe`. The lesson is per-context trusted types, not one global safe string.
 
-Obo cannot copy the JS protocol: fixed arity, homogeneous arrays, and interfaces
-cannot hold scalars (LANGUAGE §5a). Variadic tags need tuples/generics and a new
-calling convention. Compiler-known tags keep the syntax without that.
+Obo cannot copy the JS tag protocol: fixed arity, homogeneous arrays, and
+interfaces cannot hold scalars (LANGUAGE §5a). Compiler-known domains avoid
+needing variadic tuples while preserving static checks.
 
-## 5. Architecture options
+## 8. Architecture options
 
-**A. compiler-known tags (recommended):** scanner/parser/type checker know four
-tags and the emitter builds typed values. **B. builder API only:** implementable
-with records/methods, but verbose and the caller classifies every hole/context;
-a fallback and implementation substrate. **C. general tag protocol:** needs
-variadic heterogeneous values, tuples, escape policy and a user-tag trust
-boundary; defer. **D. hygienic macros/AST:** would generate all of it, but there
-is no AST and it is overkill.
+**A. compiler-known domains (recommended):** the scanner/parser know `sql`,
+`sqlRaw`, `html` and `htmlRaw`; the emitter uses one internal descriptor per
+domain. **B. builder API only:** per-domain records/methods, implementable now
+but verbose and caller-classified; fallback/substrate. **C. general tag protocol
+/ user-defined domains:** deferred. **D. macros/AST:** would generate it, but no
+AST and overkill.
 
-## 6. Types and representation
+User-defined domains would need associated fragment/raw types, opaque
+constructors, a tag signature binding literal chunks and typed holes, a
+compile-time encode/splice/join/context policy and a trust declaration. Obo
+lacks associated types, generic modules and variadic heterogeneous tuples, so
+this is an internal mechanism in v1, not a public `TemplateDomain` API.
+
+### Separate standard-library tags in v1
+
+The tags remain separate: `sql`/`sqlRaw` and `html`/`htmlRaw`, with separate
+helpers and fragment types. There is no generic `template` tag, no
+`escape(value)` and no public domain registry. Choosing the tag is choosing the
+grammar and trust policy. That is less extensible than JavaScript tags, and it
+is what makes the checks tractable.
+
+### Extension path
+
+After both built-ins pass, factor the shared walker and descriptor without
+changing the public tags. Public domains are a later language-feature decision
+with the prerequisites above; until then user code can use the builder API but
+cannot register a tag.
+
+## 9. Types and representation
 
 Exact placement (compiler prelude vs stdlib) is an implementation decision; the
 semantics are the proposal:
@@ -198,7 +323,7 @@ SQL; `decimal` is reserved for the future exact type. `Html` stores escaped text
 `HtmlAttr`/`HtmlAttrs` are separate because markup is not an attribute fragment.
 There is no `SafeString` or cross-domain conversion: trust is grammar-specific.
 
-## 7. Grammar, lowering and cost
+## 10. Grammar, lowering and cost
 
 ```text
 TagExpr := TAG "`" (Chunk | Hole)* "`"
@@ -219,20 +344,21 @@ the chunk, saves position, scans the nested expression, restores and resumes.
 Semicolon insertion is off in chunks; a nested template pushes another mode. This
 is still one read and one pass, with no AST.
 
-Lowering `sql` emits a hidden builder local: append text; append a `SqlArg` per
-scalar; append a `Sql` hole's parts/args; finish and return the owned `Sql`.
-`html` builds an `Html` string using the state at each hole. Hidden builders and
-temporaries are owned locals, freed on every block exit, preserving
-left-to-right evaluation and existing argument/borrow checks. Runtime-valued tags
-are not global initializers; literal raw tags may become constants later. Errors
-point at the hole.
+Lowering is one template walk with a domain hook. The shared walker emits hidden
+builder locals, appends literal chunks, evaluates holes left-to-right and frees
+temporaries on every block exit. The SQL hook appends text and `SqlArg` values
+(or splices `Sql` parts/args) and later renders placeholders. The HTML hook
+chooses the context escaper, appends bytes, or splices `Html`; it maintains the
+local HTML context state. Hidden builders are owned locals, preserving existing
+argument/borrow checks. Runtime-valued tags are not global initializers; literal
+raw tags may become constants later. Errors point at the hole.
 
-This costs a scanner stack, a local HTML state machine, new type checks and
-builder emission, plus runtime allocations. The compiler has about 470 KB of
-headroom, but implementation must measure against 2,500,000. There is no SQL
-parser, HTML sanitizer or AST, so the work is bounded.
+This costs a scanner stack, an internal domain dispatch, an HTML state machine,
+new type checks and builder emission, plus runtime allocations. The compiler has
+about 470 KB of headroom, but implementation must measure against 2,500,000.
+There is no SQL parser, HTML sanitizer or AST, so the work is bounded.
 
-## 8. Safety, escaping and ownership
+## 11. Safety, escaping and ownership
 
 - **SQL values are not escaped.** They are sent separately; quotes, `$1`, `?`
   and NUL remain data (NUL/binary is a driver concern). `sqlRaw` is syntax, not
@@ -242,6 +368,8 @@ parser, HTML sanitizer or AST, so the work is bounded.
   because the renderer reserves `$n`; `$tag$` quoting remains.
 - **No double escape.** Strings are escaped once; `Html` is trusted and inserted
   once. `Html` in an attribute or `HtmlAttrs` in data is a compile error.
+- **No cross-domain splice.** Only `Sql` may be spliced into SQL and only `Html`
+  into HTML. There is no `SafeString` coercion; a domain's trust is not portable.
 - **Structure stays literal.** Tag/attribute names cannot be holes; optional
   attributes come from `HtmlAttrs`/`HtmlAttr`, not string-built `name="value"`.
   URLs use scheme validation plus component encoding, not HTML escaping alone.
@@ -254,7 +382,7 @@ parser, HTML sanitizer or AST, so the work is bounded.
   until execution; a driver borrows them for the call. `Result` errors do not
   change this. No DB connection/schema/service is part of this design.
 
-## 9. Database values and interop
+## 12. Database values and interop
 
 V1 holes: `int`, `byte`, `bool`, `string`, `float`, `[]byte`, plus `SqlArg` for
 explicit nulls. `sqlNull()` is distinct from an empty fragment: omit a predicate
@@ -270,12 +398,13 @@ dialect-neutral: an adapter renders text and values separately, PostgreSQL's
 extended protocol being the reference. Future in-process C adapters can consume
 that pair; no helper process is allowed.
 
-## 10. Alternatives and unresolved decisions
+## 13. Alternatives and unresolved decisions
 
-Rejected: ordinary string interpolation; one cross-domain `SafeString`; JS-style
-user tags; automatic array expansion; SQL quoting/escaping instead of binding;
-identifiers as parameters; HTML sanitizer as default escaping; and full
-cross-template context propagation (the no-AST compiler cannot do it in v1).
+Rejected: ordinary string interpolation; one cross-domain `SafeString` or
+generic `escape(value)`; a public `TemplateDomain` supertype; JS-style user tags;
+automatic array expansion; SQL quoting/escaping instead of binding; identifiers
+as parameters; HTML sanitizer as default escaping; and full cross-template
+context propagation (the no-AST compiler cannot do it in v1).
 
 Decisions for the user:
 
@@ -292,10 +421,14 @@ Decisions for the user:
    vendor quoting?
 9. **Naming:** reserve `sql`, `html`, `Sql`, `Html` globally (recommended) or
    use qualified stdlib modules?
-10. **Schedule/version:** after planned `0.11` Stage B, or separate next
+10. **Domain exposure:** keep the domain descriptor compiler-internal
+    (recommended v1) or design public user-defined domains now? Public domains
+    need associated types, generic modules, typed variadic/heterogeneous holes,
+    opaque constructors and a trust policy.
+11. **Schedule/version:** after planned `0.11` Stage B, or separate next
     feature? Needs the user's roadmap decision.
 
-## 11. Compatibility, acceptance and roadmap
+## 14. Compatibility, acceptance and roadmap
 
 The syntax is additive: a backtick is currently unexpected, and `sql` followed by
 a backtick is invalid today. Existing programs do not change meaning. Ordinary
@@ -307,9 +440,13 @@ Future acceptance:
 
 - **SQL:** binds, raw fragments, nesting, joins, `[]Sql`, empty lists, duplicate
   and mixed values, deterministic `$n` numbering; corpus covers quotes, `$1`,
-  `?`, NUL and Unicode; raw with a hole is an error.
+  `?`, NUL and Unicode; raw with a hole is an error. The agreed SQL examples and
+  semantics must remain unchanged.
 - **HTML:** text/attribute/URL/script/style/comment/tag/attribute-name matrix;
   nested and array `Html`; empty arrays; double escape; XSS corpus stays text.
+- **Domain:** shared walker produces the same SQL or HTML result; `Sql` in an
+  HTML hole and `Html`/`HtmlAttrs` in a SQL hole are compile errors; no generic
+  escape entry point; once-only trust has a regression test in both domains.
 - **Ownership:** leak/double-free tests for builders, args, fragments, loops and
   early exits; consume-once; byte copy/move; no use-after-free through DB calls.
 - **Compiler:** exact error line/column; `.sym` round-trip if exported; fixed
@@ -319,10 +456,13 @@ Future acceptance:
 
 Roadmap: (1) scanner/syntax and raw tags; (2) SQL builder, `SqlArg`, binds,
 nested fragments, joins; (3) HTML text/attrs, nested/array fragments, state
-machine; (4) URL validation, `HtmlAttrs`, NULL/bytes rules; (5) adapters later.
-User-defined tags need a separate variadic/tuple design.
+machine; (4) extract/refactor the shared walker and internal domain descriptor
+only after both built-ins pass, keeping public types distinct; (5) URL validation,
+`HtmlAttrs`, NULL/bytes rules; (6) adapters later. User-defined domains remain a
+later feature with the prerequisites in §8; until then user code can use the
+builder API but cannot register a tag.
 
-## 12. References
+## 15. References
 
 External sources consulted 2026-10-31 (full URLs below; no article copies):
 
