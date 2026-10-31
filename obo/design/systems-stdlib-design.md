@@ -66,7 +66,7 @@ at this baseline; it is unrelated to the systems layer.
 | Area | Existing surface and evidence | Important limits / missing foundation |
 |---|---|---|
 | Whole files | `readFile`, `writeFile`; [runtime.c](../runtime/runtime.c):646–679 | Optional/bool errors lose errno; readFile seeks to size and is unsuitable for pipes; no public seek, truncate, durable replace or permission API. |
-| Incremental files | `openFile("r"/"w"/"a")`, `readFd`, `writeFd`, `closeFile`; runtime.c:767–833; [LANGUAGE.md](../LANGUAGE.md):1943–1965 | Raw copied fd integers; open lacks CLOEXEC; fd-state table covers only numbers below 1024; number reuse is not ownership. Reads/writes retry EINTR internally; writes may succeed partially. |
+| Incremental files | `openFile("r"/"w"/"a")`, `readFd`, `writeFd`, `closeFile`; runtime.c:767–833; [LANGUAGE.md](../LANGUAGE.md):2009–2030 | Raw copied fd integers; open lacks CLOEXEC; fd-state table covers only numbers below 1024; number reuse is not ownership. Reads/writes retry EINTR internally; writes may succeed partially. |
 | Buffered I/O | [io.obx](../lib/io.obx):13–57,75–241: Reader/Writer, fill, readLine, readN, readByte, takeChunk, flush, pump, count, write/writeBytes/writeByte | Reader/Writer borrow an int fd and own buffers only. Chunk size clamps to 1..1 MiB; line/readN totals are unbounded; readN is not exact-read. Flush retains unwritten bytes, but writeBytes can consume a prefix before failure without returning its count. No readiness/deadline/vectored interface. |
 | Directories | [fs.obx](../lib/fs.obx):109–219: open/next/close, copied DirEntry names; runtime.c:847–871 | getdents64 layout decoded in obo; skips `.`/`..`; unsorted; regular-file open only fails on next. DT_UNKNOWN fallback lstats a reconstructed path and can race. No directory-relative mutation. |
 | Metadata | fs.obx:56–106,221–269; runtime.c:872–930: stat/lstat, 14-number stat array, readlink, kind predicates | Linux values are exposed; atime/ctime have seconds only; no fstat, stat-at, chmod, mkdir, rename, hard link, unlink, filesystem sync, mapping interface. mmap exists only inside the allocator. |
@@ -85,8 +85,9 @@ at this baseline; it is unrelated to the systems layer.
 
 ### 2.1 Actual builtin and syscall boundary
 
-The builtin name universe is in [obo.obo](../src/obo.obo):2358 and the dispatch
-in :6559 onward; ownership/Result constructs have additional special parsing.
+The builtin name universe is in [obo.obo](../src/obo.obo):2393 and the dispatch
+in `fn builtin` at 7110 (`nativeCall` at 7043); ownership/Result constructs have
+additional special parsing.
 System-facing builtins are the file, directory, metadata, terminal, environment,
 args, sleep, output and exit operations above. Float and string helpers do not
 add OS capabilities. There is no arbitrary public `syscall`, socket, poll,
@@ -98,43 +99,43 @@ heap reservation), ioctl (16), nanosleep (35), exit (60), readlink (89),
 getdents64 (217) and newfstatat (262). getenv/args read the saved startup stack;
 they are not syscalls. The existence of private lseek/mmap is not a public API.
 
-[entry.S](../runtime/entry.S):19–90 defines slots 0..58 in the normal runtime;
-**slot 59 is `rt_set_host_exit` only in the hosted variant** (the normal table
-has 59 slots, the hosted table 60). Compiler constants are obo.obo:1987–2055.
-Do not reuse 59, shift existing slots, or copy obsolete 40-slot counts from
-historical interop prose. Runtime stubs also write the global `rt_entry_sp`
-(entry.S:83–90).
+[entry.S](../runtime/entry.S):19–101 defines slots 0–72 in **both** tables.
+Slot 59 is `rt_dec_reserved` in the baseline runtime and `rt_set_host_exit` in
+the hosted variant; decimal occupies slots 60–72. Compiler constants are
+obo.obo:2000–2082. Do not reuse 59, shift existing slots, treat 60–72 as free,
+or copy obsolete 40/59-slot counts from historical interop prose. Runtime stubs
+also write the global `rt_entry_sp` (entry.S:110).
 
 ### 2.2 Language and runtime constraints
 
 - Owned records/arrays move; strings share non-atomic reference counts.
   References cannot be stored or returned, and several mutable borrows may
-  alias: LANGUAGE.md:67–155,419–431. Group borrowing prevents use-after-free;
+  alias: LANGUAGE.md:133–151 and 214–431. Group borrowing prevents use-after-free;
   it does not establish cross-thread exclusion.
 - `^T` is a checked **non-owning** link, not a resource owner or a thread-safe
   weak pointer. runtime.c:470–493 computes heap-relative generation tokens;
   validation is not atomic with a subsequent access.
 - `try` propagates the same error cell and runs defers; main cannot use try.
   Deferred cleanup cannot propagate its error. `exit` runs no defers:
-  LANGUAGE.md:1670–1847,1962–1965. Trap statuses and Result error codes are
-  different namespaces (:2159–2178).
+  LANGUAGE.md:1736–1950 and 2009–2030. Trap statuses and Result error codes are
+  different namespaces (LANGUAGE.md:2240–2260).
 - Exported record fields are visible/writable; private types cannot occur in
-  exported layouts (LANGUAGE.md:1305–1327; native interop design §8.5). Merely
+  exported layouts (LANGUAGE.md:1371–1395; native interop design §8.5). Merely
   naming a record `File` with a public `tok` does not hide a token.
-- Native calls carry `freesAll` and `writesHandles` (obo.obo:6486–6556).
+- Native calls carry `freesAll` and `writesHandles` (obo.obo:7043 (nativeCall) and 7101 (effects)).
   They cannot implement the current local/pure interface effect tiers, and
   cannot be invoked through pure lambda bodies. Interior references into a
   connection array cannot be passed across such a call. Store/move a connection
   into a whole local first; reborrow state after the call. No proposal here
   quietly marks C calls pure to make a Reader interface compile.
 - Function values are second-class; Stage B captures borrow a creator's stack
-  for the duration of a call (LANGUAGE.md:1034–1115,1148–1225). Neither a lambda
+  for the duration of a call (LANGUAGE.md:1214–1300). Neither a lambda
   cell nor a captured reference can be an asynchronous thread entry argument.
 - The allocator, free lists, free traversal stack, counters, temporary roots,
   fd tracker and output buffer are global (runtime.c:83–159,330–468).
   `rt_str_inc/dec` use ordinary loads/stores (:417–428). `rt_collect` returns
   immediately (:309–321); collector comments at the file head are historical.
-- [README.md](../../README.md):133–179: 4 GiB default arena, 16 GiB ceiling,
+- [README.md](../../README.md):163–211: 4 GiB default arena, 16 GiB ceiling,
   one-object payload at most 4 GiB minus 32 bytes, separate metadata and native
   memory. mmap reserves virtual address space, not RAM. Free lists retain
   memory; `OBO_STATS` is not an RSS meter.
@@ -409,9 +410,11 @@ cross-field combinations and the `res` hint before indexing, arithmetic, copying
 or a native call. This explicitly covers `platform::Options`, `syssignals::
 SignalSet`, `sysaddress::Address`, `sysenv::Environment`, `sysbuffer::Buffer`,
 `sysfile::OpenOptions`, `sysnet::ListenOptions`, `sysprocess::Command` and
-reactor event requests. Reject a malformed record with `InvalidArgument`,
-`Range` or `InvalidResource`; never trust a field because a module constructor
-usually set it. Negative tests construct each record directly.
+reactor event requests. `sysstat::Identity` is a value record, but
+`sameIdentity` is pure equality of opaque bits and is explicitly not an authority
+check. Reject a malformed record with `InvalidArgument`, `Range` or
+`InvalidResource`; never trust a field because a module constructor usually set
+it. Negative tests construct each record directly.
 
 | State | Operation | Transition / result |
 |---|---|---|
@@ -479,9 +482,10 @@ pub const KIND_LOGGER = 15
 pub const KIND_WORKER = 16
 pub const KIND_CANCELLATION = 17
 pub const KIND_TRANSFER = 18
-pub const KIND_ATOMIC = 19
-pub const KIND_SENDER = 20
-pub const KIND_RECEIVER = 21
+pub const KIND_ATOMIC_INT = 19
+pub const KIND_ATOMIC_BOOL = 20
+pub const KIND_SENDER = 21
+pub const KIND_RECEIVER = 22
 pub fn initialize(options: &Options): Result[bool]
 pub fn hasCapability(name: string): bool
 pub fn source(r: &Resource): Result[^Resource]
@@ -497,9 +501,12 @@ the table would validate it, but that is not the documented route. `requireKind`
 is the typed-module entry check. Both reject an unregistered, closed or
 wrong-generation record.
 The `KIND_*` values are library constants; changing them is a library ABI
-change, not a kernel ABI exposure. `initialize` validates every `Options` field
-at entry: positive limits, checked arithmetic and an explicit `ignorePipeSignal`
-policy.
+change, not a kernel ABI exposure. `KIND_WORKER`, `KIND_ATOMIC_INT`,
+`KIND_ATOMIC_BOOL`, `KIND_SENDER`, `KIND_RECEIVER`, `KIND_TRANSFER` and
+`Transfer`/`releaseTransfer` are **reserved for the separate thread note**: P0–P3
+does not create or consume them, and no core module imports `systhreads`/`syssync`.
+`initialize` validates every `Options` field at entry: positive limits, checked
+arithmetic and an explicit `ignorePipeSignal` policy.
 
 Initialization is explicit, before resource creation; imports have no OS side
 effects. Defaults supplied by a constructor: 4096 native resources, 8192 live
@@ -534,8 +541,9 @@ The existing byte bridge is slow; network throughput is an acceptance measuremen
 not an assumption. A future compiler-assisted bulk copy would require its own
 checked ownership/effects boundary, benchmark against packing, self-host fixed
 point and measured <=2,500,000-byte compiler peak. It is **optional**, not a
-prerequisite hidden inside this plan. Existing slot 59 remains reserved to hosted
-exit. No new jump-table allocation is prescribed here.
+prerequisite hidden inside this plan. Slots 0–72 are occupied in both tables (59 is the
+reserved/hosted-exit slot; 60–72 are decimal builtins). No new jump-table
+allocation is prescribed here.
 
 Select the native fake versus Linux backend at build time in the link manifest.
 They implement the same adapter symbols. There is no global runtime toggle or
@@ -626,7 +634,7 @@ pub fn truncateTo(f: &File, length: int): Result[bool]
 pub fn metadata(f: &File): Result[stat::Metadata]
 pub fn chmod(f: &File, permissions: int): Result[bool]
 pub fn sync(f: &File, dataOnly: bool): Result[bool]
-pub fn intoStream(f: File): Result[stream::Stream]
+pub fn intoStream(mut f: &File): Result[stream::Stream]
 pub fn duplicateStream(f: &File): Result[stream::Stream]
 pub fn close(f: &File): Result[bool]
 pub fn rename(from: &dir::Directory, old: string,
@@ -647,14 +655,30 @@ resulting positions and lengths must be nonnegative signed 64-bit bytes. Check
 addition before seeking. ESPIPE maps to NotSeekable. Positional writes on
 append-open files are rejected rather than inheriting Linux's pwrite/O_APPEND
 surprise. Nonblocking regular-file operations may still block for storage I/O.
-`intoStream` **consumes** the typed `File`/`Connection` and returns a `Stream`
-owning the same native resource; the old shell is moved and cannot be used again.
-It adds no fd and is the supported way to hand a file/connection to the
-buffered/step APIs. `duplicateStream` is `dup` semantics: the duplicate shares
-the open file description, so it **shares the file offset and status flags**.
-Use `readAt`/`writeAt` for independent positions; do not mix buffered readers on
-duplicates. The same sharing rule applies to `Connection::duplicateStream`
-(shared socket state and half-close).
+`File::intoStream` and `Connection::intoStream` **logically consume** the typed
+shell and return a `Stream` owning the same native resource. The signature takes
+`mut &` so a `Connecting` failure can leave the shell usable; on success the
+shell's `res` is replaced with an unregistered value and every later typed
+operation fails. The shell record itself is still an ordinary owned record. It
+adds no fd and is the supported way to hand a file/connection to the buffered/
+step APIs. It atomically **re-tags the live table entry** from `KIND_FILE`/
+`KIND_CONNECTION` to `KIND_STREAM`; the old shell's handle is unusable, and the
+returned Stream passes `requireKind(..., KIND_STREAM)`.
+
+Only a live established resource is convertible: a File is open; a Connection
+must be Open, ReadClosed or WriteClosed, and the Stream preserves its half-close
+state. A `Connecting` Connection returns `InProgress` and is left unchanged (not
+consumed), so `finishConnect`/`SO_ERROR` remain available; a `Failed`/closed
+resource returns the state error and retires any live resource. On a non-`InProgress` failure the source is closed and its native
+resource retired exactly once, never leaked (an already-closed shell has no live
+resource to retire). `intoStream` loses File `metadata`/`seek`/`sync`/`truncate`/
+`chmod` and Connection `finishConnect`/addresses/socket options; use
+`duplicateStream` when both interfaces are needed. `duplicateStream` is `dup`
+semantics: the duplicate shares the open file
+description, so it **shares the file offset and status flags**. Use `readAt`/
+`writeAt` for independent positions; do not mix buffered readers on duplicates.
+The same sharing rule applies to `Connection::duplicateStream` (shared socket
+state and half-close).
 
 Open-at names use §5.1 validation. Metadata and chmod act on the open file,
 avoiding a second path lookup. Hard link does not follow the source symlink;
@@ -722,7 +746,11 @@ positive int; links outside the signed range return Range. size is meaningful fo
 regular files; device/FIFO sizes carry no portable content-length promise.
 `clock::Timestamp` normalizes nanos to 0..999,999,999 and keeps seconds separate,
 permitting dates outside signed-nanosecond epoch range. Birth time is nil when
-unavailable. Statx/fstatat conversion stays native; no new indexed stat array.
+unavailable. `sameIdentity` is **pure equality of opaque interned bits**: it does
+not validate table membership or grant authority, and a copied `Identity` is just
+a value. It is not a resource check; callers still need `Metadata`/`requireKind`
+for any native operation. Statx/fstatat conversion stays native; no new indexed
+stat array.
 
 ### 5.4 Mapping
 
@@ -886,7 +914,7 @@ pub fn close(s: &Stream): Result[bool]
 Stream is a concrete tagged native endpoint abstraction, not a current obo
 interface with unsound native effect claims. `Stream.source(s)` is exactly
 `platform::source(&s.res)` (a convenience, not a second identity model);
-typed endpoints reach it by consuming `intoStream` or by an explicit duplicate.
+typed endpoints reach it by a logical `intoStream` transfer or by an explicit duplicate.
 File/pipe/socket APIs produce a Stream by that explicit transfer or duplicate. Native side keeps iovecs and C buffers alive
 through the syscall; obo arrays are borrowed only for the call. Vector total bytes
 and count (default <=64, further bounded by backend IOV_MAX) are checked; the
@@ -1112,7 +1140,7 @@ pub fn finishConnect(c: &Connection): Result[bool]
 pub fn readSome(c: &Connection, max: int): Result[?[]byte]
 pub fn writeSome(c: &Connection, bytes: &[]byte, offset: int, count: int): Result[int]
 pub fn shutdownWrite(c: &Connection): Result[bool]
-pub fn intoStream(c: Connection): Result[stream::Stream]
+pub fn intoStream(mut c: &Connection): Result[stream::Stream]
 pub fn duplicateStream(c: &Connection): Result[stream::Stream]
 pub fn localAddress(c: &Connection): Result[address::Address]
 pub fn peerAddress(c: &Connection): Result[address::Address]
@@ -1161,6 +1189,15 @@ must be explicit policies, never an unbounded sequential DNS/connect loop.
 | WriteClosed | reads still allowed; writes return BrokenPipe |
 | Both halves closed / Failed | explicit close still required |
 | Closed | close false; all transfers Closed |
+
+`Connection::intoStream` re-tags `KIND_CONNECTION` to `KIND_STREAM` and is valid
+only in Open/ReadClosed/WriteClosed. A Connecting connection returns `InProgress`
+and is left unchanged (not consumed), so `finishConnect`/`SO_ERROR` remain
+available; Failed/Closed returns the state error and retires any live resource.
+On a non-`InProgress` failure the source is closed and its native resource
+retired, never leaked. The Stream loses
+`finishConnect`, addresses and socket options; use `duplicateStream` if both are
+needed (the duplicate shares the socket and half-close state).
 
 Directional state is two independent bits after connection establishment.
 shutdownWrite is idempotent and never implies that the peer has consumed bytes.
@@ -1667,8 +1704,17 @@ Core boundary tests required before the relevant phase:
 - **Port 0:** bind TCP and UDP to port 0, then `listenerLocalAddress`/
   `datagramLocalAddress` returns a nonzero port that accepts/sends. An unnamed
   Unix datagram sender yields `Packet.peer == nil`, not a fabricated address.
+- **intoStream:** convert an Open File and an Open Connection; the old shell is
+  invalidated, the table entry changes to `KIND_STREAM`, and Stream operations
+  pass `requireKind`. A Connecting Connection returns `InProgress` and remains usable
+  for `finishConnect`; a Failed/closed source fails and retires the native
+  resource exactly once. Assert the documented method loss. The offset test below
+  covers `duplicateStream`, not `intoStream`.
 - **Offset sharing:** two `duplicateStream` descriptors observe one file offset;
   `readAt`/`writeAt` remain independent. Do not claim independent buffer reads.
+- **Identity equality:** `sameIdentity` is pure equality of opaque bits; copying
+  an `Identity` or forging `bits` grants no authority and performs no native
+  operation. A metadata operation still requires the owning shell and kind check.
 - **Environment copy:** mutate the array returned by `entries`; the original
   snapshot and lookup results do not change.
 - **Signals:** a child killed by a known signal reports the library id
@@ -1744,7 +1790,7 @@ obo/examples/systems/            bounded copy, atomic replace, echo, supervisor
 Application: `import "sys/sysfile.obx" as file` with `-I obo/lib`; sibling module:
 `import "sysdir.obx" as dir`. Unique declared names `module sysfile`, etc. satisfy
 the basename rule and the **flat .sym namespace**; do not create another
-`module time`, `io` or `env` under a subdirectory (LANGUAGE.md:1257–1288,1383–1392).
+`module time`, `io` or `env` under a subdirectory (LANGUAGE.md:850–880 and 1371–1395).
 No re-export/facade pretending `module os` can aggregate imports. CamelCase
 functions, PascalCase types and uppercase policy constants follow existing style.
 
@@ -1796,7 +1842,7 @@ allocated here. Native manifest formats stay independently versioned.
   `tests/io_test.py`, `tests/meta_test.py`, `tests/heap_test.py`, `tests/elf_test.py`
   and tool differential gates protect runtime/legacy behavior. Native systems
   tests also use the cinterop build/verify flow and negative sidecar/ABI cases.
-  Current `--check` **rejects native calls** (obo.obo:6493); retain that expected
+  Current `--check` **rejects native calls** (obo.obo:7044); retain that expected
   diagnostic until a reviewed metadata seam exists. Fake public-signature modules
   can check client syntax, but cannot prove native effect/link correctness.
 - Any optional compiler/runtime change adds relevant ownership, symbol, ABI,

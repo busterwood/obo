@@ -57,7 +57,7 @@ file-level reasons:
 - The compiler emits mutable/owned globals at fixed `0x0C000000` addresses.
   Every thread would share one instance, including its owned strings/records
   and initialization state.
-- `rt_entry_sp` is written by every runtime stub (entry.S:83–90); output is a
+- `rt_entry_sp` is written by every runtime stub (entry.S:110); output is a
   single static buffer; `fdstate[1024]` is static (runtime.c:152). A worker
   calling legacy `openFile`/`readFd`/`closeFile`, or `fs`/`io` wrappers over
   them, writes that shared table.
@@ -354,9 +354,11 @@ No arbitrary `[]T` channel. Channels intended across the boundary are created
 before `start`; a worker-created endpoint cannot be returned through
 `JoinStatus` (only an int status) in v1.
 
-Atomic operations are sequentially consistent by default. `compareExchangeInt`
-returns whether it changed and the previous value; no address casts, no
-unchecked pointer arithmetic. `AtomicBool` has no add/exchange variants in v1.
+Atomic operations are sequentially consistent by default. `AtomicInt` and
+`AtomicBool` have distinct registry kinds `KIND_ATOMIC_INT`/`KIND_ATOMIC_BOOL`;
+their importers reject a ticket of the other type. `compareExchangeInt` returns
+whether it changed and the previous value; no address casts, no unchecked pointer
+arithmetic. `AtomicBool` has no add/exchange variants in v1.
 
 ### 9.1 Explicitly deferred: shared byte cells and locks
 
@@ -412,7 +414,9 @@ Until that design exists, no public `Mutex[T]`, `Send` or `Sync` is proposed.
   `exit_group`, runs no defers and does not report a successful join.
 - **Channels/atomics:** copy-on-send, full/empty boundaries, sender close,
   receiver close, cancellation/deadline, ticket single-use, double import,
-  wrong-kind import, and two-worker producer/consumer stress.
+  wrong-kind import, and two-worker producer/consumer stress. `KIND_ATOMIC_INT`
+  and `KIND_ATOMIC_BOOL` are distinct: importing an AtomicInt ticket with
+  `importAtomicBool` (and the reverse) must fail, not reinterpret the payload.
 - **Sanitizers:** TSAN on native adapters, registry, queues and C bootstrap;
   generated obo code is not TSAN-instrumented, so combine TSAN with confinement
   and forced-schedule tests. ASAN/UBSAN run in a separate C harness if the
