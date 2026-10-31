@@ -184,8 +184,9 @@ every executable, and the promoted seed is the matching `01fa9ed3…` image.
 indirect calls) was `0.9`/format 5. Numeric floats are released as
 `0.10`/format 6 (floats first, before Stage B). Stage B capture lists are
 released as `0.11`/format 6, including one-word float snapshots, and the seed is
-0.11. `^I` remains later work. The design is in
-[obo/design/lambdas-design.md](obo/design/lambdas-design.md).
+0.11. `^I` remains later work; its phase 2a design is in
+[obo/design/interface-handles-design.md](obo/design/interface-handles-design.md). The lambda
+design is in [obo/design/lambdas-design.md](obo/design/lambdas-design.md).
 
 | Work | State |
 |---|---|
