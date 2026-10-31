@@ -82,6 +82,14 @@ the one-time generic seam and does not require compiler changes per library.
   it does not pretend to have checked them. `--deps` remains a header scan.
 - The builtin is named `__cinterop`, is internal to generated wrappers, and is
   still experimental. The spec format is `cinterop-proto/1`.
+- A cbind may list optional `declaration_files`: C declaration headers are
+  resolved and hashed into the manifest as provenance inputs without being
+  compiled or promoted to `signature_check: header`. Use this for honest
+  declarations-only bindings.
+- `pq_connect` distinguishes invalid conninfo syntax (return `-4`, with a
+  copied diagnostic from `pq_conninfo_error_buf()`) from buffer, allocation and
+  connection-status failures. A syntactically valid conninfo that libpq cannot
+  connect still returns a connection token with `CONNECTION_BAD`.
 
 ## Explicit-close libpq adapter
 
@@ -273,6 +281,9 @@ It also builds and runs:
 - the opt-in live local PostgreSQL smoke test when `CINTEROP_TEST_DSN` is set.
 
 The project skill and buildable templates are in [`skill/`](skill/SKILL.md).
+The experimental database packages that build on this toolkit are in
+[`../db/`](../db/README.md): a PostgreSQL typed-parameter adapter and a
+declarations-only SQLite adapter, both explicit-close and tested.
 
 ## Known limits
 

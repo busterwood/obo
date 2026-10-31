@@ -1,0 +1,35 @@
+module app
+
+import "postgres.obx"
+
+// No database connection: a real libpq link plus real PGresult ownership
+// through PQmakeEmptyPGresult/PQclear. This is the non-networked smoke check.
+// It also proves a syntactically invalid conninfo is reported as input error
+// with libpq's parser message, not as an allocation failure.
+fn main() {
+    println("PQlibVersion=", postgres::lib_version())
+    let made = postgres::make_empty_rows(postgres::PGRES_TUPLES_OK)
+    match made {
+        ok(r) {
+            defer r.close()
+            println("empty_status=", r.status())
+            println("empty_rows=", r.row_count())
+            println("empty_fields=", r.column_count())
+            println("empty_open=", r.is_open())
+        }
+        err(m, c) { println("empty_error=", m, " (", c, ")"); exit(1) }
+    }
+    let bad = postgres::open("foo")
+    match bad {
+        ok(c) {
+            c.close()
+            println("invalid_conninfo_accepted=true")
+            exit(2)
+        }
+        err(m, c) {
+            println("invalid_conninfo_code=", c)
+            println("invalid_conninfo_msg=", m)
+        }
+    }
+    println("live=", postgres::live_resources())
+}

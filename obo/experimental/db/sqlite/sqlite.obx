@@ -1,0 +1,352 @@
+// Experimental SQLite package for obo.
+//
+// The host has libsqlite3.so.0 and the sqlite3 shell but no sqlite3.h, so the
+// C adapter uses the manual, declarations-only subset in sqlite_decls.h. This
+// is an explicit-close adapter, not a stable driver: Connection and Stmt hold
+// only integer registry tokens and obo never sees a sqlite3* or sqlite3_stmt*.
+//
+// Dropping a Connection or Stmt does not finalize or close anything. Use
+// `defer stmt.close()` and then `defer conn.close()`. A connection close is a
+// safe false while statements are live; finalize them first. A second close is
+// also a safe false. SQL and text bindings reject embedded NUL; BLOB bindings
+// preserve their exact length, including NUL. There is no SQL interpolation.
+module sqlite
+
+pub const SQLITE_OK = 0
+pub const SQLITE_ERROR = 1
+pub const SQLITE_INTERNAL = 2
+pub const SQLITE_PERM = 3
+pub const SQLITE_ABORT = 4
+pub const SQLITE_BUSY = 5
+pub const SQLITE_LOCKED = 6
+pub const SQLITE_NOMEM = 7
+pub const SQLITE_READONLY = 8
+pub const SQLITE_INTERRUPT = 9
+pub const SQLITE_IOERR = 10
+pub const SQLITE_CORRUPT = 11
+pub const SQLITE_NOTFOUND = 12
+pub const SQLITE_FULL = 13
+pub const SQLITE_CANTOPEN = 14
+pub const SQLITE_PROTOCOL = 15
+pub const SQLITE_EMPTY = 16
+pub const SQLITE_SCHEMA = 17
+pub const SQLITE_TOOBIG = 18
+pub const SQLITE_CONSTRAINT = 19
+pub const SQLITE_MISMATCH = 20
+pub const SQLITE_MISUSE = 21
+pub const SQLITE_AUTH = 23
+pub const SQLITE_RANGE = 25
+pub const SQLITE_NOTADB = 26
+pub const SQLITE_ROW = 100
+pub const SQLITE_DONE = 101
+
+pub const SQLITE_INTEGER = 1
+pub const SQLITE_FLOAT = 2
+pub const SQLITE_TEXT = 3
+pub const SQLITE_BLOB = 4
+pub const SQLITE_NULL = 5
+
+pub type Connection = ref record { tok: int }
+pub type Stmt = ref record { tok: int }
+
+fn encode_string(s: string): []byte {
+    var out = new []byte(0)
+    for i in 0..len(s) { append(out, s[i]) }
+    return out
+}
+
+fn has_nul(b: &[]byte): bool {
+    for i in 0..len(b) {
+        if b[i] == byte(0) { return true }
+    }
+    return false
+}
+
+fn put_bytes(b: &[]byte): int {
+    let n = len(b)
+    if n < 0 || n > 16777216 { return 0 }
+    let t = __cinterop("cres_buf_new", n)
+    if t <= 0 { return 0 }
+    for i in 0..n {
+        let ok = __cinterop("cres_buf_set", t, i, int(b[i]))
+        if ok != 1 {
+            __cinterop("cres_buf_free", t)
+            return 0
+        }
+    }
+    return t
+}
+
+fn take_buf(t: int): []byte {
+    var out = new []byte(0)
+    if t <= 0 { return out }
+    let n = __cinterop("cres_buf_len", t)
+    if n < 0 {
+        __cinterop("cres_buf_free", t)
+        return out
+    }
+    for i in 0..n {
+        let v = __cinterop("cres_buf_get", t, i)
+        if v < 0 { break }
+        append(out, byte(v))
+    }
+    __cinterop("cres_buf_free", t)
+    return out
+}
+
+fn error_text(b: []byte): string {
+    if has_nul(&b) { return "error text contains an embedded NUL" }
+    return string(b)
+}
+
+fn open_error(default_code: int): Result[Connection] {
+    let b = take_buf(__cinterop("sq_open_error_buf"))
+    var code = __cinterop("sq_open_error_code")
+    if code == 0 { code = default_code }
+    let msg = error_text(b)
+    if len(msg) == 0 { return err("SQLite open failed", code) }
+    return err(msg, code)
+}
+
+// ------------------------------------------------------------------ connection
+
+pub fn open(path: string): Result[Connection] {
+    let raw = encode_string(path)
+    if has_nul(&raw) { return err("database path contains an embedded NUL", 2) }
+    if len(raw) > 4096 { return err("database path is too long", 2) }
+    let b = put_bytes(&raw)
+    if b <= 0 { return err("database path could not be allocated", 3) }
+    let t = __cinterop("sq_open", b)
+    __cinterop("cres_buf_free", b)
+    if t <= 0 { return open_error(2) }
+    return ok(new Connection{tok: t})
+}
+
+pub fn (c: &Connection) is_open(): bool {
+    return __cinterop("sq_conn_live", c.tok) == 1
+}
+
+pub fn (c: &Connection) error_message(): []byte {
+    return take_buf(__cinterop("sq_error_buf", c.tok))
+}
+
+pub fn (c: &Connection) error_code(): int {
+    return __cinterop("sq_error_code", c.tok)
+}
+
+pub fn (c: &Connection) changes(): int {
+    return __cinterop("sq_changes", c.tok)
+}
+
+// Borrows the Connection. If statements are still live the close is a false
+// and error_code() reports SQLITE_BUSY; close the statements and retry. A
+// second close is a safe false; record drop never calls sqlite3_close.
+pub fn (c: &Connection) close(): bool {
+    return __cinterop("sq_conn_close", c.tok) == 1
+}
+
+// Executes a fixed SQL string. Multiple statements are allowed here (the
+// underlying sqlite3_exec semantics); prepare() accepts exactly one. There is
+// no string interpolation.
+pub fn (c: &Connection) exec(sql: string): Result[bool] {
+    let raw = encode_string(sql)
+    if has_nul(&raw) { return err("SQL text contains an embedded NUL", 2) }
+    let b = put_bytes(&raw)
+    if b <= 0 { return err("SQL text could not be allocated", 2) }
+    let rc = __cinterop("sq_exec", c.tok, b)
+    __cinterop("cres_buf_free", b)
+    if rc == SQLITE_OK { return ok(true) }
+    let msg = error_text(take_buf(__cinterop("sq_error_buf", c.tok)))
+    var code = __cinterop("sq_error_code", c.tok)
+    if code == 0 { code = int(rc) }
+    return err(msg, code)
+}
+
+pub fn (c: &Connection) prepare(sql: string): Result[Stmt] {
+    let raw = encode_string(sql)
+    if has_nul(&raw) { return err("SQL text contains an embedded NUL", 2) }
+    let b = put_bytes(&raw)
+    if b <= 0 { return err("SQL text could not be allocated", 2) }
+    let t = __cinterop("sq_prepare", c.tok, b)
+    __cinterop("cres_buf_free", b)
+    if t <= 0 {
+        let msg = error_text(take_buf(__cinterop("sq_error_buf", c.tok)))
+        var code = __cinterop("sq_error_code", c.tok)
+        if code == 0 { code = 2 }
+        return err(msg, code)
+    }
+    return ok(new Stmt{tok: t})
+}
+
+// ---------------------------------------------------------------- statements
+
+fn stmt_error(s: &Stmt, fallback: int): Result[bool] {
+    let msg = error_text(take_buf(__cinterop("sq_stmt_error_buf", s.tok)))
+    var code = __cinterop("sq_stmt_error_code", s.tok)
+    if code == 0 { code = fallback }
+    return err(msg, code)
+}
+
+pub fn (s: &Stmt) is_open(): bool {
+    return __cinterop("sq_stmt_live", s.tok) == 1
+}
+
+pub fn (s: &Stmt) error_message(): []byte {
+    return take_buf(__cinterop("sq_stmt_error_buf", s.tok))
+}
+
+pub fn (s: &Stmt) error_code(): int {
+    return __cinterop("sq_stmt_error_code", s.tok)
+}
+
+// Finalizes the statement exactly once and poisons its token. A second close is
+// a safe false; dropping the record never finalizes it.
+pub fn (s: &Stmt) close(): bool {
+    return __cinterop("sq_stmt_close", s.tok) == 1
+}
+
+// Resets the statement for another step. Bound values remain bound, matching
+// sqlite3_reset's documented behaviour.
+pub fn (s: &Stmt) reset(): Result[bool] {
+    let rc = __cinterop("sq_stmt_reset", s.tok)
+    if rc == SQLITE_OK { return ok(true) }
+    return stmt_error(s, int(rc))
+}
+
+// Binding indices are 1-based. Out-of-range indices are SQLITE_RANGE errors.
+pub fn (s: &Stmt) bind_null(index: int): Result[bool] {
+    let rc = __cinterop("sq_stmt_bind_null", s.tok, index)
+    if rc == SQLITE_OK { return ok(true) }
+    return stmt_error(s, int(rc))
+}
+
+pub fn (s: &Stmt) bind_int(index: int, value: int): Result[bool] {
+    let rc = __cinterop("sq_stmt_bind_int", s.tok, index, value)
+    if rc == SQLITE_OK { return ok(true) }
+    return stmt_error(s, int(rc))
+}
+
+pub fn (s: &Stmt) bind_text(index: int, value: string): Result[bool] {
+    let raw = encode_string(value)
+    if has_nul(&raw) { return err("text value contains an embedded NUL", 2) }
+    let b = put_bytes(&raw)
+    if b <= 0 { return err("text value could not be allocated", 2) }
+    let rc = __cinterop("sq_stmt_bind_text", s.tok, index, b)
+    __cinterop("cres_buf_free", b)
+    if rc == SQLITE_OK { return ok(true) }
+    return stmt_error(s, int(rc))
+}
+
+pub fn (s: &Stmt) bind_blob(index: int, value: []byte): Result[bool] {
+    let b = put_bytes(&value)
+    if b <= 0 { return err("blob value could not be allocated", 2) }
+    let rc = __cinterop("sq_stmt_bind_blob", s.tok, index, b)
+    __cinterop("cres_buf_free", b)
+    if rc == SQLITE_OK { return ok(true) }
+    return stmt_error(s, int(rc))
+}
+
+// true means a row is available; false means SQLITE_DONE. An SQLite error is a
+// Result error, never a third boolean.
+pub fn (s: &Stmt) step(): Result[bool] {
+    let rc = __cinterop("sq_stmt_step", s.tok)
+    if rc == SQLITE_ROW { return ok(true) }
+    if rc == SQLITE_DONE { return ok(false) }
+    return stmt_error(s, int(rc))
+}
+
+pub fn (s: &Stmt) column_count(): int {
+    return __cinterop("sq_stmt_column_count", s.tok)
+}
+
+pub fn (s: &Stmt) column_type(col: int): Result[int] {
+    let t = __cinterop("sq_stmt_column_type", s.tok, col)
+    if t < 0 { return err("column out of range", 2) }
+    return ok(t)
+}
+
+pub fn (s: &Stmt) is_null(col: int): Result[bool] {
+    let t = __cinterop("sq_stmt_column_type", s.tok, col)
+    if t < 0 { return err("column out of range", 2) }
+    let is_null = t == SQLITE_NULL
+    return ok(is_null)
+}
+
+// Exact text bytes for one column with SQL NULL distinct: nil means NULL, an
+// empty array means an empty value. (Obo optional values must be reference
+// types, so the exact text form is ?[]byte; use column_text for a string.)
+// SQLite's documented integer-to-text conversion is used for INTEGER columns,
+// so i64 values stay exact decimal text; no obo float path is involved.
+pub fn (s: &Stmt) column_value(col: int): Result[?[]byte] {
+    let t = __cinterop("sq_stmt_column_type", s.tok, col)
+    if t < 0 { return err("column out of range", 2) }
+    if t == SQLITE_NULL {
+        let none: ?[]byte = nil
+        return ok(none)
+    }
+    let b = take_buf(__cinterop("sq_stmt_column_text_buf", s.tok, col))
+    let out: ?[]byte = b
+    return ok(out)
+}
+
+// Convenience string form for a non-NULL column. SQL NULL is an error; use
+// column_value or is_null when NULL must be distinguished. TEXT containing NUL
+// is rejected; use column_bytes for exact bytes.
+pub fn (s: &Stmt) column_text(col: int): Result[string] {
+    let t = __cinterop("sq_stmt_column_type", s.tok, col)
+    if t < 0 { return err("column out of range", 2) }
+    if t == SQLITE_NULL { return err("SQL NULL", 1) }
+    let b = take_buf(__cinterop("sq_stmt_column_text_buf", s.tok, col))
+    if has_nul(&b) { return err("text column contains an embedded NUL; use column_bytes", 1) }
+    return ok(string(b))
+}
+
+// Exact bytes for a TEXT or BLOB column. SQL NULL is ok(nil). Embedded NUL is
+// preserved for BLOB (and for TEXT bytes) because the length comes from SQLite.
+pub fn (s: &Stmt) column_bytes(col: int): Result[?[]byte] {
+    let t = __cinterop("sq_stmt_column_type", s.tok, col)
+    if t < 0 { return err("column out of range", 2) }
+    if t == SQLITE_NULL {
+        let none: ?[]byte = nil
+        return ok(none)
+    }
+    if t != SQLITE_TEXT && t != SQLITE_BLOB {
+        return err("column is not TEXT or BLOB", 2)
+    }
+    let b = take_buf(__cinterop("sq_stmt_column_blob_buf", s.tok, col))
+    let out: ?[]byte = b
+    return ok(out)
+}
+
+// Integer view through sqlite3_column_int64. It is an exact i64 only for an
+// INTEGER column; REAL is truncated and TEXT is converted by SQLite. Use
+// column_value/column_text when exact decimal text is required.
+pub fn (s: &Stmt) column_int(col: int): Result[int] {
+    let t = __cinterop("sq_stmt_column_type", s.tok, col)
+    if t < 0 { return err("column out of range", 2) }
+    if t == SQLITE_NULL { return err("SQL NULL", 1) }
+    return ok(__cinterop("sq_stmt_column_int", s.tok, col))
+}
+
+// ------------------------------------------------------- library/resource info
+
+pub fn error_string(code: int): Result[string] {
+    let b = take_buf(__cinterop("sq_errstr_buf", code))
+    return ok(error_text(b))
+}
+
+pub fn live_resources(): int {
+    return __cinterop("cres_live_count")
+}
+
+pub fn live_buffers(): int {
+    return __cinterop("cres_live_kind", 1)
+}
+
+pub fn live_connections(): int {
+    return __cinterop("cres_live_kind", 2)
+}
+
+pub fn live_statements(): int {
+    return __cinterop("cres_live_kind", 5)
+}

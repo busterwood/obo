@@ -27,6 +27,28 @@
 static void release_conn(void *p) { PQfinish((PGconn *)p); }
 static void release_result(void *p) { PQclear((PGresult *)p); }
 
+/* The last conninfo parse diagnostic, copied before libpq frees its string.
+ * The adapter is single-threaded and trusted; this is a bounded diagnostic,
+ * not a second error channel for connection status. */
+static char *pq_parse_error = NULL;
+
+static void clear_parse_error(void) {
+    free(pq_parse_error);
+    pq_parse_error = NULL;
+}
+
+static void set_parse_error(const char *msg) {
+    size_t n;
+    char *copy;
+    clear_parse_error();
+    if (msg == NULL) msg = "invalid connection string";
+    n = strlen(msg);
+    copy = (char *)malloc(n + 1);
+    if (copy == NULL) return;
+    memcpy(copy, msg, n + 1);
+    pq_parse_error = copy;
+}
+
 static int packet_u8(const unsigned char **p, const unsigned char *end, unsigned int *v) {
     if (*p >= end) return 0;
     *v = (unsigned int)**p;
@@ -70,6 +92,7 @@ static int conninfo_has_timeout(const char *cs) {
     int found = 0;
     opts = PQconninfoParse(cs, &err);
     if (opts == NULL) {
+        set_parse_error(err != NULL ? err : "invalid connection string");
         if (err != NULL) PQfreemem(err);
         return -1;
     }
@@ -132,6 +155,7 @@ long pq_connect(long dsn_token) {
     int has_timeout;
     PGconn *conn;
     long token;
+    clear_parse_error();
     if (!cres_buf_data(dsn_token, &data, &len)) return -1;
     if (len > CRES_MAX_BUFFER) return -2;
     cs = copy_cstr(data, len);
@@ -139,7 +163,7 @@ long pq_connect(long dsn_token) {
     has_timeout = conninfo_has_timeout(cs);
     if (has_timeout < 0) {
         free(cs);
-        return -2;
+        return -4;
     }
     bounded = with_connect_timeout(cs, len, has_timeout);
     free(cs);
@@ -153,6 +177,14 @@ long pq_connect(long dsn_token) {
         return -3;
     }
     return token;
+}
+
+/* Copy of the last invalid-conninfo diagnostic from libpq. Valid only
+ * immediately after pq_connect returned -4; the wrapper copies it before any
+ * other adapter call. Returns a buffer token, or 0 on allocation failure. */
+long pq_conninfo_error_buf(void) {
+    if (pq_parse_error == NULL) return cres_buf_from_bytes("", 0);
+    return cres_buf_from_bytes(pq_parse_error, strlen(pq_parse_error));
 }
 
 long pq_conn_status(long conn_token) {

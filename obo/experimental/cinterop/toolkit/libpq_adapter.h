@@ -1,6 +1,15 @@
 /* Scalar-only libpq adapter API. Every value crosses the obo boundary as a
  * signed 64-bit integer. Negative returns are adapter errors; positive values
- * are registry tokens. No pointer is exposed to obo. */
+ * are registry tokens. No pointer is exposed to obo.
+ *
+ * pq_connect returns:
+ *   >0  connection token (status may still be CONNECTION_BAD)
+ *    0  PQconnectdb returned no PGconn
+ *   -1  invalid DSN buffer token
+ *   -2  DSN contains NUL or exceeds the buffer bound
+ *   -3  adapter allocation/registration failure
+ *   -4  invalid conninfo syntax; copy pq_conninfo_error_buf() immediately
+ */
 #ifndef OBO_CINTEROP_LIBPQ_ADAPTER_H
 #define OBO_CINTEROP_LIBPQ_ADAPTER_H
 
@@ -8,6 +17,7 @@ long pq_lib_version(void);
 long pq_make_empty_result(long status);
 
 long pq_connect(long dsn_buf);
+long pq_conninfo_error_buf(void);
 long pq_conn_status(long conn_token);
 long pq_conn_live(long conn_token);
 long pq_conn_close(long conn_token);

@@ -144,6 +144,10 @@ def load_spec(path):
         if not isinstance(spec['wrapper_sources'], list) or any(
                 not isinstance(x, str) or not x for x in spec['wrapper_sources']):
             raise ToolError("wrapper_sources must be a list of source paths")
+    if 'declaration_files' in spec:
+        if not isinstance(spec['declaration_files'], list) or any(
+                not isinstance(x, str) or not x for x in spec['declaration_files']):
+            raise ToolError("declaration_files must be a list of source paths")
     if not spec.get('headers') and not spec.get('declarations'):
         raise ToolError("a header or explicit declaration is required for every binding")
     return spec
@@ -741,6 +745,8 @@ def build(args):
 
     sources = [resolve_input(spec_dir, p, "source") for p in spec.get('sources', [])]
     headers = [resolve_input(spec_dir, p, "header") for p in spec.get('headers', [])]
+    declaration_files = [resolve_input(spec_dir, p, "declaration file")
+                         for p in spec.get('declaration_files', [])]
     cflags = list(spec.get('cflags', []))
     libs = list(spec.get('libs', []))
 
@@ -770,6 +776,8 @@ def build(args):
         input_paths['source_%d' % i] = p
     for i, p in enumerate(headers):
         input_paths['header_%d' % i] = p
+    for i, p in enumerate(declaration_files):
+        input_paths['declaration_%d' % i] = p
     compiler_version = run([obo, '--version']).stdout.strip()
     toolchain = run([cc, '--version']).stdout.splitlines()[0].strip()
     input_manifest_path = os.path.join(out, 'input-manifest.json')

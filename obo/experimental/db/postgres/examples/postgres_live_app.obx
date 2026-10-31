@@ -1,0 +1,304 @@
+module app
+
+import "postgres.obx"
+
+// Opt-in local PostgreSQL smoke test. The only argument is an explicitly
+// authorized conninfo. This app runs SELECTs only (no schema/data/role/service
+// changes), binds every parameter with $n placeholders, and closes every
+// Connection and Rows explicitly with defer.
+fn bytes_of(s: string): []byte {
+    var b = new []byte(0)
+    for i in 0..len(s) { append(b, s[i]) }
+    return b
+}
+
+fn blob3(): []byte {
+    var b = new []byte(0)
+    append(b, byte(0))
+    append(b, byte(255))
+    append(b, byte(65))
+    return b
+}
+
+fn nul_string(): string {
+    var b = new []byte(0)
+    append(b, 'S')
+    append(b, byte(0))
+    append(b, 'Q')
+    return string(b)
+}
+
+fn check(ok: bool, name: string, code: int) {
+    if !ok {
+        println("FAIL ", name)
+        exit(code)
+    }
+}
+
+fn main() {
+    let a = args()
+    if len(a) != 2 {
+        println("usage: app <conninfo>")
+        exit(64)
+    }
+    let made = postgres::open(a[1])
+    match made {
+        ok(conn) {
+            defer conn.close()
+            println("server_lib=", postgres::lib_version())
+
+            // 1. Typed parameters: text, int8, bool, bytea and NULL. The attack
+            // string is data, never SQL.
+            let attack = "x'); DROP TABLE nope; --"
+            var ps = new []postgres::Param(0)
+            append(ps, postgres::param_text(attack))
+            append(ps, postgres::param_int(-9223372036854775807))
+            append(ps, postgres::param_bool(true))
+            append(ps, postgres::param_blob(blob3()))
+            append(ps, postgres::param_null())
+            let q1 = postgres::execute(&conn,
+                "SELECT $1::text AS t, $2::int8 AS n, $3::bool AS b, encode($4::bytea,'hex') AS p, $5::text AS z",
+                ps)
+            match q1 {
+                ok(rows) {
+                    defer rows.close()
+                    check(rows.status() == postgres::PGRES_TUPLES_OK, "q1 status", 1)
+                    check(rows.row_count() == 1, "q1 rows", 2)
+                    check(rows.column_count() == 5, "q1 columns", 3)
+                    let t = rows.text(0, 0)
+                    match t {
+                        ok(v) {
+                            check(v == "x'); DROP TABLE nope; --", "q1 injection-as-data", 4)
+                        }
+                        err(m, c) { println("q1 t error ", m, " ", c); exit(5) }
+                    }
+                    let n = rows.text(0, 1)
+                    match n {
+                        ok(v) {
+                            check(v == "-9223372036854775807", "q1 int8 text", 7)
+                        }
+                        err(m, c) { println("q1 n error ", m, " ", c); exit(8) }
+                    }
+                    let bv = rows.text(0, 2)
+                    match bv {
+                        ok(v) {
+                            check(v == "t", "q1 bool text", 10)
+                        }
+                        err(m, c) { println("q1 bool error ", m, " ", c); exit(11) }
+                    }
+                    let pv = rows.text(0, 3)
+                    match pv {
+                        ok(v) {
+                            check(v == "00ff41", "q1 blob parameter", 13)
+                        }
+                        err(m, c) { println("q1 blob error ", m, " ", c); exit(14) }
+                    }
+                    let z = rows.is_null(0, 4)
+                    match z {
+                        ok(v) { check(v, "q1 null param", 15) }
+                        err(m, c) { println("q1 null error ", m, " ", c); exit(16) }
+                    }
+                    let oid = rows.column_type_oid(1)
+                    match oid {
+                        ok(v) { check(v == postgres::OID_INT8, "q1 int8 oid", 17) }
+                        err(m, c) { println("q1 oid error ", m, " ", c); exit(67) }
+                    }
+                }
+                err(m, c) { println("q1 error ", m, " ", c); exit(18) }
+            }
+
+            // 2. Empty bytea parameter round-trips as an empty, non-NULL value.
+            var ep = new []postgres::Param(0)
+            append(ep, postgres::param_blob(new []byte(0)))
+            let q1b = postgres::execute(&conn,
+                "SELECT encode($1::bytea,'hex') AS e", ep)
+            match q1b {
+                ok(rows) {
+                    defer rows.close()
+                    check(rows.status() == postgres::PGRES_TUPLES_OK, "q1b status", 70)
+                    let e = rows.text(0, 0)
+                    match e {
+                        ok(v) { check(len(v) == 0, "q1b empty blob", 71) }
+                        err(m, c) { println("q1b error ", m, " ", c); exit(72) }
+                    }
+                    println("empty_blob=ok")
+                }
+                err(m, c) { println("q1b error ", m, " ", c); exit(73) }
+            }
+
+            // 3. Exact numeric TEXT with OID/typmod, never a float conversion.
+            let q2 = postgres::query(&conn,
+                "SELECT 1.234567890123456789::numeric AS num, 9007199254740993::int8 AS big")
+            match q2 {
+                ok(rows) {
+                    defer rows.close()
+                    check(rows.status() == postgres::PGRES_TUPLES_OK, "q2 status", 19)
+                    let num = rows.text(0, 0)
+                    match num {
+                        ok(v) {
+                            check(v == "1.234567890123456789", "q2 numeric text", 21)
+                        }
+                        err(m, c) { println("q2 num error ", m, " ", c); exit(22) }
+                    }
+                    let oid = rows.column_type_oid(0)
+                    match oid {
+                        ok(v) { check(v == postgres::OID_NUMERIC, "q2 numeric oid", 23) }
+                        err(m, c) { println("q2 oid error ", m, " ", c); exit(68) }
+                    }
+                    let tm = rows.column_type_modifier(0)
+                    match tm {
+                        ok(v) { check(v == -1, "q2 numeric typmod", 24) }
+                        err(m, c) { println("q2 typmod error ", m, " ", c); exit(25) }
+                    }
+                    let big = rows.text(0, 1)
+                    match big {
+                        ok(v) {
+                            check(v == "9007199254740993", "q2 int8 exact", 27)
+                        }
+                        err(m, c) { println("q2 big error ", m, " ", c); exit(28) }
+                    }
+                    let name = rows.column_name(0)
+                    match name {
+                        ok(s) { check(s == "num", "q2 column name", 29) }
+                        err(m, c) { println("q2 name error ", m, " ", c); exit(30) }
+                    }
+                    println("numeric_text=1.234567890123456789 oid=1700 typmod=-1")
+                }
+                err(m, c) { println("q2 error ", m, " ", c); exit(31) }
+            }
+
+            // 4. NULL is distinct from empty text.
+            let q3 = postgres::query(&conn, "SELECT NULL::text AS n, ''::text AS e")
+            match q3 {
+                ok(rows) {
+                    defer rows.close()
+                    let nv = rows.value(0, 0)
+                    match nv {
+                        ok(v) { check(v == nil, "q3 null", 32) }
+                        err(m, c) { println("q3 null error ", m, " ", c); exit(33) }
+                    }
+                    let ev = rows.value(0, 1)
+                    match ev {
+                        ok(v) {
+                            if v == nil { println("q3 empty nil"); exit(34) }
+                            check(len(v) == 0, "q3 empty length", 35)
+                        }
+                        err(m, c) { println("q3 empty error ", m, " ", c); exit(36) }
+                    }
+                    let nul = rows.is_null(0, 1)
+                    match nul {
+                        ok(v) { check(!v, "q3 empty not null", 37) }
+                        err(m, c) { println("q3 isnull error ", m, " ", c); exit(38) }
+                    }
+                    println("null_and_empty=ok")
+                }
+                err(m, c) { println("q3 error ", m, " ", c); exit(39) }
+            }
+
+            // 5. Binary result with embedded NUL.
+            let q4 = postgres::execute_binary(&conn,
+                "SELECT decode('00ff41','hex') AS b", new []postgres::Param(0))
+            match q4 {
+                ok(rows) {
+                    defer rows.close()
+                    check(rows.status() == postgres::PGRES_TUPLES_OK, "q4 status", 40)
+                    let b = rows.bytes(0, 0)
+                    match b {
+                        ok(v) {
+                            check(len(v) == 3, "q4 length", 41)
+                            check(int(v[0]) == 0 && int(v[1]) == 255 && int(v[2]) == 65, "q4 bytes", 42)
+                        }
+                        err(m, c) { println("q4 bytes error ", m, " ", c); exit(43) }
+                    }
+                    println("binary_bytes=00ff41 len=3")
+                }
+                err(m, c) { println("q4 error ", m, " ", c); exit(44) }
+            }
+
+            // 6. A server error still owns a result; the message is copied and
+            // the result closes cleanly.
+            let q5 = postgres::query(&conn, "SELECT * FROM obo_db_adapter_no_such_table")
+            match q5 {
+                ok(rows) {
+                    defer rows.close()
+                    check(rows.status() == postgres::PGRES_FATAL_ERROR, "q5 status", 45)
+                    let em = rows.error_message()
+                    check(len(em) > 0, "q5 error message", 46)
+                    println("sql_error_length=", len(em))
+                }
+                err(m, c) { println("q5 error ", m, " ", c); exit(47) }
+            }
+
+            // 7. Bounds and NUL rejection at the public edge.
+            let q6 = postgres::query(&conn, "SELECT 1")
+            match q6 {
+                ok(rows) {
+                    defer rows.close()
+                    let bad = rows.value(99, 0)
+                    match bad {
+                        ok(v) { println("bounds accepted"); exit(48) }
+                        err(m, c) { check(c == 2, "bounds code", 49) }
+                    }
+                    let bad2 = rows.column_name(99)
+                    match bad2 {
+                        ok(v) { println("column bounds accepted"); exit(50) }
+                        err(m, c) { check(c == 2, "column bounds code", 51) }
+                    }
+                    let bad3 = rows.is_null(99, 0)
+                    match bad3 {
+                        ok(v) { println("isnull bounds accepted"); exit(52) }
+                        err(m, c) { check(c == 2, "isnull bounds code", 53) }
+                    }
+                }
+                err(m, c) { println("q6 error ", m, " ", c); exit(54) }
+            }
+
+            var nulparams = new []postgres::Param(0)
+            append(nulparams, postgres::param_text(nul_string()))
+            let q7 = postgres::execute(&conn, "SELECT $1::text", nulparams)
+            match q7 {
+                ok(rows) { rows.close(); println("NUL text accepted"); exit(55) }
+                err(m, c) { check(c == 2, "NUL text code", 56) }
+            }
+            let q8 = postgres::query(&conn, nul_string())
+            match q8 {
+                ok(rows) { rows.close(); println("NUL SQL accepted"); exit(57) }
+                err(m, c) { check(c == 2, "NUL SQL code", 58) }
+            }
+        }
+        err(m, c) { println("connect_error=", m, " code=", c); exit(59) }
+    }
+
+    // 8. Invalid conninfo value: syntactically valid, but libpq rejects the
+    // value before a connection. This is a transport/status failure, not the
+    // conninfo-syntax input error covered by the no-connection probe.
+    let bad = postgres::open("connect_timeout=not_a_number")
+    match bad {
+        ok(c) { c.close(); println("invalid conninfo accepted"); exit(60) }
+        err(m, c) {
+            check(c == postgres::CONNECTION_BAD, "init error status", 61)
+            check(len(m) > 0, "init error message", 62)
+            println("init_error=ok")
+        }
+    }
+
+    // A syntactically valid conninfo with a nonexistent Unix socket must also
+    // be a connection-status error (1), not the input-error path (2).
+    let badsock = postgres::open("host=/nonexistent/obo-db-no-socket port=5432 dbname=postgres user=chris connect_timeout=1")
+    match badsock {
+        ok(c) { c.close(); println("bad socket accepted"); exit(63) }
+        err(m, c) {
+            check(c == postgres::CONNECTION_BAD, "badsocket status", 64)
+            check(len(m) > 0, "badsocket message", 65)
+            println("badsocket_error=ok")
+        }
+    }
+
+    let live = postgres::live_resources()
+    println("live=", live)
+    check(live == 0, "live resources", 66)
+    check(postgres::live_connections() == 0, "live connections", 67)
+    check(postgres::live_results() == 0, "live results", 68)
+    check(postgres::live_buffers() == 0, "live buffers", 69)
+    println("live_db_smoke=ok")
+}

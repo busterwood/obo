@@ -1,0 +1,236 @@
+module app
+
+import "sqlite.obx"
+
+// SQLite in-memory smoke test. It uses only the declarations-only adapter and
+// never touches a real database file. Every Connection and Stmt is closed
+// explicitly, normally with defer, and the adapter live counters must return 0.
+fn check(ok: bool, name: string, code: int) {
+    if !ok {
+        println("FAIL ", name)
+        exit(code)
+    }
+}
+
+fn bytes3(): []byte {
+    var b = new []byte(0)
+    append(b, byte(0))
+    append(b, byte(255))
+    append(b, byte(65))
+    return b
+}
+
+fn insert_one(st: &sqlite::Stmt, id: int, name: string, score: int,
+              note_is_null: bool, note: string): Result[bool] {
+    let a = try st.bind_int(1, id)
+    let b = try st.bind_text(2, name)
+    let c = try st.bind_int(3, score)
+    var d = false
+    if note_is_null {
+        d = try st.bind_null(4)
+    } else {
+        d = try st.bind_text(4, note)
+    }
+    let e = try st.bind_blob(5, bytes3())
+    if !a || !b || !c || !d || !e { return err("bind failed", 1) }
+    let row = try st.step()
+    if row { return err("INSERT unexpectedly returned a row", 2) }
+    return ok(true)
+}
+
+fn memory_test(): Result[bool] {
+    let made = sqlite::open(":memory:")
+    match made {
+        ok(conn) {
+            defer conn.close()
+            let created = try conn.exec("CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT NOT NULL, score INTEGER, note TEXT, payload BLOB)")
+            if !created { return err("create failed", 1) }
+
+            let ins = conn.prepare("INSERT INTO t(id,name,score,note,payload) VALUES(?1,?2,?3,?4,?5)")
+            match ins {
+                ok(st) {
+                    defer st.close()
+                    let one = try insert_one(&st, 7, "alice", -9223372036854775807, true, "")
+                    if !one { return err("insert one failed", 2) }
+                    let rst = try st.reset()
+                    if !rst { return err("reset failed", 3) }
+                    let two = try insert_one(&st, 8, "bob", 42, false, "")
+                    if !two { return err("insert two failed", 4) }
+                    let rst2 = try st.reset()
+                    if !rst2 { return err("reset two failed", 5) }
+
+                    // Out-of-range binding is an explicit SQLITE_RANGE error.
+                    let bad = st.bind_int(0, 1)
+                    match bad {
+                        ok(v) { return err("bind index 0 accepted", 6) }
+                        err(m, c) { check(c == sqlite::SQLITE_RANGE, "range code", 7) }
+                    }
+                    let bad2 = st.bind_text(99, "x")
+                    match bad2 {
+                        ok(v) { return err("bind index 99 accepted", 8) }
+                        err(m, c) { check(c == sqlite::SQLITE_RANGE, "range code 2", 9) }
+                    }
+                }
+                err(m, c) { return err(m, c) }
+            }
+
+            // Prepared SELECT with a typed parameter, NULL distinct from empty,
+            // exact i64 text, and a BLOB with embedded NUL.
+            let q = conn.prepare("SELECT id,name,score,note,payload FROM t WHERE id=?1")
+            match q {
+                ok(st) {
+                    defer st.close()
+                    let bound = try st.bind_int(1, 7)
+                    if !bound { return err("select bind failed", 10) }
+                    let row = try st.step()
+                    if !row { return err("select returned no row", 11) }
+                    check(st.column_count() == 5, "column count", 12)
+                    let id = try st.column_int(0)
+                    check(id == 7, "id", 13)
+                    let name = st.column_text(1)
+                    match name {
+                        ok(v) {
+                            if v != "alice" { return err("name mismatch", 15) }
+                        }
+                        err(m, c) { return err(m, c) }
+                    }
+                    let score = st.column_text(2)
+                    match score {
+                        ok(v) {
+                            if v != "-9223372036854775807" {
+                                return err("score text mismatch", 17)
+                            }
+                        }
+                        err(m, c) { return err(m, c) }
+                    }
+                    let note = st.column_value(3)
+                    match note {
+                        ok(v) {
+                            if v != nil { return err("note should be NULL", 18) }
+                        }
+                        err(m, c) { return err(m, c) }
+                    }
+                    let payload = st.column_bytes(4)
+                    match payload {
+                        ok(v) {
+                            if v == nil { return err("payload was NULL", 19) }
+                            if len(v) != 3 { return err("payload length", 22) }
+                            if int(v[0]) != 0 || int(v[1]) != 255 || int(v[2]) != 65 {
+                                return err("payload bytes", 23)
+                            }
+                        }
+                        err(m, c) { return err(m, c) }
+                    }
+                    let done = try st.step()
+                    if done { return err("select returned extra row", 24) }
+                }
+                err(m, c) { return err(m, c) }
+            }
+
+            // Empty text and NULL must stay distinct; use a second query.
+            let q2 = conn.prepare("SELECT note, '' FROM t WHERE id=8")
+            match q2 {
+                ok(st) {
+                    defer st.close()
+                    let row = try st.step()
+                    if !row { return err("q2 no row", 25) }
+                    let empty = st.column_value(0)
+                    match empty {
+                        ok(v) {
+                            if v == nil { return err("empty should not be NULL", 26) }
+                            if len(v) != 0 { return err("empty length", 27) }
+                        }
+                        err(m, c) { return err(m, c) }
+                    }
+                    let literal = st.column_value(1)
+                    match literal {
+                        ok(v) {
+                            if v == nil { return err("literal empty nil", 28) }
+                            if len(v) != 0 { return err("literal empty length", 29) }
+                        }
+                        err(m, c) { return err(m, c) }
+                    }
+                }
+                err(m, c) { return err(m, c) }
+            }
+
+            // Constraint failure: the adapter copies the message/code.
+            let dup = conn.exec("INSERT INTO t(id,name) VALUES(7,'duplicate')")
+            match dup {
+                ok(v) { return err("duplicate insert accepted", 30) }
+                err(m, c) {
+                    check(c != 0, "constraint code", 31)
+                    check(len(m) > 0, "constraint message", 32)
+                }
+            }
+            let changes = conn.changes()
+            check(changes >= 0, "changes", 33)
+
+            // A connection cannot close while a statement is live.
+            let q3 = conn.prepare("SELECT 1")
+            match q3 {
+                ok(st) {
+                    if conn.close() { return err("closed with live statement", 34) }
+                    check(conn.error_code() == sqlite::SQLITE_BUSY, "busy code", 35)
+                    check(st.close(), "stmt close", 36)
+                    check(!st.close(), "stmt double close", 37)
+                }
+                err(m, c) { return err(m, c) }
+            }
+            check(conn.close(), "connection close", 38)
+            check(!conn.close(), "connection double close", 39)
+        }
+        err(m, c) { return err(m, c) }
+    }
+    return ok(true)
+}
+
+fn path_errors(): bool {
+    var nul = new []byte(0)
+    append(nul, 'a')
+    append(nul, byte(0))
+    append(nul, 'b')
+    let a = sqlite::open(string(nul))
+    match a {
+        ok(c) { c.close(); return false }
+        err(m, c) {
+            if c != 2 { return false }
+            if m != "database path contains an embedded NUL" { return false }
+        }
+    }
+    var long = new []byte(0)
+    for i in 0..5000 { append(long, 'a') }
+    let b = sqlite::open(string(long))
+    match b {
+        ok(c) { c.close(); return false }
+        err(m, c) {
+            if c != 2 { return false }
+            if m != "database path is too long" { return false }
+        }
+    }
+    return true
+}
+
+fn main() {
+    let r = memory_test()
+    match r {
+        ok(v) { println("sqlite_memory=ok") }
+        err(m, c) {
+            println("sqlite_memory_error=", m, " code=", c)
+            exit(1)
+        }
+    }
+    println("live=", sqlite::live_resources())
+    println("conns=", sqlite::live_connections())
+    println("stmts=", sqlite::live_statements())
+    println("buffers=", sqlite::live_buffers())
+    check(sqlite::live_resources() == 0, "live", 60)
+    check(path_errors(), "path errors", 62)
+    let es = sqlite::error_string(sqlite::SQLITE_BUSY)
+    match es {
+        ok(s) { check(len(s) > 0, "errstr", 61) }
+        err(m, c) { println("errstr error ", m); exit(62) }
+    }
+    println("path_errors=ok")
+    println("sqlite_smoke=ok")
+}

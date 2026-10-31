@@ -40,6 +40,8 @@ static int fake_last_len[FAKE_MAX_PARAMS];
 static int fake_last_format[FAKE_MAX_PARAMS];
 static char *fake_last_values[FAKE_MAX_PARAMS];
 static char fake_last_sql[256];
+static Oid fake_last_types[FAKE_MAX_PARAMS];
+static int fake_last_result_format_value = 0;
 
 long fake_get_conn_live(void) { return fake_conn_live; }
 long fake_get_result_live(void) { return fake_result_live; }
@@ -52,6 +54,8 @@ long fake_last_param_count(void) { return fake_last_nparams; }
 long fake_last_param_isnull(long i) { return (i >= 0 && i < FAKE_MAX_PARAMS) ? fake_last_isnull[i] : -1; }
 long fake_last_param_len(long i) { return (i >= 0 && i < FAKE_MAX_PARAMS) ? fake_last_len[i] : -1; }
 long fake_last_param_format(long i) { return (i >= 0 && i < FAKE_MAX_PARAMS) ? fake_last_format[i] : -1; }
+long fake_last_param_type(long i) { return (i >= 0 && i < FAKE_MAX_PARAMS) ? (long)fake_last_types[i] : -1; }
+long fake_last_result_format(void) { return (long)fake_last_result_format_value; }
 long fake_last_param_byte(long i, long j) {
     if (i < 0 || i >= FAKE_MAX_PARAMS || fake_last_values[i] == NULL) return -1;
     if (j < 0 || j >= fake_last_len[i]) return -1;
@@ -71,7 +75,9 @@ static void fake_clear_last(void) {
         fake_last_isnull[i] = 0;
         fake_last_len[i] = 0;
         fake_last_format[i] = 0;
+        fake_last_types[i] = 0;
     }
+    fake_last_result_format_value = 0;
     fake_last_nparams = 0;
     fake_last_sql[0] = 0;
 }
@@ -159,10 +165,9 @@ PGresult *PQexecParams(PGconn *conn, const char *command, int nParams,
                        int resultFormat) {
     PGresult *r;
     int i;
-    (void)paramTypes;
-    (void)resultFormat;
     fake_exec_count++;
     fake_clear_last();
+    fake_last_result_format_value = resultFormat;
     if (conn == NULL || command == NULL) return NULL;
     if (fake_fail_alloc || strstr(command, "FAKE_ALLOC") != NULL) return NULL;
     if (strlen(command) >= sizeof(fake_last_sql)) return NULL;
@@ -172,6 +177,7 @@ PGresult *PQexecParams(PGconn *conn, const char *command, int nParams,
         fake_last_isnull[i] = paramValues != NULL && paramValues[i] == NULL;
         fake_last_len[i] = (paramValues != NULL && paramValues[i] != NULL) ? paramLengths[i] : 0;
         fake_last_format[i] = (paramValues != NULL && paramValues[i] != NULL) ? paramFormats[i] : 0;
+        fake_last_types[i] = (paramTypes != NULL) ? paramTypes[i] : 0;
         if (paramValues != NULL && paramValues[i] != NULL) {
             fake_last_values[i] = (char *)malloc((size_t)fake_last_len[i] + 1);
             if (fake_last_values[i] != NULL) {
@@ -273,6 +279,13 @@ PQconninfoOption *PQconninfoParse(const char *conninfo, char **errmsg) {
     int quoted = 0;
     if (errmsg != NULL) *errmsg = NULL;
     if (p == NULL) return NULL;
+    if (strcmp(p, "fake-invalid") == 0) {
+        if (errmsg != NULL) {
+            *errmsg = (char *)malloc(23);
+            if (*errmsg != NULL) strcpy(*errmsg, "fake invalid conninfo");
+        }
+        return NULL;
+    }
     while (*p != 0) {
         if (*p == '\'') {
             quoted = !quoted;
