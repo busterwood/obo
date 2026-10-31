@@ -132,6 +132,9 @@ def load_spec(path):
     for key in ('sources', 'headers', 'libs', 'cflags', 'declarations'):
         if key in spec and not isinstance(spec[key], list):
             raise ToolError("%s must be a list" % key)
+    if 'wrapper' in spec:
+        if not isinstance(spec['wrapper'], str) or not spec['wrapper']:
+            raise ToolError("wrapper must be a source path")
     if not spec.get('headers') and not spec.get('declarations'):
         raise ToolError("a header or explicit declaration is required for every binding")
     return spec
@@ -622,7 +625,15 @@ def build(args):
 
     wrapper = os.path.join(out, spec['module'] + '.obx')
     shim = os.path.join(out, spec['module'] + '_shim.S')
-    write_text(wrapper, generate_wrapper(spec))
+    wrapper_source = None
+    if spec.get('wrapper'):
+        # A maintained package may supply its ordinary obo wrapper. Copy it into
+        # the private build directory so imports are deterministic; the original
+        # input remains part of the provenance record.
+        wrapper_source = resolve_input(spec_dir, spec['wrapper'], "wrapper source")
+        shutil.copyfile(wrapper_source, wrapper)
+    else:
+        write_text(wrapper, generate_wrapper(spec))
     write_text(shim, generate_shim(spec))
     sigcheck, sig_mode = generate_sigcheck(spec)
     sig_path = os.path.join(out, 'sigcheck.c')
@@ -646,6 +657,8 @@ def build(args):
         'compiler': obo,
         'cc': cc,
     }
+    if wrapper_source is not None:
+        input_paths['wrapper_source'] = wrapper_source
     for i, p in enumerate(sources):
         input_paths['source_%d' % i] = p
     for i, p in enumerate(headers):

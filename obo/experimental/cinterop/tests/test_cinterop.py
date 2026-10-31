@@ -30,7 +30,8 @@ class Fail(Exception):
 
 
 def run(cmd, **kw):
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=300, **kw)
+    timeout = kw.pop('timeout', 300)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kw)
 
 
 def must(cmd, **kw):
@@ -349,6 +350,87 @@ def pq(tmp):
     print('libpq: %s' % p.stdout.strip())
 
 
+def libpq_result(tmp):
+    out = os.path.join(tmp, 'libpq_result')
+    p = build(os.path.join(EX, 'libpq.cbind'), os.path.join(EX, 'libpq_probe_app.obx'), out)
+    if p.returncode != 0:
+        raise Fail("libpq result probe build failed:\n%s" % (p.stderr or p.stdout))
+    p = need(run([os.path.join(out, 'app')]), 'libpq result probe run')
+    for line in ('PQlibVersion=', 'empty_status=2', 'empty_rows=0',
+                 'empty_fields=0', 'empty_closed=true', 'live=0'):
+        if line not in p.stdout:
+            raise Fail("libpq result probe output missing %r:\n%s" % (line, p.stdout))
+    ldd = need(run(['ldd', os.path.join(out, 'app')]), 'libpq result ldd')
+    if 'libpq.so.5' not in ldd.stdout:
+        raise Fail("libpq result probe does not depend on libpq.so.5")
+    need(verify(out), 'libpq result manifest verify')
+    m = json.load(open(os.path.join(out, 'manifest.json')))
+    if m.get('signature_check') != 'declarations-only':
+        raise Fail("libpq signature_check is %r" % m.get('signature_check'))
+    print('libpq result ownership: ok')
+
+
+def fake_adapter(tmp):
+    exe = os.path.join(tmp, 'fake_adapter_test')
+    cc = os.environ.get('CC', 'gcc')
+    need(run([cc, '-O2', '-I', os.path.join(TOOL, 'toolkit'), '-o', exe,
+              os.path.join(HERE, 'fake_adapter_test.c'),
+              os.path.join(TOOL, 'toolkit', 'cres.c'),
+              os.path.join(TOOL, 'toolkit', 'libpq_adapter.c'),
+              os.path.join(HERE, 'fake_libpq.c')]), 'fake adapter C build')
+    p = need(run([exe]), 'fake adapter C run')
+    if 'fake adapter tests ok' not in p.stdout:
+        raise Fail("fake adapter C tests failed:\n%s" % p.stdout)
+    print('fake adapter C: ok')
+
+
+def libpq_fake(tmp):
+    out = os.path.join(tmp, 'fake')
+    p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_fake_app.obx'), out)
+    if p.returncode != 0:
+        raise Fail("fake libpq app build failed:\n%s" % (p.stderr or p.stdout))
+    p = need(run([os.path.join(out, 'app')]), 'fake libpq app run')
+    for line in ('status=2', 't=hello', 'n_null=true', 'n_len=0', 'b_len=3',
+                 'b0=0 b1=255 b2=65', 'num=1.234567890123456789',
+                 'num_type=1700 num_mod=-1', 'error_status=7', 'error_closed=true',
+                 'conn_closed=true', 'connect_failed=1', 'live=0', 'conns=0',
+                 'results=0', 'buffers=0'):
+        if line not in p.stdout:
+            raise Fail("fake libpq output missing %r:\n%s" % (line, p.stdout))
+    need(verify(out), 'fake libpq manifest verify')
+    ldd = need(run(['ldd', os.path.join(out, 'app')]), 'fake libpq ldd')
+    if 'libpq.so.5' in ldd.stdout:
+        raise Fail("fake libpq app unexpectedly links the real libpq")
+    leakout = os.path.join(tmp, 'fake_leak')
+    p = build(os.path.join(EX, 'libpq_fake.cbind'), os.path.join(EX, 'libpq_leak_app.obx'), leakout)
+    if p.returncode != 0:
+        raise Fail("fake libpq leak app build failed:\n%s" % (p.stderr or p.stdout))
+    p = need(run([os.path.join(leakout, 'app')]), 'fake libpq leak app run')
+    if 'live=1' not in p.stdout or 'conns=1' not in p.stdout:
+        raise Fail("fake libpq leak app did not expose the missing close:\n%s" % p.stdout)
+    print('fake libpq wrapper: ok (leak counter detects an omitted close)')
+
+
+def libpq_live(tmp):
+    dsn = os.environ.get('CINTEROP_TEST_DSN')
+    if not dsn:
+        print('live libpq: skipped (set CINTEROP_TEST_DSN to run the opt-in local smoke test)')
+        return
+    out = os.path.join(tmp, 'live')
+    p = build(os.path.join(EX, 'libpq.cbind'), os.path.join(EX, 'libpq_live_app.obx'), out)
+    if p.returncode != 0:
+        raise Fail("live libpq app build failed:\n%s" % (p.stderr or p.stdout))
+    p = run([os.path.join(out, 'app'), dsn], timeout=30)
+    if p.returncode != 0:
+        raise Fail("live libpq smoke failed (exit %d):\n%s" % (p.returncode, p.stdout + p.stderr))
+    for line in ('live_db_smoke=ok', 'live=0', 'null_and_empty=ok',
+                 'numeric_text=1.234567890123456789 oid=1700 typmod=-1',
+                 'binary_bytes=00ff41 len=3', 'sql_error_length='):
+        if line not in p.stdout:
+            raise Fail("live libpq output missing %r:\n%s" % (line, p.stdout))
+    print('live libpq: ok (explicit opt-in DSN)')
+
+
 def main():
     os.makedirs(TMPROOT, exist_ok=True)
     tmp = tempfile.mkdtemp(prefix='cinterop-test-', dir=TMPROOT)
@@ -357,6 +439,10 @@ def main():
         startup(tmp, out)
         negative(tmp, out)
         pq(tmp)
+        libpq_result(tmp)
+        fake_adapter(tmp)
+        libpq_fake(tmp)
+        libpq_live(tmp)
         print('cinterop tests ok')
         return 0
     except Fail as e:

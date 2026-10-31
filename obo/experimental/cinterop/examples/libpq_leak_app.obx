@@ -1,0 +1,23 @@
+module app
+
+import "libpq.obx"
+
+// Deliberately omits Connection.close(). The toolkit live-resource counter
+// must expose the missing PQfinish; the test asserts that this is detected.
+fn bytes_of(s: string): []byte {
+    var b = new []byte(0)
+    for i in 0..len(s) { append(b, s[i]) }
+    return b
+}
+
+fn main() {
+    let made = libpq::connect(bytes_of("fake-ok"))
+    match made {
+        ok(conn) {
+            println("leaked_connection=", conn.is_open())
+            println("live=", libpq::live_resources())
+            println("conns=", libpq::live_connections())
+        }
+        err(m, c) { println("unexpected connect error ", m, " ", c); exit(1) }
+    }
+}

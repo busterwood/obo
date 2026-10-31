@@ -34,7 +34,10 @@ SECTIONS
   .data : { *(.data) *(.data.*) *(.got) *(.got.*) }
   .bss : { *(.bss) *(.bss.*) *(COMMON) }
   . = ALIGN(0x1000);
-  ASSERT(. <= 0x03103000, "host .rodata/.data/.bss overlap the dynamic tables")
+  /* The synthetic 1 MiB stack dominates this slot; the adapter's small static
+     tables and generated native code sit above it. Keep a real bound, but do
+     not pretend the original 12 KiB headroom was enough for a library adapter. */
+  ASSERT(. <= 0x03180000, "host .rodata/.data/.bss overlap the dynamic tables")
   .dynamic : { *(.dynamic) }
   .interp : { *(.interp) }
   .dynsym : { *(.dynsym) }
