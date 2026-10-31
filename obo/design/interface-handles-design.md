@@ -18,10 +18,11 @@ existing checked-handle machinery, not a new runtime facility.
 
 Evidence for the first round is in `/tmp/opencode/interface-handles-design-20261031-162132`.
 The independent review's patched-compiler probes and outputs are in
-`/tmp/opencode/interface-design-review-20261031-162625-447640` (private): the review's B1 codegen
-cases, B3 through-handle constructor case, capture cases, `Result[?^I]` case and the `^T`
-analogues. No repository test was changed or run in this revision; the review's private probe
-binaries/outputs were read as evidence.
+`/tmp/opencode/interface-design-review-20261031-162625-447640` and the revision-2 focused review
+is in `/tmp/opencode/interface-rev2-review-20261031-165843-1057444` (both private): the B1 codegen
+cases, B3 through-handle constructor cases (`handle_through_handle_t`), capture cases,
+`Result[?^I]` case and the `^T` analogues. No repository test was changed or run in this revision;
+the review's private probe binaries/outputs were read as evidence.
 
 ---
 
@@ -34,8 +35,9 @@ binaries/outputs were read as evidence.
    There is no new representation, runtime slot or ABI word.
 2. **`handle(place)` accepts only an owned `I` place.** A local, parameter, field, element,
    global or a narrowed owned `?I` local is accepted. A `&I`, `mut &I`, `&?I`, a `for` walk
-   variable, a field reached through a reference, or **a field or element reached through a
-   handle** (`handle(hp.d)`, `handle(hp.items[0])`) is refused with the S1/through-handle message.
+   variable, a field reached through a reference, or **an interface-typed field or element
+   reached through a handle** (`handle(hp.d)`, `handle(hp.items[0])`) is refused with the
+   S1/through-handle message. A `^T` through-handle field keeps its existing accepted behaviour.
    A `?I` place must be narrowed first. `handle(^T)`/`handle(c: T)` (a link to a concrete target)
    is **not** 2a; it is phase 2b.
 3. **The one-word representation supports all `^T` positions:** locals, parameters, returns,
@@ -135,7 +137,7 @@ is later. These are the assumptions this design uses:
 | The local-tier summary means a plain `mut fn` may not be called through a handle | true: `pureFn` (`obo.obo:4292`) and the handle-borrow check in `callFnWith` (`obo.obo:6338-6350`) enforce it | `^I` inherits the rule; only `fn`, `pure`, `pure mut` calls pass |
 | A `^I` phase 2a test/error inventory exists | `tests/errors/ifaces_handle.obx` holds the 0.8-era E8a refusals; no run/`^I` test exists | rewrite E8a, add the 2a run/error/module/sym tests |
 | Compiler budget is 2,000,000 in v3 risk text | `PEAK_BUDGET = 2_500_000` (`tests/port_compare.py`, `tests/peak_budget.py`); current 0.11 self-compile peaks at 2,085,872 direct / 2,086,272 port (`FORK.md`) | 413,728 spare; measure, do not raise |
-| 88 `.sym` fixtures | 95 committed `.sym` files: 94 `obosym 6`/`compiler "0.11"`, one `obosym 7` and one `"9.9"` | migrate headers at implementation; recount then |
+| 88 `.sym` fixtures | 95 committed `.sym` files: 94 `obosym 6`/`compiler "0.11"`, one `obosym 7` and one `"9.9"` | migrate compiler headers; format/move the `obosym 7` fixture only if a format bump is chosen; recount then |
 
 The v3 design is otherwise authoritative for the box, vtable, `&I` pair slots, parameter modes,
 effect summaries and `.sym` declaration encoding. This note does not re-specify those.
@@ -164,11 +166,13 @@ box (32 bytes with header):      handle token (one word):
 - The target object and vtable are read from `[box]` and `[box+8]`, exactly as an owned/borrowed
   interface receiver does (v3 §4). The token does **not** name the target. This is why a box free
   invalidates the link in one check: the box and its target are freed together.
-- `^I` is the existing type kind `handle` with `baseOf(t) == I`. The current generic handle code
-  already gives it `isRef == false`, `nonNull == true`, `assignable` by base, `tname == "^" + I`,
-  `appTypeExpr`/`symTypeText` emitting `^I`, storage in any position, and
-  `rt_handle`/`rt_deref`/`rt_alive` code generation. The only changes are where the language
-  deliberately narrows the type or constructor.
+- `^I` is the existing type kind `handle` with `baseOf(t) == I`. The current generic type
+  operations already provide `isRef == false`, `nonNull == true`, `assignable` by base,
+  `tname == "^" + I`, `appTypeExpr`/`symTypeText` emitting `^I`, storage in any position, and the
+  `rt_handle`/`rt_deref`/`rt_alive` runtime primitives. Representation and type operations are
+  therefore reused, **but codegen is not free:** the first use of a stored `^I` needs the
+  use-site materialization of section 7.6. The remaining changes are the narrow constructor/
+  parser rules plus that codegen step.
 - **There is no kind field in the token.** The “kind” is static: only a `^I` can be produced from
   an `I` place, and only an interface base accepts `^I`. The runtime header's low 32 bits are the
   box descriptor pointer, not a handle kind. Adding a kind field would need a new token format
@@ -260,7 +264,8 @@ The builtin is at `obo/src/obo.obo:6693-6715`. Replace the blanket
 | `d` where `d: I` is an owned local/parameter, or a whole field/element/global of an owned place | accepted: `^I` token of the box; the existing `hOrigin`/`pOwner` tracking is filled exactly as for `^T` |
 | narrowed owned `?I` local/parameter (`if o != nil { handle(o) }`) | accepted: the box is still owned by `o`; `x.borrowed` is false and the narrowed type is `I` |
 | `&I`, `mut &I`, `&?I` narrowed, a `for` walk variable over `[]I`/`[]?I`, or a field reached through a reference | refused: `cannot make a handle from a borrowed interface value; make it from the place that owns it` (S1) |
-| a field or element reached through a handle (`handle(hp.d)`, `handle(hp.items[0])` where `hp: ^Holder`) | refused: `cannot make a handle from a place reached through a handle; make it from the place that owns it` (2a decision; see below) |
+| a field or element reached through a handle **whose type is an interface** (`hp.d`, `hp.items[0]`, `hp: ^Holder`, field/element `I`) | refused: `cannot make a handle from a place reached through a handle; make it from the place that owns it` (2a decision; see below) |
+| a field or element reached through a handle **whose type is `T` (record/closed)** (`handle(hp.t)`, `hp: ^Holder`) | **accepted unchanged**: existing `^T` through-handle behaviour; the probe `handle_through_handle_t` prints `7` |
 | a `?I` place that is not narrowed | refused: `handle needs a non-optional owned interface place, not ?I` (the type is rendered by `tname`) |
 | an `I` temporary (`make()`, `handle(...)` result) | existing `handle needs a variable, field or element` |
 | a `^T`, `^I` or `?^I` value | not an interface place: existing `handle needs a record or closed-type value that is not optional, not ^T` / `... not ^I` / `... not ?^I`; 2a does not overload `handle` |
@@ -273,14 +278,18 @@ Implementation details:
   interface test after the temporary/mode check and must distinguish borrowed from owned:
   `x.borrowed` is set for reference locals/parameters, walk variables and fields reached through
   a reference. Do not accept on `x.typ.kind == "iface"` alone.
-- **Explicit `viaHandle` guard (B3).** A designator reached through a handle (`hp.d`,
-  `hp.items[0]`, where `hp: ^Holder`) sets `x.viaHandle == true`; `x.borrowed` is false when the
-  root is a handle, so a borrowed-only test would wrongly accept it. Add
-  `if x.viaHandle { error("cannot make a handle from a place reached through a handle; make it from the place that owns it") }`
-  before the owned-place acceptance. It is runtime-safe in principle (the token names the box,
-  not the handle), but 2a excludes it: the origin rules for a place reached through a handle are
-  ambiguous, and accepting it was a prototype bug, not a requirement. The guard applies to fields
-  and elements; a whole handle value is already refused as “not a record or closed type”.
+- **Explicit `viaHandle` guard (B3), inside the interface branch only.** A designator reached
+  through a handle (`hp.d`, `hp.items[0]`, where `hp: ^Holder`) sets `x.viaHandle == true`;
+  `x.borrowed` is false when the root is a handle, so a borrowed-only test would wrongly accept
+  it. Add the guard **only when `isIfaceVal(x.typ)` is true**, before the owned-interface
+  acceptance:
+  `if x.viaHandle { error("cannot make a handle from a place reached through a handle; make it from the place that owns it") }`.
+  Do **not** put it before the generic `^T` branch: `^T` through-handle fields keep the existing
+  behaviour (`handle(hp.t)` where `hp: ^Holder`, `t: T` prints `7`), and the guard must not
+  affect records/closed types. It is runtime-safe in principle for interfaces too (the token names
+  the box, not the handle), but 2a excludes it: the origin rules for an interface place reached
+  through a handle are ambiguous. The guard applies to interface fields and elements; a whole
+  handle value is already refused as “not a record or closed type”.
 - A field or element of an **owned** place has `x.viaHandle == false`; `x.deref == true` is not
   enough to distinguish it from a through-handle place.
 - `handle(o)` on a narrowed `?I` uses `x.sym == o`, `x.typ == I`, `x.borrowed == false`; the token
@@ -308,9 +317,11 @@ Implementation details:
   from a stack address, which is exactly S1. The same refusal covers walk variables.
 - **No `handle` of a `^I`**; a handle of a handle is not meaningful, and a token copy already
   exists.
-- **No `handle` of a place reached through a handle** (`hp.d`, `hp.items[0]`). It is
-  runtime-safe in principle, but the origin/ownership rules for a through-handle place are
-  ambiguous. Use the place that owns the box (the owned `I` local/field/element) instead.
+- **No `handle` of an *interface* place reached through a handle** (`hp.d`, `hp.items[0]` where
+  the place's type is `I`/`?I`). It is runtime-safe in principle, but the origin/ownership rules
+  for a through-handle interface place are ambiguous. Use the place that owns the box (the owned
+  `I` local/field/element) instead. A `^T` through-handle field/element (`handle(hp.t)`) keeps the
+  existing behaviour and is not refused; the guard is inside the interface branch only.
 
 ---
 
@@ -617,50 +628,53 @@ accepted pure-later-argument case and the refused freeing-later-argument case.
 - A `^I` returned from a function is a token; it does not extend the box's lifetime. `alive` is
   the safe test. No new lifetime analysis in 2a.
 
-### 7.6 Handle materialization: required codegen step (B1)
+### 7.6 Handle use-site materialization: required codegen step (B1)
 
-The patched compiler used by the independent review implements the parser/constructor/capture
-changes but no handle-specific codegen. Its probes show **two correctness failures**:
+The patched compiler's token from `handle(xs[0])` is **already correct**; the failure is at the
+**first use/deref of the stored handle**, not in the element constructor's value load. The probes:
 
 1. **One-element array, index 0, first direct use.** With
    `var xs = new []Shape(0); append(xs, new Square{s: 2}); let h = handle(xs[0]); println(h.area())`,
-   the prototype prints `3266766515917679673` instead of `4`. Adding `let hh = h` before the call,
-   or a prior `alive(h)`, makes it print `4`; index 1 works; a method that ignores its receiver
-   prints its constant, so dispatch itself is reaching the right vtable. This is a first-use
-   materialization/ordering bug in the element constructor at index 0, not a semantic ambiguity.
+   the prototype prints `3266766515917679673` instead of `4`. `let hh = h` immediately before the
+   call, or a prior `alive(h)`, makes it print `4`; index 1 works; the **first** call is bad and a
+   later call of the same `h` is good (`i_elem4`). The stored token is not the problem; the first
+   dereference/receiver use is.
 2. **First-use handle argument through a `^I` receiver.** With a `Sink` built behind `s = handle(b)`
    and `pure mut fn write(p0: ^Shape)`, `s.write(h)` (where `h` is first used here) core-dumps;
    `let g = h; s.write(g)` works, and the `^T` analogue `s.write(h)` works. The `^I` receiver path
    must not share a register/temporary with the first-use handle argument.
 
-These are **not** to be narrowed away by forbidding the natural forms. The implementation step is:
+These are **not** to be narrowed away by forbidding the natural forms. The specified fix is a
+**use-site spill of the handle word**, not an element-constructor change:
 
-- **Treat `^I`/`?^I` as one-word non-owned addresses for code generation.** They must always be
-  materialized from their place into a fresh register or a dedicated frame temporary before a use
-  that crosses a call or evaluates other arguments. They are never home registers, never folded
-  with int/bool, and never left as an unresolved `elem` item whose index/address registers can be
-  released and reused.
-- **Element constructor at index 0:** after resolving `xs[i]`, force the element value into a
-  stable temporary (an internal store/load or a reserved register) and call `RT_HANDLE` on that
-  temporary. Do not let `rtCall`'s `asReg`/`resolve`/`releaseItem` reuse the index or base
-  register as the element-load destination when the index is 0. The exact register-allocation fix
-  is implementation work; the observable invariant is that the direct first use is correct with
-  no copy/`alive` workaround. The same rule covers a variable-index element
-  (`handle(xs[i])`).
-- **First-use handle argument through a `^I` receiver:** after the receiver's
-  `pushIfaceReceiver` and while the argument is evaluated in source order, materialize the `^I`
-  token into an argument temporary slot/register that is **not** the receiver's box/vtable
-  temporary. Keep it live until the call. Do not reorder argument evaluation; the `^T` path is the
-  reference behaviour to match.
-- **`let hh = h` and `alive(h)` are diagnostics/workarounds, not fixes.** Tests must use the
-  direct first use (`handle(xs[0]).area()` / `h.area()` with no prior copy or `alive`) and the
-  direct first-use argument (`s.write(h)`).
-- The materialization rule should be centralized in a helper used by the `handle` builtin,
-  `designatorT` handle deref, and `callFnWith` argument/receiver setup. Source anchors:
-  `handle` `obo.obo:6693-6715`, `designatorT` deref `7238-7255`, `callFnWith`
-  `6185-6266`, `pushIfaceReceiver` `6087-6103`, dispatch `6389-6395`, and the item/register
-  helpers `load`/`asReg`/`store`/`releaseItem` (`3091-3240`). The runtime token functions are
-  correct (`runtime.c:474-493`); this is compiler codegen, not a runtime change.
+- **Helper `spillHandle(x)`.** Allocate one 8-byte compiler frame temporary (a `mem` item at
+  `RBP - off`, not a user symbol; `frame += 8` at the use site), `store` the one-word handle value
+  into it, and return that `mem` item. It is a language-invisible copy: it does not consume, own,
+  free or change the token. The slot is live from the store until the enclosing dereference/call
+  returns; it is never reused for the receiver or another argument during that call. The frame
+  slot is reclaimed by the ordinary function frame at function end.
+- **First receiver use, `h.m()` / `h.area()`.** In `designatorT`'s handle branch
+  (`obo.obo:7238-7255`), after the existing `deadHandleCheck(x.sym)` (so the origin diagnostic
+  still sees the user symbol), when `baseOf(x.typ).kind == "iface"` (so `^I`/narrowed `?^I` only;
+  `^T` is untouched), do `x = spillHandle(x)` **before** `rtCall1(RT_DEREF, x, hb)`. `rt_deref`
+  then reads the temp slot, so the first `h.area()` has the same materialized path as
+  `let hh = h; hh.area()`. The temp stays live across the deref and the subsequent dispatch call.
+- **First-use `^I` argument, `s.write(h)`.** In `callFnWith`'s explicit-argument loop
+  (`obo.obo:6185-6266`), after `checkAssign`/`borrowBind` for an argument whose type is an
+  interface handle (`^I`, or a narrowed `?^I`), do `a = spillHandle(a)` before the argument is
+  pushed. `pushIfaceReceiver` has already run for the receiver; the argument's temp is independent
+  of the receiver's box/vtable temporary and lives until the call returns. Do not reorder
+  argument evaluation. `^T` arguments are untouched and keep the existing working path.
+- **Why this is concrete:** this is exactly the compiler-internal form of the two successful
+  language-level workarounds (`let hh = h` and `let g = h`), applied at the failing use sites
+  without a user local. It removes the first-use register state from the token's lifetime. If the
+  spill does **not** make the pinned probes pass, stop: the residual is an unresolved codegen risk
+  and must be reported, not worked around by narrowing the feature.
+
+Source anchors: `designatorT` handle deref `7238-7255`, `callFnWith` argument loop `6185-6266`,
+`pushIfaceReceiver` `6087-6103`, dispatch `6389-6395`, and `load`/`asReg`/`store`/`releaseItem`
+(`3091-3240`). The runtime token functions are correct (`runtime.c:474-493`); this is compiler
+codegen, not a runtime change.
 
 ---
 
@@ -743,7 +757,7 @@ rejects `string`, checks `incompleteCarrier`, rejects `isIfaceVal(ct)`, then rej
 `containsIface(ct)`, and finally chooses kind 0/1/2/3. `captureBind` (`obo.obo:1659`) holds the
 call-site binding for kind 1 roots and kind 2 origin owners.
 
-### 9.2 `^I` capture: allowed in 2a (recommended)
+### 9.2 `^I` capture: allowed in 2a (decided)
 
 A direct `^I` local/parameter is a **handle**, so it takes the existing kind 2 representation, but
 it needs an explicit, narrow classifier exemption (it is not an existing Stage B row):
@@ -775,15 +789,15 @@ local only; no function type changes, and `containsIface` itself is unchanged.
 
 | capture | 2a | reason / message |
 |---|---|---|
-| `^I` | allowed (recommended) | token snapshot; kind 2; no new environment layout |
+| `^I` | **decided: allowed** | token snapshot; kind 2; no new environment layout |
 | owned `I` / `?I` | rejected | would be a read-only borrow of the box (`&I` semantics) and needs a carrier/binding mode; existing `cannot capture interface value '<x>'; function values cannot take interface values in v1` |
 | `&I` / `mut &I` / narrowed `&?I` | rejected | v3 B1 pair-pointer semantics; a one-word capture cell cannot copy the `{obj, vtable}` pair into a body-owned pair slot; the declared type is `I`/`?I`, so the direct `cannot capture interface value '<x>'; ...` message applies |
-| `?^I` | rejected in 2a (recommended) | narrow to a `^I` local and capture that; the generic optional rule would otherwise try a read-only optional borrow, not a token snapshot. Existing carrier message; a specific “narrow first” message is an open choice |
+| `?^I` | **decided: defer** | narrow to a `^I` local and capture that; the generic optional rule would otherwise try a read-only optional borrow, not a token snapshot. Existing carrier message; a specific “narrow first” message remains a later option |
 | record/closed/array/`Result` carrying `I`, `&I`, `^I` | rejected | `containsIface` recurses into fields; function types cannot take interface values in v1. Do not carve out a record that merely holds a `^I` in 2a; the direct handle is the supported form |
 | string | rejected | unchanged |
 
 The owned-`I` and `&I` captures are the v3 §10.2 relaxation steps 1–3. They remain later work; 2a
-does not change the firewall except for the **new, classified-only direct-`^I` exemption** described
+does not change the firewall except for the **new, classifier-only direct-`^I` exemption** described
 above. It does not add a `^I` row to the general Stage B table, and it does not relax
 `containsIface`/`rejectIfaceFn`.
 
@@ -889,7 +903,7 @@ Style as `LANGUAGE.md` §10; types through `tname`; members as `I::m`. “Existi
 | situation | message |
 |---|---|
 | `handle` of `&I`, `mut &I`, `&?I` narrowed, a `for` walk variable, or a field through a reference | `cannot make a handle from a borrowed interface value; make it from the place that owns it` |
-| `handle` of a field/element reached through a handle (`hp.d`, `hp.items[0]`) | `cannot make a handle from a place reached through a handle; make it from the place that owns it` |
+| `handle` of an **interface-typed** field/element reached through a handle (`hp.d`, `hp.items[0]`) | `cannot make a handle from a place reached through a handle; make it from the place that owns it`; a `^T` through-handle place is accepted as before |
 | `handle` of a `?I` place | `handle needs a non-optional owned interface place, not ?I` |
 | equality of two `^I`/`?^I` values (other than nil) | `interface handles cannot be compared; test an optional with '== nil' or '!= nil'` |
 | direct `^I` capture | accepted; no message |
@@ -932,13 +946,13 @@ expected result for an owned `I` place.
 | type parser | `parseType` `obo.obo:4848`, caret branch `4895-4900` | accept `b.kind == "iface"` |
 | sym type parser | `symParseType` `obo.obo:12386`, caret branch `12432-12438` | accept `b.kind == "iface"` |
 | generic type ops | `isRef` `1342`, `nonNull` `1347`, `assignable` `1370`, `tname` `1326-1334`, `appTypeExpr` `11747`, `symTypeText` `12278` | no change |
-| handle builtin | `handle` branch `obo.obo:6693-6715` | owned/borrowed/optional interface rules; explicit `viaHandle` guard; force element materialization; keep `^T` |
-| handle value copy | `varDecl` `8571-8695`, let-handle copy block `8654-8677`, `store`/`load`/`asReg`/`releaseItem` `3091-3240` | preserve `let` copy origin; add explicit one-word handle materialization; do not treat as int/fold/home |
+| handle builtin | `handle` branch `obo.obo:6693-6715` | owned/borrowed/optional interface rules; explicit `viaHandle` guard **inside the interface branch only**; no element-constructor materialization; keep `^T` |
+| handle value copy | `varDecl` `8571-8695`, let-handle copy block `8654-8677`, `store`/`load`/`asReg`/`releaseItem` `3091-3240` | preserve `let` copy origin; add the compiler-internal `spillHandle` use-site copy (section 7.6); do not treat as int/fold/home |
 | alive/drop/take/replace | `6799`, `6780`, `6822`, `6717` | no change to owned rules; whole-local replace vs field/element replace tracking as section 5.3 |
 | equality | `relation` `8386`, interface check `8409-8412` | refuse interface handles except nil |
 | box/vtable | `boxDescriptor` `5702`, `boxInto` `5759`, `ifacePairCell` `5776` | no change |
-| dispatch | `designatorT` handle deref `7238-7255`, `ifaceMethodCall` `7410`, `methodCall` `7420` | dispatch structure reused, but **add handle materialization**; not a no-codegen change |
-| S4 load | `pushIfaceReceiver` `6087-6103`, receiver/argument loop `6185-6266`, dispatch `6389-6395` | reuse order; add first-use argument materialization |
+| dispatch | `designatorT` handle deref `7238-7255`, `ifaceMethodCall` `7410`, `methodCall` `7420` | dispatch structure reused, but **add `spillHandle` before the first `^I` deref**; not a no-codegen change |
+| S4 load | `pushIfaceReceiver` `6087-6103`, receiver/argument loop `6185-6266`, dispatch `6389-6395` | reuse order; add `spillHandle` for a first-use `^I` argument |
 | effect check | `setMemberSummary` `10614`, `pureFn` `4292`, `afterCall` `4392`, handle-borrow check `6338-6350` | no change; tests pin behaviour |
 | captures | `lambdaExpr` `7572`, classifier `7622-7682`, `containsIfaceIn` handle recursion `1409-1412`, `captureBind` `1659`, hidden prologue `10492-10520` | classifier-only direct-`^I` exemption; leave `containsIface`/`rejectIfaceFn` unchanged; keep `ck=2` |
 | `.sym` reader/writer | `appTypeExpr` `11747`, `symTypeText` `12278`, `symParseType` `12386` | accept and emit `^I` |
@@ -950,26 +964,33 @@ expected result for an owned `I` place.
 1. **Type and reader (compile-only).** Add the two parser edits, the `isIfaceHandle` helper and
    the equality refusal. Compile `^I` declarations, fields, params, returns, arrays and `Result`
    positions; run source and `.sym` parse tests. No code generation yet.
-2. **Constructor and liveness.** Implement the owned/borrowed/optional constructor rule, the
-   explicit `viaHandle` through-handle refusal, and force element materialization for
-   `handle(xs[0])` / `handle(xs[i])` (section 7.6). Set the existing `hOrigin`/`pOwner` as for
+2. **Constructor and liveness.** Implement the owned/borrowed/optional constructor rule and the
+   explicit `viaHandle` through-handle refusal **inside the interface-source branch only**; `^T`
+   through-handle fields keep their existing behaviour. Set the existing `hOrigin`/`pOwner` as for
    `^T`; preserve the `let`-copy origin (`let g = h`). Verify `handle(d)`/`handle(p.d)`/
    `handle(shapes[i])`/narrowed `?I` and all S1/through-handle refusals. Add `alive`, `?^I`,
-   storage and copy tests, including the one-element-array and variable-index cases.
-3. **Dispatch and effects.** The dispatch structure is reused, but add the handle materialization
-   fix for a first-use `^I` argument through a `^I` receiver (`s.write(h)`), with an argument
-   temporary/register independent of the receiver's box. Run the call matrix (pure, `pure mut`,
-   `fn`, `mut fn` refused, later arg frees, later pure arg, global init, receiver through
-   field/element/global/returned handle). Verify S4 load order and the direct first use with no
-   `let hh`/`alive` workaround. Add the shared-sink cases.
+   storage and copy tests, including the one-element-array and variable-index cases. **Do not
+   change the element constructor's value load:** its token is already correct.
+3. **Dispatch and effects.** The dispatch structure is reused, but implement the use-site
+   `spillHandle` (section 7.6) in two places: (a) in `designatorT` before the first `^I` deref,
+   so `h.area()` works with no prior `let hh`/`alive`; (b) in `callFnWith` for a first-use `^I`
+   argument through a `^I` receiver (`s.write(h)`), with an argument temp independent of the
+   receiver's box/vtable temp. Define the temp lifetime (use site through the deref/call) and keep
+   `^T` on the existing path. Run the call matrix (pure, `pure mut`, `fn`, `mut fn` refused, later
+   arg frees, later pure arg, global init, receiver through field/element/global/returned handle).
+   Verify S4 load order and both direct first-use probes. Add the shared-sink cases.
 4. **Captures.** Add the **classifier-only** direct-`^I` exemption, keep `?^I`/`I`/`&I` and
    carriers rejected, and leave `containsIface`/`rejectIfaceFn` unchanged. Add run/error tests;
    verify `captureBind` and the hidden prologue. No function-type changes.
-5. **`.sym` and versions.** Update writer/reader if not already; at implementation choose the next
-   free `OBO_VERSION` and, only if policy requires, the next free `SYM_FORMAT`; ABI stays 1. Migrate
-   every fixture header explicitly; regenerate goldens only with `sym_test.py --update`; add a
-   stale-format fixture if the format changed. Update `sym_test.py`, `port_compare.py` minima and
-   any version table.
+5. **`.sym` and versions.** Update the writer/reader if not already; at implementation choose the
+   next free `OBO_VERSION`; ABI stays 1. **If the format stays unchanged:** do not mutate
+   `SYM_FORMAT`, do not move the existing wrong-format fixture (`obosym 7`, expected `reads 6`),
+   and migrate only the compiler lines in the fixtures and `sym_test.py`'s compiler constant.
+   **If the format is bumped:** set the next free `SYM_FORMAT`, migrate every fixture to it, move
+   the existing wrong-format fixture from `obosym 7` to **new format + 1**, and update the
+   `sym_test.py` format constant, table and expected message. In both cases migrate every
+   compiler header explicitly; regenerate goldens only with `sym_test.py --update`; update
+   `port_compare.py` minima and any version table.
 6. **Docs and gates.** `LANGUAGE.md` §5b/§5 handles, this design's README entry, `FORK.md`
    evidence; all gates; self-host fixed point; peak; review; one seed promotion. `^I` is not used
    in `obo.obo` itself, so the 0.11 seed builds the next compiler.
@@ -1040,7 +1061,9 @@ Paths follow the tree. All run tests execute under `OBO_CHECK=1` where applicabl
   false after the element is removed. **M1/M2:** a whole-local `replace(d, newbox)` keeps the old
   box (and a handle to it) alive; a field/element `replace(p.d, newbox)` marks a tracked handle
   dead even though the old box is returned; `let g = h` inherits the origin and is dead after the
-  owner is freed; `var g = h` and a field copy do not.
+  owner is freed; `var g = h` and a field copy do not. **B3 control:** `handle(hp.t)` where
+  `hp: ^Holder` and `t: T` (record/closed) is still accepted and prints `7`; only an
+  interface-typed field/element through a handle is refused.
 - **R-2a-4 `tests/run/lambda_iface_handle.obx`:** capture a direct `^I` in a lambda passed to a
   pure helper; body calls `alive` and a pure member; a captured token whose box is freed before the
   call is runtime-checked or refused by the owner binding; no owned/`&I` capture.
@@ -1089,9 +1112,14 @@ Paths follow the tree. All run tests execute under `OBO_CHECK=1` where applicabl
 - **S-2a-3 `.sym` errors:** `^int`/`^Result[...]` still rejected with the old text; a forged
   `^I` in a non-interface position rejected; stale format/compiler/ABI fixtures; `^I` in a
   function type or capture carrier rejected.
-- **S-2a-4 fixture migration:** all committed `.sym` headers to the new compiler/format; the
-  intentional `format` fixture moves one past the new format; `sym_test.py` constants/table;
-  goldens regenerated explicitly; recount at implementation (95 now, not v3's 88).
+- **S-2a-4 fixture migration (conditional on the format decision):** all committed `.sym`
+  compiler headers move to the new compiler. **If `SYM_FORMAT` stays 6, there is no new format,
+  no format-fixture move and no `SYM_FORMAT` mutation:** the existing wrong-format fixture stays
+  `obosym 7` / expected `reads 6`; only its compiler line (if it names the compiler) and
+  `sym_test.py`'s compiler constant change. **If the format is bumped:** all fixtures move to the
+  new format, the existing wrong-format fixture currently at `obosym 7` moves to **new format +
+  1**, and `sym_test.py`'s `SYM_FORMAT`, table and expected message move together. Goldens are
+  regenerated explicitly; recount at implementation (95 now, not v3's 88).
 
 ### 13.4 Mutants (each with a catcher; record equivalents)
 
@@ -1109,13 +1137,13 @@ Paths follow the tree. All run tests execute under `OBO_CHECK=1` where applicabl
 | H10 | equality compares `^I` tokens | E-2a-3 |
 | H11 | owned `I`/`&I` capture accepted or `^I` capture stores a box pointer instead of a token | R-2a-4/E-2a-5/leak oracle |
 | H12 | `?^I` nil test/narrowing accepted unchecked | E-2a-2/E-2a-3 |
-| H13 | `handle` of a field through a borrowed record **or through a handle** accepted (the `viaHandle` guard is missing) | E-2a-1 (S1/B3) |
+| H13 | `handle` of a borrowed field, or an **interface-typed** field/element through a handle, is accepted (the `viaHandle` guard is missing); if the guard is placed globally, `^T` through-handle fields break | E-2a-1 (S1/B3) and R-2a-3 `^T` control |
 | H14 | `.sym` writer drops `^` or reader rejects `iface` base | S-2a-2 |
-| H15 | `OBO_VERSION`/`SYM_FORMAT` not updated to the actual next free values, or fixtures not migrated | S-2a-4 |
+| H15 | `OBO_VERSION` not updated to the actual next free value; **if** the format is bumped, `SYM_FORMAT`/fixtures/`sym_test.py` not updated; **if** it is not bumped, `SYM_FORMAT` or the `obosym 7` fixture is changed anyway | S-2a-4 (both branches) |
 | H16 | `^I` treated as owned (drop/take/free) | E-2a-4/leak oracle |
 | H17 | the capture exemption is applied to a record carrying `^I`, or `containsIface`/`rejectIfaceFn` is globally relaxed so `fn(^I)` passes | E-2a-5 |
 | H18 | `handle` returns a `^T`/concrete type instead of `^I` | type/round-trip test |
-| H19 | single-element-array/index-0 codegen: the element handle is not materialized for its first direct call (the `let hh`/`alive` workaround is needed) | R-2a-1 first-use one-element case |
+| H19 | single-element-array/index-0 codegen: the **first use/deref of the stored handle** is not materialized (the token is correct, but `let hh`/`alive` is needed for the first call) | R-2a-1 first-use one-element case |
 | H20 | first-use handle argument through a `^I` receiver shares a register/temporary with the receiver, crashing `s.write(h)` | R-2a-2 (exit/segfault) |
 | H21 | whole-local `replace(d, newbox)` is treated like a field replace and marks a tracked handle dead | E-2a-6 whole-local acceptance |
 | H22 | field/element `replace` does not mark a tracked place handle dead | E-2a-6 field/element refusal |
@@ -1134,8 +1162,8 @@ catchers.
 
 ### 2a (this design)
 
-- token-to-box `^I`; owned `I` places only; through-handle places refused; narrowed `?I`
-  accepted; `?^I`;
+- token-to-box `^I`; owned `I` places only; interface-typed through-handle places refused
+  (`^T` through-handle places unchanged); narrowed `?I` accepted; `?^I`;
 - all `^T` storage positions, copy semantics (including `let`-copy origin), `alive`, equality
   refusal;
 - dispatch structure through the existing S4 path, **plus the B1 handle-materialization codegen
@@ -1205,7 +1233,7 @@ questions for this review; the others are defaults that can be widened later.
 | 10 | 2b representation | separate design; no reservation now | pair/tag/table choice is not forced by 2a; v3 §9.2 superseded |
 | 11 | direct `^I` in `Result`/arrays/globals | **decided:** include in 2a, with explicit `Result[?^I]` widening | same one-word token and existing generic positions; tests prove it |
 | 12 | `^I` capture of a token whose owner is untracked | accept with runtime residual | same as `^T` field/element handles; owner-tracked cases are compile-checked |
-| 13 | through-handle constructor (`hp.d`, `hp.items[0]`) | **decided:** refuse in 2a | runtime-safe in principle, but origin tracking is ambiguous; explicit `viaHandle` guard |
+| 13 | **interface-typed** through-handle constructor (`hp.d`, `hp.items[0]`) | **decided:** refuse in 2a; `^T` through-handle places unchanged | runtime-safe in principle, but interface origin tracking is ambiguous; explicit `viaHandle` guard inside the interface branch |
 
 No item blocks implementation of 2a. Rows 2–4 and 12 are the acceptance choices; rows 1, 5–11 and
 13 are settled for this review.
@@ -1216,9 +1244,9 @@ No item blocks implementation of 2a. Rows 2–4 and 12 are the acceptance choice
 
 | review item | resolution in this revision |
 |---|---|
-| B1 codegen | section 7.6 states both prototype failures and the mandatory materialization invariants for element/index-0 construction and first-use `^I` arguments through a `^I` receiver; section 12.2 steps 2–3 include the codegen work; R-2a-1/R-2a-2 and H19/H20 catch it. “No new dispatch code” is corrected in sections 0, 7.1 and 12.1. |
-| B2 version/format | section 0 item 9, sections 10.3, 10.4, 11 and 16 now state only the next-free rule; no number is assigned to `^I`. A format bump is policy, not technically required; ABI 1 unless representation changes. |
-| B3 through-handle constructor | section 4.2 adds the explicit `viaHandle` guard, the message and the field/element rule; section 11 lists the diagnostic; E-2a-1 and H13 test it. |
+| B1 codegen | section 7.6 corrects the localization: the token is correct; the **first deref/receiver use** of the stored handle and the first-use `^I` argument through a `^I` receiver need a use-site `spillHandle` temp. Section 12.2 assigns the fix to step 3 (not the element constructor in step 2); R-2a-1/R-2a-2 and H19/H20 catch it. “No new dispatch code” is corrected in sections 0, 7.1 and 12.1. |
+| B2 version/format | section 0 item 9, sections 10.3, 10.4, 11 and 16 now state only the next-free rule; no number is assigned to `^I`. A format bump is policy, not technically required; ABI 1 unless representation changes. S-2a-4/H15 are explicitly conditional: if format 6 stays, there is no `SYM_FORMAT` mutation or format-fixture move; if bumped, the `obosym 7` fixture moves to new format + 1. |
+| B3 through-handle constructor | section 4.2 adds the explicit `viaHandle` guard **inside the interface-source branch only**, with `^T` through-handle fields unchanged; section 11 lists the diagnostic; E-2a-1/H13 and R-2a-3's `^T` control test both sides. |
 | M1 replace | section 5.3 splits whole-local `replace` (old box alive, handle not marked dead) from field/element `replace` (place-tracked dead mark); E-2a-6 and H21/H22 test both. |
 | M2 copy tracking | section 5.2 states that `let g = h` inherits `hOrigin`/`pOwner`/live/dead marks (with the compiler anchor), while `var`/assignment/field copies do not; E-2a-6/H23 test it. |
 | M3 v3 §9.2 | header and section 14 explicitly withdraw v3 §9.2's “2a uses the same cell” sentence; 2a is the one-word box token, 2b the pair. |
@@ -1228,9 +1256,10 @@ No item blocks implementation of 2a. Rows 2–4 and 12 are the acceptance choice
 | M7 format wording | section 10.3 removes the overstated format requirement and uses only the next-free rule. |
 
 Evidence directories:
-`/tmp/opencode/interface-handles-design-20261031-162132/` (first round) and
+`/tmp/opencode/interface-handles-design-20261031-162132/` (first round),
 `/tmp/opencode/interface-design-review-20261031-162625-447640/` (independent review, patched
-compiler).
+compiler) and `/tmp/opencode/interface-rev2-review-20261031-165843-1057444/` (focused revision-2
+review).
 
 - `worktree-verify.txt`: `HEAD` is `c47383fff8ab6251c3c254577c24047ad24762b7`, no tracked changes
   before the design edits, and the worktree is the isolated `interface-handles-design` tree.
@@ -1268,8 +1297,10 @@ Independent-review evidence used in revision 2:
   (`s.write(h)`, first use) segfaults; `i_sink_handle_copy.obx` (`let g = h; s.write(g)`) and
   `i_sink_param.obx` work; the `^T` analogue `t_sink_arg.obx` works.
 - **B3:** `i_handle_field.obx` (`hp: ^Holder; handle(hp.d)`) compiles and prints `4`;
-  `ctor_fieldref.obx` (`p: &Holder`) is refused as borrowed. The through-handle acceptance is the
-  ambiguous-origin bug, not a desired rule.
+  `ctor_fieldref.obx` (`p: &Holder`) is refused as borrowed. The interface through-handle
+  acceptance is the ambiguous-origin bug, not a desired rule. The focused-review
+  `handle_through_handle_t.obx` (`hp: ^Holder; handle(hp.d)` where `d: T` is a record) prints
+  `7`, so the `^T` through-handle path must remain accepted.
 - **M1:** `i_replace.obx` (`replace(d, newbox)` whole local) prints `true 4 9 4` — the old handle
   is alive; `i_replace_field.obx` (`replace(p.d, newbox)`) is refused with the place-tracked
   dead-handle message. `replace_handle.obx` repeats the whole-local `^T` analogue.
