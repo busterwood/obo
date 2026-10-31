@@ -1,15 +1,16 @@
 # Decimal text API design (P0)
 
 **Date:** 2026-10-31
-**Status:** DESIGN ONLY, revision 2 for focused re-review. This pass changes no
+**Status:** DESIGN ONLY, revision 3 for focused re-review. This pass changes no
 source, runtime, seed, grammar, version, `.sym` format or ABI. No version is
 reserved. It is the P0 prerequisite for the approved decimal database boundary
-and for later SQL templates. Revision 2 resolves the review of `0b9d98b`:
-private/public oracle split, corrected `1000e-16384` raw-word note, `DecimalText`
-bind-size gate, `check` code-10 allocation wording, heap/free-list failure
-tests, unnormalised and zero low-exponent vectors, exact-message assertions,
-extra check boundaries, `alloc_raw` diagnostic preservation, DB error-mapping
-alignment, module/mutation coverage, and trap-id wording.
+and for later SQL templates. Revision 2 resolved the first review `0b9d98b`
+(private/public oracle split, corrected `1000e-16384` raw-word note,
+`DecimalText` bind-size gate, heap/message tests, DB error mapping). Revision 3
+resolves the follow-up `a927acf`: explicit parse/check code-10 and defensive
+mappings on every DB read/bind path, full 32-byte err-block heap fixtures,
+parse-normalised-resistant mutant catchers, `main.obx` module coverage, updated
+DB line references and clarified mutation-harness naming.
 **Baseline:** `main` at `2364add3a7ad0a02ec9412b6834a36a510d45f32` (0.12 decimal
 scalar tier, merged approved decimal database boundary). Worktree
 `/home/chris/.local/share/opencode/worktree/fa36f3/decimal-text-design`.
@@ -123,7 +124,7 @@ Rules, all normative:
 - The integer part is mandatory and has at least one digit. A leading point
   (`.5`) and a trailing point (`1.`) are `DEC_INVALID` (4), matching the literal
   grammar (`decimal-language-design.md:67-71`) and the database design
-  (`decimal-db-boundary-design.md:93-120`).
+  (`decimal-db-boundary-design.md:86-125`).
 - An optional leading `+` or `-` is part of this **text** grammar. A source
   literal `1` is still `int`, and a source sign is still unary; a database cell
   may be `1`, `+1` or `-1` with `dscale = 0`.
@@ -177,12 +178,12 @@ Rules, all normative:
 The 98,342-byte formatter bound is exactly the worst case: 32,805 integer
 positions (exponent 32767 plus 38 coefficient digits) + one point + 65,535
 fractional digits + one sign. It is the same bound the database adapters use on
-the bind side (`decimal-db-boundary-design.md:159-178`).
+the bind side (`decimal-db-boundary-design.md:164-186`).
 
 `parse` has no input-length cap of its own. A database cell longer than 98,342
 bytes (for example 100,000 leading zeros followed by `1`) parses if the value
 fits the 38-digit/exponent/dscale rules. The database adapter's 16 MiB buffer is
-the external bound (`decimal-db-boundary-design.md:573-577`).
+the external bound (`decimal-db-boundary-design.md:595-600`).
 
 ## 3. Public API contracts
 
@@ -292,7 +293,7 @@ and parse `10` to adapter allocation code `3`; see section 9.
 | 4 | invalid value | defensive; malformed 24-byte backing bits |
 
 The database adapter uses `format` first and calls `canonical` only on code 3
-(`decimal-db-boundary-design.md:600-655`). It must not treat code 3 as a value
+(`decimal-db-boundary-design.md:622-687`). It must not treat code 3 as a value
 error and must not round.
 
 ### 3.4 `decimal::canonical`
@@ -357,7 +358,7 @@ Canonical never returns `INEXACT`: it has no display cap and never rounds.
 - `p` is the declared precision, `s` the declared scale (which may be
   negative). Valid ranges: `p 1..1000`, `s -1000..1000`. These are PostgreSQL's
   `NUMERIC_MAX_PRECISION` and `NUMERIC_MIN/MAX_SCALE`
-  (`decimal-db-boundary-design.md:166-170`).
+  (`decimal-db-boundary-design.md:164-186`).
 - `check` is a metadata gate, not a conversion. It returns the value unchanged
   (24-byte copy, same `dscale`, sign, coefficient and exponent) on success.
 - It ignores `dscale` entirely: `1.2300` and `1.23` fit the same `(p,s)`.
@@ -406,7 +407,7 @@ Canonical never returns `INEXACT`: it has no display cap and never rounds.
 | 10 | buffer/allocation | the `Result[decimal]` ok cell cannot be allocated |
 
 The database boundary maps `3/7/6` to `1010/1011/1012`
-(`decimal-db-boundary-design.md:325-371`, `:418-455`).
+(`decimal-db-boundary-design.md:332-390`, `:437-466`).
 
 ### 3.6 `decimal::exponent` and `decimal::dscale`
 
@@ -426,7 +427,7 @@ decimal::dscale(d: decimal) -> int
   an unnormalised coefficient: `(1.20 * 1.5) * 1e-16382` may store
   `1800 * 10^-16385`, whose raw word is `-16385` while the normalised exponent
   is `-16383`. A raw-word accessor would falsely reject that value at
-  PostgreSQL's `-16383` boundary (`decimal-db-boundary-design.md:373-416`).
+  PostgreSQL's `-16383` boundary (`decimal-db-boundary-design.md:391-436`).
 
 **`dscale`** returns the stored display scale, a direct `uint16` field read
 from `w2`, `0..65535`. It is not normalised and not derived from the exponent.
@@ -480,7 +481,7 @@ The one deliberate remap is formatter output bound: the core length query
 returns `DEC_UNSUPPORTED_RANGE` (6) when `required > 98,342`; the public
 `format`/`canonical` return `9`, because the cause is a display/text bound and
 the database adapter's approved mapping expects `9` (or `10`) for that path
-(`decimal-db-boundary-design.md:600-655`). `check` keeps `6` for bad metadata.
+(`decimal-db-boundary-design.md:622-687`). `check` keeps `6` for bad metadata.
 
 ### 4.2 Per-API codes
 
@@ -595,7 +596,7 @@ arithmetic result (dscale capped to 38 by the multiply rule,
 `decimal-language-design.md:123-130`; `decimal24_core.inc:2406-2416`). The value
 is identical; only presentation differs. `format` returns `INEXACT` for the
 arithmetic result and the adapter falls back to canonical. This is the approved
-database behaviour (`decimal-db-boundary-design.md:1007-1013`).
+database behaviour (`decimal-db-boundary-design.md:1124-1134`).
 
 `1000e-16384` is parse-normalised to coefficient `1`, exponent `-16381`; it is
 **not** a raw-word guard. The raw-word guard is the arithmetic fixture
@@ -888,7 +889,8 @@ static const struct dec_msg MSG_PARSE_INVALID = { 25, "obo: invalid decimal text
 ```
 
 `rt_dec_text_err(descErr, st, op)` selects the table entry, then allocates the
-16-byte err cell with `alloc_raw_try(descErr, 16)`. Place the table and
+err cell's 16-byte payload via `alloc_raw_try(descErr, 16)` (a 32-byte block
+including the 16-byte header). Place the table and
 `rt_dec_text_err` before the formatter builder, or add a static forward
 declaration; the builder uses it. The cell is the shared err
 variant: message word at offset 0, code word at offset 8
@@ -1134,11 +1136,12 @@ Add the new names to the oracle module's `__all__`; keep the private names and
 their behavior unchanged.
 
 Add a concrete module test at
-`obo/tests/modules/run/decimal_text/lib.obx` exporting free functions
+`obo/tests/modules/run/decimal_text/lib.obx` with the root
+`obo/tests/modules/run/decimal_text/main.obx`, exporting free functions
 `parseText(s: string): Result[decimal]`, `formatText(d: decimal):
 Result[string]`, `canonicalText(d: decimal): Result[string]`, `checked(d:
 decimal, p: int, s: int): Result[decimal]`, `exponentOf(d: decimal): int` and
-`dscaleOf(d: decimal): int`, plus a root that calls them. This exercises
+`dscaleOf(d: decimal): int`; `main.obx` calls them. This exercises
 `Result[decimal]`/`Result[string]` in `.sym` and module signatures; no decimal
 field or method is used.
 
@@ -1322,7 +1325,7 @@ Run the section 5.3 table through a `showCheck` helper that prints the code or
 
 Typmod vectors (database integration; P0 does not decode them, but the same
 suite records them for P1/P2) from
-`decimal-db-boundary-design.md:201-215`:
+`decimal-db-boundary-design.md:205-219`:
 
 | Declaration | typmod |
 |---|---:|
@@ -1426,7 +1429,7 @@ result.
 | `parse("-0.00") == 0.00` | true; canonical `0`; format `0.00` |
 
 Do not assert that canonical preserves `dscale`; it is value-exact only
-(`decimal-db-boundary-design.md:668-691`).
+(`decimal-db-boundary-design.md:699-723`).
 
 ### 8.7 Limits, NUL/ASCII, display cap, buffers
 
@@ -1452,12 +1455,17 @@ Do not assert that canonical preserves `dscale`; it is value-exact only
   values because the 98,342 bound is exact; 10 is a real allocation failure
   tested under `OBO_HEAP_LIMIT`. The C test asserts no truncation and no empty
   string.
-- Heap-exhaustion Result test: under a small `OBO_HEAP_LIMIT` that still leaves
-  room for a 16-byte err cell, allocate the input string/value and descriptors
-  first, then fill the heap so the ok/text payload cannot be allocated; call
-  the runtime helpers for parse, format, canonical and check; assert each
-  returns an err cell with code 10 and the exact
-  `obo: decimal result could not be allocated` message, with no fatal
+- Heap-exhaustion Result test: under a small `OBO_HEAP_LIMIT`, allocate the
+  input string/value and descriptors first, then fill the heap until exactly
+  32 bytes remain. That is the full err block (`16` payload + `16` header), so
+  the err cell fits. The parse/check ok cell is `24` payload = a `48`-byte
+  block, so it fails while the err block fits. For format/canonical use a value
+  whose text block exceeds `32` bytes (for example `1e-40`, whose fixed text is
+  `42` bytes), so text allocation fails before the final ok cell; do not use a
+  one-character value, whose text can fit a `32`-byte block and make the test
+  depend on the ok/err ordering. Call the runtime helpers for parse, format,
+  canonical and check; assert each returns an err cell with code 10 and the
+  exact `obo: decimal result could not be allocated` message, with no fatal
   `obx: out of memory`. This exercises the real free-list/exhaustion path, not
   only an impossible payload.
 - Malformed accessor trap: a C harness builds dec24 values with sign 2,
@@ -1483,7 +1491,8 @@ Do not assert that canonical preserves `dscale`; it is value-exact only
 | `make promote` | stage 2 == stage 3 byte fixed point; suite passes |
 | `python3 obo/tests/peak_budget.py` | peak under 2,500,000; empty-array delta ≥ 30,000 |
 | `mutate_fork.py` / `mutate_port.py` | new compiler text mutants 100% caught; no survivors |
-| `mutate_io.py` | new runtime/`decimal24_core.inc` text and allocator mutants; entry-slot mutants |
+| `mutate_decimal.py` | compiler, `decimal24_core.inc` and `entry.S` text mutants, including slots 73–78 |
+| `mutate_io.py` (if used for allocator mutants) | same include-text build path; no duplicate catalog |
 | `heap_test.py` | `alloc_raw` diagnostics and the code-10 heap-exhaustion Result tests |
 | `test_decimal_text_oracle.py` (private) and `test_decimal_text_public_oracle.py` (public) | private oracle/fixtures unchanged; public model agrees with `decimal::*` |
 | `module_test.py` / `sym_test.py` | module signatures with `Result[decimal]`/`Result[string]`; `.sym` rebuilt for format 7/0.14 |
@@ -1497,7 +1506,12 @@ outcome rather than reporting a spurious port difference.
 
 ### 8.9 Mutants
 
-Add a `mutate_text.py` catalog (or extend `mutate_decimal.py`) with at least:
+**Naming:** do not add a fourth harness called `mutate_text.py`. Extend the
+existing focused gate `obo/tests/mutate_decimal.py` (it already builds
+`src/obo.obo`, `runtime.c`, `entry.S` and `decimal24_core.inc`), and, if a
+shared catalog is factored out, name it `obo/tests/mutate_text_catalog.py` and
+import it from `mutate_decimal.py`, `mutate_fork.py` and `mutate_port.py`.
+`mutate_decimal.py` remains the decimal-specific entry point.
 
 | Mutant | Catcher |
 |---|---|
@@ -1511,17 +1525,17 @@ Add a `mutate_text.py` catalog (or extend `mutate_decimal.py`) with at least:
 | upper rescue 38-digit cap 37→36 | `1e32804` |
 | negative zero sign retained | `-0.00` format/canonical |
 | canonical threshold 128→127 or 129 | `1e-126`/`1e-127`, `1e127`/`1e128` |
-| canonical keeps trailing zeros | `1.2300` canonical `1.23` |
+| canonical keeps trailing zeros | `1.20*1.2` canonical `1.44`, or C fixture `1800 * 10^-2` canonical `18` |
 | canonical adjusted exponent off by one | `1.23e-200` |
-| format INEXACT `<`→`<=` | `1.2300` at dscale 2 vs 1 |
-| format pads dscale-1 | `1.2300` |
+| format INEXACT `<`→`<=` | `1.23`/`1e-40` at their exact dscale (equality boundary) and `1e-20*1e-20` (INEXACT) |
+| format pads dscale-1 | `1.20*1.2` format `1.440` |
 | format rounds a dropped digit | `1.23456` at dscale 4 |
-| check trailing-zero test `>=`→`>` | `1000` at `(2,-3)` |
-| check ignores coefficient trailing zeros | `1500` at `(2,-3)` |
+| check trailing-zero test `>=`→`>` | C fixture `1800 * 10^-2` at `(2,0)` |
+| check ignores coefficient trailing zeros | C fixture `1800 * 10^-2` |
 | check precision `<=p`→`<p` | 38 nines at `(38,0)`; `9`*38+`0` at `(39,0)` |
 | check p range 1..1000→0..1000 | `(0,0)` |
 | exponent returns the raw stored exponent | `(1.20*1.5)*1e-16382` (raw -16385, normalised -16383); not `1000e-16384`, which parse normalises |
-| dscale reads word 1/offset 16 | `1.2300` |
+| dscale reads word 1/offset 16 | `1.20*1.2` (dscale 3) or C fixture `1800 * 10^-2` |
 | parse status 7↔8 swap | 39 digits or `1e40000` |
 | formatter length/NUL off by one | exact-byte C test; max 98,342 output |
 | text allocation failure not mapped to 10 | heap-exhaustion test, free-list path |
@@ -1532,16 +1546,16 @@ Add a `mutate_text.py` catalog (or extend `mutate_decimal.py`) with at least:
 
 The compiler-side mutants are registered in `mutate_fork.py` and
 `mutate_port.py` (the `MUTANTS`/`PORT_PATTERNS` catalogs; `mutant_catchers.tsv`
-for port first-failure paths). Runtime and `decimal24_core.inc` mutants belong
-in `mutate_io.py`'s `RUNTIME_MUTANTS`; because `build_runtime` currently copies
-`runtime.c` and `entry.S` but not a mutant `.inc`, extend it with an
-`RUNTIME_INC`/include-text path (or a small `mutate_text.py` that builds the
-runtime from both sources). `entry.S` slot mutations need a new
-`ENTRY_MUTANTS` path in the same harness, or a dedicated slot-table test that
-the existing `mutate_fork` compiler cannot express. Do not omit the new slots:
-a wrong slot target that no test calls is a surviving mutant. No mutant may be
-accepted by changing a test expectation. The existing decimal mutants
-(`obo/tests/mutate_decimal.py:39-40`) remain.
+for port first-failure paths), with the decimal text entries shared from
+`mutate_text_catalog.py` so they are not duplicated. Runtime,
+`decimal24_core.inc` and `entry.S` mutants belong in `mutate_decimal.py`: it
+already copies `entry.S` and builds the runtime from `runtime.c` plus the
+include, so add an `RT_INC` replacement path and an `ENTRY_MUTANTS` list rather
+than extending `mutate_io.py`'s build. If the runtime allocator mutants are
+kept in `mutate_io.py`, extend its build with the same include-text path.
+Do not omit the new slots: a wrong slot target that no test calls is a
+surviving mutant. No mutant may be accepted by changing a test expectation.
+The existing decimal mutants (`obo/tests/mutate_decimal.py:39-40`) remain.
 
 ## 9. Interaction with the database design
 
@@ -1577,7 +1591,7 @@ calls `check`, then `encode_decimal`, then `bind_text`.
 
 ### 9.2 Error-code mapping
 
-The approved database error namespace is `decimal-db-boundary-design.md:418-455`.
+The approved database error namespace is `decimal-db-boundary-design.md:437-466`.
 The text API mapping is:
 
 | Source | Adapter code |
@@ -1617,7 +1631,7 @@ an allocation failure is mislabelled as a display-range error.
 ### 9.3 `DecimalText`
 
 `SqlArg.DecimalText { v: []byte }` remains the v1 SQL-template transport
-(`decimal-db-boundary-design.md:711-759`). The template builds the bytes with
+(`decimal-db-boundary-design.md:743-790`). The template builds the bytes with
 `encode_decimal` (display, canonical fallback), not at render time. The renderer
 first checks `len(bytes)` is `1..98,342` (empty → 1006, oversize → size code
 2), then validates the bytes with `decimal::parse(string(bytes))` and maps
@@ -1697,12 +1711,12 @@ Repository (line numbers at baseline `2364add`):
   `?decimal`, `:57` value equality, `:67-84` literals and display scale,
   `:97-110` arithmetic/traps/statuses, `:114-132` conversions/format/cap,
   `:134-142` database `check`, `:156-172` decisions.
-- `obo/design/decimal-db-boundary-design.md:81-120` public DB grammar,
-  `:122-149` display/canonical, `:159-178` limits, `:201-215` typmod vectors,
-  `:325-371` check predicate/vectors, `:373-416` PG `-16383`/normalised
-  exponent, `:418-455` error codes/messages, `:600-655` encode/fallback,
-  `:668-691` round-trip limits, `:711-759` `DecimalText`, `:955-1013` text
-  vectors, `:1145-1171` P0 list, `:1273-1288` open choices.
+- `obo/design/decimal-db-boundary-design.md:86-125` public DB grammar,
+  `:127-155` display/canonical, `:164-186` limits, `:205-219` typmod vectors,
+  `:332-390` check predicate/vectors, `:391-436` PG `-16383`/normalised
+  exponent, `:437-466` error codes/messages, `:622-687` encode/fallback,
+  `:699-723` round-trip limits, `:743-790` `DecimalText`, `:1064-1120` text
+  vectors, `:1265-1330` P0 list, `:1399-1420` open choices.
 - `obo/LANGUAGE.md:68-131` released decimal scalar tier, `:2240-2255`
   diagnostic ids and Result codes, `:2431-2436` known holes.
 - `obo/src/obo.obo:110-118` version/format/ABI, `:1295` `tDecimal`, `:2069-2082`
@@ -1730,10 +1744,12 @@ Repository (line numbers at baseline `2364add`):
   `test_decimal_text_oracle.py:60-61` private `.5`/`1.` assertions;
   `generate_text_vectors.py:88` private fixture consumer. Add
   `parse_public_text`/`build_public_text_cases`/`check_public` alongside.
-- `obo/tests/mutate_decimal.py:39-40` existing literal mutants;
+- `obo/tests/mutate_decimal.py:39-40` existing literal mutants; this focused
+  gate already builds `src/obo.obo`, `runtime.c`, `entry.S` and
+  `decimal24_core.inc`, so extend it with the text compiler/RT_INC/entry-slot
+  mutants;
   `obo/tests/mutate_io.py:47` `RUNTIME_MUTANTS`, `:310-326` runtime build
-  (currently copies `entry.S`/`decimal24_core.inc` unchanged; extend for
-  `.inc` and entry-slot mutants);
+  (only if allocator mutants are kept there; add the include-text path);
   `obo/tests/port_compare.py:257-272` decimal-version gating;
   `obo/tests/peak_budget.py` budget; `obo/FORK.md:5771-5780` 2,500,000/30,000;
   `obo/FORK.md:6145-6158` 0.12 identity/hello gate.

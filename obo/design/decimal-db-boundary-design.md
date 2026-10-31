@@ -8,11 +8,14 @@ strict public parse grammar, corrected scale-32768 fixture, SQLite
 integer-affinity behaviour, NULL/type-check order, checked-by-default binders,
 canonical/exponent tests, typmod vectors, error-name/message unification,
 canonical `Result`, read-side size/copy handling, and `DecimalText` for `sql`.
-Revision 3 (docs only) refreshes this approved design against `2364add` while
+Revision 3 (docs only) refreshed this approved design against `2364add` while
 retaining the original baseline below: links the P0 text API, keeps the
 private `parse_text` oracle and adds the public one, corrects the
 `1000e-16384` normalisation note, adds the `DecimalText` bind-size gate, and
-aligns canonical/format error mapping (9→1009, 10→3, invalid 4→2).
+aligns canonical/format error mapping (9→1009, 10→3, invalid 4→2). Revision 4
+completes the corresponding parse/check code-10 and defensive mappings on the
+read-back, `param_decimal`, `Rows.decimal`, `bind_decimal` and
+`Stmt.decimal` paths, including the normative table.
 **Baseline:** `main` at `51ce9e7680a90df9e3d5e38a9b469a460a2ca968` (0.12
 decimal scalar tier released). Worktree
 `/home/chris/.local/share/opencode/worktree/fa36f3/decimal-db-design`, branch
@@ -299,9 +302,11 @@ that does not exist before execution.
    and maps NULL to a different error); reject empty, NUL or non-ASCII as
    `1006`;
 6. exact special strings (`NaN`, `Infinity`, `-Infinity`) → `1004`;
-7. `decimal::parse`; map `4→1006`, `7→1007`, `8→1008`, `9→1009`;
+7. `decimal::parse`; map `4→1006`, `7→1007`, `8→1008`, `9→1009`,
+   `10→3` (allocation), and defensive `1/6→2` (plumbing);
 8. if constrained, `decimal::check(v, p, s)`; map `3→1010`, `7→1011`,
-   `6→1012`. A conforming server value always passes; a failure means the
+   `6→1012`, `10→3` (allocation), and defensive `1/4→2` (plumbing). A
+   conforming server value always passes; a failure means the
    value would not fit the declared metadata, never that it should be rounded.
 
 This order is normative: **NULL wins over the binary-format check**, and the
@@ -774,7 +779,8 @@ type SqlArg = closed {
   packet builder enforces). It then validates the bytes with
   **`decimal::parse`**, not merely the grammar: NUL/empty/non-ASCII/syntax →
   `1006`, more than 38 significant digits → `1007`, exponent outside `int16`
-  → `1008`, display scale outside `uint16` → `1009`. The length check is what
+  → `1008`, display scale outside `uint16` → `1009`, parse `10` (allocation)
+  → `3`, and defensive parse `1/6` → plumbing `2`. The length check is what
   prevents a direct `DecimalText` carrying 100,000 leading zeros (value `1`)
   from sending more than the bind bound. `string(bytes)` copies through fatal
   `alloc_raw`; it must not be used as the size check, and a heap failure there
@@ -871,8 +877,18 @@ pub fn param_decimal_unchecked(value: decimal): Result[Param] {
 }
 
 pub fn param_decimal(value: decimal, p: int, s: int): Result[Param] {
-    let checked = try decimal::check(value, p, s)
-    return param_decimal_unchecked(checked)
+    let r = decimal::check(value, p, s)
+    match r {
+        ok(v) { return param_decimal_unchecked(v) }
+        err(m, c) {
+            if c == 10 { return err("decimal text could not be allocated", 3) }
+            if c == 1 || c == 4 { return err("invalid decimal value", 2) }
+            if c == 3 { return err("value does not fit the declared scale without rounding", 1010) }
+            if c == 7 { return err("value exceeds the declared precision", 1011) }
+            if c == 6 { return err("invalid numeric typmod or precision/scale metadata", 1012) }
+            return err(m, c)
+        }
+    }
 }
 
 pub fn (r: &Rows) decimal(row: int, col: int): Result[decimal] {
@@ -887,19 +903,55 @@ pub fn (r: &Rows) decimal(row: int, col: int): Result[decimal] {
     if txt == "NaN" || txt == "Infinity" || txt == "-Infinity" {
         return err("non-finite numeric is not representable", 1004)
     }
-    let d = try decimal::parse(txt)
-    if meta.constrained {
-        let checked = try decimal::check(d, meta.precision, meta.scale)
-        return ok(checked)
+    let d = decimal::parse(txt)
+    match d {
+        ok(v) {
+            if meta.constrained {
+                let cr = decimal::check(v, meta.precision, meta.scale)
+                match cr {
+                    ok(checked) { return ok(checked) }
+                    err(m, c) {
+                        if c == 10 { return err("decimal text could not be allocated", 3) }
+                        if c == 1 || c == 4 { return err("invalid decimal value", 2) }
+                        if c == 3 { return err("value does not fit the declared scale without rounding", 1010) }
+                        if c == 7 { return err("value exceeds the declared precision", 1011) }
+                        if c == 6 { return err("invalid numeric typmod or precision/scale metadata", 1012) }
+                        return err(m, c)
+                    }
+                }
+            }
+            return ok(v)
+        }
+        err(m, c) {
+            if c == 10 { return err("decimal text could not be allocated", 3) }
+            if c == 1 || c == 6 { return err("invalid decimal value", 2) }
+            if c == 4 { return err("invalid decimal text", 1006) }
+            if c == 7 { return err("decimal text has more than 38 significant digits", 1007) }
+            if c == 8 { return err("decimal exponent is outside int16", 1008) }
+            if c == 9 { return err("decimal display scale is outside uint16", 1009) }
+            return err(m, c)
+        }
     }
-    return ok(d)
 }
 ```
 
-`try` propagates the parse/check codes unchanged; the final implementation maps
-`3/6/7` from `check` to `1010/1012/1011` in both `param_decimal` and
-`Rows.decimal`, and `4/7/8/9` from `parse` to `1006/1007/1008/1009`. The sketch
-omits that mapping for readability; the mapping is normative.
+The final implementation applies these mappings explicitly; `try` is not used
+for `decimal::parse`/`decimal::check` in the adapter paths. The normative table
+is:
+
+| Source | Adapter code |
+|---|---:|
+| `parse` 4 | 1006 |
+| `parse` 7 | 1007 |
+| `parse` 8 | 1008 |
+| `parse` 9 | 1009 |
+| `parse` 10 | 3 allocation |
+| `parse` 1/6 (defensive) | 2 plumbing |
+| `check` 3 | 1010 |
+| `check` 7 | 1011 |
+| `check` 6 | 1012 |
+| `check` 10 | 3 allocation |
+| `check` 1/4 (defensive) | 2 plumbing |
 
 ### 6.2 SQLite additions
 
@@ -920,8 +972,18 @@ pub fn bind_decimal_unchecked(st: &Stmt, index: int, value: decimal): Result[boo
 
 pub fn bind_decimal(st: &Stmt, index: int, value: decimal,
                     p: int, s: int): Result[bool] {
-    let checked = try decimal::check(value, p, s)
-    return bind_decimal_unchecked(st, index, checked)
+    let r = decimal::check(value, p, s)
+    match r {
+        ok(v) { return bind_decimal_unchecked(st, index, v) }
+        err(m, c) {
+            if c == 10 { return err("decimal text could not be allocated", 3) }
+            if c == 1 || c == 4 { return err("invalid decimal value", 2) }
+            if c == 3 { return err("value does not fit the declared scale without rounding", 1010) }
+            if c == 7 { return err("value exceeds the declared precision", 1011) }
+            if c == 6 { return err("invalid numeric typmod or precision/scale metadata", 1012) }
+            return err(m, c)
+        }
+    }
 }
 
 pub fn (s: &Stmt) decimal(col: int): Result[decimal] {
@@ -934,12 +996,24 @@ pub fn (s: &Stmt) decimal(col: int): Result[decimal] {
     let b = v
     if len(b) == 0 { return err("invalid decimal text", 1006) }
     if has_nul(&b) { return err("invalid decimal text", 1006) }
-    return decimal::parse(string(b))
+    let d = decimal::parse(string(b))
+    match d {
+        ok(v) { return ok(v) }
+        err(m, c) {
+            if c == 10 { return err("decimal text could not be allocated", 3) }
+            if c == 1 || c == 6 { return err("invalid decimal value", 2) }
+            if c == 4 { return err("invalid decimal text", 1006) }
+            if c == 7 { return err("decimal text has more than 38 significant digits", 1007) }
+            if c == 8 { return err("decimal exponent is outside int16", 1008) }
+            if c == 9 { return err("decimal display scale is outside uint16", 1009) }
+            return err(m, c)
+        }
+    }
 }
 ```
 
-Again, parse codes are mapped to `1006-1009` and check `3/7/6` to
-`1010/1011/1012` by the final implementation. The sketch assumes the SQLite
+Again, parse codes are mapped explicitly by the table above; `try` is not used
+for `decimal::parse`/`decimal::check`. The sketch assumes the SQLite
 copy-failure fix: a buffer token `0`/`-1` from
 `column_value` is a `2` size/plumbing error, not an empty array. The current
 merged adapter must not let a failed copy reach the `len(b) == 0` branch.
@@ -1178,6 +1252,9 @@ independent `typeof`/`quote` oracle (existing pattern,
 - `DecimalText` bind size: 98,342 bytes accepted, 98,343 rejected with code
   `2`, empty rejected with `1006`; a 100,001-byte leading-zero string remains
   accepted on the read side (no bind cap);
+- mapping tests: a synthetic text allocation failure (text code 10) maps to
+  adapter `3` on read and bind; defensive parse `1/6` and check `1/4` map to
+  plumbing `2`, never propagate a text status into the adapter namespace;
 - cross-adapter: bind the same values to PG numeric and SQLite TEXT, read
   both, compare decimal `==` and canonical text; assert display scale
   separately where guaranteed;
