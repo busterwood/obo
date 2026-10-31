@@ -415,8 +415,9 @@ reports this exact diagnostic, identical in a full build and in `--check`:
 
 The full build knows the private field; `--check` knows the type has private
 slots. `methodCall` uses the special branch **only for foreign types** and only
-when the named field is private, or when no field/slot of that name exists and
-there is no exported method. A public field still reports
+when the named field is private, or when no field/slot of that name exists,
+there is no exported method, and the type has private fields/slots. A public
+field still reports
 `type '<q>' has a field '<f>', not a method; a field cannot be called`, and a
 same-module private field keeps the existing field-not-method behavior; neither
 case is widened by this change (section 8).
@@ -683,7 +684,7 @@ points, not a contract.
 | Record vs variant | `typeDecl` calls `fieldList(rec, true)` for records and `fieldList(v, false)` for variants; variant mode forces public and `pub` there is the exact error | `typeDecl`, 4981; variants 5048-5055 |
 | Field lookup | `fieldIndex` ignores private placeholder names (empty); a real private name is found in a full build and then rejected by visibility; add `hasPrivateFields` for the check-mode diagnostic | `fieldIndex`, 1519 |
 | Designator access | after `fieldIndex`, reject a foreign private field before `load`; this covers read/write/borrow/move paths; a missing name on a type with private slots uses the same diagnostic | `designatorT`, 7279-7287 |
-| Method collision | foreign types only: if the named field is private, use the section 9 special message; if no field/slot exists and there is no exported method, use it too; a public field or a same-module private field keeps the existing "field, not method" message, identical in full build and `--check` | `methodCall`, 7425 |
+| Method collision | foreign types only: if the named field is private, use the section 9 special message; if no field/slot exists, there is no exported method, and the type has private fields/slots, use it too; a public field or a same-module private field keeps the existing "field, not method" message, identical in full build and `--check` | `methodCall`, 7425 |
 | Construction | after resolving `T` and before `RT_ALLOC_RECORD`, refuse a foreign type with any private field; check the whole record, not the given fields | `newExpr`, 7450-7485 |
 | Export closure | `closureCheck` skips private fields; public fields and variants unchanged | `closureCheck`, 11013; `checkExports`, 11058 |
 | Interface carrier | `containsIfaceIn` consults `Field.privateIface` for reconstructed types; live source types still recurse through real types; each per-field query starts with `containsIface`/a truncate | `containsIface`/`containsIfaceIn`, 1399-1439 |
