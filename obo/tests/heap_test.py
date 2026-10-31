@@ -106,6 +106,12 @@ def rt_section():
     for value in ('65536', '65552', '1MiB', '4GiB', '4294967296',
                   '4294967312', '16GiB', '17179869184', '17179869168'):
         check_case(exe, f'limit {value}', 'limit', clean_env(value), args=(value,))
+    # The final start bit for a non-128-aligned limit: control (no last header)
+    # and bug case (last 32-byte header in the partial byte) at three sizes.
+    for value in ('524304', '524320', '1048592', '1048608',
+                  '2097168', '2097184'):
+        check_case(exe, f'last-granule fill {value}', 'fill', clean_env(value),
+                   args=(value,))
     check_case(exe, 'sparse 16GiB arena', 'sparse', clean_env('16GiB'))
 
     # Bad grammar and out-of-range values: exit 2, the value named, no clamp.

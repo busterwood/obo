@@ -244,8 +244,13 @@ void rt_init(u64 sbase, u64 gstart, u64 gend) {
     if ((i64)heap_start < 0) die("obx: cannot reserve heap\n");
     if (heap_start > ~0UL - heap_size) die("obx: cannot reserve heap\n");
     heap_top = heap_start; heap_end = heap_start + heap_size;
-    /* One start bit per 16-byte granule: 32 MiB at 4 GiB, 128 MiB at 16 GiB. */
-    starts = sys_mmap(heap_size / GRAN / 8);
+    /* One start bit per 16-byte granule: 32 MiB at 4 GiB, 128 MiB at 16 GiB.
+     * Round the bitmap up: a limit whose granule count is not a multiple of 8
+     * still sets a start bit in the final partial byte, and truncating that
+     * byte would place the last bit past the mapping. */
+    u64 granules = heap_size / GRAN;
+    u64 starts_bytes = (granules + 7) / 8;
+    starts = sys_mmap(starts_bytes);
     if ((i64)starts < 0) die("obx: cannot reserve heap metadata\n");
     /* The free/mark worklist scales with the arena but stays capped at 512 MiB
      * of virtual address space (2^26 words) and never below 128 KiB. */

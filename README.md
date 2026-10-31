@@ -66,8 +66,8 @@ the historical 0.8.1; floats are 0.10, and Stage B is 0.11.
 |---|---:|
 | Compiler source | 13,883 lines, 524,165 bytes |
 | Compiler (`--version`) | 585,729 bytes, sha256 `198f3268…`, `obo 0.11`, sym-format 6, abi 1 |
-| Seed (`--version`) | unchanged promoted 0.10: 569,345 bytes, sha256 `30124be9…`, `obo 0.10`, sym-format 6, abi 1; the historical 0.9 seed is 540,673 bytes, `3d369273…`, `obo 0.9`, sym-format 5 |
-| Self-host fixed point | stage 2 == stage 3 == compiler, 585,729 bytes, `198f3268…`; the 0.10 seed builds the same image from source |
+| Seed (`--version`) | promoted obo 0.11: 585,729 bytes, sha256 `198f3268…`, `obo 0.11`, sym-format 6, abi 1; the previous 0.10 seed (569,345 bytes, `30124be9…`, `obo 0.10`, sym-format 6, abi 1) built it once; the historical 0.9 seed is 540,673 bytes, `3d369273…`, `obo 0.9`, sym-format 5 |
+| Self-host fixed point | stage 2 == stage 3 == compiler, 585,729 bytes, `198f3268…`; the promoted 0.11 seed reproduces the same image from source |
 | Self-compile wall time | 0.15 s (three timed direct runs on this host; host-dependent) |
 | Self-compile live peak | 2,085,872 bytes direct; 2,086,272 bytes port comparison (budget 2,500,000) |
 | Total allocated | 46,373,536 bytes direct; 46,378,000 bytes port comparison |
@@ -176,7 +176,7 @@ jump-table slot, so every existing index, including the hosted exit slot 59, is
 unchanged and decimal's future appended slots do not collide. Compiler source,
 version, symbol format and ABI are unchanged; a compiler rebuilt with this
 runtime has the same 585,729-byte size but a different image sha256
-(`c1d73e3c…`, rather than the released `198f3268…`) because the runtime text is
+(`01fa9ed3…`, rather than the released `198f3268…`) because the runtime text is
 embedded in every executable.
 
 ## Roadmap

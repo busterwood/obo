@@ -105,6 +105,26 @@ static void case_reuse(void) {
     rt_finish();
 }
 
+/* Fill the arena to its last 32-byte slot. The last object's header is two
+ * granules before heap_top; for a limit whose granule count is not a multiple
+ * of 8, that header's start bit is in the final partial bitmap byte. The
+ * first object keeps kind 2 and frees cleanly, which would fail if the last
+ * set_start aliased it. */
+static void case_fill(const char *want) {
+    u64 n = 0;
+    CHECK(heap_parse_size(want, &n));
+    check_mapped(n);
+    u64 first = alloc_raw(2, 8);                  /* block of pointers: kind 2, 32 bytes */
+    while (heap_end - heap_top >= 2 * GRAN) alloc_raw(1, 16);
+    CHECK(heap_end - heap_top < 2 * GRAN);
+    CHECK(is_start(heap_top - 2 * GRAN));
+    CHECK(KIND(first - GRAN) == 2);
+    rt_free(first);
+    flush();
+    OBO_EXIT(0);
+    for (;;);
+}
+
 /* A 16 GiB arena is sparse: only touched pages become resident. Objects and
  * strings are placed just across the 4 GiB and 8 GiB offsets and in the last
  * granule, so checked handles must carry granule offsets beyond 32 bits' worth
@@ -229,6 +249,10 @@ void test_main(u64 *sp) {
         case_limit(argv[2]);
     }
     else if (c_eq(c, "reuse")) case_reuse();
+    else if (c_eq(c, "fill")) {
+        if (argc < 3) fail(2);
+        case_fill(argv[2]);
+    }
     else if (c_eq(c, "sparse")) case_sparse();
     else if (c_eq(c, "object_too_large")) case_object_too_large();
     else if (c_eq(c, "at_cap")) case_at_cap();
