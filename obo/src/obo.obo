@@ -110,11 +110,12 @@ const T_PERCENTEQ = 71          // '%=' is decimal (and int) compound assignment
 // OBO_VERSION is the compiler's identity in every .sym's `compiler` line and in --version.
 // Bump OBO_VERSION with each merged compiler feature; additive builtin/runtime
 // extensions use a patch release (0.8 -> 0.8.1); 0.9 is lambdas Stage A, 0.10 is
-// numeric floats, 0.11 is Stage B capture lists, 0.12 is the decimal integration
-// and 0.13 is private-by-default record fields. Bump SYM_FORMAT on any grammar or
+// numeric floats, 0.11 is Stage B capture lists, 0.12 is the decimal integration,
+// 0.13 is private-by-default record fields and 0.14 adds the decimal text API.
+// Bump SYM_FORMAT on any grammar or
 // meaning change; bump SYM_ABI on any layout/calling-convention/descriptor/effect
 // change.
-const OBO_VERSION = "0.13"
+const OBO_VERSION = "0.14"
 const SYM_FORMAT = 7
 const SYM_ABI = 1
 
@@ -2104,6 +2105,14 @@ const RT_DEC_TO_INT = 69
 const RT_DEC_FROM_INT = 70
 const RT_DEC_RESULT = 71
 const RT_DEC_INT_RESULT = 72
+// public decimal text surface (0.14): parse/format/canonical/check return
+// Result cells; exponent/dscale are total one-word accessors.
+const RT_DEC_PARSE = 73
+const RT_DEC_FORMAT = 74
+const RT_DEC_CANONICAL = 75
+const RT_DEC_CHECK = 76
+const RT_DEC_EXPONENT = 77
+const RT_DEC_DSCALE = 78
 
 const RAX = 0
 const RCX = 1
@@ -3318,6 +3327,9 @@ fn rtCall(slot: int, args: []?Item, ret: ^Type): Item
 fn rtCall2(slot: int, a: Item, b: Item, ret: ^Type): Item
 fn rtCall3(slot: int, a: Item, b: Item, c: Item, ret: ^Type): Item
 fn rtCall4(slot: int, a: Item, b: Item, c: Item, d: Item, ret: ^Type): Item
+fn rtCall1(slot: int, a: Item, ret: ^Type): Item
+fn resultCall3(slot: int, a: Item, payload: ^Type): Item
+fn resultCall4(slot: int, a: Item, b: Item, payload: ^Type): Item
 
 fn decimalTemp(): Item {
     let s = newLocal("", tDecimal, "var")
@@ -3467,6 +3479,61 @@ fn decimalRequest(scale: Item, mode: Item): Item {
     return decPtr(req)
 }
 
+// ------------------------------------------------------------ decimal text
+
+fn decimalParse(s: Item): Item {
+    if s.typ.kind != "string" { error("decimal::parse needs a string, not " + tname(s.typ)) }
+    return resultCall3(RT_DEC_PARSE, s, tDecimal)
+}
+
+fn decimalFormat(a: Item): Item {
+    if a.typ.kind != "decimal" { error("decimal::format needs a decimal value, not " + tname(a.typ)) }
+    return resultCall3(RT_DEC_FORMAT, decPtr(a), tString)
+}
+
+fn decimalCanonical(a: Item): Item {
+    if a.typ.kind != "decimal" { error("decimal::canonical needs a decimal value, not " + tname(a.typ)) }
+    return resultCall3(RT_DEC_CANONICAL, decPtr(a), tString)
+}
+
+fn decimalExponent(a: Item): Item {
+    if a.typ.kind != "decimal" { error("decimal::exponent needs a decimal value, not " + tname(a.typ)) }
+    return rtCall1(RT_DEC_EXPONENT, decPtr(a), tInt)
+}
+
+fn decimalDscale(a: Item): Item {
+    if a.typ.kind != "decimal" { error("decimal::dscale needs a decimal value, not " + tname(a.typ)) }
+    return rtCall1(RT_DEC_DSCALE, decPtr(a), tInt)
+}
+
+// The check request block: precision is word 0, scale word 1.  Metadata is data:
+// a constant out-of-range pair is not a compile error; the runtime returns 6.
+fn decimalCheckRequest(p: Item, s: Item): Item {
+    if !isInt(p.typ) { error("decimal::check precision must be an int") }
+    if !isInt(s.typ) { error("decimal::check scale must be an int") }
+    let pv = load(p)
+    let sv = load(s)
+    let at = newFrameBytes(16)
+    let pd = newItem("mem", tInt)
+    pd.base = RBP
+    pd.disp = at
+    store(pd, pv)
+    let sd = newItem("mem", tInt)
+    sd.base = RBP
+    sd.disp = at + 8
+    store(sd, sv)
+    let req = newItem("mem", tInt)
+    req.base = RBP
+    req.disp = at
+    return decPtr(req)
+}
+
+fn decimalCheck(a: Item, p: Item, s: Item): Item {
+    if a.typ.kind != "decimal" { error("decimal::check needs a decimal value, not " + tname(a.typ)) }
+    let req = decimalCheckRequest(p, s)
+    return resultCall4(RT_DEC_CHECK, decPtr(a), req, tDecimal)
+}
+
 fn decimalStatusSlot(status: Item): ^Sym {
     let s = newLocal("", tInt, "var")
     let d = localItem(s, tInt)
@@ -3580,7 +3647,47 @@ fn decimalBuiltin(member: string): Item {
         expect(T_RPAREN, "")
         return decimalToInt(a, mode)
     }
-    error("unknown decimal operation '" + member + "'; v1 has div, quantize, toInt and fromInt")
+    if member == "parse" {
+        expect(T_LPAREN, "")
+        let s = nestedExpr()
+        expect(T_RPAREN, "")
+        return decimalParse(s)
+    }
+    if member == "format" {
+        expect(T_LPAREN, "")
+        let a = nestedExpr()
+        expect(T_RPAREN, "")
+        return decimalFormat(a)
+    }
+    if member == "canonical" {
+        expect(T_LPAREN, "")
+        let a = nestedExpr()
+        expect(T_RPAREN, "")
+        return decimalCanonical(a)
+    }
+    if member == "check" {
+        expect(T_LPAREN, "")
+        let a = nestedExpr()
+        expect(T_COMMA, "")
+        let p = nestedExpr()
+        expect(T_COMMA, "")
+        let s = nestedExpr()
+        expect(T_RPAREN, "")
+        return decimalCheck(a, p, s)
+    }
+    if member == "exponent" {
+        expect(T_LPAREN, "")
+        let a = nestedExpr()
+        expect(T_RPAREN, "")
+        return decimalExponent(a)
+    }
+    if member == "dscale" {
+        expect(T_LPAREN, "")
+        let a = nestedExpr()
+        expect(T_RPAREN, "")
+        return decimalDscale(a)
+    }
+    error("unknown decimal operation '" + member + "'; v1 has parse, format, canonical, check, exponent, dscale, div, quantize, toInt and fromInt")
     return voidItem()
 }
 

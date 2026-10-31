@@ -1,0 +1,28 @@
+module main
+import "lib.obx"
+
+fn main() {
+    let p = lib::parseText("1.2300")
+    match p {
+        ok(v) {
+            println(lib::dscaleOf(v), " ", lib::exponentOf(v)) // expect: 4 -2
+            let f = lib::formatText(v)
+            match f { ok(s) { println(s) } err(m, c) { println("err ", c) } } // expect: 1.2300
+            let c = lib::canonicalText(v)
+            match c { ok(s) { println(s) } err(m, c) { println("err ", c) } } // expect: 1.23
+            let k = lib::checked(v, 10, 4)
+            match k { ok(w) { println("checked") } err(m, c) { println("err ", c) } } // expect: checked
+        }
+        err(m, c) { println("err ", c) }
+    }
+    let bad = lib::parseText(".5")
+    match bad {
+        ok(v) { println("unexpected") }
+        err(m, c) { println(c, " ", m) } // expect: 4 obo: invalid decimal text
+    }
+    let nf = lib::formatText(1e-20 * 1e-20)
+    match nf {
+        ok(s) { println("unexpected") }
+        err(m, c) { println(c, " ", m) } // expect: 3 obo: decimal display scale would drop nonzero digits
+    }
+}

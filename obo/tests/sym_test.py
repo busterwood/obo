@@ -26,7 +26,7 @@ RT = FORK
 GOLD = os.path.join(HERE, 'modules', 'golden')
 UPDATE = '--update' in sys.argv
 
-OBO_VERSION = '0.13'
+OBO_VERSION = '0.14'
 SYM_FORMAT = 7
 SYM_ABI = 1
 
@@ -442,7 +442,7 @@ def stale_missing_corrupt_versions():
         cases = [
             (b'obosym 7', b'obosym 8', 'has format 8; this compiler reads 7'),
             (b'\nabi 1\n', b'\nabi 9\n', 'has ABI 9; this compiler uses 1'),
-            (b'compiler "0.13"', b'compiler "9.9"', "was built by compiler '9.9'; this is '0.13'"),
+            (b'compiler "0.14"', b'compiler "9.9"', "was built by compiler '9.9'; this is '0.14'"),
         ]
         for old, new, msg in cases:
             data = base
@@ -717,7 +717,7 @@ def handwritten_interface():
     uid = fnv(b'many::T')
     sym = f'''obosym 7
 abi 1
-compiler "0.13"
+compiler "0.14"
 source 0x{0:016x}
 interface 0x0
 module many
@@ -1105,7 +1105,7 @@ def b6_stub_completion():
     try:
         ok(build(d, s), 'x build')
         m = os.path.join(s, 'm.sym')
-        open(m, 'w').write('obosym 7\nabi 1\ncompiler "0.13"\nsource 0x%016x\ninterface 0x0\nmodule m\nfn f() frees 1 x::g\n' % 0)
+        open(m, 'w').write('obosym 7\nabi 1\ncompiler "0.14"\nsource 0x%016x\ninterface 0x0\nmodule m\nfn f() frees 1 x::g\n' % 0)
         rehash(m, lambda b: b)
         for name, imports in (('order1', 'import "m.obx"\nimport "x.obx"'),
                               ('order2', 'import "x.obx"\nimport "m.obx"')):
@@ -1740,7 +1740,7 @@ def fn_sym_roundtrip():
         ok(build(d, symdir, out=os.path.join(d, 'prog')), 'function-type module build')
         libpath = os.path.join(symdir, 'lib.sym')
         lib = sym_text(libpath).decode()
-        for line in ('obosym 7\n', 'abi 1\n', 'compiler "0.13"\n',
+        for line in ('obosym 7\n', 'abi 1\n', 'compiler "0.14"\n',
                      'type Cmp = fn(&Item, &Item): int\n',
                      'fn apply(p0: fn(int): int, p1: int): int\n',
                      'fn useCmp(p0: fn(&Item, &Item): int): int\n',
@@ -1955,7 +1955,7 @@ def forged_fn_positions():
         if q.returncode != 2 or want not in q.stderr:
             raise Fail(f"forward shell through a bare alias: exit {q.returncode}: {q.stderr.strip()}")
         # an incomplete forward shell as a function-type parameter
-        manual = ('obosym 7\nabi 1\ncompiler "0.13"\nsource 0x0000000000000001\n'
+        manual = ('obosym 7\nabi 1\ncompiler "0.14"\nsource 0x0000000000000001\n'
                   'interface 0x0\nmodule lib\ntype Later uid 0x%016x\n'
                   'fn apply(p0: fn(Later): int): int\n' % fnv(b'lib::Later'))
         open(libpath, 'w').write(manual)
@@ -2199,7 +2199,7 @@ fn main() {
         ok(build(d, s, out=os.path.join(d, 'p')), 'build')
         lib = os.path.join(s, 'lib.sym')
         text = sym_text(lib)
-        if b'obosym 7\n' not in text or b'compiler "0.13"' not in text:
+        if b'obosym 7\n' not in text or b'compiler "0.14"' not in text:
             raise Fail(f"format/compiler header is wrong: {text[:80]!r}")
         if b'type Mixed = ref record { pub a: int; priv; pub c: string; priv }' not in text:
             raise Fail(f"mixed field list is not canonical: {text!r}")

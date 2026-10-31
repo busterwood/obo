@@ -1,0 +1,28 @@
+// Public decimal text APIs reject wrong argument types at compile time.
+
+// === parse needs a string
+fn main() { let r = decimal::parse(1) }  // error: decimal::parse needs a string, not int
+
+// === format needs a decimal
+fn main() { let r = decimal::format(1) }  // error: decimal::format needs a decimal value, not int
+
+// === canonical needs a decimal
+fn main() { let r = decimal::canonical("x") }  // error: decimal::canonical needs a decimal value, not string
+
+// === check needs a decimal
+fn main() { let r = decimal::check(1, 1, 0) }  // error: decimal::check needs a decimal value, not int
+
+// === check precision needs int
+fn main() { let r = decimal::check(1.0, "p", 0) }  // error: decimal::check precision must be an int
+
+// === check scale needs int
+fn main() { let r = decimal::check(1.0, 1, "s") }  // error: decimal::check scale must be an int
+
+// === exponent needs a decimal
+fn main() { let r = decimal::exponent(1) }  // error: decimal::exponent needs a decimal value, not int
+
+// === dscale needs a decimal
+fn main() { let r = decimal::dscale("x") }  // error: decimal::dscale needs a decimal value, not string
+
+// === string(decimal) is still not a conversion
+fn main() { let s = string(1.0) }  // error: string(decimal) is not in v1; use print/println (display scale preserved)

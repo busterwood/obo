@@ -286,10 +286,238 @@ FORMAT_ONLY = [
     (0, 10 ** 38 - 1, 32767, 65535),  # maximum bounded display (size only)
 ]
 
+
+# ---------------------------------------------------------------------------
+# Public text API model (the strict language surface)
+#
+# The private oracle above deliberately accepts a leading point and a trailing
+# point for the experimental dec24_text protocol.  The public language grammar
+# requires an integer digit and at least one digit after a point.  This model
+# is kept separate so the private functions and fixtures stay byte-identical.
+
+_PUBLIC_GRAMMAR = re.compile(
+    r"([+-]?)([0-9]+)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?\Z"
+)
+
+
+def _public_invalid() -> dict:
+    return {"status": INVALID, "sign": 0, "coeff": 0, "exp": 0, "dscale": 0}
+
+
+def parse_public_text(text: str) -> dict:
+    """The strict public grammar: optional sign, mandatory integer digits,
+    optional '.digits' with at least one digit, optional exponent digits.
+    Semantic statuses and normalisation are the approved core's."""
+    if not isinstance(text, str) or text == "":
+        return _public_invalid()
+    if any(ord(ch) == 0 or ord(ch) > 127 for ch in text):
+        return _public_invalid()
+    m = _PUBLIC_GRAMMAR.fullmatch(text)
+    if m is None:
+        return _public_invalid()
+    sign = 1 if m.group(1) == "-" else 0
+    ipart = m.group(2)
+    fpart = m.group(3) if m.group(3) is not None else ""
+    raw_exp = m.group(4)
+    explicit = 0
+    if raw_exp is not None:
+        eneg = raw_exp.startswith("-")
+        digits_exp = raw_exp[1:] if raw_exp[:1] in "+-" else raw_exp
+        mag = 0
+        cap = 10 ** 15
+        for ch in digits_exp:
+            d = ord(ch) - 48
+            mag = cap if mag > (cap - d) // 10 else mag * 10 + d
+        explicit = -mag if eneg else mag
+
+    digits = ipart + fpart
+    dscale = max(0, len(fpart) - explicit)
+    nonleading = digits.lstrip("0")
+    if nonleading == "":
+        if dscale > MAX_DSCALE:
+            return _public_invalid() | {"status": DISPLAY_RANGE}
+        return {"status": OK, "sign": 0, "coeff": 0, "exp": 0,
+                "dscale": dscale}
+
+    core = nonleading.rstrip("0")
+    if len(core) > 38:
+        return _public_invalid() | {"status": PRECISION_OVERFLOW}
+    if dscale > MAX_DSCALE:
+        return _public_invalid() | {"status": DISPLAY_RANGE}
+    coeff = int(core)
+    trailing = len(nonleading) - len(core)
+    exp = explicit - len(fpart) + trailing
+    if exp > 32767:
+        shift = exp - 32767
+        if len(core) + shift <= 38:
+            coeff *= 10 ** shift
+            exp = 32767
+    if exp < -32768 or exp > 32767:
+        return _public_invalid() | {"status": EXPONENT_RANGE}
+    return {"status": OK, "sign": sign, "coeff": coeff, "exp": exp,
+            "dscale": dscale}
+
+
+def _public_row(text: str) -> dict:
+    r = parse_public_text(text)
+    row = {"text": text, **r, "canonical": "", "display": ""}
+    if r["status"] == OK:
+        row["canonical"] = canonical_text(
+            r["sign"], r["coeff"], r["exp"], r["dscale"])
+        st, disp = display_text(r["sign"], r["coeff"], r["exp"], r["dscale"])
+        if st == OK:
+            row["display"] = disp
+        else:
+            row["display_status"] = st
+    return row
+
+
+def build_public_text_cases() -> dict:
+    """Public valid/invalid/boundary vectors from the design (section 8.2)."""
+    texts = [
+        # valid
+        "0", "0.00", "-0", "+0", "-0.00", "1", "+1", "-1",
+        "0001.2300", "+1.2300", "-1.2300", "1.2300", "0.001",
+        "1e3", "1E+3", "1e+003", "1e0003", "1e-0003",
+        "1.2300e3", "1.2300e-2", "1e32767", "1e32768", "1e32804",
+        "1e-32768", "1e-16383", "1e-16384", "1.0e-16383",
+        "1000e-16384", "0e999999", "0e-32769", "0e-65535",
+        "-0e-32769", "9" * 38, "0." + "0" * 65535,
+        "0" * 100000 + "1",
+        # invalid syntax
+        "", "+", "-", ".", ".5", "1.", "1..2", "1e", "1e+", "1e-",
+        "1e3.", "1e3e4", "++1", "--1", "+-1", " 1", "1 ", "1\t2",
+        "1_000", "0x10", "NaN", "Inf", "Infinity", "-Infinity",
+        "1\x00", "\x00", "1\u00e9", "\uff11\uff12\uff13", "1\u00a0",
+        # semantic
+        "9" * 39, "1e32805", "1e-32769", "1e-65535", "1e-65536",
+        "1e-70000", "1.0e-70000", "0e-70000", "0e-65536",
+        "1e40000", "0e70000",
+    ]
+    # Precedence witnesses: syntax beats precision, display range beats
+    # exponent, and an unrepresentable upper rescue beats display range.
+    texts += ["1" * 39 + ".", "1e-70000", "1e40000"]
+    cases = [_public_row(t) for t in texts]
+    return {
+        "format": "obo-decimal-text-public-oracle-v1",
+        "cases": cases,
+        "counts": {
+            "parse": len(cases),
+            "ok": sum(1 for c in cases if c["status"] == OK),
+            "invalid": sum(1 for c in cases if c["status"] == INVALID),
+            "precision_overflow": sum(
+                1 for c in cases if c["status"] == PRECISION_OVERFLOW),
+            "exponent_range": sum(
+                1 for c in cases if c["status"] == EXPONENT_RANGE),
+            "display_range": sum(
+                1 for c in cases if c["status"] == DISPLAY_RANGE),
+        },
+    }
+
+
+def check_public(value: dict, p: int, s: int) -> int:
+    """The exact-fit metadata predicate.  `value` is a parse_public_text row
+    (or an explicit value dict with sign/coeff/exp/dscale)."""
+    if value.get("status", OK) != OK:
+        return INVALID
+    if p < 1 or p > 1000 or s < -1000 or s > 1000:
+        return UNSUPPORTED_RANGE
+    coeff = value["coeff"]
+    if coeff == 0:
+        return OK
+    digits = str(coeff)
+    n = len(digits)
+    t = len(digits) - len(digits.rstrip("0"))
+    k = value["exp"] + s
+    if k < 0 and t < -k:
+        return INEXACT
+    if n + k > p:
+        return PRECISION_OVERFLOW
+    return OK
+
+
+def _check_case(value: dict, p: int, s: int, text: str = "") -> dict:
+    return {"value": value, "text": text, "p": p, "s": s,
+            "status": check_public(value, p, s)}
+
+
+def build_public_check_cases() -> dict:
+    """Section 5.3 plus the section 8.4 boundary vectors, including
+    unnormalised coefficients that arithmetic can store."""
+    table = [
+        ("1.2345", 10, 4), ("1.23456", 10, 4),
+        ("123456.7890", 10, 4), ("1234567.890", 10, 4),
+        ("9" * 38, 38, 0), ("9" * 38, 37, 0),
+        ("0", 1, 0), ("0.001", 1, 3), ("0.01", 1, 3),
+        ("99000", 2, -3), ("15000", 2, -3), ("1500", 2, -3),
+        ("99999", 2, -3), ("1.5e999", 1000, -1000),
+        ("-1.2300", 10, 4), ("1.2300", 10, 2), ("1.2300", 10, 1),
+        ("1000", 2, -3), ("1000", 1, -3),
+        ("0", 0, 0), ("0", 1001, 0), ("0", 1, 1001),
+        ("1e999", 1000, 0), ("1e1000", 1000, 0),
+        ("1e1000", 1, -1000), ("1e1001", 1, -1000),
+        ("1e38", 38, 0), ("1.23456", 0, 4),
+        ("9" * 38 + "0", 39, 0), ("9" * 38 + "0", 38, 0),
+        ("1.0", 1, -1001),
+    ]
+    cases = []
+    for text, p, s in table:
+        v = parse_public_text(text)
+        cases.append(_check_case(v, p, s, text))
+    # Unnormalised fixtures: coefficient 1800 * 10^-3 is the value 1.8 with
+    # two coefficient trailing zeros; 1800 * 10^-2 is 18.
+    v1800m3 = {"status": OK, "sign": 0, "coeff": 1800, "exp": -3, "dscale": 4}
+    v1800m2 = {"status": OK, "sign": 0, "coeff": 1800, "exp": -2, "dscale": 4}
+    cases += [
+        _check_case(v1800m3, 2, 1, "1800*10^-3"),
+        _check_case(v1800m3, 2, 0, "1800*10^-3"),
+        _check_case(v1800m2, 2, 0, "1800*10^-2"),
+        _check_case(v1800m2, 1, -3, "1800*10^-2"),
+    ]
+    return {
+        "format": "obo-decimal-text-public-check-oracle-v1",
+        "cases": cases,
+        "counts": {
+            "check": len(cases),
+            "ok": sum(1 for c in cases if c["status"] == OK),
+            "inexact": sum(1 for c in cases if c["status"] == INEXACT),
+            "precision": sum(
+                1 for c in cases if c["status"] == PRECISION_OVERFLOW),
+            "metadata": sum(
+                1 for c in cases if c["status"] == UNSUPPORTED_RANGE),
+        },
+    }
+
+
+# PostgreSQL typmod vectors from decimal-db-boundary-design.md:205-219.  P0
+# does not decode typmods, but the boundary suite records them for P1/P2.
+TYPMOD_VECTORS = {
+    "numeric(1,0)": 65540,
+    "numeric(10,2)": 655366,
+    "numeric(10,4)": 655368,
+    "numeric(10,-2)": 657410,
+    "numeric(2,-3)": 133121,
+    "numeric(3,5)": 196617,
+    "numeric(38,0)": 2490372,
+    "numeric(1000,0)": 65536004,
+    "numeric(1000,1000)": 65537004,
+    "numeric(1000,-1000)": 65537052,
+    "unconstrained": -1,
+}
+
+
+def typmod(p: int, s: int) -> int:
+    """The PostgreSQL numeric typmod packing used by the vectors above."""
+    return ((p << 16) | (s & 0x7ff)) + 4
+
+
 __all__ = [
     "OK", "OVERFLOW", "UNSUPPORTED_EXACT", "INEXACT", "INVALID", "DIV_ZERO",
     "UNSUPPORTED_RANGE", "PRECISION_OVERFLOW", "EXPONENT_RANGE",
     "DISPLAY_RANGE", "BUFFER_SMALL", "STATUS", "MAX_COEFF", "MAX_DSCALE",
     "MAX_OUTPUT", "parse_text", "canonical_text", "display_text",
     "build_text_cases", "FORMAT_ONLY",
+    "parse_public_text", "build_public_text_cases", "check_public",
+    "build_public_check_cases", "TYPMOD_VECTORS", "typmod",
 ]
+

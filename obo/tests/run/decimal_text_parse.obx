@@ -1,0 +1,116 @@
+// Public strict parse: syntax, display scale, semantic precedence and limits.
+
+fn zeros(n: int): string {
+    var z = "0"
+    while len(z) < n { z = z + z }
+    return substr(z, 0, n)
+}
+
+fn parseIs(text: string, dscale: int, exp: int) {
+    let r = decimal::parse(text)
+    match r {
+        ok(v) {
+            if decimal::dscale(v) == dscale && decimal::exponent(v) == exp {
+                println("ok")
+            } else {
+                println("bad dscale/exp ", decimal::dscale(v), " ", decimal::exponent(v))
+            }
+        }
+        err(m, c) { println("err ", c, " ", m) }
+    }
+}
+
+fn parseErr(text: string, code: int, msg: string) {
+    let r = decimal::parse(text)
+    match r {
+        ok(v) { println("unexpected ok") }
+        err(m, c) {
+            if c == code && m == msg { println("ok") } else { println("err ", c, " ", m) }
+        }
+    }
+}
+
+fn main() {
+    parseIs("0", 0, 0)                          // expect: ok
+    parseIs("0.00", 2, 0)                       // expect: ok
+    parseIs("-0", 0, 0)                         // expect: ok
+    parseIs("+0", 0, 0)                         // expect: ok
+    parseIs("-0.00", 2, 0)                      // expect: ok
+    parseIs("1", 0, 0)                          // expect: ok
+    parseIs("+1", 0, 0)                         // expect: ok
+    parseIs("-1", 0, 0)                         // expect: ok
+    parseIs("0001.2300", 4, -2)                 // expect: ok
+    parseIs("+1.2300", 4, -2)                   // expect: ok
+    parseIs("-1.2300", 4, -2)                   // expect: ok
+    parseIs("1.2300", 4, -2)                    // expect: ok
+    parseIs("0.001", 3, -3)                     // expect: ok
+    parseIs("1e3", 0, 3)                        // expect: ok
+    parseIs("1E+3", 0, 3)                       // expect: ok
+    parseIs("1e+003", 0, 3)                     // expect: ok
+    parseIs("1e0003", 0, 3)                     // expect: ok
+    parseIs("1e-0003", 3, -3)                   // expect: ok
+    parseIs("1.2300e3", 1, 1)                   // expect: ok
+    parseIs("1.2300e-2", 6, -4)                 // expect: ok
+    parseIs("1e32767", 0, 32767)                // expect: ok
+    parseIs("1e32768", 0, 32768)                // expect: ok
+    parseIs("1e32804", 0, 32804)                // expect: ok
+    parseIs("1e-32768", 32768, -32768)          // expect: ok
+    parseIs("1e-16383", 16383, -16383)          // expect: ok
+    parseIs("1e-16384", 16384, -16384)          // expect: ok
+    parseIs("1.0e-16383", 16384, -16383)        // expect: ok
+    parseIs("1000e-16384", 16384, -16381)       // expect: ok
+    parseIs("0e999999", 0, 0)                   // expect: ok
+    parseIs("0e-32769", 32769, 0)               // expect: ok
+    parseIs("0e-65535", 65535, 0)               // expect: ok
+    parseIs("-0e-32769", 32769, 0)              // expect: ok
+    parseIs("99999999999999999999999999999999999999", 0, 0) // expect: ok
+
+    let zeroScale = "0." + zeros(65535)
+    parseIs(zeroScale, 65535, 0)                // expect: ok
+    let longCell = zeros(100000) + "1"
+    parseIs(longCell, 0, 0)                     // expect: ok
+
+    parseErr("", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("+", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("-", 4, "obo: invalid decimal text") // expect: ok
+    parseErr(".", 4, "obo: invalid decimal text") // expect: ok
+    parseErr(".5", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("1.", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("1..2", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("1e", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("1e+", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("1e-", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("1e3.", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("1e3e4", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("++1", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("--1", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("+-1", 4, "obo: invalid decimal text") // expect: ok
+    parseErr(" 1", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("1 ", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("1\t2", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("1_000", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("0x10", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("NaN", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("Inf", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("Infinity", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("-Infinity", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("1\0", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("\0", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("1é", 4, "obo: invalid decimal text") // expect: ok
+    parseErr("１２３", 4, "obo: invalid decimal text") // expect: ok
+
+    parseErr("999999999999999999999999999999999999999", 7, "obo: decimal text has more than 38 significant digits") // expect: ok
+    parseErr("1e32805", 8, "obo: decimal exponent is outside int16") // expect: ok
+    parseErr("1e-32769", 8, "obo: decimal exponent is outside int16") // expect: ok
+    parseErr("1e-65535", 8, "obo: decimal exponent is outside int16") // expect: ok
+    parseErr("1e-65536", 9, "obo: decimal display scale is outside uint16") // expect: ok
+    parseErr("1e-70000", 9, "obo: decimal display scale is outside uint16") // expect: ok
+    parseErr("1.0e-70000", 9, "obo: decimal display scale is outside uint16") // expect: ok
+    parseErr("0e-70000", 9, "obo: decimal display scale is outside uint16") // expect: ok
+    parseErr("0e-65536", 9, "obo: decimal display scale is outside uint16") // expect: ok
+    parseErr("1e40000", 8, "obo: decimal exponent is outside int16") // expect: ok
+
+    // Syntax wins over precision even when the text also has no fraction digit.
+    let many = "1" + zeros(38)
+    parseErr(many + ".", 4, "obo: invalid decimal text") // expect: ok
+}

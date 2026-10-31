@@ -1,0 +1,103 @@
+// Public check: exact-fit metadata, negative scale, boundaries and dscale
+// invariance.
+
+fn checkIs(d: decimal, p: int, s: int) {
+    let r = decimal::check(d, p, s)
+    match r {
+        ok(v) {
+            if v == d && decimal::dscale(v) == decimal::dscale(d) {
+                println("ok")
+            } else {
+                println("changed value")
+            }
+        }
+        err(m, c) { println("err ", c, " ", m) }
+    }
+}
+
+fn checkErr(d: decimal, p: int, s: int, code: int, msg: string) {
+    let r = decimal::check(d, p, s)
+    match r {
+        ok(v) { println("unexpected ok") }
+        err(m, c) {
+            if c == code && m == msg { println("ok") } else { println("err ", c, " ", m) }
+        }
+    }
+}
+
+fn checkText(text: string, p: int, s: int) {
+    let pr = decimal::parse(text)
+    match pr {
+        ok(d) { checkIs(d, p, s) }
+        err(m, c) { println("parse err ", c, " ", m) }
+    }
+}
+
+fn checkTextErr(text: string, p: int, s: int, code: int, msg: string) {
+    let pr = decimal::parse(text)
+    match pr {
+        ok(d) { checkErr(d, p, s, code, msg) }
+        err(m, c) { println("parse err ", c, " ", m) }
+    }
+}
+
+fn main() {
+    checkIs(1.2345, 10, 4)                      // expect: ok
+    checkErr(1.23456, 10, 4, 3, "obo: value does not fit the declared scale without rounding") // expect: ok
+    checkIs(123456.7890, 10, 4)                 // expect: ok
+    checkErr(1234567.890, 10, 4, 7, "obo: value exceeds the declared precision") // expect: ok
+
+    let nines = "99999999999999999999999999999999999999"
+    checkText(nines, 38, 0)                     // expect: ok
+    checkTextErr(nines, 37, 0, 7, "obo: value exceeds the declared precision") // expect: ok
+    checkIs(0.0, 1, 0)                          // expect: ok
+    checkIs(0.001, 1, 3)                        // expect: ok
+    checkErr(0.01, 1, 3, 7, "obo: value exceeds the declared precision") // expect: ok
+    checkIs(99000.0, 2, -3)                     // expect: ok
+    checkIs(15000.0, 2, -3)                     // expect: ok
+    checkErr(1500.0, 2, -3, 3, "obo: value does not fit the declared scale without rounding") // expect: ok
+    checkErr(99999.0, 2, -3, 3, "obo: value does not fit the declared scale without rounding") // expect: ok
+    checkErr(1.5e999, 1000, -1000, 3, "obo: value does not fit the declared scale without rounding") // expect: ok
+    checkIs(-1.2300, 10, 4)                     // expect: ok
+    checkIs(1.2300, 10, 2)                      // expect: ok
+    checkErr(1.2300, 10, 1, 3, "obo: value does not fit the declared scale without rounding") // expect: ok
+    checkIs(1000.0, 2, -3)                      // expect: ok
+    checkIs(1000.0, 1, -3)                      // expect: ok
+
+    // Metadata range is runtime data, not a compile error; metadata wins over
+    // inexactness.
+    checkErr(0.0, 0, 0, 6, "obo: decimal precision/scale is outside the supported range") // expect: ok
+    checkErr(1.0, 1001, 0, 6, "obo: decimal precision/scale is outside the supported range") // expect: ok
+    var p0 = 0
+    var p1001 = 1001
+    var s1001 = 1001
+    var sm1001 = -1001
+    checkErr(0.0, p0, 0, 6, "obo: decimal precision/scale is outside the supported range") // expect: ok
+    checkErr(0.0, p1001, 0, 6, "obo: decimal precision/scale is outside the supported range") // expect: ok
+    checkErr(0.0, 1, s1001, 6, "obo: decimal precision/scale is outside the supported range") // expect: ok
+    checkErr(1.23456, p0, 4, 6, "obo: decimal precision/scale is outside the supported range") // expect: ok
+    checkErr(1.0, 1, sm1001, 6, "obo: decimal precision/scale is outside the supported range") // expect: ok
+
+    // Boundaries from the design.
+    checkIs(1e999, 1000, 0)                     // expect: ok
+    checkErr(1e1000, 1000, 0, 7, "obo: value exceeds the declared precision") // expect: ok
+    checkIs(1e1000, 1, -1000)                   // expect: ok
+    checkErr(1e1001, 1, -1000, 7, "obo: value exceeds the declared precision") // expect: ok
+    checkErr(1e38, 38, 0, 7, "obo: value exceeds the declared precision") // expect: ok
+    let nines39 = nines + "0"
+    checkText(nines39, 39, 0)                   // expect: ok
+    checkTextErr(nines39, 38, 0, 7, "obo: value exceeds the declared precision") // expect: ok
+
+    // Arithmetic keeps the value exact even when the stored coefficient is
+    // less normalised; the predicate is invariant under trailing zeros.
+    checkIs(1.200 * 1.5, 2, 1)                  // expect: ok
+    checkErr(1.200 * 1.5, 2, 0, 3, "obo: value does not fit the declared scale without rounding") // expect: ok
+    checkIs(1.800 * 10.0, 2, 0)                 // expect: ok
+
+    // A successful check is a 24-byte copy and does not change dscale.
+    let d = decimal::parse("12.3400")
+    match d {
+        ok(v) { checkIs(v, 4, 2) }              // expect: ok
+        err(m, c) { println("err ", c, " ", m) }
+    }
+}

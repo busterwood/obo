@@ -99,6 +99,14 @@ _entry:
     slot rt_dec_from_int
     slot rt_dec_result
     slot rt_dec_int_result
+    /* public decimal text surface (0.14): slots 73..78 append after the
+     * decimal block that ends at 72. */
+    slot rt_dec_parse_text
+    slot rt_dec_format_text
+    slot rt_dec_canonical_text
+    slot rt_dec_check
+    slot rt_dec_exponent
+    slot rt_dec_dscale
 
     .text
     .macro check f
@@ -187,5 +195,11 @@ check_\f:
     check rt_dec_from_int
     check rt_dec_result
     check rt_dec_int_result
+    check rt_dec_parse_text
+    check rt_dec_format_text
+    check rt_dec_canonical_text
+    check rt_dec_check
+    check rt_dec_exponent
+    check rt_dec_dscale
 
     .section .note.GNU-stack,"",@progbits

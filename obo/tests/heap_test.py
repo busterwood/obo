@@ -74,6 +74,16 @@ def build_harness():
     return exe
 
 
+def build_text_harness():
+    obj = os.path.join(TMP, 'rt_dec_text_test.o')
+    exe = os.path.join(TMP, 'rt_dec_text_test')
+    subprocess.run(['gcc', *CFLAGS, '-c', os.path.join(HERE, 'rt_dec_text_test.c'), '-o', obj],
+                   check=True, capture_output=True)
+    subprocess.run(['ld', '-T', os.path.join(FORK, 'runtime', 'rt.ld'), '-o', exe, obj],
+                   check=True, capture_output=True)
+    return exe
+
+
 def limit_as(n):
     def set_limit():
         resource.setrlimit(resource.RLIMIT_AS, (n, n))
@@ -167,6 +177,31 @@ def rt_section():
                address_space=32 << 20, args=('64KiB',))
 
 
+def text_section():
+    exe = build_text_harness()
+    check_case(exe, 'public max display text 98,342', 'max_output',
+               clean_env('4MiB'))
+    check_case(exe, 'alloc_raw_try over-cap and arena failure', 'try_bad',
+               clean_env('64KiB'))
+    check_case(exe, 'alloc_raw_try free-list reuse', 'try_reuse',
+               clean_env('64KiB'))
+    check_case(exe, 'alloc_raw object-too-large diagnostic', 'alloc_too_large',
+               clean_env('64KiB'), want=2, stderr_exact='obx: object too large\n')
+    check_case(exe, 'alloc_raw out-of-memory diagnostic', 'alloc_oom',
+               clean_env('64KiB'), want=2, stderr_exact='obx: out of memory\n')
+    for case in ('parse10', 'format10', 'canonical10', 'check10'):
+        check_case(exe, f'{case}: 32-byte err block fits, payload fails',
+                   case, clean_env('64KiB'))
+    check_case(exe, 'format INEXACT at e+s+t == -1', 'format_truncate',
+               clean_env('64KiB'))
+    for case in ('bad_exp_sign', 'bad_exp_coeff', 'bad_exp_flags',
+                 'bad_exp_pad', 'bad_dscale_sign', 'bad_dscale_coeff'):
+        check_case(exe, f'malformed accessor {case}', case, clean_env('64KiB'),
+                   want=10, stderr_exact='obo: decimal invalid value\n')
+    for case in ('bad_format', 'bad_canonical', 'bad_check'):
+        check_case(exe, f'malformed value {case}', case, clean_env('64KiB'))
+
+
 def program_section():
     src = os.path.join(TMP, 'hello.obx')
     with open(src, 'w') as f:
@@ -218,6 +253,7 @@ def program_section():
 
 def main():
     rt_section()
+    text_section()
     program_section()
     if failures:
         print(f'\n{len(failures)} heap test(s) failed')

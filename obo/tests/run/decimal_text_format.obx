@@ -1,0 +1,157 @@
+// Public format/canonical exact bytes, thresholds, INEXACT and round-trips.
+
+fn zeros(n: int): string {
+    var z = "0"
+    while len(z) < n { z = z + z }
+    return substr(z, 0, n)
+}
+
+fn formatIs(d: decimal, want: string) {
+    let r = decimal::format(d)
+    match r {
+        ok(s) {
+            if s == want && len(s) == len(want) { println("ok") } else { println("format differs len ", len(s), " want ", len(want)) }
+        }
+        err(m, c) { println("err ", c, " ", m) }
+    }
+}
+
+fn canonicalIs(d: decimal, want: string) {
+    let r = decimal::canonical(d)
+    match r {
+        ok(s) {
+            if s == want && len(s) == len(want) { println("ok") } else { println("canonical differs len ", len(s), " want ", len(want)) }
+        }
+        err(m, c) { println("err ", c, " ", m) }
+    }
+}
+
+fn formatErr(d: decimal, code: int, msg: string) {
+    let r = decimal::format(d)
+    match r {
+        ok(s) { println("unexpected ok ", len(s)) }
+        err(m, c) {
+            if c == code && m == msg { println("ok") } else { println("err ", c, " ", m) }
+        }
+    }
+}
+
+fn canonicalErr(d: decimal, code: int, msg: string) {
+    let r = decimal::canonical(d)
+    match r {
+        ok(s) { println("unexpected ok ", len(s)) }
+        err(m, c) {
+            if c == code && m == msg { println("ok") } else { println("err ", c, " ", m) }
+        }
+    }
+}
+
+fn formatRoundTrip(d: decimal) {
+    let r = decimal::format(d)
+    match r {
+        ok(s) {
+            let p = decimal::parse(s)
+            match p {
+                ok(v) {
+                    if v == d && decimal::dscale(v) == decimal::dscale(d) {
+                        println("ok")
+                    } else {
+                        println("roundtrip differs")
+                    }
+                }
+                err(m, c) { println("parse err ", c, " ", m) }
+            }
+        }
+        err(m, c) { println("format err ", c, " ", m) }
+    }
+}
+
+fn canonicalRoundTrip(d: decimal) {
+    let r = decimal::canonical(d)
+    match r {
+        ok(s) {
+            let p = decimal::parse(s)
+            match p {
+                ok(v) { if v == d { println("ok") } else { println("value differs") } }
+                err(m, c) { println("parse err ", c, " ", m) }
+            }
+        }
+        err(m, c) { println("canonical err ", c, " ", m) }
+    }
+}
+
+fn main() {
+    formatIs(1.2300, "1.2300")                  // expect: ok
+    canonicalIs(1.2300, "1.23")                 // expect: ok
+    formatIs(0.001, "0.001")                    // expect: ok
+    canonicalIs(0.001, "0.001")                 // expect: ok
+    formatIs(1e3, "1000")                       // expect: ok
+    canonicalIs(1e3, "1000")                    // expect: ok
+    formatIs(1.2300e3, "1230.0")                // expect: ok
+    canonicalIs(1.2300e3, "1230")               // expect: ok
+    formatIs(0.00, "0.00")                      // expect: ok
+    canonicalIs(0.00, "0")                      // expect: ok
+    formatIs(-0.00, "0.00")                     // expect: ok
+    canonicalIs(-0.00, "0")                     // expect: ok
+    formatIs(99999999999999999999999999999999999999.0, "99999999999999999999999999999999999999.0") // expect: ok
+    canonicalIs(99999999999999999999999999999999999999.0, "99999999999999999999999999999999999999") // expect: ok
+
+    formatIs(1e-40, "0." + zeros(39) + "1")     // expect: ok
+    canonicalIs(1e-40, "0." + zeros(39) + "1")  // expect: ok
+    formatIs(1e-126, "0." + zeros(125) + "1")   // expect: ok
+    canonicalIs(1e-126, "0." + zeros(125) + "1") // expect: ok
+    formatIs(1e-127, "0." + zeros(126) + "1")   // expect: ok
+    canonicalIs(1e-127, "1e-127")               // expect: ok
+    formatIs(1e127, "1" + zeros(127))           // expect: ok
+    canonicalIs(1e127, "1" + zeros(127))        // expect: ok
+    formatIs(1e128, "1" + zeros(128))           // expect: ok
+    canonicalIs(1e128, "1e128")                 // expect: ok
+    formatIs(-1e-126, "-0." + zeros(125) + "1") // expect: ok
+    canonicalIs(-1e-126, "-0." + zeros(125) + "1") // expect: ok
+    formatIs(-1e-127, "-0." + zeros(126) + "1") // expect: ok
+    canonicalIs(-1e-127, "-1e-127")             // expect: ok
+
+    formatIs(1e-16383, "0." + zeros(16382) + "1") // expect: ok
+    canonicalIs(1e-16383, "1e-16383")           // expect: ok
+    canonicalIs(1e-16384, "1e-16384")           // expect: ok
+    formatIs(1.0e-16383, "0." + zeros(16382) + "10") // expect: ok
+    canonicalIs(1.0e-16383, "1e-16383")         // expect: ok
+    formatIs(1000e-16384, "0." + zeros(16380) + "1000") // expect: ok
+    canonicalIs(1000e-16384, "1e-16381")        // expect: ok
+    formatIs(1e32804, "1" + zeros(32804))       // expect: ok
+    canonicalIs(1e32804, "1e32804")             // expect: ok
+    formatIs(1e-32768, "0." + zeros(32767) + "1") // expect: ok
+    canonicalIs(1e-32768, "1e-32768")           // expect: ok
+    formatIs(1.23e-200, "0." + zeros(199) + "123") // expect: ok
+    canonicalIs(1.23e-200, "1.23e-200")         // expect: ok
+
+    formatErr(1e-20 * 1e-20, 3, "obo: decimal display scale would drop nonzero digits") // expect: ok
+    canonicalIs(1e-20 * 1e-20, "0." + zeros(39) + "1") // expect: ok
+    formatIs(1.20 * 1.2, "1.440")               // expect: ok
+    canonicalIs(1.20 * 1.2, "1.44")             // expect: ok
+    formatIs(1.20 + 1.2, "2.40")                // expect: ok
+    canonicalIs(1.20 + 1.2, "2.4")              // expect: ok
+    formatIs(1.20 * 1.0, "1.200")               // expect: ok
+    canonicalIs(1.20 * 1.0, "1.2")              // expect: ok
+
+    formatIs(0e-65535, "0." + zeros(65535))      // expect: ok
+    canonicalIs(0e-65535, "0")                   // expect: ok
+    // 1.0 + 0.0 keeps the maximum display scale, not a rewritten value.
+    formatIs(1.0 + 0.0, "1.0")                   // expect: ok
+
+    formatRoundTrip(1.2300)                      // expect: ok
+    formatRoundTrip(0.001)                       // expect: ok
+    formatRoundTrip(1e-40)                       // expect: ok
+    formatRoundTrip(0.00)                        // expect: ok
+    formatRoundTrip(-0.00)                       // expect: ok
+    formatRoundTrip(1e-16383)                    // expect: ok
+    formatRoundTrip(1.0e-16383)                  // expect: ok
+    canonicalRoundTrip(1.2300)                   // expect: ok
+    canonicalRoundTrip(1e-127)                   // expect: ok
+    canonicalRoundTrip(1e128)                    // expect: ok
+    canonicalRoundTrip(1e-32768)                 // expect: ok
+    canonicalRoundTrip(1e32804)                  // expect: ok
+    canonicalRoundTrip(-0.00)                    // expect: ok
+    canonicalIs((1.20 * 1.5) * 1e-16382, "1.8e-16382") // expect: ok
+    formatErr((1.20 * 1.5) * 1e-16382, 3, "obo: decimal display scale would drop nonzero digits") // expect: ok
+}

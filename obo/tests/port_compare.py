@@ -270,6 +270,13 @@ SEED_FILE_MIN = {
     os.path.join(FORK, 'tests', 'run', 'decimal_requests.obx'): (0, 12),
     os.path.join(FORK, 'tests', 'run', 'decimal_result_codes.obx'): (0, 12),
     os.path.join(FORK, 'tests', 'errors', 'decimal.obx'): (0, 12),
+    # Public decimal text APIs are 0.14; the 0.13 seed cannot parse them.
+    os.path.join(FORK, 'tests', 'run', 'decimal_text_parse.obx'): (0, 14),
+    os.path.join(FORK, 'tests', 'run', 'decimal_text_format.obx'): (0, 14),
+    os.path.join(FORK, 'tests', 'run', 'decimal_text_check.obx'): (0, 14),
+    os.path.join(FORK, 'tests', 'run', 'decimal_text_access.obx'): (0, 14),
+    os.path.join(FORK, 'tests', 'run', 'decimal_text_limits.obx'): (0, 14),
+    os.path.join(FORK, 'tests', 'errors', 'decimal_text.obx'): (0, 14),
 }
 SEED_LIB_MIN = {'io.obx': (0, 5), 'env.obx': (0, 4)}
 _SEED_VERSIONS = {}

@@ -2081,6 +2081,39 @@ int dec_parse(dec24 *out, const char *text, size_t len) {
     return dec_set(out, sign, lo, hi, (int)exp_final, (uint16_t)dscale);
 }
 
+/* The public text grammar is stricter than the private dec_parse grammar:
+ * the integer part and the fraction after a point are both mandatory, and the
+ * whole byte range is consumed.  This pre-validation changes no numeric
+ * behaviour; dec_parse keeps its tested coefficient, exponent, display-scale
+ * and status precedence.  NUL and non-ASCII bytes are still rejected by
+ * dec_parse itself. */
+static int dec_public_grammar(const char *t, size_t n) {
+    size_t i = 0;
+    if (i < n && (t[i] == '+' || t[i] == '-')) i++;
+    size_t int_start = i;
+    while (i < n && ascii_digit((unsigned char)t[i])) i++;
+    if (i == int_start) return 0;              /* mandatory integer digit */
+    if (i < n && t[i] == '.') {
+        i++;
+        size_t frac_start = i;
+        while (i < n && ascii_digit((unsigned char)t[i])) i++;
+        if (i == frac_start) return 0;         /* '1.' is invalid */
+    }
+    if (i < n && (t[i] == 'e' || t[i] == 'E')) {
+        i++;
+        if (i < n && (t[i] == '+' || t[i] == '-')) i++;
+        size_t exp_start = i;
+        while (i < n && ascii_digit((unsigned char)t[i])) i++;
+        if (i == exp_start) return 0;          /* '1e' / '1e+' invalid */
+    }
+    return i == n;                             /* full consumption */
+}
+
+static int dec_parse_public(dec24 *out, const char *text, size_t len) {
+    if (!dec_public_grammar(text, len)) return DEC_INVALID;
+    return dec_parse(out, text, len);           /* same semantic precedence */
+}
+
 /* ------------------------------ formatting ------------------------------ */
 
 /* Full coefficient digits, most significant first, plus the count of trailing
@@ -2346,7 +2379,7 @@ int dec_format_display(const dec24 *v, char *buf, size_t cap,
 /* -------------------------------------------------------------------------
  * obo runtime integration (compiler-facing helpers)
  *
- * Slots 60..71 append to the runtime table.  Arithmetic uses the exact core
+ * Slots 60..78 append to the runtime table.  Arithmetic uses the exact core
  * entry points, so + - * % never round; a non-representable exact result
  * traps.  Division and quantize have an explicit scale and mode and report a
  * status to the compiler, which builds a Result cell.  Pointers are explicit
@@ -2551,6 +2584,201 @@ u64 rt_dec_int_result(i64 *v, i64 status, u64 descErr, u64 descOk) {
         return (u64)c;
     }
     return rt_dec_err_cell(descErr, (int)status);
+}
+
+/* -------------------------------------------------------------------------
+ * Public decimal text surface (slots 73..78)
+ *
+ * parse/format/canonical/check return a Result cell with a core status code;
+ * exponent/dscale are total for valid language values and trap only on
+ * malformed backing bits.  Messages are static length-prefixed rodata, so an
+ * err cell needs one 32-byte allocation and no message copy.  The payload
+ * allocations are recoverable: failure maps to DEC_BUFFER_SMALL (10), while a
+ * failure to allocate even the err cell stays the global fatal OOM path.
+ * ---------------------------------------------------------------------- */
+
+enum {
+    RT_OP_PARSE = 1,
+    RT_OP_FORMAT,
+    RT_OP_CANONICAL,
+    RT_OP_CHECK
+};
+
+struct dec_msg { u64 len; char text[64]; };
+#define DEC_MSG(name, s) static const struct dec_msg name = { sizeof(s) - 1, s }
+
+DEC_MSG(MSG_PARSE_INVALID, "obo: invalid decimal text");
+DEC_MSG(MSG_PARSE_PRECISION, "obo: decimal text has more than 38 significant digits");
+DEC_MSG(MSG_PARSE_EXPONENT, "obo: decimal exponent is outside int16");
+DEC_MSG(MSG_PARSE_DISPLAY, "obo: decimal display scale is outside uint16");
+DEC_MSG(MSG_PARSE_RANGE, "obo: decimal value is outside the supported range");
+DEC_MSG(MSG_FORMAT_INEXACT, "obo: decimal display scale would drop nonzero digits");
+DEC_MSG(MSG_TEXT_RANGE, "obo: decimal text is outside the supported range");
+DEC_MSG(MSG_ALLOC, "obo: decimal result could not be allocated");
+DEC_MSG(MSG_INVALID_VALUE, "obo: invalid decimal value");
+DEC_MSG(MSG_CHECK_SCALE, "obo: value does not fit the declared scale without rounding");
+DEC_MSG(MSG_CHECK_METADATA, "obo: decimal precision/scale is outside the supported range");
+DEC_MSG(MSG_CHECK_PRECISION, "obo: value exceeds the declared precision");
+DEC_MSG(MSG_OVERFLOW, "obo: decimal overflow");
+DEC_MSG(MSG_OP_FAILED, "obo: decimal operation failed");
+#undef DEC_MSG
+
+static const struct dec_msg *rt_dec_text_message(int op, int st) {
+    if (op == RT_OP_PARSE) {
+        switch (st) {
+            case DEC_INVALID: return &MSG_PARSE_INVALID;
+            case DEC_PRECISION_OVERFLOW: return &MSG_PARSE_PRECISION;
+            case DEC_EXPONENT_RANGE: return &MSG_PARSE_EXPONENT;
+            case DEC_DISPLAY_RANGE: return &MSG_PARSE_DISPLAY;
+            case DEC_OVERFLOW: return &MSG_OVERFLOW;
+            case DEC_UNSUPPORTED_RANGE: return &MSG_PARSE_RANGE;
+            case DEC_BUFFER_SMALL: return &MSG_ALLOC;
+            default: break;
+        }
+    } else if (op == RT_OP_FORMAT) {
+        switch (st) {
+            case DEC_INEXACT: return &MSG_FORMAT_INEXACT;
+            case DEC_UNSUPPORTED_RANGE:
+            case DEC_DISPLAY_RANGE: return &MSG_TEXT_RANGE;
+            case DEC_BUFFER_SMALL: return &MSG_ALLOC;
+            case DEC_INVALID: return &MSG_INVALID_VALUE;
+            default: break;
+        }
+    } else if (op == RT_OP_CANONICAL) {
+        switch (st) {
+            case DEC_UNSUPPORTED_RANGE:
+            case DEC_DISPLAY_RANGE: return &MSG_TEXT_RANGE;
+            case DEC_BUFFER_SMALL: return &MSG_ALLOC;
+            case DEC_INVALID: return &MSG_INVALID_VALUE;
+            default: break;
+        }
+    } else if (op == RT_OP_CHECK) {
+        switch (st) {
+            case DEC_INEXACT: return &MSG_CHECK_SCALE;
+            case DEC_UNSUPPORTED_RANGE: return &MSG_CHECK_METADATA;
+            case DEC_PRECISION_OVERFLOW: return &MSG_CHECK_PRECISION;
+            case DEC_BUFFER_SMALL: return &MSG_ALLOC;
+            case DEC_OVERFLOW: return &MSG_OVERFLOW;
+            case DEC_INVALID: return &MSG_INVALID_VALUE;
+            default: break;
+        }
+    }
+    return &MSG_OP_FAILED;
+}
+
+static u64 rt_dec_text_err(u64 descErr, int st, int op) {
+    const struct dec_msg *m = rt_dec_text_message(op, st);
+    u64 *c = (u64 *)alloc_raw_try(descErr, 16);
+    if (!c) c = (u64 *)alloc_raw(descErr, 16);   /* no err cell: fatal OOM */
+    c[0] = (u64)m;
+    c[1] = (u64)st;
+    return (u64)c;
+}
+
+static int rt_dec_text_code(int st) {
+    /* The core length query uses UNSUPPORTED_RANGE for a text bound. */
+    return st == DEC_UNSUPPORTED_RANGE ? DEC_DISPLAY_RANGE : st;
+}
+
+static u64 rt_dec_decimal_ok(u64 op, u64 descErr, u64 descOk,
+                             const dec24 *v) {
+    u64 sz = descOk ? ((u64 *)descOk)[0] : 0;
+    if (sz < 24) return rt_dec_text_err(descErr, DEC_INVALID, (int)op);
+    u64 c = alloc_raw_try(descOk, sz);
+    if (!c) return rt_dec_text_err(descErr, DEC_BUFFER_SMALL, (int)op);
+    memcpy((void *)c, v, 24);                  /* Result[decimal] payload */
+    return c;
+}
+
+static u64 rt_dec_text_result(const dec24 *a, int op,
+                              u64 descErr, u64 descOk) {
+    int canonical = op == RT_OP_CANONICAL;
+    if (!a || !dec_valid(a))
+        return rt_dec_text_err(descErr, DEC_INVALID, op);
+    size_t n = 0;
+    int st = canonical ? dec_format_canonical_len(a, &n)
+                       : dec_format_display_len(a, &n);
+    if (st != DEC_OK)
+        return rt_dec_text_err(descErr, rt_dec_text_code(st), op);
+    if (n == 0 || n > (size_t)DEC_TEXT_MAX_OUTPUT)
+        return rt_dec_text_err(descErr, DEC_DISPLAY_RANGE, op);
+
+    /* [len][bytes][NUL]; the logical string length is n, the NUL is spare. */
+    u64 sp = alloc_raw_try(3, payload_add(8, n + 1));
+    if (!sp) return rt_dec_text_err(descErr, DEC_BUFFER_SMALL, op);
+    *(u64 *)sp = (u64)n;
+    size_t got = 0;
+    st = canonical ? dec_format_canonical(a, (char *)sp + 8, n + 1, &got)
+                   : dec_format_display(a, (char *)sp + 8, n + 1, &got);
+    if (st != DEC_OK) {
+        rt_str_dec(sp);                        /* strings are refcounted */
+        return rt_dec_text_err(descErr, rt_dec_text_code(st), op);
+    }
+    if (got != n) {
+        rt_str_dec(sp);
+        return rt_dec_text_err(descErr, DEC_BUFFER_SMALL, op);
+    }
+
+    u64 sz = descOk ? ((u64 *)descOk)[0] : 8;
+    u64 c = alloc_raw_try(descOk, sz);
+    if (!c) {
+        rt_str_dec(sp);
+        return rt_dec_text_err(descErr, DEC_BUFFER_SMALL, op);
+    }
+    ((u64 *)c)[0] = sp;                        /* Result[string] owns the string */
+    return c;
+}
+
+u64 rt_dec_parse_text(u64 s, u64 descErr, u64 descOk) {
+    dec24 v;
+    int st = dec_parse_public(&v, sdata(s), slen(s));
+    if (st != DEC_OK) return rt_dec_text_err(descErr, st, RT_OP_PARSE);
+    return rt_dec_decimal_ok(RT_OP_PARSE, descErr, descOk, &v);
+}
+
+u64 rt_dec_format_text(const dec24 *a, u64 descErr, u64 descOk) {
+    return rt_dec_text_result(a, RT_OP_FORMAT, descErr, descOk);
+}
+
+u64 rt_dec_canonical_text(const dec24 *a, u64 descErr, u64 descOk) {
+    return rt_dec_text_result(a, RT_OP_CANONICAL, descErr, descOk);
+}
+
+u64 rt_dec_check(const dec24 *a, const i64 *req, u64 descErr, u64 descOk) {
+    if (!a || !dec_valid(a))
+        return rt_dec_text_err(descErr, DEC_INVALID, RT_OP_CHECK);
+    if (req == 0)
+        return rt_dec_text_err(descErr, DEC_INVALID, RT_OP_CHECK);
+    i64 p = req[0], s = req[1];
+    if (p < 1 || p > 1000 || s < -1000 || s > 1000)
+        return rt_dec_text_err(descErr, DEC_UNSUPPORTED_RANGE, RT_OP_CHECK);
+    if (!dec_is_zero(a)) {
+        char d[38];
+        int len = 0, trailing = 0;
+        int st = coeff_digits(a, d, &len, &trailing);
+        if (st != DEC_OK) return rt_dec_text_err(descErr, st, RT_OP_CHECK);
+        i64 k = (i64)(int16_t)a->exp + s;
+        if (k < 0 && (i64)trailing < -k)
+            return rt_dec_text_err(descErr, DEC_INEXACT, RT_OP_CHECK);
+        if ((i64)len + k > p)
+            return rt_dec_text_err(descErr, DEC_PRECISION_OVERFLOW, RT_OP_CHECK);
+    }
+    return rt_dec_decimal_ok(RT_OP_CHECK, descErr, descOk, a);   /* unchanged */
+}
+
+i64 rt_dec_exponent(const dec24 *a) {
+    if (!a || !dec_valid(a)) rt_dec_trap(DEC_INVALID);
+    if (dec_is_zero(a)) return 0;
+    char d[38];
+    int len = 0, trailing = 0;
+    int st = coeff_digits(a, d, &len, &trailing);
+    if (st != DEC_OK) rt_dec_trap(st);
+    return (i64)(int16_t)a->exp + (i64)trailing;
+}
+
+i64 rt_dec_dscale(const dec24 *a) {
+    if (!a || !dec_valid(a)) rt_dec_trap(DEC_INVALID);
+    return (i64)a->dscale;
 }
 
 #endif /* OBO_DECIMAL24_CORE_INC */

@@ -327,10 +327,12 @@ static u64 payload_add(u64 a, u64 b) {
     return a + b;
 }
 
-static u64 alloc_raw(u64 kind, u64 payload) {
-    /* Reject an over-large object before the free lists, the bump pointer or the
-     * zeroing loop are touched. */
-    if (payload > MAX_PAYLOAD) die("obx: object too large\n");
+/* The recoverable allocator: the same free-list and bump path as alloc_raw,
+ * but it returns 0 instead of dying when the payload is over the object cap or
+ * the arena cannot supply a block.  The text APIs map that to Result code 10;
+ * every existing caller keeps the fatal alloc_raw behaviour and messages. */
+static u64 alloc_raw_try(u64 kind, u64 payload) {
+    if (payload > MAX_PAYLOAD) return 0;
     u64 size = (GRAN + payload + GRAN - 1) & ~(GRAN - 1);
     /* obo has no collector: memory comes back through rt_free */
     u64 g = size / GRAN, h = 0;
@@ -345,7 +347,7 @@ static u64 alloc_raw(u64 kind, u64 payload) {
     }
     u64 gen = 0;
     if (!h) {
-        if (size > heap_end - heap_top) die("obx: out of memory\n");
+        if (size > heap_end - heap_top) return 0;
         h = heap_top; heap_top += size;
     } else {
         gen = ((u64 *)h)[0] >> 32;                         /* a reused block keeps counting */
@@ -359,6 +361,15 @@ static u64 alloc_raw(u64 kind, u64 payload) {
     live_bytes_now += size;
     if (live_bytes_now > peak_bytes) peak_bytes = live_bytes_now;
     return h + GRAN;
+}
+
+static u64 alloc_raw(u64 kind, u64 payload) {
+    /* Reject an over-large object before the free lists, the bump pointer or the
+     * zeroing loop are touched. */
+    if (payload > MAX_PAYLOAD) die("obx: object too large\n");
+    u64 p = alloc_raw_try(kind, payload);
+    if (!p) die("obx: out of memory\n");
+    return p;
 }
 
 u64 rt_alloc_record(u64 *desc) { return alloc_raw((u64)desc, desc[0] ? desc[0] : 8); }

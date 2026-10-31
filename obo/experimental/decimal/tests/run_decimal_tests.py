@@ -203,6 +203,7 @@ def main() -> int:
 
     py_cmd = [sys.executable, "-m", "unittest", "-v",
               "test_decimal_oracle", "test_decimal_text_oracle",
+              "test_decimal_text_public_oracle",
               "test_binding_oracle", "test_arithmetic_oracle"]
     py, py_secs = run(py_cmd, HERE, timeout=180)
     with open(os.path.join(evidence, "python_test_output.txt"), "w",
