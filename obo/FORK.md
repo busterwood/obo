@@ -6127,11 +6127,11 @@ skipped flat cases (8 run files and 75 error cases). A promoted 0.11 seed would
 compare all of them.
 
 **Evidence and remaining risk.** Logs and a manifest are under
-`/tmp/opencode/lambda-stage-b-final-20261031-...` (private). Remaining work is
-independent review and integration; the seed is not promoted, `^I`/owned/string/
-interface captures remain later, and the eza reference-golden gate needs the
-pinned binary on `PATH`. No push, merge, promotion, seed copy, decimal or
-template work was performed.
+`/tmp/opencode/lambda-stage-b-final-20261031-...` (private). This checkpoint was
+later reviewed, merged and released as 0.11; `^I`/owned/string/interface
+captures remain later, and the eza reference-golden gate needs the pinned binary
+on `PATH`. No push, merge, promotion or seed copy was performed at this
+checkpoint.
 
 ## Decimal language integration (0.12 release, format 6, ABI 1)
 
