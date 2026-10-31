@@ -1,8 +1,9 @@
 # TLS transport adapter
 
-Status: **revision 2 design for focused independent re-review; no
-implementation authorized.** Revision 2 resolves the blockers/major issues
-from the independent review of `ea02b29`; see §15.1 for the resolution map.
+Status: **revision 3 design for focused independent re-review; no
+implementation authorized.** Revision 3 resolves R1/R2/R3 from the re-review
+of `2c8a824`; revision 2 resolved the earlier `ea02b29` blockers/major issues.
+See §15.1 for the resolution map.
 Baseline: current `main` `2364add3a7ad0a02ec9412b6834a36a510d45f32`,
 released obo `0.12`, symbol format 6, ABI 1. Date: 2026-10-31.
 No compiler, ABI, symbol-format or package version is reserved by this note.
@@ -788,18 +789,15 @@ pub fn writeSome(s: &TlsSession, bytes: &[]byte, offset: int,
                  count: int): Result[WriteOutcome]
 pub fn flush(s: &TlsSession): Result[FlushOutcome]
 pub fn shutdownStep(s: &TlsSession): Result[ShutdownOutcome]
-pub fn shutdownWrite(s: &TlsSession): Result[bool]
 pub fn pending(s: &TlsSession): Result[Pending]
 pub fn want(s: &TlsSession): Result[Want]
-pub fn wantsRead(s: &TlsSession): Result[bool]
-pub fn wantsWrite(s: &TlsSession): Result[bool]
 pub fn info(s: &TlsSession): Result[HandshakeInfo]
 pub fn peerIdentity(s: &TlsSession): Result[PeerIdentity]
 pub fn alpn(s: &TlsSession): Result[?string]
-pub fn source(s: &TlsSession): Result[^platform::Resource]
 pub fn watch(s: &TlsSession, r: &reactor::Reactor,
              readable: bool, writable: bool,
              tag: int): Result[reactor::Watch]
+pub fn maxTransfer(s: &TlsSession): int
 pub fn isSecure(s: &TlsSession): bool
 pub fn close(s: &TlsSession): Result[bool]
 pub fn closeContext(ctx: &TlsContext): Result[bool]
@@ -1002,11 +1000,15 @@ and returns `true`. A second close is `false`.
   `Established`; it returns `Done` only when the write BIO and C staging are
   empty. If new output is pending, it returns `WantWrite` without a second
   write.
-- `WANT_READ` returns `WantRead`; the wrapper may perform one transport read
-  and feed the C rbio in the same step, but it does not call
-  `SSL_do_handshake` a second time. `WANT_WRITE` returns `WantWrite`.
-- it never waits for readiness, never sleeps, never loops on `WouldBlock`, and
-  never restarts a deadline.
+- After the `SSL_do_handshake` call, inspect output **first**. If the write
+  BIO or C staging is non-empty, return `WantWrite` even when OpenSSL returned
+  `SSL_ERROR_WANT_READ`; a bare `WantRead` with pending handshake output is a
+  defect. If output is empty, `WANT_READ` returns `WantRead` (the wrapper may
+  perform one transport read and feed the C rbio, without a second SSL call);
+  `WANT_WRITE` returns `WantWrite`.
+- It never waits for readiness, never sleeps, never loops on `WouldBlock`, and
+  never restarts a deadline. The caller watches write when the step says
+  `WantWrite`, including the “OpenSSL wanted read but produced output” case.
 
 `handshakeUntil` is **not part of P2T-b**. It is deferred until `sysreactor`/
 `syswaitio` has a reviewed cancellation-wake contract (or a caller-provided
@@ -1029,6 +1031,10 @@ socket may still yield `WantRead` for a partial record; a writable socket may
 have no ciphertext to flush. Use `want(s)` to set interest and always call the
 step and inspect its outcome.
 
+`maxTransfer(s)` returns 65,536. It is the same cap that `readSome` and
+`writeSome` enforce; HTTP uses it to split larger buffers. It is a constant for
+v1, not a negotiated TLS value.
+
 ### 5.5 Read, write and shutdown
 
 `readSome(s, max)`:
@@ -1040,11 +1046,15 @@ step and inspect its outcome.
   prevents a response/KeyUpdate from being stranded behind a read wait.
 - if `SSL_pending(s) > 0`, it may return data without touching the transport;
   otherwise it may perform at most one transport read and feed the C rbio.
-- it calls `SSL_read_ex` **once**. It returns `Data{bytes, want}` (owned array,
-  1..max bytes), `Eof{want}` after a peer close_notify, `WantRead`/
-  `WantWrite` for readiness, or a fatal `Result.err`. `want` is `Write` when
-  control output (KeyUpdate/alert) remains, otherwise `None`/`Read` as
-  appropriate.
+- it calls `SSL_read_ex` **once**. After the call, inspect output first:
+  - data/Eof plus pending output -> `Data{bytes, want=Write}` /
+    `Eof{want=Write}`;
+  - no data/Eof but pending output -> `WantWrite`, even if OpenSSL returned
+    `SSL_ERROR_WANT_READ`; a bare `WantRead` with pending output is a defect;
+  - data/Eof with no output -> `Data{bytes, want=None}` / `Eof{want=None}`;
+  - no data/Eof and no output -> `WantRead`/`WantWrite` according to OpenSSL.
+- `Data{bytes,want}` is an owned array of 1..max bytes; `Eof` is a clean peer
+  close_notify. A fatal `Result.err` is separate.
 - a transport EOF without a received close_notify is `Truncated`, never
   `Eof`. This is a security rule, not a convenience;
 - a zero-length plaintext record is not application data; OpenSSL handles it;
@@ -1060,14 +1070,18 @@ step and inspect its outcome.
 - if output is already pending, it flushes at most one bounded chunk first and
   returns `WantWrite` if not fully drained; it does not accept new plaintext
   while output remains.
-- otherwise it calls `SSL_write_ex` **once**, with partial-write mode enabled,
-  and returns `Wrote{n, want}` for the accepted prefix. It does **not** flush
-  the newly produced ciphertext in the same step; `want=Write` tells the caller
-  to call `flush`/`handshakeStep` next. It never replays bytes; the caller
-  advances its own cursor by `n`.
-- `SSL_write_ex` may return `WantRead` (for example a TLS 1.3 KeyUpdate or a
-  post-handshake control message); the adapter returns `WantRead` and accepts
-  no plaintext on that call.
+- otherwise it calls `SSL_write_ex` **once**, with partial-write mode enabled.
+  After the call, inspect output first:
+  - accepted `n > 0` plus pending output -> `Wrote{n, want=Write}`;
+  - accepted `n > 0` with no output -> `Wrote{n, want=None}`;
+  - no accepted plaintext and pending output -> `WantWrite`, even if OpenSSL
+    returned `SSL_ERROR_WANT_READ`; a bare `WantRead` with pending output is a
+    defect;
+  - no accepted plaintext and no output -> `WantRead`/`WantWrite` according to
+    OpenSSL.
+- It does **not** flush newly produced ciphertext in the same step;
+  `want=Write` tells the caller to call `flush`/`handshakeStep` next. It never
+  replays bytes; the caller advances its own cursor by `n`.
 - if a transport write fails while flushing prior output, the session is
   failed and the error is returned; do not report `Wrote{n}` as if the bytes
   reached the peer.
@@ -1076,8 +1090,13 @@ step and inspect its outcome.
 
 - drains one bounded chunk of output per call: C staging first, then the write
   BIO into C staging. It never refills staging while it is non-empty.
+- if staging is empty and wbio is non-empty, it refills staging from wbio
+  **without a transport write**, then performs one transport write.
+- if staging drains and wbio still has bytes, it returns `WantWrite` and does
+  not write wbio in the same step.
 - returns `Done` only when both C staging and the write BIO are empty;
-  `WantWrite` if the transport accepted a short prefix or would block.
+  `WantWrite` if the transport accepted a short prefix, would block, or wbio
+  remains after the write.
 - `flush` performs at most one transport write and never calls
   `SSL_write_ex`/`SSL_read_ex`/`SSL_shutdown`; it cannot return `WantRead`.
 
@@ -1085,20 +1104,22 @@ step and inspect its outcome.
 
 - if output is pending, it flushes one bounded chunk first; if output remains,
   returns `WantWrite`;
-- calls `SSL_shutdown` **once**. Returning `1`: both directions are shut down
-  and output is empty, `Done`;
-- returning `0`: local close_notify is queued; return `Sent{want}`;
-  `want=Write` if output remains, otherwise `None`;
-- `SSL_ERROR_ZERO_RETURN`: peer close_notify arrived before ours,
-  `PeerClosed{want}`; calling again sends our close_notify and returns
-  `Sent`/`Done`;
-- `WantRead`/`WantWrite`: return the corresponding outcome;
-- any fatal error: fail the session.
+- calls `SSL_shutdown` **once**. After the call, inspect output first:
+  - output pending -> `WantWrite` if no clean state is complete, or
+    `Sent{want=Write}`/`PeerClosed{want=Write}` when the close_notify state is
+    already known; never return a bare `WantRead` with pending output;
+  - returning `1` with output empty: both directions are shut down, `Done`;
+  - returning `0`: local close_notify is queued; return `Sent{want}` with
+    `want=Write` if output remains, otherwise `None`;
+  - `SSL_ERROR_ZERO_RETURN`: peer close_notify arrived before ours,
+    `PeerClosed{want}`; calling again sends our close_notify and returns
+    `Sent`/`Done`;
+  - `WantRead` with output empty -> `WantRead`; `WantWrite` -> `WantWrite`;
+  - any fatal error: fail the session.
 
-`shutdownWrite(s)` is the HTTP-facing best-effort operation: it calls
-`shutdownStep` once and returns `true` only when local close_notify is queued
-and output is drained; `false` means call again after `wantsWrite`/`flush`.
-It does not wait for the peer's close_notify.
+`shutdownStep` is the only close_notify path exposed to HTTP; the HTTP
+`Transport.shutdownStep` maps directly to it. `close` is abortive and is not a
+clean-shutdown promise.
 
 `close(s)`:
 
@@ -1177,7 +1198,9 @@ A multi-connection server uses the same `handshakeStep`/`want`/`watch` calls
 inside its existing event loop and application tags; it does not hide a
 per-connection blocking helper. The deadline is absolute and caller-owned.
 `handshakeUntil` is deferred (see §11.4), because the public reactor/waitio
-API has no cancellation-wake registration for a new helper.
+API has no cancellation-wake registration for a new helper. A step that
+OpenSSL reports as `WANT_READ` but that produced handshake output returns
+`WantWrite`, so the loop watches write first and flushes before reading.
 
 ## 6. Nonblocking state machine
 
@@ -1247,10 +1270,13 @@ Every public step obeys these invariants:
    the transport is removed from the C staging buffer exactly once. A short
    transport write leaves the remainder pending in C and is reported by
    `want=Write`.
-5. **No output stranding.** Every step that can produce output flushes prior
-   output first and returns `WantWrite` if it remains. `Done`, `Data` and
-   `Wrote` carry `want` when output still needs a write. `flush` is the
-   explicit drain operation.
+5. **Output-first after every SSL call.** After `SSL_do_handshake`,
+   `SSL_read_ex`, `SSL_write_ex` or `SSL_shutdown`, inspect wbio/C staging
+   before returning. If output is non-empty, return `WantWrite` or a progress
+   outcome carrying `want=Write` (never a bare `WantRead`), even when OpenSSL
+   returned `SSL_ERROR_WANT_READ`. `flush` is the explicit drain operation;
+   `Done`/`Data`/`Eof`/`Wrote`/`Sent`/`PeerClosed` carry `want` when output
+   remains.
 6. **No unbounded growth.** rbio/wbio pending bytes, C staging, handshake
    bytes, certificate size, ALPN list, session count and the per-context
    aggregate budget are capped. Exceeding a cap fails the session; bytes are
@@ -1265,7 +1291,8 @@ Every public step obeys these invariants:
 | prior output pending, flush not done | `Step.WantWrite` | `Handshaking` |
 | `SSL_do_handshake` returns 1 and output empty | `Step.Done` | `Established` |
 | `SSL_do_handshake` returns 1 and output pending | `Step.WantWrite` | `Established` |
-| `SSL_ERROR_WANT_READ` | `Step.WantRead` | `Handshaking` |
+| `SSL_ERROR_WANT_READ` and output pending | `Step.WantWrite` | `Handshaking` |
+| `SSL_ERROR_WANT_READ` and output empty | `Step.WantRead` | `Handshaking` |
 | `SSL_ERROR_WANT_WRITE` | `Step.WantWrite` | `Handshaking` |
 | `SSL_ERROR_ZERO_RETURN` | fatal `HandshakeFailed` | `Failed` |
 | `SSL_ERROR_SYSCALL`, ret 0, empty error queue | `Truncated` | `Failed` |
@@ -1292,10 +1319,11 @@ alert so the server's own missing-ALPN rejection is never mislabeled
 | Condition | Result |
 |---|---|
 | output pending before read | flush one chunk; `WantWrite` if incomplete |
-| `SSL_read_ex` returns 1 with `n > 0` | `Data{bytes, want}` |
-| `SSL_pending > 0`, no transport read needed | `Data{bytes, want}` |
-| `SSL_ERROR_ZERO_RETURN` | `Eof{want}` (peer close_notify) |
-| `SSL_ERROR_WANT_READ` | `WantRead` |
+| `SSL_read_ex` returns 1 with `n > 0` | `Data{bytes, want}`; `want=Write` if output pending |
+| `SSL_pending > 0`, no transport read needed | `Data{bytes, want}`; `want=Write` if output pending |
+| `SSL_ERROR_ZERO_RETURN` | `Eof{want}`; `want=Write` if output pending |
+| `SSL_ERROR_WANT_READ` and output pending | `WantWrite` (never bare `WantRead`) |
+| `SSL_ERROR_WANT_READ` and output empty | `WantRead` |
 | `SSL_ERROR_WANT_WRITE` | `WantWrite` |
 | transport `WouldBlock` | `WantRead` |
 | transport `Interrupted` | `err(Transport{Interrupted})` |
@@ -1317,7 +1345,8 @@ buffer; the adapter returns `WantRead` until a complete record is available.
 | output pending before new plaintext | flush one chunk; `WantWrite` if incomplete |
 | `SSL_write_ex` returns 1 with `n > 0` | `Wrote{n, want}`; no flush of new output |
 | `SSL_write_ex` returns 1 with `n == 0` and count > 0 | `err(Internal)`; invariant violation |
-| `SSL_ERROR_WANT_READ` | `WantRead` (no plaintext accepted) |
+| `SSL_ERROR_WANT_READ` and output pending | `WantWrite` (no plaintext accepted) |
+| `SSL_ERROR_WANT_READ` and output empty | `WantRead` (no plaintext accepted) |
 | `SSL_ERROR_WANT_WRITE` | `WantWrite` (no plaintext accepted) |
 | `SSL_ERROR_ZERO_RETURN` | `err(Transport{Closed})` |
 | transport failure during prior-output flush | `err(Transport{sysCode})`; fail session |
@@ -1335,11 +1364,18 @@ buffer before `SSL_write_ex`, so the address is normally stable anyway.
 | Condition | Result |
 |---|---|
 | C staging empty and wbio empty | `Done` |
-| C staging non-empty, transport accepts all | continue to wbio; `Done` if empty |
+| C staging empty, wbio non-empty | refill staging from wbio **without a transport write**, then perform one bounded transport write; `WantWrite` if wbio still has bytes, `Done` only if both are empty |
+| C staging non-empty, transport accepts all | `Done` if wbio is also empty; otherwise `WantWrite` (do **not** write wbio in the same step) |
 | transport accepts a short prefix | `WantWrite`; staging retains remainder |
 | transport `WouldBlock` | `WantWrite` |
 | transport `Interrupted` | `err(Transport{Interrupted})` |
 | transport `Closed` | `err(Transport{Closed})` |
+
+`Done` requires both C staging and the write BIO to be empty. A refill from
+wbio is not a transport write; the step performs at most one transport write.
+If staging drains and wbio still has bytes, return `WantWrite` and do not write
+wbio in the same step. If wbio remains after a write, the result is
+`WantWrite`.
 
 ### 6.6 Shutdown and close_notify
 
@@ -1347,17 +1383,18 @@ buffer before `SSL_write_ex`, so the address is normally stable anyway.
 |---|---|
 | output pending before close_notify | flush one chunk; `WantWrite` if incomplete |
 | `SSL_shutdown` returns 1 and output empty | `Done` |
+| `SSL_shutdown` returns 1 and output pending | `WantWrite` (do not return `Done`) |
 | `SSL_shutdown` returns 0 | `Sent{want}`; `want=Write` if output remains |
 | `SSL_ERROR_ZERO_RETURN` | `PeerClosed{want}`; call again to send ours |
-| `SSL_ERROR_WANT_READ` | `WantRead` |
+| `SSL_ERROR_WANT_READ` and output pending | `WantWrite` |
+| `SSL_ERROR_WANT_READ` and output empty | `WantRead` |
 | `SSL_ERROR_WANT_WRITE` | `WantWrite` |
 | `SSL_ERROR_SYSCALL`/`SSL_ERROR_SSL` | fatal; close |
 
 `shutdownStep` never performs a second transport write after `SSL_shutdown`;
 the new close_notify is reported by `want=Write` and the next `flush`/
-`shutdownStep` sends it. `shutdownWrite` is the HTTP-facing best-effort call:
-`true` only when local close_notify is queued and output is drained; `false`
-means call again after `wantsWrite`/`flush`.
+`shutdownStep` sends it. The HTTP `Transport.shutdownStep` maps directly to
+this method; there is no separate `shutdownWrite` in the TLS API.
 
 The adapter does **not** call `stream::shutdownWrite` automatically after
 sending close_notify. The application may do so after `Sent` if it wants the
@@ -1801,9 +1838,9 @@ A wrong-kind/forged `res` is `InvalidResource` before any C TLS call. A closed
 | `SSL_ERROR_SSL`, other | `ProtocolViolation`/`HandshakeFailed` |
 | `SSL_ERROR_SYSCALL`, ret < 0, `errno` | `Transport{sysCode}`; capture `errno` first |
 | `SSL_ERROR_SYSCALL`, ret == 0, error queue empty | `Truncated` |
-| `SSL_ERROR_WANT_READ` | `WantRead` outcome; not fatal |
+| `SSL_ERROR_WANT_READ` | `WantRead` if output empty; `WantWrite` if wbio/C staging is non-empty; not fatal |
 | `SSL_ERROR_WANT_WRITE` | `WantWrite` outcome; not fatal |
-| `SSL_ERROR_ZERO_RETURN` | `Eof`/`PeerClosed`; clean close_notify |
+| `SSL_ERROR_ZERO_RETURN` | `Eof{want}`/`PeerClosed{want}`; clean close_notify; output pending -> want=Write |
 | `SSL_ERROR_WANT_X509_LOOKUP` | `Unsupported`; no lookup callback |
 | `SSL_ERROR_WANT_ASYNC`/`WANT_ASYNC_JOB` | `Unsupported`; no async engine |
 | `SSL_ERROR_WANT_CLIENT_HELLO_CB` | `Internal`; our ClientHello callback never returns RETRY |
@@ -1912,6 +1949,13 @@ README stating they are test-only and not trust anchors for production.
   assert the peer receives Finished and `handshakeStep` does not return
   `Done` while C staging/write BIO output remains. Assert `want=Write` and a
   following `flush` drains it.
+- **WANT_READ with pending output probe**: drive `SSL_do_handshake` until it
+  returns `SSL_ERROR_WANT_READ` with 1,359 bytes in wbio; assert the step
+  returns `Step.WantWrite` (not `Step.WantRead`), the loop watches write, and
+  the following `flush` drains the 1,359 bytes before the next read.
+- Repeat the output-first assertion for `SSL_read_ex` (KeyUpdate/alert),
+  `SSL_write_ex` and `SSL_shutdown` (close_notify): no bare `WantRead` with
+  pending output.
 - Verify a step loop using `watch`/`reactor::wait` honors the same absolute
   deadline and removes its watch on error; no `handshakeUntil` helper exists.
 
@@ -1975,6 +2019,8 @@ README stating they are test-only and not trust anchors for production.
 - 1-byte, 16 KiB and 64 KiB application writes; reads across record
   boundaries; `SSL_pending` path; zero-length write; max read.
 - TLS 1.3 KeyUpdate during a read/write sequence; no application data lost.
+  A KeyUpdate that produces output returns `WantWrite`/`Data{want=Write}`,
+  never a bare `WantRead`; the caller flushes before waiting.
 - TLS 1.2 renegotiation attempt rejected by `SSL_OP_NO_RENEGOTIATION`; the
   connection fails or remains established without renegotiation, as OpenSSL
   defines; no silent fallback.
@@ -2001,6 +2047,10 @@ README stating they are test-only and not trust anchors for production.
   moved/reallocated C buffer and assert no `SSL_R_BAD_WRITE_RETRY`.
 - `writeSome(count=0)` returns `Wrote{0,want}` and does not flush; `flush`
   is the explicit drain path.
+- **Flush refill**: with staging empty and wbio non-empty, assert `flush`
+  refills staging without a transport write, performs at most one transport
+  write, and returns `Done` only when both are empty; otherwise `WantWrite`.
+  Count transport writes per step and assert never more than one.
 - wbio/rbio/staging cap: force over-cap; `ResourceLimit`, session failed, no
   unbounded allocation.
 - **Aggregate cap**: open sessions until `maxContextBytes` would be exceeded;
@@ -2143,8 +2193,10 @@ P2T is accepted only when:
 2. **ALPN `Require` rejects a client with no ALPN extension (`AlpnRequired`)**
    and no-overlap (`NoApplicationProtocol`), with the exact variant asserted;
 3. **no `Done`/`Data`/`Wrote` outcome strands pending Finished, close_notify,
-   KeyUpdate, alert or application ciphertext**; the 1-byte-transport,
-   response-then-read, accepted-prefix and flush tests pass;
+   KeyUpdate, alert or application ciphertext, and no step returns a bare
+   `WantRead` while output is pending**; the 1,359-byte probe,
+   1-byte-transport, response-then-read, accepted-prefix, flush-refill and
+   one-transport-write-per-step tests pass;
 4. the full local handshake/ALPN/certificate/truncation matrix passes;
 5. `openssl s_client` (TLS 1.2 and 1.3, ALPN h2/http1.1/none) passes;
 6. leak counters return to zero after every path and the omitted-close oracle
@@ -2205,35 +2257,53 @@ refused, never negotiated-then-closed.
 
 ### 11.3 HTTP/1.1 and HTTP/2 integration contract
 
-- The HTTP layer receives an established `TlsSession` and `HandshakeInfo` from
-  `systls::info`; it drives the handshake with `handshakeStep` + `want` +
-  `watch` and one absolute deadline. There is no `handshakeUntil`.
-- It selects the protocol from `info.alpn`:
-  - `h2` -> HTTP/2, only if the HTTP/2 layer is present;
-  - `http/1.1` -> HTTP/1.1;
-  - `nil` -> HTTP/1.1 if the listener policy allows it, otherwise close.
-- It uses `readSome`/`writeSome`/`flush`/`shutdownStep`/`shutdownWrite`/
-  `wantsRead`/`wantsWrite`/`source`/`alpn`/`info`/`close`; it never touches
-  `session.transport` directly and never calls OpenSSL.
-- The required methods for a neutral `http1tls` adapter are:
-  - `handshakeStep(): Result[http1::Handshake]` mapping `systls::Step` to
-    `Complete`/`WantRead`/`WantWrite`;
-  - `readInto(dst, offset, max): Result[int]` mapping `Data`/`Eof`/`Want*`
-    to `>0`/`0`/`WouldBlock`;
-  - `writeFrom(src, offset, count): Result[int]` mapping `Wrote{n,want}` to
-    `n` and preserving pending output via `wantsWrite`;
-  - the neutral adapter maps `Want*` to `syserrors::WouldBlock` for the HTTP
-    interface; `systls` itself uses outcome variants, not systems codes;
-  - `flush(): Result[bool]` mapping `FlushOutcome.Done` to `true`;
-  - `shutdownWrite(): Result[bool]` mapping the best-effort close_notify;
-  - `wantsRead(): bool`, `wantsWrite(): bool` from `want`;
-  - `source(): Result[^platform::Resource]`, `isSecure(): bool`, `close()`.
-  - `alpn(): Result[?string]` and `info(): Result[HandshakeInfo]` are outside
-    the minimal `Transport` interface but required for ALPN dispatch.
-  - `Data{want=Write}` and `Wrote{n,want=Write}` set the adapter's want state;
-    the HTTP loop flushes before waiting/reading.
-  - The adapter never exposes a callback; every method is a synchronous
-    bounded step.
+- The HTTP layer receives an established `TlsSession`; it drives the handshake
+  with `handshakeStep` + `want` + `watch` and one absolute deadline. There is
+  no `handshakeUntil`.
+- It selects the protocol from `Transport.alpn()`:
+  - `AlpnH2` -> HTTP/2, only if the HTTP/2 layer is present;
+  - `AlpnHttp11` -> HTTP/1.1;
+  - `AlpnNone` -> HTTP/1.1 if the listener policy allows it, otherwise close;
+  - `AlpnOther` -> close or a protocol-specific listener policy.
+- It uses only the `http1::Transport` interface; it never touches
+  `session.transport` directly, never calls OpenSSL and never uses an fd or
+  transport-bypass escape.
+- The required methods for the neutral `http1tls` adapter, aligned with
+  `obo/design/http1-server-design.md` at `3207148`, are:
+  - `handshakeStep(): Result[http1::Step]` mapping `systls::Step` to
+    `StepDone`/`StepWantRead`/`StepWantWrite`;
+  - `readSome(max: int): Result[http1::ReadOutcome]` mapping
+    `Data`/`Eof`/`Want*` to `ReadData{bytes}`/`ReadEof`/
+    `ReadWantRead`/`ReadWantWrite`; pending output forces `ReadWantWrite` or
+    `ReadData` with the adapter's `want()` reporting write;
+  - `writeSome(bytes, offset, count): Result[http1::WriteOutcome]` mapping
+    `Wrote{n,want}` to `WriteWrote{n}` and preserving pending output through
+    `want()`; `Want*` maps to `WriteWantRead`/`WriteWantWrite`, never to a
+    systems error;
+  - `flushPending(): Result[http1::WriteOutcome]` mapping `systls::flush`:
+    drained -> `WriteWrote{0}`, pending -> `WriteWantWrite`; it never accepts
+    plaintext and cannot return `WriteWantRead` in v1;
+  - `shutdownStep(): Result[http1::ShutdownOutcome]` mapping
+    `Done`/`Sent`/`PeerClosed`/`Want*` to
+    `ShutdownDone`/`ShutdownSent`/`ShutdownPeerClosed`/`ShutdownWant*`;
+  - `pending(): Result[int]` returning `systls::pending(s).ciphertext`;
+  - `want(): Result[http1::Want]` mapping `None/Read/Write/ReadWrite` to
+    `WantNone/WantRead/WantWrite/WantReadWrite`;
+  - `alpn(): Result[http1::Alpn]` mapping nil -> `AlpnNone`,
+    `http/1.1` -> `AlpnHttp11`, `h2` -> `AlpnH2`, anything else ->
+    `AlpnOther{name}`;
+  - `isSecure(): bool` -> `true`;
+  - `maxTransfer(): int` -> `systls::maxTransfer(s)` (65,536);
+  - `watch(r, readable, writable, tag): Result[reactor::Watch]` mapping
+    `systls::watch`; this is the only readiness registration route;
+  - `close(): Result[bool]` mapping abortive `systls::close`.
+  - `systls::info`/`peerIdentity` are not required by `http1::Transport`; the
+    HTTP layer only needs `alpn()` for dispatch.
+  - `ReadData`/`WriteWrote`/`ShutdownSent` progress is preserved together with
+    `want()` reporting `WantWrite` when output remains; no accepted prefix is
+    lost.
+  - The adapter never maps a `Want*` outcome to a systems error and never
+    exposes a callback; every method is a synchronous bounded step.
 - HTTP/1.1 request parsing, header limits, chunked framing and keep-alive are
   above TLS. HTTP/2 connection preface, SETTINGS, HPACK, stream state and
   GOAWAY are above TLS.
@@ -2241,13 +2311,14 @@ refused, never negotiated-then-closed.
   GOAWAY if applicable, call `shutdownStep` until `Done`/`PeerClosed` or a
   fixed deadline, then `close`. A truncation is an error; do not report a
   clean close.
-- Client certificate identity: the HTTP/application layer may use
-  `info.peer` for authentication/authorization. TLS verifies the chain; it
-  does not assign roles.
-- SNI: with one certificate, `info.serverName` is for logging only in v1. It
-  must not be used for authorization or tenant routing: the API does not expose
-  the server certificate's own SANs. Multi-cert selection/`contextInfo` is
-  later.
+- Client certificate identity is not part of `http1::Transport`. `http1tls`
+  may expose `info.peer` as an application-level extension outside the core
+  interface; the HTTP core only uses `isSecure()` and `alpn()`. TLS verifies
+  the chain; it does not assign roles.
+- SNI is not part of `http1::Transport`; if an application-level extension
+  exposes it, it is for logging only in v1. It must not be used for
+  authorization or tenant routing: the API does not expose the server
+  certificate's own SANs. Multi-cert selection/`contextInfo` is later.
 - No HTTP parsing, ALPN-specific framing, header injection or response
   generation in TLS.
 
@@ -2373,9 +2444,11 @@ refused, never negotiated-then-closed.
    connection-fatal, for example `ProtocolViolation`).
 6. No hidden retry, no `SSL_MODE_AUTO_RETRY`, no deadline restart, no
    renegotiation, no fallback to a lower TLS version.
-7. No output stranding: `Done`/`Data`/`Wrote` carry `want` when output remains;
-   `flush` is the explicit drain; `handshakeStep` never returns `Done` with
-   pending Finished/close_notify output.
+7. No output stranding: after every SSL call, inspect output first. No step
+   returns a bare `WantRead` while wbio/C staging is non-empty; `Done`/`Data`/
+   `Eof`/`Wrote`/`Sent`/`PeerClosed` carry `want` when output remains. `flush`
+   is the explicit drain; `handshakeStep` never returns `Done` with pending
+   Finished/close_notify output.
 8. A transport EOF without close_notify is `Truncated`, never `Eof`;
    `SSL_OP_IGNORE_UNEXPECTED_EOF` is not set.
 9. Every `systls` public error is in the single TLS code family; platform/
@@ -2427,10 +2500,11 @@ refused, never negotiated-then-closed.
 The implementable path is narrow and reviewable: system OpenSSL 3.0, required
 headers, memory BIOs, a non-optional owned `TlsContext`/`TlsSession` pair over
 `sysstream`, a bounded step pump with explicit `WantRead`/`WantWrite` and
-`flush`, ALPN presence enforced by a C ClientHello callback plus a select
-callback, C-only SNI/info callbacks, explicit close and a strict TLS 1.2/1.3
-policy. It does not parse HTTP, expose OpenSSL pointers, call back into obo,
-hide retries or return `Done` with stranded Finished/close_notify output. The
+`flush`, output-first handling after every SSL call, ALPN presence enforced by
+a C ClientHello callback plus a select callback, C-only SNI/info callbacks,
+explicit close and a strict TLS 1.2/1.3 policy. It does not parse HTTP, expose
+OpenSSL pointers, call back into obo, hide retries or return `Done` with
+stranded Finished/close_notify output. The
 first deliverable is a server-side TLS echo that `openssl s_client` can drive;
 HTTP/1.1 and HTTP/2 consume the same byte stream after their own designs land.
 QUIC/HTTP/3 and client mode are separate follow-ons.
@@ -2443,6 +2517,9 @@ independent re-review.
 
 | Review item | Resolution in revision 2 |
 |---|---|
+| R1/R2 output-first after SSL calls | Handshake/read/write/shutdown now inspect wbio/C staging **after** every SSL call; non-empty output forces `WantWrite` or a progress outcome with `want=Write`, never a bare `WantRead`. Added the 1,359-byte `SSL_do_handshake` WANT_READ probe and KeyUpdate/close_notify output tests. |
+| R2 flush refill row | Added “staging empty, wbio non-empty -> refill staging without a transport write, then one write; `Done` only both empty, else `WantWrite`”; at most one transport write per step. |
+| R3 HTTP1 contract alignment | §11.3 now matches `http1-server-design.md` at `3207148`: `handshakeStep` `StepDone/StepWantRead/StepWantWrite`, `readSome`, `writeSome`, `flushPending`, multi-step `shutdownStep`, `pending()`, `want()`, `alpn/isSecure/maxTransfer/watch/close`; no `source()`, no `shutdownWrite`, no `WouldBlock` mapping, no callbacks. |
 | B1 ALPN `Require` absent extension | C-only `SSL_CTX_set_client_hello_cb` checks `SSL_client_hello_get0_ext(...ALPN...)`; absent -> `SSL_AD_MISSING_EXTENSION` + `SSL_CLIENT_HELLO_ERROR`; `AlpnRequired`. No-overlap remains select-callback alert 120/`NoApplicationProtocol`. Tests assert both variants. |
 | B2 stranded output / no flush | Added `flush`/`FlushOutcome`; every step flushes prior output first; `handshakeStep` returns `Done` only when C staging and write BIO are empty; `readSome` flushes before waiting; `writeSome(0)` is explicitly not a flush. |
 | B3 accepted bytes + want | `Wrote{count,want}`, `Data{bytes,want}`, `Eof{want}`, `Sent{want}`, `PeerClosed{want}`; `want` is `None/Read/Write/ReadWrite`; no replay. |
