@@ -107,14 +107,22 @@ decimal::quantize(a, scale, mode) -> Result[decimal]
 
 Display propagation is presentation, not arithmetic: add/sub `max`; multiply `sum` capped by the 38-digit/integer-part rule in §4.1 (value unchanged); remainder `max`; division/quantize the explicit target; unary minus unchanged; comparisons value only. `1.20 + 1.2` is `2.40`; `1.20 * 1.2` is `1.440`; `decimal::div(1.00, 2.0, 2, HALF_AWAY)` is `0.50`.
 
-Decimal exact arithmetic traps use exit 10 with diagnostic ids only: 40 not exactly representable (`DEC_INEXACT`), 41 overflow (`DEC_OVERFLOW`), 42 division by zero (`DEC_DIV_ZERO`), 43 invalid (`DEC_INVALID`), 44 unsupported range, 45 precision overflow, 46 exponent range, 47 display range, 48 buffer too small and 49 other. The `Result`-returning APIs (`decimal::div`, `quantize`, `toInt`) carry the tested **core status** in the err code: 1 `DEC_OVERFLOW`, 3 `DEC_INEXACT`, 4 `DEC_INVALID`, 5 `DEC_DIV_ZERO`, 6 `DEC_UNSUPPORTED_RANGE`; 7/8/9 are reserved text/binding statuses not currently produced by these APIs, and 2/10 stay internal. Scale/mode are validated before the core: constant invalid values are compile errors, runtime invalid scale returns 6 and invalid mode 4. `ok`/`err` follow `Result[T]`.
+Decimal exact arithmetic traps use exit 10 with diagnostic ids only: 40 not exactly representable (`DEC_INEXACT`), 41 overflow (`DEC_OVERFLOW`), 42 division by zero (`DEC_DIV_ZERO`), 43 invalid (`DEC_INVALID`), 44 unsupported range, 45 precision overflow, 46 exponent range, 47 display range, 48 buffer too small and 49 other. `Result`-returning APIs (`decimal::div`, `quantize`, `toInt`) carry the tested **core status** in the err code: 1 `DEC_OVERFLOW`, 3 `DEC_INEXACT`, 4 `DEC_INVALID`, 5 `DEC_DIV_ZERO`, 6 `DEC_UNSUPPORTED_RANGE`; 7/8/9 are text/binding statuses not produced by these three APIs (the text APIs `parse`/`format`/`canonical`/`check` produce 7/8/9 and 10), 2 is reserved, and 10 is text-allocation only. Scale/mode are validated before the core: constant invalid values are compile errors, runtime invalid scale returns 6 and invalid mode 4. `ok`/`err` follow `Result[T]`.
 
 ## 4. Conversions and formatting
 
 - Conversions are **explicit in both directions**. `decimal(i)` for `int`/`byte` is exact, dscale 0, but there is no implicit int/byte→decimal in any context; write `decimal(1)` or `1.0`. Mixed decimal/int arithmetic is a compile error unless converted.
 - `int(d)` is a compile error pointing to `decimal::toInt(d, mode) -> Result[int]`, which rounds once with the named mode, returns `INEXACT` for `UNNECESSARY`, and `OVERFLOW` outside `int`; it never silently truncates or wraps. `floor`, `ceil`, `trunc`, `round` are named stdlib operations.
 - **float→decimal is forbidden**: no literal, implicit or explicit conversion, because binary64 is inexact and no hidden rounding is allowed. decimal→float is omitted in v1; if later offered it must be explicit, documented lossy `decimal::toFloat(d)` and never a money path. No implicit decimal/float mixing.
-- `decimal::parse(s) -> Result[decimal]` accepts the section 2 grammar with full consumption and rejects whitespace, grouping, underscores, `NaN`, `Infinity` and a bare sign. It preserves dscale and returns `PRECISION`, `EXPONENT` or `DISPLAY_RANGE` on the tested precedence, and `INVALID` on syntax.
+- `decimal::parse(s) -> Result[decimal]` accepts the strict public text grammar:
+  optional sign, mandatory integer digits, optional `.` with at least one
+  fraction digit, optional exponent with at least one digit; integer-only and
+  signed database cells are accepted with dscale 0. The whole input is ASCII;
+  whitespace, grouping, underscores, NUL, `NaN`/`Infinity`, `.5` and `1.` are
+  rejected. It preserves dscale and returns `PRECISION`, `DISPLAY_RANGE` or
+  `EXPONENT` on the tested precedence (precision, then display range, then
+  exponent), and `INVALID` on syntax. The source literal grammar remains
+  section 2; this is its database-cell extension.
 - `decimal::format(d) -> Result[string]` is fixed notation with exactly dscale fractional digits, invariant C locale, no grouping and no exponent; it returns `INEXACT` if capped dscale would drop nonzero fractional digits. `decimal::canonical(d)` returns exact minimal text for keys/serialisation. `print`/`println`/`eprint`/`eprintln` use `format`: `1.2300` prints `1.2300`, `0.00` keeps its dscale, dscale 0 has no point; on `INEXACT` they print canonical exact text, never round. `formatScientific` is separate and float `e±NN` is not reused.
 - No binary float for money; database paths never use `double`.
 
@@ -166,7 +174,7 @@ Implementation landed after Stage B `0.11` as `0.12`/format 6/ABI 1; later decim
 | Remainder | `%`/`%=` truncating, sign of dividend, `DIV_ZERO` trap | floor/Euclidean default |
 | Display propagation | add/sub `max`; multiply capped sum; div target; rem `max` | fatal display trap; unbounded sum |
 | `decimal(p,s)` | deferred; boundary `check(value,p,s)` | add syntax now |
-| Operators vs stdlib | core ops; div/round/parse/format/conversions in `lib/decimal.obx` | all stdlib/methods |
+| Operators vs stdlib | core ops; div/round/conversions in `lib/decimal.obx`; `parse`/`format`/`canonical`/`check`/`exponent`/`dscale` are compiler-known text builtins in the P0 tier (a stdlib wrapper may follow) | all stdlib/methods |
 | Conversions | explicit both ways; `toInt(d,mode) -> Result`; no truncation/wrap; float→decimal forbidden | implicit int→decimal |
 | ABI / width | 24-byte three-word, align 8, stride 24, hidden out pointer; 32-byte rejected | `RAX:RDX:RCX`; 32-byte (rejected) |
 | `?decimal` / NULL | no `?decimal`; tagged DB wrapper | sentinel; `Result` as NULL |
