@@ -14,6 +14,9 @@ adapter.
 - Copy borrowed values and error strings with an explicit length. Use the
   library's reported length (`PQgetlength`, `sqlite3_column_bytes`), never
   `strlen`, for a value that may contain NUL.
+- Keep error state at the level that owns it: connection-level open/exec errors
+  on the connection, and a separate copied message/code per prepared statement.
+  A successful bind on statement B must not erase A's last error.
 - Carry NULL as a distinct kind/flag. Empty bytes are not NULL.
 - Build a small length-delimited packet in obo for parameter batches, then copy
   it once into a registry buffer. The C adapter parses and bounds the packet.
@@ -34,9 +37,11 @@ adapter.
 - **SQLite.** A missing development header is not permission to pretend a
   header check happened. Use a small, independently written declarations-only
   subset matching the official C API, link `-l:libsqlite3.so.0`, and record
-  `signature_check: "declarations-only"`. If a real header is available in a
-  private evidence location, compile the declarations against it as a read-only
-  cross-check, but keep the committed build independent of that header.
+  `signature_check: "declarations-only"`. List the declaration file under
+  `declaration_files` so the manifest hashes it without pretending it was a
+  compiled header check. If a real header is available in a private evidence
+  location, compile the declarations against it as a read-only cross-check, but
+  keep the committed build independent of that header.
 - SQLite connections must not close while prepared statements are live. Track a
   per-connection statement count, return `SQLITE_BUSY` from close, and document
   the LIFO `defer stmt.close()` / `defer conn.close()` order.
@@ -46,6 +51,11 @@ adapter.
 - A prepare error code can be a small positive SQLite result code, so the
   adapter's "no token" return must be non-positive (0/negative) or the obo
   wrapper will mistake an error for a token.
+- `sqlite3_reset` returns the previous step error after resetting. Report reset
+  as success and clear that diagnostic; otherwise a reusable statement looks
+  permanently failed.
+- `sqlite3_column_int64` is exact only for INTEGER; REAL truncates. Expose
+  exact text separately and say which accessor preserves which representation.
 
 ## Obo-language constraint
 

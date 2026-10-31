@@ -169,6 +169,25 @@ int main(void) {
     CHECK(pq_result_clear(v) == 1);
     CHECK(pq_result_clear(v) == 0);
 
+    /* Empty text and empty blob stay non-NULL with zero length. */
+    pbegin(&p, "SELECT $1::text, $2::bytea", 0, 2);
+    pparam(&p, 1, NULL, 0);
+    pparam(&p, 2, NULL, 0);
+    b = wrap(&p);
+    CHECK(b > 0);
+    v = pg_exec_typed(conn, b);
+    CHECK(v > 0);
+    CHECK(cres_buf_free(b) == 1);
+    CHECK(fake_last_param_count() == 2);
+    CHECK(fake_last_param_isnull(0) == 0);
+    CHECK(fake_last_param_type(0) == 25);
+    CHECK(fake_last_param_len(0) == 0);
+    CHECK(fake_last_param_isnull(1) == 0);
+    CHECK(fake_last_param_type(1) == 17);
+    CHECK(fake_last_param_format(1) == 1);
+    CHECK(fake_last_param_len(1) == 0);
+    CHECK(pq_result_clear(v) == 1);
+
     /* NULL first parameter: the fake result's first cell is NULL. */
     pbegin(&p, "SELECT $1::text, $2::int8", 0, 2);
     pparam(&p, 0, NULL, 0);
@@ -189,6 +208,9 @@ int main(void) {
     if (run_bad_packet(conn, &p)) return 1;
 
     pbegin(&p, "SELECT 1", 2, 0); /* invalid result format */
+    if (run_bad_packet(conn, &p)) return 1;
+
+    pbegin(&p, "SELECT 1", 0, 33); /* over the 32-parameter bound */
     if (run_bad_packet(conn, &p)) return 1;
 
     pbegin(&p, "SELECT $1", 0, 1);
@@ -260,6 +282,25 @@ int main(void) {
     CHECK(cs > 0);
     CHECK(pg_open(cs) == 0);
     CHECK(cres_buf_free(cs) == 1);
+
+    /* Syntactically invalid conninfo is a distinct input error (-4) with the
+     * parser diagnostic copied before PQfreemem; it is not an allocation error. */
+    cs = mkc("fake-invalid");
+    CHECK(cs > 0);
+    CHECK(pg_open(cs) == -4);
+    CHECK(cres_buf_free(cs) == 1);
+    v = pq_conninfo_error_buf();
+    CHECK(v > 0);
+    CHECK(cres_buf_len(v) > 0);
+    {
+        unsigned char *p = NULL;
+        size_t len = 0;
+        const char want[] = "fake invalid conninfo";
+        CHECK(cres_buf_data(v, &p, &len));
+        CHECK(len == sizeof(want) - 1 && memcmp(p, want, len) == 0);
+    }
+    CHECK(cres_buf_free(v) == 1);
+    CHECK(cres_live_count() == 0);
 
     CHECK(fake_get_conn_live() == 0);
     CHECK(fake_get_result_live() == 0);

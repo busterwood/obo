@@ -9,6 +9,9 @@
     "sqlite_adapter.c"
   ],
   "headers": [],
+  "declaration_files": [
+    "sqlite_decls.h"
+  ],
   "declarations": [
     "extern long cres_buf_new(long len);",
     "extern long cres_buf_set(long token, long index, long value);",

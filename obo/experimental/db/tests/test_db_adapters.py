@@ -13,6 +13,7 @@ or test failure is a failure.
 This is not part of the public compiler test catalog. It does not change server
 configuration, create roles/databases, start services, or depend on sqlite3.h.
 """
+import hashlib
 import json
 import os
 import shutil
@@ -87,6 +88,21 @@ def manifest(out):
     return json.load(open(os.path.join(out, 'manifest.json')))
 
 
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for b in iter(lambda: f.read(1 << 20), b''):
+            h.update(b)
+    return h.hexdigest()
+
+
+def check_declaration_hash(m, path, what):
+    if 'declaration_0' not in m.get('files', {}):
+        raise Fail('%s manifest does not hash its declaration file' % what)
+    if m['files']['declaration_0'] != sha256(path):
+        raise Fail('%s manifest declaration hash does not match source' % what)
+
+
 def expect_lines(text, lines, what):
     for line in lines:
         if line not in text:
@@ -106,12 +122,18 @@ def postgres_probe(tmp):
                      'postgres probe')
     p = need(run([app]), 'postgres probe run')
     expect_lines(p.stdout, ['PQlibVersion=', 'empty_status=2', 'empty_rows=0',
-                            'empty_fields=0', 'empty_open=true', 'live=0'],
-                 'postgres probe')
+                            'empty_fields=0', 'empty_open=true',
+                            'invalid_conninfo_code=2',
+                            'invalid_conninfo_msg=invalid connection string:',
+                            'live=0'], 'postgres probe')
+    if 'could not be allocated' in p.stdout:
+        raise Fail('invalid conninfo was misreported as an allocation failure')
+    m = manifest(out)
+    check_declaration_hash(m, os.path.join(TOOL, 'toolkit', 'libpq_decls.h'),
+                           'postgres')
     ldd = need(run(['ldd', app]), 'postgres probe ldd')
     if 'libpq.so.5' not in ldd.stdout:
         raise Fail('postgres probe does not depend on libpq.so.5')
-    m = manifest(out)
     if m.get('signature_check') != 'declarations-only':
         raise Fail('postgres signature_check is %r' % m.get('signature_check'))
     verify(out)
@@ -145,13 +167,15 @@ def sqlite_memory(tmp):
                      'sqlite memory')
     p = need(run([app]), 'sqlite memory run')
     expect_lines(p.stdout, ['sqlite_memory=ok', 'live=0', 'conns=0', 'stmts=0',
-                            'buffers=0', 'sqlite_smoke=ok'], 'sqlite memory')
+                            'buffers=0', 'path_errors=ok', 'sqlite_smoke=ok'], 'sqlite memory')
     ldd = need(run(['ldd', app]), 'sqlite ldd')
     if 'libsqlite3.so.0' not in ldd.stdout:
         raise Fail('sqlite app does not depend on libsqlite3.so.0')
     m = manifest(out)
     if m.get('signature_check') != 'declarations-only':
         raise Fail('sqlite signature_check is %r' % m.get('signature_check'))
+    check_declaration_hash(m, os.path.join(DB, 'sqlite', 'sqlite_decls.h'),
+                           'sqlite')
     verify(out)
     print('sqlite in-memory: ok')
 
@@ -175,14 +199,17 @@ def sqlite_file(tmp):
         import sqlite3
         conn = sqlite3.connect(path)
         try:
-            rows = conn.execute('SELECT id,label,n,data FROM items').fetchall()
+            rows = conn.execute(
+                'SELECT id,typeof(id),label,typeof(label),n,typeof(n),'
+                'data,typeof(data),note,typeof(note),empty,typeof(empty) '
+                'FROM items').fetchall()
         finally:
             conn.close()
-        if rows != [(1, 'oracle', -9000000000, bytes([0, 255, 65]))]:
+        want = (1, 'integer', 'oracle', 'text', -9000000000, 'integer',
+                bytes([0, 255, 65]), 'blob', None, 'null', '', 'text')
+        if rows != [want]:
             raise Fail('python sqlite3 oracle disagrees: %r' % (rows,))
-        if rows[0][3] != bytes([0, 255, 65]):
-            raise Fail('BLOB bytes changed')
-        print('sqlite tempfile/Python oracle: ok')
+        print('sqlite tempfile/Python typeof/NULL/empty/blob oracle: ok')
     finally:
         for suffix in ('', '-journal', '-wal', '-shm'):
             try:
@@ -262,7 +289,8 @@ def postgres_live(tmp):
                    % (p.returncode, p.stdout + p.stderr))
     expect_lines(p.stdout, ['numeric_text=1.234567890123456789 oid=1700 typmod=-1',
                             'null_and_empty=ok', 'binary_bytes=00ff41 len=3',
-                            'sql_error_length=', 'init_error=ok', 'live=0',
+                            'empty_blob=ok', 'sql_error_length=', 'init_error=ok',
+                            'badsocket_error=ok', 'live=0',
                             'live_db_smoke=ok'], 'live postgres')
     out2 = os.path.join(tmp, 'pg_outlives')
     app2 = must_build(LIBPQ, os.path.join(PG_EX, 'postgres_outlives_app.obx'),

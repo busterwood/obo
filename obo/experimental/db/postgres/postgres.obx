@@ -19,6 +19,7 @@
 module postgres
 
 pub const CONNECTION_OK = 0
+pub const CONNECTION_BAD = 1
 pub const PGRES_EMPTY_QUERY = 0
 pub const PGRES_COMMAND_OK = 1
 pub const PGRES_TUPLES_OK = 2
@@ -75,11 +76,6 @@ fn put_bytes(b: &[]byte): int {
         }
     }
     return t
-}
-
-fn put_cstr(b: &[]byte): int {
-    if has_nul(b) { return 0 }
-    return put_bytes(b)
 }
 
 fn take_buf(t: int): []byte {
@@ -209,11 +205,29 @@ fn build_packet(sql: string, params: &[]Param, result_binary: bool): Result[[]by
 
 pub fn open(conninfo: string): Result[Connection] {
     let raw = encode_string(conninfo)
-    let b = put_cstr(&raw)
-    if b <= 0 { return err("invalid connection string (NUL byte or too long)", 2) }
+    if has_nul(&raw) {
+        return err("invalid connection string (embedded NUL)", 2)
+    }
+    let b = put_bytes(&raw)
+    if b <= 0 { return err("invalid connection string (too long)", 2) }
     let t = __cinterop("pg_open", b)
     __cinterop("cres_buf_free", b)
-    if t <= 0 { return err("connection could not be allocated", 2) }
+    if t == -4 {
+        let eb = __cinterop("pq_conninfo_error_buf")
+        let msg = take_buf(eb)
+        let detail = error_text(msg)
+        if len(detail) == 0 {
+            return err("invalid connection string", 2)
+        }
+        return err("invalid connection string: " + detail, 2)
+    }
+    if t == -1 {
+        return err("invalid connection buffer", 2)
+    }
+    if t == -2 {
+        return err("invalid connection string (embedded NUL or too long)", 2)
+    }
+    if t <= 0 { return err("connection could not be allocated", 3) }
     let st = __cinterop("pq_conn_status", t)
     if st != CONNECTION_OK {
         let eb = __cinterop("pq_error_buf", t)
@@ -265,8 +279,8 @@ pub fn execute(c: &Connection, sql: string, params: []Param): Result[Rows] {
     return execute_fmt(c, sql, params, false)
 }
 
-// Binary result format. Use bytes() for values; value() still rejects values
-// whose text conversion contains an embedded NUL.
+// Binary result format. Use bytes() for values; value() returns exact bytes
+// (including embedded NUL); text() is the NUL-rejecting string convenience.
 pub fn execute_binary(c: &Connection, sql: string, params: []Param): Result[Rows] {
     return execute_fmt(c, sql, params, true)
 }

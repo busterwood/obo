@@ -107,7 +107,26 @@ fn main() {
                 err(m, c) { println("q1 error ", m, " ", c); exit(18) }
             }
 
-            // 2. Exact numeric TEXT with OID/typmod, never a float conversion.
+            // 2. Empty bytea parameter round-trips as an empty, non-NULL value.
+            var ep = new []postgres::Param(0)
+            append(ep, postgres::param_blob(new []byte(0)))
+            let q1b = postgres::execute(&conn,
+                "SELECT encode($1::bytea,'hex') AS e", ep)
+            match q1b {
+                ok(rows) {
+                    defer rows.close()
+                    check(rows.status() == postgres::PGRES_TUPLES_OK, "q1b status", 70)
+                    let e = rows.text(0, 0)
+                    match e {
+                        ok(v) { check(len(v) == 0, "q1b empty blob", 71) }
+                        err(m, c) { println("q1b error ", m, " ", c); exit(72) }
+                    }
+                    println("empty_blob=ok")
+                }
+                err(m, c) { println("q1b error ", m, " ", c); exit(73) }
+            }
+
+            // 3. Exact numeric TEXT with OID/typmod, never a float conversion.
             let q2 = postgres::query(&conn,
                 "SELECT 1.234567890123456789::numeric AS num, 9007199254740993::int8 AS big")
             match q2 {
@@ -148,7 +167,7 @@ fn main() {
                 err(m, c) { println("q2 error ", m, " ", c); exit(31) }
             }
 
-            // 3. NULL is distinct from empty text.
+            // 4. NULL is distinct from empty text.
             let q3 = postgres::query(&conn, "SELECT NULL::text AS n, ''::text AS e")
             match q3 {
                 ok(rows) {
@@ -176,7 +195,7 @@ fn main() {
                 err(m, c) { println("q3 error ", m, " ", c); exit(39) }
             }
 
-            // 4. Binary result with embedded NUL.
+            // 5. Binary result with embedded NUL.
             let q4 = postgres::execute_binary(&conn,
                 "SELECT decode('00ff41','hex') AS b", new []postgres::Param(0))
             match q4 {
@@ -196,7 +215,7 @@ fn main() {
                 err(m, c) { println("q4 error ", m, " ", c); exit(44) }
             }
 
-            // 5. A server error still owns a result; the message is copied and
+            // 6. A server error still owns a result; the message is copied and
             // the result closes cleanly.
             let q5 = postgres::query(&conn, "SELECT * FROM obo_db_adapter_no_such_table")
             match q5 {
@@ -210,7 +229,7 @@ fn main() {
                 err(m, c) { println("q5 error ", m, " ", c); exit(47) }
             }
 
-            // 6. Bounds and NUL rejection at the public edge.
+            // 7. Bounds and NUL rejection at the public edge.
             let q6 = postgres::query(&conn, "SELECT 1")
             match q6 {
                 ok(rows) {
@@ -250,22 +269,36 @@ fn main() {
         err(m, c) { println("connect_error=", m, " code=", c); exit(59) }
     }
 
-    // 7. Invalid conninfo: libpq rejects it before any network connection, and
-    // the adapter copies the error before closing the failed connection.
+    // 8. Invalid conninfo value: syntactically valid, but libpq rejects the
+    // value before a connection. This is a transport/status failure, not the
+    // conninfo-syntax input error covered by the no-connection probe.
     let bad = postgres::open("connect_timeout=not_a_number")
     match bad {
         ok(c) { c.close(); println("invalid conninfo accepted"); exit(60) }
         err(m, c) {
-            check(len(m) > 0, "init error message", 61)
+            check(c == postgres::CONNECTION_BAD, "init error status", 61)
+            check(len(m) > 0, "init error message", 62)
             println("init_error=ok")
+        }
+    }
+
+    // A syntactically valid conninfo with a nonexistent Unix socket must also
+    // be a connection-status error (1), not the input-error path (2).
+    let badsock = postgres::open("host=/nonexistent/obo-db-no-socket port=5432 dbname=postgres user=chris connect_timeout=1")
+    match badsock {
+        ok(c) { c.close(); println("bad socket accepted"); exit(63) }
+        err(m, c) {
+            check(c == postgres::CONNECTION_BAD, "badsocket status", 64)
+            check(len(m) > 0, "badsocket message", 65)
+            println("badsocket_error=ok")
         }
     }
 
     let live = postgres::live_resources()
     println("live=", live)
-    check(live == 0, "live resources", 62)
-    check(postgres::live_connections() == 0, "live connections", 63)
-    check(postgres::live_results() == 0, "live results", 64)
-    check(postgres::live_buffers() == 0, "live buffers", 65)
+    check(live == 0, "live resources", 66)
+    check(postgres::live_connections() == 0, "live connections", 67)
+    check(postgres::live_results() == 0, "live results", 68)
+    check(postgres::live_buffers() == 0, "live buffers", 69)
     println("live_db_smoke=ok")
 }

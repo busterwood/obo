@@ -9,6 +9,7 @@
 #include "../sqlite/sqlite_adapter.h"
 #include "../sqlite/sqlite_decls.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -32,7 +33,7 @@ static int buf_eq_bytes(long tok, const unsigned char *want, size_t n) {
 }
 
 int main(void) {
-    long path, sql, c, st, q, b;
+    long path, sql, c, st, st2, q, b;
     long live;
     unsigned char blob[3] = {0, 255, 65};
     const unsigned char want_text[] = "alice";
@@ -130,7 +131,12 @@ int main(void) {
     CHECK(buf_eq_bytes(b, blob, sizeof(blob)));
     CHECK(cres_buf_free(b) == 1);
     CHECK(sq_stmt_column_type(st, 99) == -1);
+    CHECK(sq_stmt_column_type(st, -1) == -1);
+    CHECK(sq_stmt_column_type(st, LONG_MAX) == -1);
+    CHECK(sq_stmt_column_type(st, LONG_MIN) == -1);
     CHECK(sq_stmt_column_text_buf(st, 99) == -1);
+    CHECK(sq_stmt_column_text_buf(st, LONG_MAX) == -1);
+    CHECK(sq_stmt_column_blob_buf(st, LONG_MIN) == -1);
     CHECK(sq_stmt_step(st) == SQLITE_DONE);
     CHECK(sq_stmt_close(st) == 1);
 
@@ -206,6 +212,59 @@ int main(void) {
     CHECK(sq_prepare(c, q) == 0);
     CHECK(cres_buf_free(q) == 1);
     CHECK(sq_error_code(c) == 1);
+
+    /* Statement A fails a constraint; statement B must not see or clear A's
+     * diagnosis. reset() after the failed step is a success and A is reusable. */
+    q = mkc("INSERT INTO t(id,name) VALUES(?1,?2)");
+    CHECK(q > 0);
+    st = sq_prepare(c, q);
+    CHECK(st > 0);
+    CHECK(cres_buf_free(q) == 1);
+    CHECK(sq_stmt_bind_int(st, 1, 7) == SQLITE_OK);
+    b = mkc("duplicate-again");
+    CHECK(b > 0);
+    CHECK(sq_stmt_bind_text(st, 2, b) == SQLITE_OK);
+    CHECK(cres_buf_free(b) == 1);
+    CHECK(sq_stmt_step(st) == SQLITE_CONSTRAINT);
+    CHECK(sq_stmt_error_code(st) == SQLITE_CONSTRAINT);
+    b = sq_stmt_error_buf(st);
+    CHECK(b > 0);
+    CHECK(cres_buf_len(b) > 0);
+    CHECK(cres_buf_free(b) == 1);
+
+    q = mkc("SELECT ?1");
+    CHECK(q > 0);
+    st2 = sq_prepare(c, q);
+    CHECK(st2 > 0);
+    CHECK(cres_buf_free(q) == 1);
+    b = sq_stmt_error_buf(st2);
+    CHECK(b > 0);
+    CHECK(cres_buf_len(b) == 0);
+    CHECK(cres_buf_free(b) == 1);
+    CHECK(sq_stmt_error_code(st2) == 0);
+    CHECK(sq_stmt_bind_int(st2, 1, 5) == SQLITE_OK);
+    CHECK(sq_stmt_error_code(st2) == 0);
+    CHECK(sq_stmt_error_code(st) == SQLITE_CONSTRAINT);
+    b = sq_stmt_error_buf(st);
+    CHECK(b > 0);
+    CHECK(cres_buf_len(b) > 0);
+    CHECK(cres_buf_free(b) == 1);
+
+    CHECK(sq_stmt_reset(st) == SQLITE_OK);
+    CHECK(sq_stmt_error_code(st) == 0);
+    b = sq_stmt_error_buf(st);
+    CHECK(b > 0);
+    CHECK(cres_buf_len(b) == 0);
+    CHECK(cres_buf_free(b) == 1);
+    CHECK(sq_stmt_bind_int(st, 1, 9) == SQLITE_OK);
+    b = mkc("nine");
+    CHECK(b > 0);
+    CHECK(sq_stmt_bind_text(st, 2, b) == SQLITE_OK);
+    CHECK(cres_buf_free(b) == 1);
+    CHECK(sq_stmt_step(st) == SQLITE_DONE);
+    CHECK(sq_stmt_step(st2) == SQLITE_ROW);
+    CHECK(sq_stmt_close(st2) == 1);
+    CHECK(sq_stmt_close(st) == 1);
 
     /* Connection close fails while a statement is live, then succeeds. */
     q = mkc("SELECT 1");

@@ -33,6 +33,8 @@ typedef struct sq_conn {
 typedef struct sq_stmt {
     sqlite3_stmt *stmt;
     sq_conn *owner;
+    char *last_error;
+    int last_code;
 } sq_stmt;
 
 static char g_open_error[SQ_OPEN_ERROR_MAX];
@@ -73,6 +75,35 @@ static void set_conn_error_from_db(sq_conn *c, int code) {
                                                        : sqlite3_errstr(code));
 }
 
+/* Statement diagnostics are separate from the connection's last error. A
+ * successful bind/step on statement B must not erase statement A's diagnosis,
+ * and a failed step on A must not appear on B. */
+static void set_stmt_error(sq_stmt *s, int code, const char *msg) {
+    char *copy = NULL;
+    if (s == NULL) return;
+    if (msg != NULL && msg[0] != 0) {
+        size_t n = strlen(msg);
+        copy = (char *)malloc(n + 1);
+        if (copy != NULL) memcpy(copy, msg, n + 1);
+    }
+    free(s->last_error);
+    s->last_error = copy;
+    s->last_code = code;
+}
+
+static void clear_stmt_error(sq_stmt *s) {
+    if (s == NULL) return;
+    free(s->last_error);
+    s->last_error = NULL;
+    s->last_code = 0;
+}
+
+static void set_stmt_error_from_db(sq_stmt *s, int code) {
+    set_stmt_error(s, code, s != NULL && s->owner != NULL && s->owner->db != NULL
+                                ? sqlite3_errmsg(s->owner->db)
+                                : sqlite3_errstr(code));
+}
+
 static long buf_from_cstr(const char *s) {
     if (s == NULL) s = "";
     return cres_buf_from_bytes(s, strlen(s));
@@ -107,6 +138,7 @@ static void release_stmt(void *p) {
     if (s == NULL) return;
     if (s->stmt != NULL) sqlite3_finalize(s->stmt);
     if (s->owner != NULL && s->owner->stmt_live > 0) s->owner->stmt_live--;
+    free(s->last_error);
     free(s);
 }
 
@@ -335,14 +367,12 @@ long sq_stmt_close(long stmt_token) {
 
 long sq_stmt_reset(long stmt_token) {
     sq_stmt *s = get_stmt(stmt_token);
-    int rc;
     if (s == NULL) return -1;
-    rc = sqlite3_reset(s->stmt);
-    if (rc != SQLITE_OK) {
-        set_conn_error_from_db(s->owner, rc);
-        return (long)rc;
-    }
-    clear_conn_error(s->owner);
+    /* sqlite3_reset returns the previous step error as a convenience, but it
+     * has already reset the statement. That prior error must not be reported as
+     * a reset failure: reset is successful and the statement is reusable. */
+    (void)sqlite3_reset(s->stmt);
+    clear_stmt_error(s);
     return SQLITE_OK;
 }
 
@@ -351,7 +381,7 @@ static int check_index(sq_stmt *s, long index) {
     if (s == NULL) return 0;
     n = sqlite3_bind_parameter_count(s->stmt);
     if (index < 1 || index > (long)n) {
-        set_conn_error(s->owner, SQLITE_RANGE, "parameter index out of range");
+        set_stmt_error(s, SQLITE_RANGE, "parameter index out of range");
         return 0;
     }
     return 1;
@@ -362,8 +392,8 @@ long sq_stmt_bind_null(long stmt_token, long index) {
     int rc;
     if (!check_index(s, index)) return s == NULL ? -1 : SQLITE_RANGE;
     rc = sqlite3_bind_null(s->stmt, (int)index);
-    if (rc != SQLITE_OK) set_conn_error_from_db(s->owner, rc);
-    else clear_conn_error(s->owner);
+    if (rc != SQLITE_OK) set_stmt_error_from_db(s, rc);
+    else clear_stmt_error(s);
     return (long)rc;
 }
 
@@ -372,8 +402,8 @@ long sq_stmt_bind_int(long stmt_token, long index, long value) {
     int rc;
     if (!check_index(s, index)) return s == NULL ? -1 : SQLITE_RANGE;
     rc = sqlite3_bind_int64(s->stmt, (int)index, (sqlite3_int64)value);
-    if (rc != SQLITE_OK) set_conn_error_from_db(s->owner, rc);
-    else clear_conn_error(s->owner);
+    if (rc != SQLITE_OK) set_stmt_error_from_db(s, rc);
+    else clear_stmt_error(s);
     return (long)rc;
 }
 
@@ -384,15 +414,15 @@ static long bind_bytes(long stmt_token, long index, long value_buf, int is_text)
     int rc;
     if (!check_index(s, index)) return s == NULL ? -1 : SQLITE_RANGE;
     if (!cres_buf_data(value_buf, &data, &len)) {
-        set_conn_error(s->owner, -1, "invalid value buffer");
+        set_stmt_error(s, -1, "invalid value buffer");
         return -1;
     }
     if (len > (size_t)SQ_MAX_VALUE || len > (size_t)INT_MAX) {
-        set_conn_error(s->owner, -1, "bound value is too large");
+        set_stmt_error(s, -1, "bound value is too large");
         return -1;
     }
     if (is_text && has_nul(data, len)) {
-        set_conn_error(s->owner, -1, "text value contains an embedded NUL");
+        set_stmt_error(s, -1, "text value contains an embedded NUL");
         return -1;
     }
     if (is_text) {
@@ -402,8 +432,8 @@ static long bind_bytes(long stmt_token, long index, long value_buf, int is_text)
         rc = sqlite3_bind_blob(s->stmt, (int)index, (const void *)data, (int)len,
                                OBO_SQLITE_TRANSIENT);
     }
-    if (rc != SQLITE_OK) set_conn_error_from_db(s->owner, rc);
-    else clear_conn_error(s->owner);
+    if (rc != SQLITE_OK) set_stmt_error_from_db(s, rc);
+    else clear_stmt_error(s);
     return (long)rc;
 }
 
@@ -421,9 +451,10 @@ long sq_stmt_step(long stmt_token) {
     if (s == NULL) return -1;
     rc = sqlite3_step(s->stmt);
     if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
-        set_conn_error_from_db(s->owner, rc);
+        set_stmt_error_from_db(s, rc);
         return (long)rc;
     }
+    clear_stmt_error(s);
     return (long)rc;
 }
 
@@ -480,12 +511,12 @@ long sq_stmt_column_int(long stmt_token, long col) {
 
 long sq_stmt_error_buf(long stmt_token) {
     sq_stmt *s = get_stmt(stmt_token);
-    if (s == NULL || s->owner == NULL) return -1;
-    return buf_from_cstr(s->owner->last_error != NULL ? s->owner->last_error : "");
+    if (s == NULL) return -1;
+    return buf_from_cstr(s->last_error != NULL ? s->last_error : "");
 }
 
 long sq_stmt_error_code(long stmt_token) {
     sq_stmt *s = get_stmt(stmt_token);
-    if (s == NULL || s->owner == NULL) return -1;
-    return (long)s->owner->last_code;
+    if (s == NULL) return -1;
+    return (long)s->last_code;
 }

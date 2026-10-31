@@ -32,7 +32,11 @@ typedef void (*sqlite3_destructor_type)(void *);
 
 /* Result codes. */
 #define SQLITE_OK     0
+#define SQLITE_ERROR  1
 #define SQLITE_BUSY   5
+#define SQLITE_NOMEM  7
+#define SQLITE_CONSTRAINT 19
+#define SQLITE_MISUSE 21
 #define SQLITE_RANGE  25
 #define SQLITE_ROW    100
 #define SQLITE_DONE   101

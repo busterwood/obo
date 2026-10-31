@@ -86,14 +86,24 @@ fn main() {
 ```
 
 - `open(conninfo)` calls `PQconnectdb`; the reviewed toolkit's bounded
-  `connect_timeout` check is reused. A failed connection copies the error text
+  `connect_timeout` check is reused. A syntactically invalid conninfo returns
+  `err("invalid connection string: <libpq parser message>", 2)` before any
+  connection attempt. A syntactically valid conninfo that libpq cannot connect
+  (bad socket path, invalid `connect_timeout` value, refused authentication)
+  returns `err(<libpq message>, 1)` / `CONNECTION_BAD`, not the input-error code
+  and not "could not be allocated". A failed connection copies the error text
   before `PQfinish`.
 - `execute(sql, params)` and `query(sql)` use `PQexecParams` with the fixed
   eight-argument descriptor and explicit parameter OIDs: text 25, bytea 17,
   int8 20, bool 16, and 0 for an untyped NULL. `execute_binary` asks for binary
   result columns.
 - SQL and text parameters reject embedded NUL. Bytea parameters preserve their
-  exact length. SQL is never interpolated; `$1..$n` are placeholders.
+  exact length, including an empty bytea (non-NULL, zero length). SQL is never
+  interpolated; `$1..$n` are placeholders.
+- A SQL execution failure is still a successful adapter call: `execute()`
+  returns `ok(Rows)` with `rows.status() == PGRES_FATAL_ERROR` and the copied
+  `error_message()`. This matches the reviewed libpq toolkit; only packet,
+  transport, allocation and input errors are `err(...)`.
 - `value(row,col)` is `Result[?[]byte]` because obo optional values must be
   reference types; `text(row,col)` is the string convenience and rejects NULL
   and embedded NUL. `bytes(row,col)` returns exact value bytes, with NULL as an
@@ -144,24 +154,32 @@ fn main() {
 - `open(path)` uses `sqlite3_open_v2` with READWRITE|CREATE|URI. `:memory:` and
   files under `/tmp` are supported; the tests use both and remove their files.
 - `exec(sql)` uses `sqlite3_exec` and accepts multiple statements. `prepare(sql)`
-  accepts exactly one statement and rejects trailing statements.
+  accepts exactly one statement and conservatively rejects trailing text after
+  it, including a trailing SQL comment; this is deliberate, not a full SQL
+  lexer.
 - Bind indices are 1-based; out-of-range is `SQLITE_RANGE`. Bindings are
   `bind_null`, `bind_int` (i64), `bind_text` and `bind_blob`; text rejects
   embedded NUL, blob preserves it.
 - `step()` is `Result[bool]`: `true` for `SQLITE_ROW`, `false` for
   `SQLITE_DONE`, and an error Result for any SQLite error. `reset()` is
-  explicit; `close()` finalizes exactly once.
+  explicit and returns success after resetting even when the previous step
+  failed, so the statement is reusable; `close()` finalizes exactly once.
 - `column_value` is `Result[?[]byte]` (nil is SQL NULL); `column_text` is the
   string convenience; `column_bytes` preserves TEXT/BLOB bytes; `column_type`
-  returns the SQLite datatype; `column_int` returns an exact i64 view. SQLite's
-  documented integer-to-text conversion is used, never an obo float.
+  returns the SQLite datatype. `column_int` is an exact i64 only for an INTEGER
+  column; a REAL is truncated and TEXT is converted by SQLite. Use
+  `column_value`/`column_text` for exact decimal text. SQLite's documented
+  integer-to-text conversion is used, never an obo float in the adapter.
 - A connection refuses to close while a prepared statement is live
   (`SQLITE_BUSY`); close statements first, then the connection. This is why the
   canonical order is `defer conn.close()` after `defer stmt.close()` in the same
   block (defers run last-in, first-out).
 - Errors are copied immediately: `sqlite3_exec`'s allocated `errmsg` is copied
   and freed, `open` copies the message before closing a failed handle, and
-  `error_message`/`error_code` are per-connection/stmt snapshots.
+  `error_message`/`error_code` are snapshots. Connection-level errors belong to
+  the connection; each statement has its own message/code, so statement B
+  neither sees nor clears statement A's last error. Returned SQLite codes are
+  exposed as `SQLITE_ERROR`, `SQLITE_CONSTRAINT`, `SQLITE_BUSY`, etc.
 
 ### SQLite declarations-only provenance
 
@@ -169,7 +187,10 @@ The probe host has `/lib/x86_64-linux-gnu/libsqlite3.so.0` and the `sqlite3`
 3.45.1 shell, but no `/usr/include/sqlite3.h` and no `pkg-config`. The committed
 `sqlite_decls.h` is an independently written minimal ABI declaration subset.
 `sqlite.cbind` records `signature_check: "declarations-only"`; it does not claim
-a header check. Linking is `-l:libsqlite3.so.0`.
+a header check. Linking is `-l:libsqlite3.so.0`. The declaration file itself is
+listed under `declaration_files` and hashed into the manifest as a provenance
+input, without being promoted to a compiled header check. The PostgreSQL cbind
+does the same for `libpq_decls.h`.
 
 A private evidence-only cross-check compiled the real 3.45.1 header first and
 these declarations together with static assertions for every used constant,
@@ -189,14 +210,20 @@ python3 obo/experimental/db/tests/test_db_adapters.py
 
 The suite covers:
 
-- deterministic fake-libpq C tests: typed packet/OIDs, formats, NULL, binary
-  NUL, malformed packets, SQL/text NUL, bounds, allocation failure, double
-  close, result-outlives-connection and live counters;
-- real libpq link/PGresult ownership with no connection;
+- deterministic fake-libpq C tests: typed packet/OIDs, empty text/bytea, NULL,
+  binary NUL, 33-parameter rejection, malformed packets, SQL/text NUL, bounds,
+  allocation failure, invalid conninfo diagnostic, double close,
+  result-outlives-connection and live counters;
+- real libpq link/PGresult ownership with no connection, plus invalid-conninfo
+  input-error reporting;
 - real SQLite in-memory create/insert/select/param roundtrip/NULL/blob-NUL/
-  constraint error/bounds/close-order/double-close/stale-token/live counters;
+  constraint error/reset-after-error/cross-statement error isolation/bounds/
+  close-order/double-close/stale-token/live counters;
 - real SQLite tempfile under `/tmp`, compared with Python's `sqlite3` module as
-  an independent oracle, then removed;
+  an independent oracle for `typeof`, NULL, empty text and BLOB bytes, then
+  removed;
+- manifest checks that the declarations-only header is hashed as a provenance
+  input (without claiming a compiled header check);
 - ASAN/UBSAN builds of both C adapter suites.
 
 The PostgreSQL live section is opt-in and SELECT-only:
@@ -232,5 +259,12 @@ is not a skip because the committed adapter is declarations-only.
   private evidence, not by a committed header check. A future SQLite ABI change
   needs a new review.
 - The resource registry has 64 slots total and bounds buffers to 16 MiB.
+- The C registry kinds (`CONN`, `RESULT`, `STMT`) are shared by the two
+  packages. A compiler build links one cbind/package, so a token from the other
+  adapter is not reachable in a normal application; do not link both native
+  packages into one custom image. A cross-adapter token would still be
+  same-kind and is not rejected by kind alone.
+- SQLite `prepare()` rejects trailing text/comments after the first statement
+  rather than implementing a SQL lexer.
 - No automatic foreign finalizer; a dropped record leaks until explicit close.
   The live counters are diagnostics, not a safety proof.

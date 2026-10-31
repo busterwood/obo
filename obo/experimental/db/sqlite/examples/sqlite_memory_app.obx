@@ -185,6 +185,32 @@ fn memory_test(): Result[bool] {
     return ok(true)
 }
 
+fn path_errors(): bool {
+    var nul = new []byte(0)
+    append(nul, 'a')
+    append(nul, byte(0))
+    append(nul, 'b')
+    let a = sqlite::open(string(nul))
+    match a {
+        ok(c) { c.close(); return false }
+        err(m, c) {
+            if c != 2 { return false }
+            if m != "database path contains an embedded NUL" { return false }
+        }
+    }
+    var long = new []byte(0)
+    for i in 0..5000 { append(long, 'a') }
+    let b = sqlite::open(string(long))
+    match b {
+        ok(c) { c.close(); return false }
+        err(m, c) {
+            if c != 2 { return false }
+            if m != "database path is too long" { return false }
+        }
+    }
+    return true
+}
+
 fn main() {
     let r = memory_test()
     match r {
@@ -199,10 +225,12 @@ fn main() {
     println("stmts=", sqlite::live_statements())
     println("buffers=", sqlite::live_buffers())
     check(sqlite::live_resources() == 0, "live", 60)
+    check(path_errors(), "path errors", 62)
     let es = sqlite::error_string(sqlite::SQLITE_BUSY)
     match es {
         ok(s) { check(len(s) > 0, "errstr", 61) }
         err(m, c) { println("errstr error ", m); exit(62) }
     }
+    println("path_errors=ok")
     println("sqlite_smoke=ok")
 }

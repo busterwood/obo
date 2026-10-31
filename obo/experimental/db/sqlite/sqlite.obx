@@ -13,8 +13,30 @@
 module sqlite
 
 pub const SQLITE_OK = 0
+pub const SQLITE_ERROR = 1
+pub const SQLITE_INTERNAL = 2
+pub const SQLITE_PERM = 3
+pub const SQLITE_ABORT = 4
 pub const SQLITE_BUSY = 5
+pub const SQLITE_LOCKED = 6
+pub const SQLITE_NOMEM = 7
+pub const SQLITE_READONLY = 8
+pub const SQLITE_INTERRUPT = 9
+pub const SQLITE_IOERR = 10
+pub const SQLITE_CORRUPT = 11
+pub const SQLITE_NOTFOUND = 12
+pub const SQLITE_FULL = 13
+pub const SQLITE_CANTOPEN = 14
+pub const SQLITE_PROTOCOL = 15
+pub const SQLITE_EMPTY = 16
+pub const SQLITE_SCHEMA = 17
+pub const SQLITE_TOOBIG = 18
+pub const SQLITE_CONSTRAINT = 19
+pub const SQLITE_MISMATCH = 20
+pub const SQLITE_MISUSE = 21
+pub const SQLITE_AUTH = 23
 pub const SQLITE_RANGE = 25
+pub const SQLITE_NOTADB = 26
 pub const SQLITE_ROW = 100
 pub const SQLITE_DONE = 101
 
@@ -55,11 +77,6 @@ fn put_bytes(b: &[]byte): int {
     return t
 }
 
-fn put_cstr(b: &[]byte): int {
-    if has_nul(b) { return 0 }
-    return put_bytes(b)
-}
-
 fn take_buf(t: int): []byte {
     var out = new []byte(0)
     if t <= 0 { return out }
@@ -95,8 +112,10 @@ fn open_error(default_code: int): Result[Connection] {
 
 pub fn open(path: string): Result[Connection] {
     let raw = encode_string(path)
-    let b = put_cstr(&raw)
-    if b <= 0 { return err("database path contains an embedded NUL", 2) }
+    if has_nul(&raw) { return err("database path contains an embedded NUL", 2) }
+    if len(raw) > 4096 { return err("database path is too long", 2) }
+    let b = put_bytes(&raw)
+    if b <= 0 { return err("database path could not be allocated", 3) }
     let t = __cinterop("sq_open", b)
     __cinterop("cres_buf_free", b)
     if t <= 0 { return open_error(2) }
@@ -299,8 +318,9 @@ pub fn (s: &Stmt) column_bytes(col: int): Result[?[]byte] {
     return ok(out)
 }
 
-// Exact i64 view. SQL NULL is an error; SQLite applies its documented numeric
-// conversion for TEXT columns.
+// Integer view through sqlite3_column_int64. It is an exact i64 only for an
+// INTEGER column; REAL is truncated and TEXT is converted by SQLite. Use
+// column_value/column_text when exact decimal text is required.
 pub fn (s: &Stmt) column_int(col: int): Result[int] {
     let t = __cinterop("sq_stmt_column_type", s.tok, col)
     if t < 0 { return err("column out of range", 2) }

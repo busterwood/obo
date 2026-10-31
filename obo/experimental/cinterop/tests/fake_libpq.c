@@ -279,6 +279,13 @@ PQconninfoOption *PQconninfoParse(const char *conninfo, char **errmsg) {
     int quoted = 0;
     if (errmsg != NULL) *errmsg = NULL;
     if (p == NULL) return NULL;
+    if (strcmp(p, "fake-invalid") == 0) {
+        if (errmsg != NULL) {
+            *errmsg = (char *)malloc(23);
+            if (*errmsg != NULL) strcpy(*errmsg, "fake invalid conninfo");
+        }
+        return NULL;
+    }
     while (*p != 0) {
         if (*p == '\'') {
             quoted = !quoted;
