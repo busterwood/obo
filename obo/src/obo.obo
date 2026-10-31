@@ -1218,11 +1218,12 @@ type Param = ref record {
 
 var fnStack = new []^Sym(0)       // functions and lambda bodies being compiled, for active-callee checks
 var lambdaOuterNames = new []string(0)  // enclosing local/parameter names while a lambda body compiles
-var captureSyms = new []^Sym(0)
-var lastFnBind: ?^RefBind = nil
-var lambdaArgOK = 0
+var captureSyms = new []^Sym(0)   // the capture symbols of the lambdas being compiled, for capture diagnostics
+var lastFnBind: ?^RefBind = nil   // the capture binding of the last capturing literal parsed (see lambdaExpr)
+var lambdaArgOK = 0               // around a call argument's expression: a capturing literal is allowed there
 
-// One capture: kind 0 scalar, 1 object/reference, 2 handle, 3 function value.
+// One entry of a capturing lambda's environment, in declaration order. kind is 0 for a scalar snapshot,
+// 1 for a read-only whole-object/reference capture, 2 for a handle token and 3 for a function value.
 type LambdaCap = ref record {
     outer: ^Sym
     name: string
@@ -1611,7 +1612,8 @@ fn singleBind(root: ^Sym, deep: bool, path: string, writable: bool, parent: ?^Sy
     return arenaBind(roots, deeps, paths, writable, parent)
 }
 
-// the read-only call-site binding of a capturing literal; nil if none
+// the call-site binding of a capturing literal's captures: whole owned objects, the bindings of the
+// captured references, and the origin owners of tracked let handles; read-only, and nil if none.
 fn captureBind(caps: &[]LambdaCap): ?^RefBind {
     var roots = new []^Sym(0)
     var deeps = new []bool(0)
@@ -3322,7 +3324,7 @@ fn findSym(list: &[]^Sym, name: string): ?^Sym {
     return nil
 }
 
-// the enclosing local or parameter, innermost block first
+// the local or parameter of the enclosing function with this name, innermost block first
 fn findOuterLocal(name: string): ?^Sym {
     var i = len(blocks) - 1
     while i >= 0 {
@@ -5929,7 +5931,7 @@ fn nestedExpr(): Item {
 // reference to the same place invalidates it, and the later argument is refused (see argOrderCheck).
 var argTemps = new []^Sym(0)
 var argTempsUsed = 0
-var argCapture = new []bool(0)
+var argCapture = new []bool(0)     // per argTemps entry: held for a capturing closure, not a reference
 
 // holds argument i, whose binding is b. A holder that was invalidated has stopped the compile (see
 // argOrderCheck), so only its suspicion is left from its last use. It is never named, so its freshness and
@@ -6112,10 +6114,10 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
     let argModes = new []int(0)
     let argVias = new []?^Sym(0)
     let argIdx = new []int(0)           // the parameter each of those is
-    let argIsCapture = new []bool(0)
-    var deepLine = 0
+    let argIsCapture = new []bool(0)    // the binding came from a capturing literal, not a reference argument
+    var deepLine = 0                   // the first argument that points inside something
     var deepCol = 0
-    var capDeepLine = 0
+    var capDeepLine = 0                // the first capturing closure that captures a deep reference
     var capDeepCol = 0
     let tbase = argTempsUsed
     let omark = len(ownedLocals)
@@ -6202,7 +6204,7 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
                 argOrderCheck(tbase, fname, meth, i, argLine, argCol)
                 holdArg(cb, i, true)
             } else {
-                append(argIsCapture, false)
+                // no argBinds entry here, so no argIsCapture entry either: the two stay parallel
                 argOrderCheck(tbase, fname, meth, i, argLine, argCol)
             }
         }
@@ -6222,6 +6224,8 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
             release(r.r)
         }
     }
+    // argIsCapture is appended exactly when argBinds is appended; the checks below index them together
+    if len(argBinds) != len(argIsCapture) { error("internal error: argument binding flags are misaligned") }
     releaseArgs(tbase, omark)
     if sym != T_RPAREN { error(callDisplay(meth, fname) + " takes " + string(narg) + " argument(s), not more") }
     expect(T_RPAREN, "")
@@ -6236,6 +6240,8 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
             errorAt("cannot pass a reference that points inside something to " + callDisplay(meth, fname) + ": it writes through a handle, which could free it", deepLine, deepCol)
         }
     }
+    // a capturing closure's deep capture is refused by a callee that may free through a handle or
+    // whose body is not known; a whole-object capture has no deep place and is unaffected
     if capDeepLine > 0 {
         if f == curFn || f.addr < 0 || f.writesHandles {
             errorAt("cannot pass a closure that captures a reference inside something to " + callDisplay(meth, fname) + ": it writes through a handle, which could free it", capDeepLine, capDeepCol)
@@ -6258,7 +6264,10 @@ fn callFnWith(f: ^Sym, recv: ?Item, hasRecv: bool, rline: int, rcol: int): Item 
                             // a method numbers source arguments, with the receiver as parameter 0
                             var lj = j
                             var li = i
-                            if meth { lj = argIdx[j]; li = argIdx[i] }
+                            if meth || argIsCapture[j] || argIsCapture[i] {
+                                lj = argIdx[j]
+                                li = argIdx[i]
+                            }
                             if argIsCapture[j] {
                                 error(argLabel(meth, lj, start) + " of " + callDisplay(meth, fname) + " captures a place that " + argLabel(meth, li, start) + " changes, which is mut")
                             } else {
@@ -7522,6 +7531,8 @@ fn lambdaExpr(): Item {
     let hline = tline
     let hcol = tcol
     next()
+    // The capture list is names only here; it is resolved after the parameter list, so that a name
+    // that is also a parameter gets the specific diagnostic (lambdas design 5.2 step 4).
     let capNames = new []string(0)
     let capLines = new []int(0)
     let capCols = new []int(0)
@@ -7566,6 +7577,9 @@ fn lambdaExpr(): Item {
     if len(capNames) > 0 {
         if lambdaArgOK <= 0 { error("a capturing lambda may only be passed directly as a call argument") }
     }
+    // Resolve the capture names against the enclosing function's open blocks. Globals and functions are
+    // used directly; a string or interface value has no v1 capture mode; everything else is a scalar
+    // snapshot, a read-only borrow/reference copy, a handle token copy or a function-cell copy.
     let caps = new []LambdaCap(0)
     for i in 0..len(capNames) {
         let cn = capNames[i]
@@ -7601,6 +7615,9 @@ fn lambdaExpr(): Item {
             }
             if isIfaceVal(ct) {
                 error("cannot capture interface value '" + cn + "'; function values cannot take interface values in v1")
+            } else if containsIface(ct) {
+                // containsIface recurses into record/closed fields and forward shells (interfaces v3 10.1)
+                error("cannot capture '" + cn + "': its type holds an interface value; function values cannot take interface values in v1")
             }
             var ck = 0
             if ct.kind == "int" || ct.kind == "byte" || ct.kind == "bool" {
@@ -7879,9 +7896,12 @@ fn lambdaExpr(): Item {
         rodAlign()
         let cell = RODATA_BASE + len(rodata)
         rod64(CODE_BASE + f.addr)
+        cpEnd = -1
+        foldEnd = -1
         return makeConst(ft, cell)
     }
-    // [code][cap0]...[capN] in the creating frame; it owns nothing
+    // The capturing cell lives in the creating function's frame: [code][cap0]...[capN]. It contains
+    // no owned value, so it is plain frame words and nothing frees it.
     frame += 8 * (1 + len(caps))
     let base = -frame
     let cw = alloc()
@@ -7898,6 +7918,8 @@ fn lambdaExpr(): Item {
     let cellReg = alloc()
     movRR(cellReg, RBP)
     aluRI(0, cellReg, base)
+    cpEnd = -1
+    foldEnd = -1
     return makeReg(ft, cellReg)
 }
 
@@ -10418,7 +10440,9 @@ fn lambdaBody(f: ^Sym, ret: ^Type, params: &[]Param, caps: &[]LambdaCap) {
         }
         if params[i].typ.kind == "string" { addStrLocal(s) }
     }
-    // load captures from env+8; object/reference captures are read-only reference locals
+    // Load every capture from env+8. The list and layout are known before the body, so these loads
+    // are at the top and valid on every path. A read-only object/reference capture is a param-like
+    // reference local; scalars, handles and function values are plain let locals.
     if len(caps) > 0 {
         let er = alloc()
         opMem(0x8B, er, mem(RBP, -1, 16 + 8 * (n - 1), 8), true, false)
@@ -13590,6 +13614,7 @@ fn releaseTables() {
     fnStack = new []^Sym(0)
     lambdaOuterNames = new []string(0)
     captureSyms = new []^Sym(0)
+    argCapture = new []bool(0)
     lastFnBind = nil
     lambdaArgOK = 0
     inWhileCond = false

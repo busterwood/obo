@@ -18,6 +18,19 @@ fn freeG(f: fn(int): int, n: int): int {
     G = new Bag{items: new []Box(0), n: 0}
     return f(n)
 }
+fn freeG2(n: int, f: fn(int): int): int {
+    G = new Bag{items: new []Box(0), n: 0}
+    return f(n)
+}
+fn badplain(h: ^Bag, f: fn(int): int): int {
+    h.items = new []Box(0)
+    return f(1)
+}
+fn badafter(f: fn(int): int, h: ^Bag): int {
+    h.items = new []Box(0)
+    return f(1)
+}
+fn useBag2(n: int, f: fn(int): int, mut b: &Bag): int { return f(n) }
 fn mk(q: &Bag): ^Box { return handle(q.items[0]) }
 fn applyR(x: int, f: fn(int): Result[int]): int {
     let r = f(x)
@@ -53,6 +66,9 @@ fn main() { let x = 1; println(apply(1, fn [x](x: int): int { return x })) }  //
 
 // === a mutable capture mode is unsupported
 fn main() { let n = 1; println(apply(1, fn [mut n](x: int): int { return x })) }  // error: captures are read-only: write fn [x]; mutable and owned captures are not supported
+
+// === the moved mutable capture in a let initializer is still the mode-word error
+fn main() { let x = 1; let f = fn [mut x](y: int): int { return y }; println(1) }  // error: captures are read-only: write fn [x]; mutable and owned captures are not supported
 
 // === an enclosing local used in the body is not implicitly captured
 fn main() { let n = 1; println(apply(1, fn (x: int): int { return x + n })) }  // error: 'n' is a local of the enclosing function; add it to the lambda's capture list: fn [n](...)
@@ -119,6 +135,28 @@ fn main() { let b = new Box{v: 1}; println(use2(fn [b](x: int): int { return x +
 
 // === a mut argument may not overlap a deep capture
 fn main() { var b = new Bag{items: new []Box(0), n: 0}; append(b.items, new Box{v: 1}); let d = &b.items[0]; println(useBag(fn [d](x: int): int { return x + d.v }, b)) }  // error: argument 1 of useBag captures a place that argument 2 changes, which is mut
+
+// === a plain first argument does not hide a handle-rooted capture
+fn main() { let b = new Bag{items: new []Box(0), n: 0}; append(b.items, new Box{v: 1}); let h = handle(b); let r = &h.items[0]; println(badplain(h, fn [r](x: int): int { return x + r.v })) }  // error: cannot pass a closure that captures a reference through a handle to badplain: it might free what the handle names
+
+// === a plain later argument does not hide a handle-rooted capture
+fn main() { let b = new Bag{items: new []Box(0), n: 0}; append(b.items, new Box{v: 1}); let h = handle(b); let r = &h.items[0]; println(badafter(fn [r](x: int): int { return x + r.v }, h)) }  // error: cannot pass a closure that captures a reference through a handle to badafter: it might free what the handle names
+
+// === a plain first argument does not hide a global-rooted capture
+fn main() { append(G.items, new Box{v: 1}); let r = &G.items[0]; println(freeG2(1, fn [r](x: int): int { return x + r.v })) }  // error: cannot pass a closure that captures a reference into global 'G' to freeG2: it might free it
+
+// === a plain first argument does not hide a deep mut overlap
+fn main() { var b = new Bag{items: new []Box(0), n: 0}; append(b.items, new Box{v: 1}); let d = &b.items[0]; println(useBag2(1, fn [d](x: int): int { return x + d.v }, b)) }  // error: argument 2 of useBag2 captures a place that argument 3 changes, which is mut
+
+// === a record that holds an interface cannot be captured
+type IfaceHolder = ref record { d: I }
+fn capHolder(hd: IfaceHolder): int { return apply(1, fn [hd](x: int): int { return x }) }  // error: cannot capture 'hd': its type holds an interface value; function values cannot take interface values in v1
+fn main() { println(0) }
+
+// === a closed type that holds an interface cannot be captured
+type IfaceClosed = closed { WithI { d: I } }
+fn capClosed(h: IfaceClosed): int { return apply(1, fn [h](x: int): int { return x }) }  // error: cannot capture 'h': its type holds an interface value; function values cannot take interface values in v1
+fn main() { println(0) }
 
 // === a deep capture needs a callee that does not write through a handle
 fn main() { let b = new Bag{items: new []Box(0), n: 0}; append(b.items, new Box{v: 1}); let d = &b.items[0]; println(harmful(fn [d](x: int): int { return x + d.v }, 1)) }  // error: cannot pass a closure that captures a reference inside something to harmful: it writes through a handle, which could free it

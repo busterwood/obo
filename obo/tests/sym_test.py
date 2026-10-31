@@ -2074,6 +2074,66 @@ def iface_forged_freesall():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def capture_forged_writeshandles():
+    """A well-formed source-less lib.sym may state writeshandles without freesall. A handle-rooted
+    capture must still be refused at the creating call, before and after a plain argument, with the
+    capture wording -- not the generic source-less refusal and not silently accepted."""
+    files = {
+        'lib.obx': '''module lib
+pub fn bad(n: int, f: fn(int): int): int { return f(n) }
+pub fn good(f: fn(int): int, n: int): int { return f(n) }
+''',
+        'main_bad.obx': '''module main
+import "lib.obx"
+type Box = ref record { v: int }
+type Bag = ref record { items: []Box; n: int }
+fn main() {
+    let b = new Bag{items: new []Box(0), n: 0}
+    append(b.items, new Box{v: 1})
+    let h = handle(b)
+    let r = &h.items[0]
+    println(lib::bad(1, fn [r](x: int): int { return x + r.v }))
+}
+''',
+        'main_good.obx': '''module main
+import "lib.obx"
+type Box = ref record { v: int }
+type Bag = ref record { items: []Box; n: int }
+fn main() {
+    let b = new Bag{items: new []Box(0), n: 0}
+    append(b.items, new Box{v: 1})
+    let h = handle(b)
+    let r = &h.items[0]
+    println(lib::good(fn [r](x: int): int { return x + r.v }, 1))
+}
+''',
+    }
+    d, symdir = tree(files, prefix='symcase-capture-forged-')
+    try:
+        ok(build(d, symdir, root='main_bad.obx', out=os.path.join(d, 'p')), 'honest build')
+        libpath = os.path.join(symdir, 'lib.sym')
+        base = sym_text(libpath)
+        if base.count(b'fn bad(p0: int, p1: fn(int): int): int\n') != 1:
+            raise Fail(f"lib.sym does not hold the bad heading: {base!r}")
+        if base.count(b'fn good(p0: fn(int): int, p1: int): int\n') != 1:
+            raise Fail(f"lib.sym does not hold the good heading: {base!r}")
+        os.unlink(os.path.join(d, 'lib.obx'))
+        with open(libpath, 'wb') as f:
+            f.write(base)
+        mutate(libpath, b'fn bad(p0: int, p1: fn(int): int): int\n',
+               b'fn bad(p0: int, p1: fn(int): int): int writeshandles\n')
+        mutate(libpath, b'fn good(p0: fn(int): int, p1: int): int\n',
+               b'fn good(p0: fn(int): int, p1: int): int writeshandles\n')
+        for root, name in (('main_bad.obx', 'lib::bad'), ('main_good.obx', 'lib::good')):
+            q = build(d, symdir, root=root, check=True)
+            want = ("cannot pass a closure that captures a reference through a handle to " + name +
+                    ": it might free what the handle names")
+            if q.returncode != 1 or want not in q.stderr:
+                raise Fail(f"forged writeshandles {root}: exit {q.returncode}, wanted 1 and {want!r}: {q.stderr.strip()}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def tests():
     return [
         ('sym/roundtrip_rich', roundtrip_rich),
@@ -2118,6 +2178,7 @@ def tests():
         ('sym/qualified_fnfwd_alias', qualified_fnfwd_alias),
         ('sym/iface_tier_check', iface_tier_check),
         ('sym/iface_forged_freesall', iface_forged_freesall),
+        ('sym/capture_forged_writeshandles', capture_forged_writeshandles),
     ]
 
 

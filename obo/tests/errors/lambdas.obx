@@ -19,9 +19,6 @@ fn main() { let f = fn (x: int): int { let v = try g(x); return v }; println(1) 
 // === an uninitialised function-valued local needs a value
 fn main() { var f: fn(int): int }  // error: 'f' of type fn(int): int needs an initial value (it cannot be nil)
 
-// === a mutable capture is still unsupported in Stage B
-fn main() { let x = 1; let f = fn [mut x](y: int): int { return y }; println(1) }  // error: captures are read-only: write fn [x]; mutable and owned captures are not supported
-
 // === a lambda literal cannot appear in a while condition
 fn main() { while fn (x: int): bool { return true } { break } }  // error: a lambda literal cannot appear in a while condition; move the call out of the condition before the loop
 
