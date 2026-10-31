@@ -23,6 +23,8 @@ pub type Stream = ref record { pub res: platform::Resource }
 pub type Standard = closed { Input {} Output {} Error {} }
 
 pub const MAX_CHUNK = 1048576
+pub const MAX_VECTOR_PARTS = 64
+pub const MAX_VECTOR_BYTES = 1048576
 
 fn libCode(k: errors::Kind): int {
     return errors::code(&k)
@@ -137,6 +139,104 @@ pub fn writeSome(s: &Stream, bytes: &[]byte, offset: int, count: int): Result[in
 
 pub fn writeFrom(s: &Stream, src: &[]byte, offset: int, count: int): Result[int] {
     return writeSome(s, src, offset, count)
+}
+
+// Half-close is meaningful only for a socket-backed Stream. A file/pipe
+// stream returns Unsupported; shutdownWrite is idempotent and never implies
+// that the peer consumed previously written bytes.
+pub fn shutdownRead(s: &Stream): Result[bool] {
+    let st = try platform::_tokenHandle(handle(s.res), platform::KIND_STREAM)
+    let done = try platform::_netShutdownToken(st, platform::KIND_STREAM, 0)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn shutdownWrite(s: &Stream): Result[bool] {
+    let st = try platform::_tokenHandle(handle(s.res), platform::KIND_STREAM)
+    let done = try platform::_netShutdownToken(st, platform::KIND_STREAM, 1)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+// Bounded vector transfer. P2 composes one contiguous transfer from the
+// selected prefix of `parts`, so a short return advances a caller cursor across
+// the vectors; it does not promise a single writev(2) call or preserved vector
+// boundaries across a short write. Total bytes are capped at 1 MiB.
+pub fn writeVector(s: &Stream, parts: &[][]byte, first: int,
+                   offset: int): Result[int] {
+    if len(parts) > MAX_VECTOR_PARTS {
+        return err("writeVector accepts at most 64 parts", rangeCode())
+    }
+    if first < 0 || first > len(parts) {
+        return err("writeVector first index is outside the part list", rangeCode())
+    }
+    if offset < 0 {
+        return err("writeVector offset is negative", rangeCode())
+    }
+    var total = 0
+    for i in first..len(parts) {
+        let part = len(parts[i])
+        var n = part
+        if i == first {
+            if offset > part { return err("writeVector offset is outside the first part", rangeCode()) }
+            n = part - offset
+        }
+        if total > MAX_VECTOR_BYTES - n {
+            return err("writeVector total exceeds 1 MiB", rangeCode())
+        }
+        total += n
+    }
+    let flat = new []byte(total)
+    var at = 0
+    for i in first..len(parts) {
+        var from = 0
+        if i == first { from = offset }
+        for j in from..len(parts[i]) {
+            flat[at] = parts[i][j]
+            at += 1
+        }
+    }
+    return writeSome(s, &flat, 0, total)
+}
+
+// Read at most 64 independently sized owned arrays. End-of-input before any
+// bytes returns nil; a short final part is returned as-is. An error after a
+// partial read is returned as err and the partial arrays are not retained.
+pub fn readVector(s: &Stream, sizes: &[]int): Result[?[][]byte] {
+    if len(sizes) < 1 || len(sizes) > MAX_VECTOR_PARTS {
+        return err("readVector needs 1..64 sizes", rangeCode())
+    }
+    var total = 0
+    for i in 0..len(sizes) {
+        if sizes[i] < 1 || sizes[i] > MAX_CHUNK {
+            return err("readVector size is outside 1..1 MiB", rangeCode())
+        }
+        if total > MAX_VECTOR_BYTES - sizes[i] {
+            return err("readVector total exceeds 1 MiB", rangeCode())
+        }
+        total += sizes[i]
+    }
+    var parts = new [][]byte(0)
+    for i in 0..len(sizes) {
+        let part = try readSome(s, sizes[i])
+        if part == nil {
+            if len(parts) == 0 {
+                let none: ?[][]byte = nil
+                return ok(none)
+            }
+            break
+        } else {
+            let plen = len(part)
+            append(parts, part)
+            if plen < sizes[i] { break }
+        }
+    }
+    if len(parts) == 0 {
+        let none: ?[][]byte = nil
+        return ok(none)
+    }
+    let result: ?[][]byte = parts
+    return ok(result)
 }
 
 pub fn close(s: &Stream): Result[bool] {

@@ -19,6 +19,13 @@ enum {
     SYS_KIND_DIRECTORY = 2,
     SYS_KIND_ITERATOR = 3,
     SYS_KIND_STREAM = 5,
+    SYS_KIND_REACTOR = 6,
+    SYS_KIND_WATCH = 7,
+    SYS_KIND_TIMER = 8,
+    SYS_KIND_LISTENER = 9,
+    SYS_KIND_CONNECTION = 10,
+    SYS_KIND_DATAGRAM = 11,
+    SYS_KIND_CANCELLATION = 17,
     SYS_KIND_TEST_RESOURCE = 90,
     SYS_KIND_TEST_RESOURCE_ALT = 91,
     SYS_KIND_BYTE_BUFFER = 92
@@ -75,7 +82,28 @@ enum {
     SYS_CALL_CLOCK = 16,
     SYS_CALL_SLEEP = 17,
     SYS_CALL_RANDOM = 18,
-    SYS_CALL_STANDARD = 19
+    SYS_CALL_STANDARD = 19,
+    SYS_CALL_NET_LISTEN = 20,
+    SYS_CALL_ACCEPT = 21,
+    SYS_CALL_CONNECT = 22,
+    SYS_CALL_FINISH_CONNECT = 23,
+    SYS_CALL_CONN_READ = 24,
+    SYS_CALL_CONN_WRITE = 25,
+    SYS_CALL_SHUTDOWN = 26,
+    SYS_CALL_NET_DUP = 27,
+    SYS_CALL_ADDRESS = 28,
+    SYS_CALL_SOCKOPT = 29,
+    SYS_CALL_REACTOR_NEW = 30,
+    SYS_CALL_WATCH = 31,
+    SYS_CALL_MODIFY = 32,
+    SYS_CALL_REMOVE = 33,
+    SYS_CALL_TIMER = 34,
+    SYS_CALL_CANCEL_TIMER = 35,
+    SYS_CALL_WAIT = 36,
+    SYS_CALL_WAKE = 37,
+    SYS_CALL_STOP = 38,
+    SYS_CALL_RESOLVE = 39,
+    SYS_CALL_CANCEL = 40
 };
 
 /* Fixed C-owned metadata packet: 16 signed 64-bit fields (128 bytes). */
@@ -118,6 +146,97 @@ long sys_clock_realtime_nsec(void);
 long sys_sleep_until(long monotonic_ns);
 long sys_random(long buf_token, long offset, long count, long blocking);
 long sys_stream_standard(long which);
+
+/* P2 address packet: four 64-bit fields then up to 108 address bytes. */
+#define SYS_ADDR_PACKET_BYTES 160L
+#define SYS_ADDR_DATA_OFFSET 32L
+#define SYS_ADDR_DATA_MAX 108L
+enum {
+    SYS_ADDR_FAMILY_NONE = 0,
+    SYS_ADDR_FAMILY_IPV4 = 1,
+    SYS_ADDR_FAMILY_IPV6 = 2,
+    SYS_ADDR_FAMILY_UNIX_PATH = 3,
+    SYS_ADDR_FAMILY_UNIX_ABSTRACT = 4
+};
+
+/* Listen option bits (library bits, not a Linux flag word). */
+enum {
+    SYS_LISTEN_REUSE_ADDRESS = 1,
+    SYS_LISTEN_REUSE_PORT = 2,
+    SYS_LISTEN_IPV6_ONLY = 4
+};
+
+/* Datagram metadata packet: originalSize, truncated. */
+#define SYS_DGRAM_META_BYTES 16L
+
+/* Resolver family/kind selectors. */
+enum {
+    SYS_FAMILY_ANY = 0,
+    SYS_FAMILY_IPV4 = 4,
+    SYS_FAMILY_IPV6 = 6
+};
+enum {
+    SYS_SOCKET_STREAM = 1,
+    SYS_SOCKET_DATAGRAM = 2
+};
+
+/* Resolver result packet: 16-byte header (count then reserved) then fixed
+ * address records. Error encoding keeps EAI codes and errno distinct. */
+#define SYS_RESOLVE_HEADER 16L
+#define SYS_RESOLVE_MAX_RESULTS 64L
+#define SYS_RESOLVE_EAI_BASE 100000L
+#define SYS_RESOLVE_SYSERR_BASE 200000L
+
+/* Reactor event packet: eight 64-bit fields. */
+#define SYS_EVENT_PACKET_BYTES 64L
+#define SYS_REACTOR_MAX_BATCH 64L
+
+long sys_net_listen(long addr_token, long backlog, long flags);
+long sys_net_accept(long listener_token);
+long sys_net_connect(long addr_token);
+long sys_net_finish_connect(long conn_token);
+long sys_net_read(long token, long kind, long buf_token, long offset, long count);
+long sys_net_write(long token, long kind, long buf_token, long offset, long count);
+long sys_net_shutdown(long token, long kind, long how);
+long sys_net_dup(long token, long kind, long to_kind);
+long sys_net_address(long token, long kind, long which, long out_token);
+long sys_net_set_no_delay(long token, long enabled);
+long sys_net_set_keepalive(long token, long enabled, long idle, long interval,
+                           long probes);
+long sys_net_set_buffer(long token, long kind, long which, long size);
+long sys_net_set_broadcast(long token, long enabled);
+long sys_net_bind_datagram(long addr_token);
+long sys_net_receive(long token, long buf_token, long max, long peer_token,
+                     long meta_token);
+long sys_net_send(long token, long addr_token, long buf_token, long offset,
+                  long count);
+long sys_net_state(long conn_token);
+
+long sys_net_reactor_new(long max_watches, long max_timers);
+long sys_net_cancel_new(void);
+long sys_net_watch(long reactor_token, long source_token, long source_kind,
+                   long readable, long writable, long tag);
+long sys_net_modify(long watch_token, long readable, long writable);
+long sys_net_remove(long watch_token);
+long sys_net_timer(long reactor_token, long at_ns, long period_ns, long tag);
+long sys_net_cancel_timer(long timer_token);
+long sys_net_wait(long reactor_token, long finite, long deadline_ns,
+                  long max_events, long out_token);
+long sys_net_wake(long reactor_token);
+long sys_net_stop(long reactor_token);
+long sys_net_cancel_request(long cancellation_token);
+long sys_net_cancel_pending(long cancellation_token);
+
+long sys_resolve(long host_token, long service_token, long family, long kind,
+                 long flags, long out_token, long max_results);
+
+/* Called by sys_res_close before retiring any watchable source. */
+void sys_net_forget_source(long token);
+
+/* Fake-backend P2 controls. */
+long sysfake_net_ready(long source_token);
+long sysfake_net_advance(long nanos);
+long sysfake_net_pending(long source_token, long readable, long writable);
 
 /* Fake-backend controls. These symbols exist only in the fake link unit and
  * are never called by production wrappers. Tests drive them directly. */

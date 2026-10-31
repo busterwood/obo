@@ -6,6 +6,8 @@
 #endif
 #include "sysadapter.h"
 #include "sysregistry.h"
+#include "sysnet_fake.h"
+#include "sysfake_internal.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -30,16 +32,12 @@ typedef struct {
     long refs;
 } fake_inode;
 
-typedef struct {
+struct fake_desc {
     fake_inode *ino;
     size_t pos;
     int append;
     long refs;
-} fake_desc;
-
-typedef struct {
-    fake_desc *d;
-} fake_file;
+};
 
 typedef struct {
     long index;
@@ -73,6 +71,22 @@ static long err(long e) {
     return -(e > 0 ? e : EIO);
 }
 
+int fake_pop_script(long call_class, long *result) {
+    if (qhead == qtail) return 0;
+    if (queue[qhead].call_class != call_class) return 0;
+    *result = queue[qhead].result;
+    qhead = (qhead + 1) % FAKE_QUEUE_MAX;
+    return 1;
+}
+
+long fake_clock_now(void) {
+    return fake_time;
+}
+
+void fake_clock_set(long value) {
+    fake_time = value;
+}
+
 static int pop_script(long call_class, long *result) {
     if (qhead == qtail) return 0;
     if (queue[qhead].call_class != call_class) return 0;
@@ -85,6 +99,12 @@ static int release_shared(void *p) {
     fake_file *f = (fake_file *)p;
     fake_desc *d;
     if (f == NULL) return EINVAL;
+    if (f->sock != NULL) {
+        fake_sock_release(f->sock);
+        f->sock = NULL;
+        free(f);
+        return 0;
+    }
     d = f->d;
     if (d != NULL) {
         d->refs--;
@@ -473,13 +493,15 @@ long sys_io_read(long token, long kind, long buf_token, long offset, long count,
     size_t n;
     have_script = pop_script(SYS_CALL_READ, &scripted);
     sys_reg_bump_call(SYS_CALL_READ);
-    if (f == NULL || f->d == NULL || f->d->ino == NULL) return err(EBADF);
+    if (f == NULL) return err(EBADF);
     if (offset < 0 || count <= 0) return err(EINVAL);
     r = buffer_span(buf_token, &buf, &buflen);
     if (r < 0) return r;
     if ((size_t)offset > buflen || (size_t)count > buflen - (size_t)offset) {
         return err(ERANGE);
     }
+    if (f->sock != NULL) return fake_sock_read(f, buf, (size_t)offset, (size_t)count);
+    if (f->d == NULL || f->d->ino == NULL) return err(EBADF);
     if (have_script && scripted < 0) return scripted;
     if (position >= 0) {
         if ((unsigned long long)position >= f->d->ino->len) return 0;
@@ -511,7 +533,17 @@ long sys_io_write(long token, long kind, long buf_token, long offset, long count
     size_t at;
     have_script = pop_script(SYS_CALL_WRITE, &scripted);
     sys_reg_bump_call(SYS_CALL_WRITE);
-    if (f == NULL || f->d == NULL || f->d->ino == NULL) return err(EBADF);
+    if (f == NULL) return err(EBADF);
+    if (f->sock != NULL) {
+        if (offset < 0 || count < 0) return err(EINVAL);
+        r = buffer_span(buf_token, &buf, &buflen);
+        if (r < 0) return r;
+        if ((size_t)offset > buflen || (size_t)count > buflen - (size_t)offset) {
+            return err(ERANGE);
+        }
+        return fake_sock_write(f, buf + offset, (size_t)count);
+    }
+    if (f->d == NULL || f->d->ino == NULL) return err(EBADF);
     if (offset < 0 || count < 0) return err(EINVAL);
     r = buffer_span(buf_token, &buf, &buflen);
     if (r < 0) return r;
@@ -650,8 +682,9 @@ long sys_file_dup(long token, long kind, long to_kind) {
     int have_script;
     long out;
     sys_reg_bump_call(SYS_CALL_DUP);
-    if (src == NULL || src->d == NULL) return err(EBADF);
+    if (src == NULL) return err(EBADF);
     if (to_kind <= 0) return err(EINVAL);
+    if (src->d == NULL) return err(EBADF);
     have_script = pop_script(SYS_CALL_DUP, &scripted);
     if (have_script && scripted < 0) return scripted;
     f = (fake_file *)calloc(1, sizeof(*f));
@@ -746,8 +779,16 @@ long sys_stream_standard(long which) {
 long sys_res_new(long kind, long a, long b) {
     long scripted = 0;
     int have_script;
-    (void)b;
     sys_reg_bump_call(SYS_CALL_NEW);
+    if (kind == SYS_KIND_REACTOR) {
+        return fake_reactor_new(a, b);
+    }
+    if (kind == SYS_KIND_CANCELLATION) {
+        (void)a;
+        (void)b;
+        return fake_cancel_new();
+    }
+    (void)b;
     if (kind == SYS_KIND_BYTE_BUFFER) {
         return sys_reg_new_buffer(a);
     }
@@ -811,6 +852,7 @@ long sys_res_close(long token, long kind) {
     int (*release)(void *) = NULL;
     int e;
     sys_reg_bump_call(SYS_CALL_CLOSE);
+    fake_net_forget_source(token);
     if (sys_reg_peek(token, (int)kind) == NULL) return 0;
     have_script = pop_script(SYS_CALL_CLOSE, &scripted);
     if (!sys_reg_retire(token, kind, &ptr, &release)) return 0;

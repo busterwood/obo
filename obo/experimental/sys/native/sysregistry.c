@@ -44,7 +44,7 @@ static long max_bytes_cfg;
 static size_t used_bytes;
 static int initialized;
 static long cleanup_failures;
-static long call_counts[32];
+static long call_counts[64];
 static sys_identity *identities;
 static long identity_count = 0;
 

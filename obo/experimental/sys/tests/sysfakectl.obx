@@ -24,6 +24,27 @@ pub const CLASS_CLOCK = 16
 pub const CLASS_SLEEP = 17
 pub const CLASS_RANDOM = 18
 pub const CLASS_STANDARD = 19
+pub const CLASS_NET_LISTEN = 20
+pub const CLASS_ACCEPT = 21
+pub const CLASS_CONNECT = 22
+pub const CLASS_FINISH_CONNECT = 23
+pub const CLASS_CONN_READ = 24
+pub const CLASS_CONN_WRITE = 25
+pub const CLASS_SHUTDOWN = 26
+pub const CLASS_NET_DUP = 27
+pub const CLASS_ADDRESS = 28
+pub const CLASS_SOCKOPT = 29
+pub const CLASS_REACTOR_NEW = 30
+pub const CLASS_WATCH = 31
+pub const CLASS_MODIFY = 32
+pub const CLASS_REMOVE = 33
+pub const CLASS_TIMER = 34
+pub const CLASS_CANCEL_TIMER = 35
+pub const CLASS_WAIT = 36
+pub const CLASS_WAKE = 37
+pub const CLASS_STOP = 38
+pub const CLASS_RESOLVE = 39
+pub const CLASS_CANCEL = 40
 
 pub fn reset(): int {
     return __cinterop("sysfake_reset")
@@ -51,4 +72,20 @@ pub fn setSeed(value: int): int {
 
 pub fn count(callClass: int): int {
     return __cinterop("sys_res_call_count", callClass)
+}
+
+pub fn netReady(sourceToken: int): int {
+    return __cinterop("sysfake_net_ready", sourceToken)
+}
+
+pub fn netAdvance(nanos: int): int {
+    return __cinterop("sysfake_net_advance", nanos)
+}
+
+pub fn netPending(sourceToken: int, readable: bool, writable: bool): int {
+    var rd = 0
+    var wr = 0
+    if readable { rd = 1 }
+    if writable { wr = 1 }
+    return __cinterop("sysfake_net_pending", sourceToken, rd, wr)
 }

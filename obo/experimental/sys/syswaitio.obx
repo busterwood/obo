@@ -1,0 +1,243 @@
+// Experimental systems library: deadline/cancellation I/O helpers (P2).
+//
+// Status: experimental P2 slice, unstable. These compound helpers combine the
+// sysbuffer step APIs with one reactor wait loop. They require a DEDICATED
+// reactor: a helper may consume readiness batches, so it must not be used with
+// an application reactor that carries unrelated watches. Event-driven callers
+// use sysbuffer::readExactStep/writeExactStep/writeStep plus
+// sysreactor::wait directly; `cancelled`/`deadlineReached` are the matching
+// checks.
+//
+// All three helpers keep ONE absolute deadline. EINTR, WouldBlock and partial
+// progress never reset it. Output buffers and cursors retain every byte of
+// progress on TimedOut/Cancelled/error. Cancellation is a sticky native flag
+// plus an eventfd wake, not a shared obo bool.
+module syswaitio
+
+import "sysbuffer.obx" as buffer
+import "sysstream.obx" as stream
+import "sysreactor.obx" as reactor
+import "sysclock.obx" as clock
+import "sysplatform.obx" as platform
+import "syserrors.obx" as errors
+
+pub type Cancellation = ref record { pub res: platform::Resource }
+
+const TAG_STREAM = 101
+const TAG_CANCEL = 102
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+fn rangeCode(): int { return libCode(new errors::Range{}) }
+fn cancelledCode(): int { return libCode(new errors::Cancelled{}) }
+fn timedOutCode(): int { return libCode(new errors::TimedOut{}) }
+fn systemFailure(): int { return libCode(new errors::SystemFailure{}) }
+
+pub fn cancellation(): Result[Cancellation] {
+    let r = try platform::_create(platform::KIND_CANCELLATION, 0, 0)
+    return ok(new Cancellation{res: r})
+}
+
+pub fn source(c: &Cancellation): Result[^platform::Resource] {
+    return platform::_requireKindHandle(handle(c.res), platform::KIND_CANCELLATION)
+}
+
+pub fn request(c: &Cancellation): Result[bool] {
+    let ct = try platform::_tokenHandle(handle(c.res), platform::KIND_CANCELLATION)
+    let done = try platform::_cancelRequest(ct)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn cancelled(c: &Cancellation): Result[bool] {
+    let ct = try platform::_tokenHandle(handle(c.res), platform::KIND_CANCELLATION)
+    let pending = try platform::_cancelPending(ct)
+    if pending != 0 { return ok(true) }
+    return ok(false)
+}
+
+pub fn closeCancellation(c: &Cancellation): Result[bool] {
+    return platform::_closeHandle(handle(c.res), platform::KIND_CANCELLATION)
+}
+
+pub fn deadlineReached(until: &clock::Deadline): Result[bool] {
+    if !until.finite && until.nanos != 0 {
+        return err("an infinite deadline must carry zero nanoseconds", invalidArgument())
+    }
+    if until.finite && until.nanos < 0 {
+        return err("deadline is negative", rangeCode())
+    }
+    if !until.finite { return ok(false) }
+    let now = try clock::monotonic()
+    if now.nanos >= until.nanos { return ok(true) }
+    return ok(false)
+}
+
+fn checkBeforeWait(s: &stream::Stream, c: &Cancellation,
+                   until: &clock::Deadline): Result[bool] {
+    let isCancelled = try cancelled(c)
+    if isCancelled {
+        return err("operation was cancelled", cancelledCode())
+    }
+    let expired = try deadlineReached(until)
+    if expired {
+        return err("operation deadline was reached", timedOutCode())
+    }
+    return ok(true)
+}
+
+fn waitTurn(r: &reactor::Reactor, until: &clock::Deadline): Result[bool] {
+    let events = try reactor::wait(r, until, 4)
+    if len(events) == 0 {
+        if until.finite {
+            return err("operation deadline was reached", timedOutCode())
+        }
+        return err("reactor returned no events for an infinite wait", systemFailure())
+    }
+    return ok(true)
+}
+
+pub fn readExactUntil(s: &stream::Stream, r: &reactor::Reactor, count: int,
+                      mut out: &buffer::Buffer, until: &clock::Deadline,
+                      cancel: &Cancellation): Result[bool] {
+    if count < 0 { return err("readExactUntil count is negative", rangeCode()) }
+    let available = try buffer::available(out)
+    if count > out.limit - available {
+        return err("output buffer has insufficient fixed capacity", rangeCode())
+    }
+    let st = try platform::_requireKindHandle(handle(s.res), platform::KIND_STREAM)
+    let ct = try platform::_requireKindHandle(handle(cancel.res),
+                                              platform::KIND_CANCELLATION)
+    let already = try cancelled(cancel)
+    if already {
+        return err("operation was cancelled", cancelledCode())
+    }
+    if count == 0 { return ok(true) }
+    var sw = try reactor::watchResource(r, st, true, false, TAG_STREAM)
+    defer reactor::remove(&sw)
+    var cw = try reactor::watchResource(r, ct, true, false, TAG_CANCEL)
+    defer reactor::remove(&cw)
+    let initial = out.end - out.start
+    while true {
+        let progress = (out.end - out.start) - initial
+        if progress >= count { return ok(true) }
+        try checkBeforeWait(s, cancel, until)
+        var remaining = count - progress
+        if remaining > buffer::MAX_STEP_BYTES { remaining = buffer::MAX_STEP_BYTES }
+        let done = buffer::readExactStep(s, remaining, &out)
+        match done {
+            ok(full) {
+                if full {
+                    if (out.end - out.start) - initial >= count { return ok(true) }
+                }
+            }
+            err(m, c) {
+                if errors::isWouldBlock(c) {
+                    try waitTurn(r, until)
+                } else if errors::isInterrupted(c) {
+                    try waitTurn(r, until)
+                } else {
+                    return err(m, c)
+                }
+            }
+        }
+        let nowCancelled = try cancelled(cancel)
+        if nowCancelled {
+            return err("operation was cancelled", cancelledCode())
+        }
+    }
+}
+
+pub fn writeAllUntil(s: &stream::Stream, r: &reactor::Reactor, bytes: &[]byte,
+                     mut cursor: &buffer::Cursor, until: &clock::Deadline,
+                     cancel: &Cancellation): Result[bool] {
+    if cursor.done < 0 || cursor.done > len(bytes) {
+        return err("write cursor is outside the source array", rangeCode())
+    }
+    let st = try platform::_requireKindHandle(handle(s.res), platform::KIND_STREAM)
+    let ct = try platform::_requireKindHandle(handle(cancel.res),
+                                              platform::KIND_CANCELLATION)
+    let already = try cancelled(cancel)
+    if already {
+        return err("operation was cancelled", cancelledCode())
+    }
+    if cursor.done == len(bytes) { return ok(true) }
+    var sw = try reactor::watchResource(r, st, false, true, TAG_STREAM)
+    defer reactor::remove(&sw)
+    var cw = try reactor::watchResource(r, ct, true, false, TAG_CANCEL)
+    defer reactor::remove(&cw)
+    while true {
+        if cursor.done >= len(bytes) { return ok(true) }
+        try checkBeforeWait(s, cancel, until)
+        let before = cursor.done
+        let done = buffer::writeExactStep(s, bytes, &cursor)
+        match done {
+            ok(full) {
+                if full { return ok(true) }
+            }
+            err(m, c) {
+                if errors::isWouldBlock(c) {
+                    try waitTurn(r, until)
+                } else if errors::isInterrupted(c) {
+                    try waitTurn(r, until)
+                } else {
+                    return err(m, c)
+                }
+            }
+        }
+        if cursor.done == before {
+            return err("write made no progress", systemFailure())
+        }
+        let nowCancelled = try cancelled(cancel)
+        if nowCancelled {
+            return err("operation was cancelled", cancelledCode())
+        }
+    }
+}
+
+pub fn flushUntil(mut w: &buffer::Writer, s: &stream::Stream,
+                  r: &reactor::Reactor, until: &clock::Deadline,
+                  cancel: &Cancellation): Result[bool] {
+    let available = try buffer::available(&w.buffer)
+    let st = try platform::_requireKindHandle(handle(s.res), platform::KIND_STREAM)
+    let ct = try platform::_requireKindHandle(handle(cancel.res),
+                                              platform::KIND_CANCELLATION)
+    let already = try cancelled(cancel)
+    if already {
+        return err("operation was cancelled", cancelledCode())
+    }
+    if available == 0 { return ok(true) }
+    var sw = try reactor::watchResource(r, st, false, true, TAG_STREAM)
+    defer reactor::remove(&sw)
+    var cw = try reactor::watchResource(r, ct, true, false, TAG_CANCEL)
+    defer reactor::remove(&cw)
+    while true {
+        let pending = w.buffer.end - w.buffer.start
+        if pending == 0 { return ok(true) }
+        try checkBeforeWait(s, cancel, until)
+        let n = buffer::writeStep(&w, s)
+        match n {
+            ok(wrote) {
+                if wrote == 0 {
+                    return err("flush made no progress", systemFailure())
+                }
+            }
+            err(m, c) {
+                if errors::isWouldBlock(c) {
+                    try waitTurn(r, until)
+                } else if errors::isInterrupted(c) {
+                    try waitTurn(r, until)
+                } else {
+                    return err(m, c)
+                }
+            }
+        }
+        let nowCancelled = try cancelled(cancel)
+        if nowCancelled {
+            return err("operation was cancelled", cancelledCode())
+        }
+    }
+}
