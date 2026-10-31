@@ -1,8 +1,8 @@
 # Decimal language integration design
 
 **Date:** 2026-10-31
-**Status:** APPROVED 2026-10-31. The minimum scalar tier is implemented as the WIP 0.12 compiler/runtime integration on branch `decimal-language` (based on released `0.11` main `316963c`); it is not merged, pushed or promoted; the initial independent review returned REVISE and the fixes await focused re-review. The released seed remains 0.11. Text/format stdlib, database adapters, containers, globals/constants and captures are still later work.
-**Baseline:** approved on `main` at `4a072cf5f5db8fe661ac65ff6db94ea59006e6ec`; integration re-based on the released `0.11` heap-limit main `316963c12cd7103a68e910d972e255af36290d7e`. Branch/worktree: `decimal-language`.
+**Status:** APPROVED 2026-10-31. The minimum scalar tier is implemented as the WIP 0.12 compiler/runtime integration on branch `decimal-language` (rebased on released `0.11` HTML main `34b798b`); it is not merged, pushed or promoted; the initial independent review returned REVISE, the fixes were approved and the review is closed, and the branch awaits the parent merge check. The released seed remains 0.11. Text/format stdlib, database adapters, containers, globals/constants and captures are still later work.
+**Baseline:** approved on `main` at `4a072cf5f5db8fe661ac65ff6db94ea59006e6ec`; integration rebased on the released `0.11` HTML-escaping main `34b798bc4c76cf41362d3b374c13b80e7b43f73b` (and earlier on heap-limit main `316963c`). Branch/worktree: `decimal-language`.
 **Target:** integrated after Stage B on the released 0.11 main `316963c`; this branch uses WIP `0.12`, `SYM_FORMAT=6`, `SYM_ABI=1`. Promotion still requires independent review.
 
 ## 0. Provenance

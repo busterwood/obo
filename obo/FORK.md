@@ -6134,10 +6134,10 @@ template work was performed.
 
 ## Decimal language integration (0.12 WIP, format 6, ABI 1)
 
-**Status: WIP on branch `decimal-language`, based on the released 0.11 heap-limit
-main `316963c12cd7103a68e910d972e255af36290d7e`. Not merged, pushed or promoted;
-the initial independent review returned REVISE and these fixes await focused
-re-review.** The released `seed/obo` stays the 0.11 heap-limit seed
+**Status: branch `decimal-language`, based on the released 0.11 HTML-escaping
+main `34b798bc4c76cf41362d3b374c13b80e7b43f73b`. Not merged, pushed or promoted.
+The initial independent review returned REVISE, the fixes were approved and the
+review is closed; the branch awaits the parent merge check.** The released `seed/obo` stays the 0.11 heap-limit seed
 (585,729 bytes, sha256 `01fa9ed3…`); no seed copy was made. The approved design is
 `design/decimal-language-design.md`; the reviewed arithmetic/text core stays in
 `experimental/decimal/` and is copied unchanged into
@@ -6214,21 +6214,23 @@ trap diagnostics only. `decimal` is a reserved type name. The design text now
 matches the immediate-stack literal materialisation, and the pre-existing
 lexer-wide underscore-placement gap is noted.
 
-**Gates (this branch).** The released 0.11 baseline counts are `run_fork` 1,644,
-`port_compare` 1,641 and `module_test` 112 (with `sym_test` 44 and `float_f1` 19
-unchanged). The decimal addition is 58 flat cases plus one module tree: 14
-run files, 44 error cases and `modules/run/decimal`. `run_fork` is **1,703
-passed** (1,644 + 59 including the module tree); `module_test`
-**113** (112 + 1); `sym_test` **44/44**; `port_test` **597/597**; default
-`port_compare` **1,700/1,700** (1,641 + 58 flat + 1 module tree); `OBO_REF=obo/seed/obo` **1,476/1,476** with only the explicit
-`(0, 12)` decimal skips; `float_f1` **19 groups** normal and `--noregs`;
-`doc_check` **69 examples, 0 problems**; `sym_fuzz` 200/200; `imports` 28/28;
-`stdlib` 16/16; `io_test`/`meta_test`/`memory_log_check`/`elf_test` pass;
+**Gates (this rebased branch).** The released 0.11 HTML-main baseline counts are
+`run_fork` 1,646, `port_compare` 1,642, `port_test` 583 and `module_test` 112
+(with `sym_test` 44 and `float_f1` 19 unchanged). The decimal addition is 58
+flat cases plus one module tree: 14 run files, 44 error cases and
+`modules/run/decimal`. `run_fork` is **1,705 passed** (1,646 + 59 including the
+module tree); `module_test` **113** (112 + 1); `sym_test` **44/44**; `port_test`
+**598/598** (583 + 15 decimal runtime/slot checks); default `port_compare`
+**1,701/1,701** (1,642 + 58 flat + 1 module tree); `OBO_REF=obo/seed/obo`
+**1,477/1,477** (the one HTML case plus the old flat cases; decimal cases stay
+skipped by `(0, 12)`); `float_f1` **19 groups** normal and `--noregs`;
+`doc_check` **69 examples, 0 problems**; `sym_fuzz` 200/200; `imports` **29/29**
+including the HTML library; `stdlib` 16/16; `io_test`/`meta_test`/`memory_log_check`/`elf_test` pass;
 `mutate_decimal` **22/22 caught** (focused compiler and runtime paths in a
 separate gate; the historical `mutate_fork`/`mutate_port` catalogs are otherwise
 unchanged);
 `mutate_io` **36/36**; `mutate_meta` **71/82 caught + 11 equivalent**. The
-decimal D1/D2 evidence is in `/tmp/opencode/decimal-integration-revise`.
+decimal D1/D2 evidence is in `/tmp/opencode/decimal-integration-rebase`.
 
 **Symbol fixtures.** All committed `.sym` fixtures moved to `compiler "0.12"`
 (the version line only; body hashes unchanged), and the `compiler/expect`
