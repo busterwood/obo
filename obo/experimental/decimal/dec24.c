@@ -503,7 +503,164 @@ static int u256_to_coeff(const dec_u256 *a, uint64_t *lo, uint64_t *hi) {
     return DEC_OK;
 }
 
+/* Write a value whose coefficient is already in range, rescuing an exponent
+ * just outside int16 exactly like the parser's upper-edge rule.  Below the
+ * range only trailing zeros can be removed; above it, trailing zeros can be
+ * appended while the coefficient stays within 38 digits.  This preserves the
+ * value; it does not add precision or display scale. */
+static int dec_write_rescued(dec24 *dst, int sign, uint64_t lo, uint64_t hi,
+                             int64_t exp, uint16_t dscale) {
+    if (exp >= -32768 && exp <= 32767)
+        return dec_set(dst, sign, lo, hi, (int)exp, dscale);
+    /* At most 37 trailing zeros can be moved without exceeding 38 digits. */
+    if (exp > 32804 || exp < -32805) return DEC_OVERFLOW;
+    dec_u256 c;
+    u256_from_u128(&c, hi, lo);
+    if (dec_u256_is_zero(&c))
+        return dec_set(dst, 0, 0, 0, 0, dscale);
+    int digits = dec_u256_digits(&c);
+    while (exp < -32768) {
+        uint64_t rem = 0;
+        int st = dec_div256_64(&c, &rem, &c, 10);
+        if (st != DEC_OK || rem != 0) return DEC_OVERFLOW;
+        exp++;
+        digits--;
+    }
+    while (exp > 32767 && digits < 38) {
+        int st = u256_mul_small(&c, 10);
+        if (st != DEC_OK) return DEC_OVERFLOW;
+        exp--;
+        digits++;
+    }
+    if (exp < -32768 || exp > 32767) return DEC_OVERFLOW;
+    if (u256_cmp_u128(&c, DEC_COEFF_MAX_HI, DEC_COEFF_MAX_LO) > 0)
+        return DEC_OVERFLOW;
+    return dec_set(dst, sign, c.w[0], c.w[1], (int)exp, dscale);
+}
+
 /* ----------------------------- operations ------------------------------ */
+
+/* Sticky fallback for a gap wider than the 38-significant-digit window.
+ *
+ * The smaller operand's leading digit lies at least 39 places below the
+ * larger magnitude, so its only possible effect is an inexact flag plus a
+ * one-ulp adjustment for the directed modes.  Nearest modes never reach half
+ * an ulp.  The exact result is therefore never representable in 38 digits;
+ * the rounded value is the larger operand's 38-digit grid point, optionally
+ * moved by one unit.  A subtraction borrow and its sign/mode asymmetry are
+ * handled explicitly; the smaller operand is never simply dropped. */
+static int u128_is_pow10(uint64_t lo, uint64_t hi, int *power) {
+    int n = 0;
+    while (lo != 1 || hi != 0) {
+        uint64_t qh, ql, rem;
+        if (dec_div128_64(hi, lo, 10, &qh, &ql, &rem) != DEC_OK || rem != 0)
+            return 0;
+        hi = qh;
+        lo = ql;
+        n++;
+        if (lo == 0 && hi == 0) return 0;
+    }
+    *power = n;
+    return 1;
+}
+
+/* Compare |small| with half of the lower-decade unit below a power-of-ten
+ * larger operand.  Only then can a nearest-mode subtraction see a tie or
+ * choose the predecessor; for a non-power-of-ten larger operand the small
+ * operand is at most a tenth of the upper-decade unit. */
+static int sticky_compare_half(const dec24 *big, const dec24 *small,
+                               int dbig, int dsmall) {
+    int64_t big_top = (int64_t)(int16_t)big->exp + dbig - 1;
+    int64_t small_top = (int64_t)(int16_t)small->exp + dsmall - 1;
+    int64_t half_top = big_top - 39;
+    if (small_top < half_top) return -1;
+    if (small_top > half_top) return 1;
+    dec_u256 sc, threshold;
+    u256_from_u128(&sc, small->hi, small->lo);
+    u256_from_u128(&threshold, 0, 5);
+    if (u256_mul_pow10(&threshold, dsmall - 1) != DEC_OK) return 0;
+    return dec_u256_cmp(&sc, &threshold);
+}
+
+static int dec_add_sticky_round(dec24 *dst, const dec24 *a, const dec24 *b,
+                                unsigned mode, uint16_t dscale) {
+    dec_u256 av, bv;
+    u256_from_u128(&av, a->hi, a->lo);
+    u256_from_u128(&bv, b->hi, b->lo);
+    int da = dec_u256_digits(&av), db = dec_u256_digits(&bv);
+    int64_t adj_a = (int64_t)(int16_t)a->exp + da;
+    int64_t adj_b = (int64_t)(int16_t)b->exp + db;
+    const dec24 *big = adj_a >= adj_b ? a : b;
+    int64_t gap = adj_a >= adj_b ? adj_a - adj_b : adj_b - adj_a;
+    if (gap <= 38) return DEC_UNSUPPORTED_EXACT;
+    if (mode == DEC_ROUND_UNNECESSARY) return DEC_INEXACT;
+
+    int sign = big->sign;
+    int dbig = big == a ? da : db;
+    int dsmall = big == a ? db : da;
+    const dec24 *small = big == a ? b : a;
+    int same_sign = a->sign == b->sign;
+    int power = 0;
+    int is_pow10 = u128_is_pow10(big->lo, big->hi, &power);
+    int inc = 0, dec = 0;
+    if (same_sign) {
+        inc = mode == DEC_ROUND_AWAY ||
+              (mode == DEC_ROUND_FLOOR && sign != 0) ||
+              (mode == DEC_ROUND_CEILING && sign == 0);
+    } else if (mode == DEC_ROUND_HALF_EVEN ||
+               mode == DEC_ROUND_HALF_AWAY ||
+               mode == DEC_ROUND_HALF_TOWARD_ZERO) {
+        if (is_pow10) {
+            int cmp = sticky_compare_half(big, small, dbig, dsmall);
+            if (cmp > 0) {
+                dec = 1;
+            } else if (cmp == 0 && mode == DEC_ROUND_HALF_TOWARD_ZERO) {
+                dec = 1;
+            }
+        }
+    } else if (sign == 0) {
+        dec = mode == DEC_ROUND_TOWARD_ZERO || mode == DEC_ROUND_FLOOR;
+    } else {
+        dec = mode == DEC_ROUND_TOWARD_ZERO || mode == DEC_ROUND_CEILING;
+    }
+
+    if (!inc && !dec) {
+        /* The larger operand is already on the 38-digit grid. */
+        return dec_set(dst, sign, big->lo, big->hi, (int16_t)big->exp,
+                       dscale);
+    }
+
+    int64_t exp = (int64_t)(int16_t)big->exp + dbig - 38;
+    if (exp < -32768 || exp > 32767) return DEC_OVERFLOW;
+    dec_u256 c;
+    u256_from_u128(&c, big->hi, big->lo);
+    int st = u256_mul_pow10(&c, 38 - dbig);
+    if (st != DEC_OK) return DEC_OVERFLOW;
+    if (inc) {
+        st = u256_add_small(&c, 1);
+        if (st != DEC_OK) return DEC_OVERFLOW;
+    } else if (is_pow10) {
+        /* Just below an exact power of ten the neighbouring 38-digit value
+         * lives in the lower decade: 10^k - 10^(k-38), not 10^k - 10^(k-37).
+         * This is the power-of-ten cancellation boundary, not a dropped
+         * borrow; all nines have 38 significant digits. */
+        u256_from_u128(&c, DEC_COEFF_MAX_HI, DEC_COEFF_MAX_LO);
+        exp--;
+    } else {
+        dec_u256 one = {{1, 0, 0, 0}};
+        (void)u256_sub(&c, &c, &one);
+    }
+    if (u256_cmp_u128(&c, DEC10_38_HI, DEC10_38_LO) == 0) {
+        uint64_t rem = 0;
+        st = dec_div256_64(&c, &rem, &c, 10);
+        if (st != DEC_OK || rem != 0) return DEC_OVERFLOW;
+        exp++;
+    }
+    if (exp < -32768 || exp > 32767) return DEC_OVERFLOW;
+    if (u256_cmp_u128(&c, DEC_COEFF_MAX_HI, DEC_COEFF_MAX_LO) > 0)
+        return DEC_OVERFLOW;
+    return dec_set(dst, sign, c.w[0], c.w[1], (int)exp, dscale);
+}
 
 int dec_add(dec24 *dst, const dec24 *a, const dec24 *b, unsigned mode) {
     if (dst == 0 || a == 0 || b == 0 || !mode_ok(mode) ||
@@ -535,17 +692,21 @@ int dec_add(dec24 *dst, const dec24 *a, const dec24 *b, unsigned mode) {
      * aligned operand exceeds 2^256 even though its 1.2e77 result is
      * representable after rounding.  A wide-gap sticky/one-ulp path is a
      * separate implementation and is deliberately not guessed here. */
-    if (sha > 76 || shb > 76) return DEC_UNSUPPORTED_EXACT;
+    if (sha > 76 || shb > 76)
+        return dec_add_sticky_round(dst, a, b, mode, ds);
     dec_u256 ma, mb;
     u256_from_u128(&ma, a->hi, a->lo);
     u256_from_u128(&mb, b->hi, b->lo);
     int st;
-    if (sha && (st = u256_mul_pow10(&ma, sha)) != DEC_OK) return DEC_UNSUPPORTED_EXACT;
-    if (shb && (st = u256_mul_pow10(&mb, shb)) != DEC_OK) return DEC_UNSUPPORTED_EXACT;
+    if (sha && (st = u256_mul_pow10(&ma, sha)) != DEC_OK)
+        return dec_add_sticky_round(dst, a, b, mode, ds);
+    if (shb && (st = u256_mul_pow10(&mb, shb)) != DEC_OK)
+        return dec_add_sticky_round(dst, a, b, mode, ds);
     dec_u256 m;
     int sign;
     if (a->sign == b->sign) {
-        if (u256_add(&m, &ma, &mb)) return DEC_UNSUPPORTED_EXACT;
+        if (u256_add(&m, &ma, &mb))
+            return dec_add_sticky_round(dst, a, b, mode, ds);
         sign = a->sign;
     } else {
         int cmp = dec_u256_cmp(&ma, &mb);
@@ -563,11 +724,10 @@ int dec_add(dec24 *dst, const dec24 *a, const dec24 *b, unsigned mode) {
     st = round_to_38(&m, sign, mode, &k);
     if (st != DEC_OK) return st;
     int64_t exp = (int64_t)e + k;
-    if (exp < -32768 || exp > 32767) return DEC_OVERFLOW;
     uint64_t lo, hi;
     st = u256_to_coeff(&m, &lo, &hi);
     if (st != DEC_OK) return st;
-    return dec_set(dst, sign, lo, hi, (int)exp, ds);
+    return dec_write_rescued(dst, sign, lo, hi, exp, ds);
 }
 
 int dec_sub(dec24 *dst, const dec24 *a, const dec24 *b, unsigned mode) {
@@ -595,11 +755,10 @@ int dec_mul(dec24 *dst, const dec24 *a, const dec24 *b, unsigned mode) {
     st = round_to_38(&p, sign, mode, &k);
     if (st != DEC_OK) return st;
     int64_t exp = (int64_t)(int16_t)a->exp + (int16_t)b->exp + k;
-    if (exp < -32768 || exp > 32767) return DEC_OVERFLOW;
     uint64_t lo, hi;
     st = u256_to_coeff(&p, &lo, &hi);
     if (st != DEC_OK) return st;
-    return dec_set(dst, sign, lo, hi, (int)exp, ds);
+    return dec_write_rescued(dst, sign, lo, hi, exp, ds);
 }
 
 /* Decide whether to increment after discarding a known first digit and
@@ -665,7 +824,6 @@ int dec_quantize(dec24 *dst, const dec24 *a, uint16_t target_dscale,
         } else {
             int st = dec_drop_digits(&c, (int)k, &first, &sticky);
             if (st != DEC_OK) return st;
-
         }
         int inc = decide_increment(mode, sign, first, sticky, &c);
         if (inc == -1) {

@@ -16,6 +16,8 @@ from dataclasses import dataclass, asdict
 from fractions import Fraction
 from typing import Optional
 
+import arithmetic_oracle as _ar
+
 MAX_COEFF = 10 ** 38 - 1
 MAX_DSCALE = 65535            # uint16 layout maximum, including zero dscale
 NONZERO_QUANTIZE_MAX_DSCALE = 32768  # strict quantize exp=-target fits int16
@@ -128,6 +130,33 @@ def round_to_38(c: int, sign: int, mode: int) -> tuple[int, int, int]:
     return q, k, OK
 
 
+def _rescue_dec(sign: int, c: int, exp: int, ds: int) -> tuple[Dec, int]:
+    """Apply the D2 parser-style exponent rescue to a rounded/exact value."""
+    if c == 0:
+        return zero(ds), OK
+    while exp < -32768 and c % 10 == 0:
+        c //= 10
+        exp += 1
+    while exp > 32767 and digits(c) < 38:
+        c *= 10
+        exp -= 1
+    if exp < -32768 or exp > 32767 or c > MAX_COEFF:
+        return zero(0), OVERFLOW
+    return make(sign, c, exp, ds), OK
+
+
+def _rounded_wide(a: Dec, b: Dec, mode: int, ds: int) -> tuple[Dec, int]:
+    """D2 sticky/rounded fallback for a result the exact accumulator cannot
+    represent.  The independent D2 rational model supplies the 38-digit
+    nearest/directed value; this is still not the C code."""
+    st, r = _ar.add_rounded(_ar.Dec(a.sign, a.coeff, a.exp, a.dscale),
+                            _ar.Dec(b.sign, b.coeff, b.exp, b.dscale),
+                            mode, ds)
+    if st != _ar.OK:
+        return zero(0), st
+    return make(r.sign, r.coeff, r.exp, r.dscale), st
+
+
 def add(a: Dec, b: Dec, mode: int) -> tuple[Dec, int]:
     if mode not in MODE_NAMES:
         return zero(0), INVALID
@@ -141,14 +170,14 @@ def add(a: Dec, b: Dec, mode: int) -> tuple[Dec, int]:
     e = min(a.exp, b.exp)
     sha, shb = a.exp - e, b.exp - e
     if sha > 76 or shb > 76:
-        return zero(0), UNSUPPORTED_EXACT
+        return _rounded_wide(a, b, mode, ds)
     ma, mb = a.coeff * 10 ** sha, b.coeff * 10 ** shb
     if ma.bit_length() > 256 or mb.bit_length() > 256:
-        return zero(0), UNSUPPORTED_EXACT
+        return _rounded_wide(a, b, mode, ds)
     if a.sign == b.sign:
         m, sign = ma + mb, a.sign
         if m.bit_length() > 256:
-            return zero(0), UNSUPPORTED_EXACT
+            return _rounded_wide(a, b, mode, ds)
     else:
         if ma == mb:
             return zero(ds), OK
@@ -161,10 +190,7 @@ def add(a: Dec, b: Dec, mode: int) -> tuple[Dec, int]:
     q, k, st = round_to_38(m, sign, mode)
     if st != OK:
         return zero(0), st
-    exp = e + k
-    if exp < -32768 or exp > 32767:
-        return zero(0), OVERFLOW
-    return make(sign, q, exp, ds), OK
+    return _rescue_dec(sign, q, e + k, ds)
 
 
 def sub(a: Dec, b: Dec, mode: int) -> tuple[Dec, int]:
@@ -185,10 +211,7 @@ def mul(a: Dec, b: Dec, mode: int) -> tuple[Dec, int]:
     q, k, st = round_to_38(p, sign, mode)
     if st != OK:
         return zero(0), st
-    exp = a.exp + b.exp + k
-    if exp < -32768 or exp > 32767:
-        return zero(0), OVERFLOW
-    return make(sign, q, exp, ds), OK
+    return _rescue_dec(sign, q, a.exp + b.exp + k, ds)
 
 
 def quantize(a: Dec, target: int, mode: int) -> tuple[Dec, int]:

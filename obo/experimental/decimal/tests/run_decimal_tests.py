@@ -33,9 +33,10 @@ SAN_FLAGS = [
     "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
     "-fno-omit-frame-pointer",
 ]
-CORE = ["dec24.c", "dec24_text.c", "dec24_bind.c"]
+CORE = ["dec24.c", "dec24_text.c", "dec24_bind.c", "dec24_arith.c"]
 TEST_SRC = [
-    "dec24_test.c", "dec24_text_test.c", "dec24_bind_test.c", "all_test.c",
+    "dec24_test.c", "dec24_text_test.c", "dec24_bind_test.c",
+    "dec24_arith_test.c", "all_test.c",
 ]
 FORBIDDEN = (
     "__udivti3", "__udivmodti4", "__umodti3", "__divti3", "__multi3",
@@ -94,7 +95,8 @@ def main() -> int:
     steps = []
     generated = []
     for gen in ("generate_decimal_vectors.py", "generate_text_vectors.py",
-                "generate_binding_vectors.py"):
+                "generate_binding_vectors.py",
+                "generate_arithmetic_vectors.py"):
         p, secs = run([sys.executable, gen, "--out", evidence], HERE,
                       timeout=120)
         steps.append({"cmd": [sys.executable, gen, "--out", evidence],
@@ -159,7 +161,7 @@ def main() -> int:
                                            p.stdout)]
     total_checks = sum(c_checks)
     c_ok = (p.returncode == 0 and not p.stderr and
-            "FAIL" not in p.stdout and len(c_checks) == 3)
+            "FAIL" not in p.stdout and len(c_checks) == 4)
     if not c_ok:
         print(p.stdout, p.stderr)
         return 1
@@ -201,7 +203,7 @@ def main() -> int:
 
     py_cmd = [sys.executable, "-m", "unittest", "-v",
               "test_decimal_oracle", "test_decimal_text_oracle",
-              "test_binding_oracle"]
+              "test_binding_oracle", "test_arithmetic_oracle"]
     py, py_secs = run(py_cmd, HERE, timeout=180)
     with open(os.path.join(evidence, "python_test_output.txt"), "w",
               encoding="utf-8") as f:
@@ -236,13 +238,14 @@ def main() -> int:
         "generated_utc": stamp,
         "git": git_state(),
         "scope": {
-            "kind": "experimental private dec24 foundations",
+            "kind": "experimental private dec24 foundations and arithmetic",
             "not_compiler_integration": True,
             "not_public_api": True,
             "no_language_abi_or_literal_policy": True,
             "no_database_connection_or_driver": True,
-            "no_division_api": True,
+            "private_division_and_remainder_api": True,
             "no_default_rounding": True,
+            "no_default_division_scale": True,
         },
         "generators": generated,
         "build_steps": steps,
