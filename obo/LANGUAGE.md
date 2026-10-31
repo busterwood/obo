@@ -1254,8 +1254,9 @@ fn main() {
 
 Stored function values, owned or mutable captures, string/interface captures and impure
 callbacks are later work. Stage B capture lists (`fn [x](...)`) are implemented in section 5d;
-interface handles `^I` remain later. The implemented compiler is `0.12`/format 6/ABI 1; the
-promoted `0.11` seed built it once for the release promotion. The historical `0.9` seed
+interface handles `^I` remain later. The implemented compiler is `0.13`/format 7/ABI 1; the
+promoted `0.12` seed built the 0.13 image once, and the released `0.11` seed
+(`01fa9ed3…`) also builds it. The historical `0.9` seed
 (`540,673` bytes, sha256 `3d369273…`) built the 0.10 compiler, and the historical `0.8` seed
 (`507,905` bytes, sha256 `673ae7ba…`) built the 0.9 compiler.
 
