@@ -1189,6 +1189,12 @@ static unsigned long long pow10u(int p) {
     while (p-- > 0) v *= 10ULL;
     return v;
 }
+static int candidate_ok(unsigned long long cand, int e, u64 bits) {
+    Big cb;
+    bi_set(&cb, cand);
+    u64 rb;
+    return !float_bits_from_parts(&cb, e, 0, &rb) && rb == bits;
+}
 static int shortest_positive(u64 bits, char *b) {
     char d[1200];
     int L = 0, e10 = 0;
@@ -1201,17 +1207,26 @@ static int shortest_positive(u64 bits, char *b) {
         int next = p < L ? d[p] - '0' : 0;
         int rest = 0;
         for (int i = p + 1; i < L; i++) if (d[i] != '0') { rest = 1; break; }
-        int up = next > 5 || (next == 5 && (rest || (prefix & 1)));
-        unsigned long long cand = prefix + (up ? 1 : 0);
+        unsigned long long floorq = prefix;
+        unsigned long long ceilq = prefix + 1;
         int e = e10 + L - p;
         unsigned long long lim = pow10u(p);
-        if (cand == lim) { cand = lim / 10; e++; }
-        Big cb;
-        bi_set(&cb, cand);
-        u64 rb;
-        if (!float_bits_from_parts(&cb, e, 0, &rb) && rb == bits) {
-            q = cand; qe = e; qn = p; break;
-        }
+        unsigned long long ceil_norm = ceilq;
+        int ceil_e = e;
+        if (ceil_norm == lim) { ceil_norm = lim / 10; ceil_e++; }
+        int floor_ok = candidate_ok(floorq, e, bits);
+        int ceil_ok = candidate_ok(ceil_norm, ceil_e, bits);
+        if (!floor_ok && !ceil_ok) continue;
+        int choose_floor;
+        if (next < 5) choose_floor = 1;
+        else if (next > 5 || (next == 5 && rest)) choose_floor = 0;
+        else choose_floor = (floorq & 1) == 0;  // exact decimal tie: even grid integer
+        if (choose_floor && !floor_ok) choose_floor = 0;
+        if (!choose_floor && !ceil_ok) choose_floor = 1;
+        if (choose_floor) { q = floorq; qe = e; }
+        else { q = ceil_norm; qe = ceil_e; }
+        qn = p;
+        break;
     }
     if (qn == 0) {
         // 17 significant digits always suffice; this is a defensive fallback.

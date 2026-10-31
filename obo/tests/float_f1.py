@@ -247,6 +247,8 @@ def test_shortest_format() -> None:
     println(10000000f)
     println(0.000001f)
     println(0.0000001f)
+    println(5.9604644775390625e-08f)
+    println(1f / 16777216f)
     println(5e-324f)
     println(1.7976931348623157e308f)
     println(9007199254740993f)
@@ -257,7 +259,8 @@ def test_shortest_format() -> None:
 }
 '''
     expected = ["1.5", "0.1", "1", "-1", "1000000", "10000000",
-                "0.000001", "1e-07", "5e-324",
+                "0.000001", "1e-07", "5.960464477539063e-08",
+                "5.960464477539063e-08", "5e-324",
                 "1.7976931348623157e+308", "9007199254740992", "-0",
                 "inf", "-inf", "nan"]
     run_ok(src, "shortest-style", expected)
@@ -445,6 +448,124 @@ fn main() {
             raise AssertionError(f"source-less check failed:\n{c.stderr}")
     finally:
         os.rename(hidden, lib)
+
+
+def test_power2_shortest() -> None:
+    vals = []
+    for e in range(1, 2047):
+        b = e << 52
+        for x in (b, b + 1, b - 1):
+            vals += [x, x | (1 << 63)]
+    for m in range(1, 52):
+        b = 1 << m
+        for x in (b, b + 1, b - 1):
+            if 0 <= x < (1 << 52):
+                vals += [x, x | (1 << 63)]
+    vals = list(dict.fromkeys(vals))
+    rng = random.Random(0x3E79DA3)
+    batch = 500
+    for start in range(0, len(vals), batch):
+        chunk = vals[start:start + batch]
+        lines = ["fn main() {"]
+        for j, b in enumerate(chunk):
+            f = __import__("struct").unpack(">d", __import__("struct").pack(">Q", b))[0]
+            lines.append(f'    let a{j} = parseFloat("{repr(f)}")')
+            lines.append(f'    match a{j} {{ ok(v) {{ println(string(v)) }} err(m,c) {{ println("ERR") }} }}')
+        lines.append("}")
+        d = tempfile.mkdtemp(prefix="float-f1-pow2-")
+        r, exe = compile_src("\n".join(lines) + "\n", d, f"p{start}")
+        if r.returncode != 0:
+            raise AssertionError(f"power2: compile failed: {r.stderr}")
+        q = run([exe], env=dict(os.environ, OBO_CHECK="1", OBX_GC="poison"))
+        out = q.stdout.splitlines()
+        if q.returncode != 0 or len(out) != len(chunk):
+            raise AssertionError(f"power2: run {q.returncode}: {q.stderr} {len(out)}/{len(chunk)}")
+        for b, text in zip(chunk, out):
+            rb, over = fv.bits_for_text(text)
+            if rb == 0 and text.startswith("-"):
+                rb = 1 << 63
+            if over or rb != b:
+                raise AssertionError(f"power2 roundtrip {b:016x}: {text!r}")
+            f = __import__("struct").unpack(">d", __import__("struct").pack(">Q", b))[0]
+            def sig(x):
+                t = x.strip().lower().lstrip("+-")
+                if t in ("nan", "inf", "infinity", "0"):
+                    return 0
+                m = t.split("e")[0] if "e" in t else t
+                dg = m.replace(".", "").lstrip("0").rstrip("0")
+                return len(dg) if dg else 0
+            if sig(text) > sig(repr(f)):
+                raise AssertionError(f"power2 not shortest {b:016x}: {text!r} vs {repr(f)!r}")
+
+
+def _fnv1a64(data: bytes) -> int:
+    h = 0xCBF29CE484222325
+    for c in data:
+        h ^= c
+        h = (h * 0x100000001B3) & ((1 << 64) - 1)
+    return h
+
+
+def _rehash_sym(text: str) -> str:
+    lines = text.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if line.startswith("interface "):
+            body = "".join(lines[i + 1:])
+            lines[i] = f"interface 0x{_fnv1a64(body.encode()):016x}\n"
+            return "".join(lines)
+    raise AssertionError("no interface line")
+
+
+def test_float_const_reader_matrix() -> None:
+    d = tempfile.mkdtemp(prefix="float-f1-reader-")
+    sym = os.path.join(d, "sym")
+    os.makedirs(sym)
+    with open(os.path.join(d, "lib.obx"), "w") as f:
+        f.write("module lib\npub const Half = 0.5f\n")
+    with open(os.path.join(d, "main.obx"), "w") as f:
+        f.write("module main\nimport \"lib.obx\"\nfn main() { println(floatBits(lib::Half)) }\n")
+    r = run([OBO, os.path.join(d, "main.obx"), "-o", os.path.join(d, "main"),
+             "--rt", RT, "-I", d, "--sym-dir", sym])
+    if r.returncode != 0:
+        raise AssertionError(f"reader baseline compile: {r.stderr}")
+    valid = open(os.path.join(sym, "lib.sym")).read()
+    if "const Half: float = 0x3fe0000000000000" not in valid:
+        raise AssertionError("reader baseline: canonical float const missing")
+    bad_values = [
+        "true", "1", "0x1", "0x00000000000000", "0x00000000000000000",
+        "0x000000000000000G", "0X0000000000000000",
+        "0x3FE0000000000000", "0x3fe0_0000000000000",
+        "-0x3fe0000000000000",
+    ]
+    for i, bad in enumerate(bad_values):
+        text = valid.replace("const Half: float = 0x3fe0000000000000",
+                             "const Half: float = " + bad)
+        text = _rehash_sym(text)
+        bd = os.path.join(d, f"bad{i}")
+        os.makedirs(bd)
+        shutil.copyfile(os.path.join(d, "main.obx"), os.path.join(bd, "main.obx"))
+        with open(os.path.join(bd, "lib.sym"), "w") as f:
+            f.write(text)
+        q = run([OBO, os.path.join(bd, "main.obx"), "--check",
+                 "-I", bd, "--sym-dir", bd])
+        if q.returncode == 0:
+            raise AssertionError(f"reader accepted malformed float const {bad!r}")
+        if "stale" in q.stderr.lower():
+            raise AssertionError(f"reader rejected {bad!r} as stale, not structural: {q.stderr}")
+    # Canonical high-bit/NaN raw bits remain accepted.
+    for raw in ("0x7ff8000000000000", "0x8000000000000000", "0x0000000000000000"):
+        text = valid.replace("const Half: float = 0x3fe0000000000000",
+                             "const Half: float = " + raw)
+        text = _rehash_sym(text)
+        bd = os.path.join(d, "good_" + raw[2:6])
+        os.makedirs(bd)
+        shutil.copyfile(os.path.join(d, "main.obx"), os.path.join(bd, "main.obx"))
+        with open(os.path.join(bd, "lib.sym"), "w") as f:
+            f.write(text)
+        q = run([OBO, os.path.join(bd, "main.obx"), "--check",
+                 "-I", bd, "--sym-dir", bd])
+        if q.returncode != 0:
+            raise AssertionError(f"reader rejected canonical float bits {raw}: {q.stderr}")
 
 def test_arithmetic() -> None:
     src = r'''fn main() {
@@ -651,6 +772,8 @@ def main() -> int:
     test_constants(); total += 1
     test_value_positions(); total += 1
     test_module_constants(); total += 1
+    test_float_const_reader_matrix(); total += 1
+    test_power2_shortest(); total += 1
     test_scalars_and_lambdas(); total += 1
     test_containers(); total += 1
     test_module_signature(); total += 1

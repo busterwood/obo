@@ -5758,16 +5758,22 @@ round-trip formatter. It computes the exact finite decimal expansion with the
 runtime big integers, then tries 1..17 significant digits; each candidate is
 rounded to the nearest decimal (ties-to-even) and accepted only when the exact
 same parser maps it back to the original bits. The first accepted precision is
-the shortest. Output uses fixed notation for decimal exponents -6..20 and
-scientific notation otherwise, with `e±NN`; `-0`, `nan`, `inf` and `-inf` keep
-their prior spellings. No x87/long-double result determines correctness.
+the shortest. At each precision both the floor and ceiling decimal-grid
+candidates are tested; if both round-trip, the canonical nearest to the exact
+binary value is chosen (ties-to-even). Output uses fixed notation for decimal
+exponents -6..20 and scientific notation otherwise, with `e±NN`; `-0`, `nan`,
+`inf` and `-inf` keep their prior spellings. No x87/long-double result
+determines correctness.
 
 **Constants.** Source `const X = 1.5f` and `const X = -0f` are usable; unary
 minus is a sign-bit const fold. Other constant arithmetic is **not** folded and
 is rejected with the existing “constant value must be known” diagnostic rather
 than silently using integer operations. Exported float constants use the WIP
 symbol format's raw 16-hex-bit payload, e.g. `const Half: float =
-0x3fe0000000000000`; `--check` source-less and `--reemit-sym` are byte-tested.
+0x3fe0000000000000`. Float constants require exactly `0x` plus 16 lowercase
+hex digits; decimal, short/wide, uppercase, underscore and signed forms are
+rejected structurally after rehashing in the reader matrix. `--check`
+source-less and `--reemit-sym` are byte-tested.
 This is format-5 WIP, not a release-compatible format: float is a new builtin
 type, so the format must be bumped before merge/release.
 
@@ -5779,20 +5785,23 @@ function types with mixed int/float arguments, lambda hidden-env calls,
 GC poison. The one-word stack/GPR ABI is unchanged; no Stage B captures or
 decimal values are involved.
 
-**Tests.** `tests/float_f1.py` passes 17 groups under the normal compiler and
+**Tests.** `tests/float_f1.py` passes 19 groups under the normal compiler and
 under `obo-noregs`: separator restoration, exact fixed counterexamples,
 199-case literal audit, 384-case parse audit, 1,000-case shortest property
-against an independent Python repr digit-count reference, 250 parse/format
-round-trip candidates, constants and source-less symbols, and the value-position
-matrix. A private 10,000-value parse/format/parse run completed in 0.696 s
-runtime (10 batches; 5.2 s compile); format-only 1,000 values took 0.062 s vs
-0.001 s for the old provisional path. Full old gates: `run_fork` 1544,
+plus all 2,046 normal power-of-two bit patterns/neighbours and all subnormal
+powers, both signs (12,580 values), against independent Fraction bits and a
+Python repr digit-count reference, 250 parse/format round-trip candidates,
+constants/source-less symbols, a rehashed malformed float-constant reader
+matrix, and the value-position matrix. A private 10,000-value parse/format/parse run completed in 1.142 s
+runtime (10 batches; 5.29 s compile); format-only 1,000 values took 0.107 s vs
+0.001 s for the old provisional path (the both-neighbour search roughly doubles
+the old one-candidate exact formatter). Full old gates: `run_fork` 1544,
 `port_compare` 1551, `port_test` 573, `sym_test` 42, `doc_check` 62,
 `mutate_io` 30/30, harness 27. No new F3B mutant/release matrix is claimed.
 
-**Memory.** Final direct self-compile is `2,027,184` peak bytes (stage-3
-`2,027,200`; port `2,027,552`), source `13,388` lines / `503,120` bytes, binary
-`565,249` bytes, runtime text/data `26,032`/`67,360`. Headroom under the
-unchanged `2,500,000` cap is `472,816` bytes. `nm -u runtime.o` is empty and the
-fixed point holds (`ef9873fd…`). Float release identity remains unassigned;
+**Memory.** Final direct self-compile is `2,029,072` peak bytes (stage-3
+`2,029,088`; port `2,029,440`), source `13,411` lines / `504,049` bytes, binary
+`569,345` bytes, runtime text/data `26,272`/`67,360`. Headroom under the
+unchanged `2,500,000` cap is `470,928` bytes. `nm -u runtime.o` is empty and the
+fixed point holds (`d3bcb0fc…`). Float release identity remains unassigned;
 Stage B `0.10` is not used.

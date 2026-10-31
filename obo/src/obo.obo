@@ -11806,6 +11806,25 @@ fn symHex16(what: string): int {
     return v
 }
 
+// Float constants use a canonical raw-bit form: exactly 0x and 16 lowercase
+// hexadecimal digits.  This is deliberately float-specific: historical int and
+// byte constant readers keep their existing grammar.
+fn symFloatHex16(): int {
+    if sym != T_INT { error("a float constant needs exactly 0x and 16 lowercase hexadecimal digits") }
+    let text = substr(src, tokStart, pos)
+    if !isHex16(text) {
+        error("malformed float constant: expected exactly 0x and 16 lowercase hexadecimal digits, found " + text)
+    }
+    for i in 2..18 {
+        if text[i] >= 'A' && text[i] <= 'F' {
+            error("malformed float constant: expected lowercase hexadecimal digits, found " + text)
+        }
+    }
+    let v = ival
+    next()
+    return v
+}
+
 fn symHexString(s: string): string {
     if len(s) % 2 != 0 { error("malformed hex string: an odd number of digits") }
     let out = new []byte(0)
@@ -12513,7 +12532,10 @@ fn symConstDecl(mode: int) {
     var kind = ""
     var v = 0
     var sv = ""
-    if sym == T_INT {
+    if t == tFloat {
+        kind = "float"
+        v = symFloatHex16()
+    } else if sym == T_INT {
         kind = "int"
         v = ival
         next()
@@ -12539,7 +12561,8 @@ fn symConstDecl(mode: int) {
     }
     if t == tString && kind != "string" { error("a string constant needs a hex byte string") }
     if t == tBool && kind != "bool" { error("a bool constant must be true or false") }
-    if (t == tInt || t == tByte || t == tFloat) && kind != "int" { error("an integer/float constant needs a hexadecimal value") }
+    if (t == tInt || t == tByte) && kind != "int" { error("an integer constant needs an integer value") }
+    if t == tFloat && kind != "float" { error("a float constant needs exactly 0x and 16 lowercase hexadecimal digits") }
     if t == tByte && (v < 0 || v > 255) { error("a byte constant must be between 0 and 255") }
     symClaim(name)
     append(symConstOrder, name)
