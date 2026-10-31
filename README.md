@@ -84,9 +84,9 @@ field visibility is 0.13.
 | Self-host fixed point | stage 2 == stage 3 == compiler, 647,169 bytes, `4ec4e0d6…`; both the 0.11 seed `01fa9ed3…` and the 0.12 seed build this image from source |
 | Self-compile wall time | 0.15 s on the 0.11 line; not re-benchmarked for 0.13 (host-dependent) |
 | Self-compile live peak | 2,207,824 bytes direct; 2,208,192 bytes port comparison (budget 2,500,000) |
-| Total allocated | 49,506,992 bytes direct/port comparison |
+| Total allocated | 49,506,992 bytes direct; 49,509,824 bytes port comparison |
 | Maximum resident set | 4,028 KB on the 0.11 line; not re-measured for 0.13 |
-| Live-memory budget | 2,500,000 bytes: 292,176 spare direct / 291,808 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 48,032 at baseline 2,208,272 -> mutant 2,256,304) |
+| Live-memory budget | 2,500,000 bytes: 292,176 spare direct / 291,808 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 48,032 at baseline 2,208,240 -> mutant 2,256,272) |
 | obo suite | 1,741 `run_fork` tests; 141 `module_test`; `sym_test.py` 52/52; `sym_fuzz.py` 200/200; `port_test` 598/598 with 10 encoder groups; `port_compare` 1,729/1,729 default, 1,535/1,535 against the 0.12 seed and 1,477/1,477 against the 0.11 seed; 70 doc examples; 29/29 import checks; 16/16 stdlib roots |
 | Float suite | `float_f1.py` 19 groups in normal and `--noregs` builds (12,580 power-of-two values each); `lambda_float_capture` passes in both modes; `memory_log_check` 4 sources |
 | Seed comparison | `OBO_REF=obo/seed/obo` (promoted 0.12) is 1,535/1,535; the released 0.11 seed is 1,477/1,477; the default (self) comparison is 1,729/1,729 |
@@ -101,7 +101,7 @@ field visibility is 0.13.
 The compiler budget is 2,500,000 bytes live, with the separate 30,000-byte
 empty-array oracle unchanged. The 0.13 line peaks at 2,207,824 bytes in direct self-compiles and
 2,208,192 in the port comparison: 292,176 and 291,808 bytes spare. Total
-allocation is 49,506,992 bytes direct and in the port comparison. No check was
+allocation is 49,506,992 bytes direct and 49,509,824 bytes in the port comparison. No check was
 weakened. The live peak varies by a few hundred bytes with the source path and
 total allocation by about 2 KB. The historical lambda release budget remains
 2,000,000 in its own record. This 0.13 work is committed on its worktree and is
