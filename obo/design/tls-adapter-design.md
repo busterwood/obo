@@ -1,11 +1,10 @@
 # TLS transport adapter
 
-Status: **revision 3 design for focused independent re-review; no TLS adapter
-implementation authorized.** The narrow P2T-a cinterop prerequisites were
-implemented separately and are recorded in §16; that does not authorize
-P2T-b/d. Revision 3 resolves R1/R2/R3 from the re-review of `2c8a824`;
-revision 2 resolved the earlier `ea02b29` blockers/major issues. See §15.1 for
-the resolution map.
+Status: **revision 3 design; the narrow P2T-a cinterop prerequisites and the
+experimental P2T-b server adapter are implemented separately and recorded in
+§16/§17. That does not authorize P2T-c/d.** Revision 3 resolves R1/R2/R3 from
+the re-review of `2c8a824`; revision 2 resolved the earlier `ea02b29`
+blockers/major issues. See §15.1 for the resolution map.
 Baseline: current `main` `2364add3a7ad0a02ec9412b6834a36a510d45f32`,
 released obo `0.12`, symbol format 6, ABI 1. Date: 2026-10-31.
 No compiler, ABI, symbol-format or package version is reserved by this note.
@@ -2608,3 +2607,53 @@ Deliberate limits:
   present fails the test;
 - same-user tampering with both the private cache and its stored manifest is
   outside the trusted build boundary.
+
+## 17. P2T-b implementation status (2026-10-31)
+
+Status: **experimental server-side P2T-b implementation exists in
+`obo/experimental/tls/`; pending independent review.** This section records
+what was built and does not amend §5. No compiler, runtime, ABI, symbol-format,
+seed, package-version or HTTP integration is changed or authorized.
+
+Implemented under `obo/experimental/tls/`:
+
+- `systls.obx`: `TlsContext`/`TlsSession` shells over `platform::Resource`,
+  private non-optional `transport`, explicit `close`/`closeContext` (Busy while
+  sessions live), leak/context counters, certificate/key/trust loading from
+  bounded bytes, version/cipher/group/ALPN/SNI policy, server `accept`, step
+  API (`handshakeStep`, `readSome`, `writeSome`, `flush`, `shutdownStep`,
+  `pending`, `want`, `watch`), copied info/peer identity, and the single
+  `systls` error family.
+- `native/tls_adapter.c` + `tls_adapter.h`: OpenSSL 3.0 memory BIOs only, no
+  `SSL_set_fd`; output-first status after every SSL call; one transport
+  read/write per step; bounded staging/BIO/handshake/context budgets; C-only
+  ALPN select, ClientHello ALPN-presence, SNI and info callbacks; alert
+  capture; OpenSSL error-queue drain; context/session tokens in the systems
+  registry (kinds 23/24). No pointer, C struct, callback or OpenSSL object
+  crosses to obo.
+- `tls_adapter.cbind`: scalar `i64` contract; OpenSSL headers are an external
+  build input (`include_dirs` injected by the test/build script); no extracted
+  headers or `/tmp` paths are committed. Because the experimental cinterop
+  flow links one spec per executable, this spec includes the systems adapter
+  sources and functions it uses.
+- `tests/test_tls.py`, `tests/c/tls_harness.c`,
+  `tests/apps/tls_echo_app.obx`: local CA/server/client/expired/untrusted/
+  weak/encrypted/malformed fixtures generated in a private directory; TLS 1.2
+  and 1.3; ALPN h2/http1.1/none/Require; SNI; client certificates; fragmented
+  handshakes and records; output-first/WantRead-WantWrite; close_notify and
+  truncation; KeyUpdate; 64 KiB records; nonblocking step loop; leak counters;
+  ASAN/UBSAN; `openssl s_client` (TLS 1.2/1.3 and ALPN variants); optional
+  curl TLS handshake check.
+
+Deliberate P2T-b limits (also in `LIMITS.md`): no client mode (`connect` is
+`Unsupported`), no HTTP/QUIC/DTLS, no tickets/resumption/0-RTT, no revocation,
+no multi-certificate SNI selection, no async engine, no hidden threads or
+finalizers, and OpenSSL's internal heap is outside `maxContextBytes`.
+
+Source-level deviations forced by the 0.14 language: closed-variant
+constructors share module scope, so outcome variants use unique names
+(`WantNone`, `StepDone`, `ReadData`, `ShutdownSent`, ...); optional values are
+reference-only, so absent ALPN/SNI is `""` rather than `?string`. The
+`sysstream` module gained additive `readSomeHandle`/`writeSomeHandle` forms so
+a record-owned private transport field can be used without an interior
+borrow across a conservative native-effect call.
