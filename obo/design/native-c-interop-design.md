@@ -1,11 +1,11 @@
 # Native C interop (`cinterop`) — design note
 
 Status: **hardening checkpoint pending independent rereview.** Date: 2026-10-31.
-Baseline: released `main` at `a3e5b1f` (numeric floats, compiler `0.10`,
-`.sym` format 6, ABI 1), merged into this feature. The independent architecture
+Baseline: released `main` at `c6c4d3f` (numeric floats + reviewed native
+interop, compiler `0.10`, `.sym` format 6, ABI 1). The independent architecture
 review of prototype `a29f35d` returned REVISE; the scoped B1/B2, high and
 practical-medium repairs are recorded in section 14, followed by the
-explicit-close libpq adapter checkpoint. This remains an experimental,
+explicit-close libpq adapter and hardening checkpoints. This remains an experimental,
 trusted-build prototype: not production, not a public API, not a stable format,
 and not permission to merge, push or promote a seed.
 
@@ -1053,8 +1053,8 @@ skill is implemented. Hashes are provenance, not signatures.
 
 ### 14.10 Hardening checkpoint results
 
-Evidence directory: `/tmp/opencode/cinterop-hardening-20261031T104121Z/`
-(fresh build, command logs, test logs, live output; path may vary by run).
+Evidence directory: `/tmp/opencode/cinterop-hardening-final-20261031T104405Z/`
+(fresh archive/build, command logs, test logs, live output; path may vary by run).
 
 The hardening checkpoint starts from main `c6c4d3f` and keeps compiler
 `0.10`/format 6/ABI 1 and seed `30124be9...`. The baseline freestanding
@@ -1105,11 +1105,11 @@ sym_test                       42 passed, 0 failed
 doc_check                      62 examples, 0 problems
 homes_check                    pass
 run_fork                       1555 passed, 0 failed
-port_compare                   stage B 1552/1552; peak 2,042,800
+port_compare                   stage B 1552/1552; peak 2,042,688
 mutate_harness                 27 passed, 0 failed
 float no-regs                  19 groups
 decimal D1 runner              22,821 C checks, 0 failures; ASAN/UBSAN ok
-compiler peak                  2,042,384 bytes (seed 2,041,600; delta +784)
+compiler peak                  2,042,400 bytes (seed 2,041,600; delta +800)
 fixed point                    obo == stage2 == stage3 (9cd9b55...)
 normal hello.obx               byte-identical vs seed
 baseline runtime blobs         identical to main (2c1115..., 0bd93a...)
