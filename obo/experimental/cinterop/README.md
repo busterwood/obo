@@ -228,3 +228,23 @@ The project skill and buildable templates are in [`skill/`](skill/SKILL.md).
   adapter preserves exact numeric text/OID/typmod and never converts a database
   numeric through a float.
 - The project skill is a repository/portable artifact, not a global install.
+
+## Known follow-ups (non-blocking, not fixed here)
+
+These were noted by the independent execution review and are recorded rather
+than silently claimed as resolved:
+
+- `with_connect_timeout` detects an existing timeout with a `strstr` substring
+  check. A quoted conninfo value that happens to contain `connect_timeout=`
+  could be misdetected. A stricter conninfo/keyword parse is future work; the
+  approved live test passes an explicit bounded timeout.
+- The manifest verifier hashes `host_object` and `start_object` when present but
+  does not list them in the required role sets, so a manifest that omits those
+  roles is not rejected on that ground alone. Add them to the required sets and
+  negative tests in a follow-up.
+- The `libpq_result` probe builds unconditionally, while the older `pq` probe
+  skips only when `libpq.so.5` is absent. On a host without libpq the former
+  fails rather than skipping; the skip policy should be made consistent.
+- The synthetic startup stack is a static 1 MiB buffer with runtime length and
+  headroom checks, but no guard page or compile-time capacity assertion. It is
+  prototype infrastructure, not a memory-safety guarantee.
