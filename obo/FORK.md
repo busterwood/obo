@@ -5666,3 +5666,35 @@ forward aliases, lambda parsing/contexts, purity/active calls, hidden env, cell
 and argument ABI, zero-frame cell entry, arena-local synthetic callees, outer-name
 stack restore and nonFreshLog range/trim/island restore. Stage B capture-list and
 capture-binding mutants are explicitly deferred, not counted as equivalents.
+
+## Float F1 checkpoint (unreleased, WIP)
+
+This isolated branch adds the first scalar binary64 slice. It is **not a
+release candidate** and does not assign a numeric `OBO_VERSION`, `SYM_FORMAT`
+or `SYM_ABI`. The source remains `0.9`/format 5/ABI 1 for this checkpoint; a
+float `.sym` has a type writer/reader path, but float constants and a
+format-version decision are unimplemented.
+
+Implemented: `f`/`F` literals with exact compile-time decimal-to-binary64
+conversion (integer 4x32-bit accumulator, ties-to-even), bare fraction/exponent
+rejection with an `f`-suffix diagnostic, `float` as a one-word unowned type,
+`+ - * /`, unary minus, IEEE comparisons, `float(int)`, `isNaN`/`isInf`/
+`signbit`, and a checkpoint-only `floatBits` bit oracle. Float values are raw
+bits in GPR/stack words; freestanding C helpers 41–55 use C `double`/SSE2
+internally and integer-only arguments/results. Seed 0.8 still builds the
+compiler source because the compiler itself uses no float syntax.
+
+Measured direct self-compile: `2,028,976` peak bytes, over the unchanged
+`2,000,000` budget by `28,976`; source is `13,371` lines / `501,497` bytes,
+binary `557,057` bytes, runtime text/data `18,240`/`67,360`. The parser alone
+adds about `20,224` bytes (private no-parser variant: `2,008,752`). This is a
+hard-stop checkpoint for a cap decision; no cap was raised and no check was
+weakened.
+
+Tests: `tests/float_f1.py` passes (pinned literal bits, 300 seeded random
+literals, arithmetic/NaN/±Inf/signed-zero/subnormal, scalars/params/returns,
+lambda/function-type calls, int conversion, error cases); `run_fork.py` 1544
+passed, 0 failed; `port_test.py` 573/573; `sym_test.py` 42 passed; `doc_check.py`
+62 examples, 0 problems. Unimplemented: float text parse/format/print, float
+constants/`.sym` release format, and containers beyond the naturally one-word
+scalar paths (arrays/fields/globals/Result still need explicit float tests).

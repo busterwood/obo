@@ -41,6 +41,27 @@ static void zero_words(u64 *p, u64 n) {
 }
 void *memcpy(void *d, const void *s, u64 n) { unsigned char *p = d; const unsigned char *q = s; while (n--) *p++ = *q++; return d; }
 
+/* float helpers: language values are raw binary64 bits in a u64/GPR/stack word.
+ * The C ABI here is integer-only; double/SSE2 is internal.  No libm. */
+static inline double f_from_bits(u64 b) { union { u64 u; double d; } x; x.u = b; return x.d; }
+static inline u64 f_to_bits(double d) { union { u64 u; double d; } x; x.d = d; return x.u; }
+u64 rt_f_add(u64 a, u64 b) { return f_to_bits(f_from_bits(a) + f_from_bits(b)); }
+u64 rt_f_sub(u64 a, u64 b) { return f_to_bits(f_from_bits(a) - f_from_bits(b)); }
+u64 rt_f_mul(u64 a, u64 b) { return f_to_bits(f_from_bits(a) * f_from_bits(b)); }
+u64 rt_f_div(u64 a, u64 b) { return f_to_bits(f_from_bits(a) / f_from_bits(b)); }
+u64 rt_f_neg(u64 a) { return a ^ 0x8000000000000000UL; }
+i64 rt_f_eq(u64 a, u64 b) { return f_from_bits(a) == f_from_bits(b); }
+i64 rt_f_ne(u64 a, u64 b) { return f_from_bits(a) != f_from_bits(b); }
+i64 rt_f_lt(u64 a, u64 b) { return f_from_bits(a) <  f_from_bits(b); }
+i64 rt_f_le(u64 a, u64 b) { return f_from_bits(a) <= f_from_bits(b); }
+i64 rt_f_gt(u64 a, u64 b) { return f_from_bits(a) >  f_from_bits(b); }
+i64 rt_f_ge(u64 a, u64 b) { return f_from_bits(a) >= f_from_bits(b); }
+u64 rt_i_to_f(i64 v) { return f_to_bits((double)v); }
+i64 rt_f_isnan(u64 a) { return ((a & 0x7ff0000000000000UL) == 0x7ff0000000000000UL) && (a & 0x000fffffffffffffUL); }
+i64 rt_f_isinf(u64 a) { return ((a & 0x7fffffffffffffffUL) == 0x7ff0000000000000UL); }
+i64 rt_f_signbit(u64 a) { return (i64)(a >> 63); }
+
+
 /* ---------- output ---------- */
 static char obuf[65536];
 static u64 olen;

@@ -57,6 +57,21 @@ _entry:
     slot rt_getenv
     slot rt_term_width
     slot rt_sleep
+    slot rt_f_add
+    slot rt_f_sub
+    slot rt_f_mul
+    slot rt_f_div
+    slot rt_f_neg
+    slot rt_f_eq
+    slot rt_f_ne
+    slot rt_f_lt
+    slot rt_f_le
+    slot rt_f_gt
+    slot rt_f_ge
+    slot rt_i_to_f
+    slot rt_f_isnan
+    slot rt_f_isinf
+    slot rt_f_signbit
 
     .text
     .macro check f
@@ -109,5 +124,20 @@ check_\f:
     check rt_getenv
     check rt_term_width
     check rt_sleep
+    check rt_f_add
+    check rt_f_sub
+    check rt_f_mul
+    check rt_f_div
+    check rt_f_neg
+    check rt_f_eq
+    check rt_f_ne
+    check rt_f_lt
+    check rt_f_le
+    check rt_f_gt
+    check rt_f_ge
+    check rt_i_to_f
+    check rt_f_isnan
+    check rt_f_isinf
+    check rt_f_signbit
 
     .section .note.GNU-stack,"",@progbits
