@@ -12,7 +12,7 @@ Common rules:
 - Every public record field is untrusted at entry and revalidated.
 - Native calls are one-shot. Interrupted and WouldBlock are distinct; no public
   one-shot operation retries.
-- A `Resource` contains only `reserved: int`, a checked slot/epoch hint.
+- A `Resource` contains only `reserved: int`, a checked slot/random-nonce hint.
 
 ## `syserrors`
 
@@ -40,7 +40,9 @@ pub fn text(k: &Kind): string
 
 - Assigned library codes start at 10001. Use `kind`/predicates, not literals.
 - `fromErrno` is only for an adapter/wrapper that captured one Linux errno
-  before another call. Unknown or zero values map to `SystemFailure`.
+  before another call. `EDQUOT` maps to `NoSpace` and generation `EOVERFLOW`
+  to `ResourceLimit`, matching the design table. Unknown or zero values map to
+  `SystemFailure`.
 - `isRetryable` is advisory (`Interrupted`/`WouldBlock` only) and does not
   authorize a retry.
 - `text` is diagnostic only and is never parsed for control flow.
@@ -94,12 +96,12 @@ and exposes no pipe write, so the flag changes no P0 behavior.
 ### `source` / `requireKind`
 
 Both require an initialized context and a live registered shell. They check the
-hint epoch, shell liveness, state and kind, then ask the C registry to validate
-its private token. `source` returns `InvalidResource` for unregistered, closed,
-stale or wrong-generation shells. `requireKind` returns `Closed` for a closed
-shell and `InvalidResource` for a stale or wrong-kind shell. `source` is the
-documented bridge for future `watchResource`-style calls; a typed module never
-passes a registry token.
+slot, random nonce, shell liveness, state and kind, then ask the C registry to
+validate its private token. `source` returns `InvalidResource` for unregistered,
+closed, stale, future-forged or wrong-nonce shells. `requireKind` returns
+`Closed` for a closed shell and `InvalidResource` for a stale or wrong-kind
+shell. `source` is the documented bridge for future `watchResource`-style calls;
+a typed module never passes a registry token.
 
 The handle forms `_sourceHandle(h: ^Resource)` and
 `_requireKindHandle(h: ^Resource, kind: int)` exist for typed modules because
@@ -113,7 +115,9 @@ Requires an initialized context. Reports:
 - `resources`: live native resources in the C registry;
 - `shells`: open slots plus closed tombstones whose shell is still alive
   (open leak records count as open slots until shutdown);
-- `nativeBytes`: C-owned byte-buffer bytes currently charged;
+- `nativeBytes`: **logical** C-owned byte-buffer payload bytes currently
+  charged; it excludes the +1 guard byte, buffer struct and registry table
+  overhead;
 - `cleanupFailures`: native release/close failures plus shutdown anomalies.
 
 ### `shutdown`
@@ -124,7 +128,10 @@ adapter to drain anything left, records failures, clears the managed table and
 retires the context. The returned `Counts` keeps pre-cleanup `resources`,
 `shells` and `nativeBytes` so leaks are not hidden by post-cleanup zeros.
 No native action is legal after shutdown until a new `initialize`. Old shells
-cannot address the new context because epochs remain monotonic.
+cannot address the new context because every slot creation draws a fresh random
+nonce. Explicit `close` on a shell from a retired context returns `ok(false)`
+without resolving against a new registry; a truly unknown forged shell returns
+`NotInitialized`/`InvalidResource`.
 
 ### Internal seam
 
@@ -134,7 +141,7 @@ pub fn _close(r: &Resource, kind: int): Result[bool]
 pub fn _closeHandle(h: ^Resource, kind: int): Result[bool]
 pub fn _op(r: &Resource, kind: int, op: int, a: int, b: int, c: int): Result[int]
 pub fn _opHandle(h: ^Resource, kind: int, op: int, a: int, b: int, c: int): Result[int]
-pub fn _hint(index: int, epoch: int): int      // adversarial tests only
+pub fn _hint(index: int, nonce: int): int      // adversarial tests only
 pub fn _bounds(): int                          // slot-hint bound, tests only
 ```
 
@@ -171,11 +178,14 @@ pub fn close(b: &Bytes): Result[bool]
 ```
 
 - `create` accepts `0..MAX_BYTE_BUFFER` (16 MiB); larger values are `Range`,
-  negative values `Range`, before a native call. The C adapter independently
-  enforces the same ceiling and the configured `maxNativeBytes` quota
-  (`LimitExceeded`).
-- `writePacked`/`readPacked` use `count` 1..7 and a nonnegative packed value;
-  `readPacked` returns a positive 56-bit value.
+  negative values `Range`, before a native call. Exact 16 MiB is accepted and
+  one past it is rejected. The C adapter independently enforces the same
+  ceiling and the configured `maxNativeBytes` quota (`NoSpace`; the registry
+  raw adapter code remains `EDQUOT`).
+- `writePacked`/`readPacked` use `count` 1..7 and a nonnegative packed value.
+  `writePacked` rejects a value that does not fit the requested bytes
+  (`packed >= 1 << (8*count)`) with `Range`; `readPacked` returns a positive
+  56-bit value.
 - `copyIn` copies exactly `count` bytes from `src[srcOffset..]` to
   `buffer[dstOffset..]`; `copyOut` returns the short count at the buffer end.
 - Both ranges are validated before the first native call. Embedded NUL bytes
@@ -195,6 +205,7 @@ pub fn write(t: &TestResource, value: int): Result[bool]
 pub fn read(t: &TestResource): Result[int]
 pub fn progress(t: &TestResource): Result[int]     // fake script hook; real = Unsupported
 pub fn close(t: &TestResource): Result[bool]
+pub fn closeHandle(t: ^TestResource): Result[bool]
 pub fn closeAlt(t: &TestResource): Result[bool]
 pub fn hint(t: &TestResource): int                 // tests only
 ```
@@ -210,4 +221,14 @@ boundary fixture, not a promise of a future Event/File API.
 Exported symbols take only `long` and return `long`. `>= 0` is success or
 progress; a negative result is `-errno` captured before any intervening call.
 The obo wrapper maps it immediately with `syserrors::fromErrno`. No pointer,
-struct-by-value, callback, variadic, float or registry token crosses to obo.
+struct-by-value, callback, variadic or float crosses to obo. The registry token
+is held only in the module-private slot table and never appears in a public
+record or application call.
+
+## `sysshells` (P0 type-identity fixture)
+
+`sysshells` defines P0-only `File` and `Stream` shells and `acceptStream`/
+`acceptResource` functions. They have no I/O behavior. They exist so the test
+suite can prove with `obo --check` that a `^File` cannot be passed where a
+`^Stream` or `^platform::Resource` is required. P1a replaces their role with the
+real owned File/Directory/Stream modules.

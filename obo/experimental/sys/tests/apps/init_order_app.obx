@@ -49,6 +49,8 @@ fn main() {
                 ok(c) { println("shutdown1=", c.resources, ",", c.shells, ",", c.cleanupFailures) }
                 err(m, c) { showError("shutdown1_error", m, c) }
             }
+            let rc1 = testres::close(&t)
+            match rc1 { ok(v) { println("close_after_shutdown=", v) } err(m, c) { showError("close_after_shutdown_error", m, c) } }
             let sd2 = platform::shutdown()
             match sd2 {
                 ok(c) { println("shutdown2=", c.resources, ",", c.shells, ",", c.cleanupFailures) }
@@ -63,6 +65,8 @@ fn main() {
             // New context, same process. The old shell must not address it.
             let i4 = platform::initialize(&o)
             match i4 { ok(v) { println("init_again=", v) } err(m, c) { showError("init_again_error", m, c) } }
+            let rc2 = testres::close(&t)
+            match rc2 { ok(v) { println("close_after_reinit=", v) } err(m, c) { showError("close_after_reinit_error", m, c) } }
             let stale = platform::_sourceHandle(handle(t.res))
             match stale { ok(h) { println("old_shell=unexpected_ok") } err(m, c) { showError("old_shell", m, c) } }
             let fresh = testres::open()

@@ -13,7 +13,10 @@ static int failures;
 
 int main(void) {
     long t;
+    CHECK(sys_res_new(SYS_KIND_TEST_RESOURCE, 0, 0) == -EINVAL, "create before init");
     CHECK(sys_adapter_init(8, 1024) == 0, "init");
+    CHECK(sys_adapter_init(8, 1024) == -EBUSY, "second init is busy");
+    CHECK(sys_res_nonce() >= 2, "nonce after init");
     CHECK(sysfake_reset() == 1, "reset");
 
     CHECK(sysfake_push(SYS_CALL_NEW, -ENOMEM) == 1, "script create failure");
@@ -50,6 +53,13 @@ int main(void) {
     CHECK(sys_res_call_count(SYS_CALL_OP) == 0, "counters cleared");
     CHECK(sys_res_new(SYS_KIND_BYTE_BUFFER, 4, 0) > 0, "fake byte buffer still shared");
     CHECK(sys_adapter_shutdown() >= 0, "shutdown drains");
+
+    CHECK(sys_adapter_init(1, 1024) == 0, "init one");
+    t = sys_res_new(SYS_KIND_TEST_RESOURCE, 0, 0);
+    CHECK(t > 0, "one fake resource");
+    CHECK(sys_res_new(SYS_KIND_TEST_RESOURCE, 0, 0) == -EMFILE, "fake table full");
+    CHECK(sys_res_close(t, SYS_KIND_TEST_RESOURCE) == 1, "free fake slot");
+    CHECK(sys_adapter_shutdown() == 0, "shutdown one");
     if (failures != 0) {
         fprintf(stderr, "%d fake test failure(s)\n", failures);
         return 1;

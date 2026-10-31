@@ -22,7 +22,7 @@ fn main() {
     let ir = fake::reset()
     println("fake_reset=", ir)
 
-    // Scripted creation failure: NoMemory, exactly one adapter attempt.
+    // Scripted creation failure: NoMemory, exactly one data-path attempt.
     let pushedNew = fake::push(fake::CLASS_NEW, -12)
     println("push_new=", pushedNew)
     let failed = testres::open()
@@ -94,6 +94,12 @@ fn main() {
         }
         err(m, c) { showError("open_error", m, c) }
     }
+
+    // Status mapping aligns with the design table.
+    let k75 = errors::fromErrno(75)
+    println("errno75=", errors::text(&k75))
+    let k122 = errors::fromErrno(122)
+    println("errno122=", errors::text(&k122))
 
     // Deterministic fake time: explicit advancement, no sleeps.
     let st = fake::setTime(1234)

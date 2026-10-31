@@ -1,9 +1,16 @@
+/* getrandom and O_CLOEXEC on glibc */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "sysregistry.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/random.h>
+#include <unistd.h>
 
 #define SYS_MAX_ENTRIES 65536L
 #define SYS_MAX_NATIVE_BYTES 2147483647L
@@ -34,6 +41,43 @@ static long call_counts[8];
 
 static long err(long e) {
     return -(e > 0 ? e : EIO);
+}
+
+static long random_u64(uint64_t *out) {
+    ssize_t n;
+    int first;
+    int fd;
+    size_t got;
+    n = getrandom(out, sizeof(*out), 0);
+    if (n == (ssize_t)sizeof(*out)) return 0;
+    first = errno;
+    fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return first > 0 ? first : EIO;
+    got = 0;
+    while (got < sizeof(*out)) {
+        n = read(fd, (unsigned char *)out + got, sizeof(*out) - got);
+        if (n <= 0) {
+            int e = errno;
+            (void)close(fd);
+            return e > 0 ? e : EIO;
+        }
+        got += (size_t)n;
+    }
+    (void)close(fd);
+    return 0;
+}
+
+/* A fresh unpredictable per-slot identity nonce. It is a hint ingredient, not
+ * a capability: the C registry token remains private and separate. */
+long sys_res_nonce(void) {
+    uint64_t v = 0;
+    long e;
+    if (!initialized) return err(EINVAL);
+    e = random_u64(&v);
+    if (e != 0) return err(e);
+    v &= 0xffffffffffULL;   /* 40 bits, so 40 + 20 slot bits stays positive */
+    if (v < 2) v += 2;      /* 0 and 1 are never issued */
+    return (long)v;
 }
 
 static int token_index(long token, uint32_t *gen) {
@@ -179,6 +223,7 @@ long sys_reg_buffer_op(void *ptr, long op, long a, long b, long c) {
         if (off > buf->len || (size_t)c > buf->len - off) return err(ERANGE);
         if (op == SYS_OP_BUF_SET_PACKED) {
             if (b < 0) return err(ERANGE);
+            if ((uint64_t)b >= (1ULL << (8 * (unsigned)c))) return err(ERANGE);
             packed = (uint64_t)b;
             for (i = 0; i < (size_t)c; i++) {
                 buf->data[off + i] = (unsigned char)((packed >> (8 * i)) & 0xffu);

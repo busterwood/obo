@@ -186,7 +186,7 @@ pub fn fromErrno(errno: int): Kind {
     if errno == 36 { return new NameTooLong{} }        // ENAMETOOLONG
     if errno == 38 { return new Unsupported{} }        // ENOSYS
     if errno == 40 { return new PathLoop{} }           // ELOOP
-    if errno == 75 { return new Range{} }              // EOVERFLOW
+    if errno == 75 { return new ResourceLimit{} }     // EOVERFLOW (generation retirement)
     if errno == 90 { return new MessageTooLarge{} }    // EMSGSIZE
     if errno == 95 { return new Unsupported{} }        // EOPNOTSUPP/ENOTSUP
     if errno == 98 { return new AddressInUse{} }       // EADDRINUSE
@@ -197,7 +197,7 @@ pub fn fromErrno(errno: int): Kind {
     if errno == 113 { return new Unreachable{} }       // EHOSTUNREACH
     if errno == 114 { return new InProgress{} }        // EALREADY
     if errno == 115 { return new InProgress{} }        // EINPROGRESS
-    if errno == 122 { return new LimitExceeded{} }     // EDQUOT (configured quota)
+    if errno == 122 { return new NoSpace{} }           // EDQUOT (design lists it with ENOSPC)
     if errno == 125 { return new Cancelled{} }         // ECANCELED
     return new SystemFailure{}
 }

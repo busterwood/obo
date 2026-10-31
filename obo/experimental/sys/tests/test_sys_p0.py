@@ -62,6 +62,20 @@ def run_app(path, label, argv=None):
     return p.stdout.strip().splitlines()
 
 
+def negative_check(label, fixture, out_dir):
+    p = run([OBO, '--check', os.path.join(APPS, '..', 'errors', fixture),
+             '-I', out_dir, '-I', os.path.join(APPS, '..', 'errors'),
+             '--sym-dir', os.path.join(out_dir, 'sym')])
+    if p.returncode == 0:
+        raise Fail('%s: compiler accepted a negative fixture' % label)
+    expect_path = os.path.join(APPS, '..', 'errors', fixture.replace('.obx', '.expect'))
+    want = open(expect_path).read().strip()
+    if want not in p.stderr:
+        raise Fail('%s: diagnostic mismatch\n--- got ---\n%s\n--- want ---\n%s'
+                   % (label, p.stderr.strip(), want))
+    print('negative %s: %s' % (label, want))
+
+
 def exact(label, lines, want):
     if lines != want:
         raise Fail("%s output mismatch:\n--- got ---\n%s\n--- want ---\n%s"
@@ -99,6 +113,13 @@ CONFORMANCE = [
     'copy_out_scalar=5 nul=0',
     'packed_write=4',
     'packed_read=67305985',
+    'packed_max1=1',
+    'packed_over1=Range',
+    'packed_max2=2',
+    'packed_over2=Range',
+    'packed_max7=7',
+    'packed_over7=Range',
+    'packed_edge7=Range',
     'packed_oob=Range',
     'buffer_close=true',
     'oversize=Range',
@@ -109,20 +130,23 @@ CONFORMANCE = [
 
 ADVERSARIAL = [
     'init=true',
+    'future_before=InvalidResource',
+    'out_of_range_before=InvalidResource',
+    'live_open=ok',
+    'future_after_populate=InvalidResource',
+    'wrong_nonce=InvalidResource',
+    'zero_shell=InvalidResource',
     'live_source=ok',
     'wrong_kind=InvalidResource',
-    'zero_shell=InvalidResource',
-    'out_of_range=InvalidResource',
-    'wrong_epoch=InvalidResource',
-    'copied_hint=accepted_alias',
+    'copied_hint_live=ok',
     'wrong_kind_close=InvalidResource',
     'close=true',
     'double_close=false',
     'closed_read=Closed',
-    'reused_hint_changed=true',
-    'stale_hint=InvalidResource',
-    'counts=0,0',
-    'shutdown=0,0',
+    'out_of_range_after_populate=InvalidResource',
+    'orphan_owner_dead=InvalidResource',
+    'counts=1,11',
+    'shutdown=1,11',
 ]
 
 TABLE = [
@@ -134,13 +158,23 @@ TABLE = [
     'shutdown1=0,0',
     'init2=true',
     'buffer8=ok',
-    'quota=LimitExceeded',
+    'quota=NoSpace',
     'after_release=ok',
     'oversize=Range',
     'negative=Range',
     'zero=ok',
     'zero_len=0',
     'shutdown2=0,0',
+    'init3=true',
+    'tombstone_close=true',
+    'tombstone_open=LimitExceeded',
+    'after_drop_open=ok',
+    'shutdown3=0,0',
+    'init4=true',
+    'exact16=ok',
+    'exact16_len=16777216',
+    'past16=Range',
+    'shutdown4=0,0',
 ]
 
 INIT_ORDER = [
@@ -154,11 +188,13 @@ INIT_ORDER = [
     'init_same=false',
     'init_other=Busy',
     'shutdown1=0,1,0',
+    'close_after_shutdown=false',
     'shutdown2=0,1,0',
     'cap_after=false',
     'counts_after=NotInitialized',
     'open_after=NotInitialized',
     'init_again=true',
+    'close_after_reinit=false',
     'old_shell=InvalidResource',
     'fresh_open=ok',
     'shutdown3=0,0',
@@ -166,7 +202,7 @@ INIT_ORDER = [
 
 LEAK = [
     'init=true',
-    'closed_a=1',
+    'closed_a=true',
     'opened_b=1',
     'dropped_call=ok',
     'counts_before_shutdown=2,2,0,0',
@@ -195,6 +231,8 @@ FAULT = [
     'scripted_close=Interrupted retryable=true',
     'close_again=false',
     'counts_after_close=0,1,1',
+    'errno75=ResourceLimit',
+    'errno122=NoSpace',
     'set_time=1 now=1234',
     'shutdown=0,0,0,1',
 ]
@@ -240,6 +278,9 @@ def main():
     real_conformance = build(REAL, os.path.join(APPS, 'conformance_app.obx'),
                              os.path.join(tmp, 'real-conformance'), 'real conformance')
     real_conf_out = run_app(real_conformance, 'real conformance')
+    real_conf_dir = os.path.dirname(real_conformance)
+    negative_check('file-to-stream', 'file_to_stream.obx', real_conf_dir)
+    negative_check('file-to-resource', 'file_to_resource.obx', real_conf_dir)
 
     build(REAL, os.path.join(APPS, 'adversarial_app.obx'),
           os.path.join(tmp, 'real-adversarial'), 'real adversarial')

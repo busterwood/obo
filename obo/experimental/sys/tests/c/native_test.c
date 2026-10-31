@@ -14,8 +14,13 @@ static int failures;
 
 static void test_identity(void) {
     long t1, t2, t3;
+    long n1, n2;
     CHECK(sys_adapter_init(8, 1024) == 0, "init");
     CHECK(sys_adapter_init(8, 1024) == -EBUSY, "reinit is busy");
+    n1 = sys_res_nonce();
+    n2 = sys_res_nonce();
+    CHECK(n1 >= 2 && n2 >= 2, "nonce is positive and never 0/1");
+    CHECK(n1 != n2, "nonce changes");
     t1 = sys_res_new(SYS_KIND_TEST_RESOURCE, 0, 0);
     CHECK(t1 > 0, "create test resource");
     CHECK(sys_res_validate(t1, SYS_KIND_TEST_RESOURCE) == 1, "validate kind");
@@ -73,6 +78,20 @@ static void test_buffers(void) {
           "packed set");
     r = sys_res_op(t, SYS_KIND_BYTE_BUFFER, SYS_OP_BUF_GET_PACKED, 0, 0, 7);
     CHECK(r == 0x01020304050607L, "packed get");
+    CHECK(sys_res_op(t, SYS_KIND_BYTE_BUFFER, SYS_OP_BUF_SET_PACKED, 0, 255, 1) == 1,
+          "1-byte maximum");
+    CHECK(sys_res_op(t, SYS_KIND_BYTE_BUFFER, SYS_OP_BUF_SET_PACKED, 0, 256, 1) == -ERANGE,
+          "1-byte overflow rejected");
+    CHECK(sys_res_op(t, SYS_KIND_BYTE_BUFFER, SYS_OP_BUF_SET_PACKED, 0, 65535, 2) == 2,
+          "2-byte maximum");
+    CHECK(sys_res_op(t, SYS_KIND_BYTE_BUFFER, SYS_OP_BUF_SET_PACKED, 0, 65536, 2) == -ERANGE,
+          "2-byte overflow rejected");
+    CHECK(sys_res_op(t, SYS_KIND_BYTE_BUFFER, SYS_OP_BUF_SET_PACKED, 3, 0x00ffffffffffffffL, 7) == 7,
+          "last 7-byte range");
+    CHECK(sys_res_op(t, SYS_KIND_BYTE_BUFFER, SYS_OP_BUF_SET_PACKED, 3, 0x0100000000000000L, 7) == -ERANGE,
+          "7-byte overflow rejected");
+    CHECK(sys_res_op(t, SYS_KIND_BYTE_BUFFER, SYS_OP_BUF_SET_PACKED, 4, 0, 7) == -ERANGE,
+          "7-byte one past end rejected");
     CHECK(sys_res_op(t, SYS_KIND_BYTE_BUFFER, SYS_OP_BUF_SET_PACKED, 5, 0x0102, 7) == -ERANGE,
           "packed past end");
     CHECK(sys_res_op(t, SYS_KIND_BYTE_BUFFER, SYS_OP_BUF_GET_PACKED, 0, 0, 8) == -ERANGE,
@@ -91,6 +110,17 @@ static void test_buffers(void) {
     CHECK(sys_res_op(t, SYS_KIND_BYTE_BUFFER, SYS_OP_BUF_LEN, 0, 0, 0) == 0, "zero len");
     CHECK(sys_res_close(t, SYS_KIND_BYTE_BUFFER) == 1, "zero close");
     CHECK(sys_adapter_shutdown() == 0, "shutdown buffers");
+
+    /* Exact 16 MiB boundary and one past it. */
+    CHECK(sys_adapter_init(8, 2L * SYS_MAX_BYTE_BUFFER) == 0, "init 16 MiB");
+    t = sys_res_new(SYS_KIND_BYTE_BUFFER, SYS_MAX_BYTE_BUFFER, 0);
+    CHECK(t > 0, "exact 16 MiB buffer");
+    CHECK(sys_res_op(t, SYS_KIND_BYTE_BUFFER, SYS_OP_BUF_LEN, 0, 0, 0) == SYS_MAX_BYTE_BUFFER,
+          "exact 16 MiB length");
+    CHECK(sys_res_new(SYS_KIND_BYTE_BUFFER, SYS_MAX_BYTE_BUFFER + 1, 0) == -ERANGE,
+          "one past 16 MiB rejected");
+    CHECK(sys_res_close(t, SYS_KIND_BYTE_BUFFER) == 1, "close 16 MiB");
+    CHECK(sys_adapter_shutdown() == 0, "shutdown 16 MiB");
 }
 
 static void test_ordering(void) {
@@ -98,6 +128,7 @@ static void test_ordering(void) {
     CHECK(sys_adapter_init(1, 0) == -EINVAL, "zero byte cap");
     CHECK(sys_adapter_init(65537, 8) == -EINVAL, "resource cap ceiling");
     CHECK(sys_res_new(SYS_KIND_TEST_RESOURCE, 0, 0) == -EINVAL, "create before init");
+    CHECK(sys_res_nonce() == -EINVAL, "nonce before init");
     CHECK(sys_adapter_shutdown() == -EINVAL, "shutdown before init");
     CHECK(sys_adapter_init(2, 8) == 0, "final init");
     CHECK(sys_adapter_shutdown() == 0, "final shutdown");

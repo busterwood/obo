@@ -46,6 +46,7 @@ enum {
 long sys_adapter_init(long max_resources, long max_bytes);
 long sys_adapter_shutdown(void);
 long sys_res_new(long kind, long a, long b);
+long sys_res_nonce(void);
 long sys_res_validate(long token, long kind);
 long sys_res_kind(long token);
 long sys_res_close(long token, long kind);

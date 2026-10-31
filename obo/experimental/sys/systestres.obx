@@ -57,6 +57,12 @@ pub fn close(t: &TestResource): Result[bool] {
     return platform::_closeHandle(handle(t.res), platform::KIND_TEST_RESOURCE)
 }
 
+// Handle form for collections/tests where an interior reference would cross a
+// native-effect call.
+pub fn closeHandle(t: ^TestResource): Result[bool] {
+    return platform::_closeHandle(handle(t.res), platform::KIND_TEST_RESOURCE)
+}
+
 pub fn closeAlt(t: &TestResource): Result[bool] {
     return platform::_closeHandle(handle(t.res), platform::KIND_TEST_RESOURCE_ALT)
 }

@@ -7,7 +7,8 @@
   "wrapper_sources": [
     "../syserrors.obx",
     "../systestres.obx",
-    "../sysbytes.obx"
+    "../sysbytes.obx",
+    "../sysshells.obx"
   ],
   "sources": ["sysregistry.c", "sysadapter_real.c"],
   "headers": ["sysadapter.h"],
@@ -17,6 +18,7 @@
     {"name": "sys_adapter_init", "symbol": "sys_adapter_init", "args": ["i64", "i64"], "ret": "i64", "effects": ["impure"]},
     {"name": "sys_adapter_shutdown", "symbol": "sys_adapter_shutdown", "args": [], "ret": "i64", "effects": ["impure"]},
     {"name": "sys_res_new", "symbol": "sys_res_new", "args": ["i64", "i64", "i64"], "ret": "i64", "effects": ["impure"]},
+    {"name": "sys_res_nonce", "symbol": "sys_res_nonce", "args": [], "ret": "i64", "effects": ["impure"]},
     {"name": "sys_res_validate", "symbol": "sys_res_validate", "args": ["i64", "i64"], "ret": "i64", "effects": ["impure"]},
     {"name": "sys_res_close", "symbol": "sys_res_close", "args": ["i64", "i64"], "ret": "i64", "effects": ["impure"]},
     {"name": "sys_res_op", "symbol": "sys_res_op", "args": ["i64", "i64", "i64", "i64", "i64", "i64"], "ret": "i64", "effects": ["impure"]},

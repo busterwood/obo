@@ -7,15 +7,18 @@
 //
 //     pub type Resource = ref record { reserved: int }
 //
-// `reserved` is a *checked table hint* (slot index + epoch), never authority.
-// A module-private fixed-capacity slot table keeps the native registry token,
-// kind, state and quota charge. Every entry point decodes the hint, checks the
-// epoch, kind and state, checks that the shell record is still alive, and only
-// then asks the native adapter to validate its private token. A forged,
-// out-of-range, stale or wrong-kind hint fails; a user-created shell with no
-// entry fails. Copying a live hint is the documented public-field alias
-// limitation of 0.12 records, not a new capability: it names the same entry
-// and cannot manufacture a token or a second native object.
+// `reserved` is a *checked table hint* (slot index + secret per-slot nonce),
+// never authority. A module-private fixed-capacity slot table keeps the native
+// registry token, kind, state and quota charge. Every entry point decodes the
+// hint, checks the slot, the unpredictable nonce, kind and state, checks that
+// the registered shell record is still alive, and only then asks the native
+// adapter to validate its private token. A forged, out-of-range, stale,
+// future-guessed or wrong-kind hint fails; a user-created shell with no entry
+// fails. Copying a live hint intentionally aliases the same entry (the 0.12
+// public-field limitation) but only while that entry's registered owner shell
+// is alive; it cannot manufacture a token or a second native object. A guessed
+// hint cannot become valid when a later slot is populated because the nonce is
+// generated randomly by C and never exposed as authority.
 //
 // The native registry token is never placed in `Resource` and never crosses to
 // application code. Close is explicit; a record drop runs no finalizer. Closed
@@ -96,17 +99,23 @@ pub const MAX_BYTE_BUFFER = 16777216
 
 const SLOT_BITS = 20
 const SLOT_MASK = 1048575
-const MAX_EPOCH = 2147483647
 const STATE_FREE = 0
 const STATE_OPEN = 1
 const STATE_CLOSED = 2
 
 type Slot = ref record {
-    gen: int
+    nonce: int
     kind: int
     state: int
     token: int
     owner: ?^Resource
+}
+
+// A shell from a retired context still answers explicit close with ok(false).
+// This list is module-private and is never resolved against a new registry.
+type Retired = ref record {
+    hint: int
+    kind: int
 }
 
 var slots: []Slot = new []Slot(0)
@@ -116,8 +125,8 @@ var maxBytesCfg: int = 67108864
 var ignorePipeCfg: bool = true
 var initialised: bool = false
 var shutdownDone: bool = false
-var nextEpoch: int = 1
 var cleanupFailures: int = 0
+var retired: []Retired = new []Retired(0)
 
 var cachedResources: int = 0
 var cachedShells: int = 0
@@ -130,6 +139,7 @@ fn _sourceHandle(h: ^Resource): Result[^Resource]
 fn _requireKindHandle(h: ^Resource, kind: int): Result[^Resource]
 fn _closeHandle(h: ^Resource, kind: int): Result[bool]
 fn _opHandle(h: ^Resource, kind: int, op: int, a: int, b: int, c: int): Result[int]
+fn retiredMatch(hint: int, kind: int): bool
 
 pub fn defaultOptions(): Options {
     return new Options{
@@ -167,10 +177,30 @@ fn decodeSlot(hint: int): int {
     if hint <= 0 { return -1 }
     let s = hint % 1048576
     if s <= 0 || s > len(slots) { return -1 }
-    let g = hint / 1048576
+    let n = hint / 1048576
+    if n <= 0 { return -1 }
     let i = s - 1
-    if slots[i].gen != g { return -1 }
+    if slots[i].nonce != n { return -1 }
     return i
+}
+
+fn nonceInUse(n: int): bool {
+    if n <= 0 { return true }
+    for i in 0..len(slots) {
+        if slots[i].nonce == n { return true }
+    }
+    for i in 0..len(retired) {
+        if retired[i].hint / 1048576 == n { return true }
+    }
+    return false
+}
+
+fn retiredMatch(hint: int, kind: int): bool {
+    if hint <= 0 { return false }
+    for i in 0..len(retired) {
+        if retired[i].hint == hint && retired[i].kind == kind { return true }
+    }
+    return false
 }
 
 fn ownerAlive(i: int): bool {
@@ -231,8 +261,8 @@ pub fn initialize(options: &Options): Result[bool] {
     ignorePipeCfg = options.ignorePipeSignal
     slots = new []Slot(0)
     cleanupFailures = 0
-    // nextEpoch deliberately stays monotonic across shutdown/reinitialize, so
-    // a shell from a retired context cannot address a new one.
+    // Nonces are fresh per slot creation, so a shell from a retired context
+    // cannot address a new one even when the slot index is reused.
     initialised = true
     shutdownDone = false
     return ok(true)
@@ -319,6 +349,19 @@ pub fn _create(kind: int, a: int, b: int): Result[Resource] {
     if idx0 == -2 {
         return err("configured shell/slot capacity is exhausted", limitCode())
     }
+    var nonceRaw = __cinterop("sys_res_nonce")
+    var nonceTries = 0
+    while nonceRaw > 0 && nonceInUse(nonceRaw) && nonceTries < 4 {
+        nonceRaw = __cinterop("sys_res_nonce")
+        nonceTries += 1
+    }
+    if nonceRaw <= 0 {
+        return err("native adapter could not provide an identity nonce", rawCode(nonceRaw))
+    }
+    if nonceInUse(nonceRaw) {
+        return err("could not allocate a unique identity nonce", resourceLimitCode())
+    }
+    let nonce = nonceRaw
     let raw = __cinterop("sys_res_new", kind, a, b)
     if raw < 0 {
         return err("native resource could not be created", rawCode(raw))
@@ -328,18 +371,11 @@ pub fn _create(kind: int, a: int, b: int): Result[Resource] {
     }
     var idx = idx0
     if idx < 0 {
-        append(slots, new Slot{gen: 0, kind: 0, state: STATE_FREE, token: 0, owner: nil})
+        append(slots, new Slot{nonce: 0, kind: 0, state: STATE_FREE, token: 0, owner: nil})
         idx = len(slots) - 1
     }
-    let gen = nextEpoch
-    if gen > MAX_EPOCH {
-        // Retire instead of wrapping a generation.
-        let discarded = __cinterop("sys_res_close", raw, kind)
-        return err("resource generation is exhausted; retire this slot", resourceLimitCode())
-    }
-    nextEpoch += 1
-    var r = new Resource{reserved: ((gen * 1048576) + idx + 1)}
-    slots[idx].gen = gen
+    var r = new Resource{reserved: ((nonce * 1048576) + idx + 1)}
+    slots[idx].nonce = nonce
     slots[idx].kind = kind
     slots[idx].state = STATE_OPEN
     slots[idx].token = raw
@@ -354,11 +390,21 @@ pub fn _close(r: &Resource, kind: int): Result[bool] {
 }
 
 pub fn _closeHandle(h: ^Resource, kind: int): Result[bool] {
+    let hint = h.reserved
     if !initialised {
+        // A shell from a retired context keeps its explicit-close answer false
+        // without resolving against a new registry. A truly unknown forged
+        // shell still reports NotInitialized.
+        if retiredMatch(hint, kind) { return ok(false) }
         return err("systems platform is not initialized", notInitialized())
     }
-    let idx = decodeSlot(h.reserved)
-    if idx < 0 || !ownerAlive(idx) {
+    let idx = decodeSlot(hint)
+    if idx < 0 {
+        if retiredMatch(hint, kind) { return ok(false) }
+        return err("resource is not a registered identity", invalidResource())
+    }
+    if !ownerAlive(idx) {
+        if retiredMatch(hint, kind) { return ok(false) }
         return err("resource is not a registered identity", invalidResource())
     }
     if slots[idx].state == STATE_CLOSED { return ok(false) }
@@ -449,6 +495,12 @@ pub fn shutdown(): Result[Counts] {
     let preShells = shellCount()
     var anomalies = 0
     for i in 0..len(slots) {
+        if slots[i].state != STATE_FREE {
+            append(retired, new Retired{
+                hint: (slots[i].nonce * 1048576) + i + 1
+                kind: slots[i].kind
+            })
+        }
         if slots[i].state == STATE_OPEN {
             let tok = slots[i].token
             let k = slots[i].kind
@@ -484,8 +536,8 @@ pub fn shutdown(): Result[Counts] {
 }
 
 // Test-only hint constructor for adversarial tests. Not an application API.
-pub fn _hint(index: int, epoch: int): int {
-    return (epoch * (SLOT_MASK + 1)) + index + 1
+pub fn _hint(index: int, nonce: int): int {
+    return (nonce * (SLOT_MASK + 1)) + index + 1
 }
 
 pub fn _bounds(): int {

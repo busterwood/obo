@@ -85,4 +85,55 @@ fn main() {
     }
     let s2 = platform::shutdown()
     match s2 { ok(c) { println("shutdown2=", c.resources, ",", c.shells) } err(m, c) { showError("shutdown2_error", m, c) } }
+
+    // Phase 3: maxShells=1. A closed tombstone whose shell is alive still
+    // occupies the slot; after the shell dies, insertion reuses it.
+    let o3 = platform::defaultOptions()
+    o3.maxResources = 4
+    o3.maxShells = 1
+    o3.maxNativeBytes = 64
+    let i3 = platform::initialize(&o3)
+    match i3 { ok(v) { println("init3=", v) } err(m, c) { showError("init3_error", m, c) } }
+    let tomb = testres::open()
+    match tomb {
+        ok(ta) {
+            let cl = testres::close(&ta)
+            match cl { ok(v) { println("tombstone_close=", v) } err(m, c) { showError("tombstone_close_error", m, c) } }
+            let blocked = testres::open()
+            match blocked { ok(tb) { println("tombstone_open=unexpected_ok") } err(m, c) { showError("tombstone_open", m, c) } }
+        }
+        err(m, c) { showError("tombstone_create_error", m, c) }
+    }
+    let afterDrop = testres::open()
+    match afterDrop {
+        ok(tc) {
+            println("after_drop_open=ok")
+            let cc = testres::close(&tc)
+        }
+        err(m, c) { showError("after_drop_open_error", m, c) }
+    }
+    let s3 = platform::shutdown()
+    match s3 { ok(c) { println("shutdown3=", c.resources, ",", c.shells) } err(m, c) { showError("shutdown3_error", m, c) } }
+
+    // Phase 4: exact 16 MiB boundary and one past it.
+    let o4 = platform::defaultOptions()
+    o4.maxResources = 4
+    o4.maxShells = 4
+    o4.maxNativeBytes = 33554432
+    let i4 = platform::initialize(&o4)
+    match i4 { ok(v) { println("init4=", v) } err(m, c) { showError("init4_error", m, c) } }
+    let exact = bytes::create(platform::MAX_BYTE_BUFFER)
+    match exact {
+        ok(big) {
+            println("exact16=ok")
+            let le = bytes::length(&big)
+            match le { ok(n) { println("exact16_len=", n) } err(m, c) { showError("exact16_len_error", m, c) } }
+            let past = bytes::create(platform::MAX_BYTE_BUFFER + 1)
+            match past { ok(bp) { println("past16=unexpected_ok") } err(m, c) { showError("past16", m, c) } }
+            let cb = bytes::close(&big)
+        }
+        err(m, c) { showError("exact16_error", m, c) }
+    }
+    let s4 = platform::shutdown()
+    match s4 { ok(c) { println("shutdown4=", c.resources, ",", c.shells) } err(m, c) { showError("shutdown4_error", m, c) } }
 }

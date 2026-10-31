@@ -4,6 +4,7 @@ module app
 import "sysplatform.obx" as platform
 import "systestres.obx" as testres
 import "sysbytes.obx" as bytes
+import "sysshells.obx" as shells
 import "syserrors.obx" as errors
 
 fn showError(label: string, m: string, c: int) {
@@ -73,6 +74,21 @@ fn main() {
             match p { ok(n) { println("packed_write=", n) } err(m, c) { showError("packed_write_error", m, c) } }
             let q = bytes::readPacked(&b, 24, 4)
             match q { ok(v) { println("packed_read=", v) } err(m, c) { showError("packed_read_error", m, c) } }
+
+            let m1 = bytes::writePacked(&b, 0, 255, 1)
+            match m1 { ok(v) { println("packed_max1=", v) } err(m, c) { showError("packed_max1_error", m, c) } }
+            let o1 = bytes::writePacked(&b, 0, 256, 1)
+            match o1 { ok(v) { println("packed_over1=unexpected_ok") } err(m, c) { showError("packed_over1", m, c) } }
+            let m2 = bytes::writePacked(&b, 0, 65535, 2)
+            match m2 { ok(v) { println("packed_max2=", v) } err(m, c) { showError("packed_max2_error", m, c) } }
+            let o2 = bytes::writePacked(&b, 0, 65536, 2)
+            match o2 { ok(v) { println("packed_over2=unexpected_ok") } err(m, c) { showError("packed_over2", m, c) } }
+            let m7 = bytes::writePacked(&b, 25, 72057594037927935, 7)
+            match m7 { ok(v) { println("packed_max7=", v) } err(m, c) { showError("packed_max7_error", m, c) } }
+            let o7 = bytes::writePacked(&b, 25, 72057594037927936, 7)
+            match o7 { ok(v) { println("packed_over7=unexpected_ok") } err(m, c) { showError("packed_over7", m, c) } }
+            let e7 = bytes::writePacked(&b, 26, 0, 7)
+            match e7 { ok(v) { println("packed_edge7=unexpected_ok") } err(m, c) { showError("packed_edge7", m, c) } }
 
             let bad = bytes::readPacked(&b, 30, 7)
             match bad { ok(v) { println("packed_oob=unexpected_ok") } err(m, c) { showError("packed_oob", m, c) } }

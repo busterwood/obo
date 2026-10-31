@@ -4,10 +4,11 @@
 // this seam; the API may change.
 //
 // A Bytes shell contains only `res: platform::Resource`. The bytes live in a
-// C-owned buffer reached through the managed identity table; no pointer and no
-// registry token crosses to obo. Every offset/count is checked against both
-// the obo array and the C buffer before indexing or copying. The bridge is
-// NUL-safe: all lengths are explicit and no C string function is used.
+// C-owned buffer reached through the managed identity table; no pointer crosses
+// and the registry token stays in the module-private slot table, never in a
+// public record. Every offset/count is checked against both the obo array and
+// the C buffer before indexing or copying. The bridge is NUL-safe: all lengths
+// are explicit and no C string function is used.
 //
 // The per-buffer limit is 16 MiB (platform::MAX_BYTE_BUFFER). Larger logical
 // transfers are caller chunk loops, not a hidden allocation.
@@ -64,6 +65,10 @@ pub fn getByte(b: &Bytes, index: int): Result[int] {
 pub fn writePacked(b: &Bytes, offset: int, packed: int, count: int): Result[int] {
     if offset < 0 || count < 1 || count > 7 || packed < 0 {
         return err("packed write needs 1..7 bytes at a nonnegative offset", rangeCode())
+    }
+    let limit = 1 << (8 * count)
+    if packed >= limit {
+        return err("packed value does not fit the requested byte count", rangeCode())
     }
     return platform::_opHandle(handle(b.res), platform::KIND_BYTE_BUFFER,
                          platform::OP_BUF_SET_PACKED, offset, packed, count)

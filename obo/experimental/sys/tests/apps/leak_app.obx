@@ -26,7 +26,7 @@ fn main() {
     match madeA {
         ok(a) {
             let ca = testres::close(&a)
-            println("closed_a=1")
+            match ca { ok(v) { println("closed_a=", v) } err(m, c) { showError("closed_a_error", m, c) } }
         }
         err(m, c) { showError("a_error", m, c) }
     }

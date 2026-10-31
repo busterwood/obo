@@ -1,0 +1,1 @@
+file_to_stream.obx:7:28: argument 1 of sysshells::acceptStream: cannot use ^sysshells::File as ^sysshells::Stream
