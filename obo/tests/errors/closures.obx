@@ -1,0 +1,146 @@
+// Stage B capture lists: resolution, read-only/value modes, the call-argument-only rule, the argument
+// hold/firewall, placement contexts and purity. Every message is the design's exact text.
+type Box = ref record { v: int }
+type Bag = ref record { items: []Box; n: int }
+type I = interface { fn m() }
+var G = new Bag{items: new []Box(0), n: 0}
+fn apply(x: int, f: fn(int): int): int { return f(x) }
+fn use2(f: fn(int): int, b: Box): int { return f(1) }
+fn useBag(f: fn(int): int, mut b: &Bag): int { return f(1) }
+fn useB(f: fn(int): int, b: Bag): int { return f(1) }
+fn harmful(f: fn(int): int, n: int): int {
+    let p = new Bag{items: new []Box(0), n: 0}
+    let h = handle(p)
+    h.items = new []Box(0)
+    return f(n)
+}
+fn freeG(f: fn(int): int, n: int): int {
+    G = new Bag{items: new []Box(0), n: 0}
+    return f(n)
+}
+fn mk(q: &Bag): ^Box { return handle(q.items[0]) }
+fn applyR(x: int, f: fn(int): Result[int]): int {
+    let r = f(x)
+    match r {
+        ok { return r.value }
+        err { return 0 }
+    }
+}
+
+// === an unknown capture name
+fn main() { println(apply(1, fn [nope](x: int): int { return x })) }  // error: 'nope' is not a local variable or parameter; a lambda uses globals directly, without capturing
+
+// === a global is used directly, not captured
+var GN = 1
+fn main() { println(apply(1, fn [GN](x: int): int { return x })) }  // error: 'GN' is not a local variable or parameter; a lambda uses globals directly, without capturing
+
+// === a named function is not a capture
+fn fname(): int { return 1 }
+fn main() { println(apply(1, fn [fname](x: int): int { return x })) }  // error: cannot capture function 'fname'; call it directly
+
+// === a string cannot be captured
+fn main() { let s = "hi"; println(apply(1, fn [s](x: int): int { return x })) }  // error: cannot capture 's': strings are owned; pass it as a parameter
+
+// === an interface value cannot be captured
+fn useI(d: I): int { return apply(1, fn [d](x: int): int { return x }) }  // error: cannot capture interface value 'd'; function values cannot take interface values in v1
+fn main() { println(0) }
+
+// === a capture given twice
+fn main() { let n = 1; println(apply(1, fn [n, n](x: int): int { return x })) }  // error: capture 'n' given twice
+
+// === a capture that is also a lambda parameter
+fn main() { let x = 1; println(apply(1, fn [x](x: int): int { return x })) }  // error: capture 'x' is also a parameter of the lambda
+
+// === a mutable capture mode is unsupported
+fn main() { let n = 1; println(apply(1, fn [mut n](x: int): int { return x })) }  // error: captures are read-only: write fn [x]; mutable and owned captures are not supported
+
+// === an enclosing local used in the body is not implicitly captured
+fn main() { let n = 1; println(apply(1, fn (x: int): int { return x + n })) }  // error: 'n' is a local of the enclosing function; add it to the lambda's capture list: fn [n](...)
+
+// === a moved local cannot be captured
+fn main() { let b = new Box{v: 1}; let c = b; println(apply(1, fn [b](x: int): int { return x })) }  // error: 'b' was moved and has no value here
+
+// === a freed reference cannot be captured
+fn main() { var b = new Box{v: 1}; let r = &b; drop(b); println(apply(1, fn [r](x: int): int { return x })) }  // error: 'r' may point to freed memory: something under what it points into was changed; point it again first
+
+// === a captured scalar cannot be written
+fn main() { let n = 1; println(apply(1, fn [n](x: int): int { n = 2; return x })) }  // error: cannot change captured 'n': captures are read-only; pass a mutable parameter instead
+
+// === a captured object is read-only
+fn main() { let b = new Box{v: 1}; println(apply(1, fn [b](x: int): int { b.v = 2; return x })) }  // error: cannot change through 'b': it is a read-only reference
+
+// === a captured optional cannot be taken
+fn main() { var o: ?Box = new Box{v: 1}; println(apply(1, fn [o](x: int): int { let b = take(o); return x })) }  // error: take cannot change 'o': it is immutable
+
+// === a captured optional cannot be replaced
+fn main() { var o: ?Box = new Box{v: 1}; println(apply(1, fn [o](x: int): int { let b = replace(o, new Box{v: 2}); return x })) }  // error: replace cannot change 'o': it is immutable
+
+// === a captured array cannot be truncated
+fn main() { let xs = new []int(0); append(xs, 1); println(apply(1, fn [xs](x: int): int { truncate(xs, 0); return x })) }  // error: truncate changes the array, but 'xs' is a read-only reference
+
+// === a captured object cannot be moved out
+fn eat(b: Box): int { return 1 }
+fn main() { let b = new Box{v: 1}; println(apply(1, fn [b](x: int): int { return eat(b) })) }  // error: cannot move out of a reference: a reference only borrows
+
+// === a captured array cannot be appended
+fn main() { let xs = new []int(0); println(apply(1, fn [xs](x: int): int { append(xs, 2); return x })) }  // error: append changes the array, but 'xs' is a read-only reference
+
+// === a mut method through a read-only capture is refused
+type Mut = ref record { n: int }
+fn (mut m: &Mut) bump() { m.n += 1 }
+fn main() { let m = new Mut{n: 1}; let r = &m; println(apply(1, fn [r](x: int): int { r.bump(); return x })) }  // error: the receiver of method 'Mut::bump' needs a mut reference, but this one is read-only
+
+// === a capturing literal cannot be bound to a local
+fn main() { let n = 1; let f = fn [n](x: int): int { return x }; println(apply(1, f)) }  // error: a capturing lambda may only be passed directly as a call argument
+
+// === a parenthesized capturing literal is not a direct argument
+fn main() { let n = 1; println(apply(1, (fn [n](x: int): int { return x }))) }  // error: a capturing lambda may only be passed directly as a call argument
+
+// === a capturing literal cannot be returned
+fn make(n: int): int { return fn [n](x: int): int { return x } }  // error: a capturing lambda may only be passed directly as a call argument
+
+// === a capturing literal cannot appear in a while condition
+fn main() { let n = 1; while apply(1, fn [n](x: int): int { return x }) > 0 { break } }  // error: a lambda literal cannot appear in a while condition; move the call out of the condition before the loop
+
+// === a capturing literal cannot appear in a defer body
+fn main() { let n = 1; defer apply(1, fn [n](x: int): int { return x }) }  // error: a lambda literal cannot appear in a defer body; move the call out of the defer
+
+// === a capturing literal cannot initialize a global
+var LF = fn [n](x: int): int { return x }  // error: a lambda can only be created inside a function
+
+// === a capturing literal cannot initialize a constant
+const LC = fn [n](x: int): int { return x }  // error: a lambda can only be created inside a function
+
+// === a capturing literal in a let inside a call-argument lambda is not inherited
+fn main() { let n = 1; println(apply(1, fn (x: int): int { let g = fn [n](y: int): int { return y }; return g(x) })) }  // error: a capturing lambda may only be passed directly as a call argument
+
+// === a later argument may not move a captured object
+fn main() { let b = new Box{v: 1}; println(use2(fn [b](x: int): int { return x + b.v }, b)) }  // error: argument 2 of use2 may free what argument 1 captures, and runs after it; compute it before the call
+
+// === a mut argument may not overlap a deep capture
+fn main() { var b = new Bag{items: new []Box(0), n: 0}; append(b.items, new Box{v: 1}); let d = &b.items[0]; println(useBag(fn [d](x: int): int { return x + d.v }, b)) }  // error: argument 1 of useBag captures a place that argument 2 changes, which is mut
+
+// === a deep capture needs a callee that does not write through a handle
+fn main() { let b = new Bag{items: new []Box(0), n: 0}; append(b.items, new Box{v: 1}); let d = &b.items[0]; println(harmful(fn [d](x: int): int { return x + d.v }, 1)) }  // error: cannot pass a closure that captures a reference inside something to harmful: it writes through a handle, which could free it
+
+// === a handle-rooted capture needs a handle-safe callee
+fn main() { let b = new Bag{items: new []Box(0), n: 0}; append(b.items, new Box{v: 1}); let h = handle(b); let r = &h.items[0]; println(harmful(fn [r](x: int): int { return x + r.v }, 1)) }  // error: cannot pass a closure that captures a reference through a handle to harmful: it might free what the handle names
+
+// === a global-rooted capture needs a callee that does not free the global
+fn main() { append(G.items, new Box{v: 1}); let r = &G.items[0]; println(freeG(fn [r](x: int): int { return x + r.v }, 1)) }  // error: cannot pass a closure that captures a reference into global 'G' to freeG: it might free it
+
+// === a lambda body may not call the active enclosing function
+fn active(n: int): int { return apply(n, fn [n](x: int): int { return active(x) }) }  // error: cannot call 'active' from a lambda while it is being compiled: its effects are not known yet
+fn main() { println(active(1)) }
+
+// === a lambda body that frees a global is impure
+fn main() { println(apply(1, fn (x: int): int { G = new Bag{items: new []Box(0), n: 0}; return x })) }  // error: a lambda must be pure: it may not free a global or free owned state through a handle; call a pure function instead
+
+// === a lambda body that frees owned state through a captured handle is impure
+fn main() { let b = new Bag{items: new []Box(0), n: 0}; let h = handle(b); println(apply(1, fn [h](x: int): int { h.items = new []Box(0); return x })) }  // error: a lambda must be pure: it may not free a global or free owned state through a handle; call a pure function instead
+
+// === try cannot consume a captured Result reference
+fn main() { let r = ok(1); println(applyR(1, fn [r](x: int): Result[int] { let v = try r; return ok(x + v) })) }  // error: cannot move out of a reference: a reference only borrows
+
+// === a captured tracked handle whose owner a later argument moves
+fn main() { let b = new Bag{items: new []Box(0), n: 0}; let h = handle(b); println(useB(fn [h](x: int): int { return x + h.n }, b)) }  // error: argument 2 of useB may free what argument 1 captures, and runs after it; compute it before the call

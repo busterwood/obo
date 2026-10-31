@@ -1,0 +1,96 @@
+// Stage B: explicit capture lists. Scalars are snapshots; owned objects, arrays, optionals and Results
+// are read-only borrows of the whole local; a read-only method or field read works through the capture.
+type Item = ref record { n: int }
+type Opts = ref record { bump: int; label: string }
+type Shape = closed { Circle { r: int } Square { s: int } }
+
+fn (o: &Opts) score(): int { return o.bump * 2 }
+fn apply(x: int, f: fn(int): int): int { return f(x) }
+fn twice(f: fn(int): int): int { return f(1) + f(2) }
+fn may(v: int): Result[int] {
+    if v > 0 { return ok(v) }
+    return err("bad", 1)
+}
+fn applyR(x: int, f: fn(int): Result[int]): int {
+    let r = f(x)
+    match r {
+        ok { return r.value }
+        err { return 0 }
+    }
+}
+
+fn main() {
+    let n = 7
+    println(apply(1, fn [n](x: int): int { return x + n }))
+
+    let opts = new Opts{bump: 3, label: "o"}
+    println(apply(1, fn [opts](x: int): int { return x + opts.bump + opts.score() }))
+    println(opts.label)
+
+    let xs = new []int(0)
+    append(xs, 10)
+    append(xs, 20)
+    println(apply(1, fn [xs](x: int): int {
+        var sum = x + len(xs)
+        var i = 0
+        while i < len(xs) {
+            sum += xs[i]
+            i += 1
+        }
+        return sum
+    }))
+
+    let item = new Item{n: 9}
+    let maybe: ?Item = item
+    println(apply(1, fn [maybe](x: int): int {
+        if maybe != nil { return x + maybe.n }
+        return x
+    }))
+
+    let r = ok(5)
+    println(apply(1, fn [r](x: int): int {
+        match r {
+            ok { let v = r.value
+                return x + v }
+            err { return x }
+        }
+    }))
+
+    let sh: Shape = new Circle{r: 3}
+    println(apply(1, fn [sh](x: int): int {
+        match sh {
+            Circle { return x + sh.r }
+            Square { return x + sh.s }
+        }
+    }))
+
+    let a = new Item{n: 2}
+    let b = new Item{n: 3}
+    println(apply(1, fn [b, a](x: int): int { return x + a.n * 10 + b.n }))
+    println(twice(fn [n](x: int): int { return x + n }))
+
+    println(applyR(3, fn [n](x: int): Result[int] {
+        let v = try may(x)
+        return ok(v + n)
+    }));
+    println(applyR(-1, fn [n](x: int): Result[int] {
+        let v = try may(x)
+        return ok(v + n)
+    }));
+
+    let empty = new []Item(0)
+    println(apply(4, fn [empty](x: int): int { return x + len(empty) }))
+}
+
+// expect: 8
+// expect: 10
+// expect: o
+// expect: 33
+// expect: 10
+// expect: 6
+// expect: 4
+// expect: 24
+// expect: 17
+// expect: 10
+// expect: 0
+// expect: 4

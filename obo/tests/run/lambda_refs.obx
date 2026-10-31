@@ -1,0 +1,79 @@
+// Stage B: read-only reference captures keep the reference's binding. A handle-safe callback helper
+// accepts deep, handle-rooted and global-rooted captures; a whole-object capture also passes an
+// impure callee; a callee that only frees an unrelated global still accepts a deep capture.
+type Box = ref record { v: int }
+type Bag = ref record { items: []Box; n: int }
+
+fn pure2(f: fn(int): int, n: int): int { return f(n) }
+fn pureDefer(f: fn(int): int, n: int): int {
+    defer f(n)
+    return n
+}
+fn mid(f: fn(int): int): int { return pure2(f, 2) }
+fn copyDefer(f: fn(int): int): int {
+    let g = f
+    defer g(1)
+    return 3
+}
+fn touch(f: fn(int): int, mut b: &Bag): int { return f(1) }
+fn harmful(f: fn(int): int, n: int): int {
+    let p = new Bag{items: new []Box(0), n: 0}
+    append(p.items, new Box{v: 9})
+    let h = handle(p)
+    h.n = 8
+    h.items = new []Box(0)
+    return f(n)
+}
+var G = new Bag{items: new []Box(0), n: 0}
+fn freeG(f: fn(int): int, n: int): int {
+    G = new Bag{items: new []Box(0), n: 0}
+    return f(n)
+}
+
+fn main() {
+    let b = new Box{v: 4}
+    let r = &b
+    println(pure2(fn [r](x: int): int { return x + r.v }, 1))
+
+    let bag = new Bag{items: new []Box(0), n: 0}
+    append(bag.items, new Box{v: 5})
+    let d = &bag.items[0]
+    println(pure2(fn [d](x: int): int { return x + d.v }, 1))
+    println(pureDefer(fn [d](x: int): int { return x + d.v }, 1))
+
+    let whole = new Box{v: 6}
+    println(harmful(fn [whole](x: int): int { return x + whole.v }, 1))
+
+    let q = new Box{v: 7}
+    let deep = &q
+    println(freeG(fn [deep](x: int): int { return x + deep.v }, 1))
+
+    var same = new Bag{items: new []Box(0), n: 0}
+    println(touch(fn [same](x: int): int { return x + same.n }, same))
+
+    let fwd = new Box{v: 6}
+    println(mid(fn [fwd](x: int): int { return x + fwd.v }))
+    println(copyDefer(fn [fwd](x: int): int { return x + fwd.v }))
+
+    let out = new Box{v: 8}
+    println(pure2(fn [out](x: int): int {
+        return pure2(fn [x, out](y: int): int { return x + y + out.v }, 2)
+    }, 1))
+
+    let hb = new Bag{items: new []Box(0), n: 3}
+    append(hb.items, new Box{v: 4})
+    let hh = handle(hb)
+    let hr = &hh.items[0]
+    println(pure2(fn [hr](x: int): int { return x + hr.v }, 1))
+}
+
+// expect: 5
+// expect: 6
+// expect: 1
+// expect: 7
+// expect: 8
+// expect: 1
+// expect: 8
+// expect: 3
+// expect: 11
+// expect: 5
