@@ -82,6 +82,29 @@ static void fake_clear_last(void) {
     fake_last_sql[0] = 0;
 }
 
+/* Test-only decimal result marker:
+ *   FAKE_DECIMAL oid=<int> mod=<int> value=<text|NULL>
+ * It is deliberately a decimal-integer parser; the adapter tests need to
+ * choose an OID/typmod/text without a server and without any float path. */
+static int fake_int_field(const char *s, const char *key, int *out) {
+    const char *p = strstr(s, key);
+    int neg = 0;
+    int any = 0;
+    long v = 0;
+    if (p == NULL) return 0;
+    p += strlen(key);
+    if (*p == '-') { neg = 1; p++; }
+    while (*p >= '0' && *p <= '9') {
+        v = v * 10 + (*p - '0');
+        if (v > 2147483647L) return 0;
+        p++;
+        any = 1;
+    }
+    if (!any) return 0;
+    *out = (int)(neg ? -v : v);
+    return 1;
+}
+
 static PGresult *fake_new_result(int status, int ntuples, int nfields) {
     PGresult *r;
     int i, j;
@@ -185,6 +208,26 @@ PGresult *PQexecParams(PGconn *conn, const char *command, int nParams,
                 fake_last_values[i][fake_last_len[i]] = 0;
             }
         }
+    }
+    if (strstr(command, "FAKE_DECIMAL") != NULL) {
+        int oid = 1700;
+        int mod = -1;
+        int isnull = 0;
+        const char *vp = strstr(command, "value=");
+        const char *start;
+        size_t vlen;
+        (void)fake_int_field(command, "oid=", &oid);
+        (void)fake_int_field(command, "mod=", &mod);
+        if (vp == NULL) return NULL;
+        vp += 6;
+        start = vp;
+        while (*vp != 0 && *vp != ' ') vp++;
+        vlen = (size_t)(vp - start);
+        if (vlen == 4 && strncmp(start, "NULL", 4) == 0) isnull = 1;
+        r = fake_new_result(PGRES_TUPLES_OK, 1, 1);
+        if (r == NULL) return NULL;
+        fake_set_cell(r, 0, 0, "d", (Oid)oid, mod, start, (int)vlen, isnull);
+        return r;
     }
     if (strstr(command, "FAKE_ERROR") != NULL) {
         r = fake_new_result(PGRES_FATAL_ERROR, 0, 0);

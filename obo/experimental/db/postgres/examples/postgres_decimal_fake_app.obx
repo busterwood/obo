@@ -1,0 +1,496 @@
+module app
+
+import "postgres.obx"
+
+// Deterministic decimal boundary test over the fake libpq. It checks the obo
+// encoder's exact text/error codes and the Rows.decimal read order without a
+// server; the C packet suite checks the kind 5/6 wire descriptor itself.
+
+fn zeros(n: int): string {
+    var b = new []byte(0)
+    for i in 0..n { append(b, '0') }
+    return string(b)
+}
+
+fn check(ok: bool, name: string, code: int) {
+    if !ok {
+        println("FAIL ", name)
+        exit(code)
+    }
+}
+
+fn param_err(name: string, r: Result[postgres::Param], want_code: int,
+             want_msg: string, exit_code: int) {
+    match r {
+        ok(p) { println("FAIL ", name, " unexpectedly ok"); exit(exit_code) }
+        err(m, c) {
+            check(c == want_code, name + " code", exit_code)
+            check(m == want_msg, name + " message", exit_code)
+        }
+    }
+}
+
+fn dec_err(name: string, r: Result[decimal], want_code: int,
+           want_msg: string, exit_code: int) {
+    match r {
+        ok(v) { println("FAIL ", name, " unexpectedly ok"); exit(exit_code) }
+        err(m, c) {
+            check(c == want_code, name + " code", exit_code)
+            check(m == want_msg, name + " message", exit_code)
+        }
+    }
+}
+
+fn type_err(name: string, r: Result[postgres::DecimalType],
+            want_code: int, exit_code: int) {
+    match r {
+        ok(v) { println("FAIL ", name, " unexpectedly ok"); exit(exit_code) }
+        err(m, c) { check(c == want_code, name + " code", exit_code) }
+    }
+}
+
+fn expect_text(c: &postgres::Connection, name: string, p: postgres::Param,
+               want: string, exit_code: int) {
+    var ps = new []postgres::Param(0)
+    append(ps, p)
+    let q = postgres::execute(c, "SELECT $1", ps)
+    match q {
+        ok(rows) {
+            defer rows.close()
+            check(rows.status() == postgres::PGRES_TUPLES_OK, name + " status",
+                  exit_code)
+            let t = rows.text(0, 0)
+            match t {
+                ok(v) { check(v == want, name + " text", exit_code) }
+                err(m, n) { println("FAIL ", name, " text err ", m, " ", n); exit(exit_code) }
+            }
+        }
+        err(m, n) { println("FAIL ", name, " exec ", m, " ", n); exit(exit_code) }
+    }
+}
+
+fn decode_type(rows: &postgres::Rows, name: string, p: int, s: int,
+               exit_code: int) {
+    let t = rows.decimal_type(0)
+    match t {
+        ok(v) {
+            check(v.precision == p, name + " precision", exit_code)
+            check(v.scale == s, name + " scale", exit_code)
+            check(v.constrained, name + " constrained", exit_code)
+        }
+        err(m, c) { println("FAIL ", name, " type err ", m, " ", c); exit(exit_code) }
+    }
+}
+
+fn expect_param_ok(c: &postgres::Connection, name: string,
+                   r: Result[postgres::Param], want: string, exit_code: int) {
+    match r {
+        ok(p) { expect_text(c, name, p, want, exit_code) }
+        err(m, n) { println("FAIL ", name, " param ", m, " ", n); exit(exit_code) }
+    }
+}
+
+fn query_one(c: &postgres::Connection, sql: string): Result[postgres::Rows] {
+    return postgres::query(c, sql)
+}
+
+fn main() {
+    let made = postgres::open("fake-ok")
+    match made {
+        ok(conn) {
+            defer conn.close()
+
+            // Exact emitted text: display form when possible, canonical when
+            // only the display scale is capped.
+            let one = decimal::parse("1.2300")
+            match one {
+                ok(v) {
+                    let p = postgres::param_decimal_unchecked(v)
+                    match p {
+                        ok(pp) { expect_text(&conn, "display", pp, "1.2300", 1) }
+                        err(m, c) { println("FAIL display param ", m, " ", c); exit(2) }
+                    }
+                }
+                err(m, c) { println("FAIL parse one ", m, " ", c); exit(3) }
+            }
+            expect_param_ok(&conn, "zero scale",
+                        postgres::param_decimal_unchecked(0.0000), "0.0000", 4)
+            expect_param_ok(&conn, "integer only",
+                        postgres::param_decimal_unchecked(decimal(1000)), "1000", 5)
+            expect_param_ok(&conn, "capped dscale",
+                        postgres::param_decimal_unchecked(1.0e-16383), "1e-16383", 6)
+            expect_param_ok(&conn, "normalised exponent",
+                        postgres::param_decimal_unchecked(1000e-16384),
+                        "1e-16381", 7)
+            let base = 1.20 * 1.5
+            expect_param_ok(&conn, "normalised arithmetic",
+                        postgres::param_decimal_unchecked(base * 1e-16382),
+                        "1.8e-16382", 8)
+
+            var forty = new []byte(0)
+            append(forty, '0')
+            append(forty, '.')
+            for i in 0..39 { append(forty, '0') }
+            append(forty, '1')
+            expect_param_ok(&conn, "canonical fixed",
+                        postgres::param_decimal_unchecked(1e-20 * 1e-20),
+                        string(forty), 9)
+
+            param_err("unrepresentable", postgres::param_decimal_unchecked(1e-16384),
+                      postgres::DEC_DB_PG_RANGE,
+                      "value is not representable in PostgreSQL numeric", 10)
+
+            // Checked default: exact-fit failures are reported before sending.
+            param_err("rounding", postgres::param_decimal(1.23456, 10, 4),
+                      postgres::DEC_DB_SCALE,
+                      "value does not fit the declared scale without rounding", 11)
+            param_err("precision", postgres::param_decimal(1234567.890, 10, 4),
+                      postgres::DEC_DB_RANGE,
+                      "value exceeds the declared precision", 12)
+            param_err("metadata", postgres::param_decimal(1.23456, 0, 4),
+                      postgres::DEC_DB_METADATA,
+                      "invalid numeric typmod or precision/scale metadata", 13)
+            param_err("negative scale rounding", postgres::param_decimal(decimal(1500), 2, -3),
+                      postgres::DEC_DB_SCALE,
+                      "value does not fit the declared scale without rounding", 14)
+            param_err("negative scale 99999", postgres::param_decimal(decimal(99999), 2, -3),
+                      postgres::DEC_DB_SCALE,
+                      "value does not fit the declared scale without rounding", 15)
+            param_err("negative scale deep", postgres::param_decimal(1.5e999, 1000, -1000),
+                      postgres::DEC_DB_SCALE,
+                      "value does not fit the declared scale without rounding", 16)
+            param_err("precision 1e1000", postgres::param_decimal(1e1000, 1000, 0),
+                      postgres::DEC_DB_RANGE,
+                      "value exceeds the declared precision", 17)
+
+            let neg_ok = postgres::param_decimal(decimal(99000), 2, -3)
+            match neg_ok {
+                ok(pp) { expect_text(&conn, "negative scale fit", pp, "99000", 18) }
+                err(m, c) { println("FAIL neg fit ", m, " ", c); exit(19) }
+            }
+            let big_ok = postgres::param_decimal(1e999, 1000, 0)
+            match big_ok {
+                ok(pp) { expect_text(&conn, "1e999 fit", pp,
+                                     "1" + zeros(999), 20) }
+                err(m, c) { println("FAIL 1e999 ", m, " ", c); exit(21) }
+            }
+
+            // A typed decimal NULL keeps OID 1700 and a NULL value.
+            var nulls = new []postgres::Param(0)
+            append(nulls, postgres::param_decimal_null())
+            let nq = postgres::execute(&conn, "SELECT $1", nulls)
+            match nq {
+                ok(rows) {
+                    defer rows.close()
+                    let isn = rows.is_null(0, 0)
+                    match isn {
+                        ok(v) { check(v, "decimal null", 22) }
+                        err(m, c) { println("FAIL null ", m, " ", c); exit(23) }
+                    }
+                    dec_err("decimal null read", rows.decimal(0, 0),
+                            postgres::DEC_DB_NULL, "SQL NULL", 24)
+                }
+                err(m, c) { println("FAIL null exec ", m, " ", c); exit(25) }
+            }
+
+            // Valid read-back: value, dscale and typmod decode.
+            let q1 = query_one(&conn, "FAKE_DECIMAL oid=1700 mod=655366 value=1.2300")
+            match q1 {
+                ok(rows) {
+                    defer rows.close()
+                    let d = rows.decimal(0, 0)
+                    match d {
+                        ok(v) {
+                            check(decimal::dscale(v) == 4, "read dscale", 26)
+                            let can = decimal::canonical(v)
+                            match can {
+                                ok(s) { check(s == "1.23", "read canonical", 27) }
+                                err(m, c) { println("FAIL read can ", m, " ", c); exit(28) }
+                            }
+                        }
+                        err(m, c) { println("FAIL read ", m, " ", c); exit(29) }
+                    }
+                    decode_type(&rows, "10,2", 10, 2, 30)
+                }
+                err(m, c) { println("FAIL q1 ", m, " ", c); exit(31) }
+            }
+
+            // Every typmod vector decodes without reading the value.
+            let qvec = new []int(0)
+            append(qvec, 65540)
+            append(qvec, 655366)
+            append(qvec, 655368)
+            append(qvec, 657410)
+            append(qvec, 133121)
+            append(qvec, 196617)
+            append(qvec, 2490372)
+            append(qvec, 65536004)
+            append(qvec, 65537004)
+            append(qvec, 65537052)
+            let vp = new []int(0)
+            append(vp, 1)
+            append(vp, 10)
+            append(vp, 10)
+            append(vp, 10)
+            append(vp, 2)
+            append(vp, 3)
+            append(vp, 38)
+            append(vp, 1000)
+            append(vp, 1000)
+            append(vp, 1000)
+            let vs = new []int(0)
+            append(vs, 0)
+            append(vs, 2)
+            append(vs, 4)
+            append(vs, -2)
+            append(vs, -3)
+            append(vs, 5)
+            append(vs, 0)
+            append(vs, 0)
+            append(vs, 1000)
+            append(vs, -1000)
+            for i in 0..len(qvec) {
+                let sql = "FAKE_DECIMAL oid=1700 mod=" + string(qvec[i]) + " value=0"
+                let qr = query_one(&conn, sql)
+                match qr {
+                    ok(rows) {
+                        defer rows.close()
+                        decode_type(&rows, "typmod", vp[i], vs[i], 32)
+                    }
+                    err(m, c) { println("FAIL vec ", m, " ", c); exit(33) }
+                }
+            }
+            let qu = query_one(&conn, "FAKE_DECIMAL oid=1700 mod=-1 value=1.0000")
+            match qu {
+                ok(rows) {
+                    defer rows.close()
+                    let t = rows.decimal_type(0)
+                    match t {
+                        ok(v) {
+                            check(!v.constrained, "unconstrained flag", 34)
+                            check(v.precision == 0 && v.scale == 0, "unconstrained meta", 35)
+                        }
+                        err(m, c) { println("FAIL unconstrained ", m, " ", c); exit(36) }
+                    }
+                    let d = rows.decimal(0, 0)
+                    match d {
+                        ok(v) { check(decimal::dscale(v) == 4, "unconstrained dscale", 37) }
+                        err(m, c) { println("FAIL unconstrained read ", m, " ", c); exit(38) }
+                    }
+                }
+                err(m, c) { println("FAIL qu ", m, " ", c); exit(39) }
+            }
+
+            // Negative scale is metadata only; the text keeps dscale 0.
+            let qn = query_one(&conn, "FAKE_DECIMAL oid=1700 mod=133121 value=12000")
+            match qn {
+                ok(rows) {
+                    defer rows.close()
+                    decode_type(&rows, "2,-3", 2, -3, 40)
+                    let d = rows.decimal(0, 0)
+                    match d {
+                        ok(v) {
+                            check(decimal::dscale(v) == 0, "neg scale dscale", 41)
+                            let can = decimal::canonical(v)
+                            match can {
+                                ok(s) { check(s == "12000", "neg scale canonical", 42) }
+                                err(m, c) { println("FAIL neg can ", m, " ", c); exit(43) }
+                            }
+                        }
+                        err(m, c) { println("FAIL neg read ", m, " ", c); exit(44) }
+                    }
+                }
+                err(m, c) { println("FAIL qn ", m, " ", c); exit(45) }
+            }
+
+            // 38 digits fit numeric(38,0); a 39-digit cell is precision 1007.
+            let q38 = query_one(&conn,
+                "FAKE_DECIMAL oid=1700 mod=2490372 value=99999999999999999999999999999999999999")
+            match q38 {
+                ok(rows) {
+                    defer rows.close()
+                    let d = rows.decimal(0, 0)
+                    match d {
+                        ok(v) { check(decimal::dscale(v) == 0, "38 dscale", 46) }
+                        err(m, c) { println("FAIL 38 ", m, " ", c); exit(47) }
+                    }
+                }
+                err(m, c) { println("FAIL q38 ", m, " ", c); exit(48) }
+            }
+            let q39 = query_one(&conn,
+                "FAKE_DECIMAL oid=1700 mod=-1 value=999999999999999999999999999999999999999")
+            match q39 {
+                ok(rows) {
+                    defer rows.close()
+                    dec_err("39 digits", rows.decimal(0, 0),
+                            postgres::DEC_DB_PRECISION,
+                            "decimal text has more than 38 significant digits", 49)
+                }
+                err(m, c) { println("FAIL q39 ", m, " ", c); exit(50) }
+            }
+
+            // Invalid typmods never become an unconstrained record.
+            let bad_mods = new []int(0)
+            append(bad_mods, 0)
+            append(bad_mods, 1)
+            append(bad_mods, 2)
+            append(bad_mods, 3)
+            append(bad_mods, -2)
+            append(bad_mods, 4)
+            append(bad_mods, 65601540)
+            append(bad_mods, 66541)
+            append(bad_mods, 66587)
+            for i in 0..len(bad_mods) {
+                let sql = "FAKE_DECIMAL oid=1700 mod=" + string(bad_mods[i]) + " value=1"
+                let qb = query_one(&conn, sql)
+                match qb {
+                    ok(rows) {
+                        defer rows.close()
+                        type_err("bad mod", rows.decimal_type(0),
+                                 postgres::DEC_DB_METADATA, 51)
+                        dec_err("bad mod read", rows.decimal(0, 0),
+                                postgres::DEC_DB_METADATA,
+                                "invalid numeric typmod or precision/scale metadata", 52)
+                    }
+                    err(m, c) { println("FAIL badmod ", m, " ", c); exit(53) }
+                }
+            }
+
+            // Wrong OID on a non-NULL cell is 1002 for both helpers; NULL still
+            // wins first.
+            let qo = query_one(&conn, "FAKE_DECIMAL oid=25 mod=-1 value=1.23")
+            match qo {
+                ok(rows) {
+                    defer rows.close()
+                    type_err("wrong oid type", rows.decimal_type(0),
+                             postgres::DEC_DB_NOT_DECIMAL, 54)
+                    dec_err("wrong oid read", rows.decimal(0, 0),
+                            postgres::DEC_DB_NOT_DECIMAL,
+                            "value is not numeric decimal data", 55)
+                }
+                err(m, c) { println("FAIL qo ", m, " ", c); exit(56) }
+            }
+            let qon = query_one(&conn, "FAKE_DECIMAL oid=25 mod=-1 value=NULL")
+            match qon {
+                ok(rows) {
+                    defer rows.close()
+                    dec_err("null wrong oid", rows.decimal(0, 0),
+                            postgres::DEC_DB_NULL, "SQL NULL", 57)
+                }
+                err(m, c) { println("FAIL qon ", m, " ", c); exit(58) }
+            }
+
+            // Binary format is rejected after NULL, before the OID check.
+            let qb1 = postgres::execute_binary(&conn,
+                "FAKE_DECIMAL oid=25 mod=-1 value=1.23", new []postgres::Param(0))
+            match qb1 {
+                ok(rows) {
+                    defer rows.close()
+                    dec_err("binary wrong oid", rows.decimal(0, 0),
+                            postgres::DEC_DB_BINARY,
+                            "binary decimal result is not supported", 59)
+                }
+                err(m, c) { println("FAIL qb1 ", m, " ", c); exit(60) }
+            }
+            let qb2 = postgres::execute_binary(&conn,
+                "FAKE_DECIMAL oid=1700 mod=655366 value=NULL", new []postgres::Param(0))
+            match qb2 {
+                ok(rows) {
+                    defer rows.close()
+                    dec_err("binary null", rows.decimal(0, 0),
+                            postgres::DEC_DB_NULL, "SQL NULL", 61)
+                }
+                err(m, c) { println("FAIL qb2 ", m, " ", c); exit(62) }
+            }
+
+            // Text classification and parse status mapping.
+            let qnan = query_one(&conn, "FAKE_DECIMAL oid=1700 mod=-1 value=NaN")
+            match qnan {
+                ok(rows) {
+                    defer rows.close()
+                    dec_err("NaN", rows.decimal(0, 0), postgres::DEC_DB_NONFINITE,
+                            "non-finite numeric is not representable", 63)
+                }
+                err(m, c) { println("FAIL NaN ", m, " ", c); exit(64) }
+            }
+            let qinf = query_one(&conn, "FAKE_DECIMAL oid=1700 mod=-1 value=-Infinity")
+            match qinf {
+                ok(rows) {
+                    defer rows.close()
+                    dec_err("-Infinity", rows.decimal(0, 0), postgres::DEC_DB_NONFINITE,
+                            "non-finite numeric is not representable", 65)
+                }
+                err(m, c) { println("FAIL inf ", m, " ", c); exit(66) }
+            }
+            let qempty = query_one(&conn, "FAKE_DECIMAL oid=1700 mod=-1 value=")
+            match qempty {
+                ok(rows) {
+                    defer rows.close()
+                    dec_err("empty", rows.decimal(0, 0), postgres::DEC_DB_TEXT_INVALID,
+                            "invalid decimal text", 67)
+                }
+                err(m, c) { println("FAIL empty ", m, " ", c); exit(68) }
+            }
+            let bad_texts = new []string(0)
+            append(bad_texts, ".5")
+            append(bad_texts, "1.")
+            append(bad_texts, "1..2")
+            append(bad_texts, "1e")
+            append(bad_texts, "1_000")
+            append(bad_texts, "0x10")
+            for i in 0..len(bad_texts) {
+                let sql = "FAKE_DECIMAL oid=1700 mod=-1 value=" + bad_texts[i]
+                let qbad = query_one(&conn, sql)
+                match qbad {
+                    ok(rows) {
+                        defer rows.close()
+                        dec_err("bad text " + bad_texts[i], rows.decimal(0, 0),
+                                postgres::DEC_DB_TEXT_INVALID,
+                                "invalid decimal text", 69)
+                    }
+                    err(m, c) { println("FAIL bad text ", m, " ", c); exit(70) }
+                }
+            }
+            let qexp = query_one(&conn, "FAKE_DECIMAL oid=1700 mod=-1 value=1e40000")
+            match qexp {
+                ok(rows) {
+                    defer rows.close()
+                    dec_err("exponent", rows.decimal(0, 0), postgres::DEC_DB_EXPONENT,
+                            "decimal exponent is outside int16", 71)
+                }
+                err(m, c) { println("FAIL exp ", m, " ", c); exit(72) }
+            }
+            let qdr = query_one(&conn, "FAKE_DECIMAL oid=1700 mod=-1 value=1e-70000")
+            match qdr {
+                ok(rows) {
+                    defer rows.close()
+                    dec_err("display range", rows.decimal(0, 0),
+                            postgres::DEC_DB_DISPLAY_RANGE,
+                            "decimal display scale is outside uint16", 73)
+                }
+                err(m, c) { println("FAIL dr ", m, " ", c); exit(74) }
+            }
+            let qsc = query_one(&conn, "FAKE_DECIMAL oid=1700 mod=655366 value=1.23456")
+            match qsc {
+                ok(rows) {
+                    defer rows.close()
+                    dec_err("read scale", rows.decimal(0, 0), postgres::DEC_DB_SCALE,
+                            "value does not fit the declared scale without rounding", 75)
+                }
+                err(m, c) { println("FAIL qsc ", m, " ", c); exit(76) }
+            }
+            let qpr = query_one(&conn, "FAKE_DECIMAL oid=1700 mod=65540 value=12")
+            match qpr {
+                ok(rows) {
+                    defer rows.close()
+                    dec_err("read precision", rows.decimal(0, 0), postgres::DEC_DB_RANGE,
+                            "value exceeds the declared precision", 77)
+                }
+                err(m, c) { println("FAIL qpr ", m, " ", c); exit(78) }
+            }
+        }
+        err(m, c) { println("open_err=", m, " ", c); exit(79) }
+    }
+    check(postgres::live_resources() == 0, "live", 80)
+    println("postgres_decimal_fake=ok")
+}

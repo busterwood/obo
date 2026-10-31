@@ -6,15 +6,18 @@
  *   u32 nparams,
  *   nparams x { u8 kind, u32 len, len bytes }.
  *
- * Kinds are 0 NULL, 1 text, 2 blob (bytea), 3 int (i64 decimal text) and
- * 4 bool ("t"/"f"). The adapter sets the PostgreSQL parameter OID explicitly:
- * 0 (unspecified), 25 (text), 17 (bytea), 20 (int8) and 16 (bool). It keeps
- * the eight-argument PQexecParams call from the reviewed libpq declarations.
+ * Kinds are 0 NULL, 1 text, 2 blob (bytea), 3 int (i64 decimal text), 4 bool
+ * ("t"/"f"), 5 decimal text and 6 typed decimal NULL. The adapter sets the
+ * PostgreSQL parameter OID explicitly: 0 (unspecified), 25 (text), 17 (bytea),
+ * 20 (int8), 16 (bool) and 1700 (numeric). It keeps the eight-argument
+ * PQexecParams call from the reviewed libpq declarations.
  *
  * SQL and text parameters reject embedded NUL. Binary parameters preserve
- * their exact length, including NUL. There is no SQL interpolation: the SQL
- * bytes are passed to PQexecParams as the command string and every value is a
- * bound parameter.
+ * their exact length, including NUL. Decimal text is re-validated against the
+ * strict public grammar (optional sign, mandatory integer digit, optional
+ * fraction with a digit, optional exponent) and capped at 98,342 bytes. There
+ * is no SQL interpolation: the SQL bytes are passed to PQexecParams as the
+ * command string and every value is a bound parameter.
  */
 #include "../../cinterop/toolkit/cres.h"
 #include "../../cinterop/toolkit/libpq_adapter.h"
@@ -28,13 +31,16 @@
 #define PG_MAX_PARAMS 32
 #define PG_MAX_SQL (1024L * 1024L)
 #define PG_MAX_VALUE (16L * 1024L * 1024L)
+#define PG_MAX_DECIMAL_TEXT 98342L
 
 enum {
     PG_PARAM_NULL = 0,
     PG_PARAM_TEXT = 1,
     PG_PARAM_BLOB = 2,
     PG_PARAM_INT = 3,
-    PG_PARAM_BOOL = 4
+    PG_PARAM_BOOL = 4,
+    PG_PARAM_DECIMAL = 5,
+    PG_PARAM_DECIMAL_NULL = 6
 };
 
 static void release_result(void *p) {
@@ -86,6 +92,46 @@ static int valid_int_text(const unsigned char *p, size_t n) {
         if (p[i] < '0' || p[i] > '9') return 0;
     }
     return 1;
+}
+
+/* The strict public decimal grammar: optional leading sign, at least one
+ * integer digit, an optional point followed by at least one digit, and an
+ * optional exponent with at least one digit. It accepts integer-only and
+ * signed cells and rejects .5, 1., 1..2, 1e, 1_000, 0x10, whitespace, NUL,
+ * non-ASCII, NaN/Infinity and an empty cell. */
+static int valid_decimal_text(const unsigned char *p, size_t n) {
+    size_t i = 0;
+    int digits = 0;
+    if (n == 0 || n > (size_t)PG_MAX_DECIMAL_TEXT) return 0;
+    if (p[0] == '+' || p[0] == '-') {
+        i = 1;
+        if (i == n) return 0;
+    }
+    while (i < n && p[i] >= '0' && p[i] <= '9') {
+        i++;
+        digits = 1;
+    }
+    if (!digits) return 0;
+    if (i < n && p[i] == '.') {
+        int frac = 0;
+        i++;
+        while (i < n && p[i] >= '0' && p[i] <= '9') {
+            i++;
+            frac = 1;
+        }
+        if (!frac) return 0;
+    }
+    if (i < n && (p[i] == 'e' || p[i] == 'E')) {
+        int exp_digits = 0;
+        i++;
+        if (i < n && (p[i] == '+' || p[i] == '-')) i++;
+        while (i < n && p[i] >= '0' && p[i] <= '9') {
+            i++;
+            exp_digits = 1;
+        }
+        if (!exp_digits) return 0;
+    }
+    return i == n;
 }
 
 long pg_open(long dsn_buf) {
@@ -146,7 +192,7 @@ long pg_exec_typed(long conn_token, long packet_buf) {
     for (i = 0; i < nparams; i++) {
         unsigned int kind = 0;
         unsigned long len = 0;
-        if (!packet_u8(&p, end, &kind) || kind > PG_PARAM_BOOL) goto bad_packet;
+        if (!packet_u8(&p, end, &kind) || kind > PG_PARAM_DECIMAL_NULL) goto bad_packet;
         if (!packet_u32(&p, end, &len)) goto bad_packet;
         if (len > (unsigned long)PG_MAX_VALUE || (size_t)(end - p) < (size_t)len) goto bad_packet;
         switch (kind) {
@@ -185,6 +231,21 @@ long pg_exec_typed(long conn_token, long packet_buf) {
             values[i] = copy_bytes_raw(p, (size_t)len);
             if (values[i] == NULL) goto nomem;
             lengths[i] = 1;
+            formats[i] = 0;
+            break;
+        case PG_PARAM_DECIMAL:
+            if (!valid_decimal_text(p, (size_t)len)) goto bad_packet;
+            types[i] = 1700; /* numeric */
+            values[i] = copy_bytes_raw(p, (size_t)len);
+            if (values[i] == NULL) goto nomem;
+            lengths[i] = (int)len;
+            formats[i] = 0;
+            break;
+        case PG_PARAM_DECIMAL_NULL:
+            if (len != 0) goto bad_packet;
+            types[i] = 1700; /* numeric, typed NULL */
+            values[i] = NULL;
+            lengths[i] = 0;
             formats[i] = 0;
             break;
         default:

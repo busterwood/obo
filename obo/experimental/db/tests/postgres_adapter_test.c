@@ -32,7 +32,7 @@ extern long fake_last_sql_len(void);
 extern long fake_last_sql_byte(long i);
 
 typedef struct {
-    unsigned char b[4096];
+    unsigned char b[100000];
     size_t n;
 } packet;
 
@@ -158,6 +158,58 @@ int main(void) {
     CHECK(pq_result_clear(res) == 1);
     CHECK(pq_result_clear(res) == 0);
 
+    /* Decimal text kind 5 is numeric OID 1700, text format, exact bytes. */
+    pbegin(&p, "SELECT $1", 0, 1);
+    pparam(&p, 5, "1.2300", 6);
+    b = wrap(&p);
+    CHECK(b > 0);
+    res = pg_exec_typed(conn, b);
+    CHECK(res > 0);
+    CHECK(cres_buf_free(b) == 1);
+    CHECK(fake_last_param_count() == 1);
+    CHECK(fake_last_param_type(0) == 1700);
+    CHECK(fake_last_param_format(0) == 0);
+    CHECK(fake_last_param_isnull(0) == 0);
+    CHECK(fake_last_param_len(0) == 6);
+    CHECK(fake_last_param_byte(0, 0) == '1');
+    CHECK(fake_last_param_byte(0, 1) == '.');
+    CHECK(fake_last_param_byte(0, 5) == '0');
+    CHECK(pq_result_clear(res) == 1);
+
+    /* Decimal NULL kind 6 is a typed NULL, not an empty byte string. */
+    pbegin(&p, "SELECT $1", 0, 1);
+    pparam(&p, 6, NULL, 0);
+    b = wrap(&p);
+    CHECK(b > 0);
+    res = pg_exec_typed(conn, b);
+    CHECK(res > 0);
+    CHECK(cres_buf_free(b) == 1);
+    CHECK(fake_last_param_type(0) == 1700);
+    CHECK(fake_last_param_format(0) == 0);
+    CHECK(fake_last_param_isnull(0) == 1);
+    CHECK(fake_last_param_len(0) == 0);
+    CHECK(pq_result_clear(res) == 1);
+
+    /* Integer-only and signed cells are accepted with OID 1700. */
+    {
+        const char *intcells[] = {"1", "+1", "-1", "0001", "-0"};
+        size_t k;
+        for (k = 0; k < sizeof(intcells) / sizeof(intcells[0]); k++) {
+            pbegin(&p, "SELECT $1", 0, 1);
+            pparam(&p, 5, intcells[k], strlen(intcells[k]));
+            b = wrap(&p);
+            CHECK(b > 0);
+            res = pg_exec_typed(conn, b);
+            CHECK(res > 0);
+            CHECK(cres_buf_free(b) == 1);
+            CHECK(fake_last_param_type(0) == 1700);
+            CHECK(fake_last_param_format(0) == 0);
+            CHECK(fake_last_param_len(0) == (long)strlen(intcells[k]));
+            CHECK(fake_last_param_byte(0, 0) == (long)(unsigned char)intcells[k][0]);
+            CHECK(pq_result_clear(res) == 1);
+        }
+    }
+
     /* Binary result format reaches PQexecParams as format 1. */
     pbegin(&p, "SELECT decode('00ff41','hex')", 1, 0);
     b = wrap(&p);
@@ -228,6 +280,51 @@ int main(void) {
     pbegin(&p, "SELECT $1", 0, 1);
     pparam(&p, 4, "x", 1); /* invalid bool */
     if (run_bad_packet(conn, &p)) return 1;
+
+    /* Decimal kind 5 grammar failures are rejected before PQexecParams. */
+    {
+        const char *bad_decimals[] = {
+            "", ".5", "1.", "1..2", "1e", "1e+", "1_000", "0x10",
+            "NaN", "Infinity", "-Infinity", " 1", "1 ", "+", "-", "."
+        };
+        size_t k;
+        for (k = 0; k < sizeof(bad_decimals) / sizeof(bad_decimals[0]); k++) {
+            pbegin(&p, "SELECT $1", 0, 1);
+            pparam(&p, 5, bad_decimals[k], strlen(bad_decimals[k]));
+            if (run_bad_packet(conn, &p)) return 1;
+        }
+    }
+    pbegin(&p, "SELECT $1", 0, 1);
+    pparam(&p, 5, "1\0", 2); /* embedded NUL */
+    if (run_bad_packet(conn, &p)) return 1;
+
+    pbegin(&p, "SELECT $1", 0, 1);
+    p8(&p, 6); /* kind 6 with a nonzero length is malformed */
+    p32(&p, 1);
+    pbytes(&p, "x", 1);
+    if (run_bad_packet(conn, &p)) return 1;
+
+    pbegin(&p, "SELECT $1", 0, 1);
+    pparam(&p, 7, "1", 1); /* kind above the decimal bound */
+    if (run_bad_packet(conn, &p)) return 1;
+
+    {
+        unsigned char big[98343];
+        memset(big, '1', sizeof(big));
+        pbegin(&p, "SELECT $1", 0, 1);
+        pparam(&p, 5, big, sizeof(big)); /* 98,343 bytes is over the cap */
+        if (run_bad_packet(conn, &p)) return 1;
+        pbegin(&p, "SELECT $1", 0, 1);
+        pparam(&p, 5, big, 98342); /* the exact cap is accepted by the grammar */
+        b = wrap(&p);
+        CHECK(b > 0);
+        res = pg_exec_typed(conn, b);
+        CHECK(res > 0);
+        CHECK(cres_buf_free(b) == 1);
+        CHECK(fake_last_param_type(0) == 1700);
+        CHECK(fake_last_param_len(0) == 98342);
+        CHECK(pq_result_clear(res) == 1);
+    }
 
     p.n = 0;
     p32(&p, 9);

@@ -34,7 +34,9 @@ pub const OID_TEXT = 25
 pub const OID_NUMERIC = 1700
 
 pub type Connection = ref record { tok: int }
-pub type Rows = ref record { tok: int }
+// fmt is 0 for execute() text rows and 1 for execute_binary() rows. The token
+// stays private; external code may read the format but cannot construct Rows.
+pub type Rows = ref record { tok: int; pub fmt: int }
 
 // A typed bind parameter. kind is PARAM_*; i carries int/bool and data carries
 // text/blob bytes. Null is an explicit kind, never an empty byte string.
@@ -43,6 +45,31 @@ pub const PARAM_TEXT = 1
 pub const PARAM_BLOB = 2
 pub const PARAM_INT = 3
 pub const PARAM_BOOL = 4
+pub const PARAM_DECIMAL = 5
+pub const PARAM_DECIMAL_NULL = 6
+
+// Decimal boundary error codes. They deliberately start at 1000 so they do not
+// collide with adapter plumbing codes 2/3 or PostgreSQL status values.
+pub const DEC_DB_NULL = 1001
+pub const DEC_DB_NOT_DECIMAL = 1002
+pub const DEC_DB_BINARY = 1003
+pub const DEC_DB_NONFINITE = 1004
+pub const DEC_DB_TEXT_INVALID = 1006
+pub const DEC_DB_PRECISION = 1007
+pub const DEC_DB_EXPONENT = 1008
+pub const DEC_DB_DISPLAY_RANGE = 1009
+pub const DEC_DB_SCALE = 1010
+pub const DEC_DB_RANGE = 1011
+pub const DEC_DB_METADATA = 1012
+pub const DEC_DB_PG_RANGE = 1013
+
+// Result metadata for a numeric column. All fields are public so an importer
+// can inspect the decoded typmod; there is no decimal field anywhere.
+pub type DecimalType = ref record {
+    pub precision: int
+    pub scale: int
+    pub constrained: bool
+}
 
 pub type Param = ref record {
     kind: int
@@ -102,6 +129,107 @@ fn error_text(b: []byte): string {
     return string(b)
 }
 
+// ------------------------------------------------------- decimal text helpers
+
+// Count the characters after the point in fixed display text; 0 when there is
+// no point. A local helper, not a new decimal API.
+fn fraction_digits(s: string): int {
+    for i in 0..len(s) {
+        if s[i] == '.' { return len(s) - i - 1 }
+    }
+    return 0
+}
+
+fn canonical_db(value: decimal): Result[string] {
+    let c = decimal::canonical(value)
+    match c {
+        ok(s) { return ok(s) }
+        err(m, code) {
+            if code == 6 || code == 9 {
+                return err("decimal display scale is outside uint16", DEC_DB_DISPLAY_RANGE)
+            }
+            if code == 10 { return err("decimal text could not be allocated", 3) }
+            return err("invalid decimal value", 2)
+        }
+    }
+}
+
+// Exact display text when its scale fits; canonical exact text when only the
+// display scale would be capped. Never rounds and never emits an empty string.
+fn encode_decimal(value: decimal, max_dscale: int): Result[string] {
+    let f = decimal::format(value)
+    match f {
+        ok(s) {
+            let ds = fraction_digits(s)
+            if max_dscale < 0 || ds <= max_dscale { return ok(s) }
+            // The value is exactly representable; only its display scale is not.
+            if value != 0.0 && decimal::exponent(value) < -max_dscale {
+                return err("value is not representable in PostgreSQL numeric",
+                           DEC_DB_PG_RANGE)
+            }
+            return canonical_db(value)
+        }
+        err(m, c) {
+            if c == 3 {
+                if value != 0.0 && decimal::exponent(value) < -max_dscale {
+                    return err("value is not representable in PostgreSQL numeric",
+                               DEC_DB_PG_RANGE)
+                }
+                return canonical_db(value)
+            }
+            if c == 10 { return err("decimal text could not be allocated", 3) }
+            if c == 6 || c == 9 {
+                return err("decimal display scale is outside uint16",
+                           DEC_DB_DISPLAY_RANGE)
+            }
+            return err("invalid decimal value", 2)
+        }
+    }
+}
+
+fn pg_decimal_text(value: decimal): Result[string] {
+    return encode_decimal(value, 16383)
+}
+
+// Explicit opt-out for unconstrained targets or deliberate server coercion.
+pub fn param_decimal_unchecked(value: decimal): Result[Param] {
+    let txt = try pg_decimal_text(value)
+    let raw = encode_string(txt)
+    if has_nul(&raw) { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+    return ok(new Param{kind: PARAM_DECIMAL, i: 0, data: raw})
+}
+
+// The default checked binder: reject values the declared numeric(p,s) would
+// round or overflow before any bytes reach the server.
+pub fn param_decimal(value: decimal, p: int, s: int): Result[Param] {
+    let r = decimal::check(value, p, s)
+    match r {
+        ok(v) { return param_decimal_unchecked(v) }
+        err(m, c) {
+            if c == 10 { return err("decimal text could not be allocated", 3) }
+            if c == 1 || c == 4 { return err("invalid decimal value", 2) }
+            if c == 3 {
+                return err("value does not fit the declared scale without rounding",
+                           DEC_DB_SCALE)
+            }
+            if c == 7 {
+                return err("value exceeds the declared precision", DEC_DB_RANGE)
+            }
+            if c == 6 {
+                return err("invalid numeric typmod or precision/scale metadata",
+                           DEC_DB_METADATA)
+            }
+            return err(m, c)
+        }
+    }
+}
+
+// A typed SQL NULL with OID 1700, for contexts such as SELECT $1 where the
+// server has no target column from which to infer a type.
+pub fn param_decimal_null(): Param {
+    return new Param{kind: PARAM_DECIMAL_NULL, i: 0, data: new []byte(0)}
+}
+
 pub fn param_null(): Param {
     return new Param{kind: PARAM_NULL, i: 0, data: new []byte(0)}
 }
@@ -138,6 +266,45 @@ fn append_u32(mut out: &[]byte, v: int) {
 }
 
 fn append_param(mut out: &[]byte, p: &Param): Result[bool] {
+    if p.kind == PARAM_DECIMAL_NULL {
+        if len(p.data) != 0 { return err("invalid decimal NULL parameter", 2) }
+        append(out, byte(PARAM_DECIMAL_NULL))
+        append_u32(out, 0)
+        return ok(true)
+    }
+    if p.kind == PARAM_DECIMAL {
+        let n = len(p.data)
+        if n == 0 { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+        if n > 98342 { return err("decimal parameter is too large", 2) }
+        if has_nul(&p.data) {
+            return err("invalid decimal text", DEC_DB_TEXT_INVALID)
+        }
+        let d = decimal::parse(string(p.data))
+        match d {
+            ok(v) {
+                append(out, byte(PARAM_DECIMAL))
+                append_u32(out, n)
+                for i in 0..n { append(out, p.data[i]) }
+                return ok(true)
+            }
+            err(m, c) {
+                if c == 10 { return err("decimal text could not be allocated", 3) }
+                if c == 4 { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+                if c == 7 {
+                    return err("decimal text has more than 38 significant digits",
+                               DEC_DB_PRECISION)
+                }
+                if c == 8 {
+                    return err("decimal exponent is outside int16", DEC_DB_EXPONENT)
+                }
+                if c == 9 {
+                    return err("decimal display scale is outside uint16",
+                               DEC_DB_DISPLAY_RANGE)
+                }
+                return err("invalid decimal value", 2)
+            }
+        }
+    }
     if p.kind == PARAM_NULL {
         append(out, byte(PARAM_NULL))
         append_u32(out, 0)
@@ -273,7 +440,9 @@ fn execute_fmt(c: &Connection, sql: string, params: []Param,
         let msg = take_buf(eb)
         return err(error_text(msg), 2)
     }
-    return ok(new Rows{tok: t})
+    var fmt = 0
+    if result_binary { fmt = 1 }
+    return ok(new Rows{tok: t, fmt: fmt})
 }
 
 // Text result format: every column is returned as PostgreSQL's exact text.
@@ -392,6 +561,100 @@ pub fn (r: &Rows) column_type_modifier(col: int): Result[int] {
     return ok(__cinterop("pq_fmod", r.tok, col))
 }
 
+// Decode a numeric column's typmod into an all-int record. OID 1700 is the only
+// accepted decimal result type; -1 means unconstrained and every other invalid
+// typmod is DEC_DB_METADATA rather than a meaningless unconstrained record.
+pub fn (r: &Rows) decimal_type(col: int): Result[DecimalType] {
+    let oid = try r.column_type_oid(col)
+    if oid != OID_NUMERIC {
+        return err("value is not numeric decimal data", DEC_DB_NOT_DECIMAL)
+    }
+    let tm = try r.column_type_modifier(col)
+    if tm == -1 {
+        return ok(new DecimalType{precision: 0, scale: 0, constrained: false})
+    }
+    if tm < 4 {
+        return err("invalid numeric typmod or precision/scale metadata",
+                   DEC_DB_METADATA)
+    }
+    let t = tm - 4
+    let p = (t >> 16) & 0xffff
+    let sc = (((t & 0x7ff) ^ 1024) - 1024)
+    if p < 1 || p > 1000 || sc < -1000 || sc > 1000 {
+        return err("invalid numeric typmod or precision/scale metadata",
+                   DEC_DB_METADATA)
+    }
+    return ok(new DecimalType{precision: p, scale: sc, constrained: true})
+}
+
+// Read one numeric cell as an exact decimal. The order is normative: NULL,
+// then binary result format, then OID/typmod, then the exact text bytes.
+pub fn (r: &Rows) decimal(row: int, col: int): Result[decimal] {
+    let isn = try r.is_null(row, col)
+    if isn { return err("SQL NULL", DEC_DB_NULL) }
+    if r.fmt != 0 {
+        return err("binary decimal result is not supported", DEC_DB_BINARY)
+    }
+    let meta = try r.decimal_type(col)
+    let b = try r.bytes(row, col)
+    if len(b) == 0 { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+    if has_nul(&b) { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+    let txt = string(b)
+    if txt == "NaN" || txt == "Infinity" || txt == "-Infinity" {
+        return err("non-finite numeric is not representable", DEC_DB_NONFINITE)
+    }
+    let d = decimal::parse(txt)
+    match d {
+        ok(v) {
+            if meta.constrained {
+                let cr = decimal::check(v, meta.precision, meta.scale)
+                match cr {
+                    ok(checked) { return ok(checked) }
+                    err(m, c) {
+                        if c == 10 {
+                            return err("decimal text could not be allocated", 3)
+                        }
+                        if c == 1 || c == 4 {
+                            return err("invalid decimal value", 2)
+                        }
+                        if c == 3 {
+                            return err("value does not fit the declared scale without rounding",
+                                       DEC_DB_SCALE)
+                        }
+                        if c == 7 {
+                            return err("value exceeds the declared precision",
+                                       DEC_DB_RANGE)
+                        }
+                        if c == 6 {
+                            return err("invalid numeric typmod or precision/scale metadata",
+                                       DEC_DB_METADATA)
+                        }
+                        return err(m, c)
+                    }
+                }
+            }
+            return ok(v)
+        }
+        err(m, c) {
+            if c == 10 { return err("decimal text could not be allocated", 3) }
+            if c == 1 || c == 6 { return err("invalid decimal value", 2) }
+            if c == 4 { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+            if c == 7 {
+                return err("decimal text has more than 38 significant digits",
+                           DEC_DB_PRECISION)
+            }
+            if c == 8 {
+                return err("decimal exponent is outside int16", DEC_DB_EXPONENT)
+            }
+            if c == 9 {
+                return err("decimal display scale is outside uint16",
+                           DEC_DB_DISPLAY_RANGE)
+            }
+            return err(m, c)
+        }
+    }
+}
+
 pub fn (r: &Rows) error_message(): []byte {
     return take_buf(__cinterop("pq_result_error_buf", r.tok))
 }
@@ -411,7 +674,7 @@ pub fn lib_version(): int {
 pub fn make_empty_rows(status: int): Result[Rows] {
     let t = __cinterop("pq_make_empty_result", status)
     if t <= 0 { return err("empty result could not be created", 2) }
-    return ok(new Rows{tok: t})
+    return ok(new Rows{tok: t, fmt: 0})
 }
 
 pub fn live_resources(): int {
