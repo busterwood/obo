@@ -1,11 +1,13 @@
-# Experimental systems library P0 (`obo/experimental/sys`)
+# Experimental systems library P0/P1a (`obo/experimental/sys`)
 
-Status: **experimental internal P0 boundary proof. Not a stable API, not P1a,
-and not authorized for merge/promotion by itself.** The package deliberately
-does **not** add `File`, `Directory`, a clock, networking, processes, threads or
-synchronization. Those are later phases. P1a is the first useful public slice.
+Status: **experimental internal P1a slice. Not a stable API, not P1b/P2, and
+not authorized for merge/promotion by itself.** P0 proved the resource/error/
+byte boundary; P1a adds owned `File`, anchored `Directory`, metadata snapshots,
+clocks, `getrandom`, concrete streams, bounded buffers and a single-path copy
+example on the same seam. Networking, processes, threads, synchronization,
+mappings, atomic replacement and signal policy are later phases.
 
-This package proves the boundary that P1a will build on:
+P0 proved the boundary that P1a builds on:
 
 1. a managed resource identity shell (`platform::Resource`) whose public field
    is only a checked slot/nonce hint;
@@ -30,19 +32,27 @@ obo/experimental/sys/
   systestres.obx                P0 native eventfd/counter fixture (not a File)
   sysbytes.obx                  16 MiB bounded C-owned byte bridge
   sysshells.obx                 P0-only File/Stream type-identity fixtures
+  sysstat.obx                   P1a metadata snapshot and identity equality
+  sysclock.obx                  P1a Instant/Duration/Deadline/Timestamp
+  sysrandom.obx                 P1a getrandom fillSome/bytes
+  sysstream.obx                 P1a concrete Stream and standard streams
+  sysdir.obx                    P1a anchored Directory and bounded Iterator
+  sysfile.obx                   P1a owned File and explicit OpenOptions
+  sysbuffer.obx                 P1a fixed-capacity Buffer/Reader/Writer/Cursor
   native/
     sysadapter.h                scalar-only exported adapter contract
     sysregistry.{h,c}           separate trusted C registry (does not use cres.*)
-    sysadapter_real.c           Linux eventfd + C buffers
-    sysadapter_fake.c           scripted fake counters + shared C buffers
+    sysadapter_real.c           Linux files/dirs/stat/clock/getrandom + P0 fixtures
+    sysadapter_fake.c           scripted fake resources + file/dir/clock fixtures
     sysadapter_real.cbind       real link manifest
     sysadapter_fake.cbind       fake link manifest
     sysadapter_fake_ctl.cbind   fake + test-only control symbols
   tests/
     sysfakectl.obx              test-only fake controls (fake_ctl build only)
-    apps/*.obx                  obo roots for real, fake and adversarial runs
-    c/{native_test,fake_test,bench_copy}.c
+    apps/*.obx                  obo roots for real, fake, buffer and fault runs
+    c/{native_test,fake_test,bench_copy,p1a_test}.c
     test_sys_p0.py              one-command P0 suite
+    test_sys_p1a.py             one-command P1a suite
 ```
 
 `sysregistry.*` is intentionally separate from
@@ -134,6 +144,61 @@ An open entry whose shell died remains a leak record and is reported by
 `counts`/`shutdown`; only explicit shutdown releases it. Closed tombstones live
 only while their shell is alive and are swept on later insertion.
 
+## P1a surface (experimental)
+
+P1a keeps every public shell concrete and every native resource behind the
+checked `platform::Resource` identity. No raw fd, registry token, pointer or C
+struct crosses the application boundary. Each creator returns one owned shell
+with one explicit close obligation; record drop still runs no finalizer.
+
+Under 0.13 private-by-default fields, the documented P1a record fields are
+explicitly `pub`: callers build `OpenOptions`, read metadata/entry/timestamp
+values and exercise the public-field limitation. This is not a privacy
+relaxation for the registry: the slot table, nonces, native tokens, free lists
+and per-kind state remain module-private, and every typed entry revalidates.
+
+- `sysfile::File` with explicit `OpenOptions` (`read`, `write`, `create`,
+  `exclusive`, `truncate`, `append`, `noFollow`, `nonblocking`, `permissions`).
+  A positional write on an append-open File is rejected even when it is
+  zero-length; `writeSome` with a zero count returns 0 after validation.
+  `open`/`openAt` always add CLOEXEC atomically; option validation happens before
+  a native call. `readSome`/`writeSome` make one attempt (short success, EOF nil,
+  WouldBlock separate), `readInto`/`writeFrom` use existing arrays, and `seek`,
+  `truncateTo`, `readAt`, `writeAt`, `metadata`, `duplicateStream`,
+  `intoStream` and `close` cover the P1a lifecycle. `duplicateStream` is `dup`
+  semantics; `intoStream` re-tags the live table entry and logically consumes
+  the File.
+- `sysdir::Directory` and `Iterator`: `open(path)` accepts an ordinary host
+  path and follows symlinks; `child`, `metadata` and anchored names are single
+  components and `child` opens relative to the base descriptor with NOFOLLOW
+  (never the process cwd). Iteration owns names, skips `.`/`..`, reports
+  Unknown kind and is bounded. The iterator duplicates its anchor, so closing
+  the Directory does not invalidate it; `dup(2)` also means the anchor and all
+  its iterators share one directory offset. There is no path-containment claim
+  for hostile multi-component paths; `openBeneath` is deferred.
+- `sysstat::Metadata` is a detached snapshot: kind, permissions, size, links,
+  uid/gid, seconds+nanos times, optional birth time and an equality-only interned
+  identity. `sameIdentity` is pure bit equality, not authority.
+- `sysclock`: monotonic `Instant`, nonnegative `Duration`, absolute `Deadline`
+  with a distinct infinity flag, realtime `Timestamp` seconds+nanos. Checked
+  arithmetic; `sleepUntil` is interruptible with no hidden restart.
+- `sysrandom`: `fillSome` and bounded `bytes` use `getrandom`; blocking/
+  nonblocking and EINTR/EAGAIN are distinct. No userspace PRNG or insecure
+  fallback.
+- `sysstream::Stream` is a concrete tagged endpoint over platform resources.
+  Standard streams are owned CLOEXEC duplicates. P1a covers read/write/close;
+  vector I/O, half-close and socket dispatch are later.
+- `sysbuffer`: fixed allocation (`make(limit)`, default 64 KiB, 16 MiB cap),
+  `feed`/`find`/`copy`/`consume`, `readStep`/`writeStep`, and one-attempt
+  `readExactStep`/`writeExactStep`. A single `writeStep` moves at most 1 MiB,
+  so a larger pending range advances across several calls. No append growth;
+  progress is retained.
+
+Deferred beyond P1a: `chmod`, `sync`, rename/link/symlink, `replaceAtomic`,
+`openBeneath`, mappings, reactor/wait helpers, sockets, processes, signals,
+environment mutation, terminal modes, logging and all thread/synchronization
+kinds. `sysshells` remains a P0 compiler-negative fixture, not the P1a API.
+
 ## Error namespace
 
 `syserrors` assigns library codes starting at 10001, separate from positive
@@ -185,8 +250,10 @@ Run:
 ```sh
 make -C obo obo
 python3 obo/experimental/sys/tests/test_sys_p0.py
+python3 obo/experimental/sys/tests/test_sys_p1a.py
 # or
 make -C obo sys-p0
+make -C obo sys-p1a
 ```
 
 The suite builds and runs:
@@ -206,6 +273,18 @@ The suite builds and runs:
   consumption, with per-class call counts proving no hidden retry;
 - a packed-vs-scalar bridge benchmark (C exact path and obo wrapper path).
 
+The P1a suite additionally runs:
+
+- a C harness on both adapters for open/write/read/seek/truncate/fstat/identity,
+  dup/re-tag, getdents64 iteration, clocks, sleep and getrandom, under
+  ASAN/UBSAN with leak detection;
+- real-vs-fake roots for file/stream lifecycle, open-option validation,
+  EOF-vs-WouldBlock status, anchored metadata/identity, bounded buffers and a
+  5-byte-at-a-time file copy that must match line for line;
+- scripted EINTR/EAGAIN/short-read/short-write/ENOENT/EMFILE/ENOMEM faults with
+  per-class call counts, close-EINTR consumption, absolute-deadline retry and
+  errno-category checks.
+
 Sample result on the P0 development host (Linux x86-64, gcc `-O2`; only a
 record of this run, not a portable promise):
 
@@ -220,6 +299,7 @@ obo whole process 2 MiB moved: packed 49.0 MiB/s, scalar 9.5 MiB/s
 
 This package is additive at base commit
 `9441f2d0c4a92aa817ef8e29be0582ab1c820e48` (obo 0.12, symbol format 6, ABI 1).
+The P1a slice is additive on reviewed P0 `058278f6d0f38ebd3f033a72287fee7c30e382da`.
 It reuses the existing `experimental/cinterop` build/verify tool and the
 existing tracked compiler/runtime **without modifying them**. It does not touch
 `experimental/cinterop/toolkit/cres.*`; the P0 registry is separate. Each
@@ -228,10 +308,11 @@ header, compiler and link inputs in `manifest.json`; those hashes are
 provenance/corruption checks, not signatures. No version, ABI, symbol-format or
 seed value is reserved or changed.
 
-## What P0 is not
+## What P1a is not
 
 See [`LIMITS.md`](LIMITS.md) for the complete list. In short: one process
-context, single-threaded, no finalizers, no raw fd/token exposure, no File/
-Directory/clock/network/process API, no production stability, and no version or
-ABI reservation. P1a adds the first owned File/Directory/clock/getrandom slice
-and bounded stream buffers on this seam.
+context, single-threaded, no finalizers, no raw fd/token exposure, no network/
+process/signal/mapping API, no atomic replace, no path-containment claim, no
+production stability, and no version or ABI reservation. P1b adds the remaining
+File/Directory mutation and transaction helpers; P2 adds mapping, readiness and
+networking; process supervision follows.

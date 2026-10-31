@@ -21,7 +21,7 @@ module sysbytes
 import "sysplatform.obx" as platform
 import "syserrors.obx" as errors
 
-pub type Bytes = ref record { res: platform::Resource }
+pub type Bytes = ref record { pub res: platform::Resource }
 
 fn libCode(k: errors::Kind): int {
     return errors::code(&k)
@@ -80,6 +80,24 @@ pub fn readPacked(b: &Bytes, offset: int, count: int): Result[int] {
     }
     return platform::_opHandle(handle(b.res), platform::KIND_BYTE_BUFFER,
                          platform::OP_BUF_GET_PACKED, offset, 0, count)
+}
+
+// Eight-byte signed scalar access used by the metadata packet and tests. The
+// offset must be 8-aligned; every byte is data, never a NUL-terminated string.
+pub fn readInt64(b: &Bytes, offset: int): Result[int] {
+    if offset < 0 || offset % 8 != 0 {
+        return err("int64 read needs an aligned nonnegative offset", rangeCode())
+    }
+    return platform::_opHandle(handle(b.res), platform::KIND_BYTE_BUFFER,
+                         platform::OP_BUF_GET64, offset, 0, 0)
+}
+
+pub fn writeInt64(b: &Bytes, offset: int, value: int): Result[int] {
+    if offset < 0 || offset % 8 != 0 {
+        return err("int64 write needs an aligned nonnegative offset", rangeCode())
+    }
+    return platform::_opHandle(handle(b.res), platform::KIND_BYTE_BUFFER,
+                         platform::OP_BUF_SET64, offset, value, 0)
 }
 
 pub fn fill(b: &Bytes, value: int): Result[int] {

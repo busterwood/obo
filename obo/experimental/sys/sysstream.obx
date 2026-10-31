@@ -1,0 +1,149 @@
+// Experimental systems library: concrete byte streams (P1a).
+//
+// Status: experimental P1a slice, unstable. A Stream is a tagged native
+// endpoint reached only through platform::Resource; it is not an obo interface
+// and no raw descriptor crosses. File::intoStream/duplicateStream are the
+// supported ways to transfer or duplicate a file into this abstraction.
+// Standard streams are owned CLOEXEC duplicates; process fds 0/1/2 are never
+// closed by this module.
+//
+// readSome/writeSome make one kernel transfer attempt. A short transfer is
+// success. readSome returns nil at EOF and WouldBlock when a nonblocking
+// endpoint is not ready; the two are distinct. readInto/writeFrom use the
+// existing arrays and return progress counts. Every payload is bounded by
+// MAX_CHUNK (1 MiB); larger logical transfers are caller chunk loops.
+module sysstream
+
+import "sysplatform.obx" as platform
+import "sysbytes.obx" as bytesbuf
+import "syserrors.obx" as errors
+
+pub type Stream = ref record { pub res: platform::Resource }
+
+pub type Standard = closed { Input {} Output {} Error {} }
+
+pub const MAX_CHUNK = 1048576
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+fn rangeCode(): int { return libCode(new errors::Range{}) }
+fn systemFailure(): int { return libCode(new errors::SystemFailure{}) }
+
+fn checkSource(src: &[]byte, offset: int, count: int): bool {
+    if offset < 0 || count < 0 { return false }
+    if offset > len(src) { return false }
+    if count > len(src) - offset { return false }
+    return true
+}
+
+fn checkDestination(dst: &[]byte, offset: int, max: int): bool {
+    if offset < 0 || max < 0 { return false }
+    if offset > len(dst) { return false }
+    if max > len(dst) - offset { return false }
+    return true
+}
+
+pub fn source(s: &Stream): Result[^platform::Resource] {
+    return platform::_requireKindHandle(handle(s.res), platform::KIND_STREAM)
+}
+
+fn selector(which: &Standard): int {
+    match which {
+        Input { return platform::_STANDARD_INPUT }
+        Output { return platform::_STANDARD_OUTPUT }
+        Error { return platform::_STANDARD_ERROR }
+    }
+}
+
+pub fn standard(which: &Standard): Result[Stream] {
+    let token = try platform::_standardToken(selector(which))
+    let r = try platform::_adoptToken(platform::KIND_STREAM, token)
+    return ok(new Stream{res: r})
+}
+
+pub fn standardInput(): Result[Stream] {
+    let which = new Input{}
+    return standard(&which)
+}
+pub fn standardOutput(): Result[Stream] {
+    let which = new Output{}
+    return standard(&which)
+}
+pub fn standardError(): Result[Stream] {
+    let which = new Error{}
+    return standard(&which)
+}
+
+pub fn readSome(s: &Stream, max: int): Result[?[]byte] {
+    if max <= 0 { return err("readSome needs a positive byte count", invalidArgument()) }
+    if max > MAX_CHUNK { return err("readSome is limited to 1 MiB", rangeCode()) }
+    let tmp = try bytesbuf::create(max)
+    defer bytesbuf::close(&tmp)
+    let tok = try platform::_tokenHandle(handle(s.res), platform::KIND_STREAM)
+    let bt = try platform::_tokenHandle(handle(tmp.res), platform::KIND_BYTE_BUFFER)
+    let n = try platform::_ioReadToken(tok, platform::KIND_STREAM, bt, 0, max,
+                                       platform::_POSITION_CURRENT)
+    if n == 0 {
+        let none: ?[]byte = nil
+        return ok(none)
+    }
+    let out = new []byte(n)
+    let copied = try bytesbuf::copyOut(&tmp, &out, 0, 0, n)
+    if copied != n { return err("short native read copy", systemFailure()) }
+    let result: ?[]byte = out
+    return ok(result)
+}
+
+pub fn readInto(s: &Stream, mut dst: &[]byte, offset: int, max: int): Result[int] {
+    if max <= 0 { return err("readInto needs a positive byte count", invalidArgument()) }
+    if max > MAX_CHUNK { return err("readInto is limited to 1 MiB", rangeCode()) }
+    if !checkDestination(dst, offset, max) {
+        return err("readInto destination range is outside the array", invalidArgument())
+    }
+    let tmp = try bytesbuf::create(max)
+    defer bytesbuf::close(&tmp)
+    let tok = try platform::_tokenHandle(handle(s.res), platform::KIND_STREAM)
+    let bt = try platform::_tokenHandle(handle(tmp.res), platform::KIND_BYTE_BUFFER)
+    let n = try platform::_ioReadToken(tok, platform::KIND_STREAM, bt, 0, max,
+                                       platform::_POSITION_CURRENT)
+    if n == 0 { return ok(0) }
+    let chunk = new []byte(n)
+    let copied = try bytesbuf::copyOut(&tmp, &chunk, 0, 0, n)
+    if copied != n { return err("short native read copy", systemFailure()) }
+    for i in 0..n { dst[offset + i] = chunk[i] }
+    return ok(n)
+}
+
+pub fn writeSome(s: &Stream, bytes: &[]byte, offset: int, count: int): Result[int] {
+    if !checkSource(bytes, offset, count) {
+        return err("writeSome source range is outside the array", invalidArgument())
+    }
+    if count > MAX_CHUNK { return err("writeSome is limited to 1 MiB", rangeCode()) }
+    // Empty writes return 0, but only after the endpoint has been validated.
+    let checked = try platform::_requireKindHandle(handle(s.res), platform::KIND_STREAM)
+    if count == 0 { return ok(0) }
+    let tmp = try bytesbuf::create(count)
+    defer bytesbuf::close(&tmp)
+    let copiedIn = try bytesbuf::copyIn(&tmp, bytes, offset, 0, count)
+    if copiedIn != count { return err("short native write copy", systemFailure()) }
+    let tok = try platform::_tokenHandle(checked, platform::KIND_STREAM)
+    let bt = try platform::_tokenHandle(handle(tmp.res), platform::KIND_BYTE_BUFFER)
+    return platform::_ioWriteToken(tok, platform::KIND_STREAM, bt, 0, count,
+                                   platform::_POSITION_CURRENT)
+}
+
+pub fn writeFrom(s: &Stream, src: &[]byte, offset: int, count: int): Result[int] {
+    return writeSome(s, src, offset, count)
+}
+
+pub fn close(s: &Stream): Result[bool] {
+    return platform::_closeHandle(handle(s.res), platform::KIND_STREAM)
+}
+
+// Handle forms for callers holding a whole local or a collection element.
+pub fn closeStream(s: ^Stream): Result[bool] {
+    return platform::_closeHandle(handle(s.res), platform::KIND_STREAM)
+}

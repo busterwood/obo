@@ -1,0 +1,309 @@
+// Experimental systems library: owned files (P1a).
+//
+// Status: experimental P1a slice, unstable. A File hides a CLOEXEC native
+// handle behind a checked platform::Resource; no descriptor or registry token
+// is stored in the public record. Open options are explicit and copied at open.
+// Every read/write is one kernel attempt: a short transfer is success, EOF is
+// nil (readSome) or 0 (readAt/readInto), and EINTR/WouldBlock stay distinct.
+// close is explicit and never retried after EINTR.
+//
+// P1a deliberately omits chmod, sync, rename/link/symlink and atomic replace;
+// those remain P1b. A positional write on an append-open File is rejected even
+// with a zero count. intoStream logically consumes a File by re-tagging the live
+// resource to KIND_STREAM; a failed transfer retires the source exactly once.
+// duplicateStream returns an independent owner that shares the same open file
+// description (offset and status flags), matching dup(2).
+module sysfile
+
+import "sysdir.obx" as dir
+import "sysstat.obx" as stat
+import "sysstream.obx" as stream
+import "sysplatform.obx" as platform
+import "sysbytes.obx" as bytesbuf
+import "syserrors.obx" as errors
+
+pub type File = ref record { pub res: platform::Resource }
+
+pub type OpenOptions = ref record {
+    pub read: bool
+    pub write: bool
+    pub create: bool
+    pub exclusive: bool
+    pub truncate: bool
+    pub append: bool
+    pub noFollow: bool
+    pub nonblocking: bool
+    pub permissions: int
+}
+
+pub const SEEK_START = 0
+pub const SEEK_CURRENT = 1
+pub const SEEK_END = 2
+pub const MAX_CHUNK = 1048576
+const MAX_PATH_BYTES = 4095
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+fn rangeCode(): int { return libCode(new errors::Range{}) }
+fn systemFailure(): int { return libCode(new errors::SystemFailure{}) }
+
+pub fn readOptions(): OpenOptions {
+    return new OpenOptions{
+        read: true
+        write: false
+        create: false
+        exclusive: false
+        truncate: false
+        append: false
+        noFollow: false
+        nonblocking: false
+        permissions: 420
+    }
+}
+
+fn validateOptions(o: &OpenOptions): bool {
+    if !o.read && !o.write { return false }
+    if (o.create || o.exclusive || o.truncate || o.append) && !o.write { return false }
+    if o.exclusive && !o.create { return false }
+    if o.truncate && o.append { return false }
+    if o.permissions < 0 || o.permissions > 4095 { return false }
+    return true
+}
+
+fn optionFlags(o: &OpenOptions): int {
+    var flags = 0
+    if o.read { flags = flags | platform::_OPEN_READ }
+    if o.write { flags = flags | platform::_OPEN_WRITE }
+    if o.create { flags = flags | platform::_OPEN_CREATE }
+    if o.exclusive { flags = flags | platform::_OPEN_EXCLUSIVE }
+    if o.truncate { flags = flags | platform::_OPEN_TRUNCATE }
+    if o.append { flags = flags | platform::_OPEN_APPEND }
+    if o.noFollow { flags = flags | platform::_OPEN_NOFOLLOW }
+    if o.nonblocking { flags = flags | platform::_OPEN_NONBLOCK }
+    return flags
+}
+
+fn validPath(path: string): bool {
+    if len(path) == 0 || len(path) > MAX_PATH_BYTES { return false }
+    for i in 0..len(path) {
+        if int(path[i]) == 0 { return false }
+    }
+    return true
+}
+
+fn validName(name: string): bool {
+    if len(name) == 0 || len(name) > 255 { return false }
+    if name == "." || name == ".." { return false }
+    for i in 0..len(name) {
+        let c = int(name[i])
+        if c == 0 || c == 47 { return false }
+    }
+    return true
+}
+
+fn pathBytes(path: string): Result[bytesbuf::Bytes] {
+    let n = len(path)
+    let data = new []byte(n)
+    for i in 0..n { data[i] = path[i] }
+    let b = try bytesbuf::create(n)
+    let copied = try bytesbuf::copyIn(&b, &data, 0, 0, n)
+    if copied != n {
+        bytesbuf::close(&b)
+        return err("short path copy into the native bridge", systemFailure())
+    }
+    return ok(b)
+}
+
+fn checkSource(src: &[]byte, offset: int, count: int): bool {
+    if offset < 0 || count < 0 { return false }
+    if offset > len(src) { return false }
+    if count > len(src) - offset { return false }
+    return true
+}
+
+pub fn source(f: &File): Result[^platform::Resource] {
+    return platform::_requireKindHandle(handle(f.res), platform::KIND_FILE)
+}
+
+pub fn open(path: string, options: &OpenOptions): Result[File] {
+    if !validPath(path) {
+        return err("file path is empty, too long or contains NUL", invalidArgument())
+    }
+    if !validateOptions(options) {
+        return err("file open options are inconsistent", invalidArgument())
+    }
+    let pb = try pathBytes(path)
+    defer bytesbuf::close(&pb)
+    let pt = try platform::_tokenHandle(handle(pb.res), platform::KIND_BYTE_BUFFER)
+    let token = try platform::_fileOpenToken(0, pt, optionFlags(options),
+                                             options.permissions)
+    let r = try platform::_adoptToken(platform::KIND_FILE, token)
+    return ok(new File{res: r})
+}
+
+pub fn openAt(base: &dir::Directory, name: string, options: &OpenOptions): Result[File] {
+    if !validName(name) {
+        return err("openAt name must be one ordinary path component", invalidArgument())
+    }
+    if !validateOptions(options) {
+        return err("file open options are inconsistent", invalidArgument())
+    }
+    let dt = try platform::_tokenHandle(handle(base.res), platform::KIND_DIRECTORY)
+    let pb = try pathBytes(name)
+    defer bytesbuf::close(&pb)
+    let pt = try platform::_tokenHandle(handle(pb.res), platform::KIND_BYTE_BUFFER)
+    let token = try platform::_fileOpenToken(dt, pt, optionFlags(options),
+                                             options.permissions)
+    let r = try platform::_adoptToken(platform::KIND_FILE, token)
+    return ok(new File{res: r})
+}
+
+pub fn readSome(f: &File, max: int): Result[?[]byte] {
+    if max <= 0 { return err("readSome needs a positive byte count", invalidArgument()) }
+    if max > MAX_CHUNK { return err("readSome is limited to 1 MiB", rangeCode()) }
+    let tmp = try bytesbuf::create(max)
+    defer bytesbuf::close(&tmp)
+    let ft = try platform::_tokenHandle(handle(f.res), platform::KIND_FILE)
+    let bt = try platform::_tokenHandle(handle(tmp.res), platform::KIND_BYTE_BUFFER)
+    let n = try platform::_ioReadToken(ft, platform::KIND_FILE, bt, 0, max,
+                                       platform::_POSITION_CURRENT)
+    if n == 0 {
+        let none: ?[]byte = nil
+        return ok(none)
+    }
+    let out = new []byte(n)
+    let copied = try bytesbuf::copyOut(&tmp, &out, 0, 0, n)
+    if copied != n { return err("short native read copy", systemFailure()) }
+    let result: ?[]byte = out
+    return ok(result)
+}
+
+pub fn readInto(f: &File, mut dst: &[]byte, offset: int, max: int): Result[int] {
+    if max <= 0 { return err("readInto needs a positive byte count", invalidArgument()) }
+    if max > MAX_CHUNK { return err("readInto is limited to 1 MiB", rangeCode()) }
+    if offset < 0 || offset > len(dst) || max > len(dst) - offset {
+        return err("readInto destination range is outside the array", invalidArgument())
+    }
+    let tmp = try bytesbuf::create(max)
+    defer bytesbuf::close(&tmp)
+    let ft = try platform::_tokenHandle(handle(f.res), platform::KIND_FILE)
+    let bt = try platform::_tokenHandle(handle(tmp.res), platform::KIND_BYTE_BUFFER)
+    let n = try platform::_ioReadToken(ft, platform::KIND_FILE, bt, 0, max,
+                                       platform::_POSITION_CURRENT)
+    if n == 0 { return ok(0) }
+    let chunk = new []byte(n)
+    let copied = try bytesbuf::copyOut(&tmp, &chunk, 0, 0, n)
+    if copied != n { return err("short native read copy", systemFailure()) }
+    for i in 0..n { dst[offset + i] = chunk[i] }
+    return ok(n)
+}
+
+pub fn writeSome(f: &File, bytes: &[]byte, offset: int, count: int): Result[int] {
+    if !checkSource(bytes, offset, count) {
+        return err("writeSome source range is outside the array", invalidArgument())
+    }
+    if count > MAX_CHUNK { return err("writeSome is limited to 1 MiB", rangeCode()) }
+    let checked = try platform::_requireKindHandle(handle(f.res), platform::KIND_FILE)
+    if count == 0 { return ok(0) }
+    let tmp = try bytesbuf::create(count)
+    defer bytesbuf::close(&tmp)
+    let copiedIn = try bytesbuf::copyIn(&tmp, bytes, offset, 0, count)
+    if copiedIn != count { return err("short native write copy", systemFailure()) }
+    let ft = try platform::_tokenHandle(checked, platform::KIND_FILE)
+    let bt = try platform::_tokenHandle(handle(tmp.res), platform::KIND_BYTE_BUFFER)
+    return platform::_ioWriteToken(ft, platform::KIND_FILE, bt, 0, count,
+                                   platform::_POSITION_CURRENT)
+}
+
+pub fn readAt(f: &File, position: int, max: int): Result[?[]byte] {
+    if position < 0 { return err("readAt position is negative", invalidArgument()) }
+    if max <= 0 { return err("readAt needs a positive byte count", invalidArgument()) }
+    if max > MAX_CHUNK { return err("readAt is limited to 1 MiB", rangeCode()) }
+    let tmp = try bytesbuf::create(max)
+    defer bytesbuf::close(&tmp)
+    let ft = try platform::_tokenHandle(handle(f.res), platform::KIND_FILE)
+    let bt = try platform::_tokenHandle(handle(tmp.res), platform::KIND_BYTE_BUFFER)
+    let n = try platform::_ioReadToken(ft, platform::KIND_FILE, bt, 0, max, position)
+    if n == 0 {
+        let none: ?[]byte = nil
+        return ok(none)
+    }
+    let out = new []byte(n)
+    let copied = try bytesbuf::copyOut(&tmp, &out, 0, 0, n)
+    if copied != n { return err("short native read copy", systemFailure()) }
+    let result: ?[]byte = out
+    return ok(result)
+}
+
+pub fn writeAt(f: &File, position: int, bytes: &[]byte): Result[int] {
+    if position < 0 { return err("writeAt position is negative", invalidArgument()) }
+    if len(bytes) > MAX_CHUNK { return err("writeAt is limited to 1 MiB", rangeCode()) }
+    let checked = try platform::_requireKindHandle(handle(f.res), platform::KIND_FILE)
+    // A zero-length positional write still validates the endpoint and the
+    // append-open restriction; it is not a shortcut before either check.
+    let tmp = try bytesbuf::create(len(bytes))
+    defer bytesbuf::close(&tmp)
+    let copiedIn = try bytesbuf::copyIn(&tmp, bytes, 0, 0, len(bytes))
+    if copiedIn != len(bytes) { return err("short native write copy", systemFailure()) }
+    let ft = try platform::_tokenHandle(checked, platform::KIND_FILE)
+    let bt = try platform::_tokenHandle(handle(tmp.res), platform::KIND_BYTE_BUFFER)
+    return platform::_ioWriteToken(ft, platform::KIND_FILE, bt, 0, len(bytes), position)
+}
+
+pub fn seek(f: &File, offset: int, origin: int): Result[int] {
+    if origin != SEEK_START && origin != SEEK_CURRENT && origin != SEEK_END {
+        return err("seek origin is not a library constant", invalidArgument())
+    }
+    if origin == SEEK_START && offset < 0 {
+        return err("seek would produce a negative position", rangeCode())
+    }
+    let ft = try platform::_tokenHandle(handle(f.res), platform::KIND_FILE)
+    let p = try platform::_ioSeekToken(ft, platform::KIND_FILE, offset, origin)
+    if p < 0 { return err("seek produced a negative position", rangeCode()) }
+    return ok(p)
+}
+
+pub fn truncateTo(f: &File, length: int): Result[bool] {
+    if length < 0 { return err("truncate length is negative", invalidArgument()) }
+    let ft = try platform::_tokenHandle(handle(f.res), platform::KIND_FILE)
+    let done = try platform::_ioTruncateToken(ft, platform::KIND_FILE, length)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn metadata(f: &File): Result[stat::Metadata] {
+    let ft = try platform::_tokenHandle(handle(f.res), platform::KIND_FILE)
+    let packet = try bytesbuf::create(platform::STAT_PACKET_BYTES)
+    defer bytesbuf::close(&packet)
+    let pt = try platform::_tokenHandle(handle(packet.res), platform::KIND_BYTE_BUFFER)
+    let ignored = try platform::_statToken(ft, platform::KIND_FILE, 0, 0, 0, pt)
+    if ignored < 0 { return err("metadata packet was not produced", systemFailure()) }
+    return stat::_decode(handle(packet.res))
+}
+
+pub fn duplicateStream(f: &File): Result[stream::Stream] {
+    let ft = try platform::_tokenHandle(handle(f.res), platform::KIND_FILE)
+    let token = try platform::_fileDupToken(ft, platform::KIND_FILE, platform::KIND_STREAM)
+    let r = try platform::_adoptToken(platform::KIND_STREAM, token)
+    return ok(new stream::Stream{res: r})
+}
+
+// Logically consume the File. The live native resource and managed slot are
+// re-tagged together, then the old shell's `res` is replaced with an
+// unregistered value so later File operations cannot reach the stream.
+pub fn intoStream(mut f: &File): Result[stream::Stream] {
+    let retagged = try platform::_retagHandle(handle(f.res), platform::KIND_FILE,
+                                               platform::KIND_STREAM)
+    if !retagged {
+        return err("file could not be re-tagged as a stream", systemFailure())
+    }
+    let r = replace(f.res, new platform::Resource{reserved: 0})
+    return ok(new stream::Stream{res: r})
+}
+
+pub fn close(f: &File): Result[bool] {
+    return platform::_closeHandle(handle(f.res), platform::KIND_FILE)
+}

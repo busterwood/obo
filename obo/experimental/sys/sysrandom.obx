@@ -1,0 +1,90 @@
+// Experimental systems library: kernel cryptographic randomness (P1a).
+//
+// Status: experimental P1a slice, unstable. Bytes come from getrandom without
+// GRND_RANDOM. There is no userspace PRNG, timestamp seed or fallback source.
+// blocking=false uses GRND_NONBLOCK and can return WouldBlock; EINTR is
+// Interrupted. A short kernel fill is successful progress, never a silent
+// retry of a one-shot fillSome call.
+//
+// One random request is capped at 1 MiB. Larger logical requests are caller
+// chunk loops. fillSome writes only within the existing destination array and
+// publishes no partial output on an error. bytes is a bounded compound helper;
+// it may continue after short kernel fills but stops on the first error.
+module sysrandom
+
+import "sysbytes.obx" as bytesbuf
+import "sysplatform.obx" as platform
+import "syserrors.obx" as errors
+
+pub const MAX_RANDOM_BYTES = 1048576
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+fn rangeCode(): int { return libCode(new errors::Range{}) }
+fn limitCode(): int { return libCode(new errors::LimitExceeded{}) }
+fn systemFailure(): int { return libCode(new errors::SystemFailure{}) }
+
+fn checkRange(bytes: &[]byte, offset: int, count: int): bool {
+    if offset < 0 || count < 0 { return false }
+    if offset > len(bytes) { return false }
+    if count > len(bytes) - offset { return false }
+    return true
+}
+
+pub fn fillSome(mut bytes: &[]byte, offset: int, count: int,
+                blocking: bool): Result[int] {
+    if !checkRange(bytes, offset, count) {
+        return err("random destination range is outside the array", invalidArgument())
+    }
+    if count > MAX_RANDOM_BYTES {
+        return err("one random fill is limited to 1 MiB", limitCode())
+    }
+    if count == 0 { return ok(0) }
+    let tmp = try bytesbuf::create(count)
+    defer bytesbuf::close(&tmp)
+    let tok = try platform::_tokenHandle(handle(tmp.res), platform::KIND_BYTE_BUFFER)
+    let n = try platform::_randomToken(tok, 0, count, blocking)
+    if n < 0 || n > count {
+        return err("native random fill returned an impossible count", systemFailure())
+    }
+    if n == 0 {
+        return err("native random fill returned no progress", systemFailure())
+    }
+    let chunk = new []byte(n)
+    let copied = try bytesbuf::copyOut(&tmp, &chunk, 0, 0, n)
+    if copied != n {
+        return err("short native random copy", systemFailure())
+    }
+    for i in 0..n { bytes[offset + i] = chunk[i] }
+    return ok(n)
+}
+
+pub fn bytes(count: int, blocking: bool): Result[[]byte] {
+    if count < 0 {
+        return err("random byte count cannot be negative", rangeCode())
+    }
+    if count > MAX_RANDOM_BYTES {
+        return err("one random request is limited to 1 MiB", limitCode())
+    }
+    let out = new []byte(count)
+    if count == 0 { return ok(out) }
+    let tmp = try bytesbuf::create(count)
+    defer bytesbuf::close(&tmp)
+    let tok = try platform::_tokenHandle(handle(tmp.res), platform::KIND_BYTE_BUFFER)
+    var done = 0
+    while done < count {
+        let n = try platform::_randomToken(tok, done, count - done, blocking)
+        if n <= 0 || n > count - done {
+            return err("native random fill made no valid progress", systemFailure())
+        }
+        done += n
+    }
+    let copied = try bytesbuf::copyOut(&tmp, &out, 0, 0, count)
+    if copied != count {
+        return err("short native random copy", systemFailure())
+    }
+    return ok(out)
+}

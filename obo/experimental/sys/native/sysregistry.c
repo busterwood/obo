@@ -15,6 +15,7 @@
 #define SYS_MAX_ENTRIES 65536L
 #define SYS_MAX_NATIVE_BYTES 2147483647L
 #define SYS_MAX_GEN 0x7fffffffu
+#define SYS_MAX_IDENTITIES 65536L
 
 typedef struct {
     uint32_t gen;
@@ -30,6 +31,12 @@ typedef struct {
     unsigned char *data;
 } sys_buffer;
 
+typedef struct {
+    unsigned long long dev;
+    unsigned long long ino;
+    int used;
+} sys_identity;
+
 static sys_entry *entries;
 static long entry_cap;
 static uint32_t next_gen = 1;
@@ -37,7 +44,9 @@ static long max_bytes_cfg;
 static size_t used_bytes;
 static int initialized;
 static long cleanup_failures;
-static long call_counts[8];
+static long call_counts[32];
+static sys_identity *identities;
+static long identity_count = 0;
 
 static long err(long e) {
     return -(e > 0 ? e : EIO);
@@ -193,6 +202,35 @@ long sys_reg_retire(long token, int kind, void **ptr, int (**release)(void *)) {
     return 1;
 }
 
+long sys_reg_retag(long token, int from_kind, int to_kind) {
+    uint32_t gen = 0;
+    int i = token_index(token, &gen);
+    sys_entry *e;
+    if (to_kind <= 0) return 0;
+    if (i < 0) return 0;
+    e = &entries[i];
+    if (!e->live || e->gen != gen || e->kind != from_kind) return 0;
+    e->kind = to_kind;
+    return 1;
+}
+
+long sys_reg_intern_identity(unsigned long long dev, unsigned long long ino) {
+    long i;
+    if (!initialized) return err(EINVAL);
+    for (i = 0; i < identity_count; i++) {
+        if (identities[i].used && identities[i].dev == dev && identities[i].ino == ino) {
+            return i + 1;
+        }
+    }
+    if (identity_count >= SYS_MAX_IDENTITIES) return err(EMFILE);
+    i = identity_count++;
+    identities[i].dev = dev;
+    identities[i].ino = ino;
+    identities[i].used = 1;
+    if (i + 1 <= 0 || i + 1 > 0x7fffffffL) return err(EOVERFLOW);
+    return i + 1;
+}
+
 
 long sys_reg_buffer_op(void *ptr, long op, long a, long b, long c) {
     sys_buffer *buf = (sys_buffer *)ptr;
@@ -237,7 +275,29 @@ long sys_reg_buffer_op(void *ptr, long op, long a, long b, long c) {
         if (packed > (uint64_t)0x7fffffffffffffffULL) return err(EOVERFLOW);
         return (long)packed;
     }
+    if (op == SYS_OP_BUF_SET64 || op == SYS_OP_BUF_GET64) {
+        int64_t v;
+        if (a < 0) return err(ERANGE);
+        off = (size_t)a;
+        if ((off % 8) != 0) return err(EINVAL);
+        if (off > buf->len || buf->len - off < 8) return err(ERANGE);
+        if (op == SYS_OP_BUF_GET64) {
+            memcpy(&v, buf->data + off, sizeof(v));
+            return (long)v;
+        }
+        v = (int64_t)b;
+        memcpy(buf->data + off, &v, sizeof(v));
+        return 1;
+    }
     return err(EOPNOTSUPP);
+}
+
+long sys_reg_buffer_data(long token, unsigned char **data, size_t *len) {
+    sys_buffer *buf = (sys_buffer *)sys_reg_peek(token, SYS_KIND_BYTE_BUFFER);
+    if (buf == NULL) return err(EINVAL);
+    if (data != NULL) *data = buf->data;
+    if (len != NULL) *len = buf->len;
+    return 0;
 }
 
 long sys_reg_live_count(void) {
@@ -315,9 +375,16 @@ long sys_adapter_init(long max_resources, long max_bytes) {
     if (max_bytes < 1 || max_bytes > SYS_MAX_NATIVE_BYTES) return err(EINVAL);
     entries = (sys_entry *)calloc((size_t)max_resources, sizeof(*entries));
     if (entries == NULL) return err(ENOMEM);
+    identities = (sys_identity *)calloc((size_t)SYS_MAX_IDENTITIES, sizeof(*identities));
+    if (identities == NULL) {
+        free(entries);
+        entries = NULL;
+        return err(ENOMEM);
+    }
     entry_cap = max_resources;
     max_bytes_cfg = max_bytes;
     used_bytes = 0;
+    identity_count = 0;
     cleanup_failures = 0;
     sys_reg_reset_counts();
     initialized = 1;
@@ -347,6 +414,9 @@ long sys_adapter_shutdown(void) {
     }
     free(entries);
     entries = NULL;
+    free(identities);
+    identities = NULL;
+    identity_count = 0;
     entry_cap = 0;
     max_bytes_cfg = 0;
     used_bytes = 0;

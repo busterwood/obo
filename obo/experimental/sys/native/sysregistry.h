@@ -23,8 +23,21 @@ void *sys_reg_peek(long token, int kind);
  * parameters. Returns 1 if this call retired it, 0 if stale/wrong-kind. */
 long sys_reg_retire(long token, int kind, void **ptr, int (**release)(void *));
 
+/* Atomically change a live entry's kind (File -> Stream transfer). Returns 1
+ * on success, 0 for stale/wrong-kind. The pointer and release stay unchanged. */
+long sys_reg_retag(long token, int from_kind, int to_kind);
+
+/* Intern an exact (device, inode) pair as one opaque positive int bit pattern.
+ * Entries live until shutdown and never collide. Returns -EMFILE when the
+ * bounded table is full. */
+long sys_reg_intern_identity(unsigned long long dev, unsigned long long ino);
+
 /* Shared byte-buffer operations. Returns >= 0 result or -errno. */
 long sys_reg_buffer_op(void *ptr, long op, long a, long b, long c);
+
+/* Borrow a live byte buffer's data/length for a trusted adapter call. The
+ * pointer stays C-owned and must not be retained after the call. */
+long sys_reg_buffer_data(long token, unsigned char **data, size_t *len);
 
 long sys_reg_live_count(void);
 long sys_reg_live_kind(long kind);

@@ -1,0 +1,127 @@
+// Experimental systems library: detached metadata snapshots (P1a).
+//
+// Status: experimental P1a slice, unstable. Metadata is an owned snapshot, not
+// a borrowed kernel struct. `kind` is a library constant; permissions are the
+// low Unix permission bits, not type bits. Timestamps use sysclock::Timestamp
+// seconds+nanos and never a float. Birth time is nil when the backend does not
+// provide one.
+//
+// Identity.bits is one opaque, context-local bit pattern for an exact
+// (device,inode) pair interned by the native adapter. It is equality-only: not
+// a hash clients may parse, not a raw inode, and not an authority check.
+// sameIdentity is pure bit equality and grants nothing.
+module sysstat
+
+import "sysclock.obx" as clock
+import "sysplatform.obx" as platform
+import "syserrors.obx" as errors
+
+pub type Identity = ref record { pub bits: int }
+
+pub type Metadata = ref record {
+    pub kind: int
+    pub permissions: int
+    pub size: int
+    pub links: int
+    pub uid: int
+    pub gid: int
+    pub modified: clock::Timestamp
+    pub accessed: clock::Timestamp
+    pub changed: clock::Timestamp
+    pub created: ?clock::Timestamp
+    pub identity: Identity
+}
+
+pub const KIND_UNKNOWN = 0
+pub const KIND_FIFO = 1
+pub const KIND_CHR = 2
+pub const KIND_DIR = 4
+pub const KIND_BLK = 6
+pub const KIND_REG = 8
+pub const KIND_LNK = 10
+pub const KIND_SOCK = 12
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+fn rangeCode(): int { return libCode(new errors::Range{}) }
+
+fn knownKind(k: int): bool {
+    return k == KIND_UNKNOWN || k == KIND_FIFO || k == KIND_CHR ||
+           k == KIND_DIR || k == KIND_BLK || k == KIND_REG ||
+           k == KIND_LNK || k == KIND_SOCK
+}
+
+fn field(h: ^platform::Resource, index: int): Result[int] {
+    return platform::_opHandle(h, platform::KIND_BYTE_BUFFER,
+                               platform::OP_BUF_GET64, index * 8, 0, 0)
+}
+
+fn validNanos(n: int): bool {
+    return n >= 0 && n <= 999999999
+}
+
+// Internal adapter decode. The packet is written by trusted C in the fixed
+// 16-field shape and then copied into owned obo values; no C pointer escapes.
+pub fn _decode(h: ^platform::Resource): Result[Metadata] {
+    let kind = try field(h, 0)
+    let permissions = try field(h, 1)
+    let size = try field(h, 2)
+    let links = try field(h, 3)
+    let uid = try field(h, 4)
+    let gid = try field(h, 5)
+    let mtimeS = try field(h, 6)
+    let mtimeNs = try field(h, 7)
+    let atimeS = try field(h, 8)
+    let atimeNs = try field(h, 9)
+    let ctimeS = try field(h, 10)
+    let ctimeNs = try field(h, 11)
+    let birthS = try field(h, 12)
+    let birthNs = try field(h, 13)
+    let birthPresent = try field(h, 14)
+    let identityBits = try field(h, 15)
+
+    if !knownKind(kind) { return err("metadata kind is outside the library set", rangeCode()) }
+    if permissions < 0 || permissions > 4095 {
+        return err("metadata permissions are outside 0..0xFFF", rangeCode())
+    }
+    if size < 0 || links < 0 || uid < 0 || gid < 0 {
+        return err("metadata counts must be nonnegative", rangeCode())
+    }
+    if !validNanos(mtimeNs) || !validNanos(atimeNs) || !validNanos(ctimeNs) {
+        return err("metadata timestamp nanoseconds are not normalized", rangeCode())
+    }
+    if birthPresent != 0 && birthPresent != 1 {
+        return err("metadata birth-present flag is malformed", invalidArgument())
+    }
+    if birthPresent == 1 && !validNanos(birthNs) {
+        return err("metadata birth nanoseconds are not normalized", rangeCode())
+    }
+    if identityBits <= 0 {
+        return err("metadata identity is not a valid interned bit pattern", invalidArgument())
+    }
+
+    var created: ?clock::Timestamp = nil
+    if birthPresent == 1 {
+        created = new clock::Timestamp{seconds: birthS, nanos: birthNs}
+    }
+    return ok(new Metadata{
+        kind: kind
+        permissions: permissions
+        size: size
+        links: links
+        uid: uid
+        gid: gid
+        modified: new clock::Timestamp{seconds: mtimeS, nanos: mtimeNs}
+        accessed: new clock::Timestamp{seconds: atimeS, nanos: atimeNs}
+        changed: new clock::Timestamp{seconds: ctimeS, nanos: ctimeNs}
+        created: created
+        identity: new Identity{bits: identityBits}
+    })
+}
+
+pub fn sameIdentity(a: &Identity, b: &Identity): bool {
+    return a.bits == b.bits
+}
