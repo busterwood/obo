@@ -5684,17 +5684,25 @@ bits in GPR/stack words; freestanding C helpers 41–55 use C `double`/SSE2
 internally and integer-only arguments/results. Seed 0.8 still builds the
 compiler source because the compiler itself uses no float syntax.
 
-Measured direct self-compile: `2,028,976` peak bytes, over the unchanged
-`2,000,000` budget by `28,976`; source is `13,371` lines / `501,497` bytes,
-binary `557,057` bytes, runtime text/data `18,240`/`67,360`. The parser alone
-adds about `20,224` bytes (private no-parser variant: `2,008,752`). This is a
-hard-stop checkpoint for a cap decision; no cap was raised and no check was
-weakened.
+Measured direct self-compile: `2,028,976` peak bytes; source is `13,371`
+lines / `501,497` bytes, binary `557,057` bytes, runtime text/data
+`18,240`/`67,360`. The parser alone adds about `20,224` bytes (private
+no-parser variant: `2,008,752`).
 
-Tests: `tests/float_f1.py` passes (pinned literal bits, 300 seeded random
+**Numeric-branch budget (user-approved 2026-10-31).** The numeric worktree
+uses `obo/tests/peak_budget.py` with `PEAK_BUDGET = 2_500_000` decimal bytes.
+This is not a change to the historical lambda release budget, which remains
+`2,000,000` in its own record. The zero-array heap-allocation mutant is
+additionaly judged by the same-source self-compile delta: the measured
+baseline is 2,029,376 and the mutant 2,075,744, a 46,368-byte regression; the
+shared oracle requires at least 30,000 bytes over baseline. This keeps the
+empty-array saving caught even when both peaks are below the new absolute cap.
+No check was weakened.
+
+Tests: `tests/float_f1.py` passes (pinned literal bits, 295 finite seeded random
 literals, arithmetic/NaN/±Inf/signed-zero/subnormal, scalars/params/returns,
-lambda/function-type calls, int conversion, error cases); `run_fork.py` 1544
-passed, 0 failed; `port_test.py` 573/573; `sym_test.py` 42 passed; `doc_check.py`
-62 examples, 0 problems. Unimplemented: float text parse/format/print, float
-constants/`.sym` release format, and containers beyond the naturally one-word
-scalar paths (arrays/fields/globals/Result still need explicit float tests).
+lambda/function-type calls, containers, module signature, int conversion, error
+cases, GC poison); `run_fork.py` 1544 passed, 0 failed; `port_test.py` 573/573;
+`sym_test.py` 42 passed; `doc_check.py` 62 examples, 0 problems. Unimplemented:
+float text parse/format/print, float constants/`.sym` release format, and the
+full container/symbol release matrix.
