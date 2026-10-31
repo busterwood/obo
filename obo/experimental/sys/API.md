@@ -563,8 +563,10 @@ registry tokens/generations never reach the caller, and stale registrations are
 filtered. `failed`/`timer`/`wake` are mutually exclusive and `failed` carries no
 I/O bits. Timers are kept in an insertion-order linked list and scanned each
 turn (bounded by `maxTimers`); due timers fill the batch before socket
-readiness, and a coalesced wake is emitted at the top of the next wait so it
-cannot be delayed to the deadline. Ready subscriptions rotate between batches. Endpoint close deregisters its watches; reactor close invalidates all
+readiness. A fresh eventfd wake is drained and emitted before due timers so an
+always-due timer cannot hide it; a wake coalesced from a full batch alternates
+with due timers, and an infinite wait never blocks while one is pending. Ready
+subscriptions rotate between batches. Endpoint close deregisters its watches; reactor close invalidates all
 children and `remove`/`cancelTimer` remain idempotent. `stop` prevents new
 registrations, wakes waiters and makes subsequent `wait` return `Cancelled`.
 Watching a regular file returns `Unsupported` (it is not generally

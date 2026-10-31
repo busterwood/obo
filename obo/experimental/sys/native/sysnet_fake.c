@@ -95,6 +95,7 @@ struct fake_reactor {
     long timer_count;
     long turn;
     int wake_pending;
+    int wake_first;
     fake_watch *watches;
     fake_timer *timers;
     struct fake_reactor *next;
@@ -949,6 +950,7 @@ long fake_reactor_new(long max_watches, long max_timers) {
     if (r == NULL) return err(ENOMEM);
     r->max_watches = max_watches;
     r->max_timers = max_timers;
+    r->wake_first = 1;
     r->next = fake_reactors;
     fake_reactors = r;
     token = sys_reg_new_object(SYS_KIND_REACTOR, r, release_fake_reactor, 0);
@@ -1224,17 +1226,26 @@ long sys_net_wait(long reactor_token, long finite, long deadline_ns,
         long now = fake_clock_now();
         long count = 0;
         long due;
-        collect_io(r, out, cap, &count);
-        collect_timers(r, now, out, cap, &count);
-        if (r->wake_pending && count < cap) {
-            put_event(out, count, 0, 0, 0, 0, 0, 0, 0, 1);
-            count++;
+        if (finite && now >= deadline_ns) return 0;
+        due = fake_next_due(r);
+        if (r->wake_pending) {
+            /* The fake has no separate eventfd: every wake is a fresh wake and
+             * takes priority over a due timer, matching the real backend. */
+            put_event(out, 0, 0, 0, 0, 0, 0, 0, 0, 1);
             r->wake_pending = 0;
+            return 1;
         }
+        collect_timers(r, now, out, cap, &count);
+        if (count > 0) return count;
+        if (r->wake_pending) {
+            put_event(out, 0, 0, 0, 0, 0, 0, 0, 0, 1);
+            r->wake_pending = 0;
+            return 1;
+        }
+        collect_io(r, out, cap, &count);
         if (count > 0) return count;
         due = fake_next_due(r);
         if (finite) {
-            if (now >= deadline_ns) return 0;
             if (due >= 0 && due <= deadline_ns) {
                 fake_clock_set(due);
                 continue;

@@ -390,24 +390,20 @@ static int reactor_checks(int fake, unsigned char ip[4]) {
         CHECK(sys_net_wake(reactor) == 1, "wake coalesce");
         d = deadline_ms(1000);
         rw = sys_net_wait(reactor, 1, d, 1, out2);
+        CHECK(rw == 1 && event_field(out2, 0, 7) == 1, "fresh wake before timer");
+        d = deadline_ms(1000);
+        rw = sys_net_wait(reactor, 1, d, 1, out2);
         CHECK(rw == 1 && event_field(out2, 0, 5) == 1, "timer before IO");
-        /* With a hot watch and a coalesced wake, epoll may return either ready
-         * fd first. An infinite wait must still make progress and the wake must
-         * appear in a bounded number of turns, not only at some deadline. */
+        /* Infinite waits with a fresh wake and a hot watch must return the
+         * wake immediately, not bounce through readiness until a deadline. */
         {
             int turn;
-            int saw = 0;
             for (turn = 0; turn < 4; turn++) {
-                if (turn == 0) {
-                    d = deadline_ms(1000);
-                    rw = sys_net_wait(reactor, 1, d, 1, out2);
-                } else {
-                    rw = sys_net_wait(reactor, 0, 0, 1, out2);
-                }
-                CHECK(rw == 1, "wake/io turn");
-                if (event_field(out2, 0, 7) == 1) { saw = 1; break; }
+                CHECK(sys_net_wake(reactor) == 1, "wake infinite");
+                rw = sys_net_wait(reactor, 0, 0, 1, out2);
+                CHECK(rw == 1 && event_field(out2, 0, 7) == 1,
+                      "fresh wake on infinite wait");
             }
-            CHECK(saw == 1, "pending wake infinite");
         }
         CHECK(sys_net_remove(hot) == 1, "wake hot remove");
         CHECK(sys_res_close(src, SYS_KIND_TEST_RESOURCE) == 1, "wake src close");
@@ -444,6 +440,35 @@ static int reactor_checks(int fake, unsigned char ip[4]) {
         CHECK(sys_net_remove(hot2) == 1, "starve remove");
         CHECK(sys_res_close(src2, SYS_KIND_TEST_RESOURCE) == 1, "starve src close");
         sys_res_close(out4, SYS_KIND_BYTE_BUFFER);
+    }
+    /* Due periodic timer plus a fresh wake, max_events=1: the wake must be
+     * delivered for both a finite and an infinite wait, on real and fake. */
+    {
+        unsigned char evbuf5[SYS_REACTOR_MAX_BATCH * SYS_EVENT_PACKET_BYTES];
+        long out5;
+        long pt, turn;
+        int sawWake = 0;
+        int sawTimer = 0;
+        memset(evbuf5, 0, sizeof(evbuf5));
+        out5 = mkbuf(evbuf5, (long)sizeof(evbuf5));
+        pt = sys_net_timer(reactor, sys_clock_monotonic_ns(), 1, 70);
+        CHECK(pt > 0, "wake/timer periodic");
+        CHECK(sys_net_wake(reactor) == 1, "wake/timer wake");
+        for (turn = 0; turn < 6; turn++) {
+            d = deadline_ms(100);
+            r = sys_net_wait(reactor, 1, d, 1, out5);
+            CHECK(r == 1, "wake/timer finite");
+            if (event_field(out5, 0, 7) == 1) sawWake = 1;
+            if (event_field(out5, 0, 5) == 1) sawTimer = 1;
+        }
+        CHECK(sawWake == 1, "wake not starved by due timer");
+        CHECK(sawTimer == 1, "due timer not starved by wake");
+        CHECK(sys_net_wake(reactor) == 1, "wake/timer wake2");
+        r = sys_net_wait(reactor, 0, 0, 1, out5);
+        CHECK(r == 1 && event_field(out5, 0, 7) == 1,
+              "wake not starved on infinite due-timer wait");
+        CHECK(sys_net_cancel_timer(pt) == 1, "wake/timer cancel");
+        sys_res_close(out5, SYS_KIND_BYTE_BUFFER);
     }
     CHECK(sys_net_stop(reactor) == 1, "reactor stop");
     CHECK(sys_net_stop(reactor) == 0, "reactor stop idempotent");

@@ -65,6 +65,7 @@ struct real_reactor {
     long timer_count;
     long turn;
     int wake_pending;
+    int wake_first;
     real_watch *watches;
     real_timer *timers;
     struct real_reactor *next;
@@ -937,6 +938,7 @@ long sys_net_reactor_new(long max_watches, long max_timers) {
     r->max_watches = max_watches;
     r->max_timers = max_timers;
     r->state = 0;
+    r->wake_first = 1;
     r->next = reactors;
     reactors = r;
     token = sys_reg_new_object(SYS_KIND_REACTOR, r, release_reactor, 0);
@@ -1158,6 +1160,12 @@ static long next_timer_due(real_reactor *r) {
     return best;
 }
 
+static int drain_wake_once(int fd) {
+    uint64_t value;
+    ssize_t n = read(fd, &value, sizeof(value));
+    return n == (ssize_t)sizeof(value) ? 1 : 0;
+}
+
 static void drain_wake(int fd) {
     uint64_t value;
     while (read(fd, &value, sizeof(value)) == (ssize_t)sizeof(value)) {
@@ -1202,18 +1210,37 @@ long sys_net_wait(long reactor_token, long finite, long deadline_ns,
         int sawWake = 0;
         if (now < 0) return now;
         if (finite && now >= deadline_ns) return 0;
-        /* A coalesced wake from a full previous batch must not wait for the
-         * next epoll event (which may never come on an infinite wait). */
-        if (r->wake_pending) {
-            put_event(out, 0, 0, 0, 0, 0, 0, 0, 0, 1);
-            r->wake_pending = 0;
-            return 1;
+        /* Peek the eventfd before timer priority: an always-due timer must not
+         * cause the wait loop to skip epoll forever and hide a fresh wake. */
+        {
+            int freshWake = drain_wake_once(r->wakefd);
+            if (freshWake) r->wake_pending = 1;
+            due = next_timer_due(r);
+            if (r->wake_pending) {
+                int timerDue = due >= 0 && due <= now;
+                /* A freshly drained eventfd wake always wins before timer
+                 * priority, so an always-due timer cannot hide it. A wake
+                 * already coalesced from a full batch alternates with timers
+                 * so a wake storm cannot starve them either. */
+                if (freshWake || !timerDue || r->wake_first) {
+                    put_event(out, 0, 0, 0, 0, 0, 0, 0, 0, 1);
+                    r->wake_pending = 0;
+                    r->wake_first = 0;
+                    return 1;
+                }
+                r->wake_first = 1;
+            }
         }
         /* Due timers are checked before blocking and fill the batch before
          * socket readiness, so a continuously ready watch cannot starve a
          * timer when max_events is small. */
         collect_due_timers(r, now, out, cap, &count);
         if (count > 0) return count;
+        if (r->wake_pending) {
+            put_event(out, 0, 0, 0, 0, 0, 0, 0, 0, 1);
+            r->wake_pending = 0;
+            return 1;
+        }
         due = next_timer_due(r);
         if (due >= 0) {
             long delta = due - now;

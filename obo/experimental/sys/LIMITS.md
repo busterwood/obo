@@ -220,8 +220,9 @@ consume readiness batches.
   name service: blocked readiness is represented by explicit scripts/queues,
   and an infinite `wait` with nothing ready returns an empty batch instead of
   hanging the single-threaded test process. Timers are a bounded insertion-order
-  list scanned per turn; due timers and coalesced wakes are prioritized over
-  socket readiness so a hot watch cannot starve them. Scripted close/shutdown errors still
+  list scanned per turn; due timers and fresh/coalesced wakes are prioritized
+  over socket readiness, and wake/timer priority alternates where both are
+  ready so a hot watch or an always-due timer cannot starve the other. Scripted close/shutdown errors still
   consume the fake object. It proves contract/state/error behavior, not kernel
   TCP/UDP semantics.
 - `sysshells` contains P0-only `File`/`Stream` type-identity fixtures, not I/O
