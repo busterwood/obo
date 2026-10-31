@@ -123,6 +123,11 @@ pub const _STANDARD_INPUT = 0
 pub const _STANDARD_OUTPUT = 1
 pub const _STANDARD_ERROR = 2
 
+// Library listen-option bits passed to the adapter. Not a Linux flag word.
+pub const _LISTEN_REUSE_ADDRESS = 1
+pub const _LISTEN_REUSE_PORT = 2
+pub const _LISTEN_IPV6_ONLY = 4
+
 // The bridge's per-buffer limit. Larger transfers are caller chunk loops.
 pub const MAX_BYTE_BUFFER = 16777216
 
@@ -311,6 +316,14 @@ pub fn hasCapability(name: string): bool {
     if name == "random.getrandom" { return true }
     if name == "stream.io" { return true }
     if name == "buffer.bounded" { return true }
+    if name == "address.numeric" { return true }
+    if name == "network.tcp" { return true }
+    if name == "network.udp" { return true }
+    if name == "network.unix" { return true }
+    if name == "reactor.epoll" { return true }
+    if name == "reactor.timer" { return true }
+    if name == "resolve.blocking" { return true }
+    if name == "waitio.deadline" { return true }
     return false
 }
 
@@ -754,6 +767,224 @@ pub fn shutdown(): Result[Counts] {
         nativeBytes: preBytes
         cleanupFailures: cf + anomalies
     })
+}
+
+// Internal seam: checked kind lookup for a watch source. This exposes the
+// library kind, never the native token.
+pub fn _kindOfHandle(h: ^Resource): Result[int] {
+    if !initialised {
+        return err("systems platform is not initialized", notInitialized())
+    }
+    let idx = decodeSlot(h.reserved)
+    if idx < 0 || !ownerAlive(idx) {
+        return err("resource is not a registered identity", invalidResource())
+    }
+    if slots[idx].state == STATE_CLOSED {
+        return err("resource is closed", closedCode())
+    }
+    if slots[idx].state != STATE_OPEN {
+        return err("resource is not open", invalidResource())
+    }
+    let tok = slots[idx].token
+    let k = slots[idx].kind
+    let raw = __cinterop("sys_res_validate", tok, k)
+    if raw != 1 {
+        return err("native resource token is no longer valid", invalidResource())
+    }
+    return ok(k)
+}
+
+// Internal seam: release a subscription resource (Watch/Timer) that may
+// already have been retired by its reactor or endpoint. A native token that is
+// already gone is an idempotent false, not a stale-identity error.
+pub fn _releaseHandle(h: ^Resource, kind: int): Result[bool] {
+    if !initialised {
+        if retiredMatch(h.reserved, kind) { return ok(false) }
+        return err("systems platform is not initialized", notInitialized())
+    }
+    let idx = decodeSlot(h.reserved)
+    if idx < 0 || !ownerAlive(idx) {
+        if retiredMatch(h.reserved, kind) { return ok(false) }
+        return err("resource is not a registered identity", invalidResource())
+    }
+    if slots[idx].state == STATE_CLOSED { return ok(false) }
+    if slots[idx].state != STATE_OPEN || slots[idx].kind != kind {
+        return err("resource has a different kind or state", invalidResource())
+    }
+    let tok = slots[idx].token
+    let k = slots[idx].kind
+    let raw = __cinterop("sys_res_close", tok, k)
+    slots[idx].state = STATE_CLOSED
+    slots[idx].token = 0
+    if raw == 1 { return ok(true) }
+    if raw == 0 { return ok(false) }
+    return err("release failed after retiring the resource", rawCode(raw))
+}
+
+pub fn _netListenToken(addrTok: int, backlog: int, flags: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_listen", addrTok, backlog, flags),
+                      "socket listen failed")
+}
+
+pub fn _netAcceptToken(listenerTok: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_accept", listenerTok),
+                      "socket accept failed")
+}
+
+pub fn _netConnectToken(addrTok: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_connect", addrTok),
+                      "socket connect failed")
+}
+
+pub fn _netFinishConnect(connTok: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_finish_connect", connTok),
+                      "socket connect status failed")
+}
+
+pub fn _netState(connTok: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_state", connTok),
+                      "socket state read failed")
+}
+
+pub fn _netReadToken(token: int, kind: int, bufTok: int, offset: int,
+                     count: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_read", token, kind, bufTok, offset,
+                                 count), "socket read failed")
+}
+
+pub fn _netWriteToken(token: int, kind: int, bufTok: int, offset: int,
+                      count: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_write", token, kind, bufTok, offset,
+                                 count), "socket write failed")
+}
+
+pub fn _netShutdownToken(token: int, kind: int, how: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_shutdown", token, kind, how),
+                      "socket shutdown failed")
+}
+
+pub fn _netDupToken(token: int, kind: int, toKind: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_dup", token, kind, toKind),
+                      "socket duplicate failed")
+}
+
+pub fn _netAddressToken(token: int, kind: int, which: int,
+                        outTok: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_address", token, kind, which, outTok),
+                      "socket address read failed")
+}
+
+pub fn _netNoDelayToken(token: int, enabled: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_set_no_delay", token, enabled),
+                      "TCP_NODELAY option failed")
+}
+
+pub fn _netKeepAliveToken(token: int, enabled: int, idle: int, interval: int,
+                          probes: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_set_keepalive", token, enabled, idle,
+                                 interval, probes), "keepalive option failed")
+}
+
+pub fn _netBufferToken(token: int, kind: int, which: int,
+                       size: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_set_buffer", token, kind, which, size),
+                      "socket buffer option failed")
+}
+
+pub fn _netBroadcastToken(token: int, enabled: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_set_broadcast", token, enabled),
+                      "broadcast option failed")
+}
+
+pub fn _netBindDatagramToken(addrTok: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_bind_datagram", addrTok),
+                      "datagram bind failed")
+}
+
+pub fn _netReceiveToken(token: int, bufTok: int, max: int, peerTok: int,
+                        metaTok: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_receive", token, bufTok, max, peerTok,
+                                 metaTok), "datagram receive failed")
+}
+
+pub fn _netSendToken(token: int, addrTok: int, bufTok: int, offset: int,
+                     count: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_send", token, addrTok, bufTok, offset,
+                                 count), "datagram send failed")
+}
+
+pub fn _reactorWatchToken(reactorTok: int, sourceTok: int, sourceKind: int,
+                          readable: int, writable: int, tag: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_watch", reactorTok, sourceTok,
+                                 sourceKind, readable, writable, tag),
+                      "reactor watch registration failed")
+}
+
+pub fn _reactorModify(watchTok: int, readable: int, writable: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_modify", watchTok, readable, writable),
+                      "reactor watch modification failed")
+}
+
+pub fn _reactorRemove(watchTok: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_remove", watchTok),
+                      "reactor watch removal failed")
+}
+
+pub fn _reactorTimerToken(reactorTok: int, at: int, period: int,
+                          tag: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_timer", reactorTok, at, period, tag),
+                      "reactor timer creation failed")
+}
+
+pub fn _reactorCancelTimer(timerTok: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_cancel_timer", timerTok),
+                      "reactor timer cancellation failed")
+}
+
+pub fn _reactorWait(reactorTok: int, finite: int, deadline: int, maxEvents: int,
+                    outTok: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_wait", reactorTok, finite, deadline,
+                                 maxEvents, outTok), "reactor wait failed")
+}
+
+pub fn _reactorWake(reactorTok: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_wake", reactorTok),
+                      "reactor wake failed")
+}
+
+pub fn _reactorStop(reactorTok: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_stop", reactorTok),
+                      "reactor stop failed")
+}
+
+pub fn _cancelRequest(token: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_cancel_request", token),
+                      "cancellation request failed")
+}
+
+pub fn _cancelPending(token: int): Result[int] {
+    return _rawResult(__cinterop("sys_net_cancel_pending", token),
+                      "cancellation status failed")
+}
+
+// Resolver status encoding keeps EAI failures distinct from captured errno:
+//   -(100000 + |EAI_*|)  resolver failure
+//   -(200000 + errno)    EAI_SYSTEM with a captured errno
+pub fn _resolveToken(hostTok: int, serviceTok: int, family: int, kind: int,
+                     flags: int, outTok: int, maxResults: int): Result[int] {
+    let raw = __cinterop("sys_resolve", hostTok, serviceTok, family, kind,
+                         flags, outTok, maxResults)
+    if raw <= -200000 {
+        return err("resolver reported EAI_SYSTEM", rawCode(raw + 200000))
+    }
+    if raw <= -100000 {
+        let eai = 0 - (raw + 100000)
+        if eai == 3 { return err("resolver result is temporary", libCode(new errors::ResolveTemporary{})) }
+        if eai == 2 || eai == 5 { return err("resolver found no address", libCode(new errors::ResolveNotFound{})) }
+        return err("resolver failed", libCode(new errors::ResolveFailure{}))
+    }
+    if raw < 0 { return err("resolver call failed", rawCode(raw)) }
+    return ok(raw)
 }
 
 // Test-only hint constructor for adversarial tests. Not an application API.

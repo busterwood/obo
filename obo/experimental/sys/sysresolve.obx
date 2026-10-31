@@ -1,0 +1,135 @@
+// Experimental systems library: blocking numeric/name resolution (P2).
+//
+// Status: experimental P2 slice, unstable. `resolveBlocking` is a startup and
+// client convenience that calls getaddrinfo in the calling process. It is
+// BLOCKING and promises no finite deadline: NSS/DNS may take arbitrarily long.
+// It must not be called from a reactor loop or an event-driven server path.
+//
+// Results are copied out of the C adapter and freeaddrinfo is always called.
+// Host/service bytes, result count and total packet size are bounded. NSS
+// result order is preserved. `resolveNumeric` uses AI_NUMERICHOST and
+// AI_NUMERICSERV, so it performs no name lookup and does not need DNS.
+//
+// No hidden helper process, cache or TTL is part of P2. Reactive resolution
+// (beginResolve/watchResolve/...) is P3/P4 work and is not exposed here.
+module sysresolve
+
+import "sysaddress.obx" as address
+import "sysplatform.obx" as platform
+import "sysbytes.obx" as bytesbuf
+import "syserrors.obx" as errors
+
+pub const FAMILY_ANY = 0
+pub const FAMILY_IPV4 = 4
+pub const FAMILY_IPV6 = 6
+pub const SOCKET_STREAM = 1
+pub const SOCKET_DATAGRAM = 2
+pub const MAX_RESULTS = 64
+pub const MAX_HOST_BYTES = 255
+pub const MAX_SERVICE_BYTES = 31
+
+const ADDR_BYTES = 160
+const RESULT_HEADER = 16
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+fn rangeCode(): int { return libCode(new errors::Range{}) }
+fn resolveNotFound(): int { return libCode(new errors::ResolveNotFound{}) }
+
+fn validText(value: string, max: int, required: bool): bool {
+    if len(value) > max { return false }
+    if required && len(value) < 1 { return false }
+    for i in 0..len(value) {
+        if int(value[i]) == 0 { return false }
+    }
+    return true
+}
+
+fn validQuery(host: string, service: string, family: int, kind: int): bool {
+    if !validText(host, MAX_HOST_BYTES, true) { return false }
+    if !validText(service, MAX_SERVICE_BYTES, false) { return false }
+    if family != FAMILY_ANY && family != FAMILY_IPV4 && family != FAMILY_IPV6 {
+        return false
+    }
+    if kind != SOCKET_STREAM && kind != SOCKET_DATAGRAM { return false }
+    return true
+}
+
+fn textBytes(value: string): Result[bytesbuf::Bytes] {
+    let data = address::_makeBytes(value)
+    let b = try bytesbuf::create(len(data))
+    if len(data) > 0 {
+        let copied = bytesbuf::copyIn(&b, &data, 0, 0, len(data))
+        match copied {
+            ok(n) {
+                if n != len(data) {
+                    bytesbuf::close(&b)
+                    return err("short resolver input copy", libCode(new errors::SystemFailure{}))
+                }
+            }
+            err(m, c) {
+                bytesbuf::close(&b)
+                return err(m, c)
+            }
+        }
+    }
+    return ok(b)
+}
+
+fn resolve(host: string, service: string, family: int, kind: int,
+           numericOnly: bool): Result[[]address::Address] {
+    if !validQuery(host, service, family, kind) {
+        return err("resolver host, service, family or kind is invalid",
+                   invalidArgument())
+    }
+    let hb = try textBytes(host)
+    defer bytesbuf::close(&hb)
+    let sb = try textBytes(service)
+    defer bytesbuf::close(&sb)
+    let ht = try platform::_tokenHandle(handle(hb.res), platform::KIND_BYTE_BUFFER)
+    let st = try platform::_tokenHandle(handle(sb.res), platform::KIND_BYTE_BUFFER)
+    let out = try bytesbuf::create(RESULT_HEADER + MAX_RESULTS * ADDR_BYTES)
+    defer bytesbuf::close(&out)
+    let ot = try platform::_tokenHandle(handle(out.res), platform::KIND_BYTE_BUFFER)
+    var flags = 0
+    if numericOnly { flags = 1 }
+    let n = try platform::_resolveToken(ht, st, family, kind, flags, ot, MAX_RESULTS)
+    if n == 0 {
+        return err("resolver returned no usable addresses", resolveNotFound())
+    }
+    if n > MAX_RESULTS {
+        return err("resolver returned more addresses than the bound", rangeCode())
+    }
+    var results = new []address::Address(0)
+    for i in 0..n {
+        let decoded = try address::_decodeRecord(&out, RESULT_HEADER + i * ADDR_BYTES)
+        if decoded == nil {
+            return err("resolver produced an empty address record",
+                       libCode(new errors::ResolveFailure{}))
+        }
+        append(results, decoded)
+    }
+    return ok(results)
+}
+
+pub fn resolveBlocking(host: string, service: string, family: int,
+                       kind: int): Result[[]address::Address] {
+    return resolve(host, service, family, kind, false)
+}
+
+pub fn resolveNumeric(host: string, service: string, family: int,
+                      kind: int): Result[[]address::Address] {
+    return resolve(host, service, family, kind, true)
+}
+
+// Convenience wrappers for the common stream/datagram cases.
+pub fn resolveTcp(host: string, service: string): Result[[]address::Address] {
+    return resolveBlocking(host, service, FAMILY_ANY, SOCKET_STREAM)
+}
+
+pub fn resolveUdp(host: string, service: string): Result[[]address::Address] {
+    return resolveBlocking(host, service, FAMILY_ANY, SOCKET_DATAGRAM)
+}

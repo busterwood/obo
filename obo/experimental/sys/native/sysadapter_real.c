@@ -9,6 +9,7 @@
 #endif
 #include "sysadapter.h"
 #include "sysregistry.h"
+#include "sysnet.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -16,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/random.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/eventfd.h>
@@ -25,12 +27,6 @@
 #ifndef AT_EMPTY_PATH
 #define AT_EMPTY_PATH 0x1000
 #endif
-
-typedef struct {
-    int fd;
-    int append;
-    long mode;
-} sys_fdobj;
 
 typedef struct {
     int fd;
@@ -62,6 +58,11 @@ static int release_fdobj(void *p) {
          * Never retry; report the captured error once. */
         if (close(f->fd) != 0) e = errno;
         f->fd = -1;
+    }
+    if (f->state != NULL) {
+        f->state->refs--;
+        if (f->state->refs <= 0) free(f->state);
+        f->state = NULL;
     }
     free(f);
     return e;
@@ -312,6 +313,8 @@ long sys_file_open(long dir_token, long path_token, long flags, long mode) {
     f->fd = fd;
     f->append = (flags & SYS_OPEN_APPEND) != 0;
     f->mode = mode;
+    f->sock = 0;
+    f->state = NULL;
     token = sys_reg_new_object(SYS_KIND_FILE, f, release_fdobj, 0);
     if (token < 0) {
         (void)close(fd);
@@ -347,6 +350,8 @@ long sys_dir_open(long dir_token, long path_token, long follow) {
     d->fd = fd;
     d->append = 0;
     d->mode = 0;
+    d->sock = 0;
+    d->state = NULL;
     token = sys_reg_new_object(SYS_KIND_DIRECTORY, d, release_fdobj, 0);
     if (token < 0) {
         (void)close(fd);
@@ -474,6 +479,19 @@ long sys_io_read(long token, long kind, long buf_token, long offset, long count,
     if ((size_t)offset > buflen || (size_t)count > buflen - (size_t)offset) {
         return err(ERANGE);
     }
+    if (f->sock && f->state != NULL) {
+        if (f->state->connecting) return err(EINPROGRESS);
+        if (f->state->failed) return err(f->state->failure);
+        if (f->state->read_closed) return 0;
+        n = recv(f->fd, buf + offset, (size_t)count, 0);
+        if (n == 0) f->state->read_closed = 1;
+        else if (n < 0) {
+            int e = errno;
+            if (e == ECONNRESET) f->state->read_closed = 1;
+            return err(e);
+        }
+        return (long)n;
+    }
     if (position >= 0) {
         n = pread(f->fd, buf + offset, (size_t)count, (off_t)position);
     } else {
@@ -498,6 +516,19 @@ long sys_io_write(long token, long kind, long buf_token, long offset, long count
         return err(ERANGE);
     }
     if (position >= 0 && f->append) return err(EINVAL);
+    if (f->sock && f->state != NULL) {
+        if (f->state->connecting) return err(EINPROGRESS);
+        if (f->state->failed) return err(f->state->failure);
+        if (f->state->write_closed) return err(EPIPE);
+        if (count == 0) return 0;
+        n = send(f->fd, buf + offset, (size_t)count, MSG_NOSIGNAL);
+        if (n < 0) {
+            int e = errno;
+            if (e == EPIPE) f->state->write_closed = 1;
+            return err(e);
+        }
+        return (long)n;
+    }
     if (count == 0) return 0;
     if (position >= 0) {
         n = pwrite(f->fd, buf + offset, (size_t)count, (off_t)position);
@@ -564,7 +595,14 @@ long sys_file_dup(long token, long kind, long to_kind) {
     f->fd = fd;
     f->append = src->append;
     f->mode = src->mode;
+    f->sock = src->sock;
+    f->state = src->state;
+    if (f->state != NULL) f->state->refs++;
     out = sys_reg_new_object((int)to_kind, f, release_fdobj, 0);
+    if (out < 0 && f->state != NULL) {
+        f->state->refs--;
+        f->state = NULL;
+    }
     if (out < 0) {
         (void)close(fd);
         free(f);
@@ -573,6 +611,9 @@ long sys_file_dup(long token, long kind, long to_kind) {
 }
 
 long sys_file_retag(long token, long from_kind, long to_kind) {
+    /* A connection transfer to Stream invalidates its old registrations now,
+     * not only when a later wait happens to filter a stale native event. */
+    sys_net_forget_source(token);
     if (from_kind <= 0 || to_kind <= 0) return err(EINVAL);
     if (sys_reg_retag(token, (int)from_kind, (int)to_kind) != 1) return err(EINVAL);
     return 1;
@@ -648,6 +689,8 @@ long sys_stream_standard(long which) {
     f->fd = fd;
     f->append = 0;
     f->mode = 0;
+    f->sock = 0;
+    f->state = NULL;
     token = sys_reg_new_object(SYS_KIND_STREAM, f, release_fdobj, 0);
     if (token < 0) {
         (void)close(fd);
@@ -657,10 +700,17 @@ long sys_stream_standard(long which) {
 }
 
 long sys_res_new(long kind, long a, long b) {
-    (void)b;
     sys_reg_bump_call(SYS_CALL_NEW);
     if (kind == SYS_KIND_BYTE_BUFFER) {
         return sys_reg_new_buffer(a);
+    }
+    if (kind == SYS_KIND_REACTOR) {
+        return sys_net_reactor_new(a, b);
+    }
+    if (kind == SYS_KIND_CANCELLATION) {
+        (void)a;
+        (void)b;
+        return sys_net_cancel_new();
     }
     if (kind == SYS_KIND_TEST_RESOURCE || kind == SYS_KIND_TEST_RESOURCE_ALT) {
         int fd;
@@ -676,6 +726,8 @@ long sys_res_new(long kind, long a, long b) {
         f->fd = fd;
         f->append = 0;
         f->mode = 0;
+        f->sock = 0;
+        f->state = NULL;
         token = sys_reg_new_object((int)kind, f, release_fdobj, 0);
         if (token < 0) {
             (void)close(fd);
@@ -725,6 +777,7 @@ long sys_res_close(long token, long kind) {
     int (*release)(void *) = NULL;
     int e;
     sys_reg_bump_call(SYS_CALL_CLOSE);
+    sys_net_forget_source(token);
     if (!sys_reg_retire(token, kind, &ptr, &release)) return 0;
     e = release != NULL ? release(ptr) : 0;
     if (e != 0) {

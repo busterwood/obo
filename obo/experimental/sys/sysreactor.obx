@@ -1,0 +1,195 @@
+// Experimental systems library: level-triggered readiness reactor (P2).
+//
+// Status: experimental P2 slice, unstable. Linux v1 uses epoll level-triggered
+// mode only. The reactor never calls an obo callback: wait returns a bounded
+// Event batch whose tags are application values, never registry tokens.
+//
+// A Watch owns a subscription, not the endpoint. Closing the endpoint removes
+// native registrations; already-queued events are stale-filtered before return.
+// Closing the reactor invalidates all its watches/timers; remove/cancel remain
+// idempotent and return false for an already-retired subscription.
+//
+// Fairness: a returned batch is capped at MAX_BATCH (64) even if the caller
+// asks for more, and ready subscriptions rotate between waits. Due timers are
+// checked on every turn, including turns dominated by socket traffic. Write
+// interest should be disabled when no output is queued; level-triggered
+// writable sockets otherwise cause a hot loop.
+module sysreactor
+
+import "sysplatform.obx" as platform
+import "sysclock.obx" as clock
+import "sysbytes.obx" as bytesbuf
+import "syserrors.obx" as errors
+
+pub type Reactor = ref record { pub res: platform::Resource }
+pub type Watch = ref record { pub res: platform::Resource }
+pub type Timer = ref record { pub res: platform::Resource }
+
+pub type Event = ref record {
+    pub tag: int
+    pub readable: bool
+    pub writable: bool
+    pub hangup: bool
+    pub failed: bool
+    pub timer: bool
+    pub ticks: int
+    pub wake: bool
+}
+
+pub const EVENT_BYTES = 64
+pub const MAX_EVENTS = 4096
+pub const MAX_BATCH = 64
+pub const MAX_WATCHES = 65536
+pub const MAX_TIMERS = 65536
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+fn rangeCode(): int { return libCode(new errors::Range{}) }
+fn unsupported(): int { return libCode(new errors::Unsupported{}) }
+
+fn watchable(kind: int): bool {
+    return kind == platform::KIND_STREAM ||
+           kind == platform::KIND_LISTENER ||
+           kind == platform::KIND_CONNECTION ||
+           kind == platform::KIND_DATAGRAM ||
+           kind == platform::KIND_CANCELLATION ||
+           kind == platform::KIND_TEST_RESOURCE ||
+           kind == platform::KIND_TEST_RESOURCE_ALT
+}
+
+pub fn create(maxWatches: int, maxTimers: int): Result[Reactor] {
+    if maxWatches < 1 || maxWatches > MAX_WATCHES {
+        return err("maxWatches is outside 1..65536", rangeCode())
+    }
+    if maxTimers < 1 || maxTimers > MAX_TIMERS {
+        return err("maxTimers is outside 1..65536", rangeCode())
+    }
+    let r = try platform::_create(platform::KIND_REACTOR, maxWatches, maxTimers)
+    return ok(new Reactor{res: r})
+}
+
+pub fn watchResource(r: &Reactor, source: ^platform::Resource, readable: bool,
+                     writable: bool, tag: int): Result[Watch] {
+    if !readable && !writable {
+        return err("a watch needs read or write interest", invalidArgument())
+    }
+    let rt = try platform::_tokenHandle(handle(r.res), platform::KIND_REACTOR)
+    let kind = try platform::_kindOfHandle(source)
+    if !watchable(kind) {
+        return err("resource kind is not watchable", unsupported())
+    }
+    let st = try platform::_tokenHandle(source, kind)
+    var rd = 0
+    var wr = 0
+    if readable { rd = 1 }
+    if writable { wr = 1 }
+    let token = try platform::_reactorWatchToken(rt, st, kind, rd, wr, tag)
+    let res = try platform::_adoptToken(platform::KIND_WATCH, token)
+    return ok(new Watch{res: res})
+}
+
+pub fn modify(w: &Watch, readable: bool, writable: bool): Result[bool] {
+    if !readable && !writable {
+        return err("a watch needs read or write interest", invalidArgument())
+    }
+    let wt = try platform::_tokenHandle(handle(w.res), platform::KIND_WATCH)
+    var rd = 0
+    var wr = 0
+    if readable { rd = 1 }
+    if writable { wr = 1 }
+    let done = try platform::_reactorModify(wt, rd, wr)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn remove(w: &Watch): Result[bool] {
+    return platform::_releaseHandle(handle(w.res), platform::KIND_WATCH)
+}
+
+pub fn timer(r: &Reactor, at: &clock::Deadline,
+             period: &clock::Duration, tag: int): Result[Timer] {
+    if !at.finite {
+        return err("a timer needs a finite deadline", invalidArgument())
+    }
+    if at.nanos < 0 { return err("timer deadline is negative", rangeCode()) }
+    if period.nanos < 0 { return err("timer period is negative", rangeCode()) }
+    let rt = try platform::_tokenHandle(handle(r.res), platform::KIND_REACTOR)
+    let token = try platform::_reactorTimerToken(rt, at.nanos, period.nanos, tag)
+    let res = try platform::_adoptToken(platform::KIND_TIMER, token)
+    return ok(new Timer{res: res})
+}
+
+pub fn cancelTimer(t: &Timer): Result[bool] {
+    return platform::_releaseHandle(handle(t.res), platform::KIND_TIMER)
+}
+
+pub fn wait(r: &Reactor, until: &clock::Deadline,
+            maxEvents: int): Result[[]Event] {
+    if maxEvents < 1 || maxEvents > MAX_EVENTS {
+        return err("maxEvents is outside 1..4096", rangeCode())
+    }
+    if !until.finite && until.nanos != 0 {
+        return err("an infinite deadline must carry zero nanoseconds", invalidArgument())
+    }
+    if until.finite && until.nanos < 0 {
+        return err("deadline is negative", rangeCode())
+    }
+    // The native backend returns at most MAX_BATCH events. Allocate only that
+    // many records; a larger caller request is accepted but capped.
+    var cap = maxEvents
+    if cap > MAX_BATCH { cap = MAX_BATCH }
+    let rt = try platform::_tokenHandle(handle(r.res), platform::KIND_REACTOR)
+    let out = try bytesbuf::create(cap * EVENT_BYTES)
+    defer bytesbuf::close(&out)
+    let bt = try platform::_tokenHandle(handle(out.res), platform::KIND_BYTE_BUFFER)
+    var finite = 0
+    if until.finite { finite = 1 }
+    let n = try platform::_reactorWait(rt, finite, until.nanos, maxEvents, bt)
+    if n < 0 || n > cap {
+        return err("reactor returned an impossible event count", libCode(new errors::SystemFailure{}))
+    }
+    var events = new []Event(0)
+    for i in 0..n {
+        let base = i * EVENT_BYTES
+        let tag = try bytesbuf::readInt64(&out, base)
+        let rd = try bytesbuf::readInt64(&out, base + 8)
+        let wr = try bytesbuf::readInt64(&out, base + 16)
+        let hu = try bytesbuf::readInt64(&out, base + 24)
+        let fa = try bytesbuf::readInt64(&out, base + 32)
+        let ti = try bytesbuf::readInt64(&out, base + 40)
+        let ticks = try bytesbuf::readInt64(&out, base + 48)
+        let wk = try bytesbuf::readInt64(&out, base + 56)
+        append(events, new Event{
+            tag: tag
+            readable: rd != 0
+            writable: wr != 0
+            hangup: hu != 0
+            failed: fa != 0
+            timer: ti != 0
+            ticks: ticks
+            wake: wk != 0
+        })
+    }
+    return ok(events)
+}
+
+pub fn wake(r: &Reactor): Result[bool] {
+    let rt = try platform::_tokenHandle(handle(r.res), platform::KIND_REACTOR)
+    let done = try platform::_reactorWake(rt)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn stop(r: &Reactor): Result[bool] {
+    let rt = try platform::_tokenHandle(handle(r.res), platform::KIND_REACTOR)
+    let done = try platform::_reactorStop(rt)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn close(r: &Reactor): Result[bool] {
+    return platform::_closeHandle(handle(r.res), platform::KIND_REACTOR)
+}

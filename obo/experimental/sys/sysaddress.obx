@@ -1,0 +1,506 @@
+// Experimental systems library: numeric addresses (P2).
+//
+// Status: experimental P2 slice, unstable. An Address is a closed value record
+// with public variant fields: callers and tests construct one directly, and
+// every consumer (`listen`, `connect`, `bindDatagram`, `send`, `format`) calls
+// `_encode`/`validate` before any native call. Host/network byte order is
+// private to the C adapter; the obo record stores network-order octets.
+//
+// Validation:
+//   IPv4          exactly 4 octets, port 0..65535
+//   IPv6          exactly 16 octets, port 0..65535, scope 0..4294967295
+//   UnixPath      nonempty, no NUL, at most 107 bytes (sockaddr_un capacity
+//                 including the terminator)
+//   UnixAbstract  nonempty, at most 107 bytes, arbitrary bytes preserved
+//
+// parseNumeric does no DNS, accepts no IPv6 brackets, does not guess octal
+// IPv4 (a leading zero is rejected) and does not parse embedded IPv4 inside an
+// IPv6 literal. format emits a deterministic lowercase representation; an
+// IPv6 scope is appended as `%<decimal>` only when nonzero. UnixAbstract has
+// no portable text form, so format returns `unix-abstract:<lowercase-hex>`.
+// Binding a Unix path never unlinks an existing path automatically.
+module sysaddress
+
+import "sysbytes.obx" as bytesbuf
+import "syserrors.obx" as errors
+
+pub type Address = closed {
+    IPv4 { octets: []byte; port: int }
+    IPv6 { octets: []byte; port: int; scope: int }
+    UnixPath { path: string }
+    UnixAbstract { name: []byte }
+}
+
+// Family tags in the native address packet. Not a kernel AF_* value and not a
+// stable ABI. 0 means "no address" (for example an unnamed datagram peer).
+pub const FAMILY_NONE = 0
+pub const FAMILY_IPV4 = 1
+pub const FAMILY_IPV6 = 2
+pub const FAMILY_UNIX_PATH = 3
+pub const FAMILY_UNIX_ABSTRACT = 4
+
+pub const MAX_PORT = 65535
+pub const MAX_UNIX_PATH = 107
+pub const MAX_UNIX_ABSTRACT = 107
+
+// Fixed native packet: four 64-bit fields (family, port, scope, length) then
+// up to 108 address bytes at offset 32. Must match sysadapter.h.
+pub const PACKET_BYTES = 160
+pub const DATA_OFFSET = 32
+pub const DATA_MAX = 108
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+fn rangeCode(): int { return libCode(new errors::Range{}) }
+fn ioFailure(): int { return libCode(new errors::IoFailure{}) }
+
+fn hexValue(c: int): int {
+    if c >= 48 && c <= 57 { return c - 48 }
+    if c >= 97 && c <= 102 { return c - 87 }
+    if c >= 65 && c <= 70 { return c - 55 }
+    return -1
+}
+
+fn validPort(port: int): bool {
+    return port >= 0 && port <= MAX_PORT
+}
+
+fn hasNul(value: &[]byte): bool {
+    for i in 0..len(value) {
+        if int(value[i]) == 0 { return true }
+    }
+    return false
+}
+
+fn validPath(path: string): bool {
+    if len(path) < 1 || len(path) > MAX_UNIX_PATH { return false }
+    for i in 0..len(path) {
+        if int(path[i]) == 0 { return false }
+    }
+    return true
+}
+
+fn validAbstract(name: &[]byte): bool {
+    if len(name) < 1 || len(name) > MAX_UNIX_ABSTRACT { return false }
+    return true
+}
+
+// Revalidate every field of a caller-constructed Address.
+pub fn validate(a: &Address): Result[bool] {
+    match a {
+        IPv4 {
+            if len(a.octets) != 4 {
+                return err("IPv4 address must have exactly 4 octets", invalidArgument())
+            }
+            if !validPort(a.port) {
+                return err("address port is outside 0..65535", rangeCode())
+            }
+            return ok(true)
+        }
+        IPv6 {
+            if len(a.octets) != 16 {
+                return err("IPv6 address must have exactly 16 octets", invalidArgument())
+            }
+            if !validPort(a.port) {
+                return err("address port is outside 0..65535", rangeCode())
+            }
+            if a.scope < 0 || a.scope > 4294967295 {
+                return err("IPv6 scope is outside the unsigned 32-bit range", rangeCode())
+            }
+            return ok(true)
+        }
+        UnixPath {
+            if !validPath(a.path) {
+                return err("Unix path is empty, too long or contains NUL", invalidArgument())
+            }
+            return ok(true)
+        }
+        UnixAbstract {
+            if !validAbstract(&a.name) {
+                return err("Unix abstract name is empty or too long", invalidArgument())
+            }
+            return ok(true)
+        }
+    }
+}
+
+fn makeBytes(value: string): []byte {
+    let out = new []byte(len(value))
+    for i in 0..len(value) { out[i] = value[i] }
+    return out
+}
+
+fn parseIPv4(text: string, port: int): Result[Address] {
+    let n = len(text)
+    if n < 7 || n > 15 {
+        return err("IPv4 text has an invalid length", invalidArgument())
+    }
+    let octets = new []byte(4)
+    var index = 0
+    var part = 0
+    while part < 4 {
+        if index >= n {
+            return err("IPv4 text needs four dotted decimal parts", invalidArgument())
+        }
+        let start = index
+        var value = 0
+        while index < n && int(text[index]) != 46 {
+            let c = int(text[index])
+            if c < 48 || c > 57 {
+                return err("IPv4 text contains a nondecimal character", invalidArgument())
+            }
+            // No octal guessing: a leading zero is only valid for "0".
+            if index > start && int(text[start]) == 48 {
+                return err("IPv4 text has a leading zero", invalidArgument())
+            }
+            if index - start >= 3 {
+                return err("IPv4 part has more than three digits", invalidArgument())
+            }
+            value = value * 10 + (c - 48)
+            if value > 255 {
+                return err("IPv4 part exceeds 255", rangeCode())
+            }
+            index += 1
+        }
+        if index == start {
+            return err("IPv4 text has an empty part", invalidArgument())
+        }
+        octets[part] = byte(value)
+        part += 1
+        if part < 4 {
+            if index >= n || int(text[index]) != 46 {
+                return err("IPv4 text needs exactly four parts", invalidArgument())
+            }
+            index += 1
+        } else if index != n {
+            return err("IPv4 text has trailing characters", invalidArgument())
+        }
+    }
+    let value: Address = new IPv4{octets: octets, port: port}
+    return ok(value)
+}
+
+fn parseIPv6(text: string, port: int): Result[Address] {
+    let n = len(text)
+    if n < 2 || n > 39 {
+        return err("IPv6 text has an invalid length", invalidArgument())
+    }
+    let groups = new []int(8)
+    for i in 0..8 { groups[i] = 0 }
+    var count = 0
+    var compress = -1
+    var index = 0
+    if int(text[0]) == 58 {
+        if int(text[1]) != 58 {
+            return err("IPv6 text starts with a single colon", invalidArgument())
+        }
+        compress = 0
+        index = 2
+        if index == n {
+            let value: Address = new IPv6{octets: new []byte(16), port: port, scope: 0}
+            return ok(value)
+        }
+    }
+    while index < n {
+        if count >= 8 {
+            return err("IPv6 text has too many groups", invalidArgument())
+        }
+        let start = index
+        var value = 0
+        while index < n && int(text[index]) != 58 {
+            let d = hexValue(int(text[index]))
+            if d < 0 {
+                return err("IPv6 text contains a nonhex character", invalidArgument())
+            }
+            if index - start >= 4 {
+                return err("IPv6 group has more than four digits", invalidArgument())
+            }
+            value = value * 16 + d
+            index += 1
+        }
+        if index == start {
+            return err("IPv6 text has an empty group", invalidArgument())
+        }
+        groups[count] = value
+        count += 1
+        if index == n { break }
+        // text[index] is ':'
+        if index + 1 < n && int(text[index + 1]) == 58 {
+            if compress >= 0 {
+                return err("IPv6 text has more than one '::'", invalidArgument())
+            }
+            compress = count
+            index += 2
+            if index == n { break }
+        } else {
+            index += 1
+            if index == n {
+                return err("IPv6 text ends with a single colon", invalidArgument())
+            }
+        }
+    }
+    if compress < 0 {
+        if count != 8 {
+            return err("uncompressed IPv6 text needs exactly 8 groups", invalidArgument())
+        }
+    } else if count >= 8 {
+        return err("compressed IPv6 text has too many explicit groups", invalidArgument())
+    }
+    let octets = new []byte(16)
+    var tail = count
+    if compress >= 0 { tail = count - compress }
+    for g in 0..8 {
+        var value = 0
+        if compress < 0 {
+            value = groups[g]
+        } else if g < compress {
+            value = groups[g]
+        } else if g >= 8 - tail {
+            value = groups[compress + (g - (8 - tail))]
+        }
+        octets[g * 2] = byte((value >> 8) & 255)
+        octets[g * 2 + 1] = byte(value & 255)
+    }
+    let value: Address = new IPv6{octets: octets, port: port, scope: 0}
+    return ok(value)
+}
+
+// Numeric-only parsing. `text` is a bare IPv4 or IPv6 literal; brackets are
+// not accepted because this API does not parse `[host]:port` authority text.
+pub fn parseNumeric(text: string, port: int): Result[Address] {
+    if !validPort(port) {
+        return err("address port is outside 0..65535", rangeCode())
+    }
+    if len(text) == 0 {
+        return err("address text is empty", invalidArgument())
+    }
+    if len(text) == 1 && int(text[0]) == 91 {
+        return err("IPv6 brackets are not accepted by parseNumeric", invalidArgument())
+    }
+    var hasColon = false
+    for i in 0..len(text) {
+        if int(text[i]) == 58 { hasColon = true }
+    }
+    if hasColon {
+        return parseIPv6(text, port)
+    }
+    return parseIPv4(text, port)
+}
+
+fn hexDigit(digit: int): string {
+    if digit < 10 { return string(digit) }
+    if digit == 10 { return "a" }
+    if digit == 11 { return "b" }
+    if digit == 12 { return "c" }
+    if digit == 13 { return "d" }
+    if digit == 14 { return "e" }
+    return "f"
+}
+
+fn hex4(value: int): string {
+    var out = ""
+    var started = false
+    for k in 0..4 {
+        let shift = (3 - k) * 4
+        let digit = (value >> shift) & 15
+        if digit != 0 { started = true }
+        if started || k == 3 {
+            out = out + hexDigit(digit)
+        }
+    }
+    return out
+}
+
+// Abstract names have no text form; use exactly two lowercase hex digits per
+// byte so leading zero bytes are preserved and distinct names cannot collide.
+fn hexByte(value: int): string {
+    return hexDigit((value >> 4) & 15) + hexDigit(value & 15)
+}
+
+fn joinGroups(groups: &[]int, start: int, end: int): string {
+    var out = ""
+    for i in start..end {
+        if i > start { out = out + ":" }
+        out = out + hex4(groups[i])
+    }
+    return out
+}
+
+fn formatIPv6(octets: &[]byte, port: int, scope: int): string {
+    let groups = new []int(8)
+    for i in 0..8 {
+        groups[i] = int(octets[i * 2]) * 256 + int(octets[i * 2 + 1])
+    }
+    var bestStart = -1
+    var bestLen = 0
+    var i = 0
+    while i < 8 {
+        if groups[i] == 0 {
+            var j = i
+            while j < 8 && groups[j] == 0 { j += 1 }
+            if j - i > bestLen {
+                bestLen = j - i
+                bestStart = i
+            }
+            i = j
+        } else {
+            i += 1
+        }
+    }
+    if bestLen < 2 { bestStart = -1 }
+    var out = ""
+    if bestStart < 0 {
+        out = joinGroups(&groups, 0, 8)
+    } else {
+        let left = joinGroups(&groups, 0, bestStart)
+        let right = joinGroups(&groups, bestStart + bestLen, 8)
+        out = left + "::" + right
+    }
+    if scope > 0 { out = out + "%" + string(scope) }
+    return out
+}
+
+fn formatIPv4(octets: &[]byte, port: int): string {
+    var out = ""
+    for i in 0..4 {
+        if i > 0 { out = out + "." }
+        out = out + string(int(octets[i]))
+    }
+    return out
+}
+
+pub fn format(a: &Address): Result[string] {
+    try validate(a)
+    match a {
+        IPv4 { return ok(formatIPv4(&a.octets, a.port)) }
+        IPv6 { return ok(formatIPv6(&a.octets, a.port, a.scope)) }
+        UnixPath { return ok(a.path) }
+        UnixAbstract {
+            var out = "unix-abstract:"
+            for i in 0..len(a.name) { out = out + hexByte(int(a.name[i])) }
+            return ok(out)
+        }
+    }
+}
+
+// Internal seam: encode a validated address into the fixed native packet in
+// `target` (a C-owned byte buffer of at least PACKET_BYTES). Every native
+// consumer uses this or `validate` before its call.
+pub fn _encode(a: &Address, target: &bytesbuf::Bytes): Result[bool] {
+    try validate(a)
+    let size = try bytesbuf::length(target)
+    if size < PACKET_BYTES {
+        return err("address target buffer is smaller than the fixed packet", rangeCode())
+    }
+    let packet = new []byte(PACKET_BYTES)
+    var outFamily = FAMILY_NONE
+    var outPort = 0
+    var outScope = 0
+    var outLength = 0
+    match a {
+        IPv4 {
+            outFamily = FAMILY_IPV4
+            outPort = a.port
+            outLength = 4
+            for i in 0..4 { packet[DATA_OFFSET + i] = a.octets[i] }
+        }
+        IPv6 {
+            outFamily = FAMILY_IPV6
+            outPort = a.port
+            outScope = a.scope
+            outLength = 16
+            for i in 0..16 { packet[DATA_OFFSET + i] = a.octets[i] }
+        }
+        UnixPath {
+            outFamily = FAMILY_UNIX_PATH
+            outLength = len(a.path)
+            for i in 0..len(a.path) { packet[DATA_OFFSET + i] = a.path[i] }
+        }
+        UnixAbstract {
+            outFamily = FAMILY_UNIX_ABSTRACT
+            outLength = len(a.name)
+            for i in 0..len(a.name) { packet[DATA_OFFSET + i] = a.name[i] }
+        }
+    }
+    let copied = try bytesbuf::copyIn(target, &packet, 0, 0, PACKET_BYTES)
+    if copied != PACKET_BYTES {
+        return err("short address packet copy", ioFailure())
+    }
+    // Copy the payload first, then write the four header fields: the packet
+    // array intentionally carries zero headers so it can be copied in bulk.
+    try bytesbuf::writeInt64(target, 0, outFamily)
+    try bytesbuf::writeInt64(target, 8, outPort)
+    try bytesbuf::writeInt64(target, 16, outScope)
+    try bytesbuf::writeInt64(target, 24, outLength)
+    return ok(true)
+}
+
+fn recordData(source: &bytesbuf::Bytes, base: int,
+               length: int): Result[[]byte] {
+    let data = new []byte(length)
+    if length > 0 {
+        let copied = try bytesbuf::copyOut(source, &data, base + DATA_OFFSET, 0, length)
+        if copied != length {
+            return err("short address packet read", ioFailure())
+        }
+    }
+    return ok(data)
+}
+
+// Internal seam: decode one 160-byte record at `base` from a result packet.
+// A family-0 record is the explicit "no address" value and returns nil.
+pub fn _decodeRecord(source: &bytesbuf::Bytes, base: int): Result[?Address] {
+    let size = try bytesbuf::length(source)
+    if base < 0 || base % 8 != 0 || base > size || PACKET_BYTES > size - base {
+        return err("address packet record is out of bounds", rangeCode())
+    }
+    let family = try bytesbuf::readInt64(source, base)
+    if family == FAMILY_NONE {
+        let none: ?Address = nil
+        return ok(none)
+    }
+    let port = try bytesbuf::readInt64(source, base + 8)
+    let scope = try bytesbuf::readInt64(source, base + 16)
+    let length = try bytesbuf::readInt64(source, base + 24)
+    if length < 0 || length > DATA_MAX {
+        return err("address packet length is out of bounds", ioFailure())
+    }
+    var result: Address = new IPv4{octets: new []byte(4), port: 0}
+    if family == FAMILY_IPV4 {
+        if length != 4 { return err("IPv4 packet has the wrong length", ioFailure()) }
+        let data = try recordData(source, base, length)
+        result = new IPv4{octets: data, port: port}
+    } else if family == FAMILY_IPV6 {
+        if length != 16 { return err("IPv6 packet has the wrong length", ioFailure()) }
+        let data = try recordData(source, base, length)
+        result = new IPv6{octets: data, port: port, scope: scope}
+    } else if family == FAMILY_UNIX_PATH {
+        if length < 1 || length > MAX_UNIX_PATH {
+            return err("Unix path packet has the wrong length", ioFailure())
+        }
+        let data = try recordData(source, base, length)
+        result = new UnixPath{path: string(data)}
+    } else if family == FAMILY_UNIX_ABSTRACT {
+        if length < 1 || length > MAX_UNIX_ABSTRACT {
+            return err("Unix abstract packet has the wrong length", ioFailure())
+        }
+        let data = try recordData(source, base, length)
+        result = new UnixAbstract{name: data}
+    } else {
+        return err("address packet has an unknown family", ioFailure())
+    }
+    let checked = validate(&result)
+    match checked {
+        ok(valid) {
+            let value: ?Address = result
+            return ok(value)
+        }
+        err(m, c) { return err("address packet failed validation", c) }
+    }
+}
+
+pub fn _maxPort(): int { return MAX_PORT }
+pub fn _makeBytes(value: string): []byte { return makeBytes(value) }

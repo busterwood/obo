@@ -1,8 +1,9 @@
-# Experimental sys P0/P1a API
+# Experimental sys P0/P1a/P2 API
 
 Status: **experimental, internal, unstable.** No numeric value below is a
-stable ABI. P1a adds the modules after `sysbytes`; P1b/P2 may change or replace
-them before any promotion.
+stable ABI. P2 adds addresses, sockets, the reactor, waitio and resolution;
+P1b/P3 and later phases may change or replace any of these modules before
+promotion.
 
 Common rules:
 
@@ -17,10 +18,10 @@ Common rules:
 
 ### Field visibility (0.13)
 
-The P1a public records deliberately mark their documented fields `pub` under
-0.13 private-by-default fields. Callers construct `OpenOptions`, inspect
-`Metadata`/`Entry`/timestamps, and read a shell's `res` for the documented
-public-field limitation. This does not make the record opaque or turn fields
+The P1a/P2 public records deliberately mark their documented fields `pub` under
+0.13 private-by-default fields. Callers construct `OpenOptions`, `ListenOptions`
+and `Address` values, inspect `Metadata`/`Entry`/`Packet`/`Event`, and read a
+shell's `res` for the documented public-field limitation. This does not make the record opaque or turn fields
 into authority: the managed slot table, nonces, native tokens, registry state
 and free lists remain private, and every typed entry point revalidates kind,
 generation and liveness. The slot/table internals are not exposed.
@@ -61,9 +62,8 @@ pub fn text(k: &Kind): string
 ## `sysplatform`
 
 ```obo
-// P0 public-field limitation: tests and typed shells construct/read these
-// records directly. P1a should add constructors/accessors and make the fields
-// private again.
+// Documented P0 public-field limitation: tests and typed shells construct/read
+// these records directly. Later phases may add constructors/accessors.
 pub type Resource = ref record { pub reserved: int }
 
 pub type Options = ref record {
@@ -365,7 +365,25 @@ pub fn closeStream(s: ^Stream): Result[bool]
 
 Standard streams are owned CLOEXEC duplicates; process fds 0/1/2 are never
 closed by this module. Read/write are one attempt with short success, nil/0 EOF
-and distinct WouldBlock. Vector I/O and half-close are deferred.
+and distinct WouldBlock.
+
+P2 also provides:
+
+```obo
+pub const MAX_VECTOR_PARTS = 64
+pub const MAX_VECTOR_BYTES = 1048576
+pub fn shutdownRead(s: &Stream): Result[bool]
+pub fn shutdownWrite(s: &Stream): Result[bool]
+pub fn writeVector(s: &Stream, parts: &[][]byte, first: int,
+                   offset: int): Result[int]
+pub fn readVector(s: &Stream, sizes: &[]int): Result[?[][]byte]
+```
+
+Half-close applies to socket-backed streams; a file/pipe stream returns
+`Unsupported`. `syswaitio` helpers therefore require a socket-backed Stream. `writeVector` composes one contiguous bounded transfer (it does
+not promise one writev syscall), so a short return advances a caller cursor
+across the vectors. `readVector` returns owned arrays, the final one possibly
+short; nil is EOF before any data.
 
 ## `sysbuffer`
 
@@ -400,6 +418,217 @@ an independent prefix. `readStep` appends one transfer and retains data on
 error; `writeStep` removes only the written prefix. Exact steps attempt one
 transfer, keep progress on every exit, and report `EndOfInput` when EOF arrives
 before the requested count.
+
+## `sysaddress`
+
+```obo
+pub type Address = closed {
+    IPv4 { octets: []byte; port: int }
+    IPv6 { octets: []byte; port: int; scope: int }
+    UnixPath { path: string }
+    UnixAbstract { name: []byte }
+}
+pub const FAMILY_NONE = 0
+pub const FAMILY_IPV4 = 1
+pub const FAMILY_IPV6 = 2
+pub const FAMILY_UNIX_PATH = 3
+pub const FAMILY_UNIX_ABSTRACT = 4
+pub const MAX_PORT = 65535
+pub const MAX_UNIX_PATH = 107
+pub const MAX_UNIX_ABSTRACT = 107
+pub fn validate(a: &Address): Result[bool]
+pub fn parseNumeric(text: string, port: int): Result[Address]
+pub fn format(a: &Address): Result[string]
+```
+
+IPv4 has exactly 4 octets, IPv6 exactly 16, ports are 0..65535 and IPv6 scope
+is 0..4294967295. Unix paths are nonempty, NUL-free and at most 107 bytes;
+abstract names are nonempty and at most 107 bytes. `parseNumeric` does no DNS,
+rejects brackets, does not guess octal IPv4 and does not parse embedded IPv4 in
+IPv6 text. `format` is deterministic lowercase and returns the host/path text
+without the port (the record carries the port separately); abstract names use
+`unix-abstract:<hex>` because they have no portable text form. Host/network byte
+order is a private adapter detail. Every `listen`/`connect`/`bindDatagram`/`send`
+revalidates and re-encodes the caller's record before a native call.
+
+## `sysnet`
+
+```obo
+pub type Listener = ref record { pub res: platform::Resource }
+pub type Connection = ref record { pub res: platform::Resource }
+pub type Datagram = ref record { pub res: platform::Resource }
+pub type ListenOptions = ref record {
+    pub backlog: int; pub reuseAddress: bool
+    pub reusePort: bool; pub ipv6Only: bool
+}
+pub type Packet = ref record {
+    pub bytes: []byte; pub peer: ?Address
+    pub truncated: bool; pub originalSize: int
+}
+pub const MAX_CHUNK = 1048576
+pub const MAX_BACKLOG = 65535
+pub const MAX_DATAGRAM = 65507
+
+pub fn listenOptions(): ListenOptions
+pub fn listen(a: &Address, options: &ListenOptions): Result[Listener]
+pub fn accept(l: &Listener): Result[Connection]
+pub fn connect(a: &Address): Result[Connection]
+pub fn finishConnect(c: &Connection): Result[bool]
+pub fn readSome(c: &Connection, max: int): Result[?[]byte]
+pub fn readInto(c: &Connection, mut dst: &[]byte, offset: int,
+                max: int): Result[int]
+pub fn writeSome(c: &Connection, bytes: &[]byte, offset: int,
+                 count: int): Result[int]
+pub fn writeFrom(c: &Connection, src: &[]byte, offset: int,
+                 count: int): Result[int]
+pub fn shutdownRead(c: &Connection): Result[bool]
+pub fn shutdownWrite(c: &Connection): Result[bool]
+pub fn duplicateStream(c: &Connection): Result[stream::Stream]
+pub fn intoStream(mut c: &Connection): Result[stream::Stream]
+pub fn localAddress(c: &Connection): Result[Address]
+pub fn peerAddress(c: &Connection): Result[Address]
+pub fn listenerLocalAddress(l: &Listener): Result[Address]
+pub fn datagramLocalAddress(d: &Datagram): Result[Address]
+pub fn setNoDelay(c: &Connection, enabled: bool): Result[bool]
+pub fn setKeepAlive(c: &Connection, idleSeconds: int,
+                    intervalSeconds: int, probes: int): Result[bool]
+pub fn clearKeepAlive(c: &Connection): Result[bool]
+pub fn setReceiveBuffer(d: &Datagram, bytes: int): Result[bool]
+pub fn setSendBuffer(d: &Datagram, bytes: int): Result[bool]
+pub fn setBroadcast(d: &Datagram, enabled: bool): Result[bool]
+pub fn watchConnection(r: &reactor::Reactor, c: &Connection, readable: bool,
+                       writable: bool, tag: int): Result[reactor::Watch]
+pub fn watchListener(r: &reactor::Reactor, l: &Listener,
+                     tag: int): Result[reactor::Watch]
+pub fn bindDatagram(a: &Address): Result[Datagram]
+pub fn receive(d: &Datagram, max: int): Result[Packet]
+pub fn send(d: &Datagram, to: &Address, bytes: &[]byte): Result[int]
+pub fn closeConnection(c: &Connection): Result[bool]
+pub fn closeListener(l: &Listener): Result[bool]
+pub fn closeDatagram(d: &Datagram): Result[bool]
+pub fn sourceConnection(c: &Connection): Result[^platform::Resource]
+pub fn sourceDatagram(d: &Datagram): Result[^platform::Resource]
+```
+
+Sockets are nonblocking and CLOEXEC atomically at creation. `listenOptions`
+defaults to backlog 128, reuseAddress true, reusePort false, ipv6Only true; an
+IPv6 socket is never accidentally dual-stack. The kernel may cap a larger
+requested backlog to `somaxconn`. Datagram binds apply the same IPv6-only
+default, so `::` does not reserve the matching IPv4 port. Keepalive idle,
+interval and probe values are positive and capped at 2147483. `accept` returns WouldBlock on an
+empty queue and ResourceLimit on EMFILE/ENFILE; it makes one attempt. `connect`
+returns an owned Connection while establishment is pending. `finishConnect`
+returns false while pending, true when connected, or the captured SO_ERROR
+failure; writability alone is not success. `intoStream` returns InProgress and
+leaves a Connecting connection unchanged; a failed connection is retired once
+and its state error is preserved. `duplicateStream` shares the socket and
+half-close state but owns a separate descriptor. A datagram send is all-or-error;
+receive preserves empty datagrams, peer and truncation (`originalSize` exact on
+Linux). Port 0 is discoverable before accepting/sending. `peer` is nil only for a
+kernel-unnamed sender; P2 has no unbound datagram constructor, so applications
+normally observe the sender's bound address.
+
+## `sysreactor`
+
+```obo
+pub type Reactor = ref record { pub res: platform::Resource }
+pub type Watch = ref record { pub res: platform::Resource }
+pub type Timer = ref record { pub res: platform::Resource }
+pub type Event = ref record {
+    pub tag: int; pub readable: bool; pub writable: bool; pub hangup: bool
+    pub failed: bool; pub timer: bool; pub ticks: int; pub wake: bool
+}
+pub const EVENT_BYTES = 64
+pub const MAX_EVENTS = 4096
+pub const MAX_BATCH = 64
+pub fn create(maxWatches: int, maxTimers: int): Result[Reactor]
+pub fn watchResource(r: &Reactor, source: ^platform::Resource,
+                     readable: bool, writable: bool, tag: int): Result[Watch]
+pub fn modify(w: &Watch, readable: bool, writable: bool): Result[bool]
+pub fn remove(w: &Watch): Result[bool]
+pub fn timer(r: &Reactor, at: &clock::Deadline,
+             period: &clock::Duration, tag: int): Result[Timer]
+pub fn cancelTimer(t: &Timer): Result[bool]
+pub fn wait(r: &Reactor, until: &clock::Deadline,
+            maxEvents: int): Result[[]Event]
+pub fn wake(r: &Reactor): Result[bool]
+pub fn stop(r: &Reactor): Result[bool]
+pub fn close(r: &Reactor): Result[bool]
+```
+
+Linux v1 is level-triggered epoll only. `timer` requires a finite `at`; a zero
+period is one-shot. `wait` accepts `forever()` and returns an empty batch on
+deadline, at most 64 events per call. Events carry application tags only; native
+registry tokens/generations never reach the caller, and stale registrations are
+filtered. `failed`/`timer`/`wake` are mutually exclusive and `failed` carries no
+I/O bits. Timers are kept in an insertion-order linked list and scanned each
+turn (bounded by `maxTimers`); due timers fill the batch before socket
+readiness. A fresh eventfd wake is drained and emitted before due timers so an
+always-due timer cannot hide it; a wake coalesced from a full batch alternates
+with due timers, and an infinite wait never blocks while one is pending. Ready
+subscriptions rotate between batches. Endpoint close deregisters its watches; reactor close invalidates all
+children and `remove`/`cancelTimer` remain idempotent. `stop` prevents new
+registrations, wakes waiters and makes subsequent `wait` return `Cancelled`.
+Watching a regular file returns `Unsupported` (it is not generally
+epoll-watchable).
+
+## `syswaitio`
+
+```obo
+pub type Cancellation = ref record { pub res: platform::Resource }
+pub fn cancellation(): Result[Cancellation]
+pub fn request(c: &Cancellation): Result[bool]
+pub fn cancelled(c: &Cancellation): Result[bool]
+pub fn closeCancellation(c: &Cancellation): Result[bool]
+pub fn deadlineReached(until: &clock::Deadline): Result[bool]
+pub fn readExactUntil(s: &stream::Stream, r: &reactor::Reactor, count: int,
+                      mut out: &buffer::Buffer, until: &clock::Deadline,
+                      cancel: &Cancellation): Result[bool]
+pub fn writeAllUntil(s: &stream::Stream, r: &reactor::Reactor,
+                     bytes: &[]byte, mut cursor: &buffer::Cursor,
+                     until: &clock::Deadline,
+                     cancel: &Cancellation): Result[bool]
+pub fn flushUntil(mut w: &buffer::Writer, s: &stream::Stream,
+                  r: &reactor::Reactor, until: &clock::Deadline,
+                  cancel: &Cancellation): Result[bool]
+```
+
+Cancellation is a sticky native flag plus eventfd wake. These compound helpers
+use one absolute deadline, never restart it on EINTR/WouldBlock/progress, and
+retain buffer/cursor progress on every exit. EAGAIN/EINTR with no progress is
+ordinary backpressure: the helper waits for readiness and retries; only a
+non-retryable zero-progress transfer is terminal. `readExactUntil.count` is additional
+bytes appended after the existing buffer prefix. They consume readiness batches,
+so they require a **dedicated reactor**; event-driven callers use the buffer
+step APIs with `cancelled`/`deadlineReached` instead.
+
+## `sysresolve`
+
+```obo
+pub const FAMILY_ANY = 0
+pub const FAMILY_IPV4 = 4
+pub const FAMILY_IPV6 = 6
+pub const SOCKET_STREAM = 1
+pub const SOCKET_DATAGRAM = 2
+pub const MAX_RESULTS = 64
+pub fn resolveBlocking(host: string, service: string, family: int,
+                       kind: int): Result[[]address::Address]
+pub fn resolveNumeric(host: string, service: string, family: int,
+                      kind: int): Result[[]address::Address]
+pub fn resolveTcp(host: string, service: string): Result[[]address::Address]
+pub fn resolveUdp(host: string, service: string): Result[[]address::Address]
+```
+
+Host is 1..255 bytes and service 0..31 bytes, both NUL-free. Results preserve
+getaddrinfo/NSS order; the C adapter copies them and always calls
+`freeaddrinfo`. EAI_AGAIN is ResolveTemporary, EAI_NONAME/NODATA is
+ResolveNotFound and other EAI failures are ResolveFailure; EAI_SYSTEM preserves
+the captured errno category. `resolveNumeric` uses AI_NUMERICHOST and
+AI_NUMERICSERV and needs no NSS/DNS. `resolveBlocking` is **blocking with no finite deadline** and is not for reactor
+loops. No cache, TTL, helper process or reactive resolver is part of P2. The
+fake resolver is a deterministic table (`localhost`, `example.test`,
+`resolve-again.test`, `notfound.test`, `system.test`) plus numeric parsing; it
+performs no NSS/DNS.
 
 ## `systestres` (P0 fixture, not a future File)
 

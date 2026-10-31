@@ -1,0 +1,467 @@
+// Experimental systems library: TCP, UDP and Unix sockets (P2).
+//
+// Status: experimental P2 slice, unstable. Listener/Connection/Datagram hide
+// one CLOEXEC, nonblocking native socket behind a checked platform::Resource.
+// No raw descriptor, socket-option integer or registry token is exposed.
+//
+// Every one-shot operation makes one kernel attempt. accept returns WouldBlock
+// on an empty queue; read/write may be short; EINTR and WouldBlock stay
+// distinct. Connection state is tracked natively:
+//
+//   Connecting -> finishConnect -> Open / pending(false) / Failed
+//   Open       -> read EOF -> ReadClosed; shutdownWrite -> WriteClosed
+//   ReadClosed / WriteClosed still allow the other direction
+//
+// connect returns an owned Connection even while establishment is pending.
+// intoStream consumes an Open/ReadClosed/WriteClosed connection by re-tagging
+// it to KIND_STREAM; a Connecting connection returns InProgress and is left
+// unchanged, and a Failed connection is retired exactly once. duplicateStream
+// creates an independent descriptor sharing the socket and half-close state.
+//
+// All address records are revalidated and encoded before native calls.
+module sysnet
+
+import "sysaddress.obx" as address
+import "sysplatform.obx" as platform
+import "sysstream.obx" as stream
+import "sysreactor.obx" as reactor
+import "sysbytes.obx" as bytesbuf
+import "syserrors.obx" as errors
+
+pub type Listener = ref record { pub res: platform::Resource }
+pub type Connection = ref record { pub res: platform::Resource }
+pub type Datagram = ref record { pub res: platform::Resource }
+
+pub type ListenOptions = ref record {
+    pub backlog: int
+    pub reuseAddress: bool
+    pub reusePort: bool
+    pub ipv6Only: bool
+}
+
+pub type Packet = ref record {
+    pub bytes: []byte
+    pub peer: ?address::Address
+    pub truncated: bool
+    pub originalSize: int
+}
+
+pub const MAX_CHUNK = 1048576
+pub const MAX_BACKLOG = 65535
+pub const MAX_DATAGRAM = 65507
+pub const MAX_UNIX_PATH = 107
+const ADDR_BYTES = 160
+const META_BYTES = 16
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+fn rangeCode(): int { return libCode(new errors::Range{}) }
+fn inProgress(): int { return libCode(new errors::InProgress{}) }
+fn unsupported(): int { return libCode(new errors::Unsupported{}) }
+fn systemFailure(): int { return libCode(new errors::SystemFailure{}) }
+
+pub fn listenOptions(): ListenOptions {
+    return new ListenOptions{
+        backlog: 128
+        reuseAddress: true
+        reusePort: false
+        ipv6Only: true
+    }
+}
+
+fn validOptions(o: &ListenOptions): bool {
+    return o.backlog >= 1 && o.backlog <= MAX_BACKLOG
+}
+
+fn optionFlags(o: &ListenOptions): int {
+    var flags = 0
+    if o.reuseAddress { flags = flags | platform::_LISTEN_REUSE_ADDRESS }
+    if o.reusePort { flags = flags | platform::_LISTEN_REUSE_PORT }
+    if o.ipv6Only { flags = flags | platform::_LISTEN_IPV6_ONLY }
+    return flags
+}
+
+fn checkSource(bytes: &[]byte, offset: int, count: int): bool {
+    if offset < 0 || count < 0 { return false }
+    if offset > len(bytes) { return false }
+    if count > len(bytes) - offset { return false }
+    return true
+}
+
+fn checkDestination(dst: &[]byte, offset: int, max: int): bool {
+    if offset < 0 || max < 0 { return false }
+    if offset > len(dst) { return false }
+    if max > len(dst) - offset { return false }
+    return true
+}
+
+// Encode one revalidated address into a fresh C-owned packet buffer.
+fn addressPacket(a: &address::Address): Result[bytesbuf::Bytes] {
+    let b = try bytesbuf::create(ADDR_BYTES)
+    let encoded = address::_encode(a, &b)
+    match encoded {
+        ok(valid) { return ok(b) }
+        err(m, c) {
+            bytesbuf::close(&b)
+            return err("address could not be encoded", c)
+        }
+    }
+}
+
+fn decodeAddressFrom(b: &bytesbuf::Bytes): Result[address::Address] {
+    let decoded = try address::_decodeRecord(b, 0)
+    if decoded == nil {
+        return err("endpoint has no address of a representable kind", unsupported())
+    } else {
+        let value: address::Address = decoded
+        return ok(value)
+    }
+}
+
+fn endpointAddress(token: int, kind: int, which: int): Result[address::Address] {
+    let b = try bytesbuf::create(ADDR_BYTES)
+    defer bytesbuf::close(&b)
+    let bt = try platform::_tokenHandle(handle(b.res), platform::KIND_BYTE_BUFFER)
+    let n = try platform::_netAddressToken(token, kind, which, bt)
+    if n == 0 {
+        return err("endpoint has no bound or peer address", unsupported())
+    }
+    return decodeAddressFrom(&b)
+}
+
+pub fn source(l: &Listener): Result[^platform::Resource] {
+    return platform::_requireKindHandle(handle(l.res), platform::KIND_LISTENER)
+}
+
+pub fn sourceConnection(c: &Connection): Result[^platform::Resource] {
+    return platform::_requireKindHandle(handle(c.res), platform::KIND_CONNECTION)
+}
+
+pub fn sourceDatagram(d: &Datagram): Result[^platform::Resource] {
+    return platform::_requireKindHandle(handle(d.res), platform::KIND_DATAGRAM)
+}
+
+pub fn listen(a: &address::Address, options: &ListenOptions): Result[Listener] {
+    if !validOptions(options) {
+        return err("listen backlog must be in 1..65535", rangeCode())
+    }
+    let ab = try addressPacket(a)
+    defer bytesbuf::close(&ab)
+    let at = try platform::_tokenHandle(handle(ab.res), platform::KIND_BYTE_BUFFER)
+    let token = try platform::_netListenToken(at, options.backlog,
+                                              optionFlags(options))
+    let r = try platform::_adoptToken(platform::KIND_LISTENER, token)
+    return ok(new Listener{res: r})
+}
+
+pub fn accept(l: &Listener): Result[Connection] {
+    let lt = try platform::_tokenHandle(handle(l.res), platform::KIND_LISTENER)
+    let token = try platform::_netAcceptToken(lt)
+    let r = try platform::_adoptToken(platform::KIND_CONNECTION, token)
+    return ok(new Connection{res: r})
+}
+
+pub fn connect(a: &address::Address): Result[Connection] {
+    let ab = try addressPacket(a)
+    defer bytesbuf::close(&ab)
+    let at = try platform::_tokenHandle(handle(ab.res), platform::KIND_BYTE_BUFFER)
+    let token = try platform::_netConnectToken(at)
+    let r = try platform::_adoptToken(platform::KIND_CONNECTION, token)
+    return ok(new Connection{res: r})
+}
+
+pub fn finishConnect(c: &Connection): Result[bool] {
+    let ct = try platform::_tokenHandle(handle(c.res), platform::KIND_CONNECTION)
+    let state = try platform::_netFinishConnect(ct)
+    if state == 1 { return ok(true) }
+    return ok(false)
+}
+
+fn connectionState(c: &Connection): Result[int] {
+    let ct = try platform::_tokenHandle(handle(c.res), platform::KIND_CONNECTION)
+    return platform::_netState(ct)
+}
+
+pub fn readSome(c: &Connection, max: int): Result[?[]byte] {
+    if max <= 0 { return err("readSome needs a positive byte count", invalidArgument()) }
+    if max > MAX_CHUNK { return err("readSome is limited to 1 MiB", rangeCode()) }
+    let tmp = try bytesbuf::create(max)
+    defer bytesbuf::close(&tmp)
+    let ct = try platform::_tokenHandle(handle(c.res), platform::KIND_CONNECTION)
+    let bt = try platform::_tokenHandle(handle(tmp.res), platform::KIND_BYTE_BUFFER)
+    let n = try platform::_netReadToken(ct, platform::KIND_CONNECTION, bt, 0, max)
+    if n == 0 {
+        let none: ?[]byte = nil
+        return ok(none)
+    }
+    let out = new []byte(n)
+    let copied = try bytesbuf::copyOut(&tmp, &out, 0, 0, n)
+    if copied != n { return err("short socket read copy", systemFailure()) }
+    let result: ?[]byte = out
+    return ok(result)
+}
+
+pub fn readInto(c: &Connection, mut dst: &[]byte, offset: int, max: int): Result[int] {
+    if max <= 0 { return err("readInto needs a positive byte count", invalidArgument()) }
+    if max > MAX_CHUNK { return err("readInto is limited to 1 MiB", rangeCode()) }
+    if !checkDestination(dst, offset, max) {
+        return err("readInto destination range is outside the array", invalidArgument())
+    }
+    let tmp = try bytesbuf::create(max)
+    defer bytesbuf::close(&tmp)
+    let ct = try platform::_tokenHandle(handle(c.res), platform::KIND_CONNECTION)
+    let bt = try platform::_tokenHandle(handle(tmp.res), platform::KIND_BYTE_BUFFER)
+    let n = try platform::_netReadToken(ct, platform::KIND_CONNECTION, bt, 0, max)
+    if n == 0 { return ok(0) }
+    let chunk = new []byte(n)
+    let copied = try bytesbuf::copyOut(&tmp, &chunk, 0, 0, n)
+    if copied != n { return err("short socket read copy", systemFailure()) }
+    for i in 0..n { dst[offset + i] = chunk[i] }
+    return ok(n)
+}
+
+pub fn writeSome(c: &Connection, bytes: &[]byte, offset: int, count: int): Result[int] {
+    if !checkSource(bytes, offset, count) {
+        return err("writeSome source range is outside the array", invalidArgument())
+    }
+    if count > MAX_CHUNK { return err("writeSome is limited to 1 MiB", rangeCode()) }
+    let checked = try platform::_requireKindHandle(handle(c.res), platform::KIND_CONNECTION)
+    if count == 0 { return ok(0) }
+    let tmp = try bytesbuf::create(count)
+    defer bytesbuf::close(&tmp)
+    let copiedIn = try bytesbuf::copyIn(&tmp, bytes, offset, 0, count)
+    if copiedIn != count { return err("short socket write copy", systemFailure()) }
+    let ct = try platform::_tokenHandle(checked, platform::KIND_CONNECTION)
+    let bt = try platform::_tokenHandle(handle(tmp.res), platform::KIND_BYTE_BUFFER)
+    return platform::_netWriteToken(ct, platform::KIND_CONNECTION, bt, 0, count)
+}
+
+pub fn writeFrom(c: &Connection, src: &[]byte, offset: int, count: int): Result[int] {
+    return writeSome(c, src, offset, count)
+}
+
+pub fn shutdownWrite(c: &Connection): Result[bool] {
+    let ct = try platform::_tokenHandle(handle(c.res), platform::KIND_CONNECTION)
+    let done = try platform::_netShutdownToken(ct, platform::KIND_CONNECTION, 1)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn shutdownRead(c: &Connection): Result[bool] {
+    let ct = try platform::_tokenHandle(handle(c.res), platform::KIND_CONNECTION)
+    let done = try platform::_netShutdownToken(ct, platform::KIND_CONNECTION, 0)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn duplicateStream(c: &Connection): Result[stream::Stream] {
+    let ct = try platform::_tokenHandle(handle(c.res), platform::KIND_CONNECTION)
+    let state = try platform::_netState(ct)
+    if state == 2 { return err("connection establishment is still pending", inProgress()) }
+    if state != 1 { return err("connection is not open", systemFailure()) }
+    let token = try platform::_netDupToken(ct, platform::KIND_CONNECTION,
+                                           platform::KIND_STREAM)
+    let r = try platform::_adoptToken(platform::KIND_STREAM, token)
+    return ok(new stream::Stream{res: r})
+}
+
+// Logically consume the Connection. Connecting is left untouched and returns
+// InProgress; a failed connection retires its native resource exactly once.
+pub fn intoStream(mut c: &Connection): Result[stream::Stream] {
+    let ct = try platform::_tokenHandle(handle(c.res), platform::KIND_CONNECTION)
+    let state = platform::_netState(ct)
+    match state {
+        ok(current) {
+            if current == 2 {
+                return err("connection establishment is still pending", inProgress())
+            }
+            if current != 1 {
+                return err("connection state is not streamable", systemFailure())
+            }
+        }
+        err(m, code) {
+            // Failed: retire the native resource exactly once and preserve the
+            // captured connection error as the state error.
+            let retired = platform::_closeHandle(handle(c.res), platform::KIND_CONNECTION)
+            match retired { ok(v) { } err(rm, rc) { } }
+            return err(m, code)
+        }
+    }
+    let retagged = try platform::_retagHandle(handle(c.res), platform::KIND_CONNECTION,
+                                               platform::KIND_STREAM)
+    if !retagged {
+        return err("connection could not be re-tagged as a stream", systemFailure())
+    }
+    let r = replace(c.res, new platform::Resource{reserved: 0})
+    return ok(new stream::Stream{res: r})
+}
+
+pub fn localAddress(c: &Connection): Result[address::Address] {
+    let ct = try platform::_tokenHandle(handle(c.res), platform::KIND_CONNECTION)
+    return endpointAddress(ct, platform::KIND_CONNECTION, 0)
+}
+
+pub fn peerAddress(c: &Connection): Result[address::Address] {
+    let ct = try platform::_tokenHandle(handle(c.res), platform::KIND_CONNECTION)
+    return endpointAddress(ct, platform::KIND_CONNECTION, 1)
+}
+
+pub fn listenerLocalAddress(l: &Listener): Result[address::Address] {
+    let lt = try platform::_tokenHandle(handle(l.res), platform::KIND_LISTENER)
+    return endpointAddress(lt, platform::KIND_LISTENER, 0)
+}
+
+pub fn datagramLocalAddress(d: &Datagram): Result[address::Address] {
+    let dt = try platform::_tokenHandle(handle(d.res), platform::KIND_DATAGRAM)
+    return endpointAddress(dt, platform::KIND_DATAGRAM, 0)
+}
+
+pub fn setNoDelay(c: &Connection, enabled: bool): Result[bool] {
+    let ct = try platform::_tokenHandle(handle(c.res), platform::KIND_CONNECTION)
+    var on = 0
+    if enabled { on = 1 }
+    let done = try platform::_netNoDelayToken(ct, on)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn setKeepAlive(c: &Connection, idleSeconds: int, intervalSeconds: int,
+                    probes: int): Result[bool] {
+    if idleSeconds <= 0 || intervalSeconds <= 0 || probes <= 0 {
+        return err("keepalive parameters must be positive", rangeCode())
+    }
+    let ct = try platform::_tokenHandle(handle(c.res), platform::KIND_CONNECTION)
+    let done = try platform::_netKeepAliveToken(ct, 1, idleSeconds,
+                                                intervalSeconds, probes)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn clearKeepAlive(c: &Connection): Result[bool] {
+    let ct = try platform::_tokenHandle(handle(c.res), platform::KIND_CONNECTION)
+    let done = try platform::_netKeepAliveToken(ct, 0, 0, 0, 0)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn setReceiveBuffer(d: &Datagram, bytes: int): Result[bool] {
+    let dt = try platform::_tokenHandle(handle(d.res), platform::KIND_DATAGRAM)
+    let done = try platform::_netBufferToken(dt, platform::KIND_DATAGRAM, 0, bytes)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn setSendBuffer(d: &Datagram, bytes: int): Result[bool] {
+    let dt = try platform::_tokenHandle(handle(d.res), platform::KIND_DATAGRAM)
+    let done = try platform::_netBufferToken(dt, platform::KIND_DATAGRAM, 1, bytes)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn setBroadcast(d: &Datagram, enabled: bool): Result[bool] {
+    let dt = try platform::_tokenHandle(handle(d.res), platform::KIND_DATAGRAM)
+    var on = 0
+    if enabled { on = 1 }
+    let done = try platform::_netBroadcastToken(dt, on)
+    if done == 1 { return ok(true) }
+    return ok(false)
+}
+
+pub fn watchConnection(r: &reactor::Reactor, c: &Connection, readable: bool,
+                       writable: bool, tag: int): Result[reactor::Watch] {
+    let source = try platform::_requireKindHandle(handle(c.res),
+                                                  platform::KIND_CONNECTION)
+    return reactor::watchResource(r, source, readable, writable, tag)
+}
+
+pub fn watchListener(r: &reactor::Reactor, l: &Listener,
+                     tag: int): Result[reactor::Watch] {
+    let source = try platform::_requireKindHandle(handle(l.res),
+                                                  platform::KIND_LISTENER)
+    return reactor::watchResource(r, source, true, false, tag)
+}
+
+pub fn bindDatagram(a: &address::Address): Result[Datagram] {
+    let ab = try addressPacket(a)
+    defer bytesbuf::close(&ab)
+    let at = try platform::_tokenHandle(handle(ab.res), platform::KIND_BYTE_BUFFER)
+    let token = try platform::_netBindDatagramToken(at)
+    let r = try platform::_adoptToken(platform::KIND_DATAGRAM, token)
+    return ok(new Datagram{res: r})
+}
+
+pub fn receive(d: &Datagram, max: int): Result[Packet] {
+    if max < 0 { return err("receive size is negative", invalidArgument()) }
+    if max > MAX_DATAGRAM { return err("receive size exceeds the datagram limit", rangeCode()) }
+    let dt = try platform::_tokenHandle(handle(d.res), platform::KIND_DATAGRAM)
+    let data = try bytesbuf::create(max)
+    defer bytesbuf::close(&data)
+    let peer = try bytesbuf::create(ADDR_BYTES)
+    defer bytesbuf::close(&peer)
+    let meta = try bytesbuf::create(META_BYTES)
+    defer bytesbuf::close(&meta)
+    let bt = try platform::_tokenHandle(handle(data.res), platform::KIND_BYTE_BUFFER)
+    let pt = try platform::_tokenHandle(handle(peer.res), platform::KIND_BYTE_BUFFER)
+    let mt = try platform::_tokenHandle(handle(meta.res), platform::KIND_BYTE_BUFFER)
+    let n = try platform::_netReceiveToken(dt, bt, max, pt, mt)
+    let original = try bytesbuf::readInt64(&meta, 0)
+    let wasTruncated = try bytesbuf::readInt64(&meta, 8)
+    let out = new []byte(n)
+    if n > 0 {
+        let copied = try bytesbuf::copyOut(&data, &out, 0, 0, n)
+        if copied != n { return err("short datagram copy", systemFailure()) }
+    }
+    var peerValue: ?address::Address = nil
+    let decoded = try address::_decodeRecord(&peer, 0)
+    if decoded != nil {
+        let value: address::Address = decoded
+        peerValue = value
+    } else {
+        drop(decoded)
+        peerValue = nil
+    }
+    return ok(new Packet{
+        bytes: out
+        peer: peerValue
+        truncated: wasTruncated != 0
+        originalSize: original
+    })
+}
+
+pub fn send(d: &Datagram, to: &address::Address, bytes: &[]byte): Result[int] {
+    let count = len(bytes)
+    if count > MAX_DATAGRAM {
+        return err("datagram exceeds the 65507-byte limit", rangeCode())
+    }
+    let dt = try platform::_tokenHandle(handle(d.res), platform::KIND_DATAGRAM)
+    let ab = try addressPacket(to)
+    defer bytesbuf::close(&ab)
+    let at = try platform::_tokenHandle(handle(ab.res), platform::KIND_BYTE_BUFFER)
+    let tmp = try bytesbuf::create(count)
+    defer bytesbuf::close(&tmp)
+    if count > 0 {
+        let copiedIn = try bytesbuf::copyIn(&tmp, bytes, 0, 0, count)
+        if copiedIn != count { return err("short datagram write copy", systemFailure()) }
+    }
+    let bt = try platform::_tokenHandle(handle(tmp.res), platform::KIND_BYTE_BUFFER)
+    let n = try platform::_netSendToken(dt, at, bt, 0, count)
+    if n != count {
+        return err("datagram send reported a short transfer", systemFailure())
+    }
+    return ok(n)
+}
+
+pub fn closeConnection(c: &Connection): Result[bool] {
+    return platform::_closeHandle(handle(c.res), platform::KIND_CONNECTION)
+}
+
+pub fn closeListener(l: &Listener): Result[bool] {
+    return platform::_closeHandle(handle(l.res), platform::KIND_LISTENER)
+}
+
+pub fn closeDatagram(d: &Datagram): Result[bool] {
+    return platform::_closeHandle(handle(d.res), platform::KIND_DATAGRAM)
+}

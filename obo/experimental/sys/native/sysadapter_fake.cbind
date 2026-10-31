@@ -15,14 +15,23 @@
     "../sysstream.obx",
     "../sysdir.obx",
     "../sysfile.obx",
-    "../sysbuffer.obx"
+    "../sysbuffer.obx",
+    "../sysaddress.obx",
+    "../sysreactor.obx",
+    "../sysnet.obx",
+    "../sysresolve.obx",
+    "../syswaitio.obx"
   ],
   "sources": [
     "sysregistry.c",
-    "sysadapter_fake.c"
+    "sysadapter_fake.c",
+    "sysnet_fake.c"
   ],
   "headers": [
-    "sysadapter.h"
+    "sysadapter.h",
+    "sysnet.h",
+    "sysnet_fake.h",
+    "sysfake_internal.h"
   ],
   "libs": [],
   "cflags": [],
@@ -345,6 +354,368 @@
       "name": "sys_stream_standard",
       "symbol": "sys_stream_standard",
       "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_listen",
+      "symbol": "sys_net_listen",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_accept",
+      "symbol": "sys_net_accept",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_connect",
+      "symbol": "sys_net_connect",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_finish_connect",
+      "symbol": "sys_net_finish_connect",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_read",
+      "symbol": "sys_net_read",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_write",
+      "symbol": "sys_net_write",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_shutdown",
+      "symbol": "sys_net_shutdown",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_dup",
+      "symbol": "sys_net_dup",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_address",
+      "symbol": "sys_net_address",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_set_no_delay",
+      "symbol": "sys_net_set_no_delay",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_set_keepalive",
+      "symbol": "sys_net_set_keepalive",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_set_buffer",
+      "symbol": "sys_net_set_buffer",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_set_broadcast",
+      "symbol": "sys_net_set_broadcast",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_bind_datagram",
+      "symbol": "sys_net_bind_datagram",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_receive",
+      "symbol": "sys_net_receive",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_send",
+      "symbol": "sys_net_send",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_state",
+      "symbol": "sys_net_state",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_watch",
+      "symbol": "sys_net_watch",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_modify",
+      "symbol": "sys_net_modify",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_remove",
+      "symbol": "sys_net_remove",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_timer",
+      "symbol": "sys_net_timer",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_cancel_timer",
+      "symbol": "sys_net_cancel_timer",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_wait",
+      "symbol": "sys_net_wait",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_wake",
+      "symbol": "sys_net_wake",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_stop",
+      "symbol": "sys_net_stop",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_cancel_request",
+      "symbol": "sys_net_cancel_request",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_cancel_pending",
+      "symbol": "sys_net_cancel_pending",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_resolve",
+      "symbol": "sys_resolve",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64",
         "i64"
       ],
       "ret": "i64",
