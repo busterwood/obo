@@ -11,7 +11,7 @@ CFLAGS = -O2 -ffreestanding -fno-builtin -nostdlib -fno-pic -fno-pie -fno-stack-
 # Each build's symbol files live in <out>/sym, created by tools/build_tools.py;
 # build/tools/sym for `make tools`. Symbol writes truncate in place, so tests use
 # private output directories instead of sharing one writable sym dir.
-.PHONY: tools tools-check tools-memory eza eza-check eza-memory sys-p0 sys-p1a sys-p2 http1 all clean
+.PHONY: tools tools-check tools-memory eza eza-check eza-memory sys-p0 sys-p1a sys-p2 tls http1 all clean
 OUT_TOOLS = build/tools
 OUT_EZA   = build/eza
 
@@ -89,6 +89,12 @@ sys-p1a: obo
 # readiness/timers/wake, cancellation/deadline helpers and blocking resolution.
 sys-p2: obo
 	python3 experimental/sys/tests/test_sys_p2.py
+
+# Experimental TLS P2T-b: hosted server TLS 1.2/1.3, OpenSSL memory BIOs,
+# C harness + ASAN/UBSAN, obo echo fixture and openssl s_client checks.
+# OpenSSL headers are located or fetched privately by the script.
+tls: obo
+	python3 experimental/tls/tests/test_tls.py
 
 # Experimental HTTP/1.1 H1a0: pure in-memory parser, serializer and date tests.
 # No sockets, TLS, clock or reactor are involved.

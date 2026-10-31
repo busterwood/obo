@@ -1,0 +1,1142 @@
+{
+  "format": "cinterop-proto/1",
+  "module": "systls",
+  "platform": "x86_64-linux-gnu",
+  "abi": "sysv-amd64",
+  "wrapper": "systls.obx",
+  "wrapper_sources": [
+    "systls.obx",
+    "../sys/sysplatform.obx",
+    "../sys/syserrors.obx",
+    "../sys/sysstream.obx",
+    "../sys/sysbytes.obx",
+    "../sys/sysreactor.obx",
+    "../sys/sysclock.obx",
+    "../sys/sysnet.obx",
+    "../sys/sysaddress.obx",
+    "../sys/sysfile.obx",
+    "../sys/sysdir.obx",
+    "../sys/sysstat.obx",
+    "../sys/sysbuffer.obx",
+    "../sys/syswaitio.obx",
+    "../sys/sysresolve.obx",
+    "../sys/sysrandom.obx"
+  ],
+  "sources": [
+    "native/tls_adapter.c",
+    "../sys/native/sysregistry.c",
+    "../sys/native/sysadapter_real.c",
+    "../sys/native/sysnet_real.c"
+  ],
+  "headers": [
+    "native/tls_adapter.h",
+    "../sys/native/sysadapter.h",
+    "../sys/native/sysnet.h"
+  ],
+  "include_dirs": [],
+  "libs": [
+    "-l:libssl.so.3",
+    "-l:libcrypto.so.3",
+    "-pthread"
+  ],
+  "cflags": [
+    "-pthread"
+  ],
+  "functions": [
+    {
+      "name": "tls_init",
+      "symbol": "tls_init",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_context_new",
+      "symbol": "tls_context_new",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_context_load_chain",
+      "symbol": "tls_context_load_chain",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_context_load_key",
+      "symbol": "tls_context_load_key",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_context_set_trust",
+      "symbol": "tls_context_set_trust",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_context_use_system_trust",
+      "symbol": "tls_context_use_system_trust",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_context_set_alpn",
+      "symbol": "tls_context_set_alpn",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_context_set_version",
+      "symbol": "tls_context_set_version",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_context_set_ciphers",
+      "symbol": "tls_context_set_ciphers",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_context_set_groups",
+      "symbol": "tls_context_set_groups",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_context_role",
+      "symbol": "tls_context_role",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_context_live_sessions",
+      "symbol": "tls_context_live_sessions",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_context_counts",
+      "symbol": "tls_context_counts",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_context_error_copy",
+      "symbol": "tls_context_error_copy",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_session_new",
+      "symbol": "tls_session_new",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_session_handshake",
+      "symbol": "tls_session_handshake",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_session_read",
+      "symbol": "tls_session_read",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_session_write",
+      "symbol": "tls_session_write",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_session_drain",
+      "symbol": "tls_session_drain",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_session_commit",
+      "symbol": "tls_session_commit",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_session_feed",
+      "symbol": "tls_session_feed",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_session_eof",
+      "symbol": "tls_session_eof",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_session_fail",
+      "symbol": "tls_session_fail",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_session_output_pending",
+      "symbol": "tls_session_output_pending",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_session_ciphertext_pending",
+      "symbol": "tls_session_ciphertext_pending",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_session_plaintext_pending",
+      "symbol": "tls_session_plaintext_pending",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_session_shutdown",
+      "symbol": "tls_session_shutdown",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_session_info_copy",
+      "symbol": "tls_session_info_copy",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_session_info_scalar",
+      "symbol": "tls_session_info_scalar",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_session_peer_count",
+      "symbol": "tls_session_peer_count",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_session_peer_item",
+      "symbol": "tls_session_peer_item",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_session_error_copy",
+      "symbol": "tls_session_error_copy",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_verify_text",
+      "symbol": "tls_verify_text",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "tls_counts",
+      "symbol": "tls_counts",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_adapter_init",
+      "symbol": "sys_adapter_init",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_adapter_shutdown",
+      "symbol": "sys_adapter_shutdown",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_res_new",
+      "symbol": "sys_res_new",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_res_nonce",
+      "symbol": "sys_res_nonce",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_res_validate",
+      "symbol": "sys_res_validate",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_res_close",
+      "symbol": "sys_res_close",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_res_op",
+      "symbol": "sys_res_op",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_res_live_count",
+      "symbol": "sys_res_live_count",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_res_bytes",
+      "symbol": "sys_res_bytes",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_res_cleanup_failures",
+      "symbol": "sys_res_cleanup_failures",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_file_open",
+      "symbol": "sys_file_open",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_dir_open",
+      "symbol": "sys_dir_open",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_dir_iterate",
+      "symbol": "sys_dir_iterate",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_dir_next",
+      "symbol": "sys_dir_next",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_io_read",
+      "symbol": "sys_io_read",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_io_write",
+      "symbol": "sys_io_write",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_io_seek",
+      "symbol": "sys_io_seek",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_io_truncate",
+      "symbol": "sys_io_truncate",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_stat_get",
+      "symbol": "sys_stat_get",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_file_dup",
+      "symbol": "sys_file_dup",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_file_retag",
+      "symbol": "sys_file_retag",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_clock_monotonic_ns",
+      "symbol": "sys_clock_monotonic_ns",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_clock_realtime_sec",
+      "symbol": "sys_clock_realtime_sec",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_clock_realtime_nsec",
+      "symbol": "sys_clock_realtime_nsec",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_sleep_until",
+      "symbol": "sys_sleep_until",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_random",
+      "symbol": "sys_random",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_stream_standard",
+      "symbol": "sys_stream_standard",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_listen",
+      "symbol": "sys_net_listen",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_accept",
+      "symbol": "sys_net_accept",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_connect",
+      "symbol": "sys_net_connect",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_finish_connect",
+      "symbol": "sys_net_finish_connect",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_read",
+      "symbol": "sys_net_read",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_write",
+      "symbol": "sys_net_write",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_shutdown",
+      "symbol": "sys_net_shutdown",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_dup",
+      "symbol": "sys_net_dup",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_address",
+      "symbol": "sys_net_address",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_set_no_delay",
+      "symbol": "sys_net_set_no_delay",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_set_keepalive",
+      "symbol": "sys_net_set_keepalive",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_set_buffer",
+      "symbol": "sys_net_set_buffer",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_set_broadcast",
+      "symbol": "sys_net_set_broadcast",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_bind_datagram",
+      "symbol": "sys_net_bind_datagram",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_receive",
+      "symbol": "sys_net_receive",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_send",
+      "symbol": "sys_net_send",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_state",
+      "symbol": "sys_net_state",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_watch",
+      "symbol": "sys_net_watch",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_modify",
+      "symbol": "sys_net_modify",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_remove",
+      "symbol": "sys_net_remove",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_timer",
+      "symbol": "sys_net_timer",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_cancel_timer",
+      "symbol": "sys_net_cancel_timer",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_wait",
+      "symbol": "sys_net_wait",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_wake",
+      "symbol": "sys_net_wake",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_stop",
+      "symbol": "sys_net_stop",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_cancel_request",
+      "symbol": "sys_net_cancel_request",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_net_cancel_pending",
+      "symbol": "sys_net_cancel_pending",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_resolve",
+      "symbol": "sys_resolve",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    }
+  ]
+}

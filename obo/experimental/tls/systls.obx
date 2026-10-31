@@ -1,0 +1,1492 @@
+// Experimental server-side TLS adapter (P2T-b).
+//
+// Status: experimental, hosted-only, no stable API/ABI. Server TLS 1.2/1.3 over
+// an owned sysstream::Stream using OpenSSL 3.0 memory BIOs. This module is the
+// ordinary obo wrapper; the C adapter under native/ never receives an obo
+// pointer and never returns an OpenSSL pointer. Close is explicit. No client
+// mode, HTTP, QUIC, tickets, resumption or 0-RTT is implemented here.
+//
+// See ../README.md, ../API.md and ../LIMITS.md. The authoritative design is
+// obo/design/tls-adapter-design.md.
+module systls
+
+import "sysplatform.obx" as platform
+import "sysstream.obx" as stream
+import "sysbytes.obx" as bytesbuf
+import "sysreactor.obx" as reactor
+import "sysclock.obx" as clock
+import "syserrors.obx" as errors
+
+pub const KIND_TLS_CONTEXT = platform::KIND_TLS_CONTEXT
+pub const KIND_TLS_SESSION = platform::KIND_TLS_SESSION
+
+pub const MAX_TRANSFER = 65536
+const ROLE_SERVER = 0
+const ROLE_CLIENT = 1
+const VERSION_12 = 0
+const VERSION_13 = 1
+const VERIFY_NONE = 0
+const VERIFY_OPTIONAL = 1
+const VERIFY_REQUIRED = 2
+
+const ALPN_DISABLED = 0
+const ALPN_PREFER = 1
+const ALPN_REQUIRE = 2
+
+const INFO_VERSION = 1
+const INFO_CIPHER = 2
+const INFO_ALPN = 3
+const INFO_SNI = 4
+const INFO_SUBJECT = 5
+const INFO_ISSUER = 6
+const INFO_SHA256 = 7
+const INFO_NOT_BEFORE = 8
+const INFO_NOT_AFTER = 9
+const INFO_PEER_PRESENT = 10
+const INFO_VERIFICATION = 11
+const INFO_VERIFY_CODE = 12
+const INFO_STATE = 13
+
+const STATE_NEW = 0
+const STATE_HANDSHAKING = 1
+const STATE_ESTABLISHED = 2
+const STATE_SEND_CLOSED = 3
+const STATE_RECV_CLOSED = 4
+const STATE_BOTH_CLOSED = 5
+const STATE_FAILED = 6
+const STATE_CLOSED = 7
+
+const FAIL_INVALID_ARGUMENT = 1
+const FAIL_RANGE = 2
+const FAIL_INVALID_RESOURCE = 3
+const FAIL_CLOSED = 4
+const FAIL_HANDSHAKE_FAILED = 5
+const FAIL_PROTOCOL_ALERT = 6
+const FAIL_PROTOCOL_VIOLATION = 7
+const FAIL_VERIFY_FAILED = 8
+const FAIL_NO_PEER_CERTIFICATE = 9
+const FAIL_CERTIFICATE_REJECTED = 10
+const FAIL_KEY_REJECTED = 11
+const FAIL_CONFIGURATION = 12
+const FAIL_ALPN_REQUIRED = 13
+const FAIL_NO_APPLICATION_PROTOCOL = 14
+const FAIL_ALPN_MISMATCH = 15
+const FAIL_TRUNCATED = 16
+const FAIL_NOT_READY = 17
+const FAIL_TRANSPORT = 18
+const FAIL_RESOURCE_LIMIT = 19
+const FAIL_BUSY = 20
+const FAIL_NOT_CONFIGURED = 21
+const FAIL_UNSUPPORTED = 22
+const FAIL_INTERNAL = 23
+
+const STEP_DONE = 1
+const STEP_WANT_READ = 2
+const STEP_WANT_WRITE = 3
+const SHUTDOWN_SENT = 2
+const SHUTDOWN_PEER_CLOSED = 3
+const SHUTDOWN_WANT_READ = 4
+const SHUTDOWN_WANT_WRITE = 5
+
+pub type TlsContext = ref record { pub res: platform::Resource }
+pub type TlsSession = ref record {
+    pub res: platform::Resource
+    transport: stream::Stream
+}
+
+pub type Role = closed { Server {} Client {} }
+pub type Version = closed { Tls12 {} Tls13 {} }
+pub type VerifyMode = closed { VerifyNone {} VerifyOptional {} VerifyRequired {} }
+pub type AlpnPolicy = closed {
+    Disabled {}
+    Prefer { protocols: []string }
+    Require { protocols: []string }
+}
+pub type ContextOptions = ref record {
+    pub role: Role
+    pub minVersion: Version
+    pub maxVersion: Version
+    pub verify: VerifyMode
+    pub alpn: AlpnPolicy
+    pub requireSni: bool
+    pub verifyDepth: int
+    pub maxSessions: int
+    pub maxHandshakeBytes: int
+    pub maxContextBytes: int
+}
+pub type ServerIdentity = closed {
+    Dns { name: string }
+    Ip { text: string }
+}
+
+pub type Want = closed { WantNone {} WantRead {} WantWrite {} WantReadWrite {} }
+pub type Step = closed { StepDone {} StepWantRead {} StepWantWrite {} }
+pub type ReadOutcome = closed {
+    ReadData { bytes: []byte; want: Want }
+    ReadEof { want: Want }
+    ReadWantRead {}
+    ReadWantWrite {}
+}
+pub type WriteOutcome = closed {
+    WriteWrote { count: int; want: Want }
+    WriteWantRead {}
+    WriteWantWrite {}
+}
+pub type FlushOutcome = closed { FlushDone {} FlushWantWrite {} }
+pub type ShutdownOutcome = closed {
+    ShutdownDone {}
+    ShutdownSent { want: Want }
+    ShutdownPeerClosed { want: Want }
+    ShutdownWantRead {}
+    ShutdownWantWrite {}
+}
+pub type Pending = ref record {
+    pub plaintext: int
+    pub ciphertext: int
+}
+
+pub type PeerVerification = closed {
+    NotRequested {}
+    Verified {}
+    Failed { code: int }
+}
+pub type PeerIdentity = ref record {
+    pub present: bool
+    pub verification: PeerVerification
+    pub subject: string
+    pub issuer: string
+    pub dnsNames: []string
+    pub ipAddresses: []string
+    pub notBefore: clock::Timestamp
+    pub notAfter: clock::Timestamp
+    pub sha256: []byte
+}
+pub type HandshakeInfo = ref record {
+    pub version: string
+    pub cipher: string
+    pub alpn: string
+    pub serverName: string
+    pub peer: PeerIdentity
+}
+
+pub type Counts = ref record {
+    pub liveContexts: int
+    pub liveSessions: int
+    pub handshakesStarted: int
+    pub handshakesCompleted: int
+    pub handshakeFailures: int
+    pub verifyFailures: int
+    pub alpnRejections: int
+    pub truncations: int
+    pub ciphertextPending: int
+    pub plaintextPending: int
+    pub contextBytes: int
+    pub maxContextBytes: int
+}
+pub type ContextCounts = ref record {
+    pub liveSessions: int
+    pub maxSessions: int
+    pub handshakesStarted: int
+    pub handshakesCompleted: int
+    pub handshakeFailures: int
+    pub bytesCharged: int
+    pub maxBytes: int
+    pub poisoned: bool
+}
+
+pub type Failure = closed {
+    InvalidArgument {}
+    Range {}
+    InvalidResource {}
+    Closed {}
+    HandshakeFailed {}
+    ProtocolAlert { description: int }
+    ProtocolViolation {}
+    VerifyFailed { verifyCode: int }
+    NoPeerCertificate {}
+    CertificateRejected {}
+    KeyRejected {}
+    Configuration {}
+    AlpnRequired {}
+    NoApplicationProtocol {}
+    AlpnMismatch {}
+    Truncated {}
+    NotReady {}
+    Transport { sysCode: int }
+    ResourceLimit {}
+    Busy {}
+    NotConfigured {}
+    Unsupported {}
+    Internal {}
+}
+
+fn tlsCode(kind: int, payload: int): int {
+    return kind * 16777216 + payload
+}
+
+fn text(code: int): string
+fn failure(code: int): Failure
+
+fn codeOf(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn isClosed(code: int): bool {
+    return code == codeOf(new errors::Closed{}) || code == tlsCode(FAIL_CLOSED, 0)
+}
+
+fn isWouldBlock(code: int): bool {
+    return errors::isWouldBlock(code)
+}
+
+fn mapSystem(code: int): int {
+    if code == codeOf(new errors::InvalidArgument{}) { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
+    if code == codeOf(new errors::Range{}) { return tlsCode(FAIL_RANGE, 0) }
+    if code == codeOf(new errors::InvalidResource{}) { return tlsCode(FAIL_INVALID_RESOURCE, 0) }
+    if code == codeOf(new errors::Closed{}) { return tlsCode(FAIL_CLOSED, 0) }
+    if code == codeOf(new errors::ResourceLimit{}) { return tlsCode(FAIL_RESOURCE_LIMIT, 0) }
+    if code == codeOf(new errors::LimitExceeded{}) { return tlsCode(FAIL_RESOURCE_LIMIT, 0) }
+    if code == codeOf(new errors::Busy{}) { return tlsCode(FAIL_BUSY, 0) }
+    if code == codeOf(new errors::Unsupported{}) { return tlsCode(FAIL_UNSUPPORTED, 0) }
+    return tlsCode(FAIL_TRANSPORT, code)
+}
+
+fn makeBytes(n: int): Result[bytesbuf::Bytes] {
+    let made = bytesbuf::create(n)
+    match made {
+        ok(b) { return ok(b) }
+        err(m, c) { return err("TLS byte buffer allocation failed", mapSystem(c)) }
+    }
+}
+
+fn bytesToken(b: &bytesbuf::Bytes): Result[int] {
+    let found = platform::_tokenHandle(handle(b.res), platform::KIND_BYTE_BUFFER)
+    match found {
+        ok(t) { return ok(t) }
+        err(m, c) { return err("TLS byte buffer identity is not valid", mapSystem(c)) }
+    }
+}
+
+fn copyInto(b: &bytesbuf::Bytes, src: &[]byte, count: int): Result[bool] {
+    let copied = bytesbuf::copyIn(b, src, 0, 0, count)
+    match copied {
+        ok(n) {
+            if n != count { return err("short copy into the TLS native buffer", tlsCode(FAIL_INTERNAL, 0)) }
+            return ok(true)
+        }
+        err(m, c) { return err("could not copy bytes into the TLS native buffer", mapSystem(c)) }
+    }
+}
+
+fn copyOut(b: &bytesbuf::Bytes, count: int): Result[[]byte] {
+    let out = new []byte(count)
+    let copied = bytesbuf::copyOut(b, &out, 0, 0, count)
+    match copied {
+        ok(n) {
+            if n != count { return err("short copy out of the TLS native buffer", tlsCode(FAIL_INTERNAL, 0)) }
+            return ok(out)
+        }
+        err(m, c) { return err("could not copy bytes out of the TLS native buffer", mapSystem(c)) }
+    }
+}
+
+fn contextToken(ctx: &TlsContext): Result[int] {
+    let found = platform::_tokenHandle(handle(ctx.res), KIND_TLS_CONTEXT)
+    match found {
+        ok(t) { return ok(t) }
+        err(m, c) { return err("TLS context is not a live registered context", mapSystem(c)) }
+    }
+}
+
+fn sessionToken(s: &TlsSession): Result[int] {
+    let found = platform::_tokenHandle(handle(s.res), KIND_TLS_SESSION)
+    match found {
+        ok(t) { return ok(t) }
+        err(m, c) { return err("TLS session is not a live registered session", mapSystem(c)) }
+    }
+}
+
+fn nativeFailure(code: int): string {
+    return text(code)
+}
+
+fn sessionError(tok: int, code: int): string {
+    let b = makeBytes(1024)
+    match b {
+        ok(buf) {
+            defer bytesbuf::close(&buf)
+            let bt = bytesToken(&buf)
+            match bt {
+                ok(token) {
+                    let n = __cinterop("tls_session_error_copy", tok, token, 1024)
+                    if n > 0 {
+                        let copied = copyOut(&buf, n)
+                        match copied { ok(out) { return string(out) } err(m, c) { } }
+                    }
+                }
+                err(m, c) { }
+            }
+        }
+        err(m, c) { }
+    }
+    return nativeFailure(code)
+}
+
+fn contextError(tok: int, code: int): string {
+    let b = makeBytes(1024)
+    match b {
+        ok(buf) {
+            defer bytesbuf::close(&buf)
+            let bt = bytesToken(&buf)
+            match bt {
+                ok(token) {
+                    let n = __cinterop("tls_context_error_copy", tok, token, 1024)
+                    if n > 0 {
+                        let copied = copyOut(&buf, n)
+                        match copied { ok(out) { return string(out) } err(m, c) { } }
+                    }
+                }
+                err(m, c) { }
+            }
+        }
+        err(m, c) { }
+    }
+    return nativeFailure(code)
+}
+
+fn roleCode(r: &Role): int {
+    match r {
+        Server { return ROLE_SERVER }
+        Client { return ROLE_CLIENT }
+    }
+}
+
+fn versionCode(v: &Version): int {
+    match v {
+        Tls12 { return VERSION_12 }
+        Tls13 { return VERSION_13 }
+    }
+}
+
+fn verifyCode(v: &VerifyMode): int {
+    match v {
+        VerifyNone { return VERIFY_NONE }
+        VerifyOptional { return VERIFY_OPTIONAL }
+        VerifyRequired { return VERIFY_REQUIRED }
+    }
+}
+
+fn alpnPolicyCode(p: &AlpnPolicy): int {
+    match p {
+        Disabled { return ALPN_DISABLED }
+        Prefer { return ALPN_PREFER }
+        Require { return ALPN_REQUIRE }
+    }
+}
+
+fn wantNone(): Want { return new WantNone{} }
+fn wantRead(): Want { return new WantRead{} }
+fn wantWrite(): Want { return new WantWrite{} }
+
+fn wantForPending(pending: int): Want {
+    if pending > 0 { return new WantWrite{} }
+    return new WantNone{}
+}
+
+fn stepDone(): Step { let v: Step = new StepDone{}; return v }
+fn stepWantRead(): Step { let v: Step = new StepWantRead{}; return v }
+fn stepWantWrite(): Step { let v: Step = new StepWantWrite{}; return v }
+
+fn readData(bytes: []byte, want: Want): ReadOutcome {
+    let v: ReadOutcome = new ReadData{bytes: bytes, want: want}
+    return v
+}
+fn readEof(want: Want): ReadOutcome {
+    let v: ReadOutcome = new ReadEof{want: want}
+    return v
+}
+fn readWantRead(): ReadOutcome { let v: ReadOutcome = new ReadWantRead{}; return v }
+fn readWantWrite(): ReadOutcome { let v: ReadOutcome = new ReadWantWrite{}; return v }
+
+fn writeWrote(count: int, want: Want): WriteOutcome {
+    let v: WriteOutcome = new WriteWrote{count: count, want: want}
+    return v
+}
+fn writeWantRead(): WriteOutcome { let v: WriteOutcome = new WriteWantRead{}; return v }
+fn writeWantWrite(): WriteOutcome { let v: WriteOutcome = new WriteWantWrite{}; return v }
+
+fn flushDone(): FlushOutcome { let v: FlushOutcome = new FlushDone{}; return v }
+fn flushWantWrite(): FlushOutcome { let v: FlushOutcome = new FlushWantWrite{}; return v }
+
+fn shutdownDone(): ShutdownOutcome { let v: ShutdownOutcome = new ShutdownDone{}; return v }
+fn shutdownSent(want: Want): ShutdownOutcome {
+    let v: ShutdownOutcome = new ShutdownSent{want: want}
+    return v
+}
+fn shutdownPeerClosed(want: Want): ShutdownOutcome {
+    let v: ShutdownOutcome = new ShutdownPeerClosed{want: want}
+    return v
+}
+fn shutdownWantRead(): ShutdownOutcome { let v: ShutdownOutcome = new ShutdownWantRead{}; return v }
+fn shutdownWantWrite(): ShutdownOutcome { let v: ShutdownOutcome = new ShutdownWantWrite{}; return v }
+
+fn pendingOutput(tok: int): Result[int] {
+    let n = __cinterop("tls_session_output_pending", tok)
+    if n < 0 { return err(sessionError(tok, 0 - n), 0 - n) }
+    return ok(n)
+}
+
+fn sessionState(tok: int): Result[int] {
+    let st = __cinterop("tls_session_info_scalar", tok, INFO_STATE)
+    if st < 0 { return err(sessionError(tok, 0 - st), 0 - st) }
+    return ok(st)
+}
+
+fn readyState(st: int): bool {
+    return st == STATE_ESTABLISHED || st == STATE_SEND_CLOSED ||
+           st == STATE_RECV_CLOSED || st == STATE_BOTH_CLOSED
+}
+
+fn activeState(st: int): bool {
+    return st == STATE_ESTABLISHED || st == STATE_SEND_CLOSED ||
+           st == STATE_RECV_CLOSED
+}
+
+pub fn serverOptions(): ContextOptions {
+    let protocols = new []string(0)
+    append(protocols, "http/1.1")
+    return new ContextOptions{
+        role: new Server{}
+        minVersion: new Tls12{}
+        maxVersion: new Tls13{}
+        verify: new VerifyNone{}
+        alpn: new Prefer{protocols: protocols}
+        requireSni: false
+        verifyDepth: 8
+        maxSessions: 256
+        maxHandshakeBytes: 1048576
+        maxContextBytes: 67108864
+    }
+}
+
+pub fn clientOptions(): ContextOptions {
+    let protocols = new []string(0)
+    append(protocols, "http/1.1")
+    return new ContextOptions{
+        role: new Client{}
+        minVersion: new Tls12{}
+        maxVersion: new Tls13{}
+        verify: new VerifyRequired{}
+        alpn: new Prefer{protocols: protocols}
+        requireSni: false
+        verifyDepth: 8
+        maxSessions: 64
+        maxHandshakeBytes: 1048576
+        maxContextBytes: 67108864
+    }
+}
+
+fn validateAlpn(p: &AlpnPolicy): int {
+    let policy = alpnPolicyCode(p)
+    match p {
+        Disabled { return tlsCode(0, 0) }
+        Prefer {
+            if len(p.protocols) < 1 || len(p.protocols) > 16 { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
+            var total = 0
+            for i in 0..len(p.protocols) {
+                let s = p.protocols[i]
+                if len(s) < 1 || len(s) > 255 { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
+                for j in 0..len(s) { if int(s[j]) == 0 { return tlsCode(FAIL_INVALID_ARGUMENT, 0) } }
+                for j in 0..i {
+                    if p.protocols[j] == s { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
+                }
+                total += len(s)
+            }
+            if total > 1024 { return tlsCode(FAIL_RESOURCE_LIMIT, 0) }
+            return tlsCode(0, 0)
+        }
+        Require {
+            if len(p.protocols) < 1 || len(p.protocols) > 16 { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
+            var total = 0
+            for i in 0..len(p.protocols) {
+                let s = p.protocols[i]
+                if len(s) < 1 || len(s) > 255 { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
+                for j in 0..len(s) { if int(s[j]) == 0 { return tlsCode(FAIL_INVALID_ARGUMENT, 0) } }
+                for j in 0..i {
+                    if p.protocols[j] == s { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
+                }
+                total += len(s)
+            }
+            if total > 1024 { return tlsCode(FAIL_RESOURCE_LIMIT, 0) }
+            return tlsCode(0, 0)
+        }
+    }
+}
+
+fn cloneAlpn(p: &AlpnPolicy): AlpnPolicy {
+    match p {
+        Disabled { return new Disabled{} }
+        Prefer {
+            var copy = new []string(0)
+            for i in 0..len(p.protocols) { append(copy, p.protocols[i]) }
+            return new Prefer{protocols: copy}
+        }
+        Require {
+            var copy = new []string(0)
+            for i in 0..len(p.protocols) { append(copy, p.protocols[i]) }
+            return new Require{protocols: copy}
+        }
+    }
+}
+
+fn validateOptions(o: &ContextOptions): int {
+    let r = roleCode(&o.role)
+    if r != ROLE_SERVER && r != ROLE_CLIENT { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
+    let mn = versionCode(&o.minVersion)
+    let mx = versionCode(&o.maxVersion)
+    if mn < VERSION_12 || mn > VERSION_13 { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
+    if mx < VERSION_12 || mx > VERSION_13 { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
+    if mn > mx { return tlsCode(FAIL_CONFIGURATION, 0) }
+    let v = verifyCode(&o.verify)
+    if v < VERIFY_NONE || v > VERIFY_REQUIRED { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
+    if r == ROLE_CLIENT && v == VERIFY_OPTIONAL { return tlsCode(FAIL_CONFIGURATION, 0) }
+    if r == ROLE_CLIENT && o.requireSni { return tlsCode(FAIL_CONFIGURATION, 0) }
+    if o.verifyDepth < 0 || o.verifyDepth > 16 { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
+    if o.maxSessions < 1 || o.maxSessions > 4096 { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
+    if o.maxHandshakeBytes < 16384 || o.maxHandshakeBytes > 8388608 {
+        return tlsCode(FAIL_INVALID_ARGUMENT, 0)
+    }
+    if o.maxContextBytes < 1048576 || o.maxContextBytes > 1073741824 {
+        return tlsCode(FAIL_INVALID_ARGUMENT, 0)
+    }
+    return validateAlpn(&o.alpn)
+}
+
+fn optionsPacket(o: &ContextOptions): Result[bytesbuf::Bytes] {
+    let b = try makeBytes(80)
+    let vals = new []int(0)
+    append(vals, roleCode(&o.role))
+    append(vals, versionCode(&o.minVersion))
+    append(vals, versionCode(&o.maxVersion))
+    append(vals, verifyCode(&o.verify))
+    if o.requireSni { append(vals, 1) } else { append(vals, 0) }
+    append(vals, o.verifyDepth)
+    append(vals, o.maxSessions)
+    append(vals, o.maxHandshakeBytes)
+    append(vals, o.maxContextBytes)
+    append(vals, 0)
+    for i in 0..len(vals) {
+        let wrote = bytesbuf::writeInt64(&b, i * 8, vals[i])
+        match wrote {
+            ok(n) { }
+            err(m, c) { bytesbuf::close(&b); return err("could not build TLS options", mapSystem(c)) }
+        }
+    }
+    return ok(b)
+}
+
+fn alpnPacket(p: &AlpnPolicy): Result[bytesbuf::Bytes] {
+    let policy = alpnPolicyCode(p)
+    var count = 0
+    var total = 0
+    match p {
+        Disabled { }
+        Prefer { count = len(p.protocols); for i in 0..len(p.protocols) { total += len(p.protocols[i]) } }
+        Require { count = len(p.protocols); for i in 0..len(p.protocols) { total += len(p.protocols[i]) } }
+    }
+    let size = 16 + count * 2 + total
+    let b = try makeBytes(size)
+    let w0 = bytesbuf::writeInt64(&b, 0, policy)
+    match w0 { ok(n) { } err(m, c) { bytesbuf::close(&b); return err("could not build ALPN policy", mapSystem(c)) } }
+    let w1 = bytesbuf::writeInt64(&b, 8, count)
+    match w1 { ok(n) { } err(m, c) { bytesbuf::close(&b); return err("could not build ALPN policy", mapSystem(c)) } }
+    var at = 16
+    match p {
+        Disabled { }
+        Prefer {
+            for i in 0..count {
+                let s = p.protocols[i]
+                let hi = bytesbuf::setByte(&b, at, (len(s) / 256) % 256)
+                match hi { ok(v) { } err(m, c) { bytesbuf::close(&b); return err("could not build ALPN policy", mapSystem(c)) } }
+                let lo = bytesbuf::setByte(&b, at + 1, len(s) % 256)
+                match lo { ok(v) { } err(m, c) { bytesbuf::close(&b); return err("could not build ALPN policy", mapSystem(c)) } }
+                at += 2
+                for j in 0..len(s) {
+                    let set = bytesbuf::setByte(&b, at, int(s[j]))
+                    match set { ok(okv) { } err(m, c) { bytesbuf::close(&b); return err("could not build ALPN policy", mapSystem(c)) } }
+                    at += 1
+                }
+            }
+        }
+        Require {
+            for i in 0..count {
+                let s = p.protocols[i]
+                let hi = bytesbuf::setByte(&b, at, (len(s) / 256) % 256)
+                match hi { ok(v) { } err(m, c) { bytesbuf::close(&b); return err("could not build ALPN policy", mapSystem(c)) } }
+                let lo = bytesbuf::setByte(&b, at + 1, len(s) % 256)
+                match lo { ok(v) { } err(m, c) { bytesbuf::close(&b); return err("could not build ALPN policy", mapSystem(c)) } }
+                at += 2
+                for j in 0..len(s) {
+                    let set = bytesbuf::setByte(&b, at, int(s[j]))
+                    match set { ok(okv) { } err(m, c) { bytesbuf::close(&b); return err("could not build ALPN policy", mapSystem(c)) } }
+                    at += 1
+                }
+            }
+        }
+    }
+    return ok(b)
+}
+
+
+pub fn setAlpn(ctx: &TlsContext, policy: &AlpnPolicy): Result[bool] {
+    let invalid = validateAlpn(policy)
+    if invalid != 0 { return err(nativeFailure(invalid), invalid) }
+    let tok = try contextToken(ctx)
+    let pb = try alpnPacket(policy)
+    defer bytesbuf::close(&pb)
+    let pt = try bytesToken(&pb)
+    let raw = __cinterop("tls_context_set_alpn", tok, pt)
+    if raw < 0 {
+        let code = 0 - raw
+        return err(contextError(tok, code), code)
+    }
+    return ok(true)
+}
+
+
+pub fn createContext(options: &ContextOptions): Result[TlsContext] {
+    let invalid = validateOptions(options)
+    if invalid != 0 { return err(nativeFailure(invalid), invalid) }
+    let init = __cinterop("tls_init")
+    if init < 0 { return err("OpenSSL could not be initialized for TLS", 0 - init) }
+    let pb = try optionsPacket(options)
+    defer bytesbuf::close(&pb)
+    let pt = try bytesToken(&pb)
+    let raw = __cinterop("tls_context_new", pt)
+    if raw < 0 { return err("TLS context could not be created", 0 - raw) }
+    let adopted = platform::_adoptToken(KIND_TLS_CONTEXT, raw)
+    match adopted {
+        ok(r) {
+            var ctx = new TlsContext{res: r}
+            let localAlpn = cloneAlpn(&options.alpn)
+            let alpnSet = setAlpn(&ctx, &localAlpn)
+            match alpnSet {
+                ok(done) { return ok(ctx) }
+                err(m, c) {
+                    let cl = platform::_closeHandle(handle(ctx.res), KIND_TLS_CONTEXT)
+                    match cl { ok(v) { } err(em, ec) { } }
+                    return err("TLS ALPN policy could not be applied", c)
+                }
+            }
+        }
+        err(m, c) {
+            return err("TLS context could not be registered", mapSystem(c))
+        }
+    }
+}
+
+fn loadPem(ctx: &TlsContext, pem: &[]byte, max: int, which: int): Result[bool] {
+    if len(pem) > max { return err("TLS PEM input exceeds the configured limit", tlsCode(FAIL_RANGE, 0)) }
+    let tok = try contextToken(ctx)
+    let b = try makeBytes(len(pem))
+    defer bytesbuf::close(&b)
+    let copied = try copyInto(&b, pem, len(pem))
+    let bt = try bytesToken(&b)
+    var raw = 0
+    if which == 0 { raw = __cinterop("tls_context_load_chain", tok, bt) }
+    if which == 1 { raw = __cinterop("tls_context_load_key", tok, bt) }
+    if which == 2 { raw = __cinterop("tls_context_set_trust", tok, bt) }
+    if which == 3 { raw = __cinterop("tls_context_use_system_trust", tok) }
+    if raw < 0 {
+        let code = 0 - raw
+        return err(contextError(tok, code), code)
+    }
+    if raw == 0 { return err("TLS configuration did not become ready", tlsCode(FAIL_CONFIGURATION, 0)) }
+    return ok(true)
+}
+
+pub fn loadCertificateChain(ctx: &TlsContext, pem: &[]byte): Result[bool] {
+    return loadPem(ctx, pem, 1048576, 0)
+}
+
+pub fn loadPrivateKey(ctx: &TlsContext, pem: &[]byte): Result[bool] {
+    return loadPem(ctx, pem, 65536, 1)
+}
+
+pub fn setTrustedCertificates(ctx: &TlsContext, pem: &[]byte): Result[bool] {
+    return loadPem(ctx, pem, 4194304, 2)
+}
+
+pub fn useSystemTrustStore(ctx: &TlsContext): Result[bool] {
+    let empty = new []byte(0)
+    return loadPem(ctx, &empty, 0, 3)
+}
+
+fn setVersion(ctx: &TlsContext, v: &Version, which: int): Result[bool] {
+    let tok = try contextToken(ctx)
+    let raw = __cinterop("tls_context_set_version", tok, which, versionCode(v))
+    if raw < 0 {
+        let code = 0 - raw
+        return err(contextError(tok, code), code)
+    }
+    return ok(true)
+}
+
+pub fn setMinVersion(ctx: &TlsContext, version: &Version): Result[bool] {
+    return setVersion(ctx, version, 0)
+}
+
+pub fn setMaxVersion(ctx: &TlsContext, version: &Version): Result[bool] {
+    return setVersion(ctx, version, 1)
+}
+
+fn validateList(items: &[]string): int {
+    if len(items) < 1 || len(items) > 64 { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
+    var total = 0
+    for i in 0..len(items) {
+        let s = items[i]
+        if len(s) < 1 || len(s) > 255 { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
+        for j in 0..len(s) {
+            let c = int(s[j])
+            if c < 0x21 || c > 0x7e { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
+            if c == 58 { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
+        }
+        total += len(s)
+    }
+    if total > 1024 { return tlsCode(FAIL_RESOURCE_LIMIT, 0) }
+    return 0
+}
+
+fn joinList(items: &[]string): string {
+    var out = ""
+    for i in 0..len(items) {
+        if i > 0 { out = out + ":" }
+        out = out + items[i]
+    }
+    return out
+}
+
+fn setList(ctx: &TlsContext, items: []string, which: int): Result[bool] {
+    let invalid = validateList(&items)
+    if invalid != 0 { return err(nativeFailure(invalid), invalid) }
+    let tok = try contextToken(ctx)
+    let s = joinList(&items)
+    let b = try makeBytes(len(s))
+    defer bytesbuf::close(&b)
+    let bytes = new []byte(len(s))
+    for i in 0..len(s) { bytes[i] = s[i] }
+    let copied = try copyInto(&b, &bytes, len(s))
+    let bt = try bytesToken(&b)
+    var raw = 0
+    if which == 2 { raw = __cinterop("tls_context_set_groups", tok, bt) }
+    if which == 0 || which == 1 { raw = __cinterop("tls_context_set_ciphers", tok, which, bt) }
+    if raw < 0 {
+        let code = 0 - raw
+        return err(contextError(tok, code), code)
+    }
+    return ok(true)
+}
+
+pub fn setCipherSuites(ctx: &TlsContext, suites: []string): Result[bool] {
+    return setList(ctx, suites, 0)
+}
+
+pub fn setCipherList(ctx: &TlsContext, ciphers: []string): Result[bool] {
+    return setList(ctx, ciphers, 1)
+}
+
+pub fn setGroups(ctx: &TlsContext, groups: []string): Result[bool] {
+    return setList(ctx, groups, 2)
+}
+
+pub fn accept(ctx: &TlsContext, transport: stream::Stream): Result[TlsSession] {
+    let tok = contextToken(ctx)
+    match tok {
+        err(m, c) {
+            let cl = stream::close(&transport)
+            return err("TLS context is not live", mapSystem(c))
+        }
+        ok(ct) {
+            let st = stream::source(&transport)
+            match st {
+                err(m, c) {
+                    let cl = stream::close(&transport)
+                    return err("TLS transport is not a live stream", mapSystem(c))
+                }
+                ok(source) {
+                    let raw = __cinterop("tls_session_new", ct)
+                    if raw < 0 {
+                        let cl = stream::close(&transport)
+                        let code = 0 - raw
+                        return err(contextError(ct, code), code)
+                    }
+                    let adopted = platform::_adoptToken(KIND_TLS_SESSION, raw)
+                    match adopted {
+                        ok(r) {
+                            return ok(new TlsSession{res: r, transport: transport})
+                        }
+                        err(m, c) {
+                            let cl = stream::close(&transport)
+                            return err("TLS session could not be registered", mapSystem(c))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn connect(ctx: &TlsContext, transport: stream::Stream,
+               identity: &ServerIdentity): Result[TlsSession] {
+    let tok = contextToken(ctx)
+    match tok {
+        err(m, c) {
+            let cl = stream::close(&transport)
+            return err("TLS context is not live", mapSystem(c))
+        }
+        ok(ct) {
+            let role = __cinterop("tls_context_role", ct)
+            let cl = stream::close(&transport)
+            if role == ROLE_SERVER {
+                return err("connect requires a client context", tlsCode(FAIL_CONFIGURATION, 0))
+            }
+            return err("TLS client mode is not implemented in P2T-b", tlsCode(FAIL_UNSUPPORTED, 0))
+        }
+    }
+}
+
+fn flushOne(s: &TlsSession, tok: int): Result[int] {
+    let b = try makeBytes(MAX_TRANSFER)
+    defer bytesbuf::close(&b)
+    let bt = try bytesToken(&b)
+    let n = __cinterop("tls_session_drain", tok, bt, MAX_TRANSFER)
+    if n < 0 {
+        let code = 0 - n
+        return err(sessionError(tok, code), code)
+    }
+    if n == 0 { return ok(STEP_DONE) }
+    let out = try copyOut(&b, n)
+    let wrote = stream::writeSomeHandle(handle(s.transport), &out, 0, n)
+    match wrote {
+        ok(written) {
+            if written < 0 || written > n {
+                let _ = __cinterop("tls_session_fail", tok)
+                return err("TLS transport reported an invalid write count", tlsCode(FAIL_INTERNAL, 0))
+            }
+            let committed = __cinterop("tls_session_commit", tok, written)
+            if committed < 0 {
+                return err("TLS ciphertext commit failed", 0 - committed)
+            }
+            if written < n { return ok(STEP_WANT_WRITE) }
+            let pending = try pendingOutput(tok)
+            if pending > 0 { return ok(STEP_WANT_WRITE) }
+            return ok(STEP_DONE)
+        }
+        err(m, c) {
+            if isWouldBlock(c) { return ok(STEP_WANT_WRITE) }
+            let _ = __cinterop("tls_session_fail", tok)
+            return err("TLS transport write failed", tlsCode(FAIL_TRANSPORT, c))
+        }
+    }
+}
+
+fn readTransportOne(s: &TlsSession, tok: int): Result[int] {
+    let got = stream::readSomeHandle(handle(s.transport), MAX_TRANSFER)
+    match got {
+        ok(chunk) {
+            if chunk == nil {
+                let _ = __cinterop("tls_session_eof", tok)
+                return ok(2)
+            } else {
+                let data: []byte = chunk
+                let b = try makeBytes(len(data))
+                defer bytesbuf::close(&b)
+                let copied = try copyInto(&b, &data, len(data))
+                let bt = try bytesToken(&b)
+                let fed = __cinterop("tls_session_feed", tok, bt, 0, len(data))
+                if fed < 0 {
+                    let code = 0 - fed
+                    return err(sessionError(tok, code), code)
+                }
+                if fed != len(data) {
+                    return err("TLS ciphertext feed was short", tlsCode(FAIL_INTERNAL, 0))
+                }
+                return ok(1)
+            }
+        }
+        err(m, c) {
+            if isWouldBlock(c) { return ok(3) }
+            let _ = __cinterop("tls_session_fail", tok)
+            return err("TLS transport read failed", tlsCode(FAIL_TRANSPORT, c))
+        }
+    }
+}
+
+pub fn handshakeStep(s: &TlsSession): Result[Step] {
+    let tok = try sessionToken(s)
+    var pending = try pendingOutput(tok)
+    if pending > 0 {
+        let flushed = try flushOne(s, tok)
+        if flushed == STEP_WANT_WRITE { return ok(stepWantWrite()) }
+    }
+    let st = try sessionState(tok)
+    if st == STATE_FAILED || st == STATE_CLOSED { return err("TLS session is closed", tlsCode(FAIL_CLOSED, 0)) }
+    if readyState(st) {
+        let left = try pendingOutput(tok)
+        if left > 0 { return ok(stepWantWrite()) }
+        return ok(stepDone())
+    }
+    let cipher = __cinterop("tls_session_ciphertext_pending", tok)
+    if cipher < 0 {
+        let code = 0 - cipher
+        return err(sessionError(tok, code), code)
+    }
+    if cipher == 0 {
+        let read = try readTransportOne(s, tok)
+        if read == 3 {
+            return ok(stepWantRead())
+        }
+    }
+    let raw = __cinterop("tls_session_handshake", tok)
+    if raw < 0 {
+        let code = 0 - raw
+        return err(sessionError(tok, code), code)
+    }
+    let left = try pendingOutput(tok)
+    if raw == STEP_DONE {
+        if left > 0 { return ok(stepWantWrite()) }
+        return ok(stepDone())
+    }
+    if raw == STEP_WANT_READ {
+        if left > 0 { return ok(stepWantWrite()) }
+        return ok(stepWantRead())
+    }
+    if raw == STEP_WANT_WRITE { return ok(stepWantWrite()) }
+    return err("TLS handshake returned an unknown step", tlsCode(FAIL_INTERNAL, 0))
+}
+
+pub fn readSome(s: &TlsSession, max: int): Result[ReadOutcome] {
+    if max < 1 || max > MAX_TRANSFER {
+        return err("readSome max must be 1..65536", tlsCode(FAIL_RANGE, 0))
+    }
+    let tok = try sessionToken(s)
+    let st = try sessionState(tok)
+    if st == STATE_NEW || st == STATE_HANDSHAKING {
+        return err("TLS handshake is not complete", tlsCode(FAIL_NOT_READY, 0))
+    }
+    if st == STATE_FAILED || st == STATE_CLOSED { return err("TLS session is closed", tlsCode(FAIL_CLOSED, 0)) }
+    var pending = try pendingOutput(tok)
+    if pending > 0 {
+        let flushed = try flushOne(s, tok)
+        if flushed == STEP_WANT_WRITE { return ok(readWantWrite()) }
+    }
+    let plain = __cinterop("tls_session_plaintext_pending", tok)
+    if plain < 0 {
+        let code = 0 - plain
+        return err(sessionError(tok, code), code)
+    }
+    if plain == 0 {
+        let cipher = __cinterop("tls_session_ciphertext_pending", tok)
+        if cipher < 0 {
+            let code = 0 - cipher
+            return err(sessionError(tok, code), code)
+        }
+        if cipher == 0 {
+            let read = try readTransportOne(s, tok)
+            if read == 3 { return ok(readWantRead()) }
+        }
+    }
+    let b = try makeBytes(max)
+    defer bytesbuf::close(&b)
+    let bt = try bytesToken(&b)
+    let raw = __cinterop("tls_session_read", tok, bt, max)
+    if raw < 0 {
+        let code = 0 - raw
+        return err(sessionError(tok, code), code)
+    }
+    let left = try pendingOutput(tok)
+    if raw > 0 {
+        let out = try copyOut(&b, raw)
+        return ok(readData(out, wantForPending(left)))
+    }
+    if raw == 0 {
+        return ok(readEof(wantForPending(left)))
+    }
+    if raw == STEP_WANT_READ {
+        if left > 0 { return ok(readWantWrite()) }
+        return ok(readWantRead())
+    }
+    if raw == STEP_WANT_WRITE { return ok(readWantWrite()) }
+    return err("TLS read returned an unknown status", tlsCode(FAIL_INTERNAL, 0))
+}
+
+pub fn writeSome(s: &TlsSession, bytes: &[]byte, offset: int, count: int): Result[WriteOutcome] {
+    if offset < 0 || count < 0 || offset > len(bytes) || count > len(bytes) - offset {
+        return err("writeSome source range is outside the array", tlsCode(FAIL_INVALID_ARGUMENT, 0))
+    }
+    if count > MAX_TRANSFER { return err("writeSome count must be 0..65536", tlsCode(FAIL_RANGE, 0)) }
+    let tok = try sessionToken(s)
+    let st = try sessionState(tok)
+    if st == STATE_NEW || st == STATE_HANDSHAKING {
+        return err("TLS handshake is not complete", tlsCode(FAIL_NOT_READY, 0))
+    }
+    if st == STATE_FAILED || st == STATE_CLOSED ||
+       st == STATE_SEND_CLOSED || st == STATE_BOTH_CLOSED {
+        return err("TLS session cannot write after local close", tlsCode(FAIL_CLOSED, 0))
+    }
+    if count == 0 {
+        let pending = try pendingOutput(tok)
+        return ok(writeWrote(0, wantForPending(pending)))
+    }
+    var pending = try pendingOutput(tok)
+    if pending > 0 {
+        let flushed = try flushOne(s, tok)
+        if flushed == STEP_WANT_WRITE { return ok(writeWantWrite()) }
+    }
+    let b = try makeBytes(count)
+    defer bytesbuf::close(&b)
+    let copied = try copyInto(&b, bytes, count)
+    let bt = try bytesToken(&b)
+    let raw = __cinterop("tls_session_write", tok, bt, offset, count)
+    if raw < 0 {
+        let code = 0 - raw
+        return err(sessionError(tok, code), code)
+    }
+    let left = try pendingOutput(tok)
+    if raw > 0 {
+        return ok(writeWrote(raw, wantForPending(left)))
+    }
+    if raw == STEP_WANT_READ {
+        if left > 0 { return ok(writeWantWrite()) }
+        return ok(writeWantRead())
+    }
+    if raw == STEP_WANT_WRITE { return ok(writeWantWrite()) }
+    return err("TLS write returned an unknown status", tlsCode(FAIL_INTERNAL, 0))
+}
+
+pub fn flush(s: &TlsSession): Result[FlushOutcome] {
+    let tok = try sessionToken(s)
+    let st = try sessionState(tok)
+    if st == STATE_NEW || st == STATE_HANDSHAKING {
+        return err("TLS handshake is not complete", tlsCode(FAIL_NOT_READY, 0))
+    }
+    if st == STATE_FAILED || st == STATE_CLOSED { return err("TLS session is closed", tlsCode(FAIL_CLOSED, 0)) }
+    let flushed = try flushOne(s, tok)
+    if flushed == STEP_WANT_WRITE { return ok(flushWantWrite()) }
+    return ok(flushDone())
+}
+
+pub fn shutdownStep(s: &TlsSession): Result[ShutdownOutcome] {
+    let tok = try sessionToken(s)
+    let st = try sessionState(tok)
+    if st == STATE_NEW || st == STATE_HANDSHAKING {
+        return err("TLS handshake is not complete", tlsCode(FAIL_NOT_READY, 0))
+    }
+    if st == STATE_FAILED || st == STATE_CLOSED { return err("TLS session is closed", tlsCode(FAIL_CLOSED, 0)) }
+    var pending = try pendingOutput(tok)
+    if pending > 0 {
+        let flushed = try flushOne(s, tok)
+        if flushed == STEP_WANT_WRITE { return ok(shutdownWantWrite()) }
+    }
+    let cipher = __cinterop("tls_session_ciphertext_pending", tok)
+    if cipher < 0 {
+        let code = 0 - cipher
+        return err(sessionError(tok, code), code)
+    }
+    if cipher == 0 {
+        let read = try readTransportOne(s, tok)
+        if read == 3 { return ok(shutdownWantRead()) }
+    }
+    let raw = __cinterop("tls_session_shutdown", tok)
+    if raw < 0 {
+        let code = 0 - raw
+        return err(sessionError(tok, code), code)
+    }
+    let left = try pendingOutput(tok)
+    if raw == 1 {
+        if left > 0 { return ok(shutdownWantWrite()) }
+        return ok(shutdownDone())
+    }
+    if raw == SHUTDOWN_SENT { return ok(shutdownSent(wantForPending(left))) }
+    if raw == SHUTDOWN_PEER_CLOSED { return ok(shutdownPeerClosed(wantForPending(left))) }
+    if raw == SHUTDOWN_WANT_READ {
+        if left > 0 { return ok(shutdownWantWrite()) }
+        return ok(shutdownWantRead())
+    }
+    if raw == SHUTDOWN_WANT_WRITE { return ok(shutdownWantWrite()) }
+    return err("TLS shutdown returned an unknown status", tlsCode(FAIL_INTERNAL, 0))
+}
+
+pub fn pending(s: &TlsSession): Result[Pending] {
+    let tok = try sessionToken(s)
+    let ct = __cinterop("tls_session_ciphertext_pending", tok)
+    if ct < 0 {
+        let code = 0 - ct
+        return err(sessionError(tok, code), code)
+    }
+    let pt = __cinterop("tls_session_plaintext_pending", tok)
+    if pt < 0 {
+        let code = 0 - pt
+        return err(sessionError(tok, code), code)
+    }
+    return ok(new Pending{plaintext: pt, ciphertext: ct})
+}
+
+pub fn want(s: &TlsSession): Result[Want] {
+    let tok = try sessionToken(s)
+    let st = try sessionState(tok)
+    if st == STATE_FAILED || st == STATE_CLOSED { return err("TLS session is closed", tlsCode(FAIL_CLOSED, 0)) }
+    let pending = try pendingOutput(tok)
+    if pending > 0 { return ok(wantWrite()) }
+    if st == STATE_ESTABLISHED || st == STATE_SEND_CLOSED || st == STATE_RECV_CLOSED {
+        return ok(wantRead())
+    }
+    return ok(wantNone())
+}
+
+fn infoString(tok: int, field: int, cap: int): Result[string] {
+    let b = try makeBytes(cap)
+    defer bytesbuf::close(&b)
+    let bt = try bytesToken(&b)
+    let n = __cinterop("tls_session_info_copy", tok, field, bt, cap)
+    if n < 0 {
+        let code = 0 - n
+        return err(sessionError(tok, code), code)
+    }
+    if n == 0 {
+        return ok("")
+    }
+    let out = try copyOut(&b, n)
+    return ok(string(out))
+}
+
+fn infoBytes(tok: int, field: int, cap: int): Result[[]byte] {
+    let b = try makeBytes(cap)
+    defer bytesbuf::close(&b)
+    let bt = try bytesToken(&b)
+    let n = __cinterop("tls_session_info_copy", tok, field, bt, cap)
+    if n < 0 {
+        let code = 0 - n
+        return err(sessionError(tok, code), code)
+    }
+    return copyOut(&b, n)
+}
+
+fn timestampOf(seconds: int, nanos: int): clock::Timestamp {
+    return new clock::Timestamp{seconds: seconds, nanos: nanos}
+}
+
+fn peerNames(tok: int, which: int): Result[[]string] {
+    let raw = __cinterop("tls_session_peer_count", tok, which)
+    if raw < 0 {
+        let code = 0 - raw
+        return err(sessionError(tok, code), code)
+    }
+    var out = new []string(0)
+    for i in 0..raw {
+        let b = try makeBytes(255)
+        defer bytesbuf::close(&b)
+        let bt = try bytesToken(&b)
+        let n = __cinterop("tls_session_peer_item", tok, which, i, bt, 255)
+        if n < 0 {
+            let code = 0 - n
+            return err(sessionError(tok, code), code)
+        }
+        if n > 0 {
+            let bytes = try copyOut(&b, n)
+            append(out, string(bytes))
+        }
+    }
+    return ok(out)
+}
+
+pub fn peerIdentity(s: &TlsSession): Result[PeerIdentity] {
+    let tok = try sessionToken(s)
+    let st = try sessionState(tok)
+    if !activeState(st) && st != STATE_BOTH_CLOSED {
+        return err("TLS handshake is not complete", tlsCode(FAIL_NOT_READY, 0))
+    }
+    let present = __cinterop("tls_session_info_scalar", tok, INFO_PEER_PRESENT)
+    let verification = __cinterop("tls_session_info_scalar", tok, INFO_VERIFICATION)
+    let verifyCodeValue = __cinterop("tls_session_info_scalar", tok, INFO_VERIFY_CODE)
+    if present < 0 { return err(sessionError(tok, 0 - present), 0 - present) }
+    if verification < 0 { return err(sessionError(tok, 0 - verification), 0 - verification) }
+    if verifyCodeValue < 0 { return err(sessionError(tok, 0 - verifyCodeValue), 0 - verifyCodeValue) }
+    var v: PeerVerification = new NotRequested{}
+    if verification == 1 { v = new Verified{} }
+    if verification == 2 { v = new Failed{code: verifyCodeValue} }
+    let subjectText = try infoString(tok, INFO_SUBJECT, 1024)
+    let issuerText = try infoString(tok, INFO_ISSUER, 1024)
+    let dns = try peerNames(tok, 1)
+    let ips = try peerNames(tok, 2)
+    let hash = try infoBytes(tok, INFO_SHA256, 32)
+    let beforeBytes = try infoBytes(tok, INFO_NOT_BEFORE, 16)
+    let afterBytes = try infoBytes(tok, INFO_NOT_AFTER, 16)
+    var beforeSec = 0
+    var beforeNanos = 0
+    var afterSec = 0
+    var afterNanos = 0
+    if len(beforeBytes) == 16 {
+        let bb = try makeBytes(16)
+        defer bytesbuf::close(&bb)
+        let copied = try copyInto(&bb, &beforeBytes, 16)
+        let s1 = bytesbuf::readInt64(&bb, 0)
+        let n1 = bytesbuf::readInt64(&bb, 8)
+        match s1 { ok(x) { beforeSec = x } err(m, c) { } }
+        match n1 { ok(x) { beforeNanos = x } err(m, c) { } }
+    }
+    if len(afterBytes) == 16 {
+        let ab = try makeBytes(16)
+        defer bytesbuf::close(&ab)
+        let copied = try copyInto(&ab, &afterBytes, 16)
+        let s2 = bytesbuf::readInt64(&ab, 0)
+        let n2 = bytesbuf::readInt64(&ab, 8)
+        match s2 { ok(x) { afterSec = x } err(m, c) { } }
+        match n2 { ok(x) { afterNanos = x } err(m, c) { } }
+    }
+    var presentBool = false
+    if present == 1 { presentBool = true }
+    return ok(new PeerIdentity{
+        present: presentBool
+        verification: v
+        subject: subjectText
+        issuer: issuerText
+        dnsNames: dns
+        ipAddresses: ips
+        notBefore: timestampOf(beforeSec, beforeNanos)
+        notAfter: timestampOf(afterSec, afterNanos)
+        sha256: hash
+    })
+}
+
+pub fn info(s: &TlsSession): Result[HandshakeInfo] {
+    let tok = try sessionToken(s)
+    let st = try sessionState(tok)
+    if !activeState(st) && st != STATE_BOTH_CLOSED {
+        return err("TLS handshake is not complete", tlsCode(FAIL_NOT_READY, 0))
+    }
+    let version = try infoString(tok, INFO_VERSION, 64)
+    let cipher = try infoString(tok, INFO_CIPHER, 128)
+    let alpnValue = try infoString(tok, INFO_ALPN, 255)
+    let sni = try infoString(tok, INFO_SNI, 255)
+    let peer = try peerIdentity(s)
+    return ok(new HandshakeInfo{
+        version: version
+        cipher: cipher
+        alpn: alpnValue
+        serverName: sni
+        peer: peer
+    })
+}
+
+pub fn alpn(s: &TlsSession): Result[string] {
+    let tok = try sessionToken(s)
+    return infoString(tok, INFO_ALPN, 255)
+}
+
+pub fn watch(s: &TlsSession, r: &reactor::Reactor, readable: bool, writable: bool,
+             tag: int): Result[reactor::Watch] {
+    let tok = try sessionToken(s)
+    let src = platform::_requireKindHandle(handle(s.transport.res), platform::KIND_STREAM)
+    match src {
+        ok(source) {
+            return reactor::watchResource(r, source, readable, writable, tag)
+        }
+        err(m, c) { return err("TLS session transport is not watchable", mapSystem(c)) }
+    }
+}
+
+pub fn maxTransfer(s: &TlsSession): int {
+    return MAX_TRANSFER
+}
+
+pub fn isSecure(s: &TlsSession): bool {
+    let tok = sessionToken(s)
+    match tok {
+        ok(t) {
+            let st = __cinterop("tls_session_info_scalar", t, INFO_STATE)
+            if st < 0 { return false }
+            return readyState(st)
+        }
+        err(m, c) { return false }
+    }
+}
+
+pub fn close(s: &TlsSession): Result[bool] {
+    let tr = stream::closeStream(handle(s.transport))
+    let cl = platform::_closeHandle(handle(s.res), KIND_TLS_SESSION)
+    match cl {
+        ok(v) {
+            match tr {
+                ok(tv) { return ok(v) }
+                err(tm, tc) { return err("TLS session transport close failed", mapSystem(tc)) }
+            }
+        }
+        err(cm, cc) {
+            if isClosed(cc) { return ok(false) }
+            return err("TLS session native close failed", mapSystem(cc))
+        }
+    }
+}
+pub fn closeContext(ctx: &TlsContext): Result[bool] {
+    let found = contextToken(ctx)
+    match found {
+        err(m, c) {
+            if isClosed(c) { return ok(false) }
+            return err("TLS context is not live", mapSystem(c))
+        }
+        ok(tok) {
+            let live = __cinterop("tls_context_live_sessions", tok)
+            if live < 0 {
+                let code = 0 - live
+                return err(contextError(tok, code), code)
+            }
+            if live > 0 { return err("TLS context still has live sessions", tlsCode(FAIL_BUSY, 0)) }
+            let cl = platform::_closeHandle(handle(ctx.res), KIND_TLS_CONTEXT)
+            match cl {
+                ok(v) { return ok(v) }
+                err(m, c) { return err("TLS context native close failed", mapSystem(c)) }
+            }
+        }
+    }
+}
+
+pub fn failure(code: int): Failure {
+    if code < 0 { return new Internal{} }
+    let kind = code / 16777216
+    let payload = code - kind * 16777216
+    if kind == FAIL_INVALID_ARGUMENT { return new InvalidArgument{} }
+    if kind == FAIL_RANGE { return new Range{} }
+    if kind == FAIL_INVALID_RESOURCE { return new InvalidResource{} }
+    if kind == FAIL_CLOSED { return new Closed{} }
+    if kind == FAIL_HANDSHAKE_FAILED { return new HandshakeFailed{} }
+    if kind == FAIL_PROTOCOL_ALERT { return new ProtocolAlert{description: payload} }
+    if kind == FAIL_PROTOCOL_VIOLATION { return new ProtocolViolation{} }
+    if kind == FAIL_VERIFY_FAILED { return new VerifyFailed{verifyCode: payload} }
+    if kind == FAIL_NO_PEER_CERTIFICATE { return new NoPeerCertificate{} }
+    if kind == FAIL_CERTIFICATE_REJECTED { return new CertificateRejected{} }
+    if kind == FAIL_KEY_REJECTED { return new KeyRejected{} }
+    if kind == FAIL_CONFIGURATION { return new Configuration{} }
+    if kind == FAIL_ALPN_REQUIRED { return new AlpnRequired{} }
+    if kind == FAIL_NO_APPLICATION_PROTOCOL { return new NoApplicationProtocol{} }
+    if kind == FAIL_ALPN_MISMATCH { return new AlpnMismatch{} }
+    if kind == FAIL_TRUNCATED { return new Truncated{} }
+    if kind == FAIL_NOT_READY { return new NotReady{} }
+    if kind == FAIL_TRANSPORT { return new Transport{sysCode: payload} }
+    if kind == FAIL_RESOURCE_LIMIT { return new ResourceLimit{} }
+    if kind == FAIL_BUSY { return new Busy{} }
+    if kind == FAIL_NOT_CONFIGURED { return new NotConfigured{} }
+    if kind == FAIL_UNSUPPORTED { return new Unsupported{} }
+    return new Internal{}
+}
+
+pub fn text(code: int): string {
+    let f = failure(code)
+    match f {
+        InvalidArgument { return "InvalidArgument" }
+        Range { return "Range" }
+        InvalidResource { return "InvalidResource" }
+        Closed { return "Closed" }
+        HandshakeFailed { return "HandshakeFailed" }
+        ProtocolAlert { return "ProtocolAlert(" + string(f.description) + ")" }
+        ProtocolViolation { return "ProtocolViolation" }
+        VerifyFailed { return "VerifyFailed(" + string(f.verifyCode) + ")" }
+        NoPeerCertificate { return "NoPeerCertificate" }
+        CertificateRejected { return "CertificateRejected" }
+        KeyRejected { return "KeyRejected" }
+        Configuration { return "Configuration" }
+        AlpnRequired { return "AlpnRequired" }
+        NoApplicationProtocol { return "NoApplicationProtocol" }
+        AlpnMismatch { return "AlpnMismatch" }
+        Truncated { return "Truncated" }
+        NotReady { return "NotReady" }
+        Transport { return "Transport(" + string(f.sysCode) + ")" }
+        ResourceLimit { return "ResourceLimit" }
+        Busy { return "Busy" }
+        NotConfigured { return "NotConfigured" }
+        Unsupported { return "Unsupported" }
+        Internal { return "Internal" }
+    }
+}
+
+pub fn verifyText(code: int): string {
+    let b = makeBytes(256)
+    match b {
+        ok(buf) {
+            defer bytesbuf::close(&buf)
+            let bt = bytesToken(&buf)
+            match bt {
+                ok(tok) {
+                    let n = __cinterop("tls_verify_text", code, tok, 256)
+                    if n > 0 {
+                        let copied = copyOut(&buf, n)
+                        match copied { ok(out) { return string(out) } err(m, c) { } }
+                    }
+                }
+                err(m, c) { }
+            }
+        }
+        err(m, c) { }
+    }
+    return "X509 verification error " + string(code)
+}
+
+
+pub fn counts(): Result[Counts] {
+    let b = try makeBytes(96)
+    defer bytesbuf::close(&b)
+    let bt = try bytesToken(&b)
+    let raw = __cinterop("tls_counts", bt)
+    if raw < 0 {
+        let code = 0 - raw
+        return err(nativeFailure(code), code)
+    }
+    var v = new []int(0)
+    for i in 0..12 {
+        let x = bytesbuf::readInt64(&b, i * 8)
+        match x { ok(n) { append(v, n) } err(m, c) { return err("TLS counts packet is malformed", mapSystem(c)) } }
+    }
+    return ok(new Counts{
+        liveContexts: v[0]
+        liveSessions: v[1]
+        handshakesStarted: v[2]
+        handshakesCompleted: v[3]
+        handshakeFailures: v[4]
+        verifyFailures: v[5]
+        alpnRejections: v[6]
+        truncations: v[7]
+        ciphertextPending: v[8]
+        plaintextPending: v[9]
+        contextBytes: v[10]
+        maxContextBytes: v[11]
+    })
+}
+
+pub fn contextCounts(ctx: &TlsContext): Result[ContextCounts] {
+    let tok = try contextToken(ctx)
+    let b = try makeBytes(64)
+    defer bytesbuf::close(&b)
+    let bt = try bytesToken(&b)
+    let raw = __cinterop("tls_context_counts", tok, bt)
+    if raw < 0 {
+        let code = 0 - raw
+        return err(contextError(tok, code), code)
+    }
+    var v = new []int(0)
+    for i in 0..8 {
+        let x = bytesbuf::readInt64(&b, i * 8)
+        match x { ok(n) { append(v, n) } err(m, c) { return err("TLS context counts packet is malformed", mapSystem(c)) } }
+    }
+    var poisoned = false
+    if v[7] == 1 { poisoned = true }
+    return ok(new ContextCounts{
+        liveSessions: v[0]
+        maxSessions: v[1]
+        handshakesStarted: v[2]
+        handshakesCompleted: v[3]
+        handshakeFailures: v[4]
+        bytesCharged: v[5]
+        maxBytes: v[6]
+        poisoned: poisoned
+    })
+}

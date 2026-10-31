@@ -1,0 +1,378 @@
+// P2T-b obo integration fixture: a local TLS echo server using only the
+// experimental public systls API. Test-only; not a production HTTP server.
+//
+// argv: PORT MODE CERT_PEM KEY_PEM [CA_PEM]
+// MODE: echo | h2 | require | clientcert
+module tls_echo_app
+
+import "systls.obx" as tls
+import "sysplatform.obx" as platform
+import "sysnet.obx" as net
+import "sysaddress.obx" as address
+import "sysreactor.obx" as reactor
+import "sysclock.obx" as clock
+import "sysstream.obx" as stream
+import "syserrors.obx" as errors
+
+fn parsePort(s: string): int {
+    var v = 0
+    for i in 0..len(s) {
+        let c = int(s[i])
+        if c < 48 || c > 57 { return -1 }
+        v = v * 10 + (c - 48)
+        if v > 65535 { return -1 }
+    }
+    return v
+}
+
+fn wantIsWrite(w: &tls::Want): bool {
+    match w {
+        WantWrite { return true }
+        WantNone { return false }
+        WantRead { return false }
+        WantReadWrite { return false }
+    }
+}
+
+fn waitRead(r: &reactor::Reactor, w: &reactor::Watch, dl: &clock::Deadline): Result[bool] {
+    let m = reactor::modify(w, true, false)
+    let changed = try m
+    let x = reactor::wait(r, dl, 1)
+    let events = try x
+    return ok(true)
+}
+
+fn waitWrite(r: &reactor::Reactor, w: &reactor::Watch, dl: &clock::Deadline): Result[bool] {
+    let m = reactor::modify(w, false, true)
+    let changed = try m
+    let x = reactor::wait(r, dl, 1)
+    let events = try x
+    return ok(true)
+}
+
+fn flushAll(s: &tls::TlsSession, r: &reactor::Reactor, w: &reactor::Watch,
+            dl: &clock::Deadline): Result[bool] {
+    var guard = 0
+    while guard < 1024 {
+        guard += 1
+        let fr = tls::flush(s)
+        let out = try fr
+        match out {
+            FlushDone { return ok(true) }
+            FlushWantWrite {
+                let waited = try waitWrite(r, w, dl)
+            }
+        }
+    }
+    return err("flush loop did not finish", 0)
+}
+
+fn writeAll(s: &tls::TlsSession, data: &[]byte, r: &reactor::Reactor,
+            w: &reactor::Watch, dl: &clock::Deadline): Result[bool] {
+    var at = 0
+    var guard = 0
+    while at < len(data) && guard < 4096 {
+        guard += 1
+        let wr = tls::writeSome(s, data, at, len(data) - at)
+        let out = try wr
+        match out {
+            WriteWrote {
+                let count = out.count
+                at += count
+                if wantIsWrite(&out.want) {
+                    let flushed = try flushAll(s, r, w, dl)
+                }
+            }
+            WriteWantRead {
+                let waited = try waitRead(r, w, dl)
+            }
+            WriteWantWrite {
+                let flushed = try flushAll(s, r, w, dl)
+            }
+        }
+    }
+    if at != len(data) { return err("write loop did not finish", 0) }
+    return ok(true)
+}
+
+fn driveHandshake(s: &tls::TlsSession, r: &reactor::Reactor,
+                  w: &reactor::Watch, dl: &clock::Deadline): Result[bool] {
+    var guard = 0
+    while guard < 4096 {
+        guard += 1
+        let hr = tls::handshakeStep(s)
+        let step = try hr
+        match step {
+            StepDone { return ok(true) }
+            StepWantRead {
+                let waited = try waitRead(r, w, dl)
+            }
+            StepWantWrite {
+                let waited = try waitWrite(r, w, dl)
+            }
+        }
+    }
+    return err("handshake loop did not finish", 0)
+}
+
+fn closeSession(s: &tls::TlsSession, r: &reactor::Reactor,
+                w: &reactor::Watch, dl: &clock::Deadline): Result[bool] {
+    var guard = 0
+    while guard < 64 {
+        guard += 1
+        let sr = tls::shutdownStep(s)
+        let out = try sr
+        match out {
+            ShutdownDone { return ok(true) }
+            ShutdownSent {
+                let flushed = try flushAll(s, r, w, dl)
+                return ok(true)
+            }
+            ShutdownPeerClosed {
+                let flushed = try flushAll(s, r, w, dl)
+                return ok(true)
+            }
+            ShutdownWantRead {
+                let waited = try waitRead(r, w, dl)
+            }
+            ShutdownWantWrite {
+                let flushed = try flushAll(s, r, w, dl)
+            }
+        }
+    }
+    return ok(false)
+}
+
+fn deadlineAfter(ms: int): clock::Deadline {
+    let now = clock::monotonic()
+    match now {
+        ok(n) {
+            let d = clock::durationMs(ms)
+            match d {
+                ok(dur) {
+                    let dl = clock::after(&n, &dur)
+                    match dl {
+                        ok(x) { return x }
+                        err(m, c) { }
+                    }
+                }
+                err(m, c) { }
+            }
+        }
+        err(m, c) { }
+    }
+    return clock::forever()
+}
+
+fn verificationText(v: &tls::PeerVerification): string {
+    match v {
+        NotRequested { return "not-requested" }
+        Verified { return "verified" }
+        Failed { return "failed" }
+    }
+}
+
+fn makeOptions(mode: string): tls::ContextOptions {
+    var opts = tls::serverOptions()
+    if mode == "h2" {
+        let p2 = new []string(0)
+        append(p2, "h2")
+        append(p2, "http/1.1")
+        opts.alpn = new tls::Prefer{protocols: p2}
+    }
+    if mode == "require" {
+        let p3 = new []string(0)
+        append(p3, "http/1.1")
+        opts.alpn = new tls::Require{protocols: p3}
+    }
+    if mode == "clientcert" {
+        opts.verify = new tls::VerifyRequired{}
+    }
+    return opts
+}
+
+fn run(): Result[bool] {
+    let av = args()
+    if len(av) < 5 { return err("usage: tls_echo_app PORT MODE CERT KEY [CA]", 2) }
+    let port = parsePort(av[1])
+    if port < 0 { return err("bad port", 2) }
+    let mode = av[2]
+    let certPath = av[3]
+    let keyPath = av[4]
+    var caPath = ""
+    if len(av) >= 6 { caPath = av[5] }
+
+    let po = platform::defaultOptions()
+    let init = platform::initialize(&po)
+    let started = try init
+
+    let opts = makeOptions(mode)
+    let ctx = try tls::createContext(&opts)
+    defer tls::closeContext(&ctx)
+    if mode == "policy" {
+        let v12 = new tls::Tls12{}
+        let mn = try tls::setMinVersion(&ctx, &v12)
+        let v13 = new tls::Tls13{}
+        let mx = try tls::setMaxVersion(&ctx, &v13)
+        let cs = new []string(0)
+        append(cs, "TLS_AES_128_GCM_SHA256")
+        let c1 = try tls::setCipherSuites(&ctx, cs)
+        let cl = new []string(0)
+        append(cl, "ECDHE-RSA-AES128-GCM-SHA256")
+        let c2 = try tls::setCipherList(&ctx, cl)
+        let gs = new []string(0)
+        append(gs, "X25519")
+        append(gs, "P-256")
+        let g = try tls::setGroups(&ctx, gs)
+        println("policy=ok")
+    }
+    if mode == "sys-trust" {
+        let st = tls::useSystemTrustStore(&ctx)
+        match st {
+            ok(v) { println("sys-trust=ok") }
+            err(m, c) { println("sys-trust=", tls::text(c)) }
+        }
+    }
+
+    let cert = readFile(certPath)
+    if cert == nil { return err("certificate file could not be read", 3) }
+    let certBytes: []byte = cert
+    let loadedChain = try tls::loadCertificateChain(&ctx, &certBytes)
+    let key = readFile(keyPath)
+    if key == nil { return err("private key file could not be read", 3) }
+    let keyBytes: []byte = key
+    let loadedKey = try tls::loadPrivateKey(&ctx, &keyBytes)
+    if len(caPath) > 0 {
+        let ca = readFile(caPath)
+        if ca == nil { return err("CA file could not be read", 3) }
+        let caBytes: []byte = ca
+        let trusted = try tls::setTrustedCertificates(&ctx, &caBytes)
+    }
+
+    let addr = try address::parseNumeric("127.0.0.1", port)
+    let lo = net::listenOptions()
+    let listener = try net::listen(&addr, &lo)
+    defer net::closeListener(&listener)
+    println("ready")
+
+    var conn: ?net::Connection = nil
+    var tries = 0
+    while conn == nil && tries < 20000 {
+        tries += 1
+        let ar = net::accept(&listener)
+        match ar {
+            ok(c) { conn = c }
+            err(m, c) {
+                if errors::isWouldBlock(c) {
+                    let sl = sleepMs(1)
+                } else {
+                    return err("accept failed", 3)
+                }
+            }
+        }
+    }
+    if conn == nil { return err("accept timed out", 3) }
+    let acceptedConn: net::Connection = conn
+    let transport = try net::intoStream(&acceptedConn)
+    let sess = try tls::accept(&ctx, transport)
+    defer tls::close(&sess)
+
+    let r = try reactor::create(8, 8)
+    defer reactor::close(&r)
+    let dl = deadlineAfter(15000)
+    let w = try tls::watch(&sess, &r, true, false, 1)
+    defer reactor::remove(&w)
+
+    let hs = try driveHandshake(&sess, &r, &w, &dl)
+    if !hs { return err("TLS handshake failed", 4) }
+
+    let info = try tls::info(&sess)
+    println("version=", info.version)
+    println("alpn=", info.alpn)
+    println("sni=", info.serverName)
+    println("peer=", info.peer.present)
+    println("verify=", verificationText(&info.peer.verification))
+    println("max-transfer=", tls::maxTransfer(&sess))
+    println("secure=", tls::isSecure(&sess))
+    let alpnOnly = try tls::alpn(&sess)
+    println("alpn2=", alpnOnly)
+    let vt = tls::verifyText(62)
+    if len(vt) > 0 { println("verify-text=ok") }
+    let wnt = try tls::want(&sess)
+    match wnt {
+        WantWrite { println("want=write") }
+        WantRead { println("want=read") }
+        WantNone { println("want=none") }
+        WantReadWrite { println("want=readwrite") }
+    }
+    if mode == "busy" {
+        let busyr = tls::closeContext(&ctx)
+        match busyr {
+            ok(v) { println("busy-close=", v) }
+            err(m, c) { println("busy=", tls::text(c)) }
+        }
+    }
+    let pemt = try tls::pending(&sess)
+    println("pending=", string(pemt.plaintext), ",", string(pemt.ciphertext))
+    let cc = try tls::contextCounts(&ctx)
+    println("ctx-live=", string(cc.liveSessions))
+
+    var eof = false
+    var guard = 0
+    while !eof && guard < 4096 {
+        guard += 1
+        let rr = tls::readSome(&sess, 65536)
+        match rr {
+            ok(out) {
+                match out {
+                    ReadData {
+                        let n = len(out.bytes)
+                        let copy = new []byte(n)
+                        for i in 0..n { copy[i] = out.bytes[i] }
+                        let written = try writeAll(&sess, &copy, &r, &w, &dl)
+                        if wantIsWrite(&out.want) {
+                            let flushed = try flushAll(&sess, &r, &w, &dl)
+                        }
+                    }
+                    ReadEof {
+                        println("eof")
+                        eof = true
+                        let cs = try closeSession(&sess, &r, &w, &dl)
+                    }
+                    ReadWantRead {
+                        let waited = try waitRead(&r, &w, &dl)
+                    }
+                    ReadWantWrite {
+                        let flushed = try flushAll(&sess, &r, &w, &dl)
+                    }
+                }
+            }
+            err(m, c) {
+                println("read-error=", tls::text(c))
+                eof = true
+            }
+        }
+    }
+
+    let sclosed = try tls::close(&sess)
+    let cclosed = try tls::closeContext(&ctx)
+    let sagain = try tls::close(&sess)
+    let cagain = try tls::closeContext(&ctx)
+    println("double-close=", sagain, ",", cagain)
+    let counts = try tls::counts()
+    println("counts=", string(counts.liveContexts), ",", string(counts.liveSessions),
+            ",", string(counts.handshakesCompleted), ",", string(counts.handshakeFailures),
+            ",", string(counts.ciphertextPending), ",", string(counts.plaintextPending))
+    return ok(true)
+}
+
+fn main() {
+    let result = run()
+    match result {
+        ok(v) { println("done") }
+        err(m, c) {
+            println("error=", m, " code=", string(c), " text=", tls::text(c))
+            exit(1)
+        }
+    }
+}
