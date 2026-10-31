@@ -1,7 +1,8 @@
 # Field visibility: private by default, `pub` per field
 
-Status: design only. No compiler, runtime, seed, test or `.sym` change is made
-by this note, and no version or symbol-format number is reserved.
+Status: design only, revision 2 after independent review (B1-B5, H1-H6). No
+compiler, runtime, seed, test or `.sym` change is made by this note, and no
+version or symbol-format number is reserved.
 
 Baseline: released `main` `34b798b` (`obo 0.11`, `SYM_FORMAT 6`, `SYM_ABI 1`).
 The compiler is `obo/src/obo.obo`; the library is `obo/lib/*.obx`.
@@ -20,7 +21,7 @@ the default.
 | Syntax | `pub name: T`; no `priv` keyword in source |
 | Mixed records | allowed; every field independently public or private |
 | `.sym` representation | public fields are typed `pub`; each private field is an opaque one-word `priv` or `priviface` slot |
-| Private field names/types in `.sym` | not emitted; `.sym` is not a confidentiality boundary, but this avoids needless leakage and hash churn |
+| Private field names/types in `.sym` | not emitted in the field list; `pf`/`pfree` summary paths may still name a private field (accepted v1 leak) |
 | External construction | only when **all** fields are `pub`; otherwise a module constructor is required |
 | Private field types | may be any type, including private named types; the export closure check skips private fields |
 | Interface-carrying hidden fields | encoded as `priviface` so the lambda/interface firewall stays sound in `--check` |
@@ -52,7 +53,8 @@ pub type Counter = ref record {
 
 `pub` is the same word already used for top-level declarations and methods; the
 scanner already emits `T_PUB`. `priv` is **not** a source keyword: `priv: int`
-is a field literally named `priv`, and remains private.
+is a field literally named `priv`, and remains private; `pub priv: int` and
+`pub priviface: int` are public fields with those names.
 
 A private field is accessible to every declaration in the defining **module**,
 not merely to methods of its own type. Functions, methods of other types,
@@ -135,10 +137,11 @@ Two honest options existed:
    names and types in every `.sym`, and forces private field types to be
    exportable because the reader cannot resolve a private named type.
 2. Emit private fields as opaque slots. This keeps implementation names and
-   types out of the interface, allows private field types to be genuinely
-   private, and keeps a private implementation change from changing the
-   interface hash. The cost is that the reader does not know a private field's
-   name or type.
+   types out of the field list, allows private field types to be genuinely
+   private, and keeps a field-list-only change from changing the interface
+   hash. Exported `pf`/`pfree` summaries can still expose a private field path
+   and therefore still change the hash (section 2.1). The cost is that the
+   reader does not know a private field's name or type.
 
 This design chooses **2**. `.sym` is an interface artifact and is already
 trusted build output, not a confidentiality boundary; but avoiding a leak is
@@ -147,11 +150,40 @@ the caller writes the field name in the access expression, and the diagnostic
 uses that spelling. Construction does not need the name either ("it has private
 fields").
 
-The consequence is deliberate: changing a private field's name or its type
-(while keeping one slot and the same `priv`/`priviface` class) does **not**
-change the interface hash. Changing the number or order of slots does, because
-it can change public offsets and external constructibility. That is the right
-interface boundary.
+The field-list consequence is deliberate: changing a private field's name or
+its type (while keeping one slot and the same `priv`/`priviface` class) does
+**not** change the interface hash *unless it changes an exported callable's
+summary*. Changing the number or order of slots does, because it can change
+public offsets and external constructibility.
+
+That qualification is required because summaries are not redacted in v1. An
+exported function that writes or replaces an owned private field records the
+field path in its `pfree`/`pf` row:
+
+```text
+pub type R = ref record { n: int; buf: []byte }   // both fields private
+pub fn reset(mut r: &R) { r.n = 0; r.buf = new []byte(0) }
+fn reset(mut p0: &R) pfree 0x1 pf 0 "=/buf"
+```
+
+`buf` is private, yet `"=/buf"` is in the interface. Consequences:
+
+- Renaming `buf` changes the exported summary, so the interface hash **does**
+  change, and must.
+- Renaming a private scalar that no exported summary names (for example `n`)
+  does not change the hash.
+- Changing a private field from owned to scalar (or the reverse) can add or
+  remove a `pf` row, so the hash changes.
+- `io::Reader::buf` and `io::Writer::buf` are the concrete private-field
+  examples: their exported methods carry `pf 0 "=/buf"` or `"!/buf"`.
+  `fs::Dir::buf` remains public in the v1 exception (section 10.2), but
+  `fs::next` carries the same `pf 0 "=/buf"` path; a public field in a summary
+  is the same hash category.
+
+Accept this leak for v1. Do **not** invent summary redaction, generic path
+names, or a second hash of private field identities. The summaries must remain
+exact for ownership checking; redacting a path would make the summary lie.
+Document that a private field name may appear in a `.sym` summary line.
 
 ## 3. Construction
 
@@ -278,14 +310,31 @@ private field were emitted as a bare `priv` int, `--check` would reconstruct the
 imported record as interface-free and could accept a program a full build
 rejects.
 
-The writer therefore emits `priviface` instead of `priv` when the live field
-carries an interface, recursively, at write time. The reader sets
-`Field.privateIface` on the placeholder; `containsIfaceIn` tests that flag before
-recursing into the placeholder type. The comparison uses
-`containsIfaceIn(liveField.typ)` for the live side and the parsed flag for the
-symbol side, so a source `Field.privateIface` need not be maintained. The flag
-is part of the interface hash. This is the minimum metadata needed to keep
-`--check` sound without exposing the hidden type.
+The writer therefore emits `priviface` instead of `priv` when the field carries
+an interface. The exact test is:
+
+```text
+field.privateIface || containsIface(field.typ)
+```
+
+The `privateIface` term is mandatory for parsed fields: a `.sym`-reconstructed
+private field has `typ == int` as its placeholder, so testing only
+`containsIface(field.typ)` would silently re-emit `priv` and lose the marker on
+`--reemit-sym`. The reader sets `Field.privateIface` on the placeholder;
+`containsIfaceIn` tests that flag before recursing into the placeholder type.
+`symCompareFields` compares the live side's `containsIface(liveField.typ)` with
+the **parsed flag** (not a recomputation from the parsed placeholder type).
+The flag is part of the interface hash. This is the minimum metadata needed to
+keep `--check` sound without exposing the hidden type.
+
+Each carrier query must start from a clean visited set. `containsIfaceIn` uses
+the global `ifaceSeen` list to terminate recursive records; call
+`containsIface` (which truncates `ifaceSeen` first, `obo.obo:1399-1403`) for
+each field, or explicitly truncate before each `containsIfaceIn` query. Calling
+the recursive helper directly across fields leaks visited state: if a private
+field `b: B` is checked first and B's traversal visits C, then a second private
+field `c: C` would be marked plain `priv` instead of `priviface`. The fixture in
+section 11.3 covers exactly this order.
 
 No other field-type property is needed across the boundary:
 
@@ -315,8 +364,9 @@ Reasons:
   pattern or make the variant partially un-matchable, which needs a new
   exhaustiveness/privacy design.
 - The motivating cases for this change are stateful library records
-  (`Reader`, `Dir`, `Connection`, `Html`), not closed unions. Variant data is
-  usually intentionally public.
+  (`Reader`, `Writer`, `Connection`, `Html`), not closed unions. Variant data is
+  usually intentionally public. (`fs::Dir` stays a public-field v1 exception;
+  see section 10.2.)
 
 Therefore:
 
@@ -353,11 +403,15 @@ rules. Inside an owned `T` method, a field cannot be moved out directly; use
 
 A public method and a private field may not have the same name on the same
 receiver type (the existing field/method collision rule applies to all fields,
-public or private). An external call `x.privateName()` must not accidentally
-report "field, not method" and reveal a private field; it reports the ordinary
-no-exported-member diagnostic. In `--check` the opaque slot has no name, so the
-same path reports "no field" unless the method exists; the implementation should
-normalize this at `methodCall` (section 8).
+public or private). An external call `x.privateName()` must not report
+`type '<q>' has a field '<f>', not a method` and reveal a private field. It
+reports this exact diagnostic, identical in a full build and in `--check`:
+
+`type '<q>' has no public field or exported method '<f>' (only 'pub' declarations are visible outside module '<m>'; mark the field 'pub' or add a public method)`
+
+The full build knows the private field; `--check` knows the type has private
+slots. `methodCall` uses the same branch for both when no exported method exists
+and the type has private fields (section 8).
 
 ### 6.2 Interfaces and external implementations
 
@@ -418,20 +472,25 @@ make `^T` invalid. Dead-handle and origin checks are unchanged.
 
 The experimental `Connection { tok: int }`, `Rows { tok: int }`,
 `Buffer { tok: int }`, sqlite `Connection`/`Stmt`, and future DB wrapper records
-should make `tok` private. External code can then no longer write
-`new Connection{tok: 123}` at all; it must go through `connect`/`exec`/the
-module's constructors. This is a real improvement over the current comment
-"record fields are not private", because a guessed or copied integer can no
-longer be wrapped in the public type by an importer.
+should make `tok` private. External code can then no longer *accidentally* write
+`new Connection{tok: 123}`; it must use `connect`/`exec`/the module's
+constructors.
 
-It is **not** a capability or security boundary:
+This is **not** a capability or security boundary, and the doc must not claim
+that forging becomes impossible:
 
+- Keep `buffer::wrap(tok)` as an explicit raw-token constructor. A module may
+  deliberately expose a raw-token constructor; that is an API decision, not a
+  language hole. `wrap` remains the documented escape for tests and callers who
+  already have a token.
 - Code in the defining module (including a test helper) can still construct a
   token value.
 - C code and the trusted registry remain the authority for stale, wrong-kind and
   forged integers; `cres_peek` still validates the live bit, generation and
   kind.
-- The token is still an integer, not an unforgeable capability.
+- The token is still an integer, not an unforgeable capability. Private fields
+  reduce accidental construction; they do not stop a copied integer from being
+  wrapped by `wrap` or by same-module code.
 
 Tests can still exercise forged/stale tokens without a language escape hatch:
 
@@ -480,11 +539,17 @@ Rules:
 
 - Public fields are `pub name: Type`, in declaration order.
 - A private field is exactly one `priv` token, or `priviface` if its hidden type
-  contains an interface.
+  contains an interface. The writer's exact test is
+  `field.privateIface || containsIface(field.typ)`, so a parsed placeholder
+  keeps its marker through `--reemit-sym`; each carrier query uses
+  `containsIface` (clean visited set), never a cross-field
+  `containsIfaceIn` call.
 - Bare `name: Type` is an error in a format 7 record definition. This is a
   deliberate strictness, so every public field is visibly public.
-- Closed variants use `pub` on every field; `priv`/`priviface` there is an
-  error.
+- In the `.sym` writer, closed variants emit `pub` on every field; `priv`/
+  `priviface` there is an error. This is a format requirement only: source
+  variant fields are never annotated, and `pub` in source is rejected
+  (section 5). Migration must not add `pub` to variant source fields.
 - Shells (`type T uid ...`) have no fields and no visibility marker.
 - Interfaces have no fields; their members are unchanged.
 - A definition still lists fields in declaration order, and offsets are
@@ -493,12 +558,17 @@ Rules:
   typ: tInt, offset: 8 * index}` for a private slot. Empty names never match a
   source identifier; `fieldIndex` therefore ignores them naturally.
 - `symCompareFields` requires: same count; for a private slot, both sides
-  private, same offset and the same carrier answer (`containsIfaceIn` on the
-  live field type versus the parsed `privateIface`); for a public field, same
-  name, same type and same offset, and both public. A live public field against
-  a parsed private slot (or the reverse) is `symDisagree`.
+  private, same offset and the same carrier answer (`containsIface` on the live
+  field type versus the **parsed** `privateIface` flag, not a recomputation
+  from the parsed placeholder); for a public field, same name, same type and
+  same offset, and both public. A live public field against a parsed private
+  slot (or the reverse) is `symDisagree`.
 - Duplicate public field names remain an error. Private slots have no names, so
   there is no duplicate-name case for them; their count is positional.
+- `pub priv: int` and `pub priviface: int` are ordinary public fields named
+  `priv`/`priviface`. The leading `pub` disambiguates them from the private
+  markers; the reader must accept both, and canonical re-emission must preserve
+  them byte-for-byte (section 11.3).
 - Unknown field markers, `priv` with a following name or `:`, `priviface` in a
   variant, and a missing `pub` on a non-private field are all malformed
   symbol-file errors with line:col.
@@ -512,9 +582,16 @@ The body after `interface` includes the field markers, so:
 - adding/removing a private slot changes it (the token appears/disappears, and
   public offsets or external constructibility may change);
 - changing a private field's name or its type while keeping one `priv` slot and
-  the same `priviface` class does **not** change it;
+  the same `priviface` class does **not** change it *if no exported callable's
+  summary names that field*;
+- renaming or retyping a private field that appears in an exported `pf`/`pfree`
+  path **does** change it; for example `io::Reader/Writer.buf` must change the
+  hash when its name or ownership changes (`fs::Dir.buf` is public in v1 but
+  appears in `fs::next`'s summary and is the same path category);
 - changing a private field into an interface carrier (or back) changes it
   because the marker changes;
+- `pfree`/`pf` summary paths are not redacted: a private field name can appear
+  in the interface, and that leak is accepted in v1;
 - private implementation types that are not fields of an exported record do not
   appear at all;
 - `depiface` propagates any of these changes to dependents.
@@ -590,15 +667,16 @@ points, not a contract.
 
 | Area | Change | Anchor |
 |---|---|---|
-| Field model | add `private: bool`, `privateIface: bool` to `Field` | `type Field`, 1235 |
+| Field model | add `private: bool`, `privateIface: bool` to `Field` (16 bytes/Field; function-type parameters share `Field`) | `type Field`, 1235; `fnAddParam`, 1305 |
 | Source parser | `fieldList` parses optional `T_PUB` before a name group; all names in the group share visibility | `fieldList`, 4944 |
 | Record vs variant | `typeDecl` calls `fieldList(rec, true)` for records and `fieldList(v, false)` for variants; variant mode forces public and `pub` there is the exact error | `typeDecl`, 4981; variants 5048-5055 |
 | Field lookup | `fieldIndex` ignores private placeholder names (empty); a real private name is found in a full build and then rejected by visibility; add `hasPrivateFields` for the check-mode diagnostic | `fieldIndex`, 1519 |
 | Designator access | after `fieldIndex`, reject a foreign private field before `load`; this covers read/write/borrow/move paths; a missing name on a type with private slots uses the same diagnostic | `designatorT`, 7279-7287 |
-| Method collision | do not report a foreign private field as "field, not method"; report the no-public-field/no-exported-member path | `methodCall`, 7425 |
+| Method collision | do not report a foreign private field as "field, not method"; use the one section 9 message when no exported method exists and the type has private fields, identical in full build and `--check` | `methodCall`, 7425 |
 | Construction | after resolving `T` and before `RT_ALLOC_RECORD`, refuse a foreign type with any private field; check the whole record, not the given fields | `newExpr`, 7450-7485 |
 | Export closure | `closureCheck` skips private fields; public fields and variants unchanged | `closureCheck`, 11013; `checkExports`, 11058 |
-| Interface carrier | `containsIfaceIn` consults `Field.privateIface` for reconstructed types; live source types still recurse through real types | `containsIfaceIn`, ~1420 |
+| Interface carrier | `containsIfaceIn` consults `Field.privateIface` for reconstructed types; live source types still recurse through real types; each per-field query starts with `containsIface`/a truncate | `containsIface`/`containsIfaceIn`, 1399-1439 |
+| Writer carrier | emit `priviface` when `field.privateIface || containsIface(field.typ)` | `appFields`, 11792 |
 | Writer | `appFields` emits `pub` on public fields, `priv`/`priviface` on private; variants always `pub`; `appTypeDef` passes the variant flag | `appFields`, 11792; `appTypeDef`, 11871 |
 | Sym reader | `symFieldList` parses `pub`/`priv`/`priviface`; private slot is a one-word placeholder; variant mode rejects private markers | `symFieldList`, 12449 |
 | Sym comparison | compare count, private/privateIface, offsets; public names/types; no placeholder type comparison | `symCompareFields`, 12470 |
@@ -609,13 +687,20 @@ points, not a contract.
 | `--reemit-sym` | no code change beyond the writer/reader; add round-trip tests | existing path |
 | Dependency scan | none; header/import parsing is unaffected | `--deps` |
 
-The compiler has no AST: the parser writes directly into the `Field` list. The
-new flag is one word per field in the compiler's arena, and the code additions
-are a few branches. The current 0.11 self-compile peak is about `2,085,872`
-bytes live with `413,728` bytes spare under the `2,500,000` cap. Expected
-impact is roughly `+10,000` to `+25,000` bytes peak (flags, parser branches,
-writer/reader branches, diagnostics); measure at the stage checkpoint and do not
-trim other features. No runtime change is expected.
+The compiler has no AST: the parser writes directly into the `Field` list.
+Adding `private` and `privateIface` costs **16 bytes per `Field`** (the two
+booleans plus alignment), not one word. `Field` is also used for a function
+type's parameters (`fnType`/`fnAddParam` at `obo.obo:1297-1313`), so every
+function-type parameter pays the same cost, not just record fields. This is a
+compiler-memory cost only; it does not change the program ABI or a record's
+layout.
+
+The current 0.11 self-compile peak is about `2,085,872` bytes live with
+`413,728` bytes spare under the `2,500,000` cap. Expected impact is roughly
+`+10,000` to `+30,000` bytes peak (16-byte `Field`s, parser branches,
+writer/reader branches, diagnostics); measure at the stage checkpoint,
+including the function-type-parameter population, and do not trim other
+features. No runtime change is expected.
 
 Suggested ordering (one feature in flight):
 
@@ -637,6 +722,7 @@ spelling the caller wrote.
 | Private field write | same message (visibility is checked at field resolution, before the write) |
 | Private field borrow | same message |
 | Private field move/`take`/`replace` | same message |
+| Private field used as a method (`x.privateName()`) | `type '<q>' has no public field or exported method '<f>' (only 'pub' declarations are visible outside module '<m>'; mark the field 'pub' or add a public method)` |
 | Construction with any private field | `cannot construct '<q>' outside its module: it has private fields; add a constructor function in module '<m>'` |
 | `pub` on a variant field | `'pub' is not allowed on a variant field; variant fields are always public` |
 | `pub` on a field of a private type | allowed; no diagnostic |
@@ -673,13 +759,32 @@ A mechanical recount at this base gives:
   `.obx`/`.obo`: `9` in `obo/lib` (the 10th grep hit in `html.obx` is a
   comment), `90` in `obo/tests`, `4` in `obo/experimental`, and `0` in
   `obo/cmd`, `obo/examples` and `obo/src`.
-- `72` cross-module record constructions (`new alias::T{...}`): `3` in
-  `obo/cmd/eza.obx` (`cli::FlagSpec`, two `fs::DirEntry`), `69` in tests. The
-  brief's "143 records / ~51 uses" is a tracking estimate; the command below is
-  the reproducible count and should be rerun at implementation because tests
-  will have changed.
-- `154` total `pub type` lines, of which `103` are record definitions and the
-  rest are closed types, interfaces, aliases and forward declarations.
+- `71` real cross-module record constructions (`new alias::T{...}`): `3` in
+  `obo/cmd/eza.obx` (`cli::FlagSpec`, two `fs::DirEntry`) and `68` in tests.
+  The raw grep split is `69` tests + `3` cmd = `72`; one of those 69 test hits
+  is a comment in `obo/tests/mutate_fork.py:661`, not a construction site. So
+  the real split is `68` tests + `3` cmd = `71`; do not count the comment as a
+  migration site.
+- `147` total `pub type` lines in `.obx`/`.obo` (anchored `^pub type `), of
+  which `103` are record definitions and the rest are closed types, interfaces,
+  aliases and forward declarations. The earlier `154` came from an unanchored
+  grep that counted scanner keyword strings and comments.
+- Embedded Python test sources add `28` record definitions and `22` construction
+  sites matching `new lib::...{`. That 28/22 is the column-0 fixture scope; a
+  broader alias count finds 30 constructions and 40 definition lines in `.py`
+  because it includes one-line dict fixtures and comments. Both scopes must be
+  audited; the implementation migration list should name the files
+  (`sym_test.py`, `float_f1.py`, `sym_fuzz.py`, and any mutate script).
+- There are `95` committed `.sym` files: `3` goldens under
+  `tests/modules/golden/expected` (regenerable with `sym_test.py --update`) and
+  `92` hand-written/controlled fixtures under `tests/modules/sym/*/symdir`
+  (not an `--update` target; see step 6).
+- The existing wrong-format fixture
+  `tests/modules/sym/format/symdir/lib.sym` uses `obosym 7`, and
+  `tests/modules/sym/format/expect` expects `has format 7; this compiler reads
+  6`. If the next free format for this feature is 7, move that fixture to
+  `obosym 8` and update the expect line and `sym_test.py` constants/messages;
+  otherwise leave it as the next-future-format probe.
 - Single-file tests with `type` (not `pub`) do not need field changes because
   their fields are used in the same module.
 - The compiler itself (`obo/src/obo.obo`) is one module and has no `pub type`,
@@ -698,19 +803,19 @@ rg -n '^pub type ' obo --glob '*.obx' --glob '*.obo'
 | Record | Fields today | Decision | Work |
 |---|---|---|---|
 | `io::Reader` | `fd`, `buf`, `pos`, `size`, `hitEof` | **private** | `newReader` exists; public methods already cover reading. No field access needed by importers. |
-| `io::Writer` | `fd`, `buf`, `size` | **private** | `newWriter` exists. Move `fmt::writePadded`'s buffer loop back into `io` as `pub fn writePadded(mut w: &Writer, n: int, width: int): Result[bool]` (or add a public `appendPadded`); update `fmt` to call it. Do not expose `buf`/`size`. |
+| `io::Writer` | `fd`, `buf`, `size` | **private + accessor** | `newWriter` exists. Add `pub fn bufferedBytes(w: &Writer): int` and migrate `tests/lib/write_byte.obx`'s two `len(w.buf)` checks to it. Move `fmt::writePadded`'s buffer loop into `io` as `pub fn writePadded(mut w: &Writer, n: int, width: int): Result[bool]`; keep `fmt::writePadded` as a delegating wrapper or update `wc`/tests. Do not expose `buf`/`size`. |
 | `cli::FlagSpec` | short/long/mode/consume/accept/choices/default | **keep public** | Configuration data; external construction in `eza::mkSpec` is intentional. Adding a constructor for eight fields would be boilerplate with no invariant. |
 | `cli::Option` | short/long/value/hasValue | **keep public** | Result data read by `eza::deduce`. A field is not state to protect; accessors would add ~10 call-site changes with no benefit. |
 | `cli::Parsed` | options/operands | **keep public** | Same: plain result data; `eza` reads `options`/`operands` directly. |
 | `fs::Stat` | 14 stat fields | **keep public** | Plain OS data returned by `stat`; accessor explosion, and callers read subsets. `lstat`/`stat` are the constructors. |
 | `fs::DirEntry` | name/ino/kind | **keep public** | A scratch in/out record: `eza` constructs it and `fs::next` fills it. A private version needs a mutable accessor protocol for no safety gain. |
-| `fs::Dir` | fd/path/buf/text/pos/used/eof/size | **private** | `open`/`next`/`close` are the API; importers only pass `&Dir`. This is the strongest stdlib win. |
-| `html::Html` | text | **private + `raw`** (recommended; see 10.4) | `raw`, `escapeText`, `escapeAttr`, `validateUrl`, `join` construct; add a read accessor or `toText` for rendering. Update `html_escape.obx` direct-construction test to an error/`raw`. |
-| `libpq::Connection`, `Rows`, `Buffer`, `Demo` | tok | **private** | Module constructors produce them; `tok` is a registry handle. |
+| `fs::Dir` | fd/path/buf/text/pos/used/eof/size | **keep public (v1 exception)** | `tests/meta/crafted.obx:59` constructs `new fs::Dir{...}` with a crafted buffer to exercise `fs::next`'s error branches. A test-only constructor or mutable accessor protocol is not worth it in v1; document `Dir` as a deliberate exception. Its `buf` still appears in `next`'s `pf` summary (section 2.1). |
+| `html::Html` | text | **private + `raw`** (decided; see 10.4) | `raw`, `escapeText`, `escapeAttr`, `validateUrl`, `join` construct; add `toText` for rendering. Update `html_escape.obx` direct-construction test to `raw`, and update `lib/html.obx`'s comment. |
+| `libpq::Connection`, `Rows`, `Buffer`, `Demo` | tok | **private, except deliberate raw constructors** | Module constructors produce them; `tok` is a registry handle. Keep `buffer::wrap(tok)` as the documented raw-token constructor; the C registry remains the security boundary. |
 | sqlite `Connection`, `Stmt` | tok | **private** | Same. |
 | postgres `Connection`, `Rows` | tok | **private** | Same. |
 | postgres `Param` | kind/i/data | **private** | `param_null`/`param_int`/`param_bool`/`param_text`/`param_blob` already construct; `exec` reads inside the module. |
-| test fixtures | varied | **add `pub` mechanically** unless the test is specifically about privacy | 90 definitions; most are one-line records. Add `pub` to every field to preserve old behavior, then add the new negative fixtures separately. |
+| test fixtures | varied | **add `pub` to record fields only** unless the test is specifically about privacy | 90 `.obx` definitions plus 28 embedded Python definitions. Closed-variant fields are already public: do **not** add `pub` to them. Add `pub` to record fields to preserve old behavior, then add the new negative fixtures separately. |
 
 The rule of thumb: **data records whose fields are the API stay public; records
 whose fields are invariants/state become private.** Public fields are still a
@@ -718,9 +823,16 @@ deliberate API commitment; default-private makes that commitment visible.
 
 ### 10.3 Mechanical audit and migration procedure
 
-1. **Inventory.** Run the three `rg` commands above. Save the list of record
-   definitions and constructor sites in the implementation commit message or a
-   scratch file (not a generated source file).
+1. **Inventory.** Run the `rg` commands above over `.obx`/`.obo`. Repeat inside
+   Python test sources for embedded fixture text:
+   ```sh
+   rg -n '^pub type [A-Za-z0-9_]* = ref record' obo/tests --glob '*.py'
+   rg -n 'new lib::[A-Z][A-Za-z0-9_]*\{' obo/tests --glob '*.py'
+   ```
+   Save the list of record definitions and constructor sites in the
+   implementation commit message or a scratch file (not a generated source
+   file). Remember that the `.py` definitions are inside strings and are
+   compiled by the tests that write them.
 2. **Find external field uses.** For each shipping record, search its field
    names in importers:
    ```sh
@@ -730,30 +842,43 @@ deliberate API commitment; default-private makes that commitment visible.
 3. **Classify** each record with the table above. When in doubt, keep a plain
    data record public rather than inventing accessors; when the field is an
    invariant (fd, buffer, iterator position, registry token), make it private
-   and add/find a function.
-4. **Annotate shipping records** with `pub` on the fields that remain API. Add
-   constructors/accessors for private ones. Update `fmt` for `Writer`, and
-   `html` tests for `Html`.
-5. **Annotate test fixtures.** For `run/` and `sym/` fixtures that intentionally
-   use cross-module fields, add `pub` to the fields. For fixtures that only use
-   the record in its own module, no annotation is needed. Add new `errors/`
-   fixtures for the privacy diagnostics; do not weaken existing tests by
-   changing an error fixture into a run fixture.
-6. **Regenerate goldens.** Update `tests/modules/golden/expected/*.sym`,
-   `tests/modules/sym/*` expectations, `sym_test.py` constants and any
-   `OBO_VERSION`/`SYM_FORMAT` assertions. Use `--update` only after reviewing a
-   deliberate writer diff.
+   and add/find a function. Keep `fs::Dir` public in v1.
+4. **Annotate shipping records** with `pub` on the record fields that remain
+   API. Add constructors/accessors for private ones. Update `fmt`/`io` for
+   `Writer`, `tests/lib/write_byte.obx` for `bufferedBytes`, and `html` tests
+   for `Html`.
+5. **Annotate test fixtures.** For `run/`, `sym/` and embedded Python fixtures
+   that intentionally use cross-module record fields, add `pub` to **record**
+   fields. Do not add `pub` to closed-variant fields: they are already public
+   and the parser rejects `pub` there. For fixtures that only use the record in
+   its own module, no annotation is needed. Add new `errors/` fixtures for the
+   privacy diagnostics; do not weaken existing tests by changing an error
+   fixture into a run fixture.
+6. **Regenerate symbol files.** The `3` goldens under
+   `tests/modules/golden/expected/*.sym` are regenerable with
+   `sym_test.py --update` after reviewing a deliberate writer diff. The `92`
+   files under `tests/modules/sym/*/symdir` are hand-written/controlled
+   fixtures: migrate them with a scripted, reviewed rewrite for the field
+   markers plus targeted hash/format edits, not with `--update`. Also update
+   `sym_test.py` constants/assertions, the `tests/modules/sym/format` expect
+   line, and the `obosym 7` fixture if 7 becomes the real format (move it to 8).
 7. **Docs.** Update `LANGUAGE.md` sections 1, 3, 5a and 6 (record fields,
-   construction, methods/exports, `.sym` grammar and module errors), every
-   doc example that constructs an imported record, and `HISTORY.md`/`FORK.md`
-   release notes at implementation. This design file stays as the rationale.
-8. **Gate.** `module_test.py`, `sym_test.py`, `doc_check.py`, `port_compare.py`,
+   construction, methods/exports, `.sym` grammar and module errors), the §10
+   compile-error table (new visibility/construction/variant rows), every doc
+   example that constructs an imported record, `lib/html.obx`'s public-field
+   comment, and `HISTORY.md`/`FORK.md`. Update the root `README.md` version and
+   live-peak metrics table. Fix the stale `LANGUAGE.md` `--version` text
+   (`obo 0.9 sym-format 5`) while editing §6 if the format bump makes it cheap;
+   otherwise leave it for the version-update commit and report it.
+8. **Gate.** `module_test.py`, `sym_test.py`, `meta_test.py`, `io_test.py`,
+   `sym_fuzz.py`, `float_f1.py`, `doc_check.py`, `stdlib.py`/eza, `port_compare.py`,
    the peak budget, the mutant matrix and the eza golden suite. The compiler
    self-host and fixed point are mandatory.
 
-### 10.4 Html: recommendation and the approved template design
+### 10.4 Html: decided private `text`, and the approved template design
 
-The approved template design (`template-literals-design.md`, revision 3) says:
+**Decision: private `text`.** The approved template design
+(`template-literals-design.md`, revision 3) currently says:
 
 - `Html` is an ordinary standard-library record with **public fields**, so
   `new Html{text: ...}` is legal and is exactly an explicit raw operation;
@@ -796,12 +921,17 @@ Template lowering implications:
 - Tests that currently do `new html::Html{text: ...}` become `html::raw(...)`;
   tests that read `h.text` use `html::toText(h)` or `join`.
 
-If reviewers prefer to preserve the approved wording, the alternative is a
-documented exception: `Html.text` stays `pub` and the record is listed as a
-"public-field data type" in the migration table. That keeps the template design
-unchanged and accepts that accidental construction remains. Recommendation:
-take the private-field revision, and record it explicitly in the template
-design's status line when this lands.
+This decision revises the approved template design's public-field sentence; the
+revision must be recorded in that design's status line when this lands. The old
+public-field option is rejected, not held open: it would keep accidental
+construction and retain the only reason `Html` appeared in this migration table
+as a public-field exception.
+
+Also update the comment block in `obo/lib/html.obx:14-21`, which currently says
+`pub type Html = ref record { text: string }` and "`new html::Html{text: ...}`
+is legal". It becomes a private-field record with `raw` as the explicit trusted
+constructor; the trust-by-convention wording stays, but the direct-construction
+sentence goes.
 
 ### 10.5 Compatibility policy
 
@@ -821,12 +951,15 @@ This is a breaking language release, not a compatibility shim release:
   compiler cannot read new `.sym` files and vice versa.
 
 Migration size estimate: 9 stdlib record definitions plus 4 experimental
-wrapper records (with 2 non-trivial code changes: `io::Writer` buffer helper and
-`html::Html` access), 72 constructor sites (69 tests, 3 `cmd/eza`), up to 90
-test definitions to annotate (only those whose fields cross a module boundary),
-~95 golden `.sym` files to regenerate, plus doc examples and new fixtures. Most
-of it is mechanical; the risk is in the two non-trivial library changes and in
-missing a cross-module field use in a test that only fails at the gate.
+wrapper records (with three non-trivial code changes: `io::Writer`
+accessor/padded-write helper, `fmt` delegation, and `html::Html` access), 71 real
+constructor sites (68 tests, 3 `cmd/eza`; one comment is not a site), 90 `.obx`
+test definitions plus 28 embedded Python definitions and 22 embedded Python
+`new lib::` sites, 3 regenerable goldens plus 92 hand-written `.sym` fixtures,
+plus doc examples and new fixtures. Keep `fs::Dir` public in v1 rather than
+adding a test-only constructor. Most of it is mechanical; the risk is in the
+library changes and in missing a cross-module field use in a test that only
+fails at the gate.
 
 ## 11. Tests, docs and mutation targets
 
@@ -857,6 +990,14 @@ missing a cross-module field use in a test that only fails at the gate.
   fixture below.
 - `field_visibility_html` (after migration): `raw`, `escapeText`, `join`,
   `toText`; the direct-construction negative is its own error fixture.
+- `field_visibility_pf_leak`: B1's both-directions fixture. `pub type R = ref
+  record { buf: []byte; n: int }` (both private) and
+  `pub fn reset(mut r: &R) { r.buf = new []byte(0); r.n = 0 }` produce
+  `type R = ref record { priv; priv }` and
+  `fn reset(mut p0: &R) pfree 0x1 pf 0 "=/buf"`. Renaming `n` keeps the
+  interface hash; renaming `buf` changes it. The fixture also asserts that
+  `"=/buf"` (the private name) is present in the summary and is accepted, not
+  redacted.
 
 ### 11.2 Negative module fixtures (`tests/modules/errors/`)
 
@@ -871,9 +1012,10 @@ missing a cross-module field use in a test that only fails at the gate.
 - `field_private_variant_pub`: `pub` on a variant field.
 - `field_public_private_type`: a `pub` field of a private named type still gets
   the existing closure error.
-- `field_private_method`: calling a private method (or a private field as a
-  method) is the no-public-field/no-exported-member diagnostic, not "field, not
-  method".
+- `field_private_method`: calling a private field as a method gets the exact
+  section 9 message
+  `type '<q>' has no public field or exported method '<f>' (only 'pub' declarations are visible outside module '<m>'; mark the field 'pub' or add a public method)`,
+  identical in a full build and in `--check`, not `has a field, not a method`.
 - `field_private_handle`: `h.priv` is the access error.
 - `field_private_interface_capture`: the `priviface` capture rejection, both
   full build and `--check`.
@@ -886,20 +1028,48 @@ missing a cross-module field use in a test that only fails at the gate.
 - A private-first/middle/last layout: `pub` offsets and private slot count.
 - Canonical output always writes `pub`; a bare-field hand-written input is
   rejected.
+- `pub priv: int` and `pub priviface: int` round-trip: the reader accepts them
+  as public fields named `priv`/`priviface`, and canonical re-emission is
+  byte-identical (H4).
 - `priv` with a name/colon, `priviface` in a variant, unknown marker: exact
   malformed-symbol messages with line:col.
 - Duplicate public field remains an error; private slots have no duplicate-name
   case.
 - Interface hash: public↔private changes it; a private slot count/order change
-  changes it; a private name/type change with the same class does not;
-  `priviface` changes it; `depiface` updates.
+  changes it; a private name/type change with the same class does **not** change
+  it *if no exported summary names the field*, and **does** change it when a
+  `pf`/`pfree` path names the field (B1 fixture); `priviface` changes it;
+  `depiface` updates.
 - Full build disagreement: mutate `pub`↔`priv` or `priv`↔`priviface`, rehash,
   and get `symDisagree`.
+- **B2 byte-identical re-emission with `priviface`:** build a module with a
+  private interface-carrying field, run `--reemit-sym`, and compare all bytes.
+  The writer's `field.privateIface || containsIface(field.typ)` term is what
+  keeps the marker from degrading to `priv`; a test that reads the re-emitted
+  file and checks the marker catches its removal.
+- **B2 `--check` capture rejection from the re-emitted file:** delete the
+  dependency source, use the re-emitted `.sym`, and confirm that a lambda
+  capture/function type that carries the private interface field is rejected
+  exactly as in the full build.
+- **B1 concrete library summaries:** build `io.obx` and `fs.obx` after the
+  migration and assert `io.sym` still has `pf 0 "=/buf"`/`"!/buf"` for the
+  Reader/Writer methods and `fs.sym` still has `pf 0 "=/buf"` for `next`;
+  `fs::Dir.buf` remains public in the v1 exception, but the summary path is
+  unchanged and exposed.
+- **B3 multi-field carrier visited state:** define
+  `type C = ref record { s: Shape }`, `type B = ref record { c: C }`, and
+  `pub type A = ref record { b: B; c: C }` with both fields private. `B`'s
+  traversal visits `C`; the second field `c` must still be `priviface`, not
+  `priv`. Assert the `.sym` field list is `{ priviface; priviface }`. A
+  cross-field `containsIfaceIn` call with a stale `ifaceSeen` fails this.
 - `--check` from a source-less dependency with mixed records: public access and
   all-public construction pass; private access/construction fail; private
   carrier capture fails.
 - Old format 6 rejection (exact message), and `--version` reports the next free
-  numbers.
+  numbers. If the next real format is 7, update the existing
+  `tests/modules/sym/format` probe from `obosym 7` to `obosym 8` and its expect
+  line to `has format 8; this compiler reads 7`; do not leave the probe equal
+  to the new real format.
 - A tampered visibility change without rehashing is caught by the interface
   hash; a rehashed one is accepted by `--check` and documented as trusted-input
   behavior.
@@ -909,10 +1079,24 @@ missing a cross-module field use in a test that only fails at the gate.
 - Update `LANGUAGE.md` examples and add runnable examples for:
   `pub` field, private field access error, factory construction, and the `.sym`
   field grammar. `doc_check.py` must compile every `// example: runs` block.
+  Add the new visibility/construction/variant rows to the §10 compile-error
+  table.
 - Update `HISTORY.md`/`FORK.md` release notes and the `.sym` example in
-  `LANGUAGE.md` section 6.
+  `LANGUAGE.md` section 6. Document that `pfree`/`pf` summary paths may name a
+  private field and that this leak is accepted. Update the root `README.md`
+  version and live-peak metrics table. Fix the stale `LANGUAGE.md` `--version`
+  text (`obo 0.9 sym-format 5`) if the same edit touches §6.
+- Update `obo/lib/html.obx:14-21`: remove the public-field/direct-construction
+  sentence and describe private `text` plus `raw` as the explicit trusted
+  constructor.
 - `module_test.py` gains the new `run/`/`errors/` directories automatically;
   no harness change unless a fixture needs an `includes` file.
+- Gates: `meta_test.py`, `io_test.py`, `sym_test.py`, `sym_fuzz.py`,
+  `float_f1.py`, `module_test.py`, `doc_check.py`, `stdlib.py`/eza,
+  `port_compare.py`, the peak budget, the mutant matrix and the eza golden
+  suite. `io_test.py` covers the `Writer` accessor/`write_byte` change;
+  `meta_test.py` covers the public `fs::Dir` craft fixture; `sym_fuzz.py` and
+  `float_f1.py` cover the embedded Python fixture sources.
 - `port_compare.py` must show the compiler self-host, fixed point, and no
   memory regression beyond the measured delta under `2,500,000`.
 - `peak_budget.py` remains unchanged; record the measured baseline delta.
@@ -922,11 +1106,13 @@ missing a cross-module field use in a test that only fails at the gate.
   - construction check removed,
   - `closureCheck` traversing private fields (should fail the private-type
     fixture),
-  - `symCompareFields` ignoring visibility/`priviface`,
-  - writer omitting `pub` or `priv`,
+  - `symCompareFields` ignoring visibility/`priviface` or recomputing from the
+    parsed placeholder,
+  - writer omitting `pub`/`priv`, or dropping the `field.privateIface` OR term,
   - reader accepting a bare field as public,
   - placeholder offset computed wrong,
-  - `containsIfaceIn` ignoring `privateIface`.
+  - `containsIfaceIn` ignoring `privateIface`, or a per-field query that does
+    not truncate `ifaceSeen`.
 - `stdlib.py`/`eza` golden suite: the stdlib migration must keep byte output
   identical; `fmt`/`io` changes are the only behavior-adjacent ones.
 
@@ -955,52 +1141,69 @@ missing a cross-module field use in a test that only fails at the gate.
   Could come later only with a deliberate module-system design.
 - **Keep all fields public and rely on lint.** Rejected: not enforceable by the
   compiler, and the user decision explicitly asks for compiler semantics.
-- **Emit all field names/types in `.sym` for simpler diagnostics.** Rejected in
-  favor of opaque slots; the caller's spelling is enough for diagnostics, and
-  hidden types should stay hidden. Could be revisited if tooling needs a
-  separate debug artifact, but not in the interface file.
+- **Emit all field names/types in the `.sym` field list for simpler
+  diagnostics.** Rejected in favor of opaque slots; the caller's spelling is
+  enough for diagnostics, and hidden types should stay hidden in the field
+  list. This does not redact `pf`/`pfree` summary paths: those can still name a
+  private field, and v1 accepts that leak (section 2.1). Could be revisited if
+  tooling needs a separate debug artifact, but not in the interface file.
 - **Private fields in closed variants in v1.** Rejected/deferred; see section 5.
   It is a complete alternative but doubles the pattern/construction/`.sym`
   surface for little current benefit.
 
-## 13. Open choices and recommendations
+## 13. Resolved decisions
 
-The default-private decision is settled. These are implementation choices that
-need a user/reviewer confirmation; each has a recommendation.
+These were open in the first revision; they are settled and are not reopened by
+this note.
 
-1. **Html.** Recommend private `text` + public `raw`/escapers/`toText`, and
-   record the revision in the template design. Alternative: keep `pub text` as
-   a documented public-data exception. (Section 10.4.)
-2. **Mixed-record `.sym`.** Recommend opaque `priv`/`priviface` slots as
-   specified. Alternative: full field emission, which is simpler but leaks
-   private types and forces the old closure rule. (Section 2.)
-3. **Private field types.** Recommend relaxing the closure rule and allowing
-   private named types in private fields. Confirm that the `priviface` marker is
-   the only cross-boundary type property needed. (Section 4.)
-4. **Stdlib data records.** Recommend keeping `FlagSpec`, `Option`, `Parsed`,
-   `Stat`, `DirEntry` public; make `Reader`, `Writer`, `Dir`, `Html` and
-   token-bearing wrappers private. Confirm this split. (Section 10.2.)
-5. **Version coordination.** Recommend no reservation: take the next free
-   format for this feature, or one shared bump with `^I` if they land together.
-   (Section 7.6.)
-6. **`pub` on a field of a private type.** Recommend allow silently; confirm
-   that no warning is wanted. (Section 1.1.)
+1. **Html.** Private `text` plus public `raw`/escapers/`toText`; the approved
+   template design's public-field sentence is explicitly revised. (Section
+   10.4.)
+2. **Mixed-record `.sym`.** Opaque `priv`/`priviface` slots as specified,
+   with the `pf`/`pfree` private-name leak accepted for v1. (Sections 2 and
+   2.1.)
+3. **Private field types.** Closure relaxation accepted; private named types
+   are allowed in private fields, with `priviface` as the only cross-boundary
+   carrier property. (Section 4.)
+4. **Stdlib data records.** Keep `FlagSpec`, `Option`, `Parsed`, `Stat`,
+   `DirEntry` public; keep `fs::Dir` public as a v1 worked exception; make
+   `io::Reader`, `io::Writer` (with `bufferedBytes`), `html::Html`, and
+   token-bearing wrappers private. Keep `buffer::wrap` as an explicit raw-token
+   constructor. (Section 10.2.)
+5. **Version coordination.** No reservation: take the next free format for this
+   feature, or one shared bump with `^I` if they land together. (Section 7.6.)
+6. **`pub` on a field of a private type.** Allowed silently, no warning.
+   (Section 1.1.)
 
 ## 14. Acceptance checklist
 
 - [ ] A record field is private by default; `pub name: T` makes it public.
 - [ ] Inside the module all fields are accessible; outside only `pub` fields.
 - [ ] Mixed records preserve offsets; `.sym` has `pub` and `priv`/`priviface`
-      slots and round-trips canonically.
+      slots and round-trips canonically, including `pub priv:` and
+      `pub priviface:` and a byte-identical re-emitted `priviface`.
 - [ ] External `new` is refused when any field is private; the factory pattern
       is documented and tested.
 - [ ] Private field types may be private; public fields still pass the closure
       check.
-- [ ] Closed variant fields stay public; `pub` there is the exact error.
+- [ ] Private field names/types that do not affect an exported summary keep the
+      interface hash; those that change a `pf`/`pfree` path change it. The
+      accepted private-name leak in summaries is documented.
+- [ ] Carrier checks truncate the visited set per field; the B3 two-field
+      fixture emits `priviface; priviface`.
+- [ ] Closed variant fields stay public; `pub` there is the exact error, and
+      migration does not add `pub` to variant fields.
 - [ ] Methods, interfaces, borrows/moves, handles, arrays, globals and C
-      wrappers follow the interaction rules.
-- [ ] Format 6 is rejected; goldens and `sym_test.py` are migrated; `--check`
-      from source-less `.sym` passes the positive and negative fixtures.
-- [ ] Compiler peak stays under `2,500,000`; measured delta recorded.
-- [ ] Stdlib/cmd migration keeps output byte-identical; docs and doc examples
-      compile; mutation targets catch each removed check.
+      wrappers follow the interaction rules; the private-field-as-method
+      diagnostic is identical in full build and `--check`.
+- [ ] Format 6 is rejected; the 3 goldens and 92 hand-written `.sym` fixtures
+      are migrated; the `obosym 7` wrong-format probe is moved to 8 if 7 is the
+      next real format; `--check` from source-less `.sym` passes the positive
+      and negative fixtures.
+- [ ] `fs::Dir` remains public; `io::Writer` is private with `bufferedBytes`;
+      `tests/lib/write_byte.obx` is migrated.
+- [ ] Compiler peak stays under `2,500,000`; the 16-byte-per-`Field` cost
+      (including function-type parameters) is measured.
+- [ ] Stdlib/cmd migration keeps output byte-identical; `meta_test.py`,
+      `io_test.py`, `sym_fuzz.py`, `float_f1.py`, `stdlib.py`/eza, docs and doc
+      examples are in the gate; mutation targets catch each removed check.
