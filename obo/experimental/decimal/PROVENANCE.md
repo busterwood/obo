@@ -48,8 +48,8 @@ status value or tested behavior changed. Current hashes:
 ```text
 e98d59de10eeb8eb89dc9930ec0a2b70aa0c0de68c60157649c220a1653882ec  dec24.c
 d97d107eca85123c268d7cb2555b0d75b22d3db9566e457685992065f997f516  dec24.h
-dae4e2f2a0231e422bf338d18c86b38c8b1ef9da193402abe0171fd637fa8e72  dec24_text.c
-d7ee8793d4ddcf7078b2519e00473d5934cc00f370159aa11160f679647d4808  dec24_text.h
+ae26f4fc9a4c0a1198335b69a3e52b681418daad8222460e14a2c53509cb9ae1  dec24_text.c
+04c8b9133686cdd597a0aebbe3fec79f4443c6f79d46df03b83a51e581e5ce7b  dec24_text.h
 b81ffc8fc14202be4f053f66ab0d381985fe7034bda5adf9a5cfdf006801c7cb  dec24_bind.c
 bb285370458d035d0ae302d6bc15aaa1d49cc8776a7a4b2c68052f4ff194d869  dec24_bind.h
 940bfc6a1a9d60071a220ca980b03250c1384fb5de3d04b49e7290866d3fb6a9  tests/dec24_test.c
@@ -57,9 +57,16 @@ bb285370458d035d0ae302d6bc15aaa1d49cc8776a7a4b2c68052f4ff194d869  dec24_bind.h
 ```
 
 New D1 files are the text and binding modules, their independent Python
-oracles/generators, the C test bodies, the aggregate/host/start entry points and
-the evidence runner. They were written for this package; no monolithic untested
-fast path was copied from the private scratch trees.
+oracles/generators, the C test bodies, the aggregate/host/start entry points,
+the evidence runner and the optional seeded property-probe runner. They were
+written for this package; no monolithic untested fast path was copied from the
+private scratch trees.
+
+The focused upper-exponent repair changed only `dec24_text.c`/`.h` and tests: a
+parsed value whose normalized exponent exceeds 32767 puts back the minimal
+coefficient trailing zeros needed to store exponent 32767, if the result stays
+within 38 digits. It adds no ABI or compiler change. The import-time reviewed
+hashes above are unchanged.
 
 ## Evidence
 

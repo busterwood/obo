@@ -133,7 +133,25 @@ int dec_parse(dec24 *out, const char *text, size_t len) {
 
     __int128 exp_final = explicit_exp - (__int128)frac_digits +
                          (__int128)stripped + (__int128)acc.extra_zeros;
-    if (exp_final < -32768 || exp_final > 32767) return DEC_EXPONENT_RANGE;
+    /* Normalization strips all coefficient trailing zeros, which can push the
+     * exponent above int16 even though the value is representable with a
+     * less-normalized coefficient.  Put back only the minimal number of
+     * zeros needed to store exponent 32767; 1e32804 needs 37 zeros
+     * (38 digits total) and is representable, while 1e32805 needs 38 zeros
+     * (39 digits) and is not.  Negative exponents cannot be rescued this way
+     * because stripping already made the exponent as large as possible. */
+    if (exp_final > 32767) {
+        __int128 shift = exp_final - 32767;
+        int digits = acc.sig - stripped;
+        if (shift > (__int128)(38 - digits)) return DEC_EXPONENT_RANGE;
+        unsigned __int128 c = (unsigned __int128)lo |
+                              ((unsigned __int128)hi << 64);
+        for (__int128 i = 0; i < shift; i++) c *= 10u;
+        lo = (uint64_t)c;
+        hi = (uint64_t)(c >> 64);
+        exp_final = 32767;
+    }
+    if (exp_final < -32768) return DEC_EXPONENT_RANGE;
     return dec_set(out, sign, lo, hi, (int)exp_final, (uint16_t)dscale);
 }
 

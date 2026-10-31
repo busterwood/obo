@@ -79,18 +79,29 @@ The coefficient is normalized by removing trailing zeros. Display scale is
 Semantic parse statuses are distinct and checked only after the full text is
 syntactically valid: `DEC_PRECISION_OVERFLOW` for more than 38 significant
 digits, `DEC_DISPLAY_RANGE` for display scale outside `uint16`, and
-`DEC_EXPONENT_RANGE` for a nonzero exponent outside `int16`. Zero keeps
-canonical exponent 0, so a huge positive explicit exponent does not make zero
-unrepresentable; its display scale still has to fit `uint16`. Leading zeros and
-trailing zeros are handled without building huge powers of ten, so long inputs
-are linear and never silently rounded.
+`DEC_EXPONENT_RANGE` for a nonzero value that remains outside `int16`. Zero
+keeps canonical exponent 0, so a huge positive explicit exponent does not make
+zero unrepresentable; its display scale still has to fit `uint16`. Leading
+zeros and trailing zeros are handled without building huge powers of ten, so
+long inputs are linear and never silently rounded.
+
+Upper-exponent normalization is round-trip complete. If stripping trailing
+zeros pushes the exponent above 32767, the parser puts back only the minimal
+number of coefficient zeros needed to store exponent 32767, provided the
+coefficient stays within 38 digits. Thus `1e32804` is accepted as coefficient
+`10^37` with exponent 32767, while `1e32805` would need 39 digits and remains
+`DEC_EXPONENT_RANGE`. Negative exponents are not falsely rescued: stripping has
+already made the exponent as large as possible, so a still-too-negative value
+is genuinely unrepresentable.
 
 Two separate formatters avoid inventing a public display policy:
 
 - `dec_format_canonical*` produces exact numeric text and ignores display
-  scale. Fixed notation is used when it is at most 128 bytes; otherwise it uses
-  the exact scientific form. This 128-byte threshold is a documented private
-  protocol, not a final language rule.
+  scale. Fixed notation is used when its magnitude text (excluding the optional
+  `-` sign) is at most 128 bytes; otherwise it uses the exact scientific form.
+  A negative fixed value can therefore be one byte longer than the threshold.
+  This 128-byte threshold is a documented private protocol, not a final
+  language rule.
 - `dec_format_display*` produces fixed notation with exactly the value's
   `dscale` fractional digits, preserving trailing zeros (`1.2300`). It never
   rounds: if the value needs more fractional digits than its display scale, it
@@ -158,17 +169,21 @@ separate host ASAN/UBSAN diagnostic with the same test bodies. It records
 source hashes, generated-fixture hashes, command logs, `nm` output, sizes,
 disassembly and results.
 
-At this milestone the freestanding harness reports **21,195 checks, 0 failures**:
+At this milestone the freestanding harness reports **22,821 checks, 0 failures**:
 
 ```text
 PASS checks=5804         retained reviewed core vectors/tests
-PASS text checks=12477   parse/format fixed, random, boundary and buffer cases
+PASS text checks=14103   parse/format fixed, random, boundary, upper-exponent
+                         and buffer cases
 PASS bind checks=2914    exact fit, explicit rounding, carry and limits
 ```
 
-The Python oracles run **33 tests** and include the retained 5,804-check core
-corpus (including 1,053 comparison vectors and property checks), 564 text cases
-(500 seeded random plus fixed boundaries), and 500 binding cases. Python
+The Python oracles run **34 tests** and include the retained 5,804-check core
+corpus (including 1,053 comparison vectors and property checks), 571 text cases
+(500 seeded random plus fixed boundaries), and 500 binding cases. The upper-edge
+property additionally checks raw coefficient values `10^k * 10^32767` and
+`10^k * 10^32766`, both signs, canonical and display round-trips against exact
+`Fraction` values. Python
 `decimal` is used only as a secondary exact cross-check; no oracle copies the C
 limb code and no oracle uses binary float. `nm -u` on the final freestanding
 binary is empty; no `__udivti3`, `__udivmodti4`, `__umodti3`, `__multi3`, libc,
@@ -177,6 +192,17 @@ artifact.
 
 The source/provenance and reviewed-prototype hashes are in
 [`PROVENANCE.md`](PROVENANCE.md).
+
+An optional host-only seeded probe retains the larger property checks:
+
+```sh
+python3 obo/experimental/decimal/tests/run_property_probes.py          # quick
+python3 obo/experimental/decimal/tests/run_property_probes.py --full   # review scale
+```
+
+The `--full` run used in this evidence checked 100,000 ordering pairs, 50,000
+binding cases and 1,150 upper-exponent canonical/display round-trips with zero
+failures. These counts are separate from the 22,821 freestanding checks above.
 
 ## Not implemented / still unsupported
 

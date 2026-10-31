@@ -80,7 +80,14 @@ class TextOracleTests(unittest.TestCase):
         self.assertEqual(r["status"], o.OK)
         self.assertEqual(r["coeff"], int(nines38))
         self.assertEqual(o.parse_text("1e32767")["status"], o.OK)
-        self.assertEqual(o.parse_text("1e32768")["status"], o.EXPONENT_RANGE)
+        r = o.parse_text("1e32768")
+        self.assertEqual((r["status"], r["coeff"], r["exp"]),
+                         (o.OK, 10, 32767))
+        r = o.parse_text("1e32804")
+        self.assertEqual((r["status"], r["coeff"], r["exp"]),
+                         (o.OK, 10 ** 37, 32767))
+        self.assertEqual(o.parse_text("1e32805")["status"],
+                         o.EXPONENT_RANGE)
         self.assertEqual(o.parse_text("1e-32768")["status"], o.OK)
         self.assertEqual(o.parse_text("1e-32769")["status"], o.EXPONENT_RANGE)
         self.assertEqual(o.parse_text("1e-65536")["status"], o.DISPLAY_RANGE)
@@ -130,6 +137,59 @@ class TextOracleTests(unittest.TestCase):
                          (o.OK, "1.500000"))
         self.assertEqual(o.canonical_text(r["sign"], r["coeff"], r["exp"], 6),
                          "1.5")
+
+    def test_upper_exponent_canonical_and_display_roundtrip(self):
+        import random
+
+        def exact(sign, coeff, exp):
+            v = Fraction(coeff)
+            v = v * (10 ** exp) if exp >= 0 else v / (10 ** (-exp))
+            return -v if sign else v
+
+        # Raw core values, not just the normalized coefficient 1.  These are
+        # all representable (coefficient <= 10^38-1) even when the canonical
+        # scientific adjusted exponent is above 32767.
+        cases = []
+        for sign in (0, 1):
+            for exp in (32767, 32766):
+                for k in range(1, 38):
+                    cases.append((sign, 10 ** k, exp, (k * 7) % 39))
+        cases.append((0, o.MAX_COEFF, 32767, 0))
+        cases.append((1, o.MAX_COEFF, 32767, 65535))
+        cases.append((0, 10 ** 37 + 12345, 32767, 3))
+
+        rng = random.Random(0xD1E0A)
+        for _ in range(300):
+            coeff = rng.choice([
+                1, 9, 10 ** rng.randrange(1, 38),
+                rng.randrange(1, o.MAX_COEFF + 1), o.MAX_COEFF,
+            ])
+            cases.append((rng.randrange(2), coeff,
+                          rng.randrange(32700, 32768),
+                          rng.randrange(0, 39)))
+
+        for sign, coeff, exp, dscale in cases:
+            want = exact(sign, coeff, exp)
+            canon = o.canonical_text(sign, coeff, exp, dscale)
+            r = o.parse_text(canon)
+            self.assertEqual(r["status"], o.OK, (sign, coeff, exp, canon))
+            self.assertEqual(value_of(r), want, canon)
+
+            st, disp = o.display_text(sign, coeff, exp, dscale)
+            self.assertEqual(st, o.OK, (sign, coeff, exp, dscale))
+            r2 = o.parse_text(disp)
+            self.assertEqual(r2["status"], o.OK, disp)
+            self.assertEqual(value_of(r2), want)
+            self.assertEqual(r2["dscale"], dscale)
+
+        self.assertEqual(
+            (o.parse_text("10e32767")["coeff"],
+             o.parse_text("10e32767")["exp"]), (10, 32767))
+        self.assertEqual(
+            (o.parse_text("1e32804")["coeff"],
+             o.parse_text("1e32804")["exp"]), (10 ** 37, 32767))
+        self.assertEqual(o.parse_text("1e32805")["status"],
+                         o.EXPONENT_RANGE)
 
     def test_long_inputs_are_linear_and_bounded(self):
         t0 = time.monotonic()

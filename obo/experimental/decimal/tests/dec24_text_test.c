@@ -526,6 +526,145 @@ static void test_canonical_and_display_edges(void) {
         fail_u64("disp_max_bound_write", 0, "unchanged", 0, 1);
 }
 
+static void set_pow10(dec24 *d, int sign, int k, int exp, uint16_t dscale) {
+    unsigned __int128 c = 1;
+    for (int i = 0; i < k; i++) c *= 10u;
+    dec_set(d, sign, (uint64_t)c, (uint64_t)(c >> 64), exp, dscale);
+}
+
+static void test_upper_exponent_roundtrip(void) {
+    static char big[100000];
+    dec24 a, reparsed, want;
+    char canon[130];
+    size_t n = 0;
+    for (int sign = 0; sign <= 1; sign++) {
+        for (int expi = 0; expi < 2; expi++) {
+            int exp = expi == 0 ? 32767 : 32766;
+            for (int k = 1; k <= 37; k++) {
+                uint16_t ds = (uint16_t)((k * 7) % 39);
+                set_pow10(&a, sign, k, exp, ds);
+                checks++;
+                if (!dec_valid(&a)) {
+                    fail_u64("upper_valid", (unsigned)k, "valid", 0, 1);
+                    continue;
+                }
+                int st = dec_format_canonical_len(&a, &n);
+                checks++;
+                if (st != DEC_OK) {
+                    fail_status("upper_canon_len", (unsigned)k, st, DEC_OK);
+                    continue;
+                }
+                st = dec_format_canonical(&a, canon, sizeof canon, &n);
+                checks++;
+                if (st != DEC_OK) {
+                    fail_status("upper_canon", (unsigned)k, st, DEC_OK);
+                    continue;
+                }
+                st = dec_parse(&reparsed, canon, n);
+                checks++;
+                if (st != DEC_OK) {
+                    fail_status("upper_canon_parse", (unsigned)k, st, DEC_OK);
+                } else {
+                    checks++;
+                    if (dec_cmp(&a, &reparsed) != 0)
+                        fail_u64("upper_canon_value", (unsigned)k,
+                                 "equal", 0, 1);
+                }
+
+                st = dec_format_display_len(&a, &n);
+                checks++;
+                if (st != DEC_OK || n + 1 > sizeof big) {
+                    fail_status("upper_disp_len", (unsigned)k, st, DEC_OK);
+                    fail_u64("upper_disp_len_fit", (unsigned)k, "len", n,
+                             sizeof big);
+                    continue;
+                }
+                st = dec_format_display(&a, big, sizeof big, &n);
+                checks++;
+                if (st != DEC_OK) {
+                    fail_status("upper_disp", (unsigned)k, st, DEC_OK);
+                    continue;
+                }
+                st = dec_parse(&reparsed, big, n);
+                checks++;
+                if (st != DEC_OK) {
+                    fail_status("upper_disp_parse", (unsigned)k, st, DEC_OK);
+                } else {
+                    checks++;
+                    if (dec_cmp(&a, &reparsed) != 0)
+                        fail_u64("upper_disp_value", (unsigned)k, "equal", 0, 1);
+                    checks++;
+                    if (reparsed.dscale != a.dscale)
+                        fail_u64("upper_disp_scale", (unsigned)k, "dscale",
+                                 reparsed.dscale, a.dscale);
+                }
+            }
+        }
+    }
+
+    /* Nonzero coefficient with no normalization: the canonical adjusted
+     * exponent 32804 must parse back to the same raw core value. */
+    dec_set(&a, 0, DEC_COEFF_MAX_LO, DEC_COEFF_MAX_HI, 32767, 65535);
+    int st = dec_format_canonical(&a, canon, sizeof canon, &n);
+    checks++;
+    if (st != DEC_OK) {
+        fail_status("upper_max_canon", 0, st, DEC_OK);
+    } else {
+        st = dec_parse(&reparsed, canon, n);
+        checks++;
+        if (st != DEC_OK) {
+            fail_status("upper_max_parse", 0, st, DEC_OK);
+        } else {
+            checks++;
+            if (dec_cmp(&a, &reparsed) != 0)
+                fail_u64("upper_max_value", 0, "equal", 0, 1);
+        }
+    }
+    st = dec_format_display_len(&a, &n);
+    checks++;
+    if (st != DEC_OK || n + 1 > sizeof big) {
+        fail_status("upper_max_disp_len", 0, st, DEC_OK);
+    } else {
+        st = dec_format_display(&a, big, sizeof big, &n);
+        checks++;
+        if (st == DEC_OK) {
+            st = dec_parse(&reparsed, big, n);
+            checks++;
+            if (st != DEC_OK || dec_cmp(&a, &reparsed) != 0 ||
+                reparsed.dscale != a.dscale)
+                fail_u64("upper_max_disp_roundtrip", 0, "equal", 0, 1);
+        } else {
+            fail_status("upper_max_disp", 0, st, DEC_OK);
+        }
+    }
+
+    /* Explicit raw upper-edge parse expectations. */
+    st = dec_parse(&a, "10e32767", 8);
+    checks++;
+    if (st != DEC_OK) {
+        fail_status("parse_raw_10e32767", 0, st, DEC_OK);
+    } else {
+        dec_set(&want, 0, 10, 0, 32767, 0);
+        check_dec_fields("parse_raw_10e32767", 0, &a, &want, 1);
+    }
+    st = dec_parse(&a, "1e32804", 7);
+    checks++;
+    if (st != DEC_OK) {
+        fail_status("parse_raw_1e32804", 0, st, DEC_OK);
+    } else {
+        set_pow10(&want, 0, 37, 32767, 0);
+        check_dec_fields("parse_raw_1e32804", 0, &a, &want, 1);
+    }
+    fill_byte(&a, sizeof a, 0xAA);
+    st = dec_parse(&a, "1e32805", 7);
+    checks++;
+    if (st != DEC_EXPONENT_RANGE)
+        fail_status("parse_raw_1e32805", 0, st, DEC_EXPONENT_RANGE);
+    checks++;
+    if (!all_byte(&a, sizeof a, 0xAA))
+        fail_u64("parse_raw_1e32805_write", 0, "unchanged", 0, 1);
+}
+
 int dec24_text_test_main(void) {
     for (unsigned i = 0; i < DEC_TEXT_VECTORS_COUNT; i++)
         run_parse_vec(i, &dec_text_vectors[i]);
@@ -533,6 +672,7 @@ int dec24_text_test_main(void) {
         run_format_vec(i, &dec_format_vectors[i]);
     test_long_and_edge_inputs();
     test_canonical_and_display_edges();
+    test_upper_exponent_roundtrip();
 
     if (failures == 0) {
         write_str("PASS text checks=");

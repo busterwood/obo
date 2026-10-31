@@ -98,6 +98,14 @@ def parse_text(text: str) -> dict:
     coeff = int(core)
     trailing = len(nonleading) - len(core)
     exp = explicit - len(fpart) + trailing
+    if exp > 32767:
+        # Normalization can push exp above int16.  Put back the minimal
+        # coefficient zeros needed for exponent 32767.  1e32804 fits with 38
+        # digits; 1e32805 would need 39 and remains unrepresentable.
+        shift = exp - 32767
+        if len(core) + shift <= 38:
+            coeff *= 10 ** shift
+            exp = 32767
     if exp < -32768 or exp > 32767:
         return {"status": EXPONENT_RANGE, "sign": 0, "coeff": 0,
                 "exp": 0, "dscale": 0}
@@ -178,10 +186,14 @@ def build_text_cases() -> dict:
         "999999999999999999999999999999999999999",
         "1000000000000000000000000000000000000000",
         "0." + "0" * 100,
-        "1e32767", "1e32768", "1e-32768", "1e-32769",
+        "1e32767", "1e32768", "1e32804", "1e32805",
+        "10e32767", "10e32766", "100e32766",
+        "1e-32768", "1e-32769",
         "1e-65535", "1e-65536", "1e99999", "1e-99999",
         "0e999999999999999999", "0e-999999999999",
         "9" * 38 + "0",
+        "9" * 38 + "e32767",
+        "1" + "0" * 37 + "e32767",
         "0.000000000000000000000000000000000000001",
         "", "+", "-", ".", "e1", "1e", "1e+", "1e-", "1..2", "1.2.3",
         " 1", "1 ", "1\t", "1_000", "0x10", "NaN", "Infinity", "-Infinity",

@@ -34,9 +34,11 @@
  *
  * Two separate formatters:
  *   - canonical: exact numeric text, ignoring display scale.  Fixed notation
- *     is used when it is at most DEC_TEXT_CANON_FIXED_MAX bytes; otherwise the
- *     exact scientific form is used.  This is the documented private fallback;
- *     it is not a final language display policy.
+ *     is used when its magnitude text (excluding the optional '-' sign) is at
+ *     most DEC_TEXT_CANON_FIXED_MAX bytes; otherwise the exact scientific form
+ *     is used.  A negative fixed value can therefore be one byte longer than
+ *     the threshold.  This is the documented private fallback; it is not a
+ *     final language display policy.
  *   - display: fixed notation with exactly the value's dscale fractional
  *     digits, preserving trailing zeros.  It never rounds: if the value needs
  *     more fractional digits than dscale, it returns DEC_INEXACT.
