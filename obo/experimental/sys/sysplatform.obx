@@ -96,6 +96,32 @@ pub const OP_BUF_GET = 12
 pub const OP_BUF_SET_PACKED = 13
 pub const OP_BUF_GET_PACKED = 14
 pub const OP_BUF_FILL = 15
+pub const OP_BUF_GET64 = 16
+pub const OP_BUF_SET64 = 17
+
+// P1a metadata packet shape (16 signed 64-bit fields = 128 bytes).
+pub const STAT_PACKET_BYTES = 128
+
+// Library open-option bits passed to the adapter. Not a Linux flag word.
+pub const _OPEN_READ = 1
+pub const _OPEN_WRITE = 2
+pub const _OPEN_CREATE = 4
+pub const _OPEN_EXCLUSIVE = 8
+pub const _OPEN_TRUNCATE = 16
+pub const _OPEN_APPEND = 32
+pub const _OPEN_NOFOLLOW = 64
+pub const _OPEN_NONBLOCK = 128
+
+// Library seek origins passed to the adapter.
+pub const _SEEK_START = 0
+pub const _SEEK_CURRENT = 1
+pub const _SEEK_END = 2
+pub const _POSITION_CURRENT = -1
+
+// Standard-stream selectors.
+pub const _STANDARD_INPUT = 0
+pub const _STANDARD_OUTPUT = 1
+pub const _STANDARD_ERROR = 2
 
 // The bridge's per-buffer limit. Larger transfers are caller chunk loops.
 pub const MAX_BYTE_BUFFER = 16777216
@@ -277,6 +303,14 @@ pub fn hasCapability(name: string): bool {
     if name == "resource.probe" { return true }
     if name == "byte.bridge" { return true }
     if name == "platform.counts" { return true }
+    if name == "file.open" { return true }
+    if name == "file.openAt" { return true }
+    if name == "directory.iterate" { return true }
+    if name == "metadata.stat" { return true }
+    if name == "clock.monotonic" { return true }
+    if name == "random.getrandom" { return true }
+    if name == "stream.io" { return true }
+    if name == "buffer.bounded" { return true }
     return false
 }
 
@@ -446,6 +480,184 @@ pub fn _opHandle(h: ^Resource, kind: int, op: int, a: int, b: int, c: int): Resu
         return err("native resource operation failed", rawCode(raw))
     }
     return ok(raw)
+}
+
+fn _rawResult(raw: int, message: string): Result[int] {
+    if raw < 0 { return err(message, rawCode(raw)) }
+    return ok(raw)
+}
+
+// Internal seam: the private C registry token for a checked live resource.
+// Typed modules use it only to pass the token to another trusted adapter
+// operation; it is never stored in a public record or returned to an
+// application-facing API.
+pub fn _tokenHandle(h: ^Resource, kind: int): Result[int] {
+    let checked = try _requireKindHandle(h, kind)
+    let idx = decodeSlot(checked.reserved)
+    if idx < 0 {
+        return err("resource identity changed during validation", invalidResource())
+    }
+    return ok(slots[idx].token)
+}
+
+fn _discardNative(token: int, kind: int) {
+    let raw = __cinterop("sys_res_close", token, kind)
+    if raw < 0 { cleanupFailures += 1 }
+}
+
+// Internal seam: adopt an already-created native token into a managed shell.
+// Used by typed P1a creators that need path-buffer or duplicate arguments. The
+// token is validated for its kind and released if registration cannot finish.
+pub fn _adoptToken(kind: int, token: int): Result[Resource] {
+    if !initialised {
+        return err("systems platform is not initialized", notInitialized())
+    }
+    if kind <= 0 || token <= 0 {
+        return err("invalid native resource token", invalidResource())
+    }
+    let valid = __cinterop("sys_res_validate", token, kind)
+    if valid != 1 {
+        return err("native resource token is not valid for the requested kind", invalidResource())
+    }
+    let idx0 = findSlot()
+    if idx0 == -2 {
+        _discardNative(token, kind)
+        return err("configured shell/slot capacity is exhausted", limitCode())
+    }
+    var nonceRaw = __cinterop("sys_res_nonce")
+    var nonceTries = 0
+    while nonceRaw > 0 && nonceInUse(nonceRaw) && nonceTries < 4 {
+        nonceRaw = __cinterop("sys_res_nonce")
+        nonceTries += 1
+    }
+    if nonceRaw <= 0 {
+        _discardNative(token, kind)
+        return err("native adapter could not provide an identity nonce", rawCode(nonceRaw))
+    }
+    if nonceInUse(nonceRaw) {
+        _discardNative(token, kind)
+        return err("could not allocate a unique identity nonce", resourceLimitCode())
+    }
+    var idx = idx0
+    if idx < 0 {
+        append(slots, new Slot{nonce: 0, kind: 0, state: STATE_FREE, token: 0, owner: nil})
+        idx = len(slots) - 1
+    }
+    var r = new Resource{reserved: ((nonceRaw * 1048576) + idx + 1)}
+    slots[idx].nonce = nonceRaw
+    slots[idx].kind = kind
+    slots[idx].state = STATE_OPEN
+    slots[idx].token = token
+    slots[idx].owner = handle(r)
+    return ok(r)
+}
+
+// Internal seam: logically transfer a live resource to another typed kind. The
+// C registry entry and managed slot change kind together; the caller replaces
+// its old shell's `res` so the old shell can no longer operate on it.
+pub fn _retagHandle(h: ^Resource, fromKind: int, toKind: int): Result[bool] {
+    if toKind <= 0 { return err("invalid target resource kind", invalidArgument()) }
+    let checked = try _requireKindHandle(h, fromKind)
+    let idx = decodeSlot(checked.reserved)
+    if idx < 0 {
+        return err("resource identity changed during validation", invalidResource())
+    }
+    let tok = slots[idx].token
+    let raw = __cinterop("sys_file_retag", tok, fromKind, toKind)
+    if raw == 1 {
+        slots[idx].kind = toKind
+        return ok(true)
+    }
+    if raw == 0 {
+        return err("native resource could not be re-tagged", invalidResource())
+    }
+    return err("native resource re-tag failed", rawCode(raw))
+}
+
+pub fn _fileOpenToken(dirTok: int, pathTok: int, flags: int, mode: int): Result[int] {
+    let raw = __cinterop("sys_file_open", dirTok, pathTok, flags, mode)
+    return _rawResult(raw, "file open failed")
+}
+
+pub fn _dirOpenToken(pathTok: int, follow: int): Result[int] {
+    let raw = __cinterop("sys_dir_open", pathTok, follow)
+    return _rawResult(raw, "directory open failed")
+}
+
+pub fn _dirIterToken(dirTok: int): Result[int] {
+    let raw = __cinterop("sys_dir_iterate", dirTok)
+    return _rawResult(raw, "directory iterator creation failed")
+}
+
+pub fn _dirNextToken(itTok: int, bufTok: int, cap: int): Result[int] {
+    let raw = __cinterop("sys_dir_next", itTok, bufTok, cap)
+    return _rawResult(raw, "directory read failed")
+}
+
+pub fn _ioReadToken(token: int, kind: int, bufTok: int, offset: int,
+                    count: int, position: int): Result[int] {
+    let raw = __cinterop("sys_io_read", token, kind, bufTok, offset, count, position)
+    return _rawResult(raw, "read failed")
+}
+
+pub fn _ioWriteToken(token: int, kind: int, bufTok: int, offset: int,
+                     count: int, position: int): Result[int] {
+    let raw = __cinterop("sys_io_write", token, kind, bufTok, offset, count, position)
+    return _rawResult(raw, "write failed")
+}
+
+pub fn _ioSeekToken(token: int, kind: int, offset: int, origin: int): Result[int] {
+    let raw = __cinterop("sys_io_seek", token, kind, offset, origin)
+    return _rawResult(raw, "seek failed")
+}
+
+pub fn _ioTruncateToken(token: int, kind: int, length: int): Result[int] {
+    let raw = __cinterop("sys_io_truncate", token, kind, length)
+    return _rawResult(raw, "truncate failed")
+}
+
+pub fn _statToken(subjectTok: int, subjectKind: int, dirTok: int,
+                  nameTok: int, follow: int, bufTok: int): Result[int] {
+    let raw = __cinterop("sys_stat_get", subjectTok, subjectKind, dirTok,
+                         nameTok, follow, bufTok)
+    return _rawResult(raw, "metadata read failed")
+}
+
+pub fn _fileDupToken(token: int, kind: int, toKind: int): Result[int] {
+    let raw = __cinterop("sys_file_dup", token, kind, toKind)
+    return _rawResult(raw, "resource duplicate failed")
+}
+
+pub fn _clockMonotonicNs(): Result[int] {
+    let raw = __cinterop("sys_clock_monotonic_ns")
+    return _rawResult(raw, "monotonic clock read failed")
+}
+
+pub fn _clockRealtimeSec(): Result[int] {
+    let raw = __cinterop("sys_clock_realtime_sec")
+    return _rawResult(raw, "realtime clock read failed")
+}
+
+pub fn _clockRealtimeNsec(): Result[int] {
+    let raw = __cinterop("sys_clock_realtime_nsec")
+    return _rawResult(raw, "realtime clock read failed")
+}
+
+pub fn _sleepUntilNs(nanos: int): Result[int] {
+    let raw = __cinterop("sys_sleep_until", nanos)
+    return _rawResult(raw, "sleep failed")
+}
+
+pub fn _randomToken(bufTok: int, offset: int, count: int, blocking: bool): Result[int] {
+    var flag = 0
+    if blocking { flag = 1 }
+    let raw = __cinterop("sys_random", bufTok, offset, count, flag)
+    return _rawResult(raw, "random fill failed")
+}
+
+pub fn _standardToken(which: int): Result[int] {
+    let raw = __cinterop("sys_stream_standard", which)
+    return _rawResult(raw, "standard stream duplicate failed")
 }
 
 pub fn counts(): Result[Counts] {

@@ -1,0 +1,211 @@
+// Experimental systems library: bounded byte buffers and step helpers (P1a).
+//
+// Status: experimental P1a slice, unstable. Storage is allocated once with
+// `new []byte(limit)` and never grows by append; compaction moves the unread
+// range [start,end) to the front. Public fields are untrusted and revalidated at
+// every entry. Default capacity is 64 KiB and the configured cap is 16 MiB.
+//
+// feed is all-or-nothing with respect to capacity. find is binary-safe. copy
+// returns an independent prefix; consume compacts. readStep appends one
+// transfer and preserves partial data on error. writeStep removes only the
+// successfully written prefix. Exact steps make one transfer attempt and keep
+// their cursor/buffer progress on every exit; EOF before the requested count is
+// EndOfInput.
+module sysbuffer
+
+import "sysstream.obx" as stream
+import "syserrors.obx" as errors
+
+pub type Buffer = ref record {
+    bytes: []byte
+    start: int
+    end: int
+    limit: int
+}
+
+pub type Reader = ref record { buffer: Buffer; eof: bool }
+pub type Writer = ref record { buffer: Buffer }
+pub type Cursor = ref record { done: int }
+
+pub const DEFAULT_LIMIT = 65536
+pub const MAX_BUFFER_BYTES = 16777216
+pub const MAX_STEP_BYTES = 1048576
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+fn rangeCode(): int { return libCode(new errors::Range{}) }
+fn limitCode(): int { return libCode(new errors::LimitExceeded{}) }
+fn endOfInput(): int { return libCode(new errors::EndOfInput{}) }
+
+fn valid(b: &Buffer): bool {
+    if b.limit < 0 || b.limit > MAX_BUFFER_BYTES { return false }
+    if len(b.bytes) != b.limit { return false }
+    if b.start < 0 || b.end < b.start || b.end > b.limit { return false }
+    return true
+}
+
+fn validReader(r: &Reader): bool {
+    return valid(&r.buffer)
+}
+
+fn validWriter(w: &Writer): bool {
+    return valid(&w.buffer)
+}
+
+// Move the unread range to the beginning of the fixed allocation. Callers
+// validate first. This never allocates or changes the logical contents.
+fn rewind(mut b: &Buffer) {
+    if b.start == 0 { return }
+    let n = b.end - b.start
+    for i in 0..n { b.bytes[i] = b.bytes[b.start + i] }
+    b.start = 0
+    b.end = n
+}
+
+pub fn make(limit: int): Result[Buffer] {
+    if limit < 0 || limit > MAX_BUFFER_BYTES {
+        return err("buffer limit is outside 0..16 MiB", rangeCode())
+    }
+    return ok(new Buffer{bytes: new []byte(limit), start: 0, end: 0, limit: limit})
+}
+
+pub fn available(b: &Buffer): Result[int] {
+    if !valid(b) { return err("buffer fields are inconsistent", invalidArgument()) }
+    return ok(b.end - b.start)
+}
+
+pub fn feed(mut b: &Buffer, data: &[]byte): Result[bool] {
+    if !valid(b) { return err("buffer fields are inconsistent", invalidArgument()) }
+    let n = len(data)
+    if n == 0 { return ok(true) }
+    if n > b.limit - b.end {
+        rewind(&b)
+        if n > b.limit - b.end {
+            return err("buffer capacity is exhausted", limitCode())
+        }
+    }
+    for i in 0..n { b.bytes[b.end + i] = data[i] }
+    b.end += n
+    return ok(true)
+}
+
+// Binary-safe incremental search over [start,end). `from` is relative to start.
+// The result is an absolute index into the buffer's byte array; -1 means the
+// separator has not arrived.
+pub fn find(b: &Buffer, separator: &[]byte, from: int): Result[int] {
+    if !valid(b) { return err("buffer fields are inconsistent", invalidArgument()) }
+    let slen = len(separator)
+    if slen == 0 { return err("find needs a non-empty separator", invalidArgument()) }
+    let avail = b.end - b.start
+    if from < 0 || from > avail {
+        return err("find start offset is outside the buffered range", rangeCode())
+    }
+    if slen > avail - from { return ok(-1) }
+    for i in from..(avail - slen + 1) {
+        var same = true
+        for j in 0..slen {
+            if b.bytes[b.start + i + j] != separator[j] {
+                same = false
+                break
+            }
+        }
+        if same { return ok(b.start + i) }
+    }
+    return ok(-1)
+}
+
+pub fn copy(b: &Buffer, count: int): Result[[]byte] {
+    if !valid(b) { return err("buffer fields are inconsistent", invalidArgument()) }
+    if count < 0 { return err("copy count is negative", rangeCode()) }
+    let avail = b.end - b.start
+    var n = count
+    if n > avail { n = avail }
+    let out = new []byte(n)
+    for i in 0..n { out[i] = b.bytes[b.start + i] }
+    return ok(out)
+}
+
+pub fn consume(mut b: &Buffer, count: int): Result[bool] {
+    if !valid(b) { return err("buffer fields are inconsistent", invalidArgument()) }
+    if count < 0 { return err("consume count is negative", rangeCode()) }
+    let avail = b.end - b.start
+    if count > avail { return err("consume count is beyond the buffered bytes", rangeCode()) }
+    b.start += count
+    if b.start == b.end {
+        b.start = 0
+        b.end = 0
+    } else if b.start > b.limit / 2 {
+        rewind(&b)
+    }
+    return ok(true)
+}
+
+pub fn readStep(mut r: &Reader, s: &stream::Stream, max: int): Result[int] {
+    if !validReader(r) { return err("reader buffer fields are inconsistent", invalidArgument()) }
+    if r.eof { return ok(0) }
+    if max <= 0 { return err("readStep needs a positive byte count", invalidArgument()) }
+    if max > MAX_STEP_BYTES { return err("readStep is limited to 1 MiB", rangeCode()) }
+    rewind(&r.buffer)
+    let free = r.buffer.limit - r.buffer.end
+    if free == 0 { return err("reader buffer has no free capacity", limitCode()) }
+    var cap = max
+    if cap > free { cap = free }
+    let data = try stream::readSome(s, cap)
+    if data == nil { r.eof = true; return ok(0) }
+    let fed = try feed(&r.buffer, &data)
+    if !fed { return err("readStep could not retain the transfer", limitCode()) }
+    return ok(len(data))
+}
+
+pub fn writeStep(mut w: &Writer, s: &stream::Stream): Result[int] {
+    if !validWriter(w) { return err("writer buffer fields are inconsistent", invalidArgument()) }
+    let n = w.buffer.end - w.buffer.start
+    if n == 0 { return ok(0) }
+    // Copy pending bytes out of the public record before the native call so no
+    // interior array reference crosses the conservative native effect summary.
+    let pending = new []byte(n)
+    for i in 0..n { pending[i] = w.buffer.bytes[w.buffer.start + i] }
+    let wrote = try stream::writeSome(s, &pending, 0, n)
+    if wrote < 0 || wrote > n {
+        return err("writeStep observed an impossible write count", libCode(new errors::SystemFailure{}))
+    }
+    let consumed = try consume(&w.buffer, wrote)
+    if !consumed { return err("writeStep could not discard written bytes", libCode(new errors::SystemFailure{})) }
+    return ok(wrote)
+}
+
+pub fn writeExactStep(s: &stream::Stream, bytes: &[]byte, mut cursor: &Cursor): Result[bool] {
+    if cursor.done < 0 || cursor.done > len(bytes) {
+        return err("write cursor is outside the source array", rangeCode())
+    }
+    if cursor.done == len(bytes) { return ok(true) }
+    let n = try stream::writeSome(s, bytes, cursor.done, len(bytes) - cursor.done)
+    if n < 0 || n > len(bytes) - cursor.done {
+        return err("writeExactStep observed an impossible write count",
+                   libCode(new errors::SystemFailure{}))
+    }
+    cursor.done += n
+    if cursor.done == len(bytes) { return ok(true) }
+    return ok(false)
+}
+
+pub fn readExactStep(s: &stream::Stream, count: int, mut out: &Buffer): Result[bool] {
+    if !valid(out) { return err("output buffer fields are inconsistent", invalidArgument()) }
+    if count < 0 { return err("readExactStep count is negative", rangeCode()) }
+    if count == 0 { return ok(true) }
+    if count > MAX_STEP_BYTES { return err("readExactStep is limited to 1 MiB", rangeCode()) }
+    rewind(&out)
+    let free = out.limit - out.end
+    if count > free {
+        return err("output buffer has insufficient fixed capacity", limitCode())
+    }
+    let data = try stream::readSome(s, count)
+    if data == nil { return err("end of input before the requested count", endOfInput()) }
+    let fed = try feed(&out, &data)
+    if !fed { return err("readExactStep could not retain the transfer", limitCode()) }
+    if len(data) == count { return ok(true) }
+    return ok(false)
+}

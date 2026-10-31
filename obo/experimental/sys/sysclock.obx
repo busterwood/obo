@@ -1,0 +1,154 @@
+// Experimental systems library: clocks, nonnegative durations and absolute
+// deadlines (P1a).
+//
+// Status: experimental P1a slice, unstable. No float time arithmetic is used.
+// Instant is CLOCK_MONOTONIC in signed nanoseconds and is valid only within
+// this boot/backend clock domain. Timestamp is CLOCK_REALTIME seconds plus
+// normalized nanoseconds and is the one timestamp type used by metadata.
+// Deadline keeps infinity as a distinct flag, not INT64_MAX. All addition and
+// subtraction is checked; overflow is Range, never wrap or saturation.
+//
+// sleepUntil is interruptible and returns Interrupted. There is no hidden
+// retry: calling it again uses the same absolute deadline, and a compound
+// helper may recompute remaining time but must never restart the deadline.
+module sysclock
+
+import "sysplatform.obx" as platform
+import "syserrors.obx" as errors
+
+pub type Instant = ref record { nanos: int }
+pub type Duration = ref record { nanos: int }
+pub type Deadline = ref record { finite: bool; nanos: int }
+pub type Timestamp = ref record { seconds: int; nanos: int }
+
+const MAX_I64 = 9223372036854775807
+const NANOS_PER_SECOND = 1000000000
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+fn rangeCode(): int { return libCode(new errors::Range{}) }
+
+fn validInstant(v: &Instant): bool {
+    return v.nanos >= 0
+}
+
+fn validDuration(v: &Duration): bool {
+    return v.nanos >= 0
+}
+
+fn validTimestamp(v: &Timestamp): bool {
+    return v.nanos >= 0 && v.nanos <= 999999999
+}
+
+fn validDeadline(v: &Deadline): bool {
+    if !v.finite { return v.nanos == 0 }
+    return v.nanos >= 0
+}
+
+pub fn monotonic(): Result[Instant] {
+    let ns = try platform::_clockMonotonicNs()
+    if ns < 0 { return err("monotonic clock returned a negative instant", rangeCode()) }
+    return ok(new Instant{nanos: ns})
+}
+
+pub fn realtime(): Result[Timestamp] {
+    let sec = try platform::_clockRealtimeSec()
+    let ns = try platform::_clockRealtimeNsec()
+    if ns < 0 || ns > 999999999 {
+        return err("realtime clock returned unnormalized nanoseconds", rangeCode())
+    }
+    return ok(new Timestamp{seconds: sec, nanos: ns})
+}
+
+// Signed nanoseconds since the Unix epoch. This deliberately has a narrower
+// range than Timestamp; metadata and calendar text use seconds+nanos.
+pub fn realtimeNs(): Result[int] {
+    let t = try realtime()
+    if t.seconds > 9223372036 || t.seconds < -9223372036 {
+        return err("realtime seconds are outside the signed-nanosecond range", rangeCode())
+    }
+    let base = t.seconds * NANOS_PER_SECOND
+    if base > MAX_I64 - t.nanos {
+        return err("realtime value overflows signed nanoseconds", rangeCode())
+    }
+    return ok(base + t.nanos)
+}
+
+pub fn durationNs(n: int): Result[Duration] {
+    if n < 0 { return err("a duration cannot be negative", invalidArgument()) }
+    return ok(new Duration{nanos: n})
+}
+
+pub fn durationMs(n: int): Result[Duration] {
+    if n < 0 { return err("a duration cannot be negative", invalidArgument()) }
+    if n > MAX_I64 / 1000000 {
+        return err("millisecond duration overflows signed nanoseconds", rangeCode())
+    }
+    return ok(new Duration{nanos: n * 1000000})
+}
+
+pub fn after(now: &Instant, duration: &Duration): Result[Deadline] {
+    if !validInstant(now) { return err("instant is malformed", invalidArgument()) }
+    if !validDuration(duration) { return err("duration is malformed", invalidArgument()) }
+    if now.nanos > MAX_I64 - duration.nanos {
+        return err("deadline addition overflowed", rangeCode())
+    }
+    return ok(new Deadline{finite: true, nanos: now.nanos + duration.nanos})
+}
+
+pub fn forever(): Deadline {
+    return new Deadline{finite: false, nanos: 0}
+}
+
+pub fn elapsed(start: &Instant, now: &Instant): Result[Duration] {
+    if !validInstant(start) || !validInstant(now) {
+        return err("instant is malformed", invalidArgument())
+    }
+    if now.nanos < start.nanos {
+        return err("elapsed time has a later start than now", invalidArgument())
+    }
+    return ok(new Duration{nanos: now.nanos - start.nanos})
+}
+
+// nil means the deadline is infinite; a finite deadline at or before now has
+// zero remaining time.
+pub fn remaining(now: &Instant, deadline: &Deadline): Result[?Duration] {
+    if !validInstant(now) { return err("instant is malformed", invalidArgument()) }
+    if !validDeadline(deadline) { return err("deadline is malformed", invalidArgument()) }
+    if !deadline.finite {
+        let none: ?Duration = nil
+        return ok(none)
+    }
+    if deadline.nanos <= now.nanos {
+        let zero: ?Duration = new Duration{nanos: 0}
+        return ok(zero)
+    }
+    let left: ?Duration = new Duration{nanos: deadline.nanos - now.nanos}
+    return ok(left)
+}
+
+// Absolute, interruptible wait. A finite deadline at/before now returns
+// immediately. An infinite deadline is not a valid finite sleep request.
+pub fn sleepUntil(deadline: &Deadline): Result[bool] {
+    if !validDeadline(deadline) {
+        return err("deadline is malformed", invalidArgument())
+    }
+    if !deadline.finite {
+        return err("an infinite deadline cannot be passed to sleepUntil", invalidArgument())
+    }
+    let done = try platform::_sleepUntilNs(deadline.nanos)
+    if done < 0 { return err("sleep returned no progress", rangeCode()) }
+    return ok(true)
+}
+
+pub fn sleep(duration: &Duration): Result[bool] {
+    if !validDuration(duration) {
+        return err("duration is malformed", invalidArgument())
+    }
+    let now = try monotonic()
+    let deadline = try after(&now, duration)
+    return sleepUntil(&deadline)
+}

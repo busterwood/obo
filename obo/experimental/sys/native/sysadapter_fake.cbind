@@ -8,22 +8,348 @@
     "../syserrors.obx",
     "../systestres.obx",
     "../sysbytes.obx",
-    "../sysshells.obx"
+    "../sysshells.obx",
+    "../sysclock.obx",
+    "../sysrandom.obx",
+    "../sysstat.obx",
+    "../sysstream.obx",
+    "../sysdir.obx",
+    "../sysfile.obx",
+    "../sysbuffer.obx"
   ],
-  "sources": ["sysregistry.c", "sysadapter_fake.c"],
-  "headers": ["sysadapter.h"],
+  "sources": [
+    "sysregistry.c",
+    "sysadapter_fake.c"
+  ],
+  "headers": [
+    "sysadapter.h"
+  ],
   "libs": [],
   "cflags": [],
   "functions": [
-    {"name": "sys_adapter_init", "symbol": "sys_adapter_init", "args": ["i64", "i64"], "ret": "i64", "effects": ["impure"]},
-    {"name": "sys_adapter_shutdown", "symbol": "sys_adapter_shutdown", "args": [], "ret": "i64", "effects": ["impure"]},
-    {"name": "sys_res_new", "symbol": "sys_res_new", "args": ["i64", "i64", "i64"], "ret": "i64", "effects": ["impure"]},
-    {"name": "sys_res_nonce", "symbol": "sys_res_nonce", "args": [], "ret": "i64", "effects": ["impure"]},
-    {"name": "sys_res_validate", "symbol": "sys_res_validate", "args": ["i64", "i64"], "ret": "i64", "effects": ["impure"]},
-    {"name": "sys_res_close", "symbol": "sys_res_close", "args": ["i64", "i64"], "ret": "i64", "effects": ["impure"]},
-    {"name": "sys_res_op", "symbol": "sys_res_op", "args": ["i64", "i64", "i64", "i64", "i64", "i64"], "ret": "i64", "effects": ["impure"]},
-    {"name": "sys_res_live_count", "symbol": "sys_res_live_count", "args": [], "ret": "i64", "effects": ["impure"]},
-    {"name": "sys_res_bytes", "symbol": "sys_res_bytes", "args": [], "ret": "i64", "effects": ["impure"]},
-    {"name": "sys_res_cleanup_failures", "symbol": "sys_res_cleanup_failures", "args": [], "ret": "i64", "effects": ["impure"]}
+    {
+      "name": "sys_adapter_init",
+      "symbol": "sys_adapter_init",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_adapter_shutdown",
+      "symbol": "sys_adapter_shutdown",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_res_new",
+      "symbol": "sys_res_new",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_res_nonce",
+      "symbol": "sys_res_nonce",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_res_validate",
+      "symbol": "sys_res_validate",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_res_close",
+      "symbol": "sys_res_close",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_res_op",
+      "symbol": "sys_res_op",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_res_live_count",
+      "symbol": "sys_res_live_count",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_res_bytes",
+      "symbol": "sys_res_bytes",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_res_cleanup_failures",
+      "symbol": "sys_res_cleanup_failures",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_file_open",
+      "symbol": "sys_file_open",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_dir_open",
+      "symbol": "sys_dir_open",
+      "args": [
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_dir_iterate",
+      "symbol": "sys_dir_iterate",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_dir_next",
+      "symbol": "sys_dir_next",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_io_read",
+      "symbol": "sys_io_read",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_io_write",
+      "symbol": "sys_io_write",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_io_seek",
+      "symbol": "sys_io_seek",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_io_truncate",
+      "symbol": "sys_io_truncate",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_stat_get",
+      "symbol": "sys_stat_get",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_file_dup",
+      "symbol": "sys_file_dup",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_file_retag",
+      "symbol": "sys_file_retag",
+      "args": [
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_clock_monotonic_ns",
+      "symbol": "sys_clock_monotonic_ns",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_clock_realtime_sec",
+      "symbol": "sys_clock_realtime_sec",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_clock_realtime_nsec",
+      "symbol": "sys_clock_realtime_nsec",
+      "args": [],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_sleep_until",
+      "symbol": "sys_sleep_until",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_random",
+      "symbol": "sys_random",
+      "args": [
+        "i64",
+        "i64",
+        "i64",
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    },
+    {
+      "name": "sys_stream_standard",
+      "symbol": "sys_stream_standard",
+      "args": [
+        "i64"
+      ],
+      "ret": "i64",
+      "effects": [
+        "impure"
+      ]
+    }
   ]
 }

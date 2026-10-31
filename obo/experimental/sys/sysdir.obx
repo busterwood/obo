@@ -1,0 +1,152 @@
+// Experimental systems library: anchored directories and bounded iteration
+// (P1a).
+//
+// Status: experimental P1a slice, unstable. A Directory is an owned CLOEXEC
+// native handle; open(path) accepts an ordinary host path and follows symlinks
+// (the application chooses the initial anchor). child, metadata and every
+// anchored name operation accept exactly one component: nonempty, no '/', no
+// NUL, and not "." or "..". child opens with NOFOLLOW.
+//
+// These operations do NOT claim path containment against concurrent rename or
+// mount changes. Multi-component hostile paths belong to a later openBeneath
+// capability. Iteration is bounded, skips "."/"..", yields owned names and
+// promises no order or snapshot. An iterator duplicates its anchor, so closing
+// the Directory does not invalidate it. Kernel dirent corruption permanently
+// fails the iterator with IoFailure rather than looping.
+module sysdir
+
+import "sysplatform.obx" as platform
+import "sysstat.obx" as stat
+import "sysbytes.obx" as bytesbuf
+import "syserrors.obx" as errors
+
+pub type Directory = ref record { res: platform::Resource }
+pub type Iterator = ref record { res: platform::Resource }
+pub type Entry = ref record { name: string; kind: int }
+
+pub const MAX_NAME_BYTES = 4096
+const MAX_PATH_BYTES = 4095
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+fn systemFailure(): int { return libCode(new errors::SystemFailure{}) }
+
+fn validPath(path: string): bool {
+    if len(path) == 0 || len(path) > MAX_PATH_BYTES { return false }
+    for i in 0..len(path) {
+        let c = int(path[i])
+        if c == 0 { return false }
+    }
+    return true
+}
+
+fn validName(name: string): bool {
+    if len(name) == 0 || len(name) > 255 { return false }
+    if name == "." || name == ".." { return false }
+    for i in 0..len(name) {
+        let c = int(name[i])
+        if c == 0 || c == 47 { return false }
+    }
+    return true
+}
+
+fn pathBytes(path: string): Result[bytesbuf::Bytes] {
+    let n = len(path)
+    let data = new []byte(n)
+    for i in 0..n { data[i] = path[i] }
+    let b = try bytesbuf::create(n)
+    let copied = try bytesbuf::copyIn(&b, &data, 0, 0, n)
+    if copied != n {
+        bytesbuf::close(&b)
+        return err("short path copy into the native bridge", systemFailure())
+    }
+    return ok(b)
+}
+
+pub fn open(path: string): Result[Directory] {
+    if !validPath(path) {
+        return err("directory path is empty, too long or contains NUL", invalidArgument())
+    }
+    let pb = try pathBytes(path)
+    defer bytesbuf::close(&pb)
+    let pt = try platform::_tokenHandle(handle(pb.res), platform::KIND_BYTE_BUFFER)
+    let token = try platform::_dirOpenToken(pt, 1)
+    let r = try platform::_adoptToken(platform::KIND_DIRECTORY, token)
+    return ok(new Directory{res: r})
+}
+
+pub fn source(base: &Directory): Result[^platform::Resource] {
+    return platform::_requireKindHandle(handle(base.res), platform::KIND_DIRECTORY)
+}
+
+pub fn child(base: &Directory, name: string): Result[Directory] {
+    if !validName(name) {
+        return err("child name must be one ordinary path component", invalidArgument())
+    }
+    let dt = try platform::_tokenHandle(handle(base.res), platform::KIND_DIRECTORY)
+    let pb = try pathBytes(name)
+    defer bytesbuf::close(&pb)
+    let pt = try platform::_tokenHandle(handle(pb.res), platform::KIND_BYTE_BUFFER)
+    let token = try platform::_dirOpenToken(pt, 0)
+    let r = try platform::_adoptToken(platform::KIND_DIRECTORY, token)
+    return ok(new Directory{res: r})
+}
+
+pub fn iterate(base: &Directory): Result[Iterator] {
+    let dt = try platform::_tokenHandle(handle(base.res), platform::KIND_DIRECTORY)
+    let token = try platform::_dirIterToken(dt)
+    let r = try platform::_adoptToken(platform::KIND_ITERATOR, token)
+    return ok(new Iterator{res: r})
+}
+
+pub fn next(it: &Iterator): Result[?Entry] {
+    let itt = try platform::_tokenHandle(handle(it.res), platform::KIND_ITERATOR)
+    let nb = try bytesbuf::create(MAX_NAME_BYTES)
+    defer bytesbuf::close(&nb)
+    let nt = try platform::_tokenHandle(handle(nb.res), platform::KIND_BYTE_BUFFER)
+    let packed = try platform::_dirNextToken(itt, nt, MAX_NAME_BYTES)
+    if packed == 0 {
+        let none: ?Entry = nil
+        return ok(none)
+    }
+    let n = packed / 256
+    let kind = packed - (n * 256)
+    if n <= 0 || n > MAX_NAME_BYTES || kind < 0 || kind > 12 {
+        return err("native directory entry was malformed", systemFailure())
+    }
+    let out = new []byte(n)
+    let copied = try bytesbuf::copyOut(&nb, &out, 0, 0, n)
+    if copied != n { return err("short native directory-name copy", systemFailure()) }
+    let name = string(out)
+    let entry: ?Entry = new Entry{name: name, kind: kind}
+    return ok(entry)
+}
+
+pub fn metadata(base: &Directory, name: string, follow: bool): Result[stat::Metadata] {
+    if !validName(name) {
+        return err("metadata name must be one ordinary path component", invalidArgument())
+    }
+    let dt = try platform::_tokenHandle(handle(base.res), platform::KIND_DIRECTORY)
+    let nb = try pathBytes(name)
+    defer bytesbuf::close(&nb)
+    let nt = try platform::_tokenHandle(handle(nb.res), platform::KIND_BYTE_BUFFER)
+    let packet = try bytesbuf::create(platform::STAT_PACKET_BYTES)
+    defer bytesbuf::close(&packet)
+    let pt = try platform::_tokenHandle(handle(packet.res), platform::KIND_BYTE_BUFFER)
+    var followFlag = 0
+    if follow { followFlag = 1 }
+    let ignored = try platform::_statToken(0, 0, dt, nt, followFlag, pt)
+    if ignored < 0 { return err("metadata packet was not produced", systemFailure()) }
+    return stat::_decode(handle(packet.res))
+}
+
+pub fn close(base: &Directory): Result[bool] {
+    return platform::_closeHandle(handle(base.res), platform::KIND_DIRECTORY)
+}
+
+pub fn closeIterator(it: &Iterator): Result[bool] {
+    return platform::_closeHandle(handle(it.res), platform::KIND_ITERATOR)
+}
