@@ -109,6 +109,7 @@ fn main() {
 # so port_compare and run_fork exercise the same source.
 INTERFACES = open(os.path.join(FORK, 'tests', 'run', 'ifaces_homes.obx')).read()
 LAMBDAS = open(os.path.join(FORK, 'tests', 'run', 'lambdas_homes.obx')).read()
+LAMBDA_STATE = open(os.path.join(FORK, 'tests', 'run', 'lambda_state.obx')).read()
 
 # the peephole (FORK.md, "Peephole pass"): `x = x op y` on a local in a register is one instruction on the
 # local, in every form, also at the first instruction of a loop body (a jump target); no temporary is copied back
@@ -266,7 +267,7 @@ def both_modes(port, tmp):
     noregs, why = no_regs_compiler(tmp)
     if why:
         return why
-    for tag, text in (('ifaces', INTERFACES), ('lambdas', LAMBDAS)):
+    for tag, text in (('ifaces', INTERFACES), ('lambdas', LAMBDAS), ('lambda-state', LAMBDA_STATE)):
         src = os.path.join(tmp, tag + '.obx')
         open(src, 'w').write(text)
         a = run_outcome(port, src, os.path.join(tmp, tag + '-reg'))
@@ -289,6 +290,7 @@ PROGRAMS = {
     'the limit of a for loop is given back with its variable': (MORE, 16, None),
     'an interface-heavy program': (INTERFACES, 200, None),
     'a lambda-heavy program': (LAMBDAS, 200, None),
+    'a capturing-lambda state program': (LAMBDA_STATE, 200, None),
 }
 
 

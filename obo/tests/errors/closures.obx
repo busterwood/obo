@@ -6,6 +6,7 @@ type I = interface { fn m() }
 var G = new Bag{items: new []Box(0), n: 0}
 fn apply(x: int, f: fn(int): int): int { return f(x) }
 fn use2(f: fn(int): int, b: Box): int { return f(1) }
+fn useOpt(f: fn(int): int, o: ?Box): int { return f(1) }
 fn useBag(f: fn(int): int, mut b: &Bag): int { return f(1) }
 fn useB(f: fn(int): int, b: Bag): int { return f(1) }
 fn harmful(f: fn(int): int, n: int): int {
@@ -58,6 +59,12 @@ fn main() { let s = "hi"; println(apply(1, fn [s](x: int): int { return x })) } 
 fn useI(d: I): int { return apply(1, fn [d](x: int): int { return x }) }  // error: cannot capture interface value 'd'; function values cannot take interface values in v1
 fn main() { println(0) }
 
+// === an empty capture list is an error
+fn main() { println(apply(1, fn [](x: int): int { return x })) }  // error: a capture list needs at least one name
+
+// === a move capture mode is unsupported
+fn main() { let n = 1; println(apply(1, fn [move n](x: int): int { return x })) }  // error: captures are read-only: write fn [x]; mutable and owned captures are not supported
+
 // === a capture given twice
 fn main() { let n = 1; println(apply(1, fn [n, n](x: int): int { return x })) }  // error: capture 'n' given twice
 
@@ -106,6 +113,12 @@ type Mut = ref record { n: int }
 fn (mut m: &Mut) bump() { m.n += 1 }
 fn main() { let m = new Mut{n: 1}; let r = &m; println(apply(1, fn [r](x: int): int { r.bump(); return x })) }  // error: the receiver of method 'Mut::bump' needs a mut reference, but this one is read-only
 
+// === a capturing literal cannot be assigned as a value
+fn main() { let n = 1; var f: fn(int): int = fn (x: int): int { return x }; f = fn [n](x: int): int { return x } }  // error: a capturing lambda may only be passed directly as a call argument
+
+// === a capturing literal inside ok is not a direct call argument
+fn main() { let n = 1; let r = ok(fn [n](x: int): int { return x }) }  // error: a capturing lambda may only be passed directly as a call argument
+
 // === a capturing literal cannot be bound to a local
 fn main() { let n = 1; let f = fn [n](x: int): int { return x }; println(apply(1, f)) }  // error: a capturing lambda may only be passed directly as a call argument
 
@@ -148,6 +161,32 @@ fn main() { append(G.items, new Box{v: 1}); let r = &G.items[0]; println(freeG2(
 // === a plain first argument does not hide a deep mut overlap
 fn main() { var b = new Bag{items: new []Box(0), n: 0}; append(b.items, new Box{v: 1}); let d = &b.items[0]; println(useBag2(1, fn [d](x: int): int { return x + d.v }, b)) }  // error: argument 2 of useBag2 captures a place that argument 3 changes, which is mut
 
+// === an array that holds an interface cannot be captured
+type IfaceHolderA = ref record { d: I }
+fn capArr(a: []IfaceHolderA): int { return apply(1, fn [a](x: int): int { return x }) }  // error: cannot capture 'a': its type holds an interface value; function values cannot take interface values in v1
+fn main() { println(0) }
+
+// === an optional that holds an interface cannot be captured
+type IfaceHolderO = ref record { d: I }
+fn capOpt(o: ?IfaceHolderO): int { return apply(1, fn [o](x: int): int { return x }) }  // error: cannot capture 'o': its type holds an interface value; function values cannot take interface values in v1
+fn main() { println(0) }
+
+// === a Result that holds an interface cannot be captured
+type IfaceHolderR = ref record { d: I }
+fn capRes(r: Result[IfaceHolderR]): int { return apply(1, fn [r](x: int): int { return x }) }  // error: cannot capture 'r': its type holds an interface value; function values cannot take interface values in v1
+fn main() { println(0) }
+
+// === a recursive record that holds an interface cannot be captured
+type IfaceRec = ref record { next: ?IfaceRec; d: I }
+fn capRec(r: IfaceRec): int { return apply(1, fn [r](x: int): int { return x }) }  // error: cannot capture 'r': its type holds an interface value; function values cannot take interface values in v1
+fn main() { println(0) }
+
+// === a forward shell capture reports the type is not yet defined
+type ForwardCap
+fn capForward(h: ForwardCap): int { return apply(1, fn [h](x: int): int { return x }) }  // error: ForwardCap is declared but not yet defined
+type ForwardCap = ref record { d: int }
+fn main() { println(0) }
+
 // === a record that holds an interface cannot be captured
 type IfaceHolder = ref record { d: I }
 fn capHolder(hd: IfaceHolder): int { return apply(1, fn [hd](x: int): int { return x }) }  // error: cannot capture 'hd': its type holds an interface value; function values cannot take interface values in v1
@@ -179,6 +218,36 @@ fn main() { let b = new Bag{items: new []Box(0), n: 0}; let h = handle(b); print
 
 // === try cannot consume a captured Result reference
 fn main() { let r = ok(1); println(applyR(1, fn [r](x: int): Result[int] { let v = try r; return ok(x + v) })) }  // error: cannot move out of a reference: a reference only borrows
+
+// === an inner island must not overwrite the outer argument holder
+fn pair(n: int, r: &Bag, f: fn(int): int): int { return f(n) }
+fn use3(r: &Bag, f: fn(int): int, b: Bag): int { return f(1) }
+fn main() { var b = new Bag{items: new []Box(0), n: 0}; append(b.items, new Box{v: 1}); println(use3(&b, fn [b](x: int): int { let y = pair(1, &b, fn [x](z: int): int { return z + x }); return x + y }, b)) }  // error: argument 3 of use3 may free what argument 1 points into, and runs after it; compute it before the call
+
+// === a later argument that takes the captured optional is refused
+fn main() { var o: ?Box = new Box{v: 1}; println(useOpt(fn [o](x: int): int { return x }, take(o))) }  // error: argument 2 of useOpt may free what argument 1 captures, and runs after it; compute it before the call
+
+// === a later argument that replaces the captured optional is refused
+fn main() { var o: ?Box = new Box{v: 1}; println(useOpt(fn [o](x: int): int { return x }, replace(o, new Box{v: 2}))) }  // error: argument 2 of useOpt may free what argument 1 captures, and runs after it; compute it before the call
+
+// === a lambda body cannot call the active enclosing method
+type ActiveM = ref record { n: int }
+fn (m: &ActiveM) rec(x: int): int { return apply(x, fn [m](y: int): int { return m.rec(y) }) }  // error: cannot call 'ActiveM::rec' from a lambda while it is being compiled: its effects are not known yet
+fn main() { println(0) }
+
+// === a method receiver that is mut may not overlap a deep capture
+fn (mut b: &Bag) overlap(f: fn(int): int): int { return f(1) }
+fn main() { var b = new Bag{items: new []Box(0), n: 0}; append(b.items, new Box{v: 1}); let d = &b.items[0]; println(b.overlap(fn [d](x: int): int { return x + d.v })) }  // error: argument 1 of method 'Bag::overlap' captures a place that the receiver changes, which is mut
+
+// === a two-hop callee that writes through a handle refuses a handle-rooted capture
+fn badHop(f: fn(int): int, n: int): int { let p = new Bag{items: new []Box(0), n: 0}; let h = handle(p); h.items = new []Box(0); return f(n) }
+fn midHop(f: fn(int): int, n: int): int { return badHop(f, n) }
+fn main() { let b = new Bag{items: new []Box(0), n: 0}; append(b.items, new Box{v: 1}); let h = handle(b); let r = &h.items[0]; println(midHop(fn [r](x: int): int { return x + r.v }, 1)) }  // error: cannot pass a closure that captures a reference through a handle to midHop: it might free what the handle names
+
+// === a two-hop callee that frees a global refuses a global-rooted capture
+fn freeHop(n: int, f: fn(int): int): int { G = new Bag{items: new []Box(0), n: 0}; return f(n) }
+fn midFree(n: int, f: fn(int): int): int { return freeHop(n, f) }
+fn main() { append(G.items, new Box{v: 1}); let r = &G.items[0]; println(midFree(1, fn [r](x: int): int { return x + r.v })) }  // error: cannot pass a closure that captures a reference into global 'G' to midFree: it might free it
 
 // === a captured tracked handle whose owner a later argument moves
 fn main() { let b = new Bag{items: new []Box(0), n: 0}; let h = handle(b); println(useB(fn [h](x: int): int { return x + h.n }, b)) }  // error: argument 2 of useB may free what argument 1 captures, and runs after it; compute it before the call

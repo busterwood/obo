@@ -1,0 +1,2 @@
+exit 1
+stderr lib.obx:2:48: a record field cannot be a function value; function values are parameters and locals only

@@ -1,0 +1,14 @@
+module main
+import "lib.obx"
+type Item = ref record { n: int }
+fn main() {
+    let n = 7
+    println(lib::apply(1, fn [n](x: int): int { return x + n }))
+    let item = new Item{n: 3}
+    println(lib::apply(2, fn [item](x: int): int { return x + item.n }))
+    let h = handle(item)
+    println(lib::apply(3, fn [h](x: int): int { return x + h.n }))
+}
+// expect: 8
+// expect: 5
+// expect: 6

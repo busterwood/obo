@@ -2074,6 +2074,39 @@ def iface_forged_freesall():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def capture_sourceless_pure():
+    """A source-less, well-formed lib.sym whose callback helpers are pure accepts a handle-rooted
+    capture in both argument orders. This is the honest control for capture_forged_writeshandles;
+    it is a real --check exit-0 assertion, not REF==PORT and not a source-less full build."""
+    files = {
+        'lib.obx': '''module lib
+pub fn apply(x: int, f: fn(int): int): int { return f(x) }
+pub fn applyf(f: fn(int): int, x: int): int { return f(x) }
+''',
+        'main.obx': '''module main
+import "lib.obx"
+type Box = ref record { v: int }
+type Bag = ref record { items: []Box; n: int }
+fn main() {
+    let b = new Bag{items: new []Box(0), n: 0}
+    append(b.items, new Box{v: 1})
+    let h = handle(b)
+    let r = &h.items[0]
+    println(lib::apply(1, fn [r](x: int): int { return x + r.v }))
+    println(lib::applyf(fn [r](x: int): int { return x + r.v }, 1))
+}
+''',
+    }
+    d, symdir = tree(files, prefix='symcase-capture-pure-')
+    try:
+        ok(build(d, symdir, out=os.path.join(d, 'p')), 'honest pure build')
+        os.unlink(os.path.join(d, 'lib.obx'))
+        q = build(d, symdir, check=True)
+        ok(q, 'source-less pure check')
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def capture_forged_writeshandles():
     """A well-formed source-less lib.sym may state writeshandles without freesall. A handle-rooted
     capture must still be refused at the creating call, before and after a plain argument, with the
@@ -2178,6 +2211,7 @@ def tests():
         ('sym/qualified_fnfwd_alias', qualified_fnfwd_alias),
         ('sym/iface_tier_check', iface_tier_check),
         ('sym/iface_forged_freesall', iface_forged_freesall),
+        ('sym/capture_sourceless_pure', capture_sourceless_pure),
         ('sym/capture_forged_writeshandles', capture_forged_writeshandles),
     ]
 

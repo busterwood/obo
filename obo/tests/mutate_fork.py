@@ -925,6 +925,8 @@ EQUIVALENT = {
     "interfaces v3 X30: the mode-0 comparison ignores parameter modes": "equivalent for the same reason as the methods' mode-0 checks: a full build reads each import's .sym right after its own writer has rewritten it from the same live interface (compileUnit, writeSym, then readSym in mode 0), and an import must have a header, so no full build reads a file it did not write (a forged lib.sym in the sym dir is overwritten first); --check reads in mode 1, which compares nothing with the live interface. The writer's modes are pinned by the golden and the round trip (a writer that drops mut, X26, is caught there)",
     "interfaces v3 X8: the receiver's obj and vtable are loaded after the arguments (S4)": "equivalent on legal source: S4's order is defensive. The receiver is held as argument 0 (holdArg), and argOrderCheck refuses any later argument that moves or frees what the receiver points into; the mut-alias check also refuses a mut argument that points inside the receiver. For an interface receiver that is the box or pair slot, so no accepted call can replace, re-point or free the place whose obj and vtable the mutant reads. The mutant still saves the box pointer as argument 0 before the explicit arguments and reserves the vtable slot above them; after the arguments it reads [box] and [box+8] and fills those exact slots, so argument order, layout and the two dispatch words are unchanged. E6's errors/ifaces_calls case `h.d.grow(swap(h))` is rejected identically by the unmutated and mutant compilers, and the full suite (including run/ifaces_calls and run/ifaces_effects) passes without a fault. The only difference is the time of two reads of unchanged box words, which no legal program can observe",
     "interfaces v3 X15: the local tier drops the pfree-subset check": "equivalent in the current architecture: the signature comparison has already required method and member parameter modes to be equal (X38d), and the synthetic S(m) puts a pfree bit on exactly the member's mode-2 parameters. callFn records pfree only for a mode-2 argument, so a source method's pfree mask is a subset of S(m) by construction; a mode-1 parameter cannot be changed and no recorded free can land on it. The branch is defensive for a forged *method* summary, but implDecl only ever sees methods compiled from source: a .sym reader trusts an imported implementation and does not re-run the check, and a root cannot implement an interface for an imported type. The full suite passes without the branch, and there is no honest input that reaches it, so no test can distinguish it.",
+    "lambdas B12: island does not reset lastFnBind": "equivalent as defence in depth: nestedExpr and tailExpr clear lastFnBind at the start of every argument and top-level expression, so at an island entry it is already nil for the literal being compiled; no accepted source can make the missing island reset observable. The LamCtx save/reset remains a defensive invariant.",
+    "lambdas B25: island does not reset the alive guard": "equivalent as defence in depth: an island is entered after the outer alive call has returned, so inAlive is already false; guardOpen is false and guardIdx is only read by a following conjunction guard. An inner alive's tokSeq is later than the outer guardStart+1, so it cannot be mistaken for the first guard, and the island installs fresh originDead/originSyms arrays, so the stale index is not read. The reset remains a defensive invariant; the guard tests pass with and without it.",
 }
 
 
@@ -1589,9 +1591,9 @@ LAMBDA_MUTANTS = {
         '    if inDefer { error("a lambda literal cannot appear in a defer body; move the call out of the defer") }\n', ''),
     "lambdas X17: lambda allowed outside a function": (
         '    if curFn == nil { error("a lambda can only be created inside a function") }\n', ''),
-    "lambdas X18: capture list accepted": (
-        '    if sym == T_LBRACK {\n        error("a capture list is not supported yet; this compiler implements non-capturing lambdas only")\n    }\n',
-        '    if false {\n        error("a capture list is not supported yet; this compiler implements non-capturing lambdas only")\n    }\n'),
+    "lambdas X18: capture list accepted outside a direct call argument": (
+        '    if len(capNames) > 0 {\n        if lambdaArgOK <= 0 { error("a capturing lambda may only be passed directly as a call argument") }\n    }\n',
+        '    if false {\n        if lambdaArgOK <= 0 { error("a capturing lambda may only be passed directly as a call argument") }\n    }\n'),
     "lambdas X19: lambda purity check dropped": (
         '    if !(pureFn(f) && !f.writesHandles && f.fnRec.pfree == 0) {\n', '    if false {\n'),
     "lambdas X20: active enclosing call allowed": (
@@ -1627,6 +1629,82 @@ LAMBDA_MUTANTS = {
         '    replace(nonFreshLog, replace(c.nonFreshLog, new []int(0)))\n', ''),
 }
 MUTANTS.update(LAMBDA_MUTANTS)
+
+LAMBDA_B_MUTANTS = {
+    # Stage B capture-list parser and classifier
+    "lambdas B1: empty capture list accepted": (
+        '        if sym == T_RBRACK { error("a capture list needs at least one name") }\n',
+        '        if false { error("a capture list needs at least one name") }\n'),
+    "lambdas B2: duplicate capture accepted": (
+        "                if capNames[i] == cn { error(\"capture '\" + cn + \"' given twice\") }\n",
+        "                if false { error(\"capture '\" + cn + \"' given twice\") }\n"),
+    "lambdas B3: mut/move capture mode accepted": (
+        '            if (cn == "mut" || cn == "move") && sym == T_IDENT {\n                error("captures are read-only: write fn [x]; mutable and owned captures are not supported")\n            }\n',
+        '            if false {\n                error("captures are read-only: write fn [x]; mutable and owned captures are not supported")\n            }\n'),
+    "lambdas B4: capture also a parameter accepted": (
+        "            if p.name == cn { error(\"capture '\" + cn + \"' is also a parameter of the lambda\") }\n",
+        "            if false { error(\"capture '\" + cn + \"' is also a parameter of the lambda\") }\n"),
+    "lambdas B5: unknown capture accepted": (
+        "            error(\"'\" + cn + \"' is not a local variable or parameter; a lambda uses globals directly, without capturing\")\n",
+        "            let missing = cn\n"),
+    "lambdas B6: function capture gets the generic message": (
+        "            if g != nil && g.kind == \"fn\" { error(\"cannot capture function '\" + cn + \"'; call it directly\") }\n",
+        "            if false { error(\"cannot capture function '\" + cn + \"'; call it directly\") }\n"),
+    "lambdas B7: string capture accepted": (
+        "            if ct.kind == \"string\" {\n                error(\"cannot capture '\" + cn + \"': strings are owned; pass it as a parameter\")\n            }\n",
+        "            if false {\n                error(\"cannot capture '\" + cn + \"': strings are owned; pass it as a parameter\")\n            }\n"),
+    "lambdas B8: direct interface capture gets the indirect message": (
+        "            } else if isIfaceVal(ct) {\n                error(\"cannot capture interface value '\" + cn + \"'; function values cannot take interface values in v1\")\n",
+        "            } else if false {\n                error(\"cannot capture interface value '\" + cn + \"'; function values cannot take interface values in v1\")\n"),
+    "lambdas B9: record/closed interface capture accepted": (
+        '            } else if containsIface(ct) {\n',
+        '            } else if false {\n'),
+    "lambdas B10: incomplete capture gets the interface message": (
+        '            if ct.incomplete {\n                error(tname(ct) + " is declared but not yet defined")\n',
+        '            if false {\n                error(tname(ct) + " is declared but not yet defined")\n'),
+    "lambdas B11: island does not reset lambdaArgOK": (
+        '    lastFnBind = nil\n    lambdaArgOK = 0\n    selfCalls = 0\n',
+        '    lastFnBind = nil\n    selfCalls = 0\n'),
+    "lambdas B12: island does not reset lastFnBind": (
+        '    lastFnBind = nil\n    lambdaArgOK = 0\n    selfCalls = 0\n',
+        '    lambdaArgOK = 0\n    selfCalls = 0\n'),
+    "lambdas B13: capture binding is not held": (
+        '                holdArg(cb, i, true)\n', ''),
+    "lambdas B14: capture arg flag is cleared": (
+        '    argCapture[argTempsUsed] = cap\n', '    argCapture[argTempsUsed] = false\n'),
+    "lambdas B15: handle-rooted capture uses pureFn only": (
+        '                if argIsCapture[i] { bad = !(pureFn(f) && !f.writesHandles) }\n',
+        '                if argIsCapture[i] { bad = !pureFn(f) }\n'),
+    "lambdas B16: deep capture ignores writesHandles": (
+        '        if f == curFn || f.addr < 0 || f.writesHandles {\n',
+        '        if false {\n'),
+    "lambdas B17: global capture ignores mightFree": (
+        '            if ar.storage == "global" && mightFree(f, ar) {\n',
+        '            if false {\n'),
+    "lambdas B18: whole-object capture is treated as deep": (
+        '            } else {\n                append(roots, s)\n                append(deeps, false)\n                append(paths, "")\n            }\n',
+        '            } else {\n                append(roots, s)\n                append(deeps, true)\n                append(paths, "")\n            }\n'),
+    "lambdas B19: capture prologue reads the wrong env word": (
+        '            opMem(0x8B, rv, mem(er, -1, 8 + 8 * i, 8), true, false)\n',
+        '            opMem(0x8B, rv, mem(er, -1, 9 + 8 * i, 8), true, false)\n'),
+    "lambdas B20: cell stores a code offset": (
+        '    movRI(cw, CODE_BASE + f.addr)\n', '    movRI(cw, f.addr)\n'),
+    "lambdas B21: capture cell word offset off by one": (
+        '        opMem(0x89, v.r, mem(RBP, -1, base + 8 + 8 * i, 8), true, false)\n',
+        '        opMem(0x89, v.r, mem(RBP, -1, base + 8 * i, 8), true, false)\n'),
+    "lambdas B23: capture mut-overlap labels use compressed binding indexes": (
+        '                            if meth || argIsCapture[j] || argIsCapture[i] {\n',
+        '                            if meth {\n'),
+    "lambdas B24: the literal does not publish its capture binding": (
+        '    lastFnBind = captureBind(&caps)\n', '    lastFnBind = nil\n'),
+    "lambdas B25: island does not reset the alive guard": (
+        '    guardStart = -10\n    guardSym = nil\n    guardFollow = 0\n    guardFree = 0\n    guardNeg = false\n    guardOpen = false\n    guardIdx = 0\n    guardMark = nil\n    inAlive = false\n    lastNamed = nil\n',
+        '    guardStart = guardStart\n    guardSym = nil\n    guardFollow = 0\n    guardFree = 0\n    guardNeg = false\n    guardOpen = false\n    guardIdx = 0\n    guardMark = nil\n    inAlive = false\n    lastNamed = nil\n'),
+    "lambdas B22: island does not reset argTempsUsed": (
+        '    argTempsUsed = len(argTemps)\n    curFn = f\n',
+        '    argTempsUsed = 0\n    curFn = f\n'),
+}
+MUTANTS.update(LAMBDA_B_MUTANTS)
 
 def apply_edits(src, edits):
     """Apply replacements in order; each must match exactly once. Returns

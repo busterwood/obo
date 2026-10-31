@@ -1,0 +1,9 @@
+obosym 5
+abi 1
+compiler "0.9"
+source 0xa6dd7b6f9a5cabe5
+dep l "l.obx"
+interface 0x35bd6233729d827c
+module a
+depiface l 0x70deba36d89b4b71
+fn run(p0: fn(int, int): int, p1: int, p2: int): int

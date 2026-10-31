@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:10:63: cannot pass a closure that captures a reference through a handle to l1::mid: it might free what the handle names

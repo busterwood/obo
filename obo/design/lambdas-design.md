@@ -18,6 +18,8 @@ non-capturing literals, structural function types and indirect calls, but no
 capture lists or `^I`.
 
 > 2026-10-30 version shift: interfaces is now `0.8`/format `4` (`obo/design/interfaces-v3-design.md`), so Stage A is `0.9`/format `5` and Stage B is `0.10`/format `5`; interfaces v3 also requires `containsIface` to recurse into record and closed fields (v3 section 10). Also amended 2026-10-30: `containsIface` now recurses into record and closed fields with a visited list and treats an incomplete forward shell as containing an interface (section 5.2 snippet), and the interface-exclusion reasons now cite interfaces v3; no lambda rule is loosened.
+>
+> 2026-10-31 release-order update: floats are `0.10`/format `6`/ABI `1` first; Stage B is now targeted as `0.11`/format `6`/ABI `1` after floats. The `0.10`/format `5` Stage B reservations below are historical and preserved; they are not the current target. The experimental Stage B checkpoint stays version-neutral at `0.9`/format `5` until the float release base is available, and no fixture migration is performed here.
 
 Every claim about the current compiler below was checked against
 `obo/src/obo.obo` at this baseline; `file:line` references are to that file,

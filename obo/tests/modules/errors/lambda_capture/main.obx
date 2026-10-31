@@ -1,0 +1,7 @@
+module main
+import "lib.obx"
+fn main() {
+    let n = 1
+    let f = fn [n](x: int): int { return x }
+    println(lib::apply(1, f))
+}

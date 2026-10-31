@@ -1,0 +1,8 @@
+obosym 5
+abi 1
+compiler "0.9"
+source 0x98365f2d3cf6b306
+interface 0xd8e12bc0ceb0e956
+module lib
+fn apply(p0: int, p1: fn(int): int): int
+fn applyf(p0: fn(int): int, p1: int): int

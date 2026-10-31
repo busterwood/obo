@@ -1,0 +1,73 @@
+// Stage B state: a capturing literal inside a held index/append/replace value, an earlier
+// read-only argument followed by a capture, nested islands, a deferred call through the
+// receiving callee, and a home-retry-sized outer function. The creator frame stays live for
+// the whole call chain; the capture cell is frame memory, not heap.
+type Item = ref record { n: int }
+fn apply(x: int, f: fn(int): int): int { return f(x) }
+fn pick(f: fn(int): int): int { return f(3) }
+fn mix(r: &Item, f: fn(int): int): int { return r.n + f(1) }
+fn deferCall(f: fn(int): int): int {
+    defer f(1)
+    return 2
+}
+fn heavy(n: int): int {
+    var a = 1
+    var b = 2
+    var c = 3
+    var d = 4
+    var e = 5
+    var f = 6
+    var g = 7
+    var h = 8
+    var i = 0
+    while i < n {
+        a += i
+        b += a
+        c += b
+        d += c
+        e += d
+        f += e
+        g += f
+        h += g
+        i += 1
+    }
+    return apply(n, fn [a, b, c, d, e, f, g, h](x: int): int {
+        return x + a + b + c + d + e + f + g + h
+    })
+}
+
+fn main() {
+    let item = new Item{n: 4}
+    let n = 2
+    println(mix(&item, fn [n](x: int): int { return x + n }))
+
+    let xs = new []int(0)
+    append(xs, 10)
+    append(xs, 20)
+    append(xs, 30)
+    println(xs[pick(fn [n](x: int): int { return x - n })])
+    append(xs, pick(fn [n](x: int): int { return x + n }))
+    println(len(xs))
+
+    var o: ?Item = new Item{n: 1}
+    let old = replace(o, new Item{n: pick(fn [n](x: int): int { return x + n })})
+    if old != nil { println(old.n) }
+    if o != nil { println(o.n) }
+
+    println(deferCall(fn [n](x: int): int { return x + n }))
+
+    let out = 3
+    println(apply(1, fn [out](x: int): int {
+        return apply(2, fn [x, out](y: int): int { return x + y + out })
+    }))
+
+    println(heavy(2))
+}
+// expect: 7
+// expect: 20
+// expect: 4
+// expect: 1
+// expect: 5
+// expect: 2
+// expect: 6
+// expect: 340
