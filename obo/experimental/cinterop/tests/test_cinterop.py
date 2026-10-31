@@ -319,7 +319,7 @@ def assert_relro_sections(exe):
             if name in parts:
                 i = parts.index(name)
                 addr = int(parts[i + 2], 16)
-                size = int(parts[i + 5], 16)
+                size = int(parts[i + 4], 16)
                 if size and not any(a <= addr and addr + size <= b for a, b in ranges):
                     raise Fail("%s at %#x..%#x is outside GNU_RELRO" % (name, addr, addr + size))
 
