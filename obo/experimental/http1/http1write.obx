@@ -1,0 +1,562 @@
+// Experimental HTTP/1.1 response serializer (H1a0).
+//
+// Status: experimental and unstable. Pure obo: no sockets, streams or clocks.
+// The caller supplies the Date seconds/nanos and drains the bounded output
+// buffer with takeOutput.
+//
+// The writer owns Date, Server, Content-Length, Transfer-Encoding, Connection,
+// Trailer, Keep-Alive and Upgrade. Application fields are validated at entry
+// and the whole block is revalidated when it is committed. Chunked framing is
+// chosen only when the length is unknown and after the first body write; an
+// empty unknown-length response ends with Content-Length: 0. HEAD, 1xx, 204,
+// 205 and 304 never put body bytes on the wire. HTTP/1.0 uses its own status
+// line and close-delimited framing, never chunked.
+module http1write
+
+import "http1core.obx" as core
+import "http1date.obx" as date
+
+pub type Response = ref record {
+    limits: core::Limits
+    method: string
+    http10: bool
+    close: bool
+    dateText: string
+    status: int
+    reason: string
+    began: bool
+    committed: bool
+    ended: bool
+    failed: bool
+    headers: []core::Header
+    hasLength: bool
+    length: int
+    trailerNames: []string
+    trailers: []core::Header
+    trailerBytes: int
+    out: []byte
+    cap: int
+    chunked: bool
+    bodyAllowed: bool
+    discardBody: bool
+    wroteBody: bool
+    bodyBytes: int
+    finalQueued: bool
+}
+
+fn appendText(mut out: &[]byte, s: string) {
+    for i in 0..len(s) { append(out, s[i]) }
+}
+
+fn appendBytes(mut out: &[]byte, src: &[]byte, offset: int, count: int) {
+    for i in 0..count { append(out, src[offset + i]) }
+}
+
+fn validSource(src: &[]byte, offset: int, count: int): bool {
+    if offset < 0 || count < 0 { return false }
+    if offset > len(src) { return false }
+    return count <= len(src) - offset
+}
+
+fn trimOws(s: string): string {
+    var a = 0
+    var b = len(s)
+    while a < b && (s[a] == ' ' || s[a] == '\t') { a += 1 }
+    while b > a && (s[b - 1] == ' ' || s[b - 1] == '\t') { b -= 1 }
+    return substr(s, a, b)
+}
+
+fn appendStatus(mut out: &[]byte, status: int) {
+    append(out, byte(int('0') + (status / 100) % 10))
+    append(out, byte(int('0') + (status / 10) % 10))
+    append(out, byte(int('0') + status % 10))
+}
+
+fn hexWidth(n: int): int {
+    if n < 16 { return 1 }
+    if n < 256 { return 2 }
+    if n < 4096 { return 3 }
+    if n < 65536 { return 4 }
+    if n < 1048576 { return 5 }
+    if n < 16777216 { return 6 }
+    if n < 268435456 { return 7 }
+    return 8
+}
+
+fn appendHex(mut out: &[]byte, n: int) {
+    let digits = "0123456789abcdef"
+    let width = hexWidth(n)
+    var shift = width - 1
+    while shift >= 0 {
+        var div = 1
+        for i in 0..shift { div *= 16 }
+        append(out, digits[(n / div) % 16])
+        shift -= 1
+    }
+}
+
+fn setFailed(mut r: &Response) {
+    r.failed = true
+}
+
+pub fn makeResponse(limits: &core::Limits, method: string, http10: bool,
+                    close: bool, dateSeconds: int, dateNanos: int): Result[Response] {
+    let checked = try core::validateLimits(limits)
+    if !checked { return err("HTTP limits are invalid", core::ERR_INVALID_ARGUMENT) }
+    if !core::isToken(method) {
+        return err("response context method is not a token", core::ERR_INVALID_ARGUMENT)
+    }
+    let formatted = try date::formatHttpDate(dateSeconds, dateNanos)
+    return ok(new Response{
+        limits: core::copyLimits(limits),
+        method: method,
+        http10: http10,
+        close: close || http10,
+        dateText: formatted,
+        status: 0,
+        reason: "",
+        began: false,
+        committed: false,
+        ended: false,
+        failed: false,
+        headers: new []core::Header(0),
+        hasLength: false,
+        length: 0,
+        trailerNames: new []string(0),
+        trailers: new []core::Header(0),
+        trailerBytes: 0,
+        out: new []byte(0),
+        cap: limits.maxResponseBuffer,
+        chunked: false,
+        bodyAllowed: false,
+        discardBody: false,
+        wroteBody: false,
+        bodyBytes: 0,
+        finalQueued: false
+    })
+}
+
+pub fn beginResponseWithReason(mut r: &Response, status: int,
+                               reason: string): Result[bool]
+
+pub fn beginResponse(mut r: &Response, status: int): Result[bool] {
+    return beginResponseWithReason(r, status, core::statusText(status))
+}
+
+pub fn beginResponseWithReason(mut r: &Response, status: int, reason: string): Result[bool] {
+    if r.began || r.committed || r.ended || r.failed {
+        return err("response status is already fixed", core::ERR_INVALID_STATE)
+    }
+    if status < 100 || status > 599 {
+        return err("response status is outside 100..599", core::ERR_INVALID_ARGUMENT)
+    }
+    if status < 200 {
+        return err("normal responses cannot use 1xx", core::ERR_INVALID_ARGUMENT)
+    }
+    if !core::isFieldValue(reason) {
+        return err("reason phrase contains a control byte", core::ERR_INVALID_ARGUMENT)
+    }
+    if status == 204 && r.hasLength {
+        return err("204 does not accept Content-Length", core::ERR_INVALID_STATE)
+    }
+    if status == 205 {
+        if r.hasLength && r.length != 0 {
+            return err("205 accepts only Content-Length: 0", core::ERR_INVALID_STATE)
+        }
+        r.hasLength = true
+        r.length = 0
+    }
+    r.status = status
+    r.reason = reason
+    r.began = true
+    if r.method == "HEAD" {
+        r.bodyAllowed = false
+        r.discardBody = true
+    } else if status == 204 || status == 205 || status == 304 {
+        r.bodyAllowed = false
+        r.discardBody = false
+    } else {
+        r.bodyAllowed = true
+        r.discardBody = false
+    }
+    return ok(true)
+}
+
+pub fn setHeader(mut r: &Response, name: string, value: string): Result[bool] {
+    if r.committed || r.ended || r.failed {
+        return err("headers are already committed", core::ERR_INVALID_STATE)
+    }
+    if !core::isToken(name) {
+        return err("header name is not a token", core::ERR_INVALID_ARGUMENT)
+    }
+    if core::isWriterOwned(name) {
+        return err("header is owned by the HTTP writer", core::ERR_INVALID_ARGUMENT)
+    }
+    let trimmed = trimOws(value)
+    if !core::isFieldValue(trimmed) {
+        return err("header value contains a forbidden byte", core::ERR_INVALID_ARGUMENT)
+    }
+    append(r.headers, new core::Header{name: name, value: trimmed})
+    return ok(true)
+}
+
+pub fn setLength(mut r: &Response, length: int): Result[bool] {
+    if r.committed || r.ended || r.failed {
+        return err("response framing is already committed", core::ERR_INVALID_STATE)
+    }
+    if length < 0 {
+        return err("Content-Length cannot be negative", core::ERR_INVALID_ARGUMENT)
+    }
+    if r.began {
+        if r.status == 204 || (r.status >= 100 && r.status < 200) {
+            return err("this status does not accept Content-Length", core::ERR_INVALID_STATE)
+        }
+        if r.status == 205 && length != 0 {
+            return err("205 accepts only Content-Length: 0", core::ERR_INVALID_STATE)
+        }
+        if r.status == 205 && length == 0 { r.hasLength = true; r.length = 0; return ok(true) }
+        if !r.bodyAllowed && r.method != "HEAD" && r.status != 304 {
+            return err("this response cannot carry a length", core::ERR_INVALID_STATE)
+        }
+    }
+    r.hasLength = true
+    r.length = length
+    return ok(true)
+}
+
+pub fn setTrailerNames(mut r: &Response, names: &[]string): Result[bool] {
+    if r.committed || r.ended || r.failed || r.wroteBody {
+        return err("response trailers must be declared before the body", core::ERR_INVALID_STATE)
+    }
+    if r.hasLength {
+        return err("response trailers require chunked framing", core::ERR_INVALID_STATE)
+    }
+    if r.began && !r.bodyAllowed {
+        return err("this response cannot carry trailers", core::ERR_INVALID_STATE)
+    }
+    if len(names) > r.limits.maxResponseTrailerCount {
+        return err("too many response trailer names", core::ERR_LIMIT_EXCEEDED)
+    }
+    var copied = new []string(0)
+    for i in 0..len(names) {
+        let name = names[i]
+        if !core::isToken(name) || core::isForbiddenTrailer(name) {
+            return err("response trailer name is invalid or forbidden", core::ERR_INVALID_ARGUMENT)
+        }
+        append(copied, name)
+    }
+    r.trailerNames = copied
+    return ok(true)
+}
+
+fn declaredTrailer(r: &Response, name: string): bool {
+    for i in 0..len(r.trailerNames) {
+        if core::equalFold(r.trailerNames[i], name) { return true }
+    }
+    return false
+}
+
+pub fn addTrailer(mut r: &Response, name: string, value: string): Result[bool] {
+    if r.failed || r.ended {
+        return err("response is already complete", core::ERR_INVALID_STATE)
+    }
+    if !r.committed || !r.chunked || !r.wroteBody {
+        return err("trailers require a chunked response after a body write", core::ERR_INVALID_STATE)
+    }
+    if !core::isToken(name) || core::isForbiddenTrailer(name) {
+        return err("response trailer name is invalid or forbidden", core::ERR_INVALID_ARGUMENT)
+    }
+    if !declaredTrailer(r, name) {
+        return err("response trailer name was not declared", core::ERR_INVALID_STATE)
+    }
+    let trimmed = trimOws(value)
+    if !core::isFieldValue(trimmed) {
+        return err("response trailer value contains a forbidden byte", core::ERR_INVALID_ARGUMENT)
+    }
+    if len(r.trailers) + 1 > r.limits.maxResponseTrailerCount {
+        return err("too many response trailers", core::ERR_LIMIT_EXCEEDED)
+    }
+    let cost = len(name) + len(trimmed) + 4
+    if r.trailerBytes + cost > r.limits.maxResponseTrailerBytes {
+        return err("response trailer budget is exhausted", core::ERR_LIMIT_EXCEEDED)
+    }
+    r.trailerBytes += cost
+    append(r.trailers, new core::Header{name: name, value: trimmed})
+    return ok(true)
+}
+
+fn buildHeaders(mut r: &Response, finalNoBody: bool): Result[[]byte] {
+    var fixedLength = false
+    var useChunked = false
+    var closeDelimited = false
+    if r.bodyAllowed {
+        if r.hasLength {
+            fixedLength = true
+        } else if finalNoBody && !r.wroteBody {
+            r.hasLength = true
+            r.length = 0
+            fixedLength = true
+        } else if r.http10 {
+            closeDelimited = true
+            r.close = true
+        } else {
+            useChunked = true
+        }
+    }
+    if len(r.trailerNames) > 0 && !useChunked {
+        return err("response trailers require chunked framing", core::ERR_INVALID_STATE)
+    }
+    var out = new []byte(0)
+    if r.http10 {
+        appendText(out, "HTTP/1.0 ")
+    } else {
+        appendText(out, "HTTP/1.1 ")
+    }
+    appendStatus(out, r.status)
+    append(out, ' ')
+    appendText(out, r.reason)
+    appendText(out, "\r\n")
+    appendText(out, "Date: ")
+    appendText(out, r.dateText)
+    appendText(out, "\r\n")
+    if len(r.limits.serverName) > 0 {
+        appendText(out, "Server: ")
+        appendText(out, r.limits.serverName)
+        appendText(out, "\r\n")
+    }
+    for i in 0..len(r.headers) {
+        appendText(out, r.headers[i].name)
+        appendText(out, ": ")
+        appendText(out, r.headers[i].value)
+        appendText(out, "\r\n")
+    }
+    if r.status == 205 {
+        appendText(out, "Content-Length: 0\r\n")
+    } else if fixedLength || (r.hasLength && (r.method == "HEAD" || r.status == 304)) {
+        appendText(out, "Content-Length: ")
+        appendText(out, string(r.length))
+        appendText(out, "\r\n")
+    } else if useChunked {
+        appendText(out, "Transfer-Encoding: chunked\r\n")
+        if len(r.trailerNames) > 0 {
+            appendText(out, "Trailer: ")
+            for i in 0..len(r.trailerNames) {
+                if i > 0 { appendText(out, ", ") }
+                appendText(out, r.trailerNames[i])
+            }
+            appendText(out, "\r\n")
+        }
+    }
+    if r.close {
+        appendText(out, "Connection: close\r\n")
+    }
+    appendText(out, "\r\n")
+    r.chunked = useChunked
+    return ok(out)
+}
+
+fn commitHeaders(mut r: &Response, finalNoBody: bool): Result[bool] {
+    if r.committed { return ok(true) }
+    if !r.began { return err("beginResponse must be called first", core::ERR_INVALID_STATE) }
+    let block = buildHeaders(r, finalNoBody)
+    match block {
+        ok(bytes) {
+            if len(bytes) > r.limits.maxResponseHeaderBytes {
+                setFailed(r)
+                return err("response header block exceeds maxResponseHeaderBytes",
+                           core::ERR_LIMIT_EXCEEDED)
+            }
+            if len(r.out) + len(bytes) > r.cap {
+                setFailed(r)
+                return err("response header block does not fit maxResponseBuffer",
+                           core::ERR_LIMIT_EXCEEDED)
+            }
+            appendBytes(r.out, &bytes, 0, len(bytes))
+            r.committed = true
+            return ok(true)
+        }
+        err(m, c) {
+            setFailed(r)
+            return err(m, c)
+        }
+    }
+}
+
+pub fn writeBody(mut r: &Response, bytes: &[]byte, offset: int, count: int): Result[int] {
+    if !validSource(bytes, offset, count) {
+        return err("body source range is outside the array", core::ERR_INVALID_ARGUMENT)
+    }
+    if count <= 0 {
+        return err("writeBody needs a positive count", core::ERR_INVALID_ARGUMENT)
+    }
+    if r.failed || r.ended {
+        return err("response is already complete or failed", core::ERR_INVALID_STATE)
+    }
+    if !r.began {
+        return err("beginResponse must be called first", core::ERR_INVALID_STATE)
+    }
+    if r.discardBody {
+        if !r.committed {
+            let okCommit = try commitHeaders(r, true)
+            if !okCommit { return err("response headers were not committed", core::ERR_INVALID_STATE) }
+        }
+        r.wroteBody = true
+        return ok(count)
+    }
+    if !r.bodyAllowed {
+        return err("this response status does not allow a body", core::ERR_INVALID_STATE)
+    }
+    if !r.committed {
+        let okCommit = try commitHeaders(r, false)
+        if !okCommit { return err("response headers were not committed", core::ERR_INVALID_STATE) }
+    }
+    if r.chunked {
+        let free = r.cap - len(r.out)
+        var n = count
+        if n > r.limits.maxChunkSize { n = r.limits.maxChunkSize }
+        while n > 0 {
+            let overhead = hexWidth(n) + 4
+            if n + overhead <= free { break }
+            n -= n + overhead - free
+            if n < 0 { n = 0 }
+        }
+        if n <= 0 { return ok(0) }
+        appendHex(r.out, n)
+        appendText(r.out, "\r\n")
+        appendBytes(r.out, bytes, offset, n)
+        appendText(r.out, "\r\n")
+        r.wroteBody = true
+        r.bodyBytes += n
+        return ok(n)
+    }
+    if r.hasLength {
+        let remaining = r.length - r.bodyBytes
+        if remaining <= 0 {
+            setFailed(r)
+            return err("response body exceeds its declared length", core::ERR_LIMIT_EXCEEDED)
+        }
+        if count > remaining {
+            setFailed(r)
+            return err("response body exceeds its declared length", core::ERR_LIMIT_EXCEEDED)
+        }
+    }
+    let free = r.cap - len(r.out)
+    var n = count
+    if n > free { n = free }
+    if r.hasLength {
+        let remaining = r.length - r.bodyBytes
+        if n > remaining { n = remaining }
+    }
+    if n <= 0 { return ok(0) }
+    appendBytes(r.out, bytes, offset, n)
+    r.wroteBody = true
+    r.bodyBytes += n
+    return ok(n)
+}
+
+pub fn writeText(mut r: &Response, text: string, offset: int, count: int): Result[int] {
+    if offset < 0 || count < 0 || offset > len(text) || count > len(text) - offset {
+        return err("text source range is outside the string", core::ERR_INVALID_ARGUMENT)
+    }
+    if count <= 0 {
+        return err("writeText needs a positive count", core::ERR_INVALID_ARGUMENT)
+    }
+    let bytes = new []byte(count)
+    for i in 0..count { bytes[i] = text[offset + i] }
+    return writeBody(r, &bytes, 0, count)
+}
+
+pub fn endResponse(mut r: &Response): Result[bool] {
+    if r.failed {
+        return err("response is already failed", core::ERR_INVALID_STATE)
+    }
+    if r.ended {
+        return err("response is already complete", core::ERR_INVALID_STATE)
+    }
+    if !r.began {
+        return err("beginResponse must be called first", core::ERR_INVALID_STATE)
+    }
+    if !r.committed {
+        let okCommit = try commitHeaders(r, true)
+        if !okCommit { return err("response headers were not committed", core::ERR_INVALID_STATE) }
+    }
+    if r.chunked {
+        if r.finalQueued {
+            r.ended = true
+            return ok(true)
+        }
+        var final = new []byte(0)
+        appendText(final, "0\r\n")
+        for i in 0..len(r.trailers) {
+            appendText(final, r.trailers[i].name)
+            appendText(final, ": ")
+            appendText(final, r.trailers[i].value)
+            appendText(final, "\r\n")
+        }
+        appendText(final, "\r\n")
+        if len(r.out) + len(final) > r.cap {
+            if len(final) > r.cap {
+                setFailed(r)
+                return err("response trailer block cannot fit maxResponseBuffer",
+                           core::ERR_LIMIT_EXCEEDED)
+            }
+            return ok(false)
+        }
+        appendBytes(r.out, &final, 0, len(final))
+        r.finalQueued = true
+        r.ended = true
+        return ok(true)
+    }
+    if r.bodyAllowed && r.hasLength && !r.discardBody && r.bodyBytes != r.length {
+        setFailed(r)
+        return err("response body is shorter than its declared length",
+                   core::ERR_INCOMPLETE_BODY)
+    }
+    r.ended = true
+    return ok(true)
+}
+
+pub fn takeOutput(mut r: &Response): Result[[]byte] {
+    let out = replace(r.out, new []byte(0))
+    return ok(out)
+}
+
+pub fn pending(r: &Response): int {
+    return len(r.out)
+}
+
+pub fn isCommitted(r: &Response): bool { return r.committed }
+pub fn isDone(r: &Response): bool { return r.ended && (!r.chunked || r.finalQueued) }
+pub fn hasFailed(r: &Response): bool { return r.failed }
+
+pub fn continueBytes(): []byte {
+    let text = "HTTP/1.1 100 Continue\r\n\r\n"
+    let out = new []byte(0)
+    for i in 0..len(text) { append(out, text[i]) }
+    return out
+}
+
+// Protocol-generated error response. The body is static; no request bytes are
+// reflected. HEAD keeps the Content-Length but suppresses the body.
+pub fn errorResponse(limits: &core::Limits, status: int, isHead: bool,
+                     http10: bool, dateSeconds: int, dateNanos: int): Result[[]byte] {
+    var method = "GET"
+    if isHead { method = "HEAD" }
+    var made = try makeResponse(limits, method, http10, true, dateSeconds, dateNanos)
+    let body = core::errorBody(status)
+    let began = try beginResponse(&made, status)
+    if !began { return err("could not begin the error response", core::ERR_INTERNAL) }
+    let ct = try setHeader(&made, "Content-Type", "text/plain; charset=utf-8")
+    if !ct { return err("could not set the error Content-Type", core::ERR_INTERNAL) }
+    let set = try setLength(&made, len(body))
+    if !set { return err("could not set the error length", core::ERR_INTERNAL) }
+    let bytes = new []byte(0)
+    for i in 0..len(body) { append(bytes, body[i]) }
+    let n = try writeBody(&made, &bytes, 0, len(bytes))
+    if n != len(bytes) && !isHead {
+        return err("could not write the error body", core::ERR_INTERNAL)
+    }
+    let done = try endResponse(&made)
+    if !done { return err("could not finish the error response", core::ERR_INTERNAL) }
+    return takeOutput(&made)
+}

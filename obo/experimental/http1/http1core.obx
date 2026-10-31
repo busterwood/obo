@@ -1,0 +1,357 @@
+// Experimental HTTP/1.1 grammar support: shared limits, request metadata,
+// status/error tables and byte predicates.
+//
+// Status: H1a0 experimental slice, unstable. This module is pure obo: no
+// sockets, streams, clocks or native calls. The parser and serializer are
+// separate modules; this file only holds the records and tables both need.
+module http1core
+
+// Parser/serializer limits. These are the H1a0 subset of the design's Limits;
+// network/timeout fields are deliberately absent until the connection phase.
+// Every field is public so a caller can configure it, and every entry point
+// deep-copies and validates the record.
+pub type Limits = ref record {
+    pub maxStartLine: int
+    pub maxTarget: int
+    pub maxHeaderBytes: int
+    pub maxHeaderCount: int
+    pub maxHeaderLine: int
+    pub maxBody: int
+    pub maxChunkLine: int
+    pub maxChunkSize: int
+    pub maxChunkCount: int
+    pub maxChunkMetadata: int
+    pub maxTrailerBytes: int
+    pub maxTrailerCount: int
+    pub maxResponseHeaderBytes: int
+    pub maxResponseBuffer: int
+    pub maxResponseTrailerCount: int
+    pub maxResponseTrailerBytes: int
+    pub maxPipelineBytes: int
+    pub maxRequests: int
+    pub allowHttp10: bool
+    pub allowExtensionMethods: bool
+    pub pipelining: bool
+    pub autoContinue: bool
+    pub serverName: string
+}
+
+// One ordered field. Duplicate fields are preserved. name and value are owned
+// copies; value is already trimmed of leading/trailing SP/HTAB.
+pub type Header = ref record {
+    pub name: string
+    pub value: string
+}
+
+// Request metadata available after HeadReady. target/path/query/authority are
+// raw bytes (no percent decoding or normalization). headers is ordered and may
+// contain duplicates. The body is not here; it is streamed by the parser.
+pub type RequestInfo = ref record {
+    pub method: string
+    pub target: string
+    pub path: string
+    pub query: string
+    pub scheme: string
+    pub authority: string
+    pub versionMajor: int
+    pub versionMinor: int
+    pub http10: bool
+    pub headers: []Header
+    pub hasContentLength: bool
+    pub contentLength: int
+    pub chunked: bool
+    pub hasBody: bool
+    pub expectContinue: bool
+    pub keepAlive: bool
+    pub close: bool
+}
+
+// Serializer/application error codes. They are not HTTP statuses.
+pub const ERR_INVALID_STATE = 1
+pub const ERR_INVALID_ARGUMENT = 2
+pub const ERR_LIMIT_EXCEEDED = 3
+pub const ERR_INCOMPLETE_BODY = 4
+pub const ERR_INTERNAL = 5
+
+pub const MAX_SERVER_NAME = 64
+pub const MIN_RESPONSE_BUFFER = 256
+pub const MAX_HEADER_BUDGET = 16777216
+
+pub fn defaultLimits(): Limits {
+    return new Limits{
+        maxStartLine: 8192,
+        maxTarget: 4096,
+        maxHeaderBytes: 16384,
+        maxHeaderCount: 100,
+        maxHeaderLine: 8192,
+        maxBody: 8388608,
+        maxChunkLine: 1024,
+        maxChunkSize: 1048576,
+        maxChunkCount: 65536,
+        maxChunkMetadata: 65536,
+        maxTrailerBytes: 4096,
+        maxTrailerCount: 32,
+        maxResponseHeaderBytes: 16384,
+        maxResponseBuffer: 32768,
+        maxResponseTrailerCount: 32,
+        maxResponseTrailerBytes: 4096,
+        maxPipelineBytes: 24576,
+        maxRequests: 1000,
+        allowHttp10: false,
+        allowExtensionMethods: false,
+        pipelining: true,
+        autoContinue: true,
+        serverName: ""
+    }
+}
+
+// Copy every field into a fresh record. Strings are immutable, but the caller's
+// Limits record itself is never retained.
+pub fn copyLimits(l: &Limits): Limits {
+    return new Limits{
+        maxStartLine: l.maxStartLine,
+        maxTarget: l.maxTarget,
+        maxHeaderBytes: l.maxHeaderBytes,
+        maxHeaderCount: l.maxHeaderCount,
+        maxHeaderLine: l.maxHeaderLine,
+        maxBody: l.maxBody,
+        maxChunkLine: l.maxChunkLine,
+        maxChunkSize: l.maxChunkSize,
+        maxChunkCount: l.maxChunkCount,
+        maxChunkMetadata: l.maxChunkMetadata,
+        maxTrailerBytes: l.maxTrailerBytes,
+        maxTrailerCount: l.maxTrailerCount,
+        maxResponseHeaderBytes: l.maxResponseHeaderBytes,
+        maxResponseBuffer: l.maxResponseBuffer,
+        maxResponseTrailerCount: l.maxResponseTrailerCount,
+        maxResponseTrailerBytes: l.maxResponseTrailerBytes,
+        maxPipelineBytes: l.maxPipelineBytes,
+        maxRequests: l.maxRequests,
+        allowHttp10: l.allowHttp10,
+        allowExtensionMethods: l.allowExtensionMethods,
+        pipelining: l.pipelining,
+        autoContinue: l.autoContinue,
+        serverName: l.serverName
+    }
+}
+
+fn positive(n: int): bool { return n > 0 }
+
+pub fn isToken(s: string): bool
+
+pub fn validateLimits(l: &Limits): Result[bool] {
+    if !positive(l.maxStartLine) || !positive(l.maxTarget) ||
+       !positive(l.maxHeaderBytes) || !positive(l.maxHeaderCount) ||
+       !positive(l.maxHeaderLine) || !positive(l.maxBody) ||
+       !positive(l.maxChunkLine) || !positive(l.maxChunkSize) ||
+       !positive(l.maxChunkCount) || !positive(l.maxChunkMetadata) ||
+       !positive(l.maxTrailerBytes) || !positive(l.maxTrailerCount) ||
+       !positive(l.maxResponseHeaderBytes) || !positive(l.maxResponseBuffer) ||
+       !positive(l.maxResponseTrailerCount) ||
+       !positive(l.maxResponseTrailerBytes) || !positive(l.maxPipelineBytes) ||
+       !positive(l.maxRequests) {
+        return err("every HTTP limit must be positive", ERR_INVALID_ARGUMENT)
+    }
+    if l.maxTarget > 9223372036854775763 {
+        return err("maxTarget is too large", ERR_LIMIT_EXCEEDED)
+    }
+    if l.maxTarget + 44 > l.maxStartLine {
+        return err("maxStartLine must provide maxTarget plus 44 bytes", ERR_INVALID_ARGUMENT)
+    }
+    if l.maxHeaderLine > l.maxHeaderBytes {
+        return err("maxHeaderLine exceeds maxHeaderBytes", ERR_INVALID_ARGUMENT)
+    }
+    if l.maxHeaderBytes > MAX_HEADER_BUDGET - l.maxHeaderLine {
+        return err("header budget exceeds 16 MiB", ERR_LIMIT_EXCEEDED)
+    }
+    if l.maxChunkLine > l.maxChunkMetadata {
+        return err("maxChunkLine exceeds maxChunkMetadata", ERR_INVALID_ARGUMENT)
+    }
+    if l.maxChunkSize > l.maxBody {
+        return err("maxChunkSize exceeds maxBody", ERR_INVALID_ARGUMENT)
+    }
+    if l.maxResponseHeaderBytes > l.maxResponseBuffer {
+        return err("maxResponseHeaderBytes exceeds maxResponseBuffer", ERR_INVALID_ARGUMENT)
+    }
+    if l.maxResponseBuffer < MIN_RESPONSE_BUFFER {
+        return err("maxResponseBuffer is below the 256-byte minimum", ERR_INVALID_ARGUMENT)
+    }
+    if l.maxResponseTrailerBytes > l.maxResponseBuffer - 16 {
+        return err("response trailer budget does not fit maxResponseBuffer", ERR_INVALID_ARGUMENT)
+    }
+    if l.maxPipelineBytes > l.maxHeaderBytes + l.maxHeaderLine {
+        return err("maxPipelineBytes exceeds the input buffer budget", ERR_INVALID_ARGUMENT)
+    }
+    if len(l.serverName) > MAX_SERVER_NAME {
+        return err("serverName is longer than 64 bytes", ERR_LIMIT_EXCEEDED)
+    }
+    if len(l.serverName) > 0 && !isToken(l.serverName) {
+        return err("serverName is not a valid product token", ERR_INVALID_ARGUMENT)
+    }
+    return ok(true)
+}
+
+pub fn isAlpha(b: byte): bool {
+    return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+pub fn isDigit(b: byte): bool {
+    return b >= '0' && b <= '9'
+}
+
+pub fn isHex(b: byte): bool {
+    return isDigit(b) || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
+}
+
+pub fn hexValue(b: byte): int {
+    if b >= '0' && b <= '9' { return int(b) - int('0') }
+    if b >= 'a' && b <= 'f' { return int(b) - int('a') + 10 }
+    if b >= 'A' && b <= 'F' { return int(b) - int('A') + 10 }
+    return -1
+}
+
+pub fn lowerAscii(b: byte): byte {
+    if b >= 'A' && b <= 'Z' { return byte(int(b) + 32) }
+    return b
+}
+
+// RFC 9110 tchar.
+pub fn isTokenChar(b: byte): bool {
+    if isAlpha(b) || isDigit(b) { return true }
+    return b == '!' || b == '#' || b == '$' || b == '%' || b == '&' ||
+           b == '\'' || b == '*' || b == '+' || b == '-' || b == '.' ||
+           b == '^' || b == '_' || b == '`' || b == '|' || b == '~'
+}
+
+pub fn isToken(s: string): bool {
+    if len(s) == 0 { return false }
+    for i in 0..len(s) {
+        if !isTokenChar(s[i]) { return false }
+    }
+    return true
+}
+
+pub fn equalFold(a: string, b: string): bool {
+    if len(a) != len(b) { return false }
+    for i in 0..len(a) {
+        if lowerAscii(a[i]) != lowerAscii(b[i]) { return false }
+    }
+    return true
+}
+
+pub fn equalFoldBytes(a: &[]byte, from: int, to: int, b: string): bool {
+    if to - from != len(b) { return false }
+    for i in 0..len(b) {
+        if lowerAscii(a[from + i]) != lowerAscii(b[i]) { return false }
+    }
+    return true
+}
+
+pub fn startsWithFold(a: &[]byte, from: int, prefix: string): bool {
+    if from < 0 || len(prefix) > len(a) - from { return false }
+    for i in 0..len(prefix) {
+        if lowerAscii(a[from + i]) != lowerAscii(prefix[i]) { return false }
+    }
+    return true
+}
+
+// field-value bytes: HTAB, SP, VCHAR and obs-text. No CR/LF/NUL, no other CTL,
+// no DEL.
+pub fn isFieldValueByte(b: byte): bool {
+    let n = int(b)
+    if n == 9 { return true }
+    if n < 32 { return false }
+    if n == 127 { return false }
+    return true
+}
+
+pub fn isFieldValue(s: string): bool {
+    for i in 0..len(s) {
+        if !isFieldValueByte(s[i]) { return false }
+    }
+    return true
+}
+
+pub fn isWriterOwned(name: string): bool {
+    return equalFold(name, "Date") || equalFold(name, "Server") ||
+           equalFold(name, "Content-Length") ||
+           equalFold(name, "Transfer-Encoding") ||
+           equalFold(name, "Connection") || equalFold(name, "Trailer") ||
+           equalFold(name, "Keep-Alive") || equalFold(name, "Upgrade")
+}
+
+pub fn isForbiddenTrailer(name: string): bool {
+    return equalFold(name, "Content-Length") ||
+           equalFold(name, "Transfer-Encoding") ||
+           equalFold(name, "Host") || equalFold(name, "Connection") ||
+           equalFold(name, "Trailer") || equalFold(name, "Upgrade") ||
+           equalFold(name, "Keep-Alive") ||
+           equalFold(name, "Proxy-Connection") || equalFold(name, "TE") ||
+           equalFold(name, "Expect") || equalFold(name, "Authorization") ||
+           equalFold(name, "Proxy-Authorization") ||
+           equalFold(name, "Cookie") || equalFold(name, "Set-Cookie")
+}
+
+pub fn isForbiddenConnectionToken(name: string): bool {
+    return equalFold(name, "content-length") ||
+           equalFold(name, "transfer-encoding") ||
+           equalFold(name, "host") || equalFold(name, "trailer")
+}
+
+pub fn statusText(status: int): string {
+    if status == 100 { return "Continue" }
+    if status == 101 { return "Switching Protocols" }
+    if status == 200 { return "OK" }
+    if status == 201 { return "Created" }
+    if status == 202 { return "Accepted" }
+    if status == 203 { return "Non-Authoritative Information" }
+    if status == 204 { return "No Content" }
+    if status == 205 { return "Reset Content" }
+    if status == 206 { return "Partial Content" }
+    if status == 300 { return "Multiple Choices" }
+    if status == 301 { return "Moved Permanently" }
+    if status == 302 { return "Found" }
+    if status == 303 { return "See Other" }
+    if status == 304 { return "Not Modified" }
+    if status == 307 { return "Temporary Redirect" }
+    if status == 308 { return "Permanent Redirect" }
+    if status == 400 { return "Bad Request" }
+    if status == 401 { return "Unauthorized" }
+    if status == 403 { return "Forbidden" }
+    if status == 404 { return "Not Found" }
+    if status == 405 { return "Method Not Allowed" }
+    if status == 406 { return "Not Acceptable" }
+    if status == 408 { return "Request Timeout" }
+    if status == 409 { return "Conflict" }
+    if status == 410 { return "Gone" }
+    if status == 411 { return "Length Required" }
+    if status == 412 { return "Precondition Failed" }
+    if status == 413 { return "Content Too Large" }
+    if status == 414 { return "URI Too Long" }
+    if status == 415 { return "Unsupported Media Type" }
+    if status == 416 { return "Range Not Satisfiable" }
+    if status == 417 { return "Expectation Failed" }
+    if status == 418 { return "I'm a teapot" }
+    if status == 422 { return "Unprocessable Content" }
+    if status == 426 { return "Upgrade Required" }
+    if status == 429 { return "Too Many Requests" }
+    if status == 431 { return "Request Header Fields Too Large" }
+    if status == 500 { return "Internal Server Error" }
+    if status == 501 { return "Not Implemented" }
+    if status == 502 { return "Bad Gateway" }
+    if status == 503 { return "Service Unavailable" }
+    if status == 504 { return "Gateway Timeout" }
+    if status == 505 { return "HTTP Version Not Supported" }
+    return "Unknown"
+}
+
+// Static protocol-error body. No request bytes, target or exception text ever
+// reach this string.
+pub fn errorBody(status: int): string {
+    if status == 400 || status == 408 || status == 413 || status == 414 ||
+       status == 417 || status == 429 || status == 431 || status == 501 ||
+       status == 503 || status == 505 {
+        return string(status) + " " + statusText(status) + "\n"
+    }
+    return string(status) + " Error\n"
+}
