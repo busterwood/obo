@@ -1,9 +1,13 @@
 # Decimal ↔ database boundary design
 
 **Date:** 2026-10-31
-**Status:** DESIGN ONLY, for independent review. No source, adapter, runtime,
-seed, version, format or ABI change is made by this pass. No version is
-reserved.
+**Status:** DESIGN ONLY, revision 2, for focused independent re-review. No
+source, adapter, runtime, seed, version, format or ABI change is made by this
+pass. No version is reserved. Revision 2 resolves the review of `17f17f2`:
+strict public parse grammar, corrected scale-32768 fixture, SQLite
+integer-affinity behaviour, NULL/type-check order, checked-by-default binders,
+canonical/exponent tests, typmod vectors, error-name/message unification,
+canonical `Result`, read-side size/copy handling, and `DecimalText` for `sql`.
 **Baseline:** `main` at `51ce9e7680a90df9e3d5e38a9b469a460a2ca968` (0.12
 decimal scalar tier released). Worktree
 `/home/chris/.local/share/opencode/worktree/fa36f3/decimal-db-design`, branch
@@ -21,19 +25,24 @@ decimal design `obo/design/decimal-language-design.md` §5.
    If the display scale was capped and would hide a nonzero digit, the adapter
    emits `decimal::canonical` instead. Neither form rounds.
 3. `decimal::check(value, p, s)` is the only precision/scale gate. It is exact,
-   accepts PostgreSQL's negative scale `-1000..1000`, and never rounds.
-   `param_decimal_checked` / `bind_decimal_checked` reject a value that the
-   declared `(p,s)` would round or overflow; the unchecked forms leave that to
-   the server and are documented as such.
+   accepts PostgreSQL's negative scale `-1000..1000`, and never rounds. The
+   **default** binder is `param_decimal(value, p, s)` /
+   `bind_decimal(s, index, value, p, s)`: it rejects a value that the declared
+   `(p,s)` would round or overflow. `param_decimal_unchecked` /
+   `bind_decimal_unchecked` is the explicit opt-out for unconstrained targets
+   or deliberate server coercion.
 4. SQLite stores decimal as **TEXT**. `decimal()` accepts TEXT and INTEGER
    storage, rejects REAL and BLOB, and never calls `sqlite3_column_double`.
-   NUMERIC/REAL affinity columns are documented traps, not a supported storage
-   policy.
+   NUMERIC/INTEGER/REAL affinity columns are documented traps, not a supported
+   storage policy: integer-valued decimals such as `1.00`, `1.0` and `0.0000`
+   are converted to INTEGER and lose display scale; non-integer values become
+   REAL and are rejected on read.
 5. NULL is distinct from zero and from every decimal error. The v1 API is
-   **error-only**: callers test `is_null` (or `column_value`) first; a defensive
-   NULL error code `1001` exists but is not the normal path. A tagged
-   `DecimalOrNull` wrapper is deferred because decimal record/variant fields
-   are not implemented in 0.12 (`obo/src/obo.obo:5448`).
+   **error-only**: callers test `is_null` first; a defensive NULL error code
+   `1001` exists but is not the normal path. This is a **temporary deviation**
+   from the approved `DecimalOrNull` preference, to be replaced when decimal
+   record/variant fields land in M2; the field restriction is
+   `obo/src/obo.obo:5448`.
 6. PostgreSQL typmod is decoded with the upstream formula
    `((p << 16) | (s & 0x7ff)) + 4`; `-1` means unconstrained. Read-back
    validates the decoded `(p,s)` with `decimal::check`; the column scale is
@@ -71,12 +80,13 @@ decimal design `obo/design/decimal-language-design.md` §5.
 
 ### 2.1 Accepted text grammar
 
-The database boundary accepts exactly the `decimal::parse` grammar
-(`decimal-language-design.md:117`) and applies it to the whole cell:
+The database boundary accepts exactly the **public** `decimal::parse` grammar
+from the approved decimal design (`decimal-language-design.md:67-71`, `:117`)
+and applies it to the whole cell. This is the language contract, not the
+private `dec24_text.c` convenience parser:
 
 ```text
-db-decimal := ['+'|'-'] ( digits [ '.' digits? ] | '.' digits )
-              [ ('e'|'E') ['+'|'-'] digits ]
+db-decimal := ['+'|'-'] digits [ '.' digits ] [ ('e'|'E') ['+'|'-'] digits ]
 ```
 
 with these rules:
@@ -85,27 +95,34 @@ with these rules:
 - ASCII only; embedded NUL and every byte `> 0x7f` are invalid;
 - no grouping separators, no underscores, no `NaN`, no `Infinity`, no bare
   sign, no empty string;
-- a trailing point (`1.`) and a leading point (`.5`) are accepted by the
-  private parser (`dec24_text.h:11-16`) but are **never emitted**. The shared
-  adapters accept them because `decimal::parse` does; a second, stricter
-  grammar would need a separate scanner. The emitted form has no bare point.
+- the integer part is mandatory and must contain at least one digit. A leading
+  point (`.5`) and a trailing point (`1.`) are **rejected**, matching the
+  approved literal grammar. Integer-only text (`1`, `+1`, `-1`) is accepted
+  with `dscale = 0`; this is required for every PostgreSQL or SQLite cell whose
+  value is integral.
 - leading zeros are accepted (`0001.2300` = `1.2300`); trailing fractional
   zeros are significant for `dscale` and are preserved;
 - the coefficient is normalised by stripping trailing zeros; more than 38
   significant digits is `PRECISION` (7), a nonzero exponent outside `int16` is
   `EXPONENT` (8), `dscale > 65535` is `DISPLAY_RANGE` (9), and syntax is
-  `INVALID` (4), in the precedence fixed by `dec24_text.h:27-33`;
+  `INVALID` (4), in the approved precedence (precision, display range,
+  exponent range);
 - `-0`, `+0` and `0` all become canonical positive zero (no negative zero);
   zero has exponent 0 but keeps its written `dscale` (`decimal-language-design.md:28`).
 
+The private core parser accepts a superset (`.5`, `1.`); the public builtin and
+the DB read path must enforce the stricter public grammar instead of exposing
+`dec_parse` unchanged. The DB tests include `.5` and `1.` as `4` (`INVALID`).
+
 ### 2.2 Emitted text
 
-Two exact forms are defined, both already implemented in the private core:
+Two exact forms are defined; the core routines already exist and the public
+builtins wrap them with the allocation/Result contract:
 
 | Form | Producer | Shape | Purpose |
 |---|---|---|---|
-| display | `decimal::format` (`dec24_text.c:388`) | fixed notation, exactly `dscale` fractional digits, no exponent | parameter binding, PG-compatible text, display scale preservation |
-| canonical | `decimal::canonical` (`dec24_text.c:291`) | minimal exact text; fixed up to 128 bytes, exact scientific (`d e±N`) above | fallback when display cannot be exact; value keys |
+| display | `decimal::format(d) -> Result[string]` (`dec24_text.c:388`) | fixed notation, exactly `dscale` fractional digits, no exponent | parameter binding, PG-compatible text, display scale preservation |
+| canonical | `decimal::canonical(d) -> Result[string]` (`dec24_text.c:291`) | minimal exact text; fixed up to 128 bytes, exact scientific (`d e±N`) above | fallback when display cannot be exact; value keys |
 
 Emitted rules:
 
@@ -116,7 +133,9 @@ Emitted rules:
 - canonical writes `0` for zero, never `0.0`, never `-0`; it writes no
   trailing fraction zeros and no trailing point;
 - scientific canonical uses lowercase `e`, no `+` sign, and no exponent
-  leading zeros (`1.23e-80`, not `1.23E-080`);
+  leading zeros (`1.23e-200`, not `1.23E-080`); it is used only when the fixed
+  form would exceed 128 bytes, so `1e-40` is canonical fixed
+  (`0.` + 39 zeros + `1`), not scientific;
 - the display form is preferred. The adapter falls back to canonical **only**
   when `format` returns `DEC_INEXACT` (capped display scale would drop a
   nonzero digit; `decimal-language-design.md:118,130`);
@@ -179,18 +198,24 @@ supports it. Test vectors:
 | Declaration | typmod |
 |---|---:|
 | `numeric(1,0)` | 65540 |
+| `numeric(10,2)` | 655366 |
 | `numeric(10,4)` | 655368 |
+| `numeric(10,-2)` | 657410 |
 | `numeric(2,-3)` | 133121 |
 | `numeric(3,5)` | 196617 |
 | `numeric(38,0)` | 2490372 |
+| `numeric(1000,0)` | 65536004 |
 | `numeric(1000,1000)` | 65537004 |
 | `numeric(1000,-1000)` | 65537052 |
 | unconstrained `numeric` | -1 |
 
 `column_type_oid()` and `column_type_modifier()` already exist and validate
 the column index before reading typmod (`postgres.obx:381-391`). The new
-`decimal_type()` decodes them into an all-int record; no decimal field is
-needed. Nullability is **not** available in `PGresult` and is not exposed.
+`decimal_type()` checks `OID == 1700` first (otherwise `1002`, the same code
+`decimal()` returns) and decodes the rest into an all-int record; no decimal
+field is needed. Invalid typmods return `1012`, never a meaningless
+unconstrained record. Nullability is **not** available in `PGresult` and is not
+exposed.
 
 ### 3.2 Text on the wire
 
@@ -203,10 +228,11 @@ needed. Nullability is **not** available in `PGresult` and is not exposed.
 - Special values `NaN`, `Infinity`, `-Infinity` are legitimate PostgreSQL
   `numeric` values but are not obo decimals (`decimal-language-design.md:106`).
   The read path must recognise those exact strings and return `1004`
-  (`NONFINITE`), not feed them to the parser and report a generic syntax error.
+  (`DEC_DB_NONFINITE`), not feed them to the parser and report a generic syntax
+  error.
 - `execute_binary()` on a numeric column returns the upstream binary form
   (`int16 ndigits, weight, sign, dscale, digits`). v1 never decodes it:
-  `decimal()` returns `1003` (`BINARY_UNSUPPORTED`).
+  `decimal()` returns `1003` (`DEC_DB_BINARY`).
 
 ### 3.3 Parameter binding
 
@@ -230,22 +256,25 @@ pub const PARAM_DECIMAL_NULL = 6
   is always a separate length-delimited parameter (`postgres_adapter.c:3-17`,
   `:197-198`).
 - The C adapter re-validates the decimal grammar before `PQexecParams`
-  (defence in depth; the obo builder already emits valid text). It rejects
-  `NaN`, `Infinity`, `1_000`, whitespace, quotes, `0x`, a bare sign, empty text,
-  embedded NUL, a `+` mantissa sign, more than one point and non-ASCII bytes.
-  Its kind bound (`postgres_adapter.c:149`) grows from `PG_PARAM_BOOL` to
-  `PG_PARAM_DECIMAL_NULL`; text length is capped at 98,342 bytes.
+  (defence in depth; the obo builder already emits valid text). It accepts the
+  public grammar, including a leading `+`/`-` and integer-only text, and
+  rejects `NaN`, `Infinity`, `1_000`, whitespace, quotes, `0x`, a bare sign,
+  `.5`, `1.`, empty text, embedded NUL, more than one point and non-ASCII
+  bytes. Its kind bound (`postgres_adapter.c:149`) grows from `PG_PARAM_BOOL`
+  to `PG_PARAM_DECIMAL_NULL`; text length is capped at 98,342 bytes.
 - NULL, zero and empty text are three different things: NULL is a NULL
   parameter, zero is the text `0`/`0.0000`, and empty text is always rejected.
 
-`param_decimal_checked(value, p, s)` calls `decimal::check` before building the
-packet. This is the only way to guarantee that a `numeric(p,s)` target will not
-silently round: PostgreSQL itself rounds fractional excess and raises
-`numeric field overflow` for integer excess
-(`apply_typmod`/`round_var`). `param_decimal` and `param_decimal_checked` bind
-the same value; the checked form only adds the exact-fit gate. The caller must
-supply the target column's `(p,s)`; the adapter cannot discover it from `$n`
-or from a `RowDescription` that does not exist before execution.
+`param_decimal(value, p, s)` is the **default** binder. It calls
+`decimal::check` before building the packet and is the only way to guarantee
+that a `numeric(p,s)` target will not silently round: PostgreSQL itself rounds
+fractional excess and raises `numeric field overflow` for integer excess
+(`apply_typmod`/`round_var`). `param_decimal_unchecked(value)` is the explicit
+opt-out: it is for unconstrained targets or for a caller that deliberately
+wants PostgreSQL's coercion, and it must not be used for money or constrained
+columns without a separate check. The caller must supply the target column's
+`(p,s)`; the adapter cannot discover it from `$n` or from a `RowDescription`
+that does not exist before execution.
 
 ### 3.4 Read-back
 
@@ -265,6 +294,12 @@ or from a `RowDescription` that does not exist before execution.
    `6→1012`. A conforming server value always passes; a failure means the
    value would not fit the declared metadata, never that it should be rounded.
 
+This order is normative: **NULL wins over the binary-format check**, and the
+binary-format check wins over the OID check. A NULL cell in a binary result
+therefore returns `1001`, not `1003`; a non-NULL cell in a binary result returns
+`1003` even if its OID is not numeric. The same order is used by the API
+sketches.
+
 The value keeps the `dscale` that `decimal::parse` derives from the text. For
 `s >= 0`, PostgreSQL prints exactly `s` fractional digits (including trailing
 zeros), so the column display scale is recovered exactly. For `s < 0`,
@@ -279,7 +314,8 @@ A value already rounded by the server (by another writer, or by an unchecked
 bind into `numeric(p,s)`) is indistinguishable on read from a value that was
 stored exactly. `check` validates the stored value against the declared
 metadata; it cannot recover the pre-rounding value. Preventing new rounding is
-the job of `param_decimal_checked`/`bind_decimal_checked`.
+the job of the default `param_decimal(value,p,s)` /
+`bind_decimal(s,index,value,p,s)`.
 
 ### 3.5 Precision/scale validation
 
@@ -320,7 +356,10 @@ This predicate is exact and allocation-free; it never materialises
 | `0.001` | 1 | 3 | fits |
 | `0.01` | 1 | 3 | `1011` |
 | `99000` | 2 | -3 | fits |
+| `15000` | 2 | -3 | fits (multiple of 1000, 2 digits) |
 | `1500` | 2 | -3 | `1010` (not a multiple of 1000) |
+| `99999` | 2 | -3 | `1010` (would round to 100000; unchecked server then overflows) |
+| `1.5e999` | 1000 | -1000 | `1010` (would round to 0 at scale -1000) |
 | `-1.2300` | 10 | 4 | fits |
 
 `decimal::check` returns the value unchanged on success; it never quantizes.
@@ -345,39 +384,61 @@ The PostgreSQL binder therefore needs the value's exponent:
   scale is not;
 - else emit display text.
 
-`decimal::exponent(d) -> int` (and, for symmetry and tests,
-`decimal::dscale(d) -> int`) is a prerequisite for this pre-classification.
-`exponent` must return the **normalised** exponent: the stored exponent plus
-the number of trailing zeros in the coefficient. The stored coefficient is not
-guaranteed normalised (arithmetic may keep `1.440` as `1440 * 10^-3`), and the
-raw word would falsely reject `1000 * 10^-16384` = `1e-16381`, which
-PostgreSQL can store. Without the accessor the adapter can still bind display
-text and let the server raise 22003, but that is a server error, not a
-deterministic adapter code. See §10, O6.
+`decimal::exponent(d) -> int` and `decimal::dscale(d) -> int` are prerequisites
+for this pre-classification. `dscale` is a direct 16-bit field read from word
+2. `exponent` must return the **normalised** exponent: the stored `int16`
+exponent plus the number of trailing zeros in the 128-bit coefficient, so it
+requires a coefficient trailing-zero count rather than a single word read. The
+stored coefficient is not guaranteed normalised (arithmetic may keep `1.440`
+as `1440 * 10^-3`), and the raw word would falsely reject
+`1000 * 10^-16384` = `1e-16381`, which PostgreSQL can store. Without the
+accessor the adapter can still bind display text and let the server raise
+22003, but that is a server error, not a deterministic adapter code. See §10,
+O6.
 
 Positive magnitude is not a problem: obo's maximum is exponent 32767 plus 38
 significant digits (~32,805 integer digits), below PostgreSQL's ~131,072-digit
 unconstrained limit. Constrained precision `p <= 1000` is handled by
 `decimal::check`.
 
-### 3.7 PostgreSQL error mapping
+### 3.7 Adapter decimal error mapping (shared; 1005 is SQLite-only)
 
 | Code | Name | Meaning |
 |---:|---|---|
 | 2 | adapter plumbing | row/column out of range, stale/poisoned token, malformed packet, size |
 | 3 | allocation | adapter/packet/buffer allocation failed |
-| 1001 | `DB_NULL` | SQL NULL (defensive; prefer `is_null`) |
-| 1002 | `DB_NOT_DECIMAL` | result OID is not 1700, or a non-decimal storage class |
-| 1003 | `DB_BINARY` | decimal read requested from `execute_binary` rows |
-| 1004 | `DB_NONFINITE` | `NaN`, `Infinity`, `-Infinity` |
-| 1006 | `DB_TEXT_INVALID` | empty/NUL/non-ASCII/grammar-invalid text |
-| 1007 | `DB_PRECISION` | more than 38 significant digits |
-| 1008 | `DB_EXPONENT` | nonzero exponent outside `int16` |
-| 1009 | `DB_DISPLAY_RANGE` | `dscale` outside `uint16` |
-| 1010 | `DB_SCALE` | `check`: value would need rounding at declared scale |
-| 1011 | `DB_RANGE` | `check`: integer part exceeds declared precision |
-| 1012 | `DB_TYPMOD` | invalid typmod or invalid `(p,s)` metadata |
-| 1013 | `DB_PG_RANGE` | value not representable in PostgreSQL numeric (`exp < -16383`) |
+| 1001 | `DEC_DB_NULL` | SQL NULL (defensive; prefer `is_null`) |
+| 1002 | `DEC_DB_NOT_DECIMAL` | result OID is not 1700, or a non-decimal storage class |
+| 1003 | `DEC_DB_BINARY` | decimal read requested from `execute_binary` rows |
+| 1004 | `DEC_DB_NONFINITE` | `NaN`, `Infinity`, `-Infinity` |
+| 1005 | `DEC_DB_INEXACT_STORAGE` | SQLite REAL storage class |
+| 1006 | `DEC_DB_TEXT_INVALID` | empty/NUL/non-ASCII/grammar-invalid text |
+| 1007 | `DEC_DB_PRECISION` | more than 38 significant digits |
+| 1008 | `DEC_DB_EXPONENT` | nonzero exponent outside `int16` |
+| 1009 | `DEC_DB_DISPLAY_RANGE` | `dscale` outside `uint16` |
+| 1010 | `DEC_DB_SCALE` | `check`: value would need rounding at declared scale |
+| 1011 | `DEC_DB_RANGE` | `check`: scaled value exceeds declared precision |
+| 1012 | `DEC_DB_TYPMOD` | invalid typmod or invalid `(p,s)` metadata |
+| 1013 | `DEC_DB_PG_RANGE` | value not representable in PostgreSQL numeric (`exp < -16383`) |
+
+Normative messages (the message text is part of the test contract; do not
+rename a code without updating this table and the tests):
+
+| Code | Message |
+|---:|---|
+| 1001 | `SQL NULL` |
+| 1002 | `value is not numeric decimal data` |
+| 1003 | `binary decimal result is not supported` |
+| 1004 | `non-finite numeric is not representable` |
+| 1005 | `SQLite REAL storage is not exact decimal` |
+| 1006 | `invalid decimal text` |
+| 1007 | `decimal text has more than 38 significant digits` |
+| 1008 | `decimal exponent is outside int16` |
+| 1009 | `decimal display scale is outside uint16` |
+| 1010 | `value does not fit the declared scale without rounding` |
+| 1011 | `value exceeds the declared precision` |
+| 1012 | `invalid numeric typmod` |
+| 1013 | `value is not representable in PostgreSQL numeric` |
 
 A SQL execution failure remains what it already is: `execute()` returns
 `ok(Rows)` with `status() == PGRES_FATAL_ERROR` and copied
@@ -401,12 +462,14 @@ Storage-class rules for `decimal(col)`:
 | `SQLITE_NULL` (5) | NULL (1001 if `decimal` is called directly) |
 | `SQLITE_TEXT` (3) | read `column_text`/`column_bytes` exact bytes; parse |
 | `SQLITE_INTEGER` (1) | read SQLite's exact i64-to-text rendering; parse with `dscale = 0` |
-| `SQLITE_FLOAT` (2) | reject `1005` (`INEXACT_STORAGE`); never call `sqlite3_column_double` |
+| `SQLITE_FLOAT` (2) | reject `1005` (`DEC_DB_INEXACT_STORAGE`); never call `sqlite3_column_double` |
 | `SQLITE_BLOB` (4) | reject `1002`; decimal is not a BLOB |
 
 INTEGER is accepted because SQLite's documented INTEGER→TEXT rendering is the
 exact ASCII i64 (`db/README.md:167-172`), not a float. It necessarily has
-`dscale = 0`.
+`dscale = 0`. This is also the path by which an integer-valued decimal stored
+in a NUMERIC/INTEGER-affinity column arrives (`1.00` → INTEGER `1`), so the
+`dscale` loss is a documented affinity consequence, not a read bug.
 
 **Affinity traps** (from `sqlite.org/datatype3.html` §3):
 
@@ -414,18 +477,23 @@ exact ASCII i64 (`db/README.md:167-172`), not a float. It necessarily has
   is stored as text;
 - `NUMERIC`, `DECIMAL(p,s)`, `BOOLEAN`, `DATE`, `DATETIME`, or an unknown
   declared type gives NUMERIC affinity: a well-formed numeric text is converted
-  to INTEGER or REAL. `1.2300` becomes REAL `1.23` (dscale lost); an integer
-  outside the signed 64-bit range becomes REAL; a value beyond about 15.95
-  significant decimal digits loses digits irreversibly;
-- `INTEGER`/`INT` affinity behaves like NUMERIC for storage;
-- `REAL`/`DOUBLE`/`FLOAT` affinity forces REAL;
+  to INTEGER when the value is integral, otherwise to REAL. `1.2300` becomes
+  REAL `1.23`; `1.00`, `1.0` and `0.0000` become INTEGER `1`, `1` and `0`.
+  Both conversions lose `dscale`; the INTEGER case also loses the fractional
+  spelling. An integer outside the signed 64-bit range becomes REAL; a value
+  beyond about 15.95 significant decimal digits loses digits irreversibly.
+- `INTEGER`/`INT` affinity behaves like NUMERIC for storage, so the same
+  integer-valued conversion and `dscale` loss apply.
+- `REAL`/`DOUBLE`/`FLOAT` affinity forces REAL even for integral values;
 - no declared type or `BLOB` gives BLOB affinity (TEXT is preserved).
 
 Therefore: **declare decimal columns as `TEXT`** (preferably in a `STRICT`
 table). The adapter cannot change a column's affinity at bind time; a TEXT bind
 into a NUMERIC-affinity column is converted by SQLite before storage. The
-tests must demonstrate the trap, not hide it. `PRAGMA table_info`/declared-type
-inspection is not part of the binding path.
+integer-valued case is **accepted as INTEGER on read** (value exact, `dscale`
+0), not rejected; the non-integer case is REAL and is rejected as `1005`. The
+tests must demonstrate both traps, not hide them.
+`PRAGMA table_info`/declared-type inspection is not part of the binding path.
 
 SQLite TEXT has no numeric ordering: `ORDER BY decimal_text` is lexicographic
 (`"10" < "9"`), and canonical scientific fallback is not sortable numerically.
@@ -440,16 +508,19 @@ methods: decimal method parameters are rejected in v1,
 `obo/src/obo.obo:11483-11484`):
 
 ```obo
-fn bind_decimal(s: &Stmt, index: int, value: decimal): Result[bool]
-fn bind_decimal_checked(s: &Stmt, index: int, value: decimal,
-                        p: int, s: int): Result[bool]
+fn bind_decimal(s: &Stmt, index: int, value: decimal,
+                p: int, s: int): Result[bool]
+fn bind_decimal_unchecked(s: &Stmt, index: int, value: decimal): Result[bool]
 ```
 
-- `bind_decimal` formats to display/canonical text and calls the existing
-  `bind_text` path; the bound storage class is TEXT.
-- `bind_decimal_checked` first calls `decimal::check(value, p, s)` and returns
-  `1010`/`1011`/`1012` if the declared schema would round or overflow; it does
-  not rely on SQLite (which has no `(p,s)` enforcement).
+- `bind_decimal` is the default: it first calls `decimal::check(value, p, s)`
+  and returns `1010`/`1011`/`1012` (mapped from check `3/7/6`) if the declared
+  schema would round or overflow, then formats and calls the existing
+  `bind_text` path. SQLite has no `(p,s)` enforcement, so this check is the only
+  schema gate.
+- `bind_decimal_unchecked` is the explicit opt-out for a TEXT column with no
+  declared precision/scale, or when the caller deliberately wants the value
+  stored without a schema check.
 - NULL uses `bind_null`; zero binds `"0"` or `"0.0000"`; empty text is never a
   decimal and must not be bound by these functions.
 - Never bind REAL. A REAL bind is the float path and is forbidden.
@@ -462,7 +533,10 @@ fn bind_decimal_checked(s: &Stmt, index: int, value: decimal,
    `1001`; `SQLITE_FLOAT` → `1005`; `SQLITE_BLOB` → `1002`;
 2. for TEXT/INTEGER, `column_value(col)` (which uses
    `sqlite3_column_text` + `sqlite3_column_bytes`;
-   `sqlite_adapter.c:480-491`) or `column_bytes` for exact TEXT bytes;
+   `sqlite_adapter.c:480-491`) or `column_bytes` for exact TEXT bytes. A copy
+   failure (buffer registry full, `> 16 MiB`, allocation failure) is a `2`
+   size/plumbing error, **never an empty array** and never mistaken for empty
+   text;
 3. reject empty/NUL/non-ASCII as `1006`;
 4. special strings `NaN`/`Infinity`/`-Infinity` → `1004`;
 5. `decimal::parse`; map statuses as in §3.7;
@@ -476,18 +550,30 @@ asking SQLite for text: `sqlite3_column_text` on a REAL formats it to about 15
 significant digits, which would silently lose exactness
 (`sqlite.org/c3ref/column_blob.html`).
 
+Two NUL paths are distinct: `bind_text` rejects NUL at **bind** time with the
+existing `2` input error, before SQLite sees it; a TEXT value inserted by SQL
+or produced by another writer can still contain NUL, and a decimal read of it
+returns `1006`. A BLOB read is rejected earlier as `1002` and is not treated as
+text.
+
+The read side is **not** limited to the 98,342-byte emitted-text bound. The
+adapter buffer limit is 16 MiB, and `decimal::parse` accepts any length whose
+value fits the 38-digit/exponent rules. A 100,000-byte cell of leading zeros
+plus `1` therefore parses successfully even though it exceeds the bind-side
+emitted bound; copy failure above 16 MiB is the `2` size error described above.
+
 The four storage classes remain distinguishable; `typeof()` in SQL is a useful
 test oracle. No silent conversion is permitted: REAL is not rounded, truncated
 or formatted; it is rejected.
 
 ### 4.4 SQLite error mapping
 
-Same decimal codes as §3.7, plus:
+Same decimal codes as §3.7. SQLite adds one code and reuses `1002` for BLOB:
 
 | Code | Name | Meaning |
 |---:|---|---|
-| 1005 | `DB_INEXACT_STORAGE` | SQLite REAL storage class |
-| 1002 | `DB_NOT_DECIMAL` | SQLite BLOB storage class or non-decimal input |
+| 1005 | `DEC_DB_INEXACT_STORAGE` | SQLite REAL storage class |
+| 1002 | `DEC_DB_NOT_DECIMAL` | SQLite BLOB storage class or non-decimal input |
 
 SQLite's own `SQLITE_*` codes remain the result of `prepare`/`step`/`bind`
 failures (`sqlite.obx:15-41`); the decimal codes above are returned only by the
@@ -512,16 +598,18 @@ fn encode_decimal(value: decimal, max_dscale: int): Result[string] {
             }
             // The value is exactly representable; only the display scale is not.
             if value != 0.0 && decimal::exponent(value) < -max_dscale {
-                return err("value is not representable at this scale", 1013)
+                return err("value is not representable in PostgreSQL numeric", 1013)
             }
-            return ok(decimal::canonical(value))
+            return decimal::canonical(value)
         }
         err(m, c) {
-            if c != 3 { return err(m, c) }          // only INEXACT falls back
-            if value != 0.0 && decimal::exponent(value) < -max_dscale {
-                return err("value is not representable at this scale", 1013)
+            if c != 3 {
+                return err("decimal display scale is outside uint16", 1009)
             }
-            return ok(decimal::canonical(value))
+            if value != 0.0 && decimal::exponent(value) < -max_dscale {
+                return err("value is not representable in PostgreSQL numeric", 1013)
+            }
+            return decimal::canonical(value)
         }
     }
 }
@@ -534,7 +622,10 @@ is a prerequisite (§3.6, §8). The fallback is not a rounding step: canonical
 is exact by construction, and `format` has already returned `INEXACT` rather
 than dropping digits. A `format` error other than `INEXACT` is unreachable for
 a valid 24-byte value; if one occurs, map it to `1009` rather than propagate a
-core status into the adapter namespace.
+core status into the adapter namespace. `decimal::canonical` returns
+`Result[string]` because allocation or the 98,342-byte bound can fail; map a
+canonical range failure to `1009` and an allocation failure to `3`. Neither
+failure path may fall back to truncation, rounding or empty text.
 
 ### 5.2 NULL semantics
 
@@ -542,8 +633,10 @@ core status into the adapter namespace.
   `?[]byte` nil from `value`/`column_value` identifies it.
 - Binding NULL uses `param_null()`/`param_decimal_null()`/`bind_null`; binding
   zero uses decimal text; empty text is rejected.
-- A SQL `NULL` result cell still has the numeric OID/typmod, so type checks
-  can run before the NULL check; the value check must run after.
+- The normative read order is `is_null` first, then the binary-format check,
+  then OID/typmod, then value text. A SQL `NULL` cell still has the numeric
+  OID/typmod, but the NULL result wins: a NULL binary cell returns `1001`, not
+  `1003`, and a NULL non-numeric cell returns `1001`, not `1002`.
 
 ### 5.3 Display-scale preservation
 
@@ -567,15 +660,19 @@ The following are not recoverable from a database round trip and must not be
 promised: a `dscale` above the transport limit; a negative column scale
 (metadata only); a constrained column's precision when the result is an
 expression or an unconstrained column; the original spelling (`+1`,
-`0001.2300`, `1.`); the choice between display and canonical fallback; the
+`0001.2300`); the choice between display and canonical fallback; the
 declared type name or domain OID; and nullability (absent from `PGresult`).
 
 ### 5.4 Sizes, bounds and NUL
 
 - SQL text 1 MiB; PostgreSQL parameters 32; value buffers 16 MiB. SQLite
   parameters use SQLite's own variable limit and the adapter's index check.
-- Decimal parameter text is validated to `1..98342` bytes; values outside are
-  rejected before allocation.
+- **Emitted/bound** decimal text is validated to `1..98342` bytes; values
+  outside are rejected before allocation.
+- **Read-side** text is limited by the 16 MiB adapter buffer, not by 98,342;
+  `decimal::parse` accepts a longer cell if its value fits the 38-digit,
+  `int16` exponent and `uint16` display-scale rules. A 100 KB leading-zero
+  cell parses; a copy failure above 16 MiB is the `2` size error.
 - PostgreSQL unconstrained output can reach ~147 KB; the 16 MiB buffer and the
   38-digit/`int16` parse limits bound what is accepted.
 - SQLite TEXT/BLOB lengths come from `sqlite3_column_bytes`; embedded NUL is
@@ -593,15 +690,43 @@ The approved template design binds a value as a parameter and splices only a
 let q = sql`SELECT * FROM account WHERE balance = ${amount}`
 ```
 
-When `SqlArg` gains its decimal case, it must be `Decimal { v: decimal }`
-(`template-literals-design.md:318-328`, `:434-439`), rendered by the adapter
-through the same `encode_decimal` and OID 1700. It must **not** be preformatted
-into SQL text, quoted, or turned into a float. A `Sql` fragment is raw
-structure; a decimal is always a bind. NULL in a template is `sqlNull()` or a
-future nullable wrapper, never the text `"NULL"`. Until decimal record/variant
-fields exist, a decimal hole in `sql` is a compile error rather than a silent
-stringification. `sql` stays dialect-neutral; the PostgreSQL adapter chooses
-`$n`/OID 1700 and the SQLite adapter chooses `?n`/TEXT.
+The approved design proposes `Decimal { v: decimal }`
+(`template-literals-design.md:318-328`, `:434-439`), which is blocked today
+because closed-variant fields cannot be decimal (`obo/src/obo.obo:5448`). A
+lossless adapter alternative is available and should be adopted for v1:
+
+```obo
+type SqlArg = closed {
+    Null { }  Int { v: int }  Bool { v: bool }
+    Float { v: float }  Str { v: string }  Bytes { v: []byte }
+    DecimalText { v: []byte }        // exact §2.2 text, not SQL text
+}
+```
+
+- `DecimalText` holds the bytes produced by `encode_decimal`/`decimal::canonical`
+  at template-build time. The tag lowering (or a `sqlDecimal(d)` helper) fills
+  it. An encoding failure aborts the template construction with the decimal
+  error; it never yields empty text. It is a **value payload**, not SQL syntax:
+  the renderer emits `$n`/`?n` and passes the bytes as a bind parameter with
+  OID 1700 on PostgreSQL and TEXT on SQLite.
+- It is lossless for the value and preserves display scale when the display
+  form was exact. If canonical fallback was used, the value is exact and the
+  display scale follows the exponent, as in every other path.
+- The renderer validates the bytes with the public grammar and rejects NUL,
+  empty, oversize or non-ASCII as `1006`. Direct construction is legal (the
+  fields are public) but is a raw operation, like `new Sql{...}`; trust is
+  convention-level, not type-enforced.
+- It is not a float, not a quoted literal and not interpolated SQL. It does not
+  duplicate the adapter's format logic; it carries the already-formatted exact
+  text.
+- When decimal record/variant fields land, a `Decimal { v: decimal }` variant
+  may be added or `DecimalText` may remain as the preformatted transport. The
+  v1 plan does **not** depend on that future field support, so a decimal hole
+  in `sql` can ship with P0/P1 rather than being a compile error.
+
+NULL in a template is `sqlNull()` or a future nullable wrapper, never the text
+`"NULL"`. `sql` stays dialect-neutral; the PostgreSQL adapter chooses `$n`/OID
+1700 and the SQLite adapter chooses `?n`/TEXT.
 
 ## 6. API sketches (0.11/0.12 obo)
 
@@ -638,8 +763,8 @@ pub type DecimalType = ref record {
     constrained: bool
 }
 
-pub fn param_decimal(value: decimal): Result[Param]
-pub fn param_decimal_checked(value: decimal, p: int, s: int): Result[Param]
+pub fn param_decimal(value: decimal, p: int, s: int): Result[Param]
+pub fn param_decimal_unchecked(value: decimal): Result[Param]
 pub fn param_decimal_null(): Param
 
 pub fn (r: &Rows) decimal_type(col: int): Result[DecimalType]
@@ -655,10 +780,13 @@ pub type Rows = ref record { tok: int; fmt: int }   // fmt 0 text, 1 binary
 ```
 
 `param_decimal` is a free function because the value would otherwise be a
-decimal argument to a method. `Rows.decimal` is a method returning
-`Result[decimal]`, which is allowed (the return type is `Result`, not decimal).
-`decimal_type` returns `constrained = false`, `precision = 0`, `scale = 0` for
-typmod `-1`.
+decimal argument to a method. It is the default checked binder; the `_unchecked`
+name is the opt-out. `Rows.decimal` is a method returning `Result[decimal]`,
+which is allowed (the return type is `Result`, not decimal). `decimal_type`
+returns `1002` for any OID other than 1700 (the same code `decimal()` returns)
+and returns `constrained = false`, `precision = 0`, `scale = 0` for typmod
+`-1`; it never returns a meaningless unconstrained record for a non-numeric
+column.
 
 Implementation shape (illustrative; valid 0.12 constructs):
 
@@ -667,21 +795,26 @@ fn pg_decimal_text(value: decimal): Result[string] {
     return encode_decimal(value, 16383)
 }
 
-pub fn param_decimal(value: decimal): Result[Param] {
+pub fn param_decimal_unchecked(value: decimal): Result[Param] {
     let txt = try pg_decimal_text(value)
     let raw = encode_string(txt)
-    if has_nul(&raw) { return err("decimal text contains an embedded NUL", 1006) }
+    if has_nul(&raw) { return err("invalid decimal text", 1006) }
     return ok(new Param{kind: PARAM_DECIMAL, i: 0, data: raw})
 }
 
+pub fn param_decimal(value: decimal, p: int, s: int): Result[Param] {
+    let checked = try decimal::check(value, p, s)
+    return param_decimal_unchecked(checked)
+}
+
 pub fn (r: &Rows) decimal(row: int, col: int): Result[decimal] {
-    if r.fmt != 0 { return err("binary numeric result is not supported", 1003) }
-    let meta = try r.decimal_type(col)
     let isn = try r.is_null(row, col)
     if isn { return err("SQL NULL", 1001) }
+    if r.fmt != 0 { return err("binary decimal result is not supported", 1003) }
+    let meta = try r.decimal_type(col)
     let b = try r.bytes(row, col)          // non-optional []byte; rejects NULL
-    if len(b) == 0 { return err("empty numeric text", 1006) }
-    if has_nul(&b) { return err("numeric text contains an embedded NUL", 1006) }
+    if len(b) == 0 { return err("invalid decimal text", 1006) }
+    if has_nul(&b) { return err("invalid decimal text", 1006) }
     let txt = string(b)
     if txt == "NaN" || txt == "Infinity" || txt == "-Infinity" {
         return err("non-finite numeric is not representable", 1004)
@@ -696,42 +829,52 @@ pub fn (r: &Rows) decimal(row: int, col: int): Result[decimal] {
 ```
 
 `try` propagates the parse/check codes unchanged; the final implementation maps
-`3/6/7` from `check` to `1010/1012/1011` and `4/7/8/9` from `parse` to
-`1006/1007/1008/1009`, as specified in §3.4. The sketch omits that mapping for
-readability; the mapping is normative.
+`3/6/7` from `check` to `1010/1012/1011` in both `param_decimal` and
+`Rows.decimal`, and `4/7/8/9` from `parse` to `1006/1007/1008/1009`. The sketch
+omits that mapping for readability; the mapping is normative.
 
 ### 6.2 SQLite additions
 
 ```obo
-pub fn bind_decimal(s: &Stmt, index: int, value: decimal): Result[bool]
-pub fn bind_decimal_checked(s: &Stmt, index: int, value: decimal,
-                            p: int, s: int): Result[bool]
+pub fn bind_decimal(s: &Stmt, index: int, value: decimal,
+                    p: int, s: int): Result[bool]
+pub fn bind_decimal_unchecked(s: &Stmt, index: int, value: decimal): Result[bool]
 pub fn (s: &Stmt) decimal(col: int): Result[decimal]
 ```
 
 Implementation shape:
 
 ```obo
-pub fn bind_decimal(s: &Stmt, index: int, value: decimal): Result[bool] {
+pub fn bind_decimal_unchecked(s: &Stmt, index: int, value: decimal): Result[bool] {
     let txt = try encode_decimal(value, 65535)
     return s.bind_text(index, txt)
+}
+
+pub fn bind_decimal(s: &Stmt, index: int, value: decimal,
+                    p: int, s: int): Result[bool] {
+    let checked = try decimal::check(value, p, s)
+    return bind_decimal_unchecked(s, index, checked)
 }
 
 pub fn (s: &Stmt) decimal(col: int): Result[decimal] {
     let t = try s.column_type(col)
     if t == SQLITE_NULL { return err("SQL NULL", 1001) }
-    if t == SQLITE_FLOAT { return err("REAL storage is not exact", 1005) }
-    if t == SQLITE_BLOB { return err("BLOB is not decimal text", 1002) }
+    if t == SQLITE_FLOAT { return err("SQLite REAL storage is not exact decimal", 1005) }
+    if t == SQLITE_BLOB { return err("value is not numeric decimal data", 1002) }
     let v = try s.column_value(col)
     if v == nil { return err("SQL NULL", 1001) }
     let b = v
-    if len(b) == 0 { return err("empty decimal text", 1006) }
-    if has_nul(&b) { return err("decimal text contains an embedded NUL", 1006) }
+    if len(b) == 0 { return err("invalid decimal text", 1006) }
+    if has_nul(&b) { return err("invalid decimal text", 1006) }
     return decimal::parse(string(b))
 }
 ```
 
-Again, parse codes are mapped to `1006-1009` by the final implementation.
+Again, parse codes are mapped to `1006-1009` and check `3/7/6` to
+`1010/1011/1012` by the final implementation. The sketch assumes the SQLite
+copy-failure fix: a buffer token `0`/`-1` from
+`column_value` is a `2` size/plumbing error, not an empty array. The current
+merged adapter must not let a failed copy reach the `len(b) == 0` branch.
 
 ### 6.3 The NULL wrapper question
 
@@ -757,7 +900,10 @@ match isn {
 
 A tagged wrapper cannot be written today. Records and closed variants reject
 decimal fields (`obo/src/obo.obo:5448`), and `?decimal` is not representable
-(`decimal-language-design.md:42`). The two candidate shapes for later are:
+(`decimal-language-design.md:42`). The approved design prefers the tagged
+wrapper; the error-only form here is a **temporary deviation**, to be replaced
+in M2 when decimal record/variant fields land. The two candidate shapes for
+later are:
 
 ```obo
 // Later, after decimal fields land (M2 containers). Not valid today.
@@ -787,6 +933,11 @@ it with:
 - PG `dscale` boundary (`16383` accept, `16384` reject);
 - SQLite affinity vectors.
 
+The current `parse_text` regex accepts `.5`/`1.` and must be tightened to the
+public §2.1 grammar before it is used as the DB oracle; otherwise the oracle
+would disagree with the adapter by design. A shared strict check should reject
+a leading/trailing point before delegating to the core value model.
+
 Parser/format cases (all must be no-float, exact):
 
 | Input | Status | Value / note |
@@ -807,15 +958,27 @@ Parser/format cases (all must be no-float, exact):
 | `1e-32768` | ok | minimum exponent |
 | `1e-32769` | 8 | below `int16` |
 | `1e-16383` | ok | PG lower boundary |
-| `1e-16384` | ok in obo, `1013` for PG binding | not PG-representable |
+| `1e-16384` | ok in obo, `1013` for unchecked PG binding | not PG-representable; a constrained default bind may return `1010` first |
 | `0e999999` | ok | zero keeps exponent 0, dscale 0 |
 | `0.` + 65535 zeros | ok | dscale boundary |
-| `1.` or `.5` | ok by `decimal::parse`; see O7 | not emitted |
-| `+1`, `-1` | ok | sign |
+| `1`, `+1`, `-1` | ok | integer-only text, dscale 0 |
+| `1.` or `.5` | 4 | public grammar rejects bare points |
 | empty, `+`, `-`, `.`, `1..2`, `1e`, `1e+` | 4 | syntax |
 | ` 1`, `1 `, `1_000`, `0x10` | 4 | no whitespace/underscore/hex |
 | `NaN`, `Infinity`, `-Infinity` | 4 (special-cased as 1004 on DB read) | non-finite |
 | `1\x002`, `1é` | 4 | NUL / non-ASCII |
+| `1.0e-16383` | ok | dscale 16384, normalised exponent -16383; PG emits canonical `1e-16383` |
+| `1000e-16384` | ok | coefficient `1000`, raw exponent -16384, normalised -16381; PG emits canonical, not `1013` |
+| `"0"*100000 + "1"` | ok | read-side text longer than the 98,342-byte bind bound; parses as `1` |
+
+Wire-form cases (independent of input spelling):
+
+| Case | Expected |
+|---|---|
+| multiplied `1e-20 * 1e-20` | value `1e-40`, dscale 38 (cap), `format` `INEXACT`, canonical fixed `0.` + 39 zeros + `1` (42 bytes, not scientific) |
+| `1.0e-16383` bound to PostgreSQL | display has 16,384 fraction digits → canonical `1e-16383`; value preserved |
+| `1000e-16384` bound to PostgreSQL | normalised exponent -16381, canonical; **not** `1013` |
+| `1e-16384` bound to PostgreSQL | normalised exponent -16384 → `1013` |
 
 ### 7.2 PostgreSQL tests
 
@@ -825,34 +988,54 @@ Deterministic fake-libpq C tests (`obo/experimental/db/tests/postgres_adapter_te
   `paramFormats == 0`, `paramLengths == 6`, exact bytes;
 - decimal NULL kind 6: `paramTypes == 1700`, `paramValues == NULL`,
   `isnull == 1`;
-- invalid decimal packets: empty, `+1`, `1..2`, `1e`, `1_000`, `0x10`, `NaN`,
-  `Infinity`, `1\x00`, 98,343-byte text → `pg_exec_typed` returns `-2` and
-  leaks no buffers;
+- valid integer-only packet: `+1` / `-1` / `1`, OID 1700, text format, exact
+  bytes (dscale 0);
+- invalid decimal packets: empty, `.5`, `1.`, `1..2`, `1e`, `1_000`, `0x10`,
+  `NaN`, `Infinity`, `1\x00`, 98,343-byte text → `pg_exec_typed` returns `-2`
+  and leaks no buffers;
 - kind 7 and 33 parameters → `-2`;
 - existing text/int/bool/bytea/NULL OIDs unchanged.
 
 Live SELECT-only tests (opt-in `CINTEROP_TEST_DSN`; no DDL):
 
-- `SELECT $1::numeric` with bound `1.2300` → text `1.2300`, OID 1700,
-  typmod -1, decimal dscale 4;
+- `SELECT $1::numeric` with `param_decimal_unchecked(1.2300)` (unconstrained
+  target) → text `1.2300`, OID 1700, typmod -1, decimal dscale 4;
 - `SELECT $1::numeric(10,4)` with `1.2300` → `1.2300`; with `1.23456`,
-  unchecked the server rounds to `1.2346` (demonstrates why
-  `param_decimal_checked` exists), checked returns `1010` before sending;
+  `param_decimal(value,10,4)` returns `1010` before sending; the explicit
+  `param_decimal_unchecked` demonstrates that the server would round to
+  `1.2346`;
 - `SELECT $1::numeric(2,-3)` with `12000` → text `12000`, typmod 133121,
-  scale -3; with `1500`, checked returns `1010`;
+  scale -3; with `1500`, default checked returns `1010`;
+- `SELECT $1::numeric(2,-3)` with `99999` → checked `1010` (not a multiple of
+  1000); unchecked would round to `100000` and then fail server-side with
+  `numeric field overflow`. The adapter classifies the exact-fit failure, not
+  the server's post-rounding overflow;
+- `SELECT $1::numeric(1000,-1000)` with `1.5e999` → checked `1010` (would
+  round to 0 at scale -1000), not `1011`/server overflow;
 - `SELECT 1.0000::numeric`, `1::numeric(10,4)`, `1.2345::numeric(2,3)`
   (server overflow) — read/mapping;
 - `SELECT 'NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric` →
   `1004` each;
 - `SELECT NULL::numeric, 0::numeric` → NULL code and zero dscale 0;
 - `SELECT 1e-16383::numeric` → ok; `SELECT 1e-16384::numeric` → server error
-  (and a bound `1e-16384` returns `1013` before the call);
+  (and `param_decimal_unchecked(1e-16384)` returns `1013` before the call; a
+  default `param_decimal(value,p,s)` may return `1010` first because the
+  declared scale check runs before encoding);
 - 38-digit value `999...9::numeric` → ok; 39 significant digits → `1007`;
   `SELECT 1e40000::numeric` → `1008` (PostgreSQL can store it; obo's exponent
   range cannot); `1e-16384::numeric` is rejected by the server instead;
 - `execute_binary("SELECT 1.23::numeric")` then `decimal()` → `1003`;
-- typmod decode: `decimal_type` on the cast columns returns
-  `(10,4)`, `(2,-3)`, `(1,0)`, unconstrained;
+  `execute_binary("SELECT NULL::numeric")` then `decimal()` → `1001` (NULL
+  wins over the binary-format check);
+- typmod decode vectors: `(1,0)=65540`, `(10,2)=655366`, `(10,4)=655368`,
+  `(10,-2)=657410`, `(2,-3)=133121`, `(3,5)=196617`, `(38,0)=2490372`,
+  `(1000,0)=65536004`, `(1000,1000)=65537004`, `(1000,-1000)=65537052`,
+  unconstrained `-1`;
+- invalid typmods in a fake `PGresult` or direct decode test: `0`, `1`, `2`,
+  `3`, `-2`, `<-1`, precision `0`, precision `1001`, scale `1001`, scale
+  `-1001` → `1012`; wrong OID on a non-NULL cell for both `decimal()` and
+  `decimal_type()` → `1002` (not a meaningless unconstrained record); a NULL
+  cell still returns `1001` first;
 - a numeric expression with typmod -1 is not checked; a value that would not
   fit a constrained column can only be observed through a cast and is rejected
   by the server before read-back.
@@ -872,23 +1055,41 @@ independent `typeof`/`quote` oracle (existing pattern,
 - TEXT round trip: bind `1.2300`, `typeof(v) == 'text'`, read exact bytes,
   dscale 4, value equality, canonical `1.23`;
 - TEXT column with `TEXT` affinity stores text unchanged;
-- NUMERIC-affinity trap: `CREATE TABLE t(v NUMERIC)`, bind text `1.2300`,
-  `typeof(v) == 'real'`, `v == 1.23` (REAL), adapter `decimal()` returns
-  `1005`; the test asserts the trap and the rejection;
+- NUMERIC-affinity non-integer trap: `CREATE TABLE t(v NUMERIC)`, bind text
+  `1.2300`, `typeof(v) == 'real'`, `v == 1.23` (REAL), adapter `decimal()`
+  returns `1005`;
+- NUMERIC/INTEGER-affinity integer trap: bind `1.00`, `1.0` and `0.0000` into
+  `NUMERIC` (and `INTEGER`) columns; `typeof(v) == 'integer'`, values are
+  `1`, `1`, `0`, adapter `decimal()` returns dscale 0. This is accepted as
+  exact INTEGER, not rejected; the test asserts the display-scale loss;
 - INTEGER storage: `SELECT 9223372036854775807` → text exact, dscale 0;
   `-9223372036854775808`; `0`; `typeof == 'integer'`;
 - REAL storage: `SELECT 1.23` (REAL) → `1005`; `1e300`, `-0.0` → `1005`;
 - BLOB storage: `x'312e3233'` → `1002`;
 - NULL vs empty: `NULL` → `1001` (or nil from `column_value`), `''` →
   `1006`, `'0'` → zero dscale 0;
-- bad text: `' 1'`, `'1 '`, `'1_000'`, `'0x10'`, `'1..2'`, `'NaN'`,
-  `'Infinity'`, `'1\x002'` (bound with `bind_text`/BLOB or inserted via SQL) →
-  `1004`/`1006` as appropriate;
+- bad text: `' 1'`, `'1 '`, `'1_000'`, `'0x10'`, `'.5'`, `'1.'`, `'1..2'`,
+  `'NaN'`, `'Infinity'` → `1006`/`1004` as appropriate. NUL paths are tested
+  separately: `bind_text` with NUL returns the existing `2` input error before
+  SQLite sees it; a TEXT value inserted through SQL with an embedded NUL reads
+  as `1006`; a BLOB reads as `1002`;
 - 38-digit boundary, 39 significant digits (`1007`), dscale 32768 and 65535
   TEXT round trips, large magnitude `1e32767` / `1e-32768`;
-- `decimal::div(1.0, 3.0, 32768, HALF_AWAY)` (38 significant digits at
-  exponent -32768) round-trips through SQLite TEXT but returns `1013` on a
-  PostgreSQL bind, because PostgreSQL cannot store digits below `10^-16383`;
+- a parse-created 38-digit value at exponent -32768,
+  `12345678901234567890123456789012345678e-32768`, round-trips through SQLite
+  TEXT but returns `1013` on a PostgreSQL bind, because PostgreSQL cannot store
+  digits below `10^-16383`. This replaces the earlier division example:
+  `decimal::div(1.0,3.0,32768,HALF_AWAY)` needs a 32,768-digit coefficient and
+  traps, so it is not a valid boundary fixture;
+- canonical fallback: `1.0e-16383` (dscale 16384) with
+  `param_decimal_unchecked` binds as canonical `1e-16383` on PostgreSQL;
+  `1000e-16384` binds canonical (normalised exponent -16381) and must not
+  return `1013`; `1e-16384` returns `1013`; a multiplied
+  `1e-20*1e-20` has `format` `INEXACT` and binds canonical fixed
+  `0.` + 39 zeros + `1` (dscale 40 after the PG round trip);
+- read-side size: a 100,001-byte cell of leading zeros plus `1` parses and
+  returns `1` (not `1006`); a synthetic copy failure above 16 MiB returns the
+  `2` size error, never an empty array;
 - cross-adapter: bind the same values to PG numeric and SQLite TEXT, read
   both, compare decimal `==` and canonical text; assert display scale
   separately where guaranteed;
@@ -912,10 +1113,12 @@ The core already implements `dec_parse`, `dec_format_display` and
 exposes only `div`, `quantize`, `toInt` and `fromInt`
 (`obo/LANGUAGE.md:97-100`; `obo/src/obo.obo:3522-3559`). The DB boundary needs:
 
-- `decimal::parse(s: string) -> Result[decimal]` with the §2.1 grammar and
-  statuses;
+- `decimal::parse(s: string) -> Result[decimal]` with the §2.1 **public**
+  grammar and statuses. It must enforce the mandatory integer part and reject
+  `.5`/`1.`; it must not expose the private `dec_parse` superset unchanged;
 - `decimal::format(d: decimal) -> Result[string]` (display; `INEXACT` on cap);
-- `decimal::canonical(d: decimal) -> string` (exact minimal text);
+- `decimal::canonical(d: decimal) -> Result[string]` (exact minimal text;
+  allocation/range failure is an error, never truncation);
 - `decimal::check(value: decimal, p: int, s: int) -> Result[decimal]` with
   `p 1..1000`, `s -1000..1000`, no rounding;
 - `decimal::exponent(d: decimal) -> int` (normalised exponent) and
@@ -929,9 +1132,10 @@ tests. This tier should also add the `check` predicate to the Python oracle.
 
 **P1 — PostgreSQL binding.**
 
-Add `PARAM_DECIMAL`/`PARAM_DECIMAL_NULL`, `param_decimal`,
-`param_decimal_checked`, `param_decimal_null`, the C grammar validator and
-`paramTypes = 1700`; add packet tests. No read path yet.
+Add `PARAM_DECIMAL`/`PARAM_DECIMAL_NULL`, `param_decimal(value,p,s)` as the
+default checked binder, `param_decimal_unchecked`, `param_decimal_null`, the C
+grammar validator (public grammar, no `.5`/`1.`) and `paramTypes = 1700`; add
+packet tests. No read path yet.
 
 **P2 — PostgreSQL read-back.**
 
@@ -941,21 +1145,29 @@ No C changes beyond what P1 needs (`pq_ftype`, `pq_fmod`, `pq_getisnull`,
 
 **P3 — SQLite.**
 
-Add `bind_decimal`, `bind_decimal_checked`, `Stmt.decimal`, storage-class
-rejection and the affinity traps. Bind directly reuses `bind_text`; read
-reuses `column_type`/`column_value`.
+Add `bind_decimal(s,index,value,p,s)` as the default checked binder,
+`bind_decimal_unchecked`, `Stmt.decimal`, storage-class rules and the affinity
+traps (integer-valued NUMERIC columns read as INTEGER with dscale 0;
+non-integer REAL is rejected). Bind directly reuses `bind_text`; read reuses
+`column_type`/`column_value`. Include the copy-failure fix so a failed buffer
+copy is a `2` error, not empty text.
 
 **P4 — oracles and gates.**
 
-Extend `decimal_text_oracle.py` with `check`/typmod cases; add live PG vectors;
-add Python SQLite `typeof`/`quote` vectors; run ASAN/UBSAN, live counters, and
-the no-float source/`nm` checks.
+Extend `decimal_text_oracle.py` with the strict public parse grammar,
+`check`/typmod cases and the wire-form canonical/fallback cases; add live PG
+vectors; add Python SQLite `typeof`/`quote` vectors including the
+integer-valued NUMERIC-affinity trap; run ASAN/UBSAN, live counters, and the
+no-float source/`nm` checks. The scale-32768 boundary fixture is the
+parse-created 38-digit value, not division.
 
-**P5 — `sql` template decimal (`SqlArg.Decimal`).**
+**P5 — `sql` template decimal (`SqlArg.DecimalText`).**
 
-Blocked on decimal record/variant fields (M2 containers). Once available, the
-renderer uses the same `encode_decimal` and the adapters' OID/TEXT paths. Until
-then a decimal hole is a compile error.
+Use the lossless `DecimalText { v: []byte }` variant from §5.5, not the
+decimal-field variant. It is implementable without M2 containers: the template
+lowers a decimal hole to exact §2.2 bytes, the renderer validates them and the
+adapter binds them with OID 1700/TEXT. A `Decimal { v: decimal }` variant can
+replace or join it later; P5 is not blocked on decimal record/variant fields.
 
 ### 8.1 API, schema and manifest impact
 
@@ -972,10 +1184,13 @@ then a decimal hole is a compile error.
 - Existing read helpers (`value`, `text`, `bytes`, `column_value`,
   `column_text`, `column_bytes`, `column_int`) keep their semantics; decimal
   helpers are additive.
+- Adding `SqlArg.DecimalText` changes the experimental stdlib closed type and
+  therefore its interface hash/`.sym` consumers; rebuild them. It is not a
+  compiler format or ABI bump.
 - No database schema migration is performed or prescribed by the adapter.
   PostgreSQL columns should be `numeric` (constrained only where the caller
-  supplies the matching `(p,s)` to a checked bind); SQLite columns should be
-  declared `TEXT`. Existing NUMERIC-affinity SQLite data that SQLite already
+  supplies the matching `(p,s)` to the default checked bind); SQLite columns
+  should be declared `TEXT`. Existing NUMERIC-affinity SQLite data that SQLite already
   converted to REAL cannot be recovered by the adapter and reads as `1005`.
 
 **Later (explicitly not this work):** binary numeric send/recv, COPY, arrays,
@@ -1019,17 +1234,18 @@ Oracle / ASE adapters.
 
 | # | Choice | Recommendation |
 |---|---|---|
-| O1 | v1 NULL representation: error-only vs tagged wrapper | **Error-only** with `is_null` first and defensive code 1001. The closed `DecimalOrNull` needs decimal record/variant fields; add it in M2, not now. |
+| O1 | v1 NULL representation: error-only vs tagged wrapper | **Error-only for v1, explicitly temporary**: `is_null` first and defensive code 1001. This deviates from the approved `DecimalOrNull` preference only because decimal record/variant fields are unavailable; replace it in M2. |
 | O2 | PostgreSQL text vs binary | **Text**, both parameters and results. Revisit binary only with a measured need and byte-format goldens. |
 | O3 | SQLite TEXT enforcement | Read-time storage-class checks plus documentation/tests; do not auto-inspect declared types on bind. Optional `column_decltype()` for diagnostics later. Accept INTEGER; reject REAL/BLOB. |
 | O4 | Automatic typmod check on read | **Yes.** A conforming server value passes; a mismatch is a hard `1010`/`1011`, never a silent fit. |
 | O5 | Typed decimal NULL parameter | **Add `PARAM_DECIMAL_NULL`** (OID 1700, NULL value) for `SELECT $1`; keep `param_null()` for inference contexts. |
-| O6 | `decimal::exponent`/`dscale` accessors | **Add them.** They are two word reads from the existing 24-byte layout and make the PG `-16383` boundary deterministic (`1013`). Without them, bind display text and map server SQLSTATE 22003. |
-| O7 | Read grammar: accept bare `.5`/`1.` | **Accept** (matches `decimal::parse`; PG output never contains them). Rejecting would require a second scanner for no value gain. Never emit them. |
+| O6 | `decimal::exponent`/`dscale` accessors | **Add them.** `dscale` is a direct 16-bit word read; `exponent` needs the stored `int16` plus a 128-bit coefficient trailing-zero count. They make the PG `-16383` boundary deterministic (`1013`). Without them, bind display text and map server SQLSTATE 22003. |
+| O7 | Read grammar: accept bare `.5`/`1.` | **Reject.** The public grammar and the approved literal grammar require an integer part; `.5` and `1.` are `INVALID` (4) on DB read and are never emitted. No private-parser superset is exposed. |
 | O8 | Error-code namespace | **1000+** for decimal boundary codes; keep SQLite `SQLITE_*` and PG status separate. Do not reuse core 1/3/4/5/6/7/8/9 in adapter results. |
-| O9 | SQLite INTEGER read | **Accept** as exact scale-0; document dscale 0 and the NUMERIC-affinity conversion. |
+| O9 | SQLite INTEGER read | **Accept** as exact scale-0. Integer-valued decimals in NUMERIC/INTEGER-affinity columns (`1.00`, `1.0`, `0.0000`) therefore read as INTEGER with dscale 0; non-integer values become REAL and are rejected. |
 | O10 | Canonical fallback notation | **Scientific** (existing core policy) for values whose fixed text exceeds 128 bytes. PG accepts it; SQLite stores it; it is exact. Document that it is not numerically ordered as TEXT. |
 | O11 | `database/sql`-style scanning | Do not add a generic scanner API in v1; explicit `decimal`/`decimal_type`/`is_null` calls keep the contract auditable. |
+| O12 | Checked vs unchecked binder default | **Checked is the default** (`param_decimal(value,p,s)`, `bind_decimal(...,p,s)`); unchecked is the explicit opt-out for unconstrained targets or deliberate server coercion. |
 
 ## 11. References
 
