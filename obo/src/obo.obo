@@ -7613,7 +7613,9 @@ fn lambdaExpr(): Item {
             if ct.kind == "string" {
                 error("cannot capture '" + cn + "': strings are owned; pass it as a parameter")
             }
-            if isIfaceVal(ct) {
+            if ct.incomplete {
+                error(tname(ct) + " is declared but not yet defined")
+            } else if isIfaceVal(ct) {
                 error("cannot capture interface value '" + cn + "'; function values cannot take interface values in v1")
             } else if containsIface(ct) {
                 // containsIface recurses into record/closed fields and forward shells (interfaces v3 10.1)
