@@ -1,16 +1,18 @@
 # Lambdas (phase 9) — design note
 
-Status: **Stage A merged and promoted at `0.9`/format 5; release pending the
-final push audit. Stage B is design-only/deferred.** Historical baseline for this
+Status: **Stage A merged and promoted at `0.9`/format 5. Numeric floats were
+released before Stage B at `0.10`/format 6; Stage B is design-only/deferred and
+is now planned as `0.11`.** Historical baseline for this
 note: `main` at `90ad7d3` (`Merge branch 'docs-06': document the promoted 0.6
 seed`), read-only in the worktree
 `/home/chris/obx/.claude/worktrees/lambdas-design` on branch `lambdas-design`.
 The historical compiler source was 11,027 lines and the promoted seed reported
 `obo 0.6 sym-format 2 abi 1`; those numbers are retained as history. The current
-main line targets the interface baseline `0.8`/format `4` and implements
-Stage A as `0.9`/format `5`; Stage B remains `0.10`/format `5` (section 6.5). The
-promoted 0.9 seed reproduces the compiler; the historical 0.8 seed built it once
-for the release promotion.
+main line targets the interface baseline `0.8`/format `4`, implements
+Stage A as `0.9`/format `5`, and released floats as `0.10`/format 6; the
+remaining Stage B design below still uses its original `0.10` numbering in
+historical text and should be read as `0.11` after the float release. The
+promoted 0.9 seed built the 0.10 compiler once for the release promotion.
 The runtime empty-array memory package is approved and separate; Stage A includes
 non-capturing literals, structural function types and indirect calls, but no
 capture lists or `^I`.

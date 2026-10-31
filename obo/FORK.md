@@ -5244,7 +5244,8 @@ Status: steps 1 to 6 are implemented and independently reviewed (the final step-
 The design branch was merged into main at `61dd4ec`, the implementation branch at `302b5d9`, and the seed was
 promoted once to 0.8 (`seed/obo` is 507,905 bytes, sha256 `673ae7ba…`, `obo 0.8 sym-format 4 abi 1`). The
 compiler source remains free of interface syntax, so the pre-promotion 0.6 seed built the 0.8 compiler. `^I` is
-phase 2a, after lambdas Stage A (0.9) and Stage B (0.10, both symbol format 5). The superseded owning/v2 notes
+phase 2a, after lambdas Stage A (0.9; Stage B was originally numbered 0.10 with symbol format 5,
+and is now planned as 0.11 after the released numeric floats). The superseded owning/v2 notes
 and `interfaces-design.md` remain historical; `interfaces-v3-design.md` is the authority.
 
 ## What is in 0.8
@@ -5675,8 +5676,8 @@ capture-binding mutants are explicitly deferred, not counted as equivalents.
 
 ### Stage A release: merge, one promotion and post-promotion gates
 
-Status: **merged and promoted on `main`; final push pending the independent
-post-promotion identity audit.** The reviewed feature commit is
+Status: **merged and promoted on `main` as `0.9`; superseded by the released
+`0.10` numeric floats line.** The reviewed feature commit is
 `7bd905e9426433da14ab9c094d9eb55288c9a302`; the merge commit is
 `5b1a04b3d613e7586cdca4d1e3efe1c82f93d6cd` (parents
 `75b061cc396c83e38a6053cdcd3015bd0b9cc00c` and `7bd905e…`). The reviewed source
@@ -5914,6 +5915,9 @@ release candidate and no final full matrix is claimed.
 
 ## Float 0.10 release candidate (format 6)
 
+Status: **released on `main`; the promotion and post-promotion evidence are in
+"Float 0.10 release: merge, one promotion and post-promotion gates" below.** The
+text in this section is the frozen candidate record, written before integration.
 The user approved floats before Stage B: the candidate identity is
 **`OBO_VERSION = 0.10`, `SYM_FORMAT = 6`, `SYM_ABI = 1`**. ABI 1 is intentional:
 float remains one word in GPR/stack, the parameter/return convention is the same,
@@ -5951,3 +5955,89 @@ fixed point sha256 **`30124be958a772db7b0236b212ee526fd209c3b357a080beeaf57c6966
 The compiler is still built by the local old 0.8 seed; main's promoted 0.9 seed
 and the future 0.10 promotion are integration concerns after independent review.
 No merge, push, promotion or seed copy was done.
+
+## Float 0.10 release: merge, one promotion and post-promotion gates
+
+Status: **released on `main` as `obo 0.10`, symbol format 6, ABI 1.** The reviewed
+candidate is `fdfac1c01bf6ce141fe086be648e7476bb770e24` (fixes `ae4b339` and
+gate preparation `614ab55`); it was merged with `--no-ff` from the promoted 0.9
+line at merge commit `bf0abdb`. The only overlap with the 0.9 release was
+documentation; it was resolved by keeping the Stage A record and adding the
+numeric sections, with no source, runtime or test semantic change. The candidate
+evidence is `/tmp/opencode/float-0.10-release-final-20261031-090739` (13 input
+sha256 entries verified against the candidate tree; full frozen gate log set).
+This release adds the separate post-promotion evidence in
+`/tmp/opencode/float-0.10-postpromotion-20261031T091344Z` (private).
+
+**Pre-promotion build and fixed point.** The old seed was preserved as
+`old-seed-obo-0.9`, `540,673` bytes, sha256
+`3d36927389beee355a64cea61e34d3f015c21c149493c45848effad3917cab37`,
+`obo 0.9 sym-format 5 abi 1`. The ignored runtime objects and bins were removed
+and rebuilt from the merged `runtime/runtime.c` and `runtime/entry.S`, then the
+compiler was built with the explicit command `./seed/obo src/obo.obo -o obo
+--rt .`. It is `569,345` bytes, sha256
+`30124be958a772db7b0236b212ee526fd209c3b357a080beeaf57c6966a1cd83`,
+`obo 0.10 sym-format 6 abi 1`; source is `13,417` lines / `504,413` bytes,
+sha256 `ebc1dad2…`; runtime text/data are `26,272`/`67,360` bytes, hashes
+`2c111527…`/`0bd93a12…`. Three direct self-compiles are byte-identical to the
+compiler (`30124be9…`) and peak at `2,030,368`, `2,030,368`, `2,030,368` live
+bytes; stage 2 == stage 3 (`cmp` clean) at `30124be9…`. The old 0.9 seed builds
+the source to the same image, so the main seed did not regress the merge.
+
+**One promotion.** `make promote` was run once with the recipe unchanged; its log
+is `promote.log`. It rebuilt stage 2 and stage 3, ran `run_fork` (**1,555
+passed**) on the promoted stage-2 compiler, and copied `.stage2` to `seed/obo`.
+The seed moved from `540,673` to `569,345` bytes, sha256 `30124be9…`, and the
+post-promotion tree rebuilt the compiler from that seed to the same hash. No
+other seed copy was made.
+
+**Post-promotion gates on the frozen source/tests and promoted seed.** Logs,
+paths and timings are in the private evidence directory; the same commands are
+listed there. `run_fork` **1,555 passed, 0 failed**; `memory_log_check` **4
+sources**; `float_f1.py` **19 groups** under the normal compiler and **19 groups**
+under `OBO=noregs` (12,580 power-of-two values each); `module_test` **107/107**;
+`sym_test` **42/42** with golden comparison and no `--update`; `sym_fuzz`
+**200/200**; `doc_check` **62 examples, 0 problems**; `homes_check` **13**;
+`homes_edge` **1,028 statements, 119 refused by both, 0 differ**; `elf_test` ok;
+`io_test` **0 failures**; `meta_test` **34**; `port_test` **573/573** with **10
+encoder groups**; default `port_compare` **1,552/1,552**; the standalone seed
+comparison `OBO_REF=obo/seed/obo` is **1,394/1,394 identical with zero version
+skips** (seed mode excludes the 158 module-tree cases by design, so the default
+1,552 is the full matrix); `imports` **28/28**; `stdlib` **16/16**; `tools.py
+--require-reference` **509/509** and `--memory` **4/4**; strict pinned `eza.py
+--require-reference` **554/554** (reference sha256 `10457dde…`) and `--memory`
+**5/5**. Tool sizes are cat `53,249`, wc `57,345`, sort `81,921`, head `53,249`
+and tail `61,441`; eza is `229,377` bytes. The eza 10k worst live peak is
+`2,184,368` bytes under the unchanged, separate `EZA_PEAK_MAX = 2,752,512`.
+
+**Identity after the gates.** Source `ebc1dad2…` (`13,417` lines / `504,413`
+bytes), runtime `e0db363a…`/`30ececb4…`, runtime text/data
+`2c111527…`/`0bd93a12…`, compiler and seed both `30124be9…` / `569,345` bytes,
+and `--version` `obo 0.10 sym-format 6 abi 1`. The final fixed-point rebuild from
+the promoted seed is stage 2 == stage 3 == seed == compiler. Three direct
+self-compiles peak at `2,030,368`; stage 3 peaks at `2,030,320`; the port
+comparison peaks at `2,030,448` and allocates `44,519,440` (direct allocation
+`44,518,160`). All are under the unchanged `2,500,000` numeric cap
+(`469,632`/`469,552` spare); the separate `EMPTY_ARRAY_MIN_DELTA = 30_000`
+oracle is unchanged.
+
+**Mutation gates.** `mutate_fork` **654/682 caught, 28 equivalent**, 0
+missed/stale/broken (190.26 s); `mutate_port` **531/531** (160.82 s);
+`mutate_io` **36/36**, including the empty-array self-host memory oracle
+(19.94 s); `mutate_meta` **71/82 caught, 11 equivalent** (`50/52` runtime,
+`21/30` compiler; 148.54 s); `mutate_harness_test` **27/27** (0.35 s). No test
+assertion or oracle was weakened, and no verdict was cached.
+
+**Fixture check.** All 92 committed `.sym` files carry the new identity: 89 are
+`obosym 6` / `abi 1` / `compiler "0.10"`; the three intentional exceptions are
+the format fixture (`obosym 7`, expected to be rejected), the compiler fixture
+(`compiler "9.9"`) and the ABI fixture (`abi 9`). Across the 92 changed files the
+bodies after the three header lines are byte-identical to the pre-float fixtures;
+only the format/compiler header (and, for the format fixture, its intentional
+format bump) changed.
+
+**Scope.** No Stage B capture lists, `^I`, decimal, template work or new language
+scope is included. Stage B is next planned as `0.11`. The local untracked
+`parse_actual.txt` and `parse_run.err` files were not touched, staged or
+deleted. The release commits contain the merge, the promoted seed and the release
+documentation only; evidence logs remain private under `/tmp/opencode`.

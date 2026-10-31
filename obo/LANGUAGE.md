@@ -23,7 +23,7 @@ compile, but is a known problem rather than a model of good code.
 | Type | Meaning | Owned |
 |---|---|---|
 | `int`, `byte`, `bool` | numbers and booleans, copied by value | no |
-| `float` | IEEE 754 binary64, copied by value (work-in-progress numeric branch) | no |
+| `float` | IEEE 754 binary64, copied by value | no |
 | `string` | immutable bytes | yes (reference counted) |
 | `[]T` | growable array of `T` | yes |
 | `ref record { ... }` | a record, declared with `type` | yes |
@@ -37,7 +37,7 @@ Records and closed types are declared with `type`, and may refer to each other.
 A forward declaration `type Sym` lets them do so; the fields are only usable once
 the type is defined.
 
-### Float (work in progress)
+### Float
 
 `float` is IEEE 754 binary64 in one 8-byte word. The `f`/`F` suffix marks a
 float literal (`1f`, `1.5f`, `1.5e3F`); bare fractional and exponent literals
@@ -57,13 +57,12 @@ using fixed notation for decimal exponents -6..20 and scientific `e±NN` outside
 it; special spellings are `nan`, `inf`, `-inf` and `-0`. `parseFloat(s)` is the
 explicit checked string parser and returns `Result[float]`; malformed input is
 code 22 and overflow code 34, while underflow gives signed zero/subnormal.
-There is no `float -> int` conversion in this checkpoint.
+There is no `float -> int` conversion in this release.
 
-Float constants are raw binary64 bit patterns in `.sym`; candidate format 6
-requires exactly `0x` plus 16 lowercase hexadecimal digits. The format is
-float-specific; format 5 does not carry the float public grammar. `floatBits` is
-an internal test diagnostic, available only with `--test-float-bits`, not a
-public API.
+Float constants are raw binary64 bit patterns in `.sym`; format 6 requires
+exactly `0x` plus 16 lowercase hexadecimal digits. The format is float-specific;
+format 5 does not carry the float public grammar. `floatBits` is an internal test
+diagnostic, available only with `--test-float-bits`, not a public API.
 
 ## 2. Ownership
 
