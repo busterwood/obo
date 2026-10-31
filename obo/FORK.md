@@ -6242,12 +6242,11 @@ gates were rerun on the rebased tree, not reused from the pre-rebase branch.
 fixture now expects the 0.12 stale message. Format remains `obosym 6`, ABI 1.
 The stale-version mutant pattern in `mutate_fork` moved from 0.11 to 0.12.
 
-## Decimal text API (0.14 implementation checkpoint)
+## Decimal text API (0.14 release)
 
-**Status: implemented on `decimal-text-impl` for independent review, not
-merged, pushed, promoted or seeded.** Base is released `0.13` main
-`618cc47b21c75d1ad498a048d302fead43b1b4b5`; `seed/obo` remains the 0.13 image
-(sha256 `4ec4e0d6…`). The approved design is
+**Status: reviewed, merged and promoted on main.** The branch was based on
+released `0.13` main `618cc47b21c75d1ad498a048d302fead43b1b4b5`; the promoted
+0.14 `seed/obo` is the same image (sha256 `63437c3c…`). The approved design is
 `design/decimal-text-api-design.md`; the database boundary design is unchanged.
 
 **Identity and ABI.** `OBO_VERSION = "0.14"`, `SYM_FORMAT = 7`, `SYM_ABI = 1`.
@@ -6283,8 +6282,9 @@ freestanding runtime adds no libc/libgcc or float import; `runtime_text.bin` is
 59,776 bytes and `runtime_data.bin` 67,360.
 
 **Gates (this worktree).** `run_fork` **1,756 passed**; default
-`port_compare` **1,744/1,744**; `OBO_REF=obo/seed/obo` **1,535/1,535**
-(the six new run/error files are skipped at `(0,14)`); `port_test` **604/604**;
+`port_compare` **1,744/1,744**; `OBO_REF=obo/seed/obo` **1,549/1,549**
+against the promoted 0.14 seed; the 0.13 seed compares **1,535/1,535** because
+the six new run/error files are skipped at `(0,14)`; `port_test` **604/604**;
 `module_test` **142** (141 + `modules/run/decimal_text`); `sym_test` **52/52**;
 `float_f1` **19 groups**; `doc_check` **71 examples**; `imports` **29/29**;
 `stdlib` **16/16**; `tools` **509 passed**; cinterop, DB-adapter and systems P0
@@ -6294,9 +6294,9 @@ text compiler/core/entry catalog lives there rather than in the shared
 `mutate_fork`/`mutate_port` catalogs) validates an unmutated baseline first and
 catches **64/64** (compiler dispatch/request, core text semantics, allocator,
 entry slots 73-78); `mutate_fork` is **694 caught + 31 equivalent of 725**;
-`mutate_port` is **540/540**. Self-compile live peak is 2,239,376 bytes in the heap gate and
-2,239,328 in the port comparison, both below 2,500,000; the empty-array
-savings oracle is 48,192 bytes, above 30,000.
+`mutate_port` is **540/540**. Self-compile live peak is 2,238,928 bytes direct and 2,239,056 in the port
+comparison, both below 2,500,000; the empty-array savings oracle is 48,192
+bytes, above 30,000.
 
 **Fixtures.** The committed `.sym` fixtures and the golden writer set changed
 only their `compiler` version line from 0.13 to 0.14 (body hashes unchanged);
