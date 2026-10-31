@@ -84,37 +84,37 @@ pub const KIND_SOCK = 12
 pub const DIR_BUF = 32768
 
 pub type Stat = ref record {
-    mode: int
-    size: int
-    mtime: int
-    mtimeNs: int
-    uid: int
-    gid: int
-    nlink: int
-    ino: int
-    dev: int
-    rdev: int
-    blksize: int
-    blocks: int
-    atime: int
-    ctime: int
+    pub mode: int
+    pub size: int
+    pub mtime: int
+    pub mtimeNs: int
+    pub uid: int
+    pub gid: int
+    pub nlink: int
+    pub ino: int
+    pub dev: int
+    pub rdev: int
+    pub blksize: int
+    pub blocks: int
+    pub atime: int
+    pub ctime: int
 }
 
 pub type DirEntry = ref record {
-    name: string
-    ino: int
-    kind: byte
+    pub name: string
+    pub ino: int
+    pub kind: byte
 }
 
 pub type Dir = ref record {
-    fd: int
-    path: string       // the operand path, owned; used for entry paths
-    buf: []byte        // current raw getdents64 buffer, owned
-    text: string       // string(buf), owned; used by substr
-    pos: int
-    used: int
-    eof: bool
-    size: int          // requested buffer size
+    pub fd: int
+    pub path: string       // the operand path, owned; used for entry paths
+    pub buf: []byte        // current raw getdents64 buffer, owned
+    pub text: string       // string(buf), owned; used by substr
+    pub pos: int
+    pub used: int
+    pub eof: bool
+    pub size: int          // requested buffer size
 }
 
 // d_ino: the low bytes first, as the kernel stores them; values above INT64_MAX

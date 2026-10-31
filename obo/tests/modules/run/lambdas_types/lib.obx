@@ -1,6 +1,6 @@
 module lib
 
-pub type Item = ref record { n: int }
+pub type Item = ref record { pub n: int }
 pub type Cmp = fn(&Item, &Item): int
 
 pub fn apply(cb: fn(int): int, x: int): int { return x }

@@ -1,3 +1,3 @@
 module lib
-pub type T = ref record { v: int }
+pub type T = ref record { pub v: int }
 pub fn make(): T { return new T{v: 1} }

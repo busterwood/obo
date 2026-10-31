@@ -1,11 +1,11 @@
-obosym 6
+obosym 7
 abi 1
-compiler "0.12"
-source 0xe8012afce820cb5c
-interface 0x8fa8a4f23845df94
+compiler "0.13"
+source 0x63daa0b05c7fcae3
+interface 0xf759d9ab233b5a93
 module lib
 type Node uid 0x5fca22110fba38d4
-type Node = ref record { v: int }
+type Node = ref record { pub v: int }
 const Limit: int = 0x000000000000000a
 const Mask: byte = 0x00000000000000ff
 const On: bool = true

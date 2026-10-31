@@ -1,0 +1,9 @@
+module lib
+import "inner.obx"
+pub type Outer = ref record {
+    pub id: int
+    pub inner: inner::Inner
+}
+pub fn mk(id: int, v: int): Outer {
+    return new Outer{id: id, inner: inner::mk(v)}
+}

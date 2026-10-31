@@ -1,0 +1,6 @@
+module main
+import "lib.obx"
+import "inner.obx"
+fn main() {
+    let o = new lib::Outer{id: 1, inner: new inner::Hidden{v: 2, secret: 3}}
+}

@@ -9,9 +9,9 @@ pub type Shape = interface {
 pub type Apply = interface {
     pure fn apply(d: &Shape): int
 }
-pub type Square = ref record { s: int }
-pub type Rect = ref record { w: int; h: int }
-pub type Holder = ref record { d: Shape; o: ?Shape; items: []Shape }
+pub type Square = ref record { pub s: int }
+pub type Rect = ref record { pub w: int; pub h: int }
+pub type Holder = ref record { pub d: Shape; pub o: ?Shape; pub items: []Shape }
 
 pub fn (q: &Square) area(): int { return q.s * q.s }
 pub fn (mut q: &Square) grow(k: int) { q.s += k }

@@ -26,8 +26,8 @@ RT = FORK
 GOLD = os.path.join(HERE, 'modules', 'golden')
 UPDATE = '--update' in sys.argv
 
-OBO_VERSION = '0.12'
-SYM_FORMAT = 6
+OBO_VERSION = '0.13'
+SYM_FORMAT = 7
 SYM_ABI = 1
 
 
@@ -137,11 +137,11 @@ def tree(files, prefix='symcase-'):
 
 RICH_LIB = '''module lib
 
-pub type Node = ref record { value: int; next: ?Node }
+pub type Node = ref record { pub value: int; pub next: ?Node }
 pub type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
-pub type Builder = ref record { items: []int }
-pub type Holder = ref record { c: ?Circle }
-pub type Bag = ref record { items: []Node; n: int }
+pub type Builder = ref record { pub items: []int }
+pub type Holder = ref record { pub c: ?Circle }
+pub type Bag = ref record { pub items: []Node; pub n: int }
 pub type Text = []string
 pub type NodeAlias = Node
 pub type CircleAlias = Circle
@@ -293,11 +293,11 @@ def hash_private_and_rename():
     """A private body/type change keeps the interface hash; a parameter rename keeps
     it too (canonical p0..); renaming a private freed global changes it."""
     files = {'lib.obx': '''module lib
-pub type Node = ref record { v: int }
+pub type Node = ref record { pub v: int }
 pub var owned: ?Node = nil
 fn hidden(): int { let x = 1; return x }
 fn wipe() { owned = nil }
-type Private = ref record { q: int }
+type Private = ref record { pub q: int }
 pub fn use(alpha: int): int { return alpha + hidden() }
 pub fn clear() { wipe() }
 ''', 'main.obx': 'module main\nimport "lib.obx"\nfn main() { println(lib::use(1)) }\n'}
@@ -440,9 +440,9 @@ def stale_missing_corrupt_versions():
         open(p, 'wb').write(base)
         # format / ABI / compiler, each its own exact message
         cases = [
-            (b'obosym 6', b'obosym 7', 'has format 7; this compiler reads 6'),
+            (b'obosym 7', b'obosym 8', 'has format 8; this compiler reads 7'),
             (b'\nabi 1\n', b'\nabi 9\n', 'has ABI 9; this compiler uses 1'),
-            (b'compiler "0.12"', b'compiler "9.9"', "was built by compiler '9.9'; this is '0.12'"),
+            (b'compiler "0.13"', b'compiler "9.9"', "was built by compiler '9.9'; this is '0.13'"),
         ]
         for old, new, msg in cases:
             data = base
@@ -458,7 +458,7 @@ def stale_missing_corrupt_versions():
 
 def sourceless_and_build_requirement():
     files = {
-        'lib.obx': 'module lib\npub fn f(): int { return 1 }\npub type T = ref record { v: int }\n',
+        'lib.obx': 'module lib\npub fn f(): int { return 1 }\npub type T = ref record { pub v: int }\n',
         'main.obx': 'module main\nimport "lib.obx"\nfn main() { println(lib::f()) }\n',
     }
     d, s = tree(files)
@@ -596,7 +596,7 @@ def check_mode_and_cli():
 def malformed_structures():
     """Rehashed structural corruption is a clean symbol-file error with a line:col."""
     files = {'lib.obx': '''module lib
-pub type Node = ref record { v: int }
+pub type Node = ref record { pub v: int }
 pub type Shape = closed { Dot { x: int } }
 pub const Limit = 10
 pub const Mask = byte(255)
@@ -623,13 +623,13 @@ pub fn pure(x: int): int { return x + 1 }
             ('scalar borrow', b'p0: int', b'p0: &int', 'can be borrowed'),
             ('unknown type', b'v: int', b'v: Nope', "unknown type 'Nope'"),
             ('unknown foreign type', b'v: int', b'v: other::Nope', "unknown module 'other'"),
-            ('duplicate field', b'{ v: int }', b'{ v: int; v: int }', 'duplicate field'),
-            ('zero variants', b'closed { Dot { x: int } }', b'closed { }', 'at least one variant'),
-            ('duplicate type', b'type Node = ref record { v: int }',
-             b'type Node = ref record { v: int }\ntype Node = ref record { v: int }', 'duplicate definition'),
+            ('duplicate field', b'{ pub v: int }', b'{ pub v: int; pub v: int }', 'duplicate field'),
+            ('zero variants', b'closed { Dot { pub x: int } }', b'closed { }', 'at least one variant'),
+            ('duplicate type', b'type Node = ref record { pub v: int }',
+             b'type Node = ref record { pub v: int }\ntype Node = ref record { pub v: int }', 'duplicate definition'),
             ('definition without shell', b'type Node uid 0x5fca22110fba38d4\n', b'', 'no shell'),
-            ('shell never defined', b'type Node = ref record { v: int }', b'', 'shell but no definition'),
-            ('kind mismatch', b'type Node = ref record { v: int }', b'type Node = closed { Dot { x: int } }', 'duplicate type key'),
+            ('shell never defined', b'type Node = ref record { pub v: int }', b'', 'shell but no definition'),
+            ('kind mismatch', b'type Node = ref record { pub v: int }', b'type Node = closed { Dot { pub x: int } }', 'duplicate type key'),
             ('duplicate export', b'fn pure(p0: int): int', b'fn pure(p0: int): int\nfn pure(p0: int): int', 'duplicate exported'),
             ('frees count too large', b' frees 1 lib::cache', b' frees 2 lib::cache', 'frees list'),
             ('duplicate frees key', b' frees 1 lib::cache', b' frees 2 lib::cache lib::cache', 'duplicate frees key'),
@@ -715,14 +715,14 @@ def handwritten_interface():
     parameter names, summary items in any order, and a pf row at index >= 62."""
     params = ', '.join(f'q{i}: int' for i in range(63))
     uid = fnv(b'many::T')
-    sym = f'''obosym 6
+    sym = f'''obosym 7
 abi 1
-compiler "0.12"
+compiler "0.13"
 source 0x{0:016x}
 interface 0x0
 module many
 type T uid 0x{uid:016x}
-type T = ref record {{ v: int }}
+type T = ref record {{ pub v: int }}
 fn (mut obj: &T) go(k: int) pf 0 "!" pfree 0x1
 fn many({params}): int pf 62 "!" pfree 0xc000000000000000
 '''
@@ -759,7 +759,7 @@ def b6_stub_order():
     the middle module's: both orders reject the use-after-free."""
     files = {
         'a.obx': '''module a
-pub type Box = ref record { v: int }
+pub type Box = ref record { pub v: int }
 pub var g: ?Box = new Box{v: 1}
 pub fn wipe() { g = nil }
 ''',
@@ -785,7 +785,7 @@ pub fn wipe() { g = nil }
 
 def b7_aliases():
     files = {
-        'a.obx': 'module a\npub type T = ref record { v: int }\npub fn make(v: int): T { return new T{v: v} }\n',
+        'a.obx': 'module a\npub type T = ref record { pub v: int }\npub fn make(v: int): T { return new T{v: v} }\n',
         'b.obx': '''module b
 import "a.obx" as a1
 import "a.obx" as a2
@@ -819,7 +819,7 @@ fn main() {
             raise Fail('an alias leaked into a signature')
         ok(build(d, s, check=True), 'check')
         # the alias keys do not re-declare T: a distinct struct is still distinct
-        files2 = {'c.obx': 'module c\npub type T = ref record { v: int }\npub fn make(): T { return new T{v: 1} }\n',
+        files2 = {'c.obx': 'module c\npub type T = ref record { pub v: int }\npub fn make(): T { return new T{v: 1} }\n',
                   'a.obx': files['a.obx'],
                   'main.obx': 'module main\nimport "a.obx"\nimport "c.obx"\nfn main() { let x = c::make(); println(x.v) }\n',
                   'bad.obx': 'module bad\nimport "a.obx"\nimport "c.obx"\nfn main() { let x: a::T = c::make() }\n'}
@@ -839,9 +839,9 @@ def effects_check():
     """pmodes, pfree and pf cross the boundary precisely; imported functions are known."""
     files = {
         'lib.obx': '''module lib
-pub type Node = ref record { v: int }
-pub type Box = ref record { items: []Node }
-pub type Bag = ref record { items: []Node }
+pub type Node = ref record { pub v: int }
+pub type Box = ref record { pub items: []Node }
+pub type Bag = ref record { pub items: []Node }
 pub fn appendOnly(mut a: &[]Node, v: int) { append(a, new Node{v: v}) }
 pub fn clear(mut a: &[]Node) { truncate(a, 0) }
 pub fn pure(x: int): int { return x + 1 }
@@ -917,10 +917,10 @@ def reader_does_not_use_lookup():
     """The .sym reader resolves the module's own types, not the importer's scope:
     an importer's private type with the same name must not shadow the imported one."""
     files = {
-        'lib.obx': 'module lib\npub type T = ref record { v: int }\npub fn make(): T { return new T{v: 1} }\npub fn get(t: T): int { return t.v }\n',
+        'lib.obx': 'module lib\npub type T = ref record { pub v: int }\npub fn make(): T { return new T{v: 1} }\npub fn get(t: T): int { return t.v }\n',
         'main.obx': '''module main
 import "lib.obx"
-type T = ref record { q: int }
+type T = ref record { pub q: int }
 fn main() {
     let x = lib::make()
     println(lib::get(x))
@@ -939,8 +939,8 @@ def module_names_int_result():
     """A module named int/Result is representable: int::T and Result::T parse, and
     Result[T] stays distinguishable from a module-qualified Result::T."""
     files = {
-        'int.obx': 'module int\npub type T = ref record { v: int }\npub fn make(): T { return new T{v: 3} }\n',
-        'Result.obx': 'module Result\npub type T = ref record { v: int }\npub fn r(): Result[int] { return ok(1) }\n',
+        'int.obx': 'module int\npub type T = ref record { pub v: int }\npub fn make(): T { return new T{v: 3} }\n',
+        'Result.obx': 'module Result\npub type T = ref record { pub v: int }\npub fn r(): Result[int] { return ok(1) }\n',
         'main.obx': '''module main
 import "int.obx" as ii
 import "Result.obx" as rr
@@ -1048,7 +1048,7 @@ def transitive_type_check():
     """A signature may mention a type from a module the importer does not import
     directly: reading the middle .sym loads the transitive interface."""
     files = {
-        'lib.obx': 'module lib\npub type T = ref record { v: int }\n',
+        'lib.obx': 'module lib\npub type T = ref record { pub v: int }\n',
         'mid.obx': 'module mid\nimport "lib.obx"\npub fn m(): lib::T { return new lib::T{v: 4} }\n',
         'main.obx': 'module main\nimport "mid.obx"\nfn main() { let x = mid::m(); println(x.v) }\n',
     }
@@ -1074,7 +1074,7 @@ def forward_variant_check():
         'lib.obx': '''module lib
 pub type Holder
 pub type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
-pub type Holder = ref record { c: ?Circle }
+pub type Holder = ref record { pub c: ?Circle }
 pub fn make(): Holder { return new Holder{c: new Circle{r: 1}} }
 ''',
         'main.obx': 'module main\nimport "lib.obx"\nfn main() { let h = lib::make() }\n',
@@ -1098,14 +1098,14 @@ def b6_stub_completion():
     """The mandatory B6 case: a middle .sym whose summary names x::g but has no
     depiface to x creates the stub before x loads; both load orders reject the
     use-after-free through the same ^Sym."""
-    x = 'module x\npub type Box = ref record { v: int }\npub var g: Box = new Box{v: 1}\n'
+    x = 'module x\npub type Box = ref record { pub v: int }\npub var g: Box = new Box{v: 1}\n'
     files = {'x.obx': x,
              'main.obx': 'module main\nimport "x.obx"\nfn main() { let r = &x::g; println(r.v) }\n'}
     d, s = tree(files)
     try:
         ok(build(d, s), 'x build')
         m = os.path.join(s, 'm.sym')
-        open(m, 'w').write('obosym 6\nabi 1\ncompiler "0.12"\nsource 0x%016x\ninterface 0x0\nmodule m\nfn f() frees 1 x::g\n' % 0)
+        open(m, 'w').write('obosym 7\nabi 1\ncompiler "0.13"\nsource 0x%016x\ninterface 0x0\nmodule m\nfn f() frees 1 x::g\n' % 0)
         rehash(m, lambda b: b)
         for name, imports in (('order1', 'import "m.obx"\nimport "x.obx"'),
                               ('order2', 'import "x.obx"\nimport "m.obx"')):
@@ -1166,7 +1166,7 @@ def hash_methods():
     interface; a private method is not interface data; a pub method and its order
     are."""
     base = '''module lib
-pub type M = ref record { v: int }
+pub type M = ref record { pub v: int }
 pub fn (m: &M) get(k: int): int { return m.v + k }
 fn (m: &M) hidden(): int { return m.v }
 pub fn (m: &M) one(): int { return 1 }
@@ -1219,8 +1219,8 @@ def malformed_methods():
     """Reader validation of a method line: structure, receiver kind and identity,
     position, duplicate keys and the summary indexes (0 is the receiver)."""
     base = '''module lib
-pub type Node = ref record { v: int }
-pub type Bag = ref record { items: []Node; n: int }
+pub type Node = ref record { pub v: int }
+pub type Bag = ref record { pub items: []Node; pub n: int }
 pub type NodeAlias = Node
 pub type Shape = closed { Dot { x: int } }
 pub fn (n: &Node) get(): int { return n.v }
@@ -1286,8 +1286,8 @@ fn (n: &Node) hidden(): int { return n.v }
         if q.returncode != 2 or "comes before the definition of type 'Node'" not in q.stderr:
             raise Fail(f"method between shell and definition: exit {q.returncode}: {q.stderr.strip()}")
         files2 = {
-            'other.obx': 'module other\npub type Box = ref record { v: int }\n',
-            'lib.obx': 'module lib\nimport "other.obx"\npub type Node = ref record { v: int }\n'
+            'other.obx': 'module other\npub type Box = ref record { pub v: int }\n',
+            'lib.obx': 'module lib\nimport "other.obx"\npub type Node = ref record { pub v: int }\n'
                        'pub fn (n: &Node) get(): int { return n.v }\n',
             'main.obx': 'module main\nimport "lib.obx"\nfn main() { }\n',
         }
@@ -1313,14 +1313,14 @@ def methods_sourceless_check():
     module's own .sym carries its methods; a format-1 file is rejected."""
     files = {
         'lib.obx': '''module lib
-pub type T = ref record { v: int }
+pub type T = ref record { pub v: int }
 pub fn make(v: int): T { return new T{v: v} }
 pub fn (t: &T) get(): int { return t.v }
 pub fn (mut t: &T) bump() { t.v += 1 }
 ''',
         'main.obx': '''module main
 import "lib.obx"
-pub type Local = ref record { n: int }
+pub type Local = ref record { pub n: int }
 pub fn (l: &Local) lget(): int { return l.n }
 fn main() {
     let t = lib::make(2)
@@ -1347,9 +1347,9 @@ fn main() {
         if 'fn (p0: &Local) lget(): int' not in main_text:
             raise Fail(f"the checked module's .sym lacks its method: {main_text!r}")
         base = sym_text(libsym)
-        open(libsym, 'wb').write(base.replace(b'obosym 6', b'obosym 1', 1))
+        open(libsym, 'wb').write(base.replace(b'obosym 7', b'obosym 1', 1))
         q = build(d, s, check=True)
-        if q.returncode != 2 or 'has format 1; this compiler reads 6' not in q.stderr:
+        if q.returncode != 2 or 'has format 1; this compiler reads 7' not in q.stderr:
             raise Fail(f"format 1: exit {q.returncode}: {q.stderr.strip()}")
         open(libsym, 'wb').write(base)
         os.rename(os.path.join(d, 'lib.obx.bak'), os.path.join(d, 'lib.obx'))
@@ -1362,7 +1362,7 @@ pub type Shape = interface {
     pure fn area(): int
     mut fn grow(k: int)
 }
-pub type Circle = ref record { r: int }
+pub type Circle = ref record { pub r: int }
 pub fn (c: &Circle) area(): int { return 3 * c.r * c.r }
 pub fn (mut c: &Circle) grow(k: int) { c.r += k }
 pub impl Shape for Circle
@@ -1453,10 +1453,10 @@ IFACE_OWNED_LIB = '''module lib
 pub type Shape = interface {
     pure fn area(): int
 }
-pub type Square = ref record { s: int }
+pub type Square = ref record { pub s: int }
 pub fn (q: &Square) area(): int { return q.s * q.s }
 pub impl Shape for Square
-pub type Holder = ref record { d: Shape; maybe: ?Shape; items: []Shape; r: Result[Shape] }
+pub type Holder = ref record { pub d: Shape; pub maybe: ?Shape; pub items: []Shape; pub r: Result[Shape] }
 pub var G: Shape = new Square{s: 1}
 pub fn make(n: int): Shape {
     return new Square{s: n}
@@ -1477,7 +1477,7 @@ IFACE_HIDDEN_LIB = '''module lib
 pub type Shape = interface {
     pure fn area(): int
 }
-pub type Hidden = ref record { s: int }
+pub type Hidden = ref record { pub s: int }
 fn (h: &Hidden) area(): int { return h.s }
 impl Shape for Hidden
 '''
@@ -1540,7 +1540,7 @@ def iface_ref_check():
 pub type Shape = interface {
     pure fn area(): int
 }
-pub type Square = ref record { s: int }
+pub type Square = ref record { pub s: int }
 pub fn (q: &Square) area(): int { return q.s }
 pub impl Shape for Square
 pub fn total(xs: &[]Shape): int {
@@ -1607,7 +1607,7 @@ fn main() {
 type Shape = interface {
     pure fn area(): int
 }
-type Square = ref record { s: int }
+type Square = ref record { pub s: int }
 fn (q: &Square) area(): int { return q.s }
 impl Shape for Square
 fn make(): Shape { return new Square{s: 1} }
@@ -1640,7 +1640,7 @@ fn main() {
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
-    optional = '''type Holder = ref record { o: ?Shape }
+    optional = '''type Holder = ref record { pub o: ?Shape }
 fn main() {
     let h = new Holder{o: make()}
     var r = &h.o
@@ -1648,7 +1648,7 @@ fn main() {
 }
 '''
     optional_alias = '''type O = ?Shape
-type Holder = ref record { o: O }
+type Holder = ref record { pub o: O }
 fn main() {
     let h = new Holder{o: make()}
     let r: &O = &h.o
@@ -1705,22 +1705,22 @@ def stale_format3_interface():
         f.write('obosym 3\nabi 1\ncompiler "0.7"\nsource 0x0000000000000001\ninterface 0x0\nmodule lib\n'
                 'type I = interface { fn m(p0: I): int }\nfn f(p0: I): int\n')
     q = build(d, symdir, check=True)
-    if q.returncode != 2 or 'has format 3; this compiler reads 6; rebuild it' not in q.stderr:
+    if q.returncode != 2 or 'has format 3; this compiler reads 7; rebuild it' not in q.stderr:
         raise Fail(f"stale format-3 interface file: exit {q.returncode}: {q.stderr.strip()}")
     shutil.rmtree(d, ignore_errors=True)
 
 
 FN_LIB = '''module lib
-pub type Item = ref record { n: int }
+pub type Item = ref record { pub n: int }
 pub type I = interface { fn m(p0: int) }
 pub type ArrI = []I
 pub type OptI = ?I
 pub type ResI = Result[I]
-pub type Holder = ref record { s: I }
+pub type Holder = ref record { pub s: I }
 pub type Cmp = fn(&Item, &Item): int
-pub type T = ref record { v: int }
+pub type T = ref record { pub v: int }
 pub type Closed = closed { V { v: int } }
-pub type NodeI = ref record { next: ?NodeI; s: I }
+pub type NodeI = ref record { pub next: ?NodeI; pub s: I }
 pub var G: int = 0
 pub const C = 7
 pub fn plain(p0: int): int { return p0 }
@@ -1740,7 +1740,7 @@ def fn_sym_roundtrip():
         ok(build(d, symdir, out=os.path.join(d, 'prog')), 'function-type module build')
         libpath = os.path.join(symdir, 'lib.sym')
         lib = sym_text(libpath).decode()
-        for line in ('obosym 6\n', 'abi 1\n', 'compiler "0.12"\n',
+        for line in ('obosym 7\n', 'abi 1\n', 'compiler "0.13"\n',
                      'type Cmp = fn(&Item, &Item): int\n',
                      'fn apply(p0: fn(int): int, p1: int): int\n',
                      'fn useCmp(p0: fn(&Item, &Item): int): int\n',
@@ -1776,9 +1776,9 @@ def stale_format4_fn_rejected():
         ok(build(d, symdir, out=os.path.join(d, 'prog')), 'honest format-5 build')
         libpath = os.path.join(symdir, 'lib.sym')
         os.unlink(os.path.join(d, 'lib.obx'))
-        mutate(libpath, b'obosym 6', b'obosym 4', recompute=False)
+        mutate(libpath, b'obosym 7', b'obosym 4', recompute=False)
         q = build(d, symdir, check=True)
-        if q.returncode != 2 or 'has format 4; this compiler reads 6; rebuild it' not in q.stderr:
+        if q.returncode != 2 or 'has format 4; this compiler reads 7; rebuild it' not in q.stderr:
             raise Fail(f"stale format-4 function type: exit {q.returncode}: {q.stderr.strip()}")
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -1797,9 +1797,9 @@ def forged_fn_positions():
         base = sym_text(libpath)
         os.unlink(os.path.join(d, 'lib.obx'))
         cases = [
-            (b'type T = ref record { v: int }', b'type T = ref record { v: fn(int): int }',
+            (b'type T = ref record { pub v: int }', b'type T = ref record { pub v: fn(int): int }',
              'a record field cannot be a function value'),
-            (b'type Closed = closed { V { v: int } }', b'type Closed = closed { V { v: fn(int): int } }',
+            (b'type Closed = closed { V { pub v: int } }', b'type Closed = closed { V { pub v: fn(int): int } }',
              'a record field cannot be a function value'),
             (b'var G: int', b'var G: fn(int): int',
              'a function value cannot be a global; it is a parameter or a local'),
@@ -1915,7 +1915,7 @@ def forged_fn_positions():
              'the receiver must be a record or closed type defined in this module, not fn(int): int'),
             (b'fn plain(p0: int): int', b'fn (p0: &fn(int): int) plain()',
              'only records, closed types and arrays can be borrowed, not fn(int): int'),
-            (b'type T = ref record { v: int }', b'type T = fn(int): int',
+            (b'type T = ref record { pub v: int }', b'type T = fn(int): int',
              "a function type cannot be forward-declared: 'T' is already declared as a forward type"),
         ]
         for old, new, want in cases:
@@ -1930,8 +1930,8 @@ def forged_fn_positions():
         alias_line = b'type Cmp = fn(&Item, &Item): int\n'
         bare = base.replace(alias_line, b'')
         for marker, old, new, want in [
-            (b'type T = ref record { v: int }\n',
-             b'type T = ref record { v: int }', b'type T = ref record { v: Cmp }',
+            (b'type T = ref record { pub v: int }\n',
+             b'type T = ref record { pub v: int }', b'type T = ref record { pub v: Cmp }',
              'a record field cannot be a function value'),
             (b'type I = interface { fn m(p0: int) }\n',
              b'type I = interface { fn m(p0: int) }', b'type I = interface { fn m(p0: Cmp) }',
@@ -1944,7 +1944,7 @@ def forged_fn_positions():
             if q.returncode != 2 or want not in q.stderr:
                 raise Fail(f"reordered alias {old!r} -> {new!r}: exit {q.returncode}: {q.stderr.strip()}")
         # a forward shell redefined through a bare function-type alias
-        marker = b'type T = ref record { v: int }\n'
+        marker = b'type T = ref record { pub v: int }\n'
         bare2 = base.replace(alias_line, b'')
         at = bare2.index(marker)
         open(libpath, 'wb').write(bare2[:at] + alias_line + b'type T = Cmp\n' +
@@ -1955,7 +1955,7 @@ def forged_fn_positions():
         if q.returncode != 2 or want not in q.stderr:
             raise Fail(f"forward shell through a bare alias: exit {q.returncode}: {q.stderr.strip()}")
         # an incomplete forward shell as a function-type parameter
-        manual = ('obosym 6\nabi 1\ncompiler "0.12"\nsource 0x0000000000000001\n'
+        manual = ('obosym 7\nabi 1\ncompiler "0.13"\nsource 0x0000000000000001\n'
                   'interface 0x0\nmodule lib\ntype Later uid 0x%016x\n'
                   'fn apply(p0: fn(Later): int): int\n' % fnv(b'lib::Later'))
         open(libpath, 'w').write(manual)
@@ -1973,13 +1973,13 @@ def qualified_fnfwd_alias():
     """A forward shell redefined through a qualified function-type alias is refused with the
     forward-function diagnostic, even though the alias lives in another module's .sym."""
     d, symdir = tree({'dep.obx': 'module dep\npub type Cmp = fn(int): int\n',
-                      'lib.obx': 'module lib\nimport "dep.obx"\npub type T = ref record { v: int }\n',
+                      'lib.obx': 'module lib\nimport "dep.obx"\npub type T = ref record { pub v: int }\n',
                       'main.obx': 'module main\nimport "lib.obx"\nfn main() { }\n'},
                      prefix='symcase-qfn-fwd-')
     try:
         ok(build(d, symdir, out=os.path.join(d, 'prog')), 'qualified forward build')
         libpath = os.path.join(symdir, 'lib.sym')
-        mutate(libpath, b'type T = ref record { v: int }\n', b'type T = dep::Cmp\n')
+        mutate(libpath, b'type T = ref record { pub v: int }\n', b'type T = dep::Cmp\n')
         os.unlink(os.path.join(d, 'lib.obx'))
         os.unlink(os.path.join(d, 'dep.obx'))
         q = build(d, symdir, check=True)
@@ -2039,7 +2039,7 @@ def iface_tier_check():
 IFACE_FORGED = {
     'lib.obx': 'module lib\npub fn fwd(): int { return 1 }\n',
     'mid.obx': ('module mid\nimport "lib.obx"\npub type I = interface { mut fn f() }\n'
-                'pub type T = ref record { k: int }\n'
+                'pub type T = ref record { pub k: int }\n'
                 'pub fn (mut t: &T) f() {\n    let x = lib::fwd()\n    t.k = x\n}\n'
                 'pub impl I for T\n'),
     'main.obx': 'module main\nimport "mid.obx"\nfn main() { }\n',
@@ -2085,8 +2085,8 @@ pub fn applyf(f: fn(int): int, x: int): int { return f(x) }
 ''',
         'main.obx': '''module main
 import "lib.obx"
-type Box = ref record { v: int }
-type Bag = ref record { items: []Box; n: int }
+type Box = ref record { pub v: int }
+type Bag = ref record { pub items: []Box; pub n: int }
 fn main() {
     let b = new Bag{items: new []Box(0), n: 0}
     append(b.items, new Box{v: 1})
@@ -2118,8 +2118,8 @@ pub fn good(f: fn(int): int, n: int): int { return f(n) }
 ''',
         'main_bad.obx': '''module main
 import "lib.obx"
-type Box = ref record { v: int }
-type Bag = ref record { items: []Box; n: int }
+type Box = ref record { pub v: int }
+type Bag = ref record { pub items: []Box; pub n: int }
 fn main() {
     let b = new Bag{items: new []Box(0), n: 0}
     append(b.items, new Box{v: 1})
@@ -2130,8 +2130,8 @@ fn main() {
 ''',
         'main_good.obx': '''module main
 import "lib.obx"
-type Box = ref record { v: int }
-type Bag = ref record { items: []Box; n: int }
+type Box = ref record { pub v: int }
+type Bag = ref record { pub items: []Box; pub n: int }
 fn main() {
     let b = new Bag{items: new []Box(0), n: 0}
     append(b.items, new Box{v: 1})
@@ -2163,6 +2163,341 @@ fn main() {
                     ": it might free what the handle names")
             if q.returncode != 1 or want not in q.stderr:
                 raise Fail(f"forged writeshandles {root}: exit {q.returncode}, wanted 1 and {want!r}: {q.stderr.strip()}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def field_visibility_roundtrip():
+    '''Format 7: mixed records emit pub/priv, re-emit byte-identically, and a
+    source-less --check keeps public access, private diagnostics and construction
+    refusal identical to the full build.'''
+    files = {
+        'lib.obx': '''module lib
+pub type Mixed = ref record {
+    pub a: int
+    b: []byte
+    pub c: string
+    d: int
+}
+pub type Empty = ref record { }
+pub fn mk(): Mixed { return new Mixed{a: 1, b: new []byte(0), c: "x", d: 2} }
+''',
+        'main.obx': '''module main
+import "lib.obx"
+fn main() {
+    var x = lib::mk()
+    println(x.a, x.c)
+    x.a = 5
+    let e = new lib::Empty{}
+    drop(e)
+}
+''',
+    }
+    d, s = tree(files)
+    try:
+        ok(build(d, s, out=os.path.join(d, 'p')), 'build')
+        lib = os.path.join(s, 'lib.sym')
+        text = sym_text(lib)
+        if b'obosym 7\n' not in text or b'compiler "0.13"' not in text:
+            raise Fail(f"format/compiler header is wrong: {text[:80]!r}")
+        if b'type Mixed = ref record { pub a: int; priv; pub c: string; priv }' not in text:
+            raise Fail(f"mixed field list is not canonical: {text!r}")
+        if b'type Empty = ref record { }' not in text:
+            raise Fail(f"zero-field record is not canonical: {text!r}")
+        r = reemit(lib)
+        ok(r, 'reemit')
+        if r.stdout != text:
+            raise Fail('--reemit-sym is not byte-identical')
+        os.rename(os.path.join(d, 'lib.obx'), os.path.join(d, 'lib.obx.bak'))
+        ok(build(d, s, check=True), 'source-less positive')
+        open(os.path.join(d, 'bad.obx'), 'w').write(
+            'module main\nimport "lib.obx"\nfn main() { let x = lib::mk(); println(x.b) }\n')
+        q = build(d, s, root='bad.obx', check=True)
+        want = ("type 'lib::Mixed' has no public field 'b' "
+                "(only 'pub' fields are visible outside module 'lib'; mark 'b' 'pub' or add an accessor)")
+        if q.returncode != 1 or want not in q.stderr:
+            raise Fail(f"source-less private read: exit {q.returncode}: {q.stderr.strip()}")
+        open(os.path.join(d, 'bad.obx'), 'w').write(
+            'module main\nimport "lib.obx"\nfn main() { let x = new lib::Mixed{a: 1} }\n')
+        q = build(d, s, root='bad.obx', check=True)
+        want = ("cannot construct 'lib::Mixed' outside its module: it has private fields; "
+                "add a constructor function in module 'lib'")
+        if q.returncode != 1 or want not in q.stderr:
+            raise Fail(f"source-less construction: exit {q.returncode}: {q.stderr.strip()}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def field_visibility_public_names():
+    '''pub priv and pub priviface are ordinary public fields, distinct from the
+    private markers, and re-emit byte-for-byte.'''
+    files = {
+        'lib.obx': '''module lib
+pub type Odd = ref record {
+    pub priv: int
+    pub priviface: int
+    x: int
+}
+pub fn mk(): Odd { return new Odd{priv: 1, priviface: 2, x: 3} }
+''',
+        'main.obx': 'module main\nimport "lib.obx"\nfn main() { let o = lib::mk(); println(o.priv, o.priviface) }\n',
+    }
+    d, s = tree(files)
+    try:
+        ok(build(d, s, out=os.path.join(d, 'p')), 'build')
+        lib = os.path.join(s, 'lib.sym')
+        text = sym_text(lib)
+        if b'type Odd = ref record { pub priv: int; pub priviface: int; priv }' not in text:
+            raise Fail(f"pub priv/priviface field list is wrong: {text!r}")
+        if reemit(lib).stdout != text:
+            raise Fail('pub priv/priviface re-emission is not byte-identical')
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def field_visibility_markers():
+    '''Malformed visibility markers are symbol-file errors with a line:col.'''
+    files = {
+        'lib.obx': '''module lib
+pub type Mixed = ref record {
+    pub a: int
+    b: []byte
+}
+pub type Plain = ref record { pub v: int }
+pub type Shape = closed { Dot { x: int } }
+''',
+        'main.obx': 'module main\nimport "lib.obx"\nfn main() { }\n',
+    }
+    d, s = tree(files)
+    try:
+        ok(build(d, s), 'base')
+        lib = os.path.join(s, 'lib.sym')
+        base = sym_text(lib)
+        cases = [
+            ('private name', b'{ pub a: int; priv }', b'{ pub a: int; priv x: int }',
+             'a private field has no name or type'),
+            ('private colon', b'{ pub a: int; priv }', b'{ pub a: int; priv: int }',
+             'a private field has no name or type'),
+            ('unknown marker', b'{ pub a: int; priv }', b'{ pub a: int; wat }',
+             "expected 'pub', 'priv' or 'priviface' in a record field list"),
+            ('bare public', b'{ pub v: int }', b'{ v: int }',
+             "expected 'pub', 'priv' or 'priviface' in a record field list"),
+            ('variant private', b'Dot { pub x: int }', b'Dot { priv }',
+             'private fields are not allowed in a closed variant'),
+        ]
+        for name, old, new, want in cases:
+            if base.count(old) != 1:
+                raise Fail(f"{name}: {old!r} occurs {base.count(old)} times")
+            open(lib, 'wb').write(base)
+            mutate(lib, old, new)
+            q = build(d, s, check=True)
+            if q.returncode != 2 or 'symbol file:' not in q.stderr or want not in q.stderr:
+                raise Fail(f"{name}: exit {q.returncode}: {q.stderr.strip()}")
+            if ':' not in q.stderr.split('symbol file:')[0]:
+                raise Fail(f"{name}: no line:col in {q.stderr.strip()!r}")
+        open(lib, 'wb').write(base)
+        mutate(lib, b'{ pub v: int }', b'{ pub v: int; pub v: int }')
+        q = build(d, s, check=True)
+        if q.returncode != 2 or "duplicate field 'v'" not in q.stderr:
+            raise Fail(f"duplicate public field: exit {q.returncode}: {q.stderr.strip()}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def field_visibility_tamper():
+    '''An unrehashed visibility change is caught by the interface hash; a rehashed
+    one is accepted (trusted build input) and then construct-refused.'''
+    files = {
+        'lib.obx': 'module lib\npub type P = ref record { pub v: int }\npub fn mk(): P { return new P{v: 1} }\n',
+        'main.obx': 'module main\nimport "lib.obx"\nfn main() { let p = lib::mk() }\n',
+    }
+    d, s = tree(files)
+    try:
+        ok(build(d, s, out=os.path.join(d, 'p')), 'build')
+        lib = os.path.join(s, 'lib.sym')
+        base = sym_text(lib)
+        open(lib, 'wb').write(base)
+        mutate(lib, b'{ pub v: int }', b'{ priv }', recompute=False)
+        q = build(d, s, check=True)
+        if q.returncode != 2 or 'is corrupt (interface hash)' not in q.stderr:
+            raise Fail(f"unhashed tamper: exit {q.returncode}: {q.stderr.strip()}")
+        open(lib, 'wb').write(base)
+        mutate(lib, b'{ pub v: int }', b'{ priv }', recompute=True)
+        ok(build(d, s, check=True), 'rehashed tamper is trusted input')
+        open(os.path.join(d, 'bad.obx'), 'w').write(
+            'module main\nimport "lib.obx"\nfn main() { let p = new lib::P{v: 1} }\n')
+        q = build(d, s, root='bad.obx', check=True)
+        if q.returncode != 1 or 'it has private fields' not in q.stderr:
+            raise Fail(f"rehashed private construction: exit {q.returncode}: {q.stderr.strip()}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def field_visibility_hashes():
+    '''Private field identity/type changes keep the hash only when no exported
+    summary changes; carrier-class changes always change it.'''
+    base = '''module lib
+pub type R = ref record {
+    buf: []byte
+    n: int
+}
+pub fn make(): R { return new R{buf: new []byte(0), n: 0} }
+pub fn reset(mut r: &R) {
+    r.buf = new []byte(0)
+    r.n = 0
+}
+'''
+    main = 'module main\nimport "lib.obx"\nfn main() { let r = lib::make(); lib::reset(r) }\n'
+    def ihash(src):
+        d, s = tree({'lib.obx': src, 'main.obx': main})
+        try:
+            ok(build(d, s, out=os.path.join(d, 'p')), 'variant build')
+            return sym_header(os.path.join(s, 'lib.sym'))['interface']
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+    h0 = ihash(base)
+    h_n = ihash(base.replace('n: int', 'm: int').replace('n: 0', 'm: 0').replace('r.n', 'r.m'))
+    if h_n != h0:
+        raise Fail('renaming a private scalar not named in a summary changed the interface hash')
+    h_buf = ihash(base.replace('buf', 'data'))
+    if h_buf == h0:
+        raise Fail('renaming a private field named in a pf path kept the interface hash')
+    h_int = ihash(base.replace('buf: []byte', 'buf: []int')
+                      .replace('new []byte(0), n', 'new []int(0), n')
+                      .replace('r.buf = new []byte(0)', 'r.buf = new []int(0)'))
+    if h_int != h0:
+        raise Fail('[]byte -> []int on a private pf-path field changed the interface hash')
+    h_scalar = ihash('''module lib
+pub type R = ref record {
+    buf: int
+    n: int
+}
+pub fn make(): R { return new R{buf: 0, n: 0} }
+pub fn reset(mut r: &R) {
+    r.n = 0
+}
+''')
+    if h_scalar == h0:
+        raise Fail('[]byte -> int on a private pf-path field kept the interface hash')
+    h_pub = ihash('module lib\npub type R = ref record { pub buf: []byte; pub n: int }\npub fn make(): R { return new R{buf: new []byte(0), n: 0} }\npub fn reset(mut r: &R) { }\n')
+    h_priv = ihash('module lib\npub type R = ref record { buf: []byte; pub n: int }\npub fn make(): R { return new R{buf: new []byte(0), n: 0} }\npub fn reset(mut r: &R) { }\n')
+    if h_pub == h_priv:
+        raise Fail('public -> private did not change the interface hash')
+    h_iface = ihash('''module lib
+pub type Shape = interface { pure fn area(): int }
+pub type Square = ref record { pub s: int }
+pub fn (q: &Square) area(): int { return q.s }
+pub impl Shape for Square
+pub type R = ref record {
+    buf: []byte
+    h: Shape
+}
+pub fn make(): R { return new R{buf: new []byte(0), h: new Square{s: 1}} }
+pub fn reset(mut r: &R) { }
+''')
+    if h_iface == h0:
+        raise Fail('a private interface carrier did not change the interface hash')
+
+
+def field_visibility_carrier_multi():
+    '''B3: each per-field carrier query starts clean, so both fields are priviface.'''
+    files = {
+        'lib.obx': '''module lib
+pub type Shape = interface { pure fn area(): int }
+pub type Square = ref record { pub s: int }
+pub fn (q: &Square) area(): int { return q.s }
+pub impl Shape for Square
+type C = ref record { s: Shape }
+type B = ref record { c: C }
+pub type A = ref record {
+    b: B
+    c: C
+}
+pub fn mk(): A {
+    return new A{b: new B{c: new C{s: new Square{s: 1}}},
+                 c: new C{s: new Square{s: 2}}}
+}
+''',
+        'main.obx': 'module main\nimport "lib.obx"\nfn main() { let a = lib::mk() }\n',
+    }
+    d, s = tree(files)
+    try:
+        ok(build(d, s, out=os.path.join(d, 'p')), 'build')
+        lib = os.path.join(s, 'lib.sym')
+        text = sym_text(lib)
+        if b'type A = ref record { priviface; priviface }' not in text:
+            raise Fail(f"B3 carrier visited state leaked across fields: {text!r}")
+        if reemit(lib).stdout != text:
+            raise Fail('carrier re-emission is not byte-identical')
+        os.rename(os.path.join(d, 'lib.obx'), os.path.join(d, 'lib.obx.bak'))
+        open(os.path.join(d, 'cap.obx'), 'w').write('''module main
+import "lib.obx"
+fn apply(f: fn(): int): int { return f() }
+fn main() {
+    let a = lib::mk()
+    println(apply(fn [a](): int { return 0 }))
+}
+''')
+        q = build(d, s, root='cap.obx', check=True)
+        if q.returncode != 1 or 'holds an interface value' not in q.stderr:
+            raise Fail(f"source-less carrier capture: exit {q.returncode}: {q.stderr.strip()}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def field_visibility_library_summaries():
+    '''io::Reader/Writer are private and fs::Dir stays public; pf paths still name
+    their buf fields, as v1 accepts.'''
+    d = tempfile.mkdtemp(prefix='libsum-')
+    s = os.path.join(d, 'sym')
+    os.makedirs(s)
+    try:
+        open(os.path.join(d, 'main.obx'), 'w').write(
+            'module main\nimport "io.obx" as io\nimport "fs.obx" as fs\n'
+            'fn main() { let w = io::newWriter(1, 8); io::flush(w); println(fs::KIND_REG) }\n')
+        libdir = os.path.join(FORK, 'lib')
+        q = subprocess.run([OBO, os.path.join(d, 'main.obx'), '-o', os.path.join(d, 'p'),
+                            '--rt', RT, '-I', d, '-I', libdir, '--sym-dir', s],
+                           capture_output=True, text=True, timeout=120)
+        ok(q, 'library build')
+        io_text = sym_text(os.path.join(s, 'io.sym'))
+        fs_text = sym_text(os.path.join(s, 'fs.sym'))
+        if b'type Reader = ref record { priv; priv; priv; priv; priv }' not in io_text:
+            raise Fail(f"io::Reader fields are not private: {io_text!r}")
+        if b'type Writer = ref record { priv; priv; priv }' not in io_text:
+            raise Fail(f"io::Writer fields are not private: {io_text!r}")
+        if b'type Dir = ref record { pub fd: int;' not in fs_text:
+            raise Fail(f"fs::Dir is not public: {fs_text!r}")
+        if b'pf 0 "=/buf"' not in io_text or b'pf 0 "!/buf"' not in io_text:
+            raise Fail('io pf paths are missing')
+        if b'pf 0 "=/buf"' not in fs_text:
+            raise Fail('fs::next pf path is missing')
+        if b'fn bufferedBytes(p0: &Writer): int' not in io_text:
+            raise Fail('io::bufferedBytes is not exported')
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def field_visibility_old_format():
+    '''Format 6 is refused with the exact next-format message.'''
+    files = {
+        'lib.obx': 'module lib\npub type P = ref record { pub v: int }\npub fn mk(): P { return new P{v: 1} }\n',
+        'main.obx': 'module main\nimport "lib.obx"\nfn main() { let p = lib::mk() }\n',
+    }
+    d, s = tree(files)
+    try:
+        ok(build(d, s, out=os.path.join(d, 'p')), 'build')
+        p = os.path.join(s, 'lib.sym')
+        text = sym_text(p)
+        open(p, 'wb').write(text.replace(b'obosym 7', b'obosym 6', 1))
+        q = build(d, s, check=True)
+        want = f"obxc: symbol file '{p}' has format 6; this compiler reads 7; rebuild it"
+        if q.returncode != 2 or want not in q.stderr:
+            raise Fail(f"format 6: exit {q.returncode}: {q.stderr.strip()}")
+        q = subprocess.run([OBO, '--version'], capture_output=True, text=True)
+        want = f'obo {OBO_VERSION} sym-format {SYM_FORMAT} abi {SYM_ABI}\n'
+        if q.stdout != want:
+            raise Fail(f"--version: {q.stdout!r}")
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -2213,6 +2548,14 @@ def tests():
         ('sym/iface_forged_freesall', iface_forged_freesall),
         ('sym/capture_sourceless_pure', capture_sourceless_pure),
         ('sym/capture_forged_writeshandles', capture_forged_writeshandles),
+        ('sym/field_visibility_roundtrip', field_visibility_roundtrip),
+        ('sym/field_visibility_public_names', field_visibility_public_names),
+        ('sym/field_visibility_markers', field_visibility_markers),
+        ('sym/field_visibility_tamper', field_visibility_tamper),
+        ('sym/field_visibility_hashes', field_visibility_hashes),
+        ('sym/field_visibility_carrier_multi', field_visibility_carrier_multi),
+        ('sym/field_visibility_library_summaries', field_visibility_library_summaries),
+        ('sym/field_visibility_old_format', field_visibility_old_format),
     ]
 
 

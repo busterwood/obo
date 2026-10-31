@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:3:42: type 'lib::C' has a field 'a', not a method; a field cannot be called

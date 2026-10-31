@@ -110,11 +110,12 @@ const T_PERCENTEQ = 71          // '%=' is decimal (and int) compound assignment
 // OBO_VERSION is the compiler's identity in every .sym's `compiler` line and in --version.
 // Bump OBO_VERSION with each merged compiler feature; additive builtin/runtime
 // extensions use a patch release (0.8 -> 0.8.1); 0.9 is lambdas Stage A, 0.10 is
-// numeric floats, 0.11 is Stage B capture lists and 0.12 is the WIP decimal
-// integration. Bump SYM_FORMAT on any grammar or meaning change; bump SYM_ABI on
-// any layout/calling-convention/descriptor/effect change.
-const OBO_VERSION = "0.12"
-const SYM_FORMAT = 6
+// numeric floats, 0.11 is Stage B capture lists, 0.12 is the decimal integration
+// and 0.13 is private-by-default record fields. Bump SYM_FORMAT on any grammar or
+// meaning change; bump SYM_ABI on any layout/calling-convention/descriptor/effect
+// change.
+const OBO_VERSION = "0.13"
+const SYM_FORMAT = 7
 const SYM_ABI = 1
 
 fn makeTokNames(): []string {
@@ -1248,6 +1249,8 @@ type Field = ref record {
     name: string
     offset: int
     typ: ^Type
+    private: bool             // a record field private to its defining module; never set for fn params/placeholders
+    privateIface: bool        // a .sym private slot whose hidden type carries an interface (reader sets it)
 }
 
 type Type = ref record {
@@ -1438,6 +1441,7 @@ fn containsIfaceIn(t: ^Type): bool {
         append(ifaceSeen, t)
         if t.kind == "record" {
             for i in 0..len(t.fields) {
+                if t.fields[i].privateIface { return true }
                 if containsIfaceIn(t.fields[i].typ) { return true }
             }
         } else {
@@ -1528,12 +1532,32 @@ fn rejectIfaceFn(t: ^Type) {
     }
 }
 
-// the index of a record's field, or -1 (fields are reached through the type's handle)
+// the index of a record's field, or -1 (fields are reached through the type's handle). A .sym private
+// placeholder has name "", which no source identifier can match.
 fn fieldIndex(t: ^Type, name: string): int {
     for i in 0..len(t.fields) {
         if t.fields[i].name == name { return i }
     }
     return -1
+}
+
+fn hasPrivateFields(t: ^Type): bool {
+    for i in 0..len(t.fields) {
+        if t.fields[i].private { return true }
+    }
+    return false
+}
+
+// The exact access message for a foreign private field (read/write/borrow/move all fail here).
+fn privateFieldMsg(t: ^Type, f: string): string {
+    return "type '" + tname(t) + "' has no public field '" + f + "' (only 'pub' fields are visible outside module '" +
+           t.owner + "'; mark '" + f + "' 'pub' or add an accessor)"
+}
+
+// The exact method-call message for a foreign private field or a missing member on a mixed record.
+fn privateMemberMsg(t: ^Type, f: string): string {
+    return "type '" + tname(t) + "' has no public field or exported method '" + f +
+           "' (only 'pub' declarations are visible outside module '" + t.owner + "'; mark the field 'pub' or add a public method)"
 }
 
 // ======================================================== symbols, items
@@ -5431,11 +5455,17 @@ fn refuseOptionalIfaceLocal(t: ^Type) {
     }
 }
 
-fn fieldList(rec: ^Type) {
+fn fieldList(rec: ^Type, variant: bool) {
     expect(T_LBRACE, "")
     skipSemis()
     var offset = 0
     while sym != T_RBRACE {
+        var isPub = false
+        if sym == T_PUB {
+            if variant { errorAt("'pub' is not allowed on a variant field; variant fields are always public", 0, 0) }
+            next()
+            isPub = true
+        }
         let names = new []string(0)
         append(names, ident())
         while sym == T_COMMA {
@@ -5448,7 +5478,7 @@ fn fieldList(rec: ^Type) {
         if t.kind == "decimal" { error("decimal record fields are not supported in v1") }
         for n in names {
             if fieldIndex(rec, n) >= 0 { error("duplicate field '" + n + "'") }
-            append(rec.fields, new Field{name: n, offset: offset, typ: t})
+            append(rec.fields, new Field{name: n, offset: offset, typ: t, private: !variant && !isPub})
             offset += 8
         }
         if sym != T_RBRACE { expect(T_SEMI, "';' or newline") }
@@ -5511,7 +5541,7 @@ fn typeDecl(isPub: bool) {
             cs.exported = cs.exported || isPub       // sticky across a forward heading and its definition
             cs.line = line
         }
-        fieldList(rec)
+        fieldList(rec, false)
         rec.incomplete = false
     } else if sym == T_CLOSED {
         next()
@@ -5543,7 +5573,7 @@ fn typeDecl(isPub: bool) {
             vs.line = vline
             declare(vs)
             vs.exported = pubType                // exporting a closed type exports its variants
-            fieldList(v)
+            fieldList(v, true)
             append(ct.variants, v)
             skipSemis()
         }
@@ -7845,12 +7875,18 @@ fn designatorT(target: bool): Item {
             let rt0 = x.typ
             let fi = fieldIndex(rt0, fname)
             if fi < 0 {
+                if rt0.owner != "" && rt0.owner != curModuleName && hasPrivateFields(rt0) {
+                    errorAt(privateFieldMsg(rt0, fname), mline, mcol)
+                }
                 let mv = findMethod(rt0, fname)
                 if mv != nil && (mv.owner == curModuleName || mv.exported) {
                     error("method '" + methodDisplay(mv) + "' cannot be used as a value: call it with '(' after its name")
                 }
                 error(tname(rt0) + " has no field '" + fname + "'")
                 return x
+            }
+            if rt0.fields[fi].private && rt0.owner != "" && rt0.owner != curModuleName {
+                errorAt(privateFieldMsg(rt0, fname), mline, mcol)
             }
             let fty = rt0.fields[fi].typ
             let foff = rt0.fields[fi].offset
@@ -7990,10 +8026,19 @@ fn methodCall(recv: Item, name: string, dline: int, dcol: int, rline: int, rcol:
     if t.kind == "iface" { return ifaceMethodCall(recv, t, name, dline, dcol, rline, rcol) }
     if t.kind != "record" && t.kind != "closed" { errorAt(tname(t) + " has no methods", dline, dcol) }
     if t.kind == "record" && fieldIndex(t, name) >= 0 {
+        let fi = fieldIndex(t, name)
+        if t.owner != "" && t.owner != curModuleName && t.fields[fi].private {
+            errorAt(privateMemberMsg(t, name), dline, dcol)
+        }
         errorAt("type '" + tname(t) + "' has a field '" + name + "', not a method; a field cannot be called", dline, dcol)
     }
     let m = findMethod(t, name)
     if t.owner != "" && t.owner != curModuleName && (m == nil || !m.exported) {
+        // a foreign mixed record hides names: a private field or an absent member gets the same
+        // no-public-field-or-method message, identical in a full build and in --check
+        if t.kind == "record" && hasPrivateFields(t) {
+            errorAt(privateMemberMsg(t, name), dline, dcol)
+        }
         // the same message in a full build and in --check: a private method never leaks
         var tn = t.name
         var mm = m
@@ -8045,6 +8090,10 @@ fn newExpr(): Item {
     if s.kind == "type" && symType(s).incomplete { error("'" + qname + "' is declared but not yet defined") }
     if s.kind != "type" || symType(s).kind != "record" { error("'" + qname + "' is not a record type") }
     let t = symType(s)
+    if t.owner != "" && t.owner != curModuleName && hasPrivateFields(t) {
+        error("cannot construct '" + tname(t) + "' outside its module: it has private fields; add a constructor function in module '" +
+              t.owner + "'")
+    }
     let p = rtCall1(RT_ALLOC_RECORD, makeConst(tInt, t.desc), t)
     let given = new []string(0)
     expect(T_LBRACE, "")
@@ -11773,6 +11822,7 @@ fn closureCheck(t: ^Type, declName: string, variant: string, line: int) {
         }
     } else {
         for i in 0..len(t.fields) {
+            if t.fields[i].private { continue }   // a private field's type is the module's business
             closureCheck(t.fields[i].typ, declName, variant, line)
         }
     }
@@ -12512,14 +12562,29 @@ fn appTypeExpr(mut b: &[]byte, t: ^Type, modName: string) {
     appStr(b, t.name)
 }
 
-fn appFields(mut b: &[]byte, rec: ^Type, modName: string) {
+fn appFields(mut b: &[]byte, rec: ^Type, modName: string, variant: bool) {
     append(b, '{')
     for i in 0..len(rec.fields) {
         if i > 0 { append(b, ';') }
         append(b, ' ')
-        appStr(b, rec.fields[i].name)
-        appStr(b, ": ")
-        appTypeExpr(b, rec.fields[i].typ, modName)
+        if variant {
+            appStr(b, "pub ")
+            appStr(b, rec.fields[i].name)
+            appStr(b, ": ")
+            appTypeExpr(b, rec.fields[i].typ, modName)
+        } else if rec.fields[i].private {
+            // opaque one-word slot: no name, no type; the carrier bit is the only metadata
+            if rec.fields[i].privateIface || containsIface(rec.fields[i].typ) {
+                appStr(b, "priviface")
+            } else {
+                appStr(b, "priv")
+            }
+        } else {
+            appStr(b, "pub ")
+            appStr(b, rec.fields[i].name)
+            appStr(b, ": ")
+            appTypeExpr(b, rec.fields[i].typ, modName)
+        }
     }
     append(b, ' ')
     append(b, '}')
@@ -12597,7 +12662,7 @@ fn appTypeDef(mut b: &[]byte, s: ^Sym, modName: string) {
     appStr(b, s.name)
     if t.kind == "record" {
         appStr(b, " = ref record ")
-        appFields(b, t, modName)
+        appFields(b, t, modName, false)
         append(b, '\n')
         return
     }
@@ -12612,7 +12677,7 @@ fn appTypeDef(mut b: &[]byte, s: ^Sym, modName: string) {
         append(b, ' ')
         appStr(b, t.variants[i].name)
         append(b, ' ')
-        appFields(b, t.variants[i], modName)
+        appFields(b, t.variants[i], modName, true)
     }
     appStr(b, " }\n")
 }
@@ -13170,22 +13235,48 @@ fn symParseType(): ^Type {
     return symFinishTypeName(name, nline, ncol)
 }
 
-// parses { field: type; ... } into rec's (empty) field list, in declaration order
-fn symFieldList(rec: ^Type) {
+// parses { pub field: type; priv; priviface } into rec's (empty) field list, in declaration order.
+// A private slot is a one-word placeholder with no name; `pub priv: int` is an ordinary public field.
+fn symFieldList(rec: ^Type, variant: bool) {
     expect(T_LBRACE, "")
     skipSemis()
     while sym != T_RBRACE {
-        if sym != T_IDENT { error("expected a field name") }
-        let fline = tline
-        let fname = ident()
-        if sym != T_COLON { errorAt("expected ':' after the field name", fline, 1) }
-        next()
-        let t = symParseType()
-        rejectFn(t, "a record field cannot be a function value; function values are parameters and locals only")
-        for i in 0..len(rec.fields) {
-            if rec.fields[i].name == fname { error("duplicate field '" + fname + "'") }
+        var isPub = false
+        if sym == T_PUB {
+            next()
+            isPub = true
         }
-        append(rec.fields, new Field{name: fname, offset: 8 * len(rec.fields), typ: t})
+        if !isPub && sym == T_IDENT && (sval == "priv" || sval == "priviface") {
+            let marker = sval
+            let mline = tline
+            let mcol = tcol
+            next()
+            if sym == T_IDENT || sym == T_COLON {
+                errorAt("a private field has no name or type", mline, mcol)
+            }
+            if variant {
+                errorAt("private fields are not allowed in a closed variant", mline, mcol)
+            }
+            var carrier = false
+            if marker == "priviface" { carrier = true }
+            append(rec.fields, new Field{name: "", offset: 8 * len(rec.fields), typ: tInt,
+                                         private: true, privateIface: carrier})
+        } else {
+            if !isPub {
+                errorAt("expected 'pub', 'priv' or 'priviface' in a record field list", 0, 0)
+            }
+            if sym != T_IDENT { error("expected a field name") }
+            let fline = tline
+            let fname = ident()
+            if sym != T_COLON { errorAt("expected ':' after the field name", fline, 1) }
+            next()
+            let t = symParseType()
+            rejectFn(t, "a record field cannot be a function value; function values are parameters and locals only")
+            for i in 0..len(rec.fields) {
+                if rec.fields[i].name == fname { error("duplicate field '" + fname + "'") }
+            }
+            append(rec.fields, new Field{name: fname, offset: 8 * len(rec.fields), typ: t})
+        }
         if sym == T_SEMI { next() } else if sym != T_RBRACE { error("expected ';' or '}'") }
         skipSemis()
     }
@@ -13195,9 +13286,16 @@ fn symFieldList(rec: ^Type) {
 fn symCompareFields(live: ^Type, parsed: ^Type, what: string) {
     if len(live.fields) != len(parsed.fields) { symDisagree(what) }
     for i in 0..len(live.fields) {
-        if live.fields[i].name != parsed.fields[i].name { symDisagree(what) }
         if live.fields[i].offset != parsed.fields[i].offset { symDisagree(what) }
-        if !same(live.fields[i].typ, parsed.fields[i].typ) { symDisagree(what) }
+        if live.fields[i].private != parsed.fields[i].private { symDisagree(what) }
+        if live.fields[i].private {
+            // the parsed side is a placeholder: only the carrier answer crosses the boundary, and
+            // the parsed flag (not a recomputation from the placeholder type) is authoritative
+            if containsIface(live.fields[i].typ) != parsed.fields[i].privateIface { symDisagree(what) }
+        } else {
+            if live.fields[i].name != parsed.fields[i].name { symDisagree(what) }
+            if !same(live.fields[i].typ, parsed.fields[i].typ) { symDisagree(what) }
+        }
     }
 }
 
@@ -13569,7 +13667,7 @@ fn symTypeDecl(mode: int) {
             if got != nil { t = got }
             if !t.incomplete { error("duplicate definition of type '" + name + "'") }
             t.kind = "record"
-            symFieldList(t)
+            symFieldList(t, false)
             t.incomplete = false
             t.desc = 0
             let ds = findExport(symCurMod, name)
@@ -13581,7 +13679,7 @@ fn symTypeDecl(mode: int) {
         if got != nil { t = got }
         if t.kind != "record" || t.incomplete { symDisagree("type '" + name + "'") }
         let tmp = newType("record", "", nil)
-        symFieldList(tmp)
+        symFieldList(tmp, false)
         symCompareFields(t, tmp, "type '" + name + "'")
         return
     }
@@ -13626,7 +13724,7 @@ fn symTypeDecl(mode: int) {
                 vs.line = vline
                 append(symCurMod.globals, vs)
                 append(symSeen, vname)
-                symFieldList(v)
+                symFieldList(v, true)
                 v.desc = 0
                 append(ct.variants, v)
             } else {
@@ -13634,7 +13732,7 @@ fn symTypeDecl(mode: int) {
                 let v = ct.variants[vi]
                 if v.name != vname { symDisagree("variant '" + vname + "'") }
                 let vtmp = newType("record", "", nil)
-                symFieldList(vtmp)
+                symFieldList(vtmp, true)
                 symCompareFields(v, vtmp, "variant '" + vname + "'")
                 let vs = findExport(symCurMod, vname)
                 if vs == nil { symDisagree("variant '" + vname + "'") }

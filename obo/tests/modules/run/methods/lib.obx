@@ -1,6 +1,6 @@
 module lib
 
-pub type Builder = ref record { items: []string; n: int }
+pub type Builder = ref record { pub items: []string; pub n: int }
 
 pub fn make(): Builder { return new Builder{items: new []string(0), n: 0} }
 pub fn (b: &Builder) count(): int { return b.n }

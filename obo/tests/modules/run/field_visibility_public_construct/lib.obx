@@ -1,0 +1,7 @@
+module lib
+pub type P = ref record {
+    pub x: int
+    pub y: int
+}
+pub type PAlias = P
+pub fn make(x: int, y: int): P { return new P{x: x, y: y} }

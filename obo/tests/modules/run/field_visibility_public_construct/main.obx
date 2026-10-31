@@ -1,0 +1,10 @@
+module main
+import "lib.obx"
+fn main() {
+    let p = new lib::P{x: 1, y: 2}
+    println(p.x, p.y)            // expect: 12
+    let q = new lib::PAlias{x: 3, y: 4}
+    println(q.x, q.y)            // expect: 34
+    let r = lib::make(5, 6)
+    println(r.x, r.y)            // expect: 56
+}

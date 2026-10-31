@@ -1,9 +1,10 @@
 module demo
 
-// Ordinary obo surface for the template adapter. The token is an integer; obo
-// record fields are not private, so the C registry is what rejects a forged or
-// stale token. Dropping Demo does NOT release the C resource: call close(),
-// normally through defer (close borrows the wrapper).
+// Ordinary obo surface for the template adapter. The token is an integer and
+// the field is private to this module; importers use open(). The C registry,
+// not the field visibility, is what rejects a copied or stale token. Dropping
+// Demo does NOT release the C resource: call close(), normally through defer
+// (close borrows the wrapper).
 pub type Demo = ref record { tok: int }
 
 pub fn open(size: int): Result[Demo] {

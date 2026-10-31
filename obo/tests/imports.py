@@ -159,7 +159,7 @@ IMPORTERS = {
     'html': ('import "html.obx" as html\n'
              'fn main() {\n'
              '    let h = html::escapeText("<x>")\n'
-             '    println(h.text)\n'
+             '    println(html::toText(h))\n'
              '}\n', '&lt;x&gt;\n'),
 }
 

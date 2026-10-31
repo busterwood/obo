@@ -1,0 +1,10 @@
+module lib
+type Secret = ref record { n: int }
+pub type Session = ref record {
+    pub id: int
+    cache: Secret
+}
+pub fn mk(id: int): Session {
+    return new Session{id: id, cache: new Secret{n: id * 2}}
+}
+pub fn cached(s: &Session): int { return s.cache.n }

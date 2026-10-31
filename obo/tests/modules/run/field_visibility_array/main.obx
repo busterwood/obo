@@ -1,0 +1,19 @@
+module main
+import "lib.obx"
+fn main() {
+    var xs = new []lib::T(0)
+    append(xs, lib::mk(1))
+    append(xs, lib::mk(2))
+    println(xs[0].v, xs[1].v)     // expect: 12
+    xs[1].v = 7
+    println(xs[1].v)              // expect: 7
+    let moved = replace(xs[0], lib::mk(0))
+    println(moved.v)              // expect: 1
+    xs[0] = moved
+    println(lib::secretOf(xs[0])) // expect: 2
+    var opts = new []?lib::T(2)
+    println(opts[0] == nil)       // expect: true
+    opts[1] = lib::mk(5)
+    let got = take(opts[1])
+    if got != nil { println(got.v) } // expect: 5
+}

@@ -1,0 +1,14 @@
+module main
+import "html.obx" as html
+fn main() {
+    let h = html::raw("<b>hi</b>")
+    println(html::toText(h))     // expect: <b>hi</b>
+    let e = html::escapeText("<x>")
+    println(html::toText(e))     // expect: &lt;x&gt;
+    var parts = new []html::Html(0)
+    append(parts, html::raw("<a>"))
+    append(parts, html::escapeAttr("\""))
+    append(parts, html::raw("</a>"))
+    let joined = html::join(parts)
+    println(html::toText(joined)) // expect: <a>&quot;</a>
+}

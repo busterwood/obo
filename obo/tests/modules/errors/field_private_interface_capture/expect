@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:6:33: cannot capture 'h': its type holds an interface value; function values cannot take interface values in v1

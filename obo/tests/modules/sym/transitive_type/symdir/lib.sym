@@ -1,8 +1,8 @@
-obosym 6
+obosym 7
 abi 1
-compiler "0.12"
+compiler "0.13"
 source 0x8aae20a574ffece5
-interface 0xaa08c7688f25f7e9
+interface 0x97b9dfa7a9dc00de
 module lib
 type T uid 0x2bd2b8a37148a914
-type T = ref record { v: int }
+type T = ref record { pub v: int }

@@ -24,7 +24,7 @@ pub fn compress(data: []byte, level: int): Result[buffer::Buffer] {
     let made = buffer::from_bytes(data)
     match made {
         ok(inp) {
-            let t = __cinterop("zlib_compress", inp.tok, level)
+            let t = __cinterop("zlib_compress", buffer::rawToken(inp), level)
             inp.close()
             if t <= 0 { return err("zlib compress failed", 3) }
             return ok(buffer::wrap(t))
@@ -37,7 +37,7 @@ pub fn uncompress(data: []byte, out_len: int): Result[buffer::Buffer] {
     let made = buffer::from_bytes(data)
     match made {
         ok(inp) {
-            let t = __cinterop("zlib_uncompress", inp.tok, out_len)
+            let t = __cinterop("zlib_uncompress", buffer::rawToken(inp), out_len)
             inp.close()
             if t <= 0 { return err("zlib uncompress failed", 4) }
             return ok(buffer::wrap(t))

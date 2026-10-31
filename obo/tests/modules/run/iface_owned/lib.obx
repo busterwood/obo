@@ -3,11 +3,11 @@ module lib
 pub type Shape = interface {
     pure fn area(): int
 }
-pub type Square = ref record { s: int }
+pub type Square = ref record { pub s: int }
 pub fn (q: &Square) area(): int { return q.s * q.s }
 pub impl Shape for Square
 
-pub type Holder = ref record { d: Shape; maybe: ?Shape; items: []Shape; r: Result[Shape] }
+pub type Holder = ref record { pub d: Shape; pub maybe: ?Shape; pub items: []Shape; pub r: Result[Shape] }
 
 pub var G: Shape = new Square{s: 1}
 

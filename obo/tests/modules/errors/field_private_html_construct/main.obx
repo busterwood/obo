@@ -1,0 +1,3 @@
+module main
+import "html.obx" as html
+fn main() { let h = new html::Html{text: "<b>"} }

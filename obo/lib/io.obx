@@ -7,8 +7,10 @@
 // and reach exported declarations as io::name. Within a file a declaration may
 // use only earlier declarations, so this file's functions are ordered callees
 // first. The module is dependency-free (builtins only) and defines no main.
-// Number formatting lives in fmt.obx; P2 moved writePadded there and added
-// writeByte here (design stdlib-eza-design-v7 section 5.5).
+// Number formatting lives in fmt.obx; P2 moved writePadded there, and 0.13
+// moved it back here so a private Writer buffer can serve it; fmt keeps a
+// delegating wrapper for its existing callers. writeByte also lives here
+// (design stdlib-eza-design-v7 section 5.5).
 //
 // A Reader or Writer owns only its byte buffer; the fd is borrowed (an int has
 // no owner), so the caller closes what it opened and the library never closes
@@ -25,6 +27,9 @@
 
 module io
 
+// Reader and Writer state is private to this module: the fd, buffer and
+// iterator position are invariants, not API. Importers use the functions
+// below (and Writer.bufferedBytes to observe pending bytes).
 pub type Reader = ref record {
     fd: int
     buf: []byte          // the current chunk: owned; len(buf) is the chunk length
@@ -54,6 +59,12 @@ pub fn newReader(fd: int, size: int): Reader {
 
 pub fn newWriter(fd: int, size: int): Writer {
     return new Writer{fd: fd, buf: new []byte(0), size: clampChunk(size)}
+}
+
+// The number of bytes waiting to be flushed. Tests use this instead of reaching
+// into the private buffer; the buffer itself stays hidden.
+pub fn bufferedBytes(w: &Writer): int {
+    return len(w.buf)
 }
 
 // True when the borrowed fd is a terminal (the isatty builtin's ioctl TCGETS).
@@ -212,6 +223,36 @@ pub fn writeBytes(mut w: &Writer, data: &[]byte): Result[bool] {
 pub fn writeByte(mut w: &Writer, b: byte): Result[bool] {
     append(w.buf, b)
     if len(w.buf) >= w.size { try flush(w) }
+    return ok(true)
+}
+
+// Write the non-negative int n right-aligned in width (width 0: no padding)
+// through a Writer, flushing at the Writer's threshold. This is the old
+// fmt::writePadded moved back into io so the buffer and threshold stay private;
+// fmt::writePadded is a delegating wrapper and the output bytes are unchanged.
+pub fn writePadded(mut w: &Writer, n: int, width: int): Result[bool] {
+    var d = 1
+    var q = n
+    while q >= 10 {
+        d += 1
+        q = q / 10
+    }
+    if d < width {
+        for i in 0..(width - d) {
+            append(w.buf, ' ')
+            if len(w.buf) >= w.size { try flush(w) }
+        }
+    }
+    var p = 1
+    for i in 1..d { p *= 10 }
+    var r = n
+    for i in 0..d {
+        let digit = r / p
+        append(w.buf, byte('0' + digit))
+        if len(w.buf) >= w.size { try flush(w) }
+        r = r - digit * p
+        if p > 1 { p = p / 10 }
+    }
     return ok(true)
 }
 

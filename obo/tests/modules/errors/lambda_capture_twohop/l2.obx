@@ -1,5 +1,5 @@
 module l2
-pub type Bag = ref record { items: []int; n: int }
+pub type Bag = ref record { pub items: []int; pub n: int }
 pub fn bad(f: fn(int): int, n: int): int {
     let b = new Bag{items: new []int(0), n: 0}
     let h = handle(b)

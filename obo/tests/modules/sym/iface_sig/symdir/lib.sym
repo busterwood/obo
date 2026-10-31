@@ -1,11 +1,11 @@
-obosym 6
+obosym 7
 abi 1
-compiler "0.12"
-source 0x3c4c3c7a3cdd29bc
+compiler "0.13"
+source 0x2695746401331cf3
 dep dep "dep.obx"
-interface 0x8075d7a3cbd303e0
+interface 0x73c0d5be3d8f9dea
 module lib
-depiface dep 0xefcef5b786525eed
+depiface dep 0x51db8b8b704adefe
 type T uid 0x2bd2b8a37148a914
-type T = ref record { v: int }
+type T = ref record { pub v: int }
 type I = interface { pure fn m0(p0: &T, p1: int): T; pure mut fn m1(mut p0: &T); pure fn m2(p0: &I, mut p1: &I): string; fn m3(p0: ?T, p1: []T): Result[int]; fn m4(p0: dep::T2): dep::T2; pure fn m5(p0: &I): I; fn m6(p0: ?I, p1: []I): ?I; fn m7(p0: I): Result[I]; fn m8(p0: &?I); mut fn m9(mut p0: &?I); fn m10(); mut fn m11(p0: int); pure mut fn m12() }

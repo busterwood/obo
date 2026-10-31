@@ -1,2 +1,2 @@
 module lib
-pub type T = ref record { n: int }
+pub type T = ref record { pub n: int }

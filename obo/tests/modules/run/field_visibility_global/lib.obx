@@ -1,0 +1,8 @@
+module lib
+pub type C = ref record {
+    pub a: int
+    b: int
+}
+pub var G: C = new C{a: 1, b: 2}
+pub let L: C = new C{a: 3, b: 4}
+pub fn mk(a: int): C { return new C{a: a, b: a + 1} }

@@ -4,8 +4,10 @@
 // It is not a stable driver. Connection and Rows hold only an integer registry
 // token; obo never sees a PGconn*, PGresult* or char*. The trusted C adapter
 // validates the token's kind and generation on every call and poisons it on
-// close. Obo record fields are not private: a forged or stale integer is
-// rejected by the C registry before dereference.
+// close. The wrapper record's token field is private to this module, so an
+// importer cannot accidentally construct one; a copied or stale integer is
+// still rejected by the C registry before dereference, which remains the
+// boundary (private fields are not a capability system).
 //
 // Dropping a Connection or Rows never calls PQfinish or PQclear. Use
 // `defer conn.close()` and `defer rows.close()`. A PGresult stays usable after

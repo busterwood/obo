@@ -1,0 +1,6 @@
+module lib
+pub type C = ref record {
+    pub a: int
+    b: int
+}
+pub fn mk(): C { return new C{a: 1, b: 2} }

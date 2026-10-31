@@ -4,7 +4,7 @@ pub type Shape = interface {
     pure fn area(): int
     mut fn grow(k: int)
 }
-pub type Square = ref record { s: int }
+pub type Square = ref record { pub s: int }
 pub fn (q: &Square) area(): int { return q.s * q.s }
 pub fn (mut q: &Square) grow(k: int) { q.s += k }
 pub impl Shape for Square

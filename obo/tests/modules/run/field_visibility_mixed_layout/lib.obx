@@ -1,0 +1,11 @@
+module lib
+pub type M = ref record {
+    first, mid: int
+    pub a: int
+    pub label, unit: string
+    last: int
+}
+pub type Empty = ref record { }
+pub fn mk(): M {
+    return new M{first: 1, mid: 2, a: 10, label: "L", unit: "U", last: 3}
+}

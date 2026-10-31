@@ -1,0 +1,6 @@
+module lib
+type Secret = ref record { v: int }
+pub type S = ref record {
+    pub id: int
+    pub s: Secret
+}

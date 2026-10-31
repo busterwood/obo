@@ -1,10 +1,10 @@
-obosym 6
+obosym 7
 abi 1
-compiler "0.12"
+compiler "0.13"
 source 0x0d3379222e02e51a
-interface 0x366b43f6f152afd5
+interface 0xf6eed87b5eaf61e4
 module lib
 type Node uid 0x5fca22110fba38d4
-type Node = ref record { v: int }
+type Node = ref record { pub v: int }
 fn (p0: int) get(): int
 fn make(p0: int): Node

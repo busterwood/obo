@@ -115,9 +115,11 @@ match made {
 }
 ```
 
-- `Connection` and `Rows` contain only an integer token. Obo record fields are
-  not private; the C registry rejects stale/wrong-kind/unknown tokens before
-  dereference. The token is not an unforgeable capability.
+- `Connection` and `Rows` contain only an integer token, private to the wrapper
+  module (0.13+). Importers use `connect`/`query`; the C registry rejects
+  stale/wrong-kind/unknown tokens before dereference. The token is not an
+  unforgeable capability, and a deliberate same-module raw-token escape (such as
+  `buffer::wrap`) remains possible.
 - `close` is explicit and borrows the wrapper, so `defer conn.close()` and
   `defer rows.close()` are the canonical cleanup. A `PGresult` remains usable
   after its connection closes. `PQfinish`/`PQclear` happen exactly once; the
@@ -306,7 +308,8 @@ declarations-only SQLite adapter, both explicit-close and tested.
   full database driver or a stable public API.
 - The token registry protects against accidental stale/wrong-kind/forged integer
   use, not against trusted C or an adversarial caller. Its generation is 31
-  bits. Obo record fields are not private.
+  bits. Obo token fields are private to their wrapper modules; that reduces
+  accidental construction, not deliberate forgery.
 - Source floats/decimals are not part of the native contract. The libpq
   adapter preserves exact numeric text/OID/typmod and never converts a database
   numeric through a float.

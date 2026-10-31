@@ -64,28 +64,11 @@ pub fn appendPadded(mut buf: &[]byte, n: int, width: int) {
 }
 
 // Write the non-negative int n right-aligned in width (width 0: no padding)
-// through a Writer, flushing at the Writer's threshold. The P2 move of the
-// merged io::writePadded: the same padding, digit loop and flush points, so
-// wc's bytes are unchanged.
+// through a Writer, flushing at the Writer's threshold. 0.13 moved the loop
+// into io (so Writer's buffer stays private); this wrapper keeps the P2 API and
+// the byte stream unchanged.
 pub fn writePadded(mut w: &io::Writer, n: int, width: int): Result[bool] {
-    var d = digits(n)
-    if d < width {
-        for i in 0..(width - d) {
-            append(w.buf, ' ')
-            if len(w.buf) >= w.size { try io::flush(w) }
-        }
-    }
-    var p = 1
-    for i in 1..d { p *= 10 }
-    var r = n
-    for i in 0..d {
-        let digit = r / p
-        append(w.buf, byte('0' + digit))
-        if len(w.buf) >= w.size { try io::flush(w) }
-        r = r - digit * p
-        if p > 1 { p = p / 10 }
-    }
-    return ok(true)
+    return io::writePadded(w, n, width)
 }
 
 // bit set in mode -> ch, else '-'

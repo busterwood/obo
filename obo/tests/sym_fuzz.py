@@ -33,7 +33,7 @@ RULE_ONE = ("may not declare 'main'", "_root' is reserved", "must be in a file n
             "has no exported member", "is not a type")
 
 A = '''module a
-pub type Box = ref record { v: int }
+pub type Box = ref record { pub v: int }
 pub var g: ?Box = new Box{v: 1}
 pub fn f(): int { return 1 }
 '''
@@ -43,7 +43,7 @@ LIB = '''module lib
 import "a.obx" as a1
 import "a.obx" as a2
 
-pub type Node = ref record { value: int; next: ?Node }
+pub type Node = ref record { pub value: int; pub next: ?Node }
 pub type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
 pub type Alias = []Node
 pub const Limit = 10

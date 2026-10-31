@@ -1,0 +1,11 @@
+module main
+import "lib.obx"
+import "inner.obx"
+fn main() {
+    let o = new lib::Outer{id: 1, inner: new inner::Inner{v: 2}}
+    println(o.id, o.inner.v)      // expect: 12
+    o.inner.v = 5
+    println(o.inner.v)            // expect: 5
+    let made = lib::mk(3, 4)
+    println(made.inner.v)         // expect: 4
+}

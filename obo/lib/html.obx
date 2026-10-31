@@ -11,14 +11,16 @@
 // to: literal chunks become raw, text holes call escapeText, quoted attribute
 // holes call escapeAttr, and URL-valued attribute holes call validateUrl.
 //
-// TRUST IS A CONVENTION, NOT TYPE ENFORCEMENT. Html is a public-field record:
+// TRUST IS A CONVENTION, NOT TYPE ENFORCEMENT. Html's text field is private to
+// this module:
 //
 //     pub type Html = ref record { text: string }
 //
-// `new html::Html{text: ...}` is legal and is exactly the explicit raw
-// constructor. Documentation and review require construction through raw or
-// through an escaping function. There is deliberately no SafeString and no
-// conversion between Html and any SQL fragment type.
+// direct `new html::Html{text: ...}` from an importer is refused. Construction
+// is through the public raw constructor or through an escaping function, and
+// toText is the read-only rendering accessor. Documentation and review still
+// require trusted content to go through raw. There is deliberately no
+// SafeString and no conversion between Html and any SQL fragment type.
 //
 // Html means claimed-safe content, not "a string that happens to look safe".
 // A fragment may intentionally open or close an element; the author owns
@@ -77,8 +79,8 @@
 // array conversion or separator.
 module html
 
-// Claimed-safe HTML content. The field is public by design: direct construction
-// is legal and is the explicit raw operation. Trust is convention-level.
+// Claimed-safe HTML content. text is private: importers construct through raw or
+// an escaper and read through toText. Trust is still convention-level.
 pub type Html = ref record {
     text: string
 }
@@ -88,6 +90,11 @@ pub type Html = ref record {
 // string-to-Html conversion.
 pub fn raw(text: string): Html {
     return new Html{text: text}
+}
+
+// The read-only rendering accessor for an Html value.
+pub fn toText(h: &Html): string {
+    return h.text
 }
 
 fn appendEntity(mut out: &[]byte, name: string) {

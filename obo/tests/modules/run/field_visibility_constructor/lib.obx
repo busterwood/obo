@@ -1,0 +1,10 @@
+module lib
+pub type Counter = ref record {
+    value: int
+    step: int
+}
+pub fn newCounter(start: int, step: int): Counter {
+    return new Counter{value: start, step: step}
+}
+pub fn (c: &Counter) valueNow(): int { return c.value }
+pub fn (mut c: &Counter) bump() { c.value += c.step }

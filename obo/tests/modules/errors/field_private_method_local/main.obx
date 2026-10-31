@@ -1,0 +1,9 @@
+module main
+type C = ref record {
+    pub a: int
+    b: int
+}
+fn main() {
+    let c = new C{a: 1, b: 2}
+    println(c.b())
+}

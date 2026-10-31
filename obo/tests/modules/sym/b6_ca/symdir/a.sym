@@ -1,10 +1,10 @@
-obosym 6
+obosym 7
 abi 1
-compiler "0.12"
+compiler "0.13"
 source 0xddaf565528ad0da0
-interface 0xad320ebb1b35e980
+interface 0x27a7e21b97f85605
 module a
 type Box uid 0x4807edde879003c1
-type Box = ref record { v: int }
+type Box = ref record { pub v: int }
 var g: ?Box
 fn wipe() frees 1 a::g

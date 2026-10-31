@@ -1,0 +1,21 @@
+module main
+import "lib.obx"
+fn main() {
+    var c = lib::mk(3)
+    println(c.a)                 // expect: 3
+    c.a = 9
+    println(c.a)                 // expect: 9
+    let r = &c.buf
+    println(len(r))              // expect: 0
+    append(c.buf, byte(65))
+    println(len(c.buf), c.buf[0]) // expect: 165
+    let moved = replace(c.buf, new []byte(0))
+    println(len(moved))          // expect: 1
+    let old = replace(c.buf, moved)
+    println(len(old))            // expect: 0
+    let o = take(c.opt)
+    if o == nil { println("nil") } // expect: nil
+    c.opt = nil
+    let whole = c
+    println(whole.a)             // expect: 9
+}

@@ -1,0 +1,8 @@
+module main
+import "lib.obx"
+fn main() {
+    let c = lib::newCounter(10, 2)
+    println(c.valueNow())        // expect: 10
+    c.bump()
+    println(c.valueNow())        // expect: 12
+}

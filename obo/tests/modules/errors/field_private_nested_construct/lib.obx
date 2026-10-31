@@ -1,0 +1,6 @@
+module lib
+import "inner.obx"
+pub type Outer = ref record {
+    pub id: int
+    pub inner: inner::Hidden
+}

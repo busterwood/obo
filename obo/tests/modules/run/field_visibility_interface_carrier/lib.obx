@@ -1,0 +1,10 @@
+module lib
+pub type Shape = interface { pure fn area(): int }
+pub type Square = ref record { pub s: int }
+pub fn (q: &Square) area(): int { return q.s * q.s }
+pub impl Shape for Square
+pub type Plain = ref record {
+    pub id: int
+    hidden: int
+}
+pub fn plain(id: int): Plain { return new Plain{id: id, hidden: id + 1} }

@@ -1,9 +1,9 @@
-obosym 6
+obosym 7
 abi 1
-compiler "0.12"
+compiler "0.13"
 source 0x613f6603e1a2a230
-interface 0xa54ec37a6968c2ff
+interface 0x63778952c77f842c
 module lib
 type Builder uid 0xb6ede1b4a032d0af
-type Builder = ref record { n: int }
+type Builder = ref record { pub n: int }
 fn (p0: &Builder) main(): int

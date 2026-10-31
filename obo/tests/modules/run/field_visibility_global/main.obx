@@ -1,0 +1,10 @@
+module main
+import "lib.obx"
+fn main() {
+    println(lib::G.a)            // expect: 1
+    lib::G.a = 5
+    println(lib::G.a)            // expect: 5
+    lib::G = lib::mk(9)
+    println(lib::G.a)            // expect: 9
+    println(lib::L.a)            // expect: 3
+}

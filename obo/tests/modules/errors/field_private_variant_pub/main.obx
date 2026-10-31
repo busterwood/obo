@@ -1,0 +1,3 @@
+module main
+type S = closed { A { pub x: int } }
+fn main() { }

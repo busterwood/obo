@@ -1,0 +1,9 @@
+module main
+import "lib.obx"
+fn apply(f: fn(): int): int { return f() }
+fn main() {
+    let p = lib::plain(2)
+    println(apply(fn [p](): int { return p.id }))  // expect: 2
+    let s = new lib::Square{s: 3}
+    println(s.area())            // expect: 9
+}

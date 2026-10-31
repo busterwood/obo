@@ -1,8 +1,8 @@
-obosym 6
+obosym 7
 abi 1
-compiler "0.12"
+compiler "0.13"
 source 0x67f05e0a3fcae513
 dep lib "lib.obx"
-interface 0xd28b6215e011c69b
+interface 0x6f50bff62096e003
 module main
-depiface lib 0x8075d7a3cbd303e0
+depiface lib 0x73c0d5be3d8f9dea

@@ -1,0 +1,9 @@
+module main
+import "lib.obx"
+fn main() {
+    var c = lib::mk()
+    println(c.value)             // expect: 0
+    c.bump()
+    println(c.peek())            // expect: 9
+    println(c.viaHidden())       // expect: 3
+}
