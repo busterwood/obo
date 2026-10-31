@@ -27,7 +27,7 @@ decimal design `obo/design/decimal-language-design.md` §5.
 3. `decimal::check(value, p, s)` is the only precision/scale gate. It is exact,
    accepts PostgreSQL's negative scale `-1000..1000`, and never rounds. The
    **default** binder is `param_decimal(value, p, s)` /
-   `bind_decimal(s, index, value, p, s)`: it rejects a value that the declared
+   `bind_decimal(st, index, value, p, s)`: it rejects a value that the declared
    `(p,s)` would round or overflow. `param_decimal_unchecked` /
    `bind_decimal_unchecked` is the explicit opt-out for unconstrained targets
    or deliberate server coercion.
@@ -80,10 +80,15 @@ decimal design `obo/design/decimal-language-design.md` §5.
 
 ### 2.1 Accepted text grammar
 
-The database boundary accepts exactly the **public** `decimal::parse` grammar
-from the approved decimal design (`decimal-language-design.md:67-71`, `:117`)
-and applies it to the whole cell. This is the language contract, not the
-private `dec24_text.c` convenience parser:
+The database boundary accepts the **public** `decimal::parse` grammar and
+applies it to the whole cell. This is the language contract, not the private
+`dec24_text.c` convenience parser. Relative to the section-2 literal grammar
+(`decimal-language-design.md:67-71`), the DB parse adds two forms for cells: an
+optional leading sign and integer-only text. A source literal `1` is `int` and
+a leading sign is unary, but a database numeric cell may be `1`, `+1` or `-1`
+with dscale 0. This is a **parse extension for database cells**; the decimal
+design's parse paragraph (`:117`) should be updated to state it. The literal
+grammar's rejection of bare points still applies.
 
 ```text
 db-decimal := ['+'|'-'] digits [ '.' digits ] [ ('e'|'E') ['+'|'-'] digits ]
@@ -315,7 +320,7 @@ bind into `numeric(p,s)`) is indistinguishable on read from a value that was
 stored exactly. `check` validates the stored value against the declared
 metadata; it cannot recover the pre-rounding value. Preventing new rounding is
 the job of the default `param_decimal(value,p,s)` /
-`bind_decimal(s,index,value,p,s)`.
+`bind_decimal(st,index,value,p,s)`.
 
 ### 3.5 Precision/scale validation
 
@@ -396,6 +401,15 @@ accessor the adapter can still bind display text and let the server raise
 22003, but that is a server error, not a deterministic adapter code. See §10,
 O6.
 
+The normalisation requirement has an arithmetic fixture that a raw-word
+accessor fails: `(1.20 * 1.5) * 1e-16382` is `1.8e-16382`. The first product
+may be stored as `180 * 10^-2` or `1800 * 10^-3`; the second is then
+`180 * 10^-16384` or `1800 * 10^-16385`, so the raw word is -16384 or
+-16385, both below -16383, while the normalised exponent is -16383. The
+adapter must emit canonical `1.8e-16382` (display is `INEXACT` at the capped
+dscale) and PostgreSQL must accept it with `dscale = 16383`; a raw-exponent
+check would wrongly return `1013`.
+
 Positive magnitude is not a problem: obo's maximum is exponent 32767 plus 38
 significant digits (~32,805 integer digits), below PostgreSQL's ~131,072-digit
 unconstrained limit. Constrained precision `p <= 1000` is handled by
@@ -418,7 +432,7 @@ unconstrained limit. Constrained precision `p <= 1000` is handled by
 | 1009 | `DEC_DB_DISPLAY_RANGE` | `dscale` outside `uint16` |
 | 1010 | `DEC_DB_SCALE` | `check`: value would need rounding at declared scale |
 | 1011 | `DEC_DB_RANGE` | `check`: scaled value exceeds declared precision |
-| 1012 | `DEC_DB_TYPMOD` | invalid typmod or invalid `(p,s)` metadata |
+| 1012 | `DEC_DB_METADATA` | invalid typmod or invalid `(p,s)` metadata |
 | 1013 | `DEC_DB_PG_RANGE` | value not representable in PostgreSQL numeric (`exp < -16383`) |
 
 Normative messages (the message text is part of the test contract; do not
@@ -437,7 +451,7 @@ rename a code without updating this table and the tests):
 | 1009 | `decimal display scale is outside uint16` |
 | 1010 | `value does not fit the declared scale without rounding` |
 | 1011 | `value exceeds the declared precision` |
-| 1012 | `invalid numeric typmod` |
+| 1012 | `invalid numeric typmod or precision/scale metadata` |
 | 1013 | `value is not representable in PostgreSQL numeric` |
 
 A SQL execution failure remains what it already is: `execute()` returns
@@ -508,9 +522,9 @@ methods: decimal method parameters are rejected in v1,
 `obo/src/obo.obo:11483-11484`):
 
 ```obo
-fn bind_decimal(s: &Stmt, index: int, value: decimal,
+fn bind_decimal(st: &Stmt, index: int, value: decimal,
                 p: int, s: int): Result[bool]
-fn bind_decimal_unchecked(s: &Stmt, index: int, value: decimal): Result[bool]
+fn bind_decimal_unchecked(st: &Stmt, index: int, value: decimal): Result[bool]
 ```
 
 - `bind_decimal` is the default: it first calls `decimal::check(value, p, s)`
@@ -588,6 +602,19 @@ decimal namespace deliberately starts at 1000 to avoid collisions.
 Both adapters use the same `encode_decimal(value, max_dscale)` helper:
 
 ```obo
+fn canonical_db(value: decimal): Result[string] {
+    let c = decimal::canonical(value)
+    match c {
+        ok(s) { return ok(s) }
+        err(m, code) {
+            if code == 9 || code == 10 {
+                return err("decimal display scale is outside uint16", 1009)
+            }
+            return err("decimal text could not be allocated", 3)
+        }
+    }
+}
+
 fn encode_decimal(value: decimal, max_dscale: int): Result[string] {
     let f = decimal::format(value)
     match f {
@@ -600,7 +627,7 @@ fn encode_decimal(value: decimal, max_dscale: int): Result[string] {
             if value != 0.0 && decimal::exponent(value) < -max_dscale {
                 return err("value is not representable in PostgreSQL numeric", 1013)
             }
-            return decimal::canonical(value)
+            return canonical_db(value)
         }
         err(m, c) {
             if c != 3 {
@@ -609,7 +636,7 @@ fn encode_decimal(value: decimal, max_dscale: int): Result[string] {
             if value != 0.0 && decimal::exponent(value) < -max_dscale {
                 return err("value is not representable in PostgreSQL numeric", 1013)
             }
-            return decimal::canonical(value)
+            return canonical_db(value)
         }
     }
 }
@@ -712,10 +739,13 @@ type SqlArg = closed {
 - It is lossless for the value and preserves display scale when the display
   form was exact. If canonical fallback was used, the value is exact and the
   display scale follows the exponent, as in every other path.
-- The renderer validates the bytes with the public grammar and rejects NUL,
-  empty, oversize or non-ASCII as `1006`. Direct construction is legal (the
-  fields are public) but is a raw operation, like `new Sql{...}`; trust is
-  convention-level, not type-enforced.
+- The renderer validates the bytes with **`decimal::parse`**, not merely the
+  grammar: NUL/empty/non-ASCII/syntax → `1006`, more than 38 significant
+  digits → `1007`, exponent outside `int16` → `1008`, display scale outside
+  `uint16` → `1009`. Direct construction is legal (the fields are public) but
+  is a raw operation, like `new Sql{...}`; trust is convention-level. A direct
+  `DecimalText` carrying 39 digits or `1e40000` is rejected at render, not
+  sent to the database.
 - It is not a float, not a quoted literal and not interpolated SQL. It does not
   duplicate the adapter's format logic; it carries the already-formatted exact
   text.
@@ -753,7 +783,7 @@ pub const DEC_DB_EXPONENT = 1008
 pub const DEC_DB_DISPLAY_RANGE = 1009
 pub const DEC_DB_SCALE = 1010
 pub const DEC_DB_RANGE = 1011
-pub const DEC_DB_TYPMOD = 1012
+pub const DEC_DB_METADATA = 1012
 pub const DEC_DB_PG_RANGE = 1013
 
 // Result metadata; all-int so it is representable today.
@@ -836,24 +866,24 @@ omits that mapping for readability; the mapping is normative.
 ### 6.2 SQLite additions
 
 ```obo
-pub fn bind_decimal(s: &Stmt, index: int, value: decimal,
+pub fn bind_decimal(st: &Stmt, index: int, value: decimal,
                     p: int, s: int): Result[bool]
-pub fn bind_decimal_unchecked(s: &Stmt, index: int, value: decimal): Result[bool]
+pub fn bind_decimal_unchecked(st: &Stmt, index: int, value: decimal): Result[bool]
 pub fn (s: &Stmt) decimal(col: int): Result[decimal]
 ```
 
 Implementation shape:
 
 ```obo
-pub fn bind_decimal_unchecked(s: &Stmt, index: int, value: decimal): Result[bool] {
+pub fn bind_decimal_unchecked(st: &Stmt, index: int, value: decimal): Result[bool] {
     let txt = try encode_decimal(value, 65535)
-    return s.bind_text(index, txt)
+    return st.bind_text(index, txt)
 }
 
-pub fn bind_decimal(s: &Stmt, index: int, value: decimal,
+pub fn bind_decimal(st: &Stmt, index: int, value: decimal,
                     p: int, s: int): Result[bool] {
     let checked = try decimal::check(value, p, s)
-    return bind_decimal_unchecked(s, index, checked)
+    return bind_decimal_unchecked(st, index, checked)
 }
 
 pub fn (s: &Stmt) decimal(col: int): Result[decimal] {
@@ -957,6 +987,7 @@ Parser/format cases (all must be no-float, exact):
 | `1e32805` | 8 | cannot rescue within 38 digits |
 | `1e-32768` | ok | minimum exponent |
 | `1e-32769` | 8 | below `int16` |
+| `1e-70000` | 9 | display scale 70,000 out of range wins over exponent precedence |
 | `1e-16383` | ok | PG lower boundary |
 | `1e-16384` | ok in obo, `1013` for unchecked PG binding | not PG-representable; a constrained default bind may return `1010` first |
 | `0e999999` | ok | zero keeps exponent 0, dscale 0 |
@@ -978,6 +1009,7 @@ Wire-form cases (independent of input spelling):
 | multiplied `1e-20 * 1e-20` | value `1e-40`, dscale 38 (cap), `format` `INEXACT`, canonical fixed `0.` + 39 zeros + `1` (42 bytes, not scientific) |
 | `1.0e-16383` bound to PostgreSQL | display has 16,384 fraction digits → canonical `1e-16383`; value preserved |
 | `1000e-16384` bound to PostgreSQL | normalised exponent -16381, canonical; **not** `1013` |
+| `(1.20 * 1.5) * 1e-16382` bound with `param_decimal_unchecked` | value `1.8e-16382`; raw exponent -16384/-16385 but normalised -16383; canonical `1.8e-16382`, PG `dscale = 16383`; a raw-word accessor would wrongly return `1013` |
 | `1e-16384` bound to PostgreSQL | normalised exponent -16384 → `1013` |
 
 ### 7.2 PostgreSQL tests
@@ -1069,7 +1101,9 @@ independent `typeof`/`quote` oracle (existing pattern,
 - NULL vs empty: `NULL` → `1001` (or nil from `column_value`), `''` →
   `1006`, `'0'` → zero dscale 0;
 - bad text: `' 1'`, `'1 '`, `'1_000'`, `'0x10'`, `'.5'`, `'1.'`, `'1..2'`,
-  `'NaN'`, `'Infinity'` → `1006`/`1004` as appropriate. NUL paths are tested
+  `'NaN'`, `'Infinity'` → `1006`/`1004` as appropriate; status precedence:
+  `'1e-70000'` → `1009` (display range wins), `'1e40000'` → `1008`, a
+  39-significant-digit cell → `1007`. NUL paths are tested
   separately: `bind_text` with NUL returns the existing `2` input error before
   SQLite sees it; a TEXT value inserted through SQL with an embedded NUL reads
   as `1006`; a BLOB reads as `1002`;
@@ -1077,16 +1111,19 @@ independent `typeof`/`quote` oracle (existing pattern,
   TEXT round trips, large magnitude `1e32767` / `1e-32768`;
 - a parse-created 38-digit value at exponent -32768,
   `12345678901234567890123456789012345678e-32768`, round-trips through SQLite
-  TEXT but returns `1013` on a PostgreSQL bind, because PostgreSQL cannot store
-  digits below `10^-16383`. This replaces the earlier division example:
+  TEXT but `param_decimal_unchecked` returns `1013` on a PostgreSQL bind,
+  because PostgreSQL cannot store digits below `10^-16383`. This replaces the
+  earlier division example:
   `decimal::div(1.0,3.0,32768,HALF_AWAY)` needs a 32,768-digit coefficient and
   traps, so it is not a valid boundary fixture;
 - canonical fallback: `1.0e-16383` (dscale 16384) with
   `param_decimal_unchecked` binds as canonical `1e-16383` on PostgreSQL;
   `1000e-16384` binds canonical (normalised exponent -16381) and must not
-  return `1013`; `1e-16384` returns `1013`; a multiplied
-  `1e-20*1e-20` has `format` `INEXACT` and binds canonical fixed
-  `0.` + 39 zeros + `1` (dscale 40 after the PG round trip);
+  return `1013`; `1e-16384` returns `1013`; `(1.20 * 1.5) * 1e-16382` has
+  raw exponent -16384/-16385 but normalised -16383, binds canonical
+  `1.8e-16382`, and PG accepts it with dscale 16383 (a raw-word accessor would
+  return `1013`); a multiplied `1e-20*1e-20` has `format` `INEXACT` and binds
+  canonical fixed `0.` + 39 zeros + `1` (dscale 40 after the PG round trip);
 - read-side size: a 100,001-byte cell of leading zeros plus `1` parses and
   returns `1` (not `1006`); a synthetic copy failure above 16 MiB returns the
   `2` size error, never an empty array;
@@ -1114,8 +1151,11 @@ exposes only `div`, `quantize`, `toInt` and `fromInt`
 (`obo/LANGUAGE.md:97-100`; `obo/src/obo.obo:3522-3559`). The DB boundary needs:
 
 - `decimal::parse(s: string) -> Result[decimal]` with the §2.1 **public**
-  grammar and statuses. It must enforce the mandatory integer part and reject
-  `.5`/`1.`; it must not expose the private `dec_parse` superset unchanged;
+  grammar and statuses, including the DB-cell sign/integer-only extension. It
+  must enforce the mandatory integer part and reject `.5`/`1.`; it must not
+  expose the private `dec_parse` superset unchanged. The decimal design's
+  parse paragraph (`decimal-language-design.md:117`) should be updated to
+  record the extension;
 - `decimal::format(d: decimal) -> Result[string]` (display; `INEXACT` on cap);
 - `decimal::canonical(d: decimal) -> Result[string]` (exact minimal text;
   allocation/range failure is an error, never truncation);
@@ -1145,7 +1185,7 @@ No C changes beyond what P1 needs (`pq_ftype`, `pq_fmod`, `pq_getisnull`,
 
 **P3 — SQLite.**
 
-Add `bind_decimal(s,index,value,p,s)` as the default checked binder,
+Add `bind_decimal(st,index,value,p,s)` as the default checked binder,
 `bind_decimal_unchecked`, `Stmt.decimal`, storage-class rules and the affinity
 traps (integer-valued NUMERIC columns read as INTEGER with dscale 0;
 non-integer REAL is rejected). Bind directly reuses `bind_text`; read reuses
