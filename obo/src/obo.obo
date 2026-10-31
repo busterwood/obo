@@ -2662,8 +2662,10 @@ fn nameType(t: ^Type, name: string) {
 }
 
 fn reservedTypeName(n: string): bool {
+    // decimal joined the built-in types in 0.12.  float is a separate
+    // pre-existing naming hole and is deliberately not changed here.
     return n == "int" || n == "byte" || n == "bool" || n == "string" ||
-        n == "void" || n == "nil" || n == "Result"
+        n == "void" || n == "nil" || n == "Result" || n == "decimal"
 }
 
 // ------------------------------------------------- the canonical registries
@@ -3298,6 +3300,13 @@ fn decimalTemp(): Item {
     return localItem(s, tDecimal)
 }
 
+// A raw frame temporary of n bytes (n a multiple of 8), returning its rbp
+// offset.  Used for the explicit decimal request block.
+fn newFrameBytes(n: int): int {
+    frame += n
+    return -frame
+}
+
 fn decPtr(x: &Item): Item {
     var c = copyItem(x)
     resolve(c)
@@ -3404,17 +3413,34 @@ fn decimalFromInt(a: Item): Item {
     return dst
 }
 
-// scale * 8 + mode: one word for the explicit decimal request.
-fn decimalPacked(scale: Item, mode: Item): Item {
+// The explicit decimal request block: scale is word 0 (0..32768) and mode is
+// word 1 (0..7).  Constants outside those ranges are compile errors; runtime
+// values are validated by the runtime before the core sees them, so no value can
+// alias a different valid request.
+fn decimalRequest(scale: Item, mode: Item): Item {
     if !isInt(scale.typ) { error("decimal scale must be an int") }
     if !isInt(mode.typ) { error("decimal rounding mode must be one of the mode constants") }
+    if scale.mode == "const" && (scale.val < 0 || scale.val > 32768) {
+        error("decimal scale must be 0..32768")
+    }
+    if mode.mode == "const" && (mode.val < 0 || mode.val > 7) {
+        error("decimal rounding mode must be 0..7")
+    }
     let sv = load(scale)
     let mv = load(mode)
-    opReg(0x69, sv.r, sv.r, true, false)      // imul sv, sv, 256
-    emit32(256)
-    opReg(0x03, sv.r, mv.r, true, false)      // low byte: mode 0..7
-    release(mv.r)
-    return makeReg(tInt, sv.r)
+    let at = newFrameBytes(16)
+    let sd = newItem("mem", tInt)
+    sd.base = RBP
+    sd.disp = at
+    store(sd, sv)
+    let md = newItem("mem", tInt)
+    md.base = RBP
+    md.disp = at + 8
+    store(md, mv)
+    let req = newItem("mem", tInt)
+    req.base = RBP
+    req.disp = at
+    return decPtr(req)
 }
 
 fn decimalStatusSlot(status: Item): ^Sym {
@@ -3455,8 +3481,8 @@ fn decimalDiv(a: Item, b: Item, scale: Item, mode: Item): Item {
     let dp = decPtr(dst)
     let pa = decPtr(a)
     let pb = decPtr(b)
-    let packed = decimalPacked(scale, mode)
-    let st = rtCall4(RT_DEC_DIV_INTO, dp, pa, pb, packed, tInt)
+    let req = decimalRequest(scale, mode)
+    let st = rtCall4(RT_DEC_DIV_INTO, dp, pa, pb, req, tInt)
     let ss = decimalStatusSlot(st)
     let si = localItem(ss, tInt)
     return decimalResultDecimal(dst, si)
@@ -3467,8 +3493,8 @@ fn decimalQuantize(a: Item, scale: Item, mode: Item): Item {
     let dst = decimalTemp()
     let dp = decPtr(dst)
     let pa = decPtr(a)
-    let packed = decimalPacked(scale, mode)
-    let st = rtCall3(RT_DEC_QUANTIZE_INTO, dp, pa, packed, tInt)
+    let req = decimalRequest(scale, mode)
+    let st = rtCall3(RT_DEC_QUANTIZE_INTO, dp, pa, req, tInt)
     let ss = decimalStatusSlot(st)
     let si = localItem(ss, tInt)
     return decimalResultDecimal(dst, si)
@@ -3477,6 +3503,9 @@ fn decimalQuantize(a: Item, scale: Item, mode: Item): Item {
 fn decimalToInt(a: Item, mode: Item): Item {
     if a.typ.kind != "decimal" { error("decimal::toInt needs a decimal value, not " + tname(a.typ)) }
     if !isInt(mode.typ) { error("decimal::toInt needs a rounding mode") }
+    if mode.mode == "const" && (mode.val < 0 || mode.val > 7) {
+        error("decimal rounding mode must be 0..7")
+    }
     let os = newLocal("", tInt, "var")
     let out = localItem(os, tInt)
     let op = decPtr(out)

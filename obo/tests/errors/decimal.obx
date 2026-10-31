@@ -101,3 +101,52 @@ fn main() {}
 
 // === int %= is not supported
 fn main() { var x = 3; x %= 2 }  // error: '%=' is only supported for decimal values
+
+// === constant div scale below range
+fn main() { let r = decimal::div(1.0, 3.0, -1, HALF_AWAY) }  // error: decimal scale must be 0..32768
+
+// === constant div scale above range
+fn main() { let r = decimal::div(1.0, 3.0, 32769, HALF_AWAY) }  // error: decimal scale must be 0..32768
+
+// === constant div scale huge
+fn main() { let r = decimal::div(1.0, 3.0, 72057594037927936, HALF_AWAY) }  // error: decimal scale must be 0..32768
+
+// === constant div mode 256
+fn main() { let r = decimal::div(1.0, 3.0, 2, 256) }  // error: decimal rounding mode must be 0..7
+
+// === constant div mode -256
+fn main() { let r = decimal::div(1.0, 3.0, 2, -256) }  // error: decimal rounding mode must be 0..7
+
+// === constant div mode 8
+fn main() { let r = decimal::div(1.0, 3.0, 2, 8) }  // error: decimal rounding mode must be 0..7
+
+// === constant quantize scale below range
+fn main() { let r = decimal::quantize(1.0, -1, HALF_AWAY) }  // error: decimal scale must be 0..32768
+
+// === constant quantize scale above range
+fn main() { let r = decimal::quantize(1.0, 32769, HALF_AWAY) }  // error: decimal scale must be 0..32768
+
+// === constant quantize scale huge
+fn main() { let r = decimal::quantize(1.0, 72057594037927936, HALF_AWAY) }  // error: decimal scale must be 0..32768
+
+// === constant quantize mode 256
+fn main() { let r = decimal::quantize(1.0, 2, 256) }  // error: decimal rounding mode must be 0..7
+
+// === constant quantize mode -256
+fn main() { let r = decimal::quantize(1.0, 2, -256) }  // error: decimal rounding mode must be 0..7
+
+// === constant quantize mode 8
+fn main() { let r = decimal::quantize(1.0, 2, 8) }  // error: decimal rounding mode must be 0..7
+
+// === constant toInt mode 256
+fn main() { let r = decimal::toInt(1.5, 256) }  // error: decimal rounding mode must be 0..7
+
+// === constant toInt mode -1
+fn main() { let r = decimal::toInt(1.5, -1) }  // error: decimal rounding mode must be 0..7
+
+// === constant toInt mode 8
+fn main() { let r = decimal::toInt(1.5, 8) }  // error: decimal rounding mode must be 0..7
+
+// === decimal is a reserved type name
+type decimal = ref record { x: int }  // error: cannot declare a type named 'decimal'
+fn main() {}

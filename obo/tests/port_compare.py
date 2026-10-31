@@ -267,6 +267,8 @@ SEED_FILE_MIN = {
     os.path.join(FORK, 'tests', 'run', 'decimal_trap_inexact.obx'): (0, 12),
     os.path.join(FORK, 'tests', 'run', 'decimal_trap_overflow.obx'): (0, 12),
     os.path.join(FORK, 'tests', 'run', 'decimal_trap_divzero.obx'): (0, 12),
+    os.path.join(FORK, 'tests', 'run', 'decimal_requests.obx'): (0, 12),
+    os.path.join(FORK, 'tests', 'run', 'decimal_result_codes.obx'): (0, 12),
     os.path.join(FORK, 'tests', 'errors', 'decimal.obx'): (0, 12),
 }
 SEED_LIB_MIN = {'io.obx': (0, 5), 'env.obx': (0, 4)}

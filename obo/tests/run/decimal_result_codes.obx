@@ -1,0 +1,31 @@
+// Result-returning decimal APIs carry the reviewed CORE status values:
+// 1 OVERFLOW, 3 INEXACT, 4 INVALID, 5 DIV_ZERO, 6 UNSUPPORTED_RANGE.
+// Codes 7/8/9 are core text/binding statuses and are not currently produced by
+// div/quantize/toInt; 2 and 10 stay internal.  The 40-49 ids are trap ids only.
+fn showD(r: Result[decimal]) {
+    match r {
+        ok(v) { println("ok") }
+        err(m, c) { println(c) }
+    }
+}
+fn showI(r: Result[int]) {
+    match r {
+        ok(v) { println("ok") }
+        err(m, c) { println(c) }
+    }
+}
+fn main() {
+    showD(decimal::div(1.0, 0.0, 2, HALF_AWAY))          // expect: 5
+    showD(decimal::div(1.0, 3.0, 2, UNNECESSARY))        // expect: 3
+    var s = 32769
+    showD(decimal::div(1.0, 3.0, s, HALF_AWAY))          // expect: 6
+    var m = 8
+    showD(decimal::div(1.0, 3.0, 2, m))                  // expect: 4
+    showD(decimal::div(1.0, 3.0, 32768, HALF_AWAY))      // expect: 1
+    showD(decimal::div(1e32767, 1e-32768, 0, HALF_AWAY)) // expect: 1
+    showD(decimal::quantize(1.0, 32768, HALF_AWAY))      // expect: 1
+    showI(decimal::toInt(1e30, HALF_AWAY))               // expect: 1
+    showI(decimal::toInt(2.6, UNNECESSARY))              // expect: 3
+    m = 8
+    showI(decimal::toInt(2.6, m))                        // expect: 4
+}

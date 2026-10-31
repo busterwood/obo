@@ -2398,10 +2398,14 @@ static int rt_dec_coeff_digits(const dec24 *a) {
     return dec_u256_digits(&v);
 }
 
-/* Display scale for multiply: min(s1+s2, max(0, 38-intd)).  The value is
- * unchanged; only presentation is capped (design section 4.1). */
-static uint16_t rt_dec_mul_dscale(const dec24 *a, const dec24 *b) {
-    int intd = rt_dec_coeff_digits(a) + (int)(int16_t)a->exp;
+/* Display scale for multiply: min(s1+s2, max(0, 38-intd)), where intd comes
+ * from the RESULT's exact coefficient/exponent, not either operand.  The value
+ * is unchanged; only presentation is capped (design section 4.1).  The exact
+ * core has already rejected results needing more than 38 digits, so the result
+ * coefficient is the exact normalized one, not a truncated operand. */
+static uint16_t rt_dec_mul_result_dscale(const dec24 *r,
+                                        const dec24 *a, const dec24 *b) {
+    int intd = rt_dec_coeff_digits(r) + (int)(int16_t)r->exp;
     if (intd < 0) intd = 0;
     int cap = 38 - intd;
     if (cap < 0) cap = 0;
@@ -2429,8 +2433,12 @@ void rt_dec_sub(dec24 *dst, const dec24 *a, const dec24 *b) {
 
 void rt_dec_mul(dec24 *dst, const dec24 *a, const dec24 *b) {
     if (!dec_valid(a) || !dec_valid(b)) rt_dec_trap(DEC_INVALID);
-    int st = dec_mul_exact(dst, a, b, rt_dec_mul_dscale(a, b));
+    /* Multiply once with neutral display metadata, then derive the cap from the
+     * exact result.  dscale is presentation-only, so setting it here cannot
+     * change the value or round it. */
+    int st = dec_mul_exact(dst, a, b, 0);
     if (st != DEC_OK) rt_dec_trap(st);
+    dst->dscale = rt_dec_mul_result_dscale(dst, a, b);
 }
 
 void rt_dec_rem(dec24 *dst, const dec24 *a, const dec24 *b) {
@@ -2460,22 +2468,36 @@ void rt_dec_print(const dec24 *a) {
     putb(buf, (u64)n);
 }
 
-/* packed = scale * 256 + mode; scale 0..32768, mode DEC_ROUND_* 0..7.
- * The result value is written only on DEC_OK.  The status is returned so the
- * compiler can build a Result cell; no value error is a fatal trap here. */
-i64 rt_dec_div_into(dec24 *dst, const dec24 *a, const dec24 *b, i64 packed) {
-    if (!dec_valid(a) || !dec_valid(b)) return DEC_INVALID;
-    i64 mode = packed & 255;
-    i64 scale = packed >> 8;
-    if (scale < 0 || scale > 32768 || mode < 0 || mode > 7) return DEC_UNSUPPORTED_RANGE;
-    return dec_div_scale(dst, a, b, (int32_t)scale, (unsigned)mode, (uint16_t)scale);
+/* Explicit request block: [0] scale 0..32768, [1] mode 0..7.  The compiler
+ * stores the two words in its frame and passes a pointer, so every i64 value is
+ * validated without lossy packing or aliasing.  The result value is written only
+ * on DEC_OK.  The status is returned so the compiler can build a Result cell; no
+ * value error is a fatal trap here.  Invalid scale is DEC_UNSUPPORTED_RANGE;
+ * invalid mode is DEC_INVALID. */
+static int rt_dec_request(const i64 *req, i64 *scale, i64 *mode) {
+    if (req == 0) return DEC_INVALID;
+    *scale = req[0];
+    *mode = req[1];
+    if (*scale < 0 || *scale > 32768) return DEC_UNSUPPORTED_RANGE;
+    if (*mode < 0 || *mode > 7) return DEC_INVALID;
+    return DEC_OK;
 }
 
-i64 rt_dec_quantize_into(dec24 *dst, const dec24 *a, i64 packed) {
+i64 rt_dec_div_into(dec24 *dst, const dec24 *a, const dec24 *b,
+                    const i64 *req) {
+    if (!dec_valid(a) || !dec_valid(b)) return DEC_INVALID;
+    i64 scale = 0, mode = 0;
+    int st = rt_dec_request(req, &scale, &mode);
+    if (st != DEC_OK) return st;
+    return dec_div_scale(dst, a, b, (int32_t)scale, (unsigned)mode,
+                         (uint16_t)scale);
+}
+
+i64 rt_dec_quantize_into(dec24 *dst, const dec24 *a, const i64 *req) {
     if (!dec_valid(a)) return DEC_INVALID;
-    i64 mode = packed & 255;
-    i64 scale = packed >> 8;
-    if (scale < 0 || scale > 32768 || mode < 0 || mode > 7) return DEC_UNSUPPORTED_RANGE;
+    i64 scale = 0, mode = 0;
+    int st = rt_dec_request(req, &scale, &mode);
+    if (st != DEC_OK) return st;
     return dec_quantize(dst, a, (uint16_t)scale, (unsigned)mode);
 }
 

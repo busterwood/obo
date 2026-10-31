@@ -8,6 +8,8 @@ fn show(r: Result[decimal]) {
 }
 
 fn main() {
+    var badScale = 32769
+    var badMode = 8
     show(decimal::div(1.00, 2.0, 2, HALF_AWAY)) // expect: 0.50
     show(decimal::div(1.0, 2.0, 1, HALF_AWAY)) // expect: 0.5
     show(decimal::div(1.0, 2.0, 0, HALF_AWAY)) // expect: 1
@@ -16,6 +18,6 @@ fn main() {
     show(decimal::div(1.0, 8.0, 3, HALF_AWAY)) // expect: 0.125
     show(decimal::div(1.0, 0.0, 2, HALF_AWAY)) // expect: err 5
     show(decimal::div(1.0, 3.0, 2, UNNECESSARY)) // expect: err 3
-    show(decimal::div(1.0, 3.0, 32769, HALF_AWAY)) // expect: err 6
-    show(decimal::div(1.0, 3.0, 2, 8)) // expect: err 6
+    show(decimal::div(1.0, 3.0, badScale, HALF_AWAY)) // expect: err 6
+    show(decimal::div(1.0, 3.0, 2, badMode)) // expect: err 4
 }

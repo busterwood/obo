@@ -1,0 +1,65 @@
+// Explicit request validation: scale 0..32768 and mode 0..7.  Constant invalid
+// requests are compile errors (errors/decimal.obx); runtime values return a
+// Result error without calling the core: scale -> UNSUPPORTED_RANGE (6),
+// mode -> INVALID (4).  No invalid request traps or returns ok.
+
+fn show(r: Result[decimal]) {
+    match r {
+        ok(v) { println("ok") }
+        err(m, c) { println("err ", c) }
+    }
+}
+fn showInt(r: Result[int]) {
+    match r {
+        ok(v) { println("ok") }
+        err(m, c) { println("err ", c) }
+    }
+}
+
+fn main() {
+    var s = -1
+    var m = 2
+    show(decimal::div(1.0, 3.0, s, m)) // expect: err 6
+    s = 32768
+    show(decimal::div(0.0, 3.0, s, m)) // expect: ok
+    show(decimal::div(1.0, 3.0, s, m)) // expect: err 1
+    s = 32769
+    show(decimal::div(1.0, 3.0, s, m)) // expect: err 6
+    s = 72057594037927936
+    show(decimal::div(1.0, 3.0, s, m)) // expect: err 6
+    s = 2
+    m = 256
+    show(decimal::div(1.0, 3.0, s, m)) // expect: err 4
+    m = -256
+    show(decimal::div(1.0, 3.0, s, m)) // expect: err 4
+    m = 8
+    show(decimal::div(1.0, 3.0, s, m)) // expect: err 4
+
+    m = 2
+    s = -1
+    show(decimal::quantize(1.0, s, m)) // expect: err 6
+    s = 32768
+    show(decimal::quantize(0.0, s, m)) // expect: ok
+    show(decimal::quantize(1.0, s, m)) // expect: err 1
+    s = 32769
+    show(decimal::quantize(1.0, s, m)) // expect: err 6
+    s = 72057594037927936
+    show(decimal::quantize(1.0, s, m)) // expect: err 6
+    s = 2
+    m = 256
+    show(decimal::quantize(1.0, s, m)) // expect: err 4
+    m = -256
+    show(decimal::quantize(1.0, s, m)) // expect: err 4
+    m = 8
+    show(decimal::quantize(1.0, s, m)) // expect: err 4
+
+    let d = 1.5
+    m = 256
+    showInt(decimal::toInt(d, m)) // expect: err 4
+    m = -256
+    showInt(decimal::toInt(d, m)) // expect: err 4
+    m = 8
+    showInt(decimal::toInt(d, m)) // expect: err 4
+    m = 2
+    showInt(decimal::toInt(d, m)) // expect: ok
+}
