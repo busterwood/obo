@@ -750,12 +750,12 @@ def test_parse_random_and_format_roundtrip() -> None:
     run_ok("\n".join(lines) + "\n", "parse-random", ["-1"])
 
 def test_errors() -> None:
-    compile_error("fn main() { let x = 1.5 }\n", "bare-fraction",
-                  "f suffix for float")
-    compile_error("fn main() { let x = 1e3 }\n", "bare-exponent",
-                  "f suffix for float")
+    compile_error("fn main() { let x: float = 1.5 }\n", "bare-fraction",
+                  "cannot use decimal as float")
+    compile_error("fn main() { let x: float = 1e3 }\n", "bare-exponent",
+                  "cannot use decimal as float")
     compile_error("fn main() { let x = 1.5m }\n", "m-suffix",
-                  "f suffix for float")
+                  "no m or d suffix")
     compile_error("fn main() { let x = 1.f }\n", "dot-no-digits",
                   "fraction needs digits")
     compile_error("fn main() { let x = 1e }\n", "exp-no-digits",
