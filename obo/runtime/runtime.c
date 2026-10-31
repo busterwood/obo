@@ -113,16 +113,25 @@ static void die(const char *msg) { die_code(msg, 2); }
  * and the positive errno at +8. The compiler passes both descriptors to each
  * I/O helper, and match compares the header tag against the cached variants,
  * so the helpers must use exactly the descriptor they are given. */
-#define HEAP_SIZE (1UL << 32)
+#define HEAP_DEFAULT (4UL << 30)    /* 4,294,967,296 bytes: 4 GiB */
+#define HEAP_CEILING (16UL << 30)   /* 17,179,869,184 bytes: 16 GiB */
+#define HEAP_MIN     (64UL << 10)   /* 65,536 bytes: 64 KiB */
 #define GRAN 16
 #define NCLASS 65
 #define MARK 1UL
+/* One object, header included, stays below 4 GiB even when the arena is larger.
+ * The size word's low 32 bits hold the rounded size (a string's reference count
+ * uses the high half), so 0xFFFFFFF0 is the largest size free_block can recover.
+ * Payload is therefore at most 4 GiB - 32 bytes. */
+#define MAX_OBJECT  0xFFFFFFF0UL
+#define MAX_PAYLOAD (MAX_OBJECT - GRAN)
 
 static u64 heap_start, heap_top, heap_end;
+static u64 heap_size;                  /* resolved arena size: default 4 GiB, ceiling 16 GiB */
 static unsigned char *starts;          /* one bit per granule: an object header starts here */
 static u64 *free_small[NCLASS];
 static u64 *free_large;
-static u64 *mstack; static u64 msp, mcap;
+static u64 *mstack; static u64 msp, mcap;   /* free/mark worklist; virtual, scaled, capped */
 static u64 stack_base, glob_start, glob_end;
 u64 env_base;                          /* the initial stack's envp, for getenv */
 u64 rt_entry_sp;                       /* set by the entry stubs in entry.S */
@@ -156,12 +165,65 @@ static inline void clr_start(u64 h) { u64 g = gidx(h); starts[g >> 3] &= (unsign
 
 static int starts_with(const char *s, const char *p) { while (*p) if (*s++ != *p++) return 0; return 1; }
 
+/* OBO_HEAP_LIMIT is a canonical, unsigned whole number of bytes: no sign, no
+ * leading zero, no whitespace, no fraction or exponent, and an optional exact
+ * binary suffix KiB, MiB or GiB.  The value must be a multiple of one granule
+ * and in [HEAP_MIN, HEAP_CEILING]; it is never clamped.  4294967296 means
+ * 4 GiB, 17179869184 means the compiled 16 GiB ceiling. */
+static int heap_parse_size(const char *v, u64 *out) {
+    const char *p = v;
+    if (!*p) return 0;
+    if (*p == '0' && p[1] != 0) return 0;                 /* canonical: no leading zero */
+    u64 n = 0;
+    while (*p >= '0' && *p <= '9') {
+        u64 d = (u64)(*p - '0');
+        if (n > (~0UL - d) / 10) return 0;
+        n = n * 10 + d;
+        p++;
+    }
+    if (p == v) return 0;                                 /* empty, sign or whitespace */
+    u64 mul = 1;
+    if (*p) {
+        if      (p[0] == 'K' && p[1] == 'i' && p[2] == 'B' && !p[3]) mul = 1UL << 10;
+        else if (p[0] == 'M' && p[1] == 'i' && p[2] == 'B' && !p[3]) mul = 1UL << 20;
+        else if (p[0] == 'G' && p[1] == 'i' && p[2] == 'B' && !p[3]) mul = 1UL << 30;
+        else return 0;                                    /* fraction, exponent or bad suffix */
+    }
+    if (n > ~0UL / mul) return 0;                         /* overflow */
+    n *= mul;
+    if (n < HEAP_MIN || n > HEAP_CEILING) return 0;       /* below the floor or above the ceiling */
+    if (n & (GRAN - 1)) return 0;                         /* not a whole number of granules */
+    *out = n;
+    return 1;
+}
+
+static void heap_limit_bad(const char *v) {
+    flush();
+    const char *m = "obo: invalid OBO_HEAP_LIMIT: ";
+    u64 n = 0; while (m[n]) n++;
+    sys3(1, 2, (i64)m, n);
+    n = 0; while (v[n]) n++;
+    sys3(1, 2, (i64)v, n);
+    sys3(1, 2, (i64)"\n", 1);
+    OBO_EXIT(2);
+    for (;;);
+}
+
 void rt_init(u64 sbase, u64 gstart, u64 gend) {
     stack_base = sbase; glob_start = gstart; glob_end = gend;
+    heap_size = HEAP_DEFAULT;
     /* the initial stack holds argc, argv[], NULL, envp[], NULL */
     u64 argc = *(u64 *)sbase;
     env_base = sbase + 8 * (argc + 2);
+    int heap_limit_seen = 0;
     for (char **env = (char **)env_base; *env; env++) {
+        if (starts_with(*env, "OBO_HEAP_LIMIT=")) {
+            /* the first entry wins, like getenv; validate before any mapping */
+            if (!heap_limit_seen) {
+                heap_limit_seen = 1;
+                if (!heap_parse_size(*env + 15, &heap_size)) heap_limit_bad(*env + 15);
+            }
+        }
         if (starts_with(*env, "OBX_GC=poison")) gc_poison = 1;
         if (starts_with(*env, "OBX_GC=stress")) gc_poison = 1;
         if (starts_with(*env, "OBO_CHECK=1")) leak_check = 1;
@@ -178,11 +240,26 @@ void rt_init(u64 sbase, u64 gstart, u64 gend) {
         fault_winsz = 1;
         fault_sleep = 1;
     }
-    heap_start = (u64)sys_mmap(HEAP_SIZE);
+    heap_start = (u64)sys_mmap(heap_size);
     if ((i64)heap_start < 0) die("obx: cannot reserve heap\n");
-    heap_top = heap_start; heap_end = heap_start + HEAP_SIZE;
-    starts = sys_mmap(HEAP_SIZE / GRAN / 8);
-    mcap = 1UL << 26; mstack = sys_mmap(mcap * 8);
+    if (heap_start > ~0UL - heap_size) die("obx: cannot reserve heap\n");
+    heap_top = heap_start; heap_end = heap_start + heap_size;
+    /* One start bit per 16-byte granule: 32 MiB at 4 GiB, 128 MiB at 16 GiB.
+     * Round the bitmap up: a limit whose granule count is not a multiple of 8
+     * still sets a start bit in the final partial byte, and truncating that
+     * byte would place the last bit past the mapping. */
+    u64 granules = heap_size / GRAN;
+    u64 starts_bytes = (granules + 7) / 8;
+    starts = sys_mmap(starts_bytes);
+    if ((i64)starts < 0) die("obx: cannot reserve heap metadata\n");
+    /* The free/mark worklist scales with the arena but stays capped at 512 MiB
+     * of virtual address space (2^26 words) and never below 128 KiB. */
+    u64 entries = heap_size / (GRAN * 4);
+    if (entries < (1UL << 14)) entries = 1UL << 14;
+    if (entries > (1UL << 26)) entries = 1UL << 26;
+    mcap = entries;
+    mstack = sys_mmap(mcap * 8);
+    if ((i64)mstack < 0) die("obx: cannot reserve heap metadata\n");
 }
 
 static void mark_ptr(u64 w) {
@@ -243,7 +320,17 @@ void rt_collect(void) {
     threshold = live_bytes * 2 > (8UL << 20) ? live_bytes * 2 : (8UL << 20);
 }
 
+/* Payload arithmetic is checked before alloc_raw sees it: a wrapped sum must
+ * never turn a huge request into a small allocation and a large copy. */
+static u64 payload_add(u64 a, u64 b) {
+    if (b > ~0UL - a) die("obx: allocation size overflow\n");
+    return a + b;
+}
+
 static u64 alloc_raw(u64 kind, u64 payload) {
+    /* Reject an over-large object before the free lists, the bump pointer or the
+     * zeroing loop are touched. */
+    if (payload > MAX_PAYLOAD) die("obx: object too large\n");
     u64 size = (GRAN + payload + GRAN - 1) & ~(GRAN - 1);
     /* obo has no collector: memory comes back through rt_free */
     u64 g = size / GRAN, h = 0;
@@ -258,7 +345,7 @@ static u64 alloc_raw(u64 kind, u64 payload) {
     }
     u64 gen = 0;
     if (!h) {
-        if (heap_top + size > heap_end) die("obx: out of memory\n");
+        if (size > heap_end - heap_top) die("obx: out of memory\n");
         h = heap_top; heap_top += size;
     } else {
         gen = ((u64 *)h)[0] >> 32;                         /* a reused block keeps counting */
@@ -284,6 +371,8 @@ typedef struct { u64 len, cap, data, esize; } Array;
 static void free_block(u64 h) {
     if (h < heap_start || h >= heap_top) die_code("obo: invalid free outside the heap\n", 6);
     u64 *hdr = (u64 *)h, size = hdr[1] & 0xFFFFFFF0UL;      /* high bits: a string's reference count */
+    if ((h & (GRAN - 1)) || size < 2 * GRAN || size > heap_top - h)
+        die_code("obo: invalid free outside the heap\n", 6);
     clr_start(h);
     hdr[0] = ((hdr[0] >> 32) + 1) << 32;                    /* a new generation: old handles go stale */
     live_owned--;
@@ -341,10 +430,17 @@ void rt_str_dec(u64 s) {
 /* Frees an object and everything it owns. Iterative, so long lists don't
  * overflow the stack. Every pointer stored in an owned object's owning fields,
  * or in a block of references, is owning (strings are not freed in M1). */
+static void free_push(u64 v) {
+    /* Checked before every push: the worklist is a fixed mapping and a wide
+     * object graph must fail with its own diagnostic, never write past it. */
+    if (msp >= mcap) die_code("obo: object graph too deep to free\n", 6);
+    mstack[msp++] = v;
+}
+
 void rt_free(u64 p) {
     if (!p) return;
     msp = 0;
-    mstack[msp++] = p;
+    free_push(p);
     while (msp) {
         u64 q = mstack[--msp];
         if (q < heap_start + GRAN || q >= heap_top || (q & (GRAN - 1)) || !is_start(q - GRAN))
@@ -353,9 +449,9 @@ void rt_free(u64 p) {
         u64 *body = (u64 *)q;
         if (kind == 3) die_code("obo: internal error: freeing a string\n", 6);
         if (kind == 5) {
-            if (body[2] && !is_empty_data(body[2])) mstack[msp++] = body[2];
+            if (body[2] && !is_empty_data(body[2])) free_push(body[2]);
         } else if (kind == 2) {
-            for (u64 i = 0; i < body[0]; i++) if (body[1 + i]) mstack[msp++] = body[1 + i];
+            for (u64 i = 0; i < body[0]; i++) if (body[1 + i]) free_push(body[1 + i]);
         } else if (kind == 6) {
             for (u64 i = 0; i < body[0]; i++) rt_str_dec(body[1 + i]);
         } else if (kind != 1 && kind != 4) {
@@ -363,17 +459,18 @@ void rt_free(u64 p) {
             u64 *desc = (u64 *)kind, n = desc[1];
             for (u64 i = 0; i < n; i++) {
                 u64 v = *(u64 *)((u64)body + desc[2 + i]);
-                if (v) mstack[msp++] = v;
+                if (v) free_push(v);
             }
             for (u64 i = 0; i < desc[2 + n]; i++) rt_str_dec(*(u64 *)((u64)body + desc[3 + n + i]));
         }
-        if (msp + 1024 >= mcap) die_code("obo: object graph too deep to free\n", 6);
         free_block(h);
     }
 }
 
 /* Handles: the object's offset in the heap (in 16-byte units) and, in the
- * high half, the generation of its block when the handle was taken. 0 is nil. */
+ * high half, the generation of its block when the handle was taken. 0 is nil.
+ * The low half is a granule offset, so it addresses 2^32 * 16 = 64 GiB; the
+ * 30-bit maximum of a 16 GiB arena leaves the generation half untouched. */
 u64 rt_handle(u64 p) {
     if (!p) return 0;
     return ((p - heap_start) / GRAN) | (((u64 *)(p - GRAN))[0] >> 32) << 32;
@@ -431,6 +528,8 @@ void rt_finish(void) {
 }
 
 static u64 new_block(u64 kind, u64 esize, u64 cap) {
+    if (!esize || cap > (MAX_PAYLOAD - 8) / esize)
+        die("obx: allocation size overflow\n");
     u64 b = alloc_raw(kind, 8 + esize * cap);
     *(u64 *)b = cap;
     return b;
@@ -453,7 +552,13 @@ u64 rt_alloc_array(i64 n, u64 kind) {
  * survives a collection during the growth. */
 void rt_append(Array *a, u64 v) {
     if (a->len == a->cap) {
-        u64 cap = a->cap < 4 ? 8 : a->cap * 2;
+        u64 cap;
+        if (a->cap < 4) cap = 8;
+        else {
+            if (!a->esize || a->cap > MAX_PAYLOAD / a->esize / 2)
+                die("obx: allocation size overflow\n");
+            cap = a->cap * 2;
+        }
         u64 kind = KIND(a->data - GRAN);
         u64 b = new_block(kind, a->esize, cap);
         memcpy((char *)b + 8, (char *)a->data + 8, a->len * a->esize);
@@ -485,7 +590,7 @@ u64 rt_concat(u64 a, u64 b) {
     u64 la = slen(a), lb = slen(b);
     if (!la) return rt_str_inc(b);
     if (!lb) return rt_str_inc(a);
-    u64 p = alloc_raw(3, 8 + la + lb);
+    u64 p = alloc_raw(3, payload_add(8, payload_add(la, lb)));
     *(u64 *)p = la + lb;
     memcpy((char *)p + 8, sdata(a), la);
     memcpy((char *)p + 8 + la, sdata(b), lb);
@@ -512,7 +617,7 @@ u64 rt_int_to_str(i64 v) {
 /* string(bytes): copies the array's bytes into a new string */
 u64 rt_bytes_to_string(Array *a) {
     if (!a->len) return 0;
-    u64 p = alloc_raw(3, 8 + a->len);
+    u64 p = alloc_raw(3, payload_add(8, a->len));
     *(u64 *)p = a->len;
     memcpy((char *)p + 8, (char *)a->data + 8, a->len);
     return p;
@@ -522,7 +627,7 @@ u64 rt_bytes_to_string(Array *a) {
 u64 rt_substr(u64 s, i64 from, i64 to, i64 line) {
     if (from < 0 || to < from || (u64)to > slen(s)) rt_panic_bounds(line);
     if (to == from) return 0;
-    u64 p = alloc_raw(3, 8 + (u64)(to - from));
+    u64 p = alloc_raw(3, payload_add(8, (u64)(to - from)));
     *(u64 *)p = (u64)(to - from);
     memcpy((char *)p + 8, sdata(s) + from, (u64)(to - from));
     return p;
@@ -579,7 +684,7 @@ i64 rt_write_file(u64 path, Array *a, i64 executable) {
  * The cell stores and the tmp_root use follow the runtime's two-allocation rule. */
 static u64 iomsg_lit(const char *s) {
     u64 n = 0; while (s[n]) n++;
-    u64 p = alloc_raw(3, 8 + n);
+    u64 p = alloc_raw(3, payload_add(8, n));
     *(u64 *)p = n;
     memcpy((char *)p + 8, s, n);
     return p;
@@ -587,7 +692,7 @@ static u64 iomsg_lit(const char *s) {
 static u64 iomsg_str(const char *pre, u64 s) {
     u64 pl = 0; while (pre[pl]) pl++;
     u64 sl = slen(s);
-    u64 p = alloc_raw(3, 8 + pl + sl);
+    u64 p = alloc_raw(3, payload_add(8, payload_add(pl, sl)));
     *(u64 *)p = pl + sl;
     memcpy((char *)p + 8, pre, pl);
     memcpy((char *)p + 8 + pl, sdata(s), sl);
@@ -598,7 +703,7 @@ static u64 iomsg_num(const char *pre, i64 v) {
     do { b[--i] = (char)('0' + u % 10); u /= 10; } while (u);
     if (v < 0) b[--i] = '-';
     u64 pl = 0; while (pre[pl]) pl++;
-    u64 p = alloc_raw(3, 8 + pl + (u64)(24 - i));
+    u64 p = alloc_raw(3, payload_add(8, pl + (u64)(24 - i)));
     *(u64 *)p = pl + (u64)(24 - i);
     memcpy((char *)p + 8, pre, pl);
     memcpy((char *)p + 8 + pl, b + i, 24 - i);
@@ -926,7 +1031,7 @@ u64 rt_args(void) {
         while (argv[i][n]) n++;
         u64 s = 0;
         if (n) {
-            s = alloc_raw(3, 8 + n);
+            s = alloc_raw(3, payload_add(8, n));
             *(u64 *)s = n;
             memcpy((char *)s + 8, argv[i], n);
         }

@@ -66,8 +66,8 @@ the historical 0.8.1; floats are 0.10, and Stage B is 0.11.
 |---|---:|
 | Compiler source | 13,883 lines, 524,165 bytes |
 | Compiler (`--version`) | 585,729 bytes, sha256 `198f3268…`, `obo 0.11`, sym-format 6, abi 1 |
-| Seed (`--version`) | unchanged promoted 0.10: 569,345 bytes, sha256 `30124be9…`, `obo 0.10`, sym-format 6, abi 1; the historical 0.9 seed is 540,673 bytes, `3d369273…`, `obo 0.9`, sym-format 5 |
-| Self-host fixed point | stage 2 == stage 3 == compiler, 585,729 bytes, `198f3268…`; the 0.10 seed builds the same image from source |
+| Seed (`--version`) | promoted obo 0.11: 585,729 bytes, sha256 `198f3268…`, `obo 0.11`, sym-format 6, abi 1; the previous 0.10 seed (569,345 bytes, `30124be9…`, `obo 0.10`, sym-format 6, abi 1) built it once; the historical 0.9 seed is 540,673 bytes, `3d369273…`, `obo 0.9`, sym-format 5 |
+| Self-host fixed point | stage 2 == stage 3 == compiler, 585,729 bytes, `198f3268…`; the promoted 0.11 seed reproduces the same image from source |
 | Self-compile wall time | 0.15 s (three timed direct runs on this host; host-dependent) |
 | Self-compile live peak | 2,085,872 bytes direct; 2,086,272 bytes port comparison (budget 2,500,000) |
 | Total allocated | 46,373,536 bytes direct; 46,378,000 bytes port comparison |
@@ -129,6 +129,55 @@ above are the recorded 0.8 line. The honest shape of these numbers is in
 [PERFORMANCE.md](PERFORMANCE.md): pure compute is far ahead of CPython, while
 `wc -l` is at Python parity and behind GNU, eza is slower than Python and `ls`
 on names (its case is size and memory), and the sort rows are fixture-specific.
+
+### Heap limit and address space
+
+The freestanding runtime reserves the heap with `mmap(MAP_PRIVATE |
+MAP_ANONYMOUS | MAP_NORESERVE)`. The compiled default is **4 GiB**
+(4,294,967,296 bytes) and the compiled ceiling is **16 GiB**
+(17,179,869,184 bytes). `OBO_HEAP_LIMIT` may lower or raise the arena inside that
+range:
+
+- the value is a canonical unsigned whole number of bytes (`4294967296`) or the
+  same with an exact binary suffix `KiB`, `MiB` or `GiB` (`4GiB`);
+- it must be at least 64 KiB, a multiple of 16 bytes, and at most 16 GiB;
+- signs, whitespace, leading zeros, fractions, exponents, unknown suffixes,
+  empty values and overflow are rejected. There is **no silent clamp**: an
+  invalid or above-ceiling value prints `obo: invalid OBO_HEAP_LIMIT: <value>`
+  to stderr and exits 2 before any mapping is made.
+
+For example, `OBO_HEAP_LIMIT=64KiB` gives a small bounded arena and
+`OBO_HEAP_LIMIT=16GiB` raises it to the compiled ceiling. The one-object cap is
+independent of the arena: an object's rounded size may not exceed 0xFFFFFFF0
+bytes, so its payload is at most 4 GiB - 32 bytes even in a 16 GiB heap. This is
+what keeps the size word's low 32 bits unambiguous while a string's reference
+count uses the high half.
+
+`MAP_NORESERVE` reserves address space, not RAM: only touched pages become
+resident, so a sparse 16 GiB heap with a few small objects has a small RSS. The
+heap cap excludes runtime metadata and native libraries. The starts bitmap is
+one bit per 16-byte granule (32 MiB at 4 GiB, 128 MiB at 16 GiB), and the
+free/mark worklist scales with the arena from 128 KiB to 512 MiB of virtual
+address space. Linux overcommit policy, `RLIMIT_AS`, cgroups and any host memory
+limit still apply; a failed mapping exits cleanly with
+`obx: cannot reserve heap` or `obx: cannot reserve heap metadata`, never a
+segfault. Freed blocks return to the runtime's free lists, not to the OS, so
+fragmentation and the high-water mark remain part of a process's footprint;
+`OBO_STATS=1` reports live peak and total allocated bytes, not RSS. The 5 GiB
+address-space cap in `port_compare.py` is a harness safety limit, not a runtime
+default.
+
+Regression note from the runtime-only Stage B rebase: the 4 GiB default maps a
+32 MiB starts bitmap and a 512 MiB worklist; the 16 GiB ceiling maps a 128 MiB
+starts bitmap and the same capped 512 MiB worklist. The recorded 16 GiB
+`heap_test` run peaks at about 16.625 GiB of virtual address space and 264 KiB of
+maximum RSS while touching only a few pages. The change adds no runtime
+jump-table slot, so every existing index, including the hosted exit slot 59, is
+unchanged and decimal's future appended slots do not collide. Compiler source,
+version, symbol format and ABI are unchanged; a compiler rebuilt with this
+runtime has the same 585,729-byte size but a different image sha256
+(`01fa9ed3…`, rather than the released `198f3268…`) because the runtime text is
+embedded in every executable.
 
 ## Roadmap
 
@@ -263,6 +312,7 @@ cd obo && python3 tests/doc_check.py     # LANGUAGE.md examples
 cd obo && python3 tests/run_fork.py      # obo's tests, leak check always on
 cd obo && python3 tests/elf_test.py      # the image: trimmed runtime-data segment
 cd obo && python3 tests/io_test.py --rt --programs --tools  # I/O runtime and programs
+cd obo && python3 tests/heap_test.py     # heap limits, allocation bounds, sparse 16 GiB
 cd obo && python3 tests/mutate_fork.py   # obo's mutants
 cd obo && python3 tests/mutate_io.py     # runtime/library mutants
 cd obo && python3 tests/mutate_harness_test.py  # the mutation harness's own tests (fake builders)

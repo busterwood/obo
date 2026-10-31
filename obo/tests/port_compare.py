@@ -49,8 +49,9 @@ LIBDIR = os.path.join(FORK, 'lib')
 REF_OUTCOMES = {}
 
 # quick mode: the port's compiles and runs may map at most this much address space, so a runaway mutant fails fast.
-# The runtime reserves about 4.5 GiB up front (a 4 GiB heap, a 32 MiB starts table, a 512 MiB mstack), so a
-# 4 GiB cap would stop the runtime itself; the cap is 5 GiB, which leaves room for the process.
+# The default runtime reserves about 4.5 GiB up front (a 4 GiB heap, a 32 MiB starts table, a 512 MiB mstack), so a
+# 4 GiB cap would stop the runtime itself; the cap is 5 GiB, which leaves room for the process.  OBO_HEAP_LIMIT can
+# lower that reservation, but this harness leaves the compiled default unchanged.
 ADDRESS_SPACE = 5 << 30
 
 

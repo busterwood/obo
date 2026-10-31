@@ -149,8 +149,8 @@ RUNTIME_MUTANTS = {
         '        if (!is_empty_data(a->data)) free_block(a->data - GRAN);\n',
         '        free_block(a->data - GRAN);\n'),
     'empty array free pushes the static block': (
-        '            if (body[2] && !is_empty_data(body[2])) mstack[msp++] = body[2];\n',
-        '            if (body[2]) mstack[msp++] = body[2];\n'),
+        '            if (body[2] && !is_empty_data(body[2])) free_push(body[2]);\n',
+        '            if (body[2]) free_push(body[2]);\n'),
     'zero array alloc gets a heap block': (
         '    u64 b = n ? new_block(kind, esize, (u64)n) : empty_data(kind);\n',
         '    u64 b = new_block(kind, esize, (u64)n);\n'),
