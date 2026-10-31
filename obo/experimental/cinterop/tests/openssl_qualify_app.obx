@@ -1,0 +1,9 @@
+module app
+
+import "openssl_probe.obx"
+
+fn main() {
+    let ok = openssl_probe::qualify(1)
+    println("openssl-qualify=", ok)
+    println("openssl-version-num=", openssl_probe::version())
+}
