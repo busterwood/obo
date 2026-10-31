@@ -276,7 +276,9 @@ pub fn (s: &Stmt) is_null(col: int): Result[bool] {
 // empty array means an empty value. (Obo optional values must be reference
 // types, so the exact text form is ?[]byte; use column_text for a string.)
 // SQLite's documented integer-to-text conversion is used for INTEGER columns,
-// so i64 values stay exact decimal text; no obo float path is involved.
+// so i64 values stay exact decimal text; no obo float path is involved. A
+// non-NULL value over the 16 MiB copy bound or a copy allocation failure is a
+// Result error, never an empty success. REAL is rejected as inexact.
 pub fn (s: &Stmt) column_value(col: int): Result[?[]byte] {
     let t = __cinterop("sq_stmt_column_type", s.tok, col)
     if t < 0 { return err("column out of range", 2) }
@@ -284,7 +286,14 @@ pub fn (s: &Stmt) column_value(col: int): Result[?[]byte] {
         let none: ?[]byte = nil
         return ok(none)
     }
-    let b = take_buf(__cinterop("sq_stmt_column_text_buf", s.tok, col))
+    if t == SQLITE_FLOAT {
+        return err("REAL column is not exact decimal/data", 2)
+    }
+    let tok = __cinterop("sq_stmt_column_text_buf", s.tok, col)
+    if tok <= 0 {
+        return err("column value is too large to copy or allocation failed", 2)
+    }
+    let b = take_buf(tok)
     let out: ?[]byte = b
     return ok(out)
 }
@@ -296,7 +305,14 @@ pub fn (s: &Stmt) column_text(col: int): Result[string] {
     let t = __cinterop("sq_stmt_column_type", s.tok, col)
     if t < 0 { return err("column out of range", 2) }
     if t == SQLITE_NULL { return err("SQL NULL", 1) }
-    let b = take_buf(__cinterop("sq_stmt_column_text_buf", s.tok, col))
+    if t == SQLITE_FLOAT {
+        return err("REAL column is not exact decimal/data", 2)
+    }
+    let tok = __cinterop("sq_stmt_column_text_buf", s.tok, col)
+    if tok <= 0 {
+        return err("column value is too large to copy or allocation failed", 2)
+    }
+    let b = take_buf(tok)
     if has_nul(&b) { return err("text column contains an embedded NUL; use column_bytes", 1) }
     return ok(string(b))
 }
@@ -313,18 +329,26 @@ pub fn (s: &Stmt) column_bytes(col: int): Result[?[]byte] {
     if t != SQLITE_TEXT && t != SQLITE_BLOB {
         return err("column is not TEXT or BLOB", 2)
     }
-    let b = take_buf(__cinterop("sq_stmt_column_blob_buf", s.tok, col))
+    let tok = __cinterop("sq_stmt_column_blob_buf", s.tok, col)
+    if tok <= 0 {
+        return err("column value is too large to copy or allocation failed", 2)
+    }
+    let b = take_buf(tok)
     let out: ?[]byte = b
     return ok(out)
 }
 
 // Integer view through sqlite3_column_int64. It is an exact i64 only for an
-// INTEGER column; REAL is truncated and TEXT is converted by SQLite. Use
-// column_value/column_text when exact decimal text is required.
+// INTEGER column; TEXT is converted by SQLite. REAL is rejected because it is
+// not exact decimal/integer data. Use column_value/column_text for exact
+// integer-to-text values.
 pub fn (s: &Stmt) column_int(col: int): Result[int] {
     let t = __cinterop("sq_stmt_column_type", s.tok, col)
     if t < 0 { return err("column out of range", 2) }
     if t == SQLITE_NULL { return err("SQL NULL", 1) }
+    if t == SQLITE_FLOAT {
+        return err("REAL column is not exact decimal/integer data", 2)
+    }
     return ok(__cinterop("sq_stmt_column_int", s.tok, col))
 }
 

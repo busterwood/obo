@@ -136,7 +136,7 @@ long pq_lib_version(void) {
 long pq_make_empty_result(long status) {
     PGresult *res;
     long token;
-    if (status < 0 || status > PGRES_TUPLES_CHUNK) return -2;
+    if (status < 0 || status > PGRES_PIPELINE_ABORTED) return -2;
     res = PQmakeEmptyPGresult(NULL, (int)status);
     if (res == NULL) return 0;
     token = cres_register(CRES_KIND_RESULT, res, release_result);

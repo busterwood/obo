@@ -173,6 +173,61 @@ int main(void) {
     CHECK(cres_buf_free(b) == 1);
     CHECK(sq_stmt_close(st) == 1);
 
+    /* A non-NULL value over the 16 MiB registry bound must be a clean copy
+     * failure, never an empty success. */
+    q = mkc("SELECT zeroblob(17000000)");
+    CHECK(q > 0);
+    st = sq_prepare(c, q);
+    CHECK(st > 0);
+    CHECK(cres_buf_free(q) == 1);
+    CHECK(sq_stmt_step(st) == SQLITE_ROW);
+    CHECK(sq_stmt_column_type(st, 0) == SQLITE_BLOB);
+    CHECK(sq_stmt_column_blob_buf(st, 0) == -2);
+    CHECK(sq_stmt_column_text_buf(st, 0) == -2);
+    CHECK(cres_live_kind(CRES_KIND_BUFFER) == 0);
+    CHECK(sq_stmt_close(st) == 1);
+
+    q = mkc("SELECT CAST(zeroblob(17000000) AS TEXT)");
+    CHECK(q > 0);
+    st = sq_prepare(c, q);
+    CHECK(st > 0);
+    CHECK(cres_buf_free(q) == 1);
+    CHECK(sq_stmt_step(st) == SQLITE_ROW);
+    CHECK(sq_stmt_column_type(st, 0) == SQLITE_TEXT);
+    CHECK(sq_stmt_column_text_buf(st, 0) == -2);
+    CHECK(sq_stmt_column_blob_buf(st, 0) == -2);
+    CHECK(cres_live_kind(CRES_KIND_BUFFER) == 0);
+    CHECK(sq_stmt_close(st) == 1);
+
+    /* Zero-length BLOB/TEXT remains a valid empty value, not an error. */
+    q = mkc("SELECT zeroblob(0), ''");
+    CHECK(q > 0);
+    st = sq_prepare(c, q);
+    CHECK(st > 0);
+    CHECK(cres_buf_free(q) == 1);
+    CHECK(sq_stmt_step(st) == SQLITE_ROW);
+    CHECK(sq_stmt_column_type(st, 0) == SQLITE_BLOB);
+    b = sq_stmt_column_blob_buf(st, 0);
+    CHECK(b > 0);
+    CHECK(cres_buf_len(b) == 0);
+    CHECK(cres_buf_free(b) == 1);
+    CHECK(sq_stmt_column_type(st, 1) == SQLITE_TEXT);
+    b = sq_stmt_column_text_buf(st, 1);
+    CHECK(b > 0);
+    CHECK(cres_buf_len(b) == 0);
+    CHECK(cres_buf_free(b) == 1);
+    CHECK(sq_stmt_close(st) == 1);
+
+    /* REAL is not exact decimal/integer data; the wrapper rejects it. */
+    q = mkc("SELECT 1.5");
+    CHECK(q > 0);
+    st = sq_prepare(c, q);
+    CHECK(st > 0);
+    CHECK(cres_buf_free(q) == 1);
+    CHECK(sq_stmt_step(st) == SQLITE_ROW);
+    CHECK(sq_stmt_column_type(st, 0) == SQLITE_FLOAT);
+    CHECK(sq_stmt_close(st) == 1);
+
     /* SQL and TEXT embedded NUL are rejected; BLOB NUL is preserved above. */
     sql = mk("SELECT 1\0x", 10);
     CHECK(sql > 0);
@@ -305,6 +360,15 @@ int main(void) {
     CHECK(sq_stmt_close(st) == 1);
     CHECK(sq_conn_close(c) == 1);
     unlink(filepath);
+
+    /* Wrong-kind registry tokens are rejected by the adapter helpers. */
+    b = cres_buf_new(0);
+    CHECK(b > 0);
+    CHECK(sq_conn_live(b) == 0);
+    CHECK(sq_stmt_live(b) == 0);
+    CHECK(sq_conn_close(b) == 0);
+    CHECK(sq_stmt_close(b) == 0);
+    CHECK(cres_buf_free(b) == 1);
 
     /* Library errstr is available without a connection. */
     b = sq_errstr_buf(SQLITE_BUSY);

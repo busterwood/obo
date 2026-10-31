@@ -1,0 +1,68 @@
+module app
+
+import "postgres.obx"
+
+fn blob3(): []byte {
+    var b = new []byte(0)
+    append(b, byte(0))
+    append(b, byte(255))
+    append(b, byte(65))
+    return b
+}
+
+fn main() {
+    let made = postgres::open("fake-ok")
+    match made {
+        ok(c) {
+            defer c.close()
+            var ps = new []postgres::Param(0)
+            append(ps, postgres::param_text("hello"))
+            append(ps, postgres::param_int(-9223372036854775807))
+            append(ps, postgres::param_blob(blob3()))
+            append(ps, postgres::param_null())
+            let q = postgres::execute(&c, "SELECT $1::text, $2::int8, $3::bytea, $4::text", ps)
+            match q {
+                ok(rows) {
+                    defer rows.close()
+                    println("status=", rows.status())
+                    println("rows=", rows.row_count(), " cols=", rows.column_count())
+                    let t = rows.text(0, 0)
+                    match t {
+                        ok(v) { println("t=", v) }
+                        err(m, n) { println("t_err=", n, " ", m) }
+                    }
+                    let n = rows.text(0, 1)
+                    match n {
+                        ok(v) { println("n=", v) }
+                        err(m, n2) { println("n_err=", n2, " ", m) }
+                    }
+                    let b = rows.value(0, 2)
+                    match b {
+                        ok(v) {
+                            if v == nil { println("b=nil") } else { println("b_len=", len(v), " b0=", int(v[0]), " b1=", int(v[1]), " b2=", int(v[2])) }
+                        }
+                        err(m, n3) { println("b_err=", n3, " ", m) }
+                    }
+                    let num = rows.text(0, 3)
+                    match num {
+                        ok(v) { println("num=", v) }
+                        err(m, n4) { println("num_err=", n4, " ", m) }
+                    }
+                    let oid = rows.column_type_oid(3)
+                    match oid {
+                        ok(v) { println("oid=", v) }
+                        err(m, n5) { println("oid_err=", n5, " ", m) }
+                    }
+                    let mod = rows.column_type_modifier(3)
+                    match mod {
+                        ok(v) { println("mod=", v) }
+                        err(m, n6) { println("mod_err=", n6, " ", m) }
+                    }
+                }
+                err(m, n) { println("q_err=", n, " ", m) }
+            }
+        }
+        err(m, n) { println("open_err=", n, " ", m) }
+    }
+    println("live=", postgres::live_resources())
+}

@@ -37,6 +37,7 @@ SQLITE_PATHS = [
     '/usr/lib/x86_64-linux-gnu/libsqlite3.so.0',
 ]
 LIBPQ = os.path.join(DB, 'postgres', 'postgres.cbind')
+LIBPQ_FAKE = os.path.join(DB, 'postgres', 'postgres_fake.cbind')
 SQLITE = os.path.join(DB, 'sqlite', 'sqlite.cbind')
 PG_EX = os.path.join(DB, 'postgres', 'examples')
 SQ_EX = os.path.join(DB, 'sqlite', 'examples')
@@ -140,6 +141,24 @@ def postgres_probe(tmp):
     print('postgres link/ownership probe: ok')
 
 
+def postgres_fake_obo(tmp):
+    out = os.path.join(tmp, 'pg_fake_obo')
+    app = must_build(LIBPQ_FAKE, os.path.join(PG_EX, 'postgres_fake_app.obx'),
+                     out, 'postgres fake obo')
+    p = need(run([app]), 'postgres fake obo run')
+    expect_lines(p.stdout, ['status=2', 'rows=1 cols=4', 't=hello',
+                            'n=-9223372036854775807', 'b_len=3',
+                            'b0=0 b1=255 b2=65',
+                            'num=1.234567890123456789',
+                            'oid=1700', 'mod=-1', 'live=0'],
+                 'postgres fake obo')
+    ldd = need(run(['ldd', app]), 'postgres fake obo ldd')
+    if 'libpq.so.5' in ldd.stdout:
+        raise Fail('postgres fake obo unexpectedly links real libpq')
+    verify(out)
+    print('postgres fake-libpq obo packet encoder: ok')
+
+
 def postgres_fake_c(tmp):
     exe = os.path.join(tmp, 'postgres_adapter_test')
     cmd = [cc(), '-O2', '-Wall', '-Wextra',
@@ -167,7 +186,8 @@ def sqlite_memory(tmp):
                      'sqlite memory')
     p = need(run([app]), 'sqlite memory run')
     expect_lines(p.stdout, ['sqlite_memory=ok', 'live=0', 'conns=0', 'stmts=0',
-                            'buffers=0', 'path_errors=ok', 'sqlite_smoke=ok'], 'sqlite memory')
+                            'buffers=0', 'path_errors=ok', 'defer_order=ok',
+                            'large_and_real_errors=ok', 'sqlite_smoke=ok'], 'sqlite memory')
     ldd = need(run(['ldd', app]), 'sqlite ldd')
     if 'libsqlite3.so.0' not in ldd.stdout:
         raise Fail('sqlite app does not depend on libsqlite3.so.0')
@@ -307,6 +327,7 @@ def main():
     tmp = tempfile.mkdtemp(prefix='db-adapters-test-', dir=TMPROOT)
     try:
         postgres_fake_c(tmp)
+        postgres_fake_obo(tmp)
         sqlite_c(tmp)
         sqlite_memory(tmp)
         sqlite_file(tmp)

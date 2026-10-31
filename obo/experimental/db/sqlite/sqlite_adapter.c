@@ -481,26 +481,32 @@ long sq_stmt_column_text_buf(long stmt_token, long col) {
     sq_stmt *s = get_stmt(stmt_token);
     const unsigned char *p;
     int n;
+    long t;
     if (!check_column(s, col)) return -1;
     if (sqlite3_column_type(s->stmt, (int)col) == SQLITE_NULL) return 0;
     p = sqlite3_column_text(s->stmt, (int)col);
     n = sqlite3_column_bytes(s->stmt, (int)col);
     if (n < 0) return -1;
     if (p == NULL && n != 0) return -1;
-    return cres_buf_from_bytes(p, (size_t)n);
+    t = cres_buf_from_bytes(p, (size_t)n);
+    /* 0 means SQL NULL to the wrapper, so report a copy/allocation failure
+     * distinctly: a non-NULL value must never silently become empty. */
+    return t > 0 ? t : -2;
 }
 
 long sq_stmt_column_blob_buf(long stmt_token, long col) {
     sq_stmt *s = get_stmt(stmt_token);
     const void *p;
     int n;
+    long t;
     if (!check_column(s, col)) return -1;
     if (sqlite3_column_type(s->stmt, (int)col) == SQLITE_NULL) return 0;
     p = sqlite3_column_blob(s->stmt, (int)col);
     n = sqlite3_column_bytes(s->stmt, (int)col);
     if (n < 0) return -1;
     if (p == NULL && n != 0) return -1;
-    return cres_buf_from_bytes(p, (size_t)n);
+    t = cres_buf_from_bytes(p, (size_t)n);
+    return t > 0 ? t : -2;
 }
 
 long sq_stmt_column_int(long stmt_token, long col) {

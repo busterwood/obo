@@ -10,7 +10,9 @@
   ],
   "headers": [],
   "declaration_files": [
-    "sqlite_decls.h"
+    "sqlite_decls.h",
+    "sqlite_adapter.h",
+    "../../cinterop/toolkit/cres.h"
   ],
   "declarations": [
     "extern long cres_buf_new(long len);",

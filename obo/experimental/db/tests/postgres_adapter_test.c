@@ -300,6 +300,13 @@ int main(void) {
         CHECK(len == sizeof(want) - 1 && memcmp(p, want, len) == 0);
     }
     CHECK(cres_buf_free(v) == 1);
+
+    /* PostgreSQL 16 ExecStatusType ends at 11; status 12 is not claimed. */
+    CHECK(pq_make_empty_result(12) == -2);
+    b = pq_make_empty_result(PGRES_PIPELINE_ABORTED);
+    CHECK(b > 0);
+    CHECK(pq_result_clear(b) == 1);
+
     CHECK(cres_live_count() == 0);
 
     CHECK(fake_get_conn_live() == 0);
