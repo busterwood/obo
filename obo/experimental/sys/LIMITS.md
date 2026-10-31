@@ -1,18 +1,22 @@
-# Experimental sys P0 limits
+# Experimental sys P0/P1a limits
 
-These limits are part of the P0 boundary proof. They are deliberately explicit
-rather than hidden behind a stable-looking API.
+These limits are part of the P0/P1a boundary proof. They are deliberately
+explicit rather than hidden behind a stable-looking API.
 
 ## Scope
 
-- **P0 only.** There is no `File`, `Directory`, metadata, mapping, clock,
-  calendar, randomness, stream, reactor, socket, DNS, process, signal, terminal
-  or logging API here. P1a starts the first useful slice.
+- **P0 plus P1a.** P0 provided the identity/error/byte seam. P1a adds owned
+  `File`, anchored `Directory`/`Iterator`, metadata snapshots, clocks,
+  `getrandom`, concrete streams and bounded buffers. There is still no mapping,
+  calendar, reactor, socket, DNS, process, signal, environment mutation,
+  terminal or logging API, and no atomic replacement or full path-containment
+  helper.
 - **One process context, single thread.** The managed table and C registry are
   process globals. There is no worker context selection, lock, atomic or TSAN
   claim.
-- **Linux x86-64 real backend.** The real fixture uses `eventfd`; other
-  platforms would need a different adapter and are not claimed.
+- **Linux x86-64 real backend.** The real adapter uses openat/read/write/lseek/
+  ftruncate/fstat/statx/getdents64/clock_gettime/getrandom and P0's eventfd
+  fixture. Other platforms would need a different adapter and are not claimed.
 - **Hosted cinterop only.** The package uses the experimental hosted
   cinterop link (non-PIE fixed layout). The freestanding compiler/runtime is
   unchanged and does not link this package.
@@ -67,6 +71,12 @@ rather than hidden behind a stable-looking API.
 | C-owned logical byte payload charged | 64 MiB | 2 GiB (`maxNativeBytes`) |
 | One `sysbytes` buffer | 16 MiB | 16 MiB (`MAX_BYTE_BUFFER`) |
 | Packed bridge group | 7 bytes | 7 bytes |
+| One file/stream transfer chunk | 1 MiB | 1 MiB (`MAX_CHUNK`) |
+| One `sysrandom` request | 1 MiB | 1 MiB (`MAX_RANDOM_BYTES`) |
+| One bounded buffer | 64 KiB default | 16 MiB (`MAX_BUFFER_BYTES`) |
+| Path string | 4095 bytes | 4095 bytes |
+| One directory component name | 255 bytes | 255 bytes |
+| Metadata packet | 16 fields | 128 bytes |
 
 `Options.maxResources`, `maxShells` and `maxNativeBytes` must be positive and
 within the ceilings. The native byte quota charges the **logical payload
@@ -85,8 +95,8 @@ allocate past the stated capacity.
 - Unknown native errors are `SystemFailure`; diagnostic text is not parsed.
 - `Interrupted` (EINTR) and `WouldBlock` (EAGAIN) remain separate. No public
   one-shot operation retries. Close never retries. `isRetryable` is advisory.
-- `ignorePipeSignal` is validated and stored for P1a. P0 installs no signal
-  disposition and exposes no pipe write, so it changes no P0 behavior.
+- `ignorePipeSignal` is validated and stored for later pipe APIs. P1a exposes no
+  pipe write and installs no signal disposition, so it changes no P1a behavior.
 
 ## Byte bridge
 
@@ -106,6 +116,54 @@ allocate past the stated capacity.
   P2 may request a separately reviewed bulk-copy design if the bridge is the
   limiting factor.
 
+## P1a file and buffer limits
+
+- Open options are a library record, not a Linux flag word. Validation is
+  repeated before native work; C independently rejects inconsistent flags.
+  CLOEXEC is added atomically by the adapter. `permissions` is 0..0xFFF and
+  `umask` still applies on creation.
+- `readSome`/`writeSome`/`readAt`/`writeAt` move at most 1 MiB per call. A
+  positive short result is success and is never silently repeated. `readInto`
+  and `writeFrom` use temporary C-owned scratch buffers through the P0 byte
+  bridge, so they are bounded allocation-free **forms** for the caller's result
+  array, not allocation-free native paths.
+- `readAt`/`writeAt` do not move the file offset. A positional write on an
+  append-open File is rejected (`InvalidArgument`) instead of inheriting the
+  kernel's pwrite/O_APPEND ambiguity. Nonblocking regular-file I/O may still
+  block in storage.
+- `duplicateStream` shares the open file description, so offset and status
+  flags are shared. `intoStream` re-tags the live resource to `KIND_STREAM` and
+  replaces the old shell's `res`; the old File shell then fails typed operations.
+- Anchored names are single components. This is not proof against concurrent
+  rename/mount namespace changes. `openBeneath` with RESOLVE_BENEATH is deferred.
+- Directory iteration uses a bounded 8 KiB getdents64 buffer, at most 64
+  refills per `next`, maximum name length 255 and no ordering/snapshot promise.
+  The fake backend yields a fixed `.`/`..`/`alpha`/`beta` script and no child
+  namespace.
+- Buffer storage is `new []byte(limit)` with `make`; it never grows by append.
+  `feed` compacts and is all-or-nothing by capacity. `copy` allocates an owned
+  prefix. Exact steps attempt one transfer and retain progress; `readExactStep`
+  requires enough fixed free capacity before reading.
+- Metadata identity interning is bounded at 65536 pairs per context. Exhaustion
+  is `ResourceLimit`; entries live until shutdown. Identity bits are not stable
+  across processes or restarts and must never be persisted.
+- `statx` supplies birth time when available; a `stat`/`fstat` fallback reports
+  birth as nil. Timestamps are integer seconds+nanos, never floats.
+- Clock arithmetic is checked signed 64-bit nanoseconds. `realtimeNs` has the
+  narrower 1677–2262 range and returns `Range` outside it. Infinite deadlines are
+  a flag; `sleepUntil` rejects them rather than inventing a duration.
+- Randomness comes only from `getrandom`; there is no insecure fallback. One
+  call is capped at 1 MiB. Fake deterministic entropy exists only in the
+  test-only fake link and is never an application-selected production mode.
+
+## P1b/P2 deferrals
+
+P1b owns `chmod`, `sync`, rename/link/symlink, `replaceAtomic`, `openBeneath`,
+directory mutation and durability reporting. P2 owns mappings, readiness,
+reactor/wait helpers, sockets, resolution and process supervision. Vector I/O,
+half-close and socket dispatch on `Stream` are also later. No thread, atomic,
+channel or synchronization kind is created by P0/P1a.
+
 ## Backends and tests
 
 - Real and fake are selected at **link time** by different `.cbind` manifests.
@@ -114,11 +172,15 @@ allocate past the stated capacity.
   control module is not part of the production wrapper surface.
 - ASAN/UBSAN run on separate C harnesses, not on the fixed-address hosted obo
   image. This is stated rather than claiming instrumentation that did not run.
-- The fake owns fake counters and shared C buffers, not file descriptors. A
-  scripted close error still consumes the fake resource, modeling Linux close.
+- The fake owns fake counters, in-memory file contents, a fixed directory
+  script and shared C buffers, not file descriptors. A scripted close error
+  still consumes the fake resource, modeling Linux close. It is a deterministic
+  contract/fault fixture, not a filesystem implementation: its directory child
+  namespace and metadata policy are intentionally shallow.
 - `sysshells` contains P0-only `File`/`Stream` type-identity fixtures, not I/O
   APIs. Compiler-negative fixtures assert that `^File` cannot be passed where
-  `^Stream` or `^platform::Resource` is required.
+  `^Stream` or `^platform::Resource` is required. The P1a `sysfile::File` and
+  `sysstream::Stream` are separate concrete modules.
 - Tests assume a local Linux host with a C compiler. No network service, DNS,
   database, host limit change or persistent data is used.
 
@@ -130,5 +192,5 @@ allocate past the stated capacity.
 - The `.cbind` format is the existing experimental `cinterop-proto/1`. Hashes in
   the manifest are provenance/corruption checks, not signatures.
 - Experimental APIs may change with a migration note. Nothing here is stable;
-  P1a is where owned File/Directory/clock/getrandom and bounded stream buffers
-  are added and reviewed.
+  P1a adds owned File/Directory/clock/getrandom, metadata, concrete streams and
+  bounded buffers on the reviewed P0 seam. P1b/P2 remain deferred.
