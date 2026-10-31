@@ -2239,11 +2239,28 @@ and `io::termWidth(fd)`.
 
 ## 9. Runtime checks and exit codes
 
-Decimal exact arithmetic uses exit 10 with diagnostic codes 40-49: 40 is "not
-exactly representable", 41 overflow, 42 division by zero, 43 invalid, 44
+Decimal exact arithmetic traps with exit 10 and diagnostic ids 40-49: 40 is
+"not exactly representable", 41 overflow, 42 division by zero, 43 invalid, 44
 unsupported range, 45 precision overflow, 46 exponent range, 47 display range
-and 48 buffer too small. `decimal::div`, `decimal::quantize` and
-`decimal::toInt` report these as `Result` codes instead of trapping.
+and 48 buffer too small; 49 is other. The ids are trap diagnostics only.
+
+`decimal::div`, `decimal::quantize` and `decimal::toInt` do not trap for value
+errors; their `Result` `err` code is the reviewed core status:
+
+| Result code | Core status | Meaning |
+|---:|---|---|
+| 1 | `DEC_OVERFLOW` | overflow / not representable in the 38-digit range |
+| 3 | `DEC_INEXACT` | `UNNECESSARY` would discard a nonzero digit |
+| 4 | `DEC_INVALID` | invalid value or rounding mode |
+| 5 | `DEC_DIV_ZERO` | zero divisor |
+| 6 | `DEC_UNSUPPORTED_RANGE` | request outside the API range (scale not 0..32768) |
+| 7 | `DEC_PRECISION_OVERFLOW` | reserved; not currently returned by these APIs |
+| 8 | `DEC_EXPONENT_RANGE` | reserved; not currently returned by these APIs |
+| 9 | `DEC_DISPLAY_RANGE` | reserved; not currently returned by these APIs |
+
+Core status 2 (`UNSUPPORTED_EXACT`) and 10 (`BUFFER_SMALL`) stay internal.
+Scale and mode are validated before the core is called: constant invalid values
+are compile errors, runtime values return 6 (scale) or 4 (mode).
 
 | Exit code | Cause |
 |---|---|

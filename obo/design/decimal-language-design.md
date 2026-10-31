@@ -1,7 +1,7 @@
 # Decimal language integration design
 
 **Date:** 2026-10-31
-**Status:** APPROVED 2026-10-31. The minimum scalar tier is implemented as the WIP 0.12 compiler/runtime integration on branch `decimal-language` (based on released `0.11` main `316963c`); it is not merged, pushed, promoted or independently reviewed, and the released seed remains 0.11. Text/format stdlib, database adapters, containers, globals/constants and captures are still later work.
+**Status:** APPROVED 2026-10-31. The minimum scalar tier is implemented as the WIP 0.12 compiler/runtime integration on branch `decimal-language` (based on released `0.11` main `316963c`); it is not merged, pushed or promoted; the initial independent review returned REVISE and the fixes await focused re-review. The released seed remains 0.11. Text/format stdlib, database adapters, containers, globals/constants and captures are still later work.
 **Baseline:** approved on `main` at `4a072cf5f5db8fe661ac65ff6db94ea59006e6ec`; integration re-based on the released `0.11` heap-limit main `316963c12cd7103a68e910d972e255af36290d7e`. Branch/worktree: `decimal-language`.
 **Target:** integrated after Stage B on the released 0.11 main `316963c`; this branch uses WIP `0.12`, `SYM_FORMAT=6`, `SYM_ABI=1`. Promotion still requires independent review.
 
@@ -35,7 +35,7 @@ Baseline: `0.10`, `SYM_FORMAT=6`, `SYM_ABI=1`, one-word values, raw binary64 flo
 | Return | hidden caller destination pointer; callee copies 24 bytes |
 | Record field | 24-byte inline field; offsets use a size/alignment function |
 | Array | pointer-free kind with alignment 8 and stride 24; append/truncate/for copy 24 bytes |
-| Global / constant / `.sym` | 24-byte zero-initialised storage or rodata; `Sym.value` addresses a constant; `.sym` is `hex "<48 lowercase hex digits>"` |
+| Global / constant / `.sym` | later tier: 24-byte zero-initialised storage or rodata; `Sym.value` would address a constant; `.sym` is `hex "<48 lowercase hex digits>"` |
 | `Result[decimal]` | owned cell; `ok` payload at offset 0, descriptor size 24 |
 | Interface / lambda | parameter/return allowed, not receiver; Stage B capture copies 24 bytes |
 
@@ -81,7 +81,7 @@ The coefficient is normalised by removing trailing zeros; `dscale = max(0, fract
 
 Exact literals; never round. More than 38 significant digits, a nonzero value outside `int16`, or dscale outside `uint16` is a compile error. There is no underflow-to-zero: `1e-32769` errors. Zero keeps exponent 0, so a huge written exponent on zero is accepted if its dscale fits. Upper-exponent rescue: `1e32804` becomes coefficient `10^37`, exponent 32767; `1e32805` needs 39 digits and errors.
 
-The compiler parses a literal into two 64-bit coefficient words with multiply-by-ten/add and carries, validating precision, exponent and dscale; it uses no runtime. Decimal **arithmetic** folding is not required in v1; literals/unary minus materialise as rodata, and later folding uses the same rules. `decimal(p,s)` is not syntax; precision/scale is boundary metadata (section 5).
+The compiler parses a literal into two 64-bit coefficient words with multiply-by-ten/add and carries, validating precision, exponent and dscale; it uses no runtime. Decimal **arithmetic** folding is not required in v1; a literal materialises directly as a 24-byte frame temporary with three immediate word stores (v1 does not use rodata for decimal literals), and later folding uses the same rules. `decimal(p,s)` is not syntax; precision/scale is boundary metadata (section 5).
 
 ## 3. Operations and operators
 
@@ -107,7 +107,7 @@ decimal::quantize(a, scale, mode) -> Result[decimal]
 
 Display propagation is presentation, not arithmetic: add/sub `max`; multiply `sum` capped by the 38-digit/integer-part rule in §4.1 (value unchanged); remainder `max`; division/quantize the explicit target; unary minus unchanged; comparisons value only. `1.20 + 1.2` is `2.40`; `1.20 * 1.2` is `1.440`; `decimal::div(1.00, 2.0, 2, HALF_AWAY)` is `0.50`.
 
-Decimal traps use exit 10. The WIP 0.12 implementation assigns 40 not exactly representable (`DEC_INEXACT`), 41 overflow (`DEC_OVERFLOW`), 42 division by zero (`DEC_DIV_ZERO`), 43 invalid (`DEC_INVALID`), 44 unsupported range, 45 precision overflow, 46 exponent range, 47 display range, 48 buffer too small and 49 other; core statuses 1/2/4/6/7/8 remain unchanged and 2/10 stay internal. `ok`/`err` follow `Result[T]`.
+Decimal exact arithmetic traps use exit 10 with diagnostic ids only: 40 not exactly representable (`DEC_INEXACT`), 41 overflow (`DEC_OVERFLOW`), 42 division by zero (`DEC_DIV_ZERO`), 43 invalid (`DEC_INVALID`), 44 unsupported range, 45 precision overflow, 46 exponent range, 47 display range, 48 buffer too small and 49 other. The `Result`-returning APIs (`decimal::div`, `quantize`, `toInt`) carry the tested **core status** in the err code: 1 `DEC_OVERFLOW`, 3 `DEC_INEXACT`, 4 `DEC_INVALID`, 5 `DEC_DIV_ZERO`, 6 `DEC_UNSUPPORTED_RANGE`; 7/8/9 are reserved text/binding statuses not currently produced by these APIs, and 2/10 stay internal. Scale/mode are validated before the core: constant invalid values are compile errors, runtime invalid scale returns 6 and invalid mode 4. `ok`/`err` follow `Result[T]`.
 
 ## 4. Conversions and formatting
 
@@ -123,11 +123,11 @@ Decimal traps use exit 10. The WIP 0.12 implementation assigns 40 not exactly re
 `dscale` is metadata, not a numeric quantum. A multiply can produce more fractional places than a 38-digit value can display with its integer part. The value is unchanged; dscale is capped:
 
 ```text
-intd = max(0, digits(coefficient) + exponent)   // digits left of the point
+intd = max(0, digits(result_coefficient) + result_exponent)   // digits left of the point
 dscale = min(s1 + s2, max(0, 38 - intd))
 ```
 
-This preserves the integer part and 38 displayed digits without rounding. `format` returns `INEXACT` if significant fractional digits exceed the capped scale; only numeric overflow (>38 digits or exponent outside `int16`) traps.
+This uses the exact result value, never an operand, so multiplication display scale is order-independent. It preserves the integer part and 38 displayed digits without rounding. `format` returns `INEXACT` if significant fractional digits exceed the capped scale; only numeric overflow (>38 digits or exponent outside `int16`) traps.
 
 SQL Server `decimal(p,s)` (p<=38) reduces `s` when multiplication `p=p1+p2+1` exceeds 38, preserving integer digits. PostgreSQL `numeric` is arbitrary precision and stores dscale; Oracle `NUMBER` has 38 digits and column scale -84..127; MySQL `DECIMAL` caps 65/30. obo has no p/s in the type, so it derives this value-local cap within 38 digits.
 
@@ -160,7 +160,7 @@ Implementation lands after Stage B `0.11`; no version is reserved. Rejected: 16-
 | Decision | Final choice | Remaining alternative |
 |---|---|---|
 | Literal marker | none: bare fraction/exponent is decimal, `f/F` float | `m`, `d` (rejected) |
-| Trap codes | exit 10; ids 40–49; core 1/2/4/6/7/8 unchanged | shared errno/trap codes |
+| Trap codes | exit 10; ids 40–49 are trap ids only; Result errors carry core statuses 1/3/4/5/6 (7/8/9 reserved, 2/10 internal) | shared errno/trap codes |
 | Arithmetic failure | `+ - * %` trap; `div` returns `Result` | all operators `Result` |
 | Division/scale | no default; `div(a,b,scale,mode)`; `/` compile error; 0..32768 | fixed/negative scale |
 | Remainder | `%`/`%=` truncating, sign of dividend, `DIV_ZERO` trap | floor/Euclidean default |
