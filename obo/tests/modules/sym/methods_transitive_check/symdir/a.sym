@@ -1,9 +1,9 @@
-obosym 6
+obosym 7
 abi 1
-compiler "0.12"
+compiler "0.13"
 source 0xf6569c84545b5483
 dep l "l.obx"
-interface 0xad9822da934bc8c3
+interface 0x9a5308e9c46055f5
 module a
-depiface l 0xa631708ee1698f75
+depiface l 0x013937881a9be1f8
 fn make(p0: int): l::T

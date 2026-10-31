@@ -52,8 +52,12 @@ database-adapter registry work in another worktree.
 ## Resource identity in one page
 
 ```obo
-pub type Resource = ref record { reserved: int }
+pub type Resource = ref record { pub reserved: int }
 ```
+
+`reserved` is public in P0 because the tests and typed shell fixtures construct
+and read the shell directly. This is the documented P0 public-field limitation;
+the module-private slot table and native registry token remain private.
 
 `reserved` is a **checked hint**: a bounded slot index plus an unpredictable
 40-bit per-slot nonce. It is not a C token, not a capability and not authority.

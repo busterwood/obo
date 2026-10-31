@@ -1,6 +1,6 @@
 module lib
 pub type Real = float
-pub type Pair = ref record { a: float; b: int }
+pub type Pair = ref record { pub a: float; pub b: int }
 pub type Floats = []float
 pub const Half = 0.5f
 pub const NegZero = -0f

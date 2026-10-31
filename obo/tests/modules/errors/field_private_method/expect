@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:3:42: type 'lib::C' has no public field or exported method 'b' (only 'pub' declarations are visible outside module 'lib'; mark the field 'pub' or add a public method)

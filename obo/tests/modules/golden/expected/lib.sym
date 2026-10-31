@@ -1,19 +1,19 @@
-obosym 6
+obosym 7
 abi 1
-compiler "0.12"
-source 0x889de7ba5ed06e38
+compiler "0.13"
+source 0x174e3c7a7d11773a
 dep other "other.obx"
-interface 0x0101ecdd832eb974
+interface 0x8dd77a5c5a9fef89
 module lib
-depiface other 0xaf82ae64d770c496
+depiface other 0x2ad00a13934aa171
 type Node uid 0x5fca22110fba38d4
 type Fwd uid 0xc4e88e319fe28959
 type Shape uid 0x6fe855337d3c0b3d
 type Holder uid 0x1c2d79f85a8d8c56
-type Node = ref record { value: int; child: ?Node }
-type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
-type Fwd = ref record { c: ?Circle }
-type Holder = ref record { c: ?Circle }
+type Node = ref record { pub value: int; pub child: ?Node }
+type Shape = closed { Circle { pub r: int } Rect { pub w: int; pub h: int } }
+type Fwd = ref record { pub c: ?Circle }
+type Holder = ref record { pub c: ?Circle }
 type BoxAlias = other::Box
 type Alias = []Node
 type Cmp = fn(&Node, &Node): int

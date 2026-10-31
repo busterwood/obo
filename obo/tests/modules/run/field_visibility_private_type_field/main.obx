@@ -1,0 +1,7 @@
+module main
+import "lib.obx"
+fn main() {
+    let s = lib::mk(4)
+    println(s.id)                // expect: 4
+    println(lib::cached(s))      // expect: 8
+}

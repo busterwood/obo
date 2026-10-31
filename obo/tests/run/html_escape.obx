@@ -18,22 +18,22 @@ fn check(label: string, got: string, want: string) {
 
 fn escaped(s: string): string {
     let h = html::escapeText(s)
-    return h.text
+    return html::toText(h)
 }
 
 fn attr(s: string): string {
     let h = html::escapeAttr(s)
-    return h.text
+    return html::toText(h)
 }
 
 fn rawText(s: string): string {
     let h = html::raw(s)
-    return h.text
+    return html::toText(h)
 }
 
 fn joined(parts: &[]html::Html): string {
     let h = html::join(parts)
-    return h.text
+    return html::toText(h)
 }
 
 // "a", SOH, "b": the literal form for controls other than the supported
@@ -97,7 +97,7 @@ fn checkInt(label: string, got: int, want: int) {
 fn urlOk(label: string, url: string, want: string) {
     let r = html::validateUrl(url)
     match r {
-        ok(h) { check(label, h.text, want) }
+        ok(h) { check(label, html::toText(h), want) }
         err(m, c) { println("FAIL ", label, " rejected ", c, " [", m, "]") }
     }
 }
@@ -105,7 +105,7 @@ fn urlOk(label: string, url: string, want: string) {
 fn urlErr(label: string, url: string, wantMessage: string) {
     let r = html::validateUrl(url)
     match r {
-        ok(h) { println("FAIL ", label, " accepted [", h.text, "]") }
+        ok(h) { println("FAIL ", label, " accepted [", html::toText(h), "]") }
         err(m, c) {
             if c == 22 && m == wantMessage {
                 println("ok ", label)
@@ -145,7 +145,7 @@ fn main() {
     let badIn = bytes3('x', byte(0x80), 'y')
     let badWant = bytes3('x', byte(0x80), 'y')
     let badOut = html::escapeText(badIn)
-    check("text-invalid-utf8", badOut.text, badWant)
+    check("text-invalid-utf8", html::toText(badOut), badWant)
     // expect: ok text-invalid-utf8
 
     // 100k+ input: length and both ends are exact, not sampled.
@@ -155,21 +155,21 @@ fn main() {
     append(longBuf, '<')
     let longSource = string(longBuf)
     let longText = html::escapeText(longSource)
-    checkInt("long-text-len", len(longText.text), 100009)
+    checkInt("long-text-len", len(html::toText(longText)), 100009)
     // expect: ok long-text-len
-    check("long-text-prefix", substr(longText.text, 0, 5), "&amp;")
+    check("long-text-prefix", substr(html::toText(longText), 0, 5), "&amp;")
     // expect: ok long-text-prefix
     check("long-text-suffix",
-          substr(longText.text, len(longText.text) - 4, len(longText.text)),
+          substr(html::toText(longText), len(html::toText(longText)) - 4, len(html::toText(longText))),
           "&lt;")
     // expect: ok long-text-suffix
     let longAttr = html::escapeAttr(longSource)
-    checkInt("long-attr-len", len(longAttr.text), 100009)
+    checkInt("long-attr-len", len(html::toText(longAttr)), 100009)
     // expect: ok long-attr-len
-    check("long-attr-prefix", substr(longAttr.text, 0, 5), "&amp;")
+    check("long-attr-prefix", substr(html::toText(longAttr), 0, 5), "&amp;")
     // expect: ok long-attr-prefix
     check("long-attr-suffix",
-          substr(longAttr.text, len(longAttr.text) - 4, len(longAttr.text)),
+          substr(html::toText(longAttr), len(html::toText(longAttr)) - 4, len(html::toText(longAttr))),
           "&lt;")
     // expect: ok long-attr-suffix
 
@@ -203,10 +203,10 @@ fn main() {
     let rawH = html::raw(original)
     check("raw-caller-binding", original, "abc")
     // expect: ok raw-caller-binding
-    check("raw-value", rawH.text, "abc")
+    check("raw-value", html::toText(rawH), "abc")
     // expect: ok raw-value
-    let direct = new html::Html{text: "<i>direct</i>"}
-    check("direct-construction", direct.text, "<i>direct</i>")
+    let direct = html::raw("<i>direct</i>")
+    check("direct-construction", html::toText(direct), "<i>direct</i>")
     // expect: ok direct-construction
 
     // join order, already-safe inputs and empty array; the array is borrowed.

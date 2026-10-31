@@ -1,11 +1,11 @@
-obosym 6
+obosym 7
 abi 1
-compiler "0.12"
-source 0x61e56a4f5cff8fdc
-interface 0xaf82ae64d770c496
+compiler "0.13"
+source 0x69e54cd0b06b35f3
+interface 0x2ad00a13934aa171
 module other
 type Box uid 0xd3c72a1d4d0783b2
-type Box = ref record { v: int }
+type Box = ref record { pub v: int }
 const Unit: int = 0x0000000000000001
 fn make(p0: int): Box
 fn boxed(p0: Box): int

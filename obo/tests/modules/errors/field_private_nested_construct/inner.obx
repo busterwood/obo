@@ -1,0 +1,5 @@
+module inner
+pub type Hidden = ref record {
+    pub v: int
+    secret: int
+}

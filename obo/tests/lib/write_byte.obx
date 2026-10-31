@@ -99,7 +99,7 @@ fn main() {
                 ok(v) { println("write to read-only fd succeeded"); exit(1) }
                 err(m, c) {
                     if c != 9 { println("err code ", c, " want 9"); exit(1) }
-                    if len(w.buf) != 1 { println("buffer ", len(w.buf), " want 1"); exit(1) }
+                    if io::bufferedBytes(w) != 1 { println("buffer ", io::bufferedBytes(w), " want 1"); exit(1) }
                 }
             }
             let f = io::flush(w)
@@ -107,7 +107,7 @@ fn main() {
                 ok(v) { println("flush to read-only fd succeeded"); exit(1) }
                 err(m, c) {
                     if c != 9 { println("flush err code ", c, " want 9"); exit(1) }
-                    if len(w.buf) != 1 { println("flush buffer ", len(w.buf), " want 1"); exit(1) }
+                    if io::bufferedBytes(w) != 1 { println("flush buffer ", io::bufferedBytes(w), " want 1"); exit(1) }
                 }
             }
             let cl = closeFile(fd)

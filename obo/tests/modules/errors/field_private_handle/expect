@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:3:61: type 'lib::C' has no public field 'b' (only 'pub' fields are visible outside module 'lib'; mark 'b' 'pub' or add an accessor)

@@ -1,7 +1,7 @@
 module main
 import "lib.obx"
 // the implementation reads and changes a scalar of its mut argument, and frees nothing
-pub type Quiet = ref record { w: int }
+pub type Quiet = ref record { pub w: int }
 pub fn (q: &Quiet) size(mut x: &lib::Item): int {
     x.n += q.w
     return x.n

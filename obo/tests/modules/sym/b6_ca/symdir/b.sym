@@ -1,9 +1,9 @@
-obosym 6
+obosym 7
 abi 1
-compiler "0.12"
+compiler "0.13"
 source 0x2ec8547db6eef4af
 dep a "a.obx"
-interface 0x8cdf3f23b577c302
+interface 0xd14113da92d994ef
 module b
-depiface a 0xad320ebb1b35e980
+depiface a 0x27a7e21b97f85605
 fn mid() frees 1 a::g

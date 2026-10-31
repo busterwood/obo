@@ -1,0 +1,7 @@
+module lib
+pub type T = ref record {
+    pub v: int
+    secret: int
+}
+pub fn mk(v: int): T { return new T{v: v, secret: v * 2} }
+pub fn secretOf(t: &T): int { return t.secret }

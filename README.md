@@ -19,16 +19,19 @@ measurements.
 
 ## Current state (31 October 2026)
 
-The released compiler is **obo 0.12, symbol format 6, ABI 1** (643,073 bytes,
-sha256 `d98d6b5f…`), with exact 24-byte decimals, Stage B capture lists, the
-HTML escaping library and the configurable heap runtime. `seed/obo` is the
-promoted 0.12 image (same size and hash); it was promoted once after review.
-The released 0.11 seed (585,729 bytes, sha256 `01fa9ed3…`) built the 0.12 image
-once. The 0.10 seed (569,345 bytes, `30124be9…`) built the first 0.11 image.
-Floats were released at `0.10`/format 6; Stage B is `0.11`; decimal is `0.12`,
-all without changing symbol format 6 or ABI 1. Format 5 is not accepted.
+The worktree compiler is **obo 0.13, symbol format 7, ABI 1** (647,169 bytes,
+sha256 `4ec4e0d6…`), with private-by-default record fields, exact 24-byte
+decimals, Stage B capture lists, the HTML escaping library and the configurable
+heap runtime. `seed/obo` remains the promoted **0.12** image (643,073 bytes,
+`d98d6b5f…`); the 0.13 image is **not** promoted. The released 0.11 seed
+(585,729 bytes, sha256 `01fa9ed3…`) built the 0.13 image once, and the 0.13
+image reaches a fixed point; the 0.12 seed builds the same 0.13 image.
+Floats were released at `0.10`/format 6; Stage B is `0.11`/format 6; decimal is
+`0.12`/format 6; private-by-default fields are `0.13`/format 7. Format 6 is not
+accepted by the 0.13 compiler: rebuild old `.sym` files.
 Version policy: additive builtin/runtime extensions use patch releases such as
-the historical 0.8.1; floats are 0.10, Stage B is 0.11 and decimal is 0.12.
+the historical 0.8.1; floats are 0.10, Stage B is 0.11, decimal is 0.12 and
+field visibility is 0.13.
 
 - **Language.** Single ownership, moves, borrowed `&T` references, checked `^T`
   handles, effect summaries, `Result[T]`/`try`, incremental I/O, modules and
@@ -38,20 +41,24 @@ the historical 0.8.1; floats are 0.10, Stage B is 0.11 and decimal is 0.12.
   binary64 floats with shortest round-trip formatting and a checked parser,
   Stage B explicit capture lists (`fn [a, b](...)`) with call-scoped read-only
   borrows, scalar snapshots (including one-word float snapshots) and the
-  per-kind call-site firewall, and the exact 24-byte `decimal` scalar tier
+  per-kind call-site firewall, the exact 24-byte `decimal` scalar tier
   (bare fractional literals, exact `+ - * %`, comparisons, explicit
-  `div`/`quantize`/`toInt`, display-scale preservation). The HTML escaping
+  `div`/`quantize`/`toInt`, display-scale preservation), and private-by-default
+  record fields with `pub` per field, mixed records, opaque `priv`/`priviface`
+  `.sym` slots and constructor-only external construction. The HTML escaping
   library is in `obo/lib/html.obx`. Interface handles `^I` are later. The full
   reference is [obo/LANGUAGE.md](obo/LANGUAGE.md).
-- **Compiler.** 14,608 lines / 550,897 bytes of obo source. Numeric floats add
+- **Compiler.** 14,706 lines / 555,862 bytes of obo source. Numeric floats add
   the `float` type, exact literal/constant conversion, arithmetic, formatting,
   `parseFloat` and format-6 symbol support to the 0.9/format-5 lambda line;
   Stage B adds capture-list parsing, recursive incomplete/interface
   classification, scalar float snapshots and the call-site capture binding;
   0.12 adds the exact decimal type, literal parser, 24-byte ABI, operators,
-  explicit request validation and `Result` APIs. The 0.11 seed (585,729 bytes,
-  sha256 `01fa9ed3…`) built the 0.12 image once; the 0.10 seed built the first
-  0.11 image. The historical 0.9 and 0.8 seeds and their sizes are historical.
+  explicit request validation and `Result` APIs; 0.13 adds the `Field` visibility
+  flags, source `pub` fields, the designator/construction rules, the relaxed
+  private-field closure, `priv`/`priviface` writer/reader and format 7. The 0.11
+  seed (585,729 bytes, sha256 `01fa9ed3…`) built the 0.13 image once; the 0.12
+  seed builds the identical image and the fixed point holds.
 - **Tools.** `cat`, `wc`, `sort`, `head`, `tail` and the partial `eza`
   reimplementation are written in obo and built by `make tools` / `make eza`.
   Differential gates compare them with GNU coreutils 9.4 (`obo/tests/tools.py`)
@@ -71,33 +78,49 @@ the historical 0.8.1; floats are 0.10, Stage B is 0.11 and decimal is 0.12.
 
 | Current metric | Value |
 |---|---:|
-| Compiler source | 14,608 lines, 550,897 bytes |
-| Compiler (`--version`) | 643,073 bytes, sha256 `d98d6b5f…`, `obo 0.12`, sym-format 6, abi 1 |
-| Seed (`--version`) | promoted obo 0.12: 643,073 bytes, sha256 `d98d6b5f…`, sym-format 6, abi 1; the released 0.11 seed (585,729 bytes, `01fa9ed3…`) built this image once; the historical 0.10 seed is 569,345 bytes, `30124be9…`, `obo 0.10`, sym-format 6, abi 1 |
-| Self-host fixed point | stage 2 == stage 3 == compiler, 643,073 bytes, `d98d6b5f…`; the 0.11 seed builds the same image from source |
-| Self-compile wall time | 0.15 s on the 0.11 line; not re-benchmarked for 0.12 (host-dependent) |
-| Self-compile live peak | 2,194,160 bytes direct; 2,194,560 bytes port comparison (budget 2,500,000) |
-| Total allocated | 49,033,600 bytes direct; 49,038,064 bytes port comparison |
-| Maximum resident set | 4,028 KB on the 0.11 line; not re-measured for 0.12 |
-| Live-memory budget | 2,500,000 bytes: 305,840 spare direct / 305,440 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 47,840 at baseline 2,194,608 -> mutant 2,242,448) |
-| obo suite | 1,705 `run_fork` tests; 113 `module_test`; `sym_test.py` 44/44; `sym_fuzz.py` 200/200; `port_test` 598/598 with 10 encoder groups; `port_compare` 1,701/1,701; 69 doc examples; 29/29 import checks; 16/16 stdlib roots |
+| Compiler source | 14,706 lines, 555,862 bytes |
+| Compiler (`--version`) | 647,169 bytes, sha256 `4ec4e0d6…`, `obo 0.13`, sym-format 7, abi 1 |
+| Seed (`--version`) | `seed/obo` is still the promoted obo 0.12: 643,073 bytes, sha256 `d98d6b5f…`, sym-format 6, abi 1; the released 0.11 seed (585,729 bytes, `01fa9ed3…`) built the 0.13 image once; the 0.13 image is not promoted |
+| Self-host fixed point | stage 2 == stage 3 == compiler, 647,169 bytes, `4ec4e0d6…`; both the 0.11 seed `01fa9ed3…` and the 0.12 seed build this image from source |
+| Self-compile wall time | 0.15 s on the 0.11 line; not re-benchmarked for 0.13 (host-dependent) |
+| Self-compile live peak | 2,207,824 bytes direct; 2,208,192 bytes port comparison (budget 2,500,000) |
+| Total allocated | 49,506,992 bytes direct; 49,509,824 bytes port comparison |
+| Maximum resident set | 4,028 KB on the 0.11 line; not re-measured for 0.13 |
+| Live-memory budget | 2,500,000 bytes: 292,176 spare direct / 291,808 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 48,032 at baseline 2,208,240 -> mutant 2,256,272) |
+| obo suite | 1,741 `run_fork` tests; 141 `module_test`; `sym_test.py` 52/52; `sym_fuzz.py` 200/200; `port_test` 598/598 with 10 encoder groups; `port_compare` 1,729/1,729 default, 1,535/1,535 against the 0.12 seed and 1,477/1,477 against the 0.11 seed; 70 doc examples; 29/29 import checks; 16/16 stdlib roots |
 | Float suite | `float_f1.py` 19 groups in normal and `--noregs` builds (12,580 power-of-two values each); `lambda_float_capture` passes in both modes; `memory_log_check` 4 sources |
-| Seed comparison | `OBO_REF=obo/seed/obo` 1,535/1,535 identical flat cases against the promoted 0.12 seed; before promotion the same comparison against the 0.11 seed was 1,477/1,477 because the 58 decimal flat cases were skipped by explicit `(0, 12)` entries. Of the default 1,701 cases, the decimal additions are 58 flat cases plus one module tree |
-| Mutation gates | `mutate_fork` 680/710 + 30 equivalent, 0 missed/stale/broken; `mutate_port` 531/531; `mutate_io` 36/36 (including the self-host memory oracle); `mutate_meta` 71/82 + 11 equivalent; `mutate_decimal` 22/22; harness 27/27 |
+| Seed comparison | `OBO_REF=obo/seed/obo` (promoted 0.12) is 1,535/1,535; the released 0.11 seed is 1,477/1,477; the default (self) comparison is 1,729/1,729 |
+| Mutation gates | `mutate_fork` 694/725 caught + 31 equivalent, 0 missed/stale/broken; `mutate_port` 540/540 (5 reader/writer mutants exercised only by `sym_test` are judged by `mutate_fork`); `mutate_meta` 71/82 caught + 11 equivalent; `mutate_decimal` 22/22; `mutate_io` 36/36 (including the self-host memory oracle) |
 | Tools differential gate | 509 checks vs GNU coreutils 9.4; 4 memory cases |
-| Tool binaries | cat 53,249; wc 57,345; sort 81,921; head 53,249; tail 61,441 bytes (static, runtime included) |
-| eza E2 differential gate | reference-golden run not executed here: pinned eza is not on the host `PATH`; own binary gate and 5/5 memory cases pass |
-| eza E2 binary | 229,377 bytes (static, runtime included; reference eza 0.23.3 is 2,294,768) |
+| Tool binaries | cat 81,921; wc 86,017; sort 110,593; head 81,921; tail 94,209 bytes (static, runtime included) |
+| eza E2 differential gate | own-binary gate: 482 passed, 0 failed, 72 live-only skips; pinned reference eza is not on the host `PATH` |
+| eza E2 binary | 258,049 bytes (static, runtime included; reference eza 0.23.3 is 2,294,768) |
 | eza 10k-entry live peak | worst 2,184,368 bytes; `EZA_PEAK_MAX` 2,752,512 (a distinct eza cap, not the compiler budget) |
 | Minimal static executable | 32,769 bytes (runtime included) |
 
 The compiler budget is 2,500,000 bytes live, with the separate 30,000-byte
-empty-array oracle unchanged. The 0.12 line peaks at 2,194,160 bytes in direct
-self-compiles and 2,194,560 bytes in the port comparison: 305,840 and 305,440
-bytes spare respectively. No check was weakened. The live peak varies by a few
-hundred bytes with the source path and total allocation by about 2 KB. The
-historical lambda release budget remains 2,000,000 in its own record. The
-release is merged and promoted on main.
+empty-array oracle unchanged. The 0.13 line peaks at 2,207,824 bytes in direct self-compiles and
+2,208,192 in the port comparison: 292,176 and 291,808 bytes spare. Total
+allocation is 49,506,992 bytes direct and 49,509,824 bytes in the port comparison. No check was
+weakened. The live peak varies by a few hundred bytes with the source path and
+total allocation by about 2 KB. The historical lambda release budget remains
+2,000,000 in its own record. This 0.13 work is committed on its worktree and is
+not merged or promoted; `seed/obo` stays at 0.12.
+
+### Field visibility 0.13
+
+Record fields are private to the defining module unless declared `pub`. The
+`0.13`/format-7 change adds mixed records, module-level access, constructor-only
+external construction for records with any private field, private field types
+with the closure check relaxed for them, and opaque one-word `priv`/`priviface`
+slots in `.sym` that preserve layout without writing private names or types. The
+exported `pf`/`pfree` summary paths may still name a private field; that leak is
+accepted in v1 and means renaming such a field changes the interface hash while a
+field-list-only change may not. Closed-variant fields stay public. `fs::Dir` is a
+deliberate public-field v1 exception; `io::Reader`/`Writer` are private (with
+`bufferedBytes`), `html::Html` is private (with `raw`/`toText`), and the
+experimental DB/C wrappers hide their registry tokens while keeping explicit
+raw-token escape hatches such as `buffer::wrap`/`rawToken`.
 
 ### Decimal 0.12
 
@@ -362,7 +385,7 @@ cd obo && python3 tests/tools.py --memory              # the four pinned tool me
 cd obo && python3 bench/bench.py         # memory and time against the collector
 cd obo && ./obo --deps tests/modules/run/basic/main.obx -I tests/modules/run/basic  # dependencies first
 cd obo && mkdir -p /tmp/syms && ./obo --check src/obo.obo --sym-dir /tmp/syms        # check without an executable
-cd obo && ./obo --version                # obo 0.12 sym-format 6 abi 1 (0.11 seed built it once)
+cd obo && ./obo --version                # obo 0.13 sym-format 7 abi 1 (0.11 seed built it once)
 cd obo && ./obo --reemit-sym /tmp/syms/obo.sym   # canonical re-emission (test hook)
 ```
 

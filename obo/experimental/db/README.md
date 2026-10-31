@@ -262,9 +262,9 @@ is not a skip because the committed adapter is declarations-only.
 - No source float arguments/results in the native contract. SQLite REAL columns
   are exposed through SQLite's text conversion only; do not use this adapter for
   a floating-point protocol.
-- Obo record fields are not private. The token protects against accidental
-  stale/wrong-kind/forged integer use, not against trusted C or an adversarial
-  caller. The generation is finite (31 bits).
+- Obo token fields are private to their wrapper modules (0.13+). The token
+  protects against accidental stale/wrong-kind/forged integer use, not against
+  trusted C or an adversarial caller. The generation is finite (31 bits).
 - PostgreSQL's cbind is declarations-only on this host; libpq dynamic
   dependencies can still resolve differently at run time.
 - SQLite's declarations-only ABI is verified against the 3.45.1 header in

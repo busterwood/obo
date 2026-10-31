@@ -1,0 +1,3 @@
+module main
+import "lib.obx"
+fn main() { var x = lib::mk(); let y = replace(x.buf, new []byte(0)) }

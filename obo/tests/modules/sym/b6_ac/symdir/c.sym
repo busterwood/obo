@@ -1,9 +1,9 @@
-obosym 6
+obosym 7
 abi 1
-compiler "0.12"
+compiler "0.13"
 source 0xfb01c2c77a96347a
 dep b "b.obx"
-interface 0xee3ed02f32a1a877
+interface 0x625186475f0aa77e
 module c
-depiface b 0x8cdf3f23b577c302
+depiface b 0xd14113da92d994ef
 fn outer() frees 1 a::g

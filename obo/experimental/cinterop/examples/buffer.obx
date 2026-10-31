@@ -1,10 +1,12 @@
 // Small explicit-close obo view over the toolkit C byte buffers.
 //
-// The token is an integer registry token, not a pointer. Buffer fields are
-// ordinary public record fields; the C registry rejects stale/wrong-kind
-// integers. Dropping Buffer does NOT free the C buffer: call close(), normally
-// through defer. This is a scoped helper for the experimental toolkit, not a
-// managed ownership annotation.
+// The token is an integer registry token, not a pointer. Buffer's token field
+// is private to this module, so importers construct through from_bytes or the
+// explicit raw-token wrap(). Private fields reduce accidental construction;
+// they are not a capability, and the C registry remains what rejects
+// stale/wrong-kind integers. Dropping Buffer does NOT free the C buffer: call
+// close(), normally through defer. This is a scoped helper for the experimental
+// toolkit, not a managed ownership annotation.
 module buffer
 
 pub type Buffer = ref record { tok: int }
@@ -26,7 +28,13 @@ pub fn from_bytes(data: []byte): Result[Buffer] {
 
 // Wrap an existing positive registry token. The token is not a capability; the
 // registry still validates kind/generation on every operation.
+// Explicit raw-token constructors and accessor. These are deliberate escape
+// hatches for a caller that already has a registry token (for example another
+// adapter composing on the same C registry); the registry still validates the
+// token, and private fields are not a capability system.
 pub fn wrap(tok: int): Buffer { return new Buffer{tok: tok} }
+
+pub fn rawToken(b: &Buffer): int { return b.tok }
 
 pub fn (b: &Buffer) len(): int {
     return __cinterop("cres_buf_len", b.tok)

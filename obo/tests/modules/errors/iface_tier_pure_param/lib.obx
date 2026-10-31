@@ -1,6 +1,6 @@
 module lib
-pub type Leaf = ref record { v: int }
-pub type Item = ref record { n: int; o: ?Leaf }
+pub type Leaf = ref record { pub v: int }
+pub type Item = ref record { pub n: int; pub o: ?Leaf }
 pub type Reader = interface {
     pure fn size(mut p0: &Item): int
 }

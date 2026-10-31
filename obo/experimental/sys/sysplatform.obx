@@ -5,10 +5,13 @@
 //
 // The public shell is exactly:
 //
-//     pub type Resource = ref record { reserved: int }
+//     pub type Resource = ref record { pub reserved: int }
 //
 // `reserved` is a *checked table hint* (slot index + secret per-slot nonce),
-// never authority. A module-private fixed-capacity slot table keeps the native
+// never authority. It is deliberately `pub` in P0: tests and the typed shell
+// modules construct a Resource shell and copy the hint, and P0 has no public
+// constructor/accessor pair yet. This is the documented P0 public-field
+// limitation, not a privacy relaxation for the registry itself. A module-private fixed-capacity slot table keeps the native
 // registry token, kind, state and quota charge. Every entry point decodes the
 // hint, checks the slot, the unpredictable nonce, kind and state, checks that
 // the registered shell record is still alive, and only then asks the native
@@ -37,20 +40,20 @@ module sysplatform
 
 import "syserrors.obx" as errors
 
-pub type Resource = ref record { reserved: int }
+pub type Resource = ref record { pub reserved: int }
 
 pub type Options = ref record {
-    maxResources: int
-    maxShells: int
-    maxNativeBytes: int
-    ignorePipeSignal: bool
+    pub maxResources: int
+    pub maxShells: int
+    pub maxNativeBytes: int
+    pub ignorePipeSignal: bool
 }
 
 pub type Counts = ref record {
-    resources: int
-    shells: int
-    nativeBytes: int
-    cleanupFailures: int
+    pub resources: int
+    pub shells: int
+    pub nativeBytes: int
+    pub cleanupFailures: int
 }
 
 // Library kind constants. Values 1..22 are the design's planned kinds; 90..92

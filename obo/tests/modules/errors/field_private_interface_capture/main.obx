@@ -1,0 +1,7 @@
+module main
+import "lib.obx"
+fn apply(f: fn(): int): int { return f() }
+fn main() {
+    let h = lib::mk()
+    println(apply(fn [h](): int { return h.id }))
+}

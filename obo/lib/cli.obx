@@ -70,25 +70,25 @@ pub const VALUE_REQUIRED = 1
 pub const VALUE_OPTIONAL = 2
 
 pub type FlagSpec = ref record {
-    short: byte          // 0 = no short form
-    long: string         // canonical long name, never ""
-    mode: int            // VALUE_NONE / VALUE_REQUIRED / VALUE_OPTIONAL
-    consume: []string    // optional: values consumed as a separate next token
-    accept: []string     // values accepted after '=' or attached; empty = any
-    choices: []string    // text for error/help choices; empty = no choices text
-    default: string      // optional: value when no value is given
+    pub short: byte          // 0 = no short form
+    pub long: string         // canonical long name, never ""
+    pub mode: int            // VALUE_NONE / VALUE_REQUIRED / VALUE_OPTIONAL
+    pub consume: []string    // optional: values consumed as a separate next token
+    pub accept: []string     // values accepted after '=' or attached; empty = any
+    pub choices: []string    // text for error/help choices; empty = no choices text
+    pub default: string      // optional: value when no value is given
 }
 
 pub type Option = ref record {
-    short: byte          // the occurrence's short form, or 0
-    long: string         // the matched long name
-    value: string        // the effective value; "" for VALUE_NONE
-    hasValue: bool
+    pub short: byte          // the occurrence's short form, or 0
+    pub long: string         // the matched long name
+    pub value: string        // the effective value; "" for VALUE_NONE
+    pub hasValue: bool
 }
 
 pub type Parsed = ref record {
-    options: []Option
-    operands: []string
+    pub options: []Option
+    pub operands: []string
 }
 
 // a one-byte string for error wording ("Unknown argument -Q")

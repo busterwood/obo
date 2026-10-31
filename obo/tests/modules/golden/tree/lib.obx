@@ -2,12 +2,12 @@ module lib
 
 import "other.obx"
 
-pub type Node = ref record { value: int; child: ?Node }
+pub type Node = ref record { pub value: int; pub child: ?Node }
 pub type Fwd
 pub type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
-pub type Fwd = ref record { c: ?Circle }
+pub type Fwd = ref record { pub c: ?Circle }
 pub type BoxAlias = other::Box
-pub type Holder = ref record { c: ?Circle }
+pub type Holder = ref record { pub c: ?Circle }
 pub type Alias = []Node
 pub type Cmp = fn(&Node, &Node): int
 pub const Limit = 10

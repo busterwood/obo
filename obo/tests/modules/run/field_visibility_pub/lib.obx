@@ -1,0 +1,10 @@
+module lib
+pub type C = ref record {
+    pub a: int
+    pub buf: []byte
+    pub opt: ?[]byte
+    step: int
+}
+pub fn mk(a: int): C {
+    return new C{a: a, buf: new []byte(0), opt: nil, step: 1}
+}

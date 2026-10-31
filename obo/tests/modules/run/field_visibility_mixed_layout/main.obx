@@ -1,0 +1,14 @@
+module main
+import "lib.obx"
+fn main() {
+    var m = lib::mk()
+    println(m.a)                 // expect: 10
+    println(m.label, m.unit)     // expect: LU
+    m.a = 42
+    m.label = "x"
+    m.unit = "y"
+    println(m.a, m.label, m.unit) // expect: 42xy
+    let e = new lib::Empty{}
+    drop(e)
+    println("empty")             // expect: empty
+}

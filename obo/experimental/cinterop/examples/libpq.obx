@@ -5,10 +5,12 @@
 // obo never sees a PGconn* or PGresult*. The trusted C adapter validates the
 // token's kind and generation on every call and poisons it on close.
 //
-// IMPORTANT: record fields are not private in obo. An ordinary obo value can be
-// written as `new Connection{tok: 123}`; the C registry rejects an unknown,
-// stale, or wrong-kind token before dereferencing it. The token is not a
-// capability and this is not a security boundary against trusted C.
+// The token fields are private to this module: an importer cannot write
+// `new Connection{tok: 123}` accidentally and must use connect(). A copied
+// integer can still be smuggled back in (same-module code or a deliberate
+// raw-token API); the C registry rejects an unknown, stale, or wrong-kind token
+// before dereferencing it. The token is not a capability and this is not a
+// security boundary against trusted C.
 //
 // Dropping a Connection or Rows does NOT call PQfinish or PQclear. Close
 // explicitly (or use a scoped helper in the application) and call

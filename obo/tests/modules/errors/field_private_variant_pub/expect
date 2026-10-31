@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:2:23: 'pub' is not allowed on a variant field; variant fields are always public

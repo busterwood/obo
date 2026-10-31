@@ -3,6 +3,6 @@ module lib
 pub type Shape = interface {
     pure fn area(): int
 }
-pub type Hidden = ref record { s: int }
+pub type Hidden = ref record { pub s: int }
 fn (h: &Hidden) area(): int { return h.s }
 impl Shape for Hidden

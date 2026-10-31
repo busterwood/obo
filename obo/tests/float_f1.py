@@ -337,13 +337,13 @@ fn main() {
 
 
 def test_value_positions() -> None:
-    src = r'''type Pair = ref record { a: float; b: int }
+    src = r'''type Pair = ref record { pub a: float; pub b: int }
 type Choice = closed { One { x: float }; Two { y: float; z: int } }
 type Iface = interface {
     pure fn scale(x: float, k: int): float
     pure fn get(): float
 }
-type Impl = ref record { v: float }
+type Impl = ref record { pub v: float }
 fn (p: &Impl) scale(x: float, k: int): float { return x * float(k) }
 fn (p: &Impl) get(): float { return p.v }
 impl Iface for Impl
@@ -392,7 +392,7 @@ def test_module_constants() -> None:
     with open(lib, "w") as f:
         f.write('''module lib
 pub type Real = float
-pub type Pair = ref record { a: float; b: int }
+pub type Pair = ref record { pub a: float; pub b: int }
 pub type Floats = []float
 pub const Half = 0.5f
 pub const NegZero = -0f
@@ -560,7 +560,7 @@ def test_float_const_reader_matrix() -> None:
         if "stale" in q.stderr.lower():
             raise AssertionError(f"reader rejected {bad!r} as stale, not structural: {q.stderr}")
     # Format 5 is rejected before the new float grammar is read.
-    old5 = valid.replace("obosym 6", "obosym 5", 1)
+    old5 = valid.replace("obosym 7", "obosym 5", 1)
     bd = os.path.join(d, "old5")
     os.makedirs(bd)
     shutil.copyfile(os.path.join(d, "main.obx"), os.path.join(bd, "main.obx"))
@@ -568,7 +568,7 @@ def test_float_const_reader_matrix() -> None:
         f.write(old5)
     q = run([OBO, os.path.join(bd, "main.obx"), "--check",
              "-I", bd, "--sym-dir", bd, "--test-float-bits"])
-    if q.returncode != 2 or "has format 5; this compiler reads 6" not in q.stderr:
+    if q.returncode != 2 or "has format 5; this compiler reads 7" not in q.stderr:
         raise AssertionError(f"format-5 float file was not rejected first: {q.stderr}")
 
     # Canonical high-bit/NaN raw bits remain accepted.
@@ -650,7 +650,7 @@ fn main() {
 
 
 def test_containers() -> None:
-    src = r'''type Box = ref record { x: float }
+    src = r'''type Box = ref record { pub x: float }
 var G: float = 2f
 fn one(): Result[float] { return ok(1.5f) }
 fn main() {

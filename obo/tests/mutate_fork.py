@@ -691,8 +691,18 @@ SYM_MUTANTS = {
                                              "        append(b, 'q')\n        appInt(b, i)"),
     "sym: closed variants omitted": ("        appStr(b, t.variants[i].name)",
                                      "        appStr(b, \"\")"),
-    "sym: record fields reversed": ("        appStr(b, rec.fields[i].name)\n        appStr(b, \": \")\n        appTypeExpr(b, rec.fields[i].typ, modName)",
-                                    "        appStr(b, rec.fields[len(rec.fields) - 1 - i].name)\n        appStr(b, \": \")\n        appTypeExpr(b, rec.fields[len(rec.fields) - 1 - i].typ, modName)"),
+    "sym: record fields reversed": ("""        } else {
+            appStr(b, "pub ")
+            appStr(b, rec.fields[i].name)
+            appStr(b, ": ")
+            appTypeExpr(b, rec.fields[i].typ, modName)
+        }""",
+                                    """        } else {
+            appStr(b, "pub ")
+            appStr(b, rec.fields[len(rec.fields) - 1 - i].name)
+            appStr(b, ": ")
+            appTypeExpr(b, rec.fields[len(rec.fields) - 1 - i].typ, modName)
+        }"""),
     "sym: local type expressions lose their bare name": ("    if t.owner != \"\" && t.owner != modName {",
                                                          "    if t.owner != \"\" {"),
     "sym: freesall omitted": ("    if f.freesAll { appStr(b, \" freesall\") }",
@@ -887,6 +897,81 @@ SYM_MUTANTS = {
         """    restoreScan(ss)
     symMode = false
     truncate(symLoadNames, len(symLoadNames) - 1)"""),
+
+    # ---- field visibility (private by default; design section 11.4)
+    "field visibility: private-field access allowed": (
+        """            if rt0.fields[fi].private && rt0.owner != "" && rt0.owner != curModuleName {
+                errorAt(privateFieldMsg(rt0, fname), mline, mcol)
+            }""",
+        """            if false {
+                errorAt(privateFieldMsg(rt0, fname), mline, mcol)
+            }"""),
+    "field visibility: same-module private field refused": (
+        '            if rt0.fields[fi].private && rt0.owner != "" && rt0.owner != curModuleName {',
+        '            if rt0.fields[fi].private {'),
+    "field visibility: external construction with private fields allowed": (
+        """    if t.owner != "" && t.owner != curModuleName && hasPrivateFields(t) {
+        error("cannot construct '" + tname(t) + "' outside its module: it has private fields; add a constructor function in module '" +
+              t.owner + "'")
+    }""",
+        """    if false {
+        error("cannot construct '" + tname(t) + "' outside its module: it has private fields; add a constructor function in module '" +
+              t.owner + "'")
+    }"""),
+    "field visibility: mixed record loses its private slots": (
+        '        if t.fields[i].private { return true }',
+        '        if false { return true }'),
+    "field visibility: export closure traverses private fields": (
+        '            if t.fields[i].private { continue }   // a private field\'s type is the module\'s business',
+        '            if false { continue }   // a private field\'s type is the module\'s business'),
+    "field visibility: symCompareFields ignores visibility": (
+        '        if live.fields[i].private != parsed.fields[i].private { symDisagree(what) }',
+        '        if false { symDisagree(what) }'),
+    "field visibility: writer omits pub": (
+        """        } else {
+            appStr(b, "pub ")
+            appStr(b, rec.fields[i].name)
+            appStr(b, ": ")
+            appTypeExpr(b, rec.fields[i].typ, modName)
+        }""",
+        """        } else {
+            appStr(b, rec.fields[i].name)
+            appStr(b, ": ")
+            appTypeExpr(b, rec.fields[i].typ, modName)
+        }"""),
+    "field visibility: writer omits priv": (
+        '                appStr(b, "priv")',
+        '                appStr(b, "")'),
+    "field visibility: writer degrades priviface to priv": (
+        '                appStr(b, "priviface")',
+        '                appStr(b, "priv")'),
+    "field visibility: writer drops the parsed privateIface flag": (
+        '            if rec.fields[i].privateIface || containsIface(rec.fields[i].typ) {',
+        '            if containsIface(rec.fields[i].typ) {'),
+    "field visibility: reader accepts a bare field": (
+        """            if !isPub {
+                errorAt("expected 'pub', 'priv' or 'priviface' in a record field list", 0, 0)
+            }""",
+        """            if false {
+                errorAt("expected 'pub', 'priv' or 'priviface' in a record field list", 0, 0)
+            }"""),
+    "field visibility: reader accepts a private field in a variant": (
+        '            if variant {\n                errorAt("private fields are not allowed in a closed variant", mline, mcol)\n            }',
+        '            if false {\n                errorAt("private fields are not allowed in a closed variant", mline, mcol)\n            }'),
+    "field visibility: private placeholder offset is zero": (
+        '            append(rec.fields, new Field{name: "", offset: 8 * len(rec.fields), typ: tInt,',
+        '            append(rec.fields, new Field{name: "", offset: 0, typ: tInt,'),
+    "field visibility: containsIfaceIn ignores privateIface": (
+        '                if t.fields[i].privateIface { return true }',
+        '                if false { return true }'),
+    "field visibility: containsIface keeps a stale visited set": (
+        """fn containsIface(t: ^Type): bool {
+    truncate(ifaceSeen, 0)
+    return containsIfaceIn(t)
+}""",
+        """fn containsIface(t: ^Type): bool {
+    return containsIfaceIn(t)
+}"""),
 }
 
 MODULE_MUTANTS.update(SYM_MUTANTS)
@@ -922,6 +1007,7 @@ EQUIVALENT = {
     "image: the epilogue is the old two-instruction sequence": "equivalent: x86 leave is defined as mov rsp,rbp; pop rbp (RSP := RBP, then RBP := Pop()) and has no other effect, so the old five-byte encoding and leave; ret produce the same registers, flags and memory; only the code size differs, and the behavioural gates do not compare produced bytes",
 
     # interfaces v3 step 2: the summary bits that no reader consults, and the mode-0 check a full build cannot reach
+    "field visibility: symCompareFields ignores visibility": "equivalent in the current architecture for the same reason as the mode-0 method and interface checks: a full build writes each import's .sym from the live interface immediately before reading it back (compileUnit, writeSym, readSym mode 0), so the parsed visibility cannot differ from the live one; a crafted file is only ever read by --check (mode 1), which reconstructs placeholders and trusts the file by design. The writer's pub/priv/priviface markers are pinned separately by the round-trip and carrier mutants and tests, so this compare remains a defensive invariant that no honest input can distinguish.",
     "interfaces v3 X30: the mode-0 comparison ignores parameter modes": "equivalent for the same reason as the methods' mode-0 checks: a full build reads each import's .sym right after its own writer has rewritten it from the same live interface (compileUnit, writeSym, then readSym in mode 0), and an import must have a header, so no full build reads a file it did not write (a forged lib.sym in the sym dir is overwritten first); --check reads in mode 1, which compares nothing with the live interface. The writer's modes are pinned by the golden and the round trip (a writer that drops mut, X26, is caught there)",
     "interfaces v3 X8: the receiver's obj and vtable are loaded after the arguments (S4)": "equivalent on legal source: S4's order is defensive. The receiver is held as argument 0 (holdArg), and argOrderCheck refuses any later argument that moves or frees what the receiver points into; the mut-alias check also refuses a mut argument that points inside the receiver. For an interface receiver that is the box or pair slot, so no accepted call can replace, re-point or free the place whose obj and vtable the mutant reads. The mutant still saves the box pointer as argument 0 before the explicit arguments and reserves the vtable slot above them; after the arguments it reads [box] and [box+8] and fills those exact slots, so argument order, layout and the two dispatch words are unchanged. E6's errors/ifaces_calls case `h.d.grow(swap(h))` is rejected identically by the unmutated and mutant compilers, and the full suite (including run/ifaces_calls and run/ifaces_effects) passes without a fault. The only difference is the time of two reads of unchanged box words, which no legal program can observe",
     "interfaces v3 X15: the local tier drops the pfree-subset check": "equivalent in the current architecture: the signature comparison has already required method and member parameter modes to be equal (X38d), and the synthetic S(m) puts a pfree bit on exactly the member's mode-2 parameters. callFn records pfree only for a mode-2 argument, so a source method's pfree mask is a subset of S(m) by construction; a mode-1 parameter cannot be changed and no recorded free can land on it. The branch is defensive for a forged *method* summary, but implDecl only ever sees methods compiled from source: a .sym reader trusts an imported implementation and does not re-run the check, and a root cannot implement an interface for an imported type. The full suite passes without the branch, and there is no honest input that reaches it, so no test can distinguish it.",
@@ -1450,8 +1536,8 @@ INTERFACE_MUTANTS = {
     "interfaces v3 X9: a temporary may be borrowed into a cell": (
         "    if x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: a reference cannot borrow from a temporary\")\n    }\n",
         "    if false && x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: a reference cannot borrow from a temporary\")\n    }\n"),
-    "interfaces v3 X36a: SYM_FORMAT stays 2": ("const SYM_FORMAT = 6\n", "const SYM_FORMAT = 2\n"),
-    "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.12\"\n", "const OBO_VERSION = \"0.6\"\n"),
+    "interfaces v3 X36a: SYM_FORMAT stays 2": ("const SYM_FORMAT = 7\n", "const SYM_FORMAT = 2\n"),
+    "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.13\"\n", "const OBO_VERSION = \"0.6\"\n"),
 
     # summary reconstruction (S-2): setMemberSummary is shared by the source and the reader
     "interfaces v3 X18: the receiver bit is omitted for mut fn": (
@@ -1535,8 +1621,8 @@ LAMBDA_MUTANTS = {
         '    if k == "fn" {\n        for i in 0..fnArity(t) { closureCheck(fnParam(t, i), declName, variant, line) }\n',
         '    if false {\n        for i in 0..fnArity(t) { closureCheck(fnParam(t, i), declName, variant, line) }\n'),
     "lambdas X9: reader field accepts a function value": (
-        '        let t = symParseType()\n        rejectFn(t, "a record field cannot be a function value; function values are parameters and locals only")\n',
-        '        let t = symParseType()\n'),
+        '            let t = symParseType()\n            rejectFn(t, "a record field cannot be a function value; function values are parameters and locals only")\n',
+        '            let t = symParseType()\n'),
     "lambdas X10: reader global accepts a function value": (
         '    rejectFn(t, "a function value cannot be a global; it is a parameter or a local")\n', ''),
     "lambdas X11: reader constant accepts a function value": (

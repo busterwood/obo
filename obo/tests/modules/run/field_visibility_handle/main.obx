@@ -1,0 +1,10 @@
+module main
+import "lib.obx"
+fn main() {
+    var c = lib::mk()
+    let h = handle(c)
+    println(h.a)                 // expect: 1
+    h.a = 6
+    println(h.a)                 // expect: 6
+    println(c.a)                 // expect: 6
+}

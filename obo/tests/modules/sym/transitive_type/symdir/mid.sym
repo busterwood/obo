@@ -1,9 +1,9 @@
-obosym 6
+obosym 7
 abi 1
-compiler "0.12"
+compiler "0.13"
 source 0x8cb6e1234683741b
 dep lib "lib.obx"
-interface 0xefd374f059ca1e86
+interface 0x889892399ab41649
 module mid
-depiface lib 0xaa08c7688f25f7e9
+depiface lib 0x97b9dfa7a9dc00de
 fn m(): lib::T

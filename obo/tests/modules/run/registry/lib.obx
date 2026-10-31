@@ -1,5 +1,5 @@
 module lib
-pub type T = ref record { v: int }
+pub type T = ref record { pub v: int }
 pub fn make(v: int): T { return new T{v: v} }
 pub fn value(t: T): int { return t.v }
 pub type Shape = closed { Dot { x: int } }

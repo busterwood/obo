@@ -120,9 +120,11 @@ fn use(c: &Connection) {
 }
 ```
 
-- The record field is an integer token. Obo record fields are **not private**;
-  say so honestly. Forged or stale integers are rejected by the C registry
-  before dereference.
+- The record field is an integer token and is **private to the wrapper module**
+  (0.13+), so importers cannot accidentally construct or mutate it. Say so
+  honestly: a same-module raw constructor or accessor can still copy a token, and
+  the C registry rejects forged or stale integers before dereference. Private
+  fields are not a capability boundary.
 - Accept `[]byte`, `[]?[]byte` and `[]bool` at the public edge; build the small
   fixed packet in obo, then copy it to a C buffer once.
 - Provide `value`/`text` accessors that use the C length and reject embedded NUL

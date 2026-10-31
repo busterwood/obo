@@ -1,5 +1,5 @@
 module lib
-pub type Node = ref record { v: int }
+pub type Node = ref record { pub v: int }
 pub const Limit = 10
 pub const Mask = byte(255)
 pub const On = true

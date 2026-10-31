@@ -1,4 +1,4 @@
 module a
-pub type Box = ref record { v: int }
+pub type Box = ref record { pub v: int }
 pub var g: Box = new Box{v: 1}
 pub fn wipe() { g = new Box{v: 2} }
