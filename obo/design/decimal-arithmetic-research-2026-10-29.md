@@ -5,15 +5,22 @@
 **Status:** Research spike. No compiler, runtime, test, Makefile or other design document was changed. Benchmark sources, binaries and logs live under `/tmp/obo-decimal-arith/`, not in the repository.
 **Companions:** `decimal-research-2026-10-28.md` (approved 24-byte design and database survey) and `numeric-literals-decision-2026-10-29.md` (literal policy).
 
-**D1 implementation status (2026-10-31, non-normative).** A private, experimental
-core now lives in `obo/experimental/decimal/` for independent review. It imports
-the repaired 24-byte/38-digit prototype and adds exact parse/format and
-mathematical `decimal(p,s)` binding validation. It is not compiler/runtime
-integration, not an ABI, not a public API and not approved `decimal(p,s)` syntax;
-division, remainder, default rounding and database adapters remain open.
-The 16-byte/96-bit `.NET` sketches and the `m` literal suffix remain superseded
-for the target design. See `experimental/decimal/README.md` for the implemented
-contract, honest unsupported cases and evidence.
+**D1/D2 implementation status (2026-10-31, non-normative).** A private,
+experimental core lives in `obo/experimental/decimal/` for independent review.
+D1 imported the repaired 24-byte/38-digit prototype and added exact
+parse/format and mathematical `decimal(p,s)` binding validation. D2 added an
+explicit exact-versus-rounded arithmetic contract: exact add/sub/mul/div and
+truncating remainder, explicitly scaled/precision division with all eight
+rounding modes, and the wide-gap sticky add/sub path (including the
+power-of-ten cancellation boundary). D2 also applied the reviewed portable
+optimizations (fast digit count, `divq` fast paths, 19-digit chunk
+drop/scale and text extraction) without changing the ABI. It is still not
+compiler/runtime integration, not an ABI, not a public API and not approved
+`decimal(p,s)` syntax; public default rounding, public division scale,
+overflow/error grammar and database adapters remain open. The 16-byte/96-bit
+`.NET` sketches and the `m` literal suffix remain superseded for the target
+design. See `experimental/decimal/README.md` for the implemented contract,
+proposed policies, honest unsupported cases and evidence.
 
 **Markers:** **[V]** verified locally in this spike: measured, rebuilt, or read in the local source tree. **[C]** cited externally: stated by the cited primary source but not independently reproduced here. **[O]** observed environment or implementation detail, not a general contract. **[I]** inference, design judgment or recommendation. Design-document statements are marked [V design]; vendor facts they cite are [C] unless reproduced here. All performance numbers are [V] for the stated host and method only. No unmeasured performance claim is presented as fact.
 

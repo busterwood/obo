@@ -39,34 +39,54 @@ b2f3ad8a8bb430d3eda9e2c598a829e590066f8bd0dd11a71cbadc6423e80a1f
 
 ## Imported and changed in this repository
 
-`tests/dec24_test.c` and `tests/decimal_oracle.py` are byte-identical to the
-reviewed copies above. `dec24.c` and `dec24.h` retain the reviewed core and
-receive only additive D1 status constants/names (`PRECISION_OVERFLOW`,
-`EXPONENT_RANGE`, `DISPLAY_RANGE`, `BUFFER_SMALL`); no existing operation,
-status value or tested behavior changed. Current hashes:
+The reviewed core kept its limb primitives, status values and tested D1
+behavior. D2 changes are additive except for the deliberate
+replacement of the old `DEC_UNSUPPORTED_EXACT` add/sub refusal by the sticky
+rounded path; the exact entry points report `DEC_INEXACT` instead where the
+exact result is not 38-digit representable. The import-time reviewed hashes
+above remain the historical provenance of the primitive code.
+
+Step 1 (behavior-preserving optimization) added the BSR/`10^i` digit count,
+the `divq` fast paths, 19-digit chunk drop/scale and the text 19-digit split.
+Step 2 added `dec24_arith.c`/`.h`, the exact/rounded contract, division,
+truncating remainder and the wide-gap sticky add/sub.
+
+Current D2 hashes:
 
 ```text
-e98d59de10eeb8eb89dc9930ec0a2b70aa0c0de68c60157649c220a1653882ec  dec24.c
-d97d107eca85123c268d7cb2555b0d75b22d3db9566e457685992065f997f516  dec24.h
-ae26f4fc9a4c0a1198335b69a3e52b681418daad8222460e14a2c53509cb9ae1  dec24_text.c
+3ec61c496bbc9911e61d006c3e65fb4d91989d19935f70de5364349c0771ceae  dec24.c
+e71df2a6c45d4909fa83f5ae3e6ef48a1368b7f2b01973a53c8924535f2cd3ff  dec24.h
+4bfc67b2ff59e0600c26db8563cf202b9ddd53b8f499a9d2b2e60105be05d491  dec24_text.c
 04c8b9133686cdd597a0aebbe3fec79f4443c6f79d46df03b83a51e581e5ce7b  dec24_text.h
 b81ffc8fc14202be4f053f66ab0d381985fe7034bda5adf9a5cfdf006801c7cb  dec24_bind.c
 bb285370458d035d0ae302d6bc15aaa1d49cc8776a7a4b2c68052f4ff194d869  dec24_bind.h
-940bfc6a1a9d60071a220ca980b03250c1384fb5de3d04b49e7290866d3fb6a9  tests/dec24_test.c
-4c0aada160ac6d6d043045cb63d94a723921708e1fe1fe4202116434528d09db  tests/decimal_oracle.py
+fce297916a6f1acf2af8cca81e6ed5940be42d29370d835126bebbc09a7c74da  dec24_arith.c
+b55863684088687223114e4da4e204f44c242ae061f93d53dafd5013cea87240  dec24_arith.h
+fdb9e59998e8da736a5a19e9a72a2ace6a06839fd74bf6a5a2a35465205b9c34  tests/dec24_test.c
+be222cf840a8724127233b31899786c4363d77d1e36849cf1b993967cfecb899  tests/decimal_oracle.py
+78e8b0b72b3f414a9b549bcc70a24247cd69635fff8cb2927ac9887024cf3aa6  tests/arithmetic_oracle.py
+4d0b7f68c8aaf651cd72fec59a14ae1b5302bbe6892598bf0c9e0f6a90e05a40  tests/dec24_arith_test.c
+872725b8f574860e844f60a83b68237df91a36e451cbbf3d4c3c8c80425a42f6  tests/generate_arithmetic_vectors.py
+d3dad2aa484c926c2b5b1138224b043c96fa4f86c625979718d8b752819ca5ff  tests/test_arithmetic_oracle.py
+296040cfe86836d6df8e92b09ef2c94fbd543a6a124f15832a1c65ef65bc551e  tests/run_decimal_tests.py
+36a5d1585c4966f1d1ae79f9bb0823ee32fd07126e9c15db7b44d219663507c7  tests/run_property_probes.py
 ```
 
-New D1 files are the text and binding modules, their independent Python
-oracles/generators, the C test bodies, the aggregate/host/start entry points,
-the evidence runner and the optional seeded property-probe runner. They were
-written for this package; no monolithic untested fast path was copied from the
-private scratch trees.
+`tests/dec24_test.c` now includes the explicit D2 replacement of the old
+`12e76 + 1` refusal; the rest of the retained D1 vectors are unchanged or
+extended. `tests/decimal_oracle.py` gained a wide-gap fallback that delegates
+to the independent rational model instead of returning `UNSUPPORTED_EXACT`.
 
 The focused upper-exponent repair changed only `dec24_text.c`/`.h` and tests: a
 parsed value whose normalized exponent exceeds 32767 puts back the minimal
 coefficient trailing zeros needed to store exponent 32767, if the result stays
-within 38 digits. It adds no ABI or compiler change. The import-time reviewed
-hashes above are unchanged.
+within 38 digits. It adds no ABI or compiler change.
+
+The D2 arithmetic oracle (`tests/arithmetic_oracle.py`) is independent of the C
+implementation: it uses `Fraction` plus integer rounding decisions, not Python
+`decimal`, and the property probes compare division, remainder and wide-gap
+results against it. The retained Python `decimal` cross-check remains a
+secondary D1 check only.
 
 ## Evidence
 
@@ -74,13 +94,17 @@ The runner writes fresh immutable evidence outside the repository:
 
 ```sh
 python3 obo/experimental/decimal/tests/run_decimal_tests.py \
-    --evidence /tmp/opencode/decimal-D1-<timestamp>
+    --evidence /tmp/opencode/decimal-D2-<timestamp>
+python3 obo/experimental/decimal/tests/run_property_probes.py --full \
+    --evidence /tmp/opencode/decimal-D2-<timestamp>-probes
 ```
 
-It records exact package source hashes, generated fixture hashes, build/run
+They record exact package source hashes, generated fixture hashes, build/run
 commands, C and Python output, sanitizer output, `nm`/size/disassembly output
 and the current git HEAD/status. Source generation does not write into the
-repository working tree.
+repository working tree. The D2 benchmark harness and its logs are outside the
+repository under `/tmp/opencode/decimal-D2-<timestamp>-bench`; the README
+records the method and medians.
 
 Suggested package integrity command (excluding this file while generating):
 
