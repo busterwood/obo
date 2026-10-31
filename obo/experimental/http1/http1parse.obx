@@ -1,0 +1,1661 @@
+// Experimental incremental HTTP/1.1 request parser (H1a0).
+//
+// Status: H1a0 experimental slice, unstable. Pure obo: no sockets, streams,
+// clocks or native calls. The caller feeds bounded byte arrays and drives
+// next/readBody; incomplete input returns NeedRead and preserves every bit of
+// parser state. Bytes after a body belong to the next request.
+//
+// Grammar and policy follow obo/design/http1-server-design.md sections 5 and 9:
+// strict CRLF, token methods, raw request targets, case-insensitive field names,
+// no obs-fold, CL/TE ambiguity rejected, chunked only as the final transfer
+// coding, bounded chunks/trailers, 100-continue state, HTTP/1.0 compatibility
+// only when enabled, and a terminal error that can never parse a second request.
+//
+// The parser does not allocate a request-sized buffer. The input buffer is fixed
+// at maxHeaderBytes + maxHeaderLine; feed copies into it and returns false when
+// no room remains. A complete line must therefore fit that budget.
+module http1parse
+
+import "http1core.obx" as core
+
+pub type Event = closed {
+    NeedRead {}
+    HeadReady {}
+    BodyData { bytes: []byte }
+    BodyEnd {}
+    Error { status: int; code: int; message: string }
+    Failed {}
+    Closed {}
+}
+
+pub type ContinueState = closed {
+    ContinueNone {}
+    ContinueDue {}
+    ContinueSent {}
+    ContinueSkipped {}
+}
+
+pub type Parser = ref record {
+    limits: core::Limits
+    buf: []byte
+    start: int
+    end: int
+    cap: int
+    state: int
+    failed: bool
+    errorSent: bool
+    errorStatus: int
+    errorMessage: string
+    eofSeen: bool
+    terminalClosed: bool
+    scan: int
+    head: core::RequestInfo
+    headReady: bool
+    headEmitted: bool
+    requestsStarted: int
+    lastKeepAlive: bool
+    complete: bool
+    bodyEnded: bool
+    remaining: int
+    chunkRemaining: int
+    chunkCount: int
+    chunkMeta: int
+    bodyTotal: int
+    trailerBytes: int
+    trailers: []core::Header
+    continueMode: int
+    headerBytes: int
+    headerCount: int
+    closeRequested: bool
+    http10: bool
+    hasCL: bool
+    contentLength: int
+    expectHeader: bool
+    chunked: bool
+    hasBody: bool
+    targetCanonical: string
+    authorityRaw: string
+    scheme: string
+    emit: int
+    bodyChunk: []byte
+    bodyCap: int
+}
+
+type TargetParts = ref record {
+    scheme: string
+    authority: string
+    canonical: string
+    path: string
+    query: string
+}
+
+type Authority = ref record {
+    host: string
+    port: int
+    hasPort: bool
+    canonical: string
+}
+
+const S_START = 0
+const S_HEADERS = 1
+const S_FIXED = 2
+const S_CHUNK_SIZE = 3
+const S_CHUNK_DATA = 4
+const S_CHUNK_CRLF = 5
+const S_TRAILERS = 6
+const S_COMPLETE = 7
+const S_FAILED = 8
+
+const C_NONE = 0
+const C_DUE = 1
+const C_SENT = 2
+const C_SKIPPED = 3
+
+const EV_NONE = 0
+const EV_NEED = 1
+const EV_HEAD = 2
+const EV_BODY = 3
+const EV_END = 4
+const EV_ERR = 5
+const EV_CLOSED = 6
+
+const MAX_METHOD = 32
+const MAX_INT = 9223372036854775807
+const BODY_STEP = 65536
+
+fn emptyInfo(): core::RequestInfo {
+    return new core::RequestInfo{
+        method: "",
+        target: "",
+        path: "",
+        query: "",
+        scheme: "",
+        authority: "",
+        versionMajor: 0,
+        versionMinor: 0,
+        http10: false,
+        headers: new []core::Header(0),
+        hasContentLength: false,
+        contentLength: 0,
+        chunked: false,
+        hasBody: false,
+        expectContinue: false,
+        keepAlive: false,
+        close: false
+    }
+}
+
+pub fn makeParser(limits: &core::Limits): Result[Parser] {
+    let checked = try core::validateLimits(limits)
+    if !checked { return err("HTTP limits are invalid", core::ERR_INVALID_ARGUMENT) }
+    let cap = limits.maxHeaderBytes + limits.maxHeaderLine
+    if cap <= 0 { return err("HTTP input buffer budget is empty", core::ERR_INVALID_ARGUMENT) }
+    return ok(new Parser{
+        limits: core::copyLimits(limits),
+        buf: new []byte(cap),
+        start: 0,
+        end: 0,
+        cap: cap,
+        state: S_START,
+        failed: false,
+        errorSent: false,
+        errorStatus: 0,
+        errorMessage: "",
+        eofSeen: false,
+        terminalClosed: false,
+        scan: 0,
+        head: emptyInfo(),
+        headReady: false,
+        headEmitted: false,
+        requestsStarted: 0,
+        lastKeepAlive: false,
+        complete: false,
+        bodyEnded: false,
+        remaining: 0,
+        chunkRemaining: 0,
+        chunkCount: 0,
+        chunkMeta: 0,
+        bodyTotal: 0,
+        trailerBytes: 0,
+        trailers: new []core::Header(0),
+        continueMode: C_NONE,
+        headerBytes: 0,
+        headerCount: 0,
+        closeRequested: false,
+        http10: false,
+        hasCL: false,
+        contentLength: 0,
+        expectHeader: false,
+        chunked: false,
+        hasBody: false,
+        targetCanonical: "",
+        authorityRaw: "",
+        scheme: "",
+        emit: EV_NONE,
+        bodyChunk: new []byte(0),
+        bodyCap: BODY_STEP
+    })
+}
+
+fn fail(mut p: &Parser, status: int, message: string) {
+    if p.failed { return }
+    p.failed = true
+    p.errorStatus = status
+    p.errorMessage = message
+    p.state = S_FAILED
+    p.emit = EV_ERR
+}
+
+fn avail(p: &Parser): int {
+    return p.end - p.start
+}
+
+fn compact(mut p: &Parser) {
+    let n = p.end - p.start
+    if p.start == 0 { return }
+    for i in 0..n { p.buf[i] = p.buf[p.start + i] }
+    p.start = 0
+    p.end = n
+}
+
+fn consumeBytes(mut p: &Parser, n: int) {
+    p.scan = 0
+    p.start += n
+    if p.start == p.end {
+        p.start = 0
+        p.end = 0
+    } else if p.start > p.cap / 2 {
+        compact(p)
+    }
+}
+
+pub fn feed(mut p: &Parser, data: &[]byte): Result[bool] {
+    // After a clean EOF or a terminal Closed, input cannot be added. Buffered
+    // bytes from before the EOF may still be parsed by next/readBody.
+    if p.failed || p.state == S_FAILED || p.eofSeen || p.terminalClosed {
+        return ok(false)
+    }
+    let n = len(data)
+    if n == 0 { return ok(true) }
+    if n > p.cap - p.end {
+        compact(p)
+        if n > p.cap - p.end {
+            var status = 400
+            if p.state == S_START { status = 414 }
+            if p.state == S_HEADERS { status = 431 }
+            fail(p, status, "HTTP parser input buffer is full")
+            return ok(false)
+        }
+    }
+    for i in 0..n { p.buf[p.end + i] = data[i] }
+    p.end += n
+    return ok(true)
+}
+
+pub fn buffered(p: &Parser): int {
+    return p.end - p.start
+}
+
+pub fn isFailed(p: &Parser): bool { return p.failed }
+pub fn isComplete(p: &Parser): bool { return p.complete && p.bodyEnded }
+pub fn requestNumber(p: &Parser): int { return p.requestsStarted }
+
+// Return the byte index of the CR that ends the next line, or -1 when the line
+// has not arrived. The CRLF pair is validated and a bare CR/LF, NUL or an
+// over-limit line fails the parser.
+fn findLine(mut p: &Parser, maxLine: int, tooLongStatus: int): int {
+    let n = avail(p)
+    if n == 0 {
+        p.scan = 0
+        return -1
+    }
+    // `scan` is relative to p.start and survives feed/compact. A one-byte feed
+    // resumes where the previous scan stopped instead of rescanning the line.
+    var i = p.scan
+    if i < 0 || i > n { i = 0 }
+    while i < n {
+        let b = p.buf[p.start + i]
+        if b == '\n' {
+            if i == 0 || p.buf[p.start + i - 1] != '\r' {
+                fail(p, 400, "bare LF in a header or start line")
+                return -1
+            }
+            let lineLen = i + 1
+            if lineLen > maxLine {
+                fail(p, tooLongStatus, "HTTP line exceeds its configured limit")
+                return -1
+            }
+            p.scan = 0
+            return p.start + i - 1
+        }
+        if b == '\r' {
+            if i + 1 >= n {
+                // The CR might be followed by the missing LF on the next feed.
+                p.scan = i
+                return -1
+            }
+            if p.buf[p.start + i + 1] != '\n' {
+                fail(p, 400, "bare CR in a header or start line")
+                return -1
+            }
+        }
+        if b == 0 {
+            fail(p, 400, "NUL byte in an HTTP line")
+            return -1
+        }
+        i += 1
+    }
+    p.scan = n
+    if n > maxLine {
+        fail(p, tooLongStatus, "HTTP line exceeds its configured limit")
+    }
+    return -1
+}
+
+fn bytesString(b: &[]byte, from: int, to: int): string {
+    let out = new []byte(to - from)
+    for i in from..to { out[i - from] = b[i] }
+    return string(out)
+}
+
+fn copyHeader(h: &core::Header): core::Header {
+    return new core::Header{name: h.name, value: h.value}
+}
+
+fn copyHeaders(a: &[]core::Header): []core::Header {
+    let out = new []core::Header(0)
+    for i in 0..len(a) { append(out, copyHeader(&a[i])) }
+    return out
+}
+
+pub fn requestInfo(p: &Parser): Result[core::RequestInfo] {
+    if !p.headReady { return err("request head is not ready", core::ERR_INVALID_STATE) }
+    return ok(new core::RequestInfo{
+        method: p.head.method,
+        target: p.head.target,
+        path: p.head.path,
+        query: p.head.query,
+        scheme: p.head.scheme,
+        authority: p.head.authority,
+        versionMajor: p.head.versionMajor,
+        versionMinor: p.head.versionMinor,
+        http10: p.head.http10,
+        headers: copyHeaders(&p.head.headers),
+        hasContentLength: p.head.hasContentLength,
+        contentLength: p.head.contentLength,
+        chunked: p.head.chunked,
+        hasBody: p.head.hasBody,
+        expectContinue: p.head.expectContinue,
+        keepAlive: p.head.keepAlive,
+        close: p.head.close
+    })
+}
+
+pub fn headerCount(p: &Parser): int { return len(p.head.headers) }
+
+pub fn headerAt(p: &Parser, index: int): Result[core::Header] {
+    if index < 0 || index >= len(p.head.headers) {
+        return err("header index is outside the request", core::ERR_INVALID_ARGUMENT)
+    }
+    return ok(copyHeader(&p.head.headers[index]))
+}
+
+pub fn headerValue(p: &Parser, name: string): Result[?core::Header] {
+    if !core::isToken(name) {
+        return err("header name is not a token", core::ERR_INVALID_ARGUMENT)
+    }
+    for i in 0..len(p.head.headers) {
+        if core::equalFold(p.head.headers[i].name, name) {
+            let found: ?core::Header = copyHeader(&p.head.headers[i])
+            return ok(found)
+        }
+    }
+    let none: ?core::Header = nil
+    return ok(none)
+}
+
+pub fn trailerCount(p: &Parser): int { return len(p.trailers) }
+
+pub fn trailerAt(p: &Parser, index: int): Result[core::Header] {
+    if index < 0 || index >= len(p.trailers) {
+        return err("trailer index is outside the request", core::ERR_INVALID_ARGUMENT)
+    }
+    return ok(copyHeader(&p.trailers[index]))
+}
+
+pub fn trailerValue(p: &Parser, name: string): Result[?core::Header] {
+    if !core::isToken(name) {
+        return err("trailer name is not a token", core::ERR_INVALID_ARGUMENT)
+    }
+    for i in 0..len(p.trailers) {
+        if core::equalFold(p.trailers[i].name, name) {
+            let found: ?core::Header = copyHeader(&p.trailers[i])
+            return ok(found)
+        }
+    }
+    let none: ?core::Header = nil
+    return ok(none)
+}
+
+// Set when every expect/body/100-continue condition is reviewed. The parser
+// only records state; writing the interim response is the connection layer's
+// job (or http1write::continueBytes in a test driver).
+pub fn continueState(p: &Parser): ContinueState {
+    if p.continueMode == C_SENT { return new ContinueSent{} }
+    if p.continueMode == C_SKIPPED { return new ContinueSkipped{} }
+    if p.continueMode == C_DUE { return new ContinueDue{} }
+    return new ContinueNone{}
+}
+
+pub fn continueDue(p: &Parser): bool {
+    return p.continueMode == C_DUE
+}
+
+pub fn markContinueSent(mut p: &Parser): Result[bool] {
+    if p.continueMode == C_SENT { return ok(true) }
+    if p.continueMode != C_DUE {
+        return err("no 100-continue response is due", core::ERR_INVALID_STATE)
+    }
+    p.continueMode = C_SENT
+    return ok(true)
+}
+
+// -1: non-digit or empty, -2: 64-bit overflow, -3: value exceeds maxValue.
+fn parseDigits(value: string, maxValue: int): int {
+    if len(value) == 0 { return -1 }
+    var v = 0
+    for i in 0..len(value) {
+        let b = value[i]
+        if b < '0' || b > '9' { return -1 }
+        let d = int(b) - int('0')
+        if v > (MAX_INT - d) / 10 { return -2 }
+        v = v * 10 + d
+    }
+    if v > maxValue { return -3 }
+    return v
+}
+
+fn validTargetBytes(b: &[]byte, from: int, to: int): bool {
+    var i = from
+    while i < to {
+        let x = int(b[i])
+        if x <= 32 || x >= 127 { return false }
+        if b[i] == '#' { return false }
+        if b[i] == '%' {
+            if i + 2 >= to { return false }
+            if !core::isHex(b[i + 1]) || !core::isHex(b[i + 2]) { return false }
+            i += 3
+        } else {
+            i += 1
+        }
+    }
+    return true
+}
+
+fn lowerString(s: string): string {
+    var out = new []byte(0)
+    for i in 0..len(s) { append(out, core::lowerAscii(s[i])) }
+    return string(out)
+}
+
+fn portDefault(scheme: string, port: int): bool {
+    if scheme == "http" && port == 80 { return true }
+    if scheme == "https" && port == 443 { return true }
+    return false
+}
+
+fn validRegName(s: string): bool {
+    if len(s) == 0 || len(s) > 255 { return false }
+    var i = 0
+    while i < len(s) {
+        let b = s[i]
+        let x = int(b)
+        if x >= 128 || x <= 32 || x == 127 { return false }
+        if b == ',' || b == '/' || b == '\\' || b == '#' || b == '?' ||
+           b == '@' || b == ':' { return false }
+        if b == '%' {
+            if i + 2 >= len(s) { return false }
+            if !core::isHex(s[i + 1]) || !core::isHex(s[i + 2]) { return false }
+            i += 3
+        } else if core::isAlpha(b) || core::isDigit(b) || b == '-' || b == '.' ||
+                  b == '_' || b == '~' || b == '!' || b == '$' || b == '&' ||
+                  b == '\'' || b == '(' || b == ')' || b == '*' || b == '+' ||
+                  b == ';' || b == '=' {
+            i += 1
+        } else {
+            return false
+        }
+    }
+    return true
+}
+
+fn validIpLiteral(s: string): bool {
+    if len(s) < 2 || len(s) > 255 { return false }
+    var colons = 0
+    for i in 0..len(s) {
+        let b = s[i]
+        if b == ':' { colons += 1 }
+        if !(core::isHex(b) || b == ':' || b == '.') { return false }
+    }
+    return colons > 0
+}
+
+fn parseAuthority(text: string, scheme: string): Result[Authority] {
+    if len(text) == 0 { return err("authority is empty", 22) }
+    for i in 0..len(text) {
+        if text[i] == '@' { return err("authority contains userinfo", 22) }
+    }
+    var host = ""
+    var port = 0
+    var hasPort = false
+    if text[0] == '[' {
+        var closeAt = -1
+        for i in 1..len(text) {
+            if text[i] == ']' { closeAt = i; break }
+        }
+        if closeAt < 0 { return err("IPv6 authority has no closing bracket", 22) }
+        let inner = substr(text, 1, closeAt)
+        if !validIpLiteral(inner) {
+            return err("IPv6 authority is malformed", 22)
+        }
+        host = "[" + lowerString(inner) + "]"
+        if closeAt + 1 < len(text) {
+            if text[closeAt + 1] != ':' { return err("junk after IPv6 authority", 22) }
+            let ptext = substr(text, closeAt + 2, len(text))
+            if len(ptext) == 0 { return err("authority port is empty", 22) }
+            let pv = parseDigits(ptext, 65535)
+            if pv < 0 || pv > 65535 { return err("authority port is invalid", 22) }
+            port = pv
+            hasPort = true
+        }
+    } else {
+        var colon = -1
+        for i in 0..len(text) {
+            if text[i] == ':' {
+                if colon >= 0 { return err("unbracketed authority has several colons", 22) }
+                colon = i
+            }
+        }
+        if colon >= 0 {
+            let hostPart = substr(text, 0, colon)
+            if !validRegName(hostPart) { return err("authority host is invalid", 22) }
+            host = lowerString(hostPart)
+            let ptext = substr(text, colon + 1, len(text))
+            if len(ptext) == 0 { return err("authority port is empty", 22) }
+            let pv = parseDigits(ptext, 65535)
+            if pv < 0 || pv > 65535 { return err("authority port is invalid", 22) }
+            port = pv
+            hasPort = true
+        } else {
+            if !validRegName(text) { return err("authority host is invalid", 22) }
+            host = lowerString(text)
+        }
+    }
+    var canonical = host
+    if hasPort && !portDefault(scheme, port) {
+        canonical = canonical + ":" + string(port)
+    }
+    return ok(new Authority{host: host, port: port, hasPort: hasPort, canonical: canonical})
+}
+
+fn parseTarget(b: &[]byte, from: int, to: int, method: string): Result[TargetParts] {
+    if from >= to { return err("request target is empty", 22) }
+    if to - from == 1 && b[from] == '*' {
+        if method != "OPTIONS" { return err("asterisk-form is only valid for OPTIONS", 22) }
+        return ok(new TargetParts{scheme: "", authority: "", canonical: "",
+                                 path: "*", query: ""})
+    }
+    if b[from] == '/' {
+        var q = -1
+        for i in from..to {
+            if b[i] == '?' { q = i; break }
+        }
+        var path = ""
+        var query = ""
+        if q < 0 {
+            path = bytesString(b, from, to)
+        } else {
+            path = bytesString(b, from, q)
+            query = bytesString(b, q + 1, to)
+        }
+        if len(path) == 0 { return err("origin-form path is empty", 22) }
+        return ok(new TargetParts{scheme: "", authority: "", canonical: "",
+                                 path: path, query: query})
+    }
+    var scheme = ""
+    var rest = from
+    if core::startsWithFold(b, from, "http://") {
+        scheme = "http"
+        rest = from + 7
+    } else if core::startsWithFold(b, from, "https://") {
+        scheme = "https"
+        rest = from + 8
+    } else {
+        return err("request target is neither origin-form nor absolute-form", 22)
+    }
+    if rest >= to { return err("absolute-form authority is empty", 22) }
+    var authEnd = to
+    for i in rest..to {
+        if b[i] == '/' || b[i] == '?' { authEnd = i; break }
+    }
+    if authEnd == rest { return err("absolute-form authority is empty", 22) }
+    let authText = bytesString(b, rest, authEnd)
+    let auth = try parseAuthority(authText, scheme)
+    var path = "/"
+    var query = ""
+    if authEnd < to {
+        if b[authEnd] == '?' {
+            query = bytesString(b, authEnd + 1, to)
+        } else {
+            var q = -1
+            for i in authEnd..to {
+                if b[i] == '?' { q = i; break }
+            }
+            if q < 0 {
+                path = bytesString(b, authEnd, to)
+            } else {
+                path = bytesString(b, authEnd, q)
+                query = bytesString(b, q + 1, to)
+            }
+        }
+    }
+    if len(path) == 0 || path[0] != '/' {
+        return err("absolute-form path does not start with /", 22)
+    }
+    return ok(new TargetParts{scheme: scheme, authority: authText,
+                             canonical: auth.canonical, path: path, query: query})
+}
+
+fn parseRequestLine(mut p: &Parser, lineStart: int, lineEnd: int) {
+    let lineLen = lineEnd - lineStart
+    if lineLen == 0 {
+        fail(p, 400, "leading blank line before the request line")
+        return
+    }
+    var sp1 = -1
+    var sp2 = -1
+    for i in lineStart..lineEnd {
+        if p.buf[i] == ' ' {
+            if sp1 < 0 {
+                sp1 = i
+            } else if sp2 < 0 {
+                sp2 = i
+            } else {
+                fail(p, 400, "request line has more than two spaces")
+                return
+            }
+        }
+    }
+    if sp1 < 0 || sp2 < 0 {
+        fail(p, 400, "request line does not contain method SP target SP version")
+        return
+    }
+    if sp1 == lineStart || sp2 == sp1 + 1 || sp2 + 1 == lineEnd {
+        fail(p, 400, "request line has an empty method, target or version")
+        return
+    }
+    let methodLen = sp1 - lineStart
+    if methodLen > MAX_METHOD {
+        fail(p, 400, "request method is longer than 32 bytes")
+        return
+    }
+    for i in lineStart..sp1 {
+        if !core::isTokenChar(p.buf[i]) {
+            fail(p, 400, "request method is not a token")
+            return
+        }
+    }
+    let targetLen = sp2 - sp1 - 1
+    if targetLen > p.limits.maxTarget {
+        fail(p, 414, "request target exceeds maxTarget")
+        return
+    }
+    if !validTargetBytes(&p.buf, sp1 + 1, sp2) {
+        fail(p, 400, "request target contains a forbidden byte or bad percent escape")
+        return
+    }
+    let method = bytesString(&p.buf, lineStart, sp1)
+    if sp2 + 1 == lineEnd {
+        fail(p, 400, "request line has no HTTP version")
+        return
+    }
+    let vs = sp2 + 1
+    if lineEnd - vs < 5 || p.buf[vs] != 'H' || p.buf[vs + 1] != 'T' ||
+       p.buf[vs + 2] != 'T' || p.buf[vs + 3] != 'P' || p.buf[vs + 4] != '/' {
+        fail(p, 400, "HTTP version is not HTTP/<digit>.<digit>")
+        return
+    }
+    if lineEnd - vs != 8 || !core::isDigit(p.buf[vs + 5]) ||
+       p.buf[vs + 6] != '.' || !core::isDigit(p.buf[vs + 7]) {
+        fail(p, 505, "HTTP version is not supported")
+        return
+    }
+    let major = int(p.buf[vs + 5]) - int('0')
+    let minor = int(p.buf[vs + 7]) - int('0')
+    var isHttp10 = false
+    if major == 1 && minor == 1 {
+        isHttp10 = false
+    } else if major == 1 && minor == 0 {
+        if !p.limits.allowHttp10 {
+            fail(p, 505, "HTTP/1.0 is disabled by policy")
+            return
+        }
+        isHttp10 = true
+    } else {
+        fail(p, 505, "HTTP version is not supported")
+        return
+    }
+    if method == "CONNECT" || method == "TRACE" {
+        fail(p, 501, "CONNECT and TRACE are not implemented")
+        return
+    }
+    let known = method == "GET" || method == "HEAD" || method == "POST" ||
+                method == "PUT" || method == "DELETE" || method == "PATCH" ||
+                method == "OPTIONS"
+    if !known && !p.limits.allowExtensionMethods {
+        fail(p, 501, "extension method is disabled by policy")
+        return
+    }
+    let target = bytesString(&p.buf, sp1 + 1, sp2)
+    let parsedTarget = parseTarget(&p.buf, sp1 + 1, sp2, method)
+    match parsedTarget {
+        ok(parts) {
+            p.head.method = method
+            p.head.target = target
+            p.head.path = parts.path
+            p.head.query = parts.query
+            p.head.scheme = parts.scheme
+            p.head.authority = parts.authority
+            p.head.versionMajor = major
+            p.head.versionMinor = minor
+            p.head.http10 = isHttp10
+            p.http10 = isHttp10
+            p.targetCanonical = parts.canonical
+            p.authorityRaw = parts.authority
+            p.scheme = parts.scheme
+            p.headerBytes = lineEnd + 2 - lineStart
+        }
+        err(m, c) {
+            fail(p, 400, "request target is malformed")
+        }
+    }
+}
+
+fn parseAndAppendField(mut p: &Parser, lineStart: int, lineEnd: int): bool {
+    if lineStart < lineEnd &&
+       (p.buf[lineStart] == ' ' || p.buf[lineStart] == '\t') {
+        fail(p, 400, "obs-fold continuation is not accepted")
+        return false
+    }
+    var colon = -1
+    for i in lineStart..lineEnd {
+        if p.buf[i] == ':' { colon = i; break }
+    }
+    if colon < 0 {
+        fail(p, 400, "field line has no colon")
+        return false
+    }
+    if colon == lineStart {
+        fail(p, 400, "field name is empty")
+        return false
+    }
+    for i in lineStart..colon {
+        if !core::isTokenChar(p.buf[i]) {
+            if p.buf[i] == ' ' || p.buf[i] == '\t' {
+                fail(p, 400, "whitespace before the field colon")
+            } else {
+                fail(p, 400, "field name is not a token")
+            }
+            return false
+        }
+    }
+    var vs = colon + 1
+    var ve = lineEnd
+    while vs < ve && (p.buf[vs] == ' ' || p.buf[vs] == '\t') { vs += 1 }
+    while ve > vs && (p.buf[ve - 1] == ' ' || p.buf[ve - 1] == '\t') { ve -= 1 }
+    for i in vs..ve {
+        if !core::isFieldValueByte(p.buf[i]) {
+            fail(p, 400, "field value contains a forbidden control byte")
+            return false
+        }
+    }
+    let name = bytesString(&p.buf, lineStart, colon)
+    let value = bytesString(&p.buf, vs, ve)
+    append(p.head.headers, new core::Header{name: name, value: value})
+    return true
+}
+
+fn parseConnectionTokens(mut p: &Parser, value: string): bool {
+    if len(value) == 0 {
+        fail(p, 400, "Connection field is empty")
+        return false
+    }
+    var i = 0
+    while true {
+        while i < len(value) && (value[i] == ' ' || value[i] == '\t') { i += 1 }
+        let start = i
+        while i < len(value) && value[i] != ',' { i += 1 }
+        var end = i
+        while end > start && (value[end - 1] == ' ' || value[end - 1] == '\t') { end -= 1 }
+        if end == start {
+            fail(p, 400, "Connection has an empty list element")
+            return false
+        }
+        let tok = substr(value, start, end)
+        if !core::isToken(tok) {
+            fail(p, 400, "Connection token is malformed")
+            return false
+        }
+        if core::equalFold(tok, "close") {
+            p.closeRequested = true
+        } else if core::equalFold(tok, "upgrade") {
+            fail(p, 501, "Connection upgrade is not implemented")
+            return false
+        } else if core::isForbiddenConnectionToken(tok) {
+            fail(p, 400, "Connection names a framing field")
+            return false
+        }
+        if i >= len(value) { break }
+        i += 1
+        if i == len(value) {
+            fail(p, 400, "Connection has a trailing comma")
+            return false
+        }
+    }
+    return true
+}
+
+fn validTokenList(value: string): bool {
+    if len(value) == 0 { return false }
+    var i = 0
+    while true {
+        while i < len(value) && (value[i] == ' ' || value[i] == '\t') { i += 1 }
+        let start = i
+        while i < len(value) && value[i] != ',' { i += 1 }
+        var end = i
+        while end > start && (value[end - 1] == ' ' || value[end - 1] == '\t') { end -= 1 }
+        if end == start { return false }
+        let tok = substr(value, start, end)
+        if !core::isToken(tok) { return false }
+        if i >= len(value) { break }
+        i += 1
+        if i == len(value) { return false }
+    }
+    return true
+}
+
+fn parseTrailerDeclaration(mut p: &Parser, value: string): bool {
+    if !validTokenList(value) {
+        fail(p, 400, "Trailer header has an empty or malformed element")
+        return false
+    }
+    var i = 0
+    while true {
+        while i < len(value) && (value[i] == ' ' || value[i] == '\t') { i += 1 }
+        let start = i
+        while i < len(value) && value[i] != ',' { i += 1 }
+        var end = i
+        while end > start && (value[end - 1] == ' ' || value[end - 1] == '\t') { end -= 1 }
+        let tok = substr(value, start, end)
+        if core::isForbiddenTrailer(tok) {
+            fail(p, 400, "Trailer declaration names a forbidden field")
+            return false
+        }
+        if i >= len(value) { break }
+        i += 1
+    }
+    return true
+}
+
+fn validParameters(elem: string, semi: int): bool {
+    var i = semi
+    while i < len(elem) {
+        if elem[i] != ';' { return false }
+        i += 1
+        let nameStart = i
+        while i < len(elem) && core::isTokenChar(elem[i]) { i += 1 }
+        if i == nameStart { return false }
+        if i < len(elem) && elem[i] == '=' {
+            i += 1
+            if i >= len(elem) { return false }
+            if elem[i] == '"' {
+                i += 1
+                var quoteDone = false
+                while i < len(elem) {
+                    if elem[i] == '"' { quoteDone = true; i += 1; break }
+                    if elem[i] == '\\' {
+                        i += 1
+                        if i >= len(elem) { return false }
+                    } else if !core::isFieldValueByte(elem[i]) {
+                        return false
+                    }
+                    i += 1
+                }
+                if !quoteDone { return false }
+            } else {
+                let vstart = i
+                while i < len(elem) && core::isTokenChar(elem[i]) { i += 1 }
+                if i == vstart { return false }
+            }
+        }
+    }
+    return true
+}
+
+fn applyTransferEncoding(mut p: &Parser, value: string): bool {
+    if p.http10 {
+        fail(p, 400, "Transfer-Encoding is not valid on HTTP/1.0")
+        return false
+    }
+    if len(value) == 0 {
+        fail(p, 400, "Transfer-Encoding field is empty")
+        return false
+    }
+    var count = 0
+    var unsupported = false
+    var seenChunked = false
+    var lastChunked = false
+    var i = 0
+    while true {
+        while i < len(value) && (value[i] == ' ' || value[i] == '\t') { i += 1 }
+        let start = i
+        while i < len(value) && value[i] != ',' { i += 1 }
+        var end = i
+        while end > start && (value[end - 1] == ' ' || value[end - 1] == '\t') { end -= 1 }
+        if end == start {
+            fail(p, 400, "Transfer-Encoding has an empty list element")
+            return false
+        }
+        let elem = substr(value, start, end)
+        var semi = -1
+        for j in 0..len(elem) {
+            if elem[j] == ';' { semi = j; break }
+        }
+        var coding = elem
+        if semi >= 0 { coding = substr(elem, 0, semi) }
+        if !core::isToken(coding) {
+            fail(p, 400, "Transfer-Encoding coding is not a token")
+            return false
+        }
+        if semi >= 0 {
+            if core::equalFold(coding, "chunked") {
+                fail(p, 400, "chunked does not accept parameters")
+                return false
+            }
+            if !validParameters(elem, semi) {
+                fail(p, 400, "Transfer-Encoding parameters are malformed")
+                return false
+            }
+        }
+        count += 1
+        if core::equalFold(coding, "chunked") {
+            if seenChunked {
+                fail(p, 400, "chunked appears more than once")
+                return false
+            }
+            seenChunked = true
+            if i < len(value) {
+                fail(p, 400, "chunked is not the final transfer coding")
+                return false
+            }
+            lastChunked = true
+        } else {
+            unsupported = true
+            lastChunked = false
+        }
+        if i >= len(value) { break }
+        i += 1
+        if i == len(value) {
+            fail(p, 400, "Transfer-Encoding has a trailing comma")
+            return false
+        }
+    }
+    if !lastChunked {
+        if count == 1 && unsupported {
+            fail(p, 501, "transfer coding is not supported")
+        } else {
+            fail(p, 400, "final transfer coding is not chunked")
+        }
+        return false
+    }
+    if count > 1 && unsupported {
+        fail(p, 501, "transfer coding is not supported")
+        return false
+    }
+    p.chunked = true
+    return true
+}
+
+fn applyContentLength(mut p: &Parser, value: string): bool {
+    if len(value) == 0 {
+        fail(p, 400, "Content-Length is empty")
+        return false
+    }
+    let parsed = parseDigits(value, p.limits.maxBody)
+    if parsed == -2 {
+        fail(p, 400, "Content-Length overflows")
+        return false
+    }
+    if parsed == -3 {
+        fail(p, 413, "Content-Length exceeds maxBody")
+        return false
+    }
+    if parsed < 0 {
+        fail(p, 400, "Content-Length is not a decimal integer")
+        return false
+    }
+    p.hasCL = true
+    p.contentLength = parsed
+    return true
+}
+
+fn finalizeHeaders(mut p: &Parser) {
+    var hostCount = 0
+    var hostValue = ""
+    var clCount = 0
+    var clValue = ""
+    var teCount = 0
+    var teValue = ""
+    var expectCount = 0
+    var expectValue = ""
+    var sawUpgrade = false
+    var trailerDecls = new []string(0)
+    for i in 0..len(p.head.headers) {
+        let name = p.head.headers[i].name
+        let value = p.head.headers[i].value
+        if core::equalFold(name, "Host") {
+            hostCount += 1
+            hostValue = value
+        } else if core::equalFold(name, "Content-Length") {
+            clCount += 1
+            clValue = value
+        } else if core::equalFold(name, "Transfer-Encoding") {
+            teCount += 1
+            teValue = value
+        } else if core::equalFold(name, "Expect") {
+            expectCount += 1
+            expectValue = value
+        } else if core::equalFold(name, "Upgrade") {
+            sawUpgrade = true
+        } else if core::equalFold(name, "Connection") {
+            if !parseConnectionTokens(p, value) { return }
+        } else if core::equalFold(name, "Trailer") {
+            append(trailerDecls, value)
+        }
+    }
+    if hostCount > 1 {
+        fail(p, 400, "duplicate Host field")
+        return
+    }
+    if clCount > 1 {
+        fail(p, 400, "duplicate Content-Length field")
+        return
+    }
+    if teCount > 1 {
+        fail(p, 400, "duplicate Transfer-Encoding field")
+        return
+    }
+    if expectCount > 1 {
+        fail(p, 417, "multiple Expect fields")
+        return
+    }
+    if sawUpgrade {
+        fail(p, 501, "Upgrade is not implemented")
+        return
+    }
+    if clCount > 0 && teCount > 0 {
+        fail(p, 400, "Content-Length and Transfer-Encoding together")
+        return
+    }
+    if hostCount == 0 && !p.http10 {
+        fail(p, 400, "HTTP/1.1 requires exactly one Host field")
+        return
+    }
+    var hostCanonical = ""
+    if hostCount == 1 {
+        if len(hostValue) == 0 {
+            fail(p, 400, "Host field is empty")
+            return
+        }
+        let parsedHost = parseAuthority(hostValue, p.scheme)
+        match parsedHost {
+            ok(a) {
+                hostCanonical = a.canonical
+            }
+            err(m, c) {
+                fail(p, 400, "Host field is malformed")
+                return
+            }
+        }
+    }
+    if len(p.scheme) > 0 && hostCount == 1 {
+        if hostCanonical != p.targetCanonical {
+            fail(p, 400, "absolute-form authority does not match Host")
+            return
+        }
+    }
+    if clCount > 0 {
+        if !applyContentLength(p, clValue) { return }
+    }
+    if teCount > 0 {
+        if !applyTransferEncoding(p, teValue) { return }
+    }
+    if expectCount == 1 {
+        if !core::equalFold(expectValue, "100-continue") {
+            fail(p, 417, "only Expect: 100-continue is supported")
+            return
+        }
+        p.expectHeader = true
+    }
+    let hasBody = p.chunked || (p.hasCL && p.contentLength > 0)
+    if len(trailerDecls) > 0 {
+        if !p.chunked {
+            fail(p, 400, "Trailer declaration requires a chunked body")
+            return
+        }
+        for i in 0..len(trailerDecls) {
+            if !parseTrailerDeclaration(p, trailerDecls[i]) { return }
+        }
+    }
+    p.requestsStarted += 1
+    p.head.hasContentLength = p.hasCL
+    p.head.contentLength = p.contentLength
+    p.head.chunked = p.chunked
+    p.head.hasBody = hasBody
+    p.head.expectContinue = p.expectHeader && hasBody && !p.http10
+    p.head.close = p.closeRequested || p.http10
+    p.lastKeepAlive = p.limits.pipelining && !p.head.close &&
+                      p.requestsStarted < p.limits.maxRequests
+    p.head.keepAlive = p.lastKeepAlive
+    p.hasBody = hasBody
+    if p.head.expectContinue {
+        if avail(p) == 0 { p.continueMode = C_DUE } else { p.continueMode = C_SKIPPED }
+    } else {
+        p.continueMode = C_NONE
+    }
+    if p.chunked {
+        p.state = S_CHUNK_SIZE
+        p.chunkRemaining = 0
+        p.chunkCount = 0
+        p.chunkMeta = 0
+    } else {
+        p.state = S_FIXED
+        p.remaining = p.contentLength
+    }
+    p.headReady = true
+    p.emit = EV_HEAD
+}
+
+fn endBody(mut p: &Parser) {
+    if p.continueMode == C_DUE { p.continueMode = C_SKIPPED }
+    p.complete = true
+    p.bodyEnded = true
+    p.state = S_COMPLETE
+    p.emit = EV_END
+}
+
+fn stepStart(mut p: &Parser) {
+    if avail(p) == 0 {
+        if p.eofSeen { p.emit = EV_CLOSED } else { p.emit = EV_NEED }
+        return
+    }
+    let cr = findLine(p, p.limits.maxStartLine, 414)
+    if cr < 0 {
+        if p.failed { return }
+        if p.eofSeen {
+            fail(p, 400, "connection ended inside the request line")
+        } else {
+            p.emit = EV_NEED
+        }
+        return
+    }
+    let lineStart = p.start
+    let lineLen = cr + 2 - lineStart
+    if lineLen == 2 {
+        fail(p, 400, "leading blank line before the request line")
+        return
+    }
+    parseRequestLine(p, lineStart, cr)
+    if p.failed { return }
+    consumeBytes(p, lineLen)
+    p.state = S_HEADERS
+}
+
+fn stepHeaders(mut p: &Parser) {
+    if avail(p) == 0 {
+        if p.eofSeen {
+            fail(p, 400, "connection ended inside the header block")
+        } else {
+            p.emit = EV_NEED
+        }
+        return
+    }
+    let cr = findLine(p, p.limits.maxHeaderLine, 431)
+    if cr < 0 {
+        if p.failed { return }
+        if p.eofSeen {
+            fail(p, 400, "connection ended inside the header block")
+        } else {
+            p.emit = EV_NEED
+        }
+        return
+    }
+    let lineStart = p.start
+    let lineLen = cr + 2 - lineStart
+    if p.headerBytes + lineLen > p.limits.maxHeaderBytes {
+        fail(p, 431, "header block exceeds maxHeaderBytes")
+        return
+    }
+    if lineLen == 2 {
+        p.headerBytes += 2
+        consumeBytes(p, 2)
+        finalizeHeaders(p)
+        return
+    }
+    p.headerCount += 1
+    if p.headerCount > p.limits.maxHeaderCount {
+        fail(p, 431, "header count exceeds maxHeaderCount")
+        return
+    }
+    if !parseAndAppendField(p, lineStart, cr) { return }
+    p.headerBytes += lineLen
+    consumeBytes(p, lineLen)
+}
+
+fn stepFixed(mut p: &Parser) {
+    if p.remaining == 0 {
+        endBody(p)
+        return
+    }
+    let n = avail(p)
+    if n == 0 {
+        if p.eofSeen {
+            fail(p, 400, "connection ended before Content-Length bytes arrived")
+        } else {
+            p.emit = EV_NEED
+        }
+        return
+    }
+    var take = p.bodyCap
+    if take > p.remaining { take = p.remaining }
+    if take > n { take = n }
+    let out = new []byte(take)
+    for i in 0..take { out[i] = p.buf[p.start + i] }
+    consumeBytes(p, take)
+    p.remaining -= take
+    p.bodyTotal += take
+    if p.continueMode == C_DUE { p.continueMode = C_SKIPPED }
+    p.bodyChunk = out
+    p.emit = EV_BODY
+}
+
+fn parseChunkSizeLine(mut p: &Parser, lineStart: int, lineEnd: int): bool {
+    var hexEnd = lineStart
+    while hexEnd < lineEnd {
+        let b = p.buf[hexEnd]
+        if b == ';' { break }
+        if !core::isHex(b) {
+            fail(p, 400, "chunk size is not hexadecimal")
+            return false
+        }
+        hexEnd += 1
+    }
+    let digits = hexEnd - lineStart
+    if digits < 1 || digits > 16 {
+        fail(p, 400, "chunk size has no digits or too many")
+        return false
+    }
+    if hexEnd < lineEnd && p.buf[hexEnd] != ';' {
+        fail(p, 400, "chunk size has trailing junk")
+        return false
+    }
+    var size = 0
+    for i in lineStart..hexEnd {
+        let d = core::hexValue(p.buf[i])
+        if size > (MAX_INT - d) / 16 {
+            fail(p, 400, "chunk size overflows")
+            return false
+        }
+        size = size * 16 + d
+    }
+    if size > p.limits.maxChunkSize {
+        fail(p, 413, "chunk size exceeds maxChunkSize")
+        return false
+    }
+    var i = hexEnd
+    while i < lineEnd {
+        if p.buf[i] != ';' {
+            fail(p, 400, "chunk extension does not start with semicolon")
+            return false
+        }
+        i += 1
+        let nameStart = i
+        while i < lineEnd && core::isTokenChar(p.buf[i]) { i += 1 }
+        if i == nameStart {
+            fail(p, 400, "chunk extension name is empty")
+            return false
+        }
+        if i < lineEnd && p.buf[i] == '=' {
+            i += 1
+            if i >= lineEnd {
+                fail(p, 400, "chunk extension value is empty")
+                return false
+            }
+            if p.buf[i] == '"' {
+                i += 1
+                var quoteDone = false
+                while i < lineEnd {
+                    if p.buf[i] == '"' { quoteDone = true; i += 1; break }
+                    if p.buf[i] == '\\' {
+                        i += 1
+                        if i >= lineEnd {
+                            fail(p, 400, "chunk extension escape is truncated")
+                            return false
+                        }
+                        if !core::isFieldValueByte(p.buf[i]) {
+                            fail(p, 400, "chunk extension has a control byte")
+                            return false
+                        }
+                    } else if !core::isFieldValueByte(p.buf[i]) {
+                        fail(p, 400, "chunk extension has a control byte")
+                        return false
+                    }
+                    i += 1
+                }
+                if !quoteDone {
+                    fail(p, 400, "chunk extension quoted string is unterminated")
+                    return false
+                }
+            } else {
+                let vstart = i
+                while i < lineEnd && core::isTokenChar(p.buf[i]) { i += 1 }
+                if i == vstart {
+                    fail(p, 400, "chunk extension value is not a token")
+                    return false
+                }
+            }
+        }
+        if i < lineEnd && p.buf[i] != ';' {
+            fail(p, 400, "junk after a chunk extension")
+            return false
+        }
+    }
+    let lineLen = lineEnd + 2 - lineStart
+    if p.chunkMeta + lineLen > p.limits.maxChunkMetadata {
+        fail(p, 400, "chunk metadata exceeds maxChunkMetadata")
+        return false
+    }
+    p.chunkMeta += lineLen
+    if size == 0 {
+        p.state = S_TRAILERS
+    } else {
+        p.chunkCount += 1
+        if p.chunkCount > p.limits.maxChunkCount {
+            fail(p, 400, "chunk count exceeds maxChunkCount")
+            return false
+        }
+        p.chunkRemaining = size
+        p.state = S_CHUNK_DATA
+    }
+    return true
+}
+
+fn stepChunkSize(mut p: &Parser) {
+    if avail(p) == 0 {
+        if p.eofSeen {
+            fail(p, 400, "connection ended before a chunk size line")
+        } else {
+            p.emit = EV_NEED
+        }
+        return
+    }
+    let cr = findLine(p, p.limits.maxChunkLine, 400)
+    if cr < 0 {
+        if p.failed { return }
+        if p.eofSeen {
+            fail(p, 400, "connection ended inside a chunk size line")
+        } else {
+            p.emit = EV_NEED
+        }
+        return
+    }
+    let lineStart = p.start
+    let lineLen = cr + 2 - lineStart
+    if !parseChunkSizeLine(p, lineStart, cr) { return }
+    consumeBytes(p, lineLen)
+}
+
+fn stepChunkData(mut p: &Parser) {
+    if p.chunkRemaining == 0 {
+        p.state = S_CHUNK_CRLF
+        return
+    }
+    let n = avail(p)
+    if n == 0 {
+        if p.eofSeen {
+            fail(p, 400, "connection ended inside a chunk")
+        } else {
+            p.emit = EV_NEED
+        }
+        return
+    }
+    var take = p.bodyCap
+    if take > p.chunkRemaining { take = p.chunkRemaining }
+    if take > n { take = n }
+    if p.bodyTotal + take > p.limits.maxBody {
+        fail(p, 413, "decoded body exceeds maxBody")
+        return
+    }
+    let out = new []byte(take)
+    for i in 0..take { out[i] = p.buf[p.start + i] }
+    consumeBytes(p, take)
+    p.chunkRemaining -= take
+    p.bodyTotal += take
+    if p.continueMode == C_DUE { p.continueMode = C_SKIPPED }
+    p.bodyChunk = out
+    p.emit = EV_BODY
+}
+
+fn stepChunkCRLF(mut p: &Parser) {
+    let n = avail(p)
+    if n < 2 {
+        if p.eofSeen {
+            fail(p, 400, "connection ended before the chunk CRLF")
+        } else {
+            p.emit = EV_NEED
+        }
+        return
+    }
+    if p.buf[p.start] != '\r' || p.buf[p.start + 1] != '\n' {
+        fail(p, 400, "chunk data is not followed by CRLF")
+        return
+    }
+    consumeBytes(p, 2)
+    p.state = S_CHUNK_SIZE
+}
+
+fn stepTrailers(mut p: &Parser) {
+    if avail(p) == 0 {
+        if p.eofSeen {
+            fail(p, 400, "connection ended inside the trailer section")
+        } else {
+            p.emit = EV_NEED
+        }
+        return
+    }
+    let cr = findLine(p, p.limits.maxHeaderLine, 400)
+    if cr < 0 {
+        if p.failed { return }
+        if p.eofSeen {
+            fail(p, 400, "connection ended inside the trailer section")
+        } else {
+            p.emit = EV_NEED
+        }
+        return
+    }
+    let lineStart = p.start
+    let lineLen = cr + 2 - lineStart
+    if p.trailerBytes + lineLen > p.limits.maxTrailerBytes {
+        fail(p, 400, "trailer section exceeds maxTrailerBytes")
+        return
+    }
+    if lineLen == 2 {
+        consumeBytes(p, 2)
+        endBody(p)
+        return
+    }
+    if len(p.trailers) + 1 > p.limits.maxTrailerCount {
+        fail(p, 400, "trailer count exceeds maxTrailerCount")
+        return
+    }
+    // Parse into the request field list temporarily, then move the last item
+    // into the trailer list after the forbidden-name check.
+    let before = len(p.head.headers)
+    if !parseAndAppendField(p, lineStart, cr) { return }
+    let h = copyHeader(&p.head.headers[len(p.head.headers) - 1])
+    if core::isForbiddenTrailer(h.name) {
+        fail(p, 400, "forbidden trailer field")
+        return
+    }
+    append(p.trailers, new core::Header{name: h.name, value: h.value})
+    truncate(p.head.headers, before)
+    p.trailerBytes += lineLen
+    consumeBytes(p, lineLen)
+}
+
+fn startNext(mut p: &Parser) {
+    if p.requestsStarted >= p.limits.maxRequests {
+        p.emit = EV_CLOSED
+        return
+    }
+    if !p.limits.pipelining && avail(p) > 0 {
+        fail(p, 400, "pipelined bytes are not accepted with pipelining=false")
+        return
+    }
+    if avail(p) > p.limits.maxPipelineBytes {
+        fail(p, 400, "buffered bytes exceed maxPipelineBytes")
+        return
+    }
+    if !p.lastKeepAlive {
+        p.emit = EV_CLOSED
+        return
+    }
+    if avail(p) == 0 && p.eofSeen {
+        p.emit = EV_CLOSED
+        return
+    }
+    p.scan = 0
+    p.head = emptyInfo()
+    p.headReady = false
+    p.headEmitted = false
+    p.complete = false
+    p.bodyEnded = false
+    p.remaining = 0
+    p.chunkRemaining = 0
+    p.chunkCount = 0
+    p.chunkMeta = 0
+    p.bodyTotal = 0
+    p.trailerBytes = 0
+    p.trailers = new []core::Header(0)
+    p.continueMode = C_NONE
+    p.headerBytes = 0
+    p.headerCount = 0
+    p.closeRequested = false
+    p.http10 = false
+    p.hasCL = false
+    p.contentLength = 0
+    p.expectHeader = false
+    p.chunked = false
+    p.hasBody = false
+    p.targetCanonical = ""
+    p.authorityRaw = ""
+    p.scheme = ""
+    p.state = S_START
+    p.emit = EV_NONE
+    if avail(p) == 0 {
+        if p.eofSeen { p.emit = EV_CLOSED } else { p.emit = EV_NEED }
+    }
+}
+
+fn errorEvent(mut p: &Parser): Event {
+    if !p.errorSent {
+        p.errorSent = true
+        return new Error{status: p.errorStatus, code: p.errorStatus,
+                          message: p.errorMessage}
+    }
+    return new Failed{}
+}
+
+fn makeEvent(mut p: &Parser): Event {
+    let kind = p.emit
+    p.emit = EV_NONE
+    if kind == EV_NEED { return new NeedRead{} }
+    if kind == EV_HEAD {
+        p.headEmitted = true
+        return new HeadReady{}
+    }
+    if kind == EV_BODY {
+        let bytes = replace(p.bodyChunk, new []byte(0))
+        return new BodyData{bytes: bytes}
+    }
+    if kind == EV_END { return new BodyEnd{} }
+    if kind == EV_CLOSED {
+        p.terminalClosed = true
+        return new Closed{}
+    }
+    if kind == EV_ERR { return errorEvent(p) }
+    return new Failed{}
+}
+
+fn drive(mut p: &Parser): Result[Event] {
+    if p.failed {
+        return ok(errorEvent(p))
+    }
+    if p.terminalClosed {
+        let closedEvent: Event = new Closed{}
+        return ok(closedEvent)
+    }
+    if p.state == S_COMPLETE {
+        startNext(p)
+    }
+    var guard = 0
+    while p.emit == EV_NONE && !p.failed {
+        guard += 1
+        if guard > 100000 {
+            fail(p, 400, "parser made no progress")
+            break
+        }
+        if p.state == S_START {
+            stepStart(p)
+        } else if p.state == S_HEADERS {
+            stepHeaders(p)
+        } else if p.state == S_FIXED {
+            stepFixed(p)
+        } else if p.state == S_CHUNK_SIZE {
+            stepChunkSize(p)
+        } else if p.state == S_CHUNK_DATA {
+            stepChunkData(p)
+        } else if p.state == S_CHUNK_CRLF {
+            stepChunkCRLF(p)
+        } else if p.state == S_TRAILERS {
+            stepTrailers(p)
+        } else if p.state == S_COMPLETE {
+            startNext(p)
+        } else {
+            p.emit = EV_CLOSED
+        }
+    }
+    if p.failed {
+        return ok(errorEvent(p))
+    }
+    return ok(makeEvent(p))
+}
+
+// H1a0 streaming convenience: next may return BodyData after HeadReady without
+// a separate readBody call. The H1a Connection must use nextHead instead, which
+// refuses to stream a body implicitly.
+pub fn next(mut p: &Parser): Result[Event] {
+    p.bodyCap = BODY_STEP
+    return drive(p)
+}
+
+// Head-only gate for the future H1a Connection: parse a request head, errors,
+// NeedRead or Closed, but never return BodyData. While a body is unread this
+// returns InvalidState; the caller must use readBody to reach BodyEnd first.
+pub fn nextHead(mut p: &Parser): Result[Event] {
+    if p.failed {
+        return ok(errorEvent(p))
+    }
+    if p.terminalClosed {
+        let closedEvent: Event = new Closed{}
+        return ok(closedEvent)
+    }
+    if p.headReady && !p.complete {
+        return err("nextHead requires readBody while the request body is unread",
+                   core::ERR_INVALID_STATE)
+    }
+    p.bodyCap = BODY_STEP
+    return drive(p)
+}
+
+pub fn readBody(mut p: &Parser, max: int): Result[Event] {
+    if max <= 0 {
+        return err("readBody needs a positive maximum", core::ERR_INVALID_ARGUMENT)
+    }
+    if !p.headReady {
+        return err("readBody requires a ready request head", core::ERR_INVALID_STATE)
+    }
+    if p.bodyEnded {
+        return err("request body is already complete", core::ERR_INVALID_STATE)
+    }
+    p.bodyCap = max
+    return drive(p)
+}
+
+// Signal a clean EOF from the caller. A truncated head/body/chunk/trailer
+// becomes a protocol error; an idle connection closes; an exact complete
+// message is unaffected.
+pub fn eof(mut p: &Parser): Result[bool] {
+    if !p.failed && !p.terminalClosed { p.eofSeen = true }
+    return ok(true)
+}

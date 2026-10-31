@@ -1,0 +1,415 @@
+// Experimental HTTP-date formatting and parsing (H1a0).
+//
+// Status: experimental and unstable. Pure obo: no sysclock dependency. The
+// later connection wrapper adapts clock::Timestamp to these explicit
+// (seconds, nanos) entry points.
+//
+// formatHttpDate emits IMF-fixdate: "Sun, 06 Nov 1994 08:49:37 GMT". It uses
+// integer civil-date arithmetic, never float/decimal. parseHttpDate accepts the
+// three RFC 9110 forms (IMF-fixdate, RFC 850 and asctime), is ASCII
+// case-insensitive for names, rejects trailing text, and applies the RFC 9110
+// 50-year window to the RFC 850 two-digit year using the supplied reference
+// Unix time. Weekday names are validated as known names but are not required to
+// match the date, matching common HTTP parser practice.
+module http1date
+
+pub type DateValue = ref record {
+    pub seconds: int
+    pub nanos: int
+}
+
+type Civil = ref record { y: int; m: int; d: int }
+
+const SECONDS_PER_DAY = 86400
+const MAX_SECONDS = 253402300799       // 9999-12-31T23:59:59Z
+const MIN_SECONDS = -62135596800       // 0001-01-01T00:00:00Z
+
+fn floorDiv(a: int, b: int): int {
+    if a >= 0 { return a / b }
+    return -((-a + b - 1) / b)
+}
+
+fn floorMod(a: int, b: int): int {
+    return a - floorDiv(a, b) * b
+}
+
+fn isLeap(y: int): bool {
+    if y % 4 != 0 { return false }
+    if y % 100 != 0 { return true }
+    return y % 400 == 0
+}
+
+fn daysInMonth(y: int, m: int): int {
+    if m == 1 || m == 3 || m == 5 || m == 7 || m == 8 || m == 10 || m == 12 {
+        return 31
+    }
+    if m == 4 || m == 6 || m == 9 || m == 11 { return 30 }
+    if m == 2 {
+        if isLeap(y) { return 29 }
+        return 28
+    }
+    return 0
+}
+
+fn validCivil(y: int, m: int, d: int): bool {
+    if y < 1 || y > 9999 { return false }
+    if m < 1 || m > 12 { return false }
+    if d < 1 || d > daysInMonth(y, m) { return false }
+    return true
+}
+
+// Howard Hinnant's civil_from_days, with days relative to 1970-01-01.
+fn civilFromDays(days: int): Civil {
+    let z = days + 719468
+    let era = floorDiv(z, 146097)
+    let doe = z - era * 146097
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    var y = yoe + era * 400
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    let mp = (5 * doy + 2) / 153
+    let d = doy - (153 * mp + 2) / 5 + 1
+    var m = mp + 3
+    if mp >= 10 { m = mp - 9 }
+    if m <= 2 { y += 1 }
+    return new Civil{y: y, m: m, d: d}
+}
+
+// Howard Hinnant's days_from_civil, relative to 1970-01-01.
+fn daysFromCivil(y: int, m: int, d: int): int {
+    var yy = y
+    if m <= 2 { yy -= 1 }
+    let era = floorDiv(yy, 400)
+    let yoe = yy - era * 400
+    var mp = m - 3
+    if m <= 2 { mp = m + 9 }
+    let doy = (153 * mp + 2) / 5 + d - 1
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    return era * 146097 + doe - 719468
+}
+
+fn weekdayName(index: int): string {
+    if index == 0 { return "Sun" }
+    if index == 1 { return "Mon" }
+    if index == 2 { return "Tue" }
+    if index == 3 { return "Wed" }
+    if index == 4 { return "Thu" }
+    if index == 5 { return "Fri" }
+    return "Sat"
+}
+
+fn longWeekdayName(index: int): string {
+    if index == 0 { return "Sunday" }
+    if index == 1 { return "Monday" }
+    if index == 2 { return "Tuesday" }
+    if index == 3 { return "Wednesday" }
+    if index == 4 { return "Thursday" }
+    if index == 5 { return "Friday" }
+    return "Saturday"
+}
+
+fn monthName(index: int): string {
+    if index == 1 { return "Jan" }
+    if index == 2 { return "Feb" }
+    if index == 3 { return "Mar" }
+    if index == 4 { return "Apr" }
+    if index == 5 { return "May" }
+    if index == 6 { return "Jun" }
+    if index == 7 { return "Jul" }
+    if index == 8 { return "Aug" }
+    if index == 9 { return "Sep" }
+    if index == 10 { return "Oct" }
+    if index == 11 { return "Nov" }
+    return "Dec"
+}
+
+fn appendText(mut out: &[]byte, s: string) {
+    for i in 0..len(s) { append(out, s[i]) }
+}
+
+fn append2(mut out: &[]byte, n: int) {
+    append(out, byte(int('0') + (n / 10) % 10))
+    append(out, byte(int('0') + n % 10))
+}
+
+fn append4(mut out: &[]byte, n: int) {
+    append(out, byte(int('0') + (n / 1000) % 10))
+    append(out, byte(int('0') + (n / 100) % 10))
+    append(out, byte(int('0') + (n / 10) % 10))
+    append(out, byte(int('0') + n % 10))
+}
+
+pub fn formatHttpDate(seconds: int, nanos: int): Result[string] {
+    if nanos < 0 || nanos > 999999999 {
+        return err("HTTP-date nanoseconds are outside 0..999999999", 34)
+    }
+    if seconds < MIN_SECONDS || seconds > MAX_SECONDS {
+        return err("HTTP-date seconds are outside year 1..9999", 34)
+    }
+    let days = floorDiv(seconds, SECONDS_PER_DAY)
+    let sod = seconds - days * SECONDS_PER_DAY
+    let c = civilFromDays(days)
+    if !validCivil(c.y, c.m, c.d) {
+        return err("HTTP-date civil conversion produced an invalid date", 34)
+    }
+    let wd = floorMod(days + 4, 7)
+    let hh = sod / 3600
+    let mm = (sod % 3600) / 60
+    let ss = sod % 60
+    var out = new []byte(0)
+    appendText(out, weekdayName(wd))
+    append(out, ',')
+    append(out, ' ')
+    append2(out, c.d)
+    append(out, ' ')
+    appendText(out, monthName(c.m))
+    append(out, ' ')
+    append4(out, c.y)
+    append(out, ' ')
+    append2(out, hh)
+    append(out, ':')
+    append2(out, mm)
+    append(out, ':')
+    append2(out, ss)
+    appendText(out, " GMT")
+    return ok(string(out))
+}
+
+fn digitAt(s: string, at: int): bool
+
+fn parse2(s: string, at: int): int {
+    if at < 0 || at + 1 >= len(s) { return -1 }
+    if !digitAt(s, at) || !digitAt(s, at + 1) { return -1 }
+    return (int(s[at]) - int('0')) * 10 + (int(s[at + 1]) - int('0'))
+}
+
+fn parse4(s: string, at: int): int {
+    if at < 0 || at + 3 >= len(s) { return -1 }
+    var v = 0
+    for i in 0..4 {
+        if !digitAt(s, at + i) { return -1 }
+        v = v * 10 + int(s[at + i]) - int('0')
+    }
+    return v
+}
+
+fn digitAt(s: string, at: int): bool {
+    if at < 0 || at >= len(s) { return false }
+    return s[at] >= '0' && s[at] <= '9'
+}
+
+fn lowerByte(b: byte): byte
+
+fn monthIndex(s: string, at: int): int {
+    if at < 0 || at + 3 > len(s) { return -1 }
+    let a = s[at]
+    let b = s[at + 1]
+    let c = s[at + 2]
+    let la = lowerByte(a)
+    let lb = lowerByte(b)
+    let lc = lowerByte(c)
+    if la == 'j' && lb == 'a' && lc == 'n' { return 1 }
+    if la == 'f' && lb == 'e' && lc == 'b' { return 2 }
+    if la == 'm' && lb == 'a' && lc == 'r' { return 3 }
+    if la == 'a' && lb == 'p' && lc == 'r' { return 4 }
+    if la == 'm' && lb == 'a' && lc == 'y' { return 5 }
+    if la == 'j' && lb == 'u' && lc == 'n' { return 6 }
+    if la == 'j' && lb == 'u' && lc == 'l' { return 7 }
+    if la == 'a' && lb == 'u' && lc == 'g' { return 8 }
+    if la == 's' && lb == 'e' && lc == 'p' { return 9 }
+    if la == 'o' && lb == 'c' && lc == 't' { return 10 }
+    if la == 'n' && lb == 'o' && lc == 'v' { return 11 }
+    if la == 'd' && lb == 'e' && lc == 'c' { return 12 }
+    return -1
+}
+
+fn lowerByte(b: byte): byte {
+    if b >= 'A' && b <= 'Z' { return byte(int(b) + 32) }
+    return b
+}
+
+fn equalFoldText(a: string, b: string): bool
+
+fn knownWeekday(s: string, at: int, length: int): bool {
+    if at < 0 || at + length > len(s) { return false }
+    if length == 3 {
+        let a = lowerByte(s[at])
+        let b = lowerByte(s[at + 1])
+        let c = lowerByte(s[at + 2])
+        return (a == 's' && b == 'u' && c == 'n') ||
+               (a == 'm' && b == 'o' && c == 'n') ||
+               (a == 't' && b == 'u' && c == 'e') ||
+               (a == 'w' && b == 'e' && c == 'd') ||
+               (a == 't' && b == 'h' && c == 'u') ||
+               (a == 'f' && b == 'r' && c == 'i') ||
+               (a == 's' && b == 'a' && c == 't')
+    }
+    if length == 6 {
+        return equalFoldText(substr(s, at, at + 6), "sunday") ||
+               equalFoldText(substr(s, at, at + 6), "monday") ||
+               equalFoldText(substr(s, at, at + 6), "tuesday") ||
+               equalFoldText(substr(s, at, at + 6), "friday") ||
+               equalFoldText(substr(s, at, at + 6), "saturday")
+    }
+    if length == 7 {
+        return equalFoldText(substr(s, at, at + 7), "tuesday") ||
+               equalFoldText(substr(s, at, at + 7), "wednesday")
+    }
+    if length == 8 {
+        return equalFoldText(substr(s, at, at + 8), "thursday")
+    }
+    if length == 9 {
+        return equalFoldText(substr(s, at, at + 9), "wednesday")
+    }
+    return false
+}
+
+fn equalFoldText(a: string, b: string): bool {
+    if len(a) != len(b) { return false }
+    for i in 0..len(a) {
+        if lowerByte(a[i]) != lowerByte(b[i]) { return false }
+    }
+    return true
+}
+
+fn timeSeconds(s: string, at: int): int {
+    if at < 0 || at + 8 > len(s) { return -1 }
+    if s[at + 2] != ':' || s[at + 5] != ':' { return -1 }
+    let hh = parse2(s, at)
+    let mm = parse2(s, at + 3)
+    let ss = parse2(s, at + 6)
+    if hh < 0 || mm < 0 || ss < 0 { return -1 }
+    if hh > 23 || mm > 59 || ss > 59 { return -1 }
+    return hh * 3600 + mm * 60 + ss
+}
+
+fn makeDate(y: int, m: int, d: int, sod: int): Result[DateValue] {
+    if !validCivil(y, m, d) { return err("HTTP-date has an invalid calendar date", 22) }
+    if sod < 0 || sod >= SECONDS_PER_DAY {
+        return err("HTTP-date has an invalid time of day", 22)
+    }
+    let seconds = daysFromCivil(y, m, d) * SECONDS_PER_DAY + sod
+    if seconds < MIN_SECONDS || seconds > MAX_SECONDS {
+        return err("HTTP-date is outside year 1..9999", 34)
+    }
+    return ok(new DateValue{seconds: seconds, nanos: 0})
+}
+
+fn parseImf(text: string): Result[DateValue] {
+    if len(text) != 29 { return err("IMF-fixdate has the wrong length", 22) }
+    if text[3] != ',' || text[4] != ' ' || text[7] != ' ' ||
+       text[11] != ' ' || text[16] != ' ' || text[19] != ':' ||
+       text[22] != ':' || text[25] != ' ' {
+        return err("IMF-fixdate separators are malformed", 22)
+    }
+    if !knownWeekday(text, 0, 3) { return err("IMF-fixdate weekday is unknown", 22) }
+    let day = parse2(text, 5)
+    let mon = monthIndex(text, 8)
+    let year = parse4(text, 12)
+    let sod = timeSeconds(text, 17)
+    if !equalFoldText(substr(text, 26, 29), "gmt") {
+        return err("IMF-fixdate zone is not GMT", 22)
+    }
+    if day < 0 || mon < 0 || year < 0 || sod < 0 {
+        return err("IMF-fixdate has a malformed component", 22)
+    }
+    return makeDate(year, mon, day, sod)
+}
+
+// The same wall-clock time `years` calendar years later. A Feb 29 target in a
+// non-leap year clamps to Feb 28; this is the RFC 850 50-year comparison point.
+fn secondsPlusYears(nowSeconds: int, years: int): int {
+    let days = floorDiv(nowSeconds, SECONDS_PER_DAY)
+    let sod = nowSeconds - days * SECONDS_PER_DAY
+    let c = civilFromDays(days)
+    let y = c.y + years
+    var d = c.d
+    if !validCivil(y, c.m, d) { d = 28 }
+    return daysFromCivil(y, c.m, d) * SECONDS_PER_DAY + sod
+}
+
+fn parseRfc850(text: string, nowSeconds: int): Result[DateValue] {
+    var comma = -1
+    for i in 0..len(text) {
+        if text[i] == ',' { comma = i; break }
+    }
+    if comma < 6 {
+        return err("RFC 850 requires a full weekday name", 22)
+    }
+    if !knownWeekday(text, 0, comma) { return err("RFC 850 weekday is unknown", 22) }
+    if comma + 2 > len(text) || text[comma + 1] != ' ' {
+        return err("RFC 850 date has a malformed weekday separator", 22)
+    }
+    let at = comma + 2
+    if len(text) - at != 22 { return err("RFC 850 date has the wrong length", 22) }
+    if text[at + 2] != '-' || text[at + 6] != '-' || text[at + 9] != ' ' ||
+       text[at + 12] != ':' || text[at + 15] != ':' || text[at + 18] != ' ' {
+        return err("RFC 850 date separators are malformed", 22)
+    }
+    let day = parse2(text, at)
+    let mon = monthIndex(text, at + 3)
+    let yy = parse2(text, at + 7)
+    let sod = timeSeconds(text, at + 10)
+    if !equalFoldText(substr(text, at + 19, at + 22), "gmt") {
+        return err("RFC 850 date zone is not GMT", 22)
+    }
+    if day < 0 || mon < 0 || yy < 0 || sod < 0 {
+        return err("RFC 850 date has a malformed component", 22)
+    }
+    let nowDays = floorDiv(nowSeconds, SECONDS_PER_DAY)
+    let nowCivil = civilFromDays(nowDays)
+    let nowYear = nowCivil.y
+    var year = (nowYear / 100) * 100 + yy
+    let candidate = makeDate(year, mon, day, sod)
+    match candidate {
+        ok(v) {
+            // Timestamp granularity: compare the candidate instant with the
+            // same instant 50 calendar years after the reference time.
+            if v.seconds > secondsPlusYears(nowSeconds, 50) {
+                year -= 100
+                if year < 1 { year += 100 }
+            }
+        }
+        err(m, c) {
+            // A candidate such as Feb 29 in a non-leap century is not a valid
+            // instant; try the previous century before rejecting the value.
+            year -= 100
+            if year < 1 { year += 100 }
+        }
+    }
+    return makeDate(year, mon, day, sod)
+}
+
+fn parseAsctime(text: string): Result[DateValue] {
+    if len(text) != 24 { return err("asctime date has the wrong length", 22) }
+    if text[3] != ' ' || text[7] != ' ' || text[10] != ' ' ||
+       text[19] != ' ' || text[13] != ':' || text[16] != ':' {
+        return err("asctime date separators are malformed", 22)
+    }
+    if !knownWeekday(text, 0, 3) { return err("asctime weekday is unknown", 22) }
+    let mon = monthIndex(text, 4)
+    var day = 0
+    if text[8] == ' ' {
+        if !digitAt(text, 9) { day = -1 } else { day = int(text[9]) - int('0') }
+    } else {
+        day = parse2(text, 8)
+    }
+    let sod = timeSeconds(text, 11)
+    let year = parse4(text, 20)
+    if day < 0 || mon < 0 || year < 0 || sod < 0 {
+        return err("asctime date has a malformed component", 22)
+    }
+    return makeDate(year, mon, day, sod)
+}
+
+pub fn parseHttpDate(text: string, nowSeconds: int): Result[DateValue] {
+    if len(text) == 29 && text[3] == ',' && text[4] == ' ' {
+        return parseImf(text)
+    }
+    if len(text) == 24 && text[3] == ' ' && text[7] == ' ' {
+        return parseAsctime(text)
+    }
+    if len(text) > 4 && text[3] != ' ' {
+        return parseRfc850(text, nowSeconds)
+    }
+    return err("HTTP-date does not match a supported form", 22)
+}
