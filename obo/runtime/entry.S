@@ -77,7 +77,28 @@ _entry:
     slot rt_f_parse
 #ifdef OBO_HOSTED_EXIT
     slot rt_set_host_exit
+#else
+    /* Slot 59 is reserved in the baseline build so decimal slots start at 60
+     * in both the baseline and hosted tables; the hosted build uses 59 for its
+     * exit callback. */
+    slot rt_dec_reserved
 #endif
+
+    /* decimal integration (0.12): slots 60..72 append after the float block.
+     * The hosted-exit slot stays 59, so both builds keep these indices. */
+    slot rt_dec_add
+    slot rt_dec_sub
+    slot rt_dec_mul
+    slot rt_dec_rem
+    slot rt_dec_neg
+    slot rt_dec_cmp
+    slot rt_dec_print
+    slot rt_dec_div_into
+    slot rt_dec_quantize_into
+    slot rt_dec_to_int
+    slot rt_dec_from_int
+    slot rt_dec_result
+    slot rt_dec_int_result
 
     .text
     .macro check f
@@ -150,6 +171,21 @@ check_\f:
     check rt_f_parse
 #ifdef OBO_HOSTED_EXIT
     check rt_set_host_exit
+#else
+    check rt_dec_reserved
 #endif
+    check rt_dec_add
+    check rt_dec_sub
+    check rt_dec_mul
+    check rt_dec_rem
+    check rt_dec_neg
+    check rt_dec_cmp
+    check rt_dec_print
+    check rt_dec_div_into
+    check rt_dec_quantize_into
+    check rt_dec_to_int
+    check rt_dec_from_int
+    check rt_dec_result
+    check rt_dec_int_result
 
     .section .note.GNU-stack,"",@progbits
