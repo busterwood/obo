@@ -5,6 +5,16 @@
 **Status:** Research spike. No compiler, runtime, test, Makefile or other design document was changed. Benchmark sources, binaries and logs live under `/tmp/obo-decimal-arith/`, not in the repository.
 **Companions:** `decimal-research-2026-10-28.md` (approved 24-byte design and database survey) and `numeric-literals-decision-2026-10-29.md` (literal policy).
 
+**D1 implementation status (2026-10-31, non-normative).** A private, experimental
+core now lives in `obo/experimental/decimal/` for independent review. It imports
+the repaired 24-byte/38-digit prototype and adds exact parse/format and
+mathematical `decimal(p,s)` binding validation. It is not compiler/runtime
+integration, not an ABI, not a public API and not approved `decimal(p,s)` syntax;
+division, remainder, default rounding and database adapters remain open.
+The 16-byte/96-bit `.NET` sketches and the `m` literal suffix remain superseded
+for the target design. See `experimental/decimal/README.md` for the implemented
+contract, honest unsupported cases and evidence.
+
 **Markers:** **[V]** verified locally in this spike: measured, rebuilt, or read in the local source tree. **[C]** cited externally: stated by the cited primary source but not independently reproduced here. **[O]** observed environment or implementation detail, not a general contract. **[I]** inference, design judgment or recommendation. Design-document statements are marked [V design]; vendor facts they cite are [C] unless reproduced here. All performance numbers are [V] for the stated host and method only. No unmeasured performance claim is presented as fact.
 
 **Review response.** An independent Sonnet review reproduced the benchmark and vector suites but returned REVISE. This revision applies the blocking and should-fix items:
