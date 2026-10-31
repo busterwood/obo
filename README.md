@@ -57,9 +57,10 @@ the historical 0.8.1; floats are 0.10, and Stage B is 0.11.
   and staleness/version checks. A full build still compiles every module body
   from source; `--check` checks against dependencies' symbol files, including
   dependencies without sources.
-- **Library and tools.** The ten modules under `obo/lib/` are `strings`, `paths`,
-  `sort`, `time`, `cli`, `io`, `fmt`, `errors`, `fs` and `env`. Each tool is a
-  module root and imports only what it uses; `obo/tools/build_tools.py` compiles
+- **Library and tools.** The eleven modules under `obo/lib/` are `strings`,
+  `paths`, `sort`, `time`, `cli`, `io`, `fmt`, `errors`, `fs`, `env` and `html`.
+  Each tool is a module root and imports only what it uses;
+  `obo/tools/build_tools.py` compiles
   it directly with the ordinary compiler, with nothing concatenated. The exact
   subsets and caveats are in [obo/cmd/README.md](obo/cmd/README.md).
 
@@ -74,9 +75,9 @@ the historical 0.8.1; floats are 0.10, and Stage B is 0.11.
 | Total allocated | 46,373,536 bytes direct; 46,378,000 bytes port comparison |
 | Maximum resident set | 4,028 KB direct |
 | Live-memory budget | 2,500,000 bytes: 414,128 spare direct / 413,728 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 46,528 at baseline 2,086,320 -> mutant 2,132,848) |
-| obo suite | 1,644 `run_fork` tests; 112 `module_test`; `sym_test.py` 44/44; `sym_fuzz.py` 200/200; `port_test` 582/582 with 10 encoder groups; `port_compare` 1,641/1,641; 66 doc examples; 28/28 import checks; 16/16 stdlib roots |
+| obo suite | 1,645 `run_fork` tests; 112 `module_test`; `sym_test.py` 44/44; `sym_fuzz.py` 200/200; `port_test` 582/582 with 10 encoder groups; `port_compare` 1,642/1,642; 66 doc examples; 29/29 import checks; 16/16 stdlib roots |
 | Float suite | `float_f1.py` 19 groups in normal and `--noregs` builds (12,580 power-of-two values each); `lambda_float_capture` passes in both modes; `memory_log_check` 4 sources |
-| Seed comparison | `OBO_REF=obo/seed/obo` 1,476/1,476 identical flat cases against the 0.11 seed, exit 0; no version skips. Of the default 1,641 cases, 1,476 are flat and 165 are non-flat (154 module tree/symcheck, 4 CLI, 5 special, 1 reemit and 1 token check); the 165 non-flat cases run separately |
+| Seed comparison | `OBO_REF=obo/seed/obo` 1,477/1,477 identical flat cases against the 0.11 seed, exit 0; no version skips. Of the default 1,642 cases, 1,477 are flat and 165 are non-flat (154 module tree/symcheck, 4 CLI, 5 special, 1 reemit and 1 token check); the 165 non-flat cases run separately |
 | Mutation gates | `mutate_fork` 680/710 + 30 equivalent, 0 missed/stale/broken; `mutate_port` 531/531; `mutate_io` 36/36 (including the self-host memory oracle); `mutate_meta` 71/82 + 11 equivalent; harness 27/27 |
 | Tools differential gate | 509 checks vs GNU coreutils 9.4; 4 memory cases |
 | Tool binaries | cat 53,249; wc 57,345; sort 81,921; head 53,249; tail 61,441 bytes (static, runtime included) |
@@ -285,7 +286,7 @@ The aim is a compiler you can trust, so the process matters as much as the code.
 | `obo/src/obo.obo` | obo's compiler, in obo, built by `obo/seed/obo` (promote with `make promote`) |
 | `obo/seed/obo` | the trusted previous stage |
 | `obo/LANGUAGE.md` | the current language reference, including known holes |
-| `obo/lib/` | the ten source modules: `strings`, `paths`, `sort`, `time`, `cli`, `io` (buffered `Reader`/`Writer`, `writeByte`), `fmt`, `errors`, `fs` and `env` |
+| `obo/lib/` | the eleven source modules: `strings`, `paths`, `sort`, `time`, `cli`, `io` (buffered `Reader`/`Writer`, `writeByte`), `fmt`, `errors`, `fs`, `env` and `html` |
 | `obo/cmd/` | the tools: `cat`, `wc`, `sort`, `head`, `tail` and `eza`, with `README.md` and their subsets |
 | `obo/tests/` | obo's suite, mutants, the I/O, tools and eza gates |
 | `obo/tests/io_test.py` | the runtime and streaming-I/O gates |

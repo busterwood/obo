@@ -1,0 +1,212 @@
+// tests/run/html_escape.obx: the ordinary standard-library HTML helpers.
+//
+// The module is imported through -I obo/lib like the other library modules.
+// Every check prints one line; the expect comments are compared in order.
+// The cases pin the documented byte output, UTF-8 pass-through, both quote
+// types, NUL/control handling, double escaping, raw construction, join order
+// and the URL scheme policy. A failure prints FAIL and therefore differs from
+// the expected stdout.
+import "html.obx" as html
+
+fn check(label: string, got: string, want: string) {
+    if got == want {
+        println("ok ", label)
+    } else {
+        println("FAIL ", label, " got [", got, "] want [", want, "]")
+    }
+}
+
+fn escaped(s: string): string {
+    let h = html::escapeText(s)
+    return h.text
+}
+
+fn attr(s: string): string {
+    let h = html::escapeAttr(s)
+    return h.text
+}
+
+fn rawText(s: string): string {
+    let h = html::raw(s)
+    return h.text
+}
+
+fn joined(parts: &[]html::Html): string {
+    let h = html::join(parts)
+    return h.text
+}
+
+// "a", SOH, "b": the literal form for controls other than the supported
+// escapes is a byte array.
+fn controlString(): string {
+    let b = new []byte(3)
+    b[0] = 'a'
+    b[1] = byte(1)
+    b[2] = 'b'
+    return string(b)
+}
+
+fn delString(): string {
+    let b = new []byte(3)
+    b[0] = 'a'
+    b[1] = byte(127)
+    b[2] = 'b'
+    return string(b)
+}
+
+fn urlOk(label: string, url: string, want: string) {
+    let r = html::validateUrl(url)
+    match r {
+        ok(h) { check(label, h.text, want) }
+        err(m, c) { println("FAIL ", label, " rejected ", c, " [", m, "]") }
+    }
+}
+
+fn urlErr(label: string, url: string, wantMessage: string) {
+    let r = html::validateUrl(url)
+    match r {
+        ok(h) { println("FAIL ", label, " accepted [", h.text, "]") }
+        err(m, c) {
+            if c == 22 && m == wantMessage {
+                println("ok ", label)
+            } else {
+                println("FAIL ", label, " err ", c, " [", m, "]", " want 22 [", wantMessage, "]")
+            }
+        }
+    }
+}
+
+fn main() {
+    // Text content: all five ASCII specials, UTF-8 bytes unchanged, empty.
+    check("text-specials", escaped("&<>\"'"),
+          "&amp;&lt;&gt;&quot;&#39;")
+    // expect: ok text-specials
+    check("text-utf8", escaped("café 日本 🚀"), "café 日本 🚀")
+    // expect: ok text-utf8
+    check("text-empty", escaped(""), "")
+    // expect: ok text-empty
+
+    // Escaping is once-only: already-encoded text is escaped again.
+    check("text-double", escaped("&amp; &quot;"),
+          "&amp;amp; &amp;quot;")
+    // expect: ok text-double
+
+    // NUL, other C0 controls and DEL are numeric references. Text keeps
+    // tab/LF/CR raw so markup stays readable.
+    check("text-nul", escaped("a\0b"), "a&#0;b")
+    // expect: ok text-nul
+    check("text-control", escaped(controlString()), "a&#1;b")
+    // expect: ok text-control
+    check("text-del", escaped(delString()), "a&#127;b")
+    // expect: ok text-del
+    check("text-whitespace", escaped("a\tb\nc\rd"),
+          "a\tb\nc\rd")
+    // expect: ok text-whitespace
+
+    // Quoted attribute values: both quote characters are escaped, and
+    // tab/LF/CR become references instead of raw whitespace.
+    check("attr-specials", attr("&<>\"'"),
+          "&amp;&lt;&gt;&quot;&#39;")
+    // expect: ok attr-specials
+    check("attr-both-quotes", attr("a\"b'c"),
+          "a&quot;b&#39;c")
+    // expect: ok attr-both-quotes
+    check("attr-empty", attr(""), "")
+    // expect: ok attr-empty
+    check("attr-double", attr("&quot;"), "&amp;quot;")
+    // expect: ok attr-double
+    check("attr-nul", attr("a\0b"), "a&#0;b")
+    // expect: ok attr-nul
+    check("attr-whitespace", attr("a\tb\nc\rd"),
+          "a&#9;b&#10;c&#13;d")
+    // expect: ok attr-whitespace
+
+    // raw is the explicit trusted constructor and does not escape.
+    check("raw-passthrough", rawText("<b>&</b>"), "<b>&</b>")
+    // expect: ok raw-passthrough
+    check("raw-empty", rawText(""), "")
+    // expect: ok raw-empty
+    let direct = new html::Html{text: "<i>direct</i>"}
+    check("direct-construction", direct.text, "<i>direct</i>")
+    // expect: ok direct-construction
+
+    // join order, already-safe inputs and empty array; the array is borrowed.
+    var parts = new []html::Html(0)
+    append(parts, html::raw("<a>"))
+    append(parts, html::escapeText("<b>"))
+    append(parts, html::raw("</a>"))
+    check("join-order", joined(parts), "<a>&lt;b&gt;</a>")
+    // expect: ok join-order
+    check("join-reuse", joined(parts), "<a>&lt;b&gt;</a>")
+    // expect: ok join-reuse
+    var none = new []html::Html(0)
+    check("join-empty", joined(none), "")
+    // expect: ok join-empty
+
+    // Allowed URLs: relative references, http(s)/mailto, case-insensitive
+    // schemes, and attribute escaping of & and both quotes.
+    urlOk("url-https", "https://example.com/a?x=1&y=2",
+          "https://example.com/a?x=1&amp;y=2")
+    // expect: ok url-https
+    urlOk("url-http-case", "HTTP://Example.COM/Path",
+          "HTTP://Example.COM/Path")
+    // expect: ok url-http-case
+    urlOk("url-mailto", "mailto:user@example.com?subject=Hi",
+          "mailto:user@example.com?subject=Hi")
+    // expect: ok url-mailto
+    urlOk("url-relative", "/users/42?tab=profile&x=1",
+          "/users/42?tab=profile&amp;x=1")
+    // expect: ok url-relative
+    urlOk("url-query", "?q=a&b", "?q=a&amp;b")
+    // expect: ok url-query
+    urlOk("url-fragment", "#section-2", "#section-2")
+    // expect: ok url-fragment
+    urlOk("url-network", "//example.com/a", "//example.com/a")
+    // expect: ok url-network
+    urlOk("url-dot-colon", "./foo:bar", "./foo:bar")
+    // expect: ok url-dot-colon
+    urlOk("url-empty", "", "")
+    // expect: ok url-empty
+    urlOk("url-quotes", "https://example.com/?q=\"x\"&a='b'",
+          "https://example.com/?q=&quot;x&quot;&amp;a=&#39;b&#39;")
+    // expect: ok url-quotes
+
+    // Rejected schemes, including mixed case, data/vbscript/file/blob.
+    urlErr("url-js", "javascript:alert(1)", "URL scheme is not allowed")
+    // expect: ok url-js
+    urlErr("url-js-case", "JaVaScRiPt:alert(1)", "URL scheme is not allowed")
+    // expect: ok url-js-case
+    urlErr("url-data", "data:text/html,<script>alert(1)</script>",
+           "URL scheme is not allowed")
+    // expect: ok url-data
+    urlErr("url-vbscript", "vbscript:msgbox(1)", "URL scheme is not allowed")
+    // expect: ok url-vbscript
+    urlErr("url-file", "file:///etc/passwd", "URL scheme is not allowed")
+    // expect: ok url-file
+    urlErr("url-blob", "blob:https://example.com/x", "URL scheme is not allowed")
+    // expect: ok url-blob
+    urlErr("url-other", "foo:bar", "URL scheme is not allowed")
+    // expect: ok url-other
+    urlErr("url-invalid-scheme", "1javascript:alert(1)",
+           "URL scheme is not allowed")
+    // expect: ok url-invalid-scheme
+    urlErr("url-colon", ":foo", "URL scheme is not allowed")
+    // expect: ok url-colon
+
+    // Whitespace and control obfuscation is refused before scheme parsing.
+    urlErr("url-space-prefix", " javascript:alert(1)",
+           "URL contains an ASCII space or control byte")
+    // expect: ok url-space-prefix
+    urlErr("url-space-path", "https://example.com/a b",
+           "URL contains an ASCII space or control byte")
+    // expect: ok url-space-path
+    urlErr("url-tab", "java\tscript:alert(1)",
+           "URL contains an ASCII space or control byte")
+    // expect: ok url-tab
+    urlErr("url-nul", "javascript\0:alert(1)",
+           "URL contains an ASCII space or control byte")
+    // expect: ok url-nul
+    urlErr("url-control-path", "https://example.com/a\0b",
+           "URL contains an ASCII space or control byte")
+    // expect: ok url-control-path
+}
