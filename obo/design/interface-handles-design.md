@@ -18,11 +18,12 @@ existing checked-handle machinery, not a new runtime facility.
 
 Evidence for the first round is in `/tmp/opencode/interface-handles-design-20261031-162132`.
 The independent review's patched-compiler probes and outputs are in
-`/tmp/opencode/interface-design-review-20261031-162625-447640` and the revision-2 focused review
-is in `/tmp/opencode/interface-rev2-review-20261031-165843-1057444` (both private): the B1 codegen
-cases, B3 through-handle constructor cases (`handle_through_handle_t`), capture cases,
-`Result[?^I]` case and the `^T` analogues. No repository test was changed or run in this revision;
-the review's private probe binaries/outputs were read as evidence.
+`/tmp/opencode/interface-design-review-20261031-162625-447640`, the revision-2 focused review
+`/tmp/opencode/interface-rev2-review-20261031-165843-1057444`, and the revision-3 check
+`/tmp/opencode/interface-rev3-check-1793467882039544356` (all private): the B1 codegen cases, B3
+through-handle constructor cases (`handle_through_handle_t`), capture cases, `Result[?^I]` case
+and the `^T` analogues. No repository test was changed or run in this revision; the review's
+private probe binaries/outputs were read as evidence.
 
 ---
 
@@ -137,7 +138,7 @@ is later. These are the assumptions this design uses:
 | The local-tier summary means a plain `mut fn` may not be called through a handle | true: `pureFn` (`obo.obo:4292`) and the handle-borrow check in `callFnWith` (`obo.obo:6338-6350`) enforce it | `^I` inherits the rule; only `fn`, `pure`, `pure mut` calls pass |
 | A `^I` phase 2a test/error inventory exists | `tests/errors/ifaces_handle.obx` holds the 0.8-era E8a refusals; no run/`^I` test exists | rewrite E8a, add the 2a run/error/module/sym tests |
 | Compiler budget is 2,000,000 in v3 risk text | `PEAK_BUDGET = 2_500_000` (`tests/port_compare.py`, `tests/peak_budget.py`); current 0.11 self-compile peaks at 2,085,872 direct / 2,086,272 port (`FORK.md`) | 413,728 spare; measure, do not raise |
-| 88 `.sym` fixtures | 95 committed `.sym` files: 94 `obosym 6`/`compiler "0.11"`, one `obosym 7` and one `"9.9"` | migrate compiler headers; format/move the `obosym 7` fixture only if a format bump is chosen; recount then |
+| 88 `.sym` fixtures | 95 committed `.sym` files: 94 `obosym 6`/`compiler "0.11"`, one `obosym 7` and one `"9.9"` | migrate compiler headers except the deliberate `"9.9"` fixture; format/move the `obosym 7` fixture only if a format bump is chosen; recount then |
 
 The v3 design is otherwise authoritative for the box, vtable, `&I` pair slots, parameter modes,
 effect summaries and `.sym` declaration encoding. This note does not re-specify those.
@@ -528,7 +529,7 @@ handle base. Test both the explicit-optional success and the `ok(h)` refusal.
 ### 7.1 The designator path is already there
 
 `designatorT` (`obo.obo:7208`) dereferences every handle when a `.` follows
-(`obo.obo:7238-7255`):
+(`obo.obo:7238-7252`; the `rtCall1(RT_DEREF)` is at `7250`):
 
 ```text
 if sym == T_DOT && x.typ.kind == "handle":
@@ -558,7 +559,7 @@ The exact sequence for `h.m(a, b)` is:
    arguments, loads `obj = [box]`, and pushes it as argument 0. **Both loads happen before any
    explicit argument expression runs** (the loop reaches `i == 0` first).
 6. Explicit arguments run left to right; `argOrderCheck` and alias checks run after each.
-7. `call [vtable + 8*slot]` (`callFnWith`, `obo.obo:6389-6395`); the vtable word is at
+7. `call [vtable + 8*slot]` (`callFnWith`, `obo.obo:6375-6378`); the vtable word is at
    `[rsp + 8*n]`.
 
 S4 is already implemented for `I`/`&I`; `^I` inherits the load order because the deref merely
@@ -654,8 +655,9 @@ These are **not** to be narrowed away by forbidding the natural forms. The speci
   returns; it is never reused for the receiver or another argument during that call. The frame
   slot is reclaimed by the ordinary function frame at function end.
 - **First receiver use, `h.m()` / `h.area()`.** In `designatorT`'s handle branch
-  (`obo.obo:7238-7255`), after the existing `deadHandleCheck(x.sym)` (so the origin diagnostic
-  still sees the user symbol), when `baseOf(x.typ).kind == "iface"` (so `^I`/narrowed `?^I` only;
+  (`obo.obo:7238-7252`; the `RT_DEREF` call is at `7250`), after the existing
+  `deadHandleCheck(x.sym)` (so the origin diagnostic still sees the user symbol), when
+  `baseOf(x.typ).kind == "iface"` (so `^I`/narrowed `?^I` only;
   `^T` is untouched), do `x = spillHandle(x)` **before** `rtCall1(RT_DEREF, x, hb)`. `rt_deref`
   then reads the temp slot, so the first `h.area()` has the same materialized path as
   `let hh = h; hh.area()`. The temp stays live across the deref and the subsequent dispatch call.
@@ -671,10 +673,11 @@ These are **not** to be narrowed away by forbidding the natural forms. The speci
   spill does **not** make the pinned probes pass, stop: the residual is an unresolved codegen risk
   and must be reported, not worked around by narrowing the feature.
 
-Source anchors: `designatorT` handle deref `7238-7255`, `callFnWith` argument loop `6185-6266`,
-`pushIfaceReceiver` `6087-6103`, dispatch `6389-6395`, and `load`/`asReg`/`store`/`releaseItem`
-(`3091-3240`). The runtime token functions are correct (`runtime.c:474-493`); this is compiler
-codegen, not a runtime change.
+Source anchors: `designatorT` handle deref `7238-7252` (`RT_DEREF` `7250`), `callFnWith`
+argument loop `6185-6266`, `pushIfaceReceiver` `6087-6098`, dispatch `6375-6378`, and
+`load`/`asReg`/`store`
+(`3091-3240`), with `releaseItem` at `2994`. The runtime token functions are correct
+(`runtime.c:474-493`); this is compiler codegen, not a runtime change.
 
 ---
 
@@ -947,12 +950,12 @@ expected result for an owned `I` place.
 | sym type parser | `symParseType` `obo.obo:12386`, caret branch `12432-12438` | accept `b.kind == "iface"` |
 | generic type ops | `isRef` `1342`, `nonNull` `1347`, `assignable` `1370`, `tname` `1326-1334`, `appTypeExpr` `11747`, `symTypeText` `12278` | no change |
 | handle builtin | `handle` branch `obo.obo:6693-6715` | owned/borrowed/optional interface rules; explicit `viaHandle` guard **inside the interface branch only**; no element-constructor materialization; keep `^T` |
-| handle value copy | `varDecl` `8571-8695`, let-handle copy block `8654-8677`, `store`/`load`/`asReg`/`releaseItem` `3091-3240` | preserve `let` copy origin; add the compiler-internal `spillHandle` use-site copy (section 7.6); do not treat as int/fold/home |
+| handle value copy | `varDecl` `8571-8695`, let-handle copy block `8654-8677`, `store`/`load`/`asReg` `3091-3240`, `releaseItem` `2994` | preserve `let` copy origin; add the compiler-internal `spillHandle` use-site copy (section 7.6); do not treat as int/fold/home |
 | alive/drop/take/replace | `6799`, `6780`, `6822`, `6717` | no change to owned rules; whole-local replace vs field/element replace tracking as section 5.3 |
 | equality | `relation` `8386`, interface check `8409-8412` | refuse interface handles except nil |
 | box/vtable | `boxDescriptor` `5702`, `boxInto` `5759`, `ifacePairCell` `5776` | no change |
-| dispatch | `designatorT` handle deref `7238-7255`, `ifaceMethodCall` `7410`, `methodCall` `7420` | dispatch structure reused, but **add `spillHandle` before the first `^I` deref**; not a no-codegen change |
-| S4 load | `pushIfaceReceiver` `6087-6103`, receiver/argument loop `6185-6266`, dispatch `6389-6395` | reuse order; add `spillHandle` for a first-use `^I` argument |
+| dispatch | `designatorT` handle deref `7238-7252` (`RT_DEREF` call `7250`), `ifaceMethodCall` `7410`, `methodCall` `7420` | dispatch structure reused, but **add `spillHandle` before the first `^I` deref**; not a no-codegen change |
+| S4 load | `pushIfaceReceiver` `6087-6098`, receiver/argument loop `6185-6266`, dispatch `6375-6378` | reuse order; add `spillHandle` for a first-use `^I` argument |
 | effect check | `setMemberSummary` `10614`, `pureFn` `4292`, `afterCall` `4392`, handle-borrow check `6338-6350` | no change; tests pin behaviour |
 | captures | `lambdaExpr` `7572`, classifier `7622-7682`, `containsIfaceIn` handle recursion `1409-1412`, `captureBind` `1659`, hidden prologue `10492-10520` | classifier-only direct-`^I` exemption; leave `containsIface`/`rejectIfaceFn` unchanged; keep `ck=2` |
 | `.sym` reader/writer | `appTypeExpr` `11747`, `symTypeText` `12278`, `symParseType` `12386` | accept and emit `^I` |
@@ -986,11 +989,13 @@ expected result for an owned `I` place.
    next free `OBO_VERSION`; ABI stays 1. **If the format stays unchanged:** do not mutate
    `SYM_FORMAT`, do not move the existing wrong-format fixture (`obosym 7`, expected `reads 6`),
    and migrate only the compiler lines in the fixtures and `sym_test.py`'s compiler constant.
-   **If the format is bumped:** set the next free `SYM_FORMAT`, migrate every fixture to it, move
+   **If the format is bumped:** set the next free `SYM_FORMAT`, migrate the other fixtures, move
    the existing wrong-format fixture from `obosym 7` to **new format + 1**, and update the
-   `sym_test.py` format constant, table and expected message. In both cases migrate every
-   compiler header explicitly; regenerate goldens only with `sym_test.py --update`; update
-   `port_compare.py` minima and any version table.
+   `sym_test.py` format constant, table and expected message. In both cases migrate compiler
+   headers except the deliberate `compiler "9.9"` fixture
+   (`tests/modules/sym/compiler/symdir/lib.sym`) and the `sym_test.py:445` stale-compiler test;
+   regenerate goldens only with `sym_test.py --update`; update `port_compare.py` minima and any
+   version table.
 6. **Docs and gates.** `LANGUAGE.md` §5b/§5 handles, this design's README entry, `FORK.md`
    evidence; all gates; self-host fixed point; peak; review; one seed promotion. `^I` is not used
    in `obo.obo` itself, so the 0.11 seed builds the next compiler.
@@ -1112,14 +1117,17 @@ Paths follow the tree. All run tests execute under `OBO_CHECK=1` where applicabl
 - **S-2a-3 `.sym` errors:** `^int`/`^Result[...]` still rejected with the old text; a forged
   `^I` in a non-interface position rejected; stale format/compiler/ABI fixtures; `^I` in a
   function type or capture carrier rejected.
-- **S-2a-4 fixture migration (conditional on the format decision):** all committed `.sym`
-  compiler headers move to the new compiler. **If `SYM_FORMAT` stays 6, there is no new format,
-  no format-fixture move and no `SYM_FORMAT` mutation:** the existing wrong-format fixture stays
-  `obosym 7` / expected `reads 6`; only its compiler line (if it names the compiler) and
-  `sym_test.py`'s compiler constant change. **If the format is bumped:** all fixtures move to the
-  new format, the existing wrong-format fixture currently at `obosym 7` moves to **new format +
-  1**, and `sym_test.py`'s `SYM_FORMAT`, table and expected message move together. Goldens are
-  regenerated explicitly; recount at implementation (95 now, not v3's 88).
+- **S-2a-4 fixture migration (conditional on the format decision):** migrate committed `.sym`
+  compiler headers to the new compiler, with **two deliberate exceptions that stay**:
+  `obo/tests/modules/sym/compiler/symdir/lib.sym` keeps `compiler "9.9"` (the stale-compiler
+  fixture), and the stale-compiler test at `sym_test.py:445` keeps its expected `9.9` text.
+  **If `SYM_FORMAT` stays 6, there is no new format, no format-fixture move and no `SYM_FORMAT`
+  mutation:** the existing wrong-format fixture stays `obosym 7` / expected `reads 6`; only the
+  remaining compiler headers and `sym_test.py`'s compiler constant change. **If the format is
+  bumped:** the other fixtures move to the new format, the existing wrong-format fixture currently
+  at `obosym 7` moves to **new format + 1**, and `sym_test.py`'s `SYM_FORMAT`, table and expected
+  message move together. Goldens are regenerated explicitly; recount at implementation (95 now,
+  not v3's 88).
 
 ### 13.4 Mutants (each with a catcher; record equivalents)
 
@@ -1139,7 +1147,7 @@ Paths follow the tree. All run tests execute under `OBO_CHECK=1` where applicabl
 | H12 | `?^I` nil test/narrowing accepted unchecked | E-2a-2/E-2a-3 |
 | H13 | `handle` of a borrowed field, or an **interface-typed** field/element through a handle, is accepted (the `viaHandle` guard is missing); if the guard is placed globally, `^T` through-handle fields break | E-2a-1 (S1/B3) and R-2a-3 `^T` control |
 | H14 | `.sym` writer drops `^` or reader rejects `iface` base | S-2a-2 |
-| H15 | `OBO_VERSION` not updated to the actual next free value; **if** the format is bumped, `SYM_FORMAT`/fixtures/`sym_test.py` not updated; **if** it is not bumped, `SYM_FORMAT` or the `obosym 7` fixture is changed anyway | S-2a-4 (both branches) |
+| H15 | `OBO_VERSION` not updated to the actual next free value; **if** the format is bumped, `SYM_FORMAT`/fixtures/`sym_test.py` not updated; **if** it is not bumped, `SYM_FORMAT` or the `obosym 7` fixture is changed anyway; the deliberate `compiler "9.9"` fixture/stale-compiler test is changed | S-2a-4 (both branches) |
 | H16 | `^I` treated as owned (drop/take/free) | E-2a-4/leak oracle |
 | H17 | the capture exemption is applied to a record carrying `^I`, or `containsIface`/`rejectIfaceFn` is globally relaxed so `fn(^I)` passes | E-2a-5 |
 | H18 | `handle` returns a `^T`/concrete type instead of `^I` | type/round-trip test |
@@ -1223,7 +1231,7 @@ questions for this review; the others are defaults that can be widened later.
 |---|---|---|---|
 | 1 | version and format | **rule:** next free `OBO_VERSION`; next free `SYM_FORMAT` only if policy requires; ABI 1 | decimal 0.12/format 6 and templates precede; no number is preassigned |
 | 2 | direct `^I` capture | **decided:** allow in 2a via a classifier-only exemption | kind 2 token snapshot, no layout change; safe and tested |
-| 3 | `?^I` capture | defer; narrow to `^I` first | generic optional capture would try a borrow, not a token; keep one supported form |
+| 3 | `?^I` capture | **decided:** defer; narrow to `^I` first | generic optional capture would try a borrow, not a token; keep one supported form |
 | 4 | owned `I`/`&I` captures | defer to 2b/later | needs a new carrier/binding and pair copy; v3 §10.2 steps 1–3 |
 | 5 | generation on move | **decided:** do not bump; correct the prior wording | runtime only knows free; move is not a free; `^T` semantics |
 | 6 | equality message | **decided:** `interface handles cannot be compared; test an optional with '== nil' or '!= nil'` | specific, no reuse alternative |
@@ -1245,7 +1253,7 @@ No item blocks implementation of 2a. Rows 2–4 and 12 are the acceptance choice
 | review item | resolution in this revision |
 |---|---|
 | B1 codegen | section 7.6 corrects the localization: the token is correct; the **first deref/receiver use** of the stored handle and the first-use `^I` argument through a `^I` receiver need a use-site `spillHandle` temp. Section 12.2 assigns the fix to step 3 (not the element constructor in step 2); R-2a-1/R-2a-2 and H19/H20 catch it. “No new dispatch code” is corrected in sections 0, 7.1 and 12.1. |
-| B2 version/format | section 0 item 9, sections 10.3, 10.4, 11 and 16 now state only the next-free rule; no number is assigned to `^I`. A format bump is policy, not technically required; ABI 1 unless representation changes. S-2a-4/H15 are explicitly conditional: if format 6 stays, there is no `SYM_FORMAT` mutation or format-fixture move; if bumped, the `obosym 7` fixture moves to new format + 1. |
+| B2 version/format | section 0 item 9, sections 10.3, 10.4, 11 and 16 now state only the next-free rule; no number is assigned to `^I`. A format bump is policy, not technically required; ABI 1 unless representation changes. S-2a-4/H15 are explicitly conditional: if format 6 stays, there is no `SYM_FORMAT` mutation or format-fixture move; if bumped, the `obosym 7` fixture moves to new format + 1. The deliberate `compiler "9.9"` fixture and `sym_test.py:445` stale-compiler test stay in both branches. |
 | B3 through-handle constructor | section 4.2 adds the explicit `viaHandle` guard **inside the interface-source branch only**, with `^T` through-handle fields unchanged; section 11 lists the diagnostic; E-2a-1/H13 and R-2a-3's `^T` control test both sides. |
 | M1 replace | section 5.3 splits whole-local `replace` (old box alive, handle not marked dead) from field/element `replace` (place-tracked dead mark); E-2a-6 and H21/H22 test both. |
 | M2 copy tracking | section 5.2 states that `let g = h` inherits `hOrigin`/`pOwner`/live/dead marks (with the compiler anchor), while `var`/assignment/field copies do not; E-2a-6/H23 test it. |
@@ -1258,8 +1266,8 @@ No item blocks implementation of 2a. Rows 2–4 and 12 are the acceptance choice
 Evidence directories:
 `/tmp/opencode/interface-handles-design-20261031-162132/` (first round),
 `/tmp/opencode/interface-design-review-20261031-162625-447640/` (independent review, patched
-compiler) and `/tmp/opencode/interface-rev2-review-20261031-165843-1057444/` (focused revision-2
-review).
+compiler), `/tmp/opencode/interface-rev2-review-20261031-165843-1057444/` (focused revision-2
+review) and `/tmp/opencode/interface-rev3-check-1793467882039544356/` (revision-3 check).
 
 - `worktree-verify.txt`: `HEAD` is `c47383fff8ab6251c3c254577c24047ad24762b7`, no tracked changes
   before the design edits, and the worktree is the isolated `interface-handles-design` tree.
