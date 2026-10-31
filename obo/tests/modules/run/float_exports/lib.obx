@@ -1,0 +1,8 @@
+module lib
+pub type Real = float
+pub type Pair = ref record { a: float; b: int }
+pub type Floats = []float
+pub const Half = 0.5f
+pub const NegZero = -0f
+pub var Global: float = 1.5f
+pub fn half(x: Real): Real { return x * Half }

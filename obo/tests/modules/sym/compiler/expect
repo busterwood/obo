@@ -1,2 +1,2 @@
 exit 2
-stderr obxc: symbol file '<sym>/lib.sym' was built by compiler '9.9'; this is '0.9'; rebuild it
+stderr obxc: symbol file '<sym>/lib.sym' was built by compiler '9.9'; this is '0.10'; rebuild it

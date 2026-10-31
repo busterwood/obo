@@ -445,6 +445,16 @@ def test_memory_baseline_over_budget_aborts():
             raise AssertionError('an over-budget baseline did not abort')
 
 
+def test_empty_array_delta_extra_heap_is_caught():
+    caught, delta = mio.empty_array_regression(2_000_000, 2_044_672)
+    assert caught and delta == 44_672
+
+
+def test_empty_array_delta_below_tolerance_not_caught():
+    caught, delta = mio.empty_array_regression(2_000_000, 2_001_000)
+    assert not caught and delta == 1_000
+
+
 def test_memory_baseline_oracle_failure_aborts():
     def fail(rt, work):
         raise mio.MemoryOracleError('no live peak')

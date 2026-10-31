@@ -23,6 +23,7 @@ compile, but is a known problem rather than a model of good code.
 | Type | Meaning | Owned |
 |---|---|---|
 | `int`, `byte`, `bool` | numbers and booleans, copied by value | no |
+| `float` | IEEE 754 binary64, copied by value (work-in-progress numeric branch) | no |
 | `string` | immutable bytes | yes (reference counted) |
 | `[]T` | growable array of `T` | yes |
 | `ref record { ... }` | a record, declared with `type` | yes |
@@ -35,6 +36,34 @@ compile, but is a known problem rather than a model of good code.
 Records and closed types are declared with `type`, and may refer to each other.
 A forward declaration `type Sym` lets them do so; the fields are only usable once
 the type is defined.
+
+### Float (work in progress)
+
+`float` is IEEE 754 binary64 in one 8-byte word. The `f`/`F` suffix marks a
+float literal (`1f`, `1.5f`, `1.5e3F`); bare fractional and exponent literals
+will be exact `decimal` once that type exists, and are compile errors in a
+float-only compiler directing the `f` suffix. There is no implicit int/float
+conversion: use `float(i)`. Mixed float/int arithmetic and comparison are
+errors. Float is finite, infinite and NaN-capable IEEE data: runtime arithmetic
+uses IEEE overflow to infinity and standard NaN behavior; comparisons are
+unordered for NaN (`==` false, `!=` true, ordered comparisons false), and
+`+0 == -0`. A finite source literal whose exact value rounds beyond binary64 is
+a compile error, never an implicit infinity.
+
+Float values are unowned one-word scalars and work in locals, parameters,
+returns, fields, arrays, globals, `Result[float]`, methods, interfaces and
+function types. Formatting is shortest round-trip with deterministic ties-to-even,
+using fixed notation for decimal exponents -6..20 and scientific `e±NN` outside
+it; special spellings are `nan`, `inf`, `-inf` and `-0`. `parseFloat(s)` is the
+explicit checked string parser and returns `Result[float]`; malformed input is
+code 22 and overflow code 34, while underflow gives signed zero/subnormal.
+There is no `float -> int` conversion in this checkpoint.
+
+Float constants are raw binary64 bit patterns in `.sym`; candidate format 6
+requires exactly `0x` plus 16 lowercase hexadecimal digits. The format is
+float-specific; format 5 does not carry the float public grammar. `floatBits` is
+an internal test diagnostic, available only with `--test-float-bits`, not a
+public API.
 
 ## 2. Ownership
 
@@ -801,7 +830,8 @@ An interface is a named set of methods that a record or closed type can implemen
 either an **owned box** (`I`, `?I`) or a **borrowed pair** (`&I`, `mut &I`, `&?I`); an interface is never a value
 of its own kind with fields or identity. Interfaces arrived in `0.8`; additive
 builtin/runtime extensions use patch releases such as the historical `0.8.1`.
-Lambdas are `0.9`, and handles to interfaces (`^I`) are a later phase.
+Lambdas are `0.9`, numeric floats are `0.10`/format 6, Stage B is next planned
+as `0.11`, and handles to interfaces (`^I`) are a later phase.
 
 ### Declarations and implementations
 
@@ -1110,10 +1140,11 @@ fn main() {
 ```
 
 Capturing closures, owned/read-only capture lists, stored function values and impure callbacks
-are later work. Stage B (`fn [x](...)`) remains reserved for `0.10`; interface handles `^I`
-remain later. The implemented compiler is `0.9`/format 5; the promoted `0.9` seed
-reproduces it. The historical `0.8` seed (`507,905` bytes, sha256 `673ae7ba…`)
-built it once for the release promotion.
+are later work. Stage B (`fn [x](...)`) is next planned as `0.11`; interface handles `^I`
+remain later. The implemented compiler is `0.10`/format 6; the promoted `0.10`
+seed reproduces it. The historical `0.9` seed (`540,673` bytes, sha256
+`3d369273…`) built it once for the release promotion, and the historical `0.8`
+seed (`507,905` bytes, sha256 `673ae7ba…`) built the 0.9 compiler.
 
 ## 6. Modules
 

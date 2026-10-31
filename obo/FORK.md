@@ -5738,3 +5738,216 @@ compiler budget remains `2,000,000` bytes; no 2.5 MB allowance is authorized or
 used. If a 2.5 MB cap were ever approved, the absolute-budget zero-array memory
 mutant would no longer be caught and would need a relative-budget regression
 review first.
+## Float F1 checkpoint (unreleased, WIP)
+
+This isolated branch adds the first scalar binary64 slice. It is **not a
+release candidate** and does not assign a numeric `OBO_VERSION`, `SYM_FORMAT`
+or `SYM_ABI`. The source remains `0.9`/format 5/ABI 1 for this checkpoint; a
+float `.sym` has a type writer/reader path, but float constants and a
+format-version decision are unimplemented.
+
+Implemented: `f`/`F` literals with exact compile-time decimal-to-binary64
+conversion (exact base-2^16 big integer plus sticky, ties-to-even), bare fraction/exponent
+rejection with an `f`-suffix diagnostic, `float` as a one-word unowned type,
+`+ - * /`, unary minus, IEEE comparisons, `float(int)`, `isNaN`/`isInf`/
+`signbit`, and a checkpoint-only `floatBits` bit oracle. Float values are raw
+bits in GPR/stack words; freestanding C helpers 41–55 use C `double`/SSE2
+internally and integer-only arguments/results. Seed 0.8 still builds the
+compiler source because the compiler itself uses no float syntax.
+
+The original F1/F2 checkpoint measured `2,028,976` peak bytes; the exact
+converter checkpoint is `2,027,248` direct (`2,027,264` stage 3; port
+`2,027,616`), source `13,390` lines / `503,098` bytes, binary `561,153` bytes,
+runtime text/data `23,904`/`67,360`.
+
+**Numeric-branch budget (user-approved 2026-10-31).** The numeric worktree
+uses `obo/tests/peak_budget.py` with `PEAK_BUDGET = 2_500_000` decimal bytes.
+This is not a change to the historical lambda release budget, which remains
+`2,000,000` in its own record. The zero-array heap-allocation mutant is
+additionally judged by the same-source self-compile delta: after the exact
+converter the latest measured baseline is 2,030,784 and the mutant 2,076,512, a
+45,728-byte regression (historical pre-float delta 44,672); the shared oracle
+requires at least 30,000 bytes over baseline. This keeps the
+empty-array saving caught even when both peaks are below the new absolute cap.
+No check was weakened.
+
+Tests after the converter/separator fix: `tests/float_f1.py` passes 12 groups (pinned
+literal bits, 295 finite seeded random literals, exact fixed counterexamples,
+long mantissas, arithmetic/NaN/±Inf/signed-zero/subnormal,
+scalars/params/returns, lambda/function-type calls, containers, module
+signature, int conversion, exponent bounds, error cases, GC poison);
+`run_fork.py` 1544 passed; `port_test.py` 573/573; `sym_test.py` 42 passed;
+`doc_check.py` 62 examples, 0 problems. The audit's independent literal corpus
+(199 finite cases) and parse corpus (384 cases) both pass. Unimplemented:
+shortest formatting, float constants/`.sym` release format, float-to-int, and
+the full container/symbol release matrix.
+
+## Float F2 checkpoint (unreleased, WIP)
+
+Adds a first working text path without changing the one-word float ABI or the
+compiler identity. `print`/`println` accept float, `string(float)` returns a
+string, and `parseFloat(string): Result[float]` is the explicit checked
+parser. There is no implicit string/numeric conversion and no float-to-int yet.
+
+The F2 formatter was a provisional 17-significant-digit scientific notation,
+not claimed shortest. **F3A below replaces it with a shortest round-trip
+formatter**; special spellings remain `nan`, `inf`, `-inf` and `-0`, and NaN
+payloads are not printed or specified.
+`parseFloat` accepts finite decimal/exponent text, `nan`, `inf`/`infinity` and
+signs, returns EINVAL 22 for malformed text and ERANGE 34 for overflow;
+underflow yields signed zero/subnormal. Literal overflow remains a compile
+error, distinct from this runtime `Result`.
+
+Implementation: runtime slots 56–58 append after 40. After the independent
+audit, both compiler and runtime use an exact base-2^16/2^32 big-integer
+converter: up to 1200 significant decimal digits plus sticky, exact rational
+comparison, binary search against binary64 neighbours, and a midpoint/tie
+decision. This replaces the broken approximate 4x32 accumulator; it is not
+`strtod`, host float, `long double` rounding, libc or libgcc. The F2 formatting path was provisional; F3A replaces it with the exact
+shortest formatter described below. Runtime text/data are
+`23,904`/`67,360`; no undefined runtime symbols.
+
+After the exact converter and separator fix, direct self-compile is
+`2,027,248` peak bytes (stage-3 `2,027,264`; port `2,027,616`), source
+`13,390` lines / `503,098` bytes, binary `561,153` bytes. Under the approved
+`2,500,000` cap with `472,752` bytes headroom. Fixed point holds (stage2 == stage3). `tests/float_f1.py` has 11
+groups including 250 parse/format candidates (247 finite round-trip cases),
+six exact audit counterexamples with pinned SHA-256 text, long mantissas,
+huge-exponent bounds, compiler underscore separators (including a >1200-digit
+separated fraction), parse strictness, special spellings, malformed/overflow
+`Result` codes, and expected bits from an independent Fraction model. The independent audit
+corpora pass; targeted fix re-review is still required.
+
+Unimplemented at F2: shortest-round-trip formatting and float constants; F3A
+below adds both. The public `.sym` release format/version, float-to-int and the
+final API/style decision remain open.
+
+## Float F3A checkpoint (unreleased, WIP)
+
+**Formatter.** The provisional 17-digit display path is replaced by a shortest
+round-trip formatter. It computes the exact finite decimal expansion with the
+runtime big integers, then tries 1..17 significant digits; each candidate is
+rounded to the nearest decimal (ties-to-even) and accepted only when the exact
+same parser maps it back to the original bits. The first accepted precision is
+the shortest. At each precision both the floor and ceiling decimal-grid
+candidates are tested; if both round-trip, the canonical nearest to the exact
+binary value is chosen (ties-to-even). Output uses fixed notation for decimal
+exponents -6..20 and scientific notation otherwise, with `e±NN`; `-0`, `nan`,
+`inf` and `-inf` keep their prior spellings. No x87/long-double result
+determines correctness.
+
+**Constants.** Source `const X = 1.5f` and `const X = -0f` are usable; unary
+minus is a sign-bit const fold. Other constant arithmetic is **not** folded and
+is rejected with the existing “constant value must be known” diagnostic rather
+than silently using integer operations. Exported float constants use the WIP
+symbol format's raw 16-hex-bit payload, e.g. `const Half: float =
+0x3fe0000000000000`. Float constants require exactly `0x` plus 16 lowercase
+hex digits; decimal, short/wide, uppercase, underscore and signed forms are
+rejected structurally after rehashing in the reader matrix. `--check`
+source-less and `--reemit-sym` are byte-tested.
+This is format-5 WIP, not a release-compatible format: float is a new builtin
+type, so the format must be bumped before merge/release.
+
+**Positions.** Tests cover record and closed fields, arrays append/truncate,
+zero/initialized globals, locals and register-home-disabled builds, direct and
+method parameters/returns, interface dispatch with float members, structural
+function types with mixed int/float arguments, lambda hidden-env calls,
+`Result[float]`, module aliases/constants/globals, malformed symbol input and
+GC poison. The one-word stack/GPR ABI is unchanged; no Stage B captures or
+decimal values are involved.
+
+**Tests.** `tests/float_f1.py` passes 19 groups under the normal compiler and
+under `obo-noregs`: separator restoration, exact fixed counterexamples,
+199-case literal audit, 384-case parse audit, 1,000-case shortest property
+plus all 2,046 normal power-of-two bit patterns/neighbours and all subnormal
+powers, both signs (12,580 values), against independent Fraction bits and a
+Python repr digit-count reference, 250 parse/format round-trip candidates,
+constants/source-less symbols, a rehashed malformed float-constant reader
+matrix, and the value-position matrix. A private 10,000-value parse/format/parse run completed in 1.142 s
+runtime (10 batches; 5.29 s compile); format-only 1,000 values took 0.107 s vs
+0.001 s for the old provisional path (the both-neighbour search roughly doubles
+the old one-candidate exact formatter). Full old gates: `run_fork` 1544,
+`port_compare` 1551, `port_test` 573, `sym_test` 42, `doc_check` 62,
+`mutate_io` 30/30, harness 27. No new F3B mutant/release matrix is claimed.
+
+**Memory.** Final direct self-compile is `2,030,320` peak bytes (three runs;
+stage-3 `2,030,336`; port `2,030,688`, RSS 31,488 KiB), source `13,417` lines /
+`504,413` bytes, binary `569,345` bytes, runtime text/data `26,272`/`67,360`.
+Headroom under the unchanged `2,500,000` cap is `469,680` bytes. `nm -u runtime.o`
+is empty and the fixed point holds (`30124be9…`). Release identity is the
+candidate `0.10`/format 6/ABI 1; Stage B is next planned as `0.11`.
+
+## Float F3B preparation (historical; superseded by the 0.10 candidate below)
+
+`floatBits` is no longer a public builtin. It is an internal diagnostic available
+only with the explicit `--test-float-bits` CLI flag; without it the compiler
+reports `floatBits is an internal test diagnostic; pass --test-float-bits`.
+The flag is carried by the standalone float runner and the reader gate; normal
+programs and the compact mandatory gate do not use it. This is a test-only
+switch, not an environment-variable checks bypass.
+
+**Mandatory functional integration.** `tests/float_core.obx` is a compact
+program registered in `run_fork.py` (formatted literals, arithmetic,
+comparisons, parse Result, constants, fields, arrays, globals, function value,
+interface dispatch and `Result[float]`). `tests/float_errors.obx` registers
+eight compile-error cases. `run_fork.py` also runs the source-less
+`float_f1.py --reader-only` gate. These are in the normal `run_fork` suite, so
+`mutate_fork` builds the actual mutated compiler source for them; the compact
+core is also a `mutate_io` case, compiled and run against the actual mutant
+runtime with its own `rt_dir`. The full 12,580-value power-of-two matrix remains
+in standalone `tests/float_f1.py` (19 groups) and is not repeated in every
+mutant invocation.
+
+**Focused mutant catalog.** `mutate_fork` gains float literal-separator and
+float-constant reader mutants (3/3 caught in a targeted run). `mutate_io` gains
+float add/div/comparison, negative-zero formatting, shortest ceiling-candidate
+and empty-parse mutants (6/6 caught against the actual mutant runtime). These
+are preparatory targeted checks, not a claim that the full fork/port/meta
+matrix has been rerun.
+
+Current gates after this preparation: `run_fork` **1554 passed**, `port_compare`
+**1551/1551** (old cases; the new float core is not in its flat old-file set),
+`port_test` 573/573, `sym_test` 42, `doc_check` 62, `mutate_io` **36/36**,
+`mutate_harness_test` 27, standalone `float_f1` **19 groups** under normal and
+`obo-noregs`. The release identity/format decision is still open; this is not a
+release candidate and no final full matrix is claimed.
+
+## Float 0.10 release candidate (format 6)
+
+The user approved floats before Stage B: the candidate identity is
+**`OBO_VERSION = 0.10`, `SYM_FORMAT = 6`, `SYM_ABI = 1`**. ABI 1 is intentional:
+float remains one word in GPR/stack, the parameter/return convention is the same,
+and runtime slots 0..40 retain their old prefix; slots 41..58 append. Stage B is
+now next planned as **0.11**, not 0.10.
+
+**Fixture migration.** 91 committed `.sym` fixtures moved from format 5 /
+`compiler "0.9"` to format 6 / `compiler "0.10"`; the intentional format fixture
+moved from 6 to 7 (expected `has format 7; this compiler reads 6`), `compiler
+"9.9"` and `abi 9` exceptions remain. Headers are outside the interface hash, so
+body hashes were not recomputed. `sym_test.py` was updated to actual compiler
+identity; no `--update` was used. Public float constants use exactly `0x` plus 16
+lowercase hex bits in format 6; format 5 is rejected before the float body is
+read. A new `modules/run/float_exports` source case covers float aliases,
+constants, globals, record fields, arrays and functions.
+
+**Frozen release gates (source/tests at this checkpoint):**
+`run_fork` **1555**, `memory_log_check` 4 sources, `float_f1` **19 groups** in
+normal and `obo-noregs` modes, `module_test` **107**, `sym_test` **42**,
+`sym_fuzz` **200/200**, `doc_check` **62**, `homes_check` and `homes_edge`
+pass, `elf_test`, `io_test`, `meta_test` **34**, `port_test` **573/573 with 10
+encoder groups**, default `port_compare` **1552/1552**, 0.8 seed compare
+**1269/1269**, imports **28/28**, stdlib **16/16**, tools **509/509 + memory
+4/4**, pinned eza **554/554 + memory 5/5**. Full `mutate_fork` **654/682 caught,
+28 equivalent**, `mutate_port` **531/531**, `mutate_io` **36/36**, `mutate_meta`
+**71/82 caught, 11 equivalent**, harness **27/27**. The 0.9-seed comparison is a
+non-gate diagnostic: it reports expected format/header differences (1439/1552)
+because the old 0.9 compiler emits format 5.
+
+**Final measurements:** direct self-compile **2,030,320** live bytes (three
+runs), stage-3 **2,030,336**, port **2,030,688** (RSS 31,488 KiB), headroom under
+2,500,000 **469,680**; source **13,417 lines / 504,413 bytes**, compiler binary
+**569,345 bytes**, runtime text/data **26,272/67,360**, `nm -u runtime.o` empty,
+fixed point sha256 **`30124be958a772db7b0236b212ee526fd209c3b357a080beeaf57c6966a1cd83`**.
+The compiler is still built by the local old 0.8 seed; main's promoted 0.9 seed
+and the future 0.10 promotion are integration concerns after independent review.
+No merge, push, promotion or seed copy was done.

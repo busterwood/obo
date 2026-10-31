@@ -19,16 +19,16 @@ measurements.
 
 ## Current state (31 October 2026)
 
-The promoted seed is **obo 0.9, symbol format 5, ABI 1** (540,673 bytes,
-sha256 `3d369273…`). It is the reviewed Stage A lambdas compiler, merged at
-`5b1a04b3d613e7586cdca4d1e3efe1c82f93d6cd` from reviewed feature commit
-`7bd905e9426433da14ab9c094d9eb55288c9a302`; stage 2 == stage 3, and the seed
-reproduces the compiler byte for byte. The historical promoted 0.8 seed
-(507,905 bytes, sha256 `673ae7ba…`) built this compiler once during promotion
-and remains in the private release evidence for provenance. Final push awaits
-the independent post-promotion identity audit. Version policy: additive
-builtin/runtime extensions use patch releases such as the historical 0.8.1;
-Stage A is 0.9, while Stage B remains reserved for 0.10.
+The reviewed numeric float candidate, **obo 0.10, symbol format 6, ABI 1**, is
+integrated on this tree; its one seed promotion and post-promotion release
+gates follow. The previous promoted seed is **obo 0.9, symbol format 5, ABI 1**
+(540,673 bytes, sha256 `3d369273…`), the reviewed Stage A lambdas compiler
+merged at `5b1a04b3d613e7586cdca4d1e3efe1c82f93d6cd` from reviewed feature
+commit `7bd905e9426433da14ab9c094d9eb55288c9a302`. Stage B capture lists are
+next planned as `0.11` and are not implemented here. The float symbol grammar
+is format-6-only; no format-5 compatibility is claimed. Version policy:
+additive builtin/runtime extensions use patch releases such as the historical
+0.8.1; floats are 0.10, while Stage B is 0.11.
 
 - **Language.** Single ownership, moves, borrowed `&T` references, checked `^T`
   handles, effect summaries, `Result[T]`/`try`, incremental I/O, modules and
@@ -62,13 +62,12 @@ Stage A is 0.9, while Stage B remains reserved for 0.10.
 | Current metric | Value |
 |---|---:|
 | Compiler source | 12,953 lines, 488,954 bytes |
-| Compiler and seed (`--version`) | seed and compiler 540,673 bytes, sha256 `3d369273…`, `obo 0.9`, sym-format 5, abi 1; the historical 0.8 seed is 507,905 bytes, `673ae7ba…`, `obo 0.8` |
-| Self-host fixed point | stage 2 == stage 3, 540,673 bytes; the promoted 0.9 seed reproduces the compiler |
-| Self-compile wall time | 0.14 s (one timed run on this host; host-dependent) |
-| Self-compile live peak | 1,963,264 bytes direct; 1,963,344 bytes port comparison (budget 2,000,000) |
-| Total allocated | 42,922,368 bytes direct; 42,923,648 bytes port comparison |
-| Maximum resident set | 3,640 KB (timed run on this host) |
-| Live-memory budget | 2,000,000 bytes: 36,736 spare direct / 36,656 port comparison |
+| Compiler and seed (`--version`) | numeric compiler `obo 0.10`, sym-format 6, abi 1; the previous 0.9 seed is 540,673 bytes, sha256 `3d369273…`, `obo 0.9` |
+| Self-host fixed point | the 0.9 seed builds the 0.10 compiler; stage 2 == stage 3 |
+| Self-compile wall time | measured on the release tree (host-dependent) |
+| Self-compile live peak | numeric budget 2,500,000; see the release record for the measured peak |
+| Maximum resident set | see the release record |
+| Live-memory budget | 2,500,000 bytes for numeric work; the separate empty-array oracle requires a 30,000-byte regression |
 | obo suite | 1,544 `run_fork` tests; 106 `module_test`; `sym_test.py` 42/42; `sym_fuzz.py` 200/200; `port_test` 573/573 with 10 encoder groups; `port_compare` 1,551/1,551; 62 doc examples; 28/28 import checks; 16/16 stdlib roots |
 | Seed comparison | `OBO_REF=obo/seed/obo` 1,394/1,394 identical against the promoted 0.9 seed; no skips |
 | Mutation gates (post-promotion, `5b1a04b`) | `mutate_fork` 651/679 + 28 equivalent; `mutate_port` 529/529; `mutate_io` 30/30 (including the self-host memory oracle); `mutate_meta` 71/82 + 11 equivalent |
@@ -125,15 +124,16 @@ on names (its case is size and memory), and the sort rows are fixture-specific.
 ## Roadmap
 
 **Lambdas Stage A** (non-capturing literals, structural function types and
-indirect calls) is merged and promoted as `0.9`/format 5; the 0.9 seed reproduces
-it. Final push awaits the independent post-promotion identity audit. Stage B
-(`0.10` capture lists) and `^I` remain later work. The design is in
+indirect calls) was Stage A `0.9`/format 5. Numeric floats are `0.10`/format 6
+(floats first, before Stage B); the 0.10 seed promotion follows. Stage B capture
+lists are next planned as `0.11`, and `^I` remains later work. The design is in
 [obo/design/lambdas-design.md](obo/design/lambdas-design.md).
 
 | Work | State |
 |---|---|
-| Lambdas Stage A | merged and promoted at 0.9/format 5; release pending final push audit |
-| Lambdas Stage B | next after Stage A release: 0.10, capture lists; `^I` follows Stage B |
+| Lambdas Stage A | merged and promoted at 0.9/format 5 |
+| Numeric floats | 0.10/format 6/ABI 1; reviewed candidate integrated, promotion and release gates in progress |
+| Lambdas Stage B | next after floats: 0.11, capture lists; `^I` follows Stage B |
 | Peephole/optimizer audit | evidence-gated |
 | More tools: `fd`, `hexyl`, `tokei`, `jq` | later |
 | Floats, concurrency, networking, TUI | deliberately later; `jq` and `hyperfine` would need the float decision first |
@@ -268,7 +268,7 @@ cd obo && python3 tests/tools.py --memory              # the four pinned tool me
 cd obo && python3 bench/bench.py         # memory and time against the collector
 cd obo && ./obo --deps tests/modules/run/basic/main.obx -I tests/modules/run/basic  # dependencies first
 cd obo && mkdir -p /tmp/syms && ./obo --check src/obo.obo --sym-dir /tmp/syms        # check without an executable
-cd obo && ./obo --version                # branch: obo 0.9 sym-format 5 abi 1
+cd obo && ./obo --version                # numeric candidate: obo 0.10 sym-format 6 abi 1
 cd obo && ./obo --reemit-sym /tmp/syms/obo.sym   # canonical re-emission (test hook)
 ```
 

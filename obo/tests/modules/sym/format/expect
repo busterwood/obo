@@ -1,2 +1,2 @@
 exit 2
-stderr obxc: symbol file '<sym>/lib.sym' has format 6; this compiler reads 5; rebuild it
+stderr obxc: symbol file '<sym>/lib.sym' has format 7; this compiler reads 6; rebuild it

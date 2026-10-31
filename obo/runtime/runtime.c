@@ -9,6 +9,7 @@
 
 typedef unsigned long u64;
 typedef long i64;
+typedef unsigned int u32;
 
 static i64 sys3(i64 n, i64 a, i64 b, i64 c) {
     i64 r;
@@ -40,6 +41,27 @@ static void zero_words(u64 *p, u64 n) {
     while (n--) *p++ = 0;
 }
 void *memcpy(void *d, const void *s, u64 n) { unsigned char *p = d; const unsigned char *q = s; while (n--) *p++ = *q++; return d; }
+
+/* float helpers: language values are raw binary64 bits in a u64/GPR/stack word.
+ * The C ABI here is integer-only; double/SSE2 is internal.  No libm. */
+static inline double f_from_bits(u64 b) { union { u64 u; double d; } x; x.u = b; return x.d; }
+static inline u64 f_to_bits(double d) { union { u64 u; double d; } x; x.d = d; return x.u; }
+u64 rt_f_add(u64 a, u64 b) { return f_to_bits(f_from_bits(a) + f_from_bits(b)); }
+u64 rt_f_sub(u64 a, u64 b) { return f_to_bits(f_from_bits(a) - f_from_bits(b)); }
+u64 rt_f_mul(u64 a, u64 b) { return f_to_bits(f_from_bits(a) * f_from_bits(b)); }
+u64 rt_f_div(u64 a, u64 b) { return f_to_bits(f_from_bits(a) / f_from_bits(b)); }
+u64 rt_f_neg(u64 a) { return a ^ 0x8000000000000000UL; }
+i64 rt_f_eq(u64 a, u64 b) { return f_from_bits(a) == f_from_bits(b); }
+i64 rt_f_ne(u64 a, u64 b) { return f_from_bits(a) != f_from_bits(b); }
+i64 rt_f_lt(u64 a, u64 b) { return f_from_bits(a) <  f_from_bits(b); }
+i64 rt_f_le(u64 a, u64 b) { return f_from_bits(a) <= f_from_bits(b); }
+i64 rt_f_gt(u64 a, u64 b) { return f_from_bits(a) >  f_from_bits(b); }
+i64 rt_f_ge(u64 a, u64 b) { return f_from_bits(a) >= f_from_bits(b); }
+u64 rt_i_to_f(i64 v) { return f_to_bits((double)v); }
+i64 rt_f_isnan(u64 a) { return ((a & 0x7ff0000000000000UL) == 0x7ff0000000000000UL) && (a & 0x000fffffffffffffUL); }
+i64 rt_f_isinf(u64 a) { return ((a & 0x7fffffffffffffffUL) == 0x7ff0000000000000UL); }
+i64 rt_f_signbit(u64 a) { return (i64)(a >> 63); }
+
 
 /* ---------- output ---------- */
 static char obuf[65536];
@@ -904,6 +926,457 @@ void rt_print_int(i64 v) { put_int(v); }
 void rt_print_str(u64 s) { if (s) putb(sdata(s), slen(s)); }
 void rt_print_bool(i64 b) { puts_(b ? "true" : "false"); }
 void rt_newline(void) { putb("\n", 1); }
+
+/* Shortest binary64 formatting, defined after the exact big-integer helpers. */
+static int fmt_shortest(u64 bits, char *b);
+
+static int fmt_f(u64 bits, char *b) {
+    return fmt_shortest(bits, b);
+}
+
+u64 rt_f_to_str(u64 bits) {
+    char b[64];
+    int n = fmt_f(bits, b);
+    u64 p = alloc_raw(3, 8 + (u64)n);
+    *(u64 *)p = (u64)n;
+    memcpy((char *)p + 8, b, (u64)n);
+    return p;
+}
+void rt_f_print(u64 bits) {
+    char b[64];
+    int n = fmt_f(bits, b);
+    putb(b, (u64)n);
+}
+
+static int ci_is(const char *p, u64 n, const char *w) {
+    u64 i = 0;
+    while (w[i]) {
+        if (i >= n) return 0;
+        char c = p[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c != w[i]) return 0;
+        i++;
+    }
+    return i == n;
+}
+
+/* Exact decimal-to-binary64 for parseFloat.  A base-2^32 big integer holds the
+ * first 1200 significant digits (a binary64 midpoint has at most 768
+ * significant decimal digits: floor(54*log10(2)+1075*log10(5))+1 = 768; the
+ * 1077-character subnormal/normal case includes leading fractional zeros),
+ * with a sticky flag for the discarded tail.  Binary
+ * search compares the exact rational against binary64 candidates; no libc,
+ * strtod, host float or long-double rounding is used. */
+#define FP_MAX_SIG 1200
+#define FP_MAX_EXP10 4000
+#define BI_MAX 1024
+/* Conservative limb bound: 4 bits per decimal digit, plus shift headroom.
+ * Actual worst case is ~574 limbs; this guard catches a future constant change. */
+#define FP_MAX_LIMBS (((FP_MAX_SIG * 4 + 31) / 32) + ((FP_MAX_EXP10 * 4 + 31) / 32) + 64)
+_Static_assert(BI_MAX >= FP_MAX_LIMBS, "BI_MAX too small for the exact converter bounds");
+typedef struct { u32 w[BI_MAX]; int n; } Big;
+
+static void bi_trim(Big *a) { while (a->n > 0 && a->w[a->n - 1] == 0) a->n--; }
+static void bi_set(Big *a, u64 v) {
+    a->n = 0;
+    while (v) { a->w[a->n++] = (u32)v; v >>= 32; }
+}
+static void bi_copy(Big *d, const Big *s) {
+    d->n = s->n;
+    for (int i = 0; i < s->n; i++) d->w[i] = s->w[i];
+}
+static int bi_cmp(const Big *a, const Big *b) {
+    if (a->n != b->n) return a->n < b->n ? -1 : 1;
+    for (int i = a->n - 1; i >= 0; i--) {
+        if (a->w[i] != b->w[i]) return a->w[i] < b->w[i] ? -1 : 1;
+    }
+    return 0;
+}
+static void bi_mul_small(Big *a, u32 m) {
+    u64 carry = 0;
+    for (int i = 0; i < a->n; i++) {
+        u64 v = (u64)a->w[i] * m + carry;
+        a->w[i] = (u32)v;
+        carry = v >> 32;
+    }
+    while (carry) { a->w[a->n++] = (u32)carry; carry >>= 32; }
+}
+static void bi_add_small(Big *a, u32 d) {
+    u64 carry = d;
+    for (int i = 0; i < a->n && carry; i++) {
+        u64 v = (u64)a->w[i] + carry;
+        a->w[i] = (u32)v;
+        carry = v >> 32;
+    }
+    while (carry) { a->w[a->n++] = (u32)carry; carry >>= 32; }
+}
+static void bi_shl(Big *out, const Big *a, int bits) {
+    if (bits <= 0) { bi_copy(out, a); return; }
+    int word = bits / 32, rem = bits % 32;
+    out->n = 0;
+    for (int i = 0; i < word; i++) out->w[out->n++] = 0;
+    u64 carry = 0;
+    for (int i = 0; i < a->n; i++) {
+        u64 v = ((u64)a->w[i] << rem) | carry;
+        out->w[out->n++] = (u32)v;
+        carry = v >> 32;
+    }
+    while (carry) { out->w[out->n++] = (u32)carry; carry >>= 32; }
+    bi_trim(out);
+}
+static void bi_mul_big(Big *out, const Big *a, const Big *b) {
+    out->n = a->n + b->n + 1;
+    for (int i = 0; i < out->n; i++) out->w[i] = 0;
+    for (int i = 0; i < a->n; i++) {
+        u64 carry = 0;
+        for (int j = 0; j < b->n; j++) {
+            u64 v = (u64)out->w[i + j] + (u64)a->w[i] * b->w[j] + carry;
+            out->w[i + j] = (u32)v;
+            carry = v >> 32;
+        }
+        int k = i + b->n;
+        while (carry) {
+            u64 v = (u64)out->w[k] + carry;
+            out->w[k++] = (u32)v;
+            carry = v >> 32;
+        }
+    }
+    bi_trim(out);
+}
+static void bi_mul_u64(Big *out, const Big *a, u64 v) {
+    Big b;
+    bi_set(&b, v);
+    bi_mul_big(out, a, &b);
+}
+static void bi_pow10(Big *out, int k) {
+    Big r, base, sq;
+    bi_set(&r, 1);
+    bi_set(&base, 10);
+    while (k > 0) {
+        if (k & 1) { bi_mul_big(&sq, &r, &base); bi_copy(&r, &sq); }
+        k >>= 1;
+        if (k > 0) { bi_mul_big(&sq, &base, &base); bi_copy(&base, &sq); }
+    }
+    bi_copy(out, &r);
+}
+
+static int cmp_bin(const Big *n, int p, const Big *pow, const Big *a,
+                   int sticky, u64 M, int B) {
+    Big mb, r, l, mp;
+    int c;
+    if (p >= 0) {
+        if (B >= 0) {
+            bi_set(&mb, M); bi_shl(&r, &mb, B); c = bi_cmp(a, &r);
+        } else {
+            bi_set(&mb, M); bi_shl(&l, a, -B); c = bi_cmp(&l, &mb);
+        }
+    } else {
+        bi_mul_u64(&mp, pow, M);
+        if (B >= 0) {
+            bi_shl(&r, &mp, B); c = bi_cmp(n, &r);
+        } else {
+            bi_shl(&l, n, -B); c = bi_cmp(&l, &mp);
+        }
+    }
+    if (c == 0 && sticky) return 1;
+    return c;
+}
+static int cmp_bits(const Big *n, int p, const Big *pow, const Big *a,
+                    int sticky, u64 bits) {
+    if (bits == 0) return 1;
+    u64 e = (bits >> 52) & 0x7ff;
+    u64 f = bits & 0x000fffffffffffffUL;
+    u64 M = f;
+    int B = -1074;
+    if (e != 0) { M = (1ULL << 52) | f; B = (int)e - 1023 - 52; }
+    return cmp_bin(n, p, pow, a, sticky, M, B);
+}
+static int float_bits_from_parts(const Big *n, int p, int sticky, u64 *out) {
+    Big pow, a;
+    if (n->n == 0) { *out = 0; return 0; }
+    int pk = p < 0 ? -p : p;
+    bi_pow10(&pow, pk);
+    if (p >= 0) bi_mul_big(&a, n, &pow); else a.n = 0;
+    if (cmp_bin(n, p, &pow, &a, sticky, (1ULL << 54) - 1, 970) >= 0)
+        return 1;
+    u64 lo = 0, hi = 0x7fefffffffffffffUL;
+    while (lo < hi) {
+        u64 mid = lo + (hi - lo + 1) / 2;
+        if (cmp_bits(n, p, &pow, &a, sticky, mid) >= 0) lo = mid;
+        else hi = mid - 1;
+    }
+    if (cmp_bits(n, p, &pow, &a, sticky, lo) == 0) { *out = lo; return 0; }
+    if (lo == 0x7fefffffffffffffUL) { *out = lo; return 0; }
+    int c;
+    if (lo == 0) {
+        c = cmp_bin(n, p, &pow, &a, sticky, 1, -1075);
+    } else {
+        u64 hi2 = lo + 1;
+        u64 elo = (lo >> 52) & 0x7ff, ehi = (hi2 >> 52) & 0x7ff;
+        u64 mlo = lo & 0x000fffffffffffffUL;
+        u64 mhi = hi2 & 0x000fffffffffffffUL;
+        int blo = -1074, bhi = -1074;
+        if (elo) { mlo |= 1ULL << 52; blo = (int)elo - 1023 - 52; }
+        if (ehi) { mhi |= 1ULL << 52; bhi = (int)ehi - 1023 - 52; }
+        int b = blo < bhi ? blo : bhi;
+        u64 mmid = (mlo << (blo - b)) + (mhi << (bhi - b));
+        c = cmp_bin(n, p, &pow, &a, sticky, mmid, b - 1);
+    }
+    if (c < 0) *out = lo;
+    else if (c > 0) *out = lo + 1;
+    else *out = ((lo & 1) == 0) ? lo : lo + 1;
+    return 0;
+}
+
+/* parseFloat(string): Result[float].  Malformed input is EINVAL 22; a value
+ * beyond binary64 range is ERANGE 34.  Underflow returns signed zero/subnormal. */
+static void bi_div10(Big *a, u32 *rem) {
+    u64 r = 0;
+    for (int i = a->n - 1; i >= 0; i--) {
+        u64 cur = (r << 32) | a->w[i];
+        a->w[i] = (u32)(cur / 10);
+        r = cur % 10;
+    }
+    *rem = (u32)r;
+    bi_trim(a);
+}
+static void bi_pow5(Big *out, int k) {
+    Big r, base, sq;
+    bi_set(&r, 1);
+    bi_set(&base, 5);
+    while (k > 0) {
+        if (k & 1) { bi_mul_big(&sq, &r, &base); bi_copy(&r, &sq); }
+        k >>= 1;
+        if (k > 0) { bi_mul_big(&sq, &base, &base); bi_copy(&base, &sq); }
+    }
+    bi_copy(out, &r);
+}
+/* Exact finite decimal digits of a binary64 magnitude: value = digits * 10^e10. */
+static int exact_digits(u64 bits, char *digits, int *len, int *e10) {
+    u64 ef = (bits >> 52) & 0x7ff;
+    u64 frac = bits & 0x000fffffffffffffUL;
+    if (ef == 0 && frac == 0) { digits[0] = '0'; *len = 1; *e10 = 0; return 0; }
+    u64 M = ef == 0 ? frac : ((1ULL << 52) | frac);
+    int B = ef == 0 ? -1074 : (int)ef - 1023 - 52;
+    Big n, t, p5;
+    bi_set(&n, M);
+    if (B >= 0) {
+        bi_shl(&t, &n, B);
+        bi_copy(&n, &t);
+        *e10 = 0;
+    } else {
+        int k = -B;
+        bi_pow5(&p5, k);
+        bi_mul_big(&t, &n, &p5);
+        bi_copy(&n, &t);
+        *e10 = -k;
+    }
+    char rev[1200];
+    int nr = 0;
+    while (n.n > 0) {
+        u32 r;
+        bi_div10(&n, &r);
+        if (nr >= (int)sizeof(rev)) return -1;
+        rev[nr++] = (char)('0' + (int)r);
+    }
+    if (nr == 0) { digits[0] = '0'; *len = 1; *e10 = 0; return 0; }
+    for (int i = 0; i < nr; i++) digits[i] = rev[nr - 1 - i];
+    *len = nr;
+    return 0;
+}
+static unsigned long long pow10u(int p) {
+    unsigned long long v = 1;
+    while (p-- > 0) v *= 10ULL;
+    return v;
+}
+static int candidate_ok(unsigned long long cand, int e, u64 bits) {
+    Big cb;
+    bi_set(&cb, cand);
+    u64 rb;
+    return !float_bits_from_parts(&cb, e, 0, &rb) && rb == bits;
+}
+static int shortest_positive(u64 bits, char *b) {
+    char d[1200];
+    int L = 0, e10 = 0;
+    if (exact_digits(bits, d, &L, &e10)) return -1;
+    unsigned long long q = 0;
+    int qe = 0, qn = 0;
+    for (int p = 1; p <= 17 && p <= L; p++) {
+        unsigned long long prefix = 0;
+        for (int i = 0; i < p; i++) prefix = prefix * 10ULL + (unsigned long long)(d[i] - '0');
+        int next = p < L ? d[p] - '0' : 0;
+        int rest = 0;
+        for (int i = p + 1; i < L; i++) if (d[i] != '0') { rest = 1; break; }
+        unsigned long long floorq = prefix;
+        unsigned long long ceilq = prefix + 1;
+        int e = e10 + L - p;
+        unsigned long long lim = pow10u(p);
+        unsigned long long ceil_norm = ceilq;
+        int ceil_e = e;
+        if (ceil_norm == lim) { ceil_norm = lim / 10; ceil_e++; }
+        int floor_ok = candidate_ok(floorq, e, bits);
+        int ceil_ok = candidate_ok(ceil_norm, ceil_e, bits);
+        if (!floor_ok && !ceil_ok) continue;
+        int choose_floor;
+        if (next < 5) choose_floor = 1;
+        else if (next > 5 || (next == 5 && rest)) choose_floor = 0;
+        else choose_floor = (floorq & 1) == 0;  // exact decimal tie: even grid integer
+        if (choose_floor && !floor_ok) choose_floor = 0;
+        if (!choose_floor && !ceil_ok) choose_floor = 1;
+        if (choose_floor) { q = floorq; qe = e; }
+        else { q = ceil_norm; qe = ceil_e; }
+        qn = p;
+        break;
+    }
+    if (qn == 0) {
+        // 17 significant digits always suffice; this is a defensive fallback.
+        unsigned long long prefix = 0;
+        int p = L < 17 ? L : 17;
+        for (int i = 0; i < p; i++) prefix = prefix * 10ULL + (unsigned long long)(d[i] - '0');
+        q = prefix; qe = e10 + L - p; qn = p;
+    }
+    while (qn > 1 && q % 10 == 0) { q /= 10; qn--; qe++; }
+    char qd[20];
+    int nd = 0;
+    unsigned long long x = q;
+    do { qd[nd++] = (char)('0' + (int)(x % 10)); x /= 10; } while (x);
+    // reverse
+    for (int i = 0; i < nd / 2; i++) { char t = qd[i]; qd[i] = qd[nd - 1 - i]; qd[nd - 1 - i] = t; }
+    int k = qe + nd - 1;
+    int o = 0;
+    if (nd == 1) b[o++] = qd[0];
+    else { b[o++] = qd[0]; b[o++] = '.'; for (int i = 1; i < nd; i++) b[o++] = qd[i]; }
+    if (k >= -6 && k <= 20) {
+        // Re-render in fixed notation from the canonical digits.
+        o = 0;
+        if (qe >= 0) {
+            for (int i = 0; i < nd; i++) b[o++] = qd[i];
+            for (int i = 0; i < qe; i++) b[o++] = '0';
+            if (nd == 0) b[o++] = '0';
+        } else {
+            int point = nd + qe;
+            if (point > 0) {
+                for (int i = 0; i < point; i++) b[o++] = qd[i];
+                b[o++] = '.';
+                for (int i = point; i < nd; i++) b[o++] = qd[i];
+            } else {
+                b[o++] = '0'; b[o++] = '.';
+                for (int i = 0; i < -point; i++) b[o++] = '0';
+                for (int i = 0; i < nd; i++) b[o++] = qd[i];
+            }
+        }
+        return o;
+    }
+    // Scientific notation, at least two exponent digits.
+    int o2 = 0;
+    b[o2++] = qd[0];
+    if (nd > 1) { b[o2++] = '.'; for (int i = 1; i < nd; i++) b[o2++] = qd[i]; }
+    b[o2++] = 'e';
+    int ek = k;
+    if (ek < 0) { b[o2++] = '-'; ek = -ek; } else b[o2++] = '+';
+    if (ek >= 100) { b[o2++] = (char)('0' + ek / 100); ek %= 100; }
+    b[o2++] = (char)('0' + ek / 10);
+    b[o2++] = (char)('0' + ek % 10);
+    return o2;
+}
+static int fmt_shortest(u64 bits, char *b) {
+    int o = 0;
+    u64 sign = bits >> 63;
+    u64 ef = (bits >> 52) & 0x7ff;
+    u64 frac = bits & 0x000fffffffffffffUL;
+    if (ef == 0x7ff) {
+        if (frac) { b[o++] = 'n'; b[o++] = 'a'; b[o++] = 'n'; }
+        else { if (sign) b[o++] = '-'; b[o++] = 'i'; b[o++] = 'n'; b[o++] = 'f'; }
+        return o;
+    }
+    if (ef == 0 && frac == 0) {
+        if (sign) b[o++] = '-';
+        b[o++] = '0';
+        return o;
+    }
+    if (sign) b[o++] = '-';
+    int n = shortest_positive(bits & 0x7fffffffffffffffUL, b + o);
+    if (n < 0) return -1;
+    return o + n;
+}
+
+u64 rt_f_parse(u64 s, u64 descErr, u64 descOk) {
+    const char *p = sdata(s);
+    u64 n = slen(s);
+    u64 i = 0;
+    while (i < n && (p[i] == ' ' || p[i] == '\t' || p[i] == '\n' || p[i] == '\r')) i++;
+    int sign = 0;
+    if (i < n && (p[i] == '+' || p[i] == '-')) { sign = p[i] == '-'; i++; }
+    u64 j = i;
+    while (j < n && p[j] != ' ' && p[j] != '\t' && p[j] != '\n' && p[j] != '\r') j++;
+    u64 tail = j;
+    while (tail < n && (p[tail] == ' ' || p[tail] == '\t' || p[tail] == '\n' || p[tail] == '\r')) tail++;
+    if (tail != n) return err_cell(descErr, iomsg_lit("invalid float"), 22);
+    u64 w = j - i;
+    if (ci_is(p + i, w, "nan")) {
+        u64 bits = 0x7ff8000000000000UL;
+        if (sign) bits |= 0x8000000000000000UL;
+        return ok_cell(descOk, bits);
+    }
+    if (ci_is(p + i, w, "inf") || ci_is(p + i, w, "infinity")) {
+        u64 bits = 0x7ff0000000000000UL;
+        if (sign) bits |= 0x8000000000000000UL;
+        return ok_cell(descOk, bits);
+    }
+    i64 exp10 = 0, frac = 0, discarded = 0;
+    int huge = 0, eneg = 0, edigits = 0, any = 0, dot = 0, sig = 0, sticky = 0;
+    Big mant;
+    mant.n = 0;
+    while (i < j) {
+        char c = p[i];
+        if (c == '.') {
+            if (dot) return err_cell(descErr, iomsg_lit("invalid float"), 22);
+            dot = 1; i++;
+        } else if (c >= '0' && c <= '9') {
+            any = 1;
+            if (dot) frac++;
+            int d = c - '0';
+            if (sig == 0 && d == 0) { i++; }
+            else {
+                sig++;
+                if (sig <= 1200) { bi_mul_small(&mant, 10); bi_add_small(&mant, (u32)d); }
+                else { discarded++; if (d) sticky = 1; }
+                i++;
+            }
+        } else break;
+    }
+    if (!any) return err_cell(descErr, iomsg_lit("invalid float"), 22);
+    if (i < j && (p[i] == 'e' || p[i] == 'E')) {
+        i++;
+        if (i < j && (p[i] == '+' || p[i] == '-')) { eneg = p[i] == '-'; i++; }
+        i64 cap = (i64)n + 5000;
+        while (i < j && p[i] >= '0' && p[i] <= '9') {
+            int d = p[i] - '0';
+            if (exp10 > (cap - d) / 10) huge = 1;
+            else exp10 = exp10 * 10 + d;
+            edigits++; i++;
+        }
+        if (!edigits) return err_cell(descErr, iomsg_lit("invalid float"), 22);
+    }
+    if (i != j) return err_cell(descErr, iomsg_lit("invalid float"), 22);
+    if (mant.n == 0) {
+        u64 bits = sign ? 0x8000000000000000UL : 0;
+        return ok_cell(descOk, bits);
+    }
+    if (huge) {
+        if (eneg) return ok_cell(descOk, sign ? 0x8000000000000000UL : 0);
+        return err_cell(descErr, iomsg_lit("float out of range"), 34);
+    }
+    if (eneg) exp10 = -exp10;
+    i64 pwr = exp10 - frac + discarded;
+    if (pwr > 4000) return err_cell(descErr, iomsg_lit("float out of range"), 34);
+    if (pwr < -4000) return ok_cell(descOk, sign ? 0x8000000000000000UL : 0);
+    u64 bits;
+    if (float_bits_from_parts(&mant, (int)pwr, sticky, &bits))
+        return err_cell(descErr, iomsg_lit("float out of range"), 34);
+    if (sign) bits |= 0x8000000000000000UL;
+    return ok_cell(descOk, bits);
+}
 
 void rt_gc_stats(void) {
     puts_("obo: "); put_int((i64)live_owned); puts_(" live objects, ");
