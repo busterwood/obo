@@ -80,6 +80,8 @@ pub const KIND_ATOMIC_INT = 19
 pub const KIND_ATOMIC_BOOL = 20
 pub const KIND_SENDER = 21
 pub const KIND_RECEIVER = 22
+pub const KIND_TLS_CONTEXT = 23
+pub const KIND_TLS_SESSION = 24
 
 // P0 fixture kinds: a small native eventfd/counter and a C-owned byte buffer.
 pub const KIND_TEST_RESOURCE = 90
