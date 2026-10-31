@@ -1526,3 +1526,9 @@ void rt_misaligned(void) {
 }
 
 void rt_exit(i64 code) { flush(); OBO_EXIT(code); for (;;); }
+
+/* Reviewed decimal core and compiler-facing helpers.  Kept as a separate
+ * included source file so its provenance from obo/experimental/decimal is
+ * explicit; runtime.c remains the only translation unit the build and test
+ * harnesses compile. */
+#include "decimal24_core.inc"

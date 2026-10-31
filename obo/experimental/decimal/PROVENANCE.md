@@ -89,6 +89,18 @@ implementation: it uses `Fraction` plus integer rounding decisions, not Python
 results against it. The retained Python `decimal` cross-check remains a
 secondary D1 check only.
 
+## Compiler integration copy (0.12 WIP)
+
+The reviewed core is copied into `../../runtime/decimal24_core.inc` and compiled
+as part of the single freestanding `runtime/runtime.c` translation unit.  The
+copy omits only include guards, `#include` lines and the 24-byte static
+assertions; the arithmetic file's private `u256_*` helper names gain an `a_`
+prefix to avoid colliding with the core's same-named static helpers.  The
+source files above remain unchanged.  The compiler integration helpers, ABI and
+trap policy are in that file and in `obo/src/obo.obo`; this package is no longer
+un-integrated private evidence, but it is still not a public API or a stable
+wire format.
+
 ## Evidence
 
 The runner writes fresh immutable evidence outside the repository:

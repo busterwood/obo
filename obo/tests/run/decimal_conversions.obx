@@ -1,0 +1,23 @@
+// Explicit int conversions and the checked toInt Result.
+
+fn show(r: Result[int]) {
+    match r {
+        ok(v) { println(v) }
+        err(m, c) { println("err ", c) }
+    }
+}
+
+fn main() {
+    println(decimal(42)) // expect: 42
+    println(decimal(-7)) // expect: -7
+    println(decimal::fromInt(255)) // expect: 255
+    println(decimal(byte(9))) // expect: 9
+    show(decimal::toInt(2.6, HALF_AWAY)) // expect: 3
+    show(decimal::toInt(2.5, HALF_EVEN)) // expect: 2
+    show(decimal::toInt(2.5, HALF_AWAY)) // expect: 3
+    show(decimal::toInt(-2.6, TOWARD_ZERO)) // expect: -2
+    show(decimal::toInt(-2.6, FLOOR)) // expect: -3
+    show(decimal::toInt(-2.6, CEILING)) // expect: -2
+    show(decimal::toInt(2.6, UNNECESSARY)) // expect: err 3
+    show(decimal::toInt(1e30, HALF_AWAY)) // expect: err 1
+}

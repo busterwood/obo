@@ -24,6 +24,7 @@ compile, but is a known problem rather than a model of good code.
 |---|---|---|
 | `int`, `byte`, `bool` | numbers and booleans, copied by value | no |
 | `float` | IEEE 754 binary64, copied by value | no |
+| `decimal` | exact 38-digit decimal, 24 bytes, copied by value (v1 scalar tier) | no |
 | `string` | immutable bytes | yes (reference counted) |
 | `[]T` | growable array of `T` | yes |
 | `ref record { ... }` | a record, declared with `type` | yes |
@@ -40,11 +41,11 @@ the type is defined.
 ### Float
 
 `float` is IEEE 754 binary64 in one 8-byte word. The `f`/`F` suffix marks a
-float literal (`1f`, `1.5f`, `1.5e3F`); bare fractional and exponent literals
-will be exact `decimal` once that type exists, and are compile errors in a
-float-only compiler directing the `f` suffix. There is no implicit int/float
-conversion: use `float(i)`. Mixed float/int arithmetic and comparison are
-errors. Float is finite, infinite and NaN-capable IEEE data: runtime arithmetic
+float literal (`1f`, `1.5f`, `1.5e3F`); a bare fractional or exponent literal is
+exact `decimal` (next section), so write the suffix in a float context. There is
+no implicit int/float or decimal/float conversion: use `float(i)`. Mixed
+float/int and float/decimal arithmetic and comparison are errors. Float is
+finite, infinite and NaN-capable IEEE data: runtime arithmetic
 uses IEEE overflow to infinity and standard NaN behavior; comparisons are
 unordered for NaN (`==` false, `!=` true, ordered comparisons false), and
 `+0 == -0`. A finite source literal whose exact value rounds beyond binary64 is
@@ -63,6 +64,71 @@ Float constants are raw binary64 bit patterns in `.sym`; format 6 requires
 exactly `0x` plus 16 lowercase hexadecimal digits. The format is float-specific;
 format 5 does not carry the float public grammar. `floatBits` is an internal test
 diagnostic, available only with `--test-float-bits`, not a public API.
+
+### Decimal (0.12 release scalar tier)
+
+`decimal` is an exact finite decimal value: a 128-bit coefficient (at most
+`10^38 - 1`), an `int16` exponent, a `uint16` display scale and a sign, in 24
+bytes. There is no NaN, infinity or negative zero. A bare fractional or
+exponent literal is decimal (`12.34`, `0.0011e3`, `1.2300`); an integer literal
+is still `int`; `f`/`F` still marks float. There is no `m`/`d` suffix. The
+written fractional digits are the display scale, so `1.2300` prints `1.2300`.
+A literal needing more than 38 significant digits, or an exponent/display scale
+outside the representation, is a compile error.
+
+```obo
+// example: runs
+// prints 2.40
+// prints 1.440
+// prints 0.012300
+// prints true
+fn main() {
+    println(1.20 + 1.2)
+    println(1.20 * 1.2)
+    println(1.2300e-2)
+    println(1.0 == 1.00)
+}
+```
+
+`+`, `-`, `*` and `%` are exact; a result that is not exactly representable
+traps with exit 10 (codes 40-41), never silently rounds. `%` is the truncating
+remainder with the sign of the dividend; a zero divisor traps (code 42).
+Comparisons compare numeric value only, ignoring display scale. `/` and `/=` are
+compile errors; use `decimal::div(a, b, scale, mode)`, which returns
+`Result[decimal]` and requires an explicit scale `0..32768` and mode.
+`decimal::quantize(v, scale, mode)` rounds once at the target scale and
+`decimal::toInt(d, mode)` is the checked `Result[int]` conversion.
+
+```obo
+// example: runs
+// prints 0.50
+fn main() {
+    let r = decimal::div(1.00, 2.0, 2, HALF_AWAY)
+    match r {
+        ok(v) { println(v) }
+        err(m, c) { println("err ", c) }
+    }
+}
+```
+
+`decimal(i)` and `decimal::fromInt(i)` convert an int/byte exactly; there is no
+implicit int-to-decimal conversion. `int(d)` is a compile error pointing to
+`decimal::toInt`. Float-to-decimal and decimal-to-float conversions are not in
+v1. `print`/`println` preserve the display scale; if a capped multiply display
+scale would hide a nonzero fractional digit, they print the exact canonical
+form instead of rounding.
+
+```obo
+// example: error: decimal division needs an explicit scale and mode
+fn main() { let x = 1.0 / 2.0 }
+```
+
+In this v1 tier decimals work as locals, parameters and returns (three-word
+by-value slots and a hidden destination pointer for returns) and in
+`Result[decimal]`. Decimal globals, constants, record fields, arrays, captures,
+methods, interfaces and function values are not implemented and are refused
+with a clear diagnostic. `?decimal` is not representable; there is no raw-bits
+access and no owned or mutable decimal.
 
 ## 2. Ownership
 
@@ -2173,6 +2239,29 @@ and `io::termWidth(fd)`.
 
 ## 9. Runtime checks and exit codes
 
+Decimal exact arithmetic traps with exit 10 and diagnostic ids 40-49: 40 is
+"not exactly representable", 41 overflow, 42 division by zero, 43 invalid, 44
+unsupported range, 45 precision overflow, 46 exponent range, 47 display range
+and 48 buffer too small; 49 is other. The ids are trap diagnostics only.
+
+`decimal::div`, `decimal::quantize` and `decimal::toInt` do not trap for value
+errors; their `Result` `err` code is the reviewed core status:
+
+| Result code | Core status | Meaning |
+|---:|---|---|
+| 1 | `DEC_OVERFLOW` | overflow / not representable in the 38-digit range |
+| 3 | `DEC_INEXACT` | `UNNECESSARY` would discard a nonzero digit |
+| 4 | `DEC_INVALID` | invalid value or rounding mode |
+| 5 | `DEC_DIV_ZERO` | zero divisor |
+| 6 | `DEC_UNSUPPORTED_RANGE` | request outside the API range (scale not 0..32768) |
+| 7 | `DEC_PRECISION_OVERFLOW` | reserved; not currently returned by these APIs |
+| 8 | `DEC_EXPONENT_RANGE` | reserved; not currently returned by these APIs |
+| 9 | `DEC_DISPLAY_RANGE` | reserved; not currently returned by these APIs |
+
+Core status 2 (`UNSUPPORTED_EXACT`) and 10 (`BUFFER_SMALL`) stay internal.
+Scale and mode are validated before the core is called: constant invalid values
+are compile errors, runtime values return 6 (scale) or 4 (mode).
+
 | Exit code | Cause |
 |---|---|
 | 2 | negative array length, or out of memory |
@@ -2340,6 +2429,18 @@ depend on the program.
 - Strings are reference counted rather than collected.
 
 ## 12. Known holes and planned changes
+
+Decimal is the released minimum scalar tier at 0.12: no decimal globals,
+constants, record fields, arrays, methods, lambdas/captures or interfaces; no
+`format`/`parse` stdlib, database adapter, `decimal(p,s)` syntax, float interop
+or owned/mut decimal. Display scale is independent metadata, and a multiply
+caps the propagated display scale at the 38-digit rule without changing the
+value. The reviewed core keeps its strict quantize target limit of 32768. The
+0.11 seed built the 0.12 image once; the parent promotion makes `seed/obo` the
+same 0.12 image. Underscore placement such as `1_.0` is not validated by the
+shared lexer; that is a pre-existing lexer-wide gap, not decimal-specific.
+`float` remains a separate pre-existing reserved-type-name gap; `decimal` is
+now reserved.
 
 **Assignment targets across calls (closed).** The target of an assignment is located
 before the right-hand side is evaluated, so a call on the right that frees the target

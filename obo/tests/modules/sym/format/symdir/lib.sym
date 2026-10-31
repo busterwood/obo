@@ -1,6 +1,6 @@
 obosym 7
 abi 1
-compiler "0.11"
+compiler "0.12"
 source 0xe8012afce820cb5c
 interface 0xa0be583601c569c3
 module lib

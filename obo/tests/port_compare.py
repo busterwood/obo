@@ -253,6 +253,23 @@ SEED_FILE_MIN = {
     os.path.join(FORK, 'tests', 'run', 'lambda_state.obx'): (0, 11),
     os.path.join(FORK, 'tests', 'run', 'lambda_float_capture.obx'): (0, 11),
     os.path.join(FORK, 'tests', 'errors', 'closures.obx'): (0, 11),
+    # Decimal integration is 0.12: the released 0.11 seed cannot parse bare
+    # fractional/exponent decimal literals, decimal type names or decimal::.
+    os.path.join(FORK, 'tests', 'run', 'decimal_literals.obx'): (0, 12),
+    os.path.join(FORK, 'tests', 'run', 'decimal_arithmetic.obx'): (0, 12),
+    os.path.join(FORK, 'tests', 'run', 'decimal_compare.obx'): (0, 12),
+    os.path.join(FORK, 'tests', 'run', 'decimal_display.obx'): (0, 12),
+    os.path.join(FORK, 'tests', 'run', 'decimal_conversions.obx'): (0, 12),
+    os.path.join(FORK, 'tests', 'run', 'decimal_div.obx'): (0, 12),
+    os.path.join(FORK, 'tests', 'run', 'decimal_quantize.obx'): (0, 12),
+    os.path.join(FORK, 'tests', 'run', 'decimal_calls.obx'): (0, 12),
+    os.path.join(FORK, 'tests', 'run', 'decimal_result.obx'): (0, 12),
+    os.path.join(FORK, 'tests', 'run', 'decimal_trap_inexact.obx'): (0, 12),
+    os.path.join(FORK, 'tests', 'run', 'decimal_trap_overflow.obx'): (0, 12),
+    os.path.join(FORK, 'tests', 'run', 'decimal_trap_divzero.obx'): (0, 12),
+    os.path.join(FORK, 'tests', 'run', 'decimal_requests.obx'): (0, 12),
+    os.path.join(FORK, 'tests', 'run', 'decimal_result_codes.obx'): (0, 12),
+    os.path.join(FORK, 'tests', 'errors', 'decimal.obx'): (0, 12),
 }
 SEED_LIB_MIN = {'io.obx': (0, 5), 'env.obx': (0, 4)}
 _SEED_VERSIONS = {}

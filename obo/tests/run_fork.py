@@ -50,7 +50,7 @@ import elf_test  # noqa: E402
 import html_lib_test  # noqa: E402
 
 run.OBXC = os.path.abspath(os.environ.get('OBO', os.path.join(FORK, 'obo')))
-run.ROOT = FORK                                   # --rt: the fork's runtime
+run.ROOT = os.path.abspath(os.environ.get('OBO_RT', FORK))  # --rt: the fork's runtime (OBO_RT overrides for mutation harnesses)
 FUZZ_COUNT = 50                                   # seeds per profile for own-fuzz
 
 # The smoke subset: the tests that a real fail-fast run of the 326 mutants found

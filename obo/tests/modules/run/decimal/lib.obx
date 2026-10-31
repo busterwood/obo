@@ -1,0 +1,7 @@
+module lib
+
+pub fn add(a: decimal, b: decimal): decimal { return a + b }
+pub fn third(): decimal { return 0.333333 }
+pub fn div(a: decimal, b: decimal): Result[decimal] {
+    return decimal::div(a, b, 3, HALF_AWAY)
+}

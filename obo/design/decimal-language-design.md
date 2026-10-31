@@ -1,9 +1,9 @@
 # Decimal language integration design
 
 **Date:** 2026-10-31
-**Status:** Proposal for independent review. Not approved, not implemented. No compiler, runtime, seed, `.sym` format or database code is changed.
-**Baseline:** `main` at `4a072cf5f5db8fe661ac65ff6db94ea59006e6ec` ("Merge independently reviewed experimental decimal D2 arithmetic"). Branch/worktree: `decimal-language-design`.
-**Target:** after Stage B (`0.11` is next planned), version-neutral. This document does not reserve `0.12`, a format number or an ABI number; those are chosen at implementation/promotion.
+**Status:** APPROVED 2026-10-31 and RELEASED as `0.12`/format 6/ABI 1. The minimum scalar tier is on branch `decimal-language`, rebased on released `0.11` HTML main `34b798b`; the independent review returned REVISE, the fixes were approved and the review is closed. The parent merges and promotes; after promotion `seed/obo` is the same 0.12 image (643,073 bytes, sha256 `d98d6b5f…`), built once by the 0.11 seed `01fa9ed3…`. Text/format stdlib, database adapters, containers, globals/constants and captures are still later work.
+**Baseline:** approved on `main` at `4a072cf5f5db8fe661ac65ff6db94ea59006e6ec`; integration rebased on the released `0.11` HTML-escaping main `34b798bc4c76cf41362d3b374c13b80e7b43f73b` (and earlier on heap-limit main `316963c`). Branch/worktree: `decimal-language`.
+**Target:** released as `0.12`/`SYM_FORMAT=6`/`SYM_ABI=1` on branch `decimal-language`, rebased on the released 0.11 HTML main `34b798b`; the parent merges and promotes the same image.
 
 ## 0. Provenance
 
@@ -35,7 +35,7 @@ Baseline: `0.10`, `SYM_FORMAT=6`, `SYM_ABI=1`, one-word values, raw binary64 flo
 | Return | hidden caller destination pointer; callee copies 24 bytes |
 | Record field | 24-byte inline field; offsets use a size/alignment function |
 | Array | pointer-free kind with alignment 8 and stride 24; append/truncate/for copy 24 bytes |
-| Global / constant / `.sym` | 24-byte zero-initialised storage or rodata; `Sym.value` addresses a constant; `.sym` is `hex "<48 lowercase hex digits>"` |
+| Global / constant / `.sym` | later tier: 24-byte zero-initialised storage or rodata; `Sym.value` would address a constant; `.sym` is `hex "<48 lowercase hex digits>"` |
 | `Result[decimal]` | owned cell; `ok` payload at offset 0, descriptor size 24 |
 | Interface / lambda | parameter/return allowed, not receiver; Stage B capture copies 24 bytes |
 
@@ -81,7 +81,7 @@ The coefficient is normalised by removing trailing zeros; `dscale = max(0, fract
 
 Exact literals; never round. More than 38 significant digits, a nonzero value outside `int16`, or dscale outside `uint16` is a compile error. There is no underflow-to-zero: `1e-32769` errors. Zero keeps exponent 0, so a huge written exponent on zero is accepted if its dscale fits. Upper-exponent rescue: `1e32804` becomes coefficient `10^37`, exponent 32767; `1e32805` needs 39 digits and errors.
 
-The compiler parses a literal into two 64-bit coefficient words with multiply-by-ten/add and carries, validating precision, exponent and dscale; it uses no runtime. Decimal **arithmetic** folding is not required in v1; literals/unary minus materialise as rodata, and later folding uses the same rules. `decimal(p,s)` is not syntax; precision/scale is boundary metadata (section 5).
+The compiler parses a literal into two 64-bit coefficient words with multiply-by-ten/add and carries, validating precision, exponent and dscale; it uses no runtime. Decimal **arithmetic** folding is not required in v1; a literal materialises directly as a 24-byte frame temporary with three immediate word stores (v1 does not use rodata for decimal literals), and later folding uses the same rules. `decimal(p,s)` is not syntax; precision/scale is boundary metadata (section 5).
 
 ## 3. Operations and operators
 
@@ -107,7 +107,7 @@ decimal::quantize(a, scale, mode) -> Result[decimal]
 
 Display propagation is presentation, not arithmetic: add/sub `max`; multiply `sum` capped by the 38-digit/integer-part rule in §4.1 (value unchanged); remainder `max`; division/quantize the explicit target; unary minus unchanged; comparisons value only. `1.20 + 1.2` is `2.40`; `1.20 * 1.2` is `1.440`; `decimal::div(1.00, 2.0, 2, HALF_AWAY)` is `0.50`.
 
-Decimal traps use exit 10. Diagnostic ids 40–49 are distinct from I/O errno and trap codes; core statuses 1/2/4/6/7/8 remain unchanged. Constants map `DEC_INEXACT`, `DEC_OVERFLOW`, `DEC_DIV_ZERO`, `DEC_INVALID`, `DEC_RANGE`, `DEC_PRECISION`, `DEC_EXPONENT` and `DEC_DISPLAY_RANGE` (metadata only); 2 and 10 stay internal. `ok`/`err` follow `Result[T]`.
+Decimal exact arithmetic traps use exit 10 with diagnostic ids only: 40 not exactly representable (`DEC_INEXACT`), 41 overflow (`DEC_OVERFLOW`), 42 division by zero (`DEC_DIV_ZERO`), 43 invalid (`DEC_INVALID`), 44 unsupported range, 45 precision overflow, 46 exponent range, 47 display range, 48 buffer too small and 49 other. The `Result`-returning APIs (`decimal::div`, `quantize`, `toInt`) carry the tested **core status** in the err code: 1 `DEC_OVERFLOW`, 3 `DEC_INEXACT`, 4 `DEC_INVALID`, 5 `DEC_DIV_ZERO`, 6 `DEC_UNSUPPORTED_RANGE`; 7/8/9 are reserved text/binding statuses not currently produced by these APIs, and 2/10 stay internal. Scale/mode are validated before the core: constant invalid values are compile errors, runtime invalid scale returns 6 and invalid mode 4. `ok`/`err` follow `Result[T]`.
 
 ## 4. Conversions and formatting
 
@@ -123,11 +123,11 @@ Decimal traps use exit 10. Diagnostic ids 40–49 are distinct from I/O errno an
 `dscale` is metadata, not a numeric quantum. A multiply can produce more fractional places than a 38-digit value can display with its integer part. The value is unchanged; dscale is capped:
 
 ```text
-intd = max(0, digits(coefficient) + exponent)   // digits left of the point
+intd = max(0, digits(result_coefficient) + result_exponent)   // digits left of the point
 dscale = min(s1 + s2, max(0, 38 - intd))
 ```
 
-This preserves the integer part and 38 displayed digits without rounding. `format` returns `INEXACT` if significant fractional digits exceed the capped scale; only numeric overflow (>38 digits or exponent outside `int16`) traps.
+This uses the exact result value, never an operand, so multiplication display scale is order-independent. It preserves the integer part and 38 displayed digits without rounding. `format` returns `INEXACT` if significant fractional digits exceed the capped scale; only numeric overflow (>38 digits or exponent outside `int16`) traps.
 
 SQL Server `decimal(p,s)` (p<=38) reduces `s` when multiplication `p=p1+p2+1` exceeds 38, preserving integer digits. PostgreSQL `numeric` is arbitrary precision and stores dscale; Oracle `NUMBER` has 38 digits and column scale -84..127; MySQL `DECIMAL` caps 65/30. obo has no p/s in the type, so it derives this value-local cap within 38 digits.
 
@@ -160,7 +160,7 @@ Implementation lands after Stage B `0.11`; no version is reserved. Rejected: 16-
 | Decision | Final choice | Remaining alternative |
 |---|---|---|
 | Literal marker | none: bare fraction/exponent is decimal, `f/F` float | `m`, `d` (rejected) |
-| Trap codes | exit 10; ids 40–49; core 1/2/4/6/7/8 unchanged | shared errno/trap codes |
+| Trap codes | exit 10; ids 40–49 are trap ids only; Result errors carry core statuses 1/3/4/5/6 (7/8/9 reserved, 2/10 internal) | shared errno/trap codes |
 | Arithmetic failure | `+ - * %` trap; `div` returns `Result` | all operators `Result` |
 | Division/scale | no default; `div(a,b,scale,mode)`; `/` compile error; 0..32768 | fixed/negative scale |
 | Remainder | `%`/`%=` truncating, sign of dividend, `DIV_ZERO` trap | floor/Euclidean default |
@@ -171,10 +171,10 @@ Implementation lands after Stage B `0.11`; no version is reserved. Rejected: 16-
 | ABI / width | 24-byte three-word, align 8, stride 24, hidden out pointer; 32-byte rejected | `RAX:RDX:RCX`; 32-byte (rejected) |
 | `?decimal` / NULL | no `?decimal`; tagged DB wrapper | sentinel; `Result` as NULL |
 
-Open engineering choices: exact 40–49 assignments, adapter order, diagnostic wording.
+Open engineering choices: adapter order and final diagnostic wording; the 40–49 assignment above is implemented and reviewed on this branch.
 
 ## 8. Migration and compatibility
 
 Today `0.10`/format 6 rejects bare `1.5`; `1.5f` is float. Decimal changes that error into a value, so no valid float program changes. `f/F` and one-word raw binary64 `.sym` stay; decimal never reuses float's slot/XMM/format-6 grammar.
 
-The implementation lands after Stage B (`0.11`), not concurrently. Do not reserve `0.12`/format 7/ABI 2; choose version, `SYM_FORMAT` and `SYM_ABI` at promotion after Stage B's calling/capture ABI is known. Old `.sym` files must be rebuilt. This is version-neutral, assumes no Stage B commit/seed/merge/push, and adds no helper process/DB/native pointer ABI.
+The released integration is on branch `decimal-language`, rebased on the released 0.11 HTML main `34b798b`: `OBO_VERSION="0.12"`, `SYM_FORMAT=6`, `SYM_ABI=1`. No format 7 or ABI 2 is introduced. Old `.sym` files must be rebuilt because the compiler version line changed. This branch does not promote; the parent merges and promotes the same image. No helper process/DB/native pointer ABI is added.

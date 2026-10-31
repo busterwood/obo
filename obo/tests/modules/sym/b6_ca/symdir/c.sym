@@ -1,6 +1,6 @@
 obosym 6
 abi 1
-compiler "0.11"
+compiler "0.12"
 source 0xfb01c2c77a96347a
 dep b "b.obx"
 interface 0xee3ed02f32a1a877

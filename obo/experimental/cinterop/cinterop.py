@@ -664,11 +664,14 @@ def build_hosted_runtime(out, cc):
     entry_src = require_file(os.path.join(OBO_ROOT, 'runtime', 'entry.S'), 'runtime entry source')
     link_script = require_file(os.path.join(OBO_ROOT, 'runtime', 'rt.ld'), 'runtime linker script')
     entry_text = open(entry_src).read()
-    base_slots = sum(1 for line in entry_text.splitlines()
-                     if line.strip().startswith('slot ') and 'rt_set_host_exit' not in line)
-    if base_slots != RT_HOST_EXIT_SLOT:
-        raise ToolError("hosted runtime slot mismatch: entry.S has %d base slots, host_abi says %d"
-                        % (base_slots, RT_HOST_EXIT_SLOT))
+    slot_lines = [line.strip() for line in entry_text.splitlines()
+                  if line.strip().startswith('slot ')]
+    if 'slot rt_set_host_exit' not in slot_lines:
+        raise ToolError("hosted runtime entry.S has no hosted exit slot")
+    host_slot = slot_lines.index('slot rt_set_host_exit')
+    if host_slot != RT_HOST_EXIT_SLOT:
+        raise ToolError("hosted runtime slot mismatch: entry.S puts rt_set_host_exit at %d, host_abi says %d"
+                        % (host_slot, RT_HOST_EXIT_SLOT))
     if '#ifdef OBO_HOSTED_EXIT' not in entry_text or 'slot rt_set_host_exit' not in entry_text:
         raise ToolError("runtime entry.S has no hosted exit slot")
     ld = shutil.which('ld')

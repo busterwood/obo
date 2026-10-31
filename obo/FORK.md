@@ -6043,15 +6043,16 @@ only the format/compiler header (and, for the format fixture, its intentional
 format bump) changed.
 
 **Scope.** No Stage B capture lists, `^I`, decimal, template work or new language
-scope is included. Stage B is next planned as `0.11`. The local untracked
+scope was included at this checkpoint; Stage B was later released as `0.11`. The local untracked
 `parse_actual.txt` and `parse_run.err` files were not touched, staged or
 deleted. The release commits contain the merge, the promoted seed and the release
 documentation only; evidence logs remain private under `/tmp/opencode`.
 
 ## Stage B capture-list release candidate (0.11, format 6, ABI 1)
 
-Status: **implemented on the isolated review branch and stopped for independent
-review; not merged, pushed or promoted.** The six Stage B commits are the five
+Status: **historical release-candidate checkpoint (implemented on the isolated
+review branch before merge); it was later merged, promoted and pushed as 0.11.**
+The six Stage B commits are the five
 original commits forward-ported onto main `4a072cf5f5db8fe661ac65ff6de06e6ec`
 (the released floats line) with `git rebase`, plus the final `765df3b`
 completion commit; nothing was merged. The approved F1/F2 float work,
@@ -6131,3 +6132,111 @@ independent review and integration; the seed is not promoted, `^I`/owned/string/
 interface captures remain later, and the eza reference-golden gate needs the
 pinned binary on `PATH`. No push, merge, promotion, seed copy, decimal or
 template work was performed.
+
+## Decimal language integration (0.12 release, format 6, ABI 1)
+
+**Status: released on branch `decimal-language`, rebased on the released 0.11
+HTML-escaping main `34b798bc4c76cf41362d3b374c13b80e7b43f73b`. The independent
+review is closed and the fixes are approved; the parent merges and promotes this
+branch. This branch does not promote.** After that promotion `seed/obo` is the
+same 0.12 image (643,073 bytes, sha256 `d98d6b5f…`); the released 0.11 seed
+(585,729 bytes, sha256 `01fa9ed3…`) built this image once. The approved design is
+`design/decimal-language-design.md`; the reviewed arithmetic/text core stays in
+`experimental/decimal/` and is copied unchanged into
+`runtime/decimal24_core.inc` (provenance hashes in that file and in the package's
+`PROVENANCE.md`). The release adds only the compiler/runtime minimum tier.
+
+**Identity and fixed point.** `OBO_VERSION = "0.12"`, `SYM_FORMAT = 6`,
+`SYM_ABI = 1`. Source is 14,608 lines / 550,897 bytes; the compiler is 643,073
+bytes, sha256 `d98d6b5f5dce123457fce1ba781ee6aeabd3a361c1c5708fff1a7874b1e23e40`.
+Stage 2 and stage 3 equal the compiler. Three direct self-compiles peak at
+2,194,160 bytes live and allocate 49,033,600; the port comparison peaks at
+2,194,560 and allocates 49,038,064, all under the 2,500,000 budget. The
+empty-array oracle still has a 47,840-byte delta (baseline 2,194,608), above
+the 30,000-byte floor. Before promotion, a normal `println("hello")` built by the 0.11
+seed and by the 0.12 compiler against this runtime is byte-identical (69,633
+bytes); the 0.11 seed builds the 0.12 image once.
+
+**Language and ABI.** A bare fractional/exponent literal is exact decimal;
+integers stay `int`; `f`/`F` stays float; no `m`/`d` suffix. Literals carry a
+128-bit coefficient, `int16` exponent and `uint16` display scale; `1.2300`
+prints `1.2300` and `-0.00` is canonical positive zero. Out-of-range literals
+are compile errors. Decimal values are 24 bytes (three words: coefficient
+lo/hi, packed exponent/dscale/sign). Parameters are by value in 24-byte stack
+slots; decimal returns use a hidden destination pointer at
+`16 + visible-parameter-bytes`; locals use 24-byte slots. `+ - * %` are exact
+and trap rather than round; unary minus preserves scale; comparisons ignore
+scale. `/` and `/=` are compile errors directing `decimal::div(a, b, scale,
+mode)`. `decimal::div` and `decimal::quantize` require an explicit `0..32768`
+scale and mode and return `Result[decimal]`; `decimal::toInt(d, mode)` returns
+`Result[int]`. `decimal(i)`/`decimal::fromInt(i)` are the explicit int
+conversions; float interop is absent and `int(d)` points to `toInt`.
+`print`/`println` preserve display scale and fall back to canonical text rather
+than rounding when a capped multiply display scale hides a nonzero digit.
+
+The tier supports decimal locals, parameters/returns and `Result[decimal]`
+(including `ok`, consuming `match` and `try`). Globals, constants, record
+fields, arrays (24-byte stride), captures, methods, interfaces and function
+values are refused with explicit diagnostics; `?decimal`, `&decimal`, owned/mut
+decimal and raw bits are absent. Captures, owned/mut decimals, stdlib
+`format`/`parse`, `decimal(p,s)`, database adapters and DEC display beyond the
+core's 32768 strict quantize limit remain later work.
+
+**Traps and Result codes.** Decimal exact arithmetic (`+ - * %`) traps with
+exit 10 and diagnostic ids 40-49: 40 not exactly representable, 41 overflow, 42
+division by zero, 43 invalid, 44 unsupported range, 45 precision overflow, 46
+exponent range, 47 display range, 48 buffer too small, 49 other. The ids are
+trap diagnostics only. `decimal::div`/`quantize`/`toInt` never trap for value
+errors; their `Result` error code is the reviewed core status: 1 overflow,
+3 inexact/`UNNECESSARY`, 4 invalid, 5 division by zero, 6 unsupported range;
+7/8/9 are reserved core text/binding statuses not currently produced by these
+APIs, and 2/10 stay internal. Request scale/mode are validated before the core:
+constant invalid values are compile errors, runtime scale outside 0..32768
+returns 6, runtime mode outside 0..7 returns 4. `+ - * %` keep the two main trap
+messages `obo: decimal result is not exactly representable` and
+`obo: decimal overflow`.
+
+**Runtime/build.** `runtime/runtime.c` includes `decimal24_core.inc`; the
+Makefile and the mutation harnesses carry that dependency/copy. Entry slots
+59-72: slot 59 is the baseline reserved slot and the hosted-exit slot in the
+cinterop table, so decimal slots are 60-72 in both builds. `runtime_text.bin`
+grows to 53,888 bytes and `runtime_data.bin` is 67,360; the
+freestanding runtime and compiler have no undefined symbols (`nm -u` empty), no
+libc/libm/libgcc/`__udivti3`, and the reviewed D1/D2 freestanding runner still
+reports 32,719 C checks, 0 failures, with empty `forbidden_hits`/`nm -u`.
+
+**Review fixes (a21e407 -> release).** The multiply display cap now comes from
+the exact result's coefficient/exponent, so operand order cannot change display
+scale (`123...678.0 * 0.1` and `0.1 * 123...678.0` both print one fractional
+digit; `1e38 * 0.1` and `0.1 * 1e38` both print no point). Explicit decimal
+requests are a two-word `[scale, mode]` block validated before the core: constant
+invalid values are compile errors, runtime scale outside 0..32768 returns core
+status 6, runtime mode outside 0..7 returns core status 4, and no value can alias
+a different valid request. `Result` errors carry core statuses; the 40-49 ids are
+trap diagnostics only. `decimal` is a reserved type name. The design text now
+matches the immediate-stack literal materialisation, and the pre-existing
+lexer-wide underscore-placement gap is noted.
+
+**Gates (this rebased release).** The pre-decimal 0.11 HTML-main baseline counts are
+`run_fork` 1,646, `port_compare` 1,642, `port_test` 583 and `module_test` 112
+(with `sym_test` 44 and `float_f1` 19 unchanged). The decimal addition is 58
+flat cases plus one module tree: 14 run files, 44 error cases and
+`modules/run/decimal`. `run_fork` is **1,705 passed** (1,646 + 59 including the
+module tree); `module_test` **113** (112 + 1); `sym_test` **44/44**; `port_test`
+**598/598** (583 + 15 decimal runtime/slot checks); default `port_compare`
+**1,701/1,701** (1,642 + 58 flat + 1 module tree); `OBO_REF=obo/seed/obo`
+**1,477/1,477** (the one HTML case plus the old flat cases; decimal cases stay
+skipped by `(0, 12)`); `float_f1` **19 groups** normal and `--noregs`;
+`doc_check` **69 examples, 0 problems**; `sym_fuzz` 200/200; `imports` **29/29**
+including the HTML library; `stdlib` 16/16; `io_test`/`meta_test`/`memory_log_check`/`elf_test` pass;
+`mutate_decimal` **22/22 caught** (focused compiler and runtime paths in a
+separate gate; the historical `mutate_fork`/`mutate_port` catalogs are otherwise
+unchanged);
+`mutate_io` **36/36**; `mutate_meta` **71/82 caught + 11 equivalent**. The
+decimal D1/D2 evidence is in `/tmp/opencode/decimal-integration-rebase`; all
+gates were rerun on the rebased tree, not reused from the pre-rebase branch.
+
+**Symbol fixtures.** All committed `.sym` fixtures moved to `compiler "0.12"`
+(the version line only; body hashes unchanged), and the `compiler/expect`
+fixture now expects the 0.12 stale message. Format remains `obosym 6`, ABI 1.
+The stale-version mutant pattern in `mutate_fork` moved from 0.11 to 0.12.

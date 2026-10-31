@@ -1,0 +1,12 @@
+module main
+import "lib.obx"
+
+fn main() {
+    println(lib::add(1.20, 2.3))     // expect: 3.50
+    println(lib::third())            // expect: 0.333333
+    let r = lib::div(1.0, 3.0)
+    match r {
+        ok(v) { println(v) }         // expect: 0.333
+        err(m, c) { println("err ", c) }
+    }
+}
