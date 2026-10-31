@@ -1,0 +1,545 @@
+// Experimental systems library: platform support boundary (P0).
+//
+// Status: experimental P0 boundary proof. This is not the P1a File/Directory/
+// clock API and not a stable ABI.
+//
+// The public shell is exactly:
+//
+//     pub type Resource = ref record { reserved: int }
+//
+// `reserved` is a *checked table hint* (slot index + secret per-slot nonce),
+// never authority. A module-private fixed-capacity slot table keeps the native
+// registry token, kind, state and quota charge. Every entry point decodes the
+// hint, checks the slot, the unpredictable nonce, kind and state, checks that
+// the registered shell record is still alive, and only then asks the native
+// adapter to validate its private token. A forged, out-of-range, stale,
+// future-guessed or wrong-kind hint fails; a user-created shell with no entry
+// fails. Copying a live hint intentionally aliases the same entry (the 0.12
+// public-field limitation) but only while that entry's registered owner shell
+// is alive; it cannot manufacture a token or a second native object. A guessed
+// hint cannot become valid when a later slot is populated because the nonce is
+// generated randomly by C and never exposed as authority.
+//
+// The native registry token is never placed in `Resource` and never crosses to
+// application code. Close is explicit; a record drop runs no finalizer. Closed
+// slots are tombstones while their shell is alive and are swept only after the
+// shell dies. Open entries whose shell died are leak records, reported by
+// counts/shutdown and released only during explicit shutdown.
+//
+// `_create`, `_close` and `_op` are the internal seam used by typed modules
+// (`systestres`, `sysbytes`). They are exported only because 0.12 modules have
+// no friend/private cross-module functions. Applications must not call them.
+//
+// The native backend is chosen at link time by the cinterop manifest; there is
+// no runtime toggle and no stored obo callback. Importing this module performs
+// no native call.
+module sysplatform
+
+import "syserrors.obx" as errors
+
+pub type Resource = ref record { reserved: int }
+
+pub type Options = ref record {
+    maxResources: int
+    maxShells: int
+    maxNativeBytes: int
+    ignorePipeSignal: bool
+}
+
+pub type Counts = ref record {
+    resources: int
+    shells: int
+    nativeBytes: int
+    cleanupFailures: int
+}
+
+// Library kind constants. Values 1..22 are the design's planned kinds; 90..92
+// are P0-only fixtures and are not reserved for later phases.
+pub const KIND_FILE = 1
+pub const KIND_DIRECTORY = 2
+pub const KIND_ITERATOR = 3
+pub const KIND_MAPPING = 4
+pub const KIND_STREAM = 5
+pub const KIND_REACTOR = 6
+pub const KIND_WATCH = 7
+pub const KIND_TIMER = 8
+pub const KIND_LISTENER = 9
+pub const KIND_CONNECTION = 10
+pub const KIND_DATAGRAM = 11
+pub const KIND_CHILD = 12
+pub const KIND_SIGNAL_SOURCE = 13
+pub const KIND_TERMINAL = 14
+pub const KIND_LOGGER = 15
+pub const KIND_WORKER = 16
+pub const KIND_CANCELLATION = 17
+pub const KIND_TRANSFER = 18
+pub const KIND_ATOMIC_INT = 19
+pub const KIND_ATOMIC_BOOL = 20
+pub const KIND_SENDER = 21
+pub const KIND_RECEIVER = 22
+
+// P0 fixture kinds: a small native eventfd/counter and a C-owned byte buffer.
+pub const KIND_TEST_RESOURCE = 90
+pub const KIND_TEST_RESOURCE_ALT = 91
+pub const KIND_BYTE_BUFFER = 92
+
+// Internal adapter operation codes (scalar only).
+pub const OP_TEST_WRITE = 1
+pub const OP_TEST_READ = 2
+pub const OP_TEST_PROGRESS = 3
+pub const OP_BUF_LEN = 10
+pub const OP_BUF_SET = 11
+pub const OP_BUF_GET = 12
+pub const OP_BUF_SET_PACKED = 13
+pub const OP_BUF_GET_PACKED = 14
+pub const OP_BUF_FILL = 15
+
+// The bridge's per-buffer limit. Larger transfers are caller chunk loops.
+pub const MAX_BYTE_BUFFER = 16777216
+
+const SLOT_BITS = 20
+const SLOT_MASK = 1048575
+const STATE_FREE = 0
+const STATE_OPEN = 1
+const STATE_CLOSED = 2
+
+type Slot = ref record {
+    nonce: int
+    kind: int
+    state: int
+    token: int
+    owner: ?^Resource
+}
+
+// A shell from a retired context still answers explicit close with ok(false).
+// This list is module-private and is never resolved against a new registry.
+type Retired = ref record {
+    hint: int
+    kind: int
+}
+
+var slots: []Slot = new []Slot(0)
+var maxResourcesCfg: int = 4096
+var maxShellsCfg: int = 8192
+var maxBytesCfg: int = 67108864
+var ignorePipeCfg: bool = true
+var initialised: bool = false
+var shutdownDone: bool = false
+var cleanupFailures: int = 0
+var retired: []Retired = new []Retired(0)
+
+var cachedResources: int = 0
+var cachedShells: int = 0
+var cachedBytes: int = 0
+var cachedCleanup: int = 0
+
+// Forward headings: public `&Resource` forms delegate to handle forms so a
+// typed module never passes an interior reference across a native-effect call.
+fn _sourceHandle(h: ^Resource): Result[^Resource]
+fn _requireKindHandle(h: ^Resource, kind: int): Result[^Resource]
+fn _closeHandle(h: ^Resource, kind: int): Result[bool]
+fn _opHandle(h: ^Resource, kind: int, op: int, a: int, b: int, c: int): Result[int]
+fn retiredMatch(hint: int, kind: int): bool
+
+pub fn defaultOptions(): Options {
+    return new Options{
+        maxResources: 4096
+        maxShells: 8192
+        maxNativeBytes: 67108864
+        ignorePipeSignal: true
+    }
+}
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+// Adapter convention: >= 0 is success/progress, negative is -errno, captured
+// by the C adapter before any other call. The raw errno never reaches clients.
+fn rawCode(raw: int): int {
+    if raw >= 0 { return libCode(new errors::SystemFailure{}) }
+    let e = 0 - raw
+    if e <= 0 { return libCode(new errors::SystemFailure{}) }
+    let k = errors::fromErrno(e)
+    return errors::code(&k)
+}
+
+fn notInitialized(): int { return libCode(new errors::NotInitialized{}) }
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+fn invalidResource(): int { return libCode(new errors::InvalidResource{}) }
+fn closedCode(): int { return libCode(new errors::Closed{}) }
+fn rangeCode(): int { return libCode(new errors::Range{}) }
+fn busyCode(): int { return libCode(new errors::Busy{}) }
+fn limitCode(): int { return libCode(new errors::LimitExceeded{}) }
+fn resourceLimitCode(): int { return libCode(new errors::ResourceLimit{}) }
+
+fn decodeSlot(hint: int): int {
+    if hint <= 0 { return -1 }
+    let s = hint % 1048576
+    if s <= 0 || s > len(slots) { return -1 }
+    let n = hint / 1048576
+    if n <= 0 { return -1 }
+    let i = s - 1
+    if slots[i].nonce != n { return -1 }
+    return i
+}
+
+fn nonceInUse(n: int): bool {
+    if n <= 0 { return true }
+    for i in 0..len(slots) {
+        if slots[i].nonce == n { return true }
+    }
+    for i in 0..len(retired) {
+        if retired[i].hint / 1048576 == n { return true }
+    }
+    return false
+}
+
+fn retiredMatch(hint: int, kind: int): bool {
+    if hint <= 0 { return false }
+    for i in 0..len(retired) {
+        if retired[i].hint == hint && retired[i].kind == kind { return true }
+    }
+    return false
+}
+
+fn ownerAlive(i: int): bool {
+    let o = slots[i].owner
+    if o == nil { return false }
+    return alive(o)
+}
+
+fn shellCount(): int {
+    var n = 0
+    for i in 0..len(slots) {
+        if slots[i].state == STATE_OPEN { n += 1 } else if slots[i].state == STATE_CLOSED && ownerAlive(i) { n += 1 }
+    }
+    return n
+}
+
+// Return a reusable index, -1 when a new slot may be appended, or -2 when the
+// configured shell/slot capacity is exhausted.
+fn findSlot(): int {
+    for i in 0..len(slots) {
+        if slots[i].state == STATE_FREE { return i }
+        if slots[i].state == STATE_CLOSED && !ownerAlive(i) { return i }
+    }
+    if len(slots) < maxShellsCfg { return -1 }
+    return -2
+}
+
+fn validateOptions(o: &Options): bool {
+    if o.maxResources <= 0 || o.maxResources > 65536 { return false }
+    if o.maxShells <= 0 || o.maxShells > 1048575 { return false }
+    if o.maxNativeBytes <= 0 || o.maxNativeBytes > 2147483647 { return false }
+    return true
+}
+
+fn samePolicy(o: &Options): bool {
+    return o.maxResources == maxResourcesCfg &&
+           o.maxShells == maxShellsCfg &&
+           o.maxNativeBytes == maxBytesCfg &&
+           o.ignorePipeSignal == ignorePipeCfg
+}
+
+// Explicit initialization; no native action happens at import.
+pub fn initialize(options: &Options): Result[bool] {
+    if !validateOptions(options) {
+        return err("invalid systems platform options", invalidArgument())
+    }
+    if initialised {
+        if samePolicy(options) { return ok(false) }
+        return err("a different systems policy is already active", busyCode())
+    }
+    let raw = __cinterop("sys_adapter_init", options.maxResources, options.maxNativeBytes)
+    if raw < 0 {
+        return err("native systems adapter did not initialize", rawCode(raw))
+    }
+    maxResourcesCfg = options.maxResources
+    maxShellsCfg = options.maxShells
+    maxBytesCfg = options.maxNativeBytes
+    ignorePipeCfg = options.ignorePipeSignal
+    slots = new []Slot(0)
+    cleanupFailures = 0
+    // Nonces are fresh per slot creation, so a shell from a retired context
+    // cannot address a new one even when the slot index is reused.
+    initialised = true
+    shutdownDone = false
+    return ok(true)
+}
+
+pub fn hasCapability(name: string): bool {
+    if !initialised { return false }
+    if name == "resource.identity" { return true }
+    if name == "resource.probe" { return true }
+    if name == "byte.bridge" { return true }
+    if name == "platform.counts" { return true }
+    return false
+}
+
+// The supported bridge from a shell's `res` field to the checked identity.
+// Callers passing an interior reference (`&x.res` through another reference)
+// must use `_sourceHandle(handle(x.res))` instead; the compiler's conservative
+// native effect summary forbids passing an interior reference into this
+// function because it contains a native call.
+pub fn source(r: &Resource): Result[^Resource] {
+    return _sourceHandle(handle(r))
+}
+
+// Internal handle form used by typed modules. A copied ^Resource is not the C
+// token and does not transfer ownership.
+pub fn _sourceHandle(h: ^Resource): Result[^Resource] {
+    if !initialised {
+        return err("systems platform is not initialized", notInitialized())
+    }
+    let idx = decodeSlot(h.reserved)
+    if idx < 0 || !ownerAlive(idx) || slots[idx].state != STATE_OPEN {
+        return err("resource is not a live registered identity", invalidResource())
+    }
+    let tok = slots[idx].token
+    let kind = slots[idx].kind
+    let raw = __cinterop("sys_res_validate", tok, kind)
+    if raw != 1 {
+        return err("native resource token is no longer valid", invalidResource())
+    }
+    return ok(h)
+}
+
+// The typed-module entry check. Closed is distinguished from stale/wrong kind
+// so typed operations can return Closed after an explicit close.
+pub fn requireKind(r: &Resource, kind: int): Result[^Resource] {
+    return _requireKindHandle(handle(r), kind)
+}
+
+pub fn _requireKindHandle(h: ^Resource, kind: int): Result[^Resource] {
+    if !initialised {
+        return err("systems platform is not initialized", notInitialized())
+    }
+    if kind <= 0 {
+        return err("invalid resource kind", invalidArgument())
+    }
+    let idx = decodeSlot(h.reserved)
+    if idx < 0 || !ownerAlive(idx) {
+        return err("resource is not a registered identity", invalidResource())
+    }
+    if slots[idx].state == STATE_CLOSED {
+        return err("resource is closed", closedCode())
+    }
+    if slots[idx].state != STATE_OPEN || slots[idx].kind != kind {
+        return err("resource has a different kind or state", invalidResource())
+    }
+    let tok = slots[idx].token
+    let k = slots[idx].kind
+    let raw = __cinterop("sys_res_validate", tok, k)
+    if raw != 1 {
+        return err("native resource token is no longer valid", invalidResource())
+    }
+    return ok(h)
+}
+
+// Internal seam: create a typed resource and return its owned shell.
+pub fn _create(kind: int, a: int, b: int): Result[Resource] {
+    if !initialised {
+        return err("systems platform is not initialized", notInitialized())
+    }
+    if kind <= 0 {
+        return err("invalid resource kind", invalidArgument())
+    }
+    let idx0 = findSlot()
+    if idx0 == -2 {
+        return err("configured shell/slot capacity is exhausted", limitCode())
+    }
+    var nonceRaw = __cinterop("sys_res_nonce")
+    var nonceTries = 0
+    while nonceRaw > 0 && nonceInUse(nonceRaw) && nonceTries < 4 {
+        nonceRaw = __cinterop("sys_res_nonce")
+        nonceTries += 1
+    }
+    if nonceRaw <= 0 {
+        return err("native adapter could not provide an identity nonce", rawCode(nonceRaw))
+    }
+    if nonceInUse(nonceRaw) {
+        return err("could not allocate a unique identity nonce", resourceLimitCode())
+    }
+    let nonce = nonceRaw
+    let raw = __cinterop("sys_res_new", kind, a, b)
+    if raw < 0 {
+        return err("native resource could not be created", rawCode(raw))
+    }
+    if raw == 0 {
+        return err("native adapter returned no resource token", libCode(new errors::SystemFailure{}))
+    }
+    var idx = idx0
+    if idx < 0 {
+        append(slots, new Slot{nonce: 0, kind: 0, state: STATE_FREE, token: 0, owner: nil})
+        idx = len(slots) - 1
+    }
+    var r = new Resource{reserved: ((nonce * 1048576) + idx + 1)}
+    slots[idx].nonce = nonce
+    slots[idx].kind = kind
+    slots[idx].state = STATE_OPEN
+    slots[idx].token = raw
+    slots[idx].owner = handle(r)
+    return ok(r)
+}
+
+// Internal seam: explicit close. Tombstones a double close as ok(false) while
+// the shell is alive; a native close failure still retires the token.
+pub fn _close(r: &Resource, kind: int): Result[bool] {
+    return _closeHandle(handle(r), kind)
+}
+
+pub fn _closeHandle(h: ^Resource, kind: int): Result[bool] {
+    let hint = h.reserved
+    if !initialised {
+        // A shell from a retired context keeps its explicit-close answer false
+        // without resolving against a new registry. A truly unknown forged
+        // shell still reports NotInitialized.
+        if retiredMatch(hint, kind) { return ok(false) }
+        return err("systems platform is not initialized", notInitialized())
+    }
+    let idx = decodeSlot(hint)
+    if idx < 0 {
+        if retiredMatch(hint, kind) { return ok(false) }
+        return err("resource is not a registered identity", invalidResource())
+    }
+    if !ownerAlive(idx) {
+        if retiredMatch(hint, kind) { return ok(false) }
+        return err("resource is not a registered identity", invalidResource())
+    }
+    if slots[idx].state == STATE_CLOSED { return ok(false) }
+    if slots[idx].state != STATE_OPEN || slots[idx].kind != kind {
+        return err("resource has a different kind or state", invalidResource())
+    }
+    let tok = slots[idx].token
+    let k = slots[idx].kind
+    let raw = __cinterop("sys_res_close", tok, k)
+    slots[idx].state = STATE_CLOSED
+    slots[idx].token = 0
+    if raw == 1 { return ok(true) }
+    if raw == 0 {
+        return err("native resource was already invalid", invalidResource())
+    }
+    // Linux close consumes the descriptor even when it reports an error. The
+    // wrapper must not retry; the C registry records the cleanup failure.
+    return err("close failed after retiring the resource", rawCode(raw))
+}
+
+// Internal seam: one adapter operation after a full identity/kind check.
+pub fn _op(r: &Resource, kind: int, op: int, a: int, b: int, c: int): Result[int] {
+    return _opHandle(handle(r), kind, op, a, b, c)
+}
+
+pub fn _opHandle(h: ^Resource, kind: int, op: int, a: int, b: int, c: int): Result[int] {
+    let checked = try _requireKindHandle(h, kind)
+    let idx = decodeSlot(checked.reserved)
+    if idx < 0 {
+        return err("resource identity changed during validation", invalidResource())
+    }
+    let tok = slots[idx].token
+    let k = slots[idx].kind
+    let raw = __cinterop("sys_res_op", tok, k, op, a, b, c)
+    if raw < 0 {
+        return err("native resource operation failed", rawCode(raw))
+    }
+    return ok(raw)
+}
+
+pub fn counts(): Result[Counts] {
+    if !initialised {
+        return err("systems platform is not initialized", notInitialized())
+    }
+    let live = __cinterop("sys_res_live_count")
+    if live < 0 {
+        return err("native resource census failed", rawCode(live))
+    }
+    let bytes = __cinterop("sys_res_bytes")
+    if bytes < 0 {
+        return err("native byte census failed", rawCode(bytes))
+    }
+    let cf = __cinterop("sys_res_cleanup_failures")
+    if cf < 0 {
+        return err("native cleanup census failed", rawCode(cf))
+    }
+    return ok(new Counts{
+        resources: live
+        shells: shellCount()
+        nativeBytes: bytes
+        cleanupFailures: cleanupFailures + cf
+    })
+}
+
+// Explicit teardown. The returned Counts is the *pre-cleanup* census with
+// cleanup failures attached, so leaks are not hidden by post-cleanup zeros.
+// Repeating shutdown returns the same cached report without native calls.
+pub fn shutdown(): Result[Counts] {
+    if !initialised {
+        if shutdownDone {
+            return ok(new Counts{
+                resources: cachedResources
+                shells: cachedShells
+                nativeBytes: cachedBytes
+                cleanupFailures: cachedCleanup
+            })
+        }
+        return err("systems platform is not initialized", notInitialized())
+    }
+    let preResources = __cinterop("sys_res_live_count")
+    if preResources < 0 {
+        return err("native resource census failed", rawCode(preResources))
+    }
+    let preBytes = __cinterop("sys_res_bytes")
+    if preBytes < 0 {
+        return err("native byte census failed", rawCode(preBytes))
+    }
+    let preShells = shellCount()
+    var anomalies = 0
+    for i in 0..len(slots) {
+        if slots[i].state != STATE_FREE {
+            append(retired, new Retired{
+                hint: (slots[i].nonce * 1048576) + i + 1
+                kind: slots[i].kind
+            })
+        }
+        if slots[i].state == STATE_OPEN {
+            let tok = slots[i].token
+            let k = slots[i].kind
+            let raw = __cinterop("sys_res_close", tok, k)
+            // A close failure is counted by the C registry's cleanup counter;
+            // do not count it twice here.
+            slots[i].state = STATE_CLOSED
+            slots[i].token = 0
+        }
+    }
+    let leftover = __cinterop("sys_adapter_shutdown")
+    if leftover < 0 { anomalies += 1 }
+    if leftover > 0 { anomalies += 1 }
+    var cf = __cinterop("sys_res_cleanup_failures")
+    if cf < 0 {
+        anomalies += 1
+        cf = 0
+    }
+    cleanupFailures = anomalies
+    cachedResources = preResources
+    cachedShells = preShells
+    cachedBytes = preBytes
+    cachedCleanup = cf + anomalies
+    slots = new []Slot(0)
+    initialised = false
+    shutdownDone = true
+    return ok(new Counts{
+        resources: preResources
+        shells: preShells
+        nativeBytes: preBytes
+        cleanupFailures: cf + anomalies
+    })
+}
+
+// Test-only hint constructor for adversarial tests. Not an application API.
+pub fn _hint(index: int, nonce: int): int {
+    return (nonce * (SLOT_MASK + 1)) + index + 1
+}
+
+pub fn _bounds(): int {
+    return SLOT_MASK
+}

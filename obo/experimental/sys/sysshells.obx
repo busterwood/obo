@@ -1,0 +1,37 @@
+// P0-only typed shell fixtures for compiler-negative identity tests.
+//
+// These are deliberately not the P1a File/Stream APIs: they have no open,
+// read, write or close behavior. They exist only to prove that a handle to one
+// concrete shell type cannot be passed where another shell type or a bare
+// `^platform::Resource` is required. P1a will replace this file's role with the
+// real owned File/Directory/Stream modules.
+module sysshells
+
+import "sysplatform.obx" as platform
+
+pub type File = ref record { res: platform::Resource }
+pub type Stream = ref record { res: platform::Resource }
+
+pub fn emptyFile(): File {
+    return new File{res: new platform::Resource{reserved: 0}}
+}
+
+pub fn emptyStream(): Stream {
+    return new Stream{res: new platform::Resource{reserved: 0}}
+}
+
+pub fn fileHandle(f: &File): ^File {
+    return handle(f)
+}
+
+pub fn streamHandle(s: &Stream): ^Stream {
+    return handle(s)
+}
+
+pub fn acceptStream(s: ^Stream): int {
+    return s.res.reserved
+}
+
+pub fn acceptResource(h: ^platform::Resource): int {
+    return h.reserved
+}

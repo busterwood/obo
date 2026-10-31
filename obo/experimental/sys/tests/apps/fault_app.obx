@@ -1,0 +1,113 @@
+// Fake-backend fault injection and no-hidden-retry proof.
+// Built only with sysadapter_fake_ctl.cbind.
+module app
+import "sysplatform.obx" as platform
+import "systestres.obx" as testres
+import "sysbytes.obx" as bytes
+import "syserrors.obx" as errors
+import "sysfakectl.obx" as fake
+
+fn showError(label: string, m: string, c: int) {
+    let k = errors::kind(c)
+    println(label, "=", errors::text(&k), " retryable=", errors::isRetryable(c))
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let init = platform::initialize(&o)
+    match init {
+        ok(v) { println("init=", v) }
+        err(m, c) { showError("init_error", m, c) }
+    }
+    let ir = fake::reset()
+    println("fake_reset=", ir)
+
+    // Scripted creation failure: NoMemory, exactly one data-path attempt.
+    let pushedNew = fake::push(fake::CLASS_NEW, -12)
+    println("push_new=", pushedNew)
+    let failed = testres::open()
+    match failed {
+        ok(t) { println("scripted_open=unexpected_ok") }
+        err(m, c) { showError("scripted_open", m, c) }
+    }
+    println("new_calls=", fake::count(fake::CLASS_NEW))
+
+    // A normal resource for the remaining scripts.
+    let made = testres::open()
+    match made {
+        ok(t) {
+            fake::reset()
+            let p1 = fake::push(fake::CLASS_OP, -4)
+            println("push_eintr=", p1)
+            let w = testres::write(&t, 5)
+            match w {
+                ok(v) { println("scripted_write=unexpected_ok") }
+                err(m, c) {
+                    showError("scripted_write", m, c)
+                    println("interrupted=", errors::isInterrupted(c), " would_block=", errors::isWouldBlock(c))
+                }
+            }
+            println("op_calls_after_eintr=", fake::count(fake::CLASS_OP))
+
+            fake::reset()
+            let p2 = fake::push(fake::CLASS_OP, -11)
+            println("push_eagain=", p2)
+            let r = testres::read(&t)
+            match r {
+                ok(v) { println("scripted_read=unexpected_ok") }
+                err(m, c) {
+                    showError("scripted_read", m, c)
+                    println("would_block=", errors::isWouldBlock(c), " interrupted=", errors::isInterrupted(c))
+                }
+            }
+            println("op_calls_after_eagain=", fake::count(fake::CLASS_OP))
+
+            fake::reset()
+            let p3 = fake::push(fake::CLASS_OP, 3)
+            println("push_progress=", p3)
+            let pv = testres::progress(&t)
+            match pv {
+                ok(v) { println("progress=", v) }
+                err(m, c) { showError("progress_error", m, c) }
+            }
+            println("op_calls_after_progress=", fake::count(fake::CLASS_OP))
+
+            // A scripted close error still consumes the native resource.
+            fake::reset()
+            let p4 = fake::push(fake::CLASS_CLOSE, -4)
+            println("push_close_eintr=", p4)
+            let cl = testres::close(&t)
+            match cl {
+                ok(v) { println("scripted_close=unexpected_ok") }
+                err(m, c) { showError("scripted_close", m, c) }
+            }
+            let cl2 = testres::close(&t)
+            match cl2 {
+                ok(v) { println("close_again=", v) }
+                err(m, c) { showError("close_again_error", m, c) }
+            }
+            let cnt = platform::counts()
+            match cnt {
+                ok(c) { println("counts_after_close=", c.resources, ",", c.shells, ",", c.cleanupFailures) }
+                err(m, c) { showError("counts_error", m, c) }
+            }
+        }
+        err(m, c) { showError("open_error", m, c) }
+    }
+
+    // Status mapping aligns with the design table.
+    let k75 = errors::fromErrno(75)
+    println("errno75=", errors::text(&k75))
+    let k122 = errors::fromErrno(122)
+    println("errno122=", errors::text(&k122))
+
+    // Deterministic fake time: explicit advancement, no sleeps.
+    let st = fake::setTime(1234)
+    println("set_time=", st, " now=", fake::now())
+
+    let sd = platform::shutdown()
+    match sd {
+        ok(c) { println("shutdown=", c.resources, ",", c.shells, ",", c.nativeBytes, ",", c.cleanupFailures) }
+        err(m, c) { showError("shutdown_error", m, c) }
+    }
+}

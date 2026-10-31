@@ -11,7 +11,7 @@ CFLAGS = -O2 -ffreestanding -fno-builtin -nostdlib -fno-pic -fno-pie -fno-stack-
 # Each build's symbol files live in <out>/sym, created by tools/build_tools.py;
 # build/tools/sym for `make tools`. Symbol writes truncate in place, so tests use
 # private output directories instead of sharing one writable sym dir.
-.PHONY: tools tools-check tools-memory eza eza-check eza-memory all clean
+.PHONY: tools tools-check tools-memory eza eza-check eza-memory sys-p0 all clean
 OUT_TOOLS = build/tools
 OUT_EZA   = build/eza
 
@@ -74,6 +74,11 @@ eza-check: eza
 
 eza-memory: eza
 	python3 tests/eza.py --memory
+
+# Experimental systems P0 boundary proof: C adapters, ASAN/UBSAN harnesses,
+# real/fake obo roots, adversarial identity/lifecycle tests and benchmarks.
+sys-p0: obo
+	python3 experimental/sys/tests/test_sys_p0.py
 
 # make the current compiler the new seed, once it is a fixed point and the suite passes
 promote: obo

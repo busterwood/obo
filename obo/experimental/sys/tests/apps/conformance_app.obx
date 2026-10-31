@@ -1,0 +1,118 @@
+// Backend conformance root: built once against the real Linux adapter and once
+// against the scripted fake adapter. The printed contract trace must match.
+module app
+import "sysplatform.obx" as platform
+import "systestres.obx" as testres
+import "sysbytes.obx" as bytes
+import "sysshells.obx" as shells
+import "syserrors.obx" as errors
+
+fn showError(label: string, m: string, c: int) {
+    let k = errors::kind(c)
+    println(label, "=", errors::text(&k))
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let init = platform::initialize(&o)
+    match init { ok(v) { println("init=", v) } err(m, c) { showError("init_error", m, c) } }
+
+    let made = testres::open()
+    match made {
+        ok(t) {
+            let src = testres::source(&t)
+            match src { ok(h) { println("source=ok") } err(m, c) { showError("source_error", m, c) } }
+            let w = testres::write(&t, 5)
+            match w { ok(v) { println("write=", v) } err(m, c) { showError("write_error", m, c) } }
+            let r = testres::read(&t)
+            match r { ok(v) { println("read=", v) } err(m, c) { showError("read_error", m, c) } }
+            let r2 = testres::read(&t)
+            match r2 { ok(v) { println("read_empty=unexpected_ok") } err(m, c) { showError("read_empty", m, c) } }
+            let w0 = testres::write(&t, 0)
+            match w0 { ok(v) { println("write_zero=unexpected_ok") } err(m, c) { showError("write_zero", m, c) } }
+            let c1 = testres::close(&t)
+            match c1 { ok(v) { println("close=", v) } err(m, c) { showError("close_error", m, c) } }
+            let c2 = testres::close(&t)
+            match c2 { ok(v) { println("double_close=", v) } err(m, c) { showError("double_close_error", m, c) } }
+        }
+        err(m, c) { showError("open_error", m, c) }
+    }
+
+    let bm = bytes::create(32)
+    match bm {
+        ok(b) {
+            let lb = bytes::length(&b)
+            match lb { ok(n) { println("length=", n) } err(m, c) { showError("length_error", m, c) } }
+            let f = bytes::fill(&b, 171)
+            match f { ok(n) { println("fill=", n) } err(m, c) { showError("fill_error", m, c) } }
+            let g0 = bytes::getByte(&b, 0)
+            match g0 { ok(v) { println("get0=", v) } err(m, c) { showError("get0_error", m, c) } }
+
+            let src = new []byte(5)
+            src[0] = byte(65)
+            src[1] = byte(0)
+            src[2] = byte(66)
+            src[3] = byte(255)
+            src[4] = byte(67)
+            let ci = bytes::copyIn(&b, &src, 0, 4, 5)
+            match ci { ok(n) { println("copy_in=", n) } err(m, c) { showError("copy_in_error", m, c) } }
+            let dst = new []byte(5)
+            let co = bytes::copyOut(&b, &dst, 4, 0, 5)
+            match co {
+                ok(n) {
+                    println("copy_out=", n, " nul=", int(dst[1]), " ff=", int(dst[3]))
+                }
+                err(m, c) { showError("copy_out_error", m, c) }
+            }
+            let cis = bytes::copyInScalar(&b, &src, 0, 16, 5)
+            match cis { ok(n) { println("copy_in_scalar=", n) } err(m, c) { showError("copy_in_scalar_error", m, c) } }
+            let ds = new []byte(5)
+            let cos = bytes::copyOutScalar(&b, &ds, 16, 0, 5)
+            match cos { ok(n) { println("copy_out_scalar=", n, " nul=", int(ds[1])) } err(m, c) { showError("copy_out_scalar_error", m, c) } }
+
+            let p = bytes::writePacked(&b, 24, 0x04030201, 4)
+            match p { ok(n) { println("packed_write=", n) } err(m, c) { showError("packed_write_error", m, c) } }
+            let q = bytes::readPacked(&b, 24, 4)
+            match q { ok(v) { println("packed_read=", v) } err(m, c) { showError("packed_read_error", m, c) } }
+
+            let m1 = bytes::writePacked(&b, 0, 255, 1)
+            match m1 { ok(v) { println("packed_max1=", v) } err(m, c) { showError("packed_max1_error", m, c) } }
+            let o1 = bytes::writePacked(&b, 0, 256, 1)
+            match o1 { ok(v) { println("packed_over1=unexpected_ok") } err(m, c) { showError("packed_over1", m, c) } }
+            let m2 = bytes::writePacked(&b, 0, 65535, 2)
+            match m2 { ok(v) { println("packed_max2=", v) } err(m, c) { showError("packed_max2_error", m, c) } }
+            let o2 = bytes::writePacked(&b, 0, 65536, 2)
+            match o2 { ok(v) { println("packed_over2=unexpected_ok") } err(m, c) { showError("packed_over2", m, c) } }
+            let m7 = bytes::writePacked(&b, 25, 72057594037927935, 7)
+            match m7 { ok(v) { println("packed_max7=", v) } err(m, c) { showError("packed_max7_error", m, c) } }
+            let o7 = bytes::writePacked(&b, 25, 72057594037927936, 7)
+            match o7 { ok(v) { println("packed_over7=unexpected_ok") } err(m, c) { showError("packed_over7", m, c) } }
+            let e7 = bytes::writePacked(&b, 26, 0, 7)
+            match e7 { ok(v) { println("packed_edge7=unexpected_ok") } err(m, c) { showError("packed_edge7", m, c) } }
+
+            let bad = bytes::readPacked(&b, 30, 7)
+            match bad { ok(v) { println("packed_oob=unexpected_ok") } err(m, c) { showError("packed_oob", m, c) } }
+            let cb = bytes::close(&b)
+            match cb { ok(v) { println("buffer_close=", v) } err(m, c) { showError("buffer_close_error", m, c) } }
+        }
+        err(m, c) { showError("buffer_error", m, c) }
+    }
+
+    let big = bytes::create(platform::MAX_BYTE_BUFFER + 1)
+    match big { ok(x) { println("oversize=unexpected_ok") } err(m, c) { showError("oversize", m, c) } }
+
+    let forged = new platform::Resource{reserved: 0}
+    let fs = platform::source(&forged)
+    match fs { ok(h) { println("forged=unexpected_ok") } err(m, c) { showError("forged", m, c) } }
+
+    let cnt = platform::counts()
+    match cnt {
+        ok(c) { println("counts=", c.resources, ",", c.shells, ",", c.nativeBytes, ",", c.cleanupFailures) }
+        err(m, c) { showError("counts_error", m, c) }
+    }
+    let sd = platform::shutdown()
+    match sd {
+        ok(c) { println("shutdown=", c.resources, ",", c.shells, ",", c.nativeBytes, ",", c.cleanupFailures) }
+        err(m, c) { showError("shutdown_error", m, c) }
+    }
+}

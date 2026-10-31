@@ -1,0 +1,8 @@
+module bad_file_to_stream
+import "sysshells.obx" as shells
+
+fn main() {
+    let f = shells::emptyFile()
+    let hf = shells::fileHandle(&f)
+    shells::acceptStream(hf)
+}
