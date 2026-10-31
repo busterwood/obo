@@ -15,6 +15,16 @@ Common rules:
   one-shot operation retries.
 - A `Resource` contains only `reserved: int`, a checked slot/random-nonce hint.
 
+### Field visibility (0.13)
+
+The P1a public records deliberately mark their documented fields `pub` under
+0.13 private-by-default fields. Callers construct `OpenOptions`, inspect
+`Metadata`/`Entry`/timestamps, and read a shell's `res` for the documented
+public-field limitation. This does not make the record opaque or turn fields
+into authority: the managed slot table, nonces, native tokens, registry state
+and free lists remain private, and every typed entry point revalidates kind,
+generation and liveness. The slot/table internals are not exposed.
+
 ## `syserrors`
 
 ```obo
@@ -160,7 +170,7 @@ the pre-cleanup census.
 ## `sysbytes`
 
 ```obo
-pub type Bytes = ref record { res: platform::Resource }
+pub type Bytes = ref record { pub res: platform::Resource }
 
 pub fn create(count: int): Result[Bytes]                       // 0..16 MiB
 pub fn source(b: &Bytes): Result[^platform::Resource]
@@ -201,11 +211,13 @@ pub fn close(b: &Bytes): Result[bool]
 ## `sysstat`
 
 ```obo
-pub type Identity = ref record { bits: int }
+pub type Identity = ref record { pub bits: int }
 pub type Metadata = ref record {
-    kind: int; permissions: int; size: int; links: int
-    uid: int; gid: int; modified: clock::Timestamp; accessed: clock::Timestamp
-    changed: clock::Timestamp; created: ?clock::Timestamp; identity: Identity
+    pub kind: int; pub permissions: int; pub size: int; pub links: int
+    pub uid: int; pub gid: int
+    pub modified: clock::Timestamp; pub accessed: clock::Timestamp
+    pub changed: clock::Timestamp; pub created: ?clock::Timestamp
+    pub identity: Identity
 }
 pub const KIND_UNKNOWN = 0
 pub const KIND_FIFO = 1
@@ -227,10 +239,10 @@ an error/hash. `sameIdentity` is pure bit equality and grants no authority.
 ## `sysclock`
 
 ```obo
-pub type Instant = ref record { nanos: int }
-pub type Duration = ref record { nanos: int }
-pub type Deadline = ref record { finite: bool; nanos: int }
-pub type Timestamp = ref record { seconds: int; nanos: int }
+pub type Instant = ref record { pub nanos: int }
+pub type Duration = ref record { pub nanos: int }
+pub type Deadline = ref record { pub finite: bool; pub nanos: int }
+pub type Timestamp = ref record { pub seconds: int; pub nanos: int }
 
 pub fn monotonic(): Result[Instant]
 pub fn realtime(): Result[Timestamp]
@@ -268,11 +280,11 @@ No userspace PRNG or fallback source exists.
 ## `sysfile`
 
 ```obo
-pub type File = ref record { res: platform::Resource }
+pub type File = ref record { pub res: platform::Resource }
 pub type OpenOptions = ref record {
-    read: bool; write: bool; create: bool; exclusive: bool
-    truncate: bool; append: bool; noFollow: bool; nonblocking: bool
-    permissions: int
+    pub read: bool; pub write: bool; pub create: bool; pub exclusive: bool
+    pub truncate: bool; pub append: bool; pub noFollow: bool
+    pub nonblocking: bool; pub permissions: int
 }
 pub const SEEK_START = 0
 pub const SEEK_CURRENT = 1
@@ -299,17 +311,17 @@ read/write; create/exclusive/truncate/append require write; exclusive requires
 create; truncate and append are mutually exclusive; permissions are 0..0xFFF.
 Every open is CLOEXEC. `readSome`/`writeSome` make one attempt; a short transfer
 is success, EOF is nil, large requests are capped at 1 MiB. `readAt`/`writeAt`
-never move the shared offset, and positional writes on an append-open File are
-`InvalidArgument`. `close` never retries after EINTR. `intoStream` re-tags the
+never move the shared offset, and positional writes on an append-open File,
+including a zero-length write, are `InvalidArgument`. `close` never retries after EINTR. `intoStream` re-tags the
 live resource and replaces the old shell's `res`; `duplicateStream` shares the
 open file description (offset and flags), matching `dup(2)`.
 
 ## `sysdir`
 
 ```obo
-pub type Directory = ref record { res: platform::Resource }
-pub type Iterator = ref record { res: platform::Resource }
-pub type Entry = ref record { name: string; kind: int }
+pub type Directory = ref record { pub res: platform::Resource }
+pub type Iterator = ref record { pub res: platform::Resource }
+pub type Entry = ref record { pub name: string; pub kind: int }
 
 pub fn open(path: string): Result[Directory]
 pub fn source(base: &Directory): Result[^platform::Resource]
@@ -325,12 +337,16 @@ pub fn closeIterator(it: &Iterator): Result[bool]
 component only (nonempty, no `/`, NUL, `.` or `..`); `child` opens NOFOLLOW.
 `next` skips `.`/`..`, returns owned names, reports Unknown kind rather than
 hiding a failed stat, and fails permanently on corrupt dirents. Order is not
-promised and this is not a path-containment API.
+promised and this is not a path-containment API. `iterate` duplicates the
+anchor descriptor, so closing the Directory does not invalidate the Iterator;
+because `dup(2)` shares the open file description, the Directory and all
+iterators made from it share one directory offset. Use one active iterator per
+anchor and do not assume independent snapshots.
 
 ## `sysstream`
 
 ```obo
-pub type Stream = ref record { res: platform::Resource }
+pub type Stream = ref record { pub res: platform::Resource }
 pub type Standard = closed { Input {} Output {} Error {} }
 pub const MAX_CHUNK = 1048576
 
@@ -354,10 +370,10 @@ and distinct WouldBlock. Vector I/O and half-close are deferred.
 ## `sysbuffer`
 
 ```obo
-pub type Buffer = ref record { bytes: []byte; start: int; end: int; limit: int }
-pub type Reader = ref record { buffer: Buffer; eof: bool }
-pub type Writer = ref record { buffer: Buffer }
-pub type Cursor = ref record { done: int }
+pub type Buffer = ref record { pub bytes: []byte; pub start: int; pub end: int; pub limit: int }
+pub type Reader = ref record { pub buffer: Buffer; pub eof: bool }
+pub type Writer = ref record { pub buffer: Buffer }
+pub type Cursor = ref record { pub done: int }
 pub const DEFAULT_LIMIT = 65536
 pub const MAX_BUFFER_BYTES = 16777216
 pub const MAX_STEP_BYTES = 1048576

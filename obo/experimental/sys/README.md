@@ -151,8 +151,16 @@ checked `platform::Resource` identity. No raw fd, registry token, pointer or C
 struct crosses the application boundary. Each creator returns one owned shell
 with one explicit close obligation; record drop still runs no finalizer.
 
+Under 0.13 private-by-default fields, the documented P1a record fields are
+explicitly `pub`: callers build `OpenOptions`, read metadata/entry/timestamp
+values and exercise the public-field limitation. This is not a privacy
+relaxation for the registry: the slot table, nonces, native tokens, free lists
+and per-kind state remain module-private, and every typed entry revalidates.
+
 - `sysfile::File` with explicit `OpenOptions` (`read`, `write`, `create`,
   `exclusive`, `truncate`, `append`, `noFollow`, `nonblocking`, `permissions`).
+  A positional write on an append-open File is rejected even when it is
+  zero-length; `writeSome` with a zero count returns 0 after validation.
   `open`/`openAt` always add CLOEXEC atomically; option validation happens before
   a native call. `readSome`/`writeSome` make one attempt (short success, EOF nil,
   WouldBlock separate), `readInto`/`writeFrom` use existing arrays, and `seek`,
@@ -160,11 +168,14 @@ with one explicit close obligation; record drop still runs no finalizer.
   `intoStream` and `close` cover the P1a lifecycle. `duplicateStream` is `dup`
   semantics; `intoStream` re-tags the live table entry and logically consumes
   the File.
-- `sysdir::Directory` and `Iterator`: `open(path)` follows host symlinks;
-  `child`, `metadata` and anchored names are single components and `child`
-  opens NOFOLLOW. Iteration owns names, skips `.`/`..`, reports Unknown kind,
-  duplicates its anchor and is bounded. There is no path-containment claim for
-  hostile multi-component paths; `openBeneath` is deferred.
+- `sysdir::Directory` and `Iterator`: `open(path)` accepts an ordinary host
+  path and follows symlinks; `child`, `metadata` and anchored names are single
+  components and `child` opens relative to the base descriptor with NOFOLLOW
+  (never the process cwd). Iteration owns names, skips `.`/`..`, reports
+  Unknown kind and is bounded. The iterator duplicates its anchor, so closing
+  the Directory does not invalidate it; `dup(2)` also means the anchor and all
+  its iterators share one directory offset. There is no path-containment claim
+  for hostile multi-component paths; `openBeneath` is deferred.
 - `sysstat::Metadata` is a detached snapshot: kind, permissions, size, links,
   uid/gid, seconds+nanos times, optional birth time and an equality-only interned
   identity. `sameIdentity` is pure bit equality, not authority.
@@ -179,7 +190,9 @@ with one explicit close obligation; record drop still runs no finalizer.
   vector I/O, half-close and socket dispatch are later.
 - `sysbuffer`: fixed allocation (`make(limit)`, default 64 KiB, 16 MiB cap),
   `feed`/`find`/`copy`/`consume`, `readStep`/`writeStep`, and one-attempt
-  `readExactStep`/`writeExactStep`. No append growth; progress is retained.
+  `readExactStep`/`writeExactStep`. A single `writeStep` moves at most 1 MiB,
+  so a larger pending range advances across several calls. No append growth;
+  progress is retained.
 
 Deferred beyond P1a: `chmod`, `sync`, rename/link/symlink, `replaceAtomic`,
 `openBeneath`, mappings, reactor/wait helpers, sockets, processes, signals,

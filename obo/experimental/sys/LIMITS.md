@@ -121,16 +121,20 @@ allocate past the stated capacity.
 - Open options are a library record, not a Linux flag word. Validation is
   repeated before native work; C independently rejects inconsistent flags.
   CLOEXEC is added atomically by the adapter. `permissions` is 0..0xFFF and
-  `umask` still applies on creation.
+  `umask` still applies on creation. Under 0.13, the documented record fields
+  (options, metadata, entries, timestamps, buffer fields and each shell's `res`)
+  are explicitly `pub`; the slot table, nonce, token and registry state are not.
 - `readSome`/`writeSome`/`readAt`/`writeAt` move at most 1 MiB per call. A
   positive short result is success and is never silently repeated. `readInto`
   and `writeFrom` use temporary C-owned scratch buffers through the P0 byte
   bridge, so they are bounded allocation-free **forms** for the caller's result
   array, not allocation-free native paths.
 - `readAt`/`writeAt` do not move the file offset. A positional write on an
-  append-open File is rejected (`InvalidArgument`) instead of inheriting the
-  kernel's pwrite/O_APPEND ambiguity. Nonblocking regular-file I/O may still
-  block in storage.
+  append-open File is rejected (`InvalidArgument`) even with a zero byte count,
+  instead of inheriting the kernel's pwrite/O_APPEND ambiguity. A zero-length
+  current-position `writeSome` returns 0 after resource validation. Negative or
+  nonrepresentable seek results map to `Range`. Nonblocking regular-file I/O may
+  still block in storage.
 - `duplicateStream` shares the open file description, so offset and status
   flags are shared. `intoStream` re-tags the live resource to `KIND_STREAM` and
   replaces the old shell's `res`; the old File shell then fails typed operations.
@@ -138,12 +142,17 @@ allocate past the stated capacity.
   rename/mount namespace changes. `openBeneath` with RESOLVE_BENEATH is deferred.
 - Directory iteration uses a bounded 8 KiB getdents64 buffer, at most 64
   refills per `next`, maximum name length 255 and no ordering/snapshot promise.
-  The fake backend yields a fixed `.`/`..`/`alpha`/`beta` script and no child
-  namespace.
+  The iterator duplicates its anchor with CLOEXEC; `dup(2)` shares the open
+  file description, so the Directory and its iterators share one directory
+  offset. Use one active iterator per anchor. The fake backend yields a scripted
+  `.`/`..`/`alpha`/`beta`/`gamma(Unknown)` root and a single anchored child
+  named `sub`; it is not a general directory tree.
 - Buffer storage is `new []byte(limit)` with `make`; it never grows by append.
   `feed` compacts and is all-or-nothing by capacity. `copy` allocates an owned
   prefix. Exact steps attempt one transfer and retain progress; `readExactStep`
-  requires enough fixed free capacity before reading.
+  requires enough fixed free capacity before reading. `writeStep` copies only a
+  1 MiB prefix of a larger pending range and returns that progress; the next
+  call continues from the compacted remainder.
 - Metadata identity interning is bounded at 65536 pairs per context. Exhaustion
   is `ResourceLimit`; entries live until shutdown. Identity bits are not stable
   across processes or restarts and must never be persisted.
@@ -172,11 +181,13 @@ channel or synchronization kind is created by P0/P1a.
   control module is not part of the production wrapper surface.
 - ASAN/UBSAN run on separate C harnesses, not on the fixed-address hosted obo
   image. This is stated rather than claiming instrumentation that did not run.
-- The fake owns fake counters, in-memory file contents, a fixed directory
-  script and shared C buffers, not file descriptors. A scripted close error
+- The fake owns fake counters, in-memory inodes/descriptions, a fixed directory
+  script and shared C buffers, not file descriptors. Separate opens have
+  independent offsets, `dup` shares one description, O_APPEND writes at inode
+  end, and path/fstat identity comes from the same inode. A scripted close error
   still consumes the fake resource, modeling Linux close. It is a deterministic
   contract/fault fixture, not a filesystem implementation: its directory child
-  namespace and metadata policy are intentionally shallow.
+  namespace (`sub`) and metadata policy are intentionally shallow.
 - `sysshells` contains P0-only `File`/`Stream` type-identity fixtures, not I/O
   APIs. Compiler-negative fixtures assert that `^File` cannot be passed where
   `^Stream` or `^platform::Resource` is required. The P1a `sysfile::File` and
