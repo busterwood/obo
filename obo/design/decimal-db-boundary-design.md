@@ -1,9 +1,9 @@
 # Decimal ↔ database boundary design
 
 **Date:** 2026-10-31
-**Status:** DESIGN ONLY, revision 2, for focused independent re-review. No
-source, adapter, runtime, seed, version, format or ABI change is made by this
-pass. No version is reserved. Revision 2 resolves the review of `17f17f2`:
+**Status:** DESIGN ONLY, revision 4, APPROVED. No source, adapter, runtime,
+seed, version, format or ABI change is made by this pass. No version is
+reserved. Revisions 2-4 resolve the reviews of `17f17f2`:
 strict public parse grammar, corrected scale-32768 fixture, SQLite
 integer-affinity behaviour, NULL/type-check order, checked-by-default binders,
 canonical/exponent tests, typmod vectors, error-name/message unification,

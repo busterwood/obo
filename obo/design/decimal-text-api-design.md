@@ -1529,7 +1529,7 @@ import it from `mutate_decimal.py`, `mutate_fork.py` and `mutate_port.py`.
 | canonical adjusted exponent off by one | `1.23e-200` |
 | format INEXACT `<`→`<=` | `1.23`/`1e-40` at their exact dscale (equality boundary) and `1e-20*1e-20` (INEXACT) |
 | format pads dscale-1 | `1.20*1.2` format `1.440` |
-| format rounds a dropped digit | `1.23456` at dscale 4 |
+| format rounds a dropped digit | C fixture with a dropped nonzero digit at dscale 4 |
 | check trailing-zero test `>=`→`>` | C fixture `1800 * 10^-2` at `(2,0)` |
 | check ignores coefficient trailing zeros | C fixture `1800 * 10^-2` |
 | check precision `<=p`→`<p` | 38 nines at `(38,0)`; `9`*38+`0` at `(39,0)` |
