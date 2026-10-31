@@ -2269,7 +2269,7 @@ refused, never negotiated-then-closed.
   `session.transport` directly, never calls OpenSSL and never uses an fd or
   transport-bypass escape.
 - The required methods for the neutral `http1tls` adapter, aligned with
-  `obo/design/http1-server-design.md` at `3207148`, are:
+  `obo/design/http1-server-design.md` at `326cdad`, are:
   - `handshakeStep(): Result[http1::Step]` mapping `systls::Step` to
     `StepDone`/`StepWantRead`/`StepWantWrite`;
   - `readSome(max: int): Result[http1::ReadOutcome]` mapping
@@ -2519,7 +2519,7 @@ independent re-review.
 |---|---|
 | R1/R2 output-first after SSL calls | Handshake/read/write/shutdown now inspect wbio/C staging **after** every SSL call; non-empty output forces `WantWrite` or a progress outcome with `want=Write`, never a bare `WantRead`. Added the 1,359-byte `SSL_do_handshake` WANT_READ probe and KeyUpdate/close_notify output tests. |
 | R2 flush refill row | Added “staging empty, wbio non-empty -> refill staging without a transport write, then one write; `Done` only both empty, else `WantWrite`”; at most one transport write per step. |
-| R3 HTTP1 contract alignment | §11.3 now matches `http1-server-design.md` at `3207148`: `handshakeStep` `StepDone/StepWantRead/StepWantWrite`, `readSome`, `writeSome`, `flushPending`, multi-step `shutdownStep`, `pending()`, `want()`, `alpn/isSecure/maxTransfer/watch/close`; no `source()`, no `shutdownWrite`, no `WouldBlock` mapping, no callbacks. |
+| R3 HTTP1 contract alignment | §11.3 now matches `http1-server-design.md` at `326cdad`: `handshakeStep` `StepDone/StepWantRead/StepWantWrite`, `readSome`, `writeSome`, `flushPending`, multi-step `shutdownStep`, `pending()`, `want()`, `alpn/isSecure/maxTransfer/watch/close`; no `source()`, no `shutdownWrite`, no `WouldBlock` mapping, no callbacks. |
 | B1 ALPN `Require` absent extension | C-only `SSL_CTX_set_client_hello_cb` checks `SSL_client_hello_get0_ext(...ALPN...)`; absent -> `SSL_AD_MISSING_EXTENSION` + `SSL_CLIENT_HELLO_ERROR`; `AlpnRequired`. No-overlap remains select-callback alert 120/`NoApplicationProtocol`. Tests assert both variants. |
 | B2 stranded output / no flush | Added `flush`/`FlushOutcome`; every step flushes prior output first; `handshakeStep` returns `Done` only when C staging and write BIO are empty; `readSome` flushes before waiting; `writeSome(0)` is explicitly not a flush. |
 | B3 accepted bytes + want | `Wrote{count,want}`, `Data{bytes,want}`, `Eof{want}`, `Sent{want}`, `PeerClosed{want}`; `want` is `None/Read/Write/ReadWrite`; no replay. |
