@@ -1,0 +1,232 @@
+// obo/lib/html.obx: context escaping for the HTML template domain.
+//
+// It is a source module (`module html`); importers write
+//
+//     import "../lib/html.obx" as html     // from obo/cmd/
+//     import "html.obx" as html            // from obo/lib/ with -I
+//
+// and reach exported declarations as html::name. This is an ordinary
+// standard-library module: no compiler, runtime, seed or format changes are
+// involved. It is the builder API that a future `html` template tag will lower
+// to: literal chunks become raw, text holes call escapeText, quoted attribute
+// holes call escapeAttr, and URL-valued attribute holes call validateUrl.
+//
+// TRUST IS A CONVENTION, NOT TYPE ENFORCEMENT. Html is a public-field record:
+//
+//     pub type Html = ref record { text: string }
+//
+// `new html::Html{text: ...}` is legal and is exactly the explicit raw
+// constructor. Documentation and review require construction through raw or
+// through an escaping function. There is deliberately no SafeString and no
+// conversion between Html and any SQL fragment type.
+//
+// Html means claimed-safe content, not "a string that happens to look safe".
+// A fragment may intentionally open or close an element; the author owns
+// balance and context. There is no sanitizer here: untrusted rich HTML must be
+// sanitized by a separate, explicitly named policy before it becomes Html.
+//
+// Contexts:
+//
+//   * escapeText  - text content.
+//   * escapeAttr  - quoted attribute values, including both `"` and `'`.
+//   * validateUrl - URL-valued quoted attributes (href, src, ...) with a
+//                   scheme allow-list, then attribute escaping.
+//   * raw         - an explicit trusted string, never escaped.
+//   * join        - concatenation of already-built Html fragments.
+//
+// This module intentionally provides no function for script/style bodies, JS or
+// CSS, comments, unquoted attribute values, or dynamic tag/attribute names.
+// Those contexts need a different encoder (or literal structure), and a
+// function that claimed to escape them would be wrong. Build structure
+// literally; only values are escaped.
+//
+// Byte and control policy. Input is processed byte-wise, so valid UTF-8 (and
+// any other non-ASCII bytes) pass through unchanged; only ASCII specials become
+// entities. escapeText and escapeAttr emit `&amp;`, `&lt;`, `&gt;`, `&quot;`
+// and `&#39;`. ASCII NUL and other C0 controls, plus DEL, become decimal
+// numeric character references (`&#0;`, `&#1;`, ..., `&#127;`). In text,
+// tab/LF/CR are left as raw bytes for readable markup; in a quoted attribute
+// value they are also escaped (`&#9;`, `&#10;`, `&#13;`), where raw whitespace
+// may otherwise be normalized. An HTML parser maps `&#0;` to U+FFFD, so a raw
+// NUL never reaches the output. C1 controls encoded as UTF-8 are non-ASCII and
+// pass through; they are not interpreted here.
+//
+// Escaping is one pass, not idempotent: escapeText("&amp;") is "&amp;amp;".
+// An already-encoded string is encoded again, so do not pass one through an
+// escaper. raw is the way to insert a fragment once, and join does not escape
+// its inputs.
+//
+// URL policy. validateUrl accepts a relative reference (including `/path`,
+// `?query`, `#frag` and `//host/path`) or an absolute URL whose scheme is
+// http, https or mailto. Scheme matching is ASCII case-insensitive. Every other
+// scheme is rejected, in particular javascript, data, vbscript, file and blob.
+// Any ASCII space, tab, newline, other C0 control or DEL is rejected anywhere
+// in the input, so whitespace/mixed-case obfuscation such as " javaScript:" or
+// "java\tscript:" is not accepted. A colon in the first path segment must begin
+// a valid scheme; "foo:bar" is therefore rejected (write "./foo:bar" for a
+// relative path). Percent-encode spaces and other URL components before the
+// call: this function validates the scheme and then attribute-encodes; it does
+// not percent-encode or otherwise rewrite the path/query. The returned Html is
+// attribute-value content for a quoted href/src, not a complete tag or raw
+// markup. It is element-agnostic: a validated URL is not a policy for
+// script-src, base href or other navigation/control attributes.
+//
+// Ownership: Html owns its text. raw stores its own reference to the string,
+// so the caller's binding stays valid; escapeText, escapeAttr and validateUrl
+// build a new string; join borrows the array and elements. There is no implicit
+// array conversion or separator.
+module html
+
+// Claimed-safe HTML content. The field is public by design: direct construction
+// is legal and is the explicit raw operation. Trust is convention-level.
+pub type Html = ref record {
+    text: string
+}
+
+// The explicit trusted constructor: text is inserted verbatim. Its name is
+// short because callers already write html::raw; there is no implicit
+// string-to-Html conversion.
+pub fn raw(text: string): Html {
+    return new Html{text: text}
+}
+
+fn appendEntity(mut out: &[]byte, name: string) {
+    append(out, '&')
+    for i in 0..len(name) { append(out, name[i]) }
+    append(out, ';')
+}
+
+// n is 0..127; append its decimal form with no leading zero.
+fn appendDecimal(mut out: &[]byte, n: int) {
+    if n >= 100 {
+        append(out, byte('0' + n / 100))
+        n = n % 100
+        append(out, byte('0' + n / 10))
+        append(out, byte('0' + n % 10))
+        return
+    }
+    if n >= 10 {
+        append(out, byte('0' + n / 10))
+    }
+    append(out, byte('0' + n % 10))
+}
+
+fn appendEscaped(mut out: &[]byte, s: string, attr: bool) {
+    for i in 0..len(s) {
+        let b = s[i]
+        if b == '&' {
+            appendEntity(out, "amp")
+        } else if b == '<' {
+            appendEntity(out, "lt")
+        } else if b == '>' {
+            appendEntity(out, "gt")
+        } else if b == '"' {
+            appendEntity(out, "quot")
+        } else if b == '\'' {
+            appendEntity(out, "#39")
+        } else if b == 0 || b == 0x7F ||
+                  (b < 0x20 && (attr || (b != '\t' && b != '\n' && b != '\r'))) {
+            append(out, '&')
+            append(out, '#')
+            appendDecimal(out, int(b))
+            append(out, ';')
+        } else {
+            append(out, b)
+        }
+    }
+}
+
+// Escape text content: & < > " ' and ASCII controls as documented above.
+pub fn escapeText(s: string): Html {
+    var out = new []byte(0)
+    appendEscaped(out, s, false)
+    return new Html{text: string(out)}
+}
+
+// Escape one quoted attribute value: the same ASCII entities, plus tab/LF/CR
+// as numeric references. Both quote characters are escaped, so either quote
+// can delimit the attribute. The result is not a complete attribute.
+pub fn escapeAttr(s: string): Html {
+    var out = new []byte(0)
+    appendEscaped(out, s, true)
+    return new Html{text: string(out)}
+}
+
+fn isAlpha(b: byte): bool {
+    return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+fn isSchemeByte(b: byte): bool {
+    return isAlpha(b) || (b >= '0' && b <= '9') || b == '+' || b == '-' || b == '.'
+}
+
+fn validScheme(s: string, end: int): bool {
+    if end <= 0 { return false }
+    if !isAlpha(s[0]) { return false }
+    for i in 1..end {
+        if !isSchemeByte(s[i]) { return false }
+    }
+    return true
+}
+
+fn schemeIs(s: string, end: int, name: string): bool {
+    if end != len(name) { return false }
+    for i in 0..end {
+        var b = s[i]
+        if b >= 'A' && b <= 'Z' { b = byte(int(b) + 32) }
+        if b != name[i] { return false }
+    }
+    return true
+}
+
+// The byte index of the colon that ends the first path segment's scheme, or -1
+// when a /, ? or # ends the segment first (a relative reference).
+fn schemeEnd(s: string): int {
+    for i in 0..len(s) {
+        let b = s[i]
+        if b == ':' { return i }
+        if b == '/' || b == '?' || b == '#' { return -1 }
+    }
+    return -1
+}
+
+fn allowedScheme(s: string, end: int): bool {
+    return schemeIs(s, end, "http") || schemeIs(s, end, "https") ||
+           schemeIs(s, end, "mailto")
+}
+
+// No ASCII space, C0 control or DEL anywhere: browsers strip or ignore some of
+// these in URL parsing, so a URL containing one is refused rather than guessed.
+fn urlBytesOk(s: string): bool {
+    for i in 0..len(s) {
+        let b = s[i]
+        if b <= 0x20 || b == 0x7F { return false }
+    }
+    return true
+}
+
+// Validate a URL for a quoted href/src value and return its attribute-encoded
+// bytes. Relative references and http/https/mailto are allowed; all other
+// schemes, ASCII whitespace and controls are rejected with EINVAL (22).
+pub fn validateUrl(s: string): Result[Html] {
+    if !urlBytesOk(s) {
+        return err("URL contains an ASCII space or control byte", 22)
+    }
+    let end = schemeEnd(s)
+    if end >= 0 && !(validScheme(s, end) && allowedScheme(s, end)) {
+        return err("URL scheme is not allowed", 22)
+    }
+    return ok(escapeAttr(s))
+}
+
+// Concatenate already-safe fragments in order. The array is borrowed, so the
+// caller keeps its elements; no separator and no escaping are added. An empty
+// array gives an empty Html.
+pub fn join(parts: &[]Html): Html {
+    var out = new []byte(0)
+    for i in 0..len(parts) {
+        let text = parts[i].text
+        for j in 0..len(text) { append(out, text[j]) }
+    }
+    return new Html{text: string(out)}
+}

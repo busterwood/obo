@@ -5,7 +5,7 @@
 
 Cases:
   * every stdlib module (io, strings, paths, sort, time, cli, fmt, errors, fs,
-    env) compiles through a tiny importer root built with `-I obo/lib`;
+    env, html) compiles through a tiny importer root built with `-I obo/lib`;
   * every tool source (cmd/cat.obx, wc.obx, sort.obx, head.obx, tail.obx,
     eza.obx) compiles with its own relative `../lib/...` imports and no -I;
   * the design 4.2 P2/P4 tool-matrix checks: every tool import is an explicit
@@ -14,9 +14,10 @@ Cases:
     `../lib/sort.obx` (never the plain name, which would resolve to the sort
     tool root), and a scratch cmd/ tree with io/fmt/errors/strings decoys
     beside cat.obx still builds and runs against the real lib/ modules;
-  * obo/lib holds exactly the P5a module set: io, strings, paths, sort, time,
-    cli, fmt, errors, fs and env. The exact-set check proves no module outside
-    the staged set exists (and that no leftover compatibility module does);
+  * obo/lib holds exactly the staged module set: io, strings, paths, sort,
+    time, cli, fmt, errors, fs, env and html. The exact-set check proves no
+    module outside the staged set exists (and that no leftover compatibility
+    module does);
   * collision/decoy trees pin module resolution and the exact diagnostics:
     a headerless imported module, a self import cycle, a mutual import cycle,
     a headerless local decoy shadowing a lib module, a headed local decoy with
@@ -155,13 +156,19 @@ IMPORTERS = {
     'env': ('import "env.obx" as env\n'
             'fn main() { println(env::getOr("NO-SUCH=NAME", "absent")) }\n',
             'absent\n'),
+    'html': ('import "html.obx" as html\n'
+             'fn main() {\n'
+             '    let h = html::escapeText("<x>")\n'
+             '    println(h.text)\n'
+             '}\n', '&lt;x&gt;\n'),
 }
 
 TOOLS = ['cat.obx', 'wc.obx', 'sort.obx', 'head.obx', 'tail.obx',
          'eza.obx']
 
 WANT_LIB = {'cli.obx', 'env.obx', 'errors.obx', 'fmt.obx', 'fs.obx',
-            'io.obx', 'paths.obx', 'sort.obx', 'strings.obx', 'time.obx'}
+            'html.obx', 'io.obx', 'paths.obx', 'sort.obx', 'strings.obx',
+            'time.obx'}
 
 
 def main():
@@ -170,7 +177,8 @@ def main():
         print(f"no compiler at {OBXC}: run make first")
         sys.exit(2)
 
-    # The exact P5a lib module set: fs arrived in P3 and env in P5a.
+    # The exact staged lib module set: fs arrived in P3, env in P5a and
+    # html is the independent HTML escaping module.
     got = {f for f in os.listdir(LIBDIR) if f.endswith('.obx')}
     if got != WANT_LIB:
         missing = sorted(WANT_LIB - got)

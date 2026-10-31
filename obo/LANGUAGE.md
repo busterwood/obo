@@ -2007,11 +2007,26 @@ modules under `obo/lib/`: `strings` (`cmp`, split/join, trim, natord and
 QuoteSpaces helpers), `paths`, `sort`, `time`, `cli`, `fmt` (`digits`,
 `appendPadded`, `writePadded`, `modeString`), `errors` (C-locale errno
 `text`, `osError`, `debugPath` and the eza-shaped `EXIT_*` constants), `fs`
-(directory iteration, stat/lstat and symlink targets; see "Metadata" below)
-and `env` (`get`, `has`, `value`, `getOr`; see "Environment" below).
+(directory iteration, stat/lstat and symlink targets; see "Metadata" below),
+`env` (`get`, `has`, `value`, `getOr`; see "Environment" below) and `html`.
 P2 moved
 `writePadded` from `io` and the digit/padding helpers from `strings` into
 `fmt`, and removed the four P1 compatibility functions.
+
+`obo/lib/html.obx` is the builder API for the HTML template domain. `Html` is
+an ordinary record with the public field `text`; `raw` is the explicit trusted
+constructor, `escapeText` encodes text content, `escapeAttr` encodes one quoted
+attribute value (both quote types), `validateUrl` allow-lists relative,
+`http`, `https` and `mailto` URLs and attribute-encodes the result, and `join`
+concatenates `Html` fragments without escaping them. Trust is a documented
+convention, not type enforcement: direct `new html::Html{text: ...}` is legal
+and equivalent to `raw`. Escaping is one pass and not idempotent: an
+already-encoded string is encoded again, and `raw` must not be fed untrusted
+values. There is deliberately no API for script/style bodies, comments,
+unquoted attributes or dynamic tag/attribute names, and no sanitizer. The
+future compiler-known `html` tag will lower literal chunks to `raw` and holes
+to these context functions; until then, this module is the builder-only form.
+Its header documents the byte, control and URL policies.
 
 ### Metadata
 

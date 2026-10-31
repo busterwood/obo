@@ -6,7 +6,7 @@ grid/UTF-8/lossy names). Each source file here is a module root that imports
 `../lib/...` modules by explicit relative path; every library name is qualified
 (`io::Writer`, `io::newWriter`, `fmt::writePadded`, `errors::text`, ...).
 `cat`, `wc`, `sort`, `head` and `tail` are headerless roots; `eza.obx`
-declares `module eza` and imports all ten library modules.
+declares `module eza` and imports ten of the eleven library modules.
 `tools/build_tools.py` compiles each root directly with the ordinary compiler,
 dependency-first, and nothing is concatenated. The builder creates a symbol
 directory under its output (`build/tools/sym` for `make tools`, `build/eza/sym`
