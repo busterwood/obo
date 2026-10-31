@@ -1,5 +1,5 @@
 {
-  "format": "cinterop-proto/0",
+  "format": "cinterop-proto/1",
   "module": "pqprobe",
   "platform": "x86_64-linux-gnu",
   "abi": "sysv-amd64",
@@ -9,6 +9,6 @@
   "libs": ["-l:libpq.so.5"],
   "cflags": [],
   "functions": [
-    {"name": "pq_lib_version", "symbol": "PQlibVersion", "args": [], "ret": "i32", "effects": ["pure"]}
+    {"name": "pq_lib_version", "symbol": "PQlibVersion", "args": [], "ret": "i32", "effects": ["impure"]}
   ]
 }

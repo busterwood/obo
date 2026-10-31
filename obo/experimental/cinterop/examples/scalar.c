@@ -2,6 +2,8 @@
 
 long zero(void) { return 0; }
 int neg32(void) { return -123; }
+int int32_min(void) { return (-2147483647 - 1); }
+int int32_max(void) { return 2147483647; }
 long identity(long a) { return a; }
 long add(long a, long b) { return a + b; }
 long sum3(long a, long b, long c) { return a + b + c; }

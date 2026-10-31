@@ -1,12 +1,12 @@
 # Native C interop (`cinterop`) — design note
 
-Status: **design proposal; experimental prototype exists (section 14), not a
-production implementation.** Date: 2026-10-31. Baseline: `main` at `befa626`
-(`obo: promote the 0.9 seed and release Stage A lambdas`), compiler `0.9`,
-`.sym` format 5, ABI 1. The only work approved here is a one-time generic
-capability and an experimental prototype for review. This is not approval of a
-full production API, not a stable format, and not permission to merge, push or
-promote a seed.
+Status: **REVISE response pending independent rereview.** Date: 2026-10-31.
+Baseline: `main` at `befa626` (`obo: promote the 0.9 seed and release Stage A
+lambdas`), compiler `0.9`, `.sym` format 5, ABI 1. The independent architecture
+review of prototype `a29f35d` returned REVISE; the scoped B1/B2, high and
+practical-medium repairs are recorded in section 14. This remains an
+experimental, trusted-build prototype: not production, not a public API, not a
+stable format, and not permission to merge, push or promote a seed.
 
 The prototype lives outside the public compiler surface under
 `obo/experimental/cinterop/`. It is labelled experimental. Nothing in this note
@@ -46,10 +46,55 @@ Goals:
    manifests and platform mismatches fail before native code runs.
 6. A useful scalar probe first, then libpq availability as a separate gate.
    The libpq probe is `PQlibVersion` only; no database connection.
+7. A binding is a maintained obo package with ordinary imports, not a
+   generator run on every application build.
+
+### 1.1 Approved steering decision (2026-10-31)
+
+The user-approved direction is **a small interop toolkit plus an agent skill**,
+not a universal configurable C-binding generator. The earlier paragraph in
+section 1 describing a tool that emits bindings from headers plus a spec is
+retained as the historical proposal; it is **refined/superseded by this
+decision**, not erased.
+
+**Approved:**
+
+- The generic native compiler/link/ABI infrastructure is essential: the
+  mandatory compiler-visible native contract, the system-linker bridge, and
+  explicit foreign ownership. These must not be replaced by trusting an LLM.
+- A deterministic toolkit enforces signatures, effects, link inputs, artifact
+  checks and ABI safety.
+- Adapting each C API is done by an LLM agent following a documented skill and
+  templates, not by adding a per-library compiler branch.
+- Per-library output is a maintained obo package with ordinary imports, not a
+  generator invocation on every application build.
+
+**Proposed, not implemented or installed:**
+
+- The planned skill guides an agent to inspect C headers and ownership, design
+  an idiomatic obo module, write C/assembly adapters from templates, declare
+  bindings/effects/link dependencies, and test ABI, lifetime, errors and
+  integration.
+- Skill packaging, installation and a stable template catalog require a
+  separate review and approval.
+
+The existing `cinterop.py` is an experimental proof fixture/convenience. It
+must not grow into a wide header parser or an option-rich universal binding
+generator. Current work prioritises hardening the generic boundary and the
+reusable build/validation templates. A concrete future generator is considered
+only if repeated real bindings show a genuine automation benefit.
+
+This decision does not require any compiler change per library; it preserves
+the one-time generic seam. It also does not cancel the B1/B2/H1..H4/M1..M6
+repairs in section 14, or approve a full production driver, resource
+finalizers or skill implementation.
 
 ## 2. Non-goals
 
 - No stable public C interop API in this proposal.
+- No universal configurable C-binding generator: per-library adaptation is
+  toolkit-plus-agent-skill work. The skill itself is not implemented or
+  installed by this checkpoint.
 - No arbitrary C header parsing, C++ interop, templates or macros.
 - No general FFI for variadic C functions, callbacks, `struct` by value, TLS,
   C `long double`/floats, or decimal values in v1.
@@ -164,11 +209,11 @@ module hello
 
 // generated, not hand-maintained
 pub fn add(a0: int, a1: int): int {
-    return cinterop("add", a0, a1)
+    return __cinterop("add", a0, a1)
 }
 ```
 
-`cinterop` is a compiler-known builtin, not a new declaration grammar. It
+`__cinterop` is an internal compiler-known builtin, not a new declaration grammar. It
 accepts a literal C symbol name and zero or more scalar `int` arguments in the
 prototype. It emits the ordinary obo argument push sequence and a rel32 call
 whose target is an unresolved symbol `obo_native_<name>`. The compiler records
@@ -187,18 +232,23 @@ symbol without a generic way to emit that call. The prototype therefore adds
 one small compiler builtin plus a generic relocation sidecar, and does the real
 link with the system toolchain.
 
-This proposal does **not** make `cinterop` a public stable API. The builtin is
+This proposal does **not** make `__cinterop` a public stable API. The builtin is
 experimental, its argument surface is scalar-only, and it is not advertised in
 `LANGUAGE.md` until a separate review accepts a stable design.
 
 ## 5. Specification language and manifest
 
 The prototype uses a deliberately small JSON spec (TOML is also acceptable;
-the key requirement is a simple, deterministic schema, not full Clang parsing):
+the key requirement is a simple, deterministic schema, not full Clang parsing).
+Per the 2026-10-31 steering decision, this is a **fixture input for the
+experimental proof**, not the proposed universal product: the intended
+per-library workflow is an agent-maintained obo package using the documented
+skill/templates, with this toolkit enforcing the generic checks. Do not grow
+this schema into a wide header-parser option surface.
 
 ```json
 {
-  "format": "cinterop-proto/0",
+  "format": "cinterop-proto/1",
   "module": "hello",
   "platform": "x86_64-linux-gnu",
   "abi": "sysv-amd64",
@@ -217,14 +267,17 @@ For libpq the only prototype entry is:
 
 ```json
 {"name": "pq_lib_version", "symbol": "PQlibVersion", "args": [],
- "ret": "i32", "effects": ["pure"]}
+ "ret": "i32", "effects": ["impure"]}
 ```
 
-The spec is explicit. Headers are included in the generated C file only when
-the user provided them; the tool does not infer ownership, nullability,
+The spec is explicit. Every function requires either a supplied header or an
+explicit `declarations` entry; the tool does not infer ownership, nullability,
 lifetime or effects from a header. `i64` maps to a signed 64-bit C integer
-(`long` on this target); `i32` maps to C `int` and is sign-extended in `rax` on
-return so obo always sees a 64-bit `int`.
+(`long` on this target). `i32` is supported **only as a return width**, where
+the thunk sign-extends `eax` into `rax`; `i32` arguments are rejected in this
+prototype because there is no checked narrowing conversion. The signature check
+is labelled `header` when a real header supplied the declaration and
+`declarations-only` when the author supplied the declaration text.
 
 Future pointer/resource annotations (design only, not implemented) are
 explicit and versioned:
@@ -238,11 +291,17 @@ explicit and versioned:
  "ret": "borrow_bytes", "lifetime": "owner", "owner": "arg0"}
 ```
 
-The manifest is a separate, versioned file containing at least: spec hash,
-wrapper hash, shim source hash, shim object hash, compiler identity, `.sym`
-hash, target triple, pointer width, ABI, exported symbols, arity and effects.
-The build tool recomputes the hashes and refuses a stale or modified artifact
-before invoking the compiler or executing anything.
+The manifest is a separate, versioned file (`cinterop-proto/1`) containing at
+least: spec, application, header/declaration input, generated wrapper, shim
+source/object, `native.relocs`, native object, image, executable, host/start/
+link/tool/compiler and C compiler hashes; target triple, pointer width, ABI,
+signature-check mode (`header` or `declarations-only`), exported thunk set,
+arity, effects and resolved shared-library paths/hashes. The build writes and
+verifies an input manifest **before compiling**, then verifies the final
+manifest automatically after linking. Missing required files fail rather than
+being omitted. The sidecar is a typed record (`offset symbol nargs argtypes
+result effects`), not symbol-only. Hashes are provenance, not signatures; a
+same-signature sidecar or library substitution remains a trusted-input issue.
 
 ## 6. Generated shim and ABI thunk
 
@@ -300,13 +359,15 @@ link around it:
 3. Link with the system `cc`/`ld`, a linker script that places the obo sections
    at their existing fixed virtual addresses, a small hosted startup object,
    the generated shim object and the requested system library.
-4. The startup uses the host `crt1.o`/`crti.o`/`crtn.o` and therefore the
-   normal dynamic loader and `__libc_start_main` path, so glibc constructors,
-   TLS, IFUNC resolution and libpq's dependencies behave normally. A small C
-   `main` builds the initial-stack-shaped block that `rt_init` expects and
-   jumps to the obo entry. This synthetic block is a prototype boundary;
-   production should add a proper entry function that takes `argc/argv/envp`
-   explicitly.
+4. The startup uses the host `crt1.o`/`crti.o`/`crtn.o` and the normal
+   `__libc_start_main`/dynamic-loader path. A small C `main` builds the
+   initial-stack-shaped block that `rt_init` expects and jumps to the obo entry.
+   The block is 16-byte aligned with padding above it, checks its pointer-array
+   size and a 128 KiB stack headroom before writing, and fails cleanly if the
+   1 MiB buffer is insufficient. This probe does **not** link
+   `crtbegin.o`/`crtend.o` and does **not** test or claim C constructors, TLS,
+   IFUNC or normal `atexit` teardown; `rt_finish` still exits by raw syscall.
+   Those remain prototype boundaries for a production entry design.
 5. The final artifact must be `ET_EXEC` (non-PIE), not a PIE/shared object,
    and the obo segments must be at the expected addresses. This avoids an
    ASLR relocation rewrite of obo's absolute cells.
@@ -380,42 +441,48 @@ does not pretend that goal is already met.
 
 ### 8.4 Effects
 
-Every native function defaults to `impure`. `pure` is allowed only when the
-spec author asserts that the function has no observable side effects, no
-allocation that escapes, and no dependence on mutable process state. The
-compiler must be conservative:
-
-- Native calls do not inherit a made-up `pure` summary from the wrapper.
-- A native call site counts as a user call and invalidates assumptions that a
-  call may free or write through a handle, even when the current prototype's
-  arguments are only scalars.
-- The generated wrapper's `.sym` carries the ordinary compiler-computed effect
-  summary; native code is not exempt from `freesAll`/`writesHandles`
-  conservatism.
-- Effect summaries are inline metadata, not ownership proofs.
+Every native function is conservatively `impure`. The prototype accepts no
+`pure` claim and has no real effect-contract proof. The compiler treats a native
+call through a synthetic callee with `freesAll = true` and
+`writesHandles = true`, so `afterCall` invalidates deep references, the handle
+root and every visible global before the call's result is used. It also counts
+as a user call. The generated wrapper's ordinary `.sym` therefore contains
+`freesall writeshandles`; the test asserts that. The scalar prototype passes no
+managed pointers to C, but the summary does not rely on that narrower fact.
+Effect summaries are inline metadata, not ownership proofs.
 
 ## 9. `.sym` checks, hashes and build validation
 
 - The existing `.sym` format stays format 5 and ABI 1. The wrapper is a normal
   module and its `.sym` is written by the normal writer.
-- Native-specific metadata lives in the manifest, not in a patched `.sym`
-  grammar. It may use an experimental `cinterop-proto/0` prefix; it must not
-  bump `.sym` format or obo ABI.
-- The build checks, before compiling or running:
-  1. spec/manifest format and platform triple;
-  2. ABI string and pointer width;
-  3. arity and scalar types against the generated wrapper;
-  4. spec, wrapper, shim-source and shim-object hashes;
-  5. that the object's exported thunk names exactly match the spec;
-  6. that the final link has no missing thunk (a missing symbol is a link
-     error, not a runtime lookup).
-- A native object modified after manifest generation is rejected.
-- A stale manifest (source or spec changed) is rejected.
-- A platform mismatch is rejected before compilation.
-- A wrong arity/signature is rejected by the wrapper generator and by the
-  compiler's type check.
-- Hashing establishes provenance and accidental-corruption detection, not
-  memory safety. C remains trusted and unchecked.
+- Native-specific metadata lives in the typed sidecar and manifest, not in a
+  patched `.sym` grammar. It uses the experimental `cinterop-proto/1` prefix; it
+  does not bump `.sym` format or obo ABI.
+- The compiler records every native call's offset, symbol, argument count, all
+  `i64` argument types, result width and conservative effects. The tool checks
+  every record against the spec before `make_object`/link, rejects missing or
+  extra arguments and incompatible symbols, and requires every spec symbol to
+  have a call.
+- The build writes and verifies an input manifest before compiling, then
+  automatically verifies the final manifest after linking. Required roles
+  include the application, spec, headers, sources, wrapper, wrapper `.sym`,
+  shim source/object, signature check, sidecar, image, native object, host/
+  start/link/tool/compiler and C compiler. Missing files fail.
+- The generated shim's `obo_native_*` export set is checked against the spec
+  before link. The object's relocation symbols come from the validated sidecar.
+- The final ELF is checked for `ET_EXEC`, expected fixed VAs and flags, segment
+  file bounds/overlap, no W+X segment and a non-executable `GNU_STACK`. The
+  linker script asserts each region's capacity.
+- A native object, sidecar, header, wrapper, `.sym` or manifest modified after
+  build is rejected. A platform/ABI/pointer-width mismatch is rejected.
+- A wrong arity is rejected by the typed sidecar check; a header/declaration
+  mismatch is rejected by the generated C signature check; `i32` arguments are
+  rejected rather than narrowed.
+- The resolved shared libraries are recorded with paths and hashes, with the
+  documented limitation that the dynamic loader can still resolve a different
+  file at run time. Hashing establishes provenance and accidental-corruption
+  detection, not memory safety or toolchain authorization. C remains trusted
+  and unchecked; a same-signature sidecar/lib substitution is trusted input.
 
 ## 10. Security and trusted C
 
@@ -441,7 +508,8 @@ not an assertion that all of C is safe.
 
 - Current compiler: `0.9`, `.sym` format 5, ABI 1. These are unchanged by this
   proposal.
-- Native prototype package format: `cinterop-proto/0` (experimental).
+- Native prototype package format: `cinterop-proto/1` (experimental, mandatory
+  typed sidecar; no stable native ABI).
 - Future stable native manifest: `cinterop/1`, thunk ABI `cabi1`, independent
   of `.sym` format/ABI. No stable number is assigned now.
 - Floats remain next at `0.10`/format 6/ABI 1; decimal remains after that at
@@ -454,30 +522,39 @@ not an assertion that all of C is safe.
 
 P0 (ABI only, no application import):
 
-- scalar C functions `identity`, `add`, `mix` with 0..8 signed 64-bit
-  arguments;
+- scalar C functions with 0..8 signed 64-bit arguments, including
+  `INT64_MIN`/`INT64_MAX`;
 - expected results for odd and even argument counts;
-- stack alignment checked by a C function that uses aligned SSE operations or
-  an explicit alignment assertion;
+- `i32` returns at `INT32_MIN`/`INT32_MAX`, sign-extended; `i32` arguments
+  rejected;
+- stack alignment checked for 6/7/8 arguments;
 - `rbx`, `rbp`, `r12..r15` preservation checked from a caller that holds
   values across the call;
+- compiled-`__cinterop` path with nested arguments, non-zero stack depth and
+  live locals/homes, not only the handwritten ABI probe;
 - no libc needed for the freestanding ABI probe.
 
 P1 (tool and artifacts):
 
 - spec parsing, deterministic wrapper/shim/manifest generation;
-- wrong arity and wrong signature fail before execution;
-- modified native object hash fails;
-- platform mismatch fails;
-- stale manifest fails;
-- missing thunk is a link failure.
+- wrong direct arity, extra arguments and incompatible symbol substitution fail
+  before link even with `--native-relocs`;
+- `i32` arguments, missing header/declaration, duplicate C symbols and
+  variadic/unsupported declarations are rejected;
+- modified native object, sidecar, header, wrapper `.sym` and manifest fail;
+- platform/ABI mismatch and missing required files fail;
+- missing thunk/C definition is a link failure;
+- `--check` refuses native modules rather than pretending to have checked them.
 
 P2 (end-to-end):
 
 - ordinary application `import "hello.obx"` and `hello::add(20,22) == 42`;
 - actual system-linked `ET_EXEC`, not a runtime child process;
 - `readelf -h` shows `EXEC`, `readelf -l` shows the obo segments at their
-  expected addresses, `ldd` shows the intended shared libraries;
+  expected addresses and permissions, `ldd` shows the intended shared
+  libraries;
+- argv/`argc` and environment work for both parities; `OBO_CHECK`/`OBO_STATS`
+  are visible; the synthetic stack fails cleanly near its pointer-array limit;
 - a second independent scalar module/library proves the seam is not
   PQ-specific;
 - no unresolved thunk symbols in the final link.
@@ -516,9 +593,14 @@ Risks:
   Hosted linking at those addresses works for a non-PIE `ET_EXEC`, but it
   forecloses PIE/ASLR and needs careful linker-script ownership of the dynamic
   sections.
-- **Startup is bespoke.** The synthetic initial stack and custom `_start` are
-  acceptable for a probe, not for a supported runtime. libc termination and
-  constructors need a production entry design.
+- **Startup is bespoke.** The synthetic initial stack plus host `crt1` bridge is
+  acceptable for a probe, not for a supported runtime. Constructors, TLS, IFUNC
+  and libc termination are untested/unclaimed; they need a production entry
+  design.
+- **Agent adaptation is not a safety proof.** The approved toolkit-plus-skill
+  direction keeps mandatory compiler/link checks, but the planned skill is not
+  implemented. Human/agent C-header and ownership interpretation can still be
+  wrong; only the enforced contracts and tests are checked.
 - **Effects and ownership are not automatic.** Trusted C can violate any
   annotation. No finalizer exists, so automatic cleanup is future work.
 - **Limited ABI surface.** No floats, callbacks, variadics, structs by value or
@@ -536,137 +618,201 @@ Plan:
    including 0..8 args and alignment/register checks.
 2. **P1** — implement the cinterop tool, spec/manifest validation, generated
    wrapper and shim, negative tests.
-3. **P2** — add the minimal generic compiler seam (`cinterop` builtin plus
+3. **P2** — add the minimal generic compiler seam (`__cinterop` builtin plus
    relocation sidecar), build the fixed image, link with the system toolchain,
    import the generated module and run `add(20,22)`.
 4. **P3** — conditional libpq `PQlibVersion` probe, if available, with no
    database connection.
 5. Stop at the prototype checkpoint for architecture/security review. Do not
    merge, push, promote or seed-copy.
+6. Future, after separate approval: document the agent skill/templates for
+   maintaining per-library obo packages. The skill is not implemented or
+   installed by this checkpoint; do not expand the fixture into a universal
+   configurable generator.
 
 ## 14. Prototype results
 
-Recorded from the actual prototype in this worktree, 2026-10-31. The design
-commit is `cd90a2d`; the prototype code and tests are the working-tree changes
-committed separately after this document. Artifacts and logs are under
-`/tmp/opencode/c-interop-prototype-20261031/`.
+Recorded from the repair worktree, 2026-10-31. Reviewed prototype:
+`a29f35d`; independent verdict: REVISE. Design baseline: `cd90a2d`, base
+`befa626` (`0.9`, `.sym` format 5, ABI 1). Evidence directories:
+`/tmp/opencode/c-interop-repair-a29f35d/` (before/failing cases) and the fresh
+repair archive recorded with the final report. This section records what ran,
+not what was hoped.
 
-### 14.1 Scalar end to end (P0/P1/P2)
+### 14.1 B1 and B2 reproduced before repair
 
-Command:
+**B1, startup half-parity.** The committed `a29f35d` host built the block and
+inserted the alignment pad below `argc`. Running its runtime probe with an odd
+environment:
+
+```text
+env -i FOO=bar .../app one two
+argc=0
+FOO=nil
+zero=0
+```
+
+The first word read as `argc` was the pad, and the environment pointer pointed at
+`argv`. This is the actual failing case, not a code-reading inference.
+
+**B2, direct wrong-arity call.** The committed tool accepted a direct call
+`cinterop("add", 1)` even though the spec's `add` takes two arguments. The build
+succeeded, the executable ran, and printed a wrong value:
+
+```text
+direct=4198445
+```
+
+The sidecar recorded only `offset symbol`; the tool checked symbol membership,
+not arity.
+
+### 14.2 Repairs and verified gates
+
+**B1/H4.** `host.c` now computes the required pointer words with checked
+addition, aligns the block base before writing `argc`, places the pad above the
+block, requires 128 KiB of stack growth headroom, and fails with
+`obo: cinterop startup stack overflow` before writing outside the 1 MiB buffer.
+
+Verified:
+
+```text
+env -i FOO=bar app one two          -> argc=3, arg0=<app>, FOO=bar
+env -i FOO=bar BAZ=qux app one two  -> argc=3, arg0=<app>, FOO=bar
+env -i FOO=bar OBO_STATS=1 app      -> stderr has "peak bytes"
+env -i FOO=bar OBO_CHECK=1 leak-app -> exit 8, "file descriptors leaked"
+110000 very short environment vars  -> exit 0 (fits)
+116000 very short environment vars  -> exit 127, clean startup-stack message
+```
+
+The 116,000-variable case is permitted by the host ARG_MAX and reaches the
+pointer-array boundary honestly; the failure is clean, not a write below the
+buffer.
+
+**B2/H1/H2.** The compiler's builtin is now the internal `__cinterop`. Its typed
+sidecar is:
+
+```text
+cinterop-relocs 1
+<offset> <symbol> <nargs> <argtypes> <result> freesall,writeshandles
+```
+
+Every record is checked against the spec before `make_object`/link: missing and
+extra arguments fail, unknown/incompatible symbols fail, every spec symbol must
+have a call, and duplicate offsets fail. Direct wrong-arity with
+`--native-relocs` is now:
+
+```text
+cinterop: native call to 'add' has 1 argument(s), spec says 2
+```
+
+`i32` arguments are rejected instead of silently narrowed; `i32` returns remain
+sign-extended, with `INT32_MIN`/`INT32_MAX` tests. Native calls receive a
+conservative `freesAll`/`writesHandles` summary through `afterCall`; the wrapper
+`.sym` is asserted to contain `freesall writeshandles`, and a module test
+confirms a reference into a global is invalidated across the native call.
+
+**H3/M6.** The build now writes and verifies an input manifest before compiling,
+then verifies the final manifest automatically. Required hashes include the
+application, spec, headers/declarations, sources, wrapper, wrapper `.sym`,
+shim source/object, signature check, sidecar, image, native object,
+host/start/link/tool/compiler and C compiler. Missing files fail. Signature
+checks are labelled `header` (scalar example) or `declarations-only` (libpq
+manual declaration); there is no silent "checked" mode. The shim's
+`obo_native_*` export set is validated against the spec before link. Resolved
+dynamic library paths/hashes are recorded by `ldd`,
+with the documented limitation that run-time resolution can differ.
+
+Negative tests cover changed header, deleted and edited sidecar, modified
+native object, missing wrapper `.sym`, manifest metadata tamper, missing
+native definition, variadic declaration, duplicate C symbol, no
+header/declaration, `i32` argument, platform mismatch and `--check` refusal.
+
+**M1/M2.** The linker script now asserts each fixed region's capacity. The tool
+validates program-header file bounds, `filesz <= memsz`, segment overlap,
+expected obo VAs/flags, no W+X segment and non-executable `GNU_STACK`. The
+review's "1 MiB before 0x401000" address-order note was mistaken: the host
+region starts at `0x03000000` and is bounded below `0x04000000`; the obo text
+is at `0x00401000`. The actual layout is asserted, not copied from that note.
+
+### 14.3 End-to-end results after repair
+
+Scalar command (ordinary obo import + generated wrapper):
 
 ```sh
 python3 obo/experimental/cinterop/cinterop.py build \
   obo/experimental/cinterop/examples/scalar.cbind \
   obo/experimental/cinterop/examples/scalar_app.obx \
-  --out /tmp/opencode/c-interop-prototype-20261031/scalar --obo obo/obo
+  --out /tmp/.../scalar --obo obo/obo
 ```
 
-Observed: build succeeded; the ordinary obo application printed `scalar ok`
-and exited 0. The test covers `zero`, signed 64-bit `identity`, `add`, and
-`sum3`..`sum8` (0..8 arguments), plus `align6`, `align7`, `align8`.
+Observed: `scalar ok`, exit 0. This covers 0..8 `i64` arguments, nested calls,
+non-zero expression depth, live locals/homes, `INT64_MIN/MAX`, and
+`INT32_MIN/MAX` returns. The handwritten freestanding ABI probe still runs with
+no libc and empty `nm -u`; it checks `rbx`, `rbp`, `r12..r15`, while the
+compiled-path test covers the generated call sequence and register homes.
 
-Generated `.sym` for the wrapper is ordinary format 5 with no native extension
-(`fn add(p0: int, p1: int): int writeshandles`), and the application import is
-an ordinary `import "hello.obx"`.
+Final ELF: `Type: EXEC`, entry `0x3000030` (host crt1); `.obo.text` at `0x401000`,
+`.obo.rodata` at `0x08000000`, `.obo.bss` at `0x0C000000`, `.obo.rttext` at
+`0x10000000`, `.obo.rtdata` at `0x20000000`; `GNU_STACK RW`; no W+X segment;
+no unresolved `obo_native_*` symbol.
 
-Final artifact:
+libpq availability probe:
 
-- `readelf -h`: `Type: EXEC (Executable file)`, entry `0x3000000`.
-- `readelf -l`: `.obo.text` at `0x401000`, `.obo.rodata` at `0x08000000`,
-  `.obo.bss` at `0x0C000000`, `.obo.rttext` at `0x10000000`,
-  `.obo.rtdata` at `0x20000000`; host CRT/PLT/dynamic tables above.
-- `nm -u`: only `__libc_start_main@GLIBC_2.34`, a normal dynamic-loader
-  reference; no `obo_native_*` unresolved thunk.
-- `ldd`: `libc.so.6`, the normal interpreter.
-
-The freestanding ABI probe (`gcc -nostdlib -no-pie`, no libc) linked the
-generated shim and scalar objects, ran with exit 0, and had an empty `nm -u`.
-It checks the result plus `rbx`, `rbp`, `r12..r15` preservation and the
-odd/even 7/8-argument alignment paths.
-
-### 14.2 libpq availability and version (P3)
-
-Host facts observed read-only:
-
-- `/usr/lib/x86_64-linux-gnu/libpq.so.5` and `libpq.so.5.16` exist.
-- `/usr/include/postgresql/libpq-fe.h` is absent.
-- `pkg-config --modversion libpq` reports no package (the command is absent or
-  the `.pc` file is not installed).
+- `/usr/lib/x86_64-linux-gnu/libpq.so.5` -> `libpq.so.5.16` exists.
+- `/usr/include/postgresql/libpq-fe.h` is absent and `pkg-config libpq` is not
+  installed, so the probe uses an explicit `declarations-only` declaration.
+- Actual run: `PQlibVersion=160015`.
+- `ldd` includes `libpq.so.5` and the normal installed dependencies
+  (`libssl.so.3`, `libcrypto.so.3`, GSS/Kerberos, LDAP, SASL, GnuTLS, ...).
 - No database connection, query, server, socket or service action was taken.
 
-The probe therefore uses the documented fallback: a manual
-`extern int PQlibVersion(void);` declaration in the generated C input and
-`-l:libpq.so.5`. Build succeeded; the application printed:
+### 14.4 Regression, budget and fixed point
 
-```
-PQlibVersion=160015
-```
+- `tests/module_test.py`: 106 passed, 0 failed.
+- `tests/elf_test.py`: pass.
+- `tests/run_fork.py --smoke`: 1544 passed, 0 failed (the full suite reordered,
+  not a reduced subset).
+- Normal non-native program: seed and repaired compiler output byte-identical.
+- Repaired compiler self-build: byte-identical fixed point.
+- Product peak: seed `1,990,992` bytes; repaired compiler `1,991,792` bytes;
+  delta `+800`, under the approved `2,500,000` cap. No cap increase or check
+  weakening.
+- Targeted cinterop tests: pass, including the libpq probe; libpq is skipped
+  only when `libpq.so.5` is absent, and a build failure with the library present
+  is a failure.
 
-`ldd` shows `libpq.so.5` plus its normal dependencies (`libssl.so.3`,
-`libcrypto.so.3`, GSS/Kerberos, LDAP, SASL, GnuTLS and others), which is the
-expected hosted dynamic-loader path. `nm -u` has `PQlibVersion` (resolved by
-the dynamic loader at run time) and `__libc_start_main`, not an unresolved
-`obo_native_*` thunk.
+No final full 679/529 mutant matrix was run for this private checkpoint.
 
-### 14.3 Negative and regression gates
+### 14.5 Remaining limits and status
 
-The targeted test command is:
+The fixed-image extraction, host `crt1` plus synthetic-stack bridge, non-PIE
+layout and prototype linker script are not a production backend. The probe
+does not link `crtbegin.o`/`crtend.o` and does not test or claim C constructors,
+TLS, IFUNC or normal `atexit` teardown; `rt_finish` still exits by raw syscall.
+No pointer/ownership/foreign-resource API exists: no `PGconn`, `PGresult`,
+`malloc`, borrowed bytes or automatic `PQfinish`/`PQclear`. No callbacks,
+variadics as user syntax, structs by value, floats or decimals. C is trusted and
+unchecked; hashes are provenance, not signatures. The direct `__cinterop`
+builtin is internal and experimental, and same-signature sidecar edits remain a
+trusted-input issue.
 
-```sh
-python3 obo/experimental/cinterop/tests/test_cinterop.py
-```
+During this repair the user approved the toolkit-plus-agent-skill steering
+recorded in section 1.1. That decision is recorded here and in the experimental
+README; the skill itself is **planned/proposed, not implemented or installed**,
+and no generator/API expansion was added.
 
-Observed: `libpq: PQlibVersion=160015`, `cinterop tests ok`, exit 0. It also
-passes these failures:
-
-- wrong arity against a provided C header (`add` declared with one argument):
-  rejected by the generated C signature check before execution;
-- platform mismatch (`aarch64-linux-gnu`): rejected by the spec validator;
-- direct `cinterop` use without `--native-relocs`: rejected by the compiler;
-- modified `native.o`: rejected by manifest hash verification;
-- edited wrapper source with the old manifest: rejected as stale.
-
-Regression results:
-
-- `python3 tests/module_test.py`: 106 passed, 0 failed.
-- `python3 tests/elf_test.py`: pass.
-- `python3 tests/run_fork.py --smoke`: 1544 passed, 0 failed.
-- A normal non-native program compiled by the seed and by the new compiler is
-  byte-identical.
-- The new compiler builds itself byte-identically (fixed point).
-- Product peak: seed `1,988,576` bytes; new compiler `1,989,008` bytes;
-  delta `+432` bytes, below the approved `2,500,000` cap. No cap increase and
-  no check weakening.
-
-### 14.4 What is still missing
-
-This is a real scalar/link prototype, not the full generic backend:
-
-- The compiler still emits a fixed `ET_EXEC`; the tool extracts its load
-  regions into an object. A production backend should emit a real relocatable
-  object with sections/relocations directly.
-- The startup is the prototype synthetic-stack plus host `crt1.o` bridge.
-  Production needs a supported `argc/argv/envp`, constructor, TLS, IFUNC and
-  termination contract.
-- Ownership/effect mapping for `PGconn`, `PGresult`, `malloc`, borrowed bytes
-  and automatic `PQfinish`/`PQclear` is designed but not implemented.
-- No callbacks, variadics, structs by value, TLS, floats, decimals or
-  binary-only module import.
-- Hash checks are provenance/corruption checks, not memory-safety proofs.
-- No per-library compiler edits and no PQ-specific compiler code exist; a
-  second independent scalar library (the libpq probe) used the same seam.
-
-Status: **stop at the prototype checkpoint for separate architecture/security
-review.** Not merged, pushed, promoted or seed-copied.
+Status: **REVISE response complete for scoped repairs; stop for independent
+rereview.** Not merged, pushed, promoted or seed-copied.
 
 ## 15. Open questions and review focus
 
 1. Should production emit a relocatable object directly, or keep a separate
    link tool that consumes an image plus relocation sidecar?
-2. Is the `cinterop("symbol", args...)` builtin acceptable as the minimal
-   generic seam, or should the stable design use a declaration form that does
-   not look variadic?
+2. Is the internal `__cinterop` builtin acceptable as the minimal seam, or
+   should the stable design use a non-variadic declaration form? The prototype
+   accepts 0..8 arguments and checks the sidecar; it does not stabilize that
+   surface. The approved toolkit-plus-skill direction does not require a
+   universal generator, but the stable declaration/contract form is still open.
 3. Where should the native entry path live so it shares the ordinary call-site
    register save/restore exactly, without duplicating `callFnWith`?
 4. What is the production startup contract for `argc/argv/envp`, constructors,
@@ -674,10 +820,11 @@ review.** Not merged, pushed, promoted or seed-copied.
 5. How should a foreign-resource finalizer be represented so record drop can
    call `PQfinish`/`PQclear` exactly once, with double-close safety and no
    undocumented destructor?
-6. How are effect contracts checked against generated wrappers, and should a
-   native wrapper be allowed to claim `pure` at all in the first stable
-   version?
-7. What exact manifest signature/hash chain is required for reproducible
-   supply-chain review, beyond accidental-corruption hashes?
+6. Should a future stable binding accept any `pure` claim? The current answer is
+   no: native calls are `freesall`/`writeshandles` until a checked effect
+   contract exists.
+7. What manifest signature/hash chain is required for supply-chain review,
+   beyond accidental-corruption hashes, and how should resolved dynamic-library
+   substitutions be handled?
 8. When, if ever, should a binary-only module import be supported? This
    proposal deliberately does not pretend it exists.

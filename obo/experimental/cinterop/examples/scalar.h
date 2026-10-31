@@ -1,5 +1,7 @@
 long zero(void);
 int neg32(void);
+int int32_min(void);
+int int32_max(void);
 long identity(long a);
 long add(long a, long b);
 long sum3(long a, long b, long c);

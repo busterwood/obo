@@ -1,0 +1,14 @@
+module app
+
+import "hello.obx"
+
+// Deliberately leaks a tracked descriptor: OBO_CHECK=1 must be visible through
+// the synthetic environment block for this to fail with the leak exit code.
+fn main() {
+    let r = openFile("/dev/null", "r")
+    match r {
+        ok(fd) { println("opened=", fd) }
+        err(m, c) { println("open failed: ", m, " (", c, ")"); exit(1) }
+    }
+    println("zero=", hello::zero())
+}

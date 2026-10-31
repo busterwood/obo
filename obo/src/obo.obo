@@ -1285,6 +1285,7 @@ type FnRec = ref record {
 type NativeReloc = ref record {
     off: int                  // offset of the rel32 field from CODE_BASE
     sym: string               // C symbol before the generated obo_native_ prefix
+    nargs: int                // call-site arguments; the tool checks this against the spec
 }
 
 var nativeRelocs = new []NativeReloc(0)
@@ -1318,6 +1319,10 @@ fn newSym(kind: string, name: string, t: ?^Type): ^Sym {
                    ret: tVoid, line: -1, home: -1, recv: tVoid})
     return handle(symArena[len(symArena) - 1])
 }
+
+// The synthetic callee used to give an experimental native call the conservative summary of a
+// function that may free anything and write through a handle. It is never emitted or exported.
+let nativeEffectSym = newSym("fn", "__cinterop call", nil)
 
 // every method of the whole compilation, in declaration order; each symbol's recv is its canonical
 // receiver type (tVoid for a plain function). The array holds handles into symArena, which owns the
@@ -1894,7 +1899,7 @@ fn initCompiler() {
     append(universe, newSym("type", "bool", tBool))
     append(universe, newSym("type", "string", tString))
     append(universe, newSym("type", "Result", tResultCtor))
-    let names = words("print println len gc gcstats exit append truncate substr eprint eprintln readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr cinterop")
+    let names = words("print println len gc gcstats exit append truncate substr eprint eprintln readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr __cinterop")
     for n in names { append(universe, newSym("builtin", n, nil)) }
     append(universe, newSym("builtin", "ok", nil))
     append(universe, newSym("builtin", "err", nil))
@@ -5941,15 +5946,18 @@ fn conversion(t: ^Type): Item {
     return x
 }
 
-// Experimental cinterop("symbol", int args...): a scalar native call. The arguments use obo's
+// Experimental __cinterop("symbol", int args...): a scalar native call. The arguments use obo's
 // ordinary right-to-left stack layout; the generated thunk converts them to SysV. The call target
 // is a placeholder rel32 recorded in the sidecar, never an address guessed by this compiler.
 // There is no name, arity or library special case: every function goes through the same path.
+// This builtin is internal to generated wrappers; the sidecar records the call-site arity so the
+// build tool can reject a direct or tampered call whose signature does not match the spec.
 fn nativeCall(): Item {
+    if checking { error("__cinterop is not supported in --check: native calls need the typed sidecar and link step") }
     expect(T_LPAREN, "")
-    if sym != T_STRING { error("cinterop needs a C symbol name string first") }
+    if sym != T_STRING { error("__cinterop needs a C symbol name string first") }
     let cname = sval
-    if !isCNativeName(cname) { error("cinterop symbol name must be a C identifier") }
+    if !isCNativeName(cname) { error("__cinterop symbol name must be a C identifier") }
     next()
     // Save the live registers before the argument expressions run, as an ordinary obo call does.
     // The pushed values stay visible to the collector and are restored after the call.
@@ -5959,9 +5967,9 @@ fn nativeCall(): Item {
     let args = new []?Item(0)
     while sym == T_COMMA {
         next()
-        if len(args) >= 8 { error("cinterop takes at most 8 arguments in this prototype") }
+        if len(args) >= 8 { error("__cinterop takes at most 8 arguments in this prototype") }
         let a = nestedExpr()
-        if !isInt(a.typ) { error("cinterop arguments must be int in this prototype") }
+        if !isInt(a.typ) { error("__cinterop arguments must be int in this prototype") }
         append(args, a)
     }
     expect(T_RPAREN, "")
@@ -5991,16 +5999,20 @@ fn nativeCall(): Item {
     emit(0xE8)
     let at = pc()
     emit32(0)
-    append(nativeRelocs, new NativeReloc{off: at, sym: cname})
+    append(nativeRelocs, new NativeReloc{off: at, sym: cname, nargs: n})
     if n > 0 || pad != 0 {
         aluRI(0, RSP, 8 * n + pad)
         depth -= 8 * n + pad
     }
     restoreRegs(saved)
     // C is trusted but opaque: it may free or write through anything it had from an earlier call.
-    // Native code receives no managed pointers in this prototype, but the summary stays conservative.
-    let f = curFn
-    if f != nil { f.writesHandles = true }
+    // Give the call the same conservative summary as a compiled function that frees anything and
+    // writes through a handle. Do not use a spec "pure" claim to weaken this until a real checked
+    // effect contract exists.
+    nativeEffectSym.addr = 0
+    nativeEffectSym.freesAll = true
+    nativeEffectSym.writesHandles = true
+    afterCall(nativeEffectSym)
     userCalls += 1
     let r = alloc()
     movRR(r, RAX)
@@ -6008,7 +6020,7 @@ fn nativeCall(): Item {
 }
 
 fn builtin(name: string): Item {
-    if name == "cinterop" { return nativeCall() }
+    if name == "__cinterop" { return nativeCall() }
     if name == "ok" {
         // ok(v): Result[T] where T is v's type. v is moved into the cell, so a reference or an
         // error value (which has no payload type) cannot be its value.
@@ -9307,7 +9319,7 @@ fn dropFrame(at: int, f: ^Sym) {
 
 // ---- the pre-scan of a function
 
-let callExempt = words("if while for return match defer in else new print println eprint eprintln len gc gcstats exit append truncate substr readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr take handle alive drop replace int byte string ok err try cinterop")
+let callExempt = words("if while for return match defer in else new print println eprint eprintln len gc gcstats exit append truncate substr readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr take handle alive drop replace int byte string ok err try __cinterop")
 
 fn wordAt(a: int, b: int, w: string): bool {
     if len(w) != b - a { return false }
@@ -12933,11 +12945,23 @@ fn compileFile(path: string, out: string, rtDir: string) {
     }
     if len(nativeRelocPath) > 0 {
         let b = new []byte(0)
+        appStr(b, "cinterop-relocs 1\n")
         for i in 0..len(nativeRelocs) {
             appInt(b, nativeRelocs[i].off)
             append(b, ' ')
             appStr(b, nativeRelocs[i].sym)
-            append(b, '\n')
+            append(b, ' ')
+            appInt(b, nativeRelocs[i].nargs)
+            append(b, ' ')
+            if nativeRelocs[i].nargs == 0 {
+                append(b, '-')
+            } else {
+                for j in 0..nativeRelocs[i].nargs {
+                    if j > 0 { append(b, ',') }
+                    appStr(b, "i64")
+                }
+            }
+            appStr(b, " i64 freesall,writeshandles\n")
         }
         if !writeFile(nativeRelocPath, b, false) {
             eprintln("obxc: cannot write native relocations to ", nativeRelocPath)
