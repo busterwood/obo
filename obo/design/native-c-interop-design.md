@@ -1,7 +1,6 @@
 # Native C interop (`cinterop`) — design note
 
-Status: **REVISE response plus explicit-close resource-adapter checkpoint
-pending independent rereview.** Date: 2026-10-31.
+Status: **hardening checkpoint pending independent rereview.** Date: 2026-10-31.
 Baseline: released `main` at `a3e5b1f` (numeric floats, compiler `0.10`,
 `.sym` format 6, ABI 1), merged into this feature. The independent architecture
 review of prototype `a29f35d` returned REVISE; the scoped B1/B2, high and
@@ -371,16 +370,25 @@ link around it:
 3. Link with the system `cc`/`ld`, a linker script that places the obo sections
    at their existing fixed virtual addresses, a small hosted startup object,
    the generated shim object and the requested system library.
-4. The startup uses the host `crt1.o`/`crti.o`/`crtn.o` and the normal
-   `__libc_start_main`/dynamic-loader path. A small C `main` builds the
-   initial-stack-shaped block that `rt_init` expects and jumps to the obo entry.
-   The block is 16-byte aligned with padding above it, checks its pointer-array
-   size and a 128 KiB stack headroom before writing, and fails cleanly if the
-   1 MiB buffer is insufficient. This probe does **not** link
-   `crtbegin.o`/`crtend.o` and does **not** test or claim C constructors, TLS,
-   IFUNC or normal `atexit` teardown; `rt_finish` still exits by raw syscall.
-   Those remain prototype boundaries for a production entry design.
-5. The final artifact must be `ET_EXEC` (non-PIE), not a PIE/shared object,
+4. The startup uses the host `crt1.o`/`crti.o`/`crtbegin.o`/`crtend.o`/`crtn.o`
+   and the normal `__libc_start_main`/dynamic-loader path, with
+   `.init_array`/`.fini_array` placed by the linker script. A small C `main`
+   builds the initial-stack-shaped pointer block that `rt_init` expects on a
+   separate guarded `mmap` stack: a validated size, `PROT_NONE` guard pages
+   below and above, 16-byte alignment with padding above the block, checked
+   pointer-array arithmetic and a 128 KiB growth headroom. Invalid sizes and
+   near-ARG_MAX blocks fail cleanly before any write outside the usable region.
+   The block carries no auxv because `rt_init` does not read one; the host CRT
+   stack remains intact because the hosted exit path does not return into it.
+5. The cinterop build compiles a **separate** `-DOBO_HOSTED_EXIT` runtime
+   variant with one appended jump-table slot. Only that variant calls a host C
+   exit callback; normal return, `exit`, `OBO_CHECK` leak failure and runtime
+   panics call libc `exit`, so constructors run, C stdio flushes and atexit
+   handlers run while the obo status is preserved. The baseline freestanding
+   runtime bytes and the compiler's RT constants are unchanged. TLS and IFUNC
+   are not claimed merely because the host CRT is linked; they need their own
+   fixtures/review.
+6. The final artifact must be `ET_EXEC` (non-PIE), not a PIE/shared object,
    and the obo segments must be at the expected addresses. This avoids an
    ASLR relocation rewrite of obo's absolute cells.
 
@@ -388,10 +396,12 @@ The normal host startup is not optional. A freestanding static libpq archive
 would still need glibc, OpenSSL, GSS and loader services; the design does not
 pretend a no-libc link is a general C interop solution.
 
-Prototype limitation: `rt_finish` exits with a raw syscall, so libc `atexit`
-handlers and stdio flushing are bypassed at program end. The prototype's output
-is syscall-based and flushes its own buffer, and the libpq probe allocates
-nothing that needs a destructor. Production must bridge normal termination.
+Termination contract: the baseline freestanding runtime still exits by raw
+syscall. The cinterop build uses the separate `-DOBO_HOSTED_EXIT` variant and a
+host callback to libc `exit`, so the hosted subset runs constructors and
+atexit and flushes C stdio; tests cover normal return, `exit(code)` and
+`OBO_CHECK` statuses. TLS and IFUNC are not claimed. Production normalization of
+the baseline runtime and arbitrary-library TLS/IFUNC remain future work.
 
 ## 8. Ownership, effects and cleanup
 
@@ -486,16 +496,24 @@ IDL or per-library compiler branch.
   are not private: `new Connection{tok: ...}` is writable by an importer, so the
   C registry, not the obo type, is what rejects an invalid token. The notes do
   not claim otherwise.
-- Dropping a `Connection` or `Rows` frees the record only. It does **not** call
-  `PQfinish` or `PQclear`. `close` is explicit and consumes the wrapper; double
-  close is a safe false. `live_resources`/`live_connections`/`live_results`/
-  `live_buffers` expose the registry counters, and the tests fail when a close is
-  omitted. This is an explicit-close kit, not automatic foreign ownership.
+- Dropping a `Connection`, `Rows` or `Buffer` frees the record only. It does
+  **not** call `PQfinish`, `PQclear` or `free`. `close` is explicit, borrows the
+  wrapper (so `defer c.close()` is legal), poisons the token, and returns false
+  on a second close. `live_resources`/`live_connections`/`live_results`/
+  `live_buffers` expose registry counters, and tests fail when a close is
+  omitted. This is an explicit-defer kit, not automatic foreign ownership. Obo
+  `exit(...)` runs no defers; return from the block when cleanup matters. The
+  hosted C exit still runs libc atexit handlers.
 - Byte buffers are C-owned, length-bounded (`CRES_MAX_BUFFER`), and accessed
   through the integer API. Obo builds the small fixed query packet, copies it
   into one C buffer, and reads result bytes through `cres_buf_get` with the C
   length. This byte loop is intentionally slow but honest for the first bounded
   proof; it does not pretend to be a general string bridge.
+- Canonical usage registers `defer close()` promptly after creation:
+  `defer conn.close()`, `defer rows.close()`, `defer buf.close()`. Tests cover
+  normal success, error arms, early returns, nested connection/result lifetimes,
+  loop paths and a buffer. The C registry counters stay diagnostic and
+  independent of record drop.
 - `PQexecParams` receives the fixed SQL text and a descriptor array of parameter
   values, lengths and formats. SQL and text values reject embedded NUL; binary
   values preserve their exact length, including NUL. SQL is never interpolated.
@@ -625,7 +643,12 @@ P2 (end-to-end):
   expected addresses and permissions, `ldd` shows the intended shared
   libraries;
 - argv/`argc` and environment work for both parities; `OBO_CHECK`/`OBO_STATS`
-  are visible; the synthetic stack fails cleanly near its pointer-array limit;
+  are visible; the guarded stack fails cleanly near its pointer-array limit and
+  on invalid size;
+- low/high guard-page touches and real deep recursion die by controlled
+  SIGSEGV, not silent adjacent corruption;
+- hosted shutdown runs constructors and atexit, flushes C stdio, and preserves
+  normal/`exit(7)`/`OBO_CHECK` statuses;
 - a second independent scalar module/library proves the seam is not
   PQ-specific;
 - no unresolved thunk symbols in the final link.
@@ -639,11 +662,23 @@ P3 (libpq, conditional):
   without a connection;
 - the explicit-close adapter is exercised against a fake libpq for NULL/empty,
   binary/NUL, errors, allocation failure and close counts;
+- explicit `defer` cleanup covers success, error/early return, nested lifetimes,
+  loops and a C buffer, with live counters at zero;
+- `.cbind` conninfo timeout detection uses libpq's own parser, not a quoted-value
+  substring check;
 - the live `PQconnectdb`/`PQexecParams` smoke test runs only when the user
   explicitly supplies a local DSN; it uses SELECTs and does not modify server
   configuration, roles, schema or persistent data;
 - if the library is unavailable, record `blocked: libpq` and do not install
   anything.
+
+P4 (second library):
+
+- zlib is built through the same generic toolkit with the real installed
+  `<zlib.h>` header and system `libz.so.1`;
+- an in-memory binary roundtrip preserves embedded NUL bytes, reports API
+  errors, and closes C buffers through `defer`;
+- no per-library compiler branch or generator switch is added.
 
 Regression gates for the prototype commit:
 
@@ -866,9 +901,11 @@ No final full 679/529 mutant matrix was run for this private checkpoint.
 ### 14.5 Remaining limits and status
 
 The fixed-image extraction, host `crt1` plus synthetic-stack bridge, non-PIE
-layout and prototype linker script are not a production backend. The probe
-does not link `crtbegin.o`/`crtend.o` and does not test or claim C constructors,
-TLS, IFUNC or normal `atexit` teardown; `rt_finish` still exits by raw syscall.
+layout and prototype linker script are not a production backend. At the
+`a29f35d` repair stage the probe did not link `crtbegin.o`/`crtend.o`; the later
+hosted checkpoint does, tests constructors/atexit/stdio, and still does not
+claim TLS or IFUNC. The baseline freestanding runtime still exits by raw
+syscall.
 At the `a29f35d` repair stage no pointer/ownership/foreign-resource API
 existed. The later explicit-close checkpoint (14.6-14.9) adds `PGconn`/`PGresult`
 tokens, bounded borrowed bytes and explicit `PQfinish`/`PQclear`, but still no
@@ -995,18 +1032,108 @@ was needed.
 
 ### 14.9 Status and remaining limits
 
-Status: **explicit-close adapter checkpoint, pending independent rereview.** Not
-merged to `main`, not pushed, not promoted, no seed copy.
+Status: **hardening checkpoint, pending independent rereview.** Not merged to
+`main`, not pushed, not promoted, no seed copy.
+
+Implemented in this checkpoint: guarded hosted stack; proper hosted C exit with
+constructor/atexit/stdio tests; explicit-close borrow methods and `defer`
+examples for Connection/Rows/Buffer; libpq conninfo parse for timeout detection;
+required host/start manifest roles; unified real-libpq skip policy; second
+library (zlib) with a real system header and in-memory binary roundtrip.
 
 Still not implemented or claimed: automatic foreign finalization on ordinary
 record drop; a production driver or full libpq API; callbacks, C variadics,
-struct-by-value, TLS/IFUNC, source floats/decimals in the native contract;
-binary-only module imports; stable `cinterop/1`/`cabi1`; PIE/ASLR; normal libc
-termination (`rt_finish` is still a raw syscall); `crtbegin`/`crtend`
-constructors. The fixed-image linker bridge and synthetic startup stack remain
-prototype infrastructure. Global skill packaging/installation remains separate;
-the repository project skill is implemented. Hashes are provenance, not
-signatures.
+struct-by-value, source floats/decimals in the native contract; TLS/IFUNC;
+binary-only module imports; stable `cinterop/1`/`cabi1`; PIE/ASLR; full
+arbitrary-library constructor/TLS support; `rt_finish` is still a raw syscall in
+the baseline freestanding runtime (the separate hosted cinterop variant uses the
+callback). The fixed-image linker bridge remains prototype infrastructure.
+Global skill packaging/installation remains separate; the repository project
+skill is implemented. Hashes are provenance, not signatures.
+
+### 14.10 Hardening checkpoint results
+
+Evidence directory: `/tmp/opencode/cinterop-hardening-20261031T104121Z/`
+(fresh build, command logs, test logs, live output; path may vary by run).
+
+The hardening checkpoint starts from main `c6c4d3f` and keeps compiler
+`0.10`/format 6/ABI 1 and seed `30124be9...`. The baseline freestanding
+`runtime_text.bin`/`runtime_data.bin` are byte-identical to main; only the
+separate `-DOBO_HOSTED_EXIT` cinterop runtime differs. The compiler self-build
+is still `9cd9b55f83127cce0da3de6eb8d164654d999c13e7fb74f7ac480d9a52b2d40e`.
+
+Reviewed low findings resolved:
+
+- timeout detection now uses `PQconninfoParse`/`PQconninfoFree` and checks that
+  `connect_timeout` has a value; real-parser tests cover quoted
+  `application_name='connect_timeout='` and `password=...` values;
+- `host_object` and `start_object` are required build roles, with a
+  delete-role negative test;
+- all real-libpq probes use one skip policy: skip only when `libpq.so.5` is
+  absent; a present-library build failure is a test failure.
+
+Guarded startup/shutdown tests:
+
+- invalid `OBO_CINTEROP_STACK_BYTES` (4096) exits 127 with
+  `obo: cinterop invalid stack size`;
+- low and high guard touches die by SIGSEGV (`returncode -11` in Python);
+- real obo deep recursion on a 512 KiB guarded stack dies by SIGSEGV, not
+  silent adjacent corruption;
+- even/odd argv/env, `OBO_CHECK`, `OBO_STATS` and near-ARG_MAX cases pass;
+- a linked C constructor, atexit handler and unflushed stdio in the hosted app
+  all run/flush at exit; normal return, `exit(7)` and `OBO_CHECK` leak exit 8
+  preserve statuses.
+
+Explicit defer tests: `libpq_defer_app.obx` covers success, error/early return,
+nested connection/result lifetimes, loop cleanup and a C `buffer::Buffer`; the
+result-outlives-connection app closes `PGconn` first and still reads `PGresult`;
+all end with `live=0`/`conns=0`/`results=0`/`buffers=0`.
+
+Second library: zlib through the same toolkit with the installed real
+`/usr/include/zlib.h` and `libz.so.1`. In-memory roundtrip preserves embedded
+NUL bytes, too-small output and invalid data return errors, `defer` closes the
+C buffers, and the C adapter test also runs under ASAN/UBSAN.
+
+Observed test totals:
+
+```text
+cinterop suite                 pass (fake, defer, guard, shutdown, zlib, ASAN)
+module_test                    107 passed, 0 failed
+elf_test                       pass
+float_f1                       19 groups
+sym_test                       42 passed, 0 failed
+doc_check                      62 examples, 0 problems
+homes_check                    pass
+run_fork                       1555 passed, 0 failed
+port_compare                   stage B 1552/1552; peak 2,042,800
+mutate_harness                 27 passed, 0 failed
+float no-regs                  19 groups
+decimal D1 runner              22,821 C checks, 0 failures; ASAN/UBSAN ok
+compiler peak                  2,042,384 bytes (seed 2,041,600; delta +784)
+fixed point                    obo == stage2 == stage3 (9cd9b55...)
+normal hello.obx               byte-identical vs seed
+baseline runtime blobs         identical to main (2c1115..., 0bd93a...)
+```
+
+Live local PostgreSQL (explicit opt-in; SELECTs only; role `chris`, database
+`postgres`, no `infocube`):
+
+```text
+server_version=160015
+numeric_text=1.234567890123456789 oid=1700 typmod=-1
+null_and_empty=ok
+sql_error_length=134
+binary_bytes=00ff41 len=3
+live=0
+live_db_smoke=ok
+```
+
+Status: **hardening checkpoint pending independent rereview.** Not merged to
+main, not pushed, not promoted, no seed copy. Constructors/atexit/stdio are
+tested for the hosted subset; TLS/IFUNC and arbitrary-library hosted-runtime
+features remain unclaimed. The fixed-image/non-PIE bridge, baseline raw-syscall
+freestanding exit, and explicit-only foreign ownership remain known production
+limits.
 
 ## 15. Open questions and review focus
 

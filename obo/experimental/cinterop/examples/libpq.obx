@@ -157,9 +157,10 @@ pub fn (c: &Connection) error_message(): []byte {
     return take_buf(__cinterop("pq_error_buf", c.tok))
 }
 
-// Consumes the Connection. Double close is a safe false, never a second
-// PQfinish.
-pub fn (c: Connection) close(): bool {
+// Borrows the Connection so `defer conn.close()` is allowed. Closing poisons the
+// registry token; a second close is a safe false, never a second PQfinish. The
+// record drop still does not free the foreign resource.
+pub fn (c: &Connection) close(): bool {
     return __cinterop("pq_conn_close", c.tok) == 1
 }
 
@@ -259,9 +260,10 @@ pub fn (r: &Rows) error_message(): []byte {
     return take_buf(__cinterop("pq_result_error_buf", r.tok))
 }
 
-// Consumes the Rows. A PGresult outlives its PGconn in this adapter; close the
-// connection first if you need to exercise that lifetime.
-pub fn (r: Rows) close(): bool {
+// Borrows the Rows so `defer rows.close()` is allowed. Closing poisons the token;
+// a PGresult outlives its PGconn in this adapter, so close the connection first
+// if you need to exercise that lifetime. The record drop never calls PQclear.
+pub fn (r: &Rows) close(): bool {
     return __cinterop("pq_result_clear", r.tok) == 1
 }
 

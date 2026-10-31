@@ -1,0 +1,59 @@
+// Small explicit-close obo view over the toolkit C byte buffers.
+//
+// The token is an integer registry token, not a pointer. Buffer fields are
+// ordinary public record fields; the C registry rejects stale/wrong-kind
+// integers. Dropping Buffer does NOT free the C buffer: call close(), normally
+// through defer. This is a scoped helper for the experimental toolkit, not a
+// managed ownership annotation.
+module buffer
+
+pub type Buffer = ref record { tok: int }
+
+pub fn from_bytes(data: []byte): Result[Buffer] {
+    let n = len(data)
+    if n < 0 || n > 16777216 { return err("buffer too large", 2) }
+    let t = __cinterop("cres_buf_new", n)
+    if t <= 0 { return err("buffer allocation failed", 2) }
+    for i in 0..n {
+        let ok = __cinterop("cres_buf_set", t, i, int(data[i]))
+        if ok != 1 {
+            __cinterop("cres_buf_free", t)
+            return err("buffer copy failed", 2)
+        }
+    }
+    return ok(new Buffer{tok: t})
+}
+
+// Wrap an existing positive registry token. The token is not a capability; the
+// registry still validates kind/generation on every operation.
+pub fn wrap(tok: int): Buffer { return new Buffer{tok: tok} }
+
+pub fn (b: &Buffer) len(): int {
+    return __cinterop("cres_buf_len", b.tok)
+}
+
+pub fn (b: &Buffer) byte_at(index: int): int {
+    return __cinterop("cres_buf_get", b.tok, index)
+}
+
+pub fn (b: &Buffer) to_bytes(): []byte {
+    var out = new []byte(0)
+    let n = __cinterop("cres_buf_len", b.tok)
+    if n < 0 { return out }
+    for i in 0..n {
+        let v = __cinterop("cres_buf_get", b.tok, i)
+        if v < 0 { break }
+        append(out, byte(v))
+    }
+    return out
+}
+
+// Borrows the Buffer so `defer b.close()` is legal. Double close is a safe
+// false; the underlying malloc block is freed exactly once by the C registry.
+pub fn (b: &Buffer) close(): bool {
+    return __cinterop("cres_buf_free", b.tok) == 1
+}
+
+pub fn live(): int {
+    return __cinterop("cres_live_count")
+}

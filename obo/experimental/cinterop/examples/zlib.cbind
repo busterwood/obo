@@ -1,0 +1,24 @@
+{
+  "format": "cinterop-proto/1",
+  "module": "zlib",
+  "platform": "x86_64-linux-gnu",
+  "abi": "sysv-amd64",
+  "wrapper": "zlib.obx",
+  "wrapper_sources": ["buffer.obx"],
+  "sources": ["../toolkit/cres.c", "zlib_adapter.c"],
+  "headers": ["/usr/include/zlib.h", "zlib_adapter.h", "../toolkit/cres.h"],
+  "declarations": [],
+  "libs": ["-l:libz.so.1"],
+  "cflags": [],
+  "functions": [
+    {"name": "cres_buf_new", "symbol": "cres_buf_new", "args": ["i64"], "ret": "i64", "effects": ["impure"]},
+    {"name": "cres_buf_set", "symbol": "cres_buf_set", "args": ["i64", "i64", "i64"], "ret": "i64", "effects": ["impure"]},
+    {"name": "cres_buf_get", "symbol": "cres_buf_get", "args": ["i64", "i64"], "ret": "i64", "effects": ["impure"]},
+    {"name": "cres_buf_len", "symbol": "cres_buf_len", "args": ["i64"], "ret": "i64", "effects": ["impure"]},
+    {"name": "cres_buf_free", "symbol": "cres_buf_free", "args": ["i64"], "ret": "i64", "effects": ["impure"]},
+    {"name": "cres_live_count", "symbol": "cres_live_count", "args": [], "ret": "i64", "effects": ["impure"]},
+    {"name": "zlib_version_buf", "symbol": "zlib_version_buf", "args": [], "ret": "i64", "effects": ["impure"]},
+    {"name": "zlib_compress", "symbol": "zlib_compress", "args": ["i64", "i64"], "ret": "i64", "effects": ["impure"]},
+    {"name": "zlib_uncompress", "symbol": "zlib_uncompress", "args": ["i64", "i64"], "ret": "i64", "effects": ["impure"]}
+  ]
+}

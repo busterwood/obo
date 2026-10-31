@@ -2,7 +2,8 @@ module demo
 
 // Ordinary obo surface for the template adapter. The token is an integer; obo
 // record fields are not private, so the C registry is what rejects a forged or
-// stale token. Dropping Demo does NOT release the C resource: call close().
+// stale token. Dropping Demo does NOT release the C resource: call close(),
+// normally through defer (close borrows the wrapper).
 pub type Demo = ref record { tok: int }
 
 pub fn open(size: int): Result[Demo] {
@@ -15,7 +16,7 @@ pub fn (d: &Demo) byte_at(index: int): int {
     return __cinterop("demo_read_byte", d.tok, index)
 }
 
-pub fn (d: Demo) close(): bool {
+pub fn (d: &Demo) close(): bool {
     return __cinterop("demo_close", d.tok) == 1
 }
 

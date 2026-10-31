@@ -1,21 +1,23 @@
 # Experimental C interop (`cinterop`)
 
-Status: **REVISE response plus explicit-close resource-adapter checkpoint,
-pending independent rereview.** The prototype was repaired after the
-architecture/security review of `a29f35d`, then merged with released `0.10`
-main. This is still an experimental, trusted-build probe, not a production API,
-not a stable format, and not approved for merge, push, promotion or seed copy.
+Status: **hardening checkpoint pending independent rereview.** The prototype
+was repaired after the architecture/security review of `a29f35d`, merged with
+released `0.10` main, and now has an explicit-defer cleanup story, a guarded
+hosted entry stack with proper C exit/atexit/stdio shutdown, and a second real
+library (zlib). This is still an experimental, trusted-build probe, not a
+production API, not a stable format, and not approved for merge, push, promotion
+or seed copy.
 Design:
 [`../../design/native-c-interop-design.md`](../../design/native-c-interop-design.md).
 
 The compiler boundary still supports **scalar `i64` arguments and `i32`/`i64`
 results only**. The toolkit now also has a small trusted **C resource registry**
 and an explicit-close libpq adapter: obo receives generation/kind-checked
-integer tokens, never a raw `PGconn*`/`PGresult*`. Connection/Rows close is
-explicit; dropping an ordinary record does **not** call `PQfinish`/`PQclear`.
-There are still no callbacks, C variadics, structs by value, source floats/
-decimals in the native contract, TLS, automatic foreign finalizers or a full
-database driver. C is trusted and unchecked; hashes are provenance/corruption
+integer tokens, never a raw `PGconn*`/`PGresult*`. Connection/Rows/Buffer close
+is explicit and normally written with obo `defer`; dropping an ordinary record
+does **not** call `PQfinish`/`PQclear`/`free`. There are still no callbacks, C
+variadics, structs by value, source floats/decimals in the native contract, TLS
+or IFUNC guarantees, automatic foreign finalizers or a full database driver. C is trusted and unchecked; hashes are provenance/corruption
 checks, not a signature authority or a memory-safety proof.
 
 ## Approved steering decision (2026-10-31)
@@ -42,11 +44,16 @@ the one-time generic seam and does not require compiler changes per library.
 
 ## What changed in the repair
 
-- Synthetic startup stack: the base is aligned **before** writing `argc`; the
-  alignment pad is above the block, never between the base and `argc`. The
-  pointer block has checked arithmetic, a 128 KiB stack-growth headroom and a
-  clean `obo: cinterop startup stack overflow` failure before any write outside
-  the 1 MiB buffer.
+- Guarded hosted startup: the synthetic pointer block sits on a separate
+  `mmap` stack with `PROT_NONE` guard pages below and above, a validated size,
+  checked arithmetic and a 128 KiB growth headroom. The base is aligned before
+  writing `argc`; the pad is above the block. Invalid sizes and near-ARG_MAX
+  blocks fail with a clean message before any write outside the usable stack.
+- Proper hosted shutdown: only the cinterop build compiles a separate
+  `-DOBO_HOSTED_EXIT` runtime variant (the baseline freestanding runtime bytes
+  are unchanged). Normal return, `exit`, `OBO_CHECK` leak failure and runtime
+  panics enter a host C callback and call libc `exit`, so constructors run,
+  C stdio flushes and atexit handlers run while the obo exit status is kept.
 - Native calls are typed at the call site: the compiler's `__cinterop` sidecar
   records arity, `i64` argument types, result width and the conservative
   `freesall,writeshandles` effects. The tool checks **every** record against the
@@ -61,8 +68,10 @@ the one-time generic seam and does not require compiler changes per library.
   that contract. No spec `pure` claim is accepted.
 - Provenance is checked before compiling and before link, and the build runs
   `verify` automatically. Required inputs include the header (where supplied),
-  wrapper, shim source/object, `native.relocs`, host/start/link/tool/compiler
-  and C compiler; missing files fail rather than being silently omitted. The
+  wrapper, shim source/object, `native.relocs`, host/start/host-stack/link
+  sources, runtime source/entry/linker script, hosted runtime blobs, tool,
+  compiler and C compiler; `host_object`/`start_object` are required build
+  roles. Missing files fail rather than being silently omitted. The
   final manifest records resolved shared-library paths and hashes, with the
   limitation that dynamic dependencies can still resolve differently at run
   time.
@@ -84,8 +93,15 @@ ordinary obo:
 let made = libpq::connect(dsn_bytes)
 match made {
     ok(conn) {
+        defer conn.close()
         let rows = libpq::exec_params(&conn, sql_bytes, values, binary_flags)
-        // read values/errors, then rows.close() and conn.close()
+        match rows {
+            ok(r) {
+                defer r.close()
+                // read values/errors
+            }
+            err(m, c) { ... }
+        }
     }
     err(m, c) { ... }
 }
@@ -94,8 +110,10 @@ match made {
 - `Connection` and `Rows` contain only an integer token. Obo record fields are
   not private; the C registry rejects stale/wrong-kind/unknown tokens before
   dereference. The token is not an unforgeable capability.
-- `close` is explicit: `conn.close()`, `rows.close()`. A `PGresult` remains
-  usable after its connection closes. `PQfinish`/`PQclear` happen exactly once.
+- `close` is explicit and borrows the wrapper, so `defer conn.close()` and
+  `defer rows.close()` are the canonical cleanup. A `PGresult` remains usable
+  after its connection closes. `PQfinish`/`PQclear` happen exactly once; the
+  record drop never frees the foreign object.
 - `live_resources()`/`live_connections()`/`live_results()`/`live_buffers()`
   expose the registry counters; the tests fail if a close is omitted.
 - `exec_params` sends a fixed SQL statement plus `$n` parameters through
@@ -108,7 +126,48 @@ match made {
 - The byte-copy bridge is a bounded one-byte-at-a-time loop for this first
   proof. It is deliberately slow and honest, not a general string ABI.
 
+## Explicit defer cleanup
+
+`defer` is the idiomatic explicit cleanup. Register it promptly after creating
+the wrapper, and do not use `exit(...)` when cleanup must run: obo `exit` runs no
+defers (libc atexit handlers still run through the hosted exit callback).
+
+```obo
+fn use(): Result[bool] {
+    let made = libpq::connect(dsn)
+    match made {
+        ok(conn) {
+            defer conn.close()
+            let q = libpq::query(&conn, sql)
+            match q {
+                ok(rows) {
+                    defer rows.close()
+                    return ok(rows.status() == libpq::PGRES_TUPLES_OK)
+                }
+                err(m, c) { return err(m, c) }
+            }
+        }
+        err(m, c) { return err(m, c) }
+    }
+}
+```
+
+The same pattern works for `buffer::Buffer`, including a `defer` inside a loop
+or nested block. Each block exit (normal, early return, error arm, `break`/
+`continue`) runs its defers once; double close is a safe false. The C registry
+live counters remain diagnostics independent of record drop.
+
+`examples/libpq_defer_app.obx` exercises success, early-return, nested
+connection/result lifetimes, a loop and a C buffer. `examples/libpq_outlives_app.obx`
+closes a connection before its result and reads the result afterwards.
+
 ## Build
+
+The cinterop build compiles its own `-DOBO_HOSTED_EXIT` runtime under the private
+output directory; the normal compiler/freestanding runtime and its default
+output are unchanged. The hosted stack defaults to 1 MiB; override it with
+`OBO_CINTEROP_STACK_BYTES` between 256 KiB and 16 MiB. Invalid sizes fail before
+launch.
 
 ```sh
 cd obo
@@ -200,6 +259,17 @@ It also builds and runs:
   injection-as-data;
 - the fake-libpq obo wrapper app and a deliberate missing-close app whose
   `live=1` proves the leak counter detects the omission;
+- explicit-defer success/early-return/nested/loop/buffer paths and a
+  result-outlives-connection app;
+- real libpq's conninfo parser for timeout detection (quoted values are not
+  mistaken for keywords), with `PQconnectdb` wrapped and never called;
+- guarded-stack fixtures: invalid size, low/high guard SIGSEGV, and a real obo
+  deep-recursion guard fault;
+- hosted shutdown fixtures: constructor, atexit, C stdio flush, normal exit,
+  `exit(7)` and `OBO_CHECK` exit 8;
+- a second real library, zlib: real system header, in-memory binary
+  compress/uncompress roundtrip, API errors and explicit close;
+- ASAN/UBSAN runs of the fake adapter, zlib adapter and guarded-stack fixture;
 - the opt-in live local PostgreSQL smoke test when `CINTEROP_TEST_DSN` is set.
 
 The project skill and buildable templates are in [`skill/`](skill/SKILL.md).
@@ -209,11 +279,13 @@ The project skill and buildable templates are in [`skill/`](skill/SKILL.md).
 - The compiler still emits a fixed `ET_EXEC`; the tool extracts its load regions
   into a relocatable object. Production should emit a real object with
   sections/relocations directly.
-- Startup uses host `crt1.o`/`crti.o`/`crtn.o` and a synthetic initial-stack
-  block. It does **not** link `crtbegin.o`/`crtend.o` and does **not** claim
-  support for C constructors, TLS, IFUNC or other hosted-runtime behaviour
-  beyond what the minimal probe exercised. `rt_finish` still exits by raw
-  syscall, so libc `atexit`/stdio teardown is bypassed.
+- Hosted startup uses host `crt1.o`/`crti.o`/`crtbegin.o`/`crtend.o`/`crtn.o`,
+  `.init_array`/`.fini_array` placement, and a guarded `mmap` stack. Constructors,
+  atexit and C stdio flush are tested in this hosted subset. TLS and IFUNC are
+  **not** claimed; the normal CRT/loader support for arbitrary library TLS/IFUNC
+  needs its own fixtures and review. The baseline freestanding runtime still
+  exits by raw syscall; only the separate cinterop hosted runtime uses the exit
+  callback.
 - The final layout is non-PIE and fixed-address; ASLR/PIE is unsupported.
 - C is trusted and unchecked. A malicious `.cbind`, header/declaration or
   same-signature sidecar is within the trusted build input, not sandboxed.
@@ -229,22 +301,18 @@ The project skill and buildable templates are in [`skill/`](skill/SKILL.md).
   numeric through a float.
 - The project skill is a repository/portable artifact, not a global install.
 
-## Known follow-ups (non-blocking, not fixed here)
+## Review findings resolved in this hardening checkpoint
 
-These were noted by the independent execution review and are recorded rather
-than silently claimed as resolved:
+- `connect_timeout` detection now asks libpq's own `PQconninfoParse` whether the
+  `connect_timeout` keyword has a value. Quoted values such as
+  `application_name='connect_timeout='` are covered by a real-parser test.
+- `host_object` and `start_object` are required manifest build roles, and a
+  negative test deletes `host_object` and expects verification to fail.
+- The real-libpq version/result probes and the timeout-parser test share one
+  skip policy: skip only when `libpq.so.5` is actually absent; a build failure
+  with the library present is a test failure.
+- The static 1 MiB startup buffer is replaced by a guarded `mmap` stack with
+  invalid-size, guard-fault and deep-recursion tests.
 
-- `with_connect_timeout` detects an existing timeout with a `strstr` substring
-  check. A quoted conninfo value that happens to contain `connect_timeout=`
-  could be misdetected. A stricter conninfo/keyword parse is future work; the
-  approved live test passes an explicit bounded timeout.
-- The manifest verifier hashes `host_object` and `start_object` when present but
-  does not list them in the required role sets, so a manifest that omits those
-  roles is not rejected on that ground alone. Add them to the required sets and
-  negative tests in a follow-up.
-- The `libpq_result` probe builds unconditionally, while the older `pq` probe
-  skips only when `libpq.so.5` is absent. On a host without libpq the former
-  fails rather than skipping; the skip policy should be made consistent.
-- The synthetic startup stack is a static 1 MiB buffer with runtime length and
-  headroom checks, but no guard page or compile-time capacity assertion. It is
-  prototype infrastructure, not a memory-safety guarantee.
+Remaining production limits are listed above; these findings are not silently
+carried as unresolved.

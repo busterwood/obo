@@ -1,0 +1,121 @@
+module app
+
+import "libpq.obx"
+import "buffer.obx"
+
+// Canonical explicit cleanup with obo defer. close() borrows the wrapper, so it
+// is legal in a defer and the record drop still never frees the foreign object.
+// `exit(...)` deliberately does not run defers; return from the block instead.
+fn bytes_of(s: string): []byte {
+    var b = new []byte(0)
+    for i in 0..len(s) { append(b, s[i]) }
+    return b
+}
+
+fn use_query(): Result[bool] {
+    let made = libpq::connect(bytes_of("fake-ok"))
+    match made {
+        ok(conn) {
+            defer conn.close()
+            let q = libpq::query(&conn, bytes_of("FAKE_OK"))
+            match q {
+                ok(rows) {
+                    defer rows.close()
+                    if rows.status() != libpq::PGRES_TUPLES_OK {
+                        return err("bad status", 1)
+                    }
+                    return ok(true)
+                }
+                err(m, c) { return err(m, c) }
+            }
+        }
+        err(m, c) { return err(m, c) }
+    }
+}
+
+fn use_early(): Result[bool] {
+    let made = libpq::connect(bytes_of("fake-ok"))
+    match made {
+        ok(conn) {
+            defer conn.close()
+            return err("early return", 7)
+        }
+        err(m, c) { return err(m, c) }
+    }
+}
+
+fn use_nested(): Result[bool] {
+    let a = libpq::connect(bytes_of("fake-ok"))
+    match a {
+        ok(outer) {
+            defer outer.close()
+            let b = libpq::connect(bytes_of("fake-ok"))
+            match b {
+                ok(inner) {
+                    defer inner.close()
+                    return ok(outer.is_open() && inner.is_open())
+                }
+                err(m, c) { return err(m, c) }
+            }
+        }
+        err(m, c) { return err(m, c) }
+    }
+}
+
+fn use_loops(n: int): int {
+    var count = 0
+    for i in 0..n {
+        let made = libpq::connect(bytes_of("fake-ok"))
+        match made {
+            ok(conn) {
+                defer conn.close()
+                count += 1
+            }
+            err(m, c) { return -1 }
+        }
+    }
+    return count
+}
+
+fn use_buffer(): Result[bool] {
+    let made = buffer::from_bytes(bytes_of("binary"))
+    match made {
+        ok(b) {
+            defer b.close()
+            let blen = b.len()
+            let data = b.to_bytes()
+            let all = blen == 6 && len(data) == 6 && int(data[0]) == 98
+            return ok(all)
+        }
+        err(m, c) { return err(m, c) }
+    }
+}
+
+fn main() {
+    let q = use_query()
+    match q {
+        ok(v) { println("query_ok=", v) }
+        err(m, c) { println("query_error=", m, " (", c, ")"); exit(1) }
+    }
+    let e = use_early()
+    match e {
+        ok(v) { println("unexpected_early_ok=", v); exit(2) }
+        err(m, c) { println("early_error=", c) }
+    }
+    let n = use_nested()
+    match n {
+        ok(v) { println("nested_ok=", v) }
+        err(m, c) { println("nested_error=", m, " (", c, ")"); exit(3) }
+    }
+    let looped = use_loops(3)
+    println("loop_closes=", looped)
+    let bb = use_buffer()
+    match bb {
+        ok(v) { println("buffer_ok=", v) }
+        err(m, c) { println("buffer_error=", m, " (", c, ")"); exit(4) }
+    }
+    println("live=", libpq::live_resources())
+    println("conns=", libpq::live_connections())
+    println("results=", libpq::live_results())
+    println("buffers=", libpq::live_buffers())
+}
