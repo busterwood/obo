@@ -382,9 +382,12 @@ fn scanNumber() {
 // Exact decimal-to-binary64 conversion.  A base-2^16 big integer holds the
 // significand, and a separate decimal exponent drives an exact rational
 // comparison against binary64 candidates.  Up to 1200 significant decimal
-// digits are retained plus a sticky flag; 1200 exceeds the at-most-1077-digit
-// terminating decimal of any binary64 midpoint, so truncation is exact for
-// round-to-nearest binary64 (the tail can only break an otherwise exact tie).
+// digits are retained plus a sticky flag.  A binary64 midpoint has at most 768
+// significant decimal digits: with M < 2^54 and Q >= -1075,
+// floor(54*log10(2) + 1075*log10(5)) + 1 = 768.  (The 1077-character
+// subnormal/normal case includes leading fractional zeros.)  1200 is a strict
+// bound, so truncation cannot hide a tie at the retained precision; the sticky
+// tail can only break an otherwise exact tie.
 const FL_MAX_SIG = 1200
 
 fn biTrim(a: []int): []int {
@@ -635,7 +638,14 @@ fn floatLiteralBits(s: string): int {
     i = 0
     while i < mend {
         let c = s[i]
-        if c == '.' { dot = i; i += 1 } else {
+        if c == '_' {
+            // Source separators are consumed by the scanner but are not value
+            // digits; they must not affect fraction/significant/discarded counts.
+            i += 1
+        } else if c == '.' {
+            dot = i
+            i += 1
+        } else {
             if !isDigit(c) { fail("bad float literal") }
             any = true
             if dot >= 0 { frac += 1 }

@@ -5676,7 +5676,7 @@ float `.sym` has a type writer/reader path, but float constants and a
 format-version decision are unimplemented.
 
 Implemented: `f`/`F` literals with exact compile-time decimal-to-binary64
-conversion (integer 4x32-bit accumulator, ties-to-even), bare fraction/exponent
+conversion (exact base-2^16 big integer plus sticky, ties-to-even), bare fraction/exponent
 rejection with an `f`-suffix diagnostic, `float` as a one-word unowned type,
 `+ - * /`, unary minus, IEEE comparisons, `float(int)`, `isNaN`/`isInf`/
 `signbit`, and a checkpoint-only `floatBits` bit oracle. Float values are raw
@@ -5685,22 +5685,22 @@ internally and integer-only arguments/results. Seed 0.8 still builds the
 compiler source because the compiler itself uses no float syntax.
 
 The original F1/F2 checkpoint measured `2,028,976` peak bytes; the exact
-converter checkpoint is `2,026,816` direct (`2,026,832` stage 3), source
-`13,380` lines / `502,674` bytes, binary `561,153` bytes, runtime text/data
-`23,904`/`67,360`.
+converter checkpoint is `2,027,248` direct (`2,027,264` stage 3; port
+`2,027,616`), source `13,390` lines / `503,098` bytes, binary `561,153` bytes,
+runtime text/data `23,904`/`67,360`.
 
 **Numeric-branch budget (user-approved 2026-10-31).** The numeric worktree
 uses `obo/tests/peak_budget.py` with `PEAK_BUDGET = 2_500_000` decimal bytes.
 This is not a change to the historical lambda release budget, which remains
 `2,000,000` in its own record. The zero-array heap-allocation mutant is
 additionally judged by the same-source self-compile delta: after the exact
-converter the fresh measured baseline is 2,027,232 and the mutant 2,072,832, a
+converter the latest measured baseline is 2,027,664 and the mutant 2,073,264, a
 45,600-byte regression (historical pre-float delta 44,672); the shared oracle
 requires at least 30,000 bytes over baseline. This keeps the
 empty-array saving caught even when both peaks are below the new absolute cap.
 No check was weakened.
 
-Tests after the converter fix: `tests/float_f1.py` passes 11 groups (pinned
+Tests after the converter/separator fix: `tests/float_f1.py` passes 12 groups (pinned
 literal bits, 295 finite seeded random literals, exact fixed counterexamples,
 long mantissas, arithmetic/NaN/±Inf/signed-zero/subnormal,
 scalars/params/returns, lambda/function-type calls, containers, module
@@ -5737,14 +5737,15 @@ decision. This replaces the broken approximate 4x32 accumulator; it is not
 a provisional `long double` 17-digit display path. Runtime text/data are
 `23,904`/`67,360`; no undefined runtime symbols.
 
-After the exact converter, direct self-compile is `2,026,816` peak bytes
-(stage-3 `2,026,832`), source `13,380` lines / `502,674` bytes, binary
-`561,153` bytes. Under the approved `2,500,000` cap with `473,184` bytes
-headroom. Fixed point holds (stage2 == stage3). `tests/float_f1.py` has 11
+After the exact converter and separator fix, direct self-compile is
+`2,027,248` peak bytes (stage-3 `2,027,264`; port `2,027,616`), source
+`13,390` lines / `503,098` bytes, binary `561,153` bytes. Under the approved
+`2,500,000` cap with `472,752` bytes headroom. Fixed point holds (stage2 == stage3). `tests/float_f1.py` has 11
 groups including 250 parse/format candidates (247 finite round-trip cases),
 six exact audit counterexamples with pinned SHA-256 text, long mantissas,
-huge-exponent bounds, special spellings, malformed/overflow `Result` codes,
-and expected bits from an independent Fraction model. The independent audit
+huge-exponent bounds, compiler underscore separators (including a >1200-digit
+separated fraction), parse strictness, special spellings, malformed/overflow
+`Result` codes, and expected bits from an independent Fraction model. The independent audit
 corpora pass; targeted fix re-review is still required.
 
 Unimplemented: shortest-round-trip formatting, float constants and public

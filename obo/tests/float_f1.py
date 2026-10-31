@@ -193,6 +193,48 @@ def test_int_conversions() -> None:
     lines.append("}")
     run_ok("\n".join(lines) + "\n", "int-conversions", ["-1"])
 
+
+def test_separators() -> None:
+    cases = [
+        ("1_0f", "10"),
+        ("1_000.5f", "1000.5"),
+        ("1_.0f", "1.0"),
+        ("1.0_f", "1.0"),
+        ("1_0_f", "10"),
+        ("1__0f", "10"),
+        ("1_0.0_0f", "10.00"),
+        ("1_0e2f", "1000"),
+    ]
+    # A >1200-digit fraction with separators; underscores must not be counted
+    # as fraction/significant/discarded digits.
+    rng = random.Random(0x5EED)
+    digits = "".join(str(rng.randrange(10)) for _ in range(1300))
+    plain = "1." + digits
+    sep = "1." + "_".join(digits[i:i+3] for i in range(0, len(digits), 3))
+    cases.append((sep + "f", plain))
+    lines = ["fn main() {"]
+    for i, (lit, plain) in enumerate(cases):
+        b, over = fv.bits_for_text(plain)
+        assert not over
+        lines.append(f'    if floatBits({lit}) != 0x{b:016x} {{ println({i}) }}')
+    lines.append("    println(-1)")
+    lines.append("}")
+    run_ok("\n".join(lines) + "\n", "separators", ["-1"])
+
+    compile_error("fn main() { let x = 1e1_0f }\n", "exp-underscore",
+                  "bad float exponent")
+    compile_error("fn main() { let x = 1._0f }\n", "fraction-leading-underscore",
+                  "fraction needs digits")
+
+    src = r'''fn main() {
+    let a = parseFloat("1_0")
+    match a { ok(v) { println(0) } err(m,c) { println(c) } }
+    let b = parseFloat("1.0_")
+    match b { ok(v) { println(0) } err(m,c) { println(c) } }
+}
+'''
+    run_ok(src, "parse-underscore", ["22", "22"])
+
 def test_arithmetic() -> None:
     src = r'''fn main() {
     let pz = 0f
@@ -394,6 +436,7 @@ def main() -> int:
     test_fixed_conversion_cases(); total += 1
     test_exponent_bounds(); total += 1
     test_int_conversions(); total += 1
+    test_separators(); total += 1
     test_scalars_and_lambdas(); total += 1
     test_containers(); total += 1
     test_module_signature(); total += 1

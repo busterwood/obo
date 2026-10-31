@@ -1000,15 +1000,20 @@ static int ci_is(const char *p, u64 n, const char *w) {
     return i == n;
 }
 
-/* Exact decimal-string to binary64 for parseFloat.  A 128-bit 4x32-limb
- * accumulator with a sticky bit mirrors the compiler's literal conversion;
- * no libc strtod, host float or long-double rounding is used here. */
 /* Exact decimal-to-binary64 for parseFloat.  A base-2^32 big integer holds the
- * first 1200 significant digits (the maximum terminating decimal of a binary64
- * midpoint is 1077 digits), with a sticky flag for the discarded tail.  Binary
+ * first 1200 significant digits (a binary64 midpoint has at most 768
+ * significant decimal digits: floor(54*log10(2)+1075*log10(5))+1 = 768; the
+ * 1077-character subnormal/normal case includes leading fractional zeros),
+ * with a sticky flag for the discarded tail.  Binary
  * search compares the exact rational against binary64 candidates; no libc,
  * strtod, host float or long-double rounding is used. */
+#define FP_MAX_SIG 1200
+#define FP_MAX_EXP10 4000
 #define BI_MAX 1024
+/* Conservative limb bound: 4 bits per decimal digit, plus shift headroom.
+ * Actual worst case is ~574 limbs; this guard catches a future constant change. */
+#define FP_MAX_LIMBS (((FP_MAX_SIG * 4 + 31) / 32) + ((FP_MAX_EXP10 * 4 + 31) / 32) + 64)
+_Static_assert(BI_MAX >= FP_MAX_LIMBS, "BI_MAX too small for the exact converter bounds");
 typedef struct { u32 w[BI_MAX]; int n; } Big;
 
 static void bi_trim(Big *a) { while (a->n > 0 && a->w[a->n - 1] == 0) a->n--; }
