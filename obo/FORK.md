@@ -6241,3 +6241,63 @@ gates were rerun on the rebased tree, not reused from the pre-rebase branch.
 (the version line only; body hashes unchanged), and the `compiler/expect`
 fixture now expects the 0.12 stale message. Format remains `obosym 6`, ABI 1.
 The stale-version mutant pattern in `mutate_fork` moved from 0.11 to 0.12.
+
+## Decimal text API (0.14 implementation checkpoint)
+
+**Status: implemented on `decimal-text-impl` for independent review, not
+merged, pushed, promoted or seeded.** Base is released `0.13` main
+`618cc47b21c75d1ad498a048d302fead43b1b4b5`; `seed/obo` remains the 0.13 image
+(sha256 `4ec4e0d6…`). The approved design is
+`design/decimal-text-api-design.md`; the database boundary design is unchanged.
+
+**Identity and ABI.** `OBO_VERSION = "0.14"`, `SYM_FORMAT = 7`, `SYM_ABI = 1`.
+No `.sym` grammar changed; every 0.13 `.sym` carries a different compiler line
+and must be rebuilt. Stage 2 and stage 3 are byte-identical (`cmp` fixed
+point), and a normal `println("hello")` built by the 0.13 seed and by this
+compiler against the same runtime is byte-identical (the heap gate checks it).
+The compiler is 655,361 bytes; source is 14,813 lines / 559,468 bytes.
+
+**Surface.** Six compiler-known builtins append after the decimal block:
+`decimal::parse(s) -> Result[decimal]`, `format(d) -> Result[string]`,
+`canonical(d) -> Result[string]`, `check(value,p,s) -> Result[decimal]`,
+`exponent(d) -> int` and `dscale(d) -> int`. Runtime slots 73-78 append after
+60-72. Parse is the strict public grammar (optional sign, mandatory integer
+digits, optional `.digits`, optional exponent digits; full ASCII consumption)
+over the unchanged private `dec_parse`; format is fixed with exactly `dscale`
+digits and returns 3 rather than dropping a nonzero digit; canonical is exact
+minimal text (fixed at or below 128 bytes of magnitude text, lowercase
+scientific above); check is the exact-fit predicate (`value*10^s` integral and
+below `10^p`, `p 1..1000`, `s -1000..1000`, no rounding); exponent is the
+normalised `int16` exponent plus coefficient trailing zeros, dscale the stored
+`uint16`. Text APIs return core statuses as `Result` codes with exact messages;
+only the 40-49 ids remain trap diagnostic labels. `string(decimal)`, float
+interop, `?decimal`, decimal fields/arrays/globals/constants and method
+parameters/returns remain refused.
+
+**Runtime.** `alloc_raw_try` is the recoverable allocator (same free-list/bump
+path, returns 0 on an over-cap payload or a full arena); `alloc_raw` keeps the
+exact `obx: object too large` and `obx: out of memory` diagnostics. Text payload
+and ok-cell failures map to code 10; the 98,342-byte formatter bound maps to 9.
+Malformed accessor backing bits trap with diagnostic 43 and exit 10. The
+freestanding runtime adds no libc/libgcc or float import; `runtime_text.bin` is
+59,776 bytes and `runtime_data.bin` 67,360.
+
+**Gates (this worktree).** `run_fork` **1,756 passed**; default
+`port_compare` **1,744/1,744**; `OBO_REF=obo/seed/obo` **1,535/1,535**
+(the six new run/error files are skipped at `(0,14)`); `port_test` **604/604**;
+`module_test` **142** (141 + `modules/run/decimal_text`); `sym_test` **52/52**;
+`float_f1` **19 groups**; `doc_check` **71 examples**; `imports` **29/29**;
+`stdlib` **16/16**; `tools` **509 passed**; cinterop, DB-adapter and systems P0
+suites pass; the evidence runner reports **32,719 C checks, 0 failures** (D2)
+with empty forbidden/undefined symbols. `mutate_decimal` catches **64/64**
+(compiler dispatch/request, core text semantics, allocator, entry slots 73-78);
+`mutate_fork` is **694 caught + 31 equivalent of 725**; `mutate_port` is
+**540/540**. Self-compile live peak is 2,239,376 bytes in the heap gate and
+2,239,328 in the port comparison, both below 2,500,000; the empty-array
+savings oracle is 48,192 bytes, above 30,000.
+
+**Fixtures.** The committed `.sym` fixtures and the golden writer set changed
+only their `compiler` version line from 0.13 to 0.14 (body hashes unchanged);
+`tests/modules/sym/compiler/expect` now names 0.14. The private
+`decimal_text_oracle.py::parse_text`/`build_text_cases` and
+`dec24_text.c/h` are unchanged; the strict public model lives beside them.

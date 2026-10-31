@@ -155,6 +155,60 @@ v1. `print`/`println` preserve the display scale; if a capped multiply display
 scale would hide a nonzero fractional digit, they print the exact canonical
 form instead of rounding.
 
+The public text surface returns `Result` values:
+
+| Call | Result |
+|---|---|
+| `decimal::parse(s)` | `Result[decimal]`: strict text grammar, preserving display scale |
+| `decimal::format(d)` | `Result[string]`: fixed display text with exactly `dscale` digits |
+| `decimal::canonical(d)` | `Result[string]`: exact minimal value text, ignoring `dscale` |
+| `decimal::check(v, p, s)` | `Result[decimal]`: exact fit for declared precision/scale |
+| `decimal::exponent(d)` | normalised exponent as `int` |
+| `decimal::dscale(d)` | stored display scale as `int` |
+
+`parse` accepts an optional sign, mandatory integer digits, an optional
+fraction with at least one digit and an optional exponent, all ASCII; empty
+text, whitespace, grouping, underscores, NUL, non-ASCII, `.5`, `1.`, `NaN` and
+`Infinity` are invalid. `-0` is positive zero and the written display scale is
+preserved. `format` never rounds: a capped `dscale` that would drop a nonzero
+digit returns code 3. `canonical` is `0` for zero, fixed below 128 bytes of
+magnitude text and lowercase scientific above it. `check` requires
+`value*10^s` to be an integer with at most `p` digits, `p` 1..1000 and `s`
+-1000..1000; it ignores `dscale` and never rounds. Text API error messages are
+exact and carry the core status as the `Result` code (3, 4, 6, 7, 8, 9 or 10).
+
+```obo
+// example: runs
+// prints 1 1
+// prints 1230.0
+// prints 1230
+// prints 4 obo: invalid decimal text
+// prints 3 obo: value does not fit the declared scale without rounding
+fn main() {
+    let p = decimal::parse("+1.2300e3")
+    match p {
+        ok(v) {
+            println(decimal::dscale(v), " ", decimal::exponent(v))
+            let f = decimal::format(v)
+            match f { ok(s) { println(s) } err(m, c) { println(c) } }
+            let c = decimal::canonical(v)
+            match c { ok(s) { println(s) } err(m, c) { println(c) } }
+        }
+        err(m, c) { println("err ", c) }
+    }
+    let bad = decimal::parse(".5")
+    match bad {
+        ok(v) { println("unexpected") }
+        err(m, c) { println(c, " ", m) }
+    }
+    let k = decimal::check(1.23456, 10, 4)
+    match k {
+        ok(v) { println("ok") }
+        err(m, c) { println(c, " ", m) }
+    }
+}
+```
+
 ```obo
 // example: error: decimal division needs an explicit scale and mode
 fn main() { let x = 1.0 / 2.0 }
@@ -2343,17 +2397,21 @@ errors; their `Result` `err` code is the reviewed core status:
 | Result code | Core status | Meaning |
 |---:|---|---|
 | 1 | `DEC_OVERFLOW` | overflow / not representable in the 38-digit range |
-| 3 | `DEC_INEXACT` | `UNNECESSARY` would discard a nonzero digit |
-| 4 | `DEC_INVALID` | invalid value or rounding mode |
+| 3 | `DEC_INEXACT` | `UNNECESSARY` would discard a nonzero digit, or `format` would drop a nonzero digit |
+| 4 | `DEC_INVALID` | invalid value, invalid text or rounding mode |
 | 5 | `DEC_DIV_ZERO` | zero divisor |
-| 6 | `DEC_UNSUPPORTED_RANGE` | request outside the API range (scale not 0..32768) |
-| 7 | `DEC_PRECISION_OVERFLOW` | reserved; not currently returned by these APIs |
-| 8 | `DEC_EXPONENT_RANGE` | reserved; not currently returned by these APIs |
-| 9 | `DEC_DISPLAY_RANGE` | reserved; not currently returned by these APIs |
+| 6 | `DEC_UNSUPPORTED_RANGE` | request outside the API range (scale not 0..32768, or `check` metadata) |
+| 7 | `DEC_PRECISION_OVERFLOW` | too many significant digits for `parse`/`check` |
+| 8 | `DEC_EXPONENT_RANGE` | `parse` exponent outside `int16` |
+| 9 | `DEC_DISPLAY_RANGE` | `parse`/formatter text or display-scale bound |
+| 10 | `DEC_BUFFER_SMALL` | a text or `Result` cell could not be allocated |
 
-Core status 2 (`UNSUPPORTED_EXACT`) and 10 (`BUFFER_SMALL`) stay internal.
-Scale and mode are validated before the core is called: constant invalid values
-are compile errors, runtime values return 6 (scale) or 4 (mode).
+Core status 2 (`UNSUPPORTED_EXACT`) stays reserved. For the text APIs,
+`parse` produces 4/7/8/9/10, `format` 3/9/10, `canonical` 4/9/10 and `check`
+3/6/7/10; defensive 1/4/6 remaps are described in the design. Scale and mode
+are validated before the core is called: constant invalid values are compile
+errors, runtime values return 6 (scale) or 4 (mode). `decimal::check` metadata
+is data, so an out-of-range constant `p`/`s` returns 6 at run time.
 
 | Exit code | Cause |
 |---|---|
