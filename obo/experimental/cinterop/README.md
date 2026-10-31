@@ -235,10 +235,18 @@ database, send SQL, start a server, open a socket or use a service.
 
 ### Private include roots, cflags and link hardening
 
-A `.cbind` may list `include_dirs` and `cflags`. The same flags are applied to:
+A `.cbind` may list `include_dirs` and `cflags`. The same preprocessor state is
+used by:
 
-- the generated C signature check (`signature_check: header`), and
-- every binding source compile.
+- the generated C signature check (`signature_check: header`),
+- every binding source compile, and
+- the dependency scan for each of those compiles.
+
+All three use `-fno-pie -O2 -I <spec>`, the declared `include_dirs` and the
+declared `cflags`. A private header selected by `__OPTIMIZE__` or a `-D` flag is
+therefore hashed, and a conditional prototype cannot validate one declaration
+while the source object is compiled against another. A negative test covers
+both cases.
 
 That matters for a private sysroot: the explicit `headers` list is not enough
 when `openssl/ssl.h` includes other headers from the include root. A relative
@@ -248,13 +256,17 @@ resolution is checked too. The manifest records `include_dirs`, `include_paths`,
 `cflags`, and `header_deps` (the transitive preprocessor inputs, with SHA-256),
 so a changed private header is detected by `verify` instead of being ambient
 state. The generated wrapper/spec does not need absolute build paths; committed
-bindings should use repository-relative paths, and a cbind for a private root
-can be generated inside the private build directory.
+bindings should use repository-relative paths (for example the zlib binding's
+`zlib_system.h` wrapper around `<zlib.h>`), and a cbind for a private root can
+be generated inside the private build directory. Source, header and include
+roots are passed to `-ffile-prefix-map`, so absolute build roots do not appear
+in emitted objects.
 
 Every hosted cinterop link now gets `-Wl,-z,relro`, `-Wl,-z,now` and
 `-Wl,-z,noexecstack` by default. The final ELF must contain a non-empty
-`PT_GNU_RELRO` and `BIND_NOW`/`DF_1_NOW`; `validate_final` and `verify` both
-check this. The separate freestanding runtime/seed build is unchanged. A
+`PT_GNU_RELRO`, `BIND_NOW`/`DF_1_NOW`, and `.preinit_array`/`.init_array`/
+`.fini_array` must lie inside the RELRO range; `validate_final` and `verify`
+both check this. The separate freestanding runtime/seed build is unchanged. A
 missing or incompatible shared-library symbol therefore fails at process load,
 not on a later request.
 
@@ -264,12 +276,16 @@ The test suite qualifies the hosted runtime against the system OpenSSL 3.0
 libraries without installing development packages or using root:
 
 ```sh
-# If /usr/include/openssl is absent, the test uses the installed libssl3t64
-# version and runs, in a private cache:
+# The test locates libssl.so.3/libcrypto.so.3 with ldconfig -p (falling back to
+# the standard multiarch paths). If the installed libssl-dev package version
+# does not match libssl3t64, it uses the matching package in a private cache:
 #   apt-get download libssl-dev=<installed version>
 #   dpkg-deb -x libssl-dev_<version>_amd64.deb <private-root>
 # It then adds <private-root>/usr/include and
-# <private-root>/usr/include/x86_64-linux-gnu as include_dirs.
+# <private-root>/usr/include/x86_64-linux-gnu as include_dirs. A cache hit is
+# content-checked against a stored SHA-256 manifest of the extracted headers.
+# The generated spec and C fixture copy live in the private build directory, so
+# the uncommitted spec has no absolute repository source paths.
 python3 experimental/cinterop/tests/test_cinterop.py
 ```
 
@@ -352,7 +368,8 @@ It also builds and runs:
 - private `include_dirs`/`cflags`: a header reachable only through the include
   root must work in the signature check and source compile, and its absence or
   a missing cflag must fail (relative escapes are rejected);
-- RELRO/NOW: `readelf` sees `GNU_RELRO` and `BIND_NOW`/`FLAGS_1 NOW`;
+- RELRO/NOW: `readelf` sees `GNU_RELRO` and `BIND_NOW`/`FLAGS_1 NOW`, and
+  `.preinit_array`/`.init_array`/`.fini_array` lie inside the RELRO range;
 - hosted OpenSSL 3.0: private `libssl-dev` extraction, real `libssl.so.3`/
   `libcrypto.so.3` link, TLS 1.3 memory-BIO/ALPN handshake, provider/RAND,
   thread-local state, constructor/atexit/stdio/`OPENSSL_cleanup`, and a separate
@@ -392,6 +409,18 @@ declarations-only SQLite adapter, both explicit-close and tested.
 - Source floats/decimals are not part of the native contract. The libpq
   adapter preserves exact numeric text/OID/typmod and never converts a database
   numeric through a float.
+- The hosted OpenSSL qualification is distro-aware only to the extent of its
+  package probe: it accepts `/usr/include` headers only when the installed
+  `libssl-dev` package version matches `libssl3t64`, otherwise it fetches the
+  matching package. Libraries are discovered with `ldconfig -p`; the test
+  skips only when `libssl.so.3`/`libcrypto.so.3` are genuinely absent (or the
+  explicit opt-out is set).
+- The private header cache is content-checked against a stored hash manifest.
+  That catches accidental cache corruption; same-user tampering with both the
+  cache and its manifest is outside the trusted build boundary.
+- A private-root cbind generated at test/build time may contain an explicit
+  absolute `include_dirs` entry. Source, header and include roots are
+  path-mapped in emitted objects, and extracted headers are never committed.
 - The project skill is a repository/portable artifact, not a global install.
 
 ## Review findings resolved in this hardening checkpoint

@@ -2564,26 +2564,34 @@ P2T-b. It does not amend the API in §5 and does not authorize P2T-b/d.
 
 Implemented in `obo/experimental/cinterop`:
 
-- `include_dirs` and `cflags` are applied to both the generated signature-check
-  compile and every binding source compile. Relative include roots may not
-  escape the spec directory/obo tree; symlink resolution is checked; absolute
-  roots are explicit build inputs. Transitive headers are hashed into the
-  manifest (`header_deps`), and no extracted header is committed.
+- `include_dirs` and `cflags` are applied to the generated signature-check
+  compile, every binding source compile and each per-compile dependency scan,
+  all with `-fno-pie -O2`. Relative include roots may not escape the spec
+  directory/obo tree; symlink resolution is checked; nonexistent and symlink
+  escapes fail; absolute roots are explicit build inputs. Transitive headers
+  are hashed into the manifest (`header_deps`), including headers selected by
+  `__OPTIMIZE__`, and no extracted header is committed. A conditional
+  prototype mismatch is rejected by the signature check.
 - Hosted cinterop links always pass `-Wl,-z,relro,-z,now,-z,noexecstack`. The
   linker script now emits `PT_GNU_RELRO` (via `DATA_SEGMENT_ALIGN`/
-  `RELRO_END`/`DATA_SEGMENT_END`) and the tool rejects an ELF without a
-  non-empty RELRO segment or `BIND_NOW`/`DF_1_NOW`. The freestanding base
-  runtime and seed are unchanged.
-- The hosted OpenSSL 3.0 qualification fetches the matching `libssl-dev`
-  without root (`apt-get download` + `dpkg-deb -x`, cache keyed by the
-  installed `libssl3t64` version) and links `libssl.so.3`/`libcrypto.so.3`
-  through cinterop. It covers `OPENSSL_version_num`, provider load,
-  `RAND_bytes`, min TLS 1.2/max TLS 1.3, a generated self-signed cert/key, a
-  TLS 1.3 memory-BIO handshake with ALPN `http/1.1`, application data,
-  `pthread_once`, clock/mmap, thread-local `errno`/error queue, constructor,
-  libc atexit, C stdio flush, `OPENSSL_atexit` ordering and explicit
-  `OPENSSL_cleanup` with a post-cleanup check. A separate ASAN/UBSAN harness
-  runs the same fixture.
+  `RELRO_END`/`DATA_SEGMENT_END`); `.preinit_array`/`.init_array`/
+  `.fini_array` are inside the RELRO range, and the tool rejects an ELF
+  without a non-empty RELRO segment or `BIND_NOW`/`DF_1_NOW`. The freestanding
+  base runtime and seed are unchanged.
+- The hosted OpenSSL 3.0 qualification locates libraries with `ldconfig -p`,
+  accepts already-installed headers only when the `libssl-dev` package version
+  matches the installed runtime, and otherwise fetches the matching package
+  without root (`apt-get download` + `dpkg-deb -x`) into a private cache keyed
+  by the installed `libssl3t64` version and content-checked against a stored
+  header hash manifest. It links `libssl.so.3`/`libcrypto.so.3` through
+  cinterop and covers `OPENSSL_version_num`, provider load, `RAND_bytes`, min
+  TLS 1.2/max TLS 1.3, a generated self-signed cert/key, a TLS 1.3 memory-BIO
+  handshake with ALPN `http/1.1`, application data, `pthread_once`,
+  clock/mmap, thread-local `errno`/error queue, constructor, libc atexit, C
+  stdio flush, `OPENSSL_atexit` ordering and explicit `OPENSSL_cleanup` with a
+  post-cleanup check. A separate ASAN/UBSAN harness runs the same fixture. The
+  generated spec/fixture copy lives in the private build directory, and source/
+  header/include roots are path-mapped in emitted objects.
 
 Deliberate limits:
 
@@ -2593,7 +2601,10 @@ Deliberate limits:
   hosted OpenSSL run proves the adapter's policy;
 - no compiler, `.sym` format, ABI, package-version or seed change;
 - no committed extracted headers and no committed build that depends on
-  `/tmp`; the test cache is private and regenerated/fetched as needed;
+  `/tmp`; the test cache is private, regenerated/fetched as needed, and
+  content-checked against a stored hash manifest on reuse;
 - the qualification skips only when the runtime libraries are genuinely absent
   (or an explicit test opt-out is set); a header/build failure with the library
-  present fails the test.
+  present fails the test;
+- same-user tampering with both the private cache and its stored manifest is
+  outside the trusted build boundary.
