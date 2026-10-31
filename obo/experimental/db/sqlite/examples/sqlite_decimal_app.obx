@@ -445,7 +445,15 @@ fn run(c: &sqlite::Connection): Result[bool] {
 }
 
 fn main() {
-    let made = sqlite::open(":memory:")
+    let a = args()
+    var path = ":memory:"
+    if len(a) == 2 {
+        path = a[1]
+    } else if len(a) != 1 {
+        println("usage: app [database-path]")
+        exit(64)
+    }
+    let made = sqlite::open(path)
     match made {
         ok(conn) {
             defer conn.close()

@@ -202,15 +202,68 @@ def sqlite_decimal(tmp):
         return None
     out = os.path.join(tmp, 'sq_decimal')
     app = must_build(SQLITE, SQ_DECIMAL_APP, out, 'sqlite decimal')
-    p = need(run([app]), 'sqlite decimal run')
-    expect_lines(p.stdout, ['sqlite_decimal=ok', 'live=0'], 'sqlite decimal')
+    path = os.path.join(tmp, 'decimal_oracle.db')
+    for suffix in ('', '-journal', '-wal', '-shm'):
+        try:
+            os.unlink(path + suffix)
+        except FileNotFoundError:
+            pass
+    try:
+        p = need(run([app, path]), 'sqlite decimal run')
+        expect_lines(p.stdout, ['sqlite_decimal=ok', 'live=0'], 'sqlite decimal')
+        import sqlite3
+        conn = sqlite3.connect(path)
+        try:
+            text_rows = conn.execute(
+                'SELECT id, typeof(v), quote(v) FROM t_text ORDER BY id'
+            ).fetchall()
+            want_text = [(1, 'text', "'1.2300'"),
+                         (2, 'text', "'0.0000'"),
+                         (3, 'text', "'1000'")]
+            if text_rows != want_text:
+                raise Fail('python TEXT oracle disagrees: %r' % (text_rows,))
+
+            # NUMERIC/INTEGER affinity: integral text becomes INTEGER and
+            # loses display scale; 1.2300 becomes REAL.
+            num_rows = conn.execute(
+                'SELECT id, typeof(v), quote(v) FROM t_num ORDER BY id'
+            ).fetchall()
+            want_num = [(1, 'integer', '1'), (2, 'integer', '1'),
+                        (3, 'integer', '0'), (4, 'real', '1.23')]
+            if num_rows != want_num:
+                raise Fail('python NUMERIC affinity oracle disagrees: %r'
+                           % (num_rows,))
+            int_rows = conn.execute(
+                'SELECT id, typeof(v), quote(v) FROM t_int ORDER BY id'
+            ).fetchall()
+            want_int = [(1, 'integer', '1'), (2, 'real', '1.23')]
+            if int_rows != want_int:
+                raise Fail('python INTEGER affinity oracle disagrees: %r'
+                           % (int_rows,))
+
+            kind, n, value = conn.execute(
+                'SELECT typeof(v), length(v), v FROM t_big WHERE id=5'
+            ).fetchone()
+            if (kind, n) != ('text', 100001):
+                raise Fail('python long-text oracle disagrees: %r'
+                           % ((kind, n),))
+            if set(value) != {'0', '1'} or not value.endswith('1'):
+                raise Fail('python long-text content disagrees')
+        finally:
+            conn.close()
+    finally:
+        for suffix in ('', '-journal', '-wal', '-shm'):
+            try:
+                os.unlink(path + suffix)
+            except FileNotFoundError:
+                pass
     m = manifest(out)
     if m.get('signature_check') != 'declarations-only':
         raise Fail('sqlite decimal signature_check is %r'
                    % m.get('signature_check'))
     check_declaration_hash(m, SQLITE_DECL_FILES, 'sqlite decimal')
     verify(out)
-    print('sqlite decimal bind/read/affinity/NUL/large: ok')
+    print('sqlite decimal bind/read/affinity/NUL/large Python oracle: ok')
     return app
 
 
