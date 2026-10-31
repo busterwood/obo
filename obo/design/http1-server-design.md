@@ -1,14 +1,15 @@
 # HTTP/1.1 server protocol layer
 
 Status: **design for independent review; no implementation authorized.**
-Revision 2 (2026-10-31): resolves the REVISE review at
-`/tmp/opencode/http1-design-review-651927`; reconciles the transport seam with
-the TLS adapter design at `ea02b29`, adds fresh-connection/handshake/response
-total deadlines, graceful close policy, owned read bytes, unread-body
-`InvalidState`, response trailer/aggregate caps, ALPN dispatch and the neutral
-`http1tls` adapter. Baseline: `main`
-`2364add3a7ad0a02ec9412b6834a36a510d45f32`, obo `0.12`, symbol format 6,
-ABI 1. This note reserves no compiler, ABI, symbol-format, package or protocol
+Revision 3 (2026-10-31): resolves the focused review at
+`/tmp/opencode/http1-rev2-review-1379386`; revision 2 resolved the first
+review. Revision 3 disarms accept/handshake deadlines and resets request/
+response totals per message, fixes the accept sketch, retries `endResponse`,
+requires `acceptAlpn` before HTTP parsing, includes `RequestInfo` copies in the
+aggregate budget, and maps `flushPending` to `systls::flush(s)`. Revision 2
+reconciled the transport seam with the TLS adapter design at `ea02b29`.
+Baseline: `main` `2364add3a7ad0a02ec9412b6834a36a510d45f32`, obo `0.12`,
+symbol format 6, ABI 1. This note reserves no compiler, ABI, symbol-format, package or protocol
 version. It designs protocol logic in obo above the approved
 systems stream/buffer/reactor layer and an optional TLS transport adapter; it
 does not design TLS, HTTP/2 or HTTP/3.
@@ -232,6 +233,7 @@ pub type Limits = ref record {
     responseTotalTimeoutMs: int  // absolute, slow-reader cap
     totalTimeoutMs: int          // whole request/response cap
     allowHttp10: bool
+    allowNoAlpn: bool             // TLS with no ALPN is HTTP/1.1 if true
     allowExtensionMethods: bool
     pipelining: bool
     autoContinue: bool
@@ -352,10 +354,13 @@ pub type FlushOutcome = closed {
 `maxResponseTrailerBytes <= maxResponseBuffer`,
 `maxPipelineBytes <= maxHeaderBytes + maxHeaderLine`, and
 `maxTotalConnectionBytes >= maxConnections * perConnectionBytes` where
-`perConnectionBytes = maxHeaderBytes + maxHeaderLine + maxResponseBuffer`.
+`perConnectionBytes = maxHeaderBytes + maxHeaderLine + maxResponseBuffer +
+maxHeaderBytes` (fixed buffers plus the bounded `RequestInfo` header copy).
+The multiplication is checked; overflow or a budget below the reservation is
+`InvalidArgument`/`ResourceLimit`, never a wrapped smaller budget.
 Timeout values are positive and fit a checked millisecond-to-nanosecond
 conversion. `maxResponseBuffer` and `maxHeaderBytes` are at most 16 MiB.
-`maxConnections` is positive. The `serverName` token is at most 64 bytes and
+`maxConnections` is positive. `allowNoAlpn` is a bool. The `serverName` token is at most 64 bytes and
 contains no CR/LF/NUL. `make` **deep-copies** the whole `Limits` record
 (scalars and the `serverName` string); it never stores `&Limits`.
 
@@ -392,7 +397,7 @@ pub type Transport = interface {
 
     // Flush pending ciphertext without accepting new plaintext.
     // Required because an empty HTTP output buffer is not "flushed" while TLS
-    // still holds ciphertext. TLS-side addendum: see §11.5.
+    // still holds ciphertext. TLS maps this to systls::flush(s); see §11.5.
     mut fn flushPending(): Result[WriteOutcome]
 
     // Multi-step close_notify/FIN: Done, Sent, PeerClosed, or Want*.
@@ -421,9 +426,9 @@ Mapping table:
 | `handshakeStep` | `StepDone` | `systls::handshakeStep` mapped |
 | `readSome` | `stream::readSome`; nil -> `ReadEof` | `systls::readSome`; owned bytes |
 | `writeSome` | `stream::writeSome` -> `WriteWrote` | `systls::writeSome`; Want* preserved |
-| `flushPending` | `WriteWrote{0}` | **required TLS addendum**: `systls::flushStep` (or count-0 flush) |
+| `flushPending` | `WriteWrote{0}` | `systls::flush(s)` (ciphertext-only, no plaintext) |
 | `shutdownStep` | `stream::shutdownWrite` -> `ShutdownDone` | `systls::shutdownStep` mapped |
-| `pending` | `0` | `systls::pending` |
+| `pending` | `0` | `systls::pending` mapped to total ciphertext bytes (staging + BIO) |
 | `want` | `WantNone` | `systls::want` mapped |
 | `alpn` | `AlpnNone` | `systls::alpn`/`info.alpn` mapped |
 | `isSecure` | `false` | `true` |
@@ -458,8 +463,9 @@ Transfer rules:
 - `alpn()` is valid after the handshake; the HTTP/1.1 server accepts
   `AlpnHttp11`/`AlpnNone` (if policy permits no ALPN) and closes on `AlpnH2`
   or `AlpnOther` because h2/h3 are separate designs. The recommended TLS
-  configuration is `Require(["http/1.1"])`; the TLS default
-  `Prefer(["h2","http/1.1"])` must not be used unexamined.
+  configuration is `Require(["http/1.1"])`. The TLS default
+  `Prefer(["http/1.1"])` is acceptable; a `Prefer(["h2","http/1.1"])` policy
+  must not be used unexamined.
 - `watch` is the only readiness registration route. `source()` does not exist
   in the TLS adapter and is not part of this contract.
 - No pointer, TLS struct, ciphertext buffer or fd crosses this boundary.
@@ -476,9 +482,9 @@ Contract details the TLS adapter must satisfy:
 3. **Want flags and progress.** `writeSome` may return `WriteWantRead` for a
    KeyUpdate; `flush` must return `WantRead` and the server must watch read.
    The adapter must not leave both want flags false while holding ciphertext.
-4. **Ciphertext drain.** `flushPending` is required; a zero-length
-   `writeSome` is not a substitute unless the TLS design explicitly defines
-   count-0 to flush pending ciphertext.
+4. **Ciphertext drain.** `flushPending` maps to the TLS adapter's
+   `flush(s)`, which drains C staging and the write BIO without accepting
+   plaintext. A zero-length `writeSome` is not a flush.
 5. **No hidden network work.** No DNS, OCSP fetch, blocking verification or
    thread in a step. Certificate/key loading happens before HTTP.
 6. **Readiness.** `watch` observes the underlying stream; a readable event can
@@ -512,8 +518,8 @@ pub type Connection = ref record { /* implementation state; not API */ }
 pub fn make(limits: &Limits): Result[Connection]
 pub fn phase(c: &Connection): Phase
 pub fn deadline(c: &Connection): clock::Deadline
-pub fn wantsRead(c: &Connection, t: &Transport): bool
-pub fn wantsWrite(c: &Connection, t: &Transport): bool
+pub fn wantsRead(c: &Connection, t: &Transport): Result[bool]
+pub fn wantsWrite(c: &Connection, t: &Transport): Result[bool]
 
 pub fn next(mut c: &Connection, mut t: &Transport,
             now: &Now): Result[Event]
@@ -535,6 +541,7 @@ pub fn beginResponseWithReason(mut c: &Connection, status: int,
 pub fn setHeader(mut c: &Connection, name: string,
                  value: string): Result[bool]
 pub fn setLength(mut c: &Connection, length: int): Result[bool]
+pub fn acceptAlpn(mut c: &Connection, mut t: &Transport): Result[bool]
 pub fn sendContinue(mut c: &Connection): Result[bool]
 pub fn setTrailerNames(mut c: &Connection, names: &[]string): Result[bool]
 pub fn addTrailer(mut c: &Connection, name: string,
@@ -569,9 +576,12 @@ Rules:
   treats leftover body bytes as a new request. `readBody` or `discardBody` is
   the only transition to a complete body; `requestClose` + `close` may abandon
   it.
-- `readBody` returns `BodyData` with an owned array of `1..max` bytes,
-  `BodyEnd` once, or `BodyNeedRead`. `max` is capped to `t.maxTransfer()`.
-  It never allocates a body-sized array and never returns more than `max`.
+- `readBody` requires `max > 0`; `max == 0` is `InvalidArgument`. It returns
+  `BodyData` with an owned array of `1..max` bytes, `BodyEnd` once, or
+  `BodyNeedRead`. `max` is capped to `t.maxTransfer()`. It never allocates a
+  body-sized array and never returns more than `max`. After a final response
+  has started, `readBody` returns `InvalidState`: a client waiting for
+  `100-continue` will not send a body after the final response.
 - `writeBody`/`writeText` require `count > 0`, a valid `offset`, and
   `offset + count <=` the source length; violations are `InvalidArgument`.
   They return the number of **application bytes accepted** into the encoded
@@ -587,6 +597,10 @@ Rules:
   can be called once. A body write before `beginResponse` or after
   `endResponse` is `InvalidState`.
 - `setLength` requires a nonnegative integer; negative is `InvalidArgument`.
+- `acceptAlpn` is valid only after `HandshakeDone`; it is idempotent while
+  accepted. Plain transport is accepted. TLS `AlpnHttp11` is accepted;
+  `AlpnNone` is accepted only if `Limits.allowNoAlpn`; `AlpnH2`/`AlpnOther`
+  close the transport and return `Unsupported`.
 - `sendContinue` is valid only after `HeadReady`, when the request has a body,
   `Expect: 100-continue` was present and no final response has started; it is
   idempotent and returns `false` when no interim response is appropriate.
@@ -600,23 +614,36 @@ Rules:
   only when the HTTP output buffer is empty **and** `t.pending() == 0`. If
   `writeSome` accepts a prefix and the HTTP buffer remains nonempty, it
   returns `FlushWantWrite` so the caller yields and re-enters; it does not spin.
-  It returns `FlushWantRead`/`FlushWantWrite` for TLS control needs; `next`
-  maps those to `NeedRead`/`NeedWrite`.
+  If `flushPending` returns `WriteWrote{n}` while `t.pending() > 0`, it returns
+  `FlushWantWrite`, never `Flushed`. It returns `FlushWantRead`/
+  `FlushWantWrite` for TLS control needs; `next` maps those to
+  `NeedRead`/`NeedWrite`.
 - `requestClose` sets the per-connection close policy. The current response
   gets `Connection: close` if headers are not yet committed; if they are
   already committed, the connection closes after the response flush without a
   second header block. `closeAfterResponse` exposes the flag.
+- `endResponse` returns `false` when the final chunk terminator/trailers did not
+  fit. The caller must `flush` and call `endResponse` again until it returns
+  `true`; `false` is not completion. `true` means the final framing is queued,
+  not necessarily flushed.
 - `shutdownStep` first flushes output/ciphertext, then drives
   `t.shutdownStep()`; it is multi-step and may return `ShutdownSent` before
   the peer closes. It requires a complete/abandoned body and a completed
   response; otherwise `InvalidState`. `close` is abortive and does not promise
   close_notify; call `shutdownStep` for a best-effort clean close.
+- `wantsRead`/`wantsWrite` return `Result[bool]`. A `want()`/`pending()` error
+  is returned; the caller closes the connection. They never silently treat a
+  transport error as no interest.
 - `close` marks the connection closed, closes the transport once, and is
   idempotent. Dropping a `Connection` record does not close anything.
-- `HandshakeDone` is returned once when the transport handshake completes; the
-  application inspects `t.alpn()` and rejects h2/other/forbidden no-ALPN before
-  calling `next` again. `HeadReady` follows only for an accepted HTTP/1.1
-  transport.
+- `HandshakeDone` is returned once when the transport handshake completes. The
+  application **must** call `acceptAlpn(c, t)` before calling `next` again.
+  `acceptAlpn` accepts plain transport, `AlpnHttp11`, or `AlpnNone` when
+  `Limits.allowNoAlpn` is true; it rejects `AlpnH2`/`AlpnOther` (and no-ALPN
+  when forbidden), closes the transport and returns `Unsupported`. `next`
+  returns `InvalidState` after `HandshakeDone` until ALPN is accepted, so an h2
+  preface can never be parsed as HTTP/1.1. `HeadReady` follows only for an
+  accepted HTTP/1.1 transport.
 - `HeadReady` is returned once per request. `ProtocolError` and `TimedOut` are
   returned once; subsequent `next` calls return `NeedWrite`/`NeedRead` until
   the queued error response is flushed, then `ConnectionClosed`. `ResponseComplete` means
@@ -639,8 +666,8 @@ Draining   -> Closing  (drain bound/deadline)
 
 | Phase | Entry | Exit |
 |---|---|---|
-| `Handshaking` | `make`; TLS session | `StepDone` -> `Idle`; handshake/accept timeout -> `Closing` |
-| `Idle` | handshake done, no request | first request byte -> `ReadingHead`; accept/idle timeout -> `Closing` |
+| `Handshaking` | `make`; TLS session | `StepDone` clears handshake deadline -> `Idle`; handshake/accept timeout -> `Closing` |
+| `Idle` | handshake done, no request | first byte of the first request clears accept deadline -> `ReadingHead`; accept/idle timeout -> `Closing` |
 | `ReadingHead` | first byte | blank line -> `ReadingBody` or `Responding`; error -> `Closing` |
 | `ReadingBody` | body framing non-zero | `BodyEnd`/drain -> `Responding`; early response -> `Responding`; error -> `Closing` |
 | `Responding` | `beginResponse` or early response | response complete + keep-alive -> `Idle`; close policy -> `Closing`; unread body + keep-alive -> `Draining` |
@@ -838,9 +865,12 @@ Special fields are validated after the whole block, so order does not matter:
   `Expect: 100-continue` with `Content-Length: 0` is bodyless and gets no 100.
 - **`Upgrade`** / `Connection: upgrade`: `501` and close; no 101, no WebSocket.
 - **`Trailer`**: comma-separated nonempty tokens; an empty element is `400`.
-  It declares response/request trailer names. With a non-chunked request body
-  it is `400`. It does not by itself permit a trailer; the actual trailer
-  fields are still validated (§5.5).
+  A declaration naming a forbidden trailer field (`Content-Length`,
+  `Transfer-Encoding`, `Host`, `Connection`, `Trailer`, `Upgrade`,
+  `Keep-Alive`, `Proxy-Connection`, `TE`, `Expect`, `Authorization`,
+  `Proxy-Authorization`, `Cookie`, `Set-Cookie`) is `400`. With a non-chunked
+  request body it is `400`. It does not by itself permit a trailer; the actual
+  trailer fields are still validated (§5.5).
 - **`TE`** (not `Transfer-Encoding`): accepted but not used; `trailers` is a
   valid token. It never changes request framing.
 
@@ -943,9 +973,11 @@ Rules:
   progress. `BodyData.bytes` is an owned copy; `inbuf` is not exposed.
 - `BodyData` never crosses a request boundary; after `BodyEnd`, further bytes are
   pipelined next-request bytes.
-- `max` is the caller's bound, capped by `t.maxTransfer()`; the function never
-  allocates a body-sized array. It returns an owned `bytes` array of 1..max
-  bytes; the caller owns and frees it.
+- `max` must be positive and is capped by `t.maxTransfer()`; `max == 0` is
+  `InvalidArgument`. The function never allocates a body-sized array. It
+  returns an owned `bytes` array of 1..max bytes; the caller owns and frees it.
+  After a final response starts, `readBody` is `InvalidState`; use
+  `requestClose`/`close` for a waiting `Expect` client.
 - `discardBody` uses the same framing but discards owned `BodyData` arrays,
   with a caller-supplied byte cap and the same deadlines. It is used for early
   responses and drain; if the cap or deadline is exceeded, the connection
@@ -1071,8 +1103,12 @@ status-line = "HTTP/1.1" SP 3DIGIT SP reason-phrase CRLF
   may use `http1date::parseHttpDate` for `If-Modified-Since`.
 - `http1date::parseHttpDate` accepts the three HTTP-date forms (IMF-fixdate,
   RFC 850, asctime) case-insensitively where the grammar allows, rejects
-  trailing text, and returns UTC seconds. It is a helper, not request parsing;
-  a malformed conditional header is the application's `400` decision.
+  trailing text, and returns UTC seconds. For the RFC 850 two-digit year, apply
+  the RFC 9110 50-year rule: interpret the value as the most recent year in the
+  past 50 years with that last two digits (a candidate more than 50 years in
+  the future is reduced by 100). IMF-fixdate years are 0001..9999. It is a
+  helper, not request parsing; a malformed conditional header is the
+  application's `400` decision.
 
 ```obo
 module http1date
@@ -1142,7 +1178,10 @@ last  = "0" CRLF *trailer-field CRLF
   number of data bytes accepted, which may be less than `count`.
 - `endResponse` emits `0\r\n`, optional trailers, then `\r\n`. It never emits a
   second terminator. If the output buffer is full, it retains the pending state
-  and returns `false`/`NeedWrite`; the caller flushes and calls again.
+  and returns `false`; the caller flushes and calls `endResponse` again. The
+  call is idempotent while the terminator/trailers are pending, and `true`
+  means the entire final framing was accepted into the output buffer (not
+  necessarily flushed). A caller must not treat `false` as completion.
 - CRLF is emitted only as part of the chunk grammar; a body byte sequence
   containing CRLF is data and is not reinterpreted.
 - No chunk extensions are emitted. A codec adapter that needs extensions is a
@@ -1277,9 +1316,18 @@ fn (mut s: &EchoSession) pumpEcho(now: &http1::Now): Result[bool] {
             return ok(false)                     // watch read
         }
         BodyEnd {
-            if !s.ended {
-                try http1::endResponse(&s.conn)
-                s.ended = true
+            while !s.ended {
+                let done = try http1::endResponse(&s.conn)
+                if done {
+                    s.ended = true
+                    break
+                }
+                let f = try http1::flush(&s.conn, &s.transport)
+                match f {
+                    Flushed { }
+                    FlushWantRead { return ok(false) }
+                    FlushWantWrite { return ok(false) }
+                }
             }
             let f = try http1::flush(&s.conn, &s.transport)
             match f {
@@ -1320,7 +1368,19 @@ fn (mut s: &EchoSession) respondHello(now: &http1::Now): Result[bool] {
         if n == 0 { return ok(false) }           // caller flushes and retries
         pos += n
     }
-    try http1::endResponse(&s.conn)
+    while !s.ended {
+        let done = try http1::endResponse(&s.conn)
+        if done {
+            s.ended = true
+            break
+        }
+        let f = try http1::flush(&s.conn, &s.transport)
+        match f {
+            Flushed { }
+            FlushWantRead { return ok(false) }
+            FlushWantWrite { return ok(false) }
+        }
+    }
     return ok(true)
 }
 ```
@@ -1343,13 +1403,9 @@ fn (mut s: &EchoSession) serveOne(now: &http1::Now): Result[bool] {
         let ev = try http1::next(&s.conn, &s.transport, now)
         match ev {
             HandshakeDone {
-                let a = try s.transport.alpn()
-                match a {
-                    AlpnHttp11 { }
-                    AlpnNone { }                 // policy allows no ALPN
-                    AlpnH2 { return ok(false) }  // h2 is a separate design
-                    AlpnOther { return ok(false) }
-                }
+                // acceptAlpn closes/rejects h2, other and forbidden no-ALPN
+                // before any HTTP/1.1 byte is parsed.
+                try http1::acceptAlpn(&s.conn, &s.transport)
                 return ok(true)
             }
             HeadReady {
@@ -1402,7 +1458,7 @@ fn acceptOne(l: &net::Listener, r: &reactor::Reactor,
         conn: c, transport: t, pendingBytes: new []byte(0),
         pending: 0, pendingPos: 0, started: false, ended: false
     }
-    let w = try t.watch(r, true, false, tag)
+    let w = try session.transport.watch(r, true, false, tag)
     return ok(new Slot{gen: tag, live: true, session: session,
                        watch: w, peer: peerText})
 }
@@ -1431,26 +1487,31 @@ releases the partial session; the error path is tested for leaks.
 All deadlines are monotonic (`sysclock::Instant`), never wall-clock. The wall
 clock is used only for the `Date` field.
 
-| Deadline | Starts | Renewed | Default | On expiry |
-|---|---|---|---|---|
-| accept | `make`/accept | never | 10 s | close silently |
-| handshake | `make`/accept | never | 10 s | close silently |
-| header | first decrypted request byte | never | 10 s | `408`, close |
-| body idle | first `readBody` call | each positive decoded body read | 30 s | `408`, close |
-| idle | response complete | new request byte | 60 s | close silently |
-| response idle | first response byte queued | each positive transport write | 60 s | close |
-| response total | response headers committed | never | 300 s | close |
-| request total | first request byte | never | 300 s | close (`408` if possible) |
+| Deadline | Active window | Starts | Renewed/cleared | Default | On expiry |
+|---|---|---|---|---|---|
+| accept | `Handshaking` or fresh `Idle` before the first request byte | `make`/accept | cleared on first decrypted request byte and never re-armed | 10 s | close silently |
+| handshake | `Handshaking` only | `make`/accept | cleared on `StepDone` | 10 s | close silently |
+| header | `ReadingHead` | first decrypted request byte | never | 10 s | `408`, close |
+| body idle | `ReadingBody` after the first read | first `readBody` call | renewed on each positive decoded body read | 30 s | `408`, close |
+| idle | `Idle` after a response completes | response complete | cleared on first byte of the next request | 60 s | close silently |
+| response idle | `Responding` | first response byte queued | renewed on each positive transport write | 60 s | close |
+| response total | `Responding` | response headers committed | cleared when the response completes | 300 s | close |
+| request total | one request/response cycle | first request byte | cleared when the response completes; restarts on the next request | 300 s | close (`408` if possible) |
 
 Rules:
 
 - A freshly accepted connection **always** has an accept deadline, even if it
-  sends no bytes. Slowloris cannot hold `maxConnections` sockets indefinitely.
-- A TLS connection **always** has a handshake deadline. `next` calls
-  `handshakeStep` unconditionally in `Handshaking`, at most once per call; it
-  does not wait for `want()` first, because a fresh session may need C work
-  before it reports either want. `StepDone` returns `HandshakeDone`; a timeout
-  closes without an HTTP response.
+  sends no bytes. The accept deadline is **disarmed on the first decrypted
+  request byte and never re-armed**; it must not remain armed during a live
+  request or on a keep-alive `Idle` after the first request. Slowloris cannot
+  hold `maxConnections` sockets indefinitely.
+- A TLS connection **always** has a handshake deadline while `Handshaking`.
+  The handshake deadline is **cleared on `StepDone`**; it must not remain armed
+  after the handshake. `next` calls `handshakeStep` unconditionally in
+  `Handshaking`, at most once per call; it does not wait for `want()` first,
+  because a fresh session may need C work before it reports either want.
+  `StepDone` returns `HandshakeDone`; a timeout closes without an HTTP
+  response.
 - The header deadline is absolute from the first decrypted byte; a slowloris
   sending one byte per second cannot extend it. No per-byte or per-line reset.
 - The body idle deadline starts at the first `readBody` call, so handler
@@ -1465,16 +1526,22 @@ Rules:
 - `clock::Deadline` is stored, not recomputed from "now" on each retry. No
   helper restarts a timeout after `Interrupted`, `WouldBlock` or partial
   progress.
-- `deadline(c)` returns the earliest finite deadline. If it returns
-  `forever()`, the server calls `reactor::wait` with `forever()`; it must
-  **not** pass forever to `reactor::timer`, which rejects it. Only finite
-  deadlines create timers. Timers are checked every reactor turn even under
-  continuous traffic.
-- `next` checks accept, handshake, header, body, idle, response idle, response
-  total and request total deadlines. An accept/handshake/idle timeout closes
+- `deadline(c)` returns the earliest **active** finite deadline; disarmed
+  accept/handshake deadlines are excluded. If no active deadline is finite it
+  returns `forever()`, and the server calls `reactor::wait` with `forever()`;
+  it must **not** pass forever to `reactor::timer`, which rejects it. Only
+  finite deadlines create timers. Timers are checked every reactor turn even
+  under continuous traffic.
+- `next` checks only active deadlines. An accept/handshake/idle timeout closes
   silently; a header/body timeout queues `408` when a response is still
   possible; a response timeout closes because the response may be partially on
-  the wire.
+  the wire. An expired accept/handshake deadline is never consulted after it
+  was cleared.
+- `requestTotal` starts at the first byte of each request and is cleared when
+  that response completes; it is not a whole-connection deadline. A keep-alive
+  connection may serve a second request after the first request-total window.
+  `responseTotal` starts at each response header commit and is cleared when
+  that response completes; it is not a connection-wide timer.
 
 ### 8.2 Slowloris and resource pressure
 
@@ -1483,7 +1550,8 @@ Rules:
   allocation.
 - `maxConnections` and `maxTotalConnectionBytes` are admission policy. A
   connection reserves at least
-  `maxHeaderBytes + maxHeaderLine + maxResponseBuffer` fixed bytes; the server
+  `maxHeaderBytes + maxHeaderLine + maxResponseBuffer + maxHeaderBytes` bytes
+  (fixed buffers plus the bounded `RequestInfo` copy); the server
   rejects a new accept (or closes it with a bounded `503`) when either the
   count or the aggregate budget would be exceeded. Raising
   `maxResponseBuffer`/`maxHeaderBytes` therefore cannot create an unbounded
@@ -1506,11 +1574,17 @@ Rules:
 The application computes interest from the protocol and transport:
 
 ```text
+let w = try t.want()
+let p = try t.pending()
 read  = phase in {Handshaking, Idle, ReadingHead, ReadingBody}
-        or t.want() in {WantRead, WantReadWrite}
-write = outbuf nonempty or t.pending() > 0
-        or t.want() in {WantWrite, WantReadWrite}
+        or w in {WantRead, WantReadWrite}
+write = outbuf nonempty or p > 0
+        or w in {WantWrite, WantReadWrite}
 ```
+
+A `want()`/`pending()` error is a transport error; the caller closes the
+connection. `wantsRead`/`wantsWrite` expose the same `Result` behavior, so a
+server never mistakes a transport failure for "no interest".
 
 - Never register writable interest when there is no queued output/ciphertext
   and the transport does not want write; level-triggered writable would
@@ -1757,17 +1831,22 @@ output byte array. No sleeps, no TLS, no sockets.
 | chunk writer | chunk boundaries, size hex, terminator, trailers |
 | backpressure | output buffer full yields 0; flush resumes; no lost/replayed bytes |
 | body limit | exact max accepted, max+1 is 413 |
+| body reader bounds | `max == 0` InvalidArgument; after final response InvalidState |
 | header limits | exact limit accepted, +1 is 431/414 |
 | timeouts | fake clock at deadline, one nanosecond before/after; no reset |
 | fresh connection | no bytes; accept deadline fires; no hang |
+| accept disarm | live request/response crossing 10 s after accept survives; accept deadline not consulted |
+| keep-alive total reset | second request after the first request-total window is accepted; totals restart per request/response |
 | TLS handshake | fresh session with neither want; handshakeStep still driven; handshake deadline fires |
+| handshake disarm | after StepDone, handshake deadline is cleared and not consulted during the request |
 | unread body + next | `next` returns `InvalidState`; no second request parse; early response + close works |
 | 100 early final | final before read/100; connection closes; no 100 after final |
 | slow reader | response idle renews, response total does not; forced close |
 | response trailers | count/byte caps enforced; forbidden names rejected |
+| endResponse false | tiny maxResponseBuffer forces `false`; handler flushes and retries; terminator/trailers complete |
 | TLS pending ciphertext | `Flushed` false while `pending>0`; flushPending drives it |
 | TLS shutdown | multi-step Sent/PeerClosed; close abortive |
-| ALPN | H2/Other rejected; Http11/None per policy |
+| ALPN | `acceptAlpn` required; H2/Other close; no HTTP parse after rejection; Http11/None per policy |
 | maxTransfer | >65536 request split; no adapter Range; short writes |
 | aggregate admission | maxConnections and maxTotalConnectionBytes both enforced; 503/close |
 | maxTarget/start line | exact target reachable; start line over is 414 |
@@ -1783,8 +1862,9 @@ output byte array. No sleeps, no TLS, no sockets.
 | sendContinue | idempotent; no 100 for bodyless/final |
 | headerValue field | `headerValue(c, info.method)` compiles and copies |
 | writeText repeated | same local string passed repeatedly; no move |
-| Date RFC850/asctime | two-digit year window and year range |
+| Date RFC850/asctime | RFC 9110 50-year two-digit window and year range |
 | close | idempotent; transport close exactly once |
+| want/pending error | `wantsRead`/`wantsWrite` return err; server closes, not "no interest" |
 
 ### 10.2 Fuzzing
 
@@ -1836,8 +1916,8 @@ output byte array. No sleeps, no TLS, no sockets.
 - TLS integration is a separate adapter gate: ALPN `http/1.1`, h2/nil
   dispatch, clean close_notify, truncated record, handshake with neither want,
   `writeSome` WantRead (KeyUpdate), `pending` ciphertext draining, multi-step
-  shutdown WantRead/WantWrite, no callback. The TLS-side `flushStep` addendum
-  is tested by the TLS adapter owner, not silently assumed.
+  shutdown WantRead/WantWrite, `flush` ciphertext draining, no callback. The
+  mapping to `tls::flush(s)` is tested by the TLS adapter owner.
 
 ### 10.5 Syntax and ownership gate (no code)
 
@@ -1848,10 +1928,12 @@ and the accept sketch from §7.4, with a fake `http1` module and a scripted
 - compile with the current seed, `-I` the fixture root, `--check` where native
   calls are absent, and a private sym dir;
 - assert no move/borrow diagnostics for repeated `writeText(c, body, ...)`,
-  `headerValue(c, info.method)`, sibling session fields and `replace(r.bytes,
-  new []byte(0))`;
+  `headerValue(c, info.method)`, sibling session fields, `replace(r.bytes,
+  new []byte(0))`, and the `endResponse`/`flush` retry loop;
 - run one request through the fake transport under `OBO_CHECK=1` for both a
   bodyless and a fixed-length body request;
+- the same gate compiles the accept sketch after moving `t` into the session;
+  it must use `session.transport.watch(...)`, not the moved local;
 - the same gate compiles a TLS-neutral `http1tls` stub that maps
   `ReadOutcome`/`WriteOutcome`/`ShutdownOutcome`/`Want`/`Alpn` without importing
   `systls` into `http1`;
@@ -1957,17 +2039,19 @@ Mapping requirements:
 - `readSome(max)` -> `tls::readSome`, moving `Data.bytes` into
   `ReadData.bytes`; map `Eof`/`Want*` exactly.
 - `writeSome` -> `tls::writeSome`, preserving `Wrote`/`WantRead`/`WantWrite`.
-- `flushPending` -> **required TLS-side method**. The current TLS design has no
-  ciphertext-only drain. The TLS reviewer must add either
-  `tls::flushStep(s): Result[WriteOutcome>` (preferred) or explicitly define
-  `tls::writeSome(..., count=0)` to flush pending ciphertext before returning
-  `Wrote{0}`. Without one of these, HTTP `Flushed` cannot be honest. This is
-  flagged as a TLS-side prerequisite, not silently assumed.
+- `flushPending` -> `tls::flush(s)`. The in-progress TLS design already
+  provides ciphertext-only `flush(s)` with no plaintext acceptance; map its
+  `Done`/`WantWrite` to `WriteWrote{0}`/progress and `WriteWantWrite`. It cannot
+  return `WantRead`. HTTP does not invent a second TLS method; if the final TLS
+  API renames it, rename the mapping once.
 - `shutdownStep` -> `tls::shutdownStep`, mapping all outcomes; multi-step.
-- `pending`/`want` -> `tls::pending`/`tls::want`.
+- `pending`/`want` -> `tls::pending` (mapped to a checked total ciphertext
+  byte count)/`tls::want`.
 - `alpn` -> `tls::alpn`/`info.alpn`; map nil to `AlpnNone`, `"http/1.1"` to
   `AlpnHttp11`, `"h2"` to `AlpnH2`, anything else to `AlpnOther`.
 - `watch` -> `tls::watch`; `close` -> `tls::close` (abortive). No `source()`.
+- `acceptAlpn` uses `Limits.allowNoAlpn` for `AlpnNone`; h2/other close before
+  any HTTP/1.1 parse.
 - `isSecure = true`; `maxTransfer = 65536`.
 
 ALPN and server policy:
@@ -1975,8 +2059,8 @@ ALPN and server policy:
 - The HTTP/1.1 listener should configure TLS `Require(["http/1.1"])`. If it
   uses `Prefer`, a client may negotiate `h2`; `next` returns `HandshakeDone`,
   the server inspects `alpn()`, and **closes** on `AlpnH2`/`AlpnOther`.
-  `AlpnNone` is allowed only if the listener policy permits no ALPN; then it
-  is treated as HTTP/1.1.
+  `AlpnNone` is allowed only if `Limits.allowNoAlpn` is true; then it is
+  treated as HTTP/1.1. `acceptAlpn` enforces this before any HTTP parse.
 - There is no h2c/Upgrade fallback. h2/h3 are separate designs.
 - The HTTP layer does not see certificates, keys, SNI, session tickets or TLS
   errors beyond a mapped `Result` category.
@@ -1984,8 +2068,9 @@ ALPN and server policy:
   `shutdownStep` path until `ShutdownDone`/`ShutdownPeerClosed` or a deadline,
   then `close`. Do not report a truncated TLS close as clean.
 
-`H1c` is therefore not "tests only": it adds the neutral adapter and may
-require the TLS-side flush addendum and ALPN dispatch tests.
+`H1c` is therefore not "tests only": it adds the neutral adapter, maps
+`flushPending` to `systls::flush(s)`, and adds ALPN/`acceptAlpn` dispatch
+tests.
 
 ### 11.6 With `html`/`sql` templates
 
@@ -2024,7 +2109,7 @@ queue pressure, drop with a counter; never block the reactor on a slow log sink.
 | H1a0: pure grammar | `http1parse` over byte arrays, `http1date` over explicit `(seconds,nanos)` (public wrapper later accepts `clock::Timestamp`); no `sysbuffer`/`sysreactor`/network | start/header/chunk corpus, exact limits, date tests |
 | H1a: connection | after systems P1a (`sysbuffer`, `sysclock`) and P2 (`sysstream` for the plain adapter); `Connection`, `MemoryTransport`, deadlines, body streaming; no network/TLS | corpus, fuzz, smuggling, fragmentation, HEAD/204/304, 100-continue, injection, syntax gate |
 | H1b: server loop | P2 `sysnet` accept, `sysreactor` watches, drain, aggregate admission, plain stream | loopback tests, curl/Go differential, slowloris, 256 idle connections, leak gates |
-| H1c: TLS integration | P2T + `http1tls` wrapper + TLS-side `flushStep` (or count-0 flush) + ALPN dispatch; HTTP transport/flush/shutdown changes are in scope | TLS gate from the separate adapter design; h2/nil dispatch |
+| H1c: TLS integration | P2T + `http1tls` wrapper + `tls::flush(s)` mapping + ALPN/`acceptAlpn` dispatch; HTTP transport/flush/shutdown changes are in scope | TLS gate from the separate adapter design; h2/nil dispatch |
 | H1d: hardening | fuzz expansion, conformance, performance/backpressure, logging | release checklist, no body desync, budget measured |
 | H2/H3 | separate designs | not in this note |
 
@@ -2149,6 +2234,7 @@ compiler adds a bulk `[]byte` copy, it is an optimization behind the same
 | `responseTotalTimeoutMs` | 300000 |
 | `totalTimeoutMs` | 300000 |
 | `allowHttp10` | false |
+| `allowNoAlpn` | true |
 | `allowExtensionMethods` | false |
 | `pipelining` | true |
 | `autoContinue` | true |
@@ -2166,10 +2252,11 @@ The focused re-review should check:
 1. The `Transport` seam against the TLS design: owned `readSome`, `WantRead`
    on write, `flushPending`/`pending`, multi-step `shutdownStep`, abortive
    `close`, `watch` without `source`, ALPN dispatch, `maxTransfer`, and the
-   neutral `http1tls` wrapper. The TLS-side `flushStep` addendum must be
-   accepted or rejected by the TLS reviewer.
-2. Whether the fresh-connection, handshake and response-total deadlines, and
-   the `forever()`/`reactor::timer` distinction, are implementable.
+   neutral `http1tls` wrapper and the `systls::flush(s)` mapping. The TLS
+   reviewer must confirm the final `flush(s)` name/semantics.
+2. Whether the fresh-connection, handshake and response-total deadlines, the
+   disarm-on-first-byte/StepDone rules, per-request/per-response resets, and
+   the `forever()`/`reactor::timer` distinction are implementable.
 3. Whether `requestClose`/`closeAfterResponse`/`shutdownStep` and the
    `Draining`/`Closing` transitions cover graceful shutdown without claiming a
    clean TLS close.
@@ -2177,8 +2264,10 @@ The focused re-review should check:
    `100-continue` early-final close, eliminate the desync case in tests.
 5. Whether by-value string APIs are acceptable given that `&string` is
    rejected by 0.12 and strings are refcounted copies; the syntax/ownership
-   gate must pass.
+   gate must compile both handlers and the accept sketch, including the
+   `endResponse` retry loop.
 6. Whether the `maxTarget`/`maxStartLine`, response trailer, aggregate memory
-   and empty-list-element rules close the remaining limit gaps.
-7. Whether the defaults and HTTP/1.0 always-close choice are the right product
-   scope.
+   (including `RequestInfo` copies and checked multiplication) and
+   empty-list-element rules close the remaining limit gaps.
+7. Whether `acceptAlpn` / `allowNoAlpn` and the defaults/HTTP/1.0 always-close
+   choice are the right product scope.
