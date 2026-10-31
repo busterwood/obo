@@ -32,8 +32,10 @@ Floats were released at `0.10`/format 6; Stage B is `0.11`/format 6; decimal is
 text API is `0.14`/format 7. Format 6 is not accepted by the 0.14 compiler:
 rebuild old `.sym` files.
 Version policy: additive builtin/runtime extensions use patch releases such as
-the historical 0.8.1; floats are 0.10, Stage B is 0.11, decimal is 0.12 and
-field visibility is 0.13.
+the historical 0.8.1; floats are 0.10, Stage B is 0.11, decimal is 0.12,
+field visibility is 0.13 and decimal text is 0.14. The template-literal source
+on this branch is **0.15, symbol format 8, ABI 1**; it is not promoted, so
+`seed/obo` remains the 0.14 image until an independent review and promotion.
 
 - **Language.** Single ownership, moves, borrowed `&T` references, checked `^T`
   handles, effect summaries, `Result[T]`/`try`, incremental I/O, modules and
@@ -47,10 +49,12 @@ field visibility is 0.13.
   (bare fractional literals, exact `+ - * %`, comparisons, explicit
   `div`/`quantize`/`toInt`, display-scale preservation), and private-by-default
   record fields with `pub` per field, mixed records, opaque `priv`/`priviface`
-  `.sym` slots and constructor-only external construction. The HTML escaping
-  library is in `obo/lib/html.obx`. Interface handles `^I` are later. The full
+  `.sym` slots and constructor-only external construction, and on this branch
+  compiler-known `sql`/`html` template literals with typed bind parameters,
+  fragment composition and contextual HTML escaping. The HTML escaping library
+  is in `obo/lib/html.obx`. Interface handles `^I` are later. The full
   reference is [obo/LANGUAGE.md](obo/LANGUAGE.md).
-- **Compiler.** 14,706 lines / 555,862 bytes of obo source. Numeric floats add
+- **Compiler.** 15,611 lines / 589,373 bytes of obo source on this branch (the released 0.14 line was 14,706 / 555,862). Numeric floats add
   the `float` type, exact literal/constant conversion, arithmetic, formatting,
   `parseFloat` and format-6 symbol support to the 0.9/format-5 lambda line;
   Stage B adds capture-list parsing, recursive incomplete/interface
@@ -108,6 +112,21 @@ weakened. The live peak varies by a few hundred bytes with the source path and
 total allocation by about 2.8 KB. The historical lambda release budget remains
 2,000,000 in its own record. The 0.14 release is merged and promoted on main;
 `seed/obo` is the matching 0.14 image.
+
+### Template literals 0.15 (implementation branch)
+
+Compiler-known `sql`/`sqlRaw` and `html`/`htmlRaw` backtick tags are implemented
+in the source tree but are not promoted to `seed/obo`. SQL holes become ordered
+bind parameters in public `Sql`/`SqlArg` records; literal chunks stay raw text,
+`Sql` fragments splice, `sql.copy`, `sqlJoin`, `sqlWhere`, `sqlNull` and
+`sqlBytes` compose explicitly, and `[]Sql` never expands implicitly. Decimal
+arguments use exact `DecimalText` bytes (display form, canonical only when the
+display scale was capped; never rounded). HTML holes are context-escaped for
+text, quoted attributes and allow-listed URLs; `Html` fragments splice only as
+text, `[]Html` concatenates, and script/style/comment/name/unquoted holes are
+compile errors. The database driver is later: `Sql` is a dialect-neutral
+text/parameter pair, and SQL identifiers, `ORDER BY` and `$n` rendering remain
+the adapter's or a future allow-list API's job.
 
 ### Field visibility 0.13
 
@@ -388,7 +407,7 @@ cd obo && python3 tests/tools.py --memory              # the four pinned tool me
 cd obo && python3 bench/bench.py         # memory and time against the collector
 cd obo && ./obo --deps tests/modules/run/basic/main.obx -I tests/modules/run/basic  # dependencies first
 cd obo && mkdir -p /tmp/syms && ./obo --check src/obo.obo --sym-dir /tmp/syms        # check without an executable
-cd obo && ./obo --version                # obo 0.14 sym-format 7 abi 1 (0.13 seed built it once)
+cd obo && ./obo --version                # source: obo 0.15 sym-format 8 abi 1 (the 0.14 seed builds it; seed remains 0.14 until promotion)
 cd obo && ./obo --reemit-sym /tmp/syms/obo.sym   # canonical re-emission (test hook)
 ```
 
