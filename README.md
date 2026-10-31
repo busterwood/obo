@@ -82,10 +82,10 @@ field visibility is 0.13.
 | Compiler (`--version`) | 647,169 bytes, sha256 `4ec4e0d6…`, `obo 0.13`, sym-format 7, abi 1 |
 | Seed (`--version`) | promoted obo 0.13: 647,169 bytes, sha256 `4ec4e0d6…`, sym-format 7, abi 1; the released 0.12 seed (643,073 bytes, `d98d6b5f…`) built this image once; the 0.11 seed (585,729 bytes, `01fa9ed3…`) also builds it |
 | Self-host fixed point | stage 2 == stage 3 == compiler, 647,169 bytes, `4ec4e0d6…`; the 0.11 and 0.12 seeds build this image from source, and the promoted 0.13 seed reproduces it |
-| Self-compile wall time | 0.15 s on the 0.11 line; not re-benchmarked for 0.13 (host-dependent) |
+| Self-compile wall time | 0.20 s (5 runs, median; host-dependent, measured 31 October 2026) |
 | Self-compile live peak | 2,207,824 bytes direct; 2,208,192 bytes port comparison (budget 2,500,000) |
 | Total allocated | 49,506,992 bytes direct; 49,509,824 bytes port comparison |
-| Maximum resident set | 4,028 KB on the 0.11 line; not re-measured for 0.13 |
+| Maximum resident set | 4,224 KB (measured 31 October 2026) |
 | Live-memory budget | 2,500,000 bytes: 292,176 spare direct / 291,808 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 48,032 at baseline 2,208,240 -> mutant 2,256,272) |
 | obo suite | 1,741 `run_fork` tests; 141 `module_test`; `sym_test.py` 52/52; `sym_fuzz.py` 200/200; `port_test` 598/598 with 10 encoder groups; `port_compare` 1,729/1,729 default; seed comparisons 1,535/1,535 against the promoted 0.13 seed and the 0.12 seed, and 1,477/1,477 against the 0.11 seed; 70 doc examples; 29/29 import checks; 16/16 stdlib roots |
 | Float suite | `float_f1.py` 19 groups in normal and `--noregs` builds (12,580 power-of-two values each); `lambda_float_capture` passes in both modes; `memory_log_check` 4 sources |
@@ -95,7 +95,7 @@ field visibility is 0.13.
 | Tool binaries | cat 81,921; wc 86,017; sort 110,593; head 81,921; tail 94,209 bytes (static, runtime included) |
 | eza E2 differential gate | own-binary gate: 482 passed, 0 failed, 72 live-only skips; pinned reference eza is not on the host `PATH` |
 | eza E2 binary | 258,049 bytes (static, runtime included; reference eza 0.23.3 is 2,294,768) |
-| eza 10k-entry live peak | worst 2,184,368 bytes; `EZA_PEAK_MAX` 2,752,512 (a distinct eza cap, not the compiler budget) |
+| eza 10k-entry live peak | worst 2,184,496 bytes (Tree; Restricted long 2,184,368); `EZA_PEAK_MAX` 2,752,512 (a distinct eza cap, not the compiler budget) |
 | Minimal static executable | 32,769 bytes (runtime included) |
 
 The compiler budget is 2,500,000 bytes live, with the separate 30,000-byte
@@ -103,7 +103,7 @@ empty-array oracle unchanged. The 0.13 line peaks at 2,207,824 bytes in direct s
 2,208,192 in the port comparison: 292,176 and 291,808 bytes spare. Total
 allocation is 49,506,992 bytes direct and 49,509,824 bytes in the port comparison. No check was
 weakened. The live peak varies by a few hundred bytes with the source path and
-total allocation by about 2 KB. The historical lambda release budget remains
+total allocation by about 2.8 KB (2,832 bytes). The historical lambda release budget remains
 2,000,000 in its own record. The 0.13 release is merged and promoted on main;
 `seed/obo` is the matching 0.13 image.
 
@@ -149,38 +149,40 @@ statuses (1, 3, 4, 5, 6), as documented in `obo/LANGUAGE.md` section 9.
 ## Performance
 
 These are one host's measurements, not portable constants: an AMD Ryzen 7
-8745HS under WSL2, CPython 3.12.3, GNU coreutils 9.4, pinned eza 0.23.3 and
-**obo 0.8 sym-format 4 abi 1**, main `9290396`. The table is the second of two
-default runs on 30 October 2026; the first run agreed within normal variance
-except for the eza row, which was the outlier (55.9 ms obo / 66.9 ms pinned;
-the second run is shown). The benchmark uses warm page cache, one pinned core,
+8745HS under WSL2, CPython 3.12.3, GNU coreutils 9.4 and **obo 0.13 sym-format
+7 abi 1**, main `8cd46f1`, measured on 31 October 2026. The table is the second
+of two default runs; the first differed most on obo `sort` (242.7 ms vs
+204.5 ms here), Python's explicit loop and `sum(range)`, while other obo rows
+stayed mostly within about 3%, with eza at 5%. The benchmark uses warm page
+cache, one pinned core,
 medians of repeated runs, timed output to `/dev/null`, `LC_ALL=C` and `TZ=UTC`;
 the command is `python3 obo/bench/cli/run.py` (add `--eza PATH`, or have a
-matching eza on `PATH`, for the pinned-eza row). Full tables, binary sizes,
-memory figures, methodology and caveats are in [PERFORMANCE.md](PERFORMANCE.md);
-how to run and read the suite is in
+matching eza on `PATH`, for the optional pinned-eza row). The pinned eza 0.23.3
+reference was not on this host's `PATH`, so that row was skipped. Full tables,
+binary sizes, memory figures, methodology and caveats are in
+[PERFORMANCE.md](PERFORMANCE.md); how to run and read the suite is in
 [obo/bench/cli/README.md](obo/bench/cli/README.md). The earlier 0.5 / 0.6
 sample is historical and lives in [HISTORY.md](HISTORY.md).
 
 | Workload | obo | Comparison |
 |---|---:|---:|
-| Process startup | 0.24 ms | Python 12.8 ms (53.7x slower) |
-| `fib(32)` recursive | 10.6 ms | Python 216.9 ms (20.5x slower) |
-| Sum below 100,000,000, explicit loop | 23.4 ms | Python 7,511 ms (321.5x slower) |
-| Sieve of Eratosthenes to 10,000,000 | 135.2 ms | Python 2,392 ms (17.7x slower) |
-| `wc -lwc`, 110 MB | 131.7 ms | Python 474.5 ms (3.60x slower); GNU 1,038 ms (7.88x slower) |
-| `sort`, 1,000,000 lines | 162.9 ms | Python 602.0 ms (3.70x slower); GNU 256.5 ms (1.57x slower) |
-| `sort -n`, 1,000,000 lines | 255.1 ms | GNU 434.7 ms (1.70x slower); Python 516.4 ms (2.02x slower) |
-| `eza`, 10,000 names | 30.4 ms (pre-help 212,993 B; not re-measured) | pinned eza 59.2 ms (1.94x slower); Python 16.3 ms and GNU `ls` 6.55 ms are faster |
+| Process startup | 0.20 ms | Python 12.3 ms (62.6x slower) |
+| `fib(32)` recursive | 10.2 ms | Python 206.5 ms (20.2x slower) |
+| Sum below 100,000,000, explicit loop | 22.2 ms | Python 8,046 ms (361.7x slower) |
+| Sieve of Eratosthenes to 10,000,000 | 142.5 ms | Python 2,560 ms (18.0x slower) |
+| `wc -l`, 110 MB | 89.9 ms | Python 82.1 ms (0.91x); GNU 13.6 ms (0.15x) |
+| `wc -lwc`, 110 MB | 136.9 ms | Python 519.2 ms (3.79x slower); GNU 1,137 ms (8.30x slower) |
+| `sort`, 1,000,000 lines | 204.5 ms | Python 604.5 ms (2.96x slower); GNU 274.3 ms (1.34x slower) |
+| `sort -n`, 1,000,000 lines | 263.2 ms | GNU 490.1 ms (1.86x slower); Python 556.6 ms (2.11x slower) |
+| `eza`, 10,000 names | 29.9 ms | Python 16.8 ms and GNU `ls` 6.62 ms are faster; pinned eza row skipped |
 
-The compiler is a 643,073-byte static binary; the 0.11 seed built the 0.12
-image once and the promotion makes `seed/obo` the same 0.12 image. The tools are
-cat 53,249, wc 57,345, sort 81,921, head 53,249 and tail 61,441 bytes; eza is
-229,377 bytes against 2,294,768 for the pinned eza 0.23.3 reference. Every obo
-binary is freestanding and static, with the runtime included. The benchmark rows
-above are the recorded 0.8 line. The honest shape of these numbers is in
+The compiler is the 647,169-byte 0.13 fixed point (sha256 `4ec4e0d6…`);
+`seed/obo` is the same image. The tools are cat 81,921, wc 86,017, sort
+110,593, head 81,921 and tail 94,209 bytes; eza is 258,049 bytes. Every obo
+binary is freestanding and static, with the runtime included. The benchmark
+rows above are the current 0.13 line. The honest shape of these numbers is in
 [PERFORMANCE.md](PERFORMANCE.md): pure compute is far ahead of CPython, while
-`wc -l` is at Python parity and behind GNU, eza is slower than Python and `ls`
+`wc -l` is close to Python and behind GNU, eza is slower than Python and `ls`
 on names (its case is size and memory), and the sort rows are fixture-specific.
 
 ### Heap limit and address space
