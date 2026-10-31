@@ -1,0 +1,7 @@
+module app
+
+import "pqprobe.obx"
+
+fn main() {
+    println("PQlibVersion=", pqprobe::pq_lib_version())
+}

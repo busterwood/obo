@@ -1,0 +1,100 @@
+module app
+
+import "libpq.obx"
+
+fn bytes_of(s: string): []byte {
+    var b = new []byte(0)
+    for i in 0..len(s) { append(b, s[i]) }
+    return b
+}
+
+fn main() {
+    let made = libpq::make_empty_rows(libpq::PGRES_TUPLES_OK)
+    match made {
+        ok(r) {
+            if r.status() != libpq::PGRES_TUPLES_OK { exit(1) }
+            if r.ntuples() != 0 || r.nfields() != 0 { exit(2) }
+            println("empty_closed=", r.close())
+        }
+        err(m, c) { println("empty_error=", m, " (", c, ")"); exit(3) }
+    }
+
+    let connected = libpq::connect(bytes_of("fake-ok"))
+    match connected {
+        ok(conn) {
+            let vals = new []?[]byte(0)
+            append(vals, bytes_of("hello"))
+            append(vals, nil)
+            var bin = new []byte(0)
+            append(bin, byte(0))
+            append(bin, byte(255))
+            append(bin, byte(65))
+            append(vals, bin)
+            let binary = new []bool(0)
+            append(binary, false)
+            append(binary, false)
+            append(binary, true)
+
+            let q = libpq::exec_params(&conn, bytes_of("FAKE_OK"), vals, binary)
+            match q {
+                ok(rows) {
+                    println("status=", rows.status())
+                    println("ntuples=", rows.ntuples())
+                    println("nfields=", rows.nfields())
+                    let t = rows.text(0, 0)
+                    match t {
+                        ok(s) { println("t=", s) }
+                        err(m, c) { println("t_error=", m, " (", c, ")"); exit(4) }
+                    }
+                    println("n_null=", rows.is_null(0, 1))
+                    println("n_len=", rows.length(0, 1))
+                    let b = rows.value(0, 2)
+                    match b {
+                        ok(v) {
+                            println("b_len=", len(v))
+                            println("b0=", int(v[0]), " b1=", int(v[1]), " b2=", int(v[2]))
+                        }
+                        err(m, c) { println("b_error=", m, " (", c, ")"); exit(5) }
+                    }
+                    let num = rows.text(0, 3)
+                    match num {
+                        ok(s) { println("num=", s) }
+                        err(m, c) { println("num_error=", m, " (", c, ")"); exit(6) }
+                    }
+                    println("num_type=", rows.ftype(3), " num_mod=", rows.fmod(3))
+                    let nm = rows.fname(3)
+                    match nm {
+                        ok(s) { println("num_name=", s) }
+                        err(m, c) { println("name_error=", m, " (", c, ")"); exit(7) }
+                    }
+                    println("rows_closed=", rows.close())
+                }
+                err(m, c) { println("query_error=", m, " (", c, ")"); exit(8) }
+            }
+
+            let bad = libpq::query(&conn, bytes_of("FAKE_ERROR"))
+            match bad {
+                ok(rows) {
+                    println("error_status=", rows.status())
+                    let em = rows.error_message()
+                    println("error_len=", len(em))
+                    println("error_closed=", rows.close())
+                }
+                err(m, c) { println("unexpected_error_result=", m, " (", c, ")"); exit(9) }
+            }
+            println("conn_closed=", conn.close())
+        }
+        err(m, c) { println("connect_error=", m, " (", c, ")"); exit(10) }
+    }
+
+    let failed = libpq::connect(bytes_of("fake-fail"))
+    match failed {
+        ok(conn) { println("unexpected_connect_ok"); conn.close(); exit(11) }
+        err(m, c) { println("connect_failed=", c) }
+    }
+
+    println("live=", libpq::live_resources())
+    println("conns=", libpq::live_connections())
+    println("results=", libpq::live_results())
+    println("buffers=", libpq::live_buffers())
+}

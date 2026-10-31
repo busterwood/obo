@@ -1,0 +1,13 @@
+module app
+
+import "hello.obx"
+
+// Startup/argv/env probe for the synthetic initial-stack block.
+fn main() {
+    let a = args()
+    println("argc=", len(a))
+    if len(a) > 0 { println("arg0=", a[0]) }
+    let f: ?[]byte = getenv("FOO")
+    if f == nil { println("FOO=nil") } else { println("FOO=", string(f)) }
+    println("zero=", hello::zero())
+}

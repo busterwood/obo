@@ -1,0 +1,296 @@
+// Experimental in-process libpq wrapper.
+//
+// This is an explicit-close package, not a production driver. Connection and
+// Rows are ordinary obo records whose only field is an integer registry token;
+// obo never sees a PGconn* or PGresult*. The trusted C adapter validates the
+// token's kind and generation on every call and poisons it on close.
+//
+// IMPORTANT: record fields are not private in obo. An ordinary obo value can be
+// written as `new Connection{tok: 123}`; the C registry rejects an unknown,
+// stale, or wrong-kind token before dereferencing it. The token is not a
+// capability and this is not a security boundary against trusted C.
+//
+// Dropping a Connection or Rows does NOT call PQfinish or PQclear. Close
+// explicitly (or use a scoped helper in the application) and call
+// live_resources() when checking for leaks.
+module libpq
+
+pub const CONNECTION_OK = 0
+pub const PGRES_EMPTY_QUERY = 0
+pub const PGRES_COMMAND_OK = 1
+pub const PGRES_TUPLES_OK = 2
+pub const PGRES_FATAL_ERROR = 7
+
+pub type Connection = ref record { tok: int }
+pub type Rows = ref record { tok: int }
+
+// ------------------------------------------------------------------ buffers
+
+// Copy obo bytes into a C-owned, length-bounded buffer one byte at a time.
+// This is deliberately simple and slow: it is the first bounded proof, not a
+// general string bridge. The raw pointer never leaves C.
+fn put_bytes(b: &[]byte): int {
+    let n = len(b)
+    if n < 0 || n > 16777216 { return 0 }
+    let t = __cinterop("cres_buf_new", n)
+    if t <= 0 { return 0 }
+    for i in 0..n {
+        let ok = __cinterop("cres_buf_set", t, i, int(b[i]))
+        if ok != 1 {
+            __cinterop("cres_buf_free", t)
+            return 0
+        }
+    }
+    return t
+}
+
+fn put_cstr(b: &[]byte): int {
+    for i in 0..len(b) {
+        if b[i] == byte(0) { return 0 }
+    }
+    return put_bytes(b)
+}
+
+fn take_buf(t: int): []byte {
+    var out = new []byte(0)
+    if t <= 0 { return out }
+    let n = __cinterop("cres_buf_len", t)
+    if n < 0 {
+        __cinterop("cres_buf_free", t)
+        return out
+    }
+    for i in 0..n {
+        let v = __cinterop("cres_buf_get", t, i)
+        if v < 0 { break }
+        append(out, byte(v))
+    }
+    __cinterop("cres_buf_free", t)
+    return out
+}
+
+// Text conversion rejects an embedded NUL so a binary value cannot silently
+// truncate at the obo string boundary.
+fn text_of(b: []byte): Result[string] {
+    for i in 0..len(b) {
+        if b[i] == byte(0) { return err("bytes contain an embedded NUL", 1) }
+    }
+    return ok(string(b))
+}
+
+fn text_or_empty(b: []byte): string {
+    for i in 0..len(b) {
+        if b[i] == byte(0) { return "bytes contain an embedded NUL" }
+    }
+    return string(b)
+}
+
+fn append_u32(mut out: &[]byte, v: int) {
+    var x = v
+    for i in 0..4 {
+        append(out, byte(x % 256))
+        x = x / 256
+    }
+}
+
+// Packet for pq_exec_packet. Building it is pure obo; only the finished buffer
+// crosses into C.
+fn build_packet(sql: &[]byte, mut values: &[]?[]byte, binary: &[]bool, result_binary: bool): Result[[]byte] {
+    let np = len(values)
+    if len(binary) != np { return err("values and binary flags differ in length", 2) }
+    for i in 0..len(sql) {
+        if sql[i] == byte(0) { return err("SQL text contains an embedded NUL", 2) }
+    }
+    var out = new []byte(0)
+    append_u32(&out, len(sql))
+    for i in 0..len(sql) { append(out, sql[i]) }
+    if result_binary { append(out, byte(1)) } else { append(out, byte(0)) }
+    append_u32(&out, np)
+    for i in 0..np {
+        let v = take(values[i])
+        if v == nil {
+            append(out, byte(0))     // SQL NULL, distinct from empty
+            append_u32(&out, 0)
+        } else {
+            let is_binary = binary[i]
+            if is_binary {
+                append(out, byte(2))
+            } else {
+                for j in 0..len(v) {
+                    if v[j] == byte(0) { return err("text parameter contains an embedded NUL", 2) }
+                }
+                append(out, byte(1))
+            }
+            append_u32(&out, len(v))
+            for j in 0..len(v) { append(out, v[j]) }
+        }
+    }
+    return ok(out)
+}
+
+// -------------------------------------------------------------- connections
+
+pub fn connect(dsn: []byte): Result[Connection] {
+    let b = put_cstr(&dsn)
+    if b <= 0 { return err("invalid connection string (NUL byte or too long)", 2) }
+    let t = __cinterop("pq_connect", b)
+    __cinterop("cres_buf_free", b)
+    if t <= 0 { return err("connection could not be allocated", 2) }
+    let st = __cinterop("pq_conn_status", t)
+    if st != CONNECTION_OK {
+        let eb = __cinterop("pq_error_buf", t)
+        let msg = take_buf(eb)
+        __cinterop("pq_conn_close", t)
+        return err(text_or_empty(msg), st)
+    }
+    return ok(new Connection{tok: t})
+}
+
+pub fn (c: &Connection) status(): int {
+    return __cinterop("pq_conn_status", c.tok)
+}
+
+pub fn (c: &Connection) is_open(): bool {
+    return __cinterop("pq_conn_live", c.tok) == 1
+}
+
+pub fn (c: &Connection) error_message(): []byte {
+    return take_buf(__cinterop("pq_error_buf", c.tok))
+}
+
+// Consumes the Connection. Double close is a safe false, never a second
+// PQfinish.
+pub fn (c: Connection) close(): bool {
+    return __cinterop("pq_conn_close", c.tok) == 1
+}
+
+// -------------------------------------------------------------- query / rows
+
+fn exec_params_fmt(c: &Connection, sql: []byte,
+                   values: []?[]byte, binary: []bool, result_binary: bool): Result[Rows]
+
+pub fn exec_params(c: &Connection, sql: []byte,
+                   values: []?[]byte, binary: []bool): Result[Rows] {
+    return exec_params_fmt(c, sql, values, binary, false)
+}
+
+pub fn exec_params_binary(c: &Connection, sql: []byte,
+                          values: []?[]byte, binary: []bool): Result[Rows] {
+    return exec_params_fmt(c, sql, values, binary, true)
+}
+
+fn exec_params_fmt(c: &Connection, sql: []byte,
+                   values: []?[]byte, binary: []bool, result_binary: bool): Result[Rows] {
+    let ctok = c.tok
+    let packet = try build_packet(&sql, &values, &binary, result_binary)
+    let b = put_bytes(&packet)
+    if b <= 0 { return err("query packet could not be allocated", 2) }
+    let t = __cinterop("pq_exec_packet", ctok, b)
+    __cinterop("cres_buf_free", b)
+    if t <= 0 {
+        let eb = __cinterop("pq_error_buf", ctok)
+        let msg = take_buf(eb)
+        return err(text_or_empty(msg), 2)
+    }
+    return ok(new Rows{tok: t})
+}
+
+pub fn query(c: &Connection, sql: []byte): Result[Rows] {
+    return exec_params(c, sql, new []?[]byte(0), new []bool(0))
+}
+
+pub fn (r: &Rows) status(): int {
+    return __cinterop("pq_result_status", r.tok)
+}
+
+pub fn (r: &Rows) is_open(): bool {
+    return __cinterop("pq_result_live", r.tok) == 1
+}
+
+pub fn (r: &Rows) ntuples(): int {
+    return __cinterop("pq_ntuples", r.tok)
+}
+
+pub fn (r: &Rows) nfields(): int {
+    return __cinterop("pq_nfields", r.tok)
+}
+
+pub fn (r: &Rows) is_null(row: int, col: int): bool {
+    return __cinterop("pq_getisnull", r.tok, row, col) == 1
+}
+
+// Length in bytes as libpq reports it; NULL and empty both report 0. Use
+// is_null to tell them apart.
+pub fn (r: &Rows) length(row: int, col: int): int {
+    return __cinterop("pq_getlength", r.tok, row, col)
+}
+
+// Exact bytes, including an embedded NUL. NULL is an error here; check
+// is_null first when NULL and empty must be distinguished.
+pub fn (r: &Rows) value(row: int, col: int): Result[[]byte] {
+    let null = __cinterop("pq_getisnull", r.tok, row, col)
+    if null == 1 { return err("SQL NULL", 1) }
+    if null < 0 { return err("row or column out of range", 2) }
+    let t = __cinterop("pq_value_buf", r.tok, row, col)
+    if t <= 0 { return err("value could not be copied", 2) }
+    return ok(take_buf(t))
+}
+
+pub fn (r: &Rows) text(row: int, col: int): Result[string] {
+    let b = try r.value(row, col)
+    return text_of(b)
+}
+
+pub fn (r: &Rows) fname(col: int): Result[string] {
+    let t = __cinterop("pq_fname_buf", r.tok, col)
+    if t <= 0 { return err("column out of range", 2) }
+    let b = take_buf(t)
+    return text_of(b)
+}
+
+pub fn (r: &Rows) ftype(col: int): int {
+    return __cinterop("pq_ftype", r.tok, col)
+}
+
+pub fn (r: &Rows) fmod(col: int): int {
+    return __cinterop("pq_fmod", r.tok, col)
+}
+
+pub fn (r: &Rows) error_message(): []byte {
+    return take_buf(__cinterop("pq_result_error_buf", r.tok))
+}
+
+// Consumes the Rows. A PGresult outlives its PGconn in this adapter; close the
+// connection first if you need to exercise that lifetime.
+pub fn (r: Rows) close(): bool {
+    return __cinterop("pq_result_clear", r.tok) == 1
+}
+
+// ------------------------------------------------------- library/resource info
+
+pub fn lib_version(): int {
+    return __cinterop("pq_lib_version")
+}
+
+// PQmakeEmptyPGresult(NULL, status) + PQclear: real libpq result ownership
+// without a database connection.
+pub fn make_empty_rows(status: int): Result[Rows] {
+    let t = __cinterop("pq_make_empty_result", status)
+    if t <= 0 { return err("empty result could not be created", 2) }
+    return ok(new Rows{tok: t})
+}
+
+pub fn live_resources(): int {
+    return __cinterop("cres_live_count")
+}
+
+pub fn live_buffers(): int {
+    return __cinterop("cres_live_kind", 1)
+}
+
+pub fn live_connections(): int {
+    return __cinterop("cres_live_kind", 2)
+}
+
+pub fn live_results(): int {
+    return __cinterop("cres_live_kind", 3)
+}

@@ -1,0 +1,45 @@
+module app
+
+import "hello.obx"
+
+fn check(name: string, got: int, want: int) {
+    if got != want {
+        println(name, ": got ", got, ", want ", want)
+        exit(1)
+    }
+}
+
+fn live_regs(n: int): int {
+    var a = 1
+    var b = 2
+    var c = 3
+    var d = 4
+    var acc = 0
+    for i in 0..n {
+        acc = acc + hello::add(a, i) + hello::add(b, c) + hello::add(d, i)
+    }
+    return acc
+}
+
+fn main() {
+    check("zero", hello::zero(), 0)
+    check("neg32", hello::neg32(), -123)
+    check("int32_min", hello::int32_min(), -2147483647 - 1)
+    check("int32_max", hello::int32_max(), 2147483647)
+    check("identity", hello::identity(-9000000000), -9000000000)
+    check("min64", hello::identity(-9223372036854775807 - 1), -9223372036854775807 - 1)
+    check("max64", hello::identity(9223372036854775807), 9223372036854775807)
+    check("add", hello::add(20, 22), 42)
+    check("nested", hello::add(hello::identity(1), hello::add(2, hello::identity(3))), 6)
+    check("live_regs", live_regs(5), 70)
+    check("sum3", hello::sum3(1, 2, 3), 6)
+    check("sum4", hello::sum4(1, 2, 3, 4), 10)
+    check("sum5", hello::sum5(1, 2, 3, 4, 5), 15)
+    check("sum6", hello::sum6(1, 2, 3, 4, 5, 6), 21)
+    check("sum7", hello::sum7(1, 2, 3, 4, 5, 6, 7), 28)
+    check("sum8", hello::sum8(1, 2, 3, 4, 5, 6, 7, 8), 36)
+    check("align6", hello::align6(1, 2, 3, 4, 5, 6), 1)
+    check("align7", hello::align7(1, 2, 3, 4, 5, 6, 7), 1)
+    check("align8", hello::align8(1, 2, 3, 4, 5, 6, 7, 8), 1)
+    println("scalar ok")
+}

@@ -1,0 +1,23 @@
+module app
+
+import "libpq.obx"
+
+// No database connection: actual libpq version plus real PGresult ownership
+// through PQmakeEmptyPGresult/PQclear.
+fn main() {
+    println("PQlibVersion=", libpq::lib_version())
+    let made = libpq::make_empty_rows(libpq::PGRES_TUPLES_OK)
+    match made {
+        ok(r) {
+            println("empty_status=", r.status())
+            println("empty_rows=", r.ntuples())
+            println("empty_fields=", r.nfields())
+            println("empty_closed=", r.close())
+        }
+        err(m, c) {
+            println("empty_error=", m, " (", c, ")")
+            exit(1)
+        }
+    }
+    println("live=", libpq::live_resources())
+}
