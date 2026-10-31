@@ -38,6 +38,43 @@ Records and closed types are declared with `type`, and may refer to each other.
 A forward declaration `type Sym` lets them do so; the fields are only usable once
 the type is defined.
 
+A record field is **private to its defining module by default**. `pub` before a
+field name makes that field part of the exported interface; it applies to every
+name in a comma group, and a mixed record spells the private and public fields as
+separate declarations:
+
+```obo
+// example: runs
+// prints 12
+module main
+
+pub type Counter = ref record {
+    pub value: int          // public
+    step: int               // private to this module
+    pub label, unit: string // both public
+}
+
+fn main() {
+    var c = new Counter{value: 10, step: 2, label: "n", unit: "u"}
+    c.value += c.step
+    println(c.value)
+}
+```
+
+Inside the defining module every field is accessible, whether `pub` or not.
+Importers may read, write, borrow, move, `take`, `replace` and name in
+`new T{...}` only public fields. External construction is allowed only when
+**every** field is public; otherwise the module must provide a constructor
+function. A field's type is not part of the interface when the field is private:
+a private field may use a private named type, and the export closure check skips
+it. A `pub` field of a private type is still the existing export error, because
+an importer must be able to name the field's type.
+
+Closed-variant fields remain public in v1; `pub` on a variant field is rejected.
+An aliased imported type takes the underlying type's field visibility and owner.
+The `.sym` representation and the exact diagnostics are in section 6 and
+section 10.
+
 ### Float
 
 `float` is IEEE 754 binary64 in one 8-byte word. The `f`/`F` suffix marks a
@@ -187,7 +224,10 @@ The rules for moves:
   ```
 
 - A plain assignment cannot move out of a field or element, or out of a global.
-  Use `take` on an optional one instead.
+  Use `take` on an optional one instead. A private field of an imported record
+  cannot be the operand of `take`, `replace` or a move at all: field resolution
+  reports the no-public-field error before the move is considered. The whole
+  record remains movable, passable, returnable, storable and droppable.
 - Both branches of an `if`, and every arm of a `match`, must leave each variable
   in the same state. A variable moved on only one path is an error at the merge.
 
@@ -752,6 +792,14 @@ are refused); `mut r: &T` may change fields, append, and free below the receiver
 `r: T` is owned and is freed at return unless returned, passed on or dropped. A
 field cannot be moved out of an owned receiver: use `replace(r.f, new ...)` or
 return `r` itself.
+
+A method body has module-level access to every field of its receiver type, so a
+`mut &T` method can maintain private state and a `&T` method can read it. A
+public method is the external surface for that state. An external call to a
+foreign **private field** used as a method (`x.privateName()`) does not leak the
+field: it reports the no-public-field-or-method message (section 10). A public
+field on a mixed record, and any field called as a method inside its own module,
+keeps the ordinary `has a field ..., not a method` message.
 
 ### Calls
 
@@ -1382,9 +1430,25 @@ Exporting a closed type exports its variants, so an importer may write
 is exported only if it is `pub`; exporting a method also requires its receiver
 type to be exported.
 
+Record fields have their own visibility, private by default: `pub` before a field
+name makes that field accessible to importers, and a mixed record may expose some
+fields and hide others. Inside the defining module all fields are ordinary.
+Outside it, a private field cannot be read, written, borrowed, moved, `take`n,
+`replace`d or named in `new T{...}`. External `new T{...}` is allowed only when
+**all** fields are public; a record with any private field requires a constructor
+function in its module. A zero-field record is vacuously all-public and may be
+constructed externally. Closed-variant fields stay public in v1; `pub` on one is
+the exact error in section 10.
+
+Field visibility is applied at the field designator, not at the spelling: a
+nested path is checked segment by segment, arrays follow their element type, and
+an alias or a global does not bypass the rule. A `pub` field of a private named
+type is still the closure error below; a **private** field may use any private
+named type because it is not part of the interface.
+
 An exported declaration may not mention a **private** named type of its own
-module, directly or through `[]`, `?`, `^`, `Result`, record fields or a
-closed-type variant's fields:
+module, directly or through `[]`, `?`, `^`, `Result`, public record fields or a
+closed-type variant's fields. Private fields are skipped by this check:
 
 `exported 'Shape' uses private type 'Secret' (variant 'A'); mark 'Secret' pub too`
 
@@ -1490,10 +1554,12 @@ build** still requires every source; if only a `.sym` exists it reports
 without source` (exit 2). The checked root is exempt from the basename rule (it is
 the root of its check graph), and its `.sym` is named by its declared module name.
 
-`--version` prints `obo 0.12 sym-format 6 abi 1`; the numbers are the `obosym`
+`--version` prints `obo 0.13 sym-format 7 abi 1`; the numbers are the `obosym`
 format, the compiled-program ABI and the compiler version, each checked exactly
-when a `.sym` is read. The historical `0.8.1` release printed
-`obo 0.8.1 sym-format 4 abi 1`. `--reemit-sym FILE` is a testing hook: it reads a symbol
+when a `.sym` is read. The historical `0.12` release printed
+`obo 0.12 sym-format 6 abi 1`, and `0.8.1` printed
+`obo 0.8.1 sym-format 4 abi 1`. A format-6 file is rejected by the exact check;
+rebuild it. `--reemit-sym FILE` is a testing hook: it reads a symbol
 file with the reader and prints the canonical re-emission, which the symbol-file
 tests compare byte-for-byte.
 
@@ -1502,18 +1568,19 @@ tests compare byte-for-byte.
 A `.sym` is text in a language-like declaration syntax, readable by the scanner:
 
 ```text
-obosym 6
+obosym 7
 abi 1
-compiler "0.12"
+compiler "0.13"
 source 0x0123456789abcdef
 dep io "io.obx"
 interface 0xfedcba9876543210
 module strings
 depiface io 0x1111111111111111
 type Builder uid 0x3333333333333333
-type Builder = ref record { items: []string; count: int }
-type Node = ref record { value: int; next: ?Node }
-type Shape = closed { Circle { r: int } Rect { w: int; h: int } }
+type Builder = ref record { pub items: []string; priv; pub count: int }
+type Node = ref record { pub value: int; pub next: ?Node }
+type Holder = ref record { priviface; pub id: int }
+type Shape = closed { Circle { pub r: int } Rect { pub w: int; pub h: int } }
 type Sized = interface { pure fn size(): int; mut fn fill(mut p0: &Builder) }
 type Text = []string
 const Limit: int = 0x000000000000000a
@@ -1544,10 +1611,33 @@ fn split(p0: string, p1: string): []string
   declarations are skipped without reordering the exported ones. No address,
   offset, descriptor, pointer, timestamp or absolute path appears.
 - A record definition lists its fields in declaration order (offsets are
-  recomputed: one 8-byte word each); a closed definition lists its variants in
-  declaration order. Every exported record/closed type has a shell line first, so
-  recursive and mutually recursive types resolve. Variants are registered by the
-  reader under `Module::Variant` and exported with their closed type.
+  recomputed: one 8-byte word each). Every public field is written explicitly as
+  `pub name: Type`; a bare `name: Type` is malformed in format 7, so a writer bug
+  cannot silently publish a field. A private field is the single token `priv`, or
+  `priviface` when its hidden type contains an interface (directly or through
+  `[]`, `?`, `^`, `Result`, records or variants). The slot is one word at the next
+  offset; the private name and type are not written. `pub priv: int` and
+  `pub priviface: int` are ordinary public fields named `priv`/`priviface` and
+  round-trip unchanged. A closed definition lists its variants in declaration
+  order; every variant field is written with `pub`, and `priv`/`priviface` inside
+  a variant is a malformed-symbol error. Every exported record/closed type has a
+  shell line first, so recursive and mutually recursive types resolve. Variants
+  are registered by the reader under `Module::Variant` and exported with their
+  closed type.
+- Field visibility is part of the interface body, so public↔private changes,
+  adding/removing/reordering a slot, and a `priv`↔`priviface` change all change
+  the interface hash. Renaming or retyping a private field does **not** change it
+  unless an exported callable's `pf`/`pfree` summary text changes: a private name
+  in a summary path is accepted and not redacted (`io::Reader::buf` is the
+  concrete example), so renaming that field changes the hash, `[]byte -> []int`
+  keeps it, and `[]byte -> int` changes it because the owned-field `pf` row
+  disappears. A retyped field whose summary text is identical also keeps it.
+- The reader creates a private slot as a nameless placeholder with the parsed
+  `priviface` bit and `int` as its type; an empty name never matches a source
+  identifier, so `fieldIndex` ignores it. `symCompareFields` compares the live
+  field's carrier answer (`containsIface` on its real type) with the parsed flag,
+  never a recomputation from the placeholder, so `--reemit-sym` keeps
+  `priviface`. Each per-field carrier query starts with a clean visited set.
 - An alias `type A = <typeExpr>` maps the name to the existing type; it never
   re-declares it. Field and signature types are emitted as the underlying type, so
   layout never depends on an alias.
@@ -2080,19 +2170,21 @@ P2 moved
 `fmt`, and removed the four P1 compatibility functions.
 
 `obo/lib/html.obx` is the builder API for the HTML template domain. `Html` is
-an ordinary record with the public field `text`; `raw` is the explicit trusted
-constructor, `escapeText` encodes text content, `escapeAttr` encodes one quoted
-attribute value (both quote types), `validateUrl` allow-lists relative,
-`http`, `https` and `mailto` URLs and attribute-encodes the result, and `join`
-concatenates `Html` fragments without escaping them. Trust is a documented
-convention, not type enforcement: direct `new html::Html{text: ...}` is legal
-and equivalent to `raw`. Escaping is one pass and not idempotent: an
-already-encoded string is encoded again, and `raw` must not be fed untrusted
-values. There is deliberately no API for script/style bodies, comments,
-unquoted attributes or dynamic tag/attribute names, and no sanitizer. The
-future compiler-known `html` tag will lower literal chunks to `raw` and holes
-to these context functions; until then, this module is the builder-only form.
-Its header documents the byte, control and URL policies.
+a record whose `text` field is **private to the module**; `raw` is the explicit
+trusted constructor, `escapeText` encodes text content, `escapeAttr` encodes one
+quoted attribute value (both quote types), `validateUrl` allow-lists relative,
+`http`, `https` and `mailto` URLs and attribute-encodes the result, `join`
+concatenates `Html` fragments without escaping them, and `toText` is the
+read-only rendering accessor. Direct `new html::Html{text: ...}` from an importer
+is not legal: it is refused as an external construction of a private-field
+record. Trust is a documented convention, not type enforcement: `raw` still
+accepts any string and is equivalent to the old direct construction. Escaping is
+one pass and not idempotent: an already-encoded string is encoded again, and
+`raw` must not be fed untrusted values. There is deliberately no API for
+script/style bodies, comments, unquoted attributes or dynamic tag/attribute
+names, and no sanitizer. The future compiler-known `html` tag will lower literal
+chunks to `raw` and holes to these context functions; until then, this module is
+the builder-only form. Its header documents the byte, control and URL policies.
 
 ### Metadata
 
@@ -2330,7 +2422,15 @@ depend on the program.
 | `<t> has no methods` | a method call on `int`, `string`, `[]T`, `?T`, `^T` or `Result[T]`. |
 | `type '<T>' has no method '<m>' (declare it before use; use a forward heading for mutual recursion)` | no visible method of that name on the receiver's static type. |
 | `module '<m>' has no exported member '<T>::<m>' (only 'pub' declarations are visible)` | a private or unknown method of an imported type; the same message in a full build and in `--check`. |
-| `type '<T>' has a field '<f>', not a method; a field cannot be called` | `x.f(` where `f` is a field. |
+| `type '<T>' has a field '<f>', not a method; a field cannot be called` | `x.f(` where `f` is a field. On a foreign mixed record a **private** field instead reports `type '<q>' has no public field or exported method '<f>' (only 'pub' declarations are visible outside module '<m>'; mark the field 'pub' or add a public method)`, identical in a full build and `--check`. |
+| `type '<q>' has no public field '<f>' (only 'pub' fields are visible outside module '<m>'; mark '<f>' 'pub' or add an accessor)` | reading, writing, borrowing, moving, `take`ing or `replace`ing a private field of an imported record, or naming a missing field on such a record. The same message is used for all four source forms because field resolution fails first. Add `pub` in the defining module or an accessor. |
+| `type '<q>' has no public field or exported method '<f>' (only 'pub' declarations are visible outside module '<m>'; mark the field 'pub' or add a public method)` | `x.f(` where `f` is a private field or an absent member of a foreign mixed record, or a private method on such a record. A public field keeps the `has a field ..., not a method` message. |
+| `cannot construct '<q>' outside its module: it has private fields; add a constructor function in module '<m>'` | `new lib::T{...}` when any field of `T` is private, even if every private field is supplied or omitted. Only an all-public record (including a zero-field record) may be constructed externally. |
+| `'pub' is not allowed on a variant field; variant fields are always public` | a source `pub` in a closed variant's field list. |
+| `obxc: <p>:<line>:<col>: symbol file: expected 'pub', 'priv' or 'priviface' in a record field list` | a format-7 record field without a visibility marker, or an unknown marker. |
+| `obxc: <p>:<line>:<col>: symbol file: a private field has no name or type` | `priv`/`priviface` followed by a name or `:`. |
+| `obxc: <p>:<line>:<col>: symbol file: private fields are not allowed in a closed variant` | `priv`/`priviface` inside a closed definition. |
+| `exported '<T>' uses private type '<S>'; mark '<S>' pub too` | a **public** field of an exported record names a private type; private fields are skipped by the closure check and may use private types freely. |
 | `method '<T>::<m>' cannot be used as a value: call it with '(' after its name` | `x.m` without a call. |
 | `the receiver of method '<T>::<m>' needs a mut reference, but this one is read-only` | a `mut` receiver through a read-only binding. |
 | `cannot call a method that takes its receiver by value through a handle: the handle does not own the object; declare the method with '&' or 'mut &T', or call it on the owner` | an owned receiver that is a whole handle dereference. |
