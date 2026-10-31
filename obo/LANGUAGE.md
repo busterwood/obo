@@ -1206,8 +1206,8 @@ fn main() {
 
 Stored function values, owned or mutable captures, string/interface captures and impure
 callbacks are later work. Stage B capture lists (`fn [x](...)`) are implemented in section 5d;
-interface handles `^I` remain later. The implemented compiler is `0.11`/format 6/ABI 1; the
-promoted `0.10` seed built it once for the release promotion. The historical `0.9` seed
+interface handles `^I` remain later. The implemented compiler is `0.12`/format 6/ABI 1; the
+promoted `0.11` seed built it once for the release promotion. The historical `0.9` seed
 (`540,673` bytes, sha256 `3d369273…`) built the 0.10 compiler, and the historical `0.8` seed
 (`507,905` bytes, sha256 `673ae7ba…`) built the 0.9 compiler.
 
@@ -1490,7 +1490,7 @@ build** still requires every source; if only a `.sym` exists it reports
 without source` (exit 2). The checked root is exempt from the basename rule (it is
 the root of its check graph), and its `.sym` is named by its declared module name.
 
-`--version` prints `obo 0.9 sym-format 5 abi 1`; the numbers are the `obosym`
+`--version` prints `obo 0.12 sym-format 6 abi 1`; the numbers are the `obosym`
 format, the compiled-program ABI and the compiler version, each checked exactly
 when a `.sym` is read. The historical `0.8.1` release printed
 `obo 0.8.1 sym-format 4 abi 1`. `--reemit-sym FILE` is a testing hook: it reads a symbol
@@ -1502,9 +1502,9 @@ tests compare byte-for-byte.
 A `.sym` is text in a language-like declaration syntax, readable by the scanner:
 
 ```text
-obosym 4
+obosym 6
 abi 1
-compiler "0.8"
+compiler "0.12"
 source 0x0123456789abcdef
 dep io "io.obx"
 interface 0xfedcba9876543210
@@ -2436,8 +2436,8 @@ constants, record fields, arrays, methods, lambdas/captures or interfaces; no
 or owned/mut decimal. Display scale is independent metadata, and a multiply
 caps the propagated display scale at the 38-digit rule without changing the
 value. The reviewed core keeps its strict quantize target limit of 32768. The
-0.11 seed built the 0.12 image once; the parent promotion makes `seed/obo` the
-same 0.12 image. Underscore placement such as `1_.0` is not validated by the
+0.11 seed built the 0.12 image once; the promotion makes `seed/obo` the same
+0.12 image. Underscore placement such as `1_.0` is not validated by the
 shared lexer; that is a pre-existing lexer-wide gap, not decimal-specific.
 `float` remains a separate pre-existing reserved-type-name gap; `decimal` is
 now reserved.

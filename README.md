@@ -21,13 +21,12 @@ measurements.
 
 The released compiler is **obo 0.12, symbol format 6, ABI 1** (643,073 bytes,
 sha256 `d98d6b5f…`), with exact 24-byte decimals, Stage B capture lists, the
-HTML escaping library and the configurable heap runtime. The parent merges and
-promotes this branch; after that promotion `seed/obo` is the same 0.12 image
-(same size and hash). The released 0.11 seed (585,729
-bytes, sha256 `01fa9ed3…`) built the 0.12 image once. The 0.10 seed (569,345
-bytes, `30124be9…`) built the first 0.11 image. Floats were released at
-`0.10`/format 6; Stage B is `0.11`; decimal is `0.12`, all without changing
-symbol format 6 or ABI 1. Format 5 is not accepted.
+HTML escaping library and the configurable heap runtime. `seed/obo` is the
+promoted 0.12 image (same size and hash); it was promoted once after review.
+The released 0.11 seed (585,729 bytes, sha256 `01fa9ed3…`) built the 0.12 image
+once. The 0.10 seed (569,345 bytes, `30124be9…`) built the first 0.11 image.
+Floats were released at `0.10`/format 6; Stage B is `0.11`; decimal is `0.12`,
+all without changing symbol format 6 or ABI 1. Format 5 is not accepted.
 Version policy: additive builtin/runtime extensions use patch releases such as
 the historical 0.8.1; floats are 0.10, Stage B is 0.11 and decimal is 0.12.
 
@@ -74,7 +73,7 @@ the historical 0.8.1; floats are 0.10, Stage B is 0.11 and decimal is 0.12.
 |---|---:|
 | Compiler source | 14,608 lines, 550,897 bytes |
 | Compiler (`--version`) | 643,073 bytes, sha256 `d98d6b5f…`, `obo 0.12`, sym-format 6, abi 1 |
-| Seed (`--version`) | after the parent promotion: obo 0.12, 643,073 bytes, sha256 `d98d6b5f…`, sym-format 6, abi 1; the released 0.11 seed (585,729 bytes, `01fa9ed3…`) built this image once; the historical 0.10 seed is 569,345 bytes, `30124be9…`, `obo 0.10`, sym-format 6, abi 1 |
+| Seed (`--version`) | promoted obo 0.12: 643,073 bytes, sha256 `d98d6b5f…`, sym-format 6, abi 1; the released 0.11 seed (585,729 bytes, `01fa9ed3…`) built this image once; the historical 0.10 seed is 569,345 bytes, `30124be9…`, `obo 0.10`, sym-format 6, abi 1 |
 | Self-host fixed point | stage 2 == stage 3 == compiler, 643,073 bytes, `d98d6b5f…`; the 0.11 seed builds the same image from source |
 | Self-compile wall time | 0.15 s on the 0.11 line; not re-benchmarked for 0.12 (host-dependent) |
 | Self-compile live peak | 2,194,160 bytes direct; 2,194,560 bytes port comparison (budget 2,500,000) |
@@ -83,7 +82,7 @@ the historical 0.8.1; floats are 0.10, Stage B is 0.11 and decimal is 0.12.
 | Live-memory budget | 2,500,000 bytes: 305,840 spare direct / 305,440 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 47,840 at baseline 2,194,608 -> mutant 2,242,448) |
 | obo suite | 1,705 `run_fork` tests; 113 `module_test`; `sym_test.py` 44/44; `sym_fuzz.py` 200/200; `port_test` 598/598 with 10 encoder groups; `port_compare` 1,701/1,701; 69 doc examples; 29/29 import checks; 16/16 stdlib roots |
 | Float suite | `float_f1.py` 19 groups in normal and `--noregs` builds (12,580 power-of-two values each); `lambda_float_capture` passes in both modes; `memory_log_check` 4 sources |
-| Seed comparison | before promotion, `OBO_REF=obo/seed/obo` 1,477/1,477 identical flat cases against the 0.11 seed; decimal cases stay skipped by explicit `(0, 12)` entries. Of the default 1,701 cases, the decimal additions are 58 flat cases plus one module tree |
+| Seed comparison | `OBO_REF=obo/seed/obo` 1,535/1,535 identical flat cases against the promoted 0.12 seed; before promotion the same comparison against the 0.11 seed was 1,477/1,477 because the 58 decimal flat cases were skipped by explicit `(0, 12)` entries. Of the default 1,701 cases, the decimal additions are 58 flat cases plus one module tree |
 | Mutation gates | `mutate_fork` 680/710 + 30 equivalent, 0 missed/stale/broken; `mutate_port` 531/531; `mutate_io` 36/36 (including the self-host memory oracle); `mutate_meta` 71/82 + 11 equivalent; `mutate_decimal` 22/22; harness 27/27 |
 | Tools differential gate | 509 checks vs GNU coreutils 9.4; 4 memory cases |
 | Tool binaries | cat 53,249; wc 57,345; sort 81,921; head 53,249; tail 61,441 bytes (static, runtime included) |
@@ -98,7 +97,7 @@ self-compiles and 2,194,560 bytes in the port comparison: 305,840 and 305,440
 bytes spare respectively. No check was weakened. The live peak varies by a few
 hundred bytes with the source path and total allocation by about 2 KB. The
 historical lambda release budget remains 2,000,000 in its own record. The
-parent merges and promotes this branch; this branch does not promote.
+release is merged and promoted on main.
 
 ### Decimal 0.12
 
@@ -108,9 +107,9 @@ is the hosted-exit slot in the cinterop build). Source is 14,608 lines /
 550,897 bytes; the compiler is 643,073 bytes, sha256 `d98d6b5f…`, and stage 2 ==
 stage 3. It self-compiles at 2,194,160 bytes live (port comparison 2,194,560)
 and allocates 49,033,600 bytes, under the 2,500,000 budget. `run_fork` is 1,705
-tests, `module_test` 113, `port_compare` 1,701/1,701 default, and the 0.11-seed
-comparison is 1,477/1,477 because the decimal cases are explicitly `(0, 12)`
-skips. `sym_test` 44/44, `port_test` 598/598, `float_f1` 19 groups in both
+tests, `module_test` 113, `port_compare` 1,701/1,701 default, and the
+seed comparison is 1,535/1,535 against the promoted 0.12 seed (it was
+1,477/1,477 against the 0.11 seed, whose decimal cases were `(0, 12)` skips). `sym_test` 44/44, `port_test` 598/598, `float_f1` 19 groups in both
 register modes, `doc_check` 69 examples, `mutate_decimal` 22/22, and the
 reviewed D1/D2 runner remains 32,719 C checks.
 
@@ -152,7 +151,7 @@ sample is historical and lives in [HISTORY.md](HISTORY.md).
 | `eza`, 10,000 names | 30.4 ms (pre-help 212,993 B; not re-measured) | pinned eza 59.2 ms (1.94x slower); Python 16.3 ms and GNU `ls` 6.55 ms are faster |
 
 The compiler is a 643,073-byte static binary; the 0.11 seed built the 0.12
-image once and the parent promotion makes `seed/obo` the same 0.12 image. The tools are
+image once and the promotion makes `seed/obo` the same 0.12 image. The tools are
 cat 53,249, wc 57,345, sort 81,921, head 53,249 and tail 61,441 bytes; eza is
 229,377 bytes against 2,294,768 for the pinned eza 0.23.3 reference. Every obo
 binary is freestanding and static, with the runtime included. The benchmark rows
@@ -208,8 +207,8 @@ unchanged and decimal's future appended slots do not collide. Compiler source,
 version, symbol format and ABI are unchanged; the compiler image differs from
 the earlier 0.11 image (`198f3268…`) because the runtime text is embedded in
 every executable. The decimal release adds only appended runtime slots, so this
-index, including hosted exit slot 59, is unchanged; after promotion the seed is
-the matching 0.12 `d98d6b5f…` image.
+index, including hosted exit slot 59, is unchanged; the promoted seed is the
+matching 0.12 `d98d6b5f…` image.
 
 ## Roadmap
 

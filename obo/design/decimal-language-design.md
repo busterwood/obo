@@ -1,9 +1,9 @@
 # Decimal language integration design
 
 **Date:** 2026-10-31
-**Status:** APPROVED 2026-10-31 and RELEASED as `0.12`/format 6/ABI 1. The minimum scalar tier is on branch `decimal-language`, rebased on released `0.11` HTML main `34b798b`; the independent review returned REVISE, the fixes were approved and the review is closed. The parent merges and promotes; after promotion `seed/obo` is the same 0.12 image (643,073 bytes, sha256 `d98d6b5f…`), built once by the 0.11 seed `01fa9ed3…`. Text/format stdlib, database adapters, containers, globals/constants and captures are still later work.
+**Status:** APPROVED 2026-10-31, RELEASED as `0.12`/format 6/ABI 1, merged and promoted on main after rebasing on released `0.11` HTML main `34b798b`; the independent review returned REVISE, the fixes were approved and the review is closed. The promoted `seed/obo` is the same 0.12 image (643,073 bytes, sha256 `d98d6b5f…`), built once by the 0.11 seed `01fa9ed3…`. Text/format stdlib, database adapters, containers, globals/constants and captures are still later work.
 **Baseline:** approved on `main` at `4a072cf5f5db8fe661ac65ff6db94ea59006e6ec`; integration rebased on the released `0.11` HTML-escaping main `34b798bc4c76cf41362d3b374c13b80e7b43f73b` (and earlier on heap-limit main `316963c`). Branch/worktree: `decimal-language`.
-**Target:** released as `0.12`/`SYM_FORMAT=6`/`SYM_ABI=1` on branch `decimal-language`, rebased on the released 0.11 HTML main `34b798b`; the parent merges and promotes the same image.
+**Target:** released as `0.12`/`SYM_FORMAT=6`/`SYM_ABI=1`, merged and promoted on main after rebasing on the released 0.11 HTML main `34b798b`; the promoted seed is the same image.
 
 ## 0. Provenance
 
@@ -58,7 +58,7 @@ Comparison and equality compare value only, so `1.0 == 1.00` is true. `dec_cmp(a
 
 ### 1.5 Compiler budget
 
-The Stage B budget is `PEAK_BUDGET = 1,351,000` bytes; recent peak is around 1.2 MB. The compiler need not use decimal, so incremental peak should be modest. A `2,500,000`-byte ceiling is a plausible planning upper bound if it grows, not a target or reservation; measure in M1 and raise it only with a recorded `FORK.md` reason.
+The compiler budget is `PEAK_BUDGET = 2,500,000` bytes. The released 0.12 scalar tier peaks at 2,194,160 bytes direct and 2,194,560 bytes in the port comparison. Later decimal tiers stay under the same ceiling; measure and record any change with a `FORK.md` reason before raising it.
 
 ## 2. Literals
 
@@ -155,7 +155,7 @@ Gates: `doc_check`, `run_fork`, `port_compare`, self-host/fixed point, `mutate_f
 
 ## 7. Final decisions and rejected alternatives
 
-Implementation lands after Stage B `0.11`; no version is reserved. Rejected: 16-byte/96-bit `.NET`; scale-only 128-bit; 256-bit storage; heap/string decimal; IEEE decimal128/DPD; float money; `m`/`d`; all-`Result` operators; default division; pointer parameters; `?decimal` sentinel; immediate `decimal(p,s)`; helper process; frozen C wire.
+Implementation landed after Stage B `0.11` as `0.12`/format 6/ABI 1; later decimal tiers reserve no version here. Rejected: 16-byte/96-bit `.NET`; scale-only 128-bit; 256-bit storage; heap/string decimal; IEEE decimal128/DPD; float money; `m`/`d`; all-`Result` operators; default division; pointer parameters; `?decimal` sentinel; immediate `decimal(p,s)`; helper process; frozen C wire.
 
 | Decision | Final choice | Remaining alternative |
 |---|---|---|
@@ -177,4 +177,4 @@ Open engineering choices: adapter order and final diagnostic wording; the 40–4
 
 Today `0.10`/format 6 rejects bare `1.5`; `1.5f` is float. Decimal changes that error into a value, so no valid float program changes. `f/F` and one-word raw binary64 `.sym` stay; decimal never reuses float's slot/XMM/format-6 grammar.
 
-The released integration is on branch `decimal-language`, rebased on the released 0.11 HTML main `34b798b`: `OBO_VERSION="0.12"`, `SYM_FORMAT=6`, `SYM_ABI=1`. No format 7 or ABI 2 is introduced. Old `.sym` files must be rebuilt because the compiler version line changed. This branch does not promote; the parent merges and promotes the same image. No helper process/DB/native pointer ABI is added.
+The released integration is on branch `decimal-language`, rebased on the released 0.11 HTML main `34b798b`: `OBO_VERSION="0.12"`, `SYM_FORMAT=6`, `SYM_ABI=1`. No format 7 or ABI 2 is introduced. Old `.sym` files must be rebuilt because the compiler version line changed. It is merged and promoted on main; the promoted seed is the same image. No helper process/DB/native pointer ABI is added.

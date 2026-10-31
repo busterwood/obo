@@ -6135,12 +6135,12 @@ template work was performed.
 
 ## Decimal language integration (0.12 release, format 6, ABI 1)
 
-**Status: released on branch `decimal-language`, rebased on the released 0.11
-HTML-escaping main `34b798bc4c76cf41362d3b374c13b80e7b43f73b`. The independent
-review is closed and the fixes are approved; the parent merges and promotes this
-branch. This branch does not promote.** After that promotion `seed/obo` is the
-same 0.12 image (643,073 bytes, sha256 `d98d6b5f…`); the released 0.11 seed
-(585,729 bytes, sha256 `01fa9ed3…`) built this image once. The approved design is
+**Status: released and promoted on `main` after review.** The branch
+`decimal-language` was rebased on the released 0.11 HTML-escaping main
+`34b798bc4c76cf41362d3b374c13b80e7b43f73b`; the independent review is closed
+and the fixes are approved. `seed/obo` is the promoted same 0.12 image
+(643,073 bytes, sha256 `d98d6b5f…`); the released 0.11 seed (585,729 bytes,
+sha256 `01fa9ed3…`) built this image once. The approved design is
 `design/decimal-language-design.md`; the reviewed arithmetic/text core stays in
 `experimental/decimal/` and is copied unchanged into
 `runtime/decimal24_core.inc` (provenance hashes in that file and in the package's
@@ -6225,8 +6225,9 @@ flat cases plus one module tree: 14 run files, 44 error cases and
 module tree); `module_test` **113** (112 + 1); `sym_test` **44/44**; `port_test`
 **598/598** (583 + 15 decimal runtime/slot checks); default `port_compare`
 **1,701/1,701** (1,642 + 58 flat + 1 module tree); `OBO_REF=obo/seed/obo`
-**1,477/1,477** (the one HTML case plus the old flat cases; decimal cases stay
-skipped by `(0, 12)`); `float_f1` **19 groups** normal and `--noregs`;
+**1,535/1,535** against the promoted 0.12 seed (before promotion the same
+comparison against the 0.11 seed was 1,477/1,477, with the 58 decimal flat
+cases skipped by `(0, 12)`); `float_f1` **19 groups** normal and `--noregs`;
 `doc_check` **69 examples, 0 problems**; `sym_fuzz` 200/200; `imports` **29/29**
 including the HTML library; `stdlib` 16/16; `io_test`/`meta_test`/`memory_log_check`/`elf_test` pass;
 `mutate_decimal` **22/22 caught** (focused compiler and runtime paths in a

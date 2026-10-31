@@ -89,7 +89,7 @@ implementation: it uses `Fraction` plus integer rounding decisions, not Python
 results against it. The retained Python `decimal` cross-check remains a
 secondary D1 check only.
 
-## Compiler integration copy (0.12 WIP)
+## Compiler integration copy (released 0.12)
 
 The reviewed core is copied into `../../runtime/decimal24_core.inc` and compiled
 as part of the single freestanding `runtime/runtime.c` translation unit.  The

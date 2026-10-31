@@ -1,14 +1,13 @@
 # Experimental decimal foundations (`decimal`)
 
-Status: **experimental D2 private arithmetic contract, reviewed and now copied
-unchanged into the WIP 0.12 runtime as `runtime/decimal24_core.inc` for compiler
-integration.** D2 adds the exact/rounded arithmetic separation, general division,
-truncating remainder and the wide-gap sticky add/sub path on top of the reviewed
-D1 core. This is not compiler integration, not a public API, not a stable ABI,
-not a language literal grammar and not a database adapter. No version,
-`SYM_FORMAT`, `SYM_ABI`, seed, release or **public** default
-rounding/division-scale policy was changed. Do not merge, push or promote
-without the independent review that this milestone stops for.
+Status: **experimental D2 arithmetic contract, reviewed and copied unchanged
+into `runtime/decimal24_core.inc`; the minimum scalar decimal tier is released
+as obo `0.12`.** D2 adds the exact/rounded arithmetic separation, general
+division, truncating remainder and the wide-gap sticky add/sub path on top of
+the reviewed D1 core. This package remains the reviewed core and provenance
+record; the language integration lives in the compiler/runtime and is a released
+public contract for the scalar tier. Later tiers (fields, arrays, globals,
+captures, methods/interfaces, text APIs, database wire) remain unimplemented.
 
 The approved direction remains:
 
@@ -368,11 +367,11 @@ quotient-estimate path.
 
 ## Not implemented / still unsupported
 
-- Compiler/runtime integration beyond the WIP 0.12 minimum scalar tier: fields,
-  arrays, globals/constants, captures, methods/interfaces, `.sym` constants,
-  constant folding and standard-library APIs are still not implemented. The
-  scalar ABI/literals/operators/`Result[decimal]` integration lives only on the
-  unmerged `decimal-language` branch and is not a released public contract.
+- Compiler/runtime integration beyond the released 0.12 minimum scalar tier:
+  fields, arrays, globals/constants, captures, methods/interfaces, `.sym`
+  constants, constant folding and standard-library APIs are still not
+  implemented. The scalar ABI/literals/operators/`Result[decimal]` integration
+  is released as `0.12`; the remaining tiers are not.
 - Public display policy, **public** default rounding, **public** default
   division scale, language overflow/error grammar, and canonical text as a
   language guarantee. The D2 division/remainder APIs are private and explicit.
@@ -397,7 +396,7 @@ must choose the ABI and error/overflow/division policies from the approved
 research first, with explicit review. That integration, Stage B/lambda work,
 the C interop toolkit and allocator work are separate and were not touched.
 
-## Compiler integration plan (minimum tier WIP; the rest not started)
+## Compiler integration plan (minimum tier released; later tiers not started)
 
 1. Independent review of this D1/D2 core, text, binding and arithmetic contract
    and its honest limits.
