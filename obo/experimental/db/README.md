@@ -120,7 +120,9 @@ fn main() {
 
 Runnable apps: `postgres/examples/postgres_probe_app.obx` (real libpq link and
 `PQmakeEmptyPGresult` ownership without a connection), `postgres_live_app.obx`
-(opt-in SELECT-only smoke test), and `postgres_outlives_app.obx`.
+(opt-in SELECT-only smoke test), `postgres_outlives_app.obx`, and
+`postgres_fake_app.obx` with `postgres_fake.cbind` (obo-level typed packet
+encoder over the deterministic fake libpq).
 
 ## SQLite
 
@@ -166,14 +168,19 @@ fn main() {
   failed, so the statement is reusable; `close()` finalizes exactly once.
 - `column_value` is `Result[?[]byte]` (nil is SQL NULL); `column_text` is the
   string convenience; `column_bytes` preserves TEXT/BLOB bytes; `column_type`
-  returns the SQLite datatype. `column_int` is an exact i64 only for an INTEGER
-  column; a REAL is truncated and TEXT is converted by SQLite. Use
-  `column_value`/`column_text` for exact decimal text. SQLite's documented
-  integer-to-text conversion is used, never an obo float in the adapter.
+  returns the SQLite datatype. A non-NULL value whose copy exceeds the 16 MiB
+  registry/buffer bound (or fails allocation/registry registration) is an
+  error, never an empty success; zero-length values remain valid. `column_int`
+  is an exact i64 only for an INTEGER column; TEXT is converted by SQLite.
+  REAL is rejected by `column_value`, `column_text` and `column_int` because it
+  is not exact decimal/integer data. SQLite's documented integer-to-text
+  conversion is used, never an obo float in the adapter.
 - A connection refuses to close while a prepared statement is live
-  (`SQLITE_BUSY`); close statements first, then the connection. This is why the
-  canonical order is `defer conn.close()` after `defer stmt.close()` in the same
-  block (defers run last-in, first-out).
+  (`SQLITE_BUSY`); close statements first, then the connection. In one block,
+  register `defer conn.close()` **before** `defer stmt.close()`: defers run
+  last-in, first-out, so the statement finalizes before the connection closes.
+  Registering the connection defer later would run `conn.close()` first, get
+  `SQLITE_BUSY`, and leak the connection.
 - Errors are copied immediately: `sqlite3_exec`'s allocated `errmsg` is copied
   and freed, `open` copies the message before closing a failed handle, and
   `error_message`/`error_code` are snapshots. Connection-level errors belong to
@@ -187,10 +194,11 @@ The probe host has `/lib/x86_64-linux-gnu/libsqlite3.so.0` and the `sqlite3`
 3.45.1 shell, but no `/usr/include/sqlite3.h` and no `pkg-config`. The committed
 `sqlite_decls.h` is an independently written minimal ABI declaration subset.
 `sqlite.cbind` records `signature_check: "declarations-only"`; it does not claim
-a header check. Linking is `-l:libsqlite3.so.0`. The declaration file itself is
-listed under `declaration_files` and hashed into the manifest as a provenance
-input, without being promoted to a compiled header check. The PostgreSQL cbind
-does the same for `libpq_decls.h`.
+a header check. Linking is `-l:libsqlite3.so.0`. The declaration file and the
+adapter/shared headers are listed under `declaration_files` and hashed into the
+manifest as provenance inputs, without being promoted to a compiled header
+check. The PostgreSQL cbind does the same for `libpq_decls.h`,
+`postgres_adapter.h` and `cres.h`.
 
 A private evidence-only cross-check compiled the real 3.45.1 header first and
 these declarations together with static assertions for every used constant,
@@ -214,11 +222,15 @@ The suite covers:
   binary NUL, 33-parameter rejection, malformed packets, SQL/text NUL, bounds,
   allocation failure, invalid conninfo diagnostic, double close,
   result-outlives-connection and live counters;
+- an obo-level fake-libpq packet encoder test: typed text/int/blob/NULL params,
+  binary NUL, exact numeric text and OID/typmod, no real libpq dependency;
 - real libpq link/PGresult ownership with no connection, plus invalid-conninfo
   input-error reporting;
 - real SQLite in-memory create/insert/select/param roundtrip/NULL/blob-NUL/
   constraint error/reset-after-error/cross-statement error isolation/bounds/
-  close-order/double-close/stale-token/live counters;
+  close-order/double-close/stale-token/live counters; >16 MiB BLOB/TEXT copy
+  failures are errors (zero-length values remain valid), REAL is rejected, and
+  a same-block defer-order regression checks statement-before-connection close;
 - real SQLite tempfile under `/tmp`, compared with Python's `sqlite3` module as
   an independent oracle for `typeof`, NULL, empty text and BLOB bytes, then
   removed;
@@ -268,3 +280,8 @@ is not a skip because the committed adapter is declarations-only.
   rather than implementing a SQL lexer.
 - No automatic foreign finalizer; a dropped record leaks until explicit close.
   The live counters are diagnostics, not a safety proof.
+- The manifest hashes the adapter/shared declaration headers through
+  `declaration_files`; host-provided CRT startup objects (`crt1.o`, `crti.o`,
+  `crtbegin.o`, `crtend.o`, `crtn.o`) are resolved from the host toolchain by
+  cinterop and are not individually hashed. The manifest records the compiler
+  path and other build inputs.

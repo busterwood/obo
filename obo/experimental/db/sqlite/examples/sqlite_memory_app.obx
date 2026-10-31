@@ -38,6 +38,123 @@ fn insert_one(st: &sqlite::Stmt, id: int, name: string, score: int,
     return ok(true)
 }
 
+fn large_values(c: &sqlite::Connection): Result[bool] {
+    let q = c.prepare("SELECT zeroblob(17000000)")
+    match q {
+        ok(st) {
+            defer st.close()
+            let row = try st.step()
+            if !row { return err("large blob no row", 70) }
+            let r1 = st.column_bytes(0)
+            match r1 {
+                ok(v) { return err("large blob returned success", 71) }
+                err(m, code) {
+                    if code != 2 { return err("large blob code", 72) }
+                }
+            }
+            let r2 = st.column_value(0)
+            match r2 {
+                ok(v) { return err("large blob value returned success", 73) }
+                err(m, code) {
+                    if code != 2 { return err("large blob value code", 74) }
+                }
+            }
+            let r3 = st.column_text(0)
+            match r3 {
+                ok(v) { return err("large blob text returned success", 75) }
+                err(m, code) {
+                    if code != 2 { return err("large blob text code", 76) }
+                }
+            }
+        }
+        err(m, c) { return err(m, c) }
+    }
+    let qt = c.prepare("SELECT CAST(zeroblob(17000000) AS TEXT)")
+    match qt {
+        ok(st) {
+            defer st.close()
+            let row = try st.step()
+            if !row { return err("large text no row", 77) }
+            let r4 = st.column_text(0)
+            match r4 {
+                ok(v) { return err("large text returned success", 78) }
+                err(m, code) {
+                    if code != 2 { return err("large text code", 79) }
+                }
+            }
+            let r5 = st.column_value(0)
+            match r5 {
+                ok(v) { return err("large text value returned success", 80) }
+                err(m, code) {
+                    if code != 2 { return err("large text value code", 81) }
+                }
+            }
+        }
+        err(m, c) { return err(m, c) }
+    }
+    let qr = c.prepare("SELECT 1.5")
+    match qr {
+        ok(st) {
+            defer st.close()
+            let row = try st.step()
+            if !row { return err("REAL no row", 82) }
+            let r6 = st.column_int(0)
+            match r6 {
+                ok(v) { return err("REAL column_int returned success", 83) }
+                err(m, code) {
+                    if code != 2 { return err("REAL int code", 84) }
+                }
+            }
+            let r7 = st.column_value(0)
+            match r7 {
+                ok(v) { return err("REAL column_value returned success", 85) }
+                err(m, code) {
+                    if code != 2 { return err("REAL value code", 86) }
+                }
+            }
+            let r8 = st.column_text(0)
+            match r8 {
+                ok(v) { return err("REAL column_text returned success", 87) }
+                err(m, code) {
+                    if code != 2 { return err("REAL text code", 88) }
+                }
+            }
+            let r9 = st.column_bytes(0)
+            match r9 {
+                ok(v) { return err("REAL column_bytes returned success", 92) }
+                err(m, code) {
+                    if code != 2 { return err("REAL bytes code", 93) }
+                }
+            }
+        }
+        err(m, c) { return err(m, c) }
+    }
+    println("large_and_real_errors=ok")
+    return ok(true)
+}
+
+fn defer_order(): bool {
+    let made = sqlite::open(":memory:")
+    match made {
+        ok(conn) {
+            defer conn.close()
+            let p = conn.prepare("CREATE TABLE d(v INTEGER)")
+            match p {
+                ok(st) {
+                    defer st.close()
+                    let step = st.step()
+                    match step {
+                        ok(v) { return true }
+                        err(m, c) { return false }
+                    }
+                }
+                err(m, c) { return false }
+            }
+        }
+        err(m, c) { return false }
+    }
+}
+
 fn memory_test(): Result[bool] {
     let made = sqlite::open(":memory:")
     match made {
@@ -154,6 +271,9 @@ fn memory_test(): Result[bool] {
                 err(m, c) { return err(m, c) }
             }
 
+            let big = try large_values(&conn)
+            if !big { return err("large value check failed", 89) }
+
             // Constraint failure: the adapter copies the message/code.
             let dup = conn.exec("INSERT INTO t(id,name) VALUES(7,'duplicate')")
             match dup {
@@ -212,6 +332,10 @@ fn path_errors(): bool {
 }
 
 fn main() {
+    let d = defer_order()
+    check(d, "defer order", 90)
+    check(sqlite::live_resources() == 0, "defer live", 91)
+    println("defer_order=ok")
     let r = memory_test()
     match r {
         ok(v) { println("sqlite_memory=ok") }

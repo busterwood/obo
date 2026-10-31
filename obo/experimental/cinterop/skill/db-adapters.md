@@ -43,8 +43,10 @@ adapter.
   location, compile the declarations against it as a read-only cross-check, but
   keep the committed build independent of that header.
 - SQLite connections must not close while prepared statements are live. Track a
-  per-connection statement count, return `SQLITE_BUSY` from close, and document
-  the LIFO `defer stmt.close()` / `defer conn.close()` order.
+  per-connection statement count, return `SQLITE_BUSY` from close, and register
+  `defer conn.close()` before `defer stmt.close()`: LIFO then finalizes the
+  statement first. Reversing that order closes the connection first, gets
+  `SQLITE_BUSY`, and leaks the connection.
 - SQLite's `sqlite3_exec` and `sqlite3_prepare_v2` have different statement
   counts: exec accepts multiple statements, prepare accepts exactly one. State
   that in the wrapper rather than silently truncating SQL.
