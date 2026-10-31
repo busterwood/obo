@@ -1,6 +1,7 @@
 # Design notes
 
 - [decimal-research-2026-10-28.md](decimal-research-2026-10-28.md) — database-first research for a lossless decimal type (SQL Server, Oracle, Sybase, PostgreSQL storage formats; 38-digit/24-byte recommendation; future work, after floats).
+- [decimal-language-design.md](decimal-language-design.md) — proposal for language integration of the approved 24-byte `decimal`, baseline `4a072cf`, after Stage B `0.11`; final literal/type/arithmetic/conversion decisions (bare fractional literals, trap-on-overflow `+ - *`, compile-error `/`, explicit `div` returning `Result`, explicit conversions, display-scale preservation), 24-byte ABI, containers, formatting, database boundary `check`, phased plan and open engineering choices. Design only, not approved, no implementation.
 - [stdlib-eza-design-v7.md](stdlib-eza-design-v7.md) — approved v7 design for the CLI stdlib and `eza` core: runtime metadata slots, module APIs, E0/E1/E2 scope, gates and sequencing. Implemented through the E2 core (P3-P6b; see `../FORK.md` and `../cmd/README.md`); the eza 0.23.3 reference pin and probes are recorded in the tests.
 - [stdlib-eza-design-v7-review.md](stdlib-eza-design-v7-review.md) — independent APPROVE review of v7.
 - [numeric-literals-decision-2026-10-29.md](numeric-literals-decision-2026-10-29.md) — user-approved numeric literal policy: exact decimal by default for fractional and exponent literals, `f`/`F` for binary float; floats at position 11, decimal after; not implemented.
