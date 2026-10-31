@@ -7,7 +7,9 @@ review. Revision 3 disarms accept/handshake deadlines and resets request/
 response totals per message, fixes the accept sketch, retries `endResponse`,
 requires `acceptAlpn` before HTTP parsing, includes `RequestInfo` copies in the
 aggregate budget, and maps `flushPending` to `systls::flush(s)`. Revision 2
-reconciled the transport seam with the TLS adapter design at `ea02b29`.
+reconciled the transport seam with the TLS adapter design at `ea02b29`; the
+TLS adapter is in progress at `2c8a824`, which provides the shared `flush(s)`
+surface (update this citation when TLS commits).
 Baseline: `main` `2364add3a7ad0a02ec9412b6834a36a510d45f32`, obo `0.12`,
 symbol format 6, ABI 1. This note reserves no compiler, ABI, symbol-format, package or protocol
 version. It designs protocol logic in obo above the approved
@@ -96,7 +98,7 @@ them, not a claim that they are implemented.
 | `sysreactor` | level-triggered `watchResource`, `modify`, `remove`, `timer`, `wait`, `stop` |
 | `sysclock` | `Instant`, `Duration`, `Deadline`, `Timestamp`, `after`, `remaining`, `realtime` |
 | `syswaitio` | only the blocking single-connection convenience; requires a dedicated reactor |
-| `systls` (separate design `ea02b29`) | TLS session I/O only through `http1tls`; no HTTP import |
+| `systls` (separate design `ea02b29`, in progress `2c8a824`) | TLS session I/O only through `http1tls`; no HTTP import |
 | `http1tls` (this design) | neutral adapter; imports `http1` + `systls`; implements `http1::Transport` |
 | `sysnet` | `Listener`, `Connection`, `accept`, `intoStream`, addresses; not HTTP routing |
 | `sysplatform` | checked `Resource` identity for `watchResource`; counts for leak tests |
@@ -351,13 +353,16 @@ pub type FlushOutcome = closed {
 `maxHeaderLine <= maxHeaderBytes`, `maxHeaderBytes + maxHeaderLine <= 16 MiB`,
 `maxChunkLine <= maxChunkMetadata`, `maxChunkSize <= maxBody`,
 `maxResponseHeaderBytes <= maxResponseBuffer`,
-`maxResponseTrailerBytes <= maxResponseBuffer`,
-`maxPipelineBytes <= maxHeaderBytes + maxHeaderLine`, and
+`maxResponseTrailerBytes + 16 <= maxResponseBuffer`,
+`maxResponseBuffer >= 64` (so a chunk terminator/trailer block can eventually
+fit), `maxPipelineBytes <= maxHeaderBytes + maxHeaderLine`, and
 `maxTotalConnectionBytes >= maxConnections * perConnectionBytes` where
 `perConnectionBytes = maxHeaderBytes + maxHeaderLine + maxResponseBuffer +
-maxHeaderBytes` (fixed buffers plus the bounded `RequestInfo` header copy).
-The multiplication is checked; overflow or a budget below the reservation is
-`InvalidArgument`/`ResourceLimit`, never a wrapped smaller budget.
+maxHeaderBytes + maxTarget` (fixed buffers plus the bounded `RequestInfo`
+header and target/path/query copies).
+The multiplication and `maxResponseTrailerBytes + 16` are checked; overflow or
+a budget below the reservation is `InvalidArgument`/`ResourceLimit`, never a
+wrapped smaller budget.
 Timeout values are positive and fit a checked millisecond-to-nanosecond
 conversion. `maxResponseBuffer` and `maxHeaderBytes` are at most 16 MiB.
 `maxConnections` is positive. `allowNoAlpn` is a bool. The `serverName` token is at most 64 bytes and
@@ -375,7 +380,8 @@ first drives the transport; `requestInfo` is valid after `HeadReady`.
 ### 4.3 Transport interface (TLS adapter contract)
 
 The interface is deliberately the **shape of the actual TLS adapter**
-(`tls-adapter-design` at `ea02b29`), not a socket-like wrapper around it:
+(`tls-adapter-design` at `ea02b29`, in-progress `2c8a824`), not a socket-like
+wrapper around it:
 owned read bytes, explicit want-read/want-write on write and shutdown, a
 ciphertext-drain step, multi-step shutdown, and ALPN information. `http1` does
 not import `systls`; the neutral adapter `http1tls` imports both and implements
@@ -410,7 +416,8 @@ pub type Transport = interface {
     fn maxTransfer(): int             // 1..65536; caps read/write count
 
     // Adapter-owned readiness registration. Plain uses watchResource;
-    // TLS uses systls::watch. There is no source()/fd escape.
+    // HTTP uses watch. TLS may expose source for other users, but this
+    // contract does not use it and exposes no fd.
     fn watch(r: &reactor::Reactor, readable: bool, writable: bool,
              tag: int): Result[reactor::Watch]
 
@@ -466,8 +473,9 @@ Transfer rules:
   configuration is `Require(["http/1.1"])`. The TLS default
   `Prefer(["http/1.1"])` is acceptable; a `Prefer(["h2","http/1.1"])` policy
   must not be used unexamined.
-- `watch` is the only readiness registration route. `source()` does not exist
-  in the TLS adapter and is not part of this contract.
+- `watch` is the only readiness registration route in this contract. The TLS
+  adapter may expose `source()` for other users, but HTTP does not use it; no
+  fd or source identity is part of the HTTP transport API.
 - No pointer, TLS struct, ciphertext buffer or fd crosses this boundary.
 - `http1tls` must map TLS errors to `Result` categories without adding a
   hidden retry or a blocking wait. `systls` does not import HTTP.
@@ -1258,12 +1266,11 @@ Handler obligations:
 
 ### 7.2 Reading a bounded body and streaming a response
 
-The following is a valid-shaped handler sketch. The session owns the connection,
-the transport and the pending plaintext array as **sibling fields**; this
-matters for obo's conservative aliasing rule. Passing a buffer reached through
-a different reference (for example `other.bytes` to a call that mutates `c`) is
-rejected as "may point inside". Sibling fields of one owned record are disjoint
-and are accepted.
+The following sketches are **resumable**: each has per-request state, resets at
+`HeadReady`/`ResponseComplete`, and never replays a status line, header block,
+body byte or chunk terminator. The session owns the connection, the transport
+and the pending plaintext array as **sibling fields**; this matters for obo's
+conservative aliasing rule.
 
 ```obo
 type EchoSession = ref record {
@@ -1272,22 +1279,62 @@ type EchoSession = ref record {
     pendingBytes: []byte
     pending: int          // bytes in pendingBytes not yet written
     pendingPos: int
-    started: bool
-    ended: bool
+    bodyDone: bool
+    responseStarted: bool
+    finalQueued: bool
+    responseFinished: bool
+    bodyPos: int
+    bodyText: string
+}
+
+fn (mut s: &EchoSession) resetForRequest() {
+    s.pending = 0
+    s.pendingPos = 0
+    s.bodyDone = false
+    s.responseStarted = false
+    s.finalQueued = false
+    s.responseFinished = false
+    s.bodyPos = 0
+    s.bodyText = ""
+}
+
+fn (mut s: &EchoSession) resetAfterResponse() {
+    s.resetForRequest()
 }
 
 fn (mut s: &EchoSession) startEcho(now: &http1::Now): Result[bool] {
-    if s.started { return ok(true) }
+    if s.responseStarted { return ok(true) }
     let name = "Content-Type"
     let value = "application/octet-stream"
     try http1::setHeader(&s.conn, name, value)
     try http1::beginResponse(&s.conn, 200, now)  // no length: HTTP/1.1 chunked
-    s.started = true
+    s.responseStarted = true
+    return ok(true)
+}
+
+fn (mut s: &EchoSession) finishEcho(): Result[bool] {
+    while !s.responseFinished {
+        if !s.finalQueued {
+            let done = try http1::endResponse(&s.conn)
+            if done { s.finalQueued = true }
+        }
+        let f = try http1::flush(&s.conn, &s.transport)
+        match f {
+            Flushed {
+                if s.finalQueued {
+                    s.responseFinished = true
+                    return ok(true)
+                }
+            }
+            FlushWantRead { return ok(false) }
+            FlushWantWrite { return ok(false) }
+        }
+    }
     return ok(true)
 }
 
 fn (mut s: &EchoSession) pumpEcho(now: &http1::Now): Result[bool] {
-    if !s.started { try s.startEcho(now) }
+    if !s.responseStarted { try s.startEcho(now) }
 
     // Flush bytes accepted from the previous read before reading more.
     while s.pendingPos < s.pending {
@@ -1304,39 +1351,53 @@ fn (mut s: &EchoSession) pumpEcho(now: &http1::Now): Result[bool] {
         s.pendingPos += n
     }
 
-    let r = try http1::readBody(&s.conn, &s.transport, 16384, now)
-    match r {
-        BodyData {
-            s.pendingBytes = replace(r.bytes, new []byte(0))
-            s.pending = len(s.pendingBytes)
-            s.pendingPos = 0
-            return ok(true)
-        }
-        BodyNeedRead {
-            return ok(false)                     // watch read
-        }
-        BodyEnd {
-            while !s.ended {
-                let done = try http1::endResponse(&s.conn)
-                if done {
-                    s.ended = true
-                    break
-                }
-                let f = try http1::flush(&s.conn, &s.transport)
-                match f {
-                    Flushed { }
-                    FlushWantRead { return ok(false) }
-                    FlushWantWrite { return ok(false) }
-                }
+    if !s.bodyDone {
+        let r = try http1::readBody(&s.conn, &s.transport, 16384, now)
+        match r {
+            BodyData {
+                s.pendingBytes = replace(r.bytes, new []byte(0))
+                s.pending = len(s.pendingBytes)
+                s.pendingPos = 0
+                return ok(true)
             }
+            BodyNeedRead {
+                return ok(false)                     // watch read
+            }
+            BodyEnd {
+                s.bodyDone = true
+            }
+        }
+    }
+    // BodyEnd is not a reason to call readBody again; re-entry goes straight
+    // to finishing the response.
+    return s.finishEcho()
+}
+
+fn (mut s: &EchoSession) respondHello(now: &http1::Now): Result[bool] {
+    if !s.responseStarted {
+        s.bodyText = "hello\n"
+        s.bodyPos = 0
+        let name = "Content-Type"
+        let value = "text/plain; charset=utf-8"
+        try http1::setHeader(&s.conn, name, value)
+        try http1::setLength(&s.conn, len(s.bodyText))
+        try http1::beginResponse(&s.conn, 200, now)
+        s.responseStarted = true
+    }
+    while s.bodyPos < len(s.bodyText) {
+        let n = try http1::writeText(&s.conn, s.bodyText,
+                                     s.bodyPos, len(s.bodyText) - s.bodyPos)
+        if n == 0 {
             let f = try http1::flush(&s.conn, &s.transport)
             match f {
-                Flushed { return ok(true) }
+                Flushed { }
                 FlushWantRead { return ok(false) }
                 FlushWantWrite { return ok(false) }
             }
         }
+        s.bodyPos += n
     }
+    return s.finishEcho()
 }
 ```
 
@@ -1344,46 +1405,17 @@ fn (mut s: &EchoSession) pumpEcho(now: &http1::Now): Result[bool] {
 encoded output buffer (bounded by `Limits.maxResponseBuffer`). It never buffers
 the whole request or response. A slow reader fills the output buffer;
 `writeBody` returns `0`; the handler flushes and yields. A slow sender returns
-`BodyNeedRead`; the handler yields. A TLS `FlushWantRead` (for example a
-KeyUpdate) is yielded as a read need, not retried inside the handler.
+`BodyNeedRead`; the handler yields. A TLS `FlushWantRead` is yielded as a read
+need, not retried inside the handler.
 
-If a handler is written as separate `Connection` and handler records instead,
-it must take the scratch array into a local before the call and restore it
-afterwards, or keep both the connection and buffer as locals in one function.
-The session pattern above is simpler and is the recommended API usage.
-
-A known-length response uses:
-
-```obo
-fn (mut s: &EchoSession) respondHello(now: &http1::Now): Result[bool] {
-    let body = "hello\n"
-    let name = "Content-Type"
-    let value = "text/plain; charset=utf-8"
-    try http1::setHeader(&s.conn, name, value)
-    try http1::setLength(&s.conn, len(body))
-    try http1::beginResponse(&s.conn, 200, now)
-    var pos = 0
-    while pos < len(body) {
-        let n = try http1::writeText(&s.conn, body, pos, len(body) - pos)
-        if n == 0 { return ok(false) }           // caller flushes and retries
-        pos += n
-    }
-    while !s.ended {
-        let done = try http1::endResponse(&s.conn)
-        if done {
-            s.ended = true
-            break
-        }
-        let f = try http1::flush(&s.conn, &s.transport)
-        match f {
-            Flushed { }
-            FlushWantRead { return ok(false) }
-            FlushWantWrite { return ok(false) }
-        }
-    }
-    return ok(true)
-}
-```
+`BodyEnd` sets `bodyDone`; on re-entry `pumpEcho` skips `readBody` and calls
+`finishEcho`. `finishEcho` retries `endResponse` until it returns `true`, then
+flushes until `Flushed`; `false` is never treated as completion. `respondHello`
+is the bodyless-response example: it sets headers/length/status once, persists
+`bodyPos`, and resumes `writeText` without replaying the prefix. A request with
+a body must use `pumpEcho`, read/discard to `BodyEnd`, or `requestClose`.
+Both handlers reset at `HeadReady` and `ResponseComplete`; a second keep-alive
+request starts clean.
 
 **String parameters are by value, not `&string`.** The 0.12 compiler rejects
 `&string` ("only records, closed types and arrays can be borrowed, not
@@ -1409,7 +1441,8 @@ fn (mut s: &EchoSession) serveOne(now: &http1::Now): Result[bool] {
                 return ok(true)
             }
             HeadReady {
-                // Application routing/decision; no protocol callback.
+                // Fresh per-request state; no prior cursor/body/response bits.
+                s.resetForRequest()
                 let info = try http1::requestInfo(&s.conn)
                 if info.method == "HEAD" {
                     // respond with metadata, no body
@@ -1417,6 +1450,7 @@ fn (mut s: &EchoSession) serveOne(now: &http1::Now): Result[bool] {
                 return ok(true)
             }
             ResponseComplete {
+                s.resetAfterResponse()
                 return ok(true)
             }
             NeedRead { return ok(false) }
@@ -1550,16 +1584,18 @@ Rules:
   allocation.
 - `maxConnections` and `maxTotalConnectionBytes` are admission policy. A
   connection reserves at least
-  `maxHeaderBytes + maxHeaderLine + maxResponseBuffer + maxHeaderBytes` bytes
-  (fixed buffers plus the bounded `RequestInfo` copy); the server
+  `maxHeaderBytes + maxHeaderLine + maxResponseBuffer + maxHeaderBytes +
+  maxTarget` bytes (fixed buffers plus the bounded `RequestInfo` header and
+  target/path/query copies); the server
   rejects a new accept (or closes it with a bounded `503`) when either the
   count or the aggregate budget would be exceeded. Raising
   `maxResponseBuffer`/`maxHeaderBytes` therefore cannot create an unbounded
   multi-GiB server without changing the aggregate budget.
 - Per-connection `inbuf` and `outbuf` are fixed at construction; no geometric
   growth. A full buffer causes backpressure or a protocol error, not allocation.
-- `RequestInfo` header copies are bounded by `maxHeaderBytes` and freed at the
-  end of the handler turn; they are counted in the aggregate estimate.
+- `RequestInfo` header copies are bounded by `maxHeaderBytes`, target/path/
+  query copies by `maxTarget`, and both are freed at the end of the handler
+  turn; both are included in the aggregate reservation.
 - Accept fairness: at most 32 accepts per reactor turn; per-connection work is
   capped at 64 KiB read/write and 64 events per turn; ready connections rotate.
 - `EMFILE`/`ENFILE` pauses acceptance and reports resource pressure; no busy
@@ -1836,14 +1872,16 @@ output byte array. No sleeps, no TLS, no sockets.
 | timeouts | fake clock at deadline, one nanosecond before/after; no reset |
 | fresh connection | no bytes; accept deadline fires; no hang |
 | accept disarm | live request/response crossing 10 s after accept survives; accept deadline not consulted |
-| keep-alive total reset | second request after the first request-total window is accepted; totals restart per request/response |
+| keep-alive total reset | with a raised idle timeout, second request after the first request-total window is accepted; totals restart per request/response |
 | TLS handshake | fresh session with neither want; handshakeStep still driven; handshake deadline fires |
 | handshake disarm | after StepDone, handshake deadline is cleared and not consulted during the request |
 | unread body + next | `next` returns `InvalidState`; no second request parse; early response + close works |
 | 100 early final | final before read/100; connection closes; no 100 after final |
 | slow reader | response idle renews, response total does not; forced close |
 | response trailers | count/byte caps enforced; forbidden names rejected |
-| endResponse false | tiny maxResponseBuffer forces `false`; handler flushes and retries; terminator/trailers complete |
+| endResponse false | viable tiny `maxResponseBuffer` (64, trailer cap <=48) forces `false`; handler flushes and retries; terminator/trailers complete; values below validation minimum rejected |
+| handler forced yield | exact `pumpEcho`/`respondHello` sketches; `writeText 0`, `endResponse false`, `FlushWantWrite`; one status/header/body/terminator; second keep-alive request clean |
+| per-request reset | `HeadReady`/`ResponseComplete` clear bodyDone/responseStarted/finalQueued/bodyPos; no header/body replay |
 | TLS pending ciphertext | `Flushed` false while `pending>0`; flushPending drives it |
 | TLS shutdown | multi-step Sent/PeerClosed; close abortive |
 | ALPN | `acceptAlpn` required; H2/Other close; no HTTP parse after rejection; Http11/None per policy |
@@ -1853,6 +1891,7 @@ output byte array. No sleeps, no TLS, no sockets.
 | maxHeaderLine/bytes | CRLF included; exact +1 |
 | maxChunkMetadata/count | exact boundary and +1 |
 | maxResponseHeaderBytes | exact commit and +1 rejection |
+| maxResponseBuffer minimum | 64 accepted; below 64 rejected; endResponse cannot fail forever |
 | pipeline/request caps | maxPipelineBytes, maxRequests, pipelining=false |
 | HTTP/1.0 | valid response, close, no chunked/keep-alive; Host optional |
 | 304/205/HEAD | CL metadata rules; HEAD default omits CL; 205 length 0 |
@@ -1932,6 +1971,11 @@ and the accept sketch from §7.4, with a fake `http1` module and a scripted
   new []byte(0))`, and the `endResponse`/`flush` retry loop;
 - run one request through the fake transport under `OBO_CHECK=1` for both a
   bodyless and a fixed-length body request;
+- forced-yield run of the exact sketches: a scripted transport/output buffer
+  makes `writeText` return `0`, `endResponse` return `false`, and `flush`
+  return `FlushWantWrite`; assert exactly one status line/header block, each
+  body byte once, and one chunk terminator/trailer block, then reset and serve
+  a second keep-alive request through the same session;
 - the same gate compiles the accept sketch after moving `t` into the session;
   it must use `session.transport.watch(...)`, not the moved local;
 - the same gate compiles a TLS-neutral `http1tls` stub that maps
@@ -1978,8 +2022,8 @@ mandatory before H1a is accepted.
 
 - The server calls `Transport.watch(r, readable, writable, tag)`, which uses
   `reactor::watchResource` for plain streams and `systls::watch` for TLS. It
-  never watches an fd or a TLS struct directly; `source()` is not part of the
-  contract.
+  never watches an fd or a TLS struct directly; HTTP uses `watch`, not
+  `source()`.
 - Level-triggered only. After a readable event, `readBody`/`next` must attempt a
   transfer and handle `ReadWantRead`/`WriteWantRead`/`WouldBlock`; a readiness
   event is not data.
@@ -2039,7 +2083,7 @@ Mapping requirements:
 - `readSome(max)` -> `tls::readSome`, moving `Data.bytes` into
   `ReadData.bytes`; map `Eof`/`Want*` exactly.
 - `writeSome` -> `tls::writeSome`, preserving `Wrote`/`WantRead`/`WantWrite`.
-- `flushPending` -> `tls::flush(s)`. The in-progress TLS design already
+- `flushPending` -> `tls::flush(s)`. The in-progress TLS revision `2c8a824`
   provides ciphertext-only `flush(s)` with no plaintext acceptance; map its
   `Done`/`WantWrite` to `WriteWrote{0}`/progress and `WriteWantWrite`. It cannot
   return `WantRead`. HTTP does not invent a second TLS method; if the final TLS
@@ -2049,7 +2093,8 @@ Mapping requirements:
   byte count)/`tls::want`.
 - `alpn` -> `tls::alpn`/`info.alpn`; map nil to `AlpnNone`, `"http/1.1"` to
   `AlpnHttp11`, `"h2"` to `AlpnH2`, anything else to `AlpnOther`.
-- `watch` -> `tls::watch`; `close` -> `tls::close` (abortive). No `source()`.
+- `watch` -> `tls::watch`; `close` -> `tls::close` (abortive). TLS may expose
+  `source()`, but HTTP does not use it.
 - `acceptAlpn` uses `Limits.allowNoAlpn` for `AlpnNone`; h2/other close before
   any HTTP/1.1 parse.
 - `isSecure = true`; `maxTransfer = 65536`.
@@ -2264,10 +2309,11 @@ The focused re-review should check:
    `100-continue` early-final close, eliminate the desync case in tests.
 5. Whether by-value string APIs are acceptable given that `&string` is
    rejected by 0.12 and strings are refcounted copies; the syntax/ownership
-   gate must compile both handlers and the accept sketch, including the
-   `endResponse` retry loop.
+   gate must compile both handlers and the accept sketch, including reset,
+   forced-yield, `endResponse` retry and second-keep-alive runs.
 6. Whether the `maxTarget`/`maxStartLine`, response trailer, aggregate memory
-   (including `RequestInfo` copies and checked multiplication) and
-   empty-list-element rules close the remaining limit gaps.
+   (including `RequestInfo` header and target/path/query copies and checked
+   multiplication) and empty-list-element rules close the remaining limit
+   gaps.
 7. Whether `acceptAlpn` / `allowNoAlpn` and the defaults/HTTP/1.0 always-close
    choice are the right product scope.
