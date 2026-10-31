@@ -351,7 +351,7 @@ long sys_net_connect(long addr_token) {
     rc = connect(fd, (struct sockaddr *)&ss, salen);
     if (rc != 0) {
         int e = errno;
-        if (e == EINPROGRESS || e == EALREADY || e == EAGAIN) {
+        if (e == EINPROGRESS || e == EALREADY || e == EAGAIN || e == EINTR) {
             connecting = 1;
         } else {
             (void)close(fd);
@@ -385,6 +385,9 @@ long sys_net_finish_connect(long conn_token) {
         prc = poll(&pfd, 1, 0);
         if (prc < 0) {
             int e = errno;
+            /* EINTR is not a connect failure: the connection may still be in
+             * progress. Leave the state pending for the caller to retry. */
+            if (e == EINTR) return 0;
             c->state->failed = 1;
             c->state->failure = e;
             c->state->connecting = 0;
@@ -394,6 +397,7 @@ long sys_net_finish_connect(long conn_token) {
     }
     if (getsockopt(c->fd, SOL_SOCKET, SO_ERROR, &soerr, &solen) != 0) {
         int e = errno;
+        if (e == EINTR) return 0;
         c->state->failed = 1;
         c->state->failure = e;
         c->state->connecting = 0;
@@ -655,6 +659,15 @@ long sys_net_bind_datagram(long addr_token) {
     if (r < 0) return r;
     fd = socket(ss.ss_family, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (fd < 0) return err(errno);
+    if (ss.ss_family == AF_INET6) {
+        /* Default a datagram socket to IPv6-only, matching the stream
+         * listen default. Otherwise :: can reserve the same IPv4 port and
+         * silently create a dual-stack endpoint. */
+        int only = 1;
+        if (setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &only, sizeof(only)) != 0) {
+            int e = errno; (void)close(fd); return err(e);
+        }
+    }
     if (bind(fd, (struct sockaddr *)&ss, salen) != 0) {
         int e = errno; (void)close(fd); return err(e);
     }
@@ -1189,6 +1202,18 @@ long sys_net_wait(long reactor_token, long finite, long deadline_ns,
         int sawWake = 0;
         if (now < 0) return now;
         if (finite && now >= deadline_ns) return 0;
+        /* A coalesced wake from a full previous batch must not wait for the
+         * next epoll event (which may never come on an infinite wait). */
+        if (r->wake_pending) {
+            put_event(out, 0, 0, 0, 0, 0, 0, 0, 0, 1);
+            r->wake_pending = 0;
+            return 1;
+        }
+        /* Due timers are checked before blocking and fill the batch before
+         * socket readiness, so a continuously ready watch cannot starve a
+         * timer when max_events is small. */
+        collect_due_timers(r, now, out, cap, &count);
+        if (count > 0) return count;
         due = next_timer_due(r);
         if (due >= 0) {
             long delta = due - now;
@@ -1206,6 +1231,10 @@ long sys_net_wait(long reactor_token, long finite, long deadline_ns,
             if (errno == EINTR) continue;
             return err(errno);
         }
+        now = real_now();
+        if (now < 0) return now;
+        /* Timers that became due during the wait get the batch before I/O. */
+        collect_due_timers(r, now, out, cap, &count);
         {
             int reverse = (r->turn & 1) != 0;
             r->turn++;
@@ -1243,9 +1272,6 @@ long sys_net_wait(long reactor_token, long finite, long deadline_ns,
                 }
             }
         }
-        now = real_now();
-        if (now < 0) return now;
-        collect_due_timers(r, now, out, cap, &count);
         if (sawWake) {
             drain_wake(r->wakefd);
             if (r->state != 0) return err(ECANCELED);

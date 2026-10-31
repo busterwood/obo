@@ -44,6 +44,7 @@ struct fake_sock {
     int failed;
     long failure;
     int read_closed;
+    int read_shutdown;
     int write_closed;
     int force_readable;
     int force_writable;
@@ -444,7 +445,7 @@ long sys_net_connect(long addr_token) {
     if (r < 0) return r;
     have_script = fake_pop_script(SYS_CALL_CONNECT, &scripted);
     if (have_script && scripted < 0 && scripted != -EINPROGRESS &&
-        scripted != -EAGAIN) return scripted;
+        scripted != -EAGAIN && scripted != -EINTR) return scripted;
     listener = find_listener(&a);
     if (listener == NULL) return err(ECONNREFUSED);
     client = new_sock(SYS_KIND_CONNECTION);
@@ -471,7 +472,8 @@ long sys_net_connect(long addr_token) {
         client->has_peer_addr = 1;
     }
     client->connecting = (have_script &&
-                          (scripted == -EINPROGRESS || scripted == -EAGAIN)) ? 1 : 0;
+                          (scripted == -EINPROGRESS || scripted == -EAGAIN ||
+                           scripted == -EINTR)) ? 1 : 0;
     stoken = new_sock_handle(SYS_KIND_CONNECTION, server);
     if (stoken < 0) {
         fake_sock_release(client);
@@ -526,6 +528,7 @@ long sys_net_finish_connect(long conn_token) {
     if (!f->sock->connecting) return 1;
     have_script = fake_pop_script(SYS_CALL_FINISH_CONNECT, &scripted);
     if (have_script && scripted < 0) {
+        if (scripted == -EINTR) return 0;   /* pending; never poison */
         f->sock->failed = 1;
         f->sock->failure = -scripted;
         f->sock->connecting = 0;
@@ -556,6 +559,7 @@ long fake_sock_read(struct fake_file *f, unsigned char *buf, size_t offset,
     sys_reg_bump_call(SYS_CALL_CONN_READ);
     if (s->connecting) return err(EINPROGRESS);
     if (s->failed) return err(s->failure);
+    if (s->read_shutdown) return 0;
     if (have_script && scripted < 0) return scripted;
     if (s->in_len == 0) {
         if (s->peer_closed || s->read_closed) return 0;
@@ -635,9 +639,12 @@ long sys_net_shutdown(long token, long kind, long how) {
     if (f->sock->connecting) return err(EINPROGRESS);
     if (f->sock->failed) return err(f->sock->failure);
     if (how == 0) {
-        f->sock->read_closed = 1;
-        if (f->sock->peer != NULL) f->sock->peer->write_closed = 1;
+        /* SHUT_RD closes only the local read direction. It does not notify the
+         * peer or make the peer's writes fail; queued/new data is not
+         * delivered to this reader. */
+        f->sock->read_shutdown = 1;
     } else {
+        /* SHUT_WR is visible to the peer as EOF on its read side. */
         f->sock->write_closed = 1;
         if (f->sock->peer != NULL) f->sock->peer->read_closed = 1;
     }
@@ -985,9 +992,15 @@ static long source_ready(long token, long kind, int *readable, int *writable,
             if (s->msgs_head != NULL) *readable = 1;
         } else {
             if (s->in_len > 0) *readable = 1;
+            if (s->read_shutdown || s->read_closed ||
+                (s->peer_closed && s->in_len == 0)) {
+                /* EOF is readable (a zero-byte read) and a hangup in the
+                 * level-triggered contract, matching epoll EPOLLIN|RDHUP. */
+                *readable = 1;
+                *hangup = 1;
+            }
             if (s->connecting) *writable = 1;
             else if (!s->write_closed) *writable = 1;
-            if (s->peer_closed && s->in_len == 0) *hangup = 1;
         }
         if (s->force_readable) *readable = 1;
         if (s->force_writable) *writable = 1;

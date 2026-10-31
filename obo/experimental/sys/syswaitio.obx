@@ -173,6 +173,7 @@ pub fn writeAllUntil(s: &stream::Stream, r: &reactor::Reactor, bytes: &[]byte,
         if cursor.done >= len(bytes) { return ok(true) }
         try checkBeforeWait(s, cancel, until)
         let before = cursor.done
+        var retryable = false
         let done = buffer::writeExactStep(s, bytes, &cursor)
         match done {
             ok(full) {
@@ -180,15 +181,20 @@ pub fn writeAllUntil(s: &stream::Stream, r: &reactor::Reactor, bytes: &[]byte,
             }
             err(m, c) {
                 if errors::isWouldBlock(c) {
+                    retryable = true
                     try waitTurn(r, until)
                 } else if errors::isInterrupted(c) {
+                    retryable = true
                     try waitTurn(r, until)
                 } else {
                     return err(m, c)
                 }
             }
         }
-        if cursor.done == before {
+        // EAGAIN/EINTR with no progress is ordinary backpressure: waitTurn
+        // consumed one readiness/deadline check, so retry the transfer. A
+        // non-retryable zero-progress write is the only terminal anomaly.
+        if cursor.done == before && !retryable {
             return err("write made no progress", systemFailure())
         }
         let nowCancelled = try cancelled(cancel)

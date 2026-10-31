@@ -611,6 +611,9 @@ long sys_file_dup(long token, long kind, long to_kind) {
 }
 
 long sys_file_retag(long token, long from_kind, long to_kind) {
+    /* A connection transfer to Stream invalidates its old registrations now,
+     * not only when a later wait happens to filter a stale native event. */
+    sys_net_forget_source(token);
     if (from_kind <= 0 || to_kind <= 0) return err(EINVAL);
     if (sys_reg_retag(token, (int)from_kind, (int)to_kind) != 1) return err(EINVAL);
     return 1;

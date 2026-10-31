@@ -290,6 +290,16 @@ pub fn parseNumeric(text: string, port: int): Result[Address] {
     return parseIPv4(text, port)
 }
 
+fn hexDigit(digit: int): string {
+    if digit < 10 { return string(digit) }
+    if digit == 10 { return "a" }
+    if digit == 11 { return "b" }
+    if digit == 12 { return "c" }
+    if digit == 13 { return "d" }
+    if digit == 14 { return "e" }
+    return "f"
+}
+
 fn hex4(value: int): string {
     var out = ""
     var started = false
@@ -298,28 +308,16 @@ fn hex4(value: int): string {
         let digit = (value >> shift) & 15
         if digit != 0 { started = true }
         if started || k == 3 {
-            if digit < 10 {
-                out = out + string(digit)
-            } else if digit == 10 {
-                out = out + "a"
-            } else if digit == 11 {
-                out = out + "b"
-            } else if digit == 12 {
-                out = out + "c"
-            } else if digit == 13 {
-                out = out + "d"
-            } else if digit == 14 {
-                out = out + "e"
-            } else {
-                out = out + "f"
-            }
+            out = out + hexDigit(digit)
         }
     }
     return out
 }
 
+// Abstract names have no text form; use exactly two lowercase hex digits per
+// byte so leading zero bytes are preserved and distinct names cannot collide.
 fn hexByte(value: int): string {
-    return hex4(value)
+    return hexDigit((value >> 4) & 15) + hexDigit(value & 15)
 }
 
 fn joinGroups(groups: &[]int, start: int, end: int): string {

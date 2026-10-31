@@ -380,7 +380,7 @@ pub fn readVector(s: &Stream, sizes: &[]int): Result[?[][]byte]
 ```
 
 Half-close applies to socket-backed streams; a file/pipe stream returns
-`Unsupported`. `writeVector` composes one contiguous bounded transfer (it does
+`Unsupported`. `syswaitio` helpers therefore require a socket-backed Stream. `writeVector` composes one contiguous bounded transfer (it does
 not promise one writev syscall), so a short return advances a caller cursor
 across the vectors. `readVector` returns owned arrays, the final one possibly
 short; nil is EOF before any data.
@@ -512,7 +512,10 @@ pub fn sourceDatagram(d: &Datagram): Result[^platform::Resource]
 
 Sockets are nonblocking and CLOEXEC atomically at creation. `listenOptions`
 defaults to backlog 128, reuseAddress true, reusePort false, ipv6Only true; an
-IPv6 socket is never accidentally dual-stack. `accept` returns WouldBlock on an
+IPv6 socket is never accidentally dual-stack. The kernel may cap a larger
+requested backlog to `somaxconn`. Datagram binds apply the same IPv6-only
+default, so `::` does not reserve the matching IPv4 port. Keepalive idle,
+interval and probe values are positive and capped at 2147483. `accept` returns WouldBlock on an
 empty queue and ResourceLimit on EMFILE/ENFILE; it makes one attempt. `connect`
 returns an owned Connection while establishment is pending. `finishConnect`
 returns false while pending, true when connected, or the captured SO_ERROR
@@ -521,7 +524,9 @@ leaves a Connecting connection unchanged; a failed connection is retired once
 and its state error is preserved. `duplicateStream` shares the socket and
 half-close state but owns a separate descriptor. A datagram send is all-or-error;
 receive preserves empty datagrams, peer and truncation (`originalSize` exact on
-Linux). Port 0 is discoverable before accepting/sending.
+Linux). Port 0 is discoverable before accepting/sending. `peer` is nil only for a
+kernel-unnamed sender; P2 has no unbound datagram constructor, so applications
+normally observe the sender's bound address.
 
 ## `sysreactor`
 
@@ -556,8 +561,10 @@ period is one-shot. `wait` accepts `forever()` and returns an empty batch on
 deadline, at most 64 events per call. Events carry application tags only; native
 registry tokens/generations never reach the caller, and stale registrations are
 filtered. `failed`/`timer`/`wake` are mutually exclusive and `failed` carries no
-I/O bits. Timers are checked every turn and ready subscriptions rotate between
-batches. Endpoint close deregisters its watches; reactor close invalidates all
+I/O bits. Timers are kept in an insertion-order linked list and scanned each
+turn (bounded by `maxTimers`); due timers fill the batch before socket
+readiness, and a coalesced wake is emitted at the top of the next wait so it
+cannot be delayed to the deadline. Ready subscriptions rotate between batches. Endpoint close deregisters its watches; reactor close invalidates all
 children and `remove`/`cancelTimer` remain idempotent. `stop` prevents new
 registrations, wakes waiters and makes subsequent `wait` return `Cancelled`.
 Watching a regular file returns `Unsupported` (it is not generally
@@ -586,7 +593,9 @@ pub fn flushUntil(mut w: &buffer::Writer, s: &stream::Stream,
 
 Cancellation is a sticky native flag plus eventfd wake. These compound helpers
 use one absolute deadline, never restart it on EINTR/WouldBlock/progress, and
-retain buffer/cursor progress on every exit. `readExactUntil.count` is additional
+retain buffer/cursor progress on every exit. EAGAIN/EINTR with no progress is
+ordinary backpressure: the helper waits for readiness and retries; only a
+non-retryable zero-progress transfer is terminal. `readExactUntil.count` is additional
 bytes appended after the existing buffer prefix. They consume readiness batches,
 so they require a **dedicated reactor**; event-driven callers use the buffer
 step APIs with `cancelled`/`deadlineReached` instead.
@@ -613,9 +622,11 @@ getaddrinfo/NSS order; the C adapter copies them and always calls
 `freeaddrinfo`. EAI_AGAIN is ResolveTemporary, EAI_NONAME/NODATA is
 ResolveNotFound and other EAI failures are ResolveFailure; EAI_SYSTEM preserves
 the captured errno category. `resolveNumeric` uses AI_NUMERICHOST and
-AI_NUMERICSERV and needs no NSS/DNS. `resolveBlocking` is **blocking with no
-finite deadline** and is not for reactor loops. No cache, TTL, helper process or
-reactive resolver is part of P2.
+AI_NUMERICSERV and needs no NSS/DNS. `resolveBlocking` is **blocking with no finite deadline** and is not for reactor
+loops. No cache, TTL, helper process or reactive resolver is part of P2. The
+fake resolver is a deterministic table (`localhost`, `example.test`,
+`resolve-again.test`, `notfound.test`, `system.test`) plus numeric parsing; it
+performs no NSS/DNS.
 
 ## `systestres` (P0 fixture, not a future File)
 

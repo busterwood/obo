@@ -18,6 +18,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -262,7 +264,73 @@ static int datagram_checks(const char *patha, const char *pathb) {
     return 0;
 }
 
-static int reactor_checks(unsigned char ip[4]) {
+static int v6only_check(void) {
+    unsigned char zero6[16];
+    unsigned char zero4[4] = {0, 0, 0, 0};
+    long a6, a4, d6, d4, local;
+    long port;
+    int one = 1;
+    memset(zero6, 0, sizeof(zero6));
+    a6 = mkaddr(SYS_ADDR_FAMILY_IPV6, 0, zero6, 16);
+    CHECK(a6 > 0, "v6only addr6");
+    d6 = sys_net_bind_datagram(a6);
+    CHECK(d6 > 0, "v6only dgram bind");
+    local = zero_addr();
+    CHECK(sys_net_address(d6, SYS_KIND_DATAGRAM, 0, local) == 1, "v6only local");
+    port = address_field(local, 1);
+    CHECK(port > 0, "v6only port");
+    a4 = mkaddr(SYS_ADDR_FAMILY_IPV4, port, zero4, 4);
+    /* With IPV6_V6ONLY=1 the IPv4 wildcard may use the same port. */
+    d4 = sys_net_bind_datagram(a4);
+    CHECK(d4 > 0, "v6only v4 same-port bind");
+    CHECK(sys_res_close(d4, SYS_KIND_DATAGRAM) == 1, "v6only v4 close");
+    CHECK(sys_res_close(d6, SYS_KIND_DATAGRAM) == 1, "v6only v6 close");
+    sys_res_close(a6, SYS_KIND_BYTE_BUFFER);
+    sys_res_close(a4, SYS_KIND_BYTE_BUFFER);
+    sys_res_close(local, SYS_KIND_BYTE_BUFFER);
+    (void)one;
+    return 0;
+}
+
+/* A raw, unbound Unix datagram sender is the only way to exercise the kernel's
+ * unnamed-peer form; the adapter itself has no unbound datagram constructor. */
+static int unnamed_peer_check(const char *path) {
+    long aa = mkaddr(SYS_ADDR_FAMILY_UNIX_PATH, 0,
+                     (const unsigned char *)path, (long)strlen(path));
+    long receiver, data, peer, meta, raw, r;
+    unsigned char *p = NULL;
+    size_t n = 0;
+    struct sockaddr_un sun;
+    unlink(path);
+    receiver = sys_net_bind_datagram(aa);
+    CHECK(receiver > 0, "unnamed receiver");
+    raw = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    CHECK(raw >= 0, "unnamed raw socket");
+    memset(&sun, 0, sizeof(sun));
+    sun.sun_family = AF_UNIX;
+    CHECK(strlen(path) < sizeof(sun.sun_path), "unnamed path length");
+    memcpy(sun.sun_path, path, strlen(path));
+    CHECK(sendto(raw, "z", 1, 0, (struct sockaddr *)&sun, sizeof(sun)) == 1,
+          "unnamed raw send");
+    close(raw);
+    data = zero_addr();
+    peer = zero_addr();
+    meta = zero_addr();
+    r = sys_net_receive(receiver, data, 8, peer, meta);
+    CHECK(r == 1, "unnamed receive");
+    CHECK(field(peer, 0) == SYS_ADDR_FAMILY_NONE, "unnamed peer is nil");
+    CHECK(sys_reg_buffer_data(data, &p, &n) == 0 && n >= 1 && p[0] == 'z',
+          "unnamed data");
+    CHECK(sys_res_close(receiver, SYS_KIND_DATAGRAM) == 1, "unnamed receiver close");
+    sys_res_close(aa, SYS_KIND_BYTE_BUFFER);
+    sys_res_close(data, SYS_KIND_BYTE_BUFFER);
+    sys_res_close(peer, SYS_KIND_BYTE_BUFFER);
+    sys_res_close(meta, SYS_KIND_BYTE_BUFFER);
+    unlink(path);
+    return 0;
+}
+
+static int reactor_checks(int fake, unsigned char ip[4]) {
     long addr = mkaddr(SYS_ADDR_FAMILY_IPV4, 0, ip, 4);
     long listener, local, target, conn, accepted, reactor, watch, timer;
     long out, wake, events, r, d;
@@ -306,6 +374,77 @@ static int reactor_checks(unsigned char ip[4]) {
     d = deadline_ms(1000);
     r = sys_net_wait(reactor, 1, d, 8, out);
     CHECK(r >= 1 && event_field(out, 0, 7) == 1, "reactor wake event");
+    if (!fake) {
+        /* Coalesced wake must not wait for an eventfd that is already drained. */
+        long src = sys_res_new(SYS_KIND_TEST_RESOURCE, 0, 0);
+        long hot, tw, rw;
+        unsigned char evbuf2[SYS_REACTOR_MAX_BATCH * SYS_EVENT_PACKET_BYTES];
+        long out2;
+        memset(evbuf2, 0, sizeof(evbuf2));
+        out2 = mkbuf(evbuf2, (long)sizeof(evbuf2));
+        CHECK(src > 0, "wake src");
+        hot = sys_net_watch(reactor, src, SYS_KIND_TEST_RESOURCE, 0, 1, 66);
+        CHECK(hot > 0, "wake hot watch");
+        tw = sys_net_timer(reactor, sys_clock_monotonic_ns(), 0, 67);
+        CHECK(tw > 0, "wake timer");
+        CHECK(sys_net_wake(reactor) == 1, "wake coalesce");
+        d = deadline_ms(1000);
+        rw = sys_net_wait(reactor, 1, d, 1, out2);
+        CHECK(rw == 1 && event_field(out2, 0, 5) == 1, "timer before IO");
+        /* With a hot watch and a coalesced wake, epoll may return either ready
+         * fd first. An infinite wait must still make progress and the wake must
+         * appear in a bounded number of turns, not only at some deadline. */
+        {
+            int turn;
+            int saw = 0;
+            for (turn = 0; turn < 4; turn++) {
+                if (turn == 0) {
+                    d = deadline_ms(1000);
+                    rw = sys_net_wait(reactor, 1, d, 1, out2);
+                } else {
+                    rw = sys_net_wait(reactor, 0, 0, 1, out2);
+                }
+                CHECK(rw == 1, "wake/io turn");
+                if (event_field(out2, 0, 7) == 1) { saw = 1; break; }
+            }
+            CHECK(saw == 1, "pending wake infinite");
+        }
+        CHECK(sys_net_remove(hot) == 1, "wake hot remove");
+        CHECK(sys_res_close(src, SYS_KIND_TEST_RESOURCE) == 1, "wake src close");
+        sys_res_close(out2, SYS_KIND_BYTE_BUFFER);
+    }
+    if (!fake) {
+        /* A continuously writable watch must not starve a due timer. */
+        long src2 = sys_res_new(SYS_KIND_TEST_RESOURCE, 0, 0);
+        long hot2, tt, wt;
+        unsigned char evbuf4[SYS_REACTOR_MAX_BATCH * SYS_EVENT_PACKET_BYTES];
+        long out4;
+        memset(evbuf4, 0, sizeof(evbuf4));
+        out4 = mkbuf(evbuf4, (long)sizeof(evbuf4));
+        int seen = 0;
+        int turn;
+        CHECK(src2 > 0, "starve src");
+        hot2 = sys_net_watch(reactor, src2, SYS_KIND_TEST_RESOURCE, 0, 1, 68);
+        CHECK(hot2 > 0, "starve watch");
+        tt = sys_net_timer(reactor, sys_clock_monotonic_ns() + 5000000L, 0, 69);
+        CHECK(tt > 0, "starve timer");
+        CHECK(sys_sleep_until(sys_clock_monotonic_ns() + 10000000L) == 1,
+              "starve sleep");
+        for (turn = 0; turn < 4; turn++) {
+            d = deadline_ms(100);
+            wt = sys_net_wait(reactor, 1, d, 1, out4);
+            CHECK(wt >= 0, "starve wait");
+            if (wt == 1 && event_field(out4, 0, 5) == 1) {
+                CHECK(event_field(out4, 0, 0) == 69, "starve timer tag");
+                seen = 1;
+                break;
+            }
+        }
+        CHECK(seen == 1, "timer not starved by hot watch");
+        CHECK(sys_net_remove(hot2) == 1, "starve remove");
+        CHECK(sys_res_close(src2, SYS_KIND_TEST_RESOURCE) == 1, "starve src close");
+        sys_res_close(out4, SYS_KIND_BYTE_BUFFER);
+    }
     CHECK(sys_net_stop(reactor) == 1, "reactor stop");
     CHECK(sys_net_stop(reactor) == 0, "reactor stop idempotent");
     d = deadline_ms(100);
@@ -436,7 +575,15 @@ int main(int argc, char **argv) {
 
         }
     }
-    CHECK(reactor_checks(ip4) == 0, "reactor");
+    if (!fake) {
+        CHECK(v6only_check() == 0, "v6only datagram");
+        {
+            char path[600];
+            snprintf(path, sizeof(path), "%s/unnamed", work);
+            CHECK(unnamed_peer_check(path) == 0, "unnamed peer");
+        }
+    }
+    CHECK(reactor_checks(fake, ip4) == 0, "reactor");
 
     CHECK(resolver_checks() == 0, "resolver");
 

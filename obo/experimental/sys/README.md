@@ -228,15 +228,16 @@ crosses the application boundary.
   invalid lengths; `format` is deterministic lowercase and never fabricates an
   unnamed address. Host/network byte order is private to C.
 - `sysnet::Listener`/`Connection`/`Datagram`: `listen` validates
-  `ListenOptions` (backlog 1..65535, independent reuseAddress/reusePort,
-  ipv6Only default **true**), `accept` returns WouldBlock on an empty queue,
+  `ListenOptions` (backlog 1..65535, kernel-capped to `somaxconn`; independent
+  reuseAddress/reusePort, ipv6Only default **true**), `accept` returns WouldBlock on an empty queue,
   and every socket is nonblocking+CLOEXEC at creation. `connect` returns an
   owned Connection even while pending; `finishConnect` returns false until a
   nonblocking completion check succeeds and then the captured `SO_ERROR`
   failure. `readSome`/`writeSome`/`readInto`/`writeFrom` are one-attempt forms.
   `shutdownWrite` is idempotent, EOF is nil, WouldBlock is distinct, and
   `intoStream`/`duplicateStream` implement consuming transfer and `dup`
-  semantics. Datagram receive preserves boundaries, peer and truncation;
+  semantics. IPv6 datagram binds default to v6-only. Datagram receive preserves boundaries,
+  peer and truncation;
   empty datagrams are data. Port 0 is discoverable through the listener/
   datagram local address.
 - `sysreactor`: level-triggered epoll only in v1. `watchResource` accepts a
@@ -249,7 +250,8 @@ crosses the application boundary.
 - `syswaitio::Cancellation` is a sticky native flag plus eventfd wake.
   `readExactUntil`/`writeAllUntil`/`flushUntil` use one caller-owned absolute
   deadline, retain progress and never reset the deadline on EINTR, WouldBlock
-  or partial progress. They require a **dedicated reactor**; event-driven
+  or partial progress; retryable no-progress failures wait and retry. They
+  require a socket-backed Stream. They require a **dedicated reactor**; event-driven
   callers use the buffer step APIs plus `cancelled`/`deadlineReached`.
 - `sysresolve::resolveBlocking` copies getaddrinfo results and always calls
   `freeaddrinfo`; `resolveNumeric` is an explicit no-NSS path. Blocking NSS is
@@ -352,10 +354,13 @@ The P2 suite additionally runs:
 - a C harness on both adapters for IPv4/IPv6/Unix TCP, Unix datagrams, port-0
   discovery, reactor timers/wake/stop, resolver status encoding and real
   RLIMIT_NOFILE accept pressure, under ASAN/UBSAN/LSan;
-- identical real/fake roots for address parsing/formatting/validation, TCP/UDP/
-  Unix loopback, short/empty/truncated datagrams, reactor timers/fairness/wake/
-  stop/stale filtering, resolver numeric/blocking errors and waitio
-  cancellation/deadline/no-reset behavior;
+- identical real/fake roots for address parsing/formatting/validation
+  (including abstract-name hex separation), TCP/UDP/Unix/abstract loopback,
+  readInto/writeFrom, duplicateStream, socket options, short/empty/truncated
+  datagrams, reactor EOF/timers/fairness/wake/stop/stale filtering, resolver
+  numeric/blocking errors and waitio cancellation/deadline/no-reset behavior;
+- C checks for IPv6-only datagram binds, an unnamed Unix datagram peer and
+  coalesced wake/timer priority;
 - scripted fake EMFILE/EAGAIN/short I/O/pending-or-failed connect/EAI faults,
   accepted-connection pressure, watch/timer quota pressure and retained
   deadline/progress assertions.

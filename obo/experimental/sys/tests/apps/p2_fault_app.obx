@@ -71,6 +71,97 @@ fn pair(): Result[Pair] {
     return ok(new Pair{client: cv, server: sv})
 }
 
+fn hasReadTag(events: &[]reactor::Event, tag: int): bool {
+    for i in 0..len(events) {
+        if events[i].tag == tag && events[i].readable {
+            return true
+        }
+    }
+    return false
+}
+
+fn connectEintrChecks(): Result[bool] {
+    let bindAddr = try address::parseNumeric("127.0.0.1", 0)
+    let opts = net::listenOptions()
+    let l = try net::listen(&bindAddr, &opts)
+    let local = try net::listenerLocalAddress(&l)
+    let target = try address::parseNumeric("127.0.0.1", portOf(local))
+    fake::push(fake::CLASS_CONNECT, -4)
+    let c = try net::connect(&target)
+    fake::push(fake::CLASS_FINISH_CONNECT, -4)
+    let first = try net::finishConnect(&c)
+    let second = try net::finishConnect(&c)
+    println("connect_eintr_first=", first, " second=", second)
+    let a = try net::accept(&l)
+    let ac = try net::closeConnection(&a)
+    let cc = try net::closeConnection(&c)
+    let lc = try net::closeListener(&l)
+    return ok(!first && second)
+}
+
+fn halfCloseChecks(): Result[bool] {
+    let p = try pair()
+    let co = take(p.client)
+    if co == nil { return err("pair client", 10038) }
+    let client: net::Connection = co
+    let so = take(p.server)
+    if so == nil { return err("pair server", 10038) }
+    let server: net::Connection = so
+    let r = try reactor::create(8, 8)
+    let w = try net::watchConnection(&r, &server, true, false, 101)
+    let sw = try net::shutdownWrite(&client)
+    let dl = deadlineAfter(100)
+    let ev = try reactor::wait(&r, &dl, 4)
+    println("halfclose_ready=", hasReadTag(&ev, 101))
+    let rm = try reactor::remove(&w)
+    let rd = try net::readSome(&server, 1)
+    if rd == nil { println("halfclose_eof=nil") } else { println("halfclose_eof=data") }
+    let rcl = try reactor::close(&r)
+    let cc = try net::closeConnection(&client)
+    let cs = try net::closeConnection(&server)
+    return ok(true)
+}
+
+fn shutdownReadChecks(): Result[bool] {
+    let p = try pair()
+    let co = take(p.client)
+    if co == nil { return err("pair client", 10038) }
+    let client: net::Connection = co
+    let so = take(p.server)
+    if so == nil { return err("pair server", 10038) }
+    let server: net::Connection = so
+    let sr = try net::shutdownRead(&server)
+    let text = mk("x")
+    let w = try net::writeSome(&client, &text, 0, 1)
+    let rd = try net::readSome(&server, 1)
+    println("shutdown_read_write=", w, " eof=", rd == nil)
+    let cc = try net::closeConnection(&client)
+    let cs = try net::closeConnection(&server)
+    return ok(true)
+}
+
+fn intoStreamWatchChecks(): Result[bool] {
+    let p = try pair()
+    let co = take(p.client)
+    if co == nil { return err("pair client", 10038) }
+    let client: net::Connection = co
+    let so = take(p.server)
+    if so == nil { return err("pair server", 10038) }
+    let server: net::Connection = so
+    let r = try reactor::create(8, 8)
+    let w = try net::watchConnection(&r, &server, false, true, 77)
+    let st = try net::intoStream(&server)
+    let dl = deadlineAfter(20)
+    let ev = try reactor::wait(&r, &dl, 4)
+    println("into_watch_events=", len(ev))
+    let rm = try reactor::remove(&w)
+    println("into_watch_remove=", rm)
+    let sc = try stream::close(&st)
+    let cc = try net::closeConnection(&client)
+    let rcl = try reactor::close(&r)
+    return ok(true)
+}
+
 fn main() {
     let o = platform::defaultOptions()
     let ini = platform::initialize(&o)
@@ -275,6 +366,44 @@ fn main() {
             fake::push(fake::CLASS_CONN_WRITE, -11)
             let ew = net::writeSome(&client, &hello, 0, 5)
             match ew { ok(v) { println("write_eagain=ok") } err(m,c) { show("write_eagain", c) } }
+            // A retryable write failure must wait and retry, not become
+            // SystemFailure. duplicateStream shares the socket while keeping
+            // the original Connection for the existing cleanup paths.
+            let drc = reactor::create(8, 8)
+            match drc {
+                ok(dr) {
+                    let dstr = net::duplicateStream(&client)
+                    match dstr {
+                        ok(ds) {
+                            let dcx = waitio::cancellation()
+                            match dcx {
+                                ok(dcxv) {
+                                    let dtext = mk("hello")
+                                    let dcur = new buffer::Cursor{done: 0}
+                                    let ddl = deadlineAfter(1000)
+                                    fake::push(fake::CLASS_CONN_WRITE, -11)
+                                    let dwr = waitio::writeAllUntil(&ds, &dr, &dtext, &dcur, &ddl, &dcxv)
+                                    match dwr { ok(v) { println("waitio_eagain=", v, " done=", dcur.done) } err(m,c) { show("waitio_eagain", c) } }
+                                    let dcur2 = new buffer::Cursor{done: 0}
+                                    let dtext2 = mk("hi")
+                                    fake::push(fake::CLASS_CONN_WRITE, -4)
+                                    let dwr2 = waitio::writeAllUntil(&ds, &dr, &dtext2, &dcur2, &ddl, &dcxv)
+                                    match dwr2 { ok(v) { println("waitio_eintr=", v, " done=", dcur2.done) } err(m,c) { show("waitio_eintr", c) } }
+                                    let dccl = waitio::closeCancellation(&dcxv)
+                                    match dccl { ok(v) { } err(m,c) { } }
+                                }
+                                err(m,c) { show("waitio_retry_cancel", c) }
+                            }
+                            let dsc = stream::close(&ds)
+                            match dsc { ok(v) { } err(m,c) { } }
+                        }
+                        err(m,c) { show("waitio_retry_dup", c) }
+                    }
+                    let drcl = reactor::close(&dr)
+                    match drcl { ok(v) { } err(m,c) { } }
+                }
+                err(m,c) { show("waitio_retry_reactor", c) }
+            }
             let cc = net::closeConnection(&client)
             let cs = net::closeConnection(&server)
             match cc { ok(v) { } err(m,c) { } }
@@ -504,6 +633,15 @@ fn main() {
         }
         err(m,c) { show("quota_reactor", c) }
     }
+
+    let ce = connectEintrChecks()
+    match ce { ok(v) { } err(m,c) { show("connect_eintr", c) } }
+    let hc = halfCloseChecks()
+    match hc { ok(v) { } err(m,c) { show("halfclose", c) } }
+    let src = shutdownReadChecks()
+    match src { ok(v) { } err(m,c) { show("shutdown_read", c) } }
+    let iw = intoStreamWatchChecks()
+    match iw { ok(v) { } err(m,c) { show("into_watch", c) } }
 
     let cnt = platform::counts()
     match cnt { ok(c) { println("counts_resources=", c.resources) } err(m,c) { show("counts", c) } }

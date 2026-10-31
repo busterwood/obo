@@ -216,9 +216,12 @@ consume readiness batches.
   namespace (`sub`) and metadata policy are intentionally shallow.
 - The fake P2 backend uses in-memory paired connections, queued datagrams,
   scripted readiness/errors and a fake monotonic clock. It has no kernel socket,
-  epoll or DNS: blocked readiness is represented by explicit scripts/queues,
+  epoll or DNS; its resolver is the fixed table documented in `API.md`, not a
+  name service: blocked readiness is represented by explicit scripts/queues,
   and an infinite `wait` with nothing ready returns an empty batch instead of
-  hanging the single-threaded test process. Scripted close/shutdown errors still
+  hanging the single-threaded test process. Timers are a bounded insertion-order
+  list scanned per turn; due timers and coalesced wakes are prioritized over
+  socket readiness so a hot watch cannot starve them. Scripted close/shutdown errors still
   consume the fake object. It proves contract/state/error behavior, not kernel
   TCP/UDP semantics.
 - `sysshells` contains P0-only `File`/`Stream` type-identity fixtures, not I/O
