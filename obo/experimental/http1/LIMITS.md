@@ -18,7 +18,7 @@ HTTP/1.1 design, not protocol constants or a security guarantee by themselves.
 | `maxChunkLine` | 1024 | chunk-size line with extensions and CRLF |
 | `maxChunkSize` | 1048576 | one decoded chunk |
 | `maxChunkCount` | 65536 | data chunks (the last zero chunk is not counted) |
-| `maxChunkMetadata` | 65536 | cumulative chunk size/extension lines |
+| `maxChunkMetadata` | 65536 | cumulative chunk-size/extension lines, including the final 0 line |
 | `maxTrailerBytes` | 4096 | request trailer field lines |
 | `maxTrailerCount` | 32 | request trailer fields |
 | `maxResponseHeaderBytes` | 16384 | response status line + fields + CRLFs |
@@ -43,22 +43,26 @@ part of H1a0 because it performs no I/O.
 
 - every numeric limit positive;
 - `maxTarget + 44 <= maxStartLine`;
+- `maxStartLine <= maxHeaderBytes`;
 - `maxHeaderLine <= maxHeaderBytes` and
   `maxHeaderBytes + maxHeaderLine <= 16 MiB`;
-- `maxChunkLine <= maxChunkMetadata` and `maxChunkSize <= maxBody`;
+- `maxChunkLine <= maxChunkMetadata`, `maxChunkLine <= maxHeaderBytes +
+  maxHeaderLine`, and `maxChunkSize <= maxBody`;
 - `maxResponseHeaderBytes <= maxResponseBuffer`;
 - `maxResponseBuffer >= 256` (a minimal header block and final chunk/trailer
-  block fit);
+  block fit) and `maxResponseBuffer <= 16 MiB`;
 - `maxResponseTrailerBytes + 16 <= maxResponseBuffer`;
 - `maxPipelineBytes <= maxHeaderBytes + maxHeaderLine`;
 - `serverName` is at most 64 bytes and, when non-empty, a valid token.
 
 Overflow and budget violations are `err(..., code)` before any buffer is made.
 The parser input buffer is exactly `maxHeaderBytes + maxHeaderLine` bytes and
-never grows. `feed` is all-or-nothing: if one feed cannot fit, the parser enters
-a terminal error (`414` while reading a start line, `431` while reading headers,
-`400` otherwise). Callers should feed bounded pieces (for example transport
-read sizes) rather than a whole large body.
+never grows. `feed` is all-or-nothing: if one feed cannot fit, that call copies
+nothing and the parser enters a terminal error (`414` while reading a start
+line, `431` while reading headers, `400` otherwise). `feed` also returns `false`
+after a clean EOF or after `Closed`; the parser cannot be resurrected. Callers
+should feed bounded pieces (for example transport read sizes) rather than a
+whole large body.
 
 ## Exact boundary semantics
 
@@ -71,14 +75,26 @@ read sizes) rather than a whole large body.
 - A chunk of exactly `maxChunkSize` is accepted; larger is `413`. Decoded bytes
   over `maxBody` are `413`.
 - `maxChunkCount` counts data chunks. Exceeding it is `400` (framing abuse).
-- `maxChunkMetadata` sums chunk-size line bytes (including extensions and CRLF).
+- `maxChunkMetadata` sums every chunk-size line, including extensions and CRLF
+  and the final `0` chunk-size line. Chunk-data CRLFs are not part of it.
 - Request trailer count/bytes use their own limits; the final blank line is not
   counted in `maxTrailerBytes`.
 - `maxPipelineBytes` is checked when a completed message is followed by bytes
   that belong to the next message. Exceeding it is `400`.
 - `maxRequests` is per parser/connection. The last allowed request has
   `keepAlive == false`; after its body the parser returns `Closed` and never
-  parses another buffered request.
+  parses another buffered request. There is no protocol-generated `429` in
+  H1a0; `Closed` is the terminal result. `429` remains an application/status
+  table entry only.
+- `pipelining == false` also has `keepAlive == false`. Already-buffered bytes
+  for a second request are `400`; a later sequential feed is refused because
+  `Closed` is terminal.
+- Start-line and target limits are distinct: `maxStartLine` is checked before
+  parsing, and a target over `maxTarget` is `414`. Because
+  `maxTarget + 44 <= maxStartLine`, a line over `maxStartLine` is usually also
+  over `maxTarget`; both map to `414`.
+- Host/authority IPv6 support validates bracketed hex/colon/dot syntax and the
+  port; it is not a full IPv6 address-semantics validator.
 
 ## Request status mapping
 
@@ -94,7 +110,7 @@ read sizes) rather than a whole large body.
 | Upgrade / `Connection: upgrade` | `501` |
 | unsupported HTTP version, HTTP/1.0 when disabled | `505` |
 | unsupported expectation / multiple Expect | `417` |
-| too many requests | `429` |
+| `maxRequests` exhausted | no response, `Closed` |
 | connection ended before a declared boundary | `400` |
 | idle EOF before any request | no response, `Closed` |
 

@@ -71,6 +71,7 @@ pub type Parser = ref record { /* private fields */ }
 pub fn makeParser(l: &Limits): Result[Parser]
 pub fn feed(mut p: &Parser, data: &[]byte): Result[bool]
 pub fn next(mut p: &Parser): Result[Event]
+pub fn nextHead(mut p: &Parser): Result[Event]
 pub fn readBody(mut p: &Parser, max: int): Result[Event]
 pub fn eof(mut p: &Parser): Result[bool]
 
@@ -95,25 +96,33 @@ pub fn requestNumber(p: &Parser): int
 
 1. `makeParser` validates and deep-copies `Limits`. The input buffer is
    `maxHeaderBytes + maxHeaderLine` bytes; it never grows.
-2. `feed` copies caller bytes into the bounded input buffer. `false` means the
-   buffer is full and the parser has entered a terminal error; no bytes were
-   consumed by that call. `feed` after a terminal error also returns `false`.
-3. `next` returns `HeadReady` once, then body events, then `BodyEnd` once. When
-   no complete line or body byte is buffered it returns `NeedRead` without losing
-   state. After `BodyEnd`, a later `next` either parses the next pipelined request,
-   returns `NeedRead`, returns `Closed` (close policy/EOF) or returns a terminal
-   error.
-4. `readBody(max)` is `next` restricted to the body state with a caller bound
-   `1..max`. It returns `BodyData` with 1..max owned bytes, `BodyEnd`, `NeedRead`
-   or a terminal error. `max <= 0` is an argument error; a second call after
-   `BodyEnd`, or a call before `HeadReady`, is `InvalidState`.
-5. `eof` records a clean end of input. A partial start line/header/body/chunk/
-   trailer becomes `400`; an idle parser becomes `Closed`; an exact complete
-   message is unaffected.
+2. `feed` copies caller bytes into the bounded input buffer all-or-nothing.
+   `false` means that call copied nothing and the parser is terminal: the buffer
+   is full, a clean EOF was already signalled, or a `Closed` was already emitted.
+   Callers must feed bounded pieces and treat `false` as terminal.
+3. `next` is the H1a0 streaming convenience: it returns `HeadReady` once, then
+   body events, then `BodyEnd` once. When no complete line or body byte is
+   buffered it returns `NeedRead` without losing state. After `BodyEnd`, a later
+   `next` either parses the next buffered pipelined request, returns `NeedRead`,
+   returns `Closed` (close policy/EOF) or returns a terminal error.
+4. `nextHead` is the H1a gate: it parses a head, errors, `NeedRead` or `Closed`
+   and never streams a body. While a head is ready and its body is unread it
+   returns `InvalidState`; the caller must use `readBody` to reach `BodyEnd`.
+   The future `Connection` must use this pair, not body-streaming `next`.
+5. `readBody(max)` is the body reader with a caller bound `1..max`. It returns
+   `BodyData` with 1..max owned bytes, `BodyEnd`, `NeedRead` or a terminal error.
+   `max <= 0` is an argument error; a second call after `BodyEnd`, or a call
+   before `HeadReady`, is `InvalidState`.
+6. `eof` records a clean end of input exactly once. A partial start line/header/
+   body/chunk/trailer becomes `400`; an idle parser becomes `Closed`; an exact
+   complete message is unaffected. Once EOF is signalled, `feed` returns `false`,
+   but bytes already buffered before the EOF may still parse. `Closed` is
+   terminal: later `next`/`nextHead` stay `Closed` and `feed` stays `false`.
 
 `BodyData.bytes` is a fresh owned array, never a slice of the input buffer.
 Bytes after a completed body are next-request bytes and are never consumed as
 body. On `Error`, the next `next` returns `Failed` and no new request is parsed.
+On `Closed`, the parser is terminal, not merely idle.
 
 ### Continue state
 
@@ -128,8 +137,9 @@ The parser never writes bytes; use `http1write::continueBytes`.
 A parser is one in-flight request at a time. It parses the next request only
 after `BodyEnd`. HTTP/1.1 is persistent by default; `Connection: close`,
 HTTP/1.0 compatibility, `maxRequests` or `pipelining == false` produce `Closed`
-after the current body/response boundary. `pipelining == false` rejects buffered
-pipelined bytes with `400`. Buffered bytes beyond the current message are bounded
+after the current body/response boundary. With `pipelining == false` a
+sequential second request fed later is also refused: `Closed` is terminal and
+`feed` returns `false`. Already-buffered pipelined bytes are a `400`. Buffered bytes beyond the current message are bounded
 by `maxPipelineBytes`. There is no request queue.
 
 ## `http1write`
@@ -211,6 +221,9 @@ pub fn parseHttpDate(text: string, nowSeconds: int): Result[DateValue]
 `formatHttpDate` emits IMF-fixdate in GMT and validates `nanos` 0..999999999 and
 years 0001..9999. `parseHttpDate` accepts IMF-fixdate, RFC 850 and asctime
 case-insensitively for names, rejects trailing text, and uses `nowSeconds` only
-for the RFC 850 50-year two-digit-year window. Weekday names are checked as known
-names but are not required to match the calendar date. The later clock wrapper
-adapts `clock::Timestamp` to these explicit seconds/nanos functions.
+for the RFC 850 50-year two-digit-year window. That window is applied at
+timestamp granularity: a candidate more than the same instant 50 calendar years
+later rolls back one century; exactly 50 years does not. RFC 850 requires a full
+weekday name. Weekday names are checked as known names but are not required to
+match the calendar date. The later clock wrapper adapts `clock::Timestamp` to
+these explicit seconds/nanos functions.

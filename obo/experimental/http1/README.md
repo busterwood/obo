@@ -53,7 +53,9 @@ point revalidates caller-visible fields.
 - Limits for start line, target, header block/line/count, body, chunks, chunk
   metadata/count, trailers and buffered pipeline bytes.
 - Host rules, absolute-form authority comparison with default-port
-  canonicalization, IPv6 literals, missing/duplicate Host rejection.
+  canonicalization, bracketed IPv6-literal syntax (nonempty hex/colon/dot form
+  with at least one colon; this is not a full IPv6 semantic validator), and
+  missing/duplicate Host rejection.
 - CL/TE smuggling defenses: CL+TE rejected, duplicate/conflicting CL rejected,
   duplicate TE rejected, chunked only as the final coding, empty list elements
   rejected, unsupported codings `501`, no close-delimited request bodies.
@@ -68,7 +70,8 @@ point revalidates caller-visible fields.
   304, 205 length 0, 304 metadata, header-injection rejection, response trailers
   and HTTP/1.0 close-delimited output.
 - IMF-fixdate formatting from explicit `(seconds, nanos)` and parsing of all
-  three RFC 9110 date forms with the RFC 850 50-year window. No clock dependency.
+  three RFC 9110 date forms with the RFC 850 50-year window at timestamp
+  granularity and a required full weekday name. No clock dependency.
 
 ## Build and test
 
@@ -79,8 +82,8 @@ make -C obo obo runtime_text.bin runtime_data.bin   # or: make -C obo http1
 make -C obo http1
 ```
 
-`make http1` builds the 0.13 seed compiler image, then builds three small drivers
-and runs the in-memory suite. The suite covers exact bytes/statuses, one-byte and
+`make http1` builds the seed compiler image, then builds three small drivers and
+runs the in-memory suite. The suite covers exact bytes/statuses, one-byte and
 fragmented feeds, the smuggling corpus, CL/TE conflicts, duplicate fields, chunk
 boundaries/extensions/trailers, exact limits, HTTP/1.0, Host/absolute-form,
 100-continue, HEAD/204/205/304, response framing/injection, backpressure, error
