@@ -138,6 +138,32 @@ class PublicTextTests(unittest.TestCase):
             p, s = name[len("numeric("):-1].split(",")
             self.assertEqual(o.typmod(int(p), int(s)), value, name)
 
+    def test_typmod_decode_vectors(self):
+        cases = o.build_public_typmod_cases()
+        self.assertEqual(cases["unconstrained"]["typmod"], -1)
+        self.assertEqual(cases["unconstrained"]["decode"], [0, 0, False])
+        for c in cases["encoded"]:
+            self.assertEqual(o.typmod(c["p"], c["s"]), c["typmod"], c["name"])
+            self.assertEqual(o.decode_typmod(c["typmod"]),
+                             (c["p"], c["s"], True), c["name"])
+        for value in cases["invalid"]:
+            self.assertIsNone(o.decode_typmod(value), value)
+
+    def test_postgres_dscale_boundary(self):
+        low = o.parse_public_text("1e-16383")
+        self.assertEqual((low["status"], low["exp"], low["dscale"]),
+                         (o.OK, -16383, 16383))
+        below = o.parse_public_text("1e-16384")
+        self.assertEqual((below["status"], below["exp"], below["dscale"]),
+                         (o.OK, -16384, 16384))
+        displayed = o.parse_public_text("1.0e-16383")
+        self.assertEqual((displayed["status"], displayed["exp"],
+                          displayed["dscale"]), (o.OK, -16383, 16384))
+        normalised = o.parse_public_text("1000e-16384")
+        self.assertEqual((normalised["status"], normalised["exp"],
+                          normalised["dscale"]), (o.OK, -16381, 16384))
+        self.assertEqual(o.PG_DSCALE_MAX, 16383)
+
     def test_public_cases_are_deterministic(self):
         self.assertEqual(o.build_public_text_cases(),
                          o.build_public_text_cases())
