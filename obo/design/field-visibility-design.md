@@ -168,12 +168,16 @@ fn reset(mut p0: &R) pfree 0x1 pf 0 "=/buf"
 
 `buf` is private, yet `"=/buf"` is in the interface. Consequences:
 
-- Renaming `buf` changes the exported summary, so the interface hash **does**
-  change, and must.
+- Renaming `buf` changes the exported summary path, so the interface hash
+  **does** change, and must.
 - Renaming a private scalar that no exported summary names (for example `n`)
   does not change the hash.
-- Changing a private field from owned to scalar (or the reverse) can add or
-  remove a `pf` row, so the hash changes.
+- Retyping `buf` changes the hash only when the summary text changes.
+  `[]byte` to `[]int` still emits `pfree 0x1 pf 0 "=/buf"` and the field list
+  is still one opaque `priv`, so the body is identical and the hash stays the
+  same. `[]byte` to `int` removes the owned-field `pf` row, so the hash changes.
+  An owned/scalar class change, a path-shape change, or a `priviface` class
+  change is the trigger, not the spelling of the type.
 - `io::Reader::buf` and `io::Writer::buf` are the concrete private-field
   examples: their exported methods carry `pf 0 "=/buf"` or `"!/buf"`.
   `fs::Dir::buf` remains public in the v1 exception (section 10.2), but
@@ -410,8 +414,12 @@ reports this exact diagnostic, identical in a full build and in `--check`:
 `type '<q>' has no public field or exported method '<f>' (only 'pub' declarations are visible outside module '<m>'; mark the field 'pub' or add a public method)`
 
 The full build knows the private field; `--check` knows the type has private
-slots. `methodCall` uses the same branch for both when no exported method exists
-and the type has private fields (section 8).
+slots. `methodCall` uses the special branch **only for foreign types** and only
+when the named field is private, or when no field/slot of that name exists and
+there is no exported method. A public field still reports
+`type '<q>' has a field '<f>', not a method; a field cannot be called`, and a
+same-module private field keeps the existing field-not-method behavior; neither
+case is widened by this change (section 8).
 
 ### 6.2 Interfaces and external implementations
 
@@ -584,10 +592,13 @@ The body after `interface` includes the field markers, so:
 - changing a private field's name or its type while keeping one `priv` slot and
   the same `priviface` class does **not** change it *if no exported callable's
   summary names that field*;
-- renaming or retyping a private field that appears in an exported `pf`/`pfree`
-  path **does** change it; for example `io::Reader/Writer.buf` must change the
-  hash when its name or ownership changes (`fs::Dir.buf` is public in v1 but
-  appears in `fs::next`'s summary and is the same path category);
+- renaming a private field that appears in an exported `pf`/`pfree` path
+  changes it because the path text changes; retyping it changes it **only when
+  the summary text changes** (owned/scalar class, path shape, or `priviface`
+  class). `io::Reader/Writer.buf` renamed must change the hash;
+  `[]byte -> []int` on `buf` must not, while `[]byte -> int` must
+  (`fs::Dir.buf` is public in v1 but appears in `fs::next`'s summary and is the
+  same path category);
 - changing a private field into an interface carrier (or back) changes it
   because the marker changes;
 - `pfree`/`pf` summary paths are not redacted: a private field name can appear
@@ -672,7 +683,7 @@ points, not a contract.
 | Record vs variant | `typeDecl` calls `fieldList(rec, true)` for records and `fieldList(v, false)` for variants; variant mode forces public and `pub` there is the exact error | `typeDecl`, 4981; variants 5048-5055 |
 | Field lookup | `fieldIndex` ignores private placeholder names (empty); a real private name is found in a full build and then rejected by visibility; add `hasPrivateFields` for the check-mode diagnostic | `fieldIndex`, 1519 |
 | Designator access | after `fieldIndex`, reject a foreign private field before `load`; this covers read/write/borrow/move paths; a missing name on a type with private slots uses the same diagnostic | `designatorT`, 7279-7287 |
-| Method collision | do not report a foreign private field as "field, not method"; use the one section 9 message when no exported method exists and the type has private fields, identical in full build and `--check` | `methodCall`, 7425 |
+| Method collision | foreign types only: if the named field is private, use the section 9 special message; if no field/slot exists and there is no exported method, use it too; a public field or a same-module private field keeps the existing "field, not method" message, identical in full build and `--check` | `methodCall`, 7425 |
 | Construction | after resolving `T` and before `RT_ALLOC_RECORD`, refuse a foreign type with any private field; check the whole record, not the given fields | `newExpr`, 7450-7485 |
 | Export closure | `closureCheck` skips private fields; public fields and variants unchanged | `closureCheck`, 11013; `checkExports`, 11058 |
 | Interface carrier | `containsIfaceIn` consults `Field.privateIface` for reconstructed types; live source types still recurse through real types; each per-field query starts with `containsIface`/a truncate | `containsIface`/`containsIfaceIn`, 1399-1439 |
@@ -722,7 +733,8 @@ spelling the caller wrote.
 | Private field write | same message (visibility is checked at field resolution, before the write) |
 | Private field borrow | same message |
 | Private field move/`take`/`replace` | same message |
-| Private field used as a method (`x.privateName()`) | `type '<q>' has no public field or exported method '<f>' (only 'pub' declarations are visible outside module '<m>'; mark the field 'pub' or add a public method)` |
+| Foreign private field used as a method (`x.privateName()`), or a missing field/method on a foreign mixed record | `type '<q>' has no public field or exported method '<f>' (only 'pub' declarations are visible outside module '<m>'; mark the field 'pub' or add a public method)` |
+| Public field on a mixed record called as a method, or any field called as a method inside its own module | existing `type '<q>' has a field '<f>', not a method; a field cannot be called` |
 | Construction with any private field | `cannot construct '<q>' outside its module: it has private fields; add a constructor function in module '<m>'` |
 | `pub` on a variant field | `'pub' is not allowed on a variant field; variant fields are always public` |
 | `pub` on a field of a private type | allowed; no diagnostic |
@@ -760,11 +772,12 @@ A mechanical recount at this base gives:
   comment), `90` in `obo/tests`, `4` in `obo/experimental`, and `0` in
   `obo/cmd`, `obo/examples` and `obo/src`.
 - `71` real cross-module record constructions (`new alias::T{...}`): `3` in
-  `obo/cmd/eza.obx` (`cli::FlagSpec`, two `fs::DirEntry`) and `68` in tests.
-  The raw grep split is `69` tests + `3` cmd = `72`; one of those 69 test hits
-  is a comment in `obo/tests/mutate_fork.py:661`, not a construction site. So
-  the real split is `68` tests + `3` cmd = `71`; do not count the comment as a
-  migration site.
+  `obo/cmd/eza.obx` (`cli::FlagSpec`, two `fs::DirEntry`) and `68` in test
+  `.obx` files. The `.obx` grep yields `72` hits: `68` test `.obx` + `3` cmd +
+  `1` comment at `obo/lib/html.obx:18` (`new html::Html{text: ...}`). Only the
+  last is not a construction site, so the real `.obx` count is `71`. A separate
+  `.py` comment at `obo/tests/mutate_fork.py:661` is not matched by this command
+  and must not be folded into the `.obx` split.
 - `147` total `pub type` lines in `.obx`/`.obo` (anchored `^pub type `), of
   which `103` are record definitions and the rest are closed types, interfaces,
   aliases and forward declarations. The earlier `154` came from an unanchored
@@ -862,14 +875,20 @@ deliberate API commitment; default-private makes that commitment visible.
    markers plus targeted hash/format edits, not with `--update`. Also update
    `sym_test.py` constants/assertions, the `tests/modules/sym/format` expect
    line, and the `obosym 7` fixture if 7 becomes the real format (move it to 8).
-7. **Docs.** Update `LANGUAGE.md` sections 1, 3, 5a and 6 (record fields,
-   construction, methods/exports, `.sym` grammar and module errors), the §10
-   compile-error table (new visibility/construction/variant rows), every doc
-   example that constructs an imported record, `lib/html.obx`'s public-field
-   comment, and `HISTORY.md`/`FORK.md`. Update the root `README.md` version and
-   live-peak metrics table. Fix the stale `LANGUAGE.md` `--version` text
-   (`obo 0.9 sym-format 5`) while editing §6 if the format bump makes it cheap;
-   otherwise leave it for the version-update commit and report it.
+7. **Docs.** Update `LANGUAGE.md` sections 1, 3, 5a, 6 and 8 (record fields,
+   construction, methods/exports, `.sym` grammar and module errors, and the
+   HTML builder paragraph), the §10 compile-error table (new
+   visibility/construction/variant rows), every doc example that constructs an
+   imported record, `lib/html.obx`'s public-field comment, and
+   `HISTORY.md`/`FORK.md`. In §8, rewrite the current sentence
+   "`Html` is an ordinary record with the public field `text`; direct
+   `new html::Html{text: ...}` is legal and equivalent to `raw`" to the
+   private-`text` model: `raw` is the explicit trusted constructor,
+   `toText` is the read accessor, and direct construction is not legal.
+   Update the root `README.md` version and live-peak metrics table. Fix the
+   stale `LANGUAGE.md` `--version` text (`obo 0.9 sym-format 5`) while editing
+   §6 if the format bump makes it cheap; otherwise leave it for the
+   version-update commit and report it.
 8. **Gate.** `module_test.py`, `sym_test.py`, `meta_test.py`, `io_test.py`,
    `sym_fuzz.py`, `float_f1.py`, `doc_check.py`, `stdlib.py`/eza, `port_compare.py`,
    the peak budget, the mutant matrix and the eza golden suite. The compiler
@@ -953,7 +972,8 @@ This is a breaking language release, not a compatibility shim release:
 Migration size estimate: 9 stdlib record definitions plus 4 experimental
 wrapper records (with three non-trivial code changes: `io::Writer`
 accessor/padded-write helper, `fmt` delegation, and `html::Html` access), 71 real
-constructor sites (68 tests, 3 `cmd/eza`; one comment is not a site), 90 `.obx`
+constructor sites (68 test `.obx`, 3 `cmd/eza`; the `html.obx:18` comment is not
+a site), 90 `.obx`
 test definitions plus 28 embedded Python definitions and 22 embedded Python
 `new lib::` sites, 3 regenerable goldens plus 92 hand-written `.sym` fixtures,
 plus doc examples and new fixtures. Keep `fs::Dir` public in v1 rather than
@@ -995,9 +1015,11 @@ fails at the gate.
   `pub fn reset(mut r: &R) { r.buf = new []byte(0); r.n = 0 }` produce
   `type R = ref record { priv; priv }` and
   `fn reset(mut p0: &R) pfree 0x1 pf 0 "=/buf"`. Renaming `n` keeps the
-  interface hash; renaming `buf` changes it. The fixture also asserts that
-  `"=/buf"` (the private name) is present in the summary and is accepted, not
-  redacted.
+  interface hash; renaming `buf` changes it. Retyping `buf` from `[]byte` to
+  `[]int` keeps the hash (same summary text, same opaque field list); retyping
+  it from `[]byte` to `int` changes it (the `pf` row disappears). The fixture
+  also asserts that `"=/buf"` (the private name) is present in the summary and
+  is accepted, not redacted.
 
 ### 11.2 Negative module fixtures (`tests/modules/errors/`)
 
@@ -1012,10 +1034,19 @@ fails at the gate.
 - `field_private_variant_pub`: `pub` on a variant field.
 - `field_public_private_type`: a `pub` field of a private named type still gets
   the existing closure error.
-- `field_private_method`: calling a private field as a method gets the exact
-  section 9 message
+- `field_private_method`: calling a foreign private field as a method gets the
+  exact section 9 message
   `type '<q>' has no public field or exported method '<f>' (only 'pub' declarations are visible outside module '<m>'; mark the field 'pub' or add a public method)`,
   identical in a full build and in `--check`, not `has a field, not a method`.
+- `field_public_method_collision`: a public field on a mixed record called as a
+  method still gets
+  `type '<q>' has a field '<f>', not a method; a field cannot be called`.
+- `field_private_method_local`: a private field called as a method inside its
+  own module still gets the same existing field-not-method message; H1 must not
+  change same-module behavior.
+- `field_mixed_unknown_method`: on a foreign mixed record, `x.nosuch()` with no
+  field or slot and no exported method gets the same special section 9 message;
+  on an all-public foreign record it keeps the ordinary no-method message.
 - `field_private_handle`: `h.priv` is the access error.
 - `field_private_interface_capture`: the `priviface` capture rejection, both
   full build and `--check`.
@@ -1037,9 +1068,10 @@ fails at the gate.
   case.
 - Interface hash: public↔private changes it; a private slot count/order change
   changes it; a private name/type change with the same class does **not** change
-  it *if no exported summary names the field*, and **does** change it when a
-  `pf`/`pfree` path names the field (B1 fixture); `priviface` changes it;
-  `depiface` updates.
+  it *if no exported summary names the field*. A rename of a field named in a
+  `pf`/`pfree` path changes it. A retype of such a field changes it only if the
+  summary text changes: `[]byte -> []int` keeps the hash, `[]byte -> int`
+  changes it (B1 fixture). `priviface` changes it; `depiface` updates.
 - Full build disagreement: mutate `pub`↔`priv` or `priv`↔`priviface`, rehash,
   and get `symDisagree`.
 - **B2 byte-identical re-emission with `priviface`:** build a module with a
@@ -1086,6 +1118,10 @@ fails at the gate.
   private field and that this leak is accepted. Update the root `README.md`
   version and live-peak metrics table. Fix the stale `LANGUAGE.md` `--version`
   text (`obo 0.9 sym-format 5`) if the same edit touches §6.
+- Rewrite `LANGUAGE.md` §8's HTML paragraph (currently "`Html` is an ordinary
+  record with the public field `text`; direct `new html::Html{text: ...}` is
+  legal") for private `text`: `raw` is the explicit trusted constructor,
+  `toText` reads, and direct construction is not legal.
 - Update `obo/lib/html.obx:14-21`: remove the public-field/direct-construction
   sentence and describe private `text` plus `raw` as the explicit trusted
   constructor.
@@ -1187,15 +1223,19 @@ this note.
 - [ ] Private field types may be private; public fields still pass the closure
       check.
 - [ ] Private field names/types that do not affect an exported summary keep the
-      interface hash; those that change a `pf`/`pfree` path change it. The
-      accepted private-name leak in summaries is documented.
+      interface hash; renaming a `pf`/`pfree` path changes it, and retyping it
+      changes it only when the summary text changes (`[]byte -> []int` keeps
+      the hash, `[]byte -> int` changes it). The accepted private-name leak in
+      summaries is documented.
 - [ ] Carrier checks truncate the visited set per field; the B3 two-field
       fixture emits `priviface; priviface`.
 - [ ] Closed variant fields stay public; `pub` there is the exact error, and
       migration does not add `pub` to variant fields.
 - [ ] Methods, interfaces, borrows/moves, handles, arrays, globals and C
       wrappers follow the interaction rules; the private-field-as-method
-      diagnostic is identical in full build and `--check`.
+      diagnostic is foreign-only and identical in full build and `--check`,
+      while public fields and same-module private fields keep the existing
+      field-not-method message.
 - [ ] Format 6 is rejected; the 3 goldens and 92 hand-written `.sym` fixtures
       are migrated; the `obosym 7` wrong-format probe is moved to 8 if 7 is the
       next real format; `--check` from source-less `.sym` passes the positive
