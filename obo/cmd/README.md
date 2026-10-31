@@ -24,17 +24,17 @@ python3 tests/eza.py --require-reference     # the eza E0/E1/E2 differential gat
 python3 tests/eza.py --memory
 ```
 
-The merged tree builds these freestanding static binaries, each with the
+The current tree builds these freestanding static binaries, each with the
 runtime included:
 
 | Tool | Size |
 |---|---:|
-| `cat` | 45,057 bytes |
-| `wc` | 49,153 bytes |
-| `sort` | 73,729 bytes |
-| `head` | 45,057 bytes |
-| `tail` | 53,249 bytes |
-| `eza` | 221,185 bytes |
+| `cat` | 81,921 bytes |
+| `wc` | 86,017 bytes |
+| `sort` | 110,593 bytes |
+| `head` | 81,921 bytes |
+| `tail` | 94,209 bytes |
+| `eza` | 258,049 bytes |
 
 The library modules are `lib/io.obx` (`Reader`, `Writer`, the buffered functions,
 `writeByte` and `isTty`), `lib/strings.obx` (byte classification, `cmp`, the
@@ -194,16 +194,17 @@ padded cases (the one-byte unreadable fixture's digit count is checked so the
 visible output agrees). `-m`, `-L`, `--files0-from`, long options, `--help` and
 `--version` are absent.
 
-**Performance (0.8 run, 30 October 2026).** `wc` scans only the columns the
+**Performance (0.13 run, 31 October 2026).** `wc` scans only the columns the
 command line asks for: `-c` sums chunk lengths without looking at a byte, `-l`
 runs a newline-only loop unrolled 32 bytes with four accumulators, and a single
 word state machine counts words and, when `-l` is also selected, lines in one
 pass, so `-lw`/`-lwc` cost about what `-w` alone costs. On the CLI benchmark's
-110,000,000-byte text file (warm cache, one core), `-l` measures 78.9 ms,
-slightly behind Python's C `bytes.count` (73.8 ms) and behind GNU `wc -l`
-(12.0 ms, whose `memchr` loop is SIMD); `-lwc` measures 131.7 ms against
-Python's chunked counter (474.5 ms) and GNU `wc -lwc` (1,038 ms), beating both
-by 3.60x and 7.88x. Absolute times are fixture-dependent.
+110,000,000-byte text file (warm cache, one core), `-l` measures 89.9 ms,
+slightly behind Python's C `bytes.count` (82.1 ms) and behind GNU `wc -l`
+(13.6 ms, whose `memchr` loop is SIMD); `-lwc` measures 136.9 ms against
+Python's chunked counter (519.2 ms) and GNU `wc -lwc` (1,137 ms), beating both
+by 3.79x and 8.30x. Absolute times are fixture-dependent; see
+[`PERFORMANCE.md`](../../PERFORMANCE.md) for the current table and caveats.
 
 ## sort
 
@@ -256,7 +257,7 @@ exhaust memory (the runtime exits 2). `-k`, `-t`, `-f`, `-b`, `-d`, `-i`, `-M`,
 `-h`, `-V`, `-s`, `-c`, `-C`, `-o`, `-m`, `-z`, `--parallel`, long options,
 `--help` and `--version` are absent.
 
-**Performance (0.8 run, 30 October 2026).** The default order is a stable MSD
+**Performance (0.13 run, 31 October 2026).** The default order is a stable MSD
 radix sort over byte positions in the buffer: 257 buckets (byte + 1, with 0 for
 the line terminator so a prefix sorts first), insertion sort below 20 elements,
 and a common-prefix pass that skips a shared byte run instead of paying a
@@ -271,23 +272,17 @@ fraction stage whose terminator sorts below `0`; a numerically equal range
 continues with the whole-line byte radix unless `-u`, which is the last-resort
 tie-break. Output is assembled in 64 KiB blocks and written with `writeFd`. On
 the CLI benchmark's 1,000,000 fixed 8-digit lines (warm cache, one core) obo
-`sort` measures 162.9 ms against GNU `sort` 9.4's 256.5 ms and the benchmark's
-Python 602.0 ms; it was about 1,838 ms with the former readLine + index merge.
-Earlier clean reruns measured sorted input at 56.6 ms (GNU 83.4 ms), a 22 MB
-random variable-length file at 256 ms (GNU 312 ms), and a 73 MB file whose
-lines share a 64-byte prefix at 614 ms (GNU 461 ms); those are separate fixtures
-and were not repeated for the 0.8 run. Absolute times are fixture-dependent,
-and on the shapes measured here the shared-prefix file is the one where a
-comparison sort with `memcmp` clearly wins; duplicate-heavy variable-length
-inputs can favor GNU as well, while fixed-width and small-key inputs favor the
-radix. Peak RSS on the 9 MB/1,000,000-line file is 40.8 MB (GNU `sort` 9.4
-pinned to one core uses about 59 MB there, and 136.8 MB unpinned with its
-default threads) and about 103 MB on the 73 MB file; `-n` uses 79.9 MB on the
-9 MB fixture (the former key records and stable merge measured 135.6 MB). On
-the CLI benchmark's fixed 8-digit fixture `-n` measures 255.1 ms against GNU
-`sort -n`'s 434.7 ms, and on our 1,000,000-line decimal and all-negative
-fixtures it measured 265-310 ms against 455-520 ms in an earlier run. Absolute
-times move about 10-15% with host load and depend on the fixture.
+`sort` measures 204.5 ms against GNU `sort` 9.4's 274.3 ms and Python's
+604.5 ms. Absolute times are fixture-dependent: a comparison sort with `memcmp`
+can win on long shared-prefix inputs, and duplicate-heavy variable-length
+inputs can favor GNU, while fixed-width and small-key inputs favor the radix.
+Peak RSS on the 9 MB/1,000,000-line file is 40,832 KiB (GNU `sort` 9.4 pinned
+to one core uses about 58,892 KiB there, and 136,716 KiB unpinned with its
+default threads); `-n` uses 79,872 KiB on the 9 MB fixture. On the CLI
+benchmark's fixed 8-digit fixture `-n` measures 263.2 ms against GNU
+`sort -n`'s 490.1 ms.
+Absolute times move about 10-15% with host load and depend on the fixture; see
+[`PERFORMANCE.md`](../../PERFORMANCE.md) for the current table and caveats.
 
 ## tail
 
@@ -654,20 +649,16 @@ and `-?=` is `Unknown argument -=`. Values of rejected
 eza-valid flags are still consumed with eza's value mode before the unsupported
 error (`-I=`, `-L x`).
 
-**Measured (merged help build).** eza binary 221,185 bytes (static, runtime
-included; 4,096 bytes above the 217,089-byte pre-sleep help build from the
-larger runtime, and 8,192 above the 212,993-byte pre-help E2 binary; the
-reference is 2,294,768). On 10,000 entries under
-`OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, restricted long peaks at 2,190,352
-live heap bytes, the name-only listing at 2,189,728, the tree at 2,190,480,
-the coloured listing at 2,189,952 and the E2 grid at 2,190,128 (2,560 KiB max
-RSS in the recorded run; reruns varied 2,304-2,560 KiB across views; the UTF-8
-width table is code, not per-entry heap). These entry paths do not execute
-help; a help run is 33,792 peak bytes.
+**Measured (0.13 run, 31 October 2026).** eza binary 258,049 bytes (static,
+runtime included; sha256 `845b2c18…`). On 10,000 entries under
+`OBO_STATS=1 OBO_CHECK=1 OBX_GC=poison`, restricted long peaks at 2,184,368
+live heap bytes, the name-only listing at 2,183,712, the tree at 2,184,496,
+the coloured listing at 2,183,968 and the E2 grid at 2,184,144 (2,560 KiB max
+RSS in the recorded run; the UTF-8 width table is code, not per-entry heap).
 `tests/eza.py --memory` keeps the P4 `EZA_PEAK_MAX = 2,752,512` bytes and
-gates on no leak/double-close line. GNU time measures the reference at about
-24.6 MB max RSS (long), 12.0 MB (names), 14.2 MB (tree) and about 12 MB
-(colour); that measurement is printed for comparison and is not gated.
+gates on no leak/double-close line. The pinned eza 0.23.3 reference was not
+present on this host, so no reference memory row was measured. See
+[`PERFORMANCE.md`](../../PERFORMANCE.md) for the current benchmark table.
 
 ### E2: grid, width sources, UTF-8 and lossy names
 
