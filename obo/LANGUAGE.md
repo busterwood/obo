@@ -65,7 +65,7 @@ exactly `0x` plus 16 lowercase hexadecimal digits. The format is float-specific;
 format 5 does not carry the float public grammar. `floatBits` is an internal test
 diagnostic, available only with `--test-float-bits`, not a public API.
 
-### Decimal (0.12, WIP scalar tier)
+### Decimal (0.12 release scalar tier)
 
 `decimal` is an exact finite decimal value: a 128-bit coefficient (at most
 `10^38 - 1`), an `int16` exponent, a `uint16` display scale and a sign, in 24
@@ -2430,12 +2430,17 @@ depend on the program.
 
 ## 12. Known holes and planned changes
 
-Decimal is a WIP minimum tier at 0.12: no decimal globals, constants, record
-fields, arrays, methods, lambdas/captures or interfaces; no `format`/`parse`
-stdlib, database adapter, `decimal(p,s)` syntax, float interop or owned/mut
-decimal. Display scale is independent metadata, and a multiply caps the
-propagated display scale at the 38-digit rule without changing the value. The
-released seed remains 0.11 until independent review.
+Decimal is the released minimum scalar tier at 0.12: no decimal globals,
+constants, record fields, arrays, methods, lambdas/captures or interfaces; no
+`format`/`parse` stdlib, database adapter, `decimal(p,s)` syntax, float interop
+or owned/mut decimal. Display scale is independent metadata, and a multiply
+caps the propagated display scale at the 38-digit rule without changing the
+value. The reviewed core keeps its strict quantize target limit of 32768. The
+0.11 seed built the 0.12 image once; the parent promotion makes `seed/obo` the
+same 0.12 image. Underscore placement such as `1_.0` is not validated by the
+shared lexer; that is a pre-existing lexer-wide gap, not decimal-specific.
+`float` remains a separate pre-existing reserved-type-name gap; `decimal` is
+now reserved.
 
 **Assignment targets across calls (closed).** The target of an assignment is located
 before the right-hand side is evaluated, so a call on the right that frees the target

@@ -6043,15 +6043,16 @@ only the format/compiler header (and, for the format fixture, its intentional
 format bump) changed.
 
 **Scope.** No Stage B capture lists, `^I`, decimal, template work or new language
-scope is included. Stage B is next planned as `0.11`. The local untracked
+scope was included at this checkpoint; Stage B was later released as `0.11`. The local untracked
 `parse_actual.txt` and `parse_run.err` files were not touched, staged or
 deleted. The release commits contain the merge, the promoted seed and the release
 documentation only; evidence logs remain private under `/tmp/opencode`.
 
 ## Stage B capture-list release candidate (0.11, format 6, ABI 1)
 
-Status: **implemented on the isolated review branch and stopped for independent
-review; not merged, pushed or promoted.** The six Stage B commits are the five
+Status: **historical release-candidate checkpoint (implemented on the isolated
+review branch before merge); it was later merged, promoted and pushed as 0.11.**
+The six Stage B commits are the five
 original commits forward-ported onto main `4a072cf5f5db8fe661ac65ff6de06e6ec`
 (the released floats line) with `git rebase`, plus the final `765df3b`
 completion commit; nothing was merged. The approved F1/F2 float work,
@@ -6132,17 +6133,18 @@ interface captures remain later, and the eza reference-golden gate needs the
 pinned binary on `PATH`. No push, merge, promotion, seed copy, decimal or
 template work was performed.
 
-## Decimal language integration (0.12 WIP, format 6, ABI 1)
+## Decimal language integration (0.12 release, format 6, ABI 1)
 
-**Status: branch `decimal-language`, based on the released 0.11 HTML-escaping
-main `34b798bc4c76cf41362d3b374c13b80e7b43f73b`. Not merged, pushed or promoted.
-The initial independent review returned REVISE, the fixes were approved and the
-review is closed; the branch awaits the parent merge check.** The released `seed/obo` stays the 0.11 heap-limit seed
-(585,729 bytes, sha256 `01fa9ed3…`); no seed copy was made. The approved design is
+**Status: released on branch `decimal-language`, rebased on the released 0.11
+HTML-escaping main `34b798bc4c76cf41362d3b374c13b80e7b43f73b`. The independent
+review is closed and the fixes are approved; the parent merges and promotes this
+branch. This branch does not promote.** After that promotion `seed/obo` is the
+same 0.12 image (643,073 bytes, sha256 `d98d6b5f…`); the released 0.11 seed
+(585,729 bytes, sha256 `01fa9ed3…`) built this image once. The approved design is
 `design/decimal-language-design.md`; the reviewed arithmetic/text core stays in
 `experimental/decimal/` and is copied unchanged into
 `runtime/decimal24_core.inc` (provenance hashes in that file and in the package's
-`PROVENANCE.md`). The integration adds only the compiler/runtime minimum tier.
+`PROVENANCE.md`). The release adds only the compiler/runtime minimum tier.
 
 **Identity and fixed point.** `OBO_VERSION = "0.12"`, `SYM_FORMAT = 6`,
 `SYM_ABI = 1`. Source is 14,608 lines / 550,897 bytes; the compiler is 643,073
@@ -6151,8 +6153,9 @@ Stage 2 and stage 3 equal the compiler. Three direct self-compiles peak at
 2,194,160 bytes live and allocate 49,033,600; the port comparison peaks at
 2,194,560 and allocates 49,038,064, all under the 2,500,000 budget. The
 empty-array oracle still has a 47,840-byte delta (baseline 2,194,608), above
-the 30,000-byte floor. A normal `println("hello")` built by the 0.11 seed and by
-the 0.12 compiler against this runtime is byte-identical (69,633 bytes).
+the 30,000-byte floor. Before promotion, a normal `println("hello")` built by the 0.11
+seed and by the 0.12 compiler against this runtime is byte-identical (69,633
+bytes); the 0.11 seed builds the 0.12 image once.
 
 **Language and ABI.** A bare fractional/exponent literal is exact decimal;
 integers stay `int`; `f`/`F` stays float; no `m`/`d` suffix. Literals carry a
@@ -6202,7 +6205,7 @@ freestanding runtime and compiler have no undefined symbols (`nm -u` empty), no
 libc/libm/libgcc/`__udivti3`, and the reviewed D1/D2 freestanding runner still
 reports 32,719 C checks, 0 failures, with empty `forbidden_hits`/`nm -u`.
 
-**Review fixes (a21e407 -> this HEAD).** The multiply display cap now comes from
+**Review fixes (a21e407 -> release).** The multiply display cap now comes from
 the exact result's coefficient/exponent, so operand order cannot change display
 scale (`123...678.0 * 0.1` and `0.1 * 123...678.0` both print one fractional
 digit; `1e38 * 0.1` and `0.1 * 1e38` both print no point). Explicit decimal
@@ -6214,7 +6217,7 @@ trap diagnostics only. `decimal` is a reserved type name. The design text now
 matches the immediate-stack literal materialisation, and the pre-existing
 lexer-wide underscore-placement gap is noted.
 
-**Gates (this rebased branch).** The released 0.11 HTML-main baseline counts are
+**Gates (this rebased release).** The pre-decimal 0.11 HTML-main baseline counts are
 `run_fork` 1,646, `port_compare` 1,642, `port_test` 583 and `module_test` 112
 (with `sym_test` 44 and `float_f1` 19 unchanged). The decimal addition is 58
 flat cases plus one module tree: 14 run files, 44 error cases and
@@ -6230,7 +6233,8 @@ including the HTML library; `stdlib` 16/16; `io_test`/`meta_test`/`memory_log_ch
 separate gate; the historical `mutate_fork`/`mutate_port` catalogs are otherwise
 unchanged);
 `mutate_io` **36/36**; `mutate_meta` **71/82 caught + 11 equivalent**. The
-decimal D1/D2 evidence is in `/tmp/opencode/decimal-integration-rebase`.
+decimal D1/D2 evidence is in `/tmp/opencode/decimal-integration-rebase`; all
+gates were rerun on the rebased tree, not reused from the pre-rebase branch.
 
 **Symbol fixtures.** All committed `.sym` fixtures moved to `compiler "0.12"`
 (the version line only; body hashes unchanged), and the `compiler/expect`

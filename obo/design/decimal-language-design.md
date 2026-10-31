@@ -1,9 +1,9 @@
 # Decimal language integration design
 
 **Date:** 2026-10-31
-**Status:** APPROVED 2026-10-31. The minimum scalar tier is implemented as the WIP 0.12 compiler/runtime integration on branch `decimal-language` (rebased on released `0.11` HTML main `34b798b`); it is not merged, pushed or promoted; the initial independent review returned REVISE, the fixes were approved and the review is closed, and the branch awaits the parent merge check. The released seed remains 0.11. Text/format stdlib, database adapters, containers, globals/constants and captures are still later work.
+**Status:** APPROVED 2026-10-31 and RELEASED as `0.12`/format 6/ABI 1. The minimum scalar tier is on branch `decimal-language`, rebased on released `0.11` HTML main `34b798b`; the independent review returned REVISE, the fixes were approved and the review is closed. The parent merges and promotes; after promotion `seed/obo` is the same 0.12 image (643,073 bytes, sha256 `d98d6b5f…`), built once by the 0.11 seed `01fa9ed3…`. Text/format stdlib, database adapters, containers, globals/constants and captures are still later work.
 **Baseline:** approved on `main` at `4a072cf5f5db8fe661ac65ff6db94ea59006e6ec`; integration rebased on the released `0.11` HTML-escaping main `34b798bc4c76cf41362d3b374c13b80e7b43f73b` (and earlier on heap-limit main `316963c`). Branch/worktree: `decimal-language`.
-**Target:** integrated after Stage B on the released 0.11 main `316963c`; this branch uses WIP `0.12`, `SYM_FORMAT=6`, `SYM_ABI=1`. Promotion still requires independent review.
+**Target:** released as `0.12`/`SYM_FORMAT=6`/`SYM_ABI=1` on branch `decimal-language`, rebased on the released 0.11 HTML main `34b798b`; the parent merges and promotes the same image.
 
 ## 0. Provenance
 
@@ -171,10 +171,10 @@ Implementation lands after Stage B `0.11`; no version is reserved. Rejected: 16-
 | ABI / width | 24-byte three-word, align 8, stride 24, hidden out pointer; 32-byte rejected | `RAX:RDX:RCX`; 32-byte (rejected) |
 | `?decimal` / NULL | no `?decimal`; tagged DB wrapper | sentinel; `Result` as NULL |
 
-Open engineering choices: adapter order and final diagnostic wording; the WIP 40–49 assignment above is implemented on this branch and still needs independent review.
+Open engineering choices: adapter order and final diagnostic wording; the 40–49 assignment above is implemented and reviewed on this branch.
 
 ## 8. Migration and compatibility
 
 Today `0.10`/format 6 rejects bare `1.5`; `1.5f` is float. Decimal changes that error into a value, so no valid float program changes. `f/F` and one-word raw binary64 `.sym` stay; decimal never reuses float's slot/XMM/format-6 grammar.
 
-The WIP integration is on branch `decimal-language` based on the released 0.11 main `316963c`: `OBO_VERSION="0.12"`, `SYM_FORMAT=6`, `SYM_ABI=1`. No format 7 or ABI 2 is introduced. Old `.sym` files must be rebuilt because the compiler version line changed. No seed copy, merge or push was made; promotion still needs independent review. No helper process/DB/native pointer ABI is added.
+The released integration is on branch `decimal-language`, rebased on the released 0.11 HTML main `34b798b`: `OBO_VERSION="0.12"`, `SYM_FORMAT=6`, `SYM_ABI=1`. No format 7 or ABI 2 is introduced. Old `.sym` files must be rebuilt because the compiler version line changed. This branch does not promote; the parent merges and promotes the same image. No helper process/DB/native pointer ABI is added.
