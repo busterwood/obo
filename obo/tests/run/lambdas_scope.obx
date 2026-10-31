@@ -1,0 +1,57 @@
+type Item = ref record { n: int }
+fn (i: &Item) with(f: fn(int): int): int { return f(i.n) }
+fn (i: &Item) bump(): int {
+    let f = fn (x: int): int { return x + 1 }
+    return f(i.n)
+}
+
+fn main() {
+    let keep = new Item{n: 5}
+    let keepRef = &keep
+    defer { println(keepRef.n) }
+    {
+        let f = fn (x: int): int { return x + 1 }
+        println(f(1))
+    }
+    var i = 0
+    while i < 2 {
+        let f = fn (x: int): int { return x * 2 }
+        println(f(i))
+        i += 1
+    }
+    let f = fn (x: int): int { return x + 1 }
+    if f(1) == 2 { println("if") }
+    i = 0
+    while f(i) < 5 { i += 1 }
+    println(i)
+    defer { println(f(3)) }
+    match 1 {
+        1 { let g = fn (x: int): int { return x + 4 }; println(g(2)) }
+        else { println(0) }
+    }
+    let item = new Item{n: 2}
+    println(item.with(fn (x: int): int { return x * 2 }))
+    println(item.bump())
+    println(f(f(1)))
+    let twice = fn (x: int): int { return x + 1 }
+    println(twice(1), " ", twice(1))
+    let outer = fn (x: int): int {
+        let inner = fn (y: int): int { return y + 1 }
+        return x + 1
+    }
+    println(outer(1))
+}
+
+// expect: 2
+// expect: 0
+// expect: 2
+// expect: if
+// expect: 4
+// expect: 6
+// expect: 4
+// expect: 3
+// expect: 3
+// expect: 2 2
+// expect: 2
+// expect: 4
+// expect: 5

@@ -1,0 +1,33 @@
+// Stage A step 1: the source accepts a function type as a parameter type, a method parameter type and a
+// type alias, including a nested callback. There is no lambda value or indirect call yet, so nothing here
+// creates or calls a function value; the forward headings exercise structural `same` on two independently
+// parsed function types, and the alias spelling must be transparent to it.
+
+type Item = ref record { n: int }
+type Cmp = fn(&Item, &Item): int
+type Pred = fn(&Item): bool
+type Thunk = fn(): int
+type Higher = fn(fn(int): int): int
+type Pair = fn(int, int): int
+type Node = ref record { next: ?Node; n: int }
+type NodeCmp = fn(Node): int
+
+fn declarers(cmp: Cmp, pred: Pred, th: Thunk, higher: Higher, pair: Pair, nc: NodeCmp): int { return 0 }
+
+fn nested(callback: fn(fn(int): int): int): int { return 0 }
+
+fn (i: &Item) compare(other: &Item, cmp: Cmp): int { return i.n }
+
+// A forward heading and its body may spell the same function type differently (alias vs raw): `same` is
+// structural, not an alias or pointer identity test.
+fn accepts(cmp: Cmp): int
+fn accepts(cmp: fn(&Item, &Item): int): int { return 0 }
+
+fn takesCallback(callback: fn(int): int): int
+fn takesCallback(callback: fn(int): int): int { return 0 }
+
+fn main() {
+    println("lambdas step 1 types ok")
+}
+
+// expect: lambdas step 1 types ok

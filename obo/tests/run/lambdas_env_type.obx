@@ -1,0 +1,8 @@
+// A type named env is in the type namespace and does not collide with the hidden environment.
+type env = ref record { n: int }
+fn main() {
+    let f = fn (): int { let x = new env{n: 7}; return x.n }
+    println(f())
+}
+
+// expect: 7

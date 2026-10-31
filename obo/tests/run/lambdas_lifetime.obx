@@ -1,0 +1,22 @@
+// An outer parameter/local name stack must be popped when its literal body ends. A stale x from f's
+// lambda would make main's lambda see a captured outer x instead of the global x.
+var x = 9
+fn f(x: int): int {
+    let l = fn (): int { return 1 }
+    return x
+}
+fn g(): int {
+    let y = 2
+    let l = fn (): int { return 1 }
+    return y
+}
+fn main() {
+    let h = fn (): int { return x }
+    println(h())
+    println(f(3))
+    println(g())
+}
+
+// expect: 9
+// expect: 3
+// expect: 2

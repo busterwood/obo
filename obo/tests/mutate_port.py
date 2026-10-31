@@ -39,7 +39,7 @@ CATCHER_FILE = os.path.join(HERE, 'mutant_catchers.tsv')
 MARK = "    let symMark = len(symArena)                 // the function's own symbols start here\n"
 FREE = "    truncate(symArena, symMark)                 // and nothing refers to them any more\n"
 PARAMS_DONE = "        }\n    }\n    expect(T_LBRACE, \"\")\n    openBlock()\n"
-BLOCKS_CLOSE = "    closeBlock(term)\n    closeBlock(term)\n    homeBits = 0\n"
+BLOCKS_CLOSE = "    closeBlock(term)\n    closeBlock(term)\n    homeBits = 0\n    if homeRetry {\n"
 
 # each mutant is a list of (old, new) replacements, each of which must match exactly once
 MUTANTS = {
@@ -102,8 +102,8 @@ MUTANTS = {
     # a reference inside something passed to a writer is not refused
     "call-site deep-argument check dropped": [("    if deepLine > 0 {\n        if f == curFn {", "    if false {\n        if f == curFn {")],
     # a recursive call that writes through a handle, found at the end of the body, is not reported
-    "deferred self-call check dropped": [("    if pendLine > 0 && f.writesHandles { errorAt(pendMsg, pendLine, pendCol) }",
-                                          "    if false { errorAt(pendMsg, pendLine, pendCol) }")],
+    "deferred self-call check dropped": [("    if pendLine > 0 && f.writesHandles { errorAt(pendMsg, pendLine, pendCol) }\n    pendLine = 0\n    curFn = nil\n",
+                                          "    if false { errorAt(pendMsg, pendLine, pendCol) }\n    pendLine = 0\n    curFn = nil\n")],
     # a recursive call leaves its references' suspicion unmarked
     "self-call suspects not marked": [("        if v.isRefLocal && v.refDeep && !v.moved { v.suspect = true }",
                                        "        if false { v.suspect = true }")],
@@ -192,7 +192,8 @@ MUTANTS = {
     "push imm8 up to 128": [("fn pushI(v: int) {\n    if fits8(v) {", "fn pushI(v: int) {\n    if v >= -128 && v <= 128 {")],
     "push imm8 from -129": [("fn pushI(v: int) {\n    if fits8(v) {", "fn pushI(v: int) {\n    if v >= -129 && v < 128 {")],
     "push imm32 masked": [("        emit(0x68)\n        emit32(v)\n", "        emit(0x68)\n        emit32(v & 0x7FFFFFFF)\n")],
-    "frame dropped although there are locals": [("    if size == 0 {\n        dropFrame(frameAt, f)", "    if size <= 16 {\n        dropFrame(frameAt, f)")],
+    "frame dropped although there are locals": [("    if homeRetry {\n        truncate(bindArena, bindMark)\n        truncate(argTemps, tempMark)\n        truncate(symArena, symMark)\n        return true\n    }\n    if !term { epilogue() }\n    let size = (frame + 15) & ~15\n    if size == 0 {\n        dropFrame(frameAt, f)",
+                                                   "    if homeRetry {\n        truncate(bindArena, bindMark)\n        truncate(argTemps, tempMark)\n        truncate(symArena, symMark)\n        return true\n    }\n    if !term { epilogue() }\n    let size = (frame + 15) & ~15\n    if size <= 16 {\n        dropFrame(frameAt, f)")],
     "held: replace does not free what it holds": [('        consume(v)\n        freeEvent(x, place, raw, orig, ident)\n', '        consume(v)\n')],
     "held: take does not free what it holds": [('        freeEvent(x, lastPlace, lastRaw, lastOrigin, lastIdent)\n', '')],
     "held: moves do not reach held handle targets": [('        } else if heldForeign[i] {\n            if s.isParam || !refParamKey(heldKey[i]) { heldHit[i] = true }', '        } else if false {\n            if s.isParam || !refParamKey(heldKey[i]) { heldHit[i] = true }')],

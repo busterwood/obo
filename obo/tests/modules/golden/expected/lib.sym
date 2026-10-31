@@ -1,9 +1,9 @@
-obosym 4
+obosym 5
 abi 1
-compiler "0.8.1"
-source 0x8643f1a941784054
+compiler "0.9"
+source 0x889de7ba5ed06e38
 dep other "other.obx"
-interface 0x1091b97ac05a4131
+interface 0x0101ecdd832eb974
 module lib
 depiface other 0xaf82ae64d770c496
 type Node uid 0x5fca22110fba38d4
@@ -16,6 +16,7 @@ type Fwd = ref record { c: ?Circle }
 type Holder = ref record { c: ?Circle }
 type BoxAlias = other::Box
 type Alias = []Node
+type Cmp = fn(&Node, &Node): int
 const Limit: int = 0x000000000000000a
 const Mask: byte = 0x00000000000000ff
 const On: bool = true
@@ -28,3 +29,5 @@ fn (p0: Node) taken(): int
 fn make(p0: int): Node
 fn area(p0: Shape): int
 fn add(mut p0: &Node, p1: int)
+fn useCmp(p0: fn(&Node, &Node): int)
+fn useRaw(p0: fn(&Node, &Node): int)

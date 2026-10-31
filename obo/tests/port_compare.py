@@ -195,6 +195,9 @@ SEED_FILE_MIN = {
     os.path.join(FORK, 'tests', 'errors', 'env.obx'): (0, 4),
     os.path.join(FORK, 'tests', 'run', 'term.obx'): (0, 5),
     os.path.join(FORK, 'tests', 'errors', 'term.obx'): (0, 5),
+    # sleepMs is an additive 0.8.1 builtin; the promoted 0.8 seed cannot parse it.
+    os.path.join(FORK, 'tests', 'run', 'sleep.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'errors', 'sleep.obx'): (0, 9),
     os.path.join(FORK, 'tests', 'run', 'methods.obx'): (0, 6),
     os.path.join(FORK, 'tests', 'run', 'methods_refs.obx'): (0, 6),
     os.path.join(FORK, 'tests', 'run', 'methods_fields.obx'): (0, 6),
@@ -224,6 +227,18 @@ SEED_FILE_MIN = {
     os.path.join(FORK, 'tests', 'errors', 'ifaces_calls.obx'): (0, 8),
     os.path.join(FORK, 'tests', 'errors', 'ifaces_pos.obx'): (0, 8),
     os.path.join(FORK, 'tests', 'errors', 'ifaces_refs.obx'): (0, 8),
+    os.path.join(FORK, 'tests', 'run', 'lambdas.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'run', 'lambdas_higher.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'run', 'lambdas_effects.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'run', 'lambdas_sort.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'run', 'lambdas_homes.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'run', 'lambdas_scope.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'run', 'lambdas_env.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'run', 'lambdas_env_type.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'run', 'lambdas_lifetime.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'run', 'lambdas_types.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'errors', 'lambdas.obx'): (0, 9),
+    os.path.join(FORK, 'tests', 'errors', 'lambdas_step1.obx'): (0, 9),
 }
 SEED_LIB_MIN = {'io.obx': (0, 5), 'env.obx': (0, 4)}
 _SEED_VERSIONS = {}
@@ -765,7 +780,7 @@ def compare_trees(tmp, quick, port, only=None, stats=None):
         # merely agree with a port that also failed
         if a.returncode != 0 or b.returncode != 0:
             failures.append(f"reemit {name}: exit obo {a.returncode}, port {b.returncode}")
-        elif not a.stdout or not a.stdout.startswith(b'obosym 4\n') or b'fn many(' not in a.stdout:
+        elif not a.stdout or not a.stdout.startswith(b'obosym 5\n') or b'fn many(' not in a.stdout:
             failures.append(f"reemit {name}: obo's output is not canonical: {a.stdout[:80]!r}")
         else:
             modline = next((l for l in a.stdout.splitlines() if l.startswith(b'module ')), b'module many')

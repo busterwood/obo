@@ -144,6 +144,9 @@ RT_CASES = [
     ('inert', clean_env(fault='short'), 0),
     ('sleep', clean_env(check=True), 0),
     ('sleep_eintr', clean_env(check=True, meta_fault='eintr'), 0),
+    ('empty_arrays', clean_env(check=True), 0),
+    ('static_free', clean_env(check=True), 6),
+    ('unknown_kind', clean_env(check=True), 2),
 ]
 
 

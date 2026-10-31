@@ -1,0 +1,55 @@
+type Item = ref record { n: int }
+fn apply(x: int, f: fn(int): int): int { return f(x) }
+fn twice(x: int): int { return x * 2 }
+fn (i: &Item) with(f: fn(int): int): int { return f(i.n) }
+
+fn main() {
+    let f = fn (x: int): int { return x + 1 }
+    println(f(2))
+    println(apply(3, fn (x: int): int { return x * 2 }))
+    let g = fn (x: int): int { return twice(x) }
+    println(apply(4, g))
+    var h = fn (x: int): int { return x - 1 }
+    h = fn (x: int): int { return x * 10 }
+    println(h(4))
+    let id = fn (s: string): string { return s }
+    println(id("hi"))
+    let mk = fn (v: int): Item { return new Item{n: v} }
+    let item = mk(5)
+    println(item.n)
+    let arr = fn (): []int { return new []int(0) }
+    let xs = arr()
+    append(xs, 1)
+    println(len(xs))
+    let okf = fn (v: int): Result[int] { return ok(v) }
+    let r = okf(7)
+    match r {
+        ok(v) { println(v) }
+        err(m, c) { println(m) }
+    }
+    let voidf = fn () { println("void") }
+    voidf()
+    let item2 = new Item{n: 9}
+    println(item2.with(fn (x: int): int { return x * 3 }))
+    let n = 4
+    if f(1) == 2 { println(n) }
+    println(apply(f(1), fn (x: int): int { return x + 3 }))
+    let sum8 = fn (a: int, b: int, c: int, d: int, e: int, f2: int, g: int, h: int): int {
+        return a + b + c + d + e + f2 + g + h
+    }
+    println(sum8(1, 2, 3, 4, 5, 6, 7, 8))
+}
+
+// expect: 3
+// expect: 6
+// expect: 8
+// expect: 40
+// expect: hi
+// expect: 5
+// expect: 1
+// expect: 7
+// expect: void
+// expect: 27
+// expect: 4
+// expect: 5
+// expect: 36

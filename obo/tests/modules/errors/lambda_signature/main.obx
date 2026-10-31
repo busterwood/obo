@@ -1,0 +1,5 @@
+module main
+import "lib.obx"
+fn main() {
+    println(lib::apply(1, fn (x: string): int { return len(x) }))
+}

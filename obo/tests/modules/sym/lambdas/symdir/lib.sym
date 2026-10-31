@@ -1,0 +1,11 @@
+obosym 5
+abi 1
+compiler "0.9"
+source 0xf880b67cc32cbbe7
+interface 0xb099cdc1d83ae582
+module lib
+type Item uid 0x77cd9ce6ef199f77
+type Item = ref record { n: int }
+type Cmp = fn(&Item, &Item): int
+fn apply(p0: int, p1: fn(int): int): int
+fn compare(p0: &Item, p1: &Item, p2: fn(&Item, &Item): int): int

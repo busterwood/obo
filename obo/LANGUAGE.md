@@ -1001,6 +1001,118 @@ member cannot take or return a function value; the lambda firewall is part of th
 value cannot be `new`-ed, used as a constant, `match`ed, or printed: `new I` is `'I' is not a record type`,
 `new []I(n > 0)` starts as nil (use `[]?I` or start empty), and a missing initializer is the existing nil error.
 
+## 5c. Function types and non-capturing lambdas
+
+A **function type** is structural and is written `fn(ParamTypes): Ret`; an omitted return is
+`void`. Parameters are owned (no marker) or read-only `&`; `mut` is not allowed. Two function
+types are the same only when their parameter count, modes, types and return are the same. There
+is no variance, subtyping or inference.
+
+```obo
+// example: compiles
+type Item = ref record { n: int }
+type Cmp = fn(int, int): int
+type Pred = fn(&Item): bool
+type Mapping = fn(fn(int): int): int
+fn main() { println(0) }
+```
+
+Function types are allowed as function/method/lambda **parameter** types, local `let`/`var`
+variable types (with an initializer) and type aliases. They are not allowed as returns,
+fields, globals, constants, array/optional/handle/`Result` components, references, interface
+members or receivers. An interface inside a function type is refused, including through a
+record or closed-type field.
+
+A **non-capturing lambda literal** is `fn (Params) [: Ret] { Body }`. It has no name and no
+capture list. The body is an ordinary function body and must return a value on every path when
+its return type is not `void`. Parameter names, `mut` rules and interface/return restrictions
+are checked at the header.
+
+```obo
+// example: runs
+// prints 3
+// prints 6
+// prints 8
+fn apply(x: int, f: fn(int): int): int { return f(x) }
+
+fn twice(x: int): int { return x * 2 }
+
+fn main() {
+    let inc = fn (x: int): int { return x + 1 }
+    println(apply(2, inc))
+    println(apply(3, fn (x: int): int { return x * 2 }))
+    println(apply(4, fn (x: int): int { return twice(x) }))
+}
+```
+
+A function value is **second-class**: it may be a parameter, a local (with an initializer) or
+a call argument, and may be copied or assigned. It is never owned, returned, stored in a field,
+array, global, constant, `Result`, optional, handle or interface, and cannot be compared with
+another function value or with `nil`. A function value is called by its bare local/parameter
+name with ordinary call syntax; the result ends the designator, so store a record/array result
+before using `.` or `[]`. A function value has no fields or methods.
+
+```obo
+// example: runs
+// prints 9
+// prints 9
+type Item = ref record { n: int }
+fn use(f: fn(&Item): int, x: &Item): int { return f(x) }
+
+fn main() {
+    let get = fn (x: &Item): int { return x.n }
+    let item = new Item{n: 9}
+    println(use(get, &item))
+    let add = fn (a: int, b: int): int { return a + b }
+    println(add(4, 5))
+}
+```
+
+The value representation is one word: a pointer to an immutable cell whose word 0 is the code
+address. A call passes that cell as a hidden environment argument before the visible arguments,
+then dispatches indirectly through the cell. The environment is not a source name: a user
+global, local or parameter called `env` remains an ordinary name. The runtime and array ABI are
+unchanged.
+
+**Effects.** Every function value is pure in the compiler's existing predicate: its hidden body
+may allocate, write scalar globals, append to owned/global arrays, perform I/O builtins, take or
+free its owned parameters and call pure functions or other function values. It may not free a
+global, free owned state through a handle, call an impure function, call a forward-headed
+function whose summary is not final, or call the function/method whose body is still being
+compiled. An indirect call is a pure call: it does not invalidate the caller's references,
+handles or globals, though its owned arguments are consumed and its owned/string/`Result`
+result is the caller's ordinary result. Purity here is the existing compiler predicate, not a
+referential-purity guarantee; ref-counted string writes follow their existing rules.
+
+A lambda body cannot use an enclosing local or parameter by implicit capture. A referenced
+outer local produces the capture-list diagnostic; capture lists themselves are a Stage B
+feature and are not accepted by this compiler. A lambda cannot appear in a `while` condition,
+a `defer` body, a global/constant initializer, or outside a function. A bare lambda is not a
+statement and cannot be invoked directly.
+
+```obo
+// example: error: is a local of the enclosing function
+fn main() {
+    let x = 1
+    let f = fn (): int { return x }
+    println(f())
+}
+```
+
+```obo
+// example: error: a lambda must be pure
+var xs: []int = new []int(0)
+fn main() {
+    let f = fn (): int { truncate(xs, 0); return 0 }
+    println(f())
+}
+```
+
+Capturing closures, owned/read-only capture lists, stored function values and impure callbacks
+are later work. Stage B (`fn [x](...)`) remains reserved for `0.10`; interface handles `^I`
+remain later. The implemented compiler is `0.9`/format 5, built by the promoted `0.8` seed until
+the promotion after final review.
+
 ## 6. Modules
 
 Modules: one source file is one **module**, imported modules are compiled

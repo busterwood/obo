@@ -1,0 +1,5 @@
+module lib
+pub type Item = ref record { n: int }
+pub type Cmp = fn(&Item, &Item): int
+pub fn apply(x: int, f: fn(int): int): int { return f(x) }
+pub fn compare(a: &Item, b: &Item, cmp: Cmp): int { return cmp(a, b) }

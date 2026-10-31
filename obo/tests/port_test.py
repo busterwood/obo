@@ -47,7 +47,19 @@ def group_push_immediates(Fail, obo, unique):
     encoder_test.check(cases, Fail, obo, unique)
 
 
-OBO_GROUPS = [group_push_immediates]
+def group_call_indirect(Fail, obo, unique):
+    """call r/m64: the indirect function-value dispatch, FF /2"""
+    op = encoder_test.op
+    cases = [
+        (op(0xff, 2, 0, w=0), 'call rax'),
+        (op(0xff, 2, 8, w=0), 'call r8'),
+        (op(0xff, 2, (5, None, 8), w=0), 'call QWORD PTR [rbp+0x8]'),
+        (op(0xff, 2, (0, 1, 0), w=0), 'call QWORD PTR [rax+rcx*8]'),
+    ]
+    encoder_test.check(cases, Fail, obo, unique)
+
+
+OBO_GROUPS = [group_push_immediates, group_call_indirect]
 
 # the Stage 1 scanner additions, for the port-vs-obo scanner fuzz: obo's own list, so
 # obx/tests/stage_test.FRAGMENTS (which obx uses) is not changed

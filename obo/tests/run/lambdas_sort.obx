@@ -1,0 +1,45 @@
+type Item = ref record { n: int }
+fn sortIndices(mut order: &[]int, items: &[]Item, cmp: fn(&Item, &Item): int) {
+    var i = 1
+    while i < len(order) {
+        let v = order[i]
+        var j = i - 1
+        while j >= 0 && cmp(&items[order[j]], &items[v]) > 0 {
+            order[j + 1] = order[j]
+            j -= 1
+        }
+        order[j + 1] = v
+        i += 1
+    }
+}
+
+fn main() {
+    let items = new []Item(0)
+    append(items, new Item{n: 3})
+    append(items, new Item{n: 1})
+    append(items, new Item{n: 2})
+    var order = new []int(0)
+    append(order, 0)
+    append(order, 1)
+    append(order, 2)
+    sortIndices(&order, items, fn (a: &Item, b: &Item): int { return a.n - b.n })
+    println(items[order[0]].n, " ", items[order[1]].n, " ", items[order[2]].n)
+
+    var down = new []int(0)
+    append(down, 0)
+    append(down, 1)
+    append(down, 2)
+    sortIndices(&down, items, fn (a: &Item, b: &Item): int { return b.n - a.n })
+    println(items[down[0]].n, " ", items[down[1]].n, " ", items[down[2]].n)
+
+    var no = new []int(0)
+    append(no, 0)
+    append(no, 1)
+    append(no, 2)
+    sortIndices(&no, items, fn (a: &Item, b: &Item): int { return a.n - b.n })
+    println(no[0], " ", no[1], " ", no[2])
+}
+
+// expect: 1 2 3
+// expect: 3 2 1
+// expect: 1 2 0

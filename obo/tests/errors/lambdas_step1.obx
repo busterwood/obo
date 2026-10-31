@@ -1,0 +1,210 @@
+// Stage A step 1 source firewall: a function type is parsed in parameter, alias and (uninitialised) local
+// positions, and refused in every constructor, storage, return, receiver and interface position. There is
+// no lambda value or indirect call yet, so every case here only forms or uses a function *type*.
+
+type Item = ref record { n: int }
+type Cmp = fn(&Item, &Item): int
+type Inc = fn(int): int
+
+// === an optional cannot hold a function value
+fn main() { var f: ?Cmp }  // error: an optional cannot hold a function value; function values are parameters and locals only
+
+// === an array cannot hold a function value
+fn main() { var a: []Cmp }  // error: an array cannot hold function values
+
+// === Result cannot hold a function value
+fn main() { var r: Result[Cmp] }  // error: Result cannot hold a function value
+
+// === a handle cannot name a function value
+fn main() { var h: ^Cmp }  // error: handles name records and closed types, not fn(&Item, &Item): int
+
+// === a function value cannot be borrowed
+fn f(c: &Cmp) { }  // error: only records, closed types and arrays can be borrowed, not fn(&Item, &Item): int
+
+// === an interface member cannot take a borrowed function value
+type Iborrow = interface { fn m(p0: &fn(int): int) }  // error: only records, closed types and arrays can be borrowed, not fn(int): int
+
+// === a method receiver cannot be a borrowed function value
+fn (r: &fn(int): int) bad() { }  // error: only records, closed types and arrays can be borrowed, not fn(int): int
+
+// === a record field cannot be a function value
+type Holder = ref record { c: Cmp }  // error: a record field cannot be a function value; function values are parameters and locals only
+
+// === a closed variant field cannot be a function value
+type Shape = closed { V { c: Cmp } }  // error: a record field cannot be a function value; function values are parameters and locals only
+
+// === a global declared function value is refused before needs-initial-value
+var G: Cmp  // error: a function value cannot be a global; it is a parameter or a local
+
+// === a global declared through an alias is refused the same way
+var G2: Inc  // error: a function value cannot be a global; it is a parameter or a local
+
+// === a function cannot return a function value
+fn make(): Cmp { }  // error: a function cannot return a function value; function values are parameters and locals only
+
+// === a method cannot return a function value
+fn (i: &Item) make(): Cmp { }  // error: a function cannot return a function value; function values are parameters and locals only
+
+// === a method receiver cannot be a function value
+fn (c: Cmp) use() { }  // error: a method's receiver must be a record or closed type declared in this module, not fn(&Item, &Item): int
+
+// === an exported callback signature cannot hide a private type
+type Hidden = ref record { n: int }
+pub fn expose(cb: fn(Hidden): int) { }  // error: exported 'expose' uses private type 'Hidden'; mark 'Hidden' pub too
+
+// === an exported function-type alias cannot hide a private type
+type Hidden2 = ref record { n: int }
+pub type CmpHidden = fn(Hidden2): int  // error: exported 'CmpHidden' uses private type 'Hidden2'; mark 'Hidden2' pub too
+
+// === a function type cannot return a function type
+type BadRet = fn(int): fn(int): int  // error: a function type cannot return a function value
+
+// === a function type cannot return a function type through an alias
+type BadRetAlias = fn(int): Cmp  // error: a function type cannot return a function value
+
+// === a raw function type cannot end its parameter list with a comma
+type BadTrailingRaw = fn(int,)  // error: expected a parameter type
+
+// === a function type cannot end an alias parameter with a comma
+type BadTrailingAlias = fn(Cmp,)  // error: expected a parameter type
+
+// === a borrowed function type parameter cannot end with a comma
+type BadTrailingBorrow = fn(&Item,)  // error: expected a parameter type
+
+// === a nested function type cannot end its parameter list with a comma
+type BadTrailingNested = fn(fn(int,))  // error: expected a parameter type
+
+// === a function type cannot have a capture list
+type BadCapture = fn[](int): int  // error: a function type cannot have a capture list
+
+// === a function type cannot borrow a non-owned parameter
+type BadBorrow = fn(&int): int  // error: only records, closed types and arrays can be borrowed, not int
+
+// === mut is not a type in a function type parameter
+type BadMut = fn(mut &int): int  // error: undeclared identifier 'mut'
+
+// === a function-typed parameter still needs mut to be a reference
+fn mutParam(mut g: fn(int): int) { }  // error: mut needs a reference parameter: write mut name: &T
+
+// === an interface member parameter cannot be a function value
+type I1 = interface { fn m(f: fn(int): int) }  // error: an interface method cannot use a function value; function types are not supported in interfaces
+
+// === an interface member return cannot be a function value
+type I2 = interface { fn m(): fn(int): int }  // error: an interface method cannot use a function value; function types are not supported in interfaces
+
+// === a nested interface member parameter cannot hide a function value
+type I3 = interface { fn m(g: fn(fn(int): int): int) }  // error: an interface method cannot use a function value; function types are not supported in interfaces
+
+// === a direct interface parameter is refused in a function type
+type I4 = interface { fn m() }
+type BadIfaceParam = fn(I4): int  // error: a function value cannot take or return an interface value
+
+// === a direct interface return is refused in a function type
+type I5 = interface { fn m() }
+type BadIfaceRet = fn(): I5  // error: a function value cannot take or return an interface value
+
+// === an interface hidden in a nested callback parameter is refused
+type I6 = interface { fn m() }
+type BadNestedIface = fn(fn(I6): int): int  // error: a function value cannot take or return an interface value
+
+// === a direct interface in an array constructor is refused
+type I6a = interface { fn m() }
+type BadArrIface = fn([]I6a): int  // error: a function value cannot take or return an interface value
+
+// === a direct interface in an optional constructor is refused
+type I6b = interface { fn m() }
+type BadOptIface = fn(?I6b): int  // error: a function value cannot take or return an interface value
+
+// === a direct interface in a Result constructor is refused
+type I6c = interface { fn m() }
+type BadResultIface = fn(Result[I6c]): int  // error: a function value cannot take or return an interface value
+
+// === a direct interface through a borrowed array is refused
+type I6d = interface { fn m() }
+type BadBorrowArrIface = fn(&[]I6d): int  // error: a function value cannot take or return an interface value
+
+// === an array alias of an interface is refused in a function type
+type I6e = interface { fn m() }
+type I6Arr = []I6e
+type BadAliasArrIface = fn(I6Arr): int  // error: a function value cannot take or return an interface value
+
+// === an optional alias of an interface is refused in a function type
+type I6f = interface { fn m() }
+type I6Opt = ?I6f
+type BadAliasOptIface = fn(I6Opt): int  // error: a function value cannot take or return an interface value
+
+// === a Result alias of an interface is refused in a function type
+type I6g = interface { fn m() }
+type I6Res = Result[I6g]
+type BadAliasResIface = fn(I6Res): int  // error: a function value cannot take or return an interface value
+
+// === a borrowed array alias of an interface is refused in a function type
+type I6h = interface { fn m() }
+type I6BorrowArr = []I6h
+type BadAliasBorrowIface = fn(&I6BorrowArr): int  // error: a function value cannot take or return an interface value
+
+// === a record that holds an interface is refused as a function type parameter
+type I7 = interface { fn m() }
+type IfaceHolder = ref record { s: I7 }
+type BadHolder = fn(IfaceHolder): int  // error: a function value cannot take or return 'IfaceHolder': it holds an interface value
+
+// === a record that holds an interface behind an array is refused as a function type parameter
+type I7a = interface { fn m() }
+type IfaceHolderArr = ref record { s: I7a }
+type BadArrHolder = fn([]IfaceHolderArr): int  // error: a function value cannot take or return 'IfaceHolderArr': it holds an interface value
+
+// === a closed type whose variant holds an interface is refused as a function type parameter
+type I8 = interface { fn m() }
+type IfaceShape = closed { V { s: I8 } }
+type BadShape = fn(IfaceShape): int  // error: a function value cannot take or return 'IfaceShape': it holds an interface value
+
+// === a recursive record that holds an interface is refused without looping
+type I9 = interface { fn m() }
+type NodeI = ref record { next: ?NodeI; s: I9 }
+type BadNode = fn(NodeI): int  // error: a function value cannot take or return 'NodeI': it holds an interface value
+
+// === an incomplete forward shell is refused as a function type parameter
+type IfaceLater
+type BadIncomplete = fn(IfaceLater): int  // error: a function value cannot take or return 'IfaceLater': it is not yet defined; define it before this function type
+
+// === a forward shell cannot be redefined as a function type alias
+type C
+type C = fn(int): int  // error: a function type cannot be forward-declared: 'C' is already declared as a forward type
+
+// === a local function type with no initial value keeps the existing non-null error
+fn main() { var f: fn(int): int }  // error: 'f' of type fn(int): int needs an initial value (it cannot be nil)
+
+// === a local alias to a function type with no initial value keeps the existing non-null error
+fn main() { var f: Inc }  // error: 'f' of type fn(int): int needs an initial value (it cannot be nil)
+
+// === ok cannot hold a function value
+fn f(g: fn(int): int) { let r = ok(g) }  // error: Result cannot hold a function value
+
+// === function values cannot be compared
+fn f(g: fn(int): int, h: fn(int): int) { if g == h { } }  // error: function values cannot be compared
+
+// === a function value can never be nil in a comparison
+fn f(g: fn(int): int) { if g == nil { } }  // error: a function value can never be nil
+
+// === a function value can never be assigned nil
+fn f(g: fn(int): int) { g = nil }  // error: a function value can never be nil
+
+// === print keeps its existing message with the function type name
+fn f(g: fn(int): int) { println(g) }  // error: cannot print fn(int): int
+
+// === a forward heading and a body whose function return types differ do not match
+fn f(g: fn(int): int): int
+fn f(g: fn(int)): int { return 1 }  // error: 'f' does not match its forward heading
+
+// === a forward heading and a body whose function parameter types differ do not match
+fn g(f: fn(int): int)
+fn g(f: fn(byte): int) { }  // error: 'g' does not match its forward heading
+
+// === a forward heading and a body whose function parameter modes differ do not match
+fn h(f: fn(&Item): int)
+fn h(f: fn(Item): int) { }  // error: 'h' does not match its forward heading
+
+// === an incomplete shell held by a record is refused through the field walk
+type LaterShell
+type HolderShell = ref record { l: LaterShell }
+type BadShellHolder = fn(HolderShell): int  // error: a function value cannot take or return 'HolderShell': it holds an interface value

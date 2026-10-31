@@ -1,0 +1,8 @@
+// A zero-capacity array still has normal bounds checks: writing index 0 traps, never segfaults.
+fn main() {
+    var a: []int = new []int(0)
+    a[0] = 1
+    println("unreachable")
+}
+
+// expect-exit: 3

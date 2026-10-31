@@ -1,0 +1,167 @@
+// Stage A non-capturing lambda and indirect-call diagnostics. Each case is one refusal.
+
+type Item = ref record { n: int }
+type Inc = fn(int): int
+
+// === a lambda parameter cannot be mut
+fn main() { let f = fn (mut x: int): int { return x }; println(f(1)) }  // error: a lambda parameter cannot be mut; a function value takes owned or read-only parameters
+
+// === a value return needs a return type
+fn main() { let f = fn (x: int) { return x }; println(1) }  // error: a lambda that returns a value needs a return type
+
+// === a non-void lambda must return on every path
+fn main() { let f = fn (x: int): int { if x > 0 { return x } }; println(1) }  // error: a lambda must return a value on every path
+
+// === try needs a Result-returning lambda
+fn g(x: int): Result[int] { return ok(x) }
+fn main() { let f = fn (x: int): int { let v = try g(x); return v }; println(1) }  // error: try needs a function that returns a Result; 'a lambda' returns int
+
+// === an uninitialised function-valued local needs a value
+fn main() { var f: fn(int): int }  // error: 'f' of type fn(int): int needs an initial value (it cannot be nil)
+
+// === a capture list is not supported in Stage A
+fn main() { let x = 1; let f = fn [x](y: int): int { return y }; println(1) }  // error: a capture list is not supported yet; this compiler implements non-capturing lambdas only
+
+// === a lambda literal cannot appear in a while condition
+fn main() { while fn (x: int): bool { return true } { break } }  // error: a lambda literal cannot appear in a while condition; move the call out of the condition before the loop
+
+// === a lambda literal cannot appear in a defer body
+fn main() { defer { let f = fn (x: int): int { return x } } }  // error: a lambda literal cannot appear in a defer body; move the call out of the defer
+
+// === a lambda cannot be a global initializer
+var LG = fn (x: int): int { return x }  // error: a lambda can only be created inside a function
+
+// === a lambda cannot be a constant initializer
+const LC = fn (x: int): int { return x }  // error: a lambda can only be created inside a function
+
+// === a lambda literal cannot start a statement
+fn main() { fn (x: int): int { return x } }  // error: expected a statement
+
+// === a lambda literal cannot be invoked directly
+fn main() { let x = fn (y: int): int { return y }(1); println(x) }  // error: expected ';' or newline, found (
+
+// === calling the active enclosing function from a lambda is refused
+fn outer(x: int): int { let f = fn (y: int): int { return outer(y) }; return 0 }  // error: cannot call 'outer' from a lambda while it is being compiled: its effects are not known yet
+fn main() { println(outer(1)) }
+
+// === a lambda that frees a global is impure
+var IG: []int = new []int(0)
+fn main() { let f = fn (x: int): int { truncate(IG, 0); return x }; println(f(1)) }  // error: a lambda must be pure: it may not free a global or free owned state through a handle; call a pure function instead
+
+// === a lambda that calls an impure function is impure
+var IG2: []int = new []int(0)
+fn imp(x: int): int { IG2 = new []int(0); return x }
+fn main() { let f = fn (x: int): int { return imp(x) }; println(f(1)) }  // error: a lambda must be pure: it may not free a global or free owned state through a handle; call a pure function instead
+
+// === a lambda that calls a forward-headed function is impure
+fn late(x: int): int
+fn main() { let f = fn (x: int): int { return late(x) }; println(f(1)) }  // error: a lambda must be pure: it may not free a global or free owned state through a handle; call a pure function instead
+fn late(x: int): int { return x }
+
+// === a function value has no fields or methods
+fn main() { let f = fn (x: int): int { return x }; println(f.n) }  // error: a function value has no fields or methods; call it with '(' after its name
+
+// === a function value cannot be called as a method
+fn main() { let f = fn (x: int): int { return x }; println(f.m()) }  // error: a function value has no fields or methods; call it with '(' after its name
+
+// === a function value cannot be indexed
+fn main() { let f = fn (x: int): int { return x }; println(f[0]) }  // error: fn(int): int cannot be indexed
+
+// === an indirect call ends the designator
+fn main() { let f = fn (x: int): int { return x }; println(f(1).n) }  // error: expected ',', found .
+
+// === too few arguments to a function value
+fn main() { let f = fn (x: int): int { return x }; println(f()) }  // error: function value 'f' takes 1 argument(s), not 0
+
+// === too many arguments to a function value
+fn main() { let f = fn (x: int): int { return x }; println(f(1, 2)) }  // error: function value 'f' takes 1 argument(s), not more
+
+// === a function value argument has the wrong type
+fn main() { let f = fn (x: int): int { return x }; println(f("s")) }  // error: argument 1 of function value 'f': cannot use string as int
+
+// === a borrowed argument cannot satisfy an owned parameter
+fn main() { let f = fn (it: Item): int { return it.n }; let a = new Item{n: 1}; println(f(&a)) }  // error: cannot move out of a reference: a reference only borrows
+
+// === function values cannot be compared
+fn main() { let f = fn (x: int): int { return x }; let g = fn (x: int): int { return x }; println(f == g) }  // error: function values cannot be compared
+
+// === a function value can never be nil in a comparison
+fn main() { let f = fn (x: int): int { return x }; println(f == nil) }  // error: a function value can never be nil
+
+// === a function value can never be assigned nil
+fn main() { var f = fn (x: int): int { return x }; f = nil }  // error: a function value can never be nil
+
+// === a function value cannot be printed
+fn main() { let f = fn (x: int): int { return x }; println(f) }  // error: cannot print fn(int): int
+
+// === drop cannot take a function value
+fn main() { let f = fn (x: int): int { return x }; drop(f) }  // error: drop needs a local variable holding an owned value
+
+// === take cannot take a function value
+fn main() { let f = fn (x: int): int { return x }; take(f) }  // error: take needs an optional variable, field or element holding an owned value
+
+// === replace cannot take a function value
+fn main() { let f = fn (x: int): int { return x }; replace(f, f) }  // error: replace needs a variable, field or element holding an owned value
+
+// === handle cannot name a function value
+fn main() { let f = fn (x: int): int { return x }; handle(f) }  // error: handle needs a record or closed-type value that is not optional, not fn(int): int
+
+// === alive cannot name a function value
+fn main() { let f = fn (x: int): int { return x }; alive(f) }  // error: alive needs a handle, not fn(int): int
+
+// === match cannot inspect a function value
+fn main() { let f = fn (x: int): int { return x }; match f { 1 { println(1) } else { println(0) } } }  // error: match needs an int, byte, closed type or Result, not fn(int): int
+
+// === for cannot walk a function value
+fn main() { let f = fn (x: int): int { return x }; for x in f { println(x) } }  // error: cannot iterate over fn(int): int
+
+// === a function value is not a bool condition
+fn main() { let f = fn (x: int): int { return x }; if f { println(1) } }  // error: condition must be bool, not fn(int): int
+
+// === a function value cannot be added
+fn main() { let f = fn (x: int): int { return x }; println(f + 1) }  // error: '+' needs ints
+
+// === a function value cannot be borrowed
+fn main() { let f = fn (x: int): int { return x }; let x = &f; println(1) }  // error: & needs a variable, field or element holding a record, closed type or array
+
+// === ok cannot hold a function value
+fn main() { let f = fn (x: int): int { return x }; let r = ok(f) }  // error: Result cannot hold a function value
+
+// === an owned argument is moved at an indirect call
+type Item2 = ref record { n: int }
+fn main() { let f = fn (it: Item2): int { return it.n }; let a = new Item2{n: 1}; println(f(a)); println(a.n) }  // error: 'a' was moved and has no value here
+
+// === a later argument that moves a held reference is refused
+type Item3 = ref record { n: int }
+fn main() { let f = fn (r: &Item3, it: Item3): int { return r.n + it.n }; let a = new Item3{n: 1}; println(f(&a, a)) }  // error: argument 2 of function value 'f' may free what argument 1 points into, and runs after it; compute it before the call
+
+// === an enclosing local named env cannot be captured implicitly
+fn main() { let env = 7; let f = fn (): int { return env }; println(f()) }  // error: 'env' is a local of the enclosing function; add it to the lambda's capture list: fn [env](...)
+
+// === an enclosing parameter named env cannot be captured implicitly
+fn outerEnv(env: int): int { let f = fn (): int { return env }; return f() }  // error: 'env' is a local of the enclosing function; add it to the lambda's capture list: fn [env](...)
+fn main2() { println(outerEnv(7)) }
+
+// === a global env does not let an outer local env fall through
+var env = 7
+fn main() { let env = 8; let f = fn (): int { return env }; println(f()) }  // error: 'env' is a local of the enclosing function; add it to the lambda's capture list: fn [env](...)
+
+// === a nested lambda cannot implicitly use an outer lambda parameter named env
+fn main() { let f = fn (env: int): int { let g = fn (): int { return env }; return g() }; println(f(2)) }  // error: 'env' is a local of the enclosing function; add it to the lambda's capture list: fn [env](...)
+
+// === an ordinary enclosing local cannot be captured implicitly
+fn main() { let x = 7; let f = fn (): int { return x }; println(f()) }  // error: 'x' is a local of the enclosing function; add it to the lambda's capture list: fn [x](...)
+
+// === an ordinary enclosing parameter cannot be captured implicitly
+fn outerX(y: int): int { let f = fn (): int { return y }; return f() }  // error: 'y' is a local of the enclosing function; add it to the lambda's capture list: fn [y](...)
+fn main2() { println(outerX(7)) }
+
+// === an enclosing loop local cannot be captured implicitly
+fn main() { var i = 0; while i < 1 { let z = 7; let f = fn (): int { return z }; println(f()); i += 1 } }  // error: 'z' is a local of the enclosing function; add it to the lambda's capture list: fn [z](...)
+
+// === an enclosing match binding cannot be captured implicitly
+fn main() { match 1 { 1 { let z = 7; let f = fn (): int { return z }; println(f()) } else { println(0) } } }  // error: 'z' is a local of the enclosing function; add it to the lambda's capture list: fn [z](...)
+
+// === a type-position name shadowed by an outer local keeps the lambda rejection
+type T = ref record { n: int }
+fn main() { let T = 1; let f = fn (): int { let v: T = 0; return T }; println(f()) }  // error: 'T' is a local of the enclosing function; add it to the lambda's capture list: fn [T](...)

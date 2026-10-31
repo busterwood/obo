@@ -1,0 +1,37 @@
+// The hidden environment cell is not a source name: globals named env, a visible parameter env,
+// and a type/function/constant named env all remain usable; only an explicit parameter shadows.
+type EnvRec = ref record { n: int }
+var env = 7
+var envRec = new EnvRec{n: 7}
+var envArr: []int = new []int(0)
+const envConst = 7
+fn envFn(): int { return 7 }
+
+fn main() {
+    append(envArr, 0)
+    let g = fn (): int { return env }
+    println(g())
+    let r = fn (): int { return envRec.n }
+    println(r())
+    let a = fn (): int { return len(envArr) }
+    println(a())
+    let c = fn (): int { return envConst }
+    println(c())
+    let f = fn (): int { return envFn() }
+    println(f())
+    let p = fn (env: int): int { return env + 1 }
+    println(p(2))
+    let n = fn (env: int): int {
+        let q = fn (env: int): int { return env + 1 }
+        return q(env)
+    }
+    println(n(2))
+}
+
+// expect: 7
+// expect: 7
+// expect: 1
+// expect: 7
+// expect: 7
+// expect: 3
+// expect: 3

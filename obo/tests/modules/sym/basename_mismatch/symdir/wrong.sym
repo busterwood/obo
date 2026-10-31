@@ -1,6 +1,6 @@
-obosym 4
+obosym 5
 abi 1
-compiler "0.8.1"
+compiler "0.9"
 source 0xb61fb94405e36b39
 interface 0x011b83e028b71d26
 module other

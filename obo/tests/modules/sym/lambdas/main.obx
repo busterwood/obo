@@ -1,0 +1,15 @@
+module main
+import "lib.obx"
+
+fn main() {
+    let inc = fn (x: int): int { return x + 1 }
+    println(lib::apply(3, inc))
+    println(lib::apply(4, fn (x: int): int { return x * 2 }))
+    let a = new lib::Item{n: 7}
+    let b = new lib::Item{n: 3}
+    println(lib::compare(&a, &b, fn (x: &lib::Item, y: &lib::Item): int { return x.n - y.n }))
+}
+
+// expect: 4
+// expect: 8
+// expect: 4
