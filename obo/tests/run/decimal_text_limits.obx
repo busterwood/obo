@@ -1,0 +1,101 @@
+// Public text limits: 38 digits, exponent/display boundaries, long cells and
+// exact formatter lengths.
+
+fn zeros(n: int): string {
+    var z = "0"
+    while len(z) < n { z = z + z }
+    return substr(z, 0, n)
+}
+
+fn codeOf(r: Result[decimal]) {
+    match r {
+        ok(v) { println("ok") }
+        err(m, c) { println(c) }
+    }
+}
+
+fn formatLen(d: decimal, want: int) {
+    let r = decimal::format(d)
+    match r {
+        ok(s) {
+            if len(s) == want { println("ok") } else { println("len ", len(s)) }
+        }
+        err(m, c) { println("err ", c, " ", m) }
+    }
+}
+
+fn canonicalIs(d: decimal, want: string) {
+    let r = decimal::canonical(d)
+    match r {
+        ok(s) {
+            if s == want && len(s) == len(want) { println("ok") } else { println("canonical differs len ", len(s)) }
+        }
+        err(m, c) { println("err ", c, " ", m) }
+    }
+}
+
+fn formatTextLen(text: string, want: int) {
+    let p = decimal::parse(text)
+    match p {
+        ok(d) { formatLen(d, want) }
+        err(m, c) { println("parse err ", c, " ", m) }
+    }
+}
+
+fn canonicalTextIs(text: string, want: string) {
+    let p = decimal::parse(text)
+    match p {
+        ok(d) { canonicalIs(d, want) }
+        err(m, c) { println("parse err ", c, " ", m) }
+    }
+}
+
+fn parseErr(text: string, code: int) {
+    let r = decimal::parse(text)
+    match r {
+        ok(v) { println("unexpected ok") }
+        err(m, c) { if c == code { println("ok") } else { println("code ", c) } }
+    }
+}
+
+fn main() {
+    let nines = "99999999999999999999999999999999999999"
+    codeOf(decimal::parse(nines))               // expect: ok
+    codeOf(decimal::parse(nines + "1"))         // expect: 7
+    codeOf(decimal::parse(nines + "0"))         // expect: ok
+    codeOf(decimal::parse("1" + zeros(38)))     // expect: ok
+    canonicalTextIs(nines + "0", nines + "0") // expect: ok
+
+    let z65535 = "0." + zeros(65535)
+    codeOf(decimal::parse(z65535))              // expect: ok
+    formatTextLen(z65535, 65537) // expect: ok
+    canonicalTextIs(z65535, "0") // expect: ok
+    codeOf(decimal::parse(z65535 + "0"))        // expect: 9
+
+    let oneFrac = "1." + zeros(65535)
+    codeOf(decimal::parse(oneFrac))             // expect: ok
+    formatTextLen(oneFrac, 65537) // expect: ok
+    canonicalTextIs(oneFrac, "1") // expect: ok
+
+    codeOf(decimal::parse("0e-32769"))          // expect: ok
+    formatLen(0e-32769, 32771)                  // expect: ok
+    canonicalIs(0e-32769, "0")                  // expect: ok
+    formatLen(0e-65535, 65537)                  // expect: ok
+    canonicalIs(0e-65535, "0")                  // expect: ok
+
+    formatLen(1e-32768, 32770)                  // expect: ok
+    formatLen(1e32804, 32805)                   // expect: ok
+    canonicalIs(1e-32768, "1e-32768")           // expect: ok
+    canonicalIs(1e32804, "1e32804")             // expect: ok
+
+    let longCell = zeros(100000) + "1"
+    codeOf(decimal::parse(longCell))            // expect: ok
+    canonicalTextIs(longCell, "1") // expect: ok
+
+    parseErr("1\0", 4)                          // expect: ok
+    parseErr("\0", 4)                           // expect: ok
+    parseErr("1é", 4)                           // expect: ok
+    parseErr("", 4)                             // expect: ok
+
+    codeOf(decimal::parse("0." + zeros(65536))) // expect: 9
+}

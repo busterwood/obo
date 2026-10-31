@@ -1,0 +1,25 @@
+module lib
+
+pub fn parseText(s: string): Result[decimal] {
+    return decimal::parse(s)
+}
+
+pub fn formatText(d: decimal): Result[string] {
+    return decimal::format(d)
+}
+
+pub fn canonicalText(d: decimal): Result[string] {
+    return decimal::canonical(d)
+}
+
+pub fn checked(d: decimal, p: int, s: int): Result[decimal] {
+    return decimal::check(d, p, s)
+}
+
+pub fn exponentOf(d: decimal): int {
+    return decimal::exponent(d)
+}
+
+pub fn dscaleOf(d: decimal): int {
+    return decimal::dscale(d)
+}
