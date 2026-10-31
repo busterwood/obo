@@ -1,8 +1,9 @@
 # Systems standard library
 
 Status: **design for independent review; no implementation authorized.**
-Baseline: released `main` `34b798bc4c76cf41362d3b374c13b80e7b43f73b`,
-obo 0.11, symbol format 6, ABI 1. Date: 2026-10-31.
+Baseline: released `main` `51ce9e7680a90df9e3d5e38a9b469a460a2ca968`,
+obo 0.12, symbol format 6, ABI 1. Date: 2026-10-31. Decimal `0.12` and the
+experimental Postgres/SQLite adapters are present at this baseline.
 No compiler, ABI, symbol-format or package version is reserved by this note.
 
 ## 1. Decision and scope
@@ -13,14 +14,18 @@ catalog. Start with files, directory-relative operations, clocks and randomness;
 then add nonblocking networking and a single-threaded readiness reactor; then
 process supervision. Recommend **one reactor per worker process**, initially
 launched by an external supervisor, subsequently by the process module. Native
-obo threads are later runtime/compiler work. Public synchronization of arbitrary
-obo objects is not sound today and is not part of the first thread release.
+obo threads and synchronization are separate runtime/compiler work in
+`systems-threads-design.md`; they are not part of this core library.
 
 This is foundation work for command-line programs, services and native-library
 adapters. The HTTP readiness assessment in §10 describes dependencies only.
 Request parsing, framing, routing, HTTP/1.1, HTTP/2 and HTTP/3 are outside this
 design. TLS and compression are separately maintained transport/codec adapters,
 not implementations of those protocols here.
+
+Review posture: §3–4 and **P0/P1a are the approvable slice** after these fixes;
+P2/P3 and the optional TLS/codec adapters remain directional until P0 evidence
+lands. Threads and synchronization are not part of this approval.
 
 The first target is **Linux x86-64**. Public contracts prefer Unix concepts which
 can later have BSD/macOS implementations. That is a portability boundary, not a
@@ -33,20 +38,20 @@ close-on-exec or timeout behavior to approximate POSIX compatibility.
 
 - §2: baseline inventory and evidence.
 - §3–4: information hiding, dependency graph, errors and resource invariants.
-- §5–8: implementable module contracts and 0.11-shaped API headings.
-- §9: thread/runtime work and concurrency decision.
-- §10–13: readiness, tests, packaging and delivery phases.
+- §5–8: implementable module contracts and 0.12-shaped API headings.
+- §9: process/reactor concurrency verdict and pointer to the thread note.
+- §10–13: readiness, tests, packaging and core delivery phases.
 - §14–15: rejected alternatives and real product decisions.
 
-API blocks are **proposed declarations**, using ordinary 0.11 types, not complete
+API blocks are **proposed declarations**, using ordinary 0.12 types, not complete
 modules available for import. Type declarations, record/variant construction,
-`match`, `defer`, `try` and ownership patterns in the examples follow 0.11
-syntax. Bodyless `pub fn` headings are signature notation: 0.11 has no
+`match`, `defer`, `try` and ownership patterns in the examples follow 0.12
+syntax. Bodyless `pub fn` headings are signature notation: 0.12 has no
 declaration-only function form, so each heading becomes a definition in an
 implementation; an API block as written is not a compilable module. There are no
 invented generics, destructors, async keywords, borrowed returns, `Send`/`Sync`
-markers or thread syntax. `Result[T]` is the existing builtin. The thread
-headings are explicitly blocked proposals, not evidence of thread support.
+markers or thread syntax. `Result[T]` is the existing builtin. Thread headings
+are not in this core document; see `systems-threads-design.md`.
 
 ## 2. Current state: what actually exists
 
@@ -71,11 +76,12 @@ at this baseline; it is unrelated to the systems layer.
 | Mapping | private `mmap` only inside `rt_init` (runtime.c:28–41,212–300) | No public anonymous/file mapping, protection, flush or copy interface; no mapping lifetime separate from the allocator. |
 | Network / readiness | absent | No socket, connect/accept, bind, send/receive, poll/epoll/eventfd, nonblocking mode or DNS. There is no way to wait for readiness without blocking in `readFd`/`sleepMs`. |
 | Process / signals | absent | No spawn/exec, wait/reap, pipe creation, process group, pidfd, signal set, signalfd or SIGCHLD policy. `exit` skips defers and is a raw process exit. |
-| Concurrency | absent | No threads, atomics, mutex, condvar, channels, worker entry ABI or reactor. The runtime and language are single-threaded by construction (see §9.2). |
+| Concurrency | absent | No threads, atomics, mutex, condvar, channels, worker entry ABI or reactor. The runtime and language are single-threaded by construction; threads and synchronization are analyzed in `systems-threads-design.md`. |
 | Strings / paths | [strings.obx](../lib/strings.obx):32–74,163–315,831–1195; [paths.obx](../lib/paths.obx):1–18,26–133 | Byte comparisons, split/join/trim, UTF-8 validation/lossy conversion, partial simple Unicode folding, display width, natural order and eza quoting. Paths are lexical join/parent/component/extension, not filesystem containment, normalization against symlinks or a sandbox. |
 | Sort / format / errors | [sort.obx](../lib/sort.obx):1–26,124–198; [fmt.obx](../lib/fmt.obx):13–34,36–139; [errors.obx](../lib/errors.obx):11–59,120–123 | Stable index sorting and integer sort; digits/padding and eza modes; small English errno table plus eza exit constants. No generic containers, error categories, structured logging or duration formatting. These are useful existing modules, not replacements for OS resources. |
-| HTML | [html.obx](../lib/html.obx):1–80: `Html`, `escapeText`, `escapeAttr`, `validateUrl`, `raw`, `join`; the exact eleven-module set is pinned in [imports.py](../tests/imports.py):169–185 | Present at this baseline, but it is an escaping/serialization helper with public fields and convention-level trust. It supplies no sockets, timers, request parser, framing or concurrency. |
+| HTML | [html.obx](../lib/html.obx):82–225 defines `Html`, `escapeText`, `escapeAttr`, `validateUrl`, `raw` and `join`; the exact eleven-module set is pinned in [imports.py](../tests/imports.py):169–172 | Present at this baseline, but it is an escaping/serialization helper with public fields and convention-level trust. It supplies no sockets, timers, request parser, framing or concurrency. |
 | Native interop | [cinterop README](../experimental/cinterop/README.md):13–21,57–84,277–298; [design](native-c-interop-design.md) §8; [skill](../experimental/cinterop/skill/SKILL.md):22–61 | Trusted scalar i64 input, i32/i64 result, checked C tokens, bounded byte loops, explicit close. Internal/experimental, no callbacks into obo, no pointers or structs by value, no production TLS/IFUNC guarantee, no automatic foreign finalizer. zlib is a proof fixture, not a stable streaming codec. |
+| DB adapters | `experimental/db/{postgres,sqlite}` at this baseline use `ref record { tok: int }` (e.g. postgres.obx:34–35, sqlite.obx:49–50) | **Documented temporary exception**, not the new core model. Their kind-checked C registry rejects stale/wrong-kind tokens, but the public field is a token, not a `res: platform::Resource` identity. Migrate after the core registry lands; do not copy this shape into new systems modules. |
 
 ### 2.1 Actual builtin and syscall boundary
 
@@ -138,8 +144,9 @@ historical interop prose. Runtime stubs also write the global `rt_entry_sp`
   managed-heap exhaustion without separate runtime allocation work**. No normal
   I/O error or remote input should intentionally use a runtime panic.
 - The compiler live-memory budget is **2,500,000 bytes**, not the application
-  heap limit (README.md:73–94). All initial APIs are source plus trusted C shims
-  using the existing experimental seam. Compiler features are separately gated.
+  heap limit; the released 0.12 line peaks at 2,194,160 bytes in the recorded
+  README gate. All initial APIs are source plus trusted C shims using the
+  existing experimental seam. Compiler features are separately gated.
 
 ## 3. Information hiding and module boundaries
 
@@ -159,13 +166,14 @@ Names in this table are logical names; unique physical module names are in §12.
 | sys/platform (support) | syscall/libc choice, native registries, allocation quotas, ABI conversion | resource operations on managed identities, capability queries, diagnostics | libc versus raw syscall implementation; registry growth; fake backend |
 | os/file | open policy, offsets, durability and replace transaction | File, open/openAt, read/write, seek, sync, replace | openat2 capability check, fsync ordering, temporary-file strategy |
 | os/dir | directory cursor and anchored-name traversal | Directory, Iterator, next, child operations | getdents versus readdir, buffer sizing, unknown d_type |
-| os/stat | metadata layout, unavailable fields, identity representation | Metadata snapshot and identity equality | statx versus fstatat, timestamp precision, unsigned IDs |
+| os/stat | metadata layout, unavailable fields, identity representation | Metadata snapshot and identity equality | statx versus fstatat, timestamp precision, interned device/inode identity |
 | os/mapping | mapped address/protection/page alignment | Mapping, bounded copy, protect, flush, close | mmap layout, page size, mprotect restrictions |
-| time/clock | clock source and unit conversion | Instant, Duration, Deadline, realtimeNs/monotonic | clock_gettime versus vDSO; backend fake clock |
+| time/clock | clock source and unit conversion | Instant, Duration, Deadline, Timestamp, realtime/monotonic | clock_gettime versus vDSO; backend fake clock |
 | time/calendar | civil calendar and accepted text syntax | parse/format RFC3339, UTC conversion | parser implementation or formatting optimization |
 | random | entropy provider and partial-fill mechanics | fillSome, fillUntil, bytes with explicit limit | getrandom availability and chunk size |
 | io/stream | endpoint kind and partial-transfer normalization | Stream, readSome/writeSome, half-close, explicit close | socket/file/pipe dispatch, native buffering |
 | io/buffer | capacity, compaction, byte cursor and pending progress | feed/find/copy/consume, Reader/Writer steps | ring versus linear storage; readv/writev batching |
+| io/wait | readiness/deadline/cancellation composition and retained progress | readUntil/writeAllUntil/flushUntil steps | helper loop policy; reactor integration |
 | poll/reactor | interest registration, wakeup and timer queue | watch/modify/remove, wait batch, timer, stop | poll versus epoll, timer heap versus wheel |
 | net/address | sockaddr packing and presentation | IPv4/IPv6/Unix addresses, parse/format | kernel layouts, byte order, scope handling |
 | net/socket | connection state and socket policy | Listener, Connection, Datagram, connect/accept/receive/send | accept4 fallback, options implementation |
@@ -173,8 +181,6 @@ Names in this table are logical names; unique physical module names are in §12.
 | process | spawn transaction, fd inheritance and child reaping | Command, Child, wait/terminate, exit status | posix_spawn versus fork/exec, pidfd availability |
 | signals | signal mask, coalescing and safe delivery machinery | SignalSet, event source, next | signalfd versus self-pipe handler |
 | environment | snapshot and startup mutation policy | Environment snapshot, set/unset, child environment | initial envp versus host libc environment |
-| threads (later) | worker start ABI, stacks, runtime contexts and join ownership | start registered worker, cancel, join/detach | runtime thread context/allocator implementation |
-| sync (later) | native lock/queue implementation and memory ordering | bounded bytes channels and concrete shared scalar cells | futex versus pthread primitives; queue layout |
 | terminal (later) | mode snapshot/restoration and ioctl layouts | Terminal, size, enterRaw, restore | termios differences, resize delivery |
 | logging | record escaping, buffering and loss/backpressure policy | bounded emit, drain, flush, counters | text versus structured sink, queue strategy |
 
@@ -186,16 +192,20 @@ their helper functions need somewhere to live.
 
 ### 3.2 Dependency DAG
 
-`A -> B` means A imports B. This is the permitted dependency graph; within a row
-there are no implicit reverse edges. Platform C adapters may call common registry
-support, never application obo. Thread bootstrap is a runtime boundary below it.
+`A -> B` means A imports B. This is the permitted dependency graph for the core
+systems library; within a row there are no implicit reverse edges. Platform C
+adapters may call common registry support, never application obo. Threads and
+synchronization are a separate design (`systems-threads-design.md`) and do not
+appear in this core DAG.
 
 ```text
 syserrors                                      -> (builtins only)
 sysplatform                                    -> syserrors
-sysclock, syscalendar, sysaddress                -> syserrors
+sysclock, sysaddress                            -> syserrors
   sysclock                                     -> sysplatform
-sysenv, sysrandom, sysstat                       -> sysplatform, syserrors
+  syscalendar                                  -> sysclock, syserrors
+sysenv, sysrandom                                -> sysplatform, syserrors
+sysstat                                        -> sysclock, sysplatform, syserrors
 sysstream                                      -> sysplatform, syserrors
 sysdir                                         -> sysplatform, sysstat, syserrors
 sysfile                                        -> sysdir, sysstat, sysstream, sysplatform
@@ -206,11 +216,9 @@ sysnet                                         -> sysaddress, sysstream, sysreac
 sysresolve                                     -> sysaddress, sysreactor, sysplatform
 syssignals                                     -> sysreactor, sysplatform
 sysprocess                                     -> sysenv, sysdir, sysstream, sysreactor, sysplatform
-syswaitio                                      -> sysstream, sysbuffer, sysreactor, sysclock
-systhreads                                     -> sysplatform, sysclock
-syssync                                        -> systhreads, sysreactor, sysclock, sysplatform
+syswaitio                                      -> sysstream, sysbuffer, sysreactor, sysclock, sysplatform
 systerminal                                    -> sysstream, syssignals, sysreactor, sysplatform
-syslog                                         -> sysclock, sysplatform, syserrors
+syslog                                         -> sysstream, sysclock, sysplatform, syserrors
 ```
 
 Clock has no timer-queue dependency: reactor owns timers. Reactor does not import
@@ -239,21 +247,23 @@ number, but clients never branch by parsing them. Existing raw-fd builtins and
 legacy fs/io remain a documented legacy boundary; this rule applies to the new
 systems API, not a false claim about all existing obo programs.
 
-**Implementing hiding in 0.11:** choose one concrete shell representation.
-Every native typed shell owns a **concrete** field `resource: platform::Resource`
-(for example `pub type File = ref record { resource: platform::Resource }`);
+**Implementing hiding in 0.12:** choose one concrete shell representation.
+Every native typed shell owns a **concrete** field `res: platform::Resource`
+(for example `pub type File = ref record { res: platform::Resource }`);
 there is no type-erasing alias and no `^File -> ^Resource` conversion. The
 support record itself is `pub type Resource = ref record { reserved: int }`, which
 carries no authority. `platform::source(r: &Resource): Result[^Resource]` checks
 that the record is a live table member and returns its non-owning identity.
 `platform::requireKind(r: &Resource, kind: int): Result[^Resource]` performs the
-same check plus the expected kind. A module-private table associates that
-identity with a C token, kind, state and quota charge. Validate membership,
-generation and kind before every native access. A user-created `Resource` has no
+same check plus the expected kind. Every typed module operation calls
+`requireKind(&x.res, platform::KIND_*)` before any native access; typed `source`/
+`watch` helpers do the same. A module-private table associates that identity with
+a C token, kind, state and quota charge. Validate membership, generation and kind
+before every native access. A user-created `Resource` has no
 entry and returns `InvalidResource`. Moving a shell preserves identity; copying
 or reconstructing a record does not duplicate a resource.
 
-**Public-field limitation, stated honestly:** `resource` is public and writable.
+**Public-field limitation, stated honestly:** `res` is public and writable.
 Replacing it cannot forge a new capability: the registry still checks membership,
 generation and kind, and a user-created `Resource` fails. But a caller *can*
 deliberately point a shell at another live resource of the same kind, which
@@ -261,17 +271,23 @@ aliases or steals that resource and can leave the original open (a leak). Typed
 modules therefore revalidate the field on every entry point and reject a
 cross-kind alias with `InvalidResource`; they do not claim that public fields are
 opaque. A compiler-negative test must reject `^File`/`^Stream` conversion, and a
-runtime test must cover a replaced same-kind and cross-kind field.
+runtime test must cover a replaced same-kind and cross-kind field. At this
+baseline fields are public; if the approved private-by-default field design is
+implemented, `res` must be explicitly `pub` to preserve this contract.
 
-Start with a bounded linear identity table (default 4096 live resources per
-context) and measure it. This is a correctness prototype, not an O(1) scalability
-claim. A later index cache may use an **untrusted managed-table hint**, checked
-against full owner identity on every lookup; it must not encode a C token or fd.
-Changing that implementation field is not supported client usage. If sufficient
-performance requires actual opaque types or a new identity-hash primitive,
-propose and budget that separately. Exported-field privacy cannot be assumed.
-Private tables must not retain an owning reference to the shell: omitted close
-is a detectable native leak, not an immortal managed object disguised as cleanup.
+`Resource.reserved` is the **checked table hint** from P0 onward, not merely a
+linear-scan placeholder: it holds a bounded slot index plus an epoch. A lookup
+indexes a fixed table with it, then verifies the full owner identity (generation,
+kind, live state) and never treats the hint as authority. An out-of-range,
+forged, stale or cross-context hint returns `InvalidResource` or falls back to a
+bounded scan; it can never select a different live resource by itself. P0's
+table is a fixed-capacity array (default 4096 live resources per context) with
+free slots and tombstone epochs, so the common path is O(1) and does not rely on
+a whole-table scan. If a later index needs a hash, it is still an untrusted hint
+checked against full identity; changing the hint layout is not a client API.
+Exported-field privacy cannot be assumed. Private tables must not retain an
+owning reference to the shell: omitted close is a detectable native leak, not an
+immortal managed object disguised as cleanup.
 
 Keep a closed tombstone only while its shell is alive, so repeated close can
 return false without treating a forged shell as previously closed. Sweep dead
@@ -368,9 +384,14 @@ they never restart a timeout from zero. `close` is never retried after `EINTR` o
 Linux because the descriptor is already consumed.
 
 `readSome` / `writeSome` perform at most one kernel transfer attempt. A positive
-short transfer is success; it is never silently repeated. Empty writes return
-0 after resource validation. A zero read request is InvalidArgument; EOF is
-`ok(nil)`, distinct from WouldBlock. For UDP, empty datagrams are data, not EOF.
+short transfer is success; it is never silently repeated. `readInto`/`writeFrom`
+are the allocation-free forms: `readInto` writes at `offset` within the existing
+`dst` length, up to `max`, and returns 0 only at EOF; `writeFrom` writes at most
+`count` bytes from `src[offset..]` and returns the short count. Neither allocates
+a result array or copies the payload again. Empty writes return 0 after resource
+validation. A zero read request is InvalidArgument; EOF is `ok(nil)` for
+`readSome` and `ok(0)` for `readInto`, distinct from WouldBlock. For UDP, empty
+datagrams are data, not EOF.
 No normal network/filesystem failure traps. Checked sizes are validated before
 array indexing, multiplication, narrowing, allocation or native calls.
 
@@ -381,6 +402,16 @@ obligation. The shell's record destructor does **not** release native resources.
 Register `defer close(owner)` immediately. A borrowed operation never retains a
 borrowed obo reference in C; queued bytes are copied to C-owned memory before
 return, or moved into an obo-owned pending operation on the same thread.
+
+**Uniform public-field rule.** Every public value record is untrusted at every
+entry point, not only at its constructor. Revalidate all fields, lengths, ranges,
+cross-field combinations and the `res` hint before indexing, arithmetic, copying
+or a native call. This explicitly covers `platform::Options`, `syssignals::
+SignalSet`, `sysaddress::Address`, `sysenv::Environment`, `sysbuffer::Buffer`,
+`sysfile::OpenOptions`, `sysnet::ListenOptions`, `sysprocess::Command` and
+reactor event requests. Reject a malformed record with `InvalidArgument`,
+`Range` or `InvalidResource`; never trust a field because a module constructor
+usually set it. Negative tests construct each record directly.
 
 | State | Operation | Transition / result |
 |---|---|---|
@@ -422,7 +453,7 @@ boundary, where Linux struct layouts and errno translation belong.
 ```obo
 module sysplatform
 pub type Resource = ref record { reserved: int }
-pub type Transfer = ref record { resource: Resource }
+pub type Transfer = ref record { res: Resource }
 pub type Options = ref record {
     maxResources: int; maxShells: int; maxNativeBytes: int
     ignorePipeSignal: bool
@@ -460,9 +491,11 @@ pub fn releaseTransfer(t: &Transfer): Result[bool]
 pub fn shutdown(): Result[Counts]
 ```
 
-`source` is the only supported bridge from a shell's `resource` field to the
-checked identity used by `watchResource`; `requireKind` is the typed-module
-entry check. Both reject an unregistered, closed or wrong-generation record.
+`source` is the supported bridge from a shell's `res` field to the checked
+identity used by `watchResource`; a caller could still write `handle(f.res)` and
+the table would validate it, but that is not the documented route. `requireKind`
+is the typed-module entry check. Both reject an unregistered, closed or
+wrong-generation record.
 The `KIND_*` values are library constants; changing them is a library ABI
 change, not a kernel ABI exposure. `initialize` validates every `Options` field
 at entry: positive limits, checked arithmetic and an explicit `ignorePipeSignal`
@@ -470,8 +503,10 @@ policy.
 
 Initialization is explicit, before resource creation; imports have no OS side
 effects. Defaults supplied by a constructor: 4096 native resources, 8192 live
-shells and 64 MiB native-buffer bytes, independently adjustable with checked
-positive limits. Unknown capability names return false. Reinitializing with the
+shells, 64 MiB native-buffer bytes and `ignorePipeSignal = true`, independently
+adjustable with checked limits. `ignorePipeSignal = false` preserves the legacy
+SIGPIPE disposition and makes new pipe-write APIs return Unsupported before
+writing (see §8.2). Unknown capability names return false. Reinitializing with the
 same policy returns false; incompatible policy is Busy. shutdown closes orphaned
 resources after an application has closed its owners, reports pre-cleanup leaks
 and cleanup failures, and rejects running children/workers until their shutdown
@@ -522,14 +557,15 @@ module sysdir
 import "sysplatform.obx" as platform
 import "sysstat.obx" as stat
 
-pub type Directory = ref record { resource: platform::Resource }
-pub type Iterator = ref record { resource: platform::Resource }
+pub type Directory = ref record { res: platform::Resource }
+pub type Iterator = ref record { res: platform::Resource }
 pub type Entry = ref record { name: string; kind: int }
 pub fn open(path: string): Result[Directory]
 pub fn child(base: &Directory, name: string): Result[Directory]
 pub fn iterate(base: &Directory): Result[Iterator]
 pub fn next(it: &Iterator): Result[?Entry]
 pub fn metadata(base: &Directory, name: string, follow: bool): Result[stat::Metadata]
+pub fn readLink(base: &Directory, name: string): Result[[]byte]
 pub fn mkdir(base: &Directory, name: string, permissions: int): Result[bool]
 pub fn unlink(base: &Directory, name: string): Result[bool]
 pub fn removeEmpty(base: &Directory, name: string): Result[bool]
@@ -547,6 +583,9 @@ The iterator duplicates its anchor; closing Directory does not invalidate it.
 It yields owned names independent of refill/close, skips `.`/`..`, promises no
 order or directory snapshot, and returns Unknown kind rather than hiding a failed
 stat. Metadata is a separate checked operation; names can disappear between calls.
+`readLink` returns the raw target bytes, not a NUL-terminated string, and inherits
+the existing contract: a dangling target succeeds, a non-symlink is InvalidArgument,
+and a target of 4095 bytes or more is NameTooLong (never a silent truncation).
 Kernel dirent corruption fails the iterator permanently with IoFailure, not a
 repeatable infinite loop. Enumeration buffer and maximum name length are bounded.
 
@@ -565,7 +604,7 @@ import "sysplatform.obx" as platform
 import "sysstat.obx" as stat
 import "sysstream.obx" as stream
 
-pub type File = ref record { resource: platform::Resource }
+pub type File = ref record { res: platform::Resource }
 pub type OpenOptions = ref record {
     read: bool; write: bool; create: bool; exclusive: bool
     truncate: bool; append: bool; noFollow: bool; nonblocking: bool
@@ -587,6 +626,7 @@ pub fn truncateTo(f: &File, length: int): Result[bool]
 pub fn metadata(f: &File): Result[stat::Metadata]
 pub fn chmod(f: &File, permissions: int): Result[bool]
 pub fn sync(f: &File, dataOnly: bool): Result[bool]
+pub fn intoStream(f: File): Result[stream::Stream]
 pub fn duplicateStream(f: &File): Result[stream::Stream]
 pub fn close(f: &File): Result[bool]
 pub fn rename(from: &dir::Directory, old: string,
@@ -607,6 +647,14 @@ resulting positions and lengths must be nonnegative signed 64-bit bytes. Check
 addition before seeking. ESPIPE maps to NotSeekable. Positional writes on
 append-open files are rejected rather than inheriting Linux's pwrite/O_APPEND
 surprise. Nonblocking regular-file operations may still block for storage I/O.
+`intoStream` **consumes** the typed `File`/`Connection` and returns a `Stream`
+owning the same native resource; the old shell is moved and cannot be used again.
+It adds no fd and is the supported way to hand a file/connection to the
+buffered/step APIs. `duplicateStream` is `dup` semantics: the duplicate shares
+the open file description, so it **shares the file offset and status flags**.
+Use `readAt`/`writeAt` for independent positions; do not mix buffered readers on
+duplicates. The same sharing rule applies to `Connection::duplicateStream`
+(shared socket state and half-close).
 
 Open-at names use §5.1 validation. Metadata and chmod act on the open file,
 avoiding a second path lookup. Hard link does not follow the source symlink;
@@ -640,25 +688,41 @@ failure is returned.
 
 ```obo
 module sysstat
-pub type Timestamp = ref record { seconds: int; nanos: int }
-pub type Identity = ref record { device: []byte; inode: []byte }
+import "sysclock.obx" as clock
+pub type Identity = ref record { bits: int }
 pub type Metadata = ref record {
     kind: int; permissions: int; size: int; links: int
-    uid: int; gid: int; modified: Timestamp; accessed: Timestamp
-    changed: Timestamp; created: ?Timestamp; identity: Identity
+    uid: int; gid: int; modified: clock::Timestamp; accessed: clock::Timestamp
+    changed: clock::Timestamp; created: ?clock::Timestamp; identity: Identity
 }
+pub const KIND_UNKNOWN = 0
+pub const KIND_FIFO = 1
+pub const KIND_CHR = 2
+pub const KIND_DIR = 4
+pub const KIND_BLK = 6
+pub const KIND_REG = 8
+pub const KIND_LNK = 10
+pub const KIND_SOCK = 12
 pub fn sameIdentity(a: &Identity, b: &Identity): bool
 ```
 
-Metadata is a detached owned snapshot, not a borrowed kernel struct. kind is a
-library constant; permissions are low Unix permission bits, not type bits.
-Identity components are canonical 8-byte unsigned values, with equality only;
-this avoids silently interpreting a uint64 inode as a negative obo int. uid/gid
-fit positive int; links outside the signed range return Range. size is meaningful
-for regular files; device/FIFO sizes carry no portable content-length promise.
-Timestamps normalize nanos to 0..999,999,999 and keep seconds separate, permitting
-dates outside signed-nanosecond epoch range. Birth time is nil when unavailable.
-Statx/fstatat conversion stays native; no new indexed stat array.
+Metadata is a detached owned snapshot, not a borrowed kernel struct. `kind` is a
+library constant from the list above; permissions are low Unix permission bits,
+not type bits. `Identity.bits` is an **opaque, context-local interned identity**
+for the exact `(device,inode)` pair, stored as one int bit pattern and compared
+only for equality. It is not a hash and not a raw inode: the adapter interns the
+exact pair in a fixed table, so equal files compare equal and collisions are
+impossible; table exhaustion is `ResourceLimit`, not a silent collision. Entries live for
+the systems context (bounded, cleared at shutdown); there is no per-`Metadata`
+release hook, so equality remains valid for every snapshot in that context. It
+is not stable across processes/restarts and must never be persisted, used in
+arithmetic, formatted as a number, or interpreted as a negative error. This avoids
+two `[]byte` allocations per stat while preserving exact equality. uid/gid fit
+positive int; links outside the signed range return Range. size is meaningful for
+regular files; device/FIFO sizes carry no portable content-length promise.
+`clock::Timestamp` normalizes nanos to 0..999,999,999 and keeps seconds separate,
+permitting dates outside signed-nanosecond epoch range. Birth time is nil when
+unavailable. Statx/fstatat conversion stays native; no new indexed stat array.
 
 ### 5.4 Mapping
 
@@ -666,7 +730,7 @@ Statx/fstatat conversion stays native; no new indexed stat array.
 module sysmapping
 import "sysfile.obx" as file
 import "sysplatform.obx" as platform
-pub type Mapping = ref record { resource: platform::Resource }
+pub type Mapping = ref record { res: platform::Resource }
 pub fn anonymous(length: int, writable: bool): Result[Mapping]
 pub fn fromFile(f: &file::File, offset: int, length: int,
                 writable: bool, shared: bool): Result[Mapping]
@@ -702,13 +766,17 @@ module sysclock
 pub type Instant = ref record { nanos: int }
 pub type Duration = ref record { nanos: int }
 pub type Deadline = ref record { finite: bool; nanos: int }
+pub type Timestamp = ref record { seconds: int; nanos: int }
 pub fn monotonic(): Result[Instant]
+pub fn realtime(): Result[Timestamp]
 pub fn realtimeNs(): Result[int]
 pub fn durationNs(n: int): Result[Duration]
 pub fn durationMs(n: int): Result[Duration]
 pub fn after(now: &Instant, duration: &Duration): Result[Deadline]
 pub fn forever(): Deadline
+pub fn elapsed(start: &Instant, now: &Instant): Result[Duration]
 pub fn remaining(now: &Instant, deadline: &Deadline): Result[?Duration]
+pub fn sleep(duration: &Duration): Result[bool]
 pub fn sleepUntil(deadline: &Deadline): Result[bool]
 ```
 
@@ -719,12 +787,17 @@ deadline addition and elapsed subtraction are checked before arithmetic;
 overflow is Range, not wrap/saturation. A finite deadline at/before now is
 expired; remaining returns zero. Infinity is a distinct flag, not INT64_MAX;
 `remaining` returns nil for an infinite deadline, so no duration overflow is
-invented. Reject malformed public records. realtimeNs is signed ns since Unix epoch and
-returns Range if seconds cannot be represented (~1677–2262 range); calendar
-and metadata use seconds+nanos for wider dates. No float time arithmetic.
+invented. Reject malformed public records. `realtime()` returns seconds+nanos
+and is the single timestamp type used by metadata and calendar; `realtimeNs`
+is a convenience that returns signed ns since the Unix epoch and Range if the
+seconds cannot be represented (~1677–2262), so metadata/calendar avoid that
+narrow range. No float time arithmetic.
 
-`sleepUntil` is deliberately interruptible and returns Interrupted; calling it
-again uses the same absolute deadline. Reactor waits and syswaitio helpers may
+`elapsed` subtracts two monotonic instants with checked ordering (a later start
+is `InvalidArgument`). `sleep(duration)` is `sleepUntil(now + duration)` with the
+same interruptible, no-hidden-retry contract; it is a convenience, not a second
+timer implementation. `sleepUntil` is deliberately interruptible and returns
+Interrupted; calling it again uses the same absolute deadline. Reactor waits and syswaitio helpers may
 handle EINTR internally only by checking stop/cancellation and recomputing
 remaining time against the original deadline. Rounding for a millisecond backend
 is upward with checked clamping per wait, never making an early timeout. Realtime
@@ -733,16 +806,18 @@ by CLOCK_MONOTONIC; a future boottime clock is a separately named capability.
 
 ```obo
 module syscalendar
-pub type Timestamp = ref record { seconds: int; nanos: int }
-pub fn parseRfc3339(text: string): Result[Timestamp]
-pub fn formatRfc3339(t: &Timestamp): Result[string]
+import "sysclock.obx" as clock
+pub fn parseRfc3339(text: string): Result[clock::Timestamp]
+pub fn formatRfc3339(t: &clock::Timestamp): Result[string]
 ```
 
-`parseRfc3339` accepts four-digit years 0001..9999,
-valid Gregorian dates, `T`, seconds, optional 1..9 fractional digits, and `Z` or
-signed HH:MM offset; normalize to UTC. Reject leap seconds, excess fractional
-digits, trailing text and `-00:00` (unknown offset) rather than silently assigning
-an instant. Output UTC `Z`, omitting a zero fraction and trimming trailing zeros.
+`parseRfc3339` accepts four-digit years 0001..9999, valid Gregorian dates,
+uppercase `T`/`Z` and lowercase `t`/`z` (RFC 3339 §5.6), seconds, optional 1..9
+fractional digits, and `Z` or signed HH:MM offset; normalize to UTC. `-00:00`
+means UTC with an unknown local offset (RFC 3339 §4.3), so it is accepted and
+normalized, not rejected. Reject leap seconds, excess fractional digits,
+out-of-range offsets and trailing text. Output UTC `Z`, omitting a zero fraction
+and trimming trailing zeros.
 This is a specified ISO-8601/RFC3339 profile, not all ISO-8601 forms, locale or TZ
 database support. Existing time::civil/formatIso keep their contracts.
 
@@ -787,13 +862,19 @@ as an application-selected production mode.
 ```obo
 module sysstream
 import "sysplatform.obx" as platform
-pub type Stream = ref record { resource: platform::Resource }
+pub type Stream = ref record { res: platform::Resource }
+pub type Standard = closed { Input {} Output {} Error {} }
 pub fn source(s: &Stream): Result[^platform::Resource]
+pub fn standard(which: &Standard): Result[Stream]
 pub fn standardInput(): Result[Stream]
 pub fn standardOutput(): Result[Stream]
 pub fn standardError(): Result[Stream]
 pub fn readSome(s: &Stream, max: int): Result[?[]byte]
+pub fn readInto(s: &Stream, mut dst: &[]byte, offset: int,
+                max: int): Result[int]
 pub fn writeSome(s: &Stream, bytes: &[]byte, offset: int, count: int): Result[int]
+pub fn writeFrom(s: &Stream, src: &[]byte, offset: int,
+                 count: int): Result[int]
 pub fn writeVector(s: &Stream, parts: &[][]byte,
                    first: int, offset: int): Result[int]
 pub fn readVector(s: &Stream, sizes: &[]int): Result[?[][]byte]
@@ -803,13 +884,16 @@ pub fn close(s: &Stream): Result[bool]
 ```
 
 Stream is a concrete tagged native endpoint abstraction, not a current obo
-interface with unsound native effect claims. File/pipe/socket APIs produce it by
-explicit duplicate or transfer. Native side keeps iovecs and C buffers alive
+interface with unsound native effect claims. `Stream.source(s)` is exactly
+`platform::source(&s.res)` (a convenience, not a second identity model);
+typed endpoints reach it by consuming `intoStream` or by an explicit duplicate.
+File/pipe/socket APIs produce a Stream by that explicit transfer or duplicate. Native side keeps iovecs and C buffers alive
 through the syscall; obo arrays are borrowed only for the call. Vector total bytes
 and count (default <=64, further bounded by backend IOV_MAX) are checked; the
 return count advances a cursor across vectors, not a count per vector. ReadVector
 returns owned arrays, final one possibly short; nil is EOF before any data.
-Socket send uses MSG_NOSIGNAL. Pipe writes need the explicit SIGPIPE policy in §8.
+Socket send uses MSG_NOSIGNAL. Pipe writes use the default-ignore SIGPIPE policy
+in §8.2 (or Unsupported if the caller keeps the legacy disposition).
 Half-close on unsupported endpoint kinds returns Unsupported.
 
 ```obo
@@ -872,7 +956,7 @@ import "sysstream.obx" as stream
 import "sysreactor.obx" as reactor
 import "sysclock.obx" as clock
 import "sysplatform.obx" as platform
-pub type Cancellation = ref record { resource: platform::Resource }
+pub type Cancellation = ref record { res: platform::Resource }
 pub fn cancellation(): Result[Cancellation]
 pub fn request(c: &Cancellation): Result[bool]
 pub fn closeCancellation(c: &Cancellation): Result[bool]
@@ -882,7 +966,18 @@ pub fn readExactUntil(s: &stream::Stream, r: &reactor::Reactor, count: int,
 pub fn writeAllUntil(s: &stream::Stream, r: &reactor::Reactor, bytes: &[]byte,
                       mut cursor: &buffer::Cursor, until: &clock::Deadline,
                       cancel: &Cancellation): Result[bool]
+pub fn flushUntil(mut w: &buffer::Writer, s: &stream::Stream,
+                  r: &reactor::Reactor, until: &clock::Deadline,
+                  cancel: &Cancellation): Result[bool]
 ```
+
+`readExactUntil.count` is the number of **additional** bytes to append after
+`out`'s existing `[start,end)` prefix; success means exactly that many new bytes,
+`EndOfInput` means EOF before they arrive, and the prefix is never discarded.
+`writeAllUntil` succeeds when `cursor.done == len(bytes)`; a short write advances
+the cursor and never replays bytes. `flushUntil` succeeds when the writer's
+pending bytes are drained, retaining any remainder on error/timeout. All three
+use the same absolute deadline and never restart it.
 
 Cancellation is a native flag plus wake registration, not a shared obo bool.
 request is idempotent and cancellation is sticky. V1 can request it before a
@@ -917,7 +1012,7 @@ fn inspect(path: string): Result[int] {
 fn main() {
     let options = new platform::Options{
         maxResources: 4096, maxShells: 8192, maxNativeBytes: 67108864,
-        ignorePipeSignal: false
+        ignorePipeSignal: true
     }
     let started = platform::initialize(options)
     match started {
@@ -959,9 +1054,11 @@ pub fn parseNumeric(text: string, port: int): Result[Address]
 pub fn format(a: &Address): Result[string]
 ```
 
-IPv4/IPv6 octet lengths are exactly 4/16; port 0..65535, scope an unsigned
-32-bit interface index represented as nonnegative int. Host/network byte order
-is private. Numeric parsing does no DNS, accepts IPv6 bracket presentation only
+Every consumer (`listen`, `connect`, `bindDatagram`, `send`, `format`) revalidates
+a caller-constructed `Address`: IPv4/IPv6 octet lengths are exactly 4/16; port
+0..65535; scope an unsigned 32-bit interface index represented as nonnegative
+int; Unix path has no NUL and fits `sockaddr_un`; abstract name is bounded.
+Host/network byte order is private. Numeric parsing does no DNS, accepts IPv6 bracket presentation only
 where explicitly documented, and never guesses octal IPv4. UnixPath rejects
 NUL and checks sockaddr_un capacity including terminator; UnixAbstract preserves
 arbitrary bytes and is a Linux capability, not a portable pathname. Bind never
@@ -978,11 +1075,15 @@ are available separately and do not need NSS. Blocking resolver calls are
 startup/client conveniences; **no finite deadline is promised for blocking NSS**.
 
 For reactive resolution, add `beginResolve`, `watchResolve`, `takeResolved`,
-`cancelResolve`, `closeResolve` over a bounded ResolverJob identity. P3 uses an
-explicitly configured helper process (not automatic process spawning by import).
-P4 may use C-only workers that never call obo or touch its heap. Deadline/cancel
-abandons the result, frees eventual output and bounds outstanding work; it does
-not pretend to interrupt an arbitrary libc resolver safely. Callbacks from an
+`cancelResolve`, `closeResolve` over a bounded ResolverJob identity. The
+implementation is an **open question**: an explicitly configured helper process
+(P3) or a C-only worker in the separate thread note (P4). Do not silently rely on
+either. The 2026-10-28 database-adapter decision rejected a C helper process for
+database work; DNS has different latency/cancellation constraints and needs its
+own evidence. A helper process adds lifecycle/framing; a C worker needs hosted
+TLS/pthread qualification. Deadline/cancel abandons the result, frees eventual
+output and bounds outstanding work; it does not pretend to interrupt an arbitrary
+libc resolver safely. Callbacks from an
 alternative C resolver queue records on the C side. A simple listening server
 can use numeric addresses and requires no DNS.
 
@@ -991,17 +1092,18 @@ can use numeric addresses and requires no DNS.
 ```obo
 module sysnet
 import "sysaddress.obx" as address
+import "sysplatform.obx" as platform
 import "sysstream.obx" as stream
 import "sysreactor.obx" as reactor
 
-pub type Listener = ref record { reserved: int }
-pub type Connection = ref record { reserved: int }
-pub type Datagram = ref record { reserved: int }
+pub type Listener = ref record { res: platform::Resource }
+pub type Connection = ref record { res: platform::Resource }
+pub type Datagram = ref record { res: platform::Resource }
 pub type ListenOptions = ref record {
     backlog: int; reuseAddress: bool; reusePort: bool; ipv6Only: bool
 }
 pub type Packet = ref record {
-    bytes: []byte; peer: address::Address; truncated: bool; originalSize: int
+    bytes: []byte; peer: ?address::Address; truncated: bool; originalSize: int
 }
 pub fn listen(a: &address::Address, options: &ListenOptions): Result[Listener]
 pub fn accept(l: &Listener): Result[Connection]
@@ -1010,9 +1112,12 @@ pub fn finishConnect(c: &Connection): Result[bool]
 pub fn readSome(c: &Connection, max: int): Result[?[]byte]
 pub fn writeSome(c: &Connection, bytes: &[]byte, offset: int, count: int): Result[int]
 pub fn shutdownWrite(c: &Connection): Result[bool]
+pub fn intoStream(c: Connection): Result[stream::Stream]
 pub fn duplicateStream(c: &Connection): Result[stream::Stream]
 pub fn localAddress(c: &Connection): Result[address::Address]
 pub fn peerAddress(c: &Connection): Result[address::Address]
+pub fn listenerLocalAddress(l: &Listener): Result[address::Address]
+pub fn datagramLocalAddress(d: &Datagram): Result[address::Address]
 pub fn setNoDelay(c: &Connection, enabled: bool): Result[bool]
 pub fn setKeepAlive(c: &Connection, idleSeconds: int,
                     intervalSeconds: int, probes: int): Result[bool]
@@ -1029,12 +1134,16 @@ pub fn closeDatagram(d: &Datagram): Result[bool]
 ```
 
 All sockets are nonblocking and CLOEXEC from creation; no mode toggle on an open
-connection, since dup shares file-status flags. accept returns WouldBlock on an
-empty queue. On EMFILE/ENFILE pause acceptance, report resource pressure and wait
+connection, since dup shares file-status flags. `listenerLocalAddress` and
+`datagramLocalAddress` return the bound address, so a port-0 bind can discover
+the kernel's chosen port before accepting or sending. accept returns WouldBlock
+on an empty queue. On EMFILE/ENFILE pause acceptance, report resource pressure and wait
 for capacity/backoff; any reserved-fd recovery technique is an explicit listener
-policy, not a busy accept loop. EINTR is observable. Positive backlog is validated
-but kernel capping is documented. REUSEADDR and REUSEPORT are independent explicit
-options; default reusePort=false, ipv6Only=true. No accidental dual-stack bind.
+policy, not a busy accept loop. EINTR is observable. `ListenOptions` is revalidated
+at `listen`: backlog is positive (kernel capping documented), booleans are
+independent, and the three option flags are copied, never retained. REUSEADDR and
+REUSEPORT are independent explicit options; default reusePort=false,
+ipv6Only=true. No accidental dual-stack bind.
 
 connect creates an owned Connection even if connection establishment is pending;
 the pending status is stored internally, not returned as err that loses the
@@ -1062,12 +1171,16 @@ readers on duplicates splits incoming bytes and is explicitly unsupported by
 buffered-reader helpers. Native state tracks endpoint sharing.
 
 Datagram receive preserves message boundaries, sender and truncation. An empty
-datagram succeeds with empty bytes. originalSize is exact when the backend can
-provide it, otherwise -1 with truncated=true; no silent truncation. A datagram
-send is all-or-error; an unexpected short send is IoFailure, never continuation
-as a second datagram. Provide checked receive/send buffer size options and
-broadcast enablement in P2; multicast membership, ancillary data and batch
-sendmmsg/recvmmsg are later independently justified additions.
+datagram succeeds with empty bytes. `peer` is nil for an unnamed Unix datagram
+sender; a caller must not treat nil as an address. `originalSize` is exact when
+the backend can provide it, otherwise -1 with truncated=true; no silent
+truncation. A datagram send is all-or-error; an unexpected short send is
+IoFailure, never continuation as a second datagram. v1 datagrams are unconnected:
+repeated `send(d, samePeer, ...)` is the connected-peer pattern; a
+`connectDatagram`/socket-option escape hatch is not exposed. Provide checked
+receive/send buffer size options and broadcast enablement in P2; multicast
+membership, ancillary data and batch sendmmsg/recvmmsg are later independently
+justified additions.
 
 Server-specific needs are accept fairness, descriptor pressure, bounded per-peer
 buffers, idle deadlines and shutdown. Client-specific needs are address resolution,
@@ -1080,9 +1193,9 @@ integer escape hatch.
 module sysreactor
 import "sysclock.obx" as clock
 import "sysplatform.obx" as platform
-pub type Reactor = ref record { reserved: int }
-pub type Watch = ref record { reserved: int }
-pub type Timer = ref record { reserved: int }
+pub type Reactor = ref record { res: platform::Resource }
+pub type Watch = ref record { res: platform::Resource }
+pub type Timer = ref record { res: platform::Resource }
 pub type Event = ref record {
     tag: int; readable: bool; writable: bool; hangup: bool
     failed: bool; timer: bool; ticks: int; wake: bool
@@ -1100,6 +1213,13 @@ pub fn wake(r: &Reactor): Result[bool]
 pub fn stop(r: &Reactor): Result[bool]
 pub fn close(r: &Reactor): Result[bool]
 ```
+
+`timer` requires a finite `at`; `forever()` as `at` is InvalidArgument (a timer
+that never fires is useless and would complicate cancellation). A zero `period`
+is one-shot; a positive period is periodic. `wait` may take `forever()`.
+Valid `Event` combinations: `timer`/`wake`/`failed` are mutually exclusive;
+`readable`/`writable`/`hangup` may combine; `timer` has `ticks >= 1`; `wake` and
+`failed` have no I/O bits; a `failed` event still requires explicit close.
 
 This is **readiness**, not completion: readable can produce WouldBlock; hangup
 does not mean buffered input has been drained. Always attempt transfers and
@@ -1160,23 +1280,29 @@ a drain loop. No registered obo callbacks: caller iterates Event records.
 module sysprocess
 import "sysenv.obx" as env
 import "sysdir.obx" as dir
+import "sysplatform.obx" as platform
 import "sysstream.obx" as stream
 import "sysreactor.obx" as reactor
-pub type Child = ref record { reserved: int }
+pub type Child = ref record { res: platform::Resource }
 pub type Redirect = closed {
     Inherit {}
     Null {}
     Pipe {}
     FromStream { source: ?stream::Stream }
+    MergeError {}                 // stderr -> stdout (2>&1); valid for error only
+}
+pub type EnvPolicy = closed {
+    Inherit {}                    // snapshot inherited process environment at spawn
+    Explicit { value: env::Environment }
 }
 pub type Command = ref record {
-    executable: string; arguments: []string; environment: env::Environment
+    executable: string; arguments: []string; environment: EnvPolicy
     directory: ?dir::Directory; input: Redirect; output: Redirect; error: Redirect
     newGroup: bool
 }
 pub type ExitStatus = closed {
     Exited { code: int }
-    Signalled { signal: int; coreDumped: bool }
+    Signalled { signal: int; coreDumped: bool } // library id, not a Linux number
 }
 pub fn spawn(command: &Command): Result[Child]
 pub fn closeCommand(mut command: &Command): Result[bool]
@@ -1190,10 +1316,18 @@ pub fn watchChild(r: &reactor::Reactor, child: &Child,
                   tag: int): Result[reactor::Watch]
 pub fn detach(child: &Child): Result[bool]
 pub fn close(child: &Child): Result[bool]
+pub fn reapChildren(): Result[int]
+pub fn cwd(): Result[string]
+pub fn chdir(directory: &dir::Directory): Result[bool]
 ```
 
-Command owns its arrays/environment/redirection resources; spawn borrows it and
-copies validated argv/env/native launch state before launching. No shell parsing:
+Command owns its arrays/environment policy/redirection resources; `spawn`
+revalidates the whole public record (nonempty executable, argv shape, no NULs,
+valid `EnvPolicy`, each `Redirect` kind, open directory) and copies validated
+argv/env/native launch state before launching. `environment: Inherit` snapshots
+the process environment at spawn; `Explicit` uses the caller's snapshot.
+`MergeError` is valid only for `error` and duplicates the stdout descriptor as
+stderr (`2>&1`); `input`/`output` reject it. No shell parsing:
 executable is an explicit pathname, arguments includes argv[0], NUL is rejected,
 and ARG_MAX overflow is a Result. PATH search is a separately named optional
 policy; never interpret metacharacters. FromStream sources are duplicated for
@@ -1233,8 +1367,9 @@ exec-replace can be a separate checked API: failure returns err; success never
 returns and cannot run defers. Prefer spawn for normal applications.
 
 wait decodes WIFEXITED/WEXITSTATUS/WIFSIGNALED/WTERMSIG/WCOREDUMP, not `status >> 8`
-alone. Stopped/continued notifications, if later exposed, are distinct nonterminal
-events. pollExit returns nil while running, stores the terminal status and reaps
+alone. The terminal `Signalled.signal` is a library signal id mapped by the C
+adapter, never a raw Linux number. Stopped/continued notifications, if later
+exposed, are distinct nonterminal events. pollExit returns nil while running, stores the terminal status and reaps
 exactly once. Repeated waits return copied cached status. EINTR is Interrupted
 for blocking wait; use reactor + pollExit for bounded waiting. pidfd is preferred
 on Linux; fallback tracks only owned children and cannot safely signal an arbitrary
@@ -1262,15 +1397,17 @@ turn; tests and documentation must state this scheduling requirement.
 
 ```obo
 module syssignals
+import "sysplatform.obx" as platform
 import "sysreactor.obx" as reactor
 pub type SignalSet = ref record { bits: int }
-pub type SignalSource = ref record { reserved: int }
+pub type SignalSource = ref record { res: platform::Resource }
 pub type Event = ref record { signal: int; count: int }
-pub const INTERRUPT = 2
-pub const TERMINATE = 15
-pub const HANGUP = 1
-pub const CHILD = 17
-pub const WINDOW_CHANGED = 28
+pub const INTERRUPT = 1
+pub const TERMINATE = 2
+pub const HANGUP = 3
+pub const CHILD = 4
+pub const WINDOW_CHANGED = 5
+pub const OTHER = 6                 // status-only; not subscribable
 pub fn empty(): SignalSet
 pub fn add(mut s: &SignalSet, signal: int): Result[bool]
 pub fn remove(mut s: &SignalSet, signal: int): Result[bool]
@@ -1282,8 +1419,12 @@ pub fn close(source: &SignalSource): Result[bool]
 ```
 
 `subscribe`, `watch`, `next` and `close` expose **queued/coalesced events**, never
-an obo signal-handler function. SignalSet uses named library constants, not a raw
-sigaction layout; `add` rejects SIGKILL/SIGSTOP and synchronous fault signals.
+an obo signal-handler function. SignalSet uses library-assigned ids mapped by the
+C adapter, not Linux signal numbers; `add` and `subscribe` both revalidate the
+public `bits` (supported ids, range, at least one signal) and reject
+SIGKILL/SIGSTOP and synchronous fault signals, so a directly constructed
+`SignalSet` cannot block them. `OTHER` is a status-only id for an exit signal
+outside the subscribable set; `add` rejects it.
 Linux prefers signalfd: block the selected signals before starting workers and
 keep them blocked in every thread; one designated consumer drains the queue.
 Restore a saved mask on close only under context ownership; overlapping
@@ -1298,16 +1439,20 @@ Ordinary signals already coalesce, so this is a notification service, not an
 exact event counter. SIGKILL/SIGSTOP cannot be intercepted. Reap all exited
 children when handling Child, rather than one per signal.
 
-SIGPIPE policy must be installed explicitly at systems-context startup for pipe
-I/O (normally ignore it process-wide and return BrokenPipe). Socket sends use
-MSG_NOSIGNAL without changing global state. Do not change process dispositions on
-module import. Spawn restores intended child defaults. When hosted libraries
-also own signals, incompatible subscriptions return Busy; no handler replacement
-behind their backs.
-Until a separately reviewed per-call SIGPIPE suppression implementation exists,
-new pipe-write APIs return Unsupported before issuing a write when the context
-has not enabled that policy. Default signal termination must not masquerade as
-a Result-returning BrokenPipe contract.
+**SIGPIPE default:** systems-context initialization installs `SIGPIPE` ignored
+by default (`Options.ignorePipeSignal = true`). New pipe-write APIs then return
+`BrokenPipe` after a failed write. This deliberately changes legacy
+`print`/`println`, which do not check write errors: instead of being killed by
+SIGPIPE on a closed pipe, they now silently drop output. That compatibility
+consequence must be documented in the release note and tested; it is the price
+of a Result-returning pipe API. Socket sends use `MSG_NOSIGNAL` without changing
+global state. Do not change process dispositions on module import. A caller that
+needs the old disposition sets `ignorePipeSignal = false`; in that mode new
+pipe-write APIs return `Unsupported` **before** writing, rather than allowing
+default termination. Spawn restores intended child defaults. When hosted
+libraries also own signals, incompatible subscriptions return `Busy`; no handler
+replacement behind their backs. There is no separate per-call suppression
+primitive in v1.
 
 ### 8.3 Environment and cwd
 
@@ -1322,13 +1467,17 @@ pub fn unset(mut e: &Environment, name: string): Result[bool]
 pub fn entries(e: &Environment): Result[[]Pair]
 ```
 
-Validate names (nonempty, no `=`/NUL), values (no NUL) and total size. Missing is
-nil, present-empty is an empty byte array. A snapshot owns all content; local
-mutation has no process effect. Entries preserve startup order and duplicate-key
-policy is explicit at implementation; lookup is first match, like `getenv`. This
-hides environment serialization and duplicate-key handling, not arbitrary config.
-There is no native resource and no close obligation; dropping the snapshot frees
-its strings normally.
+Validate names (nonempty, no `=`/NUL), values (no NUL) and total size at
+construction **and again in `get`/`set`/`unset`/`entries`**: a caller can construct
+`Environment` directly, so malformed entries are `InvalidArgument`, never a
+native call. Missing is nil, present-empty is an empty byte array. A snapshot
+owns all content; local mutation has no process effect. `entries` returns a
+**copy** (new `Pair` records and copied strings), never a borrow of the internal
+array, so the caller cannot mutate the snapshot through the result. Entries
+preserve startup order and duplicate-key policy is explicit at implementation;
+lookup is first match, like `getenv`. This hides environment serialization and
+duplicate-key handling, not arbitrary config. There is no native resource and no
+close obligation; dropping the snapshot frees its strings normally.
 
 Optional `setProcess`/`unsetProcess` are **startup-only**, before any native worker,
 resolver or thread; then freeze process environment. libc setenv alone cannot
@@ -1349,12 +1498,13 @@ least open-files and address-space queries for diagnostics.
 
 ```obo
 module systerminal
+import "sysplatform.obx" as platform
 import "sysstream.obx" as stream
 import "sysreactor.obx" as reactor
 import "syssignals.obx" as signals
-pub type Terminal = ref record { reserved: int }
+pub type Terminal = ref record { res: platform::Resource }
 pub type Size = ref record { rows: int; columns: int }
-pub fn open(fd: int): Result[Terminal]
+pub fn openStandard(which: &stream::Standard): Result[Terminal]
 pub fn size(t: &Terminal): Result[Size]
 pub fn enterRaw(t: &Terminal): Result[bool]
 pub fn restore(t: &Terminal): Result[bool]
@@ -1364,21 +1514,25 @@ pub fn duplicate(t: &Terminal): Result[stream::Stream]
 pub fn close(t: &Terminal): Result[bool]
 ```
 
-`systerminal` owns an independent standard-stream duplicate (`open` duplicates
-the given descriptor with CLOEXEC; it does not take ownership of 0/1/2) and a
-saved termios snapshot. `enterRaw` is an explicit restoration obligation with
+`systerminal` owns an independent standard-stream duplicate (`openStandard`
+selects Input/Output/Error through `stream::standard` with CLOEXEC; it does not
+take ownership of 0/1/2 and accepts no arbitrary fd) and a saved termios
+snapshot. `enterRaw` is an explicit restoration obligation with
 `defer restore`; `close` restores once and is idempotent. Window size events use
 syssignals; `watchResize` is a typed integration, not a second signal handler.
 Arbitrary ioctl is not exposed. A terminal UI framework is separate.
 
 ```obo
 module syslog
+import "sysplatform.obx" as platform
+import "sysstream.obx" as stream
 import "sysclock.obx" as clock
-pub type Logger = ref record { reserved: int }
+pub type Logger = ref record { res: platform::Resource }
 pub type Level = closed { Debug {} Info {} Warn {} Error {} }
 pub type Policy = closed { ReturnWouldBlock {} DropWithCounter {} }
 pub type EmitResult = ref record { accepted: bool; dropped: int }
-pub fn open(fd: int, capacity: int, policy: &Policy): Result[Logger]
+pub fn openStandard(which: &stream::Standard, capacity: int,
+                    policy: &Policy): Result[Logger]
 pub fn emit(l: &Logger, level: &Level, message: &[]byte): Result[EmitResult]
 pub fn drain(l: &Logger, until: &clock::Deadline): Result[bool]
 pub fn flush(l: &Logger): Result[bool]
@@ -1386,9 +1540,10 @@ pub fn close(l: &Logger): Result[bool]
 ```
 
 `syslog` exposes a Logger with an owned bounded output buffer, level, per-record
-limit, and policy (`ReturnWouldBlock` or explicit `DropWithCounter`). `open`
-duplicates the descriptor with CLOEXEC and does not take ownership of the
-caller's fd. `emit` copies a record atomically into the queue or rejects it;
+limit, and policy (`ReturnWouldBlock` or explicit `DropWithCounter`).
+`openStandard` selects Input/Output/Error through `stream::standard`, duplicates
+it with CLOEXEC, and accepts no arbitrary fd. `emit` copies a record atomically
+into the queue or rejects it;
 `drain`/`flush` report sink errors. Escape newline/control bytes in fields; timestamp by realtime and
 record latency by monotonic time. No implicit global logger, background thread,
 unbounded queue or hidden application secrets. An initial line format is
@@ -1397,391 +1552,33 @@ log by calling a potentially blocking sink on every error. Multi-process logging
 uses a supervisor collector/pipe with defined framing and size caps; writes to a
 shared regular file are not magically record-atomic.
 
-## 9. Concurrency decision and the actual thread boundary
+## 9. Process and reactor concurrency verdict
 
-### 9.1 Options
-
-| Choice | CPU / isolation / memory | Handler ergonomics and HTTP relevance | Testing and migration |
-|---|---|---|---|
-| (a) Prefork/process workers first | multiple cores, process fault isolation, independent non-atomic heaps; duplicated/COW pages and per-process native resources | blocking handler is simple but consumes a worker; good deployment boundary, shared cache needs IPC | kill/restart and pipe tests are straightforward; general obo fork is unavailable; spawn/exec avoids inherited lock problems |
-| (b) One reactor now | many idle connections on one core, one heap, no allocator change | explicit state machines; blocking DNS/file/CPU work stalls all peers; enough to prove transport/timeouts | deterministic fake time/readiness; endpoint API remains useful inside future workers |
-| (c) Full threads + arbitrary shared state now | multicore and shared cache, weakest isolation; allocator/RC/handle/compiler memory model all change | synchronous thread-per-connection is familiar but stack/memory limits and cancellation matter | largest race/test surface and migration risk; wrapping pthread_create/mutex is unsound |
-| (d) Hybrid: reactor per process, confined threads later | cores via processes first; later bounded compute/native worker pools; ownership stays local | explicit reactor for I/O, messages for CPU work; no protocol dependency | staged gates; stream/deadline/byte-message contracts survive; application chooses a worker deployment |
-
-**Verdict: choose (d), implemented first as (b) plus externally supervised
-processes.** Add spawn/exec supervision in P3. Use prefork only after a focused
-runtime/hosted fork audit, never claim it already works. This uses multiple cores
-without requiring shared-memory obo values. It preserves failure isolation and
-makes deadline/fault tests deterministic. CPU-heavy handlers must go to another
-process until the thread stage; starting an implicit thread to hide blocking is
-rejected. Full threads (c) are not a first release: they require every item in
-§9.4, and arbitrary shared obo state remains excluded even then.
-
-### 9.2 What is impossible today, with the exact reason
-
-Concurrent execution of two arbitrary obo functions is unsafe. The blocking
-facts, not general caution, are:
-
-- `rt_init` maps one arena and one starts bitmap, and `heap_start`, `heap_top`,
-  `heap_end`, `free_small[]`, `free_large`, `mstack`, `msp`/`mcap`,
-  `tmp_root[]`, `rt_entry_sp`, `env_base`, `stack_base`, `glob_start/glob_end`,
-  `obuf`/`olen` and the counters are file-static or global (runtime.c:83–159,
-  212–300). Two threads allocating or freeing race on the free lists, the
-  traversal worklist and the counters; a second `rt_init` also remaps the
-  process-wide globals.
-- `rt_str_inc` and `rt_str_dec` are ordinary load/add/store on the high 32 bits
-  of a string's size word (runtime.c:417–428). They are correct only for one
-  mutator.
-- `rt_handle` encodes a heap-relative granule offset and a generation
-  (runtime.c:474–493). A `^T` from one arena cannot be validated against
-  another, and `handle_target` is not atomic with the subsequent access.
-- The compiler emits mutable/owned globals at fixed addresses in the
-  `0x0C000000` region. Every thread would share one instance, including its
-  owned strings/records and initialization state.
-- `rt_entry_sp` is written by every runtime stub (entry.S:83–90); output is a
-  single static buffer; the legacy `fdstate[1024]` table is static.
-- `OBO_EXIT` and the trap paths use raw `exit(60)`, which in a multithreaded
-  process terminates only the caller and can leave the process alive with
-  corrupt accounting. Hosted `exit()` is process-wide but runs `atexit`
-  handlers from a worker.
-- The C seam accepts only scalar i64 arguments and returns i32/i64; it has no
-  function-pointer parameter, no callback, no C-created obo entry and no TLS
-  guarantee. A Stored/captured lambda is call-scoped and cannot be an
-  asynchronous entry argument (LANGUAGE.md:1034–1225).
-- `fork()` in a process with obo state duplicates one owner graph and one set of
-  locks with no owner in the child; it is not an obo thread API. A prefork
-  launcher must fork before native libraries/threads exist and then enter a
-  compiler-known process entry, as §8.1 requires.
-
-A Mutex record does not repair any of these. C-only helper threads that never
-touch obo memory can eventually service native work, but the native registry,
-host TLS, completion queue and wakeup still need a thread-safety review. This is
-not full obo threading. P1–P3 use helper processes instead and make no new
-runtime threading claim.
-
-#### What may be shared if threads are added
-
-| Value / facility | Across confined workers | Reason |
-|---|---|---|
-| `int`, `byte`, `bool`, `float` by value; serialized bytes | copy | No ownership or hidden header. |
-| Immutable rodata string literals and scalar `const`s | read-only share | `rt_str_inc/dec` ignores non-heap addresses; no mutable header. |
-| Heap `string`, `[]T`, record/closed value, `Result`, `?T`, interface, function value | **no** | Non-atomic RC, owned graph, call-scoped captures or vtable/box ownership. |
-| `^T` handle | **no** | Heap-relative token; wrong arena and check/use race. |
-| `File`, `Directory`, `Stream`, `Connection`, `Mapping`, `Worker` shell | **no** | Registry identity and native lifetime belong to one context; use an explicit transfer ticket only. |
-| Mutable/owned global, module initializer state | **no** by default | Fixed address and one initialization; per-context globals are compiler work. |
-| Native `AtomicInt`/`AtomicBool`, channel endpoints, `SharedBytes` guard | yes, as concrete native types | C-owned state with explicit synchronization; not an obo object. |
-
-The safe rule is: **copy scalars and bytes; never copy an obo ownership token,
-a `^T`, or a borrowed reference.** A native resource handoff needs its own
-old-owner-invalidation protocol; sending a shell or token is not a handoff.
-
-### 9.3 Recommended first obo thread model: confined workers and copied messages
-
-No generic `Send`/`Sync` markers in the first release. Each obo worker has a
-runtime context; all managed values and mutable globals are confined to that
-context. Cross-worker messages contain copied bytes and explicit scalar metadata.
-The compiler does not pretend arbitrary records are shareable. Native shared
-resources are concrete reviewed types, accessed only by validated operations.
-
-Threading is a **hosted-build feature**. The current freestanding static image
-has one process context and no host TLS; adding worker threads there would also
-require loader/TLS setup that this design does not propose. The hosted cinterop
-build already provides libc startup and pthread-capable linking; use that for
-threads. Freestanding programs stay single-threaded and use processes.
-
-```obo
-module systhreads
-import "sysclock.obx" as clock
-import "sysplatform.obx" as platform
-pub type Worker = ref record { reserved: int }
-pub type WorkerEntry = ref record { reserved: int }
-pub type StartOptions = ref record {
-    stackBytes: int; heapBytes: int; name: string
-    tickets: []?platform::Transfer
-}
-pub type JoinStatus = ref record { code: int; cancelled: bool }
-pub fn entry(name: string): Result[WorkerEntry]
-pub fn start(entry: &WorkerEntry, input: []byte,
-             mut options: &StartOptions): Result[Worker]
-pub fn takeTicket(index: int): Result[platform::Transfer]
-pub fn cancel(w: &Worker): Result[bool]
-pub fn join(w: &Worker, until: &clock::Deadline): Result[JoinStatus]
-pub fn detach(w: &Worker): Result[bool]
-pub fn close(w: &Worker): Result[bool]
-```
-
-`entry(name)` resolves a **build-registered static entry**, not a code address
-or lambda. The link manifest lists each entry name, its fixed obo signature
-`fn worker(input: []byte): int`, and a generated table slot. An unknown name is
-NotFound; there is no way to construct an entry from an int. The returned
-`WorkerEntry` is a build-table descriptor, not a native owner: dropping it is
-harmless and it has no close obligation. The entry function
-runs with its own arena, stack, globals and native context. It may call ordinary
-library code only if that code is in the worker-safe closure (no forbidden
-globals, no thread-foreign values); the compiler/build checker must prove that
-closure rather than trusting a comment.
-
-`start` **consumes** `input` and every non-nil `options.tickets` entry on every
-path (it takes them, leaving nil). It copies the bytes into a bounded native
-staging buffer before launching; the worker then allocates its own `[]byte` in
-its own arena and frees the staging buffer. This is copying, not moving a pointer
-between arenas. Failure frees the input, releases unconsumed tickets and all
-partially created native state. A later borrow-and-copy variant can preserve the
-caller's array on failure without changing the worker model. A ticket is
-single-use and typed; a caller cannot forge a native handle from an int. The
-worker obtains a launch ticket with `takeTicket(index)` (valid only inside a
-worker, index checked against the launch packet); the ticket is then consumed by
-the typed importer, for example `syssync::importSender`. `takeTicket` is the only
-way a ticket enters the worker; it is never encoded in `input` bytes or returned
-as a raw int.
-
-Worker lifecycle: Starting -> Running -> Finished -> Joined, or Running/Finished
--> Detached -> Reaped. Failed startup returns no worker and releases stack, arena
-and mailbox. Join timeout leaves the Worker joinable; successful join/detach is
-exactly once; repeated join returns a cached JoinStatus (recommended, like Child)
-or Closed as fixed at implementation. `close` on a Finished/Joined worker
-releases the shell; on a Running worker it transfers to the supervisor (like
-`Child.close`) and does not kill or block. Detach transfers lifetime/accounting
-to the runtime supervisor, never discards a still-running context. Process shutdown
-cancels and joins/detaches all workers before the main arena is destroyed. No
-`pthread_cancel`/asynchronous cancellation: `cancel` sets a C atomic flag, wakes
-waits, and the worker checks it at library blocking points or explicitly during
-computation. A blocked native call (DNS, a blocking file read, a third-party
-library) may not observe cancellation; `join` reports TimedOut, not a lie.
-
-#### Worker entry ABI (no general C-to-obo callback)
-
-The only C-to-obo transition is a runtime-owned bootstrap calling one
-build-validated entry label. `pthread_create` receives the address of a **runtime
-C function**, `rt_worker_bootstrap`, never an obo function pointer, a lambda, a
-captured environment or an application-provided C callback. The bootstrap is
-part of the trusted runtime and is reviewed with the ABI.
-
-The entry calling convention is the existing obo stack convention, not a new
-FFI. The worker has a separate 16-byte-aligned obo stack. With one owned `[]byte`
-argument, the C bootstrap has already published the worker's `RtCtx` in TLS and
-then calls an assembly trampoline equivalent to:
-
-```asm
-; rdi = WorkerStart* (runtime-owned); returns the entry's int in rax
-rt_worker_trampoline:
-    push %rbp
-    mov  %rsp, %rbp                 ; save the C/pthread stack in the frame word
-    mov  WorkerStart.obo_stack_top(%rdi), %rsp
-    sub  $8, %rsp                   ; alignment pad above the argument
-    push WorkerStart.input_array(%rdi) ; one obo argument, in the worker arena
-    call *WorkerStart.code(%rdi)    ; entry sees rsp % 16 == 8
-    mov  %rbp, %rsp                 ; back to the C trampoline frame
-    pop  %rbp
-    ret                             ; C bootstrap calls rt_worker_finish(rax)
-```
-
-`WorkerStart.code` is the table slot for a statically named `fn worker(input:
-[]byte): int`. The entry prologue expects the argument at `[rbp+16]`, exactly as
-`fnBody` lays out one parameter. The trampoline does **not** keep the C stack
-pointer or the context in `r12`/`r13`: obo uses those registers as local homes
-and does not promise a callee-saved contract for them. It relies only on `%rbp`,
-which the obo prologue/epilogue preserves as its frame pointer. The runtime
-allocates the input array header and bytes in the worker arena before the call;
-the callee owns and frees the array on return. The entry has no receiver, no
-borrowed arguments, no captured values and no `Result` return, so a bad entry
-cannot smuggle a pointer or a second ownership graph across the boundary. A
-`Result` would have to be resolved into an int status and copied bytes before
-return.
-
-`rt_worker_finish` does not free the worker arena or the obo stack while the
-bootstrap is still using them. It records status, marks the context Finished,
-signals the joiner and returns; `pthread` releases the C stack, and the joiner (or
-detached supervisor) releases the obo stack and arena only after the thread has
-terminated. A normal worker return runs the entry function's own defers and frees
-its locals before `rt_worker_finish`. A trap/OOM is process-fatal (below), so
-there is no half-unwound context to join.
-
-This is deliberately narrower than "call any obo function on a new thread". It
-is enough for a worker pool or a compute job; it is not a general callback
-facility, a coroutine runtime or thread-per-connection with arbitrary shared
-state.
-
-### 9.4 Required runtime/compiler work, in implementation order
-
-| Work | Exact obligation and risk |
+| Choice | Verdict |
 |---|---|
-| Entry ABI and validation | A runtime-owned C/assembly bootstrap calls only a build-registered entry label (9.3). `pthread_create` receives `rt_worker_bootstrap`, not an obo pointer. The build table records name, signature and code slot; unknown/duplicate names fail the link. No general C-to-obo callback, no lambda/capture, no app C callback. Raw `clone` is rejected for hosted builds: it does not set up glibc TLS, loader state or pthread bookkeeping. |
-| Entry execution context | Split `rt_init` into process initialization, worker initialization and worker teardown. A worker must not rerun process initializers, `atexit`, argv parsing or module side effects. It gets an immutable argv/env snapshot, its own context and its own arena; it must not call process `rt_finish`. Register active workers in a native list for diagnostics/shutdown. |
-| Allocation / arena | Confinement is the recommendation: each `RtCtx` owns `heap_start/top/end`, starts bitmap, free lists, `mstack/msp/mcap`, temporary roots and counters. Worker arenas are separate `mmap` reservations of `options.heapBytes` (default 64 MiB, checked minimum 64 KiB, aggregate cap), not 4 GiB each. The starts bitmap and worklist scale with the worker arena. The joiner destroys the arena only after the thread has terminated and no native operation can refer to it. A shared allocator would require locks/atomics on every allocate/free path, reentrancy review and scalable worklists; one malloc lock is insufficient. |
-| Refcounts | Confinement keeps the existing non-atomic string RC correct only if no heap string/array/record is shared, including through globals or library caches. Copy bytes on transfer; never transfer an RC pointer. If shared immutable strings are ever required, use atomic inc/dec with release/acquire destruction and an overflow policy, plus arena lifetime protection; atomic RC still does not make mutable records safe. |
-| Globals and generated addressing | Current mutable/owned globals live at fixed `0x0C000000` addresses and are shared. Two staged options: (T1) reject a worker entry whose transitive call closure reads or writes mutable/owned globals; immutable scalar/rodata constants may be shared. (T2) generate context-relative global access (recommended implementation: a fixed TLS offset holding the context's globals base, emitted at each global access) and initialize/destroy per-context globals in dependency order. T1 is the smaller sound first step; T2 is an ABI/codegen change, not a library flag. Do not rerun module initializers with external side effects in every worker. |
-| Handles | The current `^T` is a 32-bit heap-granule offset plus a 32-bit generation (runtime.c:474–493); it has no context tag and assumes one heap. No `^T` crosses a worker boundary. Each context decodes against its own arena. If defense-in-depth against a forged cross-context handle is required, adding an arena tag needs a reviewed handle-ABI change; do not silently steal generation bits. Check/use must not race a free even within one context. |
-| Compiler escape/effect boundary | Validate the static entry signature; reject borrowed values, `^T`, interfaces, function values, optionals of owned values and any thread-foreign type at the entry and channel boundaries. Introduce backend-owned worker-entry descriptors without changing the scalar C interop contract. Native effects remain conservative. `.sym`/ABI consequences and the 2,500,000-byte compiler budget need independent review. |
-| TLS and errno | Hosted libc requires real per-thread TLS. Use pthread-created threads so libc initializes it. Store `RtCtx *` in a `__thread` variable (or a reviewed fixed TLS slot) and load it at every runtime entry. C adapters capture `errno` immediately after each libc call into a scalar before any other call; raw syscalls already return negative errno and need no libc errno. Never expose TLS addresses. `getaddrinfo`, `strerror`, `locale` and third-party libraries must be audited for thread safety; an unsafe library is confined to one worker or protected by a C lock, not assumed safe. |
-| Signals | Signals and dispositions are process-wide. Block service signals before creating workers; every worker inherits the mask; one designated signalfd/pidfd consumer drains them. No obo code runs in an asynchronous handler. `SIGPIPE` is ignored process-wide only by explicit systems-context startup; socket sends use `MSG_NOSIGNAL`. `SIGSEGV`/`SIGBUS`/`SIGFPE`/`SIGILL` remain fatal. Do not install a `SIGCHLD` handler that calls obo. |
-| Output, registry and fds | Output buffers and `rt_entry_sp` become context-local. Each worker flushes its own buffer through a C mutex around `write(2)`; no obo code runs while holding it. File descriptors are process-wide: each context owns its own descriptors; never close a shared duplicate. The new native registry is per-context; a resource transfer ticket atomically invalidates the source shell and installs a new shell in the destination, with kind/generation rechecked. Standard streams are duplicated per worker (stdin sharing is explicitly unsupported unless the application coordinates it). |
-| Traps and termination | First thread release: an obo trap or managed OOM is **process-fatal** via `exit_group` (or hosted process abort) with a minimal diagnostic. It must not use thread-local `exit(60)` and must not fabricate a successful join or run partial defers. Normal worker return runs its own defers and frees its locals, then tears down only that worker. Split `OBO_EXIT` into worker-finish versus process-exit; after joining/detaching workers, main's normal finish also uses `exit_group` so a detached worker cannot outlive the process image. Catchable thread traps are a later design. |
-| Memory model | Obo accesses are worker-confined by construction. Publication of native byte messages and completion flags uses C11 atomics with release/acquire; join observes prior worker completion. All shared native state uses C atomics/locks. Do not advertise a data-race-free shared-obo memory model until the language can enforce one. |
+| Prefork/process workers first | Deferred until a focused hosted/fork runtime audit; general obo `fork` is not a v1 API. |
+| One reactor per process | **Recommended first.** Many idle connections, one heap, deterministic deadlines, no allocator change. |
+| Full threads plus arbitrary shared state | Rejected for the core library. It requires the separate thread design and still excludes shared obo values. |
+| Reactor per process plus confined workers later | **Target architecture.** Supervised processes first; confined compute workers only after the thread note's T2 prerequisites. |
 
-StackBytes: validate a page multiple, guard pages, a minimum sufficient for the
-bootstrap and known runtime stack use, and a configured process total; default
-1 MiB is a starting measurement, not a proven bound. No growable stacks. Overflow
-is fatal with guard detection. HeapBytes is carved from an aggregate managed
-quota; native messages, stacks and metadata have separate caps/counters. Thread
-creation `EAGAIN`/`ENOMEM` is a Result; managed OOM/traps follow the fatal model.
-The compiler may not exceed the 2,500,000-byte budget to land this phase; if it
-cannot fit, stop and revise scope.
+Run one reactor per supervised worker process. Use `spawn/exec` supervision in
+P3; a controlled prefork launcher needs its own runtime audit. CPU-heavy or
+blocking work moves to another process until threads are separately approved.
+No core module creates a hidden thread or a callback into obo.
 
-### 9.5 Synchronization: what can a Mutex protect?
-
-A Mutex protects **a shareable storage location**, not an arbitrary object simply
-because an application promises to lock. With 0.11's aliasable borrows and exposed
-fields, `Mutex[T]`, returning `&T` from lock, or putting `^T` in a shared record
-would be invented/unsafe APIs. There are no generic user types or Send/Sync
-markers today. Recommend v1 **message passing only for obo application state**,
-plus concrete native shared scalar cells. A C mutex may protect C registry/queue
-memory internally before any public sync module exists.
-
-| Primitive | Proposed contract / permitted storage | Availability |
-|---|---|---|
-| Mutex | nonrecursive native ownership lock for reviewed C-owned cells; lockUntil, tryLock, unlock; owner-checked, close Busy while held/waited on | internal first; public raw lock only after a shareable-cell API exists |
-| Condvar | wait atomically releases/reacquires its associated native mutex; predicate loop mandatory; spurious wakes allowed; monotonic deadlines | internal channel implementation first; no obo predicate callbacks |
-| RwLock | C-owned snapshot cell; writer-preference/no starvation objective; no lock upgrade, no references escaping read lock | later concrete SharedBytes store, not arbitrary records |
-| Once | C-owned initialization state Unset/Running/Ready/Failed; recursion is error; failure cached or explicitly reset before use | native package initialization only; no retained obo lambda |
-| Atomics | concrete AtomicInt/AtomicBool in C registry; load/store/exchange/fetchAdd/compareExchange, checked/wrapping policy named | after thread-safe registry; default sequential consistency, no address casts |
-| Channels | bounded byte-message queue with explicit sender/receiver endpoint ownership, close, deadline and wake integration | recommended first public synchronization |
-
-For a later **concrete C-owned SharedBytes** extension, these are possible
-0.11-shaped headings in syssync (not arbitrary obo-value guards):
-
-```obo
-module syssync
-import "sysclock.obx" as clock
-pub type SharedBytes = ref record { reserved: int }
-pub type Mutex = ref record { reserved: int }
-pub type Condvar = ref record { reserved: int }
-pub type RwLock = ref record { reserved: int }
-pub type Guard = ref record { reserved: int }
-pub type Once = ref record { reserved: int }
-pub fn sharedBytes(initial: &[]byte, limit: int, readers: bool): Result[SharedBytes]
-pub fn mutex(cell: &SharedBytes): Result[Mutex]
-pub fn rwlock(cell: &SharedBytes): Result[RwLock]
-pub fn lock(m: &Mutex, until: &clock::Deadline): Result[Guard]
-pub fn readLock(m: &RwLock, until: &clock::Deadline): Result[Guard]
-pub fn writeLock(m: &RwLock, until: &clock::Deadline): Result[Guard]
-pub fn snapshot(g: &Guard): Result[[]byte]
-pub fn replaceBytes(g: &Guard, bytes: &[]byte): Result[bool]
-pub fn unlock(g: &Guard): Result[bool]
-pub fn condvar(m: &Mutex): Result[Condvar]
-pub fn waitCondition(c: &Condvar, g: &Guard,
-                      until: &clock::Deadline): Result[bool]
-pub fn notify(c: &Condvar, all: bool): Result[bool]
-pub fn once(limit: int): Result[Once]
-pub fn beginOnce(o: &Once): Result[bool]
-pub fn publishOnce(o: &Once, bytes: &[]byte): Result[bool]
-pub fn failOnce(o: &Once): Result[bool]
-pub fn readOnce(o: &Once): Result[[]byte]
-```
-
-A SharedBytes cell owns **one** lock, selected as mutex or rwlock at construction;
-asking for the other kind is InvalidArgument. Returned lock endpoints refer to
-that same native lock, never attach a second independent lock to the cell.
-Guard is checked for current worker, cell, generation and read/write mode on
-every operation. snapshot copies; replaceBytes requires a write guard and is
-all-or-nothing within the cap. Register `defer unlock(guard)`; no guard crosses
-workers. Closing a cell/lock with guards or waiters is Busy, not destruction of
-live pthread/futex storage. Lock endpoints and Once also require explicit close
-functions with the common state contract; these headings omit those repetitive
-declarations, not their ownership obligations.
-
-waitCondition requires the associated mutex guard, releases/reacquires it
-atomically with waiting, and returns with the guard held, including timeout or
-interruption. `ok(true)` means notified, `ok(false)` means the deadline expired,
-and `Interrupted`/`Cancelled` are errors with the guard still held. **Reacquisition
-may finish after the condition deadline**; the deadline bounds the condition
-wait, not arbitrary lock-holder execution. Predicates must be rechecked from a
-copied snapshot in a loop. notify does not assert a predicate is true. Once.begin grants initialization to exactly one worker;
-Running returns WouldBlock, Ready returns false, Failed returns its cached error.
-The initializer calls publishOnce with copied bytes or failOnce on every exit;
-no stored lambda. A missing publish is a lifecycle error visible in diagnostics.
-This extension stays deferred until a real consumer needs shared native bytes.
-
-Concrete future channel sketch (after P4):
-
-```obo
-module syssync
-import "sysclock.obx" as clock
-import "sysplatform.obx" as platform
-pub type Sender = ref record { reserved: int }
-pub type Receiver = ref record { reserved: int }
-pub type Channel = ref record { sender: ?Sender; receiver: ?Receiver }
-pub type AtomicInt = ref record { reserved: int }
-pub type Exchange = ref record { changed: bool; previous: int }
-pub fn bytesChannel(maxMessages: int, maxBytes: int): Result[Channel]
-pub fn send(s: &Sender, data: &[]byte, until: &clock::Deadline): Result[bool]
-pub fn receive(r: &Receiver, until: &clock::Deadline): Result[?[]byte]
-pub fn exportSender(s: &Sender): Result[platform::Transfer]
-pub fn exportReceiver(r: &Receiver): Result[platform::Transfer]
-pub fn importSender(t: platform::Transfer): Result[Sender]
-pub fn importReceiver(t: platform::Transfer): Result[Receiver]
-pub fn closeSender(s: &Sender): Result[bool]
-pub fn closeReceiver(r: &Receiver): Result[bool]
-pub fn exportAtomic(a: &AtomicInt): Result[platform::Transfer]
-pub fn importAtomic(t: platform::Transfer): Result[AtomicInt]
-pub fn atomicInt(value: int): Result[AtomicInt]
-pub fn load(a: &AtomicInt): Result[int]
-pub fn store(a: &AtomicInt, value: int): Result[bool]
-pub fn compareExchange(a: &AtomicInt, expected: int, value: int): Result[Exchange]
-```
-
-send copies all bytes before publication; full queue is WouldBlock for expired/
-zero wait, TimedOut at a finite later deadline. Failure publishes nothing and
-caller retains its array. receive copies into the receiving arena, returning nil
-only after all senders close and queued messages drain. Receiver close rejects
-new sends and frees queued native bytes; blocked calls wake with Closed/Cancelled.
-Bound both message count and aggregate byte count. No arbitrary []T channel.
-
-Cross-thread Sender/Receiver/AtomicInt use **explicit export/import tickets** in
-the runtime launch packet (`StartOptions.tickets`; retrieved in the worker with
-`systhreads::takeTicket(index)`), with checked native reference ownership; the
-obo shell itself never crosses. Each side gets a new local shell. `exportSender`
-and `exportReceiver` add a native endpoint reference and return a single-use
-ticket; the source endpoint remains usable. `importSender`/`importReceiver`/
-`importAtomic` consume a ticket and return a new local shell; a ticket cannot be
-imported twice, and an unused ticket is released with
-`sysplatform::releaseTransfer`. Endpoint duplication increments native ownership,
-not an obo reference count. Tickets are typed runtime transfer records, not public
-token integers or bytes a user can forge into native handles. This transfer
-service must land before public channels; the headings alone do not implement it.
-Worker input remains ordinary copied bytes for business data. Channels intended
-across the boundary are created before `start` and their endpoints exported into
-`StartOptions.tickets`; a worker-created endpoint cannot be returned through
-`JoinStatus` (which is only an int status) in v1. Same-process reactor owners can
-use corresponding nonblocking channel step/watch methods without rewriting
-byte-message semantics.
-
-SharedBytes, if added, stores bytes in C and returns copies under locks; it never
-returns `&[]byte`. Threads may **copy** int/byte/bool/float values and serialized
-bytes; they may not share managed strings, records, arrays, Result cells, borrowed
-references, function cells, interfaces, handles, mutable globals, File/Connection
-shells or mapping views. Sending a stream requires a separately specified native
-resource handoff with old-owner invalidation; it is not enabled by sending a token.
-
-Send/Sync-like markers become necessary only if the product later chooses general
-shared/transferable obo values. They need structural type classification,
-global/effect tracking, exclusive access or guard enforcement, atomic/shared
-lifetime machinery and ABI rules. The marker names alone are not the design.
-
-**Synchronization verdict.** Do not ship `Mutex`/`Condvar`/`RwLock`/`Once` as
-guards over arbitrary obo values in 0.11. Ship bounded byte channels and concrete
-native `AtomicInt`/`AtomicBool` first, because their shared storage is C-owned and
-their operations can be checked. A later `SharedBytes` gives lock-protected
-native bytes with copy-in/copy-out, not `Mutex[T]` and not a returned `&T`.
-`Send`/`Sync`-like markers are a language design project, not a library
-convenience; until then, message passing is the only supported way to move
-application state between workers. A `Mutex` record can protect a C registry cell
-internally, but it cannot make an obo record safe to share.
+Threads, synchronization, worker entry, T2 context-relative state and the
+T1/T2 decision are **not part of this core design**. They live in
+[systems-threads-design.md](systems-threads-design.md). That note records that
+T2 (context-relative globals and the identity table) is a prerequisite for P4b/P5;
+P4a is an infrastructure spike with no public worker API; T1-only workers are
+compute/native jobs with no `sys*` resource use. The core phases below stop at P3
+plus optional adapters. P4/P5 do not authorize implementation here.
 
 ## 10. HTTP readiness assessment (no protocol design)
 
-Phases refer to §13. “Foundation” means a facility exists for a future HTTP
-implementation, not that an HTTP server or protocol is supplied.
+Phases refer to §13 for this core; thread/sync phases are in
+`systems-threads-design.md`. “Foundation” means a facility exists for a future
+HTTP implementation, not that an HTTP server or protocol is supplied.
 
 | Need | Baseline | Supplying module / phase | Remaining assessment |
 |---|---|---|---|
@@ -1790,10 +1587,10 @@ implementation, not that an HTTP server or protocol is supplied.
 | Timers, idle/read/write/connect timeouts | sleep only | sysclock P1; sysreactor/syswaitio P2 | absolute monotonic deadlines, cancellation and fairness |
 | TLS | no stable adapter | optional transport adapter P2T after P2 + hosted interop hardening | certificate/key loading, hostname verification for clients, handshake/read/write/shutdown state and want-read/want-write; C callbacks queue events only; no pointers/SSL structs escape |
 | Concurrent connections | single blocking program | reactor P2 | one-core event loop, bounded state machines |
-| CPU utilization / isolation | single process/thread | externally supervised P2 workers; sysprocess P3 | multi-process scale first; P4 confined workers only after runtime gates |
-| Shared application state/cache | single-thread-local only | per-process owner + IPC P3; byte channels P5 | no arbitrary shared obo object graph; no present Mutex workaround |
+| CPU utilization / isolation | single process/thread | externally supervised P2 workers; sysprocess P3 | multi-process scale first; confined workers are in the thread note, blocked on T2 |
+| Shared application state/cache | single-thread-local only | per-process owner + IPC P3; byte channels are in the thread note | no arbitrary shared obo object graph; no present Mutex workaround |
 | Compression | experimental in-memory zlib example | optional bounded streaming codec P2C | incremental input/output, output quota, expansion-ratio/CPU limits; protocol negotiation separate |
-| DNS | absent | resolveBlocking P2; reactive helper P3/P4 | not needed for numeric server bind; NSS blocking cannot hide inside event loop |
+| DNS | absent | resolveBlocking P2; reactive helper is an open question (P3 process helper vs P4 C worker) | not needed for numeric server bind; NSS blocking cannot hide inside event loop; the DB helper-process rejection of 2026-10-28 is not silently ignored |
 | Graceful shutdown | exit skips defers | reactor drain P2; signals/reaping P3 | stop acceptance, fixed drain deadline, flush/close, join/reap, normal return |
 | Logging / telemetry | print/eprint and heap stats | bounded syslog P1/P2, process collector P3 | error-returning sink, queue/drop counters; no blocking print dependency in hot reactor |
 | Static/config files | limited read/stat | sysfile/sysdir/sysstat P1 | anchored paths and bounded reads; storage may still block |
@@ -1845,6 +1642,41 @@ dispatch to a removed generation. Every failure of a compound operation checks
 all partially acquired resources. Error-path retained buffers and ownership moves
 need compiler-negative tests as well as runtime tests.
 
+Core boundary tests required before the relevant phase:
+
+- **Identity bridge:** `platform::source`/`requireKind` accept the shell's own
+  `res`; a compiler-negative test rejects a `^File` passed where `^Stream` or
+  `^Resource` is required. At runtime, replace `file.res` with another same-kind
+  resource (documented alias/steal) and with a cross-kind resource (must return
+  `InvalidResource`); a user-constructed `Resource` must fail.
+- **Hint table:** forge `Resource.reserved` out of range, stale and pointing at
+  another live slot; every case must fail full identity/kind checks or fall back
+  safely, never select the wrong resource.
+- **Public-field bypass:** construct `Options`, `SignalSet`, `Address`,
+  `Environment`, `Buffer`, `OpenOptions`, `ListenOptions` and `Command` directly
+  with invalid fields and assert `InvalidArgument`/`Range`, never a native call.
+- **Standard streams:** `openStandard(Input/Output/Error)` each duplicate the
+  right descriptor with CLOEXEC; the closed `Standard` type makes an invalid
+  `which` unrepresentable, so the test covers all three variants; no arbitrary
+  fd exists in the API; closing a
+  returned Stream/Terminal/Logger cannot close process 0/1/2. Keep a legacy
+  `openFile` descriptor open across a new-registry operation and prove neither
+  owner closes the other.
+- **Readlink:** dangling target, non-symlink, empty target and a 4095-byte target;
+  4096 bytes is `NameTooLong`, never truncated.
+- **Port 0:** bind TCP and UDP to port 0, then `listenerLocalAddress`/
+  `datagramLocalAddress` returns a nonzero port that accepts/sends. An unnamed
+  Unix datagram sender yields `Packet.peer == nil`, not a fabricated address.
+- **Offset sharing:** two `duplicateStream` descriptors observe one file offset;
+  `readAt`/`writeAt` remain independent. Do not claim independent buffer reads.
+- **Environment copy:** mutate the array returned by `entries`; the original
+  snapshot and lookup results do not change.
+- **Signals:** a child killed by a known signal reports the library id
+  (`TERMINATE` etc.), an unmapped one reports `OTHER`, never the raw Linux
+  number; `ExitStatus.Exited.code` is not shifted.
+- **Kinds:** every `sysstat::KIND_*` maps to the correct `fs::typeOf`/metadata
+  class, including FIFO, socket, block, char and symlink.
+
 ### 11.2 Resource pressure and native diagnostics
 
 - RLIMIT_NOFILE tests with a very low soft limit, inherited descriptors above
@@ -1859,51 +1691,17 @@ need compiler-negative tests as well as runtime tests.
   and event-cancellation sequences. Sanitizer binaries may need a separate C
   harness because the hosted fixed-address layout can conflict with sanitizer
   mappings; never claim instrumentation that did not run.
-- TSAN when any native worker/registry is concurrent; after P4 also instrument
+- TSAN when any native worker/registry is concurrent; the thread note covers
   runtime C plus appropriate generated-code memory accesses. TSAN on C alone
-  cannot prove obo code race-free. Add forced scheduling/litmus tests for
-  publication, join, close/use, Once failure, condvar spurious wakeups and channel
-  shutdown. Stress tests supplement, not replace, deterministic schedules.
+  cannot prove obo code race-free. The thread note owns forced scheduling/litmus
+  tests for publication, join, close/use and channel shutdown; stress tests
+  supplement, not replace, deterministic schedules.
 - Descriptor/socket/mapping/child/thread/registry/buffer live counts, bytes and
   high-water marks per context. Deliberately omit a close to prove the oracle
   detects it. Native counters are separate from OBO_CHECK managed/fd counters;
   current fdstate cannot see C-owned fds. Fail test teardown on either leak.
 
-### 11.3 Thread and synchronization gates
-
-These are gates for the later thread phase, not claims about the current build.
-
-- **Entry ABI:** a link-time table test rejects unknown/duplicate entry names and
-  a non-`fn worker(input: []byte): int` signature. Disassembly or a marker test
-  proves `pthread_create` receives `rt_worker_bootstrap`, not a user pointer.
-  The worker sees `rsp % 16 == 8` at entry and the input array at `[rbp+16]`;
-  after normal return the joiner observes the int status, the entry's defers ran,
-  and the arena was freed once.
-- **Arena isolation:** a worker allocates/frees thousands of objects while the
-  main context does the same; no free-list, counter or starts-bitmap corruption.
-  A test that tries to pass a `^T`, `string`, record, array or `Result` across the
-  boundary must be rejected by the compiler; a native ticket test must invalidate
-  the source shell and recheck kind/generation in the destination.
-- **Refcounts:** with confinement, deliberately share no heap string. If a later
-  shared-string mode is added, a litmus test must cover concurrent inc/dec,
-  final release, overflow and arena destruction; TSAN alone cannot prove the
-  generated obo accesses.
-- **TLS and errno:** two workers force different `errno` values through a C
-  adapter and read them back independently; `rt_ctx` resolves per thread. A
-  hosted library that is not thread-safe is either confined or protected.
-- **Signals and traps:** every worker inherits the blocked service mask; one
-  signalfd consumer receives a coalesced event; `SIGPIPE` policy is explicit.
-  A worker trap exits the whole process via `exit_group`; the test asserts no
-  fabricated successful join and no partial worker teardown.
-- **Output:** concurrent `print`/`eprint` records do not tear within a record;
-  the C mutex is never held while obo code runs. Detached worker completion
-  releases its arena; shutdown cancels/joins or explicitly detaches every worker.
-- **Sanitizers:** TSAN on native adapters, registry, queues and C bootstrap;
-  generated obo code is not TSAN-instrumented, so combine TSAN with confinement
-  tests and litmus/forced-schedule tests. ASAN/UBSAN run in a separate C harness
-  if the fixed-address image conflicts with the sanitizer mapping.
-
-### 11.4 Conformance and operational observations
+### 11.3 Conformance and operational observations
 
 Compare file contents/permissions/rename visibility with Python os/coreutils;
 metadata and symlink behavior with Python stat; RFC3339/profile dates with an
@@ -1937,7 +1735,7 @@ obo/lib/sys/
   sysmapping.obx sysstream.obx    sysbuffer.obx  syswaitio.obx
   sysaddress.obx sysnet.obx       sysresolve.obx sysreactor.obx
   sysenv.obx     syssignals.obx   sysprocess.obx syslog.obx
-  systhreads.obx syssync.obx      systerminal.obx              (later)
+  systerminal.obx                                              (later)
 obo/experimental/systems/        reviewed native adapters, .cbind, fake backend
 obo/tests/systems/               obo roots and native/model fixtures
 obo/examples/systems/            bounded copy, atomic replace, echo, supervisor
@@ -1979,7 +1777,7 @@ allocated here. Native manifest formats stay independently versioned.
 ### 12.3 How modules are actually tested here
 
 - [imports.py](../tests/imports.py):131–185 has tiny importer roots and an exact
-  eleven-file `WANT_LIB` check; it currently lists **only the top level**. Add a
+  eleven-file `WANT_LIB` check at 169–172; it currently lists **only the top level**. Add a
   separate explicit recursive systems inventory/import matrix, dependency-cycle
   and duplicate-name tests; retain the original top-level checks and tool-decoy
   tests. Add native-link roots rather than pretending ordinary compile tests
@@ -2016,22 +1814,25 @@ Each phase has a usable exit point and can stop without exposing later APIs.
 
 | Phase | Scope / useful exit | Dependencies / blocked work | Rough effort |
 |---|---|---|---|
-| P0: boundary proof | native identity registry with no public tokens, status mapping, bounded byte bridge, fake backend, leak oracle; benchmark bridge | existing experimental cinterop; hosted TLS/errno qualification for libc calls; no compiler additions | 2–3 |
+| P0: boundary proof | chosen `res: platform::Resource` shell representation, `source`/`requireKind`, P0 checked slot-hint identity table, status mapping, bounded byte bridge, fake backend, leak oracle, compiler-negative `^File`/`^Stream` tests; benchmark bridge | existing experimental cinterop; hosted TLS/errno qualification for libc calls; no compiler additions | 3–4 |
 | P1a: smallest useful slice | owned File/open/read/write/close, anchored Directory, Metadata, seek/truncate, monotonic/realtime clock, bounded buffers, getrandom; bounded file-copy example | P0; explicit close and managed OOM limitations; pure calendar/parser tests can proceed independently | 3–5 |
 | P1b: practical filesystem | rename/link/mkdir/chmod/sync and atomic replace reports, RFC3339, env snapshots, basic bounded logging; configuration-update example | P1a; openBeneath capability tested separately; mapping is optional P1b extension with SIGBUS contract | 2–4 (+1–2 mapping) |
 | P2: network/reactor | numeric addresses, TCP/UDP/Unix sockets, partial/vector I/O, level readiness, timers/wake/fairness, bounded echo and timeout demos; blocking DNS clearly named | P1a; native bridge performance gate, no thread requirement | 4–7 |
 | P2T/P2C: optional adapters | TLS transport and streaming compression readiness, not HTTP | separate adapter designs; production hosted boundary/TLS library validation | 3–6 TLS; 1–3 codec, independently scoped |
-| P3: processes | spawn/exec/wait, pipes/redirection, process groups, reaper, signals, cwd policy, resolver helper and supervisor example | P2 for nonblocking supervision; process env mutation blocked on coherent env bridge; controlled prefork optional separate audit | 4–6 |
-| P4: confined threads | worker-entry ABI, per-worker contexts/arenas, TLS/masks/termination, startup/join/detach/cancel, copied worker input; **T1** worker-safe closure with no mutable/owned globals; **T2** context-relative globals only if T1 blocks a real consumer | **blocked on all runtime/compiler obligations in §9.4**, review and compiler memory gate; not implementable as a C shim alone; hosted build only | 8–14+ (T2 adds 2–4), design risk high |
-| P5: synchronization | native endpoint tickets, bounded byte channels, atomic scalar cells, wake integration; Mutex/Condvar internals; later concrete shared byte store | P4 + thread-safe native registry; arbitrary shared obo values still excluded | 3–6; general Send/Sync excluded from estimate |
+| P3: processes | spawn/exec/wait, pipes/redirection, process groups, reaper, signals, cwd policy, resolver policy and supervisor example | P2 for nonblocking supervision; process env mutation blocked on coherent env bridge; controlled prefork optional separate audit | 4–6 |
+
+P4 (threads) and P5 (synchronization) are **not estimated or authorized in this
+core note**. They are specified in `systems-threads-design.md`; P4a is an
+infrastructure spike, while P4b/P5 are blocked on T2 context-relative globals
+and the identity table. They keep their own phase gates. Core P0/P1a are the
+approvable slice; P2/P3 are directional until their P0 evidence lands.
 
 Implement P1a before networking: it improves ordinary programs immediately and
 proves resource/error/copy contracts. P2 may use externally supervised worker
 processes without waiting for P3. P3 gives libraries explicit subprocess control.
-Threads then synchronization are separate deliverables; native locks needed to
-implement P4 are internal mechanisms, not early public shared-value promises.
 Terminal raw-mode work is a demand-driven 1–2 week extension after signals, not
-a prerequisite for networking. No HTTP module is hidden in any phase.
+a prerequisite for networking. No HTTP module is hidden in any phase. Threads and
+synchronization are a separate design and do not gate P0–P3.
 
 Phase acceptance requires normal success, bounded failure, omitted-close oracle,
 documentation, current-language syntax and an independently understandable
@@ -2052,23 +1853,20 @@ stream/byte/deadline contracts if the backend later gains threads or bulk copy.
 4. **Callbacks into obo from C, including signal/SSL callbacks:** unsupported ABI
    and stack/ownership context. C queues events; explicit polling enters obo
    normally. Dedicated future runtime worker bootstrap is not general FFI callbacks.
-5. **“Just pthread_create plus Mutex”:** allocator, RC, globals, handles, TLS,
-   entry ABI and process-exit semantics remain unsafe.
-6. **Goroutine-style port / implicit thread spawning:** requires scheduler,
-   growable stacks, blocking-call interception and different cancellation/lifetime
-   rules. A resolver or buffered writer must not create hidden execution contexts.
-7. **Hidden retries / timeout restart:** EINTR and EAGAIN are control flow with
+5. **Hidden retries / timeout restart:** EINTR and EAGAIN are control flow with
    explicit policy; one absolute deadline survives every retry and partial transfer.
-8. **GC-dependent resource cleanup or finalizers:** obo has no collector, record
+6. **GC-dependent resource cleanup or finalizers:** obo has no collector, record
    drop does not close C resources, and resource exhaustion cannot await GC anyway.
-9. **General generic Mutex[T]/Channel[T] or Send/Sync labels without semantics:**
-   invents unsupported language and fails to define shareable storage/alias rules.
-10. **Zero-copy pointers across scalar interop / borrowed mapping slices:** violates
-    the trusted scalar boundary and 0.11 reference restrictions. Copy first;
-    reviewed optimization later.
-11. **Make legacy builtins transparently safe/nonblocking:** silently changes retry,
-    fd ownership, error and buffering contracts used by tools/compiler. Migrate
-    explicitly rather than changing their meaning in a library design.
+7. **Zero-copy pointers across scalar interop / borrowed mapping slices:** violates
+   the trusted scalar boundary and 0.12 reference restrictions. Copy first;
+   reviewed optimization later.
+8. **Make legacy builtins transparently safe/nonblocking:** silently changes retry,
+   fd ownership, error and buffering contracts used by tools/compiler. Migrate
+   explicitly rather than changing their meaning in a library design.
+
+Thread-specific rejected alternatives (`pthread_create` plus `Mutex`, a
+goroutine-style port, generic `Mutex[T]`/`Send`/`Sync`) are in
+`systems-threads-design.md`; they are not part of the core library.
 
 ## 15. Open product choices and recommendations
 
@@ -2077,14 +1875,11 @@ above are not optional votes about correctness.
 
 | Choice | Recommendation | Consequence of choosing otherwise |
 |---|---|---|
-| Default service concurrency | reactor per supervised process; spawn/exec supervisor before controlled prefork | prefork default needs a runtime/native-library fork audit before advertising it; thread-per-connection needs P4 first |
-| Threads now versus later | ship P1–P3 first; validate workload demand before P4 | prioritizing threads brings the 8–14+ week ABI/runtime effort and budget risk forward |
-| First thread scope | T1: confined workers, copied byte messages, no mutable/owned globals in the worker closure | T2 context-relative globals is more general but adds compiler/ABI work; arbitrary shared obo values are still excluded |
-| First sync scope | bounded byte channels plus concrete `AtomicInt`/`AtomicBool`; no `Mutex[T]`/`Send`/`Sync` | a general guard API would require a language ownership/memory-model design, not a C mutex wrapper |
-| Hosted-only threads | yes; freestanding stays single-threaded and uses processes | claiming freestanding pthread/TLS support would require loader/TLS work outside this design |
-| Shareable language values | byte-message confinement first, no Send/Sync markers yet | general shared state requires a new language memory/aliasing/type design, not just P5 |
+| Default service concurrency | reactor per supervised process; spawn/exec supervisor before controlled prefork. Thread/sync choices are in `systems-threads-design.md`. | prefork default needs a runtime/native-library fork audit before advertising it; thread-per-connection is a separate, later design |
+| DNS reactive helper | open question: an explicit helper process (P3) or C-only worker (P4); do not silently assume either. The 2026-10-28 database-adapter decision rejected a C helper process for DB work. | a helper process adds lifecycle/framing; a C worker needs thread/TLS qualification; blocking NSS cannot sit in the reactor |
 | POSIX abstraction level | Unix resource semantics, Linux implementation and explicit Linux capabilities | exact Linux mirrors weaken portability; lowest-common-denominator POSIX loses path/notification guarantees |
 | Stable systems library dependent on hosted C | accept an explicitly native-linked experimental package first; stabilize only after interop qualification | requiring freestanding-only immediately needs another generic native-link/backend design; do not fund dozens of compiler builtins implicitly |
+| DB adapter token exception | documented temporary exception: `experimental/db/{postgres,sqlite}` use `ref record { tok: int }` until migrated to the new `res: platform::Resource` registry; do not copy the model into new core modules | leaving the exception unstated creates two native-resource models; a forced migration now expands the DB adapter scope |
 | Throughput versus strict scalar copy boundary | measure byte/packed-scalar bridge in P0/P2; keep API representation-independent | if insufficient, request a separate checked bulk-transfer proposal and compiler-budget evidence before changing the seam |
 
 No decision about HTTP version, protocol features, routing, TLS provider or
