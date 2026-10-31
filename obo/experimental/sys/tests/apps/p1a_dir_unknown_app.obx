@@ -1,0 +1,56 @@
+// Fake-only directory script root: proves DT_UNKNOWN maps to KIND_UNKNOWN
+// without hiding a failed stat, and that the bounded iterator reaches the end.
+module app
+
+import "sysplatform.obx" as platform
+import "sysdir.obx" as dir
+import "sysstat.obx" as stat
+import "syserrors.obx" as errors
+
+fn show(label: string, code: int) {
+    let k = errors::kind(code)
+    println(label, "=", errors::text(&k))
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini { ok(v) { println("init=", v) } err(m, c) { show("init_error", c) } }
+    let av = args()
+    let dm = dir::open(av[1])
+    match dm {
+        ok(d) {
+            let itm = dir::iterate(&d)
+            match itm {
+                ok(it) {
+                    var count = 0
+                    var gammaSeen = false
+                    var gammaKind = -1
+                    var running = true
+                    while running {
+                        let n = dir::next(&it)
+                        match n {
+                            ok(v) {
+                                if v == nil { running = false } else {
+                                    count += 1
+                                    if v.name == "gamma" { gammaSeen = true
+                                        gammaKind = v.kind }
+                                }
+                            }
+                            err(m, c) { show("next_error", c); running = false }
+                        }
+                    }
+                    println("entries=", count, " gamma=", gammaSeen, " kind=", gammaKind, " unknown=", stat::KIND_UNKNOWN)
+                    let ci = dir::closeIterator(&it)
+                    match ci { ok(v) { println("iter_close=", v) } err(m, c) { show("iter_close_error", c) } }
+                }
+                err(m, c) { show("iterate_error", c) }
+            }
+            let dc = dir::close(&d)
+            match dc { ok(v) { println("dir_close=", v) } err(m, c) { show("dir_close_error", c) } }
+        }
+        err(m, c) { show("dir_open_error", c) }
+    }
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.shells) } err(m, c) { show("shutdown_error", c) } }
+}

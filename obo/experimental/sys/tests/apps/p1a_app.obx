@@ -1,0 +1,321 @@
+// P1a conformance root: built against the Linux adapter and the scripted fake.
+// It prints only backend-independent facts (counts, booleans, status names),
+// never raw clocks, inode identities or directory order, so both traces match.
+module app
+
+import "sysplatform.obx" as platform
+import "sysfile.obx" as file
+import "sysdir.obx" as dir
+import "sysstat.obx" as stat
+import "sysclock.obx" as clock
+import "sysrandom.obx" as random
+import "sysstream.obx" as stream
+import "sysbuffer.obx" as buffer
+import "syserrors.obx" as errors
+
+fn show(label: string, code: int) {
+    let k = errors::kind(code)
+    println(label, "=", errors::text(&k))
+}
+
+fn makeBytes(s: string): []byte {
+    let out = new []byte(len(s))
+    for i in 0..len(s) { out[i] = s[i] }
+    return out
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini { ok(v) { println("init=", v) } err(m, c) { show("init_error", c) } }
+    println("caps=", platform::hasCapability("file.open"), ",", platform::hasCapability("clock.monotonic"), ",", platform::hasCapability("nope"))
+
+    // Clock: pure deadline arithmetic plus one immediate absolute sleep.
+    let start = new clock::Instant{nanos: 100}
+    let span = new clock::Duration{nanos: 50}
+    let dl = clock::after(&start, &span)
+    match dl {
+        ok(d) {
+            let left = clock::remaining(&start, &d)
+            match left {
+                ok(v) { if v == nil { println("remaining=nil") } else { println("remaining=", v.nanos) } }
+                err(m, c) { show("remaining_error", c) }
+            }
+            let zeroTime = new clock::Instant{nanos: 150}
+            let zero = clock::remaining(&zeroTime, &d)
+            match zero { ok(v) { if v == nil { println("remaining_zero=nil") } else { println("remaining_zero=", v.nanos) } } err(m, c) { show("remaining_zero_error", c) } }
+        }
+        err(m, c) { show("after_error", c) }
+    }
+    let inf = clock::forever()
+    let infLeft = clock::remaining(&start, &inf)
+    match infLeft { ok(v) { if v == nil { println("remaining_inf=nil") } else { println("remaining_inf=finite") } } err(m, c) { show("remaining_inf_error", c) } }
+    let later = new clock::Instant{nanos: 200}
+    let el = clock::elapsed(&start, &later)
+    match el { ok(v) { println("elapsed=", v.nanos) } err(m, c) { show("elapsed_error", c) } }
+    let badEl = clock::elapsed(&later, &start)
+    match badEl { ok(v) { println("elapsed_reverse=ok") } err(m, c) { show("elapsed_reverse", c) } }
+    let huge = new clock::Duration{nanos: 9223372036854775807}
+    let over = clock::after(&start, &huge)
+    match over { ok(v) { println("after_overflow=ok") } err(m, c) { show("after_overflow", c) } }
+    let negMs = clock::durationMs(-1)
+    match negMs { ok(v) { println("duration_negative=ok") } err(m, c) { show("duration_negative", c) } }
+    let bigMs = clock::durationMs(9223372036855)
+    match bigMs { ok(v) { println("duration_overflow=ok") } err(m, c) { show("duration_overflow", c) } }
+    let infSleep = clock::sleepUntil(&inf)
+    match infSleep { ok(v) { println("sleep_inf=ok") } err(m, c) { show("sleep_inf", c) } }
+    let zeroDur = clock::durationNs(0)
+    match zeroDur {
+        ok(d) { let slept = clock::sleep(&d); match slept { ok(v) { println("sleep0=", v) } err(m, c) { show("sleep0_error", c) } } }
+        err(m, c) { show("zero_duration_error", c) }
+    }
+    let mono = clock::monotonic()
+    match mono { ok(v) { println("monotonic_nonneg=", v.nanos >= 0) } err(m, c) { show("monotonic_error", c) } }
+    let rt = clock::realtime()
+    match rt { ok(v) { println("realtime_nanos_ok=", v.nanos >= 0 && v.nanos <= 999999999) } err(m, c) { show("realtime_error", c) } }
+
+    // Random: only length/progress facts; values are not printed.
+    let rb = random::bytes(16, false)
+    match rb { ok(v) { println("random_len=", len(v)) } err(m, c) { show("random_error", c) } }
+    var fill = new []byte(8)
+    let fs = random::fillSome(&fill, 0, 8, false)
+    match fs { ok(v) { println("random_fill=", v) } err(m, c) { show("random_fill_error", c) } }
+    let big = random::bytes(random::MAX_RANDOM_BYTES + 1, false)
+    match big { ok(v) { println("random_big=ok") } err(m, c) { show("random_big", c) } }
+    let badRange = random::fillSome(&fill, 7, 2, false)
+    match badRange { ok(v) { println("random_range=ok") } err(m, c) { show("random_range", c) } }
+
+    let av = args()
+    let path = av[1]
+    let dirPath = av[2]
+
+    // Open-option validation happens before any native call.
+    let bad1 = file::readOptions()
+    bad1.read = false
+    let b1 = file::open(path, &bad1)
+    match b1 { ok(v) { println("opt_none=ok") } err(m, c) { show("opt_none", c) } }
+    let bad2 = file::readOptions()
+    bad2.create = true
+    let b2 = file::open(path, &bad2)
+    match b2 { ok(v) { println("opt_create_no_write=ok") } err(m, c) { show("opt_create_no_write", c) } }
+    let bad3 = file::readOptions()
+    bad3.write = true
+    bad3.exclusive = true
+    let b3 = file::open(path, &bad3)
+    match b3 { ok(v) { println("opt_excl_no_create=ok") } err(m, c) { show("opt_excl_no_create", c) } }
+    let bad4 = file::readOptions()
+    bad4.write = true
+    bad4.truncate = true
+    bad4.append = true
+    let b4 = file::open(path, &bad4)
+    match b4 { ok(v) { println("opt_trunc_append=ok") } err(m, c) { show("opt_trunc_append", c) } }
+    let bad5 = file::readOptions()
+    bad5.write = true
+    bad5.create = true
+    bad5.permissions = 4096
+    let b5 = file::open(path, &bad5)
+    match b5 { ok(v) { println("opt_perm=ok") } err(m, c) { show("opt_perm", c) } }
+
+    let opts = file::readOptions()
+    opts.write = true
+    opts.create = true
+    opts.exclusive = true
+    opts.truncate = true
+    opts.permissions = 384
+    let made = file::open(path, &opts)
+    match made {
+        ok(f) {
+            let data = makeBytes("hello world")
+            let w = file::writeSome(&f, &data, 0, 11)
+            match w { ok(n) { println("write=", n) } err(m, c) { show("write_error", c) } }
+            let sk0 = file::seek(&f, 0, file::SEEK_START)
+            match sk0 { ok(p) { println("seek0=", p) } err(m, c) { show("seek0_error", c) } }
+            let r1 = file::readSome(&f, 5)
+            match r1 { ok(v) { if v == nil { println("read1=nil") } else { println("read1=", string(v)) } } err(m, c) { show("read1_error", c) } }
+            let r2 = file::readSome(&f, 100)
+            match r2 { ok(v) { if v == nil { println("read2=nil") } else { println("read2=", string(v)) } } err(m, c) { show("read2_error", c) } }
+            let r3 = file::readSome(&f, 5)
+            match r3 { ok(v) { if v == nil { println("read3=nil") } else { println("read3=", string(v)) } } err(m, c) { show("read3_error", c) } }
+            let sk = file::seek(&f, 0, file::SEEK_START)
+            match sk { ok(p) { println("seek=", p) } err(m, c) { show("seek_error", c) } }
+            let upper = makeBytes("WORLD")
+            let wa = file::writeAt(&f, 6, &upper)
+            match wa { ok(n) { println("writeat=", n) } err(m, c) { show("writeat_error", c) } }
+            let ra = file::readAt(&f, 0, 11)
+            match ra { ok(v) { if v == nil { println("readat=nil") } else { println("readat=", string(v)) } } err(m, c) { show("readat_error", c) } }
+            let tr = file::truncateTo(&f, 5)
+            match tr { ok(v) { println("truncate=", v) } err(m, c) { show("truncate_error", c) } }
+            let md = file::metadata(&f)
+            match md {
+                ok(m) {
+                    println("meta=", m.kind, ",", m.size, ",", m.permissions, ",", m.links)
+                    let md2 = file::metadata(&f)
+                    match md2 {
+                        ok(m2) {
+                            println("identity_same=", stat::sameIdentity(&m.identity, &m2.identity))
+                        }
+                        err(m2c, c) { show("meta2_error", c) }
+                    }
+                }
+                err(m, c) { show("meta_error", c) }
+            }
+            let back = file::readAt(&f, 0, 11)
+            match back { ok(v) { if v == nil { println("back=nil") } else { println("back=", string(v)) } } err(m, c) { show("back_error", c) } }
+
+            let dup = file::duplicateStream(&f)
+            match dup {
+                ok(s) {
+                    let sseek = file::seek(&f, 2, file::SEEK_START)
+                    match sseek { ok(p) { println("dup_seek=", p) } err(m, c) { show("dup_seek_error", c) } }
+                    let sr = stream::readSome(&s, 3)
+                    match sr { ok(v) { if v == nil { println("dup_read=nil") } else { println("dup_read=", string(v)) } } err(m, c) { show("dup_read_error", c) } }
+                    let indep = file::readAt(&f, 0, 5)
+                    match indep { ok(v) { if v == nil { println("dup_at=nil") } else { println("dup_at=", string(v)) } } err(m, c) { show("dup_at_error", c) } }
+                    let sc = stream::close(&s)
+                    match sc { ok(v) { println("dup_close=", v) } err(m, c) { show("dup_close_error", c) } }
+                }
+                err(m, c) { show("dup_error", c) }
+            }
+            let fc = file::close(&f)
+            match fc { ok(v) { println("file_close=", v) } err(m, c) { show("file_close_error", c) } }
+        }
+        err(m, c) { show("open_error", c) }
+    }
+
+    let ro = file::readOptions()
+    let rm = file::open(path, &ro)
+    match rm {
+        ok(f) {
+            let st = file::intoStream(&f)
+            match st {
+                ok(s) {
+                    let sr = stream::readSome(&s, 5)
+                    match sr { ok(v) { if v == nil { println("into_read=nil") } else { println("into_read=", string(v)) } } err(m, c) { show("into_read_error", c) } }
+                    let old = file::close(&f)
+                    match old { ok(v) { println("into_old_close=ok") } err(m, c) { show("into_old_close", c) } }
+                    let sc = stream::close(&s)
+                    match sc { ok(v) { println("into_close=", v) } err(m, c) { show("into_close_error", c) } }
+                }
+                err(m, c) { show("into_error", c) }
+            }
+        }
+        err(m, c) { show("reopen_error", c) }
+    }
+
+    let appOpts = file::readOptions()
+    appOpts.write = true
+    appOpts.append = true
+    let ap = file::open(path, &appOpts)
+    match ap {
+        ok(f) {
+            let x = makeBytes("x")
+            let pos = file::writeAt(&f, 0, &x)
+            match pos { ok(v) { println("append_writeat=ok") } err(m, c) { show("append_writeat", c) } }
+            let fc = file::close(&f)
+            match fc { ok(v) { println("append_close=", v) } err(m, c) { show("append_close_error", c) } }
+        }
+        err(m, c) { show("append_open_error", c) }
+    }
+
+    // Directory iteration and anchored metadata; order is not promised.
+    let dm = dir::open(dirPath)
+    match dm {
+        ok(d) {
+            let itm = dir::iterate(&d)
+            match itm {
+                ok(it) {
+                    var hasAlpha = false
+                    var hasBeta = false
+                    var alphaReg = false
+                    var betaReg = false
+                    var running = true
+                    while running {
+                        let n = dir::next(&it)
+                        match n {
+                            ok(v) {
+                                if v == nil { running = false } else {
+                                    if v.name == "alpha" { hasAlpha = true
+                                        if v.kind == stat::KIND_REG { alphaReg = true } }
+                                    if v.name == "beta" { hasBeta = true
+                                        if v.kind == stat::KIND_REG { betaReg = true } }
+                                }
+                            }
+                            err(m, c) { show("dir_next_error", c); running = false }
+                        }
+                    }
+                    println("dir_names=", hasAlpha, ",", hasBeta, ",", alphaReg, ",", betaReg)
+                    let ci = dir::closeIterator(&it)
+                    match ci { ok(v) { println("dir_iter_close=", v) } err(m, c) { show("dir_iter_close_error", c) } }
+                }
+                err(m, c) { show("dir_iter_error", c) }
+            }
+            let ma = dir::metadata(&d, "alpha", false)
+            let mb = dir::metadata(&d, "beta", false)
+            var aBits = 0
+            var bBits = 0
+            var aKind = 0
+            var aSize = 0
+            var bKind = 0
+            var bSize = 0
+            match ma {
+                ok(a) {
+                    aKind = a.kind
+                    aSize = a.size
+                    aBits = a.identity.bits
+                }
+                err(m, c) { show("dir_alpha_error", c) }
+            }
+            match mb {
+                ok(b) {
+                    bKind = b.kind
+                    bSize = b.size
+                    bBits = b.identity.bits
+                }
+                err(m, c) { show("dir_beta_error", c) }
+            }
+            println("dir_meta=", aKind, ",", aSize, ",", bKind, ",", bSize)
+            let ai = new stat::Identity{bits: aBits}
+            let bi = new stat::Identity{bits: bBits}
+            println("dir_identity_same=", stat::sameIdentity(&ai, &bi))
+            let badName = dir::metadata(&d, "..", false)
+            match badName { ok(v) { println("dir_bad_name=ok") } err(m, c) { show("dir_bad_name", c) } }
+            let child = dir::child(&d, "missing")
+            match child { ok(v) { println("dir_child=ok") } err(m, c) { show("dir_child", c) } }
+            let dc = dir::close(&d)
+            match dc { ok(v) { println("dir_close=", v) } err(m, c) { show("dir_close_error", c) } }
+        }
+        err(m, c) { show("dir_open_error", c) }
+    }
+
+    // Bounded buffer primitives (no endpoint involved).
+    let bm = buffer::make(8)
+    match bm {
+        ok(b) {
+            let abc = makeBytes("abc")
+            let f1 = buffer::feed(&b, &abc)
+            match f1 { ok(v) { println("buf_feed=", v) } err(m, c) { show("buf_feed_error", c) } }
+            let sep = makeBytes("bc")
+            let fi = buffer::find(&b, &sep, 0)
+            match fi { ok(v) { println("buf_find=", v) } err(m, c) { show("buf_find_error", c) } }
+            let cp = buffer::copy(&b, 2)
+            match cp { ok(v) { println("buf_copy=", string(v)) } err(m, c) { show("buf_copy_error", c) } }
+            let co = buffer::consume(&b, 2)
+            match co { ok(v) { println("buf_consume=", v) } err(m, c) { show("buf_consume_error", c) } }
+            let defgh = makeBytes("defgh")
+            let f2 = buffer::feed(&b, &defgh)
+            match f2 { ok(v) { println("buf_feed2=", v) } err(m, c) { show("buf_feed2_error", c) } }
+            let over = makeBytes("xyz")
+            let f3 = buffer::feed(&b, &over)
+            match f3 { ok(v) { println("buf_over=ok") } err(m, c) { show("buf_over", c) } }
+            let empty = makeBytes("")
+            let efind = buffer::find(&b, &empty, 0)
+            match efind { ok(v) { println("buf_empty_sep=ok") } err(m, c) { show("buf_empty_sep", c) } }
+        }
+        err(m, c) { show("buf_make_error", c) }
+    }
+
+    let cnt = platform::counts()
+    match cnt { ok(c) { println("counts=", c.resources, ",", c.shells) } err(m, c) { show("counts_error", c) } }
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.shells, ",", c.cleanupFailures) } err(m, c) { show("shutdown_error", c) } }
+}

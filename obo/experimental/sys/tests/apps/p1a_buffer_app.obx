@@ -1,0 +1,316 @@
+// P1a bounded-buffer and step-helper conformance root. Built against both
+// backends; prints only counts, booleans, status names and copied ASCII text.
+module app
+
+import "sysplatform.obx" as platform
+import "sysfile.obx" as file
+import "sysstream.obx" as stream
+import "sysbuffer.obx" as buffer
+import "syserrors.obx" as errors
+
+fn show(label: string, code: int) {
+    let k = errors::kind(code)
+    println(label, "=", errors::text(&k))
+}
+
+fn makeBytes(s: string): []byte {
+    let out = new []byte(len(s))
+    for i in 0..len(s) { out[i] = s[i] }
+    return out
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini { ok(v) { println("init=", v) } err(m, c) { show("init_error", c) } }
+    let av = args()
+    let workPath = av[1]
+    let srcPath = av[2]
+    let dstPath = av[3]
+
+    // Fixed-capacity primitives and their boundaries.
+    let bm = buffer::make(8)
+    match bm {
+        ok(b) {
+            let abc = makeBytes("abc")
+            let f1 = buffer::feed(&b, &abc)
+            match f1 { ok(v) { println("feed1=", v) } err(m, c) { show("feed1_error", c) } }
+            let sep = makeBytes("bc")
+            let fi = buffer::find(&b, &sep, 0)
+            match fi { ok(v) { println("find=", v) } err(m, c) { show("find_error", c) } }
+            let cp = buffer::copy(&b, 2)
+            match cp { ok(v) { println("copy=", string(v)) } err(m, c) { show("copy_error", c) } }
+            let co = buffer::consume(&b, 2)
+            match co { ok(v) { println("consume=", v) } err(m, c) { show("consume_error", c) } }
+            let defgh = makeBytes("defgh")
+            let f2 = buffer::feed(&b, &defgh)
+            match f2 { ok(v) { println("feed2=", v) } err(m, c) { show("feed2_error", c) } }
+            let cp2 = buffer::copy(&b, 6)
+            match cp2 { ok(v) { println("copy2=", string(v)) } err(m, c) { show("copy2_error", c) } }
+            let fg = makeBytes("fg")
+            let fi2 = buffer::find(&b, &fg, 0)
+            match fi2 { ok(v) { println("find2=", v) } err(m, c) { show("find2_error", c) } }
+            let over = makeBytes("xyz")
+            let f3 = buffer::feed(&b, &over)
+            match f3 { ok(v) { println("over=ok") } err(m, c) { show("over", c) } }
+            let beyond = buffer::consume(&b, 100)
+            match beyond { ok(v) { println("consume_beyond=ok") } err(m, c) { show("consume_beyond", c) } }
+            let empty = makeBytes("")
+            let efind = buffer::find(&b, &empty, 0)
+            match efind { ok(v) { println("empty_sep=ok") } err(m, c) { show("empty_sep", c) } }
+        }
+        err(m, c) { show("make_error", c) }
+    }
+    let zero = buffer::make(0)
+    match zero {
+        ok(b) {
+            let empty = makeBytes("")
+            let f = buffer::feed(&b, &empty)
+            match f { ok(v) { println("zero_feed_empty=", v) } err(m, c) { show("zero_feed_empty_error", c) } }
+            let one = makeBytes("x")
+            let f2 = buffer::feed(&b, &one)
+            match f2 { ok(v) { println("zero_feed=ok") } err(m, c) { show("zero_feed", c) } }
+        }
+        err(m, c) { show("zero_make_error", c) }
+    }
+    let neg = buffer::make(-1)
+    match neg { ok(v) { println("neg_make=ok") } err(m, c) { show("neg_make", c) } }
+    let huge = buffer::make(buffer::MAX_BUFFER_BYTES + 1)
+    match huge { ok(v) { println("huge_make=ok") } err(m, c) { show("huge_make", c) } }
+
+    // One writeStep plus one writeExactStep to a file-backed stream.
+    let opts = file::readOptions()
+    opts.write = true
+    opts.create = true
+    opts.exclusive = true
+    opts.truncate = true
+    opts.permissions = 384
+    let made = file::open(workPath, &opts)
+    match made {
+        ok(f) {
+            let st = file::intoStream(&f)
+            match st {
+                ok(s) {
+                    let wm = buffer::make(8)
+                    match wm {
+                        ok(wbuf) {
+                            let w = new buffer::Writer{buffer: wbuf}
+                            let abc = makeBytes("abc")
+                            let wf = buffer::feed(&w.buffer, &abc)
+                            match wf { ok(v) { println("writer_feed=", v) } err(m, c) { show("writer_feed_error", c) } }
+                            let ws = buffer::writeStep(&w, &s)
+                            match ws { ok(v) { println("write_step=", v, " pending=", w.buffer.end - w.buffer.start) } err(m, c) { show("write_step_error", c) } }
+                            let ws0 = buffer::writeStep(&w, &s)
+                            match ws0 { ok(v) { println("write_step_empty=", v) } err(m, c) { show("write_step_empty_error", c) } }
+                        }
+                        err(m, c) { show("writer_make_error", c) }
+                    }
+                    let hello = makeBytes("hello")
+                    let cur = new buffer::Cursor{done: 0}
+                    let wx = buffer::writeExactStep(&s, &hello, &cur)
+                    match wx { ok(v) { println("write_exact=", v, " done=", cur.done) } err(m, c) { show("write_exact_error", c) } }
+                    let again = buffer::writeExactStep(&s, &hello, &cur)
+                    match again { ok(v) { println("write_exact_done=", v, " done=", cur.done) } err(m, c) { show("write_exact_done_error", c) } }
+                    let sc = stream::close(&s)
+                    match sc { ok(v) { println("write_close=", v) } err(m, c) { show("write_close_error", c) } }
+                }
+                err(m, c) { show("into_write_error", c) }
+            }
+        }
+        err(m, c) { show("work_open_error", c) }
+    }
+
+    // readExactStep retains its prefix and distinguishes EOF from short data.
+    let ro = file::readOptions()
+    let rm = file::open(workPath, &ro)
+    match rm {
+        ok(f) {
+            let st = file::intoStream(&f)
+            match st {
+                ok(s) {
+                    let bm2 = buffer::make(16)
+                    match bm2 {
+                        ok(ob) {
+                            let rx = buffer::readExactStep(&s, 8, &ob)
+                            match rx { ok(v) { println("read_exact=", v) } err(m, c) { show("read_exact_error", c) } }
+                            let cp = buffer::copy(&ob, 8)
+                            match cp { ok(v) { println("content=", string(v)) } err(m, c) { show("content_error", c) } }
+                            let rx2 = buffer::readExactStep(&s, 1, &ob)
+                            match rx2 { ok(v) { println("read_exact_eof=ok") } err(m, c) { show("read_exact_eof", c) } }
+                        }
+                        err(m, c) { show("read_make_error", c) }
+                    }
+                    let sc = stream::close(&s)
+                    match sc { ok(v) { println("read_close=", v) } err(m, c) { show("read_close_error", c) } }
+                }
+                err(m, c) { show("into_read_error", c) }
+            }
+        }
+        err(m, c) { show("read_open_error", c) }
+    }
+
+    // readStep preserves data and stops at fixed capacity until consumed.
+    let rm2 = file::open(workPath, &ro)
+    match rm2 {
+        ok(f) {
+            let st = file::intoStream(&f)
+            match st {
+                ok(s) {
+                    let bm3 = buffer::make(4)
+                    match bm3 {
+                        ok(cb) {
+                            let r = new buffer::Reader{buffer: cb, eof: false}
+                            let s1 = buffer::readStep(&r, &s, 4)
+                            match s1 {
+                                ok(n) {
+                                    println("step1=", n)
+                                    let c1 = buffer::copy(&r.buffer, 4)
+                                    match c1 { ok(v) { println("step1_data=", string(v)) } err(m, c) { show("step1_data_error", c) } }
+                                }
+                                err(m, c) { show("step1_error", c) }
+                            }
+                            let s2 = buffer::readStep(&r, &s, 4)
+                            match s2 { ok(n) { println("step2=", n) } err(m, c) { show("step2_full", c) } }
+                            let cc = buffer::consume(&r.buffer, 4)
+                            match cc { ok(v) { println("step_consume=", v) } err(m, c) { show("step_consume_error", c) } }
+                            let s3 = buffer::readStep(&r, &s, 4)
+                            match s3 {
+                                ok(n) {
+                                    println("step3=", n)
+                                    let c3 = buffer::copy(&r.buffer, 4)
+                                    match c3 { ok(v) { println("step3_data=", string(v)) } err(m, c) { show("step3_data_error", c) } }
+                                }
+                                err(m, c) { show("step3_error", c) }
+                            }
+                            let cc3 = buffer::consume(&r.buffer, 4)
+                            match cc3 { ok(v) { println("step3_consume=", v) } err(m, c) { show("step3_consume_error", c) } }
+                            let s4 = buffer::readStep(&r, &s, 4)
+                            match s4 { ok(n) { println("step_eof=", n, " eof=", r.eof) } err(m, c) { show("step_eof_error", c) } }                        }
+                        err(m, c) { show("reader_make_error", c) }
+                    }
+                    let sc = stream::close(&s)
+                    match sc { ok(v) { println("reader_close=", v) } err(m, c) { show("reader_close_error", c) } }
+                }
+                err(m, c) { show("into_reader_error", c) }
+            }
+        }
+        err(m, c) { show("reader_open_error", c) }
+    }
+
+    // Bounded file copy: read into a 5-byte buffer, drain into a 5-byte writer.
+    let srcOpts = file::readOptions()
+    srcOpts.write = true
+    srcOpts.create = true
+    srcOpts.exclusive = true
+    srcOpts.truncate = true
+    srcOpts.permissions = 384
+    let sm = file::open(srcPath, &srcOpts)
+    match sm {
+        ok(sf) {
+            let text = makeBytes("The quick brown fox")
+            let written = file::writeSome(&sf, &text, 0, 19)
+            match written { ok(v) { println("source_write=", v) } err(m, c) { show("source_write_error", c) } }
+            let sk = file::seek(&sf, 0, file::SEEK_START)
+            match sk { ok(v) { println("source_seek=", v) } err(m, c) { show("source_seek_error", c) } }
+            let ss = file::intoStream(&sf)
+            match ss {
+                ok(src) {
+                    let dm = file::open(dstPath, &srcOpts)
+                    match dm {
+                        ok(df) {
+                            let ds = file::intoStream(&df)
+                            match ds {
+                                ok(dst) {
+                                    let cbm = buffer::make(5)
+                                    match cbm {
+                                        ok(cbuf) {
+                                            let r = new buffer::Reader{buffer: cbuf, eof: false}
+                                            let wbm = buffer::make(5)
+                                            match wbm {
+                                                ok(wbuf) {
+                                                    let w = new buffer::Writer{buffer: wbuf}
+                                                    var copying = true
+                                                    var total = 0
+                                                    while copying {
+                                                        let step = buffer::readStep(&r, &src, 5)
+                                                        match step {
+                                                            ok(n) {
+                                                                if n == 0 { copying = false } else {
+                                                                    total += n
+                                                                    let got = buffer::copy(&r.buffer, n)
+                                                                    match got {
+                                                                        ok(chunk) {
+                                                                            let cf = buffer::feed(&w.buffer, &chunk)
+                                                                            match cf { ok(v) { } err(m, c) { show("copy_feed_error", c); copying = false } }
+                                                                        }
+                                                                        err(m, c) { show("copy_chunk_error", c); copying = false }
+                                                                    }
+                                                                    let cdone = buffer::consume(&r.buffer, n)
+                                                                    match cdone { ok(v) { } err(m, c) { show("copy_consume_error", c); copying = false } }
+                                                                    var flushing = true
+                                                                    while flushing {
+                                                                        let wstep = buffer::writeStep(&w, &dst)
+                                                                        match wstep {
+                                                                            ok(wn) { if wn == 0 { flushing = false } }
+                                                                            err(m, c) { show("copy_write_error", c); flushing = false; copying = false }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            err(m, c) { show("copy_read_error", c); copying = false }
+                                                        }
+                                                    }
+                                                    println("copy_total=", total)
+                                                }
+                                                err(m, c) { show("copy_wmake_error", c) }
+                                            }
+                                        }
+                                        err(m, c) { show("copy_bmake_error", c) }
+                                    }
+                                    let dc = stream::close(&dst)
+                                    match dc { ok(v) { println("copy_dst_close=", v) } err(m, c) { show("copy_dst_close_error", c) } }
+                                }
+                                err(m, c) { show("copy_dst_into_error", c) }
+                            }
+                        }
+                        err(m, c) { show("copy_dst_open_error", c) }
+                    }
+                    let sc2 = stream::close(&src)
+                    match sc2 { ok(v) { println("copy_src_close=", v) } err(m, c) { show("copy_src_close_error", c) } }
+                }
+                err(m, c) { show("copy_src_into_error", c) }
+            }
+        }
+        err(m, c) { show("copy_src_open_error", c) }
+    }
+
+    let dm2 = file::open(dstPath, &ro)
+    match dm2 {
+        ok(f) {
+            let st = file::intoStream(&f)
+            match st {
+                ok(s) {
+                    let vb = buffer::make(32)
+                    match vb {
+                        ok(ob) {
+                            let rx = buffer::readExactStep(&s, 19, &ob)
+                            match rx { ok(v) { println("copy_verify=", v) } err(m, c) { show("copy_verify_error", c) } }
+                            let cp = buffer::copy(&ob, 19)
+                            match cp { ok(v) { println("copy_content=", string(v)) } err(m, c) { show("copy_content_error", c) } }
+                        }
+                        err(m, c) { show("copy_verify_make_error", c) }
+                    }
+                    let sc = stream::close(&s)
+                    match sc { ok(v) { println("copy_verify_close=", v) } err(m, c) { show("copy_verify_close_error", c) } }
+                }
+                err(m, c) { show("copy_verify_into_error", c) }
+            }
+        }
+        err(m, c) { show("copy_verify_open_error", c) }
+    }
+
+    let cnt = platform::counts()
+    match cnt { ok(c) { println("counts=", c.resources, ",", c.shells) } err(m, c) { show("counts_error", c) } }
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.shells, ",", c.cleanupFailures) } err(m, c) { show("shutdown_error", c) } }
+}

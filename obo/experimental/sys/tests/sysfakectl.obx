@@ -9,6 +9,21 @@ pub const CLASS_NEW = 1
 pub const CLASS_OP = 2
 pub const CLASS_CLOSE = 3
 pub const CLASS_VALIDATE = 4
+pub const CLASS_FILE_OPEN = 5
+pub const CLASS_DIR_OPEN = 6
+pub const CLASS_DIR_ITERATE = 7
+pub const CLASS_DIR_NEXT = 8
+pub const CLASS_READ = 9
+pub const CLASS_WRITE = 10
+pub const CLASS_SEEK = 11
+pub const CLASS_TRUNCATE = 12
+pub const CLASS_STAT = 13
+pub const CLASS_DUP = 14
+pub const CLASS_RETAG = 15
+pub const CLASS_CLOCK = 16
+pub const CLASS_SLEEP = 17
+pub const CLASS_RANDOM = 18
+pub const CLASS_STANDARD = 19
 
 pub fn reset(): int {
     return __cinterop("sysfake_reset")
@@ -24,6 +39,14 @@ pub fn setTime(value: int): int {
 
 pub fn now(): int {
     return __cinterop("sysfake_now")
+}
+
+pub fn setRealtime(seconds: int, nanos: int): int {
+    return __cinterop("sysfake_set_realtime", seconds, nanos)
+}
+
+pub fn setSeed(value: int): int {
+    return __cinterop("sysfake_set_seed", value)
 }
 
 pub fn count(callClass: int): int {

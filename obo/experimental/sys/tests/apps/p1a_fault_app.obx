@@ -1,0 +1,135 @@
+// P1a scripted-fault root. Built only with sysadapter_fake_ctl.cbind, which
+// adds the sysfake_* controls. Every one-shot call is scripted once and the
+// per-class call count proves there was no hidden retry.
+module app
+
+import "sysplatform.obx" as platform
+import "sysfile.obx" as file
+import "sysdir.obx" as dir
+import "sysclock.obx" as clock
+import "sysrandom.obx" as random
+import "sysfakectl.obx" as fake
+import "syserrors.obx" as errors
+
+fn show(label: string, code: int) {
+    let k = errors::kind(code)
+    println(label, "=", errors::text(&k))
+}
+
+fn makeBytes(s: string): []byte {
+    let out = new []byte(len(s))
+    for i in 0..len(s) { out[i] = s[i] }
+    return out
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini { ok(v) { println("init=", v) } err(m, c) { show("init_error", c) } }
+    println("fake_reset=", fake::reset())
+    let av = args()
+    let path = av[1]
+
+    fake::push(fake::CLASS_FILE_OPEN, -24)
+    let opts = file::readOptions()
+    opts.write = true
+    opts.create = true
+    opts.truncate = true
+    let emfile = file::open(path, &opts)
+    match emfile { ok(v) { println("scripted_open=ok") } err(m, c) { show("scripted_open", c) } }
+    println("file_open_calls=", fake::count(fake::CLASS_FILE_OPEN))
+
+    fake::push(fake::CLASS_FILE_OPEN, -2)
+    let enoent = file::open(path, &opts)
+    match enoent { ok(v) { println("scripted_enoent=ok") } err(m, c) { show("scripted_enoent", c) } }
+    println("file_open_calls2=", fake::count(fake::CLASS_FILE_OPEN))
+
+    let made = file::open(path, &opts)
+    match made {
+        ok(f) {
+            fake::push(fake::CLASS_READ, -4)
+            let r1 = file::readSome(&f, 4)
+            match r1 { ok(v) { println("read_eintr=ok") } err(m, c) { show("read_eintr", c) } }
+            println("read_calls_eintr=", fake::count(fake::CLASS_READ))
+
+            fake::push(fake::CLASS_READ, -11)
+            let r2 = file::readSome(&f, 4)
+            match r2 { ok(v) { println("read_eagain=ok") } err(m, c) { show("read_eagain", c) } }
+            println("read_calls_eagain=", fake::count(fake::CLASS_READ))
+
+            let r3 = file::readSome(&f, 4)
+            match r3 { ok(v) { if v == nil { println("read_eof=nil") } else { println("read_eof=data") } } err(m, c) { show("read_eof", c) } }
+
+            let text = makeBytes("abcde")
+            fake::push(fake::CLASS_WRITE, 2)
+            let w1 = file::writeSome(&f, &text, 0, 5)
+            match w1 { ok(v) { println("write_short=", v) } err(m, c) { show("write_short", c) } }
+            println("write_calls_short=", fake::count(fake::CLASS_WRITE))
+
+            fake::push(fake::CLASS_WRITE, -12)
+            let w2 = file::writeSome(&f, &text, 2, 3)
+            match w2 { ok(v) { println("write_nomem=ok") } err(m, c) { show("write_nomem", c) } }
+            println("write_calls_nomem=", fake::count(fake::CLASS_WRITE))
+
+            fake::push(fake::CLASS_STAT, -12)
+            let m1 = file::metadata(&f)
+            match m1 { ok(v) { println("stat_nomem=ok") } err(m, c) { show("stat_nomem", c) } }
+            println("stat_calls=", fake::count(fake::CLASS_STAT))
+
+            fake::push(fake::CLASS_CLOSE, -4)
+            let c1 = file::close(&f)
+            match c1 { ok(v) { println("close_eintr=ok") } err(m, c) { show("close_eintr", c) } }
+            let c2 = file::close(&f)
+            match c2 { ok(v) { println("close_again=", v) } err(m, c) { show("close_again_error", c) } }
+        }
+        err(m, c) { show("open_error", c) }
+    }
+
+    fake::push(fake::CLASS_DIR_OPEN, -2)
+    let dm = dir::open(path)
+    match dm { ok(v) { println("dir_enoent=ok") } err(m, c) { show("dir_enoent", c) } }
+    println("dir_open_calls=", fake::count(fake::CLASS_DIR_OPEN))
+
+    fake::push(fake::CLASS_RANDOM, -11)
+    let rb = random::bytes(8, false)
+    match rb { ok(v) { println("random_eagain=ok") } err(m, c) { show("random_eagain", c) } }
+    println("random_calls=", fake::count(fake::CLASS_RANDOM))
+
+    fake::setTime(1234)
+    let now = clock::monotonic()
+    match now {
+        ok(n) {
+            let d = clock::durationNs(10)
+            match d {
+                ok(dur) {
+                    let dl = clock::after(&n, &dur)
+                    match dl {
+                        ok(deadline) {
+                            fake::push(fake::CLASS_SLEEP, -4)
+                            let s1 = clock::sleepUntil(&deadline)
+                            match s1 { ok(v) { println("sleep_eintr=ok") } err(m, c) { show("sleep_eintr", c) } }
+                            let s2 = clock::sleepUntil(&deadline)
+                            match s2 { ok(v) { println("sleep_retry=", v) } err(m, c) { show("sleep_retry", c) } }
+                            let afterSleep = clock::monotonic()
+                            match afterSleep { ok(a) { println("fake_time=", a.nanos) } err(m, c) { show("fake_time_error", c) } }
+                        }
+                        err(m, c) { show("deadline_error", c) }
+                    }
+                }
+                err(m, c) { show("duration_error", c) }
+            }
+        }
+        err(m, c) { show("monotonic_error", c) }
+    }
+
+    let k23 = errors::fromErrno(23)
+    let k24 = errors::fromErrno(24)
+    let k12 = errors::fromErrno(12)
+    let k2 = errors::fromErrno(2)
+    println("errno_map=", errors::text(&k23), ",", errors::text(&k24), ",", errors::text(&k12), ",", errors::text(&k2))
+
+    let cnt = platform::counts()
+    match cnt { ok(c) { println("counts_resources=", c.resources) } err(m, c) { show("counts_error", c) } }
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.cleanupFailures) } err(m, c) { show("shutdown_error", c) } }
+}
