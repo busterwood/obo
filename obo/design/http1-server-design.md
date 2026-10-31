@@ -1,7 +1,9 @@
 # HTTP/1.1 server protocol layer
 
 Status: **design for independent review; no implementation authorized.**
-Revision 3 (2026-10-31): resolves the focused review at
+Revision 4 (2026-10-31): final handler-example corrections after `1c24d2c`
+(resumable/reset state, viable response-buffer minimum, known-length example,
+`2 * maxTarget` aggregate). Revision 3 resolved the focused review at
 `/tmp/opencode/http1-rev2-review-1379386`; revision 2 resolved the first
 review. Revision 3 disarms accept/handshake deadlines and resets request/
 response totals per message, fixes the accept sketch, retries `endResponse`,
@@ -354,13 +356,15 @@ pub type FlushOutcome = closed {
 `maxChunkLine <= maxChunkMetadata`, `maxChunkSize <= maxBody`,
 `maxResponseHeaderBytes <= maxResponseBuffer`,
 `maxResponseTrailerBytes + 16 <= maxResponseBuffer`,
-`maxResponseBuffer >= 64` (so a chunk terminator/trailer block can eventually
-fit), `maxPipelineBytes <= maxHeaderBytes + maxHeaderLine`, and
+`maxResponseBuffer >= 256` (so a minimal status line/header block and final
+chunk terminator/trailer block fit), `maxPipelineBytes <= maxHeaderBytes +
+maxHeaderLine`, and
 `maxTotalConnectionBytes >= maxConnections * perConnectionBytes` where
 `perConnectionBytes = maxHeaderBytes + maxHeaderLine + maxResponseBuffer +
-maxHeaderBytes + maxTarget` (fixed buffers plus the bounded `RequestInfo`
-header and target/path/query copies).
-The multiplication and `maxResponseTrailerBytes + 16` are checked; overflow or
+maxHeaderBytes + 2 * maxTarget` (fixed buffers plus the bounded `RequestInfo`
+header copy; target, path and query can together approach `2 * maxTarget`).
+The multiplication, `2 * maxTarget` and `maxResponseTrailerBytes + 16` are
+checked; overflow or
 a budget below the reservation is `InvalidArgument`/`ResourceLimit`, never a
 wrapped smaller budget.
 Timeout values are positive and fit a checked millisecond-to-nanosecond
@@ -1411,9 +1415,10 @@ need, not retried inside the handler.
 `BodyEnd` sets `bodyDone`; on re-entry `pumpEcho` skips `readBody` and calls
 `finishEcho`. `finishEcho` retries `endResponse` until it returns `true`, then
 flushes until `Flushed`; `false` is never treated as completion. `respondHello`
-is the bodyless-response example: it sets headers/length/status once, persists
-`bodyPos`, and resumes `writeText` without replaying the prefix. A request with
-a body must use `pumpEcho`, read/discard to `BodyEnd`, or `requestClose`.
+is the known-length response example (it writes `hello\n`); it sets
+headers/length/status once, persists `bodyPos`, and resumes `writeText` without
+replaying the prefix. A request with a body must use `pumpEcho`, read/discard
+to `BodyEnd`, or `requestClose`.
 Both handlers reset at `HeadReady` and `ResponseComplete`; a second keep-alive
 request starts clean.
 
@@ -1489,8 +1494,11 @@ fn acceptOne(l: &net::Listener, r: &reactor::Reactor,
     let t = http1::plain(s)                 // or http1tls::accept(ctx, s)
     let c = try http1::make(limits)         // deep-copies Limits
     let session = new EchoSession{
-        conn: c, transport: t, pendingBytes: new []byte(0),
-        pending: 0, pendingPos: 0, started: false, ended: false
+        conn: c, transport: t,
+        pendingBytes: new []byte(0), pending: 0, pendingPos: 0,
+        bodyDone: false, responseStarted: false,
+        finalQueued: false, responseFinished: false,
+        bodyPos: 0, bodyText: ""
     }
     let w = try session.transport.watch(r, true, false, tag)
     return ok(new Slot{gen: tag, live: true, session: session,
@@ -1585,7 +1593,7 @@ Rules:
 - `maxConnections` and `maxTotalConnectionBytes` are admission policy. A
   connection reserves at least
   `maxHeaderBytes + maxHeaderLine + maxResponseBuffer + maxHeaderBytes +
-  maxTarget` bytes (fixed buffers plus the bounded `RequestInfo` header and
+  2 * maxTarget` bytes (fixed buffers plus the bounded `RequestInfo` header and
   target/path/query copies); the server
   rejects a new accept (or closes it with a bounded `503`) when either the
   count or the aggregate budget would be exceeded. Raising
@@ -1879,7 +1887,7 @@ output byte array. No sleeps, no TLS, no sockets.
 | 100 early final | final before read/100; connection closes; no 100 after final |
 | slow reader | response idle renews, response total does not; forced close |
 | response trailers | count/byte caps enforced; forbidden names rejected |
-| endResponse false | viable tiny `maxResponseBuffer` (64, trailer cap <=48) forces `false`; handler flushes and retries; terminator/trailers complete; values below validation minimum rejected |
+| endResponse false | viable tiny `maxResponseBuffer` (256, trailer cap <=240) forces `false`; handler flushes and retries; terminator/trailers complete; values below validation minimum rejected |
 | handler forced yield | exact `pumpEcho`/`respondHello` sketches; `writeText 0`, `endResponse false`, `FlushWantWrite`; one status/header/body/terminator; second keep-alive request clean |
 | per-request reset | `HeadReady`/`ResponseComplete` clear bodyDone/responseStarted/finalQueued/bodyPos; no header/body replay |
 | TLS pending ciphertext | `Flushed` false while `pending>0`; flushPending drives it |
@@ -1891,7 +1899,7 @@ output byte array. No sleeps, no TLS, no sockets.
 | maxHeaderLine/bytes | CRLF included; exact +1 |
 | maxChunkMetadata/count | exact boundary and +1 |
 | maxResponseHeaderBytes | exact commit and +1 rejection |
-| maxResponseBuffer minimum | 64 accepted; below 64 rejected; endResponse cannot fail forever |
+| maxResponseBuffer minimum | 256 accepted; below 256 rejected; endResponse cannot fail forever |
 | pipeline/request caps | maxPipelineBytes, maxRequests, pipelining=false |
 | HTTP/1.0 | valid response, close, no chunked/keep-alive; Host optional |
 | 304/205/HEAD | CL metadata rules; HEAD default omits CL; 205 length 0 |
