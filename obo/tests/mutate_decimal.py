@@ -130,9 +130,9 @@ RUNTIME_MUTANTS = [
      "decimal24_core.inc",
      "        if (i == frac_start) return 0;         /* '1.' is invalid */",
      "        if (i == frac_start) return 1;         /* '1.' is invalid */"),
-    ("core parser accepts trailing whitespace or underscores",
+    ("public strict wrapper is bypassed",
      "decimal24_core.inc",
-     "    if (i != len) return DEC_INVALID;",
+     "    if (!dec_public_grammar(text, len)) return DEC_INVALID;",
      "    if (0) return DEC_INVALID;"),
     ("precision limit becomes 39 digits",
      "decimal24_core.inc",
@@ -156,8 +156,8 @@ RUNTIME_MUTANTS = [
      "        if (shift > (__int128)(37 - digits)) return DEC_EXPONENT_RANGE;"),
     ("negative zero keeps its sign",
      "decimal24_core.inc",
-     "    if (lo == 0 && hi == 0) {\n        d->sign = 0;\n        d->exp = 0;",
-     "    if (lo == 0 && hi == 0) {\n        d->sign = (uint8_t)sign;\n        d->exp = 0;"),
+     "    if (!acc.started) {\n        return dec_set(out, 0, 0, 0, 0, (uint16_t)dscale);\n    }",
+     "    if (!acc.started) {\n        dec_set(out, 0, 0, 0, 0, (uint16_t)dscale);\n        out->sign = (uint8_t)sign;\n        return DEC_OK;\n    }"),
     ("parse precision status becomes exponent range",
      "decimal24_core.inc",
      "    if (acc.overflow) return DEC_PRECISION_OVERFLOW;",
@@ -284,18 +284,19 @@ TEXT_CASES = [
     ('max_output', '4MiB', 0, None),
     ('try_bad', '64KiB', 0, None),
     ('try_reuse', '64KiB', 0, None),
-    ('alloc_too_large', '64KiB', 2, 'obx: object too large\\n'),
-    ('alloc_oom', '64KiB', 2, 'obx: out of memory\\n'),
+    ('alloc_too_large', '64KiB', 2, 'obx: object too large\n'),
+    ('alloc_oom', '64KiB', 2, 'obx: out of memory\n'),
     ('parse10', '64KiB', 0, None),
     ('format10', '64KiB', 0, None),
     ('canonical10', '64KiB', 0, None),
+    ('format_truncate', '64KiB', 0, None),
     ('check10', '64KiB', 0, None),
-    ('bad_exp_sign', '64KiB', 10, 'obo: decimal invalid value\\n'),
-    ('bad_exp_coeff', '64KiB', 10, 'obo: decimal invalid value\\n'),
-    ('bad_exp_flags', '64KiB', 10, 'obo: decimal invalid value\\n'),
-    ('bad_exp_pad', '64KiB', 10, 'obo: decimal invalid value\\n'),
-    ('bad_dscale_sign', '64KiB', 10, 'obo: decimal invalid value\\n'),
-    ('bad_dscale_coeff', '64KiB', 10, 'obo: decimal invalid value\\n'),
+    ('bad_exp_sign', '64KiB', 10, 'obo: decimal invalid value\n'),
+    ('bad_exp_coeff', '64KiB', 10, 'obo: decimal invalid value\n'),
+    ('bad_exp_flags', '64KiB', 10, 'obo: decimal invalid value\n'),
+    ('bad_exp_pad', '64KiB', 10, 'obo: decimal invalid value\n'),
+    ('bad_dscale_sign', '64KiB', 10, 'obo: decimal invalid value\n'),
+    ('bad_dscale_coeff', '64KiB', 10, 'obo: decimal invalid value\n'),
     ('bad_format', '64KiB', 0, None),
     ('bad_canonical', '64KiB', 0, None),
     ('bad_check', '64KiB', 0, None),
@@ -337,7 +338,7 @@ def run_text_suite(rt, work, verbose):
     return True
 
 
-def run_suite(exe, rt, work, verbose):
+def run_suite(exe, rt, work, verbose, runtime_dir=None):
     env = dict(os.environ, OBO=exe, OBO_RT=rt)
     r = subprocess.run([sys.executable, RUNNER, '-k', 'decimal'],
                        capture_output=True, text=True, timeout=300, env=env)
@@ -346,7 +347,7 @@ def run_suite(exe, rt, work, verbose):
             for line in (r.stdout + r.stderr).splitlines()[:8]:
                 print('        ' + line)
         return False
-    return run_text_suite(rt, work, verbose)
+    return run_text_suite(runtime_dir or rt, work, verbose)
 
 
 def main():
@@ -355,6 +356,13 @@ def main():
     tmp = tempfile.mkdtemp(prefix='obo-mut-decimal-')
     caught = missed = broken = 0
     try:
+        # The unmutated baseline must pass the same judge path; otherwise a
+        # broken expectation would make every mutant look caught.
+        if not run_suite(os.path.join(FORK, 'obo'), FORK, tmp, verbose,
+                         runtime_dir=os.path.join(FORK, 'runtime')):
+            print("BROKEN  baseline: the unmutated decimal suite or text cases failed")
+            return 1
+        print("baseline ok")
         for item in MUTANTS:
             name, old, new = item[0], item[1], item[2]
             want = item[3] if len(item) > 3 else 1

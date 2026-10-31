@@ -88,6 +88,11 @@ fn main() {
     canonicalIs(1e-32768, "1e-32768")           // expect: ok
     canonicalIs(1e32804, "1e32804")             // expect: ok
 
+    // Database vector: a full 38-digit coefficient at the minimum exponent.
+    let db38 = "12345678901234567890123456789012345678e-32768"
+    codeOf(decimal::parse(db38))                 // expect: ok
+    canonicalTextIs(db38, "1.2345678901234567890123456789012345678e-32731") // expect: ok
+
     let longCell = zeros(100000) + "1"
     codeOf(decimal::parse(longCell))            // expect: ok
     canonicalTextIs(longCell, "1") // expect: ok

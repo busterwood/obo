@@ -178,6 +178,17 @@ static void case_canonical10(void) {
     rt_finish();
 }
 
+/* A display cap that would drop exactly one nonzero digit: c=12345, e=-5,
+ * s=4, so e+s+t == -1.  The formatter must return INEXACT, not truncate. */
+static void case_format_truncate(void) {
+    dec24 v;
+    CHECK(dec_set(&v, 0, 12345, 0, -5, 4) == DEC_OK);
+    u64 c = rt_dec_format_text(&v, (u64)desc_err, (u64)desc_str);
+    check_err(c, DEC_INEXACT,
+              "obo: decimal display scale would drop nonzero digits");
+    rt_finish();
+}
+
 /* Malformed raw values must trap, not return a Result. */
 static void case_bad_exp_sign(void) {
     dec24 v;
@@ -287,6 +298,7 @@ void test_main(u64 *sp) {
     else if (c_eq(c, "check10")) case_check10();
     else if (c_eq(c, "format10")) case_format10();
     else if (c_eq(c, "canonical10")) case_canonical10();
+    else if (c_eq(c, "format_truncate")) case_format_truncate();
     else if (c_eq(c, "bad_exp_sign")) case_bad_exp_sign();
     else if (c_eq(c, "bad_exp_coeff")) case_bad_exp_coeff();
     else if (c_eq(c, "bad_exp_flags")) case_bad_exp_flags();

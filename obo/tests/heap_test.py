@@ -192,6 +192,8 @@ def text_section():
     for case in ('parse10', 'format10', 'canonical10', 'check10'):
         check_case(exe, f'{case}: 32-byte err block fits, payload fails',
                    case, clean_env('64KiB'))
+    check_case(exe, 'format INEXACT at e+s+t == -1', 'format_truncate',
+               clean_env('64KiB'))
     for case in ('bad_exp_sign', 'bad_exp_coeff', 'bad_exp_flags',
                  'bad_exp_pad', 'bad_dscale_sign', 'bad_dscale_coeff'):
         check_case(exe, f'malformed accessor {case}', case, clean_env('64KiB'),

@@ -171,8 +171,8 @@ fraction with at least one digit and an optional exponent, all ASCII; empty
 text, whitespace, grouping, underscores, NUL, non-ASCII, `.5`, `1.`, `NaN` and
 `Infinity` are invalid. `-0` is positive zero and the written display scale is
 preserved. `format` never rounds: a capped `dscale` that would drop a nonzero
-digit returns code 3. `canonical` is `0` for zero, fixed below 128 bytes of
-magnitude text and lowercase scientific above it. `check` requires
+digit returns code 3. `canonical` is `0` for zero, fixed at or below 128 bytes
+of magnitude text and lowercase scientific above it. `check` requires
 `value*10^s` to be an integer with at most `p` digits, `p` 1..1000 and `s`
 -1000..1000; it ignores `dscale` and never rounds. Text API error messages are
 exact and carry the core status as the `Result` code (3, 4, 6, 7, 8, 9 or 10).

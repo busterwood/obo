@@ -6289,10 +6289,12 @@ freestanding runtime adds no libc/libgcc or float import; `runtime_text.bin` is
 `float_f1` **19 groups**; `doc_check` **71 examples**; `imports` **29/29**;
 `stdlib` **16/16**; `tools` **509 passed**; cinterop, DB-adapter and systems P0
 suites pass; the evidence runner reports **32,719 C checks, 0 failures** (D2)
-with empty forbidden/undefined symbols. `mutate_decimal` catches **64/64**
-(compiler dispatch/request, core text semantics, allocator, entry slots 73-78);
-`mutate_fork` is **694 caught + 31 equivalent of 725**; `mutate_port` is
-**540/540**. Self-compile live peak is 2,239,376 bytes in the heap gate and
+with empty forbidden/undefined symbols. `mutate_decimal` (the focused gate; its
+text compiler/core/entry catalog lives there rather than in the shared
+`mutate_fork`/`mutate_port` catalogs) validates an unmutated baseline first and
+catches **64/64** (compiler dispatch/request, core text semantics, allocator,
+entry slots 73-78); `mutate_fork` is **694 caught + 31 equivalent of 725**;
+`mutate_port` is **540/540**. Self-compile live peak is 2,239,376 bytes in the heap gate and
 2,239,328 in the port comparison, both below 2,500,000; the empty-array
 savings oracle is 48,192 bytes, above 30,000.
 
