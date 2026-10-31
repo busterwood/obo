@@ -569,8 +569,24 @@ def verify_doc(doc, base, full):
                         % (doc['signature_check'], SIG_MODES))
     if list(doc['effects']) != list(EFFECTS):
         raise ToolError("manifest effects are not the conservative contract")
+    if not isinstance(doc['module'], str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', doc['module']):
+        raise ToolError("manifest module is malformed")
     if not isinstance(doc['symbols'], list) or not isinstance(doc['expected_thunks'], list):
         raise ToolError("manifest symbols/thunks are malformed")
+    for sym in doc['symbols']:
+        if not isinstance(sym, dict):
+            raise ToolError("manifest symbol entry is not an object")
+        for k in ('name', 'symbol', 'args', 'ret'):
+            if k not in sym:
+                raise ToolError("manifest symbol entry is missing %r" % k)
+        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', str(sym['name'])):
+            raise ToolError("manifest symbol name is malformed")
+        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', str(sym['symbol'])):
+            raise ToolError("manifest C symbol is malformed")
+        if not isinstance(sym['args'], list) or any(a != 'i64' for a in sym['args']):
+            raise ToolError("manifest symbol arguments are not i64")
+        if sym['ret'] not in ('i32', 'i64'):
+            raise ToolError("manifest symbol result is not i32/i64")
     if sorted(doc['expected_thunks']) != sorted('obo_native_' + s['symbol'] for s in doc['symbols']):
         raise ToolError("manifest thunk list does not match its symbols")
     files = doc['files']
@@ -581,6 +597,21 @@ def verify_doc(doc, base, full):
     missing = required - set(files)
     if missing:
         raise ToolError("manifest is missing required file role(s): %s" % ', '.join(sorted(missing)))
+    # Cross-check the manifest's own symbol metadata against the hashed spec.
+    # The spec hash alone would not catch a manifest that rewrites symbols and
+    # thunks consistently while pointing at an unchanged spec file.
+    spec_path = os.path.normpath(os.path.join(base, paths['spec']))
+    if os.path.isfile(spec_path):
+        spec = load_spec(spec_path)
+        if doc['module'] != spec['module']:
+            raise ToolError("manifest module %r does not match spec module %r"
+                            % (doc['module'], spec['module']))
+        want_syms = [{'name': f['name'], 'symbol': f['symbol'],
+                      'args': f['args'], 'ret': f['ret']} for f in spec['functions']]
+        got_syms = [{'name': s['name'], 'symbol': s['symbol'],
+                     'args': s['args'], 'ret': s['ret']} for s in doc['symbols']]
+        if got_syms != want_syms:
+            raise ToolError("manifest symbols do not match the spec")
     for key, want in files.items():
         path = os.path.normpath(os.path.join(base, paths[key]))
         if not os.path.isfile(path):

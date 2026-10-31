@@ -349,6 +349,20 @@ def negative(tmp, scalar_out):
     json.dump(m, open(mpath, 'w'))
     if verify(copy).returncode == 0:
         raise Fail("manifest metadata tamper was not rejected")
+    # A consistent rewrite of symbols+thunks must still be rejected against the
+    # hashed spec, not just against its own metadata.
+    copy = os.path.join(tmp, 'prov_symbols')
+    shutil.copytree(prov, copy)
+    mpath = os.path.join(copy, 'manifest.json')
+    m = json.load(open(mpath))
+    for k, rel in list(m['paths'].items()):
+        m['paths'][k] = os.path.join(copy, rel) if not os.path.isabs(rel) else rel
+    m['symbols'][0]['symbol'] = 'evil'
+    m['expected_thunks'] = ['obo_native_evil'] + m['expected_thunks'][1:]
+    json.dump(m, open(mpath, 'w'))
+    if verify(copy).returncode == 0:
+        raise Fail("manifest symbol/thunk rewrite was not rejected against the spec")
+
 
 
 def pq(tmp):

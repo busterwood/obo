@@ -635,8 +635,15 @@ P3 (libpq, conditional):
 - if installed headers and library are available, build `PQlibVersion` and
   print the actual version;
 - `ldd`/`readelf -d` show `libpq.so.5` and normal dynamic dependencies;
-- no `PQconnectdb`, query, server, socket or service action;
-- if unavailable, record `blocked: libpq` and do not install anything.
+- real `PQmakeEmptyPGresult(NULL, status)` + `PQclear` proves result ownership
+  without a connection;
+- the explicit-close adapter is exercised against a fake libpq for NULL/empty,
+  binary/NUL, errors, allocation failure and close counts;
+- the live `PQconnectdb`/`PQexecParams` smoke test runs only when the user
+  explicitly supplies a local DSN; it uses SELECTs and does not modify server
+  configuration, roles, schema or persistent data;
+- if the library is unavailable, record `blocked: libpq` and do not install
+  anything.
 
 Regression gates for the prototype commit:
 
