@@ -1,0 +1,33 @@
+{
+  "format": "cinterop-proto/1",
+  "module": "sysplatform",
+  "platform": "x86_64-linux-gnu",
+  "abi": "sysv-amd64",
+  "wrapper": "../sysplatform.obx",
+  "wrapper_sources": [
+    "../syserrors.obx",
+    "../systestres.obx",
+    "../sysbytes.obx",
+    "../tests/sysfakectl.obx"
+  ],
+  "sources": ["sysregistry.c", "sysadapter_fake.c"],
+  "headers": ["sysadapter.h"],
+  "libs": [],
+  "cflags": [],
+  "functions": [
+    {"name": "sys_adapter_init", "symbol": "sys_adapter_init", "args": ["i64", "i64"], "ret": "i64", "effects": ["impure"]},
+    {"name": "sys_adapter_shutdown", "symbol": "sys_adapter_shutdown", "args": [], "ret": "i64", "effects": ["impure"]},
+    {"name": "sys_res_new", "symbol": "sys_res_new", "args": ["i64", "i64", "i64"], "ret": "i64", "effects": ["impure"]},
+    {"name": "sys_res_validate", "symbol": "sys_res_validate", "args": ["i64", "i64"], "ret": "i64", "effects": ["impure"]},
+    {"name": "sys_res_close", "symbol": "sys_res_close", "args": ["i64", "i64"], "ret": "i64", "effects": ["impure"]},
+    {"name": "sys_res_op", "symbol": "sys_res_op", "args": ["i64", "i64", "i64", "i64", "i64", "i64"], "ret": "i64", "effects": ["impure"]},
+    {"name": "sys_res_live_count", "symbol": "sys_res_live_count", "args": [], "ret": "i64", "effects": ["impure"]},
+    {"name": "sys_res_bytes", "symbol": "sys_res_bytes", "args": [], "ret": "i64", "effects": ["impure"]},
+    {"name": "sys_res_cleanup_failures", "symbol": "sys_res_cleanup_failures", "args": [], "ret": "i64", "effects": ["impure"]},
+    {"name": "sysfake_reset", "symbol": "sysfake_reset", "args": [], "ret": "i64", "effects": ["impure"]},
+    {"name": "sysfake_push", "symbol": "sysfake_push", "args": ["i64", "i64"], "ret": "i64", "effects": ["impure"]},
+    {"name": "sysfake_set_time", "symbol": "sysfake_set_time", "args": ["i64"], "ret": "i64", "effects": ["impure"]},
+    {"name": "sysfake_now", "symbol": "sysfake_now", "args": [], "ret": "i64", "effects": ["impure"]},
+    {"name": "sys_res_call_count", "symbol": "sys_res_call_count", "args": ["i64"], "ret": "i64", "effects": ["impure"]}
+  ]
+}

@@ -1,0 +1,196 @@
+// Experimental systems library: bounded C-owned byte bridge (P0).
+//
+// Status: experimental P0 proof. P1a builds the bounded stream/file buffers on
+// this seam; the API may change.
+//
+// A Bytes shell contains only `res: platform::Resource`. The bytes live in a
+// C-owned buffer reached through the managed identity table; no pointer and no
+// registry token crosses to obo. Every offset/count is checked against both
+// the obo array and the C buffer before indexing or copying. The bridge is
+// NUL-safe: all lengths are explicit and no C string function is used.
+//
+// The per-buffer limit is 16 MiB (platform::MAX_BYTE_BUFFER). Larger logical
+// transfers are caller chunk loops, not a hidden allocation.
+//
+// `copyIn`/`copyOut` use packed groups of at most seven bytes (fits a positive
+// signed 56-bit value). `copyInScalar`/`copyOutScalar` are the reference
+// one-byte path used by the P0 benchmark.
+module sysbytes
+
+import "sysplatform.obx" as platform
+import "syserrors.obx" as errors
+
+pub type Bytes = ref record { res: platform::Resource }
+
+fn libCode(k: errors::Kind): int {
+    return errors::code(&k)
+}
+
+fn invalidArgument(): int { return libCode(new errors::InvalidArgument{}) }
+fn rangeCode(): int { return libCode(new errors::Range{}) }
+fn systemFailure(): int { return libCode(new errors::SystemFailure{}) }
+
+pub fn create(count: int): Result[Bytes] {
+    if count < 0 || count > platform::MAX_BYTE_BUFFER {
+        return err("byte buffer length is outside 0..16 MiB", rangeCode())
+    }
+    let r = try platform::_create(platform::KIND_BYTE_BUFFER, count, 0)
+    return ok(new Bytes{res: r})
+}
+
+pub fn source(b: &Bytes): Result[^platform::Resource] {
+    return platform::_requireKindHandle(handle(b.res), platform::KIND_BYTE_BUFFER)
+}
+
+pub fn length(b: &Bytes): Result[int] {
+    return platform::_opHandle(handle(b.res), platform::KIND_BYTE_BUFFER, platform::OP_BUF_LEN, 0, 0, 0)
+}
+
+pub fn setByte(b: &Bytes, index: int, value: int): Result[bool] {
+    if index < 0 { return err("byte index is negative", rangeCode()) }
+    if value < 0 || value > 255 { return err("byte value is outside 0..255", rangeCode()) }
+    let n = try platform::_opHandle(handle(b.res), platform::KIND_BYTE_BUFFER,
+                              platform::OP_BUF_SET, index, value, 0)
+    let wrote = n == 1
+    return ok(wrote)
+}
+
+pub fn getByte(b: &Bytes, index: int): Result[int] {
+    if index < 0 { return err("byte index is negative", rangeCode()) }
+    return platform::_opHandle(handle(b.res), platform::KIND_BYTE_BUFFER,
+                         platform::OP_BUF_GET, index, 0, 0)
+}
+
+pub fn writePacked(b: &Bytes, offset: int, packed: int, count: int): Result[int] {
+    if offset < 0 || count < 1 || count > 7 || packed < 0 {
+        return err("packed write needs 1..7 bytes at a nonnegative offset", rangeCode())
+    }
+    return platform::_opHandle(handle(b.res), platform::KIND_BYTE_BUFFER,
+                         platform::OP_BUF_SET_PACKED, offset, packed, count)
+}
+
+pub fn readPacked(b: &Bytes, offset: int, count: int): Result[int] {
+    if offset < 0 || count < 1 || count > 7 {
+        return err("packed read needs 1..7 bytes at a nonnegative offset", rangeCode())
+    }
+    return platform::_opHandle(handle(b.res), platform::KIND_BYTE_BUFFER,
+                         platform::OP_BUF_GET_PACKED, offset, 0, count)
+}
+
+pub fn fill(b: &Bytes, value: int): Result[int] {
+    if value < 0 || value > 255 { return err("byte value is outside 0..255", rangeCode()) }
+    return platform::_opHandle(handle(b.res), platform::KIND_BYTE_BUFFER, platform::OP_BUF_FILL, value, 0, 0)
+}
+
+fn pack7(src: &[]byte, at: int, count: int): int {
+    var v = 0
+    for i in 0..count {
+        v = v | (int(src[at + i]) << (8 * i))
+    }
+    return v
+}
+
+fn unpack7(packed: int, count: int): []byte {
+    var out = new []byte(0)
+    for i in 0..count {
+        append(out, byte((packed >> (8 * i)) & 255))
+    }
+    return out
+}
+
+fn checkSource(src: &[]byte, offset: int, count: int): bool {
+    if offset < 0 || count < 0 { return false }
+    if offset > len(src) { return false }
+    if count > len(src) - offset { return false }
+    return true
+}
+
+fn checkDestination(dst: &[]byte, offset: int, max: int): bool {
+    if offset < 0 || max < 0 { return false }
+    if offset > len(dst) { return false }
+    if max > len(dst) - offset { return false }
+    return true
+}
+
+// Copy exactly `count` source bytes from `src[srcOffset..]` into the buffer at
+// `dstOffset`. The whole range is validated before the first native call.
+pub fn copyIn(b: &Bytes, src: &[]byte, srcOffset: int, dstOffset: int, count: int): Result[int] {
+    if !checkSource(src, srcOffset, count) {
+        return err("source range is outside the obo array", invalidArgument())
+    }
+    let n = try length(b)
+    if dstOffset < 0 || dstOffset > n || count > n - dstOffset {
+        return err("destination range is outside the C buffer", rangeCode())
+    }
+    var done = 0
+    while done < count {
+        var take = count - done
+        if take > 7 { take = 7 }
+        let packed = pack7(src, srcOffset + done, take)
+        let wrote = try writePacked(b, dstOffset + done, packed, take)
+        if wrote != take { return err("short packed native copy", systemFailure()) }
+        done += take
+    }
+    return ok(count)
+}
+
+// One-byte reference path for the P0 benchmark.
+pub fn copyInScalar(b: &Bytes, src: &[]byte, srcOffset: int, dstOffset: int, count: int): Result[int] {
+    if !checkSource(src, srcOffset, count) {
+        return err("source range is outside the obo array", invalidArgument())
+    }
+    let n = try length(b)
+    if dstOffset < 0 || dstOffset > n || count > n - dstOffset {
+        return err("destination range is outside the C buffer", rangeCode())
+    }
+    for i in 0..count {
+        let okv = try setByte(b, dstOffset + i, int(src[srcOffset + i]))
+        if !okv { return err("short scalar native copy", systemFailure()) }
+    }
+    return ok(count)
+}
+
+// Copy at most `max` bytes from the buffer at `srcOffset` into the existing
+// obo array at `dstOffset`; returns the short count at the buffer end.
+pub fn copyOut(b: &Bytes, mut dst: &[]byte, srcOffset: int, dstOffset: int, max: int): Result[int] {
+    if !checkDestination(dst, dstOffset, max) {
+        return err("destination range is outside the obo array", invalidArgument())
+    }
+    let n = try length(b)
+    if srcOffset < 0 || srcOffset > n {
+        return err("source range is outside the C buffer", rangeCode())
+    }
+    var count = max
+    if count > n - srcOffset { count = n - srcOffset }
+    var done = 0
+    while done < count {
+        var take = count - done
+        if take > 7 { take = 7 }
+        let packed = try readPacked(b, srcOffset + done, take)
+        let bytes = unpack7(packed, take)
+        for i in 0..take { dst[dstOffset + done + i] = bytes[i] }
+        done += take
+    }
+    return ok(count)
+}
+
+pub fn copyOutScalar(b: &Bytes, mut dst: &[]byte, srcOffset: int, dstOffset: int, max: int): Result[int] {
+    if !checkDestination(dst, dstOffset, max) {
+        return err("destination range is outside the obo array", invalidArgument())
+    }
+    let n = try length(b)
+    if srcOffset < 0 || srcOffset > n {
+        return err("source range is outside the C buffer", rangeCode())
+    }
+    var count = max
+    if count > n - srcOffset { count = n - srcOffset }
+    for i in 0..count {
+        let v = try getByte(b, srcOffset + i)
+        dst[dstOffset + i] = byte(v)
+    }
+    return ok(count)
+}
+
+pub fn close(b: &Bytes): Result[bool] {
+    return platform::_closeHandle(handle(b.res), platform::KIND_BYTE_BUFFER)
+}

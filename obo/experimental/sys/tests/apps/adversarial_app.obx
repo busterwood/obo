@@ -1,0 +1,93 @@
+// Adversarial identity tests: forged/stale hints, user-created shells,
+// wrong-kind shells, double close and closed I/O.
+module app
+import "sysplatform.obx" as platform
+import "systestres.obx" as testres
+import "sysbytes.obx" as bytes
+import "syserrors.obx" as errors
+
+fn showError(label: string, m: string, c: int) {
+    let k = errors::kind(c)
+    println(label, "=", errors::text(&k))
+}
+
+fn makeClosedHint(): Result[int] {
+    let t = try testres::open()
+    let hint = t.res.reserved
+    let cl = try testres::close(&t)
+    return ok(hint)
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    o.maxShells = 8
+    o.maxResources = 8
+    o.maxNativeBytes = 1024
+    let init = platform::initialize(&o)
+    match init { ok(v) { println("init=", v) } err(m, c) { showError("init_error", m, c) } }
+
+    // Live shell validates; a cross-kind request does not.
+    let made = testres::open()
+    match made {
+        ok(t) {
+            let src = testres::source(&t)
+            match src { ok(h) { println("live_source=ok") } err(m, c) { showError("live_source_error", m, c) } }
+            let wrong = testres::sourceAsAlt(&t)
+            match wrong { ok(h) { println("wrong_kind=unexpected_ok") } err(m, c) { showError("wrong_kind", m, c) } }
+
+            // User-created shells with no/forged hints.
+            let zero = new platform::Resource{reserved: 0}
+            let z = platform::source(&zero)
+            match z { ok(h) { println("zero_shell=unexpected_ok") } err(m, c) { showError("zero_shell", m, c) } }
+            let outOfRange = new platform::Resource{reserved: platform::_hint(99, 1)}
+            let oor = platform::source(&outOfRange)
+            match oor { ok(h) { println("out_of_range=unexpected_ok") } err(m, c) { showError("out_of_range", m, c) } }
+            let wrongEpoch = new platform::Resource{reserved: platform::_hint(0, 999)}
+            let we = platform::source(&wrongEpoch)
+            match we { ok(h) { println("wrong_epoch=unexpected_ok") } err(m, c) { showError("wrong_epoch", m, c) } }
+
+            // Documented public-field alias: an exact copied hint names the same
+            // entry. It cannot manufacture a token, and is the known 0.12 limit.
+            let alias = new platform::Resource{reserved: t.res.reserved}
+            let asrc = platform::source(&alias)
+            match asrc { ok(h) { println("copied_hint=accepted_alias") } err(m, c) { showError("copied_hint", m, c) } }
+
+            // Wrong kind on close is rejected and leaves the shell open.
+            let wc = testres::closeAlt(&t)
+            match wc { ok(v) { println("wrong_kind_close=unexpected_ok") } err(m, c) { showError("wrong_kind_close", m, c) } }
+
+            let c1 = testres::close(&t)
+            match c1 { ok(v) { println("close=", v) } err(m, c) { showError("close_error", m, c) } }
+            let c2 = testres::close(&t)
+            match c2 { ok(v) { println("double_close=", v) } err(m, c) { showError("double_close_error", m, c) } }
+            let closedRead = testres::read(&t)
+            match closedRead { ok(v) { println("closed_read=unexpected_ok") } err(m, c) { showError("closed_read", m, c) } }
+        }
+        err(m, c) { showError("open_error", m, c) }
+    }
+
+    // Stale hint after slot reuse. The helper's shell dies so the tombstone can
+    // be reclaimed; the new slot has a new epoch.
+    let stale = makeClosedHint()
+    match stale {
+        ok(oldHint) {
+            let fresh = testres::open()
+            match fresh {
+                ok(t2) {
+                    println("reused_hint_changed=", oldHint != t2.res.reserved)
+                    let oldShell = new platform::Resource{reserved: oldHint}
+                    let sr = platform::source(&oldShell)
+                    match sr { ok(h) { println("stale_hint=unexpected_ok") } err(m, c) { showError("stale_hint", m, c) } }
+                    let _closeFresh = testres::close(&t2)
+                }
+                err(m, c) { showError("reuse_open_error", m, c) }
+            }
+        }
+        err(m, c) { showError("make_closed_error", m, c) }
+    }
+
+    let cnt = platform::counts()
+    match cnt { ok(c) { println("counts=", c.resources, ",", c.shells) } err(m, c) { showError("counts_error", m, c) } }
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.shells) } err(m, c) { showError("shutdown_error", m, c) } }
+}

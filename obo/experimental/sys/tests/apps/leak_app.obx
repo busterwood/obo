@@ -1,0 +1,57 @@
+// Leak oracle: an omitted explicit close is visible in counts and in the
+// pre-cleanup shutdown report. Record drop never closes a native resource.
+module app
+import "sysplatform.obx" as platform
+import "systestres.obx" as testres
+import "sysbytes.obx" as bytes
+import "syserrors.obx" as errors
+
+fn showError(label: string, m: string, c: int) {
+    let k = errors::kind(c)
+    println(label, "=", errors::text(&k))
+}
+
+fn droppedWithoutClose(): Result[bool] {
+    let t = try testres::open()
+    return ok(true)
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let init = platform::initialize(&o)
+    match init { ok(v) { println("init=", v) } err(m, c) { showError("init_error", m, c) } }
+
+    let madeA = testres::open()
+    let madeB = testres::open()
+    match madeA {
+        ok(a) {
+            let ca = testres::close(&a)
+            println("closed_a=1")
+        }
+        err(m, c) { showError("a_error", m, c) }
+    }
+    // B stays open: a deliberate leak.
+    match madeB {
+        ok(b) { println("opened_b=1") }
+        err(m, c) { showError("b_error", m, c) }
+    }
+
+    let dropped = droppedWithoutClose()
+    match dropped { ok(v) { println("dropped_call=ok") } err(m, c) { showError("dropped_error", m, c) } }
+
+    let c1 = platform::counts()
+    match c1 {
+        ok(c) { println("counts_before_shutdown=", c.resources, ",", c.shells, ",", c.nativeBytes, ",", c.cleanupFailures) }
+        err(m, c) { showError("counts_error", m, c) }
+    }
+    let sd = platform::shutdown()
+    match sd {
+        ok(c) { println("shutdown_report=", c.resources, ",", c.shells, ",", c.nativeBytes, ",", c.cleanupFailures) }
+        err(m, c) { showError("shutdown_error", m, c) }
+    }
+    let sd2 = platform::shutdown()
+    match sd2 {
+        ok(c) { println("shutdown_cached=", c.resources, ",", c.shells, ",", c.nativeBytes, ",", c.cleanupFailures) }
+        err(m, c) { showError("shutdown2_error", m, c) }
+    }
+}

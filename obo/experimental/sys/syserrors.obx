@@ -1,0 +1,255 @@
+// Experimental systems library: library error categories (P0).
+//
+// Status: experimental P0 boundary proof, not a stable ABI. The numeric values
+// below are assigned once in this implementation and are deliberately outside
+// the positive legacy errno range and the runtime trap codes 2..9. Callers
+// branch with predicates/kind, never with a raw number:
+//
+//     let k = syserrors::kind(code)
+//     if syserrors::isInterrupted(code) { ... }
+//
+// `fromErrno` is for a native adapter/wrapper that captured one raw Linux
+// errno *before another call could overwrite errno*. It is not a promise that
+// the errno number itself is part of the public contract.
+//
+// No hidden retry lives here. Interrupted and WouldBlock stay distinct:
+// EINTR means the one-shot call was interrupted with no progress; EAGAIN means
+// the endpoint is not ready. `isRetryable` is advisory only.
+module syserrors
+
+pub type Kind = closed {
+    InvalidArgument {} Range {} InvalidResource {} Closed {} NotInitialized {}
+    NotFound {} AlreadyExists {} Permission {} NotDirectory {} IsDirectory {}
+    PathLoop {} NameTooLong {} CrossDevice {}
+    Interrupted {} WouldBlock {} InProgress {} TimedOut {} Cancelled {}
+    EndOfInput {} ResourceLimit {} NoMemory {} NoSpace {} LimitExceeded {}
+    BrokenPipe {} Reset {} Refused {} AddressInUse {} Unreachable {}
+    NotSeekable {} Unsupported {} Busy {}
+    ResolveTemporary {} ResolveNotFound {} ResolveFailure {}
+    MessageTooLarge {} Poisoned {} IoFailure {} SystemFailure {} DurabilityUnknown {}
+}
+
+// Implementation-assigned library codes. Not a stable ABI: use `code`/`kind`.
+const CODE_INVALID_ARGUMENT = 10001
+const CODE_RANGE = 10002
+const CODE_INVALID_RESOURCE = 10003
+const CODE_CLOSED = 10004
+const CODE_NOT_INITIALIZED = 10005
+const CODE_NOT_FOUND = 10006
+const CODE_ALREADY_EXISTS = 10007
+const CODE_PERMISSION = 10008
+const CODE_NOT_DIRECTORY = 10009
+const CODE_IS_DIRECTORY = 10010
+const CODE_PATH_LOOP = 10011
+const CODE_NAME_TOO_LONG = 10012
+const CODE_CROSS_DEVICE = 10013
+const CODE_INTERRUPTED = 10014
+const CODE_WOULD_BLOCK = 10015
+const CODE_IN_PROGRESS = 10016
+const CODE_TIMED_OUT = 10017
+const CODE_CANCELLED = 10018
+const CODE_END_OF_INPUT = 10019
+const CODE_RESOURCE_LIMIT = 10020
+const CODE_NO_MEMORY = 10021
+const CODE_NO_SPACE = 10022
+const CODE_LIMIT_EXCEEDED = 10023
+const CODE_BROKEN_PIPE = 10024
+const CODE_RESET = 10025
+const CODE_REFUSED = 10026
+const CODE_ADDRESS_IN_USE = 10027
+const CODE_UNREACHABLE = 10028
+const CODE_NOT_SEEKABLE = 10029
+const CODE_UNSUPPORTED = 10030
+const CODE_BUSY = 10031
+const CODE_RESOLVE_TEMPORARY = 10032
+const CODE_RESOLVE_NOT_FOUND = 10033
+const CODE_RESOLVE_FAILURE = 10034
+const CODE_MESSAGE_TOO_LARGE = 10035
+const CODE_POISONED = 10036
+const CODE_IO_FAILURE = 10037
+const CODE_SYSTEM_FAILURE = 10038
+const CODE_DURABILITY_UNKNOWN = 10039
+
+// Only constructor for a library code from a Kind value.
+pub fn code(k: &Kind): int {
+    match k {
+        InvalidArgument { return CODE_INVALID_ARGUMENT }
+        Range { return CODE_RANGE }
+        InvalidResource { return CODE_INVALID_RESOURCE }
+        Closed { return CODE_CLOSED }
+        NotInitialized { return CODE_NOT_INITIALIZED }
+        NotFound { return CODE_NOT_FOUND }
+        AlreadyExists { return CODE_ALREADY_EXISTS }
+        Permission { return CODE_PERMISSION }
+        NotDirectory { return CODE_NOT_DIRECTORY }
+        IsDirectory { return CODE_IS_DIRECTORY }
+        PathLoop { return CODE_PATH_LOOP }
+        NameTooLong { return CODE_NAME_TOO_LONG }
+        CrossDevice { return CODE_CROSS_DEVICE }
+        Interrupted { return CODE_INTERRUPTED }
+        WouldBlock { return CODE_WOULD_BLOCK }
+        InProgress { return CODE_IN_PROGRESS }
+        TimedOut { return CODE_TIMED_OUT }
+        Cancelled { return CODE_CANCELLED }
+        EndOfInput { return CODE_END_OF_INPUT }
+        ResourceLimit { return CODE_RESOURCE_LIMIT }
+        NoMemory { return CODE_NO_MEMORY }
+        NoSpace { return CODE_NO_SPACE }
+        LimitExceeded { return CODE_LIMIT_EXCEEDED }
+        BrokenPipe { return CODE_BROKEN_PIPE }
+        Reset { return CODE_RESET }
+        Refused { return CODE_REFUSED }
+        AddressInUse { return CODE_ADDRESS_IN_USE }
+        Unreachable { return CODE_UNREACHABLE }
+        NotSeekable { return CODE_NOT_SEEKABLE }
+        Unsupported { return CODE_UNSUPPORTED }
+        Busy { return CODE_BUSY }
+        ResolveTemporary { return CODE_RESOLVE_TEMPORARY }
+        ResolveNotFound { return CODE_RESOLVE_NOT_FOUND }
+        ResolveFailure { return CODE_RESOLVE_FAILURE }
+        MessageTooLarge { return CODE_MESSAGE_TOO_LARGE }
+        Poisoned { return CODE_POISONED }
+        IoFailure { return CODE_IO_FAILURE }
+        SystemFailure { return CODE_SYSTEM_FAILURE }
+        DurabilityUnknown { return CODE_DURABILITY_UNKNOWN }
+    }
+}
+
+// Interpret an assigned library code. Unknown values are SystemFailure; a raw
+// errno is never silently treated as a library code.
+pub fn kind(code: int): Kind {
+    if code == CODE_INVALID_ARGUMENT { return new InvalidArgument{} }
+    if code == CODE_RANGE { return new Range{} }
+    if code == CODE_INVALID_RESOURCE { return new InvalidResource{} }
+    if code == CODE_CLOSED { return new Closed{} }
+    if code == CODE_NOT_INITIALIZED { return new NotInitialized{} }
+    if code == CODE_NOT_FOUND { return new NotFound{} }
+    if code == CODE_ALREADY_EXISTS { return new AlreadyExists{} }
+    if code == CODE_PERMISSION { return new Permission{} }
+    if code == CODE_NOT_DIRECTORY { return new NotDirectory{} }
+    if code == CODE_IS_DIRECTORY { return new IsDirectory{} }
+    if code == CODE_PATH_LOOP { return new PathLoop{} }
+    if code == CODE_NAME_TOO_LONG { return new NameTooLong{} }
+    if code == CODE_CROSS_DEVICE { return new CrossDevice{} }
+    if code == CODE_INTERRUPTED { return new Interrupted{} }
+    if code == CODE_WOULD_BLOCK { return new WouldBlock{} }
+    if code == CODE_IN_PROGRESS { return new InProgress{} }
+    if code == CODE_TIMED_OUT { return new TimedOut{} }
+    if code == CODE_CANCELLED { return new Cancelled{} }
+    if code == CODE_END_OF_INPUT { return new EndOfInput{} }
+    if code == CODE_RESOURCE_LIMIT { return new ResourceLimit{} }
+    if code == CODE_NO_MEMORY { return new NoMemory{} }
+    if code == CODE_NO_SPACE { return new NoSpace{} }
+    if code == CODE_LIMIT_EXCEEDED { return new LimitExceeded{} }
+    if code == CODE_BROKEN_PIPE { return new BrokenPipe{} }
+    if code == CODE_RESET { return new Reset{} }
+    if code == CODE_REFUSED { return new Refused{} }
+    if code == CODE_ADDRESS_IN_USE { return new AddressInUse{} }
+    if code == CODE_UNREACHABLE { return new Unreachable{} }
+    if code == CODE_NOT_SEEKABLE { return new NotSeekable{} }
+    if code == CODE_UNSUPPORTED { return new Unsupported{} }
+    if code == CODE_BUSY { return new Busy{} }
+    if code == CODE_RESOLVE_TEMPORARY { return new ResolveTemporary{} }
+    if code == CODE_RESOLVE_NOT_FOUND { return new ResolveNotFound{} }
+    if code == CODE_RESOLVE_FAILURE { return new ResolveFailure{} }
+    if code == CODE_MESSAGE_TOO_LARGE { return new MessageTooLarge{} }
+    if code == CODE_POISONED { return new Poisoned{} }
+    if code == CODE_IO_FAILURE { return new IoFailure{} }
+    if code == CODE_DURABILITY_UNKNOWN { return new DurabilityUnknown{} }
+    return new SystemFailure{}
+}
+
+// Translate one captured Linux errno. This is the adapter-facing constructor;
+// application code receives library codes from the systems modules.
+pub fn fromErrno(errno: int): Kind {
+    if errno == 1 { return new Permission{} }          // EPERM
+    if errno == 2 { return new NotFound{} }            // ENOENT
+    if errno == 4 { return new Interrupted{} }         // EINTR
+    if errno == 5 { return new IoFailure{} }           // EIO
+    if errno == 9 { return new InvalidResource{} }     // EBADF
+    if errno == 11 { return new WouldBlock{} }         // EAGAIN/EWOULDBLOCK
+    if errno == 12 { return new NoMemory{} }           // ENOMEM
+    if errno == 13 { return new Permission{} }         // EACCES
+    if errno == 16 { return new Busy{} }               // EBUSY
+    if errno == 17 { return new AlreadyExists{} }      // EEXIST
+    if errno == 18 { return new CrossDevice{} }        // EXDEV
+    if errno == 20 { return new NotDirectory{} }       // ENOTDIR
+    if errno == 21 { return new IsDirectory{} }        // EISDIR
+    if errno == 22 { return new InvalidArgument{} }    // EINVAL
+    if errno == 23 { return new ResourceLimit{} }      // ENFILE
+    if errno == 24 { return new ResourceLimit{} }      // EMFILE
+    if errno == 27 { return new LimitExceeded{} }      // EFBIG
+    if errno == 28 { return new NoSpace{} }            // ENOSPC
+    if errno == 29 { return new NotSeekable{} }        // ESPIPE
+    if errno == 32 { return new BrokenPipe{} }         // EPIPE
+    if errno == 34 { return new Range{} }              // ERANGE
+    if errno == 36 { return new NameTooLong{} }        // ENAMETOOLONG
+    if errno == 38 { return new Unsupported{} }        // ENOSYS
+    if errno == 40 { return new PathLoop{} }           // ELOOP
+    if errno == 75 { return new Range{} }              // EOVERFLOW
+    if errno == 90 { return new MessageTooLarge{} }    // EMSGSIZE
+    if errno == 95 { return new Unsupported{} }        // EOPNOTSUPP/ENOTSUP
+    if errno == 98 { return new AddressInUse{} }       // EADDRINUSE
+    if errno == 101 { return new Unreachable{} }       // ENETUNREACH
+    if errno == 104 { return new Reset{} }             // ECONNRESET
+    if errno == 110 { return new TimedOut{} }          // ETIMEDOUT
+    if errno == 111 { return new Refused{} }           // ECONNREFUSED
+    if errno == 113 { return new Unreachable{} }       // EHOSTUNREACH
+    if errno == 114 { return new InProgress{} }        // EALREADY
+    if errno == 115 { return new InProgress{} }        // EINPROGRESS
+    if errno == 122 { return new LimitExceeded{} }     // EDQUOT (configured quota)
+    if errno == 125 { return new Cancelled{} }         // ECANCELED
+    return new SystemFailure{}
+}
+
+pub fn isInterrupted(code: int): bool { return code == CODE_INTERRUPTED }
+pub fn isWouldBlock(code: int): bool { return code == CODE_WOULD_BLOCK }
+// Advisory only: it never authorizes an automatic retry.
+pub fn isRetryable(code: int): bool {
+    return code == CODE_INTERRUPTED || code == CODE_WOULD_BLOCK
+}
+
+// Diagnostic text. Callers never parse this.
+pub fn text(k: &Kind): string {
+    match k {
+        InvalidArgument { return "InvalidArgument" }
+        Range { return "Range" }
+        InvalidResource { return "InvalidResource" }
+        Closed { return "Closed" }
+        NotInitialized { return "NotInitialized" }
+        NotFound { return "NotFound" }
+        AlreadyExists { return "AlreadyExists" }
+        Permission { return "Permission" }
+        NotDirectory { return "NotDirectory" }
+        IsDirectory { return "IsDirectory" }
+        PathLoop { return "PathLoop" }
+        NameTooLong { return "NameTooLong" }
+        CrossDevice { return "CrossDevice" }
+        Interrupted { return "Interrupted" }
+        WouldBlock { return "WouldBlock" }
+        InProgress { return "InProgress" }
+        TimedOut { return "TimedOut" }
+        Cancelled { return "Cancelled" }
+        EndOfInput { return "EndOfInput" }
+        ResourceLimit { return "ResourceLimit" }
+        NoMemory { return "NoMemory" }
+        NoSpace { return "NoSpace" }
+        LimitExceeded { return "LimitExceeded" }
+        BrokenPipe { return "BrokenPipe" }
+        Reset { return "Reset" }
+        Refused { return "Refused" }
+        AddressInUse { return "AddressInUse" }
+        Unreachable { return "Unreachable" }
+        NotSeekable { return "NotSeekable" }
+        Unsupported { return "Unsupported" }
+        Busy { return "Busy" }
+        ResolveTemporary { return "ResolveTemporary" }
+        ResolveNotFound { return "ResolveNotFound" }
+        ResolveFailure { return "ResolveFailure" }
+        MessageTooLarge { return "MessageTooLarge" }
+        Poisoned { return "Poisoned" }
+        IoFailure { return "IoFailure" }
+        SystemFailure { return "SystemFailure" }
+        DurabilityUnknown { return "DurabilityUnknown" }
+    }
+}

@@ -1,0 +1,31 @@
+// Test-only control surface for the link-time fake backend.
+//
+// This module is copied only by sysadapter_fake_ctl.cbind and imported only by
+// the fault-injection test root. It is not part of the production package and
+// no production wrapper references a sysfake_* symbol.
+module sysfakectl
+
+pub const CLASS_NEW = 1
+pub const CLASS_OP = 2
+pub const CLASS_CLOSE = 3
+pub const CLASS_VALIDATE = 4
+
+pub fn reset(): int {
+    return __cinterop("sysfake_reset")
+}
+
+pub fn push(callClass: int, result: int): int {
+    return __cinterop("sysfake_push", callClass, result)
+}
+
+pub fn setTime(value: int): int {
+    return __cinterop("sysfake_set_time", value)
+}
+
+pub fn now(): int {
+    return __cinterop("sysfake_now")
+}
+
+pub fn count(callClass: int): int {
+    return __cinterop("sys_res_call_count", callClass)
+}

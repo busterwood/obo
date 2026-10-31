@@ -1,0 +1,51 @@
+// P0 byte-bridge benchmark: argv[1] is "scalar" or "packed".
+// The Python harness times the whole process; the C harness records a tighter
+// bridge-only number. Neither is a claim about P2 network throughput.
+module app
+import "sysplatform.obx" as platform
+import "sysbytes.obx" as bytes
+import "syserrors.obx" as errors
+
+const N = 1048576
+
+fn main() {
+    let argv = args()
+    var mode = "packed"
+    if len(argv) > 1 { mode = argv[1] }
+    let o = platform::defaultOptions()
+    o.maxNativeBytes = 2097152
+    let init = platform::initialize(&o)
+    match init {
+        ok(v) {
+            let bm = bytes::create(N)
+            match bm {
+                ok(b) {
+                    let src = new []byte(N)
+                    for i in 0..N { src[i] = byte(i % 251) }
+                    if mode == "scalar" {
+                        let w = bytes::copyInScalar(&b, &src, 0, 0, N)
+                        match w { ok(n) { println("copy_in=", n) } err(m, c) { println("copy_in_error=", c) } }
+                    } else {
+                        let w = bytes::copyIn(&b, &src, 0, 0, N)
+                        match w { ok(n) { println("copy_in=", n) } err(m, c) { println("copy_in_error=", c) } }
+                    }
+                    let dst = new []byte(N)
+                    if mode == "scalar" {
+                        let r = bytes::copyOutScalar(&b, &dst, 0, 0, N)
+                        match r { ok(n) { println("copy_out=", n) } err(m, c) { println("copy_out_error=", c) } }
+                    } else {
+                        let r = bytes::copyOut(&b, &dst, 0, 0, N)
+                        match r { ok(n) { println("copy_out=", n) } err(m, c) { println("copy_out_error=", c) } }
+                    }
+                    var sum = 0
+                    for i in 0..N { sum = (sum + int(dst[i])) % 1000000007 }
+                    println("mode=", mode, " sum=", sum)
+                    let cb = bytes::close(&b)
+                }
+                err(m, c) { println("buffer_error=", c) }
+            }
+            let sd = platform::shutdown()
+        }
+        err(m, c) { println("init_error=", c) }
+    }
+}
