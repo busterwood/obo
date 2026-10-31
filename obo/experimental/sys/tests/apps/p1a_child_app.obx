@@ -1,0 +1,54 @@
+// Anchored-child root: run from a different cwd, open a base directory by an
+// absolute path, then open child "sub" relative to that anchor. This fails if
+// child resolves against the process cwd instead of the base descriptor.
+module app
+
+import "sysplatform.obx" as platform
+import "sysdir.obx" as dir
+import "syserrors.obx" as errors
+
+fn show(label: string, code: int) {
+    let k = errors::kind(code)
+    println(label, "=", errors::text(&k))
+}
+
+fn main() {
+    let o = platform::defaultOptions()
+    let ini = platform::initialize(&o)
+    match ini { ok(v) { println("init=", v) } err(m, c) { show("init_error", c) } }
+    let av = args()
+    let dm = dir::open(av[1])
+    match dm {
+        ok(d) {
+            let cm = dir::child(&d, "sub")
+            match cm {
+                ok(c) {
+                    println("child=true")
+                    let itm = dir::iterate(&c)
+                    match itm {
+                        ok(it) {
+                            let n = dir::next(&it)
+                            match n {
+                                ok(v) { if v == nil { println("child_empty=true") } else { println("child_empty=false") } }
+                                err(m, c) { show("child_next_error", c) }
+                            }
+                            let ci = dir::closeIterator(&it)
+                            match ci { ok(v) { println("child_iter_close=", v) } err(m, c) { show("child_iter_close_error", c) } }
+                        }
+                        err(m, c) { show("child_iterate_error", c) }
+                    }
+                    let cc = dir::close(&c)
+                    match cc { ok(v) { println("child_close=", v) } err(m, c) { show("child_close_error", c) } }
+                }
+                err(m, c) { show("child", c) }
+            }
+            let missing = dir::child(&d, "missing")
+            match missing { ok(v) { println("missing=ok") } err(m, c) { show("missing", c) } }
+            let dc = dir::close(&d)
+            match dc { ok(v) { println("dir_close=", v) } err(m, c) { show("dir_close_error", c) } }
+        }
+        err(m, c) { show("dir_open_error", c) }
+    }
+    let sd = platform::shutdown()
+    match sd { ok(c) { println("shutdown=", c.resources, ",", c.shells) } err(m, c) { show("shutdown_error", c) } }
+}

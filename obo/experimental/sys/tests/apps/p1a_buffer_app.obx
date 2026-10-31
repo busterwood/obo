@@ -27,6 +27,7 @@ fn main() {
     let workPath = av[1]
     let srcPath = av[2]
     let dstPath = av[3]
+    let bigPath = av[4]
 
     // Fixed-capacity primitives and their boundaries.
     let bm = buffer::make(8)
@@ -77,6 +78,24 @@ fn main() {
     match neg { ok(v) { println("neg_make=ok") } err(m, c) { show("neg_make", c) } }
     let huge = buffer::make(buffer::MAX_BUFFER_BYTES + 1)
     match huge { ok(v) { println("huge_make=ok") } err(m, c) { show("huge_make", c) } }
+    let exact = buffer::make(buffer::MAX_BUFFER_BYTES)
+    match exact {
+        ok(b) { println("exact16=ok len=", len(b.bytes), " avail=", b.end - b.start) }
+        err(m, c) { show("exact16_error", c) }
+    }
+    let bad1 = new buffer::Buffer{bytes: new []byte(4), start: 0, end: 5, limit: 4}
+    let b1 = buffer::available(&bad1)
+    match b1 { ok(v) { println("bad_end=ok") } err(m, c) { show("bad_end", c) } }
+    let bad2 = new buffer::Buffer{bytes: new []byte(4), start: 3, end: 2, limit: 4}
+    let oneByte = makeBytes("x")
+    let b2 = buffer::feed(&bad2, &oneByte)
+    match b2 { ok(v) { println("bad_order=ok") } err(m, c) { show("bad_order", c) } }
+    let bad3 = new buffer::Buffer{bytes: new []byte(0), start: 0, end: 0, limit: buffer::MAX_BUFFER_BYTES + 1}
+    let b3 = buffer::available(&bad3)
+    match b3 { ok(v) { println("bad_limit=ok") } err(m, c) { show("bad_limit", c) } }
+    let bad4 = new buffer::Buffer{bytes: new []byte(8), start: 0, end: 0, limit: 4}
+    let b4 = buffer::available(&bad4)
+    match b4 { ok(v) { println("bad_len=ok") } err(m, c) { show("bad_len", c) } }
 
     // One writeStep plus one writeExactStep to a file-backed stream.
     let opts = file::readOptions()
@@ -307,6 +326,56 @@ fn main() {
             }
         }
         err(m, c) { show("copy_verify_open_error", c) }
+    }
+
+    // writeStep advances a pending range larger than one 1 MiB transfer.
+    let bigOpts = file::readOptions()
+    bigOpts.write = true
+    bigOpts.create = true
+    bigOpts.exclusive = true
+    bigOpts.truncate = true
+    bigOpts.permissions = 384
+    let bigMade = file::open(bigPath, &bigOpts)
+    match bigMade {
+        ok(f) {
+            let st = file::intoStream(&f)
+            match st {
+                ok(s) {
+                    let big = new []byte(2097152)
+                    for i in 0..2097152 { big[i] = byte(i % 251) }
+                    let wbuf = buffer::make(2097152)
+                    match wbuf {
+                        ok(wb) {
+                            let w = new buffer::Writer{buffer: wb}
+                            let fed = buffer::feed(&w.buffer, &big)
+                            match fed { ok(v) { println("big_feed=", v) } err(m, c) { show("big_feed_error", c) } }
+                            let w1 = buffer::writeStep(&w, &s)
+                            match w1 { ok(v) { println("big_step1=", v, " pending=", w.buffer.end - w.buffer.start) } err(m, c) { show("big_step1_error", c) } }
+                            let w2 = buffer::writeStep(&w, &s)
+                            match w2 { ok(v) { println("big_step2=", v, " pending=", w.buffer.end - w.buffer.start) } err(m, c) { show("big_step2_error", c) } }
+                            let w3 = buffer::writeStep(&w, &s)
+                            match w3 { ok(v) { println("big_step3=", v) } err(m, c) { show("big_step3_error", c) } }
+                        }
+                        err(m, c) { show("big_buffer_error", c) }
+                    }
+                    let sc = stream::close(&s)
+                    match sc { ok(v) { println("big_close=", v) } err(m, c) { show("big_close_error", c) } }
+                }
+                err(m, c) { show("big_into_error", c) }
+            }
+        }
+        err(m, c) { show("big_open_error", c) }
+    }
+    let bigro = file::readOptions()
+    let bm2 = file::open(bigPath, &bigro)
+    match bm2 {
+        ok(f) {
+            let md = file::metadata(&f)
+            match md { ok(m) { println("big_size=", m.size) } err(m, c) { show("big_size_error", c) } }
+            let fc = file::close(&f)
+            match fc { ok(v) { println("big_file_close=", v) } err(m, c) { show("big_file_close_error", c) } }
+        }
+        err(m, c) { show("big_reopen_error", c) }
     }
 
     let cnt = platform::counts()

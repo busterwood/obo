@@ -25,24 +25,30 @@ typedef struct {
     unsigned char *data;
     size_t len;
     size_t cap;
-    size_t pos;
-    int append;
     long mode;
     long id;
     long refs;
-} fake_shared;
+} fake_inode;
 
 typedef struct {
-    fake_shared *s;
+    fake_inode *ino;
+    size_t pos;
+    int append;
+    long refs;
+} fake_desc;
+
+typedef struct {
+    fake_desc *d;
 } fake_file;
 
 typedef struct {
     long index;
+    long id;
 } fake_dir;
 
 typedef struct {
     char *path;
-    fake_shared *s;
+    fake_inode *ino;
 } fake_store_entry;
 
 static fake_script queue[FAKE_QUEUE_MAX];
@@ -77,14 +83,23 @@ static int pop_script(long call_class, long *result) {
 
 static int release_shared(void *p) {
     fake_file *f = (fake_file *)p;
+    fake_desc *d;
     if (f == NULL) return EINVAL;
-    if (f->s != NULL) {
-        f->s->refs--;
-        if (f->s->refs <= 0) {
-            free(f->s->data);
-            free(f->s);
+    d = f->d;
+    if (d != NULL) {
+        d->refs--;
+        if (d->refs <= 0) {
+            fake_inode *ino = d->ino;
+            if (ino != NULL) {
+                ino->refs--;
+                if (ino->refs <= 0) {
+                    free(ino->data);
+                    free(ino);
+                }
+            }
+            free(d);
         }
-        f->s = NULL;
+        f->d = NULL;
     }
     free(f);
     return 0;
@@ -131,36 +146,46 @@ static long path_hash(const char *path, size_t len) {
     return (long)h;
 }
 
-static fake_shared *new_shared(long mode) {
-    fake_shared *s = (fake_shared *)calloc(1, sizeof(*s));
-    if (s == NULL) return NULL;
-    s->mode = mode & 07777;
-    s->id = fake_next_id++;
-    if (s->id <= 0) s->id = 1;
-    s->refs = 1;
-    return s;
+static fake_inode *new_inode(long mode) {
+    fake_inode *ino = (fake_inode *)calloc(1, sizeof(*ino));
+    if (ino == NULL) return NULL;
+    ino->mode = mode & 07777;
+    ino->id = fake_next_id++;
+    if (ino->id <= 0) ino->id = 1;
+    return ino;
 }
 
 static fake_file *new_file(long mode, size_t initial) {
     fake_file *f = (fake_file *)calloc(1, sizeof(*f));
-    fake_shared *s;
+    fake_desc *d;
+    fake_inode *ino;
     if (f == NULL) return NULL;
-    s = new_shared(mode);
-    if (s == NULL) {
+    d = (fake_desc *)calloc(1, sizeof(*d));
+    if (d == NULL) {
+        free(f);
+        return NULL;
+    }
+    ino = new_inode(mode);
+    if (ino == NULL) {
+        free(d);
         free(f);
         return NULL;
     }
     if (initial > 0) {
-        s->data = (unsigned char *)calloc(initial, 1);
-        if (s->data == NULL) {
-            free(s);
+        ino->data = (unsigned char *)calloc(initial, 1);
+        if (ino->data == NULL) {
+            free(ino);
+            free(d);
             free(f);
             return NULL;
         }
-        s->cap = initial;
-        s->len = initial;
+        ino->cap = initial;
+        ino->len = initial;
     }
-    f->s = s;
+    ino->refs = 1;
+    d->ino = ino;
+    d->refs = 1;
+    f->d = d;
     return f;
 }
 
@@ -175,44 +200,50 @@ static long store_find(const char *path, size_t len) {
     return -1;
 }
 
-static fake_shared *store_add(const char *path, size_t len, long mode) {
-    fake_shared *s;
+static fake_inode *store_add(const char *path, size_t len, long mode) {
+    fake_inode *ino;
     char *copy;
     if (fake_store_used >= FAKE_STORE_MAX) return NULL;
-    s = new_shared(mode);
-    if (s == NULL) return NULL;
+    ino = new_inode(mode);
+    if (ino == NULL) return NULL;
     copy = (char *)malloc(len + 1);
     if (copy == NULL) {
-        free(s);
+        free(ino);
         return NULL;
     }
     memcpy(copy, path, len);
     copy[len] = '\0';
+    ino->refs = 1;
     fake_store[fake_store_used].path = copy;
-    fake_store[fake_store_used].s = s;
+    fake_store[fake_store_used].ino = ino;
     fake_store_used++;
-    return s;
+    return ino;
+}
+
+static fake_inode *store_ensure(const char *path, long mode) {
+    long idx = store_find(path, strlen(path));
+    if (idx >= 0) return fake_store[idx].ino;
+    return store_add(path, strlen(path), mode);
 }
 
 static void store_clear(void) {
     long i;
     for (i = 0; i < fake_store_used; i++) {
         free(fake_store[i].path);
-        if (fake_store[i].s != NULL) {
-            if (fake_store[i].s->refs <= 1) {
-                free(fake_store[i].s->data);
-                free(fake_store[i].s);
-            } else {
-                fake_store[i].s->refs--;
+        if (fake_store[i].ino != NULL) {
+            fake_store[i].ino->refs--;
+            if (fake_store[i].ino->refs <= 0) {
+                free(fake_store[i].ino->data);
+                free(fake_store[i].ino);
             }
         }
         fake_store[i].path = NULL;
-        fake_store[i].s = NULL;
+        fake_store[i].ino = NULL;
     }
     fake_store_used = 0;
 }
 
-static long grow_shared(fake_shared *s, size_t need) {
+static long grow_inode(fake_inode *s, size_t need) {
     unsigned char *p;
     size_t cap;
     if (need > (size_t)FAKE_FILE_MAX) return err(ENOSPC);
@@ -292,7 +323,8 @@ long sys_file_open(long dir_token, long path_token, long flags, long mode) {
     long scripted = 0;
     int have_script;
     fake_file *f;
-    fake_shared *s;
+    fake_inode *ino;
+    fake_desc *d;
     long idx;
     long token;
     sys_reg_bump_call(SYS_CALL_FILE_OPEN);
@@ -309,31 +341,35 @@ long sys_file_open(long dir_token, long path_token, long flags, long mode) {
     idx = store_find(path, pathlen);
     if (idx < 0) {
         if ((flags & SYS_OPEN_CREATE) == 0) return err(ENOENT);
-        s = store_add(path, pathlen, (flags & SYS_OPEN_CREATE) ? mode : 0644);
-        if (s == NULL) return err(ENOMEM);
+        ino = store_add(path, pathlen, mode);
+        if (ino == NULL) return err(ENOMEM);
     } else {
         if ((flags & SYS_OPEN_CREATE) != 0 && (flags & SYS_OPEN_EXCLUSIVE) != 0) {
             return err(EEXIST);
         }
-        s = fake_store[idx].s;
-        if ((flags & SYS_OPEN_CREATE) != 0) s->mode = mode & 07777;
-        if ((flags & SYS_OPEN_TRUNCATE) != 0) {
-            s->len = 0;
-            s->pos = 0;
-        }
+        ino = fake_store[idx].ino;
+        if ((flags & SYS_OPEN_CREATE) != 0) ino->mode = mode & 07777;
+        if ((flags & SYS_OPEN_TRUNCATE) != 0) ino->len = 0;
     }
-    s->pos = 0;
-    s->append = (flags & SYS_OPEN_APPEND) != 0;
     f = (fake_file *)calloc(1, sizeof(*f));
-    if (f == NULL) return err(ENOMEM);
-    f->s = s;
-    s->refs++;
+    d = (fake_desc *)calloc(1, sizeof(*d));
+    if (f == NULL || d == NULL) {
+        free(f);
+        free(d);
+        return err(ENOMEM);
+    }
+    d->ino = ino;
+    d->pos = 0;
+    d->append = (flags & SYS_OPEN_APPEND) != 0;
+    d->refs = 1;
+    ino->refs++;
+    f->d = d;
     token = sys_reg_new_object(SYS_KIND_FILE, f, release_shared, 0);
     if (token < 0) release_shared(f);
     return token;
 }
 
-long sys_dir_open(long path_token, long follow) {
+long sys_dir_open(long dir_token, long path_token, long follow) {
     const char *path = NULL;
     size_t pathlen = 0;
     long scripted = 0;
@@ -342,19 +378,35 @@ long sys_dir_open(long path_token, long follow) {
     long token;
     sys_reg_bump_call(SYS_CALL_DIR_OPEN);
     if (follow != 0 && follow != 1) return err(EINVAL);
+    if (dir_token != 0) {
+        fake_dir *parent = (fake_dir *)sys_reg_peek(dir_token, SYS_KIND_DIRECTORY);
+        if (parent == NULL) return err(EBADF);
+    }
     {
         long pr = path_of(path_token, &path, &pathlen);
         if (pr < 0) return pr;
     }
-    (void)pathlen;
     have_script = pop_script(SYS_CALL_DIR_OPEN, &scripted);
     if (have_script && scripted < 0) return scripted;
-    /* The fake has no child-directory namespace; an anchored child open is
-     * NotFound so the scripted backend stays deterministic. */
-    if (follow == 0) return err(ENOENT);
+    /* A root open accepts any path. An anchored child names only the scripted
+     * "sub" directory; every other child is NotFound. */
+    if (dir_token != 0) {
+        if (follow != 0) return err(ENOENT);
+        if (!(pathlen == 3 && memcmp(path, "sub", 3) == 0)) return err(ENOENT);
+    }
+    if (dir_token == 0) {
+        /* The root script's regular entries have matching in-memory inodes so
+         * path metadata and fstat identity agree for the same name. */
+        if (store_ensure("alpha", 0644) == NULL ||
+            store_ensure("beta", 0644) == NULL ||
+            store_ensure("gamma", 0644) == NULL) {
+            return err(ENOMEM);
+        }
+    }
     d = (fake_dir *)calloc(1, sizeof(*d));
     if (d == NULL) return err(ENOMEM);
     d->index = 0;
+    d->id = (dir_token != 0) ? 1 : 0;
     token = sys_reg_new_object(SYS_KIND_DIRECTORY, d, release_dir, 0);
     if (token < 0) free(d);
     return token;
@@ -373,6 +425,7 @@ long sys_dir_iterate(long dir_token) {
     it = (fake_dir *)calloc(1, sizeof(*it));
     if (it == NULL) return err(ENOMEM);
     it->index = src->index;
+    it->id = src->id;
     token = sys_reg_new_object(SYS_KIND_ITERATOR, it, release_dir, 0);
     if (token < 0) free(it);
     return token;
@@ -393,6 +446,8 @@ long sys_dir_next(long it_token, long buf_token, long cap) {
     if (cap < 1 || (size_t)cap > dstlen) return err(ERANGE);
     have_script = pop_script(SYS_CALL_DIR_NEXT, &scripted);
     if (have_script && scripted < 0) return scripted;
+    /* Anchored child directories have no scripted entries of their own. */
+    if (it->id != 0) return 0;
     while ((size_t)it->index < sizeof(fake_entries) / sizeof(fake_entries[0])) {
         long i = it->index++;
         if (strcmp(fake_entries[i].name, ".") == 0 ||
@@ -418,7 +473,7 @@ long sys_io_read(long token, long kind, long buf_token, long offset, long count,
     size_t n;
     have_script = pop_script(SYS_CALL_READ, &scripted);
     sys_reg_bump_call(SYS_CALL_READ);
-    if (f == NULL || f->s == NULL) return err(EBADF);
+    if (f == NULL || f->d == NULL || f->d->ino == NULL) return err(EBADF);
     if (offset < 0 || count <= 0) return err(EINVAL);
     r = buffer_span(buf_token, &buf, &buflen);
     if (r < 0) return r;
@@ -427,19 +482,19 @@ long sys_io_read(long token, long kind, long buf_token, long offset, long count,
     }
     if (have_script && scripted < 0) return scripted;
     if (position >= 0) {
-        if ((unsigned long long)position >= f->s->len) return 0;
-        n = f->s->len - (size_t)position;
+        if ((unsigned long long)position >= f->d->ino->len) return 0;
+        n = f->d->ino->len - (size_t)position;
     } else {
-        if (f->s->pos >= f->s->len) return 0;
-        n = f->s->len - f->s->pos;
+        if (f->d->pos >= f->d->ino->len) return 0;
+        n = f->d->ino->len - f->d->pos;
     }
     if (n > (size_t)count) n = (size_t)count;
     if (have_script && scripted >= 0 && (size_t)scripted < n) n = (size_t)scripted;
     if (position >= 0) {
-        memcpy(buf + offset, f->s->data + (size_t)position, n);
+        memcpy(buf + offset, f->d->ino->data + (size_t)position, n);
     } else {
-        memcpy(buf + offset, f->s->data + f->s->pos, n);
-        f->s->pos += n;
+        memcpy(buf + offset, f->d->ino->data + f->d->pos, n);
+        f->d->pos += n;
     }
     return (long)n;
 }
@@ -456,25 +511,27 @@ long sys_io_write(long token, long kind, long buf_token, long offset, long count
     size_t at;
     have_script = pop_script(SYS_CALL_WRITE, &scripted);
     sys_reg_bump_call(SYS_CALL_WRITE);
-    if (f == NULL || f->s == NULL) return err(EBADF);
+    if (f == NULL || f->d == NULL || f->d->ino == NULL) return err(EBADF);
     if (offset < 0 || count < 0) return err(EINVAL);
     r = buffer_span(buf_token, &buf, &buflen);
     if (r < 0) return r;
     if ((size_t)offset > buflen || (size_t)count > buflen - (size_t)offset) {
         return err(ERANGE);
     }
+    if (position >= 0 && f->d->append) return err(EINVAL);
     if (count == 0) return 0;
-    if (position >= 0 && f->s->append) return err(EINVAL);
     if (have_script && scripted < 0) return scripted;
     n = (size_t)count;
     if (have_script && scripted >= 0 && (size_t)scripted < n) n = (size_t)scripted;
-    at = (position >= 0) ? (size_t)position : f->s->pos;
+    if (position >= 0) at = (size_t)position;
+    else if (f->d->append) at = f->d->ino->len;
+    else at = f->d->pos;
     if (at > (size_t)FAKE_FILE_MAX || n > (size_t)FAKE_FILE_MAX - at) return err(ENOSPC);
-    r = grow_shared(f->s, at + n);
+    r = grow_inode(f->d->ino, at + n);
     if (r < 0) return r;
-    memcpy(f->s->data + at, buf + offset, n);
-    if (at + n > f->s->len) f->s->len = at + n;
-    if (position < 0) f->s->pos = at + n;
+    memcpy(f->d->ino->data + at, buf + offset, n);
+    if (at + n > f->d->ino->len) f->d->ino->len = at + n;
+    if (position < 0) f->d->pos = at + n;
     return (long)n;
 }
 
@@ -483,18 +540,18 @@ long sys_io_seek(long token, long kind, long offset, long origin) {
     long base;
     long pos;
     sys_reg_bump_call(SYS_CALL_SEEK);
-    if (f == NULL || f->s == NULL) return err(EBADF);
+    if (f == NULL || f->d == NULL || f->d->ino == NULL) return err(EBADF);
     if (origin == SYS_SEEK_START) base = 0;
-    else if (origin == SYS_SEEK_CURRENT) base = (long)f->s->pos;
-    else if (origin == SYS_SEEK_END) base = (long)f->s->len;
+    else if (origin == SYS_SEEK_CURRENT) base = (long)f->d->pos;
+    else if (origin == SYS_SEEK_END) base = (long)f->d->ino->len;
     else return err(EINVAL);
-    if ((offset > 0 && base > 0x7fffffffffffffffL - offset) ||
-        (offset < 0 && base < -offset)) {
-        return err(ERANGE);
+    if (offset > 0 && base > 0x7fffffffffffffffL - offset) return err(ERANGE);
+    if (offset < 0) {
+        if (offset == (-0x7fffffffffffffffL - 1) || base < -offset) return err(ERANGE);
     }
     pos = base + offset;
-    if (pos < 0) return err(EINVAL);
-    f->s->pos = (size_t)pos;
+    if (pos < 0) return err(ERANGE);
+    f->d->pos = (size_t)pos;
     return pos;
 }
 
@@ -502,15 +559,14 @@ long sys_io_truncate(long token, long kind, long length) {
     fake_file *f = file_of(token, kind);
     long r;
     sys_reg_bump_call(SYS_CALL_TRUNCATE);
-    if (f == NULL || f->s == NULL) return err(EBADF);
+    if (f == NULL || f->d == NULL || f->d->ino == NULL) return err(EBADF);
     if (length < 0 || length > FAKE_FILE_MAX) return err(EINVAL);
-    if ((size_t)length > f->s->len) {
-        r = grow_shared(f->s, (size_t)length);
+    if ((size_t)length > f->d->ino->len) {
+        r = grow_inode(f->d->ino, (size_t)length);
         if (r < 0) return r;
-        memset(f->s->data + f->s->len, 0, (size_t)length - f->s->len);
+        memset(f->d->ino->data + f->d->ino->len, 0, (size_t)length - f->d->ino->len);
     }
-    f->s->len = (size_t)length;
-    if (f->s->pos > f->s->len) f->s->pos = f->s->len;
+    f->d->ino->len = (size_t)length;
     return 1;
 }
 
@@ -535,19 +591,28 @@ long sys_stat_get(long subject_token, long subject_kind, long dir_token,
     if (have_script && scripted < 0) return scripted;
     if (subject_token != 0) {
         fake_file *f = file_of(subject_token, subject_kind);
-        if (f == NULL || f->s == NULL) return err(EBADF);
-        mode = 040000 | (f->s->mode & 07777);
-        size = (long)f->s->len;
-        id = f->s->id;
+        if (f == NULL || f->d == NULL || f->d->ino == NULL) return err(EBADF);
+        mode = 040000 | (f->d->ino->mode & 07777);
+        size = (long)f->d->ino->len;
+        id = f->d->ino->id;
     } else {
         const char *path = NULL;
         size_t pathlen = 0;
+        long idx;
         if (dir_token != 0 && sys_reg_peek(dir_token, SYS_KIND_DIRECTORY) == NULL) {
             return err(EBADF);
         }
         r = path_of(name_token, &path, &pathlen);
         if (r < 0) return r;
-        id = path_hash(path, pathlen);
+        idx = store_find(path, pathlen);
+        if (idx >= 0) {
+            fake_inode *ino = fake_store[idx].ino;
+            mode = 040000 | (ino->mode & 07777);
+            size = (long)ino->len;
+            id = ino->id;
+        } else {
+            id = path_hash(path, pathlen);
+        }
     }
     memset(out, 0, (size_t)SYS_STAT_PACKET_BYTES);
     {
@@ -585,17 +650,17 @@ long sys_file_dup(long token, long kind, long to_kind) {
     int have_script;
     long out;
     sys_reg_bump_call(SYS_CALL_DUP);
-    if (src == NULL || src->s == NULL) return err(EBADF);
+    if (src == NULL || src->d == NULL) return err(EBADF);
     if (to_kind <= 0) return err(EINVAL);
     have_script = pop_script(SYS_CALL_DUP, &scripted);
     if (have_script && scripted < 0) return scripted;
     f = (fake_file *)calloc(1, sizeof(*f));
     if (f == NULL) return err(ENOMEM);
-    f->s = src->s;
-    f->s->refs++;
+    f->d = src->d;
+    f->d->refs++;
     out = sys_reg_new_object((int)to_kind, f, release_shared, 0);
     if (out < 0) {
-        f->s->refs--;
+        f->d->refs--;
         free(f);
     }
     return out;
@@ -711,24 +776,24 @@ long sys_res_op(long token, long kind, long op, long a, long b, long c) {
     }
     if (kind == SYS_KIND_TEST_RESOURCE || kind == SYS_KIND_TEST_RESOURCE_ALT) {
         fake_file *f = file_of(token, kind);
-        if (f == NULL || f->s == NULL) return err(EINVAL);
+        if (f == NULL || f->d == NULL || f->d->ino == NULL) return err(EINVAL);
         have_script = pop_script(SYS_CALL_OP, &scripted);
         if (have_script && scripted < 0) return scripted;
         if (op == SYS_OP_TEST_WRITE) {
             if (a <= 0) return err(EINVAL);
-            if (grow_shared(f->s, 8) < 0) return err(ENOMEM);
-            memcpy(f->s->data, &a, sizeof(long));
-            f->s->len = 8;
-            f->s->pos = 0;
+            if (grow_inode(f->d->ino, 8) < 0) return err(ENOMEM);
+            memcpy(f->d->ino->data, &a, sizeof(long));
+            f->d->ino->len = 8;
+            f->d->pos = 0;
             return 1;
         }
         if (op == SYS_OP_TEST_READ) {
             long v = 0;
             if (have_script) return scripted;
-            if (f->s->len < 8) return err(EAGAIN);
-            memcpy(&v, f->s->data, sizeof(v));
-            f->s->len = 0;
-            f->s->pos = 0;
+            if (f->d->ino->len < 8) return err(EAGAIN);
+            memcpy(&v, f->d->ino->data, sizeof(v));
+            f->d->ino->len = 0;
+            f->d->pos = 0;
             return v;
         }
         if (op == SYS_OP_TEST_PROGRESS) {

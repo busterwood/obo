@@ -11,8 +11,10 @@
 // mount changes. Multi-component hostile paths belong to a later openBeneath
 // capability. Iteration is bounded, skips "."/"..", yields owned names and
 // promises no order or snapshot. An iterator duplicates its anchor, so closing
-// the Directory does not invalidate it. Kernel dirent corruption permanently
-// fails the iterator with IoFailure rather than looping.
+// the Directory does not invalidate it; dup(2) also shares the directory offset,
+// so the anchor and all its iterators must not be treated as independent
+// cursors. Kernel dirent corruption permanently fails the iterator with
+// IoFailure rather than looping.
 module sysdir
 
 import "sysplatform.obx" as platform
@@ -20,9 +22,9 @@ import "sysstat.obx" as stat
 import "sysbytes.obx" as bytesbuf
 import "syserrors.obx" as errors
 
-pub type Directory = ref record { res: platform::Resource }
-pub type Iterator = ref record { res: platform::Resource }
-pub type Entry = ref record { name: string; kind: int }
+pub type Directory = ref record { pub res: platform::Resource }
+pub type Iterator = ref record { pub res: platform::Resource }
+pub type Entry = ref record { pub name: string; pub kind: int }
 
 pub const MAX_NAME_BYTES = 4096
 const MAX_PATH_BYTES = 4095
@@ -41,6 +43,12 @@ fn validPath(path: string): bool {
         if c == 0 { return false }
     }
     return true
+}
+
+fn knownKind(k: int): bool {
+    return k == stat::KIND_UNKNOWN || k == stat::KIND_FIFO || k == stat::KIND_CHR ||
+           k == stat::KIND_DIR || k == stat::KIND_BLK || k == stat::KIND_REG ||
+           k == stat::KIND_LNK || k == stat::KIND_SOCK
 }
 
 fn validName(name: string): bool {
@@ -73,7 +81,7 @@ pub fn open(path: string): Result[Directory] {
     let pb = try pathBytes(path)
     defer bytesbuf::close(&pb)
     let pt = try platform::_tokenHandle(handle(pb.res), platform::KIND_BYTE_BUFFER)
-    let token = try platform::_dirOpenToken(pt, 1)
+    let token = try platform::_dirOpenToken(0, pt, 1)
     let r = try platform::_adoptToken(platform::KIND_DIRECTORY, token)
     return ok(new Directory{res: r})
 }
@@ -90,7 +98,7 @@ pub fn child(base: &Directory, name: string): Result[Directory] {
     let pb = try pathBytes(name)
     defer bytesbuf::close(&pb)
     let pt = try platform::_tokenHandle(handle(pb.res), platform::KIND_BYTE_BUFFER)
-    let token = try platform::_dirOpenToken(pt, 0)
+    let token = try platform::_dirOpenToken(dt, pt, 0)
     let r = try platform::_adoptToken(platform::KIND_DIRECTORY, token)
     return ok(new Directory{res: r})
 }
@@ -114,7 +122,7 @@ pub fn next(it: &Iterator): Result[?Entry] {
     }
     let n = packed / 256
     let kind = packed - (n * 256)
-    if n <= 0 || n > MAX_NAME_BYTES || kind < 0 || kind > 12 {
+    if n <= 0 || n > MAX_NAME_BYTES || !knownKind(kind) {
         return err("native directory entry was malformed", systemFailure())
     }
     let out = new []byte(n)

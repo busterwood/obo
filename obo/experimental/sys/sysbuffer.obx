@@ -8,24 +8,25 @@
 // feed is all-or-nothing with respect to capacity. find is binary-safe. copy
 // returns an independent prefix; consume compacts. readStep appends one
 // transfer and preserves partial data on error. writeStep removes only the
-// successfully written prefix. Exact steps make one transfer attempt and keep
-// their cursor/buffer progress on every exit; EOF before the requested count is
-// EndOfInput.
+// successfully written prefix, at most one 1 MiB transfer per call, so a larger
+// pending range advances across several calls. Exact steps make one transfer
+// attempt and keep their cursor/buffer progress on every exit; EOF before the
+// requested count is EndOfInput.
 module sysbuffer
 
 import "sysstream.obx" as stream
 import "syserrors.obx" as errors
 
 pub type Buffer = ref record {
-    bytes: []byte
-    start: int
-    end: int
-    limit: int
+    pub bytes: []byte
+    pub start: int
+    pub end: int
+    pub limit: int
 }
 
-pub type Reader = ref record { buffer: Buffer; eof: bool }
-pub type Writer = ref record { buffer: Buffer }
-pub type Cursor = ref record { done: int }
+pub type Reader = ref record { pub buffer: Buffer; pub eof: bool }
+pub type Writer = ref record { pub buffer: Buffer }
+pub type Cursor = ref record { pub done: int }
 
 pub const DEFAULT_LIMIT = 65536
 pub const MAX_BUFFER_BYTES = 16777216
@@ -164,12 +165,15 @@ pub fn writeStep(mut w: &Writer, s: &stream::Stream): Result[int] {
     if !validWriter(w) { return err("writer buffer fields are inconsistent", invalidArgument()) }
     let n = w.buffer.end - w.buffer.start
     if n == 0 { return ok(0) }
-    // Copy pending bytes out of the public record before the native call so no
-    // interior array reference crosses the conservative native effect summary.
-    let pending = new []byte(n)
-    for i in 0..n { pending[i] = w.buffer.bytes[w.buffer.start + i] }
-    let wrote = try stream::writeSome(s, &pending, 0, n)
-    if wrote < 0 || wrote > n {
+    // Copy one bounded prefix out of the public record before the native call
+    // so no interior array reference crosses the conservative native effect
+    // summary. A larger pending range advances across several writeStep calls.
+    var take = n
+    if take > MAX_STEP_BYTES { take = MAX_STEP_BYTES }
+    let pending = new []byte(take)
+    for i in 0..take { pending[i] = w.buffer.bytes[w.buffer.start + i] }
+    let wrote = try stream::writeSome(s, &pending, 0, take)
+    if wrote < 0 || wrote > take {
         return err("writeStep observed an impossible write count", libCode(new errors::SystemFailure{}))
     }
     let consumed = try consume(&w.buffer, wrote)

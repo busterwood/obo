@@ -101,7 +101,7 @@ long sys_res_call_count(long call_class);
 /* P1a scalar operations. Every argument/result is long; path and payload bytes
  * live in C-owned byte-buffer resources reached by token. */
 long sys_file_open(long dir_token, long path_token, long flags, long mode);
-long sys_dir_open(long path_token, long follow);
+long sys_dir_open(long dir_token, long path_token, long follow);
 long sys_dir_iterate(long dir_token);
 long sys_dir_next(long it_token, long buf_token, long cap);
 long sys_io_read(long token, long kind, long buf_token, long offset, long count, long position);

@@ -209,6 +209,7 @@
       "symbol": "sys_dir_open",
       "args": [
         "i64",
+        "i64",
         "i64"
       ],
       "ret": "i64",

@@ -21,7 +21,7 @@ module sysbytes
 import "sysplatform.obx" as platform
 import "syserrors.obx" as errors
 
-pub type Bytes = ref record { res: platform::Resource }
+pub type Bytes = ref record { pub res: platform::Resource }
 
 fn libCode(k: errors::Kind): int {
     return errors::code(&k)

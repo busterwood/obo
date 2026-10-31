@@ -568,10 +568,16 @@ pub fn _retagHandle(h: ^Resource, fromKind: int, toKind: int): Result[bool] {
         slots[idx].kind = toKind
         return ok(true)
     }
+    // A failed transfer retires the source exactly once. On Linux close
+    // consumes the descriptor even when it reports an error, so never retry.
+    let closeRaw = __cinterop("sys_res_close", tok, fromKind)
+    slots[idx].state = STATE_CLOSED
+    slots[idx].token = 0
+    if closeRaw < 0 { cleanupFailures += 1 }
     if raw == 0 {
-        return err("native resource could not be re-tagged", invalidResource())
+        return err("native resource could not be re-tagged; source was retired", invalidResource())
     }
-    return err("native resource re-tag failed", rawCode(raw))
+    return err("native resource re-tag failed; source was retired", rawCode(raw))
 }
 
 pub fn _fileOpenToken(dirTok: int, pathTok: int, flags: int, mode: int): Result[int] {
@@ -579,8 +585,8 @@ pub fn _fileOpenToken(dirTok: int, pathTok: int, flags: int, mode: int): Result[
     return _rawResult(raw, "file open failed")
 }
 
-pub fn _dirOpenToken(pathTok: int, follow: int): Result[int] {
-    let raw = __cinterop("sys_dir_open", pathTok, follow)
+pub fn _dirOpenToken(dirTok: int, pathTok: int, follow: int): Result[int] {
+    let raw = __cinterop("sys_dir_open", dirTok, pathTok, follow)
     return _rawResult(raw, "directory open failed")
 }
 

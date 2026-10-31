@@ -16,10 +16,10 @@ module sysclock
 import "sysplatform.obx" as platform
 import "syserrors.obx" as errors
 
-pub type Instant = ref record { nanos: int }
-pub type Duration = ref record { nanos: int }
-pub type Deadline = ref record { finite: bool; nanos: int }
-pub type Timestamp = ref record { seconds: int; nanos: int }
+pub type Instant = ref record { pub nanos: int }
+pub type Duration = ref record { pub nanos: int }
+pub type Deadline = ref record { pub finite: bool; pub nanos: int }
+pub type Timestamp = ref record { pub seconds: int; pub nanos: int }
 
 const MAX_I64 = 9223372036854775807
 const NANOS_PER_SECOND = 1000000000

@@ -18,7 +18,7 @@ import "sysplatform.obx" as platform
 import "sysbytes.obx" as bytesbuf
 import "syserrors.obx" as errors
 
-pub type Stream = ref record { res: platform::Resource }
+pub type Stream = ref record { pub res: platform::Resource }
 
 pub type Standard = closed { Input {} Output {} Error {} }
 

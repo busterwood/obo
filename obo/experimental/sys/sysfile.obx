@@ -8,10 +8,11 @@
 // close is explicit and never retried after EINTR.
 //
 // P1a deliberately omits chmod, sync, rename/link/symlink and atomic replace;
-// those remain P1b. intoStream logically consumes a File by re-tagging the live
-// resource to KIND_STREAM; duplicateStream returns an independent owner that
-// shares the same open file description (offset and status flags), matching
-// dup(2).
+// those remain P1b. A positional write on an append-open File is rejected even
+// with a zero count. intoStream logically consumes a File by re-tagging the live
+// resource to KIND_STREAM; a failed transfer retires the source exactly once.
+// duplicateStream returns an independent owner that shares the same open file
+// description (offset and status flags), matching dup(2).
 module sysfile
 
 import "sysdir.obx" as dir
@@ -21,18 +22,18 @@ import "sysplatform.obx" as platform
 import "sysbytes.obx" as bytesbuf
 import "syserrors.obx" as errors
 
-pub type File = ref record { res: platform::Resource }
+pub type File = ref record { pub res: platform::Resource }
 
 pub type OpenOptions = ref record {
-    read: bool
-    write: bool
-    create: bool
-    exclusive: bool
-    truncate: bool
-    append: bool
-    noFollow: bool
-    nonblocking: bool
-    permissions: int
+    pub read: bool
+    pub write: bool
+    pub create: bool
+    pub exclusive: bool
+    pub truncate: bool
+    pub append: bool
+    pub noFollow: bool
+    pub nonblocking: bool
+    pub permissions: int
 }
 
 pub const SEEK_START = 0
@@ -241,7 +242,8 @@ pub fn writeAt(f: &File, position: int, bytes: &[]byte): Result[int] {
     if position < 0 { return err("writeAt position is negative", invalidArgument()) }
     if len(bytes) > MAX_CHUNK { return err("writeAt is limited to 1 MiB", rangeCode()) }
     let checked = try platform::_requireKindHandle(handle(f.res), platform::KIND_FILE)
-    if len(bytes) == 0 { return ok(0) }
+    // A zero-length positional write still validates the endpoint and the
+    // append-open restriction; it is not a shortcut before either check.
     let tmp = try bytesbuf::create(len(bytes))
     defer bytesbuf::close(&tmp)
     let copiedIn = try bytesbuf::copyIn(&tmp, bytes, 0, 0, len(bytes))
@@ -254,6 +256,9 @@ pub fn writeAt(f: &File, position: int, bytes: &[]byte): Result[int] {
 pub fn seek(f: &File, offset: int, origin: int): Result[int] {
     if origin != SEEK_START && origin != SEEK_CURRENT && origin != SEEK_END {
         return err("seek origin is not a library constant", invalidArgument())
+    }
+    if origin == SEEK_START && offset < 0 {
+        return err("seek would produce a negative position", rangeCode())
     }
     let ft = try platform::_tokenHandle(handle(f.res), platform::KIND_FILE)
     let p = try platform::_ioSeekToken(ft, platform::KIND_FILE, offset, origin)

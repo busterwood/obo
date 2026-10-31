@@ -16,20 +16,20 @@ import "sysclock.obx" as clock
 import "sysplatform.obx" as platform
 import "syserrors.obx" as errors
 
-pub type Identity = ref record { bits: int }
+pub type Identity = ref record { pub bits: int }
 
 pub type Metadata = ref record {
-    kind: int
-    permissions: int
-    size: int
-    links: int
-    uid: int
-    gid: int
-    modified: clock::Timestamp
-    accessed: clock::Timestamp
-    changed: clock::Timestamp
-    created: ?clock::Timestamp
-    identity: Identity
+    pub kind: int
+    pub permissions: int
+    pub size: int
+    pub links: int
+    pub uid: int
+    pub gid: int
+    pub modified: clock::Timestamp
+    pub accessed: clock::Timestamp
+    pub changed: clock::Timestamp
+    pub created: ?clock::Timestamp
+    pub identity: Identity
 }
 
 pub const KIND_UNKNOWN = 0

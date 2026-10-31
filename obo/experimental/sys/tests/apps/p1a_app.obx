@@ -10,6 +10,7 @@ import "sysstat.obx" as stat
 import "sysclock.obx" as clock
 import "sysrandom.obx" as random
 import "sysstream.obx" as stream
+import "sysbytes.obx" as bytesbuf
 import "sysbuffer.obx" as buffer
 import "syserrors.obx" as errors
 
@@ -84,10 +85,15 @@ fn main() {
     match big { ok(v) { println("random_big=ok") } err(m, c) { show("random_big", c) } }
     let badRange = random::fillSome(&fill, 7, 2, false)
     match badRange { ok(v) { println("random_range=ok") } err(m, c) { show("random_range", c) } }
+    let rz = random::bytes(0, false)
+    match rz { ok(v) { println("random_zero_len=", len(v)) } err(m, c) { show("random_zero_error", c) } }
+    let fz = random::fillSome(&fill, 0, 0, false)
+    match fz { ok(v) { println("random_zero_fill=", v) } err(m, c) { show("random_zero_fill_error", c) } }
 
     let av = args()
     let path = av[1]
     let dirPath = av[2]
+    let alphaPath = av[3]
 
     // Open-option validation happens before any native call.
     let bad1 = file::readOptions()
@@ -136,6 +142,10 @@ fn main() {
             match r2 { ok(v) { if v == nil { println("read2=nil") } else { println("read2=", string(v)) } } err(m, c) { show("read2_error", c) } }
             let r3 = file::readSome(&f, 5)
             match r3 { ok(v) { if v == nil { println("read3=nil") } else { println("read3=", string(v)) } } err(m, c) { show("read3_error", c) } }
+            let sneg = file::seek(&f, -1, file::SEEK_START)
+            match sneg { ok(p) { println("seek_negative=ok") } err(m, c) { show("seek_negative", c) } }
+            let shuge = file::seek(&f, 9223372036854775807, file::SEEK_CURRENT)
+            match shuge { ok(p) { println("seek_overflow=ok") } err(m, c) { show("seek_overflow", c) } }
             let sk = file::seek(&f, 0, file::SEEK_START)
             match sk { ok(p) { println("seek=", p) } err(m, c) { show("seek_error", c) } }
             let upper = makeBytes("WORLD")
@@ -202,6 +212,43 @@ fn main() {
         err(m, c) { show("reopen_error", c) }
     }
 
+    // Separate opens have independent offsets; fstat identities still match.
+    let oa = file::open(path, &ro)
+    match oa {
+        ok(fa) {
+            let ob = file::open(path, &ro)
+            match ob {
+                ok(fb) {
+                    let ra = file::readSome(&fa, 2)
+                    match ra { ok(v) { if v == nil { println("separate_read=nil") } else { println("separate_read=", string(v)) } } err(m, c) { show("separate_read_error", c) } }
+                    let rb2 = file::readSome(&fb, 2)
+                    match rb2 { ok(v) { if v == nil { println("separate_read2=nil") } else { println("separate_read2=", string(v)) } } err(m, c) { show("separate_read2_error", c) } }
+                    let ma = file::metadata(&fa)
+                    let mb = file::metadata(&fb)
+                    var aBits = 0
+                    var bBits = 0
+                    match ma {
+                        ok(x) { aBits = x.identity.bits }
+                        err(m, c) { show("separate_meta_error", c) }
+                    }
+                    match mb {
+                        ok(y) { bBits = y.identity.bits }
+                        err(m, c) { show("separate_meta2_error", c) }
+                    }
+                    let xi = new stat::Identity{bits: aBits}
+                    let yi = new stat::Identity{bits: bBits}
+                    println("separate_identity=", stat::sameIdentity(&xi, &yi))
+                    let ca = file::close(&fa)
+                    let cb = file::close(&fb)
+                    match ca { ok(v) { println("separate_close_a=", v) } err(m, c) { show("separate_close_a_error", c) } }
+                    match cb { ok(v) { println("separate_close_b=", v) } err(m, c) { show("separate_close_b_error", c) } }
+                }
+                err(m, c) { show("separate_open_b_error", c) }
+            }
+        }
+        err(m, c) { show("separate_open_a_error", c) }
+    }
+
     let appOpts = file::readOptions()
     appOpts.write = true
     appOpts.append = true
@@ -211,10 +258,54 @@ fn main() {
             let x = makeBytes("x")
             let pos = file::writeAt(&f, 0, &x)
             match pos { ok(v) { println("append_writeat=ok") } err(m, c) { show("append_writeat", c) } }
+            let zero = makeBytes("")
+            let zpos = file::writeAt(&f, 0, &zero)
+            match zpos { ok(v) { println("append_writeat_zero=ok") } err(m, c) { show("append_writeat_zero", c) } }
+            let zcur = file::writeSome(&f, &zero, 0, 0)
+            match zcur { ok(v) { println("append_writesome_zero=", v) } err(m, c) { show("append_writesome_zero_error", c) } }
+            let xy = makeBytes("XY")
+            let aw = file::writeSome(&f, &xy, 0, 2)
+            match aw { ok(v) { println("append_write=", v) } err(m, c) { show("append_write_error", c) } }
+            let ar = file::readAt(&f, 5, 2)
+            match ar { ok(v) { if v == nil { println("append_read=nil") } else { println("append_read=", string(v)) } } err(m, c) { show("append_read_error", c) } }
             let fc = file::close(&f)
             match fc { ok(v) { println("append_close=", v) } err(m, c) { show("append_close_error", c) } }
         }
         err(m, c) { show("append_open_error", c) }
+    }
+
+    // Forged, wrong-kind and stale shells are rejected by the identity layer.
+    let forged = new file::File{res: new platform::Resource{reserved: 0}}
+    let forgedRead = file::readSome(&forged, 1)
+    match forgedRead { ok(v) { println("forged=ok") } err(m, c) { show("forged", c) } }
+    let bm2 = bytesbuf::create(4)
+    match bm2 {
+        ok(bb) {
+            let wrongRes = new platform::Resource{reserved: bb.res.reserved}
+            let wrong = new file::File{res: wrongRes}
+            let wrongRead = file::readSome(&wrong, 1)
+            match wrongRead { ok(v) { println("wrong_kind=ok") } err(m, c) { show("wrong_kind", c) } }
+            let wrongClose = file::close(&wrong)
+            match wrongClose { ok(v) { println("wrong_kind_close=ok") } err(m, c) { show("wrong_kind_close", c) } }
+            let bclose = bytesbuf::close(&bb)
+            match bclose { ok(v) { println("wrong_kind_bytes_close=", v) } err(m, c) { show("wrong_kind_bytes_close_error", c) } }
+        }
+        err(m, c) { show("wrong_kind_bytes_error", c) }
+    }
+    let lf = file::open(path, &ro)
+    match lf {
+        ok(f) {
+            let hint = f.res.reserved
+            let lc = file::close(&f)
+            match lc { ok(v) { println("stale_source_close=", v) } err(m, c) { show("stale_source_close_error", c) } }
+            let staleRes = new platform::Resource{reserved: hint}
+            let stale = new file::File{res: staleRes}
+            let staleRead = file::readSome(&stale, 1)
+            match staleRead { ok(v) { println("stale=ok") } err(m, c) { show("stale", c) } }
+            let staleClose = file::close(&stale)
+            match staleClose { ok(v) { println("stale_close=", v) } err(m, c) { show("stale_close_error", c) } }
+        }
+        err(m, c) { show("stale_open_error", c) }
     }
 
     // Directory iteration and anchored metadata; order is not promised.
@@ -277,6 +368,22 @@ fn main() {
             let ai = new stat::Identity{bits: aBits}
             let bi = new stat::Identity{bits: bBits}
             println("dir_identity_same=", stat::sameIdentity(&ai, &bi))
+            let af = file::openAt(&d, "alpha", &ro)
+            match af {
+                ok(f) {
+                    let fm = file::metadata(&f)
+                    var fBits = 0
+                    match fm {
+                        ok(x) { fBits = x.identity.bits }
+                        err(m, c) { show("alpha_meta_error", c) }
+                    }
+                    let fi = new stat::Identity{bits: fBits}
+                    println("dir_file_identity=", stat::sameIdentity(&ai, &fi))
+                    let fc = file::close(&f)
+                    match fc { ok(v) { println("alpha_close=", v) } err(m, c) { show("alpha_close_error", c) } }
+                }
+                err(m, c) { show("alpha_open_error", c) }
+            }
             let badName = dir::metadata(&d, "..", false)
             match badName { ok(v) { println("dir_bad_name=ok") } err(m, c) { show("dir_bad_name", c) } }
             let child = dir::child(&d, "missing")

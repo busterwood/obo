@@ -52,8 +52,8 @@ def build(spec, app, out, label):
     return os.path.join(out, 'app')
 
 
-def run_app(path, label, argv):
-    p = run([path] + list(argv), env=dict(os.environ, OBO_CHECK='1'), timeout=120)
+def run_app(path, label, argv, cwd=None):
+    p = run([path] + list(argv), env=dict(os.environ, OBO_CHECK='1'), timeout=120, cwd=cwd)
     if p.returncode != 0:
         raise Fail("%s exited %d:\n%s\n%s" % (label, p.returncode, p.stdout, p.stderr))
     return p.stdout.strip().splitlines()
@@ -97,6 +97,8 @@ CONFORMANCE = [
     'random_fill=8',
     'random_big=LimitExceeded',
     'random_range=InvalidArgument',
+    'random_zero_len=0',
+    'random_zero_fill=0',
     'opt_none=InvalidArgument',
     'opt_create_no_write=InvalidArgument',
     'opt_excl_no_create=InvalidArgument',
@@ -107,6 +109,8 @@ CONFORMANCE = [
     'read1=hello',
     'read2= world',
     'read3=nil',
+    'seek_negative=Range',
+    'seek_overflow=Range',
     'seek=0',
     'writeat=5',
     'readat=hello WORLD',
@@ -122,12 +126,30 @@ CONFORMANCE = [
     'into_read=hello',
     'into_old_close=InvalidResource',
     'into_close=true',
+    'separate_read=he',
+    'separate_read2=he',
+    'separate_identity=true',
+    'separate_close_a=true',
+    'separate_close_b=true',
     'append_writeat=InvalidArgument',
+    'append_writeat_zero=InvalidArgument',
+    'append_writesome_zero=0',
+    'append_write=2',
+    'append_read=XY',
     'append_close=true',
+    'forged=InvalidResource',
+    'wrong_kind=InvalidResource',
+    'wrong_kind_close=InvalidResource',
+    'wrong_kind_bytes_close=true',
+    'stale_source_close=true',
+    'stale=Closed',
+    'stale_close=false',
     'dir_names=true,true,true,true',
     'dir_iter_close=true',
     'dir_meta=8,0,8,0',
     'dir_identity_same=false',
+    'dir_file_identity=true',
+    'alpha_close=true',
     'dir_bad_name=InvalidArgument',
     'dir_child=NotFound',
     'dir_close=true',
@@ -158,6 +180,11 @@ BUFFER = [
     'zero_feed=LimitExceeded',
     'neg_make=Range',
     'huge_make=Range',
+    'exact16=ok len=16777216 avail=0',
+    'bad_end=InvalidArgument',
+    'bad_order=InvalidArgument',
+    'bad_limit=InvalidArgument',
+    'bad_len=InvalidArgument',
     'writer_feed=true',
     'write_step=3 pending=0',
     'write_step_empty=0',
@@ -185,6 +212,13 @@ BUFFER = [
     'copy_verify=true',
     'copy_content=The quick brown fox',
     'copy_verify_close=true',
+    'big_feed=true',
+    'big_step1=1048576 pending=1048576',
+    'big_step2=1048576 pending=0',
+    'big_step3=0',
+    'big_close=true',
+    'big_size=2097152',
+    'big_file_close=true',
     'counts=0,0',
     'shutdown=0,0,0',
 ]
@@ -268,36 +302,59 @@ def main():
 
     conf_dir = prepare_conf(tmp)
     conf_file = os.path.join(tmp, 'conf-file')
+    alpha_path = os.path.join(conf_dir, 'alpha')
 
     # Real conformance root.
     real_conf = build(REAL, os.path.join(APPS, 'p1a_app.obx'),
                       os.path.join(tmp, 'real-conformance'), 'real conformance')
     clean_files(conf_file)
-    real_conf_out = run_app(real_conf, 'real conformance', [conf_file, conf_dir])
+    real_conf_out = run_app(real_conf, 'real conformance', [conf_file, conf_dir, alpha_path])
 
     # Fake conformance root: same contract trace.
     fake_conf = build(FAKE, os.path.join(APPS, 'p1a_app.obx'),
                       os.path.join(tmp, 'fake-conformance'), 'fake conformance')
     clean_files(conf_file)
-    fake_conf_out = run_app(fake_conf, 'fake conformance', [conf_file, conf_dir])
+    fake_conf_out = run_app(fake_conf, 'fake conformance', [conf_file, conf_dir, alpha_path])
 
     exact('real conformance', real_conf_out, CONFORMANCE)
     exact('fake conformance', fake_conf_out, CONFORMANCE)
     if real_conf_out != fake_conf_out:
         raise Fail('real/fake conformance traces differ')
 
+    # Anchored child must resolve against the base directory, not process cwd.
+    base = os.path.join(tmp, 'child-base')
+    os.makedirs(os.path.join(base, 'sub'), exist_ok=True)
+    elsewhere = os.path.join(tmp, 'child-cwd')
+    os.makedirs(elsewhere, exist_ok=True)
+    child_expected = [
+        'init=true',
+        'child=true',
+        'child_empty=true',
+        'child_iter_close=true',
+        'child_close=true',
+        'missing=NotFound',
+        'dir_close=true',
+        'shutdown=0,0',
+    ]
+    for spec, label in ((REAL, 'real child'), (FAKE, 'fake child')):
+        exe = build(spec, os.path.join(APPS, 'p1a_child_app.obx'),
+                    os.path.join(tmp, label.replace(' ', '-')), label)
+        out = run_app(exe, label, [base], cwd=elsewhere)
+        exact(label, out, child_expected)
+
     # Buffer and bounded file-copy roots.
     work = os.path.join(tmp, 'buffer-work')
     src = os.path.join(tmp, 'buffer-src')
     dst = os.path.join(tmp, 'buffer-dst')
+    big = os.path.join(tmp, 'buffer-big')
     real_buf = build(REAL, os.path.join(APPS, 'p1a_buffer_app.obx'),
                      os.path.join(tmp, 'real-buffer'), 'real buffer')
-    clean_files(work, src, dst)
-    real_buf_out = run_app(real_buf, 'real buffer', [work, src, dst])
+    clean_files(work, src, dst, big)
+    real_buf_out = run_app(real_buf, 'real buffer', [work, src, dst, big])
     fake_buf = build(FAKE, os.path.join(APPS, 'p1a_buffer_app.obx'),
                      os.path.join(tmp, 'fake-buffer'), 'fake buffer')
-    clean_files(work, src, dst)
-    fake_buf_out = run_app(fake_buf, 'fake buffer', [work, src, dst])
+    clean_files(work, src, dst, big)
+    fake_buf_out = run_app(fake_buf, 'fake buffer', [work, src, dst, big])
     exact('real buffer', real_buf_out, BUFFER)
     exact('fake buffer', fake_buf_out, BUFFER)
     if real_buf_out != fake_buf_out:

@@ -320,11 +320,12 @@ long sys_file_open(long dir_token, long path_token, long flags, long mode) {
     return token;
 }
 
-long sys_dir_open(long path_token, long follow) {
+long sys_dir_open(long dir_token, long path_token, long follow) {
     const char *path = NULL;
     size_t pathlen = 0;
     sys_fdobj *d;
     int fd;
+    int dfd;
     int flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC;
     long token;
     if (follow != 0 && follow != 1) return err(EINVAL);
@@ -333,8 +334,10 @@ long sys_dir_open(long path_token, long follow) {
         if (pr < 0) return pr;
     }
     (void)pathlen;
+    dfd = dirfd_of(dir_token);
+    if (dir_token != 0 && dfd < 0) return err(EBADF);
     if (!follow) flags |= O_NOFOLLOW;
-    fd = openat(AT_FDCWD, path, flags);
+    fd = openat(dfd, path, flags);
     if (fd < 0) return err(errno);
     d = (sys_fdobj *)malloc(sizeof(*d));
     if (d == NULL) {
@@ -494,8 +497,8 @@ long sys_io_write(long token, long kind, long buf_token, long offset, long count
     if ((size_t)offset > buflen || (size_t)count > buflen - (size_t)offset) {
         return err(ERANGE);
     }
-    if (count == 0) return 0;
     if (position >= 0 && f->append) return err(EINVAL);
+    if (count == 0) return 0;
     if (position >= 0) {
         n = pwrite(f->fd, buf + offset, (size_t)count, (off_t)position);
     } else {
@@ -514,8 +517,12 @@ long sys_io_seek(long token, long kind, long offset, long origin) {
     else if (origin == SYS_SEEK_CURRENT) whence = SEEK_CUR;
     else if (origin == SYS_SEEK_END) whence = SEEK_END;
     else return err(EINVAL);
+    if (origin == SYS_SEEK_START && offset < 0) return err(ERANGE);
     pos = lseek(f->fd, (off_t)offset, whence);
-    if (pos < 0) return err(errno);
+    if (pos < 0) {
+        if (errno == EINVAL || errno == EOVERFLOW) return err(ERANGE);
+        return err(errno);
+    }
     return (long)pos;
 }
 
@@ -575,6 +582,7 @@ long sys_clock_monotonic_ns(void) {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return err(errno);
     if (ts.tv_sec < 0 || ts.tv_sec > (time_t)9223372036LL) return err(EOVERFLOW);
+    if (ts.tv_sec == (time_t)9223372036LL && ts.tv_nsec > 854775807L) return err(EOVERFLOW);
     return (long)((int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec);
 }
 

@@ -167,7 +167,7 @@ int main(int argc, char **argv) {
     /* Directory iteration. */
     pt = make_buf(dirpath, strlen(dirpath));
     CHECK(pt > 0, "dir path buffer");
-    dt = sys_dir_open(pt, 1);
+    dt = sys_dir_open(0, pt, 1);
     CHECK(dt > 0, "dir open");
     it = sys_dir_iterate(dt);
     CHECK(it > 0, "dir iterate");
