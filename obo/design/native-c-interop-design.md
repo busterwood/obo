@@ -1135,6 +1135,51 @@ features remain unclaimed. The fixed-image/non-PIE bridge, baseline raw-syscall
 freestanding exit, and explicit-only foreign ownership remain known production
 limits.
 
+### 14.11 P2T-a prerequisite checkpoint
+
+Status: **prerequisites implemented, pending independent review.** This
+checkpoint does not implement the TLS adapter and does not change the compiler,
+`.sym` format, ABI, runtime blobs or package version. It adds only toolkit
+inputs/checks needed by the approved TLS design.
+
+- `.cbind` may list `include_dirs`; relative entries must resolve inside the
+  spec directory or obo tree, symlink escapes are rejected, and an absolute
+  root is accepted only when explicitly written. `cflags` and `include_dirs`
+  are applied to the signature-check compile, every binding source compile and
+  the per-compile dependency scan, all with `-fno-pie -O2`. A header selected
+  by `__OPTIMIZE__` or `-D` is therefore hashed, and a conditional prototype
+  cannot validate one declaration while the source object uses another.
+- The manifest records `include_dirs`, resolved `include_paths`, `cflags` and
+  transitive `header_deps` (SHA-256), so a private sysroot is a hashed build
+  input rather than ambient state. Source, header and include roots are passed
+  to `-ffile-prefix-map`; extracted headers are never committed. A committed
+  binding that wraps a system header uses a repository-relative entry point
+  (for example zlib's `zlib_system.h`).
+- Every hosted cinterop link gets `-Wl,-z,relro`, `-Wl,-z,now` and
+  `-Wl,-z,noexecstack`. A linker-script `DATA_SEGMENT_ALIGN`/`RELRO_END`/
+  `DATA_SEGMENT_END` sequence is required for `PT_GNU_RELRO`; the final ELF is
+  rejected unless the segment, `BIND_NOW`/`DF_1_NOW` and the
+  `.preinit_array`/`.init_array`/`.fini_array` range are inside RELRO. The
+  freestanding runtime/seed build is untouched.
+- The hosted runtime now has an OpenSSL 3.0 qualification. Libraries are found
+  with `ldconfig -p`; installed headers are used only when their `libssl-dev`
+  package version matches the installed runtime. Otherwise matching
+  `libssl-dev` headers are fetched and extracted without root into a private,
+  content-hashed cache, and a fixture linked with `-l:libssl.so.3
+  -l:libcrypto.so.3` performs a TLS 1.3 memory-BIO handshake with ALPN
+  `http/1.1`. It also checks provider load, `RAND_bytes`,
+  `OPENSSL_version_num`, `pthread_once`, clock/mmap, thread-local
+  `errno`/OpenSSL error queue, constructors, libc atexit, C stdio flush,
+  `OPENSSL_atexit` ordering and explicit `OPENSSL_cleanup`. A separate
+  ASAN/UBSAN harness runs the same fixture. The generated test spec/fixture
+  copy lives in the private build directory, not with absolute repository
+  source paths.
+- Tests skip the OpenSSL qualification only when `libssl.so.3`/
+  `libcrypto.so.3` are absent (or an explicit opt-out is set); a failure to
+  obtain matching headers or to build/run with the library present is a
+  failure. This is a hosted-interaction qualification, not a general TLS/IFUNC
+  guarantee and not a public TLS API.
+
 ## 15. Open questions and review focus
 
 1. Should production emit a relocatable object directly, or keep a separate

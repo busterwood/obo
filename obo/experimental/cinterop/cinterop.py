@@ -43,6 +43,19 @@ MAX_ARGS = 8
 ARG_REGS = ('%rdi', '%rsi', '%rdx', '%rcx', '%r8', '%r9')
 EFFECTS = ('freesall', 'writeshandles')
 SIG_MODES = ('header', 'declarations-only')
+# Hosted cinterop links get full RELRO and immediate binding by default. A
+# missing or incompatible shared-library symbol then fails at load time instead
+# of during a request. The separate freestanding runtime/seed build is not
+# touched. The final ELF is re-checked by validate_final/verify_doc.
+LINK_HARDENING_FLAGS = ['-Wl,-z,relro', '-Wl,-z,now', '-Wl,-z,noexecstack']
+PT_DYNAMIC = 2
+PT_GNU_RELRO = 0x6474e552
+DT_NULL = 0
+DT_BIND_NOW = 24
+DT_FLAGS = 30
+DT_FLAGS_1 = 0x6ffffffb
+DF_BIND_NOW = 0x8
+DF_1_NOW = 0x1
 REQUIRED_INPUT_KEYS = {
     'spec', 'app', 'wrapper', 'shim_source', 'signature_check_source',
     'host_source', 'host_stack_source', 'host_stack_header',
@@ -84,6 +97,86 @@ def require_file(path, what):
 def resolve_input(spec_dir, p, what):
     path = p if os.path.isabs(p) else os.path.join(spec_dir, p)
     return require_file(path, what)
+
+
+def check_flag_text(value, what):
+    if not isinstance(value, str) or not value:
+        raise ToolError("%s entries must be non-empty strings" % what)
+    if '\0' in value or '\n' in value or '\r' in value:
+        raise ToolError("%s entry contains a NUL or newline: %r" % (what, value))
+    return value
+
+
+def _inside(path, root):
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
+
+
+def resolve_include_dir(spec_dir, p):
+    """Resolve an include directory and reject implicit relative escapes.
+
+    A relative include is allowed only when it resolves inside the spec
+    directory or the obo tree (so a package may use ../shared). An absolute
+    path is explicit and is allowed, but it must be a directory. Symlink
+    escapes are rejected too: realpath is checked, not just the spelling.
+    """
+    check_flag_text(p, 'include_dirs')
+    if os.path.isabs(p):
+        real = os.path.realpath(p)
+    else:
+        norm = os.path.normpath(p)
+        if os.path.isabs(norm) or norm == os.pardir or norm.startswith(os.pardir + os.sep):
+            raise ToolError("include_dirs %r escapes the spec directory; "
+                            "list an absolute path explicitly" % p)
+        real = os.path.realpath(os.path.join(spec_dir, p))
+        allowed = (os.path.realpath(spec_dir), os.path.realpath(OBO_ROOT))
+        if not any(_inside(real, root) for root in allowed):
+            raise ToolError("include_dirs %r resolves outside the spec directory "
+                            "and obo tree; list an absolute path explicitly" % p)
+    if not os.path.isdir(real):
+        raise ToolError("include directory not found: %s" % p)
+    return real
+
+
+def resolve_header(spec_dir, include_dirs, p, what):
+    """Resolve a header by the spec directory first, then include_dirs."""
+    check_flag_text(p, what)
+    if os.path.isabs(p):
+        return require_file(p, what)
+    candidates = [os.path.join(spec_dir, p)]
+    candidates += [os.path.join(d, p) for d in include_dirs]
+    for path in candidates:
+        if os.path.isfile(path):
+            return os.path.realpath(path)
+    raise ToolError("%s not found: %s (searched the spec directory and include_dirs)"
+                    % (what, p))
+
+
+def include_flags(include_dirs):
+    out = []
+    for d in include_dirs:
+        out += ['-I', d]
+    return out
+
+
+def path_map_flags(roots):
+    """Keep absolute build roots out of object diagnostics/debug info.
+
+    Sources and headers may live outside the spec directory (a maintained
+    wrapper plus a private sysroot, or a test fixture in the repository with a
+    generated spec in a temp dir). Map every root, not only include_dirs.
+    """
+    out = []
+    seen = set()
+    for root in roots:
+        real = os.path.realpath(root)
+        if real in seen or real == os.sep:
+            continue
+        seen.add(real)
+        out.append('-ffile-prefix-map=%s=/cinterop-root-%d' % (real, len(seen) - 1))
+    return out
 
 
 def load_spec(path):
@@ -134,9 +227,13 @@ def load_spec(path):
         for bad in ('variadic', 'struct_by_value', 'tls', 'floats', 'callbacks'):
             if f.get(bad):
                 raise ToolError("%s: %s is not supported by this prototype" % (f['name'], bad))
-    for key in ('sources', 'headers', 'libs', 'cflags', 'declarations'):
+    for key in ('sources', 'headers', 'libs', 'cflags', 'declarations',
+                'include_dirs'):
         if key in spec and not isinstance(spec[key], list):
             raise ToolError("%s must be a list" % key)
+    for key in ('libs', 'cflags', 'include_dirs'):
+        for value in spec.get(key, []):
+            check_flag_text(value, key)
     if 'wrapper' in spec:
         if not isinstance(spec['wrapper'], str) or not spec['wrapper']:
             raise ToolError("wrapper must be a source path")
@@ -220,11 +317,13 @@ def generate_sigcheck(spec):
     return '\n'.join(out), mode
 
 
-def manifest_doc(spec, paths, compiler_version, toolchain, signature_check, kind):
+def manifest_doc(spec, paths, compiler_version, toolchain, signature_check, kind,
+                 include_dirs=None, include_paths=None, cflags=None,
+                 header_deps=None, link_flags=None):
     files = {}
     for key, path in paths.items():
         files[key] = sha256(require_file(path, key))
-    return {
+    doc = {
         'format': FORMAT,
         'kind': kind,
         'module': spec['module'],
@@ -240,7 +339,70 @@ def manifest_doc(spec, paths, compiler_version, toolchain, signature_check, kind
         'expected_thunks': ['obo_native_' + f['symbol'] for f in spec['functions']],
         'files': files,
         'paths': {},
+        'include_dirs': list(include_dirs or []),
+        'include_paths': dict(include_paths or {}),
+        'cflags': list(cflags or []),
     }
+    if header_deps is not None:
+        doc['header_deps'] = header_deps
+    if link_flags is not None:
+        doc['link_flags'] = list(link_flags)
+        doc['hardening'] = {'relro': True, 'now': True, 'noexecstack': True}
+    return doc
+
+
+def parse_dependency_makefile(text):
+    """Parse the dependency list from `cc -M` output.
+
+    Paths are whitespace-separated with backslash escapes (notably escaped
+    spaces), and line continuations are common. The target before the first
+    colon is ignored; the dependency headers are returned as written.
+    """
+    text = text.replace('\\\n', ' ')
+    if ':' not in text:
+        raise ToolError("C dependency output has no target separator")
+    rhs = text.split(':', 1)[1]
+    tokens = []
+    cur = []
+    escaped = False
+    for ch in rhs:
+        if escaped:
+            cur.append(ch)
+            escaped = False
+        elif ch == '\\':
+            escaped = True
+        elif ch.isspace():
+            if cur:
+                tokens.append(''.join(cur))
+                cur = []
+        else:
+            cur.append(ch)
+    if escaped:
+        cur.append('\\')
+    if cur:
+        tokens.append(''.join(cur))
+    return tokens
+
+
+def collect_header_deps(cc, compiles, out):
+    """Hash every header the compiler actually reads for the binding.
+
+    `compiles` is (source, flags) for each real compile. The dependency scan
+    must use exactly that compile's macros/optimization/include flags: a header
+    selected by `__OPTIMIZE__` or a `-D` flag is part of the input only when the
+    scan sees the same preprocessor state. Results from all compiles are
+    unioned.
+    """
+    seen = {}
+    for source, flags in compiles:
+        p = run([cc, '-M', *flags, source])
+        for dep in parse_dependency_makefile(p.stdout):
+            real = os.path.realpath(dep)
+            if not os.path.isfile(real):
+                raise ToolError("preprocessor dependency is missing: %s" % dep)
+            seen[real] = sha256(real)
+    return [{'path': os.path.relpath(path, out), 'sha256': digest}
+            for path, digest in sorted(seen.items())]
 
 
 def write_text(path, text):
@@ -289,6 +451,46 @@ def read_phdrs(data):
                 lo, hi = b, a
             if lo['vaddr'] + lo['memsz'] > hi['vaddr']:
                 raise ToolError("overlapping load segments at %#x and %#x" % (lo['vaddr'], hi['vaddr']))
+    return out
+
+
+def read_sections(data):
+    """Read section names/addresses/sizes from an ELF64 image (no stripping)."""
+    if data[:4] != b'\x7fELF' or data[4] != 2 or data[5] != 1:
+        raise ToolError("not a 64-bit little-endian ELF image")
+    e_shoff = struct.unpack_from('<Q', data, 0x28)[0]
+    e_shentsize = struct.unpack_from('<H', data, 0x3a)[0]
+    e_shnum = struct.unpack_from('<H', data, 0x3c)[0]
+    e_shstrndx = struct.unpack_from('<H', data, 0x3e)[0]
+    if e_shoff == 0 or e_shnum == 0:
+        raise ToolError("final artifact has no section table")
+    if e_shentsize != 64 or e_shstrndx >= e_shnum:
+        raise ToolError("final artifact has a malformed section table")
+    if e_shoff + e_shnum * e_shentsize > len(data):
+        raise ToolError("section table is outside the file")
+    headers = []
+    for i in range(e_shnum):
+        at = e_shoff + i * e_shentsize
+        name, typ, flags, addr, off, size, link, info, alignv, entsize = \
+            struct.unpack_from('<IIQQQQIIQQ', data, at)
+        if off + size > len(data) and typ != 8:       # SHT_NOBITS has no file bytes
+            raise ToolError("section %d extends past the file" % i)
+        headers.append({'nameoff': name, 'type': typ, 'flags': flags,
+                        'addr': addr, 'off': off, 'size': size})
+    strtab = headers[e_shstrndx]
+    if strtab['off'] + strtab['size'] > len(data):
+        raise ToolError("section name table is outside the file")
+    names = data[strtab['off']:strtab['off'] + strtab['size']]
+    out = []
+    for s in headers:
+        start = s['nameoff']
+        if start >= len(names):
+            raise ToolError("section name offset is outside the name table")
+        end = names.find(b'\0', start)
+        if end < 0:
+            raise ToolError("unterminated section name")
+        s['name'] = names[start:end].decode('latin-1')
+        out.append(s)
     return out
 
 
@@ -506,6 +708,43 @@ def make_object(image, out, relocs):
         f.write(bytes(ehdr) + bytes(body))
 
 
+def check_hardening(data):
+    """Require full RELRO and immediate binding in a hosted cinterop link."""
+    ph = read_phdrs(data)
+    relro = [p for p in ph if p['type'] == PT_GNU_RELRO and p['memsz'] > 0]
+    if not relro:
+        raise ToolError("final artifact has no non-empty GNU_RELRO segment")
+    relro_ranges = [(p['vaddr'], p['vaddr'] + p['memsz']) for p in relro]
+    for section in read_sections(data):
+        if section['name'] in ('.preinit_array', '.init_array', '.fini_array') \
+                and section['size']:
+            lo = section['addr']
+            hi = lo + section['size']
+            if not any(a <= lo and hi <= b for a, b in relro_ranges):
+                raise ToolError("%s is outside PT_GNU_RELRO" % section['name'])
+    dynamic = [p for p in ph if p['type'] == PT_DYNAMIC]
+    if len(dynamic) != 1:
+        raise ToolError("final artifact has no single PT_DYNAMIC segment")
+    at = dynamic[0]['off']
+    end = at + dynamic[0]['filesz']
+    if end > len(data) or (end - at) % 16:
+        raise ToolError("final artifact has a malformed PT_DYNAMIC segment")
+    bind_now = False
+    while at + 16 <= end:
+        tag, value = struct.unpack_from('<QQ', data, at)
+        at += 16
+        if tag == DT_NULL:
+            break
+        if tag == DT_BIND_NOW:
+            bind_now = True
+        elif tag == DT_FLAGS and value & DF_BIND_NOW:
+            bind_now = True
+        elif tag == DT_FLAGS_1 and value & DF_1_NOW:
+            bind_now = True
+    if not bind_now:
+        raise ToolError("final artifact does not request immediate binding (BIND_NOW/DF_1_NOW)")
+
+
 def validate_final(exe):
     data = open(exe, 'rb').read()
     if data[:4] != b'\x7fELF' or struct.unpack_from('<H', data, 16)[0] != 2:
@@ -531,6 +770,7 @@ def validate_final(exe):
     stacks = [p for p in ph if p['type'] == 0x6474e551]
     if len(stacks) != 1 or (stacks[0]['flags'] & 1):
         raise ToolError("final artifact has no one non-executable GNU_STACK")
+    check_hardening(data)
     return data
 
 
@@ -605,6 +845,19 @@ def verify_doc(doc, base, full):
     paths = doc['paths']
     if not isinstance(files, dict) or not isinstance(paths, dict) or set(files) != set(paths):
         raise ToolError("manifest files/paths are missing or inconsistent")
+    for key in ('include_dirs', 'cflags'):
+        if not isinstance(doc.get(key), list) or any(
+                not isinstance(x, str) or not x for x in doc.get(key, [])):
+            raise ToolError("manifest %s is not a list of paths/flags" % key)
+    include_paths = doc.get('include_paths')
+    if not isinstance(include_paths, dict):
+        raise ToolError("manifest include_paths is missing or malformed")
+    for role, rel in include_paths.items():
+        if not isinstance(role, str) or not isinstance(rel, str):
+            raise ToolError("manifest include_paths entry is malformed")
+        include_dir = os.path.normpath(os.path.join(base, rel)) if not os.path.isabs(rel) else rel
+        if not os.path.isdir(include_dir):
+            raise ToolError("include directory %s is missing" % include_dir)
     required = REQUIRED_BUILD_KEYS if full else REQUIRED_INPUT_KEYS
     missing = required - set(files)
     if missing:
@@ -640,6 +893,34 @@ def verify_doc(doc, base, full):
                 raise ToolError("resolved library is missing: %s" % path)
             if sha256(path) != lib.get('sha256'):
                 raise ToolError("resolved library changed: %s" % path)
+        deps = doc.get('header_deps')
+        if not isinstance(deps, list) or not deps:
+            raise ToolError("build manifest is missing header_deps")
+        for dep in deps:
+            if not isinstance(dep, dict):
+                raise ToolError("header dependency entry is not an object")
+            rel = dep.get('path')
+            if not isinstance(rel, str) or not rel:
+                raise ToolError("header dependency path is malformed")
+            path = rel if os.path.isabs(rel) else os.path.normpath(os.path.join(base, rel))
+            if not os.path.isfile(path):
+                raise ToolError("header dependency is missing: %s" % path)
+            if sha256(path) != dep.get('sha256'):
+                raise ToolError("header dependency changed: %s" % path)
+        link_flags = doc.get('link_flags')
+        if not isinstance(link_flags, list) or any(flag not in LINK_HARDENING_FLAGS
+                                                   for flag in link_flags):
+            raise ToolError("build manifest link_flags are not the reviewed hardening set")
+        if any(flag not in link_flags for flag in LINK_HARDENING_FLAGS):
+            raise ToolError("build manifest is missing a hardening link flag")
+        hardening = doc.get('hardening')
+        if not isinstance(hardening, dict) or any(
+                hardening.get(k) is not True for k in ('relro', 'now', 'noexecstack')):
+            raise ToolError("build manifest hardening record is incomplete")
+        exe = os.path.normpath(os.path.join(base, paths['executable']))
+        if not os.path.isfile(exe):
+            raise ToolError("final executable is missing: %s" % exe)
+        validate_final(exe)
 
 
 def verify_manifest(path):
@@ -743,12 +1024,22 @@ def build(args):
     sig_path = os.path.join(out, 'sigcheck.c')
     write_text(sig_path, sigcheck)
 
+    include_dirs = [resolve_include_dir(spec_dir, p)
+                    for p in spec.get('include_dirs', [])]
     sources = [resolve_input(spec_dir, p, "source") for p in spec.get('sources', [])]
-    headers = [resolve_input(spec_dir, p, "header") for p in spec.get('headers', [])]
+    headers = [resolve_header(spec_dir, include_dirs, p, "header")
+               for p in spec.get('headers', [])]
     declaration_files = [resolve_input(spec_dir, p, "declaration file")
                          for p in spec.get('declaration_files', [])]
     cflags = list(spec.get('cflags', []))
     libs = list(spec.get('libs', []))
+    inc_flags = include_flags(include_dirs)
+    map_roots = [spec_dir, os.path.dirname(app), *include_dirs,
+                 *[os.path.dirname(p) for p in sources],
+                 *[os.path.dirname(p) for p in headers]]
+    map_flags = path_map_flags(map_roots)
+    include_paths = {'include_%d' % i: os.path.relpath(path, out)
+                     for i, path in enumerate(include_dirs)}
 
     input_paths = {
         'spec': spec_path,
@@ -781,20 +1072,30 @@ def build(args):
     compiler_version = run([obo, '--version']).stdout.strip()
     toolchain = run([cc, '--version']).stdout.splitlines()[0].strip()
     input_manifest_path = os.path.join(out, 'input-manifest.json')
-    input_doc = manifest_doc(spec, input_paths, compiler_version, toolchain, sig_mode, 'input')
+    input_doc = manifest_doc(spec, input_paths, compiler_version, toolchain, sig_mode,
+                             'input', include_dirs=spec.get('include_dirs', []),
+                             include_paths=include_paths, cflags=cflags)
     input_doc['paths'] = {k: os.path.relpath(v, out) for k, v in input_paths.items()}
     write_manifest(input_manifest_path, input_doc)
     verify_doc(input_doc, out, False)   # check the inputs before compiling
 
+    # The signature check and every binding source see the same preprocessor
+    # state: -fno-pie, -O2, include dirs and cflags. A private sysroot therefore
+    # works in header mode, and a flag or __OPTIMIZE__ branch that changes a
+    # prototype cannot validate one declaration and compile another.
+    source_flags = ['-fno-pie', '-O2', '-I', spec_dir, *inc_flags, *map_flags, *cflags]
+    sig_flags = ['-fno-pie', '-O2', '-Werror', '-I', spec_dir, *inc_flags, *map_flags, *cflags]
     sig_o = os.path.join(out, 'sigcheck.o')
-    run([cc, '-c', '-fno-pie', '-Werror', '-I', spec_dir, sig_path, '-o', sig_o])
+    run([cc, '-c', *sig_flags, sig_path, '-o', sig_o])
     shim_o = os.path.join(out, 'shim.o')
     run([cc, '-c', shim, '-o', shim_o])
     src_objs = []
     for i, p in enumerate(sources):
         o = os.path.join(out, 'src%d.o' % i)
-        run([cc, '-c', '-fno-pie', '-O2', *cflags, p, '-o', o])
+        run([cc, '-c', *source_flags, p, '-o', o])
         src_objs.append(o)
+    header_deps = collect_header_deps(
+        cc, [(sig_path, sig_flags), *[(p, source_flags) for p in sources]], out)
     host_o = os.path.join(out, 'host.o')
     host_stack_o = os.path.join(out, 'host_stack.o')
     start_o = os.path.join(out, 'start.o')
@@ -821,7 +1122,7 @@ def build(args):
     link = [cc, '-nostartfiles', '-no-pie', '-T', os.path.join(HERE, 'link.ld'),
             '-o', exe, crt[0], crt[1], crt[2], native_o, host_o, host_stack_o, start_o,
             shim_o, *src_objs, crt[3], crt[4],
-            '-Wl,--no-as-needed', '-Wl,-z,noexecstack', *libs, '-lc']
+            '-Wl,--no-as-needed', *LINK_HARDENING_FLAGS, *libs, '-lc']
     run(link)
     validate_final(exe)
 
@@ -843,7 +1144,10 @@ def build(args):
     })
     for i, o in enumerate(src_objs):
         paths['source_object_%d' % i] = o
-    doc = manifest_doc(spec, paths, compiler_version, toolchain, sig_mode, 'build')
+    doc = manifest_doc(spec, paths, compiler_version, toolchain, sig_mode, 'build',
+                       include_dirs=spec.get('include_dirs', []),
+                       include_paths=include_paths, cflags=cflags,
+                       header_deps=header_deps, link_flags=LINK_HARDENING_FLAGS)
     doc['paths'] = {k: os.path.relpath(v, out) for k, v in paths.items()}
     doc['resolved_libraries'] = resolved_libraries(exe)
     manifest_path = os.path.join(out, 'manifest.json')

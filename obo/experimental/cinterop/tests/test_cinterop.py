@@ -5,12 +5,17 @@
 
 This is not part of the public compiler test catalog. It builds a real scalar
 module end to end, checks the ABI/alignment assertions, checks the synthetic
-startup stack and its bounds, exercises direct-call and provenance failures, and
-conditionally builds the PQlibVersion probe when the host has libpq.so.5. No
-database connection is made.
+startup stack and its bounds, exercises direct-call and provenance failures,
+checks private include/cflag provenance and RELRO, conditionally builds the
+PQlibVersion probe when the host has libpq.so.5, and conditionally runs the
+hosted OpenSSL qualification. No database connection is made.
 """
+import glob
+import hashlib
 import json
 import os
+import re
+import resource
 import shutil
 import subprocess
 import sys
@@ -55,6 +60,202 @@ def zlib_present():
     return os.path.exists(ZLIB_HEADER) and any(os.path.exists(p) for p in ZLIB_PROBE_PATHS)
 
 
+OPENSSL_LIB_FALLBACKS = {
+    'libssl.so.3': ['/usr/lib/x86_64-linux-gnu/libssl.so.3',
+                    '/lib/x86_64-linux-gnu/libssl.so.3'],
+    'libcrypto.so.3': ['/usr/lib/x86_64-linux-gnu/libcrypto.so.3',
+                       '/lib/x86_64-linux-gnu/libcrypto.so.3'],
+}
+OPENSSL_HEADER = '/usr/include/openssl/ssl.h'
+OPENSSL_CACHE = os.path.join(TMPROOT, 'cinterop-openssl-dev')
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for b in iter(lambda: f.read(1 << 20), b''):
+            h.update(b)
+    return h.hexdigest()
+
+
+def ldconfig_paths(name):
+    if not shutil.which('ldconfig') and not os.path.exists('/sbin/ldconfig'):
+        return []
+    p = run([shutil.which('ldconfig') or '/sbin/ldconfig', '-p'])
+    if p.returncode != 0:
+        return []
+    paths = []
+    for line in p.stdout.splitlines():
+        parts = line.split()
+        if parts and parts[0] == name and '=>' in line:
+            path = line.split('=>', 1)[1].strip().split()[0]
+            if os.path.exists(path):
+                paths.append(path)
+    return paths
+
+
+def openssl_library_paths(name):
+    paths = ldconfig_paths(name)
+    if not paths:
+        paths = [p for p in OPENSSL_LIB_FALLBACKS[name] if os.path.exists(p)]
+    return paths
+
+
+def openssl_library_present():
+    if os.environ.get('CINTEROP_TEST_NO_OPENSSL') == '1':
+        return False
+    return (bool(openssl_library_paths('libssl.so.3'))
+            and bool(openssl_library_paths('libcrypto.so.3')))
+
+
+def openssl_installed_version():
+    if not shutil.which('dpkg-query'):
+        return None
+    for package in ('libssl3t64', 'libssl3'):
+        p = run(['dpkg-query', '-W', '-f=${Version}', package])
+        if p.returncode == 0 and p.stdout.strip():
+            return p.stdout.strip()
+    return None
+
+
+def openssl_header_version_string():
+    path = '/usr/include/openssl/opensslv.h'
+    if not os.path.isfile(path):
+        return None
+    m = re.search(r'OPENSSL_VERSION_STR\s+"([^"]+)"', open(path).read())
+    return m.group(1) if m else None
+
+
+def openssl_runtime_version_string():
+    if not shutil.which('openssl'):
+        return None
+    p = run(['openssl', 'version', '-v'])
+    if p.returncode != 0:
+        return None
+    parts = p.stdout.split()
+    return parts[1] if len(parts) > 1 else None
+
+
+def openssl_system_headers_match(version):
+    if not os.path.exists(OPENSSL_HEADER):
+        return False
+    if version is not None and shutil.which('dpkg-query'):
+        p = run(['dpkg-query', '-W', '-f=${Version}', 'libssl-dev'])
+        if p.returncode == 0 and p.stdout.strip() == version:
+            return True
+    # Fall back to the upstream version string when the package database is not
+    # available (or says the headers are not package-owned).
+    header = openssl_header_version_string()
+    runtime = openssl_runtime_version_string()
+    return header is not None and runtime is not None and header == runtime
+
+
+def open_cache_manifest(root):
+    return os.path.join(root, 'cache-manifest.sha256')
+
+
+def write_cache_manifest(include_root):
+    """Hash the extracted include tree so a later cache hit is content-checked."""
+    entries = []
+    for dirpath, _, filenames in os.walk(include_root):
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            entries.append((os.path.relpath(path, include_root), sha256_file(path)))
+    entries.sort()
+    with open(open_cache_manifest(os.path.dirname(os.path.dirname(include_root))), 'w') as f:
+        for rel, digest in entries:
+            f.write('%s  %s\n' % (digest, rel))
+
+
+def cache_manifest_ok(cache, include_root):
+    manifest = open_cache_manifest(cache)
+    if not os.path.isfile(manifest):
+        return False
+    want = {}
+    for line in open(manifest):
+        parts = line.rstrip('\n').split('  ', 1)
+        if len(parts) == 2:
+            want[parts[1]] = parts[0]
+    got = {}
+    for dirpath, _, filenames in os.walk(include_root):
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            got[os.path.relpath(path, include_root)] = sha256_file(path)
+    return want == got
+
+
+def cache_manifest_self_test(tmp):
+    root = os.path.join(tmp, 'cache-manifest-test')
+    include = os.path.join(root, 'usr', 'include')
+    os.makedirs(os.path.join(include, 'openssl'))
+    with open(os.path.join(include, 'openssl', 'ssl.h'), 'w') as f:
+        f.write('#define TEST 1\n')
+    write_cache_manifest(include)
+    if not cache_manifest_ok(root, include):
+        raise Fail("a freshly written cache manifest did not validate")
+    with open(os.path.join(include, 'openssl', 'ssl.h'), 'a') as f:
+        f.write('#define TEST 2\n')
+    if cache_manifest_ok(root, include):
+        raise Fail("a tampered private-header cache was not rejected")
+
+
+def openssl_include_dirs():
+    """Return include roots for the exact installed libssl-dev without root.
+
+    If the host already has matching development headers they are used
+    directly. Otherwise the matching package is downloaded with `apt-get
+    download` and unpacked with `dpkg-deb -x` into a private cache. The cache
+    key is the installed library package version, so headers and library stay
+    paired; a cache hit is content-checked against a stored hash manifest.
+    """
+    version = openssl_installed_version()
+    if openssl_system_headers_match(version):
+        dirs = ['/usr/include']
+        if os.path.isdir('/usr/include/x86_64-linux-gnu'):
+            dirs.append('/usr/include/x86_64-linux-gnu')
+        return dirs
+    if version is None:
+        raise Fail("libssl is present but its installed package version is unknown; "
+                   "cannot select matching libssl-dev headers")
+    cache = os.path.join(OPENSSL_CACHE, version)
+    marker = os.path.join(cache, '.complete')
+    include = os.path.join(cache, 'usr', 'include')
+    arch_include = os.path.join(include, 'x86_64-linux-gnu')
+    if (os.path.isfile(marker) and os.path.exists(os.path.join(include, 'openssl', 'ssl.h'))
+            and cache_manifest_ok(cache, include)):
+        return [include, arch_include]
+    work = tempfile.mkdtemp(prefix='openssl-dev-', dir=TMPROOT)
+    try:
+        p = run(['apt-get', 'download', 'libssl-dev=' + version], cwd=work, timeout=300)
+        if p.returncode != 0:
+            raise Fail("cannot download libssl-dev=%s for the installed libssl %s:\n%s"
+                       % (version, version, (p.stderr or p.stdout).strip()))
+        debs = glob.glob(os.path.join(work, 'libssl-dev_*.deb'))
+        if len(debs) != 1:
+            raise Fail("apt-get download produced %d libssl-dev archives" % len(debs))
+        package_version = run(['dpkg-deb', '-f', debs[0], 'Version']).stdout.strip()
+        if package_version != version:
+            raise Fail("downloaded libssl-dev %r does not match installed libssl %r"
+                       % (package_version, version))
+        root = os.path.join(work, 'root')
+        need(run(['dpkg-deb', '-x', debs[0], root]), 'libssl-dev extraction')
+        root_include = os.path.join(root, 'usr', 'include')
+        if not os.path.exists(os.path.join(root_include, 'openssl', 'ssl.h')):
+            raise Fail("extracted libssl-dev has no openssl/ssl.h")
+        write_cache_manifest(root_include)
+        os.makedirs(OPENSSL_CACHE, exist_ok=True)
+        tmp_cache = cache + '.tmp-%d' % os.getpid()
+        shutil.rmtree(tmp_cache, ignore_errors=True)
+        shutil.move(root, tmp_cache)
+        shutil.rmtree(cache, ignore_errors=True)
+        os.rename(tmp_cache, cache)
+        with open(marker, 'w') as f:
+            f.write(version + '\n')
+        return [include, arch_include]
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def run(cmd, **kw):
     timeout = kw.pop('timeout', 300)
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kw)
@@ -77,8 +278,50 @@ def need(p, what):
     return p
 
 
+def no_core_env(tmp):
+    """Disable core dumps for deliberate-fault tests.
+
+    Some hosts route core dumps through a slow pipe handler that ignores
+    RLIMIT_CORE, so waiting for SIGSEGV can take much longer than the test
+    timeout. The preload's constructor clears PR_SET_DUMPABLE before main; the
+    signal itself and the exit status are unchanged.
+    """
+    src = os.path.join(tmp, 'cinterop_no_core.c')
+    so = os.path.join(tmp, 'cinterop_no_core.so')
+    if not os.path.exists(so):
+        with open(src, 'w') as f:
+            f.write('#include <sys/prctl.h>\n'
+                    '__attribute__((constructor)) static void obo_test_no_core(void) {\n'
+                    '    prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);\n}\n')
+        need(run([os.environ.get('CC', 'gcc'), '-shared', '-fPIC', '-o', so, src]),
+             'no-core preload build')
+    return {'LD_PRELOAD': so}
+
+
 def verify(out):
     return run([sys.executable, TOOLPY, 'verify', os.path.join(out, 'manifest.json')])
+
+
+def assert_relro_sections(exe):
+    """The final ELF must cover constructors/destructors with GNU_RELRO."""
+    ph = need(run(['readelf', '-lW', exe]), 'readelf -l')
+    ranges = []
+    for line in ph.stdout.splitlines():
+        parts = line.split()
+        if parts and parts[0] == 'GNU_RELRO':
+            ranges.append((int(parts[2], 16), int(parts[2], 16) + int(parts[5], 16)))
+    if not ranges:
+        raise Fail("final artifact has no GNU_RELRO segment")
+    sw = need(run(['readelf', '-SW', exe]), 'readelf -S')
+    for name in ('.preinit_array', '.init_array', '.fini_array'):
+        for line in sw.stdout.splitlines():
+            parts = line.split()
+            if name in parts:
+                i = parts.index(name)
+                addr = int(parts[i + 2], 16)
+                size = int(parts[i + 5], 16)
+                if size and not any(a <= addr and addr + size <= b for a, b in ranges):
+                    raise Fail("%s at %#x..%#x is outside GNU_RELRO" % (name, addr, addr + size))
 
 
 def scalar(tmp):
@@ -105,6 +348,10 @@ def scalar(tmp):
             raise Fail("missing obo load segment %s" % addr)
     if 'GNU_STACK' not in ph.stdout or 'RWE' in ph.stdout:
         raise Fail("final stack is not non-executable")
+    assert_relro_sections(os.path.join(out, 'app'))
+    dyn = need(run(['readelf', '-dW', os.path.join(out, 'app')]), 'readelf -d')
+    if 'BIND_NOW' not in dyn.stdout and 'NOW' not in dyn.stdout:
+        raise Fail("final artifact does not request immediate binding")
     undef = need(run(['nm', '-u', os.path.join(out, 'app')]), 'nm -u')
     if 'obo_native_' in undef.stdout:
         raise Fail("final executable has an unresolved thunk")
@@ -112,6 +359,14 @@ def scalar(tmp):
     m = json.load(open(os.path.join(out, 'manifest.json')))
     if m.get('signature_check') != 'header':
         raise Fail("scalar signature_check is %r, expected header" % m.get('signature_check'))
+    for key in ('include_dirs', 'include_paths', 'cflags', 'header_deps',
+                'link_flags', 'hardening'):
+        if key not in m:
+            raise Fail("build manifest is missing %r" % key)
+    if m['hardening'] != {'relro': True, 'now': True, 'noexecstack': True}:
+        raise Fail("build manifest hardening record is %r" % m['hardening'])
+    if '-Wl,-z,relro' not in m['link_flags'] or '-Wl,-z,now' not in m['link_flags']:
+        raise Fail("build manifest link_flags are %r" % m['link_flags'])
     # Freestanding ABI probe: no libc, no dynamic loader; checks the thunk and
     # SysV callee-saved registers directly.
     probe = os.path.join(tmp, 'abi_probe')
@@ -174,8 +429,9 @@ def startup(tmp, scalar_out):
     p = need(run([guard, 'invalid']), 'guard stack invalid run')
     if 'invalid_rejected=' not in p.stdout:
         raise Fail("guard stack invalid-size run did not report a clean error")
+    fault_env = no_core_env(tmp)
     for mode in ('low', 'high'):
-        p = run([guard, mode])
+        p = run([guard, mode], env=dict(os.environ, **fault_env))
         if p.returncode != -11:
             raise Fail("guard stack %s did not die by SIGSEGV: %d %s"
                        % (mode, p.returncode, p.stderr[:120]))
@@ -186,7 +442,9 @@ def startup(tmp, scalar_out):
     p = build(os.path.join(EX, 'scalar.cbind'), os.path.join(EX, 'deep_recursion_app.obx'), deep)
     if p.returncode != 0:
         raise Fail("deep-recursion app build failed:\n%s" % (p.stderr or p.stdout))
-    p = run([os.path.join(deep, 'app')], env={'OBO_CINTEROP_STACK_BYTES': '524288'}, timeout=20)
+    p = run([os.path.join(deep, 'app')],
+            env=dict(os.environ, OBO_CINTEROP_STACK_BYTES='524288', **fault_env),
+            timeout=20)
     if p.returncode != -11:
         raise Fail("deep recursion did not hit the stack guard: %d %s"
                    % (p.returncode, p.stderr[:120]))
@@ -692,7 +950,255 @@ def libpq_live(tmp):
     print('live libpq: ok (explicit opt-in DSN)')
 
 
+def include_and_cflags(tmp):
+    """A private include dir and a cflag must reach the signature check and the
+    binding source compile with the same preprocessor state, and both must be
+    recorded in the manifest."""
+    root = os.path.join(tmp, 'include_cflags')
+    private = os.path.join(root, 'inc', 'private')
+    dep = os.path.join(root, 'inc', 'dep')
+    opt = os.path.join(root, 'inc', 'opt')
+    debug = os.path.join(root, 'inc', 'debug')
+    proto = os.path.join(root, 'inc', 'proto')
+    for path in (private, dep, opt, debug, proto):
+        os.makedirs(path)
+    with open(os.path.join(private, 'probe.h'), 'w') as f:
+        f.write('#ifndef OBO_INCLUDE_PROBE_H\n#define OBO_INCLUDE_PROBE_H\n'
+                '#include "probe_dep.h"\n#endif\n')
+    with open(os.path.join(dep, 'probe_dep.h'), 'w') as f:
+        f.write('#ifndef OBO_INCLUDE_PROBE_DEP_H\n#define OBO_INCLUDE_PROBE_DEP_H\n'
+                '#if !defined(CINTEROP_CFLAG_PROBE)\n'
+                '#error "CINTEROP_CFLAG_PROBE missing from this compile"\n'
+                '#endif\n'
+                '#ifdef __OPTIMIZE__\n#include "opt.h"\n#else\n#include "debug.h"\n#endif\n'
+                'long probe_value(long x);\n#endif\n')
+    with open(os.path.join(opt, 'opt.h'), 'w') as f:
+        f.write('#ifndef OBO_INCLUDE_OPT_H\n#define OBO_INCLUDE_OPT_H\n'
+                '#define PROBE_K 7\n#endif\n')
+    with open(os.path.join(debug, 'debug.h'), 'w') as f:
+        f.write('#ifndef OBO_INCLUDE_DEBUG_H\n#define OBO_INCLUDE_DEBUG_H\n'
+                '#define PROBE_K 0\n#endif\n')
+    with open(os.path.join(proto, 'proto.h'), 'w') as f:
+        f.write('#ifndef OBO_INCLUDE_PROTO_H\n#define OBO_INCLUDE_PROTO_H\n'
+                '#ifdef __OPTIMIZE__\n'
+                'int probe_value(long x);\n'
+                '#else\n'
+                'long probe_value(long x);\n'
+                '#endif\n#endif\n')
+    with open(os.path.join(root, 'probe.c'), 'w') as f:
+        f.write('#include "probe.h"\nlong probe_value(long x) { return x + PROBE_K; }\n')
+    with open(os.path.join(root, 'proto.c'), 'w') as f:
+        f.write('long probe_value(long x) { return x; }\n')
+    with open(os.path.join(root, 'app.obx'), 'w') as f:
+        f.write('module app\n\nimport "probe.obx"\n\n'
+                'fn main() { println(probe::probe_value(35)) }\n')
+    spec = {
+        'format': 'cinterop-proto/1',
+        'module': 'probe',
+        'platform': 'x86_64-linux-gnu',
+        'abi': 'sysv-amd64',
+        'sources': ['probe.c'],
+        'headers': ['probe.h'],
+        'include_dirs': ['inc/private', 'inc/dep', 'inc/opt', 'inc/debug'],
+        'cflags': ['-DCINTEROP_CFLAG_PROBE=1'],
+        'libs': [],
+        'functions': [{'name': 'probe_value', 'symbol': 'probe_value',
+                       'args': ['i64'], 'ret': 'i64', 'effects': ['impure']}],
+    }
+    spec_path = os.path.join(root, 'probe.cbind')
+
+    def write(s):
+        with open(spec_path, 'w') as f:
+            json.dump(s, f)
+        return spec_path
+
+    out = os.path.join(tmp, 'include_cflags_build')
+    need(build(write(spec), os.path.join(root, 'app.obx'), out), 'include/cflags build')
+    p = need(run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1')),
+             'include/cflags run')
+    if p.stdout.strip() != '42':
+        raise Fail("include/cflags app output was %r" % p.stdout.strip())
+    need(verify(out), 'include/cflags manifest verify')
+    m = json.load(open(os.path.join(out, 'manifest.json')))
+    if m['include_dirs'] != spec['include_dirs'] or m['cflags'] != spec['cflags']:
+        raise Fail("manifest did not record include_dirs/cflags: %r %r"
+                   % (m['include_dirs'], m['cflags']))
+    names = {os.path.basename(d['path']) for d in m['header_deps']}
+    if not {'probe.h', 'probe_dep.h', 'opt.h'}.issubset(names):
+        raise Fail("manifest header_deps do not include the optimized private headers: %r"
+                   % sorted(names))
+    if 'debug.h' in names:
+        raise Fail("dependency scan used a different __OPTIMIZE__ state than the source compile")
+    for target in (os.path.join(opt, 'opt.h'), os.path.join(private, 'probe.h')):
+        original = open(target).read()
+        try:
+            with open(target, 'a') as f:
+                f.write('\n')
+            if verify(out).returncode == 0:
+                raise Fail("a changed private header was not rejected: %s" % target)
+        finally:
+            with open(target, 'w') as f:
+                f.write(original)
+
+    no_inc = dict(spec)
+    no_inc.pop('include_dirs')
+    p = build(write(no_inc), os.path.join(root, 'app.obx'), os.path.join(tmp, 'include_missing'))
+    if p.returncode == 0 or 'probe.h' not in (p.stderr + p.stdout):
+        raise Fail("a header reachable only through include_dirs was not rejected:\n%s"
+                   % (p.stderr + p.stdout))
+    no_flag = dict(spec)
+    no_flag['cflags'] = []
+    p = build(write(no_flag), os.path.join(root, 'app.obx'), os.path.join(tmp, 'cflag_missing'))
+    if p.returncode == 0 or 'CINTEROP_CFLAG_PROBE' not in (p.stderr + p.stdout):
+        raise Fail("a cflag missing from the signature check/source compile was not rejected:\n%s"
+                   % (p.stderr + p.stdout))
+    escape = dict(spec)
+    escape['include_dirs'] = ['../escape']
+    p = build(write(escape), os.path.join(root, 'app.obx'), os.path.join(tmp, 'include_escape'))
+    if p.returncode == 0 or 'escapes the spec directory' not in (p.stderr + p.stdout):
+        raise Fail("a relative include-dir escape was not rejected:\n%s" % (p.stderr + p.stdout))
+    missing = dict(spec)
+    missing['include_dirs'] = [os.path.join(tmp, 'no-such-include-root')]
+    p = build(write(missing), os.path.join(root, 'app.obx'), os.path.join(tmp, 'include_nonexistent'))
+    if p.returncode == 0 or 'include directory not found' not in (p.stderr + p.stdout):
+        raise Fail("a nonexistent include root was not rejected:\n%s" % (p.stderr + p.stdout))
+    outside = os.path.join(tmp, 'outside_headers')
+    os.makedirs(outside)
+    link = os.path.join(root, 'inc', 'link-outside')
+    os.symlink(outside, link)
+    symlink = dict(spec)
+    symlink['include_dirs'] = ['inc/link-outside']
+    p = build(write(symlink), os.path.join(root, 'app.obx'), os.path.join(tmp, 'include_symlink'))
+    if p.returncode == 0 or 'resolves outside' not in (p.stderr + p.stdout):
+        raise Fail("a symlink include-root escape was not rejected:\n%s" % (p.stderr + p.stdout))
+
+    # The signature check must use the same __OPTIMIZE__ branch as the source.
+    # Under -O2 this header says int, while the spec says i64; the build must
+    # fail rather than accept a prototype that the source object disagrees with.
+    mismatch = dict(spec)
+    mismatch['sources'] = ['proto.c']
+    mismatch['headers'] = ['proto.h']
+    mismatch['include_dirs'] = ['inc/proto']
+    p = build(write(mismatch), os.path.join(root, 'app.obx'),
+              os.path.join(tmp, 'include_proto_mismatch'))
+    if p.returncode == 0 or 'probe_value' not in (p.stderr + p.stdout):
+        raise Fail("a __OPTIMIZE__-dependent prototype mismatch was not rejected:\n%s"
+                   % (p.stderr + p.stdout))
+    print('include_dirs/cflags: ok (same flags for signature check, source and dependency scan)')
+
+
+def openssl_qualification(tmp):
+    if not openssl_library_present():
+        print('hosted OpenSSL qualification: skipped (libssl.so.3/libcrypto.so.3 absent, '
+              'or CINTEROP_TEST_NO_OPENSSL=1)')
+        return
+    include_dirs = openssl_include_dirs()
+    test_dir = HERE
+    # Keep the generated spec and C sources in the private build directory so
+    # the uncommitted spec has no absolute repository source paths. The private
+    # sysroot remains an explicit absolute build input.
+    src_dir = os.path.join(tmp, 'openssl-src')
+    os.makedirs(src_dir)
+    for name in ('openssl_qualify.c', 'openssl_qualify.h'):
+        shutil.copyfile(os.path.join(test_dir, name), os.path.join(src_dir, name))
+    spec = {
+        'format': 'cinterop-proto/1',
+        'module': 'openssl_probe',
+        'platform': 'x86_64-linux-gnu',
+        'abi': 'sysv-amd64',
+        'sources': ['openssl_qualify.c'],
+        'headers': [
+            'openssl_qualify.h',
+            'openssl/ssl.h', 'openssl/evp.h', 'openssl/rand.h',
+            'openssl/err.h', 'openssl/provider.h', 'openssl/x509.h',
+            'openssl/pem.h', 'openssl/bio.h', 'openssl/opensslv.h',
+        ],
+        'include_dirs': include_dirs,
+        'cflags': ['-pthread'],
+        'libs': ['-l:libssl.so.3', '-l:libcrypto.so.3', '-pthread'],
+        'functions': [
+            {'name': 'qualify', 'symbol': 'obo_openssl_qualify',
+             'args': ['i64'], 'ret': 'i64', 'effects': ['impure']},
+            {'name': 'version', 'symbol': 'obo_openssl_version_num',
+             'args': [], 'ret': 'i64', 'effects': ['impure']},
+        ],
+    }
+    spec_path = os.path.join(src_dir, 'openssl_qualify.cbind')
+    with open(spec_path, 'w') as f:
+        json.dump(spec, f)
+    out = os.path.join(tmp, 'openssl')
+    p = build(spec_path, os.path.join(test_dir, 'openssl_qualify_app.obx'), out)
+    if p.returncode != 0:
+        raise Fail("hosted OpenSSL qualification build failed:\n%s" % (p.stderr or p.stdout))
+    app_path = os.path.join(out, 'app')
+    blob = open(app_path, 'rb').read()
+    if src_dir.encode() in blob:
+        raise Fail("the final artifact embeds the private source directory path")
+    p = need(run([app_path], env=dict(os.environ, OBO_CHECK='1'),
+                 timeout=120), 'hosted OpenSSL qualification run')
+    for line in ('openssl-qualify=ok', 'openssl-version-num=0x300',
+                 'openssl-tls=1.3 alpn=http/1.1', 'openssl-post-cleanup=ok'):
+        if line not in p.stdout:
+            raise Fail("hosted OpenSSL output missing %r:\n%s" % (line, p.stdout))
+    if 'openssl-qualify=1' not in p.stdout:
+        raise Fail("the obo scalar seam did not return OpenSSL success:\n%s" % p.stdout)
+    for marker in ('openssl-ctor', 'openssl-cleanup-atexit', 'openssl-atexit'):
+        if marker not in p.stderr:
+            raise Fail("hosted OpenSSL stderr missing %r:\n%s" % (marker, p.stderr))
+    if p.stderr.index('openssl-cleanup-atexit') > p.stderr.index('openssl-atexit'):
+        raise Fail("OPENSSL_cleanup did not run before the libc atexit marker:\n%s" % p.stderr)
+    ldd = need(run(['ldd', os.path.join(out, 'app')]), 'openssl ldd')
+    for lib in ('libssl.so.3', 'libcrypto.so.3'):
+        if lib not in ldd.stdout:
+            raise Fail("hosted OpenSSL app does not depend on %s" % lib)
+    assert_relro_sections(app_path)
+    dyn = need(run(['readelf', '-dW', app_path]), 'openssl readelf -d')
+    if 'BIND_NOW' not in dyn.stdout and 'NOW' not in dyn.stdout:
+        raise Fail("hosted OpenSSL app does not request immediate binding")
+    need(verify(out), 'openssl manifest verify')
+    m = json.load(open(os.path.join(out, 'manifest.json')))
+    if m.get('signature_check') != 'header':
+        raise Fail("OpenSSL signature_check is %r" % m.get('signature_check'))
+    if m.get('include_dirs') != include_dirs or m.get('cflags') != ['-pthread']:
+        raise Fail("OpenSSL manifest did not record include_dirs/cflags")
+    deps = {os.path.basename(d['path']) for d in m['header_deps']}
+    if 'ssl.h' not in deps or 'opensslv.h' not in deps or 'openssl_qualify.h' not in deps:
+        raise Fail("OpenSSL manifest header_deps are incomplete: %r" % sorted(deps))
+    if m.get('hardening') != {'relro': True, 'now': True, 'noexecstack': True}:
+        raise Fail("OpenSSL manifest hardening record is %r" % m.get('hardening'))
+
+    # The same C fixture under ASAN/UBSAN, separately from the fixed hosted
+    # image: provider setup, the BIO handshake and cleanup must stay clean.
+    asan_main = os.path.join(tmp, 'openssl_asan_main.c')
+    with open(asan_main, 'w') as f:
+        f.write('#include <stdio.h>\n#include "openssl_qualify.h"\n'
+                'int main(void) {\n'
+                '    long ok = obo_openssl_qualify(1);\n'
+                '    printf("asan-qualify=%ld\\n", ok);\n'
+                '    return ok == 1 ? 0 : 1;\n}\n')
+    cc = os.environ.get('CC', 'gcc')
+    asan_exe = os.path.join(tmp, 'openssl_qualify_asan')
+    flags = ['-O1', '-g', '-fsanitize=address,undefined',
+             '-fno-sanitize-recover=all', '-fno-omit-frame-pointer', '-pthread']
+    for d in include_dirs:
+        flags += ['-I', d]
+    need(run([cc, *flags, '-I', src_dir, '-o', asan_exe,
+              os.path.join(src_dir, 'openssl_qualify.c'), asan_main,
+              '-l:libssl.so.3', '-l:libcrypto.so.3']), 'OpenSSL ASAN/UBSAN build')
+    p = need(run([asan_exe], env=dict(os.environ,
+                                      ASAN_OPTIONS='detect_leaks=1:abort_on_error=1',
+                                      UBSAN_OPTIONS='halt_on_error=1'),
+                 timeout=120), 'OpenSSL ASAN/UBSAN run')
+    if 'asan-qualify=1' not in p.stdout or 'openssl-post-cleanup=ok' not in p.stdout:
+        raise Fail("OpenSSL ASAN/UBSAN run failed:\n%s\n%s" % (p.stdout, p.stderr))
+    print('hosted OpenSSL qualification: ok (TLS 1.3 memory BIO, ALPN, provider, '
+          'RAND, pthread_once, TLS errno/error queue, atexit/cleanup; ASAN/UBSAN)')
+
+
 def main():
+    # The guard/deep-recursion tests deliberately fault. A host core-dump pipe
+    # can take longer than the test timeout; the signal verdict is what matters.
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     os.makedirs(TMPROOT, exist_ok=True)
     tmp = tempfile.mkdtemp(prefix='cinterop-test-', dir=TMPROOT)
     try:
@@ -706,6 +1212,9 @@ def main():
         fake_adapter(tmp)
         libpq_fake(tmp)
         zlib_second(tmp)
+        include_and_cflags(tmp)
+        cache_manifest_self_test(tmp)
+        openssl_qualification(tmp)
         sanitizer_adapters(tmp)
         libpq_live(tmp)
         print('cinterop tests ok')

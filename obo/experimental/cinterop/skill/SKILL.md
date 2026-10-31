@@ -147,7 +147,20 @@ wide C header parser.
   fake source instead;
 - `headers` when a real header is present, otherwise an explicit `declarations`
   list; never pretend a declarations-only check used the installed header;
+- `include_dirs` for a private sysroot (for example extracted `libssl-dev`
+  headers) and `cflags` for real compile options. The signature check, every
+  binding source compile **and** each dependency scan use the same
+  `-fno-pie -O2`/include/cflag state. A relative include root must stay inside
+  the spec directory or obo tree; write an absolute root only when it is an
+  explicit build input, and do not commit machine-specific absolute paths;
 - one function entry per exported C symbol, with `i64` args and `i32`/`i64` ret.
+
+The manifest records `include_dirs`, `include_paths`, `cflags`, transitive
+`header_deps` hashes, `link_flags` and the RELRO/NOW/noexecstack hardening
+record. Every hosted link gets full RELRO and immediate binding; the final ELF
+is rejected if `PT_GNU_RELRO` or `BIND_NOW`/`DF_1_NOW` is missing, and
+constructors/destructors must lie inside the RELRO range. The separate
+freestanding compiler/runtime build is unchanged.
 
 ### 5. Build and test in a private directory
 
@@ -184,13 +197,27 @@ Test at three levels:
    create roles/databases/schema, edit `pg_hba`, start services, expose ports,
    or read credential files as part of a test run. Use `timeout` around the
    whole app and close every resource.
+6. **Private header package / hosted qualification**, if the library needs one.
+   Do not install system packages or use root. Download the exact matching
+   development package (for example `apt-get download
+   libssl-dev=<installed libssl3t64 version>`), extract it with `dpkg-deb -x`
+   into a private path, and pass that include root through `include_dirs`.
+   Never commit the extracted headers. Accept already-installed headers only
+   when their package version matches the installed runtime library; otherwise
+   fetch the matching development package. Keep a content hash manifest for a
+   private cache and re-check it on a cache hit. A build failure with the
+   library present is a failure; skip only when the runtime library is
+   genuinely absent. The hosted OpenSSL 3.0 fixture in
+   `tests/openssl_qualify.c` is the worked example for constructors, atexit,
+   C stdio, thread-local state, provider loading and `OPENSSL_cleanup`.
 
 ### 6. Review what the manifest actually proves
 
 The manifest hashes inputs and artifacts and checks platform/ABI/pointer width,
-thunk set, signature mode, effects and resolved libraries. Hashes are
-provenance/corruption checks, not signatures. A same-signature sidecar or
-library substitution remains trusted input. Say that plainly.
+thunk set, signature mode, effects, resolved libraries, transitive header
+dependencies and the RELRO/NOW/noexecstack link policy. Hashes are
+provenance/corruption checks, not signatures. A same-signature sidecar, header
+or library substitution remains trusted input. Say that plainly.
 
 ## Templates
 
