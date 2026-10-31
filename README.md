@@ -17,16 +17,18 @@ is `obo/src/obo.obo`. See [HISTORY.md](HISTORY.md) for the obx language,
 architecture and tests, the ownership fork, milestone chronology and earlier
 measurements.
 
-## Current state (30 October 2026)
+## Current state (31 October 2026)
 
-The promoted seed is **obo 0.8, symbol format 4, ABI 1** (507,905 bytes,
-sha256 `673ae7ba…`). This feature branch builds a **540,673-byte `obo 0.9`
-compiler, symbol format 5, ABI 1** from that unchanged seed; stage 2 == stage 3,
-checked with `cmp`. This is a release candidate on the lambdas branch, not a
-merged or promoted compiler; `main` remains the 0.8.1 line until the final review,
-integration and one promotion. Version policy: additive builtin/runtime
-extensions use patch releases such as 0.8.1; Stage A is 0.9, while Stage B remains
-reserved for 0.10.
+The promoted seed is **obo 0.9, symbol format 5, ABI 1** (540,673 bytes,
+sha256 `3d369273…`). It is the reviewed Stage A lambdas compiler, merged at
+`5b1a04b3d613e7586cdca4d1e3efe1c82f93d6cd` from reviewed feature commit
+`7bd905e9426433da14ab9c094d9eb55288c9a302`; stage 2 == stage 3, and the seed
+reproduces the compiler byte for byte. The historical promoted 0.8 seed
+(507,905 bytes, sha256 `673ae7ba…`) built this compiler once during promotion
+and remains in the private release evidence for provenance. Final push awaits
+the independent post-promotion identity audit. Version policy: additive
+builtin/runtime extensions use patch releases such as the historical 0.8.1;
+Stage A is 0.9, while Stage B remains reserved for 0.10.
 
 - **Language.** Single ownership, moves, borrowed `&T` references, checked `^T`
   handles, effect summaries, `Result[T]`/`try`, incremental I/O, modules and
@@ -35,11 +37,12 @@ reserved for 0.10.
   types and non-capturing lambda literals with indirect calls. Stage B capture
   lists and `^I` are later. The full reference is
   [obo/LANGUAGE.md](obo/LANGUAGE.md).
-- **Compiler.** 12,953 lines / 488,954 bytes of obo source. The branch adds
-  Stage A function types and non-capturing lambdas to the 0.8/format-4 interfaces
-  line while keeping the compiler source in the pre-lambda subset, so the promoted
-  0.8 seed (507,905 bytes, sha256 `673ae7ba…`) builds the 0.9 branch compiler. The
-  0.6 and 0.5 seeds and their compiler sizes are historical.
+- **Compiler.** 12,953 lines / 488,954 bytes of obo source. Stage A adds
+  structural function types and non-capturing lambda literals to the 0.8/format-4
+  interfaces line. The promoted 0.9 seed (540,673 bytes, sha256 `3d369273…`) is
+  this compiler; the historical 0.8 seed (507,905 bytes, sha256 `673ae7ba…`)
+  built it once for the release promotion. The 0.6 and 0.5 seeds and their
+  compiler sizes are historical.
 - **Tools.** `cat`, `wc`, `sort`, `head`, `tail` and the partial `eza`
   reimplementation are written in obo and built by `make tools` / `make eza`.
   Differential gates compare them with GNU coreutils 9.4 (`obo/tests/tools.py`)
@@ -59,26 +62,27 @@ reserved for 0.10.
 | Current metric | Value |
 |---|---:|
 | Compiler source | 12,953 lines, 488,954 bytes |
-| Compiler and seed (`--version`) | seed 507,905 bytes, sha256 `673ae7ba…`, `obo 0.8`; branch compiler 540,673 bytes, `obo 0.9`, sym-format 5, abi 1 |
-| Self-host fixed point | stage 2 == stage 3, 540,673 bytes; the 0.8 seed builds the 0.9 branch compiler |
-| Self-compile wall time | 0.15 s (3 runs on this host; host-dependent) |
-| Self-compile live peak | 1,963,248 bytes direct; 1,963,616 bytes port comparison (budget 2,000,000) |
-| Total allocated | 42,923,352 bytes direct; 42,926,784 bytes port comparison |
-| Maximum resident set | 3,640 KB (3 runs on this host) |
-| Live-memory budget | 2,000,000 bytes: 36,752 spare direct / 36,384 port comparison |
+| Compiler and seed (`--version`) | seed and compiler 540,673 bytes, sha256 `3d369273…`, `obo 0.9`, sym-format 5, abi 1; the historical 0.8 seed is 507,905 bytes, `673ae7ba…`, `obo 0.8` |
+| Self-host fixed point | stage 2 == stage 3, 540,673 bytes; the promoted 0.9 seed reproduces the compiler |
+| Self-compile wall time | 0.14 s (one timed run on this host; host-dependent) |
+| Self-compile live peak | 1,963,264 bytes direct; 1,963,344 bytes port comparison (budget 2,000,000) |
+| Total allocated | 42,922,368 bytes direct; 42,923,648 bytes port comparison |
+| Maximum resident set | 3,640 KB (timed run on this host) |
+| Live-memory budget | 2,000,000 bytes: 36,736 spare direct / 36,656 port comparison |
 | obo suite | 1,544 `run_fork` tests; 106 `module_test`; `sym_test.py` 42/42; `sym_fuzz.py` 200/200; `port_test` 573/573 with 10 encoder groups; `port_compare` 1,551/1,551; 62 doc examples; 28/28 import checks; 16/16 stdlib roots |
-| Mutation gates (at `03d3885`) | `mutate_fork` 651/679 + 28 equivalent; `mutate_port` 529/529; `mutate_io` 30/30 (including the self-host memory oracle); `mutate_meta` 71/82 + 11 equivalent |
+| Seed comparison | `OBO_REF=obo/seed/obo` 1,394/1,394 identical against the promoted 0.9 seed; no skips |
+| Mutation gates (post-promotion, `5b1a04b`) | `mutate_fork` 651/679 + 28 equivalent; `mutate_port` 529/529; `mutate_io` 30/30 (including the self-host memory oracle); `mutate_meta` 71/82 + 11 equivalent |
 | Tools differential gate | 509 checks vs GNU coreutils 9.4; 4 memory cases |
 | Tool binaries | cat 45,057; wc 49,153; sort 73,729; head 45,057; tail 53,249 bytes (static, runtime included) |
 | eza E2 differential gate | 554/554 non-memory cases (465 exact reference goldens, 72 live including 22 pty, 17 own) + 5/5 memory cases |
 | eza E2 binary | 221,185 bytes (static, runtime included; reference eza 0.23.3 is 2,294,768) |
-| eza 10k-entry live peak | worst 2,190,480 bytes; `EZA_PEAK_MAX` 2,752,512 (a distinct eza cap, not the compiler budget) |
-| eza 10k-entry max RSS | 2,560 KiB in the recorded run; reference about 24.6 MB long / 12-14 MB other views |
+| eza 10k-entry live peak | worst 2,184,496 bytes; `EZA_PEAK_MAX` 2,752,512 (a distinct eza cap, not the compiler budget) |
+| eza 10k-entry max RSS | 2,560 KiB in the recorded run; reference 24,872 KiB long / 11,992–14,108 KiB other views |
 | Minimal static executable | 32,769 bytes (runtime included) |
 
-The compiler budget is 2,000,000 bytes live. The final branch tree peaks at
-1,963,248 bytes in three direct self-compiles and 1,963,616 bytes in the port
-comparison: 36,752 and 36,384 bytes spare respectively. No budget was raised and
+The compiler budget is 2,000,000 bytes live. The promoted tree peaks at
+1,963,264 bytes in three direct self-compiles and 1,963,344 bytes in the port
+comparison: 36,736 and 36,656 bytes spare respectively. No budget was raised and
 no check was weakened. The live peak varies by a few hundred bytes with the source
 path and total allocation by about 2 KB.
 
@@ -109,25 +113,26 @@ sample is historical and lives in [HISTORY.md](HISTORY.md).
 | `sort -n`, 1,000,000 lines | 255.1 ms | GNU 434.7 ms (1.70x slower); Python 516.4 ms (2.02x slower) |
 | `eza`, 10,000 names | 30.4 ms (pre-help 212,993 B; not re-measured) | pinned eza 59.2 ms (1.94x slower); Python 16.3 ms and GNU `ls` 6.55 ms are faster |
 
-The branch compiler is a 540,673-byte static binary built by the 0.8 seed; the tools are cat 45,057, wc
-49,153, sort 73,729, head 45,057 and tail 53,249 bytes; eza is 221,185 bytes against 2,294,768 for the
-pinned eza 0.23.3 reference. Every obo binary is freestanding and static, with
-the runtime included. The honest shape of these numbers is in
-[PERFORMANCE.md](PERFORMANCE.md): pure compute is far ahead of CPython, while
+The promoted compiler is a 540,673-byte static binary built by the 0.8 seed during
+the one promotion; the 0.9 seed now reproduces it. The tools are cat 45,057, wc
+49,153, sort 73,729, head 45,057 and tail 53,249 bytes; eza is 221,185 bytes
+against 2,294,768 for the pinned eza 0.23.3 reference. Every obo binary is
+freestanding and static, with the runtime included. The honest shape of these
+numbers is in [PERFORMANCE.md](PERFORMANCE.md): pure compute is far ahead of CPython, while
 `wc -l` is at Python parity and behind GNU, eza is slower than Python and `ls`
 on names (its case is size and memory), and the sort rows are fixture-specific.
 
 ## Roadmap
 
 **Lambdas Stage A** (non-capturing literals, structural function types and
-indirect calls) is implemented on this feature branch as `0.9`/format 5 and is
-awaiting final review/integration. The unchanged 0.8 seed remains the promoted
-compiler on `main`. Stage B (`0.10` capture lists) and `^I` remain later work.
-The design is in [obo/design/lambdas-design.md](obo/design/lambdas-design.md).
+indirect calls) is merged and promoted as `0.9`/format 5; the 0.9 seed reproduces
+it. Final push awaits the independent post-promotion identity audit. Stage B
+(`0.10` capture lists) and `^I` remain later work. The design is in
+[obo/design/lambdas-design.md](obo/design/lambdas-design.md).
 
 | Work | State |
 |---|---|
-| Lambdas Stage A | implemented on the lambdas branch at 0.9/format 5, pending final review and promotion |
+| Lambdas Stage A | merged and promoted at 0.9/format 5; release pending final push audit |
 | Lambdas Stage B | next after Stage A release: 0.10, capture lists; `^I` follows Stage B |
 | Peephole/optimizer audit | evidence-gated |
 | More tools: `fd`, `hexyl`, `tokei`, `jq` | later |

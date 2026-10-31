@@ -5584,14 +5584,19 @@ runners do not emit per-mutant timings, so only their gate walls and CPU are rep
 repair changed the tests-tree digest and is reflected above; the compiler, runtime and seed did not change.
 ## Stage A lambdas: implementation, memory recovery and final gates
 
-Stage A is implemented on the isolated lambdas branch at `obo 0.9`, symbol
-format 5, ABI 1, built by the unchanged promoted `0.8` seed
-(`507,905` bytes, sha256 `673ae7ba…`). It adds structural function types,
-non-capturing `fn (...) { ... }` literals, the one-word cell ABI with a hidden
-environment argument and indirect `call qword ptr [cell]` dispatch, the
-second-class position firewall, the pure-callback rules and 0.9/format-5 symbol
-support. Capture lists, owned/read-only captures, `^I` and Stage B remain
-deferred.
+Stage A was implemented on the isolated lambdas branch and is now merged and
+promoted on `main` as `obo 0.9`, symbol format 5, ABI 1. The reviewed feature
+commit is `7bd905e9426433da14ab9c094d9eb55288c9a302`; the merge commit is
+`5b1a04b3d613e7586cdca4d1e3efe1c82f93d6cd`. The historical promoted `0.8` seed
+(`507,905` bytes, sha256 `673ae7ba…`) built the merged compiler once for the
+promotion; `seed/obo` is now the same `540,673`-byte, sha256 `3d369273…`
+compiler. Stage A adds structural function types, non-capturing
+`fn (...) { ... }` literals, the one-word cell ABI with a hidden environment
+argument and indirect `call qword ptr [cell]` dispatch, the second-class
+position firewall, the pure-callback rules and 0.9/format-5 symbol support.
+Capture lists, owned/read-only captures, `^I` and Stage B remain deferred. The
+feature evidence below is retained; the release record and post-promotion gates
+are in "Stage A release: merge, one promotion and post-promotion gates".
 
 The first implementation crossed the 2,000,000-byte compiler self-compile budget
 at 2,060,608 live bytes. The recovery kept the budget and checks unchanged and
@@ -5607,8 +5612,9 @@ added two reviewed pieces:
   covers flat ranges, pre-loop defer slices, loop truncation, nested islands,
   break/continue/try/defer/homes and many literal bodies.
 
-After codegen, the compiler self-compile peaks are three identical direct runs at
-`1,963,248` bytes and a stage-3 peak of `1,963,296`; the port comparison peaks at
+On the pre-merge feature tree, after codegen, the compiler self-compile peaks are
+three identical direct runs at `1,963,248` bytes and a stage-3 peak of `1,963,296`;
+the port comparison peaks at
 `1,963,616`. The final source is `488,954` bytes, the binary `540,673` bytes, and
 the emitted code is `478,526` bytes in 29 full chunks plus 3,390 bytes in the
 current chunk. Direct headroom is 36,752 bytes. Stage 2 equals stage 3 byte for
@@ -5623,7 +5629,7 @@ exercised privately; permanent mutation catalog routing is recorded in the
 Step 4 mutant matrix below.
 
 
-### Stage A final gate evidence (feature branch `2da9ed1` + Step 4)
+### Stage A final gate evidence (historical feature branch `2da9ed1` + Step 4, pre-merge 0.8 seed)
 
 The final Step 4 source is `488,954` bytes (12,953 lines, sha256 `5ba392c4…`), the
 compiler binary `540,673` bytes (`3d369273…`), and emitted code `478,526` bytes:
@@ -5666,3 +5672,69 @@ forward aliases, lambda parsing/contexts, purity/active calls, hidden env, cell
 and argument ABI, zero-frame cell entry, arena-local synthetic callees, outer-name
 stack restore and nonFreshLog range/trim/island restore. Stage B capture-list and
 capture-binding mutants are explicitly deferred, not counted as equivalents.
+
+### Stage A release: merge, one promotion and post-promotion gates
+
+Status: **merged and promoted on `main`; final push pending the independent
+post-promotion identity audit.** The reviewed feature commit is
+`7bd905e9426433da14ab9c094d9eb55288c9a302`; the merge commit is
+`5b1a04b3d613e7586cdca4d1e3efe1c82f93d6cd` (parents
+`75b061cc396c83e38a6053cdcd3015bd0b9cc00c` and `7bd905e…`). The reviewed source
+is `488,954` bytes / `12,953` lines, sha256 `5ba392c4…`; `runtime/runtime.c` is
+`194e6059…`; the compiler is `540,673` bytes, sha256 `3d369273…`, `--version`
+`obo 0.9 sym-format 5 abi 1`.
+
+Before the promotion the old seed was preserved as a private regular snapshot
+at `/tmp/opencode/lambda-stage-a-postpromotion-20261031T055721Z/old-seed-obo-0.8`:
+`507,905` bytes, sha256 `673ae7ba13cec45be14eeb99d8f638e8418ed2ac0cd91787aa4a18c54a407374`,
+`obo 0.8 sym-format 4 abi 1` (historical). The ignored runtime bins were rebuilt
+from the merged runtime first (`runtime_text.bin` `da033ab3…`, `runtime_data.bin`
+`0bd93a12…`); the stale main-worktree artifacts were not reused. The merged
+compiler was then built from the preserved old seed, reproduced `3d369273…`, and
+made the fixed point `stage2 == stage3 == seed/obo == obo`. The old 0.8 seed's
+own build of the 0.9 source peaked at `2,070,368` bytes (allocated
+`47,614,080`); that bootstrap compile is the historical seed, not the promoted
+compiler, and is outside the compiler self-compile budget. `make promote` was
+run exactly once with the Makefile recipe unchanged; its log is
+`…/promote.log`. The new seed is `540,673` bytes, sha256 `3d369273…`,
+`obo 0.9 sym-format 5 abi 1`; the old seed remains the bootstrap proof, not a
+tracked extra seed.
+
+Post-promotion gates on the frozen source/tests and promoted seed (logs in
+`/tmp/opencode/lambda-stage-a-postpromotion-20261031T055721Z/`): `run_fork`
+**1,544 passed**; checked `NF_CHECK` **4/4**; `module_test` **106**; `sym_test`
+**42** with golden comparison and no `--update`; `sym_fuzz` **200/200**;
+`doc_check` **62**; `homes_check` **13**; `homes_edge` **1,028 statements, 119
+refused by both, 0 differ**; `elf_test` ok; `io_test` **0 failures**;
+`meta_test` **34**; `port_test` **573/573** with 10 encoder groups;
+`port_compare` **1,551/1,551**; standalone seed comparison
+`OBO_REF=obo/seed/obo` **1,394/1,394** with no skips; harness **25**; imports
+**28/28**; stdlib **16/16**; `tools.py --require-reference` **509** and
+`--memory` **4**; strict pinned `eza.py --require-reference` **554** and
+`--memory` **5** (`eza` sha256 `10457dde…`).
+
+Self-compile measurements on the promoted tree: three direct runs each peak
+`1,963,264` bytes (RSS `3,640` KiB; total allocated `42,922,368`); the port
+comparison peaks `1,963,344` bytes and allocates `42,923,648`; stage 2/3 peaks
+`1,963,280`/`1,963,328` and `cmp` is clean. All are below the unchanged
+`2,000,000` budget (36,736/36,656 spare). Tool sizes are cat 45,057, wc 49,153,
+sort 73,729, head 45,057, tail 53,249 and eza 221,185 bytes.
+
+Mutation gates (run sequentially, full fallback, no verdict cache):
+`mutate_fork` **651/679 caught + 28 equivalent** in 182.989 s; `mutate_port`
+**529/529** in 129.933 s; `mutate_io` **30/30**, including the zero-array memory
+oracle with baseline `1,963,440` and mutant-runtime peak `2,008,112` over the
+unchanged `2,000,000` cap; `mutate_meta` **71/82 caught + 11 equivalent**
+(50/52 runtime, 21/30 compiler). The fork/port timing headers record git HEAD
+`5b1a04b…`, source `5ba392c4…`, seed `3d369273…`, runtime `194e6059…` and the
+frozen tests digest `1aa27be5…`; the end records show 0 missed/stale/broken.
+The two catalog-equivalent fork mutants caught by the suite are reported, not
+reclassified.
+
+The historical feature-branch record above (0.8 seed, `2da9ed1` + Step 4)
+retains its own numbers, including the pre-merge 1,269/1,269 seed comparison and
+the 14 old-seed skips; those are history, not the promoted state. The strict
+compiler budget remains `2,000,000` bytes; no 2.5 MB allowance is authorized or
+used. If a 2.5 MB cap were ever approved, the absolute-budget zero-array memory
+mutant would no longer be caught and would need a relative-budget regression
+review first.

@@ -799,8 +799,9 @@ module) is the spelling throughout.
 
 An interface is a named set of methods that a record or closed type can implement. A value of interface type is
 either an **owned box** (`I`, `?I`) or a **borrowed pair** (`&I`, `mut &I`, `&?I`); an interface is never a value
-of its own kind with fields or identity. The implemented form is `0.8`; additive builtin/runtime extensions use patch releases such as `0.8.1`, while lambdas remain `0.9`/`0.10`, and handles to
-interfaces (`^I`) are a later phase.
+of its own kind with fields or identity. Interfaces arrived in `0.8`; additive
+builtin/runtime extensions use patch releases such as the historical `0.8.1`.
+Lambdas are `0.9`, and handles to interfaces (`^I`) are a later phase.
 
 ### Declarations and implementations
 
@@ -1110,8 +1111,9 @@ fn main() {
 
 Capturing closures, owned/read-only capture lists, stored function values and impure callbacks
 are later work. Stage B (`fn [x](...)`) remains reserved for `0.10`; interface handles `^I`
-remain later. The implemented compiler is `0.9`/format 5, built by the promoted `0.8` seed until
-the promotion after final review.
+remain later. The implemented compiler is `0.9`/format 5; the promoted `0.9` seed
+reproduces it. The historical `0.8` seed (`507,905` bytes, sha256 `673ae7ba…`)
+built it once for the release promotion.
 
 ## 6. Modules
 
@@ -1294,9 +1296,10 @@ build** still requires every source; if only a `.sym` exists it reports
 without source` (exit 2). The checked root is exempt from the basename rule (it is
 the root of its check graph), and its `.sym` is named by its declared module name.
 
-`--version` prints `obo 0.8.1 sym-format 4 abi 1`; the numbers are the `obosym`
+`--version` prints `obo 0.9 sym-format 5 abi 1`; the numbers are the `obosym`
 format, the compiled-program ABI and the compiler version, each checked exactly
-when a `.sym` is read. `--reemit-sym FILE` is a testing hook: it reads a symbol
+when a `.sym` is read. The historical `0.8.1` release printed
+`obo 0.8.1 sym-format 4 abi 1`. `--reemit-sym FILE` is a testing hook: it reads a symbol
 file with the reader and prints the canonical re-emission, which the symbol-file
 tests compare byte-for-byte.
 
