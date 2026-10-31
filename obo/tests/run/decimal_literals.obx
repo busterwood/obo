@@ -1,0 +1,20 @@
+// Decimal literal grammar and display scale: a bare fraction or exponent is
+// exact decimal; integers stay int.  The written fractional digits are kept.
+
+fn main() {
+    println(1.50)                    // expect: 1.50
+    println(0.0011e3)                // expect: 1.1
+    println(1.2300)                  // expect: 1.2300
+    println(1.5e3)                   // expect: 1500
+    println(1.2300e-2)               // expect: 0.012300
+    println(0.00)                    // expect: 0.00
+    println(100)                     // expect: 100
+    println(1.000)                   // expect: 1.000
+    println(1_000.00)                // expect: 1000.00
+    println(-0.00)                   // expect: 0.00
+    println(1e3)                     // expect: 1000
+    println(1E+3)                    // expect: 1000
+    println(0e999999)                // expect: 0
+    println(12345678901234567890123456789012345678.0) // expect: 12345678901234567890123456789012345678.0
+    println(1e32804 == 1e32804)      // expect: true
+}

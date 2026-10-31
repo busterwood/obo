@@ -1,0 +1,27 @@
+// Result[decimal]: ok() carries the whole 24-byte payload, consuming match and
+// try move it, and err codes use the reviewed core statuses.
+
+fn div(a: decimal, b: decimal): Result[decimal] {
+    return decimal::div(a, b, 2, HALF_AWAY)
+}
+fn compute(a: decimal, b: decimal): Result[decimal] {
+    let h = try div(a, b)
+    return ok(h + 0.01)
+}
+fn main() {
+    let r: Result[decimal] = ok(1.50)
+    match r {
+        ok(v) { println(v) } // expect: 1.50
+        err(m, c) { println("err ", c) }
+    }
+    let a = compute(1.00, 2.0)
+    match a {
+        ok(v) { println(v) } // expect: 0.51
+        err(m, c) { println("err ", c) }
+    }
+    let b = compute(1.0, 0.0)
+    match b {
+        ok(v) { println(v) }
+        err(m, c) { println("err ", c, " ", m) } // expect: err 5 obo: decimal division by zero
+    }
+}

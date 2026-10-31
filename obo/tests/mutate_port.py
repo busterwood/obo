@@ -180,7 +180,7 @@ MUTANTS = {
     # cheap code generation (FORK.md, Phase 1). A misaligned stack at a runtime call is trapped by the
     # runtime's entry stubs (exit 4), so a wrong depth shows up as a mismatch
     "runtime call pad dropped when misaligned": [("    let pad = depth % 16\n", "    let pad = 0\n")],
-    "obo call pad dropped when misaligned": [("    let pad = (depth + 8 * nw) % 16\n", "    let pad = 0\n")],
+    "obo call pad dropped when misaligned": [("    let pad = (depth + total) % 16\n", "    let pad = 0\n")],
     "push imm not counted in the depth": [("            pushI(a.val)                           // no register needed\n            depth += 8\n",
                                            "            pushI(a.val)                           // no register needed\n")],
     # an imm8 push for a value that needs imm32: caught by the objdump cross-check
@@ -354,7 +354,7 @@ MUTANTS.update({
     "scan: ranking ignored": [("    if nfree <= better { return -1 }", "")],
     "scope end does not give the register back": [("        if s.home >= 0 && !homeRetry { releaseHome(s.home) }", "        if s.home < 0 && !homeRetry { releaseHome(s.home) }")],
     "runtime calls push the locals' registers": [("    let saved = usedRegs() & ~homeBits      // the C runtime keeps r12 to r15, where the locals are", "    let saved = usedRegs()")],
-    "return copies a local's register": [("        let x = asReg(x0)\n        for k in blocks[fnBlock].omark", "        let x = load(x0)\n        for k in blocks[fnBlock].omark")],
+    "return copies a local's register": [("        let x = asReg(x0)\n        if active {", "        let x = load(x0)\n        if active {")],
     "for limit's register never given back": [("            if lim.home >= 0 { append(blocks[len(blocks) - 1].syms, lim) }       // so that the block's end frees it\n", "")],
     "bool parameters left in memory": [('        if params[i].mode == 0 && (params[i].typ.kind == "int" || params[i].typ.kind == "bool") {\n            let h', '        if params[i].mode == 0 && params[i].typ.kind == "int" {\n            let h')],
     "a local in a register as a statement accepted": [('        if x.mode != "reg" || x.home { errorAt("this expression does nothing"', '        if x.mode != "reg" { errorAt("this expression does nothing"')],

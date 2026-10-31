@@ -21,7 +21,7 @@ all: runtime_text.bin runtime_data.bin obo
 obo: src/obo.obo seed/obo runtime_text.bin runtime_data.bin
 	./seed/obo src/obo.obo -o obo --rt .
 
-runtime.elf: runtime/runtime.c runtime/entry.S runtime/rt.ld
+runtime.elf: runtime/runtime.c runtime/entry.S runtime/rt.ld runtime/decimal24_core.inc
 	gcc $(CFLAGS) -c runtime/runtime.c -o runtime.o
 	gcc -c runtime/entry.S -o entry.o
 	ld -T runtime/rt.ld -o runtime.elf entry.o runtime.o

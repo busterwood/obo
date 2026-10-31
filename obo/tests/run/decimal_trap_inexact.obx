@@ -1,0 +1,8 @@
+// An exact + - * % result that needs more than 38 significant digits traps
+// with exit 10 and code 40; there is no hidden rounding.
+
+fn main() {
+    println(99999999999999999999999999999999999999.0 * 2.0)
+}
+// expect-exit: 10
+// expect-stderr: obo: decimal result is not exactly representable

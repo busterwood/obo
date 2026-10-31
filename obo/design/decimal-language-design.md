@@ -1,9 +1,9 @@
 # Decimal language integration design
 
 **Date:** 2026-10-31
-**Status:** Proposal for independent review. Not approved, not implemented. No compiler, runtime, seed, `.sym` format or database code is changed.
-**Baseline:** `main` at `4a072cf5f5db8fe661ac65ff6db94ea59006e6ec` ("Merge independently reviewed experimental decimal D2 arithmetic"). Branch/worktree: `decimal-language-design`.
-**Target:** after Stage B (`0.11` is next planned), version-neutral. This document does not reserve `0.12`, a format number or an ABI number; those are chosen at implementation/promotion.
+**Status:** APPROVED 2026-10-31. The minimum scalar tier is implemented as the WIP 0.12 compiler/runtime integration on branch `decimal-language` (based on released `0.11` main `316963c`); it is not merged, pushed, promoted or independently reviewed, and the released seed remains 0.11. Text/format stdlib, database adapters, containers, globals/constants and captures are still later work.
+**Baseline:** approved on `main` at `4a072cf5f5db8fe661ac65ff6db94ea59006e6ec`; integration re-based on the released `0.11` heap-limit main `316963c12cd7103a68e910d972e255af36290d7e`. Branch/worktree: `decimal-language`.
+**Target:** integrated after Stage B on the released 0.11 main `316963c`; this branch uses WIP `0.12`, `SYM_FORMAT=6`, `SYM_ABI=1`. Promotion still requires independent review.
 
 ## 0. Provenance
 
@@ -107,7 +107,7 @@ decimal::quantize(a, scale, mode) -> Result[decimal]
 
 Display propagation is presentation, not arithmetic: add/sub `max`; multiply `sum` capped by the 38-digit/integer-part rule in §4.1 (value unchanged); remainder `max`; division/quantize the explicit target; unary minus unchanged; comparisons value only. `1.20 + 1.2` is `2.40`; `1.20 * 1.2` is `1.440`; `decimal::div(1.00, 2.0, 2, HALF_AWAY)` is `0.50`.
 
-Decimal traps use exit 10. Diagnostic ids 40–49 are distinct from I/O errno and trap codes; core statuses 1/2/4/6/7/8 remain unchanged. Constants map `DEC_INEXACT`, `DEC_OVERFLOW`, `DEC_DIV_ZERO`, `DEC_INVALID`, `DEC_RANGE`, `DEC_PRECISION`, `DEC_EXPONENT` and `DEC_DISPLAY_RANGE` (metadata only); 2 and 10 stay internal. `ok`/`err` follow `Result[T]`.
+Decimal traps use exit 10. The WIP 0.12 implementation assigns 40 not exactly representable (`DEC_INEXACT`), 41 overflow (`DEC_OVERFLOW`), 42 division by zero (`DEC_DIV_ZERO`), 43 invalid (`DEC_INVALID`), 44 unsupported range, 45 precision overflow, 46 exponent range, 47 display range, 48 buffer too small and 49 other; core statuses 1/2/4/6/7/8 remain unchanged and 2/10 stay internal. `ok`/`err` follow `Result[T]`.
 
 ## 4. Conversions and formatting
 
@@ -171,10 +171,10 @@ Implementation lands after Stage B `0.11`; no version is reserved. Rejected: 16-
 | ABI / width | 24-byte three-word, align 8, stride 24, hidden out pointer; 32-byte rejected | `RAX:RDX:RCX`; 32-byte (rejected) |
 | `?decimal` / NULL | no `?decimal`; tagged DB wrapper | sentinel; `Result` as NULL |
 
-Open engineering choices: exact 40–49 assignments, adapter order, diagnostic wording.
+Open engineering choices: adapter order and final diagnostic wording; the WIP 40–49 assignment above is implemented on this branch and still needs independent review.
 
 ## 8. Migration and compatibility
 
 Today `0.10`/format 6 rejects bare `1.5`; `1.5f` is float. Decimal changes that error into a value, so no valid float program changes. `f/F` and one-word raw binary64 `.sym` stay; decimal never reuses float's slot/XMM/format-6 grammar.
 
-The implementation lands after Stage B (`0.11`), not concurrently. Do not reserve `0.12`/format 7/ABI 2; choose version, `SYM_FORMAT` and `SYM_ABI` at promotion after Stage B's calling/capture ABI is known. Old `.sym` files must be rebuilt. This is version-neutral, assumes no Stage B commit/seed/merge/push, and adds no helper process/DB/native pointer ABI.
+The WIP integration is on branch `decimal-language` based on the released 0.11 main `316963c`: `OBO_VERSION="0.12"`, `SYM_FORMAT=6`, `SYM_ABI=1`. No format 7 or ABI 2 is introduced. Old `.sym` files must be rebuilt because the compiler version line changed. No seed copy, merge or push was made; promotion still needs independent review. No helper process/DB/native pointer ABI is added.

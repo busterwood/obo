@@ -1,0 +1,103 @@
+// Decimal fail-closed diagnostics.  Every construct outside the v1 scalar tier
+// is refused at compile time; value errors at run time are traps, not compiler
+// panics.
+
+// === division needs an explicit scale and mode
+fn main() { let x = 1.0 / 2.0 }  // error: decimal division needs an explicit scale and mode; use decimal::div(a, b, scale, mode)
+
+// === compound division needs an explicit scale and mode
+fn main() { var x = 1.0; x /= 2.0 }  // error: decimal division needs an explicit scale and mode; use decimal::div(a, b, scale, mode)
+
+// === too many significant digits in a literal
+fn main() { let x = 123456789012345678901234567890123456789.0 }  // error: decimal literal has more than 38 significant digits
+
+// === literal exponent out of range
+fn main() { let x = 1e32805 }  // error: decimal literal exponent is out of range
+
+// === no m suffix
+fn main() { let x = 1.5m }  // error: decimal literals have no m or d suffix
+
+// === no d suffix
+fn main() { let x = 1.5d }  // error: decimal literals have no m or d suffix
+
+// === a trailing dot is rejected
+fn main() { let x = 1. }  // error: a decimal fraction needs digits after '.'
+
+// === float to decimal is forbidden
+fn main() { let x = decimal(1.5f) }  // error: float -> decimal is forbidden
+
+// === decimal to float is omitted
+fn main() { let x = float(1.0) }  // error: decimal -> float is omitted in v1
+
+// === int(decimal) points to toInt
+fn main() { let x = int(1.0) }  // error: int(decimal) is not a conversion; use decimal::toInt(d, mode)
+
+// === decimal does not mix with int arithmetic
+fn main() { let x = 1.0 + 1 }  // error: cannot mix decimal with int; convert explicitly with decimal(n)
+
+// === decimal does not compare with int
+fn main() { println(1.0 == 1) }  // error: cannot compare decimal with int; convert explicitly
+
+// === arrays of decimal are not v1
+fn main() { let a: []decimal = new []decimal(1) }  // error: arrays of decimal (24-byte stride) are not supported in v1
+
+// === decimal record fields are not v1
+type R = ref record { d: decimal }  // error: decimal record fields are not supported in v1
+fn main() {}
+
+// === decimal globals are not v1
+var g: decimal = 1.0  // error: decimal globals are not supported in v1
+fn main() {}
+
+// === decimal constants are not v1
+const C = 1.0  // error: decimal constants are not supported in v1
+fn main() {}
+
+// === optional decimal is not representable
+fn main() { let d: ?decimal = nil }  // error: only reference types can be optional, not decimal
+
+// === decimal cannot be borrowed
+fn f(d: &decimal) {}  // error: only records, closed types and arrays can be borrowed, not decimal
+fn main() {}
+
+// === mut decimal needs a reference and is not v1
+fn f(mut d: decimal) {}  // error: mut needs a reference parameter: write mut name: &T
+fn main() {}
+
+// === decimal capture is refused
+fn apply(f: fn(int): int): int { return f(1) }
+fn main() {
+    let d = 1.0
+    println(apply(fn [d](x: int): int { return x }))  // error: cannot capture decimal 'd': decimals have no capture mode in v1
+}
+
+// === decimal lambda parameter is refused
+fn main() { let f = fn (d: decimal): int { return 1 } }  // error: decimal lambda parameters are not supported in v1
+
+// === decimal lambda return is refused
+fn main() { let f = fn (x: int): decimal { return 1.0 } }  // error: decimal lambda returns are not supported in v1
+
+// === decimal method parameter is refused
+type R = ref record { v: int }
+fn (r: R) f(d: decimal): int { return 1 }  // error: decimal method parameters are not supported in v1
+fn main() {}
+
+// === decimal method return is refused
+type R2 = ref record { v: int }
+fn (r: R2) f(): decimal { return 1.0 }  // error: decimal returns from methods are not supported in v1
+fn main() {}
+
+// === decimal interface parameter is refused
+type I = interface { fn f(x: decimal): int }  // error: decimal interface method parameters are not supported in v1
+fn main() {}
+
+// === decimal interface return is refused
+type I2 = interface { fn f(): decimal }  // error: decimal interface method returns are not supported in v1
+fn main() {}
+
+// === decimal function values are refused
+fn use(f: fn(decimal): int): int { return 1 }  // error: decimal function values are not supported in v1
+fn main() {}
+
+// === int %= is not supported
+fn main() { var x = 3; x %= 2 }  // error: '%=' is only supported for decimal values

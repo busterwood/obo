@@ -314,6 +314,7 @@ def build_runtime(src_text, work):
     open(os.path.join(rt, 'runtime.c'), 'w').write(src_text)
     shutil.copy(os.path.join(FORK, 'runtime', 'entry.S'), rt)
     shutil.copy(os.path.join(FORK, 'runtime', 'rt.ld'), rt)
+    shutil.copy(os.path.join(FORK, 'runtime', 'decimal24_core.inc'), rt)
     subprocess.run(['gcc', *CFLAGS, '-c', 'runtime.c', '-o', 'runtime.o'], cwd=rt,
                    check=True, capture_output=True)
     subprocess.run(['gcc', '-c', 'entry.S', '-o', 'entry.o'], cwd=rt, check=True, capture_output=True)

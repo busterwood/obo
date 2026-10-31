@@ -1,0 +1,7 @@
+// An exact result whose exponent cannot fit int16 traps with exit 10 and code 41.
+
+fn main() {
+    println(1e32767 * 1e32767)
+}
+// expect-exit: 10
+// expect-stderr: obo: decimal overflow

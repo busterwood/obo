@@ -1,0 +1,21 @@
+// decimal::div always takes an explicit scale and mode and returns Result.
+
+fn show(r: Result[decimal]) {
+    match r {
+        ok(v) { println(v) }
+        err(m, c) { println("err ", c) }
+    }
+}
+
+fn main() {
+    show(decimal::div(1.00, 2.0, 2, HALF_AWAY)) // expect: 0.50
+    show(decimal::div(1.0, 2.0, 1, HALF_AWAY)) // expect: 0.5
+    show(decimal::div(1.0, 2.0, 0, HALF_AWAY)) // expect: 1
+    show(decimal::div(1.0, 3.0, 6, HALF_AWAY)) // expect: 0.333333
+    show(decimal::div(2.0, 3.0, 6, HALF_EVEN)) // expect: 0.666667
+    show(decimal::div(1.0, 8.0, 3, HALF_AWAY)) // expect: 0.125
+    show(decimal::div(1.0, 0.0, 2, HALF_AWAY)) // expect: err 5
+    show(decimal::div(1.0, 3.0, 2, UNNECESSARY)) // expect: err 3
+    show(decimal::div(1.0, 3.0, 32769, HALF_AWAY)) // expect: err 6
+    show(decimal::div(1.0, 3.0, 2, 8)) // expect: err 6
+}

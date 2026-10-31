@@ -94,6 +94,27 @@ varies by a few hundred bytes with the source path and total allocation by
 about 2 KB. The historical lambda release budget remains 2,000,000 in its own
 record. Stage B is merged, promoted and pushed.
 
+### Decimal 0.12 WIP (unmerged branch)
+
+A separate worktree/branch, `decimal-language`, re-based on this released 0.11
+main (`316963c`), adds the approved 24-byte exact `decimal` scalar tier. It is
+**WIP, not merged, pushed, promoted or independently reviewed**; the released
+seed and this README's released metrics remain 0.11. The branch identity is
+`obo 0.12`, symbol format 6, ABI 1 (append-only: runtime slots 60-72; slot 59
+stays reserved/baseline and is the hosted-exit slot in the cinterop build).
+Source is 14,579 lines / 549,864 bytes; the compiler is 643,073 bytes, sha256
+`e21606ce…`, and stage 2 == stage 3. It self-compiles at 2,192,160 bytes live
+(port comparison 2,192,560) and allocates 48,979,312 bytes, under the 2,500,000
+budget. `run_fork` is 1,685 tests, `module_test` 113, `port_compare` 1,682/1,682
+default, and the 0.11-seed comparison stays 1,476/1,476 because the new decimal
+cases are explicitly `(0, 12)` skips. `sym_test` 44/44, `port_test` 595/595,
+`float_f1` 19 groups in both register modes, `doc_check` 69 examples,
+`mutate_decimal` 17/17, and the reviewed D1/D2 runner remains 32,719 C checks.
+The tier supports literals, locals/parameters/returns, exact `+ - * %`, unary
+minus, comparisons, display printing, explicit int conversions and
+`decimal::div`/`quantize`/`toInt`; globals, constants, fields, arrays, captures,
+methods and interfaces are refused with clear diagnostics.
+
 ## Performance
 
 These are one host's measurements, not portable constants: an AMD Ryzen 7

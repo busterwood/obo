@@ -1,0 +1,19 @@
+// decimal::quantize rounds once at the target scale, never with a default.
+
+fn show(r: Result[decimal]) {
+    match r {
+        ok(v) { println(v) }
+        err(m, c) { println("err ", c) }
+    }
+}
+
+fn main() {
+    show(decimal::quantize(1.235, 2, HALF_AWAY)) // expect: 1.24
+    show(decimal::quantize(1.245, 2, HALF_EVEN)) // expect: 1.24
+    show(decimal::quantize(-1.235, 2, HALF_AWAY)) // expect: -1.24
+    show(decimal::quantize(-1.235, 2, TOWARD_ZERO)) // expect: -1.23
+    show(decimal::quantize(1.234, 2, UNNECESSARY)) // expect: err 3
+    show(decimal::quantize(1.230, 2, UNNECESSARY)) // expect: 1.23
+    show(decimal::quantize(0.00, 4, HALF_AWAY)) // expect: 0.0000
+    show(decimal::quantize(1.0, 32769, HALF_AWAY)) // expect: err 6
+}

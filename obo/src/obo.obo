@@ -3386,7 +3386,7 @@ fn decimalNeg(a: Item): Item {
     return dst
 }
 
-fn decimalCompare(slot: int, a: Item, b: Item): int {
+fn decimalCompare(a: Item, b: Item): int {
     let pa = decPtr(a)
     let pb = decPtr(b)
     let r = rtCall2(RT_DEC_CMP, pa, pb, tInt)
@@ -3410,9 +3410,9 @@ fn decimalPacked(scale: Item, mode: Item): Item {
     if !isInt(mode.typ) { error("decimal rounding mode must be one of the mode constants") }
     let sv = load(scale)
     let mv = load(mode)
-    opReg(0x6B, sv.r, sv.r, true, false)      // imul sv, sv, 8
-    emit(8)
-    opReg(0x03, sv.r, mv.r, true, false)
+    opReg(0x69, sv.r, sv.r, true, false)      // imul sv, sv, 256
+    emit32(256)
+    opReg(0x03, sv.r, mv.r, true, false)      // low byte: mode 0..7
     release(mv.r)
     return makeReg(tInt, sv.r)
 }
@@ -9011,7 +9011,7 @@ fn relation(): Item {
         if kx != "decimal" || ky != "decimal" {
             error("cannot compare decimal with " + tname(y.typ) + "; convert explicitly")
         }
-        let cr = decimalCompare(RT_DEC_CMP, x, y)
+        let cr = decimalCompare(x, y)
         aluRI(7, cr, 0)
         release(cr)
         let z = newItem("cond", tBool)
@@ -11688,6 +11688,7 @@ fn constDecl(isPub: bool) {
     let name = ident()
     expect(T_ASSIGN, "")
     let x = expression()
+    if x.typ.kind == "decimal" { error("decimal constants are not supported in v1; construct the value where it is used") }
     if x.mode != "const" { error("constant value must be known at compile time") }
     rejectFn(x.typ, "a constant cannot hold a function value")
     if x.typ.kind == "nil" { error("a constant cannot be nil; use a typed optional var or let") }

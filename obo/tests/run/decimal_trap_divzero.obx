@@ -1,0 +1,7 @@
+// The exact truncating remainder traps on a zero divisor with exit 10 and code 42.
+
+fn main() {
+    println(1.0 % 0.0)
+}
+// expect-exit: 10
+// expect-stderr: obo: decimal division by zero

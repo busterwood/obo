@@ -2460,21 +2460,21 @@ void rt_dec_print(const dec24 *a) {
     putb(buf, (u64)n);
 }
 
-/* packed = scale * 8 + mode; scale 0..32768, mode DEC_ROUND_* 0..7.
+/* packed = scale * 256 + mode; scale 0..32768, mode DEC_ROUND_* 0..7.
  * The result value is written only on DEC_OK.  The status is returned so the
  * compiler can build a Result cell; no value error is a fatal trap here. */
 i64 rt_dec_div_into(dec24 *dst, const dec24 *a, const dec24 *b, i64 packed) {
     if (!dec_valid(a) || !dec_valid(b)) return DEC_INVALID;
-    i64 mode = packed % 8;
-    i64 scale = packed / 8;
+    i64 mode = packed & 255;
+    i64 scale = packed >> 8;
     if (scale < 0 || scale > 32768 || mode < 0 || mode > 7) return DEC_UNSUPPORTED_RANGE;
     return dec_div_scale(dst, a, b, (int32_t)scale, (unsigned)mode, (uint16_t)scale);
 }
 
 i64 rt_dec_quantize_into(dec24 *dst, const dec24 *a, i64 packed) {
     if (!dec_valid(a)) return DEC_INVALID;
-    i64 mode = packed % 8;
-    i64 scale = packed / 8;
+    i64 mode = packed & 255;
+    i64 scale = packed >> 8;
     if (scale < 0 || scale > 32768 || mode < 0 || mode > 7) return DEC_UNSUPPORTED_RANGE;
     return dec_quantize(dst, a, (uint16_t)scale, (unsigned)mode);
 }

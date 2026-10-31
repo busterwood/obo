@@ -656,7 +656,7 @@ MODULE_MUTANTS = {
     "modules: -I ignored": ("        for k in 0..len(incDirs) { append(cands, joinDirPath(incDirs[k], raw)) }\n", ""),
     "modules: module globals share one slot": ("        gsym.offset = GLOBAL_BASE + gsize", "        gsym.offset = GLOBAL_BASE"),
     "modules: T_COLONCOLON is 66": ("const T_COLONCOLON = 67", "const T_COLONCOLON = 66"),
-    "modules: token names lack ::": ("try :: float\"", "try float\""),
+    "modules: token names lack ::": ("try :: float decimal /= %=\"", "try float decimal /= %=\""),
     "modules: pre-scan forgets the :: of a qualified literal": ("""        } else if c == ':' {
             // `new lib::Node{...}`: the `::` is part of the type name, so the member word after it is
             // still the type a record literal names. Treating the `::` like `new` keeps afterNew set
@@ -1062,9 +1062,9 @@ RESULT_MUTANTS = {
     'result: try returns the success value on error': ('    opMem(0x8B, RAX, mem(RBP, -1, slot.offset, 8), true, false)\n    epilogue()',
                                                        '    movRI(RAX, 0)\n    epilogue()'),
     'result: try keeps the ok shell': ('    rtCall1(RT_FREE, makeReg(rt, cellR), tVoid)             // the shell; releases cellR\n', ''),
-    'result: try does not zero the ok payload': ('    opMem(0xC7, 0, mem(cellR, -1, 0, 8), true, false)       // the payload is moved out, not owned by the shell\n    emit32(0)\n', ''),
-    'result: try returns the cell instead of the payload': ('    opMem(0x8B, payload, mem(cellR, -1, 0, 8), true, false)\n    opMem(0xC7, 0, mem(cellR, -1, 0, 8), true, false)       // the payload is moved out, not owned by the shell',
-                                                            '    movRR(payload, cellR)\n    opMem(0xC7, 0, mem(cellR, -1, 0, 8), true, false)       // the payload is moved out, not owned by the shell'),
+    'result: try does not zero the ok payload': ('        opMem(0xC7, 0, mem(cellR, -1, 0, 8), true, false)       // the payload is moved out, not owned by the shell\n        emit32(0)\n', ''),
+    'result: try returns the cell instead of the payload': ('        opMem(0x8B, payload, mem(cellR, -1, 0, 8), true, false)\n        opMem(0xC7, 0, mem(cellR, -1, 0, 8), true, false)       // the payload is moved out, not owned by the shell',
+                                                            '        movRR(payload, cellR)\n        opMem(0xC7, 0, mem(cellR, -1, 0, 8), true, false)       // the payload is moved out, not owned by the shell'),
     'result: try does not consume its operand': ('    consume(e)\n    let cell = asReg(e)', '    let cell = asReg(e)'),
     'result: try snapshots before consuming': ("""    consume(e)
     let cell = asReg(e)
@@ -1451,7 +1451,7 @@ INTERFACE_MUTANTS = {
         "    if x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: a reference cannot borrow from a temporary\")\n    }\n",
         "    if false && x.mode == \"reg\" && isOwned(x.typ) {\n        error(\"store this value in a variable first: a reference cannot borrow from a temporary\")\n    }\n"),
     "interfaces v3 X36a: SYM_FORMAT stays 2": ("const SYM_FORMAT = 6\n", "const SYM_FORMAT = 2\n"),
-    "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.11\"\n", "const OBO_VERSION = \"0.6\"\n"),
+    "interfaces v3 X36b: OBO_VERSION stays 0.6": ("const OBO_VERSION = \"0.12\"\n", "const OBO_VERSION = \"0.6\"\n"),
 
     # summary reconstruction (S-2): setMemberSummary is shared by the source and the reader
     "interfaces v3 X18: the receiver bit is omitted for mut fn": (
