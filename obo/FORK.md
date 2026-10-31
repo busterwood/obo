@@ -5706,3 +5706,38 @@ cases, GC poison); `run_fork.py` 1544 passed, 0 failed; `port_test.py` 573/573;
 `sym_test.py` 42 passed; `doc_check.py` 62 examples, 0 problems. Unimplemented:
 float text parse/format/print, float constants/`.sym` release format, and the
 full container/symbol release matrix.
+
+## Float F2 checkpoint (unreleased, WIP)
+
+Adds a first working text path without changing the one-word float ABI or the
+compiler identity. `print`/`println` accept float, `string(float)` returns a
+string, and `parseFloat(string): Result[float]` is the explicit checked
+parser. There is no implicit string/numeric conversion and no float-to-int yet.
+
+Formatting is **provisional 17-significant-digit scientific notation**, not
+claimed shortest: ordinary finite values use one digit, a point, up to 16
+further significant digits with trailing zeros removed, and `e±NN`. Special
+spellings are `nan`, `inf`, `-inf` and `-0`; NaN payloads are not printed or
+specified. This is a stable round-trip checkpoint, not a final public style.
+`parseFloat` accepts finite decimal/exponent text, `nan`, `inf`/`infinity` and
+signs, returns EINVAL 22 for malformed text and ERANGE 34 for overflow;
+underflow yields signed zero/subnormal. Literal overflow remains a compile
+error, distinct from this runtime `Result`.
+
+Implementation: runtime slots 56–58 append after 40; the parse uses the same
+exact 4x32-limb/sticky conversion in freestanding C with `divq` limb division,
+not `strtod`, `long double` rounding or libgcc. Formatting uses `long double`
+for the provisional 17-digit display path. Runtime text/data are
+`22,688`/`67,360`; no undefined runtime symbols.
+
+Measured direct self-compile: `2,031,184` peak bytes (stage-3 `2,031,200`),
+source `13,384` lines / `502,001` bytes, binary `561,153` bytes. Under the
+approved `2,500,000` cap with `468,816` bytes headroom. Fixed point holds
+(stage2 == stage3). `tests/float_f1.py` now has 8 groups including 250 parse/format candidates (247 finite round-trip cases), special spellings, malformed/overflow `Result` codes,
+and exact parse bits against Python struct. The F1 128-bit literal conversion
+still needs an independent adversarial IEEE edge audit; the tests are not a
+claim that it is proven for every input.
+
+Unimplemented: shortest-round-trip formatting, float constants and public
+`.sym` release format/version, float-to-int, and the final public API/style
+decision.

@@ -219,6 +219,60 @@ def test_module_signature() -> None:
     if q.returncode != 0 or q.stdout.splitlines() != ["true"]:
         raise AssertionError(f"module signature: run {q.returncode}: {q.stdout!r} {q.stderr!r}")
 
+
+def test_print_and_parse() -> None:
+    src = r'''fn main() {
+    println(1.5f)
+    println(0.1f)
+    println(-0f)
+    println(1f / 0f)
+    println(-1f / 0f)
+    println(0f / 0f)
+    println(string(1.5f))
+    let a = parseFloat("1.5")
+    match a {
+        ok(v) { println(v == 1.5f) }
+        err(m, c) { println(false) }
+    }
+    let b = parseFloat("1e309")
+    match b { ok(v) { println(0) } err(m, c) { println(c) } }
+    let c = parseFloat("nope")
+    match c { ok(v) { println(0) } err(m, c) { println(c) } }
+    let d = parseFloat("nan")
+    match d { ok(v) { println(isNaN(v)) } err(m, c) { println(false) } }
+    let e = parseFloat("-inf")
+    match e { ok(v) { println(isInf(v) && signbit(v)) } err(m, c) { println(false) } }
+    let f = parseFloat("-0")
+    match f { ok(v) { println(signbit(v)) } err(m, c) { println(false) } }
+}
+'''
+    expected = ["1.5e+00", "1.0000000000000001e-01", "-0", "inf", "-inf",
+                "nan", "1.5e+00", "true", "34", "22", "true", "true", "true"]
+    run_ok(src, "print-parse", expected)
+
+
+def test_parse_random_and_format_roundtrip() -> None:
+    rng = random.Random(0xF2A45E)
+    lines = ["fn main() {"]
+    n = 0
+    for _ in range(250):
+        sign = "-" if rng.randrange(2) else ""
+        nd = rng.randint(1, 22)
+        nf = rng.randint(0, 10)
+        ds = "".join(str(rng.randrange(10)) for _ in range(nd + nf))
+        text = ds[:-nf] + "." + ds[-nf:] if nf else ds
+        es = "e" + str(rng.randint(-320, 300)) if rng.randrange(2) else ""
+        text = f"{sign}{text}{es}"
+        f = float(text)
+        if f in (float("inf"), float("-inf")):
+            continue
+        b = struct.unpack(">Q", struct.pack(">d", f))[0]
+        lines.append(f'    let a{n} = parseFloat("{text}")')
+        lines.append(f'    match a{n} {{ ok(v) {{ if floatBits(v) != 0x{b:016x} {{ println({n}) }}; let t = string(v); let r = parseFloat(t); match r {{ ok(w) {{ if floatBits(w) != floatBits(v) {{ println({n}) }} }} err(m,c) {{ println({n}) }} }} }} err(m,c) {{ println({n}) }} }}')
+        n += 1
+    lines += ["    println(-1)", "}"]
+    run_ok("\n".join(lines) + "\n", "parse-random", ["-1"])
+
 def test_errors() -> None:
     compile_error("fn main() { let x = 1.5 }\n", "bare-fraction",
                   "f suffix for float")
@@ -257,6 +311,8 @@ def main() -> int:
     test_scalars_and_lambdas(); total += 1
     test_containers(); total += 1
     test_module_signature(); total += 1
+    test_print_and_parse(); total += 1
+    test_parse_random_and_format_roundtrip(); total += 1
     test_errors(); total += 1
     print(f"float_f1: ok ({total} groups)")
     return 0

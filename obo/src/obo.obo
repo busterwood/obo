@@ -1918,6 +1918,9 @@ const RT_I_TO_F = 52
 const RT_F_ISNAN = 53
 const RT_F_ISINF = 54
 const RT_F_SIGNBIT = 55
+const RT_F_TO_STR = 56
+const RT_F_PRINT = 57
+const RT_F_PARSE = 58
 
 const RAX = 0
 const RCX = 1
@@ -2218,7 +2221,7 @@ fn initCompiler() {
     append(universe, newSym("type", "bool", tBool))
     append(universe, newSym("type", "string", tString))
     append(universe, newSym("type", "Result", tResultCtor))
-    let names = words("print println len gc gcstats exit append truncate substr eprint eprintln readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr isNaN isInf signbit floatBits")
+    let names = words("print println len gc gcstats exit append truncate substr eprint eprintln readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr isNaN isInf signbit floatBits parseFloat")
     for n in names { append(universe, newSym("builtin", n, nil)) }
     append(universe, newSym("builtin", "ok", nil))
     append(universe, newSym("builtin", "err", nil))
@@ -6240,6 +6243,7 @@ fn conversion(t: ^Type): Item {
     let a = nestedExpr()
     expect(T_RPAREN, "")
     if t == tString {
+        if a.typ.kind == "float" { return rtCall1(RT_F_TO_STR, a, tString) }
         // string(n) gives the decimal digits of an int; string(bytes) copies a []byte
         if a.typ.kind == "int" {
             if a.mode == "const" { return makeConst(tString, stringLit(string(a.val))) }
@@ -6326,6 +6330,8 @@ fn builtin(name: string): Item {
                 slot = RT_PRINT_BOOL
             } else if k == "string" {
                 slot = RT_PRINT_STR
+            } else if k == "float" {
+                slot = RT_F_PRINT
             }
             if slot < 0 { error("cannot print " + tname(a.typ)) }
             rtCall1(slot, a, tVoid)
@@ -6353,6 +6359,13 @@ fn builtin(name: string): Item {
         var slot = RT_F_ISNAN
         if name == "isInf" { slot = RT_F_ISINF } else if name == "signbit" { slot = RT_F_SIGNBIT }
         return rtCall1(slot, a, tBool)
+    }
+    if name == "parseFloat" {
+        expect(T_LPAREN, "")
+        let s = nestedExpr()
+        expect(T_RPAREN, "")
+        if s.typ.kind != "string" { error("parseFloat needs a string, not " + tname(s.typ)) }
+        return resultCall3(RT_F_PARSE, s, tFloat)
     }
     if name == "args" {
         expect(T_LPAREN, "")
@@ -9631,7 +9644,7 @@ fn dropFrame(at: int, f: ^Sym) {
 
 // ---- the pre-scan of a function
 
-let callExempt = words("if while for return match defer in else new print println eprint eprintln len gc gcstats exit append truncate substr readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr take handle alive drop replace int byte float string isNaN isInf signbit floatBits ok err try")
+let callExempt = words("if while for return match defer in else new print println eprint eprintln len gc gcstats exit append truncate substr readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr take handle alive drop replace int byte float string isNaN isInf signbit floatBits parseFloat ok err try")
 
 fn wordAt(a: int, b: int, w: string): bool {
     if len(w) != b - a { return false }

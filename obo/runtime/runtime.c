@@ -9,6 +9,7 @@
 
 typedef unsigned long u64;
 typedef long i64;
+typedef unsigned int u32;
 
 static i64 sys3(i64 n, i64 a, i64 b, i64 c) {
     i64 r;
@@ -925,6 +926,341 @@ void rt_print_int(i64 v) { put_int(v); }
 void rt_print_str(u64 s) { if (s) putb(sdata(s), slen(s)); }
 void rt_print_bool(i64 b) { puts_(b ? "true" : "false"); }
 void rt_newline(void) { putb("\n", 1); }
+
+/* Provisional 17-significant-digit scientific formatting.  This is deliberately
+ * not claimed to be shortest-round-trip yet; it is stable and parses back to the
+ * same bits.  Long double on x86-64 has enough precision for this first step. */
+static int fmt_f(u64 bits, char *b) {
+    int o = 0;
+    u64 sign = bits >> 63;
+    u64 ef = (bits >> 52) & 0x7ff;
+    u64 frac = bits & 0x000fffffffffffffUL;
+    if (ef == 0x7ff) {
+        if (frac) { b[o++] = 'n'; b[o++] = 'a'; b[o++] = 'n'; }
+        else {
+            if (sign) b[o++] = '-';
+            b[o++] = 'i'; b[o++] = 'n'; b[o++] = 'f';
+        }
+        return o;
+    }
+    if (ef == 0 && frac == 0) {
+        if (sign) b[o++] = '-';
+        b[o++] = '0';
+        return o;
+    }
+    if (sign) b[o++] = '-';
+    long double x = (long double)f_from_bits(bits & 0x7fffffffffffffffUL);
+    int e10 = 0;
+    while (x >= 10.0L) { x /= 10.0L; e10++; }
+    while (x < 1.0L) { x *= 10.0L; e10--; }
+    long double scaled = x;
+    for (int k = 0; k < 16; k++) scaled *= 10.0L;
+    i64 n = (i64)(scaled + 0.5L);
+    if (n >= 100000000000000000LL) { n /= 10; e10++; }
+    char d[17];
+    for (int k = 16; k >= 0; k--) { d[k] = (char)('0' + (int)(n % 10)); n /= 10; }
+    int nd = 17;
+    while (nd > 1 && d[nd - 1] == '0') nd--;
+    b[o++] = d[0];
+    if (nd > 1) {
+        b[o++] = '.';
+        for (int k = 1; k < nd; k++) b[o++] = d[k];
+    }
+    b[o++] = 'e';
+    if (e10 < 0) { b[o++] = '-'; e10 = -e10; } else b[o++] = '+';
+    if (e10 >= 100) { b[o++] = (char)('0' + e10 / 100); e10 %= 100; }
+    b[o++] = (char)('0' + e10 / 10);
+    b[o++] = (char)('0' + e10 % 10);
+    return o;
+}
+
+u64 rt_f_to_str(u64 bits) {
+    char b[64];
+    int n = fmt_f(bits, b);
+    u64 p = alloc_raw(3, 8 + (u64)n);
+    *(u64 *)p = (u64)n;
+    memcpy((char *)p + 8, b, (u64)n);
+    return p;
+}
+void rt_f_print(u64 bits) {
+    char b[64];
+    int n = fmt_f(bits, b);
+    putb(b, (u64)n);
+}
+
+static int ci_is(const char *p, u64 n, const char *w) {
+    u64 i = 0;
+    while (w[i]) {
+        if (i >= n) return 0;
+        char c = p[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c != w[i]) return 0;
+        i++;
+    }
+    return i == n;
+}
+
+/* Exact decimal-string to binary64 for parseFloat.  A 128-bit 4x32-limb
+ * accumulator with a sticky bit mirrors the compiler's literal conversion;
+ * no libc strtod, host float or long-double rounding is used here. */
+typedef struct { u32 w[4]; int e; int sticky; } FParse;
+
+static int fp_any(const FParse *a) {
+    return (a->w[0] | a->w[1] | a->w[2] | a->w[3]) != 0;
+}
+static int fp_bitlen32(u32 v) {
+    int n = 0;
+    while (v) { n++; v >>= 1; }
+    return n;
+}
+static int fp_bitlen(const FParse *a) {
+    for (int i = 3; i >= 0; i--)
+        if (a->w[i]) return i * 32 + fp_bitlen32(a->w[i]);
+    return 0;
+}
+static void fp_zero(FParse *a) { a->w[0] = a->w[1] = a->w[2] = a->w[3] = 0; }
+static void fp_shl(FParse *a, int n) {
+    if (n <= 0) return;
+    if (n >= 128) { fp_zero(a); return; }
+    int wi = n / 32, bi = n % 32;
+    u32 out[4] = {0, 0, 0, 0};
+    for (int i = 3; i >= 0; i--) {
+        int src = i - wi;
+        if (src >= 0) {
+            u64 v = ((u64)a->w[src] << bi) & 0xffffffffUL;
+            if (bi && src - 1 >= 0)
+                v |= ((u64)a->w[src - 1] >> (32 - bi)) & 0xffffffffUL;
+            out[i] = (u32)v;
+        }
+    }
+    for (int i = 0; i < 4; i++) a->w[i] = out[i];
+}
+static int fp_shr(FParse *a, int n) {
+    if (n <= 0) return 0;
+    if (n >= 128) { int lost = fp_any(a); fp_zero(a); return lost; }
+    int wi = n / 32, bi = n % 32;
+    u32 out[4] = {0, 0, 0, 0};
+    for (int i = 0; i < 4; i++) {
+        int src = i + wi;
+        if (src < 4) {
+            u64 v = ((u64)a->w[src] >> bi) & 0xffffffffUL;
+            if (bi && src + 1 < 4)
+                v |= ((u64)a->w[src + 1] << (32 - bi)) & 0xffffffffUL;
+            out[i] = (u32)v;
+        }
+    }
+    int lost = 0;
+    for (int i = 0; i < wi; i++) if (a->w[i]) lost = 1;
+    if (bi && wi < 4 && (a->w[wi] & ((1U << bi) - 1U))) lost = 1;
+    for (int i = 0; i < 4; i++) a->w[i] = out[i];
+    return lost;
+}
+static void fp_norm(FParse *a) {
+    int bl = fp_bitlen(a);
+    if (bl > 128) {
+        int sh = bl - 128;
+        if (fp_shr(a, sh)) a->sticky = 1;
+        a->e += sh;
+    }
+}
+static void fp_mul10(FParse *a) {
+    u64 carry = 0;
+    for (int i = 0; i < 4; i++) {
+        u64 v = (u64)a->w[i] * 10 + carry;
+        a->w[i] = (u32)v;
+        carry = v >> 32;
+    }
+    if (carry) {
+        int sh = fp_bitlen32((u32)carry);
+        u32 out[4];
+        for (int i = 3; i >= 0; i--) {
+            u64 v = (u64)a->w[i] >> sh;
+            if (sh) {
+                if (i == 3) v |= ((u64)carry << (32 - sh));
+                else v |= ((u64)a->w[i + 1] << (32 - sh));
+            }
+            out[i] = (u32)v;
+        }
+        if (sh && (a->w[0] & ((1U << sh) - 1U))) a->sticky = 1;
+        for (int i = 0; i < 4; i++) a->w[i] = out[i];
+        a->e += sh;
+        fp_norm(a);
+    }
+}
+static void fp_add_digit(FParse *a, u32 d) {
+    u64 carry = d;
+    for (int i = 0; i < 4 && carry; i++) {
+        u64 v = (u64)a->w[i] + carry;
+        a->w[i] = (u32)v;
+        carry = v >> 32;
+    }
+    if (carry) {
+        int lost = (int)(a->w[0] & 1U);
+        for (int i = 3; i > 0; i--)
+            a->w[i] = (a->w[i] >> 1) | ((a->w[i - 1] & 1U) << 31);
+        a->w[0] >>= 1;
+        a->w[3] |= 1U << 31;
+        a->e++;
+        if (lost) a->sticky = 1;
+        fp_norm(a);
+    }
+}
+static void fp_div10(FParse *a) {
+    int bl = fp_bitlen(a);
+    int k = 128 - bl;
+    if (k > 0) { fp_shl(a, k); a->e -= k; }
+    u64 rem = 0;
+    for (int i = 3; i >= 0; i--) {
+        u64 cur = (rem << 32) | a->w[i];
+        a->w[i] = (u32)(cur / 10);
+        rem = cur % 10;
+    }
+    if (rem) a->sticky = 1;
+}
+static u64 fp_low64(const FParse *a) {
+    return (u64)a->w[0] | ((u64)a->w[1] << 32);
+}
+static int fp_bit_at(const FParse *a, int pos) {
+    if (pos < 0 || pos >= 128) return 0;
+    return (int)((a->w[pos / 32] >> (pos % 32)) & 1U);
+}
+static int fp_any_below(const FParse *a, int pos) {
+    if (pos <= 0) return 0;
+    int full = pos / 32;
+    for (int i = 0; i < full; i++) if (a->w[i]) return 1;
+    int rem = pos % 32;
+    if (rem && full < 4 && (a->w[full] & ((1U << rem) - 1U))) return 1;
+    return 0;
+}
+static u64 fp_left_bits(FParse *a, int k, int *guard) {
+    *guard = 0;
+    fp_shl(a, k);
+    return fp_low64(a);
+}
+static u64 fp_right_bits(FParse *a, int k, int *guard) {
+    if (k <= 0) return fp_left_bits(a, -k, guard);
+    if (k >= 128) {
+        if (fp_any(a)) a->sticky = 1;
+        *guard = 0;
+        fp_zero(a);
+        return 0;
+    }
+    *guard = fp_bit_at(a, k - 1);
+    if (fp_any_below(a, k - 1)) a->sticky = 1;
+    fp_shr(a, k);
+    return fp_low64(a);
+}
+static int fp_to_bits(FParse *a, u64 *out) {
+    if (!fp_any(a)) { *out = 0; return 0; }
+    int bl = fp_bitlen(a);
+    int ev = a->e + bl - 1;
+    int guard = 0;
+    u64 q = 0;
+    if (ev < -1022) {
+        int k = -(a->e + 1074);
+        if (k > 0) q = fp_right_bits(a, k, &guard);
+        else q = fp_left_bits(a, -k, &guard);
+        if (guard && (a->sticky || (q & 1))) q++;
+        if (!q) { *out = 0; return 0; }
+        *out = q >= (1ULL << 52) ? (1ULL << 52) : q;
+        return 0;
+    }
+    if (ev > 1023) return 1;
+    int e2;
+    if (bl > 53) {
+        int sh = bl - 53;
+        q = fp_right_bits(a, sh, &guard);
+        e2 = a->e + sh;
+    } else {
+        q = fp_left_bits(a, 53 - bl, &guard);
+        e2 = a->e - (53 - bl);
+    }
+    if (guard && (a->sticky || (q & 1))) q++;
+    if (q == (1ULL << 53)) { q >>= 1; e2++; }
+    int E = e2 + 52;
+    if (E > 1023) return 1;
+    if (E >= -1022) {
+        *out = ((u64)(E + 1023) << 52) | (q - (1ULL << 52));
+        return 0;
+    }
+    *out = q;
+    return 0;
+}
+
+/* parseFloat(string): Result[float].  Malformed input is EINVAL 22; a value
+ * beyond binary64 range is ERANGE 34.  Underflow returns signed zero/subnormal. */
+u64 rt_f_parse(u64 s, u64 descErr, u64 descOk) {
+    const char *p = sdata(s);
+    u64 n = slen(s);
+    u64 i = 0;
+    while (i < n && (p[i] == ' ' || p[i] == '\t' || p[i] == '\n' || p[i] == '\r')) i++;
+    int sign = 0;
+    if (i < n && (p[i] == '+' || p[i] == '-')) { sign = p[i] == '-'; i++; }
+    u64 j = i;
+    while (j < n && p[j] != ' ' && p[j] != '\t' && p[j] != '\n' && p[j] != '\r') j++;
+    u64 tail = j;
+    while (tail < n && (p[tail] == ' ' || p[tail] == '\t' || p[tail] == '\n' || p[tail] == '\r')) tail++;
+    if (tail != n) return err_cell(descErr, iomsg_lit("invalid float"), 22);
+    u64 w = j - i;
+    if (ci_is(p + i, w, "nan")) {
+        u64 bits = 0x7ff8000000000000UL;
+        if (sign) bits |= 0x8000000000000000UL;
+        return ok_cell(descOk, bits);
+    }
+    if (ci_is(p + i, w, "inf") || ci_is(p + i, w, "infinity")) {
+        u64 bits = 0x7ff0000000000000UL;
+        if (sign) bits |= 0x8000000000000000UL;
+        return ok_cell(descOk, bits);
+    }
+    FParse a;
+    fp_zero(&a); a.e = 0; a.sticky = 0;
+    int digits = 0, frac = 0, dot = 0;
+    while (i < j) {
+        char c = p[i];
+        if (c == '.') {
+            if (dot) return err_cell(descErr, iomsg_lit("invalid float"), 22);
+            dot = 1; i++;
+        } else if (c >= '0' && c <= '9') {
+            fp_mul10(&a);
+            fp_add_digit(&a, (u32)(c - '0'));
+            digits++;
+            if (dot) frac++;
+            if (a.e > 1100) return err_cell(descErr, iomsg_lit("float out of range"), 34);
+            i++;
+        } else break;
+    }
+    if (digits == 0) return err_cell(descErr, iomsg_lit("invalid float"), 22);
+    int exp10 = 0, eneg = 0, edigits = 0;
+    if (i < j && (p[i] == 'e' || p[i] == 'E')) {
+        i++;
+        if (i < j && (p[i] == '+' || p[i] == '-')) { eneg = p[i] == '-'; i++; }
+        while (i < j && p[i] >= '0' && p[i] <= '9') {
+            if (exp10 < 100000) exp10 = exp10 * 10 + (p[i] - '0');
+            edigits++; i++;
+        }
+        if (!edigits) return err_cell(descErr, iomsg_lit("invalid float"), 22);
+    }
+    if (i != j) return err_cell(descErr, iomsg_lit("invalid float"), 22);
+    if (eneg) exp10 = -exp10;
+    exp10 -= frac;
+    if (exp10 > 4000) return err_cell(descErr, iomsg_lit("float out of range"), 34);
+    if (exp10 < -4000) {
+        fp_zero(&a);
+    } else {
+        for (; exp10 > 0; exp10--) {
+            fp_mul10(&a);
+            if (a.e > 1100) return err_cell(descErr, iomsg_lit("float out of range"), 34);
+        }
+        for (; exp10 < 0; exp10++) {
+            fp_div10(&a);
+            if (!fp_any(&a) && a.e < -1300) break;
+        }
+    }
+    u64 bits;
+    if (fp_to_bits(&a, &bits)) return err_cell(descErr, iomsg_lit("float out of range"), 34);
+    if (sign) bits |= 0x8000000000000000UL;
+    return ok_cell(descOk, bits);
+}
 
 void rt_gc_stats(void) {
     puts_("obo: "); put_int((i64)live_owned); puts_(" live objects, ");

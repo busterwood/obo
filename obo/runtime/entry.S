@@ -72,6 +72,9 @@ _entry:
     slot rt_f_isnan
     slot rt_f_isinf
     slot rt_f_signbit
+    slot rt_f_to_str
+    slot rt_f_print
+    slot rt_f_parse
 
     .text
     .macro check f
@@ -139,5 +142,8 @@ check_\f:
     check rt_f_isnan
     check rt_f_isinf
     check rt_f_signbit
+    check rt_f_to_str
+    check rt_f_print
+    check rt_f_parse
 
     .section .note.GNU-stack,"",@progbits
