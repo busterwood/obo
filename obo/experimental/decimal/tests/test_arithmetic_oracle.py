@@ -117,6 +117,10 @@ class RoundedTests(unittest.TestCase):
         st, r = ar.div_precision(D(0, 1, 32767), D(0, 1, -1), 1,
                                  ar.MODES["HALF_EVEN"], 0)
         self.assertEqual((st, r.coeff, r.exp), (ar.OK, 10, 32767))
+        st, r = ar.div_precision(D(0, 10 ** 33, 32767), D(0, 1, 0), 1,
+                                 ar.MODES["HALF_EVEN"], 0)
+        self.assertEqual(st, ar.OK)
+        self.assertEqual((r.coeff, r.exp), (10 ** 33, 32767))
         st, _ = ar.div_precision(D(0, 1, 32767), D(0, 1, -38), 1,
                                  ar.MODES["HALF_EVEN"], 0)
         self.assertEqual(st, ar.OVERFLOW)

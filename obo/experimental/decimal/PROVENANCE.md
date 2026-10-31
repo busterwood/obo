@@ -2,7 +2,8 @@
 
 ## Approved research
 
-This experimental package implements only the D1 foundations described by:
+This experimental package implements the D1 foundations and the D2 arithmetic
+contract described by:
 
 - `obo/design/decimal-research-2026-10-28.md`
 - `obo/design/decimal-arithmetic-research-2026-10-29.md`
@@ -54,20 +55,20 @@ truncating remainder and the wide-gap sticky add/sub.
 Current D2 hashes:
 
 ```text
-3ec61c496bbc9911e61d006c3e65fb4d91989d19935f70de5364349c0771ceae  dec24.c
+0954ca0e71b4700b8f2a58739f423bb5807a641792c678141e459b29d54742ad  dec24.c
 e71df2a6c45d4909fa83f5ae3e6ef48a1368b7f2b01973a53c8924535f2cd3ff  dec24.h
 4bfc67b2ff59e0600c26db8563cf202b9ddd53b8f499a9d2b2e60105be05d491  dec24_text.c
 04c8b9133686cdd597a0aebbe3fec79f4443c6f79d46df03b83a51e581e5ce7b  dec24_text.h
 b81ffc8fc14202be4f053f66ab0d381985fe7034bda5adf9a5cfdf006801c7cb  dec24_bind.c
 bb285370458d035d0ae302d6bc15aaa1d49cc8776a7a4b2c68052f4ff194d869  dec24_bind.h
 fce297916a6f1acf2af8cca81e6ed5940be42d29370d835126bebbc09a7c74da  dec24_arith.c
-b55863684088687223114e4da4e204f44c242ae061f93d53dafd5013cea87240  dec24_arith.h
+cf3436646008ba53837bec048c31334970ed5a0917971221c4401380225d37be  dec24_arith.h
 fdb9e59998e8da736a5a19e9a72a2ace6a06839fd74bf6a5a2a35465205b9c34  tests/dec24_test.c
 be222cf840a8724127233b31899786c4363d77d1e36849cf1b993967cfecb899  tests/decimal_oracle.py
 78e8b0b72b3f414a9b549bcc70a24247cd69635fff8cb2927ac9887024cf3aa6  tests/arithmetic_oracle.py
-4d0b7f68c8aaf651cd72fec59a14ae1b5302bbe6892598bf0c9e0f6a90e05a40  tests/dec24_arith_test.c
+bf6801d5e978fe4dd98d64e53dcf846c333e17e2370f151bc95b86c3be8d3da3  tests/dec24_arith_test.c
 872725b8f574860e844f60a83b68237df91a36e451cbbf3d4c3c8c80425a42f6  tests/generate_arithmetic_vectors.py
-d3dad2aa484c926c2b5b1138224b043c96fa4f86c625979718d8b752819ca5ff  tests/test_arithmetic_oracle.py
+da059b622a622923293b8a6772d13c54981b3c6fd8792d8bf65397e67d7fc044  tests/test_arithmetic_oracle.py
 296040cfe86836d6df8e92b09ef2c94fbd543a6a124f15832a1c65ef65bc551e  tests/run_decimal_tests.py
 36a5d1585c4966f1d1ae79f9bb0823ee32fd07126e9c15db7b44d219663507c7  tests/run_property_probes.py
 ```

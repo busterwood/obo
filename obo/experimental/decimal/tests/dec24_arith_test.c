@@ -454,6 +454,19 @@ static void boundary_cases(void) {
         mk(&want, 0, 10, 0, 32767, 0);
         check_dec_raw("upper_rescue_div", 0, &out, &want);
     }
+    /* Longer-than-requested coefficient pinned: 1e32800 at precision 1
+     * rescues to coefficient 10^33 (34 digits) with exponent 32767. */
+    mk(&a, 0, 0x38c15b0a00000000ULL, 0x0000314dc6448d93ULL, 32767, 0);
+    mk(&b, 0, 1, 0, 0, 0);
+    st = dec_div_precision(&out, &a, &b, 1, DEC_ROUND_HALF_EVEN, 0);
+    checks++;
+    if (st != DEC_OK) fail_status("upper_rescue_div_long", 0, st, DEC_OK);
+    else {
+        mk(&want, 0, 0x38c15b0a00000000ULL, 0x0000314dc6448d93ULL,
+           32767, 0);
+        check_dec_raw("upper_rescue_div_long", 0, &out, &want);
+    }
+    mk(&a, 0, 1, 0, 32767, 0);
     mk(&b, 0, 1, 0, -38, 0);      /* 1e32805 needs 39 digits */
     fill_byte(&out, 0xAA);
     check_status_unchanged("upper_rescue_div_overflow", 0, &out,

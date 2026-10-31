@@ -684,14 +684,14 @@ int dec_add(dec24 *dst, const dec24 *a, const dec24 *b, unsigned mode) {
     int e = ea < eb ? ea : eb;
     int sha = ea - e;
     int shb = eb - e;
-    /* Honest-refusal guard.  This is not a decimal-digit rule
-     * (digits + shift <= 76).  We align only when each shift is <= 76, and
-     * then each aligned operand and the sum must fit in the 256-bit
-     * accumulator.  Thus 9e76 + 1 and 109e75 + 1 are accepted (77/78-digit
-     * aligned integers below 2^256), while 12e76 + 1 is refused because the
-     * aligned operand exceeds 2^256 even though its 1.2e77 result is
-     * representable after rounding.  A wide-gap sticky/one-ulp path is a
-     * separate implementation and is deliberately not guessed here. */
+    /* Prefer the exact aligned accumulator when it fits.  This is not a
+     * decimal-digit rule (digits + shift <= 76): each shift is <= 76 and each
+     * aligned operand/sum must fit the 256-bit accumulator.  Thus 9e76 + 1
+     * and 109e75 + 1 remain on the exact path, while 12e76 + 1 falls through
+     * to dec_add_sticky_round because the aligned operand exceeds 2^256.
+     * The sticky path rounds once to 38 digits, handles the sign- and
+     * mode-dependent neighbour and records DEC_INEXACT for exact callers;
+     * it is not a guessed or silently dropped wide-gap result. */
     if (sha > 76 || shb > 76)
         return dec_add_sticky_round(dst, a, b, mode, ds);
     dec_u256 ma, mb;

@@ -98,9 +98,15 @@ typedef struct {
  * PRECISION: the result is the exact quotient rounded once to `precision`
  * significant digits.  The result exponent is derived from the quotient's
  * adjusted exponent, so a value needing fewer significant digits is padded
- * to the requested precision (the numeric value is unchanged; display scale
- * remains independent).  A derived exponent outside int16 returns
- * DEC_OVERFLOW.
+ * to the requested precision.  Exponent range is handled like the parser:
+ * below int16, coefficient trailing zeros are removed only as far as needed;
+ * above int16, trailing zeros are appended (the upper-exponent rescue) until
+ * the exponent fits.  The stored coefficient can therefore be longer than the
+ * requested precision: 1e32800 at precision 1 becomes coefficient 10^33 with
+ * exponent 32767 (34 coefficient digits), and 1e32805 still overflows because
+ * 39 digits would be required.  The numeric value is unchanged and display
+ * scale remains independent.  DEC_OVERFLOW is returned only when the exponent
+ * cannot be brought into int16 within 38 coefficient digits.
  *
  * UNNECESSARY returns DEC_INEXACT if any nonzero digit would be discarded.
  * Representability and range take precedence: if the rounded result cannot fit
