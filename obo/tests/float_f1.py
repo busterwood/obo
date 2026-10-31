@@ -51,7 +51,7 @@ def compile_src(src: str, d: str, name: str):
     exe = os.path.join(d, name)
     with open(p, "w") as f:
         f.write(src)
-    r = run([OBO, p, "-o", exe, "--rt", RT])
+    r = run([OBO, p, "-o", exe, "--rt", RT, "--test-float-bits"])
     return r, exe
 
 
@@ -74,7 +74,7 @@ def compile_error(src: str, name: str, needle: str, timeout: int = 120) -> None:
     p = os.path.join(d, name + ".obx")
     with open(p, "w") as f:
         f.write(src)
-    r = run([OBO, p, "-o", os.path.join(d, name), "--rt", RT], timeout=timeout)
+    r = run([OBO, p, "-o", os.path.join(d, name), "--rt", RT, "--test-float-bits"], timeout=timeout)
     if r.returncode == 0:
         raise AssertionError(f"{name}: expected a compile error")
     if needle not in r.stderr:
@@ -327,6 +327,13 @@ fn main() {
                   "const-arithmetic", "constant value must be known")
     compile_error("fn main() { let x: ?float = nil }\n",
                   "optional-float", "only reference types can be optional")
+    d = tempfile.mkdtemp(prefix="float-f1-nobits-")
+    p = os.path.join(d, "nobits.obx")
+    with open(p, "w") as f:
+        f.write("fn main() { println(floatBits(1.5f)) }\n")
+    r = run([OBO, p, "-o", os.path.join(d, "nobits"), "--rt", RT])
+    if r.returncode == 0 or "internal test diagnostic" not in r.stderr:
+        raise AssertionError(f"floatBits was public without the test flag:\n{r.stderr}")
 
 
 def test_value_positions() -> None:
@@ -411,7 +418,7 @@ fn main() {
 ''')
     exe = os.path.join(d, "main")
     r = run([OBO, os.path.join(d, "main.obx"), "-o", exe, "--rt", RT,
-             "-I", d, "--sym-dir", sym])
+             "-I", d, "--sym-dir", sym, "--test-float-bits"])
     if r.returncode != 0:
         raise AssertionError(f"constant module: compile failed:\n{r.stderr}")
     q = run([exe, os.path.join(d, "main-run")],
@@ -435,7 +442,7 @@ fn main() {
     with open(os.path.join(bad, "lib.sym"), "w") as f:
         f.write(badsym)
     bad_run = run([OBO, os.path.join(bad, "main.obx"), "--check",
-                   "-I", bad, "--sym-dir", bad])
+                   "-I", bad, "--sym-dir", bad, "--test-float-bits"])
     if bad_run.returncode == 0:
         raise AssertionError(f"malformed float constant was not rejected:\n{bad_run.stderr}")
 
@@ -443,7 +450,7 @@ fn main() {
     os.rename(lib, hidden)
     try:
         c = run([OBO, os.path.join(d, "main.obx"), "--check",
-                 "-I", d, "--sym-dir", sym])
+                 "-I", d, "--sym-dir", sym, "--test-float-bits"])
         if c.returncode != 0:
             raise AssertionError(f"source-less check failed:\n{c.stderr}")
     finally:
@@ -525,7 +532,7 @@ def test_float_const_reader_matrix() -> None:
     with open(os.path.join(d, "main.obx"), "w") as f:
         f.write("module main\nimport \"lib.obx\"\nfn main() { println(floatBits(lib::Half)) }\n")
     r = run([OBO, os.path.join(d, "main.obx"), "-o", os.path.join(d, "main"),
-             "--rt", RT, "-I", d, "--sym-dir", sym])
+             "--rt", RT, "-I", d, "--sym-dir", sym, "--test-float-bits"])
     if r.returncode != 0:
         raise AssertionError(f"reader baseline compile: {r.stderr}")
     valid = open(os.path.join(sym, "lib.sym")).read()
@@ -547,7 +554,7 @@ def test_float_const_reader_matrix() -> None:
         with open(os.path.join(bd, "lib.sym"), "w") as f:
             f.write(text)
         q = run([OBO, os.path.join(bd, "main.obx"), "--check",
-                 "-I", bd, "--sym-dir", bd])
+                 "-I", bd, "--sym-dir", bd, "--test-float-bits"])
         if q.returncode == 0:
             raise AssertionError(f"reader accepted malformed float const {bad!r}")
         if "stale" in q.stderr.lower():
@@ -563,7 +570,7 @@ def test_float_const_reader_matrix() -> None:
         with open(os.path.join(bd, "lib.sym"), "w") as f:
             f.write(text)
         q = run([OBO, os.path.join(bd, "main.obx"), "--check",
-                 "-I", bd, "--sym-dir", bd])
+                 "-I", bd, "--sym-dir", bd, "--test-float-bits"])
         if q.returncode != 0:
             raise AssertionError(f"reader rejected canonical float bits {raw}: {q.stderr}")
 
@@ -667,7 +674,7 @@ def test_module_signature() -> None:
         f.write('module main\nimport "lib.obx"\nfn main() { println(lib::half(3f) == 1.5f) }\n')
     exe = os.path.join(d, "main")
     r = run([OBO, os.path.join(d, "main.obx"), "-o", exe, "--rt", RT,
-             "-I", d, "--sym-dir", sym])
+             "-I", d, "--sym-dir", sym, "--test-float-bits"])
     if r.returncode != 0:
         raise AssertionError(f"module signature: compile failed:\n{r.stderr}")
     q = run([exe, os.path.join(d, "main-run")],
@@ -763,6 +770,11 @@ def main() -> int:
         print(f"missing compiler: {OBO}", file=sys.stderr)
         return 2
     total = 0
+    if "--reader-only" in sys.argv:
+        test_module_constants(); total += 1
+        test_float_const_reader_matrix(); total += 1
+        print(f"float_f1: ok ({total} reader groups)")
+        return 0
     test_literal_bits(); total += 1
     test_arithmetic(); total += 1
     test_fixed_conversion_cases(); total += 1

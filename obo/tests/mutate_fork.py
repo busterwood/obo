@@ -1183,6 +1183,18 @@ IO_MUTANTS = {
         '        return resultCall4(RT_READ_FD, fd, n, derived("opt", derived("array", tByte)))\n',
         '        return resultCall4(RT_READ_FD, n, fd, derived("opt", derived("array", tByte)))\n'),
 }
+FLOAT_MUTANTS = {
+    'float: literal separators are rejected': (
+        "        if c == '_' {\n            // Source separators are consumed by the scanner but are not value\n",
+        "        if false {\n            // Source separators are consumed by the scanner but are not value\n"),
+    'float: constant reader accepts a short hex value': (
+        '    if !isHex16(text) {\n        error("malformed float constant: expected exactly 0x and 16 lowercase hexadecimal digits, found " + text)\n',
+        '    if false {\n        error("malformed float constant: expected exactly 0x and 16 lowercase hexadecimal digits, found " + text)\n'),
+    'float: constant reader accepts uppercase hex': (
+        "        if text[i] >= 'A' && text[i] <= 'F' {\n",
+        "        if false && text[i] >= 'A' && text[i] <= 'F' {\n"),
+}
+MUTANTS.update(FLOAT_MUTANTS)
 MUTANTS.update(IO_MUTANTS)
 
 # image emission (FORK.md, "Compiler size fixes"): the runtime data segment's

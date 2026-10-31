@@ -45,6 +45,24 @@ TMP = tempfile.mkdtemp(prefix='obo-mutate-io-')
 
 # ---------------------------------------------------------------- mutants
 RUNTIME_MUTANTS = {
+    'float add subtracts': (
+        'u64 rt_f_add(u64 a, u64 b) { return f_to_bits(f_from_bits(a) + f_from_bits(b)); }',
+        'u64 rt_f_add(u64 a, u64 b) { return f_to_bits(f_from_bits(a) - f_from_bits(b)); }'),
+    'float divide multiplies': (
+        'u64 rt_f_div(u64 a, u64 b) { return f_to_bits(f_from_bits(a) / f_from_bits(b)); }',
+        'u64 rt_f_div(u64 a, u64 b) { return f_to_bits(f_from_bits(a) * f_from_bits(b)); }'),
+    'float not-equal uses equal': (
+        'i64 rt_f_ne(u64 a, u64 b) { return f_from_bits(a) != f_from_bits(b); }',
+        'i64 rt_f_ne(u64 a, u64 b) { return f_from_bits(a) == f_from_bits(b); }'),
+    'float shortest ignores ceiling candidate': (
+        '        int ceil_ok = candidate_ok(ceil_norm, ceil_e, bits);\n',
+        '        int ceil_ok = 0;\n'),
+    'float parse accepts empty input': (
+        '    if (!any) return err_cell(descErr, iomsg_lit("invalid float"), 22);\n',
+        '    if (0) return err_cell(descErr, iomsg_lit("invalid float"), 22);\n'),
+    'float negative zero prints positive': (
+        '    if (ef == 0 && frac == 0) {\n        if (sign) b[o++] = \'-\';\n        b[o++] = \'0\';\n        return o;\n    }',
+        '    if (ef == 0 && frac == 0) {\n        b[o++] = \'0\';\n        return o;\n    }'),
     # a short read is data, not EOF
     'short read treated as EOF': (
         '    if ((u64)r < (u64)max) a->len = (u64)r;                        /* a short read is data, not EOF */\n',
@@ -218,6 +236,7 @@ CASES = [
     case('run/io_writer', 'tests/run/io_writer.obx', env=clean_env(check=True)),
     case('run/io_defer', 'tests/run/io_defer.obx', env=clean_env(check=True)),
     case('run/empty_arrays', 'tests/run/empty_arrays.obx', env=clean_env(check=True)),
+    case('float/core', 'tests/float_core.obx', env=clean_env(check=True)),
     case('io/short_read', 'tests/io/short_read.obx', env=clean_env(check=True), stdin=b'0123456789'),
     case('io/fault_eintr', 'tests/io/fault_eintr.obx', env=clean_env(check=True, fault='eintr')),
     case('io/fault_inert', 'tests/io/fault_inert.obx', env=clean_env(fault='short')),

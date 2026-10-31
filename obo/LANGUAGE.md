@@ -23,6 +23,7 @@ compile, but is a known problem rather than a model of good code.
 | Type | Meaning | Owned |
 |---|---|---|
 | `int`, `byte`, `bool` | numbers and booleans, copied by value | no |
+| `float` | IEEE 754 binary64, copied by value (work-in-progress numeric branch) | no |
 | `string` | immutable bytes | yes (reference counted) |
 | `[]T` | growable array of `T` | yes |
 | `ref record { ... }` | a record, declared with `type` | yes |
@@ -35,6 +36,33 @@ compile, but is a known problem rather than a model of good code.
 Records and closed types are declared with `type`, and may refer to each other.
 A forward declaration `type Sym` lets them do so; the fields are only usable once
 the type is defined.
+
+### Float (work in progress)
+
+`float` is IEEE 754 binary64 in one 8-byte word. The `f`/`F` suffix marks a
+float literal (`1f`, `1.5f`, `1.5e3F`); bare fractional and exponent literals
+will be exact `decimal` once that type exists, and are compile errors in a
+float-only compiler directing the `f` suffix. There is no implicit int/float
+conversion: use `float(i)`. Mixed float/int arithmetic and comparison are
+errors. Float is finite, infinite and NaN-capable IEEE data: runtime arithmetic
+uses IEEE overflow to infinity and standard NaN behavior; comparisons are
+unordered for NaN (`==` false, `!=` true, ordered comparisons false), and
+`+0 == -0`. A finite source literal whose exact value rounds beyond binary64 is
+a compile error, never an implicit infinity.
+
+Float values are unowned one-word scalars and work in locals, parameters,
+returns, fields, arrays, globals, `Result[float]`, methods, interfaces and
+function types. Formatting is shortest round-trip with deterministic ties-to-even,
+using fixed notation for decimal exponents -6..20 and scientific `e±NN` outside
+it; special spellings are `nan`, `inf`, `-inf` and `-0`. `parseFloat(s)` is the
+explicit checked string parser and returns `Result[float]`; malformed input is
+code 22 and overflow code 34, while underflow gives signed zero/subnormal.
+There is no `float -> int` conversion in this checkpoint.
+
+Float constants are raw binary64 bit patterns in `.sym`; the current WIP format
+requires exactly `0x` plus 16 lowercase hexadecimal digits. The format is
+experimental and must be versioned before release. `floatBits` is an internal
+test diagnostic, available only with `--test-float-bits`, not a public API.
 
 ## 2. Ownership
 

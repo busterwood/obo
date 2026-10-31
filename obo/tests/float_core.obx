@@ -1,0 +1,76 @@
+// Compact mandatory float gate: formatted values, arithmetic, parse Result,
+// constants, fields, arrays, functions, interface dispatch and Result[float].
+// Bit-specific literal probes stay in tests/float_f1.py with the test flag.
+// expect: 1.5
+// expect: 10
+// expect: 5.960464477539063e-08
+// expect: 1.7976931348623157e+308
+// expect: -0
+// expect: inf
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: 34
+// expect: 22
+// expect: 22
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+const Half = 0.5f
+var G: float = 2.5f
+
+type Pair = ref record { a: float; b: int }
+type Iface = interface {
+    pure fn scale(x: float, k: int): float
+    pure fn get(): float
+}
+type Impl = ref record { v: float }
+fn (p: &Impl) scale(x: float, k: int): float { return x * float(k) }
+fn (p: &Impl) get(): float { return p.v }
+impl Iface for Impl
+
+fn main() {
+    println(string(1.5f))
+    println(string(1_0f))
+    println(string(5.9604644775390625e-08f))
+    println(string(1.7976931348623157e308f))
+    println(string(-0f))
+    println(string(1f / 0f))
+    println(1f + 2f == 3f)
+    println(1f / 3f > 0.333f)
+    println(1f != 2f)
+    let a = parseFloat("1.5")
+    match a {
+        ok(v) { println(v == 1.5f) }
+        err(m, c) { println(false) }
+    }
+    let b = parseFloat("1e309")
+    match b { ok(v) { println(0) } err(m, c) { println(c) } }
+    let bad = parseFloat("1.5x")
+    match bad { ok(v) { println(0) } err(m, c) { println(c) } }
+    let empty = parseFloat("")
+    match empty { ok(v) { println(0) } err(m, c) { println(c) } }
+    println(Half == 0.5f)
+    println(G == 2.5f)
+    let p = new Pair{a: 1.5f, b: 2}
+    println(p.a == 1.5f)
+    let xs = new []float(0)
+    append(xs, 1.5f)
+    append(xs, 2.5f)
+    truncate(xs, 1)
+    println(len(xs) == 1 && xs[0] == 1.5f)
+    let f = fn (a: int, b: float, c: int, d: float): float { return b + d }
+    println(f(1, 2f, 3, 4f) == 6f)
+    let i: Iface = new Impl{v: 3f}
+    println(i.scale(2f, 3) == 6f && i.get() == 3f)
+    let r: Result[float] = ok(1.5f)
+    match r {
+        ok(v) { println(v == 1.5f) }
+        err(m, c) { println(false) }
+    }
+}

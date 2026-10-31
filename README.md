@@ -17,6 +17,16 @@ is `obo/src/obo.obo`. See [HISTORY.md](HISTORY.md) for the obx language,
 architecture and tests, the ownership fork, milestone chronology and earlier
 measurements.
 
+> **Numeric WIP branch.** This worktree adds the unreleased float implementation
+> on top of the Stage A line. Its compiler is currently 13,417 lines / 504,421
+> bytes, binary 569,345 bytes; the local seed is still the old 0.8 compiler
+> (`673ae7ba…`). The branch identity remains WIP `0.9`/format 5/ABI 1; the float
+> symbol grammar needs a release format bump and is not claimed compatible or
+> promoted. The 2,500,000-byte numeric budget and the separate 30,000-byte
+> empty-array regression oracle are described in `obo/tests/peak_budget.py` and
+> `obo/FORK.md`. Main/history status below is the Stage A record, not a claim
+> about this numeric branch.
+
 ## Current state (30 October 2026)
 
 The promoted seed is **obo 0.8, symbol format 4, ABI 1** (507,905 bytes,

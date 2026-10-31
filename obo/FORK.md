@@ -5694,8 +5694,8 @@ uses `obo/tests/peak_budget.py` with `PEAK_BUDGET = 2_500_000` decimal bytes.
 This is not a change to the historical lambda release budget, which remains
 `2,000,000` in its own record. The zero-array heap-allocation mutant is
 additionally judged by the same-source self-compile delta: after the exact
-converter the latest measured baseline is 2,027,600 and the mutant 2,073,200, a
-45,600-byte regression (historical pre-float delta 44,672); the shared oracle
+converter the latest measured baseline is 2,030,784 and the mutant 2,076,512, a
+45,728-byte regression (historical pre-float delta 44,672); the shared oracle
 requires at least 30,000 bytes over baseline. This keeps the
 empty-array saving caught even when both peaks are below the new absolute cap.
 No check was weakened.
@@ -5799,9 +5799,44 @@ the old one-candidate exact formatter). Full old gates: `run_fork` 1544,
 `port_compare` 1551, `port_test` 573, `sym_test` 42, `doc_check` 62,
 `mutate_io` 30/30, harness 27. No new F3B mutant/release matrix is claimed.
 
-**Memory.** Final direct self-compile is `2,029,072` peak bytes (stage-3
-`2,029,088`; port `2,029,440`), source `13,411` lines / `504,049` bytes, binary
+**Memory.** Final direct self-compile is `2,030,368` peak bytes (stage-3
+`2,030,384`; port `2,030,736`), source `13,417` lines / `504,421` bytes, binary
 `569,345` bytes, runtime text/data `26,272`/`67,360`. Headroom under the
-unchanged `2,500,000` cap is `470,928` bytes. `nm -u runtime.o` is empty and the
-fixed point holds (`d3bcb0fc…`). Float release identity remains unassigned;
+unchanged `2,500,000` cap is `469,632` bytes. `nm -u runtime.o` is empty and the
+fixed point holds (`b02429d0…`). Float release identity remains unassigned;
 Stage B `0.10` is not used.
+
+## Float F3B preparation (unreleased, WIP; no final matrix)
+
+`floatBits` is no longer a public builtin. It is an internal diagnostic available
+only with the explicit `--test-float-bits` CLI flag; without it the compiler
+reports `floatBits is an internal test diagnostic; pass --test-float-bits`.
+The flag is carried by the standalone float runner and the reader gate; normal
+programs and the compact mandatory gate do not use it. This is a test-only
+switch, not an environment-variable checks bypass.
+
+**Mandatory functional integration.** `tests/float_core.obx` is a compact
+program registered in `run_fork.py` (formatted literals, arithmetic,
+comparisons, parse Result, constants, fields, arrays, globals, function value,
+interface dispatch and `Result[float]`). `tests/float_errors.obx` registers
+eight compile-error cases. `run_fork.py` also runs the source-less
+`float_f1.py --reader-only` gate. These are in the normal `run_fork` suite, so
+`mutate_fork` builds the actual mutated compiler source for them; the compact
+core is also a `mutate_io` case, compiled and run against the actual mutant
+runtime with its own `rt_dir`. The full 12,580-value power-of-two matrix remains
+in standalone `tests/float_f1.py` (19 groups) and is not repeated in every
+mutant invocation.
+
+**Focused mutant catalog.** `mutate_fork` gains float literal-separator and
+float-constant reader mutants (3/3 caught in a targeted run). `mutate_io` gains
+float add/div/comparison, negative-zero formatting, shortest ceiling-candidate
+and empty-parse mutants (6/6 caught against the actual mutant runtime). These
+are preparatory targeted checks, not a claim that the full fork/port/meta
+matrix has been rerun.
+
+Current gates after this preparation: `run_fork` **1554 passed**, `port_compare`
+**1551/1551** (old cases; the new float core is not in its flat old-file set),
+`port_test` 573/573, `sym_test` 42, `doc_check` 62, `mutate_io` **36/36**,
+`mutate_harness_test` 27, standalone `float_f1` **19 groups** under normal and
+`obo-noregs`. The release identity/format decision is still open; this is not a
+release candidate and no final full matrix is claimed.
