@@ -75,6 +75,9 @@ _entry:
     slot rt_f_to_str
     slot rt_f_print
     slot rt_f_parse
+#ifdef OBO_HOSTED_EXIT
+    slot rt_set_host_exit
+#endif
 
     .text
     .macro check f
@@ -145,5 +148,8 @@ check_\f:
     check rt_f_to_str
     check rt_f_print
     check rt_f_parse
+#ifdef OBO_HOSTED_EXIT
+    check rt_set_host_exit
+#endif
 
     .section .note.GNU-stack,"",@progbits

@@ -1,0 +1,15 @@
+module app
+
+import "hello.obx"
+
+// Guarded-stack probe: the hosted entry runs on a separate mmap stack with
+// PROT_NONE guard pages. This deliberately recurses past the usable stack; the
+// expected outcome is a guard-page SIGSEGV, not silent adjacent corruption.
+fn rec(n: int): int {
+    if n <= 0 { return hello::zero() }
+    return rec(n - 1) + 1
+}
+
+fn main() {
+    println(rec(2000000))
+}

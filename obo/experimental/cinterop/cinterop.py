@@ -27,6 +27,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OBO_ROOT = os.path.dirname(os.path.dirname(HERE))
 DEFAULT_OBO = os.path.join(OBO_ROOT, 'obo')
 DEFAULT_RT = OBO_ROOT
+RT_HOST_EXIT_SLOT = 59
 
 CODE_BASE = 0x401000
 IMAGE_BASE = 0x400000
@@ -44,11 +45,14 @@ EFFECTS = ('freesall', 'writeshandles')
 SIG_MODES = ('header', 'declarations-only')
 REQUIRED_INPUT_KEYS = {
     'spec', 'app', 'wrapper', 'shim_source', 'signature_check_source',
-    'host_source', 'start_source', 'link_script', 'tool', 'compiler', 'cc',
+    'host_source', 'host_stack_source', 'host_stack_header',
+    'host_abi_source', 'start_source', 'link_script', 'runtime_source',
+    'runtime_entry', 'runtime_link_script', 'tool', 'compiler', 'cc',
 }
 REQUIRED_BUILD_KEYS = REQUIRED_INPUT_KEYS | {
-    'wrapper_sym', 'shim_object', 'signature_check_object', 'image', 'relocs',
-    'native_object', 'executable', 'input_manifest',
+    'wrapper_sym', 'shim_object', 'signature_check_object', 'host_object',
+    'host_stack_object', 'start_object', 'runtime_text', 'runtime_data',
+    'image', 'relocs', 'native_object', 'executable', 'input_manifest',
 }
 
 
@@ -136,6 +140,10 @@ def load_spec(path):
     if 'wrapper' in spec:
         if not isinstance(spec['wrapper'], str) or not spec['wrapper']:
             raise ToolError("wrapper must be a source path")
+    if 'wrapper_sources' in spec:
+        if not isinstance(spec['wrapper_sources'], list) or any(
+                not isinstance(x, str) or not x for x in spec['wrapper_sources']):
+            raise ToolError("wrapper_sources must be a list of source paths")
     if not spec.get('headers') and not spec.get('declarations'):
         raise ToolError("a header or explicit declaration is required for every binding")
     return spec
@@ -638,6 +646,56 @@ def verify_manifest(path):
     verify_doc(doc, os.path.dirname(os.path.abspath(path)), True)
 
 
+HOSTED_RT_CFLAGS = [
+    '-O2', '-ffreestanding', '-fno-builtin', '-nostdlib', '-fno-pic',
+    '-fno-pie', '-fno-stack-protector', '-fno-asynchronous-unwind-tables',
+    '-mcmodel=small', '-fno-tree-loop-distribute-patterns', '-Wall',
+]
+
+
+def build_hosted_runtime(out, cc):
+    """Build the separate -DOBO_HOSTED_EXIT runtime blobs used only by cinterop.
+
+    The baseline freestanding runtime is untouched. The slot count is checked
+    against host_abi.h so the host's fixed RT_HOST_EXIT_ADDR cannot silently
+    point at the wrong table entry.
+    """
+    rt_src = require_file(os.path.join(OBO_ROOT, 'runtime', 'runtime.c'), 'runtime source')
+    entry_src = require_file(os.path.join(OBO_ROOT, 'runtime', 'entry.S'), 'runtime entry source')
+    link_script = require_file(os.path.join(OBO_ROOT, 'runtime', 'rt.ld'), 'runtime linker script')
+    entry_text = open(entry_src).read()
+    base_slots = sum(1 for line in entry_text.splitlines()
+                     if line.strip().startswith('slot ') and 'rt_set_host_exit' not in line)
+    if base_slots != RT_HOST_EXIT_SLOT:
+        raise ToolError("hosted runtime slot mismatch: entry.S has %d base slots, host_abi says %d"
+                        % (base_slots, RT_HOST_EXIT_SLOT))
+    if '#ifdef OBO_HOSTED_EXIT' not in entry_text or 'slot rt_set_host_exit' not in entry_text:
+        raise ToolError("runtime entry.S has no hosted exit slot")
+    ld = shutil.which('ld')
+    objcopy = shutil.which('objcopy')
+    if not ld or not objcopy:
+        raise ToolError("hosted runtime needs ld and objcopy on PATH")
+    rt_dir = os.path.join(out, 'hosted-runtime')
+    os.makedirs(rt_dir, exist_ok=True)
+    rt_o = os.path.join(rt_dir, 'runtime.o')
+    entry_o = os.path.join(rt_dir, 'entry.o')
+    rt_elf = os.path.join(rt_dir, 'runtime.elf')
+    rt_text = os.path.join(rt_dir, 'runtime_text.bin')
+    rt_data = os.path.join(rt_dir, 'runtime_data.bin')
+    run([cc, *HOSTED_RT_CFLAGS, '-DOBO_HOSTED_EXIT', '-c', rt_src, '-o', rt_o])
+    run([cc, '-c', '-DOBO_HOSTED_EXIT', entry_src, '-o', entry_o])
+    run([ld, '-T', link_script, '-o', rt_elf, entry_o, rt_o])
+    run([objcopy, '-O', 'binary', '-j', '.text', rt_elf, rt_text])
+    run([objcopy, '-O', 'binary', '-j', '.data', '--set-section-flags',
+         '.data=alloc,load,contents', rt_elf, rt_data])
+    return {
+        'dir': rt_dir,
+        'sources': {'runtime_source': rt_src, 'runtime_entry': entry_src,
+                    'runtime_link_script': link_script},
+        'blobs': {'runtime_text': rt_text, 'runtime_data': rt_data},
+    }
+
+
 def build(args):
     spec_path = os.path.abspath(args.spec)
     app = os.path.abspath(args.app)
@@ -654,6 +712,7 @@ def build(args):
     if not cc:
         raise ToolError("C compiler not found: %s" % args.cc)
     cc = require_file(cc, "C compiler")
+    hosted_rt = build_hosted_runtime(out, cc)
 
     wrapper = os.path.join(out, spec['module'] + '.obx')
     shim = os.path.join(out, spec['module'] + '_shim.S')
@@ -666,6 +725,12 @@ def build(args):
         shutil.copyfile(wrapper_source, wrapper)
     else:
         write_text(wrapper, generate_wrapper(spec))
+    extra_wrappers = []
+    for i, src in enumerate(spec.get('wrapper_sources', [])):
+        path = resolve_input(spec_dir, src, "extra wrapper source")
+        dest = os.path.join(out, os.path.basename(path))
+        shutil.copyfile(path, dest)
+        extra_wrappers.append((i, path, dest))
     write_text(shim, generate_shim(spec))
     sigcheck, sig_mode = generate_sigcheck(spec)
     sig_path = os.path.join(out, 'sigcheck.c')
@@ -683,14 +748,21 @@ def build(args):
         'shim_source': shim,
         'signature_check_source': sig_path,
         'host_source': os.path.join(HERE, 'host.c'),
+        'host_stack_source': os.path.join(HERE, 'host_stack.c'),
+        'host_stack_header': os.path.join(HERE, 'host_stack.h'),
+        'host_abi_source': os.path.join(OBO_ROOT, 'runtime', 'host_abi.h'),
         'start_source': os.path.join(HERE, 'start.S'),
         'link_script': os.path.join(HERE, 'link.ld'),
         'tool': os.path.realpath(__file__),
         'compiler': obo,
         'cc': cc,
     }
+    input_paths.update(hosted_rt['sources'])
     if wrapper_source is not None:
         input_paths['wrapper_source'] = wrapper_source
+    for i, src, dest in extra_wrappers:
+        input_paths['wrapper_source_%d' % i] = src
+        input_paths['wrapper_extra_%d' % i] = dest
     for i, p in enumerate(sources):
         input_paths['source_%d' % i] = p
     for i, p in enumerate(headers):
@@ -713,11 +785,13 @@ def build(args):
         run([cc, '-c', '-fno-pie', '-O2', *cflags, p, '-o', o])
         src_objs.append(o)
     host_o = os.path.join(out, 'host.o')
+    host_stack_o = os.path.join(out, 'host_stack.o')
     start_o = os.path.join(out, 'start.o')
     run([cc, '-c', '-fno-pie', '-O2', os.path.join(HERE, 'host.c'), '-o', host_o])
+    run([cc, '-c', '-fno-pie', '-O2', os.path.join(HERE, 'host_stack.c'), '-o', host_stack_o])
     run([cc, '-c', os.path.join(HERE, 'start.S'), '-o', start_o])
     crt = []
-    for name in ('crt1.o', 'crti.o', 'crtn.o'):
+    for name in ('crt1.o', 'crti.o', 'crtbegin.o', 'crtend.o', 'crtn.o'):
         p = run([cc, '-print-file-name=' + name]).stdout.strip()
         if not p or not os.path.exists(p):
             raise ToolError("cannot find the host %s (needed for normal CRT startup)" % name)
@@ -725,7 +799,7 @@ def build(args):
 
     image = os.path.join(out, spec['module'] + '.image')
     relocs_path = os.path.join(out, 'native.relocs')
-    run([obo, app, '-o', image, '--rt', DEFAULT_RT, '-I', out, '-I', os.path.dirname(app),
+    run([obo, app, '-o', image, '--rt', hosted_rt['dir'], '-I', out, '-I', os.path.dirname(app),
          '--sym-dir', symdir, '--native-relocs', relocs_path])
     relocs = read_relocs(relocs_path)
     validate_calls(relocs, spec)
@@ -734,7 +808,8 @@ def build(args):
     make_object(image, native_o, relocs)
     exe = os.path.join(out, args.name or 'app')
     link = [cc, '-nostartfiles', '-no-pie', '-T', os.path.join(HERE, 'link.ld'),
-            '-o', exe, crt[0], crt[1], native_o, host_o, start_o, shim_o, *src_objs, crt[2],
+            '-o', exe, crt[0], crt[1], crt[2], native_o, host_o, host_stack_o, start_o,
+            shim_o, *src_objs, crt[3], crt[4],
             '-Wl,--no-as-needed', '-Wl,-z,noexecstack', *libs, '-lc']
     run(link)
     validate_final(exe)
@@ -745,7 +820,10 @@ def build(args):
         'shim_object': shim_o,
         'signature_check_object': sig_o,
         'host_object': host_o,
+        'host_stack_object': host_stack_o,
         'start_object': start_o,
+        'runtime_text': hosted_rt['blobs']['runtime_text'],
+        'runtime_data': hosted_rt['blobs']['runtime_data'],
         'image': image,
         'relocs': relocs_path,
         'native_object': native_o,

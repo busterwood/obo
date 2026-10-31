@@ -262,3 +262,46 @@ PGresult *PQmakeEmptyPGresult(PGconn *conn, int status) {
     fake_make_empty_count++;
     return fake_new_result(status, 0, 0);
 }
+
+/* Minimal fake conninfo parser: enough to exercise the adapter's
+ * "is connect_timeout present?" query without a hand-rolled production parser.
+ * It walks unquoted tokens and ignores quoted text. */
+PQconninfoOption *PQconninfoParse(const char *conninfo, char **errmsg) {
+    PQconninfoOption *opts;
+    const char *p = conninfo;
+    int found = 0;
+    int quoted = 0;
+    if (errmsg != NULL) *errmsg = NULL;
+    if (p == NULL) return NULL;
+    while (*p != 0) {
+        if (*p == '\'') {
+            quoted = !quoted;
+            p++;
+            continue;
+        }
+        if (!quoted && strncmp(p, "connect_timeout", 15) == 0) {
+            const char *q = p + 15;
+            while (*q == ' ' || *q == '\t') q++;
+            if (*q == '=') {
+                found = 1;
+                break;
+            }
+        }
+        p++;
+    }
+    opts = (PQconninfoOption *)calloc(2, sizeof(*opts));
+    if (opts == NULL) return NULL;
+    if (found) {
+        opts[0].keyword = (char *)"connect_timeout";
+        opts[0].val = (char *)"";
+    }
+    return opts;
+}
+
+void PQconninfoFree(PQconninfoOption *connOptions) {
+    free(connOptions);
+}
+
+void PQfreemem(void *ptr) {
+    free(ptr);
+}

@@ -61,14 +61,36 @@ static char *copy_cstr(const unsigned char *p, size_t n) {
     return copy_bytes_raw(p, n);
 }
 
-static char *with_connect_timeout(const char *cs, size_t n) {
+/* Ask libpq's own conninfo parser whether a bounded timeout is already named.
+ * Returns 1 present, 0 absent, -1 invalid conninfo. This avoids mistaking a
+ * quoted value such as application_name='connect_timeout=' for a keyword. */
+static int conninfo_has_timeout(const char *cs) {
+    PQconninfoOption *opts;
+    char *err = NULL;
+    int found = 0;
+    opts = PQconninfoParse(cs, &err);
+    if (opts == NULL) {
+        if (err != NULL) PQfreemem(err);
+        return -1;
+    }
+    for (PQconninfoOption *o = opts; o->keyword != NULL; o++) {
+        if (strcmp(o->keyword, "connect_timeout") == 0 && o->val != NULL) {
+            found = 1;
+            break;
+        }
+    }
+    PQconninfoFree(opts);
+    return found;
+}
+
+static char *with_connect_timeout(const char *cs, size_t n, int has_timeout) {
     const char *suffix = "connect_timeout=5";
     size_t slen = strlen(suffix);
     char *out;
     char sep = ' ';
     int uri = (n >= 11 && memcmp(cs, "postgres://", 11) == 0) ||
               (n >= 13 && memcmp(cs, "postgresql://", 13) == 0);
-    if (strstr(cs, "connect_timeout=") != NULL) {
+    if (has_timeout) {
         out = (char *)malloc(n + 1);
         if (out == NULL) return NULL;
         memcpy(out, cs, n + 1);
@@ -107,13 +129,19 @@ long pq_connect(long dsn_token) {
     size_t len = 0;
     char *cs;
     char *bounded;
+    int has_timeout;
     PGconn *conn;
     long token;
     if (!cres_buf_data(dsn_token, &data, &len)) return -1;
     if (len > CRES_MAX_BUFFER) return -2;
     cs = copy_cstr(data, len);
     if (cs == NULL) return -2;
-    bounded = with_connect_timeout(cs, len);
+    has_timeout = conninfo_has_timeout(cs);
+    if (has_timeout < 0) {
+        free(cs);
+        return -2;
+    }
+    bounded = with_connect_timeout(cs, len, has_timeout);
     free(cs);
     if (bounded == NULL) return -3;
     conn = PQconnectdb(bounded);

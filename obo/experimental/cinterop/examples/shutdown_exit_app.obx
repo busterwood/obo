@@ -1,0 +1,8 @@
+module app
+
+import "hello.obx"
+
+fn main() {
+    println("before-exit")
+    exit(7)
+}

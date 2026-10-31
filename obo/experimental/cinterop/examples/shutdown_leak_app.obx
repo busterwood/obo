@@ -1,0 +1,12 @@
+module app
+
+import "hello.obx"
+
+fn main() {
+    let r = openFile("/dev/null", "r")
+    match r {
+        ok(fd) { println("opened=", fd) }
+        err(m, c) { println("open failed: ", m, " (", c, ")"); exit(1) }
+    }
+    println("zero=", hello::zero())
+}
