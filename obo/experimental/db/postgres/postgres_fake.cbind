@@ -14,7 +14,8 @@
   "declaration_files": [
     "../../cinterop/toolkit/libpq_decls.h",
     "postgres_adapter.h",
-    "../../cinterop/toolkit/cres.h"
+    "../../cinterop/toolkit/cres.h",
+    "../../cinterop/toolkit/libpq_adapter.h"
   ],
   "declarations": [
     "extern long cres_buf_new(long len);",

@@ -41,6 +41,17 @@ LIBPQ_FAKE = os.path.join(DB, 'postgres', 'postgres_fake.cbind')
 SQLITE = os.path.join(DB, 'sqlite', 'sqlite.cbind')
 PG_EX = os.path.join(DB, 'postgres', 'examples')
 SQ_EX = os.path.join(DB, 'sqlite', 'examples')
+PG_DECL_FILES = [
+    ('declaration_0', os.path.join(TOOL, 'toolkit', 'libpq_decls.h')),
+    ('declaration_1', os.path.join(DB, 'postgres', 'postgres_adapter.h')),
+    ('declaration_2', os.path.join(TOOL, 'toolkit', 'cres.h')),
+    ('declaration_3', os.path.join(TOOL, 'toolkit', 'libpq_adapter.h')),
+]
+SQLITE_DECL_FILES = [
+    ('declaration_0', os.path.join(DB, 'sqlite', 'sqlite_decls.h')),
+    ('declaration_1', os.path.join(DB, 'sqlite', 'sqlite_adapter.h')),
+    ('declaration_2', os.path.join(TOOL, 'toolkit', 'cres.h')),
+]
 
 
 class Fail(Exception):
@@ -97,11 +108,14 @@ def sha256(path):
     return h.hexdigest()
 
 
-def check_declaration_hash(m, path, what):
-    if 'declaration_0' not in m.get('files', {}):
-        raise Fail('%s manifest does not hash its declaration file' % what)
-    if m['files']['declaration_0'] != sha256(path):
-        raise Fail('%s manifest declaration hash does not match source' % what)
+def check_declaration_hash(m, expected, what):
+    files = m.get('files', {})
+    for key, path in expected:
+        if key not in files:
+            raise Fail('%s manifest is missing %s (%s)' % (what, key, path))
+        if files[key] != sha256(path):
+            raise Fail('%s manifest hash for %s does not match source'
+                       % (what, key))
 
 
 def expect_lines(text, lines, what):
@@ -130,8 +144,7 @@ def postgres_probe(tmp):
     if 'could not be allocated' in p.stdout:
         raise Fail('invalid conninfo was misreported as an allocation failure')
     m = manifest(out)
-    check_declaration_hash(m, os.path.join(TOOL, 'toolkit', 'libpq_decls.h'),
-                           'postgres')
+    check_declaration_hash(m, PG_DECL_FILES, 'postgres')
     ldd = need(run(['ldd', app]), 'postgres probe ldd')
     if 'libpq.so.5' not in ldd.stdout:
         raise Fail('postgres probe does not depend on libpq.so.5')
@@ -155,6 +168,7 @@ def postgres_fake_obo(tmp):
     ldd = need(run(['ldd', app]), 'postgres fake obo ldd')
     if 'libpq.so.5' in ldd.stdout:
         raise Fail('postgres fake obo unexpectedly links real libpq')
+    check_declaration_hash(manifest(out), PG_DECL_FILES, 'postgres fake')
     verify(out)
     print('postgres fake-libpq obo packet encoder: ok')
 
@@ -194,8 +208,7 @@ def sqlite_memory(tmp):
     m = manifest(out)
     if m.get('signature_check') != 'declarations-only':
         raise Fail('sqlite signature_check is %r' % m.get('signature_check'))
-    check_declaration_hash(m, os.path.join(DB, 'sqlite', 'sqlite_decls.h'),
-                           'sqlite')
+    check_declaration_hash(m, SQLITE_DECL_FILES, 'sqlite')
     verify(out)
     print('sqlite in-memory: ok')
 
