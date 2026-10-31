@@ -2051,6 +2051,12 @@ so sharing them changes no result. Only the basic types are compared by identity
 
 **Budget raised, 983,000 to 2,000,000** (measured live peak about 0.95 MB), on 2026-10-26, by the user's decision. A budget about 3% above the peak left new checker work only about 28 KB of headroom (983,000 less 954,912 bytes). Leaks are still caught separately, by the leak check in `tests/port_test.py`, so the budget no longer has to guard them. `mutate_port` now checks memory mutants against the baseline peak plus 3%.
 
+**Budget raised, 2,000,000 to 2,500,000** (2,500,000 *decimal bytes*), on 2026-10-31, by the user's explicit decision: "yes, increase budget to 2.5MB for ALL work". This is the shared compiler live-peak cap for all workstreams, including Stage B and the future float branch; the historical 2,000,000 Stage B cap is superseded. The original Stage B breach remains historical: the first complete Stage B build measured 2,001,872 bytes (port self) and 2,001,664 (seed-on-source), and the process note (comment trimming instead of stopping) is preserved in the private checkpoint logs. The corrected Stage B checkpoint measures about 2,001,856 bytes, so the new cap is an authorization, not an optimization claim, and leaves roughly half a MB of headroom.
+
+The cap is defined once in `tests/peak_budget.py` and imported by both `tests/port_compare.py` and `tests/mutate_io.py`, so they cannot drift. The zero-array allocation mutant no longer falls to the absolute cap once the baseline is above 2,000,000, so the same module defines `EMPTY_ARRAY_MIN_DELTA = 30_000`: `mutate_io` requires the mutant's same-source self-compile peak to exceed the unmutated baseline by at least that floor, while still running the semantic I/O cases first. The current same-source measurement is baseline 2,001,904 -> mutant 2,046,992, delta 45,088 bytes; all 30 I/O mutants are caught. A failed stats report or a failed self-compile is a harness `BROKEN` result, not a catch. This adds no ownership/reference check relaxation; the EZA and tool memory budgets remain pinned and separate.
+
+At the time of the budget decision above Stage B was still version-neutral and experimental at `0.9`/format 5/ABI 1. The release order from the user was floats `0.10`/format 6/ABI 1 first; Stage B followed as `0.11`/format 6/ABI 1 on top of the released float base. The final Stage B candidate and its migration are recorded at the end of this file; the historical `0.9` checkpoint text remains as history.
+
 ### Peephole pass (measured; built later, with loop-head alignment: see the next section)
 
 The obx design (`HISTORY.md`, "Future work: an obx peephole optimizer") still applies: an
@@ -6041,3 +6047,87 @@ scope is included. Stage B is next planned as `0.11`. The local untracked
 `parse_actual.txt` and `parse_run.err` files were not touched, staged or
 deleted. The release commits contain the merge, the promoted seed and the release
 documentation only; evidence logs remain private under `/tmp/opencode`.
+
+## Stage B capture-list release candidate (0.11, format 6, ABI 1)
+
+Status: **implemented on the isolated review branch and stopped for independent
+review; not merged, pushed or promoted.** The six Stage B commits are the five
+original commits forward-ported onto main `4a072cf5f5db8fe661ac65ff6de06e6ec`
+(the released floats line) with `git rebase`, plus the final `765df3b`
+completion commit; nothing was merged. The approved F1/F2 float work,
+firewall/source fixes and the shared 2,500,000-byte budget survived the rebase;
+documentation conflicts were resolved by keeping main's released record and
+adding the Stage B text, never by blind overwrite. The promoted `seed/obo`
+remains the released **0.10** compiler; no seed copy was made.
+
+**Identity and fixed point.** `OBO_VERSION = "0.11"`, `SYM_FORMAT = 6`,
+`SYM_ABI = 1`. Source is `13,883` lines / `524,165` bytes; the compiler is
+`585,729` bytes, sha256
+`198f3268eb4fa24fb657a4ee72829149d6c3bfec6be4cc30e6b8480368633c9b`. Stage 2,
+stage 3 and the compiler are byte-identical, and the released 0.10 seed builds
+that same image from source. Three direct self-compiles peak at `2,085,872`
+bytes live and allocate `46,373,536`; the port comparison peaks at `2,086,272`
+and allocates `46,378,000` (`413,728` spare under the unchanged 2,500,000 cap).
+The separate empty-array oracle is unchanged: baseline `2,086,320` -> mutant
+`2,132,848`, delta `46,528`, floor `30,000`.
+
+**Capture semantics.** The capture list is explicit and resolves only enclosing
+locals/parameters; globals and constants are used directly. `int`/`byte`/`bool`
+and now `float` are one-word value snapshots; a float snapshot stores its raw
+binary64 bits with no conversion, and float aliases/parameters take the same
+mode. Record, closed, array, optional and `Result` captures remain read-only
+borrows of the whole local, so float fields, elements and `Result[float]`
+payloads are read through the existing reference/narrowing machinery. `mut`,
+`move`/owned, string and interface captures remain unsupported; a carrier that
+holds both a float and an interface still fails the interface firewall. A
+captured float write reports `cannot change captured 'x': captures are read-only;
+pass a mutable parameter instead`, not the generic immutable-let message.
+
+The P2 review fix is included: the incomplete-carrier query recurses through
+`?`/`[]`/`^`/`Result` and record/closed fields, terminates on cycles with a
+visited list, and runs before the interface classifier. A direct shell and a
+wrapped shell both report `<T> is declared but not yet defined`; a genuinely
+interface-bearing carrier keeps the interface message. The hidden environment
+is still one read-only `[code][caps...]` word in the creator's frame; the
+one-word value ABI, format 6 and ABI 1 are unchanged.
+
+**Gates.** `run_fork` **1,644 passed**; `module_test` **112**; `sym_test`
+**44/44**; `sym_fuzz` **200/200** (seed 20261028); `doc_check` **66 examples,
+0 problems**; `homes_check` and `homes_edge` pass; `memory_log_check` 4
+sources; `elf_test`, `io_test`, `meta_test` 34 and `imports` 28/28 pass;
+`stdlib` 16/16; `port_test` **582/582** with 10 encoder groups; default
+`port_compare` **1,641/1,641**; `float_f1` **19 groups** in normal and
+`--noregs` builds; the new `run/lambda_float_capture.obx` passes in both
+register modes. `tools.py --require-reference` **509/509** and `--memory`
+**4/4**; eza memory **5/5** (the pinned eza reference is not on this host's
+`PATH`, so the reference-golden run was not executed).
+
+**Mutation gates.** `mutate_fork` **680/710 caught + 30 equivalent**, 0
+missed/stale/broken (the catalog includes the new B26 recursive-incomplete,
+B27 float-snapshot and B28 float-write-diagnostic mutants; B12 and B25 remain
+the two documented defensive equivalents). `mutate_port` **531/531**;
+`mutate_io` **36/36** including the empty-array self-host oracle;
+`mutate_meta` **71/82 caught + 11 equivalent**; `mutate_harness_test`
+**27/27**. Older Stage A mutants are retargeted only where Stage B changed the
+shared argument helper's text; no expectation was relaxed and no false
+equivalence was introduced.
+
+**Symbol fixtures and seed comparison.** All committed `.sym` fixtures moved
+to `obosym 6` / `compiler "0.11"` (headers only; body hashes were not
+recomputed). The three intentional exceptions retain `obosym 7`, `compiler
+"9.9"` and `abi 9`. Against the released 0.10 seed, `OBO_REF=obo/seed/obo`
+reports **1,393/1,393 identical**, exit 0, with no unexpected skips. The nine
+Stage B `(0, 11)` entries (8 run files plus `errors/closures.obx`) carry an
+explicit minimum in `tests/port_compare.py` and are skipped only because the
+0.10 seed cannot compile capture syntax. The default 1,641 comprises 1,476 flat
+and 165 non-flat cases (154 module tree/symcheck, 4 CLI, 5 special, 1 reemit and
+1 token check); the 248-case difference is those 165 non-flat cases plus 83
+skipped flat cases (8 run files and 75 error cases). A promoted 0.11 seed would
+compare all of them.
+
+**Evidence and remaining risk.** Logs and a manifest are under
+`/tmp/opencode/lambda-stage-b-final-20261031-...` (private). Remaining work is
+independent review and integration; the seed is not promoted, `^I`/owned/string/
+interface captures remain later, and the eza reference-golden gate needs the
+pinned binary on `PATH`. No push, merge, promotion, seed copy, decimal or
+template work was performed.

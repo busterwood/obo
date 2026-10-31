@@ -1,0 +1,8 @@
+obosym 6
+abi 1
+compiler "0.11"
+source 0x658af6e7c3a5d435
+interface 0x70deba36d89b4b71
+module l
+type Cmp = fn(int, int): int
+fn apply2(p0: int, p1: int, p2: fn(int, int): int): int

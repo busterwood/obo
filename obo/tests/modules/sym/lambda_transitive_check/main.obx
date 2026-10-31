@@ -1,0 +1,5 @@
+module main
+import "a.obx"
+fn main() {
+    println(a::run(fn (x: int, y: int): int { return x + y }, 2, 3))
+}

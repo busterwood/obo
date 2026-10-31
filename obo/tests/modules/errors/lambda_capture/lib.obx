@@ -1,0 +1,2 @@
+module lib
+pub fn apply(x: int, f: fn(int): int): int { return f(x) }

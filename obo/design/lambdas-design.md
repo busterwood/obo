@@ -1,8 +1,9 @@
 # Lambdas (phase 9) — design note
 
 Status: **Stage A merged and promoted at `0.9`/format 5. Numeric floats were
-released before Stage B at `0.10`/format 6; Stage B is design-only/deferred and
-is now planned as `0.11`.** Historical baseline for this
+released before Stage B at `0.10`/format 6; Stage B capture lists are implemented
+on the release branch as `0.11`/format 6/ABI 1 and await independent review.**
+Historical baseline for this
 note: `main` at `90ad7d3` (`Merge branch 'docs-06': document the promoted 0.6
 seed`), read-only in the worktree
 `/home/chris/obx/.claude/worktrees/lambdas-design` on branch `lambdas-design`.
@@ -18,6 +19,10 @@ non-capturing literals, structural function types and indirect calls, but no
 capture lists or `^I`.
 
 > 2026-10-30 version shift: interfaces is now `0.8`/format `4` (`obo/design/interfaces-v3-design.md`), so Stage A is `0.9`/format `5` and Stage B is `0.10`/format `5`; interfaces v3 also requires `containsIface` to recurse into record and closed fields (v3 section 10). Also amended 2026-10-30: `containsIface` now recurses into record and closed fields with a visited list and treats an incomplete forward shell as containing an interface (section 5.2 snippet), and the interface-exclusion reasons now cite interfaces v3; no lambda rule is loosened.
+>
+> 2026-10-31 release-order update: floats are `0.10`/format `6`/ABI `1` first; Stage B is now targeted as `0.11`/format `6`/ABI `1` after floats. The `0.10`/format `5` Stage B reservations below are historical and preserved; they are not the current target. The experimental Stage B checkpoint stays version-neutral at `0.9`/format `5` until the float release base is available, and no fixture migration is performed here.
+>
+> 2026-10-31 float-capture decision: the user explicitly approved float captures for Stage B v1. A `float` (and a float alias or parameter) uses the same one-word value snapshot as `int`/`byte`/`bool`, storing the raw binary64 bits. Records, closed types, arrays, optionals and `Result[float]` remain read-only whole-local borrows; a float constant or global is used directly. `mut`/`move`, string and interface captures remain unsupported, and a carrier that holds both a float and an interface still fails the interface firewall. This supersedes the earlier fail-closed float wording for the release branch only.
 
 Every claim about the current compiler below was checked against
 `obo/src/obo.obo` at this baseline; `file:line` references are to that file,
@@ -659,7 +664,7 @@ type, not by syntax:
 |---|---|---|---|
 | record, closed type, array, optional, `Result` | read-only borrow of the whole local (store the object/optional/result word) | a read-only reference `&T` (internal), not ownable | the local itself (whole object); a reference's binding if the captured symbol is itself a reference |
 | `&T` reference local/parameter | read-only copy of the reference pointer | a read-only reference `&T` | the reference's binding (roots, deeps, paths) |
-| `int`, `byte`, `bool` | value snapshot | a `let` local of that type | none |
+| `int`, `byte`, `bool`, `float` | value snapshot; a float stores its one raw binary64 word | a `let` local of that type | none |
 | `^T` handle | value copy of the token | a `let` handle local; reading and scalar writes through it are pure, a write that frees an owned field through it makes the body impure and is rejected | the handle's origin owner if it is a tracked `let` handle; otherwise none |
 | function type | value copy of the cell pointer | a `let` function-value local | none (the target's captures are guaranteed by the call chain) |
 | `string` | rejected in v1 | — | — |
@@ -686,6 +691,14 @@ type, not by syntax:
   path can distinguish a capture from an ordinary immutable local). It is a
   snapshot at creation, not
   a live view.
+- A float capture is a scalar snapshot of its raw binary64 bits: the cell
+  word is loaded and stored exactly like an `int` local, and the hidden body
+  declares an ordinary float local. Float aliases and parameters classify as
+  `float`, so they take the same mode. A record/closed/array/optional/`Result`
+  that holds a float remains a read-only whole-local borrow, and its float
+  field/element/payload is read through the existing reference machinery. A
+  float constant/global is used directly without a capture entry. There is no
+  float-to-int conversion or host-float path in the capture cell itself.
 - A handle capture is a `let` handle local: reading through it is allowed
   (the runtime token checks liveness), re-pointing it is refused, and a
   write that frees an owned field through it makes the body impure and is

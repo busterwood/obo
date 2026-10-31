@@ -1,0 +1,36 @@
+// Stage B: a handle is captured by value (a token copy). Reads and scalar writes through it are pure;
+// a write that frees owned state through it is the purity error (errors/closures.obx). An untracked
+// handle returned from a function is the existing runtime liveness residual.
+type Box = ref record { v: int }
+type Par = ref record { child: Box; n: int }
+
+fn apply(x: int, f: fn(int): int): int { return f(x) }
+fn mk(q: &Par): ^Box { return handle(q.child) }
+
+fn main() {
+    let b = new Box{v: 1}
+    let h = handle(b)
+    println(apply(1, fn [h](x: int): int {
+        h.v = 7
+        return x + h.v
+    }))
+    println(b.v)
+
+    let p = new Par{child: new Box{v: 2}, n: 3}
+    let hp = handle(p)
+    println(apply(1, fn [hp](x: int): int {
+        hp.n = 5
+        return x + hp.n + hp.child.v
+    }))
+    println(p.n)
+
+    let q = new Par{child: new Box{v: 1}, n: 0}
+    let stale = mk(&q)
+    q.child = new Box{v: 2}
+    println(apply(1, fn [stale](x: int): int { return x + stale.v }))
+}
+// expect: 8
+// expect: 7
+// expect: 8
+// expect: 5
+// expect-exit: 7

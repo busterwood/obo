@@ -1,6 +1,6 @@
 obosym 6
 abi 1
-compiler "0.10"
+compiler "0.11"
 source 0x57cbd7496c146911
 interface 0x4b760c124a3421ee
 module dep

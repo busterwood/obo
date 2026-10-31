@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
-"""Stage B memory budget: the port compiling itself must stay within a recorded
-live peak (exact, from OBO_STATS), so a change that keeps memory alive fails a
-test instead of going unnoticed."""
+"""Historical one-off patcher for the old literal PEAK_BUDGET in port_compare.
+
+Superseded by tests/peak_budget.py, the single shared live-peak budget imported by
+port_compare and mutate_io. This script refuses to modify the tree unless run with
+--apply-historical; do not run it against the current tree.
+"""
 import os
+import sys
 P = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tests', 'port_compare.py')
+if '--apply-historical' not in sys.argv:
+    print('historical one-off patcher; the current budget is tests/peak_budget.py')
+    print('refusing to modify the tree (pass --apply-historical only for historical archaeology)')
+    sys.exit(2)
 s = open(P).read()
 
 def sub(old, new):

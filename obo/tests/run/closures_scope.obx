@@ -1,0 +1,67 @@
+// Stage B: a capturing literal may be created in a loop body, an if arm, a match arm and a method
+// call argument; the island restores the outer guard/state. Non-capturing values still work in a defer.
+type Box = ref record { v: int }
+type Opts = ref record { bump: int }
+type Item = ref record { n: int }
+
+fn (o: &Opts) run(f: fn(int): int): int { return f(o.bump) }
+fn apply(x: int, f: fn(int): int): int { return f(x) }
+fn pick(b: bool, f: fn(int): int): int { return f(3) }
+
+fn homes(n: int): int {
+    return apply(n, fn [n](x: int): int {
+        let n = 100
+        return x + n
+    })
+}
+
+fn main() {
+    let step = 1
+    var i = 0
+    while i < 3 {
+        let k = i
+        println(apply(i, fn [step, k](x: int): int { return x + step + k }))
+        i += 1
+    }
+
+    if true {
+        println(apply(1, fn [step](x: int): int { return x + step }))
+    }
+
+    match 1 {
+        1 { println(apply(2, fn [step](x: int): int { return x + step })) }
+        else { println(0) }
+    }
+
+    let items = new []Item(0)
+    append(items, new Item{n: 1})
+    append(items, new Item{n: 2})
+    for x in items {
+        println(apply(10, fn [x](y: int): int { return y + x.n }))
+    }
+
+    let opts = new Opts{bump: 5}
+    println(opts.run(fn [opts](x: int): int { return x + opts.bump }))
+
+    let b = new Box{v: 1}
+    let h = handle(b)
+    if alive(h) && apply(1, fn [step](x: int): int { return x + step }) == 2 {
+        println(pick(true, fn [step](x: int): int { return x + step }))
+    }
+    println(alive(h))
+
+    let f = fn (x: int): int { return x + 1 }
+    defer f(1)
+    println(homes(1))
+}
+// expect: 1
+// expect: 3
+// expect: 5
+// expect: 2
+// expect: 3
+// expect: 11
+// expect: 12
+// expect: 10
+// expect: 4
+// expect: true
+// expect: 101

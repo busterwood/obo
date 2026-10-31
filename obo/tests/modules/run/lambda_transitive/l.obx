@@ -1,0 +1,3 @@
+module l
+pub type Cmp = fn(int, int): int
+pub fn apply2(a: int, b: int, cmp: Cmp): int { return cmp(a, b) }

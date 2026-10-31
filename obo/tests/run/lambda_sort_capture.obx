@@ -1,0 +1,53 @@
+// Stage B: the comparator shape. The helper takes a mut index array and calls a pure callback on deep
+// element references; a captured Opts record and scalar tune the order. The helper stays pure and
+// accepts &items[...].
+type Item = ref record { n: int }
+type Opts = ref record { desc: bool }
+
+fn sortIndices(mut order: &[]int, items: &[]Item, cmp: fn(&Item, &Item): int) {
+    var i = 1
+    while i < len(order) {
+        let v = order[i]
+        var j = i - 1
+        while j >= 0 && cmp(&items[order[j]], &items[v]) > 0 {
+            order[j + 1] = order[j]
+            j -= 1
+        }
+        order[j + 1] = v
+        i += 1
+    }
+}
+
+fn show(items: &[]Item, order: &[]int) {
+    var i = 0
+    while i < len(order) {
+        print(items[order[i]].n)
+        print(" ")
+        i += 1
+    }
+    println("")
+}
+
+fn main() {
+    let items = new []Item(0)
+    append(items, new Item{n: 3})
+    append(items, new Item{n: 1})
+    append(items, new Item{n: 2})
+    let order = new []int(0)
+    append(order, 0)
+    append(order, 1)
+    append(order, 2)
+
+    sortIndices(&order, items, fn (a: &Item, b: &Item): int { return a.n - b.n })
+    show(items, order)
+
+    let opts = new Opts{desc: true}
+    let step = 1
+    sortIndices(&order, items, fn [opts, step](a: &Item, b: &Item): int {
+        if opts.desc { return (b.n - step) - (a.n - step) }
+        return (a.n - step) - (b.n - step)
+    })
+    show(items, order)
+}
+// expect: 1 2 3 
+// expect: 3 2 1 

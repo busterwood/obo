@@ -1,0 +1,2 @@
+module lib2
+pub fn call2(f: fn(int): int, n: int): int { return f(n) }

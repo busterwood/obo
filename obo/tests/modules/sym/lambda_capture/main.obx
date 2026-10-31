@@ -1,0 +1,12 @@
+module main
+import "lib.obx"
+type Box = ref record { v: int }
+type Bag = ref record { items: []Box; n: int }
+fn main() {
+    let b = new Bag{items: new []Box(0), n: 0}
+    append(b.items, new Box{v: 1})
+    let h = handle(b)
+    let r = &h.items[0]
+    println(lib::apply(1, fn [r](x: int): int { return x + r.v }))
+    println(lib::applyf(fn [r](x: int): int { return x + r.v }, 1))
+}

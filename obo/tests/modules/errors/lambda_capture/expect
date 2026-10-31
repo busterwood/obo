@@ -1,0 +1,2 @@
+exit 1
+stderr main.obx:5:33: a capturing lambda may only be passed directly as a call argument

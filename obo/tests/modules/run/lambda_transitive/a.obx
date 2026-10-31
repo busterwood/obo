@@ -1,0 +1,3 @@
+module a
+import "l.obx"
+pub fn run(cb: l::Cmp, x: int, y: int): int { return l::apply2(x, y, cb) }

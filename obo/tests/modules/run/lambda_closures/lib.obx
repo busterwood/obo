@@ -1,0 +1,3 @@
+module lib
+import "lib2.obx"
+pub fn apply(x: int, f: fn(int): int): int { return lib2::call2(f, x) }

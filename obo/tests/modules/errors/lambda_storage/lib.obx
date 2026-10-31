@@ -1,0 +1,2 @@
+module lib
+pub type Holder = ref record { f: fn(int): int }

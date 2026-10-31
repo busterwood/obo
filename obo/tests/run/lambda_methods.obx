@@ -1,0 +1,30 @@
+// Stage B: a lambda in a method body captures the receiver read-only (a & / mut & receiver is
+// a pointer copy, an owned receiver is a whole-object read-only borrow). A capturing literal
+// may be a method argument; a read-only method can be called through the capture.
+type Item = ref record { n: int }
+fn apply(x: int, f: fn(int): int): int { return f(x) }
+
+fn (i: &Item) get(): int { return i.n }
+fn (i: &Item) plus(f: fn(int): int): int { return f(i.n) }
+fn (i: &Item) captureRef(): int {
+    return apply(1, fn [i](x: int): int { return x + i.n + i.get() })
+}
+fn (mut i: &Item) captureMut(): int {
+    return apply(1, fn [i](x: int): int { return x + i.n })
+}
+fn (i: Item) captureOwned(): int {
+    return apply(1, fn [i](x: int): int { return x + i.n })
+}
+
+fn main() {
+    let item = new Item{n: 5}
+    println(item.captureRef())
+    println(item.captureMut())
+    println(item.plus(fn [item](x: int): int { return x + item.n }))
+    let owned = new Item{n: 7}
+    println(owned.captureOwned())
+}
+// expect: 11
+// expect: 6
+// expect: 10
+// expect: 8
