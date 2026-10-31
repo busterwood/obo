@@ -1,0 +1,415 @@
+// Experimental PostgreSQL package for obo.
+//
+// This is an explicit-close adapter over the reviewed cinterop libpq toolkit.
+// It is not a stable driver. Connection and Rows hold only an integer registry
+// token; obo never sees a PGconn*, PGresult* or char*. The trusted C adapter
+// validates the token's kind and generation on every call and poisons it on
+// close. Obo record fields are not private: a forged or stale integer is
+// rejected by the C registry before dereference.
+//
+// Dropping a Connection or Rows never calls PQfinish or PQclear. Use
+// `defer conn.close()` and `defer rows.close()`. A PGresult stays usable after
+// its PGconn closes in this adapter; close the connection first if that
+// lifetime is needed.
+//
+// Values cross as exact bytes. Numeric columns are never converted through a
+// float. Rows exposes the PostgreSQL type OID and typmod and the exact text.
+// SQL is always a fixed statement with $1..$n placeholders; there is no SQL
+// interpolation.
+module postgres
+
+pub const CONNECTION_OK = 0
+pub const PGRES_EMPTY_QUERY = 0
+pub const PGRES_COMMAND_OK = 1
+pub const PGRES_TUPLES_OK = 2
+pub const PGRES_FATAL_ERROR = 7
+
+pub const OID_BOOL = 16
+pub const OID_BYTEA = 17
+pub const OID_INT8 = 20
+pub const OID_TEXT = 25
+pub const OID_NUMERIC = 1700
+
+pub type Connection = ref record { tok: int }
+pub type Rows = ref record { tok: int }
+
+// A typed bind parameter. kind is PARAM_*; i carries int/bool and data carries
+// text/blob bytes. Null is an explicit kind, never an empty byte string.
+pub const PARAM_NULL = 0
+pub const PARAM_TEXT = 1
+pub const PARAM_BLOB = 2
+pub const PARAM_INT = 3
+pub const PARAM_BOOL = 4
+
+pub type Param = ref record {
+    kind: int
+    i: int
+    data: []byte
+}
+
+fn encode_string(s: string): []byte {
+    var out = new []byte(0)
+    for i in 0..len(s) { append(out, s[i]) }
+    return out
+}
+
+fn has_nul(b: &[]byte): bool {
+    for i in 0..len(b) {
+        if b[i] == byte(0) { return true }
+    }
+    return false
+}
+
+// Copy obo bytes into a C-owned, length-bounded buffer one byte at a time.
+// The raw pointer stays in C; this is the same bounded proof used by toolkit.
+fn put_bytes(b: &[]byte): int {
+    let n = len(b)
+    if n < 0 || n > 16777216 { return 0 }
+    let t = __cinterop("cres_buf_new", n)
+    if t <= 0 { return 0 }
+    for i in 0..n {
+        let ok = __cinterop("cres_buf_set", t, i, int(b[i]))
+        if ok != 1 {
+            __cinterop("cres_buf_free", t)
+            return 0
+        }
+    }
+    return t
+}
+
+fn put_cstr(b: &[]byte): int {
+    if has_nul(b) { return 0 }
+    return put_bytes(b)
+}
+
+fn take_buf(t: int): []byte {
+    var out = new []byte(0)
+    if t <= 0 { return out }
+    let n = __cinterop("cres_buf_len", t)
+    if n < 0 {
+        __cinterop("cres_buf_free", t)
+        return out
+    }
+    for i in 0..n {
+        let v = __cinterop("cres_buf_get", t, i)
+        if v < 0 { break }
+        append(out, byte(v))
+    }
+    __cinterop("cres_buf_free", t)
+    return out
+}
+
+fn error_text(b: []byte): string {
+    if has_nul(&b) { return "error text contains an embedded NUL" }
+    return string(b)
+}
+
+pub fn param_null(): Param {
+    return new Param{kind: PARAM_NULL, i: 0, data: new []byte(0)}
+}
+
+pub fn param_int(v: int): Param {
+    return new Param{kind: PARAM_INT, i: v, data: new []byte(0)}
+}
+
+pub fn param_bool(v: bool): Param {
+    var n = 0
+    if v { n = 1 }
+    return new Param{kind: PARAM_BOOL, i: n, data: new []byte(0)}
+}
+
+pub fn param_text(s: string): Param {
+    return new Param{kind: PARAM_TEXT, i: 0, data: encode_string(s)}
+}
+
+pub fn param_blob(b: []byte): Param {
+    return new Param{kind: PARAM_BLOB, i: 0, data: b}
+}
+
+// Same as param_blob, named for callers that think in bytes.
+pub fn param_bytes(b: []byte): Param {
+    return new Param{kind: PARAM_BLOB, i: 0, data: b}
+}
+
+fn append_u32(mut out: &[]byte, v: int) {
+    var x = v
+    for i in 0..4 {
+        append(out, byte(x % 256))
+        x = x / 256
+    }
+}
+
+fn append_param(mut out: &[]byte, p: &Param): Result[bool] {
+    if p.kind == PARAM_NULL {
+        append(out, byte(PARAM_NULL))
+        append_u32(out, 0)
+        return ok(true)
+    }
+    if p.kind == PARAM_TEXT {
+        if has_nul(&p.data) {
+            return err("text parameter contains an embedded NUL", 2)
+        }
+        append(out, byte(PARAM_TEXT))
+        append_u32(out, len(p.data))
+        for i in 0..len(p.data) { append(out, p.data[i]) }
+        return ok(true)
+    }
+    if p.kind == PARAM_BLOB {
+        if len(p.data) > 16777216 {
+            return err("blob parameter is too large", 2)
+        }
+        append(out, byte(PARAM_BLOB))
+        append_u32(out, len(p.data))
+        for i in 0..len(p.data) { append(out, p.data[i]) }
+        return ok(true)
+    }
+    if p.kind == PARAM_INT {
+        let digits = string(p.i)
+        append(out, byte(PARAM_INT))
+        append_u32(out, len(digits))
+        for i in 0..len(digits) { append(out, digits[i]) }
+        return ok(true)
+    }
+    if p.kind == PARAM_BOOL {
+        append(out, byte(PARAM_BOOL))
+        append_u32(out, 1)
+        if p.i != 0 {
+            append(out, 't')
+        } else {
+            append(out, 'f')
+        }
+        return ok(true)
+    }
+    return err("unknown parameter kind", 2)
+}
+
+// Packet for pg_exec_typed. It is built in obo; only the finished length-
+// delimited buffer crosses into C.
+fn build_packet(sql: string, params: &[]Param, result_binary: bool): Result[[]byte] {
+    let np = len(params)
+    if np > 32 { return err("too many parameters (maximum 32)", 2) }
+    if len(sql) > 1048576 { return err("SQL text is too large", 2) }
+    let sb = encode_string(sql)
+    if has_nul(&sb) {
+        return err("SQL text contains an embedded NUL", 2)
+    }
+    var out = new []byte(0)
+    append_u32(&out, len(sb))
+    for i in 0..len(sb) { append(out, sb[i]) }
+    if result_binary { append(out, byte(1)) } else { append(out, byte(0)) }
+    append_u32(&out, np)
+    for i in 0..np {
+        let one = try append_param(&out, params[i])
+        if !one { return err("parameter could not be encoded", 2) }
+    }
+    return ok(out)
+}
+
+// ------------------------------------------------------------------ connection
+
+pub fn open(conninfo: string): Result[Connection] {
+    let raw = encode_string(conninfo)
+    let b = put_cstr(&raw)
+    if b <= 0 { return err("invalid connection string (NUL byte or too long)", 2) }
+    let t = __cinterop("pg_open", b)
+    __cinterop("cres_buf_free", b)
+    if t <= 0 { return err("connection could not be allocated", 2) }
+    let st = __cinterop("pq_conn_status", t)
+    if st != CONNECTION_OK {
+        let eb = __cinterop("pq_error_buf", t)
+        let msg = take_buf(eb)
+        __cinterop("pq_conn_close", t)
+        return err(error_text(msg), st)
+    }
+    return ok(new Connection{tok: t})
+}
+
+pub fn (c: &Connection) status(): int {
+    return __cinterop("pq_conn_status", c.tok)
+}
+
+pub fn (c: &Connection) is_open(): bool {
+    return __cinterop("pq_conn_live", c.tok) == 1
+}
+
+pub fn (c: &Connection) error_message(): []byte {
+    return take_buf(__cinterop("pq_error_buf", c.tok))
+}
+
+// Borrows the Connection. Closing poisons the token; a second close is a safe
+// false, never a second PQfinish. Record drop does not free the foreign object.
+pub fn (c: &Connection) close(): bool {
+    return __cinterop("pq_conn_close", c.tok) == 1
+}
+
+// ------------------------------------------------------------------ execution
+
+fn execute_fmt(c: &Connection, sql: string, params: []Param,
+               result_binary: bool): Result[Rows] {
+    let ctok = c.tok
+    let packet = try build_packet(sql, &params, result_binary)
+    let b = put_bytes(&packet)
+    if b <= 0 { return err("query packet could not be allocated", 2) }
+    let t = __cinterop("pg_exec_typed", ctok, b)
+    __cinterop("cres_buf_free", b)
+    if t <= 0 {
+        let eb = __cinterop("pq_error_buf", ctok)
+        let msg = take_buf(eb)
+        return err(error_text(msg), 2)
+    }
+    return ok(new Rows{tok: t})
+}
+
+// Text result format: every column is returned as PostgreSQL's exact text.
+pub fn execute(c: &Connection, sql: string, params: []Param): Result[Rows] {
+    return execute_fmt(c, sql, params, false)
+}
+
+// Binary result format. Use bytes() for values; value() still rejects values
+// whose text conversion contains an embedded NUL.
+pub fn execute_binary(c: &Connection, sql: string, params: []Param): Result[Rows] {
+    return execute_fmt(c, sql, params, true)
+}
+
+// A fixed statement with no parameters.
+pub fn query(c: &Connection, sql: string): Result[Rows] {
+    return execute(c, sql, new []Param(0))
+}
+
+// ---------------------------------------------------------------------- rows
+
+pub fn (r: &Rows) status(): int {
+    return __cinterop("pq_result_status", r.tok)
+}
+
+pub fn (r: &Rows) is_open(): bool {
+    return __cinterop("pq_result_live", r.tok) == 1
+}
+
+pub fn (r: &Rows) row_count(): int {
+    return __cinterop("pq_ntuples", r.tok)
+}
+
+pub fn (r: &Rows) column_count(): int {
+    return __cinterop("pq_nfields", r.tok)
+}
+
+fn col_ok(r: &Rows, col: int): bool {
+    let n = __cinterop("pq_nfields", r.tok)
+    return n >= 0 && col >= 0 && col < n
+}
+
+pub fn (r: &Rows) is_null(row: int, col: int): Result[bool] {
+    let n = __cinterop("pq_getisnull", r.tok, row, col)
+    if n < 0 { return err("row or column out of range", 2) }
+    let is_null = n == 1
+    return ok(is_null)
+}
+
+// Length in bytes as libpq reports it; NULL and empty both report 0. Use
+// is_null to tell them apart. A negative result means out of range/stale.
+pub fn (r: &Rows) length(row: int, col: int): int {
+    return __cinterop("pq_getlength", r.tok, row, col)
+}
+
+// Exact bytes for a cell with SQL NULL distinct: nil means NULL, an empty
+// array means an empty value. (Obo does not allow a ?string payload; optional
+// values are reference types only, so the exact text form is ?[]byte. Use
+// text() when a string is wanted.)
+pub fn (r: &Rows) value(row: int, col: int): Result[?[]byte] {
+    let null = __cinterop("pq_getisnull", r.tok, row, col)
+    if null == 1 {
+        let none: ?[]byte = nil
+        return ok(none)
+    }
+    if null < 0 { return err("row or column out of range", 2) }
+    let t = __cinterop("pq_value_buf", r.tok, row, col)
+    if t <= 0 { return err("value could not be copied", 2) }
+    let b = take_buf(t)
+    let out: ?[]byte = b
+    return ok(out)
+}
+
+// Convenience string form for a non-NULL cell. SQL NULL is an error; use
+// value() or is_null() when NULL must be distinguished. Embedded NUL is
+// rejected because a string cannot represent it losslessly here.
+pub fn (r: &Rows) text(row: int, col: int): Result[string] {
+    let null = __cinterop("pq_getisnull", r.tok, row, col)
+    if null == 1 { return err("SQL NULL", 1) }
+    if null < 0 { return err("row or column out of range", 2) }
+    let t = __cinterop("pq_value_buf", r.tok, row, col)
+    if t <= 0 { return err("value could not be copied", 2) }
+    let b = take_buf(t)
+    if has_nul(&b) { return err("value contains an embedded NUL; use bytes", 1) }
+    return ok(string(b))
+}
+
+// Exact bytes for a cell, including embedded NUL. SQL NULL is an error here;
+// check is_null or use value() when NULL must be distinct.
+pub fn (r: &Rows) bytes(row: int, col: int): Result[[]byte] {
+    let null = __cinterop("pq_getisnull", r.tok, row, col)
+    if null == 1 { return err("SQL NULL", 1) }
+    if null < 0 { return err("row or column out of range", 2) }
+    let t = __cinterop("pq_value_buf", r.tok, row, col)
+    if t <= 0 { return err("value could not be copied", 2) }
+    return ok(take_buf(t))
+}
+
+pub fn (r: &Rows) column_name(col: int): Result[string] {
+    if !col_ok(r, col) { return err("column out of range", 2) }
+    let t = __cinterop("pq_fname_buf", r.tok, col)
+    if t <= 0 { return err("column name could not be copied", 2) }
+    let b = take_buf(t)
+    if has_nul(&b) { return err("column name contains an embedded NUL", 1) }
+    return ok(string(b))
+}
+
+pub fn (r: &Rows) column_type_oid(col: int): Result[int] {
+    if !col_ok(r, col) { return err("column out of range", 2) }
+    return ok(__cinterop("pq_ftype", r.tok, col))
+}
+
+// PostgreSQL typmod; -1 is a valid "no modifier" value, so bounds are checked
+// before this call rather than inferred from the result.
+pub fn (r: &Rows) column_type_modifier(col: int): Result[int] {
+    if !col_ok(r, col) { return err("column out of range", 2) }
+    return ok(__cinterop("pq_fmod", r.tok, col))
+}
+
+pub fn (r: &Rows) error_message(): []byte {
+    return take_buf(__cinterop("pq_result_error_buf", r.tok))
+}
+
+// Borrows Rows. A second close is a safe false; drop never calls PQclear.
+pub fn (r: &Rows) close(): bool {
+    return __cinterop("pq_result_clear", r.tok) == 1
+}
+
+// ------------------------------------------------------- library/resource info
+
+pub fn lib_version(): int {
+    return __cinterop("pq_lib_version")
+}
+
+// Real PGresult ownership with no connection, for link/ownership probes.
+pub fn make_empty_rows(status: int): Result[Rows] {
+    let t = __cinterop("pq_make_empty_result", status)
+    if t <= 0 { return err("empty result could not be created", 2) }
+    return ok(new Rows{tok: t})
+}
+
+pub fn live_resources(): int {
+    return __cinterop("cres_live_count")
+}
+
+pub fn live_buffers(): int {
+    return __cinterop("cres_live_kind", 1)
+}
+
+pub fn live_connections(): int {
+    return __cinterop("cres_live_kind", 2)
+}
+
+pub fn live_results(): int {
+    return __cinterop("cres_live_kind", 3)
+}

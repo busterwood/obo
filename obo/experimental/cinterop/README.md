@@ -273,6 +273,9 @@ It also builds and runs:
 - the opt-in live local PostgreSQL smoke test when `CINTEROP_TEST_DSN` is set.
 
 The project skill and buildable templates are in [`skill/`](skill/SKILL.md).
+The experimental database packages that build on this toolkit are in
+[`../db/`](../db/README.md): a PostgreSQL typed-parameter adapter and a
+declarations-only SQLite adapter, both explicit-close and tested.
 
 ## Known limits
 

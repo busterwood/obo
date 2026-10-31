@@ -200,6 +200,10 @@ library substitution remains trusted input. Say that plainly.
 - `templates/README.md` — how the files fit together.
 - `examples/libpq_defer_app.obx` and `examples/zlib_app.obx` — real worked
   examples of `defer` cleanup, binary buffers and a second library.
+- `db-adapters.md` — database-specific notes from the experimental
+  `obo/experimental/db/{postgres,sqlite}` packages: typed parameter packets,
+  statement/connection close ordering, and the declarations-only SQLite ABI
+  cross-check policy.
 
 Start from `examples/libpq.*` and `toolkit/libpq_adapter.c` for a complete
 working example, then remove the parts your library does not need. Do not grow

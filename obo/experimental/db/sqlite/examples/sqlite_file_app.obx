@@ -1,0 +1,65 @@
+module app
+
+import "sqlite.obx"
+
+// SQLite file smoke test. The caller supplies a fresh path under /tmp; this app
+// creates a small table, inserts one row through bound parameters and closes
+// everything explicitly. The test process removes the file and checks the bytes
+// with Python's sqlite3 module as an independent oracle.
+fn check(ok: bool, name: string, code: int) {
+    if !ok {
+        println("FAIL ", name)
+        exit(code)
+    }
+}
+
+fn write_file(path: string): Result[bool] {
+    let made = sqlite::open(path)
+    match made {
+        ok(conn) {
+            defer conn.close()
+            let schema = try conn.exec("CREATE TABLE items(id INTEGER PRIMARY KEY, label TEXT NOT NULL, n INTEGER, data BLOB)")
+            if !schema { return err("schema failed", 1) }
+            let st = conn.prepare("INSERT INTO items(id,label,n,data) VALUES(?1,?2,?3,?4)")
+            match st {
+                ok(s) {
+                    defer s.close()
+                    let b1 = try s.bind_int(1, 1)
+                    if !b1 { return err("bind id", 2) }
+                    let b2 = try s.bind_text(2, "oracle")
+                    if !b2 { return err("bind label", 3) }
+                    let b3 = try s.bind_int(3, -9000000000)
+                    if !b3 { return err("bind n", 4) }
+                    var blob = new []byte(0)
+                    append(blob, byte(0))
+                    append(blob, byte(255))
+                    append(blob, byte(65))
+                    let b4 = try s.bind_blob(4, blob)
+                    if !b4 { return err("bind blob", 5) }
+                    let row = try s.step()
+                    if row { return err("step returned a row", 6) }
+                }
+                err(m, c) { return err(m, c) }
+            }
+            println("changes=", conn.changes())
+            if !conn.close() { return err("close failed", 7) }
+            if conn.close() { return err("double close succeeded", 8) }
+        }
+        err(m, c) { return err(m, c) }
+    }
+    return ok(true)
+}
+
+fn main() {
+    let a = args()
+    if len(a) != 2 {
+        println("usage: app <database-path>")
+        exit(64)
+    }
+    let r = write_file(a[1])
+    match r {
+        ok(v) { println("sqlite_file=ok") }
+        err(m, c) { println("sqlite_file_error=", m, " code=", c); exit(1) }
+    }
+    check(sqlite::live_resources() == 0, "live", 11)
+}

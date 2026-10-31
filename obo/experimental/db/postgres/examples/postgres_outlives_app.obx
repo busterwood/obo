@@ -1,0 +1,41 @@
+module app
+
+import "postgres.obx"
+
+// PGresult-outlives-PGconn probe. It closes the connection before reading the
+// result, then closes the result. Run only with an explicitly authorized DSN.
+fn check(ok: bool, name: string, code: int) {
+    if !ok { println("FAIL ", name); exit(code) }
+}
+
+fn main() {
+    let a = args()
+    if len(a) != 2 { println("usage: app <conninfo>"); exit(64) }
+    let made = postgres::open(a[1])
+    match made {
+        ok(conn) {
+            let q = postgres::query(&conn, "SELECT 1.234567890123456789::numeric AS value")
+            match q {
+                ok(rows) {
+                    check(conn.close(), "connection close", 1)
+                    check(!conn.is_open(), "connection closed", 2)
+                    check(rows.is_open(), "result survives connection", 3)
+                    let v = rows.text(0, 0)
+                    match v {
+                        ok(s) {
+                            check(s == "1.234567890123456789", "exact result text", 5)
+                        }
+                        err(m, c) { println("value error ", m, " ", c); exit(6) }
+                    }
+                    check(rows.close(), "result close", 7)
+                    check(!rows.close(), "result double close", 8)
+                }
+                err(m, c) { println("query error ", m, " ", c); exit(9) }
+            }
+            check(!conn.close(), "connection double close", 10)
+        }
+        err(m, c) { println("connect error ", m, " ", c); exit(11) }
+    }
+    check(postgres::live_resources() == 0, "live", 12)
+    println("pgresult_outlives_conn=ok")
+}

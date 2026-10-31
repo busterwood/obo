@@ -1,0 +1,21 @@
+module app
+
+import "postgres.obx"
+
+// No database connection: a real libpq link plus real PGresult ownership
+// through PQmakeEmptyPGresult/PQclear. This is the non-networked smoke check.
+fn main() {
+    println("PQlibVersion=", postgres::lib_version())
+    let made = postgres::make_empty_rows(postgres::PGRES_TUPLES_OK)
+    match made {
+        ok(r) {
+            defer r.close()
+            println("empty_status=", r.status())
+            println("empty_rows=", r.row_count())
+            println("empty_fields=", r.column_count())
+            println("empty_open=", r.is_open())
+        }
+        err(m, c) { println("empty_error=", m, " (", c, ")"); exit(1) }
+    }
+    println("live=", postgres::live_resources())
+}
