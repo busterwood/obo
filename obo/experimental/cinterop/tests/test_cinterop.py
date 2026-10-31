@@ -190,6 +190,29 @@ def negative(tmp, scalar_out):
     if p.returncode == 0 or 'i32 arguments' not in (p.stderr + p.stdout):
         raise Fail("i32 argument was not rejected")
 
+    # Source float types are outside the native contract.
+    bad = dict(spec0)
+    bad['module'] = 'floatsrc'
+    bad['functions'] = [{'name': 'floatsrc', 'symbol': 'floatsrc', 'args': ['i64'],
+                         'ret': 'float', 'effects': ['impure']}]
+    p = build(write_spec('floatsrc', bad), os.path.join(EX, 'scalar_app.obx'),
+              os.path.join(tmp, 'floatsrc'))
+    if p.returncode == 0 or 'ret must be i32 or i64' not in (p.stderr + p.stdout):
+        raise Fail("a float native result was not rejected")
+    bad = dict(spec0)
+    bad['module'] = 'floatarg'
+    bad['functions'] = [{'name': 'floatarg', 'symbol': 'floatarg', 'args': ['float'],
+                         'ret': 'i64', 'effects': ['impure']}]
+    p = build(write_spec('floatarg', bad), os.path.join(EX, 'scalar_app.obx'),
+              os.path.join(tmp, 'floatarg'))
+    if p.returncode == 0 or 'args must be i64' not in (p.stderr + p.stdout):
+        raise Fail("a float native argument was not rejected")
+    path = os.path.join(tmp, 'direct_float.obx')
+    open(path, 'w').write('module app\n\nfn main() { println(__cinterop("add", 1.5f, 2)) }\n')
+    p = build(os.path.join(EX, 'scalar.cbind'), path, os.path.join(tmp, 'direct_float'))
+    if p.returncode == 0 or 'arguments must be int' not in (p.stderr + p.stdout):
+        raise Fail("a direct float native argument was not rejected")
+
     # no header and no explicit declaration is not an unchecked mode
     bad = dict(spec0)
     bad['module'] = 'nosig'
@@ -350,6 +373,19 @@ def pq(tmp):
     print('libpq: %s' % p.stdout.strip())
 
 
+def template(tmp):
+    tdir = os.path.join(TOOL, 'skill', 'templates')
+    out = os.path.join(tmp, 'template')
+    p = build(os.path.join(tdir, 'library.cbind'), os.path.join(tdir, 'app.obx'), out)
+    if p.returncode != 0:
+        raise Fail("template build failed:\n%s" % (p.stderr or p.stdout))
+    p = need(run([os.path.join(out, 'app')]), 'template run')
+    if 'byte0=0' not in p.stdout or 'closed=true' not in p.stdout or 'live=0' not in p.stdout:
+        raise Fail("template output mismatch:\n%s" % p.stdout)
+    need(verify(out), 'template manifest verify')
+    print('template dry-run: ok')
+
+
 def libpq_result(tmp):
     out = os.path.join(tmp, 'libpq_result')
     p = build(os.path.join(EX, 'libpq.cbind'), os.path.join(EX, 'libpq_probe_app.obx'), out)
@@ -439,6 +475,7 @@ def main():
         startup(tmp, out)
         negative(tmp, out)
         pq(tmp)
+        template(tmp)
         libpq_result(tmp)
         fake_adapter(tmp)
         libpq_fake(tmp)

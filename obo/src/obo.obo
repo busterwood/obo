@@ -101,6 +101,7 @@ const T_SHL = 64
 const T_SHR = 65
 const T_TRY = 66
 const T_COLONCOLON = 67
+const T_FLOAT = 68              // a float literal token; float is a type name, not a keyword
 
 // Stage 2: the symbol-file format, the compiled-program ABI and the compiler version.
 // OBO_VERSION is the compiler's identity in every .sym's `compiler` line and in --version.
@@ -108,13 +109,13 @@ const T_COLONCOLON = 67
 // extensions use a patch release (0.8 -> 0.8.1); 0.9 is lambdas Stage A and 0.10 is
 // Stage B. Bump SYM_FORMAT on any grammar or meaning change; bump SYM_ABI on
 // any layout/calling-convention/descriptor/effect change.
-const OBO_VERSION = "0.9"
-const SYM_FORMAT = 5
+const OBO_VERSION = "0.10"
+const SYM_FORMAT = 6
 const SYM_ABI = 1
 
 fn makeTokNames(): []string {
     let k = new []string(0)
-    let names = "eof ident int char string module import pub type var let const fn return if else while for in break continue defer match ref record closed new nil true false ( ) { } [ ] , ; : . .. = == != < <= > >= + - * / % ! ? & | ^ ~ && || += -= *= << >> try ::"
+    let names = "eof ident int char string module import pub type var let const fn return if else while for in break continue defer match ref record closed new nil true false ( ) { } [ ] , ; : . .. = == != < <= > >= + - * / % ! ? & | ^ ~ && || += -= *= << >> try :: float"
     var start = 0
     for i in 0..len(names) + 1 {
         if i == len(names) || names[i] == ' ' {
@@ -138,11 +139,13 @@ var last = -1             // kind of the previous token
 var sym = -1              // kind of the current token: "ident", "int", "==", "fn", ...
 var sval = ""             // identifier text or string literal bytes
 var ival = 0              // integer or character value
+var ftext = ""           // the text of a float literal, converted when it is used
 var tokSeq = 0                   // the tokens read so far (the index of the current one)
 var tline = 0             // where the current token starts
 var tcol = 0
 var tokStart = 0          // where the current token's text starts in src (the .sym reader checks hex forms)
 var dumpMode = false
+var testFloatBits = false      // --test-float-bits: internal bit-diagnostic mode
 
 fn makeKeywords(): []string {
     let k = new []string(0)
@@ -225,7 +228,7 @@ fn advance() {
 // a newline after one of these ends the statement
 fn semiAfter(k: int): bool {
     match k {
-        T_IDENT, T_INT, T_CHAR, T_STRING, T_TRUE, T_FALSE, T_NIL, T_RETURN, T_BREAK, T_CONTINUE,
+        T_IDENT, T_INT, T_FLOAT, T_CHAR, T_STRING, T_TRUE, T_FALSE, T_NIL, T_RETURN, T_BREAK, T_CONTINUE,
         T_RPAREN, T_RBRACK, T_RBRACE { return true }
         else { return false }
     }
@@ -305,7 +308,10 @@ fn punct1(c: int): int {
     }
 }
 
+fn floatLiteralBits(s: string): int
+
 fn scanNumber() {
+    let start = pos
     var v = 0
     if src[pos] == '0' && (peek(1) == 'x' || peek(1) == 'X') {
         advance()
@@ -323,24 +329,353 @@ fn scanNumber() {
         }
         if !any { fail("hex literal needs digits") }
         if significant > 16 { fail("integer literal too large") }
-    } else {
-        var big = false
-        while pos < len(src) && (isDigit(src[pos]) || src[pos] == '_') {
-            let d = src[pos]
-            if d != '_' {
-                let dv = d - '0'
-                if v > (9223372036854775807 - dv) / 10 {
-                    big = true
-                } else {
-                    v = v * 10 + dv
-                }
-            }
-            advance()
-        }
-        if big { fail("integer literal too large") }
+        ival = v
+        setTok(T_INT)
+        return
     }
+    var big = false
+    while pos < len(src) && (isDigit(src[pos]) || src[pos] == '_') {
+        let d = src[pos]
+        if d != '_' {
+            let dv = d - '0'
+            if v > (9223372036854775807 - dv) / 10 {
+                big = true
+            } else {
+                v = v * 10 + dv
+            }
+        }
+        advance()
+    }
+    var hasDot = false
+    var hasExp = false
+    if pos < len(src) && src[pos] == '.' && !(peek(1) == '.') {
+        hasDot = true
+        advance()
+        if pos >= len(src) || !isDigit(src[pos]) { fail("a float fraction needs digits after '.'") }
+        while pos < len(src) && (isDigit(src[pos]) || src[pos] == '_') { advance() }
+    }
+    if pos < len(src) && (src[pos] == 'e' || src[pos] == 'E') {
+        hasExp = true
+        advance()
+        if pos < len(src) && (src[pos] == '+' || src[pos] == '-') { advance() }
+        if pos >= len(src) || !isDigit(src[pos]) { fail("a float exponent needs digits") }
+        while pos < len(src) && (isDigit(src[pos]) || src[pos] == '_') { advance() }
+    }
+    var isFloat = false
+    if pos < len(src) && (src[pos] == 'f' || src[pos] == 'F') {
+        isFloat = true
+        advance()
+    }
+    if isFloat {
+        ftext = substr(src, start, pos - 1)
+        setTok(T_FLOAT)
+        return
+    }
+    if hasDot || hasExp {
+        fail("a fractional or exponent literal needs an f suffix for float (for example 1.5f)")
+    }
+    if big { fail("integer literal too large") }
     ival = v
     setTok(T_INT)
+}
+
+// ================================================= float literal conversion
+// Exact decimal-to-binary64 conversion.  A base-2^16 big integer holds the
+// significand, and a separate decimal exponent drives an exact rational
+// comparison against binary64 candidates.  Up to 1200 significant decimal
+// digits are retained plus a sticky flag.  A binary64 midpoint has at most 768
+// significant decimal digits: with M < 2^54 and Q >= -1075,
+// floor(54*log10(2) + 1075*log10(5)) + 1 = 768.  (The 1077-character
+// subnormal/normal case includes leading fractional zeros.)  1200 is a strict
+// bound, so truncation cannot hide a tie at the retained precision; the sticky
+// tail can only break an otherwise exact tie.
+const FL_MAX_SIG = 1200
+
+fn biTrim(a: []int): []int {
+    var n = len(a)
+    while n > 0 && a[n - 1] == 0 { n -= 1 }
+    if n != len(a) { truncate(a, n) }
+    return a
+}
+fn biFromU64(v: int): []int {
+    let a = new []int(0)
+    var x = v
+    while x > 0 {
+        append(a, x & 0xFFFF)
+        x = x >> 16
+    }
+    return biTrim(a)
+}
+fn biMulSmall(a: &[]int, m: int): []int {
+    let out = new []int(0)
+    var carry = 0
+    for i in 0..len(a) {
+        let v = a[i] * m + carry
+        append(out, v & 0xFFFF)
+        carry = v >> 16
+    }
+    while carry > 0 {
+        append(out, carry & 0xFFFF)
+        carry = carry >> 16
+    }
+    return biTrim(out)
+}
+fn biAddSmall(a: &[]int, d: int): []int {
+    let out = new []int(0)
+    var carry = d
+    for i in 0..len(a) {
+        let v = a[i] + carry
+        append(out, v & 0xFFFF)
+        carry = v >> 16
+    }
+    while carry > 0 {
+        append(out, carry & 0xFFFF)
+        carry = carry >> 16
+    }
+    return biTrim(out)
+}
+fn biShl(a: &[]int, bits: int): []int {
+    if bits <= 0 {
+        let same = new []int(0)
+        for i in 0..len(a) { append(same, a[i]) }
+        return same
+    }
+    let word = bits / 16
+    let rem = bits % 16
+    let out = new []int(0)
+    for i in 0..word { append(out, 0) }
+    var carry = 0
+    for i in 0..len(a) {
+        let v = (a[i] << rem) + carry
+        append(out, v & 0xFFFF)
+        carry = v >> 16
+    }
+    while carry > 0 {
+        append(out, carry & 0xFFFF)
+        carry = carry >> 16
+    }
+    return biTrim(out)
+}
+fn biCmp(a: &[]int, b: &[]int): int {
+    if len(a) < len(b) { return -1 }
+    if len(a) > len(b) { return 1 }
+    var i = len(a) - 1
+    while i >= 0 {
+        if a[i] < b[i] { return -1 }
+        if a[i] > b[i] { return 1 }
+        i -= 1
+    }
+    return 0
+}
+fn biMulBig(a: &[]int, b: &[]int): []int {
+    let out = new []int(0)
+    for i in 0..len(a) + len(b) + 1 { append(out, 0) }
+    for i in 0..len(a) {
+        var carry = 0
+        for j in 0..len(b) {
+            let v = out[i + j] + a[i] * b[j] + carry
+            out[i + j] = v & 0xFFFF
+            carry = v >> 16
+        }
+        var k = i + len(b)
+        while carry > 0 {
+            let v = out[k] + carry
+            out[k] = v & 0xFFFF
+            carry = v >> 16
+            k += 1
+        }
+    }
+    return biTrim(out)
+}
+fn biMulU64(a: &[]int, v: int): []int {
+    let b = biFromU64(v)
+    return biMulBig(a, &b)
+}
+fn biPow10(k: int): []int {
+    var r = biFromU64(1)
+    var base = biFromU64(10)
+    var e = k
+    while e > 0 {
+        if (e & 1) != 0 { r = biMulBig(&r, &base) }
+        e = e >> 1
+        if e > 0 {
+            let sq = biMulBig(&base, &base)
+            base = sq
+        }
+    }
+    return r
+}
+
+// Compare N*10^p (plus sticky below its last retained decimal unit) with
+// M*2^B.  p, pow and a are prepared once for a literal.
+fn cmpBin(n: &[]int, p: int, pow: &[]int, a: &[]int, sticky: bool,
+           M: int, B: int): int {
+    var c = 0
+    if p >= 0 {
+        if B >= 0 {
+            let mb = biFromU64(M)
+            let r = biShl(&mb, B)
+            c = biCmp(a, &r)
+        } else {
+            let l = biShl(a, -B)
+            let mb = biFromU64(M)
+            c = biCmp(&l, &mb)
+        }
+    } else {
+        let mp = biMulU64(pow, M)
+        if B >= 0 {
+            let r = biShl(&mp, B)
+            c = biCmp(n, &r)
+        } else {
+            let l = biShl(n, -B)
+            c = biCmp(&l, &mp)
+        }
+    }
+    if c == 0 && sticky { return 1 }
+    return c
+}
+
+fn cmpBits(n: &[]int, p: int, pow: &[]int, a: &[]int, sticky: bool, bits: int): int {
+    if bits == 0 { return 1 }
+    let e = (bits >> 52) & 0x7ff
+    let f = bits & 0xfffffffffffff
+    var M = f
+    var B = -1074
+    if e != 0 {
+        M = (1 << 52) | f
+        B = e - 1023 - 52
+    }
+    return cmpBin(n, p, &pow, &a, sticky, M, B)
+}
+
+fn floatBitsFromParts(n: &[]int, p: int, sticky: bool): int {
+    if len(n) == 0 { return 0 }
+    var pk = p
+    if pk < 0 { pk = -pk }
+    let pow = biPow10(pk)
+    var a = new []int(0)
+    if p >= 0 { a = biMulBig(n, &pow) }
+    // 2^1024 - 2^970 is the overflow midpoint; equality is overflow.
+    if cmpBin(n, p, &pow, &a, sticky, (1 << 54) - 1, 970) >= 0 {
+        fail("float literal out of range")
+    }
+    var lo = 0
+    var hi = 0x7fefffffffffffff
+    while lo < hi {
+        let mid = lo + (hi - lo + 1) / 2
+        if cmpBits(n, p, &pow, &a, sticky, mid) >= 0 { lo = mid } else { hi = mid - 1 }
+    }
+    if cmpBits(n, p, &pow, &a, sticky, lo) == 0 { return lo }
+    // Value is above max finite but below the overflow midpoint.
+    if lo == 0x7fefffffffffffff { return lo }
+    var c = 0
+    if lo == 0 {
+        c = cmpBin(n, p, &pow, &a, sticky, 1, -1075)  // half the minimum subnormal
+    } else {
+        let hi2 = lo + 1
+        let elo = (lo >> 52) & 0x7ff
+        let ehi = (hi2 >> 52) & 0x7ff
+        var mlo = lo & 0xfffffffffffff
+        var mhi = hi2 & 0xfffffffffffff
+        var blo = -1074
+        var bhi = -1074
+        if elo != 0 { mlo = (1 << 52) | mlo; blo = elo - 1023 - 52 }
+        if ehi != 0 { mhi = (1 << 52) | mhi; bhi = ehi - 1023 - 52 }
+        var b = blo
+        if bhi < b { b = bhi }
+        let mmid = (mlo << (blo - b)) + (mhi << (bhi - b))
+        c = cmpBin(n, p, &pow, &a, sticky, mmid, b - 1)
+    }
+    if c < 0 { return lo }
+    if c > 0 { return lo + 1 }
+    if (lo & 1) == 0 { return lo }
+    return lo + 1
+}
+
+fn floatLiteralBits(s: string): int {
+    var epos = -1
+    var i = 0
+    while i < len(s) {
+        if s[i] == 'e' || s[i] == 'E' { epos = i; break }
+        i += 1
+    }
+    var mend = len(s)
+    if epos >= 0 { mend = epos }
+    var dot = -1
+    i = 0
+    while i < mend {
+        if s[i] == '.' { dot = i; break }
+        i += 1
+    }
+    var explicit = 0
+    var huge = false
+    var eneg = false
+    if epos >= 0 {
+        var j = epos + 1
+        if j < len(s) && (s[j] == '+' || s[j] == '-') {
+            eneg = s[j] == '-'
+            j += 1
+        }
+        if j >= len(s) { fail("a float exponent needs digits") }
+        let ecap = len(s) + 5000
+        var any = false
+        while j < len(s) {
+            if !isDigit(s[j]) { fail("bad float exponent") }
+            let dv = s[j] - '0'
+            if explicit > (ecap - dv) / 10 { huge = true } else { explicit = explicit * 10 + dv }
+            any = true
+            j += 1
+        }
+        if !any { fail("a float exponent needs digits") }
+        if eneg { explicit = -explicit }
+    }
+    var n = new []int(0)
+    var sig = 0
+    var discarded = 0
+    var sticky = false
+    var frac = 0
+    var any = false
+    dot = -1
+    i = 0
+    while i < mend {
+        let c = s[i]
+        if c == '_' {
+            // Source separators are consumed by the scanner but are not value
+            // digits; they must not affect fraction/significant/discarded counts.
+            i += 1
+        } else if c == '.' {
+            dot = i
+            i += 1
+        } else {
+            if !isDigit(c) { fail("bad float literal") }
+            any = true
+            if dot >= 0 { frac += 1 }
+            let d = c - '0'
+            if sig == 0 && d == 0 {
+                i += 1
+            } else {
+                sig += 1
+                if sig <= FL_MAX_SIG {
+                    n = biMulSmall(&n, 10)
+                    n = biAddSmall(&n, d)
+                } else {
+                    discarded += 1
+                    if d != 0 { sticky = true }
+                }
+                i += 1
+            }
+        }
+    }
+    if !any { fail("a float literal needs digits") }
+    if len(n) == 0 { return 0 }
+    if huge {
+        if eneg { return 0 }
+        fail("float literal out of range")
+    }
+    var p = explicit - frac + discarded
+    if p > 4000 { fail("float literal out of range") }
+    if p < -4000 { return 0 }
+    return floatBitsFromParts(&n, p, sticky)
 }
 
 fn scanChar() {
@@ -931,6 +1266,7 @@ fn derived(kind: string, base: ^Type): ^Type {
 }
 
 let tInt = newType("int", "int", nil)
+let tFloat = newType("float", "float", nil)
 let tByte = newType("byte", "byte", nil)
 let tBool = newType("bool", "bool", nil)
 let tString = newType("string", "string", nil)
@@ -1015,7 +1351,7 @@ fn same(a: ^Type, b: ^Type): bool {
     }
     if a.kind == "array" || a.kind == "opt" || a.kind == "handle" { return same(baseOf(a), baseOf(b)) }
     return a.kind == "int" || a.kind == "byte" || a.kind == "bool" || a.kind == "string" ||
-        a.kind == "void" || a.kind == "nil"
+        a.kind == "float" || a.kind == "void" || a.kind == "nil"
 }
 
 fn assignable(dst: ^Type, src: ^Type): bool {
@@ -1600,6 +1936,26 @@ const RT_ISATTY = 37
 const RT_GETENV = 38
 const RT_TERM_WIDTH = 39
 const RT_SLEEP = 40
+// float F1 scalar helpers: raw binary64 bits in u64 arguments/results.  These append;
+// slots 0..40 keep their old meaning for the 0.8 seed-built runtime.
+const RT_F_ADD = 41
+const RT_F_SUB = 42
+const RT_F_MUL = 43
+const RT_F_DIV = 44
+const RT_F_NEG = 45
+const RT_F_EQ = 46
+const RT_F_NE = 47
+const RT_F_LT = 48
+const RT_F_LE = 49
+const RT_F_GT = 50
+const RT_F_GE = 51
+const RT_I_TO_F = 52
+const RT_F_ISNAN = 53
+const RT_F_ISINF = 54
+const RT_F_SIGNBIT = 55
+const RT_F_TO_STR = 56
+const RT_F_PRINT = 57
+const RT_F_PARSE = 58
 
 const RAX = 0
 const RCX = 1
@@ -1895,11 +2251,12 @@ fn initCompiler() {
     let poolRefs = &pool
     for r in poolRefs { append(free, r) }
     append(universe, newSym("type", "int", tInt))
+    append(universe, newSym("type", "float", tFloat))
     append(universe, newSym("type", "byte", tByte))
     append(universe, newSym("type", "bool", tBool))
     append(universe, newSym("type", "string", tString))
     append(universe, newSym("type", "Result", tResultCtor))
-    let names = words("print println len gc gcstats exit append truncate substr eprint eprintln readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr __cinterop")
+    let names = words("print println len gc gcstats exit append truncate substr eprint eprintln readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr isNaN isInf signbit floatBits parseFloat __cinterop")
     for n in names { append(universe, newSym("builtin", n, nil)) }
     append(universe, newSym("builtin", "ok", nil))
     append(universe, newSym("builtin", "err", nil))
@@ -5921,6 +6278,7 @@ fn conversion(t: ^Type): Item {
     let a = nestedExpr()
     expect(T_RPAREN, "")
     if t == tString {
+        if a.typ.kind == "float" { return rtCall1(RT_F_TO_STR, a, tString) }
         // string(n) gives the decimal digits of an int; string(bytes) copies a []byte
         if a.typ.kind == "int" {
             if a.mode == "const" { return makeConst(tString, stringLit(string(a.val))) }
@@ -5934,6 +6292,11 @@ fn conversion(t: ^Type): Item {
         }
         noTemp(a)
         return rtCall1(RT_BYTES_TO_STRING, a, tString)
+    }
+    if t == tFloat {
+        if a.typ.kind == "float" { return a }
+        if !isInt(a.typ) { error("float() needs an int or byte, not " + tname(a.typ)) }
+        return rtCall1(RT_I_TO_F, a, tFloat)
     }
     if !isInt(a.typ) { error(tname(t) + "() needs an int or byte, not " + tname(a.typ)) }
     if a.mode == "const" {
@@ -6076,6 +6439,8 @@ fn builtin(name: string): Item {
                 slot = RT_PRINT_BOOL
             } else if k == "string" {
                 slot = RT_PRINT_STR
+            } else if k == "float" {
+                slot = RT_F_PRINT
             }
             if slot < 0 { error("cannot print " + tname(a.typ)) }
             rtCall1(slot, a, tVoid)
@@ -6084,6 +6449,33 @@ fn builtin(name: string): Item {
         if name == "println" || name == "eprintln" { rtCall0(RT_NEWLINE, tVoid) }
         if toStderr { rtCall1(RT_SET_OUTPUT, makeConst(tInt, 1), tVoid) }
         return voidItem()
+    }
+    if name == "floatBits" {
+        // internal test-only diagnostic: reinterpret a float word as int bits.
+        if !testFloatBits { error("floatBits is an internal test diagnostic; pass --test-float-bits") }
+        expect(T_LPAREN, "")
+        let a = nestedExpr()
+        expect(T_RPAREN, "")
+        if a.typ.kind != "float" { error("floatBits needs a float, not " + tname(a.typ)) }
+        if a.mode == "const" { return makeConst(tInt, a.val) }
+        a.typ = tInt
+        return a
+    }
+    if name == "isNaN" || name == "isInf" || name == "signbit" {
+        expect(T_LPAREN, "")
+        let a = nestedExpr()
+        expect(T_RPAREN, "")
+        if a.typ.kind != "float" { error(name + " needs a float, not " + tname(a.typ)) }
+        var slot = RT_F_ISNAN
+        if name == "isInf" { slot = RT_F_ISINF } else if name == "signbit" { slot = RT_F_SIGNBIT }
+        return rtCall1(slot, a, tBool)
+    }
+    if name == "parseFloat" {
+        expect(T_LPAREN, "")
+        let s = nestedExpr()
+        expect(T_RPAREN, "")
+        if s.typ.kind != "string" { error("parseFloat needs a string, not " + tname(s.typ)) }
+        return resultCall3(RT_F_PARSE, s, tFloat)
     }
     if name == "args" {
         expect(T_LPAREN, "")
@@ -6632,7 +7024,7 @@ fn nameItem(s: ^Sym, name: string, target: bool): Item {
         if inDefer && s.isRefLocal { noteDeferUse(s) }
         return x
     }
-    if s.kind == "type" && sym == T_LPAREN && (symType(s) == tInt || symType(s) == tByte || symType(s) == tString) {
+    if s.kind == "type" && sym == T_LPAREN && (symType(s) == tInt || symType(s) == tByte || symType(s) == tString || symType(s) == tFloat) {
         return conversion(symType(s))
     }
     error("'" + name + "' is a type, not a value (use 'new " + name + "{...}' to make one)")
@@ -7290,6 +7682,11 @@ fn factor(): Item {
         next()
         return makeConst(tInt, v)
     }
+    if k == T_FLOAT {
+        let v = floatLiteralBits(ftext)
+        next()
+        return makeConst(tFloat, v)
+    }
     if k == T_STRING {
         let addr = stringLit(sval)
         next()
@@ -7329,6 +7726,11 @@ fn factor(): Item {
     if k == T_MINUS || k == T_TILDE {
         next()
         let x = factor()
+        if x.typ.kind == "float" {
+            if k != T_MINUS { error("'~' needs an int") }
+            if x.mode == "const" { return makeConst(tFloat, x.val ^ 0x8000000000000000) }
+            return rtCall1(RT_F_NEG, x, tFloat)
+        }
         if !isInt(x.typ) { error("'" + tokName(k) + "' needs an int") }
         if x.mode == "const" {
             if k == T_MINUS { return makeConst(tInt, -x.val) }
@@ -7611,17 +8013,33 @@ fn binop(o: int, x0: Item, y0: Item): Item {
     return x
 }
 
+fn floatBinop(o: int, x: Item, y: Item): Item {
+    var slot = 0
+    if o == T_PLUS { slot = RT_F_ADD } else if o == T_MINUS { slot = RT_F_SUB } else if o == T_STAR { slot = RT_F_MUL } else if o == T_SLASH { slot = RT_F_DIV } else { error("'" + tokName(o) + "' needs ints") }
+    return rtCall2(slot, x, y, tFloat)
+}
+
 fn term(): Item {
     var x = factor()
     while isMulOp(sym) {
         let o = sym
         next()
-        if !isInt(x.typ) { error("'" + tokName(o) + "' needs ints") }
-        x = materialise(x)
-        tryNest += 1
-        let y = factor()
-        tryNest -= 1
-        x = binop(o, x, y)
+        if x.typ.kind == "float" {
+            if o != T_STAR && o != T_SLASH { error("'" + tokName(o) + "' needs ints") }
+            x = materialise(x)
+            tryNest += 1
+            let y = factor()
+            tryNest -= 1
+            if y.typ.kind != "float" { error("'" + tokName(o) + "' needs two floats, not " + tname(x.typ) + " and " + tname(y.typ)) }
+            x = floatBinop(o, x, y)
+        } else {
+            if !isInt(x.typ) { error("'" + tokName(o) + "' needs ints") }
+            x = materialise(x)
+            tryNest += 1
+            let y = factor()
+            tryNest -= 1
+            x = binop(o, x, y)
+        }
     }
     return x
 }
@@ -7643,6 +8061,16 @@ fn simpleExpr(): Item {
             } else {
                 x = rtCall2(RT_CONCAT, x, y, tString)
             }
+            continue
+        }
+        if x.typ.kind == "float" {
+            if o != T_PLUS && o != T_MINUS { error("'" + tokName(o) + "' needs ints") }
+            x = materialise(x)
+            tryNest += 1
+            let y = term()
+            tryNest -= 1
+            if y.typ.kind != "float" { error("'" + tokName(o) + "' needs two floats, not " + tname(x.typ) + " and " + tname(y.typ)) }
+            x = floatBinop(o, x, y)
             continue
         }
         if !isInt(x.typ) { error("'" + tokName(o) + "' needs ints") }
@@ -7680,6 +8108,14 @@ fn relation(): Item {
     // interface identity is not meaningful (v3 6.3); a test against nil is allowed (it narrows a ?I)
     if (isIfaceVal(x.typ) || isIfaceVal(y.typ)) && kx != "nil" && ky != "nil" {
         error("interface values cannot be compared; test an optional with '== nil' or '!= nil'")
+    }
+    if kx == "float" || ky == "float" {
+        if kx != "float" || ky != "float" {
+            error("cannot compare float with " + tname(y.typ) + "; convert explicitly")
+        }
+        var fslot = RT_F_EQ
+        if o == T_NE { fslot = RT_F_NE } else if o == T_LT { fslot = RT_F_LT } else if o == T_LE { fslot = RT_F_LE } else if o == T_GT { fslot = RT_F_GT } else if o == T_GE { fslot = RT_F_GE }
+        return rtCall2(fslot, x, y, tBool)
     }
     if kx == "string" || ky == "string" {
         if kx != ky || (o != T_EQ && o != T_NE) { error("strings can only be compared with == and !=") }
@@ -9319,7 +9755,7 @@ fn dropFrame(at: int, f: ^Sym) {
 
 // ---- the pre-scan of a function
 
-let callExempt = words("if while for return match defer in else new print println eprint eprintln len gc gcstats exit append truncate substr readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr take handle alive drop replace int byte string ok err try __cinterop")
+let callExempt = words("if while for return match defer in else new print println eprint eprintln len gc gcstats exit append truncate substr readFile writeFile args openFile readFd writeFd closeFile readDirFd statPath lstatPath readLinkPath isatty getenv terminalWidth sleepMs stdin stdout stderr take handle alive drop replace int byte float string isNaN isInf signbit floatBits parseFloat ok err try __cinterop")
 
 fn wordAt(a: int, b: int, w: string): bool {
     if len(w) != b - a { return false }
@@ -11474,6 +11910,25 @@ fn symHex16(what: string): int {
     return v
 }
 
+// Float constants use a canonical raw-bit form: exactly 0x and 16 lowercase
+// hexadecimal digits.  This is deliberately float-specific: historical int and
+// byte constant readers keep their existing grammar.
+fn symFloatHex16(): int {
+    if sym != T_INT { error("a float constant needs exactly 0x and 16 lowercase hexadecimal digits") }
+    let text = substr(src, tokStart, pos)
+    if !isHex16(text) {
+        error("malformed float constant: expected exactly 0x and 16 lowercase hexadecimal digits, found " + text)
+    }
+    for i in 2..18 {
+        if text[i] >= 'A' && text[i] <= 'F' {
+            error("malformed float constant: expected lowercase hexadecimal digits, found " + text)
+        }
+    }
+    let v = ival
+    next()
+    return v
+}
+
 fn symHexString(s: string): string {
     if len(s) % 2 != 0 { error("malformed hex string: an odd number of digits") }
     let out = new []byte(0)
@@ -11579,6 +12034,7 @@ fn symFinishTypeName(name: string, nline: int, ncol: int): ^Type {
         return symQualifiedType(name, member, nline, ncol)
     }
     if name == "int" { return tInt }
+    if name == "float" { return tFloat }
     if name == "byte" { return tByte }
     if name == "bool" { return tBool }
     if name == "string" { return tString }
@@ -12180,7 +12636,10 @@ fn symConstDecl(mode: int) {
     var kind = ""
     var v = 0
     var sv = ""
-    if sym == T_INT {
+    if t == tFloat {
+        kind = "float"
+        v = symFloatHex16()
+    } else if sym == T_INT {
         kind = "int"
         v = ival
         next()
@@ -12201,12 +12660,13 @@ fn symConstDecl(mode: int) {
     } else {
         error("expected a constant value")
     }
-    if t != tInt && t != tByte && t != tBool && t != tString {
+    if t != tInt && t != tByte && t != tBool && t != tString && t != tFloat {
         error("a constant must have type int, byte, bool or string")
     }
     if t == tString && kind != "string" { error("a string constant needs a hex byte string") }
     if t == tBool && kind != "bool" { error("a bool constant must be true or false") }
     if (t == tInt || t == tByte) && kind != "int" { error("an integer constant needs an integer value") }
+    if t == tFloat && kind != "float" { error("a float constant needs exactly 0x and 16 lowercase hexadecimal digits") }
     if t == tByte && (v < 0 || v > 255) { error("a byte constant must be between 0 and 255") }
     symClaim(name)
     append(symConstOrder, name)
@@ -12982,7 +13442,7 @@ fn checkFile(path: string) {
 
 fn usage() {
     eprintln("usage: obxc SOURCE [-o OUTPUT] [--rt RUNTIME_DIR] [-I DIR]... [--sym-dir DIR] ",
-             "[--native-relocs FILE] [--check | --deps | --emit-sym] | --version | --tokens FILE | --encode FILE | --reemit-sym FILE")
+             "[--native-relocs FILE] [--check | --deps | --emit-sym] | --version | --tokens FILE | --encode FILE | --reemit-sym FILE | --test-float-bits")
 }
 
 // reports a Stage 2 CLI conflict (exit 2)
@@ -12995,6 +13455,7 @@ fn main() {
     initCompiler()
     let a = args()
     for i in 1..len(a) {
+        if a[i] == "--test-float-bits" { testFloatBits = true }
         if a[i] == "--version" {
             println("obo ", OBO_VERSION, " sym-format ", SYM_FORMAT, " abi ", SYM_ABI)
             return
@@ -13054,6 +13515,9 @@ fn main() {
         } else if arg == "--emit-sym" {
             if mode != "build" { cliFail("--check, --deps and --emit-sym are mutually exclusive") }
             emitSym = true
+            i += 1
+        } else if arg == "--test-float-bits" {
+            testFloatBits = true
             i += 1
         } else if len(arg) > 0 && arg[0] == '-' {
             cliFail("unknown option " + arg)

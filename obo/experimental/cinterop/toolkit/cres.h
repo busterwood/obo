@@ -21,7 +21,8 @@ enum {
     CRES_KIND_NONE = 0,
     CRES_KIND_BUFFER = 1,
     CRES_KIND_CONN = 2,
-    CRES_KIND_RESULT = 3
+    CRES_KIND_RESULT = 3,
+    CRES_KIND_CUSTOM = 4
 };
 
 #define CRES_MAX_ENTRIES 64

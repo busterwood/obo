@@ -1,12 +1,14 @@
 # Native C interop (`cinterop`) — design note
 
-Status: **REVISE response pending independent rereview.** Date: 2026-10-31.
-Baseline: `main` at `befa626` (`obo: promote the 0.9 seed and release Stage A
-lambdas`), compiler `0.9`, `.sym` format 5, ABI 1. The independent architecture
+Status: **REVISE response plus explicit-close resource-adapter checkpoint
+pending independent rereview.** Date: 2026-10-31.
+Baseline: released `main` at `a3e5b1f` (numeric floats, compiler `0.10`,
+`.sym` format 6, ABI 1), merged into this feature. The independent architecture
 review of prototype `a29f35d` returned REVISE; the scoped B1/B2, high and
-practical-medium repairs are recorded in section 14. This remains an
-experimental, trusted-build prototype: not production, not a public API, not a
-stable format, and not permission to merge, push or promote a seed.
+practical-medium repairs are recorded in section 14, followed by the
+explicit-close libpq adapter checkpoint. This remains an experimental,
+trusted-build prototype: not production, not a public API, not a stable format,
+and not permission to merge, push or promote a seed.
 
 The prototype lives outside the public compiler surface under
 `obo/experimental/cinterop/`. It is labelled experimental. Nothing in this note
@@ -44,8 +46,9 @@ Goals:
 5. Reproducible, validated artifacts: spec, shim, object, manifest and wrapper
    hashes are checked before compilation/execution; wrong arity, stale
    manifests and platform mismatches fail before native code runs.
-6. A useful scalar probe first, then libpq availability as a separate gate.
-   The libpq probe is `PQlibVersion` only; no database connection.
+6. A useful scalar probe first, then real libpq availability/result ownership,
+   then an explicit-close connection/query/result adapter. The live database
+   smoke test is opt-in and locally authorized; no automatic driver.
 7. A binding is a maintained obo package with ordinary imports, not a
    generator run on every application build.
 
@@ -69,14 +72,22 @@ decision**, not erased.
 - Per-library output is a maintained obo package with ordinary imports, not a
   generator invocation on every application build.
 
-**Proposed, not implemented or installed:**
+**Implemented in this checkpoint:**
 
-- The planned skill guides an agent to inspect C headers and ownership, design
-  an idiomatic obo module, write C/assembly adapters from templates, declare
-  bindings/effects/link dependencies, and test ABI, lifetime, errors and
-  integration.
-- Skill packaging, installation and a stable template catalog require a
-  separate review and approval.
+- The project skill and small real templates live under
+  `obo/experimental/cinterop/skill/` (`SKILL.md`, `templates/`). They guide an
+  agent to inspect C headers and ownership, design an idiomatic obo module,
+  write C adapters from templates, declare bindings/effects/link dependencies,
+  and test ABI, lifetime, errors and integration.
+- The templates are real: the `library.cbind`/`wrapper.obx`/`adapter.c` set
+  builds and runs with the same toolkit, and the libpq package is the second
+  worked example.
+
+**Still separate:**
+
+- Skill packaging, global installation and a stable template catalog require a
+  separate review and approval. The repository copy is a portable project
+  skill, not a global install.
 
 The existing `cinterop.py` is an experimental proof fixture/convenience. It
 must not grow into a wide header parser or an option-rich universal binding
@@ -93,8 +104,8 @@ finalizers or skill implementation.
 
 - No stable public C interop API in this proposal.
 - No universal configurable C-binding generator: per-library adaptation is
-  toolkit-plus-agent-skill work. The skill itself is not implemented or
-  installed by this checkpoint.
+  toolkit-plus-agent-skill work. The skill is implemented as a portable project
+  skill in this checkpoint; it is not installed globally.
 - No arbitrary C header parsing, C++ interop, templates or macros.
 - No general FFI for variadic C functions, callbacks, `struct` by value, TLS,
   C `long double`/floats, or decimal values in v1.
@@ -108,9 +119,10 @@ finalizers or skill implementation.
   declared trusted C.
 - No PIE/ASLR redesign of the obo image, no runtime address lookup cheat, no
   `dlopen`/`dlsym` scheme.
-- No production-quality libpq driver: connection, query, result and error
-  lifetime rules are designed here, but only `PQlibVersion` is executed in the
-  prototype.
+- No production-quality libpq driver. The explicit-close adapter executes a
+  bounded connection/query/result/error subset against a local database only
+  when the user opts in; it is not a general driver, ORM, schema tool or
+  automatic-ownership layer.
 - No version/format number taken from the floats/decimal roadmap. Floats are
   next at `0.10`/format 6/ABI 1; decimal is `0.11`/format 6. Native interop
   assigns no such version here.
@@ -146,7 +158,7 @@ These are facts read from the baseline source, not assumptions:
    The System V AMD64 ABI expects integer arguments in
    `rdi,rsi,rdx,rcx,r8,r9` and further arguments on the stack. A generated
    thunk must translate one to the other.
-6. **The symbol file is validation metadata, not a binding.** `.sym` format 5
+6. **The symbol file is validation metadata, not a binding.** `.sym` format 6
    (`obo/src/obo.obo:111-113`) records source hashes, interfaces, implementations
    and effects. It does not describe a native symbol address, relocatable
    object or linker input.
@@ -188,7 +200,7 @@ foo.cbind + C headers
         |
         v
    cinterop tool  --->  foo.obx (ordinary wrapper module)
-        |                 foo.sym (ordinary .sym, format 5)
+        |                 foo.sym (ordinary .sym, format 6)
         |                 foo_shim.S / foo_shim.o (generated thunks)
         |                 foo.manifest.json (hashes, ABI, platform, symbols)
         v
@@ -263,7 +275,7 @@ this schema into a wide header-parser option surface.
 }
 ```
 
-For libpq the only prototype entry is:
+The first libpq availability probe used only:
 
 ```json
 {"name": "pq_lib_version", "symbol": "PQlibVersion", "args": [],
@@ -279,8 +291,8 @@ prototype because there is no checked narrowing conversion. The signature check
 is labelled `header` when a real header supplied the declaration and
 `declarations-only` when the author supplied the declaration text.
 
-Future pointer/resource annotations (design only, not implemented) are
-explicit and versioned:
+The explicit-close adapter implements the connection/result/query subset below.
+Future pointer/resource annotations (design only) are explicit and versioned:
 
 ```json
 {"name": "PQconnectdb", "args": ["borrow_cstr"], "ret": "own<PGconn>",
@@ -402,7 +414,9 @@ nothing that needs a destructor. Production must bridge normal termination.
 
 ### 8.2 Explicit resource rules (libpq)
 
-These are design requirements, not implemented v1 behavior:
+The explicit-close libpq adapter implements the connection, query, result,
+NULL/empty, byte and error rules below. Automatic ownership transfer and future
+types remain design-only:
 
 - `PQconnectdb` returns an owned `PGconn`; `PQfinish` is called exactly once.
 - `PQexec`/`PQexecParams` return an owned `PGresult`; `PQclear` is called
@@ -451,9 +465,63 @@ as a user call. The generated wrapper's ordinary `.sym` therefore contains
 managed pointers to C, but the summary does not rely on that narrower fact.
 Effect summaries are inline metadata, not ownership proofs.
 
+### 8.5 Explicit-close C resource registry and library adapter
+
+The checkpoint adds a small toolkit-owned C registry
+(`obo/experimental/cinterop/toolkit/cres.{h,c}`) and an explicit-close libpq
+adapter (`toolkit/libpq_adapter.{h,c}`). It is a generic table, not a universal
+IDL or per-library compiler branch.
+
+- A token is `index | generation << 32`; the table entry also stores a kind and
+  a release function. `cres_peek(token, kind)` validates the live bit,
+  generation and kind before any dereference. Close poisons the generation
+  before calling the release function, so a double close cannot call
+  `PQfinish`/`PQclear` a second time.
+- The generation is 31 bits and the table is trusted C. This protects ordinary
+  obo code from stale, wrong-kind and accidentally forged integers; it is not an
+  unforgeable capability against trusted C or an adversarial caller.
+- Obo receives only `long` tokens. `PGconn*`, `PGresult*`, `char*`, `malloc`
+  blocks and all pointer arithmetic stay in C. The `Connection` and `Rows`
+  wrappers are ordinary `ref record`s with one integer field. Obo record fields
+  are not private: `new Connection{tok: ...}` is writable by an importer, so the
+  C registry, not the obo type, is what rejects an invalid token. The notes do
+  not claim otherwise.
+- Dropping a `Connection` or `Rows` frees the record only. It does **not** call
+  `PQfinish` or `PQclear`. `close` is explicit and consumes the wrapper; double
+  close is a safe false. `live_resources`/`live_connections`/`live_results`/
+  `live_buffers` expose the registry counters, and the tests fail when a close is
+  omitted. This is an explicit-close kit, not automatic foreign ownership.
+- Byte buffers are C-owned, length-bounded (`CRES_MAX_BUFFER`), and accessed
+  through the integer API. Obo builds the small fixed query packet, copies it
+  into one C buffer, and reads result bytes through `cres_buf_get` with the C
+  length. This byte loop is intentionally slow but honest for the first bounded
+  proof; it does not pretend to be a general string bridge.
+- `PQexecParams` receives the fixed SQL text and a descriptor array of parameter
+  values, lengths and formats. SQL and text values reject embedded NUL; binary
+  values preserve their exact length, including NUL. SQL is never interpolated.
+  `NULL` is an explicit kind, distinct from an empty text or empty binary value.
+- Values and error messages are copied with `PQgetlength`/`strlen` as
+  appropriate; `PQgetvalue` is never used as a C string. `PQntuples`,
+  `PQnfields`, `PQgetlength`, `PQfnumber`-style indices and `PQgetisnull` are
+  checked for bounds before use. Error results still own a `PGresult` and are
+  cleared exactly once. A `PGresult` remains usable after its `PGconn` is closed;
+  the adapter tests that lifetime.
+- Exact numeric text, OID and typmod are preserved as text/metadata. No numeric,
+  `money` or decimal database value is routed through a binary float. Source
+  float arguments/returns are rejected by the native contract; floats are not a
+  supported native type.
+- The adapter packet and registry are fixed, reviewed C. Do not grow them into a
+  generic IDL, a callback bridge, a variadic shim, struct-by-value ABI, TLS,
+  IFUNC or a raw-pointer escape hatch. If a library needs one of those, stop and
+  report a concrete blocker.
+
+The opt-in live test uses an ordinary local PostgreSQL role/database only with
+explicit user authorization. It is not a product default and does not modify
+server configuration, roles, schema or persistent data.
+
 ## 9. `.sym` checks, hashes and build validation
 
-- The existing `.sym` format stays format 5 and ABI 1. The wrapper is a normal
+- The existing `.sym` format stays format 6 and ABI 1. The wrapper is a normal
   module and its `.sym` is written by the normal writer.
 - Native-specific metadata lives in the typed sidecar and manifest, not in a
   patched `.sym` grammar. It uses the experimental `cinterop-proto/1` prefix; it
@@ -496,7 +564,9 @@ claim that annotated headers make it safe. The threat model is:
   authority;
 - no automatic execution of native code at compiler time beyond invoking the
   trusted C toolchain for declared inputs;
-- no database connection, SQL evaluation or network access in the prototype;
+- no database connection, SQL evaluation or network access in the default
+  tests or compiler; the live database smoke test is opt-in, local and
+  explicitly authorized;
 - no native code is loaded from an untrusted search path; the final ELF is a
   normal system-linked executable with its normal dynamic dependencies.
 
@@ -506,14 +576,15 @@ not an assertion that all of C is safe.
 
 ## 11. Versioning
 
-- Current compiler: `0.9`, `.sym` format 5, ABI 1. These are unchanged by this
-  proposal.
+- Current compiler: `0.10`, `.sym` format 6, ABI 1. The native experiment does
+  not take a new version, format or ABI number.
 - Native prototype package format: `cinterop-proto/1` (experimental, mandatory
   typed sidecar; no stable native ABI).
 - Future stable native manifest: `cinterop/1`, thunk ABI `cabi1`, independent
   of `.sym` format/ABI. No stable number is assigned now.
-- Floats remain next at `0.10`/format 6/ABI 1; decimal remains after that at
-  `0.11`/format 6. Native interop does not take either version.
+- Floats are released at `0.10`/format 6/ABI 1; decimal remains after that at
+  `0.11`/format 6 (Stage B prep is separate). Native interop does not take
+  either version.
 - A future ABI change to obo calls, record descriptors or handle representation
   requires a separate `SYM_ABI` decision; the native manifest records the ABI
   it was generated for and refuses a mismatch.
@@ -598,9 +669,9 @@ Risks:
   and libc termination are untested/unclaimed; they need a production entry
   design.
 - **Agent adaptation is not a safety proof.** The approved toolkit-plus-skill
-  direction keeps mandatory compiler/link checks, but the planned skill is not
-  implemented. Human/agent C-header and ownership interpretation can still be
-  wrong; only the enforced contracts and tests are checked.
+  direction keeps mandatory compiler/link checks, and the project skill and
+  templates are implemented. Human/agent C-header and ownership interpretation
+  can still be wrong; only the enforced contracts and tests are checked.
 - **Effects and ownership are not automatic.** Trusted C can violate any
   annotation. No finalizer exists, so automatic cleanup is future work.
 - **Limited ABI surface.** No floats, callbacks, variadics, structs by value or
@@ -625,19 +696,21 @@ Plan:
    database connection.
 5. Stop at the prototype checkpoint for architecture/security review. Do not
    merge, push, promote or seed-copy.
-6. Future, after separate approval: document the agent skill/templates for
-   maintaining per-library obo packages. The skill is not implemented or
-   installed by this checkpoint; do not expand the fixture into a universal
+6. The agent skill/templates for maintaining per-library obo packages are
+   implemented in `obo/experimental/cinterop/skill/`. Packaging/global
+   installation remains separate; do not expand the fixture into a universal
    configurable generator.
 
 ## 14. Prototype results
 
 Recorded from the repair worktree, 2026-10-31. Reviewed prototype:
-`a29f35d`; independent verdict: REVISE. Design baseline: `cd90a2d`, base
-`befa626` (`0.9`, `.sym` format 5, ABI 1). Evidence directories:
-`/tmp/opencode/c-interop-repair-a29f35d/` (before/failing cases) and the fresh
-repair archive recorded with the final report. This section records what ran,
-not what was hoped.
+`a29f35d`; independent verdict: REVISE. Historical repair baseline: `cd90a2d`,
+base `befa626` (`0.9`, `.sym` format 5, ABI 1). The feature was then merged with
+released `main` `a3e5b1f` (`0.10`, `.sym` format 6, ABI 1) and the explicit-close
+libpq adapter was added; sections 14.6-14.9 record that checkpoint. Evidence
+directories: `/tmp/opencode/c-interop-repair-a29f35d/` (before/failing cases),
+the fresh repair archive, and the final merged feature archive recorded with the
+report. This section records what ran, not what was hoped.
 
 ### 14.1 B1 and B2 reproduced before repair
 
@@ -789,20 +862,144 @@ The fixed-image extraction, host `crt1` plus synthetic-stack bridge, non-PIE
 layout and prototype linker script are not a production backend. The probe
 does not link `crtbegin.o`/`crtend.o` and does not test or claim C constructors,
 TLS, IFUNC or normal `atexit` teardown; `rt_finish` still exits by raw syscall.
-No pointer/ownership/foreign-resource API exists: no `PGconn`, `PGresult`,
-`malloc`, borrowed bytes or automatic `PQfinish`/`PQclear`. No callbacks,
-variadics as user syntax, structs by value, floats or decimals. C is trusted and
+At the `a29f35d` repair stage no pointer/ownership/foreign-resource API
+existed. The later explicit-close checkpoint (14.6-14.9) adds `PGconn`/`PGresult`
+tokens, bounded borrowed bytes and explicit `PQfinish`/`PQclear`, but still no
+automatic foreign finalizer. No callbacks, variadics as user syntax, structs by
+value, source floats/decimals in the native contract. C is trusted and
 unchecked; hashes are provenance, not signatures. The direct `__cinterop`
 builtin is internal and experimental, and same-signature sidecar edits remain a
 trusted-input issue.
 
 During this repair the user approved the toolkit-plus-agent-skill steering
 recorded in section 1.1. That decision is recorded here and in the experimental
-README; the skill itself is **planned/proposed, not implemented or installed**,
-and no generator/API expansion was added.
+README; the portable project skill and templates are now implemented under
+`obo/experimental/cinterop/skill/`, while global installation/packaging remains
+separate. No universal generator/API expansion was added.
 
 Status: **REVISE response complete for scoped repairs; stop for independent
 rereview.** Not merged, pushed, promoted or seed-copied.
+
+### 14.6 Merged 0.10 checkpoint and regression gates
+
+The feature was merged with released `main` `a3e5b1f` (do not merge the feature
+back into `main` from this checkpoint). The merge conflicts were the expected
+generic compiler lists: the builtin universe now contains both the float
+builtins and `__cinterop`; `callExempt` contains the float names and
+`__cinterop`; the usage line contains both `--native-relocs` and
+`--test-float-bits`. The promoted `0.10` seed from main was preserved; the
+feature's old `0.9` seed was not copied over it. The merged compiler reports
+`obo 0.10 sym-format 6 abi 1`.
+
+Verified on the merged feature:
+
+| Gate | Result |
+|---|---|
+| `make obo` from released 0.10 seed | pass |
+| `tests/module_test.py` | 107 passed, 0 failed |
+| `tests/elf_test.py` | pass |
+| `tests/float_f1.py` | ok, 19 groups |
+| `tests/doc_check.py` | 62 examples, 0 problems |
+| `tests/homes_check.py` | pass |
+| `tests/sym_test.py` | 42 passed, 0 failed |
+| `tests/run_fork.py` | 1555 passed, 0 failed |
+| normal `examples/hello.obx` vs seed | byte-identical executable |
+| compiler self-build fixed point | stage2 == stage3 == merged `obo` (`9cd9b55f...`) |
+| product peak (`OBO_STATS=1`, self-compile) | 2,042,368 bytes; seed 2,041,568; delta +800, under 2,500,000 |
+| targeted cinterop suite | pass, including fake adapter and opt-in live DB |
+
+### 14.7 Explicit-close resource adapter results
+
+The toolkit now contains the generic registry and the libpq adapter described
+in §8.5. Deterministic coverage uses `tests/fake_libpq.c` and
+`tests/fake_adapter_test.c`; no socket is opened there.
+
+The fake adapter tests exercise and pass:
+
+- connect success, connect `BAD` with error text, and `NULL` connect;
+- `PQfinish` exactly once on normal/double/stale/wrong-kind close;
+- query success, error result, `NULL` result and empty result;
+- `PQclear` exactly once, including error results and a result that outlives
+  its connection;
+- NULL vs empty parameter separation, binary parameter with embedded NUL, text
+  parameter with NUL rejection, and SQL text with NUL rejection;
+- malformed packet (trailing bytes, bad kind, bad result format, bounds);
+- allocation failure in `PQexecParams` (no token and no leak);
+- injection-shaped text passed as a parameter while the SQL text remains the
+  fixed statement;
+- exact numeric text plus OID `1700` and typmod `-1`, never a float;
+- row/column bounds and stale-token rejection before dereference;
+- registry live counts return to zero after every cleanup path.
+
+The obo wrapper is tested against the fake for close, error-result close,
+binary/NUL, NULL/empty, numeric text/metadata, no real `libpq.so.5` dependency,
+and the deliberate missing-close app. The missing-close app prints `live=1` and
+`conns=1`, so the leak check fails if a close is omitted.
+
+Real libpq without a database:
+
+```text
+PQlibVersion=160015
+empty_status=2
+empty_rows=0
+empty_fields=0
+empty_closed=true
+live=0
+```
+
+This proves the real dynamic link and real `PQmakeEmptyPGresult(NULL, ...)` /
+`PQclear` ownership without connecting. It does not prove a driver.
+
+### 14.8 Opt-in live PostgreSQL smoke test
+
+The user explicitly authorized local database testing for this checkpoint. The
+test used the least-privileged local role `chris` (no superuser, no createdb,
+no createrole) and the existing `postgres` database over the local Unix socket:
+
+```text
+host=/var/run/postgresql port=5432 dbname=postgres user=chris connect_timeout=3
+```
+
+This is a private local-development configuration recorded for reproducibility,
+not a universal default. The test did not create roles/databases/schema, edit
+`pg_hba`, start/stop services, expose ports, install packages, or read
+credential files. The server was PostgreSQL 16.15; `current_user=chris`,
+`current_database=postgres`.
+
+The in-process obo app used the adapter, not `psql` as a runtime helper, and
+ran only `SELECT`s. Observed output:
+
+```text
+server_version=160015
+numeric_text=1.234567890123456789 oid=1700 typmod=-1
+null_and_empty=ok
+sql_error_length=134
+binary_bytes=00ff41 len=3
+live=0
+live_db_smoke=ok
+```
+
+Covered: parameterized text treated as data (a SQL-injection-shaped string
+round-trips unchanged), `$2::int` text parameter, SQL `NULL` distinct from empty
+string, exact `numeric` text plus OID/typmod, a real server error result cleared
+cleanly, binary `bytea` result with embedded NUL bytes `00 ff 41`, connection and
+result close, and zero live registry resources. No temporary or persistent table
+was needed.
+
+### 14.9 Status and remaining limits
+
+Status: **explicit-close adapter checkpoint, pending independent rereview.** Not
+merged to `main`, not pushed, not promoted, no seed copy.
+
+Still not implemented or claimed: automatic foreign finalization on ordinary
+record drop; a production driver or full libpq API; callbacks, C variadics,
+struct-by-value, TLS/IFUNC, source floats/decimals in the native contract;
+binary-only module imports; stable `cinterop/1`/`cabi1`; PIE/ASLR; normal libc
+termination (`rt_finish` is still a raw syscall); `crtbegin`/`crtend`
+constructors. The fixed-image linker bridge and synthetic startup stack remain
+prototype infrastructure. Global skill packaging/installation remains separate;
+the repository project skill is implemented. Hashes are provenance, not
+signatures.
 
 ## 15. Open questions and review focus
 

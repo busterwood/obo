@@ -1,0 +1,15 @@
+module app
+
+import "demo.obx"
+
+fn main() {
+    let made = demo::open(4)
+    match made {
+        ok(d) {
+            println("byte0=", d.byte_at(0))
+            println("closed=", d.close())
+        }
+        err(m, c) { println("open error ", m, " ", c); exit(1) }
+    }
+    println("live=", demo::live())
+}

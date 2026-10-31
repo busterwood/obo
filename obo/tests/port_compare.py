@@ -32,17 +32,16 @@ sys.path.insert(0, os.path.join(ROOT, 'tests'))
 sys.path.insert(0, HERE)
 import run  # noqa: E402  (for error_cases)
 import mutate_stats  # noqa: E402  (optional timings and counters)
+from peak_budget import PEAK_BUDGET  # noqa: E402
 
 REF = os.path.abspath(os.environ.get('OBO_REF', os.path.join(FORK, 'obo')))
 SRC = os.path.join(FORK, 'src', 'obo.obo')
 LIBDIR = os.path.join(FORK, 'lib')
-# live peak, in bytes, of the port compiling itself. Lower it when memory improves; raise it only
-# for a reason recorded in FORK.md. The P6a tree measures 1,646,816 bytes live and 35,353,648 bytes
-# total allocation on main after the 0.5 promote (FORK.md, "Terminal-size metadata: slot 39"); the
-# budget stays 2,000,000 (353,184 spare above that peak). The figure is for the current tree and
-# varies by a few hundred bytes with the source path. Leaks are caught separately, by port_test's
-# leak check.
-PEAK_BUDGET = 2_000_000
+# Numeric-branch compiler live-peak budget, shared with mutate_io.  The user
+# explicitly approved 2,500,000 decimal bytes for numeric work; the historical
+# lambda release budget remains 2,000,000 in its own record.  The figure varies
+# by a few hundred bytes with the source path.  Leaks are caught separately by
+# port_test's leak check.
 
 
 # REF's outcome for each case text, with the seconds its compile and run took: a mutant's
@@ -198,6 +197,11 @@ SEED_FILE_MIN = {
     # sleepMs is an additive 0.8.1 builtin; the promoted 0.8 seed cannot parse it.
     os.path.join(FORK, 'tests', 'run', 'sleep.obx'): (0, 9),
     os.path.join(FORK, 'tests', 'errors', 'sleep.obx'): (0, 9),
+    # Numeric float cases are not in the flat old-file globs (they run from
+    # run_fork's explicit compact/reader gates).  If a future harness adds
+    # them, the seed comparison skips them until the 0.10 float identity.
+    os.path.join(FORK, 'tests', 'float_core.obx'): (0, 10),
+    os.path.join(FORK, 'tests', 'float_errors.obx'): (0, 10),
     os.path.join(FORK, 'tests', 'run', 'methods.obx'): (0, 6),
     os.path.join(FORK, 'tests', 'run', 'methods_refs.obx'): (0, 6),
     os.path.join(FORK, 'tests', 'run', 'methods_fields.obx'): (0, 6),
@@ -780,7 +784,7 @@ def compare_trees(tmp, quick, port, only=None, stats=None):
         # merely agree with a port that also failed
         if a.returncode != 0 or b.returncode != 0:
             failures.append(f"reemit {name}: exit obo {a.returncode}, port {b.returncode}")
-        elif not a.stdout or not a.stdout.startswith(b'obosym 5\n') or b'fn many(' not in a.stdout:
+        elif not a.stdout or not a.stdout.startswith(b'obosym 6\n') or b'fn many(' not in a.stdout:
             failures.append(f"reemit {name}: obo's output is not canonical: {a.stdout[:80]!r}")
         else:
             modline = next((l for l in a.stdout.splitlines() if l.startswith(b'module ')), b'module many')

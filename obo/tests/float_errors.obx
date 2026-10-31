@@ -1,0 +1,26 @@
+// Float diagnostics kept in the mandatory error gate.
+
+// === a bare fractional literal needs f
+fn main() { let x = 1.5 }  // error: a fractional or exponent literal needs an f suffix for float (for example 1.5f)
+
+// === a bare exponent literal needs f
+fn main() { let x = 1e3 }  // error: a fractional or exponent literal needs an f suffix for float (for example 1.5f)
+
+// === literal overflow is a compile error
+fn main() { let x = 1e309f }  // error: float literal out of range
+
+// === an int is not implicitly a float
+fn main() { let x: float = 1 }  // error: initialising 'x': cannot use int as float
+
+// === a float is not implicitly an int
+fn main() { let x: int = 1f }  // error: initialising 'x': cannot use float as int
+
+// === float and int do not mix
+fn main() { let x = 1f + 1 }  // error: '+' needs two floats, not float and int
+
+// === constant arithmetic is not folded
+const X = 1f + 2f  // error: constant value must be known at compile time
+fn main() { println(X) }
+
+// === float constants cannot be optional
+fn main() { let x: ?float = nil }  // error: only reference types can be optional, not float

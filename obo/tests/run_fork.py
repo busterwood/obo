@@ -172,6 +172,16 @@ def main():
     # memory size the full image, and the program built by the compiler runs
     tests.append(("image/runtime_data_segment", lambda: elf_test.check(run.OBXC)))
     tests.append(("lambda/call-arena-bound", call_arena_bound))
+    tests.append(("float/core", lambda: program_test(os.path.join(HERE, "float_core.obx"))))
+    def float_reader_gate():
+        p = subprocess.run([sys.executable, os.path.join(HERE, "float_f1.py"), "--reader-only"],
+                           capture_output=True, text=True, timeout=120,
+                           env=dict(os.environ, OBO=run.OBXC))
+        if p.returncode != 0:
+            raise run.Fail((p.stdout + p.stderr).strip()[:500])
+    tests.append(("float/reader", float_reader_gate))
+    for name, text, lo, hi in run.error_cases(os.path.join(HERE, "float_errors.obx")):
+        tests.append((f"float/errors/{name}", lambda s=text, l=lo, h=hi: run.error_test(s, l, h)))
     tests.append(("lambda/checked-log-gate", checked_log_gate))
     smoke_names = set()
     if smoke:

@@ -1,7 +1,7 @@
 # Numeric literal policy: exact by default, float by suffix
 
 **Date:** 2026-10-29
-**Status:** User-approved language direction. Not implemented. Floats remain at roadmap position 11; decimal remains after floats.
+**Status:** User-approved language direction. Floating point is released at `0.10`/format 6; decimal remains after floats. Floats were accelerated ahead of the older roadmap position by explicit user decision, and Stage B moves to the next planned release (`0.11`).
 **Scope:** literal and conversion policy for the planned `float` and `decimal` types. The eza/stdlib phases and the approved eza design are unaffected.
 
 ## Decision

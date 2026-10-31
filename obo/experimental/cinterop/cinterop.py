@@ -5,12 +5,13 @@
     python3 obo/experimental/cinterop/cinterop.py verify MANIFEST
 
 SPEC is a small JSON file (format cinterop-proto/1). This is a trusted-build
-prototype, not a public API. It generates an ordinary .obx wrapper, an assembly
-thunk for each scalar function, a typed sidecar check, and a real system-linked
-non-PIE ELF. The compiler's experimental __cinterop builtin emits a call-site
-arity record; this tool checks every record against the spec before the link.
-Hashes are provenance/corruption checks, not a signature or a memory-safety
-proof.
+prototype, not a public API. It generates an assembly thunk for each scalar
+function and either generates a simple .obx wrapper or copies the maintained
+wrapper named by "wrapper"; it checks the typed sidecar and builds a real
+system-linked non-PIE ELF. The compiler's experimental __cinterop builtin emits
+a call-site arity record; this tool checks every record against the spec before
+the link. Hashes are provenance/corruption checks, not a signature or a
+memory-safety proof.
 """
 import argparse
 import hashlib

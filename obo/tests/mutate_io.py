@@ -30,6 +30,7 @@ FORK = os.path.dirname(HERE)
 ROOT = os.path.join(os.path.dirname(FORK), 'obx')
 sys.path.insert(0, os.path.join(ROOT, 'tests'))
 import run  # noqa: E402
+from peak_budget import PEAK_BUDGET, empty_array_regression  # noqa: E402
 
 run.OBXC = os.path.abspath(os.environ.get('OBO', os.path.join(FORK, 'obo')))
 run.ROOT = FORK
@@ -37,7 +38,6 @@ LIBDIR = os.path.join(FORK, 'lib')
 RUNTIME = os.path.join(FORK, 'runtime', 'runtime.c')
 SRC = os.path.join(FORK, 'src', 'obo.obo')
 SEED = os.path.join(FORK, 'seed', 'obo')
-PEAK_BUDGET = 2_000_000
 CFLAGS = ('-O2 -ffreestanding -fno-builtin -nostdlib -fno-pic -fno-pie '
           '-fno-stack-protector -fno-asynchronous-unwind-tables -mcmodel=small '
           '-fno-tree-loop-distribute-patterns -Wall').split()
@@ -45,6 +45,24 @@ TMP = tempfile.mkdtemp(prefix='obo-mutate-io-')
 
 # ---------------------------------------------------------------- mutants
 RUNTIME_MUTANTS = {
+    'float add subtracts': (
+        'u64 rt_f_add(u64 a, u64 b) { return f_to_bits(f_from_bits(a) + f_from_bits(b)); }',
+        'u64 rt_f_add(u64 a, u64 b) { return f_to_bits(f_from_bits(a) - f_from_bits(b)); }'),
+    'float divide multiplies': (
+        'u64 rt_f_div(u64 a, u64 b) { return f_to_bits(f_from_bits(a) / f_from_bits(b)); }',
+        'u64 rt_f_div(u64 a, u64 b) { return f_to_bits(f_from_bits(a) * f_from_bits(b)); }'),
+    'float not-equal uses equal': (
+        'i64 rt_f_ne(u64 a, u64 b) { return f_from_bits(a) != f_from_bits(b); }',
+        'i64 rt_f_ne(u64 a, u64 b) { return f_from_bits(a) == f_from_bits(b); }'),
+    'float shortest ignores ceiling candidate': (
+        '        int ceil_ok = candidate_ok(ceil_norm, ceil_e, bits);\n',
+        '        int ceil_ok = 0;\n'),
+    'float parse accepts empty input': (
+        '    if (!any) return err_cell(descErr, iomsg_lit("invalid float"), 22);\n',
+        '    if (0) return err_cell(descErr, iomsg_lit("invalid float"), 22);\n'),
+    'float negative zero prints positive': (
+        '    if (ef == 0 && frac == 0) {\n        if (sign) b[o++] = \'-\';\n        b[o++] = \'0\';\n        return o;\n    }',
+        '    if (ef == 0 && frac == 0) {\n        b[o++] = \'0\';\n        return o;\n    }'),
     # a short read is data, not EOF
     'short read treated as EOF': (
         '    if ((u64)r < (u64)max) a->len = (u64)r;                        /* a short read is data, not EOF */\n',
@@ -174,9 +192,10 @@ LIB_MUTANTS = {
 }
 
 # Runtime mutants with no program-observable semantic difference are judged by the actual
-# compiler self-host memory oracle: a compiler built against the mutant runtime must compile
-# src/obo.obo within the same 2,000,000-byte live-peak budget. The normal program suite is
-# still run first for every mutant.
+# compiler self-host memory oracle.  The absolute numeric-branch budget is 2,500,000 bytes;
+# the zero-array mutant is additionally judged by its delta from the unmutated baseline because
+# the baseline is itself above the historical 2,000,000 lambda budget.  The normal program suite
+# is still run first for every mutant.
 MEMORY_MUTANTS = {'zero array alloc gets a heap block'}
 
 # ---------------------------------------------------------------- cases
@@ -217,6 +236,7 @@ CASES = [
     case('run/io_writer', 'tests/run/io_writer.obx', env=clean_env(check=True)),
     case('run/io_defer', 'tests/run/io_defer.obx', env=clean_env(check=True)),
     case('run/empty_arrays', 'tests/run/empty_arrays.obx', env=clean_env(check=True)),
+    case('float/core', 'tests/float_core.obx', env=clean_env(check=True)),
     case('io/short_read', 'tests/io/short_read.obx', env=clean_env(check=True), stdin=b'0123456789'),
     case('io/fault_eintr', 'tests/io/fault_eintr.obx', env=clean_env(check=True, fault='eintr')),
     case('io/fault_inert', 'tests/io/fault_inert.obx', env=clean_env(fault='short')),
@@ -424,12 +444,16 @@ def main():
                 except MemoryOracleError as e:
                     broken.append(f"BROKEN {kind}: {name}: {e}")
                     continue
+                over, delta = empty_array_regression(base_peak, peak)
                 if peak > PEAK_BUDGET:
                     first = (f"memory: live peak {peak} bytes is over the budget of {PEAK_BUDGET} "
-                             f"(baseline {base_peak}); the compiler embeds the mutant runtime")
+                             f"(baseline {base_peak}, delta {delta}); the compiler embeds the mutant runtime")
+                elif over:
+                    first = (f"memory: live peak {peak} is {delta} bytes above baseline {base_peak} "
+                             f"(minimum empty-array delta 30000); the shared empty block was lost")
                 else:
-                    first = (f"memory: live peak {peak} bytes stays within the budget of {PEAK_BUDGET} "
-                             f"(baseline {base_peak})")
+                    first = (f"memory: live peak {peak} bytes is within budget and only {delta} bytes "
+                             f"above baseline {base_peak}; no empty-array regression")
         except subprocess.CalledProcessError as e:
             broken.append(f"BROKEN {kind}: {name}: {e.stderr.decode()[:160]}")
             continue
