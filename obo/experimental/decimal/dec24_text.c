@@ -163,14 +163,22 @@ static int coeff_digits(const dec24 *v, char digits[38], int *len,
                         int *trailing) {
     uint64_t lo = v->lo, hi = v->hi;
     int n = 0;
-    while (lo != 0 || hi != 0) {
+    if (hi != 0) {
         uint64_t qh, ql, rem;
-        if (dec_div128_64(hi, lo, 10, &qh, &ql, &rem) != DEC_OK)
+        /* coeff < 10^38 implies hi < 10^19, so qh is zero and ql < 10^19. */
+        if (dec_div128_64(hi, lo, 10000000000000000000ULL,
+                          &qh, &ql, &rem) != DEC_OK)
             return DEC_INVALID;
-        digits[n++] = (char)('0' + (int)rem);
-        hi = qh;
+        if (qh != 0) return DEC_INVALID;
+        for (int j = 0; j < 19; j++) {
+            digits[n++] = (char)('0' + (int)(rem % 10));
+            rem /= 10;
+        }
         lo = ql;
-        if (n > 38) return DEC_INVALID;
+    }
+    while (lo != 0) {
+        digits[n++] = (char)('0' + (int)(lo % 10));
+        lo /= 10;
     }
     for (int i = 0; i < n / 2; i++) {
         char t = digits[i];

@@ -54,7 +54,7 @@ typedef struct {
 enum {
     DEC_OK = 0,
     DEC_OVERFLOW = 1,
-    DEC_UNSUPPORTED_EXACT = 2,  /* exact alignment/range not attempted */
+    DEC_UNSUPPORTED_EXACT = 2,  /* retained; D2 add/sub use the sticky path */
     DEC_INEXACT = 3,            /* UNNECESSARY with discarded nonzero digits */
     DEC_INVALID = 4,
     DEC_DIV_ZERO = 5,
@@ -107,7 +107,14 @@ int dec_cmp(const dec24 *a, const dec24 *b);
 int dec_equal(const dec24 *a, const dec24 *b);
 
 /* Mode is mandatory: the prototype does not choose a language default.
- * Malformed input values and invalid modes return DEC_INVALID. */
+ * Malformed input values and invalid modes return DEC_INVALID.
+ *
+ * D2 completed the add/sub range contract: a gap wider than the 38-digit
+ * window uses a sticky path with the correct sign- and mode-dependent one-ulp
+ * neighbour (including power-of-ten cancellation).  DEC_UNSUPPORTED_EXACT is
+ * no longer returned by these entry points.  They remain *rounded* operations:
+ * DEC_OK does not mean the exact result was representable; use the exact
+ * entry points in dec24_arith.h when that distinction matters. */
 int dec_add(dec24 *dst, const dec24 *a, const dec24 *b, unsigned mode);
 int dec_sub(dec24 *dst, const dec24 *a, const dec24 *b, unsigned mode);
 int dec_mul(dec24 *dst, const dec24 *a, const dec24 *b, unsigned mode);

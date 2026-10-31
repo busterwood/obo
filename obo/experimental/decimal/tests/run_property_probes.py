@@ -25,6 +25,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 import binding_oracle as bo  # noqa: E402
+import arithmetic_oracle as ar  # noqa: E402
 
 
 class Dec(ctypes.Structure):
@@ -76,7 +77,8 @@ def build_lib(evidence: str) -> tuple[str, dict]:
     cmd = ["gcc", "-O2", "-fPIC", "-shared", "-std=c11", "-Wall", "-Wextra",
            "-Werror", "-I", ROOT,
            os.path.join(ROOT, "dec24.c"), os.path.join(ROOT, "dec24_text.c"),
-           os.path.join(ROOT, "dec24_bind.c"), "-o", out]
+           os.path.join(ROOT, "dec24_bind.c"),
+           os.path.join(ROOT, "dec24_arith.c"), "-o", out]
     t0 = time.monotonic()
     p = subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True)
     return out, {"cmd": cmd, "returncode": p.returncode,
@@ -111,6 +113,26 @@ def bind_api(lib):
                                       ctypes.c_int64, ctypes.c_int64,
                                       ctypes.c_uint]
     lib.dec_bind_quantize.restype = ctypes.c_int
+    lib.dec_add.argtypes = [ctypes.POINTER(Dec), ctypes.POINTER(Dec),
+                            ctypes.POINTER(Dec), ctypes.c_uint]
+    lib.dec_add.restype = ctypes.c_int
+    lib.dec_sub.argtypes = [ctypes.POINTER(Dec), ctypes.POINTER(Dec),
+                            ctypes.POINTER(Dec), ctypes.c_uint]
+    lib.dec_sub.restype = ctypes.c_int
+    for name in ("dec_add_exact", "dec_sub_exact", "dec_mul_exact",
+                 "dec_div_exact", "dec_rem_trunc"):
+        fn = getattr(lib, name)
+        fn.argtypes = [ctypes.POINTER(Dec), ctypes.POINTER(Dec),
+                       ctypes.POINTER(Dec), ctypes.c_uint16]
+        fn.restype = ctypes.c_int
+    lib.dec_div_scale.argtypes = [ctypes.POINTER(Dec), ctypes.POINTER(Dec),
+                                  ctypes.POINTER(Dec), ctypes.c_int32,
+                                  ctypes.c_uint, ctypes.c_uint16]
+    lib.dec_div_scale.restype = ctypes.c_int
+    lib.dec_div_precision.argtypes = [ctypes.POINTER(Dec), ctypes.POINTER(Dec),
+                                      ctypes.POINTER(Dec), ctypes.c_uint,
+                                      ctypes.c_uint, ctypes.c_uint16]
+    lib.dec_div_precision.restype = ctypes.c_int
 
 
 def format_text(lib, v, display: bool):
@@ -225,6 +247,122 @@ def probe_upper(lib, n: int, rng: random.Random) -> dict:
             "seconds": round(time.monotonic() - t0, 3), "sample": bad}
 
 
+def _ar(v):
+    return ar.Dec(v[0], v[1], v[2], v[3])
+
+
+def _cmp_result(out: Dec, want) -> bool:
+    return (parts(out)[:3] == (want.sign, want.coeff, want.exp) and
+            out.dscale == want.dscale)
+
+
+def probe_division(lib, n: int, rng: random.Random) -> dict:
+    bad = []
+    ok = 0
+    t0 = time.monotonic()
+    for _ in range(n):
+        a = rand_dec(rng, -40, 40)
+        b = rand_dec(rng, -40, 40)
+        if b[1] == 0:
+            b = (0, 1, 0, b[3])
+        mode = rng.randrange(8)
+        ds = rng.randrange(0, 65536)
+        if rng.randrange(2):
+            scale = rng.choice([-5, -1, 0, 1, 2, 5, 10, 19, 38])
+            st, want = ar.div_scale(_ar(a), _ar(b), scale, mode, ds)
+            out = Dec()
+            ctypes.memset(ctypes.byref(out), 0xAA, ctypes.sizeof(out))
+            got = lib.dec_div_scale(ctypes.byref(out), ctypes.byref(mk(a)),
+                                    ctypes.byref(mk(b)), scale, mode, ds)
+        else:
+            p = rng.choice([1, 2, 3, 5, 10, 19, 20, 37, 38])
+            st, want = ar.div_precision(_ar(a), _ar(b), p, mode, ds)
+            out = Dec()
+            ctypes.memset(ctypes.byref(out), 0xAA, ctypes.sizeof(out))
+            got = lib.dec_div_precision(ctypes.byref(out), ctypes.byref(mk(a)),
+                                        ctypes.byref(mk(b)), p, mode, ds)
+        if got != st:
+            bad.append(("div_status", a, b, mode, ds, st, got))
+        elif got == 0:
+            ok += 1
+            if not _cmp_result(out, want):
+                bad.append(("div_value", a, b, mode, ds, want, parts(out)))
+        elif bytes(out) != b"\xaa" * ctypes.sizeof(out):
+            bad.append(("div_mutated", a, b, mode, got))
+        if len(bad) >= 10:
+            break
+    return {"cases": n, "ok_results": ok, "failures": len(bad),
+            "seconds": round(time.monotonic() - t0, 3), "sample": bad}
+
+
+def probe_remainder(lib, n: int, rng: random.Random) -> dict:
+    bad = []
+    t0 = time.monotonic()
+    for _ in range(n):
+        a = rand_dec(rng, -60, 60)
+        b = rand_dec(rng, -60, 60)
+        if b[1] == 0:
+            b = (0, 1, 0, b[3])
+        ds = rng.randrange(0, 65536)
+        st, want = ar.rem_trunc(_ar(a), _ar(b), ds)
+        out = Dec()
+        ctypes.memset(ctypes.byref(out), 0xAA, ctypes.sizeof(out))
+        got = lib.dec_rem_trunc(ctypes.byref(out), ctypes.byref(mk(a)),
+                                ctypes.byref(mk(b)), ds)
+        if got != st:
+            bad.append(("rem_status", a, b, ds, st, got))
+        elif got == 0:
+            if (value(parts(out)) != ar.value(want) or
+                    out.dscale != want.dscale):
+                bad.append(("rem_value", a, b, ds, want, parts(out)))
+        elif bytes(out) != b"\xaa" * ctypes.sizeof(out):
+            bad.append(("rem_mutated", a, b, got))
+        if len(bad) >= 10:
+            break
+    return {"cases": n, "failures": len(bad),
+            "seconds": round(time.monotonic() - t0, 3), "sample": bad}
+
+
+def probe_gap(lib, n: int, rng: random.Random) -> dict:
+    bad = []
+    t0 = time.monotonic()
+    for _ in range(n):
+        a = rand_dec(rng, -200, 200)
+        b = rand_dec(rng, -200, 200)
+        if a[1] == 0:
+            a = (0, 1, a[2], a[3])
+        if b[1] == 0:
+            b = (0, 1, b[2], b[3])
+        if rng.randrange(2):
+            b = (b[0], b[1], max(-32768, a[2] - rng.randrange(39, 300)), b[3])
+        else:
+            a = (a[0], a[1], max(-32768, b[2] - rng.randrange(39, 300)), a[3])
+        mode = rng.randrange(8)
+        ds = max(a[3], b[3])
+        for fn, oracle in ((lib.dec_add, ar.add_rounded),
+                           (lib.dec_sub, ar.sub_rounded)):
+            st, want = oracle(_ar(a), _ar(b), mode, ds)
+            out = Dec()
+            ctypes.memset(ctypes.byref(out), 0xAA, ctypes.sizeof(out))
+            got = fn(ctypes.byref(out), ctypes.byref(mk(a)),
+                     ctypes.byref(mk(b)), mode)
+            if got != st:
+                bad.append(("gap_status", a, b, mode, st, got))
+            elif got == 0:
+                if (value(parts(out)) != ar.value(want) or
+                        out.dscale != want.dscale):
+                    bad.append(("gap_value", a, b, mode, ar.value(want),
+                                value(parts(out))))
+            elif bytes(out) != b"\xaa" * ctypes.sizeof(out):
+                bad.append(("gap_mutated", a, b, mode, got))
+            if len(bad) >= 10:
+                break
+        if len(bad) >= 10:
+            break
+    return {"cases": n, "failures": len(bad),
+            "seconds": round(time.monotonic() - t0, 3), "sample": bad}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--evidence", default=None)
@@ -233,6 +371,9 @@ def main() -> int:
     ap.add_argument("--ordering", type=int, default=None)
     ap.add_argument("--binding", type=int, default=None)
     ap.add_argument("--upper", type=int, default=None)
+    ap.add_argument("--div", type=int, default=None)
+    ap.add_argument("--rem", type=int, default=None)
+    ap.add_argument("--gap", type=int, default=None)
     args = ap.parse_args()
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     evidence = os.path.abspath(
@@ -245,6 +386,12 @@ def main() -> int:
         50000 if args.full else 10000)
     n_upper = args.upper if args.upper is not None else (
         1000 if args.full else 300)
+    n_div = args.div if args.div is not None else (
+        20000 if args.full else 2000)
+    n_rem = args.rem if args.rem is not None else (
+        10000 if args.full else 1000)
+    n_gap = args.gap if args.gap is not None else (
+        20000 if args.full else 2000)
 
     libpath, build = build_lib(evidence)
     if build["returncode"] != 0:
@@ -264,17 +411,32 @@ def main() -> int:
         "ordering": probe_ordering(lib, n_order, rng),
         "binding": probe_binding(lib, n_bind, rng),
         "upper_roundtrip": probe_upper(lib, n_upper, rng),
+        "division": probe_division(lib, n_div, rng),
+        "remainder": probe_remainder(lib, n_rem, rng),
+        "wide_gap": probe_gap(lib, n_gap, rng),
     }
     ok = all(results[k]["failures"] == 0
-             for k in ("ordering", "binding", "upper_roundtrip"))
+             for k in ("ordering", "binding", "upper_roundtrip",
+                       "division", "remainder", "wide_gap"))
     results["ok"] = ok
+    def json_default(o):
+        if isinstance(o, ar.Dec):
+            return o.parts()
+        if isinstance(o, Fraction):
+            return str(o)
+        if isinstance(o, tuple):
+            return list(o)
+        raise TypeError(type(o).__name__)
+
     with open(os.path.join(evidence, "property_probes.json"), "w",
               encoding="utf-8") as f:
-        json.dump(results, f, indent=2, sort_keys=True)
+        json.dump(results, f, indent=2, sort_keys=True,
+                  default=json_default)
         f.write("\n")
     print(json.dumps({k: results[k] for k in
                       ("mode", "ordering", "binding", "upper_roundtrip",
-                       "ok")}, indent=2))
+                       "division", "remainder", "wide_gap", "ok")},
+                     indent=2, default=json_default))
     return 0 if ok else 1
 
 

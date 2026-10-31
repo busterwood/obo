@@ -418,18 +418,31 @@ int dec24_test_main(void) {
     check_status_unchanged("zero_mul_badmode", 0, &out,
                            dec_mul(&out, &a, &b, 8), DEC_INVALID);
 
-    /* Guard honesty: 12e76 + 1 is refused (aligned operand > 2^256), while
-     * 77/78-digit aligned integers below 2^256 are accepted exactly. */
+    /* D2 sticky completion: 12e76 + 1 is no longer refused.  Its exact value
+     * needs more than 38 significant digits, but the rounded API returns the
+     * 38-digit grid point (12e76 for nearest/truncation) and the exact API
+     * reports INEXACT.  77/78-digit aligned integers below 2^256 remain on
+     * the existing exact alignment path. */
     dec_set(&a, 0, 12, 0, 76, 0);
     dec_set(&b, 0, 1, 0, 0, 0);
-    fill_byte(&out, 0xAA);
-    check_status_unchanged("guard_refuse_12e76", 0, &out,
-                           dec_add(&out, &a, &b, DEC_ROUND_HALF_EVEN),
-                           DEC_UNSUPPORTED_EXACT);
-    fill_byte(&out, 0xAA);
-    check_status_unchanged("guard_refuse_12e76_sub", 0, &out,
-                           dec_sub(&out, &a, &b, DEC_ROUND_HALF_EVEN),
-                           DEC_UNSUPPORTED_EXACT);
+    dec_zero(&out);
+    int sticky_add = dec_add(&out, &a, &b, DEC_ROUND_HALF_EVEN);
+    checks++;
+    if (sticky_add != DEC_OK) {
+        fail_status("sticky_12e76", 0, sticky_add, DEC_OK);
+    } else {
+        dec_set(&want, 0, 12, 0, 76, 0);
+        check_dec("sticky_12e76", 0, &out, &want);
+    }
+    dec_zero(&out);
+    int sticky_sub = dec_sub(&out, &a, &b, DEC_ROUND_HALF_EVEN);
+    checks++;
+    if (sticky_sub != DEC_OK) {
+        fail_status("sticky_12e76_sub", 0, sticky_sub, DEC_OK);
+    } else {
+        dec_set(&want, 0, 12, 0, 76, 0);
+        check_dec("sticky_12e76_sub", 0, &out, &want);
+    }
 
     dec_set(&a, 0, 9, 0, 76, 0);
     dec_set(&b, 0, 1, 0, 0, 0);
