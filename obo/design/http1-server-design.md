@@ -1,9 +1,15 @@
 # HTTP/1.1 server protocol layer
 
 Status: **design for independent review; no implementation authorized.**
-Baseline: `main` `2364add3a7ad0a02ec9412b6834a36a510d45f32`, obo `0.12`,
-symbol format 6, ABI 1. This note reserves no compiler, ABI, symbol-format,
-package or protocol version. It designs protocol logic in obo above the approved
+Revision 2 (2026-10-31): resolves the REVISE review at
+`/tmp/opencode/http1-design-review-651927`; reconciles the transport seam with
+the TLS adapter design at `ea02b29`, adds fresh-connection/handshake/response
+total deadlines, graceful close policy, owned read bytes, unread-body
+`InvalidState`, response trailer/aggregate caps, ALPN dispatch and the neutral
+`http1tls` adapter. Baseline: `main`
+`2364add3a7ad0a02ec9412b6834a36a510d45f32`, obo `0.12`, symbol format 6,
+ABI 1. This note reserves no compiler, ABI, symbol-format, package or protocol
+version. It designs protocol logic in obo above the approved
 systems stream/buffer/reactor layer and an optional TLS transport adapter; it
 does not design TLS, HTTP/2 or HTTP/3.
 
@@ -17,7 +23,8 @@ Implement a **strict, incremental HTTP/1.1 origin-server protocol layer** with:
 - a byte-state parser over `sysbuffer::Buffer` that never buffers a whole
   request or response;
 - one narrow `Transport` interface implemented by plain `sysstream::Stream`
-  and, later, by the separate TLS adapter;
+  and, later, by the neutral `http1tls` wrapper around the separate TLS
+  adapter;
 - absolute monotonic deadlines for headers, body progress, idle keep-alive and
   response progress, with no deadline restart on partial input;
 - request framing decisions made once, from the header block, with CL/TE
@@ -83,11 +90,13 @@ them, not a claim that they are implemented.
 
 | Module | Contract used here |
 |---|---|
-| `sysstream` | `Stream`, `readSome`/`readInto`, `writeSome`/`writeFrom`, `shutdownWrite`, `close`, `source` |
+| `sysstream` | `Stream`, `readSome`, `writeSome`, `shutdownWrite`, `close`, `source` (plain adapter only) |
 | `sysbuffer` | fixed-capacity `Buffer`, `feed`, `find`, `consume`, `copy`, `Reader`/`Writer` steps |
 | `sysreactor` | level-triggered `watchResource`, `modify`, `remove`, `timer`, `wait`, `stop` |
 | `sysclock` | `Instant`, `Duration`, `Deadline`, `Timestamp`, `after`, `remaining`, `realtime` |
 | `syswaitio` | only the blocking single-connection convenience; requires a dedicated reactor |
+| `systls` (separate design `ea02b29`) | TLS session I/O only through `http1tls`; no HTTP import |
+| `http1tls` (this design) | neutral adapter; imports `http1` + `systls`; implements `http1::Transport` |
 | `sysnet` | `Listener`, `Connection`, `accept`, `intoStream`, addresses; not HTTP routing |
 | `sysplatform` | checked `Resource` identity for `watchResource`; counts for leak tests |
 | `syslog` | bounded log records, explicit drain; no blocking print in the loop |
@@ -112,7 +121,10 @@ records, closed types, optionals, arrays, methods, interfaces, capturing
 lambdas (only when passed directly as call arguments), `match`, `defer` and
 `try`. They do not use a destructor, async/await, generics, a function value in
 a field, a returned reference, or a private-field feature that is still design
-only. API blocks are **proposed declarations**, not a compilable module; the
+only. String parameters are by value: `&string` is rejected by 0.12 ("only
+records, closed types and arrays can be borrowed, not string"), while strings
+are reference-counted and copied on pass. The compile gate in §10.5 proves
+repeated `writeText(c, body, ...)` and a string field passed to `headerValue`. API blocks are **proposed declarations**, not a compilable module; the
 bodyless `pub fn` headings become definitions in an implementation.
 
 ### 2.3 Why this is not a systems module
@@ -132,14 +144,16 @@ obo/lib/http1.obx          public types, Transport interface, Connection, plain 
                            server helpers
 obo/lib/http1parse.obx     pure start-line/header/chunk validators and framing
 obo/lib/http1date.obx      HTTP-date format/parse (integer civil math)
+obo/lib/http1tls.obx       neutral TLS adapter: imports http1 + systls, wraps
+                           TlsSession as an http1::Transport
 ```
 
-`module http1`, `module http1parse`, `module http1date`; imports resolve sibling
-modules first, then `-I` roots. `http1` imports `http1parse`, `http1date` and
+`module http1`, `module http1parse`, `module http1date`, `module http1tls`;
+imports resolve sibling modules first, then `-I` roots. `http1` imports `http1parse`, `http1date` and
 the systems modules. The split is logical; an implementation may keep the pure
 validators in `http1.obx` if that keeps the module count down, but the public
-type names stay unique. The TLS module implements `http1::Transport` for its
-own session type; no HTTP module imports TLS.
+type names stay unique. `http1tls` imports both `http1` and `systls`; `http1`
+never imports `systls`, and `systls` never imports HTTP.
 
 Hidden decisions:
 
@@ -148,6 +162,7 @@ Hidden decisions:
 | `http1parse` | exact byte grammar, token sets, chunk/trailer state | validated start line, ordered fields, framing decision, typed parse error |
 | `http1` | connection phase, buffering, pipelining, response framing | `Connection`, step/read/write/close calls, `Event` |
 | `http1date` | civil calendar and HTTP-date grammar | `formatHttpDate`, `parseHttpDate` |
+| `http1tls` | TLS wrapper type, outcome mapping, ALPN mapping | `http1::Transport` for `TlsTransport`; `accept` |
 
 The parser does not know routes, handlers, files, databases or HTML. The
 serializer does not know the application's body type; it accepts bytes.
@@ -184,7 +199,7 @@ module http1
 import "sys/sysbuffer.obx" as buffer
 import "sys/sysclock.obx" as clock
 import "sys/syserrors.obx" as errors
-import "sys/sysplatform.obx" as platform
+import "sys/sysreactor.obx" as reactor
 import "sys/sysstream.obx" as stream
 
 pub type Limits = ref record {
@@ -192,7 +207,7 @@ pub type Limits = ref record {
     maxTarget: int               // bytes in request-target
     maxHeaderBytes: int          // start line + all field lines + CRLFs
     maxHeaderCount: int
-    maxHeaderLine: int
+    maxHeaderLine: int           // includes CRLF
     maxBody: int                 // decoded request-body bytes
     maxChunkLine: int            // size line + extensions + CRLF
     maxChunkSize: int
@@ -200,16 +215,22 @@ pub type Limits = ref record {
     maxChunkMetadata: int        // size lines + CRLFs + extensions, cumulative
     maxTrailerBytes: int
     maxTrailerCount: int
-    maxResponseHeaderBytes: int
+    maxResponseHeaderBytes: int  // status line + fields + CRLFs
     maxResponseBuffer: int       // encoded pending output per connection
+    maxResponseTrailerCount: int
+    maxResponseTrailerBytes: int
     maxPipelineBytes: int        // unread bytes beyond the current message
     maxRequests: int             // per connection, before forced close
     maxConnections: int          // server helper admission cap
+    maxTotalConnectionBytes: int // aggregate fixed buffers admitted by server
+    acceptTimeoutMs: int         // fresh connection before first request byte
+    handshakeTimeoutMs: int      // TLS handshake, from accept/make
     headerTimeoutMs: int
     bodyIdleTimeoutMs: int
     idleTimeoutMs: int
-    responseTimeoutMs: int
-    totalTimeoutMs: int
+    responseTimeoutMs: int       // progress timeout
+    responseTotalTimeoutMs: int  // absolute, slow-reader cap
+    totalTimeoutMs: int          // whole request/response cap
     allowHttp10: bool
     allowExtensionMethods: bool
     pipelining: bool
@@ -257,39 +278,86 @@ pub type Phase = closed {
 }
 
 pub type Event = closed {
+    HandshakeDone {}             // transport handshake complete; inspect ALPN
     NeedRead {}                  // no complete head/body input; watch read
-    NeedWrite {}                 // pending output; watch write
+    NeedWrite {}                 // pending output/ciphertext; watch write
     HeadReady {}                 // request headers complete; inspect/respond
-    ResponseComplete {}          // response fully flushed
+    ResponseComplete {}          // response plaintext and ciphertext flushed
     TimedOut {}                  // deadline fired; error/close already queued
     ProtocolError { status: int }// protocol error response queued; no handler
     ConnectionClosed {}
 }
 
 pub type BodyRead = closed {
-    BodyData { count: int }      // 1..max bytes written to dst
+    BodyData { bytes: []byte }   // owned, 1..max bytes
     BodyEnd {}                   // body complete; trailers available
     BodyNeedRead {}              // no input now; watch read
 }
 
-pub type Handshake = closed {
-    Complete {}
+// Transport outcomes use distinct variant names: closed-type variants share a
+// module namespace in obo, so Step/Read/Write/Shutdown cannot all use "Done".
+pub type Step = closed {
+    StepDone {}
+    StepWantRead {}
+    StepWantWrite {}
+}
+
+pub type ReadOutcome = closed {
+    ReadData { bytes: []byte }   // owned plaintext, 1..max bytes
+    ReadEof {}
+    ReadWantRead {}
+    ReadWantWrite {}
+}
+
+pub type WriteOutcome = closed {
+    WriteWrote { count: int }    // accepted prefix, 0 allowed for count 0
+    WriteWantRead {}
+    WriteWantWrite {}
+}
+
+pub type ShutdownOutcome = closed {
+    ShutdownDone {}
+    ShutdownSent {}
+    ShutdownPeerClosed {}
+    ShutdownWantRead {}
+    ShutdownWantWrite {}
+}
+
+pub type Want = closed {
+    WantNone {}
     WantRead {}
     WantWrite {}
+    WantReadWrite {}
+}
+
+pub type Alpn = closed {
+    AlpnNone {}
+    AlpnHttp11 {}
+    AlpnH2 {}
+    AlpnOther { name: string }
+}
+
+pub type FlushOutcome = closed {
+    Flushed {}
+    FlushWantRead {}
+    FlushWantWrite {}
 }
 ```
 
-`Limits` fields are revalidated at `make`: every limit is positive, sublimits do
-not exceed their parent (`maxHeaderLine <= maxHeaderBytes`,
-`maxTarget <= maxStartLine`, `maxChunkLine <= maxChunkMetadata`,
-`maxResponseHeaderBytes <= maxResponseBuffer`, `maxChunkSize <= maxBody`,
-`maxPipelineBytes <= maxHeaderBytes + maxHeaderLine`), and `maxHeaderBytes` plus
-`maxHeaderLine` is at most 16 MiB. Timeout values are positive and fit a checked
-millisecond-to-nanosecond conversion. `maxResponseBuffer` and `maxHeaderBytes`
-are at most 16 MiB. The `serverName` token is at most 64 bytes and contains no
-CR/LF/NUL. Zero is invalid, not
-"unlimited"; an application that wants no timeout must change the policy
-explicitly, not rely on an accidental zero.
+`Limits` fields are revalidated at `make`: every limit is positive,
+`maxTarget + 44 <= maxStartLine` (32-byte method, two SP, eight-byte version, CRLF),
+`maxHeaderLine <= maxHeaderBytes`, `maxHeaderBytes + maxHeaderLine <= 16 MiB`,
+`maxChunkLine <= maxChunkMetadata`, `maxChunkSize <= maxBody`,
+`maxResponseHeaderBytes <= maxResponseBuffer`,
+`maxResponseTrailerBytes <= maxResponseBuffer`,
+`maxPipelineBytes <= maxHeaderBytes + maxHeaderLine`, and
+`maxTotalConnectionBytes >= maxConnections * perConnectionBytes` where
+`perConnectionBytes = maxHeaderBytes + maxHeaderLine + maxResponseBuffer`.
+Timeout values are positive and fit a checked millisecond-to-nanosecond
+conversion. `maxResponseBuffer` and `maxHeaderBytes` are at most 16 MiB.
+`maxConnections` is positive. The `serverName` token is at most 64 bytes and
+contains no CR/LF/NUL. `make` **deep-copies** the whole `Limits` record
+(scalars and the `serverName` string); it never stores `&Limits`.
 
 `RequestInfo.headers`, `path`, `target` and `query` are owned copies. The body
 is not in `RequestInfo`; `readBody` is the body reader. `headerValue` returns
@@ -299,71 +367,129 @@ optionals. `contentLength` uses `hasContentLength` rather than an optional
 integer. `RequestInfo.secure` is filled from `Transport.isSecure()` when `next`
 first drives the transport; `requestInfo` is valid after `HeadReady`.
 
-### 4.3 Transport interface (the TLS adapter contract)
+### 4.3 Transport interface (TLS adapter contract)
+
+The interface is deliberately the **shape of the actual TLS adapter**
+(`tls-adapter-design` at `ea02b29`), not a socket-like wrapper around it:
+owned read bytes, explicit want-read/want-write on write and shutdown, a
+ciphertext-drain step, multi-step shutdown, and ALPN information. `http1` does
+not import `systls`; the neutral adapter `http1tls` imports both and implements
+this interface for its own wrapper type.
 
 ```obo
 pub type Transport = interface {
-    // Drive TLS handshake/control (handshake, key update, alerts) one step.
-    // Plain returns Complete immediately; established TLS may return Want*.
-    mut fn handshakeStep(): Result[Handshake]
+    // One bounded handshake/control step. Drive unconditionally in Handshaking;
+    // a fresh TLS session may want neither read nor write before C work.
+    mut fn handshakeStep(): Result[Step]
 
-    // One nonblocking transfer attempt. Read: >0 bytes, 0 clean EOF.
-    // Write: >0 short success. WouldBlock means no progress; never spin.
-    mut fn readInto(mut dst: &[]byte, offset: int, max: int): Result[int]
-    mut fn writeFrom(src: &[]byte, offset: int, count: int): Result[int]
+    // One bounded plaintext read. max is 1..maxTransfer.
+    mut fn readSome(max: int): Result[ReadOutcome]
 
-    // Best-effort FIN/close_notify; bounded and nonblocking.
-    mut fn shutdownWrite(): Result[bool]
+    // One bounded plaintext write. May return WantRead (TLS 1.3 KeyUpdate)
+    // or WantWrite without accepting plaintext.
+    mut fn writeSome(bytes: &[]byte, offset: int,
+                     count: int): Result[WriteOutcome]
 
-    // Readiness hints for TLS post-handshake traffic (key update, alerts).
-    // Plain may return false for both while application data is available.
-    fn wantsRead(): bool
-    fn wantsWrite(): bool
+    // Flush pending ciphertext without accepting new plaintext.
+    // Required because an empty HTTP output buffer is not "flushed" while TLS
+    // still holds ciphertext. TLS-side addendum: see §11.5.
+    mut fn flushPending(): Result[WriteOutcome]
 
-    // Checked identity for reactor::watchResource; observation only.
-    fn source(): Result[^platform::Resource]
+    // Multi-step close_notify/FIN: Done, Sent, PeerClosed, or Want*.
+    mut fn shutdownStep(): Result[ShutdownOutcome]
 
+    fn pending(): Result[int]          // pending ciphertext bytes
+    fn want(): Result[Want]           // TLS-level readiness request
+    fn alpn(): Result[Alpn]           // valid after handshake; plain = AlpnNone
     fn isSecure(): bool
+    fn maxTransfer(): int             // 1..65536; caps read/write count
+
+    // Adapter-owned readiness registration. Plain uses watchResource;
+    // TLS uses systls::watch. There is no source()/fd escape.
+    fn watch(r: &reactor::Reactor, readable: bool, writable: bool,
+             tag: int): Result[reactor::Watch]
+
+    // Abortive close. Never a clean-shutdown promise; may omit close_notify.
     mut fn close(): Result[bool]
 }
 ```
 
-Transfer result semantics: `readInto` returns `>0` bytes, `0` only at clean
-EOF, `WouldBlock` for no progress, and `Interrupted` for a signal with no
-progress; `writeFrom` returns `>0` for a short success and never returns `0` for
-a nonzero `count` (treat `0` as `WouldBlock`/`IoFailure`). A transport must not
-hide a retry loop or a timeout inside either call.
+Mapping table:
+
+| HTTP `Transport` | Plain adapter | TLS adapter (`http1tls`) |
+|---|---|---|
+| `handshakeStep` | `StepDone` | `systls::handshakeStep` mapped |
+| `readSome` | `stream::readSome`; nil -> `ReadEof` | `systls::readSome`; owned bytes |
+| `writeSome` | `stream::writeSome` -> `WriteWrote` | `systls::writeSome`; Want* preserved |
+| `flushPending` | `WriteWrote{0}` | **required TLS addendum**: `systls::flushStep` (or count-0 flush) |
+| `shutdownStep` | `stream::shutdownWrite` -> `ShutdownDone` | `systls::shutdownStep` mapped |
+| `pending` | `0` | `systls::pending` |
+| `want` | `WantNone` | `systls::want` mapped |
+| `alpn` | `AlpnNone` | `systls::alpn`/`info.alpn` mapped |
+| `isSecure` | `false` | `true` |
+| `maxTransfer` | `65536` | `65536` |
+| `watch` | `reactor::watchResource` on `stream::source` | `systls::watch` |
+| `close` | `stream::close` | `systls::close` (abortive) |
+
+Transfer rules:
+
+- `readSome(max)` requires `1 <= max <= maxTransfer`; it returns
+  `ReadData` with an owned array of 1..max bytes, `ReadEof` only on a clean
+  EOF/close_notify, `ReadWantRead`/`ReadWantWrite` for readiness, or a fatal
+  `Result.err`. A truncated TLS record is an error, never `ReadEof`.
+- `writeSome` accepts `0 <= count <= maxTransfer`; `WriteWrote{count}` is the
+  accepted prefix, never replayed. `count == 0` returns `WriteWrote{0}` after
+  validation. `WriteWantRead`/`WriteWantWrite` accept no plaintext. A
+  `WriteWrote{0}` for `count > 0` is an adapter invariant violation; close the
+  connection rather than spinning.
+- `flushPending` flushes only ciphertext and returns `WriteWrote{n}` progress,
+  `WriteWantRead`/`WriteWantWrite`, or an error. It must not accept plaintext.
+- `maxTransfer` is at most 65,536; `flush` and `readBody` cap their requests
+  to it, so a configured `maxResponseBuffer` above 64 KiB is split across
+  several transport calls and never produces an adapter `Range`.
+- Short transfers are normal; the caller advances its cursor and retries under
+  the same deadline. No transport call hides a retry loop.
+- `pending()` reports ciphertext bytes still in the adapter. `Flushed` requires
+  both the HTTP output buffer empty and `pending() == 0`.
+- `shutdownStep` is multi-step: a single call may return `ShutdownSent`
+  before the peer close_notify; the caller drives it again under a deadline.
+  `ShutdownDone`/`ShutdownPeerClosed` are terminal for the close_notify
+  exchange. `close` remains abortive and may omit close_notify.
+- `alpn()` is valid after the handshake; the HTTP/1.1 server accepts
+  `AlpnHttp11`/`AlpnNone` (if policy permits no ALPN) and closes on `AlpnH2`
+  or `AlpnOther` because h2/h3 are separate designs. The recommended TLS
+  configuration is `Require(["http/1.1"])`; the TLS default
+  `Prefer(["h2","http/1.1"])` must not be used unexamined.
+- `watch` is the only readiness registration route. `source()` does not exist
+  in the TLS adapter and is not part of this contract.
+- No pointer, TLS struct, ciphertext buffer or fd crosses this boundary.
+- `http1tls` must map TLS errors to `Result` categories without adding a
+  hidden retry or a blocking wait. `systls` does not import HTTP.
 
 Contract details the TLS adapter must satisfy:
 
-1. **No callbacks.** C code never calls obo. `handshakeStep`, `readInto` and
-   `writeFrom` are ordinary synchronous calls that each perform a bounded
-   amount of work and return; a TLS library that needs to write handshake bytes
-   returns `WantWrite` and retains them internally.
-2. **One logical byte stream.** `readInto` returns plaintext application bytes
-   after TLS processing; it must not require the caller to know TLS record
-   boundaries. A clean `close_notify` is read `0`; a truncated TLS record is
-   `Reset`/`IoFailure`, not EOF.
-3. **Want flags are advisory but must make progress.** After `WantRead`, a
-   subsequent readable event plus `handshakeStep`/`readInto` must make progress
-   or return `WouldBlock` with a changed want state; the server watches the
-   underlying socket. `next` calls `handshakeStep` when the transport wants
-   read or write, even while application output is pending, so TLS control
-   records are not starved by a blocked application write. A TLS adapter must
-   not leave both wants false while holding output that cannot be written.
-4. **No hidden network work.** No DNS, OCSP fetch, blocking certificate
-   validation or thread inside a step. Certificate/key loading happens before
-   the connection is handed to HTTP.
-5. **Readiness source.** `source()` returns the underlying stream's checked
-   identity, suitable for `reactor::watchResource`; the watch grants readiness,
-   not I/O. The adapter keeps ownership of the stream.
-6. **Close is explicit and idempotent.** `close` attempts a bounded
-   close_notify, then closes the underlying stream; second close returns false
-   without a second native close.
-7. **Half-close.** `shutdownWrite` is best-effort; HTTP does not assume the peer
-   consumed bytes when it returns.
-8. **No pointer or TLS struct escape.** Only bytes, status codes and the
-   checked resource identity cross the boundary.
+1. **No callbacks.** C code never calls obo. Each call performs bounded work and
+   returns; no sleep, hidden thread or blocking wait.
+2. **One logical plaintext stream.** `readSome` returns application bytes after
+   TLS processing; record boundaries are not exposed. Clean close_notify is
+   `ReadEof`; truncation is an error.
+3. **Want flags and progress.** `writeSome` may return `WriteWantRead` for a
+   KeyUpdate; `flush` must return `WantRead` and the server must watch read.
+   The adapter must not leave both want flags false while holding ciphertext.
+4. **Ciphertext drain.** `flushPending` is required; a zero-length
+   `writeSome` is not a substitute unless the TLS design explicitly defines
+   count-0 to flush pending ciphertext.
+5. **No hidden network work.** No DNS, OCSP fetch, blocking verification or
+   thread in a step. Certificate/key loading happens before HTTP.
+6. **Readiness.** `watch` observes the underlying stream; a readable event can
+   still produce `ReadWantRead` for a partial record. Always call the step and
+   inspect the outcome.
+7. **Close is not clean by itself.** Clean close uses `shutdownStep` to
+   `ShutdownDone`/`ShutdownPeerClosed` or a fixed deadline, then `close`.
+8. **ALPN is explicit.** The server dispatches on `alpn()`; h2/h3 are not
+   silently downgraded or parsed as HTTP/1.1.
+9. **maxTransfer.** All reads/writes are capped at 65,536; HTTP chunks its
+   buffers accordingly.
 
 The plain adapter is:
 
@@ -371,11 +497,10 @@ The plain adapter is:
 pub fn plain(s: stream::Stream): Transport
 ```
 
-It wraps the stream in a private record, forwards `readInto`/`writeFrom` to
-`sysstream`, returns `Complete` from `handshakeStep`, and returns
-`stream::source(&s)` from `source()`. It owns the stream and closes it exactly
-once. A test `MemoryTransport` implements the same interface over an in-memory
-byte queue; it needs no native code, no TLS and no network.
+It wraps the stream in a private record, implements the same interface, reports
+`AlpnNone`/`isSecure=false`/`pending=0`/`WantNone`, and uses
+`stream::source` only inside its `watch` implementation. It owns the stream and
+closes it exactly once.
 
 ### 4.4 Connection API
 
@@ -393,8 +518,7 @@ pub fn wantsWrite(c: &Connection, t: &Transport): bool
 pub fn next(mut c: &Connection, mut t: &Transport,
             now: &Now): Result[Event]
 pub fn readBody(mut c: &Connection, mut t: &Transport,
-                mut dst: &[]byte, offset: int, max: int,
-                now: &Now): Result[BodyRead]
+                max: int, now: &Now): Result[BodyRead]
 pub fn discardBody(mut c: &Connection, mut t: &Transport,
                    maxBytes: int, now: &Now): Result[bool]
 
@@ -406,82 +530,127 @@ pub fn trailerValue(c: &Connection, name: string): Result[?Header]
 
 pub fn beginResponse(mut c: &Connection, status: int,
                      now: &Now): Result[bool]
+pub fn beginResponseWithReason(mut c: &Connection, status: int,
+                               reason: string, now: &Now): Result[bool]
 pub fn setHeader(mut c: &Connection, name: string,
                  value: string): Result[bool]
 pub fn setLength(mut c: &Connection, length: int): Result[bool]
 pub fn sendContinue(mut c: &Connection): Result[bool]
 pub fn setTrailerNames(mut c: &Connection, names: &[]string): Result[bool]
-pub fn addTrailer(mut c: &Connection, name: string, value: string): Result[bool]
+pub fn addTrailer(mut c: &Connection, name: string,
+                  value: string): Result[bool]
 pub fn writeBody(mut c: &Connection, bytes: &[]byte,
                  offset: int, count: int): Result[int]
 pub fn writeText(mut c: &Connection, text: string,
                  offset: int, count: int): Result[int]
 pub fn endResponse(mut c: &Connection): Result[bool]
-pub fn flush(mut c: &Connection, mut t: &Transport): Result[bool]
+pub fn flush(mut c: &Connection, mut t: &Transport): Result[FlushOutcome]
+
+pub fn requestClose(mut c: &Connection): Result[bool]
+pub fn closeAfterResponse(c: &Connection): bool
+pub fn shutdownStep(mut c: &Connection,
+                    mut t: &Transport): Result[ShutdownOutcome]
 pub fn close(mut c: &Connection, mut t: &Transport): Result[bool]
 ```
 
 Rules:
 
-- `next` drives handshake, output flushing, head parsing and deadline checks;
-  it never reads body bytes on behalf of a handler. `readBody` is the only body
-  consumer.
-- `next` returns `HeadReady` exactly once per request. After `HeadReady`, the application
-  may call `readBody` zero or more times, and `beginResponse`/`writeBody`/
-  `endResponse` at any point. It must not call `next` to parse the next request
-  until the response is complete and the body is consumed or drained.
-- `readBody` returns `BodyData` with `1 <= count <= max`, `BodyEnd` once, or
-  `BodyNeedRead`. `max == 0` is `InvalidArgument`. `offset + max` is checked
-  against `len(dst)`.
+- `make` deep-copies `Limits`; a later caller mutation does not change the
+  connection. It starts the accept and handshake deadlines.
+- `next` drives the handshake **unconditionally** while `Handshaking` (at most
+  one `handshakeStep` per call), then output flush, then head parsing and
+  deadline checks. It never reads body bytes on behalf of a handler.
+- `next` returns `HeadReady` exactly once per request. After `HeadReady`, the
+  application may call `readBody` zero or more times, and
+  `beginResponse`/`writeBody`/`endResponse` at any point.
+- **Unread body boundary:** while a request body is unread and not drained,
+  `next` returns `InvalidState` (a `Result.err`; not an `Event`) before parsing
+  another request. It may flush already-queued output first, but it never
+  treats leftover body bytes as a new request. `readBody` or `discardBody` is
+  the only transition to a complete body; `requestClose` + `close` may abandon
+  it.
+- `readBody` returns `BodyData` with an owned array of `1..max` bytes,
+  `BodyEnd` once, or `BodyNeedRead`. `max` is capped to `t.maxTransfer()`.
+  It never allocates a body-sized array and never returns more than `max`.
 - `writeBody`/`writeText` require `count > 0`, a valid `offset`, and
   `offset + count <=` the source length; violations are `InvalidArgument`.
   They return the number of **application bytes accepted** into the encoded
   output buffer. `0` means no room; the caller must `flush` and retry with the
   same remaining bytes. They never silently drop or replay.
-- `flush` performs at most one transport write and returns `true` only when the
-  output buffer is empty; `false` means pending/WouldBlock. `next` also flushes
-  before reading, so a loop may rely on `next` rather than calling `flush`
-  explicitly.
-- `close` is abortive: it does not flush queued output. Call `endResponse` and
-  `flush` on the normal path, then `close`. It marks the connection closed,
-  closes the transport once, and is idempotent. Dropping a `Connection` record
-  does not close anything.
-- `HeadReady` is returned once per request. `ProtocolError` and `TimedOut` are
-  returned once; subsequent `next` calls return `NeedWrite` until the queued
-  error response is flushed, then `ConnectionClosed`. `ResponseComplete` means
-  the final response bytes are flushed; the next `next` call may return
-  `ConnectionClosed` (close) or parse a buffered next request. `ConnectionClosed`
-  is terminal.
+  `writeText` takes a by-value string; strings are refcounted and copied, so a
+  local string can be written repeatedly without a move. `&string` is invalid
+  in 0.12.
+- `beginResponse`/`beginResponseWithReason` fix the status (and optional
+  reason); they do **not** commit headers. `setHeader`, `setLength` and
+  `setTrailerNames` may be staged before or after `beginResponse` but before
+  the first body write/`endResponse`, which commits headers. `beginResponse`
+  can be called once. A body write before `beginResponse` or after
+  `endResponse` is `InvalidState`.
+- `setLength` requires a nonnegative integer; negative is `InvalidArgument`.
 - `sendContinue` is valid only after `HeadReady`, when the request has a body,
   `Expect: 100-continue` was present and no final response has started; it is
   idempotent and returns `false` when no interim response is appropriate.
-- `setHeader` and `setLength` may be staged before `beginResponse`; the status
-  is fixed by `beginResponse`, but no header/length/trailer change is allowed
-  after the first body write. `beginResponse` itself can be called once. A body
-  write before `beginResponse` or after `endResponse` is `InvalidState`.
-- `setLength` requires a nonnegative integer; negative is `InvalidArgument`.
-- `setTrailerNames` is valid after `beginResponse` and before any body write;
-  it declares response trailer names and causes a `Trailer` field to be
-  emitted. `addTrailer` is valid only for a chunked response, after body writes
-  and before `endResponse`; the name must be declared and not forbidden.
+- `setTrailerNames` is valid before any body write; it declares response
+  trailer names and causes a `Trailer` field to be emitted. `addTrailer` is
+  valid only for a chunked response, after body writes and before
+  `endResponse`; the name must be declared and not forbidden. Both enforce
+  `maxResponseTrailerCount`/`maxResponseTrailerBytes`.
+- `flush` performs at most one `writeSome` and then, if the HTTP buffer is
+  empty, drains pending ciphertext with `flushPending`. It returns `Flushed`
+  only when the HTTP output buffer is empty **and** `t.pending() == 0`. If
+  `writeSome` accepts a prefix and the HTTP buffer remains nonempty, it
+  returns `FlushWantWrite` so the caller yields and re-enters; it does not spin.
+  It returns `FlushWantRead`/`FlushWantWrite` for TLS control needs; `next`
+  maps those to `NeedRead`/`NeedWrite`.
+- `requestClose` sets the per-connection close policy. The current response
+  gets `Connection: close` if headers are not yet committed; if they are
+  already committed, the connection closes after the response flush without a
+  second header block. `closeAfterResponse` exposes the flag.
+- `shutdownStep` first flushes output/ciphertext, then drives
+  `t.shutdownStep()`; it is multi-step and may return `ShutdownSent` before
+  the peer closes. It requires a complete/abandoned body and a completed
+  response; otherwise `InvalidState`. `close` is abortive and does not promise
+  close_notify; call `shutdownStep` for a best-effort clean close.
+- `close` marks the connection closed, closes the transport once, and is
+  idempotent. Dropping a `Connection` record does not close anything.
+- `HandshakeDone` is returned once when the transport handshake completes; the
+  application inspects `t.alpn()` and rejects h2/other/forbidden no-ALPN before
+  calling `next` again. `HeadReady` follows only for an accepted HTTP/1.1
+  transport.
+- `HeadReady` is returned once per request. `ProtocolError` and `TimedOut` are
+  returned once; subsequent `next` calls return `NeedWrite`/`NeedRead` until
+  the queued error response is flushed, then `ConnectionClosed`. `ResponseComplete` means
+  the final response plaintext and ciphertext are flushed; the next `next`
+  call may return `ConnectionClosed` (close policy) or parse a buffered next
+  request. `ConnectionClosed` is terminal.
 - All functions revalidate public fields; a directly constructed or mutated
   record returns `InvalidArgument`/`InvalidState`, never a native call on a
   forged state.
 
-### 4.5 Phases and ownership
+### 4.5 Phases, close policy and ownership
 
 ```text
 Handshaking -> Idle -> ReadingHead -> ReadingBody -> Responding
      -> (Idle | Draining | Closing) -> Closed
-Responding -> Draining (early response with keep-alive)
+Responding -> Draining (early response, keep-alive desired)
+Responding -> Closing  (requestClose / Connection: close / error)
+Draining   -> Closing  (drain bound/deadline)
 ```
 
-`Idle` means "no request in flight"; it may have buffered pipelined bytes. A
-request starts at the first non-empty byte of the request line. `ReadingHead`
-ends at the blank line; `ReadingBody` exists only if the framing decision is
-non-zero. `Responding` starts at `beginResponse` (or remains implicit if the
-application responds before reading the body); `Draining` discards a bounded
-unread body before reuse. `Closed` is terminal.
+| Phase | Entry | Exit |
+|---|---|---|
+| `Handshaking` | `make`; TLS session | `StepDone` -> `Idle`; handshake/accept timeout -> `Closing` |
+| `Idle` | handshake done, no request | first request byte -> `ReadingHead`; accept/idle timeout -> `Closing` |
+| `ReadingHead` | first byte | blank line -> `ReadingBody` or `Responding`; error -> `Closing` |
+| `ReadingBody` | body framing non-zero | `BodyEnd`/drain -> `Responding`; early response -> `Responding`; error -> `Closing` |
+| `Responding` | `beginResponse` or early response | response complete + keep-alive -> `Idle`; close policy -> `Closing`; unread body + keep-alive -> `Draining` |
+| `Draining` | early response with unread body | body done -> `Idle`/`Closing`; bound/deadline -> `Closing` |
+| `Closing` | close policy/error/shutdown | `shutdownStep` done or `close` -> `Closed` |
+| `Closed` | close | terminal |
+
+`requestClose` affects the current response and prevents any new request from
+being parsed. Idle connections with `closeAfterResponse` are closed immediately;
+a response in flight gets `Connection: close` if headers are still staged.
 
 Invariants:
 
@@ -489,8 +658,8 @@ Invariants:
    head is not complete.
 2. The parser consumes exactly one message's bytes; bytes after the body belong
    to the next request and stay in `inbuf`.
-3. A request body is never buffered whole; `readBody` moves at most `max` bytes
-   per call.
+3. A request body is never buffered whole; `readBody` returns at most `max`
+   owned bytes per call.
 4. A response body is never buffered whole; `writeBody` accepts only what fits
    in the bounded output buffer.
 5. Framing headers (`Content-Length`, `Transfer-Encoding`, `Connection`,
@@ -503,6 +672,10 @@ Invariants:
    never reused after an uncertain body boundary.
 9. Close happens exactly once; no operation is attempted after `Closed`.
 10. Remote bytes only produce `Result` errors, never a runtime panic or exit.
+11. `next` never parses a new request while the current body is unread; the
+    API returns `InvalidState` instead of silently desynchronising.
+12. `Flushed` requires ciphertext drained; TLS control wants are propagated,
+    not hidden.
 
 ## 5. Parser design
 
@@ -586,9 +759,12 @@ Rules:
   `"http"` or `"https"` lowercased; `https` over a non-secure transport is an
   application policy decision, not a parser error.
 
-Start-line limit errors: if the line exceeds `maxStartLine` before CRLF, `414`
-if the target is already over `maxTarget`, otherwise `400`; a start line over
-the limit is never truncated and parsed.
+Start-line limit errors: a start line that exceeds `maxStartLine` before CRLF
+is `414 URI Too Long`, regardless of whether the target alone is over
+`maxTarget`; a target over `maxTarget` is also `414`. The line is never
+truncated and parsed. `validateLimits` requires
+`maxTarget + 44 <= maxStartLine`, so the exact target limit is reachable with a
+32-byte method, two SPs, an eight-byte version and CRLF.
 
 ### 5.3 Header fields
 
@@ -625,11 +801,15 @@ normalized.
 Special fields are validated after the whole block, so order does not matter:
 
 - **`Host`**: HTTP/1.1 requires exactly one nonempty Host. Duplicate `Host`,
-  comma in Host, userinfo, whitespace, `/`, `\`, `#`, `?`, control or an invalid
-  port is `400`. IPv6 literals are bracketed; the host is 1..255 bytes. With
-  absolute-form, the effective authority is the target authority; if Host is
-  also present it must canonicalize to the same host and port, otherwise `400`.
-  HTTP/1.0 compatibility mode may omit Host.
+  comma in Host, userinfo, whitespace, `/`, `\`, `#`, `?`, control, obs-text,
+  invalid percent escape or an invalid port is `400`. Host and authority are
+  ASCII only. Port is `0..65535`; an empty port (`host:`) is `400`. IPv6
+  literals are bracketed (`[::1]`, `[::1]:443`); the host is 1..255 bytes.
+  With absolute-form, the effective authority is the target authority; it must
+  be nonempty and ASCII with the same port rules. If Host is also present it
+  must canonicalize to the same host and port, otherwise `400`. Default ports
+  are removed only for comparison (`http` 80, `https` 443). HTTP/1.0
+  compatibility mode may omit Host.
 - **`Content-Length`**: exactly one field, digits only, no sign, no whitespace,
   no comma/list, no hex, no leading `+`; parse with overflow check. A duplicate
   field is `400` even when the values are identical. RFC 9112 permits collapsing
@@ -637,26 +817,30 @@ Special fields are validated after the whole block, so order does not matter:
   one unambiguous framing path. A value greater than `maxBody` is `413`
   immediately; no body bytes are read.
 - **`Transfer-Encoding`**: exactly one field, comma-separated codings, OWS
-  around commas, each a token; chunked must be the final coding and have no
-  parameters. `chunked` alone is supported. Any other coding, a list with a
-  non-chunked final coding, repeated `chunked`, parameters on `chunked`, or more
-  than one `Transfer-Encoding` field is rejected: `400` for an ambiguous final
-  coding, `501` for a well-formed but unsupported coding. `Transfer-Encoding`
-  on HTTP/1.0 is `400`.
+  around commas, each a nonempty token; an empty list element (`chunked,`,
+  `,chunked`, `gzip,,chunked`) is `400`. Chunked must be the final coding and
+  have no parameters. `chunked` alone is supported. Any other coding, a list
+  with a non-chunked final coding, repeated `chunked`, parameters on `chunked`,
+  or more than one `Transfer-Encoding` field is rejected: `400` for an
+  ambiguous final coding, `501` for a well-formed but unsupported coding.
+  `Transfer-Encoding` on HTTP/1.0 is `400`.
 - **CL + TE**: if both are present, `400` and close. Do not prefer TE; do not
   fall back to CL.
-- **`Connection`**: comma-separated tokens. `close` wins over `keep-alive`;
+- **`Connection`**: comma-separated nonempty tokens; an empty element
+  (`Connection: ,close`, `close,`) is `400`. `close` wins over `keep-alive`;
   `keep-alive` in HTTP/1.1 is accepted but not required. A token naming
   `content-length`, `transfer-encoding`, `host` or `trailer` is `400` (smuggling
   defense); `upgrade` is handled as `501` below. `Proxy-Connection` is parsed
   but never controls persistence.
 - **`Expect`**: only `100-continue` (case-insensitive) is accepted; any other
-  expectation is `417`. On HTTP/1.0 or with no body, it is ignored (no interim
-  response).
+  expectation, multiple `Expect` fields, or a comma list with a non-100 token
+  is `417`. On HTTP/1.0 or with no body, it is ignored (no interim response).
+  `Expect: 100-continue` with `Content-Length: 0` is bodyless and gets no 100.
 - **`Upgrade`** / `Connection: upgrade`: `501` and close; no 101, no WebSocket.
-- **`Trailer`**: tokens only; it declares response/request trailer names. With a
-  non-chunked request body it is `400`. It does not by itself permit a trailer;
-  the actual trailer fields are still validated (§5.5).
+- **`Trailer`**: comma-separated nonempty tokens; an empty element is `400`.
+  It declares response/request trailer names. With a non-chunked request body
+  it is `400`. It does not by itself permit a trailer; the actual trailer
+  fields are still validated (§5.5).
 - **`TE`** (not `Transfer-Encoding`): accepted but not used; `trailers` is a
   valid token. It never changes request framing.
 
@@ -674,6 +858,7 @@ The decision is made once, after the header block, and stored:
 | invalid CL | any | `400`, close |
 | absent | final coding not chunked | `400`, close |
 | absent | unsupported coding | `501`, close |
+| absent | empty list element (`chunked,`, `,chunked`) | `400`, close |
 | `N > maxBody` | absent | `413`, close, no read |
 
 Requests are **never** close-delimited. A request body is exactly the fixed
@@ -714,17 +899,19 @@ Rules:
   `Proxy-Authorization`, `Cookie`, `Set-Cookie`. Other fields are preserved and
   available through `trailerValue` after `readBody` returns `BodyEnd`.
 - `readBody` returns only decoded data bytes; chunk headers, CRLFs and trailers
-  are consumed internally. A caller never sees chunk framing.
+  are consumed internally. A caller never sees chunk framing. `BodyData.bytes`
+  is a fresh owned array, not a slice into `inbuf`.
 
 ### 5.6 `100 Continue`
 
 - `Expect: 100-continue` is recorded on the request, not acted on at header
   time.
 - On the first `readBody` call for a request with a body and
-  `autoContinue = true`, if no body bytes are already buffered and no continue
-  has been sent, the connection queues `HTTP/1.1 100 Continue\r\n\r\n` before
-  reading. The application can therefore reject from headers (for example
-  `413` or `401`) without causing a `100`.
+  `autoContinue = true`, if no body bytes are already buffered, no continue has
+  been sent, and no final response has started, the connection queues
+  `HTTP/1.1 100 Continue\r\n\r\n` before reading. The application can therefore
+  reject from headers (for example `413` or `401`) without causing a `100`;
+  after a final response, no 100 is ever sent.
 - If body bytes are already buffered (client did not wait), `100` is skipped;
   the bytes are read normally.
 - `autoContinue = false` requires the application to call `sendContinue`
@@ -733,29 +920,39 @@ Rules:
   unsolicited `100` and deadlock.
 - A `100` is never sent for a bodyless request, after a final response, or more
   than once. `100` has no `Content-Length`, `Transfer-Encoding`, `Date` or body.
+- If the handler sends a final response before reading a body for an
+  `Expect: 100-continue` request, the connection **must close after the final
+  response**; it must not send 100 and must not try to drain a client that is
+  still waiting. `requestClose` is the normal policy. The same applies when a
+  final response was already sent and no 100 can be sent.
 
 ### 5.7 Body reader semantics
 
 `readBody` is a function of the already-decided framing:
 
 - **No body**: first call returns `BodyEnd`; subsequent calls are `InvalidState`.
-- **Fixed**: copy from `inbuf` first, otherwise one `t.readInto` attempt capped
-  at `min(max, remaining, maxBody - total)`. A positive read advances
-  `remaining`; short reads are normal. `0` from the transport before
-  `remaining == 0` is `EndOfInput` mapped to a protocol `400` and close. When
-  `remaining == 0`, return `BodyEnd`.
+- **Fixed**: copy from `inbuf` first, otherwise one `t.readSome(max)` attempt
+  capped at `min(max, remaining, maxBody - total)` and at `t.maxTransfer()`.
+  A positive `ReadData` advances `remaining`; short reads are normal.
+  `ReadEof` before `remaining == 0` is `EndOfInput` mapped to a protocol
+  `400` and close. When `remaining == 0`, return `BodyEnd`.
 - **Chunked**: consume the size line and extensions from `inbuf`/transport, then
   data up to `chunkRemaining`; after data, require the CRLF, then read the next
-  size. Return `BodyData` as soon as at least one byte is available, without waiting
-  for a whole chunk. A `BodyNeedRead` return preserves all parser progress.
+  size. Return `BodyData` as soon as at least one byte is available, without
+  waiting for a whole chunk. A `BodyNeedRead` return preserves all parser
+  progress. `BodyData.bytes` is an owned copy; `inbuf` is not exposed.
 - `BodyData` never crosses a request boundary; after `BodyEnd`, further bytes are
   pipelined next-request bytes.
-- `max` is the caller's buffer bound, not a suggestion; the function never
-  allocates a body-sized array. `offset + max` is checked before writing.
-- `discardBody` uses the same framing but discards bytes, with a caller-supplied
-  byte cap and the same deadlines. It is used for early responses and drain; if
-  the cap or deadline is exceeded, the connection closes instead of reading
-  forever.
+- `max` is the caller's bound, capped by `t.maxTransfer()`; the function never
+  allocates a body-sized array. It returns an owned `bytes` array of 1..max
+  bytes; the caller owns and frees it.
+- `discardBody` uses the same framing but discards owned `BodyData` arrays,
+  with a caller-supplied byte cap and the same deadlines. It is used for early
+  responses and drain; if the cap or deadline is exceeded, the connection
+  closes instead of reading forever. If the request is waiting for
+  `100-continue` and no final response has been sent, `discardBody` sends the
+  100 first; if a final response has already been sent, it returns
+  `InvalidState` and the caller must close.
 
 ### 5.8 Keep-alive, close and pipelining
 
@@ -769,13 +966,14 @@ Decision table after a complete response:
 | HTTP/1.0 compatibility | any | close by default; no chunked |
 | parse/framing error | protocol error response | close after flush |
 | response body length mismatch | any | close (no retry) |
-| body not fully read | keep-alive desired | bounded `Drain`, then reuse only if complete |
+| body not fully read | keep-alive desired | explicit bounded `discardBody`; `next` is `InvalidState` until complete |
 
 - HTTP/1.1 is persistent by default. The response does not need
   `Connection: keep-alive`; it is omitted. A close response sends
   `Connection: close`.
-- HTTP/1.0 compatibility (`allowHttp10 = true`) is always close-delimited or
-  `Content-Length`; chunked responses are not sent and the status line is
+- HTTP/1.0 compatibility (`allowHttp10 = true`) is **always close**: it uses
+  `Content-Length` or close-delimited framing, never chunked, never
+  `Connection: keep-alive`, and sends `Connection: close`; the status line is
   `HTTP/1.0`. Host is optional; TE is rejected; `Expect` is ignored. This is an
   opt-in profile, not the default.
 - `pipelining = false` forces `Connection: close` after each response and
@@ -792,8 +990,9 @@ Decision table after a complete response:
   closed with `400`; the client can retry one request per connection.
 - `maxRequests` bounds per-connection request count. On the last allowed
   response the writer adds `Connection: close`; a new request is not parsed.
-- A response with `Connection: close` is flushed, the transport is half-closed
-  where supported, then closed. Unread body bytes are not drained unless the
+- A response with `Connection: close` is flushed, then the server may drive
+  `shutdownStep` for a best-effort FIN/close_notify until a deadline, then
+  `close` (abortive if needed). Unread body bytes are not drained unless the
   application explicitly asks; closing is safer than parsing an untrusted
   remainder.
 
@@ -802,6 +1001,7 @@ Decision table after a complete response:
 | Condition | Status | Close |
 |---|---|---|
 | malformed start line / field / chunk / trailer | `400` | yes |
+| start line over `maxStartLine` (any cause) | `414` | yes |
 | start line or target too long | `414` | yes |
 | header block/line/count too large | `431` | yes |
 | declared or decoded body too large | `413` | yes |
@@ -815,7 +1015,8 @@ Decision table after a complete response:
 
 `400` is used for ambiguity, not for a merely unsupported feature. A handler
 that rejects a syntactically valid request chooses its own status (`405`, `413`,
-`415`, etc.); the protocol does not reinterpret it.
+`415`, etc.); the protocol does not reinterpret it. `next` returns
+`InvalidState` rather than a status while a body is unread and not drained.
 
 ## 6. Serializer
 
@@ -828,8 +1029,9 @@ status-line = "HTTP/1.1" SP 3DIGIT SP reason-phrase CRLF
 
 - Status is 100..599. The normal response path rejects 1xx; only the internal
   `100 Continue` path writes one. The status-line version is `HTTP/1.1` except
-  in the opt-in HTTP/1.0 compatibility profile, which writes `HTTP/1.0`. The reason phrase is a default table entry or
-  a validated custom string; it contains only HTAB/SP/VCHAR/obs-text, never
+  in the opt-in HTTP/1.0 compatibility profile, which writes `HTTP/1.0`. The
+  reason phrase is a default table entry, or the validated `reason` supplied to
+  `beginResponseWithReason`; it contains only HTAB/SP/VCHAR/obs-text, never
   CR/LF/NUL. The status code is not echoed from request data.
 - Header names are tokens; values contain no CR/LF/NUL and no obs-fold. Values
   are trimmed of leading/trailing SP/HTAB. `setHeader` validates immediately and
@@ -887,7 +1089,7 @@ pub fn parseHttpDate(text: string): Result[clock::Timestamp]
 | `204` | no | forbidden | forbidden |
 | `205` | no | `0` only | forbidden |
 | `304` | no | optional (metadata) | forbidden in v1 |
-| any `HEAD` | no (writes discarded) | optional; default `0` | forbidden in v1 |
+| any `HEAD` | no (writes discarded) | optional; omit if not set | forbidden in v1 |
 | other | yes | if `setLength` was called | chunked if no length |
 | `CONNECT`/`Upgrade` | never generated | n/a | n/a |
 
@@ -903,12 +1105,15 @@ pub fn parseHttpDate(text: string): Result[clock::Timestamp]
   should set `Content-Length`; chunked is the correct fallback for
   unknown/streamed length.
 - HTTP/1.0 compatibility with no length uses close-delimited framing and forces
-  close; chunked is never sent to a 1.0 client. A handler that needs keep-alive
-  on 1.0 must set a length.
+  close; chunked is never sent to a 1.0 client. HTTP/1.0 is always close in
+  this design, so a 1.0 response never advertises `keep-alive`.
 - A response with no body (204/304/HEAD/205) sends no terminating chunk. For
   HEAD, `writeBody` accepts bytes only to validate/ignore them; they are not
-  counted and not sent. If no length was set, `Content-Length: 0` is sent; an
-  application that wants GET-equivalent metadata sets the real length.
+  counted and not sent. If no length was set, **no `Content-Length` is sent**;
+  the application sets the real metadata length with `setLength` when it knows
+  it. This avoids a misleading `Content-Length: 0` for a GET that has a body.
+  (Protocol-generated HEAD error responses may still carry the length of the
+  suppressed error body.)
 - `304` may include `Content-Length` but no body. `204` and `1xx` never include
   `Content-Length`; `setLength` is rejected for them. `205` accepts only
   `setLength(0)` and sends `Content-Length: 0`. `HEAD` accepts any nonnegative
@@ -918,7 +1123,10 @@ pub fn parseHttpDate(text: string): Result[clock::Timestamp]
   calls `setTrailerNames` before body, then `addTrailer` after the body; the
   writer emits the `Trailer` field, the zero chunk, trailers, and final CRLF.
   Trailer names are subject to the same forbidden set as request trailers.
-  With fixed length, trailer calls are `InvalidState`.
+  `setTrailerNames`/`addTrailer` enforce `maxResponseTrailerCount` and
+  `maxResponseTrailerBytes`; the `Trailer` field itself counts toward
+  `maxResponseHeaderBytes`. With fixed length, trailer calls are
+  `InvalidState`.
 
 ### 6.4 Chunked writer
 
@@ -944,19 +1152,24 @@ last  = "0" CRLF *trailer-field CRLF
 
 Protocol errors are generated by the connection, not by the handler:
 
-- A small fixed plain-text body (`400 Bad Request\n`, `413 Content Too Large\n`,
-  `414 URI Too Long\n`, `431 Request Header Fields Too Large\n`,
-  `501 Not Implemented\n`, `505 HTTP Version Not Supported\n`,
-  `408 Request Timeout\n`, `503 Service Unavailable\n`) with
+- A small fixed plain-text body (`400 Bad Request\n`, `408 Request Timeout\n`,
+  `413 Content Too Large\n`, `414 URI Too Long\n`, `417 Expectation Failed\n`,
+  `429 Too Many Requests\n`, `431 Request Header Fields Too Large\n`,
+  `501 Not Implemented\n`, `503 Service Unavailable\n`,
+  `505 HTTP Version Not Supported\n`) with
   `Content-Type: text/plain; charset=utf-8`, exact `Content-Length`, `Date`,
-  optional `Server`, and `Connection: close`.
+  optional `Server`, and `Connection: close`. Any other protocol-generated
+  status uses a generic `NNN Error\n` body with the same framing; no request
+  data is reflected.
 - No request bytes, header values, target, query or exception text are echoed.
   This prevents response splitting and log/body injection.
 - For `HEAD`, the body is suppressed but the same `Content-Length` is sent.
 - If the error occurs after any response bytes are on the wire, the connection
   closes without a second status line.
 - `408` is sent for header/body timeouts if headers were complete or a response
-  can still be framed; an idle timeout closes silently.
+  can still be framed; an idle/accept/handshake timeout closes silently.
+- A slow-reader response that reaches `responseTotalTimeoutMs` is closed; an
+  error status is not attempted after the response has started.
 - `500` is application-generated, not a parse error. The protocol never turns a
   handler exception into a wire response automatically; the handler must call
   `beginResponse(500, ...)`.
@@ -986,36 +1199,39 @@ returns `Result[bool]`: `true` means it made progress, `false` means it yielded
 
 Handler obligations:
 
-1. On `HeadReady`, inspect `requestInfo`/`headerValue`; decide whether to read the
-   body, reject, or respond.
-2. Read at most its own buffer size per `readBody`; never assume the whole body
-   is available.
-3. If it responds before reading the body, either set close semantics or let the
-   connection perform bounded drain; do not rely on the client to stop sending.
-4. Set `Content-Length` whenever known. Use chunked only for unknown length.
-5. Never set framing/hop-by-hop headers through `setHeader`; use
-   `setLength`/`endResponse`.
-6. On `writeBody` returning `0`, call `flush` and retain the remaining cursor;
-   do not advance the cursor or replay bytes.
-7. Call `readBody` until `BodyEnd` before reusing the connection, unless it accepts
-   drain/close.
-8. Never touch a `Connection` after `Closed`.
+1. On `HandshakeDone`, inspect `t.alpn()` and reject h2/other/forbidden no-ALPN
+   before any HTTP/1.1 parse.
+2. On `HeadReady`, inspect `requestInfo`/`headerValue`; decide whether to read
+   the body, reject, or respond.
+3. Read at most the transport/transfer bound per `readBody`; never assume the
+   whole body is available.
+4. If it responds before reading the body, call `requestClose` and close, or
+   call `discardBody` within its bound and deadline. `next` returns
+   `InvalidState` while a body is unread; it never auto-drains.
+5. Set `Content-Length` whenever known. Use chunked only for unknown length.
+6. Never set framing/hop-by-hop headers through `setHeader`; use
+   `setLength`/`setTrailerNames`/`endResponse`.
+7. On `writeBody` returning `0`, call `flush` and inspect `FlushOutcome`; retain
+   the remaining cursor. Do not advance the cursor or replay bytes.
+8. Call `readBody` until `BodyEnd` before reusing the connection, unless it
+   accepts drain/close.
+9. Never touch a `Connection` after `Closed`.
 
 ### 7.2 Reading a bounded body and streaming a response
 
 The following is a valid-shaped handler sketch. The session owns the connection,
-the transport and the scratch buffer as **sibling fields**; this matters for
-obo's conservative aliasing rule. Passing a buffer reached through a different
-reference (for example `other.buf` to a call that mutates `c`) is rejected as
-"may point inside". Sibling fields of one owned record are disjoint and are
-accepted.
+the transport and the pending plaintext array as **sibling fields**; this
+matters for obo's conservative aliasing rule. Passing a buffer reached through
+a different reference (for example `other.bytes` to a call that mutates `c`) is
+rejected as "may point inside". Sibling fields of one owned record are disjoint
+and are accepted.
 
 ```obo
 type EchoSession = ref record {
     conn: http1::Connection
     transport: http1::Transport
-    buf: []byte
-    pending: int          // bytes in buf not yet written
+    pendingBytes: []byte
+    pending: int          // bytes in pendingBytes not yet written
     pendingPos: int
     started: bool
     ended: bool
@@ -1023,7 +1239,9 @@ type EchoSession = ref record {
 
 fn (mut s: &EchoSession) startEcho(now: &http1::Now): Result[bool] {
     if s.started { return ok(true) }
-    try http1::setHeader(&s.conn, "Content-Type", "application/octet-stream")
+    let name = "Content-Type"
+    let value = "application/octet-stream"
+    try http1::setHeader(&s.conn, name, value)
     try http1::beginResponse(&s.conn, 200, now)  // no length: HTTP/1.1 chunked
     s.started = true
     return ok(true)
@@ -1034,20 +1252,24 @@ fn (mut s: &EchoSession) pumpEcho(now: &http1::Now): Result[bool] {
 
     // Flush bytes accepted from the previous read before reading more.
     while s.pendingPos < s.pending {
-        let n = try http1::writeBody(&s.conn, &s.buf,
+        let n = try http1::writeBody(&s.conn, &s.pendingBytes,
                                      s.pendingPos, s.pending - s.pendingPos)
         if n == 0 {
-            let drained = try http1::flush(&s.conn, &s.transport)
-            if !drained { return ok(false) }     // watch write
+            let f = try http1::flush(&s.conn, &s.transport)
+            match f {
+                Flushed { }
+                FlushWantRead { return ok(false) }
+                FlushWantWrite { return ok(false) }
+            }
         }
         s.pendingPos += n
     }
 
-    let r = try http1::readBody(&s.conn, &s.transport, &s.buf,
-                                0, len(s.buf), now)
+    let r = try http1::readBody(&s.conn, &s.transport, 16384, now)
     match r {
         BodyData {
-            s.pending = r.count
+            s.pendingBytes = replace(r.bytes, new []byte(0))
+            s.pending = len(s.pendingBytes)
             s.pendingPos = 0
             return ok(true)
         }
@@ -1059,19 +1281,23 @@ fn (mut s: &EchoSession) pumpEcho(now: &http1::Now): Result[bool] {
                 try http1::endResponse(&s.conn)
                 s.ended = true
             }
-            let drained = try http1::flush(&s.conn, &s.transport)
-            return ok(drained)
+            let f = try http1::flush(&s.conn, &s.transport)
+            match f {
+                Flushed { return ok(true) }
+                FlushWantRead { return ok(false) }
+                FlushWantWrite { return ok(false) }
+            }
         }
     }
 }
 ```
 
-`pumpEcho` holds at most one `buf` (for example 16 KiB) and one encoded
-output buffer (bounded by `Limits.maxResponseBuffer`). It never buffers the
-whole request or response. A slow reader fills the output buffer; `writeBody`
-returns `0`; the handler flushes and yields. A slow sender returns
-`BodyNeedRead`; the handler yields. The connection's parser progress, deadlines
-and partial chunk state survive both yields.
+`pumpEcho` holds at most one `pendingBytes` array (for example 16 KiB) and one
+encoded output buffer (bounded by `Limits.maxResponseBuffer`). It never buffers
+the whole request or response. A slow reader fills the output buffer;
+`writeBody` returns `0`; the handler flushes and yields. A slow sender returns
+`BodyNeedRead`; the handler yields. A TLS `FlushWantRead` (for example a
+KeyUpdate) is yielded as a read need, not retried inside the handler.
 
 If a handler is written as separate `Connection` and handler records instead,
 it must take the scratch array into a local before the call and restore it
@@ -1083,7 +1309,9 @@ A known-length response uses:
 ```obo
 fn (mut s: &EchoSession) respondHello(now: &http1::Now): Result[bool] {
     let body = "hello\n"
-    try http1::setHeader(&s.conn, "Content-Type", "text/plain; charset=utf-8")
+    let name = "Content-Type"
+    let value = "text/plain; charset=utf-8"
+    try http1::setHeader(&s.conn, name, value)
     try http1::setLength(&s.conn, len(body))
     try http1::beginResponse(&s.conn, 200, now)
     var pos = 0
@@ -1097,9 +1325,15 @@ fn (mut s: &EchoSession) respondHello(now: &http1::Now): Result[bool] {
 }
 ```
 
-`writeText` accepts string bytes without a `[]byte` conversion; templates can
-write `html::Html.text` (a `string`) directly. The writer still validates the
-body length and never interprets the text as headers.
+**String parameters are by value, not `&string`.** The 0.12 compiler rejects
+`&string` ("only records, closed types and arrays can be borrowed, not
+string"); strings are reference-counted and copied on pass. Repeated
+`writeText(c, body, ...)` and `headerValue(c, info.method)` are therefore valid;
+the syntax gate in §10.5 proves both patterns. `Limits` is the only record that
+must be deep-copied because it is retained across calls.
+
+`writeText` never interprets the string as headers. Templates can write
+`html::Html.text` directly.
 
 ### 7.3 Event loop sketch
 
@@ -1108,6 +1342,16 @@ fn (mut s: &EchoSession) serveOne(now: &http1::Now): Result[bool] {
     while true {
         let ev = try http1::next(&s.conn, &s.transport, now)
         match ev {
+            HandshakeDone {
+                let a = try s.transport.alpn()
+                match a {
+                    AlpnHttp11 { }
+                    AlpnNone { }                 // policy allows no ALPN
+                    AlpnH2 { return ok(false) }  // h2 is a separate design
+                    AlpnOther { return ok(false) }
+                }
+                return ok(true)
+            }
             HeadReady {
                 // Application routing/decision; no protocol callback.
                 let info = try http1::requestInfo(&s.conn)
@@ -1152,15 +1396,13 @@ fn acceptOne(l: &net::Listener, r: &reactor::Reactor,
     let peer = try net::peerAddress(n)
     let peerText = try address::format(&peer)
     let s = try net::intoStream(n)          // consumes the Connection
-    let t = http1::plain(s)
-    let src = try t.source()                // before moving t into the session
-    let c = try http1::make(limits)
-    let buf = new []byte(16384)
+    let t = http1::plain(s)                 // or http1tls::accept(ctx, s)
+    let c = try http1::make(limits)         // deep-copies Limits
     let session = new EchoSession{
-        conn: c, transport: t, buf: buf,
+        conn: c, transport: t, pendingBytes: new []byte(0),
         pending: 0, pendingPos: 0, started: false, ended: false
     }
-    let w = try reactor::watchResource(r, src, true, false, tag)
+    let w = try t.watch(r, true, false, tag)
     return ok(new Slot{gen: tag, live: true, session: session,
                        watch: w, peer: peerText})
 }
@@ -1168,11 +1410,12 @@ fn acceptOne(l: &net::Listener, r: &reactor::Reactor,
 
 The loop keeps slots in an array, maps a reactor event's application tag to a
 slot generation, calls `next`/the handler once per readable/writable turn, then
-updates the watch interest. A tag naming a dead generation is ignored; the
-application tag is not a native resource token. On `ConnectionClosed`, remove
-the watch, close the session transport, mark the slot free and reuse the slot
-with a new generation. On `EMFILE`/`ENFILE`, stop accepting and back off; do
-not spin on `accept`.
+updates the watch interest with `reactor::modify`. A tag naming a dead
+generation is ignored; the application tag is not a native resource token. On
+`ConnectionClosed`, remove the watch, call `shutdownStep` best-effort (if the
+response/body is complete), then `close`, mark the slot free and reuse it with a
+new generation. On `EMFILE`/`ENFILE`, stop accepting and back off; do not spin
+on `accept`.
 
 The listener watch itself is registered with `net::watchListener` or the
 listener's checked source. The accept batch is capped (32 per turn), and each
@@ -1185,47 +1428,70 @@ releases the partial session; the error path is tested for leaks.
 
 ### 8.1 Deadlines
 
-All deadlines are monotonic (`sysclock::Instant`), never wall-clock. The
-wall clock is used only for the `Date` field.
+All deadlines are monotonic (`sysclock::Instant`), never wall-clock. The wall
+clock is used only for the `Date` field.
 
 | Deadline | Starts | Renewed | Default | On expiry |
 |---|---|---|---|---|
-| header | first byte of a request | never | 10 s | `408`, close |
-| body idle | first `readBody` call | each positive body read | 30 s | `408`, close |
-| request total | first byte | never | 300 s | close (`408` if possible) |
-| idle | response flushed | new request byte | 60 s | close silently |
-| response | first response byte queued | each positive transport write | 60 s | close |
+| accept | `make`/accept | never | 10 s | close silently |
+| handshake | `make`/accept | never | 10 s | close silently |
+| header | first decrypted request byte | never | 10 s | `408`, close |
+| body idle | first `readBody` call | each positive decoded body read | 30 s | `408`, close |
+| idle | response complete | new request byte | 60 s | close silently |
+| response idle | first response byte queued | each positive transport write | 60 s | close |
+| response total | response headers committed | never | 300 s | close |
+| request total | first request byte | never | 300 s | close (`408` if possible) |
 
 Rules:
 
-- The header deadline is absolute from the first byte; a slowloris sending one
-  byte per second cannot extend it. No per-byte or per-line reset.
+- A freshly accepted connection **always** has an accept deadline, even if it
+  sends no bytes. Slowloris cannot hold `maxConnections` sockets indefinitely.
+- A TLS connection **always** has a handshake deadline. `next` calls
+  `handshakeStep` unconditionally in `Handshaking`, at most once per call; it
+  does not wait for `want()` first, because a fresh session may need C work
+  before it reports either want. `StepDone` returns `HandshakeDone`; a timeout
+  closes without an HTTP response.
+- The header deadline is absolute from the first decrypted byte; a slowloris
+  sending one byte per second cannot extend it. No per-byte or per-line reset.
 - The body idle deadline starts at the first `readBody` call, so handler
   computation before reading is not billed as client slowness; it renews only
-  on actual decoded body progress, not on chunk metadata alone. A client that sends only chunk extensions still times
-  out. `bodyIdleTimeoutMs` is a progress timeout, not a total body timeout; the
-  request total deadline caps the whole exchange.
-- The response deadline renews on a positive accepted write, not on a handler
-  call that produced no transport progress. A handler that spins without
-  flushing does not extend it.
+  on actual decoded body progress, not on chunk metadata alone. A client that
+  sends only chunk extensions still times out. `bodyIdleTimeoutMs` is a
+  progress timeout; the request total deadline caps the whole exchange.
+- The response idle deadline renews on a positive accepted write, not on a
+  handler call that produced no transport progress. `responseTotalTimeoutMs`
+  is a separate absolute cap from response header commit; a slow reader cannot
+  hold a connection past it.
 - `clock::Deadline` is stored, not recomputed from "now" on each retry. No
   helper restarts a timeout after `Interrupted`, `WouldBlock` or partial
   progress.
-- `deadline(c)` returns the earliest finite deadline; the application uses it
-  as the reactor wait timeout. `forever()` is returned when no connection
-  deadline is pending. Timers are checked every reactor turn even under
+- `deadline(c)` returns the earliest finite deadline. If it returns
+  `forever()`, the server calls `reactor::wait` with `forever()`; it must
+  **not** pass forever to `reactor::timer`, which rejects it. Only finite
+  deadlines create timers. Timers are checked every reactor turn even under
   continuous traffic.
+- `next` checks accept, handshake, header, body, idle, response idle, response
+  total and request total deadlines. An accept/handshake/idle timeout closes
+  silently; a header/body timeout queues `408` when a response is still
+  possible; a response timeout closes because the response may be partially on
+  the wire.
 
 ### 8.2 Slowloris and resource pressure
 
 - Header bytes, line length, field count, target length, chunk metadata, chunk
   count, trailer bytes and body bytes are all independently bounded before
   allocation.
-- `maxConnections` (server policy) rejects excess accepted sockets immediately
-  or with a bounded `503`; no unbounded accept backlog is drained into obo
-  memory.
+- `maxConnections` and `maxTotalConnectionBytes` are admission policy. A
+  connection reserves at least
+  `maxHeaderBytes + maxHeaderLine + maxResponseBuffer` fixed bytes; the server
+  rejects a new accept (or closes it with a bounded `503`) when either the
+  count or the aggregate budget would be exceeded. Raising
+  `maxResponseBuffer`/`maxHeaderBytes` therefore cannot create an unbounded
+  multi-GiB server without changing the aggregate budget.
 - Per-connection `inbuf` and `outbuf` are fixed at construction; no geometric
   growth. A full buffer causes backpressure or a protocol error, not allocation.
+- `RequestInfo` header copies are bounded by `maxHeaderBytes` and freed at the
+  end of the handler turn; they are counted in the aggregate estimate.
 - Accept fairness: at most 32 accepts per reactor turn; per-connection work is
   capped at 64 KiB read/write and 64 events per turn; ready connections rotate.
 - `EMFILE`/`ENFILE` pauses acceptance and reports resource pressure; no busy
@@ -1235,38 +1501,65 @@ Rules:
   that exceeds a limit is closed after its protocol error; one bad connection
   never affects another.
 
-### 8.3 Read/write interest
+### 8.3 Read/write interest and transfer size
 
 The application computes interest from the protocol and transport:
 
 ```text
-read  = phase in {Handshaking, Idle, ReadingHead, ReadingBody} or t.wantsRead()
-write = outbuf nonempty or t.wantsWrite()
+read  = phase in {Handshaking, Idle, ReadingHead, ReadingBody}
+        or t.want() in {WantRead, WantReadWrite}
+write = outbuf nonempty or t.pending() > 0
+        or t.want() in {WantWrite, WantReadWrite}
 ```
 
-- Never register writable interest when there is no queued output and the
-  transport does not want write; level-triggered writable would hot-loop.
-- `next` flushes at most one bounded write before parsing. If output remains,
-  it returns `NeedWrite`; the parser does not read more until the output drains,
-  which provides backpressure to pipelined clients.
-- A `WouldBlock` from `readInto`/`writeFrom` is normal; the connection yields.
-  An `Interrupted` is retried only by the application loop against the same
-  deadline, never by a hidden loop.
+- Never register writable interest when there is no queued output/ciphertext
+  and the transport does not want write; level-triggered writable would
+  hot-loop.
+- `next` flushes a bounded amount before parsing. If `flush` returns
+  `FlushWantRead`, `next` returns `NeedRead`; if `FlushWantWrite`, it returns
+  `NeedWrite`. The parser does not read more until the output drains, which
+  provides backpressure to pipelined clients.
+- `readBody` and `flush` cap every transport request to
+  `min(user bound, t.maxTransfer())`. TLS caps at 65,536; a configured
+  `maxResponseBuffer` above that is split across calls, never passed as one
+  oversized `Range`.
+- A short transfer is normal: advance the cursor, keep the same deadline, and
+  retry after readiness. `WouldBlock`/`Want*` is control flow; `Interrupted` is
+  retried only by the application loop against the same deadline.
 - `BrokenPipe`/`Reset`/`Closed` closes the connection; no retry.
 
 ### 8.4 Drain and graceful shutdown
 
+The per-connection API is:
+
+- `requestClose(c)`: set close-after-response; current response gets
+  `Connection: close` if headers are still staged, otherwise the connection
+  closes after the flushed response without a second header block. No new
+  request is parsed.
+- `closeAfterResponse(c)`: observe the policy.
+- `discardBody(c, t, maxBytes, now)`: bounded drain of an unread body; if the
+  client is waiting for `100-continue` and no final response has been sent, it
+  sends 100 first; after a final response it returns `InvalidState` (close
+  instead).
+- `shutdownStep(c, t)`: flush output/ciphertext, then advance `shutdownStep`
+  on the transport. `ShutdownSent` is not completion; drive again until
+  `ShutdownDone`/`ShutdownPeerClosed` or a fixed deadline, then `close`.
+- `close(c, t)`: abortive, exactly once; it may omit close_notify. A clean
+  close is best-effort only.
+
 Graceful server shutdown:
 
 1. Stop accepting; close the listener.
-2. Mark every live connection `closeAfterResponse` and stop parsing new
-   requests; a new pipelined request gets `503` or is not read.
+2. Call `requestClose` on every live connection; stop parsing new requests.
 3. Let in-flight responses finish until a fixed shutdown deadline.
 4. Close idle connections immediately.
-5. For connections with unread bodies, either bounded-drain or close; do not
-   wait indefinitely.
-6. Close watches, transports, connections and finally the reactor; report
-   counts and any cleanup failures.
+5. For connections with unread bodies, either bounded-drain (`discardBody`) or
+   `close`; do not wait indefinitely. If an `Expect: 100-continue` client is
+   still waiting and a final response was already sent, close rather than
+   drain.
+6. Drive `shutdownStep` best-effort on completed responses until the deadline;
+   then `close`. Remove watches, close transports and the reactor; report
+   counts and cleanup failures.
 
 `Connection::close` is always safe in `defer`, but `defer` discards its Result;
 the normal path should close explicitly and inspect the Result, then defer as a
@@ -1283,8 +1576,9 @@ readiness batches and require a dedicated reactor. The event loop uses
 A single-connection blocking driver or test may use a dedicated reactor and
 `syswaitio` for a fixed pre-serialized small response, with one absolute
 deadline. `syswaitio::readExactUntil` is not used for HTTP bodies because it
-cannot parse chunk framing; `readBody` owns that state. This keeps the
-dedicated-reactor requirement explicit rather than hiding a second reactor.
+cannot parse chunk framing; `readBody` owns that state. TLS `shutdownStep` is
+likewise driven by the server loop, not by `syswaitio`, because it is
+multi-step and can require both read and write readiness.
 
 ## 9. Security
 
@@ -1298,14 +1592,17 @@ ambiguity:
 - duplicate CL: reject, even identical values; no comma/list form.
 - TE not ending in `chunked`: reject.
 - multiple TE fields: reject.
+- empty list elements in `Transfer-Encoding`/`Connection`/`Trailer`: reject.
 - unsupported coding: `501`, close; never fall back to CL.
 - obs-fold, bare CR/LF, NUL, whitespace before colon: reject.
 - chunk size/extension/CRLF/trailer grammar: strict, bounded.
 - no close-delimited request bodies.
 - any parse error closes; the connection is never reused with an uncertain
   boundary.
-- a handler that leaves a body unread either drains exactly or closes; it never
-  treats leftover bytes as a new request.
+- a handler that leaves a body unread either drains exactly or closes; `next`
+  returns `InvalidState` and never treats leftover bytes as a new request.
+- an early final response to a waiting `100-continue` client closes; it does
+  not drain or send 100 after the final response.
 
 ### 9.2 Smuggling corpus (minimum)
 
@@ -1323,6 +1620,9 @@ following valid request on the same connection.
 | `Transfer-Encoding: gzip, chunked` | `501`, close |
 | `Transfer-Encoding: chunked, identity` | `400`, close |
 | `Transfer-Encoding: chunked;foo` | `400`, close |
+| `Transfer-Encoding: ,chunked`, `chunked,`, `gzip,,chunked` | `400`, close |
+| `Connection: ,close`, `close,` | `400`, close |
+| `Trailer: Content-Length` declaration | `400`, close |
 | `Transfer-Encoding : chunked` (space before colon) | `400`, close |
 | obs-fold continuation after a field | `400`, close |
 | line terminated by bare LF or bare CR | `400`, close |
@@ -1334,7 +1634,21 @@ following valid request on the same connection.
 | chunk extension over limit / malformed | `400`, close |
 | forbidden trailer (`Content-Length`) | `400`, close |
 | duplicate `Host` or missing Host (1.1) | `400`, close |
+| Host with obs-text, empty/invalid port, `host:` | `400`, close |
 | absolute-form authority differs from Host | `400`, close |
+| absolute-form empty authority, userinfo, invalid port | `400`, close |
+| `OPTIONS *` with a body | framing applies; handler decides |
+| `CONNECT` with a body | `501`, close |
+| multiple `Expect` or non-100 list | `417`, close |
+| `Expect: 100-continue` with CL:0 | no 100; bodyless |
+| body bytes already sent before 100 | 100 skipped; body read |
+| final response after waiting `Expect` | close; no 100 after final |
+| `maxPipelineBytes` exceeded | `400`, close |
+| `maxRequests` with pipelined bytes | last response close; no extra parse |
+| `pipelining=false` with pipelined bytes | close; no second parse |
+| HTTP/1.0 valid request | `HTTP/1.0` response, close, no chunked |
+| HTTP/1.0 `Connection: keep-alive` | still close; no keep-alive header |
+| Host IPv6/default port | `[::1]:80` vs `http://[::1]` canonicalization; mismatch 400 |
 | `GET / HTTP/0.9` / no version | `400`/`505`, close |
 | `GET / HTTP/2.0` | `505`, close |
 | `CONNECT host:443 HTTP/1.1` | `501`, close |
@@ -1343,7 +1657,8 @@ following valid request on the same connection.
 | `Expect: something-else` | `417`, close |
 | target contains `#`, space, CTL, NUL, bad `%` escape | `400`, close |
 | target over `maxTarget` | `414`, close |
-| start line/header block over limit | `400`/`431`/`414`, close |
+| start line over `maxStartLine` | `414`, close |
+| header block/line over limit | `431`, close |
 | declared body over `maxBody` | `413`, close |
 | header/body timeout | `408`, close |
 | valid pipelined `GET` then `POST` with CL | both processed in order, no desync |
@@ -1356,8 +1671,10 @@ never reports a successful body end before the declared/chunked boundary.
 ### 9.3 Host, authority and target
 
 - HTTP/1.1 requires exactly one Host. Missing, duplicate, empty, comma-laden,
-  whitespace-containing, userinfo-containing or control-containing Host is
-  `400`.
+  whitespace-containing, userinfo-containing, obs-text/control-containing or
+  invalid-port Host is `400`. Host and authority are ASCII; port is
+  `0..65535`; an empty port is `400`; IPv6 literals are bracketed. Absolute
+  authority is nonempty and follows the same rules.
 - Absolute-form is accepted because RFC 9112 requires origin servers to accept
   it. The target authority is the effective authority; a present Host must
   canonicalize to the same host/port, otherwise `400`. This avoids cache
@@ -1375,8 +1692,9 @@ never reports a successful body end before the declared/chunked boundary.
 
 ### 9.4 Header and URI limits
 
-`431` for a header block/line/count over limit; `414` for a start line/target
-over limit; `400` for malformed syntax; `413` for body/framing size over limit.
+`431` for a header block/line/count over limit; `414` for **any** start line
+over `maxStartLine` and for a target over `maxTarget`; `400` for malformed
+syntax; `413` for body/framing size over limit.
 The distinctions are stable and logged without the offending bytes. The parser
 never truncates a field and then parses the prefix.
 
@@ -1421,7 +1739,7 @@ output byte array. No sleeps, no TLS, no sockets.
 
 | Test | Assertion |
 |---|---|
-| one-byte feeds | every split point of every corpus request yields the same event sequence |
+| one-byte feeds | every split point yields the same parsed request/response and no state loss; event counts may differ |
 | random fragmentation | 1..N byte feeds, including empty reads, preserve parser state |
 | start line | method/target/version table, exact error status |
 | headers | token/OWS/obs-fold/NUL/CR/LF/count/line/byte limits |
@@ -1441,6 +1759,31 @@ output byte array. No sleeps, no TLS, no sockets.
 | body limit | exact max accepted, max+1 is 413 |
 | header limits | exact limit accepted, +1 is 431/414 |
 | timeouts | fake clock at deadline, one nanosecond before/after; no reset |
+| fresh connection | no bytes; accept deadline fires; no hang |
+| TLS handshake | fresh session with neither want; handshakeStep still driven; handshake deadline fires |
+| unread body + next | `next` returns `InvalidState`; no second request parse; early response + close works |
+| 100 early final | final before read/100; connection closes; no 100 after final |
+| slow reader | response idle renews, response total does not; forced close |
+| response trailers | count/byte caps enforced; forbidden names rejected |
+| TLS pending ciphertext | `Flushed` false while `pending>0`; flushPending drives it |
+| TLS shutdown | multi-step Sent/PeerClosed; close abortive |
+| ALPN | H2/Other rejected; Http11/None per policy |
+| maxTransfer | >65536 request split; no adapter Range; short writes |
+| aggregate admission | maxConnections and maxTotalConnectionBytes both enforced; 503/close |
+| maxTarget/start line | exact target reachable; start line over is 414 |
+| maxHeaderLine/bytes | CRLF included; exact +1 |
+| maxChunkMetadata/count | exact boundary and +1 |
+| maxResponseHeaderBytes | exact commit and +1 rejection |
+| pipeline/request caps | maxPipelineBytes, maxRequests, pipelining=false |
+| HTTP/1.0 | valid response, close, no chunked/keep-alive; Host optional |
+| 304/205/HEAD | CL metadata rules; HEAD default omits CL; 205 length 0 |
+| error after partial | no second status line; close |
+| error bodies | 400/408/413/414/417/429/431/501/503/505 static, exact CL, no echo |
+| double begin/end, late setHeader | InvalidState; no wire change |
+| sendContinue | idempotent; no 100 for bodyless/final |
+| headerValue field | `headerValue(c, info.method)` compiles and copies |
+| writeText repeated | same local string passed repeatedly; no move |
+| Date RFC850/asctime | two-digit year window and year range |
 | close | idempotent; transport close exactly once |
 
 ### 10.2 Fuzzing
@@ -1468,6 +1811,12 @@ output byte array. No sleeps, no TLS, no sockets.
   the first body, using distinct methods/paths and a body-length oracle.
 - Test CL/TE combinations at both request and response sides; a response with a
   length mismatch closes and never emits a second response.
+- After an early final response with an unread body, call `next` and assert
+  `InvalidState` (not a second request); after `requestClose`, assert close
+  without parsing. Repeatedly with `Expect: 100-continue`, assert no 100 after
+  the final response and no drain wait.
+- Feed empty list elements in `Transfer-Encoding`, `Connection` and `Trailer`;
+  assert `400` before any body parse.
 
 ### 10.4 Differential and conformance
 
@@ -1476,16 +1825,44 @@ output byte array. No sleeps, no TLS, no sockets.
   headers, body bytes and connection reuse. Do not compare incidental header
   order or reason text.
 - Malformed differential: assert category (reject/close) and no desync, not an
-  exact status code; servers legitimately differ on `400` vs `431`.
+  exact status code; servers legitimately differ on `400` vs `431`. Include
+  absolute-form authority vs Host canonicalization, IPv6/default-port and
+  `OPTIONS *` cases.
 - RFC 9110/9112 MUST/SHOULD checklist: Host, absolute-form, CL/TE, chunked,
   HEAD/204/304, 100-continue, Connection, Date, status line.
 - Network integration: loopback TCP with port 0, `sysnet` accept, reactor
   fairness, idle timeout, slowloris, the configured maximum of idle connections
   (256 by default); no external network.
-- TLS integration is a separate adapter gate: ALPN `http/1.1`, clean
-  close_notify, truncated record, handshake want-read/want-write, no callback.
+- TLS integration is a separate adapter gate: ALPN `http/1.1`, h2/nil
+  dispatch, clean close_notify, truncated record, handshake with neither want,
+  `writeSome` WantRead (KeyUpdate), `pending` ciphertext draining, multi-step
+  shutdown WantRead/WantWrite, no callback. The TLS-side `flushStep` addendum
+  is tested by the TLS adapter owner, not silently assumed.
 
-### 10.5 Leaks and resource gates
+### 10.5 Syntax and ownership gate (no code)
+
+A checked-in compile fixture must contain both handler sketches from §7.2/§7.3
+and the accept sketch from §7.4, with a fake `http1` module and a scripted
+`MemoryTransport`:
+
+- compile with the current seed, `-I` the fixture root, `--check` where native
+  calls are absent, and a private sym dir;
+- assert no move/borrow diagnostics for repeated `writeText(c, body, ...)`,
+  `headerValue(c, info.method)`, sibling session fields and `replace(r.bytes,
+  new []byte(0))`;
+- run one request through the fake transport under `OBO_CHECK=1` for both a
+  bodyless and a fixed-length body request;
+- the same gate compiles a TLS-neutral `http1tls` stub that maps
+  `ReadOutcome`/`WriteOutcome`/`ShutdownOutcome`/`Want`/`Alpn` without importing
+  `systls` into `http1`;
+- a negative compile fixture uses a separate `Connection`/buffer record and must
+  fail with the "may point inside" diagnostic, proving the session pattern is
+  the intended route.
+
+This gate is a test artifact of implementation, not code in this design. It is
+mandatory before H1a is accepted.
+
+### 10.6 Leaks and resource gates
 
 - `OBO_CHECK=1` reports no managed leaks/double frees for parser, serializer and
   handler examples.
@@ -1494,42 +1871,51 @@ output byte array. No sleeps, no TLS, no sockets.
 - Deliberately omit a close in a negative test; the oracle must report it.
 - ASAN/UBSAN for native adapters; no claim for uninstrumented obo code.
 - Long-running test: 10k requests on one connection with bounded memory; 256
-  concurrent idle connections with fixed per-connection buffers.
+  concurrent idle connections with fixed per-connection buffers; aggregate
+  admission stays within `maxTotalConnectionBytes`.
 
 ## 11. Integration
 
 ### 11.1 With `sysstream`/`sysbuffer`
 
-- `Transport::readInto`/`writeFrom` map directly to `sysstream::readInto`/
-  `writeFrom`; no hidden retry. A short transfer is success.
-- `Connection` allocates two fixed `sysbuffer::Buffer`s at `make`; `feed` is
-  all-or-nothing and never grows. Body data is copied to the caller's `dst`
-  (or, for a fixed body with empty `inbuf`, read directly into `dst`).
-- `stream::shutdownWrite` is used only for `Connection: close`/TLS close_notify;
-  it is not a substitute for `close`.
+- The plain `Transport` maps `readSome(max)` to `stream::readSome(s, max)` and
+  `writeSome` to `stream::writeSome`; no hidden retry. A short transfer is
+  success. `readSome` returns owned bytes, so `readBody` returns owned
+  `BodyData` without a caller buffer.
+- `Connection` allocates two fixed `sysbuffer::Buffer`s at `make`: the header
+  input buffer and the encoded output buffer. `feed` is all-or-nothing and
+  never grows. Body data from `inbuf` is copied into an owned `BodyData` array;
+  transport reads already return owned arrays.
+- `stream::shutdownWrite` is used only by the plain `shutdownStep`; it is not a
+  substitute for `close`. `close` remains abortive.
 - Never store `&Stream` in a record; the `Transport` parameter is passed to each
   step, as the systems design requires. A plain transport owns its stream; a TLS
   transport owns its session.
 
 ### 11.2 With `sysreactor`
 
-- The server registers the transport's checked `source()` with
-  `reactor::watchResource`; it never watches an fd or a TLS struct.
+- The server calls `Transport.watch(r, readable, writable, tag)`, which uses
+  `reactor::watchResource` for plain streams and `systls::watch` for TLS. It
+  never watches an fd or a TLS struct directly; `source()` is not part of the
+  contract.
 - Level-triggered only. After a readable event, `readBody`/`next` must attempt a
-  transfer and handle `WouldBlock`; a readiness event is not data.
+  transfer and handle `ReadWantRead`/`WriteWantRead`/`WouldBlock`; a readiness
+  event is not data.
 - Interest is modified, not re-registered, when read/write needs change; remove
   the watch before closing the transport. Stale events after close are ignored
   by generation/tag checks.
-- Timers use `reactor::timer`/`wait` with the earliest `Connection.deadline`;
-  timer callbacks do not call into obo. `wake`/`stop` are used for shutdown.
+- `deadline(c)` may return `forever()`; `reactor::wait` accepts it, but
+  `reactor::timer` does not. Create a timer only for a finite deadline; for an
+  infinite one, wait without a timer. Timer callbacks do not call into obo.
+  `wake`/`stop` are used for shutdown.
 - Fairness limits from §8.2 apply.
 
 ### 11.3 With `sysnet`
 
 - `net::accept` -> `net::intoStream` consumes the connection; capture
   `peerAddress` before conversion for logging.
-- `net::watchListener` or `stream::source` registers the listener; accept in
-  bounded batches; `WouldBlock` ends the batch.
+- `net::watchListener` or the listener's checked source registers the listener;
+  accept in bounded batches; `WouldBlock` ends the batch.
 - `net::setNoDelay`, keep-alive probes and listener options are application
   policy, not HTTP.
 - The core `Connection` does not require `sysnet`; tests use file/pipe/memory
@@ -1543,18 +1929,63 @@ consume events from the server's reactor.
 
 ### 11.5 With the TLS adapter
 
-The TLS design is a parallel deliverable. This layer requires only the
-`Transport` contract in §4.3. In particular:
+The TLS adapter remains a separate design; `http1` does not import `systls`.
+A neutral module is required:
 
-- TLS handshake state is exposed as `Handshake` steps, not callbacks.
-- `readInto` returns decrypted application bytes; `writeFrom` accepts plaintext.
-- `wantsRead`/`wantsWrite` communicate TLS-level needs; the server watches the
-  underlying stream.
-- `source()` returns the underlying stream identity for the reactor.
-- `close` performs bounded close_notify; a truncated record is not EOF.
-- ALPN must select `http/1.1`; h2/h3 are separate and not negotiated here.
+```text
+obo/lib/http1tls.obx
+    import "http1.obx" as http1
+    import "sys/systls.obx" as tls
+    import "sysreactor.obx" as reactor
+    import "sysstream.obx" as stream
+```
+
+`http1tls` defines a wrapper type (for example
+`pub type TlsTransport = ref record { session: tls::TlsSession }`) and implements
+`http1::Transport` for that type. The implementation lives in the module that
+defines the wrapper, satisfying the `impl I for T` rule without making `systls`
+import HTTP. `http1tls::accept(ctx, stream): Result[http1::Transport]` wraps
+`tls::accept`; a future `connect` wrapper follows the same pattern. `http1tls`
+may also expose forwarded `info`/`peerIdentity` for application logging, but
+the HTTP/1.1 protocol layer only consumes `alpn`, `isSecure`, byte I/O, want,
+pending, shutdown and close.
+
+Mapping requirements:
+
+- `handshakeStep` -> `tls::handshakeStep`, mapping `Step.Done/WantRead/WantWrite`
+  to `StepDone/StepWantRead/StepWantWrite`.
+- `readSome(max)` -> `tls::readSome`, moving `Data.bytes` into
+  `ReadData.bytes`; map `Eof`/`Want*` exactly.
+- `writeSome` -> `tls::writeSome`, preserving `Wrote`/`WantRead`/`WantWrite`.
+- `flushPending` -> **required TLS-side method**. The current TLS design has no
+  ciphertext-only drain. The TLS reviewer must add either
+  `tls::flushStep(s): Result[WriteOutcome>` (preferred) or explicitly define
+  `tls::writeSome(..., count=0)` to flush pending ciphertext before returning
+  `Wrote{0}`. Without one of these, HTTP `Flushed` cannot be honest. This is
+  flagged as a TLS-side prerequisite, not silently assumed.
+- `shutdownStep` -> `tls::shutdownStep`, mapping all outcomes; multi-step.
+- `pending`/`want` -> `tls::pending`/`tls::want`.
+- `alpn` -> `tls::alpn`/`info.alpn`; map nil to `AlpnNone`, `"http/1.1"` to
+  `AlpnHttp11`, `"h2"` to `AlpnH2`, anything else to `AlpnOther`.
+- `watch` -> `tls::watch`; `close` -> `tls::close` (abortive). No `source()`.
+- `isSecure = true`; `maxTransfer = 65536`.
+
+ALPN and server policy:
+
+- The HTTP/1.1 listener should configure TLS `Require(["http/1.1"])`. If it
+  uses `Prefer`, a client may negotiate `h2`; `next` returns `HandshakeDone`,
+  the server inspects `alpn()`, and **closes** on `AlpnH2`/`AlpnOther`.
+  `AlpnNone` is allowed only if the listener policy permits no ALPN; then it
+  is treated as HTTP/1.1.
+- There is no h2c/Upgrade fallback. h2/h3 are separate designs.
 - The HTTP layer does not see certificates, keys, SNI, session tickets or TLS
   errors beyond a mapped `Result` category.
+- TLS `close` may omit close_notify. Clean shutdown is the multi-step
+  `shutdownStep` path until `ShutdownDone`/`ShutdownPeerClosed` or a deadline,
+  then `close`. Do not report a truncated TLS close as clean.
+
+`H1c` is therefore not "tests only": it adds the neutral adapter and may
+require the TLS-side flush addendum and ALPN dispatch tests.
 
 ### 11.6 With `html`/`sql` templates
 
@@ -1590,9 +2021,10 @@ queue pressure, drop with a counter; never block the reactor on a slow log sink.
 
 | Phase | Scope | Exit |
 |---|---|---|
-| H1a: parser/serializer | `http1parse`, `http1date`, `MemoryTransport`, `Connection` state machine; no network/TLS | corpus, fuzz, smuggling, fragmentation, HEAD/204/304, 100-continue, injection tests pass |
-| H1b: server loop | `sysnet` accept, reactor watches, deadlines, drain, max connections; plain stream | loopback tests, curl/Go differential, slowloris, 256 idle connections, leak gates |
-| H1c: TLS integration | TLS adapter implements `Transport`; handshake steps; ALPN `http/1.1` | TLS gate from the separate adapter design; no HTTP changes except tests |
+| H1a0: pure grammar | `http1parse` over byte arrays, `http1date` over explicit `(seconds,nanos)` (public wrapper later accepts `clock::Timestamp`); no `sysbuffer`/`sysreactor`/network | start/header/chunk corpus, exact limits, date tests |
+| H1a: connection | after systems P1a (`sysbuffer`, `sysclock`) and P2 (`sysstream` for the plain adapter); `Connection`, `MemoryTransport`, deadlines, body streaming; no network/TLS | corpus, fuzz, smuggling, fragmentation, HEAD/204/304, 100-continue, injection, syntax gate |
+| H1b: server loop | P2 `sysnet` accept, `sysreactor` watches, drain, aggregate admission, plain stream | loopback tests, curl/Go differential, slowloris, 256 idle connections, leak gates |
+| H1c: TLS integration | P2T + `http1tls` wrapper + TLS-side `flushStep` (or count-0 flush) + ALPN dispatch; HTTP transport/flush/shutdown changes are in scope | TLS gate from the separate adapter design; h2/nil dispatch |
 | H1d: hardening | fuzz expansion, conformance, performance/backpressure, logging | release checklist, no body desync, budget measured |
 | H2/H3 | separate designs | not in this note |
 
@@ -1645,6 +2077,20 @@ compiler adds a bulk `[]byte` copy, it is an optimization behind the same
 13. **Using `syswaitio` per connection in the shared loop.** It consumes
     readiness batches and needs a dedicated reactor; use explicit nonblocking
     steps.
+14. **A socket-shaped `readInto`/`writeFrom`/`source()` transport.** It forces
+    an extra copy and cannot express TLS `WantRead` on write, ciphertext
+    pending, multi-step shutdown, or `watch` without a stream identity. Use the
+    owned-outcome `Transport` in §4.3.
+15. **`systls` implements `http1::Transport` directly.** `impl I for T` belongs
+    in the module defining `T`; `systls` would import HTTP and invert the
+    systems dependency. Use the neutral `http1tls` wrapper type.
+16. **Treating `close` as a clean TLS shutdown.** TLS `close` may omit
+    close_notify; use multi-step `shutdownStep` best-effort, then `close`, and
+    never report a truncated close as clean.
+17. **Auto-draining an unread body inside `next`.** It hides a potentially
+    large read and can desynchronise an early response. `next` returns
+    `InvalidState`; the caller explicitly `readBody`/`discardBody` or
+    `requestClose`/`close`.
 
 ## 14. Open choices and recommendations
 
@@ -1657,15 +2103,15 @@ compiler adds a bulk `[]byte` copy, it is an optimization behind the same
 | `100-continue` | Auto on first `readBody` | Always-send causes unsolicited 100; never-send can deadlock |
 | `CONNECT`/`TRACE` | `501`, close | Proxying/tracing expands scope and security surface |
 | Request trailers | Accept bounded, expose after `BodyEnd` | Ignoring them loses checksums; accepting unbounded is DoS |
-| Response trailers | Opt-in, chunked only | Auto trailers complicate framing and clients |
+| Response trailers | Opt-in, chunked only, count/byte caps | Auto trailers complicate framing and clients |
 | Error page | Minimal plain text, no echo, `Connection: close` | HTML/error reflection invites XSS/log injection |
-| HTTP/1.0 | Off by default; explicit compatibility profile | Always-on adds close/chunked/Host branches and tests |
+| HTTP/1.0 | Off by default; explicit always-close compatibility profile | Always-on adds close/Host branches and tests |
 | Unknown methods | `501` by default; opt-in extension methods | Silently passing arbitrary tokens to handlers weakens policy |
 | Duplicate CL | Reject all duplicates | RFC allows collapsing identical values, but one path is safer |
 | Leading CRLF | Reject; do not implement the SHOULD-ignore | Slight client incompatibility, simpler boundaries |
 | `Server` | Omit by default; configurable product token | Version strings aid fingerprinting |
 | Date caching | Optional 1 s app cache | Per-response formatting is simple and correct |
-| Max connections | 256 default | 1024+ raises fixed buffer memory; tune with measurement |
+| Max connections/memory | 256 and 64 MiB aggregate by default | A count alone lets raised buffer limits exceed the memory budget |
 | Path normalization | None in HTTP; expose raw bytes | Normalizing here hides routing bugs and can create traversal |
 | `103 Early Hints` | Not in v1 | Adds interim-response state and tests |
 | Response compression | Not in v1; codec adapter later | Scope and side-channel risk |
@@ -1675,7 +2121,7 @@ compiler adds a bulk `[]byte` copy, it is an optimization behind the same
 | Limit | Default |
 |---|---|
 | `maxStartLine` | 8192 |
-| `maxTarget` | 8192 |
+| `maxTarget` | 4096 |
 | `maxHeaderBytes` | 16384 |
 | `maxHeaderCount` | 100 |
 | `maxHeaderLine` | 8192 |
@@ -1688,13 +2134,19 @@ compiler adds a bulk `[]byte` copy, it is an optimization behind the same
 | `maxTrailerCount` | 32 |
 | `maxResponseHeaderBytes` | 16384 |
 | `maxResponseBuffer` | 32 KiB |
+| `maxResponseTrailerCount` | 32 |
+| `maxResponseTrailerBytes` | 4096 |
 | `maxPipelineBytes` | `maxHeaderBytes + maxHeaderLine` |
 | `maxRequests` | 1000 |
-| `maxConnections` (server) | 256 |
+| `maxConnections` | 256 |
+| `maxTotalConnectionBytes` | 64 MiB |
+| `acceptTimeoutMs` | 10000 |
+| `handshakeTimeoutMs` | 10000 |
 | `headerTimeoutMs` | 10000 |
 | `bodyIdleTimeoutMs` | 30000 |
 | `idleTimeoutMs` | 60000 |
 | `responseTimeoutMs` | 60000 |
+| `responseTotalTimeoutMs` | 300000 |
 | `totalTimeoutMs` | 300000 |
 | `allowHttp10` | false |
 | `allowExtensionMethods` | false |
@@ -1709,23 +2161,24 @@ security guarantee by itself.
 
 ## 15. Review focus
 
-The independent review should check:
+The focused re-review should check:
 
-1. Whether the `Transport` interface is sufficient for the parallel TLS adapter
-   (handshake want-read/want-write, close_notify, source identity) without
-   importing TLS types into HTTP.
-2. Whether the step API is implementable under obo's borrow/move rules,
-   especially passing `&Connection` and `&Transport` and writing into a caller's
-   `dst` without storing references.
-3. Whether every CL/TE/chunk/trailer ambiguity has a deterministic close, and
-   whether the smuggling corpus covers the chosen parser behavior.
-4. Whether the response framing matrix (HEAD/204/205/304/1xx) matches RFC 9110
-   and remains testable.
-5. Whether timeouts and buffer caps are enforceable with the approved
-   `sysbuffer`/`sysreactor`/`sysclock` contracts, and whether `syswaitio` is
-   correctly kept out of the shared loop.
-6. Whether `Date`/HTTP-date belongs in `http1date` or needs a systems calendar
-   extension; this note chooses a small pure module to avoid changing
-   `syscalendar`.
-7. Whether the default limits and the HTTP/1.0 compatibility choice are the
-   right product scope.
+1. The `Transport` seam against the TLS design: owned `readSome`, `WantRead`
+   on write, `flushPending`/`pending`, multi-step `shutdownStep`, abortive
+   `close`, `watch` without `source`, ALPN dispatch, `maxTransfer`, and the
+   neutral `http1tls` wrapper. The TLS-side `flushStep` addendum must be
+   accepted or rejected by the TLS reviewer.
+2. Whether the fresh-connection, handshake and response-total deadlines, and
+   the `forever()`/`reactor::timer` distinction, are implementable.
+3. Whether `requestClose`/`closeAfterResponse`/`shutdownStep` and the
+   `Draining`/`Closing` transitions cover graceful shutdown without claiming a
+   clean TLS close.
+4. Whether `next` returning `InvalidState` for an unread body, and the
+   `100-continue` early-final close, eliminate the desync case in tests.
+5. Whether by-value string APIs are acceptable given that `&string` is
+   rejected by 0.12 and strings are refcounted copies; the syntax/ownership
+   gate must pass.
+6. Whether the `maxTarget`/`maxStartLine`, response trailer, aggregate memory
+   and empty-list-element rules close the remaining limit gaps.
+7. Whether the defaults and HTTP/1.0 always-close choice are the right product
+   scope.
