@@ -6,7 +6,7 @@
   "wrapper": "zlib.obx",
   "wrapper_sources": ["buffer.obx"],
   "sources": ["../toolkit/cres.c", "zlib_adapter.c"],
-  "headers": ["/usr/include/zlib.h", "zlib_adapter.h", "../toolkit/cres.h"],
+  "headers": ["zlib_system.h", "zlib_adapter.h", "../toolkit/cres.h"],
   "declarations": [],
   "libs": ["-l:libz.so.1"],
   "cflags": [],

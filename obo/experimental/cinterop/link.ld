@@ -37,6 +37,11 @@ SECTIONS
      They must be separate output sections for ld to emit PT_GNU_RELRO; a
      single .data that also absorbs .got defeats -z relro. */
   . = DATA_SEGMENT_ALIGN (CONSTANT (MAXPAGESIZE), CONSTANT (COMMONPAGESIZE));
+  /* Constructors/destructors are relocated before the loader makes the RELRO
+     range read-only, so keep them inside it. */
+  .preinit_array : { *(.preinit_array) }
+  .init_array : { *(.init_array) *(.ctors) }
+  .fini_array : { *(.fini_array) *(.dtors) }
   .data.rel.ro : { *(.data.rel.ro) *(.data.rel.ro.*) }
   /* .dynamic belongs in the RELRO range too; the loader writes DT_DEBUG before
      it removes write permission. */
@@ -49,9 +54,6 @@ SECTIONS
   . = DATA_SEGMENT_RELRO_END (SIZEOF (.got.plt) >= 24 ? 24 : 0, .);
   .got.plt : { *(.got.plt) }
   .data : { *(.data) *(.data.*) }
-  .preinit_array : { *(.preinit_array) }
-  .init_array : { *(.init_array) *(.ctors) }
-  .fini_array : { *(.fini_array) *(.dtors) }
   .bss : { *(.bss) *(.bss.*) *(COMMON) }
   . = ALIGN(0x1000);
   /* The synthetic 1 MiB stack dominates this slot; the adapter's small static

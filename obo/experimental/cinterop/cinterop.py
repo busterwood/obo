@@ -161,11 +161,21 @@ def include_flags(include_dirs):
     return out
 
 
-def path_map_flags(spec_dir, include_dirs):
-    """Keep absolute build roots out of object diagnostics/debug info."""
-    out = ['-ffile-prefix-map=%s=.' % spec_dir]
-    for i, d in enumerate(include_dirs):
-        out.append('-ffile-prefix-map=%s=/cinterop-include-%d' % (d, i))
+def path_map_flags(roots):
+    """Keep absolute build roots out of object diagnostics/debug info.
+
+    Sources and headers may live outside the spec directory (a maintained
+    wrapper plus a private sysroot, or a test fixture in the repository with a
+    generated spec in a temp dir). Map every root, not only include_dirs.
+    """
+    out = []
+    seen = set()
+    for root in roots:
+        real = os.path.realpath(root)
+        if real in seen or real == os.sep:
+            continue
+        seen.add(real)
+        out.append('-ffile-prefix-map=%s=/cinterop-root-%d' % (real, len(seen) - 1))
     return out
 
 
@@ -374,17 +384,18 @@ def parse_dependency_makefile(text):
     return tokens
 
 
-def collect_header_deps(cc, base_flags, sources, out):
+def collect_header_deps(cc, compiles, out):
     """Hash every header the compiler actually reads for the binding.
 
-    The explicit `headers` list is necessary but not sufficient: include_dirs
-    may supply transitive headers (as a private OpenSSL sysroot does). `cc -M`
-    with the same include/cflags makes those inputs part of the provenance
-    record instead of ambient state.
+    `compiles` is (source, flags) for each real compile. The dependency scan
+    must use exactly that compile's macros/optimization/include flags: a header
+    selected by `__OPTIMIZE__` or a `-D` flag is part of the input only when the
+    scan sees the same preprocessor state. Results from all compiles are
+    unioned.
     """
     seen = {}
-    for source in sources:
-        p = run([cc, '-M', *base_flags, source])
+    for source, flags in compiles:
+        p = run([cc, '-M', *flags, source])
         for dep in parse_dependency_makefile(p.stdout):
             real = os.path.realpath(dep)
             if not os.path.isfile(real):
@@ -440,6 +451,46 @@ def read_phdrs(data):
                 lo, hi = b, a
             if lo['vaddr'] + lo['memsz'] > hi['vaddr']:
                 raise ToolError("overlapping load segments at %#x and %#x" % (lo['vaddr'], hi['vaddr']))
+    return out
+
+
+def read_sections(data):
+    """Read section names/addresses/sizes from an ELF64 image (no stripping)."""
+    if data[:4] != b'\x7fELF' or data[4] != 2 or data[5] != 1:
+        raise ToolError("not a 64-bit little-endian ELF image")
+    e_shoff = struct.unpack_from('<Q', data, 0x28)[0]
+    e_shentsize = struct.unpack_from('<H', data, 0x3a)[0]
+    e_shnum = struct.unpack_from('<H', data, 0x3c)[0]
+    e_shstrndx = struct.unpack_from('<H', data, 0x3e)[0]
+    if e_shoff == 0 or e_shnum == 0:
+        raise ToolError("final artifact has no section table")
+    if e_shentsize != 64 or e_shstrndx >= e_shnum:
+        raise ToolError("final artifact has a malformed section table")
+    if e_shoff + e_shnum * e_shentsize > len(data):
+        raise ToolError("section table is outside the file")
+    headers = []
+    for i in range(e_shnum):
+        at = e_shoff + i * e_shentsize
+        name, typ, flags, addr, off, size, link, info, alignv, entsize = \
+            struct.unpack_from('<IIQQQQIIQQ', data, at)
+        if off + size > len(data) and typ != 8:       # SHT_NOBITS has no file bytes
+            raise ToolError("section %d extends past the file" % i)
+        headers.append({'nameoff': name, 'type': typ, 'flags': flags,
+                        'addr': addr, 'off': off, 'size': size})
+    strtab = headers[e_shstrndx]
+    if strtab['off'] + strtab['size'] > len(data):
+        raise ToolError("section name table is outside the file")
+    names = data[strtab['off']:strtab['off'] + strtab['size']]
+    out = []
+    for s in headers:
+        start = s['nameoff']
+        if start >= len(names):
+            raise ToolError("section name offset is outside the name table")
+        end = names.find(b'\0', start)
+        if end < 0:
+            raise ToolError("unterminated section name")
+        s['name'] = names[start:end].decode('latin-1')
+        out.append(s)
     return out
 
 
@@ -663,6 +714,14 @@ def check_hardening(data):
     relro = [p for p in ph if p['type'] == PT_GNU_RELRO and p['memsz'] > 0]
     if not relro:
         raise ToolError("final artifact has no non-empty GNU_RELRO segment")
+    relro_ranges = [(p['vaddr'], p['vaddr'] + p['memsz']) for p in relro]
+    for section in read_sections(data):
+        if section['name'] in ('.preinit_array', '.init_array', '.fini_array') \
+                and section['size']:
+            lo = section['addr']
+            hi = lo + section['size']
+            if not any(a <= lo and hi <= b for a, b in relro_ranges):
+                raise ToolError("%s is outside PT_GNU_RELRO" % section['name'])
     dynamic = [p for p in ph if p['type'] == PT_DYNAMIC]
     if len(dynamic) != 1:
         raise ToolError("final artifact has no single PT_DYNAMIC segment")
@@ -975,7 +1034,10 @@ def build(args):
     cflags = list(spec.get('cflags', []))
     libs = list(spec.get('libs', []))
     inc_flags = include_flags(include_dirs)
-    map_flags = path_map_flags(spec_dir, include_dirs)
+    map_roots = [spec_dir, os.path.dirname(app), *include_dirs,
+                 *[os.path.dirname(p) for p in sources],
+                 *[os.path.dirname(p) for p in headers]]
+    map_flags = path_map_flags(map_roots)
     include_paths = {'include_%d' % i: os.path.relpath(path, out)
                      for i, path in enumerate(include_dirs)}
 
@@ -1017,22 +1079,23 @@ def build(args):
     write_manifest(input_manifest_path, input_doc)
     verify_doc(input_doc, out, False)   # check the inputs before compiling
 
-    # The signature check and every binding source see the same include dirs and
-    # cflags. A private sysroot therefore works in header mode, and a flag that
-    # changes a prototype cannot silently apply to only one phase.
-    compile_base = [*inc_flags, *map_flags, *cflags]
+    # The signature check and every binding source see the same preprocessor
+    # state: -fno-pie, -O2, include dirs and cflags. A private sysroot therefore
+    # works in header mode, and a flag or __OPTIMIZE__ branch that changes a
+    # prototype cannot validate one declaration and compile another.
+    source_flags = ['-fno-pie', '-O2', '-I', spec_dir, *inc_flags, *map_flags, *cflags]
+    sig_flags = ['-fno-pie', '-O2', '-Werror', '-I', spec_dir, *inc_flags, *map_flags, *cflags]
     sig_o = os.path.join(out, 'sigcheck.o')
-    run([cc, '-c', '-fno-pie', '-Werror', '-I', spec_dir, *compile_base,
-         sig_path, '-o', sig_o])
+    run([cc, '-c', *sig_flags, sig_path, '-o', sig_o])
     shim_o = os.path.join(out, 'shim.o')
     run([cc, '-c', shim, '-o', shim_o])
     src_objs = []
     for i, p in enumerate(sources):
         o = os.path.join(out, 'src%d.o' % i)
-        run([cc, '-c', '-fno-pie', '-O2', *compile_base, p, '-o', o])
+        run([cc, '-c', *source_flags, p, '-o', o])
         src_objs.append(o)
-    header_deps = collect_header_deps(cc, ['-I', spec_dir, *compile_base],
-                                      [sig_path, *sources], out)
+    header_deps = collect_header_deps(
+        cc, [(sig_path, sig_flags), *[(p, source_flags) for p in sources]], out)
     host_o = os.path.join(out, 'host.o')
     host_stack_o = os.path.join(out, 'host_stack.o')
     start_o = os.path.join(out, 'start.o')
