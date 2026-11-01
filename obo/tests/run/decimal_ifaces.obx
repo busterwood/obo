@@ -1,0 +1,89 @@
+// Decimal interface members (stage D4a): pure, plain, mut and impure members with decimal
+// parameters and returns, two record types implementing one interface, and dispatch through
+// an owned I, a borrowed &I and a mutable mut &I. The vtable load offset and the argument
+// stride are exercised by 24-byte arguments mixed with int, string and no arguments; a
+// decimal-returning member also pushes the hidden destination pointer.
+var pool: []int = new []int(0)
+var touched = 0
+
+fn sink() {
+    truncate(pool, 0)
+    touched += 1
+}
+
+type Ledger = interface {
+    pure fn add(x: decimal, y: decimal): decimal
+    fn scale(n: int, x: decimal, s: string): decimal
+    mut fn deposit(x: decimal): decimal
+    impure fn charge(x: decimal): decimal
+    pure fn empty(): decimal
+}
+type Cash = ref record { v: decimal; n: int }
+type Credit = ref record { v: decimal; n: int }
+
+fn (c: &Cash) add(x: decimal, y: decimal): decimal { return c.v + x + y }
+fn (c: &Cash) scale(n: int, x: decimal, s: string): decimal { return c.v + x * decimal(n) + decimal(len(s)) }
+fn (mut c: &Cash) deposit(x: decimal): decimal {
+    c.v = c.v + x
+    c.n += 1
+    return c.v
+}
+fn (c: &Cash) charge(x: decimal): decimal {
+    sink()
+    return c.v * x
+}
+fn (c: &Cash) empty(): decimal { return 0.00 }
+impl Ledger for Cash
+
+fn (c: &Credit) add(x: decimal, y: decimal): decimal { return c.v + x + y + 0.01 }
+fn (c: &Credit) scale(n: int, x: decimal, s: string): decimal { return c.v + x * decimal(n) - decimal(len(s)) }
+fn (mut c: &Credit) deposit(x: decimal): decimal {
+    c.v = c.v + x + 0.10
+    c.n += 1
+    return c.v
+}
+fn (c: &Credit) charge(x: decimal): decimal {
+    sink()
+    return c.v - x
+}
+fn (c: &Credit) empty(): decimal { return 0.01 }
+impl Ledger for Credit
+
+// the same member through &I and through mut &I, and a decimal return used in arithmetic
+fn viaBorrow(l: &Ledger, x: decimal): decimal { return l.add(x, 0.25) }
+fn viaMut(mut l: &Ledger, x: decimal): decimal { return l.deposit(x) }
+
+fn main() {
+    var cash = new Cash{v: 10.00, n: 0}
+    var credit = new Credit{v: 20.00, n: 0}
+    // direct calls on the two implementations
+    println(cash.add(1.10, 2.20))                 // expect: 13.30
+    println(credit.add(1.10, 2.20))               // expect: 23.31
+    println(cash.scale(2, 1.50, "ab"))            // expect: 15.00
+    println(credit.scale(3, 1.50, "abcd"))        // expect: 20.50
+    println(cash.deposit(0.50))                   // expect: 10.50
+    println(credit.deposit(0.50))                 // expect: 20.60
+    println(cash.empty())                         // expect: 0.00
+    println(credit.empty())                       // expect: 0.01
+    // through an owned interface value
+    var l: Ledger = cash
+    println(l.add(0.25, 0.25))                    // expect: 11.00
+    println(l.scale(2, 0.50, "xyz"))              // expect: 14.50
+    println(l.empty())                            // expect: 0.00
+    println(l.deposit(1.00))                      // expect: 11.50
+    println(l.add(1.0, 1.0) + l.empty())          // expect: 13.50
+    if l.add(0.5, 0.5) > 12.0 { println("rich") } // expect: rich
+    // through &I and through mut &I
+    let rb: &Ledger = &l
+    println(viaBorrow(rb, 2.00))                  // expect: 13.75
+    println(viaMut(rb, 0.50))                     // expect: 12.00
+    // the impure member through a borrowed interface, and its summary
+    println(rb.charge(2.0))                       // expect: 24.000
+    println(touched)                              // expect: 1
+    // the second implementation through the same interface
+    let l2: Ledger = credit
+    println(l2.add(0.10, 0.20))                   // expect: 20.91
+    println(l2.scale(4, 0.25, "z"))               // expect: 20.60
+    println(l2.empty())                           // expect: 0.01
+    println(touched)                              // expect: 1
+}

@@ -1,0 +1,31 @@
+module lib
+// A cross-module interface with decimal parameters and returns: it is written to lib.sym,
+// the importer implements it for its own type, and the library dispatches through it.
+pub type Ledger = interface {
+    pure fn add(x: decimal, y: decimal): decimal
+    fn scale(n: int, x: decimal, s: string): decimal
+    mut fn deposit(x: decimal): decimal
+    impure fn charge(x: decimal): decimal
+}
+pub type Cash = ref record { pub v: decimal; pub n: int }
+
+fn sink() {
+    // an impure member may free a global; this module has none of its own to free here
+}
+
+pub fn (c: &Cash) add(x: decimal, y: decimal): decimal { return c.v + x + y }
+pub fn (c: &Cash) scale(n: int, x: decimal, s: string): decimal { return c.v + x * decimal(n) + decimal(len(s)) }
+pub fn (mut c: &Cash) deposit(x: decimal): decimal {
+    c.v = c.v + x
+    c.n += 1
+    return c.v
+}
+pub fn (c: &Cash) charge(x: decimal): decimal { return c.v * x }
+pub impl Ledger for Cash
+
+pub fn make(v: decimal): Ledger { return new Cash{v: v, n: 0} }
+
+// the library calls the member through an owned interface value it was given
+pub fn total(a: Ledger, b: Ledger): decimal {
+    return a.add(0.0, 0.0) + b.add(0.0, 0.0)
+}

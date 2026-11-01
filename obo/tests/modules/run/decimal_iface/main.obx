@@ -1,0 +1,29 @@
+module main
+import "lib.obx"
+// The importer's own type implements the imported interface with decimal members; calls run
+// through the lib's vtable and through a locally built box.
+type Credit = ref record { v: decimal; n: int }
+fn (c: &Credit) add(x: decimal, y: decimal): decimal { return c.v + x + y + 0.01 }
+fn (c: &Credit) scale(n: int, x: decimal, s: string): decimal { return c.v + x * decimal(n) - decimal(len(s)) }
+fn (mut c: &Credit) deposit(x: decimal): decimal {
+    c.v = c.v + x + 0.10
+    c.n += 1
+    return c.v
+}
+fn (c: &Credit) charge(x: decimal): decimal { return c.v - x }
+impl lib::Ledger for Credit
+
+fn main() {
+    let a: lib::Ledger = lib::make(10.00)             // a lib type through a lib factory
+    let b: lib::Ledger = new lib::Cash{v: 2.50, n: 0} // a lib type converted here
+    var c: lib::Ledger = new Credit{v: 20.00, n: 0}   // a main type under the lib interface
+    println(a.add(1.10, 2.20))                        // expect: 13.30
+    println(b.scale(2, 0.50, "ab"))                   // expect: 5.50
+    println(c.add(1.10, 2.20))                        // expect: 23.31
+    println(c.scale(3, 1.50, "abcd"))                 // expect: 20.50
+    println(c.deposit(0.50))                          // expect: 20.60
+    println(c.charge(2.0))                            // expect: 18.60
+    println(lib::total(a, b))                         // expect: 12.50
+    // a decimal-returning member used in arithmetic and comparison without a temporary
+    if c.add(0.0, 0.0) > 20.0 { println("credit") }   // expect: credit
+}

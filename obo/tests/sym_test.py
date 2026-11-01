@@ -26,8 +26,8 @@ RT = FORK
 GOLD = os.path.join(HERE, 'modules', 'golden')
 UPDATE = '--update' in sys.argv
 
-OBO_VERSION = '0.17'
-SYM_FORMAT = 10
+OBO_VERSION = '0.18'
+SYM_FORMAT = 11
 SYM_ABI = 1
 
 
@@ -444,9 +444,9 @@ def stale_missing_corrupt_versions():
         open(p, 'wb').write(base)
         # format / ABI / compiler, each its own exact message
         cases = [
-            (b'obosym 10', b'obosym 8', 'has format 8; this compiler reads 10'),
+            (b'obosym 11', b'obosym 8', 'has format 8; this compiler reads 11'),
             (b'\nabi 1\n', b'\nabi 9\n', 'has ABI 9; this compiler uses 1'),
-            (b'compiler "0.17"', b'compiler "9.9"', "was built by compiler '9.9'; this is '0.17'"),
+            (b'compiler "0.18"', b'compiler "9.9"', "was built by compiler '9.9'; this is '0.18'"),
         ]
         for old, new, msg in cases:
             data = base
@@ -719,9 +719,9 @@ def handwritten_interface():
     parameter names, summary items in any order, and a pf row at index >= 62."""
     params = ', '.join(f'q{i}: int' for i in range(63))
     uid = fnv(b'many::T')
-    sym = f'''obosym 10
+    sym = f'''obosym 11
 abi 1
-compiler "0.17"
+compiler "0.18"
 source 0x{0:016x}
 interface 0x0
 module many
@@ -1109,7 +1109,7 @@ def b6_stub_completion():
     try:
         ok(build(d, s), 'x build')
         m = os.path.join(s, 'm.sym')
-        open(m, 'w').write('obosym 10\nabi 1\ncompiler "0.17"\nsource 0x%016x\ninterface 0x0\nmodule m\nfn f() frees 1 x::g\n' % 0)
+        open(m, 'w').write('obosym 11\nabi 1\ncompiler "0.18"\nsource 0x%016x\ninterface 0x0\nmodule m\nfn f() frees 1 x::g\n' % 0)
         rehash(m, lambda b: b)
         for name, imports in (('order1', 'import "m.obx"\nimport "x.obx"'),
                               ('order2', 'import "x.obx"\nimport "m.obx"')):
@@ -1351,9 +1351,9 @@ fn main() {
         if 'fn (p0: &Local) lget(): int' not in main_text:
             raise Fail(f"the checked module's .sym lacks its method: {main_text!r}")
         base = sym_text(libsym)
-        open(libsym, 'wb').write(base.replace(b'obosym 10', b'obosym 1', 1))
+        open(libsym, 'wb').write(base.replace(b'obosym 11', b'obosym 1', 1))
         q = build(d, s, check=True)
-        if q.returncode != 2 or 'has format 1; this compiler reads 10' not in q.stderr:
+        if q.returncode != 2 or 'has format 1; this compiler reads 11' not in q.stderr:
             raise Fail(f"format 1: exit {q.returncode}: {q.stderr.strip()}")
         open(libsym, 'wb').write(base)
         os.rename(os.path.join(d, 'lib.obx.bak'), os.path.join(d, 'lib.obx'))
@@ -1748,9 +1748,9 @@ def iface_impure_roundtrip():
         # a format-9 file that carries the marker is refused by the format check, before the body
         base = sym_text(chk_lib)
         with open(chk_lib, 'wb') as f:
-            f.write(base.replace(b'obosym 10', b'obosym 9', 1))
+            f.write(base.replace(b'obosym 11', b'obosym 9', 1))
         q = build(d, chk, check=True)
-        if q.returncode != 2 or 'has format 9; this compiler reads 10; rebuild it' not in q.stderr:
+        if q.returncode != 2 or 'has format 9; this compiler reads 11; rebuild it' not in q.stderr:
             raise Fail(f"format-9 impure interface: exit {q.returncode}: {q.stderr.strip()}")
         with open(chk_lib, 'wb') as f:
             f.write(base)
@@ -1780,7 +1780,7 @@ def stale_format3_interface():
         f.write('obosym 3\nabi 1\ncompiler "0.7"\nsource 0x0000000000000001\ninterface 0x0\nmodule lib\n'
                 'type I = interface { fn m(p0: I): int }\nfn f(p0: I): int\n')
     q = build(d, symdir, check=True)
-    if q.returncode != 2 or 'has format 3; this compiler reads 10; rebuild it' not in q.stderr:
+    if q.returncode != 2 or 'has format 3; this compiler reads 11; rebuild it' not in q.stderr:
         raise Fail(f"stale format-3 interface file: exit {q.returncode}: {q.stderr.strip()}")
     shutil.rmtree(d, ignore_errors=True)
 
@@ -1815,7 +1815,7 @@ def fn_sym_roundtrip():
         ok(build(d, symdir, out=os.path.join(d, 'prog')), 'function-type module build')
         libpath = os.path.join(symdir, 'lib.sym')
         lib = sym_text(libpath).decode()
-        for line in ('obosym 10\n', 'abi 1\n', 'compiler "0.17"\n',
+        for line in ('obosym 11\n', 'abi 1\n', 'compiler "0.18"\n',
                      'type Cmp = fn(&Item, &Item): int\n',
                      'fn apply(p0: fn(int): int, p1: int): int\n',
                      'fn useCmp(p0: fn(&Item, &Item): int): int\n',
@@ -1851,9 +1851,9 @@ def stale_format4_fn_rejected():
         ok(build(d, symdir, out=os.path.join(d, 'prog')), 'honest format-5 build')
         libpath = os.path.join(symdir, 'lib.sym')
         os.unlink(os.path.join(d, 'lib.obx'))
-        mutate(libpath, b'obosym 10', b'obosym 4', recompute=False)
+        mutate(libpath, b'obosym 11', b'obosym 4', recompute=False)
         q = build(d, symdir, check=True)
-        if q.returncode != 2 or 'has format 4; this compiler reads 10; rebuild it' not in q.stderr:
+        if q.returncode != 2 or 'has format 4; this compiler reads 11; rebuild it' not in q.stderr:
             raise Fail(f"stale format-4 function type: exit {q.returncode}: {q.stderr.strip()}")
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -2030,7 +2030,7 @@ def forged_fn_positions():
         if q.returncode != 2 or want not in q.stderr:
             raise Fail(f"forward shell through a bare alias: exit {q.returncode}: {q.stderr.strip()}")
         # an incomplete forward shell as a function-type parameter
-        manual = ('obosym 10\nabi 1\ncompiler "0.17"\nsource 0x0000000000000001\n'
+        manual = ('obosym 11\nabi 1\ncompiler "0.18"\nsource 0x0000000000000001\n'
                   'interface 0x0\nmodule lib\ntype Later uid 0x%016x\n'
                   'fn apply(p0: fn(Later): int): int\n' % fnv(b'lib::Later'))
         open(libpath, 'w').write(manual)
@@ -2274,7 +2274,7 @@ fn main() {
         ok(build(d, s, out=os.path.join(d, 'p')), 'build')
         lib = os.path.join(s, 'lib.sym')
         text = sym_text(lib)
-        if b'obosym 10\n' not in text or b'compiler "0.17"' not in text:
+        if b'obosym 11\n' not in text or b'compiler "0.18"' not in text:
             raise Fail(f"format/compiler header is wrong: {text[:80]!r}")
         if b'type Mixed = ref record { pub a: int; priv; pub c: string; priv }' not in text:
             raise Fail(f"mixed field list is not canonical: {text!r}")
@@ -2590,9 +2590,9 @@ def field_visibility_old_format():
         ok(build(d, s, out=os.path.join(d, 'p')), 'build')
         p = os.path.join(s, 'lib.sym')
         text = sym_text(p)
-        open(p, 'wb').write(text.replace(b'obosym 10', b'obosym 6', 1))
+        open(p, 'wb').write(text.replace(b'obosym 11', b'obosym 6', 1))
         q = build(d, s, check=True)
-        want = f"obxc: symbol file '{p}' has format 6; this compiler reads 10; rebuild it"
+        want = f"obxc: symbol file '{p}' has format 6; this compiler reads 11; rebuild it"
         if q.returncode != 2 or want not in q.stderr:
             raise Fail(f"format 6: exit {q.returncode}: {q.stderr.strip()}")
         q = subprocess.run([OBO, '--version'], capture_output=True, text=True)
@@ -2794,6 +2794,104 @@ def decimal_globals_sym():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def decimal_pfree_sym():
+    '''D4a: the free summary of a method whose mut receiver is followed by a decimal parameter.
+    recordParamFree must map the receiver's rbp offset back to parameter index 0 over the whole
+    signature: the old offset/8 mapping saw a 24-byte parameter and dropped the bit entirely. The
+    written method line carries pfree 0x1 and its pf row; the file re-emits byte-identically, and a
+    source-less check rebuilds it identically.'''
+    files = {
+        'lib.obx': ('module lib\n'
+                    'pub type Inner = ref record { pub v: int }\n'
+                    'pub type Box = ref record { pub inner: Inner; pub n: int }\n'
+                    'pub fn (mut b: &Box) redo(d: decimal): decimal {\n'
+                    '    b.inner = new Inner{v: 2}\n'
+                    '    return d\n'
+                    '}\n'),
+        'main.obx': 'module main\nimport "lib.obx"\nfn main() { }\n',
+    }
+    d, s = tree(files)
+    try:
+        ok(build(d, s, out=os.path.join(d, 'prog')), 'full build of the decimal-pfree tree')
+        lib = os.path.join(s, 'lib.sym')
+        text = sym_text(lib)
+        want = b'fn (mut p0: &Box) redo(p1: decimal): decimal pfree 0x1 pf 0 "=/inner"'
+        if want not in text:
+            raise Fail(f"the mut receiver's pfree bit is wrong, wanted {want!r}: {text!r}")
+        r = reemit(lib)
+        if r.returncode != 0 or r.stdout != text:
+            raise Fail('the decimal-pfree lib.sym does not re-emit unchanged')
+        full_main = sym_text(os.path.join(s, 'main.sym'))
+        os.rename(os.path.join(d, 'lib.obx'), os.path.join(d, 'lib.obx.bak'))
+        chk = os.path.join(d, 'sym-check')
+        shutil.copytree(s, chk)
+        ok(build(d, chk, check=True), 'source-less check of the decimal-pfree tree')
+        if sym_text(os.path.join(chk, 'main.sym')) != full_main:
+            raise Fail('the source-less --check main.sym differs from the full build')
+        os.rename(os.path.join(d, 'lib.obx.bak'), os.path.join(d, 'lib.obx'))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def decimal_methods_ifaces_sym():
+    '''D4a: decimal method and interface signatures in a .sym. An interface member writes its decimal
+    parameters and return, a method writes them in its receiver-plus-parameters form, and a function
+    writes them in a plain signature. The file re-emits byte-identically, a source-less check of main
+    writes the same main.sym as the full build, and a format-10 file (a 0.17 reader's output) is
+    refused before its body is read.'''
+    src = os.path.join(HERE, 'modules', 'run', 'decimal_iface')
+    files = {}
+    for name in ('main.obx', 'lib.obx'):
+        with open(os.path.join(src, name)) as f:
+            files[name] = f.read()
+    d, s = tree(files)
+    try:
+        ok(build(d, s, out=os.path.join(d, 'prog')), 'full build of the decimal-interface tree')
+        lib = os.path.join(s, 'lib.sym')
+        text = sym_text(lib)
+        for want in (
+            b'type Ledger = interface { pure fn add(p0: decimal, p1: decimal): decimal; '
+            b'fn scale(p0: int, p1: decimal, p2: string): decimal; mut fn deposit(p0: decimal): decimal; '
+            b'impure fn charge(p0: decimal): decimal }',
+            b'fn (p0: &Cash) add(p1: decimal, p2: decimal): decimal',
+            b'fn (p0: &Cash) scale(p1: int, p2: decimal, p3: string): decimal',
+            b'fn (mut p0: &Cash) deposit(p1: decimal): decimal',
+            b'fn (p0: &Cash) charge(p1: decimal): decimal',
+            b'fn make(p0: decimal): Ledger',
+            b'fn total(p0: Ledger, p1: Ledger): decimal',
+        ):
+            if want not in text:
+                raise Fail(f"decimal method or interface line is wrong, wanted {want!r}: {text!r}")
+        if b'compiler "0.18"' not in text or b'obosym 11\n' not in text:
+            raise Fail(f"the format/compiler header is wrong: {text[:60]!r}")
+        r = reemit(lib)
+        if r.returncode != 0 or r.stdout != text:
+            raise Fail('the decimal-method lib.sym does not re-emit unchanged')
+        full_main = sym_text(os.path.join(s, 'main.sym'))
+        os.rename(os.path.join(d, 'lib.obx'), os.path.join(d, 'lib.obx.bak'))
+        chk = os.path.join(d, 'sym-check')
+        shutil.copytree(s, chk)
+        ok(build(d, chk, check=True), 'source-less check of the decimal-interface tree')
+        if sym_text(os.path.join(chk, 'main.sym')) != full_main:
+            raise Fail('the source-less --check main.sym differs from the full build')
+        # a 0.17 (.sym format 10) file is refused, even though its text grammar is this one
+        chk_lib = os.path.join(chk, 'lib.sym')
+        base = sym_text(chk_lib)
+        with open(chk_lib, 'wb') as f:
+            f.write(base.replace(b'obosym 11', b'obosym 10', 1))
+        q = build(d, chk, check=True)
+        want = 'has format 10; this compiler reads 11; rebuild it'
+        if q.returncode != 2 or want not in q.stderr:
+            raise Fail(f"format-10 decimal interface: exit {q.returncode}: {q.stderr.strip()}")
+        with open(chk_lib, 'wb') as f:
+            f.write(base)
+        os.rename(os.path.join(d, 'lib.obx.bak'), os.path.join(d, 'lib.obx'))
+        # the check build is still gone (the source was absent); the normal tree builds again
+        ok(build(d, s, out=os.path.join(d, 'again')), 'rebuild after the format-10 check')
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def tests():
     return [
         ('sym/roundtrip_rich', roundtrip_rich),
@@ -2852,6 +2950,8 @@ def tests():
         ('sym/decimal_fields', decimal_fields_sym),
         ('sym/decimal_arrays', decimal_arrays_sym),
         ('sym/decimal_globals', decimal_globals_sym),
+        ('sym/decimal_methods_ifaces', decimal_methods_ifaces_sym),
+        ('sym/decimal_pfree', decimal_pfree_sym),
     ]
 
 

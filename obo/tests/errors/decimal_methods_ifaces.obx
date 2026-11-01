@@ -1,0 +1,69 @@
+// Decimal method and interface signatures (stage D4a) are still type-checked: a decimal
+// parameter takes only a decimal, a decimal return needs a decimal value, and a decimal is
+// never a receiver. The last two cases are the recordParamFree soundness case: a decimal
+// parameter after a mut reference shifts the parameter offsets, so the free summary must
+// map by signature index or the stale reference below is accepted.
+type Inner = ref record { v: int }
+type Box = ref record { inner: Inner; n: int }
+type I = interface { pure fn take(x: decimal): decimal }
+
+type Cash = ref record { v: decimal }
+fn (c: &Cash) take(x: decimal): decimal { return x }
+impl I for Cash
+
+// === a decimal method parameter rejects an int argument
+fn (c: &Cash) scaled(x: decimal): decimal { return x }
+fn main() {
+    let c = new Cash{v: 1.0}
+    println(c.scaled(1))  // error: cannot use int as decimal
+}
+
+// === a decimal method return rejects an int value
+fn (c: &Cash) bad(): decimal { return 1 }  // error: cannot use int as decimal
+fn main() {
+    let c = new Cash{v: 1.0}
+    println(c.bad())
+}
+
+// === a decimal is never a receiver
+fn (d: &decimal) money(): decimal { return 1.0 }  // error: only records, closed types and arrays can be borrowed, not decimal
+fn main() { }
+
+// === an interface decimal parameter rejects an int argument
+fn main() {
+    let i: I = new Cash{v: 1.0}
+    println(i.take(1))  // error: cannot use int as decimal
+}
+
+// === an interface decimal return rejects an int value
+type Bad = ref record { v: int }
+fn (b: &Bad) take(x: decimal): decimal { return 1 }  // error: cannot use int as decimal
+impl I for Bad
+fn main() {
+    let i: I = new Bad{v: 1}
+    println(i.take(1.0))
+}
+
+// === a method with a decimal parameter after its mut receiver keeps the free summary
+fn (mut b: &Box) redo(d: decimal): decimal {
+    b.inner = new Inner{v: 2}
+    return d
+}
+fn main() {
+    var b = new Box{inner: new Inner{v: 1}, n: 0}
+    let r = &b.inner
+    let z = b.redo(1.0)
+    println(r.v)  // error: 'r' may point to freed memory
+}
+
+// === a plain function with a decimal parameter after its mut reference keeps the free summary
+fn redo(mut b: &Box, d: decimal): decimal {
+    b.inner = new Inner{v: 2}
+    return d
+}
+fn main() {
+    var b = new Box{inner: new Inner{v: 1}, n: 0}
+    let r = &b.inner
+    let z = redo(b, 1.0)
+    println(r.v)  // error: 'r' may point to freed memory
+}

@@ -560,7 +560,7 @@ def test_float_const_reader_matrix() -> None:
         if "stale" in q.stderr.lower():
             raise AssertionError(f"reader rejected {bad!r} as stale, not structural: {q.stderr}")
     # Format 5 is rejected before the new float grammar is read.
-    old5 = valid.replace("obosym 10", "obosym 5", 1)
+    old5 = valid.replace("obosym 11", "obosym 5", 1)
     bd = os.path.join(d, "old5")
     os.makedirs(bd)
     shutil.copyfile(os.path.join(d, "main.obx"), os.path.join(bd, "main.obx"))
@@ -568,7 +568,7 @@ def test_float_const_reader_matrix() -> None:
         f.write(old5)
     q = run([OBO, os.path.join(bd, "main.obx"), "--check",
              "-I", bd, "--sym-dir", bd, "--test-float-bits"])
-    if q.returncode != 2 or "has format 5; this compiler reads 10" not in q.stderr:
+    if q.returncode != 2 or "has format 5; this compiler reads 11" not in q.stderr:
         raise AssertionError(f"format-5 float file was not rejected first: {q.stderr}")
 
     # Canonical high-bit/NaN raw bits remain accepted.
