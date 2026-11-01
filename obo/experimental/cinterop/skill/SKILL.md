@@ -109,12 +109,19 @@ Rules that are easy to get wrong:
   `const:-1` (the no-callback destructor, e.g. `SQLITE_TRANSIENT`).
 - `cbytes`/`cstr_out`/`nonzero` need `ret_ctype`. `cbytes` also needs
   `length` (same C parameters, `int` return) and a positive `cap`.
-- `out_own` and `out_offset` consume no argument, follow the inputs, allow at
-  most one of each, and the native return type is the literal `<native>_out`.
-  Inputs must come first.
+- `out_own` and `out_offset` consume no call argument and appear **in C order**,
+  interleaved with inputs when the C prototype does. For example,
+  `sqlite3_open_v2(path, &db, flags, NULL)` is `borrow_cstr@0`,
+  `out_own<sqlite3>`, `i32@1`, `null`. At most one `out_own` and one
+  `out_offset` are allowed, and the native return type is the literal
+  `<native>_out`.
 - A `types` entry gives the C type and the release:
   `{"name": "PGconn", "obo": "Connection", "release": "PQfinish",
   "release_result": "void"}`.
+- `own` and `own_opt` differ on NULL. `own<C>` treats NULL as a native contract
+  violation (exit 11); `own_opt<C>` gives nil so the wrapper can return `err`.
+  Use `own` only where the C API's NULL is truly unreachable, and `own_opt`
+  where an allocation failure is a normal error (the template uses `own_opt`).
 
 ## Workflow
 
@@ -161,7 +168,7 @@ functions; do not start by writing a token adapter.
   ],
   "functions": [
     {"name": "demo_open", "symbol": "demo_open",
-     "args": ["i64@0"], "ret": "own<demo_item>", "effects": ["impure"]},
+     "args": ["i64@0"], "ret": "own_opt<demo_item>", "effects": ["impure"]},
     {"name": "demo_read_byte", "symbol": "demo_read_byte",
      "args": ["borrow<demo_item>@0", "i64@1"], "ret": "i64",
      "effects": ["impure"]},
@@ -180,6 +187,14 @@ functions; do not start by writing a token adapter.
 - `sources` for the adapter and any trusted helper C file; `libs` only for the
   real system library; a fake build links the fake source instead and lists no
   library.
+- `wrapper_sources` lists the ordinary `.obx` modules the maintained wrapper
+  imports when they are not `wrapper` itself (for example zlib's
+  `buffer.obx`, sqlite's `sqldialect.obx`, and postgres's `sqldialect.obx`
+  plus `libpq.obx`). The manifest hashes them, so a shared helper change is a
+  provenance input.
+- `effects` is `["impure"]` on every exported function. The compiler adds the
+  conservative `freesall,writeshandles` summary and the tool checks it; a spec
+  `pure` claim is not accepted, because a native call can touch anything C can.
 - `include_dirs` for a private sysroot and `cflags` for real compile options.
   The signature check, every binding source compile **and** each dependency
   scan use the same `-fno-pie -O2`/include/cflag state. A relative include root
@@ -200,7 +215,7 @@ is the reference.
 ```obo
 pub type Demo = foreign "demo_item"
 
-native fn demo_open(size: int): Demo              // spec ret own<demo_item>
+native fn demo_open(size: int): ?Demo               // spec ret own_opt<demo_item>
 native fn demo_read_byte(item: &Demo, index: int): int
 native fn demo_make(size: int, out item: Demo): demo_make_out
 
@@ -208,8 +223,11 @@ pub fn (mut d: &Demo) close(): Result[bool] { return __foreignClose(d) }
 pub fn (d: &Demo) is_open(): bool { return __foreignIsOpen(d) }
 
 pub fn open(size: int): Result[Demo] {
-    if size < 0 { return err("size is out of range", 2) }
-    return ok(demo_open(size))
+    if size < 0 || size > 1048576 { return err("size is out of range", 2) }
+    let c = demo_open(size)            // own_opt: NULL is nil, not exit 11
+    if c == nil { return err("demo_item allocation failed", 3) }
+    var d = c
+    return ok(d)
 }
 
 pub fn open_out(size: int): Result[Demo] {
@@ -233,7 +251,9 @@ pub fn open_out(size: int): Result[Demo] {
   per out parameter (`?Demo` for `out_own`). A bare out-call statement is
   refused, because it would silently drop a live handle. `take` moves the
   handle out; close it once on the error path (the record's drop frees the obo
-  record, not the C object, and the census reports a missed close).
+  record, not the C object, and the census reports a missed close). A failing
+  open can write a non-NULL handle (as `sqlite3_open_v2` does), so `rc != 0`
+  does not imply nil.
 - Accept `[]byte`, `[]?[]byte` and `[]bool` at the public edge and pass the
   arrays to the native call (`ints`/`nil_bytes_list`) directly; do not build a
   length-delimited packet. Send a typed OID array with the values when the API
@@ -353,10 +373,10 @@ or library substitution remains trusted input. Say that plainly.
 ## Legacy: the `cres` token adapter (zlib/buffer only)
 
 `toolkit/cres.c/.h` is the older integer-token registry. It remains only for
-the zlib adapter and `examples/buffer.obx` (and the `tests/cres_test.c` registry
-test). zlib is outside the v2 gates. Do **not** start a new binding on `cres`;
-the database packages, the skill templates and the sys/tls/http2 adapters do
-not use it.
+the zlib adapter and its C test, `examples/buffer.obx`, and the
+`tests/cres_test.c` registry test. zlib is outside the v2 gates. Do **not**
+start a new binding on `cres`; the database packages, the skill templates and
+the sys/tls/http2 adapters do not use it.
 
 If you are maintaining that legacy shape, keep the exported ABI scalar:
 

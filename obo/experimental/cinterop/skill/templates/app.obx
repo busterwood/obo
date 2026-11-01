@@ -24,4 +24,17 @@ fn main() {
         }
         err(m, c) { println("out error ", m, " ", c); exit(1) }
     }
+
+    // The error path: demo_make(7) writes a non-NULL handle and returns rc 7.
+    // The wrapper must close that handle; if it does not, the OBO_CHECK=1
+    // census exits 8 and this run fails.
+    let failed = demo::open_out(7)
+    match failed {
+        ok(d) {
+            d.close()
+            println("out_error=none")
+            exit(1)
+        }
+        err(m, c) { println("out_error=", c) }
+    }
 }

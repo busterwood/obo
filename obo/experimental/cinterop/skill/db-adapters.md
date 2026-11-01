@@ -11,8 +11,13 @@ directly.
 - Keep the real C pointer in a `foreign` record's private word. `own`/`own_opt`
   return it, `borrow`/`borrow_mut` pass it, `is_open` reads the word, and a
   direct borrow after close exits 7. The older `cres` token registry is only
-  for the zlib adapter, the buffer example and the registry test, not these
-  packages.
+  for the zlib adapter and its test, the buffer example and the registry test,
+  not these packages.
+- List shared ordinary `.obx` helpers in the spec's `wrapper_sources` (sqlite
+  and postgres list `sqldialect.obx`, zlib lists `buffer.obx`, and postgres
+  also lists `libpq.obx`) so the manifest hashes them. Every spec function
+  carries `"effects": ["impure"]`; the compiler adds the conservative
+  `freesall,writeshandles` summary and the tool checks it.
 - Release every connection/result/statement exactly once from an explicit
   close. A second close is a safe `false`/`ok(false)`.
 - Copy borrowed values and error strings with an explicit length. Use the

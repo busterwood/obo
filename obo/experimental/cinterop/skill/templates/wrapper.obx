@@ -1,7 +1,8 @@
 // Ordinary obo surface for the v2 template adapter.
 //
 // Demo is a foreign handle: obo holds the real demo_item * in its private word
-// and cannot construct, copy or convert it. open() gets an `own` result and
+// and cannot construct, copy or convert it. open() gets an `own_opt` result
+// (NULL is nil, so an allocation failure becomes err rather than exit 11), and
 // open_out() gets the same pointer through an out record. Close explicitly,
 // normally with defer. Dropping Demo does NOT release the C object; under
 // OBO_CHECK=1 the foreign-handle census reports it (exit 8).
@@ -9,7 +10,7 @@ module demo
 
 pub type Demo = foreign "demo_item"
 
-native fn demo_open(size: int): Demo
+native fn demo_open(size: int): ?Demo              // own_opt: NULL is nil
 native fn demo_read_byte(item: &Demo, index: int): int
 native fn demo_make(size: int, out item: Demo): demo_make_out
 
@@ -18,11 +19,16 @@ pub fn (d: &Demo) is_open(): bool { return __foreignIsOpen(d) }
 
 pub fn open(size: int): Result[Demo] {
     if size < 0 || size > 1048576 { return err("size is out of range", 2) }
-    return ok(demo_open(size))
+    let c = demo_open(size)
+    if c == nil { return err("demo_item allocation failed", 3) }
+    var d = c
+    return ok(d)
 }
 
 // The out record is an ordinary value: `rc` first, then `item: ?Demo`. `take`
-// moves the handle out; close it exactly once on the error path too.
+// moves the handle out; close it exactly once on the error path too. A failing
+// open can write a non-NULL handle (like sqlite3_open_v2), so `rc != 0` does
+// not imply nil.
 pub fn open_out(size: int): Result[Demo] {
     if size < 0 || size > 1048576 { return err("size is out of range", 2) }
     var out = demo_make(size)

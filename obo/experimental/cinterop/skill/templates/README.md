@@ -7,18 +7,21 @@ replace the demo operations.
 Files:
 
 - `adapter.c`, `adapter.h` — a C adapter that keeps the real `demo_item *` on
-  the C side. `demo_open` returns it for an `own` result, `demo_make`
-  reports failure through an out record, and `demo_close` frees once. There is
-  no token registry, no `cres` and no pointer-as-integer.
+  the C side. `demo_open` returns it for an `own_opt` result (NULL is nil, so an
+  allocation failure reaches the wrapper as an error instead of exiting 11),
+  `demo_make` reports failure through an out record and can leave a non-NULL
+  handle on that error path, and `demo_close` frees once. There is no token
+  registry, no `cres` and no pointer-as-integer.
 - `wrapper.obx` — the maintained obo wrapper: `pub type Demo = foreign
   "demo_item"`, body-less `native fn` declarations, and exported
   `close`/`is_open` over `__foreignClose`/`__foreignIsOpen`.
 - `library.cbind` — the reviewable `cinterop-proto/2` contract:
   `signature_check: header` against `adapter.h`, the `types` release table, and
-  `own`/`borrow`/`out_own` kinds.
+  `own_opt`/`borrow`/`out_own` kinds.
 - `app.obx` — a small consumer used as a dry-run smoke test. It closes with
-  `defer`, shows that a second close is safe, and reads a handle through the
-  out record.
+  `defer`, shows that a second close is safe, reads a handle through the out
+  record, and exercises the out record's non-NULL error path (size 7). Run it
+  under `OBO_CHECK=1`: a missed error-path close fails the census (exit 8).
 
 Build the template from this directory:
 
@@ -38,7 +41,13 @@ byte0=0
 open=true
 closed=true
 out_byte0=0
+out_error=7
 ```
+
+The last line comes from `demo::open_out(7)`: the adapter writes a real handle
+and returns rc 7, and the wrapper closes that handle before returning `err`.
+With `OBO_CHECK=1`, a missed close would show up as `foreign handles leaked`
+and exit 8.
 
 There are no `../../toolkit` paths: the only C source is `adapter.c` beside the
 spec. When you copy the files into a package, update `sources`, `headers`,
@@ -65,8 +74,8 @@ record and do not return a C pointer as an integer.
 
 ## Legacy `cres` policy
 
-`toolkit/cres.c` and `cres.h` stay only for the zlib adapter and the
-`examples/buffer.obx` example (and the registry test under `tests/`). zlib
+`toolkit/cres.c` and `cres.h` stay only for the zlib adapter and its C test,
+the `examples/buffer.obx` example, and the registry test under `tests/`. zlib
 is outside the v2 gates and still uses the older integer-token registry. Do not
 start a new binding on `cres`: a new package uses a `foreign` handle with an
 explicit `close`, as this template does. The database packages no longer include

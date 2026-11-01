@@ -764,9 +764,9 @@ def template(tmp):
         raise Fail("template build failed:\n%s" % (p.stderr or p.stdout))
     p = need(run([os.path.join(out, 'app')], env=dict(os.environ, OBO_CHECK='1')),
              'template run')
-    for line in ('byte0=0', 'open=true', 'closed=true', 'out_byte0=0'):
-        if line not in p.stdout:
-            raise Fail("template output missing %r:\n%s" % (line, p.stdout))
+    want = 'byte0=0\nopen=true\nclosed=true\nout_byte0=0\nout_error=7\n'
+    if p.stdout != want:
+        raise Fail("template output mismatch:\nwant %r\ngot  %r" % (want, p.stdout))
     need(verify(out), 'template manifest verify')
     print('template dry-run: ok')
 

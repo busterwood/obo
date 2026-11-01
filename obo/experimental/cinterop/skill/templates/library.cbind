@@ -16,7 +16,7 @@
   ],
   "functions": [
     {"name": "demo_open", "symbol": "demo_open",
-     "args": ["i64@0"], "ret": "own<demo_item>", "effects": ["impure"]},
+     "args": ["i64@0"], "ret": "own_opt<demo_item>", "effects": ["impure"]},
     {"name": "demo_read_byte", "symbol": "demo_read_byte",
      "args": ["borrow<demo_item>@0", "i64@1"], "ret": "i64",
      "effects": ["impure"]},
