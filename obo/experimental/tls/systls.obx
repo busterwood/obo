@@ -762,79 +762,44 @@ pub fn setMaxVersion(ctx: &TlsContext, version: &Version): Result[bool] {
     return setVersion(ctx, version, 1)
 }
 
-fn lowerAscii(c: int): int {
-    if c >= 65 && c <= 90 { return c + 32 }
-    return c
+fn allowedCipherSuite(s: string): bool {
+    return s == "TLS_AES_256_GCM_SHA384" ||
+           s == "TLS_CHACHA20_POLY1305_SHA256" ||
+           s == "TLS_AES_128_GCM_SHA256"
 }
 
-fn containsIgnoreCase(s: string, needle: string): bool {
-    if len(needle) == 0 || len(needle) > len(s) { return false }
-    for i in 0..(len(s) - len(needle) + 1) {
-        var same = true
-        for j in 0..len(needle) {
-            if lowerAscii(int(s[i + j])) != lowerAscii(int(needle[j])) {
-                same = false
-            }
-        }
-        if same { return true }
-    }
+fn allowedCipherList(s: string): bool {
+    return s == "ECDHE-ECDSA-AES256-GCM-SHA384" ||
+           s == "ECDHE-RSA-AES256-GCM-SHA384" ||
+           s == "ECDHE-ECDSA-CHACHA20-POLY1305" ||
+           s == "ECDHE-RSA-CHACHA20-POLY1305" ||
+           s == "ECDHE-ECDSA-AES128-GCM-SHA256" ||
+           s == "ECDHE-RSA-AES128-GCM-SHA256"
+}
+
+fn allowedGroup(s: string): bool {
+    return s == "X25519" || s == "P-256" || s == "P-384"
+}
+
+fn allowedListItem(which: int, s: string): bool {
+    if which == 0 { return allowedCipherSuite(s) }
+    if which == 1 { return allowedCipherList(s) }
+    if which == 2 { return allowedGroup(s) }
     return false
 }
 
-fn endsWithIgnoreCase(s: string, needle: string): bool {
-    if len(needle) == 0 || len(needle) > len(s) { return false }
-    let at = len(s) - len(needle)
-    for i in 0..len(needle) {
-        if lowerAscii(int(s[at + i])) != lowerAscii(int(needle[i])) { return false }
-    }
-    return true
-}
-
-fn weakListName(s: string): bool {
-    if endsWithIgnoreCase(s, "-SHA") { return true }
-    if endsWithIgnoreCase(s, "-SHA1") { return true }
-    if containsIgnoreCase(s, "NULL") { return true }
-    if containsIgnoreCase(s, "ANON") { return true }
-    if containsIgnoreCase(s, "ADH") { return true }
-    if containsIgnoreCase(s, "AECDH") { return true }
-    if containsIgnoreCase(s, "EXPORT") { return true }
-    if containsIgnoreCase(s, "RC4") { return true }
-    if containsIgnoreCase(s, "3DES") { return true }
-    if containsIgnoreCase(s, "DES") { return true }
-    if containsIgnoreCase(s, "MD5") { return true }
-    if containsIgnoreCase(s, "RC2") { return true }
-    if containsIgnoreCase(s, "IDEA") { return true }
-    if containsIgnoreCase(s, "SEED") { return true }
-    if containsIgnoreCase(s, "LOW") { return true }
-    if containsIgnoreCase(s, "COMPLEMENTOFALL") { return true }
-    if containsIgnoreCase(s, "COMPLEMENTOFDEFAULT") { return true }
-    if containsIgnoreCase(s, "DEFAULT") { return true }
-    if containsIgnoreCase(s, "ALL") { return true }
-    if containsIgnoreCase(s, "HIGH") { return true }
-    if containsIgnoreCase(s, "MEDIUM") { return true }
-    return false
-}
-
-fn validateList(items: &[]string): int {
+fn validateList(items: &[]string, which: int): int {
     if len(items) < 1 || len(items) > 64 { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
     var total = 0
     for i in 0..len(items) {
         let s = items[i]
         if len(s) < 1 || len(s) > 255 { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
-        for j in 0..len(s) {
-            let c = int(s[j])
-            let alpha = (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
-            let digit = c >= 48 && c <= 57
-            let safe = c == 95 || c == 45
-            if !alpha && !digit && !safe { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
-        }
-        if weakListName(s) { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
+        if !allowedListItem(which, s) { return tlsCode(FAIL_INVALID_ARGUMENT, 0) }
         total += len(s)
     }
     if total + len(items) - 1 > 1024 { return tlsCode(FAIL_RESOURCE_LIMIT, 0) }
     return 0
 }
-
 fn joinList(items: &[]string): string {
     var out = ""
     for i in 0..len(items) {
@@ -845,7 +810,7 @@ fn joinList(items: &[]string): string {
 }
 
 fn setList(ctx: &TlsContext, items: []string, which: int): Result[bool] {
-    let invalid = validateList(&items)
+    let invalid = validateList(&items, which)
     if invalid != 0 { return err(nativeFailure(invalid), invalid) }
     let tok = try contextToken(ctx)
     let s = joinList(&items)

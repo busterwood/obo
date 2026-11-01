@@ -379,6 +379,12 @@ static int mode_tls(const char *dir, int minver, int maxver, const char *alpn,
             CHECK(sellen == strlen(want_alpn) && memcmp(sel, want_alpn, sellen) == 0,
                   "expected ALPN selected");
         }
+        {
+            const SSL_CIPHER *sc = SSL_get_current_cipher(p.ssl);
+            const char *cn = sc != NULL ? SSL_CIPHER_get_name(sc) : "";
+            CHECK(cn != NULL && strstr(cn, "CBC") == NULL && strstr(cn, "NULL") == NULL,
+                  "negotiated cipher is an approved AEAD suite");
+        }
         CHECK(tls_session_info_scalar(st, TLS_INFO_PEER_PRESENT) == 0, "no client certificate");
         CHECK(tls_session_info_scalar(st, TLS_INFO_VERIFICATION) == 0, "no verification requested");
         {
@@ -942,8 +948,15 @@ static int mode_reneg(const char *dir) {
     r = SSL_renegotiate(p.ssl);
     CHECK(r == 1, "client requests renegotiation");
     cr = SSL_do_handshake(p.ssl);
+    CHECK(cr <= 0, "client renegotiation is not accepted");
     CHECK(feed_client_output(st, &p, 65536), "feed reneg attempt");
     CHECK(drain_server_output(st, &p), "drain reneg attempt");
+    {
+        int cr2 = client_handshake(&p);
+        CHECK(cr2 != 1, "client renegotiation does not complete");
+        CHECK(tls_session_info_scalar(st, TLS_INFO_STATE) == 2,
+              "server remains established without renegotiation");
+    }
     /* Renegotiation is disabled on the server. The client either fails or
      * remains established; a second application-data read must not expose a
      * renegotiated handshake as data. */
@@ -998,14 +1011,35 @@ static int mode_bypass(const char *dir) {
     long ctx = new_raw_context(0, 0, 0, 1);
     long st;
     struct peer p;
+    unsigned char wire[8192];
+    unsigned char byte = 0;
+    long token;
+    int n;
     if (ctx <= 0) return 0;
     CHECK(apply_identity(ctx, dir), "bypass identity");
     st = tls_session_new(ctx);
     CHECK(st > 0, "bypass session");
     CHECK(peer_new(&p, NULL, NULL, NULL, TLS1_3_VERSION, TLS1_3_VERSION, 0, "http/1.1"),
           "bypass client");
+    (void)client_handshake(&p);
+    n = BIO_read(p.wbio, wire, (int)sizeof(wire));
+    CHECK(n > 0, "bypass ClientHello");
+    token = make_buffer(wire, (size_t)n);
+    CHECK(token > 0, "bypass feed buffer");
+    CHECK(tls_session_feed(st, token, 0, n) == n, "bypass feeds ClientHello");
+    sys_res_close(token, 92);
+    (void)tls_session_handshake(st);
     CHECK(sys_res_close(ctx, TLS_KIND_CONTEXT) == 1,
           "context release does not fail with live sessions");
+    token = make_buffer(&byte, 1);
+    CHECK(token > 0, "bypass post-close buffer");
+    CHECK(tls_session_feed(st, token, 0, 1) == -TLS_FAIL(TLS_FAIL_CLOSED, 0),
+          "feed after context detach is Closed");
+    CHECK(tls_session_handshake(st) == -TLS_FAIL(TLS_FAIL_CLOSED, 0),
+          "handshake after context detach is Closed");
+    CHECK(tls_session_info_scalar(st, TLS_INFO_VERIFICATION) >= 0,
+          "info after detach is safe");
+    sys_res_close(token, 92);
     CHECK(sys_res_close(st, TLS_KIND_SESSION) == 1, "bypass session still closes");
     peer_free(&p);
     return 1;
@@ -1194,6 +1228,8 @@ static int mode_validate(const char *dir) {
     long ctx;
     long st;
     long r;
+    long saved_ctx = 0;
+    long saved_st = 0;
 
     opt = make_options(0, 1, 0, 0, 0, 8, 16, 1048576, 67108864);
     ctx = tls_context_new(opt);
@@ -1201,7 +1237,10 @@ static int mode_validate(const char *dir) {
     CHECK(ctx == -TLS_FAIL(TLS_FAIL_CONFIGURATION, 0), "min > max is Configuration");
 
     ctx = new_raw_context(0, 0, 0, 1);
+    saved_ctx = ctx;
     CHECK(ctx > 0, "validate context");
+    CHECK(sys_res_validate(ctx, TLS_KIND_SESSION) == 0,
+          "context token is rejected as a session token");
     CHECK(tls_context_ready(ctx) == 0, "context is not ready before cert/key");
     CHECK(tls_session_new(ctx) == -TLS_FAIL(TLS_FAIL_NOT_CONFIGURED, 0),
           "accept before configuration is NotConfigured");
@@ -1243,6 +1282,16 @@ static int mode_validate(const char *dir) {
           "broad cipher keyword is rejected");
     CHECK(set_list(ctx, 2, "X25519:@SECLEVEL=0") == -TLS_FAIL(TLS_FAIL_INVALID_ARGUMENT, 0),
           "group expression is rejected");
+    CHECK(set_list(ctx, 1, "CBC") == -TLS_FAIL(TLS_FAIL_INVALID_ARGUMENT, 0),
+          "CBC keyword is rejected");
+    CHECK(set_list(ctx, 1, "SHA") == -TLS_FAIL(TLS_FAIL_INVALID_ARGUMENT, 0),
+          "SHA keyword is rejected");
+    CHECK(set_list(ctx, 1, "AES") == -TLS_FAIL(TLS_FAIL_INVALID_ARGUMENT, 0),
+          "AES keyword is rejected");
+    CHECK(set_list(ctx, 1, "AES128-SHA256") == -TLS_FAIL(TLS_FAIL_INVALID_ARGUMENT, 0),
+          "CBC suite is rejected");
+    CHECK(set_list(ctx, 1, "ECDHE-RSA-AES256-SHA384") == -TLS_FAIL(TLS_FAIL_INVALID_ARGUMENT, 0),
+          "CBC ECDHE suite is rejected");
     {
         char p255[4][256];
         char p204[5][205];
@@ -1273,41 +1322,29 @@ static int mode_validate(const char *dir) {
               "min > max setter is Configuration");
     }
     st = tls_session_new(ctx);
+    saved_st = st;
     CHECK(st > 0, "validate session");
     if (st > 0) {
+        CHECK(sys_res_validate(st, TLS_KIND_CONTEXT) == 0,
+              "session token is rejected as a context token");
         r = tls_context_set_alpn(ctx, 0);
         CHECK(r == -TLS_FAIL(TLS_FAIL_BUSY, 0), "setter after session is Busy");
-        sys_res_close(st, TLS_KIND_SESSION);
+        CHECK(sys_res_close(st, TLS_KIND_SESSION) == 1, "validate session close");
+        CHECK(sys_res_validate(saved_st, TLS_KIND_SESSION) == 0,
+              "closed session token is stale");
     }
-    sys_res_close(ctx, TLS_KIND_CONTEXT);
+    CHECK(sys_res_close(ctx, TLS_KIND_CONTEXT) == 1, "validate context close");
+    CHECK(sys_res_validate(saved_ctx, TLS_KIND_CONTEXT) == 0,
+          "closed context token is stale");
 
     ctx = new_raw_context(0, 0, 0, 1);
-    CHECK(ctx > 0, "poison context");
-    {
-        char path[4096];
-        long token;
-        snprintf(path, sizeof(path), "%s/server.pem", dir);
-        token = read_file_buffer(path, NULL);
-        CHECK(tls_context_load_chain(ctx, token) == 1, "poison chain");
-        sys_res_close(token, 92);
-        snprintf(path, sizeof(path), "%s/server.key", dir);
-        token = read_file_buffer(path, NULL);
-        CHECK(tls_context_load_key(ctx, token) == 1, "poison key");
-        sys_res_close(token, 92);
-    }
-    {
-        long token = sys_reg_new_buffer(5);
-        unsigned char *dst = NULL;
-        size_t cap = 0;
-        if (token > 0 && sys_reg_buffer_data(token, &dst, &cap) == 0) {
-            memcpy(dst, "BOGUS", 5);
-            r = tls_context_set_groups(ctx, token);
-            CHECK(r == -TLS_FAIL(TLS_FAIL_CONFIGURATION, 0), "bad group list is Configuration");
-            CHECK(tls_session_new(ctx) == -TLS_FAIL(TLS_FAIL_CONFIGURATION, 0),
-                  "poisoned context refuses sessions");
-        }
-        sys_res_close(token, 92);
-    }
+    CHECK(ctx > 0, "strict-list context");
+    CHECK(apply_identity(ctx, dir), "strict-list identity");
+    CHECK(set_list(ctx, 2, "BOGUS") == -TLS_FAIL(TLS_FAIL_INVALID_ARGUMENT, 0),
+          "unknown group is InvalidArgument");
+    st = tls_session_new(ctx);
+    CHECK(st > 0, "invalid policy did not poison the context");
+    if (st > 0) sys_res_close(st, TLS_KIND_SESSION);
     sys_res_close(ctx, TLS_KIND_CONTEXT);
     return 1;
 }

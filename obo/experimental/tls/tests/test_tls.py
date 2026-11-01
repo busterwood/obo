@@ -467,6 +467,8 @@ def weak_policy_scenario(exe, fixtures):
     ss.close()
     out, err = app.finish()
     for marker in ('weak-policy=InvalidArgument', 'weak-groups=InvalidArgument',
+                   'cbc-policy=InvalidArgument', 'sha-policy=InvalidArgument',
+                   'aes-policy=InvalidArgument', 'cbc-suite=InvalidArgument',
                    'counts=0,0'):
         if marker not in out:
             raise Fail('weak-policy missing %r:\n%s\n%s' % (marker, out, err))
@@ -481,6 +483,18 @@ def weak_policy_null_rejected(exe, fixtures):
     text = (p.stdout or '') + (p.stderr or '')
     if 'Ciphersuite:' in text and 'NULL' in text.split('Ciphersuite:', 1)[1].splitlines()[0]:
         raise Fail('NULL cipher was negotiated:\n%s' % text[:3000])
+    app.finish()
+
+
+def cbc_suite_rejected(exe, fixtures):
+    app = App(exe, fixtures, 'weak-policy')
+    cmd = ['timeout', '6', 'openssl', 's_client', '-connect',
+           '127.0.0.1:%d' % app.port, '-servername', 'localhost',
+           '-tls1_2', '-cipher', 'AES128-SHA256', '-brief']
+    p = run(cmd, timeout=15)
+    text = (p.stdout or '') + (p.stderr or '')
+    if 'Ciphersuite:' in text and 'AES128-SHA256' in text.split('Ciphersuite:', 1)[1].splitlines()[0]:
+        raise Fail('CBC suite was negotiated:\n%s' % text[:3000])
     app.finish()
 
 
@@ -655,6 +669,7 @@ def main():
     large_echo_scenario(app, fixtures)
     weak_policy_scenario(app, fixtures)
     weak_policy_null_rejected(app, fixtures)
+    cbc_suite_rejected(app, fixtures)
     min_version_check(app, fixtures)
     forged_check(app, fixtures)
     print('obo offset/weak-policy/min-version/forged scenarios: ok')

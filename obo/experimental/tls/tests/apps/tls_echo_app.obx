@@ -243,6 +243,22 @@ fn run(): Result[bool] {
             ok(v) { println("weak-groups=accepted") }
             err(m, c) { println("weak-groups=", tls::text(c)) }
         }
+        let cbc = new []string(0)
+        append(cbc, "CBC")
+        let c1 = tls::setCipherList(&ctx, cbc)
+        match c1 { ok(v) { println("cbc-policy=accepted") } err(m, c) { println("cbc-policy=", tls::text(c)) } }
+        let sha = new []string(0)
+        append(sha, "SHA")
+        let c2 = tls::setCipherList(&ctx, sha)
+        match c2 { ok(v) { println("sha-policy=accepted") } err(m, c) { println("sha-policy=", tls::text(c)) } }
+        let aes = new []string(0)
+        append(aes, "AES")
+        let c3 = tls::setCipherList(&ctx, aes)
+        match c3 { ok(v) { println("aes-policy=accepted") } err(m, c) { println("aes-policy=", tls::text(c)) } }
+        let cbcSuite = new []string(0)
+        append(cbcSuite, "AES128-SHA256")
+        let c4 = tls::setCipherList(&ctx, cbcSuite)
+        match c4 { ok(v) { println("cbc-suite=accepted") } err(m, c) { println("cbc-suite=", tls::text(c)) } }
     }
     if mode == "min13" {
         let v13only = new tls::Tls13{}

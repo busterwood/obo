@@ -96,6 +96,7 @@ struct tls_session {
     long long charge;
     int state;
     int transport_eof;
+    int verify_mode;
     int alpn_required_missing;
     int received_alert;
     int sent_alert;
@@ -312,6 +313,27 @@ static long context_charge(tls_context *c, long long n) {
     c->extra_charge += n;
     c->bytes_charged += n;
     g_bytes_charged += n;
+    return 1;
+}
+
+static long context_recharge(tls_context *c, long long old_charge, long long new_charge) {
+    long long delta;
+    if (c == NULL || old_charge < 0 || new_charge < 0) return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
+    delta = new_charge - old_charge;
+    if (delta > 0) {
+        if (c->bytes_charged > c->max_context_bytes - delta) {
+            return fail_plain(TLS_FAIL_RESOURCE_LIMIT);
+        }
+        if (g_bytes_charged > 0x7fffffffffffffffLL - delta) {
+            return fail_plain(TLS_FAIL_RESOURCE_LIMIT);
+        }
+    }
+    c->extra_charge += delta;
+    c->bytes_charged += delta;
+    g_bytes_charged += delta;
+    if (c->extra_charge < 0) c->extra_charge = 0;
+    if (c->bytes_charged < 0) c->bytes_charged = 0;
+    if (g_bytes_charged < 0) g_bytes_charged = 0;
     return 1;
 }
 
@@ -559,80 +581,57 @@ static long parse_pem_certs(const unsigned char *data, size_t len, long max_coun
     return 1;
 }
 
-static int ascii_lower(int c) {
-    return (c >= 'A' && c <= 'Z') ? c + ('a' - 'A') : c;
+static int name_is(const char *s, size_t len, const char *want) {
+    size_t n = strlen(want);
+    return n == len && memcmp(s, want, n) == 0;
 }
 
-static int contains_ci(const char *s, size_t len, const char *needle) {
-    size_t nlen = strlen(needle);
-    size_t i;
-    size_t j;
-    if (nlen == 0 || nlen > len) return 0;
-    for (i = 0; i + nlen <= len; i++) {
-        int same = 1;
-        for (j = 0; j < nlen; j++) {
-            if (ascii_lower((unsigned char)s[i + j]) !=
-                ascii_lower((unsigned char)needle[j])) {
-                same = 0;
-                break;
-            }
-        }
-        if (same) return 1;
-    }
+static int allowed_cipher_suite(const char *s, size_t len) {
+    return name_is(s, len, "TLS_AES_256_GCM_SHA384") ||
+           name_is(s, len, "TLS_CHACHA20_POLY1305_SHA256") ||
+           name_is(s, len, "TLS_AES_128_GCM_SHA256");
+}
+
+static int allowed_cipher_list(const char *s, size_t len) {
+    return name_is(s, len, "ECDHE-ECDSA-AES256-GCM-SHA384") ||
+           name_is(s, len, "ECDHE-RSA-AES256-GCM-SHA384") ||
+           name_is(s, len, "ECDHE-ECDSA-CHACHA20-POLY1305") ||
+           name_is(s, len, "ECDHE-RSA-CHACHA20-POLY1305") ||
+           name_is(s, len, "ECDHE-ECDSA-AES128-GCM-SHA256") ||
+           name_is(s, len, "ECDHE-RSA-AES128-GCM-SHA256");
+}
+
+static int allowed_group(const char *s, size_t len) {
+    return name_is(s, len, "X25519") || name_is(s, len, "P-256") ||
+           name_is(s, len, "P-384");
+}
+
+static int allowed_list_name(const char *s, size_t len, int which) {
+    if (which == 0) return allowed_cipher_suite(s, len);
+    if (which == 1) return allowed_cipher_list(s, len);
+    if (which == 2) return allowed_group(s, len);
     return 0;
 }
 
-static int ends_with_ci(const char *s, size_t len, const char *needle) {
-    size_t nlen = strlen(needle);
-    size_t i;
-    if (nlen == 0 || nlen > len) return 0;
-    for (i = 0; i < nlen; i++) {
-        if (ascii_lower((unsigned char)s[len - nlen + i]) !=
-            ascii_lower((unsigned char)needle[i])) return 0;
-    }
-    return 1;
-}
-
-static int weak_list_name(const char *s, size_t len) {
-    static const char *const weak[] = {
-        "NULL", "ANON", "ADH", "AECDH", "EXPORT", "RC4", "3DES", "DES",
-        "MD5", "RC2", "IDEA", "SEED", "LOW", "COMPLEMENTOFALL",
-        "COMPLEMENTOFDEFAULT", "DEFAULT", "ALL", "HIGH", "MEDIUM"
-    };
-    size_t i;
-    if (ends_with_ci(s, len, "-SHA") || ends_with_ci(s, len, "-SHA1")) return 1;
-    for (i = 0; i < sizeof(weak) / sizeof(weak[0]); i++) {
-        if (contains_ci(s, len, weak[i])) return 1;
-    }
-    return 0;
-}
-
-/* Validate a colon-joined cipher/group list. OpenSSL accepts control
- * expressions such as @SECLEVEL=0, eNULL, ALL and !; the public API must not.
- * Copy into an explicit NUL-terminated buffer for the OpenSSL call. */
+/* Validate a colon-joined cipher/group list against the exact approved AEAD/
+ * group names. OpenSSL expressions, broad keywords (ALL/CBC/SHA/AES), NULL/
+ * weak names and CBC suites are rejected before SSL_CTX mutation. */
 static long validate_list_string(const unsigned char *data, size_t len,
-                                 char *out, size_t cap) {
+                                 char *out, size_t cap, long which) {
     size_t at = 0;
     size_t token_start = 0;
+    long count = 0;
     if (data == NULL || out == NULL || cap == 0) return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
     if (len == 0 || len > 1024) return fail_plain(TLS_FAIL_RANGE);
     if (len + 1 > cap) return fail_plain(TLS_FAIL_RESOURCE_LIMIT);
     for (at = 0; at <= len; at++) {
         if (at == len || data[at] == ':') {
             size_t n = at - token_start;
-            size_t i;
-            if (n == 0 || n > 255) return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
-            for (i = 0; i < n; i++) {
-                unsigned char c = data[token_start + i];
-                int alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
-                int digit = c >= '0' && c <= '9';
-                if (!alpha && !digit && c != '_' && c != '-') {
-                    return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
-                }
-            }
-            if (weak_list_name((const char *)data + token_start, n)) {
+            if (n == 0 || n > 255 || count >= 64) return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
+            if (!allowed_list_name((const char *)data + token_start, n, (int)which)) {
                 return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
             }
+            count++;
             token_start = at + 1;
         }
     }
@@ -699,9 +698,25 @@ static int context_release(void *p) {
     if (c->live_sessions != 0) {
         tls_session *s;
         for (s = g_sessions; s != NULL; s = s->next) {
-            if (s->owner == c) s->owner = NULL;
+            if (s->owner == c) {
+                s->owner = NULL;
+                if (s->state == TLS_STATE_NEW || s->state == TLS_STATE_HANDSHAKING) {
+                    s->state = TLS_STATE_FAILED;
+                    session_fail_text(s, "TLS context was closed during the handshake");
+                }
+            }
         }
         c->live_sessions = 0;
+    }
+    if (c->ssl_ctx != NULL) {
+        /* Clear every callback that carries the context pointer before the
+         * context is freed. Detached SSL objects retain an SSL_CTX reference,
+         * but must never call back into freed adapter state. */
+        SSL_CTX_set_alpn_select_cb(c->ssl_ctx, NULL, NULL);
+        SSL_CTX_set_client_hello_cb(c->ssl_ctx, NULL, NULL);
+        SSL_CTX_set_tlsext_servername_callback(c->ssl_ctx, NULL);
+        SSL_CTX_set_tlsext_servername_arg(c->ssl_ctx, NULL);
+        SSL_CTX_set_info_callback(c->ssl_ctx, NULL);
     }
     charge = (long long)sizeof(tls_context) + c->extra_charge;
     if (c->ssl_ctx != NULL) SSL_CTX_free(c->ssl_ctx);
@@ -1052,12 +1067,9 @@ long tls_context_set_trust(long context_token, long pem_token) {
     r = buffer_span(pem_token, &data, &len);
     if (r < 0) return r;
     if (len == 0 || len > (size_t)TLS_MAX_TRUST_PEM) return fail_plain(TLS_FAIL_RANGE);
-    r = context_charge(c, (long long)len);
-    if (r < 0) return r;
     ERR_clear_error();
     r = parse_pem_certs(data, len, TLS_MAX_TRUST_CERTS, &certs, &count);
     if (r < 0) {
-        context_uncharge(c, (long long)len);
         context_fail_text(c, "trust bundle PEM did not parse");
         return r;
     }
@@ -1065,7 +1077,6 @@ long tls_context_set_trust(long context_token, long pem_token) {
     if (store == NULL) {
         for (i = 0; i < count; i++) X509_free(certs[i]);
         free(certs);
-        context_uncharge(c, (long long)len);
         return fail_plain(TLS_FAIL_RESOURCE_LIMIT);
     }
     for (i = 0; i < count; i++) {
@@ -1078,7 +1089,6 @@ long tls_context_set_trust(long context_token, long pem_token) {
                 X509_STORE_free(store);
                 for (long j = 0; j < count; j++) X509_free(certs[j]);
                 free(certs);
-                context_uncharge(c, (long long)len);
                 drain_errors(c->last_error, sizeof(c->last_error));
                 context_fail_text(c, "trust bundle certificate could not be added");
                 return fail_plain(TLS_FAIL_CERTIFICATE_REJECTED);
@@ -1088,12 +1098,13 @@ long tls_context_set_trust(long context_token, long pem_token) {
     for (i = 0; i < count; i++) X509_free(certs[i]);
     free(certs);
     ERR_clear_error();
-    SSL_CTX_set_cert_store(c->ssl_ctx, store);
-    {
-        long long old_trust = c->trust_charge;
-        c->trust_charge = (long long)len;
-        context_uncharge(c, old_trust);
+    r = context_recharge(c, c->trust_charge, (long long)len);
+    if (r < 0) {
+        X509_STORE_free(store);
+        return r;
     }
+    c->trust_charge = (long long)len;
+    SSL_CTX_set_cert_store(c->ssl_ctx, store);
     c->trust_set = 1;
     context_set_ready(c);
     return 1;
@@ -1242,7 +1253,7 @@ long tls_context_set_ciphers(long context_token, long which, long list_token) {
     if (which != 0 && which != 1) return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
     r = buffer_span(list_token, &data, &len);
     if (r < 0) return r;
-    r = validate_list_string(data, len, list, sizeof(list));
+    r = validate_list_string(data, len, list, sizeof(list), which);
     if (r < 0) return r;
     ERR_clear_error();
     r = which == 0 ? SSL_CTX_set_ciphersuites(c->ssl_ctx, list)
@@ -1269,7 +1280,7 @@ long tls_context_set_groups(long context_token, long list_token) {
     if (r < 0) return r;
     r = buffer_span(list_token, &data, &len);
     if (r < 0) return r;
-    r = validate_list_string(data, len, list, sizeof(list));
+    r = validate_list_string(data, len, list, sizeof(list), 2);
     if (r < 0) return r;
     ERR_clear_error();
     if (SSL_CTX_set1_groups_list(c->ssl_ctx, list) != 1) {
@@ -1389,6 +1400,7 @@ long tls_session_new(long context_token) {
                           SSL_MODE_RELEASE_BUFFERS);
     SSL_set_ex_data(s->ssl, g_ex_index, s);
     s->state = TLS_STATE_HANDSHAKING;
+    s->verify_mode = c->verify;
     s->charge = charge;
     token = sys_reg_new_object(TLS_KIND_SESSION, s, session_release, (size_t)charge);
     if (token < 0) {
@@ -1418,6 +1430,7 @@ long tls_session_handshake(long session_token) {
     if (s == NULL) return fail_plain(TLS_FAIL_INVALID_RESOURCE);
     session_clear_error(s);
     if (s->state == TLS_STATE_FAILED || s->state == TLS_STATE_CLOSED) return fail_plain(TLS_FAIL_CLOSED);
+    if (s->owner == NULL) return fail_plain(TLS_FAIL_CLOSED);
     if (s->state == TLS_STATE_ESTABLISHED || s->state == TLS_STATE_SEND_CLOSED ||
         s->state == TLS_STATE_RECV_CLOSED || s->state == TLS_STATE_BOTH_CLOSED) {
         return TLS_STEP_DONE;
@@ -1598,6 +1611,7 @@ long tls_session_feed(long session_token, long in_token, long offset, long count
     if (s == NULL) return fail_plain(TLS_FAIL_INVALID_RESOURCE);
     if (offset < 0 || count < 0) return fail_plain(TLS_FAIL_INVALID_ARGUMENT);
     if (s->state == TLS_STATE_FAILED || s->state == TLS_STATE_CLOSED) return fail_plain(TLS_FAIL_CLOSED);
+    if (s->owner == NULL) return fail_plain(TLS_FAIL_CLOSED);
     if (count == 0) return 0;
     r = buffer_span(in_token, &data, &len);
     if (r < 0) return r;
@@ -1769,7 +1783,7 @@ long tls_session_info_scalar(long session_token, long field) {
     if (field == TLS_INFO_PEER_PRESENT) return s->peer_cert != NULL ? 1 : 0;
     if (field == TLS_INFO_VERIFY_CODE) return (long)SSL_get_verify_result(s->ssl);
     if (field == TLS_INFO_VERIFICATION) {
-        if (s->owner == NULL || s->owner->verify == TLS_VERIFY_NONE) return 0;
+        if (s->verify_mode == TLS_VERIFY_NONE) return 0;
         if (s->peer_cert == NULL) return 0;
         vr = (long)SSL_get_verify_result(s->ssl);
         return vr == X509_V_OK ? 1 : 2;
