@@ -631,17 +631,18 @@ pub fn watchDatagram(r: &reactor::Reactor, d: &Datagram,
 
 Rules:
 
-- `bindDatagram` keeps its current signature and uses defaults. The new
-  `bindDatagramOptions` is the QUIC path; it revalidates every field, sets
-  `CLOEXEC` and nonblocking, and closes the socket on any post-bind failure.
+- `bindDatagram` keeps its current signature and compatibility profile (no
+  GRO, no DF). The new `bindDatagramOptions` is the QUIC path; it revalidates
+  every field, sets `CLOEXEC` and nonblocking, and closes the socket on any
+  post-bind failure.
 - `receiveBatch` requires `1 <= maxPackets <= 64` and
-  `1 <= maxBytes <= 65536`. `maxBytes` is the **total** byte budget for the
+  `1 <= maxBytes <= 65507`. `maxBytes` is the **total** byte budget for the
   returned batch, not a per-packet bound: the sum of `Packet.bytes` is at most
   `maxBytes`, so a 64-packet batch cannot allocate 4 MiB. A datagram larger
   than `maxBytes` returns `Range` rather than silent truncation; the caller
-  retries with a larger budget (the maximum UDP datagram is 65,535 bytes).
+  retries with a larger budget (the maximum UDP payload is 65,507 bytes).
   `truncated`/`originalSize` are still preserved for kernel truncation. A
-  single `recvmmsg` call fills the batch; extra datagrams remain in the
+  bounded `recvmsg` loop fills the batch; extra datagrams remain in the
   socket.
 - If `UDP_GRO` is enabled and the kernel returns a coalesced buffer,
   `segmentSize` is the GRO segment size and `bytes` contains all segments; the

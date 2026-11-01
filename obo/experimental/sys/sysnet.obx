@@ -602,8 +602,8 @@ pub fn receive(d: &Datagram, max: int): Result[Packet] {
 
 // Bounded batch receive. maxBytes is the total byte budget of the returned
 // batch, not a per-packet bound, so a 64-packet batch never allocates
-// 64 * 65507 bytes. At most one datagram may be consumed but not returned: a
-// datagram larger than the remaining budget returns Range.
+// 64 * 65507 bytes. Earlier datagrams in a partial batch are consumed but not
+// returned: a datagram larger than the remaining budget returns Range.
 pub fn receiveBatch(d: &Datagram, maxPackets: int,
                     maxBytes: int): Result[Datagrams] {
     if maxPackets < 1 || maxPackets > MAX_BATCH_DATAGRAMS {
