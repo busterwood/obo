@@ -119,8 +119,16 @@ the value. Use `"int"` only when a non-zero release really is an error, and
   `SQL_NO_TOTAL` for a truncated `SQL_C_CHAR` chunk (the chunk length is
   recovered with a `0xFF` sentinel) but the remaining length for
   `SQL_C_BINARY`. ODBC has no one-argument statement free, so the release is a
-  shim (`ms_close_stmt`) and the foreign type is a project opaque type whose
-  value is the driver handle. See `db/mssql/README.md` for the probe table.
+  shim (`ms_close_stmt`); the foreign types are project state pointers, not the
+  raw handles.
+  A connection owns its statements: `ms_close_conn` marks children dead and
+  frees their HSTMTs before disconnecting, every stmt shim checks the closed
+  flag, and `Rows.is_open()` consults the state. Reusing a prepared statement
+  needs `SQLFreeStmt(h, SQL_CLOSE)` before `SQLExecute` (otherwise `24000`).
+  Above 4000 text bytes or 8000 binary bytes the parameter `ColumnSize` must be
+  0 ("unspecified"), not the byte count (`HY104`). `SQLGetData` consumes
+  columns in ascending order, so read/cache skipped columns first. See
+  `db/mssql/README.md` for the probe table and the 38-digit decimal bound.
 - SQLite's `sqlite3_exec` and `sqlite3_prepare_v2` have different statement
   counts: exec accepts multiple statements, prepare accepts exactly one. State
   that in the wrapper rather than silently truncating SQL.

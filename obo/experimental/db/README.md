@@ -316,9 +316,26 @@ fn main() {
 - Result values are UTF-8 through `SQL_C_CHAR`; `varbinary` is raw bytes.
   NULL and empty are distinct. A truncated text chunk is recovered with a
   `0xFF` sentinel because the driver reports `SQL_NO_TOTAL`; this preserves
-  embedded NUL. Values are capped at 16 MiB; a larger value is an error.
+  embedded NUL. Values are capped at 16 MiB; a larger value is an error, and an
+  exactly-16-MiB value ending in a multi-byte character is still readable.
+- Text and binary parameters support the full 16 MiB value cap. Above 4000
+  text bytes / 8000 binary bytes the binding passes an unspecified ODBC
+  `ColumnSize`; the driver otherwise rejects the value with `HY104`.
+- The connection owns its statements. `Connection.close()` marks every child
+  statement dead and frees its HSTMT before disconnecting, so a `Rows` that
+  outlives its connection returns `err("statement's connection is closed", 2)`
+  and `Rows.is_open()` is false, never a use-after-free. A reused prepared
+  statement closes its previous cursor before `SQLExecute`, and the per-row
+  cell cache is cleared on `SQL_NO_DATA`.
+- `SQLGetData` consumes columns in ascending order; reading a later column
+  first reads and caches the skipped ones, so `text(1)` then `text(0)` is
+  well defined. After the cursor is exhausted, `text(0)` is `no current row`,
+  not the last row.
 - The cursor is streaming, so `row_count()` is `SQLRowCount` (-1 before the end
   of a SELECT, the count after fetching to the end, affected rows for DML).
+- SQL Server decimal has at most 38 significant digits. `decimal::parse`
+  enforces that bound; the generic 98,342-byte decimal text cap used by the
+  other adapters does not apply.
 - No transactions API, typed `datetimeoffset`/`money` accessors, multiple
   result sets, `Sql` bridge, fake driver or pooling in this slice; the package
   README lists them as follow-ups.
@@ -505,12 +522,17 @@ The suite covers:
   SQLite ABI test. Stage (g) deleted the postgres C adapter suite, so there is
   no postgres C sanitizer half.
 
-The SQL Server suite is opt-in and SELECT-only. It reads `MSSQL_TEST_DSN`, or
-`~/.obo-mssql-dsn` when the environment is unset, and skips cleanly when neither
-exists; it never prints the DSN or reads credential files. It covers the
-measured W/narrow split, `dbo.items` text/decimal/temporal/GUID/binary/NULL,
-typed parameters, SQLSTATE errors, chunked and oversize reads, close semantics
-and the `OBO_CHECK=1` census. See [`mssql/README.md`](mssql/README.md).
+The SQL Server suite is opt-in and SELECT-only. It reads the DSN from
+`MSSQL_TEST_DSN` or, when that is unset, from the mode-600 `~/.obo-mssql-dsn`
+fixture; it never prints the DSN and reads no other credential file. The
+standard db-adapter gate invokes this suite, or prints a visible
+`mssql live: skipped` line when neither source exists (it does not report a
+silent green pass). The 21 live sections cover the measured W/narrow split,
+`dbo.items` text/decimal/temporal/GUID/binary/NULL, typed and 1 MiB parameters,
+SQLSTATE errors, chunked/oversize/exact-cap reads, i64 min/max, ascending-column
+and stale-row behaviour, parent-close safety, statement reuse and the
+`OBO_CHECK=1` census; a standalone ASan harness repeats the parent-close
+sequence directly against the shims. See [`mssql/README.md`](mssql/README.md).
 
 The PostgreSQL live section is opt-in and SELECT-only, including the
 `execute_sql` bridge vectors:

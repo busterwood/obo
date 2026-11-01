@@ -142,7 +142,7 @@ fn main() {
 | Function | Notes |
 |---|---|
 | `mssql::open(dsn: string): Result[Connection]` | DSN is a UTF-8 ODBC connection string. Empty, over 16 MiB, or containing NUL is code 2. A failed connect copies the diagnostic, SQLSTATE and native code before freeing the handle. |
-| `Connection.close(): Result[bool]` | Disconnect and free the DBC. Second close is `ok(false)`. Close statements first (tidy order). |
+| `Connection.close(): Result[bool]` | Marks every child statement dead, frees its HSTMT, then disconnects and frees the DBC. A disconnect/free failure is an `err`; the handle is gone either way. Second close is `ok(false)`. A child `Rows` remains usable only as a clean "statement's connection is closed" error after this call. |
 | `Connection.is_open(): bool` | |
 | `Connection.status(): int` | `SQL_SUCCESS` while open, `SQL_ERROR` after close. |
 | `Connection.error_message(): []byte` | All connection diagnostic records as UTF-8 `SQLSTATE/native/message` lines. |
@@ -170,21 +170,25 @@ fn main() {
 | `decimal_text(col): Result[?[]byte]` | SQL Server's exact decimal text; nil is NULL. |
 | `decimal(col): Result[decimal]` | Parses the exact text. NULL is `DEC_DB_NULL`; binary is `DEC_DB_NOT_DECIMAL`; `float`/`real` is `DEC_DB_INEXACT_STORAGE`. Inserts the leading zero SQL Server omits (`.5000` → `0.5000`) without changing value or display scale. |
 | `status(): int`, `error_message()`, `sqlstate()`, `error_code()` | Last `SQLRETURN` and the statement diagnostic. |
-| `close(): Result[bool]`, `is_open()` | Second close is `ok(false)`; accessors after close are `err("rows are closed", 2)`. |
+| `close(): Result[bool]`, `is_open()` | Second close is `ok(false)`; accessors after the Rows closes are `err("rows are closed", 2)`. After the **Connection** closes, `is_open()` is false and accessors are `err("statement's connection is closed", 2)`; `close()` still frees the C state once. |
 
 The cell cache is per statement and per column/representation: `is_null(0)`
 then `text(0)` then `bytes(0)` reuse one `SQLGetData` read for the current row.
-Reading a different column keeps that column's cache until the next `fetch`.
+`SQLGetData` consumes columns in ascending order, so reading `text(1)` first
+makes the shim read and cache column 0 as well; a later `text(0)` is served
+from that cache. The cache is cleared when a row is fetched or when the cursor
+reaches `SQL_NO_DATA`/a failed fetch, so `text(0)` after exhaustion is
+`err("no current row", 2)`, not the last row.
 
 ### Parameters
 
 | Constructor | Wire form |
 |---|---|
-| `param_text(string)` | `SQL_C_CHAR` + `SQL_WVARCHAR`; UTF-8; embedded NUL rejected at bind. |
+| `param_text(string)` | `SQL_C_CHAR` + `SQL_WVARCHAR`; UTF-8 (invalid UTF-8 is rejected before the driver can substitute U+FFFD); embedded NUL rejected at bind. Values over 4000 bytes use an unspecified `ColumnSize`, which the driver requires. |
 | `param_int(int)` | `SQL_C_SBIGINT` + `SQL_BIGINT`; the full i64 range. |
-| `param_bytes([]byte)` / `param_blob` | `SQL_C_BINARY` + `SQL_VARBINARY`; exact length including NUL. |
+| `param_bytes([]byte)` / `param_blob` | `SQL_C_BINARY` + `SQL_VARBINARY`; exact length including NUL. Values over 8000 bytes use an unspecified `ColumnSize`. |
 | `param_null()` | `SQL_NULL_DATA`; typed by the target column. |
-| `param_decimal_text([]byte)` | Exact decimal text; validated by `decimal::parse`, 98,342-byte cap. |
+| `param_decimal_text([]byte)` | Exact decimal text; validated by `decimal::parse`. SQL Server decimal has at most 38 significant digits, which is the real bound. |
 | `param_decimal(value, p, s)` | `decimal::check` first; a value that would round is `DEC_DB_SCALE`. |
 
 Every value is copied into a C-side slot at bind time, so the caller's array
@@ -195,9 +199,11 @@ type; there is no binary decimal format.
 ## Limits and error model
 
 Kept from the other adapters: SQL text 1 MiB, connection string 16 MiB, value
-16 MiB, 32 parameters, decimal text 98,342 bytes. This package also caps result
-columns at 4096 and rejects an out-of-range column or a closed handle before any
-C call.
+16 MiB (text and binary parameters included), 32 parameters. This package also
+caps result columns at 4096 and rejects an out-of-range column or a closed
+handle before any C call. SQL Server's `decimal(p,s)` has `p` and `s` in
+`1..38`; `decimal::parse` enforces the 38-significant-digit bound, so the
+generic 98,342-byte text cap used by the other adapters does not apply here.
 
 A SQL failure is `err(message, code)`. `message` is the formatted diagnostic, so
 a string search for the SQLSTATE and the native number both work; the same
@@ -229,18 +235,32 @@ is never printed or written into the manifest. Against the local
 - SQLSTATE `42S02`/native 208 for a missing table, UTF-8 in a non-ASCII
   diagnostic, empty/NUL/oversize SQL input errors, a bad DSN (`IM002`);
 - non-ASCII column metadata (`SELECT 1 AS [café]`);
+- 1 MiB text and binary parameters (the >4000/8000 `ColumnSize` path);
 - large values that cross the 4096-byte read chunks, embedded NUL across
-  chunks, a 10,000-byte binary value, and a 17 MB value that must fail the
-  16 MiB cap;
+  chunks (6,001 UTF-8 bytes), a 10,000-byte binary value, an exactly 16 MiB
+  value ending in a two-byte character, and a value one byte over the 16 MiB
+  cap that must report `value exceeds the 16 MiB cap`;
+- ascending column reads (`text(1)` before `text(0)`), a stale-row check after
+  `SQL_NO_DATA`, and the full i64 min/max parameter and result range;
 - `datetimeoffset` readable as exact text;
 - close/double-close and closed-`Rows` accessors;
+- the B1 parent-close fixture: `conn.close()` first, then `rows.is_open()` is
+  false and `rows.text(0)` is a clean `statement's connection is closed` error
+  (no signal), followed by a clean `rows.close()`;
+- a standalone ASan harness that links the shim sources directly and repeats
+  the parent-close sequence, so a use-after-free is detected outside the obo
+  image;
 - `OBO_CHECK=1` census: a clean run exits 0; a dropped Connection reports
   `Connection 1` (exit 8), a dropped Stmt reports `Stmt 1` (exit 8), `exit(0)`
   runs no census, use after close exits 7, and
   `OBO_CENSUS_FAULT=underflow` exits 4.
 
-The runner also checks `signature_check: declarations-only`, the two
-declaration-file hashes, the manifest verify and `libodbc.so.2` in `ldd`.
+The runner asserts all 21 section markers, so a section that is accidentally
+left out of `run_all` fails the suite instead of passing silently. It also
+checks `signature_check: declarations-only`, the two declaration-file hashes,
+the manifest verify, `libodbc.so.2` in `ldd`, and builds/runs the ASan harness.
+`obo/experimental/db/tests/test_db_adapters.py` invokes this suite too, or
+prints a visible `mssql live: skipped` line when no DSN is configured.
 
 ## Unsupported / follow-ups
 
