@@ -288,7 +288,12 @@ lifetime or effects from a header. `i64` maps to a signed 64-bit C integer
 the thunk sign-extends `eax` into `rax`; `i32` arguments are rejected in this
 prototype because there is no checked narrowing conversion. The signature check
 is labelled `header` when a real header supplied the declaration and
-`declarations-only` when the author supplied the declaration text.
+`declarations-only` when the author supplied the declaration text. The libpq
+wrapper binding (`examples/libpq.cbind`) lists `toolkit/cres.h` and
+`toolkit/libpq_adapter.h`, so a declaration that disagrees with those headers
+fails the build; its label is `header`. libpq's own prototypes remain hand-written
+in `toolkit/libpq_decls.h` (the libpq development header is absent), so that
+check does not cover libpq's API. The `pq.cbind` probe stays `declarations-only`.
 
 The explicit-close adapter implements the connection/result/query subset below.
 Future pointer/resource annotations (design only) are explicit and versioned:
@@ -493,9 +498,13 @@ IDL or per-library compiler branch.
 - Obo receives only `long` tokens. `PGconn*`, `PGresult*`, `char*`, `malloc`
   blocks and all pointer arithmetic stay in C. The `Connection` and `Rows`
   wrappers are ordinary `ref record`s with one integer field. Obo record fields
-  are not private: `new Connection{tok: ...}` is writable by an importer, so the
-  C registry, not the obo type, is what rejects an invalid token. The notes do
-  not claim otherwise.
+  are private to their defining module by default, so an importer that writes
+  `new lib::Connection{tok: 123}` is rejected (`cannot construct ... outside its
+  module: it has private fields`) and must use `connect()`/`query()`. Same-module
+  code, or a deliberate raw-token API such as `buffer::wrap`, can still build a
+  token, so the C registry, not the obo field privacy, is what rejects a stale,
+  forged or wrong-kind token: `cres_peek` checks the live bit, generation and
+  kind before any dereference.
 - Dropping a `Connection`, `Rows` or `Buffer` frees the record only. It does
   **not** call `PQfinish`, `PQclear` or `free`. `close` is explicit, borrows the
   wrapper (so `defer c.close()` is legal), poisons the token, and returns false
@@ -1014,7 +1023,7 @@ The in-process obo app used the adapter, not `psql` as a runtime helper, and
 ran only `SELECT`s. Observed output:
 
 ```text
-server_version=160015
+libpq_version=160015
 numeric_text=1.234567890123456789 oid=1700 typmod=-1
 null_and_empty=ok
 sql_error_length=134
@@ -1022,6 +1031,12 @@ binary_bytes=00ff41 len=3
 live=0
 live_db_smoke=ok
 ```
+
+`libpq_version=160015` is the **client** libpq version reported by
+`PQlibVersion`, not the server version. The adapter does not call
+`PQserverVersion`, so the server version (PostgreSQL 16.15, stated above) was
+not read through the adapter. (This line was previously mislabelled
+`server_version=`.)
 
 Covered: parameterized text treated as data (a SQL-injection-shaped string
 round-trips unchanged), `$2::int` text parameter, SQL `NULL` distinct from empty
@@ -1119,7 +1134,7 @@ Live local PostgreSQL (explicit opt-in; SELECTs only; role `chris`, database
 `postgres`, no `infocube`):
 
 ```text
-server_version=160015
+libpq_version=160015
 numeric_text=1.234567890123456789 oid=1700 typmod=-1
 null_and_empty=ok
 sql_error_length=134
@@ -1127,6 +1142,10 @@ binary_bytes=00ff41 len=3
 live=0
 live_db_smoke=ok
 ```
+
+`libpq_version` is the client libpq version (`PQlibVersion`), not the server
+version; it was printed as `server_version=` in the original run. The adapter
+does not expose `PQserverVersion`.
 
 Status: **hardening checkpoint pending independent rereview.** Not merged to
 main, not pushed, not promoted, no seed copy. Constructors/atexit/stdio are
@@ -1204,3 +1223,6 @@ inputs/checks needed by the approved TLS design.
    substitutions be handled?
 8. When, if ever, should a binary-only module import be supported? This
    proposal deliberately does not pretend it exists.
+9. Imported-module provenance: modules found through `-I` paths and the obo
+   library are not yet hashed in the build manifest. Recording them needs a
+   compiler change, so it is deferred.

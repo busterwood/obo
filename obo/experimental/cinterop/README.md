@@ -94,7 +94,10 @@ the one-time generic seam and does not require compiler changes per library.
 - `pq_connect` distinguishes invalid conninfo syntax (return `-4`, with a
   copied diagnostic from `pq_conninfo_error_buf()`) from buffer, allocation and
   connection-status failures. A syntactically valid conninfo that libpq cannot
-  connect still returns a connection token with `CONNECTION_BAD`.
+  connect still returns a connection token with `CONNECTION_BAD`. The wrapper
+  returns the diagnostic as the `err` message (for example
+  `unterminated quoted string in connection info string`) and gives each other
+  negative code its own message.
 
 ## Explicit-close libpq adapter
 
@@ -135,6 +138,15 @@ match made {
   `PQexecParams`. SQL/text values reject embedded NUL; binary values preserve
   their length including NUL; `nil` is SQL NULL and an empty array is an empty
   value. There is no SQL interpolation.
+- Packet limits are enforced in the wrapper before any C call: more than 32
+  parameters (`PQ_MAX_PARAMS`) or more than 1 MiB of SQL (`PQ_MAX_SQL`) returns
+  a specific `err`. The constants in `libpq.obx` must match the C defines in
+  `toolkit/libpq_adapter.c`. An adapter-side rejection is reported by its code,
+  never as a possibly stale connection error.
+- `connect_timeout`: when the conninfo has no `connect_timeout` keyword, the
+  adapter appends `connect_timeout=5`. Any explicit `connect_timeout` is used as
+  given, so an explicit `connect_timeout=0` disables libpq's timeout and gets no
+  default; negative values are passed to libpq unchanged.
 - Values and error messages are copied by length; `PQgetlength` is used, never
   `strlen`. Exact numeric text, OID and typmod are preserved; no numeric value
   is routed through a float.
@@ -235,6 +247,16 @@ The probe output is `PQlibVersion=160015`, an empty `PGRES_TUPLES_OK` result
 with status 2, successful close, and `live=0`. It does not connect to a
 database, send SQL, start a server, open a socket or use a service.
 
+### Signature checks for the libpq binding
+
+`libpq.cbind` and `libpq_fake.cbind` list `toolkit/cres.h` and
+`toolkit/libpq_adapter.h` as headers, so their declarations are checked against
+the real adapter prototypes (`signature_check: header`). A declaration that
+disagrees with a header fails the build before link. libpq's own prototypes
+still come from the hand-written `toolkit/libpq_decls.h`, because the libpq
+development header is not installed on the probe host. The header check
+therefore covers the obo-facing adapter API, not libpq's API itself.
+
 ### Private include roots, cflags and link hardening
 
 A `.cbind` may list `include_dirs` and `cflags`. The same preprocessor state is
@@ -308,10 +330,13 @@ The C fixture (`tests/openssl_qualify.c`) is linked through `cinterop.py` with
 - full RELRO/NOW and the expected `libssl.so.3`/`libcrypto.so.3` dependencies.
 
 The same C fixture also runs under ASAN/UBSAN as a separate harness. The test
-skips only when `libssl.so.3`/`libcrypto.so.3` are absent (or
-`CINTEROP_TEST_NO_OPENSSL=1` is explicitly set). With the library present, a
-failed header download, build or qualification is a test failure. Extracted
-headers are never committed, and no committed build depends on `/tmp`.
+skips when `libssl.so.3`/`libcrypto.so.3` are absent (or
+`CINTEROP_TEST_NO_OPENSSL=1` is explicitly set). The header download needs the
+network. If `apt-get download` cannot run or fails, the qualification is
+**skipped** with the printed line `skipped: openssl (no network)` and the rest of
+the suite continues. A skip is never a silent pass. With the library present and
+headers available, a build or qualification failure is still a test failure.
+Extracted headers are never committed.
 
 This qualifies the hosted CRT/loader/OpenSSL interaction for the approved TLS
 adapter work. It is **not** the TLS adapter itself: the separate experimental
@@ -339,6 +364,10 @@ services, expose ports, install packages or read credential files. Without
 python3 obo/experimental/cinterop/tests/test_cinterop.py
 ```
 
+Scratch build trees and the OpenSSL header cache live under `TMPROOT` (default:
+Python's `tempfile.gettempdir()`, which honours `TMPDIR`). Set `TMPROOT` to choose
+another location; the committed build does not depend on `/tmp`.
+
 The targeted test covers 0..8 scalar arguments, `INT64_MIN/MAX`, `i32` return
 bounds, odd/even stack alignment, live-register/nested/non-zero-depth native
 calls, the freestanding ABI probe, argv/environment parity, `OBO_CHECK`/
@@ -359,6 +388,14 @@ It also builds and runs:
   injection-as-data;
 - the fake-libpq obo wrapper app and a deliberate missing-close app whose
   `live=1` proves the leak counter detects the omission;
+- invalid conninfo (`host='unterminated`) returns libpq's copied diagnostic with
+  code 2 and registers no connection; the fake parser reports the same text, and
+  the real libpq parser runs too when `libpq.so.5` is present. No server is used;
+- packet limits with the fake ABI: 33 parameters and 1 MiB + 1 bytes of SQL are
+  rejected with specific messages, and 32 parameters is accepted;
+- a libpq spec declaration that disagrees with `libpq_adapter.h` (an
+  internally consistent `int` against the header's `long`) fails the signature
+  check before link;
 - explicit-defer success/early-return/nested/loop/buffer paths and a
   result-outlives-connection app;
 - real libpq's conninfo parser for timeout detection (quoted values are not
@@ -419,8 +456,9 @@ declarations-only SQLite adapter, both explicit-close and tested.
   package probe: it accepts `/usr/include` headers only when the installed
   `libssl-dev` package version matches `libssl3t64`, otherwise it fetches the
   matching package. Libraries are discovered with `ldconfig -p`; the test
-  skips only when `libssl.so.3`/`libcrypto.so.3` are genuinely absent (or the
-  explicit opt-out is set).
+  skips when `libssl.so.3`/`libcrypto.so.3` are genuinely absent (or the
+  explicit opt-out is set), and skips with `skipped: openssl (no network)` when
+  the matching headers cannot be downloaded.
 - The private header cache is content-checked against a stored hash manifest.
   That catches accidental cache corruption; same-user tampering with both the
   cache and its manifest is outside the trusted build boundary.
@@ -428,6 +466,9 @@ declarations-only SQLite adapter, both explicit-close and tested.
   absolute `include_dirs` entry. Source, header and include roots are
   path-mapped in emitted objects, and extracted headers are never committed.
 - The project skill is a repository/portable artifact, not a global install.
+- Modules found through `-I` paths and the obo library are not yet hashed in the
+  build manifest. Imported-module provenance needs a compiler change and is
+  deferred.
 
 ## Review findings resolved in this hardening checkpoint
 
