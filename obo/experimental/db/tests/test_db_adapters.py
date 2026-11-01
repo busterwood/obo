@@ -276,7 +276,7 @@ def postgres_decimal_fake_obo(tmp):
         raise Fail('postgres decimal fake app unexpectedly links real libpq')
     check_declaration_hash(manifest(out), PG_FAKE_HEADERS, 'postgres decimal fake')
     verify(out)
-    print('postgres decimal binding/read-back over fake libpq: ok')
+    print('postgres decimal binding/read-back/getDecimal over fake libpq: ok')
     return app
 
 
@@ -462,7 +462,8 @@ def sqlite_decimal(tmp):
             pass
     try:
         p = need(run([app, path], env=dict(os.environ, OBO_CHECK='1')), 'sqlite decimal run')
-        expect_lines(p.stdout, ['sqlite_decimal=ok'], 'sqlite decimal')
+        expect_lines(p.stdout, ['sqlite_get_decimal=ok', 'sqlite_decimal=ok'],
+                     'sqlite decimal')
         import sqlite3
         conn = sqlite3.connect(path)
         try:
@@ -515,7 +516,7 @@ def sqlite_decimal(tmp):
                    % m.get('signature_check'))
     check_declaration_hash(m, SQLITE_DECL_FILES, 'sqlite decimal')
     verify(out)
-    print('sqlite decimal bind/read/affinity/NUL/large Python oracle: ok')
+    print('sqlite decimal bind/read/getDecimal/affinity/NUL/large Python oracle: ok')
     return app
 
 
@@ -793,8 +794,9 @@ def postgres_decimal_live(tmp):
     if p.returncode != 0:
         raise Fail('live postgres decimal app failed (exit %d):\n%s'
                    % (p.returncode, p.stdout + p.stderr))
-    expect_lines(p.stdout, ['postgres_decimal_live=ok'], 'live postgres decimal')
-    print('live postgres decimal SELECT-only vectors: ok')
+    expect_lines(p.stdout, ['postgres_get_decimal=ok',
+                            'postgres_decimal_live=ok'], 'live postgres decimal')
+    print('live postgres decimal/getDecimal SELECT-only vectors: ok')
 
 
 def mssql_live():

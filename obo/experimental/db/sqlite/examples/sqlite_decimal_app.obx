@@ -91,6 +91,58 @@ fn one_decimal_err(c: &sqlite::Connection, sql: string, name: string,
     return ok(r)
 }
 
+fn one_get(c: &sqlite::Connection, sql: string): Result[sqlite::DecimalOrNull] {
+    let st = try c.prepare(sql)
+    let row = try st.step()
+    if !row { st.close(); return err("query returned no row", 21) }
+    let v = try sqlite::getDecimal(&st, 0)
+    let done = try st.step()
+    if done { st.close(); return err("query returned extra row", 22) }
+    st.close()
+    return ok(v)
+}
+
+fn get_ok(c: &sqlite::Connection, sql: string, name: string,
+          want_can: string, want_dscale: int): Result[bool] {
+    let r = try one_get(c, sql)
+    match r {
+        Null { return err(name + ": unexpectedly null", 23) }
+        Value {
+            let can = try decimal::canonical(r.v)
+            if can != want_can { return err(name + ": canonical " + can, 24) }
+            if decimal::dscale(r.v) != want_dscale {
+                return err(name + ": dscale " + string(decimal::dscale(r.v)), 25)
+            }
+            return ok(true)
+        }
+    }
+}
+
+fn get_null(c: &sqlite::Connection, sql: string, name: string): Result[bool] {
+    let r = try one_get(c, sql)
+    match r {
+        Null { return ok(true) }
+        Value { return err(name + ": unexpectedly a value", 26) }
+    }
+}
+
+fn get_err(c: &sqlite::Connection, sql: string, name: string,
+           want_code: int, want_msg: string): Result[bool] {
+    let st = try c.prepare(sql)
+    let row = try st.step()
+    if !row { st.close(); return err(name + ": no row", 27) }
+    let r = sqlite::getDecimal(&st, 0)
+    st.close()
+    match r {
+        ok(v) { return err(name + ": unexpectedly ok", 28) }
+        err(m, c) {
+            if c != want_code { return err(name + ": code " + string(c), 29) }
+            if m != want_msg { return err(name + ": message " + m, 30) }
+            return ok(true)
+        }
+    }
+}
+
 fn insert_value(c: &sqlite::Connection, table: string, id: int,
                 value: decimal, p: int, s: int, checked: bool): Result[bool] {
     let sql = "INSERT INTO " + table + "(id,v) VALUES(?1,?2)"
@@ -434,13 +486,76 @@ fn boundary_tests(c: &sqlite::Connection): Result[bool] {
     return ok(true)
 }
 
+fn get_decimal_tests(c: &sqlite::Connection): Result[bool] {
+    // NULL is Null and a present zero is Value; the two are never conflated.
+    let n = try get_null(c, "SELECT NULL", "get null")
+    let z = try get_ok(c, "SELECT '0'", "get zero", "0", 0)
+    let z2 = try get_ok(c, "SELECT '0.00'", "get zero scale 2", "0", 2)
+    if !n || !z || !z2 { return err("get null/zero", 80) }
+
+    // Scales 0, 2 and 6, positive and negative, and the 38-digit bound.
+    let s0 = try get_ok(c, "SELECT 42", "get scale 0", "42", 0)
+    let s2 = try get_ok(c, "SELECT '-1.23'", "get scale 2", "-1.23", 2)
+    let s6 = try get_ok(c, "SELECT '1.230000'", "get scale 6", "1.23", 6)
+    let d38 = try get_ok(c,
+        "SELECT '99999999999999999999999999999999999999'",
+        "get 38 digits", "99999999999999999999999999999999999999", 0)
+    let big = try get_ok(c, "SELECT '1e-16384'", "get large dscale",
+                         "1e-16384", 16384)
+    if !s0 || !s2 || !s6 || !d38 || !big {
+        return err("get scales", 81)
+    }
+
+    // TEXT keeps its display scale; an INTEGER-affinity integer is exact text
+    // with dscale 0 (the documented affinity loss). The INTEGER storage class
+    // of a plain integer is accepted as SQLite's exact i64 text.
+    let textv = try get_ok(c, "SELECT v FROM t_text WHERE id=1",
+                           "get TEXT affinity", "1.23", 4)
+    let numv = try get_ok(c, "SELECT v FROM t_num WHERE id=1",
+                          "get NUMERIC affinity integer", "1", 0)
+    let intv = try get_ok(c, "SELECT 9223372036854775807",
+                          "get INTEGER storage", "9223372036854775807", 0)
+    if !textv || !numv || !intv { return err("get affinity", 82) }
+
+    // REAL is not exact decimal, BLOB is not decimal, and malformed/overflow
+    // text keeps decimal()'s codes and messages.
+    let real = try get_err(c, "SELECT 1.23", "get REAL",
+                           sqlite::DEC_DB_INEXACT_STORAGE,
+                           "SQLite REAL storage is not exact decimal")
+    let numreal = try get_err(c, "SELECT v FROM t_num WHERE id=4",
+                              "get NUMERIC affinity REAL",
+                              sqlite::DEC_DB_INEXACT_STORAGE,
+                              "SQLite REAL storage is not exact decimal")
+    let blob = try get_err(c, "SELECT x'312e3233'", "get BLOB",
+                           sqlite::DEC_DB_NOT_DECIMAL,
+                           "value is not numeric decimal data")
+    let bad = try get_err(c, "SELECT ' 1'", "get malformed",
+                          sqlite::DEC_DB_TEXT_INVALID,
+                          "invalid decimal text")
+    let empty = try get_err(c, "SELECT ''", "get empty",
+                            sqlite::DEC_DB_TEXT_INVALID,
+                            "invalid decimal text")
+    let over = try get_err(c,
+        "SELECT '999999999999999999999999999999999999999'",
+        "get 39 digits", sqlite::DEC_DB_PRECISION,
+        "decimal text has more than 38 significant digits")
+    let exp = try get_err(c, "SELECT '1e40000'", "get exponent",
+                          sqlite::DEC_DB_EXPONENT,
+                          "decimal exponent is outside int16")
+    if !real || !numreal || !blob || !bad || !empty || !over || !exp {
+        return err("get errors", 83)
+    }
+    return ok(true)
+}
+
 fn run(c: &sqlite::Connection): Result[bool] {
     let a = try text_tests(c)
     let b = try affinity_tests(c)
     let d = try storage_tests(c)
     let e = try binding_tests(c)
     let f = try boundary_tests(c)
-    if !a || !b || !d || !e || !f { return err("section failed", 80) }
+    let g = try get_decimal_tests(c)
+    if !a || !b || !d || !e || !f || !g { return err("section failed", 80) }
     return ok(true)
 }
 
@@ -459,7 +574,10 @@ fn main() {
             defer conn.close()
             let r = run(&conn)
             match r {
-                ok(v) { println("sqlite_decimal=ok") }
+                ok(v) {
+                    println("sqlite_get_decimal=ok")
+                    println("sqlite_decimal=ok")
+                }
                 err(m, c) {
                     println("sqlite_decimal_error=", m, " code=", c)
                     exit(1)

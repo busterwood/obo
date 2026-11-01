@@ -64,6 +64,12 @@ fn copy_bytes(b: &[]byte): []byte {
     return out
 }
 
+fn zero_string(n: int): string {
+    var b = new []byte(0)
+    for i in 0..n { append(b, '0') }
+    return string(b)
+}
+
 fn bin3(): []byte {
     var b = new []byte(0)
     append(b, byte(0))
@@ -939,6 +945,102 @@ fn mars_busy(c: &mssql::Connection): Result[bool] {
     return ok(true)
 }
 
+fn get_decimal_ok(rows: &mssql::Rows, col: int, name: string,
+                  want_can: string, want_dscale: int): Result[bool] {
+    let g = try mssql::getDecimal(rows, col)
+    match g {
+        Null { return err(name + ": unexpectedly null", 120) }
+        Value {
+            let can = try decimal::canonical(g.v)
+            let _a = try eq_str(name + " canonical", can, want_can)
+            let _b = try eq_int(name + " dscale", decimal::dscale(g.v),
+                                want_dscale)
+            return ok(true)
+        }
+    }
+}
+
+fn get_decimal_null(rows: &mssql::Rows, col: int,
+                    name: string): Result[bool] {
+    let g = try mssql::getDecimal(rows, col)
+    match g {
+        Null { return ok(true) }
+        Value { return err(name + ": unexpectedly a value", 121) }
+    }
+}
+
+fn get_decimal_err(rows: &mssql::Rows, col: int, name: string,
+                   want_code: int, want_msg: string): Result[bool] {
+    let g = mssql::getDecimal(rows, col)
+    match g {
+        ok(v) { return err(name + ": unexpectedly ok", 122) }
+        err(m, c) {
+            let _a = try eq_int(name + " code", c, want_code)
+            let _b = try eq_str(name + " message", m, want_msg)
+            return ok(true)
+        }
+    }
+}
+
+fn decimal_or_null(c: &mssql::Connection): Result[bool] {
+    var rows = try c.exec(
+        "SELECT CAST(NULL AS decimal(18,4)) AS n, " +
+        "CAST(0 AS decimal(18,4)) AS z, " +
+        "CAST(42 AS decimal(10,0)) AS s0, " +
+        "CAST(-1.23 AS decimal(10,2)) AS s2, " +
+        "CAST(1.230000 AS decimal(10,6)) AS s6, " +
+        "CAST(99999999999999999999999999999999999999 AS decimal(38,0)) AS d38, " +
+        "CAST(0.00000000000000000000000000000000000001 AS decimal(38,38)) AS big, " +
+        "CAST(1.23 AS float) AS f, " +
+        "CAST(N'1.23' AS nvarchar(10)) AS t, " +
+        "CAST(0x01 AS varbinary(4)) AS b, " +
+        "CAST(NULL AS nvarchar(10)) AS nt, " +
+        "CAST(12.34 AS money) AS mn, " +
+        "CAST(-0.50 AS smallmoney) AS sm")
+    defer rows.close()
+    let _c200 = try eq_int("decimal_or_null columns", rows.column_count(), 13)
+    let more = try rows.fetch()
+    let _c201 = try eq_bool("decimal_or_null fetch", more, true)
+
+    // Declared metadata is read from SQLDescribeCol, not guessed from text.
+    let mt = try rows.decimal_type(3)
+    let _c202 = try eq_int("decimal_or_null meta precision", mt.precision, 10)
+    let _c203 = try eq_int("decimal_or_null meta scale", mt.scale, 2)
+    let _c204 = try eq_bool("decimal_or_null meta constrained", mt.constrained, true)
+
+    // NULL is Null, never zero; a present zero is Value{0} with its scale.
+    let _c205 = try get_decimal_null(&rows, 0, "decimal_or_null null")
+    let _c206 = try get_decimal_ok(&rows, 1, "decimal_or_null zero", "0", 4)
+    let _c207 = try get_decimal_ok(&rows, 2, "decimal_or_null scale 0", "42", 0)
+    let _c208 = try get_decimal_ok(&rows, 3, "decimal_or_null scale 2", "-1.23", 2)
+    let _c209 = try get_decimal_ok(&rows, 4, "decimal_or_null scale 6", "1.23", 6)
+    let _c210 = try get_decimal_ok(&rows, 5, "decimal_or_null 38 digits",
+                                   "99999999999999999999999999999999999999", 0)
+    let big_can = "0." + zero_string(37) + "1"
+    let _c211 = try get_decimal_ok(&rows, 6, "decimal_or_null scale 38",
+                                   big_can, 38)
+
+    // Float and non-decimal text/binary are refused before any text parse;
+    // NULL still wins over the type check.
+    let _c212 = try get_decimal_err(&rows, 7, "decimal_or_null float",
+                                    mssql::DEC_DB_INEXACT_STORAGE,
+                                    "REAL/FLOAT storage is not exact decimal")
+    let _c213 = try get_decimal_err(&rows, 8, "decimal_or_null text",
+                                    mssql::DEC_DB_NOT_DECIMAL,
+                                    "value is not numeric decimal data")
+    let _c214 = try get_decimal_err(&rows, 9, "decimal_or_null binary",
+                                    mssql::DEC_DB_NOT_DECIMAL,
+                                    "value is not numeric decimal data")
+    let _c215 = try get_decimal_null(&rows, 10, "decimal_or_null null text")
+    // money/smallmoney arrive as SQL_DECIMAL with an exact text value; they are
+    // not a separate Money type, and no float path is involved.
+    let _c216 = try get_decimal_ok(&rows, 11, "decimal_or_null money",
+                                   "12.34", 4)
+    let _c217 = try get_decimal_ok(&rows, 12, "decimal_or_null smallmoney",
+                                   "-0.5", 4)
+    return ok(true)
+}
+
 fn run_all(c: &mssql::Connection): Result[bool] {
     let _c1 = try select_one(c)
     println("mssql section select_one")
@@ -986,6 +1088,8 @@ fn run_all(c: &mssql::Connection): Result[bool] {
     println("mssql section skipped_overcap")
     let _c23 = try mars_busy(c)
     println("mssql section mars_busy")
+    let _c24 = try decimal_or_null(c)
+    println("mssql section decimal_or_null")
 
     // A failed open reports its SQLSTATE and native code without a connection.
     let bad = mssql::open("DSN=no_such_dsn_obo;")
