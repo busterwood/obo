@@ -281,6 +281,15 @@ SEED_FILE_MIN = {
 SEED_LIB_MIN = {'io.obx': (0, 5), 'env.obx': (0, 4)}
 _SEED_VERSIONS = {}
 
+# Regression cases whose expected behaviour the promoted seed image predates.
+# The 0.14 seed was built before the ok(comparison) codegen fix, so it still
+# stores the allocator's clobbered flags; it cannot be used as the reference for
+# this case. The default comparison and run_fork cover it. Remove this entry
+# when seed/obo is rebuilt from a compiler that carries the fix.
+SEED_BUG_SKIP = {
+    os.path.join(FORK, 'tests', 'run', 'result_bool.obx'),
+}
+
 
 def ref_version(ref):
     """(major, minor) from `REF --version`, or None if it cannot be read."""
@@ -320,7 +329,9 @@ def seed_skips(path, text):
     own version and its library imports are both required: an explicit entry
     does not hide a newer library (env.obx is 0.4 itself but imports io.obx for
     io::isTty; it is io.obx's own terminalWidth definition that the 0.4 seed
-    cannot parse)."""
+    cannot parse). A post-seed regression fix is skipped explicitly (SEED_BUG_SKIP)."""
+    if path in SEED_BUG_SKIP:
+        return True
     need = SEED_FILE_MIN.get(path)
     imp = import_min(text)
     if imp is not None and (need is None or imp > need):
