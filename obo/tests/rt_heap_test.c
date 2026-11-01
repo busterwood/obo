@@ -215,17 +215,21 @@ static void case_stale(const char *want) {
 }
 
 /* The handle-range guard accepts exactly 64 GiB (2^32 granules, last offset
- * 0xffffffff) and rejects one granule more with a clean exit 2. */
+ * 0xffffffff) and the safe partial-granule tail up to 64 GiB+15, then rejects
+ * one full extra granule with a clean exit 2. */
 static void case_guard_ok(void) {
     check_mapped(HEAP_DEFAULT);
     rt_test_heap_range(HEAP_MIN);
     rt_test_heap_range(HEAP_CEILING);
+    rt_test_heap_range(HEAP_CEILING + 1);
+    rt_test_heap_range(HEAP_CEILING + 8);
+    rt_test_heap_range(HEAP_CEILING + 15);
     rt_finish();
 }
 
 static void case_guard_bad(void) {
     check_mapped(HEAP_DEFAULT);
-    rt_test_heap_range(HEAP_CEILING + GRAN);
+    rt_test_heap_range(HEAP_CEILING + 16);
     fail(1);
 }
 

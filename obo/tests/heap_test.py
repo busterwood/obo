@@ -8,10 +8,12 @@ case in its own process, so OBO_HEAP_LIMIT and RLIMIT_AS reach rt_init exactly
 as they do for a compiled program.  It covers:
 
   * the compiled 4 GiB default and the 64 GiB compiled ceiling;
-  * lower and raised limits, free-list reuse, and sparse 32 GiB, 48 GiB and
-    (address space permitting) 64 GiB arenas with objects and strings just
-    across 4 GiB and 8 GiB, at 1/2 and 3/4 of the arena, and in the last
-    granule (offset 0xffffffff at 64 GiB);
+  * lower and raised limits, free-list reuse, and sparse 32 GiB and 48 GiB
+    arenas with objects and strings just across 4 GiB and 8 GiB, at 1/2 and
+    3/4 of the arena, and in the last granule (offset 0xffffffff at 64 GiB).
+    The mandatory suite reserves about 49 GiB of virtual address space for
+    48 GiB; the 64 GiB cases require about 66 GiB and skip cleanly when
+    RLIMIT_AS or overcommit cannot supply it;
   * high-offset free/realloc generation checks, including a stale handle that
     must trap after reuse;
   * the canonical OBO_HEAP_LIMIT grammar: integer bytes or KiB/MiB/GiB only,
@@ -113,22 +115,24 @@ def check_case(exe, name, case, env, want=0, stderr_has=None, stderr_exact=None,
         print(f"ok   {name}")
 
 
-# A 64 GiB arena plus its 512 MiB starts bitmap and 512 MiB worklist reserve
-# about 65 GiB of virtual address space.  Below this floor the 64 GiB cases skip
-# before running; a mapping failure above it also skips, so a host with a tight
-# overcommit policy cannot turn an unavailable reservation into a test failure.
-LARGE_AS_FLOOR = 66 << 30
+# A large arena reserves its size plus a starts bitmap and a worklist.  Below
+# the given floor the corresponding cases skip before running; a mapping
+# failure above it also skips, so a host with a tight overcommit policy cannot
+# turn an unavailable reservation into a test failure.
+LARGE_AS_48 = 49 << 30
+LARGE_AS_64 = 66 << 30
 
 
-def check_large_case(exe, name, case, value, env, want=0, stderr_has=None, timeout=180):
-    """check_case for the 64 GiB arena: skip (do not fail) if it cannot map."""
+def check_large_case(exe, name, case, value, env, want=0, stderr_has=None,
+                     timeout=180, as_floor=LARGE_AS_64):
+    """check_case for a large arena: skip (do not fail) if it cannot map."""
     soft, _ = resource.getrlimit(resource.RLIMIT_AS)
-    if soft != resource.RLIM_INFINITY and soft < LARGE_AS_FLOOR:
-        print(f"skip {name}: RLIMIT_AS {soft} < {LARGE_AS_FLOOR} bytes")
+    if soft != resource.RLIM_INFINITY and soft < as_floor:
+        print(f"skip {name}: RLIMIT_AS {soft} < {as_floor} bytes")
         return
     p = subprocess.run([exe, case, value], capture_output=True, timeout=timeout, env=env)
     stderr = p.stderr.decode('utf-8', 'replace')
-    if p.returncode == 2 and 'obx: cannot reserve heap' in stderr:
+    if p.returncode == 2 and stderr == 'obx: cannot reserve heap\n':
         print(f"skip {name}: {stderr.strip()}")
     elif p.returncode != want:
         failures.append(f"{name}: exit {p.returncode}, expected {want}; stderr {stderr.strip()[:200]!r}")
@@ -143,14 +147,21 @@ def check_large_case(exe, name, case, value, env, want=0, stderr_has=None, timeo
 def rt_section():
     exe = build_harness()
 
-    # The compiled default and explicit limits inside [64 KiB, 64 GiB].
+    # The compiled default and explicit limits through 32 GiB are mandatory.
     check_case(exe, 'default 4 GiB', 'default', clean_env())
     check_case(exe, '64KiB lower limit + reuse', 'reuse', clean_env('64KiB'))
     for value in ('65536', '65552', '1MiB', '4GiB', '4294967296',
                   '4294967312', '16GiB', '17179869184', '17179869168',
-                  '17179869200', '32GiB', '34359738368', '48GiB',
-                  '64GiB', '68719476736', '68719476720'):
+                  '17179869200', '32GiB', '34359738368'):
         check_case(exe, f'limit {value}', 'limit', clean_env(value), args=(value,))
+    # The larger limits reserve their arena plus metadata, so they skip cleanly
+    # on a host whose address-space cap is below the floor.
+    for value, floor in (('48GiB', LARGE_AS_48),
+                         ('64GiB', LARGE_AS_64),
+                         ('68719476736', LARGE_AS_64),
+                         ('68719476720', LARGE_AS_64)):
+        check_large_case(exe, f'limit {value}', 'limit', value, clean_env(value),
+                         as_floor=floor)
     # The final start bit for a non-128-aligned limit: control (no last header)
     # and bug case (last 32-byte header in the partial byte) at three sizes.
     for value in ('524304', '524320', '1048592', '1048608',
@@ -158,8 +169,8 @@ def rt_section():
         check_case(exe, f'last-granule fill {value}', 'fill', clean_env(value),
                    args=(value,))
 
-    # 32 GiB and 48 GiB are mandatory; the 64 GiB ceiling case may skip when the
-    # host cannot reserve its ~65 GiB of virtual address space.
+    # 32 GiB and 48 GiB are mandatory; the 64 GiB ceiling cases may skip when
+    # the host cannot reserve their ~66 GiB of virtual address space.
     for value in ('32GiB', '48GiB'):
         check_case(exe, f'sparse {value} arena', 'sparse', clean_env(value),
                    args=(value,))
@@ -170,7 +181,7 @@ def rt_section():
     check_large_case(exe, 'stale high handle at 64GiB', 'stale', '64GiB',
                      clean_env('64GiB'), want=7, stderr_has='has been freed')
     check_case(exe, 'handle-range guard accepts 64GiB', 'guard_ok', clean_env())
-    check_case(exe, 'handle-range guard rejects 64GiB+granule', 'guard_bad',
+    check_case(exe, 'handle-range guard rejects 64GiB+16', 'guard_bad',
                clean_env(), want=2,
                stderr_exact='obx: heap limit exceeds the 64 GiB handle range\n')
 
