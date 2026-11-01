@@ -286,19 +286,29 @@ fn memory_test(): Result[bool] {
             let changes = conn.changes()
             check(changes >= 0, "changes", 33)
 
-            // A connection cannot close while a statement is live.
+            // sqlite3_close_v2 succeeds with a live statement (D14). The
+            // connection handle is gone, but the orphaned statement still works
+            // until it is finalized.
             let q3 = conn.prepare("SELECT 1")
             match q3 {
                 ok(st) {
-                    if conn.close() { return err("closed with live statement", 34) }
-                    check(conn.error_code() == sqlite::SQLITE_BUSY, "busy code", 35)
-                    check(st.close(), "stmt close", 36)
-                    check(!st.close(), "stmt double close", 37)
+                    let cr = conn.close()
+                    match cr {
+                        ok(v) { check(v, "close with live statement", 34) }
+                        err(m, c) { return err("close with live statement: " + m, 35) }
+                    }
+                    check(!conn.is_open(), "connection closed", 35)
+                    let row = try st.step()
+                    check(row, "orphan statement step", 36)
+                    st.close()
+                    let sr = st.close()
+                    match sr {
+                        ok(v) { check(!v, "stmt double close", 37) }
+                        err(m, c) { return err("stmt double close: " + m, 38) }
+                    }
                 }
                 err(m, c) { return err(m, c) }
             }
-            check(conn.close(), "connection close", 38)
-            check(!conn.close(), "connection double close", 39)
         }
         err(m, c) { return err(m, c) }
     }
@@ -334,7 +344,6 @@ fn path_errors(): bool {
 fn main() {
     let d = defer_order()
     check(d, "defer order", 90)
-    check(sqlite::live_resources() == 0, "defer live", 91)
     println("defer_order=ok")
     let r = memory_test()
     match r {
@@ -344,11 +353,6 @@ fn main() {
             exit(1)
         }
     }
-    println("live=", sqlite::live_resources())
-    println("conns=", sqlite::live_connections())
-    println("stmts=", sqlite::live_statements())
-    println("buffers=", sqlite::live_buffers())
-    check(sqlite::live_resources() == 0, "live", 60)
     check(path_errors(), "path errors", 62)
     let es = sqlite::error_string(sqlite::SQLITE_BUSY)
     match es {

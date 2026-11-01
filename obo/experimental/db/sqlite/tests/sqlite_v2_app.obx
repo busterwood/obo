@@ -1,0 +1,301 @@
+module app
+
+import "sqlite.obx"
+
+// Real libsqlite3 3.45.1 coverage for the cinterop v2 binding. Run with a fresh
+// database path so the close_v2/SQLITE_BUSY case has a concurrent connection.
+fn check(ok: bool, name: string, code: int) {
+    if !ok {
+        println("FAIL ", name)
+        exit(code)
+    }
+}
+
+fn expect_code(r: Result[bool], want: int, name: string, code: int) {
+    match r {
+        ok(v) { println("FAIL ", name, " unexpectedly ok"); exit(code) }
+        err(m, c) { check(c == want, name, code) }
+    }
+}
+
+fn long_string(n: int): string {
+    var b = new []byte(0)
+    for i in 0..n { append(b, byte(97)) }
+    return string(b)
+}
+
+fn basic(c: &sqlite::Connection): Result[bool] {
+    let created = try c.exec("CREATE TABLE t(id INTEGER PRIMARY KEY, txt TEXT, n INTEGER, b BLOB)")
+    if !created { return err("create", 1) }
+
+    let ins = try c.prepare("INSERT INTO t(id,txt,n,b) VALUES(?1,?2,?3,?4)")
+    defer ins.close()
+    let a = try ins.bind_int(1, 1)
+    let b = try ins.bind_text(2, "hello")
+    let d = try ins.bind_int(3, -9000000000)
+    var blob = new []byte(0)
+    append(blob, byte(0))
+    append(blob, byte(255))
+    append(blob, byte(65))
+    let e = try ins.bind_blob(4, blob)
+    if !a || !b || !d || !e { return err("bind", 2) }
+    let row = try ins.step()
+    if row { return err("insert row", 3) }
+    check(c.changes() == 1, "changes", 4)
+    ins.close()
+
+    // Zero-length BLOB stays a BLOB, never SQL NULL.
+    let z = try c.prepare("INSERT INTO t(id,b) VALUES(2,?1)")
+    defer z.close()
+    var empty = new []byte(0)
+    let zb = try z.bind_blob(1, empty)
+    if !zb { return err("zero blob bind", 5) }
+    let zr = try z.step()
+    if zr { return err("zero blob insert row", 6) }
+    z.close()
+
+    let q = try c.prepare("SELECT txt,n,b,typeof(b),length(b) FROM t WHERE id=1")
+    defer q.close()
+    let qr = try q.step()
+    if !qr { return err("select no row", 7) }
+    let txt = try q.column_text(0)
+    check(txt == "hello", "text", 8)
+    let ns = try q.column_text(1)
+    check(ns == "-9000000000", "i64 text", 9)
+    let bytes = try q.column_bytes(2)
+    if bytes == nil { return err("blob NULL", 10) }
+    check(len(bytes) == 3, "blob len", 11)
+    check(int(bytes[0]) == 0 && int(bytes[1]) == 255 && int(bytes[2]) == 65,
+          "blob bytes", 12)
+    q.close()
+
+    let q2 = try c.prepare("SELECT typeof(b),length(b) FROM t WHERE id=2")
+    defer q2.close()
+    let r2 = try q2.step()
+    if !r2 { return err("zero blob select", 13) }
+    let ty = try q2.column_text(0)
+    check(ty == "blob", "zero blob type", 14)
+    let len2 = try q2.column_int(1)
+    check(len2 == 0, "zero blob length", 15)
+    q2.close()
+
+    // SQL NULL is distinct from empty text.
+    let nullq = try c.prepare("SELECT NULL, ''")
+    defer nullq.close()
+    let nr = try nullq.step()
+    if !nr { return err("null select", 16) }
+    let nv = try nullq.column_value(0)
+    check(nv == nil, "column_value null", 17)
+    let ev = try nullq.column_value(1)
+    if ev == nil { return err("empty text nil", 18) }
+    check(len(ev) == 0, "empty text length", 19)
+    nullq.close()
+
+    // A NUL in TEXT is refused before the call; BLOBs keep it.
+    let nultext = try c.prepare("SELECT ?1")
+    defer nultext.close()
+    var tbytes = new []byte(0)
+    append(tbytes, byte(97))
+    append(tbytes, byte(0))
+    append(tbytes, byte(98))
+    expect_code(nultext.bind_text_raw(1, &tbytes), 2, "text NUL", 20)
+    var kept = try nultext.bind_blob(1, tbytes)
+    if !kept { return err("blob NUL bind", 21) }
+    let nrow = try nultext.step()
+    if !nrow { return err("blob NUL select", 22) }
+    let got = try nultext.column_bytes(0)
+    if got == nil { return err("blob NUL NULL", 23) }
+    check(len(got) == 3 && int(got[1]) == 0, "blob NUL bytes", 24)
+    nultext.close()
+    return ok(true)
+}
+
+fn overwrite_test(c: &sqlite::Connection): Result[bool] {
+    // SQLITE_TRANSIENT (const:-1): SQLite copies the value, so changing the
+    // borrowed array after the bind cannot change the bound bytes.
+    let p = try c.prepare("SELECT ?1")
+    defer p.close()
+    var buf = new []byte(0)
+    append(buf, byte(104))
+    append(buf, byte(105))
+    let bound = try p.bind_text_raw(1, &buf)
+    if !bound { return err("overwrite bind", 1) }
+    buf[0] = byte(120)
+    let row = try p.step()
+    if !row { return err("overwrite select", 2) }
+    let v = try p.column_text(0)
+    if v != "hi" { return err("transient copy changed", 3) }
+    p.close()
+    return ok(true)
+}
+
+fn exec_test(c: &sqlite::Connection): Result[bool] {
+    let ok1 = try c.exec("CREATE TABLE e(v INTEGER); INSERT INTO e(v) VALUES(1); INSERT INTO e(v) VALUES(2);")
+    if !ok1 { return err("multi exec", 1) }
+    let ok2 = try c.exec("")
+    if !ok2 { return err("empty exec", 2) }
+    let ok3 = try c.exec("   ;  ")
+    if !ok3 { return err("blank exec", 3) }
+    let p = c.prepare("")
+    match p {
+        ok(s) { return err("empty prepare accepted", 4) }
+        err(m, code) { check(code == 2, "empty prepare code", 5) }
+    }
+    let p2 = c.prepare("SELECT 1; SELECT 2")
+    match p2 {
+        ok(s) { return err("multi prepare accepted", 6) }
+        err(m, code) { check(code == 2, "multi prepare code", 7) }
+    }
+    let p3 = c.prepare("SELECT 1; -- trailing")
+    match p3 {
+        ok(s) { s.close(); return err("trailing text accepted", 8) }
+        err(m, code) { check(code == 2, "trailing code", 9) }
+    }
+    return ok(true)
+}
+
+fn caps_test(c: &sqlite::Connection): Result[bool] {
+    let long_sql = long_string(1048577)
+    expect_code(c.exec(long_sql), 2, "SQL cap exec", 1)
+    let lp = c.prepare(long_sql)
+    match lp {
+        ok(s) { return err("large SQL prepare accepted", 2) }
+        err(m, code) { check(code == 2, "SQL cap prepare", 3) }
+    }
+    var big = new []byte(0)
+    for i in 0..16777217 { append(big, byte(65)) }
+    let bp = try c.prepare("SELECT ?1")
+    defer bp.close()
+    let br = bp.bind_blob(1, big)
+    match br {
+        ok(v) { return err("large value accepted", 4) }
+        err(m, code) { check(code == 2, "value cap", 5) }
+    }
+    let capq = try c.prepare("SELECT zeroblob(17000000)")
+    defer capq.close()
+    let cr = try capq.step()
+    if !cr { return err("cap row", 6) }
+    let cb = capq.column_bytes(0)
+    match cb {
+        ok(v) { return err("large blob copy accepted", 7) }
+        err(m, code) { check(code == 2, "blob cap", 8) }
+    }
+    capq.close()
+    let long_path = long_string(4097)
+    let op = sqlite::open(long_path)
+    match op {
+        ok(c) { c.close(); return err("long path accepted", 9) }
+        err(m, code) { check(code == 2, "path cap", 10) }
+    }
+    return ok(true)
+}
+
+fn error_paths(c: &sqlite::Connection): Result[bool] {
+    let created = try c.exec("CREATE TABLE u(v INTEGER PRIMARY KEY)")
+    if !created { return err("create u", 1) }
+    let ins = try c.prepare("INSERT INTO u(v) VALUES(1)")
+    defer ins.close()
+    let r = try ins.step()
+    if r { return err("u insert row", 2) }
+    ins.close()
+    let dup = try c.prepare("INSERT INTO u(v) VALUES(1)")
+    defer dup.close()
+    let dr = dup.step()
+    match dr {
+        ok(v) { return err("duplicate accepted", 3) }
+        err(m, code) {
+            check(code == sqlite::SQLITE_CONSTRAINT, "constraint code", 4)
+            check(dup.error_code() == sqlite::SQLITE_CONSTRAINT, "stmt errcode", 5)
+            let rr = try dup.reset()
+            if !rr { return err("reset after fail", 6) }
+        }
+    }
+    dup.close()
+    // After a successful step the connection errcode is SQLITE_ROW (100).
+    let q = try c.prepare("SELECT 1")
+    defer q.close()
+    let qr = try q.step()
+    if !qr { return err("row step", 7) }
+    check(q.error_code() == sqlite::SQLITE_ROW, "row errcode", 8)
+    let es = sqlite::error_string(sqlite::SQLITE_CONSTRAINT)
+    match es {
+        ok(s) { check(len(s) > 0, "errstr", 9) }
+        err(m, code) { return err("errstr", 10) }
+    }
+    return ok(true)
+}
+
+fn close_v2_test(path: string): Result[bool] {
+    let c1 = try sqlite::open(path)
+    let cr = try c1.exec("CREATE TABLE z(v INTEGER); INSERT INTO z(v) VALUES(1); INSERT INTO z(v) VALUES(2);")
+    if !cr { return err("z setup", 1) }
+    let c2 = try sqlite::open(path)
+    let st = try c1.prepare("SELECT * FROM z")
+    let row = try st.step()
+    if !row { return err("z no row", 2) }
+    check(c1.has_live(), "has_live true", 3)
+    let did_close = c1.close()
+    match did_close {
+        ok(v) { check(v, "close_v2 ok", 4) }
+        err(m, code) { return err("close_v2 failed: " + m, 4) }
+    }
+    check(!c1.is_open(), "close_v2 closed", 5)
+    // The orphaned statement still works, and while it remains on a row its
+    // read lock keeps a second connection's write at SQLITE_BUSY.
+    let row2 = try st.step()
+    check(row2, "orphan row", 6)
+    let v = try st.column_int(0)
+    check(v == 2, "orphan column", 6)
+    // A write on the second connection is BUSY while the orphan holds a read lock.
+    let busy = c2.exec("INSERT INTO z(v) VALUES(2)")
+    match busy {
+        ok(v) { return err("busy write succeeded", 7) }
+        err(m, code) { check(code == sqlite::SQLITE_BUSY, "busy code", 8) }
+    }
+    st.close()
+    let after = try c2.exec("INSERT INTO z(v) VALUES(3)")
+    if !after { return err("write after finalize", 9) }
+    c2.close()
+    return ok(true)
+}
+
+fn suite(c: &sqlite::Connection): Result[bool] {
+    let b = try basic(c)
+    if !b { return err("basic", 1) }
+    let o = try overwrite_test(c)
+    if !o { return err("overwrite", 2) }
+    let e = try exec_test(c)
+    if !e { return err("exec", 3) }
+    let caps = try caps_test(c)
+    if !caps { return err("caps", 4) }
+    let errs = try error_paths(c)
+    if !errs { return err("errors", 5) }
+    return ok(true)
+}
+
+fn main() {
+    let a = args()
+    if len(a) != 2 {
+        println("usage: app <database-path>")
+        exit(64)
+    }
+    let path = a[1]
+    let made = sqlite::open(":memory:")
+    match made {
+        ok(c) {
+            defer c.close()
+            let s = suite(&c)
+            match s {
+                ok(v) { println("basic=ok exec=ok caps=ok errors=ok") }
+                err(m, code) { println("suite error ", m, " ", code); exit(5) }
+            }
+        }
+        err(m, code) { println("open error ", m, " ", code); exit(6) }
+    }
+    let cv = close_v2_test(path)
+    match cv {
+        ok(v) { println("close_v2=ok") }
+        err(m, code) { println("close_v2 error ", m, " ", code); exit(7) }
+    }
+    println("sqlite_v2=ok")
+}

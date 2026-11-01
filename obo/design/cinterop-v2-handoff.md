@@ -25,7 +25,12 @@ where the work stands, how to run it, and when to stop and ask the user.
 - **Stage (e)**, the libpq v2 port: implemented on `cinterop-v2-e`, pending independent review and
   merge. Design §8 records the implementation, the retained old adapter for `db/postgres`, and the
   live SELECT-only checks.
-- **Stages (f) to (h):** not started.
+- **Stage (f)**, out parameters and the SQLite v2 port: implemented on `cinterop-v2-f`, pending
+  independent review and merge. Design §8 records the implementation, the one deviation (an
+  out_offset-only `var` is freed at scope end, so the sketched exit 5 is unreachable), and the gate
+  results. The one trusted helper lives in `obo/experimental/db/sqlite/sq_stmt_errcode.c`; the binding
+  no longer has a C adapter.
+- **Stage (g) and (h):** not started.
 - **Cleanup audit:** in progress. A read-only audit of old interop code and docs is running. It sorts
   items into three groups: wrong or dead now, removable at a named stage, and keep. Nothing will be
   deleted until the user has seen its list.
@@ -135,7 +140,7 @@ The full scope and gates for each stage are in design §8; the test lists are in
 | (c) `native fn` | body-less declarations, kind table, `cinterop-relocs 2`, `cinterop-proto/2`, `signature_check` | parse and type-check body-less natives | medium | Done in `85923af` with (b). Replaces the stage (a) kinds string at each call. Int-form natives stay byte-identical. |
 | (d) foreign handles | `foreign` record kind with one private word, `own`/`own_opt`/`borrow<T>`/`borrow_mut<T>`, `close`/`is_open`, exit 7 in the thunk, per-type census | `foreign` record kind, private-field checks; no new ownership rule | medium to high | Implemented on `cinterop-v2-d`, pending review/merge. `out_own`/`out_offset` deferred to (f); close/is_open are internal builtins plus wrapper methods (design §8). No ASan run over the obo image. |
 | (e) libpq | rewrite `libpq.obx`/`libpq.cbind` to v2 foreign handles and direct `PQexecParams` arrays; add `libpq_conninfo.c` | none | low to medium | Implemented on `cinterop-v2-e`, pending review/merge. `libpq_adapter.c/.h` are retained for `db/postgres` until stage (g); a `Rows` dropped without `close` is reported by the census. |
-| (f) SQLite | `sqlite3_close_v2`, the `nonzero` probe, `exec` loop, `out_own`/`out_offset` (deferred from (d)); delete `sqlite_adapter.c`/`.h` | none | medium | The UAF reproduction must fail in the old shape and pass in the new. |
+| (f) SQLite | `sqlite3_close_v2`, the `nonzero` probe, `exec` loop, `out_own`/`out_offset` (deferred from (d)); delete `sqlite_adapter.c`/`.h` | none | medium | Implemented on `cinterop-v2-f`, pending review/merge. The UAF reproduction fails in the old shape and passes in the new; `sq_stmt_errcode` lives in `db/sqlite/sq_stmt_errcode.c`. |
 | (g) db/postgres | map the surface in §5.6; remove `live_*` counters and the packet builder; move decimal checks into obo | none | medium | The SQL template bridge (`912143d`, merged during stage (a)) is now part of this surface and must keep passing. |
 | (h) skill and templates | `skill/SKILL.md` and project templates for explicit close, the census, the kinds and the `cres` policy | none | low | Folds in the "later stage" items from the cleanup audit. zlib stays on its adapter. |
 
@@ -180,10 +185,9 @@ These are known, safe, and documented. Fold them into a later stage.
   - `obo/experimental/cinterop/tests/test_cinterop.py`, with fixtures `bytes_fixture.*`,
     `nullconst_fixture.*`, `stack_args_fixture.*` and `stack_args_wrap.obx`;
   - `obo/experimental/db/tests/test_db_adapters.py`.
-- To be replaced:
-  - `toolkit/libpq_adapter.*` (stage (e));
-  - `examples/libpq.obx` and `libpq.cbind` (stage (e));
-  - `db/sqlite/sqlite_adapter.c` (stage (f));
-  - `db/postgres/postgres_adapter.c` (stage (g)).
+- Replaced or removed:
+  - `toolkit/libpq_adapter.*` and the libpq example adapter (stage (e); the toolkit copy remains for `db/postgres`);
+  - `db/sqlite/sqlite_adapter.c/.h` and `sqlite_adapter_test.c` (stage (f), deleted; the helper is `sq_stmt_errcode.c`);
+  - `db/postgres/postgres_adapter.c` (stage (g), still to do).
 - Superseded design: `native-c-interop-design.md`. Its "Superseded direction" note points to the v2
   design.

@@ -465,14 +465,17 @@ fn main() {
                     exit(1)
                 }
             }
-            check(conn.close(), "connection close", 90)
-            check(!conn.close(), "connection double close", 91)
+            let cr = conn.close()
+            match cr {
+                ok(v) { check(v, "connection close", 90) }
+                err(m, c) { println("close error ", m); exit(91) }
+            }
+            let cr2 = conn.close()
+            match cr2 {
+                ok(v) { check(!v, "connection double close", 91) }
+                err(m, c) { println("double close error ", m); exit(92) }
+            }
         }
         err(m, c) { println("open_error=", m, " code=", c); exit(2) }
     }
-    check(sqlite::live_resources() == 0, "live", 92)
-    check(sqlite::live_connections() == 0, "conns", 93)
-    check(sqlite::live_statements() == 0, "stmts", 94)
-    check(sqlite::live_buffers() == 0, "buffers", 95)
-    println("live=", sqlite::live_resources())
 }

@@ -1,0 +1,116 @@
+module app
+
+import "sqlite.obx"
+
+// Fake-libsqlite3 coverage: open failure with a non-NULL db, prepare failure
+// with a non-NULL stmt, reset after a failed step, column_text with SQLITE_NOMEM,
+// the const:-1 destructor, and close_v2 zombies.
+fn check(ok: bool, name: string, code: int) {
+    if !ok {
+        println("FAIL ", name)
+        exit(code)
+    }
+}
+
+fn qint(c: &sqlite::Connection, sql: string): Result[int] {
+    let st = try c.prepare(sql)
+    defer st.close()
+    let row = try st.step()
+    if !row { return err("counter query had no row", 1) }
+    let v = try st.column_int(0)
+    st.close()
+    return ok(v)
+}
+
+fn suite(): Result[bool] {
+    let made = sqlite::open(":memory:")
+    match made {
+        ok(c) {
+            defer c.close()
+            let closed0 = try qint(&c, "SELECT closed")
+            let fin0 = try qint(&c, "SELECT finalized")
+
+            let bad_open = sqlite::open("fail")
+            match bad_open {
+                ok(x) { println("FAIL failed open accepted"); exit(1) }
+                err(m, code) {
+                    check(m == "fake open failure", "open message", 2)
+                    check(code == 1, "open code", 3)
+                }
+            }
+            let closed1 = try qint(&c, "SELECT closed")
+            check(closed1 == closed0 + 1, "failed open closed once", 4)
+
+            let bad_prep = c.prepare("bad statement")
+            match bad_prep {
+                ok(st) { println("FAIL failed prepare accepted"); exit(5) }
+                err(m, code) { check(code == 1, "prepare code", 6) }
+            }
+            let fin1 = try qint(&c, "SELECT finalized")
+            check(fin1 == fin0 + 3, "failed prepare finalized once", 7)
+
+            let rs = try c.prepare("SELECT resetfail")
+            defer rs.close()
+            let rr = rs.step()
+            match rr {
+                ok(v) { println("FAIL resetfail step"); exit(8) }
+                err(m, code) { check(code == 19, "resetfail step code", 9) }
+            }
+            let rst = try rs.reset()
+            check(rst, "reset after failed step", 10)
+            rs.close()
+
+            let nm = try c.prepare("SELECT nomem")
+            defer nm.close()
+            let nr = try nm.step()
+            if !nr { println("FAIL nomem no row"); exit(11) }
+            let nt = nm.column_text(0)
+            match nt {
+                ok(v) { println("FAIL nomem text accepted"); exit(12) }
+                err(m, code) { check(code == 7, "nomem code", 13) }
+            }
+            nm.close()
+
+            let d = try c.prepare("SELECT ?1")
+            defer d.close()
+            var b = new []byte(0)
+            append(b, byte(104))
+            append(b, byte(105))
+            let db = try d.bind_text_raw(1, &b)
+            if !db { println("FAIL dtor bind"); exit(14) }
+            let dtor = try qint(&c, "SELECT last_dtor")
+            check(dtor == -1, "const -1 destructor", 15)
+            let dlen = try qint(&c, "SELECT last_len")
+            check(dlen == 2, "destructor length", 16)
+            d.close()
+
+            let d2 = try sqlite::open(":memory:")
+            let s2 = try d2.prepare("SELECT 1")
+            check(d2.has_live(), "zombie has_live", 17)
+            let zc = d2.close()
+            match zc {
+                ok(v) { check(v, "zombie close ok", 18) }
+                err(m, code) { println("FAIL zombie close"); exit(18) }
+            }
+            check(!d2.is_open(), "zombie handle closed", 19)
+            let row = try s2.step()
+            check(row, "orphan step", 20)
+            let fin_before = try qint(&c, "SELECT finalized")
+            s2.close()
+            let zz = try qint(&c, "SELECT zombies")
+            check(zz == 0, "zombie finalized", 21)
+            let fin2 = try qint(&c, "SELECT finalized")
+            check(fin2 == fin_before + 3, "zombie finalize counted", 22)
+        }
+        err(m, code) { println("FAIL fake open ", m, " ", code); exit(23) }
+    }
+    return ok(true)
+}
+
+fn main() {
+    let r = suite()
+    match r {
+        ok(v) { println("sqlite_fake=ok") }
+        err(m, c) { println("suite error ", m, " ", c); exit(99) }
+    }
+}

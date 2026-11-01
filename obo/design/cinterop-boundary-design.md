@@ -204,7 +204,7 @@ type first (6.2, point 2). `cstr_out` copies up to NUL within 16 MiB.
 ### 3.4 Primitive 3: foreign handles, explicit close, census
 
 **Declaration** (D1): `type Conn = foreign "PGconn"`. The spec names the release symbol and its result shape:
-`"release": "PQfinish", "release_result": "void"` (or `"int"`). Obo code never names the release function.
+`"release": "PQfinish", "release_result": "void"` (or `"int"`; `"discard"` calls an int release and ignores its result). Obo code never names the release function.
 
 **Representation and creation.** A compiler-generated `ref record` with one private field, the C word, nonzero while
 the handle is live. The word is in neither the owned nor the string offset list, so `rt_free` never reads or frees it
@@ -215,7 +215,7 @@ record whose word has been zeroed.
 **Generated methods.** For each foreign type the compiler emits:
 - `close(mut t: &T): Result[bool]`. If the word is 0, it returns `ok(false)` and makes no C call (double close, review 9).
   Otherwise it copies the word, sets the field to 0, decrements the census counter, calls the release symbol with the copy,
-  and returns `ok(true)`. For `"release_result": "int"`, a nonzero C result is `err` with that code. The handle is gone
+  and returns `ok(true)`. For `"release_result": "int"`, a nonzero C result is `err` with that code. `"discard"` ignores the int a release such as `sqlite3_close_v2` returns. The handle is gone
   either way.
 - `is_open(&T): bool`. It returns true when the word is nonzero.
 
@@ -277,7 +277,7 @@ This is the file rule: dropping an open fd leaks it.
 array drops its handles, which then leak as any dropped handle does. A global handle is counted like any other live
 handle at normal end.
 
-**Close errors.** A release declared `"release_result": "int"` gives `err` from `close`; the handle is gone either way.
+**Close errors.** A release declared `"release_result": "int"` gives `err` from `close`; the handle is gone either way. `"discard"` calls the same int-returning release but always gives `ok(true)` (D14).
 
 ### 3.5 Typed native declarations and the sidecar (D1)
 
@@ -491,10 +491,10 @@ Scope: the subset that `db/sqlite/sqlite_adapter.c` calls, declared in `sqlite_d
 | SQLite function | Kinds | Obo wrapper |
 |---|---|---|
 | `sqlite3_open_v2(path, &db, flags, NULL)` | `borrow_cstr@0`, `out_own<Db>`, `i32@1`, `null`; ret `i32` | `open` (6.3) |
-| `sqlite3_close_v2` | release of `Db` (spec `"release": "sqlite3_close_v2"`, `"void"`; rc discarded) | generated `close` |
+| `sqlite3_close_v2` | release of `Db` (spec `"release": "sqlite3_close_v2"`, `"discard"`; rc ignored) | generated `close` |
 | `sqlite3_next_stmt(db, NULL)` | `borrow_mut<Db>@0`, `null`; ret `nonzero` | `has_live_statements` (informational) |
 | `sqlite3_prepare_v2(db, sql, n, &stmt, &tail)` | `borrow_mut<Db>@0`, `borrow_bytes@1`, `out_own<Stmt>`, `out_offset@1`; ret `i32` | `prepare` (6.3) |
-| `sqlite3_finalize` | release of `Stmt` (spec `"release": "sqlite3_finalize"`, `"void"`) | generated `close` |
+| `sqlite3_finalize` | release of `Stmt` (spec `"release": "sqlite3_finalize"`, `"discard"`) | generated `close` |
 | `sqlite3_step`, `sqlite3_reset` | `borrow_mut<Stmt>@0`; ret `i32` | `step`, `reset` |
 | `sqlite3_bind_null`, `sqlite3_bind_int64` | `borrow_mut<Stmt>@0`, `i32@1`, `i64@2` for int | `bind_null`, `bind_int` |
 | `sqlite3_bind_text`, `sqlite3_bind_blob` | `borrow_mut<Stmt>@0`, `i32@1`, `borrow_bytes@2`, `const:-1` | `bind_text`, `bind_blob` |
@@ -601,8 +601,8 @@ BLOBs keep NUL; empty SQL is `err`; `len >= INT_MAX` is refused (`sqlite_adapter
 ```obo
 module sqlite
 
-type Db = foreign "sqlite3"                    // spec: release sqlite3_close_v2, void
-type Stmt = foreign "sqlite3_stmt"             // spec: release sqlite3_finalize, void
+type Db = foreign "sqlite3"                    // spec: release sqlite3_close_v2, discard
+type Stmt = foreign "sqlite3_stmt"             // spec: release sqlite3_finalize, discard
 
 // The result types open_v2_out {rc: int, db: ?Db} and prepare_v2_out {rc: int, st: ?Stmt, tail: int}
 // are generated from the out kinds (3.1); the names follow the `<native>_out` rule.
@@ -688,7 +688,7 @@ Each item below was decided by the user with the recommended option. The chosen 
 - **D9.** Scratch copy for `borrow_cstr`; no reserved terminators.
 - **D10.** `Float` is rejected in v1. `Bytes` uses OID 17 with binary format, with no `::bytea` cast.
 - **D11.** `cstr_out` returns empty for NULL, per call.
-- **D15.** `close` returns `Result[bool]` as `Dir.close` does. A `"void"` release gives `ok(true)`; `ok(false)` marks a second close.
+- **D15.** `close` returns `Result[bool]` as `Dir.close` does. A `"void"` or `"discard"` release gives `ok(true)`; `ok(false)` marks a second close.
 
 ### 7.3 Future option (not in scope)
 
@@ -723,6 +723,8 @@ Every stage keeps the gates in native design section 12. A compiler-changing sta
 
 **Stage (f): port SQLite.** Adopts `sqlite3_close_v2` (D14), the `nonzero` probe and `sq_stmt_errcode`. Rewrites `sqlite.obx` and `sqlite.cbind` to 6.1 and 6.3, implements `exec` as the loop in 6.2 point 5, and deletes `sqlite_adapter.c` and `.h`. Risk: medium. Gate: the real 3.45.1 tests, the new fake, the UAF reproduction (fails in the old shape, passes in the new), the BUSY, zombie and census tests, and the `sqlite_memory`, `sqlite_file` and `sqlite_decimal` cases in `test_db_adapters.py` unchanged except for the documented close change.
 
+*Stage (f) implemented* (branch `cinterop-v2-f`). Declaration syntax adds `out name: T` for an `out_own<T>` and `out name: int from input` for `out_offset@k`; out parameters consume no call argument, follow the inputs, allow at most one of each form, and the return type is the generated `<native>_out` record (`rc: int` first, then the out fields in declaration order). The record is built directly, never registered in module globals or `.sym`; a hidden non-owned frame word holds it, the C result is stored in `rc` before any helper call, and every `out_own` write is wrapped in a counted foreign record before the call returns an `outResult` item. A bare out-call statement is refused. The sidecar keeps `cinterop-relocs 2` and adds optional `outrec` lines; old readers reject them and the new reader accepts sidecars without them. `release_result: "discard"` is implemented for `sqlite3_close_v2`/`sqlite3_finalize`, and a function-pointer `const` slot accepts only `-1`. SQLite is ported to v2: `sqlite.obx`/`sqlite.cbind` use `Connection`/`Stmt` foreign handles, `open_v2`/`prepare_v2` out records, `sq_stmt_errcode` in `db/sqlite/sq_stmt_errcode.c`, a `nonzero` `has_live`, `cbytes` text/blob reads, and `exec` as the close-on-every-exit prepare/step/finalize loop; `sqlite_adapter.c/.h` are deleted and the `live_*` counters are gone. `sqlite_decls.h` keeps ABI-identical declarations-only spellings (`const void *`, `long`) and a real-library ABI test covers every function. Gate: the out fixture (success, error non-NULL/NULL out_own closed once, interleaved/trailing slots, seven C parameters, every tail case, tamper/negative cases), byte identity (`125 identical / 9 standalone failures / 0 mismatch`), fixed point, `run_fork` 1809, `test_cinterop.py`, `test_db_adapters.py`, the real 3.45.1 suite, the fake suite, the ASan UAF fixture (old fails, new passes), the ABI test, and `OBO_CHECK=1` runs with zero census. One deviation: an out_offset-only record stored in a `var` is freed at scope end and exits 0, not the object-census exit 5 sketched earlier; the only discard paths are refused at compile time, so that expectation is unreachable and the test asserts the no-census result.
+
 **Stage (g): port db/postgres.** Maps the surface in 5.6 onto `connect`, `exec` and `Rows`, removes the `live_*` counters and the packet builder, and moves the decimal grammar and cap into obo. Risk: medium. Gate: the postgres cases in `test_db_adapters.py` (fake and decimal fake), the decimal negative table against both checks, the `postgres_adapter_test.c` cases ported, and the opt-in live smoke test (SELECT-only, `CINTEROP_TEST_DSN`).
 
 **Stage (h): skill and templates.** Updates `skill/SKILL.md` and the project-skill templates for the explicit `close`, the census, the kinds and the `cres` policy (7.2). zlib stays on its current adapter, outside the v2 gates (review 7). Risk: low. Gate: a generated project builds; existing `cres` tests pass.
@@ -735,15 +737,16 @@ Exposure: (a) none beyond the existing `&T` argument rules; (b) none; (c) parse 
 **Borrow timing (review 12).** `f(&a, grow(&a))`: where the checker accepts the call, the native sees the grown array; where the existing overlap rule refuses it, the test asserts the refusal.
 
 **Foreign handle suite (stage (d)).**
-`out_own` and `out_offset` are deferred to stage (f), where SQLite needs them, so they have no stage (d)
-tests; stage (d) covers own/own_opt/borrow/borrow_mut.
+`out_own` and `out_offset` are implemented in stage (f), where SQLite needs them; the stage (d) tests
+cover own/own_opt/borrow/borrow_mut.
 
 - use after close: a `borrow<T>`/`borrow_mut<T>` native on a closed handle exits 7 with its message and makes no C call; `alive(h)` stays true (record liveness) while `is_open` is false;
 - double close: `ok(false)` and exactly one C release call;
 - census underflow, forced by `OBO_CENSUS_FAULT=underflow` (inert unless `OBO_CHECK=1`): exit 4;
 - census under `OBO_CHECK=1`: a handle never closed exits 8 at normal end and names the type; the same for a handle dropped at scope end, overwritten, or dropped with its enclosing record, each with no C release call;
 - (stage (f), with `out_own`) an `out_own` written with an error return and not closed on the error
-  path: exit 8;
+  path: exit 8; an out record stored in a `var` is freed at scope end, and an out record with a live
+  `out_own` reports `foreign handles leaked: T 1` at normal end;
 - a release returning an error (`"release_result": "int"`): `err` with the code, and the handle is zero afterwards;
 - exit paths (3.4 table): `exit(n)` with a leaked fd and a live handle exits `n` with no message; a trap with a live handle exits with the trap code and no message; the hosted build matches;
 - without `OBO_CHECK=1`: no census output and no exit 8 for the same programs.
@@ -751,6 +754,8 @@ tests; stage (d) covers own/own_opt/borrow/borrow_mut.
 **Exec loop (review 5).** A script whose second statement fails at step, and a `break` out of the loop, each leave the `Stmt` census at zero at normal end.
 
 **Review regression.** The UAF reproduction of the old `release_stmt` shape (6.2, point 1) must fail under ASan; the `close_v2` shape must pass. The orphaned-statement BUSY, zombie and census tests (6.2, point 1) must pass.
+
+**Stage (f) implemented tests.** `tests/out_fixture.c/.h` and `out_wrap.obx` cover out_own success, a failure with a non-NULL handle closed exactly once, a NULL write, interleaved (`open_v2` shape) and trailing (`prepare_v2` shape) slots, seven C parameters (out slot on the stack), every `out_offset` case (exact, 0, len, NULL, before-base, past-end), and sidecar `outrec` assertions. The tool suite mutates the sidecar (missing/wrong `outrec`, wrong record name, wrong order, `rc` not first, duplicate field, unknown own type, wrong offset target) and refuses out in `__cinterop`, non-scalar out results, two out_own/out_offset slots, and `const:0` in a function-pointer slot. SQLite adds `sqlite_v2_app.obx` (open/close, bind int/text/blob/NULL, zero-length BLOB, NUL rules, `changes`, multi-statement `exec`, empty SQL, caps, `close_v2` orphan + `SQLITE_BUSY` + finalize, `sq_stmt_errcode`, `has_live`, `const:-1` overwrite, `OBO_CHECK=1` zero census), `sqlite_fake_app.obx` with `fake_sqlite.c/.h` (failed open/prepare with non-NULL writes, reset after a failed step, `NOMEM`, destructor `-1`, zombies), `sqlite_uaf_fixture.c` under ASan (old shape fails, new passes), and `real_sqlite_abi_test.c` over every declared function.
 
 **SQLite, real library (3.45.1).** Open and close a file database. Prepare, bind int, text, blob and NULL. Step and reset with rebinding. `column_text` and `column_blob` with embedded NULs and a zero-length BLOB (BLOB type, not nil). A REAL column refused before conversion. `changes`. Multi-statement `exec`. Empty SQL refused. The `const:-1` overwrite test. The close-with-live-statement test (6.2, point 1).
 
