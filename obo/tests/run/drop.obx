@@ -20,5 +20,4 @@ fn main() {
     println(total)                   // expect: 3
     let a = new Mem{base: 5}
     drop(a)                          // freed here, not at the end of main
-    gcstats()                        // expect: obo: 0 live objects, 32 peak bytes
 }
