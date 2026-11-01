@@ -45,7 +45,7 @@ Summary of decisions:
 | Native ownership | C owns `nghttp2_session*`; obo owns `H2Connection` and `H2Stream` shells |
 | Event delivery | bounded C event ring of fixed records; obo polls; no callback into obo |
 | Header/body payload | pulled from bounded per-stream C buffers, not queued in events |
-| Transport | `httpapi::Transport` (owned bytes, explicit `Want*`, flush, shutdown), shared with H1 |
+| Transport | `httptransport::Transport` concrete record (owned bytes, explicit `Want*`, flush, shutdown), shared with H1 |
 | ALPN | `h2` required over TLS; `http/1.1` is a separate dispatch; no downgrade |
 | h2c | opt-in prior knowledge on a dedicated cleartext profile; no `Upgrade` in v1 |
 | Push | none in v1; advertised disabled |
@@ -69,9 +69,9 @@ Summary of decisions:
   fairness.
 - Graceful drain: GOAWAY, stop accepting new streams, finish existing streams,
   deadline, close.
-- A handler seam shared with HTTP/1.1: `RequestMeta`, a single per-exchange
-  `Exchange` interface (body plus response), trailers/reset capabilities, and
-  an `Handler` interface. No function values in fields and no C callback.
+- A handler seam shared with HTTP/1.1: `RequestMeta`, a pure
+  `Handler = fn(&RequestMeta, &Now): Action`, and a concrete per-protocol
+  exchange (free functions). No impure interface, no callback.
 - Deterministic tests, h2spec/h2load/curl integration, fuzz/ASAN and leak
   gates.
 
@@ -109,8 +109,9 @@ Summary of decisions:
 | `sysbytes` | `Bytes` shell over a C-owned bounded byte buffer; `copyIn`/`copyOut` | experimental P0, present |
 | `systls` | server TLS 1.2/1.3, ALPN, `handshakeStep`, `readSome`, `writeSome`, `flush`, `shutdownStep`, `pending`, `want`, `watch`, `close` | experimental P2T-b, present; pending independent review |
 | `http1core`/`http1parse` | shared HTTP/1.1 limits/header/request vocabulary and pure grammar | H1a0, present |
-| `httpapi` (new) | shared `Transport`, `Header`, `RequestMeta`, `Exchange`, `Handler`, `Failure` | design, this note |
-| `http2` (new) | connection/stream protocol state and the `Exchange` implementation | design, this note |
+| `httpapi` (new) | shared `Header`, `RequestMeta`, `Action`, `Handler`, `Failure`; no I/O | design, this note |
+| `httptransport` (new) | concrete plain/TLS/memory `Transport` record and free functions | design, this note |
+| `http2` (new) | connection/stream protocol state and the concrete stream functions | design, this note |
 | `nghttp2` | RFC 9113 framer, HPACK, flow control, settings, stream state, h2spec-tested | system library; headers required |
 
 The systems note's constraints apply unchanged: owned records move, references
@@ -232,7 +233,7 @@ Representative C surface (names are implementation details, not a public ABI):
 |---|---|---|
 | `h2_init` | none | `1` compatible, negative failure |
 | `h2_conn_new` | options packet token, packet length | connection token, negative status |
-| `h2_conn_feed` | conn token, byte-buffer token, offset, count | bytes consumed, negative status |
+| `h2_conn_feed` | conn token, byte-buffer token, offset, count, now nanos | bytes consumed, negative status |
 | `h2_conn_send` | conn token, max bytes | bytes queued in the wire ring, negative status |
 | `h2_conn_wire_pending` | conn token | wire bytes |
 | `h2_conn_wire_read` | conn token, out buffer token, max | bytes copied, `0`, negative status |
@@ -240,13 +241,17 @@ Representative C surface (names are implementation details, not a public ABI):
 | `h2_conn_event_stream_id` | conn token | stream id of the current event |
 | `h2_conn_event_flags` | conn token | flags (end stream, trailers, local) |
 | `h2_conn_event_error` | conn token | HTTP/2 or library error code |
-| `h2_conn_deadline` | conn token | earliest absolute monotonic deadline, or `0` |
+| `h2_conn_deadline` | conn token | earliest absolute monotonic deadline, or `-1` for none |
 | `h2_conn_settings_sent/acked` | conn token | `1`/`0` |
-| `h2_conn_drain` | conn token | submits the first GOAWAY, `1`/negative |
+| `h2_conn_drain` | conn token | submits the first GOAWAY only; `1`/negative |
+| `h2_conn_drain_poll` | conn token, now nanos | after first GOAWAY is sent, submits barrier PING; after PING ACK/`drainBarrierMs`, sends final GOAWAY; `1`/`0`/negative |
 | `h2_conn_goaway` | conn token, last stream id, error code | submits the final GOAWAY |
 | `h2_conn_terminate` | conn token, last stream id, error code | terminates the session |
 | `h2_conn_stats` | conn token, out buffer token | stats packet length |
 | `h2_stream_adopt` | conn token, stream id | stream token, negative status |
+| `h2_stream_markAdopted` | stream token | `1`/`0` |
+| `h2_stream_abandon` | stream token | `1`/`0` (idempotent; no-op if already released) |
+| `h2_conn_consume` | conn token, bytes | `1`/negative (connection-only window restore) |
 | `h2_stream_begin` | stream token, status | `1`/negative |
 | `h2_stream_header` | stream token, name token, value token | `1`/negative |
 | `h2_stream_commit` | stream token, end stream | `1`/negative |
@@ -254,6 +259,7 @@ Representative C surface (names are implementation details, not a public ABI):
 | `h2_stream_end` | stream token | `1`/negative |
 | `h2_stream_trailer` | stream token, name token, value token | `1`/negative |
 | `h2_stream_read` | stream token, out buffer token, max | bytes copied, `0` none, negative status |
+| `h2_stream_discard` | stream token, max, now nanos | discarded bytes, negative status |
 | `h2_stream_info` | stream token, out packet token | packet length, negative status |
 | `h2_stream_header_at` | stream token, index, out token, which | length, negative status |
 | `h2_stream_trailer_at` | stream token, index, out token, which | length, negative status |
@@ -367,21 +373,40 @@ sent, or the stream is reset; they are never duplicated or silently dropped.
   `openStream` calls `h2_stream_adopt(connToken, id)`, which registers the
   object with
   `sys_reg_new_object(KIND_H2_STREAM, ptr, release, streamMetaBytes)` if it is
-  unclaimed and returns the token; obo then calls
-  `platform::_adoptToken(KIND_H2_STREAM, token)`.
-- `h2_stream_adopt` is atomic in C: the first call marks the entry claimed,
-  registers it and returns the token; a second call returns `AlreadyExists`;
-  an unknown or closed id returns `StreamClosed`. If `_adoptToken` fails after
-  a successful registration, obo calls the private `h2_stream_abandon`, which
-  submits `RST_STREAM(REFUSED_STREAM)`, retires the new entry and frees the
-  stream. There is no half-adopted retry. An unclaimed stream has no registry
-  entry and no obo shell; it is freed by the connection close path.
+  unregistered and returns the token; C marks it `adopted=false`, and obo calls
+  `platform::_adoptToken(KIND_H2_STREAM, token)`. On success obo calls
+  `h2_stream_markAdopted(token)`.
+- `h2_stream_adopt` is atomic in C: the first call registers the entry and
+  returns the token; a second call returns `AlreadyExists`; an unknown or
+  closed id returns `StreamClosed`. If `_adoptToken` fails, obo calls the
+  private, **idempotent** `h2_stream_abandon(token)`. It first checks
+  `sys_reg_peek(token, KIND_H2_STREAM)`: if the platform already released the
+  token, it returns `0` and does nothing (no double free); if the token is
+  still live, it consumes buffered receive bytes at connection level, submits
+  `RST_STREAM(REFUSED_STREAM)`, marks the record closing and `rstSubmitted`,
+  and retires it. The C release function sees `adopted=false`/`rstSubmitted`
+  and defers free to the post-close sweep without a second RST. There is no
+  half-adopted retry. An unregistered stream has no platform entry and no
+  obo shell; it is freed by the connection close path.
+- **Stream release branch (platform-released-first included).** The C stream
+  release function is called by `sys_res_close`, including when `_adoptToken`
+  fails after registering the token. If the session is live and
+  `rstSubmitted` is false, it must: consume every buffered receive byte at
+  connection level (`nghttp2_session_consume_connection`), submit
+  `RST_STREAM(REFUSED_STREAM)` when `adopted=false`, set
+  `rstSubmitted=true`, mark the record closing, and defer free. An adopted
+  local close (`closeStream`/`reset`) sets `rstSubmitted` before release, so
+  release never emits a second RST. If `rstSubmitted` is already true, it only
+  marks closing and defers free. If the session is gone, it detaches and
+  frees according to the connection/orphan rules. Thus the
+  platform-released-first path still restores the connection window and emits
+  the intended RST even though `h2_stream_abandon` is a no-op.
 - The registry entry stores kind and generation. `sys_reg_peek(token, kind)`
   validates liveness and kind before any dereference. Close poisons the
   generation before calling the release function, so a double close cannot
   free twice.
 - `H2Stream` is a real shell over its own `KIND_H2_STREAM` entry:
-  `H2Stream = { pub res: platform::Resource, pub id: int }`. It does not hold a
+  `H2Stream = { pub res: platform::Resource }`. It does not hold a
   `Resource` for the connection, because obo `ref record` assignment moves and
   a `Resource` cannot be copied into a second shell. Every stream operation validates
   its own token; C checks the stream id, state and direction.
@@ -395,8 +420,15 @@ sent, or the stream is reset; they are never duplicated or silently dropped.
   it and invalidates the shell.
 - No C object is freed inside an nghttp2 callback. `on_stream_close` marks the
   entry closed and enqueues `EventStreamClosed`; `h2_conn_feed` performs a
-  post-`mem_recv` sweep that retires/frees closed entries. This avoids
-  use-after-free while nghttp2 may still hold the stream's user data.
+  post-`mem_recv` sweep, and `h2_conn_send` performs a post-`send` sweep, that
+  retire/free closed entries. A record marked closing by close/reset is freed
+  only after `on_stream_close` or the RST frame-sent callback. nghttp2 keeps
+  the data-provider `source.ptr` captured at submit; that pointer cannot be
+  cleared from the queued provider. The record therefore stays alive until
+  the post-close sweep, and the provider callback resolves the stream by id
+  and checks the `closing` flag, returning EOF/0 without touching freed
+  memory. `stream_user_data` is not used for identity; if set, it is cleared
+  at closing, but the deferred free is what makes the provider pointer safe.
 - Stream ids are never reused on a connection. After `closeStream`, the token
   is retired; a forged/stale shell fails `KIND_H2_STREAM` before any C
   dereference.
@@ -409,12 +441,12 @@ The reserved byte charge is explicit and conservative: the connection's
 event ring, header arena, the worst-case `maxConcurrentStreams` receive/send
 rings, and fixed overhead). Stream entries are identity only and charge their
 small fixed metadata (or zero); their buffers are already covered by the
-connection reservation. Therefore an unclaimed stream cannot undercount
+connection reservation. Therefore an unregistered stream cannot undercount
 memory, `nativeBytes` is honest at admission, and no per-allocation callback
-is needed. `server()` checks H2's own `maxConnections`/
-`maxTotalConnectionBytes` before creating the connection; exceeding it returns
-`ResourceLimit`. The platform's `maxNativeBytes` is enforced by `_adoptToken`,
-which also returns `ResourceLimit`/`Busy`. nghttp2's own internal heap
+is needed. The application-owned `Admission` helper checks H2's own
+`maxConnections`/`maxTotalConnectionBytes` before `make()`; `make()` itself
+enforces only per-connection limits. The platform's `maxNativeBytes` is
+enforced by `_adoptToken`, which also returns `ResourceLimit`/`Busy`. nghttp2's own internal heap
 is outside the charge and is documented like OpenSSL's heap in the TLS note.
 The server's `maxResources` must be at least `maxConnections * (1 +
 maxConcurrentStreams)` (14 * 33 = 462 with the defaults), well under the 4096
@@ -478,36 +510,38 @@ Provenance and test strategy:
 ### 4.1 Dependency DAG
 
 ```text
-httpapi  -> sysclock
-http2    -> httpapi, sysplatform, sysbuffer, sysbytes, sysclock, sysreactor
-httptls  -> httpapi, systls, sysreactor, sysstream
-http1    -> httpapi, http1core, http1parse, http1date, sysbuffer, sysclock
-http2    -/-> http1, systls
-systls   -/-> httpapi, http1, http2
+httpapi       -> sysclock
+httptransport -> httpapi, systls, sysreactor, sysstream, sysplatform, syserrors
+http2         -> httpapi, httptransport, sysplatform, sysbuffer, sysbytes, sysclock
+http1         -> httpapi, httptransport, http1core, http1parse, http1date,
+                 sysbuffer, sysclock
+http2         -/-> http1
+systls        -/-> httpapi, http1, http2
 ```
 
 Proposed source layout, following the experimental package style:
 
 ```text
-obo/experimental/httpapi/httpapi.obx     shared transport, header, request,
-                                         exchange, handler, failure
-obo/experimental/http2/http2.obx         H2Connection/H2Stream, limits, events,
-                                         state machine, error mapping
+obo/experimental/httpapi/httpapi.obx         shared header/request/action/
+                                             failure vocabulary; no I/O
+obo/experimental/httptransport/httptransport.obx
+                                             concrete plain/TLS/memory transport
+obo/experimental/http2/http2.obx             H2Connection/H2Stream, limits,
+                                             events, state machine, actions
 obo/experimental/http2/native/h2_adapter.h
 obo/experimental/http2/native/h2_adapter.c
 obo/experimental/http2/http2_adapter.cbind
-obo/experimental/http2/tests/...         C harness, obo drivers, integration
-obo/experimental/httptls/httptls.obx     neutral TLS Transport adapter
+obo/experimental/http2/tests/...             C harness, obo drivers, integration
 ```
 
 `httpapi` is a new shared vocabulary, not a new protocol. `http1` keeps its
-existing H1a0 modules; H1b/H1c aliases `http1::Transport` to
-`httpapi::Transport` (or keeps a source-compatible wrapper if the compiler
-does not allow the alias) and implements `httpapi::Exchange` for
-`Connection`. `http1tls` becomes `httptls` or a compatibility alias. This note
-does not change H1; it states the adoption path.
+existing H1a0 modules; H1c aliases `http1::Transport` to
+`httptransport::Transport` (or keeps a source-compatible wrapper) and produces
+`httpapi::RequestMeta`/`Action` from its concrete connection. There is no
+`Exchange` interface. `http1tls` becomes a compatibility wrapper over
+`httptransport`. This note does not change H1; it states the adoption path.
 
-Unique module/basename names: `httpapi`, `http2`, `httptls`. The C shim prefix
+Unique module/basename names: `httpapi`, `httptransport`, `http2`. The C shim prefix
 is `h2_`; the C registry kinds are library constants.
 
 ### 4.2 Kinds and resources
@@ -527,30 +561,35 @@ a library ABI change.
 `H2Connection` and `H2Stream` are shells over managed identities:
 
 ```obo
-pub type Connection = ref record { pub res: platform::Resource }
-pub type Stream = ref record {
+pub type Connection = ref record {
     pub res: platform::Resource
-    pub id: int
+    transport: transport::Transport   // owned after make(); private
+    reserved: int                     // stored H2 reservation; survives close
 }
+pub type Stream = ref record { pub res: platform::Resource }
 ```
 
-The public fields are not opaque. A forged `Stream` with a live token but a
-wrong `id` is ignored: C uses the token's authoritative stream id, and
-`streamID` is diagnostic. A forged/stale token fails `KIND_H2_STREAM` before
-any C dereference. The connection shell is not reachable from the stream
+`Connection.reserved` is a copied scalar set by `make()` from
+`reservation(limits)`; `reservedBytes(c)` returns it even after the
+connection token is retired, so the application can release admission after
+`close(c)` without reading a stale C token. `transport` is private and moved
+into the connection; `close(c)` closes it exactly once.
+
+The public fields are not opaque. `streamID(s)` asks C for the authoritative
+stream id; there is no public `id` field to forge. A forged/stale token fails
+`KIND_H2_STREAM` before any C dereference. The connection shell is not reachable from the stream
 shell; C keeps the connection pointer internally and detaches it on connection
 close. No field is an authority.
 
 ### 4.3 Ownership and lifecycle
 
-- `server()` creates one C session, registers `KIND_H2_CONNECTION`, adopts the
-  token, and returns the shell. The server preface SETTINGS is queued but not
-  necessarily written.
+- `make(t, limits, options)` owns the concrete transport, creates one C
+  session, registers `KIND_H2_CONNECTION`, adopts the token, and returns the
+  shell. The server preface SETTINGS is queued but not necessarily written.
 - `close(c)` is abortive: it retires the connection token even if the native
-  close reports an error, does not close the transport (the application owns
-  it, as in H1), and returns `ok(false)` on a second close. Live streams are
-  orphaned, not freed: their shells remain closable and their operations return
-  `Closed`.
+  close reports an error, closes the transport exactly once, and returns
+  `ok(false)` on a second close. Live streams are orphaned, not freed: their
+  shells remain closable and their operations return `Closed`.
 - `drain(c)` is graceful: submit the first GOAWAY, stop accepting new
   streams, keep feeding/sending existing streams, and finish when the drain
   deadline or `EventDrainComplete` arrives. `close` is still explicit.
@@ -558,17 +597,23 @@ close. No field is an authority.
   then adopts `KIND_H2_STREAM`. A second call for the same id returns
   `AlreadyExists`; an unknown/closed id returns `StreamClosed`; a
   draining/closed connection returns `Refused`/`Closed`. If `_adoptToken`
-  fails, obo calls the private `h2_stream_abandon`, which resets and frees the
-  stream; there is no half-adopted retry.
-- `closeStream(s)` removes the stream record and, if the stream is still open,
-  submits `RST_STREAM(CANCEL)` first. It is idempotent (`ok(false)` on a
-  second close or after a peer-initiated close). It never closes the
+  fails, obo calls the idempotent `h2_stream_abandon(token)`: it is a no-op if
+  the platform already released the token, otherwise it submits
+  `RST_STREAM(REFUSED_STREAM)`, consumes buffered window and retires. The C
+  release function sees `adopted=false` and defers free to the post-close
+  sweep. If `h2_stream_adopt` fails before a token exists, C refuses and
+  removes the stream. There is no half-adopted retry.
+- `closeStream(s)` marks the stream closing, submits `RST_STREAM(CANCEL)` if
+  still open, marks the response provider closing, clears `stream_user_data`
+  if set, and retires the token. The C record is freed only by the post-`feed`/post-`send` sweep after
+  nghttp2 reports the close or the RST is sent. It is idempotent (`ok(false)`
+  on a second close or after a peer-initiated close). It never closes the
   connection.
 - Dropping a `Connection` or `Stream` record frees only the obo record. It
   never calls `nghttp2_session_del`, closes TLS or resets a stream.
 - `defer` is the normal cleanup:
   ```obo
-  let c = try http2::server(limits, options)
+  let c = try http2::make(transport, limits, options)
   defer http2::close(c)
   ```
   Register the connection defer first so it runs last; close streams before
@@ -601,10 +646,11 @@ retry.
 
 ### 4.5 Limits
 
-`H2Limits` is deep-copied and validated at `server()`. The shared seam defines
+`H2Limits` is deep-copied and validated at `make()`. The shared seam defines
 `httpapi::CommonLimits`; H2 repeats the shared cap fields deliberately so H1
-can keep its existing `Limits` until H1b adopts the common record. H2 adds
-protocol limits.
+can keep its existing `Limits` until H1c adopts the common record.
+`CommonLimits.maxResponseBuffer` maps to H2 `maxStreamSendBuffer`; the other
+shared caps have the same names. H2 adds protocol limits.
 
 | Limit | Default | Rule |
 |---|---|---|
@@ -615,13 +661,13 @@ protocol limits.
 | `maxHeaderFieldBytes` | 8192 | one name or value |
 | `maxHeaderBlockBytes` | 81920 | compressed HEADERS+CONTINUATION budget (5 x 16384) |
 | `maxContinuations` | 4 | following one HEADERS |
-| `maxHeaderArena` | 1572864 | per-connection request+response header bytes |
+| `maxHeaderArena` | 1572864 | per-connection header bytes; must cover `maxConcurrentStreams` x per-stream staging |
 | `maxStreamRecvWindow` | 32768 | advertised INITIAL_WINDOW_SIZE |
 | `maxStreamRecvBuffer` | 32768 | must equal the window |
 | `maxConnectionWindow` | 1048576 | `maxConcurrent * streamRecvWindow` |
 | `maxStreamSendBuffer` | 32768 | per-stream response body |
 | `maxWire` | 65536 | C wire ring and obo out-buffer |
-| `maxEvents` | 256 | event ring records |
+| `maxEvents` | 256 | event ring records; at least 5 per stream + connection |
 | `maxBody` | 8388608 | decoded request body bytes |
 | `maxTrailerBytes` | 4096 | decoded request trailer bytes |
 | `maxTrailerCount` | 32 | request trailer fields |
@@ -636,6 +682,10 @@ protocol limits.
 | `maxResetRate` | 20 | tokens/second |
 | `maxPingAcks` | 100 | outstanding ACKs |
 | `maxSettingsEntries` | 32 | per SETTINGS frame |
+| `frameBurst` | 4000 | inbound frame token bucket burst |
+| `frameRate` | 2000 | inbound frames/second |
+| `zeroDataBurst` | 200 | zero-length DATA bucket burst |
+| `zeroDataRate` | 100 | zero-length DATA/second |
 | `prefaceTimeoutMs` | 10000 | h2c preface / first frame |
 | `settingsTimeoutMs` | 10000 | our SETTINGS ACK |
 | `headerTimeoutMs` | 10000 | HEADERS..END_HEADERS |
@@ -644,24 +694,29 @@ protocol limits.
 | `responseTotalTimeoutMs` | 300000 | absolute |
 | `streamTotalTimeoutMs` | 300000 | from HEADERS begin |
 | `idleTimeoutMs` | 60000 | no live streams |
+| `drainBarrierMs` | 1000 | PING-ACK barrier after the first GOAWAY |
 | `drainTimeoutMs` | 30000 | GOAWAY drain |
 
 `validateLimits` checks: every count/byte limit positive; `streamRecvBuffer >=
 streamRecvWindow` and `streamRecvBuffer == streamRecvWindow` for v1;
 `connectionWindow == maxConcurrentStreams * streamRecvWindow` (checked
 multiplication, no overflow); `maxHeaderBlockBytes >= maxHeaderListBytes`;
-`maxHeaderListBytes >= maxHeaderFieldBytes`; `maxWire >= 65536`;
+`maxHeaderListBytes >= maxHeaderFieldBytes`; `maxWire >= 65536` and
+`maxWire >= maxReadChunk + 9`;
 `maxTrailerBytes <= maxHeaderListBytes`; `maxTrailerCount <= maxHeaderCount`;
-`maxHeaderArena >= maxHeaderListBytes + maxTrailerBytes +
-maxResponseHeaderBytes + maxResponseTrailerBytes`;
+`maxHeaderArena >= maxConcurrentStreams * (maxHeaderListBytes +
+maxTrailerBytes + maxResponseHeaderBytes + maxResponseTrailerBytes)`;
 `maxTotalConnectionBytes >= maxConnections * perConnectionReservation`;
-`maxEvents >= 3 * maxConcurrentStreams + 16`; timeout values fit checked
+`maxEvents >= 5 * maxConcurrentStreams + 16`; `frameRate`/`zeroDataRate` and
+the timeout values fit checked positive ranges; timeouts fit checked
 millisecond-to-nanosecond conversion. A reservation below the minimum is
 `ResourceLimit`/`InvalidArgument`, never a wrapped smaller budget.
 `perConnectionReservation = maxConcurrent*(streamRecvBuffer +
 streamSendBuffer) + 2*maxWire + maxHeaderArena + maxEvents*32 +
 fixedOverhead`. Header staging is drawn from `maxHeaderArena`, not counted a
-second time per stream. Defaults:
+second time per stream. The `maxHeaderArena` check above is the
+per-`maxConcurrent` factor the earlier draft missed; `maxEvents` uses 5 per
+stream (Started, Data, Trailers, End, Closed). Defaults:
 `32*(32768+32768) + 2*65536 + 1572864 + 8192 + 65536` =
 `2,097,152 + 1,777,664` = `3,874,816` bytes, about 3.70 MiB.
 `14 * 3,874,816 = 54,247,424` bytes, about 51.7 MiB, under the 64 MiB
@@ -678,66 +733,55 @@ raising the aggregate budget must fail validation.
 
 ## 5. Shared handler seam with HTTP/1.1
 
-### 5.1 What is shared and what is not
+### 5.1 What is shared, and what is concrete
 
-Shared:
+The shared seam is **vocabulary plus a pure decision function**, not a
+polymorphic transport or exchange interface. This follows H1b, which records
+that obo 0.14 has no impure interface-member tier: an interface method cannot
+call `sysstream`/native I/O. A design that declares `Transport`, `Exchange`
+or `Handler` as impure interfaces is not implementable in 0.14.
 
-- `Header` (ordered, duplicates preserved, case-insensitive lookup).
-- `RequestMeta` (method, target, path, query, scheme, authority, version,
-  headers, secure, body length).
-- `Exchange`: one per-request exchange object with body read, response write, trailers,
-  interim and reset operations.
-- `Handler`: an interface with `handle(req, ex)`.
-- `Failure` categories and `BodyRead`.
-- `Transport`: byte I/O, `Want*`, flush, shutdown, ALPN.
+Shared in `httpapi`:
 
-Not shared, and not pretended identical:
+- `Header`, `RequestMeta`, `ProtocolKind`, `CommonLimits`, `BodyRead`,
+  `Failure`, `Action`, `Handler`, `Now`.
+- The pure handler contract: `Handler = fn(RequestMeta, &Now): Action`.
+- The action vocabulary used by the standard handlers/demo loop.
 
-| Aspect | HTTP/1.1 | HTTP/2 |
+Concrete, per protocol:
+
+| Concern | HTTP/1.1 | HTTP/2 |
 |---|---|---|
-| Concurrency | one request in flight | up to `maxConcurrentStreams` |
-| Framing | Content-Length/chunked | DATA + END_STREAM |
-| Header block | text, repeated | HPACK, pseudo-headers |
-| Flow control | TCP backpressure | stream and connection windows |
-| Request end | CL/chunk terminator | END_STREAM |
+| Byte transport | `httptransport::Transport` | `httptransport::Transport` |
+| Connection state | `http1conn::Connection` | `http2::Connection` |
+| Per-request view | `http1conn::Connection` functions | `http2::Stream` functions |
+| Body/response operations | concrete free functions | concrete free functions |
+| Handler execution | `http1server::runOnce` / action executor | `http2::runAction` |
+| Reset | close/abort | `RST_STREAM` |
 | Trailers | chunked only | HEADERS after DATA |
-| Reset | close the connection | RST_STREAM per stream |
-| Shutdown | `Connection: close` | GOAWAY |
-| Reason phrase | yes | no |
-| Priority | n/a | ignored |
-| 1xx | 100 only | 100-199 HEADERS |
-| Full duplex | response after body read/drain (or close) | request body may still arrive after response start; `read` remains valid until close |
-| Error response | status line + body | `:status` + DATA, or RST/GOAWAY |
 
-The seam abstracts the request/response vocabulary, not the connection model.
-A handler that needs `streamID`, multiplexing or per-stream reset checks
-`RequestMeta.streamID`/`Exchange.capabilities()`; it must not assume H1
-keep-alive semantics. In particular, H2 may deliver request body bytes after
-the response has started (full duplex), while H1 forbids `readBody` after a
-final response. A shared handler should read/drain the body before responding
-unless it explicitly branches on `RequestMeta.protocol`.
+The two protocols share `RequestMeta` and `Action`; they do **not** share a
+transport interface, an exchange interface or a callback. A general
+application that needs to inspect a body or drive a custom streaming response
+uses the concrete `http2::Connection`/`http2::Stream` functions in its own
+loop. The pure `Handler` is the shared standard/demo seam (Hello, Echo,
+Chunked, Head, NoContent, NotModified, Big, Slow, Stop, Close), matching H1b.
+A general **impure** application handler is a documented language gap: it
+needs a future impure function-value or interface-member tier. H2a/H2b and the
+concrete loop API do not require that tier; H2c must not pretend it exists.
 
-### 5.2 Interfaces
+### 5.2 Shared types
 
 ```obo
 module httpapi
 import "sys/sysclock.obx" as clock
-import "sys/sysreactor.obx" as reactor
 
 pub type Now = ref record {
     pub mono: clock::Instant
     pub wall: clock::Timestamp
 }
 
-pub type CommonLimits = ref record {
-    pub maxBody: int
-    pub maxResponseBuffer: int
-    pub maxReadChunk: int
-    pub maxHeaderListBytes: int
-    pub maxHeaderCount: int
-}
-
-pub type Protocol = closed {
+pub type ProtocolKind = closed {
     ProtocolHttp11 {}
     ProtocolHttp2 {}
 }
@@ -745,7 +789,7 @@ pub type Protocol = closed {
 pub type Header = ref record { pub name: string; pub value: string }
 
 pub type RequestMeta = ref record {
-    pub protocol: Protocol
+    pub protocol: ProtocolKind
     pub streamID: int              // 0 for HTTP/1.1
     pub method: string
     pub target: string             // raw target / :path, no decoding
@@ -762,13 +806,12 @@ pub type RequestMeta = ref record {
     pub contentLength: int
 }
 
-pub type Capabilities = record {
-    pub multiplexed: bool
-    pub trailers: bool
-    pub reset: bool
-    pub interim: bool
-    pub push: bool
-    pub reasonPhrase: bool
+pub type CommonLimits = ref record {
+    pub maxBody: int
+    pub maxResponseBuffer: int     // H1 buffer; H2 maps to maxStreamSendBuffer
+    pub maxReadChunk: int
+    pub maxHeaderListBytes: int
+    pub maxHeaderCount: int
 }
 
 pub type BodyRead = closed {
@@ -787,7 +830,7 @@ pub type Failure = closed {
     BadPreface {}
     BadFrame {}
     FrameSize {}
-    Protocol {}
+    ProtocolFailure {}
     Compression {}
     HeaderList {}
     ContinuationFlood {}
@@ -803,74 +846,73 @@ pub type Failure = closed {
     Busy {}
     Unsupported {}
     Internal {}
-    Transport { sysCode: int }
-    Tls { tlsCode: int }
+    TransportFailure { sysCode: int }
+    TlsFailure { tlsCode: int }
 }
 
 pub fn failure(code: int): Failure
 pub fn text(code: int): string
 
-pub type Exchange = interface {
-    fn capabilities(): Capabilities
-
-    mut fn read(max: int): Result[BodyRead]
-    mut fn discard(max: int): Result[bool]
-
-    fn trailerCount(): int                  // request trailers; valid after BodyEnd
-    fn trailerAt(index: int): Result[Header] // request trailers
-
-    mut fn begin(status: int): Result[bool]
-    mut fn header(name: string, value: string): Result[bool]
-    mut fn setLength(length: int): Result[bool]
-    mut fn write(bytes: &[]byte, offset: int, count: int): Result[int]
-    mut fn interim(status: int): Result[bool]
-    mut fn declareTrailers(names: []string): Result[bool]
-    mut fn trailer(name: string, value: string): Result[bool]
-    mut fn end(): Result[bool]
-    mut fn reset(code: int): Result[bool]
+pub type Action = closed {
+    Hello {}
+    Echo {}
+    Chunked {}
+    Head {}
+    NoContent {}
+    NotModified {}
+    Big {}
+    Slow {}
+    Stop {}
+    Close {}
 }
 
-pub type Handler = interface {
-    mut fn handle(req: &RequestMeta, mut ex: &Exchange): Result[bool]
-}
+pub type Handler = fn(&RequestMeta, &Now): Action
 ```
 
-The handler is an interface, not a function value. obo forbids function types
-whose parameters contain interfaces and forbids storing function values in
-fields; an interface value is allowed in a field and can be implemented by an
-application router. The protocol layer never calls the handler; the
-application loop does.
+`ProtocolKind` is a type, `ProtocolFailure` is a failure constructor, and
+`TransportFailure`/`TlsFailure` are failure constructors; no type name equals a
+closed constructor in the same module. Closed constructors share module scope,
+so this uniqueness rule is part of the API review.
 
-`httpapi::Transport` is the H1 transport contract moved to a neutral module.
-The outcome types are moved with it; variant names stay unique:
+`Action` has no data payloads in v1. The standard executor owns the bounded
+bodies (Hello, a fixed 20 KiB Big body, a small Slow body, Echo from the
+request, Chunked as an unknown-length response). A general application that
+needs an arbitrary in-memory response uses the concrete `writeBody` API, not
+`Action`; there is no hidden large allocation in the handler decision.
+
+`Handler` is a pure function value. It takes `&RequestMeta` and `&Now`, and
+returns an `Action`. It cannot read the body or write the response;
+the application loop or `http2::runAction` performs the bounded I/O. This is
+the same limitation and the same design as H1b.
+
+### 5.3 Concrete transport
+
+`httptransport` is a shared concrete module, not an interface. It replaces
+H1b's `http1transport` for combined servers; H1c may keep a compatibility
+wrapper.
 
 ```obo
-pub type Want = closed {
-    WantNone {}
-    WantRead {}
-    WantWrite {}
-    WantReadWrite {}
-}
+module httptransport
+import "sys/sysreactor.obx" as reactor
+import "sys/sysstream.obx" as stream
+import "systls.obx" as tls
 
 pub type Step = closed {
     StepDone {}
     StepWantRead {}
     StepWantWrite {}
 }
-
 pub type ReadOutcome = closed {
     ReadData { bytes: []byte }
     ReadEof {}
     ReadWantRead {}
     ReadWantWrite {}
 }
-
 pub type WriteOutcome = closed {
     WriteWrote { count: int }
     WriteWantRead {}
     WriteWantWrite {}
 }
-
 pub type ShutdownOutcome = closed {
     ShutdownDone {}
     ShutdownSent {}
@@ -878,13 +920,12 @@ pub type ShutdownOutcome = closed {
     ShutdownWantRead {}
     ShutdownWantWrite {}
 }
-
-pub type FlushOutcome = closed {
-    Flushed {}
-    FlushWantRead {}
-    FlushWantWrite {}
+pub type Want = closed {
+    WantNone {}
+    WantRead {}
+    WantWrite {}
+    WantReadWrite {}
 }
-
 pub type Alpn = closed {
     AlpnNone {}
     AlpnHttp11 {}
@@ -892,75 +933,115 @@ pub type Alpn = closed {
     AlpnOther { name: string }
 }
 
-pub type Transport = interface {
-    mut fn handshakeStep(): Result[Step]
-    mut fn readSome(max: int): Result[ReadOutcome]
-    mut fn writeSome(bytes: &[]byte, offset: int,
-                     count: int): Result[WriteOutcome]
-    mut fn flushPending(): Result[WriteOutcome]
-    mut fn shutdownStep(): Result[ShutdownOutcome]
-    fn pending(): Result[int]
-    fn want(): Result[Want]
-    fn alpn(): Result[Alpn]
-    fn isSecure(): bool
-    fn maxTransfer(): int
-    fn watch(r: &reactor::Reactor, readable: bool, writable: bool,
-             tag: int): Result[reactor::Watch]
-    mut fn close(): Result[bool]
-}
+// The representation is private; construct only with these.
+pub type Transport = ref record { /* private */ }
+
+pub fn plain(s: stream::Stream): Transport
+pub fn tlsSession(s: tls::TlsSession): Transport
+pub fn memory(input: &[]byte): Transport
+pub fn empty(): Transport
+
+pub fn handshakeStep(mut t: &Transport): Result[Step]
+pub fn readSome(mut t: &Transport, max: int): Result[ReadOutcome]
+pub fn writeSome(mut t: &Transport, bytes: &[]byte, offset: int,
+                 count: int): Result[WriteOutcome]
+pub fn flushPending(mut t: &Transport): Result[WriteOutcome]
+pub fn shutdownStep(mut t: &Transport): Result[ShutdownOutcome]
+pub fn pending(t: &Transport): Result[int]
+pub fn want(t: &Transport): Result[Want]
+pub fn alpn(t: &Transport): Result[Alpn]
+pub fn isSecure(t: &Transport): bool
+pub fn maxTransfer(t: &Transport): int
+pub fn watch(t: &Transport, r: &reactor::Reactor, readable: bool,
+             writable: bool, tag: int): Result[reactor::Watch]
+pub fn close(mut t: &Transport): Result[bool]
 ```
 
-Unique closed-variant names (`StepDone`, `ReadData`, `WriteWrote`,
-`ShutdownSent`, `WantNone`, `AlpnH2`, ...) follow the TLS/H1 precedent because
-closed constructors share module scope. `httpapi` imports `sysreactor` and
-`sysclock`; it does not import `http1`, `http2` or `systls`.
+The TLS constructor imports `systls`; `systls` does not import HTTP. The
+plain/TLS/memory variants share the same observable contract as H1b's
+transport. `alpn` returns `AlpnH2`, not a string. `close` is abortive and
+exactly once. A memory transport has no watch and returns `Unsupported`.
 
-### 5.3 Handler obligations
+`http2::Connection` owns the `Transport` after `make`. This is how `make`
+can enforce the mode/ALPN check before any frame and why `next` does not take
+a transport. The application owns aggregate admission separately (§6.4).
 
-1. Inspect `RequestMeta.protocol`, `streamID` and `capabilities()`.
-2. Read at most `max` bytes per `read`; never assume the whole body is
-   available.
-3. If responding before reading the body, either `discard` within bounds or
-   `reset` (H2) / close (H1). Do not leave a body unread and then reuse
-   connection state.
-4. Use `write` until the body is complete; `0` means backpressure. Yield and
-   retry with the same cursor. Never replay accepted bytes.
-5. Set `Content-Length` when known via `setLength`; do not set framing or
-   connection-specific headers through `header`.
-6. Declare trailers before the body; add trailers only after body writes and
-   before `end`, and only when `capabilities().trailers` is true.
-7. Use `end` once; `false` means retry after the loop pumps output.
-8. Do not store `&RequestMeta`, `&Exchange` or `&Handler` borrows. Store owned
-   copies or per-stream state keyed by `streamID`.
-9. Never close the connection or stream; the loop owns lifecycle. `reset` is
-   the abort operation, not close.
-10. Treat `Result` errors as per-exchange failures; do not panic or exit.
+### 5.4 Standard action executor
 
-### 5.4 Handler ownership and the loop
+The application loop calls the pure handler on each attempt and executes the
+returned action with the concrete stream functions. The handler borrows a
+`RequestMeta` stored in the application slot; it is pure and stateless. `http2::runAction` is the
+shared standard executor; it is ordinary impure module code, not an interface
+or callback.
 
-The application owns the `Handler` object (an owning interface), the
-connection, the transport and per-stream state. `impl httpapi::Exchange for
-http2::Stream` stays in `http2`; `impl httpapi::Exchange for
-http1::Connection` stays in `http1` (H1b). A loop calls `http2::next`, then,
-for each stream event, obtains a stream shell, builds `RequestMeta`, and calls
-`handler.handle(&req, &stream)`. The `&Stream` coerces to `mut &Exchange` for
-the duration of the call. The handler must not retain the borrow.
+The executor API is declared in §6 (`ActionState`, `makeActionState`,
+`runAction`, `actionStopRequested`, `actionCloseRequested`).
 
-A per-stream handler object is also valid: the loop creates one, stores it in
-its slot, and calls it on each event. The protocol layer does not own or store
-handlers.
+`runAction` executes the closed action set:
 
-### 5.5 Why not a callback or a function value
+| Action | HTTP/2 execution |
+|---|---|
+| `Hello` | `begin(200)`, `setLength(6)`, write `hello\n`, `end` |
+| `Echo` | `begin(200)` with no length; `readBody` -> `writeBody` until `BodyEnd`; `end` |
+| `Chunked` | `begin(200)` with no length; a fixed three-part body; `end` |
+| `Head` | `begin(200)`, `setLength(6)`, no DATA, `end` |
+| `NoContent` | `begin(204)`, `end` |
+| `NotModified` | `begin(304)`, `end` |
+| `Big` | `begin(200)`, `setLength(20480)`, a bounded 20 KiB body, `end` |
+| `Slow` | `begin(200)`; 10 bytes per call; `end` after the fixed body |
+| `Stop` | respond `Hello`, then set the stop flag; the app stops accepting |
+| `Close` | respond `Hello`, then set the close flag; the app drains/closes |
 
-- C callbacks into obo are unsupported and reentrancy-prone.
-- Obo function types cannot take or return interface values in v1, so a
-  `fn(req, body, response)` handler cannot compile with this seam.
-- Function values cannot be stored in fields, so a per-connection handler
-  field would be illegal.
-- The `Handler` interface avoids both limits, keeps control in the
-  application loop, and matches H1's "handler is application code called by
-  the loop" rule.
+`ActionState` stores the **latched first action**, per-stream bytes
+read/written, the body cursor, the response-started/finished flags and the
+stop/close flags. `runAction` invokes the handler only on the first call and
+latches the returned action; later calls reuse it and ignore a different
+handler/request. A pure handler that reads `&Now` can therefore not change its
+decision on a retry. One `ActionState` belongs to one stream and is not reused
+across requests. It is created by
+`makeActionState` and owned by the application slot; it is not a native
+resource and has no destructor. `runAction` returns `true` on progress and
+`false` on yield; it never spins. A `writeBody` returning 0, `readBody`
+returning `BodyNeedRead`, or an `end` returning false yields.
+For actions other than `Echo`, `runAction` discards the remaining request body
+with bounded `discardBody` calls after the response; if the body exceeds
+`maxBody` or the stream total deadline, it resets the stream with `CANCEL`.
+This is required so an unread body cannot hold the connection window.
 
+A general application handler that must inspect the request body or construct
+an arbitrary streaming response uses the concrete `http2::readBody`,
+`writeBody`, `beginResponse`, `endResponse`, `addTrailer` and `reset`
+functions directly in its loop. That is the working 0.14 path; it is not a
+polymorphic callback. A future impure handler tier can wrap the same concrete
+functions without changing the protocol state machine.
+
+### 5.5 Why not an interface or callback
+
+- obo 0.14 interface members have only the pure/plain/mut local tier; an
+  implementation that calls `sysstream`/native I/O or writes an owned handle is
+  rejected. H1b records the same finding.
+- Function values cannot be impure and cannot take/return interface values in
+  v1; a `fn` handler that calls impure exchange methods cannot compile.
+- C cannot call obo. nghttp2 callbacks remain C-internal and queue bounded
+  events; obo polls.
+- The pure `Action` + concrete executor keeps control in the application loop,
+  bounds every operation, and is implementable today. The concrete free-function
+  API is the general application path.
+
+### 5.6 Handler and request lifetimes
+
+The application owns the `Handler` function value (passed directly to
+`runAction`; never stored in a field), the `Connection`, the `Transport`
+(moved into the connection), the `ActionState` and per-stream slot state.
+`RequestMeta` is an owned copy built from the stream; it is valid for the
+handler call and may be stored by value. The handler must not capture or store
+borrows to the connection/stream; it receives none. `runAction` may store
+bounded progress in `ActionState`, never a reference.
+
+H2 may deliver request body bytes after the response has started (full duplex);
+H1 forbids `readBody` after a final response. The shared `Action` executor
+reads/drains before responding; a custom loop branches on
+`RequestMeta.protocol`.
 ## 6. Public API
 
 The block below is **proposed declarations**, not a compilable module. It uses
@@ -970,7 +1051,7 @@ current 0.14 field style (`pub res`) and only 0.11/Stage B features. Bodyless
 ```obo
 module http2
 import "httpapi.obx" as http
-import "sys/sysbuffer.obx" as buffer
+import "httptransport.obx" as transport
 import "sys/sysclock.obx" as clock
 import "sys/sysplatform.obx" as platform
 
@@ -985,6 +1066,7 @@ pub type Mode = closed {
 pub type Options = ref record {
     pub mode: Mode
     pub serverName: string         // empty omits the Server field
+    pub requireAuthority: bool     // origin-form requests need :authority/Host
 }
 
 pub type Limits = ref record {
@@ -1016,6 +1098,10 @@ pub type Limits = ref record {
     pub maxResetRate: int
     pub maxPingAcks: int
     pub maxSettingsEntries: int
+    pub frameBurst: int
+    pub frameRate: int
+    pub zeroDataBurst: int
+    pub zeroDataRate: int
     pub prefaceTimeoutMs: int
     pub settingsTimeoutMs: int
     pub headerTimeoutMs: int
@@ -1024,18 +1110,30 @@ pub type Limits = ref record {
     pub responseTotalTimeoutMs: int
     pub streamTotalTimeoutMs: int
     pub idleTimeoutMs: int
+    pub drainBarrierMs: int
     pub drainTimeoutMs: int
 }
 
 pub fn defaultLimits(): Limits
 pub fn validateLimits(l: &Limits): Result[bool]
 pub fn defaultOptions(): Options
+pub fn reservation(l: &Limits): Result[int]
 
-pub type Connection = ref record { pub res: platform::Resource }
-pub type Stream = ref record {
+// Application-owned aggregate admission. It is not a native resource; the
+// application calls admit() before make() and release() after close().
+pub type Admission = ref record { /* private counters */ }
+pub fn makeAdmission(): Admission
+pub fn admit(a: &Admission, l: &Limits): Result[bool]
+pub fn release(a: &Admission, reserved: int): bool
+pub fn activeCount(a: &Admission): int
+pub fn admissionReservedBytes(a: &Admission): int
+
+pub type Connection = ref record {
     pub res: platform::Resource
-    pub id: int
+    transport: transport::Transport
+    reserved: int
 }
+pub type Stream = ref record { pub res: platform::Resource }
 
 pub type StreamState = closed {
     StreamOpen {}
@@ -1063,6 +1161,7 @@ pub type Event = closed {
 pub type Counts = ref record {
     pub liveConnections: int
     pub liveStreams: int
+    pub closingStreams: int
     pub streamsOpened: int
     pub streamsClosed: int
     pub requestsCompleted: int
@@ -1070,10 +1169,13 @@ pub type Counts = ref record {
     pub resetsReceived: int
     pub goawaysSent: int
     pub goawaysReceived: int
+    pub framesIn: int
+    pub zeroDataFrames: int
     pub headerBytes: int
     pub bodyBytesIn: int
     pub bodyBytesOut: int
     pub wireBytes: int
+    pub windowRestored: int
     pub flowControlBlocked: int
     pub eventQueueHighWater: int
     pub wireHighWater: int
@@ -1085,6 +1187,7 @@ pub type Counts = ref record {
 
 pub type Stats = ref record {
     pub liveStreams: int
+    pub closingStreams: int
     pub maxConcurrentStreams: int
     pub streamsOpened: int
     pub streamsClosed: int
@@ -1092,10 +1195,13 @@ pub type Stats = ref record {
     pub resetsReceived: int
     pub goawaysSent: int
     pub goawaysReceived: int
+    pub framesIn: int
+    pub zeroDataFrames: int
     pub headerBytesIn: int
     pub bodyBytesIn: int
     pub bodyBytesOut: int
     pub wireBytes: int
+    pub windowRestored: int
     pub recvWindow: int
     pub connWindow: int
     pub eventQueueHighWater: int
@@ -1104,12 +1210,15 @@ pub type Stats = ref record {
 
 // HTTP/2 maps nghttp2 and shim failures onto the shared httpapi::Failure
 // family; h2::failure/text are convenience decoders.
-pub fn server(limits: &Limits, options: &Options): Result[Connection]
-pub fn next(mut c: &Connection, mut t: &http::Transport,
-            now: &http::Now): Result[Event]
-pub fn deadline(c: &Connection): Result[clock::Deadline]
-pub fn wantsRead(c: &Connection, t: &http::Transport): Result[bool]
-pub fn wantsWrite(c: &Connection, t: &http::Transport): Result[bool]
+pub fn make(t: transport::Transport, limits: &Limits,
+            options: &Options): Result[Connection]
+pub fn next(mut c: &Connection, now: &http::Now): Result[Event]
+pub fn deadline(c: &Connection): Result[clock::Deadline>
+pub fn wantsRead(c: &Connection): Result[bool>
+pub fn wantsWrite(c: &Connection): Result[bool]
+pub fn reservedBytes(c: &Connection): int
+pub fn shutdownStep(mut c: &Connection,
+                    now: &http::Now): Result[transport::ShutdownOutcome]
 
 pub fn openStream(c: &Connection, id: int): Result[Stream]
 pub fn closeStream(s: &Stream): Result[bool]
@@ -1119,7 +1228,7 @@ pub fn headerAt(s: &Stream, index: int): Result[http::Header]
 pub fn trailerCount(s: &Stream): Result[int]
 pub fn trailerAt(s: &Stream, index: int): Result[http::Header]
 pub fn streamState(s: &Stream): Result[StreamState]
-pub fn streamID(s: &Stream): int
+pub fn streamID(s: &Stream): Result[int]
 pub fn reset(s: &Stream, code: int): Result[bool]
 
 pub fn readBody(s: &Stream, max: int,
@@ -1136,117 +1245,185 @@ pub fn setTrailerNames(s: &Stream, names: &[]string): Result[bool]
 pub fn addTrailer(s: &Stream, name: string, value: string): Result[bool]
 pub fn endResponse(s: &Stream): Result[bool]
 
+// Shared pure handler executor (§5.4).
+pub type ActionState = ref record { /* private progress state */ }
+pub fn makeActionState(): ActionState
+pub fn runAction(mut st: &ActionState, h: http::Handler,
+                 req: &http::RequestMeta, mut s: &Stream,
+                 now: &http::Now): Result[bool]
+pub fn actionStopRequested(st: &ActionState): bool
+pub fn actionCloseRequested(st: &ActionState): bool
+
 pub fn drain(c: &Connection, now: &http::Now): Result[bool]
 pub fn drainComplete(c: &Connection): bool
-pub fn close(c: &Connection): Result[bool]
+pub fn close(mut c: &Connection): Result[bool]
 
-pub fn stats(c: &Connection): Result[Stats]
+pub fn stats(c: &Connection): Result[Stats>
 pub fn counts(): Result[Counts]
 pub fn failure(code: int): http::Failure
 pub fn text(code: int): string
 ```
 
-### 6.1 Types and validation
+### 6.1 Types, mode and lifecycle
 
 - `Limits` is deep-copied; the caller's later mutation does not change the
   connection. `validateLimits` checks all fields, including the aggregate
-  reservation and checked multiplication.
-- `Options.mode` selects TLS or prior-knowledge cleartext. `ModeTls` requires
-  `t.alpn() == "h2"` before any frame; there is no no-ALPN fallback for h2.
-  `ModePriorKnowledge` is only valid for a cleartext transport; a secure
-  transport with this mode returns `Unsupported`.
-- `serverName` is a bounded token (<=64 bytes, no CR/LF/NUL); empty omits the
-  `Server` field. It is not a version string.
+  reservation, the per-`maxConcurrentStreams` arena/event formulas, and checked
+  multiplication.
+- `make(t, limits, options)` **moves the transport into the connection**. It
+  consumes the transport on every path; on any validation failure it closes
+  the transport exactly once and returns no connection token. It validates
+  `Limits`/`Options`, then enforces the mode before any frame:
+  - `ModeTls`: `transport::isSecure(t)` must be true and
+    `transport::alpn(t)` must be `AlpnH2`; otherwise `Unsupported`.
+  - `ModePriorKnowledge`: `transport::isSecure(t)` must be false; otherwise
+    `Unsupported`.
+  There is no no-ALPN fallback for h2. The connection owns the transport;
+  `close(c)` closes it exactly once, and `shutdownStep(c, now)` drives the
+  multi-step TLS close before `close`.
+- `reservedBytes(c)` returns the stored `reserved` scalar (the H2
+  per-connection reservation), not a value read from the C token. It survives
+  `close(c)`; the application passes it to `release(a, reserved)` after
+  `close(c)`. TLS-session/transport/other native charges are outside this
+  number; see §12.
+- `Options.serverName` is a bounded token (<=64 bytes, no CR/LF/NUL); empty
+  omits `Server`. `Options.requireAuthority` (default true) rejects an origin-form request with
+  no `:authority`/`Host` with `400`/stream reset; it is not a routing policy.
+- `make` does **not** enforce aggregate admission. `Admission` is an
+  application-owned policy object: call `admit(a, limits)` before `make`, and
+  `release(a, h2::reservedBytes(c))` after `close`. A caller that skips it
+  bypasses the count/byte policy; this is documented, not a hidden global.
+  `admit` returns `ok(true)` for capacity, `ok(false)` when full, or an error
+  for malformed limits. If `make` fails after a successful `admit`, the app
+  calls `release(a, h2::reservation(limits))` to roll back. `Admission` counts
+  the H2 per-connection reservation only; TLS session/staging and other native
+  users are outside it, so choose `maxTotalConnectionBytes`/`maxConnections`
+  with headroom or extend the application budget. `Admission` has private
+  counters and no destructor.
 - `openStream` requires `id > 0` and odd (server receives client-initiated
   streams). It asks C to adopt/register the stream entry exactly once and then
   adopts `KIND_H2_STREAM`; a second call returns `AlreadyExists`, an unknown or
-  already-closed id returns `StreamClosed`. The C entry is created at the
-  first HEADERS, so the application calls `openStream` on
-  `EventStreamStarted` and keeps the shell. It allocates one managed identity
-  and one C stream record, not an OS resource. If the platform registry is
-  exhausted, `openStream` returns `ResourceLimit`; C submits
-  `RST_STREAM(REFUSED_STREAM)` and removes the stream, so the application can
-  ignore it. If `_adoptToken` fails for another reason, obo calls the private
-  `h2_stream_abandon`, which resets and frees the stream; there is no
-  half-adopted retry.
+  already-closed id returns `StreamClosed`.
+- **Adoption failure split (must be exact).** `h2_stream_adopt` registers the
+  stream with the platform and returns a token; C marks it `adopted=false`.
+  After a successful `platform::_adoptToken`, obo calls
+  `h2_stream_markAdopted(token)`. If `_adoptToken` fails, obo calls the
+  private, idempotent `h2_stream_abandon(token)`. Abandon checks
+  `sys_reg_peek`; if the platform already released the token it returns 0 and
+  does nothing, so the double-release path is impossible. If the token is
+  still live, abandon consumes buffered receive bytes at connection level,
+  submits `RST_STREAM(REFUSED_STREAM)`, marks the record closing and
+  `rstSubmitted`, and retires it; the release function sees
+  `adopted=false`/`rstSubmitted` and defers free without a second RST. If
+  `h2_stream_adopt` fails before creating a token (table cap, invalid id), C
+  submits `RST_STREAM(REFUSED_STREAM)` and removes the stream; `openStream`
+  returns `ResourceLimit`/`StreamClosed`. There is no half-adopted retry.
 - `requestInfo` copies the whole request header block into an owned
   `RequestMeta` and releases the C request-header copy; call it once. Use
   `headerAt` for lazy access before `requestInfo`; after `requestInfo`, use
   the `RequestMeta` copy. Request trailers remain in C until `BodyEnd` and are
   copied by `trailerAt`. After `requestInfo`, `headerCount`/`headerAt` return
-  `InvalidState`; they are for the lazy path before the snapshot.
+  `InvalidState`.
+- `streamID(s)` asks C for the authoritative id; it does not trust a public
+  field. `RequestMeta.streamID` is the same value. A stale token returns
+  `Closed`/`InvalidResource`.
 - `streamState` is the RFC 9113 state, not the internal response state.
-- `EventStreamStarted` is returned exactly once per stream. `EventStreamData`
-  is coalesced: at most one queued per stream until the application reads.
-  `EventStreamEnd` is returned once. `EventStreamClosed` is returned once.
-- `next` returns at most one event per call. The application calls it again
-  to drain queued events. A `NeedRead`/`NeedWrite` event is not terminal.
-- `closeStream` is idempotent; after it, every stream operation returns
-  `Closed`. A peer-initiated close retires the token first, so the app's
-  `closeStream` returns `ok(false)` and every stream operation returns
-  `Closed`/`InvalidResource`. `close` retires the connection token; live
-  stream shells are orphaned and still closable.
-- `drain` is idempotent. After it, `openStream` returns `Refused` for new ids;
-  existing streams continue. `drainComplete` is true only when no live streams
-  remain and the final GOAWAY is queued.
+- `closeStream` marks the record closing, submits `RST_STREAM(CANCEL)` if still
+  open, marks the response data provider closing (the captured `source.ptr`
+  cannot be cleared), clears `stream_user_data` if set, and retires the token.
+  The C object is **not freed** in this call; the post-`feed`/post-`send`
+  sweep frees it only after nghttp2 reports the stream closed or the RST has
+  been sent. A second close, a peer-initiated close, or a stale token returns
+  `ok(false)`. `close` retires the connection token; live stream shells are
+  orphaned and still closable.
+- `reset(s, code)` submits `RST_STREAM(code)` and marks the local side closing;
+  it does not free the record. The token remains until `closeStream`/peer close.
+- `drain` is idempotent. After it, `openStream` returns `Refused` for ids above
+  the recorded cutoff; existing/racing ids at or below it may continue.
+  `drainComplete` is true only when no live streams remain and the final GOAWAY
+  is queued.
 - `stats`/`counts` are diagnostic, not authority. Counters never control
   admission; they are sampled after the operation.
 
-### 6.2 Representative handler
+### 6.2 Representative application loop
+
+The application owns the handler function value, the `Admission`, the
+connection, and one slot per live stream. It calls `http2::next`, opens the
+stream, builds `RequestMeta` once, and calls the pure handler through
+`runAction` on each event. The handler never receives a connection/stream
+reference and never drives I/O.
 
 ```obo
-type Router = ref record {
-    bodyBytes: []byte
-    bodyPos: int
-    bodyDone: bool
-    responseStarted: bool
-    finished: bool
+type StreamSlot = ref record {
+    stream: http2::Stream
+    req: httpapi::RequestMeta
+    state: http2::ActionState
+    live: bool
 }
 
-fn (mut r: &Router) handle(req: &httpapi::RequestMeta,
-                           mut ex: &httpapi::Exchange): Result[bool] {
-    if !r.responseStarted {
-        let ct = "Content-Type"
-        let cv = "text/plain; charset=utf-8"
-        try ex.header(ct, cv)
-        try ex.begin(200)
-        r.responseStarted = true
-    }
-    while !r.finished {
-        // Flush any accepted-but-unwritten bytes before reading more.
-        if r.bodyPos < len(r.bodyBytes) {
-            let n = try ex.write(&r.bodyBytes, r.bodyPos,
-                                 len(r.bodyBytes) - r.bodyPos)
-            if n == 0 { return ok(false) }
-            r.bodyPos += n
-            if r.bodyPos < len(r.bodyBytes) { return ok(true) }
-        }
-        if !r.bodyDone {
-            let read = try ex.read(16384)
-            match read {
-                BodyData {
-                    r.bodyBytes = read.bytes
-                    r.bodyPos = 0
-                }
-                BodyNeedRead { return ok(false) }
-                BodyEnd { r.bodyDone = true }
-            }
-        } else {
-            let done = try ex.end()
-            if done { r.finished = true } else { return ok(false) }
-        }
-    }
-    return ok(true)
+fn serveStream(slot: &StreamSlot, h: httpapi::Handler,
+               now: &httpapi::Now): Result[bool] {
+    return http2::runAction(&slot.state, h, &slot.req, &slot.stream, now)
 }
 
-impl httpapi::Handler for Router
+fn handleEvent(mut c: &http2::Connection, ev: http2::Event,
+               h: httpapi::Handler, now: &httpapi::Now): Result[bool] {
+    match ev {
+        EventStreamStarted { id } {
+            let s = try http2::openStream(&c, id)
+            let req = try http2::requestInfo(&s)
+            let st = http2::makeActionState()
+            let slot = new StreamSlot{stream: s, req: req,
+                                      state: st, live: true}
+            return serveStream(&slot, h, now)
+        }
+        EventStreamData { id } {
+            // look up the live slot by id in the application table
+        }
+        EventStreamEnd { id } { }
+        EventStreamClosed { id, code } {
+            // close/drop the slot; the token may already be stale
+        }
+        EventNeedRead { return ok(false) }
+        EventNeedWrite { return ok(false) }
+        EventConnectionClosed { return ok(false) }
+        EventProtocolError { return ok(false) }
+        EventTimedOut { return ok(false) }
+        EventGoaway { return ok(true) }
+        EventDrainComplete { return ok(true) }
+        EventSettingsAcked { return ok(true) }
+        EventTrailers { id } { }
+    }
+}
 ```
 
-The sketch is resumable: it keeps per-stream state in the handler object,
-never replays a status/header/body byte, and yields on `BodyNeedRead`, a zero
-write, or an `end` that did not fit. A real multiplexed server keeps one
-`Router`-like object per stream (or keys state by `req.streamID`) and repeats
-`handle` on each event. The protocol layer does not call this function.
+The sketch omits the application's slot table lookup and the `Stop`/`Close`
+flags; `actionStopRequested`/`actionCloseRequested` are checked after
+`runAction`. A general application that needs request-body inspection uses
+`http2::readBody`/`writeBody` directly instead of `Handler`; the protocol
+functions are the same ones `runAction` uses.
+
+### 6.3 Response length and trailers
+
+`setLength` declares the response `content-length`; it is not framing for H2,
+but it is enforced:
+
+- `setLength(n)` requires `n >= 0`; it is invalid after header commit or for
+  `204`/`205`/`1xx`; `304` may carry the selected representation length.
+- `writeBody` accumulates `responseDataBytes` only for statuses that can carry
+  DATA. For `HEAD`, `204`, `205`, `304` and `1xx`, it accepts and discards the
+  bytes without accumulating and without emitting DATA.
+- `endResponse` performs the `sum(DATA) == declared` check only for statuses
+  that can carry DATA. `HEAD`, `204`, `205`, `304` and `1xx` are exempt: a
+  `304` with `setLength(7)` and zero DATA succeeds, and a `HEAD` response with
+  a nonzero metadata length and zero DATA succeeds. A normal `200` response
+  with `setLength(10)` and five DATA bytes fails with `InvalidState`/`Range`.
+- `content-length` is protocol-owned; `setHeader("content-length", ...)` is
+  rejected. `HEAD`, `204`, `205`, `304` and `1xx` never put response DATA on
+  the wire; `101` is invalid.
+- Response trailers are declared before body writes and added after the body;
+  `endResponse` uses `NO_END_STREAM` and `nghttp2_submit_trailer`. A trailer
+  after `END_STREAM` is `InvalidState`.
 
 ## 7. State machine
 
@@ -1260,7 +1437,7 @@ AwaitPreface -> AwaitSettings -> Open -> Draining -> Closing -> Closed
 
 | State | Entry | Exit |
 |---|---|---|
-| `AwaitPreface` | `server()` before the client preface (h2c, or TLS h2) | 24-byte preface valid -> `AwaitSettings`; mismatch/timeout -> `Closing`/`Failed` |
+| `AwaitPreface` | `make()` before the client preface (h2c, or TLS h2) | 24-byte preface valid -> `AwaitSettings`; mismatch/timeout -> `Closing`/`Failed` |
 | `AwaitSettings` | preface valid | our SETTINGS sent; first HEADERS -> `Open`; SETTINGS ACK deadline armed |
 | `Open` | first HEADERS or SETTINGS exchange | `drain` -> `Draining`; fatal frame/session error -> `Failed`; idle timeout -> `Closing` |
 | `Draining` | `drain()`/GOAWAY | no live streams -> `EventDrainComplete` -> `Closing`; deadline -> `Closing` |
@@ -1268,9 +1445,11 @@ AwaitPreface -> AwaitSettings -> Open -> Draining -> Closing -> Closed
 | `Closed` | `close` | terminal |
 | `Failed` | fatal protocol/library error | `close` -> `Closed` |
 
-For TLS, the dispatcher has already completed `systls::handshakeStep` and
-verified `alpn == "h2"`. `http2::next` does not drive TLS handshakes. For h2c,
-`http2::next` validates the preface before feeding any byte to nghttp2.
+For TLS, the dispatcher has already completed `httptransport::handshakeStep`
+and `http2::make` verifies `httptransport::alpn(t) == AlpnH2` before creating
+the session. `http2::next` does not drive TLS handshakes. For h2c, `make`
+requires a cleartext transport; `next` validates the preface before feeding
+any byte to nghttp2.
 
 ### 7.2 Stream
 
@@ -1302,9 +1481,9 @@ Invariants:
    only after the last DATA with `NO_END_STREAM`.
 6. Request trailers are exposed only after `BodyEnd`; they never precede DATA.
 7. `HEAD`, `1xx`, `204`, `205`, `304` never put DATA on the wire. `write`
-   accepts and discards the bytes for `HEAD`; for `204`/`205`/`304` it is
-   `InvalidState` or accepted-and-discarded per the chosen H1-compatible rule
-   (recommend accept-and-discard, and validate `content-length`).
+   accepts and discards the bytes for all of these statuses without
+   accumulating `responseDataBytes`; `content-length` is metadata only for
+   `HEAD`/`304` and is not enforced against DATA (there is none).
 8. `101` is invalid in h2 (`InvalidArgument`); no protocol switch.
 9. `begin` captures `Date` once with `sysclock::realtime`; a non-empty
    `Options.serverName` adds `Server`. Both are protocol-owned and never echo
@@ -1324,7 +1503,7 @@ Invariants:
 | `GOAWAY` | peer drain; surface `Goaway(lastStreamID, code)`; no new local streams; existing streams may finish |
 | `PRIORITY` | parsed and ignored; no scheduling tree; `SETTINGS_NO_RFC7540_PRIORITIES=1` |
 | `PUSH_PROMISE` | server receives one -> connection error PROTOCOL_ERROR; server never sends one |
-| unknown/ext | rejected by nghttp2 with the RFC error; surface `BadFrame`/`Protocol` |
+| unknown/ext | rejected by nghttp2 with the RFC error; surface `BadFrame`/`ProtocolFailure` |
 
 ### 7.4 HEADERS and CONTINUATION
 
@@ -1333,10 +1512,15 @@ Invariants:
 - Header names/values are copied immediately; nghttp2's pointers are valid
   only during the callback. Copy lengths are bounded; no `strlen`.
 - Header list size uses `nameLen + valueLen + 32` per field. Exceeding
-  `maxHeaderFieldBytes`, `maxHeaderCount` or `maxHeaderListBytes` submits
-  `RST_STREAM(ENHANCE_YOUR_CALM)` and returns
-  `NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE`. The stream is reset, not the
-  connection, for a header-list overflow.
+  `maxHeaderFieldBytes`, `maxHeaderCount` or `maxHeaderListBytes` chooses one
+  action: submit `RST_STREAM(ENHANCE_YOUR_CALM)`, set the stream's `rejected`
+  flag, and return `0` from the callback. Subsequent `on_header` calls for that
+  block are ignored, `on_frame_recv` does not enqueue `Started`/`Trailers`,
+  and no second RST is submitted. Do **not** return
+  `NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE` after submitting a custom RST:
+  nghttp2 would add its own RST(INTERNAL_ERROR). The stream is reset, not the
+  connection, for a header-list overflow. `maxConcurrentStreams` overflow uses
+  the same pattern with `RST_STREAM(REFUSED_STREAM)`.
 - Exceeding `maxContinuations` or `maxHeaderBlockBytes` is a connection
   error; let nghttp2's queued GOAWAY stand; map to `ContinuationFlood`/
   `Compression`. Do not submit a second GOAWAY.
@@ -1347,8 +1531,8 @@ Invariants:
 - Required pseudo-headers: `:method`, `:scheme`, `:path` (except CONNECT,
   which is rejected in v1); `:authority` is optional but recommended.
   `:authority` and `Host` mismatch -> `400`/stream reset. Derive authority
-  from `:authority`, else `Host`, else empty; enforce a configured
-  `requireAuthority` for origin-form requests.
+  from `:authority`, else `Host`, else empty; `Options.requireAuthority`
+  rejects an empty authority for origin-form requests.
 - `:path` is the raw target. Do not percent-decode, normalize or reject `..`
   here; that is routing policy. `*` is allowed for OPTIONS.
 - `TE` may be present only with value `trailers`; `Connection`, `Keep-Alive`,
@@ -1412,8 +1596,22 @@ Server's initial SETTINGS:
   ring.
 - `h2_stream_read` copies bytes out and then calls
   `nghttp2_session_consume(session, stream_id, n)`. The wrapper copies from
-  the platform buffer into an obo `[]byte`; if that copy fails, reset the
-  stream (no silent data loss and no stuck window).
+  the platform buffer into an obo `[]byte`; if that copy fails, the shim
+  consumes those bytes at the **connection** level and resets the stream (no
+  silent data loss and no stuck window).
+- `discardBody` consumes exactly the discarded bytes with
+  `nghttp2_session_consume(session, stream_id, n)`; a discard is not a silent
+  window leak.
+- Any receive-ring bytes still buffered when a stream is retired (local
+  close/reset, peer RST, adoption failure, connection drain/close, or a reset
+  after a copy failure) are consumed at the **connection** level with
+  `nghttp2_session_consume_connection(session, n)` before the record is
+  reaped. nghttp2 does not restore the connection window when a stream is
+  reset; without this step repeated HEADERS+DATA+RST exhausts
+  `maxConnectionWindow`. `Counts.windowRestored` counts these bytes.
+- Invariant: every application byte received is either delivered and consumed
+  (`readBody`) or discarded and consumed (connection-level). No path frees a
+  receive ring with unconsumed bytes.
 - Padding is consumed by nghttp2 immediately (verified in the 1.59 inbound
   DATA path: it calls `nghttp2_session_consume` for `readlen - data_readlen`).
   The shim consumes only application bytes; padding never accumulates.
@@ -1429,27 +1627,42 @@ Server's initial SETTINGS:
 
 ### 7.7 RST, GOAWAY, PING, WINDOW_UPDATE
 
-- `reset(s, code)` submits `RST_STREAM(code)` and marks the local side
-  closed. The peer's `on_stream_close` is ignored after the C entry is
-  removed. `CANCEL` is the application abort; `REFUSED_STREAM` for admission;
-  `ENHANCE_YOUR_CALM` for abuse; `INTERNAL_ERROR` for handler failure;
-  `PROTOCOL_ERROR` for malformed stream state.
+- `reset(s, code)` submits `RST_STREAM(code)`, marks the local side closing,
+  and marks the data provider closing (its captured `source.ptr` cannot be
+  cleared; the callback sees `closing` and returns EOF/0). It clears
+  `stream_user_data` if set. It does **not** free the C record. The only free
+  points are the post-`feed`/post-`send` sweeps after nghttp2 reports
+  `on_stream_close` or the RST frame is sent; a
+  data-provider read or `stream_user_data` access can therefore never reach
+  freed memory. `CANCEL` is the application abort; `REFUSED_STREAM` for
+  admission; `ENHANCE_YOUR_CALM` for abuse; `INTERNAL_ERROR` for handler
+  failure; `PROTOCOL_ERROR` for malformed stream state.
 - Peer RST -> `EventStreamClosed(code)`; all subsequent reads return
-  `StreamClosed`; the C entry is removed.
+  `StreamClosed`; buffered receive bytes are connection-consumed; the token is
+  retired and the record freed in the sweep after the close callback.
 - `drain(c)` calls `nghttp2_submit_shutdown_notice` (GOAWAY with
   `last_stream_id = (1<<31)-1`), enters `Draining`, records
   `drainCutoff = nghttp2_session_get_last_proc_stream_id`, and refuses new
   stream ids above it (RST_STREAM(REFUSED_STREAM)) until the final GOAWAY. A
-  racing stream at or below the cutoff may still be processed. After one round
-  trip or when the live stream count reaches zero, it calls
-  `nghttp2_submit_goaway(nghttp2_session_get_last_proc_stream_id, NO_ERROR)`
-  (never above the cutoff). Existing streams continue until
+  racing stream at or below the cutoff may still be processed. Drain has
+  explicit states:
+  `DrainNoticeQueued` (first GOAWAY submitted), `DrainNoticeSent` (the
+  `on_frame_sent` callback or the wire ring confirms it; the barrier PING is
+  submitted only here), `DrainBarrierPing` (PING with a private 8-byte nonce
+  outstanding), and `DrainFinal` (final GOAWAY queued). PING is urgent and can
+  otherwise overtake the first GOAWAY, so it is never submitted in
+  `DrainNoticeQueued`. The final GOAWAY is sent when the matching PING ACK
+  arrives or `drainBarrierMs` expires (default 1000 ms), using
+  `min(nghttp2_session_get_last_proc_stream_id(), drainCutoff)`; this is the
+  explicit round-trip barrier. `next` calls `h2_conn_drain_poll(now)` each
+  turn until `DrainFinal`. Existing streams continue until
   `EventDrainComplete` or `drainTimeoutMs`, then `close`.
 - A fatal local error uses `nghttp2_session_terminate_session2(last_proc,
   code)`: it queues GOAWAY and stops read/write. obo flushes the wire, then
-  closes. H2 does not own TLS shutdown: after `drain`/`close`, the application
-  drives `t.shutdownStep` best-effort to `ShutdownDone`/`ShutdownPeerClosed`
-  or a deadline, then `t.close`. `close(c)` is not a clean TLS close promise.
+  closes. H2 owns the transport after `make`: after `drain`, the application
+  drives `c.shutdownStep` best-effort to `ShutdownDone`/`ShutdownPeerClosed`
+  or a deadline, then `close(c)`. `close(c)` closes the transport abortively
+  and is not a clean TLS close promise.
 - PING is auto-ACKed. A PING/SETTINGS ACK flood is bounded by
   `maxOutboundAck`/`maxSettingsEntries`; `ERR_FLOODED` -> `GOAWAY(
   ENHANCE_YOUR_CALM)`.
@@ -1476,6 +1689,14 @@ Server's initial SETTINGS:
   tells the peer not to rely on the RFC 7540 tree. There is no priority
   scheduler; fairness is application round-robin with a per-stream work cap
   (default 16 KiB or 8 events per turn).
+- Inbound frame budget: a per-connection token bucket (`frameBurst=4000`,
+  `frameRate=2000/s`) counts every received frame in `on_begin_frame`; a
+  second bucket (`zeroDataBurst=200`, `zeroDataRate=100/s`) counts zero-length
+  DATA frames. Exceeding either sends `GOAWAY(ENHANCE_YOUR_CALM)` and closes.
+  This bounds endless empty DATA/PRIORITY/WINDOW_UPDATE/PING traffic on one
+  stream, which `maxStreamsPerConnection` and the 300 s total deadline do not.
+  `Counts.framesIn`/`zeroDataFrames` expose the counts; the bucket uses the
+  caller-supplied `now.mono.nanos`, never a C clock.
 - Server push is disabled. `SETTINGS_ENABLE_PUSH=0`; no `PUSH_PROMISE` is
   sent; a client `PUSH_PROMISE` is a connection error. `push()` is not in
   the API.
@@ -1490,7 +1711,7 @@ transport progress.
 
 | Deadline | Active | Starts | Renewed/cleared | Default | Expiry |
 |---|---|---|---|---|---|
-| preface | h2c `AwaitPreface` | `server()`/accept | cleared on valid preface | 10 s | close, no GOAWAY |
+| preface | h2c `AwaitPreface` | `make()`/accept | cleared on valid preface | 10 s | close, no GOAWAY |
 | settings ACK | `AwaitSettings` | our SETTINGS sent | cleared on `SettingsAcked` | 10 s | GOAWAY(SETTINGS_TIMEOUT), close |
 | header | stream `Open` before END_HEADERS | HEADERS begin | never | 10 s | RST(CANCEL) |
 | body idle | after first `read` | first `read` | positive body bytes | 30 s | RST(CANCEL) |
@@ -1498,12 +1719,14 @@ transport progress.
 | response total | after headers commit | commit | cleared on response complete | 300 s | RST(CANCEL) |
 | stream total | HEADERS begin | HEADERS begin | cleared on stream close | 300 s | RST(CANCEL) |
 | idle | no live streams | last stream closes | cleared on new HEADERS | 60 s | GOAWAY(NO_ERROR), close |
+| drain barrier | `DrainBarrierPing` | PING submitted after first GOAWAY sent | matching PING ACK | 1 s | final GOAWAY |
 | drain | `Draining` | `drain()` | never | 30 s | close |
 
 Rules:
 
 - `deadline(c)` returns the earliest **active finite** deadline across the
-  connection and live streams, or `sysclock::forever()` if none. Only finite
+  connection and live streams, or `sysclock::forever()` if none. C uses `-1`
+  for the no-deadline sentinel; `0` is a valid monotonic instant. Only finite
   deadlines create `reactor::timer`s; `forever()` is valid for
   `reactor::wait` but not for `reactor::timer`.
 - `next` checks deadlines before and after I/O so a timeout is not delayed
@@ -1530,8 +1753,8 @@ Rules:
 | Too many streams | advertised 32, C table cap 32 | RST(REFUSED_STREAM); no new stream record |
 | Flow-control starvation | connection window = maxConcurrent x stream window, per-stream buffer = window | a stalled stream holds only its share |
 | Slowloris | preface/header/body/response/stream deadlines, absolute | reset/GOAWAY/close |
-| PING/SETTINGS ACK flood | `maxOutboundAck=100`, `maxSettingsEntries=32`, `ERR_FLOODED` | GOAWAY |
-| Zero-length DATA / frame flood | frame accounting, stream total, max streams per connection | reset/GOAWAY |
+| PING/SETTINGS ACK flood | `maxOutboundAck=100`, `maxSettingsEntries=32`, `ERR_FLOODED`, frame bucket | GOAWAY |
+| Zero-length DATA / frame flood | per-connection frame token bucket (`frameBurst=4000`, `frameRate=2000`), zero-DATA bucket (`200`/`100`), stream total | GOAWAY(ENHANCE_YOUR_CALM), close |
 | Priority flood | ignored; no tree; `NO_RFC7540_PRIORITIES` | no scheduling effect |
 | Padded DATA abuse | nghttp2 consumes padding; frame size cap; stream window | only the sender's window shrinks |
 | GOAWAY ignored | drain deadline, then close | bounded shutdown |
@@ -1548,9 +1771,17 @@ The nghttp2 reset limiter is server-side, token-bucket based: an incoming
 RST_STREAM consumes a token; when empty, nghttp2 sends GOAWAY and tears down
 the connection. Defaults are burst 1000, rate 33/s; this design sets
 `burst=100`, `rate=20` (configurable) and additionally caps total streams per
-connection at 1000. Counters `resetsReceived`, `streamsOpened` and
-`streamsClosed` are exposed. A reset storm must not allocate a new stream
-record, event or header block after the cap; the C table is fixed.
+connection at 1000. Counters `resetsReceived`, `streamsOpened`,
+`streamsClosed` and `windowRestored` are exposed. A reset storm must not
+allocate a new stream record, event or header block after the cap; the C table
+is fixed.
+Every reset/close with unread DATA connection-consumes the buffered bytes
+(§7.6) before the record is reaped. Without that, a 4-byte DATA + RST repeats
+until the 1 MiB connection window is exhausted even though each stream window
+is discarded; the probe in the review evidence shows `effective_recv_data_length=4`
+and `local_window_size=65531` after a RST with no automatic restoration. The
+test sends N reset cycles with unread DATA and asserts the connection window
+returns to its configured value and other streams continue.
 
 ### 8.3 CONTINUATION and HPACK
 
@@ -1577,8 +1808,9 @@ record, event or header block after the cap; the C table is fixed.
   `h2` -> http2; `http/1.1` -> http1; empty -> reject for an h2-only
   listener (the combined H1 policy may treat no-ALPN as HTTP/1.1, but never
   as HTTP/2).
-- No h2 byte is parsed before ALPN is checked. `http2::server(ModeTls)`
-  returns `Unsupported` if `alpn()` is not `h2`; the dispatcher closes.
+- No h2 byte is parsed before ALPN is checked. `http2::make(t, limits,
+  options)` returns `Unsupported` if `ModeTls` is not `AlpnH2`/secure; the
+  dispatcher closes.
 - Prior-knowledge h2c is a separate cleartext profile. The first 24 bytes
   must be `PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n`; a mismatch closes without an
   HTTP/1.1 response. No `Upgrade`, no `HTTP2-Settings`, no `101`.
@@ -1617,8 +1849,8 @@ record, event or header block after the cap; the C table is fixed.
 | `NGHTTP2_ERR_TOO_MANY_CONTINUATIONS` | `ContinuationFlood` | GOAWAY(ENHANCE_YOUR_CALM) |
 | `NGHTTP2_ERR_HEADER_COMP` / invalid header block | `Compression` | GOAWAY(COMPRESSION_ERROR) |
 | `NGHTTP2_ERR_FRAME_SIZE_ERROR` | `FrameSize` | GOAWAY(FRAME_SIZE_ERROR) |
-| `NGHTTP2_ERR_PROTO` / invalid frame / settings expected | `Protocol`/`BadFrame` | GOAWAY(PROTOCOL_ERROR) |
-| `NGHTTP2_ERR_INVALID_STREAM_ID` / state / closed | `StreamClosed`/`Protocol` | RST(PROTOCOL_ERROR) or ignore |
+| `NGHTTP2_ERR_PROTO` / invalid frame / settings expected | `ProtocolFailure`/`BadFrame` | GOAWAY(PROTOCOL_ERROR) |
+| `NGHTTP2_ERR_INVALID_STREAM_ID` / state / closed | `StreamClosed`/`ProtocolFailure` | RST(PROTOCOL_ERROR) or ignore |
 | `NGHTTP2_ERR_REFUSED_STREAM` | `Refused` | RST(REFUSED_STREAM) |
 | `NGHTTP2_ERR_PUSH_DISABLED` | `Unsupported` | GOAWAY(PROTOCOL_ERROR) |
 | `NGHTTP2_ERR_WOULDBLOCK` | none | wire ring full; output pending |
@@ -1630,7 +1862,7 @@ record, event or header block after the cap; the C table is fixed.
 | `NGHTTP2_ERR_SESSION_CLOSING` | `Closed` | no further work |
 | `NGHTTP2_ERR_STREAM_ID_NOT_AVAILABLE` | `Refused` | GOAWAY(ENHANCE_YOUR_CALM) |
 | `NGHTTP2_ERR_INVALID_ARGUMENT` | `InvalidArgument` | internal bug; close and report |
-| `NGHTTP2_ERR_HTTP_HEADER` / `HTTP_MESSAGING` | `Protocol`/`HeaderList` | RST(PROTOCOL_ERROR) |
+| `NGHTTP2_ERR_HTTP_HEADER` / `HTTP_MESSAGING` | `ProtocolFailure`/`HeaderList` | RST(PROTOCOL_ERROR) |
 | unknown negative code | `Internal` | close; copy `nghttp2_strerror` to diagnostics |
 
 Connection-level mapping uses GOAWAY with the RFC code; stream-level mapping
@@ -1652,9 +1884,19 @@ HTML page.
   duplicate/invalid settings, too many entries.
 - Frames: HEADERS, CONTINUATION, DATA, END_STREAM, END_HEADERS, PADDED,
   PRIORITY, PING, WINDOW_UPDATE, RST_STREAM, GOAWAY, unknown type.
-- Header caps: count, field, list, arena; exactly at and one over each.
+- Header caps: count, field, list, arena; exactly at and one over each;
+  overflow emits exactly one RST(ENHANCE_YOUR_CALM), not nghttp2's INTERNAL_ERROR.
 - Flow control: stream/connection window accounting; padding-only DATA;
-  window update 0/overflow; consume-after-copy; no auto update.
+  window update 0/overflow; consume-after-copy; no auto update; discarding
+  unread bytes consumes at both levels; reset/close with unread DATA restores
+  the connection window; `windowRestored` accounting.
+- Retirement: close/reset/abandon with queued response DATA and a pending
+  data-provider source; no free before `on_stream_close`/RST-sent; ASAN/LSAN
+  clean after pumping to completion.
+- Adoption failure: fail slot/nonce adoption after stream registration;
+  exactly one native release, no double free, C table cleanup, intended
+  RST(REFUSED_STREAM), connection window restored; cover the
+  platform-released-first branch.
 - Response path: staged headers, commit on write/end, empty body END_STREAM,
   body with EOF, trailers with `NO_END_STREAM`, data provider deferred.
 - Event ring: coalescing, high-water, deliberate overflow -> failure.
@@ -1665,7 +1907,7 @@ HTML page.
 
 ### 9.2 Deterministic obo tests (MemoryTransport)
 
-A `MemoryTransport` implements `httpapi::Transport` with scripted reads,
+A `httptransport::Transport` memory variant provides scripted reads,
 writes, wants, ALPN and pending bytes. No sockets, TLS or reactor.
 
 - Preface -> SETTINGS -> HEADERS -> response; exact bytes.
@@ -1674,16 +1916,29 @@ writes, wants, ALPN and pending bytes. No sockets, TLS or reactor.
 - Request body: CL known/unknown, zero-length, DATA after END_STREAM
   (reject), body over `maxBody` (413/reset).
 - Response: known length, unknown length, HEAD, 204, 304, 1xx, trailers,
-  `end` retry, zero-write backpressure.
-- Reset: peer RST mid-body, local reset, close stream, stale shell.
+  `end` retry, zero-write backpressure; declared content-length mismatch is
+  rejected at `end` (and over-write rejected at `write`). `304` +
+  `setLength(7)` + zero DATA succeeds; `200` + `setLength(10)` + 5 DATA fails;
+  `HEAD` + nonzero metadata length + zero DATA succeeds.
+- Reset: peer RST mid-body, local reset, close stream, stale shell;
+  `closeStream` maps stale/`InvalidResource` to `ok(false)`.
+- Reset loop: N HEADERS+DATA+RST cycles with unread DATA; connection window
+  restored; another stream continues; no window depletion.
 - Trailers: request trailers after DATA, response trailers after body,
   trailer after END_STREAM (reject), count/byte caps.
 - Deadlines: fake clock, one byte per interval, header/body/response/idle/
   drain; no restart on partial progress.
 - Error/status: malformed request headers, oversized, missing pseudo-header,
   Host mismatch, forbidden connection headers.
-- Counters: streams opened/closed, resets, bytes, high-water; zero after
-  close.
+- Counters: streams opened/closed, closing streams, resets, bytes,
+  windowRestored, framesIn/zeroDataFrames, high-water; zero after close.
+- Limits boundary: `maxConcurrentStreams` at its maximum with the arena/event
+  formulas; a legal burst does not fail the connection.
+- Action latch: a pure handler that returns different actions on retries
+  (e.g. based on `Now`) is latched to the first action; no response changes
+  mid-stream.
+- Adoption failure: fault-inject `_adoptToken` after `h2_stream_adopt`;
+  exactly one release, no double free, intended RST, C table cleanup.
 
 ### 9.3 h2spec and interoperability
 
@@ -1722,12 +1977,17 @@ integration job). Run all sections; a skip needs a written reason.
   other streams continue; connection window not exhausted by the stalled
   one.
 - Slowloris: one byte per interval on preface/headers/body; deadlines fire.
-- GOAWAY drain: client keeps opening streams after GOAWAY; new streams
-  refused; existing finish; close by deadline.
+- GOAWAY drain: first notice, PING/ACK barrier (and no-ACK bounded delay),
+  final `min(last_proc, cutoff)`, new streams refused, existing finish, close
+  by deadline. Assert the first GOAWAY frame precedes the barrier PING in the
+  wire bytes; `DrainNoticeQueued` must not submit PING.
+- Frame budget: zero-length DATA/PING/PRIORITY/WINDOW_UPDATE flood; frame and
+  zero-DATA buckets trip; GOAWAY(ENHANCE_YOUR_CALM); CPU bounded.
 - Malformed frames: bad length, stream 0 DATA, even stream id, HEADERS after
   END_STREAM, DATA on idle, PUSH_PROMISE, invalid padding, frame size.
 - ALPN/h2c: wrong ALPN, no ALPN, h1 bytes on h2, h2 preface on h1, h2c
-  Upgrade attempt.
+  Upgrade attempt; `make` mode/ALPN check (`AlpnH2`, secure/cleartext) and
+  admission separately.
 - Header policy: oversized, duplicate authority, Host mismatch, forbidden
   connection headers, invalid value bytes, response header injection.
 - Fuzz: libFuzzer harness feeds random bytes and mutated valid frames to
@@ -1738,8 +1998,9 @@ integration job). Run all sections; a skip needs a written reason.
 
 - C harness and obo server under ASAN/UBSAN; nghttp2 and the shim under
   LSAN.
-- `platform::counts()` returns zero `KIND_H2_CONNECTION` after close;
-  `h2::counts().liveStreams == 0`; `nativeBytes` returns to baseline.
+- `platform::counts()` returns zero `KIND_H2_CONNECTION` and
+  `KIND_H2_STREAM` after all shells close; `h2::counts().liveStreams == 0`
+  and `closingStreams == 0`; `nativeBytes` returns to baseline.
 - Deliberately omitted `close` fails the leak gate (positive control).
 - Allocation failure at connection/stream/header/wire/event creation returns
   `ResourceLimit`/`Busy`, closes cleanly, and leaks nothing. nghttp2 NOMEM is
@@ -1747,6 +2008,10 @@ integration job). Run all sections; a skip needs a written reason.
   but recommended).
 - One native release per connection; double close returns false; stale
   stream shells fail at their own kind check without dereference.
+- Adoption fault injection: exactly one release, no double free, intended
+  `REFUSED_STREAM`, C table cleanup, no live `KIND_H2_STREAM` entry. Include a
+  buffered-DATA case and assert the connection window is restored and the RST
+  was emitted by the release branch when the platform released first.
 
 ### 9.6 Acceptance gates
 
@@ -1762,14 +2027,16 @@ H2b:
 - h2spec HTTP/2 sections for streams, headers, data, flow control, reset,
   trailers, settings, ping, goaway, priority, padding.
 - Multiplexing, flow-control/backpressure, max-streams, timeout and trailer
-  tests.
+  tests; reset/discard with unread DATA restores the connection window.
+- ASAN/LSAN close with queued response DATA and a pending provider; no UAF.
 - Leak counters zero; aggregate memory measured against the reservation.
 
 H2c:
 
 - Full h2spec over TLS h2 and h2c; curl/h2load/Go differential.
-- Rapid reset, CONTINUATION flood, HPACK bomb, slowloris, GOAWAY drain,
-  malformed frames, ALPN/h2c matrix.
+- Rapid reset, CONTINUATION flood, HPACK bomb, slowloris, GOAWAY PING barrier,
+  malformed frames, ALPN/h2c matrix, frame/zero-DATA budget, adoption-failure
+  fault injection.
 - ASAN/UBSAN/LSAN; fuzz corpus; graceful shutdown; no request smuggling.
 
 ## 10. Phasing, dependencies and effort
@@ -1777,12 +2044,16 @@ H2c:
 | Phase | Scope | Depends on | Exit | Rough effort |
 |---|---|---|---|---|
 | **H2a: shim/session** | C shim, cbind, `H2Connection`, preface, SETTINGS/ACK, PING, GOAWAY, event/wire rings, stats, error mapping; no streams | systems P2, cinterop P2T-a, pinned nghttp2 headers | C harness, connection-level h2spec, ASAN/LSAN, no pointers | 2-3 engineer-weeks |
-| **H2b: streams/flow** | stream table, HEADERS/CONTINUATION, request body, response headers/body/trailers, flow control, reset, max streams, deadlines | H2a | h2spec stream sections, multiplexing/flow/trailer/max-stream tests | 3-4 engineer-weeks |
-| **H2c: integration/security** | TLS ALPN dispatch, h2c prior knowledge, shared `httpapi` handler seam, rapid reset, CONTINUATION/HPACK caps, drain, differential, fuzz | H2b, TLS P2T-b (present), H1b/H1c for a combined listener (H1a0 only now) | full h2spec, curl/h2load/Go, security matrix, ASAN/leaks | 2-3 engineer-weeks |
+| **H2b: streams/flow** | stream table, HEADERS/CONTINUATION, request body, response headers/body/trailers, flow control, reset, max streams, deadlines, `runAction`/`ActionState` | H2a | h2spec stream sections, multiplexing/flow/trailer/max-stream tests | 3-4 engineer-weeks |
+| **H2c: integration/security** | TLS ALPN dispatch, h2c prior knowledge, shared `httpapi` request/action vocabulary, `httptransport`, rapid reset, CONTINUATION/HPACK caps, drain, differential, fuzz | H2b, TLS P2T-b (present), H1b/H1c for a combined listener (H1a0 only on this baseline) | full h2spec, curl/h2load/Go, security matrix, ASAN/leaks | 2-3 engineer-weeks |
 
 H2 can be tested standalone over a dedicated TLS or h2c port before H1b/H1c;
-the combined listener and H1 handler adoption are H2c/H1c integration work.
-No phase requires a new compiler feature or OS primitive.
+the combined listener and H1 request/action adoption are H2c/H1c integration
+work. H2a/H2b, the pure `Action` executor and the concrete loop API require no
+new compiler feature or OS primitive. A general **impure** application handler
+is a documented language gap (future impure function-value/interface-member
+tier), not a hidden H2c deliverable; the pure `Action` executor and concrete
+free-function API are the 0.14 path.
 
 Effort is for one experienced engineer including tests, not a marketing
 estimate. Review, fuzzing time and h2spec triage are additional.
@@ -1821,12 +2092,14 @@ estimate. Review, fuzzing time and h2spec triage are additional.
     can exhaust it. Per-stream and aggregate caps both required. Reject.
 15. **Treating `close` as a clean GOAWAY drain.** `close` is abortive; use
     `drain` for graceful shutdown. Reject conflating them.
-16. **A function-value handler or a C handler callback.** Obo forbids function
-    types with interface parameters and function values in fields; C cannot
-    call obo. Use the `Handler` interface called by the application loop.
+16. **An impure interface handler or a C handler callback.** Obo 0.14
+    interface members cannot perform impure I/O, and C cannot call obo. Use the
+    pure `Handler = fn(&RequestMeta, &Now): Action` plus the concrete
+    `http2::Stream` free functions; a general impure handler waits for a future
+    language tier.
 17. **A borrowed `H2Stream` view without its own registry entry.** Obo
     `ref record` assignment moves and a `platform::Resource` cannot be copied
-    into a second shell; the `Exchange` implementation would have no valid
+    into a second shell; the concrete stream functions would have no valid
     connection handle. Use a per-stream `KIND_H2_STREAM` shell with explicit
     adopt/orphan and close.
 
@@ -1839,12 +2112,20 @@ estimate. Review, fuzzing time and h2spec triage are additional.
 | h2c | Off by default; prior knowledge only on a dedicated cleartext profile; no Upgrade | Upgrade/sniffing creates downgrade and smuggling ambiguity |
 | Max concurrent/header caps | 32 streams, 16 KiB header list, 100 fields, 4 continuations | Higher caps increase per-connection memory and HPACK/DoS exposure |
 | Priority | Ignore RFC 7540; advertise `NO_RFC7540_PRIORITIES`; app-level fairness | A priority tree adds state and starvation bugs for little v1 benefit |
-| Handler model | `Handler` interface called by the app loop; one `Exchange` per stream; no stored borrows | Function values/callbacks are unsupported and invert control |
+| Handler model | Pure `Handler = fn(&RequestMeta, &Now): Action`; concrete `http2::Stream` free functions for custom streaming; no impure interface | Impure interface/function-value tiers do not exist in 0.14; pretending they do is the B1 failure |
 | Error page | Minimal plain text, no echo, `content-length`, no `Server` version; RST/GOAWAY for protocol errors | HTML/echo invites XSS, log injection and fingerprinting |
 | Stream shell | Per-stream `KIND_H2_STREAM` shell, adopted exactly once; connection close orphans it and the shell close retires it | A borrowed view cannot hold a `Resource`; copying one is illegal and a raw id is not a checked identity |
 | 100-continue | Optional `interim(100)`, not automatic | Always-send is unsolicited; never-send can deadlock a waiting client |
-| `maxConnections` | 14 with 32 streams and the checked 64 MiB aggregate; 20 requires raising `maxNativeBytes` to 96 MiB | A count alone lets raised buffers exceed the memory budget |
+| `maxConnections` | 14 with 32 streams and the checked 64 MiB H2 aggregate; TLS sessions, transport staging and other native users are charged separately, so benchmark or lower it | A count alone (or counting H2 only) lets total native memory exceed the platform budget |
 | h2c preface timing | Validate the preface before sending SETTINGS | Sending to scanners wastes bytes and complicates failure policy |
+| Mode/ALPN check | `make(t, limits, options)` owns the transport and checks `AlpnH2`/secure mode before creating the session | A transport-less factory cannot honestly enforce this |
+| Aggregate admission | Application-owned `Admission` count/byte object; `make` enforces only per-connection limits | A silently global counter or a forged caller bypasses policy |
+| GOAWAY barrier | First GOAWAY + PING ACK, fallback `drainBarrierMs=1000`; final `min(last_proc, cutoff)` | "one round trip" is undefined and can refuse streams before the client sees the notice |
+| Budget formulas | Validate arena as `maxConcurrent` x per-stream staging and events as 5 per stream; runtime arena exhaustion still resets | Default-only bounds fail at `maxConcurrent=256`/64 |
+| Frame budget | Start at 4000 burst / 2000 per s per connection, zero-DATA 200/100; benchmark h2load and tune with counters | A fixed low rate throttles a legitimate multiplexed client; a high rate weakens the flood control |
+| Admission scope | `Admission` counts the H2 reservation only; TLS session/staging and other native users are outside. Add headroom, lower `maxConnections`, or extend the application budget | Counting H2 alone can pass admission while the platform `maxNativeBytes` is exceeded |
+| `maxWire` | Keep at least `maxReadChunk + 9` and 64 KiB; do not raise without a peer-frame/read-length check | A frame larger than the wire ring would always return WOULDBLOCK |
+| Action latch | Latch the first `Action`; a pure handler that reads `&Now` is still deterministic per stream | Re-calling a non-deterministic handler could change the response mid-stream |
 | Response header commit | Commit on first body write or `end` | Early commit adds empty DATA frames or a separate flush API |
 | Trailers on H1 | Chunked only; H2 always (subject to caps) | Pretending H1 always supports trailers changes framing |
 
@@ -1862,7 +2143,9 @@ estimate. Review, fuzzing time and h2spec triage are additional.
 5. Header/body payloads live in bounded per-stream C buffers; events carry no
    payload; no whole-body allocation.
 6. `recvBuffered[s] <= maxStreamRecvBuffer`; `sum(recvBuffered) <=
-   maxConnectionWindow`; consume only after bytes leave the ring.
+   maxConnectionWindow`; consume only after bytes leave the ring. Every
+   received application byte is either delivered and consumed or discarded and
+   connection-consumed; no retirement path loses connection window.
 7. Padding is consumed by nghttp2; only application bytes are consumed by the
    shim; no padding-induced window stall.
 8. `sendBuffered[s] <= maxStreamSendBuffer`; accepted bytes are sent exactly
@@ -1872,16 +2155,21 @@ estimate. Review, fuzzing time and h2spec triage are additional.
 10. One `nghttp2_session` and one C stream record per live stream; no
     per-stream fd/thread/watch.
 11. `openStream` adopts/registers a stream entry exactly once; `closeStream`/
-    `close` are idempotent; dropping a record frees only the record.
+    `close` are idempotent; dropping a record frees only the record. A closed
+    stream record is freed only in the post-feed/post-send sweep after
+    nghttp2 reports the close or the RST is sent.
 12. A connection close retires the connection token, frees the session, wire,
     events and arena once, and orphans registered stream entries; each stream
-    shell close retires its own token exactly once. An unclaimed stream has no
-    registry entry and is freed with the connection.
+    shell close retires its own token exactly once. An unregistered stream has
+    no platform entry and is freed with the connection. `_adoptToken` failure
+    releases the native token exactly once; obo does not abandon it again.
 13. Every deadline is absolute; no partial progress restarts it.
-14. GOAWAY is sent before graceful close; `close` is abortive; drain has a
-    deadline.
+14. GOAWAY is sent before graceful close; the first notice is followed by a
+    PING-ACK/`drainBarrierMs` barrier and the final GOAWAY uses
+    `min(last_proc, cutoff)`; `close` is abortive; drain has a deadline.
 15. No pointer, C struct, function pointer or callback crosses the cbind; C
-    never calls obo.
+    never calls obo. `httpapi` contains no impure interface or exchange
+    interface; `httptransport` and the stream functions are concrete.
 16. Remote bytes produce `Result`/events, never a panic, trap or exit.
 17. Header names/values, pseudo-headers, connection-specific fields and
     response framing are validated before use; no request echo.
@@ -1890,7 +2178,15 @@ estimate. Review, fuzzing time and h2spec triage are additional.
 19. Application fairness: one stream cannot monopolize a turn; per-stream
     work is capped.
 20. All limits are validated with checked arithmetic before any allocation or
-    native call.
+    native call; the header arena and event ring include the
+    `maxConcurrentStreams` factor.
+21. Response DATA sum equals a declared `content-length` at `end`, except for
+    `HEAD`/`204`/`205`/`304`/`1xx` rules.
+22. Inbound frame and zero-length-DATA buckets bound CPU even on one stream;
+    exceeding either closes with `ENHANCE_YOUR_CALM`.
+23. `_adoptToken` failure after stream registration performs exactly one native
+    release and no double free; `h2_stream_abandon` is idempotent and a no-op
+    when the platform already released the token.
 
 ### 13.2 Review questions
 
@@ -1898,18 +2194,21 @@ estimate. Review, fuzzing time and h2spec triage are additional.
    all-or-nothing send callback, deferred data provider, no pointers) correct
    and sufficient?
 2. Is the per-stream `KIND_H2_STREAM` shell with adopt/orphan/close correct,
-   including `openStream` adopt failure, connection close with live streams,
-   and the leak oracle?
+   including the `_adoptToken` failure split (no abandon after platform
+   release), deferred free after `on_stream_close`, connection close with live
+   streams, and the leak oracle?
 3. Are the flow-control invariants correct, especially consume-after-copy,
-   padding, connection window = maxConcurrent x stream window, and the
-   zero-window send-ring behavior?
-4. Can H1 implement `httpapi::Exchange` without changing its parser/serializer
-   semantics, and does the seam avoid pretending h1/h2 are identical?
+   discarded-byte connection consumption on reset/discard/close, padding,
+   connection window = maxConcurrent x stream window, and the zero-window
+   send-ring behavior?
+4. Can H1 produce `httpapi::RequestMeta`/`Action` and use `httptransport`
+   without changing its parser/serializer semantics, and does the concrete seam
+   avoid pretending h1/h2 are identical?
 5. Are the limit defaults and the aggregate reservation formula safe and
    testable? Is 64 MiB / 14 connections the right starting point?
-6. Is the GOAWAY drain sequence (`shutdown_notice`, then `submit_goaway
-   (last_proc_stream_id)`, then close) correct for RFC 9113 and nghttp2
-   1.59?
+6. Is the GOAWAY drain sequence (`shutdown_notice`, PING-ACK or
+   `drainBarrierMs`, then `submit_goaway(min(last_proc, cutoff))`, then close)
+   correct for RFC 9113 and nghttp2 1.59?
 7. Is requiring nghttp2 headers with the exact Ubuntu pin defensible, and is
    the provenance/test strategy sufficient?
 8. Are the rapid-reset, CONTINUATION, HPACK and header-list controls
@@ -1918,12 +2217,21 @@ estimate. Review, fuzzing time and h2spec triage are additional.
    implementable and safe?
 10. Is the phasing/dependency order right, especially H2 standalone before
     the H1 combined listener?
+11. Does the C stream release branch correctly handle the
+    platform-released-first adoption path (consume window, one
+    `REFUSED_STREAM`, deferred free)?
+12. Are the 304/HEAD/no-body length exemptions and `writeBody` discard rule
+    right?
+13. Is the `DrainNoticeQueued -> DrainNoticeSent -> DrainBarrierPing ->
+    DrainFinal` ordering sufficient to keep the first GOAWAY before PING?
+14. Are the frame rate and H2-only admission defaults safe once TLS/other
+    native charges are included?
 
 ## 14. Conclusion
 
 The recommended implementation is a thin, trusted nghttp2 C shim under a
 strict scalar/token boundary, with obo owning connection policy, per-stream shells,
-deadlines, admission and the shared `httpapi` handler seam. This keeps the
+deadlines, admission and the shared `httpapi` request/action vocabulary. This keeps the
 security-critical framing, HPACK and flow-control work in a maintained,
 h2spec-tested system library, while making obo responsible for the parts a
 library cannot decide: limits, fairness, ALPN/h2c policy, error policy,
