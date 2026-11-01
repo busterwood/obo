@@ -385,12 +385,24 @@ kind:
 | `ints@k:i32`, `ints@k:u32` | `[]int`, each element range-checked (exit 11) | `const int *`, `const unsigned int *` |
 | `ints@k:len` | the element count of list `k`; reads no argument | `int` |
 | `nil_bytes_list@k` | `[]?[]byte` | `const char *const *` (NULL for nil), `const int *` (lengths) |
-| `null` | none | `void *`, NULL |
-| `const:<n>` | none | `void *`, the value `n` (e.g. `const:-1`) |
+| `null` | none | the spec's `ctypes` type, passed as NULL |
+| `const:<n>` | none | the spec's `ctypes` type, passed as the value `n` (e.g. `const:-1`) |
 
 Rules:
 
+- `null` and `const:<n>` have no obo argument, so their C type is not implied by
+  the kind. The spec gives it in `ctypes`, one entry per argument (a C type for each
+  `null`/`const`, `null` elsewhere), for example `"ctypes": ["const char *"]` for a
+  NULL `const char *`, `"void (*)(void *)"` for `const:-1` as a destructor, and
+  `"int"` for `const:5`. The signature check then compares that type with the
+  header exactly, like every other slot. A `ctypes` entry must be a pointer or
+  function-pointer type, or one of a fixed list of integer types: a struct by value
+  is refused, because the thunk passes every slot in a register. Other slots keep
+  their fixed types, so a mismatched pointer slot is still refused by the compiler.
 - `ints@k:len` must name a list kind (`ints` or `nil_bytes_list`).
+- Element counts are capped only at `INT_MAX`, which is what the C length parameter
+  can hold. A per-library cap, such as libpq's 32 parameters, belongs to the wrapper
+  (design R10): the wrapper checks it and returns an error before the call.
 - A `borrow_*`, `ints` or `nil_bytes_list` argument is an array or string. Arrays are
   passed as `&a`, under the existing `&T` argument rules (a temporary array is
   refused by `&`). A string is passed by value. A string temporary, such as a call
@@ -402,13 +414,17 @@ Rules:
 - Scratch copies (`borrow_cstr`, `ints`, `nil_bytes_list`) are freed after the call on
   the normal return path. A contract violation exits 11 before the C call. The
   hosted counter `obo_ci_scratch_live()` is 0 after each call; the test checks it.
+  On an exit-11 path the process ends without freeing scratch: the OS reclaims it.
 - The sidecar records the descriptor in its argtypes field, and the tool checks it
   against the spec (arity and each kind) before the link. A kinds binding needs a
   maintained `wrapper`; generated wrappers stay int-only.
-- Limits: at most 12 kinds per binding and 8 for the int form; a kind takes one
+- Limits: at most 12 kinds per binding and 8 for the int form; an argument index
+  `@k` is below 16 (the compiler and the tool both refuse more); a kind takes one
   `@k` argument (`null` and `const:<n>` take none); results are still `i32`/`i64`.
 
-The helpers the thunks call are in `host.c` (`obo_ci_*`), hosted builds only.
+The helpers the thunks call are in `host.c` (`obo_ci_*`), hosted builds only. They
+have hidden visibility, so they stay out of the dynamic symbol table and a user C
+library cannot bind to them.
 
 ## Tests
 
@@ -431,7 +447,12 @@ missing wrapper `.sym`, the libpq version probe, and the argument kinds (`kinds(
 a `bytes` fixture with empty, 1 MiB, nil-string and embedded-NUL inputs, the NUL
 rejected by `borrow_cstr`, the `const:-1` recorder, the `f(&a, grow(&a))` timing,
 `u32` above `2^31`, `i32`/`u32`/element range exits 11, nil and empty list elements,
-the scratch counter, and refused spec and descriptor mismatches before link). A libpq build failure is a
+the scratch counter, and refused spec and descriptor mismatches before link), the
+`null`/`const:<n>` slots typed by `ctypes` (a NULL `const char *`, a NULL struct
+pointer, a `const:-1` function-pointer destructor, `const:5` for an `int`, and
+refusals for a struct swap, a pointer mismatch, a missing or by-value type), and
+seven to eleven C parameters with odd and even stack-argument counts, each checked
+for a 16-byte aligned callee frame and for its values). A libpq build failure is a
 test failure when `libpq.so.5` is present; the test skips only when the library
 is absent.
 
