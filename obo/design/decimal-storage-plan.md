@@ -1,7 +1,7 @@
 # Decimal storage tier: plan
 
 **Date:** 2026-11-01
-**Status:** revision 2, after the independent review (REVISE, 9 blocking findings, folded in below). The memory budget is raised to 2,750,000 (§6). **Progress:** D1, D2 and D3 are implemented, reviewed, merged and released as `0.16`/format 9/ABI 1, with the seed promoted at `50cca0a`. D4a (decimal method parameters/returns and interface members) is implemented and released as `0.18`/format 11/ABI 1 (merged as `e47a8c8`, seed `769a359`, 757,761 bytes, sha256 `ca513536…`, fixed point); it also fixes the interface vtable offset and the `recordParamFree` index mapping. The APPROVE WITH NITS review is closed (fail-closed mapping, faithful refusal mutant, higher-index pfree tests, refreshed references), and main's D5 library (`0138651`) is merged. D4b is next, then D6.
+**Status:** revision 2, after the independent review (REVISE, 9 blocking findings, folded in below). The memory budget is raised to 2,750,000 (§6). **Progress:** D1, D2 and D3 are implemented, reviewed, merged and released as `0.16`/format 9/ABI 1, with the seed promoted at `50cca0a`. D4a (decimal method parameters/returns and interface members) is implemented and released as `0.18`/format 11/ABI 1 (merged as `e47a8c8`, seed `769a359`, 757,761 bytes, sha256 `ca513536…`, fixed point); it also fixes the interface vtable offset and the `recordParamFree` index mapping. The APPROVE WITH NITS review is closed (fail-closed mapping, faithful refusal mutant, higher-index pfree tests, refreshed references), and main's D5 library (`0138651`) is merged. D4b is next. D6 (the read-side database bridge) is implemented on branch `decimal-d6` from main `f4df244` and is pending independent review; it is library-only and changes no compiler, runtime, symbol format or seed.
 **Baseline:** `main` `6f83880` (obo `0.15`, `SYM_FORMAT=8`, `SYM_ABI=1`, after cinterop v2 stage d).
 **Branch/worktree:** `decimal-storage` at `.claude/worktrees/decimal-storage`.
 **Target:** one release, `0.16` / `SYM_FORMAT=9` / `SYM_ABI=1`, merged once with one seed promotion (done; see Status).
@@ -252,6 +252,15 @@ Money/currency (a `Money { amount, currency }` record with ISO 4217 minor
 units) is milestone M4 and is **not** in this branch.
 
 ### D6 — database bridge
+
+**Status:** implemented on branch `decimal-d6` (cut from main `f4df244`,
+obo 0.18/format 11); library-only, pending independent review. The read side
+adds `DecimalOrNull { Null {}; Value { v: decimal } }` and
+`getDecimal(rows, row, col)` to the PostgreSQL, SQLite and SQL Server adapters
+(SQLite takes `(&Stmt, col)` because its rows are a streaming statement). NULL
+is `Null`, never zero; a present zero is `Value{0}`. The existing
+`decimal()`/`decimal_text()` accessors keep working, and writes stay
+`DecimalText` with no `SqlArg.Decimal`. See `FORK.md` for the measured results.
 
 **Review correction:** a `${d}` decimal hole already works. `sqlTemplateHole`
 (`obo.obo:8436-8464`, decimal branch 8453-8456) maps it to tag 6, `DecimalText`,

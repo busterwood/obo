@@ -7281,3 +7281,104 @@ if `/dev/pts` is absent). `run_fork.py` **1878 passed, 0 failed**;
 `module_test.py` **150 passed**; `doc_check.py` **75 examples, 0 problems**;
 `git diff --check` is clean and `git diff main -- obo/src obo/runtime obo/seed
 obo/obo` is empty. These are host measurements, not portable promises.
+
+## Decimal database read bridge (stage D6), library-only
+
+Stage D6 of `design/decimal-storage-plan.md` adds the exact decimal **read**
+side to the experimental database adapters. The branch is cut from `main`
+`f4df244` (obo 0.18/format 11); it changes no compiler, runtime, symbol format,
+ABI or seed, and it does not add `SqlArg.Decimal`, a binary numeric path, a
+`?decimal` form or a compiler branch. Writes stay `DecimalText`.
+
+**Public API (per adapter).** The closed type is duplicated in each package
+rather than shared, so no new module enters the cinterop wrapper specs and
+there is no cross-package import cycle:
+
+- `postgres::DecimalOrNull = closed { Null {}; Value { v: decimal } }`,
+  `postgres::getDecimal(rows: &Rows, row: int, col: int): Result[DecimalOrNull]`.
+- `sqlite::DecimalOrNull` and
+  `sqlite::getDecimal(st: &Stmt, col: int): Result[DecimalOrNull]`. SQLite rows
+  are a streaming statement, so the analogue of `(rows,row,col)` is
+  `(stmt,col)`.
+- `mssql::DecimalOrNull`,
+  `mssql::getDecimal(rows: &Rows, col: int): Result[DecimalOrNull]`,
+  `mssql::DecimalType`, and `Rows.decimal_type(col)`.
+
+`postgres::Rows.decimal`, `sqlite::Stmt.decimal` and `mssql::Rows.decimal`
+(plus `mssql::Rows.decimal_text`) keep their existing API and error-only NULL
+contract. `getDecimal` is added alongside them.
+
+**NULL and zero.** `getDecimal` returns `ok(Null{})` for a SQL NULL and
+`ok(Value{v: 0})` for a present zero. NULL is never zero or empty text, and it
+wins over the binary/OID/typmod/storage-class checks. `decimal()` still returns
+`DEC_DB_NULL` (1001) for NULL; `getDecimal` does not use the error arm for it.
+
+**PostgreSQL typmod.** `numeric(p,s)` with `s >= 0` makes the typmod scale
+authoritative. PostgreSQL's `numeric_out` already prints exactly `s` fractional
+digits, so the parsed dscale normally matches; a nonconforming short text is
+restored to the declared display scale by exact zero padding (never rounding).
+Negative scale prints no fraction digits: dscale is 0 and the scale stays
+metadata only. Unconstrained numeric keeps the text's dscale. The deterministic
+fake-libpq test covers a short `1` under `numeric(10,4)` and pins dscale 4; the
+live test pins `SELECT 1::numeric(10,4)` at dscale 4. The typmod decode,
+`decimal::check` and all read errors keep the existing 1001/1002/1003/1004/
+1006/1007/1008/1009/1010/1011/1012/1013 mappings.
+
+**SQLite storage classes.** TEXT is the exact path and keeps its written
+display scale. INTEGER is SQLite's documented exact i64-to-text rendering and
+reads with dscale 0; this is the accepted NUMERIC/INTEGER-affinity consequence
+(`1.00`/`1.0`/`0.0000` become INTEGER and lose display scale), documented as a
+trap rather than repaired. REAL is refused as `DEC_DB_INEXACT_STORAGE` (1005)
+and never goes through `sqlite3_column_double`; BLOB is `DEC_DB_NOT_DECIMAL`
+(1002). There is no typmod or `(p,s)` metadata and therefore no declared-scale
+read check. Empty/NUL/non-ASCII text is 1006, `NaN`/`Infinity` is 1004, and
+over-38-digit/exponent/display-range text keeps 1007/1008/1009.
+
+**SQL Server metadata.** `getDecimal` reads the declared precision/scale from
+the existing `SQLDescribeCol` metadata (`ColumnSize`/`DecimalDigits`) through
+`decimal_type`, accepts only `decimal`/`numeric`, and applies
+`decimal::check(v,p,s)`; an out-of-range `(p,s)` is 1012 and a value that would
+round/overflow is 1010/1011. The driver's exact text carries the scale
+(`12.3400`, `-.5000`, `.0000`); the adapter inserts the omitted leading zero and
+zero-pads a short nonconforming fraction exactly. `float`/`real` is 1005 and
+text/binary columns are 1002, never silently parsed. `money`/`smallmoney` are
+reported by the driver as `SQL_DECIMAL`, so their exact text decodes as a
+decimal value; there is still no separate `Money` language type. A typed SQL
+Server `decimal` cell cannot be malformed or over 38 digits (the server rejects
+that), so the shared parse path's 1006/1007 mappings are defensive there; the
+live suite checks the 38-digit round trip and the existing 39-digit parameter
+rejection.
+
+**Tests.** `obo/experimental/db/tests/test_db_adapters.py` now expects the
+`postgres_get_decimal=ok` and `sqlite_get_decimal=ok` markers and the MSSQL
+runner asserts the new `decimal_or_null` section. Vectors cover NULL vs zero,
+positive/negative, scales 0/2/6, a 38-digit value, a large display scale
+(PostgreSQL 16383; SQLite 16384; SQL Server `decimal(38,38)`), PostgreSQL
+`numeric(10,4)` typmod, SQLite TEXT vs INTEGER affinity, SQLite REAL/BLOB
+rejection, SQL Server `decimal(18,4)`/NULL and metadata, exact
+`money`/`smallmoney` text (reported as `SQL_DECIMAL`) with `float`/text/binary
+rejection, malformed text, and over-38-digit/exponent errors. The pre-existing `decimal()`/`decimal_text()`
+oracles remain unchanged and pass.
+
+**Gates measured on this branch (Linux x86-64).**
+- `test_db_adapters.py` with a live local PostgreSQL DSN and the local SQL
+  Server DSN: **all checks ok**, including live PostgreSQL decimal/getDecimal,
+  SQLite (real 3.45.1), SQL Server 24 sections, the fake-libpq typmod vector,
+  the ASan UAF harness, the no-float source/nm gate and the manifest checks.
+  Without a DSN the live hooks print visible `skipped` lines; the SQLite and
+  fake-libpq vectors still run.
+- `run_fork.py` **1878 passed, 0 failed**; `module_test.py` **150 passed,
+  0 failed**; `doc_check.py` **75 examples, 0 problems**.
+- `git diff --check` is clean; `git diff main -- obo/src obo/runtime obo/seed
+  obo/obo` is empty. `git status --short` lists only the D6 docs, adapters,
+  examples and tests.
+
+**Deviations.** (1) The closed type is per adapter, not one shared module, to
+avoid changing every cinterop wrapper spec and to keep the packages
+independent. (2) The SQLite accessor is `(stmt,col)` because a SQLite result is
+a streaming statement, not a row-addressed `Rows`. (3) SQL Server `getDecimal`
+uses declared metadata and therefore refuses non-decimal columns; the older
+`decimal()` remains permissive for compatibility. (4) PostgreSQL and SQLite
+have no dedicated package README in this tree; their read-side documentation is
+in `experimental/db/README.md`, and `mssql/README.md` documents the SQL Server
+surface. Library-only: no release, merge, push, promotion or seed change.

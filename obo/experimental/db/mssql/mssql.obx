@@ -104,6 +104,22 @@ pub type Rows = ref record { h: Stmt; last_status: int }
 // empty byte string.
 pub type Param = ref record { kind: int; i: int; data: []byte }
 
+// Decimal column metadata from SQLDescribeCol. SQL Server decimal/numeric has
+// precision 1..38 and scale 0..precision; the value text itself does not carry
+// the declared (p,s), so the read side takes it from these fields.
+pub type DecimalType = ref record {
+    pub precision: int
+    pub scale: int
+    pub constrained: bool
+}
+
+// Read-side NULL wrapper for the exact decimal bridge. Null is a SQL NULL and is
+// never zero; a present zero is Value{v: 0}. A SQL NULL is not an error value.
+pub type DecimalOrNull = closed {
+    Null { }
+    Value { v: decimal }
+}
+
 // ---------------------------------------------------------- native declarations
 
 native fn open_native(dsn: &[]byte): ?Connection
@@ -205,6 +221,68 @@ fn fraction_digits(s: string): int {
         if s[i] == '.' { return len(s) - i - 1 }
     }
     return 0
+}
+
+fn has_exponent(s: string): bool {
+    for i in 0..len(s) {
+        if s[i] == 'e' || s[i] == 'E' { return true }
+    }
+    return false
+}
+
+// SQL Server prints a value below one without the leading zero (".0000",
+// "-.5000"). decimal::parse requires a digit before the point, so insert one
+// without changing the value or the display scale.
+fn leading_zero_text(txt: string): string {
+    if len(txt) == 0 { return txt }
+    var prefix = 0
+    if txt[0] == '-' || txt[0] == '+' { prefix = 1 }
+    if prefix < len(txt) && txt[prefix] == '.' {
+        return substr(txt, 0, prefix) + "0" + substr(txt, prefix, len(txt))
+    }
+    return txt
+}
+
+// The declared decimal(p,s) scale is authoritative. A conforming SQL Server
+// value already prints exactly s fraction digits; if a nonconforming producer
+// omits trailing zeros, restore the display scale exactly. Never rounds.
+fn declared_dscale_text(txt: string, scale: int): string {
+    if scale <= 0 { return txt }
+    if has_exponent(txt) { return txt }
+    let ds = fraction_digits(txt)
+    if ds >= scale { return txt }
+    var b = new []byte(0)
+    for i in 0..len(txt) { append(b, txt[i]) }
+    if ds == 0 { append(b, '.') }
+    for i in 0..(scale - ds) { append(b, '0') }
+    return string(b)
+}
+
+// Parse SQL Server's exact decimal text with the optional declared scale. The
+// caller has already rejected NULL and non-decimal metadata.
+fn parse_decimal_text(txt: string, scale: int): Result[decimal] {
+    let normalized = declared_dscale_text(leading_zero_text(txt), scale)
+    let d = decimal::parse(normalized)
+    match d {
+        ok(v) { return ok(v) }
+        err(m, c) {
+            if c == 10 { return err("decimal text could not be allocated", 3) }
+            if c == 1 || c == 6 { return err("invalid decimal value", 2) }
+            if c == 4 { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+            if c == 7 {
+                return err("decimal text has more than 38 significant digits",
+                           DEC_DB_PRECISION)
+            }
+            if c == 8 {
+                return err("decimal exponent is outside int16", DEC_DB_EXPONENT)
+            }
+            if c == 9 {
+                return err("decimal display scale is outside uint16",
+                           DEC_DB_DISPLAY_RANGE)
+            }
+            return err(m, c)
+        }
+    }
 }
 
 fn canonical_db(value: decimal): Result[string] {
@@ -496,6 +574,31 @@ pub fn (r: &Rows) column_nullable(col: int): Result[int] {
     return ok(col_nullable(&r.h, col))
 }
 
+// Decode a SQL Server decimal/numeric column's precision and scale from the
+// existing SQLDescribeCol metadata. Other SQL types (including float/real and
+// binary) are refused as not decimal; money/smallmoney are reported by the
+// driver as SQL_DECIMAL and are exact text, so they decode here too.
+pub fn (r: &Rows) decimal_type(col: int): Result[DecimalType] {
+    let t = try r.column_type(col)
+    if is_binary_type(t) {
+        return err("value is not numeric decimal data", DEC_DB_NOT_DECIMAL)
+    }
+    if is_inexact_float(t) {
+        return err("REAL/FLOAT storage is not exact decimal",
+                   DEC_DB_INEXACT_STORAGE)
+    }
+    if t != SQL_DECIMAL && t != SQL_NUMERIC {
+        return err("value is not numeric decimal data", DEC_DB_NOT_DECIMAL)
+    }
+    let p = try r.column_size(col)
+    let s = try r.column_digits(col)
+    if p < 1 || p > 38 || s < 0 || s > p {
+        return err("invalid numeric typmod or precision/scale metadata",
+                   DEC_DB_METADATA)
+    }
+    return ok(new DecimalType{precision: p, scale: s, constrained: true})
+}
+
 pub fn (r: &Rows) is_binary(col: int): Result[bool] {
     let t = try r.column_type(col)
     return ok(is_binary_type(t))
@@ -702,40 +805,66 @@ pub fn (r: &Rows) decimal_text(col: int): Result[?[]byte] {
 // NULL, then binary (not decimal), then exact text. SQL Server omits the leading
 // zero below one (".0000", "-.5000"); decimal::parse requires a digit before the
 // point, so one is inserted without changing the value or its display scale.
+// This unconstrained accessor keeps working; getDecimal() adds the declared
+// decimal(p,s) metadata check and the NULL wrapper.
 pub fn (r: &Rows) decimal(col: int): Result[decimal] {
     let raw = try r.decimal_text(col)
     if raw == nil { return err("SQL NULL", DEC_DB_NULL) }
     let b = raw
     if len(b) == 0 { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
     if has_nul(&b) { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
-    var txt = string(b)
+    let txt = string(b)
     if txt == "NaN" || txt == "Infinity" || txt == "-Infinity" {
         return err("non-finite numeric is not representable", DEC_DB_NONFINITE)
     }
-    if len(txt) > 0 {
-        var prefix = 0
-        if txt[0] == '-' || txt[0] == '+' { prefix = 1 }
-        if prefix < len(txt) && txt[prefix] == '.' {
-            txt = substr(txt, 0, prefix) + "0" + substr(txt, prefix, len(txt))
-        }
+    return parse_decimal_text(txt, 0)
+}
+
+// The NULL-aware, metadata-checked accessor. NULL wins before the type/OID
+// check, so ok(Null{}) is a SQL NULL; a present zero is ok(Value{v: 0}). A
+// non-decimal column (including float/real and binary) is DEC_DB_NOT_DECIMAL or
+// DEC_DB_INEXACT_STORAGE; the declared decimal(p,s) is read from the existing
+// SQLDescribeCol precision/scale and decimal::check refuses a cell that would
+// need rounding or exceed the declared precision.
+pub fn getDecimal(r: &Rows, col: int): Result[DecimalOrNull] {
+    let isn = try r.is_null(col)
+    if isn {
+        let out: DecimalOrNull = new Null{}
+        return ok(out)
     }
-    let d = decimal::parse(txt)
-    match d {
-        ok(v) { return ok(v) }
+    let meta = try r.decimal_type(col)
+    let raw = try r.decimal_text(col)
+    if raw == nil {
+        let out: DecimalOrNull = new Null{}
+        return ok(out)
+    }
+    let b = raw
+    if len(b) == 0 { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+    if has_nul(&b) { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+    let txt = string(b)
+    if txt == "NaN" || txt == "Infinity" || txt == "-Infinity" {
+        return err("non-finite numeric is not representable", DEC_DB_NONFINITE)
+    }
+    let v = try parse_decimal_text(txt, meta.scale)
+    let cr = decimal::check(v, meta.precision, meta.scale)
+    match cr {
+        ok(checked) {
+            let out: DecimalOrNull = new Value{v: checked}
+            return ok(out)
+        }
         err(m, c) {
             if c == 10 { return err("decimal text could not be allocated", 3) }
-            if c == 1 || c == 6 { return err("invalid decimal value", 2) }
-            if c == 4 { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+            if c == 1 || c == 4 { return err("invalid decimal value", 2) }
+            if c == 3 {
+                return err("value does not fit the declared scale without rounding",
+                           DEC_DB_SCALE)
+            }
             if c == 7 {
-                return err("decimal text has more than 38 significant digits",
-                           DEC_DB_PRECISION)
+                return err("value exceeds the declared precision", DEC_DB_RANGE)
             }
-            if c == 8 {
-                return err("decimal exponent is outside int16", DEC_DB_EXPONENT)
-            }
-            if c == 9 {
-                return err("decimal display scale is outside uint16",
-                           DEC_DB_DISPLAY_RANGE)
+            if c == 6 {
+                return err("invalid numeric typmod or precision/scale metadata",
+                           DEC_DB_METADATA)
             }
             return err(m, c)
         }

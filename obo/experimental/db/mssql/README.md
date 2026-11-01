@@ -117,7 +117,8 @@ fn main() {
                                 if !r { break }
                                 let id = rows.text(0)
                                 let isn = rows.is_null(1)
-                                // text(), bytes(), value(), decimal(), decimal_text()
+                                // text(), bytes(), value(), decimal(),
+                                // decimal_text(), decimal_type(), getDecimal()
                             }
                             err(m, c) { break }
                         }
@@ -173,8 +174,27 @@ fn main() {
 | `text(col): Result[string]` | Non-NULL text; rejects NULL, binary columns and embedded NUL. |
 | `decimal_text(col): Result[?[]byte]` | SQL Server's exact decimal text; nil is NULL. |
 | `decimal(col): Result[decimal]` | Parses the exact text. NULL is `DEC_DB_NULL`; binary is `DEC_DB_NOT_DECIMAL`; `float`/`real` is `DEC_DB_INEXACT_STORAGE`. Inserts the leading zero SQL Server omits (`.5000` → `0.5000`) without changing value or display scale. |
+| `decimal_type(col): Result[DecimalType]` | Declared `decimal`/`numeric` precision (`ColumnSize`) and scale (`DecimalDigits`). A non-decimal column is `DEC_DB_NOT_DECIMAL`; `float`/`real` is `DEC_DB_INEXACT_STORAGE`; invalid metadata is `DEC_DB_METADATA`. |
+| `mssql::getDecimal(rows, col): Result[DecimalOrNull]` | NULL-aware read. `Null {}` is SQL NULL, `Value { v: decimal }` is a present value including zero; the declared scale is authoritative, and the declared `(p,s)` is checked with `decimal::check`. |
 | `status(): int`, `error_message()`, `sqlstate()`, `error_code()` | Last `SQLRETURN` and the statement diagnostic. |
 | `close(): Result[bool]`, `is_open()` | Second close is `ok(false)`; a `SQLFreeStmt`/`SQLFreeHandle` failure during the release is an `err`. Accessors after the Rows closes are `err("rows are closed", 2)`. After the **Connection** closes, `is_open()` is false and accessors are `err("statement's connection is closed", 2)`; `close()` still frees the C state once. |
+
+`getDecimal` follows the same cell cache but reads the declared metadata first.
+A SQL NULL is `Null{}` (never zero); a present zero is `Value{v: 0}`. For a
+`decimal(p,s)` column the driver's text carries exactly `s` fraction digits
+(`12.3400`, `-.5000`, `.0000`); the adapter inserts the omitted leading zero
+and, if a nonconforming producer returned a shorter fraction, restores the
+declared display scale by exact zero padding. It then applies
+`decimal::check(v,p,s)`, so a value that would need rounding or exceed the
+declared precision is `DEC_DB_SCALE`/`DEC_DB_RANGE`, not a silent fit. A
+non-decimal column is `DEC_DB_NOT_DECIMAL`; `float`/`real` is
+`DEC_DB_INEXACT_STORAGE`. `money`/`smallmoney` are reported by the driver as
+`SQL_DECIMAL`, so their exact text decodes as a decimal value; there is no
+separate `Money` language type. SQL Server's typed `decimal` cannot produce
+malformed or over-38-digit text in a result cell, and its server-side conversion
+overflow is a SQL error (`Rows.execute`/`fetch`), not a decimal cell; the shared
+parse path still maps malformed text to `DEC_DB_TEXT_INVALID` and over-precision
+text to `DEC_DB_PRECISION` if a driver ever returns one.
 
 The cell cache is per statement and per column/representation: `is_null(0)`
 then `text(0)` then `bytes(0)` reuse one `SQLGetData` read for the current row.
@@ -259,6 +279,11 @@ is never printed or written into the manifest. Against the local
 - ascending column reads (`text(1)` before `text(0)`), a stale-row check after
   `SQL_NO_DATA`, and the full i64 min/max parameter and result range;
 - `datetimeoffset` readable as exact text;
+- `getDecimal` vectors: NULL vs a present zero, scales 0/2/4/6/38, a 38-digit
+  `decimal(38,0)`, a `decimal(38,38)` value with dscale 38, declared metadata
+  from `SQLDescribeCol`, exact `money`/`smallmoney` text (reported as
+  `SQL_DECIMAL`), and rejection of `float`, text and binary columns (with NULL
+  still winning over the type check);
 - close/double-close and closed-`Rows` accessors;
 - diagnostics: after a successful metadata read, value read and exhausted
   cursor, `error_message()`/`sqlstate()`/`error_code()` are empty/zero (this
@@ -279,7 +304,7 @@ is never printed or written into the manifest. Against the local
   runs no census, use after close exits 7, and
   `OBO_CENSUS_FAULT=underflow` exits 4.
 
-The runner asserts all 23 section markers, so a section that is accidentally
+The runner asserts all 24 section markers, so a section that is accidentally
 left out of `run_all` fails the suite instead of passing silently. It pops
 `OBO_CHECK` and `OBO_CENSUS_FAULT` for the clean runs and sets them explicitly
 for the census cases, so exporting either variable cannot change a passing
@@ -301,7 +326,8 @@ These are deliberately outside the first slice and need separate review:
   time (see the concurrency note above).
 - **`datetimeoffset`/`date`/`time` typed accessors.** They read as exact text;
   there is no typed value type or timezone arithmetic.
-- **`money`/`smallmoney` typed accessor.** Exact text and `decimal()` work.
+- **`money`/`smallmoney` typed accessor.** Exact text, `decimal()` and
+  `getDecimal()` work; there is no separate `Money` type.
 - **Floats.** No `float`/`real` parameter kind and no `SqlArg.Float` bridge;
   `SQL_ARG_FLOAT_UNSUPPORTED` is reserved for a future template bridge.
 - **Output parameters, streaming LOBs, scrollable cursors, connection

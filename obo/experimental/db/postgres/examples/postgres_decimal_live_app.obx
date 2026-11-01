@@ -175,6 +175,86 @@ fn read_err(c: &postgres::Connection, name: string, sql: string,
     }
 }
 
+fn get_ok(c: &postgres::Connection, name: string, sql: string,
+          want_can: string, want_dscale: int, exit_code: int) {
+    let q = query(c, sql)
+    match q {
+        ok(rows) {
+            defer rows.close()
+            check(rows.status() == postgres::PGRES_TUPLES_OK,
+                  name + " status", exit_code)
+            let g = postgres::getDecimal(&rows, 0, 0)
+            match g {
+                ok(v) {
+                    match v {
+                        Null { println("FAIL ", name, " unexpectedly null"); exit(exit_code) }
+                        Value {
+                            let can = decimal::canonical(v.v)
+                            match can {
+                                ok(s) {
+                                    check(s == want_can, name + " canonical", exit_code)
+                                    check(decimal::dscale(v.v) == want_dscale,
+                                          name + " dscale", exit_code)
+                                }
+                                err(m, n) {
+                                    println("FAIL ", name, " can ", m, " ", n)
+                                    exit(exit_code)
+                                }
+                            }
+                        }
+                    }
+                }
+                err(m, n) { println("FAIL ", name, " get ", m, " ", n); exit(exit_code) }
+            }
+        }
+        err(m, n) { println("FAIL ", name, " exec ", m, " ", n); exit(exit_code) }
+    }
+}
+
+fn get_null(c: &postgres::Connection, name: string, sql: string,
+            exit_code: int) {
+    let q = query(c, sql)
+    match q {
+        ok(rows) {
+            defer rows.close()
+            check(rows.status() == postgres::PGRES_TUPLES_OK,
+                  name + " status", exit_code)
+            let g = postgres::getDecimal(&rows, 0, 0)
+            match g {
+                ok(v) {
+                    match v {
+                        Null { }
+                        Value { println("FAIL ", name, " unexpectedly a value"); exit(exit_code) }
+                    }
+                }
+                err(m, n) { println("FAIL ", name, " get ", m, " ", n); exit(exit_code) }
+            }
+        }
+        err(m, n) { println("FAIL ", name, " exec ", m, " ", n); exit(exit_code) }
+    }
+}
+
+fn get_err(c: &postgres::Connection, name: string, sql: string,
+           want_code: int, want_msg: string, exit_code: int) {
+    let q = query(c, sql)
+    match q {
+        ok(rows) {
+            defer rows.close()
+            check(rows.status() == postgres::PGRES_TUPLES_OK,
+                  name + " status", exit_code)
+            let g = postgres::getDecimal(&rows, 0, 0)
+            match g {
+                ok(v) { println("FAIL ", name, " unexpectedly ok"); exit(exit_code) }
+                err(m, n) {
+                    check(n == want_code, name + " code", exit_code)
+                    check(m == want_msg, name + " message", exit_code)
+                }
+            }
+        }
+        err(m, n) { println("FAIL ", name, " exec ", m, " ", n); exit(exit_code) }
+    }
+}
+
 fn server_error(c: &postgres::Connection, name: string, sql: string,
                 exit_code: int) {
     let q = query(c, sql)
@@ -406,6 +486,31 @@ fn main() {
                 err(m, c) { println("FAIL un exec ", m, " ", c); exit(64) }
             }
 
+            // getDecimal: NULL is Null, zero is Value{0}, scales 0/2/6 and
+            // typmod scale are preserved, and the error codes are decimal()'s.
+            get_null(&conn, "get null", "SELECT NULL::numeric", 200)
+            get_ok(&conn, "get zero", "SELECT 0::numeric", "0", 0, 201)
+            get_ok(&conn, "get zero scale 2", "SELECT 0.00::numeric", "0", 2, 202)
+            get_ok(&conn, "get scale 0", "SELECT 42::numeric", "42", 0, 203)
+            get_ok(&conn, "get scale 2", "SELECT -1.23::numeric", "-1.23", 2, 204)
+            get_ok(&conn, "get scale 6", "SELECT 1.230000::numeric", "1.23", 6, 205)
+            get_ok(&conn, "get typmod scale", "SELECT 1::numeric(10,4)", "1", 4, 206)
+            get_ok(&conn, "get 38 digits",
+                   "SELECT 99999999999999999999999999999999999999::numeric",
+                   "99999999999999999999999999999999999999", 0, 207)
+            get_ok(&conn, "get large dscale", "SELECT 1e-16383::numeric",
+                   "1e-16383", 16383, 208)
+            get_err(&conn, "get NaN", "SELECT 'NaN'::numeric",
+                    postgres::DEC_DB_NONFINITE,
+                    "non-finite numeric is not representable", 209)
+            get_err(&conn, "get 39 digits",
+                    "SELECT 999999999999999999999999999999999999999::numeric",
+                    postgres::DEC_DB_PRECISION,
+                    "decimal text has more than 38 significant digits", 210)
+            get_err(&conn, "get not numeric", "SELECT '1.23'::text",
+                    postgres::DEC_DB_NOT_DECIMAL,
+                    "value is not numeric decimal data", 211)
+
             // Binary result format is rejected after NULL wins.
             let bq = postgres::execute_binary(&conn, "SELECT 1.23::numeric",
                                               new []postgres::Param(0))
@@ -431,5 +536,6 @@ fn main() {
         }
         err(m, c) { println("connect_error=", m, " code=", c); exit(69) }
     }
+    println("postgres_get_decimal=ok")
     println("postgres_decimal_live=ok")
 }
