@@ -1,0 +1,105 @@
+module app
+
+// Opt-in live PostgreSQL test for execute_sql. The only argument is an
+// explicitly authorized conninfo. SELECT-only: no schema, data, role or
+// service changes. It checks $1..$n rendering, parameter order, exact decimal
+// text, NULL and the explicit Float error against a real server.
+
+import "postgres.obx"
+
+fn check(ok: bool, name: string, code: int) {
+    if !ok {
+        println("FAIL ", name)
+        exit(code)
+    }
+}
+
+fn blob3(): []byte {
+    var b = new []byte(0)
+    append(b, byte(0))
+    append(b, byte(255))
+    append(b, byte(65))
+    return b
+}
+
+fn main() {
+    let a = args()
+    if len(a) != 2 {
+        println("usage: app <conninfo>")
+        exit(64)
+    }
+    let made = postgres::open(a[1])
+    match made {
+        ok(conn) {
+            defer conn.close()
+            let attack = "x'); DROP TABLE nope; --"
+            let q = sql`SELECT ${attack}::text AS t, ${42}::int8 AS n, ${true}::bool AS b, encode(${blob3()}::bytea,'hex') AS p, ${sqlNull()}::text AS z, ${1.2300}::numeric AS d`
+            let r = postgres::execute_sql(&conn, &q)
+            match r {
+                ok(rows) {
+                    defer rows.close()
+                    check(rows.status() == postgres::PGRES_TUPLES_OK, "status", 1)
+                    check(rows.row_count() == 1, "rows", 2)
+                    check(rows.column_count() == 6, "cols", 3)
+                    let t = rows.text(0, 0)
+                    match t {
+                        ok(v) { check(v == attack, "text", 4) }
+                        err(m, c) { println("text ", m, " ", c); exit(5) }
+                    }
+                    let n = rows.text(0, 1)
+                    match n {
+                        ok(v) { check(v == "42", "int", 6) }
+                        err(m, c) { println("int ", m, " ", c); exit(7) }
+                    }
+                    let b = rows.text(0, 2)
+                    match b {
+                        ok(v) { check(v == "t", "bool", 8) }
+                        err(m, c) { println("bool ", m, " ", c); exit(9) }
+                    }
+                    let p = rows.text(0, 3)
+                    match p {
+                        ok(v) { check(v == "00ff41", "blob", 10) }
+                        err(m, c) { println("blob ", m, " ", c); exit(11) }
+                    }
+                    let z = rows.is_null(0, 4)
+                    match z {
+                        ok(v) { check(v, "null", 12) }
+                        err(m, c) { println("null ", m, " ", c); exit(13) }
+                    }
+                    let d = rows.text(0, 5)
+                    match d {
+                        ok(v) { check(v == "1.2300", "decimal exact", 14) }
+                        err(m, c) { println("decimal ", m, " ", c); exit(15) }
+                    }
+                }
+                err(m, c) { println("exec ", m, " ", c); exit(16) }
+            }
+
+            // The fragment is borrowed, so re-execution is legal.
+            let r2 = postgres::execute_sql(&conn, &q)
+            match r2 {
+                ok(rows) {
+                    defer rows.close()
+                    check(rows.status() == postgres::PGRES_TUPLES_OK, "again", 17)
+                }
+                err(m, c) { println("again ", m, " ", c); exit(18) }
+            }
+
+            let fq = sql`SELECT ${1.5f}::float8`
+            let fr = postgres::execute_sql(&conn, &fq)
+            match fr {
+                ok(rows) {
+                    rows.close()
+                    println("FAIL float unexpectedly ok")
+                    exit(19)
+                }
+                err(m, c) {
+                    check(c == postgres::SQL_ARG_FLOAT_UNSUPPORTED, "float code", 20)
+                }
+            }
+            println("postgres_sql_live=ok")
+        }
+        err(m, c) { println("open ", m, " ", c); exit(21) }
+    }
+    println("live=", postgres::live_resources())
+}

@@ -1,0 +1,141 @@
+module app
+
+// Deterministic packet test for postgres::execute_sql over the fake libpq.
+// It checks the rendered $1..$n text, parameter order, OIDs/types, NULL,
+// exact decimal text, a borrowed fragment reused twice, and the explicit
+// Float/malformed-fragment errors. No server or real libpq is involved.
+
+import "postgres.obx"
+import "postgres_fake_probe.obx" as probe
+
+fn last_sql(): string {
+    var b = new []byte(0)
+    for i in 0..probe::last_sql_len() { append(b, byte(probe::last_sql_byte(i))) }
+    return string(b)
+}
+
+fn bytes_list(i: int): string {
+    var out = ""
+    let n = probe::last_param_len(i)
+    for j in 0..n {
+        if j > 0 { out = out + "," }
+        out = out + string(probe::last_param_byte(i, j))
+    }
+    return out
+}
+
+fn print_params() {
+    let n = probe::last_param_count()
+    println("nparams=", n)
+    for i in 0..n {
+        println("p", i, " type=", probe::last_param_type(i),
+                " len=", probe::last_param_len(i),
+                " null=", probe::last_param_isnull(i),
+                " bytes=", bytes_list(i))
+    }
+}
+
+fn blob3(): []byte {
+    var b = new []byte(0)
+    append(b, byte(0))
+    append(b, byte(255))
+    append(b, byte(65))
+    return b
+}
+
+fn text_bytes(s: string): []byte {
+    var b = new []byte(0)
+    for i in 0..len(s) { append(b, s[i]) }
+    return b
+}
+
+fn main() {
+    let made = postgres::open("fake-ok")
+    match made {
+        ok(conn) {
+            defer conn.close()
+
+            let q = sql`SELECT a = ${"hello"}, b = ${42}, c = ${true}, d = ${blob3()}, e = ${sqlNull()}, f = ${1.2300}`
+            let r = postgres::execute_sql(&conn, &q)
+            match r {
+                ok(rows) {
+                    defer rows.close()
+                    println("status=", rows.status())
+                    println("rows=", rows.row_count(), " cols=", rows.column_count())
+                }
+                err(m, c) { println("exec_err=", c, " ", m) }
+            }
+            println("sql=", last_sql())
+            print_params()
+
+            // The fragment is borrowed, so the same Sql can be executed again.
+            let r2 = postgres::execute_sql(&conn, &q)
+            match r2 {
+                ok(rows) {
+                    defer rows.close()
+                    println("again_status=", rows.status())
+                }
+                err(m, c) { println("again_err=", c, " ", m) }
+            }
+            println("again_sql=", last_sql())
+
+            // Float is rejected before a packet is built; the previous fake
+            // call is still the six-parameter one.
+            let fq = sql`x = ${1.5f}`
+            let fr = postgres::execute_sql(&conn, &fq)
+            match fr {
+                ok(rows) {
+                    rows.close()
+                    println("float=unexpected_ok")
+                }
+                err(m, c) { println("float=", c, " ", m) }
+            }
+            println("after_float_nparams=", probe::last_param_count())
+
+            // A malformed direct Sql fragment is rejected before the packet.
+            var ts = new []string(0)
+            append(ts, "a")
+            append(ts, "b")
+            var ps = new []SqlArg(0)
+            let bad = new Sql{text: ts, params: ps}
+            let br = postgres::execute_sql(&conn, &bad)
+            match br {
+                ok(rows) {
+                    rows.close()
+                    println("bad=unexpected_ok")
+                }
+                err(m, c) { println("bad=", c, " ", m) }
+            }
+
+            // param_decimal_text copies exact bytes and keeps its validation.
+            let dp = postgres::param_decimal_text(text_bytes("1.2300"))
+            match dp {
+                ok(p) {
+                    var dparams = new []postgres::Param(0)
+                    append(dparams, p)
+                    let dq = postgres::execute(&conn, "SELECT $1", dparams)
+                    match dq {
+                        ok(rows) {
+                            defer rows.close()
+                            let dv = rows.text(0, 0)
+                            match dv {
+                                ok(v) { println("dec_text=", v) }
+                                err(m, c) { println("dec_text_err=", c, " ", m) }
+                            }
+                        }
+                        err(m, c) { println("dec_text_exec=", c, " ", m) }
+                    }
+                }
+                err(m, c) { println("dec_text=unexpected_err ", c, " ", m) }
+            }
+            var empty = new []byte(0)
+            let ep = postgres::param_decimal_text(empty)
+            match ep {
+                ok(p) { println("dec_empty=unexpected_ok") }
+                err(m, c) { println("dec_empty=", c, " ", m) }
+            }
+        }
+        err(m, c) { println("open_err=", c, " ", m) }
+    }
+    println("live=", postgres::live_resources())
+}

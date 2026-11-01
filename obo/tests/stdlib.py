@@ -50,8 +50,9 @@ EXPECTED_ROOTS = [
     'errors_basic.obx', 'fmt_basic.obx',
     'paths_absent_base.obx', 'paths_absent_clean.obx',
     'paths_absent_dir.obx', 'paths_absent_stem.obx', 'paths_table.obx',
-    'sort_orders.obx', 'strings_basic.obx', 'strings_natcmp.obx',
-    'strings_quote.obx', 'strings_split_join.obx', 'time_civil.obx',
+    'sort_orders.obx', 'sqldialect_dialects.obx', 'strings_basic.obx',
+    'strings_natcmp.obx', 'strings_quote.obx', 'strings_split_join.obx',
+    'time_civil.obx',
 ]
 EXPECTED_MODULES = ['support.obx']
 

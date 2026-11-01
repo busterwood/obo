@@ -1,0 +1,204 @@
+module app
+
+// SQLite in-memory test for the Sql bridge: prepare_sql renders `?`, bind_sql
+// binds in order, text/int/bool/blob/NULL/decimal round-trip exactly, a
+// string containing SQL syntax stays data, and Float is an explicit error.
+// There is no interpolation and no REAL/float binding path.
+
+import "sqlite.obx"
+
+fn check(cond: bool, name: string, code: int) {
+    if !cond {
+        println("FAIL ", name)
+        exit(code)
+    }
+}
+
+fn blob3(): []byte {
+    var b = new []byte(0)
+    append(b, byte(0))
+    append(b, byte(255))
+    append(b, byte(65))
+    return b
+}
+
+fn main() {
+    let made = sqlite::open(":memory:")
+    match made {
+        ok(conn) {
+            defer conn.close()
+            let created = conn.exec("CREATE TABLE t(id INTEGER PRIMARY KEY, s TEXT, i INTEGER, b INTEGER, blob BLOB, z TEXT, d TEXT)")
+            match created {
+                ok(v) { check(v, "create", 1) }
+                err(m, c) { println("FAIL create ", m, " ", c); exit(2) }
+            }
+
+            let evil = "x'); DROP TABLE t; --"
+            let ins = sql`INSERT INTO t(id,s,i,b,blob,z,d) VALUES (${1}, ${evil}, ${-7}, ${true}, ${blob3()}, ${sqlNull()}, ${1.2300})`
+            let prep = sqlite::prepare_sql(&conn, &ins)
+            match prep {
+                ok(st) {
+                    defer st.close()
+                    let bound = sqlite::bind_sql(&st, &ins)
+                    match bound {
+                        ok(v) { check(v, "bind insert", 3) }
+                        err(m, c) { println("FAIL bind insert ", m, " ", c); exit(4) }
+                    }
+                    let done = st.step()
+                    match done {
+                        ok(has_row) { check(!has_row, "insert done", 5) }
+                        err(m, c) { println("FAIL insert step ", m, " ", c); exit(6) }
+                    }
+                }
+                err(m, c) { println("FAIL prepare insert ", m, " ", c); exit(7) }
+            }
+
+            // The bound string was data, so the table still exists and the
+            // selected values appeared in the declared order.
+            let sel = sql`SELECT s,i,b,blob,z,d,typeof(d) FROM t WHERE id = ${1}`
+            let sp = sqlite::prepare_sql(&conn, &sel)
+            match sp {
+                ok(st) {
+                    defer st.close()
+                    let bound = sqlite::bind_sql(&st, &sel)
+                    match bound {
+                        ok(v) { check(v, "bind select", 8) }
+                        err(m, c) { println("FAIL bind select ", m, " ", c); exit(9) }
+                    }
+                    let row = st.step()
+                    match row {
+                        ok(has_row) {
+                            check(has_row, "select row", 10)
+                            let s = st.column_text(0)
+                            match s {
+                                ok(v) {
+                                    check(v == evil, "text exact", 11)
+                                    println("s=", v)
+                                }
+                                err(m, c) { println("FAIL text ", m, " ", c); exit(12) }
+                            }
+                            let i = st.column_int(1)
+                            match i {
+                                ok(v) {
+                                    check(v == -7, "int exact", 13)
+                                    println("i=", v)
+                                }
+                                err(m, c) { println("FAIL int ", m, " ", c); exit(14) }
+                            }
+                            let b = st.column_int(2)
+                            match b {
+                                ok(v) {
+                                    check(v == 1, "bool is 1", 15)
+                                    println("b=", v)
+                                }
+                                err(m, c) { println("FAIL bool ", m, " ", c); exit(16) }
+                            }
+                            let bl = st.column_bytes(3)
+                            match bl {
+                                ok(v) {
+                                    if v == nil {
+                                        println("FAIL blob nil")
+                                        exit(17)
+                                    }
+                                    check(len(v) == 3 && int(v[0]) == 0 &&
+                                          int(v[1]) == 255 && int(v[2]) == 65,
+                                          "blob bytes", 18)
+                                    println("blob=", len(v), ":", int(v[0]), ",",
+                                            int(v[1]), ",", int(v[2]))
+                                }
+                                err(m, c) { println("FAIL blob ", m, " ", c); exit(19) }
+                            }
+                            let z = st.is_null(4)
+                            match z {
+                                ok(v) {
+                                    check(v, "null", 20)
+                                    println("z=null")
+                                }
+                                err(m, c) { println("FAIL null ", m, " ", c); exit(21) }
+                            }
+                            let d = st.column_text(5)
+                            match d {
+                                ok(v) {
+                                    check(v == "1.2300", "decimal text exact", 22)
+                                    println("d=", v)
+                                }
+                                err(m, c) { println("FAIL decimal ", m, " ", c); exit(23) }
+                            }
+                            let ty = st.column_text(6)
+                            match ty {
+                                ok(v) {
+                                    check(v == "text", "decimal storage text", 24)
+                                    println("dtype=", v)
+                                }
+                                err(m, c) { println("FAIL dtype ", m, " ", c); exit(25) }
+                            }
+                        }
+                        err(m, c) { println("FAIL select step ", m, " ", c); exit(26) }
+                    }
+                }
+                err(m, c) { println("FAIL prepare select ", m, " ", c); exit(27) }
+            }
+
+            // Float has a placeholder in the text, but bind_sql rejects it.
+            let fq = sql`x = ${1.5f}`
+            let fp = sqlite::prepare_sql(&conn, &fq)
+            match fp {
+                ok(st) {
+                    defer st.close()
+                    let fb = sqlite::bind_sql(&st, &fq)
+                    match fb {
+                        ok(v) { println("FAIL float unexpectedly bound"); exit(28) }
+                        err(m, c) {
+                            check(c == sqlite::SQL_ARG_FLOAT_UNSUPPORTED,
+                                  "float code", 29)
+                            println("float=", c, " ", m)
+                        }
+                    }
+                }
+                err(m, c) { println("FAIL prepare float ", m, " ", c); exit(30) }
+            }
+
+            // A NUL in a Str is rejected in the pre-validation pass, before any
+            // parameter is bound, so no partial binding is left behind.
+            var nul = new []byte(0)
+            append(nul, 'a')
+            append(nul, byte(0))
+            append(nul, 'b')
+            let nq = sql`SELECT ${1}, ${string(nul)}`
+            let np = sqlite::prepare_sql(&conn, &nq)
+            match np {
+                ok(st) {
+                    defer st.close()
+                    let nb = sqlite::bind_sql(&st, &nq)
+                    match nb {
+                        ok(v) { println("FAIL nul unexpectedly bound"); exit(33) }
+                        err(m, c) {
+                            check(c == 2, "nul code", 34)
+                            println("nul=", c, " ", m)
+                        }
+                    }
+                }
+                err(m, c) { println("FAIL prepare nul ", m, " ", c); exit(35) }
+            }
+
+            // Malformed direct Sql fragments fail before binding.
+            var ts = new []string(0)
+            append(ts, "a")
+            append(ts, "b")
+            var ps = new []SqlArg(0)
+            let bad = new Sql{text: ts, params: ps}
+            let bp = sqlite::prepare_sql(&conn, &bad)
+            match bp {
+                ok(st) {
+                    st.close()
+                    println("FAIL malformed prepare")
+                    exit(31)
+                }
+                err(m, c) { println("bad=", c, " ", m) }
+            }
+            println("sqlite_sql=ok")
+        }
+        err(m, c) { println("FAIL open ", m, " ", c); exit(32) }
+    }
+    println("live=", sqlite::live_resources())
+}

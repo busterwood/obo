@@ -38,12 +38,15 @@ SQLITE_PATHS = [
 ]
 LIBPQ = os.path.join(DB, 'postgres', 'postgres.cbind')
 LIBPQ_FAKE = os.path.join(DB, 'postgres', 'postgres_fake.cbind')
+LIBPQ_FAKE_SQL = os.path.join(DB, 'postgres', 'postgres_fake_sql.cbind')
 SQLITE = os.path.join(DB, 'sqlite', 'sqlite.cbind')
 PG_EX = os.path.join(DB, 'postgres', 'examples')
 SQ_EX = os.path.join(DB, 'sqlite', 'examples')
 PG_DECIMAL_APP = os.path.join(PG_EX, 'postgres_decimal_fake_app.obx')
 PG_DECIMAL_LIVE_APP = os.path.join(PG_EX, 'postgres_decimal_live_app.obx')
+PG_SQL_APP = os.path.join(PG_EX, 'postgres_sql_app.obx')
 SQ_DECIMAL_APP = os.path.join(SQ_EX, 'sqlite_decimal_app.obx')
+SQ_SQL_APP = os.path.join(SQ_EX, 'sqlite_sql_app.obx')
 FORBIDDEN_FLOAT_TOKENS = (
     'strtod', 'atof', 'sscanf', '%f', 'column_double', 'numeric_recv',
 )
@@ -193,6 +196,73 @@ def postgres_decimal_fake_obo(tmp):
     check_declaration_hash(manifest(out), PG_DECL_FILES, 'postgres decimal fake')
     verify(out)
     print('postgres decimal binding/read-back over fake libpq: ok')
+    return app
+
+
+def postgres_sql_fake_obo(tmp):
+    out = os.path.join(tmp, 'pg_sql_fake_obo')
+    app = must_build(LIBPQ_FAKE_SQL, PG_SQL_APP, out,
+                     'postgres sql fake obo')
+    p = need(run([app]), 'postgres sql fake obo run')
+    expect_lines(p.stdout, [
+        'status=2',
+        'rows=1 cols=4',
+        'sql=SELECT a = $1, b = $2, c = $3, d = $4, e = $5, f = $6',
+        'nparams=6',
+        'p0 type=25 len=5 null=0 bytes=104,101,108,108,111',
+        'p1 type=20 len=2 null=0 bytes=52,50',
+        'p2 type=16 len=1 null=0 bytes=116',
+        'p3 type=17 len=3 null=0 bytes=0,255,65',
+        'p4 type=0 len=0 null=1 bytes=',
+        'p5 type=1700 len=6 null=0 bytes=49,46,50,51,48,48',
+        'again_status=2',
+        'again_sql=SELECT a = $1, b = $2, c = $3, d = $4, e = $5, f = $6',
+        'float=1014 float SqlArg is not supported by the PostgreSQL adapter; use decimal or text',
+        'after_float_nparams=6',
+        'bad=2 malformed Sql fragment: text and parameters do not alternate',
+        'dec_text=1.2300',
+        'dec_empty=1006 invalid decimal text',
+        'live=0',
+    ], 'postgres sql fake obo')
+    if 'FAIL' in p.stdout or 'unexpected_ok' in p.stdout:
+        raise Fail('postgres sql fake suite reported a failure:\n%s' % p.stdout)
+    ldd = need(run(['ldd', app]), 'postgres sql fake ldd')
+    if 'libpq.so.5' in ldd.stdout:
+        raise Fail('postgres sql fake app unexpectedly links real libpq')
+    check_declaration_hash(manifest(out), PG_DECL_FILES, 'postgres sql fake')
+    verify(out)
+    print('postgres execute_sql fake packet/order/OIDs/decimal: ok')
+    return app
+
+
+def sqlite_sql(tmp):
+    if not sqlite_present():
+        print('sqlite sql bridge: skipped (libsqlite3.so.0 is absent)')
+        return None
+    out = os.path.join(tmp, 'sq_sql')
+    app = must_build(SQLITE, SQ_SQL_APP, out, 'sqlite sql bridge')
+    p = need(run([app]), 'sqlite sql bridge run')
+    expect_lines(p.stdout, [
+        "s=x'); DROP TABLE t; --",
+        'i=-7',
+        'b=1',
+        'blob=3:0,255,65',
+        'z=null',
+        'd=1.2300',
+        'dtype=text',
+        'float=1014 float SqlArg is not supported by the SQLite adapter; use decimal or text',
+        'bad=2 malformed Sql fragment: text and parameters do not alternate',
+        'sqlite_sql=ok',
+        'live=0',
+    ], 'sqlite sql bridge')
+    if 'FAIL' in p.stdout:
+        raise Fail('sqlite sql bridge reported a failure:\n%s' % p.stdout)
+    ldd = need(run(['ldd', app]), 'sqlite sql ldd')
+    if 'libsqlite3.so.0' not in ldd.stdout:
+        raise Fail('sqlite sql app does not depend on libsqlite3.so.0')
+    check_declaration_hash(manifest(out), SQLITE_DECL_FILES, 'sqlite sql')
+    verify(out)
+    print('sqlite prepare_sql/bind_sql ordering/exact text/NULL/blob: ok')
     return app
 
 
@@ -455,6 +525,25 @@ def postgres_live(tmp):
     print('live postgres SELECT-only smoke: ok (explicit CINTEROP_TEST_DSN)')
 
 
+def postgres_sql_live(tmp):
+    dsn = os.environ.get('CINTEROP_TEST_DSN')
+    if not dsn:
+        print('live postgres sql: skipped (set CINTEROP_TEST_DSN to run)')
+        return
+    if not libpq_present():
+        raise Fail('CINTEROP_TEST_DSN is set but libpq.so.5 is absent')
+    out = os.path.join(tmp, 'pg_sql_live')
+    app = must_build(LIBPQ, os.path.join(PG_EX, 'postgres_sql_live_app.obx'),
+                     out, 'postgres sql live')
+    p = run([app, dsn], timeout=40)
+    if p.returncode != 0:
+        raise Fail('live postgres sql app failed (exit %d):\n%s'
+                   % (p.returncode, p.stdout + p.stderr))
+    if 'postgres_sql_live=ok' not in p.stdout or 'live=0' not in p.stdout:
+        raise Fail('live postgres sql app output is incomplete:\n%s' % p.stdout)
+    print('live postgres execute_sql SELECT-only vectors: ok')
+
+
 def postgres_decimal_live(tmp):
     dsn = os.environ.get('CINTEROP_TEST_DSN')
     if not dsn:
@@ -479,15 +568,18 @@ def main():
         postgres_fake_c(tmp)
         fake_app = postgres_fake_obo(tmp)
         decimal_fake_app = postgres_decimal_fake_obo(tmp)
+        sql_fake_app = postgres_sql_fake_obo(tmp)
         sqlite_c(tmp)
         sqlite_app = sqlite_memory(tmp)
         decimal_sqlite_app = sqlite_decimal(tmp)
+        sqlite_sql_app = sqlite_sql(tmp)
         sqlite_file(tmp)
-        no_float_gate([fake_app, decimal_fake_app, sqlite_app,
-                       decimal_sqlite_app])
+        no_float_gate([fake_app, decimal_fake_app, sql_fake_app,
+                       sqlite_app, decimal_sqlite_app, sqlite_sql_app])
         sanitizers(tmp)
         postgres_probe(tmp)
         postgres_live(tmp)
+        postgres_sql_live(tmp)
         postgres_decimal_live(tmp)
         print('db adapter tests ok')
         return 0

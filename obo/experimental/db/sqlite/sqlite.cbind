@@ -4,6 +4,9 @@
   "platform": "x86_64-linux-gnu",
   "abi": "sysv-amd64",
   "wrapper": "sqlite.obx",
+  "wrapper_sources": [
+    "../../../lib/sqldialect.obx"
+  ],
   "sources": [
     "../../cinterop/toolkit/cres.c",
     "sqlite_adapter.c"

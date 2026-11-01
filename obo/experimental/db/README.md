@@ -20,9 +20,92 @@ Both packages accept scalars and return exact bytes/text, with explicit NULL
 flags rather than length inference. PostgreSQL columns expose type OID and
 typmod, and numeric/text values are never routed through a float. Scalar
 `decimal` values bind and read back as exact decimal text (PostgreSQL numeric
-OID 1700, SQLite TEXT); there is no binary numeric wire format. Neither package
-implements SQL templates, HTML templates, callbacks, automatic finalizers, or a
+OID 1700, SQLite TEXT); there is no binary numeric wire format. The
+dialect-neutral `Sql` template value now has a PostgreSQL bridge and a SQLite
+bridge (below); SQL Server and Oracle have placeholder rendering only. Neither
+package implements HTML templates, callbacks, automatic finalizers, or a
 schema/ORM layer.
+
+## SQL templates
+
+`sql` templates produce a `Sql` value: alternating literal text and ordered
+`SqlArg` parameters, with no placeholders in the text. Rendering is a separate,
+small step in `obo/lib/sqldialect.obx`; the adapter then binds the same ordered
+parameters. Literal chunks are trusted SQL structure, values are never
+interpolated or escaped into the text, and no identifier/`ORDER BY` allow-list
+is provided.
+
+```obo
+import "postgres.obx"
+import "sqldialect.obx" as sqldialect
+
+let q = sql`SELECT * FROM t WHERE id = ${id} AND name = ${name}`
+let text = sqldialect::renderPostgres(&q)   // SELECT ... id = $1 ... name = $2
+let rows = postgres::execute_sql(&conn, &q) // render + map + execute
+```
+
+The bridge functions borrow the fragment, so the same `Sql` may be executed or
+prepared more than once. `bind_sql` takes the same fragment that supplied the
+prepared SQL text and binds indices `1..n` in traversal order. A direct build
+from this tree passes `-I obo/lib`; the `cinterop` specs copy
+`lib/sqldialect.obx` beside the wrapper with `wrapper_sources`.
+
+| dialect | id | placeholder | this pass |
+|---|---:|---|---|
+| PostgreSQL | `POSTGRES` | `$1`, `$2`, ... | renderer + `postgres::execute_sql` |
+| SQLite | `SQLITE` | `?`, `?`, ... | renderer + `sqlite::prepare_sql` / `bind_sql` |
+| SQL Server TDS/`sp_executesql` | `SQLSERVER` | `@p1`, `@p2`, ... | renderer only |
+| SQL Server ODBC | `SQLSERVER_ODBC` | `?`, `?`, ... | renderer only |
+| Oracle | `ORACLE` | `:1`, `:2`, ... | renderer only |
+
+`render(&s, dialect)` validates that the text and parameter arrays alternate
+(`len(text) == len(params) + 1`), rejects an empty fragment and an unknown
+dialect, and copies literal chunks verbatim. `$`, `?`, `@` and `:` in literal
+text are preserved; they are not rewritten. The explicit helpers are
+`renderPostgres`, `renderSqlite`, `renderSqlServer`, `renderSqlServerOdbc` and
+`renderOracle`.
+
+`SqlArg` mapping in the two implemented bridges:
+
+| `SqlArg` | PostgreSQL | SQLite |
+|---|---|---|
+| `Null` | untyped NULL, OID 0 | SQL NULL |
+| `Int` | int8, OID 20 | INTEGER (i64) |
+| `Bool` | bool, OID 16, `t`/`f` | INTEGER 0/1 |
+| `Str` | text, OID 25 | TEXT |
+| `Bytes` | bytea, OID 17, exact length | BLOB, exact length |
+| `DecimalText` | numeric, OID 1700, exact text | TEXT, exact bytes |
+| `Float` | explicit `1014` error | explicit `1014` error |
+
+`SqlArg` byte payloads are borrowed from the `Sql`; the PostgreSQL and SQLite
+bridges deep-copy `Bytes`, and `DecimalText` keeps its exact bytes without
+reformatting (the packet path parses it only to validate grammar/precision).
+`postgres::param_decimal_text(b)` copies bytes and
+keeps `PARAM_DECIMAL`; the existing packet validation still rejects empty, NUL,
+malformed or over-precision decimal text. The bridge does not silently truncate,
+round or interpolate any value.
+
+`Float` has no adapter parameter kind in this pass. Both bridges return
+`SQL_ARG_FLOAT_UNSUPPORTED` (`1014`) before a packet or binding is sent;
+`decimal` text is the exact transport, and binary64 remains available in the
+language but is not routed through these adapters. PostgreSQL OID 701 and a
+SQLite `sqlite3_bind_double` path would be separate reviewed additions.
+
+Known type/placeholder gaps for the renderer-only dialects:
+
+- **SQL Server:** `bit`, `nvarchar`, `varbinary`, `decimal` and temporal types
+  need an ODBC/TDS type mapping. `@pN` is the TDS/`sp_executesql` form;
+  `SQLSERVER_ODBC` uses positional `?` because the ODBC driver numbers
+  parameters, not the server. No ODBC adapter is built here.
+- **Oracle:** `NUMBER`, `NVARCHAR2`, `RAW`, `DATE`/`TIMESTAMP` and large objects
+  need an OCI type mapping; `:n` is the placeholder form. Oracle treats an empty
+  string as NULL, so a `Str { v: "" }` binding is not an empty-string value.
+  No OCI adapter is built here.
+- **PostgreSQL:** `$n` is the extended-query form. An untyped NULL or a bare
+  `SELECT $1` may need a cast for server type inference, as with the direct
+  `Param` API.
+- **SQLite:** `?` is positional. SQLite's own one-based indices are used by
+  `bind_sql`; text rejects embedded NUL, while BLOB preserves it.
 
 ## Ownership and cleanup
 
@@ -157,9 +240,12 @@ let d = rows.decimal(row, col)            // Result[decimal]
 
 Runnable apps: `postgres/examples/postgres_probe_app.obx` (real libpq link and
 `PQmakeEmptyPGresult` ownership without a connection), `postgres_live_app.obx`
-(opt-in SELECT-only smoke test), `postgres_outlives_app.obx`, and
+(opt-in SELECT-only smoke test), `postgres_outlives_app.obx`,
+`postgres_sql_live_app.obx` (opt-in `execute_sql` vectors),
 `postgres_fake_app.obx` with `postgres_fake.cbind` (obo-level typed packet
-encoder over the deterministic fake libpq).
+encoder over the deterministic fake libpq), and `postgres_sql_app.obx` with
+`postgres_fake_sql.cbind` plus the test-only `postgres_fake_probe.obx`
+(rendered text, ordered OIDs and exact values of an `execute_sql` packet).
 
 ## SQLite
 
@@ -274,7 +360,8 @@ let d = st.decimal(col)                       // Result[decimal]
 - SQLite TEXT has no numeric ordering; sort after parsing in obo.
 
 Runnable apps: `sqlite/examples/sqlite_memory_app.obx`,
-`sqlite_decimal_app.obx` and `sqlite_file_app.obx`.
+`sqlite_decimal_app.obx`, `sqlite_file_app.obx` and `sqlite_sql_app.obx`
+(`prepare_sql`/`bind_sql` round-trip in memory).
 
 ## Tests
 
@@ -291,6 +378,15 @@ The suite covers:
   and live counters;
 - an obo-level fake-libpq packet encoder test: typed text/int/blob/NULL params,
   binary NUL, exact numeric text and OID/typmod, no real libpq dependency;
+- the `Sql` renderer across PostgreSQL, SQLite, both SQL Server forms and
+  Oracle, including parameter order, preserved literal `$`/`?`, empty chunks,
+  malformed fragments and unknown dialects;
+- `postgres::execute_sql` over the fake libpq: rendered `$1..$n` text, ordered
+  text/int8/bool/bytea/NULL/numeric parameters with OIDs, exact decimal bytes,
+  a borrowed fragment reused twice, and the `Float`/malformed errors;
+- `sqlite::prepare_sql`/`bind_sql` in memory: `?` rendering, ordered
+  text/int/bool/BLOB/NULL/decimal binding, an SQL-looking string kept as data,
+  exact decimal TEXT and the `Float`/malformed errors;
 - real libpq link/PGresult ownership with no connection, plus invalid-conninfo
   input-error reporting;
 - real SQLite in-memory create/insert/select/param roundtrip/NULL/blob-NUL/
@@ -313,7 +409,8 @@ The suite covers:
   input (without claiming a compiled header check);
 - ASAN/UBSAN builds of both C adapter suites.
 
-The PostgreSQL live section is opt-in and SELECT-only:
+The PostgreSQL live section is opt-in and SELECT-only, including the
+`execute_sql` bridge vectors:
 
 ```sh
 CINTEROP_TEST_DSN='host=/var/run/postgresql port=5432 dbname=postgres user=chris connect_timeout=3' \
@@ -331,16 +428,19 @@ is not a skip because the committed adapter is declarations-only.
 
 - No production driver, prepared-statement cache, notifications, COPY, TLS
   policy, connection pool, migrations, transactions API or ORM.
-- No SQL/HTML templates (`SqlArg.DecimalText`) and no binary numeric wire format
-  yet; these are separate future work. Scalar exact decimal text is implemented.
+- SQL templates are bridged for PostgreSQL and SQLite only; SQL Server and
+  Oracle have placeholder rendering, not adapters. No HTML templates, no binary
+  numeric wire format and no `Float`/binary64 binding path (code `1014`); these
+  are separate future work. Scalar exact decimal text is implemented.
 - No decimal fields, `?decimal`, decimal arrays, `decimal(p,s)` language type or
   `DecimalOrNull` wrapper. NULL is error-only (`is_null` first); `DEC_DB_NULL`
   1001 is a defensive fallback.
 - Domains over numeric, COPY, arrays, intervals, prepared-statement caches and
   catalog/typmod discovery beyond the result metadata are out of scope.
-- No source float arguments/results in the native contract. SQLite REAL columns
-  are exposed through SQLite's text conversion only; do not use this adapter for
-  a floating-point protocol.
+- No source float arguments/results in the native contract and no `SqlArg.Float`
+  binding (`SQL_ARG_FLOAT_UNSUPPORTED`, 1014). SQLite REAL columns are exposed
+  through SQLite's text conversion only; do not use this adapter for a
+  floating-point protocol.
 - Obo token fields are private to their wrapper modules (0.13+). The token
   protects against accidental stale/wrong-kind/forged integer use, not against
   trusted C or an adversarial caller. The generation is finite (31 bits).

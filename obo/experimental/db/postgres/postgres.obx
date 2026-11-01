@@ -17,8 +17,12 @@
 // Values cross as exact bytes. Numeric columns are never converted through a
 // float. Rows exposes the PostgreSQL type OID and typmod and the exact text.
 // SQL is always a fixed statement with $1..$n placeholders; there is no SQL
-// interpolation.
+// interpolation. execute_sql adds the dialect-neutral Sql-template bridge:
+// it renders $1..$n with lib/sqldialect and maps the ordered SqlArg values,
+// while SqlArg.Float is an explicit SQL_ARG_FLOAT_UNSUPPORTED error.
 module postgres
+
+import "sqldialect.obx" as sqldialect
 
 pub const CONNECTION_OK = 0
 pub const CONNECTION_BAD = 1
@@ -47,6 +51,12 @@ pub const PARAM_INT = 3
 pub const PARAM_BOOL = 4
 pub const PARAM_DECIMAL = 5
 pub const PARAM_DECIMAL_NULL = 6
+
+// SqlArg.Float is a binary64 value. This adapter does not format floats into
+// text and has no float parameter kind, so execute_sql rejects it explicitly
+// rather than rounding or interpolating it. Use decimal or a typed text/binary
+// representation when exactness matters.
+pub const SQL_ARG_FLOAT_UNSUPPORTED = 1014
 
 // Decimal boundary error codes. They deliberately start at 1000 so they do not
 // collide with adapter plumbing codes 2/3 or PostgreSQL status values.
@@ -80,6 +90,14 @@ pub type Param = ref record {
 fn encode_string(s: string): []byte {
     var out = new []byte(0)
     for i in 0..len(s) { append(out, s[i]) }
+    return out
+}
+
+// Copy a borrowed byte array. SqlArg payloads are borrowed from the Sql
+// fragment, so a bridge must not move them into a Param.
+fn copy_bytes(b: &[]byte): []byte {
+    var out = new []byte(0)
+    for i in 0..len(b) { append(out, b[i]) }
     return out
 }
 
@@ -255,6 +273,20 @@ pub fn param_blob(b: []byte): Param {
 // Same as param_blob, named for callers that think in bytes.
 pub fn param_bytes(b: []byte): Param {
     return new Param{kind: PARAM_BLOB, i: 0, data: b}
+}
+
+// A decimal parameter from exact text bytes. The bytes are copied, never
+// reformatted; PARAM_DECIMAL keeps OID 1700 and the existing append_param
+// grammar/size validation. Empty text and embedded NUL are rejected here as
+// well, so a malformed SqlArg.DecimalText fails before a packet is built.
+fn param_decimal_copy(b: &[]byte): Result[Param] {
+    if len(b) == 0 { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+    if has_nul(b) { return err("invalid decimal text", DEC_DB_TEXT_INVALID) }
+    return ok(new Param{kind: PARAM_DECIMAL, i: 0, data: copy_bytes(b)})
+}
+
+pub fn param_decimal_text(b: []byte): Result[Param] {
+    return param_decimal_copy(&b)
 }
 
 fn append_u32(mut out: &[]byte, v: int) {
@@ -459,6 +491,39 @@ pub fn execute_binary(c: &Connection, sql: string, params: []Param): Result[Rows
 // A fixed statement with no parameters.
 pub fn query(c: &Connection, sql: string): Result[Rows] {
     return execute(c, sql, new []Param(0))
+}
+
+// Map one SqlArg to the typed Param in the same order. Strings and decimal
+// text are copied by their constructors; byte payloads are deep-copied because
+// they are borrowed from the Sql fragment. Float has no parameter kind here.
+fn param_from_sql_arg(a: &SqlArg): Result[Param] {
+    match a {
+        Null { return ok(param_null()) }
+        Int { return ok(param_int(a.v)) }
+        Bool { return ok(param_bool(a.v)) }
+        Float {
+            return err("float SqlArg is not supported by the PostgreSQL adapter; use decimal or text",
+                       SQL_ARG_FLOAT_UNSUPPORTED)
+        }
+        Str { return ok(param_text(a.v)) }
+        Bytes { return ok(param_blob(copy_bytes(&a.v))) }
+        DecimalText { return param_decimal_copy(&a.v) }
+    }
+}
+
+// Execute a dialect-neutral Sql fragment with PostgreSQL $1..$n placeholders.
+// The fragment is borrowed: its text and parameters remain owned by the caller.
+// Literal chunks are trusted SQL; values are never interpolated. Rendering and
+// parameter conversion happen before the packet is built, so a malformed
+// fragment or an unsupported value sends nothing.
+pub fn execute_sql(c: &Connection, s: &Sql): Result[Rows] {
+    let text = try sqldialect::renderPostgres(s)
+    var params = new []Param(0)
+    for i in 0..len(s.params) {
+        let p = try param_from_sql_arg(&s.params[i])
+        append(params, p)
+    }
+    return execute(c, text, params)
 }
 
 // ---------------------------------------------------------------------- rows

@@ -73,8 +73,9 @@ field visibility is 0.13, decimal text is 0.14 and templates are 0.15.
   and staleness/version checks. A full build still compiles every module body
   from source; `--check` checks against dependencies' symbol files, including
   dependencies without sources.
-- **Library and tools.** The eleven modules under `obo/lib/` are `strings`,
-  `paths`, `sort`, `time`, `cli`, `io`, `fmt`, `errors`, `fs`, `env` and `html`.
+- **Library and tools.** The twelve modules under `obo/lib/` are `strings`,
+  `paths`, `sort`, `time`, `cli`, `io`, `fmt`, `errors`, `fs`, `env`, `html`
+  and `sqldialect`.
   Each tool is a module root and imports only what it uses;
   `obo/tools/build_tools.py` compiles
   it directly with the ordinary compiler, with nothing concatenated. The exact
@@ -91,7 +92,7 @@ field visibility is 0.13, decimal text is 0.14 and templates are 0.15.
 | Total allocated | 52,986,496 bytes direct; 52,990,848 bytes port comparison |
 | Maximum resident set | 4,652 KB (measured 1 November 2026) |
 | Live-memory budget | 2,500,000 bytes: 114,576 spare direct / 114,224 port comparison; the separate empty-array oracle requires a 30,000-byte same-source regression (measured 51,488) |
-| obo suite | 1,809 `run_fork` tests; 143 `module_test`; `sym_test.py` 52/52; `sym_fuzz.py` 200/200; `port_test` 612/612 with 10 encoder groups; `port_compare` 1,796/1,796 default; seed comparisons 1,600/1,600 against the promoted 0.15 seed; 71 doc examples; 29/29 import checks; 16/16 stdlib roots |
+| obo suite | 1,809 `run_fork` tests; 143 `module_test`; `sym_test.py` 52/52; `sym_fuzz.py` 200/200; `port_test` 612/612 with 10 encoder groups; `port_compare` 1,796/1,796 default; seed comparisons 1,600/1,600 against the promoted 0.15 seed; 71 doc examples; 30/30 import checks; 17/17 stdlib roots |
 | Float suite | `float_f1.py` 19 groups in normal and `--noregs` builds (12,580 power-of-two values each); `lambda_float_capture` passes in both modes; `memory_log_check` 4 sources |
 | Seed comparison | `OBO_REF=obo/seed/obo` (promoted 0.15) is 1,600/1,600; the older 0.13/0.12/0.11 comparisons skip the template files; the default (self) comparison is 1,796/1,796 |
 | Mutation gates | `mutate_fork` 718/749 caught + 31 equivalent, 0 missed/stale/broken (including 24 template compiler mutants); `mutate_port` 540/540; `mutate_meta` 71/82 caught + 11 equivalent; `mutate_decimal` 71/71 with an explicit baseline; `mutate_io` 36/36 (including the self-host memory oracle) |
@@ -124,9 +125,11 @@ predicate. HTML holes are context-escaped for text, quoted attributes and
 allow-listed URLs; URL values are validated as assembled values (a scheme may
 not span holes); `Html` fragments splice only as text, `[]Html` concatenates,
 and script/style/comment/name/unquoted/srcdoc/style/`on*` holes are compile
-errors. The database driver is later: `Sql` is a dialect-neutral
-text/parameter pair, and SQL identifiers, `ORDER BY` and `$n` rendering remain
-the adapter's or a future allow-list API's job.
+errors. `Sql` stays a dialect-neutral text/parameter pair. `obo/lib/sqldialect.obx`
+now renders PostgreSQL `$n`, SQLite `?`, SQL Server TDS `@pN`, SQL Server ODBC
+`?` and Oracle `:n`; the experimental PostgreSQL and SQLite packages add
+`execute_sql` and `prepare_sql`/`bind_sql`. SQL Server/Oracle adapters,
+`SqlArg.Float` binding and identifier/`ORDER BY` allow-lists remain later work.
 
 ### Field visibility 0.13
 
@@ -367,7 +370,7 @@ The aim is a compiler you can trust, so the process matters as much as the code.
 | `obo/src/obo.obo` | obo's compiler, in obo, built by `obo/seed/obo` (promote with `make promote`) |
 | `obo/seed/obo` | the trusted previous stage |
 | `obo/LANGUAGE.md` | the current language reference, including known holes |
-| `obo/lib/` | the eleven source modules: `strings`, `paths`, `sort`, `time`, `cli`, `io` (buffered `Reader`/`Writer`, `writeByte`), `fmt`, `errors`, `fs`, `env` and `html` |
+| `obo/lib/` | the twelve source modules: `strings`, `paths`, `sort`, `time`, `cli`, `io` (buffered `Reader`/`Writer`, `writeByte`), `fmt`, `errors`, `fs`, `env`, `html` and `sqldialect` |
 | `obo/cmd/` | the tools: `cat`, `wc`, `sort`, `head`, `tail` and `eza`, with `README.md` and their subsets |
 | `obo/tests/` | obo's suite, mutants, the I/O, tools and eza gates |
 | `obo/tests/io_test.py` | the runtime and streaming-I/O gates |
