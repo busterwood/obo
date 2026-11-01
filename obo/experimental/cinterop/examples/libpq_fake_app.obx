@@ -197,6 +197,9 @@ fn main() {
             close_conn(&conn)
             exit(11)
         }
-        err(m, c) { println("connect_failed=", c) }
+        err(m, c) {
+            println("connect_failed=", c)
+            println("connect_failed_msg=", m)
+        }
     }
 }

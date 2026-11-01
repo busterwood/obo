@@ -443,7 +443,7 @@ every argument is used.
 
 **Kept:** `toolkit/cres.c` and `cres.h` (205 and 60 lines) stay for the packages in 7.2 (D7). v2 stops using them for libpq,
 SQLite and db/postgres only. **Deleted:** `libpq_adapter.c` and `.h` (417 and 40 lines), except the conninfo check. **Kept:**
-`libpq_decls.h` (91 lines, declarations-only) and `tests/fake_libpq.c` (363, ABI kept; the counters become release and census
+`libpq_decls.h` (91 lines, the manual declaration header used in header mode) and `tests/fake_libpq.c` (363, ABI kept; the counters become release and census
 checks). **Rewritten:** `examples/libpq.obx` (300) and `libpq.cbind` (356). The conninfo check (`conninfo_has_timeout`,
 `libpq_adapter.c:89`) is the one helper, about 30 lines in `toolkit/libpq_conninfo.c`. `PQconninfoParse` returns a struct array
 that must be walked and freed, so it stays in C. D13 may remove the helper.

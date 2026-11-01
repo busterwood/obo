@@ -323,7 +323,9 @@ int PQgetlength(const PGresult *res, int row, int col) {
     fake_check_alignment();
     if (res == NULL || row < 0 || row >= res->ntuples || col < 0 || col >= res->nfields) {
         fake_oob_calls++;
-        return 424242;
+        /* Above the 16 MiB cbytes cap, so a missing wrapper bounds check yields
+         * a clean over-cap error rather than an attempt to copy 424242 bytes. */
+        return 16777217;
     }
     return res->lengths[row][col];
 }

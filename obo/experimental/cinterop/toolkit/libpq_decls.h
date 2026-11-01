@@ -52,8 +52,8 @@ typedef struct PQconninfoOption {
 #define PGRES_PIPELINE_SYNC 10
 #define PGRES_PIPELINE_ABORTED 11
 /* PostgreSQL 16 ExecStatusType ends at PGRES_PIPELINE_ABORTED (11). Newer
- * server/libpq versions may append values; this declarations-only adapter
- * deliberately does not claim a value it cannot verify. */
+ * server/libpq versions may append values; this manual declaration header
+ * (used in header mode) deliberately does not claim a value it cannot verify. */
 
 extern int PQlibVersion(void);
 

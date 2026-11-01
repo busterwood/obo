@@ -913,7 +913,8 @@ def libpq_fake(tmp):
                  'rows_closed=true', 'closed_status=-1',
                  'closed_value=2 rows are closed',
                  'error_status=7', 'error_closed=true',
-                 'conn_closed=true', 'conn_again=false', 'connect_failed=1'):
+                 'conn_closed=true', 'conn_again=false', 'connect_failed=1',
+                 'connect_failed_msg=fake connection failure'):
         if line not in p.stdout:
             raise Fail("fake libpq output missing %r:\n%s" % (line, p.stdout))
     for line in ('conns=0', 'results=0', 'finish=2', 'clear=6', 'exec=5', 'empty=1',
