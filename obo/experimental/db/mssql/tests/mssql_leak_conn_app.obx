@@ -1,0 +1,29 @@
+// Negative fixture: drop an open Connection without closing it.
+//
+// Under OBO_CHECK=1 the foreign census reports "foreign handles leaked:
+// Connection 1" at normal end (exit 8). With the extra argument "exit" the app
+// calls exit(0) instead, which runs no census and no release: exit 0.
+module app
+
+import "mssql.obx"
+import "../../../../lib/env.obx" as env
+
+fn main() {
+    let a = args()
+    let got = env::get("MSSQL_TEST_DSN")
+    if got == nil { exit(64) }
+    let made = mssql::open(string(got))
+    match made {
+        ok(conn) {
+            let q = conn.exec("SELECT 1")
+            match q {
+                ok(rows) { rows.close() }
+                err(m, code) { println("exec failed ", code, " ", m); exit(5) }
+            }
+            println("leaking one connection")
+            if len(a) > 1 && a[1] == "exit" { exit(0) }
+            return
+        }
+        err(m, code) { println("open failed ", code, " ", m); exit(6) }
+    }
+}
