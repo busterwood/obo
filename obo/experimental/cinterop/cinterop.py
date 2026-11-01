@@ -41,6 +41,7 @@ FORMAT = 'cinterop-proto/1'
 RELOC_HEADER = 'cinterop-relocs 1'
 MAX_ARGS = 8
 MAX_KIND_ARGS = 12        # kinds bindings: C-parameter descriptors per function (stage (a))
+MAX_KIND_INDEX = 16       # obo argument indexes: @k must be below this (the compiler checks the same bound)
 ARG_REGS = ('%rdi', '%rsi', '%rdx', '%rcx', '%r8', '%r9')
 EFFECTS = ('freesall', 'writeshandles')
 SIG_MODES = ('header', 'declarations-only')
@@ -50,7 +51,9 @@ SIG_MODES = ('header', 'declarations-only')
 # obo/src/obo.obo). The sidecar records the list, and the tool compares it with the spec.
 BYTES_KINDS = ('borrow_bytes', 'borrow_cstr')
 INT_LIMIT = (1 << 63) - 1
-# The C parameters each kind expands to (the sigcheck types and the thunk's arguments).
+# The C parameters each kind expands to (the sigcheck types and the thunk's arguments). The null and const
+# entries are only a count: their sigcheck type is the spec's ctypes annotation (see sig_params), because a
+# null or a const:<n> may be passed for any pointer or integer parameter.
 KIND_CTYPES = {
     'i64': ['long'], 'i32': ['int'], 'u32': ['unsigned int'],
     'null': ['void *'], 'const': ['void *'],
@@ -241,6 +244,15 @@ def load_spec(path):
             if not all(isinstance(a, str) for a in f['args']):
                 raise ToolError("%s: args must be i64, or a kind such as i64@0" % f['name'])
             check_kinds(f['name'], f['args'])
+            ct = f.get('ctypes')
+            if ct is not None:
+                if not isinstance(ct, list) or len(ct) != len(f['args']):
+                    raise ToolError("%s: ctypes must be a list with one entry per argument" % f['name'])
+                if not all(x is None or isinstance(x, str) for x in ct):
+                    raise ToolError("%s: ctypes entries must be strings or null" % f['name'])
+                check_ctypes(f['name'], f['args'], ct)
+            else:
+                check_ctypes(f['name'], f['args'], [None] * len(f['args']))
             if 'wrapper' not in spec:
                 raise ToolError("%s: a binding with argument kinds needs a maintained wrapper "
                                 "(the \"wrapper\" key)" % f['name'])
@@ -304,6 +316,10 @@ def check_kinds(fname, args):
     if len(args) > MAX_KIND_ARGS:
         raise ToolError("%s: at most %d argument kinds" % (fname, MAX_KIND_ARGS))
     kinds = [parse_kind(a) for a in args]
+    for k in kinds:
+        if k['arg'] is not None and k['arg'] >= MAX_KIND_INDEX:
+            raise ToolError("%s: argument index @%d is out of range (indexes run from 0 to %d)"
+                            % (fname, k['arg'], MAX_KIND_INDEX - 1))
     data = {}
     for k in kinds:
         if k['arg'] is None or (k['name'] == 'ints' and k['flag'] == 'len'):
@@ -321,6 +337,52 @@ def check_kinds(fname, args):
         if i not in data:
             raise ToolError("%s: argument %d has no kind" % (fname, i))
     return kinds
+
+
+# Integer types a null or const slot may be annotated with, besides pointers. A struct by value would pass
+# the sigcheck and then the register-passing thunk would be wrong, so it is not on this list.
+INT_CTYPES = ('int', 'unsigned int', 'long', 'unsigned long', 'long long', 'unsigned long long',
+              'short', 'unsigned short', 'char', 'unsigned char', 'size_t', 'ssize_t', 'int32_t',
+              'uint32_t', 'int64_t', 'uint64_t')
+
+
+def ctype_ok(t):
+    """A C type name a null or const slot may be annotated with: a pointer or function pointer, or an
+    integer type. Only type-name characters are allowed, since the text goes into the sigcheck source."""
+    if not isinstance(t, str) or len(t) > 120 or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_ *(),]*', t):
+        return False
+    base = re.sub(r'\s+', ' ', t.strip())
+    return base.endswith('*') or '(*)' in base or base in INT_CTYPES
+
+
+def check_ctypes(fname, args, ct):
+    """The ctypes list: one entry per argument, a C type for each null and const, and nothing else."""
+    kinds = [parse_kind(a) for a in args]
+    for i, k in enumerate(kinds):
+        if k['name'] in ('null', 'const'):
+            if not ct[i]:
+                raise ToolError("%s: %s needs its C parameter type: add a \"ctypes\" entry, e.g. "
+                                "\"const char *\"" % (fname, args[i]))
+            if not ctype_ok(ct[i]):
+                raise ToolError("%s: ctypes entry %r is not a pointer or an integer type"
+                                % (fname, ct[i]))
+        elif ct[i] is not None:
+            raise ToolError("%s: ctypes may only annotate null and const, not %r" % (fname, args[i]))
+
+
+def sig_params(f):
+    """The sigcheck parameter types: the spec's annotation for a null or const slot, the fixed type
+    for every other kind. The C compiler then checks each against the header exactly."""
+    if all(a == 'i64' for a in f['args']):
+        return [c_arg(a) for a in f['args']]
+    out = []
+    for i, a in enumerate(f['args']):
+        k = parse_kind(a)
+        if k['name'] in ('null', 'const'):
+            out.append(' '.join(f['ctypes'][i].split()))
+        else:
+            out += KIND_CTYPES[kind_key(k)]
+    return out
 
 
 def c_params(f):
@@ -513,7 +575,7 @@ def generate_sigcheck(spec):
         out.append(d)
     for i, f in enumerate(spec['functions']):
         ret = c_arg(f['ret'])
-        args = ', '.join(c_params(f)) or 'void'
+        args = ', '.join(sig_params(f)) or 'void'
         out.append('static %s (*obo_sig_%d)(%s) __attribute__((unused)) = %s;'
                    % (ret, i, args, f['symbol']))
     out.append('')

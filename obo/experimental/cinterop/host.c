@@ -41,6 +41,10 @@ __attribute__((weak)) void obo_host_prelaunch(void);
  * return scratch memory the thunk frees after the call (obo_ci_free). A contract
  * violation exits 11, as in design section 3.2 and D4; these exits run no census,
  * as a trap does. */
+/* The helpers are called only by the generated thunks in the same executable, so they are hidden: they do
+ * not join the dynamic symbol table, and a user C library cannot bind to or clash with them. */
+#define CI_HIDDEN __attribute__((visibility("hidden")))
+
 static long ci_live = 0;                       /* scratch blocks not yet freed */
 static const uint64_t ci_nil_string[1] = {0};  /* the nil string: a valid, non-NULL, zero-length pointer */
 
@@ -58,14 +62,14 @@ static void *ci_alloc(size_t n) {
     return p;
 }
 
-void obo_ci_free(void *p) {
+CI_HIDDEN void obo_ci_free(void *p) {
     if (p != NULL) {
         ci_live--;
         free(p);
     }
 }
 
-long obo_ci_scratch_live(void) { return ci_live; }
+CI_HIDDEN long obo_ci_scratch_live(void) { return ci_live; }
 
 static uint64_t ci_array_len(uint64_t a) { return *(const uint64_t *)(uintptr_t)a; }
 static uint64_t ci_array_data(uint64_t a) { return *(const uint64_t *)(uintptr_t)(a + 16); }
@@ -76,18 +80,18 @@ static uint64_t ci_checked_len(uint64_t n) {
     return n;
 }
 
-long obo_ci_i32(long v) {
+CI_HIDDEN long obo_ci_i32(long v) {
     if (v < (long)INT32_MIN || v > (long)INT32_MAX) ci_fail("obo: native i32 argument out of range\n", 11);
     return v;
 }
 
-long obo_ci_u32(long v) {
+CI_HIDDEN long obo_ci_u32(long v) {
     if (v < 0 || v > (long)0xFFFFFFFFUL) ci_fail("obo: native u32 argument out of range\n", 11);
     return v;
 }
 
 /* borrow_bytes, data pointer: a []byte (is_string 0) or a string (is_string 1). Never NULL. */
-const char *obo_ci_bytes_ptr(long v, long is_string) {
+CI_HIDDEN const char *obo_ci_bytes_ptr(long v, long is_string) {
     if (is_string) {
         if (v == 0) return (const char *)ci_nil_string;
         return (const char *)(uintptr_t)((uint64_t)v + 8);
@@ -96,7 +100,7 @@ const char *obo_ci_bytes_ptr(long v, long is_string) {
 }
 
 /* borrow_bytes, length: checked to fit int. */
-long obo_ci_bytes_len(long v, long is_string) {
+CI_HIDDEN long obo_ci_bytes_len(long v, long is_string) {
     if (is_string) {
         if (v == 0) return 0;
         return (long)ci_checked_len(*(const uint64_t *)(uintptr_t)v);
@@ -105,7 +109,7 @@ long obo_ci_bytes_len(long v, long is_string) {
 }
 
 /* borrow_cstr: a NUL-terminated copy. An embedded NUL exits 11 (D4). */
-char *obo_ci_cstr(const char *p, long n) {
+CI_HIDDEN char *obo_ci_cstr(const char *p, long n) {
     char *c;
     if (n > 0 && memchr(p, 0, (size_t)n) != NULL) ci_fail("obo: native C string contains a NUL byte\n", 11);
     c = ci_alloc((size_t)n + 1);
@@ -115,7 +119,7 @@ char *obo_ci_cstr(const char *p, long n) {
 }
 
 /* ints@k:i32 (is_u32 0) and ints@k:u32 (is_u32 1): a copied int array, each element range-checked. */
-void *obo_ci_ints(long arr, long is_u32) {
+CI_HIDDEN void *obo_ci_ints(long arr, long is_u32) {
     uint64_t n = ci_checked_len(ci_array_len((uint64_t)arr));
     const int64_t *src = (const int64_t *)(uintptr_t)ci_element_base((uint64_t)arr);
     void *out = ci_alloc((size_t)n * 4);
@@ -133,10 +137,10 @@ void *obo_ci_ints(long arr, long is_u32) {
 }
 
 /* ints@k:len: the element count of a list, checked to fit int. */
-long obo_ci_count(long arr) { return (long)ci_checked_len(ci_array_len((uint64_t)arr)); }
+CI_HIDDEN long obo_ci_count(long arr) { return (long)ci_checked_len(ci_array_len((uint64_t)arr)); }
 
 /* nil_bytes_list@k, the pointer array: a NULL for a nil element, and a non-NULL pointer for an empty one. */
-const char **obo_ci_list_ptrs(long list) {
+CI_HIDDEN const char **obo_ci_list_ptrs(long list) {
     uint64_t n = ci_checked_len(ci_array_len((uint64_t)list));
     const uint64_t *el = (const uint64_t *)(uintptr_t)ci_element_base((uint64_t)list);
     const char **out = ci_alloc((size_t)n * sizeof(char *));
@@ -147,10 +151,11 @@ const char **obo_ci_list_ptrs(long list) {
 }
 
 /* nil_bytes_list@k, the length array: 0 for a nil element. */
-int *obo_ci_list_lens(long list) {
+CI_HIDDEN int *obo_ci_list_lens(long list) {
     uint64_t n = ci_checked_len(ci_array_len((uint64_t)list));
     const uint64_t *el = (const uint64_t *)(uintptr_t)ci_element_base((uint64_t)list);
     int *out = ci_alloc((size_t)n * sizeof(int));
+    /* el[i] is an element of the list: a []byte array, so ci_array_len reads its length. */
     for (uint64_t i = 0; i < n; i++) {
         out[i] = el[i] == 0 ? 0 : (int)ci_checked_len(ci_array_len(el[i]));
     }
