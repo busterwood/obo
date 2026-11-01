@@ -1793,6 +1793,9 @@ type NativeReloc = ref record {
 
 var nativeRelocs = new []NativeReloc(0)
 var nativeRelocPath = ""
+// set while the declaration just parsed was a `native fn`, so a body brace on the next line gets the
+// specific no-body message instead of the generic top-level one
+var declWasNative = false
 
 fn isCNativeName(s: string): bool {
     if len(s) == 0 || len(s) > 200 { return false }
@@ -7597,6 +7600,7 @@ fn nativeCallCore(recName: string, ks: []NativeKind, display: string, mode: stri
     for k in 0..m {
         if k == 0 && firstArgReady {
             // a native fn call leaves the scanner on its first argument (nameItem did not read '(')
+            if sym == T_RPAREN { error(display + " takes " + string(m) + " argument(s), not 0") }
         } else {
             if sym != T_COMMA { error(display + " takes " + string(m) + " argument(s), not " + string(k)) }
             next()
@@ -12904,6 +12908,9 @@ fn nativeFnDecl(isPub: bool) {
     var ret = tVoid
     if sym == T_COLON {
         next()
+        if sym == T_IDENT && sval == "void" {
+            error("native fn '" + name + "': omit the return type for a unit result; 'void' is not a type in obo")
+        }
         ret = parseType()
     }
     for i in 0..len(params) {
@@ -12917,7 +12924,7 @@ fn nativeFnDecl(isPub: bool) {
     }
     if len(nativeRetShape(ret)) == 0 {
         error("native fn '" + name + "': unsupported return type " + tname(ret) +
-              " (use void, int, []byte or ?[]byte)")
+              " (omit the return type for unit, or use int, []byte or ?[]byte)")
     }
     if sym == T_LBRACE { error("native fn '" + name + "' is a declaration: it takes no body") }
     let prior = findSym(curModule.globals, name)
@@ -13471,6 +13478,7 @@ fn compileUnit(path: string, display: string, isRoot: bool) {
     while sym == T_IMPORT { parseImport(); skipSemis() }
     while sym != T_EOF {
         var isPub = false
+        declWasNative = false
         if sym == T_PUB {
             let pline = tline
             let pcol = tcol
@@ -13505,6 +13513,7 @@ fn compileUnit(path: string, display: string, isRoot: bool) {
                     // contextual: `native` is recognised only here, as `native fn`
                     next()
                     nativeFnDecl(isPub)
+                    declWasNative = true
                 } else {
                     error("expected a declaration")
                 }
@@ -13512,6 +13521,10 @@ fn compileUnit(path: string, display: string, isRoot: bool) {
         }
         if sym != T_EOF { expect(T_SEMI, "newline") }
         skipSemis()
+        // A native declaration has no body; if one starts on the next line, say so directly.
+        if declWasNative && sym == T_LBRACE {
+            error("a native fn is a declaration: it takes no body")
+        }
     }
     let syms = &curModule.globals
     for s in syms {
