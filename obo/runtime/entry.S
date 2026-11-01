@@ -3,12 +3,7 @@
  * contract (rsp = 8 mod 16 on entry) before reaching the C function, so a
  * code generator alignment bug traps immediately instead of lurking until
  * some runtime routine happens to use aligned SSE stores. r11 is a scratch
- * register in the ABI and never carries an argument.
- *
- * The stub also records the stack pointer at entry. The collector scans only
- * from there upwards, i.e. only frames built by obx code, never the runtime's
- * own C frames: every root must already be on the obx stack when the runtime
- * is entered, and that contract is what the compiler guarantees. */
+ * register in the ABI and never carries an argument. */
     .section .entry, "ax"
     .globl _entry
 _entry:
@@ -27,8 +22,13 @@ _entry:
     slot rt_concat
     slot rt_streq
     slot rt_panic_bounds
-    slot rt_collect
-    slot rt_gc_stats
+    /* Slots 11 and 12 are retired: gc()/gcstats() are gone. The positions
+     * remain reserved because the fixed jump table is part of the bootstrap
+     * ABI; no compiler emits a call to them. */
+    .balign 8
+    .quad 0
+    .balign 8
+    .quad 0
     slot rt_int_to_str
     slot rt_append
     slot rt_truncate
@@ -131,7 +131,6 @@ check_\f:
     and $15, %r11
     cmp $8, %r11
     jne rt_misaligned
-    mov %rsp, rt_entry_sp      /* the collector scans the obx stack from here up */
     jmp \f
     .endm
     check rt_init
@@ -145,8 +144,6 @@ check_\f:
     check rt_concat
     check rt_streq
     check rt_panic_bounds
-    check rt_collect
-    check rt_gc_stats
     check rt_int_to_str
     check rt_append
     check rt_truncate

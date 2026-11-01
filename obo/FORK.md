@@ -68,8 +68,8 @@ walking the type descriptors (which now list only owning fields), iteratively, s
 a million-node list frees without recursion. Growing an array frees the old data
 block; `truncate` frees the removed elements. With `OBO_CHECK=1`, a program that
 ends with live objects exits with code 5 and a count; freeing anything twice exits
-with code 6; `OBX_GC=poison` poisons freed memory. `gcstats()` prints live objects
-and peak bytes.
+with code 6; `OBX_GC=poison` poisons freed memory. There is no `gc()` or
+`gcstats()` builtin.
 
 **Tests.** `python3 obo/tests/run_fork.py` (every program runs with the leak
 check on) and `python3 obo/tests/mutate_fork.py`: 15 mutants that free too little,
@@ -6357,11 +6357,17 @@ machine local to the literal. Hidden builders are owned locals, so loops and
 early exits free them through the ordinary ownership rules. Template type
 descriptors are created lazily on first use, which keeps the `hello` gate
 byte-identical to the seed compiler for a program that does not mention a
-template type. Runtime slots 79-93 append the builder helpers; float and decimal
-slots 41-78 keep their meaning. The
+template type. Runtime slots 77-91 append the builder helpers; float and decimal
+slots 39-76 keep their meaning. The
 database driver, dialect placeholder rendering, identifier/`ORDER BY`
 allow-lists, array expansion and user-defined tags remain later work.
 `DecimalText` is the lossless decimal transport.
+
+A follow-up 0.15 runtime cleanup removed the disabled mark-sweep remnants and
+the `gc()`/`gcstats()` builtins (the language and standard library are
+pre-1.0), compacting the runtime jump table by two slots; the compiler and
+runtime are rebuilt and re-promoted together, so their numbers are the
+authoritative ones.
 
 **Gates (post-promotion).** `run_fork` **1,809 passed**;
 default `port_compare` **1,796/1,796**; `OBO_REF=obo/seed/obo`

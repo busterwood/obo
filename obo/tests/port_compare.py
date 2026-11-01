@@ -132,6 +132,14 @@ def main():
     sys.exit(1 if failures else 0)
 
 
+# obx reference tests that call the removed gc()/gcstats() builtins. obx keeps
+# its own collector and still runs them; the obo port has no such builtins, so
+# they are outside the port corpus.
+REMOVED_GC = {'tests/run/defer.obx', 'tests/run/gc_deep.obx',
+              'tests/run/gc_roots.obx', 'tests/run/gc_strings.obx',
+              'tests/run/growable.obx'}
+
+
 def cases_of(src, seed=False):
     """(name, text) of every case: the programs, src itself, and the error cases.
     A program that imports modules is compiled as a module root (see the module
@@ -145,12 +153,18 @@ def cases_of(src, seed=False):
     (terminalWidth, 0.5) and every case importing io.obx (io::termWidth). A
     promoted 0.5 seed compares them. The default comparison (obo and the port
     from the same source) always covers every file. This is the only seed-mode
-    exclusion besides the module trees."""
+    exclusion besides the module trees.
+
+    `REMOVED_GC` is an unconditional obo exclusion: gc()/gcstats() were removed
+    with the collector, and only the obx reference copy of those tests uses them.
+    """
     cases = []
     files = sorted(glob.glob(os.path.join(FORK, 'tests', 'run', '*.obx')) + glob.glob(os.path.join(FORK, 'examples', '*.obx')) +
                    glob.glob(os.path.join(FORK, 'bench', '*.obx')) + glob.glob(os.path.join(ROOT, 'tests', 'run', '*.obx')) +
                    glob.glob(os.path.join(ROOT, 'examples', '*.obx')) + [src])
     for f in files:
+        if f.startswith(ROOT + os.sep) and os.path.relpath(f, ROOT) in REMOVED_GC:
+            continue
         text = open(f, 'rb').read()
         if seed and seed_skips(f, text):
             continue
