@@ -179,7 +179,8 @@ pub fn discardBody(mut s: &Stream, max: int, now: &http::Now): Result[int]
 `requestInfo` copies the whole lazy request header list into an owned
 `RequestMeta` and releases the C request copy; call it once. `headerAt` works
 before it and returns `InvalidState` afterwards. Pseudo-headers are excluded
-from `RequestMeta.headers`. `RequestMeta.target`/`path`/`query` are raw bytes;
+from `RequestMeta.headers`; a regular `Host` field is retained there and also
+used as the authority fallback. `RequestMeta.target`/`path`/`query` are raw bytes;
 no percent-decoding or normalization is performed. `requireAuthority` rejects
 an empty `:authority`/`Host`; a non-empty `:authority` that disagrees with
 `Host` is a protocol error, and a declared `content-length` above `maxBody` is
@@ -241,7 +242,11 @@ final GOAWAY is queued and no live streams remain. Idle timeout is armed wheneve
 the preface is valid and no live streams remain; it queues GOAWAY(NO_ERROR),
 emits `EventTimedOut`, enters CLOSING and remains flushable. A fatal shim/nghttp2
 error enters FAILED but leaves a bounded send path open so `next` can flush the
-queued GOAWAY before the application closes. `close` retires the connection
+queued GOAWAY before the application closes. Settings-timeout, callback/flood, and
+event-ring-overflow failures queue GOAWAY and use the same flush path; a preface
+timeout has no GOAWAY and `next` ignores the resulting no-output send error while
+still returning `EventTimedOut`. A clean `terminate(NO_ERROR)` (for example EOF)
+enters CLOSING and is not reported as a protocol error. `close` retires the connection
 token and closes the transport exactly once; live stream shells are orphaned and
 remain closable, returning `Closed` for operations.
 

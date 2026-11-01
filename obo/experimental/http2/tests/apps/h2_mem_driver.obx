@@ -72,6 +72,12 @@ fn badRequestBlock(mode: string): []byte {
     return b
 }
 
+fn nowAt(nanos: int): http::Now {
+    let m = new clock::Instant{nanos: nanos}
+    let w = new clock::Timestamp{seconds: 0, nanos: 0}
+    return new http::Now{mono: m, wall: w}
+}
+
 fn nowValue(): http::Now {
     let mono = clock::monotonic()
     let wall = clock::realtime()
@@ -173,6 +179,46 @@ fn main() {
                 let cl = http2::close(&c)
                 match cl { ok(v) { } err(m, code) { } }
                 match blocker { ok(b) { let bc = bytesbuf::close(&b); match bc { ok(v) { } err(m, code) { } } } err(m, code) { } }
+            }
+        }
+        return
+    }
+    if mode == "prefacetimeout" {
+        let empty = new []byte(0)
+        let pt = transport::memory(&empty)
+        let pl = http2::defaultLimits()
+        let po2 = new http2::Options{mode: new http2::ModePriorKnowledge{}, serverName: "", requireAuthority: true}
+        let pm = http2::make(pt, &pl, &po2)
+        match pm {
+            err(m, c) { print("PREFACE make ", c, "\n") }
+            ok(c) {
+                let n0 = nowAt(0)
+                let e0 = http2::next(&c, &n0)
+                match e0 { ok(v) { } err(m, code) { } }
+                let n1 = nowAt(11000000000)
+                let e1 = http2::next(&c, &n1)
+                match e1 {
+                    ok(v) {
+                        match v {
+                            EventTimedOut { print("PREFACE timeout\n") }
+                            EventProtocolError { print("PREFACE protocol ", v.code, "\n") }
+                            EventNeedRead { print("PREFACE need-read\n") }
+                            EventNeedWrite { print("PREFACE need-write\n") }
+                            EventConnectionClosed { print("PREFACE closed\n") }
+                            EventGoaway { print("PREFACE goaway\n") }
+                            EventDrainComplete { print("PREFACE drain\n") }
+                            EventSettingsAcked { print("PREFACE ack\n") }
+                            EventStreamStarted { print("PREFACE started\n") }
+                            EventStreamData { print("PREFACE data\n") }
+                            EventStreamEnd { print("PREFACE end\n") }
+                            EventStreamClosed { print("PREFACE stream-closed\n") }
+                            EventTrailers { print("PREFACE trailers\n") }
+                        }
+                    }
+                    err(m, code) { print("PREFACE error ", code, "\n") }
+                }
+                let cl = http2::close(&c)
+                match cl { ok(v) { } err(m, code) { } }
             }
         }
         return

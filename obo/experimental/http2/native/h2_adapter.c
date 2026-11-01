@@ -438,7 +438,13 @@ static void event_push(h2_conn *c, uint32_t type, int32_t id, uint32_t flags,
     h2_event *e;
     if (c == NULL || type == H2_EV_NONE) return;
     if (c->event_count >= c->event_cap) {
+        if (!c->failed && c->session != NULL) {
+            (void)nghttp2_session_terminate_session2(
+                c->session, nghttp2_session_get_last_proc_stream_id(c->session),
+                NGHTTP2_ENHANCE_YOUR_CALM);
+        }
         c->failed = 1;
+        c->failed_flush = 1;
         c->failed_code = H2_FAIL(H2_FAIL_RESOURCE_LIMIT, 0);
         c->state = H2_STATE_FAILED;
         return;
@@ -1295,7 +1301,7 @@ static int read_options(h2_conn *c, const int64_t *v) {
     if (c->max_stream_send_buffer < 1) return -1;
     if (c->max_wire < 1024 || c->max_wire > (size_t)H2_MAX_WIRE_HARD) return -1;
     if (c->max_events < 1 || c->max_events > (size_t)H2_MAX_EVENTS_HARD) return -1;
-    if (c->max_wire < c->max_read_chunk + 9) return -1;
+    if (c->max_read_chunk < 1 || c->max_read_chunk > c->max_wire - 9) return -1;
     if (c->max_connection_window < c->max_stream_recv_window) return -1;
     if (c->max_response_header < 1 || c->max_response_trailer < 1) return -1;
     if (c->max_header_list + c->max_trailer_bytes + c->max_response_header +
@@ -1593,6 +1599,7 @@ static void check_deadlines(h2_conn *c, int64_t now) {
         if (c->preface_deadline < 0) c->preface_deadline = deadline_add(now, c->preface_timeout_ms);
         if (c->preface_deadline >= 0 && now >= c->preface_deadline) {
             c->failed = 1;
+            c->failed_flush = 0; /* no GOAWAY is queued for a bad/silent preface */
             c->failed_code = H2_FAIL(H2_FAIL_TIMEOUT, 0);
             c->state = H2_STATE_FAILED;
             c->timeouts += 1;
@@ -1607,13 +1614,10 @@ static void check_deadlines(h2_conn *c, int64_t now) {
                                                  NGHTTP2_SETTINGS_TIMEOUT);
         c->settings_active = 0;
         c->settings_deadline = -1;
-        c->failed = 1;
-        c->failed_code = H2_FAIL(H2_FAIL_SETTINGS_TIMEOUT, 0);
-        c->state = H2_STATE_FAILED;
         c->timeouts += 1;
         g_timeouts += 1;
-        event_push(c, H2_EV_PROTOCOL_ERROR, 0, 0,
-                   (uint32_t)H2_FAIL_SETTINGS_TIMEOUT, NGHTTP2_SETTINGS_TIMEOUT);
+        (void)conn_fail(c, H2_FAIL(H2_FAIL_SETTINGS_TIMEOUT, 0),
+                        (uint32_t)H2_FAIL_SETTINGS_TIMEOUT);
         return;
     }
     for (i = 0; i < c->stream_count; i++) {
@@ -1793,6 +1797,10 @@ long h2_conn_goaway(long conn_token, long last_stream_id, long error_code) {
     r = nghttp2_submit_goaway(c->session, NGHTTP2_FLAG_NONE, (int32_t)last_stream_id,
                               (uint32_t)error_code, NULL, 0);
     if (r != 0) return h2_err(H2_FAIL_GOAWAY, 0);
+    c->idle_active = 0;
+    c->idle_deadline = -1;
+    c->settings_active = 0;
+    c->settings_deadline = -1;
     c->state = H2_STATE_CLOSING;
     return 1;
 }
@@ -1806,7 +1814,24 @@ long h2_conn_terminate(long conn_token, long last_stream_id, long error_code) {
     r = nghttp2_session_terminate_session2(c->session, (int32_t)last_stream_id,
                                            (uint32_t)error_code);
     if (r != 0) return h2_err(H2_FAIL_INTERNAL, 0);
-    c->state = H2_STATE_FAILED;
+    c->idle_active = 0;
+    c->idle_deadline = -1;
+    c->settings_active = 0;
+    c->settings_deadline = -1;
+    c->drain_deadline = -1;
+    c->barrier_deadline = -1;
+    if ((uint32_t)error_code == NGHTTP2_NO_ERROR) {
+        /* Clean terminate is a drain, not a protocol error. The queued GOAWAY
+         * must still be sendable, and the frame-send callback must not classify
+         * it as a failure. */
+        c->state = H2_STATE_CLOSING;
+        c->failed_flush = 1;
+    } else {
+        c->failed = 1;
+        c->failed_flush = 1;
+        c->failed_code = H2_FAIL(H2_FAIL_PROTOCOL, error_code);
+        c->state = H2_STATE_FAILED;
+    }
     return 1;
 }
 

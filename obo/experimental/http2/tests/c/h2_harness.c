@@ -40,6 +40,7 @@ static size_t rx_header_len;
 static int client_closed;
 static long input_token;
 static long wire_token;
+static long g_max_events = 256;
 
 static int wire_has_type(uint8_t type);
 
@@ -217,7 +218,7 @@ static long make_server(long now) {
     v[12] = 1048576;
     v[13] = 32768;
     v[14] = 65536;
-    v[15] = 256;
+    v[15] = g_max_events;
     v[16] = 8388608;
     v[17] = 4096;
     v[18] = 32;
@@ -917,6 +918,9 @@ static void test_deadline(void) {
     ev = next_event(c, 11000000000LL);
     check(ev == H2_EV_PROTOCOL_ERROR, "settings ACK deadline fired");
     check(h2_conn_state(c) == H2_STATE_FAILED, "deadline failed the connection");
+    server_out_len = 0;
+    (void)server_send_all(c);
+    check(wire_has_type(NGHTTP2_GOAWAY), "settings timeout flushed GOAWAY");
     (void)sys_res_close(c, H2_KIND_CONNECTION);
     nghttp2_session_del(g_client);
     g_client = NULL;
@@ -1055,6 +1059,85 @@ static void test_closing_refuses_streams(void) {
     printf("ok closing-refuses\n");
 }
 
+static void test_window_update_zero(void) {
+    long c = make_server(0);
+    static unsigned char req[24 + 9 + 13];
+    long in;
+    long fed;
+    long ev;
+    int saw = 0;
+    memset(req, 0, sizeof(req));
+    memcpy(req, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", 24);
+    req[27] = 4; /* SETTINGS, empty */
+    req[35] = 4; /* WINDOW_UPDATE length */
+    req[36] = 8;
+    req[41] = 0; /* stream 0 */
+    /* increment remains zero -> PROTOCOL_ERROR */
+    in = buf_new(sizeof(req));
+    buf_put(in, req, sizeof(req));
+    fed = h2_conn_feed(c, in, 0, (long)sizeof(req), 0);
+    check(fed >= 0, "zero WINDOW_UPDATE reported by nghttp2");
+    server_out_len = 0;
+    (void)server_send_all(c);
+    check(h2_conn_state(c) == H2_STATE_FAILED, "zero WINDOW_UPDATE failed the connection");
+    check(wire_has_type(NGHTTP2_GOAWAY), "zero WINDOW_UPDATE queued GOAWAY");
+    while ((ev = next_event(c, 0)) != H2_EV_NONE) {
+        if (ev == H2_EV_PROTOCOL_ERROR) saw = 1;
+    }
+    check(saw == 1, "zero WINDOW_UPDATE surfaced one protocol error");
+    (void)sys_res_close(c, H2_KIND_CONNECTION);
+    printf("ok window-update-zero\n");
+}
+
+static void test_event_overflow(void) {
+    long c;
+    long ev;
+    int saw = 0;
+    g_max_events = 1;
+    c = make_server(0);
+    g_max_events = 256;
+    g_client = client_new();
+    client_to_server(c, 0);
+    server_to_client(c, 0);
+    submit_get(g_client, "/overflow", NULL, 0, 0);
+    client_to_server(c, 0);
+    check(h2_conn_state(c) == H2_STATE_FAILED, "event overflow failed the connection");
+    server_out_len = 0;
+    (void)server_send_all(c);
+    check(wire_has_type(NGHTTP2_GOAWAY), "event overflow queued GOAWAY");
+    while ((ev = next_event(c, 0)) != H2_EV_NONE) {
+        if (ev == H2_EV_PROTOCOL_ERROR) saw = 1;
+    }
+    check(saw == 1, "event overflow surfaced one protocol error");
+    (void)sys_res_close(c, H2_KIND_CONNECTION);
+    nghttp2_session_del(g_client);
+    g_client = NULL;
+    printf("ok event-overflow\n");
+}
+
+static void test_clean_terminate(void) {
+    long c = make_server(0);
+    long ev;
+    int protocol = 0;
+    g_client = client_new();
+    client_to_server(c, 0);
+    server_to_client(c, 0);
+    while ((ev = next_event(c, 0)) != H2_EV_NONE) { (void)ev; }
+    check(h2_conn_terminate(c, -1, NGHTTP2_NO_ERROR) == 1, "clean terminate");
+    check(h2_conn_state(c) == H2_STATE_CLOSING, "clean terminate is closing");
+    server_out_len = 0;
+    (void)server_send_all(c);
+    check(wire_has_type(NGHTTP2_GOAWAY), "clean terminate queued GOAWAY");
+    while ((ev = next_event(c, 0)) != H2_EV_NONE) {
+        if (ev == H2_EV_PROTOCOL_ERROR) protocol = 1;
+    }
+    check(protocol == 0, "clean terminate is not a protocol error");
+    (void)sys_res_close(c, H2_KIND_CONNECTION);
+    nghttp2_session_del(g_client);
+    g_client = NULL;
+    printf("ok clean-terminate\n");
+}
+
 static void test_goaway(void) {
     long c = make_server(0);
     g_client = client_new();
@@ -1133,6 +1216,9 @@ int main(int argc, char **argv) {
     test_idle();
     test_data_stream_zero();
     test_closing_refuses_streams();
+    test_window_update_zero();
+    test_event_overflow();
+    test_clean_terminate();
     test_goaway();
     printf("ok all\n");
     return 0;

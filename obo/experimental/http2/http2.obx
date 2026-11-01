@@ -290,7 +290,9 @@ pub fn validateLimits(l: &Limits): Result[bool] {
     if l.maxWire < 65536 || l.maxWire > 16777216 {
         return err("maxWire is outside 64 KiB..16 MiB", http::code(FAIL_INVALID_ARGUMENT, 0))
     }
-    if l.maxReadChunk < 1 || l.maxWire < l.maxReadChunk + 9 {
+    if l.maxReadChunk < 1 ||
+       l.maxReadChunk > 9223372036854775807 - 9 ||
+       l.maxWire < l.maxReadChunk + 9 {
         return err("maxWire is below maxReadChunk + 9", http::code(FAIL_INVALID_ARGUMENT, 0))
     }
     if !positive(l.maxEvents) || l.maxEvents < 5 * l.maxConcurrentStreams + 16 {
@@ -995,9 +997,11 @@ fn wantEvent(mut c: &Connection): Result[Event] {
 }
 
 fn flushFatal(mut c: &Connection, ct: int): Result[bool] {
-    let a = try fillOutput(c, ct)
-    let b = try pumpOut(c)
-    return ok(a && b)
+    let a = fillOutput(c, ct)
+    match a { ok(v) { } err(m, code) { } }
+    let b = pumpOut(c)
+    match b { ok(v) { } err(m, code) { } }
+    return ok(true)
 }
 
 // `next` performs one transport write/flush and at most one transport read per
@@ -1358,7 +1362,10 @@ pub fn requestInfo(mut s: &Stream): Result[http::RequestMeta] {
             scheme = h.value
         } else if h.name == ":path" { target = h.value } else if h.name == ":authority" {
             authority = h.value
-        } else if h.name == "host" { host = h.value } else {
+        } else if h.name == "host" {
+            host = h.value
+            append(headers, new http::Header{name: h.name, value: h.value})
+        } else {
             append(headers, new http::Header{name: h.name, value: h.value})
             if h.name == "content-length" {
                 hasCL = true

@@ -59,7 +59,8 @@ call or allocation.
   `maxTrailerCount <= maxHeaderCount`;
 - `maxResponseTrailerBytes <= maxResponseHeaderBytes`,
   `maxResponseTrailerCount <= maxHeaderCount`;
-- `maxWire >= 65536` and `maxWire >= maxReadChunk + 9`;
+- `maxWire >= 65536`, `maxReadChunk` positive, and the
+  `maxWire >= maxReadChunk + 9` comparison is performed with checked addition;
 - `maxEvents >= 5 * maxConcurrentStreams + 16`;
 - `maxHeaderArena >= maxConcurrentStreams * (maxHeaderListBytes +
   maxTrailerBytes + maxResponseHeaderBytes + maxResponseTrailerBytes)`;
@@ -132,8 +133,13 @@ budget.
 - A fatal shim or nghttp2 connection error sets FAILED and keeps a bounded
   send path open for the queued GOAWAY. `http2::next` flushes it before
   returning `EventProtocolError`; a connection-level nghttp2 error that is
-  reported only by a sent GOAWAY (for example DATA on stream 0) is surfaced from
-  the frame-send callback.
+  reported only by a sent GOAWAY (for example DATA on stream 0 or a zero
+  WINDOW_UPDATE increment) is surfaced from the frame-send callback.
+- Settings timeout, frame/zero-DATA flood, event-ring overflow and callback
+  failures all queue GOAWAY with a flushable failure state. A preface timeout
+  intentionally has no GOAWAY; `next` ignores the no-output send failure and
+  returns `EventTimedOut`. A clean `terminate(NO_ERROR)` enters CLOSING and is
+  not classified as a protocol error.
 - `requestInfo` rejects a declared `content-length` above `maxBody`, and
   `readBody`/`discardBody` enforce the cumulative decoded body bound. A
   `Host`/`:authority` mismatch is a protocol error.

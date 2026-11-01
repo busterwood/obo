@@ -352,6 +352,11 @@ def main():
          'Host/:authority mismatch was not rejected:\n%s' % p.stdout)
     print('obo maxBody and Host/:authority policy: ok')
 
+    p = run([mem, 'prefacetimeout'], timeout=60, env=dict(os.environ, OBO_CHECK='1'))
+    need(p.returncode == 0 and 'PREFACE timeout' in p.stdout,
+         'preface timeout did not surface EventTimedOut cleanly:\n%s' % p.stdout)
+    print('obo preface timeout: ok')
+
     # Memory transport response path, verified by the nghttp2 client harness.
     for mode in ('hello', 'trailers'):
         out = os.path.join(tmp, 'mem-%s.wire' % mode)
